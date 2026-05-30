@@ -36,13 +36,20 @@ async function startRecording() {
     const blob = new Blob(audioChunks, { type: "audio/webm" });
     const arrayBuffer = await blob.arrayBuffer();
 
-    // Convert webm to WAV server-side; the bridge expects a WAV/PCM stream.
-    // We'll send the webm file and let the bridge try to decode it (soundfile can read many formats).
-    const fdata = new FormData();
-    fdata.append("file", new Blob([arrayBuffer]), "recording.webm");
-
-    statusEl.textContent = "Uploading audio...";
+    statusEl.textContent = "Converting to WAV...";
+    // Decode WebM/Opus in the browser and re-encode as WAV (PCM 16-bit)
     try {
+      const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
+
+      // convert AudioBuffer to WAV (16-bit PCM)
+      const wavBytes = audioBufferToWav(audioBuffer);
+      const wavBlob = new Blob([wavBytes], { type: "audio/wav" });
+
+      const fdata = new FormData();
+      fdata.append("file", wavBlob, "recording.wav");
+
+      statusEl.textContent = "Uploading audio...";
       const resp = await fetch("http://localhost:5005/transcribe", {
         method: "POST",
         body: fdata,
@@ -71,10 +78,107 @@ async function startRecording() {
       statusEl.textContent = "Done";
     } catch (e) {
       console.error(e);
-      statusEl.textContent = "Error contacting voice bridge: " + e.message;
+      statusEl.textContent =
+        "Error converting or contacting voice bridge: " + e.message;
     }
   };
   mediaRecorder.start();
+}
+
+// helper: convert AudioBuffer to WAV bytes (16-bit PCM)
+function audioBufferToWav(buffer, opt) {
+  opt = opt || {};
+  const numChannels = buffer.numberOfChannels;
+  const sampleRate = buffer.sampleRate;
+  const format = opt.float32 ? 3 : 1; // 3 = IEEE float, 1 = PCM
+  const bitDepth = format === 3 ? 32 : 16;
+
+  let result;
+  if (numChannels === 2) {
+    result = interleave(buffer.getChannelData(0), buffer.getChannelData(1));
+  } else {
+    result = buffer.getChannelData(0);
+  }
+
+  return encodeWAV(result, numChannels, sampleRate, bitDepth, format);
+}
+
+function interleave(inputL, inputR) {
+  const length = inputL.length + inputR.length;
+  const result = new Float32Array(length);
+  let index = 0,
+    inputIndex = 0;
+  while (index < length) {
+    result[index++] = inputL[inputIndex];
+    result[index++] = inputR[inputIndex];
+    inputIndex++;
+  }
+  return result;
+}
+
+function encodeWAV(samples, numChannels, sampleRate, bitDepth, format) {
+  const bytesPerSample = bitDepth / 8;
+  const blockAlign = numChannels * bytesPerSample;
+  const buffer = new ArrayBuffer(44 + samples.length * bytesPerSample);
+  const view = new DataView(buffer);
+
+  /* RIFF identifier */ writeString(view, 0, "RIFF");
+  /* file length */ view.setUint32(
+    4,
+    36 + samples.length * bytesPerSample,
+    true,
+  );
+  /* RIFF type */ writeString(view, 8, "WAVE");
+  /* format chunk identifier */ writeString(view, 12, "fmt ");
+  /* format chunk length */ view.setUint32(16, 16, true);
+  /* sample format (raw) */ view.setUint16(20, format, true);
+  /* channel count */ view.setUint16(22, numChannels, true);
+  /* sample rate */ view.setUint32(24, sampleRate, true);
+  /* byte rate (sampleRate * blockAlign) */ view.setUint32(
+    28,
+    sampleRate * blockAlign,
+    true,
+  );
+  /* block align (channel count * bytes per sample) */ view.setUint16(
+    32,
+    blockAlign,
+    true,
+  );
+  /* bits per sample */ view.setUint16(34, bitDepth, true);
+  /* data chunk identifier */ writeString(view, 36, "data");
+  /* data chunk length */ view.setUint32(
+    40,
+    samples.length * bytesPerSample,
+    true,
+  );
+
+  // write the PCM samples
+  if (bitDepth === 16) {
+    floatTo16BitPCM(view, 44, samples);
+  } else {
+    writeFloat32(view, 44, samples);
+  }
+
+  return buffer;
+}
+
+function floatTo16BitPCM(output, offset, input) {
+  for (let i = 0; i < input.length; i++, offset += 2) {
+    let s = Math.max(-1, Math.min(1, input[i]));
+    output.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+  }
+}
+
+function writeFloat32(output, offset, input) {
+  for (let i = 0; i < input.length; i++, offset += 4) {
+    output.setFloat32(offset, input[i], true);
+  }
+}
+
+function writeString(view, offset, string) {
+  for (let i = 0; i < string.length; i++) {
+    view.setUint8(offset + i, string.charCodeAt(i));
+  }
 }
 
 function stopRecording() {
