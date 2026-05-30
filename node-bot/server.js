@@ -113,21 +113,55 @@ function runLlama(prompt, maxTokens = 256) {
     // Return a helpful placeholder reply so the pipeline can be tested without a model.
     return "(no model configured) I heard: " + prompt.slice(0, 200);
   }
-  // Example llama.cpp CLI: main.exe -m model.gguf -p \"prompt\" -n 128
-  // Use a simple non-interactive generation
-  const args = ["-m", LLAMA_MODEL, "-p", prompt, "-n", String(maxTokens)];
+
+  // Decide how to invoke the llama binary:
+  // - If LLAMA_MODEL looks like an HF repo id (contains a slash and not an absolute path), call with --hf-repo
+  // - Otherwise assume it's a local model file and call with -m <file>
+  let args = [];
+  const looksLikeHfRepo =
+    LLAMA_MODEL.indexOf("/") !== -1 && !fs.existsSync(LLAMA_MODEL);
+  if (looksLikeHfRepo) {
+    args = [
+      "completion",
+      "--hf-repo",
+      LLAMA_MODEL,
+      "-p",
+      prompt,
+      "-n",
+      String(maxTokens),
+    ];
+  } else {
+    args = [
+      "completion",
+      "-m",
+      LLAMA_MODEL,
+      "-p",
+      prompt,
+      "-n",
+      String(maxTokens),
+    ];
+  }
+
   console.log("Running llama:", LLAMA_BIN, args.join(" "));
   const r = spawnSync(LLAMA_BIN, args, {
     encoding: "utf8",
     maxBuffer: 50 * 1024 * 1024,
   });
   if (r.error) throw r.error;
+  console.log(
+    "llama exit",
+    r.status,
+    "stdout_len",
+    r.stdout ? r.stdout.length : 0,
+    "stderr_len",
+    r.stderr ? r.stderr.length : 0,
+  );
   if (r.status !== 0) {
     console.error("llama stderr:", r.stderr);
     throw new Error("llama failed: " + r.stderr);
   }
   // The binary usually prints the generated text to stdout after the prompt
-  const out = r.stdout;
+  const out = r.stdout || "";
   // Attempt to strip the prompt echo if present
   let reply = out;
   try {
