@@ -1,0 +1,24 @@
+# Ignore tool binaries and large model files
+/tools/llama/
+/ManaAIManatext-generation-webui/
+/text-generation-webui/
+
+# Ignore virtualenvs and node modules
+**/venv/
+**/node_modules/
+win-bot/venv/
+
+# Ignore temp and logs
+node-bot/tmp/
+*.log
+*.zip
+*.exe
+nul
+
+# Ignore model download artifacts (optionally keep model manifests)
+tools/whisper/Release/
+tools/ffmpeg/
+
+# OS files
+Thumbs.db
+.DS_Store
