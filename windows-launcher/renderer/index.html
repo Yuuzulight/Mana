@@ -1,0 +1,33 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Local Voice Coding Buddy</title>
+    <style>
+      body { font-family: Arial, sans-serif; margin: 16px; }
+      #status { margin-bottom: 12px; }
+      #transcript { margin-top: 12px; white-space: pre-wrap; }
+      #modelReply { margin-top: 12px; font-weight: bold; }
+      button { padding: 10px 14px; font-size: 14px; }
+      #talk { background: #0b84ff; color: white; border: none; border-radius: 6px; }
+    </style>
+  </head>
+  <body>
+    <h3>Local Voice Coding Buddy</h3>
+    <div id="status">Status: <span id="statustxt">Starting...</span></div>
+
+    <div>
+      <button id="openWebUI">Open Model Web UI</button>
+      <span style="margin-left:8px">(Make sure web UI is at http://localhost:7860)</span>
+    </div>
+
+    <div style="margin-top:18px">
+      <button id="talk">Push to talk (hold)</button>
+    </div>
+
+    <div id="transcript"></div>
+    <div id="modelReply"></div>
+
+    <script src="renderer.js"></script>
+  </body>
+</html>
