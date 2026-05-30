@@ -1,0 +1,17 @@
+{
+  "name": "local-voice-bot-launcher",
+  "version": "0.1.0",
+  "description": "Electron launcher that starts WSL bot and provides a Push-to-Talk UI",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "pack": "electron-builder --dir",
+    "dist": "electron-builder"
+  },
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "electron": "^26.0.0",
+    "electron-builder": "^24.7.0"
+  }
+}

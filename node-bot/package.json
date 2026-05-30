@@ -1,0 +1,15 @@
+{
+  "name": "local-llama-node-bot",
+  "version": "0.1.0",
+  "description": "Node backend that uses whisper.cpp and llama.cpp binaries for local STT and generation",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.18.2",
+    "multer": "^1.4.5-lts.1",
+    "uuid": "^9.0.0"
+  }
+}
