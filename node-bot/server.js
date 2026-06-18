@@ -9,11 +9,13 @@ Environment variables (set before running):
 - WHISPER_MODEL : full path to whisper model file (e.g. models/ggml-base.en.bin)
 - LLAMA_BIN : full path to llama.cpp/main executable (e.g. C:\llama.cpp\main.exe)
 - LLAMA_MODEL : full path to GGUF model file (e.g. models/7B.gguf)
+- TTS_PROVIDER : "cli" or "chatterbox"
 - TTS_BIN : full path to your TTS executable
 - TTS_MODEL : model path or model id for your TTS executable
 - TTS_ARGS_JSON : optional JSON array of CLI args with placeholders like {text}, {output}, {model}, {voice}, {speaker}
 - TTS_VOICE : optional voice value used by your TTS args
 - TTS_SPEAKER : optional speaker value used by your TTS args
+- CHATTERBOX_TTS_URL : local Chatterbox TTS microservice URL
 
 This server aims to avoid Python. You must download and place the whisper.cpp and llama.cpp binaries and model files yourself.
 */
@@ -24,6 +26,8 @@ const cors = require("cors");
 const { spawnSync } = require("child_process");
 const fs = require("fs");
 const path = require("path");
+const http = require("http");
+const https = require("https");
 const app = express();
 app.use(cors());
 app.use(express.json({ limit: "1mb" }));
@@ -38,6 +42,11 @@ const TTS_MODEL = process.env.TTS_MODEL || null;
 const TTS_ARGS_JSON = process.env.TTS_ARGS_JSON || null;
 const TTS_VOICE = process.env.TTS_VOICE || null;
 const TTS_SPEAKER = process.env.TTS_SPEAKER || null;
+const CHATTERBOX_TTS_URL =
+  process.env.CHATTERBOX_TTS_URL || "http://127.0.0.1:5010";
+const TTS_PROVIDER =
+  process.env.TTS_PROVIDER ||
+  (process.env.CHATTERBOX_TTS_URL ? "chatterbox" : TTS_BIN ? "cli" : "none");
 
 if (!fs.existsSync(path.join(__dirname, "tmp"))) {
   fs.mkdirSync(path.join(__dirname, "tmp"));
@@ -46,7 +55,8 @@ if (!fs.existsSync(path.join(__dirname, "tmp"))) {
 app.get("/health", (req, res) => {
   res.json({
     ok: true,
-    ttsConfigured: Boolean(TTS_BIN),
+    ttsConfigured: TTS_PROVIDER !== "none",
+    ttsProvider: TTS_PROVIDER,
   });
 });
 
@@ -126,6 +136,63 @@ function runTts(text) {
   } catch (error) {}
 
   return audio;
+}
+
+function postJsonBuffer(urlString, body) {
+  return new Promise((resolve, reject) => {
+    const url = new URL(urlString);
+    const transport = url.protocol === "https:" ? https : http;
+    const payload = Buffer.from(JSON.stringify(body), "utf8");
+
+    const req = transport.request(
+      {
+        hostname: url.hostname,
+        port: url.port,
+        path: url.pathname,
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Content-Length": payload.length,
+        },
+      },
+      (res) => {
+        const chunks = [];
+        res.on("data", (chunk) => chunks.push(chunk));
+        res.on("end", () => {
+          const buffer = Buffer.concat(chunks);
+          if (res.statusCode && res.statusCode >= 200 && res.statusCode < 300) {
+            resolve(buffer);
+            return;
+          }
+          reject(
+            new Error(
+              `TTS service request failed (${res.statusCode}): ${buffer.toString("utf8")}`,
+            ),
+          );
+        });
+      },
+    );
+
+    req.on("error", reject);
+    req.write(payload);
+    req.end();
+  });
+}
+
+async function synthesizeReply(text) {
+  if (!text) {
+    throw new Error("No text provided for synthesis");
+  }
+
+  if (TTS_PROVIDER === "chatterbox") {
+    return await postJsonBuffer(`${CHATTERBOX_TTS_URL}/synthesize`, { text });
+  }
+
+  if (TTS_PROVIDER === "cli") {
+    return runTts(text);
+  }
+
+  throw new Error("TTS not configured");
 }
 
 function findWhisperBin() {
@@ -381,11 +448,11 @@ app.post("/synthesize", async (req, res) => {
     if (!text) {
       return res.status(400).json({ error: "no text" });
     }
-    if (!TTS_BIN) {
+    if (TTS_PROVIDER === "none") {
       return res.status(400).json({ error: "TTS not configured" });
     }
 
-    const audio = runTts(text);
+    const audio = await synthesizeReply(text);
     res.setHeader("Content-Type", "audio/wav");
     return res.send(audio);
   } catch (e) {
