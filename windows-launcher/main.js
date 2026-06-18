@@ -4,15 +4,65 @@ const { spawn } = require("child_process");
 
 let mainWindow;
 let backendProcess = null;
+let ttsProcess = null;
 const BACKEND_URL = "http://localhost:5005/health";
+const TTS_URL = "http://127.0.0.1:5010/health";
 
-async function isBackendRunning() {
+async function isServiceRunning(url) {
   try {
-    const response = await fetch(BACKEND_URL);
+    const response = await fetch(url);
     return response.ok;
   } catch (error) {
     return false;
   }
+}
+
+async function isBackendRunning() {
+  return isServiceRunning(BACKEND_URL);
+}
+
+async function isTtsRunning() {
+  return isServiceRunning(TTS_URL);
+}
+
+function startTtsService() {
+  if (ttsProcess) {
+    return;
+  }
+
+  const provider = process.env.TTS_PROVIDER || "none";
+  if (provider !== "chatterbox") {
+    return;
+  }
+
+  const ttsStartScript = path.join(__dirname, "..", "tts-service", "start.ps1");
+  console.log("Starting Chatterbox TTS service:", ttsStartScript);
+  ttsProcess = spawn(
+    "powershell",
+    ["-ExecutionPolicy", "Bypass", "-File", ttsStartScript],
+    {
+      cwd: path.join(__dirname, "..", "tts-service"),
+    },
+  );
+
+  ttsProcess.on("error", (error) => {
+    console.error("Failed to start TTS service:", error);
+    dialog.showErrorBox(
+      "TTS start error",
+      `Failed to start Chatterbox TTS service: ${error.message}`,
+    );
+  });
+
+  ttsProcess.stdout.on("data", (data) => {
+    console.log(`TTS: ${data}`);
+  });
+  ttsProcess.stderr.on("data", (data) => {
+    console.error(`TTS ERR: ${data}`);
+  });
+  ttsProcess.on("close", (code) => {
+    console.log(`TTS service exited with code ${code}`);
+    ttsProcess = null;
+  });
 }
 
 function startWindowsServices() {
@@ -75,9 +125,12 @@ app.whenReady().then(() => {
   }
 
   // Start the local Node backend before opening the UI.
-  isBackendRunning()
-    .then((running) => {
-      if (!running) {
+  Promise.all([isBackendRunning(), isTtsRunning()])
+    .then(([backendRunning, ttsRunning]) => {
+      if (!ttsRunning) {
+        startTtsService();
+      }
+      if (!backendRunning) {
         startWindowsServices();
       }
     })
@@ -102,6 +155,11 @@ app.on("quit", () => {
     try {
       // Stop the local backend when the app closes.
       backendProcess.kill();
+    } catch (e) {}
+  }
+  if (ttsProcess) {
+    try {
+      ttsProcess.kill();
     } catch (e) {}
   }
 });
