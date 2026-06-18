@@ -1,7 +1,7 @@
 {
   "name": "local-voice-bot-launcher",
   "version": "0.1.0",
-  "description": "Electron launcher that starts WSL bot and provides a Push-to-Talk UI",
+  "description": "Electron launcher for the local AI assistant with a push-to-talk UI",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
