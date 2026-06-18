@@ -6,6 +6,9 @@ const openWebUIButton = document.getElementById("openWebUI");
 
 let mediaRecorder = null;
 let audioChunks = [];
+let mediaStream = null;
+let currentReplyAudio = null;
+let currentReplyUrl = null;
 
 openWebUIButton.addEventListener("click", () => {
   const { shell } = require("electron");
@@ -14,35 +17,95 @@ openWebUIButton.addEventListener("click", () => {
 
 async function checkServices() {
   try {
-    const r = await fetch("http://localhost:5005", { method: "GET" });
-    statusEl.textContent = "Voice bridge running";
+    const response = await fetch("http://localhost:5005/health", {
+      method: "GET",
+    });
+    if (!response.ok) {
+      throw new Error(`Health check returned ${response.status}`);
+    }
+    const health = await response.json();
+    statusEl.textContent = health.ttsConfigured
+      ? "Local backend running"
+      : "Local backend running (TTS not configured)";
   } catch (e) {
-    statusEl.textContent =
-      "Voice bridge not reachable (start the app or check WSL)";
+    statusEl.textContent = "Local backend not reachable";
   }
 }
 
 checkServices();
+// Keep the status fresh.
+setInterval(checkServices, 5000);
+
+function stopReplyAudio() {
+  if (currentReplyAudio) {
+    currentReplyAudio.pause();
+    currentReplyAudio = null;
+  }
+  if (currentReplyUrl) {
+    URL.revokeObjectURL(currentReplyUrl);
+    currentReplyUrl = null;
+  }
+}
+
+async function playReplyAudio(text) {
+  statusEl.textContent = "Synthesizing reply...";
+  const response = await fetch("http://localhost:5005/synthesize", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ text }),
+  });
+
+  if (!response.ok) {
+    const message = await response.text();
+    throw new Error(message);
+  }
+
+  const audioBlob = await response.blob();
+  stopReplyAudio();
+  currentReplyUrl = URL.createObjectURL(audioBlob);
+  currentReplyAudio = new Audio(currentReplyUrl);
+
+  currentReplyAudio.addEventListener(
+    "ended",
+    () => {
+      stopReplyAudio();
+    },
+    { once: true },
+  );
+
+  currentReplyAudio.addEventListener(
+    "error",
+    () => {
+      stopReplyAudio();
+    },
+    { once: true },
+  );
+
+  await currentReplyAudio.play();
+}
 
 async function startRecording() {
   transcriptEl.textContent = "";
   replyEl.textContent = "";
   audioChunks = [];
 
-  const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-  mediaRecorder = new MediaRecorder(stream, { mimeType: "audio/webm" });
+  mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  mediaRecorder = new MediaRecorder(mediaStream, { mimeType: "audio/webm" });
   mediaRecorder.ondataavailable = (e) => audioChunks.push(e.data);
   mediaRecorder.onstop = async () => {
     const blob = new Blob(audioChunks, { type: "audio/webm" });
     const arrayBuffer = await blob.arrayBuffer();
+    let audioCtx = null;
 
     statusEl.textContent = "Converting to WAV...";
-    // Decode WebM/Opus in the browser and re-encode as WAV (PCM 16-bit)
+    // Convert browser audio to WAV before upload.
     try {
-      const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
       const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
 
-      // convert AudioBuffer to WAV (16-bit PCM)
+      // Send the backend a simple audio format.
       const wavBytes = audioBufferToWav(audioBuffer);
       const wavBlob = new Blob([wavBytes], { type: "audio/wav" });
 
@@ -66,20 +129,28 @@ async function startRecording() {
       transcriptEl.textContent = "You: " + t;
       replyEl.textContent = "Bot: " + m;
 
-      // Use browser TTS to speak the reply
-      if ("speechSynthesis" in window) {
-        const utter = new SpeechSynthesisUtterance(m);
-        window.speechSynthesis.cancel();
-        window.speechSynthesis.speak(utter);
+      if (j.ttsConfigured) {
+        await playReplyAudio(m);
       } else {
-        console.warn("speechSynthesis not available in this environment");
+        stopReplyAudio();
+        statusEl.textContent = "Reply ready (TTS not configured)";
+        return;
       }
 
       statusEl.textContent = "Done";
     } catch (e) {
       console.error(e);
       statusEl.textContent =
-        "Error converting or contacting voice bridge: " + e.message;
+        "Error converting audio or contacting backend: " + e.message;
+    } finally {
+      // Clean up mic and audio resources after each recording.
+      if (audioCtx) {
+        await audioCtx.close().catch(() => {});
+      }
+      if (mediaStream) {
+        mediaStream.getTracks().forEach((track) => track.stop());
+        mediaStream = null;
+      }
     }
   };
   mediaRecorder.start();
@@ -187,31 +258,41 @@ function stopRecording() {
   }
 }
 
-// Push-to-talk behavior
-talkBtn
-  .addEventListener("mousedown", async () => {
+// Stop recording on release or when the pointer leaves the button.
+talkBtn.addEventListener("mousedown", async () => {
+  try {
     talkBtn.textContent = "Recording...";
     talkBtn.style.background = "#c0392b";
     await startRecording();
-  })
+  } catch (e) {
+    console.error(e);
+    statusEl.textContent = "Microphone access failed: " + e.message;
+    talkBtn.textContent = "Push to talk (hold)";
+    talkBtn.style.background = "#0b84ff";
+  }
+});
 
-  [
-    // stop on mouseup or mouseleave
-    ("mouseup", "mouseleave")
-  ].forEach((ev) => {
-    talkBtn.addEventListener(ev, () => {
-      talkBtn.textContent = "Push to talk (hold)";
-      talkBtn.style.background = "#0b84ff";
-      stopRecording();
-    });
+["mouseup", "mouseleave"].forEach((ev) => {
+  talkBtn.addEventListener(ev, () => {
+    talkBtn.textContent = "Push to talk (hold)";
+    talkBtn.style.background = "#0b84ff";
+    stopRecording();
   });
+});
 
-// touch support
+// Same flow for touch.
 talkBtn.addEventListener("touchstart", async (e) => {
   e.preventDefault();
-  talkBtn.textContent = "Recording...";
-  talkBtn.style.background = "#c0392b";
-  await startRecording();
+  try {
+    talkBtn.textContent = "Recording...";
+    talkBtn.style.background = "#c0392b";
+    await startRecording();
+  } catch (err) {
+    console.error(err);
+    statusEl.textContent = "Microphone access failed: " + err.message;
+    talkBtn.textContent = "Push to talk (hold)";
+    talkBtn.style.background = "#0b84ff";
+  }
 });
 talkBtn.addEventListener("touchend", (e) => {
   e.preventDefault();
