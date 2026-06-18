@@ -3,25 +3,48 @@ const path = require("path");
 const { spawn } = require("child_process");
 
 let mainWindow;
-let wslProcess = null;
+let backendProcess = null;
+const BACKEND_URL = "http://localhost:5005/health";
+
+async function isBackendRunning() {
+  try {
+    const response = await fetch(BACKEND_URL);
+    return response.ok;
+  } catch (error) {
+    return false;
+  }
+}
 
 function startWindowsServices() {
-  // Start the Node backend instead of the Python-based service
+  // Only start one backend process.
+  if (backendProcess) {
+    return;
+  }
+
   const nodeServer = path.join(__dirname, "..", "node-bot", "server.js");
   console.log("Starting Node bot:", nodeServer);
-  wslProcess = spawn("node", [nodeServer], {
+  backendProcess = spawn("node", [nodeServer], {
     cwd: path.join(__dirname, "..", "node-bot"),
-    detached: true,
   });
 
-  wslProcess.stdout.on("data", (data) => {
+  // Startup failures show up here.
+  backendProcess.on("error", (error) => {
+    console.error("Failed to start Node bot:", error);
+    dialog.showErrorBox(
+      "Backend start error",
+      `Failed to start node-bot: ${error.message}`,
+    );
+  });
+
+  backendProcess.stdout.on("data", (data) => {
     console.log(`Node: ${data}`);
   });
-  wslProcess.stderr.on("data", (data) => {
+  backendProcess.stderr.on("data", (data) => {
     console.error(`Node ERR: ${data}`);
   });
-  wslProcess.on("close", (code) => {
+  backendProcess.on("close", (code) => {
     console.log(`Node server exited with code ${code}`);
+    backendProcess = null;
   });
 }
 
@@ -51,12 +74,16 @@ app.whenReady().then(() => {
     return;
   }
 
-  // Start WSL services which in turn starts the web UI and voice bridge
-  try {
-    startWindowsServices();
-  } catch (e) {
-    dialog.showErrorBox("Start error", String(e));
-  }
+  // Start the local Node backend before opening the UI.
+  isBackendRunning()
+    .then((running) => {
+      if (!running) {
+        startWindowsServices();
+      }
+    })
+    .catch((e) => {
+      dialog.showErrorBox("Start error", String(e));
+    });
 
   createWindow();
 
@@ -66,14 +93,15 @@ app.whenReady().then(() => {
 });
 
 app.on("window-all-closed", function () {
-  // Quit the app. We do NOT kill WSL services so they continue running.
+  // Quit the app and stop the backend on non-macOS platforms.
   if (process.platform !== "darwin") app.quit();
 });
 
 app.on("quit", () => {
-  if (wslProcess) {
+  if (backendProcess) {
     try {
-      wslProcess.kill();
+      // Stop the local backend when the app closes.
+      backendProcess.kill();
     } catch (e) {}
   }
 });
