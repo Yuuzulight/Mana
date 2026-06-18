@@ -8,7 +8,11 @@ This folder contains a small voice bridge that runs inside WSL (Ubuntu) and prov
 - Query a locally-running text-generation-webui instance (if available) for a reply
 - Synthesize the reply to WAV using Coqui TTS (/synthesize endpoint)
 
-The Windows Electron launcher (in ../windows-launcher) will start this script inside WSL when you launch the app.
+Status
+------
+This path is currently legacy. The active launcher integration in `../windows-launcher` starts `../node-bot/server.js` instead.
+
+The Python WSL bridge remains in the repository as an older experiment and reference implementation.
 
 Quick setup (inside WSL)
 ------------------------
@@ -32,9 +36,10 @@ Quick setup (inside WSL)
 
 How the Windows launcher integrates
 ----------------------------------
-The Windows Electron app calls `wsl.exe` to run `~/wsl-bot/start.sh`. That script starts the
-voice bridge and (optionally) text-generation-webui. The Electron renderer sends recorded audio
-via HTTP POST to the voice bridge `/transcribe` endpoint and plays the returned WAV audio.
+This section describes the historical integration design, not the current default launcher path.
+
+Originally, the Windows Electron app was intended to call `wsl.exe` to run `~/wsl-bot/start.sh`.
+That script starts the voice bridge and optionally starts `text-generation-webui`.
 
 Notes and troubleshooting
 -------------------------
