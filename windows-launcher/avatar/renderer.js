@@ -1,10 +1,22 @@
 const { ipcRenderer } = require("electron");
+const fs = require("fs");
+const path = require("path");
 
 const avatar = document.getElementById("avatar");
+const assetRoot = path.join(__dirname, "..", "assets", "avatar");
 const states = {
-  idle: "../assets/avatar/idle.svg",
-  talking: "../assets/avatar/talking.svg",
+  idle: resolveAvatarAsset("idle"),
+  talking: resolveAvatarAsset("talking"),
 };
+
+function resolveAvatarAsset(name) {
+  const pngPath = path.join(assetRoot, `${name}.png`);
+  if (fs.existsSync(pngPath)) {
+    return `../assets/avatar/${name}.png`;
+  }
+
+  return `../assets/avatar/${name}.svg`;
+}
 
 function setAvatarState(state) {
   const nextState = states[state] ? state : "idle";
