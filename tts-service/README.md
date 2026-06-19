@@ -10,6 +10,8 @@ Endpoints
 ---------
 - `GET /health`
 - `POST /synthesize`
+  - accepts `{ "text": "...", "voice": "...", "speed": 1.0, "lang": "..." }`
+  - `voice`, `speed`, and `lang` are optional per-request overrides
 
 Environment
 -----------
@@ -17,6 +19,7 @@ Environment
   - default: `jf_nezumi`
 - `KOKORO_SPEED`
   - default: `1.18`
+- Kokoro language routing currently targets English, Chinese Mandarin, Japanese, Korean, Russian, German, Spanish, and Malay.
 - `CHATTERBOX_MODEL`
   - default: `turbo`
 - `CHATTERBOX_DEVICE`

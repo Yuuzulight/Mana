@@ -57,6 +57,16 @@ const VTUBE_STUDIO_REACTIONS_JSON =
 const TTS_PROVIDER =
   process.env.TTS_PROVIDER ||
   (TTS_BIN ? "cli" : "chatterbox");
+const KOKORO_LANGUAGE_PROFILES = {
+  english: { lang: "en-us", voice: "af_heart", speed: 1.18 },
+  chinese: { lang: "cmn", voice: "zf_xiaoyi", speed: 1.08 },
+  japanese: { lang: "ja", voice: "jf_nezumi", speed: 1.18 },
+  korean: { lang: "ko", voice: "jf_nezumi", speed: 1.12 },
+  russian: { lang: "ru", voice: "jf_nezumi", speed: 1.08 },
+  german: { lang: "de", voice: "af_heart", speed: 1.08 },
+  spanish: { lang: "es", voice: "ef_dora", speed: 1.1 },
+  malay: { lang: "ms", voice: "af_heart", speed: 1.1 },
+};
 const vtubeStudio = VTUBE_STUDIO_ENABLED
   ? new VTubeStudioClient({ url: VTUBE_STUDIO_URL })
   : null;
@@ -207,8 +217,12 @@ async function synthesizeReply(text) {
   }
 
   if (TTS_PROVIDER === "kokoro") {
+    const kokoroProfile = pickKokoroLanguageProfile(text);
     try {
-      return await postJsonBuffer(`${KOKORO_TTS_URL}/synthesize`, { text });
+      return await postJsonBuffer(`${KOKORO_TTS_URL}/synthesize`, {
+        text,
+        ...kokoroProfile,
+      });
     } catch (error) {
       console.warn(
         `Kokoro TTS failed, falling back to Chatterbox: ${error.message}`,
@@ -226,6 +240,39 @@ async function synthesizeReply(text) {
   }
 
   throw new Error("TTS not configured");
+}
+
+function pickKokoroLanguageProfile(text) {
+  const language = detectTtsLanguage(text);
+  return KOKORO_LANGUAGE_PROFILES[language] || KOKORO_LANGUAGE_PROFILES.english;
+}
+
+function detectTtsLanguage(text) {
+  if (/[\u3040-\u30ff]/.test(text)) {
+    return "japanese";
+  }
+  if (/[\u3400-\u9fff]/.test(text)) {
+    return "chinese";
+  }
+  if (/[\uac00-\ud7af]/.test(text)) {
+    return "korean";
+  }
+  if (/[\u0400-\u04ff]/.test(text)) {
+    return "russian";
+  }
+
+  const lowerText = text.toLowerCase();
+  if (/[äöüß]/i.test(text) || /\b(ich|nicht|danke|bitte|guten|hallo)\b/.test(lowerText)) {
+    return "german";
+  }
+  if (/[áéíóúñ¿¡]/i.test(text) || /\b(hola|gracias|por favor|buenos|quiero)\b/.test(lowerText)) {
+    return "spanish";
+  }
+  if (/\b(saya|awak|kamu|terima kasih|tolong|boleh|tidak|apa khabar)\b/.test(lowerText)) {
+    return "malay";
+  }
+
+  return "english";
 }
 
 function parseVTubeReactions() {
