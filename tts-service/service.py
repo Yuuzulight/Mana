@@ -10,9 +10,11 @@ from pydantic import BaseModel
 try:
     import torch
     from chatterbox.tts import ChatterboxTTS
+    from chatterbox.tts_turbo import ChatterboxTurboTTS
 except Exception:
     torch = None
     ChatterboxTTS = None
+    ChatterboxTurboTTS = None
 
 
 app = FastAPI(title="Mana Chatterbox Turbo TTS")
@@ -43,14 +45,20 @@ def resolve_device() -> str:
 
 def get_model():
     global tts_model
-    if ChatterboxTTS is None:
+    if ChatterboxTTS is None or ChatterboxTurboTTS is None:
         raise RuntimeError(
             "Chatterbox is not installed. Install tts-service/requirements.txt first."
         )
 
     if tts_model is None:
         device = resolve_device()
-        tts_model = ChatterboxTTS.from_pretrained(MODEL_NAME, device=device)
+        model_name = MODEL_NAME.strip().lower()
+
+        # Quick note: Turbo uses a different class than the standard Chatterbox model.
+        if model_name == "turbo":
+            tts_model = ChatterboxTurboTTS.from_pretrained(device=device)
+        else:
+            tts_model = ChatterboxTTS.from_pretrained(device=device)
     return tts_model
 
 
@@ -128,4 +136,3 @@ def root():
             "device": resolve_device(),
         }
     )
-
