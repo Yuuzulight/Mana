@@ -1,0 +1,3 @@
+[submodule "tools/fish-speech"]
+	path = tools/fish-speech
+	url = https://github.com/fishaudio/fish-speech.git
