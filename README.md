@@ -3,7 +3,8 @@
 Mana is a local AI assistant for Windows.
 
 The current project goal is a simple local voice loop:
-- click `Start listening`
+- launch the Windows app
+- show the PNG avatar overlay in the bottom-left corner
 - say `Mana` before the request
 - transcribe the audio locally with `whisper.cpp`
 - generate a local reply with `llama.cpp`
@@ -26,6 +27,7 @@ Mana is meant to run on your own machine instead of depending on a hosted assist
 Right now the main focus is:
 - continuous local voice input
 - wake-word response after you say `Mana`
+- startup PNG avatar overlay
 - local speech-to-text
 - local text generation
 - local text-to-speech playback
