@@ -80,6 +80,9 @@ function startWindowsServices() {
       TTS_PROVIDER: process.env.TTS_PROVIDER || "chatterbox",
       CHATTERBOX_TTS_URL:
         process.env.CHATTERBOX_TTS_URL || "http://127.0.0.1:5010",
+      VTUBE_STUDIO_URL:
+        process.env.VTUBE_STUDIO_URL || "ws://127.0.0.1:8001",
+      VTUBE_STUDIO_ENABLED: process.env.VTUBE_STUDIO_ENABLED || "1",
     },
   });
 
