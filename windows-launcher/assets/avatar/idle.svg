@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="520" height="640" viewBox="0 0 520 640">
+  <defs>
+    <linearGradient id="hair" x1="130" y1="92" x2="392" y2="425" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#2f3447"/>
+      <stop offset="1" stop-color="#141720"/>
+    </linearGradient>
+    <linearGradient id="coat" x1="126" y1="394" x2="410" y2="640" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#1c6f78"/>
+      <stop offset="1" stop-color="#0d343b"/>
+    </linearGradient>
+  </defs>
+  <ellipse cx="260" cy="604" rx="154" ry="24" fill="#000" opacity=".25"/>
+  <path d="M140 428c-28 52-40 126-34 196h306c8-72-10-152-46-204-62 34-156 38-226 8z" fill="url(#coat)"/>
+  <path d="M165 440c18 74 52 120 96 120 46 0 82-48 100-124-58 30-136 32-196 4z" fill="#eef3f4"/>
+  <path d="M132 238c-28-94 22-170 128-170 110 0 164 78 130 178l-24 98c-24 82-70 120-106 120-38 0-86-39-108-122l-20-104z" fill="url(#hair)"/>
+  <path d="M156 242c6-82 42-128 106-128 66 0 102 48 108 128 8 112-42 198-108 198-64 0-114-86-106-198z" fill="#f3c6b8"/>
+  <path d="M154 260c-10-54 10-114 70-136 20 48 74 86 150 94-4-72-42-130-114-132-82-2-126 58-106 174z" fill="url(#hair)"/>
+  <path d="M128 278c-24 2-28 54 6 68 4-22 2-44-6-68z" fill="#e8ad9e"/>
+  <path d="M392 278c24 2 28 54-6 68-4-22-2-44 6-68z" fill="#e8ad9e"/>
+  <path d="M210 272c18-12 40-12 58 0" stroke="#262b35" stroke-width="10" stroke-linecap="round" fill="none"/>
+  <path d="M292 272c18-12 40-12 58 0" stroke="#262b35" stroke-width="10" stroke-linecap="round" fill="none"/>
+  <circle cx="236" cy="304" r="10" fill="#243044"/>
+  <circle cx="322" cy="304" r="10" fill="#243044"/>
+  <path d="M256 312c-4 22-10 38-20 50 12 6 32 6 44 0" stroke="#d99b90" stroke-width="7" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+  <path d="M232 386c18 12 42 12 60 0" stroke="#914d55" stroke-width="8" stroke-linecap="round" fill="none"/>
+  <path d="M162 486c-26 28-42 78-42 138h86c-4-52 2-98 18-136l-62-2z" fill="#14505a"/>
+  <path d="M358 486c26 28 42 78 42 138h-86c4-52-2-98-18-136l62-2z" fill="#14505a"/>
+</svg>
