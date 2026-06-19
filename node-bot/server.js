@@ -28,6 +28,7 @@ const fs = require("fs");
 const path = require("path");
 const http = require("http");
 const https = require("https");
+const { VTubeStudioClient } = require("./vtube-studio-client");
 const app = express();
 app.use(cors());
 app.use(express.json({ limit: "1mb" }));
@@ -45,9 +46,17 @@ const TTS_SPEAKER = process.env.TTS_SPEAKER || null;
 const CHATTERBOX_TTS_URL =
   process.env.CHATTERBOX_TTS_URL || "http://127.0.0.1:5010";
 const DEFAULT_LLAMA_MODEL = "Qwen/Qwen2.5-0.5B-Instruct-GGUF:Q4_K_M";
+const VTUBE_STUDIO_URL =
+  process.env.VTUBE_STUDIO_URL || "ws://127.0.0.1:8001";
+const VTUBE_STUDIO_ENABLED = process.env.VTUBE_STUDIO_ENABLED !== "0";
+const VTUBE_STUDIO_REACTIONS_JSON =
+  process.env.VTUBE_STUDIO_REACTIONS_JSON || "{}";
 const TTS_PROVIDER =
   process.env.TTS_PROVIDER ||
   (TTS_BIN ? "cli" : "chatterbox");
+const vtubeStudio = VTUBE_STUDIO_ENABLED
+  ? new VTubeStudioClient({ url: VTUBE_STUDIO_URL })
+  : null;
 
 if (!fs.existsSync(path.join(__dirname, "tmp"))) {
   fs.mkdirSync(path.join(__dirname, "tmp"));
@@ -63,6 +72,8 @@ app.get("/health", (req, res) => {
     llamaModel: llamaStatus.model,
     llamaBin: llamaStatus.bin,
     llamaStatus: llamaStatus.message,
+    vtubeStudioConfigured: Boolean(vtubeStudio),
+    vtubeStudioUrl: VTUBE_STUDIO_URL,
   });
 });
 
@@ -199,6 +210,55 @@ async function synthesizeReply(text) {
   }
 
   throw new Error("TTS not configured");
+}
+
+function parseVTubeReactions() {
+  try {
+    const parsed = JSON.parse(VTUBE_STUDIO_REACTIONS_JSON);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? parsed
+      : {};
+  } catch (error) {
+    console.warn("VTUBE_STUDIO_REACTIONS_JSON must be a JSON object");
+    return {};
+  }
+}
+
+function pickVTubeReaction(text) {
+  const reactions = parseVTubeReactions();
+  const lowerText = text.toLowerCase();
+
+  // Quick note: reaction keys are plain words/phrases, values are VTube Studio hotkey names.
+  for (const [phrase, hotkeyName] of Object.entries(reactions)) {
+    if (phrase && lowerText.includes(phrase.toLowerCase())) {
+      return hotkeyName;
+    }
+  }
+
+  return reactions.default || null;
+}
+
+async function triggerVTubeReactionForReply(reply) {
+  if (!vtubeStudio || !reply) {
+    return null;
+  }
+
+  const hotkeyName = pickVTubeReaction(reply);
+  if (!hotkeyName) {
+    return null;
+  }
+
+  return await vtubeStudio.triggerHotkey({ hotkeyName });
+}
+
+function queueVTubeReaction(reply) {
+  if (!vtubeStudio) {
+    return;
+  }
+
+  triggerVTubeReactionForReply(reply).catch((error) => {
+    console.warn("VTube Studio reaction failed:", error.message);
+  });
 }
 
 function findWhisperBin() {
@@ -632,6 +692,7 @@ app.post("/transcribe", upload.single("file"), async (req, res) => {
     // Quick note: I pass the plain transcript in and let the llama system prompt shape the answer.
     const prompt = transcript;
     const reply = runLocalAssistantReply(prompt, 256);
+    queueVTubeReaction(reply);
 
     // Delay cleanup slightly so I do not race any slower external process still holding the file.
     setTimeout(() => {
@@ -670,6 +731,76 @@ app.post("/synthesize", async (req, res) => {
   } catch (e) {
     console.error(e);
     return res.status(500).json({ error: String(e) });
+  }
+});
+
+app.get("/vtube/status", async (req, res) => {
+  if (!vtubeStudio) {
+    return res.json({ enabled: false });
+  }
+
+  try {
+    const state = await vtubeStudio.getState();
+    return res.json({
+      enabled: true,
+      connected: true,
+      authenticated: vtubeStudio.authenticated,
+      url: VTUBE_STUDIO_URL,
+      state,
+    });
+  } catch (error) {
+    return res.status(503).json({
+      enabled: true,
+      connected: false,
+      authenticated: false,
+      url: VTUBE_STUDIO_URL,
+      error: error.message,
+    });
+  }
+});
+
+app.post("/vtube/auth", async (req, res) => {
+  if (!vtubeStudio) {
+    return res.status(400).json({ error: "VTube Studio integration disabled" });
+  }
+
+  try {
+    const result = await vtubeStudio.authenticate();
+    return res.json(result);
+  } catch (error) {
+    return res.status(500).json({ error: error.message });
+  }
+});
+
+app.get("/vtube/hotkeys", async (req, res) => {
+  if (!vtubeStudio) {
+    return res.status(400).json({ error: "VTube Studio integration disabled" });
+  }
+
+  try {
+    const hotkeys = await vtubeStudio.listHotkeys();
+    return res.json({ hotkeys });
+  } catch (error) {
+    return res.status(500).json({ error: error.message });
+  }
+});
+
+app.post("/vtube/hotkey", async (req, res) => {
+  if (!vtubeStudio) {
+    return res.status(400).json({ error: "VTube Studio integration disabled" });
+  }
+
+  try {
+    const hotkeyID =
+      typeof req.body?.hotkeyID === "string" ? req.body.hotkeyID.trim() : "";
+    const hotkeyName =
+      typeof req.body?.hotkeyName === "string"
+        ? req.body.hotkeyName.trim()
+        : "";
+    const result = await vtubeStudio.triggerHotkey({ hotkeyID, hotkeyName });
+    return res.json(result);
+  } catch (error) {
+    return res.status(500).json({ error: error.message });
   }
 });
 
