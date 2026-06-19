@@ -72,6 +72,14 @@ const vtubeStudio = VTUBE_STUDIO_ENABLED
   ? new VTubeStudioClient({ url: VTUBE_STUDIO_URL })
   : null;
 
+function nowMs() {
+  return Number(process.hrtime.bigint() / 1000000n);
+}
+
+function logPerf(label, startedAt) {
+  console.log(`Mana perf: ${label} ${nowMs() - startedAt}ms`);
+}
+
 if (!fs.existsSync(path.join(__dirname, "tmp"))) {
   fs.mkdirSync(path.join(__dirname, "tmp"));
 }
@@ -218,22 +226,34 @@ async function synthesizeReply(text) {
   }
 
   if (TTS_PROVIDER === "kokoro") {
+    const startedAt = nowMs();
     const kokoroProfile = pickKokoroLanguageProfile(text);
     try {
-      return await postJsonBuffer(`${KOKORO_TTS_URL}/synthesize`, {
+      const audio = await postJsonBuffer(`${KOKORO_TTS_URL}/synthesize`, {
         text,
         ...kokoroProfile,
       });
+      logPerf("tts kokoro", startedAt);
+      return audio;
     } catch (error) {
       console.warn(
         `Kokoro TTS failed, falling back to Chatterbox: ${error.message}`,
       );
-      return await postJsonBuffer(`${CHATTERBOX_TTS_URL}/synthesize`, { text });
+      const audio = await postJsonBuffer(`${CHATTERBOX_TTS_URL}/synthesize`, {
+        text,
+      });
+      logPerf("tts chatterbox fallback", startedAt);
+      return audio;
     }
   }
 
   if (TTS_PROVIDER === "chatterbox") {
-    return await postJsonBuffer(`${CHATTERBOX_TTS_URL}/synthesize`, { text });
+    const startedAt = nowMs();
+    const audio = await postJsonBuffer(`${CHATTERBOX_TTS_URL}/synthesize`, {
+      text,
+    });
+    logPerf("tts chatterbox", startedAt);
+    return audio;
   }
 
   if (TTS_PROVIDER === "cli") {
@@ -473,6 +493,7 @@ function runWhisper(filePath) {
     throw new Error("WHISPER_MODEL not configured");
   }
   const whisperBin = findWhisperBin();
+  const startedAt = nowMs();
   // I ask whisper-cli for JSON output so transcription parsing does not depend on stdout formatting.
   const outBase = filePath + ".out";
   const outJson = outBase + ".json";
@@ -503,6 +524,7 @@ function runWhisper(filePath) {
     console.error("whisper stderr:", r.stderr);
     throw new Error("whisper failed: " + r.stderr);
   }
+  logPerf("whisper", startedAt);
   // Wait briefly for the JSON file to appear
   let attempts = 0;
   while (!fs.existsSync(outJson) && attempts < 5) {
@@ -603,11 +625,13 @@ function runLlama(prompt, maxTokens = 256) {
 }
 
 function runLocalAssistantReply(prompt, maxTokens = 256) {
+  const startedAt = nowMs();
   let llamaBin;
   try {
     llamaBin = findLlamaBin();
   } catch (error) {
     console.warn(`${error.message} Returning placeholder reply instead.`);
+    logPerf("llama placeholder", startedAt);
     return "(no local llama binary found) I heard: " + prompt.slice(0, 200);
   }
 
@@ -673,6 +697,7 @@ function runLocalAssistantReply(prompt, maxTokens = 256) {
     console.error("llama stderr:", result.stderr);
     throw new Error("llama failed: " + result.stderr);
   }
+  logPerf("llama", startedAt);
 
   const rawOutput = (result.stdout || "").replace(/\r/g, "").trim();
   const promptMarker = `> ${prompt}`;
