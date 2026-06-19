@@ -9,7 +9,7 @@ Environment variables (set before running):
 - WHISPER_MODEL : full path to whisper model file (e.g. models/ggml-base.en.bin)
 - LLAMA_BIN : full path to llama.cpp/main executable (e.g. C:\llama.cpp\main.exe)
 - LLAMA_MODEL : full path to a GGUF model file, or an HF repo shorthand like user/model:Q4_K_M
-- TTS_PROVIDER : "cli", "chatterbox", or "kokoro"
+- TTS_PROVIDER : "cli", "chatterbox", "kokoro", or "fish"
 - TTS_BIN : full path to your TTS executable
 - TTS_MODEL : model path or model id for your TTS executable
 - TTS_ARGS_JSON : optional JSON array of CLI args with placeholders like {text}, {output}, {model}, {voice}, {speaker}
@@ -17,6 +17,10 @@ Environment variables (set before running):
 - TTS_SPEAKER : optional speaker value used by your TTS args
 - CHATTERBOX_TTS_URL : local Chatterbox TTS microservice URL
 - KOKORO_TTS_URL : local Kokoro TTS microservice URL
+- FISH_TTS_URL : local Fish Speech server URL
+- FISH_TTS_API_KEY : optional Fish Speech bearer token
+- FISH_TTS_REFERENCE_ID : optional saved Fish Speech reference voice id
+- FISH_TTS_FALLBACK_PROVIDER : "kokoro", "chatterbox", or "none"
 - GAMING_PROCESS_NAMES : optional comma-separated game process names for Gaming mode
 
 This server aims to avoid Python. You must download and place the whisper.cpp and llama.cpp binaries and model files yourself.
@@ -49,6 +53,22 @@ const CHATTERBOX_TTS_URL =
   process.env.CHATTERBOX_TTS_URL || "http://127.0.0.1:5010";
 const KOKORO_TTS_URL =
   process.env.KOKORO_TTS_URL || "http://127.0.0.1:5011";
+const FISH_TTS_URL = process.env.FISH_TTS_URL || "http://127.0.0.1:8080";
+const FISH_TTS_API_KEY = process.env.FISH_TTS_API_KEY || null;
+const FISH_TTS_REFERENCE_ID = process.env.FISH_TTS_REFERENCE_ID || null;
+const FISH_TTS_FORMAT = process.env.FISH_TTS_FORMAT || "wav";
+const FISH_TTS_LATENCY = process.env.FISH_TTS_LATENCY || "normal";
+const FISH_TTS_MAX_NEW_TOKENS = Number(
+  process.env.FISH_TTS_MAX_NEW_TOKENS || 1024,
+);
+const FISH_TTS_CHUNK_LENGTH = Number(process.env.FISH_TTS_CHUNK_LENGTH || 300);
+const FISH_TTS_TOP_P = Number(process.env.FISH_TTS_TOP_P || 0.8);
+const FISH_TTS_REPETITION_PENALTY = Number(
+  process.env.FISH_TTS_REPETITION_PENALTY || 1.1,
+);
+const FISH_TTS_TEMPERATURE = Number(process.env.FISH_TTS_TEMPERATURE || 0.8);
+const FISH_TTS_FALLBACK_PROVIDER =
+  process.env.FISH_TTS_FALLBACK_PROVIDER || "kokoro";
 const DEFAULT_LLAMA_MODEL = "Qwen/Qwen2.5-0.5B-Instruct-GGUF:Q4_K_M";
 const VTUBE_STUDIO_URL =
   process.env.VTUBE_STUDIO_URL || "ws://127.0.0.1:8001";
@@ -166,6 +186,7 @@ app.get("/health", (req, res) => {
     ttsProvider: TTS_PROVIDER,
     kokoroTtsUrl: KOKORO_TTS_URL,
     chatterboxTtsUrl: CHATTERBOX_TTS_URL,
+    fishTtsUrl: FISH_TTS_URL,
     llamaConfigured: llamaStatus.ok,
     llamaModel: llamaStatus.model,
     llamaBin: llamaStatus.bin,
@@ -311,34 +332,91 @@ function postJsonBuffer(urlString, body) {
   });
 }
 
-async function synthesizeReply(text) {
-  if (!text) {
-    throw new Error("No text provided for synthesis");
+function buildFishTtsRequest(text) {
+  const request = {
+    text,
+    format: FISH_TTS_FORMAT,
+    latency: FISH_TTS_LATENCY,
+    max_new_tokens: FISH_TTS_MAX_NEW_TOKENS,
+    chunk_length: FISH_TTS_CHUNK_LENGTH,
+    top_p: FISH_TTS_TOP_P,
+    repetition_penalty: FISH_TTS_REPETITION_PENALTY,
+    temperature: FISH_TTS_TEMPERATURE,
+  };
+
+  if (FISH_TTS_REFERENCE_ID) {
+    request.reference_id = FISH_TTS_REFERENCE_ID;
   }
 
-  if (TTS_PROVIDER === "kokoro") {
+  return request;
+}
+
+function postFishTtsBuffer(text) {
+  return new Promise((resolve, reject) => {
+    const url = new URL("/v1/tts", FISH_TTS_URL);
+    const transport = url.protocol === "https:" ? https : http;
+    const payload = Buffer.from(JSON.stringify(buildFishTtsRequest(text)), "utf8");
+    const headers = {
+      "Content-Type": "application/json",
+      "Content-Length": payload.length,
+    };
+
+    if (FISH_TTS_API_KEY) {
+      headers.Authorization = `Bearer ${FISH_TTS_API_KEY}`;
+    }
+
+    const req = transport.request(
+      {
+        hostname: url.hostname,
+        port: url.port,
+        path: `${url.pathname}${url.search}`,
+        method: "POST",
+        headers,
+      },
+      (res) => {
+        const chunks = [];
+        res.on("data", (chunk) => chunks.push(chunk));
+        res.on("end", () => {
+          const buffer = Buffer.concat(chunks);
+          if (res.statusCode && res.statusCode >= 200 && res.statusCode < 300) {
+            resolve(buffer);
+            return;
+          }
+          reject(
+            new Error(
+              `Fish Speech request failed (${res.statusCode}): ${buffer.toString("utf8")}`,
+            ),
+          );
+        });
+      },
+    );
+
+    req.on("error", reject);
+    req.write(payload);
+    req.end();
+  });
+}
+
+async function synthesizeWithConfiguredProvider(provider, text) {
+  if (provider === "fish") {
+    const startedAt = nowMs();
+    const audio = await postFishTtsBuffer(text);
+    logPerf("tts fish", startedAt);
+    return audio;
+  }
+
+  if (provider === "kokoro") {
     const startedAt = nowMs();
     const kokoroProfile = pickKokoroLanguageProfile(text);
-    try {
-      const audio = await postJsonBuffer(`${KOKORO_TTS_URL}/synthesize`, {
-        text,
-        ...kokoroProfile,
-      });
-      logPerf("tts kokoro", startedAt);
-      return audio;
-    } catch (error) {
-      console.warn(
-        `Kokoro TTS failed, falling back to Chatterbox: ${error.message}`,
-      );
-      const audio = await postJsonBuffer(`${CHATTERBOX_TTS_URL}/synthesize`, {
-        text,
-      });
-      logPerf("tts chatterbox fallback", startedAt);
-      return audio;
-    }
+    const audio = await postJsonBuffer(`${KOKORO_TTS_URL}/synthesize`, {
+      text,
+      ...kokoroProfile,
+    });
+    logPerf("tts kokoro", startedAt);
+    return audio;
   }
 
-  if (TTS_PROVIDER === "chatterbox") {
+  if (provider === "chatterbox") {
     const startedAt = nowMs();
     const audio = await postJsonBuffer(`${CHATTERBOX_TTS_URL}/synthesize`, {
       text,
@@ -347,8 +425,53 @@ async function synthesizeReply(text) {
     return audio;
   }
 
-  if (TTS_PROVIDER === "cli") {
+  if (provider === "cli") {
     return runTts(text);
+  }
+
+  throw new Error(`TTS provider not configured: ${provider}`);
+}
+
+async function synthesizeReply(text) {
+  if (!text) {
+    throw new Error("No text provided for synthesis");
+  }
+
+  if (TTS_PROVIDER === "fish") {
+    try {
+      return await synthesizeWithConfiguredProvider("fish", text);
+    } catch (error) {
+      if (FISH_TTS_FALLBACK_PROVIDER === "none") {
+        throw error;
+      }
+
+      console.warn(
+        `Fish Speech TTS failed, falling back to ${FISH_TTS_FALLBACK_PROVIDER}: ${error.message}`,
+      );
+      return await synthesizeWithConfiguredProvider(
+        FISH_TTS_FALLBACK_PROVIDER,
+        text,
+      );
+    }
+  }
+
+  if (TTS_PROVIDER === "kokoro") {
+    try {
+      return await synthesizeWithConfiguredProvider("kokoro", text);
+    } catch (error) {
+      console.warn(
+        `Kokoro TTS failed, falling back to Chatterbox: ${error.message}`,
+      );
+      return await synthesizeWithConfiguredProvider("chatterbox", text);
+    }
+  }
+
+  if (TTS_PROVIDER === "chatterbox") {
+    return await synthesizeWithConfiguredProvider("chatterbox", text);
+  }
+
+  if (TTS_PROVIDER === "cli") {
+    return await synthesizeWithConfiguredProvider("cli", text);
   }
 
   throw new Error("TTS not configured");
