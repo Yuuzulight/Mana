@@ -16,6 +16,7 @@ let currentReplyAudio = null;
 let currentReplyUrl = null;
 let listening = false;
 let processing = false;
+let awake = false;
 
 function setAvatarState(state) {
   ipcRenderer.send("avatar:set-state", state);
@@ -202,17 +203,32 @@ async function requestReply(text) {
 }
 
 async function handleTranscript(transcript) {
-  // Quick rundown: ignore normal room audio until the transcript includes "Mana".
-  const command = extractWakeCommand(transcript);
+  const cleanTranscript = transcript.trim();
+  if (!cleanTranscript) {
+    return;
+  }
+
+  // Quick rundown: the first wake word turns Mana on for the rest of this app session.
+  const wakeCommand = extractWakeCommand(cleanTranscript);
+  if (!awake && !wakeCommand) {
+    statusEl.textContent = "Waiting for Mana...";
+    transcriptEl.textContent = `Heard: ${cleanTranscript}`;
+    return;
+  }
+
+  if (wakeCommand) {
+    awake = true;
+  }
+
+  const command = wakeCommand || cleanTranscript;
   if (!command) {
-    statusEl.textContent = "Listening for Mana...";
-    transcriptEl.textContent = transcript ? `Heard: ${transcript}` : "";
+    statusEl.textContent = awake ? "Mana is awake..." : "Waiting for Mana...";
     return;
   }
 
   processing = true;
-  statusEl.textContent = "Mana heard her name...";
-  transcriptEl.textContent = `You: ${transcript}`;
+  statusEl.textContent = awake ? "Mana is thinking..." : "Mana heard her name...";
+  transcriptEl.textContent = `You: ${cleanTranscript}`;
 
   try {
     const replyResult = await requestReply(command);
@@ -223,14 +239,18 @@ async function handleTranscript(transcript) {
       await playReplyAudio(reply);
     }
 
-    statusEl.textContent = listening ? "Listening for Mana..." : "Stopped";
+    statusEl.textContent = listening
+      ? awake
+        ? "Mana is awake..."
+        : "Waiting for Mana..."
+      : "Stopped";
   } finally {
     processing = false;
   }
 }
 
 async function listenLoop() {
-  // Quick rundown: record short chunks, transcribe them, and only reply after the wake word.
+  // Quick rundown: wait for the first wake word, then keep replying until listening stops.
   while (listening) {
     if (processing || currentReplyAudio) {
       await wait(LISTEN_PAUSE_MS);
@@ -238,7 +258,7 @@ async function listenLoop() {
     }
 
     try {
-      statusEl.textContent = "Listening for Mana...";
+      statusEl.textContent = awake ? "Mana is awake..." : "Waiting for Mana...";
       const chunk = await recordAudioChunk(LISTEN_CHUNK_MS);
       if (!listening) {
         break;
@@ -264,11 +284,13 @@ async function startListening() {
   listening = true;
   listenBtn.textContent = "Stop listening";
   listenBtn.classList.add("active");
+  statusEl.textContent = awake ? "Mana is awake..." : "Waiting for Mana...";
   await listenLoop();
 }
 
 function stopListening() {
   listening = false;
+  awake = false;
   listenBtn.textContent = "Start listening";
   listenBtn.classList.remove("active");
   statusEl.textContent = "Stopped";
