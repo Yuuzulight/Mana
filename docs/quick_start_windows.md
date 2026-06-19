@@ -6,7 +6,7 @@ Architecture
 - `windows-launcher` runs the Electron UI.
 - The Electron main process starts `node-bot/server.js`.
 - `node-bot` calls local `whisper.cpp` and `llama.cpp` binaries.
-- `node-bot` can call local Kokoro ONNX or Chatterbox Turbo TTS microservices to synthesize reply audio.
+- `node-bot` can call local Kokoro ONNX, Chatterbox Turbo, or Fish Speech TTS services to synthesize reply audio.
 - The renderer records short audio chunks in the browser, converts them to WAV, and uses the local backend for transcription and replies.
 
 Project goal
@@ -32,6 +32,7 @@ Project goal
      - `$env:TTS_PROVIDER = "chatterbox"`
      - `$env:KOKORO_TTS_URL = "http://127.0.0.1:5011"`
      - `$env:CHATTERBOX_TTS_URL = "http://127.0.0.1:5010"`
+     - `$env:FISH_TTS_URL = "http://127.0.0.1:8080"`
      - `$env:CHATTERBOX_MODEL = "turbo"`
      - `$env:CHATTERBOX_VOICE_REF = "C:\path\to\evil-style-reference.wav"`
      - `$env:CHATTERBOX_EXAGGERATION = "0.35"`
@@ -44,6 +45,8 @@ Project goal
    - `LLAMA_BIN` should point to the Llama CLI executable you want to use.
    - `TTS_PROVIDER=kokoro` tells Mana to use the faster Kokoro ONNX service.
    - `TTS_PROVIDER=chatterbox` tells Mana to use the local Chatterbox TTS microservice.
+   - `TTS_PROVIDER=fish` tells Mana to call a separately running Fish Speech server.
+   - `FISH_TTS_FALLBACK_PROVIDER=kokoro` keeps Mana speaking through Kokoro if Fish Speech is unavailable.
    - `CHATTERBOX_VOICE_REF` should point to a short reference clip that matches the direction you want.
    - Lower `CHATTERBOX_CFG_WEIGHT` and a moderate `CHATTERBOX_EXAGGERATION` help push the voice toward a sharper, more stylized agent delivery.
    - If `LLAMA_BIN` or `LLAMA_MODEL` is not set, the backend returns a placeholder reply so you can still test audio capture and transcription.
