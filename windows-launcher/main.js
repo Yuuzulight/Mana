@@ -8,6 +8,18 @@ let backendProcess = null;
 let ttsProcess = null;
 const BACKEND_URL = "http://localhost:5005/health";
 const TTS_URL = "http://127.0.0.1:5010/health";
+const ROOT_DIR = path.join(__dirname, "..");
+const WHISPER_DIR = path.join(ROOT_DIR, "tools", "whisper");
+const DEFAULT_WHISPER_BIN = path.join(
+  WHISPER_DIR,
+  "Release",
+  "whisper-cli.exe",
+);
+const DEFAULT_WHISPER_MODEL = path.join(
+  WHISPER_DIR,
+  "models",
+  "ggml-tiny.en.bin",
+);
 const AVATAR_SIZE = {
   width: Number(process.env.MANA_AVATAR_WIDTH || 260),
   height: Number(process.env.MANA_AVATAR_HEIGHT || 320),
@@ -41,13 +53,13 @@ function startTtsService() {
     return;
   }
 
-  const ttsStartScript = path.join(__dirname, "..", "tts-service", "start.ps1");
+  const ttsStartScript = path.join(ROOT_DIR, "tts-service", "start.ps1");
   console.log("Starting Chatterbox TTS service:", ttsStartScript);
   ttsProcess = spawn(
     "powershell",
     ["-ExecutionPolicy", "Bypass", "-File", ttsStartScript],
     {
-      cwd: path.join(__dirname, "..", "tts-service"),
+      cwd: path.join(ROOT_DIR, "tts-service"),
     },
   );
 
@@ -77,12 +89,15 @@ function startWindowsServices() {
     return;
   }
 
-  const nodeServer = path.join(__dirname, "..", "node-bot", "server.js");
+  const nodeServer = path.join(ROOT_DIR, "node-bot", "server.js");
   console.log("Starting Node bot:", nodeServer);
   backendProcess = spawn("node", [nodeServer], {
-    cwd: path.join(__dirname, "..", "node-bot"),
+    cwd: path.join(ROOT_DIR, "node-bot"),
     env: {
       ...process.env,
+      // Quick note: these defaults let the launcher transcribe without a separate setup shell.
+      WHISPER_BIN: process.env.WHISPER_BIN || DEFAULT_WHISPER_BIN,
+      WHISPER_MODEL: process.env.WHISPER_MODEL || DEFAULT_WHISPER_MODEL,
       TTS_PROVIDER: process.env.TTS_PROVIDER || "chatterbox",
       CHATTERBOX_TTS_URL:
         process.env.CHATTERBOX_TTS_URL || "http://127.0.0.1:5010",

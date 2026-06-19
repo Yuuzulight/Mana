@@ -625,59 +625,99 @@ function runLocalAssistantReply(prompt, maxTokens = 256) {
   return rawOutput.replace(/\n+Exiting\.\.\.\s*$/i, "").trim();
 }
 
+function normalizeUploadedAudio(file) {
+  if (!file) {
+    throw new Error("no file");
+  }
+
+  const tmpPath = file.path;
+  const ext = path.extname(file.originalname).toLowerCase();
+  let audioPath = tmpPath;
+  const wavPath = tmpPath + ".wav";
+
+  try {
+    const conv = spawnSync("ffmpeg", ["-y", "-i", tmpPath, wavPath], {
+      encoding: "utf8",
+      maxBuffer: 20 * 1024 * 1024,
+    });
+    if (conv.status === 0) {
+      audioPath = wavPath;
+      return { tmpPath, audioPath };
+    }
+  } catch (error) {
+    console.warn("ffmpeg conversion attempt failed with error, falling back", error);
+  }
+
+  if (ext) {
+    const copyPath = tmpPath + ext;
+    try {
+      fs.copyFileSync(tmpPath, copyPath);
+      audioPath = copyPath;
+    } catch (error) {
+      console.warn("could not copy file to preserve extension", error);
+    }
+  }
+
+  return { tmpPath, audioPath };
+}
+
+function cleanupUploadedAudio(tmpPath, audioPath) {
+  setTimeout(() => {
+    try {
+      fs.unlinkSync(tmpPath);
+    } catch (error) {}
+    try {
+      if (audioPath !== tmpPath) fs.unlinkSync(audioPath);
+    } catch (error) {}
+  }, 10000);
+}
+
+function buildAssistantReply(transcript) {
+  const prompt = transcript;
+  const reply = runLocalAssistantReply(prompt, 256);
+  queueVTubeReaction(reply);
+  return reply;
+}
+
+app.post("/transcribe-only", upload.single("file"), async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ error: "no file" });
+
+    const { tmpPath, audioPath } = normalizeUploadedAudio(req.file);
+    const transcript = runWhisper(audioPath);
+    cleanupUploadedAudio(tmpPath, audioPath);
+
+    return res.json({ transcript });
+  } catch (e) {
+    console.error(e);
+    return res.status(500).json({ error: String(e) });
+  }
+});
+
+app.post("/reply", async (req, res) => {
+  try {
+    const transcript =
+      typeof req.body?.text === "string" ? req.body.text.trim() : "";
+    if (!transcript) {
+      return res.status(400).json({ error: "no text" });
+    }
+
+    const reply = buildAssistantReply(transcript);
+    return res.json({
+      reply,
+      ttsConfigured: TTS_PROVIDER !== "none",
+    });
+  } catch (e) {
+    console.error(e);
+    return res.status(500).json({ error: String(e) });
+  }
+});
+
 app.post("/transcribe", upload.single("file"), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ error: "no file" });
     console.log("Got file upload:", req.file);
-    const tmpPath = req.file.path;
-    const ext = path.extname(req.file.originalname).toLowerCase();
-    // I always try to normalize the upload to WAV first.
-    // If ffmpeg is unavailable, I preserve the original extension so whisper still has format hints.
-    let audioPath = tmpPath;
-    const wavPath = tmpPath + ".wav";
-    try {
-      // Try ffmpeg conversion to WAV for any input file
-      const conv = spawnSync("ffmpeg", ["-y", "-i", tmpPath, wavPath], {
-        encoding: "utf8",
-        maxBuffer: 20 * 1024 * 1024,
-      });
-      if (conv.status === 0) {
-        audioPath = wavPath;
-        console.log("Converted upload to WAV via ffmpeg:", wavPath);
-      } else {
-        // ffmpeg failed (maybe not installed or format issue). Try copying with extension
-        if (ext) {
-          const copyPath = tmpPath + ext;
-          try {
-            fs.copyFileSync(tmpPath, copyPath);
-            audioPath = copyPath;
-            console.log("Copied upload to preserve extension:", copyPath);
-          } catch (e) {
-            console.warn("could not copy file to preserve extension", e);
-            audioPath = tmpPath; // fall back to original
-          }
-        } else {
-          // no extension and ffmpeg failed -> use original tmpPath
-          audioPath = tmpPath;
-        }
-      }
-    } catch (e) {
-      console.warn(
-        "ffmpeg conversion attempt failed with error, falling back",
-        e,
-      );
-      if (ext) {
-        const copyPath = tmpPath + ext;
-        try {
-          fs.copyFileSync(tmpPath, copyPath);
-          audioPath = copyPath;
-        } catch (err) {
-          audioPath = tmpPath;
-        }
-      } else {
-        audioPath = tmpPath;
-      }
-    }
+    const { tmpPath, audioPath } = normalizeUploadedAudio(req.file);
 
     console.log(
       "audioPath ->",
@@ -689,20 +729,8 @@ app.post("/transcribe", upload.single("file"), async (req, res) => {
     );
     const transcript = runWhisper(audioPath);
 
-    // Quick note: I pass the plain transcript in and let the llama system prompt shape the answer.
-    const prompt = transcript;
-    const reply = runLocalAssistantReply(prompt, 256);
-    queueVTubeReaction(reply);
-
-    // Delay cleanup slightly so I do not race any slower external process still holding the file.
-    setTimeout(() => {
-      try {
-        fs.unlinkSync(tmpPath);
-      } catch (e) {}
-      try {
-        if (audioPath !== tmpPath) fs.unlinkSync(audioPath);
-      } catch (e) {}
-    }, 10000);
+    const reply = buildAssistantReply(transcript);
+    cleanupUploadedAudio(tmpPath, audioPath);
 
     return res.json({
       transcript,

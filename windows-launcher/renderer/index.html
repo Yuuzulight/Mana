@@ -9,7 +9,15 @@
       #transcript { margin-top: 12px; white-space: pre-wrap; }
       #modelReply { margin-top: 12px; font-weight: bold; }
       button { padding: 10px 14px; font-size: 14px; }
-      #talk { background: #0b84ff; color: white; border: none; border-radius: 6px; }
+      #listenToggle {
+        background: #0b84ff;
+        color: white;
+        border: none;
+        border-radius: 6px;
+      }
+      #listenToggle.active {
+        background: #c0392b;
+      }
     </style>
   </head>
   <body>
@@ -22,7 +30,8 @@
     </div>
 
     <div style="margin-top:18px">
-      <button id="talk">Push to talk (hold)</button>
+      <button id="listenToggle">Start listening</button>
+      <span style="margin-left:8px">Mana responds after she hears "Mana".</span>
     </div>
 
     <div id="transcript"></div>
