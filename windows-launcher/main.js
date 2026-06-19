@@ -30,7 +30,7 @@ function startTtsService() {
     return;
   }
 
-  const provider = process.env.TTS_PROVIDER || "none";
+  const provider = process.env.TTS_PROVIDER || "chatterbox";
   if (provider !== "chatterbox") {
     return;
   }
@@ -75,6 +75,12 @@ function startWindowsServices() {
   console.log("Starting Node bot:", nodeServer);
   backendProcess = spawn("node", [nodeServer], {
     cwd: path.join(__dirname, "..", "node-bot"),
+    env: {
+      ...process.env,
+      TTS_PROVIDER: process.env.TTS_PROVIDER || "chatterbox",
+      CHATTERBOX_TTS_URL:
+        process.env.CHATTERBOX_TTS_URL || "http://127.0.0.1:5010",
+    },
   });
 
   // Startup failures show up here.
