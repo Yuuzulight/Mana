@@ -25,6 +25,7 @@ const AVATAR_SIZE = {
   height: Number(process.env.MANA_AVATAR_HEIGHT || 320),
 };
 const AVATAR_MARGIN = Number(process.env.MANA_AVATAR_MARGIN || 12);
+const AVATAR_TOP_LEVEL = process.env.MANA_AVATAR_TOP_LEVEL || "screen-saver";
 
 async function isServiceRunning(url) {
   try {
@@ -166,12 +167,28 @@ function positionAvatarWindow() {
 }
 
 function createAvatarWindow() {
+  let avatarShown = false;
+  const showAvatarWindow = () => {
+    if (!avatarWindow || avatarWindow.isDestroyed()) {
+      return;
+    }
+
+    avatarShown = true;
+    positionAvatarWindow();
+    avatarWindow.show();
+    avatarWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+    avatarWindow.setAlwaysOnTop(true, AVATAR_TOP_LEVEL);
+    avatarWindow.moveTop();
+    avatarWindow.setIgnoreMouseEvents(true, { forward: true });
+  };
+
   avatarWindow = new BrowserWindow({
     ...getAvatarBounds(),
     frame: false,
     transparent: true,
     resizable: false,
     movable: false,
+    fullscreenable: false,
     show: false,
     skipTaskbar: true,
     focusable: false,
@@ -184,12 +201,19 @@ function createAvatarWindow() {
     },
   });
 
-  avatarWindow.setAlwaysOnTop(true, "floating");
-  avatarWindow.setIgnoreMouseEvents(true, { forward: true });
+  avatarWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+  avatarWindow.setAlwaysOnTop(true, AVATAR_TOP_LEVEL);
   avatarWindow.loadFile(path.join(__dirname, "avatar", "index.html"));
-  avatarWindow.once("ready-to-show", () => {
-    positionAvatarWindow();
-    avatarWindow.showInactive();
+  avatarWindow.once("ready-to-show", showAvatarWindow);
+  avatarWindow.webContents.once("did-finish-load", showAvatarWindow);
+  setTimeout(() => {
+    if (!avatarShown) {
+      showAvatarWindow();
+    }
+  }, 1000);
+
+  avatarWindow.webContents.on("did-fail-load", (event, code, description) => {
+    console.error(`Avatar failed to load (${code}): ${description}`);
   });
 
   avatarWindow.on("closed", () => {
