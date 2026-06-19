@@ -3,11 +3,16 @@ const statusEl = document.getElementById("statustxt");
 const transcriptEl = document.getElementById("transcript");
 const replyEl = document.getElementById("modelReply");
 const openWebUIButton = document.getElementById("openWebUI");
+const gamingModeCheckbox = document.getElementById("gamingMode");
 const { ipcRenderer } = require("electron");
 
 const WAKE_WORDS = ["mana", "manah", "manna", "mannah", "wake up"];
 const LISTEN_CHUNK_MS = 3500;
 const LISTEN_PAUSE_MS = 250;
+const GAMING_IDLE_PAUSE_MS = 900;
+const GAMING_SPEECH_POLL_MS = 140;
+const GAMING_SPEECH_TRIGGER_RMS = 0.012;
+const GAMING_SPEECH_TRIGGER_PEAK = 0.045;
 const AUTO_LISTEN_RETRY_MS = 1500;
 const AUTO_LISTEN_MAX_ATTEMPTS = 20;
 const MAX_TTS_CHUNK_CHARS = 180;
@@ -39,6 +44,7 @@ let mediaStream = null;
 let currentReplyAudio = null;
 let currentReplyUrl = null;
 let replyPlaybackToken = 0;
+let micMonitor = null;
 let listening = false;
 let processing = false;
 let awake = false;
@@ -257,10 +263,95 @@ function wait(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function recordAudioChunk(durationMs) {
+function isGamingModeEnabled() {
+  return Boolean(gamingModeCheckbox?.checked);
+}
+
+async function ensureMediaStream() {
   if (!mediaStream) {
     mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
   }
+  return mediaStream;
+}
+
+async function ensureMicMonitor() {
+  if (micMonitor) {
+    return micMonitor;
+  }
+
+  const stream = await ensureMediaStream();
+  const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+  const source = audioContext.createMediaStreamSource(stream);
+  const analyser = audioContext.createAnalyser();
+  analyser.fftSize = 1024;
+  source.connect(analyser);
+
+  // Quick rundown: this is a cheap volume check, not full recording.
+  // It lets Mana stay idle without sending quiet room audio to Whisper.
+  micMonitor = {
+    audioContext,
+    analyser,
+    data: new Float32Array(analyser.fftSize),
+  };
+  return micMonitor;
+}
+
+function stopMicMonitor() {
+  if (!micMonitor) {
+    return;
+  }
+
+  micMonitor.audioContext.close().catch(() => {});
+  micMonitor = null;
+}
+
+function readMicMonitorStats() {
+  if (!micMonitor) {
+    return { rms: 0, peak: 0 };
+  }
+
+  micMonitor.analyser.getFloatTimeDomainData(micMonitor.data);
+  let sumSquares = 0;
+  let peak = 0;
+  for (const sample of micMonitor.data) {
+    const centeredSample = sample;
+    const absSample = Math.abs(centeredSample);
+    sumSquares += centeredSample * centeredSample;
+    if (absSample > peak) {
+      peak = absSample;
+    }
+  }
+
+  return {
+    rms: Math.sqrt(sumSquares / micMonitor.data.length),
+    peak,
+  };
+}
+
+async function waitForSpeechActivity() {
+  const monitor = await ensureMicMonitor();
+  if (monitor.audioContext.state === "suspended") {
+    await monitor.audioContext.resume().catch(() => {});
+  }
+
+  while (listening && isGamingModeEnabled()) {
+    const stats = readMicMonitorStats();
+    // Quick rundown: only start the heavier record/transcribe path after speech-like volume.
+    if (
+      stats.rms >= GAMING_SPEECH_TRIGGER_RMS ||
+      stats.peak >= GAMING_SPEECH_TRIGGER_PEAK
+    ) {
+      return true;
+    }
+
+    await wait(GAMING_SPEECH_POLL_MS);
+  }
+
+  return listening;
+}
+
+async function recordAudioChunk(durationMs) {
+  await ensureMediaStream();
 
   return await new Promise((resolve, reject) => {
     const chunks = [];
@@ -340,6 +431,7 @@ async function prepareSpeechWavBlob(blob) {
 }
 
 async function transcribeBlob(blob) {
+  const startedAt = performance.now();
   const wavBlob = await prepareSpeechWavBlob(blob);
   if (!wavBlob) {
     return { transcript: "" };
@@ -358,7 +450,11 @@ async function transcribeBlob(blob) {
     throw new Error(message);
   }
 
-  return await response.json();
+  const result = await response.json();
+  console.info(
+    `Mana perf: transcribe ${Math.round(performance.now() - startedAt)}ms`,
+  );
+  return result;
 }
 
 function extractWakeCommand(transcript) {
@@ -398,6 +494,7 @@ function isNoiseOnlyTranscript(transcript) {
 }
 
 async function requestReply(text) {
+  const startedAt = performance.now();
   const response = await fetch("http://localhost:5005/reply", {
     method: "POST",
     headers: {
@@ -411,7 +508,9 @@ async function requestReply(text) {
     throw new Error(message);
   }
 
-  return await response.json();
+  const result = await response.json();
+  console.info(`Mana perf: reply ${Math.round(performance.now() - startedAt)}ms`);
+  return result;
 }
 
 async function handleTranscript(transcript) {
@@ -463,7 +562,7 @@ async function handleTranscript(transcript) {
 }
 
 async function listenLoop() {
-  // Quick rundown: wait for the first wake word, then keep replying until listening stops.
+  // Quick rundown: gaming mode waits for mic activity first, then records and transcribes.
   while (listening) {
     if (processing || currentReplyAudio) {
       await wait(LISTEN_PAUSE_MS);
@@ -472,6 +571,14 @@ async function listenLoop() {
 
     try {
       statusEl.textContent = awake ? "Mana is awake..." : "Waiting for Mana...";
+      if (isGamingModeEnabled()) {
+        const speechStarted = await waitForSpeechActivity();
+        if (!speechStarted) {
+          await wait(GAMING_IDLE_PAUSE_MS);
+          continue;
+        }
+      }
+
       const chunk = await recordAudioChunk(LISTEN_CHUNK_MS);
       if (!listening) {
         break;
@@ -508,6 +615,7 @@ function stopListening() {
   listenBtn.classList.remove("active");
   statusEl.textContent = "Stopped";
   stopReplyAudio();
+  stopMicMonitor();
 
   if (mediaStream) {
     mediaStream.getTracks().forEach((track) => track.stop());
