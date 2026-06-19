@@ -10,6 +10,7 @@ const LISTEN_CHUNK_MS = 3500;
 const LISTEN_PAUSE_MS = 250;
 const AUTO_LISTEN_RETRY_MS = 1500;
 const AUTO_LISTEN_MAX_ATTEMPTS = 20;
+const MAX_TTS_CHUNK_CHARS = 180;
 const MIN_SPEECH_RMS = 0.012;
 const MIN_SPEECH_PEAK = 0.04;
 const MAX_CLICKY_ZERO_CROSSING_RATE = 0.28;
@@ -37,6 +38,7 @@ const NOISE_ONLY_TRANSCRIPTS = [
 let mediaStream = null;
 let currentReplyAudio = null;
 let currentReplyUrl = null;
+let replyPlaybackToken = 0;
 let listening = false;
 let processing = false;
 let awake = false;
@@ -93,6 +95,7 @@ async function waitForBackend() {
 }
 
 function stopReplyAudio() {
+  replyPlaybackToken += 1;
   if (currentReplyAudio) {
     currentReplyAudio.pause();
     currentReplyAudio = null;
@@ -104,8 +107,50 @@ function stopReplyAudio() {
   setAvatarState("idle");
 }
 
-async function playReplyAudio(text) {
-  statusEl.textContent = "Synthesizing reply...";
+function splitReplyForSpeech(text) {
+  const sentences = text
+    .replace(/\s+/g, " ")
+    .trim()
+    .match(/[^.!?]+[.!?]+|[^.!?]+$/g);
+
+  if (!sentences) {
+    return [];
+  }
+
+  const chunks = [];
+  let currentChunk = "";
+  for (const sentence of sentences.map((part) => part.trim()).filter(Boolean)) {
+    const nextChunk = currentChunk ? `${currentChunk} ${sentence}` : sentence;
+    if (nextChunk.length <= MAX_TTS_CHUNK_CHARS) {
+      currentChunk = nextChunk;
+      continue;
+    }
+
+    if (currentChunk) {
+      chunks.push(currentChunk);
+    }
+    currentChunk = sentence;
+  }
+
+  if (currentChunk) {
+    chunks.push(currentChunk);
+  }
+
+  return chunks;
+}
+
+async function synthesizeSpeechChunk(index, chunks, playbackToken) {
+  if (playbackToken !== replyPlaybackToken) {
+    return null;
+  }
+
+  const text = chunks[index];
+  const total = chunks.length;
+  statusEl.textContent =
+    total > 1
+      ? `Synthesizing reply ${index + 1}/${total}...`
+      : "Synthesizing reply...";
+
   const response = await fetch("http://localhost:5005/synthesize", {
     method: "POST",
     headers: {
@@ -119,16 +164,93 @@ async function playReplyAudio(text) {
     throw new Error(message);
   }
 
-  const audioBlob = await response.blob();
+  if (playbackToken !== replyPlaybackToken) {
+    return null;
+  }
+
+  return await response.blob();
+}
+
+function playAudioBlob(audioBlob, playbackToken) {
+  return new Promise((resolve, reject) => {
+    if (playbackToken !== replyPlaybackToken) {
+      resolve();
+      return;
+    }
+
+    if (currentReplyAudio) {
+      currentReplyAudio.pause();
+      currentReplyAudio = null;
+    }
+    if (currentReplyUrl) {
+      URL.revokeObjectURL(currentReplyUrl);
+      currentReplyUrl = null;
+    }
+
+    setAvatarState("talking");
+    currentReplyUrl = URL.createObjectURL(audioBlob);
+    currentReplyAudio = new Audio(currentReplyUrl);
+
+    currentReplyAudio.addEventListener(
+      "ended",
+      () => {
+        if (currentReplyUrl) {
+          URL.revokeObjectURL(currentReplyUrl);
+          currentReplyUrl = null;
+        }
+        currentReplyAudio = null;
+        resolve();
+      },
+      { once: true },
+    );
+
+    currentReplyAudio.addEventListener(
+      "error",
+      () => {
+        if (currentReplyUrl) {
+          URL.revokeObjectURL(currentReplyUrl);
+          currentReplyUrl = null;
+        }
+        currentReplyAudio = null;
+        reject(new Error("Reply audio playback failed"));
+      },
+      { once: true },
+    );
+
+    currentReplyAudio.play().catch(reject);
+  });
+}
+
+async function playReplyAudio(text) {
+  const chunks = splitReplyForSpeech(text);
+  if (chunks.length === 0) {
+    return;
+  }
+
   stopReplyAudio();
-  currentReplyUrl = URL.createObjectURL(audioBlob);
-  currentReplyAudio = new Audio(currentReplyUrl);
+  const playbackToken = replyPlaybackToken;
+  let nextAudioBlobPromise = synthesizeSpeechChunk(0, chunks, playbackToken);
 
-  currentReplyAudio.addEventListener("ended", stopReplyAudio, { once: true });
-  currentReplyAudio.addEventListener("error", stopReplyAudio, { once: true });
+  // Quick rundown: play one chunk while the next chunk renders in the background.
+  for (let index = 0; index < chunks.length; index += 1) {
+    if (playbackToken !== replyPlaybackToken) {
+      break;
+    }
 
-  setAvatarState("talking");
-  await currentReplyAudio.play();
+    const audioBlob = await nextAudioBlobPromise;
+    nextAudioBlobPromise =
+      index + 1 < chunks.length
+        ? synthesizeSpeechChunk(index + 1, chunks, playbackToken)
+        : null;
+
+    if (audioBlob) {
+      await playAudioBlob(audioBlob, playbackToken);
+    }
+  }
+
+  if (playbackToken === replyPlaybackToken) {
+    setAvatarState("idle");
+  }
 }
 
 function wait(ms) {
