@@ -29,6 +29,7 @@ Right now the main focus is:
 - local text generation
 - local text-to-speech playback
 - optional VTube Studio avatar control
+- optional PNG avatar overlay
 - a Windows launcher that ties the pieces together
 
 ## Repository notes
@@ -40,3 +41,5 @@ Right now the main focus is:
 See `docs/quick_start_windows.md` for the current setup flow.
 
 See `docs/vtube_studio_setup.md` for avatar setup.
+
+See `docs/png_avatar_setup.md` for the simple bottom-left PNG avatar overlay.

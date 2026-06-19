@@ -3,12 +3,17 @@ const statusEl = document.getElementById("statustxt");
 const transcriptEl = document.getElementById("transcript");
 const replyEl = document.getElementById("modelReply");
 const openWebUIButton = document.getElementById("openWebUI");
+const { ipcRenderer } = require("electron");
 
 let mediaRecorder = null;
 let audioChunks = [];
 let mediaStream = null;
 let currentReplyAudio = null;
 let currentReplyUrl = null;
+
+function setAvatarState(state) {
+  ipcRenderer.send("avatar:set-state", state);
+}
 
 openWebUIButton.addEventListener("click", () => {
   const { shell } = require("electron");
@@ -33,6 +38,7 @@ async function checkServices() {
 }
 
 checkServices();
+setAvatarState("idle");
 // Keep the status fresh.
 setInterval(checkServices, 5000);
 
@@ -45,6 +51,7 @@ function stopReplyAudio() {
     URL.revokeObjectURL(currentReplyUrl);
     currentReplyUrl = null;
   }
+  setAvatarState("idle");
 }
 
 async function playReplyAudio(text) {
@@ -83,6 +90,7 @@ async function playReplyAudio(text) {
     { once: true },
   );
 
+  setAvatarState("talking");
   await currentReplyAudio.play();
 }
 
