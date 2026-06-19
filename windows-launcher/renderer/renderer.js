@@ -5,7 +5,7 @@ const replyEl = document.getElementById("modelReply");
 const openWebUIButton = document.getElementById("openWebUI");
 const { ipcRenderer } = require("electron");
 
-const WAKE_WORD = "mana";
+const WAKE_WORDS = ["mana", "manah", "manna", "mannah"];
 const LISTEN_CHUNK_MS = 3500;
 const LISTEN_PAUSE_MS = 250;
 
@@ -152,7 +152,10 @@ async function transcribeBlob(blob) {
 
 function extractWakeCommand(transcript) {
   const normalized = transcript.trim();
-  const wakePattern = new RegExp(`\\b${WAKE_WORD}\\b[\\s,.:;!?-]*`, "i");
+  const wakePattern = new RegExp(
+    `\\b(?:${WAKE_WORDS.join("|")})\\b[\\s,.:;!?-]*`,
+    "i",
+  );
   const wakeMatch = normalized.match(wakePattern);
   if (!wakeMatch) {
     return null;
