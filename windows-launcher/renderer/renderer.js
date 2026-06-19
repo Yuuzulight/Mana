@@ -10,6 +10,29 @@ const LISTEN_CHUNK_MS = 3500;
 const LISTEN_PAUSE_MS = 250;
 const AUTO_LISTEN_RETRY_MS = 1500;
 const AUTO_LISTEN_MAX_ATTEMPTS = 20;
+const MIN_SPEECH_RMS = 0.012;
+const MIN_SPEECH_PEAK = 0.04;
+const MAX_CLICKY_ZERO_CROSSING_RATE = 0.28;
+const NOISE_ONLY_TRANSCRIPTS = [
+  "blank audio",
+  "silence",
+  "silent",
+  "keyboard clicking",
+  "keyboard clicks",
+  "typing",
+  "clicking",
+  "click",
+  "mouse clicking",
+  "background noise",
+  "noise",
+  "sound effect",
+  "sound effects",
+  "music",
+  "laughter",
+  "laughing",
+  "applause",
+  "clapping",
+];
 
 let mediaStream = null;
 let currentReplyAudio = null;
@@ -140,11 +163,53 @@ async function recordAudioChunk(durationMs) {
   });
 }
 
-async function webmBlobToWavBlob(blob) {
+function getAudioStats(audioBuffer) {
+  const channel = audioBuffer.getChannelData(0);
+  let sumSquares = 0;
+  let peak = 0;
+  let zeroCrossings = 0;
+  let previous = channel[0] || 0;
+
+  for (let index = 0; index < channel.length; index += 1) {
+    const sample = channel[index];
+    const absSample = Math.abs(sample);
+    sumSquares += sample * sample;
+    if (absSample > peak) {
+      peak = absSample;
+    }
+    if ((previous < 0 && sample >= 0) || (previous >= 0 && sample < 0)) {
+      zeroCrossings += 1;
+    }
+    previous = sample;
+  }
+
+  const rms = Math.sqrt(sumSquares / Math.max(channel.length, 1));
+  return {
+    rms,
+    peak,
+    zeroCrossingRate: zeroCrossings / Math.max(channel.length, 1),
+  };
+}
+
+function looksLikeSpeech(stats) {
+  if (stats.rms < MIN_SPEECH_RMS || stats.peak < MIN_SPEECH_PEAK) {
+    return false;
+  }
+
+  return stats.zeroCrossingRate <= MAX_CLICKY_ZERO_CROSSING_RATE;
+}
+
+async function prepareSpeechWavBlob(blob) {
   const arrayBuffer = await blob.arrayBuffer();
   const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
   try {
     const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
+    const stats = getAudioStats(audioBuffer);
+    // Quick rundown: skip quiet chunks and sharp clicky noise before Whisper sees them.
+    if (!looksLikeSpeech(stats)) {
+      return null;
+    }
+
     const wavBytes = audioBufferToWav(audioBuffer);
     return new Blob([wavBytes], { type: "audio/wav" });
   } finally {
@@ -153,7 +218,11 @@ async function webmBlobToWavBlob(blob) {
 }
 
 async function transcribeBlob(blob) {
-  const wavBlob = await webmBlobToWavBlob(blob);
+  const wavBlob = await prepareSpeechWavBlob(blob);
+  if (!wavBlob) {
+    return { transcript: "" };
+  }
+
   const formData = new FormData();
   formData.append("file", wavBlob, "listening.wav");
 
@@ -185,6 +254,24 @@ function extractWakeCommand(transcript) {
   return command || normalized;
 }
 
+function cleanTranscriptText(transcript) {
+  return transcript
+    .replace(/\[[^\]]+\]/g, " ")
+    .replace(/\([^)]+\)/g, " ")
+    .replace(/[.。,…]+$/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function isNoiseOnlyTranscript(transcript) {
+  const normalized = cleanTranscriptText(transcript).toLowerCase();
+  if (!normalized) {
+    return true;
+  }
+
+  return NOISE_ONLY_TRANSCRIPTS.some((noiseText) => normalized === noiseText);
+}
+
 async function requestReply(text) {
   const response = await fetch("http://localhost:5005/reply", {
     method: "POST",
@@ -203,10 +290,11 @@ async function requestReply(text) {
 }
 
 async function handleTranscript(transcript) {
-  const cleanTranscript = transcript.trim();
-  if (!cleanTranscript) {
+  if (isNoiseOnlyTranscript(transcript)) {
     return;
   }
+
+  const cleanTranscript = cleanTranscriptText(transcript);
 
   // Quick rundown: the first wake word turns Mana on for the rest of this app session.
   const wakeCommand = extractWakeCommand(cleanTranscript);
