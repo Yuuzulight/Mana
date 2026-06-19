@@ -35,7 +35,7 @@ Right now the main focus is:
 - local text-to-speech playback
 - chunked reply speech so playback starts sooner
 - gaming mode that detects watched game processes and reduces idle work while they run
-- Kokoro ONNX fast TTS with Chatterbox as the fallback voice option
+- Kokoro ONNX fast TTS with Chatterbox and optional Fish Speech provider paths
 - multilingual TTS routing for English, Chinese, Japanese, Korean, Russian, German, Spanish, and Malay
 - single Mana voice across supported TTS languages
 - optional VTube Studio avatar control
