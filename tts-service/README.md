@@ -22,6 +22,17 @@ Environment
   - default: `0.45`
 - `CHATTERBOX_TEMPERATURE`
   - default: `0.8`
+- `CHATTERBOX_WARMUP`
+  - default: `1`
+  - set to `0` to skip startup warm-up
+- `CHATTERBOX_WARMUP_TEXT`
+  - default: `Ready.`
+
+Performance
+-----------
+The service is configured for CUDA PyTorch by default. On a supported NVIDIA GPU, `/health` should report `"device": "cuda"`.
+
+Startup warm-up is enabled by default so the first real Mana reply does not pay the full model load/CUDA initialization cost.
 
 Start
 -----

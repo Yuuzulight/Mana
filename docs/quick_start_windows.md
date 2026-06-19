@@ -7,7 +7,7 @@ Architecture
 - The Electron main process starts `node-bot/server.js`.
 - `node-bot` calls local `whisper.cpp` and `llama.cpp` binaries.
 - `node-bot` can call a local Chatterbox Turbo TTS microservice to synthesize reply audio.
-- The renderer records audio in the browser, converts it to WAV, and sends it to `http://localhost:5005/transcribe`.
+- The renderer records short audio chunks in the browser, converts them to WAV, and uses the local backend for transcription and replies.
 
 Project goal
 - This repository is for a local AI assistant running on your own machine.
@@ -68,8 +68,11 @@ Project goal
 
    The launcher starts `node-bot` automatically and will also try to start the Chatterbox TTS service when `TTS_PROVIDER=chatterbox`.
 
-6) Use Push-to-Talk
-   - Hold the `Push to talk (hold)` button, speak, then release.
+6) Use Mana
+   - Start the Windows launcher.
+   - Mana shows the PNG avatar overlay and starts listening automatically.
+   - Say `Mana` once to wake her for the session.
+   - After that first wake-up, keep talking without repeating the wake word.
    - The UI shows the transcript and model reply.
    - If Chatterbox is running, the reply is synthesized and played back by the app.
 
