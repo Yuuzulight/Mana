@@ -1,12 +1,18 @@
-const { app, BrowserWindow, dialog } = require("electron");
+const { app, BrowserWindow, dialog, ipcMain, screen } = require("electron");
 const path = require("path");
 const { spawn } = require("child_process");
 
 let mainWindow;
+let avatarWindow;
 let backendProcess = null;
 let ttsProcess = null;
 const BACKEND_URL = "http://localhost:5005/health";
 const TTS_URL = "http://127.0.0.1:5010/health";
+const AVATAR_SIZE = {
+  width: Number(process.env.MANA_AVATAR_WIDTH || 260),
+  height: Number(process.env.MANA_AVATAR_HEIGHT || 320),
+};
+const AVATAR_MARGIN = Number(process.env.MANA_AVATAR_MARGIN || 12);
 
 async function isServiceRunning(url) {
   try {
@@ -122,6 +128,57 @@ function createWindow() {
 
   mainWindow.on("closed", function () {
     mainWindow = null;
+    app.quit();
+  });
+}
+
+function getAvatarBounds() {
+  const { workArea } = screen.getPrimaryDisplay();
+  return {
+    width: AVATAR_SIZE.width,
+    height: AVATAR_SIZE.height,
+    x: workArea.x + AVATAR_MARGIN,
+    y: workArea.y + workArea.height - AVATAR_SIZE.height - AVATAR_MARGIN,
+  };
+}
+
+function positionAvatarWindow() {
+  if (!avatarWindow) {
+    return;
+  }
+
+  avatarWindow.setBounds(getAvatarBounds());
+}
+
+function createAvatarWindow() {
+  avatarWindow = new BrowserWindow({
+    ...getAvatarBounds(),
+    frame: false,
+    transparent: true,
+    resizable: false,
+    movable: false,
+    show: false,
+    skipTaskbar: true,
+    focusable: false,
+    hasShadow: false,
+    alwaysOnTop: true,
+    backgroundColor: "#00000000",
+    webPreferences: {
+      nodeIntegration: true,
+      contextIsolation: false,
+    },
+  });
+
+  avatarWindow.setAlwaysOnTop(true, "floating");
+  avatarWindow.setIgnoreMouseEvents(true, { forward: true });
+  avatarWindow.loadFile(path.join(__dirname, "avatar", "index.html"));
+  avatarWindow.once("ready-to-show", () => {
+    positionAvatarWindow();
+    avatarWindow.showInactive();
+  });
+
+  avatarWindow.on("closed", () => {
+    avatarWindow = null;
   });
 }
 
@@ -148,10 +205,23 @@ app.whenReady().then(() => {
     });
 
   createWindow();
+  createAvatarWindow();
+
+  screen.on("display-metrics-changed", positionAvatarWindow);
+  screen.on("display-added", positionAvatarWindow);
+  screen.on("display-removed", positionAvatarWindow);
 
   app.on("activate", function () {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });
+});
+
+ipcMain.on("avatar:set-state", (event, state) => {
+  if (!avatarWindow) {
+    return;
+  }
+
+  avatarWindow.webContents.send("avatar:state", state);
 });
 
 app.on("window-all-closed", function () {
