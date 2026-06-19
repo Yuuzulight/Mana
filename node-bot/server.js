@@ -9,13 +9,14 @@ Environment variables (set before running):
 - WHISPER_MODEL : full path to whisper model file (e.g. models/ggml-base.en.bin)
 - LLAMA_BIN : full path to llama.cpp/main executable (e.g. C:\llama.cpp\main.exe)
 - LLAMA_MODEL : full path to a GGUF model file, or an HF repo shorthand like user/model:Q4_K_M
-- TTS_PROVIDER : "cli" or "chatterbox"
+- TTS_PROVIDER : "cli", "chatterbox", or "kokoro"
 - TTS_BIN : full path to your TTS executable
 - TTS_MODEL : model path or model id for your TTS executable
 - TTS_ARGS_JSON : optional JSON array of CLI args with placeholders like {text}, {output}, {model}, {voice}, {speaker}
 - TTS_VOICE : optional voice value used by your TTS args
 - TTS_SPEAKER : optional speaker value used by your TTS args
 - CHATTERBOX_TTS_URL : local Chatterbox TTS microservice URL
+- KOKORO_TTS_URL : local Kokoro TTS microservice URL
 
 This server aims to avoid Python. You must download and place the whisper.cpp and llama.cpp binaries and model files yourself.
 */
@@ -45,6 +46,8 @@ const TTS_VOICE = process.env.TTS_VOICE || null;
 const TTS_SPEAKER = process.env.TTS_SPEAKER || null;
 const CHATTERBOX_TTS_URL =
   process.env.CHATTERBOX_TTS_URL || "http://127.0.0.1:5010";
+const KOKORO_TTS_URL =
+  process.env.KOKORO_TTS_URL || "http://127.0.0.1:5011";
 const DEFAULT_LLAMA_MODEL = "Qwen/Qwen2.5-0.5B-Instruct-GGUF:Q4_K_M";
 const VTUBE_STUDIO_URL =
   process.env.VTUBE_STUDIO_URL || "ws://127.0.0.1:8001";
@@ -68,6 +71,8 @@ app.get("/health", (req, res) => {
     ok: true,
     ttsConfigured: TTS_PROVIDER !== "none",
     ttsProvider: TTS_PROVIDER,
+    kokoroTtsUrl: KOKORO_TTS_URL,
+    chatterboxTtsUrl: CHATTERBOX_TTS_URL,
     llamaConfigured: llamaStatus.ok,
     llamaModel: llamaStatus.model,
     llamaBin: llamaStatus.bin,
@@ -199,6 +204,17 @@ function postJsonBuffer(urlString, body) {
 async function synthesizeReply(text) {
   if (!text) {
     throw new Error("No text provided for synthesis");
+  }
+
+  if (TTS_PROVIDER === "kokoro") {
+    try {
+      return await postJsonBuffer(`${KOKORO_TTS_URL}/synthesize`, { text });
+    } catch (error) {
+      console.warn(
+        `Kokoro TTS failed, falling back to Chatterbox: ${error.message}`,
+      );
+      return await postJsonBuffer(`${CHATTERBOX_TTS_URL}/synthesize`, { text });
+    }
   }
 
   if (TTS_PROVIDER === "chatterbox") {

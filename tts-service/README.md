@@ -1,7 +1,10 @@
 Chatterbox Turbo TTS service
 ============================
 
-This service runs Chatterbox locally and exposes a small HTTP API for Mana.
+This folder contains two local TTS services for Mana.
+
+- Kokoro ONNX is the faster primary test path on `http://127.0.0.1:5011`.
+- Chatterbox Turbo is the higher-quality fallback path on `http://127.0.0.1:5010`.
 
 Endpoints
 ---------
@@ -36,9 +39,15 @@ Startup warm-up is enabled by default so the first real Mana reply does not pay 
 
 Start
 -----
+Kokoro:
+```powershell
+cd C:\ManaAI\Mana\tts-service
+.\start_kokoro.ps1
+```
+The first Kokoro start downloads the ONNX model and voices into `tts-service\kokoro`.
+
+Chatterbox:
 ```powershell
 cd C:\ManaAI\Mana\tts-service
 .\start.ps1
 ```
-
-This service listens on `http://127.0.0.1:5010`.
