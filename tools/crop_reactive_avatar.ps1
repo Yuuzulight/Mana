@@ -7,8 +7,8 @@ param(
 
 Add-Type -AssemblyName System.Drawing
 
-$sourcePath = Resolve-Path -LiteralPath $Source
-$outputPath = Join-Path (Resolve-Path -LiteralPath $OutputDir) "."
+$sourcePath = (Resolve-Path -LiteralPath $Source).Path
+$outputPath = (Resolve-Path -LiteralPath $OutputDir).Path
 
 $image = [System.Drawing.Bitmap]::new($sourcePath)
 
