@@ -5,14 +5,14 @@
       <stop offset=".48" stop-color="#62bde6"/>
       <stop offset="1" stop-color="#2f6f9f"/>
     </linearGradient>
-    <linearGradient id="suit" x1="120" y1="410" x2="405" y2="640" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="#f8fbff"/>
-      <stop offset=".7" stop-color="#cfdbe8"/>
-      <stop offset="1" stop-color="#8fa6bb"/>
+    <linearGradient id="hoodie" x1="116" y1="398" x2="408" y2="624" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#dff7f8"/>
+      <stop offset=".62" stop-color="#b9e5e8"/>
+      <stop offset="1" stop-color="#8fc8d0"/>
     </linearGradient>
-    <linearGradient id="trim" x1="176" y1="430" x2="356" y2="620" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="#2ecad3"/>
-      <stop offset="1" stop-color="#166579"/>
+    <linearGradient id="skirt" x1="150" y1="548" x2="370" y2="638" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#566177"/>
+      <stop offset="1" stop-color="#2f3548"/>
     </linearGradient>
     <linearGradient id="accent" x1="335" y1="122" x2="414" y2="188" gradientUnits="userSpaceOnUse">
       <stop offset="0" stop-color="#ff6c78"/>
@@ -23,11 +23,16 @@
   <path d="M136 238c-32-110 24-184 126-184 104 0 164 76 128 194l-32 222c-20 66-70 100-98 100-30 0-82-34-100-102l-24-230z" fill="url(#hair)"/>
   <path d="M390 142c30 4 52 28 56 58-34 4-68-10-92-36 8-14 20-22 36-22z" fill="url(#accent)"/>
   <path d="M384 150l28-30 6 52" fill="#f8fbff" opacity=".8"/>
-  <path d="M112 624c5-84 28-158 68-202 48 30 118 34 164 8 44 44 64 112 68 194H112z" fill="url(#suit)"/>
-  <path d="M178 438c18 78 52 122 84 122 34 0 70-46 88-128-48 30-126 32-172 6z" fill="#ffffff"/>
-  <path d="M214 456l48 62 50-64 24 150H188l26-148z" fill="#eaf4fb"/>
-  <path d="M226 472l36 36 38-36 24 36c-26 28-94 28-122 0l24-36z" fill="url(#trim)"/>
-  <path d="M246 512h32l10 92h-52l10-92z" fill="#26354b"/>
+  <path d="M178 430c-42 38-62 108-66 194h300c-5-82-26-150-66-194-52 28-116 30-168 0z" fill="url(#hoodie)"/>
+  <path d="M198 432c16 92 42 130 64 130 24 0 54-40 70-132-42 24-92 26-134 2z" fill="#fffdf8"/>
+  <path d="M218 448l44 138 46-138 30 176H186l32-176z" fill="#fffdf8"/>
+  <path d="M218 450l88 118M306 450l-88 118" stroke="#252936" stroke-width="10" stroke-linecap="round" fill="none"/>
+  <path d="M164 544h198l34 80H126l38-80z" fill="url(#skirt)"/>
+  <path d="M164 544l-18 80M204 544l-8 80M246 544l-2 80M286 544l8 80M326 544l18 80" stroke="#222736" stroke-width="5" opacity=".45"/>
+  <path d="M166 432c-32 38-46 106-50 192h74c2-70 14-130 36-178l-60-14z" fill="url(#hoodie)"/>
+  <path d="M356 430c34 38 50 108 54 194h-78c0-72-12-132-34-178l58-16z" fill="url(#hoodie)"/>
+  <path d="M178 438l48 8M346 436l-48 10" stroke="#e9ffff" stroke-width="10" stroke-linecap="round" opacity=".75"/>
+  <path d="M256 424v200" stroke="#6e9da7" stroke-width="5" opacity=".65"/>
   <path d="M154 252c4-86 42-140 108-140 68 0 106 54 110 140 6 116-44 202-110 202-64 0-114-86-108-202z" fill="#f3c6b8"/>
   <path d="M150 262c-8-64 16-122 72-150 18 44 62 78 136 92-24-74-78-116-138-106-68 12-106 70-70 164z" fill="url(#hair)"/>
   <path d="M174 172c-24 58-20 142-4 204-30-40-44-110-36-166l40-38z" fill="url(#hair)"/>
@@ -48,7 +53,6 @@
   <path d="M256 316c-4 22-10 38-20 50 12 6 32 6 44 0" stroke="#d59a90" stroke-width="7" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
   <ellipse cx="262" cy="392" rx="28" ry="21" fill="#793643"/>
   <path d="M242 399c12 10 28 10 42 0" stroke="#f0a5a8" stroke-width="6" stroke-linecap="round" fill="none"/>
-  <path d="M160 486c-30 32-46 82-48 138h86c0-54 8-102 26-136l-64-2z" fill="#dce8f2"/>
-  <path d="M360 486c30 32 46 82 48 138h-86c0-54-8-102-26-136l64-2z" fill="#dce8f2"/>
-  <path d="M188 520h148" stroke="#2ecad3" stroke-width="10" stroke-linecap="round"/>
+  <path d="M122 594c-20 0-30 16-20 28 12 12 34 6 38-12l-18-16z" fill="#f3c6b8"/>
+  <path d="M404 590c20 0 30 18 18 30-14 12-36 4-40-14l22-16z" fill="#f3c6b8"/>
 </svg>
