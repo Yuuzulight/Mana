@@ -34,6 +34,11 @@ Environment
   - default: `0.45`
 - `CHATTERBOX_TEMPERATURE`
   - default: `0.8`
+- Natural Mana anime-sister starting preset
+  - `CHATTERBOX_EXAGGERATION=0.40`
+  - `CHATTERBOX_CFG_WEIGHT=0.36`
+  - `CHATTERBOX_TEMPERATURE=0.70`
+  - This aims for a youthful, crisp, natural anime delivery without the robotic edge.
 - `CHATTERBOX_WARMUP`
   - default: `1`
   - set to `0` to skip startup warm-up
