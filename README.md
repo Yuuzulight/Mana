@@ -34,6 +34,7 @@ Right now the main focus is:
 - local text generation
 - local text-to-speech playback
 - chunked reply speech so playback starts sooner
+- gaming mode to reduce idle microphone processing while games are running
 - Kokoro ONNX fast TTS with Chatterbox as the fallback voice option
 - multilingual TTS routing for English, Chinese, Japanese, Korean, Russian, German, Spanish, and Malay
 - single Mana voice across supported TTS languages
