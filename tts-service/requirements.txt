@@ -4,6 +4,7 @@ soundfile==0.12.1
 python-multipart>=0.0.18
 requests==2.32.3
 numpy>=2.0.0
-torch
-torchaudio
+--extra-index-url https://download.pytorch.org/whl/cu124
+torch==2.6.0+cu124
+torchaudio==2.6.0+cu124
 chatterbox-tts==0.1.7
