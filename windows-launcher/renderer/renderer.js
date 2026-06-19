@@ -4,15 +4,14 @@ const transcriptEl = document.getElementById("transcript");
 const replyEl = document.getElementById("modelReply");
 const openWebUIButton = document.getElementById("openWebUI");
 const gamingModeCheckbox = document.getElementById("gamingMode");
+const gamingStatusEl = document.getElementById("gamingStatus");
 const { ipcRenderer } = require("electron");
 
 const WAKE_WORDS = ["mana", "manah", "manna", "mannah", "wake up"];
 const LISTEN_CHUNK_MS = 3500;
 const LISTEN_PAUSE_MS = 250;
-const GAMING_IDLE_PAUSE_MS = 900;
-const GAMING_SPEECH_POLL_MS = 140;
-const GAMING_SPEECH_TRIGGER_RMS = 0.012;
-const GAMING_SPEECH_TRIGGER_PEAK = 0.045;
+const GAMING_IDLE_PAUSE_MS = 1800;
+const GAMING_STATUS_POLL_MS = 5000;
 const AUTO_LISTEN_RETRY_MS = 1500;
 const AUTO_LISTEN_MAX_ATTEMPTS = 20;
 const MAX_TTS_CHUNK_CHARS = 180;
@@ -44,10 +43,12 @@ let mediaStream = null;
 let currentReplyAudio = null;
 let currentReplyUrl = null;
 let replyPlaybackToken = 0;
-let micMonitor = null;
 let listening = false;
 let processing = false;
 let awake = false;
+let gamingAppRunning = false;
+let lastGamingStatusCheck = 0;
+let gamingStatusCheckPromise = null;
 
 function setAvatarState(state) {
   ipcRenderer.send("avatar:set-state", state);
@@ -267,87 +268,70 @@ function isGamingModeEnabled() {
   return Boolean(gamingModeCheckbox?.checked);
 }
 
+function updateGamingStatusText(matchedProcesses = []) {
+  if (!gamingStatusEl) {
+    return;
+  }
+
+  if (!isGamingModeEnabled()) {
+    gamingStatusEl.textContent = "Off";
+    return;
+  }
+
+  gamingStatusEl.textContent = gamingAppRunning
+    ? `Active: ${matchedProcesses.join(", ")}`
+    : "No watched game running";
+}
+
+async function refreshGamingStatus(force = false) {
+  if (!isGamingModeEnabled()) {
+    gamingAppRunning = false;
+    updateGamingStatusText();
+    return false;
+  }
+
+  const now = Date.now();
+  if (!force && now - lastGamingStatusCheck < GAMING_STATUS_POLL_MS) {
+    return gamingAppRunning;
+  }
+  if (gamingStatusCheckPromise) {
+    return gamingStatusCheckPromise;
+  }
+
+  gamingStatusCheckPromise = fetch("http://localhost:5005/gaming/status", {
+    method: "GET",
+  })
+    .then(async (response) => {
+      if (!response.ok) {
+        throw new Error(`Gaming status returned ${response.status}`);
+      }
+      const status = await response.json();
+      gamingAppRunning = Boolean(status.gamingAppRunning);
+      lastGamingStatusCheck = Date.now();
+      updateGamingStatusText(status.matchedProcesses || []);
+      return gamingAppRunning;
+    })
+    .catch((error) => {
+      console.warn("Gaming status check failed:", error.message);
+      gamingAppRunning = false;
+      lastGamingStatusCheck = Date.now();
+      if (gamingStatusEl) {
+        gamingStatusEl.textContent = "Game check unavailable";
+      }
+      return false;
+    })
+    .finally(() => {
+      gamingStatusCheckPromise = null;
+    });
+
+  return gamingStatusCheckPromise;
+}
+
 async function ensureMediaStream() {
   if (!mediaStream) {
     mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
   }
   return mediaStream;
-}
-
-async function ensureMicMonitor() {
-  if (micMonitor) {
-    return micMonitor;
-  }
-
-  const stream = await ensureMediaStream();
-  const audioContext = new (window.AudioContext || window.webkitAudioContext)();
-  const source = audioContext.createMediaStreamSource(stream);
-  const analyser = audioContext.createAnalyser();
-  analyser.fftSize = 1024;
-  source.connect(analyser);
-
-  // Quick rundown: this is a cheap volume check, not full recording.
-  // It lets Mana stay idle without sending quiet room audio to Whisper.
-  micMonitor = {
-    audioContext,
-    analyser,
-    data: new Float32Array(analyser.fftSize),
-  };
-  return micMonitor;
-}
-
-function stopMicMonitor() {
-  if (!micMonitor) {
-    return;
-  }
-
-  micMonitor.audioContext.close().catch(() => {});
-  micMonitor = null;
-}
-
-function readMicMonitorStats() {
-  if (!micMonitor) {
-    return { rms: 0, peak: 0 };
-  }
-
-  micMonitor.analyser.getFloatTimeDomainData(micMonitor.data);
-  let sumSquares = 0;
-  let peak = 0;
-  for (const sample of micMonitor.data) {
-    const centeredSample = sample;
-    const absSample = Math.abs(centeredSample);
-    sumSquares += centeredSample * centeredSample;
-    if (absSample > peak) {
-      peak = absSample;
-    }
-  }
-
-  return {
-    rms: Math.sqrt(sumSquares / micMonitor.data.length),
-    peak,
-  };
-}
-
-async function waitForSpeechActivity() {
-  const monitor = await ensureMicMonitor();
-  if (monitor.audioContext.state === "suspended") {
-    await monitor.audioContext.resume().catch(() => {});
-  }
-
-  while (listening && isGamingModeEnabled()) {
-    const stats = readMicMonitorStats();
-    // Quick rundown: only start the heavier record/transcribe path after speech-like volume.
-    if (
-      stats.rms >= GAMING_SPEECH_TRIGGER_RMS ||
-      stats.peak >= GAMING_SPEECH_TRIGGER_PEAK
-    ) {
-      return true;
-    }
-
-    await wait(GAMING_SPEECH_POLL_MS);
-  }
-
-  return listening;
 }
 
 async function recordAudioChunk(durationMs) {
@@ -515,7 +499,7 @@ async function requestReply(text) {
 
 async function handleTranscript(transcript) {
   if (isNoiseOnlyTranscript(transcript)) {
-    return;
+    return false;
   }
 
   const cleanTranscript = cleanTranscriptText(transcript);
@@ -525,7 +509,7 @@ async function handleTranscript(transcript) {
   if (!awake && !wakeCommand) {
     statusEl.textContent = "Waiting for Mana...";
     transcriptEl.textContent = `Heard: ${cleanTranscript}`;
-    return;
+    return false;
   }
 
   if (wakeCommand) {
@@ -535,7 +519,7 @@ async function handleTranscript(transcript) {
   const command = wakeCommand || cleanTranscript;
   if (!command) {
     statusEl.textContent = awake ? "Mana is awake..." : "Waiting for Mana...";
-    return;
+    return false;
   }
 
   processing = true;
@@ -556,13 +540,14 @@ async function handleTranscript(transcript) {
         ? "Mana is awake..."
         : "Waiting for Mana..."
       : "Stopped";
+    return true;
   } finally {
     processing = false;
   }
 }
 
 async function listenLoop() {
-  // Quick rundown: gaming mode waits for mic activity first, then records and transcribes.
+  // Quick rundown: game mode only slows idle loops when a watched game process is running.
   while (listening) {
     if (processing || currentReplyAudio) {
       await wait(LISTEN_PAUSE_MS);
@@ -570,14 +555,8 @@ async function listenLoop() {
     }
 
     try {
+      const gamingModeActive = await refreshGamingStatus();
       statusEl.textContent = awake ? "Mana is awake..." : "Waiting for Mana...";
-      if (isGamingModeEnabled()) {
-        const speechStarted = await waitForSpeechActivity();
-        if (!speechStarted) {
-          await wait(GAMING_IDLE_PAUSE_MS);
-          continue;
-        }
-      }
 
       const chunk = await recordAudioChunk(LISTEN_CHUNK_MS);
       if (!listening) {
@@ -585,7 +564,10 @@ async function listenLoop() {
       }
 
       const result = await transcribeBlob(chunk);
-      await handleTranscript(result.transcript || "");
+      const handledTranscript = await handleTranscript(result.transcript || "");
+      if (!handledTranscript && gamingModeActive) {
+        await wait(GAMING_IDLE_PAUSE_MS);
+      }
     } catch (error) {
       console.error(error);
       statusEl.textContent = `Listening error: ${error.message}`;
@@ -615,13 +597,17 @@ function stopListening() {
   listenBtn.classList.remove("active");
   statusEl.textContent = "Stopped";
   stopReplyAudio();
-  stopMicMonitor();
 
   if (mediaStream) {
     mediaStream.getTracks().forEach((track) => track.stop());
     mediaStream = null;
   }
 }
+
+gamingModeCheckbox?.addEventListener("change", () => {
+  lastGamingStatusCheck = 0;
+  refreshGamingStatus(true);
+});
 
 listenBtn.addEventListener("click", async () => {
   if (listening) {
@@ -656,6 +642,7 @@ async function startListeningOnLaunch() {
 }
 
 startListeningOnLaunch();
+refreshGamingStatus(true);
 
 // helper: convert AudioBuffer to WAV bytes (16-bit PCM)
 function audioBufferToWav(buffer, opt) {

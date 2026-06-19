@@ -17,6 +17,7 @@ Environment variables (set before running):
 - TTS_SPEAKER : optional speaker value used by your TTS args
 - CHATTERBOX_TTS_URL : local Chatterbox TTS microservice URL
 - KOKORO_TTS_URL : local Kokoro TTS microservice URL
+- GAMING_PROCESS_NAMES : optional comma-separated game process names for Gaming mode
 
 This server aims to avoid Python. You must download and place the whisper.cpp and llama.cpp binaries and model files yourself.
 */
@@ -57,6 +58,17 @@ const VTUBE_STUDIO_REACTIONS_JSON =
 const TTS_PROVIDER =
   process.env.TTS_PROVIDER ||
   (TTS_BIN ? "cli" : "chatterbox");
+const DEFAULT_GAMING_PROCESS_NAMES = [
+  "ffxiv_dx11.exe",
+  "ffxiv.exe",
+  "ffxivboot.exe",
+  "ffxivboot64.exe",
+  "ffxivlauncher.exe",
+  "ffxivlauncher64.exe",
+];
+const GAMING_PROCESS_NAMES = parseGamingProcessNames(
+  process.env.GAMING_PROCESS_NAMES,
+);
 const KOKORO_MANA_VOICE = process.env.KOKORO_MANA_VOICE || "jf_nezumi";
 const KOKORO_LANGUAGE_PROFILES = {
   english: { lang: "en-us", speed: 1.12 },
@@ -80,6 +92,68 @@ function logPerf(label, startedAt) {
   console.log(`Mana perf: ${label} ${nowMs() - startedAt}ms`);
 }
 
+function parseGamingProcessNames(value) {
+  if (!value) {
+    return DEFAULT_GAMING_PROCESS_NAMES;
+  }
+
+  const names = value
+    .split(",")
+    .map((name) => name.trim().toLowerCase())
+    .filter(Boolean);
+  return names.length > 0 ? names : DEFAULT_GAMING_PROCESS_NAMES;
+}
+
+function parseTasklistCsvLine(line) {
+  const values = [];
+  const pattern = /"([^"]*(?:""[^"]*)*)"|([^,]+)/g;
+  let match;
+  while ((match = pattern.exec(line)) !== null) {
+    values.push((match[1] || match[2] || "").replace(/""/g, "\""));
+  }
+  return values;
+}
+
+function getRunningProcessNames() {
+  if (process.platform !== "win32") {
+    return [];
+  }
+
+  const result = spawnSync("tasklist", ["/fo", "csv", "/nh"], {
+    encoding: "utf8",
+    maxBuffer: 5 * 1024 * 1024,
+    windowsHide: true,
+  });
+
+  if (result.error) {
+    throw result.error;
+  }
+  if (result.status !== 0) {
+    throw new Error(result.stderr || "tasklist failed");
+  }
+
+  return (result.stdout || "")
+    .split(/\r?\n/)
+    .map((line) => parseTasklistCsvLine(line)[0])
+    .filter(Boolean)
+    .map((name) => name.toLowerCase());
+}
+
+function getGamingStatus() {
+  // Quick rundown: if one watched game process is running, Mana uses the lighter idle loop.
+  const runningProcesses = getRunningProcessNames();
+  const watchedNames = new Set(GAMING_PROCESS_NAMES);
+  const matchedProcesses = [...new Set(
+    runningProcesses.filter((name) => watchedNames.has(name)),
+  )];
+
+  return {
+    gamingAppRunning: matchedProcesses.length > 0,
+    matchedProcesses,
+    watchedProcesses: GAMING_PROCESS_NAMES,
+  };
+}
+
 if (!fs.existsSync(path.join(__dirname, "tmp"))) {
   fs.mkdirSync(path.join(__dirname, "tmp"));
 }
@@ -99,6 +173,23 @@ app.get("/health", (req, res) => {
     vtubeStudioConfigured: Boolean(vtubeStudio),
     vtubeStudioUrl: VTUBE_STUDIO_URL,
   });
+});
+
+app.get("/gaming/status", (req, res) => {
+  try {
+    return res.json({
+      ok: true,
+      ...getGamingStatus(),
+    });
+  } catch (error) {
+    return res.status(500).json({
+      ok: false,
+      error: error.message,
+      gamingAppRunning: false,
+      matchedProcesses: [],
+      watchedProcesses: GAMING_PROCESS_NAMES,
+    });
+  }
 });
 
 function makeTmpPath(prefix, ext) {
