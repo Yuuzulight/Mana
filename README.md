@@ -36,6 +36,7 @@ Right now the main focus is:
 - local text-to-speech playback
 - chunked reply speech so playback starts sooner
 - Kokoro ONNX fast TTS with Chatterbox as the fallback voice option
+- multilingual TTS routing for English, Chinese, Japanese, Korean, Russian, German, Spanish, and Malay
 - optional VTube Studio avatar control
 - optional PNG avatar overlay
 - a Windows launcher that ties the pieces together
