@@ -19,7 +19,9 @@ Environment
   - default: `jf_nezumi`
 - `KOKORO_SPEED`
   - default: `1.18`
-- Kokoro language routing currently targets English, Chinese Mandarin, Japanese, Korean, Russian, German, Spanish, and Malay.
+- `KOKORO_MANA_VOICE`
+  - backend default: `jf_nezumi`
+- Kokoro language routing keeps one Mana voice while switching language codes for English, Chinese Mandarin, Japanese, Korean, Russian, German, Spanish, and Malay.
 - `CHATTERBOX_MODEL`
   - default: `turbo`
 - `CHATTERBOX_DEVICE`

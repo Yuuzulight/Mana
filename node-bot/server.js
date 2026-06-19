@@ -57,15 +57,16 @@ const VTUBE_STUDIO_REACTIONS_JSON =
 const TTS_PROVIDER =
   process.env.TTS_PROVIDER ||
   (TTS_BIN ? "cli" : "chatterbox");
+const KOKORO_MANA_VOICE = process.env.KOKORO_MANA_VOICE || "jf_nezumi";
 const KOKORO_LANGUAGE_PROFILES = {
-  english: { lang: "en-us", voice: "af_heart", speed: 1.18 },
-  chinese: { lang: "cmn", voice: "zf_xiaoyi", speed: 1.08 },
-  japanese: { lang: "ja", voice: "jf_nezumi", speed: 1.18 },
-  korean: { lang: "ko", voice: "jf_nezumi", speed: 1.12 },
-  russian: { lang: "ru", voice: "jf_nezumi", speed: 1.08 },
-  german: { lang: "de", voice: "af_heart", speed: 1.08 },
-  spanish: { lang: "es", voice: "ef_dora", speed: 1.1 },
-  malay: { lang: "ms", voice: "af_heart", speed: 1.1 },
+  english: { lang: "en-us", speed: 1.12 },
+  chinese: { lang: "cmn", speed: 1.08 },
+  japanese: { lang: "ja", speed: 1.12 },
+  korean: { lang: "ko", speed: 1.08 },
+  russian: { lang: "ru", speed: 1.08 },
+  german: { lang: "de", speed: 1.08 },
+  spanish: { lang: "es", speed: 1.1 },
+  malay: { lang: "ms", speed: 1.1 },
 };
 const vtubeStudio = VTUBE_STUDIO_ENABLED
   ? new VTubeStudioClient({ url: VTUBE_STUDIO_URL })
@@ -244,7 +245,10 @@ async function synthesizeReply(text) {
 
 function pickKokoroLanguageProfile(text) {
   const language = detectTtsLanguage(text);
-  return KOKORO_LANGUAGE_PROFILES[language] || KOKORO_LANGUAGE_PROFILES.english;
+  return {
+    voice: KOKORO_MANA_VOICE,
+    ...(KOKORO_LANGUAGE_PROFILES[language] || KOKORO_LANGUAGE_PROFILES.english),
+  };
 }
 
 function detectTtsLanguage(text) {
@@ -609,7 +613,7 @@ function runLocalAssistantReply(prompt, maxTokens = 256) {
 
   const llamaModel = findLlamaModel();
   const systemPrompt =
-    "You are Mana, a local AI assistant with an original anime little-sister personality, loosely inspired by the confident younger-sister energy of Mana Takamiya. You are bratty, smug, and teasing, but also caring, loyal, and protective. Use playful little jabs like the user is hopeless without you, then immediately help them anyway. Keep the brattyness affectionate, never cruel or genuinely insulting. Reply naturally for spoken conversation, usually in one or two short sentences unless the user needs more detail.";
+    "You are Mana, a local AI assistant with an original anime little-sister personality, loosely inspired by the confident younger-sister energy of Mana Takamiya. You are mildly bratty, smug, and teasing, but also caring, loyal, and protective. Use occasional playful little jabs, then help immediately. Keep the teasing affectionate, never cruel or genuinely insulting. Speak with a slightly robotic, clipped, deadpan cadence: short sentences, clean wording, minimal rambling. Reply naturally for spoken conversation, usually in one or two short sentences unless the user needs more detail.";
 
   // Quick note: llama.cpp can load either a local GGUF file or an HF repo shorthand.
   const args = isLocalModelSpec(llamaModel)
