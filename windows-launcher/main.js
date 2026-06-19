@@ -23,10 +23,11 @@ const DEFAULT_WHISPER_MODEL = path.join(
   "ggml-tiny.en.bin",
 );
 const AVATAR_SIZE = {
-  width: Number(process.env.MANA_AVATAR_WIDTH || 260),
-  height: Number(process.env.MANA_AVATAR_HEIGHT || 320),
+  width: Number(process.env.MANA_AVATAR_WIDTH || 234),
+  height: Number(process.env.MANA_AVATAR_HEIGHT || 288),
 };
-const AVATAR_MARGIN = Number(process.env.MANA_AVATAR_MARGIN || 12);
+const AVATAR_LEFT = Number(process.env.MANA_AVATAR_LEFT || 783);
+const AVATAR_BOTTOM = Number(process.env.MANA_AVATAR_BOTTOM || 0);
 const AVATAR_TOP_LEVEL = process.env.MANA_AVATAR_TOP_LEVEL || "screen-saver";
 
 async function isServiceRunning(url) {
@@ -196,11 +197,13 @@ function createWindow() {
 
 function getAvatarBounds() {
   const { workArea } = screen.getPrimaryDisplay();
+  // Quick rundown: these defaults place Mana near the lower-middle-left game UI area.
+  // Use MANA_AVATAR_LEFT and MANA_AVATAR_BOTTOM if you need to nudge her later.
   return {
     width: AVATAR_SIZE.width,
     height: AVATAR_SIZE.height,
-    x: workArea.x + AVATAR_MARGIN,
-    y: workArea.y + workArea.height - AVATAR_SIZE.height - AVATAR_MARGIN,
+    x: workArea.x + AVATAR_LEFT,
+    y: workArea.y + workArea.height - AVATAR_SIZE.height - AVATAR_BOTTOM,
   };
 }
 
