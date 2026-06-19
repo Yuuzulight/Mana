@@ -5,7 +5,7 @@ Mana is a local AI assistant for Windows.
 The current project goal is a simple local voice loop:
 - launch the Windows app
 - show the PNG avatar overlay in the bottom-left corner
-- say `Mana` once to wake her up
+- say `Mana` or `wake up` once to wake her up
 - keep talking without repeating the wake word
 - transcribe the audio locally with `whisper.cpp`
 - generate a local reply with `llama.cpp`
@@ -27,7 +27,7 @@ Mana is meant to run on your own machine instead of depending on a hosted assist
 
 Right now the main focus is:
 - continuous local voice input
-- one-time wake-word response after you say `Mana`
+- one-time wake response after you say `Mana` or `wake up`
 - ignores blank audio and common non-speech noise
 - startup PNG avatar overlay
 - local speech-to-text
