@@ -27,8 +27,8 @@ KOKORO_VOICES_PATH = os.environ.get(
     "KOKORO_VOICES_PATH",
     os.path.join(HERE, "kokoro", "voices-v1.0.bin"),
 )
-KOKORO_VOICE = os.environ.get("KOKORO_VOICE", "af_heart")
-KOKORO_SPEED = float(os.environ.get("KOKORO_SPEED", "1.12"))
+KOKORO_VOICE = os.environ.get("KOKORO_VOICE", "jf_nezumi")
+KOKORO_SPEED = float(os.environ.get("KOKORO_SPEED", "1.18"))
 KOKORO_LANG = os.environ.get("KOKORO_LANG", "en-us")
 KOKORO_WARMUP = os.environ.get("KOKORO_WARMUP", "1") != "0"
 

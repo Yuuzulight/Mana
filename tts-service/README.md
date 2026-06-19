@@ -13,6 +13,10 @@ Endpoints
 
 Environment
 -----------
+- `KOKORO_VOICE`
+  - default: `jf_nezumi`
+- `KOKORO_SPEED`
+  - default: `1.18`
 - `CHATTERBOX_MODEL`
   - default: `turbo`
 - `CHATTERBOX_DEVICE`
