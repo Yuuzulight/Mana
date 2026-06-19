@@ -37,6 +37,28 @@ windows-launcher/avatar/renderer.js
 
 Change the `states` paths from `.svg` to `.png`.
 
+The launcher now checks for PNG files first. If these files exist, they are used automatically:
+
+```text
+windows-launcher/assets/avatar/idle.png
+windows-launcher/assets/avatar/talking.png
+```
+
+## Crop a Discord-reactive sheet
+
+If you have one image with `Speaking` on the left and `Inactive` on the right, save it somewhere in the repo, then run:
+
+```powershell
+.\tools\crop_reactive_avatar.ps1 -Source ".\path\to\your-sheet.png"
+```
+
+This writes:
+
+```text
+windows-launcher/assets/avatar/talking.png
+windows-launcher/assets/avatar/idle.png
+```
+
 ## Position and size
 
 The avatar defaults to:
