@@ -8,3 +8,4 @@ numpy>=2.0.0
 torch==2.6.0+cu124
 torchaudio==2.6.0+cu124
 chatterbox-tts==0.1.7
+kokoro-onnx==0.5.0
