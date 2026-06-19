@@ -33,6 +33,7 @@ Right now the main focus is:
 - local speech-to-text
 - local text generation
 - local text-to-speech playback
+- chunked reply speech so playback starts sooner
 - optional VTube Studio avatar control
 - optional PNG avatar overlay
 - a Windows launcher that ties the pieces together
