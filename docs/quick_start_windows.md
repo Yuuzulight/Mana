@@ -6,7 +6,7 @@ Architecture
 - `windows-launcher` runs the Electron UI.
 - The Electron main process starts `node-bot/server.js`.
 - `node-bot` calls local `whisper.cpp` and `llama.cpp` binaries.
-- `node-bot` can call a local Chatterbox Turbo TTS microservice to synthesize reply audio.
+- `node-bot` can call local Kokoro ONNX or Chatterbox Turbo TTS microservices to synthesize reply audio.
 - The renderer records short audio chunks in the browser, converts them to WAV, and uses the local backend for transcription and replies.
 
 Project goal
@@ -30,6 +30,7 @@ Project goal
      - `$env:LLAMA_BIN = "C:\path\to\llama-cli.exe"`
      - `$env:LLAMA_MODEL = "C:\path\to\model.gguf"`
      - `$env:TTS_PROVIDER = "chatterbox"`
+     - `$env:KOKORO_TTS_URL = "http://127.0.0.1:5011"`
      - `$env:CHATTERBOX_TTS_URL = "http://127.0.0.1:5010"`
      - `$env:CHATTERBOX_MODEL = "turbo"`
      - `$env:CHATTERBOX_VOICE_REF = "C:\path\to\evil-style-reference.wav"`
@@ -41,6 +42,7 @@ Project goal
    - `WHISPER_BIN` should point to the Whisper CLI executable you want to use.
    - If `WHISPER_BIN` is unset or wrong, Mana will also try common local paths under `tools\whisper\`.
    - `LLAMA_BIN` should point to the Llama CLI executable you want to use.
+   - `TTS_PROVIDER=kokoro` tells Mana to use the faster Kokoro ONNX service.
    - `TTS_PROVIDER=chatterbox` tells Mana to use the local Chatterbox TTS microservice.
    - `CHATTERBOX_VOICE_REF` should point to a short reference clip that matches the direction you want.
    - Lower `CHATTERBOX_CFG_WEIGHT` and a moderate `CHATTERBOX_EXAGGERATION` help push the voice toward a sharper, more stylized agent delivery.
@@ -54,19 +56,20 @@ Project goal
      - `cd C:\ManaAI\Mana\windows-launcher`
      - `npm install`
 
-4) Install the Chatterbox TTS service
+4) Install the local TTS services
    - In PowerShell:
      - `cd C:\ManaAI\Mana\tts-service`
      - `.\start.ps1`
+     - `.\start_kokoro.ps1`
 
-   On first run this installs the Python dependencies and downloads the model.
+   On first run this installs the Python dependencies and downloads the models.
 
 5) Start the launcher
    - In PowerShell:
      - `cd C:\ManaAI\Mana\windows-launcher`
      - `npm run start`
 
-   The launcher starts `node-bot` automatically and will also try to start the Chatterbox TTS service when `TTS_PROVIDER=chatterbox`.
+   The launcher starts `node-bot` automatically and will also try to start Kokoro as primary TTS and Chatterbox as fallback.
 
 6) Use Mana
    - Start the Windows launcher.

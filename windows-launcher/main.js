@@ -6,8 +6,10 @@ let mainWindow;
 let avatarWindow;
 let backendProcess = null;
 let ttsProcess = null;
+let fallbackTtsProcess = null;
 const BACKEND_URL = "http://localhost:5005/health";
-const TTS_URL = "http://127.0.0.1:5010/health";
+const CHATTERBOX_TTS_URL = "http://127.0.0.1:5010/health";
+const KOKORO_TTS_URL = "http://127.0.0.1:5011/health";
 const ROOT_DIR = path.join(__dirname, "..");
 const WHISPER_DIR = path.join(ROOT_DIR, "tools", "whisper");
 const DEFAULT_WHISPER_BIN = path.join(
@@ -41,7 +43,13 @@ async function isBackendRunning() {
 }
 
 async function isTtsRunning() {
-  return isServiceRunning(TTS_URL);
+  const provider = process.env.TTS_PROVIDER || "kokoro";
+  const url = provider === "kokoro" ? KOKORO_TTS_URL : CHATTERBOX_TTS_URL;
+  return isServiceRunning(url);
+}
+
+async function isChatterboxRunning() {
+  return isServiceRunning(CHATTERBOX_TTS_URL);
 }
 
 function startTtsService() {
@@ -49,13 +57,14 @@ function startTtsService() {
     return;
   }
 
-  const provider = process.env.TTS_PROVIDER || "chatterbox";
-  if (provider !== "chatterbox") {
+  const provider = process.env.TTS_PROVIDER || "kokoro";
+  const scriptName = provider === "kokoro" ? "start_kokoro.ps1" : "start.ps1";
+  if (!["kokoro", "chatterbox"].includes(provider)) {
     return;
   }
 
-  const ttsStartScript = path.join(ROOT_DIR, "tts-service", "start.ps1");
-  console.log("Starting Chatterbox TTS service:", ttsStartScript);
+  const ttsStartScript = path.join(ROOT_DIR, "tts-service", scriptName);
+  console.log(`Starting ${provider} TTS service:`, ttsStartScript);
   ttsProcess = spawn(
     "powershell",
     ["-ExecutionPolicy", "Bypass", "-File", ttsStartScript],
@@ -84,6 +93,41 @@ function startTtsService() {
   });
 }
 
+function startFallbackChatterboxService() {
+  if (fallbackTtsProcess) {
+    return;
+  }
+
+  if ((process.env.TTS_PROVIDER || "kokoro") !== "kokoro") {
+    return;
+  }
+
+  const ttsStartScript = path.join(ROOT_DIR, "tts-service", "start.ps1");
+  console.log("Starting fallback Chatterbox TTS service:", ttsStartScript);
+  fallbackTtsProcess = spawn(
+    "powershell",
+    ["-ExecutionPolicy", "Bypass", "-File", ttsStartScript],
+    {
+      cwd: path.join(ROOT_DIR, "tts-service"),
+    },
+  );
+
+  fallbackTtsProcess.on("error", (error) => {
+    console.error("Failed to start fallback Chatterbox TTS:", error);
+  });
+
+  fallbackTtsProcess.stdout.on("data", (data) => {
+    console.log(`Fallback TTS: ${data}`);
+  });
+  fallbackTtsProcess.stderr.on("data", (data) => {
+    console.error(`Fallback TTS ERR: ${data}`);
+  });
+  fallbackTtsProcess.on("close", (code) => {
+    console.log(`Fallback Chatterbox TTS exited with code ${code}`);
+    fallbackTtsProcess = null;
+  });
+}
+
 function startWindowsServices() {
   // Only start one backend process.
   if (backendProcess) {
@@ -99,7 +143,9 @@ function startWindowsServices() {
       // Quick note: these defaults let the launcher transcribe without a separate setup shell.
       WHISPER_BIN: process.env.WHISPER_BIN || DEFAULT_WHISPER_BIN,
       WHISPER_MODEL: process.env.WHISPER_MODEL || DEFAULT_WHISPER_MODEL,
-      TTS_PROVIDER: process.env.TTS_PROVIDER || "chatterbox",
+      TTS_PROVIDER: process.env.TTS_PROVIDER || "kokoro",
+      KOKORO_TTS_URL:
+        process.env.KOKORO_TTS_URL || "http://127.0.0.1:5011",
       CHATTERBOX_TTS_URL:
         process.env.CHATTERBOX_TTS_URL || "http://127.0.0.1:5010",
       VTUBE_STUDIO_URL:
@@ -230,10 +276,13 @@ app.whenReady().then(() => {
   }
 
   // Start the local Node backend before opening the UI.
-  Promise.all([isBackendRunning(), isTtsRunning()])
-    .then(([backendRunning, ttsRunning]) => {
+  Promise.all([isBackendRunning(), isTtsRunning(), isChatterboxRunning()])
+    .then(([backendRunning, ttsRunning, chatterboxRunning]) => {
       if (!ttsRunning) {
         startTtsService();
+      }
+      if (!chatterboxRunning) {
+        startFallbackChatterboxService();
       }
       if (!backendRunning) {
         startWindowsServices();
@@ -278,6 +327,11 @@ app.on("quit", () => {
   if (ttsProcess) {
     try {
       ttsProcess.kill();
+    } catch (e) {}
+  }
+  if (fallbackTtsProcess) {
+    try {
+      fallbackTtsProcess.kill();
     } catch (e) {}
   }
 });

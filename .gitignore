@@ -18,6 +18,7 @@ nul
 # Ignore model download artifacts (optionally keep model manifests)
 tools/whisper/Release/
 tools/ffmpeg/
+tts-service/kokoro/
 
 # OS files
 Thumbs.db
