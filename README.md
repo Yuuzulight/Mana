@@ -28,6 +28,7 @@ Mana is meant to run on your own machine instead of depending on a hosted assist
 Right now the main focus is:
 - continuous local voice input
 - one-time wake-word response after you say `Mana`
+- ignores blank audio and common non-speech noise
 - startup PNG avatar overlay
 - local speech-to-text
 - local text generation
