@@ -74,16 +74,17 @@ Project goal
 6) Use Mana
    - Start the Windows launcher.
    - Mana shows the PNG avatar overlay and starts listening automatically.
-   - Keep `Gaming mode` checked when you want Mana to run lighter while a game is open.
+   - Keep `Gaming mode` checked when you want Mana to run lighter while a watched game is open.
    - Say `Mana` once to wake her for the session.
    - After that first wake-up, keep talking without repeating the wake word.
    - The UI shows the transcript and model reply.
    - If Chatterbox is running, the reply is synthesized and played back by the app.
 
 Performance notes
-- `Gaming mode` waits for speech-like microphone activity before recording a full chunk.
-- This reduces idle Whisper calls while Mana is waiting in the background.
-- If Mana misses quiet speech, uncheck `Gaming mode` or move the microphone closer.
+- `Gaming mode` checks Windows for watched game processes such as FFXIV.
+- When a watched game is running, Mana waits longer after empty/noise chunks to reduce idle work.
+- Set `GAMING_PROCESS_NAMES` to a comma-separated process list if you want to watch other games.
+- Example: `$env:GAMING_PROCESS_NAMES = "ffxiv_dx11.exe,eldenring.exe"`
 
 Troubleshooting
 - If the UI reports `Local backend not reachable`, check that `node-bot` started successfully and that nothing else is using port `5005`.
