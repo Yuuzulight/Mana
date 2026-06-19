@@ -8,6 +8,8 @@ const { ipcRenderer } = require("electron");
 const WAKE_WORDS = ["mana", "manah", "manna", "mannah"];
 const LISTEN_CHUNK_MS = 3500;
 const LISTEN_PAUSE_MS = 250;
+const AUTO_LISTEN_RETRY_MS = 1500;
+const AUTO_LISTEN_MAX_ATTEMPTS = 20;
 
 let mediaStream = null;
 let currentReplyAudio = null;
@@ -45,9 +47,26 @@ async function checkServices() {
   }
 }
 
-checkServices();
 setAvatarState("idle");
 setInterval(checkServices, 5000);
+
+async function waitForBackend() {
+  for (let attempt = 0; attempt < AUTO_LISTEN_MAX_ATTEMPTS; attempt += 1) {
+    try {
+      const response = await fetch("http://localhost:5005/health", {
+        method: "GET",
+      });
+      if (response.ok) {
+        return true;
+      }
+    } catch (error) {}
+
+    statusEl.textContent = "Waiting for local backend...";
+    await wait(AUTO_LISTEN_RETRY_MS);
+  }
+
+  return false;
+}
 
 function stopReplyAudio() {
   if (currentReplyAudio) {
@@ -275,6 +294,25 @@ listenBtn.addEventListener("click", async () => {
     statusEl.textContent = `Microphone access failed: ${error.message}`;
   }
 });
+
+async function startListeningOnLaunch() {
+  // Quick rundown: show Mana right away, then start listening as soon as the backend is ready.
+  const backendReady = await waitForBackend();
+  if (!backendReady) {
+    statusEl.textContent = "Local backend not reachable";
+    return;
+  }
+
+  try {
+    await startListening();
+  } catch (error) {
+    console.error(error);
+    stopListening();
+    statusEl.textContent = `Microphone access failed: ${error.message}`;
+  }
+}
+
+startListeningOnLaunch();
 
 // helper: convert AudioBuffer to WAV bytes (16-bit PCM)
 function audioBufferToWav(buffer, opt) {
