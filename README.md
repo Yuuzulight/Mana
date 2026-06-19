@@ -17,6 +17,7 @@ The supported path in this repository is:
 - `tools/whisper` for the `whisper.cpp` runtime
 - `tools/llama` for the `llama.cpp` runtime
 - `tts-service` for the local Chatterbox Turbo TTS microservice
+- VTube Studio Public API support for avatar hotkeys and reactions
 
 ## What Mana does
 
@@ -27,6 +28,7 @@ Right now the main focus is:
 - local speech-to-text
 - local text generation
 - local text-to-speech playback
+- optional VTube Studio avatar control
 - a Windows launcher that ties the pieces together
 
 ## Repository notes
@@ -36,3 +38,5 @@ Right now the main focus is:
 - If you do not set a local GGUF model manually, the backend can fall back to a small Hugging Face GGUF target through `llama.cpp`.
 
 See `docs/quick_start_windows.md` for the current setup flow.
+
+See `docs/vtube_studio_setup.md` for avatar setup.

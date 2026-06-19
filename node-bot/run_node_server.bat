@@ -7,6 +7,8 @@ if not exist "%WHISPER_BIN%" set "WHISPER_BIN=C:\ManaAI\Mana\tools\whisper\main.
 set "WHISPER_MODEL=C:\ManaAI\Mana\tools\whisper\models\ggml-tiny.en.bin"
 set "TTS_PROVIDER=chatterbox"
 set "CHATTERBOX_TTS_URL=http://127.0.0.1:5010"
+set "VTUBE_STUDIO_URL=ws://127.0.0.1:8001"
+set "VTUBE_STUDIO_ENABLED=1"
 
 cd /d "%~dp0"
 
