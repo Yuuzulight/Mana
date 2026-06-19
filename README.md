@@ -32,6 +32,7 @@ Right now the main focus is:
 - startup PNG avatar overlay
 - local speech-to-text
 - local text generation
+- bratty-but-caring little-sister assistant personality
 - local text-to-speech playback
 - chunked reply speech so playback starts sooner
 - Kokoro ONNX fast TTS with Chatterbox as the fallback voice option
