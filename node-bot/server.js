@@ -8,7 +8,7 @@ Environment variables (set before running):
 - WHISPER_BIN : full path to whisper.cpp main executable (e.g. C:\whisper.cpp\main.exe)
 - WHISPER_MODEL : full path to whisper model file (e.g. models/ggml-base.en.bin)
 - LLAMA_BIN : full path to llama.cpp/main executable (e.g. C:\llama.cpp\main.exe)
-- LLAMA_MODEL : full path to GGUF model file (e.g. models/7B.gguf)
+- LLAMA_MODEL : full path to a GGUF model file, or an HF repo shorthand like user/model:Q4_K_M
 - TTS_PROVIDER : "cli" or "chatterbox"
 - TTS_BIN : full path to your TTS executable
 - TTS_MODEL : model path or model id for your TTS executable
@@ -44,19 +44,25 @@ const TTS_VOICE = process.env.TTS_VOICE || null;
 const TTS_SPEAKER = process.env.TTS_SPEAKER || null;
 const CHATTERBOX_TTS_URL =
   process.env.CHATTERBOX_TTS_URL || "http://127.0.0.1:5010";
+const DEFAULT_LLAMA_MODEL = "Qwen/Qwen2.5-0.5B-Instruct-GGUF:Q4_K_M";
 const TTS_PROVIDER =
   process.env.TTS_PROVIDER ||
-  (process.env.CHATTERBOX_TTS_URL ? "chatterbox" : TTS_BIN ? "cli" : "none");
+  (TTS_BIN ? "cli" : "chatterbox");
 
 if (!fs.existsSync(path.join(__dirname, "tmp"))) {
   fs.mkdirSync(path.join(__dirname, "tmp"));
 }
 
 app.get("/health", (req, res) => {
+  const llamaStatus = getLlamaStatus();
   res.json({
     ok: true,
     ttsConfigured: TTS_PROVIDER !== "none",
     ttsProvider: TTS_PROVIDER,
+    llamaConfigured: llamaStatus.ok,
+    llamaModel: llamaStatus.model,
+    llamaBin: llamaStatus.bin,
+    llamaStatus: llamaStatus.message,
   });
 });
 
@@ -219,6 +225,122 @@ function findWhisperBin() {
   );
 }
 
+function collectFilesRecursively(rootDir, predicate) {
+  const matches = [];
+
+  if (!fs.existsSync(rootDir)) {
+    return matches;
+  }
+
+  const pending = [rootDir];
+  while (pending.length > 0) {
+    const currentDir = pending.pop();
+    let entries = [];
+    try {
+      entries = fs.readdirSync(currentDir, { withFileTypes: true });
+    } catch (error) {
+      continue;
+    }
+
+    for (const entry of entries) {
+      const fullPath = path.join(currentDir, entry.name);
+      if (entry.isDirectory()) {
+        pending.push(fullPath);
+        continue;
+      }
+      if (predicate(fullPath)) {
+        matches.push(fullPath);
+      }
+    }
+  }
+
+  return matches;
+}
+
+function findLlamaBin() {
+  const candidates = [];
+  if (LLAMA_BIN) {
+    candidates.push(LLAMA_BIN);
+  }
+
+  const localToolDir = path.join(__dirname, "..", "tools", "llama");
+  const bundledLlamaDir = path.join(
+    localToolDir,
+    "llama-b9436-bin-win-cuda-12.4-x64",
+  );
+  candidates.push(
+    path.join(bundledLlamaDir, "llama-cli.exe"),
+    path.join(bundledLlamaDir, "llama.exe"),
+    path.join(bundledLlamaDir, "llama-completion.exe"),
+    path.join(localToolDir, "llama-cli.exe"),
+    path.join(localToolDir, "llama.exe"),
+  );
+
+  const validPath = candidates.find((candidate) => candidate && fs.existsSync(candidate));
+  if (validPath) {
+    return validPath;
+  }
+
+  const checked = candidates.filter(Boolean).join(", ");
+  throw new Error(
+    `Llama executable not found. Checked: ${checked}. Set LLAMA_BIN to a valid llama-cli.exe path.`,
+  );
+}
+
+function findLlamaModel() {
+  if (LLAMA_MODEL) {
+    return LLAMA_MODEL;
+  }
+
+  const localToolDir = path.join(__dirname, "..", "tools", "llama");
+  const localGguf = collectFilesRecursively(
+    localToolDir,
+    (fullPath) => fullPath.toLowerCase().endsWith(".gguf"),
+  )[0];
+
+  if (localGguf) {
+    return localGguf;
+  }
+
+  // Quick fallback order: env var first, local GGUF next, then a small downloadable GGUF target.
+  return DEFAULT_LLAMA_MODEL;
+}
+
+function isLocalModelSpec(modelSpec) {
+  if (!modelSpec) {
+    return false;
+  }
+
+  if (fs.existsSync(modelSpec)) {
+    return true;
+  }
+
+  const normalized = modelSpec.toLowerCase();
+  return (
+    normalized.endsWith(".gguf") ||
+    normalized.includes("\\") ||
+    /^[a-z]:/i.test(modelSpec)
+  );
+}
+
+function getLlamaStatus() {
+  try {
+    return {
+      ok: true,
+      bin: findLlamaBin(),
+      model: findLlamaModel(),
+      message: "ready",
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      bin: null,
+      model: LLAMA_MODEL || DEFAULT_LLAMA_MODEL,
+      message: error.message,
+    };
+  }
+}
+
 function runWhisper(filePath) {
   if (!WHISPER_MODEL) {
     throw new Error("WHISPER_MODEL not configured");
@@ -353,6 +475,96 @@ function runLlama(prompt, maxTokens = 256) {
   return reply;
 }
 
+function runLocalAssistantReply(prompt, maxTokens = 256) {
+  let llamaBin;
+  try {
+    llamaBin = findLlamaBin();
+  } catch (error) {
+    console.warn(`${error.message} Returning placeholder reply instead.`);
+    return "(no local llama binary found) I heard: " + prompt.slice(0, 200);
+  }
+
+  const llamaModel = findLlamaModel();
+  const systemPrompt =
+    "You are Mana, a local AI assistant. Reply naturally, clearly, and concisely. Keep spoken replies short unless the user needs more detail.";
+
+  // Quick note: llama.cpp can load either a local GGUF file or an HF repo shorthand.
+  const args = isLocalModelSpec(llamaModel)
+    ? [
+        "-m",
+        llamaModel,
+        "-sys",
+        systemPrompt,
+        "-p",
+        prompt,
+        "-n",
+        String(maxTokens),
+        "--single-turn",
+        "--simple-io",
+        "--no-display-prompt",
+        "--no-show-timings",
+        "--no-perf",
+        "--no-warmup",
+      ]
+    : [
+        "-hf",
+        llamaModel,
+        "-sys",
+        systemPrompt,
+        "-p",
+        prompt,
+        "-n",
+        String(maxTokens),
+        "--single-turn",
+        "--simple-io",
+        "--no-display-prompt",
+        "--no-show-timings",
+        "--no-perf",
+        "--no-warmup",
+      ];
+
+  console.log("Running llama:", llamaBin, args.join(" "));
+  const result = spawnSync(llamaBin, args, {
+    encoding: "utf8",
+    maxBuffer: 50 * 1024 * 1024,
+    cwd: path.dirname(llamaBin),
+  });
+  if (result.error) {
+    throw result.error;
+  }
+
+  console.log(
+    "llama exit",
+    result.status,
+    "stdout_len",
+    result.stdout ? result.stdout.length : 0,
+    "stderr_len",
+    result.stderr ? result.stderr.length : 0,
+  );
+
+  if (result.status !== 0) {
+    console.error("llama stderr:", result.stderr);
+    throw new Error("llama failed: " + result.stderr);
+  }
+
+  const rawOutput = (result.stdout || "").replace(/\r/g, "").trim();
+  const promptMarker = `> ${prompt}`;
+  const markerIndex = rawOutput.lastIndexOf(promptMarker);
+  if (markerIndex !== -1) {
+    const afterPrompt = rawOutput
+      .slice(markerIndex + promptMarker.length)
+      .replace(/^(\s*\n)+/, "")
+      .replace(/\n+Exiting\.\.\.\s*$/i, "")
+      .trim();
+    if (afterPrompt) {
+      return afterPrompt;
+    }
+  }
+
+  // Quick cleanup fallback if the CLI output format shifts a bit.
+  return rawOutput.replace(/\n+Exiting\.\.\.\s*$/i, "").trim();
+}
+
 app.post("/transcribe", upload.single("file"), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ error: "no file" });
@@ -417,9 +629,9 @@ app.post("/transcribe", upload.single("file"), async (req, res) => {
     );
     const transcript = runWhisper(audioPath);
 
-    // Keep replies short and practical because this is part of a voice interaction loop.
-    const prompt = `You are a helpful local AI assistant. The user said: "${transcript}"\nRespond concisely and helpfully.`;
-    const reply = runLlama(prompt, 256);
+    // Quick note: I pass the plain transcript in and let the llama system prompt shape the answer.
+    const prompt = transcript;
+    const reply = runLocalAssistantReply(prompt, 256);
 
     // Delay cleanup slightly so I do not race any slower external process still holding the file.
     setTimeout(() => {
@@ -434,7 +646,7 @@ app.post("/transcribe", upload.single("file"), async (req, res) => {
     return res.json({
       transcript,
       reply,
-      ttsConfigured: Boolean(TTS_BIN),
+      ttsConfigured: TTS_PROVIDER !== "none",
     });
   } catch (e) {
     console.error(e);
