@@ -1,7 +1,7 @@
 {
   "name": "local-voice-bot-launcher",
   "version": "0.1.0",
-  "description": "Electron launcher for the local AI assistant with a push-to-talk UI",
+  "description": "Electron launcher for the local AI assistant with wake-word listening",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
