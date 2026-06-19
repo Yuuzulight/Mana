@@ -1,5 +1,6 @@
 import io
 import os
+import threading
 from typing import Optional
 
 import soundfile as sf
@@ -20,6 +21,7 @@ except Exception:
 app = FastAPI(title="Mana Chatterbox Turbo TTS")
 
 tts_model = None
+tts_lock = threading.Lock()
 
 DEVICE = os.environ.get("CHATTERBOX_DEVICE", "cuda")
 MODEL_NAME = os.environ.get("CHATTERBOX_MODEL", "turbo")
@@ -27,6 +29,8 @@ VOICE_REF = os.environ.get("CHATTERBOX_VOICE_REF", "")
 EXAGGERATION = float(os.environ.get("CHATTERBOX_EXAGGERATION", "0.35"))
 CFG_WEIGHT = float(os.environ.get("CHATTERBOX_CFG_WEIGHT", "0.45"))
 TEMPERATURE = float(os.environ.get("CHATTERBOX_TEMPERATURE", "0.8"))
+WARMUP_ENABLED = os.environ.get("CHATTERBOX_WARMUP", "1") != "0"
+WARMUP_TEXT = os.environ.get("CHATTERBOX_WARMUP_TEXT", "Ready.")
 
 
 class SynthesizeBody(BaseModel):
@@ -50,15 +54,16 @@ def get_model():
             "Chatterbox is not installed. Install tts-service/requirements.txt first."
         )
 
-    if tts_model is None:
-        device = resolve_device()
-        model_name = MODEL_NAME.strip().lower()
+    with tts_lock:
+        if tts_model is None:
+            device = resolve_device()
+            model_name = MODEL_NAME.strip().lower()
 
-        # Quick note: Turbo uses a different class than the standard Chatterbox model.
-        if model_name == "turbo":
-            tts_model = ChatterboxTurboTTS.from_pretrained(device=device)
-        else:
-            tts_model = ChatterboxTTS.from_pretrained(device=device)
+            # Quick note: Turbo uses a different class than the standard Chatterbox model.
+            if model_name == "turbo":
+                tts_model = ChatterboxTurboTTS.from_pretrained(device=device)
+            else:
+                tts_model = ChatterboxTTS.from_pretrained(device=device)
     return tts_model
 
 
@@ -75,13 +80,14 @@ def synthesize_to_wav_bytes(
     model = get_model()
     voice_path = voice_ref or VOICE_REF or None
 
-    audio = model.generate(
-        text=text,
-        audio_prompt_path=voice_path,
-        exaggeration=exaggeration,
-        cfg_weight=cfg_weight,
-        temperature=temperature,
-    )
+    with tts_lock:
+        audio = model.generate(
+            text=text,
+            audio_prompt_path=voice_path,
+            exaggeration=exaggeration,
+            cfg_weight=cfg_weight,
+            temperature=temperature,
+        )
 
     if hasattr(audio, "detach"):
         audio = audio.detach().cpu().numpy()
@@ -93,6 +99,29 @@ def synthesize_to_wav_bytes(
     buffer = io.BytesIO()
     sf.write(buffer, audio, sample_rate, format="WAV")
     return buffer.getvalue()
+
+
+def warmup_model():
+    if not WARMUP_ENABLED:
+        return
+
+    try:
+        # Quick note: this pays the model load/CUDA warm-up cost before Mana has to speak.
+        synthesize_to_wav_bytes(
+            text=WARMUP_TEXT,
+            voice_ref="",
+            exaggeration=EXAGGERATION,
+            cfg_weight=CFG_WEIGHT,
+            temperature=TEMPERATURE,
+        )
+        print("Chatterbox warm-up complete", flush=True)
+    except Exception as error:
+        print(f"Chatterbox warm-up failed: {error}", flush=True)
+
+
+@app.on_event("startup")
+def start_warmup():
+    threading.Thread(target=warmup_model, daemon=True).start()
 
 
 @app.get("/health")
