@@ -1,4 +1,5 @@
 const { app, BrowserWindow, desktopCapturer, dialog, ipcMain, screen } = require("electron");
+const fs = require("fs");
 const path = require("path");
 const { spawn } = require("child_process");
 
@@ -11,6 +12,7 @@ const BACKEND_URL = "http://localhost:5005/health";
 const CHATTERBOX_TTS_URL = "http://127.0.0.1:5010/health";
 const KOKORO_TTS_URL = "http://127.0.0.1:5011/health";
 const ROOT_DIR = path.join(__dirname, "..");
+const TTS_DIR = path.join(ROOT_DIR, "tts-service");
 const WHISPER_DIR = path.join(ROOT_DIR, "tools", "whisper");
 const DEFAULT_WHISPER_BIN = path.join(
   WHISPER_DIR,
@@ -22,6 +24,8 @@ const DEFAULT_WHISPER_MODEL = path.join(
   "models",
   "ggml-tiny.en.bin",
 );
+const START_FALLBACK_CHATTERBOX =
+  process.env.START_FALLBACK_CHATTERBOX === "1";
 const AVATAR_SIZE = {
   width: Number(process.env.MANA_AVATAR_WIDTH || 234),
   height: Number(process.env.MANA_AVATAR_HEIGHT || 288),
@@ -59,20 +63,15 @@ function startTtsService() {
   }
 
   const provider = process.env.TTS_PROVIDER || "kokoro";
-  const scriptName = provider === "kokoro" ? "start_kokoro.ps1" : "start.ps1";
   if (!["kokoro", "chatterbox"].includes(provider)) {
     return;
   }
 
-  const ttsStartScript = path.join(ROOT_DIR, "tts-service", scriptName);
-  console.log(`Starting ${provider} TTS service:`, ttsStartScript);
-  ttsProcess = spawn(
-    "powershell",
-    ["-ExecutionPolicy", "Bypass", "-File", ttsStartScript],
-    {
-      cwd: path.join(ROOT_DIR, "tts-service"),
-    },
-  );
+  if (provider === "kokoro") {
+    ttsProcess = startKokoroService();
+  } else {
+    ttsProcess = startTtsSetupScript("start.ps1");
+  }
 
   ttsProcess.on("error", (error) => {
     console.error("Failed to start TTS service:", error);
@@ -94,8 +93,49 @@ function startTtsService() {
   });
 }
 
+function startKokoroService() {
+  const python = path.join(TTS_DIR, "venv", "Scripts", "python.exe");
+  const model = path.join(TTS_DIR, "kokoro", "kokoro-v1.0.int8.onnx");
+  const voices = path.join(TTS_DIR, "kokoro", "voices-v1.0.bin");
+
+  if (
+    !fs.existsSync(python) ||
+    !fs.existsSync(model) ||
+    !fs.existsSync(voices)
+  ) {
+    return startTtsSetupScript("start_kokoro.ps1");
+  }
+
+  console.log("Starting Kokoro TTS service directly:", python);
+  return spawn(
+    python,
+    ["-m", "uvicorn", "kokoro_service:app", "--host", "127.0.0.1", "--port", "5011"],
+    {
+      cwd: TTS_DIR,
+      windowsHide: true,
+    },
+  );
+}
+
+function startTtsSetupScript(scriptName) {
+  const ttsStartScript = path.join(TTS_DIR, scriptName);
+  console.log("Starting TTS setup script:", ttsStartScript);
+  return spawn(
+    "powershell",
+    ["-ExecutionPolicy", "Bypass", "-File", ttsStartScript],
+    {
+      cwd: TTS_DIR,
+      windowsHide: true,
+    },
+  );
+}
+
 function startFallbackChatterboxService() {
   if (fallbackTtsProcess) {
+    return;
+  }
+
+  if (!START_FALLBACK_CHATTERBOX) {
     return;
   }
 
@@ -284,7 +324,7 @@ app.whenReady().then(() => {
       if (!ttsRunning) {
         startTtsService();
       }
-      if (!chatterboxRunning) {
+      if (START_FALLBACK_CHATTERBOX && !chatterboxRunning) {
         startFallbackChatterboxService();
       }
       if (!backendRunning) {
