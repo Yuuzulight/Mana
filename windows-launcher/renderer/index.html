@@ -8,6 +8,18 @@
       #status { margin-bottom: 12px; }
       #transcript { margin-top: 12px; white-space: pre-wrap; }
       #modelReply { margin-top: 12px; font-weight: bold; }
+      #perfPanel {
+        margin-top: 14px;
+        padding: 10px;
+        border: 1px solid #ddd;
+        border-radius: 6px;
+        background: #fafafa;
+        font-size: 12px;
+      }
+      #perfPanel pre {
+        margin: 8px 0 0;
+        white-space: pre-wrap;
+      }
       button { padding: 10px 14px; font-size: 14px; }
       #listenToggle {
         background: #0b84ff;
@@ -40,6 +52,11 @@
         Gaming mode: reduce idle processing when a watched game is running
       </label>
       <span id="gamingStatus" style="margin-left:8px">Checking games...</span>
+    </div>
+
+    <div id="perfPanel">
+      <strong>Performance</strong>
+      <pre id="perfStatus">Waiting for metrics...</pre>
     </div>
 
     <div id="transcript"></div>
