@@ -117,8 +117,25 @@ function nowMs() {
   return Number(process.hrtime.bigint() / 1000000n);
 }
 
+const perfMetrics = {
+  startedAt: Date.now(),
+  operations: {},
+};
+
 function logPerf(label, startedAt) {
-  console.log(`Mana perf: ${label} ${nowMs() - startedAt}ms`);
+  const durationMs = nowMs() - startedAt;
+  const previous = perfMetrics.operations[label] || { count: 0 };
+  perfMetrics.operations[label] = {
+    count: previous.count + 1,
+    lastMs: durationMs,
+    avgMs: Math.round(
+      ((previous.avgMs || 0) * previous.count + durationMs) /
+        (previous.count + 1),
+    ),
+    maxMs: Math.max(previous.maxMs || 0, durationMs),
+    updatedAt: new Date().toISOString(),
+  };
+  console.log(`Mana perf: ${label} ${durationMs}ms`);
 }
 
 function clampText(text, maxChars) {
@@ -192,6 +209,64 @@ function getGamingStatus() {
   };
 }
 
+function getManaProcessSnapshot() {
+  if (process.platform !== "win32") {
+    return {
+      totalMemoryMb: Math.round(process.memoryUsage().rss / 1024 / 1024),
+      processes: [],
+    };
+  }
+
+  const command = [
+    "$items = Get-CimInstance Win32_Process |",
+    "Where-Object { $_.CommandLine -match 'C:\\\\ManaAI\\\\Mana' -and $_.CommandLine -notmatch 'Get-CimInstance Win32_Process' } |",
+    "Select-Object ProcessId,Name,WorkingSetSize,CommandLine;",
+    "$items | ConvertTo-Json -Compress -Depth 3",
+  ].join(" ");
+  const result = spawnSync("powershell", [
+    "-NoProfile",
+    "-ExecutionPolicy",
+    "Bypass",
+    "-Command",
+    command,
+  ], {
+    encoding: "utf8",
+    maxBuffer: 5 * 1024 * 1024,
+    windowsHide: true,
+  });
+
+  if (result.status !== 0 || !result.stdout.trim()) {
+    return {
+      totalMemoryMb: Math.round(process.memoryUsage().rss / 1024 / 1024),
+      processes: [],
+    };
+  }
+
+  const parsed = JSON.parse(result.stdout);
+  const rows = Array.isArray(parsed) ? parsed : [parsed];
+  const processes = rows.map((row) => ({
+    pid: row.ProcessId,
+    name: row.Name,
+    memoryMb: Math.round((row.WorkingSetSize || 0) / 1024 / 1024),
+    role: getManaProcessRole(row.CommandLine || row.Name || ""),
+  }));
+
+  return {
+    totalMemoryMb: processes.reduce((sum, item) => sum + item.memoryMb, 0),
+    processes,
+  };
+}
+
+function getManaProcessRole(commandLine) {
+  const text = commandLine.toLowerCase();
+  if (text.includes("kokoro_service")) return "kokoro tts";
+  if (text.includes("uvicorn service:app")) return "chatterbox tts";
+  if (text.includes("node-bot\\server.js")) return "backend";
+  if (text.includes("nodemon")) return "dev restart";
+  if (text.includes("electron")) return "launcher";
+  return "helper";
+}
+
 if (!fs.existsSync(path.join(__dirname, "tmp"))) {
   fs.mkdirSync(path.join(__dirname, "tmp"));
 }
@@ -228,6 +303,29 @@ app.get("/gaming/status", (req, res) => {
       matchedProcesses: [],
       watchedProcesses: GAMING_PROCESS_NAMES,
     });
+  }
+});
+
+app.get("/perf/status", (req, res) => {
+  try {
+    const gaming = getGamingStatus();
+    return res.json({
+      ok: true,
+      uptimeSeconds: Math.round((Date.now() - perfMetrics.startedAt) / 1000),
+      config: {
+        whisperThreads: WHISPER_THREADS,
+        llamaThreads: LLAMA_THREADS,
+        llamaMaxTokens: LLAMA_MAX_TOKENS,
+        screenContextEnabled: SCREEN_CONTEXT_ENABLED,
+        screenContextMaxChars: SCREEN_CONTEXT_MAX_CHARS,
+        ttsProvider: TTS_PROVIDER,
+      },
+      gaming,
+      process: getManaProcessSnapshot(),
+      operations: perfMetrics.operations,
+    });
+  } catch (error) {
+    return res.status(500).json({ ok: false, error: error.message });
   }
 });
 

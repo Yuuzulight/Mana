@@ -107,6 +107,7 @@ Performance notes
 - When a watched game is running, Mana waits longer after empty/noise chunks to reduce idle work.
 - When a watched game is running, Mana records longer chunks, calls Whisper less often, and reuses screen OCR longer.
 - While gaming, Mana only refreshes screen OCR for commands that look screen-related, such as asking her to read, look, or explain an icon/menu.
+- The launcher Performance panel shows current Mana memory, detected game status, config caps, and latest Whisper/OCR/Llama/TTS timings.
 - Set `GAMING_PROCESS_NAMES` to a comma-separated process list if you want to watch other games.
 - Example: `$env:GAMING_PROCESS_NAMES = "ffxiv_dx11.exe,eldenring.exe"`
 
