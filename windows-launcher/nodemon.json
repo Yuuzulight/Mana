@@ -1,0 +1,18 @@
+{
+  "watch": [
+    "main.js",
+    "preload.js",
+    "renderer",
+    "avatar",
+    "assets/avatar",
+    "../node-bot"
+  ],
+  "ext": "js,json,html,css,md",
+  "ignore": [
+    "../node-bot/tmp/**",
+    "../node-bot/node_modules/**",
+    "node_modules/**"
+  ],
+  "delay": "500",
+  "exec": "electron ."
+}
