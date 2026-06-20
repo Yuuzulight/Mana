@@ -26,6 +26,8 @@ const DEFAULT_WHISPER_MODEL = path.join(
 );
 const START_FALLBACK_CHATTERBOX =
   process.env.START_FALLBACK_CHATTERBOX === "1";
+const HIDE_MAIN_WINDOW_AFTER_STARTUP =
+  process.env.HIDE_MAIN_WINDOW_AFTER_STARTUP !== "0";
 const AVATAR_SIZE = {
   width: Number(process.env.MANA_AVATAR_WIDTH || 234),
   height: Number(process.env.MANA_AVATAR_HEIGHT || 288),
@@ -220,6 +222,8 @@ function createWindow() {
   mainWindow = new BrowserWindow({
     width: 520,
     height: 380,
+    show: !HIDE_MAIN_WINDOW_AFTER_STARTUP,
+    skipTaskbar: HIDE_MAIN_WINDOW_AFTER_STARTUP,
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
       nodeIntegration: true,
@@ -228,6 +232,15 @@ function createWindow() {
   });
 
   mainWindow.loadFile(path.join(__dirname, "renderer", "index.html"));
+  mainWindow.once("ready-to-show", () => {
+    if (HIDE_MAIN_WINDOW_AFTER_STARTUP) {
+      // Quick rundown: keep the mic/listening page alive, just hide the control window.
+      mainWindow.hide();
+      return;
+    }
+
+    mainWindow.show();
+  });
 
   mainWindow.on("closed", function () {
     mainWindow = null;
