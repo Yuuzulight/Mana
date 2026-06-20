@@ -7,6 +7,8 @@ const assetRoot = path.join(__dirname, "..", "assets", "avatar");
 const states = {
   idle: resolveAvatarAsset("idle"),
   talking: resolveAvatarAsset("talking"),
+  excited: resolveAvatarAsset("talking"),
+  angry: resolveAvatarAsset("talking"),
 };
 
 function resolveAvatarAsset(name) {
