@@ -44,6 +44,7 @@ Project goal
      - `$env:WHISPER_THREADS = "2"`
      - `$env:LLAMA_THREADS = "4"`
      - `$env:LLAMA_MAX_TOKENS = "180"`
+     - `$env:START_FALLBACK_CHATTERBOX = "0"`
 
    Notes:
    - `WHISPER_BIN` should point to the Whisper CLI executable you want to use.
@@ -59,6 +60,7 @@ Project goal
    - If the Chatterbox service is not running, the UI still shows the text reply but will not play synthesized audio.
    - `SCREEN_CONTEXT_ENABLED=0` disables screen reading if you want the lightest runtime path.
    - `WHISPER_THREADS`, `LLAMA_THREADS`, and `LLAMA_MAX_TOKENS` cap heavy local work so games keep more CPU.
+   - `START_FALLBACK_CHATTERBOX=1` starts Chatterbox alongside Kokoro as a fallback, but uses more memory.
 
 3) Install launcher and backend dependencies
    - In PowerShell:
@@ -104,6 +106,9 @@ Screen reading notes
 
 Performance notes
 - `Gaming mode` checks Windows for watched game processes such as FFXIV.
+- Use `npm run start` instead of `npm run dev` when you are playing; dev mode adds the autorestart helper process.
+- Kokoro-only TTS is the lower-memory path. Keep `START_FALLBACK_CHATTERBOX=0` unless you specifically need the Chatterbox fallback.
+- After Kokoro has been installed once, the launcher starts the Kokoro service directly to avoid keeping an extra setup PowerShell process alive.
 - When a watched game is running, Mana waits longer after empty/noise chunks to reduce idle work.
 - When a watched game is running, Mana records longer chunks, calls Whisper less often, and reuses screen OCR longer.
 - While gaming, Mana only refreshes screen OCR for commands that look screen-related, such as asking her to read, look, or explain an icon/menu.
