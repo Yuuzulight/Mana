@@ -74,6 +74,10 @@ Project goal
 
    The launcher starts `node-bot` automatically and will also try to start Kokoro as primary TTS and Chatterbox as fallback.
 
+   Development auto-restart:
+   - Use `npm run dev` instead of `npm run start` while editing Mana.
+   - The Electron app restarts when launcher or backend source files change.
+
 6) Use Mana
    - Start the Windows launcher.
    - Mana shows the PNG avatar overlay and starts listening automatically.
