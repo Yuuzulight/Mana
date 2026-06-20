@@ -71,6 +71,8 @@ const FISH_TTS_REPETITION_PENALTY = Number(
 const FISH_TTS_TEMPERATURE = Number(process.env.FISH_TTS_TEMPERATURE || 0.8);
 const FISH_TTS_FALLBACK_PROVIDER =
   process.env.FISH_TTS_FALLBACK_PROVIDER || "kokoro";
+const KOKORO_TTS_FALLBACK_PROVIDER =
+  process.env.KOKORO_TTS_FALLBACK_PROVIDER || "none";
 const SCREEN_CONTEXT_ENABLED = process.env.SCREEN_CONTEXT_ENABLED !== "0";
 const SCREEN_CONTEXT_MAX_CHARS = Number(process.env.SCREEN_CONTEXT_MAX_CHARS || 1200);
 const SCREEN_OCR_CACHE_PATH =
@@ -575,10 +577,17 @@ async function synthesizeReply(text) {
     try {
       return await synthesizeWithConfiguredProvider("kokoro", text);
     } catch (error) {
+      if (KOKORO_TTS_FALLBACK_PROVIDER === "none") {
+        throw error;
+      }
+
       console.warn(
-        `Kokoro TTS failed, falling back to Chatterbox: ${error.message}`,
+        `Kokoro TTS failed, falling back to ${KOKORO_TTS_FALLBACK_PROVIDER}: ${error.message}`,
       );
-      return await synthesizeWithConfiguredProvider("chatterbox", text);
+      return await synthesizeWithConfiguredProvider(
+        KOKORO_TTS_FALLBACK_PROVIDER,
+        text,
+      );
     }
   }
 
