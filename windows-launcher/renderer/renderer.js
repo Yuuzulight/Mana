@@ -11,12 +11,33 @@ const WAKE_WORDS = ["mana", "manah", "manna", "mannah", "wake up"];
 const LISTEN_CHUNK_MS = 3500;
 const LISTEN_PAUSE_MS = 250;
 const GAMING_IDLE_PAUSE_MS = 1800;
+const GAMING_LISTEN_CHUNK_MS = 5000;
+const GAMING_DEEP_IDLE_PAUSE_MS = 3200;
 const GAMING_STATUS_POLL_MS = 5000;
 const AUTO_LISTEN_RETRY_MS = 1500;
 const AUTO_LISTEN_MAX_ATTEMPTS = 20;
 const MAX_TTS_CHUNK_CHARS = 180;
 const SCREEN_CONTEXT_ENABLED = true;
 const SCREEN_CONTEXT_MIN_INTERVAL_MS = 8000;
+const SCREEN_CONTEXT_GAMING_MIN_INTERVAL_MS = 30000;
+const SCREEN_CONTEXT_KEYWORDS = [
+  "screen",
+  "see",
+  "seeing",
+  "look",
+  "looking",
+  "read",
+  "icon",
+  "image",
+  "picture",
+  "menu",
+  "chat",
+  "game",
+  "ffxiv",
+  "map",
+  "quest",
+  "window",
+];
 const MIN_SPEECH_RMS = 0.012;
 const MIN_SPEECH_PEAK = 0.04;
 const MAX_CLICKY_ZERO_CROSSING_RATE = 0.28;
@@ -498,13 +519,28 @@ function isNoiseOnlyTranscript(transcript) {
   return NOISE_ONLY_TRANSCRIPTS.some((noiseText) => normalized === noiseText);
 }
 
-async function readScreenContext() {
+function shouldReadScreenForCommand(text, gamingModeActive) {
+  if (!gamingModeActive) {
+    return true;
+  }
+
+  const normalized = cleanTranscriptText(text).toLowerCase();
+  return SCREEN_CONTEXT_KEYWORDS.some((keyword) => normalized.includes(keyword));
+}
+
+async function readScreenContext(text, gamingModeActive) {
   if (!SCREEN_CONTEXT_ENABLED) {
     return "";
   }
 
   const now = Date.now();
-  if (lastScreenText && now - lastScreenContextAt < SCREEN_CONTEXT_MIN_INTERVAL_MS) {
+  const minInterval = gamingModeActive
+    ? SCREEN_CONTEXT_GAMING_MIN_INTERVAL_MS
+    : SCREEN_CONTEXT_MIN_INTERVAL_MS;
+  if (lastScreenText && now - lastScreenContextAt < minInterval) {
+    return lastScreenText;
+  }
+  if (!shouldReadScreenForCommand(text, gamingModeActive)) {
     return lastScreenText;
   }
 
@@ -533,8 +569,8 @@ async function readScreenContext() {
   }
 }
 
-async function requestScreenAwareReply(text) {
-  const screenText = await readScreenContext();
+async function requestScreenAwareReply(text, gamingModeActive) {
+  const screenText = await readScreenContext(text, gamingModeActive);
   const startedAt = performance.now();
   const response = await fetch("http://localhost:5005/reply", {
     method: "POST",
@@ -554,7 +590,7 @@ async function requestScreenAwareReply(text) {
   return result;
 }
 
-async function handleTranscript(transcript) {
+async function handleTranscript(transcript, gamingModeActive = false) {
   if (isNoiseOnlyTranscript(transcript)) {
     return false;
   }
@@ -584,7 +620,7 @@ async function handleTranscript(transcript) {
   transcriptEl.textContent = `You: ${cleanTranscript}`;
 
   try {
-    const replyResult = await requestScreenAwareReply(command);
+    const replyResult = await requestScreenAwareReply(command, gamingModeActive);
     const reply = replyResult.reply || "";
     replyEl.textContent = `Mana: ${reply}`;
 
@@ -615,15 +651,19 @@ async function listenLoop() {
       const gamingModeActive = await refreshGamingStatus();
       statusEl.textContent = awake ? "Mana is awake..." : "Waiting for Mana...";
 
-      const chunk = await recordAudioChunk(LISTEN_CHUNK_MS);
+      const chunkDuration = gamingModeActive ? GAMING_LISTEN_CHUNK_MS : LISTEN_CHUNK_MS;
+      const chunk = await recordAudioChunk(chunkDuration);
       if (!listening) {
         break;
       }
 
       const result = await transcribeBlob(chunk);
-      const handledTranscript = await handleTranscript(result.transcript || "");
+      const handledTranscript = await handleTranscript(
+        result.transcript || "",
+        gamingModeActive,
+      );
       if (!handledTranscript && gamingModeActive) {
-        await wait(GAMING_IDLE_PAUSE_MS);
+        await wait(awake ? GAMING_IDLE_PAUSE_MS : GAMING_DEEP_IDLE_PAUSE_MS);
       }
     } catch (error) {
       console.error(error);
