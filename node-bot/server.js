@@ -7,6 +7,11 @@ Node backend server (server.js)
 Environment variables (set before running):
 - WHISPER_BIN : full path to whisper.cpp main executable (e.g. C:\whisper.cpp\main.exe)
 - WHISPER_MODEL : full path to whisper model file (e.g. models/ggml-base.en.bin)
+- WHISPER_LANGUAGE : spoken language passed to whisper.cpp
+- WHISPER_PROMPT : initial prompt used to bias transcription
+- WHISPER_THREADS : whisper.cpp thread count
+- WHISPER_BEAM_SIZE : whisper.cpp beam size
+- WHISPER_NO_SPEECH_THRESHOLD : whisper.cpp no-speech threshold
 - LLAMA_BIN : full path to llama.cpp/main executable (e.g. C:\llama.cpp\main.exe)
 - LLAMA_MODEL : full path to a GGUF model file, or an HF repo shorthand like user/model:Q4_K_M
 - TTS_PROVIDER : "cli", "chatterbox", "kokoro", or "fish"
@@ -42,6 +47,15 @@ const upload = multer({ dest: path.join(__dirname, "tmp") });
 
 const WHISPER_BIN = process.env.WHISPER_BIN || null;
 const WHISPER_MODEL = process.env.WHISPER_MODEL || null;
+const WHISPER_LANGUAGE = process.env.WHISPER_LANGUAGE || "en";
+const WHISPER_PROMPT =
+  process.env.WHISPER_PROMPT ||
+  "Singapore English conversation with an AI assistant named Mana. Wake words include Mana, Manah, Manna, Mannah, and wake up. Common Singlish words include lah, leh, lor, meh, sia, can, cannot, already, alr, ok, and okay.";
+const WHISPER_THREADS = process.env.WHISPER_THREADS || "6";
+const WHISPER_BEAM_SIZE = process.env.WHISPER_BEAM_SIZE || "5";
+const WHISPER_NO_SPEECH_THRESHOLD =
+  process.env.WHISPER_NO_SPEECH_THRESHOLD || "0.45";
+const WHISPER_TEMPERATURE = process.env.WHISPER_TEMPERATURE || "0";
 const LLAMA_BIN = process.env.LLAMA_BIN || null;
 const LLAMA_MODEL = process.env.LLAMA_MODEL || null;
 const TTS_BIN = process.env.TTS_BIN || null;
@@ -187,6 +201,11 @@ app.get("/health", (req, res) => {
     kokoroTtsUrl: KOKORO_TTS_URL,
     chatterboxTtsUrl: CHATTERBOX_TTS_URL,
     fishTtsUrl: FISH_TTS_URL,
+    whisperLanguage: WHISPER_LANGUAGE,
+    whisperPromptConfigured: Boolean(WHISPER_PROMPT),
+    whisperThreads: WHISPER_THREADS,
+    whisperBeamSize: WHISPER_BEAM_SIZE,
+    whisperNoSpeechThreshold: WHISPER_NO_SPEECH_THRESHOLD,
     llamaConfigured: llamaStatus.ok,
     llamaModel: llamaStatus.model,
     llamaBin: llamaStatus.bin,
@@ -716,10 +735,23 @@ function runWhisper(filePath) {
     WHISPER_MODEL,
     "-f",
     filePath,
+    "-l",
+    WHISPER_LANGUAGE,
+    "-t",
+    WHISPER_THREADS,
+    "-bs",
+    WHISPER_BEAM_SIZE,
+    "-nth",
+    WHISPER_NO_SPEECH_THRESHOLD,
+    "-tp",
+    WHISPER_TEMPERATURE,
     "--output-json",
     "-of",
     outBase,
   ];
+  if (WHISPER_PROMPT) {
+    args.push("--prompt", WHISPER_PROMPT, "--carry-initial-prompt");
+  }
   console.log("Running whisper:", whisperBin, args.join(" "));
   const r = spawnSync(whisperBin, args, {
     encoding: "utf8",

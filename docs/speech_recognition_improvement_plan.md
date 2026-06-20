@@ -15,6 +15,7 @@ Current path
 
 Planned work
 - Add configurable Whisper model profiles so accuracy can be traded against latency.
+- Bias Whisper toward Singapore English with an initial prompt and fixed English language mode.
 - Add a speech recognition debug mode that logs chunk volume, skip reason, transcript, and timing.
 - Add fuzzy wake phrase matching for common Whisper mis-transcriptions.
 - Tune the quiet-speech threshold so quiet real speech is not skipped too aggressively.
@@ -32,3 +33,11 @@ Acceptance checks
 First implementation target
 - Start with debug logging and a test harness.
 - Use those measurements before changing thresholds or switching Whisper models.
+
+Singapore English starting settings
+- `WHISPER_LANGUAGE=en`
+- `WHISPER_THREADS=6`
+- `WHISPER_BEAM_SIZE=5`
+- `WHISPER_NO_SPEECH_THRESHOLD=0.45`
+- `WHISPER_PROMPT` should mention Singapore English, Mana wake words, and common Singlish particles.
+- For better accent recognition, prefer `ggml-base.en.bin` or `ggml-small.en.bin` over `ggml-tiny.en.bin` if latency is acceptable.

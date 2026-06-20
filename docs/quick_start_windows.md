@@ -27,6 +27,8 @@ Project goal
    - Open PowerShell and set:
      - `$env:WHISPER_BIN = "C:\path\to\whisper-cli.exe"`
      - `$env:WHISPER_MODEL = "C:\path\to\ggml-model.bin"`
+     - `$env:WHISPER_LANGUAGE = "en"`
+     - `$env:WHISPER_PROMPT = "Singapore English conversation with an AI assistant named Mana. Wake words include Mana, Manah, Manna, Mannah, and wake up."`
      - `$env:LLAMA_BIN = "C:\path\to\llama-cli.exe"`
      - `$env:LLAMA_MODEL = "C:\path\to\model.gguf"`
      - `$env:TTS_PROVIDER = "chatterbox"`
@@ -42,6 +44,8 @@ Project goal
    Notes:
    - `WHISPER_BIN` should point to the Whisper CLI executable you want to use.
    - If `WHISPER_BIN` is unset or wrong, Mana will also try common local paths under `tools\whisper\`.
+   - `WHISPER_PROMPT` helps Whisper understand accents, wake words, and common local phrasing.
+   - For Singaporean-accent recognition, `ggml-base.en.bin` or `ggml-small.en.bin` should be more accurate than `ggml-tiny.en.bin`.
    - `LLAMA_BIN` should point to the Llama CLI executable you want to use.
    - `TTS_PROVIDER=kokoro` tells Mana to use the faster Kokoro ONNX service.
    - `TTS_PROVIDER=chatterbox` tells Mana to use the local Chatterbox TTS microservice.

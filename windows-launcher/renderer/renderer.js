@@ -7,7 +7,16 @@ const gamingModeCheckbox = document.getElementById("gamingMode");
 const gamingStatusEl = document.getElementById("gamingStatus");
 const { ipcRenderer } = require("electron");
 
-const WAKE_WORDS = ["mana", "manah", "manna", "mannah", "wake up"];
+const WAKE_WORDS = [
+  "mana",
+  "manah",
+  "manna",
+  "mannah",
+  "ma na",
+  "mah na",
+  "wake up",
+  "wake-up",
+];
 const LISTEN_CHUNK_MS = 3500;
 const LISTEN_PAUSE_MS = 250;
 const GAMING_IDLE_PAUSE_MS = 1800;
@@ -442,7 +451,10 @@ async function transcribeBlob(blob) {
 }
 
 function extractWakeCommand(transcript) {
-  const normalized = transcript.trim();
+  const normalized = transcript
+    .trim()
+    .replace(/\bminor\b/gi, "mana")
+    .replace(/\bman a\b/gi, "mana");
   const wakeWordsPattern = WAKE_WORDS.map((word) =>
     word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/\s+/g, "\\s+"),
   ).join("|");
