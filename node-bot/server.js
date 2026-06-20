@@ -50,7 +50,7 @@ const WHISPER_MODEL = process.env.WHISPER_MODEL || null;
 const WHISPER_LANGUAGE = process.env.WHISPER_LANGUAGE || "en";
 const WHISPER_PROMPT =
   process.env.WHISPER_PROMPT ||
-  "Singapore English conversation with an AI assistant named Mana. Wake words include Mana, Manah, Manna, Mannah, and wake up. Common Singlish words include lah, leh, lor, meh, sia, can, cannot, already, alr, ok, and okay.";
+  "Singapore English conversation with an AI assistant named Mana. Wake words include Mana, Manah, Manna, Mannah, Myna, My Na, and wake up. Common Singlish words include lah, leh, lor, meh, sia, can, cannot, already, alr, ok, and okay.";
 const WHISPER_THREADS = process.env.WHISPER_THREADS || "6";
 const WHISPER_BEAM_SIZE = process.env.WHISPER_BEAM_SIZE || "5";
 const WHISPER_NO_SPEECH_THRESHOLD =

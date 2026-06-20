@@ -12,8 +12,10 @@ const WAKE_WORDS = [
   "manah",
   "manna",
   "mannah",
+  "myna",
   "ma na",
   "mah na",
+  "my na",
   "wake up",
   "wake-up",
 ];

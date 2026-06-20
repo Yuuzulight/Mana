@@ -28,7 +28,7 @@ Project goal
      - `$env:WHISPER_BIN = "C:\path\to\whisper-cli.exe"`
      - `$env:WHISPER_MODEL = "C:\path\to\ggml-model.bin"`
      - `$env:WHISPER_LANGUAGE = "en"`
-     - `$env:WHISPER_PROMPT = "Singapore English conversation with an AI assistant named Mana. Wake words include Mana, Manah, Manna, Mannah, and wake up."`
+     - `$env:WHISPER_PROMPT = "Singapore English conversation with an AI assistant named Mana. Wake words include Mana, Manah, Manna, Mannah, Myna, My Na, and wake up."`
      - `$env:LLAMA_BIN = "C:\path\to\llama-cli.exe"`
      - `$env:LLAMA_MODEL = "C:\path\to\model.gguf"`
      - `$env:TTS_PROVIDER = "chatterbox"`

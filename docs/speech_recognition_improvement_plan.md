@@ -11,7 +11,7 @@ Current path
 - The Electron renderer records short microphone chunks.
 - The renderer filters quiet or clicky chunks before sending audio to the backend.
 - `node-bot` sends WAV audio to `whisper.cpp`.
-- Wake phrases currently include `Mana`, `Manah`, `Manna`, `Mannah`, and `wake up`.
+- Wake phrases currently include `Mana`, `Manah`, `Manna`, `Mannah`, `Myna`, `My Na`, and `wake up`.
 
 Planned work
 - Add configurable Whisper model profiles so accuracy can be traded against latency.
