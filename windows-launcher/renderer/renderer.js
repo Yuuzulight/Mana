@@ -15,6 +15,8 @@ const GAMING_STATUS_POLL_MS = 5000;
 const AUTO_LISTEN_RETRY_MS = 1500;
 const AUTO_LISTEN_MAX_ATTEMPTS = 20;
 const MAX_TTS_CHUNK_CHARS = 180;
+const SCREEN_CONTEXT_ENABLED = true;
+const SCREEN_CONTEXT_MIN_INTERVAL_MS = 8000;
 const MIN_SPEECH_RMS = 0.012;
 const MIN_SPEECH_PEAK = 0.04;
 const MAX_CLICKY_ZERO_CROSSING_RATE = 0.28;
@@ -49,6 +51,8 @@ let awake = false;
 let gamingAppRunning = false;
 let lastGamingStatusCheck = 0;
 let gamingStatusCheckPromise = null;
+let lastScreenContextAt = 0;
+let lastScreenText = "";
 
 function setAvatarState(state) {
   ipcRenderer.send("avatar:set-state", state);
@@ -494,14 +498,50 @@ function isNoiseOnlyTranscript(transcript) {
   return NOISE_ONLY_TRANSCRIPTS.some((noiseText) => normalized === noiseText);
 }
 
-async function requestReply(text) {
+async function readScreenContext() {
+  if (!SCREEN_CONTEXT_ENABLED) {
+    return "";
+  }
+
+  const now = Date.now();
+  if (lastScreenText && now - lastScreenContextAt < SCREEN_CONTEXT_MIN_INTERVAL_MS) {
+    return lastScreenText;
+  }
+
+  try {
+    statusEl.textContent = "Mana is reading the screen...";
+    const image = await ipcRenderer.invoke("screen:capture-primary");
+    const response = await fetch("http://localhost:5005/screen/read", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ image }),
+    });
+
+    if (!response.ok) {
+      throw new Error(await response.text());
+    }
+
+    const result = await response.json();
+    lastScreenText = result.text || "";
+    lastScreenContextAt = now;
+    return lastScreenText;
+  } catch (error) {
+    console.warn("Mana screen read failed:", error);
+    return "";
+  }
+}
+
+async function requestScreenAwareReply(text) {
+  const screenText = await readScreenContext();
   const startedAt = performance.now();
   const response = await fetch("http://localhost:5005/reply", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({ text }),
+    body: JSON.stringify({ text, screenText }),
   });
 
   if (!response.ok) {
@@ -544,7 +584,7 @@ async function handleTranscript(transcript) {
   transcriptEl.textContent = `You: ${cleanTranscript}`;
 
   try {
-    const replyResult = await requestReply(command);
+    const replyResult = await requestScreenAwareReply(command);
     const reply = replyResult.reply || "";
     replyEl.textContent = `Mana: ${reply}`;
 
