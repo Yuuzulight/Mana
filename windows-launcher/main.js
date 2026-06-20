@@ -26,7 +26,7 @@ const AVATAR_SIZE = {
   width: Number(process.env.MANA_AVATAR_WIDTH || 234),
   height: Number(process.env.MANA_AVATAR_HEIGHT || 288),
 };
-const AVATAR_LEFT = Number(process.env.MANA_AVATAR_LEFT || 783);
+const AVATAR_LEFT = Number(process.env.MANA_AVATAR_LEFT || 782.5);
 const AVATAR_BOTTOM = Number(process.env.MANA_AVATAR_BOTTOM || 0);
 const AVATAR_TOP_LEVEL = process.env.MANA_AVATAR_TOP_LEVEL || "screen-saver";
 
