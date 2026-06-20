@@ -41,3 +41,17 @@ Singapore English starting settings
 - `WHISPER_NO_SPEECH_THRESHOLD=0.45`
 - `WHISPER_PROMPT` should mention Singapore English, Mana wake words, and common Singlish particles.
 - For better accent recognition, prefer `ggml-base.en.bin` or `ggml-small.en.bin` over `ggml-tiny.en.bin` if latency is acceptable.
+
+Speech debug mode
+- Browser-side debug: set `localStorage.manaSpeechDebug = "1"` in the Electron dev console, then restart listening.
+- Backend debug: set `SPEECH_DEBUG=1` before starting `node-bot`.
+- Debug output includes audio RMS, peak, zero-crossing rate, skip reason, transcript, and Whisper timing/config.
+- Disable browser-side debug with `localStorage.removeItem("manaSpeechDebug")`.
+
+Voice sample format
+- Best format: `.wav`.
+- Preferred encoding: mono, 16-bit PCM.
+- Preferred sample rate: 16kHz or 48kHz.
+- Keep each sample short: 3-10 seconds.
+- Record separate samples for wake words, normal commands, quiet speech, and speech while FFXIV is running.
+- Avoid background music in test samples unless the goal is specifically testing noisy conditions.

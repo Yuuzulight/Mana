@@ -93,6 +93,11 @@ Performance notes
 - Set `GAMING_PROCESS_NAMES` to a comma-separated process list if you want to watch other games.
 - Example: `$env:GAMING_PROCESS_NAMES = "ffxiv_dx11.exe,eldenring.exe"`
 
+Speech recognition debugging
+- In the Electron dev console, run `localStorage.manaSpeechDebug = "1"` to log audio stats and skip reasons.
+- Set `$env:SPEECH_DEBUG = "1"` before launching Mana to include backend Whisper debug metadata.
+- Use short `.wav` samples for testing your voice. Mono 16-bit PCM at 16kHz or 48kHz is preferred.
+
 Troubleshooting
 - If the UI reports `Local backend not reachable`, check that `node-bot` started successfully and that nothing else is using port `5005`.
 - If transcription fails immediately, verify `WHISPER_BIN` and `WHISPER_MODEL`.

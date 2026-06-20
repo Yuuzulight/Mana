@@ -12,6 +12,7 @@ Environment variables (set before running):
 - WHISPER_THREADS : whisper.cpp thread count
 - WHISPER_BEAM_SIZE : whisper.cpp beam size
 - WHISPER_NO_SPEECH_THRESHOLD : whisper.cpp no-speech threshold
+- SPEECH_DEBUG : set to 1 to return extra transcription debug metadata
 - LLAMA_BIN : full path to llama.cpp/main executable (e.g. C:\llama.cpp\main.exe)
 - LLAMA_MODEL : full path to a GGUF model file, or an HF repo shorthand like user/model:Q4_K_M
 - TTS_PROVIDER : "cli", "chatterbox", "kokoro", or "fish"
@@ -56,6 +57,7 @@ const WHISPER_BEAM_SIZE = process.env.WHISPER_BEAM_SIZE || "5";
 const WHISPER_NO_SPEECH_THRESHOLD =
   process.env.WHISPER_NO_SPEECH_THRESHOLD || "0.45";
 const WHISPER_TEMPERATURE = process.env.WHISPER_TEMPERATURE || "0";
+const SPEECH_DEBUG = process.env.SPEECH_DEBUG === "1";
 const LLAMA_BIN = process.env.LLAMA_BIN || null;
 const LLAMA_MODEL = process.env.LLAMA_MODEL || null;
 const TTS_BIN = process.env.TTS_BIN || null;
@@ -757,6 +759,7 @@ function runWhisper(filePath) {
     encoding: "utf8",
     maxBuffer: 50 * 1024 * 1024,
   });
+  const elapsedMs = nowMs() - startedAt;
   if (r.error) throw r.error;
   console.log(
     "whisper exit code",
@@ -780,7 +783,10 @@ function runWhisper(filePath) {
   if (!fs.existsSync(outJson)) {
     // fallback: try to return stdout
     const textOut = r.stdout ? r.stdout.trim() : "";
-    return textOut;
+    return {
+      transcript: textOut,
+      debug: buildWhisperDebug(args, elapsedMs, "stdout"),
+    };
   }
   try {
     const j = JSON.parse(fs.readFileSync(outJson, "utf8"));
@@ -796,13 +802,33 @@ function runWhisper(filePath) {
       try {
         fs.unlinkSync(outBase + ".txt");
       } catch (e) {}
-      return t;
+      return {
+        transcript: t,
+        debug: buildWhisperDebug(args, elapsedMs, "json"),
+      };
     }
   } catch (e) {
     console.warn("failed to parse whisper json", e);
   }
   // fallback to stdout
-  return r.stdout ? r.stdout.trim() : "";
+  return {
+    transcript: r.stdout ? r.stdout.trim() : "",
+    debug: buildWhisperDebug(args, elapsedMs, "fallback"),
+  };
+}
+
+function buildWhisperDebug(args, elapsedMs, source) {
+  return {
+    source,
+    elapsedMs,
+    language: WHISPER_LANGUAGE,
+    promptConfigured: Boolean(WHISPER_PROMPT),
+    threads: WHISPER_THREADS,
+    beamSize: WHISPER_BEAM_SIZE,
+    noSpeechThreshold: WHISPER_NO_SPEECH_THRESHOLD,
+    temperature: WHISPER_TEMPERATURE,
+    args: SPEECH_DEBUG ? args : undefined,
+  };
 }
 
 function runLlama(prompt, maxTokens = 256) {
@@ -1017,15 +1043,23 @@ function buildAssistantReply(transcript) {
   return reply;
 }
 
+function shouldReturnSpeechDebug(req) {
+  return SPEECH_DEBUG || req.body?.debug === "1";
+}
+
 app.post("/transcribe-only", upload.single("file"), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ error: "no file" });
 
     const { tmpPath, audioPath } = normalizeUploadedAudio(req.file);
-    const transcript = runWhisper(audioPath);
+    const whisperResult = runWhisper(audioPath);
     cleanupUploadedAudio(tmpPath, audioPath);
 
-    return res.json({ transcript });
+    const response = { transcript: whisperResult.transcript };
+    if (shouldReturnSpeechDebug(req)) {
+      response.debug = whisperResult.debug;
+    }
+    return res.json(response);
   } catch (e) {
     console.error(e);
     return res.status(500).json({ error: String(e) });
@@ -1065,16 +1099,21 @@ app.post("/transcribe", upload.single("file"), async (req, res) => {
       "size=",
       fs.existsSync(audioPath) ? fs.statSync(audioPath).size : 0,
     );
-    const transcript = runWhisper(audioPath);
+    const whisperResult = runWhisper(audioPath);
+    const transcript = whisperResult.transcript;
 
     const reply = buildAssistantReply(transcript);
     cleanupUploadedAudio(tmpPath, audioPath);
 
-    return res.json({
+    const response = {
       transcript,
       reply,
       ttsConfigured: TTS_PROVIDER !== "none",
-    });
+    };
+    if (shouldReturnSpeechDebug(req)) {
+      response.debug = whisperResult.debug;
+    }
+    return res.json(response);
   } catch (e) {
     console.error(e);
     return res.status(500).json({ error: String(e) });

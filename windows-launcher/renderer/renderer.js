@@ -29,6 +29,9 @@ const MAX_TTS_CHUNK_CHARS = 180;
 const MIN_SPEECH_RMS = 0.012;
 const MIN_SPEECH_PEAK = 0.04;
 const MAX_CLICKY_ZERO_CROSSING_RATE = 0.28;
+const SPEECH_DEBUG_ENABLED =
+  new URLSearchParams(window.location.search).get("speechDebug") === "1" ||
+  localStorage.getItem("manaSpeechDebug") === "1";
 const NOISE_ONLY_TRANSCRIPTS = [
   "blank audio",
   "silence",
@@ -275,6 +278,17 @@ function wait(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function logSpeechDebug(eventName, details = {}) {
+  if (!SPEECH_DEBUG_ENABLED) {
+    return;
+  }
+
+  console.info("Mana speech debug:", {
+    event: eventName,
+    ...details,
+  });
+}
+
 function isGamingModeEnabled() {
   return Boolean(gamingModeCheckbox?.checked);
 }
@@ -399,12 +413,16 @@ function getAudioStats(audioBuffer) {
   };
 }
 
-function looksLikeSpeech(stats) {
+function getSpeechRejectReason(stats) {
   if (stats.rms < MIN_SPEECH_RMS || stats.peak < MIN_SPEECH_PEAK) {
-    return false;
+    return "quiet";
   }
 
-  return stats.zeroCrossingRate <= MAX_CLICKY_ZERO_CROSSING_RATE;
+  if (stats.zeroCrossingRate > MAX_CLICKY_ZERO_CROSSING_RATE) {
+    return "clicky";
+  }
+
+  return null;
 }
 
 async function prepareSpeechWavBlob(blob) {
@@ -413,13 +431,25 @@ async function prepareSpeechWavBlob(blob) {
   try {
     const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
     const stats = getAudioStats(audioBuffer);
+    const rejectReason = getSpeechRejectReason(stats);
+    logSpeechDebug("audio-stats", {
+      durationSeconds: Number(audioBuffer.duration.toFixed(2)),
+      rms: Number(stats.rms.toFixed(5)),
+      peak: Number(stats.peak.toFixed(5)),
+      zeroCrossingRate: Number(stats.zeroCrossingRate.toFixed(5)),
+      rejectReason,
+    });
     // Quick rundown: skip quiet chunks and sharp clicky noise before Whisper sees them.
-    if (!looksLikeSpeech(stats)) {
-      return null;
+    if (rejectReason) {
+      return { wavBlob: null, stats, skipReason: rejectReason };
     }
 
     const wavBytes = audioBufferToWav(audioBuffer);
-    return new Blob([wavBytes], { type: "audio/wav" });
+    return {
+      wavBlob: new Blob([wavBytes], { type: "audio/wav" }),
+      stats,
+      skipReason: null,
+    };
   } finally {
     await audioCtx.close().catch(() => {});
   }
@@ -427,13 +457,28 @@ async function prepareSpeechWavBlob(blob) {
 
 async function transcribeBlob(blob) {
   const startedAt = performance.now();
-  const wavBlob = await prepareSpeechWavBlob(blob);
+  const preparedAudio = await prepareSpeechWavBlob(blob);
+  const wavBlob = preparedAudio.wavBlob;
   if (!wavBlob) {
-    return { transcript: "" };
+    logSpeechDebug("transcribe-skipped", {
+      reason: preparedAudio.skipReason,
+      elapsedMs: Math.round(performance.now() - startedAt),
+    });
+    return {
+      transcript: "",
+      debug: {
+        skipped: true,
+        skipReason: preparedAudio.skipReason,
+        stats: preparedAudio.stats,
+      },
+    };
   }
 
   const formData = new FormData();
   formData.append("file", wavBlob, "listening.wav");
+  if (SPEECH_DEBUG_ENABLED) {
+    formData.append("debug", "1");
+  }
 
   const response = await fetch("http://localhost:5005/transcribe-only", {
     method: "POST",
@@ -446,6 +491,11 @@ async function transcribeBlob(blob) {
   }
 
   const result = await response.json();
+  logSpeechDebug("transcribe-result", {
+    transcript: result.transcript || "",
+    elapsedMs: Math.round(performance.now() - startedAt),
+    backendDebug: result.debug || null,
+  });
   console.info(
     `Mana perf: transcribe ${Math.round(performance.now() - startedAt)}ms`,
   );
@@ -485,10 +535,17 @@ function cleanTranscriptText(transcript) {
 function isNoiseOnlyTranscript(transcript) {
   const normalized = cleanTranscriptText(transcript).toLowerCase();
   if (!normalized) {
+    logSpeechDebug("transcript-noise", { reason: "empty", transcript });
     return true;
   }
 
-  return NOISE_ONLY_TRANSCRIPTS.some((noiseText) => normalized === noiseText);
+  const isNoise = NOISE_ONLY_TRANSCRIPTS.some(
+    (noiseText) => normalized === noiseText,
+  );
+  if (isNoise) {
+    logSpeechDebug("transcript-noise", { reason: "noise-only", transcript });
+  }
+  return isNoise;
 }
 
 async function requestReply(text) {
