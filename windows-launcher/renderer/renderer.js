@@ -5,6 +5,7 @@ const replyEl = document.getElementById("modelReply");
 const openWebUIButton = document.getElementById("openWebUI");
 const gamingModeCheckbox = document.getElementById("gamingMode");
 const gamingStatusEl = document.getElementById("gamingStatus");
+const perfStatusEl = document.getElementById("perfStatus");
 const { ipcRenderer } = require("electron");
 
 const WAKE_WORDS = ["mana", "manah", "manna", "mannah", "wake up"];
@@ -14,6 +15,7 @@ const GAMING_IDLE_PAUSE_MS = 1800;
 const GAMING_LISTEN_CHUNK_MS = 5000;
 const GAMING_DEEP_IDLE_PAUSE_MS = 3200;
 const GAMING_STATUS_POLL_MS = 5000;
+const PERF_STATUS_POLL_MS = 3000;
 const AUTO_LISTEN_RETRY_MS = 1500;
 const AUTO_LISTEN_MAX_ATTEMPTS = 20;
 const MAX_TTS_CHUNK_CHARS = 180;
@@ -107,6 +109,7 @@ async function checkServices() {
 
 setAvatarState("idle");
 setInterval(checkServices, 5000);
+setInterval(refreshPerfStatus, PERF_STATUS_POLL_MS);
 
 async function waitForBackend() {
   for (let attempt = 0; attempt < AUTO_LISTEN_MAX_ATTEMPTS; attempt += 1) {
@@ -519,6 +522,55 @@ function isNoiseOnlyTranscript(transcript) {
   return NOISE_ONLY_TRANSCRIPTS.some((noiseText) => normalized === noiseText);
 }
 
+function formatOperationMetric(label, metric) {
+  if (!metric) {
+    return `${label}: no samples`;
+  }
+
+  return `${label}: last ${metric.lastMs}ms, avg ${metric.avgMs}ms, max ${metric.maxMs}ms, count ${metric.count}`;
+}
+
+function formatPerfStatus(status) {
+  const operations = status.operations || {};
+  const config = status.config || {};
+  const processInfo = status.process || {};
+  const gaming = status.gaming || {};
+  const gameLine = gaming.gamingAppRunning
+    ? `Game: active (${(gaming.matchedProcesses || []).join(", ")})`
+    : "Game: not detected";
+
+  return [
+    gameLine,
+    `Memory: ${processInfo.totalMemoryMb || 0} MB across ${(processInfo.processes || []).length} Mana processes`,
+    `Caps: Whisper ${config.whisperThreads} threads, Llama ${config.llamaThreads} threads, ${config.llamaMaxTokens} tokens`,
+    formatOperationMetric("Whisper", operations.whisper),
+    formatOperationMetric("OCR", operations["screen ocr"]),
+    formatOperationMetric("Llama", operations.llama),
+    formatOperationMetric("TTS Kokoro", operations["tts kokoro"]),
+    formatOperationMetric("TTS Chatterbox", operations["tts chatterbox"]),
+  ].join("\n");
+}
+
+async function refreshPerfStatus() {
+  if (!perfStatusEl) {
+    return;
+  }
+
+  try {
+    const response = await fetch("http://localhost:5005/perf/status", {
+      method: "GET",
+    });
+    if (!response.ok) {
+      throw new Error(`Performance status returned ${response.status}`);
+    }
+
+    const status = await response.json();
+    perfStatusEl.textContent = formatPerfStatus(status);
+  } catch (error) {
+    perfStatusEl.textContent = `Performance metrics unavailable: ${error.message}`;
+  }
+}
+
 function shouldReadScreenForCommand(text, gamingModeActive) {
   if (!gamingModeActive) {
     return true;
@@ -740,6 +792,7 @@ async function startListeningOnLaunch() {
 
 startListeningOnLaunch();
 refreshGamingStatus(true);
+refreshPerfStatus();
 
 // helper: convert AudioBuffer to WAV bytes (16-bit PCM)
 function audioBufferToWav(buffer, opt) {
