@@ -15,6 +15,7 @@ The current project goal is a simple local voice loop:
 
 The supported path in this repository is:
 - `windows-launcher` for the Electron desktop app
+- `windows-native-launcher` for the planned lower-memory native Windows tray app
 - `node-bot` for the local backend API
 - `tools/whisper` for the `whisper.cpp` runtime
 - `tools/llama` for the `llama.cpp` runtime
@@ -60,3 +61,5 @@ See `docs/quick_start_windows.md` for the current setup flow.
 See `docs/vtube_studio_setup.md` for avatar setup.
 
 See `docs/png_avatar_setup.md` for the simple bottom-left PNG avatar overlay.
+
+See `docs/native_launcher_plan.md` for the lower-memory native launcher plan.
