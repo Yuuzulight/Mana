@@ -6,6 +6,7 @@ Architecture
 - `windows-launcher` runs the Electron UI.
 - The Electron main process starts `node-bot/server.js`.
 - `node-bot` calls local `whisper.cpp` and `llama.cpp` binaries.
+- `node-bot` uses local OCR for screen text when Mana is awake.
 - `node-bot` can call local Kokoro ONNX, Chatterbox Turbo, or Fish Speech TTS services to synthesize reply audio.
 - The renderer records short audio chunks in the browser, converts them to WAV, and uses the local backend for transcription and replies.
 
@@ -38,6 +39,8 @@ Project goal
      - `$env:CHATTERBOX_EXAGGERATION = "0.35"`
      - `$env:CHATTERBOX_CFG_WEIGHT = "0.45"`
      - `$env:CHATTERBOX_TEMPERATURE = "0.8"`
+     - `$env:SCREEN_CONTEXT_ENABLED = "1"`
+     - `$env:SCREEN_CONTEXT_MAX_CHARS = "1200"`
 
    Notes:
    - `WHISPER_BIN` should point to the Whisper CLI executable you want to use.
@@ -51,6 +54,7 @@ Project goal
    - Lower `CHATTERBOX_CFG_WEIGHT` and a moderate `CHATTERBOX_EXAGGERATION` help push the voice toward a sharper, more stylized agent delivery.
    - If `LLAMA_BIN` or `LLAMA_MODEL` is not set, the backend returns a placeholder reply so you can still test audio capture and transcription.
    - If the Chatterbox service is not running, the UI still shows the text reply but will not play synthesized audio.
+   - `SCREEN_CONTEXT_ENABLED=0` disables screen reading if you want the lightest runtime path.
 
 3) Install launcher and backend dependencies
    - In PowerShell:
@@ -84,8 +88,15 @@ Project goal
    - Keep `Gaming mode` checked when you want Mana to run lighter while a watched game is open.
    - Say `Mana` once to wake her for the session.
    - After that first wake-up, keep talking without repeating the wake word.
+   - After Mana is awake, she reads visible screen text before replying.
    - The UI shows the transcript and model reply.
    - If Chatterbox is running, the reply is synthesized and played back by the app.
+
+Screen reading notes
+- Screen reading is local OCR through `tesseract.js`.
+- It helps Mana read menus, chat, UI labels, and other visible text.
+- It does not yet understand images, icons, characters, or game scenes without readable text.
+- The launcher downscales screen captures before OCR so it is lighter while a game is running.
 
 Performance notes
 - `Gaming mode` checks Windows for watched game processes such as FFXIV.

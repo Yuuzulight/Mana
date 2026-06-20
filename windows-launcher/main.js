@@ -1,4 +1,4 @@
-const { app, BrowserWindow, dialog, ipcMain, screen } = require("electron");
+const { app, BrowserWindow, desktopCapturer, dialog, ipcMain, screen } = require("electron");
 const path = require("path");
 const { spawn } = require("child_process");
 
@@ -313,6 +313,28 @@ ipcMain.on("avatar:set-state", (event, state) => {
   }
 
   avatarWindow.webContents.send("avatar:state", state);
+});
+
+ipcMain.handle("screen:capture-primary", async () => {
+  const primaryDisplay = screen.getPrimaryDisplay();
+  const sources = await desktopCapturer.getSources({
+    types: ["screen"],
+    thumbnailSize: {
+      // Quick rundown: smaller captures make OCR faster and lighter while a game is open.
+      width: Math.round(primaryDisplay.size.width * 0.65),
+      height: Math.round(primaryDisplay.size.height * 0.65),
+    },
+  });
+  const source =
+    sources.find((item) => item.display_id === String(primaryDisplay.id)) ||
+    sources[0];
+
+  if (!source || source.thumbnail.isEmpty()) {
+    throw new Error("No screen source was available");
+  }
+
+  const jpeg = source.thumbnail.toJPEG(75);
+  return `data:image/jpeg;base64,${jpeg.toString("base64")}`;
 });
 
 app.on("window-all-closed", function () {
