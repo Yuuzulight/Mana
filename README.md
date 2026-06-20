@@ -33,6 +33,7 @@ Right now the main focus is:
 - local speech-to-text
 - local text generation
 - local text-to-speech playback
+- local screen text reading after Mana is awake
 - chunked reply speech so playback starts sooner
 - gaming mode that detects watched game processes and reduces idle work while they run
 - Kokoro ONNX fast TTS with Chatterbox and optional Fish Speech provider paths
@@ -41,6 +42,12 @@ Right now the main focus is:
 - optional VTube Studio avatar control
 - optional PNG avatar overlay
 - a Windows launcher that ties the pieces together
+
+## Screen awareness
+
+After Mana is awake, the launcher can capture the primary monitor, send the image to the local backend, and OCR visible text with `tesseract.js`.
+
+This lets Mana answer using readable text on the screen. It does not yet give her full image/object understanding; that will need a local vision model later.
 
 ## Repository notes
 

@@ -2,6 +2,7 @@
 Node backend server (server.js)
 - POST /transcribe : accepts multipart 'file' audio, runs whisper.cpp to transcribe, then llama.cpp to generate a reply.
 - POST /synthesize : accepts JSON { text } and returns WAV audio from the configured TTS tool.
+- POST /screen/read : accepts a screenshot data URL and returns local OCR text.
 - GET /health : basic health check
 
 Environment variables (set before running):
@@ -34,10 +35,11 @@ const fs = require("fs");
 const path = require("path");
 const http = require("http");
 const https = require("https");
+const { createWorker } = require("tesseract.js");
 const { VTubeStudioClient } = require("./vtube-studio-client");
 const app = express();
 app.use(cors());
-app.use(express.json({ limit: "1mb" }));
+app.use(express.json({ limit: "15mb" }));
 const upload = multer({ dest: path.join(__dirname, "tmp") });
 
 const WHISPER_BIN = process.env.WHISPER_BIN || null;
@@ -69,6 +71,10 @@ const FISH_TTS_REPETITION_PENALTY = Number(
 const FISH_TTS_TEMPERATURE = Number(process.env.FISH_TTS_TEMPERATURE || 0.8);
 const FISH_TTS_FALLBACK_PROVIDER =
   process.env.FISH_TTS_FALLBACK_PROVIDER || "kokoro";
+const SCREEN_CONTEXT_ENABLED = process.env.SCREEN_CONTEXT_ENABLED !== "0";
+const SCREEN_CONTEXT_MAX_CHARS = Number(process.env.SCREEN_CONTEXT_MAX_CHARS || 1200);
+const SCREEN_OCR_CACHE_PATH =
+  process.env.SCREEN_OCR_CACHE_PATH || path.join(__dirname, "tmp", "tesseract");
 const DEFAULT_LLAMA_MODEL = "Qwen/Qwen2.5-0.5B-Instruct-GGUF:Q4_K_M";
 const VTUBE_STUDIO_URL =
   process.env.VTUBE_STUDIO_URL || "ws://127.0.0.1:8001";
@@ -110,6 +116,15 @@ function nowMs() {
 
 function logPerf(label, startedAt) {
   console.log(`Mana perf: ${label} ${nowMs() - startedAt}ms`);
+}
+
+function clampText(text, maxChars) {
+  const cleanText = String(text || "").replace(/\s+/g, " ").trim();
+  if (cleanText.length <= maxChars) {
+    return cleanText;
+  }
+
+  return `${cleanText.slice(0, maxChars).trim()}...`;
 }
 
 function parseGamingProcessNames(value) {
@@ -978,8 +993,72 @@ function cleanupUploadedAudio(tmpPath, audioPath) {
   }, 10000);
 }
 
-function buildAssistantReply(transcript) {
-  const prompt = transcript;
+let screenOcrWorkerPromise = null;
+
+function getScreenOcrWorker() {
+  if (!screenOcrWorkerPromise) {
+    // Quick rundown: keep one OCR worker warm so screen reading is not restarted every reply.
+    screenOcrWorkerPromise = createWorker("eng", 1, {
+      cachePath: SCREEN_OCR_CACHE_PATH,
+      errorHandler: (error) => {
+        console.warn("Screen OCR worker error:", error);
+      },
+    }).catch((error) => {
+      screenOcrWorkerPromise = null;
+      throw error;
+    });
+  }
+
+  return screenOcrWorkerPromise;
+}
+
+function dataUrlToBuffer(dataUrl) {
+  const match = String(dataUrl || "").match(/^data:image\/(?:png|jpeg|jpg);base64,(.+)$/i);
+  if (!match) {
+    throw new Error("screen image must be a PNG or JPEG data URL");
+  }
+
+  return Buffer.from(match[1], "base64");
+}
+
+async function readScreenText(imageDataUrl) {
+  if (!SCREEN_CONTEXT_ENABLED) {
+    return "";
+  }
+
+  const startedAt = nowMs();
+  const imageBuffer = dataUrlToBuffer(imageDataUrl);
+  try {
+    const worker = await getScreenOcrWorker();
+    const result = await worker.recognize(imageBuffer);
+    logPerf("screen ocr", startedAt);
+    return clampText(result?.data?.text || "", SCREEN_CONTEXT_MAX_CHARS);
+  } catch (error) {
+    // Quick rundown: if OCR chokes on one capture, reset it and keep Mana alive.
+    screenOcrWorkerPromise = null;
+    throw error;
+  }
+}
+
+function buildScreenAwarePrompt(transcript, screenText) {
+  if (!screenText) {
+    return transcript;
+  }
+
+  // Quick rundown: Mana sees this as extra context, not as something the user said.
+  return [
+    "User said:",
+    transcript,
+    "",
+    "Visible screen text:",
+    screenText,
+    "",
+    "Answer the user using the screen text only when it helps.",
+  ].join("\n");
+}
+
+function buildAssistantReply(transcript, screenText = "") {
+  const prompt = buildScreenAwarePrompt(transcript, screenText);
   const reply = runLocalAssistantReply(prompt, 256);
   queueVTubeReaction(reply);
   return reply;
@@ -1000,6 +1079,21 @@ app.post("/transcribe-only", upload.single("file"), async (req, res) => {
   }
 });
 
+app.post("/screen/read", async (req, res) => {
+  try {
+    const image = typeof req.body?.image === "string" ? req.body.image : "";
+    if (!image) {
+      return res.status(400).json({ error: "no screen image" });
+    }
+
+    const text = await readScreenText(image);
+    return res.json({ text });
+  } catch (e) {
+    console.error(e);
+    return res.status(500).json({ error: String(e) });
+  }
+});
+
 app.post("/reply", async (req, res) => {
   try {
     const transcript =
@@ -1008,7 +1102,11 @@ app.post("/reply", async (req, res) => {
       return res.status(400).json({ error: "no text" });
     }
 
-    const reply = buildAssistantReply(transcript);
+    const screenText =
+      typeof req.body?.screenText === "string"
+        ? clampText(req.body.screenText, SCREEN_CONTEXT_MAX_CHARS)
+        : "";
+    const reply = buildAssistantReply(transcript, screenText);
     return res.json({
       reply,
       ttsConfigured: TTS_PROVIDER !== "none",
