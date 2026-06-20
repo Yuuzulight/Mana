@@ -146,6 +146,22 @@ function splitReplyForSpeech(text) {
   return chunks;
 }
 
+function detectReplyEmotion(text) {
+  const normalized = text.toLowerCase();
+  const excitedPattern =
+    /!{2,}|\b(yay|yes|nice|great|awesome|amazing|let'?s go|finally|hehe|haha)\b/;
+  const angryPattern =
+    /\b(angry|mad|annoyed|ugh|hmph|stupid|idiot|seriously|how dare|stop that)\b/;
+
+  if (angryPattern.test(normalized)) {
+    return "angry";
+  }
+  if (excitedPattern.test(normalized)) {
+    return "excited";
+  }
+  return "talking";
+}
+
 async function synthesizeSpeechChunk(index, chunks, playbackToken) {
   if (playbackToken !== replyPlaybackToken) {
     return null;
@@ -178,7 +194,7 @@ async function synthesizeSpeechChunk(index, chunks, playbackToken) {
   return await response.blob();
 }
 
-function playAudioBlob(audioBlob, playbackToken) {
+function playAudioBlob(audioBlob, playbackToken, avatarState) {
   return new Promise((resolve, reject) => {
     if (playbackToken !== replyPlaybackToken) {
       resolve();
@@ -194,7 +210,7 @@ function playAudioBlob(audioBlob, playbackToken) {
       currentReplyUrl = null;
     }
 
-    setAvatarState("talking");
+    setAvatarState(avatarState);
     currentReplyUrl = URL.createObjectURL(audioBlob);
     currentReplyAudio = new Audio(currentReplyUrl);
 
@@ -236,6 +252,7 @@ async function playReplyAudio(text) {
 
   stopReplyAudio();
   const playbackToken = replyPlaybackToken;
+  const avatarState = detectReplyEmotion(text);
   let nextAudioBlobPromise = synthesizeSpeechChunk(0, chunks, playbackToken);
 
   // Quick rundown: play one chunk while the next chunk renders in the background.
@@ -251,7 +268,7 @@ async function playReplyAudio(text) {
         : null;
 
     if (audioBlob) {
-      await playAudioBlob(audioBlob, playbackToken);
+      await playAudioBlob(audioBlob, playbackToken, avatarState);
     }
   }
 
