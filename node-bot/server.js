@@ -75,6 +75,9 @@ const SCREEN_CONTEXT_ENABLED = process.env.SCREEN_CONTEXT_ENABLED !== "0";
 const SCREEN_CONTEXT_MAX_CHARS = Number(process.env.SCREEN_CONTEXT_MAX_CHARS || 1200);
 const SCREEN_OCR_CACHE_PATH =
   process.env.SCREEN_OCR_CACHE_PATH || path.join(__dirname, "tmp", "tesseract");
+const WHISPER_THREADS = Number(process.env.WHISPER_THREADS || 2);
+const LLAMA_THREADS = Number(process.env.LLAMA_THREADS || 4);
+const LLAMA_MAX_TOKENS = Number(process.env.LLAMA_MAX_TOKENS || 180);
 const DEFAULT_LLAMA_MODEL = "Qwen/Qwen2.5-0.5B-Instruct-GGUF:Q4_K_M";
 const VTUBE_STUDIO_URL =
   process.env.VTUBE_STUDIO_URL || "ws://127.0.0.1:8001";
@@ -731,6 +734,8 @@ function runWhisper(filePath) {
     WHISPER_MODEL,
     "-f",
     filePath,
+    "-t",
+    String(WHISPER_THREADS),
     "--output-json",
     "-of",
     outBase,
@@ -810,6 +815,8 @@ function runLlama(prompt, maxTokens = 256) {
       prompt,
       "-n",
       String(maxTokens),
+      "-t",
+      String(LLAMA_THREADS),
     ];
   } else {
     args = [
@@ -820,6 +827,8 @@ function runLlama(prompt, maxTokens = 256) {
       prompt,
       "-n",
       String(maxTokens),
+      "-t",
+      String(LLAMA_THREADS),
     ];
   }
 
@@ -879,6 +888,8 @@ function runLocalAssistantReply(prompt, maxTokens = 256) {
         prompt,
         "-n",
         String(maxTokens),
+        "-t",
+        String(LLAMA_THREADS),
         "--single-turn",
         "--simple-io",
         "--no-display-prompt",
@@ -895,6 +906,8 @@ function runLocalAssistantReply(prompt, maxTokens = 256) {
         prompt,
         "-n",
         String(maxTokens),
+        "-t",
+        String(LLAMA_THREADS),
         "--single-turn",
         "--simple-io",
         "--no-display-prompt",
@@ -1059,7 +1072,7 @@ function buildScreenAwarePrompt(transcript, screenText) {
 
 function buildAssistantReply(transcript, screenText = "") {
   const prompt = buildScreenAwarePrompt(transcript, screenText);
-  const reply = runLocalAssistantReply(prompt, 256);
+  const reply = runLocalAssistantReply(prompt, LLAMA_MAX_TOKENS);
   queueVTubeReaction(reply);
   return reply;
 }
