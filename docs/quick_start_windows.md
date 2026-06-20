@@ -41,6 +41,9 @@ Project goal
      - `$env:CHATTERBOX_TEMPERATURE = "0.8"`
      - `$env:SCREEN_CONTEXT_ENABLED = "1"`
      - `$env:SCREEN_CONTEXT_MAX_CHARS = "1200"`
+     - `$env:WHISPER_THREADS = "2"`
+     - `$env:LLAMA_THREADS = "4"`
+     - `$env:LLAMA_MAX_TOKENS = "180"`
 
    Notes:
    - `WHISPER_BIN` should point to the Whisper CLI executable you want to use.
@@ -55,6 +58,7 @@ Project goal
    - If `LLAMA_BIN` or `LLAMA_MODEL` is not set, the backend returns a placeholder reply so you can still test audio capture and transcription.
    - If the Chatterbox service is not running, the UI still shows the text reply but will not play synthesized audio.
    - `SCREEN_CONTEXT_ENABLED=0` disables screen reading if you want the lightest runtime path.
+   - `WHISPER_THREADS`, `LLAMA_THREADS`, and `LLAMA_MAX_TOKENS` cap heavy local work so games keep more CPU.
 
 3) Install launcher and backend dependencies
    - In PowerShell:
@@ -101,6 +105,8 @@ Screen reading notes
 Performance notes
 - `Gaming mode` checks Windows for watched game processes such as FFXIV.
 - When a watched game is running, Mana waits longer after empty/noise chunks to reduce idle work.
+- When a watched game is running, Mana records longer chunks, calls Whisper less often, and reuses screen OCR longer.
+- While gaming, Mana only refreshes screen OCR for commands that look screen-related, such as asking her to read, look, or explain an icon/menu.
 - Set `GAMING_PROCESS_NAMES` to a comma-separated process list if you want to watch other games.
 - Example: `$env:GAMING_PROCESS_NAMES = "ffxiv_dx11.exe,eldenring.exe"`
 
