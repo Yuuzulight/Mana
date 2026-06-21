@@ -23,3 +23,8 @@ tts-service/kokoro/
 # OS files
 Thumbs.db
 .DS_Store
+
+# Env files with secrets (never commit these)
+.env
+*.env
+!*.env.sample

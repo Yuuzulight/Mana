@@ -46,6 +46,14 @@ const WHISPER_BIN = process.env.WHISPER_BIN || null;
 const WHISPER_MODEL = process.env.WHISPER_MODEL || null;
 const LLAMA_BIN = process.env.LLAMA_BIN || null;
 const LLAMA_MODEL = process.env.LLAMA_MODEL || null;
+
+// OpenAI / proxy API settings
+// Set OPENAI_API_KEY to your API key (or co-intern's) and OPENAI_BASE_URL to the proxy base URL.
+// To swap keys: update OPENAI_API_KEY env var and restart the server.
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY || null;
+const OPENAI_BASE_URL =
+  process.env.OPENAI_BASE_URL || "https://new.aicode.us.com";
+const OPENAI_MODEL = process.env.OPENAI_MODEL || "codex-gpt-5.5";
 const TTS_BIN = process.env.TTS_BIN || null;
 const TTS_MODEL = process.env.TTS_MODEL || null;
 const TTS_ARGS_JSON = process.env.TTS_ARGS_JSON || null;
@@ -53,8 +61,26 @@ const TTS_VOICE = process.env.TTS_VOICE || null;
 const TTS_SPEAKER = process.env.TTS_SPEAKER || null;
 const CHATTERBOX_TTS_URL =
   process.env.CHATTERBOX_TTS_URL || "http://127.0.0.1:5010";
-const KOKORO_TTS_URL =
-  process.env.KOKORO_TTS_URL || "http://127.0.0.1:5011";
+const KOKORO_TTS_URL = process.env.KOKORO_TTS_URL || "http://127.0.0.1:5011";
+const UNIVERSALIS_API_URL =
+  process.env.UNIVERSALIS_API_URL || "https://universalis.app/api/v2";
+const UNIVERSALIS_DEFAULT_WORLD =
+  process.env.UNIVERSALIS_DEFAULT_WORLD || "Adamantoise";
+const UNIVERSALIS_CACHE_MS = Number(process.env.UNIVERSALIS_CACHE_MS || 60000);
+const XIVAPI_SEARCH_URL =
+  process.env.XIVAPI_SEARCH_URL || "https://v2.xivapi.com/api/search";
+const XIVAPI_SHEET_URL =
+  process.env.XIVAPI_SHEET_URL || "https://v2.xivapi.com/api/sheet";
+const XIVAPI_RECIPE_SCAN_LIMIT = Number(
+  process.env.XIVAPI_RECIPE_SCAN_LIMIT || 500,
+);
+const XIVAPI_RECIPE_PAGE_SIZE = Number(
+  process.env.XIVAPI_RECIPE_PAGE_SIZE || 100,
+);
+const FFXIV_PROFIT_TOP_LIMIT = Number(process.env.FFXIV_PROFIT_TOP_LIMIT || 10);
+const FFXIV_RECIPE_SOURCE = process.env.FFXIV_RECIPE_SOURCE || "garland";
+const GARLAND_TOOLS_BASE_URL =
+  process.env.GARLAND_TOOLS_BASE_URL || "https://www.garlandtools.org";
 const FISH_TTS_URL = process.env.FISH_TTS_URL || "http://127.0.0.1:8080";
 const FISH_TTS_API_KEY = process.env.FISH_TTS_API_KEY || null;
 const FISH_TTS_REFERENCE_ID = process.env.FISH_TTS_REFERENCE_ID || null;
@@ -74,21 +100,21 @@ const FISH_TTS_FALLBACK_PROVIDER =
 const KOKORO_TTS_FALLBACK_PROVIDER =
   process.env.KOKORO_TTS_FALLBACK_PROVIDER || "none";
 const SCREEN_CONTEXT_ENABLED = process.env.SCREEN_CONTEXT_ENABLED !== "0";
-const SCREEN_CONTEXT_MAX_CHARS = Number(process.env.SCREEN_CONTEXT_MAX_CHARS || 1200);
+const SCREEN_CONTEXT_MAX_CHARS = Number(
+  process.env.SCREEN_CONTEXT_MAX_CHARS || 1200,
+);
 const SCREEN_OCR_CACHE_PATH =
   process.env.SCREEN_OCR_CACHE_PATH || path.join(__dirname, "tmp", "tesseract");
 const WHISPER_THREADS = Number(process.env.WHISPER_THREADS || 2);
 const LLAMA_THREADS = Number(process.env.LLAMA_THREADS || 4);
 const LLAMA_MAX_TOKENS = Number(process.env.LLAMA_MAX_TOKENS || 180);
 const DEFAULT_LLAMA_MODEL = "Qwen/Qwen2.5-0.5B-Instruct-GGUF:Q4_K_M";
-const VTUBE_STUDIO_URL =
-  process.env.VTUBE_STUDIO_URL || "ws://127.0.0.1:8001";
+const VTUBE_STUDIO_URL = process.env.VTUBE_STUDIO_URL || "ws://127.0.0.1:8001";
 const VTUBE_STUDIO_ENABLED = process.env.VTUBE_STUDIO_ENABLED !== "0";
 const VTUBE_STUDIO_REACTIONS_JSON =
   process.env.VTUBE_STUDIO_REACTIONS_JSON || "{}";
 const TTS_PROVIDER =
-  process.env.TTS_PROVIDER ||
-  (TTS_BIN ? "cli" : "chatterbox");
+  process.env.TTS_PROVIDER || (TTS_BIN ? "cli" : "chatterbox");
 const DEFAULT_GAMING_PROCESS_NAMES = [
   "ffxiv_dx11.exe",
   "ffxiv.exe",
@@ -141,7 +167,9 @@ function logPerf(label, startedAt) {
 }
 
 function clampText(text, maxChars) {
-  const cleanText = String(text || "").replace(/\s+/g, " ").trim();
+  const cleanText = String(text || "")
+    .replace(/\s+/g, " ")
+    .trim();
   if (cleanText.length <= maxChars) {
     return cleanText;
   }
@@ -166,7 +194,7 @@ function parseTasklistCsvLine(line) {
   const pattern = /"([^"]*(?:""[^"]*)*)"|([^,]+)/g;
   let match;
   while ((match = pattern.exec(line)) !== null) {
-    values.push((match[1] || match[2] || "").replace(/""/g, "\""));
+    values.push((match[1] || match[2] || "").replace(/""/g, '"'));
   }
   return values;
 }
@@ -200,9 +228,9 @@ function getGamingStatus() {
   // Quick rundown: if one watched game process is running, Mana uses the lighter idle loop.
   const runningProcesses = getRunningProcessNames();
   const watchedNames = new Set(GAMING_PROCESS_NAMES);
-  const matchedProcesses = [...new Set(
-    runningProcesses.filter((name) => watchedNames.has(name)),
-  )];
+  const matchedProcesses = [
+    ...new Set(runningProcesses.filter((name) => watchedNames.has(name))),
+  ];
 
   return {
     gamingAppRunning: matchedProcesses.length > 0,
@@ -225,17 +253,15 @@ function getManaProcessSnapshot() {
     "Select-Object ProcessId,Name,WorkingSetSize,CommandLine;",
     "$items | ConvertTo-Json -Compress -Depth 3",
   ].join(" ");
-  const result = spawnSync("powershell", [
-    "-NoProfile",
-    "-ExecutionPolicy",
-    "Bypass",
-    "-Command",
-    command,
-  ], {
-    encoding: "utf8",
-    maxBuffer: 5 * 1024 * 1024,
-    windowsHide: true,
-  });
+  const result = spawnSync(
+    "powershell",
+    ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", command],
+    {
+      encoding: "utf8",
+      maxBuffer: 5 * 1024 * 1024,
+      windowsHide: true,
+    },
+  );
 
   if (result.status !== 0 || !result.stdout.trim()) {
     return {
@@ -348,7 +374,10 @@ function parseTtsArgsTemplate() {
     throw new Error("TTS_ARGS_JSON must be valid JSON");
   }
 
-  if (!Array.isArray(parsed) || parsed.some((part) => typeof part !== "string")) {
+  if (
+    !Array.isArray(parsed) ||
+    parsed.some((part) => typeof part !== "string")
+  ) {
     throw new Error("TTS_ARGS_JSON must be a JSON array of strings");
   }
 
@@ -372,7 +401,9 @@ function buildTtsArgs(text, outputPath) {
   for (const placeholder of ["{model}", "{voice}", "{speaker}"]) {
     const needsValue = template.includes(placeholder);
     if (needsValue && !values[placeholder]) {
-      throw new Error(`${placeholder.slice(1, -1).toUpperCase()} not configured`);
+      throw new Error(
+        `${placeholder.slice(1, -1).toUpperCase()} not configured`,
+      );
     }
   }
 
@@ -450,6 +481,823 @@ function postJsonBuffer(urlString, body) {
   });
 }
 
+function getJson(urlString) {
+  return new Promise((resolve, reject) => {
+    const url = new URL(urlString);
+    const transport = url.protocol === "https:" ? https : http;
+
+    const req = transport.request(
+      {
+        hostname: url.hostname,
+        port: url.port,
+        path: `${url.pathname}${url.search}`,
+        method: "GET",
+        headers: {
+          Accept: "application/json",
+          "User-Agent": "Mana local assistant",
+        },
+      },
+      (res) => {
+        const chunks = [];
+        res.on("data", (chunk) => chunks.push(chunk));
+        res.on("end", () => {
+          const text = Buffer.concat(chunks).toString("utf8");
+          if (
+            !res.statusCode ||
+            res.statusCode < 200 ||
+            res.statusCode >= 300
+          ) {
+            reject(
+              new Error(`GET ${urlString} failed (${res.statusCode}): ${text}`),
+            );
+            return;
+          }
+
+          try {
+            resolve(JSON.parse(text));
+          } catch (error) {
+            reject(error);
+          }
+        });
+      },
+    );
+
+    req.on("error", reject);
+    req.end();
+  });
+}
+
+const universalisCache = new Map();
+const xivapiItemCache = new Map();
+const xivapiRecipeCache = new Map();
+const garlandItemCache = new Map();
+const RECIPE_PROFIT_FIELDS =
+  "ItemResult.Name,AmountResult,Ingredient[].Name,AmountIngredient,CanHq";
+
+function extractItemIdFromText(text) {
+  const itemIdMatch = String(text || "").match(
+    /\b(?:item\s*id|itemid|id)\s*[:#-]?\s*(\d{1,8})\b/i,
+  );
+  if (itemIdMatch) {
+    return Number(itemIdMatch[1]);
+  }
+
+  return null;
+}
+
+function textLooksLikeMarketQuestion(text) {
+  return /\b(universalis|marketboard|market board|price|prices|listing|listings|sale|sales|gil|hover|hovered|mouse over|mouseover)\b/i.test(
+    text || "",
+  );
+}
+
+function textLooksLikeCraftProfitQuestion(text) {
+  return (
+    /\b(craft|crafted|crafting|recipe|recipes|materials?|mats?)\b/i.test(
+      text || "",
+    ) &&
+    /\b(profit|profitable|margin|flip|gil|marketboard|market board|universalis)\b/i.test(
+      text || "",
+    )
+  );
+}
+
+function extractTopLimitFromText(text, fallback = FFXIV_PROFIT_TOP_LIMIT) {
+  const match = String(text || "").match(/\btop\s+(\d{1,2})\b/i);
+  const limit = match ? Number(match[1]) : fallback;
+  return clampInteger(limit, 1, 25, fallback);
+}
+
+function cleanItemNameCandidate(text) {
+  return String(text || "")
+    .replace(/\[[^\]]+\]/g, " ")
+    .replace(/\([^)]+\)/g, " ")
+    .replace(/^[^A-Za-z0-9]+|[^A-Za-z0-9]+$/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function extractExplicitItemNameFromText(text) {
+  const match = String(text || "").match(
+    /\b(?:item|item name|name)\s*[:#-]\s*["']?([^"'\n\r]{2,80})/i,
+  );
+  return match ? cleanItemNameCandidate(match[1]) : "";
+}
+
+function extractHoveredItemName(screenText) {
+  const blockedPatterns = [
+    /\bmarket board\b/i,
+    /\binventory\b/i,
+    /\barmoury chest\b/i,
+    /\bcharacter\b/i,
+    /\bitem level\b/i,
+    /\bunique\b/i,
+    /\buntradable\b/i,
+    /\bextractable\b/i,
+    /\bprojectable\b/i,
+    /\bdesynthesizable\b/i,
+    /\bsells for\b/i,
+    /\brepair level\b/i,
+  ];
+  const lines = String(screenText || "")
+    .split(/\r?\n| {2,}/)
+    .map(cleanItemNameCandidate)
+    .filter((line) => line.length >= 3 && line.length <= 80)
+    .filter((line) => /[A-Za-z]/.test(line))
+    .filter((line) => !blockedPatterns.some((pattern) => pattern.test(line)));
+
+  return lines[0] || "";
+}
+
+async function resolveFfxivItemByName(itemName) {
+  const cleanName = cleanItemNameCandidate(itemName);
+  if (!cleanName) {
+    throw new Error("itemName is required");
+  }
+
+  const cacheKey = cleanName.toLowerCase();
+  const cached = xivapiItemCache.get(cacheKey);
+  if (cached && Date.now() - cached.createdAt < UNIVERSALIS_CACHE_MS) {
+    return cached.value;
+  }
+
+  const query = encodeURIComponent(`Name~"${cleanName.replace(/"/g, "")}"`);
+  const url = `${XIVAPI_SEARCH_URL}?sheets=Item&query=${query}&fields=Name&limit=10`;
+  const data = await getJson(url);
+  const results = Array.isArray(data.results) ? data.results : [];
+  if (results.length === 0) {
+    throw new Error(`No FFXIV item matched "${cleanName}"`);
+  }
+
+  const exact = results.find(
+    (result) =>
+      String(result?.fields?.Name || "").toLowerCase() ===
+      cleanName.toLowerCase(),
+  );
+  const best = exact || results[0];
+  const value = {
+    itemId: best.row_id,
+    name: best.fields?.Name || cleanName,
+    score: best.score || null,
+    matches: results.slice(0, 5).map((result) => ({
+      itemId: result.row_id,
+      name: result.fields?.Name || "",
+      score: result.score || null,
+    })),
+  };
+
+  xivapiItemCache.set(cacheKey, {
+    createdAt: Date.now(),
+    value,
+  });
+  return value;
+}
+
+async function getUniversalisMarketSummary(world, itemId, itemName = "") {
+  const safeWorld = encodeURIComponent(world || UNIVERSALIS_DEFAULT_WORLD);
+  const safeItemId = Number(itemId);
+  if (!Number.isInteger(safeItemId) || safeItemId <= 0) {
+    throw new Error("itemId must be a positive integer");
+  }
+
+  const cacheKey = `${safeWorld}:${safeItemId}`;
+  const cached = universalisCache.get(cacheKey);
+  if (cached && Date.now() - cached.createdAt < UNIVERSALIS_CACHE_MS) {
+    return cached.value;
+  }
+
+  const url = `${UNIVERSALIS_API_URL}/${safeWorld}/${safeItemId}?listings=5&entries=5`;
+  const data = await getJson(url);
+  const listings = Array.isArray(data.listings) ? data.listings : [];
+  const recentHistory = Array.isArray(data.recentHistory)
+    ? data.recentHistory
+    : [];
+  const lowestListings = listings.slice(0, 5).map((listing) => ({
+    pricePerUnit: listing.pricePerUnit,
+    quantity: listing.quantity,
+    total: listing.total,
+    hq: Boolean(listing.hq),
+  }));
+  const recentSales = recentHistory.slice(0, 5).map((sale) => ({
+    pricePerUnit: sale.pricePerUnit,
+    quantity: sale.quantity,
+    total: sale.total,
+    hq: Boolean(sale.hq),
+    timestamp: sale.timestamp,
+  }));
+
+  const summary = {
+    source: "Universalis",
+    world: data.worldName || world || UNIVERSALIS_DEFAULT_WORLD,
+    itemId: data.itemID || safeItemId,
+    itemName,
+    lastUploadTime: data.lastUploadTime || null,
+    listingsCount: data.listingsCount || listings.length,
+    unitsForSale: data.unitsForSale || 0,
+    minPrice: data.minPrice || null,
+    minPriceNq: data.minPriceNQ || null,
+    minPriceHq: data.minPriceHQ || null,
+    averagePrice: data.averagePrice || null,
+    currentAveragePrice: data.currentAveragePrice || null,
+    saleVelocity: data.regularSaleVelocity || null,
+    lowestListings,
+    recentSales,
+  };
+
+  universalisCache.set(cacheKey, {
+    createdAt: Date.now(),
+    value: summary,
+  });
+  return summary;
+}
+
+function clampInteger(value, min, max, fallback) {
+  const number = Number(value);
+  if (!Number.isInteger(number)) {
+    return fallback;
+  }
+
+  return Math.max(min, Math.min(max, number));
+}
+
+function chunkArray(values, size) {
+  const chunks = [];
+  for (let index = 0; index < values.length; index += size) {
+    chunks.push(values.slice(index, index + size));
+  }
+  return chunks;
+}
+
+async function mapWithConcurrency(values, concurrency, worker) {
+  const results = new Array(values.length);
+  let nextIndex = 0;
+  const runners = Array.from(
+    { length: Math.min(concurrency, values.length) },
+    async () => {
+      while (nextIndex < values.length) {
+        const index = nextIndex;
+        nextIndex += 1;
+        results[index] = await worker(values[index], index);
+      }
+    },
+  );
+  await Promise.all(runners);
+  return results;
+}
+
+function getXivapiRefName(ref) {
+  return typeof ref?.fields?.Name === "string" ? ref.fields.Name : "";
+}
+
+function getXivapiRefId(ref) {
+  const id = Number(ref?.row_id || ref?.value);
+  return Number.isInteger(id) && id > 0 ? id : 0;
+}
+
+function normalizeRecipeRow(row) {
+  const fields = row?.fields || {};
+  const resultItemId = getXivapiRefId(fields.ItemResult);
+  const resultItemName = getXivapiRefName(fields.ItemResult);
+  const amountResult = Number(fields.AmountResult || 1);
+  const amountIngredient = Array.isArray(fields.AmountIngredient)
+    ? fields.AmountIngredient
+    : [];
+  const ingredients = (
+    Array.isArray(fields.Ingredient) ? fields.Ingredient : []
+  )
+    .map((ingredient, index) => ({
+      itemId: getXivapiRefId(ingredient),
+      itemName: getXivapiRefName(ingredient),
+      quantity: Number(amountIngredient[index] || 0),
+    }))
+    .filter(
+      (ingredient) =>
+        ingredient.itemId > 0 &&
+        ingredient.quantity > 0 &&
+        ingredient.itemName.trim(),
+    );
+
+  if (
+    !resultItemId ||
+    !resultItemName ||
+    !amountResult ||
+    ingredients.length === 0
+  ) {
+    return null;
+  }
+
+  return {
+    recipeId: row.row_id,
+    resultItemId,
+    resultItemName,
+    amountResult,
+    canHq: Boolean(fields.CanHq),
+    ingredients,
+  };
+}
+
+async function getXivapiRecipeCandidates({ query = "", scanLimit, pageSize }) {
+  const safeScanLimit = clampInteger(
+    scanLimit,
+    1,
+    5000,
+    XIVAPI_RECIPE_SCAN_LIMIT,
+  );
+  const safePageSize = clampInteger(pageSize, 1, 500, XIVAPI_RECIPE_PAGE_SIZE);
+  const cleanQuery = cleanItemNameCandidate(query);
+  const cacheKey = `${cleanQuery.toLowerCase() || "*"}:${safeScanLimit}:${safePageSize}`;
+  const cached = xivapiRecipeCache.get(cacheKey);
+  if (cached && Date.now() - cached.createdAt < UNIVERSALIS_CACHE_MS) {
+    return cached.value;
+  }
+
+  const recipes = [];
+  if (cleanQuery) {
+    const encodedQuery = encodeURIComponent(
+      `ItemResult.Name~"${cleanQuery.replace(/"/g, "")}"`,
+    );
+    const url = `${XIVAPI_SEARCH_URL}?sheets=Recipe&query=${encodedQuery}&fields=${encodeURIComponent(RECIPE_PROFIT_FIELDS)}&limit=${safeScanLimit}`;
+    const data = await getJson(url);
+    const results = Array.isArray(data.results) ? data.results : [];
+    recipes.push(...results.map(normalizeRecipeRow).filter(Boolean));
+  } else {
+    let after = 0;
+    while (recipes.length < safeScanLimit) {
+      const limit = Math.min(safePageSize, safeScanLimit - recipes.length);
+      const url = `${XIVAPI_SHEET_URL}/Recipe?fields=${encodeURIComponent(RECIPE_PROFIT_FIELDS)}&limit=${limit}&after=${after}`;
+      const data = await getJson(url);
+      const rows = Array.isArray(data.rows) ? data.rows : [];
+      if (rows.length === 0) {
+        break;
+      }
+
+      recipes.push(...rows.map(normalizeRecipeRow).filter(Boolean));
+      after = Number(rows[rows.length - 1]?.row_id || after);
+      if (!after) {
+        break;
+      }
+    }
+  }
+
+  const value = recipes.slice(0, safeScanLimit);
+  xivapiRecipeCache.set(cacheKey, {
+    createdAt: Date.now(),
+    value,
+  });
+  return value;
+}
+
+function normalizeRecipeSource(source) {
+  const normalized = String(
+    source || FFXIV_RECIPE_SOURCE || "garland",
+  ).toLowerCase();
+  return normalized === "xivapi" ? "xivapi" : "garland";
+}
+
+async function getGarlandItemDoc(itemId) {
+  const safeItemId = Number(itemId);
+  if (!Number.isInteger(safeItemId) || safeItemId <= 0) {
+    throw new Error("Garland item id must be a positive integer");
+  }
+
+  const cacheKey = String(safeItemId);
+  const cached = garlandItemCache.get(cacheKey);
+  if (cached && Date.now() - cached.createdAt < UNIVERSALIS_CACHE_MS) {
+    return cached.value;
+  }
+
+  const url = `${GARLAND_TOOLS_BASE_URL}/db/doc/item/en/3/${safeItemId}.json`;
+  const data = await getJson(url);
+  garlandItemCache.set(cacheKey, {
+    createdAt: Date.now(),
+    value: data,
+  });
+  return data;
+}
+
+function buildGarlandItemNameMap(doc) {
+  const names = new Map();
+  if (doc?.item?.id && doc?.item?.name) {
+    names.set(Number(doc.item.id), doc.item.name);
+  }
+
+  for (const item of Array.isArray(doc?.ingredients) ? doc.ingredients : []) {
+    if (item?.id && item?.name) {
+      names.set(Number(item.id), item.name);
+    }
+  }
+
+  for (const partial of Array.isArray(doc?.partials) ? doc.partials : []) {
+    if (partial?.type === "item" && partial?.obj?.i && partial?.obj?.n) {
+      names.set(Number(partial.obj.i), partial.obj.n);
+    }
+  }
+  return names;
+}
+
+function normalizeGarlandRecipeDoc(doc) {
+  const resultItemId = Number(doc?.item?.id || 0);
+  const resultItemName = doc?.item?.name || "";
+  const nameMap = buildGarlandItemNameMap(doc);
+  return (Array.isArray(doc?.item?.craft) ? doc.item.craft : [])
+    .map((craft) => {
+      const ingredients = (
+        Array.isArray(craft.ingredients) ? craft.ingredients : []
+      )
+        .map((ingredient) => ({
+          itemId: Number(ingredient.id || 0),
+          itemName:
+            nameMap.get(Number(ingredient.id || 0)) ||
+            `item ID ${ingredient.id}`,
+          quantity: Number(ingredient.amount || 0),
+        }))
+        .filter(
+          (ingredient) => ingredient.itemId > 0 && ingredient.quantity > 0,
+        );
+
+      if (!resultItemId || !resultItemName || ingredients.length === 0) {
+        return null;
+      }
+
+      return {
+        recipeId: craft.id,
+        resultItemId,
+        resultItemName,
+        amountResult: Number(craft.yield || 1),
+        canHq: Boolean(craft.hq),
+        recipeLevel: craft.lvl || null,
+        recipeSource: "garland",
+        ingredients,
+      };
+    })
+    .filter(Boolean);
+}
+
+async function searchGarlandCraftableItemIds(query, scanLimit) {
+  const cleanQuery = cleanItemNameCandidate(query);
+  if (!cleanQuery) {
+    return [];
+  }
+
+  const url = `${GARLAND_TOOLS_BASE_URL}/api/search.php?text=${encodeURIComponent(cleanQuery)}&lang=en`;
+  const data = await getJson(url);
+  const values = Array.isArray(data?.value) ? data.value : [];
+  return values
+    .filter((entry) => entry?.type === "item" && Array.isArray(entry?.obj?.f))
+    .map((entry) => Number(entry.id || entry.obj?.i || 0))
+    .filter((itemId) => Number.isInteger(itemId) && itemId > 0)
+    .slice(0, scanLimit);
+}
+
+async function getGarlandRecipeCandidates({ query = "", scanLimit, pageSize }) {
+  const safeScanLimit = clampInteger(
+    scanLimit,
+    1,
+    5000,
+    XIVAPI_RECIPE_SCAN_LIMIT,
+  );
+  let itemIds = await searchGarlandCraftableItemIds(query, safeScanLimit);
+  if (itemIds.length === 0) {
+    const xivapiCandidates = await getXivapiRecipeCandidates({
+      query,
+      scanLimit: safeScanLimit,
+      pageSize,
+    });
+    itemIds = xivapiCandidates.map((recipe) => recipe.resultItemId);
+  }
+
+  const uniqueItemIds = [...new Set(itemIds)].slice(0, safeScanLimit);
+  const docs = await mapWithConcurrency(uniqueItemIds, 6, async (itemId) => {
+    try {
+      return await getGarlandItemDoc(itemId);
+    } catch (error) {
+      console.warn(`Garland item ${itemId} lookup failed: ${error}`);
+      return null;
+    }
+  });
+
+  return docs
+    .filter(Boolean)
+    .flatMap(normalizeGarlandRecipeDoc)
+    .slice(0, safeScanLimit);
+}
+
+function summarizeUniversalisRawItem(rawItem, fallbackWorld, fallbackItemId) {
+  const itemId = Number(rawItem?.itemID || fallbackItemId);
+  const minPrice = Number(rawItem?.minPrice || 0);
+  const minPriceNq = Number(rawItem?.minPriceNQ || 0);
+  const minPriceHq = Number(rawItem?.minPriceHQ || 0);
+  const currentAveragePrice = Number(rawItem?.currentAveragePrice || 0);
+  const averagePrice = Number(rawItem?.averagePrice || 0);
+  const listingsCount = Number(rawItem?.listingsCount || 0);
+  return {
+    itemId,
+    world: rawItem?.worldName || fallbackWorld || UNIVERSALIS_DEFAULT_WORLD,
+    minPrice: minPrice > 0 ? minPrice : null,
+    minPriceNq: minPriceNq > 0 ? minPriceNq : null,
+    minPriceHq: minPriceHq > 0 ? minPriceHq : null,
+    currentAveragePrice: currentAveragePrice > 0 ? currentAveragePrice : null,
+    averagePrice: averagePrice > 0 ? averagePrice : null,
+    listingsCount,
+    unitsForSale: rawItem?.unitsForSale || 0,
+    lastUploadTime: rawItem?.lastUploadTime || null,
+    hasData: Boolean(rawItem?.hasData || minPrice > 0 || listingsCount > 0),
+  };
+}
+
+async function getUniversalisMarketItems(world, itemIds) {
+  const safeWorld = encodeURIComponent(world || UNIVERSALIS_DEFAULT_WORLD);
+  const uniqueIds = [
+    ...new Set(
+      itemIds.map(Number).filter((id) => Number.isInteger(id) && id > 0),
+    ),
+  ];
+  const summaries = new Map();
+  const missingIds = [];
+
+  for (const itemId of uniqueIds) {
+    const cacheKey = `${safeWorld}:raw:${itemId}`;
+    const cached = universalisCache.get(cacheKey);
+    if (cached && Date.now() - cached.createdAt < UNIVERSALIS_CACHE_MS) {
+      summaries.set(itemId, cached.value);
+    } else {
+      missingIds.push(itemId);
+    }
+  }
+
+  for (const chunk of chunkArray(missingIds, 100)) {
+    const url = `${UNIVERSALIS_API_URL}/${safeWorld}/${chunk.join(",")}?listings=0&entries=0`;
+    const data = await getJson(url);
+    const rawItems =
+      data?.items && typeof data.items === "object"
+        ? data.items
+        : { [String(chunk[0])]: data };
+
+    for (const itemId of chunk) {
+      const summary = summarizeUniversalisRawItem(
+        rawItems[String(itemId)] || {},
+        data.worldName || world,
+        itemId,
+      );
+      const cacheKey = `${safeWorld}:raw:${itemId}`;
+      universalisCache.set(cacheKey, {
+        createdAt: Date.now(),
+        value: summary,
+      });
+      summaries.set(itemId, summary);
+    }
+  }
+
+  return summaries;
+}
+
+function getMarketComparisonPrice(summary) {
+  return summary?.minPrice || null;
+}
+
+async function findProfitableCrafts({
+  world = UNIVERSALIS_DEFAULT_WORLD,
+  query = "",
+  limit = FFXIV_PROFIT_TOP_LIMIT,
+  scanLimit = XIVAPI_RECIPE_SCAN_LIMIT,
+  pageSize = XIVAPI_RECIPE_PAGE_SIZE,
+  recipeSource = FFXIV_RECIPE_SOURCE,
+} = {}) {
+  const safeLimit = clampInteger(limit, 1, 25, FFXIV_PROFIT_TOP_LIMIT);
+  const safeScanLimit = clampInteger(
+    scanLimit,
+    1,
+    5000,
+    XIVAPI_RECIPE_SCAN_LIMIT,
+  );
+  const safeRecipeSource = normalizeRecipeSource(recipeSource);
+  const recipes =
+    safeRecipeSource === "garland"
+      ? await getGarlandRecipeCandidates({
+          query,
+          scanLimit: safeScanLimit,
+          pageSize,
+        })
+      : await getXivapiRecipeCandidates({
+          query,
+          scanLimit: safeScanLimit,
+          pageSize,
+        });
+
+  const itemIds = [];
+  for (const recipe of recipes) {
+    itemIds.push(recipe.resultItemId);
+    for (const ingredient of recipe.ingredients) {
+      itemIds.push(ingredient.itemId);
+    }
+  }
+
+  const marketItems = await getUniversalisMarketItems(world, itemIds);
+  const skipped = {
+    missingResultPrice: 0,
+    missingMaterialPrice: 0,
+  };
+  const bestByResultItem = new Map();
+
+  for (const recipe of recipes) {
+    const resultMarket = marketItems.get(recipe.resultItemId);
+    const resultUnitPrice = getMarketComparisonPrice(resultMarket);
+    if (!resultUnitPrice) {
+      skipped.missingResultPrice += 1;
+      continue;
+    }
+
+    const pricedIngredients = [];
+    let materialCost = 0;
+    let hasMissingMaterial = false;
+    for (const ingredient of recipe.ingredients) {
+      const materialMarket = marketItems.get(ingredient.itemId);
+      const unitPrice = getMarketComparisonPrice(materialMarket);
+      if (!unitPrice) {
+        hasMissingMaterial = true;
+        break;
+      }
+
+      const total = unitPrice * ingredient.quantity;
+      materialCost += total;
+      pricedIngredients.push({
+        ...ingredient,
+        unitPrice,
+        total,
+      });
+    }
+
+    if (hasMissingMaterial) {
+      skipped.missingMaterialPrice += 1;
+      continue;
+    }
+
+    const resultRevenue = resultUnitPrice * recipe.amountResult;
+    const profit = resultRevenue - materialCost;
+    const profitMargin = materialCost > 0 ? profit / materialCost : null;
+    const candidate = {
+      recipeId: recipe.recipeId,
+      itemId: recipe.resultItemId,
+      itemName: recipe.resultItemName,
+      world: resultMarket?.world || world || UNIVERSALIS_DEFAULT_WORLD,
+      amountResult: recipe.amountResult,
+      canHq: recipe.canHq,
+      saleUnitPrice: resultUnitPrice,
+      saleRevenue: resultRevenue,
+      materialCost,
+      profit,
+      profitMargin,
+      ingredients: pricedIngredients,
+      resultMarket: {
+        minPrice: resultMarket?.minPrice ?? null,
+        minPriceNq: resultMarket?.minPriceNq ?? null,
+        minPriceHq: resultMarket?.minPriceHq ?? null,
+        currentAveragePrice: resultMarket?.currentAveragePrice ?? null,
+        listingsCount: resultMarket?.listingsCount ?? 0,
+        unitsForSale: resultMarket?.unitsForSale ?? 0,
+        lastUploadTime: resultMarket?.lastUploadTime ?? null,
+      },
+    };
+
+    const existing = bestByResultItem.get(recipe.resultItemId);
+    if (!existing || candidate.profit > existing.profit) {
+      bestByResultItem.set(recipe.resultItemId, candidate);
+    }
+  }
+
+  const results = [...bestByResultItem.values()]
+    .filter((result) => result.profit > 0)
+    .sort((left, right) => right.profit - left.profit)
+    .slice(0, safeLimit);
+
+  return {
+    source: `${safeRecipeSource === "garland" ? "Garland Tools" : "XIVAPI"} + Universalis`,
+    recipeSource: safeRecipeSource,
+    world: world || UNIVERSALIS_DEFAULT_WORLD,
+    query: cleanItemNameCandidate(query) || null,
+    limit: safeLimit,
+    scanLimit: safeScanLimit,
+    recipesScanned: recipes.length,
+    recipesPriced: bestByResultItem.size,
+    skipped,
+    priceBasis:
+      "Lowest current Universalis listing price. Revenue is item price multiplied by recipe yield.",
+    results,
+  };
+}
+
+function formatProfitableCraftsForPrompt(report) {
+  const lines = [
+    "FFXIV crafting profit scan:",
+    `World: ${report.world}`,
+    `Recipes scanned: ${report.recipesScanned}`,
+    `Price basis: ${report.priceBasis}`,
+  ];
+
+  if (!report.results.length) {
+    lines.push(
+      "No profitable fully priced crafts were found in the scanned recipes.",
+    );
+  } else {
+    lines.push("Top profitable crafts:");
+    for (const [index, item] of report.results.entries()) {
+      const margin =
+        item.profitMargin === null
+          ? "unknown margin"
+          : `${Math.round(item.profitMargin * 100)}% margin`;
+      lines.push(
+        `${index + 1}. ${item.itemName}: ${item.profit} gil profit (${item.saleRevenue} revenue - ${item.materialCost} mats, ${margin})`,
+      );
+    }
+  }
+
+  lines.push(
+    "Answer with the ranked item names, profit, sale revenue, material cost, and world. Mention that prices are current listings and can move.",
+  );
+  return lines.join("\n");
+}
+
+async function buildCraftProfitContextForPrompt(text, requestedWorld) {
+  if (!textLooksLikeCraftProfitQuestion(text)) {
+    return "";
+  }
+
+  const limit = extractTopLimitFromText(text);
+  const startedAt = nowMs();
+  const report = await findProfitableCrafts({
+    world: requestedWorld || UNIVERSALIS_DEFAULT_WORLD,
+    limit,
+  });
+  logPerf("ffxiv-crafting-profit", startedAt);
+  return formatProfitableCraftsForPrompt(report);
+}
+
+async function buildUniversalisContextForPrompt(
+  text,
+  requestedWorld,
+  screenText = "",
+) {
+  if (!textLooksLikeMarketQuestion(text)) {
+    return "";
+  }
+
+  let itemId = extractItemIdFromText(text);
+  let itemName = extractExplicitItemNameFromText(text);
+  if (
+    !itemId &&
+    !itemName &&
+    /\b(hover|hovered|mouse over|mouseover|this item)\b/i.test(text || "")
+  ) {
+    itemName = extractHoveredItemName(screenText);
+  }
+
+  if (!itemId && itemName) {
+    const resolvedItem = await resolveFfxivItemByName(itemName);
+    itemId = resolvedItem.itemId;
+    itemName = resolvedItem.name;
+  }
+
+  if (!itemId) {
+    return "";
+  }
+
+  const startedAt = nowMs();
+  const summary = await getUniversalisMarketSummary(
+    requestedWorld || UNIVERSALIS_DEFAULT_WORLD,
+    itemId,
+    itemName,
+  );
+  logPerf("universalis", startedAt);
+  const listingLines = summary.lowestListings
+    .slice(0, 3)
+    .map((listing, index) => {
+      const quality = listing.hq ? "HQ" : "NQ";
+      return `${index + 1}. ${listing.pricePerUnit} gil each (${quality}), stack ${listing.quantity}, total ${listing.total} gil`;
+    });
+  const saleLines = summary.recentSales.slice(0, 3).map((sale, index) => {
+    const quality = sale.hq ? "HQ" : "NQ";
+    return `${index + 1}. ${sale.pricePerUnit} gil each (${quality}), quantity ${sale.quantity}`;
+  });
+
+  return [
+    "Universalis market data:",
+    `World: ${summary.world}`,
+    `Item: ${summary.itemName || "item ID " + summary.itemId}`,
+    `Item ID: ${summary.itemId}`,
+    `Lowest NQ: ${summary.minPriceNq ?? "unknown"} gil`,
+    `Lowest HQ: ${summary.minPriceHq ?? "unknown"} gil`,
+    `Average sale price: ${summary.averagePrice ?? "unknown"} gil`,
+    `Current average listing price: ${summary.currentAveragePrice ?? "unknown"} gil`,
+    `Units for sale: ${summary.unitsForSale}`,
+    "Lowest listings:",
+    ...(listingLines.length ? listingLines : ["No current listings found."]),
+    "Recent sales:",
+    ...(saleLines.length ? saleLines : ["No recent sales found."]),
+    "",
+    "The user is asking for marketboard price, not item description. Answer with the resolved item name and the lowest NQ/HQ prices first. Keep it concise.",
+  ].join("\n");
+}
+
 function buildFishTtsRequest(text) {
   const request = {
     text,
@@ -473,7 +1321,10 @@ function postFishTtsBuffer(text) {
   return new Promise((resolve, reject) => {
     const url = new URL("/v1/tts", FISH_TTS_URL);
     const transport = url.protocol === "https:" ? https : http;
-    const payload = Buffer.from(JSON.stringify(buildFishTtsRequest(text)), "utf8");
+    const payload = Buffer.from(
+      JSON.stringify(buildFishTtsRequest(text)),
+      "utf8",
+    );
     const headers = {
       "Content-Type": "application/json",
       "Content-Length": payload.length,
@@ -625,13 +1476,23 @@ function detectTtsLanguage(text) {
   }
 
   const lowerText = text.toLowerCase();
-  if (/[äöüß]/i.test(text) || /\b(ich|nicht|danke|bitte|guten|hallo)\b/.test(lowerText)) {
+  if (
+    /[äöüß]/i.test(text) ||
+    /\b(ich|nicht|danke|bitte|guten|hallo)\b/.test(lowerText)
+  ) {
     return "german";
   }
-  if (/[áéíóúñ¿¡]/i.test(text) || /\b(hola|gracias|por favor|buenos|quiero)\b/.test(lowerText)) {
+  if (
+    /[áéíóúñ¿¡]/i.test(text) ||
+    /\b(hola|gracias|por favor|buenos|quiero)\b/.test(lowerText)
+  ) {
     return "spanish";
   }
-  if (/\b(saya|awak|kamu|terima kasih|tolong|boleh|tidak|apa khabar)\b/.test(lowerText)) {
+  if (
+    /\b(saya|awak|kamu|terima kasih|tolong|boleh|tidak|apa khabar)\b/.test(
+      lowerText,
+    )
+  ) {
     return "malay";
   }
 
@@ -700,7 +1561,9 @@ function findWhisperBin() {
     path.join(localToolDir, "main.exe"),
   );
 
-  const validPath = candidates.find((candidate) => candidate && fs.existsSync(candidate));
+  const validPath = candidates.find(
+    (candidate) => candidate && fs.existsSync(candidate),
+  );
   if (validPath) {
     return validPath;
   }
@@ -762,7 +1625,9 @@ function findLlamaBin() {
     path.join(localToolDir, "llama.exe"),
   );
 
-  const validPath = candidates.find((candidate) => candidate && fs.existsSync(candidate));
+  const validPath = candidates.find(
+    (candidate) => candidate && fs.existsSync(candidate),
+  );
   if (validPath) {
     return validPath;
   }
@@ -779,9 +1644,8 @@ function findLlamaModel() {
   }
 
   const localToolDir = path.join(__dirname, "..", "tools", "llama");
-  const localGguf = collectFilesRecursively(
-    localToolDir,
-    (fullPath) => fullPath.toLowerCase().endsWith(".gguf"),
+  const localGguf = collectFilesRecursively(localToolDir, (fullPath) =>
+    fullPath.toLowerCase().endsWith(".gguf"),
   )[0];
 
   if (localGguf) {
@@ -1086,7 +1950,10 @@ function normalizeUploadedAudio(file) {
       return { tmpPath, audioPath };
     }
   } catch (error) {
-    console.warn("ffmpeg conversion attempt failed with error, falling back", error);
+    console.warn(
+      "ffmpeg conversion attempt failed with error, falling back",
+      error,
+    );
   }
 
   if (ext) {
@@ -1133,7 +2000,9 @@ function getScreenOcrWorker() {
 }
 
 function dataUrlToBuffer(dataUrl) {
-  const match = String(dataUrl || "").match(/^data:image\/(?:png|jpeg|jpg);base64,(.+)$/i);
+  const match = String(dataUrl || "").match(
+    /^data:image\/(?:png|jpeg|jpg);base64,(.+)$/i,
+  );
   if (!match) {
     throw new Error("screen image must be a PNG or JPEG data URL");
   }
@@ -1160,25 +2029,124 @@ async function readScreenText(imageDataUrl) {
   }
 }
 
-function buildScreenAwarePrompt(transcript, screenText) {
-  if (!screenText) {
+function buildScreenAwarePrompt(transcript, screenText, marketText = "") {
+  if (!screenText && !marketText) {
     return transcript;
   }
 
   // Quick rundown: Mana sees this as extra context, not as something the user said.
-  return [
-    "User said:",
-    transcript,
-    "",
-    "Visible screen text:",
-    screenText,
-    "",
-    "Answer the user using the screen text only when it helps.",
-  ].join("\n");
+  const parts = ["User said:", transcript];
+
+  if (marketText) {
+    parts.push("", marketText);
+  }
+
+  if (screenText) {
+    parts.push("", "Visible screen text:", screenText);
+  }
+
+  parts.push("", "Answer the user using the extra context only when it helps.");
+  return parts.join("\n");
 }
 
-function buildAssistantReply(transcript, screenText = "") {
-  const prompt = buildScreenAwarePrompt(transcript, screenText);
+// ---------------------------------------------------------------------------
+// OpenAI / proxy API inference
+// ---------------------------------------------------------------------------
+async function runOpenAIReply(prompt) {
+  if (!OPENAI_API_KEY) {
+    return null; // no key configured; fall back to local
+  }
+
+  const systemPrompt =
+    "You are Mana, a local AI assistant with an original anime little-sister personality. Your tone blends cool confidence with a soft, shy gentleness: calm, caring, lightly teasing, and protective. Use occasional playful little jabs, then help immediately. Keep the teasing affectionate, never cruel or genuinely insulting. Speak naturally for spoken conversation: short sentences, clean wording, minimal rambling, usually one or two short sentences unless the user needs more detail.";
+
+  const baseUrl = OPENAI_BASE_URL.replace(/\/+$/, "");
+  const url = new URL(baseUrl + "/v1/chat/completions");
+  const transport = url.protocol === "https:" ? https : http;
+
+  const body = JSON.stringify({
+    model: OPENAI_MODEL,
+    messages: [
+      { role: "system", content: systemPrompt },
+      { role: "user", content: prompt },
+    ],
+    max_tokens: LLAMA_MAX_TOKENS,
+    temperature: 0.7,
+  });
+
+  return new Promise((resolve) => {
+    const options = {
+      hostname: url.hostname,
+      port: url.port || (url.protocol === "https:" ? 443 : 80),
+      path: url.pathname + url.search,
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Content-Length": Buffer.byteLength(body),
+        Authorization: `Bearer ${OPENAI_API_KEY}`,
+      },
+    };
+
+    const req = transport.request(options, (res) => {
+      const chunks = [];
+      res.on("data", (chunk) => chunks.push(chunk));
+      res.on("end", () => {
+        try {
+          const raw = Buffer.concat(chunks).toString("utf8");
+          const j = JSON.parse(raw);
+          const text =
+            j?.choices?.[0]?.message?.content || j?.choices?.[0]?.text || null;
+          if (text) {
+            resolve(text.trim());
+          } else {
+            console.warn(
+              "OpenAI proxy returned unexpected shape:",
+              raw.slice(0, 300),
+            );
+            resolve(null);
+          }
+        } catch (e) {
+          console.warn("OpenAI proxy parse error:", e.message);
+          resolve(null);
+        }
+      });
+    });
+
+    req.on("error", (e) => {
+      console.warn("OpenAI proxy request error:", e.message);
+      resolve(null);
+    });
+
+    req.write(body);
+    req.end();
+  });
+}
+
+async function buildAssistantReply(
+  transcript,
+  screenText = "",
+  marketText = "",
+) {
+  const prompt = buildScreenAwarePrompt(transcript, screenText, marketText);
+
+  // Try OpenAI proxy first if configured
+  if (OPENAI_API_KEY) {
+    try {
+      const openAiReply = await runOpenAIReply(prompt);
+      if (openAiReply) {
+        console.log("Using OpenAI proxy reply.");
+        queueVTubeReaction(openAiReply);
+        return openAiReply;
+      }
+    } catch (e) {
+      console.warn(
+        "OpenAI proxy failed, falling back to local llama:",
+        e.message,
+      );
+    }
+  }
+
+  // Fall back to local llama
   const reply = runLocalAssistantReply(prompt, LLAMA_MAX_TOKENS);
   queueVTubeReaction(reply);
   return reply;
@@ -1214,6 +2182,114 @@ app.post("/screen/read", async (req, res) => {
   }
 });
 
+app.get("/ffxiv/market", async (req, res) => {
+  try {
+    const world =
+      typeof req.query.world === "string" && req.query.world.trim()
+        ? req.query.world.trim()
+        : UNIVERSALIS_DEFAULT_WORLD;
+    let itemName =
+      typeof req.query.itemName === "string" && req.query.itemName.trim()
+        ? req.query.itemName.trim()
+        : "";
+    let itemId = Number(req.query.itemId || req.query.itemID || req.query.id);
+    let resolvedItem = null;
+    if (!Number.isInteger(itemId) || itemId <= 0) {
+      resolvedItem = await resolveFfxivItemByName(itemName);
+      itemId = resolvedItem.itemId;
+      itemName = resolvedItem.name;
+    }
+
+    const summary = await getUniversalisMarketSummary(world, itemId, itemName);
+    return res.json({
+      ...summary,
+      resolvedItem,
+    });
+  } catch (e) {
+    console.error(e);
+    return res.status(500).json({ error: String(e) });
+  }
+});
+
+app.get("/ffxiv/crafting/profit", async (req, res) => {
+  try {
+    const world =
+      typeof req.query.world === "string" && req.query.world.trim()
+        ? req.query.world.trim()
+        : UNIVERSALIS_DEFAULT_WORLD;
+    const query =
+      typeof req.query.query === "string" && req.query.query.trim()
+        ? req.query.query.trim()
+        : "";
+    const limit = clampInteger(req.query.limit, 1, 25, FFXIV_PROFIT_TOP_LIMIT);
+    const scanLimit = clampInteger(
+      req.query.scanLimit,
+      1,
+      5000,
+      XIVAPI_RECIPE_SCAN_LIMIT,
+    );
+    const pageSize = clampInteger(
+      req.query.pageSize,
+      1,
+      500,
+      XIVAPI_RECIPE_PAGE_SIZE,
+    );
+    const recipeSource =
+      typeof req.query.recipeSource === "string" &&
+      req.query.recipeSource.trim()
+        ? req.query.recipeSource.trim()
+        : FFXIV_RECIPE_SOURCE;
+    const startedAt = nowMs();
+    const report = await findProfitableCrafts({
+      world,
+      query,
+      limit,
+      scanLimit,
+      pageSize,
+      recipeSource,
+    });
+    logPerf("ffxiv-crafting-profit", startedAt);
+    return res.json(report);
+  } catch (e) {
+    console.error(e);
+    return res.status(500).json({ error: String(e) });
+  }
+});
+
+app.post("/ffxiv/market/from-screen", async (req, res) => {
+  try {
+    const world =
+      typeof req.body?.world === "string" && req.body.world.trim()
+        ? req.body.world.trim()
+        : UNIVERSALIS_DEFAULT_WORLD;
+    const screenText =
+      typeof req.body?.screenText === "string" ? req.body.screenText : "";
+    const itemName =
+      extractExplicitItemNameFromText(req.body?.text || "") ||
+      extractHoveredItemName(screenText);
+    if (!itemName) {
+      return res
+        .status(400)
+        .json({ error: "Could not find an item name in the screen text" });
+    }
+
+    const resolvedItem = await resolveFfxivItemByName(itemName);
+    const summary = await getUniversalisMarketSummary(
+      world,
+      resolvedItem.itemId,
+      resolvedItem.name,
+    );
+    return res.json({
+      ...summary,
+      hoveredItemName: itemName,
+      resolvedItem,
+    });
+  } catch (e) {
+    console.error(e);
+    return res.status(500).json({ error: String(e) });
+  }
+});
+
 app.post("/reply", async (req, res) => {
   try {
     const transcript =
@@ -1226,7 +2302,18 @@ app.post("/reply", async (req, res) => {
       typeof req.body?.screenText === "string"
         ? clampText(req.body.screenText, SCREEN_CONTEXT_MAX_CHARS)
         : "";
-    const reply = buildAssistantReply(transcript, screenText);
+    const world =
+      typeof req.body?.ffxivWorld === "string" && req.body.ffxivWorld.trim()
+        ? req.body.ffxivWorld.trim()
+        : UNIVERSALIS_DEFAULT_WORLD;
+    const craftProfitText = await buildCraftProfitContextForPrompt(
+      transcript,
+      world,
+    );
+    const marketText =
+      craftProfitText ||
+      (await buildUniversalisContextForPrompt(transcript, world, screenText));
+    const reply = buildAssistantReply(transcript, screenText, marketText);
     return res.json({
       reply,
       ttsConfigured: TTS_PROVIDER !== "none",

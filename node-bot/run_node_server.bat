@@ -1,15 +1,21 @@
 @echo off
+REM run_node_server.bat
+REM Starts the node-bot server.
+REM Edit the env vars below to set your API key and model settings.
+REM To swap between your key and co-intern's key: change OPENAI_API_KEY below.
 
+REM --- OpenAI proxy ---
+set "OPENAI_API_KEY=sk-PASTE_YOUR_KEY_HERE"
+set "OPENAI_BASE_URL=https://new.aicode.us.com"
+set "OPENAI_MODEL=codex-gpt-5.5"
+
+REM --- Whisper (local STT, keep as-is) ---
 set "WHISPER_BIN=C:\ManaAI\Mana\tools\whisper\Release\whisper-cli.exe"
-if not exist "%WHISPER_BIN%" set "WHISPER_BIN=C:\ManaAI\Mana\tools\whisper\whisper-cli.exe"
-if not exist "%WHISPER_BIN%" set "WHISPER_BIN=C:\ManaAI\Mana\tools\whisper\main.exe"
-
 set "WHISPER_MODEL=C:\ManaAI\Mana\tools\whisper\models\ggml-tiny.en.bin"
-set "TTS_PROVIDER=chatterbox"
-set "CHATTERBOX_TTS_URL=http://127.0.0.1:5010"
-set "VTUBE_STUDIO_URL=ws://127.0.0.1:8001"
-set "VTUBE_STUDIO_ENABLED=1"
+
+REM --- Optional: local llama fallback (comment out if not using) ---
+REM set "LLAMA_BIN=C:\ManaAI\Mana\tools\llama\llama-b9436-bin-win-cuda-12.4-x64\llama.exe"
+REM set "LLAMA_MODEL=C:\ManaAI\Mana\tools\llama\gguf-models\llama-2-7b-chat-q4_0.gguf"
 
 cd /d "%~dp0"
-
-node server.js > node_server.log 2>&1
+node server.js
