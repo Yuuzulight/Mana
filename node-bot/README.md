@@ -57,6 +57,18 @@ POST /synthesize (JSON, body `{ "text": "..." }`)
 GET /health
   -> { ok: true, ttsConfigured: true|false }
 
+GET /ffxiv/market?world=Adamantoise&itemName=Potion
+  -> returns a Universalis market summary for one item
+
+GET /ffxiv/crafting/profit?world=Adamantoise&limit=10&scanLimit=500
+  -> compares Garland Tools recipe materials against Universalis prices and returns the most profitable crafts
+
+GET /ffxiv/crafting/profit?world=Adamantoise&query=ingot&limit=10
+  -> narrows the recipe scan by crafted result name
+
+GET /ffxiv/crafting/profit?world=Adamantoise&recipeSource=xivapi
+  -> forces XIVAPI recipe rows instead of the default Garland Tools item docs
+
 Notes
 -----
 - CLI flags for whisper.cpp and llama.cpp vary between forks/builds. If the binaries you use require different flags, edit node-bot/server.js accordingly.
