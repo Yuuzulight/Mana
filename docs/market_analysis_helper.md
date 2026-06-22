@@ -24,6 +24,21 @@ The backend should collect structured data first, then pass a compact summary
 into Mana's normal reply flow. That keeps the language model from guessing
 numbers and makes the feature easier to test.
 
+## Local setup
+
+Set these before starting the backend:
+
+- `MARKET_PROVIDER=alphavantage`
+- `ALPHA_VANTAGE_API_KEY=your-api-key`
+- `MARKET_WATCHLIST=NVDA,AMD,AAPL,MSFT`
+- `MARKET_CACHE_MS=300000`
+
+Mana can then answer prompts like:
+
+- `Mana, summarize NVDA today`
+- `Mana, compare AMD and NVDA`
+- `Mana, summarize my watchlist`
+
 ## Data sources
 
 Start with one primary provider to avoid complexity.
@@ -36,6 +51,9 @@ Start with one primary provider to avoid complexity.
 
 API keys must come from environment variables. They should never be written into
 launcher scripts or committed to the repository.
+
+The MVP uses Alpha Vantage `GLOBAL_QUOTE` and `OVERVIEW` data. SEC EDGAR filing
+summaries are still a later enhancement.
 
 ## Safety boundaries
 
