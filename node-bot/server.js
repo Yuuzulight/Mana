@@ -37,6 +37,10 @@ const http = require("http");
 const https = require("https");
 const { createWorker } = require("tesseract.js");
 const { VTubeStudioClient } = require("./vtube-studio-client");
+const {
+  buildMarketContextForPrompt,
+  createMarketDataClient,
+} = require("./market-data");
 const app = express();
 app.use(cors());
 app.use(express.json({ limit: "15mb" }));
@@ -67,6 +71,7 @@ const UNIVERSALIS_API_URL =
 const UNIVERSALIS_DEFAULT_WORLD =
   process.env.UNIVERSALIS_DEFAULT_WORLD || "Adamantoise";
 const UNIVERSALIS_CACHE_MS = Number(process.env.UNIVERSALIS_CACHE_MS || 60000);
+const MARKET_PROVIDER = process.env.MARKET_PROVIDER || "alphavantage";
 const XIVAPI_SEARCH_URL =
   process.env.XIVAPI_SEARCH_URL || "https://v2.xivapi.com/api/search";
 const XIVAPI_SHEET_URL =
@@ -140,6 +145,7 @@ const KOKORO_LANGUAGE_PROFILES = {
 const vtubeStudio = VTUBE_STUDIO_ENABLED
   ? new VTubeStudioClient({ url: VTUBE_STUDIO_URL })
   : null;
+const marketDataClient = createMarketDataClient();
 
 function nowMs() {
   return Number(process.hrtime.bigint() / 1000000n);
@@ -314,6 +320,9 @@ app.get("/health", (req, res) => {
     llamaStatus: llamaStatus.message,
     vtubeStudioConfigured: Boolean(vtubeStudio),
     vtubeStudioUrl: VTUBE_STUDIO_URL,
+    marketProvider: MARKET_PROVIDER,
+    marketConfigured: marketDataClient.isConfigured,
+    marketWatchlist: marketDataClient.watchlist,
   });
 });
 
@@ -2182,6 +2191,52 @@ app.post("/screen/read", async (req, res) => {
   }
 });
 
+app.get("/market/stock/summary", async (req, res) => {
+  try {
+    const symbol = typeof req.query.symbol === "string" ? req.query.symbol : "";
+    const summary = await marketDataClient.getStockSummary(symbol);
+    return res.json({
+      ...summary,
+      disclaimer: "Market analysis only. Not financial advice.",
+    });
+  } catch (e) {
+    console.error(e);
+    return res.status(500).json({ error: String(e) });
+  }
+});
+
+app.get("/market/stock/compare", async (req, res) => {
+  try {
+    const symbols =
+      typeof req.query.symbols === "string" ? req.query.symbols : "";
+    const results = await marketDataClient.compareStocks(symbols);
+    return res.json({
+      source: "Alpha Vantage",
+      symbols: results.map((item) => item.symbol),
+      results,
+      disclaimer: "Market analysis only. Not financial advice.",
+    });
+  } catch (e) {
+    console.error(e);
+    return res.status(500).json({ error: String(e) });
+  }
+});
+
+app.get("/market/watchlist", async (req, res) => {
+  try {
+    const results = await marketDataClient.getWatchlistSummary();
+    return res.json({
+      source: "Alpha Vantage",
+      symbols: results.map((item) => item.symbol),
+      results,
+      disclaimer: "Market analysis only. Not financial advice.",
+    });
+  } catch (e) {
+    console.error(e);
+    return res.status(500).json({ error: String(e) });
+  }
+});
+
 app.get("/ffxiv/market", async (req, res) => {
   try {
     const world =
@@ -2312,8 +2367,9 @@ app.post("/reply", async (req, res) => {
     );
     const marketText =
       craftProfitText ||
-      (await buildUniversalisContextForPrompt(transcript, world, screenText));
-    const reply = buildAssistantReply(transcript, screenText, marketText);
+      (await buildUniversalisContextForPrompt(transcript, world, screenText)) ||
+      (await buildMarketContextForPrompt(transcript, marketDataClient));
+    const reply = await buildAssistantReply(transcript, screenText, marketText);
     return res.json({
       reply,
       ttsConfigured: TTS_PROVIDER !== "none",
@@ -2340,7 +2396,11 @@ app.post("/transcribe", upload.single("file"), async (req, res) => {
     );
     const transcript = runWhisper(audioPath);
 
-    const reply = buildAssistantReply(transcript);
+    const stockMarketText = await buildMarketContextForPrompt(
+      transcript,
+      marketDataClient,
+    );
+    const reply = await buildAssistantReply(transcript, "", stockMarketText);
     cleanupUploadedAudio(tmpPath, audioPath);
 
     return res.json({

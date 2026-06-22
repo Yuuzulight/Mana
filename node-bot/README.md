@@ -42,6 +42,9 @@ Install and run
    $env:LLAMA_MODEL = "C:\\models\\7b.gguf"
    $env:TTS_PROVIDER = "chatterbox"
    $env:CHATTERBOX_TTS_URL = "http://127.0.0.1:5010"
+   $env:MARKET_PROVIDER = "alphavantage"
+   $env:ALPHA_VANTAGE_API_KEY = "your-api-key"
+   $env:MARKET_WATCHLIST = "NVDA,AMD,AAPL,MSFT"
 
 3. Start the server
    npm start
@@ -56,6 +59,15 @@ POST /synthesize (JSON, body `{ "text": "..." }`)
 
 GET /health
   -> { ok: true, ttsConfigured: true|false }
+
+GET /market/stock/summary?symbol=NVDA
+  -> returns an Alpha Vantage quote and company summary for one ticker
+
+GET /market/stock/compare?symbols=NVDA,AMD
+  -> returns summaries for two or more tickers
+
+GET /market/watchlist
+  -> returns summaries for the configured MARKET_WATCHLIST symbols
 
 GET /ffxiv/market?world=Adamantoise&itemName=Potion
   -> returns a Universalis market summary for one item
@@ -73,4 +85,5 @@ Notes
 -----
 - CLI flags for whisper.cpp and llama.cpp vary between forks/builds. If the binaries you use require different flags, edit node-bot/server.js accordingly.
 - `node-bot` can still support a generic CLI TTS path, but the intended realistic-voice path is the Chatterbox microservice.
+- Stock-market features are analysis helpers only. Mana does not place trades, connect to brokerages, or provide financial advice.
 - This server does synchronous subprocess calls for simplicity. For production or heavy usage, consider using streaming or persistent server processes for llama.cpp (server mode) to reduce startup overhead.
