@@ -47,6 +47,7 @@ Project goal
      - `$env:START_FALLBACK_CHATTERBOX = "0"`
      - `$env:KOKORO_TTS_FALLBACK_PROVIDER = "none"`
      - `$env:HIDE_MAIN_WINDOW_AFTER_STARTUP = "1"`
+     - `$env:UNIVERSALIS_DEFAULT_WORLD = "Adamantoise"`
 
    Notes:
    - `WHISPER_BIN` should point to the Whisper CLI executable you want to use.
@@ -65,6 +66,7 @@ Project goal
    - `START_FALLBACK_CHATTERBOX=1` starts Chatterbox alongside Kokoro as a fallback, but uses more memory.
    - `KOKORO_TTS_FALLBACK_PROVIDER=none` keeps Kokoro from falling back to Chatterbox.
    - `HIDE_MAIN_WINDOW_AFTER_STARTUP=0` keeps the control window visible for debugging.
+   - `UNIVERSALIS_DEFAULT_WORLD` is the FFXIV world Mana uses for public marketboard price checks.
 
 3) Install launcher and backend dependencies
    - In PowerShell:
@@ -120,6 +122,21 @@ Performance notes
 - The launcher Performance panel shows current Mana memory, detected game status, config caps, and latest Whisper/OCR/Llama/TTS timings.
 - Set `GAMING_PROCESS_NAMES` to a comma-separated process list if you want to watch other games.
 - Example: `$env:GAMING_PROCESS_NAMES = "ffxiv_dx11.exe,eldenring.exe"`
+
+Universalis market data
+- Mana can query public FFXIV marketboard data through Universalis.
+- Direct endpoint: `GET http://localhost:5005/ffxiv/market?world=Adamantoise&itemId=2`
+- Name lookup endpoint: `GET http://localhost:5005/ffxiv/market?world=Adamantoise&itemName=Potion`
+- Hovered-item endpoint: `POST http://localhost:5005/ffxiv/market/from-screen` with `{ "screenText": "Potion\nItem Level 1..." }`
+- Craft profit endpoint: `GET http://localhost:5005/ffxiv/crafting/profit?world=Adamantoise&limit=10&scanLimit=500`
+- Narrow the craft scan by result name: `GET http://localhost:5005/ffxiv/crafting/profit?world=Adamantoise&query=ingot&limit=10`
+- Recipe/material lookup defaults to Garland Tools item docs; use `recipeSource=xivapi` to force XIVAPI recipe rows instead.
+- Voice/text prompts can ask for prices if you include an item ID, for example: `Mana, check the marketboard price for item id 2`.
+- If the hovered item tooltip is visible, you can ask: `Mana, check the Universalis price for the item I am hovering over`.
+- Voice/text prompts can ask for profitable crafts, for example: `Mana, find the top 10 most profitable crafts on Adamantoise`.
+- Profit compares the crafted result's lowest current Universalis listing price, multiplied by recipe yield, against the sum of each material's lowest current listing price.
+- Optional tuning: `FFXIV_RECIPE_SOURCE`, `GARLAND_TOOLS_BASE_URL`, `XIVAPI_RECIPE_SCAN_LIMIT`, `XIVAPI_RECIPE_PAGE_SIZE`, and `FFXIV_PROFIT_TOP_LIMIT`.
+- This does not read packets or inspect the game client.
 
 Troubleshooting
 - If the UI reports `Local backend not reachable`, check that `node-bot` started successfully and that nothing else is using port `5005`.
