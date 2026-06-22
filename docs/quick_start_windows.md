@@ -48,6 +48,10 @@ Project goal
      - `$env:KOKORO_TTS_FALLBACK_PROVIDER = "none"`
      - `$env:HIDE_MAIN_WINDOW_AFTER_STARTUP = "1"`
      - `$env:UNIVERSALIS_DEFAULT_WORLD = "Adamantoise"`
+     - `$env:MARKET_PROVIDER = "alphavantage"`
+     - `$env:ALPHA_VANTAGE_API_KEY = "your-api-key"`
+     - `$env:MARKET_WATCHLIST = "NVDA,AMD,AAPL,MSFT"`
+     - `$env:MARKET_CACHE_MS = "300000"`
 
    Notes:
    - `WHISPER_BIN` should point to the Whisper CLI executable you want to use.
@@ -67,6 +71,8 @@ Project goal
    - `KOKORO_TTS_FALLBACK_PROVIDER=none` keeps Kokoro from falling back to Chatterbox.
    - `HIDE_MAIN_WINDOW_AFTER_STARTUP=0` keeps the control window visible for debugging.
    - `UNIVERSALIS_DEFAULT_WORLD` is the FFXIV world Mana uses for public marketboard price checks.
+   - `ALPHA_VANTAGE_API_KEY` enables stock-market summaries. Keep this in your local environment, not in committed files.
+   - `MARKET_WATCHLIST` is the comma-separated ticker list Mana uses for watchlist summaries.
 
 3) Install launcher and backend dependencies
    - In PowerShell:
@@ -137,6 +143,17 @@ Universalis market data
 - Profit compares the crafted result's lowest current Universalis listing price, multiplied by recipe yield, against the sum of each material's lowest current listing price.
 - Optional tuning: `FFXIV_RECIPE_SOURCE`, `GARLAND_TOOLS_BASE_URL`, `XIVAPI_RECIPE_SCAN_LIMIT`, `XIVAPI_RECIPE_PAGE_SIZE`, and `FFXIV_PROFIT_TOP_LIMIT`.
 - This does not read packets or inspect the game client.
+
+Stock market analysis
+- Mana can query public stock-market data through Alpha Vantage when `ALPHA_VANTAGE_API_KEY` is set.
+- Stock summary endpoint: `GET http://localhost:5005/market/stock/summary?symbol=NVDA`
+- Stock comparison endpoint: `GET http://localhost:5005/market/stock/compare?symbols=NVDA,AMD`
+- Watchlist endpoint: `GET http://localhost:5005/market/watchlist`
+- Voice/text prompts can ask for market analysis, for example: `Mana, summarize NVDA today`.
+- Voice/text prompts can compare tickers, for example: `Mana, compare AMD and NVDA`.
+- Voice/text prompts can ask about the watchlist, for example: `Mana, summarize my watchlist`.
+- Mana uses the market data as context for analysis only. She does not place trades, connect to brokerages, or provide financial advice.
+- Optional tuning: `MARKET_PROVIDER`, `ALPHA_VANTAGE_BASE_URL`, `MARKET_WATCHLIST`, and `MARKET_CACHE_MS`.
 
 Troubleshooting
 - If the UI reports `Local backend not reachable`, check that `node-bot` started successfully and that nothing else is using port `5005`.
