@@ -41,10 +41,15 @@ const {
   buildMarketContextForPrompt,
   createMarketDataClient,
 } = require("./market-data");
-const app = express();
-app.use(cors());
-app.use(express.json({ limit: "15mb" }));
-const upload = multer({ dest: path.join(__dirname, "tmp") });
+
+function createApp(deps = {}) {
+  const app = express();
+  app.use(cors());
+  app.use(express.json({ limit: "15mb" }));
+  const upload = multer({ dest: path.join(__dirname, "tmp") });
+  registerRoutes(app, upload, deps);
+  return app;
+}
 
 const WHISPER_BIN = process.env.WHISPER_BIN || null;
 const WHISPER_MODEL = process.env.WHISPER_MODEL || null;
@@ -305,6 +310,7 @@ if (!fs.existsSync(path.join(__dirname, "tmp"))) {
   fs.mkdirSync(path.join(__dirname, "tmp"));
 }
 
+function registerRoutes(app, upload, deps = {}) {
 app.get("/health", (req, res) => {
   const llamaStatus = getLlamaStatus();
   res.json({
@@ -2503,5 +2509,19 @@ app.post("/vtube/hotkey", async (req, res) => {
   }
 });
 
-const port = process.env.PORT || 5005;
-app.listen(port, () => console.log("Node local bot listening on", port));
+}
+
+function startServer() {
+  const port = process.env.PORT || 5005;
+  const app = createApp();
+  return app.listen(port, () => console.log("Node local bot listening on", port));
+}
+
+if (require.main === module) {
+  startServer();
+}
+
+module.exports = {
+  createApp,
+  startServer,
+};
