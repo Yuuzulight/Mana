@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta name="theme-color" content="#0d151c">
+    <title>Mana Mobile</title>
+    <link rel="manifest" href="./manifest.webmanifest">
+    <link rel="icon" href="./icons/icon-192.svg" type="image/svg+xml">
+    <link rel="stylesheet" href="./styles.css">
+  </head>
+  <body>
+    <main class="app">
+      <section id="lockScreen" class="lock-screen" aria-labelledby="lockTitle">
+        <div class="brand-mark" aria-hidden="true">M</div>
+        <h1 id="lockTitle">Mana Mobile</h1>
+        <form id="unlockForm" class="unlock-form">
+          <label class="sr-only" for="passcodeInput">Passcode</label>
+          <input
+            id="passcodeInput"
+            name="passcode"
+            type="password"
+            inputmode="numeric"
+            autocomplete="current-password"
+            placeholder="Passcode"
+            required
+          >
+          <button type="submit">Unlock</button>
+        </form>
+        <p id="lockStatus" class="status-text" role="status">Locked</p>
+      </section>
+
+      <section id="chatScreen" class="chat-screen hidden" aria-label="Mana chat">
+        <header class="topbar">
+          <button id="chatListButton" class="icon-button" type="button" aria-label="Open chats">
+            <span aria-hidden="true">=</span>
+          </button>
+          <div class="chat-heading">
+            <h2 id="chatTitle">Mana</h2>
+            <p id="connectionStatus">Offline</p>
+          </div>
+          <button id="newChatButton" class="icon-button" type="button" aria-label="New chat">
+            <span aria-hidden="true">+</span>
+          </button>
+        </header>
+
+        <aside id="chatDrawer" class="chat-drawer hidden" aria-label="Chats">
+          <div class="drawer-header">
+            <strong>Chats</strong>
+            <button id="closeDrawerButton" class="icon-button small" type="button" aria-label="Close chats">
+              <span aria-hidden="true">x</span>
+            </button>
+          </div>
+          <div id="chatList" class="chat-list"></div>
+        </aside>
+
+        <div id="messages" class="messages" aria-live="polite"></div>
+
+        <div class="action-row" aria-label="Chat actions">
+          <button id="sendSummaryButton" type="button">Send Summary</button>
+          <button id="syncButton" type="button">Sync</button>
+          <button id="speakerButton" class="toggle-button" type="button" aria-pressed="false">Voice Off</button>
+        </div>
+        <p id="syncStatus" class="sync-status" role="status">No pending summaries</p>
+
+        <form id="messageForm" class="composer">
+          <button id="micButton" class="icon-button mic" type="button" aria-label="Hold to talk">
+            <span aria-hidden="true">mic</span>
+          </button>
+          <label class="sr-only" for="messageInput">Message</label>
+          <textarea
+            id="messageInput"
+            name="message"
+            rows="1"
+            placeholder="Message Mana"
+            autocomplete="off"
+          ></textarea>
+          <button id="sendButton" type="submit">Send</button>
+        </form>
+      </section>
+    </main>
+
+    <script src="./app.js" defer></script>
+  </body>
+</html>
