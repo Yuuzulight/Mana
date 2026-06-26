@@ -46,3 +46,43 @@ test("mobile auth rejects wrong passcode and expired tokens", () => {
   assert.equal(auth.verifyToken(unlock.token).ok, false);
   assert.match(auth.verifyToken(unlock.token).error, /expired/i);
 });
+
+test("mobile auth rejects tokens with extra segments", () => {
+  const auth = createMobileAuth({
+    passcodeHash: hashPasscode("2468", "test-salt"),
+    sessionSecret: "unit-test-secret",
+    now: () => 1000,
+    sessionTtlMs: 60_000,
+  });
+
+  const unlock = auth.unlock("2468");
+  const verified = auth.verifyToken(`${unlock.token}.extra`);
+
+  assert.equal(verified.ok, false);
+  assert.match(verified.error, /invalid token/i);
+});
+
+test("verifyPasscode returns false for malformed hashes", () => {
+  const malformedHashes = [
+    "pbkdf2_sha256$not-a-number$test-salt$abc",
+    "pbkdf2_sha256$0$test-salt$abc",
+    "pbkdf2_sha256$120000$test-salt$abc",
+  ];
+
+  for (const malformedHash of malformedHashes) {
+    assert.doesNotThrow(() => verifyPasscode("2468", malformedHash));
+    assert.equal(verifyPasscode("2468", malformedHash), false);
+  }
+});
+
+test("mobile auth rejects malformed configured passcode hashes", () => {
+  const auth = createMobileAuth({
+    passcodeHash: "pbkdf2_sha256$not-a-number$test-salt$abc",
+    sessionSecret: "unit-test-secret",
+  });
+
+  const unlock = auth.unlock("2468");
+
+  assert.equal(unlock.ok, false);
+  assert.match(unlock.error, /invalid passcode/i);
+});

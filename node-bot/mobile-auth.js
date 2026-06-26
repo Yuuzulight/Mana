@@ -20,11 +20,23 @@ function verifyPasscode(passcode, storedHash) {
   const iterations = Number(parts[1]);
   const salt = parts[2];
   const expected = parts[3];
-  const actual = crypto
-    .pbkdf2Sync(String(passcode || ""), salt, iterations, 32, "sha256")
-    .toString("hex");
+  if (
+    !Number.isSafeInteger(iterations) ||
+    iterations <= 0 ||
+    !/^[a-f0-9]{64}$/i.test(expected)
+  ) {
+    return false;
+  }
 
-  return crypto.timingSafeEqual(Buffer.from(actual), Buffer.from(expected));
+  try {
+    const actual = crypto
+      .pbkdf2Sync(String(passcode || ""), salt, iterations, 32, "sha256")
+      .toString("hex");
+
+    return crypto.timingSafeEqual(Buffer.from(actual), Buffer.from(expected));
+  } catch (error) {
+    return false;
+  }
 }
 
 function signPayload(payload, secret) {
@@ -41,7 +53,12 @@ function createToken(payload, secret) {
 }
 
 function parseToken(token, secret) {
-  const [body, signature] = String(token || "").split(".");
+  const parts = String(token || "").split(".");
+  if (parts.length !== 2) {
+    return { ok: false, error: "Invalid token" };
+  }
+
+  const [body, signature] = parts;
   if (!body || !signature) {
     return { ok: false, error: "Invalid token" };
   }
