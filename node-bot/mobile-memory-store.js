@@ -78,7 +78,9 @@ function createMobileMemoryStore(options = {}) {
   function saveSummary(input) {
     const summaries = readJsonArray(filePath);
     const summary = normalizeSummary(input, now());
-    const existing = summaries.find((item) => item.id === summary.id);
+    const existing = summaries.find(
+      (item) => cleanText(item.id, 120) === summary.id,
+    );
     if (existing) {
       return existing;
     }
