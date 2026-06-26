@@ -553,7 +553,7 @@ async function sendAudioMessage(blob, chatId = state.currentChatId) {
     const reply = body.reply || "";
     await addMessageToChat(chatId, "user", transcript);
     await addMessageToChat(chatId, "assistant", reply);
-    if (state.speakerEnabled && reply) {
+    if (state.speakerEnabled && body.ttsConfigured && reply) {
       await playReply(reply);
     }
     els.connectionStatus.textContent = "Connected";
