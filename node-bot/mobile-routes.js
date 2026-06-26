@@ -227,6 +227,14 @@ function registerMobileRoutes(app, deps = {}) {
     }
   });
 
+  app.use(
+    "/mobile/app",
+    express.static(path.join(__dirname, "mobile-app"), {
+      extensions: ["html"],
+      index: "index.html",
+    }),
+  );
+
   app.use("/mobile", router);
 }
 
