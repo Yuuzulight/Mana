@@ -57,6 +57,29 @@ test("saveSummary is idempotent for duplicate ids", () => {
   assert.equal(store.listSummaries()[0].summary, "First summary.");
 });
 
+test("saveSummary uses normalized ids for duplicate detection", () => {
+  const { store } = makeTempStore();
+
+  const first = store.saveSummary({
+    id: "same-id",
+    source: "phone",
+    direction: "phone-to-pc",
+    chatId: "chat-1",
+    summary: "First summary.",
+  });
+  const second = store.saveSummary({
+    id: " same-id ",
+    source: "phone",
+    direction: "phone-to-pc",
+    chatId: "chat-1",
+    summary: "Whitespace should not create another record.",
+  });
+
+  assert.equal(second.id, first.id);
+  assert.equal(store.listSummaries().length, 1);
+  assert.equal(store.listSummaries()[0].summary, "First summary.");
+});
+
 test("createMobileMemoryStore reloads existing summaries from disk", () => {
   const { dir, store } = makeTempStore();
   store.saveSummary({
@@ -71,4 +94,43 @@ test("createMobileMemoryStore reloads existing summaries from disk", () => {
 
   assert.equal(reloaded.listSummaries()[0].id, "persisted");
   assert.equal(reloaded.listSummaries({ direction: "pc-to-phone" }).length, 1);
+});
+
+test("listSummaries rejects persisted JSON that is not an array", () => {
+  const { dir } = makeTempStore();
+  fs.writeFileSync(
+    path.join(dir, "mobile-summaries.json"),
+    '{"manual":"data"}\n',
+    "utf8",
+  );
+
+  const store = createMobileMemoryStore({ dataDir: dir });
+
+  assert.throws(
+    () => store.listSummaries(),
+    /mobile summaries store must contain a JSON array/,
+  );
+});
+
+test("saveSummary rejects persisted JSON that is not an array", () => {
+  const { dir } = makeTempStore();
+  fs.writeFileSync(
+    path.join(dir, "mobile-summaries.json"),
+    '{"manual":"data"}\n',
+    "utf8",
+  );
+
+  const store = createMobileMemoryStore({ dataDir: dir });
+
+  assert.throws(
+    () =>
+      store.saveSummary({
+        id: "new-note",
+        source: "phone",
+        direction: "phone-to-pc",
+        chatId: "chat-1",
+        summary: "This should not overwrite manual data.",
+      }),
+    /mobile summaries store must contain a JSON array/,
+  );
 });
