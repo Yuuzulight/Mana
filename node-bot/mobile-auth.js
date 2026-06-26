@@ -64,10 +64,17 @@ function parseToken(token, secret) {
   }
 
   const expected = signPayload(body, secret);
-  if (
-    expected.length !== signature.length ||
-    !crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(signature))
-  ) {
+  const expectedBuffer = Buffer.from(expected);
+  const signatureBuffer = Buffer.from(signature);
+  if (expectedBuffer.length !== signatureBuffer.length) {
+    return { ok: false, error: "Invalid token signature" };
+  }
+
+  try {
+    if (!crypto.timingSafeEqual(expectedBuffer, signatureBuffer)) {
+      return { ok: false, error: "Invalid token signature" };
+    }
+  } catch (error) {
     return { ok: false, error: "Invalid token signature" };
   }
 
