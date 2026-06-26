@@ -62,6 +62,25 @@ test("mobile auth rejects tokens with extra segments", () => {
   assert.match(verified.error, /invalid token/i);
 });
 
+test("mobile auth rejects malformed non-ASCII token signatures without throwing", () => {
+  const auth = createMobileAuth({
+    passcodeHash: hashPasscode("2468", "test-salt"),
+    sessionSecret: "unit-test-secret",
+    now: () => 1000,
+    sessionTtlMs: 60_000,
+  });
+
+  const unlock = auth.unlock("2468");
+  const [body, signature] = unlock.token.split(".");
+  const badSignature = "\u00e9".repeat(signature.length);
+  const badToken = `${body}.${badSignature}`;
+
+  assert.doesNotThrow(() => auth.verifyToken(badToken));
+  const verified = auth.verifyToken(badToken);
+  assert.equal(verified.ok, false);
+  assert.match(verified.error, /invalid token signature/i);
+});
+
 test("verifyPasscode returns false for malformed hashes", () => {
   const malformedHashes = [
     "pbkdf2_sha256$not-a-number$test-salt$abc",
