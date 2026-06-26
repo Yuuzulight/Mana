@@ -109,6 +109,10 @@ function currentChat() {
   return state.chats.find((item) => item.id === state.currentChatId) || null;
 }
 
+function findChat(chatId) {
+  return state.chats.find((item) => item.id === chatId) || null;
+}
+
 async function saveChat(chat) {
   chat.updatedAt = nowIso();
   await put("chats", chat);
@@ -132,8 +136,8 @@ async function loadChats() {
   await refreshSyncStatus();
 }
 
-async function addMessage(role, text, options = {}) {
-  const chat = currentChat();
+async function addMessageToChat(chatId, role, text, options = {}) {
+  const chat = findChat(chatId);
   if (!chat) {
     return null;
   }
@@ -150,12 +154,20 @@ async function addMessage(role, text, options = {}) {
   }
   await saveChat(chat);
   sortChats();
-  render();
+  if (chat.id === state.currentChatId) {
+    render();
+  } else {
+    renderChatList();
+  }
   return message;
 }
 
-async function updateMessage(messageId, changes) {
-  const chat = currentChat();
+async function addMessage(role, text, options = {}) {
+  return await addMessageToChat(state.currentChatId, role, text, options);
+}
+
+async function updateMessage(chatId, messageId, changes) {
+  const chat = findChat(chatId);
   if (!chat) {
     return;
   }
@@ -165,7 +177,12 @@ async function updateMessage(messageId, changes) {
   }
   Object.assign(message, changes);
   await saveChat(chat);
-  render();
+  sortChats();
+  if (chat.id === state.currentChatId) {
+    render();
+  } else {
+    renderChatList();
+  }
 }
 
 function sortChats() {
@@ -224,6 +241,7 @@ function render() {
   renderMessages(chat);
   renderChatList();
   els.sendButton.disabled = state.isSending;
+  els.sendSummaryButton.disabled = !hasStableSummaryContent(chat);
   els.speakerButton.textContent = state.speakerEnabled ? "Voice On" : "Voice Off";
   els.speakerButton.setAttribute("aria-pressed", String(state.speakerEnabled));
 }
@@ -304,10 +322,13 @@ function requireToken() {
 
 async function sendTextMessage(text) {
   requireToken();
+  const chatId = state.currentChatId;
   state.isSending = true;
   render();
-  await addMessage("user", text);
-  const pending = await addMessage("assistant", "Thinking...", { pending: true });
+  await addMessageToChat(chatId, "user", text);
+  const pending = await addMessageToChat(chatId, "assistant", "Thinking...", {
+    pending: true,
+  });
   els.connectionStatus.textContent = "Thinking";
 
   try {
@@ -317,7 +338,7 @@ async function sendTextMessage(text) {
         "Content-Type": "application/json",
         ...authHeaders(),
       },
-      body: JSON.stringify({ text, chatId: state.currentChatId }),
+      body: JSON.stringify({ text, chatId }),
     });
     const body = await parseJsonResponse(response);
     if (response.status === 401) {
@@ -327,7 +348,7 @@ async function sendTextMessage(text) {
     if (!response.ok) {
       throw new Error(body.error || "Chat failed");
     }
-    await updateMessage(pending.id, {
+    await updateMessage(chatId, pending.id, {
       text: body.reply || "",
       pending: false,
     });
@@ -336,7 +357,7 @@ async function sendTextMessage(text) {
     }
     els.connectionStatus.textContent = "Connected";
   } catch (error) {
-    await updateMessage(pending.id, {
+    await updateMessage(chatId, pending.id, {
       role: "system",
       text: error.message,
       pending: false,
@@ -376,10 +397,22 @@ async function playReply(text) {
 
 function buildSummaryText(chat) {
   return chat.messages
-    .filter((message) => message.role === "user" || message.role === "assistant")
+    .filter(
+      (message) =>
+        !message.pending &&
+        (message.role === "user" || message.role === "assistant"),
+    )
     .map((message) => `${message.role}: ${message.text}`)
     .join("\n")
     .slice(0, 4000);
+}
+
+function hasPendingMessages(chat) {
+  return Boolean(chat?.messages.some((message) => message.pending));
+}
+
+function hasStableSummaryContent(chat) {
+  return Boolean(buildSummaryText(chat || { messages: [] }));
 }
 
 async function queueSummary() {
@@ -388,11 +421,14 @@ async function queueSummary() {
     els.syncStatus.textContent = "No chat to summarize";
     return;
   }
-
+  const excludedPending = hasPendingMessages(chat);
   const summary = buildSummaryText(chat);
   if (!summary) {
     els.syncStatus.textContent = "No chat to summarize";
     return;
+  }
+  if (excludedPending) {
+    els.syncStatus.textContent = "Pending reply excluded";
   }
 
   const item = {
