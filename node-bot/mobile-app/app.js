@@ -14,6 +14,14 @@ const state = {
   tokenExpiresAt: Number(localStorage.getItem(TOKEN_EXPIRES_KEY) || 0),
   speakerEnabled: false,
   isSending: false,
+  isRecording: false,
+  isStoppingRecording: false,
+  mediaRecorder: null,
+  recordingChunks: [],
+  recordingStream: null,
+  recordingChatId: "",
+  recordingStartPromise: null,
+  recordingStopPromise: null,
 };
 
 const els = {
@@ -166,6 +174,14 @@ async function addMessage(role, text, options = {}) {
   return await addMessageToChat(state.currentChatId, role, text, options);
 }
 
+async function addLocalSystemMessage(text, chatId = state.currentChatId) {
+  if (!chatId) {
+    els.connectionStatus.textContent = text;
+    return null;
+  }
+  return await addMessageToChat(chatId, "system", text);
+}
+
 async function updateMessage(chatId, messageId, changes) {
   const chat = findChat(chatId);
   if (!chat) {
@@ -241,6 +257,17 @@ function render() {
   renderMessages(chat);
   renderChatList();
   els.sendButton.disabled = state.isSending;
+  els.micButton.disabled = state.isSending && !state.isRecording;
+  els.micButton.classList.toggle("recording", state.isRecording);
+  els.micButton.setAttribute("aria-pressed", String(state.isRecording));
+  els.micButton.setAttribute(
+    "aria-label",
+    state.isRecording ? "Stop recording" : "Hold to talk",
+  );
+  const micLabel = els.micButton.querySelector("span");
+  if (micLabel) {
+    micLabel.textContent = state.isRecording ? "stop" : "mic";
+  }
   els.sendSummaryButton.disabled = !hasStableSummaryContent(chat);
   els.speakerButton.textContent = state.speakerEnabled ? "Voice On" : "Voice Off";
   els.speakerButton.setAttribute("aria-pressed", String(state.speakerEnabled));
@@ -363,6 +390,176 @@ async function sendTextMessage(text) {
       pending: false,
     });
     els.connectionStatus.textContent = "Retry needed";
+  } finally {
+    state.isSending = false;
+    render();
+  }
+}
+
+function stopRecordingStream(stream = state.recordingStream) {
+  if (!stream) {
+    return;
+  }
+  for (const track of stream.getTracks()) {
+    track.stop();
+  }
+}
+
+function clearRecordingState() {
+  stopRecordingStream();
+  state.mediaRecorder = null;
+  state.recordingChunks = [];
+  state.recordingStream = null;
+  state.recordingChatId = "";
+  state.recordingStartPromise = null;
+  state.recordingStopPromise = null;
+  state.isRecording = false;
+  state.isStoppingRecording = false;
+  render();
+}
+
+function recordingFilename(blob) {
+  if (blob.type.includes("mp4")) {
+    return "voice.m4a";
+  }
+  if (blob.type.includes("ogg")) {
+    return "voice.ogg";
+  }
+  if (blob.type.includes("wav")) {
+    return "voice.wav";
+  }
+  return "voice.webm";
+}
+
+async function startRecording() {
+  if (state.isRecording || state.recordingStartPromise) {
+    return state.recordingStartPromise;
+  }
+  if (state.isSending) {
+    throw new Error("Please wait for the current reply");
+  }
+  requireToken();
+  if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === "undefined") {
+    throw new Error("Voice recording is not supported");
+  }
+
+  state.recordingStartPromise = (async () => {
+    let stream = null;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const recorder = new MediaRecorder(stream);
+      state.recordingStream = stream;
+      state.mediaRecorder = recorder;
+      state.recordingChunks = [];
+      state.recordingChatId = state.currentChatId;
+
+      recorder.addEventListener("dataavailable", (event) => {
+        if (event.data?.size) {
+          state.recordingChunks.push(event.data);
+        }
+      });
+
+      recorder.start();
+      state.isRecording = true;
+      els.connectionStatus.textContent = "Recording";
+      render();
+    } catch (error) {
+      stopRecordingStream(stream);
+      clearRecordingState();
+      throw error;
+    } finally {
+      state.recordingStartPromise = null;
+    }
+  })();
+
+  return await state.recordingStartPromise;
+}
+
+async function stopRecording() {
+  if (state.recordingStartPromise) {
+    await state.recordingStartPromise.catch(() => {});
+  }
+  if (state.recordingStopPromise) {
+    return await state.recordingStopPromise;
+  }
+
+  const recorder = state.mediaRecorder;
+  if (!recorder || !state.isRecording || state.isStoppingRecording) {
+    return;
+  }
+
+  const chatId = state.recordingChatId || state.currentChatId;
+  state.isRecording = false;
+  state.isStoppingRecording = true;
+  els.connectionStatus.textContent = "Transcribing";
+  render();
+
+  state.recordingStopPromise = new Promise((resolve) => {
+    const finalizeRecording = async () => {
+      const chunks = state.recordingChunks.slice();
+      const mimeType = recorder.mimeType || chunks[0]?.type || "audio/webm";
+      const blob = new Blob(chunks, { type: mimeType });
+      clearRecordingState();
+
+      if (!blob.size) {
+        await addLocalSystemMessage("No voice captured", chatId);
+        els.connectionStatus.textContent = "Voice failed";
+        resolve();
+        return;
+      }
+
+      await sendAudioMessage(blob, chatId);
+      resolve();
+    };
+
+    recorder.addEventListener("stop", finalizeRecording, { once: true });
+    try {
+      recorder.stop();
+    } catch (error) {
+      clearRecordingState();
+      addLocalSystemMessage(error.message, chatId).finally(resolve);
+    }
+  });
+
+  return await state.recordingStopPromise;
+}
+
+async function sendAudioMessage(blob, chatId = state.currentChatId) {
+  state.isSending = true;
+  els.connectionStatus.textContent = "Transcribing";
+  render();
+
+  try {
+    requireToken();
+    const formData = new FormData();
+    formData.append("file", blob, recordingFilename(blob));
+
+    const response = await fetch("/mobile/chat/audio", {
+      method: "POST",
+      headers: authHeaders(),
+      body: formData,
+    });
+    const body = await parseJsonResponse(response);
+    if (response.status === 401) {
+      clearToken();
+      showLock("Session expired");
+      throw new Error("Session expired");
+    }
+    if (!response.ok) {
+      throw new Error(body.error || "Voice chat failed");
+    }
+
+    const transcript = body.transcript || "";
+    const reply = body.reply || "";
+    await addMessageToChat(chatId, "user", transcript);
+    await addMessageToChat(chatId, "assistant", reply);
+    if (state.speakerEnabled && reply) {
+      await playReply(reply);
+    }
+    els.connectionStatus.textContent = "Connected";
+  } catch (error) {
+    await addLocalSystemMessage(error.message, chatId);
+    els.connectionStatus.textContent = "Voice failed";
   } finally {
     state.isSending = false;
     render();
@@ -568,8 +765,103 @@ els.speakerButton.addEventListener("click", () => {
   state.speakerEnabled = !state.speakerEnabled;
   render();
 });
+
+const MIC_TAP_TOGGLE_MS = 350;
+let micPressStarted = false;
+let micPressStartedAt = 0;
+let micPressShouldStop = false;
+let micPointerDown = false;
+let suppressNextMicClick = false;
+
+function handleRecordingError(error) {
+  addLocalSystemMessage(error.message).catch(() => {
+    els.connectionStatus.textContent = error.message;
+  });
+}
+
+function beginMicPress() {
+  micPressStarted = true;
+  micPressStartedAt = Date.now();
+  micPressShouldStop = state.isRecording || state.recordingStartPromise;
+  if (!micPressShouldStop) {
+    startRecording().catch((error) => {
+      micPressStarted = false;
+      handleRecordingError(error);
+    });
+  }
+}
+
+function endMicPress() {
+  if (!micPressStarted) {
+    return;
+  }
+  const pressDuration = Date.now() - micPressStartedAt;
+  const shouldStop = micPressShouldStop || pressDuration > MIC_TAP_TOGGLE_MS;
+  micPressStarted = false;
+  micPressShouldStop = false;
+  suppressNextMicClick = true;
+  if (shouldStop) {
+    stopRecording().catch(handleRecordingError);
+  }
+}
+
+if (window.PointerEvent) {
+  els.micButton.addEventListener("pointerdown", (event) => {
+    if (event.button !== 0 || els.micButton.disabled) {
+      return;
+    }
+    micPointerDown = true;
+    els.micButton.setPointerCapture(event.pointerId);
+    beginMicPress();
+  });
+  els.micButton.addEventListener("pointerup", (event) => {
+    if (!micPointerDown) {
+      return;
+    }
+    micPointerDown = false;
+    if (els.micButton.hasPointerCapture(event.pointerId)) {
+      els.micButton.releasePointerCapture(event.pointerId);
+    }
+    endMicPress();
+  });
+  els.micButton.addEventListener("pointercancel", () => {
+    micPointerDown = false;
+    endMicPress();
+  });
+} else {
+  els.micButton.addEventListener("mousedown", (event) => {
+    if (event.button !== 0 || els.micButton.disabled) {
+      return;
+    }
+    beginMicPress();
+  });
+  els.micButton.addEventListener("mouseup", endMicPress);
+  els.micButton.addEventListener("mouseleave", endMicPress);
+  els.micButton.addEventListener(
+    "touchstart",
+    (event) => {
+      if (els.micButton.disabled) {
+        return;
+      }
+      event.preventDefault();
+      beginMicPress();
+    },
+    { passive: false },
+  );
+  els.micButton.addEventListener("touchend", endMicPress);
+  els.micButton.addEventListener("touchcancel", endMicPress);
+}
+
 els.micButton.addEventListener("click", () => {
-  els.connectionStatus.textContent = "Voice chat is not installed";
+  if (suppressNextMicClick) {
+    suppressNextMicClick = false;
+    return;
+  }
+  if (state.isRecording || state.recordingStartPromise) {
+    stopRecording().catch(handleRecordingError);
+  } else {
+    startRecording().catch(handleRecordingError);
+  }
 });
 
 window.addEventListener("online", () => {
