@@ -16,7 +16,10 @@ function readJsonArray(filePath) {
   }
 
   const parsed = JSON.parse(raw);
-  return Array.isArray(parsed) ? parsed : [];
+  if (!Array.isArray(parsed)) {
+    throw new Error("mobile summaries store must contain a JSON array");
+  }
+  return parsed;
 }
 
 function writeJsonArray(filePath, items) {
@@ -74,12 +77,12 @@ function createMobileMemoryStore(options = {}) {
 
   function saveSummary(input) {
     const summaries = readJsonArray(filePath);
-    const existing = summaries.find((item) => item.id === input.id);
+    const summary = normalizeSummary(input, now());
+    const existing = summaries.find((item) => item.id === summary.id);
     if (existing) {
       return existing;
     }
 
-    const summary = normalizeSummary(input, now());
     summaries.push(summary);
     writeJsonArray(filePath, summaries);
     return summary;
