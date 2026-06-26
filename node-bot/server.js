@@ -37,6 +37,9 @@ const http = require("http");
 const https = require("https");
 const { createWorker } = require("tesseract.js");
 const { VTubeStudioClient } = require("./vtube-studio-client");
+const { registerMobileRoutes } = require("./mobile-routes");
+const { createMobileAuth } = require("./mobile-auth");
+const { createMobileMemoryStore } = require("./mobile-memory-store");
 const {
   buildMarketContextForPrompt,
   createMarketDataClient,
@@ -2508,6 +2511,25 @@ app.post("/vtube/hotkey", async (req, res) => {
     return res.status(500).json({ error: error.message });
   }
 });
+
+  registerMobileRoutes(app, {
+    mobileAuth:
+      deps.mobileAuth ||
+      createMobileAuth({
+        passcodeHash: process.env.MOBILE_PASSCODE_HASH || "",
+        sessionSecret: process.env.MOBILE_SESSION_SECRET || "",
+        sessionTtlMs: Number(
+          process.env.MOBILE_SESSION_TTL_MS || 12 * 60 * 60 * 1000,
+        ),
+      }),
+    mobileMemoryStore: deps.mobileMemoryStore || createMobileMemoryStore(),
+    buildAssistantReply: deps.buildAssistantReply || buildAssistantReply,
+    synthesizeReply: deps.synthesizeReply || synthesizeReply,
+    runWhisper: deps.runWhisper || runWhisper,
+    normalizeUploadedAudio:
+      deps.normalizeUploadedAudio || normalizeUploadedAudio,
+    cleanupUploadedAudio: deps.cleanupUploadedAudio || cleanupUploadedAudio,
+  });
 
 }
 
