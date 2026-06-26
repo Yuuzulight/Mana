@@ -80,6 +80,36 @@ test("saveSummary uses normalized ids for duplicate detection", () => {
   assert.equal(store.listSummaries()[0].summary, "First summary.");
 });
 
+test("saveSummary normalizes persisted ids for duplicate detection", () => {
+  const { dir } = makeTempStore();
+  const existing = {
+    id: " same-id ",
+    source: "phone",
+    direction: "phone-to-pc",
+    chatId: "chat-1",
+    title: "",
+    summary: "Legacy summary.",
+    createdAt: "2026-06-26T00:00:00.000Z",
+  };
+  fs.writeFileSync(
+    path.join(dir, "mobile-summaries.json"),
+    `${JSON.stringify([existing], null, 2)}\n`,
+    "utf8",
+  );
+
+  const store = createMobileMemoryStore({ dataDir: dir });
+  const saved = store.saveSummary({
+    id: "same-id",
+    source: "phone",
+    direction: "phone-to-pc",
+    chatId: "chat-1",
+    summary: "Should not create a duplicate.",
+  });
+
+  assert.deepEqual(saved, existing);
+  assert.equal(store.listSummaries().length, 1);
+});
+
 test("createMobileMemoryStore reloads existing summaries from disk", () => {
   const { dir, store } = makeTempStore();
   store.saveSummary({
