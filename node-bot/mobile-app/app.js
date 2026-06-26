@@ -253,11 +253,15 @@ function renderChatList() {
 
 function render() {
   const chat = currentChat();
+  const micBusy =
+    state.isSending ||
+    state.isStoppingRecording ||
+    Boolean(state.recordingStopPromise);
   els.chatTitle.textContent = chat?.title || "Mana";
   renderMessages(chat);
   renderChatList();
   els.sendButton.disabled = state.isSending;
-  els.micButton.disabled = state.isSending && !state.isRecording;
+  els.micButton.disabled = micBusy && !state.isRecording;
   els.micButton.classList.toggle("recording", state.isRecording);
   els.micButton.setAttribute("aria-pressed", String(state.isRecording));
   els.micButton.setAttribute(
@@ -405,14 +409,29 @@ function stopRecordingStream(stream = state.recordingStream) {
   }
 }
 
-function clearRecordingState() {
-  stopRecordingStream();
-  state.mediaRecorder = null;
-  state.recordingChunks = [];
-  state.recordingStream = null;
-  state.recordingChatId = "";
+function clearRecordingState(recording = {}) {
+  const {
+    recorder = state.mediaRecorder,
+    stream = state.recordingStream,
+    chunks = state.recordingChunks,
+  } = recording;
+  stopRecordingStream(stream);
+  if (state.mediaRecorder === recorder) {
+    state.mediaRecorder = null;
+  }
+  if (state.recordingChunks === chunks) {
+    state.recordingChunks = [];
+  }
+  if (state.recordingStream === stream) {
+    state.recordingStream = null;
+  }
+  if (!state.mediaRecorder) {
+    state.recordingChatId = "";
+  }
   state.recordingStartPromise = null;
-  state.recordingStopPromise = null;
+  if (!recording.stopPromise || state.recordingStopPromise === recording.stopPromise) {
+    state.recordingStopPromise = null;
+  }
   state.isRecording = false;
   state.isStoppingRecording = false;
   render();
@@ -435,7 +454,7 @@ async function startRecording() {
   if (state.isRecording || state.recordingStartPromise) {
     return state.recordingStartPromise;
   }
-  if (state.isSending) {
+  if (state.isSending || state.isStoppingRecording || state.recordingStopPromise) {
     throw new Error("Please wait for the current reply");
   }
   requireToken();
@@ -448,14 +467,15 @@ async function startRecording() {
     try {
       stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       const recorder = new MediaRecorder(stream);
+      const chunks = [];
       state.recordingStream = stream;
       state.mediaRecorder = recorder;
-      state.recordingChunks = [];
+      state.recordingChunks = chunks;
       state.recordingChatId = state.currentChatId;
 
       recorder.addEventListener("dataavailable", (event) => {
         if (event.data?.size) {
-          state.recordingChunks.push(event.data);
+          chunks.push(event.data);
         }
       });
 
@@ -465,7 +485,7 @@ async function startRecording() {
       render();
     } catch (error) {
       stopRecordingStream(stream);
-      clearRecordingState();
+      clearRecordingState({ stream });
       throw error;
     } finally {
       state.recordingStartPromise = null;
@@ -484,6 +504,8 @@ async function stopRecording() {
   }
 
   const recorder = state.mediaRecorder;
+  const stream = state.recordingStream;
+  const chunks = state.recordingChunks;
   if (!recorder || !state.isRecording || state.isStoppingRecording) {
     return;
   }
@@ -494,34 +516,42 @@ async function stopRecording() {
   els.connectionStatus.textContent = "Transcribing";
   render();
 
-  state.recordingStopPromise = new Promise((resolve) => {
-    const finalizeRecording = async () => {
-      const chunks = state.recordingChunks.slice();
-      const mimeType = recorder.mimeType || chunks[0]?.type || "audio/webm";
-      const blob = new Blob(chunks, { type: mimeType });
-      clearRecordingState();
-
-      if (!blob.size) {
-        await addLocalSystemMessage("No voice captured", chatId);
-        els.connectionStatus.textContent = "Voice failed";
-        resolve();
-        return;
-      }
-
-      await sendAudioMessage(blob, chatId);
-      resolve();
-    };
-
-    recorder.addEventListener("stop", finalizeRecording, { once: true });
-    try {
-      recorder.stop();
-    } catch (error) {
-      clearRecordingState();
-      addLocalSystemMessage(error.message, chatId).finally(resolve);
-    }
+  let resolveStop;
+  const stopPromise = new Promise((resolve) => {
+    resolveStop = resolve;
   });
+  state.recordingStopPromise = stopPromise;
 
-  return await state.recordingStopPromise;
+  const finalizeRecording = async () => {
+    const recordedChunks = chunks.slice();
+    const mimeType = recorder.mimeType || recordedChunks[0]?.type || "audio/webm";
+    const blob = new Blob(recordedChunks, { type: mimeType });
+
+    if (blob.size) {
+      state.isSending = true;
+    }
+    clearRecordingState({ recorder, stream, chunks, stopPromise });
+
+    if (!blob.size) {
+      await addLocalSystemMessage("No voice captured", chatId);
+      els.connectionStatus.textContent = "Voice failed";
+      resolveStop();
+      return;
+    }
+
+    await sendAudioMessage(blob, chatId);
+    resolveStop();
+  };
+
+  recorder.addEventListener("stop", finalizeRecording, { once: true });
+  try {
+    recorder.stop();
+  } catch (error) {
+    clearRecordingState({ recorder, stream, chunks, stopPromise });
+    addLocalSystemMessage(error.message, chatId).finally(resolveStop);
+  }
+
+  return await stopPromise;
 }
 
 async function sendAudioMessage(blob, chatId = state.currentChatId) {
@@ -553,7 +583,7 @@ async function sendAudioMessage(blob, chatId = state.currentChatId) {
     const reply = body.reply || "";
     await addMessageToChat(chatId, "user", transcript);
     await addMessageToChat(chatId, "assistant", reply);
-    if (state.speakerEnabled && body.ttsConfigured && reply) {
+    if (state.speakerEnabled && body.ttsConfigured !== false && reply) {
       await playReply(reply);
     }
     els.connectionStatus.textContent = "Connected";
