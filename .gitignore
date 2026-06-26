@@ -28,3 +28,6 @@ Thumbs.db
 .env
 *.env
 !*.env.sample
+
+# Local implementation worktrees
+.worktrees/
