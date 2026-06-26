@@ -29,7 +29,7 @@ test("createApp exposes existing health route", async () => {
   });
 });
 
-function makeMobileDeps() {
+function makeMobileDeps(overrides = {}) {
   const auth = createMobileAuth({
     passcodeHash: hashPasscode("2468", "test-salt"),
     sessionSecret: "unit-test-secret",
@@ -60,6 +60,7 @@ function makeMobileDeps() {
     runWhisper: () => "voice message",
     normalizeUploadedAudio: (file) => ({ tmpPath: file.path, audioPath: file.path }),
     cleanupUploadedAudio: () => {},
+    ...overrides,
   };
 }
 
@@ -87,6 +88,22 @@ async function unlock(baseUrl) {
   assert.equal(response.status, 200);
   assert.equal(typeof body.token, "string");
   return body.token;
+}
+
+async function withConsoleErrorSilenced(fn) {
+  const originalConsoleError = console.error;
+  console.error = () => {};
+  try {
+    return await fn();
+  } finally {
+    console.error = originalConsoleError;
+  }
+}
+
+function makeAudioForm() {
+  const form = new FormData();
+  form.append("file", new Blob(["fake audio"], { type: "audio/wav" }), "voice.wav");
+  return form;
 }
 
 test("mobile unlock returns token and health reports configured auth", async () => {
@@ -195,5 +212,160 @@ test("mobile synthesis requires auth and returns wav audio", async () => {
     assert.match(response.headers.get("content-type"), /^audio\/wav/);
     assert.equal(audio.toString("utf8"), "fake-wav");
     assert.ok(audio.length > 0);
+  });
+});
+
+test("mobile unlock rate limits repeated wrong passcodes and clears on success", async () => {
+  const app = createApp(
+    makeMobileDeps({
+      mobileUnlockRateLimit: {
+        maxAttempts: 2,
+        windowMs: 60_000,
+        now: () => 1000,
+      },
+    }),
+  );
+
+  await withServer(app, async (baseUrl) => {
+    const first = await postJson(`${baseUrl}/mobile/auth/unlock`, {
+      passcode: "0000",
+    });
+    const second = await postJson(`${baseUrl}/mobile/auth/unlock`, {
+      passcode: "1111",
+    });
+    const blocked = await postJson(`${baseUrl}/mobile/auth/unlock`, {
+      passcode: "2222",
+    });
+
+    assert.equal(first.response.status, 401);
+    assert.equal(second.response.status, 401);
+    assert.equal(blocked.response.status, 429);
+
+    const appAfterSuccess = createApp(
+      makeMobileDeps({
+        mobileUnlockRateLimit: {
+          maxAttempts: 2,
+          windowMs: 60_000,
+          now: () => 1000,
+        },
+      }),
+    );
+
+    await withServer(appAfterSuccess, async (freshBaseUrl) => {
+      const failed = await postJson(`${freshBaseUrl}/mobile/auth/unlock`, {
+        passcode: "0000",
+      });
+      const successful = await postJson(`${freshBaseUrl}/mobile/auth/unlock`, {
+        passcode: "2468",
+      });
+      const failedAfterSuccess = await postJson(`${freshBaseUrl}/mobile/auth/unlock`, {
+        passcode: "1111",
+      });
+
+      assert.equal(failed.response.status, 401);
+      assert.equal(successful.response.status, 200);
+      assert.equal(failedAfterSuccess.response.status, 401);
+    });
+  });
+});
+
+test("mobile audio chat requires auth before handling multipart upload", async () => {
+  let normalizeCalls = 0;
+  const app = createApp(
+    makeMobileDeps({
+      normalizeUploadedAudio: (file) => {
+        normalizeCalls += 1;
+        return { tmpPath: file.path, audioPath: file.path };
+      },
+    }),
+  );
+
+  await withServer(app, async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/mobile/chat/audio`, {
+      method: "POST",
+      body: makeAudioForm(),
+    });
+    const body = await response.json();
+
+    assert.equal(response.status, 401);
+    assert.match(body.error, /token|auth/i);
+    assert.equal(normalizeCalls, 0);
+  });
+});
+
+test("mobile audio chat transcribes multipart uploads and cleans up", async () => {
+  const calls = [];
+  const app = createApp(
+    makeMobileDeps({
+      normalizeUploadedAudio: (file) => {
+        calls.push(["normalize", file.originalname]);
+        return { tmpPath: file.path, audioPath: `${file.path}.wav` };
+      },
+      runWhisper: (audioPath) => {
+        calls.push(["whisper", audioPath.endsWith(".wav")]);
+        return "voice message";
+      },
+      cleanupUploadedAudio: (tmpPath, audioPath) => {
+        calls.push(["cleanup", tmpPath !== audioPath, audioPath.endsWith(".wav")]);
+      },
+    }),
+  );
+
+  await withServer(app, async (baseUrl) => {
+    const token = await unlock(baseUrl);
+    const response = await fetch(`${baseUrl}/mobile/chat/audio`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+      body: makeAudioForm(),
+    });
+    const body = await response.json();
+
+    assert.equal(response.status, 200);
+    assert.equal(body.transcript, "voice message");
+    assert.equal(body.reply, "Mana heard: voice message");
+    assert.deepEqual(calls.map((call) => call[0]), [
+      "normalize",
+      "whisper",
+      "cleanup",
+    ]);
+    assert.deepEqual(calls[0], ["normalize", "voice.wav"]);
+    assert.deepEqual(calls[1], ["whisper", true]);
+    assert.deepEqual(calls[2], ["cleanup", true, true]);
+  });
+});
+
+test("mobile audio chat cleans up multer temp file when normalization throws", async () => {
+  const cleanupCalls = [];
+  const app = createApp(
+    makeMobileDeps({
+      normalizeUploadedAudio: () => {
+        throw new Error("bad audio");
+      },
+      cleanupUploadedAudio: (tmpPath, audioPath) => {
+        cleanupCalls.push({ tmpPath, audioPath });
+      },
+    }),
+  );
+
+  await withConsoleErrorSilenced(async () => {
+    await withServer(app, async (baseUrl) => {
+      const token = await unlock(baseUrl);
+      const response = await fetch(`${baseUrl}/mobile/chat/audio`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+        body: makeAudioForm(),
+      });
+      const body = await response.json();
+
+      assert.equal(response.status, 500);
+      assert.match(body.error, /bad audio/);
+      assert.equal(cleanupCalls.length, 1);
+      assert.equal(cleanupCalls[0].tmpPath, cleanupCalls[0].audioPath);
+      assert.match(cleanupCalls[0].tmpPath, /tmp/);
+    });
   });
 });

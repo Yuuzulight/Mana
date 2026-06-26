@@ -19,6 +19,69 @@ function cleanText(value) {
   return typeof value === "string" ? value.trim() : "";
 }
 
+function cleanPositiveInteger(value, fallback) {
+  const number = Number(value);
+  if (!Number.isSafeInteger(number) || number <= 0) {
+    return fallback;
+  }
+  return number;
+}
+
+function createUnlockRateLimiter(options = {}) {
+  const maxAttempts = cleanPositiveInteger(
+    options.maxAttempts || process.env.MOBILE_UNLOCK_MAX_ATTEMPTS,
+    5,
+  );
+  const windowMs = cleanPositiveInteger(
+    options.windowMs || process.env.MOBILE_UNLOCK_WINDOW_MS,
+    5 * 60 * 1000,
+  );
+  const now = options.now || Date.now;
+  const attempts = options.attempts || new Map();
+
+  function getRecord(key, currentTime) {
+    const existing = attempts.get(key);
+    if (!existing || existing.expiresAt <= currentTime) {
+      const fresh = { count: 0, expiresAt: currentTime + windowMs };
+      attempts.set(key, fresh);
+      return fresh;
+    }
+    return existing;
+  }
+
+  function keyFor(req) {
+    return (
+      req.ip ||
+      req.get("x-forwarded-for")?.split(",")[0]?.trim() ||
+      req.socket?.remoteAddress ||
+      "unknown"
+    );
+  }
+
+  function isLimited(key) {
+    const record = attempts.get(key);
+    return Boolean(record && record.expiresAt > now() && record.count >= maxAttempts);
+  }
+
+  function recordFailure(key) {
+    const currentTime = now();
+    const record = getRecord(key, currentTime);
+    record.count += 1;
+    return record.count > maxAttempts;
+  }
+
+  function clear(key) {
+    attempts.delete(key);
+  }
+
+  return {
+    clear,
+    isLimited,
+    keyFor,
+    recordFailure,
+  };
+}
+
 function getRequiredDeps(deps) {
   return {
     mobileAuth: deps.mobileAuth || createDefaultMobileAuth(),
@@ -28,6 +91,9 @@ function getRequiredDeps(deps) {
     runWhisper: deps.runWhisper,
     normalizeUploadedAudio: deps.normalizeUploadedAudio,
     cleanupUploadedAudio: deps.cleanupUploadedAudio,
+    mobileUnlockRateLimiter:
+      deps.mobileUnlockRateLimiter ||
+      createUnlockRateLimiter(deps.mobileUnlockRateLimit),
   };
 }
 
@@ -42,6 +108,7 @@ function registerMobileRoutes(app, deps = {}) {
     runWhisper,
     normalizeUploadedAudio,
     cleanupUploadedAudio,
+    mobileUnlockRateLimiter,
   } = getRequiredDeps(deps);
   const requireAuth = mobileAuth.requireAuth;
 
@@ -53,11 +120,26 @@ function registerMobileRoutes(app, deps = {}) {
   });
 
   router.post("/auth/unlock", (req, res) => {
+    const clientKey = mobileUnlockRateLimiter.keyFor(req);
+    if (mobileUnlockRateLimiter.isLimited(clientKey)) {
+      return res.status(429).json({
+        ok: false,
+        error: "Too many unlock attempts. Try again later.",
+      });
+    }
+
     const passcode = cleanText(req.body?.passcode);
     const unlocked = mobileAuth.unlock(passcode);
     if (!unlocked.ok) {
+      if (mobileUnlockRateLimiter.recordFailure(clientKey)) {
+        return res.status(429).json({
+          ok: false,
+          error: "Too many unlock attempts. Try again later.",
+        });
+      }
       return res.status(401).json({ ok: false, error: unlocked.error });
     }
+    mobileUnlockRateLimiter.clear(clientKey);
 
     return res.json({
       ok: true,
@@ -88,6 +170,7 @@ function registerMobileRoutes(app, deps = {}) {
         return res.status(400).json({ error: "no file" });
       }
 
+      uploadPaths = { tmpPath: req.file.path, audioPath: req.file.path };
       uploadPaths = normalizeUploadedAudio(req.file);
       const transcript = runWhisper(uploadPaths.audioPath);
       const reply = await buildAssistantReply(transcript);
@@ -149,5 +232,6 @@ function registerMobileRoutes(app, deps = {}) {
 
 module.exports = {
   createDefaultMobileAuth,
+  createUnlockRateLimiter,
   registerMobileRoutes,
 };
