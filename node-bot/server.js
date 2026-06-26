@@ -2529,6 +2529,8 @@ app.post("/vtube/hotkey", async (req, res) => {
     normalizeUploadedAudio:
       deps.normalizeUploadedAudio || normalizeUploadedAudio,
     cleanupUploadedAudio: deps.cleanupUploadedAudio || cleanupUploadedAudio,
+    mobileUnlockRateLimiter: deps.mobileUnlockRateLimiter,
+    mobileUnlockRateLimit: deps.mobileUnlockRateLimit,
   });
 
 }
