@@ -1,6 +1,6 @@
 # Mana Mobile PWA Cloudflare Setup
 
-This guide exposes only Mana's mobile PWA/API surface through Cloudflare Tunnel. Persistent chat and memory data stay on the phone and PC.
+This guide exposes the Mana backend through a dedicated Cloudflare-protected hostname for mobile PWA use. With the tunnel target below, Cloudflare Access protects the hostname, but all routes on `http://127.0.0.1:5005` are reachable behind Access; keep the hostname dedicated to Mana and rely on Mana's own passcode for the mobile app.
 
 ## Local prerequisites
 
@@ -14,7 +14,13 @@ Generate a passcode hash from `node-bot`:
 
 ```powershell
 cd C:\ManaAI\Mana\node-bot
-node -e "const { hashPasscode } = require('./mobile-auth'); console.log(hashPasscode('YOUR_PASSCODE'))"
+$passcode = Read-Host -AsSecureString "Mana mobile passcode"
+$bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($passcode)
+try {
+  [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr) | node -e "const fs = require('fs'); const { hashPasscode } = require('./mobile-auth'); const pass = fs.readFileSync(0, 'utf8').replace(/\r?\n$/, ''); console.log(hashPasscode(pass));"
+} finally {
+  [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
+}
 ```
 
 Generate a session secret:
@@ -42,6 +48,10 @@ http://127.0.0.1:5005
 ```
 
 In Cloudflare Zero Trust, add an Access application for the hostname and allow only your email or identity provider account.
+
+Because this tunnel routes the hostname to the full Mana backend, every backend route is reachable after Cloudflare Access login. Do not route other local services through this hostname, and keep Mana's mobile passcode enabled.
+
+Optional hardening: in the Cloudflare Access application, restrict the application path to the mobile URL paths you intend to use, such as `/mobile/*`, if that fits your deployment. This is an Access policy boundary, not something enforced by the tunnel target itself.
 
 Use a dedicated hostname such as:
 
