@@ -123,6 +123,11 @@ const WHISPER_THREADS = Number(process.env.WHISPER_THREADS || 2);
 const LLAMA_THREADS = Number(process.env.LLAMA_THREADS || 4);
 const LLAMA_MAX_TOKENS = Number(process.env.LLAMA_MAX_TOKENS || 180);
 const DEFAULT_LLAMA_MODEL = "Qwen/Qwen2.5-0.5B-Instruct-GGUF:Q4_K_M";
+const PREFERRED_LOCAL_LLAMA_MODELS = [
+  "Qwen3-4B-Q4_K_M.gguf",
+  "qwen2.5-1.5b-instruct-q4_k_m.gguf",
+  "Qwen3-8B-Q4_K_M.gguf",
+];
 const VTUBE_STUDIO_URL = process.env.VTUBE_STUDIO_URL || "ws://127.0.0.1:8001";
 const VTUBE_STUDIO_ENABLED = process.env.VTUBE_STUDIO_ENABLED !== "0";
 const VTUBE_STUDIO_REACTIONS_JSON =
@@ -157,6 +162,28 @@ function shouldUseRemoteAi({
   allowRemoteAi = MANA_ALLOW_REMOTE_AI,
 } = {}) {
   return Boolean(apiKey && allowRemoteAi === "1");
+}
+
+function pickPreferredLlamaModel({
+  explicitModel = "",
+  localGgufs = [],
+  defaultModel = DEFAULT_LLAMA_MODEL,
+} = {}) {
+  if (explicitModel) {
+    return explicitModel;
+  }
+
+  for (const preferredName of PREFERRED_LOCAL_LLAMA_MODELS) {
+    const match = localGgufs.find(
+      (fullPath) =>
+        path.basename(fullPath).toLowerCase() === preferredName.toLowerCase(),
+    );
+    if (match) {
+      return match;
+    }
+  }
+
+  return localGgufs[0] || defaultModel;
 }
 const vtubeStudio = VTUBE_STUDIO_ENABLED
   ? new VTubeStudioClient({ url: VTUBE_STUDIO_URL })
@@ -1667,22 +1694,18 @@ function findLlamaBin() {
   );
 }
 
-function findLlamaModel() {
-  if (LLAMA_MODEL) {
-    return LLAMA_MODEL;
-  }
-
-  const localToolDir = path.join(__dirname, "..", "tools", "llama");
-  const localGguf = collectFilesRecursively(localToolDir, (fullPath) =>
+function findPreferredLlamaModel({
+  explicitModel = LLAMA_MODEL,
+  searchDir = path.join(__dirname, "..", "tools", "llama"),
+} = {}) {
+  const localGgufs = collectFilesRecursively(searchDir, (fullPath) =>
     fullPath.toLowerCase().endsWith(".gguf"),
-  )[0];
+  );
+  return pickPreferredLlamaModel({ explicitModel, localGgufs });
+}
 
-  if (localGguf) {
-    return localGguf;
-  }
-
-  // Quick fallback order: env var first, local GGUF next, then a small downloadable GGUF target.
-  return DEFAULT_LLAMA_MODEL;
+function findLlamaModel() {
+  return findPreferredLlamaModel();
 }
 
 function isLocalModelSpec(modelSpec) {
@@ -1794,7 +1817,9 @@ function runWhisper(filePath) {
 }
 
 function runLlama(prompt, maxTokens = 256) {
-  if (!LLAMA_BIN || !LLAMA_MODEL) {
+  const llamaBin = findLlamaBin();
+  const llamaModel = findLlamaModel();
+  if (!llamaBin || !llamaModel) {
     console.warn(
       "LLAMA_BIN or LLAMA_MODEL not configured — returning placeholder reply",
     );
@@ -1805,12 +1830,12 @@ function runLlama(prompt, maxTokens = 256) {
   // Support either a local GGUF path or an HF repo-style identifier without branching elsewhere.
   let args = [];
   const looksLikeHfRepo =
-    LLAMA_MODEL.indexOf("/") !== -1 && !fs.existsSync(LLAMA_MODEL);
+    llamaModel.indexOf("/") !== -1 && !fs.existsSync(llamaModel);
   if (looksLikeHfRepo) {
     args = [
       "completion",
       "--hf-repo",
-      LLAMA_MODEL,
+      llamaModel,
       "-p",
       prompt,
       "-n",
@@ -1822,7 +1847,7 @@ function runLlama(prompt, maxTokens = 256) {
     args = [
       "completion",
       "-m",
-      LLAMA_MODEL,
+      llamaModel,
       "-p",
       prompt,
       "-n",
@@ -1832,8 +1857,8 @@ function runLlama(prompt, maxTokens = 256) {
     ];
   }
 
-  console.log("Running llama:", LLAMA_BIN, args.join(" "));
-  const r = spawnSync(LLAMA_BIN, args, {
+  console.log("Running llama:", llamaBin, args.join(" "));
+  const r = spawnSync(llamaBin, args, {
     encoding: "utf8",
     maxBuffer: 50 * 1024 * 1024,
   });
@@ -2559,6 +2584,7 @@ if (require.main === module) {
 module.exports = {
   createApp,
   ensureDirectory,
+  pickPreferredLlamaModel,
   shouldUseRemoteAi,
   startServer,
 };
