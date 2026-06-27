@@ -31,3 +31,6 @@ Thumbs.db
 
 # Local implementation worktrees
 .worktrees/
+
+# Local Mana mobile memory store
+node-bot/data/
