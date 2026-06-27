@@ -4,6 +4,10 @@ Overview
 --------
 This Node.js backend accepts audio uploads, uses local whisper.cpp to transcribe, runs local llama.cpp (GGUF) to generate replies, and can synthesize reply audio by calling a local Chatterbox Turbo TTS microservice.
 
+Mana's chat AI is local by default. `OPENAI_API_KEY` is ignored unless
+`MANA_ALLOW_REMOTE_AI=1` is also set, so an accidentally present API key does
+not cause paid/proxy AI usage.
+
 Why this exists
 ---------------
 You asked to avoid Python 3.14 compatibility issues, so this implementation uses native binaries (whisper.cpp and llama.cpp) and Node.js instead of Python packages like faster-whisper and Coqui TTS.
@@ -40,6 +44,7 @@ Install and run
    $env:WHISPER_MODEL = "C:\\models\\ggml-base.en.bin"
    $env:LLAMA_BIN = "C:\\tools\\llama.cpp\\main.exe"
    $env:LLAMA_MODEL = "C:\\models\\7b.gguf"
+   $env:MANA_ALLOW_REMOTE_AI = "0"
    $env:TTS_PROVIDER = "chatterbox"
    $env:CHATTERBOX_TTS_URL = "http://127.0.0.1:5010"
    $env:MARKET_PROVIDER = "alphavantage"
@@ -83,6 +88,7 @@ GET /ffxiv/crafting/profit?world=Adamantoise&recipeSource=xivapi
 
 Notes
 -----
+- AI replies use local llama unless `MANA_ALLOW_REMOTE_AI=1` and `OPENAI_API_KEY` are both set.
 - CLI flags for whisper.cpp and llama.cpp vary between forks/builds. If the binaries you use require different flags, edit node-bot/server.js accordingly.
 - `node-bot` can still support a generic CLI TTS path, but the intended realistic-voice path is the Chatterbox microservice.
 - Stock-market features are analysis helpers only. Mana does not place trades, connect to brokerages, or provide financial advice.
