@@ -816,6 +816,7 @@ function beginMicPress() {
   if (!micPressShouldStop) {
     startRecording().catch((error) => {
       micPressStarted = false;
+      suppressNextMicClick = true;
       handleRecordingError(error);
     });
   }
@@ -885,6 +886,14 @@ if (window.PointerEvent) {
 els.micButton.addEventListener("click", () => {
   if (suppressNextMicClick) {
     suppressNextMicClick = false;
+    return;
+  }
+  if (
+    els.micButton.disabled ||
+    state.isStoppingRecording ||
+    state.recordingStopPromise ||
+    state.isSending
+  ) {
     return;
   }
   if (state.isRecording || state.recordingStartPromise) {
