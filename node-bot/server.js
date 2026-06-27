@@ -22,6 +22,7 @@ Environment variables (set before running):
 - FISH_TTS_API_KEY : optional Fish Speech bearer token
 - FISH_TTS_REFERENCE_ID : optional saved Fish Speech reference voice id
 - FISH_TTS_FALLBACK_PROVIDER : "kokoro", "chatterbox", or "none"
+- MANA_ALLOW_REMOTE_AI : set to "1" to allow OpenAI/proxy chat replies
 - GAMING_PROCESS_NAMES : optional comma-separated game process names for Gaming mode
 
 This server aims to avoid Python. You must download and place the whisper.cpp and llama.cpp binaries and model files yourself.
@@ -59,10 +60,10 @@ const WHISPER_MODEL = process.env.WHISPER_MODEL || null;
 const LLAMA_BIN = process.env.LLAMA_BIN || null;
 const LLAMA_MODEL = process.env.LLAMA_MODEL || null;
 
-// OpenAI / proxy API settings
-// Set OPENAI_API_KEY to your API key (or co-intern's) and OPENAI_BASE_URL to the proxy base URL.
-// To swap keys: update OPENAI_API_KEY env var and restart the server.
+// Remote AI is disabled by default. Set MANA_ALLOW_REMOTE_AI=1 with
+// OPENAI_API_KEY only when you intentionally want paid/proxy chat replies.
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || null;
+const MANA_ALLOW_REMOTE_AI = process.env.MANA_ALLOW_REMOTE_AI || "";
 const OPENAI_BASE_URL =
   process.env.OPENAI_BASE_URL || "https://new.aicode.us.com";
 const OPENAI_MODEL = process.env.OPENAI_MODEL || "codex-gpt-5.5";
@@ -150,6 +151,13 @@ const KOKORO_LANGUAGE_PROFILES = {
   spanish: { lang: "es", speed: 1.1 },
   malay: { lang: "ms", speed: 1.1 },
 };
+
+function shouldUseRemoteAi({
+  apiKey = OPENAI_API_KEY,
+  allowRemoteAi = MANA_ALLOW_REMOTE_AI,
+} = {}) {
+  return Boolean(apiKey && allowRemoteAi === "1");
+}
 const vtubeStudio = VTUBE_STUDIO_ENABLED
   ? new VTubeStudioClient({ url: VTUBE_STUDIO_URL })
   : null;
@@ -309,9 +317,11 @@ function getManaProcessRole(commandLine) {
   return "helper";
 }
 
-if (!fs.existsSync(path.join(__dirname, "tmp"))) {
-  fs.mkdirSync(path.join(__dirname, "tmp"));
+function ensureDirectory(dirPath) {
+  fs.mkdirSync(dirPath, { recursive: true });
 }
+
+ensureDirectory(path.join(__dirname, "tmp"));
 
 function registerRoutes(app, upload, deps = {}) {
 app.get("/health", (req, res) => {
@@ -327,6 +337,7 @@ app.get("/health", (req, res) => {
     llamaModel: llamaStatus.model,
     llamaBin: llamaStatus.bin,
     llamaStatus: llamaStatus.message,
+    remoteAiEnabled: shouldUseRemoteAi(),
     vtubeStudioConfigured: Boolean(vtubeStudio),
     vtubeStudioUrl: VTUBE_STUDIO_URL,
     marketProvider: MARKET_PROVIDER,
@@ -2071,7 +2082,7 @@ function buildScreenAwarePrompt(transcript, screenText, marketText = "") {
 // OpenAI / proxy API inference
 // ---------------------------------------------------------------------------
 async function runOpenAIReply(prompt) {
-  if (!OPENAI_API_KEY) {
+  if (!shouldUseRemoteAi()) {
     return null; // no key configured; fall back to local
   }
 
@@ -2147,8 +2158,8 @@ async function buildAssistantReply(
 ) {
   const prompt = buildScreenAwarePrompt(transcript, screenText, marketText);
 
-  // Try OpenAI proxy first if configured
-  if (OPENAI_API_KEY) {
+  // Try OpenAI/proxy only when explicitly allowed.
+  if (shouldUseRemoteAi()) {
     try {
       const openAiReply = await runOpenAIReply(prompt);
       if (openAiReply) {
@@ -2547,5 +2558,7 @@ if (require.main === module) {
 
 module.exports = {
   createApp,
+  ensureDirectory,
+  shouldUseRemoteAi,
   startServer,
 };
