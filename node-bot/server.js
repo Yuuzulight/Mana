@@ -317,9 +317,11 @@ function getManaProcessRole(commandLine) {
   return "helper";
 }
 
-if (!fs.existsSync(path.join(__dirname, "tmp"))) {
-  fs.mkdirSync(path.join(__dirname, "tmp"));
+function ensureDirectory(dirPath) {
+  fs.mkdirSync(dirPath, { recursive: true });
 }
+
+ensureDirectory(path.join(__dirname, "tmp"));
 
 function registerRoutes(app, upload, deps = {}) {
 app.get("/health", (req, res) => {
@@ -2556,6 +2558,7 @@ if (require.main === module) {
 
 module.exports = {
   createApp,
+  ensureDirectory,
   shouldUseRemoteAi,
   startServer,
 };
