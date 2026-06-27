@@ -26,7 +26,9 @@ Requirements
   - If `WHISPER_BIN` is unset or invalid, the backend also tries common local paths under `tools\whisper\`.
 - llama.cpp main executable that supports GGUF models (Windows build)
   - Download/build llama.cpp and place main.exe somewhere, set LLAMA_BIN env var to it.
-  - Download a GGUF model (7B community gguf) and set LLAMA_MODEL env var to it.
+  - Mana is configured for `Qwen3-4B-Q4_K_M.gguf` as the main local model.
+  - Keep `qwen2.5-1.5b-instruct-q4_k_m.gguf` as the fast fallback and `Qwen3-8B-Q4_K_M.gguf` as the heavier quality backup.
+  - If `LLAMA_MODEL` is unset, Mana searches `tools\llama\` and picks models in this order: 4B, 1.5B, then 8B.
 - Chatterbox Turbo TTS service
   - Set `TTS_PROVIDER=chatterbox`.
   - Run the Python service in `../tts-service`.
@@ -43,7 +45,7 @@ Install and run
    $env:WHISPER_BIN = "C:\\tools\\whisper.cpp\\main.exe"
    $env:WHISPER_MODEL = "C:\\models\\ggml-base.en.bin"
    $env:LLAMA_BIN = "C:\\tools\\llama.cpp\\main.exe"
-   $env:LLAMA_MODEL = "C:\\models\\7b.gguf"
+   $env:LLAMA_MODEL = "C:\\ManaAI\\Mana\\tools\\llama\\gguf-models\\Qwen3-4B-Q4_K_M.gguf"
    $env:MANA_ALLOW_REMOTE_AI = "0"
    $env:TTS_PROVIDER = "chatterbox"
    $env:CHATTERBOX_TTS_URL = "http://127.0.0.1:5010"
@@ -89,6 +91,7 @@ GET /ffxiv/crafting/profit?world=Adamantoise&recipeSource=xivapi
 Notes
 -----
 - AI replies use local llama unless `MANA_ALLOW_REMOTE_AI=1` and `OPENAI_API_KEY` are both set.
+- The intended local model tier is 4B primary, 1.5B fast fallback, and 8B quality backup.
 - CLI flags for whisper.cpp and llama.cpp vary between forks/builds. If the binaries you use require different flags, edit node-bot/server.js accordingly.
 - `node-bot` can still support a generic CLI TTS path, but the intended realistic-voice path is the Chatterbox microservice.
 - Stock-market features are analysis helpers only. Mana does not place trades, connect to brokerages, or provide financial advice.
