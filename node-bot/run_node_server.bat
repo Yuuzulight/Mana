@@ -12,8 +12,8 @@ set "WHISPER_BIN=C:\ManaAI\Mana\tools\whisper\Release\whisper-cli.exe"
 set "WHISPER_MODEL=C:\ManaAI\Mana\tools\whisper\models\ggml-tiny.en.bin"
 
 REM --- Local llama ---
-REM set "LLAMA_BIN=C:\ManaAI\Mana\tools\llama\llama-b9436-bin-win-cuda-12.4-x64\llama.exe"
-REM set "LLAMA_MODEL=C:\ManaAI\Mana\tools\llama\gguf-models\llama-2-7b-chat-q4_0.gguf"
+set "LLAMA_BIN=C:\ManaAI\Mana\tools\llama\llama-b9436-bin-win-cuda-12.4-x64\llama-cli.exe"
+set "LLAMA_MODEL=C:\ManaAI\Mana\tools\llama\gguf-models\qwen2.5-1.5b-instruct-q4_k_m.gguf"
 
 cd /d "%~dp0"
 node server.js
