@@ -46,6 +46,10 @@ const {
   buildMarketContextForPrompt,
   createMarketDataClient,
 } = require("./market-data");
+const {
+  createEditorIntegrations,
+  createZedIntegration,
+} = require("./zed-integration");
 
 function createApp(deps = {}) {
   const app = express();
@@ -927,6 +931,14 @@ async function resolveGatherableRecipeMaterials(recipe, options = {}) {
 }
 
 function registerRoutes(app, upload, deps = {}) {
+let editorIntegrations = deps.editors || null;
+function getEditorIntegrations() {
+  if (!editorIntegrations) {
+    editorIntegrations = createEditorIntegrations();
+  }
+  return editorIntegrations;
+}
+
 app.get("/doctor", async (req, res) => {
   try {
     const doctor = deps.doctor || runDoctorChecksAsync;
@@ -935,6 +947,131 @@ app.get("/doctor", async (req, res) => {
   } catch (error) {
     return res.status(500).json({
       ok: false,
+      error: error.message,
+    });
+  }
+});
+
+app.get("/zed/status", (req, res) => {
+  const zed = deps.zed || createZedIntegration();
+  return res.json(zed.getStatus());
+});
+
+app.post("/zed/open", async (req, res) => {
+  try {
+    const zed = deps.zed || createZedIntegration();
+    const result = await zed.open({
+      targetPath: req.body?.path,
+      line: req.body?.line,
+      column: req.body?.column,
+    });
+    return res.json(result);
+  } catch (error) {
+    return res.status(400).json({
+      opened: false,
+      error: error.message,
+    });
+  }
+});
+
+app.get("/editors/status", (req, res) => {
+  const editors = getEditorIntegrations();
+  return res.json(editors.getStatus());
+});
+
+app.post("/editors/open", async (req, res) => {
+  try {
+    const editors = getEditorIntegrations();
+    const result = await editors.open({
+      editor: req.body?.editor,
+      targetPath: req.body?.path,
+      line: req.body?.line,
+      column: req.body?.column,
+    });
+    return res.json(result);
+  } catch (error) {
+    return res.status(400).json({
+      opened: false,
+      error: error.message,
+    });
+  }
+});
+
+app.get("/editors/workspace", (req, res) => {
+  const editors = getEditorIntegrations();
+  return res.json({ workspace: editors.getWorkspace() });
+});
+
+app.post("/editors/workspace", (req, res) => {
+  try {
+    const editors = getEditorIntegrations();
+    const workspace = editors.setWorkspace(req.body?.path, {
+      editor: req.body?.editor,
+      reason: "manual",
+    });
+    return res.json({ workspace });
+  } catch (error) {
+    return res.status(400).json({
+      workspace: null,
+      error: error.message,
+    });
+  }
+});
+
+app.get("/editors/workspace/files", (req, res) => {
+  try {
+    const editors = getEditorIntegrations();
+    return res.json(editors.listWorkspaceFiles());
+  } catch (error) {
+    return res.status(400).json({
+      files: [],
+      error: error.message,
+    });
+  }
+});
+
+app.get("/editors/workspace/file", (req, res) => {
+  try {
+    const editors = getEditorIntegrations();
+    const filePath = typeof req.query.path === "string" ? req.query.path : "";
+    return res.json(editors.readWorkspaceFile(filePath));
+  } catch (error) {
+    return res.status(400).json({
+      content: "",
+      error: error.message,
+    });
+  }
+});
+
+app.get("/editors/workspace/proposals", (req, res) => {
+  const editors = getEditorIntegrations();
+  return res.json({ proposals: editors.listEditProposals() });
+});
+
+app.post("/editors/workspace/proposals", (req, res) => {
+  try {
+    const editors = getEditorIntegrations();
+    const proposal = editors.createEditProposal({
+      path: req.body?.path,
+      proposedContent: req.body?.proposedContent,
+      summary: req.body?.summary,
+    });
+    return res.json({ proposal });
+  } catch (error) {
+    return res.status(400).json({
+      proposal: null,
+      error: error.message,
+    });
+  }
+});
+
+app.get("/editors/workspace/proposals/:id", (req, res) => {
+  try {
+    const editors = getEditorIntegrations();
+    return res.json({ proposal: editors.getEditProposal(req.params.id) });
+  } catch (error) {
+    return res.status(404).json({
+      proposal: null,
       error: error.message,
     });
   }
