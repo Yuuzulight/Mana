@@ -4,6 +4,7 @@ const os = require("node:os");
 const path = require("node:path");
 
 const DEFAULT_NODE_MAJOR = 18;
+const DEFAULT_BACKEND_PORT = 5005;
 
 function checkPathExists(filePath) {
   return typeof filePath === "string" && filePath.trim() && fs.existsSync(filePath);
@@ -192,10 +193,101 @@ function checkStorage(paths = {}) {
   }
 }
 
-function probePort({ host = "127.0.0.1", port, timeoutMs = 500 }) {
+function withHealthPath(baseUrl) {
+  try {
+    const url = new URL(baseUrl);
+    if (!url.pathname || url.pathname === "/") {
+      url.pathname = "/health";
+    }
+    return url.toString();
+  } catch (error) {
+    return "";
+  }
+}
+
+function getConfiguredTtsHealthTargets(env) {
+  const provider = String(env.TTS_PROVIDER || "").trim().toLowerCase();
+  const targets = [];
+
+  if ((!provider || provider === "chatterbox") && env.CHATTERBOX_TTS_URL) {
+    targets.push({
+      id: "chatterbox",
+      url: withHealthPath(env.CHATTERBOX_TTS_URL),
+    });
+  }
+
+  if ((!provider || provider === "kokoro") && env.KOKORO_TTS_URL) {
+    targets.push({
+      id: "kokoro",
+      url: withHealthPath(env.KOKORO_TTS_URL),
+    });
+  }
+
+  if ((!provider || provider === "fish") && env.FISH_TTS_URL) {
+    targets.push({
+      id: "fish",
+      url: withHealthPath(env.FISH_TTS_URL),
+    });
+  }
+
+  return targets.filter((target) => target.url);
+}
+
+async function probeHttpHealth({ id, url, timeoutMs = 750 }) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const response = await fetch(url, {
+      method: "GET",
+      signal: controller.signal,
+    });
+    return {
+      id,
+      url,
+      ok: response.ok,
+      statusCode: response.status,
+    };
+  } catch (error) {
+    return {
+      id,
+      url,
+      ok: false,
+      error: error.name === "AbortError" ? "timeout" : error.message,
+    };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function probeTtsServices(env, services) {
+  if (Array.isArray(services)) {
+    return services;
+  }
+
+  const targets = getConfiguredTtsHealthTargets(env);
+  return Promise.all(targets.map((target) => probeHttpHealth(target)));
+}
+
+function normalizePortNumber(value, fallback) {
+  const port = Number(value || fallback);
+  return Number.isInteger(port) && port > 0 && port <= 65535 ? port : fallback;
+}
+
+function getDefaultPortChecks(env) {
+  return [
+    {
+      id: "mana-backend",
+      host: "127.0.0.1",
+      port: normalizePortNumber(env.PORT, DEFAULT_BACKEND_PORT),
+    },
+  ];
+}
+
+function probePortAvailability({ id = "port", host = "127.0.0.1", port, timeoutMs = 500 }) {
   return new Promise((resolve) => {
     if (!port) {
-      resolve({ host, port, ok: false, error: "missing port" });
+      resolve({ id, host, port, ok: false, error: "missing port" });
       return;
     }
 
@@ -203,18 +295,24 @@ function probePort({ host = "127.0.0.1", port, timeoutMs = 500 }) {
     const finish = (ok, error = "") => {
       socket.removeAllListeners();
       socket.destroy();
-      resolve({ host, port, ok, error });
+      resolve({ id, host, port, ok, error });
     };
 
     socket.setTimeout(timeoutMs);
-    socket.once("connect", () => finish(true));
+    socket.once("connect", () => finish(false, "port is already in use"));
     socket.once("timeout", () => finish(false, "timeout"));
-    socket.once("error", (error) => finish(false, error.code || error.message));
+    socket.once("error", (error) => {
+      if (error.code === "ECONNREFUSED") {
+        finish(true);
+        return;
+      }
+      finish(false, error.code || error.message);
+    });
   });
 }
 
 async function probePorts(ports = []) {
-  return Promise.all(ports.map((port) => probePort(port)));
+  return Promise.all(ports.map((port) => probePortAvailability(port)));
 }
 
 function buildDoctorResult(checks, now = () => new Date()) {
@@ -259,10 +357,14 @@ function runDoctorChecks(options = {}) {
 }
 
 async function runDoctorChecksAsync(options = {}) {
-  const portResults = await probePorts(options.ports || []);
+  const env = options.env || process.env;
+  const services = await probeTtsServices(env, options.services);
+  const portChecks = [...getDefaultPortChecks(env), ...(options.ports || [])];
+  const portResults = await probePorts(portChecks);
   const checks = runDoctorChecks({
     ...options,
-    services: options.services || [],
+    env,
+    services,
   }).checks;
 
   if (portResults.length) {
@@ -273,8 +375,8 @@ async function runDoctorChecksAsync(options = {}) {
         "Ports",
         unavailable.length ? "warn" : "pass",
         unavailable.length
-          ? `${unavailable.length} configured port check failed.`
-          : "Configured ports are reachable.",
+          ? `${unavailable.length} configured port is unavailable.`
+          : "Configured ports are available.",
         { ports: portResults },
       ),
     );

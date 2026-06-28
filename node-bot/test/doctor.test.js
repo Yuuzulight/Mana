@@ -1,12 +1,13 @@
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const http = require("node:http");
+const net = require("node:net");
 const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
 
 const { createApp } = require("../server");
-const { runDoctorChecks } = require("../doctor");
+const { runDoctorChecks, runDoctorChecksAsync } = require("../doctor");
 
 async function withServer(app, fn) {
   const server = http.createServer(app);
@@ -18,6 +19,25 @@ async function withServer(app, fn) {
   } finally {
     await new Promise((resolve) => server.close(resolve));
   }
+}
+
+async function withRawServer(handler, fn) {
+  const server = http.createServer(handler);
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const { port } = server.address();
+  try {
+    await fn({ port, url: `http://127.0.0.1:${port}` });
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+}
+
+async function getFreePort() {
+  const server = net.createServer();
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const { port } = server.address();
+  await new Promise((resolve) => server.close(resolve));
+  return port;
 }
 
 test("doctor checks return structured pass warn and fail results", () => {
@@ -108,5 +128,97 @@ test("createApp exposes doctor checks without leaking secrets", async () => {
     assert.equal(body.summary.pass, 1);
     assert.equal(body.checks[0].id, "local-ai-policy");
     assert.equal(JSON.stringify(body).includes("unit-test-secret"), false);
+  });
+});
+
+test("async doctor probes configured TTS health URLs", async () => {
+  await withRawServer((req, res) => {
+    if (req.url === "/health") {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: true }));
+      return;
+    }
+
+    res.writeHead(404);
+    res.end();
+  }, async ({ url }) => {
+    const result = await runDoctorChecksAsync({
+      env: {
+        MANA_ALLOW_REMOTE_AI: "0",
+        LLAMA_BIN: "",
+        LLAMA_MODEL: "",
+        WHISPER_BIN: "",
+        WHISPER_MODEL: "",
+        MOBILE_PASSCODE_HASH: "",
+        MOBILE_SESSION_SECRET: "",
+        TTS_PROVIDER: "chatterbox",
+        CHATTERBOX_TTS_URL: url,
+      },
+      paths: {
+        dataDir: fs.mkdtempSync(path.join(os.tmpdir(), "mana-doctor-tts-")),
+      },
+      ports: [],
+      versions: {
+        node: "v22.19.0",
+      },
+    });
+
+    const tts = result.checks.find((check) => check.id === "tts-services");
+
+    assert.equal(tts.status, "pass");
+    assert.equal(tts.details.services.length, 1);
+    assert.deepEqual(tts.details.services[0], {
+      id: "chatterbox",
+      url: `${url}/health`,
+      ok: true,
+      statusCode: 200,
+    });
+
+    fs.rmSync(result.checks.find((check) => check.id === "storage").details.dataDir, {
+      recursive: true,
+      force: true,
+    });
+  });
+});
+
+test("async doctor reports backend port availability", async () => {
+  await withRawServer((req, res) => {
+    res.writeHead(200);
+    res.end("ok");
+  }, async ({ port }) => {
+    const freePort = await getFreePort();
+    const result = await runDoctorChecksAsync({
+      env: {
+        MANA_ALLOW_REMOTE_AI: "0",
+        LLAMA_BIN: "",
+        LLAMA_MODEL: "",
+        WHISPER_BIN: "",
+        WHISPER_MODEL: "",
+        MOBILE_PASSCODE_HASH: "",
+        MOBILE_SESSION_SECRET: "",
+        PORT: String(freePort),
+      },
+      paths: {
+        dataDir: fs.mkdtempSync(path.join(os.tmpdir(), "mana-doctor-port-")),
+      },
+      ports: [{ id: "occupied-test", host: "127.0.0.1", port }],
+      versions: {
+        node: "v22.19.0",
+      },
+    });
+
+    const ports = result.checks.find((check) => check.id === "ports");
+
+    assert.equal(ports.status, "warn");
+    assert.equal(ports.details.ports.length, 2);
+    assert.equal(ports.details.ports[0].id, "mana-backend");
+    assert.equal(ports.details.ports[0].ok, true);
+    assert.equal(ports.details.ports[1].id, "occupied-test");
+    assert.equal(ports.details.ports[1].ok, false);
+
+    fs.rmSync(result.checks.find((check) => check.id === "storage").details.dataDir, {
+      recursive: true,
+      force: true,
+    });
   });
 });
