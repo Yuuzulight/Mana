@@ -3,9 +3,11 @@ const net = require("node:net");
 const os = require("node:os");
 const path = require("node:path");
 const { createEditorIntegrations } = require("./zed-integration");
+const { assertLocalAiPolicy } = require("./mana-acp-agent");
 
 const DEFAULT_NODE_MAJOR = 18;
 const DEFAULT_BACKEND_PORT = 5005;
+const DEFAULT_BACKEND_URL = "http://127.0.0.1:5005";
 
 function checkPathExists(filePath) {
   return typeof filePath === "string" && filePath.trim() && fs.existsSync(filePath);
@@ -215,6 +217,58 @@ function checkEditorIntegrations(options = {}) {
   );
 }
 
+function checkZedExternalAgent(options = {}) {
+  const env = options.env || process.env;
+  const entryPoint = options.entryPoint || path.join(__dirname, "mana-acp-agent.js");
+
+  if (!checkPathExists(entryPoint)) {
+    return makeCheck(
+      "zed-external-agent",
+      "Zed external agent",
+      "fail",
+      "Mana external agent entry point is missing.",
+      {
+        entryPoint,
+        command: `node ${entryPoint} --acp`,
+      },
+    );
+  }
+
+  try {
+    const localAi = assertLocalAiPolicy(env, {
+      allowRemoteOverride: options.allowRemoteOverride === true,
+    });
+    return makeCheck(
+      "zed-external-agent",
+      "Zed external agent",
+      "pass",
+      "Mana external agent entry point is available.",
+      {
+        entryPoint,
+        command: `node ${entryPoint} --acp`,
+        remoteAllowed: localAi.remoteAllowed,
+        mode: localAi.mode,
+      },
+    );
+  } catch (error) {
+    return makeCheck(
+      "zed-external-agent",
+      "Zed external agent",
+      "warn",
+      error.message,
+      {
+        entryPoint,
+        command: `node ${entryPoint} --acp`,
+        remoteAllowed: true,
+      },
+    );
+  }
+}
+
+function getZedExternalAgentBackendHealthTarget(env) {
+  return withHealthPath(env.MANA_BACKEND_URL || DEFAULT_BACKEND_URL);
+}
+
 function withHealthPath(baseUrl) {
   try {
     const url = new URL(baseUrl);
@@ -289,6 +343,33 @@ async function probeTtsServices(env, services) {
 
   const targets = getConfiguredTtsHealthTargets(env);
   return Promise.all(targets.map((target) => probeHttpHealth(target)));
+}
+
+async function probeZedExternalAgentBackend(env, probe = probeHttpHealth) {
+  const url = getZedExternalAgentBackendHealthTarget(env);
+  if (!url) {
+    return makeCheck(
+      "zed-external-agent-backend",
+      "Zed external agent backend",
+      "warn",
+      "MANA_BACKEND_URL is not a valid URL.",
+      { url: env.MANA_BACKEND_URL || "" },
+    );
+  }
+
+  const result = await probe({
+    id: "zed-external-agent-backend",
+    url,
+  });
+  return makeCheck(
+    "zed-external-agent-backend",
+    "Zed external agent backend",
+    result.ok ? "pass" : "warn",
+    result.ok
+      ? "Zed external agent local backend is reachable."
+      : "Zed external agent local backend is not reachable. Start node-bot before using Zed External Agent.",
+    result,
+  );
 }
 
 function normalizePortNumber(value, fallback) {
@@ -377,6 +458,11 @@ function runDoctorChecks(options = {}) {
       env,
       commandResolver: options.zedCommandResolver,
     }),
+    checkZedExternalAgent({
+      env,
+      entryPoint: options.zedExternalAgentEntryPoint,
+      allowRemoteOverride: options.allowRemoteOverride,
+    }),
   ];
 
   return buildDoctorResult(checks, options.now);
@@ -385,6 +471,10 @@ function runDoctorChecks(options = {}) {
 async function runDoctorChecksAsync(options = {}) {
   const env = options.env || process.env;
   const services = await probeTtsServices(env, options.services);
+  const zedExternalAgentBackend = await probeZedExternalAgentBackend(
+    env,
+    options.zedExternalAgentBackendProbe,
+  );
   const portChecks = [...getDefaultPortChecks(env), ...(options.ports || [])];
   const portResults = await probePorts(portChecks);
   const checks = runDoctorChecks({
@@ -392,6 +482,8 @@ async function runDoctorChecksAsync(options = {}) {
     env,
     services,
   }).checks;
+
+  checks.push(zedExternalAgentBackend);
 
   if (portResults.length) {
     const unavailable = portResults.filter((port) => !port.ok);

@@ -88,6 +88,7 @@ Current behavior:
 - Optional `line` and `column` values are passed as `file:line:column`.
 - Mana does not silently inspect or modify code through this integration. File lists and reads require explicit endpoint calls, and edit proposals stay in memory for review instead of being applied to disk.
 - Coding replies still use the local coding model profile unless remote AI is explicitly enabled.
+- Zed can also launch Mana as a local External Agent through `node-bot\mana-acp-agent.js --acp`; see [docs/zed_external_agent.md](docs/zed_external_agent.md).
 
 ## Model Stack
 
@@ -124,6 +125,7 @@ Doctor checks currently cover:
 - local storage writability
 - backend port availability
 - Zed and VS Code CLI availability
+- Zed External Agent entry point, local-only policy, and local backend reachability
 
 Common troubleshooting:
 
@@ -142,6 +144,7 @@ Common troubleshooting:
 - [Chatterbox voice tuning](docs/chatterbox_voice_tuning.md): Chatterbox voice settings.
 - [Fish Speech TTS](docs/fish_speech_tts.md): optional Fish Speech provider.
 - [Market analysis helper](docs/market_analysis_helper.md): stock-market helper setup.
+- [Zed External Agent setup](docs/zed_external_agent.md): local Zed `agent_servers` configuration.
 
 ## Backend API
 
