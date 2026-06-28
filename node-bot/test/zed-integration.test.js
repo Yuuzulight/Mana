@@ -305,6 +305,45 @@ test("workspace inspector reads bounded text files inside the workspace only", (
   }
 });
 
+test("editor integrations create safe edit proposals without writing files", () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mana-editor-proposal-"));
+  const sourceFile = path.join(tempDir, "src.js");
+  fs.writeFileSync(sourceFile, "const value = 1;\n");
+
+  try {
+    const workspaceStore = createEditorWorkspaceStore({
+      now: () => new Date("2026-06-29T00:00:00.000Z"),
+    });
+    workspaceStore.setWorkspace(tempDir, { editor: "zed" });
+    const editors = createEditorIntegrations({
+      env: {},
+      commandResolver: (command) => command,
+      workspaceStore,
+      idFactory: () => "proposal-1",
+    });
+
+    const proposal = editors.createEditProposal({
+      path: "src.js",
+      proposedContent: "const value = 2;\n",
+      summary: "Update test value",
+    });
+
+    assert.equal(proposal.id, "proposal-1");
+    assert.equal(proposal.status, "pending");
+    assert.equal(proposal.relativePath, "src.js");
+    assert.equal(proposal.summary, "Update test value");
+    assert.equal(proposal.originalContent, "const value = 1;\n");
+    assert.equal(proposal.proposedContent, "const value = 2;\n");
+    assert.match(proposal.diff, /-const value = 1;/);
+    assert.match(proposal.diff, /\+const value = 2;/);
+    assert.equal(fs.readFileSync(sourceFile, "utf8"), "const value = 1;\n");
+    assert.deepEqual(editors.listEditProposals().map((item) => item.id), ["proposal-1"]);
+    assert.equal(editors.getEditProposal("proposal-1").proposedContent, "const value = 2;\n");
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
 test("createApp exposes Zed status and open routes", async () => {
   const calls = [];
   const app = createApp({
@@ -468,6 +507,60 @@ test("createApp exposes explicit read-only workspace inspection routes", async (
       assert.equal(readResponse.status, 200);
       assert.equal(readBody.relativePath, "src/index.js");
       assert.equal(readBody.content, "console.log('route');\n");
+    });
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("createApp exposes safe edit proposal routes", async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mana-editor-route-proposal-"));
+  const sourceFile = path.join(tempDir, "app.js");
+  fs.writeFileSync(sourceFile, "console.log('before');\n");
+
+  try {
+    const workspaceStore = createEditorWorkspaceStore();
+    workspaceStore.setWorkspace(tempDir, { editor: "zed" });
+    const app = createApp({
+      editors: createEditorIntegrations({
+        env: {},
+        commandResolver: (command) => command,
+        workspaceStore,
+        idFactory: () => "proposal-route-1",
+        spawn: () => ({ once: (event, handler) => event === "spawn" && handler() }),
+      }),
+    });
+
+    await withServer(app, async (baseUrl) => {
+      const createResponse = await fetch(`${baseUrl}/editors/workspace/proposals`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          path: "app.js",
+          proposedContent: "console.log('after');\n",
+          summary: "Change log text",
+        }),
+      });
+      const createBody = await createResponse.json();
+
+      assert.equal(createResponse.status, 200);
+      assert.equal(createBody.proposal.id, "proposal-route-1");
+      assert.equal(createBody.proposal.status, "pending");
+      assert.match(createBody.proposal.diff, /-console\.log\('before'\);/);
+      assert.match(createBody.proposal.diff, /\+console\.log\('after'\);/);
+      assert.equal(fs.readFileSync(sourceFile, "utf8"), "console.log('before');\n");
+
+      const listResponse = await fetch(`${baseUrl}/editors/workspace/proposals`);
+      const listBody = await listResponse.json();
+
+      assert.equal(listResponse.status, 200);
+      assert.deepEqual(listBody.proposals.map((item) => item.id), ["proposal-route-1"]);
+
+      const getResponse = await fetch(`${baseUrl}/editors/workspace/proposals/proposal-route-1`);
+      const getBody = await getResponse.json();
+
+      assert.equal(getResponse.status, 200);
+      assert.equal(getBody.proposal.proposedContent, "console.log('after');\n");
     });
   } finally {
     fs.rmSync(tempDir, { recursive: true, force: true });

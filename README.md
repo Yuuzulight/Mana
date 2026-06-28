@@ -82,9 +82,11 @@ Current behavior:
 - `POST /editors/workspace` sets the active local workspace path explicitly.
 - `GET /editors/workspace/files` lists files in the active workspace with heavy folders skipped.
 - `GET /editors/workspace/file?path=...` reads one bounded text file inside the active workspace.
+- `POST /editors/workspace/proposals` creates an in-memory edit proposal for review without writing the file.
+- `GET /editors/workspace/proposals` and `GET /editors/workspace/proposals/:id` review pending proposals.
 - `GET /zed/status` and `POST /zed/open` remain available as Zed-specific compatibility routes.
 - Optional `line` and `column` values are passed as `file:line:column`.
-- Mana does not silently inspect or modify code through this integration. File lists and reads require explicit endpoint calls, and any edit workflow should stay explicit and reviewable.
+- Mana does not silently inspect or modify code through this integration. File lists and reads require explicit endpoint calls, and edit proposals stay in memory for review instead of being applied to disk.
 - Coding replies still use the local coding model profile unless remote AI is explicitly enabled.
 
 ## Model Stack
@@ -156,6 +158,9 @@ Useful endpoints:
 - `POST /editors/workspace`: set the active local coding workspace.
 - `GET /editors/workspace/files`: list active workspace files.
 - `GET /editors/workspace/file`: read one bounded file inside the active workspace.
+- `GET /editors/workspace/proposals`: list pending edit proposals.
+- `POST /editors/workspace/proposals`: create an in-memory edit proposal.
+- `GET /editors/workspace/proposals/:id`: inspect one edit proposal and preview diff.
 - `GET /zed/status`: Zed CLI availability.
 - `POST /zed/open`: open an existing file or folder in Zed.
 - `POST /transcribe`: audio upload, transcription, and reply.

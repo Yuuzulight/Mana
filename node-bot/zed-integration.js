@@ -250,6 +250,92 @@ function createEditorWorkspaceInspector(options = {}) {
   };
 }
 
+function createSimpleLineDiff({ relativePath, originalContent, proposedContent }) {
+  const originalLines = String(originalContent || "").split(/\r?\n/);
+  const proposedLines = String(proposedContent || "").split(/\r?\n/);
+  const lines = [`--- ${relativePath}`, `+++ ${relativePath}`];
+  const maxLines = Math.max(originalLines.length, proposedLines.length);
+
+  for (let index = 0; index < maxLines; index += 1) {
+    const originalLine = originalLines[index];
+    const proposedLine = proposedLines[index];
+    if (originalLine === proposedLine) {
+      if (originalLine !== undefined && originalLine !== "") {
+        lines.push(` ${originalLine}`);
+      }
+      continue;
+    }
+    if (originalLine !== undefined && originalLine !== "") {
+      lines.push(`-${originalLine}`);
+    }
+    if (proposedLine !== undefined && proposedLine !== "") {
+      lines.push(`+${proposedLine}`);
+    }
+  }
+
+  return `${lines.join("\n")}\n`;
+}
+
+function createEditProposalStore(options = {}) {
+  const now = options.now || (() => new Date());
+  const idFactory =
+    options.idFactory ||
+    (() => `proposal-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`);
+  const proposals = new Map();
+
+  function createProposal({
+    relativePath,
+    originalContent,
+    proposedContent,
+    summary = "",
+  } = {}) {
+    if (typeof proposedContent !== "string") {
+      throw new Error("proposedContent is required");
+    }
+
+    const proposal = {
+      id: idFactory(),
+      status: "pending",
+      relativePath,
+      summary: String(summary || "").trim(),
+      originalContent,
+      proposedContent,
+      diff: createSimpleLineDiff({
+        relativePath,
+        originalContent,
+        proposedContent,
+      }),
+      createdAt: now().toISOString(),
+    };
+    proposals.set(proposal.id, proposal);
+    return proposal;
+  }
+
+  function listProposals() {
+    return [...proposals.values()].map((proposal) => ({
+      id: proposal.id,
+      status: proposal.status,
+      relativePath: proposal.relativePath,
+      summary: proposal.summary,
+      createdAt: proposal.createdAt,
+    }));
+  }
+
+  function getProposal(id) {
+    const proposal = proposals.get(String(id || ""));
+    if (!proposal) {
+      throw new Error("edit proposal not found");
+    }
+    return proposal;
+  }
+
+  return {
+    createProposal,
+    getProposal,
+    listProposals,
+  };
+}
+
 function createEditorIntegration(config, options = {}) {
   const env = options.env || process.env;
   const commandResolver = options.commandResolver || defaultCommandResolver;
@@ -373,6 +459,12 @@ function createEditorIntegrations(options = {}) {
       maxFiles: options.maxWorkspaceFiles,
       maxReadBytes: options.maxWorkspaceReadBytes,
     });
+  const proposalStore =
+    options.proposalStore ||
+    createEditProposalStore({
+      idFactory: options.idFactory,
+      now: options.now,
+    });
   const editors = Object.fromEntries(
     Object.entries(EDITOR_CONFIGS).map(([id, config]) => [
       id,
@@ -422,10 +514,31 @@ function createEditorIntegrations(options = {}) {
     return workspaceInspector.readFile(relativeFilePath);
   }
 
+  function createEditProposal({ path: proposalPath, proposedContent, summary } = {}) {
+    const original = workspaceInspector.readFile(proposalPath);
+    return proposalStore.createProposal({
+      relativePath: original.relativePath,
+      originalContent: original.content,
+      proposedContent,
+      summary,
+    });
+  }
+
+  function listEditProposals() {
+    return proposalStore.listProposals();
+  }
+
+  function getEditProposal(id) {
+    return proposalStore.getProposal(id);
+  }
+
   return {
+    createEditProposal,
+    getEditProposal,
     getWorkspace,
     getStatus,
     listWorkspaceFiles,
+    listEditProposals,
     open,
     readWorkspaceFile,
     setWorkspace,

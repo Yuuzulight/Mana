@@ -1043,6 +1043,40 @@ app.get("/editors/workspace/file", (req, res) => {
   }
 });
 
+app.get("/editors/workspace/proposals", (req, res) => {
+  const editors = getEditorIntegrations();
+  return res.json({ proposals: editors.listEditProposals() });
+});
+
+app.post("/editors/workspace/proposals", (req, res) => {
+  try {
+    const editors = getEditorIntegrations();
+    const proposal = editors.createEditProposal({
+      path: req.body?.path,
+      proposedContent: req.body?.proposedContent,
+      summary: req.body?.summary,
+    });
+    return res.json({ proposal });
+  } catch (error) {
+    return res.status(400).json({
+      proposal: null,
+      error: error.message,
+    });
+  }
+});
+
+app.get("/editors/workspace/proposals/:id", (req, res) => {
+  try {
+    const editors = getEditorIntegrations();
+    return res.json({ proposal: editors.getEditProposal(req.params.id) });
+  } catch (error) {
+    return res.status(404).json({
+      proposal: null,
+      error: error.message,
+    });
+  }
+});
+
 app.get("/health", (req, res) => {
   const llamaStatus = getLlamaStatus();
   res.json({

@@ -97,6 +97,15 @@ GET /editors/workspace/files
 GET /editors/workspace/file?path=src/index.js
   -> reads one bounded text file inside the active workspace
 
+POST /editors/workspace/proposals (JSON, body `{ "path": "src/index.js", "proposedContent": "...", "summary": "..." }`)
+  -> creates an in-memory edit proposal with a preview diff, without writing the file
+
+GET /editors/workspace/proposals
+  -> lists pending edit proposals
+
+GET /editors/workspace/proposals/:id
+  -> returns one proposal with original content, proposed content, and preview diff
+
 GET /market/stock/summary?symbol=NVDA
   -> returns an Alpha Vantage quote and company summary for one ticker
 
@@ -123,6 +132,7 @@ Notes
 - AI replies use local llama unless `MANA_ALLOW_REMOTE_AI=1` and `OPENAI_API_KEY` are both set.
 - Editor integration only opens existing paths through local CLIs. It does not silently apply edits.
 - The active editor workspace is local process memory. It helps Mana know which project you mean, and file inspection only happens through explicit workspace file-list or file-read requests.
+- Edit proposals are also local process memory. Creating a proposal does not modify files on disk.
 - The intended local model stack is 4B primary, 8B quality mode, Qwen2.5-Coder 7B coding mode, and 1.5B fast fallback.
 - CLI flags for whisper.cpp and llama.cpp vary between forks/builds. If the binaries you use require different flags, edit node-bot/server.js accordingly.
 - `node-bot` can still support a generic CLI TTS path, but the intended realistic-voice path is the Chatterbox microservice.
