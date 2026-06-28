@@ -56,6 +56,34 @@ This lets Mana answer using readable text on the screen. It does not yet give he
 - The active Windows path is `windows-launcher` + `node-bot`.
 - If you do not set a local GGUF model manually, the backend can fall back to a small Hugging Face GGUF target through `llama.cpp`.
 
+## Required before pushing
+
+Before pushing any branch, run status and verification checks for the files you changed.
+
+Minimum required checks:
+
+```powershell
+git status --short --branch
+```
+
+If `node-bot` changed:
+
+```powershell
+cd node-bot
+npm test
+```
+
+If `windows-launcher` changed:
+
+```powershell
+cd windows-launcher
+npm test
+```
+
+For changed JavaScript files, also run `node --check` on each changed file that can be parsed by Node without a browser or Electron runtime.
+
+Do not push if required checks fail. Fix the failure first, or clearly document the blocked check and why it could not be run before asking for review.
+
 See `docs/quick_start_windows.md` for the current setup flow.
 
 See `docs/vtube_studio_setup.md` for avatar setup.
