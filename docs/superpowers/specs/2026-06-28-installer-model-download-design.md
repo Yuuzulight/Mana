@@ -15,24 +15,27 @@ This design does not replace the current development flow. `npm run start` in `w
 The new PC flow should be:
 
 1. Run `ManaSetup.exe`.
-2. Installer copies Mana app files into a predictable install folder.
-3. Installer asks whether to create Start Menu and Desktop shortcuts named `Mana`.
-4. Installer creates only the shortcut types the user accepts.
-5. User launches Mana from a shortcut or from the install folder.
-6. Mana checks for required local runtime files and models.
-7. If GGUF models are missing, Mana opens a setup/download screen before starting the normal voice loop.
-8. The setup screen downloads the 4B model first, then the 1.5B fallback, then the 8B backup.
-9. After the 4B model is present, Mana can run. The 1.5B and 8B downloads can continue or be retried from setup if interrupted.
+2. Installer asks where Mana should be installed, defaulting to `C:\ManaAI\Mana`.
+3. Installer copies Mana app files into the selected install folder.
+4. Installer asks whether to create Start Menu and Desktop shortcuts named `Mana`.
+5. Installer creates only the shortcut types the user accepts.
+6. User launches Mana from a shortcut or from the selected install folder.
+7. Mana checks for required local runtime files and models.
+8. If GGUF models are missing, Mana opens a setup/download screen before starting the normal voice loop.
+9. The setup screen downloads the 4B model first, then the 1.5B fallback, then the 8B backup.
+10. After the 4B model is present, Mana can run. The 1.5B and 8B downloads can continue or be retried from setup if interrupted.
 
 ## Install Layout
 
-Default install folder:
+Default suggested install folder:
 
 ```text
 C:\ManaAI\Mana\
 ```
 
-Important paths:
+The installer must let the user choose a different install folder. All runtime paths, model target paths, shortcut targets, and manifest paths should resolve relative to the selected install folder. The installer should reject paths that are empty, invalid Windows paths, or existing files.
+
+Important paths when the user accepts the default folder:
 
 ```text
 C:\ManaAI\Mana\windows-launcher\
@@ -51,7 +54,7 @@ The installer should install app code, package dependencies needed for runtime, 
 Model sources must be updateable without rewriting installer logic. Mana should use a JSON manifest stored at:
 
 ```text
-C:\ManaAI\Mana\config\model-sources.json
+<install-folder>\config\model-sources.json
 ```
 
 The repository should include a default manifest, and the installed app should be able to refresh it from a configured remote URL when the user clicks an update/check button.
@@ -139,7 +142,9 @@ Use the existing `electron-builder` dependency in `windows-launcher` as the inst
 The installer should:
 
 - build `ManaSetup.exe`;
-- install into `C:\ManaAI\Mana` by default;
+- suggest `C:\ManaAI\Mana` as the default install folder;
+- let the user choose a different install folder before copying files;
+- resolve installed app files, model paths, manifest paths, and shortcuts against the selected install folder;
 - ask the user whether to create a Desktop shortcut;
 - ask the user whether to create a Start Menu shortcut;
 - create only the selected shortcut types;
