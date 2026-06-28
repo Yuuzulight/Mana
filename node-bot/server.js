@@ -407,6 +407,136 @@ function ensureDirectory(dirPath) {
 
 ensureDirectory(path.join(__dirname, "tmp"));
 
+function normalizeUniversalisTimestamp(timestamp) {
+  const value = Number(timestamp || 0);
+  if (!value) {
+    return 0;
+  }
+  return value > 9999999999 ? value : value * 1000;
+}
+
+function medianNumber(values) {
+  const sorted = values
+    .map(Number)
+    .filter((value) => Number.isFinite(value) && value > 0)
+    .sort((left, right) => left - right);
+  if (!sorted.length) {
+    return null;
+  }
+
+  const middle = Math.floor(sorted.length / 2);
+  if (sorted.length % 2 === 1) {
+    return sorted[middle];
+  }
+  return Math.round((sorted[middle - 1] + sorted[middle]) / 2);
+}
+
+function summarizeSalesHistory(
+  sales = [],
+  { now = Date.now(), historyDays = 30 } = {},
+) {
+  const safeHistoryDays = Math.max(1, Number(historyDays) || 30);
+  const cutoff = now - safeHistoryDays * 24 * 60 * 60 * 1000;
+  const recentSales = (Array.isArray(sales) ? sales : [])
+    .map((sale) => ({
+      pricePerUnit: Number(sale?.pricePerUnit || 0),
+      quantity: Number(sale?.quantity || 1),
+      timestampMs: normalizeUniversalisTimestamp(sale?.timestamp),
+      hq: Boolean(sale?.hq),
+    }))
+    .filter(
+      (sale) =>
+        sale.pricePerUnit > 0 &&
+        sale.timestampMs >= cutoff &&
+        sale.timestampMs <= now,
+    );
+  const salesCount = recentSales.length;
+  const unitsSold = recentSales.reduce(
+    (sum, sale) => sum + Math.max(1, sale.quantity || 1),
+    0,
+  );
+  const totalSalePrice = recentSales.reduce(
+    (sum, sale) => sum + sale.pricePerUnit,
+    0,
+  );
+
+  return {
+    historyDays: safeHistoryDays,
+    salesCount,
+    unitsSold,
+    medianSalePrice: medianNumber(recentSales.map((sale) => sale.pricePerUnit)),
+    averageSalePrice:
+      salesCount > 0 ? Math.round(totalSalePrice / salesCount) : null,
+    lastSaleAt: recentSales.length
+      ? new Date(
+          Math.max(...recentSales.map((sale) => sale.timestampMs)),
+        ).toISOString()
+      : null,
+  };
+}
+
+function getCraftMarketabilityRequirement(saleUnitPrice) {
+  const price = Number(saleUnitPrice || 0);
+  if (price >= 10_000_000) {
+    return { tier: "premium", minimumSales: 1 };
+  }
+  if (price >= 1_000_000) {
+    return { tier: "expensive", minimumSales: 3 };
+  }
+  if (price >= 100_000) {
+    return { tier: "mid", minimumSales: 8 };
+  }
+  return { tier: "low", minimumSales: 20 };
+}
+
+function getSalesHistoryAdjustedPrice({
+  currentListingPrice,
+  materialCost,
+  amountResult = 1,
+  salesHistory = [],
+  historyDays = 30,
+  now = Date.now(),
+} = {}) {
+  const salesSummary = summarizeSalesHistory(salesHistory, { now, historyDays });
+  const requirement = getCraftMarketabilityRequirement(currentListingPrice);
+  const marketabilityPassed =
+    salesSummary.salesCount >= requirement.minimumSales;
+  if (!marketabilityPassed) {
+    return {
+      marketabilityPassed: false,
+      reason: "insufficient_sales",
+      requirement,
+      salesSummary,
+      estimatedUnitPrice: null,
+      estimatedRevenue: null,
+      estimatedProfit: null,
+    };
+  }
+
+  const salePriceCandidates = [
+    Number(currentListingPrice || 0),
+    Number(salesSummary.medianSalePrice || 0),
+  ].filter((price) => price > 0);
+  const estimatedUnitPrice = salePriceCandidates.length
+    ? Math.min(...salePriceCandidates)
+    : null;
+  const estimatedRevenue = estimatedUnitPrice
+    ? estimatedUnitPrice * Math.max(1, Number(amountResult || 1))
+    : null;
+  const estimatedProfit =
+    estimatedRevenue === null ? null : estimatedRevenue - Number(materialCost || 0);
+
+  return {
+    marketabilityPassed: true,
+    reason: "passed",
+    requirement,
+    salesSummary,
+    estimatedUnitPrice,
+    estimatedRevenue,
+    estimatedProfit,
+  };
+}
+
 function registerRoutes(app, upload, deps = {}) {
 app.get("/health", (req, res) => {
   const llamaStatus = getLlamaStatus();
@@ -1103,6 +1233,9 @@ function summarizeUniversalisRawItem(rawItem, fallbackWorld, fallbackItemId) {
   const currentAveragePrice = Number(rawItem?.currentAveragePrice || 0);
   const averagePrice = Number(rawItem?.averagePrice || 0);
   const listingsCount = Number(rawItem?.listingsCount || 0);
+  const recentHistory = Array.isArray(rawItem?.recentHistory)
+    ? rawItem.recentHistory
+    : [];
   return {
     itemId,
     world: rawItem?.worldName || fallbackWorld || UNIVERSALIS_DEFAULT_WORLD,
@@ -1114,12 +1247,19 @@ function summarizeUniversalisRawItem(rawItem, fallbackWorld, fallbackItemId) {
     listingsCount,
     unitsForSale: rawItem?.unitsForSale || 0,
     lastUploadTime: rawItem?.lastUploadTime || null,
+    recentHistory,
     hasData: Boolean(rawItem?.hasData || minPrice > 0 || listingsCount > 0),
   };
 }
 
-async function getUniversalisMarketItems(world, itemIds) {
+async function getUniversalisMarketItems(
+  world,
+  itemIds,
+  { includeHistory = false, historyDays = 30 } = {},
+) {
   const safeWorld = encodeURIComponent(world || UNIVERSALIS_DEFAULT_WORLD);
+  const safeHistoryDays = Math.max(1, Number(historyDays) || 30);
+  const historySeconds = safeHistoryDays * 24 * 60 * 60;
   const uniqueIds = [
     ...new Set(
       itemIds.map(Number).filter((id) => Number.isInteger(id) && id > 0),
@@ -1129,7 +1269,7 @@ async function getUniversalisMarketItems(world, itemIds) {
   const missingIds = [];
 
   for (const itemId of uniqueIds) {
-    const cacheKey = `${safeWorld}:raw:${itemId}`;
+    const cacheKey = `${safeWorld}:raw:${includeHistory ? `history${safeHistoryDays}` : "nohistory"}:${itemId}`;
     const cached = universalisCache.get(cacheKey);
     if (cached && Date.now() - cached.createdAt < UNIVERSALIS_CACHE_MS) {
       summaries.set(itemId, cached.value);
@@ -1139,7 +1279,10 @@ async function getUniversalisMarketItems(world, itemIds) {
   }
 
   for (const chunk of chunkArray(missingIds, 100)) {
-    const url = `${UNIVERSALIS_API_URL}/${safeWorld}/${chunk.join(",")}?listings=0&entries=0`;
+    const entriesParam = includeHistory
+      ? `entriesWithin=${historySeconds}`
+      : "entries=0";
+    const url = `${UNIVERSALIS_API_URL}/${safeWorld}/${chunk.join(",")}?listings=0&${entriesParam}`;
     const data = await getJson(url);
     const rawItems =
       data?.items && typeof data.items === "object"
@@ -1152,7 +1295,7 @@ async function getUniversalisMarketItems(world, itemIds) {
         data.worldName || world,
         itemId,
       );
-      const cacheKey = `${safeWorld}:raw:${itemId}`;
+      const cacheKey = `${safeWorld}:raw:${includeHistory ? `history${safeHistoryDays}` : "nohistory"}:${itemId}`;
       universalisCache.set(cacheKey, {
         createdAt: Date.now(),
         value: summary,
@@ -1175,6 +1318,8 @@ async function findProfitableCrafts({
   scanLimit = XIVAPI_RECIPE_SCAN_LIMIT,
   pageSize = XIVAPI_RECIPE_PAGE_SIZE,
   recipeSource = FFXIV_RECIPE_SOURCE,
+  useSalesHistory = false,
+  historyDays = 30,
 } = {}) {
   const safeLimit = clampInteger(limit, 1, 25, FFXIV_PROFIT_TOP_LIMIT);
   const safeScanLimit = clampInteger(
@@ -1184,6 +1329,7 @@ async function findProfitableCrafts({
     XIVAPI_RECIPE_SCAN_LIMIT,
   );
   const safeRecipeSource = normalizeRecipeSource(recipeSource);
+  const safeHistoryDays = clampInteger(historyDays, 1, 90, 30);
   const recipes =
     safeRecipeSource === "garland"
       ? await getGarlandRecipeCandidates({
@@ -1205,10 +1351,14 @@ async function findProfitableCrafts({
     }
   }
 
-  const marketItems = await getUniversalisMarketItems(world, itemIds);
+  const marketItems = await getUniversalisMarketItems(world, itemIds, {
+    includeHistory: Boolean(useSalesHistory),
+    historyDays: safeHistoryDays,
+  });
   const skipped = {
     missingResultPrice: 0,
     missingMaterialPrice: 0,
+    insufficientSalesHistory: 0,
   };
   const bestByResultItem = new Map();
 
@@ -1245,7 +1395,23 @@ async function findProfitableCrafts({
       continue;
     }
 
-    const resultRevenue = resultUnitPrice * recipe.amountResult;
+    const salesAdjustment = useSalesHistory
+      ? getSalesHistoryAdjustedPrice({
+          currentListingPrice: resultUnitPrice,
+          materialCost,
+          amountResult: recipe.amountResult,
+          salesHistory: resultMarket?.recentHistory || [],
+          historyDays: safeHistoryDays,
+        })
+      : null;
+    if (useSalesHistory && !salesAdjustment.marketabilityPassed) {
+      skipped.insufficientSalesHistory += 1;
+      continue;
+    }
+
+    const adjustedUnitPrice =
+      salesAdjustment?.estimatedUnitPrice || resultUnitPrice;
+    const resultRevenue = adjustedUnitPrice * recipe.amountResult;
     const profit = resultRevenue - materialCost;
     const profitMargin = materialCost > 0 ? profit / materialCost : null;
     const candidate = {
@@ -1255,7 +1421,8 @@ async function findProfitableCrafts({
       world: resultMarket?.world || world || UNIVERSALIS_DEFAULT_WORLD,
       amountResult: recipe.amountResult,
       canHq: recipe.canHq,
-      saleUnitPrice: resultUnitPrice,
+      saleUnitPrice: adjustedUnitPrice,
+      currentListingUnitPrice: resultUnitPrice,
       saleRevenue: resultRevenue,
       materialCost,
       profit,
@@ -1270,6 +1437,19 @@ async function findProfitableCrafts({
         unitsForSale: resultMarket?.unitsForSale ?? 0,
         lastUploadTime: resultMarket?.lastUploadTime ?? null,
       },
+      salesHistory: salesAdjustment
+        ? {
+            historyDays: safeHistoryDays,
+            salesCount: salesAdjustment.salesSummary.salesCount,
+            unitsSold: salesAdjustment.salesSummary.unitsSold,
+            medianSalePrice: salesAdjustment.salesSummary.medianSalePrice,
+            averageSalePrice: salesAdjustment.salesSummary.averageSalePrice,
+            lastSaleAt: salesAdjustment.salesSummary.lastSaleAt,
+            marketabilityTier: salesAdjustment.requirement.tier,
+            minimumSales: salesAdjustment.requirement.minimumSales,
+            marketabilityPassed: salesAdjustment.marketabilityPassed,
+          }
+        : null,
     };
 
     const existing = bestByResultItem.get(recipe.resultItemId);
@@ -1290,11 +1470,15 @@ async function findProfitableCrafts({
     query: cleanItemNameCandidate(query) || null,
     limit: safeLimit,
     scanLimit: safeScanLimit,
+    useSalesHistory: Boolean(useSalesHistory),
+    historyDays: safeHistoryDays,
     recipesScanned: recipes.length,
     recipesPriced: bestByResultItem.size,
     skipped,
     priceBasis:
-      "Lowest current Universalis listing price. Revenue is item price multiplied by recipe yield.",
+      useSalesHistory
+        ? "Lower of current Universalis listing price and 30-day median sale price, filtered by 30-day sales frequency."
+        : "Lowest current Universalis listing price. Revenue is item price multiplied by recipe yield.",
     results,
   };
 }
@@ -1318,14 +1502,17 @@ function formatProfitableCraftsForPrompt(report) {
         item.profitMargin === null
           ? "unknown margin"
           : `${Math.round(item.profitMargin * 100)}% margin`;
+      const salesText = item.salesHistory
+        ? `, ${item.salesHistory.salesCount} sales in ${item.salesHistory.historyDays}d`
+        : "";
       lines.push(
-        `${index + 1}. ${item.itemName}: ${item.profit} gil profit (${item.saleRevenue} revenue - ${item.materialCost} mats, ${margin})`,
+        `${index + 1}. ${item.itemName}: ${item.profit} gil profit (${item.saleRevenue} revenue - ${item.materialCost} mats, ${margin}${salesText})`,
       );
     }
   }
 
   lines.push(
-    "Answer with the ranked item names, profit, sale revenue, material cost, and world. Mention that prices are current listings and can move.",
+    "Answer with the ranked item names, profit, sale revenue, material cost, and world. Mention when sales-history filtering was used and that prices can move.",
   );
   return lines.join("\n");
 }
@@ -2406,6 +2593,10 @@ app.get("/ffxiv/crafting/profit", async (req, res) => {
       req.query.recipeSource.trim()
         ? req.query.recipeSource.trim()
         : FFXIV_RECIPE_SOURCE;
+    const useSalesHistory =
+      req.query.useSalesHistory === "1" ||
+      String(req.query.useSalesHistory || "").toLowerCase() === "true";
+    const historyDays = clampInteger(req.query.historyDays, 1, 90, 30);
     const startedAt = nowMs();
     const report = await findProfitableCrafts({
       world,
@@ -2414,6 +2605,8 @@ app.get("/ffxiv/crafting/profit", async (req, res) => {
       scanLimit,
       pageSize,
       recipeSource,
+      useSalesHistory,
+      historyDays,
     });
     logPerf("ffxiv-crafting-profit", startedAt);
     return res.json(report);
@@ -2657,9 +2850,12 @@ if (require.main === module) {
 module.exports = {
   createApp,
   ensureDirectory,
+  getCraftMarketabilityRequirement,
+  getSalesHistoryAdjustedPrice,
   normalizeLlamaModelProfile,
   pickPreferredLlamaModel,
   selectLlamaModelProfileForPrompt,
   shouldUseRemoteAi,
   startServer,
+  summarizeSalesHistory,
 };
