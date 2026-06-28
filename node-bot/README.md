@@ -35,6 +35,8 @@ Requirements
   - Run the Python service in `../tts-service`.
   - Set `CHATTERBOX_TTS_URL` if you move the service off the default port.
 - ffmpeg on PATH (optional, used to convert webm recordings to WAV)
+- Zed CLI on PATH or `ZED_BIN` set to `zed.exe` (optional, default editor for coding handoff)
+- VS Code CLI on PATH or `VSCODE_BIN` set to `code.cmd` (optional alternate editor for coding handoff)
 
 Install and run
 ---------------
@@ -53,6 +55,9 @@ Install and run
    $env:MARKET_PROVIDER = "alphavantage"
    $env:ALPHA_VANTAGE_API_KEY = "your-api-key"
    $env:MARKET_WATCHLIST = "NVDA,AMD,AAPL,MSFT"
+   $env:ZED_BIN = "C:\\Program Files\\Zed\\zed.exe"
+   $env:VSCODE_BIN = "C:\\Users\\User\\AppData\\Local\\Programs\\Microsoft VS Code\\bin\\code.cmd"
+   $env:MANA_DEFAULT_EDITOR = "zed"
 
 3. Start the server
    npm start
@@ -67,6 +72,39 @@ POST /synthesize (JSON, body `{ "text": "..." }`)
 
 GET /health
   -> { ok: true, ttsConfigured: true|false }
+
+GET /zed/status
+  -> reports whether the local Zed CLI is available
+
+POST /zed/open (JSON, body `{ "path": "C:\\ManaAI\\Mana", "line": 12 }`)
+  -> opens an existing file or folder in Zed
+
+GET /editors/status
+  -> reports local Zed and VS Code CLI availability
+
+POST /editors/open (JSON, body `{ "editor": "vscode", "path": "C:\\ManaAI\\Mana", "line": 12 }`)
+  -> opens an existing file or folder in Zed by default, or VS Code when requested
+
+GET /editors/workspace
+  -> returns the active local coding workspace path, or null when none is set
+
+POST /editors/workspace (JSON, body `{ "path": "C:\\ManaAI\\Mana", "editor": "zed" }`)
+  -> sets the active local coding workspace without reading or editing files
+
+GET /editors/workspace/files
+  -> lists files inside the active local workspace, skipping heavy folders like node_modules and .git
+
+GET /editors/workspace/file?path=src/index.js
+  -> reads one bounded text file inside the active workspace
+
+POST /editors/workspace/proposals (JSON, body `{ "path": "src/index.js", "proposedContent": "...", "summary": "..." }`)
+  -> creates an in-memory edit proposal with a preview diff, without writing the file
+
+GET /editors/workspace/proposals
+  -> lists pending edit proposals
+
+GET /editors/workspace/proposals/:id
+  -> returns one proposal with original content, proposed content, and preview diff
 
 GET /market/stock/summary?symbol=NVDA
   -> returns an Alpha Vantage quote and company summary for one ticker
@@ -92,6 +130,9 @@ GET /ffxiv/crafting/profit?world=Adamantoise&recipeSource=xivapi
 Notes
 -----
 - AI replies use local llama unless `MANA_ALLOW_REMOTE_AI=1` and `OPENAI_API_KEY` are both set.
+- Editor integration only opens existing paths through local CLIs. It does not silently apply edits.
+- The active editor workspace is local process memory. It helps Mana know which project you mean, and file inspection only happens through explicit workspace file-list or file-read requests.
+- Edit proposals are also local process memory. Creating a proposal does not modify files on disk.
 - The intended local model stack is 4B primary, 8B quality mode, Qwen2.5-Coder 7B coding mode, and 1.5B fast fallback.
 - CLI flags for whisper.cpp and llama.cpp vary between forks/builds. If the binaries you use require different flags, edit node-bot/server.js accordingly.
 - `node-bot` can still support a generic CLI TTS path, but the intended realistic-voice path is the Chatterbox microservice.
