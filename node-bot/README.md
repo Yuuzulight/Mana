@@ -27,8 +27,9 @@ Requirements
 - llama.cpp main executable that supports GGUF models (Windows build)
   - Download/build llama.cpp and place main.exe somewhere, set LLAMA_BIN env var to it.
   - Mana is configured for `Qwen3-4B-Q4_K_M.gguf` as the main local model.
-  - Keep `qwen2.5-1.5b-instruct-q4_k_m.gguf` as the fast fallback and `Qwen3-8B-Q4_K_M.gguf` as the heavier quality backup.
-  - If `LLAMA_MODEL` is unset, Mana searches `tools\llama\` and picks models in this order: 4B, 1.5B, then 8B.
+  - Keep `Qwen3-8B-Q4_K_M.gguf` as quality mode, `qwen2.5-coder-7b-instruct-q4_k_m.gguf` as coding mode, and `qwen2.5-1.5b-instruct-q4_k_m.gguf` as the fast fallback.
+  - If `LLAMA_MODEL` is unset, Mana searches `tools\llama\` and picks the default profile in this order: 4B, 1.5B, then 8B.
+  - `/reply` accepts optional `modelProfile` values: `default`, `quality`, or `coding`.
 - Chatterbox Turbo TTS service
   - Set `TTS_PROVIDER=chatterbox`.
   - Run the Python service in `../tts-service`.
@@ -91,7 +92,7 @@ GET /ffxiv/crafting/profit?world=Adamantoise&recipeSource=xivapi
 Notes
 -----
 - AI replies use local llama unless `MANA_ALLOW_REMOTE_AI=1` and `OPENAI_API_KEY` are both set.
-- The intended local model tier is 4B primary, 1.5B fast fallback, and 8B quality backup.
+- The intended local model stack is 4B primary, 8B quality mode, Qwen2.5-Coder 7B coding mode, and 1.5B fast fallback.
 - CLI flags for whisper.cpp and llama.cpp vary between forks/builds. If the binaries you use require different flags, edit node-bot/server.js accordingly.
 - `node-bot` can still support a generic CLI TTS path, but the intended realistic-voice path is the Chatterbox microservice.
 - Stock-market features are analysis helpers only. Mana does not place trades, connect to brokerages, or provide financial advice.
