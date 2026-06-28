@@ -931,6 +931,14 @@ async function resolveGatherableRecipeMaterials(recipe, options = {}) {
 }
 
 function registerRoutes(app, upload, deps = {}) {
+let editorIntegrations = deps.editors || null;
+function getEditorIntegrations() {
+  if (!editorIntegrations) {
+    editorIntegrations = createEditorIntegrations();
+  }
+  return editorIntegrations;
+}
+
 app.get("/doctor", async (req, res) => {
   try {
     const doctor = deps.doctor || runDoctorChecksAsync;
@@ -967,13 +975,13 @@ app.post("/zed/open", async (req, res) => {
 });
 
 app.get("/editors/status", (req, res) => {
-  const editors = deps.editors || createEditorIntegrations();
+  const editors = getEditorIntegrations();
   return res.json(editors.getStatus());
 });
 
 app.post("/editors/open", async (req, res) => {
   try {
-    const editors = deps.editors || createEditorIntegrations();
+    const editors = getEditorIntegrations();
     const result = await editors.open({
       editor: req.body?.editor,
       targetPath: req.body?.path,
@@ -984,6 +992,27 @@ app.post("/editors/open", async (req, res) => {
   } catch (error) {
     return res.status(400).json({
       opened: false,
+      error: error.message,
+    });
+  }
+});
+
+app.get("/editors/workspace", (req, res) => {
+  const editors = getEditorIntegrations();
+  return res.json({ workspace: editors.getWorkspace() });
+});
+
+app.post("/editors/workspace", (req, res) => {
+  try {
+    const editors = getEditorIntegrations();
+    const workspace = editors.setWorkspace(req.body?.path, {
+      editor: req.body?.editor,
+      reason: "manual",
+    });
+    return res.json({ workspace });
+  } catch (error) {
+    return res.status(400).json({
+      workspace: null,
       error: error.message,
     });
   }

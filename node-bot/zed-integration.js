@@ -1,4 +1,5 @@
 const fs = require("node:fs");
+const path = require("node:path");
 const { spawn, spawnSync } = require("node:child_process");
 
 function defaultCommandResolver(command) {
@@ -80,6 +81,44 @@ function buildSpawnInvocation(command, args, platform = process.platform) {
       "/c",
       [quoteWindowsCmdArg(command), ...args.map(quoteWindowsCmdArg)].join(" "),
     ],
+  };
+}
+
+function normalizeWorkspacePath(targetPath) {
+  const cleanPath = typeof targetPath === "string" ? targetPath.trim() : "";
+  if (!cleanPath) {
+    throw new Error("workspace path is required");
+  }
+  if (!fs.existsSync(cleanPath)) {
+    throw new Error("workspace path does not exist");
+  }
+
+  const stats = fs.statSync(cleanPath);
+  return stats.isDirectory() ? cleanPath : path.dirname(cleanPath);
+}
+
+function createEditorWorkspaceStore(options = {}) {
+  const now = options.now || (() => new Date());
+  let workspace = null;
+
+  function setWorkspace(targetPath, metadata = {}) {
+    const workspacePath = normalizeWorkspacePath(targetPath);
+    workspace = {
+      path: workspacePath,
+      editor: metadata.editor || null,
+      reason: metadata.reason || "manual",
+      updatedAt: now().toISOString(),
+    };
+    return workspace;
+  }
+
+  function getWorkspace() {
+    return workspace;
+  }
+
+  return {
+    getWorkspace,
+    setWorkspace,
   };
 }
 
@@ -198,6 +237,7 @@ function createZedIntegration(options = {}) {
 function createEditorIntegrations(options = {}) {
   const env = options.env || process.env;
   const defaultEditor = normalizeEditorId(env.MANA_DEFAULT_EDITOR, "zed");
+  const workspaceStore = options.workspaceStore || createEditorWorkspaceStore();
   const editors = Object.fromEntries(
     Object.entries(EDITOR_CONFIGS).map(([id, config]) => [
       id,
@@ -219,18 +259,38 @@ function createEditorIntegrations(options = {}) {
 
   function open({ editor, targetPath, line, column } = {}) {
     const editorId = normalizeEditorId(editor, defaultEditor);
-    return editors[editorId].open({ targetPath, line, column });
+    return editors[editorId].open({ targetPath, line, column }).then((result) => ({
+      ...result,
+      workspace: workspaceStore.setWorkspace(targetPath, {
+        editor: editorId,
+        reason: "open",
+      }),
+    }));
+  }
+
+  function getWorkspace() {
+    return workspaceStore.getWorkspace();
+  }
+
+  function setWorkspace(targetPath, metadata = {}) {
+    return workspaceStore.setWorkspace(targetPath, {
+      editor: normalizeEditorId(metadata.editor, defaultEditor),
+      reason: metadata.reason || "manual",
+    });
   }
 
   return {
+    getWorkspace,
     getStatus,
     open,
+    setWorkspace,
   };
 }
 
 module.exports = {
   buildZedOpenTarget,
   createEditorIntegrations,
+  createEditorWorkspaceStore,
   createZedIntegration,
   defaultCommandResolver,
 };

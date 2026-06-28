@@ -9,6 +9,7 @@ const { createApp } = require("../server");
 const {
   buildZedOpenTarget,
   createEditorIntegrations,
+  createEditorWorkspaceStore,
   createZedIntegration,
 } = require("../zed-integration");
 
@@ -196,6 +197,59 @@ test("generic open can launch a configured VS Code command script on Windows", a
   assert.equal(calls[0].options.shell, false);
 });
 
+test("workspace store normalizes files to their parent directory", () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mana-editor-workspace-"));
+  const sourceFile = path.join(tempDir, "index.js");
+  fs.writeFileSync(sourceFile, "console.log('workspace');\n");
+
+  try {
+    const workspaceStore = createEditorWorkspaceStore();
+
+    const fileWorkspace = workspaceStore.setWorkspace(sourceFile, {
+      editor: "zed",
+      reason: "open",
+    });
+    const folderWorkspace = workspaceStore.setWorkspace(tempDir, {
+      editor: "vscode",
+      reason: "manual",
+    });
+
+    assert.equal(fileWorkspace.path, tempDir);
+    assert.equal(fileWorkspace.editor, "zed");
+    assert.equal(fileWorkspace.reason, "open");
+    assert.equal(folderWorkspace.path, tempDir);
+    assert.equal(folderWorkspace.editor, "vscode");
+    assert.equal(folderWorkspace.reason, "manual");
+    assert.equal(workspaceStore.getWorkspace().path, tempDir);
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("generic open records the active workspace after opening a file", async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mana-editor-open-workspace-"));
+  const sourceFile = path.join(tempDir, "app.js");
+  fs.writeFileSync(sourceFile, "console.log('open workspace');\n");
+
+  try {
+    const workspaceStore = createEditorWorkspaceStore();
+    const editors = createEditorIntegrations({
+      env: {},
+      commandResolver: (command) => command,
+      workspaceStore,
+      spawn: () => ({ once: (event, handler) => event === "spawn" && handler() }),
+    });
+
+    const result = await editors.open({ editor: "vscode", targetPath: sourceFile, line: 3 });
+
+    assert.equal(result.workspace.path, tempDir);
+    assert.equal(result.workspace.editor, "vscode");
+    assert.equal(editors.getWorkspace().path, tempDir);
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
 test("createApp exposes Zed status and open routes", async () => {
   const calls = [];
   const app = createApp({
@@ -276,4 +330,49 @@ test("createApp exposes generic editor status and open routes", async () => {
       { command: "code", args: ["-g", `${__filename}:5`] },
     ]);
   });
+});
+
+test("createApp exposes active editor workspace routes", async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mana-editor-route-workspace-"));
+  const sourceFile = path.join(tempDir, "route.js");
+  fs.writeFileSync(sourceFile, "console.log('route workspace');\n");
+
+  try {
+    const workspaceStore = createEditorWorkspaceStore();
+    const app = createApp({
+      editors: createEditorIntegrations({
+        env: {},
+        commandResolver: (command) => command,
+        workspaceStore,
+        spawn: () => ({ once: (event, handler) => event === "spawn" && handler() }),
+      }),
+    });
+
+    await withServer(app, async (baseUrl) => {
+      const emptyResponse = await fetch(`${baseUrl}/editors/workspace`);
+      const emptyBody = await emptyResponse.json();
+
+      assert.equal(emptyResponse.status, 200);
+      assert.equal(emptyBody.workspace, null);
+
+      const setResponse = await fetch(`${baseUrl}/editors/workspace`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path: sourceFile, editor: "zed" }),
+      });
+      const setBody = await setResponse.json();
+
+      assert.equal(setResponse.status, 200);
+      assert.equal(setBody.workspace.path, tempDir);
+      assert.equal(setBody.workspace.editor, "zed");
+
+      const getResponse = await fetch(`${baseUrl}/editors/workspace`);
+      const getBody = await getResponse.json();
+
+      assert.equal(getResponse.status, 200);
+      assert.equal(getBody.workspace.path, tempDir);
+    });
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
 });
