@@ -41,6 +41,7 @@ const { VTubeStudioClient } = require("./vtube-studio-client");
 const { registerMobileRoutes } = require("./mobile-routes");
 const { createMobileAuth } = require("./mobile-auth");
 const { createMobileMemoryStore } = require("./mobile-memory-store");
+const { runDoctorChecksAsync } = require("./doctor");
 const {
   buildMarketContextForPrompt,
   createMarketDataClient,
@@ -926,6 +927,19 @@ async function resolveGatherableRecipeMaterials(recipe, options = {}) {
 }
 
 function registerRoutes(app, upload, deps = {}) {
+app.get("/doctor", async (req, res) => {
+  try {
+    const doctor = deps.doctor || runDoctorChecksAsync;
+    const result = await doctor();
+    return res.status(result.ok ? 200 : 503).json(result);
+  } catch (error) {
+    return res.status(500).json({
+      ok: false,
+      error: error.message,
+    });
+  }
+});
+
 app.get("/health", (req, res) => {
   const llamaStatus = getLlamaStatus();
   res.json({
