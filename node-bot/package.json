@@ -4,6 +4,7 @@
   "description": "Node backend that uses whisper.cpp and llama.cpp binaries for local STT and generation",
   "main": "server.js",
   "scripts": {
+    "doctor": "node doctor.js",
     "start": "node server.js",
     "test": "node --test"
   },
