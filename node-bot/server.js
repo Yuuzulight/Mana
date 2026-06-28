@@ -1018,6 +1018,31 @@ app.post("/editors/workspace", (req, res) => {
   }
 });
 
+app.get("/editors/workspace/files", (req, res) => {
+  try {
+    const editors = getEditorIntegrations();
+    return res.json(editors.listWorkspaceFiles());
+  } catch (error) {
+    return res.status(400).json({
+      files: [],
+      error: error.message,
+    });
+  }
+});
+
+app.get("/editors/workspace/file", (req, res) => {
+  try {
+    const editors = getEditorIntegrations();
+    const filePath = typeof req.query.path === "string" ? req.query.path : "";
+    return res.json(editors.readWorkspaceFile(filePath));
+  } catch (error) {
+    return res.status(400).json({
+      content: "",
+      error: error.message,
+    });
+  }
+});
+
 app.get("/health", (req, res) => {
   const llamaStatus = getLlamaStatus();
   res.json({

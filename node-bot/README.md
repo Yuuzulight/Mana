@@ -91,6 +91,12 @@ GET /editors/workspace
 POST /editors/workspace (JSON, body `{ "path": "C:\\ManaAI\\Mana", "editor": "zed" }`)
   -> sets the active local coding workspace without reading or editing files
 
+GET /editors/workspace/files
+  -> lists files inside the active local workspace, skipping heavy folders like node_modules and .git
+
+GET /editors/workspace/file?path=src/index.js
+  -> reads one bounded text file inside the active workspace
+
 GET /market/stock/summary?symbol=NVDA
   -> returns an Alpha Vantage quote and company summary for one ticker
 
@@ -116,7 +122,7 @@ Notes
 -----
 - AI replies use local llama unless `MANA_ALLOW_REMOTE_AI=1` and `OPENAI_API_KEY` are both set.
 - Editor integration only opens existing paths through local CLIs. It does not silently apply edits.
-- The active editor workspace is local process memory. It helps Mana know which project you mean, but it does not grant file inspection by itself.
+- The active editor workspace is local process memory. It helps Mana know which project you mean, and file inspection only happens through explicit workspace file-list or file-read requests.
 - The intended local model stack is 4B primary, 8B quality mode, Qwen2.5-Coder 7B coding mode, and 1.5B fast fallback.
 - CLI flags for whisper.cpp and llama.cpp vary between forks/builds. If the binaries you use require different flags, edit node-bot/server.js accordingly.
 - `node-bot` can still support a generic CLI TTS path, but the intended realistic-voice path is the Chatterbox microservice.

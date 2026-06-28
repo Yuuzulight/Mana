@@ -80,9 +80,11 @@ Current behavior:
 - If no editor is requested, Mana uses `MANA_DEFAULT_EDITOR`, falling back to Zed.
 - `GET /editors/workspace` reports the active local workspace path Mana last opened or was told to use.
 - `POST /editors/workspace` sets the active local workspace path explicitly.
+- `GET /editors/workspace/files` lists files in the active workspace with heavy folders skipped.
+- `GET /editors/workspace/file?path=...` reads one bounded text file inside the active workspace.
 - `GET /zed/status` and `POST /zed/open` remain available as Zed-specific compatibility routes.
 - Optional `line` and `column` values are passed as `file:line:column`.
-- Mana does not silently modify code through this integration. Any edit workflow should stay explicit and reviewable.
+- Mana does not silently inspect or modify code through this integration. File lists and reads require explicit endpoint calls, and any edit workflow should stay explicit and reviewable.
 - Coding replies still use the local coding model profile unless remote AI is explicitly enabled.
 
 ## Model Stack
@@ -152,6 +154,8 @@ Useful endpoints:
 - `POST /editors/open`: open an existing file or folder in Zed or VS Code.
 - `GET /editors/workspace`: active local coding workspace.
 - `POST /editors/workspace`: set the active local coding workspace.
+- `GET /editors/workspace/files`: list active workspace files.
+- `GET /editors/workspace/file`: read one bounded file inside the active workspace.
 - `GET /zed/status`: Zed CLI availability.
 - `POST /zed/open`: open an existing file or folder in Zed.
 - `POST /transcribe`: audio upload, transcription, and reply.

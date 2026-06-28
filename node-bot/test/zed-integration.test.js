@@ -9,6 +9,7 @@ const { createApp } = require("../server");
 const {
   buildZedOpenTarget,
   createEditorIntegrations,
+  createEditorWorkspaceInspector,
   createEditorWorkspaceStore,
   createZedIntegration,
 } = require("../zed-integration");
@@ -250,6 +251,60 @@ test("generic open records the active workspace after opening a file", async () 
   }
 });
 
+test("workspace inspector lists files and skips heavy folders", () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mana-editor-inspect-"));
+  fs.mkdirSync(path.join(tempDir, "src"));
+  fs.mkdirSync(path.join(tempDir, "node_modules"));
+  fs.writeFileSync(path.join(tempDir, "README.md"), "# Mana\n");
+  fs.writeFileSync(path.join(tempDir, "src", "app.js"), "console.log('app');\n");
+  fs.writeFileSync(path.join(tempDir, "node_modules", "ignored.js"), "ignored\n");
+
+  try {
+    const workspaceStore = createEditorWorkspaceStore();
+    workspaceStore.setWorkspace(tempDir, { editor: "zed" });
+    const inspector = createEditorWorkspaceInspector({ workspaceStore });
+
+    const result = inspector.listFiles();
+
+    assert.equal(result.workspacePath, tempDir);
+    assert.deepEqual(
+      result.files.map((file) => file.relativePath).sort(),
+      ["README.md", "src/app.js"],
+    );
+    assert.equal(result.truncated, false);
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("workspace inspector reads bounded text files inside the workspace only", () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mana-editor-read-"));
+  fs.mkdirSync(path.join(tempDir, "src"));
+  fs.writeFileSync(path.join(tempDir, "src", "app.js"), "console.log('inside');\n");
+  const outsideFile = path.join(os.tmpdir(), `mana-outside-${Date.now()}.js`);
+  fs.writeFileSync(outsideFile, "console.log('outside');\n");
+
+  try {
+    const workspaceStore = createEditorWorkspaceStore();
+    workspaceStore.setWorkspace(tempDir, { editor: "zed" });
+    const inspector = createEditorWorkspaceInspector({
+      workspaceStore,
+      maxReadBytes: 10,
+    });
+
+    const result = inspector.readFile("src/app.js");
+
+    assert.equal(result.relativePath, "src/app.js");
+    assert.equal(result.content, "console.lo");
+    assert.equal(result.truncated, true);
+    assert.throws(() => inspector.readFile(outsideFile), /inside the active workspace/i);
+    assert.throws(() => inspector.readFile("../outside.js"), /inside the active workspace/i);
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+    fs.rmSync(outsideFile, { force: true });
+  }
+});
+
 test("createApp exposes Zed status and open routes", async () => {
   const calls = [];
   const app = createApp({
@@ -371,6 +426,48 @@ test("createApp exposes active editor workspace routes", async () => {
 
       assert.equal(getResponse.status, 200);
       assert.equal(getBody.workspace.path, tempDir);
+    });
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("createApp exposes explicit read-only workspace inspection routes", async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mana-editor-route-inspect-"));
+  fs.mkdirSync(path.join(tempDir, "src"));
+  fs.writeFileSync(path.join(tempDir, "README.md"), "# Mana route\n");
+  fs.writeFileSync(path.join(tempDir, "src", "index.js"), "console.log('route');\n");
+
+  try {
+    const workspaceStore = createEditorWorkspaceStore();
+    workspaceStore.setWorkspace(tempDir, { editor: "zed" });
+    const app = createApp({
+      editors: createEditorIntegrations({
+        env: {},
+        commandResolver: (command) => command,
+        workspaceStore,
+        spawn: () => ({ once: (event, handler) => event === "spawn" && handler() }),
+      }),
+    });
+
+    await withServer(app, async (baseUrl) => {
+      const listResponse = await fetch(`${baseUrl}/editors/workspace/files`);
+      const listBody = await listResponse.json();
+
+      assert.equal(listResponse.status, 200);
+      assert.deepEqual(
+        listBody.files.map((file) => file.relativePath).sort(),
+        ["README.md", "src/index.js"],
+      );
+
+      const readResponse = await fetch(
+        `${baseUrl}/editors/workspace/file?path=${encodeURIComponent("src/index.js")}`,
+      );
+      const readBody = await readResponse.json();
+
+      assert.equal(readResponse.status, 200);
+      assert.equal(readBody.relativePath, "src/index.js");
+      assert.equal(readBody.content, "console.log('route');\n");
     });
   } finally {
     fs.rmSync(tempDir, { recursive: true, force: true });

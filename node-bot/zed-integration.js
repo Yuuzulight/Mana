@@ -2,6 +2,16 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { spawn, spawnSync } = require("node:child_process");
 
+const DEFAULT_INSPECTOR_EXCLUDES = new Set([
+  ".git",
+  ".next",
+  "dist",
+  "node_modules",
+  "out",
+  "target",
+  "tmp",
+]);
+
 function defaultCommandResolver(command) {
   const lookupCommand = process.platform === "win32" ? "where" : "which";
   const result = spawnSync(lookupCommand, [command], {
@@ -122,6 +132,124 @@ function createEditorWorkspaceStore(options = {}) {
   };
 }
 
+function toWorkspaceRelativePath(workspacePath, targetPath) {
+  const resolvedWorkspace = path.resolve(workspacePath);
+  const resolvedTarget = path.resolve(resolvedWorkspace, String(targetPath || ""));
+  const relativePath = path.relative(resolvedWorkspace, resolvedTarget);
+  if (
+    !relativePath ||
+    relativePath.startsWith("..") ||
+    path.isAbsolute(relativePath)
+  ) {
+    throw new Error("file path must be inside the active workspace");
+  }
+  return {
+    fullPath: resolvedTarget,
+    relativePath: relativePath.split(path.sep).join("/"),
+  };
+}
+
+function requireActiveWorkspace(workspaceStore) {
+  const workspace = workspaceStore.getWorkspace();
+  if (!workspace?.path) {
+    throw new Error("active workspace is not set");
+  }
+  if (!fs.existsSync(workspace.path)) {
+    throw new Error("active workspace path does not exist");
+  }
+  return workspace;
+}
+
+function createEditorWorkspaceInspector(options = {}) {
+  const workspaceStore = options.workspaceStore;
+  if (!workspaceStore) {
+    throw new Error("workspaceStore is required");
+  }
+  const maxFiles = Math.max(1, Number(options.maxFiles || 200));
+  const maxReadBytes = Math.max(1, Number(options.maxReadBytes || 64 * 1024));
+  const excludes = new Set([
+    ...DEFAULT_INSPECTOR_EXCLUDES,
+    ...(Array.isArray(options.excludes) ? options.excludes : []),
+  ]);
+
+  function listFiles() {
+    const workspace = requireActiveWorkspace(workspaceStore);
+    const workspacePath = path.resolve(workspace.path);
+    const files = [];
+    let truncated = false;
+
+    function walk(dirPath) {
+      if (files.length >= maxFiles) {
+        truncated = true;
+        return;
+      }
+
+      const entries = fs.readdirSync(dirPath, { withFileTypes: true }).sort((left, right) =>
+        left.name.localeCompare(right.name),
+      );
+
+      for (const entry of entries) {
+        if (files.length >= maxFiles) {
+          truncated = true;
+          return;
+        }
+        if (excludes.has(entry.name)) {
+          continue;
+        }
+
+        const fullPath = path.join(dirPath, entry.name);
+        if (entry.isDirectory()) {
+          walk(fullPath);
+          continue;
+        }
+        if (!entry.isFile()) {
+          continue;
+        }
+
+        const relativePath = path
+          .relative(workspacePath, fullPath)
+          .split(path.sep)
+          .join("/");
+        files.push({
+          relativePath,
+          sizeBytes: fs.statSync(fullPath).size,
+        });
+      }
+    }
+
+    walk(workspacePath);
+    return {
+      workspacePath,
+      files,
+      truncated,
+    };
+  }
+
+  function readFile(relativeFilePath) {
+    const workspace = requireActiveWorkspace(workspaceStore);
+    const workspacePath = path.resolve(workspace.path);
+    const target = toWorkspaceRelativePath(workspacePath, relativeFilePath);
+    if (!fs.existsSync(target.fullPath) || !fs.statSync(target.fullPath).isFile()) {
+      throw new Error("workspace file does not exist");
+    }
+
+    const buffer = fs.readFileSync(target.fullPath);
+    const truncated = buffer.length > maxReadBytes;
+    return {
+      workspacePath,
+      relativePath: target.relativePath,
+      content: buffer.subarray(0, maxReadBytes).toString("utf8"),
+      truncated,
+      sizeBytes: buffer.length,
+    };
+  }
+
+  return {
+    listFiles,
+    readFile,
+  };
+}
+
 function createEditorIntegration(config, options = {}) {
   const env = options.env || process.env;
   const commandResolver = options.commandResolver || defaultCommandResolver;
@@ -238,6 +366,13 @@ function createEditorIntegrations(options = {}) {
   const env = options.env || process.env;
   const defaultEditor = normalizeEditorId(env.MANA_DEFAULT_EDITOR, "zed");
   const workspaceStore = options.workspaceStore || createEditorWorkspaceStore();
+  const workspaceInspector =
+    options.workspaceInspector ||
+    createEditorWorkspaceInspector({
+      workspaceStore,
+      maxFiles: options.maxWorkspaceFiles,
+      maxReadBytes: options.maxWorkspaceReadBytes,
+    });
   const editors = Object.fromEntries(
     Object.entries(EDITOR_CONFIGS).map(([id, config]) => [
       id,
@@ -279,10 +414,20 @@ function createEditorIntegrations(options = {}) {
     });
   }
 
+  function listWorkspaceFiles() {
+    return workspaceInspector.listFiles();
+  }
+
+  function readWorkspaceFile(relativeFilePath) {
+    return workspaceInspector.readFile(relativeFilePath);
+  }
+
   return {
     getWorkspace,
     getStatus,
+    listWorkspaceFiles,
     open,
+    readWorkspaceFile,
     setWorkspace,
   };
 }
@@ -290,6 +435,7 @@ function createEditorIntegrations(options = {}) {
 module.exports = {
   buildZedOpenTarget,
   createEditorIntegrations,
+  createEditorWorkspaceInspector,
   createEditorWorkspaceStore,
   createZedIntegration,
   defaultCommandResolver,
