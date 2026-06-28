@@ -20,6 +20,46 @@
         margin: 8px 0 0;
         white-space: pre-wrap;
       }
+      #doctorPanel {
+        margin-top: 14px;
+        padding: 10px;
+        border: 1px solid #ddd;
+        border-radius: 6px;
+        background: #fff;
+        font-size: 12px;
+      }
+      #doctorHeader {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+      }
+      #doctorSummary {
+        margin-top: 8px;
+        color: #333;
+      }
+      #doctorChecks {
+        margin-top: 8px;
+        display: grid;
+        gap: 6px;
+      }
+      .doctor-check {
+        padding: 8px;
+        border-left: 4px solid #999;
+        background: #f8f8f8;
+      }
+      .doctor-check-pass {
+        border-left-color: #1f8f4d;
+      }
+      .doctor-check-warn {
+        border-left-color: #c98200;
+      }
+      .doctor-check-fail {
+        border-left-color: #c0392b;
+      }
+      .doctor-check-title {
+        font-weight: bold;
+      }
       button { padding: 10px 14px; font-size: 14px; }
       #listenToggle {
         background: #0b84ff;
@@ -57,6 +97,15 @@
     <div id="perfPanel">
       <strong>Performance</strong>
       <pre id="perfStatus">Waiting for metrics...</pre>
+    </div>
+
+    <div id="doctorPanel">
+      <div id="doctorHeader">
+        <strong id="doctorTitle">Doctor</strong>
+        <button id="runDoctor">Run checks</button>
+      </div>
+      <div id="doctorSummary">Not checked yet</div>
+      <div id="doctorChecks"></div>
     </div>
 
     <div id="transcript"></div>
