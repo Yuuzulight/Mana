@@ -123,11 +123,31 @@ const WHISPER_THREADS = Number(process.env.WHISPER_THREADS || 2);
 const LLAMA_THREADS = Number(process.env.LLAMA_THREADS || 4);
 const LLAMA_MAX_TOKENS = Number(process.env.LLAMA_MAX_TOKENS || 180);
 const DEFAULT_LLAMA_MODEL = "Qwen/Qwen2.5-0.5B-Instruct-GGUF:Q4_K_M";
-const PREFERRED_LOCAL_LLAMA_MODELS = [
-  "Qwen3-4B-Q4_K_M.gguf",
-  "qwen2.5-1.5b-instruct-q4_k_m.gguf",
-  "Qwen3-8B-Q4_K_M.gguf",
-];
+const LLAMA_MODEL_PROFILES = {
+  default: {
+    names: [
+      "Qwen3-4B-Q4_K_M.gguf",
+      "qwen2.5-1.5b-instruct-q4_k_m.gguf",
+      "Qwen3-8B-Q4_K_M.gguf",
+    ],
+  },
+  quality: {
+    names: [
+      "Qwen3-8B-Q4_K_M.gguf",
+      "Qwen3-4B-Q4_K_M.gguf",
+      "qwen2.5-1.5b-instruct-q4_k_m.gguf",
+    ],
+  },
+  coding: {
+    names: [
+      "qwen2.5-coder-7b-instruct-q4_k_m.gguf",
+      "Qwen2.5-Coder-7B-Instruct-Q4_K_M.gguf",
+      "Qwen3-4B-Q4_K_M.gguf",
+      "qwen2.5-1.5b-instruct-q4_k_m.gguf",
+      "Qwen3-8B-Q4_K_M.gguf",
+    ],
+  },
+};
 const VTUBE_STUDIO_URL = process.env.VTUBE_STUDIO_URL || "ws://127.0.0.1:8001";
 const VTUBE_STUDIO_ENABLED = process.env.VTUBE_STUDIO_ENABLED !== "0";
 const VTUBE_STUDIO_REACTIONS_JSON =
@@ -168,12 +188,15 @@ function pickPreferredLlamaModel({
   explicitModel = "",
   localGgufs = [],
   defaultModel = DEFAULT_LLAMA_MODEL,
+  profile = "default",
 } = {}) {
-  if (explicitModel) {
+  const normalizedProfile = normalizeLlamaModelProfile(profile);
+  if (explicitModel && normalizedProfile === "default") {
     return explicitModel;
   }
 
-  for (const preferredName of PREFERRED_LOCAL_LLAMA_MODELS) {
+  const modelProfile = LLAMA_MODEL_PROFILES[normalizedProfile];
+  for (const preferredName of modelProfile.names) {
     const match = localGgufs.find(
       (fullPath) =>
         path.basename(fullPath).toLowerCase() === preferredName.toLowerCase(),
@@ -183,7 +206,41 @@ function pickPreferredLlamaModel({
     }
   }
 
-  return localGgufs[0] || defaultModel;
+  return modelProfile.defaultModel || localGgufs[0] || defaultModel;
+}
+
+function normalizeLlamaModelProfile(profile) {
+  const normalized = String(profile || "default").trim().toLowerCase();
+  return LLAMA_MODEL_PROFILES[normalized] ? normalized : "default";
+}
+
+function hasExplicitLlamaModelProfile(profile) {
+  if (typeof profile !== "string") {
+    return false;
+  }
+  const normalized = profile.trim().toLowerCase();
+  return Boolean(normalized && LLAMA_MODEL_PROFILES[normalized]);
+}
+
+function selectLlamaModelProfileForPrompt(prompt, explicitProfile = "") {
+  if (hasExplicitLlamaModelProfile(explicitProfile)) {
+    return normalizeLlamaModelProfile(explicitProfile);
+  }
+
+  const text = String(prompt || "").toLowerCase();
+  if (
+    /\b(coding|code|programming|debug|debugging|refactor|javascript|typescript|python|powershell|node\.?js|react|next\.?js|css|html|git|stack trace|unit test|npm test)\b/.test(
+      text,
+    )
+  ) {
+    return "coding";
+  }
+
+  if (/\b(quality mode|better answer|deeper answer|use 8b|8b mode)\b/.test(text)) {
+    return "quality";
+  }
+
+  return "default";
 }
 const vtubeStudio = VTUBE_STUDIO_ENABLED
   ? new VTubeStudioClient({ url: VTUBE_STUDIO_URL })
@@ -1697,15 +1754,16 @@ function findLlamaBin() {
 function findPreferredLlamaModel({
   explicitModel = LLAMA_MODEL,
   searchDir = path.join(__dirname, "..", "tools", "llama"),
+  profile = "default",
 } = {}) {
   const localGgufs = collectFilesRecursively(searchDir, (fullPath) =>
     fullPath.toLowerCase().endsWith(".gguf"),
   );
-  return pickPreferredLlamaModel({ explicitModel, localGgufs });
+  return pickPreferredLlamaModel({ explicitModel, localGgufs, profile });
 }
 
-function findLlamaModel() {
-  return findPreferredLlamaModel();
+function findLlamaModel(profile = "default") {
+  return findPreferredLlamaModel({ profile });
 }
 
 function isLocalModelSpec(modelSpec) {
@@ -1816,9 +1874,9 @@ function runWhisper(filePath) {
   return r.stdout ? r.stdout.trim() : "";
 }
 
-function runLlama(prompt, maxTokens = 256) {
+function runLlama(prompt, maxTokens = 256, profile = "default") {
   const llamaBin = findLlamaBin();
-  const llamaModel = findLlamaModel();
+  const llamaModel = findLlamaModel(profile);
   if (!llamaBin || !llamaModel) {
     console.warn(
       "LLAMA_BIN or LLAMA_MODEL not configured — returning placeholder reply",
@@ -1887,7 +1945,7 @@ function runLlama(prompt, maxTokens = 256) {
   return reply;
 }
 
-function runLocalAssistantReply(prompt, maxTokens = 256) {
+function runLocalAssistantReply(prompt, maxTokens = 256, profile = "default") {
   const startedAt = nowMs();
   let llamaBin;
   try {
@@ -1898,7 +1956,7 @@ function runLocalAssistantReply(prompt, maxTokens = 256) {
     return "(no local llama binary found) I heard: " + prompt.slice(0, 200);
   }
 
-  const llamaModel = findLlamaModel();
+  const llamaModel = findLlamaModel(profile);
   const systemPrompt =
     "You are Mana, a local AI assistant with an original anime little-sister personality. Your tone blends cool confidence with a soft, shy gentleness: calm, caring, lightly teasing, and protective. Use occasional playful little jabs, then help immediately. Keep the teasing affectionate, never cruel or genuinely insulting. Speak naturally for spoken conversation: short sentences, clean wording, minimal rambling, usually one or two short sentences unless the user needs more detail.";
 
@@ -2180,8 +2238,13 @@ async function buildAssistantReply(
   transcript,
   screenText = "",
   marketText = "",
+  modelProfile = "default",
 ) {
   const prompt = buildScreenAwarePrompt(transcript, screenText, marketText);
+  const normalizedModelProfile = selectLlamaModelProfileForPrompt(
+    transcript,
+    modelProfile,
+  );
 
   // Try OpenAI/proxy only when explicitly allowed.
   if (shouldUseRemoteAi()) {
@@ -2201,7 +2264,11 @@ async function buildAssistantReply(
   }
 
   // Fall back to local llama
-  const reply = runLocalAssistantReply(prompt, LLAMA_MAX_TOKENS);
+  const reply = runLocalAssistantReply(
+    prompt,
+    LLAMA_MAX_TOKENS,
+    normalizedModelProfile,
+  );
   queueVTubeReaction(reply);
   return reply;
 }
@@ -2402,6 +2469,7 @@ app.post("/reply", async (req, res) => {
       typeof req.body?.screenText === "string"
         ? clampText(req.body.screenText, SCREEN_CONTEXT_MAX_CHARS)
         : "";
+    const modelProfile = normalizeLlamaModelProfile(req.body?.modelProfile);
     const world =
       typeof req.body?.ffxivWorld === "string" && req.body.ffxivWorld.trim()
         ? req.body.ffxivWorld.trim()
@@ -2414,7 +2482,12 @@ app.post("/reply", async (req, res) => {
       craftProfitText ||
       (await buildUniversalisContextForPrompt(transcript, world, screenText)) ||
       (await buildMarketContextForPrompt(transcript, marketDataClient));
-    const reply = await buildAssistantReply(transcript, screenText, marketText);
+    const reply = await buildAssistantReply(
+      transcript,
+      screenText,
+      marketText,
+      modelProfile,
+    );
     return res.json({
       reply,
       ttsConfigured: TTS_PROVIDER !== "none",
@@ -2584,7 +2657,9 @@ if (require.main === module) {
 module.exports = {
   createApp,
   ensureDirectory,
+  normalizeLlamaModelProfile,
   pickPreferredLlamaModel,
+  selectLlamaModelProfileForPrompt,
   shouldUseRemoteAi,
   startServer,
 };
