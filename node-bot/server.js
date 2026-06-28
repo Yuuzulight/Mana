@@ -46,6 +46,7 @@ const {
   buildMarketContextForPrompt,
   createMarketDataClient,
 } = require("./market-data");
+const { createZedIntegration } = require("./zed-integration");
 
 function createApp(deps = {}) {
   const app = express();
@@ -935,6 +936,28 @@ app.get("/doctor", async (req, res) => {
   } catch (error) {
     return res.status(500).json({
       ok: false,
+      error: error.message,
+    });
+  }
+});
+
+app.get("/zed/status", (req, res) => {
+  const zed = deps.zed || createZedIntegration();
+  return res.json(zed.getStatus());
+});
+
+app.post("/zed/open", async (req, res) => {
+  try {
+    const zed = deps.zed || createZedIntegration();
+    const result = await zed.open({
+      targetPath: req.body?.path,
+      line: req.body?.line,
+      column: req.body?.column,
+    });
+    return res.json(result);
+  } catch (error) {
+    return res.status(400).json({
+      opened: false,
       error: error.message,
     });
   }

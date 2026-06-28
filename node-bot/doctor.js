@@ -2,6 +2,7 @@ const fs = require("node:fs");
 const net = require("node:net");
 const os = require("node:os");
 const path = require("node:path");
+const { createZedIntegration } = require("./zed-integration");
 
 const DEFAULT_NODE_MAJOR = 18;
 const DEFAULT_BACKEND_PORT = 5005;
@@ -193,6 +194,24 @@ function checkStorage(paths = {}) {
   }
 }
 
+function checkZedEditor(options = {}) {
+  const status = createZedIntegration({
+    env: options.env || process.env,
+    commandResolver: options.commandResolver,
+  }).getStatus();
+
+  return makeCheck(
+    "zed-editor",
+    "Zed editor",
+    status.available ? "pass" : "warn",
+    status.message,
+    {
+      command: status.command,
+      source: status.source,
+    },
+  );
+}
+
 function withHealthPath(baseUrl) {
   try {
     const url = new URL(baseUrl);
@@ -351,6 +370,10 @@ function runDoctorChecks(options = {}) {
     checkTtsServices(options.services || []),
     checkMobileAuth(env),
     checkStorage(paths),
+    checkZedEditor({
+      env,
+      commandResolver: options.zedCommandResolver,
+    }),
   ];
 
   return buildDoctorResult(checks, options.now);

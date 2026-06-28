@@ -30,6 +30,7 @@ For the full setup flow, including model paths, Whisper, TTS services, gaming mo
 - **Gaming mode**: Mana reduces idle work while watched games are running.
 - **Desktop avatar support**: PNG overlay and optional VTube Studio hotkey control.
 - **Mobile companion path**: phone chat and summary sync are available through the local backend and optional tunnel setup.
+- **Zed coding handoff**: Mana can detect a local Zed CLI and open projects or files for coding help without applying edits silently.
 - **FFXIV and market helpers**: Mana can query Universalis crafting/market data and Alpha Vantage stock summaries when configured.
 
 ## Architecture
@@ -57,6 +58,26 @@ Default behavior:
 - Chat summaries and mobile memory are stored locally unless you intentionally sync or expose them.
 
 Remote AI is an explicit escape hatch, not the default path.
+
+## Zed Editor Integration
+
+Mana can hand coding work to Zed through the local Zed CLI.
+
+Setup:
+
+```powershell
+$env:ZED_BIN = "C:\Program Files\Zed\zed.exe"
+```
+
+If `ZED_BIN` is unset, Mana checks for `zed` on `PATH`.
+
+Current behavior:
+
+- `GET /zed/status` reports whether the Zed CLI is available.
+- `POST /zed/open` opens an existing file or folder in Zed.
+- Optional `line` and `column` values are passed as `file:line:column`.
+- Mana does not silently modify code through this integration. Any edit workflow should stay explicit and reviewable.
+- Coding replies still use the local coding model profile unless remote AI is explicitly enabled.
 
 ## Model Stack
 
@@ -92,6 +113,7 @@ Doctor checks currently cover:
 - mobile auth configuration
 - local storage writability
 - backend port availability
+- Zed CLI availability
 
 Common troubleshooting:
 
@@ -120,6 +142,8 @@ Useful endpoints:
 - `GET /health`: basic backend status.
 - `GET /doctor`: setup and readiness checks.
 - `GET /perf/status`: local performance and process metrics.
+- `GET /zed/status`: Zed CLI availability.
+- `POST /zed/open`: open an existing file or folder in Zed.
 - `POST /transcribe`: audio upload, transcription, and reply.
 - `POST /transcribe-only`: audio upload and transcription only.
 - `POST /reply`: text reply from Mana.
