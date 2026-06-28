@@ -537,6 +537,49 @@ function getSalesHistoryAdjustedPrice({
   };
 }
 
+function normalizeCraftRankingMode(rankBy, useSalesHistory = false) {
+  const normalized = String(rankBy || "")
+    .trim()
+    .toLowerCase();
+  if (normalized === "profit") {
+    return "profit";
+  }
+  if (normalized === "salesvelocity" || normalized === "sales_velocity") {
+    return "salesVelocity";
+  }
+  if (normalized === "balanced") {
+    return "balanced";
+  }
+  return useSalesHistory ? "balanced" : "profit";
+}
+
+function getCraftRankingValue(candidate, rankBy = "profit") {
+  const profit = Number(candidate?.profit || 0);
+  const unitsSold = Math.max(
+    0,
+    Number(candidate?.salesHistory?.unitsSold || 0),
+  );
+  if (rankBy === "salesVelocity") {
+    return unitsSold;
+  }
+  if (rankBy === "balanced") {
+    return profit * Math.max(1, unitsSold);
+  }
+  return profit;
+}
+
+function formatCraftRankingDetails(item, report = {}) {
+  const salesText = item.salesHistory
+    ? `, ${item.salesHistory.salesCount} sales in ${item.salesHistory.historyDays}d, ${item.salesHistory.unitsSold} units sold`
+    : "";
+  const monthlyText =
+    item.estimatedMonthlyProfit !== null &&
+    item.estimatedMonthlyProfit !== undefined
+      ? `, ${item.estimatedMonthlyProfit} gil estimated ${item.salesHistory?.historyDays || report.historyDays || 30}d profit`
+      : "";
+  return `${salesText}${monthlyText}`;
+}
+
 function registerRoutes(app, upload, deps = {}) {
 app.get("/health", (req, res) => {
   const llamaStatus = getLlamaStatus();
@@ -1320,6 +1363,7 @@ async function findProfitableCrafts({
   recipeSource = FFXIV_RECIPE_SOURCE,
   useSalesHistory = false,
   historyDays = 30,
+  rankBy,
 } = {}) {
   const safeLimit = clampInteger(limit, 1, 25, FFXIV_PROFIT_TOP_LIMIT);
   const safeScanLimit = clampInteger(
@@ -1330,6 +1374,7 @@ async function findProfitableCrafts({
   );
   const safeRecipeSource = normalizeRecipeSource(recipeSource);
   const safeHistoryDays = clampInteger(historyDays, 1, 90, 30);
+  const safeRankBy = normalizeCraftRankingMode(rankBy, Boolean(useSalesHistory));
   const recipes =
     safeRecipeSource === "garland"
       ? await getGarlandRecipeCandidates({
@@ -1414,6 +1459,10 @@ async function findProfitableCrafts({
     const resultRevenue = adjustedUnitPrice * recipe.amountResult;
     const profit = resultRevenue - materialCost;
     const profitMargin = materialCost > 0 ? profit / materialCost : null;
+    const salesUnitsSold = salesAdjustment?.salesSummary.unitsSold || 0;
+    const estimatedMonthlyProfit = useSalesHistory
+      ? profit * Math.max(1, Number(salesUnitsSold || 0))
+      : null;
     const candidate = {
       recipeId: recipe.recipeId,
       itemId: recipe.resultItemId,
@@ -1427,6 +1476,10 @@ async function findProfitableCrafts({
       materialCost,
       profit,
       profitMargin,
+      rankBy: safeRankBy,
+      rankingValue: null,
+      estimatedMonthlyProfit,
+      salesVelocityScore: useSalesHistory ? Number(salesUnitsSold || 0) : null,
       ingredients: pricedIngredients,
       resultMarket: {
         minPrice: resultMarket?.minPrice ?? null,
@@ -1451,16 +1504,25 @@ async function findProfitableCrafts({
           }
         : null,
     };
+    candidate.rankingValue = getCraftRankingValue(candidate, safeRankBy);
 
     const existing = bestByResultItem.get(recipe.resultItemId);
-    if (!existing || candidate.profit > existing.profit) {
+    if (
+      !existing ||
+      candidate.rankingValue > existing.rankingValue ||
+      (candidate.rankingValue === existing.rankingValue &&
+        candidate.profit > existing.profit)
+    ) {
       bestByResultItem.set(recipe.resultItemId, candidate);
     }
   }
 
   const results = [...bestByResultItem.values()]
     .filter((result) => result.profit > 0)
-    .sort((left, right) => right.profit - left.profit)
+    .sort(
+      (left, right) =>
+        right.rankingValue - left.rankingValue || right.profit - left.profit,
+    )
     .slice(0, safeLimit);
 
   return {
@@ -1472,12 +1534,13 @@ async function findProfitableCrafts({
     scanLimit: safeScanLimit,
     useSalesHistory: Boolean(useSalesHistory),
     historyDays: safeHistoryDays,
+    rankBy: safeRankBy,
     recipesScanned: recipes.length,
     recipesPriced: bestByResultItem.size,
     skipped,
     priceBasis:
       useSalesHistory
-        ? "Lower of current Universalis listing price and 30-day median sale price, filtered by 30-day sales frequency."
+        ? "Lower of current Universalis listing price and 30-day median sale price, filtered by 30-day sales frequency. Balanced ranking uses estimated profit multiplied by units sold in the sales-history window."
         : "Lowest current Universalis listing price. Revenue is item price multiplied by recipe yield.",
     results,
   };
@@ -1490,6 +1553,9 @@ function formatProfitableCraftsForPrompt(report) {
     `Recipes scanned: ${report.recipesScanned}`,
     `Price basis: ${report.priceBasis}`,
   ];
+  if (report.rankBy) {
+    lines.push(`Rank by: ${report.rankBy}`);
+  }
 
   if (!report.results.length) {
     lines.push(
@@ -1502,11 +1568,9 @@ function formatProfitableCraftsForPrompt(report) {
         item.profitMargin === null
           ? "unknown margin"
           : `${Math.round(item.profitMargin * 100)}% margin`;
-      const salesText = item.salesHistory
-        ? `, ${item.salesHistory.salesCount} sales in ${item.salesHistory.historyDays}d`
-        : "";
+      const rankingDetails = formatCraftRankingDetails(item, report);
       lines.push(
-        `${index + 1}. ${item.itemName}: ${item.profit} gil profit (${item.saleRevenue} revenue - ${item.materialCost} mats, ${margin}${salesText})`,
+        `${index + 1}. ${item.itemName}: ${item.profit} gil profit (${item.saleRevenue} revenue - ${item.materialCost} mats, ${margin}${rankingDetails})`,
       );
     }
   }
@@ -2597,6 +2661,7 @@ app.get("/ffxiv/crafting/profit", async (req, res) => {
       req.query.useSalesHistory === "1" ||
       String(req.query.useSalesHistory || "").toLowerCase() === "true";
     const historyDays = clampInteger(req.query.historyDays, 1, 90, 30);
+    const rankBy = normalizeCraftRankingMode(req.query.rankBy, useSalesHistory);
     const startedAt = nowMs();
     const report = await findProfitableCrafts({
       world,
@@ -2607,6 +2672,7 @@ app.get("/ffxiv/crafting/profit", async (req, res) => {
       recipeSource,
       useSalesHistory,
       historyDays,
+      rankBy,
     });
     logPerf("ffxiv-crafting-profit", startedAt);
     return res.json(report);
@@ -2850,9 +2916,12 @@ if (require.main === module) {
 module.exports = {
   createApp,
   ensureDirectory,
+  formatCraftRankingDetails,
   getCraftMarketabilityRequirement,
+  getCraftRankingValue,
   getSalesHistoryAdjustedPrice,
   normalizeLlamaModelProfile,
+  normalizeCraftRankingMode,
   pickPreferredLlamaModel,
   selectLlamaModelProfileForPrompt,
   shouldUseRemoteAi,

@@ -2,7 +2,10 @@ const assert = require("node:assert/strict");
 const test = require("node:test");
 
 const {
+  formatCraftRankingDetails,
   getCraftMarketabilityRequirement,
+  getCraftRankingValue,
+  normalizeCraftRankingMode,
   summarizeSalesHistory,
   getSalesHistoryAdjustedPrice,
 } = require("../server");
@@ -70,4 +73,64 @@ test("getSalesHistoryAdjustedPrice allows expensive slow sellers and uses median
   assert.equal(result.estimatedRevenue, 11_000_000);
   assert.equal(result.estimatedProfit, 10_998_000);
   assert.equal(result.salesSummary.salesCount, 3);
+});
+
+test("normalizeCraftRankingMode defaults sales-history scans to balanced ranking", () => {
+  assert.equal(normalizeCraftRankingMode(undefined, true), "balanced");
+  assert.equal(normalizeCraftRankingMode(undefined, false), "profit");
+  assert.equal(normalizeCraftRankingMode("salesVelocity", true), "salesVelocity");
+  assert.equal(normalizeCraftRankingMode("profit", true), "profit");
+  assert.equal(normalizeCraftRankingMode("unknown", true), "balanced");
+});
+
+test("getCraftRankingValue can rank by profit, sales velocity, or balanced monthly profit", () => {
+  const candidate = {
+    profit: 2_000,
+    salesHistory: {
+      unitsSold: 12,
+    },
+  };
+
+  assert.equal(getCraftRankingValue(candidate, "profit"), 2_000);
+  assert.equal(getCraftRankingValue(candidate, "salesVelocity"), 12);
+  assert.equal(getCraftRankingValue(candidate, "balanced"), 24_000);
+});
+
+test("balanced ranking favors frequent lower-profit crafts over rare higher-profit crafts", () => {
+  const rareHighProfit = {
+    itemName: "Rare high-profit craft",
+    profit: 100_000,
+    salesHistory: {
+      unitsSold: 1,
+    },
+  };
+  const frequentLowerProfit = {
+    itemName: "Frequent lower-profit craft",
+    profit: 30_000,
+    salesHistory: {
+      unitsSold: 10,
+    },
+  };
+
+  const ranked = [rareHighProfit, frequentLowerProfit].sort(
+    (left, right) =>
+      getCraftRankingValue(right, "balanced") -
+      getCraftRankingValue(left, "balanced"),
+  );
+
+  assert.equal(ranked[0].itemName, "Frequent lower-profit craft");
+});
+
+test("formatCraftRankingDetails includes balanced ranking context", () => {
+  const details = formatCraftRankingDetails({
+    estimatedMonthlyProfit: 24_999_500,
+    salesHistory: {
+      historyDays: 30,
+      salesCount: 5,
+      unitsSold: 5,
+    },
+  });
+
+  assert.match(details, /24999500 gil estimated 30d profit/);
+  assert.match(details, /5 units sold/);
 });
