@@ -30,6 +30,7 @@ For the full setup flow, including model paths, Whisper, TTS services, gaming mo
 - **Gaming mode**: Mana reduces idle work while watched games are running.
 - **Desktop avatar support**: PNG overlay and optional VTube Studio hotkey control.
 - **Mobile companion path**: phone chat and summary sync are available through the local backend and optional tunnel setup.
+- **Editor coding handoff**: Mana can detect local Zed or VS Code CLIs and open projects or files for coding help without applying edits silently.
 - **FFXIV and market helpers**: Mana can query Universalis crafting/market data and Alpha Vantage stock summaries when configured.
 
 ## Architecture
@@ -57,6 +58,36 @@ Default behavior:
 - Chat summaries and mobile memory are stored locally unless you intentionally sync or expose them.
 
 Remote AI is an explicit escape hatch, not the default path.
+
+## Editor Integration
+
+Mana can hand coding work to a local editor CLI. On this setup, Zed is the default editor.
+
+Setup:
+
+```powershell
+$env:ZED_BIN = "C:\Program Files\Zed\zed.exe"
+$env:VSCODE_BIN = "C:\Users\User\AppData\Local\Programs\Microsoft VS Code\bin\code.cmd"
+$env:MANA_DEFAULT_EDITOR = "zed"
+```
+
+If `ZED_BIN` is unset, Mana checks for `zed` on `PATH`. If `VSCODE_BIN` is unset, Mana checks for `code` on `PATH`.
+
+Current behavior:
+
+- `GET /editors/status` reports Zed and VS Code CLI availability.
+- `POST /editors/open` opens an existing file or folder in the requested editor.
+- If no editor is requested, Mana uses `MANA_DEFAULT_EDITOR`, falling back to Zed.
+- `GET /editors/workspace` reports the active local workspace path Mana last opened or was told to use.
+- `POST /editors/workspace` sets the active local workspace path explicitly.
+- `GET /editors/workspace/files` lists files in the active workspace with heavy folders skipped.
+- `GET /editors/workspace/file?path=...` reads one bounded text file inside the active workspace.
+- `POST /editors/workspace/proposals` creates an in-memory edit proposal for review without writing the file.
+- `GET /editors/workspace/proposals` and `GET /editors/workspace/proposals/:id` review pending proposals.
+- `GET /zed/status` and `POST /zed/open` remain available as Zed-specific compatibility routes.
+- Optional `line` and `column` values are passed as `file:line:column`.
+- Mana does not silently inspect or modify code through this integration. File lists and reads require explicit endpoint calls, and edit proposals stay in memory for review instead of being applied to disk.
+- Coding replies still use the local coding model profile unless remote AI is explicitly enabled.
 
 ## Model Stack
 
@@ -92,6 +123,7 @@ Doctor checks currently cover:
 - mobile auth configuration
 - local storage writability
 - backend port availability
+- Zed and VS Code CLI availability
 
 Common troubleshooting:
 
@@ -120,6 +152,17 @@ Useful endpoints:
 - `GET /health`: basic backend status.
 - `GET /doctor`: setup and readiness checks.
 - `GET /perf/status`: local performance and process metrics.
+- `GET /editors/status`: local editor CLI availability.
+- `POST /editors/open`: open an existing file or folder in Zed or VS Code.
+- `GET /editors/workspace`: active local coding workspace.
+- `POST /editors/workspace`: set the active local coding workspace.
+- `GET /editors/workspace/files`: list active workspace files.
+- `GET /editors/workspace/file`: read one bounded file inside the active workspace.
+- `GET /editors/workspace/proposals`: list pending edit proposals.
+- `POST /editors/workspace/proposals`: create an in-memory edit proposal.
+- `GET /editors/workspace/proposals/:id`: inspect one edit proposal and preview diff.
+- `GET /zed/status`: Zed CLI availability.
+- `POST /zed/open`: open an existing file or folder in Zed.
 - `POST /transcribe`: audio upload, transcription, and reply.
 - `POST /transcribe-only`: audio upload and transcription only.
 - `POST /reply`: text reply from Mana.

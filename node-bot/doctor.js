@@ -2,6 +2,7 @@ const fs = require("node:fs");
 const net = require("node:net");
 const os = require("node:os");
 const path = require("node:path");
+const { createEditorIntegrations } = require("./zed-integration");
 
 const DEFAULT_NODE_MAJOR = 18;
 const DEFAULT_BACKEND_PORT = 5005;
@@ -193,6 +194,27 @@ function checkStorage(paths = {}) {
   }
 }
 
+function checkEditorIntegrations(options = {}) {
+  const status = createEditorIntegrations({
+    env: options.env || process.env,
+    commandResolver: options.commandResolver,
+  }).getStatus();
+
+  return Object.entries(status.editors).map(([id, editor]) =>
+    makeCheck(
+      `${id}-editor`,
+      id === "vscode" ? "VS Code editor" : "Zed editor",
+      editor.available ? "pass" : "warn",
+      editor.message,
+      {
+        command: editor.command,
+        source: editor.source,
+        defaultEditor: status.defaultEditor === id,
+      },
+    ),
+  );
+}
+
 function withHealthPath(baseUrl) {
   try {
     const url = new URL(baseUrl);
@@ -351,6 +373,10 @@ function runDoctorChecks(options = {}) {
     checkTtsServices(options.services || []),
     checkMobileAuth(env),
     checkStorage(paths),
+    ...checkEditorIntegrations({
+      env,
+      commandResolver: options.zedCommandResolver,
+    }),
   ];
 
   return buildDoctorResult(checks, options.now);
