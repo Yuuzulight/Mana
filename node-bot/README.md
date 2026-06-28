@@ -37,6 +37,7 @@ Requirements
 - ffmpeg on PATH (optional, used to convert webm recordings to WAV)
 - Zed CLI on PATH or `ZED_BIN` set to `zed.exe` (optional, default editor for coding handoff)
 - VS Code CLI on PATH or `VSCODE_BIN` set to `code.cmd` (optional alternate editor for coding handoff)
+- Zed External Agent support uses `node mana-acp-agent.js --acp` from this backend folder
 
 Install and run
 ---------------
@@ -106,6 +107,23 @@ GET /editors/workspace/proposals
 GET /editors/workspace/proposals/:id
   -> returns one proposal with original content, proposed content, and preview diff
 
+Zed External Agent
+------------------
+Zed can launch Mana as a local External Agent through:
+
+   node C:\ManaAI\Mana\node-bot\mana-acp-agent.js --acp
+
+To print a Zed `agent_servers` settings snippet:
+
+   node mana-acp-agent.js --print-zed-config
+
+This entry point is local-only by default and refuses `MANA_ALLOW_REMOTE_AI=1`
+unless a future explicit override path is added. The current ACP slice supports
+basic lifecycle messages, sends standalone prompts to the local backend `/reply`
+endpoint with the coding model profile, and keeps file changes proposal-only.
+Start `npm start` before using the Zed External Agent, or set `MANA_BACKEND_URL`
+if the backend is on a different local URL.
+
 GET /market/stock/summary?symbol=NVDA
   -> returns an Alpha Vantage quote and company summary for one ticker
 
@@ -133,6 +151,7 @@ Notes
 - Editor integration only opens existing paths through local CLIs. It does not silently apply edits.
 - The active editor workspace is local process memory. It helps Mana know which project you mean, and file inspection only happens through explicit workspace file-list or file-read requests.
 - Edit proposals are also local process memory. Creating a proposal does not modify files on disk.
+- The Zed External Agent entry point starts the local ACP shell and uses the local backend reply route for coding replies.
 - The intended local model stack is 4B primary, 8B quality mode, Qwen2.5-Coder 7B coding mode, and 1.5B fast fallback.
 - CLI flags for whisper.cpp and llama.cpp vary between forks/builds. If the binaries you use require different flags, edit node-bot/server.js accordingly.
 - `node-bot` can still support a generic CLI TTS path, but the intended realistic-voice path is the Chatterbox microservice.
