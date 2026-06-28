@@ -32,7 +32,7 @@ function normalizePositiveInteger(value, label) {
   return number;
 }
 
-function buildZedOpenTarget({ targetPath, line, column } = {}) {
+function buildEditorOpenTarget({ targetPath, line, column } = {}) {
   const cleanPath = typeof targetPath === "string" ? targetPath.trim() : "";
   if (!cleanPath) {
     throw new Error("path is required");
@@ -53,38 +53,70 @@ function buildZedOpenTarget({ targetPath, line, column } = {}) {
     : `${cleanPath}:${normalizedLine}`;
 }
 
-function createZedIntegration(options = {}) {
+function buildZedOpenTarget(options = {}) {
+  return buildEditorOpenTarget(options);
+}
+
+function buildVsCodeOpenArgs(options = {}) {
+  const target = buildEditorOpenTarget(options);
+  const hasLine = options.line !== undefined && options.line !== null && options.line !== "";
+  return hasLine ? ["-g", target] : [target];
+}
+
+function quoteWindowsCmdArg(value) {
+  return `"${String(value).replace(/"/g, '\\"')}"`;
+}
+
+function buildSpawnInvocation(command, args, platform = process.platform) {
+  if (platform !== "win32" || !/\.(?:cmd|bat)$/i.test(command)) {
+    return { command, args };
+  }
+
+  return {
+    command: "cmd.exe",
+    args: [
+      "/d",
+      "/s",
+      "/c",
+      [quoteWindowsCmdArg(command), ...args.map(quoteWindowsCmdArg)].join(" "),
+    ],
+  };
+}
+
+function createEditorIntegration(config, options = {}) {
   const env = options.env || process.env;
   const commandResolver = options.commandResolver || defaultCommandResolver;
   const spawnProcess = options.spawn || spawn;
+  const platform = options.platform || process.platform;
+  const configuredEnvValue =
+    typeof env[config.envVar] === "string" ? env[config.envVar].trim() : "";
 
   function getStatus() {
-    const configuredBin = typeof env.ZED_BIN === "string" ? env.ZED_BIN.trim() : "";
-    if (configuredBin) {
-      if (fs.existsSync(configuredBin)) {
+    if (configuredEnvValue) {
+      if (fs.existsSync(configuredEnvValue)) {
         return {
           available: true,
-          command: configuredBin,
-          source: "ZED_BIN",
-          message: "Zed CLI is configured.",
+          command: configuredEnvValue,
+          source: config.envVar,
+          message: `${config.label} CLI is configured.`,
         };
       }
 
       return {
         available: false,
-        command: configuredBin,
-        source: "ZED_BIN",
-        message: "ZED_BIN is configured, but the file does not exist.",
+        command: configuredEnvValue,
+        source: config.envVar,
+        message: `${config.envVar} is configured, but the file does not exist.`,
       };
     }
 
-    const pathCommand = commandResolver("zed");
+    const pathCommand = commandResolver(config.pathCommand);
     if (pathCommand) {
       return {
         available: true,
         command: pathCommand,
         source: "PATH",
-        message: "Zed CLI is available on PATH.",
+        message: `${config.label} CLI is available on PATH.`,
       };
     }
 
@@ -92,7 +124,7 @@ function createZedIntegration(options = {}) {
       available: false,
       command: null,
       source: "none",
-      message: "Zed CLI was not found. Add zed to PATH or set ZED_BIN.",
+      message: `${config.label} CLI was not found. Add ${config.pathCommand} to PATH or set ${config.envVar}.`,
     };
   }
 
@@ -102,9 +134,10 @@ function createZedIntegration(options = {}) {
       return Promise.reject(new Error(status.message));
     }
 
-    const target = buildZedOpenTarget({ targetPath, line, column });
+    const args = config.buildArgs({ targetPath, line, column });
+    const invocation = buildSpawnInvocation(status.command, args, platform);
     return new Promise((resolve, reject) => {
-      const child = spawnProcess(status.command, [target], {
+      const child = spawnProcess(invocation.command, invocation.args, {
         detached: true,
         shell: false,
         stdio: "ignore",
@@ -116,7 +149,13 @@ function createZedIntegration(options = {}) {
         if (typeof child.unref === "function") {
           child.unref();
         }
-        resolve({ opened: true, command: status.command, target });
+        resolve({
+          opened: true,
+          editor: config.id,
+          command: status.command,
+          args,
+          target: args[args.length - 1],
+        });
       });
     });
   }
@@ -127,8 +166,71 @@ function createZedIntegration(options = {}) {
   };
 }
 
+const EDITOR_CONFIGS = {
+  zed: {
+    id: "zed",
+    label: "Zed",
+    envVar: "ZED_BIN",
+    pathCommand: "zed",
+    buildArgs: (options) => [buildEditorOpenTarget(options)],
+  },
+  vscode: {
+    id: "vscode",
+    label: "VS Code",
+    envVar: "VSCODE_BIN",
+    pathCommand: "code",
+    buildArgs: buildVsCodeOpenArgs,
+  },
+};
+
+function normalizeEditorId(editor, defaultEditor = "zed") {
+  const normalized = String(editor || "").trim().toLowerCase();
+  if (Object.prototype.hasOwnProperty.call(EDITOR_CONFIGS, normalized)) {
+    return normalized;
+  }
+  return defaultEditor;
+}
+
+function createZedIntegration(options = {}) {
+  return createEditorIntegration(EDITOR_CONFIGS.zed, options);
+}
+
+function createEditorIntegrations(options = {}) {
+  const env = options.env || process.env;
+  const defaultEditor = normalizeEditorId(env.MANA_DEFAULT_EDITOR, "zed");
+  const editors = Object.fromEntries(
+    Object.entries(EDITOR_CONFIGS).map(([id, config]) => [
+      id,
+      createEditorIntegration(config, options),
+    ]),
+  );
+
+  function getStatus() {
+    return {
+      defaultEditor,
+      editors: Object.fromEntries(
+        Object.entries(editors).map(([id, integration]) => [
+          id,
+          integration.getStatus(),
+        ]),
+      ),
+    };
+  }
+
+  function open({ editor, targetPath, line, column } = {}) {
+    const editorId = normalizeEditorId(editor, defaultEditor);
+    return editors[editorId].open({ targetPath, line, column });
+  }
+
+  return {
+    getStatus,
+    open,
+  };
+}
+
 module.exports = {
   buildZedOpenTarget,
+  createEditorIntegrations,
   createZedIntegration,
   defaultCommandResolver,
 };

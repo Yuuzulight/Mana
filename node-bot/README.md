@@ -35,7 +35,8 @@ Requirements
   - Run the Python service in `../tts-service`.
   - Set `CHATTERBOX_TTS_URL` if you move the service off the default port.
 - ffmpeg on PATH (optional, used to convert webm recordings to WAV)
-- Zed CLI on PATH or `ZED_BIN` set to `zed.exe` (optional, used for coding handoff)
+- Zed CLI on PATH or `ZED_BIN` set to `zed.exe` (optional, default editor for coding handoff)
+- VS Code CLI on PATH or `VSCODE_BIN` set to `code.cmd` (optional alternate editor for coding handoff)
 
 Install and run
 ---------------
@@ -55,6 +56,8 @@ Install and run
    $env:ALPHA_VANTAGE_API_KEY = "your-api-key"
    $env:MARKET_WATCHLIST = "NVDA,AMD,AAPL,MSFT"
    $env:ZED_BIN = "C:\\Program Files\\Zed\\zed.exe"
+   $env:VSCODE_BIN = "C:\\Users\\User\\AppData\\Local\\Programs\\Microsoft VS Code\\bin\\code.cmd"
+   $env:MANA_DEFAULT_EDITOR = "zed"
 
 3. Start the server
    npm start
@@ -75,6 +78,12 @@ GET /zed/status
 
 POST /zed/open (JSON, body `{ "path": "C:\\ManaAI\\Mana", "line": 12 }`)
   -> opens an existing file or folder in Zed
+
+GET /editors/status
+  -> reports local Zed and VS Code CLI availability
+
+POST /editors/open (JSON, body `{ "editor": "vscode", "path": "C:\\ManaAI\\Mana", "line": 12 }`)
+  -> opens an existing file or folder in Zed by default, or VS Code when requested
 
 GET /market/stock/summary?symbol=NVDA
   -> returns an Alpha Vantage quote and company summary for one ticker
@@ -100,7 +109,7 @@ GET /ffxiv/crafting/profit?world=Adamantoise&recipeSource=xivapi
 Notes
 -----
 - AI replies use local llama unless `MANA_ALLOW_REMOTE_AI=1` and `OPENAI_API_KEY` are both set.
-- Zed integration only opens existing paths through the local CLI. It does not silently apply edits.
+- Editor integration only opens existing paths through local CLIs. It does not silently apply edits.
 - The intended local model stack is 4B primary, 8B quality mode, Qwen2.5-Coder 7B coding mode, and 1.5B fast fallback.
 - CLI flags for whisper.cpp and llama.cpp vary between forks/builds. If the binaries you use require different flags, edit node-bot/server.js accordingly.
 - `node-bot` can still support a generic CLI TTS path, but the intended realistic-voice path is the Chatterbox microservice.

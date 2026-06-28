@@ -68,7 +68,7 @@ test("doctor checks return structured pass warn and fail results", () => {
 
     assert.equal(result.ok, false);
     assert.equal(result.summary.pass, 3);
-    assert.equal(result.summary.warn, 5);
+    assert.equal(result.summary.warn, 6);
     assert.equal(result.summary.fail, 1);
 
     assert.deepEqual(
@@ -83,6 +83,7 @@ test("doctor checks return structured pass warn and fail results", () => {
         "mobile-auth",
         "storage",
         "zed-editor",
+        "vscode-editor",
       ],
     );
     assert.equal(result.checks.find((check) => check.id === "node-runtime").status, "pass");
@@ -92,6 +93,7 @@ test("doctor checks return structured pass warn and fail results", () => {
     );
     assert.equal(result.checks.find((check) => check.id === "llama-model").status, "fail");
     assert.equal(result.checks.find((check) => check.id === "zed-editor").status, "warn");
+    assert.equal(result.checks.find((check) => check.id === "vscode-editor").status, "warn");
     assert.match(
       result.checks.find((check) => check.id === "llama-model").message,
       /not found/i,
@@ -105,7 +107,9 @@ test("doctor checks return structured pass warn and fail results", () => {
 test("doctor reports configured Zed editor availability", () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mana-doctor-zed-"));
   const zedBin = path.join(tempDir, "zed.exe");
+  const vscodeBin = path.join(tempDir, "code.cmd");
   fs.writeFileSync(zedBin, "fake");
+  fs.writeFileSync(vscodeBin, "fake");
 
   try {
     const result = runDoctorChecks({
@@ -118,6 +122,7 @@ test("doctor reports configured Zed editor availability", () => {
         MOBILE_PASSCODE_HASH: "",
         MOBILE_SESSION_SECRET: "",
         ZED_BIN: zedBin,
+        VSCODE_BIN: vscodeBin,
       },
       paths: {
         dataDir: tempDir,
@@ -129,10 +134,14 @@ test("doctor reports configured Zed editor availability", () => {
     });
 
     const zed = result.checks.find((check) => check.id === "zed-editor");
+    const vscode = result.checks.find((check) => check.id === "vscode-editor");
 
     assert.equal(zed.status, "pass");
     assert.equal(zed.details.command, zedBin);
     assert.equal(zed.details.source, "ZED_BIN");
+    assert.equal(vscode.status, "pass");
+    assert.equal(vscode.details.command, vscodeBin);
+    assert.equal(vscode.details.source, "VSCODE_BIN");
   } finally {
     fs.rmSync(tempDir, { recursive: true, force: true });
   }
