@@ -5,7 +5,13 @@ const {
   formatCraftRankingDetails,
   getCraftMarketabilityRequirement,
   getCraftRankingValue,
+  getGarlandNodeGatheringJob,
+  getGarlandNodeGatheringSources,
+  isIgnoredGatheringMaterial,
+  materialPassesGatheringFilters,
   normalizeCraftRankingMode,
+  normalizeGatheringSourceFilter,
+  resolveGatherableRecipeMaterials,
   summarizeSalesHistory,
   getSalesHistoryAdjustedPrice,
 } = require("../server");
@@ -133,4 +139,186 @@ test("formatCraftRankingDetails includes balanced ranking context", () => {
 
   assert.match(details, /24999500 gil estimated 30d profit/);
   assert.match(details, /5 units sold/);
+});
+
+test("isIgnoredGatheringMaterial ignores shards, crystals, and clusters", () => {
+  assert.equal(isIgnoredGatheringMaterial({ itemId: 2, itemName: "Fire Shard" }), true);
+  assert.equal(isIgnoredGatheringMaterial({ itemId: 8, itemName: "Fire Crystal" }), true);
+  assert.equal(isIgnoredGatheringMaterial({ itemId: 14, itemName: "Fire Cluster" }), true);
+  assert.equal(isIgnoredGatheringMaterial({ itemId: 5106, itemName: "Copper Ore" }), false);
+});
+
+test("normalizeGatheringSourceFilter defaults to normal nodes", () => {
+  assert.deepEqual(normalizeGatheringSourceFilter(undefined), ["normal"]);
+  assert.deepEqual(normalizeGatheringSourceFilter("timed,legendary"), [
+    "timed",
+    "legendary",
+  ]);
+  assert.deepEqual(normalizeGatheringSourceFilter("all"), [
+    "normal",
+    "timed",
+    "legendary",
+    "ephemeral",
+    "folklore",
+  ]);
+});
+
+test("getGarlandNodeGatheringSources classifies normal and special nodes", () => {
+  assert.deepEqual(getGarlandNodeGatheringSources({ t: 0 }), ["normal"]);
+  assert.deepEqual(getGarlandNodeGatheringSources({ t: 0, lt: "Unspoiled" }), [
+    "timed",
+  ]);
+  assert.deepEqual(getGarlandNodeGatheringSources({ t: 1, lt: "Legendary" }), [
+    "legendary",
+  ]);
+  assert.deepEqual(getGarlandNodeGatheringSources({ t: 2, lt: "Ephemeral" }), [
+    "ephemeral",
+  ]);
+  assert.deepEqual(
+    getGarlandNodeGatheringSources({ t: 0, lt: "Legendary" }, { unlockId: 42 }),
+    ["legendary", "folklore"],
+  );
+});
+
+test("getGarlandNodeGatheringJob maps Garland node type to mining or botany", () => {
+  assert.equal(getGarlandNodeGatheringJob({ t: 0 }), "mining");
+  assert.equal(getGarlandNodeGatheringJob({ t: 1 }), "mining");
+  assert.equal(getGarlandNodeGatheringJob({ t: 2 }), "botany");
+  assert.equal(getGarlandNodeGatheringJob({ t: 3 }), "botany");
+  assert.equal(getGarlandNodeGatheringJob({ t: 99 }), null);
+});
+
+test("materialPassesGatheringFilters excludes special sources unless included", () => {
+  const normalOre = {
+    itemId: 5106,
+    itemName: "Copper Ore",
+    nodes: [{ t: 0 }],
+  };
+  const timedOre = {
+    itemId: 5121,
+    itemName: "Darksteel Ore",
+    nodes: [{ t: 0, lt: "Unspoiled" }],
+  };
+  const legendaryOre = {
+    itemId: 36179,
+    itemName: "Rhodium Sand",
+    unlockId: 123,
+    nodes: [{ t: 1, lt: "Legendary" }],
+  };
+
+  assert.equal(materialPassesGatheringFilters(normalOre).passes, true);
+  assert.equal(materialPassesGatheringFilters(timedOre).passes, false);
+  assert.equal(
+    materialPassesGatheringFilters(timedOre, {
+      allowedGatheringSources: ["normal", "timed"],
+    }).passes,
+    true,
+  );
+  assert.equal(
+    materialPassesGatheringFilters(legendaryOre, {
+      allowedGatheringSources: ["normal", "legendary"],
+    }).passes,
+    true,
+  );
+  assert.equal(
+    materialPassesGatheringFilters(legendaryOre, {
+      allowedGatheringSources: ["normal", "folklore"],
+    }).passes,
+    true,
+  );
+});
+
+test("resolveGatherableRecipeMaterials expands intermediates and ignores crystals", async () => {
+  const docs = new Map([
+    [
+      5062,
+      {
+        item: {
+          id: 5062,
+          name: "Copper Ingot",
+          craft: [
+            {
+              yield: 1,
+              ingredients: [
+                { id: 5106, amount: 3 },
+                { id: 2, amount: 1 },
+              ],
+            },
+          ],
+        },
+        partials: [{ type: "node", obj: { i: 153, n: "Spineless Basin", t: 0, l: 5 } }],
+      },
+    ],
+    [
+      5106,
+      {
+        item: { id: 5106, name: "Copper Ore", nodes: [153] },
+        partials: [{ type: "node", obj: { i: 153, n: "Spineless Basin", t: 0, l: 5 } }],
+      },
+    ],
+    [
+      5258,
+      {
+        item: {
+          id: 5258,
+          name: "Ragstone Whetstone",
+          craft: [
+            {
+              yield: 1,
+              ingredients: [
+                { id: 5228, amount: 2 },
+                { id: 2, amount: 1 },
+              ],
+            },
+          ],
+        },
+        partials: [{ type: "node", obj: { i: 194, n: "Black Brush", t: 1, l: 15 } }],
+      },
+    ],
+    [
+      5228,
+      {
+        item: { id: 5228, name: "Ragstone", nodes: [194] },
+        partials: [{ type: "node", obj: { i: 194, n: "Black Brush", t: 1, l: 15 } }],
+      },
+    ],
+  ]);
+
+  const result = await resolveGatherableRecipeMaterials(
+    {
+      resultItemName: "Copper Earrings",
+      ingredients: [
+        { itemId: 5062, itemName: "Copper Ingot", quantity: 1 },
+        { itemId: 5258, itemName: "Ragstone Whetstone", quantity: 1 },
+        { itemId: 2, itemName: "Fire Shard", quantity: 1 },
+      ],
+    },
+    {
+      getItemDoc: async (itemId) => docs.get(itemId),
+      allowedGatheringSources: ["normal"],
+      allowedGatheringJobs: ["mining", "botany"],
+    },
+  );
+
+  assert.equal(result.passes, true);
+  assert.deepEqual(
+    result.materials.map((material) => ({
+      itemId: material.itemId,
+      itemName: material.itemName,
+      quantity: material.quantity,
+    })),
+    [
+      { itemId: 5106, itemName: "Copper Ore", quantity: 3 },
+      { itemId: 5228, itemName: "Ragstone", quantity: 2 },
+    ],
+  );
+});
+
+test("resolveGatherableRecipeMaterials reports missing doc fetcher instead of throwing", async () => {
+  const result = await resolveGatherableRecipeMaterials({
+    ingredients: [{ itemId: 5106, itemName: "Copper Ore", quantity: 1 }],
+  });
+
+  assert.equal(result.passes, false);
+  assert.equal(result.failures[0].reason, "missing_garland_item_doc_fetcher");
 });
