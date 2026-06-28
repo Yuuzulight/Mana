@@ -95,6 +95,17 @@ const FFXIV_PROFIT_TOP_LIMIT = Number(process.env.FFXIV_PROFIT_TOP_LIMIT || 10);
 const FFXIV_RECIPE_SOURCE = process.env.FFXIV_RECIPE_SOURCE || "garland";
 const GARLAND_TOOLS_BASE_URL =
   process.env.GARLAND_TOOLS_BASE_URL || "https://www.garlandtools.org";
+const GATHERING_SOURCE_FILTERS = [
+  "normal",
+  "timed",
+  "legendary",
+  "ephemeral",
+  "folklore",
+];
+const GATHERING_JOB_FILTERS = ["mining", "botany"];
+const IGNORED_GATHERING_MATERIAL_IDS = new Set(
+  Array.from({ length: 18 }, (_, index) => index + 2),
+);
 const FISH_TTS_URL = process.env.FISH_TTS_URL || "http://127.0.0.1:8080";
 const FISH_TTS_API_KEY = process.env.FISH_TTS_API_KEY || null;
 const FISH_TTS_REFERENCE_ID = process.env.FISH_TTS_REFERENCE_ID || null;
@@ -578,6 +589,340 @@ function formatCraftRankingDetails(item, report = {}) {
       ? `, ${item.estimatedMonthlyProfit} gil estimated ${item.salesHistory?.historyDays || report.historyDays || 30}d profit`
       : "";
   return `${salesText}${monthlyText}`;
+}
+
+function isIgnoredGatheringMaterial(material = {}) {
+  const itemId = Number(material.itemId || material.id || 0);
+  const itemName = String(material.itemName || material.name || "");
+  return (
+    IGNORED_GATHERING_MATERIAL_IDS.has(itemId) ||
+    /\b(?:shard|crystal|cluster)\b/i.test(itemName)
+  );
+}
+
+function normalizeGatheringSourceFilter(value) {
+  const rawValues = Array.isArray(value)
+    ? value
+    : String(value || "")
+        .split(",")
+        .map((entry) => entry.trim());
+  const normalized = [];
+  for (const rawValue of rawValues) {
+    const source = String(rawValue || "")
+      .trim()
+      .toLowerCase();
+    if (!source) {
+      continue;
+    }
+    if (source === "all") {
+      return [...GATHERING_SOURCE_FILTERS];
+    }
+    if (source === "unspoiled" || source === "time" || source === "timed") {
+      normalized.push("timed");
+      continue;
+    }
+    if (GATHERING_SOURCE_FILTERS.includes(source)) {
+      normalized.push(source);
+    }
+  }
+  return [...new Set(normalized.length ? normalized : ["normal"])];
+}
+
+function normalizeGatheringJobFilter(value) {
+  const rawValues = Array.isArray(value)
+    ? value
+    : String(value || "")
+        .split(",")
+        .map((entry) => entry.trim());
+  const normalized = [];
+  for (const rawValue of rawValues) {
+    const job = String(rawValue || "")
+      .trim()
+      .toLowerCase();
+    if (job === "all") {
+      return [...GATHERING_JOB_FILTERS];
+    }
+    if (job === "miner" || job === "min") {
+      normalized.push("mining");
+      continue;
+    }
+    if (job === "botanist" || job === "btn") {
+      normalized.push("botany");
+      continue;
+    }
+    if (GATHERING_JOB_FILTERS.includes(job)) {
+      normalized.push(job);
+    }
+  }
+  return [...new Set(normalized.length ? normalized : GATHERING_JOB_FILTERS)];
+}
+
+function getGarlandNodeGatheringJob(node = {}) {
+  const nodeType = Number(node.t);
+  if (nodeType === 0 || nodeType === 1) {
+    return "mining";
+  }
+  if (nodeType === 2 || nodeType === 3) {
+    return "botany";
+  }
+  return null;
+}
+
+function getGarlandNodeGatheringSources(node = {}, item = {}) {
+  const limitedType = String(node.lt || "")
+    .trim()
+    .toLowerCase();
+  const sources = [];
+  if (limitedType === "unspoiled") {
+    sources.push("timed");
+  } else if (limitedType === "legendary") {
+    sources.push("legendary");
+  } else if (limitedType === "ephemeral") {
+    sources.push("ephemeral");
+  } else {
+    sources.push("normal");
+  }
+  if (item.unlockId) {
+    sources.push("folklore");
+  }
+  return [...new Set(sources)];
+}
+
+function materialPassesGatheringFilters(
+  material = {},
+  {
+    allowedGatheringSources = ["normal"],
+    allowedGatheringJobs = GATHERING_JOB_FILTERS,
+  } = {},
+) {
+  if (isIgnoredGatheringMaterial(material)) {
+    return {
+      passes: true,
+      ignored: true,
+      reason: "ignored_crystal_shard_or_cluster",
+      matchingNodes: [],
+    };
+  }
+
+  const allowedSources = new Set(
+    normalizeGatheringSourceFilter(allowedGatheringSources),
+  );
+  const allowedJobs = new Set(normalizeGatheringJobFilter(allowedGatheringJobs));
+  const nodes = Array.isArray(material.nodes) ? material.nodes : [];
+  const matchingNodes = nodes
+    .map((node) => {
+      const job = getGarlandNodeGatheringJob(node);
+      const sources = getGarlandNodeGatheringSources(node, material);
+      return {
+        id: node.i || node.id || null,
+        name: node.n || null,
+        level: node.l || null,
+        job,
+        sources,
+      };
+    })
+    .filter(
+      (node) =>
+        node.job &&
+        allowedJobs.has(node.job) &&
+        node.sources.some((source) => allowedSources.has(source)),
+    );
+
+  return {
+    passes: matchingNodes.length > 0,
+    ignored: false,
+    reason: matchingNodes.length ? "passed" : "not_allowed_gathering_source",
+    matchingNodes,
+  };
+}
+
+function getGarlandDocNodes(doc = {}) {
+  const itemNodes = Array.isArray(doc?.item?.nodes) ? doc.item.nodes : [];
+  if (itemNodes.length === 0) {
+    return [];
+  }
+  const itemNodeIds = new Set(
+    itemNodes
+      .map(Number)
+      .filter((nodeId) => Number.isInteger(nodeId) && nodeId > 0),
+  );
+  return (Array.isArray(doc?.partials) ? doc.partials : [])
+    .filter((partial) => partial?.type === "node" && partial.obj)
+    .map((partial) => partial.obj)
+    .filter((node) => itemNodeIds.has(Number(node.i || node.id)));
+}
+
+function buildGatheringMaterialFromGarlandDoc(doc = {}, fallback = {}) {
+  return {
+    itemId: Number(doc?.item?.id || fallback.itemId || fallback.id || 0),
+    itemName: doc?.item?.name || fallback.itemName || fallback.name || "",
+    quantity: Number(fallback.quantity || 0),
+    unlockId: doc?.item?.unlockId || null,
+    nodes: getGarlandDocNodes(doc),
+  };
+}
+
+function mergeGatheringMaterials(materials) {
+  const byItemId = new Map();
+  for (const material of materials) {
+    const itemId = Number(material.itemId || 0);
+    if (!itemId) {
+      continue;
+    }
+    const existing = byItemId.get(itemId);
+    if (existing) {
+      existing.quantity += Number(material.quantity || 0);
+      continue;
+    }
+    byItemId.set(itemId, {
+      ...material,
+      quantity: Number(material.quantity || 0),
+    });
+  }
+  return [...byItemId.values()];
+}
+
+async function expandGatheringIngredient(
+  ingredient,
+  {
+    getItemDoc,
+    allowedGatheringSources = ["normal"],
+    allowedGatheringJobs = GATHERING_JOB_FILTERS,
+    maxDepth = 6,
+    depth = 0,
+    path = new Set(),
+  } = {},
+) {
+  const itemId = Number(ingredient.itemId || ingredient.id || 0);
+  const quantity = Number(ingredient.quantity || ingredient.amount || 0);
+  const fallback = {
+    itemId,
+    itemName: ingredient.itemName || ingredient.name || "",
+    quantity,
+  };
+
+  if (!itemId || quantity <= 0 || isIgnoredGatheringMaterial(fallback)) {
+    return { passes: true, materials: [], failures: [] };
+  }
+  if (typeof getItemDoc !== "function") {
+    return {
+      passes: false,
+      materials: [],
+      failures: [{ ...fallback, reason: "missing_garland_item_doc_fetcher" }],
+    };
+  }
+  if (depth > maxDepth || path.has(itemId)) {
+    return {
+      passes: false,
+      materials: [],
+      failures: [{ ...fallback, reason: "crafting_expansion_depth_exceeded" }],
+    };
+  }
+
+  const doc = await getItemDoc(itemId);
+  if (!doc?.item) {
+    return {
+      passes: false,
+      materials: [],
+      failures: [{ ...fallback, reason: "missing_garland_item_doc" }],
+    };
+  }
+
+  const material = buildGatheringMaterialFromGarlandDoc(doc, fallback);
+  const gatheringResult = materialPassesGatheringFilters(material, {
+    allowedGatheringSources,
+    allowedGatheringJobs,
+  });
+  if (gatheringResult.passes) {
+    return {
+      passes: true,
+      materials: [
+        {
+          ...material,
+          gathering: {
+            sources: [
+              ...new Set(gatheringResult.matchingNodes.flatMap((node) => node.sources)),
+            ],
+            jobs: [
+              ...new Set(gatheringResult.matchingNodes.map((node) => node.job)),
+            ],
+            nodes: gatheringResult.matchingNodes,
+          },
+        },
+      ],
+      failures: [],
+    };
+  }
+
+  const crafts = Array.isArray(doc.item.craft) ? doc.item.craft : [];
+  for (const craft of crafts) {
+    const craftYield = Math.max(1, Number(craft.yield || 1));
+    const craftCount = Math.ceil(quantity / craftYield);
+    const childResults = [];
+    const childFailures = [];
+    const nextPath = new Set(path);
+    nextPath.add(itemId);
+    for (const child of Array.isArray(craft.ingredients)
+      ? craft.ingredients
+      : []) {
+      const childResult = await expandGatheringIngredient(
+        {
+          itemId: Number(child.id || 0),
+          quantity: Number(child.amount || 0) * craftCount,
+        },
+        {
+          getItemDoc,
+          allowedGatheringSources,
+          allowedGatheringJobs,
+          maxDepth,
+          depth: depth + 1,
+          path: nextPath,
+        },
+      );
+      if (!childResult.passes) {
+        childFailures.push(...childResult.failures);
+      }
+      childResults.push(...childResult.materials);
+    }
+    if (childFailures.length === 0) {
+      return {
+        passes: true,
+        materials: mergeGatheringMaterials(childResults),
+        failures: [],
+      };
+    }
+  }
+
+  return {
+    passes: false,
+    materials: [],
+    failures: [
+      {
+        ...material,
+        reason: gatheringResult.reason,
+      },
+    ],
+  };
+}
+
+async function resolveGatherableRecipeMaterials(recipe, options = {}) {
+  const materials = [];
+  const failures = [];
+  for (const ingredient of Array.isArray(recipe?.ingredients)
+    ? recipe.ingredients
+    : []) {
+    const result = await expandGatheringIngredient(ingredient, options);
+    if (!result.passes) {
+      failures.push(...result.failures);
+    }
+    materials.push(...result.materials);
+  }
+
+  return {
+    passes: failures.length === 0,
+    materials: mergeGatheringMaterials(materials),
+    failures,
+  };
 }
 
 function registerRoutes(app, upload, deps = {}) {
@@ -1364,6 +1709,10 @@ async function findProfitableCrafts({
   useSalesHistory = false,
   historyDays = 30,
   rankBy,
+  gatherableOnly = false,
+  gatheringSources,
+  gatheringJobs,
+  minUnitsSold = 0,
 } = {}) {
   const safeLimit = clampInteger(limit, 1, 25, FFXIV_PROFIT_TOP_LIMIT);
   const safeScanLimit = clampInteger(
@@ -1375,6 +1724,10 @@ async function findProfitableCrafts({
   const safeRecipeSource = normalizeRecipeSource(recipeSource);
   const safeHistoryDays = clampInteger(historyDays, 1, 90, 30);
   const safeRankBy = normalizeCraftRankingMode(rankBy, Boolean(useSalesHistory));
+  const safeGatherableOnly = Boolean(gatherableOnly);
+  const safeGatheringSources = normalizeGatheringSourceFilter(gatheringSources);
+  const safeGatheringJobs = normalizeGatheringJobFilter(gatheringJobs);
+  const safeMinUnitsSold = clampInteger(minUnitsSold, 0, 999999, 0);
   const recipes =
     safeRecipeSource === "garland"
       ? await getGarlandRecipeCandidates({
@@ -1386,12 +1739,38 @@ async function findProfitableCrafts({
           query,
           scanLimit: safeScanLimit,
           pageSize,
-        });
+      });
+
+  const recipeGatheringPlans = new Map();
+  if (safeGatherableOnly) {
+    const gatheringPlans = await mapWithConcurrency(
+      recipes,
+      6,
+      async (recipe) => ({
+        key: `${recipe.recipeId}:${recipe.resultItemId}`,
+        plan: await resolveGatherableRecipeMaterials(recipe, {
+          getItemDoc: getGarlandItemDoc,
+          allowedGatheringSources: safeGatheringSources,
+          allowedGatheringJobs: safeGatheringJobs,
+        }),
+      }),
+    );
+    for (const { key, plan } of gatheringPlans) {
+      recipeGatheringPlans.set(key, plan);
+    }
+  }
 
   const itemIds = [];
   for (const recipe of recipes) {
     itemIds.push(recipe.resultItemId);
-    for (const ingredient of recipe.ingredients) {
+    const gatheringPlan = recipeGatheringPlans.get(
+      `${recipe.recipeId}:${recipe.resultItemId}`,
+    );
+    const ingredientsForPricing =
+      safeGatherableOnly && gatheringPlan?.passes
+        ? gatheringPlan.materials
+        : recipe.ingredients;
+    for (const ingredient of ingredientsForPricing) {
       itemIds.push(ingredient.itemId);
     }
   }
@@ -1404,10 +1783,20 @@ async function findProfitableCrafts({
     missingResultPrice: 0,
     missingMaterialPrice: 0,
     insufficientSalesHistory: 0,
+    insufficientUnitsSold: 0,
+    nonGatherableMaterials: 0,
   };
   const bestByResultItem = new Map();
 
   for (const recipe of recipes) {
+    const gatheringPlan = recipeGatheringPlans.get(
+      `${recipe.recipeId}:${recipe.resultItemId}`,
+    );
+    if (safeGatherableOnly && !gatheringPlan?.passes) {
+      skipped.nonGatherableMaterials += 1;
+      continue;
+    }
+
     const resultMarket = marketItems.get(recipe.resultItemId);
     const resultUnitPrice = getMarketComparisonPrice(resultMarket);
     if (!resultUnitPrice) {
@@ -1418,7 +1807,11 @@ async function findProfitableCrafts({
     const pricedIngredients = [];
     let materialCost = 0;
     let hasMissingMaterial = false;
-    for (const ingredient of recipe.ingredients) {
+    const ingredientsForPricing =
+      safeGatherableOnly && gatheringPlan?.passes
+        ? gatheringPlan.materials
+        : recipe.ingredients;
+    for (const ingredient of ingredientsForPricing) {
       const materialMarket = marketItems.get(ingredient.itemId);
       const unitPrice = getMarketComparisonPrice(materialMarket);
       if (!unitPrice) {
@@ -1453,6 +1846,14 @@ async function findProfitableCrafts({
       skipped.insufficientSalesHistory += 1;
       continue;
     }
+    if (
+      useSalesHistory &&
+      safeMinUnitsSold > 0 &&
+      salesAdjustment.salesSummary.unitsSold < safeMinUnitsSold
+    ) {
+      skipped.insufficientUnitsSold += 1;
+      continue;
+    }
 
     const adjustedUnitPrice =
       salesAdjustment?.estimatedUnitPrice || resultUnitPrice;
@@ -1481,6 +1882,14 @@ async function findProfitableCrafts({
       estimatedMonthlyProfit,
       salesVelocityScore: useSalesHistory ? Number(salesUnitsSold || 0) : null,
       ingredients: pricedIngredients,
+      gathering: safeGatherableOnly
+        ? {
+            gatherableOnly: true,
+            allowedSources: safeGatheringSources,
+            allowedJobs: safeGatheringJobs,
+            ignoredMaterials: "Crystals, shards, and clusters are ignored.",
+          }
+        : null,
       resultMarket: {
         minPrice: resultMarket?.minPrice ?? null,
         minPriceNq: resultMarket?.minPriceNq ?? null,
@@ -1535,12 +1944,16 @@ async function findProfitableCrafts({
     useSalesHistory: Boolean(useSalesHistory),
     historyDays: safeHistoryDays,
     rankBy: safeRankBy,
+    gatherableOnly: safeGatherableOnly,
+    gatheringSources: safeGatheringSources,
+    gatheringJobs: safeGatheringJobs,
+    minUnitsSold: safeMinUnitsSold,
     recipesScanned: recipes.length,
     recipesPriced: bestByResultItem.size,
     skipped,
     priceBasis:
       useSalesHistory
-        ? "Lower of current Universalis listing price and 30-day median sale price, filtered by 30-day sales frequency. Balanced ranking uses estimated profit multiplied by units sold in the sales-history window."
+        ? `Lower of current Universalis listing price and 30-day median sale price, filtered by 30-day sales frequency. Balanced ranking uses estimated profit multiplied by units sold in the sales-history window.${safeGatherableOnly ? " Gatherable-only scans expand craftable intermediates to base Mining/Botany materials and ignore crystals, shards, and clusters." : ""}`
         : "Lowest current Universalis listing price. Revenue is item price multiplied by recipe yield.",
     results,
   };
@@ -2662,6 +3075,14 @@ app.get("/ffxiv/crafting/profit", async (req, res) => {
       String(req.query.useSalesHistory || "").toLowerCase() === "true";
     const historyDays = clampInteger(req.query.historyDays, 1, 90, 30);
     const rankBy = normalizeCraftRankingMode(req.query.rankBy, useSalesHistory);
+    const gatherableOnly =
+      req.query.gatherableOnly === "1" ||
+      String(req.query.gatherableOnly || "").toLowerCase() === "true";
+    const gatheringSources = normalizeGatheringSourceFilter(
+      req.query.gatheringSources || req.query.allowedGatheringSources,
+    );
+    const gatheringJobs = normalizeGatheringJobFilter(req.query.gatheringJobs);
+    const minUnitsSold = clampInteger(req.query.minUnitsSold, 0, 999999, 0);
     const startedAt = nowMs();
     const report = await findProfitableCrafts({
       world,
@@ -2673,6 +3094,10 @@ app.get("/ffxiv/crafting/profit", async (req, res) => {
       useSalesHistory,
       historyDays,
       rankBy,
+      gatherableOnly,
+      gatheringSources,
+      gatheringJobs,
+      minUnitsSold,
     });
     logPerf("ffxiv-crafting-profit", startedAt);
     return res.json(report);
@@ -2919,10 +3344,16 @@ module.exports = {
   formatCraftRankingDetails,
   getCraftMarketabilityRequirement,
   getCraftRankingValue,
+  getGarlandNodeGatheringJob,
+  getGarlandNodeGatheringSources,
   getSalesHistoryAdjustedPrice,
+  isIgnoredGatheringMaterial,
+  materialPassesGatheringFilters,
   normalizeLlamaModelProfile,
   normalizeCraftRankingMode,
+  normalizeGatheringSourceFilter,
   pickPreferredLlamaModel,
+  resolveGatherableRecipeMaterials,
   selectLlamaModelProfileForPrompt,
   shouldUseRemoteAi,
   startServer,
