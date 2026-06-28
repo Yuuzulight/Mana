@@ -16,12 +16,13 @@ The new PC flow should be:
 
 1. Run `ManaSetup.exe`.
 2. Installer copies Mana app files into a predictable install folder.
-3. Installer creates Start Menu and Desktop shortcuts named `Mana`.
-4. User launches Mana from the shortcut.
-5. Mana checks for required local runtime files and models.
-6. If GGUF models are missing, Mana opens a setup/download screen before starting the normal voice loop.
-7. The setup screen downloads the 4B model first, then the 1.5B fallback, then the 8B backup.
-8. After the 4B model is present, Mana can run. The 1.5B and 8B downloads can continue or be retried from setup if interrupted.
+3. Installer asks whether to create Start Menu and Desktop shortcuts named `Mana`.
+4. Installer creates only the shortcut types the user accepts.
+5. User launches Mana from a shortcut or from the install folder.
+6. Mana checks for required local runtime files and models.
+7. If GGUF models are missing, Mana opens a setup/download screen before starting the normal voice loop.
+8. The setup screen downloads the 4B model first, then the 1.5B fallback, then the 8B backup.
+9. After the 4B model is present, Mana can run. The 1.5B and 8B downloads can continue or be retried from setup if interrupted.
 
 ## Install Layout
 
@@ -139,7 +140,9 @@ The installer should:
 
 - build `ManaSetup.exe`;
 - install into `C:\ManaAI\Mana` by default;
-- create Desktop and Start Menu shortcuts;
+- ask the user whether to create a Desktop shortcut;
+- ask the user whether to create a Start Menu shortcut;
+- create only the selected shortcut types;
 - install the Electron launcher and needed app files;
 - exclude `.git`, `.worktrees`, test artifacts, temporary audio, screenshots, caches, and large local GGUF model files;
 - include `config/model-sources.json`;
