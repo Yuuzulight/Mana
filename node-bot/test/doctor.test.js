@@ -68,7 +68,7 @@ test("doctor checks return structured pass warn and fail results", () => {
 
     assert.equal(result.ok, false);
     assert.equal(result.summary.pass, 3);
-    assert.equal(result.summary.warn, 6);
+    assert.equal(result.summary.warn, 7);
     assert.equal(result.summary.fail, 1);
 
     assert.deepEqual(
@@ -84,6 +84,7 @@ test("doctor checks return structured pass warn and fail results", () => {
         "storage",
         "zed-editor",
         "vscode-editor",
+        "zed-external-agent",
       ],
     );
     assert.equal(result.checks.find((check) => check.id === "node-runtime").status, "pass");
@@ -94,6 +95,10 @@ test("doctor checks return structured pass warn and fail results", () => {
     assert.equal(result.checks.find((check) => check.id === "llama-model").status, "fail");
     assert.equal(result.checks.find((check) => check.id === "zed-editor").status, "warn");
     assert.equal(result.checks.find((check) => check.id === "vscode-editor").status, "warn");
+    assert.equal(
+      result.checks.find((check) => check.id === "zed-external-agent").status,
+      "warn",
+    );
     assert.match(
       result.checks.find((check) => check.id === "llama-model").message,
       /not found/i,
@@ -101,6 +106,42 @@ test("doctor checks return structured pass warn and fail results", () => {
     assert.equal(result.generatedAt.endsWith("Z"), true);
   } finally {
     fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("doctor reports Mana external agent entry point availability", () => {
+  const result = runDoctorChecks({
+    env: {
+      MANA_ALLOW_REMOTE_AI: "0",
+      LLAMA_BIN: "",
+      LLAMA_MODEL: "",
+      WHISPER_BIN: "",
+      WHISPER_MODEL: "",
+      MOBILE_PASSCODE_HASH: "",
+      MOBILE_SESSION_SECRET: "",
+    },
+    paths: {
+      dataDir: fs.mkdtempSync(path.join(os.tmpdir(), "mana-doctor-acp-")),
+    },
+    services: [],
+    versions: {
+      node: "v22.19.0",
+    },
+    zedCommandResolver: () => null,
+  });
+
+  try {
+    const acp = result.checks.find((check) => check.id === "zed-external-agent");
+
+    assert.equal(acp.status, "pass");
+    assert.match(acp.message, /Mana external agent entry point is available/i);
+    assert.match(acp.details.command, /mana-acp-agent\.js --acp$/);
+    assert.equal(acp.details.remoteAllowed, false);
+  } finally {
+    fs.rmSync(result.checks.find((check) => check.id === "storage").details.dataDir, {
+      recursive: true,
+      force: true,
+    });
   }
 });
 
@@ -268,5 +309,55 @@ test("async doctor reports backend port availability", async () => {
       recursive: true,
       force: true,
     });
+  });
+});
+
+test("async doctor reports Zed external agent backend health", async () => {
+  await withRawServer((req, res) => {
+    if (req.url === "/health") {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: true }));
+      return;
+    }
+
+    res.writeHead(404);
+    res.end();
+  }, async ({ url }) => {
+    const result = await runDoctorChecksAsync({
+      env: {
+        MANA_ALLOW_REMOTE_AI: "0",
+        LLAMA_BIN: "",
+        LLAMA_MODEL: "",
+        WHISPER_BIN: "",
+        WHISPER_MODEL: "",
+        MOBILE_PASSCODE_HASH: "",
+        MOBILE_SESSION_SECRET: "",
+        MANA_BACKEND_URL: url,
+      },
+      paths: {
+        dataDir: fs.mkdtempSync(path.join(os.tmpdir(), "mana-doctor-acp-backend-")),
+      },
+      ports: [],
+      services: [],
+      versions: {
+        node: "v22.19.0",
+      },
+    });
+
+    try {
+      const backend = result.checks.find(
+        (check) => check.id === "zed-external-agent-backend",
+      );
+
+      assert.equal(backend.status, "pass");
+      assert.match(backend.message, /local backend is reachable/i);
+      assert.equal(backend.details.url, `${url}/health`);
+      assert.equal(backend.details.ok, true);
+    } finally {
+      fs.rmSync(result.checks.find((check) => check.id === "storage").details.dataDir, {
+        recursive: true,
+        force: true,
+      });
+    }
   });
 });
