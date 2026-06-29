@@ -18,3 +18,20 @@ Make Mana's local model stack visible and switchable without editing batch files
 - Missing model files are reported clearly.
 - Local-only behavior remains the default.
 - Tests cover profile selection and fallback behavior.
+
+## Implementation Notes
+
+- Added explicit `default`, `fast`, `quality`, and `coding` local profiles.
+- Added runtime local model status and active-profile switching APIs.
+- Reported missing configured GGUF files without failing the backend.
+- Kept local-only behavior as the default and only reported remote-AI warning state.
+
+## Verification
+
+- `node --test test\local-ai.test.js test\llama-model-selection.test.js test\model-management.test.js test\server-routes.test.js`
+- `node --check ai\local-ai.js`
+- `node --check model-management.js`
+- `node --check server-routes.js`
+- `node --check server.js`
+- `npm test`
+- Forbidden external-project reference scan.
