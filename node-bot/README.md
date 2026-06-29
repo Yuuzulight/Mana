@@ -29,7 +29,7 @@ Requirements
   - Mana is configured for `Qwen3-4B-Q4_K_M.gguf` as the main local model.
   - Keep `Qwen3-8B-Q4_K_M.gguf` as quality mode, `qwen2.5-coder-7b-instruct-q4_k_m.gguf` as coding mode, and `qwen2.5-1.5b-instruct-q4_k_m.gguf` as the fast fallback.
   - If `LLAMA_MODEL` is unset, Mana searches `tools\llama\` and picks the default profile in this order: 4B, 1.5B, then 8B.
-  - `/reply` accepts optional `modelProfile` values: `default`, `quality`, or `coding`.
+  - `/reply` accepts optional `modelProfile` values: `default`, `fast`, `quality`, or `coding`.
 - Chatterbox Turbo TTS service
   - Set `TTS_PROVIDER=chatterbox`.
   - Run the Python service in `../tts-service`.
@@ -73,6 +73,12 @@ POST /synthesize (JSON, body `{ "text": "..." }`)
 
 GET /health
   -> { ok: true, ttsConfigured: true|false }
+
+GET /models/status
+  -> lists local model profiles, candidate GGUF files, selected models, missing files, active profile, and remote-AI warning state
+
+POST /models/active-profile (JSON, body `{ "profile": "default" | "fast" | "quality" | "coding" }`)
+  -> switches the runtime active local profile
 
 GET /zed/status
   -> reports whether the local Zed CLI is available
@@ -148,6 +154,7 @@ GET /ffxiv/crafting/profit?world=Adamantoise&recipeSource=xivapi
 Notes
 -----
 - AI replies use local llama unless `MANA_ALLOW_REMOTE_AI=1` and `OPENAI_API_KEY` are both set.
+- The active local model profile is runtime-only and resets when the backend restarts. Model management endpoints do not enable remote AI.
 - Editor integration only opens existing paths through local CLIs. It does not silently apply edits.
 - The active editor workspace is local process memory. It helps Mana know which project you mean, and file inspection only happens through explicit workspace file-list or file-read requests.
 - Edit proposals are also local process memory. Creating a proposal does not modify files on disk.
