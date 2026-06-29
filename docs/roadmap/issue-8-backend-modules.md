@@ -26,3 +26,7 @@ Reduce the size and coupling of the Node backend by moving unrelated responsibil
 - Added focused module tests for the extracted local AI helpers.
 - Extracted local llama binary/model status checks and reply execution into `node-bot/ai/local-llama-runtime.js`.
 - Added focused runtime tests for local GGUF args, HF repo args, missing-binary placeholders, and local model detection.
+- Extracted FFXIV, Universalis, crafting-profit, sales-history, and gatherable-material helpers into `node-bot/ffxiv-market.js`.
+- Extracted TTS provider selection, CLI synthesis, Fish Speech, Kokoro, and Chatterbox synthesis into `node-bot/tts-runtime.js`.
+- Extracted VTube reaction logic and VTube Studio route registration into `node-bot/vtube-runtime.js` and `node-bot/vtube-routes.js`.
+- Moved the main stock, FFXIV, reply, transcription, screen OCR, and synthesis endpoint registration into `node-bot/server-routes.js`.
