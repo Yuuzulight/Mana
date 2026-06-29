@@ -475,6 +475,18 @@ app.get("/editors/workspace/proposals/:id", (req, res) => {
   }
 });
 
+app.post("/editors/workspace/proposals/:id/approve", (req, res) => {
+  try {
+    const editors = getEditorIntegrations();
+    return res.json({ proposal: editors.approveEditProposal(req.params.id) });
+  } catch (error) {
+    return res.status(400).json({
+      proposal: null,
+      error: error.message,
+    });
+  }
+});
+
 app.get("/health", (req, res) => {
   const llamaStatus = getLlamaStatus();
   res.json({

@@ -671,3 +671,85 @@ test("createApp exposes safe edit proposal routes", async () => {
     fs.rmSync(tempDir, { recursive: true, force: true });
   }
 });
+
+test("createApp approves an edit proposal through the shared backend route", async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mana-editor-route-approve-"));
+  const sourceFile = path.join(tempDir, "app.js");
+  fs.writeFileSync(sourceFile, "console.log('before');\n");
+
+  try {
+    const workspaceStore = createEditorWorkspaceStore();
+    workspaceStore.setWorkspace(tempDir, { editor: "zed" });
+    const timestamps = [
+      new Date("2026-06-29T00:00:00.000Z"),
+      new Date("2026-06-29T00:01:00.000Z"),
+    ];
+    const app = createApp({
+      editors: createEditorIntegrations({
+        env: {},
+        commandResolver: (command) => command,
+        workspaceStore,
+        idFactory: () => "proposal-route-approve-1",
+        now: () => timestamps.shift() || new Date("2026-06-29T00:02:00.000Z"),
+        spawn: () => ({ once: (event, handler) => event === "spawn" && handler() }),
+      }),
+    });
+
+    await withServer(app, async (baseUrl) => {
+      await fetch(`${baseUrl}/editors/workspace/proposals`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          path: "app.js",
+          proposedContent: "console.log('after');\n",
+          summary: "Change log text",
+        }),
+      });
+
+      const approveResponse = await fetch(
+        `${baseUrl}/editors/workspace/proposals/proposal-route-approve-1/approve`,
+        { method: "POST" },
+      );
+      const approveBody = await approveResponse.json();
+
+      assert.equal(approveResponse.status, 200);
+      assert.equal(approveBody.proposal.id, "proposal-route-approve-1");
+      assert.equal(approveBody.proposal.status, "applied");
+      assert.equal(approveBody.proposal.appliedAt, "2026-06-29T00:01:00.000Z");
+      assert.equal(fs.readFileSync(sourceFile, "utf8"), "console.log('after');\n");
+    });
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("createApp returns an error when approving a missing proposal", async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mana-editor-route-approve-missing-"));
+
+  try {
+    const workspaceStore = createEditorWorkspaceStore();
+    workspaceStore.setWorkspace(tempDir, { editor: "zed" });
+    const app = createApp({
+      editors: createEditorIntegrations({
+        env: {},
+        commandResolver: (command) => command,
+        workspaceStore,
+        spawn: () => ({ once: (event, handler) => event === "spawn" && handler() }),
+      }),
+    });
+
+    await withServer(app, async (baseUrl) => {
+      const response = await fetch(
+        `${baseUrl}/editors/workspace/proposals/missing-proposal/approve`,
+        { method: "POST" },
+      );
+      const body = await response.json();
+
+      assert.equal(response.status, 400);
+      assert.equal(body.proposal, null);
+      assert.match(body.error, /edit proposal not found/i);
+    });
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
