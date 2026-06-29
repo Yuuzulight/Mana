@@ -1530,6 +1530,7 @@ module.exports = {
   UNIVERSALIS_DEFAULT_WORLD,
   buildCraftProfitContextForPrompt,
   buildUniversalisContextForPrompt,
+  clampInteger,
   cleanItemNameCandidate,
   configureFfxivMarketTools,
   extractExplicitItemNameFromText,
