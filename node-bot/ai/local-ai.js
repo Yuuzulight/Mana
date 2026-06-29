@@ -4,13 +4,23 @@ const path = require("node:path");
 const DEFAULT_LLAMA_MODEL = "Qwen/Qwen2.5-0.5B-Instruct-GGUF:Q4_K_M";
 const LLAMA_MODEL_PROFILES = {
   default: {
+    label: "Default chat",
     names: [
       "Qwen3-4B-Q4_K_M.gguf",
       "qwen2.5-1.5b-instruct-q4_k_m.gguf",
       "Qwen3-8B-Q4_K_M.gguf",
     ],
   },
+  fast: {
+    label: "Fast fallback",
+    names: [
+      "qwen2.5-1.5b-instruct-q4_k_m.gguf",
+      "Qwen3-4B-Q4_K_M.gguf",
+      "Qwen3-8B-Q4_K_M.gguf",
+    ],
+  },
   quality: {
+    label: "Quality fallback",
     names: [
       "Qwen3-8B-Q4_K_M.gguf",
       "Qwen3-4B-Q4_K_M.gguf",
@@ -18,6 +28,7 @@ const LLAMA_MODEL_PROFILES = {
     ],
   },
   coding: {
+    label: "Coding",
     names: [
       "qwen2.5-coder-7b-instruct-q4_k_m.gguf",
       "Qwen2.5-Coder-7B-Instruct-Q4_K_M.gguf",
@@ -33,6 +44,17 @@ function shouldUseRemoteAi({
   allowRemoteAi = process.env.MANA_ALLOW_REMOTE_AI || "",
 } = {}) {
   return Boolean(apiKey && allowRemoteAi === "1");
+}
+
+function getKnownLlamaModelProfiles() {
+  return Object.keys(LLAMA_MODEL_PROFILES);
+}
+
+function isKnownLlamaModelProfile(profile) {
+  if (typeof profile !== "string") {
+    return false;
+  }
+  return Boolean(LLAMA_MODEL_PROFILES[profile.trim().toLowerCase()]);
 }
 
 function normalizeLlamaModelProfile(profile) {
@@ -139,6 +161,8 @@ module.exports = {
   LLAMA_MODEL_PROFILES,
   collectFilesRecursively,
   findPreferredLlamaModel,
+  getKnownLlamaModelProfiles,
+  isKnownLlamaModelProfile,
   normalizeLlamaModelProfile,
   pickPreferredLlamaModel,
   selectLlamaModelProfileForPrompt,

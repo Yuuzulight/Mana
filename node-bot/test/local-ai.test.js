@@ -4,6 +4,7 @@ const test = require("node:test");
 
 const {
   findPreferredLlamaModel,
+  getKnownLlamaModelProfiles,
   normalizeLlamaModelProfile,
   pickPreferredLlamaModel,
   selectLlamaModelProfileForPrompt,
@@ -62,6 +63,16 @@ test("local AI module can discover preferred models from a search directory", ()
   });
 
   assert.equal(modelPath, path.join("C:", "models", "Qwen3-4B-Q4_K_M.gguf"));
+});
+
+test("local AI module exposes known profiles including fast fallback", () => {
+  assert.deepEqual(getKnownLlamaModelProfiles(), [
+    "default",
+    "fast",
+    "quality",
+    "coding",
+  ]);
+  assert.equal(normalizeLlamaModelProfile("FAST"), "fast");
 });
 
 test("local AI module routes coding prompts to the coding profile", () => {
