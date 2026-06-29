@@ -50,6 +50,14 @@ const {
   createEditorIntegrations,
   createZedIntegration,
 } = require("./zed-integration");
+const {
+  DEFAULT_LLAMA_MODEL,
+  findPreferredLlamaModel,
+  normalizeLlamaModelProfile,
+  pickPreferredLlamaModel,
+  selectLlamaModelProfileForPrompt,
+  shouldUseRemoteAi,
+} = require("./ai/local-ai");
 
 function createApp(deps = {}) {
   const app = express();
@@ -138,32 +146,6 @@ const SCREEN_OCR_CACHE_PATH =
 const WHISPER_THREADS = Number(process.env.WHISPER_THREADS || 2);
 const LLAMA_THREADS = Number(process.env.LLAMA_THREADS || 4);
 const LLAMA_MAX_TOKENS = Number(process.env.LLAMA_MAX_TOKENS || 180);
-const DEFAULT_LLAMA_MODEL = "Qwen/Qwen2.5-0.5B-Instruct-GGUF:Q4_K_M";
-const LLAMA_MODEL_PROFILES = {
-  default: {
-    names: [
-      "Qwen3-4B-Q4_K_M.gguf",
-      "qwen2.5-1.5b-instruct-q4_k_m.gguf",
-      "Qwen3-8B-Q4_K_M.gguf",
-    ],
-  },
-  quality: {
-    names: [
-      "Qwen3-8B-Q4_K_M.gguf",
-      "Qwen3-4B-Q4_K_M.gguf",
-      "qwen2.5-1.5b-instruct-q4_k_m.gguf",
-    ],
-  },
-  coding: {
-    names: [
-      "qwen2.5-coder-7b-instruct-q4_k_m.gguf",
-      "Qwen2.5-Coder-7B-Instruct-Q4_K_M.gguf",
-      "Qwen3-4B-Q4_K_M.gguf",
-      "qwen2.5-1.5b-instruct-q4_k_m.gguf",
-      "Qwen3-8B-Q4_K_M.gguf",
-    ],
-  },
-};
 const VTUBE_STUDIO_URL = process.env.VTUBE_STUDIO_URL || "ws://127.0.0.1:8001";
 const VTUBE_STUDIO_ENABLED = process.env.VTUBE_STUDIO_ENABLED !== "0";
 const VTUBE_STUDIO_REACTIONS_JSON =
@@ -193,71 +175,6 @@ const KOKORO_LANGUAGE_PROFILES = {
   malay: { lang: "ms", speed: 1.1 },
 };
 
-function shouldUseRemoteAi({
-  apiKey = OPENAI_API_KEY,
-  allowRemoteAi = MANA_ALLOW_REMOTE_AI,
-} = {}) {
-  return Boolean(apiKey && allowRemoteAi === "1");
-}
-
-function pickPreferredLlamaModel({
-  explicitModel = "",
-  localGgufs = [],
-  defaultModel = DEFAULT_LLAMA_MODEL,
-  profile = "default",
-} = {}) {
-  const normalizedProfile = normalizeLlamaModelProfile(profile);
-  if (explicitModel && normalizedProfile === "default") {
-    return explicitModel;
-  }
-
-  const modelProfile = LLAMA_MODEL_PROFILES[normalizedProfile];
-  for (const preferredName of modelProfile.names) {
-    const match = localGgufs.find(
-      (fullPath) =>
-        path.basename(fullPath).toLowerCase() === preferredName.toLowerCase(),
-    );
-    if (match) {
-      return match;
-    }
-  }
-
-  return modelProfile.defaultModel || localGgufs[0] || defaultModel;
-}
-
-function normalizeLlamaModelProfile(profile) {
-  const normalized = String(profile || "default").trim().toLowerCase();
-  return LLAMA_MODEL_PROFILES[normalized] ? normalized : "default";
-}
-
-function hasExplicitLlamaModelProfile(profile) {
-  if (typeof profile !== "string") {
-    return false;
-  }
-  const normalized = profile.trim().toLowerCase();
-  return Boolean(normalized && LLAMA_MODEL_PROFILES[normalized]);
-}
-
-function selectLlamaModelProfileForPrompt(prompt, explicitProfile = "") {
-  if (hasExplicitLlamaModelProfile(explicitProfile)) {
-    return normalizeLlamaModelProfile(explicitProfile);
-  }
-
-  const text = String(prompt || "").toLowerCase();
-  if (
-    /\b(coding|code|programming|debug|debugging|refactor|javascript|typescript|python|powershell|node\.?js|react|next\.?js|css|html|git|stack trace|unit test|npm test)\b/.test(
-      text,
-    )
-  ) {
-    return "coding";
-  }
-
-  if (/\b(quality mode|better answer|deeper answer|use 8b|8b mode)\b/.test(text)) {
-    return "quality";
-  }
-
-  return "default";
-}
 const vtubeStudio = VTUBE_STUDIO_ENABLED
   ? new VTubeStudioClient({ url: VTUBE_STUDIO_URL })
   : null;
@@ -2502,38 +2419,6 @@ function findWhisperBin() {
   );
 }
 
-function collectFilesRecursively(rootDir, predicate) {
-  const matches = [];
-
-  if (!fs.existsSync(rootDir)) {
-    return matches;
-  }
-
-  const pending = [rootDir];
-  while (pending.length > 0) {
-    const currentDir = pending.pop();
-    let entries = [];
-    try {
-      entries = fs.readdirSync(currentDir, { withFileTypes: true });
-    } catch (error) {
-      continue;
-    }
-
-    for (const entry of entries) {
-      const fullPath = path.join(currentDir, entry.name);
-      if (entry.isDirectory()) {
-        pending.push(fullPath);
-        continue;
-      }
-      if (predicate(fullPath)) {
-        matches.push(fullPath);
-      }
-    }
-  }
-
-  return matches;
-}
-
 function findLlamaBin() {
   const candidates = [];
   if (LLAMA_BIN) {
@@ -2566,19 +2451,12 @@ function findLlamaBin() {
   );
 }
 
-function findPreferredLlamaModel({
-  explicitModel = LLAMA_MODEL,
-  searchDir = path.join(__dirname, "..", "tools", "llama"),
-  profile = "default",
-} = {}) {
-  const localGgufs = collectFilesRecursively(searchDir, (fullPath) =>
-    fullPath.toLowerCase().endsWith(".gguf"),
-  );
-  return pickPreferredLlamaModel({ explicitModel, localGgufs, profile });
-}
-
 function findLlamaModel(profile = "default") {
-  return findPreferredLlamaModel({ profile });
+  return findPreferredLlamaModel({
+    explicitModel: LLAMA_MODEL,
+    searchDir: path.join(__dirname, "..", "tools", "llama"),
+    profile,
+  });
 }
 
 function isLocalModelSpec(modelSpec) {
