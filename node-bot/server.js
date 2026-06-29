@@ -94,10 +94,11 @@ const {
 
 function createApp(deps = {}) {
   const app = express();
+  const appEnv = deps.env || process.env;
   app.use(cors());
   app.use(express.json({ limit: "15mb" }));
   const upload = multer({ dest: path.join(__dirname, "tmp") });
-  registerRoutes(app, upload, deps);
+  registerRoutes(app, upload, { ...deps, env: appEnv });
   return app;
 }
 
@@ -330,6 +331,7 @@ ensureDirectory(path.join(__dirname, "tmp"));
 
 function registerRoutes(app, upload, deps = {}) {
 let editorIntegrations = deps.editors || null;
+const mobileMemoryStore = deps.mobileMemoryStore || createMobileMemoryStore();
 function getEditorIntegrations() {
   if (!editorIntegrations) {
     editorIntegrations = createEditorIntegrations();
@@ -487,8 +489,122 @@ app.post("/editors/workspace/proposals/:id/approve", (req, res) => {
   }
 });
 
+function makeHealthComponent(status, configured, message, details = {}) {
+  return {
+    status,
+    configured: Boolean(configured),
+    message,
+    ...details,
+  };
+}
+
+function hasEnvValue(env, names) {
+  return names.some((name) => typeof env[name] === "string" && env[name].trim());
+}
+
+function buildHealthComponents({
+  env,
+  llamaStatus,
+  mobileMemoryStore,
+  ttsBin,
+  ttsProvider,
+  whisperBin,
+  whisperModel,
+}) {
+  const mobileAuthConfigured =
+    hasEnvValue(env, ["MOBILE_PASSCODE_HASH", "MANA_MOBILE_PASSCODE_HASH"]) &&
+    hasEnvValue(env, ["MOBILE_SESSION_SECRET", "MANA_MOBILE_SESSION_SECRET"]);
+  const cloudflareConfigured = hasEnvValue(env, [
+    "CLOUDFLARE_TUNNEL_TOKEN",
+    "CLOUDFLARE_TUNNEL_ID",
+    "CLOUDFLARE_TUNNEL_URL",
+    "MANA_TUNNEL_URL",
+  ]);
+  const vtubeEnabled = env.VTUBE_STUDIO_ENABLED !== "0";
+  const whisperConfigured = Boolean(whisperBin && whisperModel);
+  const ttsConfigured = ttsProvider !== "none";
+  const ttsStatus = !ttsConfigured
+    ? "unavailable"
+    : ttsProvider === "cli" && !ttsBin
+      ? "degraded"
+      : "configured";
+
+  return {
+    backend: makeHealthComponent("available", true, "Backend is running."),
+    localLlama: makeHealthComponent(
+      llamaStatus.ok ? "available" : "unavailable",
+      llamaStatus.ok,
+      llamaStatus.message,
+      {
+        model: llamaStatus.model,
+        bin: llamaStatus.bin,
+      },
+    ),
+    whisper: makeHealthComponent(
+      whisperConfigured ? "available" : "unavailable",
+      whisperConfigured,
+      whisperConfigured ? "Whisper is configured." : "Whisper binary or model is missing.",
+      {
+        binConfigured: Boolean(whisperBin),
+        modelConfigured: Boolean(whisperModel),
+      },
+    ),
+    tts: makeHealthComponent(
+      ttsStatus,
+      ttsConfigured,
+      ttsConfigured ? `TTS provider is ${ttsProvider}.` : "TTS is disabled.",
+      { provider: ttsProvider },
+    ),
+    mobileAuth: makeHealthComponent(
+      mobileAuthConfigured ? "available" : "unavailable",
+      mobileAuthConfigured,
+      mobileAuthConfigured ? "Mobile auth is configured." : "Mobile auth secrets are missing.",
+    ),
+    localMemory: makeHealthComponent(
+      mobileMemoryStore?.filePath ? "available" : "degraded",
+      Boolean(mobileMemoryStore?.filePath),
+      mobileMemoryStore?.filePath
+        ? "Local mobile memory store is available."
+        : "Local mobile memory store path is unavailable.",
+      {
+        filePath: mobileMemoryStore?.filePath || null,
+      },
+    ),
+    cloudflareTunnel: makeHealthComponent(
+      cloudflareConfigured ? "configured" : "unavailable",
+      cloudflareConfigured,
+      cloudflareConfigured ? "Cloudflare Tunnel is configured." : "Cloudflare Tunnel is not configured.",
+    ),
+    ffxivMarket: makeHealthComponent(
+      "configured",
+      true,
+      "FFXIV market providers are configured from local defaults.",
+      {
+        universalisConfigured: true,
+        xivapiConfigured: true,
+      },
+    ),
+    vtubeStudio: makeHealthComponent(
+      vtubeEnabled ? "configured" : "unavailable",
+      vtubeEnabled,
+      vtubeEnabled ? "VTube Studio integration is enabled." : "VTube Studio integration is disabled.",
+    ),
+  };
+}
+
 app.get("/health", (req, res) => {
+  const env = deps.env || process.env;
   const llamaStatus = getLlamaStatus();
+  const components = buildHealthComponents({
+    env,
+    llamaStatus,
+    mobileMemoryStore,
+    ttsBin: TTS_BIN,
+    ttsProvider: TTS_PROVIDER,
+    whisperBin: WHISPER_BIN,
+    whisperModel: WHISPER_MODEL,
+  });
+
   res.json({
     ok: true,
     ttsConfigured: TTS_PROVIDER !== "none",
@@ -506,6 +622,7 @@ app.get("/health", (req, res) => {
     marketProvider: MARKET_PROVIDER,
     marketConfigured: marketDataClient.isConfigured,
     marketWatchlist: marketDataClient.watchlist,
+    components,
   });
 });
 
@@ -964,7 +1081,7 @@ registerVTubeRoutes(app, { vtubeRuntime });
           process.env.MOBILE_SESSION_TTL_MS || 12 * 60 * 60 * 1000,
         ),
       }),
-    mobileMemoryStore: deps.mobileMemoryStore || createMobileMemoryStore(),
+    mobileMemoryStore,
     buildAssistantReply: deps.buildAssistantReply || buildAssistantReply,
     synthesizeReply: deps.synthesizeReply || synthesizeReply,
     runWhisper: deps.runWhisper || runWhisper,
