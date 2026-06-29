@@ -4,6 +4,7 @@
   "description": "Electron launcher for the local AI assistant with wake-word listening",
   "main": "main.js",
   "scripts": {
+    "test": "node --test",
     "start": "electron .",
     "dev": "nodemon --config nodemon.json",
     "pack": "electron-builder --dir",
