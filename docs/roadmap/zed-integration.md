@@ -6,6 +6,7 @@ Status: Done for current planned slices
 
 - Issue #22, PR #23: Added local editor CLI integration for Zed and VS Code.
 - Issue #24, PR #25: Added Mana as a Zed External Agent entry point.
+- Shared approval flow merged on 2026-06-29: added `POST /editors/workspace/proposals/:id/approve` with content verification before writes.
 
 ## Current Capabilities
 
@@ -14,10 +15,11 @@ Status: Done for current planned slices
 - Tracks active editor workspace paths locally.
 - Exposes bounded, explicit read-only workspace inspection routes.
 - Creates reviewable edit proposals instead of silently changing files.
+- Applies proposals only through the local backend approval route after verifying the file still matches the original proposal snapshot.
 - Provides `node-bot/mana-acp-agent.js` for Zed `agent_servers` configuration.
 - Keeps the External Agent path local-first by default.
 
 ## Follow-Up
 
-- Future apply-edit behavior should require a clear user-triggered command and content verification.
-- Any deeper Zed context integration should build on the existing proposal-only safety model.
+- Any deeper Zed context integration should build on the existing approval-required safety model.
+- Future editor integrations should reuse the same backend approval flow instead of adding editor-specific write paths.

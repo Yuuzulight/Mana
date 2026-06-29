@@ -41,6 +41,7 @@ Target outcome:
 - Optional capabilities can register routes and status through a consistent internal pattern.
 - The pattern stays simple and Mana-specific.
 - No external project references are introduced.
+- FFXIV/Universalis market and crafting logic should move into a clearer capability folder or section while preserving the existing public endpoint URLs.
 
 ### Issue #14: Improve Mobile Device Security Controls
 
