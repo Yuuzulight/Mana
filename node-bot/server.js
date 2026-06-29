@@ -51,13 +51,12 @@ const {
   createZedIntegration,
 } = require("./zed-integration");
 const {
-  DEFAULT_LLAMA_MODEL,
-  findPreferredLlamaModel,
   normalizeLlamaModelProfile,
   pickPreferredLlamaModel,
   selectLlamaModelProfileForPrompt,
   shouldUseRemoteAi,
 } = require("./ai/local-ai");
+const { createLocalLlamaRuntime } = require("./ai/local-llama-runtime");
 
 function createApp(deps = {}) {
   const app = express();
@@ -70,9 +69,6 @@ function createApp(deps = {}) {
 
 const WHISPER_BIN = process.env.WHISPER_BIN || null;
 const WHISPER_MODEL = process.env.WHISPER_MODEL || null;
-const LLAMA_BIN = process.env.LLAMA_BIN || null;
-const LLAMA_MODEL = process.env.LLAMA_MODEL || null;
-
 // Remote AI is disabled by default. Set MANA_ALLOW_REMOTE_AI=1 with
 // OPENAI_API_KEY only when you intentionally want paid/proxy chat replies.
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || null;
@@ -204,6 +200,13 @@ function logPerf(label, startedAt) {
   };
   console.log(`Mana perf: ${label} ${durationMs}ms`);
 }
+
+const localLlamaRuntime = createLocalLlamaRuntime({
+  env: process.env,
+  threads: LLAMA_THREADS,
+  nowMs,
+  logPerf,
+});
 
 function clampText(text, maxChars) {
   const cleanText = String(text || "")
@@ -2420,78 +2423,15 @@ function findWhisperBin() {
 }
 
 function findLlamaBin() {
-  const candidates = [];
-  if (LLAMA_BIN) {
-    candidates.push(LLAMA_BIN);
-  }
-
-  const localToolDir = path.join(__dirname, "..", "tools", "llama");
-  const bundledLlamaDir = path.join(
-    localToolDir,
-    "llama-b9436-bin-win-cuda-12.4-x64",
-  );
-  candidates.push(
-    path.join(bundledLlamaDir, "llama-cli.exe"),
-    path.join(bundledLlamaDir, "llama.exe"),
-    path.join(bundledLlamaDir, "llama-completion.exe"),
-    path.join(localToolDir, "llama-cli.exe"),
-    path.join(localToolDir, "llama.exe"),
-  );
-
-  const validPath = candidates.find(
-    (candidate) => candidate && fs.existsSync(candidate),
-  );
-  if (validPath) {
-    return validPath;
-  }
-
-  const checked = candidates.filter(Boolean).join(", ");
-  throw new Error(
-    `Llama executable not found. Checked: ${checked}. Set LLAMA_BIN to a valid llama-cli.exe path.`,
-  );
+  return localLlamaRuntime.findLlamaBin();
 }
 
 function findLlamaModel(profile = "default") {
-  return findPreferredLlamaModel({
-    explicitModel: LLAMA_MODEL,
-    searchDir: path.join(__dirname, "..", "tools", "llama"),
-    profile,
-  });
-}
-
-function isLocalModelSpec(modelSpec) {
-  if (!modelSpec) {
-    return false;
-  }
-
-  if (fs.existsSync(modelSpec)) {
-    return true;
-  }
-
-  const normalized = modelSpec.toLowerCase();
-  return (
-    normalized.endsWith(".gguf") ||
-    normalized.includes("\\") ||
-    /^[a-z]:/i.test(modelSpec)
-  );
+  return localLlamaRuntime.findLlamaModel(profile);
 }
 
 function getLlamaStatus() {
-  try {
-    return {
-      ok: true,
-      bin: findLlamaBin(),
-      model: findLlamaModel(),
-      message: "ready",
-    };
-  } catch (error) {
-    return {
-      ok: false,
-      bin: null,
-      model: LLAMA_MODEL || DEFAULT_LLAMA_MODEL,
-      message: error.message,
-    };
-  }
+  return localLlamaRuntime.getLlamaStatus();
 }
 
 function runWhisper(filePath) {
@@ -2567,172 +2507,8 @@ function runWhisper(filePath) {
   return r.stdout ? r.stdout.trim() : "";
 }
 
-function runLlama(prompt, maxTokens = 256, profile = "default") {
-  const llamaBin = findLlamaBin();
-  const llamaModel = findLlamaModel(profile);
-  if (!llamaBin || !llamaModel) {
-    console.warn(
-      "LLAMA_BIN or LLAMA_MODEL not configured — returning placeholder reply",
-    );
-    // This keeps the voice round-trip testable even before the local model is wired up.
-    return "(no model configured) I heard: " + prompt.slice(0, 200);
-  }
-
-  // Support either a local GGUF path or an HF repo-style identifier without branching elsewhere.
-  let args = [];
-  const looksLikeHfRepo =
-    llamaModel.indexOf("/") !== -1 && !fs.existsSync(llamaModel);
-  if (looksLikeHfRepo) {
-    args = [
-      "completion",
-      "--hf-repo",
-      llamaModel,
-      "-p",
-      prompt,
-      "-n",
-      String(maxTokens),
-      "-t",
-      String(LLAMA_THREADS),
-    ];
-  } else {
-    args = [
-      "completion",
-      "-m",
-      llamaModel,
-      "-p",
-      prompt,
-      "-n",
-      String(maxTokens),
-      "-t",
-      String(LLAMA_THREADS),
-    ];
-  }
-
-  console.log("Running llama:", llamaBin, args.join(" "));
-  const r = spawnSync(llamaBin, args, {
-    encoding: "utf8",
-    maxBuffer: 50 * 1024 * 1024,
-  });
-  if (r.error) throw r.error;
-  console.log(
-    "llama exit",
-    r.status,
-    "stdout_len",
-    r.stdout ? r.stdout.length : 0,
-    "stderr_len",
-    r.stderr ? r.stderr.length : 0,
-  );
-  if (r.status !== 0) {
-    console.error("llama stderr:", r.stderr);
-    throw new Error("llama failed: " + r.stderr);
-  }
-  // The binary usually prints the generated text to stdout after the prompt
-  const out = r.stdout || "";
-  // Attempt to strip the prompt echo if present
-  let reply = out;
-  try {
-    const idx = out.indexOf("\n");
-    if (idx !== -1) reply = out.slice(idx + 1);
-  } catch (e) {}
-  reply = reply.trim();
-  return reply;
-}
-
 function runLocalAssistantReply(prompt, maxTokens = 256, profile = "default") {
-  const startedAt = nowMs();
-  let llamaBin;
-  try {
-    llamaBin = findLlamaBin();
-  } catch (error) {
-    console.warn(`${error.message} Returning placeholder reply instead.`);
-    logPerf("llama placeholder", startedAt);
-    return "(no local llama binary found) I heard: " + prompt.slice(0, 200);
-  }
-
-  const llamaModel = findLlamaModel(profile);
-  const systemPrompt =
-    "You are Mana, a local AI assistant with an original anime little-sister personality. Your tone blends cool confidence with a soft, shy gentleness: calm, caring, lightly teasing, and protective. Use occasional playful little jabs, then help immediately. Keep the teasing affectionate, never cruel or genuinely insulting. Speak naturally for spoken conversation: short sentences, clean wording, minimal rambling, usually one or two short sentences unless the user needs more detail.";
-
-  // Quick note: llama.cpp can load either a local GGUF file or an HF repo shorthand.
-  const args = isLocalModelSpec(llamaModel)
-    ? [
-        "-m",
-        llamaModel,
-        "-sys",
-        systemPrompt,
-        "-p",
-        prompt,
-        "-n",
-        String(maxTokens),
-        "-t",
-        String(LLAMA_THREADS),
-        "--single-turn",
-        "--simple-io",
-        "--no-display-prompt",
-        "--no-show-timings",
-        "--no-perf",
-        "--no-warmup",
-      ]
-    : [
-        "-hf",
-        llamaModel,
-        "-sys",
-        systemPrompt,
-        "-p",
-        prompt,
-        "-n",
-        String(maxTokens),
-        "-t",
-        String(LLAMA_THREADS),
-        "--single-turn",
-        "--simple-io",
-        "--no-display-prompt",
-        "--no-show-timings",
-        "--no-perf",
-        "--no-warmup",
-      ];
-
-  console.log("Running llama:", llamaBin, args.join(" "));
-  const result = spawnSync(llamaBin, args, {
-    encoding: "utf8",
-    maxBuffer: 50 * 1024 * 1024,
-    cwd: path.dirname(llamaBin),
-  });
-  if (result.error) {
-    throw result.error;
-  }
-
-  console.log(
-    "llama exit",
-    result.status,
-    "stdout_len",
-    result.stdout ? result.stdout.length : 0,
-    "stderr_len",
-    result.stderr ? result.stderr.length : 0,
-  );
-
-  if (result.status !== 0) {
-    console.error("llama stderr:", result.stderr);
-    throw new Error("llama failed: " + result.stderr);
-  }
-  logPerf("llama", startedAt);
-
-  const rawOutput = (result.stdout || "").replace(/\r/g, "").trim();
-  const promptMarker = `> ${prompt}`;
-  const markerIndex = rawOutput.lastIndexOf(promptMarker);
-  if (markerIndex !== -1) {
-    const afterPrompt = rawOutput
-      .slice(markerIndex + promptMarker.length)
-      .replace(/^(\s*\n)+/, "")
-      .replace(/\n+Exiting\.\.\.\s*$/i, "")
-      .trim();
-    if (afterPrompt) {
-      return afterPrompt;
-    }
-  }
-
-  // Quick cleanup fallback if the CLI output format shifts a bit.
-  return rawOutput.replace(/\n+Exiting\.\.\.\s*$/i, "").trim();
+  return localLlamaRuntime.runLocalAssistantReply(prompt, maxTokens, profile);
 }
 
 function normalizeUploadedAudio(file) {
