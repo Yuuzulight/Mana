@@ -1,0 +1,22 @@
+{
+  "id": "mana",
+  "name": "Mana",
+  "version": "0.1.0",
+  "description": "Local-first Mana ACP agent for Zed with workspace tools, approval-backed edits, and explicit autonomous coding loops.",
+  "command": "node",
+  "args": ["node-bot/mana-acp-agent.js", "--acp"],
+  "env": {
+    "MANA_ALLOW_REMOTE_AI": "0",
+    "MANA_DEFAULT_EDITOR": "zed",
+    "MANA_AGENT_AUTONOMOUS": "0"
+  },
+  "capabilities": {
+    "localOnlyDefault": true,
+    "workspaceTools": true,
+    "approvalRequiredWrites": true,
+    "autonomous": true,
+    "outsidePathAllowlist": true
+  },
+  "docs": "docs/zed_external_agent.md",
+  "repository": "https://github.com/Yuuzulight/Mana"
+}
