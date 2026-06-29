@@ -486,7 +486,7 @@ git commit -m "docs: document editor approval writes"
 **Files:**
 - Verify all changed JavaScript and docs.
 
-- [ ] **Step 1: Run focused test suite**
+- [x] **Step 1: Run focused test suite**
 
 Run:
 
@@ -497,7 +497,7 @@ node --test test\zed-integration.test.js test\mana-acp-agent.test.js
 
 Expected: all tests pass.
 
-- [ ] **Step 2: Run syntax checks**
+- [x] **Step 2: Run syntax checks**
 
 Run:
 
@@ -510,7 +510,7 @@ node --check mana-acp-agent.js
 
 Expected: no output and exit code 0 for each command.
 
-- [ ] **Step 3: Check working tree**
+- [x] **Step 3: Check working tree**
 
 Run:
 
@@ -521,6 +521,6 @@ git status --short --branch
 
 Expected: branch is clean and ahead of `origin/main` by the new commits.
 
-- [ ] **Step 4: Commit any missed documentation or test updates**
+- [x] **Step 4: Commit any missed documentation or test updates**
 
 If `git status --short` shows intended files, inspect them with `git diff`, then commit with a specific message. Do not commit dependency folders or generated artifacts.
