@@ -1,5 +1,10 @@
 # Issue 8: Split Mana Backend Into Focused Modules
 
+Status: Done
+Issue: https://github.com/Yuuzulight/Mana/issues/8
+Merged PR: https://github.com/Yuuzulight/Mana/pull/15
+Merge commit: ec5468736a02095dba001df80271979ee38b59b6
+
 ## Goal
 
 Reduce the size and coupling of the Node backend by moving unrelated responsibilities out of `node-bot/server.js` into focused modules while preserving current endpoint behavior.
@@ -30,3 +35,9 @@ Reduce the size and coupling of the Node backend by moving unrelated responsibil
 - Extracted TTS provider selection, CLI synthesis, Fish Speech, Kokoro, and Chatterbox synthesis into `node-bot/tts-runtime.js`.
 - Extracted VTube reaction logic and VTube Studio route registration into `node-bot/vtube-runtime.js` and `node-bot/vtube-routes.js`.
 - Moved the main stock, FFXIV, reply, transcription, screen OCR, and synthesis endpoint registration into `node-bot/server-routes.js`.
+
+## Verification
+
+- `npm test` in `node-bot`: 107 passing, 0 failing before merge.
+- Changed JavaScript files passed `node --check`.
+- No forbidden project references were found in `README.md`, `node-bot`, or `docs`.
