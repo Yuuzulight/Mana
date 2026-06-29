@@ -369,3 +369,81 @@ test("mobile audio chat cleans up multer temp file when normalization throws", a
     });
   });
 });
+
+test("mobile unlock rejects missing passcode with validation error", async () => {
+  const app = createApp(makeMobileDeps());
+
+  await withServer(app, async (baseUrl) => {
+    const { response, body } = await postJson(`${baseUrl}/mobile/auth/unlock`, {});
+
+    assert.equal(response.status, 400);
+    assert.deepEqual(body, { error: "passcode is required" });
+  });
+});
+
+test("mobile text chat rejects missing text after auth succeeds", async () => {
+  let replyCalls = 0;
+  const app = createApp(
+    makeMobileDeps({
+      buildAssistantReply: async () => {
+        replyCalls += 1;
+        return "should not run";
+      },
+    }),
+  );
+
+  await withServer(app, async (baseUrl) => {
+    const token = await unlock(baseUrl);
+    const result = await postJson(
+      `${baseUrl}/mobile/chat/text`,
+      { text: "   " },
+      { Authorization: `Bearer ${token}` },
+    );
+
+    assert.equal(result.response.status, 400);
+    assert.deepEqual(result.body, { error: "text is required" });
+    assert.equal(replyCalls, 0);
+  });
+});
+
+test("mobile summaries reject missing summary after auth succeeds", async () => {
+  const app = createApp(makeMobileDeps());
+
+  await withServer(app, async (baseUrl) => {
+    const token = await unlock(baseUrl);
+    const result = await postJson(
+      `${baseUrl}/mobile/summaries`,
+      { id: "summary-1" },
+      { Authorization: `Bearer ${token}` },
+    );
+
+    assert.equal(result.response.status, 400);
+    assert.deepEqual(result.body, { error: "summary is required" });
+  });
+});
+
+test("mobile audio chat rejects missing file after auth succeeds", async () => {
+  let normalizeCalls = 0;
+  const app = createApp(
+    makeMobileDeps({
+      normalizeUploadedAudio: () => {
+        normalizeCalls += 1;
+        throw new Error("should not run");
+      },
+    }),
+  );
+
+  await withServer(app, async (baseUrl) => {
+    const token = await unlock(baseUrl);
+    const response = await fetch(`${baseUrl}/mobile/chat/audio`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+      body: new FormData(),
+    });
+    const body = await response.json();
+
+    assert.equal(response.status, 400);
+    assert.deepEqual(body, { error: "file is required" });
+    assert.equal(normalizeCalls, 0);
+  });
+});
