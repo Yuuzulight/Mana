@@ -27,6 +27,7 @@ function registerCoreRoutes(app, upload, deps) {
     extractHoveredItemName,
     findProfitableCrafts,
     fs,
+    getActiveModelProfile,
     getUniversalisMarketSummary,
     marketDataClient,
     normalizeCraftRankingMode,
@@ -263,7 +264,17 @@ function registerCoreRoutes(app, upload, deps) {
         optionalString(req.body?.screenText, "screenText", ""),
         SCREEN_CONTEXT_MAX_CHARS,
       );
-      const modelProfile = normalizeLlamaModelProfile(req.body?.modelProfile);
+      const hasModelProfile = Object.prototype.hasOwnProperty.call(
+        req.body || {},
+        "modelProfile",
+      );
+      const modelProfile = hasModelProfile
+        ? normalizeLlamaModelProfile(req.body?.modelProfile)
+        : normalizeLlamaModelProfile(
+            typeof getActiveModelProfile === "function"
+              ? getActiveModelProfile()
+              : "default",
+          );
       const world = optionalString(req.body?.ffxivWorld, "ffxivWorld", UNIVERSALIS_DEFAULT_WORLD);
       const craftProfitText = await buildCraftProfitContextForPrompt(
         transcript,

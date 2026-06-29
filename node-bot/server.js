@@ -54,6 +54,7 @@ const {
   createEditorIntegrations,
   createZedIntegration,
 } = require("./zed-integration");
+const { createModelManagement } = require("./model-management");
 const {
   normalizeLlamaModelProfile,
   pickPreferredLlamaModel,
@@ -338,6 +339,11 @@ function getEditorIntegrations() {
   }
   return editorIntegrations;
 }
+const modelManagement =
+  deps.modelManagement ||
+  createModelManagement({
+    env: deps.env || process.env,
+  });
 
 app.get("/doctor", async (req, res) => {
   try {
@@ -486,6 +492,18 @@ app.post("/editors/workspace/proposals/:id/approve", (req, res) => {
       proposal: null,
       error: error.message,
     });
+  }
+});
+
+app.get("/models/status", (req, res) => {
+  return res.json(modelManagement.getModelStatus());
+});
+
+app.post("/models/active-profile", (req, res) => {
+  try {
+    return res.json(modelManagement.setActiveProfile(req.body?.profile));
+  } catch (error) {
+    return res.status(400).json({ error: error.message });
   }
 });
 
@@ -1053,6 +1071,7 @@ registerCoreRoutes(app, upload, {
   extractHoveredItemName,
   findProfitableCrafts: deps.findProfitableCrafts || findProfitableCrafts,
   fs,
+  getActiveModelProfile: () => modelManagement.getActiveProfile(),
   getUniversalisMarketSummary:
     deps.getUniversalisMarketSummary || getUniversalisMarketSummary,
   logPerf,
