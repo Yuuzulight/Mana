@@ -1,6 +1,11 @@
 const os = require("node:os");
 const path = require("node:path");
 
+const { createAcpAutonomousLoop } = require("./acp-autonomous-loop");
+const { createAcpBackendBridge } = require("./acp-backend-bridge");
+const { parseAllowedPathList } = require("./acp-path-guard");
+const { createAcpTestRunner } = require("./acp-test-runner");
+
 const ACP_PROTOCOL_VERSION = 1;
 const AGENT_NAME = "Mana";
 const DEFAULT_BACKEND_URL = "http://127.0.0.1:5005";
@@ -88,6 +93,19 @@ function createJsonRpcError(id, code, message) {
   };
 }
 
+function isAutonomousEnabled(env = process.env) {
+  return String(env.MANA_AGENT_AUTONOMOUS || "").trim() === "1";
+}
+
+function getAgentLimits(env = process.env) {
+  return {
+    autonomousEnabled: isAutonomousEnabled(env),
+    maxIterations: Math.max(1, Number(env.MANA_AGENT_MAX_ITERATIONS || 3)),
+    maxFilesChanged: Math.max(1, Number(env.MANA_AGENT_MAX_FILES_CHANGED || 5)),
+    allowedPaths: parseAllowedPathList(env.MANA_AGENT_ALLOWED_PATHS || ""),
+  };
+}
+
 function createManaAcpAgent(options = {}) {
   const env = options.env || process.env;
   const buildAssistantReply = options.buildAssistantReply || null;
@@ -95,74 +113,178 @@ function createManaAcpAgent(options = {}) {
     allowRemoteOverride: options.allowRemoteOverride === true,
   });
   const workspace = normalizeWorkspace(options.workspace);
+  const agentLimits = getAgentLimits(env);
+  const backendBridge =
+    options.backendBridge ||
+    createAcpBackendBridge({
+      backendUrl: options.backendUrl || env.MANA_BACKEND_URL,
+      fetchImpl: options.fetch,
+    });
+  const testRunner =
+    options.testRunner ||
+    createAcpTestRunner({
+      timeoutMs: Number(env.MANA_AGENT_TEST_TIMEOUT_MS || 120000),
+    });
+  const autonomousLoop =
+    options.autonomousLoop ||
+    createAcpAutonomousLoop({
+      autonomousEnabled: agentLimits.autonomousEnabled,
+      maxIterations: agentLimits.maxIterations,
+      maxFilesChanged: agentLimits.maxFilesChanged,
+      backendBridge,
+      testRunner,
+    });
 
   async function handleJsonRpc(message = {}) {
     if (message.jsonrpc !== "2.0" || !message.method) {
       return createJsonRpcError(message.id ?? null, -32600, "Invalid JSON-RPC request.");
     }
 
-    if (message.method === "initialize") {
-      return createJsonRpcResult(message.id, {
-        protocolVersion: ACP_PROTOCOL_VERSION,
-        agentInfo: {
-          name: AGENT_NAME,
-          version: "0.1.0",
-        },
-        capabilities: {
-          filesystem: {
-            read: "explicit-bounded",
-            write: "approval-required",
+    try {
+      if (message.method === "initialize") {
+        return createJsonRpcResult(message.id, {
+          protocolVersion: ACP_PROTOCOL_VERSION,
+          agentInfo: {
+            name: AGENT_NAME,
+            version: "0.1.0",
           },
-        },
-        localAi,
-        workspace,
-      });
-    }
-
-    if (message.method === "session/new" || message.method === "session/create") {
-      return createJsonRpcResult(message.id, {
-        sessionId: message.params?.sessionId || `mana-${Date.now().toString(36)}`,
-        workspace,
-      });
-    }
-
-    if (message.method === "session/prompt" || message.method === "prompt") {
-      const promptText = extractPromptText(message.params);
-      if (buildAssistantReply) {
-        const reply = await buildAssistantReply(promptText, "", "", {
-          modelProfile: "coding",
-          source: "zed-external-agent",
+          capabilities: {
+            filesystem: {
+              read: "explicit-bounded",
+              write: "approval-required",
+              outsidePaths: {
+                mode: "allowlist",
+                configured: agentLimits.allowedPaths.length > 0,
+              },
+            },
+            autonomous: {
+              enabled: agentLimits.autonomousEnabled,
+              maxIterations: agentLimits.maxIterations,
+              maxFilesChanged: agentLimits.maxFilesChanged,
+            },
+            tools: [
+              "mana/workspace/status",
+              "mana/workspace/set",
+              "mana/workspace/files",
+              "mana/workspace/read",
+              "mana/edit/propose",
+              "mana/edit/list",
+              "mana/edit/get",
+              "mana/edit/approve",
+              "mana/test/run",
+              "mana/agent/run",
+            ],
+          },
+          localAi,
+          workspace,
         });
+      }
+
+      if (message.method === "session/new" || message.method === "session/create") {
+        return createJsonRpcResult(message.id, {
+          sessionId: message.params?.sessionId || `mana-${Date.now().toString(36)}`,
+          workspace,
+        });
+      }
+
+      if (message.method === "session/prompt" || message.method === "prompt") {
+        const promptText = extractPromptText(message.params);
+        if (buildAssistantReply) {
+          const reply = await buildAssistantReply(promptText, "", "", {
+            modelProfile: "coding",
+            source: "zed-external-agent",
+          });
+          return createJsonRpcResult(message.id, {
+            stopReason: "end_turn",
+            content: [
+              {
+                type: "text",
+                text: String(reply || "").trim(),
+              },
+            ],
+          });
+        }
+
+        const suffix = promptText ? ` Received: ${promptText}` : "";
         return createJsonRpcResult(message.id, {
           stopReason: "end_turn",
           content: [
             {
               type: "text",
-              text: String(reply || "").trim(),
+              text:
+                "Mana's Zed External Agent entry point is running locally. The local coding model bridge is not connected in this first slice, so code changes remain limited to reviewable edit proposals and no files are modified silently." +
+                suffix,
             },
           ],
         });
       }
 
-      const suffix = promptText ? ` Received: ${promptText}` : "";
-      return createJsonRpcResult(message.id, {
-        stopReason: "end_turn",
-        content: [
-          {
-            type: "text",
-            text:
-              "Mana's Zed External Agent entry point is running locally. The local coding model bridge is not connected in this first slice, so code changes remain limited to reviewable edit proposals and no files are modified silently." +
-              suffix,
-          },
-        ],
-      });
-    }
+      if (message.method === "mana/workspace/status") {
+        return createJsonRpcResult(message.id, await backendBridge.getWorkspace());
+      }
+      if (message.method === "mana/workspace/set") {
+        return createJsonRpcResult(
+          message.id,
+          await backendBridge.setWorkspace(message.params || {}),
+        );
+      }
+      if (message.method === "mana/workspace/files") {
+        return createJsonRpcResult(message.id, await backendBridge.listWorkspaceFiles());
+      }
+      if (message.method === "mana/workspace/read") {
+        return createJsonRpcResult(
+          message.id,
+          await backendBridge.readWorkspaceFile(message.params?.path),
+        );
+      }
+      if (message.method === "mana/edit/propose") {
+        return createJsonRpcResult(
+          message.id,
+          await backendBridge.createEditProposal(message.params || {}),
+        );
+      }
+      if (message.method === "mana/edit/list") {
+        return createJsonRpcResult(message.id, await backendBridge.listEditProposals());
+      }
+      if (message.method === "mana/edit/get") {
+        return createJsonRpcResult(
+          message.id,
+          await backendBridge.getEditProposal(message.params?.id),
+        );
+      }
+      if (message.method === "mana/edit/approve") {
+        return createJsonRpcResult(
+          message.id,
+          await backendBridge.approveEditProposal(message.params?.id),
+        );
+      }
+      if (message.method === "mana/test/run") {
+        if (!agentLimits.autonomousEnabled) {
+          return createJsonRpcError(message.id, -32000, "autonomous mode is disabled");
+        }
+        return createJsonRpcResult(
+          message.id,
+          await testRunner.run(message.params?.command, { cwd: message.params?.cwd }),
+        );
+      }
+      if (message.method === "mana/agent/run") {
+        if (!agentLimits.autonomousEnabled) {
+          return createJsonRpcError(message.id, -32000, "autonomous mode is disabled");
+        }
+        return createJsonRpcResult(
+          message.id,
+          await autonomousLoop.run(message.params || {}),
+        );
+      }
 
-    if (message.method === "shutdown") {
-      return createJsonRpcResult(message.id, null);
-    }
+      if (message.method === "shutdown") {
+        return createJsonRpcResult(message.id, null);
+      }
 
-    return createJsonRpcError(message.id ?? null, -32601, `Unsupported ACP method: ${message.method}`);
+      return createJsonRpcError(message.id ?? null, -32601, `Unsupported ACP method: ${message.method}`);
+    } catch (error) {
+      return createJsonRpcError(message.id ?? null, -32000, error.message);
+    }
   }
 
   return {
@@ -328,5 +450,7 @@ module.exports = {
   createManaAcpAgent,
   createStdioAcpServer,
   encodeJsonRpcMessage,
+  getAgentLimits,
+  isAutonomousEnabled,
   requestLocalBackendReply,
 };
