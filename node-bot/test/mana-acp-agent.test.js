@@ -71,6 +71,10 @@ test("createManaAcpAgent handles initialize with local metadata", async () => {
   assert.equal(response.id, 1);
   assert.equal(response.result.protocolVersion, 1);
   assert.equal(response.result.agentInfo.name, "Mana");
+  assert.deepEqual(response.result.capabilities.filesystem, {
+    read: "explicit-bounded",
+    write: "approval-required",
+  });
   assert.equal(response.result.localAi.remoteAllowed, false);
   assert.equal(response.result.workspace.path, "C:\\ManaAI\\Mana");
 });
