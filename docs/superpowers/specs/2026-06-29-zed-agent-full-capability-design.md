@@ -12,6 +12,7 @@ Make Mana's Zed External Agent capable of local coding workflows: workspace insp
 - Add guardrails for autonomous mode so it cannot silently operate outside the chosen workspace or run arbitrary destructive commands.
 - Add registry-ready packaging metadata and docs for Zed ACP discovery/submission.
 - Preserve the current custom `agent_servers` setup path.
+- Allow explicit access to file paths outside the active workspace when they are included in a configured allowlist.
 
 This feature targets parity-oriented local coding workflows. It will not claim identical behavior to commercial terminal agents because Zed ACP integrations, model quality, and runtime features differ by implementation.
 
@@ -49,7 +50,8 @@ Autonomous mode does not remove safety boundaries. It removes per-step approval 
 Autonomous mode must enforce:
 
 - Workspace required: no autonomous loop runs without an active workspace.
-- Workspace confinement: all file paths must resolve inside the active workspace.
+- Default workspace confinement: file paths must resolve inside the active workspace unless they match an explicitly configured outside-path allowlist.
+- Outside-path allowlist: `MANA_AGENT_ALLOWED_PATHS` can contain additional absolute directories or files, separated by semicolons on Windows and colons on other platforms. Access is allowed only when the resolved target is inside one of those roots.
 - Iteration limit: default `3`, configurable through `MANA_AGENT_MAX_ITERATIONS`.
 - File-change limit: default `5`, configurable through `MANA_AGENT_MAX_FILES_CHANGED`.
 - Command allowlist: default allowed commands are `npm test`, `npm run test`, `node --test`, and `node --check`.
@@ -59,6 +61,8 @@ Autonomous mode must enforce:
 - All applied edits go through the existing proposal conflict check before writing.
 
 If any guardrail fails, the agent returns a structured error and stops the autonomous loop.
+
+Outside-path access applies only to file inspection and proposal creation. Autonomous command execution still runs in the active workspace by default unless a later design adds per-command working-directory allowlists.
 
 ## ACP Surface
 
@@ -93,6 +97,7 @@ Add a focused backend bridge used by the ACP agent.
 Responsibilities:
 
 - Normalize `MANA_BACKEND_URL`.
+- Normalize and enforce allowed file roots from the active workspace plus `MANA_AGENT_ALLOWED_PATHS`.
 - Call existing backend endpoints:
   - `GET /editors/workspace`
   - `POST /editors/workspace`
@@ -106,6 +111,8 @@ Responsibilities:
 - Convert HTTP failures into clear ACP errors.
 
 Test execution should not go through the backend. It should run locally in the ACP process using a command runner that enforces the guardrails above.
+
+For outside paths, the ACP agent may use local filesystem helpers directly instead of the existing backend workspace APIs, because those backend APIs intentionally restrict access to the active workspace. Direct outside-path reads and proposal creation must still go through the same path allowlist and size limits.
 
 ## Autonomous Loop
 
@@ -171,7 +178,9 @@ Test areas:
 - Backend bridge normalizes URLs and reports HTTP failures clearly.
 - Autonomous mode is disabled by default.
 - Autonomous loop refuses to run without a workspace.
-- Autonomous loop enforces iteration, changed-file, command, and timeout guardrails.
+- Autonomous loop enforces iteration, changed-file, command, timeout, and file-root guardrails.
+- Outside-workspace file access is rejected by default.
+- Outside-workspace file access is allowed only for paths under `MANA_AGENT_ALLOWED_PATHS`.
 - Test runner accepts allowed commands and rejects destructive/disallowed commands.
 - Proposal approval in autonomous mode still uses the backend approval endpoint.
 - Stdio framing still works.
