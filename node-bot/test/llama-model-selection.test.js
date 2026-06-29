@@ -150,6 +150,30 @@ test("findPreferredLlamaModel uses 8B model for quality profile", () => {
   }
 });
 
+test("findPreferredLlamaModel uses 1.5B first for fast profile", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "mana-models-"));
+  const onePointFiveB = path.join(root, "qwen2.5-1.5b-instruct-q4_k_m.gguf");
+  const fourB = path.join(root, "Qwen3-4B-Q4_K_M.gguf");
+  const eightB = path.join(root, "Qwen3-8B-Q4_K_M.gguf");
+
+  try {
+    touch(fourB);
+    touch(eightB);
+    touch(onePointFiveB);
+
+    assert.equal(
+      pickPreferredLlamaModel({
+        explicitModel: "",
+        localGgufs: [fourB, eightB, onePointFiveB],
+        profile: "fast",
+      }),
+      onePointFiveB,
+    );
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("findPreferredLlamaModel falls back to local 4B when local coder GGUF is missing", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "mana-models-"));
   const fourB = path.join(root, "Qwen3-4B-Q4_K_M.gguf");
