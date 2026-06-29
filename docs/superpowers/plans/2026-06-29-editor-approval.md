@@ -261,7 +261,7 @@ git commit -m "feat: approve editor edit proposals"
 - Modify: `node-bot/server.js`
 - Modify: `node-bot/test/zed-integration.test.js`
 
-- [ ] **Step 1: Add route tests after the existing "createApp exposes safe edit proposal routes" test**
+- [x] **Step 1: Add route tests after the existing "createApp exposes safe edit proposal routes" test**
 
 Add this code:
 
@@ -349,7 +349,7 @@ test("createApp returns an error when approving a missing proposal", async () =>
 });
 ```
 
-- [ ] **Step 2: Run route tests to verify they fail**
+- [x] **Step 2: Run route tests to verify they fail**
 
 Run:
 
@@ -360,7 +360,7 @@ node --test test\zed-integration.test.js
 
 Expected: FAIL because the `/approve` route does not exist.
 
-- [ ] **Step 3: Add the route in `server.js`**
+- [x] **Step 3: Add the route in `server.js`**
 
 Add this route after `app.get("/editors/workspace/proposals/:id", ...)`:
 
@@ -378,7 +378,7 @@ app.post("/editors/workspace/proposals/:id/approve", (req, res) => {
 });
 ```
 
-- [ ] **Step 4: Run the focused tests**
+- [x] **Step 4: Run the focused tests**
 
 Run:
 
@@ -389,7 +389,7 @@ node --test test\zed-integration.test.js
 
 Expected: PASS for all `zed-integration` tests.
 
-- [ ] **Step 5: Commit backend approval route**
+- [x] **Step 5: Commit backend approval route**
 
 Run:
 
