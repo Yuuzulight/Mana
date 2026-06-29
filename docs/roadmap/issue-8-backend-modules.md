@@ -24,3 +24,5 @@ Reduce the size and coupling of the Node backend by moving unrelated responsibil
 - Extracted local AI policy, model profile selection, preferred GGUF model selection, and model-file discovery into `node-bot/ai/local-ai.js`.
 - Kept `server.js` re-exporting the same helper functions for existing tests and callers.
 - Added focused module tests for the extracted local AI helpers.
+- Extracted local llama binary/model status checks and reply execution into `node-bot/ai/local-llama-runtime.js`.
+- Added focused runtime tests for local GGUF args, HF repo args, missing-binary placeholders, and local model detection.
