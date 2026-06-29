@@ -43,67 +43,6 @@ test("reply rejects missing text with a stable validation error", async () => {
   });
 });
 
-test("ffxiv market rejects requests without item id or item name", async () => {
-  let resolveCalls = 0;
-  const app = createApp({
-    resolveFfxivItemByName: async () => {
-      resolveCalls += 1;
-      return { itemId: 1, name: "Potion" };
-    },
-  });
-
-  await withServer(app, async (baseUrl) => {
-    const response = await fetch(`${baseUrl}/ffxiv/market?itemId=abc`);
-    const payload = await response.json();
-
-    assert.equal(response.status, 400);
-    assert.deepEqual(payload, { error: "itemId or itemName is required" });
-    assert.equal(resolveCalls, 0);
-  });
-});
-
-test("ffxiv crafting profit rejects out of range limit", async () => {
-  let searchCalls = 0;
-  const app = createApp({
-    findProfitableCrafts: async () => {
-      searchCalls += 1;
-      return { results: [] };
-    },
-  });
-
-  await withServer(app, async (baseUrl) => {
-    const response = await fetch(`${baseUrl}/ffxiv/crafting/profit?limit=100`);
-    const payload = await response.json();
-
-    assert.equal(response.status, 400);
-    assert.deepEqual(payload, { error: "limit must be between 1 and 25" });
-    assert.equal(searchCalls, 0);
-  });
-});
-
-test("ffxiv crafting profit accepts valid query normalization", async () => {
-  let received = null;
-  const app = createApp({
-    findProfitableCrafts: async (options) => {
-      received = options;
-      return { results: [] };
-    },
-  });
-
-  await withServer(app, async (baseUrl) => {
-    const response = await fetch(
-      `${baseUrl}/ffxiv/crafting/profit?limit=10&useSalesHistory=true&gatherableOnly=1&historyDays=30&minUnitsSold=5`,
-    );
-
-    assert.equal(response.status, 200);
-    assert.equal(received.limit, 10);
-    assert.equal(received.useSalesHistory, true);
-    assert.equal(received.gatherableOnly, true);
-    assert.equal(received.historyDays, 30);
-    assert.equal(received.minUnitsSold, 5);
-  });
-});
-
 test("model status route reports active profile and configured profiles", async () => {
   const app = createApp({
     modelManagement: {

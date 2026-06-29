@@ -44,6 +44,13 @@ const { registerMobileRoutes } = require("./mobile-routes");
 const { createMobileAuth } = require("./mobile-auth");
 const { createMobileMemoryStore } = require("./mobile-memory-store");
 const { registerCoreRoutes } = require("./server-routes");
+const {
+  buildCapabilityHealth,
+  registerCapabilities,
+} = require("./capabilities/registry");
+const {
+  ffxivMarketCapability,
+} = require("./capabilities/ffxiv-market-capability");
 const { runDoctorChecksAsync } = require("./doctor");
 const {
   buildMarketContextForPrompt,
@@ -344,6 +351,26 @@ const modelManagement =
   createModelManagement({
     env: deps.env || process.env,
   });
+const capabilities = deps.capabilities || [ffxivMarketCapability];
+const capabilityContext = {
+  UNIVERSALIS_DEFAULT_WORLD,
+  FFXIV_PROFIT_TOP_LIMIT,
+  FFXIV_RECIPE_SOURCE,
+  XIVAPI_RECIPE_PAGE_SIZE,
+  XIVAPI_RECIPE_SCAN_LIMIT,
+  extractExplicitItemNameFromText,
+  extractHoveredItemName,
+  findProfitableCrafts: deps.findProfitableCrafts || findProfitableCrafts,
+  getUniversalisMarketSummary:
+    deps.getUniversalisMarketSummary || getUniversalisMarketSummary,
+  logPerf,
+  normalizeCraftRankingMode,
+  normalizeGatheringJobFilter,
+  normalizeGatheringSourceFilter,
+  nowMs,
+  resolveFfxivItemByName: deps.resolveFfxivItemByName || resolveFfxivItemByName,
+};
+registerCapabilities(app, capabilities, capabilityContext);
 
 app.get("/doctor", async (req, res) => {
   try {
@@ -593,15 +620,6 @@ function buildHealthComponents({
       cloudflareConfigured,
       cloudflareConfigured ? "Cloudflare Tunnel is configured." : "Cloudflare Tunnel is not configured.",
     ),
-    ffxivMarket: makeHealthComponent(
-      "configured",
-      true,
-      "FFXIV market providers are configured from local defaults.",
-      {
-        universalisConfigured: true,
-        xivapiConfigured: true,
-      },
-    ),
     vtubeStudio: makeHealthComponent(
       vtubeEnabled ? "configured" : "unavailable",
       vtubeEnabled,
@@ -622,6 +640,10 @@ app.get("/health", (req, res) => {
     whisperBin: WHISPER_BIN,
     whisperModel: WHISPER_MODEL,
   });
+  Object.assign(
+    components,
+    buildCapabilityHealth(capabilities, capabilityContext),
+  );
 
   res.json({
     ok: true,
@@ -1051,10 +1073,6 @@ async function buildAssistantReply(
 
 registerCoreRoutes(app, upload, {
   UNIVERSALIS_DEFAULT_WORLD,
-  FFXIV_PROFIT_TOP_LIMIT,
-  FFXIV_RECIPE_SOURCE,
-  XIVAPI_RECIPE_PAGE_SIZE,
-  XIVAPI_RECIPE_SCAN_LIMIT,
   TTS_PROVIDER,
   SCREEN_CONTEXT_MAX_CHARS,
   buildAssistantReply: deps.buildAssistantReply || buildAssistantReply,
@@ -1067,23 +1085,12 @@ registerCoreRoutes(app, upload, {
   cleanupUploadedAudio: deps.cleanupUploadedAudio || cleanupUploadedAudio,
   clampInteger,
   clampText,
-  extractExplicitItemNameFromText,
-  extractHoveredItemName,
-  findProfitableCrafts: deps.findProfitableCrafts || findProfitableCrafts,
   fs,
   getActiveModelProfile: () => modelManagement.getActiveProfile(),
-  getUniversalisMarketSummary:
-    deps.getUniversalisMarketSummary || getUniversalisMarketSummary,
-  logPerf,
   marketDataClient,
-  normalizeCraftRankingMode,
-  normalizeGatheringJobFilter,
-  normalizeGatheringSourceFilter,
   normalizeLlamaModelProfile,
   normalizeUploadedAudio: deps.normalizeUploadedAudio || normalizeUploadedAudio,
-  nowMs,
   readScreenText: deps.readScreenText || readScreenText,
-  resolveFfxivItemByName: deps.resolveFfxivItemByName || resolveFfxivItemByName,
   runWhisper: deps.runWhisper || runWhisper,
   synthesizeReply: deps.synthesizeReply || synthesizeReply,
 });
