@@ -18,3 +18,15 @@ Make `/health` useful for the launcher and troubleshooting by reporting componen
 - Existing launcher checks continue to work.
 - Tests cover healthy and missing-component cases.
 - The response contains no secrets or full auth tokens.
+
+## Progress
+
+- Added structured `/health.components` status for backend, local llama, Whisper, TTS, mobile auth, local memory, Cloudflare Tunnel config, FFXIV market providers, and VTube Studio.
+- Preserved existing flat `/health` fields for launcher compatibility.
+- Kept `/health` checks local and non-secret.
+
+## Verification
+
+- `node --test test\health-components.test.js test\mobile-routes.test.js test\doctor.test.js`
+- `node --check server.js`
+- `npm test`
