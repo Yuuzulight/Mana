@@ -18,3 +18,9 @@ Reduce the size and coupling of the Node backend by moving unrelated responsibil
 - Existing tests pass with `npm test` from `node-bot`.
 - Current launcher and mobile clients continue to use the same backend URLs.
 - No remote AI is introduced or enabled by default.
+
+## Progress
+
+- Extracted local AI policy, model profile selection, preferred GGUF model selection, and model-file discovery into `node-bot/ai/local-ai.js`.
+- Kept `server.js` re-exporting the same helper functions for existing tests and callers.
+- Added focused module tests for the extracted local AI helpers.
