@@ -151,6 +151,12 @@ GET /ffxiv/crafting/profit?world=Adamantoise&query=ingot&limit=10
 GET /ffxiv/crafting/profit?world=Adamantoise&recipeSource=xivapi
   -> forces XIVAPI recipe rows instead of the default Garland Tools item docs
 
+Internal capabilities
+---------------------
+Mana uses a small internal capability pattern for optional feature areas that need their own routes or health status. A capability can register routes and contribute one `/health.components` entry.
+
+The first capability is `ffxivMarket`, which owns the existing FFXIV/Universalis market and crafting endpoints while preserving their public URLs.
+
 Notes
 -----
 - AI replies use local llama unless `MANA_ALLOW_REMOTE_AI=1` and `OPENAI_API_KEY` are both set.
