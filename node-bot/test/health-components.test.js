@@ -41,6 +41,13 @@ test("health includes component readiness while preserving top-level fields", as
     ]);
     assert.equal(body.components.backend.status, "available");
     assert.equal(body.components.backend.configured, true);
+    assert.deepEqual(body.components.ffxivMarket, {
+      status: "configured",
+      configured: true,
+      message: "FFXIV market providers are configured from local defaults.",
+      universalisConfigured: true,
+      xivapiConfigured: true,
+    });
     assert.equal(typeof body.components.localLlama.message, "string");
   });
 });
