@@ -1071,6 +1071,7 @@ registerCoreRoutes(app, upload, {
   extractHoveredItemName,
   findProfitableCrafts: deps.findProfitableCrafts || findProfitableCrafts,
   fs,
+  getActiveModelProfile: () => modelManagement.getActiveProfile(),
   getUniversalisMarketSummary:
     deps.getUniversalisMarketSummary || getUniversalisMarketSummary,
   logPerf,

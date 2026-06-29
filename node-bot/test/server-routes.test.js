@@ -161,3 +161,59 @@ test("active profile route switches profile and rejects invalid profiles", async
     assert.equal(activeProfile, "coding");
   });
 });
+
+test("reply uses active model profile when request omits modelProfile", async () => {
+  let receivedProfile = null;
+  const app = createApp({
+    modelManagement: {
+      getActiveProfile: () => "fast",
+      getModelStatus: () => ({ activeProfile: "fast", profiles: {} }),
+      setActiveProfile: () => ({ activeProfile: "fast", profiles: {} }),
+    },
+    buildCraftProfitContextForPrompt: async () => "",
+    buildUniversalisContextForPrompt: async () => "",
+    buildMarketContextForPrompt: async () => "",
+    buildAssistantReply: async (transcript, screenText, marketText, modelProfile) => {
+      receivedProfile = modelProfile;
+      return "ok";
+    },
+  });
+
+  await withServer(app, async (baseUrl) => {
+    const { response, payload } = await postJson(`${baseUrl}/reply`, {
+      text: "hello",
+    });
+
+    assert.equal(response.status, 200);
+    assert.equal(payload.reply, "ok");
+    assert.equal(receivedProfile, "fast");
+  });
+});
+
+test("reply keeps explicit modelProfile above active profile", async () => {
+  let receivedProfile = null;
+  const app = createApp({
+    modelManagement: {
+      getActiveProfile: () => "fast",
+      getModelStatus: () => ({ activeProfile: "fast", profiles: {} }),
+      setActiveProfile: () => ({ activeProfile: "fast", profiles: {} }),
+    },
+    buildCraftProfitContextForPrompt: async () => "",
+    buildUniversalisContextForPrompt: async () => "",
+    buildMarketContextForPrompt: async () => "",
+    buildAssistantReply: async (transcript, screenText, marketText, modelProfile) => {
+      receivedProfile = modelProfile;
+      return "ok";
+    },
+  });
+
+  await withServer(app, async (baseUrl) => {
+    const { response } = await postJson(`${baseUrl}/reply`, {
+      text: "hello",
+      modelProfile: "coding",
+    });
+
+    assert.equal(response.status, 200);
+    assert.equal(receivedProfile, "coding");
+  });
+});
