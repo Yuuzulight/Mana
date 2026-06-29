@@ -1,3 +1,14 @@
+const {
+  ValidationError,
+  optionalBoolean,
+  optionalInteger,
+  optionalString,
+  requireFile,
+  requireOneOf,
+  requireString,
+  sendValidationError,
+} = require("./request-validation");
+
 function registerCoreRoutes(app, upload, deps) {
   const {
     UNIVERSALIS_DEFAULT_WORLD,
@@ -35,7 +46,7 @@ function registerCoreRoutes(app, upload, deps) {
 
   app.post("/transcribe-only", upload.single("file"), async (req, res) => {
     try {
-      if (!req.file) return res.status(400).json({ error: "no file" });
+      requireFile(req.file, "file");
 
       const { tmpPath, audioPath } = normalizeUploadedAudio(req.file);
       const transcript = runWhisper(audioPath);
@@ -43,6 +54,9 @@ function registerCoreRoutes(app, upload, deps) {
 
       return res.json({ transcript });
     } catch (e) {
+      if (e instanceof ValidationError) {
+        return sendValidationError(res, e);
+      }
       console.error(e);
       return res.status(500).json({ error: String(e) });
     }
@@ -111,17 +125,20 @@ function registerCoreRoutes(app, upload, deps) {
 
   app.get("/ffxiv/market", async (req, res) => {
     try {
-      const world =
-        typeof req.query.world === "string" && req.query.world.trim()
-          ? req.query.world.trim()
-          : UNIVERSALIS_DEFAULT_WORLD;
-      let itemName =
-        typeof req.query.itemName === "string" && req.query.itemName.trim()
-          ? req.query.itemName.trim()
-          : "";
-      let itemId = Number(req.query.itemId || req.query.itemID || req.query.id);
+      const world = optionalString(req.query.world, "world", UNIVERSALIS_DEFAULT_WORLD);
+      let itemName = optionalString(req.query.itemName, "itemName", "");
+      const rawItemId = req.query.itemId || req.query.itemID || req.query.id;
+      const parsedItemId = Number(rawItemId);
+      let itemId =
+        Number.isSafeInteger(parsedItemId) && parsedItemId > 0
+          ? parsedItemId
+          : null;
+      requireOneOf([
+        { value: itemId, label: "itemId" },
+        { value: itemName, label: "itemName" },
+      ]);
       let resolvedItem = null;
-      if (!Number.isInteger(itemId) || itemId <= 0) {
+      if (!itemId) {
         resolvedItem = await resolveFfxivItemByName(itemName);
         itemId = resolvedItem.itemId;
         itemName = resolvedItem.name;
@@ -133,6 +150,9 @@ function registerCoreRoutes(app, upload, deps) {
         resolvedItem,
       });
     } catch (e) {
+      if (e instanceof ValidationError) {
+        return sendValidationError(res, e);
+      }
       console.error(e);
       return res.status(500).json({ error: String(e) });
     }
@@ -140,45 +160,41 @@ function registerCoreRoutes(app, upload, deps) {
 
   app.get("/ffxiv/crafting/profit", async (req, res) => {
     try {
-      const world =
-        typeof req.query.world === "string" && req.query.world.trim()
-          ? req.query.world.trim()
-          : UNIVERSALIS_DEFAULT_WORLD;
-      const query =
-        typeof req.query.query === "string" && req.query.query.trim()
-          ? req.query.query.trim()
-          : "";
-      const limit = clampInteger(req.query.limit, 1, 25, FFXIV_PROFIT_TOP_LIMIT);
-      const scanLimit = clampInteger(
-        req.query.scanLimit,
-        1,
-        5000,
-        XIVAPI_RECIPE_SCAN_LIMIT,
-      );
-      const pageSize = clampInteger(
-        req.query.pageSize,
-        1,
-        500,
-        XIVAPI_RECIPE_PAGE_SIZE,
-      );
-      const recipeSource =
-        typeof req.query.recipeSource === "string" &&
-        req.query.recipeSource.trim()
-          ? req.query.recipeSource.trim()
-          : FFXIV_RECIPE_SOURCE;
-      const useSalesHistory =
-        req.query.useSalesHistory === "1" ||
-        String(req.query.useSalesHistory || "").toLowerCase() === "true";
-      const historyDays = clampInteger(req.query.historyDays, 1, 90, 30);
+      const world = optionalString(req.query.world, "world", UNIVERSALIS_DEFAULT_WORLD);
+      const query = optionalString(req.query.query, "query", "");
+      const limit = optionalInteger(req.query.limit, "limit", {
+        min: 1,
+        max: 25,
+        defaultValue: FFXIV_PROFIT_TOP_LIMIT,
+      });
+      const scanLimit = optionalInteger(req.query.scanLimit, "scanLimit", {
+        min: 1,
+        max: 5000,
+        defaultValue: XIVAPI_RECIPE_SCAN_LIMIT,
+      });
+      const pageSize = optionalInteger(req.query.pageSize, "pageSize", {
+        min: 1,
+        max: 500,
+        defaultValue: XIVAPI_RECIPE_PAGE_SIZE,
+      });
+      const recipeSource = optionalString(req.query.recipeSource, "recipeSource", FFXIV_RECIPE_SOURCE);
+      const useSalesHistory = optionalBoolean(req.query.useSalesHistory, "useSalesHistory", false);
+      const historyDays = optionalInteger(req.query.historyDays, "historyDays", {
+        min: 1,
+        max: 90,
+        defaultValue: 30,
+      });
       const rankBy = normalizeCraftRankingMode(req.query.rankBy, useSalesHistory);
-      const gatherableOnly =
-        req.query.gatherableOnly === "1" ||
-        String(req.query.gatherableOnly || "").toLowerCase() === "true";
+      const gatherableOnly = optionalBoolean(req.query.gatherableOnly, "gatherableOnly", false);
       const gatheringSources = normalizeGatheringSourceFilter(
         req.query.gatheringSources || req.query.allowedGatheringSources,
       );
       const gatheringJobs = normalizeGatheringJobFilter(req.query.gatheringJobs);
-      const minUnitsSold = clampInteger(req.query.minUnitsSold, 0, 999999, 0);
+      const minUnitsSold = optionalInteger(req.query.minUnitsSold, "minUnitsSold", {
+        min: 0,
+        max: 999999,
+        defaultValue: 0,
+      });
       const startedAt = nowMs();
       const report = await findProfitableCrafts({
         world,
@@ -198,6 +214,9 @@ function registerCoreRoutes(app, upload, deps) {
       logPerf("ffxiv-crafting-profit", startedAt);
       return res.json(report);
     } catch (e) {
+      if (e instanceof ValidationError) {
+        return sendValidationError(res, e);
+      }
       console.error(e);
       return res.status(500).json({ error: String(e) });
     }
@@ -239,21 +258,13 @@ function registerCoreRoutes(app, upload, deps) {
 
   app.post("/reply", async (req, res) => {
     try {
-      const transcript =
-        typeof req.body?.text === "string" ? req.body.text.trim() : "";
-      if (!transcript) {
-        return res.status(400).json({ error: "no text" });
-      }
-
-      const screenText =
-        typeof req.body?.screenText === "string"
-          ? clampText(req.body.screenText, SCREEN_CONTEXT_MAX_CHARS)
-          : "";
+      const transcript = requireString(req.body?.text, "text");
+      const screenText = clampText(
+        optionalString(req.body?.screenText, "screenText", ""),
+        SCREEN_CONTEXT_MAX_CHARS,
+      );
       const modelProfile = normalizeLlamaModelProfile(req.body?.modelProfile);
-      const world =
-        typeof req.body?.ffxivWorld === "string" && req.body.ffxivWorld.trim()
-          ? req.body.ffxivWorld.trim()
-          : UNIVERSALIS_DEFAULT_WORLD;
+      const world = optionalString(req.body?.ffxivWorld, "ffxivWorld", UNIVERSALIS_DEFAULT_WORLD);
       const craftProfitText = await buildCraftProfitContextForPrompt(
         transcript,
         world,
@@ -273,6 +284,9 @@ function registerCoreRoutes(app, upload, deps) {
         ttsConfigured: TTS_PROVIDER !== "none",
       });
     } catch (e) {
+      if (e instanceof ValidationError) {
+        return sendValidationError(res, e);
+      }
       console.error(e);
       return res.status(500).json({ error: String(e) });
     }
@@ -280,7 +294,7 @@ function registerCoreRoutes(app, upload, deps) {
 
   app.post("/transcribe", upload.single("file"), async (req, res) => {
     try {
-      if (!req.file) return res.status(400).json({ error: "no file" });
+      requireFile(req.file, "file");
       console.log("Got file upload:", req.file);
       const { tmpPath, audioPath } = normalizeUploadedAudio(req.file);
 
@@ -307,6 +321,9 @@ function registerCoreRoutes(app, upload, deps) {
         ttsConfigured: TTS_PROVIDER !== "none",
       });
     } catch (e) {
+      if (e instanceof ValidationError) {
+        return sendValidationError(res, e);
+      }
       console.error(e);
       return res.status(500).json({ error: String(e) });
     }
@@ -314,10 +331,7 @@ function registerCoreRoutes(app, upload, deps) {
 
   app.post("/synthesize", async (req, res) => {
     try {
-      const text = typeof req.body?.text === "string" ? req.body.text.trim() : "";
-      if (!text) {
-        return res.status(400).json({ error: "no text" });
-      }
+      const text = requireString(req.body?.text, "text");
       if (TTS_PROVIDER === "none") {
         return res.status(400).json({ error: "TTS not configured" });
       }
@@ -326,6 +340,9 @@ function registerCoreRoutes(app, upload, deps) {
       res.setHeader("Content-Type", "audio/wav");
       return res.send(audio);
     } catch (e) {
+      if (e instanceof ValidationError) {
+        return sendValidationError(res, e);
+      }
       console.error(e);
       return res.status(500).json({ error: String(e) });
     }
