@@ -111,7 +111,7 @@ function createManaAcpAgent(options = {}) {
         capabilities: {
           filesystem: {
             read: "explicit-bounded",
-            write: "proposal-only",
+            write: "approval-required",
           },
         },
         localAi,
