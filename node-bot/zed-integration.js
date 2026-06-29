@@ -329,10 +329,22 @@ function createEditProposalStore(options = {}) {
     return proposal;
   }
 
+  function markApplied(id) {
+    const proposal = getProposal(id);
+    if (proposal.status !== "pending") {
+      throw new Error("edit proposal is not pending");
+    }
+
+    proposal.status = "applied";
+    proposal.appliedAt = now().toISOString();
+    return proposal;
+  }
+
   return {
     createProposal,
     getProposal,
     listProposals,
+    markApplied,
   };
 }
 
@@ -532,7 +544,29 @@ function createEditorIntegrations(options = {}) {
     return proposalStore.getProposal(id);
   }
 
+  function approveEditProposal(id) {
+    const workspace = requireActiveWorkspace(workspaceStore);
+    const proposal = proposalStore.getProposal(id);
+    if (proposal.status !== "pending") {
+      throw new Error("edit proposal is not pending");
+    }
+
+    const target = toWorkspaceRelativePath(workspace.path, proposal.relativePath);
+    if (!fs.existsSync(target.fullPath) || !fs.statSync(target.fullPath).isFile()) {
+      throw new Error("workspace file does not exist");
+    }
+
+    const currentContent = fs.readFileSync(target.fullPath, "utf8");
+    if (currentContent !== proposal.originalContent) {
+      throw new Error("edit proposal conflict: current file content changed");
+    }
+
+    fs.writeFileSync(target.fullPath, proposal.proposedContent, "utf8");
+    return proposalStore.markApplied(id);
+  }
+
   return {
+    approveEditProposal,
     createEditProposal,
     getEditProposal,
     getWorkspace,
