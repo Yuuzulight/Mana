@@ -26,7 +26,7 @@
 **Files:**
 - Modify: `node-bot/test/zed-integration.test.js`
 
-- [ ] **Step 1: Add unit tests after the existing "editor integrations create safe edit proposals without writing files" test**
+- [x] **Step 1: Add unit tests after the existing "editor integrations create safe edit proposals without writing files" test**
 
 Add this code after that test block:
 
@@ -137,7 +137,7 @@ test("editor integrations reject approving the same proposal twice", () => {
 });
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run:
 
@@ -148,7 +148,7 @@ node --test test\zed-integration.test.js
 
 Expected: FAIL because `editors.approveEditProposal` is not a function.
 
-- [ ] **Step 3: Commit failing tests**
+- [x] **Step 3: Commit failing tests**
 
 Do not commit failing tests separately. Keep them staged only if needed; implementation follows in Task 2.
 
@@ -160,7 +160,7 @@ Do not commit failing tests separately. Keep them staged only if needed; impleme
 - Modify: `node-bot/zed-integration.js`
 - Test: `node-bot/test/zed-integration.test.js`
 
-- [ ] **Step 1: Add approval support inside `createEditProposalStore`**
+- [x] **Step 1: Add approval support inside `createEditProposalStore`**
 
 In `node-bot/zed-integration.js`, inside `createEditProposalStore`, add this function after `getProposal`:
 
@@ -188,7 +188,7 @@ Then add `markApplied` to the returned object:
   };
 ```
 
-- [ ] **Step 2: Add `approveEditProposal` inside `createEditorIntegrations`**
+- [x] **Step 2: Add `approveEditProposal` inside `createEditorIntegrations`**
 
 In `node-bot/zed-integration.js`, add this function after `getEditProposal`:
 
@@ -232,7 +232,7 @@ Add it to the returned object:
   };
 ```
 
-- [ ] **Step 3: Run the focused tests**
+- [x] **Step 3: Run the focused tests**
 
 Run:
 
@@ -243,7 +243,7 @@ node --test test\zed-integration.test.js
 
 Expected: PASS for all `zed-integration` tests.
 
-- [ ] **Step 4: Commit shared approval implementation**
+- [x] **Step 4: Commit shared approval implementation**
 
 Run:
 
