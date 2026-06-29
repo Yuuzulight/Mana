@@ -6,7 +6,12 @@ const openWebUIButton = document.getElementById("openWebUI");
 const gamingModeCheckbox = document.getElementById("gamingMode");
 const gamingStatusEl = document.getElementById("gamingStatus");
 const perfStatusEl = document.getElementById("perfStatus");
+const runDoctorButton = document.getElementById("runDoctor");
+const doctorTitleEl = document.getElementById("doctorTitle");
+const doctorSummaryEl = document.getElementById("doctorSummary");
+const doctorChecksEl = document.getElementById("doctorChecks");
 const { ipcRenderer } = require("electron");
+const { formatDoctorPanel } = require("./doctor-panel");
 
 const WAKE_WORDS = ["mana", "manah", "manna", "mannah", "wake up"];
 const LISTEN_CHUNK_MS = 3500;
@@ -571,6 +576,59 @@ async function refreshPerfStatus() {
   }
 }
 
+function renderDoctorPanel(result) {
+  if (!doctorTitleEl || !doctorSummaryEl || !doctorChecksEl) {
+    return;
+  }
+
+  const panel = formatDoctorPanel(result);
+  doctorTitleEl.textContent = panel.heading;
+  doctorSummaryEl.textContent = panel.summary;
+  doctorChecksEl.innerHTML = "";
+
+  for (const row of panel.rows) {
+    const item = document.createElement("div");
+    item.className = row.className;
+
+    const title = document.createElement("div");
+    title.className = "doctor-check-title";
+    title.textContent = `${row.label} (${row.status})`;
+
+    const message = document.createElement("div");
+    message.textContent = row.message;
+
+    item.append(title, message);
+    doctorChecksEl.appendChild(item);
+  }
+}
+
+async function runDoctorChecksFromLauncher() {
+  if (!doctorSummaryEl || !doctorChecksEl) {
+    return;
+  }
+
+  doctorSummaryEl.textContent = "Running checks...";
+  doctorChecksEl.innerHTML = "";
+  if (runDoctorButton) {
+    runDoctorButton.disabled = true;
+  }
+
+  try {
+    const response = await fetch("http://localhost:5005/doctor", {
+      method: "GET",
+    });
+    const result = await response.json();
+    renderDoctorPanel(result);
+  } catch (error) {
+    doctorTitleEl.textContent = "Doctor: unavailable";
+    doctorSummaryEl.textContent = `Could not run checks: ${error.message}`;
+  } finally {
+    if (runDoctorButton) {
+      runDoctorButton.disabled = false;
+    }
+  }
+}
+
 function shouldReadScreenForCommand(text, gamingModeActive) {
   if (!gamingModeActive) {
     return true;
@@ -758,6 +816,10 @@ gamingModeCheckbox?.addEventListener("change", () => {
   refreshGamingStatus(true);
 });
 
+runDoctorButton?.addEventListener("click", () => {
+  runDoctorChecksFromLauncher();
+});
+
 listenBtn.addEventListener("click", async () => {
   if (listening) {
     stopListening();
@@ -793,6 +855,7 @@ async function startListeningOnLaunch() {
 startListeningOnLaunch();
 refreshGamingStatus(true);
 refreshPerfStatus();
+runDoctorChecksFromLauncher();
 
 // helper: convert AudioBuffer to WAV bytes (16-bit PCM)
 function audioBufferToWav(buffer, opt) {
