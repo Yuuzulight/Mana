@@ -38,6 +38,8 @@ const http = require("http");
 const https = require("https");
 const { createWorker } = require("tesseract.js");
 const { VTubeStudioClient } = require("./vtube-studio-client");
+const { registerVTubeRoutes } = require("./vtube-routes");
+const { createVTubeRuntime } = require("./vtube-runtime");
 const { registerMobileRoutes } = require("./mobile-routes");
 const { createMobileAuth } = require("./mobile-auth");
 const { createMobileMemoryStore } = require("./mobile-memory-store");
@@ -141,6 +143,11 @@ const GAMING_PROCESS_NAMES = parseGamingProcessNames(
 const vtubeStudio = VTUBE_STUDIO_ENABLED
   ? new VTubeStudioClient({ url: VTUBE_STUDIO_URL })
   : null;
+const vtubeRuntime = createVTubeRuntime({
+  env: process.env,
+  vtubeStudio,
+  vtubeStudioUrl: VTUBE_STUDIO_URL,
+});
 const marketDataClient = createMarketDataClient();
 
 function nowMs() {
@@ -533,54 +540,20 @@ async function synthesizeReply(text) {
 }
 
 function parseVTubeReactions() {
-  try {
-    const parsed = JSON.parse(VTUBE_STUDIO_REACTIONS_JSON);
-    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
-      ? parsed
-      : {};
-  } catch (error) {
-    console.warn("VTUBE_STUDIO_REACTIONS_JSON must be a JSON object");
-    return {};
-  }
+  return vtubeRuntime.parseVTubeReactions();
 }
 
 function pickVTubeReaction(text) {
-  const reactions = parseVTubeReactions();
-  const lowerText = text.toLowerCase();
-
-  // Quick note: reaction keys are plain words/phrases, values are VTube Studio hotkey names.
-  for (const [phrase, hotkeyName] of Object.entries(reactions)) {
-    if (phrase && lowerText.includes(phrase.toLowerCase())) {
-      return hotkeyName;
-    }
-  }
-
-  return reactions.default || null;
+  return vtubeRuntime.pickVTubeReaction(text);
 }
 
 async function triggerVTubeReactionForReply(reply) {
-  if (!vtubeStudio || !reply) {
-    return null;
-  }
-
-  const hotkeyName = pickVTubeReaction(reply);
-  if (!hotkeyName) {
-    return null;
-  }
-
-  return await vtubeStudio.triggerHotkey({ hotkeyName });
+  return await vtubeRuntime.triggerVTubeReactionForReply(reply);
 }
 
 function queueVTubeReaction(reply) {
-  if (!vtubeStudio) {
-    return;
-  }
-
-  triggerVTubeReactionForReply(reply).catch((error) => {
-    console.warn("VTube Studio reaction failed:", error.message);
-  });
+  return vtubeRuntime.queueVTubeReaction(reply);
 }
-
 function findWhisperBin() {
   const candidates = [];
   if (WHISPER_BIN) {
@@ -1225,77 +1198,9 @@ app.post("/synthesize", async (req, res) => {
   }
 });
 
-app.get("/vtube/status", async (req, res) => {
-  if (!vtubeStudio) {
-    return res.json({ enabled: false });
-  }
+registerVTubeRoutes(app, { vtubeRuntime });
 
-  try {
-    const state = await vtubeStudio.getState();
-    return res.json({
-      enabled: true,
-      connected: true,
-      authenticated: vtubeStudio.authenticated,
-      url: VTUBE_STUDIO_URL,
-      state,
-    });
-  } catch (error) {
-    return res.status(503).json({
-      enabled: true,
-      connected: false,
-      authenticated: false,
-      url: VTUBE_STUDIO_URL,
-      error: error.message,
-    });
-  }
-});
-
-app.post("/vtube/auth", async (req, res) => {
-  if (!vtubeStudio) {
-    return res.status(400).json({ error: "VTube Studio integration disabled" });
-  }
-
-  try {
-    const result = await vtubeStudio.authenticate();
-    return res.json(result);
-  } catch (error) {
-    return res.status(500).json({ error: error.message });
-  }
-});
-
-app.get("/vtube/hotkeys", async (req, res) => {
-  if (!vtubeStudio) {
-    return res.status(400).json({ error: "VTube Studio integration disabled" });
-  }
-
-  try {
-    const hotkeys = await vtubeStudio.listHotkeys();
-    return res.json({ hotkeys });
-  } catch (error) {
-    return res.status(500).json({ error: error.message });
-  }
-});
-
-app.post("/vtube/hotkey", async (req, res) => {
-  if (!vtubeStudio) {
-    return res.status(400).json({ error: "VTube Studio integration disabled" });
-  }
-
-  try {
-    const hotkeyID =
-      typeof req.body?.hotkeyID === "string" ? req.body.hotkeyID.trim() : "";
-    const hotkeyName =
-      typeof req.body?.hotkeyName === "string"
-        ? req.body.hotkeyName.trim()
-        : "";
-    const result = await vtubeStudio.triggerHotkey({ hotkeyID, hotkeyName });
-    return res.json(result);
-  } catch (error) {
-    return res.status(500).json({ error: error.message });
-  }
-});
-
-  registerMobileRoutes(app, {
+    registerMobileRoutes(app, {
     mobileAuth:
       deps.mobileAuth ||
       createMobileAuth({
