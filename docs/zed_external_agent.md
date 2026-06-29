@@ -2,7 +2,7 @@
 
 Mana can be launched by Zed as a local External Agent through Zed's `agent_servers` settings.
 
-This path is local-first. The agent entry point refuses remote AI when `MANA_ALLOW_REMOTE_AI=1` unless a future explicit override path is added for that launch mode. Code edits are proposal-only in this first slice; the agent must not silently modify files.
+This path is local-first. The agent entry point refuses remote AI when `MANA_ALLOW_REMOTE_AI=1` unless a future explicit override path is added for that launch mode. Code edits require reviewable proposals and explicit approval through Mana's local backend; the agent must not silently modify files.
 
 ## Zed Settings
 
@@ -59,4 +59,7 @@ The async Doctor run also checks `MANA_BACKEND_URL` or `http://127.0.0.1:5005` a
 - `session/prompt` uses the local backend reply endpoint with `modelProfile: "coding"` in standalone launch.
 - The lower-level ACP agent can still use an injected local reply bridge for tests and future in-process wiring.
 - File reads stay explicit and bounded through Mana's existing editor workspace routes.
-- File edits remain reviewable proposals only; no apply action is exposed here.
+- File edits are reviewable proposals first.
+- Applying a proposal requires an explicit local backend approval call: `POST /editors/workspace/proposals/:id/approve`.
+- The approval route checks that the current file content still matches the proposal's original snapshot before writing.
+- If the file changed, Mana refuses the write and keeps the proposal pending for review.

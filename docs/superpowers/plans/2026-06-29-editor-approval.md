@@ -408,7 +408,7 @@ git commit -m "feat: expose editor proposal approval route"
 - Modify: `node-bot/test/mana-acp-agent.test.js`
 - Modify: `docs/zed_external_agent.md`
 
-- [ ] **Step 1: Update the ACP test expectation**
+- [x] **Step 1: Update the ACP test expectation**
 
 In `node-bot/test/mana-acp-agent.test.js`, change the initialize metadata expectation from:
 
@@ -422,7 +422,7 @@ to:
 write: "approval-required",
 ```
 
-- [ ] **Step 2: Run the ACP tests to verify they fail**
+- [x] **Step 2: Run the ACP tests to verify they fail**
 
 Run:
 
@@ -433,7 +433,7 @@ node --test test\mana-acp-agent.test.js
 
 Expected: FAIL because `mana-acp-agent.js` still reports `proposal-only`.
 
-- [ ] **Step 3: Update `mana-acp-agent.js`**
+- [x] **Step 3: Update `mana-acp-agent.js`**
 
 In `node-bot/mana-acp-agent.js`, change:
 
@@ -447,7 +447,7 @@ to:
 write: "approval-required",
 ```
 
-- [ ] **Step 4: Update `docs/zed_external_agent.md`**
+- [x] **Step 4: Update `docs/zed_external_agent.md`**
 
 Replace the current limit that says no apply action is exposed with wording that says:
 
@@ -458,7 +458,7 @@ Replace the current limit that says no apply action is exposed with wording that
 - If the file changed, Mana refuses the write and keeps the proposal pending for review.
 ```
 
-- [ ] **Step 5: Run the ACP tests**
+- [x] **Step 5: Run the ACP tests**
 
 Run:
 
@@ -469,7 +469,7 @@ node --test test\mana-acp-agent.test.js
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit capability and docs update**
+- [x] **Step 6: Commit capability and docs update**
 
 Run:
 
