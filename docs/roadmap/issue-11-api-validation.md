@@ -17,3 +17,17 @@ Validate important API inputs consistently so malformed requests fail clearly an
 - Valid existing requests still work.
 - Tests cover common invalid inputs.
 - Validation stays local and does not depend on a remote service.
+
+## Progress
+
+- Added lightweight dependency-free request validation helpers.
+- Added stable 400 responses for malformed core and mobile API requests.
+- Validated local-first routes without logging sensitive request values.
+
+## Verification
+
+- `node --test test\request-validation.test.js test\server-routes.test.js test\mobile-routes.test.js`
+- `node --check request-validation.js`
+- `node --check server-routes.js`
+- `node --check mobile-routes.js`
+- `npm test`
