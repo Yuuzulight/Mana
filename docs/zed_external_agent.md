@@ -52,14 +52,43 @@ The `Zed external agent` check verifies that `node-bot\mana-acp-agent.js` exists
 
 The async Doctor run also checks `MANA_BACKEND_URL` or `http://127.0.0.1:5005` at `/health`. If that check warns, start `node-bot` before using the agent from Zed.
 
-## Current Limits
+## Current Capabilities
 
-- Zed can launch the Mana ACP entry point over stdio.
-- The entry point supports basic JSON-RPC lifecycle messages.
-- `session/prompt` uses the local backend reply endpoint with `modelProfile: "coding"` in standalone launch.
-- The lower-level ACP agent can still use an injected local reply bridge for tests and future in-process wiring.
-- File reads stay explicit and bounded through Mana's existing editor workspace routes.
-- File edits are reviewable proposals first.
-- Applying a proposal requires an explicit local backend approval call: `POST /editors/workspace/proposals/:id/approve`.
-- The approval route checks that the current file content still matches the proposal's original snapshot before writing.
-- If the file changed, Mana refuses the write and keeps the proposal pending for review.
+- Zed can launch Mana over stdio through `agent_servers`.
+- Mana supports basic ACP lifecycle methods and Mana-specific workspace/edit/test methods.
+- `session/prompt` uses the local backend reply endpoint with `modelProfile: "coding"`.
+- Manual mode can inspect workspace files and create reviewable edit proposals.
+- Autonomous mode can apply proposals and run allowed tests repeatedly after explicit opt-in.
+- Writes still go through Mana's proposal conflict checks.
+
+## Manual Mode
+
+Manual mode is the default. Leave `MANA_AGENT_AUTONOMOUS` unset or set it to `0`.
+
+In manual mode, Mana can list files, read bounded file content, and create edit proposals. It cannot run tests or approve proposals through ACP.
+
+## Autonomous Mode
+
+Set `MANA_AGENT_AUTONOMOUS=1` only when you want Mana to run a bounded local coding loop.
+
+Optional controls:
+
+- `MANA_AGENT_MAX_ITERATIONS`: default `3`.
+- `MANA_AGENT_MAX_FILES_CHANGED`: default `5`.
+- `MANA_AGENT_TEST_TIMEOUT_MS`: default `120000`.
+- `MANA_AGENT_ALLOWED_PATHS`: absolute outside-workspace roots allowed for file access.
+
+Autonomous mode can approve proposals and run allowed tests without per-step approval, but only inside the configured guardrails.
+
+## Guardrails
+
+- Local-only remains the default.
+- Outside-workspace file access is denied unless the path is under `MANA_AGENT_ALLOWED_PATHS`.
+- Test commands must be allowlisted.
+- Destructive commands are rejected.
+- Test commands run without shell expansion.
+- Proposal approval still checks for file-content conflicts before writing.
+
+## Registry Packaging
+
+Mana includes registry-ready metadata at `zed-agent/mana-agent.json`. Public registry publication may require a separate Zed-side submission or review process.
