@@ -4,6 +4,13 @@ const path = require("path");
 
 const { createMobileAuth } = require("./mobile-auth");
 const { createMobileMemoryStore } = require("./mobile-memory-store");
+const {
+  ValidationError,
+  optionalString,
+  requireFile,
+  requireString,
+  sendValidationError,
+} = require("./request-validation");
 
 function createDefaultMobileAuth() {
   return createMobileAuth({
@@ -128,7 +135,15 @@ function registerMobileRoutes(app, deps = {}) {
       });
     }
 
-    const passcode = cleanText(req.body?.passcode);
+    let passcode;
+    try {
+      passcode = requireString(req.body?.passcode, "passcode");
+    } catch (error) {
+      if (error instanceof ValidationError) {
+        return sendValidationError(res, error);
+      }
+      throw error;
+    }
     const unlocked = mobileAuth.unlock(passcode);
     if (!unlocked.ok) {
       if (mobileUnlockRateLimiter.recordFailure(clientKey)) {
@@ -150,14 +165,14 @@ function registerMobileRoutes(app, deps = {}) {
 
   router.post("/chat/text", requireAuth, async (req, res) => {
     try {
-      const text = cleanText(req.body?.text);
-      if (!text) {
-        return res.status(400).json({ error: "no text" });
-      }
+      const text = requireString(req.body?.text, "text");
 
       const reply = await buildAssistantReply(text);
       return res.json({ text, reply });
     } catch (error) {
+      if (error instanceof ValidationError) {
+        return sendValidationError(res, error);
+      }
       console.error(error);
       return res.status(500).json({ error: String(error) });
     }
@@ -166,9 +181,7 @@ function registerMobileRoutes(app, deps = {}) {
   router.post("/chat/audio", requireAuth, upload.single("file"), async (req, res) => {
     let uploadPaths = null;
     try {
-      if (!req.file) {
-        return res.status(400).json({ error: "no file" });
-      }
+      requireFile(req.file, "file");
 
       uploadPaths = { tmpPath: req.file.path, audioPath: req.file.path };
       uploadPaths = normalizeUploadedAudio(req.file);
@@ -176,6 +189,9 @@ function registerMobileRoutes(app, deps = {}) {
       const reply = await buildAssistantReply(transcript);
       return res.json({ transcript, reply });
     } catch (error) {
+      if (error instanceof ValidationError) {
+        return sendValidationError(res, error);
+      }
       console.error(error);
       return res.status(500).json({ error: String(error) });
     } finally {
@@ -187,15 +203,15 @@ function registerMobileRoutes(app, deps = {}) {
 
   router.post("/synthesize", requireAuth, async (req, res) => {
     try {
-      const text = cleanText(req.body?.text);
-      if (!text) {
-        return res.status(400).json({ error: "no text" });
-      }
+      const text = requireString(req.body?.text, "text");
 
       const audio = await synthesizeReply(text);
       res.setHeader("Content-Type", "audio/wav");
       return res.send(audio);
     } catch (error) {
+      if (error instanceof ValidationError) {
+        return sendValidationError(res, error);
+      }
       console.error(error);
       return res.status(500).json({ error: String(error) });
     }
@@ -204,15 +220,18 @@ function registerMobileRoutes(app, deps = {}) {
   router.post("/summaries", requireAuth, (req, res) => {
     try {
       const summary = mobileMemoryStore.saveSummary({
-        id: req.body?.id,
-        source: req.body?.source || "phone",
+        id: optionalString(req.body?.id, "id", ""),
+        source: optionalString(req.body?.source, "source", "phone") || "phone",
         direction: "phone-to-pc",
-        chatId: req.body?.chatId,
-        title: req.body?.title,
-        summary: req.body?.summary,
+        chatId: optionalString(req.body?.chatId, "chatId", ""),
+        title: optionalString(req.body?.title, "title", ""),
+        summary: requireString(req.body?.summary, "summary"),
       });
       return res.json({ summary });
     } catch (error) {
+      if (error instanceof ValidationError) {
+        return sendValidationError(res, error);
+      }
       return res.status(400).json({ error: error.message });
     }
   });
