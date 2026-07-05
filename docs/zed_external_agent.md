@@ -12,15 +12,27 @@ Add this to your Zed settings, adjusting the path if Mana is installed somewhere
 {
   "agent_servers": {
     "mana": {
+      "type": "custom",
       "command": "node",
       "args": ["C:\\ManaAI\\Mana\\node-bot\\mana-acp-agent.js", "--acp"],
       "env": {
         "MANA_ALLOW_REMOTE_AI": "0",
-        "MANA_DEFAULT_EDITOR": "zed"
+        "MANA_DEFAULT_EDITOR": "zed",
+        "MANA_AGENT_AUTONOMOUS": "0"
       }
     }
   }
 }
+```
+
+If `agent_servers` already has other agents, keep them and add `mana` beside them.
+
+To enable the autonomous coding loop, change `MANA_AGENT_AUTONOMOUS` to `1`.
+
+To allow Mana to access paths outside the active workspace, add an allowlist:
+
+```json
+"MANA_AGENT_ALLOWED_PATHS": "D:\\SomeFolder;C:\\AnotherFolder"
 ```
 
 You can print the same snippet from the backend folder:
@@ -38,6 +50,24 @@ npm start
 ```
 
 By default, the ACP process sends prompts to `http://127.0.0.1:5005/reply` with `modelProfile: "coding"`. Set `MANA_BACKEND_URL` in the Zed `env` block if your backend runs on a different local URL.
+
+## Local Memory
+
+Mana stores Zed External Agent conversation memory locally so future ACP/model processes can remember prior turns after Zed, the backend, or the model process restarts.
+
+Default location:
+
+```text
+C:\ManaAI\Mana\node-bot\data\acp-memory\sessions
+```
+
+Each session is saved as a local JSON file with compact summary text and recent turns. No cloud sync or remote AI is used for this memory path.
+
+To move the memory folder, set `MANA_ACP_MEMORY_DIR` in the Zed `env` block:
+
+```json
+"MANA_ACP_MEMORY_DIR": "D:\\ManaMemory\\zed-agent"
+```
 
 ## Doctor Check
 
