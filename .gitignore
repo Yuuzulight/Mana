@@ -34,3 +34,7 @@ Thumbs.db
 
 # Local Mana mobile memory store
 node-bot/data/
+
+# Vector store (local index/embeddings)
+/tools/vector_store/
+tools/vector_store/
