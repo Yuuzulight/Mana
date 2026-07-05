@@ -28,6 +28,7 @@ test("backend bridge normalizes base URLs and sends coding replies", async () =>
   assert.deepEqual(JSON.parse(calls[0].options.body), {
     text: "fix this",
     modelProfile: "coding",
+    includeContext: false,
   });
 });
 
