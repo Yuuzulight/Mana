@@ -94,55 +94,95 @@ function createLocalLlamaRuntime(options = {}) {
     }
   }
 
-  function runLocalAssistantReply(prompt, maxTokens = 256, profile = "default") {
-    const startedAt = nowMs();
-    let llamaBin;
-    try {
-      llamaBin = findLlamaBin();
-    } catch (error) {
-      console.warn(`${error.message} Returning placeholder reply instead.`);
-      logPerf("llama placeholder", startedAt);
-      return "(no local llama binary found) I heard: " + prompt.slice(0, 200);
-    }
+  function runLocalAssistantReply(prompt, maxTokens = 256, profile = "default", overrideSystemPrompt = null) {
+      const startedAt = nowMs();
+      let llamaBin;
+      try {
+        llamaBin = findLlamaBin();
+      } catch (error) {
+        console.warn(`${error.message} Returning placeholder reply instead.`);
+        logPerf("llama placeholder", startedAt);
+        return "(no local llama binary found) I heard: " + prompt.slice(0, 200);
+      }
 
-    const llamaModel = findLlamaModel(profile);
-    const args = isLocalModelSpec(llamaModel, fs)
-      ? [
-          "-m",
-          llamaModel,
-          "-sys",
-          systemPrompt,
-          "-p",
-          prompt,
-          "-n",
-          String(maxTokens),
-          "-t",
-          String(threads),
-          "--single-turn",
-          "--simple-io",
-          "--no-display-prompt",
-          "--no-show-timings",
-          "--no-perf",
-          "--no-warmup",
-        ]
-      : [
-          "-hf",
-          llamaModel,
-          "-sys",
-          systemPrompt,
-          "-p",
-          prompt,
-          "-n",
-          String(maxTokens),
-          "-t",
-          String(threads),
-          "--single-turn",
-          "--simple-io",
-          "--no-display-prompt",
-          "--no-show-timings",
-          "--no-perf",
-          "--no-warmup",
-        ];
+      const llamaModel = findLlamaModel(profile);
+      const sysPrompt = overrideSystemPrompt || systemPrompt;
+      // Build base args
+      const baseArgs = isLocalModelSpec(llamaModel, fs)
+        ? [
+            "-m",
+            llamaModel,
+            "-sys",
+            sysPrompt,
+            "-p",
+            prompt,
+            "-n",
+            String(maxTokens),
+            "-t",
+            String(threads),
+            "--single-turn",
+            "--simple-io",
+            "--no-display-prompt",
+            "--no-show-timings",
+            "--no-perf",
+            "--no-warmup",
+          ]
+        : [
+            "-hf",
+            llamaModel,
+            "-sys",
+            sysPrompt,
+            "-p",
+            prompt,
+            "-n",
+            String(maxTokens),
+            "-t",
+            String(threads),
+            "--single-turn",
+            "--simple-io",
+            "--no-display-prompt",
+            "--no-show-timings",
+            "--no-perf",
+            "--no-warmup",
+          ];
+
+      // Hardware/runtime optimizations (configurable via environment)
+      // Defaults: enable flash attention and 4-bit KV compression; allow overrides via env vars
+      const enableFlashAttn = !(env.LLAMA_ENABLE_FLASHATTN === "0");
+      const kvCompress = env.LLAMA_KV_COMPRESS || "q4_0"; // set to empty string to disable
+      const contextCap = env.LLAMA_CONTEXT || env.LLAMA_CONTEXT_CAP || "4096";
+      const ngl = env.LLAMA_NGL || "99"; // number for offloading layers (model-specific)
+
+      // Smart context / KV-offload flags
+      const enableSmartContext = !(env.LLAMA_ENABLE_SMART_CONTEXT === "0");
+      const enableNoKvOffload = !(env.LLAMA_ENABLE_NO_KV_OFFLOAD === "0");
+
+      const extraArgs = [];
+      if (enableFlashAttn) {
+        extraArgs.push("--flash-attn");
+      }
+      if (kvCompress) {
+        // Both key and value compress flags if supported by the binary
+        extraArgs.push("-ctk", kvCompress);
+        extraArgs.push("-ctv", kvCompress);
+      }
+
+      // Prefer smart-context if available; also provide no-kv-offload as alternative
+      if (enableSmartContext) {
+        extraArgs.push("--smart-context");
+      }
+      if (enableNoKvOffload) {
+        extraArgs.push("--no-kv-offload");
+      }
+
+      if (ngl) {
+        extraArgs.push("-ngl", String(ngl));
+      }
+      if (contextCap) {
+        extraArgs.push("-c", String(contextCap));
+      }
+
+      const args = baseArgs.concat(extraArgs);
 
     console.log("Running llama:", llamaBin, args.join(" "));
     const result = spawnSync(llamaBin, args, {
@@ -165,7 +205,44 @@ function createLocalLlamaRuntime(options = {}) {
     }
 
     logPerf("llama", startedAt);
-    return String(result.stdout || "").trim();
+    // Cleanup known startup banner lines that llama.cpp may print before the actual reply
+    function cleanLlamaOutput(text) {
+      if (!text) return text;
+      try {
+        let s = String(text);
+        // Remove Unicode replacement chars and long boxes sequences
+        s = s.replace(/\uFFFD+/g, '');
+        // Remove lines that are mostly non-alphanumeric (ASCII art)
+        s = s
+          .split(/\r?\n/)
+          .filter((ln) => {
+            const trimmed = ln.trim();
+            if (!trimmed) return false;
+            // drop lines that are mostly punctuation/box characters
+            const alphaNumCount = (trimmed.match(/[A-Za-z0-9]/g) || []).length;
+            if (alphaNumCount / Math.max(1, trimmed.length) < 0.15) return false;
+            // drop lines that look like banner metadata
+            if (/^build\s*:/i.test(trimmed)) return false;
+            if (/^model\s*:/i.test(trimmed)) return false;
+            if (/^modalities\s*:/i.test(trimmed)) return false;
+            if (/using custom system prompt/i.test(trimmed)) return false;
+            if (/^available commands\s*:/i.test(trimmed)) return false;
+            if (/^\/\w+/.test(trimmed)) return false; // command lines like /exit /regen
+            return true;
+          })
+          .join('\n');
+
+        // Also try to remove any leading chunk until a blank line after known headings
+        const re = /[\s\S]*?(?:available commands:|loading model)[\s\S]*?\n\s*\n/imi;
+        s = s.replace(re, '');
+
+        return s.trim();
+      } catch (e) {
+        return String(text).trim();
+      }
+    }
+
+    return cleanLlamaOutput(String(result.stdout || ""));
   }
 
   return {
@@ -181,4 +258,35 @@ module.exports = {
   DEFAULT_SYSTEM_PROMPT,
   createLocalLlamaRuntime,
   isLocalModelSpec,
+  // export cleaner for other modules
+  cleanLlamaOutput: (text) => {
+    try {
+      // reuse a runtime instance's cleaner by creating a dummy runtime to access function
+      // but cleaner is local to run; replicate logic here minimally
+      if (!text) return text;
+      let s = String(text);
+      s = s.replace(/\uFFFD+/g, '');
+      s = s
+        .split(/\r?\n/)
+        .filter((ln) => {
+          const trimmed = ln.trim();
+          if (!trimmed) return false;
+          const alphaNumCount = (trimmed.match(/[A-Za-z0-9]/g) || []).length;
+          if (alphaNumCount / Math.max(1, trimmed.length) < 0.15) return false;
+          if (/^build\s*:/i.test(trimmed)) return false;
+          if (/^model\s*:/i.test(trimmed)) return false;
+          if (/^modalities\s*:/i.test(trimmed)) return false;
+          if (/using custom system prompt/i.test(trimmed)) return false;
+          if (/^available commands\s*:/i.test(trimmed)) return false;
+          if (/^\/\w+/.test(trimmed)) return false;
+          return true;
+        })
+        .join('\n');
+      const re = /[\s\S]*?(?:available commands:|loading model)[\s\S]*?\n\s*\n/imi;
+      s = s.replace(re, '');
+      return s.trim();
+    } catch (e) {
+      return String(text).trim();
+    }
+  }
 };
