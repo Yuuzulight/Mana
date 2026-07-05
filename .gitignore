@@ -38,3 +38,10 @@ node-bot/data/
 # Vector store (local index/embeddings)
 /tools/vector_store/
 tools/vector_store/
+
+# Large audio and model assets
+tools/whisper/models/
+mana-younger-sister-voice-test.wav
+tools/whisper/test.wav
+tts-language-tests*/
+tools/whisper/models/*.bin
