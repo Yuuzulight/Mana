@@ -6,6 +6,15 @@ const {
   sendValidationError,
 } = require("./request-validation");
 
+async function buildOptionalPromptContext(label, builder) {
+  try {
+    return (await builder()) || "";
+  } catch (error) {
+    console.warn(`Optional ${label} context unavailable:`, error.message);
+    return "";
+  }
+}
+
 function registerCoreRoutes(app, upload, deps) {
   const {
     UNIVERSALIS_DEFAULT_WORLD,
@@ -26,6 +35,9 @@ function registerCoreRoutes(app, upload, deps) {
     synthesizeReply,
     clampText,
     SCREEN_CONTEXT_MAX_CHARS,
+    textLooksLikeCraftProfitQuestion,
+    textLooksLikeMarketQuestion,
+    textLooksLikeStockMarketQuestion,
   } = deps;
 
   app.post("/transcribe-only", upload.single("file"), async (req, res) => {
@@ -63,7 +75,8 @@ function registerCoreRoutes(app, upload, deps) {
 
   app.get("/market/stock/summary", async (req, res) => {
     try {
-      const symbol = typeof req.query.symbol === "string" ? req.query.symbol : "";
+      const symbol =
+        typeof req.query.symbol === "string" ? req.query.symbol : "";
       const summary = await marketDataClient.getStockSummary(symbol);
       return res.json({
         ...summary,
@@ -125,20 +138,54 @@ function registerCoreRoutes(app, upload, deps) {
               ? getActiveModelProfile()
               : "default",
           );
-      const world = optionalString(req.body?.ffxivWorld, "ffxivWorld", UNIVERSALIS_DEFAULT_WORLD);
-      const craftProfitText = await buildCraftProfitContextForPrompt(
-        transcript,
-        world,
+      const includeContext = req.body?.includeContext !== false;
+      const world = optionalString(
+        req.body?.ffxivWorld,
+        "ffxivWorld",
+        UNIVERSALIS_DEFAULT_WORLD,
       );
+      const wantsCraftProfit =
+        includeContext && typeof textLooksLikeCraftProfitQuestion === "function"
+          ? textLooksLikeCraftProfitQuestion(transcript)
+          : false;
+      const wantsUniversalis =
+        includeContext && typeof textLooksLikeMarketQuestion === "function"
+          ? textLooksLikeMarketQuestion(transcript)
+          : false;
+      const wantsStockMarket =
+        includeContext && typeof textLooksLikeStockMarketQuestion === "function"
+          ? textLooksLikeStockMarketQuestion(transcript)
+          : false;
+      const craftProfitText = wantsCraftProfit
+        ? await buildOptionalPromptContext("craft profit", () =>
+            buildCraftProfitContextForPrompt(transcript, world),
+          )
+        : "";
       const marketText =
         craftProfitText ||
-        (await buildUniversalisContextForPrompt(transcript, world, screenText)) ||
-        (await buildMarketContextForPrompt(transcript, marketDataClient));
+        (wantsUniversalis
+          ? await buildOptionalPromptContext("Universalis", () =>
+              buildUniversalisContextForPrompt(transcript, world, screenText),
+            )
+          : "") ||
+        (wantsStockMarket
+          ? await buildOptionalPromptContext("market", () =>
+              buildMarketContextForPrompt(transcript, marketDataClient),
+            )
+          : "");
+      const sessionId = optionalString(req.body?.sessionId, "sessionId", null);
+      const assistantMode = optionalString(
+        req.body?.assistantMode,
+        "assistantMode",
+        null,
+      );
       const reply = await buildAssistantReply(
         transcript,
         screenText,
         marketText,
         modelProfile,
+        sessionId,
+        assistantMode,
       );
       return res.json({
         reply,
@@ -173,7 +220,20 @@ function registerCoreRoutes(app, upload, deps) {
         transcript,
         marketDataClient,
       );
-      const reply = await buildAssistantReply(transcript, "", stockMarketText);
+      const sessionId = optionalString(req.body?.sessionId, "sessionId", null);
+      const assistantMode = optionalString(
+        req.body?.assistantMode,
+        "assistantMode",
+        null,
+      );
+      const reply = await buildAssistantReply(
+        transcript,
+        "",
+        stockMarketText,
+        "default",
+        sessionId,
+        assistantMode,
+      );
       cleanupUploadedAudio(tmpPath, audioPath);
 
       return res.json({

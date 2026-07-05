@@ -67,7 +67,9 @@ function createUnlockRateLimiter(options = {}) {
 
   function isLimited(key) {
     const record = attempts.get(key);
-    return Boolean(record && record.expiresAt > now() && record.count >= maxAttempts);
+    return Boolean(
+      record && record.expiresAt > now() && record.count >= maxAttempts,
+    );
   }
 
   function recordFailure(key) {
@@ -167,7 +169,20 @@ function registerMobileRoutes(app, deps = {}) {
     try {
       const text = requireString(req.body?.text, "text");
 
-      const reply = await buildAssistantReply(text);
+      const sessionId = optionalString(req.body?.sessionId, "sessionId", null);
+      const assistantMode = optionalString(
+        req.body?.assistantMode,
+        "assistantMode",
+        null,
+      );
+      const reply = await buildAssistantReply(
+        text,
+        "",
+        "",
+        "default",
+        sessionId,
+        assistantMode,
+      );
       return res.json({ text, reply });
     } catch (error) {
       if (error instanceof ValidationError) {
@@ -178,28 +193,50 @@ function registerMobileRoutes(app, deps = {}) {
     }
   });
 
-  router.post("/chat/audio", requireAuth, upload.single("file"), async (req, res) => {
-    let uploadPaths = null;
-    try {
-      requireFile(req.file, "file");
+  router.post(
+    "/chat/audio",
+    requireAuth,
+    upload.single("file"),
+    async (req, res) => {
+      let uploadPaths = null;
+      try {
+        requireFile(req.file, "file");
 
-      uploadPaths = { tmpPath: req.file.path, audioPath: req.file.path };
-      uploadPaths = normalizeUploadedAudio(req.file);
-      const transcript = runWhisper(uploadPaths.audioPath);
-      const reply = await buildAssistantReply(transcript);
-      return res.json({ transcript, reply });
-    } catch (error) {
-      if (error instanceof ValidationError) {
-        return sendValidationError(res, error);
+        uploadPaths = { tmpPath: req.file.path, audioPath: req.file.path };
+        uploadPaths = normalizeUploadedAudio(req.file);
+        const transcript = runWhisper(uploadPaths.audioPath);
+        const sessionId = optionalString(
+          req.body?.sessionId,
+          "sessionId",
+          null,
+        );
+        const assistantMode = optionalString(
+          req.body?.assistantMode,
+          "assistantMode",
+          null,
+        );
+        const reply = await buildAssistantReply(
+          transcript,
+          "",
+          "",
+          "default",
+          sessionId,
+          assistantMode,
+        );
+        return res.json({ transcript, reply });
+      } catch (error) {
+        if (error instanceof ValidationError) {
+          return sendValidationError(res, error);
+        }
+        console.error(error);
+        return res.status(500).json({ error: String(error) });
+      } finally {
+        if (uploadPaths) {
+          cleanupUploadedAudio(uploadPaths.tmpPath, uploadPaths.audioPath);
+        }
       }
-      console.error(error);
-      return res.status(500).json({ error: String(error) });
-    } finally {
-      if (uploadPaths) {
-        cleanupUploadedAudio(uploadPaths.tmpPath, uploadPaths.audioPath);
-      }
-    }
-  });
+    },
+  );
 
   router.post("/synthesize", requireAuth, async (req, res) => {
     try {
