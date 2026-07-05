@@ -3,6 +3,7 @@
   "name": "Mana",
   "version": "0.1.0",
   "description": "Local-first Mana ACP agent for Zed with workspace tools, approval-backed edits, and explicit autonomous coding loops.",
+  "type": "custom",
   "command": "node",
   "args": ["node-bot/mana-acp-agent.js", "--acp"],
   "env": {
