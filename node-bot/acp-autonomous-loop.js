@@ -83,6 +83,42 @@ async function waitForApprovalResult(
   return { approved: false, timeout: true };
 }
 
+// Archive helper: move pending + marker into archive with combined payload
+async function archivePendingRequest(id, status, approverMeta, pendingPayload) {
+  try {
+    await ensureApprovalDir();
+    const ARCHIVE_DIR = path.join(FILE_WRITE_APPROVAL_DIR, "archive");
+    await fs.promises.mkdir(ARCHIVE_DIR, { recursive: true });
+    const outPath = path.join(ARCHIVE_DIR, `${id}.${status}.json`);
+    const archiveObj = {
+      id,
+      status,
+      pending: pendingPayload || null,
+      action: approverMeta || null,
+      archivedAt: new Date().toISOString(),
+    };
+    await fs.promises.writeFile(
+      outPath,
+      JSON.stringify(archiveObj, null, 2),
+      "utf8",
+    );
+
+    // Remove original pending and marker files if present
+    const paths = approvalPaths(id);
+    for (const p of [paths.pending, paths.approved, paths.rejected]) {
+      try {
+        if (fs.existsSync(p)) await fs.promises.unlink(p);
+      } catch (e) {
+        // ignore
+      }
+    }
+    return outPath;
+  } catch (e) {
+    console.warn("archivePendingRequest failed", e?.message || e);
+    return null;
+  }
+}
+
 /**
  * Parses assistant responses and coordinates autonomous tool executions.
  * @param {string} rawModelReply
@@ -307,8 +343,12 @@ async function executeAutonomousStep(rawModelReply, sessionId) {
         });
 
         // If approval is required, and action not pre-approved via args.approved, create pending request and wait
+        let approvalId = null;
+        let approvalPayload = null;
+        let approvalMeta = null;
         if (FILE_WRITE_REQUIRE_APPROVAL && !(args && args.approved === true)) {
           const id = makeApprovalId();
+          approvalId = id;
           const preview = String(content).slice(0, 2048);
           const payload = {
             id,
@@ -319,6 +359,7 @@ async function executeAutonomousStep(rawModelReply, sessionId) {
             preview,
             createdAt: new Date().toISOString(),
           };
+          approvalPayload = payload;
           try {
             await createPendingRequest(id, payload);
             console.log(
@@ -326,6 +367,10 @@ async function executeAutonomousStep(rawModelReply, sessionId) {
             );
             const appr = await waitForApprovalResult(id);
             if (!appr.approved) {
+              // archive rejected request
+              try {
+                await archivePendingRequest(id, "rejected", appr.meta, payload);
+              } catch (e) {}
               results.push({
                 tool: "file_write",
                 status: "rejected",
@@ -336,6 +381,7 @@ async function executeAutonomousStep(rawModelReply, sessionId) {
               continue;
             }
             // else approved -> proceed
+            approvalMeta = appr.meta;
             console.log(
               `  ✅ file_write approved id=${id} by ${appr.meta?.approver || "unknown"}`,
             );
@@ -386,6 +432,19 @@ async function executeAutonomousStep(rawModelReply, sessionId) {
           console.log(
             `  ✅ file_write append: ${resolvedPath} (+${Buffer.byteLength(content, "utf8")} bytes)`,
           );
+          // archive approval if present
+          if (approvalId) {
+            try {
+              await archivePendingRequest(
+                approvalId,
+                "approved",
+                approvalMeta,
+                approvalPayload,
+              );
+            } catch (e) {
+              console.warn("archiving pending request failed", e?.message || e);
+            }
+          }
         } else {
           // Overwrite mode: backup if exists
           try {
@@ -421,6 +480,19 @@ async function executeAutonomousStep(rawModelReply, sessionId) {
           console.log(
             `  ✅ file_write overwrite: ${resolvedPath} (${finalStat.size} bytes)`,
           );
+          // archive approval if present
+          if (approvalId) {
+            try {
+              await archivePendingRequest(
+                approvalId,
+                "approved",
+                approvalMeta,
+                approvalPayload,
+              );
+            } catch (e) {
+              console.warn("archiving pending request failed", e?.message || e);
+            }
+          }
         }
       } catch (err) {
         console.error(`  ❌ Failed file_write: ${err.message}`);
@@ -429,6 +501,19 @@ async function executeAutonomousStep(rawModelReply, sessionId) {
           status: "error",
           detail: err.message,
         });
+        // archive as error if approval was used
+        if (approvalId) {
+          try {
+            await archivePendingRequest(
+              approvalId,
+              "error",
+              { error: String(err.message) },
+              approvalPayload,
+            );
+          } catch (e) {
+            console.warn("archiving pending request failed", e?.message || e);
+          }
+        }
       }
 
       continue;
