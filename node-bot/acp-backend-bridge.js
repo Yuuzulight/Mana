@@ -87,6 +87,7 @@ function createAcpBackendBridge({
     const payload = await request("POST", "/reply", {
       text: String(prompt || ""),
       modelProfile,
+      includeContext: false,
     });
     if (typeof payload.reply !== "string") {
       throw new Error("Local Mana backend reply did not include text.");

@@ -1552,4 +1552,6 @@ module.exports = {
   resolveFfxivItemByName,
   resolveGatherableRecipeMaterials,
   summarizeSalesHistory,
+  textLooksLikeCraftProfitQuestion,
+  textLooksLikeMarketQuestion,
 };
