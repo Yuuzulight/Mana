@@ -156,3 +156,104 @@ test("reply keeps explicit modelProfile above active profile", async () => {
     assert.equal(receivedProfile, "coding");
   });
 });
+
+test("reply continues when optional market context fails", async () => {
+  const app = createApp({
+    buildCraftProfitContextForPrompt: async () => "",
+    buildUniversalisContextForPrompt: async () => "",
+    buildMarketContextForPrompt: async () => {
+      throw new Error("Alpha Vantage API key is not configured");
+    },
+    buildAssistantReply: async (transcript, screenText, marketText) => {
+      assert.equal(transcript, "can you read the current repository's readme?");
+      assert.equal(marketText, "");
+      return "README summary";
+    },
+  });
+
+  await withServer(app, async (baseUrl) => {
+    const { response, payload } = await postJson(`${baseUrl}/reply`, {
+      text: "can you read the current repository's readme?",
+      modelProfile: "coding",
+    });
+
+    assert.equal(response.status, 200);
+    assert.equal(payload.reply, "README summary");
+  });
+});
+
+test("reply skips optional context builders for general repository prompts", async () => {
+  const calls = [];
+  let contextCalls = 0;
+  const app = createApp({
+    buildCraftProfitContextForPrompt: async () => {
+      contextCalls += 1;
+      throw new Error("craft context should not run");
+    },
+    buildUniversalisContextForPrompt: async () => {
+      contextCalls += 1;
+      throw new Error("universalis context should not run");
+    },
+    buildMarketContextForPrompt: async () => {
+      contextCalls += 1;
+      throw new Error("market context should not run");
+    },
+    textLooksLikeCraftProfitQuestion: () => false,
+    textLooksLikeMarketQuestion: () => false,
+    textLooksLikeStockMarketQuestion: () => false,
+    buildAssistantReply: async (transcript, screenText, marketText) => {
+      calls.push({ transcript, screenText, marketText });
+      return "README summary";
+    },
+  });
+
+  await withServer(app, async (baseUrl) => {
+    const { response, payload } = await postJson(`${baseUrl}/reply`, {
+      text: "can you read the current repository's readme?",
+      modelProfile: "coding",
+    });
+
+    assert.equal(response.status, 200);
+    assert.equal(payload.reply, "README summary");
+    assert.equal(calls[0].marketText, "");
+    assert.equal(contextCalls, 0);
+  });
+});
+
+test("reply skips optional context builders when includeContext is false", async () => {
+  let contextCalls = 0;
+  const app = createApp({
+    buildCraftProfitContextForPrompt: async () => {
+      contextCalls += 1;
+      return "craft context";
+    },
+    buildUniversalisContextForPrompt: async () => {
+      contextCalls += 1;
+      return "universalis context";
+    },
+    buildMarketContextForPrompt: async () => {
+      contextCalls += 1;
+      return "market context";
+    },
+    textLooksLikeCraftProfitQuestion: () => true,
+    textLooksLikeMarketQuestion: () => true,
+    textLooksLikeStockMarketQuestion: () => true,
+    buildAssistantReply: async (transcript, screenText, marketText) => {
+      assert.match(transcript, /Repository README/);
+      assert.equal(marketText, "");
+      return "README summary";
+    },
+  });
+
+  await withServer(app, async (baseUrl) => {
+    const { response, payload } = await postJson(`${baseUrl}/reply`, {
+      text: "Repository README:\nFFXIV and Universalis crafting market data",
+      modelProfile: "coding",
+      includeContext: false,
+    });
+
+    assert.equal(response.status, 200);
+    assert.equal(payload.reply, "README summary");
+    assert.equal(contextCalls, 0);
+  });
+});
