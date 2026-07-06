@@ -51,6 +51,7 @@ const {
 const {
   ffxivMarketCapability,
 } = require("./capabilities/ffxiv-market-capability");
+const dirScannerCapability = require("./capabilities/dir-scanner-capability");
 const { runDoctorChecksAsync } = require("./doctor");
 const {
   buildMarketContextForPrompt,
@@ -417,7 +418,10 @@ function registerRoutes(app, upload, deps = {}) {
     createModelManagement({
       env: deps.env || process.env,
     });
-  const capabilities = deps.capabilities || [ffxivMarketCapability];
+  const capabilities = deps.capabilities || [
+    ffxivMarketCapability,
+    dirScannerCapability,
+  ];
   const capabilityContext = {
     UNIVERSALIS_DEFAULT_WORLD,
     FFXIV_PROFIT_TOP_LIMIT,
