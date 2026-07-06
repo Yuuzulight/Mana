@@ -200,7 +200,7 @@ async function executeAutonomousStep(rawModelReply, sessionId) {
     return { status: "conversational", data: rawModelReply };
   }
 
-  console.log(
+  console.error(
     `[Mana Agent Loop] ⚙️ Processing ${actions.length} autonomous action(s)...`,
   );
 
@@ -211,7 +211,7 @@ async function executeAutonomousStep(rawModelReply, sessionId) {
 
     if (tool === "local_retrieve") {
       const query = args && args.query ? String(args.query) : "";
-      console.log(
+      console.error(
         `[Mana Tool] 🔍 Executing codebase vector search for query: "${query}"`,
       );
 
@@ -246,7 +246,7 @@ async function executeAutonomousStep(rawModelReply, sessionId) {
           })
           .join("\n\n");
 
-        console.log(
+        console.error(
           `  ✅ Successfully retracted ${hits.length} matches from vector store.`,
         );
 
@@ -336,7 +336,7 @@ async function executeAutonomousStep(rawModelReply, sessionId) {
           truncated,
           injectedContext: injected,
         });
-        console.log(
+        console.error(
           `  ✅ file_read: ${resolvedPath} (${size} bytes${truncated ? ", truncated" : ""})`,
         );
       } catch (err) {
@@ -434,7 +434,7 @@ async function executeAutonomousStep(rawModelReply, sessionId) {
           approvalPayload = payload;
           try {
             await createPendingRequest(id, payload);
-            console.log(
+            console.error(
               `  ⏳ file_write pending approval id=${id} path=${payload.path}`,
             );
             const appr = await waitForApprovalResult(id);
@@ -454,7 +454,7 @@ async function executeAutonomousStep(rawModelReply, sessionId) {
             }
             // else approved -> proceed
             approvalMeta = appr.meta;
-            console.log(
+            console.error(
               `  ✅ file_write approved id=${id} by ${appr.meta?.approver || "unknown"}`,
             );
           } catch (e) {
@@ -501,7 +501,7 @@ async function executeAutonomousStep(rawModelReply, sessionId) {
             action: "appended",
             size: newSize,
           });
-          console.log(
+          console.error(
             `  ✅ file_write append: ${resolvedPath} (+${Buffer.byteLength(content, "utf8")} bytes)`,
           );
           // archive approval if present
@@ -549,7 +549,7 @@ async function executeAutonomousStep(rawModelReply, sessionId) {
             action: "overwritten",
             size: finalStat.size,
           });
-          console.log(
+          console.error(
             `  ✅ file_write overwrite: ${resolvedPath} (${finalStat.size} bytes)`,
           );
           // archive approval if present
@@ -592,7 +592,7 @@ async function executeAutonomousStep(rawModelReply, sessionId) {
     }
 
     // Unknown / unsupported tool
-    console.warn(`[Mana Tool] ⚠️ Unsupported tool: ${tool}`);
+    console.error(`[Mana Tool] ⚠️ Unsupported tool: ${tool}`);
     results.push({ tool: tool || "unknown", status: "unsupported" });
   }
 
