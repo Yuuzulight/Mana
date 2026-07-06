@@ -112,10 +112,49 @@ async function archivePendingRequest(id, status, approverMeta, pendingPayload) {
         // ignore
       }
     }
+
+    // Run retention rotation opportunistically
+    try {
+      await runArchiveRetention();
+    } catch (e) {
+      // ignore retention errors
+    }
+
     return outPath;
   } catch (e) {
     console.warn("archivePendingRequest failed", e?.message || e);
     return null;
+  }
+}
+
+// Retention / rotation: move archived files older than RETENTION_DAYS into archive/old/YYYY-MM
+const RETENTION_DAYS = Number(
+  process.env.FILE_WRITE_ARCHIVE_RETENTION_DAYS || 30,
+);
+async function runArchiveRetention() {
+  try {
+    const ARCHIVE_DIR = path.join(FILE_WRITE_APPROVAL_DIR, "archive");
+    const OLD_DIR = path.join(ARCHIVE_DIR, "old");
+    await fs.promises.mkdir(OLD_DIR, { recursive: true });
+    const files = await fs.promises.readdir(ARCHIVE_DIR);
+    const now = Date.now();
+    for (const f of files) {
+      const full = path.join(ARCHIVE_DIR, f);
+      const stat = await fs.promises.stat(full);
+      if (!stat.isFile()) continue;
+      const ageMs = now - stat.mtimeMs;
+      if (ageMs > RETENTION_DAYS * 24 * 60 * 60 * 1000) {
+        const y = new Date(stat.mtimeMs).toISOString().slice(0, 7); // YYYY-MM
+        const destDir = path.join(OLD_DIR, y);
+        await fs.promises.mkdir(destDir, { recursive: true });
+        const dest = path.join(destDir, f);
+        await fs.promises.rename(full, dest);
+      }
+    }
+    return true;
+  } catch (e) {
+    console.warn("runArchiveRetention failed", e?.message || e);
+    return false;
   }
 }
 
