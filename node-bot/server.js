@@ -1623,12 +1623,79 @@ function registerRoutes(app, upload, deps = {}) {
     }
 
     // Fall back to local llama
-    const reply = runLocalAssistantReply(
+    let reply = runLocalAssistantReply(
       finalPrompt,
       LLAMA_MAX_TOKENS,
       normalizedModelProfile,
     );
     queueVTubeReaction(reply);
+
+    // Optional verification and auto-retry logic
+    try {
+      const { verifyReply } = require("./utils/reply-verifier");
+      const verifyEnabled =
+        String(process.env.MANA_VERIFY_REPLY || "0") === "1";
+      const autoRetry =
+        String(process.env.MANA_AUTO_RETRY_VERIFICATION || "0") === "1";
+      const maxRetries = Number(process.env.MANA_VERIFY_MAX_RETRIES || 1);
+
+      if (verifyEnabled) {
+        let attempts = 0;
+        while (true) {
+          attempts += 1;
+          const verification = await verifyReply(
+            typeof reply === "string" ? reply : String(reply),
+            assistantMode || "everyday",
+          );
+          if (verification.ok) {
+            // verified
+            break;
+          }
+
+          console.warn("Reply verification failed:", verification.issues);
+          if (autoRetry && attempts <= maxRetries) {
+            // Ask the model to fix its previous reply
+            const fixPrompt =
+              finalPrompt +
+              "\n\nThe assistant produced a reply that failed verification.\nPlease regenerate the reply and fix the following issues:\n" +
+              verification.issues
+                .map((i) => `- ${i.type}: ${i.message}`)
+                .join("\n") +
+              "\nReturn only the reply.";
+            console.log(
+              "Attempting auto-retry of assistant reply (attempt",
+              attempts,
+              ")",
+            );
+            try {
+              reply = runLocalAssistantReply(
+                fixPrompt,
+                LLAMA_MAX_TOKENS,
+                normalizedModelProfile,
+              );
+              queueVTubeReaction(reply);
+              continue; // re-verify
+            } catch (retryErr) {
+              console.warn("Auto-retry failed:", retryErr.message || retryErr);
+              break;
+            }
+          } else {
+            // Do not auto-retry: include verification issues appended to reply as note
+            const issuesNote =
+              "\n\n[Mana Verification] The assistant flagged the following issues with this response:\n" +
+              verification.issues
+                .map((i) => `- ${i.type}: ${i.message}`)
+                .join("\n");
+            reply =
+              (typeof reply === "string" ? reply : String(reply)) + issuesNote;
+            break;
+          }
+        }
+      }
+    } catch (e) {
+      console.warn("Reply verification pipeline failed:", e.message || e);
+    }
+
     try {
       if (
         sessionId &&
