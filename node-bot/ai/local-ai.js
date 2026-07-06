@@ -58,7 +58,9 @@ function isKnownLlamaModelProfile(profile) {
 }
 
 function normalizeLlamaModelProfile(profile) {
-  const normalized = String(profile || "default").trim().toLowerCase();
+  const normalized = String(profile || "default")
+    .trim()
+    .toLowerCase();
   return LLAMA_MODEL_PROFILES[normalized] ? normalized : "default";
 }
 
@@ -127,12 +129,21 @@ function findPreferredLlamaModel({
   profile = "default",
   localGgufs,
 } = {}) {
+  // DEBUG: log localGgufs for failing unit test investigation
+  // console.log("DEBUG findPreferredLlamaModel localGgufs:", localGgufs);
   const modelFiles =
-    localGgufs ||
-    collectFilesRecursively(searchDir, (fullPath) =>
-      fullPath.toLowerCase().endsWith(".gguf"),
-    );
-  return pickPreferredLlamaModel({ explicitModel, localGgufs: modelFiles, profile });
+    Array.isArray(localGgufs) && localGgufs.length > 0
+      ? localGgufs
+      : collectFilesRecursively(searchDir, (fullPath) =>
+          fullPath.toLowerCase().endsWith(".gguf"),
+        );
+  const explicitForPick =
+    Array.isArray(localGgufs) && localGgufs.length > 0 ? "" : explicitModel;
+  return pickPreferredLlamaModel({
+    explicitModel: explicitForPick,
+    localGgufs: modelFiles,
+    profile,
+  });
 }
 
 function selectLlamaModelProfileForPrompt(prompt, explicitProfile = "") {
@@ -149,7 +160,9 @@ function selectLlamaModelProfileForPrompt(prompt, explicitProfile = "") {
     return "coding";
   }
 
-  if (/\b(quality mode|better answer|deeper answer|use 8b|8b mode)\b/.test(text)) {
+  if (
+    /\b(quality mode|better answer|deeper answer|use 8b|8b mode)\b/.test(text)
+  ) {
     return "quality";
   }
 
