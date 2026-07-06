@@ -228,7 +228,42 @@ function analyzeJsAstForRisks(code) {
 }
 
 function analyzePythonForRisks(code) {
+  // Prefer an AST-based analyzer implemented in Python for accuracy. Fallback to regex heuristics if the analyzer is unavailable.
   const risks = [];
+  try {
+    const scriptPath = path.join(
+      __dirname,
+      "..",
+      "tools",
+      "python_ast_analyzer.py",
+    );
+    if (fs.existsSync(scriptPath)) {
+      const tmp = writeTemp(code, ".py");
+      const res = spawnSync(process.env.PYTHON || "python", [scriptPath, tmp], {
+        encoding: "utf8",
+        timeout: 5000,
+      });
+      try {
+        fs.unlinkSync(tmp);
+      } catch (e) {}
+      if (res.status === 0 && res.stdout) {
+        try {
+          const parsed = JSON.parse(res.stdout);
+          if (Array.isArray(parsed))
+            return parsed.map((p) => ({
+              type: p.type || "python_risk",
+              message: p.message || JSON.stringify(p),
+            }));
+        } catch (e) {
+          // fall through to heuristics below
+        }
+      }
+    }
+  } catch (e) {
+    // swallow and fallback
+  }
+
+  // Fallback heuristics (less precise)
   const dangerous = [
     /\bsubprocess\b/i,
     /\bos\.system\b/i,
@@ -245,7 +280,6 @@ function analyzePythonForRisks(code) {
       });
     }
   }
-  // check for writes to sensitive paths
   if (/\.git\b|tools[\\\/]vector_store|pending_writes/i.test(code)) {
     risks.push({
       type: "python_sensitive_write",

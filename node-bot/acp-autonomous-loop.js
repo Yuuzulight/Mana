@@ -2,6 +2,7 @@ const axios = require("axios");
 const fs = require("fs");
 const path = require("path");
 const { safeJsonParse } = require("./utils/json-extract");
+const { scanDir } = require("./tools/dir_scanner");
 
 const RETRIEVER_URL = process.env.RETRIEVER_URL || "http://127.0.0.1:9000";
 const REPO_ROOT = process.env.REPO_ROOT || path.resolve(__dirname, "..");
@@ -586,6 +587,79 @@ async function executeAutonomousStep(rawModelReply, sessionId) {
             console.warn("archiving pending request failed", e?.message || e);
           }
         }
+      }
+
+      continue;
+    }
+
+    if (tool === "dir_scan") {
+      // Directory scanning tool: returns list of files within a repo-sandboxed path
+      const requestedPath = args && args.path ? String(args.path) : ".";
+      try {
+        let resolved = requestedPath;
+        if (!path.isAbsolute(requestedPath)) {
+          resolved = path.resolve(REPO_ROOT, requestedPath);
+        }
+        const rel = path.relative(REPO_ROOT, resolved);
+        if (rel.startsWith("..") || (path.isAbsolute(rel) && !rel)) {
+          results.push({
+            tool: "dir_scan",
+            status: "error",
+            detail: "path_outside_repo",
+          });
+          continue;
+        }
+        const maxDepth = Math.max(0, Number((args && args.maxDepth) || 5));
+        let exts = null;
+        if (args && args.ext) {
+          if (Array.isArray(args.ext))
+            exts = args.ext.map((s) => String(s).toLowerCase());
+          else
+            exts = String(args.ext)
+              .split(",")
+              .map((s) => s.trim().toLowerCase())
+              .filter(Boolean);
+        }
+        let exclude = [];
+        if (args && args.exclude) {
+          if (Array.isArray(args.exclude))
+            exclude = args.exclude.map((s) => String(s));
+          else
+            exclude = String(args.exclude)
+              .split(",")
+              .map((s) => s.trim())
+              .filter(Boolean);
+        }
+        const listObj = scanDir(resolved, {
+          path: resolved,
+          maxDepth,
+          exts,
+          exclude,
+          limit: args && args.limit ? Number(args.limit) : null,
+          offset: args && args.offset ? Number(args.offset) : 0,
+          useIndex: args && args.useIndex === true,
+        });
+        const items = Array.isArray(listObj) ? listObj : listObj.items || [];
+        const total =
+          listObj && typeof listObj.total === "number"
+            ? listObj.total
+            : items.length;
+        const nextToken =
+          listObj && listObj.nextToken ? listObj.nextToken : null;
+        results.push({
+          tool: "dir_scan",
+          status: "ok",
+          count: items.length,
+          total,
+          nextToken,
+          files: items,
+        });
+      } catch (e) {
+        results.push({
+          tool: "dir_scan",
+          status: "error",
+          detail: String(e.message || e),
+        });
       }
 
       continue;

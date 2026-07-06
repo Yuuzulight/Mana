@@ -5,6 +5,7 @@
 
 const fs = require("fs");
 const path = require("path");
+const crypto = require("crypto");
 
 const INDEX_PATH = path.join(__dirname, "..", "data", "dir_index.json");
 function ensureIndexDir() {
@@ -26,6 +27,15 @@ function saveIndex(idx) {
     ensureIndexDir();
     fs.writeFileSync(INDEX_PATH, JSON.stringify(idx, null, 2), "utf8");
   } catch (e) {}
+}
+
+function computeFingerprint(files) {
+  // files: array of {path,size,mtime}
+  const sorted = files
+    .map((f) => `${f.path}\0${f.size}\0${f.mtime}`)
+    .sort()
+    .join("\n");
+  return crypto.createHash("sha256").update(sorted).digest("hex");
 }
 
 function parseArgs() {
@@ -133,7 +143,7 @@ function scanDirRecursive(root, opts) {
 }
 
 function buildIndexForRoot(root, opts) {
-  // Simple index: store list and root dir mtime snapshot (may be imprecise, but useful)
+  // Build a comprehensive index and fingerprint of files (path,size,mtime)
   const resolved = path.resolve(root);
   let dirStat = null;
   try {
@@ -141,7 +151,14 @@ function buildIndexForRoot(root, opts) {
   } catch (e) {}
   const dirMtime = dirStat ? dirStat.mtimeMs : Date.now();
   const files = scanDirRecursive(root, opts);
-  return { scannedAt: Date.now(), dirMtime, files };
+  const fingerprint = computeFingerprint(
+    files.map((f) => ({
+      path: f.path,
+      size: f.size || 0,
+      mtime: f.mtime || 0,
+    })),
+  );
+  return { scannedAt: Date.now(), dirMtime, fingerprint, files };
 }
 
 function paginate(list, offset = 0, limit = null) {
@@ -158,26 +175,44 @@ function scanDir(root, opts) {
   const resolvedRoot = path.resolve(root);
   const idxKey = resolvedRoot;
   let list = null;
+  let fingerprint = null;
   if (opts.useIndex) {
     const idx = loadIndex();
     const existing = idx[idxKey];
     try {
       const st = fs.statSync(resolvedRoot);
       const dirMtime = st.mtimeMs;
-      if (existing && existing.dirMtime === dirMtime) {
+      if (existing && existing.dirMtime === dirMtime && existing.fingerprint) {
+        // likely unchanged
         list = existing.files;
+        fingerprint = existing.fingerprint;
       } else {
         const built = buildIndexForRoot(resolvedRoot, opts);
         idx[idxKey] = built;
         saveIndex(idx);
         list = built.files;
+        fingerprint = built.fingerprint;
       }
     } catch (e) {
       // fallback to fresh scan
       list = scanDirRecursive(resolvedRoot, opts);
+      fingerprint = computeFingerprint(
+        list.map((f) => ({
+          path: f.path,
+          size: f.size || 0,
+          mtime: f.mtime || 0,
+        })),
+      );
     }
   } else {
     list = scanDirRecursive(resolvedRoot, opts);
+    fingerprint = computeFingerprint(
+      list.map((f) => ({
+        path: f.path,
+        size: f.size || 0,
+        mtime: f.mtime || 0,
+      })),
+    );
   }
 
   // Apply extension/exclude filters again to be safe
@@ -194,12 +229,47 @@ function scanDir(root, opts) {
   list.sort((a, b) => a.path.localeCompare(b.path));
 
   // Pagination
-  const paged = paginate(
-    list,
-    opts.offset || 0,
-    typeof opts.limit === "number" ? opts.limit : opts.limit,
-  );
-  return paged.items;
+  const offset = Math.max(0, Number(opts.offset || 0));
+  const limit =
+    opts.limit && Number(opts.limit) > 0 ? Number(opts.limit) : null;
+  const total = list.length;
+  const items =
+    limit === null ? list.slice(offset) : list.slice(offset, offset + limit);
+  let nextToken = null;
+  const nextOffset = offset + items.length;
+  if (nextOffset < total) {
+    const tokenObj = {
+      root: resolvedRoot,
+      offset: nextOffset,
+      limit: limit,
+      fingerprint,
+    };
+    nextToken = Buffer.from(JSON.stringify(tokenObj), "utf8").toString(
+      "base64",
+    );
+  }
+
+  // Backwards-compatible return value:
+  // - older callers expect an array of items
+  // - newer callers expect an object { items, total, nextToken }
+  // To satisfy both, return the items array but attach metadata properties
+  // so callers can treat the result as an array or inspect .total/.nextToken.
+  const out = items;
+  try {
+    Object.defineProperty(out, "total", {
+      value: total,
+      enumerable: false,
+      writable: false,
+    });
+    Object.defineProperty(out, "nextToken", {
+      value: nextToken,
+      enumerable: false,
+      writable: false,
+    });
+  } catch (e) {
+    // ignore failures attaching properties
+  }
+  return out;
 }
 
 if (require.main === module) {
