@@ -600,6 +600,43 @@ async function executeAutonomousStep(rawModelReply, sessionId) {
         if (!path.isAbsolute(requestedPath)) {
           resolved = path.resolve(REPO_ROOT, requestedPath);
         }
+
+        // Accept a nextToken from callers to continue a previous paginated scan.
+        // The nextToken is a base64 JSON string produced by the scanner that contains
+        // { root, offset, limit, fingerprint }.
+        if (args && args.nextToken) {
+          try {
+            const tok = JSON.parse(
+              Buffer.from(String(args.nextToken), "base64").toString("utf8"),
+            );
+            if (tok && tok.root) {
+              // Use the token's root if it's within the repo sandbox
+              const tokRoot = String(tok.root);
+              const relTok = path.relative(REPO_ROOT, tokRoot);
+              if (!relTok.startsWith("..")) {
+                resolved = tokRoot;
+              }
+            }
+            // If token supplies offset/limit, prefer those over explicit args
+            if (tok && typeof tok.offset === "number") {
+              args.offset = tok.offset;
+            }
+            if (tok && (typeof tok.limit === "number" || tok.limit === null)) {
+              args.limit = tok.limit;
+            }
+            // carry fingerprint along for potential future validation (not required here)
+            args.__tokenFingerprint =
+              tok && tok.fingerprint ? tok.fingerprint : null;
+          } catch (e) {
+            results.push({
+              tool: "dir_scan",
+              status: "error",
+              detail: "invalid_nextToken",
+            });
+            continue;
+          }
+        }
+
         const rel = path.relative(REPO_ROOT, resolved);
         if (rel.startsWith("..") || (path.isAbsolute(rel) && !rel)) {
           results.push({
