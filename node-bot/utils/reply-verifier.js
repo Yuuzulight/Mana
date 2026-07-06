@@ -3,6 +3,7 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const esprima = require("esprima");
+const tokenCache = require("../tools/python_token_cache");
 
 function extractCodeBlocks(text) {
   const blocks = [];
@@ -316,6 +317,25 @@ async function verifyReply(text, mode = "everyday") {
         message: `Unbalanced brackets in ${lang || "code"} block`,
       });
     }
+
+    // Token-based checks: estimate tokens for the code block and flag large blocks
+    try {
+      // prefer python tokenizer for python code, otherwise treat as .py by default
+      const ext = lang && /py/i.test(lang) ? ".py" : ".py";
+      const toks = tokenCache.countTokensForTextSync(code, ext, false);
+      if (typeof toks === "number") {
+        // conservative thresholds: per-block and per-reply checks are enforced below
+        if (toks > 3000) {
+          issues.push({
+            type: "size",
+            message: `Large code block (~${toks} tokens)`,
+          });
+        }
+      }
+    } catch (e) {
+      // token counting failure shouldn't block verification; ignore
+    }
+
     if (lang === "py" || lang === "python") {
       const res = checkPythonSyntax(code);
       if (!res.ok) issues.push({ type: "python_syntax", message: res.error });
@@ -350,11 +370,29 @@ async function verifyReply(text, mode = "everyday") {
 
   // 3) deeper safety heuristics on plain text (commands, secrets, length)
   if (typeof text === "string") {
-    if (text.length > 20000)
-      issues.push({
-        type: "length",
-        message: "Reply unusually long (>20000 chars)",
-      });
+    // Token-aware reply length check (prefer accurate python token count)
+    try {
+      const totalTokens = tokenCache.countTokensForTextSync(
+        String(text),
+        ".py",
+        false,
+      );
+      // if tokens exceed conservative limit, flag
+      if (typeof totalTokens === "number" && totalTokens > 20000) {
+        issues.push({
+          type: "length",
+          message: `Reply unusually long (~${totalTokens} tokens)`,
+        });
+      }
+    } catch (e) {
+      // fallback to character-length check if token counting fails
+      if (text.length > 20000)
+        issues.push({
+          type: "length",
+          message: "Reply unusually long (>20000 chars)",
+        });
+    }
+
     const dangerousCmds =
       /\b(rm\s+-rf|rm\s+-R|del\s+\\?\/F\\?\/Q|shutdown\b|format\b)\b/i;
     if (dangerousCmds.test(text))
