@@ -1000,8 +1000,20 @@ function registerRoutes(app, upload, deps = {}) {
     }
   });
 
+  const turnArbiter = require("./utils/turn_arbiter");
+
   async function synthesizeReply(text) {
-    return await ttsRuntime.synthesizeReply(text);
+    // Acquire a voice turn (priority 0 = highest for direct voice turns)
+    const release = await turnArbiter.acquireTurn(0, {
+      timeoutMs: 2 * 60 * 1000,
+    });
+    try {
+      return await ttsRuntime.synthesizeReply(text);
+    } finally {
+      try {
+        release();
+      } catch (e) {}
+    }
   }
 
   function parseVTubeReactions() {
