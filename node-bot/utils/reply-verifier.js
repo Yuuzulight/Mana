@@ -4,6 +4,7 @@ const os = require("os");
 const path = require("path");
 const esprima = require("esprima");
 const tokenCache = require("../tools/python_token_cache");
+const tokenCacheAsync = require("../tools/python_token_cache.async");
 
 function extractCodeBlocks(text) {
   const blocks = [];
@@ -320,11 +321,9 @@ async function verifyReply(text, mode = "everyday") {
 
     // Token-based checks: estimate tokens for the code block and flag large blocks
     try {
-      // prefer python tokenizer for python code, otherwise treat as .py by default
       const ext = lang && /py/i.test(lang) ? ".py" : ".py";
-      const toks = tokenCache.countTokensForTextSync(code, ext, false);
+      const toks = await tokenCacheAsync.countTokensForText(code, ext, false);
       if (typeof toks === "number") {
-        // conservative thresholds: per-block and per-reply checks are enforced below
         if (toks > 3000) {
           issues.push({
             type: "size",
@@ -372,12 +371,11 @@ async function verifyReply(text, mode = "everyday") {
   if (typeof text === "string") {
     // Token-aware reply length check (prefer accurate python token count)
     try {
-      const totalTokens = tokenCache.countTokensForTextSync(
+      const totalTokens = await tokenCacheAsync.countTokensForText(
         String(text),
         ".py",
         false,
       );
-      // if tokens exceed conservative limit, flag
       if (typeof totalTokens === "number" && totalTokens > 20000) {
         issues.push({
           type: "length",
