@@ -1002,13 +1002,70 @@ function registerRoutes(app, upload, deps = {}) {
 
   const turnArbiter = require("./utils/turn_arbiter");
 
-  async function synthesizeReply(text) {
+  async function synthesizeReply(text, opts = {}) {
     // Acquire a voice turn (priority 0 = highest for direct voice turns)
     const release = await turnArbiter.acquireTurn(0, {
       timeoutMs: 2 * 60 * 1000,
     });
+
+    let captionServer = null;
     try {
-      return await ttsRuntime.synthesizeReply(text);
+      try {
+        captionServer = require("./caption-server");
+      } catch (e) {
+        captionServer = null;
+      }
+
+      // prefer a provider method that returns timings
+      if (typeof ttsRuntime.synthesizeWithTimings === "function") {
+        const res = await ttsRuntime.synthesizeWithTimings(text);
+        const audio = res && res.audio ? res.audio : res;
+        const timings = res && res.timings ? res.timings : null;
+        // broadcast captions if we have timings and a caption server
+        if (
+          timings &&
+          captionServer &&
+          typeof captionServer.broadcastCaption === "function"
+        ) {
+          try {
+            captionServer.broadcastCaption({
+              text,
+              words: timings,
+              source: "tts",
+            });
+          } catch (e) {}
+        }
+        return audio;
+      }
+
+      // fallback: synthesize audio and estimate timings locally
+      const audio = await ttsRuntime.synthesizeReply(text);
+      if (
+        captionServer &&
+        typeof captionServer.broadcastCaption === "function"
+      ) {
+        try {
+          // estimate timings using TTS runtime helper if available
+          const timings =
+            typeof ttsRuntime.estimateWordTimings === "function"
+              ? ttsRuntime.estimateWordTimings(text)
+              : String(text)
+                  .split(/\s+/)
+                  .filter(Boolean)
+                  .map((w, i) => ({
+                    word: w,
+                    startMs: i * 120,
+                    endMs: (i + 1) * 120,
+                  }));
+          captionServer.broadcastCaption({
+            text,
+            words: timings,
+            source: "tts",
+          });
+        } catch (e) {}
+      }
+
+      return audio;
     } finally {
       try {
         release();
@@ -1647,6 +1704,37 @@ function registerRoutes(app, upload, deps = {}) {
     );
     queueVTubeReaction(reply);
 
+    // Token-budget accounting: estimate reply tokens and deduct from session budget
+    try {
+      const talkBudget = require("./utils/talk_budget");
+      try {
+        const tokenCount =
+          await require("./tools/python_token_cache.async").countTokensForText(
+            typeof reply === "string" ? reply : String(reply),
+            ".py",
+            false,
+          );
+        const sessionKey = sessionId || "global";
+        const consumeRes = talkBudget.consumeTokens(sessionKey, tokenCount);
+        if (!consumeRes.ok) {
+          console.warn(
+            `Talk budget exceeded for session ${sessionKey}: attempted ${tokenCount} tokens, remaining ${consumeRes.remaining}`,
+          );
+        }
+        // record perf metric
+        perfMetrics.operations.push({
+          op: "reply_token_usage",
+          tokens: tokenCount,
+          session: sessionKey,
+          timestamp: Date.now(),
+        });
+      } catch (e) {
+        console.warn("Failed to account for reply tokens:", e?.message || e);
+      }
+    } catch (e) {
+      // if talk budget module missing, skip
+    }
+
     // Optional verification and auto-retry logic
     try {
       const { verifyReply } = require("./utils/reply-verifier");
@@ -1693,24 +1781,16 @@ function registerRoutes(app, upload, deps = {}) {
               queueVTubeReaction(reply);
               continue; // re-verify
             } catch (retryErr) {
-              console.warn("Auto-retry failed:", retryErr.message || retryErr);
+              console.warn("Auto-retry failed:", retryErr?.message || retryErr);
               break;
             }
-          } else {
-            // Do not auto-retry: include verification issues appended to reply as note
-            const issuesNote =
-              "\n\n[Mana Verification] The assistant flagged the following issues with this response:\n" +
-              verification.issues
-                .map((i) => `- ${i.type}: ${i.message}`)
-                .join("\n");
-            reply =
-              (typeof reply === "string" ? reply : String(reply)) + issuesNote;
-            break;
           }
+
+          break;
         }
       }
     } catch (e) {
-      console.warn("Reply verification pipeline failed:", e.message || e);
+      console.warn("Reply verification unavailable:", e?.message || e);
     }
 
     try {
@@ -1876,7 +1956,18 @@ async function startServer() {
   }
 
   const app = createApp();
-  return app.listen(port, () =>
+  const http = require("http");
+  const server = http.createServer(app);
+
+  // attach caption websocket server
+  try {
+    const captionServer = require("./caption-server");
+    captionServer.registerCaptionServer(server, { path: "/ws/captions" });
+  } catch (e) {
+    console.warn("Failed to register caption server:", e?.message || e);
+  }
+
+  return server.listen(port, () =>
     console.log("Node local bot listening on", port),
   );
 }
