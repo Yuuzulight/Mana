@@ -167,7 +167,90 @@ def cli(argv: List[str]) -> int:
     p.add_argument(
         "--json", action="store_true", help="print JSON cache for given path and exit"
     )
+    p.add_argument(
+        "--serve-stdio",
+        action="store_true",
+        help="run as a simple line-delimited JSON stdin/stdout server",
+    )
     args = p.parse_args(argv)
+
+    if args.serve_stdio:
+        # Run a line-delimited JSON server on stdin/stdout
+        try:
+            import sys
+            import tempfile
+
+            def handle_request(req: Dict[str, Any]) -> Dict[str, Any]:
+                method = req.get("method")
+                if method == "count_text":
+                    text = req.get("text", "")
+                    ext = req.get("ext", ".py")
+                    rebuild = bool(req.get("rebuild", False))
+                    # write temp file and use get_token_count_for_file to update cache
+                    tf = tempfile.NamedTemporaryFile(delete=False, suffix=ext)
+                    tf.write(text.encode("utf8"))
+                    tf.flush()
+                    tf.close()
+                    try:
+                        cache = load_cache()
+                        tokens = get_token_count_for_file(
+                            Path(tf.name), cache, rebuild=rebuild
+                        )
+                        save_cache(cache)
+                        return {"ok": True, "tokens": tokens}
+                    finally:
+                        try:
+                            os.unlink(tf.name)
+                        except Exception:
+                            pass
+                elif method == "count_path":
+                    pth = req.get("path")
+                    rebuild = bool(req.get("rebuild", False))
+                    if not pth:
+                        return {"ok": False, "error": "missing path"}
+                    try:
+                        cache = load_cache()
+                        tokens = get_token_count_for_file(
+                            Path(pth), cache, rebuild=rebuild
+                        )
+                        save_cache(cache)
+                        return {"ok": True, "tokens": tokens}
+                    except Exception as e:
+                        return {"ok": False, "error": str(e)}
+                elif method == "scan_path":
+                    pth = req.get("path")
+                    exts = req.get("exts", [".py"]) or []
+                    rebuild = bool(req.get("rebuild", False))
+                    try:
+                        res = scan_and_update(Path(pth), exts, rebuild=rebuild)
+                        return {"ok": True, "cacheKeys": list(res.keys())}
+                    except Exception as e:
+                        return {"ok": False, "error": str(e)}
+                elif method == "shutdown":
+                    return {"ok": True, "shutdown": True}
+                else:
+                    return {"ok": False, "error": "unknown_method"}
+
+            for raw in sys.stdin:
+                line = raw.strip()
+                if not line:
+                    continue
+                try:
+                    req = json.loads(line)
+                except Exception as e:
+                    resp = {"ok": False, "error": f"invalid_json: {e}"}
+                    print(json.dumps(resp), flush=True)
+                    continue
+                resp = handle_request(req)
+                # echo id if present
+                if isinstance(req, dict) and "id" in req:
+                    resp["id"] = req["id"]
+                print(json.dumps(resp), flush=True)
+                if resp.get("shutdown"):
+                    break
+        except Exception:
+            pass
+        return 0
 
     root = Path(args.path)
     exts = [e.strip() for e in args.ext.split(",") if e.strip()] if args.ext else []
