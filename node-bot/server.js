@@ -738,6 +738,7 @@ function registerRoutes(app, upload, deps = {}) {
       vtubeStudioUrl: VTUBE_STUDIO_URL,
       marketProvider: MARKET_PROVIDER,
       marketConfigured: marketDataClient.isConfigured,
+      components,
     });
 
     // Lightweight debug endpoint for frontend intent preview
