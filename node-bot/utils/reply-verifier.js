@@ -3,7 +3,6 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const esprima = require("esprima");
-const tokenCache = require("../tools/python_token_cache");
 const tokenCacheAsync = require("../tools/python_token_cache.async");
 
 function extractCodeBlocks(text) {
