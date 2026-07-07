@@ -5,31 +5,35 @@ const PY_SCRIPT = path.join(__dirname, "python_token_cache.py");
 const PY_BIN = process.env.PYTHON || "python";
 const STARTUP_ARGS = ["--serve-stdio"];
 
-let child = null;
+let children = [];
+let nextWorker = 0;
 let pending = new Map();
-let buf = "";
 let nextId = 1;
 
-function ensureChild() {
-  if (child && !child.killed) return;
-  child = spawn(PY_BIN, [PY_SCRIPT, "--serve-stdio"], {
+const DEFAULT_POOL = Math.max(1, Number(process.env.PY_TOKEN_POOL_SIZE || 2));
+
+function spawnWorker() {
+  const w = spawn(PY_BIN, [PY_SCRIPT, "--serve-stdio"], {
     stdio: ["pipe", "pipe", "inherit"],
   });
+  w._buf = "";
+  w._pendingIds = new Set();
 
-  child.stdout.on("data", (c) => {
-    buf += c.toString();
+  w.stdout.on("data", (c) => {
+    w._buf += c.toString();
     let idx;
-    while ((idx = buf.indexOf("\n")) >= 0) {
-      const line = buf.slice(0, idx).trim();
-      buf = buf.slice(idx + 1);
+    while ((idx = w._buf.indexOf("\n")) >= 0) {
+      const line = w._buf.slice(0, idx).trim();
+      w._buf = w._buf.slice(idx + 1);
       if (!line) continue;
       try {
         const obj = JSON.parse(line);
         const id = obj && obj.id;
         if (id && pending.has(id)) {
-          const { resolve, reject, timeout } = pending.get(id);
+          const { resolve, reject, timeout, worker } = pending.get(id);
           clearTimeout(timeout);
           pending.delete(id);
+          worker._pendingIds.delete(id);
           if (obj.ok) resolve(obj);
           else reject(new Error(obj.error || "python_error"));
         }
@@ -39,20 +43,39 @@ function ensureChild() {
     }
   });
 
-  child.on("exit", (code) => {
-    // reject all pending
-    for (const [id, { reject }] of pending.entries()) {
-      try {
-        reject(new Error("python_daemon_exit"));
-      } catch (e) {}
+  w.on("exit", (code) => {
+    // reject our worker's pending ids
+    for (const id of Array.from(w._pendingIds)) {
+      if (pending.has(id)) {
+        const { reject } = pending.get(id);
+        try {
+          reject(new Error("python_worker_exit"));
+        } catch (e) {}
+        pending.delete(id);
+      }
     }
-    pending.clear();
-    child = null;
+    // replace worker
+    const i = children.indexOf(w);
+    if (i >= 0) children.splice(i, 1);
+    // spawn a replacement after a small delay
+    setTimeout(() => {
+      try {
+        children.push(spawnWorker());
+      } catch (e) {}
+    }, 1000);
   });
+  return w;
+}
+
+function ensurePool() {
+  if (children.length >= DEFAULT_POOL) return;
+  while (children.length < DEFAULT_POOL) {
+    children.push(spawnWorker());
+  }
 }
 
 function sendRequest(req, timeoutMs = 20000) {
-  ensureChild();
+  ensurePool();
   return new Promise((resolve, reject) => {
     const id = String(nextId++);
     const payload = Object.assign({}, req, { id });
@@ -63,12 +86,23 @@ function sendRequest(req, timeoutMs = 20000) {
         reject(new Error("python_request_timeout"));
       }
     }, timeoutMs);
-    pending.set(id, { resolve: (obj) => resolve(obj), reject, timeout });
+
+    // pick next worker round-robin
+    const worker = children[nextWorker % children.length];
+    nextWorker = (nextWorker + 1) % Math.max(1, children.length);
+    pending.set(id, {
+      resolve: (obj) => resolve(obj),
+      reject,
+      timeout,
+      worker,
+    });
+    worker._pendingIds.add(id);
     try {
-      child.stdin.write(line);
+      worker.stdin.write(line);
     } catch (e) {
       clearTimeout(timeout);
       pending.delete(id);
+      worker._pendingIds.delete(id);
       reject(e);
     }
   });

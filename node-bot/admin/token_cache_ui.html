@@ -1,0 +1,103 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Mana Token Cache Admin</title>
+  <style>
+    body { font-family: system-ui, Arial; margin: 20px; }
+    .box { border: 1px solid #ddd; padding: 12px; margin-bottom: 12px; border-radius:6px }
+    label { display:block; margin-bottom:6px }
+    input[type=text] { width: 100%; padding:6px }
+    button { padding:6px 10px }
+    pre { background:#f8f8f8; padding:8px; overflow:auto }
+  </style>
+</head>
+<body>
+  <h1>Mana Token Cache Admin</h1>
+
+  <div class="box">
+    <label>Admin Secret (Bearer) — required if server enforces it</label>
+    <input id="secret" type="text" placeholder="Bearer secret" />
+  </div>
+
+  <div class="box">
+    <button id="btnRefresh">Refresh Cache & Metrics</button>
+    <button id="btnEvictSelected">Evict Selected</button>
+  </div>
+
+  <div class="box">
+    <h3></h3>Cache Keys (<span id="cacheCount">0</span>)</h3>
+    <select id="cacheList" size="10" style="width:100%"></select>
+  </div>
+
+  <div class="box">
+    <h3></h3>Metrics</h3>
+    <pre id="metricsPre">(no metrics)</pre>
+  </div>
+
+  <div class="box">
+    <h3>Ev</h3>ict Path</h3>
+    <input id="evictPath" type="text" placeholder="path to evict (absolute or relative)" />
+    <button id="btnEvict">Evict</button>
+    <div id="evictResult" style="margin-top:8px"></div>
+  </div>
+
+<script>
+</script>async function apiFetch(url, opts={}){
+  const secret = document.getElementById('secret').value.trim();
+  const headers = opts.headers || {};
+  headers['Content-Type'] = 'application/json';
+  if (secret) headers['Authorization'] = 'Bearer ' + secret;
+  const res = await fetch(url, Object.assign({}, opts, { headers }));
+  if (res.status === 401) throw new Error('unauthorized');
+  return res.json();
+}
+
+async function refresh(){
+  try{
+    const c = await apiFetch('/admin/token-cache', { method: 'GET' });
+    if (!c.ok) throw new Error(c.error || 'failed');
+    const listEl = document.getElementById('cacheList');
+    listEl.innerHTML = '';
+    c.keys.forEach(k => {
+      const opt = document.createElement('option'); opt.value = k; opt.textContent = k; listEl.appendChild(opt);
+    });
+    document.getElementById('cacheCount').textContent = c.count;
+  }catch(e){
+    alert('Failed to refresh cache: ' + (e.message||e));
+  }
+
+  try{
+    const m = await apiFetch('/admin/token-cache-metrics', { method: 'GET' });
+    if (!m.ok) throw new Error(m.error || 'failed');
+    document.getElementById('metricsPre').textContent = JSON.stringify(m.metrics, null, 2);
+  }catch(e){
+    document.getElementById('metricsPre').textContent = 'Failed to fetch metrics: ' + (e.message||e);
+  }
+}
+
+document.getElementById('btnRefresh').addEventListener('click', refresh);
+
+document.getElementById('btnEvict').addEventListener('click', async ()=>{
+  const p = document.getElementById('evictPath').value.trim();
+  if (!p) return alert('path required');
+  try{
+    const r = await apiFetch('/admin/token-cache/evict', { method: 'POST', body: JSON.stringify({ path: p }) });
+    document.getElementById('evictResult').textContent = JSON.stringify(r);
+    refresh();
+  }catch(e){ alert('Evict failed: ' + (e.message||e)); }
+});
+
+document.getElementById('btnEvictSelected').addEventListener('click', async ()=>{
+  const sel = document.getElementById('cacheList');
+  const v = sel.value;
+  if (!v) return alert('select an entry first');
+  document.getElementById('evictPath').value = v;
+  document.getElementById('btnEvict').click();
+});
+
+// Auto-refresh on load
+refresh();
+</script>
+</body>
+</html>
