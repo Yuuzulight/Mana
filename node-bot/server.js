@@ -958,6 +958,85 @@ function registerRoutes(app, upload, deps = {}) {
         return res.status(500).json({ ok: false, error: err.message });
       }
     });
+
+    // Admin token-cache endpoints
+    app.get("/admin/token-cache", async (req, res) => {
+      if (!checkAdminAuth(req, res)) return;
+      try {
+        const cachePath = path.join(
+          __dirname,
+          "data",
+          "token_count_cache.json",
+        );
+        if (!fs.existsSync(cachePath))
+          return res.json({ ok: true, keys: [], count: 0 });
+        const txt = await fs.promises.readFile(cachePath, "utf8");
+        const obj = JSON.parse(txt || "{}");
+        const keys = Object.keys(obj);
+        return res.json({ ok: true, keys, count: keys.length });
+      } catch (e) {
+        return res.status(500).json({ ok: false, error: String(e) });
+      }
+    });
+
+    app.post("/admin/token-cache/evict", async (req, res) => {
+      if (!checkAdminAuth(req, res)) return;
+      try {
+        const p = typeof req.body?.path === "string" ? req.body.path : null;
+        if (!p)
+          return res.status(400).json({ ok: false, error: "path required" });
+        const cachePath = path.join(
+          __dirname,
+          "data",
+          "token_count_cache.json",
+        );
+        let cache = {};
+        try {
+          if (fs.existsSync(cachePath))
+            cache = JSON.parse(
+              (await fs.promises.readFile(cachePath, "utf8")) || "{}",
+            );
+        } catch (e) {
+          cache = {};
+        }
+        const key = path.resolve(p);
+        if (cache[key]) delete cache[key];
+        await fs.promises.mkdir(path.dirname(cachePath), { recursive: true });
+        await fs.promises.writeFile(
+          cachePath,
+          JSON.stringify(cache, null, 2),
+          "utf8",
+        );
+        return res.json({ ok: true, evicted: key });
+      } catch (e) {
+        return res.status(500).json({ ok: false, error: String(e) });
+      }
+    });
+
+    // proxy metrics from Python token HTTP server if available
+    app.get("/admin/token-cache-metrics", async (req, res) => {
+      if (!checkAdminAuth(req, res)) return;
+      try {
+        const pyPort = Number(process.env.PY_TOKEN_SERVER_PORT || 9000);
+        const pySecret = process.env.PY_TOKEN_SERVER_SECRET || null;
+        const url = `http://127.0.0.1:${pyPort}/metrics`;
+        const headers = {};
+        if (pySecret) headers["Authorization"] = `Bearer ${pySecret}`;
+        const fetch = require("node-fetch");
+        const resp = await fetch(url, { headers, method: "GET" });
+        const body = await resp.text();
+        try {
+          const parsed = JSON.parse(body);
+          return res.json({ ok: true, metrics: parsed.metrics || parsed });
+        } catch (e) {
+          return res
+            .status(502)
+            .json({ ok: false, error: "invalid_metrics_response" });
+        }
+      } catch (e) {
+        return res.status(500).json({ ok: false, error: String(e) });
+      }
+    });
   });
 
   app.get("/gaming/status", (req, res) => {
@@ -1967,6 +2046,20 @@ async function startServer() {
     console.warn("Failed to register caption server:", e?.message || e);
   }
 
+  // serve admin UI static file
+  app.get("/admin/token-cache-ui", (req, res) => {
+    try {
+      const f = path.join(__dirname, "admin", "token_cache_ui.html");
+      if (!fs.existsSync(f)) return res.status(404).send("not found");
+      return res.sendFile(f);
+    } catch (e) {
+      return res.status(500).send(String(e));
+    }
+  });
+
+  return server.listen(port, () =>
+    console.log("Node local bot listening on", port),
+  );
   return server.listen(port, () =>
     console.log("Node local bot listening on", port),
   );
