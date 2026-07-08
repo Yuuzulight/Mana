@@ -2346,6 +2346,57 @@ function registerRoutes(app, upload, deps = {}) {
       if (!q)
         return res.status(400).json({ ok: false, error: "q is required" });
       const retrieverIndex = require("./tools/retriever-index");
+      // Prefer vector-store search when available (faster for large corpora)
+      try {
+        const vsModule = require("./tools/vector-store");
+        const createStore =
+          vsModule && vsModule.createStore ? vsModule.createStore : null;
+        if (createStore) {
+          const store = createStore({
+            dir:
+              process.env.VECTOR_STORE_DIR ||
+              path.join(__dirname, "..", "tools", "vector_store"),
+          });
+          await store.init();
+          await store.load();
+          const cnt = (await store.count().catch(() => 0)) || 0;
+          if (cnt > 0) {
+            // try to compute embedding for query
+            let qembed = null;
+            try {
+              if (typeof retrieverIndex.computeEmbedding === "function") {
+                qembed = await retrieverIndex.computeEmbedding(q);
+              }
+            } catch (e) {
+              qembed = null;
+            }
+            if (qembed) {
+              try {
+                const hits = await store.search(qembed, k);
+                const out = [];
+                for (const h of hits) {
+                  const p = h.path || h.id;
+                  let snippet = "";
+                  try {
+                    snippet = String(
+                      await fs.promises.readFile(p, "utf8"),
+                    ).slice(0, 800);
+                  } catch (e) {
+                    snippet = "";
+                  }
+                  out.push({ id: h.id, path: p, score: h.score, snippet });
+                }
+                return res.json({ ok: true, results: out, vectorStore: true });
+              } catch (e) {
+                // continue to fallback
+              }
+            }
+          }
+        }
+      } catch (e) {
+        // ignore vector store errors and fall back to retriever-index
+      }
+
       const results = await retrieverIndex.search(q, k);
       return res.json({ ok: true, results });
     } catch (e) {
@@ -2473,6 +2524,69 @@ function registerRoutes(app, upload, deps = {}) {
     } catch (e) {
       console.warn(
         "/admin/retriever/embeddings/status failed:",
+        e && e.message ? e.message : e,
+      );
+      return res
+        .status(500)
+        .json({ ok: false, error: e && e.message ? e.message : String(e) });
+    }
+  });
+
+  // Admin endpoints: vector store rebuild & status
+  app.post("/admin/retriever/vector/rebuild", async (req, res) => {
+    const ADMIN_SECRET_ENV = process.env.MANA_ADMIN_SECRET || "";
+    if (ADMIN_SECRET_ENV) {
+      const header = req.get("authorization") || req.get("Authorization") || "";
+      if (!header || !header.startsWith("Bearer "))
+        return res.status(401).json({ ok: false, error: "unauthorized" });
+      const token = header.slice(7).trim();
+      if (token !== ADMIN_SECRET_ENV)
+        return res.status(401).json({ ok: false, error: "unauthorized" });
+    }
+    try {
+      const retrieverIndex = require("./tools/retriever-index");
+      const dir = req.body?.dir || process.env.VECTOR_STORE_DIR;
+      const result = await retrieverIndex.buildVectorStore({ dir });
+      return res.json(Object.assign({ ok: true }, result || {}));
+    } catch (e) {
+      console.warn(
+        "/admin/retriever/vector/rebuild failed:",
+        e && e.message ? e.message : e,
+      );
+      return res
+        .status(500)
+        .json({ ok: false, error: e && e.message ? e.message : String(e) });
+    }
+  });
+
+  app.get("/admin/retriever/vector/status", async (req, res) => {
+    const ADMIN_SECRET_ENV = process.env.MANA_ADMIN_SECRET || "";
+    if (ADMIN_SECRET_ENV) {
+      const header = req.get("authorization") || req.get("Authorization") || "";
+      if (!header || !header.startsWith("Bearer "))
+        return res.status(401).json({ ok: false, error: "unauthorized" });
+      const token = header.slice(7).trim();
+      if (token !== ADMIN_SECRET_ENV)
+        return res.status(401).json({ ok: false, error: "unauthorized" });
+    }
+    try {
+      const vsModule = require("./tools/vector-store");
+      const createStore =
+        vsModule && vsModule.createStore ? vsModule.createStore : null;
+      if (!createStore)
+        return res.json({ ok: true, available: false, count: 0 });
+      const store = createStore({
+        dir:
+          process.env.VECTOR_STORE_DIR ||
+          path.join(__dirname, "..", "tools", "vector_store"),
+      });
+      await store.init();
+      await store.load();
+      const cnt = (await store.count().catch(() => 0)) || 0;
+      return res.json({ ok: true, available: true, count: cnt });
+    } catch (e) {
+      console.warn(
+        "/admin/retriever/vector/status failed:",
         e && e.message ? e.message : e,
       );
       return res
@@ -3083,7 +3197,62 @@ function registerRoutes(app, upload, deps = {}) {
           retrieverIndex.loadIndexSync && retrieverIndex.loadIndexSync();
         if (idx && Array.isArray(idx.entries) && idx.entries.length) {
           try {
-            const hits = await retrieverIndex.search(transcript, 5);
+            let hits = null;
+            try {
+              const vsModule = require("./tools/vector-store");
+              const createStore =
+                vsModule && vsModule.createStore ? vsModule.createStore : null;
+              if (createStore) {
+                const store = createStore({
+                  dir:
+                    process.env.VECTOR_STORE_DIR ||
+                    path.join(__dirname, "..", "tools", "vector_store"),
+                });
+                await store.init();
+                await store.load();
+                const cnt = (await store.count().catch(() => 0)) || 0;
+                if (
+                  cnt > 0 &&
+                  typeof retrieverIndex.computeEmbedding === "function"
+                ) {
+                  try {
+                    const qembed =
+                      await retrieverIndex.computeEmbedding(transcript);
+                    if (qembed) {
+                      const s = await store.search(qembed, 5);
+                      if (Array.isArray(s) && s.length) {
+                        // adapt store result shape to expected hits with path/score/snippet
+                        const adapted = [];
+                        for (const it of s) {
+                          const p = it.path || it.id;
+                          let snippet = "";
+                          try {
+                            snippet = String(
+                              await fs.promises.readFile(p, "utf8"),
+                            ).slice(0, 800);
+                          } catch (e) {
+                            snippet = "";
+                          }
+                          adapted.push({
+                            id: it.id,
+                            path: p,
+                            score: it.score,
+                            snippet,
+                          });
+                        }
+                        hits = adapted;
+                      }
+                    }
+                  } catch (e) {
+                    hits = null;
+                  }
+                }
+              }
+            } catch (e) {
+              hits = null;
+            }
+
+            if (!hits) hits = await retrieverIndex.search(transcript, 5);
             if (Array.isArray(hits) && hits.length) {
               const maxChars = Number(process.env.RETRIEVER_MAX_CHARS || 3000);
               const pieces = [];
