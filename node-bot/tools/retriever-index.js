@@ -316,16 +316,21 @@ async function incrementalScan(options = {}) {
 }
 
 async function computeEmbedding(text) {
-  // Return null if embeddings not configured or in test mode to keep tests deterministic
-  if (!USE_EMBEDDINGS) return null;
-  if (process.env.NODE_ENV === "test") return null;
+  const res = await computeEmbeddings([String(text || "").slice(0, 8192)]);
+  return Array.isArray(res) && res.length ? res[0] : null;
+}
+
+async function computeEmbeddings(inputs) {
+  // inputs: array of strings
+  if (!USE_EMBEDDINGS) return inputs.map(() => null);
+  if (process.env.NODE_ENV === "test") return inputs.map(() => null);
 
   const localUrl = (
     process.env.RETRIEVER_EMBEDDER_URL || "http://127.0.0.1:9001"
   ).replace(/\/$/, "");
   const embedderSecret = process.env.RETRIEVER_EMBEDDER_SECRET || null;
 
-  // Try local embedder first (no external deps)
+  // Try local embedder batch endpoint
   try {
     const resp = await fetch(localUrl + "/embed", {
       method: "POST",
@@ -333,27 +338,28 @@ async function computeEmbedding(text) {
         { "Content-Type": "application/json" },
         embedderSecret ? { Authorization: "Bearer " + embedderSecret } : {},
       ),
-      body: JSON.stringify({ inputs: [String(text || "").slice(0, 8192)] }),
+      body: JSON.stringify({
+        inputs: inputs.map((t) => String(t || "").slice(0, 8192)),
+      }),
     });
     if (resp.ok) {
       const j = await resp.json();
-      if (j && Array.isArray(j.embeddings) && Array.isArray(j.embeddings[0])) {
-        return j.embeddings[0];
-      }
+      if (j && Array.isArray(j.embeddings))
+        return j.embeddings.map((arr) => (Array.isArray(arr) ? arr : null));
     }
   } catch (e) {
-    // local embedder not available or failed; fall through to remote
+    // local embedder not available
   }
 
-  // Fallback: OpenAI embeddings if configured
-  if (!OPENAI_API_KEY) return null;
+  // Fallback to OpenAI batch embeddings
+  if (!OPENAI_API_KEY) return inputs.map(() => null);
   try {
     const url =
       (OPENAI_BASE_URL || "https://api.openai.com").replace(/\/$/, "") +
       "/v1/embeddings";
     const body = JSON.stringify({
       model: EMBEDDING_MODEL,
-      input: String(text || "").slice(0, 8192),
+      input: inputs.map((t) => String(t || "").slice(0, 8192)),
     });
     const resp = await fetch(url, {
       method: "POST",
@@ -363,20 +369,17 @@ async function computeEmbedding(text) {
       },
       body,
     });
-    if (!resp.ok) return null;
+    if (!resp.ok) return inputs.map(() => null);
     const j = await resp.json();
-    if (
-      j &&
-      Array.isArray(j.data) &&
-      j.data[0] &&
-      Array.isArray(j.data[0].embedding)
-    ) {
-      return j.data[0].embedding;
+    if (j && Array.isArray(j.data)) {
+      return j.data.map((d) =>
+        d && Array.isArray(d.embedding) ? d.embedding : null,
+      );
     }
   } catch (e) {
-    return null;
+    return inputs.map(() => null);
   }
-  return null;
+  return inputs.map(() => null);
 }
 
 function dot(a, b) {
