@@ -636,6 +636,25 @@
 
                 document.getElementById('btnIndexStatus').addEventListener('click', loadIndexStatus);
 
+                // Helper: escape HTML
+                function escapeHtml(s) {
+                    return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+                }
+
+                // Highlight matched query tokens inside a snippet (returns HTML)
+                function highlightHtml(text, query) {
+                    const qtokens = (String(query || '').toLowerCase().split(/\s+/).map(t=>t.trim()).filter(Boolean));
+                    if (!qtokens.length) return escapeHtml(text).slice(0,2000);
+                    let html = escapeHtml(text);
+                    // For each token, wrap word-boundary matches with <mark>
+                    for (const t of qtokens) {
+                        const esc = t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                        const re = new RegExp('\\b' + esc + '\\b', 'gi');
+                        html = html.replace(re, (m) => '<mark>' + m + '</mark>');
+                    }
+                    return html.slice(0,2000);
+                }
+
                 // Retriever quick search
                 async function doRetrieverSearch() {
                     try {
@@ -660,7 +679,8 @@
                             title.innerHTML = `<strong>${i+1}. ${r.path}</strong> <span style="color:#666">score:${r.score}</span>`;
                             const snippet = document.createElement('pre');
                             snippet.style.whiteSpace = 'pre-wrap';
-                            snippet.textContent = (r.snippet || '').slice(0,2000);
+                            // highlight matches
+                            snippet.innerHTML = highlightHtml(r.snippet || '', q);
                             row.appendChild(title);
                             row.appendChild(snippet);
                             el.appendChild(row);
