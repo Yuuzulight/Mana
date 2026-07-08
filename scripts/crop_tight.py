@@ -12,7 +12,12 @@ DEFAULTS = [
     os.path.join(os.path.dirname(__file__), '..', 'node-bot', 'admin', 'sprite-idle.png'),
 ]
 
-paths = sys.argv[1:] if len(sys.argv) > 1 else DEFAULTS
+# optional pad argument
+pad_arg = int(sys.argv[1]) if len(sys.argv) > 1 and sys.argv[1].isdigit() else None
+paths = sys.argv[2:] if pad_arg is not None and len(sys.argv) > 2 else (sys.argv[1:] if len(sys.argv) > 1 and not sys.argv[1].isdigit() else DEFAULTS)
+
+# default pad if not passed
+pad = pad_arg if pad_arg is not None else 0
 
 for p in paths:
     p = os.path.abspath(p)
@@ -31,8 +36,7 @@ for p in paths:
     if not bbox:
         print('Could not determine content bbox for', p)
         continue
-    # add a small 2px pad to avoid clipping thin outlines
-    pad = 2
+    # apply pad
     left = max(0, bbox[0] - pad)
     upper = max(0, bbox[1] - pad)
     right = min(im.width, bbox[2] + pad)
