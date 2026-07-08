@@ -1,0 +1,14 @@
+{
+  "total_requests": 2,
+  "latency_buckets_ms": {
+    "10": 0,
+    "50": 1,
+    "100": 0,
+    "200": 0,
+    "500": 0,
+    "1000": 1,
+    "5000": 0
+  },
+  "cache_hits": 1,
+  "cache_misses": 1
+}

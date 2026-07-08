@@ -15,6 +15,13 @@ const OPENAI_API_KEY =
   process.env.OPENAI_API_KEY || process.env.OPENAI_KEY || "";
 const OPENAI_BASE_URL = process.env.OPENAI_BASE_URL || "https://api.openai.com";
 
+// Vector store adapter (FAISS or JS fallback)
+const { createStore } = require("./vector-store");
+const VECTOR_STORE_DIR =
+  process.env.VECTOR_STORE_DIR ||
+  path.join(__dirname, "..", "tools", "vector_store");
+const vectorStore = createStore({ dir: VECTOR_STORE_DIR });
+
 function normalize(text) {
   return String(text || "")
     .toLowerCase()
@@ -492,14 +499,44 @@ async function search(query, k = 5) {
   return out;
 }
 
+async function buildVectorStore(options = {}) {
+  // Build or rebuild a separate vector store from entries which contain embeddings
+  const storeDir = options.dir || VECTOR_STORE_DIR;
+  const store = createStore ? createStore({ dir: storeDir }) : null;
+  if (!store) return { ok: false, reason: "no_vector_store" };
+  await store.init();
+  await store.load();
+  const idx = loadIndexSync();
+  const entries = Array.isArray(idx.entries) ? idx.entries : [];
+  let added = 0;
+  for (const e of entries) {
+    if (e && Array.isArray(e.embedding) && e.embedding.length) {
+      try {
+        await store.add(e.id, e.embedding, { path: e.path });
+        added += 1;
+      } catch (err) {
+        // ignore individual failures
+      }
+    }
+  }
+  try {
+    if (typeof store.buildIndex === "function") await store.buildIndex();
+    await store.save();
+  } catch (e) {}
+  const cnt = await store.count();
+  return { ok: true, added, count: cnt };
+}
+
 module.exports = {
   buildIndex,
   incrementalScan,
+  buildVectorStore,
   search,
   searchSync,
   loadIndexSync,
   INDEX_PATH,
   computeEmbedding,
+  computeEmbeddings,
   cosineSim,
   saveIndex,
 };

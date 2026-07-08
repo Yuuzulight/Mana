@@ -19,6 +19,8 @@ import hashlib
 import json
 import os
 import sys
+import threading
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -182,9 +184,15 @@ def cli(argv: List[str]) -> int:
         default=None,
         help="optional shared-secret token for HTTP endpoints (Bearer)",
     )
+    p.add_argument(
+        "--metrics-debounce-ms",
+        type=int,
+        default=int(os.environ.get("PY_METRICS_DEBOUNCE_MS", "1000")),
+        help="debounce window in milliseconds for persisting metrics to disk",
+    )
     args = p.parse_args(argv)
 
-    # Metrics (persisted)
+    # Metrics (persisted) with debounced writes
     METRICS_PATH = ROOT.joinpath("node-bot", "data", "token_metrics.json")
 
     def ensure_metrics_dir():
@@ -202,15 +210,66 @@ def cli(argv: List[str]) -> int:
         except Exception:
             return None
 
-    def save_metrics(metrics):
-        try:
-            ensure_metrics_dir()
-            with open(METRICS_PATH, "w", encoding="utf8") as f:
-                json.dump(metrics, f, indent=2, ensure_ascii=False)
-        except Exception:
-            pass
+    class DebouncedWriter:
+        def __init__(self, path: Path, debounce_ms: int = 1000):
+            self.path = path
+            self.debounce_ms = int(debounce_ms)
+            self._timer = None
+            self._lock = threading.Lock()
+            self._pending = None
+
+        def _write_now(self, metrics):
+            try:
+                ensure_metrics_dir()
+                with open(self.path, "w", encoding="utf8") as f:
+                    json.dump(metrics, f, indent=2, ensure_ascii=False)
+            except Exception:
+                pass
+
+        def _on_timer(self):
+            with self._lock:
+                pending = self._pending
+                self._pending = None
+                self._timer = None
+            if pending is not None:
+                self._write_now(pending)
+
+        def schedule(self, metrics):
+            with self._lock:
+                # store a shallow copy to avoid concurrent mutation issues
+                self._pending = metrics.copy() if isinstance(metrics, dict) else metrics
+                if self._timer:
+                    try:
+                        self._timer.cancel()
+                    except Exception:
+                        pass
+                self._timer = threading.Timer(self.debounce_ms / 1000.0, self._on_timer)
+                self._timer.daemon = True
+                self._timer.start()
+
+        def flush(self):
+            with self._lock:
+                if self._timer:
+                    try:
+                        self._timer.cancel()
+                    except Exception:
+                        pass
+                    self._timer = None
+                pending = self._pending
+                self._pending = None
+            if pending is not None:
+                self._write_now(pending)
 
     _HISTOGRAM_BUCKETS = [10, 50, 100, 200, 500, 1000, 5000]
+
+    # debounce window (ms) from CLI arg or env
+    debounce_ms = int(
+        getattr(
+            args,
+            "metrics_debounce_ms",
+            os.environ.get("PY_METRICS_DEBOUNCE_MS", "1000"),
+        )
+    )
 
     _METRICS = load_metrics()
     if not _METRICS:
@@ -220,32 +279,38 @@ def cli(argv: List[str]) -> int:
             "cache_hits": 0,
             "cache_misses": 0,
         }
-        save_metrics(_METRICS)
+
+    _metrics_lock = threading.Lock()
+    _debounced_writer = DebouncedWriter(METRICS_PATH, debounce_ms=debounce_ms)
+    # schedule an initial write (will be debounced)
+    _debounced_writer.schedule(_METRICS)
 
     def _record_latency(ms):
-        _METRICS["total_requests"] += 1
-        for b in _HISTOGRAM_BUCKETS:
-            if ms <= b:
-                _METRICS["latency_buckets_ms"][b] = (
-                    _METRICS["latency_buckets_ms"].get(b, 0) + 1
-                )
-                break
-        save_metrics(_METRICS)
+        with _metrics_lock:
+            _METRICS["total_requests"] = _METRICS.get("total_requests", 0) + 1
+            for b in _HISTOGRAM_BUCKETS:
+                if ms <= b:
+                    _METRICS["latency_buckets_ms"][b] = (
+                        _METRICS["latency_buckets_ms"].get(b, 0) + 1
+                    )
+                    break
+            _debounced_writer.schedule(_METRICS)
 
     def _record_cache_hit():
-        _METRICS["cache_hits"] = _METRICS.get("cache_hits", 0) + 1
-        save_metrics(_METRICS)
+        with _metrics_lock:
+            _METRICS["cache_hits"] = _METRICS.get("cache_hits", 0) + 1
+            _debounced_writer.schedule(_METRICS)
 
     def _record_cache_miss():
-        _METRICS["cache_misses"] = _METRICS.get("cache_misses", 0) + 1
-        save_metrics(_METRICS)
+        with _metrics_lock:
+            _METRICS["cache_misses"] = _METRICS.get("cache_misses", 0) + 1
+            _debounced_writer.schedule(_METRICS)
 
     if args.serve_stdio:
         # Run a line-delimited JSON server on stdin/stdout
         try:
             import sys
             import tempfile
-            import time
 
             def handle_request(req: Dict[str, Any]) -> Dict[str, Any]:
                 method = req.get("method")
@@ -336,11 +401,11 @@ def cli(argv: List[str]) -> int:
                     break
         except Exception:
             pass
+        _debounced_writer.flush()
         return 0
 
     if args.serve_http:
         # Start a simple HTTP server with JSON endpoints
-        import threading
         import time
         from http.server import BaseHTTPRequestHandler, HTTPServer
 
@@ -455,6 +520,10 @@ def cli(argv: List[str]) -> int:
                             self._send_json({"ok": False, "error": "unauthorized"}, 401)
                             return
                         self._send_json({"ok": True, "shutdown": True})
+                        try:
+                            _debounced_writer.flush()
+                        except Exception:
+                            pass
                         threading.Thread(
                             target=os._exit, args=(0,), daemon=True
                         ).start()
@@ -490,6 +559,10 @@ def cli(argv: List[str]) -> int:
             server.serve_forever()
         except KeyboardInterrupt:
             server.shutdown()
+            try:
+                _debounced_writer.flush()
+            except Exception:
+                pass
         return 0
 
     root = Path(args.path)
