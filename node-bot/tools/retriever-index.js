@@ -524,6 +524,25 @@ async function buildVectorStore(options = {}) {
     await store.save();
   } catch (e) {}
   const cnt = await store.count();
+  // persist a small metadata file in the store directory so admin UI can show lastBuilt
+  try {
+    const metaFile = path.join(storeDir, "vector_store_meta.json");
+    const metaObj = {
+      lastBuilt: new Date().toISOString(),
+      added,
+      count: cnt,
+    };
+    try {
+      await fs.promises.mkdir(storeDir, { recursive: true });
+    } catch (e) {}
+    await fs.promises.writeFile(
+      metaFile,
+      JSON.stringify(metaObj, null, 2),
+      "utf8",
+    );
+  } catch (e) {
+    // ignore metadata write failures
+  }
   return { ok: true, added, count: cnt };
 }
 
