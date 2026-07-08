@@ -165,12 +165,14 @@
                         </div>
 
                         <div class="box">
-                            <h3>Retriever Quick Search</h</h3>3>
+                            <h3>Retriever Quick Search</h3>
                             <div style="display:flex; gap:8px; align-items:center;">
                                 <input id="retrieverQuery" type="text" placeholder="search query" style="flex:1" />
-                                <select id="retrieverK"><option value="1">1</option><option value="3">3</option><option value="5" selected>5</option><option value</option>="10">10</option></select>
+                                <select id="retrieverK"><option value="1">1</option><option value="3">3</option><option value="5" selected>5</option><option value="10">10</option></select>
                                 <button id="btnRetrieverSearch">Search</button>
                                 <button id="btnRetrieverStatus" style="margin-left:8px">Refresh Index Status</button>
+                                <button id="btnBuildVectorStore" style="margin-left:8px">Build Vector Store</button>
+                                <button id="btnVectorStatus" style="margin-left:8px">Vector Store Status</button>
                             </div>
                             <div id="retrieverResults" class="files" style="margin-top:8px; max-height:260px;"></div>
                         </div>
@@ -691,10 +693,61 @@
                 document.getElementById('btnRetrieverSearch').addEventListener('click', doRetrieverSearch);
                 document.getElementById('btnRetrieverStatus').addEventListener('click', loadIndexStatus);
 
+                // Build Vector Store handler
+                document.getElementById('btnBuildVectorStore').addEventListener('click', async () => {
+                    const btn = document.getElementById('btnBuildVectorStore');
+                    const progressEl = document.getElementById('auditProgressPre');
+                    try {
+                        btn.disabled = true;
+                        btn.textContent = 'Building...';
+                        progressEl.textContent = '(starting vector store build...)';
+                        const secret = document.getElementById('secret').value.trim();
+                        const headers = { 'Content-Type': 'application/json' };
+                        if (secret) headers['Authorization'] = 'Bearer ' + secret;
+                        const resp = await fetch('/admin/retriever/vector/rebuild', { method: 'POST', headers });
+                        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+                        const body = await resp.json();
+                        if (!body.ok) throw new Error(body.error || 'vector rebuild failed');
+                        progressEl.textContent = `vector rebuild: added=${body.added||0} count=${body.count||0}`;
+                        await loadVectorStatus();
+                        alert('Vector store build completed');
+                    } catch (e) {
+                        alert('Vector build failed: ' + (e.message || e));
+                        document.getElementById('auditProgressPre').textContent = '(error) ' + (e.message || e);
+                    } finally {
+                        btn.disabled = false;
+                        btn.textContent = 'Build Vector Store';
+                    }
+                });
+
+                // Vector status
+                async function loadVectorStatus() {
+                    try {
+                        const secret = document.getElementById('secret').value.trim();
+                        const headers = {};
+                        if (secret) headers['Authorization'] = 'Bearer ' + secret;
+                        const resp = await fetch('/admin/retriever/vector/status', { headers });
+                        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+                        const body = await resp.json();
+                        if (!body.ok) throw new Error(body.error || 'vector status failed');
+                        const idxEl = document.getElementById('auditIndexStatus');
+                        const text = `(index: count=${body.count||0} lastBuilt=${body.lastBuilt||'n/a'} vectorAvailable=${body.available===true})`;
+                        idxEl.textContent = text;
+                        idxEl.style.color = '#0a0';
+                    } catch (e) {
+                        const idxEl = document.getElementById('auditIndexStatus');
+                        idxEl.textContent = `(vector: error)`;
+                        idxEl.style.color = '#c00';
+                    }
+                }
+
+                document.getElementById('btnVectorStatus').addEventListener('click', loadVectorStatus);
+
                 // Auto-focus secret field and initial audit/index loads
                 document.getElementById("secret").focus();
                 loadAuditPage();
                 loadIndexStatus();
+                loadVectorStatus();
             </script>
     </body>
 </html>
