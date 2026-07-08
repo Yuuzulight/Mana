@@ -1,0 +1,12 @@
+body { font-family: Arial, system-ui; margin: 10px; }
+#app { max-width: 360px; margin: 0 auto; }
+.box { border: 1px solid #ddd; padding: 8px; margin: 8px 0; border-radius: 6px; }
+.controls { display:flex; gap:8px; margin-bottom:8px; }
+#btnRecord { background:#4caf50; color:white; padding:8px 12px; border:none; border-radius:4px; }
+#btnStop { background:#c63131; color:white; padding:8px 12px; border:none; border-radius:4px; }
+#btnClear { padding:8px 12px; }
+#sprite { width:96px; height:96px; background-image: url('../../node-bot/admin/sprite-idle.png'); background-size:contain; margin:0 auto; }
+#sprite.listening { background-image: url('../../node-bot/admin/sprite-listen.png'); }
+#sprite.speaking { background-image: url('../../node-bot/admin/sprite-speak.png'); }
+#status { text-align:center; color:#666; }
+.logs { max-height:160px; overflow:auto; background:#f7f7f7; padding:6px; }
