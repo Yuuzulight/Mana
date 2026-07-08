@@ -346,6 +346,26 @@ let BACKGROUND_AUDIT_REBUILD_LOCK = false;
 let BACKGROUND_AUDIT_LAST_REBUILD = null;
 let VECTOR_STORE_REBUILD_LOCK = false;
 
+const VECTOR_REBUILD_AUDIT_PATH = path.join(
+  __dirname,
+  "data",
+  "vector_rebuild_audit.jsonl",
+);
+
+async function appendVectorRebuildAudit(entry) {
+  try {
+    const dir = path.dirname(VECTOR_REBUILD_AUDIT_PATH);
+    await fs.promises.mkdir(dir, { recursive: true });
+    const line = JSON.stringify(entry) + "\n";
+    await fs.promises.appendFile(VECTOR_REBUILD_AUDIT_PATH, line, "utf8");
+  } catch (e) {
+    console.warn(
+      "Failed to write vector rebuild audit:",
+      e && e.message ? e.message : e,
+    );
+  }
+}
+
 function loadAuditIndexSync() {
   try {
     if (fs.existsSync(BACKGROUND_AUDIT_INDEX_PATH)) {
@@ -2547,7 +2567,42 @@ function registerRoutes(app, upload, deps = {}) {
     try {
       const retrieverIndex = require("./tools/retriever-index");
       const dir = req.body?.dir || process.env.VECTOR_STORE_DIR;
+      // record audit start
+      try {
+        const header =
+          req.get("authorization") || req.get("Authorization") || "";
+        const approver =
+          header && header.startsWith("Bearer ") ? "admin" : "system";
+        await appendVectorRebuildAudit({
+          at: new Date().toISOString(),
+          approver,
+          action: "vector_rebuild",
+          status: "started",
+          dir: dir || null,
+        });
+      } catch (e) {}
+
       const result = await retrieverIndex.buildVectorStore({ dir });
+
+      // record audit done
+      try {
+        const header =
+          req.get("authorization") || req.get("Authorization") || "";
+        const approver =
+          header && header.startsWith("Bearer ") ? "admin" : "system";
+        await appendVectorRebuildAudit({
+          at: new Date().toISOString(),
+          approver,
+          action: "vector_rebuild",
+          status: result && result.ok ? "done" : "failed",
+          dir: dir || null,
+          added:
+            result && typeof result.added !== "undefined" ? result.added : null,
+          count:
+            result && typeof result.count !== "undefined" ? result.count : null,
+        });
+      } catch (e) {}
+
       return res.json(Object.assign({ ok: true }, result || {}));
     } catch (e) {
       console.warn(
@@ -2616,6 +2671,22 @@ function registerRoutes(app, upload, deps = {}) {
 
     VECTOR_STORE_REBUILD_LOCK = true;
     const startMs = Date.now();
+    // audit: started
+    try {
+      const header = req.get("authorization") || req.get("Authorization") || "";
+      const approver =
+        header && header.startsWith("Bearer ") ? "admin" : "system";
+      await appendVectorRebuildAudit({
+        at: new Date().toISOString(),
+        approver,
+        action: "vector_rebuild",
+        status: "started",
+        dir:
+          process.env.VECTOR_STORE_DIR ||
+          path.join(__dirname, "..", "tools", "vector_store"),
+      });
+    } catch (e) {}
+
     res.setHeader("Content-Type", "application/x-ndjson; charset=utf-8");
     res.setHeader("Cache-Control", "no-cache");
     res.setHeader("Connection", "keep-alive");
@@ -2737,6 +2808,25 @@ function registerRoutes(app, upload, deps = {}) {
           summary: { durationMs: duration, added, count: cnt },
         }) + "\n",
       );
+
+      // audit: done
+      try {
+        const header =
+          req.get("authorization") || req.get("Authorization") || "";
+        const approver =
+          header && header.startsWith("Bearer ") ? "admin" : "system";
+        await appendVectorRebuildAudit({
+          at: new Date().toISOString(),
+          approver,
+          action: "vector_rebuild",
+          status: "done",
+          dir: storeDir,
+          added,
+          count: cnt,
+          durationMs: duration,
+        });
+      } catch (e) {}
+
       return res.end();
     } catch (e) {
       try {
@@ -2746,6 +2836,22 @@ function registerRoutes(app, upload, deps = {}) {
       } catch (er) {}
       try {
         res.end();
+      } catch (er) {}
+
+      // audit: failed
+      try {
+        const header =
+          req.get("authorization") || req.get("Authorization") || "";
+        const approver =
+          header && header.startsWith("Bearer ") ? "admin" : "system";
+        await appendVectorRebuildAudit({
+          at: new Date().toISOString(),
+          approver,
+          action: "vector_rebuild",
+          status: "failed",
+          dir: process.env.VECTOR_STORE_DIR || storeDir,
+          error: (e && e.message) || String(e),
+        });
       } catch (er) {}
     } finally {
       VECTOR_STORE_REBUILD_LOCK = false;
