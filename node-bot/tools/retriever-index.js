@@ -3,6 +3,18 @@ const path = require("path");
 
 const INDEX_PATH = path.join(__dirname, "..", "data", "retriever_index.json");
 
+// Embedding settings
+const USE_EMBEDDINGS =
+  String(process.env.USE_EMBEDDINGS || "").toLowerCase() === "1" ||
+  String(process.env.USE_EMBEDDINGS || "").toLowerCase() === "true";
+const EMBEDDING_MODEL =
+  process.env.EMBEDDING_MODEL ||
+  process.env.OPENAI_EMBEDDING_MODEL ||
+  "text-embedding-3-small";
+const OPENAI_API_KEY =
+  process.env.OPENAI_API_KEY || process.env.OPENAI_KEY || "";
+const OPENAI_BASE_URL = process.env.OPENAI_BASE_URL || "https://api.openai.com";
+
 function normalize(text) {
   return String(text || "")
     .toLowerCase()
@@ -123,13 +135,21 @@ async function buildIndex(options = {}) {
       const tokens = tokenize(text);
       const tf = termFreq(tokens);
       const id = path.resolve(p);
-      entries.push({
+      const entry = {
         id,
         path: id,
         mtime: stat.mtimeMs,
         tokens: Object.keys(tf),
         tf,
-      });
+      };
+      // optionally compute embedding (skip in tests)
+      if (USE_EMBEDDINGS && process.env.NODE_ENV !== "test" && OPENAI_API_KEY) {
+        try {
+          const emb = await computeEmbedding(text);
+          if (emb && Array.isArray(emb)) entry.embedding = emb;
+        } catch (e) {}
+      }
+      entries.push(entry);
       seen += 1;
     } catch (e) {}
   }
@@ -244,6 +264,13 @@ async function incrementalScan(options = {}) {
       map[abs] = entry;
       if (prev) updated.push(abs);
       else added.push(abs);
+      // Optionally compute embedding (async) when enabled (skip during tests)
+      if (USE_EMBEDDINGS && process.env.NODE_ENV !== "test") {
+        try {
+          const emb = await computeEmbedding(text);
+          if (emb && Array.isArray(emb)) map[abs].embedding = emb;
+        } catch (e) {}
+      }
     } catch (e) {
       // skip
     }
@@ -288,6 +315,70 @@ async function incrementalScan(options = {}) {
   };
 }
 
+async function computeEmbedding(text) {
+  // Return null if embeddings not configured or in test mode to keep tests deterministic
+  if (!USE_EMBEDDINGS) return null;
+  if (process.env.NODE_ENV === "test") return null;
+  if (!OPENAI_API_KEY) return null;
+  try {
+    const url =
+      (OPENAI_BASE_URL || "https://api.openai.com").replace(/\/$/, "") +
+      "/v1/embeddings";
+    const body = JSON.stringify({
+      model: EMBEDDING_MODEL,
+      input: String(text || "").slice(0, 8192),
+    });
+    const resp = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: "Bearer " + OPENAI_API_KEY,
+      },
+      body,
+    });
+    if (!resp.ok) {
+      // fallback to null embedding
+      return null;
+    }
+    const j = await resp.json();
+    if (
+      j &&
+      Array.isArray(j.data) &&
+      j.data[0] &&
+      Array.isArray(j.data[0].embedding)
+    ) {
+      return j.data[0].embedding;
+    }
+  } catch (e) {
+    // ignore and fallback
+    return null;
+  }
+  return null;
+}
+
+function dot(a, b) {
+  let s = 0.0;
+  const n = Math.min(a.length, b.length);
+  for (let i = 0; i < n; i++) s += (a[i] || 0) * (b[i] || 0);
+  return s;
+}
+
+function norm(a) {
+  let s = 0.0;
+  for (let i = 0; i < a.length; i++) s += (a[i] || 0) * (a[i] || 0);
+  return Math.sqrt(s);
+}
+
+function cosineSim(a, b) {
+  if (!Array.isArray(a) || !Array.isArray(b) || !a.length || !b.length)
+    return 0;
+  const d = dot(a, b);
+  const na = norm(a);
+  const nb = norm(b);
+  if (!na || !nb) return 0;
+  return d / (na * nb);
+}
+
 function scoreTf(queryTokens, entry) {
   if (!queryTokens.length) return 0;
   let s = 0;
@@ -300,6 +391,7 @@ function searchSync(query, k = 5) {
   const idx = loadIndexSync();
   if (!idx || !Array.isArray(idx.entries) || idx.entries.length === 0)
     return [];
+  // If embeddings present, prefer embedding-based search synchronously is not supported here
   const qtokens = tokenize(query);
   const scored = idx.entries.map((e) => ({ e, score: scoreTf(qtokens, e) }));
   scored.sort((a, b) => b.score - a.score);
@@ -311,9 +403,57 @@ function searchSync(query, k = 5) {
 }
 
 async function search(query, k = 5) {
-  // returns array of {id, path, score, snippet}
-  const tops = searchSync(query, k);
+  // If embeddings are enabled and index entries have embeddings, perform embedding search
+  const idx = loadIndexSync();
   const out = [];
+  const hasEmbedding =
+    idx &&
+    Array.isArray(idx.entries) &&
+    idx.entries.length &&
+    Array.isArray(idx.entries[0].embedding);
+  if (USE_EMBEDDINGS && hasEmbedding) {
+    // compute query embedding
+    const qembed = await computeEmbedding(query);
+    if (!qembed) {
+      // fall back to tf search
+      const tops = searchSync(query, k);
+      for (const t of tops) {
+        try {
+          const raw = await fs.promises
+            .readFile(t.path, "utf8")
+            .catch(() => "");
+          const snippet = String(raw).slice(0, 800);
+          out.push({ id: t.id, path: t.path, score: t.score, snippet });
+        } catch (e) {
+          out.push({ id: t.id, path: t.path, score: t.score, snippet: "" });
+        }
+      }
+      return out;
+    }
+    // score by cosine similarity
+    const scored = [];
+    for (const e of idx.entries) {
+      if (!Array.isArray(e.embedding)) continue;
+      const s = cosineSim(qembed, e.embedding);
+      scored.push({ e, score: s });
+    }
+    scored.sort((a, b) => b.score - a.score);
+    const top = scored.slice(0, k);
+    for (const t of top) {
+      try {
+        const raw = await fs.promises
+          .readFile(t.e.path, "utf8")
+          .catch(() => "");
+        const snippet = String(raw).slice(0, 800);
+        out.push({ id: t.e.id, path: t.e.path, score: t.score, snippet });
+      } catch (e) {
+        out.push({ id: t.e.id, path: t.e.path, score: t.score, snippet: "" });
+      }
+    }
+    return out;
+  }
+  // fallback to tf
+  const tops = searchSync(query, k);
   for (const t of tops) {
     try {
       const raw = await fs.promises.readFile(t.path, "utf8").catch(() => "");
