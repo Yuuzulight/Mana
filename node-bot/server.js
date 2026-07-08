@@ -2430,6 +2430,57 @@ function registerRoutes(app, upload, deps = {}) {
     }
   });
 
+  // Embedding worker endpoints
+  app.post("/admin/retriever/embeddings/rebuild", async (req, res) => {
+    const ADMIN_SECRET_ENV = process.env.MANA_ADMIN_SECRET || "";
+    if (ADMIN_SECRET_ENV) {
+      const header = req.get("authorization") || req.get("Authorization") || "";
+      if (!header || !header.startsWith("Bearer "))
+        return res.status(401).json({ ok: false, error: "unauthorized" });
+      const token = header.slice(7).trim();
+      if (token !== ADMIN_SECRET_ENV)
+        return res.status(401).json({ ok: false, error: "unauthorized" });
+    }
+    try {
+      const embWorker = require("./tools/embedding-worker");
+      const result = await embWorker.enqueueAll({});
+      return res.json({ ok: true, queued: result.queued, total: result.total });
+    } catch (e) {
+      console.warn(
+        "/admin/retriever/embeddings/rebuild failed:",
+        e && e.message ? e.message : e,
+      );
+      return res
+        .status(500)
+        .json({ ok: false, error: e && e.message ? e.message : String(e) });
+    }
+  });
+
+  app.get("/admin/retriever/embeddings/status", async (req, res) => {
+    const ADMIN_SECRET_ENV = process.env.MANA_ADMIN_SECRET || "";
+    if (ADMIN_SECRET_ENV) {
+      const header = req.get("authorization") || req.get("Authorization") || "";
+      if (!header || !header.startsWith("Bearer "))
+        return res.status(401).json({ ok: false, error: "unauthorized" });
+      const token = header.slice(7).trim();
+      if (token !== ADMIN_SECRET_ENV)
+        return res.status(401).json({ ok: false, error: "unauthorized" });
+    }
+    try {
+      const embWorker = require("./tools/embedding-worker");
+      const st = embWorker.status();
+      return res.json({ ok: true, status: st });
+    } catch (e) {
+      console.warn(
+        "/admin/retriever/embeddings/status failed:",
+        e && e.message ? e.message : e,
+      );
+      return res
+        .status(500)
+        .json({ ok: false, error: e && e.message ? e.message : String(e) });
+    }
+  });
+
   app.post("/admin/notify/tray", async (req, res) => {
     const ADMIN_SECRET_ENV = process.env.MANA_ADMIN_SECRET || "";
     if (ADMIN_SECRET_ENV) {

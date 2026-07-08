@@ -473,4 +473,7 @@ module.exports = {
   searchSync,
   loadIndexSync,
   INDEX_PATH,
+  computeEmbedding,
+  cosineSim,
+  saveIndex,
 };
