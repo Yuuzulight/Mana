@@ -319,6 +319,33 @@ async function computeEmbedding(text) {
   // Return null if embeddings not configured or in test mode to keep tests deterministic
   if (!USE_EMBEDDINGS) return null;
   if (process.env.NODE_ENV === "test") return null;
+
+  const localUrl = (
+    process.env.RETRIEVER_EMBEDDER_URL || "http://127.0.0.1:9001"
+  ).replace(/\/$/, "");
+  const embedderSecret = process.env.RETRIEVER_EMBEDDER_SECRET || null;
+
+  // Try local embedder first (no external deps)
+  try {
+    const resp = await fetch(localUrl + "/embed", {
+      method: "POST",
+      headers: Object.assign(
+        { "Content-Type": "application/json" },
+        embedderSecret ? { Authorization: "Bearer " + embedderSecret } : {},
+      ),
+      body: JSON.stringify({ inputs: [String(text || "").slice(0, 8192)] }),
+    });
+    if (resp.ok) {
+      const j = await resp.json();
+      if (j && Array.isArray(j.embeddings) && Array.isArray(j.embeddings[0])) {
+        return j.embeddings[0];
+      }
+    }
+  } catch (e) {
+    // local embedder not available or failed; fall through to remote
+  }
+
+  // Fallback: OpenAI embeddings if configured
   if (!OPENAI_API_KEY) return null;
   try {
     const url =
@@ -336,10 +363,7 @@ async function computeEmbedding(text) {
       },
       body,
     });
-    if (!resp.ok) {
-      // fallback to null embedding
-      return null;
-    }
+    if (!resp.ok) return null;
     const j = await resp.json();
     if (
       j &&
@@ -350,7 +374,6 @@ async function computeEmbedding(text) {
       return j.data[0].embedding;
     }
   } catch (e) {
-    // ignore and fallback
     return null;
   }
   return null;
