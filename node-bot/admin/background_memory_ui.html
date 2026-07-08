@@ -163,6 +163,17 @@
                                 >
                             <span id="auditIndexStatus" style="margin-left:12px;font-weight:600;color:#444">(index: unknown)</span>
                         </div>
+
+                        <div class="box">
+                            <h3>Retriever Quick Search</h</h3>3>
+                            <div style="display:flex; gap:8px; align-items:center;">
+                                <input id="retrieverQuery" type="text" placeholder="search query" style="flex:1" />
+                                <select id="retrieverK"><option value="1">1</option><option value="3">3</option><option value="5" selected>5</option><option value</option>="10">10</option></select>
+                                <button id="btnRetrieverSearch">Search</button>
+                                <button id="btnRetrieverStatus" style="margin-left:8px">Refresh Index Status</button>
+                            </div>
+                            <div id="retrieverResults" class="files" style="margin-top:8px; max-height:260px;"></div>
+                        </div>
         <pre id="auditProgressPre" style="background:#fff9e6;padding:8px;border:1px solid #f0e0b0;">(idle)</pre>
         <div id="auditList" class="audit-list">(no audit)</div>
         <h4></h4>Selected Audit Detail</h4>
@@ -624,6 +635,41 @@
                 }
 
                 document.getElementById('btnIndexStatus').addEventListener('click', loadIndexStatus);
+
+                // Retriever quick search
+                async function doRetrieverSearch() {
+                    try {
+                        const q = (document.getElementById('retrieverQuery').value || '').trim();
+                        const k = Math.max(1, Math.min(50, Number(document.getElementById('retrieverK').value || 5)));
+                        if (!q) return alert('query required');
+                        const secret = document.getElementById('secret').value.trim();
+                        const headers = {};
+                        if (secret) headers['Authorization'] = 'Bearer ' + secret;
+                        const resp = await fetch(`/admin/retriever/search?q=${encodeURIComponent(q)}&k=${k}`, { headers });
+                        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+                        const body = await resp.json();
+                        if (!body.ok) throw new Error(body.error || 'search failed');
+                        const results = body.results || [];
+                        const el = document.getElementById('retrieverResults');
+                        el.innerHTML = '';
+                        if (!results.length) { el.textContent = '(no results)'; return; }
+                        results.forEach((r, i) => {
+                            const row = document.createElement('div');
+                            row.className = 'file-row';
+                            const title = document.createElement('div');
+                            title.innerHTML = `<strong>${i+1}. ${r.path}</strong> <span style="color:#666">score:${r.score}</span>`;
+                            const snippet = document.createElement('pre');
+                            snippet.style.whiteSpace = 'pre-wrap';
+                            snippet.textContent = (r.snippet || '').slice(0,2000);
+                            row.appendChild(title);
+                            row.appendChild(snippet);
+                            el.appendChild(row);
+                        });
+                    } catch (e) { alert('Search failed: ' + (e.message || e)); }
+                }
+
+                document.getElementById('btnRetrieverSearch').addEventListener('click', doRetrieverSearch);
+                document.getElementById('btnRetrieverStatus').addEventListener('click', loadIndexStatus);
 
                 // Auto-focus secret field and initial audit/index loads
                 document.getElementById("secret").focus();
