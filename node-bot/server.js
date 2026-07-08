@@ -344,6 +344,7 @@ const BACKGROUND_AUDIT_INDEX_PATH = path.join(
 let BACKGROUND_AUDIT_INDEX = { entries: [], lastSize: 0 };
 let BACKGROUND_AUDIT_REBUILD_LOCK = false;
 let BACKGROUND_AUDIT_LAST_REBUILD = null;
+let VECTOR_STORE_REBUILD_LOCK = false;
 
 function loadAuditIndexSync() {
   try {
@@ -2592,6 +2593,162 @@ function registerRoutes(app, upload, deps = {}) {
       return res
         .status(500)
         .json({ ok: false, error: e && e.message ? e.message : String(e) });
+    }
+  });
+
+  // Streamed vector rebuild with NDJSON progress (admin-protected)
+  app.get("/admin/retriever/vector/rebuild/stream", async (req, res) => {
+    const ADMIN_SECRET_ENV = process.env.MANA_ADMIN_SECRET || "";
+    if (ADMIN_SECRET_ENV) {
+      const header = req.get("authorization") || req.get("Authorization") || "";
+      if (!header || !header.startsWith("Bearer "))
+        return res.status(401).json({ ok: false, error: "unauthorized" });
+      const token = header.slice(7).trim();
+      if (token !== ADMIN_SECRET_ENV)
+        return res.status(401).json({ ok: false, error: "unauthorized" });
+    }
+
+    if (VECTOR_STORE_REBUILD_LOCK) {
+      res.setHeader("Content-Type", "application/x-ndjson; charset=utf-8");
+      res.write(JSON.stringify({ error: "rebuild_in_progress" }) + "\n");
+      return res.end();
+    }
+
+    VECTOR_STORE_REBUILD_LOCK = true;
+    const startMs = Date.now();
+    res.setHeader("Content-Type", "application/x-ndjson; charset=utf-8");
+    res.setHeader("Cache-Control", "no-cache");
+    res.setHeader("Connection", "keep-alive");
+
+    try {
+      const retrieverIndex = require("./tools/retriever-index");
+      const vsModule = require("./tools/vector-store");
+      const createStore =
+        vsModule && vsModule.createStore ? vsModule.createStore : null;
+      if (!createStore) {
+        res.write(JSON.stringify({ error: "no_vector_store_adapter" }) + "\n");
+        VECTOR_STORE_REBUILD_LOCK = false;
+        return res.end();
+      }
+
+      const storeDir =
+        process.env.VECTOR_STORE_DIR ||
+        path.join(__dirname, "..", "tools", "vector_store");
+      const store = createStore({ dir: storeDir });
+      await store.init();
+      await store.load();
+
+      const idx = retrieverIndex.loadIndexSync();
+      const entries = Array.isArray(idx.entries) ? idx.entries : [];
+      const total = entries.length;
+      let processed = 0;
+      let added = 0;
+      const reportEvery = Number(
+        process.env.VECTOR_REBUILD_REPORT_EVERY || 100,
+      );
+
+      // stream initial status
+      res.write(JSON.stringify({ progress: { total } }) + "\n");
+
+      for (const e of entries) {
+        if (!e || !Array.isArray(e.embedding) || !e.embedding.length) {
+          processed += 1;
+          if (processed % reportEvery === 0) {
+            res.write(
+              JSON.stringify({ progress: { processed, added } }) + "\n",
+            );
+          }
+          continue;
+        }
+        try {
+          await store.add(e.id, e.embedding, { path: e.path });
+          added += 1;
+        } catch (err) {
+          // ignore individual add failures but report
+          res.write(JSON.stringify({ warn: String(err) }) + "\n");
+        }
+        processed += 1;
+        if (processed % reportEvery === 0) {
+          res.write(JSON.stringify({ progress: { processed, added } }) + "\n");
+        }
+      }
+
+      // attempt to build index and save
+      try {
+        if (typeof store.buildIndex === "function") await store.buildIndex();
+      } catch (e) {
+        res.write(
+          JSON.stringify({
+            warn: "build_index_failed",
+            error: (e && e.message) || String(e),
+          }) + "\n",
+        );
+      }
+      try {
+        if (typeof store.save === "function") await store.save();
+      } catch (e) {
+        res.write(
+          JSON.stringify({
+            warn: "save_failed",
+            error: (e && e.message) || String(e),
+          }) + "\n",
+        );
+      }
+
+      const cnt = (await store.count().catch(() => 0)) || 0;
+      const metaFile = path.join(storeDir, "vector_store_meta.json");
+      try {
+        await fs.promises.mkdir(storeDir, { recursive: true });
+      } catch (e) {}
+      try {
+        const metaObj = {
+          lastBuilt: new Date().toISOString(),
+          added,
+          count: cnt,
+        };
+        await fs.promises.writeFile(
+          metaFile,
+          JSON.stringify(metaObj, null, 2),
+          "utf8",
+        );
+        res.write(
+          JSON.stringify({
+            done: true,
+            entries: cnt,
+            added,
+            lastBuilt: metaObj.lastBuilt,
+          }) + "\n",
+        );
+      } catch (e) {
+        res.write(
+          JSON.stringify({
+            done: true,
+            entries: cnt,
+            added,
+            error: (e && e.message) || String(e),
+          }) + "\n",
+        );
+      }
+
+      // final flush
+      const duration = Date.now() - startMs;
+      res.write(
+        JSON.stringify({
+          summary: { durationMs: duration, added, count: cnt },
+        }) + "\n",
+      );
+      return res.end();
+    } catch (e) {
+      try {
+        res.write(
+          JSON.stringify({ error: (e && e.message) || String(e) }) + "\n",
+        );
+      } catch (er) {}
+      try {
+        res.end();
+      } catch (er) {}
+    } finally {
+      VECTOR_STORE_REBUILD_LOCK = false;
     }
   });
 
