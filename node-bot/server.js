@@ -2359,6 +2359,77 @@ function registerRoutes(app, upload, deps = {}) {
     }
   });
 
+  // Incremental scan endpoint: performs an incremental update of the retriever index
+  app.post("/admin/retriever/scan-incremental", async (req, res) => {
+    const ADMIN_SECRET_ENV = process.env.MANA_ADMIN_SECRET || "";
+    if (ADMIN_SECRET_ENV) {
+      const header = req.get("authorization") || req.get("Authorization") || "";
+      if (!header || !header.startsWith("Bearer "))
+        return res.status(401).json({ ok: false, error: "unauthorized" });
+      const token = header.slice(7).trim();
+      if (token !== ADMIN_SECRET_ENV)
+        return res.status(401).json({ ok: false, error: "unauthorized" });
+    }
+
+    try {
+      const retrieverIndex = require("./tools/retriever-index");
+      const roots =
+        Array.isArray(req.body?.roots) && req.body.roots.length
+          ? req.body.roots
+          : [process.env.RETRIEVER_INDEX_ROOT || path.resolve(__dirname, "..")];
+      const exts =
+        Array.isArray(req.body?.exts) && req.body.exts.length
+          ? req.body.exts
+          : undefined;
+      const maxFiles = req.body?.maxFiles || undefined;
+      const result = await retrieverIndex.incrementalScan({
+        roots,
+        exts,
+        maxFiles,
+      });
+      return res.json({ ok: true, result });
+    } catch (e) {
+      console.warn(
+        "/admin/retriever/scan-incremental failed:",
+        e && e.message ? e.message : e,
+      );
+      return res
+        .status(500)
+        .json({ ok: false, error: e && e.message ? e.message : String(e) });
+    }
+  });
+
+  // Retriever status endpoint
+  app.get("/admin/retriever/status", async (req, res) => {
+    const ADMIN_SECRET_ENV = process.env.MANA_ADMIN_SECRET || "";
+    if (ADMIN_SECRET_ENV) {
+      const header = req.get("authorization") || req.get("Authorization") || "";
+      if (!header || !header.startsWith("Bearer "))
+        return res.status(401).json({ ok: false, error: "unauthorized" });
+      const token = header.slice(7).trim();
+      if (token !== ADMIN_SECRET_ENV)
+        return res.status(401).json({ ok: false, error: "unauthorized" });
+    }
+    try {
+      const retrieverIndex = require("./tools/retriever-index");
+      const idx = retrieverIndex.loadIndexSync();
+      return res.json({
+        ok: true,
+        meta: idx.meta || {},
+        builtAt: idx.builtAt || null,
+        count: Array.isArray(idx.entries) ? idx.entries.length : 0,
+      });
+    } catch (e) {
+      console.warn(
+        "/admin/retriever/status failed:",
+        e && e.message ? e.message : e,
+      );
+      return res
+        .status(500)
+        .json({ ok: false, error: e && e.message ? e.message : String(e) });
+    }
+  });
+
   app.post("/admin/notify/tray", async (req, res) => {
     const ADMIN_SECRET_ENV = process.env.MANA_ADMIN_SECRET || "";
     if (ADMIN_SECRET_ENV) {
