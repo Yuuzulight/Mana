@@ -704,11 +704,46 @@
                         const secret = document.getElementById('secret').value.trim();
                         const headers = { 'Content-Type': 'application/json' };
                         if (secret) headers['Authorization'] = 'Bearer ' + secret;
-                        const resp = await fetch('/admin/retriever/vector/rebuild', { method: 'POST', headers });
-                        if (!resp.ok) throw new Error('HTTP ' + resp.status);
-                        const body = await resp.json();
-                        if (!body.ok) throw new Error(body.error || 'vector rebuild failed');
-                        progressEl.textContent = `vector rebuild: added=${body.added||0} count=${body.count||0}`;
+                        // Use streaming rebuild endpoint to get progress updates
+                        const streamResp = await fetch('/admin/retriever/vector/rebuild/stream', { method: 'GET', headers });
+                        if (!streamResp.ok) throw new Error('HTTP ' + streamResp.status);
+                        const reader = streamResp.body.getReader();
+                        const decoder = new TextDecoder('utf-8');
+                        let buf = '';
+                        while (true) {
+                            const { done, value } = await reader.read();
+                            if (done) break;
+                            buf += decoder.decode(value, { stream: true });
+                            let idx;
+                            while ((idx = buf.indexOf('\n')) >= 0) {
+                                const line = buf.slice(0, idx).trim();
+                                buf = buf.slice(idx + 1);
+                                if (!line) continue;
+                                try {
+                                    const obj = JSON.parse(line);
+                                    if (obj.progress) {
+                                        const p = obj.progress;
+                                        progressEl.textContent = `processed=${p.processed||0}/${p.total||0} added=${p.added||0}`;
+                                    } else if (obj.warn) {
+                                        progressEl.textContent = `warn: ${obj.warn}`;
+                                    } else if (obj.done) {
+                                        progressEl.textContent = `done: entries=${obj.entries||0} added=${obj.added||0} lastBuilt=${obj.lastBuilt||'n/a'}`;
+                                    } else if (obj.error) {
+                                        progressEl.textContent = `error: ${obj.error}`;
+                                    } else if (obj.summary) {
+                                        progressEl.textContent = `summary: duration=${obj.summary.durationMs}ms added=${obj.summary.added} count=${obj.summary.count}`;
+                                    } else {
+                                        progressEl.textContent = JSON.stringify(obj);
+                                    }
+                                } catch (e) {
+                                    progressEl.textContent = line;
+                                }
+                            }
+                        }
+                        // flush remaining
+                        if (buf.trim()) {
+                            try { const obj = JSON.parse(buf.trim()); if (obj.done) progressEl.textContent = `done: entries=${obj.entries||0}`; } catch (e) {}
+                        }
                         await loadVectorStatus();
                         alert('Vector store build completed');
                     } catch (e) {
