@@ -1,0 +1,150 @@
+const fs = require('fs');
+const path = require('path');
+
+const INDEX_PATH = path.join(__dirname, '..', 'data', 'retriever_index.json');
+
+function normalize(text) {
+  return String(text || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function tokenize(text) {
+  const n = normalize(text);
+  if (!n) return [];
+  return n.split(' ').filter(Boolean);
+}
+
+function termFreq(tokens) {
+  const tf = Object.create(null);
+  for (const t of tokens) tf[t] = (tf[t] || 0) + 1;
+  return tf;
+}
+
+function ensureDataDir() {
+  try { fs.mkdirSync(path.dirname(INDEX_PATH), { recursive: true }); } catch (e) {}
+}
+
+function loadIndexSync() {
+  try {
+    if (!fs.existsSync(INDEX_PATH)) return { version: 1, builtAt: null, entries: [] };
+    const txt = fs.readFileSync(INDEX_PATH, 'utf8') || '';
+    return JSON.parse(txt || '{}');
+  } catch (e) {
+    return { version: 1, builtAt: null, entries: [] };
+  }
+}
+
+async function saveIndex(idx) {
+  try {
+    ensureDataDir();
+    const tmp = INDEX_PATH + '.tmp';
+    await fs.promises.writeFile(tmp, JSON.stringify(idx, null, 2), 'utf8');
+    await fs.promises.rename(tmp, INDEX_PATH);
+  } catch (e) {
+    // ignore
+  }
+}
+
+async function buildIndex(options = {}) {
+  // options: roots: array of absolute paths to scan; maxFiles, exts
+  const roots = options.roots && options.roots.length ? options.roots : [process.env.RETRIEVER_INDEX_ROOT || path.resolve(__dirname, '..')];
+  const exts = options.exts || ['.md', '.txt', '.py', '.js', '.json', '.mdx', '.html'];
+  const maxFiles = Number(options.maxFiles || Number(process.env.RETRIEVER_INDEX_MAX_FILES || 2000));
+  const entries = [];
+
+  let seen = 0;
+
+  async function scanDir(root) {
+    try {
+      const stats = await fs.promises.stat(root);
+      if (stats.isFile()) {
+        const ext = path.extname(root).toLowerCase();
+        if (exts.includes(ext)) {
+          await addFile(root);
+        }
+        return;
+      }
+    } catch (e) { return; }
+
+    const walker = [root];
+    while (walker.length && seen < maxFiles) {
+      const cur = walker.pop();
+      let names = [];
+      try { names = await fs.promises.readdir(cur); } catch (e) { continue; }
+      for (const name of names) {
+        if (seen >= maxFiles) break;
+        const p = path.join(cur, name);
+        try {
+          const st = await fs.promises.stat(p);
+          if (st.isDirectory()) {
+            walker.push(p);
+            continue;
+          }
+          const ext = path.extname(p).toLowerCase();
+          if (!exts.includes(ext)) continue;
+          await addFile(p, st);
+        } catch (e) { continue; }
+      }
+    }
+  }
+
+  async function addFile(p, st) {
+    try {
+      const stat = st || await fs.promises.stat(p);
+      const raw = await fs.promises.readFile(p, 'utf8').catch(() => '');
+      const text = String(raw).slice(0, 20000); // cap per file
+      const tokens = tokenize(text);
+      const tf = termFreq(tokens);
+      const id = path.resolve(p);
+      entries.push({ id, path: id, mtime: stat.mtimeMs, tokens: Object.keys(tf), tf });
+      seen += 1;
+    } catch (e) { }
+  }
+
+  for (const r of roots) {
+    await scanDir(r);
+  }
+
+  const idx = { version: 1, builtAt: new Date().toISOString(), entries };
+  await saveIndex(idx);
+  return idx;
+}
+
+function scoreTf(queryTokens, entry) {
+  if (!queryTokens.length) return 0;
+  let s = 0;
+  const tf = entry.tf || {};
+  for (const t of queryTokens) s += tf[t] || 0;
+  return s;
+}
+
+function searchSync(query, k = 5) {
+  const idx = loadIndexSync();
+  if (!idx || !Array.isArray(idx.entries) || idx.entries.length === 0) return [];
+  const qtokens = tokenize(query);
+  const scored = idx.entries.map((e) => ({ e, score: scoreTf(qtokens, e) }));
+  scored.sort((a, b) => b.score - a.score);
+  const top = scored.filter((s) => s.score > 0).slice(0, k).map((s) => ({ id: s.e.id, path: s.e.path, score: s.score }));
+  return top;
+}
+
+async function search(query, k = 5) {
+  // returns array of {id, path, score, snippet}
+  const tops = searchSync(query, k);
+  const out = [];
+  for (const t of tops) {
+    try {
+      const raw = await fs.promises.readFile(t.path, 'utf8').catch(() => '');
+      const snippet = String(raw).slice(0, 800);
+      out.push({ id: t.id, path: t.path, score: t.score, snippet });
+    } catch (e) {
+      out.push({ id: t.id, path: t.path, score: t.score, snippet: '' });
+    }
+  }
+  return out;
+}
+
+module.exports = { buildIndex, search, searchSync, loadIndexSync, INDEX_PATH };

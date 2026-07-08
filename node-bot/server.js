@@ -269,6 +269,748 @@ const acpMemoryStore = createAcpMemoryStore({
   },
 });
 
+// Background memory block that can be refreshed periodically from ACP session files.
+let BACKGROUND_MEMORY_BLOCK = "";
+let BACKGROUND_MEMORY_LOCK = false;
+let BACKGROUND_MEMORY_META = { files: {} };
+const BACKGROUND_META_PATH = path.join(
+  __dirname,
+  "data",
+  "acp-memory",
+  "background_meta.json",
+);
+
+function loadPersistedBackgroundMetaSync() {
+  try {
+    if (fs.existsSync(BACKGROUND_META_PATH)) {
+      const txt = fs.readFileSync(BACKGROUND_META_PATH, "utf8") || "";
+      const parsed = JSON.parse(txt || "{}") || {};
+      if (parsed && parsed.files && typeof parsed.files === "object") {
+        BACKGROUND_MEMORY_META = parsed;
+        console.log(
+          "Loaded persisted BACKGROUND_MEMORY_META (files=",
+          Object.keys(BACKGROUND_MEMORY_META.files || {}).length,
+          ")",
+        );
+      }
+    }
+  } catch (e) {
+    console.warn(
+      "Failed to load persisted background meta:",
+      e && e.message ? e.message : e,
+    );
+  }
+}
+
+// load persisted meta synchronously at startup to avoid re-reading many files
+try {
+  loadPersistedBackgroundMetaSync();
+} catch (e) {}
+
+let runBackgroundReviewerPublic = null;
+
+async function persistBackgroundMeta() {
+  try {
+    const dir = path.dirname(BACKGROUND_META_PATH);
+    await fs.promises.mkdir(dir, { recursive: true });
+    const tmp = BACKGROUND_META_PATH + ".tmp";
+    await fs.promises.writeFile(
+      tmp,
+      JSON.stringify(BACKGROUND_MEMORY_META || { files: {} }, null, 2),
+      "utf8",
+    );
+    await fs.promises.rename(tmp, BACKGROUND_META_PATH);
+  } catch (e) {
+    console.warn(
+      "Failed to persist background meta:",
+      e && e.message ? e.message : e,
+    );
+  }
+}
+
+// Append an audit entry for background memory changes
+const BACKGROUND_AUDIT_PATH = path.join(
+  __dirname,
+  "data",
+  "acp-memory",
+  "background_audit.jsonl",
+);
+const BACKGROUND_AUDIT_INDEX_PATH = path.join(
+  __dirname,
+  "data",
+  "acp-memory",
+  "background_audit_index.json",
+);
+let BACKGROUND_AUDIT_INDEX = { entries: [], lastSize: 0 };
+let BACKGROUND_AUDIT_REBUILD_LOCK = false;
+let BACKGROUND_AUDIT_LAST_REBUILD = null;
+
+function loadAuditIndexSync() {
+  try {
+    if (fs.existsSync(BACKGROUND_AUDIT_INDEX_PATH)) {
+      const txt = fs.readFileSync(BACKGROUND_AUDIT_INDEX_PATH, "utf8") || "";
+      const parsed = JSON.parse(txt || "{}") || { entries: [], lastSize: 0 };
+      if (parsed && Array.isArray(parsed.entries)) {
+        BACKGROUND_AUDIT_INDEX = parsed;
+        console.log(
+          "Loaded audit index (entries=",
+          BACKGROUND_AUDIT_INDEX.entries.length,
+          ", lastSize=",
+          BACKGROUND_AUDIT_INDEX.lastSize || 0,
+          ")",
+        );
+      }
+    }
+  } catch (e) {
+    console.warn("Failed to load audit index:", e && e.message ? e.message : e);
+  }
+}
+
+async function persistAuditIndex() {
+  try {
+    const dir = path.dirname(BACKGROUND_AUDIT_INDEX_PATH);
+    await fs.promises.mkdir(dir, { recursive: true });
+    const tmp = BACKGROUND_AUDIT_INDEX_PATH + ".tmp";
+    await fs.promises.writeFile(
+      tmp,
+      JSON.stringify(
+        BACKGROUND_AUDIT_INDEX || { entries: [], lastSize: 0 },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+    await fs.promises.rename(tmp, BACKGROUND_AUDIT_INDEX_PATH);
+  } catch (e) {
+    console.warn(
+      "Failed to persist audit index:",
+      e && e.message ? e.message : e,
+    );
+  }
+}
+
+async function buildIndexFromAuditFile() {
+  try {
+    if (!fs.existsSync(BACKGROUND_AUDIT_PATH)) {
+      BACKGROUND_AUDIT_INDEX = { entries: [], lastSize: 0 };
+      await persistAuditIndex();
+      return { entries: [], lastSize: 0 };
+    }
+    const txt = await fs.promises.readFile(BACKGROUND_AUDIT_PATH, "utf8");
+    const lines = (txt || "").split(/\r?\n/).filter(Boolean);
+    const entries = [];
+    let offset = 0;
+    for (const line of lines) {
+      const len = Buffer.byteLength(line + "\n", "utf8");
+      let meta = { raw: line };
+      try {
+        meta = JSON.parse(line);
+      } catch (e) {}
+      entries.push({
+        at: meta.at || null,
+        approver: meta.approver || null,
+        action: meta.action || null,
+        offset,
+        length: len,
+      });
+      offset += len;
+    }
+    // store oldest-first in index (matches file order)
+    BACKGROUND_AUDIT_INDEX = { entries, lastSize: offset };
+    await persistAuditIndex();
+    console.log(
+      "Rebuilt audit index (entries=",
+      entries.length,
+      ", lastSize=",
+      offset,
+      ")",
+    );
+    return { entries, lastSize: offset };
+  } catch (e) {
+    console.warn(
+      "Failed to build audit index:",
+      e && e.message ? e.message : e,
+    );
+    return { entries: [], lastSize: 0 };
+  }
+}
+
+async function appendBackgroundAudit(entry) {
+  try {
+    const dir = path.dirname(BACKGROUND_AUDIT_PATH);
+    await fs.promises.mkdir(dir, { recursive: true });
+    const line = JSON.stringify(entry) + "\n";
+    // determine current file size to get offset
+    let offset = 0;
+    try {
+      const st = await fs.promises
+        .stat(BACKGROUND_AUDIT_PATH)
+        .catch(() => ({ size: 0 }));
+      offset = st.size || 0;
+    } catch (e) {
+      offset = 0;
+    }
+    await fs.promises.appendFile(BACKGROUND_AUDIT_PATH, line, "utf8");
+    const length = Buffer.byteLength(line, "utf8");
+    // update index (append)
+    try {
+      const meta = {
+        at: entry.at || new Date().toISOString(),
+        approver: entry.approver || null,
+        action: entry.action || null,
+        offset,
+        length,
+      };
+      BACKGROUND_AUDIT_INDEX.entries = BACKGROUND_AUDIT_INDEX.entries || [];
+      BACKGROUND_AUDIT_INDEX.entries.push(meta);
+      // update lastSize
+      BACKGROUND_AUDIT_INDEX.lastSize =
+        (BACKGROUND_AUDIT_INDEX.lastSize || 0) + length;
+      // persist index asynchronously (don't await to avoid blocking)
+      persistAuditIndex().catch((err) =>
+        console.warn("persistAuditIndex failed:", err),
+      );
+    } catch (e) {
+      console.warn(
+        "Failed to update audit index:",
+        e && e.message ? e.message : e,
+      );
+    }
+
+    // send a live tray ping via internal notifier if available
+    try {
+      const trayNotifier = require("./tray-notifier");
+      // use convenience sendAuditTray which debounces/aggregates
+      const sent = await (trayNotifier.sendAuditTray
+        ? trayNotifier.sendAuditTray(entry)
+        : trayNotifier.notifyTray({
+            type: "audit",
+            title: "Background Audit",
+            text: `${entry.action || "audit"} by ${entry.approver || "unknown"}`,
+            at: entry.at || new Date().toISOString(),
+          }));
+      if (!sent) {
+        const bt = app && app.locals && app.locals.broadcastTrayNotification;
+        if (typeof bt === "function") {
+          try {
+            bt({
+              type: "audit",
+              title: "Background Audit",
+              text: `${entry.action || "audit"} by ${entry.approver || "unknown"}`,
+              at: entry.at || new Date().toISOString(),
+            });
+          } catch (e) {}
+        }
+      }
+    } catch (e) {
+      // don't block on notifications
+    }
+  } catch (e) {
+    console.warn(
+      "Failed to write background memory audit entry:",
+      e && e.message ? e.message : e,
+    );
+  }
+}
+
+// load index at startup if present
+try {
+  loadAuditIndexSync();
+} catch (e) {}
+// if no index present, build in background
+if (
+  !BACKGROUND_AUDIT_INDEX ||
+  !Array.isArray(BACKGROUND_AUDIT_INDEX.entries) ||
+  BACKGROUND_AUDIT_INDEX.entries.length === 0
+) {
+  // don't await
+  buildIndexFromAuditFile().catch((err) =>
+    console.warn("Initial audit index build failed:", err),
+  );
+}
+
+async function asyncLoadBackgroundMemory() {
+  if (BACKGROUND_MEMORY_LOCK) return;
+  BACKGROUND_MEMORY_LOCK = true;
+  try {
+    const sessionsDir =
+      (acpMemoryStore && acpMemoryStore.sessionsDir) ||
+      path.join(__dirname, "data", "acp-memory", "sessions");
+    if (!fs.existsSync(sessionsDir)) {
+      BACKGROUND_MEMORY_BLOCK = "";
+      BACKGROUND_MEMORY_META = { files: {} };
+      try {
+        await persistBackgroundMeta();
+      } catch (e) {}
+      return { summaries: [], text: "", processed: 0, totalFiles: 0 };
+    }
+
+    const names = await fs.promises.readdir(sessionsDir);
+    const jsonFiles = names.filter((f) => f.endsWith(".json"));
+
+    // Gather stats (mtime) for files and sort by most recent
+    const statPromises = jsonFiles.map(async (f) => {
+      const p = path.join(sessionsDir, f);
+      try {
+        const st = await fs.promises.stat(p);
+        return { file: f, mtime: st.mtimeMs, path: p };
+      } catch (e) {
+        return null;
+      }
+    });
+    const statsAll = (await Promise.all(statPromises)).filter(Boolean);
+    statsAll.sort((a, b) => b.mtime - a.mtime);
+
+    const maxFiles = Number(
+      process.env.MANA_BACKGROUND_MEMORY_MAX_FILES || 200,
+    );
+
+    const summaries = [];
+    const processedFiles = [];
+    let processed = 0;
+
+    for (const s of statsAll.slice(0, maxFiles)) {
+      const prev =
+        BACKGROUND_MEMORY_META.files && BACKGROUND_MEMORY_META.files[s.file];
+      if (prev && prev.mtime === s.mtime && prev.summary) {
+        summaries.push(prev.summary);
+        processedFiles.push({
+          file: s.file,
+          summary: prev.summary,
+          mtime: prev.mtime,
+        });
+      } else {
+        try {
+          const raw = await fs.promises.readFile(s.path, "utf8");
+          const obj = JSON.parse(raw || "null") || {};
+          const summ =
+            obj && obj.summary && typeof obj.summary === "string"
+              ? String(obj.summary || "")
+                  .replace(/\s+/g, " ")
+                  .trim()
+              : "";
+          if (summ) summaries.push(summ);
+          BACKGROUND_MEMORY_META.files[s.file] = {
+            mtime: s.mtime,
+            summary: summ,
+          };
+          processedFiles.push({ file: s.file, summary: summ, mtime: s.mtime });
+        } catch (e) {
+          // ignore malformed files and remove from meta
+          if (
+            BACKGROUND_MEMORY_META.files &&
+            BACKGROUND_MEMORY_META.files[s.file]
+          ) {
+            delete BACKGROUND_MEMORY_META.files[s.file];
+          }
+        }
+      }
+      processed++;
+    }
+
+    // If no summaries collected, clear block
+    if (!summaries.length) {
+      BACKGROUND_MEMORY_BLOCK = "";
+      try {
+        await persistBackgroundMeta();
+      } catch (e) {}
+      return {
+        summaries: [],
+        text: "",
+        processed,
+        processedFiles: [],
+        totalFiles: jsonFiles.length,
+      };
+    }
+
+    // Join summaries (most recent first) and compact by max chars
+    const maxChars = Number(
+      process.env.MANA_BACKGROUND_MEMORY_MAX_CHARS || 2000,
+    );
+    let text = summaries.join("\n\n").replace(/\s+/g, " ").trim();
+
+    if (text.length > maxChars) {
+      // Simple compaction: keep as much of the start (most recent) as fits
+      text = text.slice(0, maxChars).trim() + "...";
+    }
+
+    BACKGROUND_MEMORY_BLOCK = `[BACKGROUND MEMORY]\n${text}\n[END BACKGROUND MEMORY]`;
+    console.log(
+      `Loaded BACKGROUND_MEMORY_BLOCK (${text.length} chars) from ${processed} processed files (${jsonFiles.length} total)`,
+    );
+    try {
+      await persistBackgroundMeta();
+    } catch (e) {}
+    return {
+      summaries,
+      text,
+      processed,
+      processedFiles,
+      totalFiles: jsonFiles.length,
+    };
+  } catch (e) {
+    console.warn(
+      "Failed to load background memory:",
+      e && e.message ? e.message : e,
+    );
+    return { summaries: [], text: "", processed: 0, totalFiles: 0 };
+  } finally {
+    BACKGROUND_MEMORY_LOCK = false;
+  }
+}
+
+// Initial async load and periodic refresh
+if (process.env.NODE_ENV !== "test") {
+  (async () => {
+    try {
+      await asyncLoadBackgroundMemory();
+      const refreshMs = Number(
+        process.env.MANA_BACKGROUND_MEMORY_REFRESH_MS || 300000,
+      );
+
+      // Background summarizer: run an async compaction step after loading summaries.
+      let summarizerRunning = false;
+      async function runBackgroundCompactor() {
+        if (summarizerRunning) return;
+        summarizerRunning = true;
+        try {
+          const res = await asyncLoadBackgroundMemory();
+          const summaries = res && res.summaries ? res.summaries : [];
+          const processedFiles =
+            res && res.processedFiles ? res.processedFiles : [];
+          if (!summaries || !summaries.length) return;
+
+          const maxChars = Number(
+            process.env.MANA_BACKGROUND_MEMORY_MAX_CHARS || 2000,
+          );
+          const maxTokens = Number(
+            process.env.MANA_BACKGROUND_SUMMARIZER_MAX_TOKENS ||
+              Math.max(64, Math.floor(maxChars / 4)),
+          );
+
+          // Build a compact summarization prompt
+          const joined = summaries.slice(0, 200).join("\n\n");
+          const prompt = `You are a concise summarization assistant. Combine the following session summaries into a single compact background memory block suitable for inclusion beneath system instructions. Keep concrete facts, user preferences, and avoid redundancy. Return only the compacted summary text; do not add commentary.\n\nBEGIN SUMMARIES:\n${joined}\n\nCOMPACT SUMMARY:`;
+
+          let compacted = null;
+          try {
+            if (shouldUseRemoteAi()) {
+              compacted = await runOpenAIReply(
+                prompt,
+                Math.min(maxTokens, 512),
+              );
+            }
+          } catch (e) {
+            console.warn(
+              "Background summarizer (remote) failed:",
+              e && e.message ? e.message : e,
+            );
+          }
+
+          if (!compacted) {
+            try {
+              // Only attempt local summarizer when local runtime reports healthy
+              if (
+                localLlamaRuntime &&
+                typeof localLlamaRuntime.getLlamaStatus === "function" &&
+                localLlamaRuntime.getLlamaStatus() &&
+                localLlamaRuntime.getLlamaStatus().ok
+              ) {
+                compacted = localLlamaRuntime.runLocalAssistantReply(
+                  prompt,
+                  Math.min(maxTokens, 256),
+                  "default",
+                );
+              } else {
+                compacted = null;
+              }
+            } catch (e) {
+              console.warn(
+                "Background summarizer (local) failed:",
+                e && e.message ? e.message : e,
+              );
+              compacted = null;
+            }
+          }
+
+          if (compacted && typeof compacted === "string") {
+            compacted = compacted.trim().replace(/\s+/g, " ");
+            if (compacted.length > maxChars)
+              compacted = compacted.slice(0, maxChars).trim() + "...";
+            BACKGROUND_MEMORY_BLOCK = `[BACKGROUND MEMORY]\n${compacted}\n[END BACKGROUND MEMORY]`;
+            console.log(
+              "Background memory compacted by summarizer (len=",
+              compacted.length,
+              ")",
+            );
+          }
+
+          // After compaction, kick off a reviewer to prune unnecessary summaries
+          try {
+            setImmediate(() => {
+              runBackgroundReviewer().catch((err) =>
+                console.warn(
+                  "Background reviewer post-compaction failed:",
+                  err && err.message ? err.message : err,
+                ),
+              );
+            });
+          } catch (e) {}
+        } catch (e) {
+          console.warn(
+            "Background compactor failed:",
+            e && e.message ? e.message : e,
+          );
+        } finally {
+          summarizerRunning = false;
+        }
+      }
+
+      // Background reviewer: prune unnecessary summaries using the summarizer (non-blocking)
+      async function runBackgroundReviewer(apply = true) {
+        try {
+          const res = await asyncLoadBackgroundMemory();
+          const processedFiles =
+            res && res.processedFiles ? res.processedFiles : [];
+          const minSummaries = Number(
+            process.env.MANA_BACKGROUND_MEMORY_REVIEW_MIN_SUMMARIES || 10,
+          );
+          if (!processedFiles || processedFiles.length < minSummaries) {
+            // nothing to review yet
+            return {
+              ok: false,
+              reason: "not_enough_summaries",
+              processedFiles,
+            };
+          }
+
+          // Build numbered summaries list
+          const numbered = processedFiles
+            .map(
+              (p, idx) =>
+                `${idx + 1}. ${String(p.summary || "").slice(0, 400)}`,
+            )
+            .join("\n\n");
+
+          const maxChars = Number(
+            process.env.MANA_BACKGROUND_MEMORY_MAX_CHARS || 2000,
+          );
+          const maxTokens = Number(
+            process.env.MANA_BACKGROUND_SUMMARIZER_MAX_TOKENS ||
+              Math.max(64, Math.floor(maxChars / 4)),
+          );
+
+          const prompt = `You are a memory curator. Given the following numbered session summaries, identify which entries are redundant or unnecessary for long-term background memory, and which contain important facts or user preferences that should be kept. Return a strict JSON object with keys: \n  - compacted: a single compact background memory string (no more than ${Math.max(64, Math.floor(maxChars / 4))} tokens),\n  - important_facts: an array of short strings (3-10 words each) listing the most salient facts to remember,\n  - remove_indices: an array of integer indices (1-based) indicating which numbered summaries can be removed from the persisted metadata because they are trivial or redundant.\nDo not include any extra commentary. Respond with valid JSON only.\n\nBEGIN SUMMARIES:\n${numbered}\n\nEND SUMMARIES\n\nRETURN JSON:`;
+
+          let reply = null;
+          try {
+            if (shouldUseRemoteAi()) {
+              reply = await runOpenAIReply(prompt, Math.min(maxTokens, 512));
+            }
+          } catch (e) {
+            console.warn(
+              "Background reviewer (remote) failed:",
+              e && e.message ? e.message : e,
+            );
+          }
+          if (!reply) {
+            try {
+              if (
+                localLlamaRuntime &&
+                typeof localLlamaRuntime.getLlamaStatus === "function" &&
+                localLlamaRuntime.getLlamaStatus() &&
+                localLlamaRuntime.getLlamaStatus().ok
+              ) {
+                reply = localLlamaRuntime.runLocalAssistantReply(
+                  prompt,
+                  Math.min(maxTokens, 256),
+                  "default",
+                );
+              } else {
+                reply = null;
+              }
+            } catch (e) {
+              console.warn(
+                "Background reviewer (local) failed:",
+                e && e.message ? e.message : e,
+              );
+              reply = null;
+            }
+          }
+
+          if (!reply || typeof reply !== "string") {
+            console.warn("Background reviewer produced no textual reply");
+            return { ok: false, reason: "no_reply", processedFiles };
+          }
+
+          // Try to extract JSON from reply
+          let parsed = null;
+          try {
+            parsed = JSON.parse(reply);
+          } catch (e) {
+            // attempt to find a JSON block inside text
+            const m = reply.match(/\{[\s\S]*\}/m);
+            if (m) {
+              try {
+                parsed = JSON.parse(m[0]);
+              } catch (e2) {
+                parsed = null;
+              }
+            }
+          }
+
+          if (!parsed) {
+            console.warn(
+              "Background reviewer reply is not valid JSON; skipping application",
+            );
+            return { ok: false, reason: "invalid_json", reply, processedFiles };
+          }
+
+          const removeIndices = Array.isArray(parsed.remove_indices)
+            ? parsed.remove_indices
+            : parsed.removeIndices || [];
+          const importantFacts = Array.isArray(parsed.important_facts)
+            ? parsed.important_facts
+            : parsed.importantFacts || [];
+          const compacted =
+            typeof parsed.compacted === "string"
+              ? String(parsed.compacted).trim()
+              : null;
+
+          if (!apply) {
+            // Dry run: return the parsed result for preview
+            return {
+              ok: true,
+              dryRun: true,
+              parsed: { removeIndices, importantFacts, compacted },
+              reply,
+              processedFiles,
+            };
+          }
+
+          // Apply removals to BACKGROUND_MEMORY_META (mark as pruned)
+          for (const idx of removeIndices) {
+            if (!Number.isInteger(idx)) continue;
+            const i = Number(idx) - 1;
+            const pf = processedFiles[i];
+            if (
+              pf &&
+              pf.file &&
+              BACKGROUND_MEMORY_META.files &&
+              BACKGROUND_MEMORY_META.files[pf.file]
+            ) {
+              BACKGROUND_MEMORY_META.files[pf.file].pruned = true;
+              BACKGROUND_MEMORY_META.files[pf.file].summary = ""; // drop stored summary to conserve space
+            }
+          }
+
+          // Save important facts to meta for admin inspection
+          if (importantFacts && importantFacts.length) {
+            BACKGROUND_MEMORY_META.important_facts = importantFacts.slice(
+              0,
+              200,
+            );
+          }
+
+          // If we received a compacted text, update the background memory block
+          if (compacted) {
+            let compactText = compacted.replace(/\s+/g, " ").trim();
+            if (compactText.length > maxChars)
+              compactText = compactText.slice(0, maxChars).trim() + "...";
+            BACKGROUND_MEMORY_BLOCK = `[BACKGROUND MEMORY]\n${compactText}\n[END BACKGROUND MEMORY]`;
+            console.log(
+              "Background memory reviewer produced compacted block (len=",
+              compactText.length,
+              ")",
+            );
+          }
+
+          // Persist updated meta
+          try {
+            await persistBackgroundMeta();
+          } catch (e) {
+            console.warn(
+              "Failed to persist background meta after review:",
+              e && e.message ? e.message : e,
+            );
+          }
+
+          console.log(
+            `Background reviewer applied: removed ${removeIndices.length} entries, saved ${importantFacts.length} important facts`,
+          );
+          return {
+            ok: true,
+            parsed: { removeIndices, importantFacts, compacted },
+            processedFiles,
+          };
+        } catch (e) {
+          console.warn(
+            "Background reviewer failed:",
+            e && e.message ? e.message : e,
+          );
+          return { ok: false, reason: "exception", error: String(e) };
+        }
+      }
+
+      // expose reviewer to other modules/routes for preview/apply
+      try {
+        runBackgroundReviewerPublic = runBackgroundReviewer;
+      } catch (e) {}
+
+      // Run compactor once now, and schedule periodic compaction
+      runBackgroundCompactor().catch((err) =>
+        console.warn(
+          "Compactor initial run failed:",
+          err && err.message ? err.message : err,
+        ),
+      );
+
+      if (refreshMs > 0) {
+        setInterval(() => {
+          asyncLoadBackgroundMemory()
+            .then(() => runBackgroundCompactor())
+            .catch((err) =>
+              console.warn(
+                "Background memory refresh failed:",
+                err && err.message ? err.message : err,
+              ),
+            )
+            .then(() =>
+              runBackgroundReviewer().catch((err) =>
+                console.warn(
+                  "Background memory reviewer failed:",
+                  err && err.message ? err.message : err,
+                ),
+              ),
+            );
+        }, refreshMs);
+        console.log(`Background memory will refresh every ${refreshMs}ms`);
+      }
+
+      // Periodic reviewer runs less frequently than the compactor (default 1h)
+      const reviewMs = Number(
+        process.env.MANA_BACKGROUND_MEMORY_REVIEW_MS || 3600000,
+      );
+      if (reviewMs > 0) {
+        setInterval(() => {
+          runBackgroundReviewer().catch((err) =>
+            console.warn(
+              "Background memory reviewer periodic run failed:",
+              err && err.message ? err.message : err,
+            ),
+          );
+        }, reviewMs);
+        console.log(`Background memory reviewer will run every ${reviewMs}ms`);
+      }
+    } catch (e) {
+      console.warn(
+        "Initial background memory load failed:",
+        e && e.message ? e.message : e,
+      );
+    }
+  })();
+}
+
 function clampText(text, maxChars) {
   const cleanText = String(text || "")
     .replace(/\s+/g, " ")
@@ -1037,6 +1779,620 @@ function registerRoutes(app, upload, deps = {}) {
         return res.status(500).json({ ok: false, error: String(e) });
       }
     });
+
+    // Admin endpoints: background memory preview & apply (preview returns a dry-run of reviewer)
+    app.get("/admin/background-memory/preview", async (req, res) => {
+      if (!checkAdminAuth(req, res)) return;
+      try {
+        if (typeof runBackgroundReviewerPublic !== "function") {
+          return res
+            .status(500)
+            .json({ ok: false, error: "reviewer_unavailable" });
+        }
+        const preview = await runBackgroundReviewerPublic(false);
+        return res.json({ ok: true, preview });
+      } catch (e) {
+        return res.status(500).json({ ok: false, error: String(e) });
+      }
+    });
+
+    app.post("/admin/background-memory/apply", async (req, res) => {
+      if (!checkAdminAuth(req, res)) return;
+      try {
+        // If body contains explicit changes, apply them; otherwise run reviewer and apply its result
+        const body = req.body || {};
+        if (
+          body &&
+          (Array.isArray(body.remove_indices) ||
+            body.compacted ||
+            Array.isArray(body.important_facts))
+        ) {
+          // manual apply
+          const payloadRemove = Array.isArray(body.remove_indices)
+            ? body.remove_indices
+            : [];
+          const payloadImportant = Array.isArray(body.important_facts)
+            ? body.important_facts
+            : [];
+          const payloadCompacted =
+            typeof body.compacted === "string"
+              ? String(body.compacted).trim()
+              : null;
+
+          const resLoad = await asyncLoadBackgroundMemory();
+          const processedFiles =
+            resLoad && resLoad.processedFiles ? resLoad.processedFiles : [];
+          const applied = { removed: [], important: [], compacted: null };
+
+          // apply removals
+          for (const idx of payloadRemove) {
+            if (!Number.isInteger(idx)) continue;
+            const i = Number(idx) - 1;
+            const pf = processedFiles[i];
+            if (
+              pf &&
+              pf.file &&
+              BACKGROUND_MEMORY_META.files &&
+              BACKGROUND_MEMORY_META.files[pf.file]
+            ) {
+              BACKGROUND_MEMORY_META.files[pf.file].pruned = true;
+              BACKGROUND_MEMORY_META.files[pf.file].summary = "";
+              applied.removed.push(pf.file);
+            }
+          }
+
+          // important facts
+          if (payloadImportant && payloadImportant.length) {
+            BACKGROUND_MEMORY_META.important_facts = payloadImportant.slice(
+              0,
+              200,
+            );
+            applied.important = BACKGROUND_MEMORY_META.important_facts;
+          }
+
+          // compacted
+          if (payloadCompacted) {
+            const maxChars = Number(
+              process.env.MANA_BACKGROUND_MEMORY_MAX_CHARS || 2000,
+            );
+            let compactText = payloadCompacted.replace(/\s+/g, " ").trim();
+            if (compactText.length > maxChars)
+              compactText = compactText.slice(0, maxChars).trim() + "...";
+            BACKGROUND_MEMORY_BLOCK = `[BACKGROUND MEMORY]\n${compactText}\n[END BACKGROUND MEMORY]`;
+            applied.compacted = compactText;
+          }
+
+          try {
+            await persistBackgroundMeta();
+          } catch (e) {
+            // ignore
+          }
+
+          // Audit entry
+          try {
+            const header = req.get("authorization") || "";
+            const approver =
+              (body && body.approver) || (header ? "admin" : "local-user");
+            const audit = {
+              at: new Date().toISOString(),
+              approver,
+              action: "manual_apply",
+              removed: applied.removed || [],
+              important_facts: applied.important || [],
+              compacted: (applied.compacted || "").slice(0, 2000),
+            };
+            await appendBackgroundAudit(audit);
+          } catch (e) {
+            console.warn(
+              "Failed to write background audit (manual):",
+              e && e.message ? e.message : e,
+            );
+          }
+
+          return res.json({ ok: true, applied });
+        }
+
+        // otherwise run the reviewer and apply its recommendations
+        if (typeof runBackgroundReviewerPublic !== "function") {
+          return res
+            .status(500)
+            .json({ ok: false, error: "reviewer_unavailable" });
+        }
+        const result = await runBackgroundReviewerPublic(true);
+
+        // Audit reviewer application
+        try {
+          const header = req.get("authorization") || "";
+          const approver = header ? "admin" : "system";
+          const audit = {
+            at: new Date().toISOString(),
+            approver,
+            action: "reviewer_apply",
+            result: result && result.parsed ? result.parsed : null,
+            processedFilesCount:
+              result && result.processedFiles
+                ? result.processedFiles.length
+                : 0,
+          };
+          await appendBackgroundAudit(audit);
+        } catch (e) {
+          console.warn(
+            "Failed to write background audit (reviewer):",
+            e && e.message ? e.message : e,
+          );
+        }
+
+        return res.json({ ok: true, result });
+      } catch (e) {
+        return res.status(500).json({ ok: false, error: String(e) });
+      }
+    });
+  });
+
+  // Admin endpoint: read audit entries (supports pagination, free-text search, and structured filters)
+  app.get("/admin/background-memory/audit", async (req, res) => {
+    if (!checkAdminAuth(req, res)) return;
+    try {
+      const offset = Math.max(0, Number(req.query.offset || 0));
+      const limit = Math.max(1, Math.min(1000, Number(req.query.limit || 50)));
+      const q =
+        typeof req.query.q === "string" ? req.query.q.trim().toLowerCase() : "";
+
+      // structured filters
+      const approverFilter =
+        typeof req.query.approver === "string"
+          ? req.query.approver.trim().toLowerCase()
+          : null;
+      const actionFilter =
+        typeof req.query.action === "string"
+          ? req.query.action.trim().toLowerCase()
+          : null;
+      const fromTs = req.query.from ? Date.parse(String(req.query.from)) : null;
+      const toTs = req.query.to ? Date.parse(String(req.query.to)) : null;
+
+      if (!fs.existsSync(BACKGROUND_AUDIT_PATH))
+        return res.json({ ok: true, total: 0, entries: [] });
+
+      const txt = await fs.promises.readFile(BACKGROUND_AUDIT_PATH, "utf8");
+      const lines = (txt || "").trim().split(/\r?\n/).filter(Boolean);
+      const parsed = lines.map((l) => {
+        try {
+          return JSON.parse(l);
+        } catch (e) {
+          return { raw: l };
+        }
+      });
+      parsed.reverse(); // newest first
+
+      const filtered = parsed.filter((e) => {
+        try {
+          if (approverFilter) {
+            const a = (e.approver || "").toString().toLowerCase();
+            if (!a.includes(approverFilter)) return false;
+          }
+          if (actionFilter) {
+            const a = (e.action || "").toString().toLowerCase();
+            if (!a.includes(actionFilter)) return false;
+          }
+          if (fromTs || toTs) {
+            const at = e.at ? Date.parse(String(e.at)) : NaN;
+            if (fromTs && (!at || at < fromTs)) return false;
+            if (toTs && (!at || at > toTs)) return false;
+          }
+          if (q) {
+            if (!JSON.stringify(e).toLowerCase().includes(q)) return false;
+          }
+          return true;
+        } catch (ex) {
+          return false;
+        }
+      });
+
+      const total = filtered.length;
+      const page = filtered.slice(offset, offset + limit);
+
+      // determine index freshness
+      let indexUpToDate = false;
+      try {
+        const st = await fs.promises
+          .stat(BACKGROUND_AUDIT_PATH)
+          .catch(() => ({ size: 0 }));
+        const currentSize = st.size || 0;
+        indexUpToDate =
+          BACKGROUND_AUDIT_INDEX &&
+          Number(BACKGROUND_AUDIT_INDEX.lastSize || 0) === Number(currentSize);
+      } catch (e) {
+        indexUpToDate = false;
+      }
+
+      return res.json({
+        ok: true,
+        total,
+        offset,
+        limit,
+        entries: page,
+        indexUpToDate,
+      });
+    } catch (e) {
+      return res.status(500).json({ ok: false, error: String(e) });
+    }
+  });
+
+  // Admin endpoint: rebuild audit index on-demand (synchronous)
+  app.post("/admin/background-memory/audit/rebuild", async (req, res) => {
+    if (!checkAdminAuth(req, res)) return;
+    try {
+      if (BACKGROUND_AUDIT_REBUILD_LOCK) {
+        return res
+          .status(409)
+          .json({ ok: false, error: "rebuild_in_progress" });
+      }
+      BACKGROUND_AUDIT_REBUILD_LOCK = true;
+      try {
+        const result = await buildIndexFromAuditFile();
+        BACKGROUND_AUDIT_LAST_REBUILD = new Date().toISOString();
+        return res.json({
+          ok: true,
+          entries:
+            result && result.entries
+              ? result.entries.length
+              : (BACKGROUND_AUDIT_INDEX.entries || []).length,
+          lastSize:
+            (result && result.lastSize) || BACKGROUND_AUDIT_INDEX.lastSize || 0,
+        });
+      } finally {
+        BACKGROUND_AUDIT_REBUILD_LOCK = false;
+      }
+    } catch (e) {
+      BACKGROUND_AUDIT_REBUILD_LOCK = false;
+      return res.status(500).json({ ok: false, error: String(e) });
+    }
+  });
+
+  // Admin endpoint: rebuild audit index with streaming progress (NDJSON)
+  app.get("/admin/background-memory/audit/rebuild/stream", async (req, res) => {
+    if (!checkAdminAuth(req, res)) return;
+    try {
+      if (BACKGROUND_AUDIT_REBUILD_LOCK) {
+        res.setHeader("Content-Type", "application/x-ndjson; charset=utf-8");
+        res.write(JSON.stringify({ error: "rebuild_in_progress" }) + "\n");
+        return res.end();
+      }
+      BACKGROUND_AUDIT_REBUILD_LOCK = true;
+      BACKGROUND_AUDIT_LAST_REBUILD = new Date().toISOString();
+
+      res.setHeader("Content-Type", "application/x-ndjson; charset=utf-8");
+      res.setHeader("Cache-Control", "no-cache");
+      res.setHeader("Connection", "keep-alive");
+
+      // if no file, emit done
+      if (!fs.existsSync(BACKGROUND_AUDIT_PATH)) {
+        const doneObj = { done: true, entries: 0, lastSize: 0 };
+        res.write(JSON.stringify(doneObj) + "\n");
+        BACKGROUND_AUDIT_REBUILD_LOCK = false;
+        return res.end();
+      }
+
+      const st = await fs.promises
+        .stat(BACKGROUND_AUDIT_PATH)
+        .catch(() => ({ size: 0 }));
+      const totalBytes = st.size || 0;
+
+      const stream = fs.createReadStream(BACKGROUND_AUDIT_PATH, {
+        encoding: "utf8",
+      });
+      const readline = require("readline");
+      const rl = readline.createInterface({
+        input: stream,
+        crlfDelay: Infinity,
+      });
+
+      let offset = 0;
+      let count = 0;
+      const entries = [];
+      const reportEvery = Number(process.env.AUDIT_INDEX_REPORT_EVERY || 200);
+
+      let aborted = false;
+      req.on("close", () => {
+        aborted = true;
+        try {
+          rl.close();
+        } catch (e) {}
+        try {
+          stream.destroy();
+        } catch (e) {}
+      });
+
+      for await (const line of rl) {
+        if (aborted) break;
+        const len = Buffer.byteLength(line + "\n", "utf8");
+        let meta = { raw: line };
+        try {
+          meta = JSON.parse(line);
+        } catch (e) {}
+        entries.push({
+          at: meta.at || null,
+          approver: meta.approver || null,
+          action: meta.action || null,
+          offset,
+          length: len,
+        });
+        offset += len;
+        count += 1;
+        if (count % reportEvery === 0) {
+          const progress = {
+            processedLines: count,
+            bytesProcessed: offset,
+            totalBytes,
+            percent: totalBytes
+              ? Math.round((offset / totalBytes) * 100)
+              : null,
+          };
+          res.write(JSON.stringify({ progress }) + "\n");
+          // flush
+        }
+      }
+
+      // finalize index
+      BACKGROUND_AUDIT_INDEX = { entries, lastSize: offset };
+      await persistAuditIndex();
+
+      const doneObj = { done: true, entries: entries.length, lastSize: offset };
+      res.write(
+        JSON.stringify({
+          progress: {
+            processedLines: count,
+            bytesProcessed: offset,
+            totalBytes,
+            percent: totalBytes
+              ? Math.round((offset / totalBytes) * 100)
+              : null,
+          },
+        }) + "\n",
+      );
+      res.write(JSON.stringify(doneObj) + "\n");
+      BACKGROUND_AUDIT_REBUILD_LOCK = false;
+      return res.end();
+    } catch (e) {
+      BACKGROUND_AUDIT_REBUILD_LOCK = false;
+      try {
+        res.write(JSON.stringify({ error: String(e) }) + "\n");
+      } catch (er) {}
+      try {
+        res.end();
+      } catch (er) {}
+    }
+  });
+
+  // CSV export endpoint (supports same filters)
+  app.get("/admin/background-memory/audit.csv", async (req, res) => {
+    if (!checkAdminAuth(req, res)) return;
+    try {
+      const offset = Math.max(0, Number(req.query.offset || 0));
+      const limit = Math.max(
+        1,
+        Math.min(10000, Number(req.query.limit || 1000)),
+      );
+      const q =
+        typeof req.query.q === "string" ? req.query.q.trim().toLowerCase() : "";
+      const approverFilter =
+        typeof req.query.approver === "string"
+          ? req.query.approver.trim().toLowerCase()
+          : null;
+      const actionFilter =
+        typeof req.query.action === "string"
+          ? req.query.action.trim().toLowerCase()
+          : null;
+      const fromTs = req.query.from ? Date.parse(String(req.query.from)) : null;
+      const toTs = req.query.to ? Date.parse(String(req.query.to)) : null;
+
+      if (!fs.existsSync(BACKGROUND_AUDIT_PATH))
+        return res.status(200).send("");
+
+      const txt = await fs.promises.readFile(BACKGROUND_AUDIT_PATH, "utf8");
+      const lines = (txt || "").trim().split(/\r?\n/).filter(Boolean);
+      const parsed = lines
+        .map((l) => {
+          try {
+            return JSON.parse(l);
+          } catch (e) {
+            return { raw: l };
+          }
+        })
+        .reverse();
+
+      const filtered = parsed.filter((e) => {
+        try {
+          if (approverFilter) {
+            const a = (e.approver || "").toString().toLowerCase();
+            if (!a.includes(approverFilter)) return false;
+          }
+          if (actionFilter) {
+            const a = (e.action || "").toString().toLowerCase();
+            if (!a.includes(actionFilter)) return false;
+          }
+          if (fromTs || toTs) {
+            const at = e.at ? Date.parse(String(e.at)) : NaN;
+            if (fromTs && (!at || at < fromTs)) return false;
+            if (toTs && (!at || at > toTs)) return false;
+          }
+          if (q) {
+            if (!JSON.stringify(e).toLowerCase().includes(q)) return false;
+          }
+          return true;
+        } catch (ex) {
+          return false;
+        }
+      });
+
+      const page = filtered.slice(offset, offset + limit);
+
+      // Build CSV
+      const hdr = [
+        "at",
+        "approver",
+        "action",
+        "removed_count",
+        "important_facts",
+        "compacted",
+        "raw",
+      ];
+      function esc(v) {
+        if (v === null || v === undefined) return "";
+        const s = typeof v === "string" ? v : JSON.stringify(v);
+        return '"' + s.replace(/"/g, '""') + '"';
+      }
+
+      const rows = [hdr.join(",")];
+      for (const e of page) {
+        const removedCount = Array.isArray(e.removed)
+          ? e.removed.length
+          : e.result && e.result.removeIndices
+            ? e.result.removeIndices.length
+            : 0;
+        const important = Array.isArray(e.important_facts)
+          ? e.important_facts.join("; ")
+          : Array.isArray(e.importantFacts)
+            ? e.importantFacts.join("; ")
+            : "";
+        const compacted = (
+          e.compacted ||
+          (e.result && e.result.compacted) ||
+          ""
+        )
+          .toString()
+          .slice(0, 2000);
+        const raw = JSON.stringify(e);
+        const row = [
+          e.at || "",
+          e.approver || "",
+          e.action || "",
+          String(removedCount),
+          important,
+          compacted,
+          raw,
+        ]
+          .map(esc)
+          .join(",");
+        rows.push(row);
+      }
+
+      const csv = rows.join("\n");
+      res.setHeader("Content-Type", "text/csv; charset=utf-8");
+      res.setHeader(
+        "Content-Disposition",
+        `attachment; filename="background_audit.csv"`,
+      );
+      return res.send(csv);
+    } catch (e) {
+      return res.status(500).json({ ok: false, error: String(e) });
+    }
+  });
+
+  // Admin endpoint: send a tray notification (protected)
+  // Admin endpoints for retriever index: rebuild and search
+  app.post("/admin/retriever/rebuild", async (req, res) => {
+    // inline admin auth (avoid relying on outer-scope helper to ensure this handler works in all contexts)
+    const ADMIN_SECRET_ENV = process.env.MANA_ADMIN_SECRET || "";
+    if (ADMIN_SECRET_ENV) {
+      const header = req.get("authorization") || req.get("Authorization") || "";
+      if (!header || !header.startsWith("Bearer "))
+        return res.status(401).json({ ok: false, error: "unauthorized" });
+      const token = header.slice(7).trim();
+      if (token !== ADMIN_SECRET_ENV)
+        return res.status(401).json({ ok: false, error: "unauthorized" });
+    }
+    try {
+      const retrieverIndex = require("./tools/retriever-index");
+      const roots =
+        Array.isArray(req.body?.roots) && req.body.roots.length
+          ? req.body.roots
+          : [process.env.RETRIEVER_INDEX_ROOT || path.resolve(__dirname, "..")];
+      const exts =
+        Array.isArray(req.body?.exts) && req.body.exts.length
+          ? req.body.exts
+          : undefined;
+      const maxFiles = req.body?.maxFiles || undefined;
+      const result = await retrieverIndex.buildIndex({ roots, exts, maxFiles });
+      return res.json({
+        ok: true,
+        builtAt: result.builtAt,
+        count: Array.isArray(result.entries) ? result.entries.length : 0,
+      });
+    } catch (e) {
+      console.warn(
+        "/admin/retriever/rebuild failed:",
+        e && e.message ? e.message : e,
+      );
+      return res
+        .status(500)
+        .json({ ok: false, error: e && e.message ? e.message : String(e) });
+    }
+  });
+
+  app.get("/admin/retriever/search", async (req, res) => {
+    const ADMIN_SECRET_ENV = process.env.MANA_ADMIN_SECRET || "";
+    if (ADMIN_SECRET_ENV) {
+      const header = req.get("authorization") || req.get("Authorization") || "";
+      if (!header || !header.startsWith("Bearer "))
+        return res.status(401).json({ ok: false, error: "unauthorized" });
+      const token = header.slice(7).trim();
+      if (token !== ADMIN_SECRET_ENV)
+        return res.status(401).json({ ok: false, error: "unauthorized" });
+    }
+    try {
+      const q = typeof req.query.q === "string" ? req.query.q.trim() : "";
+      const k = Math.max(1, Math.min(50, Number(req.query.k || 5)));
+      if (!q)
+        return res.status(400).json({ ok: false, error: "q is required" });
+      const retrieverIndex = require("./tools/retriever-index");
+      const results = await retrieverIndex.search(q, k);
+      return res.json({ ok: true, results });
+    } catch (e) {
+      console.warn(
+        "/admin/retriever/search failed:",
+        e && e.message ? e.message : e,
+      );
+      return res
+        .status(500)
+        .json({ ok: false, error: e && e.message ? e.message : String(e) });
+    }
+  });
+
+  app.post("/admin/notify/tray", async (req, res) => {
+    const ADMIN_SECRET_ENV = process.env.MANA_ADMIN_SECRET || "";
+    if (ADMIN_SECRET_ENV) {
+      const header = req.get("authorization") || req.get("Authorization") || "";
+      if (!header || !header.startsWith("Bearer "))
+        return res.status(401).json({ ok: false, error: "unauthorized" });
+      const token = header.slice(7).trim();
+      if (token !== ADMIN_SECRET_ENV)
+        return res.status(401).json({ ok: false, error: "unauthorized" });
+    }
+    try {
+      const body = req.body || {};
+      const title =
+        typeof body.title === "string" ? body.title : "Mana Notification";
+      const text = typeof body.text === "string" ? body.text : "";
+      const type = typeof body.type === "string" ? body.type : "info";
+      const data = body.data || null;
+
+      try {
+        const bt = app && app.locals && app.locals.broadcastTrayNotification;
+        if (typeof bt === "function") {
+          bt({ type, title, text, data, at: new Date().toISOString() });
+          return res.json({ ok: true });
+        } else {
+          return res
+            .status(500)
+            .json({ ok: false, error: "tray_server_unavailable" });
+        }
+      } catch (e) {
+        return res.status(500).json({ ok: false, error: String(e) });
+      }
+    } catch (e) {
+      return res.status(400).json({ ok: false, error: String(e) });
+    }
   });
 
   app.get("/gaming/status", (req, res) => {
@@ -1566,6 +2922,15 @@ function registerRoutes(app, upload, deps = {}) {
       // don't block on logging
     }
 
+    // Inject global BACKGROUND_MEMORY_BLOCK (loaded at startup) directly under the system instructions
+    try {
+      if (BACKGROUND_MEMORY_BLOCK) {
+        selectedSystemPrompt = `${selectedSystemPrompt}\n\n${BACKGROUND_MEMORY_BLOCK}`;
+      }
+    } catch (e) {
+      // ignore failures here
+    }
+
     // Load short session memory (if provided) and prepend to prompt
     let memoryBlock = "";
     try {
@@ -1587,30 +2952,24 @@ function registerRoutes(app, upload, deps = {}) {
       memoryBlock = "";
     }
 
-    // Attempt retrieval from a local retriever microservice (preferred) or fall back to the Python subprocess
+    // Attempt retrieval from local retriever-index (fast) first. If it yields nothing, fall back to the existing HTTP or legacy Python retrievers.
     let retrievedText = "";
     try {
-      const retrieverUrl =
-        process.env.RETRIEVER_URL || "http://127.0.0.1:9000/retrieve";
       try {
-        // try HTTP retriever first
-        const resp = await fetch(retrieverUrl, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ query: transcript, k: 5 }),
-        });
-        if (resp.ok) {
+        const retrieverIndex = require("./tools/retriever-index");
+        const idx =
+          retrieverIndex.loadIndexSync && retrieverIndex.loadIndexSync();
+        if (idx && Array.isArray(idx.entries) && idx.entries.length) {
           try {
-            const hits = await resp.json();
+            const hits = await retrieverIndex.search(transcript, 5);
             if (Array.isArray(hits) && hits.length) {
               const maxChars = Number(process.env.RETRIEVER_MAX_CHARS || 3000);
               const pieces = [];
               let acc = 0;
               for (let i = 0; i < hits.length; i++) {
                 const h = hits[i];
-                const meta = h.meta || {};
-                const chunk = (meta.text || meta.preview || "").trim();
-                const header = `Source: ${meta.path} [chars ${meta.start_char}-${meta.end_char}]\n`;
+                const chunk = (h.snippet || "").trim();
+                const header = `Source: ${h.path} [score ${h.score}]\n`;
                 const snippet = header + chunk + "\n\n";
                 if (acc + snippet.length > maxChars) {
                   break;
@@ -1628,94 +2987,151 @@ function registerRoutes(app, upload, deps = {}) {
                   "\n\n";
               }
             }
-          } catch (pe) {
+          } catch (riErr) {
             console.warn(
-              "Failed to parse retriever HTTP response:",
-              pe.message,
+              "retriever-index.search failed:",
+              riErr && riErr.message ? riErr.message : riErr,
             );
           }
-        } else {
-          console.warn(
-            "Retriever HTTP returned status",
-            resp.status,
-            resp.statusText,
-          );
         }
-      } catch (httpErr) {
-        // HTTP retriever failed; attempt legacy python subprocess retriever for compatibility
+      } catch (loadErr) {
+        // retriever-index not available or failed to load; continue to HTTP/Python retriever
+      }
+
+      // If retriever-index produced results, skip the heavier HTTP/python retrievers
+      if (!retrievedText) {
+        const retrieverUrl =
+          process.env.RETRIEVER_URL || "http://127.0.0.1:9000/retrieve";
         try {
-          const vectorDir =
-            process.env.VECTOR_STORE_DIR ||
-            path.join(__dirname, "..", "tools", "vector_store");
-          const pythonBin = process.env.PYTHON_BIN || "python";
-          const retrieverScript = path.join(
-            __dirname,
-            "..",
-            "tools",
-            "retriever.py",
-          );
-          if (fs.existsSync(vectorDir) && fs.existsSync(retrieverScript)) {
-            const args = [
-              retrieverScript,
-              "--index",
-              vectorDir,
-              "--query",
-              transcript,
-              "--k",
-              "5",
-            ];
-            const r = spawnSync(pythonBin, args, {
-              encoding: "utf8",
-              maxBuffer: 20 * 1024 * 1024,
-            });
-            if (!r.error && r.status === 0 && r.stdout) {
-              try {
-                const hits = JSON.parse(r.stdout);
-                if (Array.isArray(hits) && hits.length) {
-                  const maxChars = Number(
-                    process.env.RETRIEVER_MAX_CHARS || 3000,
+          // try HTTP retriever first
+          const resp = await fetch(retrieverUrl, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ query: transcript, k: 5 }),
+          });
+          if (resp.ok) {
+            try {
+              const hits = await resp.json();
+              if (Array.isArray(hits) && hits.length) {
+                const maxChars = Number(
+                  process.env.RETRIEVER_MAX_CHARS || 3000,
+                );
+                const pieces = [];
+                let acc = 0;
+                for (let i = 0; i < hits.length; i++) {
+                  const h = hits[i];
+                  const meta = h.meta || {};
+                  const chunk = (meta.text || meta.preview || "").trim();
+                  const header = `Source: ${meta.path} [chars ${meta.start_char}-${meta.end_char}]\n`;
+                  const snippet = header + chunk + "\n\n";
+                  if (acc + snippet.length > maxChars) {
+                    break;
+                  }
+                  pieces.push(
+                    `--- Retrieved snippet ${i + 1} ---\n${snippet}--- End snippet ${i + 1} ---`,
                   );
-                  const pieces = [];
-                  let acc = 0;
-                  for (let i = 0; i < hits.length; i++) {
-                    const h = hits[i];
-                    const meta = h.meta || {};
-                    const chunk = (meta.text || meta.preview || "").trim();
-                    const header = `Source: ${meta.path} [chars ${meta.start_char}-${meta.end_char}]\n`;
-                    const snippet = header + chunk + "\n\n";
-                    if (acc + snippet.length > maxChars) {
-                      break;
-                    }
-                    pieces.push(
-                      `--- Retrieved snippet ${i + 1} ---\n${snippet}--- End snippet ${i + 1} ---`,
-                    );
-                    acc += snippet.length;
-                    if (pieces.length >= 5) break;
-                  }
-                  if (pieces.length) {
-                    retrievedText =
-                      "Retrieved repository context:\n\n" +
-                      pieces.join("\n\n") +
-                      "\n\n";
-                  }
+                  acc += snippet.length;
+                  if (pieces.length >= 5) break;
                 }
-              } catch (pe) {
+                if (pieces.length) {
+                  retrievedText =
+                    "Retrieved repository context:\n\n" +
+                    pieces.join("\n\n") +
+                    "\n\n";
+                }
+              }
+            } catch (pe) {
+              console.warn(
+                "Failed to parse retriever HTTP response:",
+                pe.message,
+              );
+            }
+          } else {
+            console.warn(
+              "Retriever HTTP returned status",
+              resp.status,
+              resp.statusText,
+            );
+          }
+        } catch (httpErr) {
+          // HTTP retriever failed; attempt legacy python subprocess retriever for compatibility
+          try {
+            const vectorDir =
+              process.env.VECTOR_STORE_DIR ||
+              path.join(__dirname, "..", "tools", "vector_store");
+            const pythonBin = process.env.PYTHON_BIN || "python";
+            const retrieverScript = path.join(
+              __dirname,
+              "..",
+              "tools",
+              "retriever.py",
+            );
+            if (fs.existsSync(vectorDir) && fs.existsSync(retrieverScript)) {
+              const args = [
+                retrieverScript,
+                "--index",
+                vectorDir,
+                "--query",
+                transcript,
+                "--k",
+                "5",
+              ];
+              const r = spawnSync(pythonBin, args, {
+                encoding: "utf8",
+                maxBuffer: 20 * 1024 * 1024,
+              });
+              if (!r.error && r.status === 0 && r.stdout) {
+                try {
+                  const hits = JSON.parse(r.stdout);
+                  if (Array.isArray(hits) && hits.length) {
+                    const maxChars = Number(
+                      process.env.RETRIEVER_MAX_CHARS || 3000,
+                    );
+                    const pieces = [];
+                    let acc = 0;
+                    for (let i = 0; i < hits.length; i++) {
+                      const h = hits[i];
+                      const meta = h.meta || {};
+                      const chunk = (meta.text || meta.preview || "").trim();
+                      const header = `Source: ${meta.path} [chars ${meta.start_char}-${meta.end_char}]\n`;
+                      const snippet = header + chunk + "\n\n";
+                      if (acc + snippet.length > maxChars) {
+                        break;
+                      }
+                      pieces.push(
+                        `--- Retrieved snippet ${i + 1} ---\n${snippet}--- End snippet ${i + 1} ---`,
+                      );
+                      acc += snippet.length;
+                      if (pieces.length >= 5) break;
+                    }
+                    if (pieces.length) {
+                      retrievedText =
+                        "Retrieved repository context:\n\n" +
+                        pieces.join("\n\n") +
+                        "\n\n";
+                    }
+                  }
+                } catch (pe) {
+                  console.warn(
+                    "Failed to parse retriever subprocess output:",
+                    pe.message,
+                  );
+                }
+              } else if (r.error) {
                 console.warn(
-                  "Failed to parse retriever subprocess output:",
-                  pe.message,
+                  "Retriever subprocess spawn error:",
+                  r.error.message,
+                );
+              } else if (r.status !== 0) {
+                console.warn(
+                  "Retriever subprocess exited with status",
+                  r.status,
                 );
               }
-            } else if (r.error) {
-              console.warn(
-                "Retriever subprocess spawn error:",
-                r.error.message,
-              );
-            } else if (r.status !== 0) {
-              console.warn("Retriever subprocess exited with status", r.status);
             }
+          } catch (subErr) {
+            console.warn("Subprocess retriever failed:", subErr.message);
           }
-        } catch (subErr) {
-          console.warn("Subprocess retriever failed:", subErr.message);
         }
       }
     } catch (e) {
@@ -2046,10 +3462,36 @@ async function startServer() {
     console.warn("Failed to register caption server:", e?.message || e);
   }
 
-  // serve admin UI static file
+  // attach tray websocket server for live tray notifications
+  try {
+    const trayServer = require("./tray-server");
+    trayServer.registerTrayServer(server, { path: "/ws/tray" });
+    // make broadcast available via app locals for other modules
+    app.locals.broadcastTrayNotification = trayServer.broadcastTrayNotification;
+    try {
+      const trayNotifier = require("./tray-notifier");
+      trayNotifier.setBroadcaster(trayServer.broadcastTrayNotification);
+    } catch (e) {
+      // ignore if notifier cannot be wired
+    }
+  } catch (e) {
+    console.warn("Failed to register tray server:", e?.message || e);
+  }
+
+  // serve admin UI static files
   app.get("/admin/token-cache-ui", (req, res) => {
     try {
       const f = path.join(__dirname, "admin", "token_cache_ui.html");
+      if (!fs.existsSync(f)) return res.status(404).send("not found");
+      return res.sendFile(f);
+    } catch (e) {
+      return res.status(500).send(String(e));
+    }
+  });
+
+  app.get("/admin/background-memory-ui", (req, res) => {
+    try {
+      const f = path.join(__dirname, "admin", "background_memory_ui.html");
       if (!fs.existsSync(f)) return res.status(404).send("not found");
       return res.sendFile(f);
     } catch (e) {
