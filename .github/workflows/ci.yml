@@ -35,11 +35,21 @@ jobs:
         working-directory: ./desktop-client
         run: |
           npm ci
+      - name: Fetch Node runtime for standalone installer
+        if: always()
+        working-directory: ${{ github.workspace }}
+        shell: pwsh
+        run: |
+          Write-Host "Fetching Node $env:NODE_VERSION for Windows runner"
+          $ver = '${{ env.NODE_VERSION }}'
+          if (-not $ver) { $ver = '18.18.0' }
+          .\scripts\fetch_node_bin.ps1 -Version $ver -Arch x64 -Force
       - name: Create Windows installer (electron-builder)
         working-directory: ./desktop-client
         env:
           CSC_LINK: ${{ secrets.CSC_LINK || '' }}
           CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD || '' }}
+          NODE_VERSION: ${{ env.NODE_VERSION || '18.18.0' }}
         run: |
           npm run dist
       - name: Upload installer artifact
