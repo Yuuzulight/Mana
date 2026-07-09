@@ -1,0 +1,31 @@
+name: Fast Node Tests
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - 'feature/**'
+
+jobs:
+  fast-node-tests:
+    name: Fast Node tests (unit + pairing smoke)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18.18.0'
+
+      - name: Install node-bot deps
+        working-directory: ./node-bot
+        run: npm ci
+
+      - name: Run fast node tests
+        env:
+          SKIP_HEAVY_MODEL_TESTS: '1'
+        working-directory: ./node-bot
+        run: npm test
