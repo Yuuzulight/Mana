@@ -32,6 +32,13 @@
       "perMachine": false,
       "allowElevation": true,
       "allowToChangeInstallationDirectory": true
-    }
+    },
+    "extraResources": [
+      {
+        "from": "../node-bot",
+        "to": "node-bot",
+        "filter": ["**/*"]
+      }
+    ]
   }
 }
