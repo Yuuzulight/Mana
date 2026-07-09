@@ -123,13 +123,13 @@ function createApp(deps = {}) {
   	  // register existing routes with deviceStore available in deps
   	  registerRoutes(app, upload, { ...deps, env: appEnv, deviceStore });
 
-  	  // serve small admin UI
-  	  app.use('/admin/mobile-devices', express.static(path.join(__dirname, 'admin')));
+	  // serve small admin UI
+	  app.use('/admin/mobile-devices', express.static(path.join(__dirname, 'admin')));
 
-  	  // mount mobile routes at /mobile
-  	  app.use('/mobile', registerMobileRoutes({ deviceStore }));
+	  // register mobile routes on the app
+	  registerMobileRoutes(app, { deviceStore });
 
-  	  return app;
+	  return app;
 }
 
 const WHISPER_BIN = process.env.WHISPER_BIN || null;
@@ -4055,6 +4055,7 @@ function registerRoutes(app, upload, deps = {}) {
         ),
       }),
     mobileMemoryStore,
+    deviceStore: deps.deviceStore,
     buildAssistantReply: deps.buildAssistantReply || buildAssistantReply,
     synthesizeReply: deps.synthesizeReply || synthesizeReply,
     runWhisper: deps.runWhisper || runWhisper,
