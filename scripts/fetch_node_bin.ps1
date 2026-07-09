@@ -45,6 +45,17 @@ try{
     Write-Log "Extracting archive..."
     Expand-Archive -LiteralPath $tmpZip -DestinationPath $tmpDir.FullName -Force
 
+    # Download SHASUMS256.txt for verification
+    $shasumsUrl = "https://nodejs.org/dist/v$Version/SHASUMS256.txt"
+    $shasumsFile = Join-Path $tmpDir.FullName 'SHASUMS256.txt'
+    try{
+        Write-Log "Downloading SHASUMS256 from $shasumsUrl"
+        Invoke-WebRequest -Uri $shasumsUrl -OutFile $shasumsFile -UseBasicParsing -ErrorAction Stop
+    } catch {
+        Write-Log "Warning: Failed to download SHASUMS256.txt: $($_.Exception.Message)"
+        $shasumsFile = $null
+    }
+
     $extractedDir = Join-Path $tmpDir.FullName "node-v$Version-win-$Arch"
     if (!(Test-Path $extractedDir)){
         # sometimes the zip may contain files at root; find first folder
@@ -57,6 +68,29 @@ try{
     if (!(Test-Path $extractedDir)){
         throw "Failed to locate extracted Node distribution in $($tmpDir.FullName)"
     }
+
+    # Compute SHA256 of the downloaded zip and compare if possible
+    try{
+        $sha256 = Get-FileHash -Path $tmpZip -Algorithm SHA256 | Select-Object -ExpandProperty Hash
+        Write-Log "Computed SHA256: $sha256"
+        if ($shasumsFile){
+            $matchLine = Select-String -Path $shasumsFile -Pattern [regex]::Escape($fileName) -SimpleMatch -Quiet
+            if ($matchLine){
+                $all = Get-Content $shasumsFile | Where-Object { $_ -match [regex]::Escape($fileName) } | Select-Object -First 1
+                if ($all){
+                    # SHASUMS file format: <hash>  <filename>
+                    $parts = $all -split '\s+' | Where-Object { $_ -ne '' }
+                    $expected = $parts[0]
+                    Write-Log "Expected SHA256 from SHASUMS256.txt: $expected"
+                    if ($expected -ne $sha256){
+                        Write-Log "WARNING: SHA256 mismatch between downloaded zip and SHASUMS256.txt"
+                    } else {
+                        Write-Log "SHA256 verified against SHASUMS256.txt"
+                    }
+                }
+            }
+        }
+    } catch { Write-Log "Warning: SHA256 verification failed: $($_.Exception.Message)" }
 
     if (Test-Path $nodeBinDir){
         if ($Force){
@@ -89,6 +123,13 @@ try{
     } else {
         Write-Log "Warning: node.exe not found in node-bin. You may need to adjust placement depending on distribution contents."
     }
+
+    # Save checksum to node-bin/CHECKSUMS.txt
+    try{
+        $checksumFile = Join-Path $nodeBinDir 'CHECKSUMS.txt'
+        "SHA256 $fileName $sha256" | Out-File -FilePath $checksumFile -Encoding UTF8
+        Write-Log "Saved checksum to $checksumFile"
+    } catch {}
 
     Write-Host "\nDone. node-bin prepared at: $nodeBinDir"
     Write-Host "You can now run: cd desktop-client; npm ci; npm run dist"
