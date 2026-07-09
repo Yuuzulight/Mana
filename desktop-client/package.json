@@ -38,6 +38,11 @@
         "from": "../node-bot",
         "to": "node-bot",
         "filter": ["**/*"]
+      },
+      {
+        "from": "../node-bin",
+        "to": "node_bin",
+        "filter": ["**/*"]
       }
     ]
   }
