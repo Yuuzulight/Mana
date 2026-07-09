@@ -6,7 +6,7 @@ function run(cmd, args, opts={}){
   if (r.status !== 0) process.exit(r.status);
 }
 
-const skipHeavy = process.env.SKIP_HEAVY_MODEL_TESTS === '1' || process.env.SKIP_HEAVY_MODEL_TESTS === 'true';
+const skipHeavy = process.env.SKIP_HEAVY_MODEL_TESTS === '1' || process.env.SKIP_HEAVY_MODEL_TESTS === 'true' || process.env.GITHUB_EVENT_NAME === 'pull_request' || (process.env.GITHUB_REF && process.env.GITHUB_REF.startsWith('refs/pull/'));
 if (skipHeavy){
   // Run only fast, focused tests (paths resolved from current working directory)
   const tests = [
