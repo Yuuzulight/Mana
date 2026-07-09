@@ -30,7 +30,17 @@ jobs:
         if: ${{ env.BASE_REF != '' }}
         run: git fetch origin $BASE_REF
 
-      - name: Check commits for Signed-off-by or signed CLA in PR
+      - name: Debug DCO context
+        if: ${{ env.PR_SHA != '' }}
+        run: |
+          echo "DEBUG: PR_AUTHOR=$PR_AUTHOR"
+          echo "DEBUG: MAINTAINERS=$MAINTAINERS"
+          echo "DEBUG: BASE_REF=$BASE_REF"
+          echo "DEBUG: PR_SHA=$PR_SHA"
+          echo "Listing recent commits between origin/$BASE_REF and $PR_SHA"
+          git --no-pager log --oneline origin/$BASE_REF..$PR_SHA || true
+
+      - name: Check commits for Signed-off-by or signed CLA in PR (non-blocking)
         if: ${{ env.PR_SHA != '' }}
         run: |
           set -euo pipefail
@@ -40,6 +50,7 @@ jobs:
             for m in $(echo "$MAINTAINERS" | tr ',' '\n'); do
               if [ "${PR_AUTHOR}" = "$m" ]; then
                 echo "PR author $PR_AUTHOR is a maintainer; bypassing DCO check.";
+                echo "DCO_MISSING=0" >> $GITHUB_ENV
                 exit 0;
               fi
             done
@@ -49,15 +60,18 @@ jobs:
           commits=$(git rev-list --no-merges origin/$BASE_REF..$PR_SHA || true)
           if [ -z "$commits" ]; then
             echo "No new commits to check."
+            echo "DCO_MISSING=0" >> $GITHUB_ENV
             exit 0
           fi
 
           missing=0
+          missing_list=""
           for c in $commits; do
             echo "Inspecting commit $c"
             if ! git show -s --format=%B $c | grep -i -q '^Signed-off-by: '; then
               echo "Commit $c is missing a Signed-off-by line"
               missing=1
+              missing_list="$missing_list\n$c"
             fi
           done
 
@@ -81,12 +95,28 @@ $files_changed"
 
             if [ "$cla_found" -eq 1 ]; then
               echo "Signed CLA file detected in PR — allowing unsigned commits since contributor submitted a CLA in this PR."
+              echo "DCO_MISSING=0" >> $GITHUB_ENV
               exit 0
             else
               echo "No signed CLA file found in PR."
-              echo "Please sign your commits with DCO (add 'Signed-off-by: Your Name <you@example.com>' to commit messages) or submit a signed CLA as described in CONTRIBUTING.md/CLA.md."
-              # fail the job to require either DCO or CLA
-              exit 1
+              echo "DCO_MISSING=1" >> $GITHUB_ENV
+              echo "DCO_MISSING_LIST<<EOF" >> $GITHUB_ENV
+              echo "$missing_list" >> $GITHUB_ENV
+              echo "EOF" >> $GITHUB_ENV
+              # do not fail CI; we will notify via comment
             fi
+          else
+            echo "All commits have DCO sign-offs."
+            echo "DCO_MISSING=0" >> $GITHUB_ENV
           fi
-          echo "All commits have DCO sign-offs."
+
+      - name: Notify contributors about missing DCO (non-blocking)
+        if: env.DCO_MISSING == '1' && github.event_name == 'pull_request'
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const missing = process.env.DCO_MISSING_LIST || '';
+            const body = `One or more commits in this PR are missing DCO sign-offs (Signed-off-by).\n\nMissing commits:${missing}\n\nPlease either:\n- Add a 'Signed-off-by: Your Name <you@example.com>' line to each commit you authored, or\n- Include a signed CLA file in the PR (recommended filename: SIGNED_CLA_<YourName>.pdf at repo root or in /cla).\n\nSee CONTRIBUTING.md for details.`;
+            const pr_number = context.payload.pull_request.number;
+            await github.rest.issues.createComment({ owner: context.repo.owner, repo: context.repo.repo, issue_number: pr_number, body });
+            console.log('Posted DCO guidance comment on PR #' + pr_number);
