@@ -40,24 +40,26 @@ const { createWorker } = require("tesseract.js");
 const { VTubeStudioClient } = require("./vtube-studio-client");
 const { registerVTubeRoutes } = require("./vtube-routes");
 const { createVTubeRuntime } = require("./vtube-runtime");
-const { registerMobileRoutes } = require("./mobile-routes");
-const { createMobileAuth } = require("./mobile-auth");
-const { createMobileMemoryStore } = require("./mobile-memory-store");
-const { registerCoreRoutes } = require("./server-routes");
-const {
-  buildCapabilityHealth,
-  registerCapabilities,
-} = require("./capabilities/registry");
-const {
-  ffxivMarketCapability,
-} = require("./capabilities/ffxiv-market-capability");
-const dirScannerCapability = require("./capabilities/dir-scanner-capability");
-const { runDoctorChecksAsync } = require("./doctor");
-const {
-  buildMarketContextForPrompt,
-  createMarketDataClient,
-  isMarketQuestion,
-} = require("./market-data");
+	const { registerMobileRoutes } = require("./mobile-routes");
+	const { createMobileAuth } = require("./mobile-auth");
+	const { createMobileMemoryStore } = require("./mobile-memory-store");
+	const { registerCoreRoutes } = require("./server-routes");
+	const {
+	  buildCapabilityHealth,
+	  registerCapabilities,
+	} = require("./capabilities/registry");
+	const {
+	  ffxivMarketCapability,
+	} = require("./capabilities/ffxiv-market-capability");
+	const dirScannerCapability = require("./capabilities/dir-scanner-capability");
+	const { runDoctorChecksAsync } = require("./doctor");
+	const { MobileDeviceStore } = require("./mobile-device-store");
+	// NOTE: mobile-auth and mobile-memory-store may exist; we add device store integration here
+	const {
+	  buildMarketContextForPrompt,
+	  createMarketDataClient,
+	  isMarketQuestion,
+	} = require("./market-data");
 const { createTtsRuntime } = require("./tts-runtime");
 const { createAcpMemoryStore } = require("./acp-memory-store");
 const {
@@ -113,9 +115,21 @@ function createApp(deps = {}) {
   const appEnv = deps.env || process.env;
   app.use(cors());
   app.use(express.json({ limit: "15mb" }));
-  const upload = multer({ dest: path.join(__dirname, "tmp") });
-  registerRoutes(app, upload, { ...deps, env: appEnv });
-  return app;
+  	const upload = multer({ dest: path.join(__dirname, "tmp") });
+
+  	  // wire mobile device store (allow override via deps for tests)
+  	  const deviceStore = deps.deviceStore || new MobileDeviceStore();
+
+  	  // register existing routes with deviceStore available in deps
+  	  registerRoutes(app, upload, { ...deps, env: appEnv, deviceStore });
+
+  	  // serve small admin UI
+  	  app.use('/admin/mobile-devices', express.static(path.join(__dirname, 'admin')));
+
+  	  // mount mobile routes at /mobile
+  	  app.use('/mobile', registerMobileRoutes({ deviceStore }));
+
+  	  return app;
 }
 
 const WHISPER_BIN = process.env.WHISPER_BIN || null;
