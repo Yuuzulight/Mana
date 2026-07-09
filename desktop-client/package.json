@@ -1,6 +1,8 @@
 {
   "name": "mana-desktop-client",
   "version": "0.1.0",
+  "description": "Mana desktop Electron client that spawns the local Mana backend, records audio, and plays TTS",
+  "author": "ManaAI",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
