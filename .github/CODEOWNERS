@@ -1,0 +1,12 @@
+# Code owners for the Mana repository
+# Responsible parties will be requested for review on changes to matching paths
+
+# Top-level ownership (fallback)
+*    @Yuuzulight
+
+# Specific owners for major areas
+/node-bot/          @Yuuzulight
+/desktop-client/    @Yuuzulight
+/windows-launcher/  @Yuuzulight
+/sprites/           @Yuuzulight
+/docs/              @Yuuzulight

@@ -1,0 +1,59 @@
+:root{
+  --bg: #ffffff;
+  --muted: #8b8b8b;
+  --accent: #7c5cff;
+  --panel: #f7f7f8;
+  --border: #e6e6e9;
+}
+html,body{height:100%;}
+body{
+  margin:0; font-family: Inter, system-ui, -apple-system, Arial; background:var(--bg); color:#111; -webkit-font-smoothing:antialiased;
+}
+.layout{display:flex;height:100vh;}
+
+/* Sidebar */
+.sidebar{width:220px; background:#fff; border-right:1px solid var(--border); padding:16px; box-sizing:border-box; display:flex; flex-direction:column;}
+.brand{font-weight:700; font-size:18px; margin-bottom:16px}
+.nav{display:flex; flex-direction:column; gap:8px}
+.nav-btn{border:none;background:transparent;padding:10px;border-radius:8px;text-align:left;color:var(--muted);cursor:pointer}
+.nav-btn.active{background:var(--panel); color:#111}
+.side-footer{margin-top:auto;color:var(--muted);font-size:13px}
+
+/* Chat area */
+.chat-area{flex:1; display:flex; flex-direction:column;}
+.chat-header{display:flex; align-items:center; justify-content:space-between; padding:14px 20px; border-bottom:1px solid var(--border);}
+.header-left{display:flex;align-items:center;gap:12px}
+.sprite{width:48px;height:48px;background-image: url('../../sprites/sprite-idle.png'); background-size:contain; background-repeat:no-repeat; border-radius:8px;}
+.title{font-weight:700}
+.subtitle{font-size:12px;color:var(--muted)}
+.header-right .icon-btn{border:1px solid var(--border); background:transparent;padding:8px;border-radius:8px}
+
+/* Messages */
+.messages{flex:1; overflow:auto; padding:20px; display:flex; flex-direction:column; gap:12px}
+.message{max-width:70%;padding:12px;border-radius:12px;background:var(--panel);border:1px solid var(--border)}
+.message.assistant{align-self:flex-start;background:#f0f5ff}
+.message.system{align-self:flex-end;background:#fff}
+
+/* Input bar */
+.input-bar{display:flex;align-items:flex-end;padding:12px 20px;border-top:1px solid var(--border);gap:12px;background:linear-gradient(180deg,#fff,#fff)}
+.avatar-wrap img{width:40px;height:40px;border-radius:8px}
+.input-wrap{flex:1;display:flex;flex-direction:column}
+#messageInput{width:100%;min-height:42px;max-height:140px;padding:10px;border-radius:16px;border:1px solid var(--border);resize:none;font-size:14px}
+.input-actions{display:flex;gap:8px;margin-top:8px}
+.primary{background:var(--accent);color:white;border:none;padding:8px 12px;border-radius:10px}
+
+/* Logs footer */
+.logs-footer{padding:8px 20px;border-top:1px solid var(--border);background:#fafafa}
+.logs{height:80px;overflow:auto;background:#fff;padding:8px;border-radius:8px;border:1px solid var(--border);}
+
+/* small sprite state classes */
+.sprite.listening{background-image: url('../../sprites/sprite-speak.png')}
+.sprite.speaking{background-image: url('../../sprites/sprite-speak.png')}
+
+/* tiny hop */
+@keyframes hop{0%{transform:translateY(0)}25%{transform:translateY(-6px)}50%{transform:translateY(0)}75%{transform:translateY(-3px)}100%{transform:translateY(0)}}
+.sprite.excited{animation:hop 320ms ease-in-out infinite}
+
+/* admin avatar excited and loading handled inline in admin page */
+#status { text-align:center; color:#666; }
+.logs { max-height:160px; overflow:auto; background:#f7f7f7; padding:6px; }
