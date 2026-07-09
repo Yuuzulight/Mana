@@ -1,0 +1,59 @@
+<!doctype html>
+<html>
+<head>
+  <meta</head> charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Mana - Desktop</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div class="layout">
+    <aside class="sidebar">
+      <div class="brand">Mana</div>
+      <nav class="nav">
+        <button class="nav-btn active">Home</button>
+        <button class="nav-btn">Code</button>
+        <button class="nav-btn">Settings</button>
+      </nav>
+      <div class="side-footer">v0.1 • Local</div>
+    </aside>
+
+    <main class="chat-area">
+      <header class="chat-header">
+        <div class="header-left">
+          <img id="sprite" class="sprite idle" role="img" aria-label="Mana avatar">
+          <div class="title-block">
+            <div class="title">Speak to Mana</div>
+            <div id="status" class="subtitle">Starting...</div>
+          </div>
+        </div>
+        <div class="header-right">
+          <button id="btnStop" class="icon-btn">Stop</button>
+        </div>
+      </header>
+
+      <section id="messages" class="messages">
+        <div id="transcript" class="message system">(transcript will appear here)</div>
+        <div id="reply" class="message assistant">(reply will appear here)</div>
+      </section>
+
+      <div class="input-bar">
+        <div class="avatar-wrap"><img id="adminSpriteSmall" src="../../sprites/sprite-idle.png" alt="avatar"/></div>
+        <div class="input-wrap">
+          <textarea id="messageInput" placeholder="Write a message..." rows="1"></textarea>
+          <div class="input-actions">
+            <button id="btnRecord" class="primary">Hold to Talk</button>
+            <button id="btnClear">Clear</button>
+          </div>
+        </div>
+      </div>
+
+      <footer class="logs-footer">
+        <pre id="backendLogs" class="logs">(backend logs)</pre>
+      </footer>
+    </main>
+  </div>
+
+  <script src="renderer.js"></script>
+</body>
+</html>

@@ -2651,6 +2651,132 @@ function registerRoutes(app, upload, deps = {}) {
     }
   });
 
+  // Vector rebuild audit endpoints
+  app.get("/admin/retriever/vector/rebuild/audit", async (req, res) => {
+    const ADMIN_SECRET_ENV = process.env.MANA_ADMIN_SECRET || "";
+    if (ADMIN_SECRET_ENV) {
+      const header = req.get("authorization") || req.get("Authorization") || "";
+      if (!header || !header.startsWith("Bearer "))
+        return res.status(401).json({ ok: false, error: "unauthorized" });
+      const token = header.slice(7).trim();
+      if (token !== ADMIN_SECRET_ENV)
+        return res.status(401).json({ ok: false, error: "unauthorized" });
+    }
+    try {
+      if (!fs.existsSync(VECTOR_REBUILD_AUDIT_PATH))
+        return res.json({ ok: true, total: 0, entries: [] });
+      const txt = await fs.promises.readFile(VECTOR_REBUILD_AUDIT_PATH, "utf8");
+      const lines = (txt || "").split(/\r?\n/).filter(Boolean);
+      let parsed = lines.map((l) => {
+        try {
+          return JSON.parse(l);
+        } catch (e) {
+          return { raw: l };
+        }
+      });
+      parsed.reverse(); // newest first
+
+      const offset = Math.max(0, Number(req.query.offset || 0));
+      const limit = Math.max(1, Math.min(1000, Number(req.query.limit || 50)));
+      const q =
+        typeof req.query.q === "string" ? req.query.q.trim().toLowerCase() : "";
+      const fromTs = req.query.from ? Date.parse(String(req.query.from)) : null;
+      const toTs = req.query.to ? Date.parse(String(req.query.to)) : null;
+
+      const filtered = parsed.filter((e) => {
+        try {
+          if (fromTs || toTs) {
+            const at = e.at ? Date.parse(String(e.at)) : NaN;
+            if (fromTs && (!at || at < fromTs)) return false;
+            if (toTs && (!at || at > toTs)) return false;
+          }
+          if (q) {
+            if (!JSON.stringify(e).toLowerCase().includes(q)) return false;
+          }
+          return true;
+        } catch (ex) {
+          return false;
+        }
+      });
+
+      const total = filtered.length;
+      const page = filtered.slice(offset, offset + limit);
+      return res.json({ ok: true, total, offset, limit, entries: page });
+    } catch (e) {
+      return res.status(500).json({ ok: false, error: String(e) });
+    }
+  });
+
+  app.get("/admin/retriever/vector/rebuild/audit.csv", async (req, res) => {
+    const ADMIN_SECRET_ENV = process.env.MANA_ADMIN_SECRET || "";
+    if (ADMIN_SECRET_ENV) {
+      const header = req.get("authorization") || req.get("Authorization") || "";
+      if (!header || !header.startsWith("Bearer "))
+        return res.status(401).json({ ok: false, error: "unauthorized" });
+      const token = header.slice(7).trim();
+      if (token !== ADMIN_SECRET_ENV)
+        return res.status(401).json({ ok: false, error: "unauthorized" });
+    }
+    try {
+      if (!fs.existsSync(VECTOR_REBUILD_AUDIT_PATH))
+        return res.status(200).send("");
+      const txt = await fs.promises.readFile(VECTOR_REBUILD_AUDIT_PATH, "utf8");
+      const lines = (txt || "").split(/\r?\n/).filter(Boolean);
+      const parsed = lines
+        .map((l) => {
+          try {
+            return JSON.parse(l);
+          } catch (e) {
+            return { raw: l };
+          }
+        })
+        .reverse();
+
+      const hdr = [
+        "at",
+        "approver",
+        "action",
+        "status",
+        "dir",
+        "added",
+        "count",
+        "durationMs",
+        "error",
+        "raw",
+      ];
+      function esc(v) {
+        if (v === null || v === undefined) return "";
+        const s = typeof v === "string" ? v : JSON.stringify(v);
+        return '"' + s.replace(/"/g, '""') + '"';
+      }
+      const rows = [hdr.join(",")];
+      for (const e of parsed) {
+        const row = [
+          esc(e.at || ""),
+          esc(e.approver || ""),
+          esc(e.action || ""),
+          esc(e.status || ""),
+          esc(e.dir || ""),
+          esc(e.added || ""),
+          esc(e.count || ""),
+          esc(e.durationMs || ""),
+          esc(e.error || ""),
+          esc(e.raw || ""),
+        ].join(",");
+        rows.push(row);
+      }
+      const csv = rows.join("\n");
+      res.setHeader("Content-Type", "text/csv; charset=utf-8");
+      res.setHeader(
+        "Content-Disposition",
+        `attachment; filename="vector_rebuild_audit.csv"`,
+      );
+      return res.send(csv);
+    } catch (e) {
+      return res.status(500).json({ ok: false, error: String(e) });
+    }
+  });
+
   // Streamed vector rebuild with NDJSON progress (admin-protected)
   app.get("/admin/retriever/vector/rebuild/stream", async (req, res) => {
     const ADMIN_SECRET_ENV = process.env.MANA_ADMIN_SECRET || "";
