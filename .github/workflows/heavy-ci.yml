@@ -1,0 +1,76 @@
+name: Heavy CI (full tests and packaging)
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    types: [labeled]
+
+jobs:
+  heavy-node-tests:
+    name: Heavy Node tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18.18.0'
+
+      - name: Install node-bot deps
+        working-directory: ./node-bot
+        run: npm ci
+
+      - name: Run full node tests
+        working-directory: ./node-bot
+        run: npm test
+
+  build-windows:
+    name: Build Windows installer (main only)
+    runs-on: windows-latest
+    needs: heavy-node-tests
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/heads/main')
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18.18.0'
+
+      - name: Prepare node-bin (optional)
+        shell: pwsh
+        run: |
+          $fetchScript = Join-Path $Env:GITHUB_WORKSPACE 'scripts\fetch_node_bin.ps1'
+          if (Test-Path $fetchScript) { & powershell -ExecutionPolicy Bypass -File $fetchScript -Version 18.18.0 -Arch x64 -Force } else { Write-Host 'No fetch_node_bin.ps1 found; skipping' }
+
+      - name: Build installer
+        working-directory: ./desktop-client
+        shell: pwsh
+        env:
+          CSC_LINK: ${{ secrets.CSC_LINK || '' }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD || '' }}
+        run: |
+          npm ci --no-audit --prefer-offline
+          npm run dist
+
+      - name: Collect installers
+        if: always()
+        shell: pwsh
+        run: |
+          $files = Get-ChildItem -Path .\dist -Recurse -Include *.exe,*.msi | Select-Object -First 10
+          if ($files) { New-Item -ItemType Directory -Path installer-artifacts -Force | Out-Null; foreach ($f in $files){ Copy-Item $f.FullName -Destination (Join-Path $Env:GITHUB_WORKSPACE 'installer-artifacts' $f.Name) -Force } }
+
+      - name: Upload installer artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mana-windows-installer
+          path: installer-artifacts/*
+
+  # Optional: a job to post a comment or create a release could go here
+
