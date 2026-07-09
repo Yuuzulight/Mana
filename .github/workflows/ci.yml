@@ -1,12 +1,29 @@
       - name: Create Windows installer (electron-builder)
-        working-directory: ./desktop-client
-        env:
-          CSC_LINK: ${{ secrets.CSC_LINK || '' }}
-          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD || '' }}
-          NODE_VERSION: ${{ env.NODE_VERSION || '18.18.0' }}
-        run: |
-          echo "Signing info: CSC_LINK present=$(test -n "$env:CSC_LINK"; echo $?)" || true
-          npm run dist
+              working-directory: ./desktop-client
+              env:
+                CSC_LINK: ${{ secrets.CSC_LINK || '' }}
+                CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD || '' }}
+                NODE_VERSION: ${{ env.NODE_VERSION || '18.18.0' }}
+              shell: pwsh
+              run: |
+                try {
+                  Write-Host "CSC_LINK present: " + (-not [string]::IsNullOrEmpty($Env:CSC_LINK))
+                  # Attempt to fetch a bundled Node runtime for packaging (non-fatal)
+                  $fetchScript = Join-Path $Env:GITHUB_WORKSPACE 'scripts\fetch_node_bin.ps1'
+                  if (Test-Path $fetchScript) {
+                    Write-Host "Fetching node binary using $fetchScript"
+                    & powershell -ExecutionPolicy Bypass -File $fetchScript -Version $Env:NODE_VERSION -Arch x64 -Force
+                  } else { Write-Host "fetch_node_bin.ps1 not found, skipping node-bin preparation" }
+
+                  Write-Host "Installing (lockfile-only if no node_modules) and running dist"
+                  npm ci --prefer-offline --no-audit --progress=false
+
+                  Write-Host "Running electron-builder dist"
+                  npm run dist
+                } catch {
+                  Write-Error $_.Exception.Message
+                  exit 1
+                }
       - name: Find produced installers and compute SHA256
         if: always()
         working-directory: ./desktop-client
