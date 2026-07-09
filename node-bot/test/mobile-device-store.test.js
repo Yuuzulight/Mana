@@ -1,14 +1,7 @@
-<<<<<<< HEAD
 const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
 const { MobileDeviceStore } = require('../mobile-device-store');
-=======
-import { strict as assert } from 'assert';
-import fs from 'fs';
-import path from 'path';
-import { MobileDeviceStore, sha256Hex } from '../mobile-device-store.js';
->>>>>>> ca6845b (Add mobile device pairing and management (device store, mobile routes, admin UI, tests))
 
 const TMP = path.join(__dirname, 'tmp-test-devices.json');
 
