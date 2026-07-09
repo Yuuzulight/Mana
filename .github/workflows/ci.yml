@@ -57,19 +57,37 @@ jobs:
         run: |
           echo "Signing info: CSC_LINK present=$(test -n "$env:CSC_LINK"; echo $?)" || true
           npm run dist
+      - name: Find produced installers and compute SHA256
+        if: always()
+        working-directory: ./desktop-client
+        shell: pwsh
+        run: |
+          $files = Get-ChildItem -Path .\dist -Recurse -Include *.exe,*.msi | Select-Object -First 10
+          if (!$files){ Write-Host "No installers found in desktop-client/dist"; exit 0 }
+          $outdir = Join-Path $Env:GITHUB_WORKSPACE 'installer-artifacts'
+          New-Item -ItemType Directory -Path $outdir -Force | Out-Null
+          $checks = @()
+          foreach ($f in $files){
+            $dest = Join-Path $outdir $f.Name
+            Copy-Item -Path $f.FullName -Destination $dest -Force
+            $hash = Get-FileHash -Path $dest -Algorithm SHA256 | Select-Object -ExpandProperty Hash
+            $checks += "$($f.Name): $hash"
+          }
+          $checks | Out-File -FilePath (Join-Path $outdir 'CHECKSUMS.txt') -Encoding UTF8
+          Write-Host "Checksums saved to $outdir\CHECKSUMS.txt"
       - name: Upload installer artifact
-        if: success()
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: mana-windows-installer
           path: |
-            desktop-client/dist/*.exe
-            desktop-client/dist/*.msi
+            installer-artifacts/*
 
   smoke-test-windows:
     name: Smoke test Windows installer
     runs-on: windows-latest
     needs: build-windows
+    timeout-minutes: 30
     steps:
       - name: Download installer artifact
         uses: actions/download-artifact@v4
