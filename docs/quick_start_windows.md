@@ -6,7 +6,6 @@ Architecture
 - `windows-launcher` runs the Electron UI.
 - The Electron main process starts `node-bot/server.js`.
 - `node-bot` calls local `whisper.cpp` and `llama.cpp` binaries.
-- `node-bot` uses local OCR for screen text when Mana is awake.
 - `node-bot` can call local Kokoro ONNX, Chatterbox Turbo, or Fish Speech TTS services to synthesize reply audio.
 - The renderer records short audio chunks in the browser, converts them to WAV, and uses the local backend for transcription and replies.
 
@@ -28,6 +27,8 @@ Project goal
    - Open PowerShell and set:
      - `$env:WHISPER_BIN = "C:\path\to\whisper-cli.exe"`
      - `$env:WHISPER_MODEL = "C:\path\to\ggml-model.bin"`
+     - `$env:WHISPER_LANGUAGE = "en"`
+     - `$env:WHISPER_PROMPT = "Singapore English conversation with an AI assistant named Mana. Wake words include Mana, Manah, Manna, Mannah, Myna, My Na, and wake up."`
      - `$env:LLAMA_BIN = "C:\path\to\llama-cli.exe"`
      - `$env:LLAMA_MODEL = "C:\path\to\model.gguf"`
      - `$env:TTS_PROVIDER = "chatterbox"`
@@ -39,23 +40,12 @@ Project goal
      - `$env:CHATTERBOX_EXAGGERATION = "0.35"`
      - `$env:CHATTERBOX_CFG_WEIGHT = "0.45"`
      - `$env:CHATTERBOX_TEMPERATURE = "0.8"`
-     - `$env:SCREEN_CONTEXT_ENABLED = "1"`
-     - `$env:SCREEN_CONTEXT_MAX_CHARS = "1200"`
-     - `$env:WHISPER_THREADS = "2"`
-     - `$env:LLAMA_THREADS = "4"`
-     - `$env:LLAMA_MAX_TOKENS = "180"`
-     - `$env:START_FALLBACK_CHATTERBOX = "0"`
-     - `$env:KOKORO_TTS_FALLBACK_PROVIDER = "none"`
-     - `$env:HIDE_MAIN_WINDOW_AFTER_STARTUP = "1"`
-     - `$env:UNIVERSALIS_DEFAULT_WORLD = "Adamantoise"`
-     - `$env:MARKET_PROVIDER = "alphavantage"`
-     - `$env:ALPHA_VANTAGE_API_KEY = "your-api-key"`
-     - `$env:MARKET_WATCHLIST = "NVDA,AMD,AAPL,MSFT"`
-     - `$env:MARKET_CACHE_MS = "300000"`
 
    Notes:
    - `WHISPER_BIN` should point to the Whisper CLI executable you want to use.
    - If `WHISPER_BIN` is unset or wrong, Mana will also try common local paths under `tools\whisper\`.
+   - `WHISPER_PROMPT` helps Whisper understand accents, wake words, and common local phrasing.
+   - For Singaporean-accent recognition, `ggml-base.en.bin` or `ggml-small.en.bin` should be more accurate than `ggml-tiny.en.bin`.
    - `LLAMA_BIN` should point to the Llama CLI executable you want to use.
    - `TTS_PROVIDER=kokoro` tells Mana to use the faster Kokoro ONNX service.
    - `TTS_PROVIDER=chatterbox` tells Mana to use the local Chatterbox TTS microservice.
@@ -65,14 +55,6 @@ Project goal
    - Lower `CHATTERBOX_CFG_WEIGHT` and a moderate `CHATTERBOX_EXAGGERATION` help push the voice toward a sharper, more stylized agent delivery.
    - If `LLAMA_BIN` or `LLAMA_MODEL` is not set, the backend returns a placeholder reply so you can still test audio capture and transcription.
    - If the Chatterbox service is not running, the UI still shows the text reply but will not play synthesized audio.
-   - `SCREEN_CONTEXT_ENABLED=0` disables screen reading if you want the lightest runtime path.
-   - `WHISPER_THREADS`, `LLAMA_THREADS`, and `LLAMA_MAX_TOKENS` cap heavy local work so games keep more CPU.
-   - `START_FALLBACK_CHATTERBOX=1` starts Chatterbox alongside Kokoro as a fallback, but uses more memory.
-   - `KOKORO_TTS_FALLBACK_PROVIDER=none` keeps Kokoro from falling back to Chatterbox.
-   - `HIDE_MAIN_WINDOW_AFTER_STARTUP=0` keeps the control window visible for debugging.
-   - `UNIVERSALIS_DEFAULT_WORLD` is the FFXIV world Mana uses for public marketboard price checks.
-   - `ALPHA_VANTAGE_API_KEY` enables stock-market summaries. Keep this in your local environment, not in committed files.
-   - `MARKET_WATCHLIST` is the comma-separated ticker list Mana uses for watchlist summaries.
 
 3) Install launcher and backend dependencies
    - In PowerShell:
@@ -96,64 +78,25 @@ Project goal
 
    The launcher starts `node-bot` automatically and will also try to start Kokoro as primary TTS and Chatterbox as fallback.
 
-   Development auto-restart:
-   - Use `npm run dev` instead of `npm run start` while editing Mana.
-   - The Electron app restarts when launcher or backend source files change.
-
 6) Use Mana
    - Start the Windows launcher.
    - Mana shows the PNG avatar overlay and starts listening automatically.
    - Keep `Gaming mode` checked when you want Mana to run lighter while a watched game is open.
    - Say `Mana` once to wake her for the session.
    - After that first wake-up, keep talking without repeating the wake word.
-   - After Mana is awake, she reads visible screen text before replying.
    - The UI shows the transcript and model reply.
    - If Chatterbox is running, the reply is synthesized and played back by the app.
 
-Screen reading notes
-- Screen reading is local OCR through `tesseract.js`.
-- It helps Mana read menus, chat, UI labels, and other visible text.
-- It does not yet understand images, icons, characters, or game scenes without readable text.
-- The launcher downscales screen captures before OCR so it is lighter while a game is running.
-
 Performance notes
 - `Gaming mode` checks Windows for watched game processes such as FFXIV.
-- Use `npm run start` instead of `npm run dev` when you are playing; dev mode adds the autorestart helper process.
-- Kokoro-only TTS is the lower-memory path. Keep `START_FALLBACK_CHATTERBOX=0` unless you specifically need the Chatterbox fallback.
-- The main control window hides after startup by default. The renderer stays alive for microphone listening while the avatar remains visible.
-- After Kokoro has been installed once, the launcher starts the Kokoro service directly to avoid keeping an extra setup PowerShell process alive.
 - When a watched game is running, Mana waits longer after empty/noise chunks to reduce idle work.
-- When a watched game is running, Mana records longer chunks, calls Whisper less often, and reuses screen OCR longer.
-- While gaming, Mana only refreshes screen OCR for commands that look screen-related, such as asking her to read, look, or explain an icon/menu.
-- The launcher Performance panel shows current Mana memory, detected game status, config caps, and latest Whisper/OCR/Llama/TTS timings.
 - Set `GAMING_PROCESS_NAMES` to a comma-separated process list if you want to watch other games.
 - Example: `$env:GAMING_PROCESS_NAMES = "ffxiv_dx11.exe,eldenring.exe"`
 
-Universalis market data
-- Mana can query public FFXIV marketboard data through Universalis.
-- Direct endpoint: `GET http://localhost:5005/ffxiv/market?world=Adamantoise&itemId=2`
-- Name lookup endpoint: `GET http://localhost:5005/ffxiv/market?world=Adamantoise&itemName=Potion`
-- Hovered-item endpoint: `POST http://localhost:5005/ffxiv/market/from-screen` with `{ "screenText": "Potion\nItem Level 1..." }`
-- Craft profit endpoint: `GET http://localhost:5005/ffxiv/crafting/profit?world=Adamantoise&limit=10&scanLimit=500`
-- Narrow the craft scan by result name: `GET http://localhost:5005/ffxiv/crafting/profit?world=Adamantoise&query=ingot&limit=10`
-- Recipe/material lookup defaults to Garland Tools item docs; use `recipeSource=xivapi` to force XIVAPI recipe rows instead.
-- Voice/text prompts can ask for prices if you include an item ID, for example: `Mana, check the marketboard price for item id 2`.
-- If the hovered item tooltip is visible, you can ask: `Mana, check the Universalis price for the item I am hovering over`.
-- Voice/text prompts can ask for profitable crafts, for example: `Mana, find the top 10 most profitable crafts on Adamantoise`.
-- Profit compares the crafted result's lowest current Universalis listing price, multiplied by recipe yield, against the sum of each material's lowest current listing price.
-- Optional tuning: `FFXIV_RECIPE_SOURCE`, `GARLAND_TOOLS_BASE_URL`, `XIVAPI_RECIPE_SCAN_LIMIT`, `XIVAPI_RECIPE_PAGE_SIZE`, and `FFXIV_PROFIT_TOP_LIMIT`.
-- This does not read packets or inspect the game client.
-
-Stock market analysis
-- Mana can query public stock-market data through Alpha Vantage when `ALPHA_VANTAGE_API_KEY` is set.
-- Stock summary endpoint: `GET http://localhost:5005/market/stock/summary?symbol=NVDA`
-- Stock comparison endpoint: `GET http://localhost:5005/market/stock/compare?symbols=NVDA,AMD`
-- Watchlist endpoint: `GET http://localhost:5005/market/watchlist`
-- Voice/text prompts can ask for market analysis, for example: `Mana, summarize NVDA today`.
-- Voice/text prompts can compare tickers, for example: `Mana, compare AMD and NVDA`.
-- Voice/text prompts can ask about the watchlist, for example: `Mana, summarize my watchlist`.
-- Mana uses the market data as context for analysis only. She does not place trades, connect to brokerages, or provide financial advice.
-- Optional tuning: `MARKET_PROVIDER`, `ALPHA_VANTAGE_BASE_URL`, `MARKET_WATCHLIST`, and `MARKET_CACHE_MS`.
+Speech recognition debugging
+- In the Electron dev console, run `localStorage.manaSpeechDebug = "1"` to log audio stats and skip reasons.
+- Set `$env:SPEECH_DEBUG = "1"` before launching Mana to include backend Whisper debug metadata.
+- Use short `.wav` samples for testing your voice. Mono 16-bit PCM at 16kHz or 48kHz is preferred.
 
 Troubleshooting
 - If the UI reports `Local backend not reachable`, check that `node-bot` started successfully and that nothing else is using port `5005`.
