@@ -33,6 +33,40 @@
           path: |
             installer-artifacts/*
 
+      - name: Comment on PR with artifact info
+        if: always() && github.event_name == 'pull_request'
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+            const workspace = process.env.GITHUB_WORKSPACE;
+            const artDir = path.join(workspace, 'installer-artifacts');
+            const checksPath = path.join(artDir, 'CHECKSUMS.txt');
+            let checks = '';
+            if (fs.existsSync(checksPath)) {
+              checks = fs.readFileSync(checksPath, 'utf8');
+            }
+            const files = fs.existsSync(artDir) ? require('fs').readdirSync(artDir).filter(f=>f.endsWith('.exe')||f.endsWith('.msi')) : [];
+            let body = 'Installer artifacts built by CI:\n\n';
+            if (files.length) {
+              for (const f of files) body += `- ${f}\n`;
+            } else {
+              body += '(no artifacts found)\n';
+            }
+            if (checks) body += '\nChecksums:\n' + '```
+' + checks + '\n```\n';
+            // find PR by head sha
+            const prList = await github.rest.pulls.list({ owner: context.repo.owner, repo: context.repo.repo, state: 'open' });
+            const prs = prList.data.filter(p => p.head.sha === process.env.GITHUB_SHA);
+            if (prs.length) {
+              for (const pr of prs) {
+                await github.rest.issues.createComment({ owner: context.repo.owner, repo: context.repo.repo, issue_number: pr.number, body });
+              }
+            } else {
+              console.log('No open PR found for head sha', process.env.GITHUB_SHA);
+            }
+
   smoke-test-windows:
     name: Smoke test Windows installer
     runs-on: windows-latest
