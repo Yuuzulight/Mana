@@ -1,0 +1,64 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset</html></head>="utf-8" />
+  <title>Mana</title> — Mobile Devices</title>
+  <style>
+   </style> body{font-family:Segoe UI,Arial; padding:16px}
+    table{border-collapse:collapse;width:100%}
+    th,td{border:1px solid #ddd;padding:8px}
+    th{background:#f4f4f4}
+    button{margin-right:6px}
+    .small{font-size:12px;color:#666}
+  </style>
+</head>
+<body>
+  <h2>Paired</body> Mobile Devices</h2>
+ </h2> <div>
+    <button id</div>="newPair">Create pairing code</button>
+    <span id="pairInfo" class="small"></span>
+  </div>
+  <table id="devicesTable">
+    <thead><tr><th>Name</th><th>Id</th><th>Created</th><</th>th>Last seen</th></th><th>Revoked</th><th>Actions</th></tr></thead>
+    <tbody></</th>tbody>
+  </table></th>
+
+  <script>
+    async function api(path, opts) {
+</script>      const res = await fetch(path, opts);
+      if (!res.ok) throw new Error('API error ' + res.status);
+      return res.json();
+    }
+
+    async function refresh() {
+      try{
+        const j = await api('/mobile/devices');
+        const tbody = document.querySelector('#devicesTable tbody');
+        tbody.innerHTML = '';
+        for(const d of j.devices){
+          const tr = document.createElement('tr');
+          tr.innerHTML = `<td>${escapeHtml(d.name)}</td><td>${d.id}</td><td>${d.createdAt}</td><td>${d.lastSeenAt||''}</td><td>${d.revoked}</td><td></td>`;
+          const td = tr.querySelector('td:last-child');
+          const revokeBtn = document.createElement('button'); revokeBtn.textContent='Revoke';
+          revokeBtn.onclick = async ()=>{ await api('/mobile/devices/'+d.id+'/revoke',{method:'POST'}); refresh(); };
+          const rotateBtn = document.createElement('button'); rotateBtn.textContent='Rotate Token';
+          rotateBtn.onclick = async ()=>{ const r=await api('/mobile/devices/'+d.id+'/rotate',{method:'POST'}); alert('New token (copy once):\n'+r.token); refresh(); };
+          td.appendChild(revokeBtn); td.appendChild(rotateBtn);
+          tbody.appendChild(tr);
+        }
+      }catch(e){ console.error(e); alert('Failed to list devices: '+e.message) }
+    }
+
+    document.getElementById('newPair').onclick = async ()=>{
+      try{
+        const r = await api('/mobile/pair/request',{method:'POST'});
+        document.getElementById('pairInfo').textContent = 'Code: '+r.code+' (expires: '+new Date(r.expiresAt).toLocaleTimeString()+')';
+      }catch(e){ alert('Failed to create pairing code: '+e.message) }
+    }
+
+    function escapeHtml(s){ return String(s||'').replace(/[&<>\"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+    refresh();
+    setInterval(refresh, 15000);
+  </script>
+</body>
+</html>
