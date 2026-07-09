@@ -25,6 +25,8 @@ jobs:
     name: Build Windows installer
     runs-on: windows-latest
     needs: tests
+    outputs:
+      artifact-name: mana-windows-installer
     steps:
       - uses: actions/checkout@v4
       - name: Setup Node.js
@@ -51,6 +53,7 @@ jobs:
           CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD || '' }}
           NODE_VERSION: ${{ env.NODE_VERSION || '18.18.0' }}
         run: |
+          echo "Signing info: CSC_LINK present=$(test -n "$env:CSC_LINK"; echo $?)" || true
           npm run dist
       - name: Upload installer artifact
         if: success()
@@ -60,3 +63,67 @@ jobs:
           path: |
             desktop-client/dist/*.exe
             desktop-client/dist/*.msi
+
+  smoke-test-windows:
+    name: Smoke test Windows installer
+    runs-on: windows-latest
+    needs: build-windows
+    steps:
+      - name: Download installer artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: mana-windows-installer
+          path: .\installer-artifacts
+      - name: Find installer
+        id: find
+        run: |
+          $exe = Get-ChildItem -Path .\installer-artifacts -Filter *.exe -Recurse | Select-Object -First 1
+          if (-not $exe) { Write-Host "No installer exe found"; exit 1 }
+          Write-Host "::set-output name=installer::$($exe.FullName)"
+        shell: pwsh
+      - name: Run installer silently
+        shell: pwsh
+        run: |
+          $installer = "${{ steps.find.outputs.installer }}"
+          Write-Host "Running installer: $installer"
+          Start-Process -FilePath $installer -ArgumentList "/S" -Wait
+          Write-Host "Installer finished"
+      - name: Locate installed app
+        shell: pwsh
+        run: |
+          # Common per-user install path for NSIS: LocalAppData\Programs\<ProductName>
+          $paths = @(
+            "$env:LOCALAPPDATA\Programs\Mana\Mana.exe",
+            "$env:ProgramFiles\Mana\Mana.exe",
+            "$env:ProgramFiles(x86)\Mana\Mana.exe"
+          )
+          $found = $null
+          foreach ($p in $paths){ if (Test-Path $p){ $found = $p; break } }
+          if (-not $found) { Write-Host "Could not locate installed Mana.exe in expected locations"; Get-ChildItem -Path "$env:LOCALAPPDATA\Programs" -Recurse -Filter Mana.exe | ForEach-Object { Write-Host $_.FullName }; exit 1 }
+          Write-Host "::set-output name=exe::$found"
+      - name: Start installed app and check health
+        shell: pwsh
+        run: |
+          $exe = "${{ steps.find.outputs.installer }}"
+          # Try to find the installed exe path from prior step
+          $installed = Get-ChildItem -Path $env:LOCALAPPDATA\Programs -Recurse -Filter Mana.exe -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $installed){ Write-Host "Installed exe not found"; exit 1 }
+          $proc = Start-Process -FilePath $installed.FullName -PassThru
+          Write-Host "Started process id $($proc.Id)"
+          $ok = $false
+          for ($i=0; $i -lt 30; $i++){
+            Start-Sleep -Seconds 2
+            try{
+              $res = Invoke-RestMethod -Uri 'http://127.0.0.1:5005/health' -Method GET -TimeoutSec 2
+              if ($res){ $ok = $true; break }
+            } catch {}
+          }
+          if (-not $ok){ Write-Host "Health check failed"; Stop-Process -Id $proc.Id -Force; exit 1 }
+          Write-Host "Health OK"
+          # cleanup
+          Stop-Process -Id $proc.Id -Force
+      - name: Uninstall (if possible)
+        shell: pwsh
+        run: |
+          $uninst = Get-ChildItem -Path $env:LOCALAPPDATA\Programs -Recurse -Filter uninst* -ErrorAction SilentlyContinue | Select-Object -First 1
+          if ($uninst){ Write-Host "Found uninstaller: $($uninst.FullName)"; Start-Process -FilePath $uninst.FullName -ArgumentList '/S' -Wait } else { Write-Host "No uninstaller found to run" }
