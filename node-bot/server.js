@@ -125,7 +125,7 @@ const WHISPER_MODEL = process.env.WHISPER_MODEL || null;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || null;
 const MANA_ALLOW_REMOTE_AI = process.env.MANA_ALLOW_REMOTE_AI || "";
 const OPENAI_BASE_URL =
-  process.env.OPENAI_BASE_URL || "https://new.aicode.us.com";
+  process.env.OPENAI_BASE_URL || "https://api.openai.com";
 const OPENAI_MODEL = process.env.OPENAI_MODEL || "codex-gpt-5.5";
 const TTS_BIN = process.env.TTS_BIN || null;
 const CHATTERBOX_TTS_URL =
