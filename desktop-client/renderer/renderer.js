@@ -170,7 +170,8 @@
   }
 
   document.getElementById('dismissOnboarding').addEventListener('click', ()=>{ localStorage.setItem('mana_seen_onboarding','1'); hideOnboarding(); });
-  document.getElementById('openDocsBtn').addEventListener('click', ()=>{ window.open('../BUILD_DESKTOP.md','_blank'); });
+  document.getElementById('openDocsBtn').addEventListener('click', async ()=>{ try{ await window.electronAPI.openDocs(); } catch(e){ window.open('../BUILD_DESKTOP.md','_blank'); } });
+  document.getElementById('runDoctorBtn').addEventListener('click', ()=>{ runOnboardingChecks(); });
 
   async function runOnboardingChecks(){
     const details = [];
