@@ -1,7 +1,7 @@
-const express = require("express");
-const multer = require("multer");
-const path = require("path");
+const express = require('express');
+const crypto = require('crypto');
 
+<<<<<<< HEAD
 const { createMobileAuth } = require("./mobile-auth");
 const { createMobileMemoryStore } = require("./mobile-memory-store");
 const {
@@ -20,12 +20,18 @@ function createDefaultMobileAuth() {
       process.env.MOBILE_SESSION_TTL_MS || 12 * 60 * 60 * 1000,
     ),
   });
+=======
+function randomToken() {
+  return crypto.randomBytes(32).toString('base64url');
+>>>>>>> c664616 (Add mobile device pairing and management (device store, mobile routes, admin UI, tests))
 }
 
-function cleanText(value) {
-  return typeof value === "string" ? value.trim() : "";
+function isLocalRequest(req) {
+  const ip = (req.ip || '').replace('::ffff:', '');
+  return ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1';
 }
 
+<<<<<<< HEAD
 function cleanPositiveInteger(value, fallback) {
   const number = Number(value);
   if (!Number.isSafeInteger(number) || number <= 0) {
@@ -107,27 +113,20 @@ function getRequiredDeps(deps) {
 }
 
 function registerMobileRoutes(app, deps = {}) {
+=======
+module.exports = function createMobileRoutes({ deviceStore }) {
+>>>>>>> c664616 (Add mobile device pairing and management (device store, mobile routes, admin UI, tests))
   const router = express.Router();
-  const upload = multer({ dest: path.join(__dirname, "tmp") });
-  const {
-    mobileAuth,
-    mobileMemoryStore,
-    buildAssistantReply,
-    synthesizeReply,
-    runWhisper,
-    normalizeUploadedAudio,
-    cleanupUploadedAudio,
-    mobileUnlockRateLimiter,
-  } = getRequiredDeps(deps);
-  const requireAuth = mobileAuth.requireAuth;
 
-  router.get("/health", (req, res) => {
-    return res.json({
-      ok: true,
-      authConfigured: Boolean(mobileAuth.isConfigured),
-    });
+  // Create pairing code (admin UI only, local requests only)
+  router.post('/pair/request', (req, res) => {
+    if (!isLocalRequest(req)) return res.status(403).json({ error: 'admin-only' });
+    const { code, expiresAt } = deviceStore.generatePairingCode(5);
+    // return code and expiration; admin UI will display QR/code
+    res.json({ code, expiresAt });
   });
 
+<<<<<<< HEAD
   router.post("/auth/unlock", (req, res) => {
     const clientKey = mobileUnlockRateLimiter.keyFor(req);
     if (mobileUnlockRateLimiter.isLimited(clientKey)) {
@@ -271,31 +270,56 @@ function registerMobileRoutes(app, deps = {}) {
       }
       return res.status(400).json({ error: error.message });
     }
+=======
+  // Complete pairing: mobile sends code + deviceName, server returns token (one-time)
+  router.post('/pair/complete', express.json(), (req, res) => {
+    const { code, deviceName } = req.body || {};
+    if (!code || !deviceName) return res.status(400).json({ error: 'missing' });
+    const ok = deviceStore.consumePairingCode(String(code));
+    if (!ok) return res.status(400).json({ error: 'invalid_or_expired_code' });
+    const token = randomToken();
+    const dev = deviceStore.addDevice({ name: deviceName, token, allowMemorySync: false });
+    // return the token once; server stores only hash
+    res.json({ token, device: { id: dev.id, name: dev.name, createdAt: dev.createdAt } });
   });
 
-  router.get("/summaries", requireAuth, (req, res) => {
-    try {
-      const direction = cleanText(req.query?.direction);
-      const filter = direction ? { direction } : {};
-      return res.json({ summaries: mobileMemoryStore.listSummaries(filter) });
-    } catch (error) {
-      return res.status(500).json({ error: error.message });
-    }
+  // Admin: list devices
+  router.get('/devices', (req, res) => {
+    if (!isLocalRequest(req)) return res.status(403).json({ error: 'admin-only' });
+    const list = deviceStore.listDevices();
+    res.json({ devices: list });
   });
 
-  app.use(
-    "/mobile/app",
-    express.static(path.join(__dirname, "mobile-app"), {
-      extensions: ["html"],
-      index: "index.html",
-    }),
-  );
+  // Admin: revoke device
+  router.post('/devices/:id/revoke', (req, res) => {
+    if (!isLocalRequest(req)) return res.status(403).json({ error: 'admin-only' });
+    const id = req.params.id;
+    const ok = deviceStore.revokeDevice(id);
+    if (!ok) return res.status(404).json({ error: 'not_found' });
+    res.json({ ok: true });
+  });
 
-  app.use("/mobile", router);
-}
+  // Admin: rotate token (returns new token value)
+  router.post('/devices/:id/rotate', (req, res) => {
+    if (!isLocalRequest(req)) return res.status(403).json({ error: 'admin-only' });
+    const id = req.params.id;
+    const newToken = randomToken();
+    const ok = deviceStore.rotateToken(id, newToken);
+    if (!ok) return res.status(404).json({ error: 'not_found' });
+    res.json({ token: newToken });
+  });
 
-module.exports = {
-  createDefaultMobileAuth,
-  createUnlockRateLimiter,
-  registerMobileRoutes,
+  // Mobile endpoint example: token-protected ping
+  router.get('/ping', (req, res) => {
+    const auth = req.get('authorization') || '';
+    if (!auth.startsWith('Bearer ')) return res.status(401).json({ error: 'missing_token' });
+    const token = auth.slice('Bearer '.length).trim();
+    const dev = deviceStore.findDeviceByToken(token);
+    if (!dev) return res.status(401).json({ error: 'invalid_token' });
+    deviceStore.updateLastSeen(dev.id);
+    res.json({ ok: true, device: { id: dev.id, name: dev.name } });
+>>>>>>> c664616 (Add mobile device pairing and management (device store, mobile routes, admin UI, tests))
+  });
+
+  return router;
 };
