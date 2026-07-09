@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  tests:
+    name: Run backend tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 18
+      - name: Install dependencies and run tests
+        working-directory: ./node-bot
+        run: |
+          npm ci
+          npm test
+
+  build-windows:
+    name: Build Windows installer
+    runs-on: windows-latest
+    needs: tests
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 18
+      - name: Install desktop-client dependencies
+        working-directory: ./desktop-client
+        run: |
+          npm ci
+      - name: Fetch Node runtime for standalone installer
+        if: always()
+        working-directory: ${{ github.workspace }}
+        shell: pwsh
+        run: |
+          Write-Host "Fetching Node $env:NODE_VERSION for Windows runner"
+          $ver = '${{ env.NODE_VERSION }}'
+          if (-not $ver) { $ver = '18.18.0' }
+          .\scripts\fetch_node_bin.ps1 -Version $ver -Arch x64 -Force
+      - name: Create Windows installer (electron-builder)
+        working-directory: ./desktop-client
+        env:
+          CSC_LINK: ${{ secrets.CSC_LINK || '' }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD || '' }}
+          NODE_VERSION: ${{ env.NODE_VERSION || '18.18.0' }}
+        run: |
+          npm run dist
+      - name: Upload installer artifact
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mana-windows-installer
+          path: |
+            desktop-client/dist/*.exe
+            desktop-client/dist/*.msi
