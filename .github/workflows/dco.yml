@@ -20,15 +20,18 @@ jobs:
           git fetch --no-tags --prune --unshallow || true
 
       - name: Determine base ref and PR author
+        if: ${{ github.event.pull_request != null }}
         run: |
           echo "BASE_REF=${{ github.event.pull_request.base.ref }}" >> $GITHUB_ENV
           echo "PR_SHA=${{ github.event.pull_request.head.sha }}" >> $GITHUB_ENV
           echo "PR_AUTHOR=${{ github.event.pull_request.user.login }}" >> $GITHUB_ENV
 
       - name: Fetch base branch
+        if: ${{ env.BASE_REF != '' }}
         run: git fetch origin $BASE_REF
 
       - name: Check commits for Signed-off-by or signed CLA in PR
+        if: ${{ env.PR_SHA != '' }}
         run: |
           set -euo pipefail
 
