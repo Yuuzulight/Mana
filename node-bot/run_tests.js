@@ -8,16 +8,16 @@ function run(cmd, args, opts={}){
 
 const skipHeavy = process.env.SKIP_HEAVY_MODEL_TESTS === '1' || process.env.SKIP_HEAVY_MODEL_TESTS === 'true';
 if (skipHeavy){
-  // Run only fast, focused tests
+  // Run only fast, focused tests (paths resolved from current working directory)
   const tests = [
-    'node --test ' + path.join('node-bot','test','mobile-device-store.test.js'),
-    'node --test ' + path.join('node-bot','test','e2e-pairing-smoke.test.js')
+    ['node', ['--test', path.join(process.cwd(), 'test', 'mobile-device-store.test.js')]],
+    ['node', ['--test', path.join(process.cwd(), 'test', 'e2e-pairing-smoke.test.js')]],
   ];
-  for (const t of tests){
-    console.log('Running fast test:', t);
-    run(t.split(' ')[0], t.split(' ').slice(1));
+  for (const [cmd, args] of tests){
+    console.log('Running fast test:', cmd, args.join(' '));
+    run(cmd, args);
   }
 } else {
   // Run full test suite (fallback to node --test across node-bot test folder)
-  run('node', ['--test', path.join('node-bot','test')]);
+  run('node', ['--test', path.join(process.cwd(), 'test')]);
 }
