@@ -1,0 +1,942 @@
+<!doctype html>
+<html>
+    <head>
+        <meta charset="utf-8" />
+        <title>Mana Background Memory Admin</title>
+        <style>
+            body {
+                font-family: system-ui, Arial;
+                margin: 20px;
+            }
+            .box {
+                border: 1px solid #ddd;
+                padding: 12px;
+                margin-bottom: 12px;
+                border-radius: 6px;
+            }
+            label {
+                display: block;
+                margin-bottom: 6px;
+            }
+            input[type="text"],
+            textarea {
+                width: 100%;
+                padding: 6px;
+            }
+            button {
+                padding: 6px 10px;
+            }
+            pre {
+                background: #f8f8f8;
+                padding: 8px;
+                overflow: auto;
+            }
+            .files {
+                max-height: 200px;
+                overflow: auto;
+                border: 1px solid #eee;
+                padding: 6px;
+            }
+            .file-row {
+                border-bottom: 1px dashed #eee;
+                padding: 6px;
+            }
+            .audit-list {
+                max-height: 240px;
+                overflow: auto;
+                border: 1px solid #eee;
+                padding: 6px;
+            }
+            .audit-row {
+                padding: 8px;
+                border-bottom: 1px solid #f0f0f0;
+                cursor: pointer;
+            }
+            .audit-row:hover {
+                background: #fafafa;
+            }
+        </style>
+    </head>
+    <body>
+
+                <h1>Mana Background Memory Admin</h1>
+                <img id="adminAvatar" src="../../sprites/sprite-idle.png" alt="Mana avatar" style="width:72px;height:72px;display:block;margin-bottom:12px;">
+                <style>
+                    /* Admin avatar hop animation */
+                    @keyframes admin-hop {
+                        0% { transform: translateY(0); }
+                        25% { transform: translateY(-8px); }
+                        50% { transform: translateY(0); }
+                        75% { transform: translateY(-4px); }
+                        100% { transform: translateY(0); }
+                    }
+                    #adminAvatar.excited {
+                        animation: admin-hop 320ms ease-in-out infinite;
+                    }
+                </style>
+
+        <div class="box">
+            <label
+                >Admin Secret (Bearer) — required if server enforces it</label
+            >
+            <input id="secret" type="text" placeholder="Bearer secret" />
+        </div>
+
+        <div class="box">
+            <button id="btnPreview">Preview Reviewer</button>
+            <button id="btnRefresh">Refresh (quick)</button>
+            <button id="btnApply">Apply Selected</button>
+            <button id="btnAuditRefresh">Refresh Audit</button>
+        </div>
+
+        <div class="box">
+            <h3>Preview: Compacted Background Memory</h3>
+            <textarea
+                id="compactedText"
+                rows="6"
+                placeholder="Compacted background memory (editable)"
+            ></textarea>
+        </div>
+
+        <div class="box">
+            <h3>Important Facts (editable, one per line)</h3>
+            <textarea
+                id="importantFacts"
+                rows="4"
+                placeholder="Important facts, one per line"
+            ></textarea>
+        </div>
+
+        <div class="box">
+            <h3>Processed Session Summaries (most recent first)</h3>
+            <div id="filesList" class="files">(no preview yet)</div>
+        </div>
+
+        <div class="box">
+            <h3>Reviewer Raw Reply</h3>
+            <pre id="rawReply">(none)</pre>
+        </div>
+
+        <div class="box">
+            <h3>Audit Log (recent)</h3>
+            <div
+                style="
+                    display: flex;
+                    gap: 8px;
+                    align-items: center;
+                    margin-bottom: 8px;
+                "
+            >
+                <input
+                    id="auditSearch"
+                    type="text"
+                    placeholder="search (text)"
+                    style="flex: 1"
+                />
+                <input
+                    id="auditApprover"
+                    type="text"
+                    placeholder="approver (exact or partial)"
+                    style="width: 180px; margin-left: 8px"
+                />
+                <input
+                    id="auditAction"
+                    type="text"
+                    placeholder="action (e.g. manual_apply)"
+                    style="width: 160px; margin-left: 8px"
+                />
+                <input
+                    id="auditFrom"
+                    type="text"
+                    placeholder="from (ISO date)"
+                    style="width: 140px; margin-left: 8px"
+                />
+                <input
+                    id="auditTo"
+                    type="text"
+                    placeholder="to (ISO date)"
+                    style="width: 140px; margin-left: 8px"
+                />
+                <select id="auditPageSize">
+                    <option value="10">10</option>
+                    <option value="25">25</option>
+                    <option value="50" selected>50</option>
+                    <option value="100">100</option>
+                </select>
+                <button id="auditPrev">Prev</button>
+                <button id="auditNext">Next</button>
+                <button id="btnExportCsv">Export CSV</button>
+                <button id="btnRebuildIndex" style="margin-left: 8px">
+                                    Rebuild Index
+                                </button>
+                                <button id="btnScanIncremental" style="margin-left:8px">Scan Incremental</button>
+                                <button id="btnIndexStatus" style="margin-left:8px">Refresh Index Status</button>
+                                <span
+                                    id="auditIndexStatus"
+                                    style="margin-left: 12px; font-weight: 600; color: #444"
+                                    >(index: unknown)</span
+                                >
+                            <span id="auditIndexStatus" style="margin-left:12px;font-weight:600;color:#444">(index: unknown)</span>
+                        </div>
+
+                        <div class="box">
+                            <h3>Vector Rebuild Audit</h3>
+                            <div style="display:flex; gap:8px; align-items:center; margin-bottom:8px;">
+                                <input id="vAuditSearch" type="text" placeholder="search audit text" style="flex:1" />
+                                <input id="vAuditFrom" type="text" placeholder="from (ISO)" style="width:160px" />
+                                <input id="vAuditTo" type="text" placeholder="to (ISO)" style="width:160px" />
+                                <select id="vAuditPageSize"><option value="10">10</option><option value="25">25</option><option value="50" selected>50</option></select>
+select>                                <button id="vAuditPrev">Prev</button>
+                                <button id="vAuditNext">Next</button>
+                                <button id="vAuditExportCsv">Export CSV</button>
+                            </div>
+                            <div id="vAuditProgress" style="background:#fff9e6;padding:8px;border:1px solid #f0e0b0;">(idle)</div>
+                            <div id="vAuditList" class="audit-list" style="margin-top:8px; max-height:240px; overflow:auto;">(no audit)</div>
+                            <pre id="vAuditDetailPre">(select an entry)</pre>
+                        </div>
+
+                        <div class="box">
+                            <h3>Retriever Quick Search</h3>
+                            <div style="display:flex; gap:8px; align-items:center;">
+                                <input id="retrieverQuery" type="text" placeholder="search query" style="flex:1" />
+                                <select id="retrieverK"><option value="1">1</option</h3>><option value="3">3</option><option value="5" selected>5</option></option><option value="10">10</option></select>
+                                <button id="btnRetrieverSearch">Search</button>
+                                <button id="btnRetrieverStatus" style="margin-left:8px">Refresh Index Status</button>
+                                <button id="btnBuildVectorStore" style="margin-left:8px">Build Vector Store</button>
+                                <button id="btnVectorStatus" style="margin-left:8px">Vector Store Status</button>
+                                <button id="btnViewVectorAudit" style="margin-left:8px">View Rebuild Audit</button>
+                            </div>
+                            <div id="retrieverResults" class="files" style="margin-top:8px; max-height:260px;"></div>
+                        </div>
+        <pre id="auditProgressPre" style="background:#fff9e6;padding:8px;border:1px solid #f0e0b0;">(idle)</pre>
+        <div id="auditList" class="audit-list">(no audit)</div>
+        <h4></h4>Selected Audit Detail</h4>
+        <pre id="auditDetailPre">(select an entry)</pre>
+    </div>
+
+        <script>
+            async function apiFetch(url, opts = {}) {
+                const secret = document.getElementById("secret").value.trim();
+                const headers = opts.headers || {};
+                headers["Content-Type"] = "application/json";
+                if (secret) headers["Authorization"] = "Bearer " + secret;
+                const res = await fetch(
+                    url,
+                    Object.assign({}, opts, { headers }),
+                );
+                if (res.status === 401) throw new Error("unauthorized");
+                const txt = await res.text();
+                try {
+                    return JSON.parse(txt);
+                } catch (e) {
+                    return { ok: false, raw: txt, status: res.status };
+                }
+            }
+
+            // Admin avatar excitement helpers
+            function exciteStart() {
+                const a = document.getElementById('adminAvatar');
+                if (!a) return;
+                a.classList.add('excited');
+            }
+            function exciteStop() {
+                const a = document.getElementById('adminAvatar');
+                if (!a) return;
+                a.classList.remove('excited');
+            }
+
+            // Admin loading animation (cycles three loading sprites)
+            let _adminLoadingInterval = null;
+            let _adminLoadingIndex = 0;
+            function startAdminLoadingAnimation(){
+                const a = document.getElementById('adminAvatar');
+                if (!a) return;
+                if (_adminLoadingInterval) return;
+                _adminLoadingIndex = 0;
+                a.src = '../../sprites/sprite-loading-1.png';
+                _adminLoadingInterval = setInterval(()=>{
+                    _adminLoadingIndex = (_adminLoadingIndex + 1) % 3;
+                    a.src = `../../sprites/sprite-loading-${_adminLoadingIndex+1}.png`;
+                }, 300);
+            }
+            function stopAdminLoadingAnimation(){
+                const a = document.getElementById('adminAvatar');
+                try{ if (_adminLoadingInterval) clearInterval(_adminLoadingInterval); }catch(e){}
+                _adminLoadingInterval = null;
+                _adminLoadingIndex = 0;
+                if (a) a.src = '../../sprites/sprite-idle.png';
+            }
+
+            let lastProcessedFiles = [];
+            let auditEntries = [];
+
+            function renderFiles(list) {
+                const el = document.getElementById("filesList");
+                el.innerHTML = "";
+                if (!list || !list.length) {
+                    el.textContent = "(no summaries)";
+                    return;
+                }
+                lastProcessedFiles = list;
+                list.forEach((p, idx) => {
+                    const row = document.createElement("div");
+                    row.className = "file-row";
+                    const cb = document.createElement("input");
+                    cb.type = "checkbox";
+                    cb.dataset.idx = idx + 1;
+                    const title = document.createElement("strong");
+                    title.textContent = ` ${idx + 1}. ${p.file}`;
+                    const snippet = document.createElement("div");
+                    snippet.textContent = (p.summary || "").slice(0, 800);
+                    row.appendChild(cb);
+                    row.appendChild(title);
+                    row.appendChild(document.createElement("br"));
+                    row.appendChild(snippet);
+                    el.appendChild(row);
+                });
+            }
+
+            async function doPreview() {
+                try {
+                    document.getElementById("rawReply").textContent =
+                        "(running preview...)";
+                    const r = await apiFetch(
+                        "/admin/background-memory/preview",
+                        { method: "GET" },
+                    );
+                    if (!r.ok) throw new Error(r.error || "preview failed");
+                    const preview = r.preview || r;
+
+                    const parsed = preview.parsed || preview || {};
+                    const compacted =
+                        parsed.compacted || preview.compacted || "";
+                    const important =
+                        parsed.important_facts ||
+                        parsed.importantFacts ||
+                        preview.important_facts ||
+                        [];
+                    const processedFiles =
+                        preview.processedFiles || preview.processedFiles || [];
+
+                    document.getElementById("compactedText").value =
+                        compacted || "";
+                    document.getElementById("importantFacts").value =
+                        important && important.length
+                            ? important.join("\n")
+                            : "";
+                    renderFiles(processedFiles || []);
+                    document.getElementById("rawReply").textContent =
+                        JSON.stringify(preview.parsed || preview, null, 2);
+                } catch (e) {
+                    alert("Preview failed: " + (e.message || e));
+                    document.getElementById("rawReply").textContent =
+                        "(error) " + (e.message || e);
+                }
+            }
+
+            async function doApply() {
+                try {
+                    const compacted = document
+                        .getElementById("compactedText")
+                        .value.trim();
+                    const important = String(
+                        document.getElementById("importantFacts").value || "",
+                    )
+                        .split(/\n+/)
+                        .map((s) => s.trim())
+                        .filter(Boolean);
+                    const checks = Array.from(
+                        document.querySelectorAll(
+                            "#filesList input[type=checkbox]:checked",
+                        ),
+                    ).map((cb) => Number(cb.dataset.idx));
+                    const payload = {
+                        remove_indices: checks,
+                        important_facts: important,
+                        compacted,
+                    };
+                    const r = await apiFetch("/admin/background-memory/apply", {
+                        method: "POST",
+                        body: JSON.stringify(payload),
+                    });
+                    if (!r.ok) throw new Error(r.error || "apply failed");
+                    alert(
+                        "Applied: " +
+                            JSON.stringify(r.applied || r.result || r, null, 2),
+                    );
+                    await doPreview();
+                    await loadAudit();
+                } catch (e) {
+                    alert("Apply failed: " + (e.message || e));
+                }
+            }
+
+            function renderAuditList(entries) {
+                const el = document.getElementById("auditList");
+                el.innerHTML = "";
+                auditEntries = entries || [];
+                if (!auditEntries.length) {
+                    el.textContent = "(no audit entries)";
+                    return;
+                }
+                auditEntries.forEach((e, i) => {
+                    const row = document.createElement("div");
+                    row.className = "audit-row";
+                    row.dataset.idx = i;
+                    const when = e.at || "";
+                    const who = e.approver || "";
+                    const action = e.action || "";
+                    const summary =
+                        (e.removed && e.removed.length
+                            ? `removed:${e.removed.length}`
+                            : "") ||
+                        (e.result ? "review_result" : "") ||
+                        "";
+                    row.textContent = `${i + 1}. ${when} | ${who} | ${action} | ${summary}`;
+                    row.addEventListener("click", () => {
+                        document.getElementById("auditDetailPre").textContent =
+                            JSON.stringify(
+                                auditEntries[Number(row.dataset.idx)],
+                                null,
+                                2,
+                            );
+                    });
+                    el.appendChild(row);
+                });
+            }
+
+            let auditOffset = 0;
+            let auditLimit = Number(
+                document.getElementById("auditPageSize").value || 50,
+            );
+            let auditQuery = "";
+
+            async function loadAuditPage() {
+                try {
+                    auditLimit = Number(
+                        document.getElementById("auditPageSize").value || 50,
+                    );
+                    auditQuery = (
+                        document.getElementById("auditSearch").value || ""
+                    ).trim();
+                    const approver = encodeURIComponent(
+                        (
+                            document.getElementById("auditApprover")?.value ||
+                            ""
+                        ).trim(),
+                    );
+                    const action = encodeURIComponent(
+                        (
+                            document.getElementById("auditAction")?.value || ""
+                        ).trim(),
+                    );
+                    const from = encodeURIComponent(
+                        (
+                            document.getElementById("auditFrom")?.value || ""
+                        ).trim(),
+                    );
+                    const to = encodeURIComponent(
+                        (
+                            document.getElementById("auditTo")?.value || ""
+                        ).trim(),
+                    );
+                    const url = `/admin/background-memory/audit?offset=${auditOffset}&limit=${auditLimit}&q=${encodeURIComponent(auditQuery)}${approver ? "&approver=" + approver : ""}${action ? "&action=" + action : ""}${from ? "&from=" + from : ""}${to ? "&to=" + to : ""}`;
+                    const r = await apiFetch(url, { method: "GET" });
+                    if (!r.ok)
+                        throw new Error(r.error || "failed to load audit");
+                    const entries = r.entries || [];
+                    renderAuditList(entries);
+                    document.getElementById("auditDetailPre").textContent =
+                        entries && entries.length
+                            ? JSON.stringify(entries[0], null, 2)
+                            : "(none)";
+                    // update page controls (we can show simple status)
+                    document.getElementById("auditPrev").disabled =
+                        auditOffset <= 0;
+                    document.getElementById("auditNext").disabled =
+                        (r.total || 0) <= auditOffset + auditLimit;
+                    // show index freshness
+                    try {
+                        const idxEl =
+                            document.getElementById("auditIndexStatus");
+                        if (typeof r.indexUpToDate !== "undefined") {
+                            idxEl.textContent = r.indexUpToDate
+                                ? "(index: up-to-date)"
+                                : "(index: stale - rebuild)";
+                            idxEl.style.color = r.indexUpToDate
+                                ? "#0a0"
+                                : "#c00";
+                        }
+                    } catch (e) {}
+                } catch (e) {
+                    document.getElementById("auditList").textContent =
+                        "Failed to load audit: " + (e.message || e);
+                    document.getElementById("auditDetailPre").textContent = "";
+                }
+            }
+
+            // Vector rebuild audit paging
+            let vAuditOffset = 0;
+            let vAuditLimit = Number(document.getElementById('vAuditPageSize')?.value || 50);
+
+            async function loadVectorAuditPage() {
+                try {
+                    vAuditLimit = Number(document.getElementById('vAuditPageSize').value || 50);
+                    const q = (document.getElementById('vAuditSearch').value || '').trim();
+                    const from = encodeURIComponent((document.getElementById('vAuditFrom').value || '').trim());
+                    const to = encodeURIComponent((document.getElementById('vAuditTo').value || '').trim());
+                    const url = `/admin/retriever/vector/rebuild/audit?offset=${vAuditOffset}&limit=${vAuditLimit}&q=${encodeURIComponent(q)}${from? '&from=' + from : ''}${to? '&to=' + to : ''}`;
+                    const secret = document.getElementById('secret').value.trim();
+                    const headers = {};
+                    if (secret) headers['Authorization'] = 'Bearer ' + secret;
+                    const resp = await fetch(url, { headers });
+                    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+                    const body = await resp.json();
+                    if (!body.ok) throw new Error(body.error || 'failed');
+                    const entries = body.entries || [];
+                    const el = document.getElementById('vAuditList');
+                    el.innerHTML = '';
+                    if (!entries.length) { el.textContent = '(no audit)'; return; }
+                    entries.forEach((e,i)=>{
+                        const row = document.createElement('div');
+                        row.className = 'audit-row';
+                        row.dataset.idx = i;
+                        row.textContent = `${i+1+vAuditOffset}. ${e.at || ''} | ${e.approver||''} | ${e.action||''} | ${e.status||''}`;
+                        row.addEventListener('click', ()=>{ document.getElementById('vAuditDetailPre').textContent = JSON.stringify(entries[Number(row.dataset.idx)], null, 2); });
+                        el.appendChild(row);
+                    });
+                    document.getElementById('vAuditPrev').disabled = vAuditOffset <= 0;
+                    document.getElementById('vAuditNext').disabled = (body.total || 0) <= vAuditOffset + vAuditLimit;
+                } catch (e) { document.getElementById('vAuditList').textContent = 'Failed to load: ' + (e.message||e); }
+            }
+
+            document.getElementById('vAuditPrev').addEventListener('click', ()=>{ vAuditOffset = Math.max(0, vAuditOffset - vAuditLimit); loadVectorAuditPage(); });
+            document.getElementById('vAuditNext').addEventListener('click', ()=>{ vAuditOffset = vAuditOffset + vAuditLimit; loadVectorAuditPage(); });
+            document.getElementById('vAuditPageSize').addEventListener('change', ()=>{ vAuditOffset = 0; loadVectorAuditPage(); });
+            document.getElementById('vAuditSearch').addEventListener('keyup', (e)=>{ if (e.key==='Enter'){ vAuditOffset=0; loadVectorAuditPage(); }});
+            document.getElementById('vAuditExportCsv').addEventListener('click', async ()=>{
+                try {
+                    const q = encodeURIComponent((document.getElementById('vAuditSearch').value||'').trim());
+                    const from = encodeURIComponent((document.getElementById('vAuditFrom').value||'').trim());
+                    const to = encodeURIComponent((document.getElementById('vAuditTo').value||'').trim());
+                    const url = `/admin/retriever/vector/rebuild/audit.csv?q=${q}${from? '&from='+from:''}${to? '&to='+to:''}`;
+                    const secret = document.getElementById('secret').value.trim();
+                    const headers = {};
+                    if (secret) headers['Authorization'] = 'Bearer ' + secret;
+                    const resp = await fetch(url, { headers });
+                    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+                    const blob = await resp.blob();
+                    const link = document.createElement('a'); link.href = URL.createObjectURL(blob); link.download='vector_rebuild_audit.csv'; document.body.appendChild(link); link.click(); setTimeout(()=>{ URL.revokeObjectURL(link.href); link.remove(); },5000);
+                } catch (e){ alert('Export failed: '+(e.message||e)); }
+            });
+
+            // initial load for vector audit
+            loadVectorAuditPage();
+
+            // View Vector Audit button -> scroll/focus to the panel
+            document.getElementById('btnViewVectorAudit').addEventListener('click', ()=>{
+                try {
+                    const panel = document.getElementById('vAuditList');
+                    if (panel) {
+                        panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                    }
+                    const inp = document.getElementById('vAuditSearch');
+                    if (inp) inp.focus();
+                } catch (e) {}
+            });
+
+
+
+            document
+                .getElementById("auditPrev")
+                .addEventListener("click", () => {
+                    auditOffset = Math.max(0, auditOffset - auditLimit);
+                    loadAuditPage();
+                });
+            document
+                .getElementById("auditNext")
+                .addEventListener("click", () => {
+                    auditOffset = auditOffset + auditLimit;
+                    loadAuditPage();
+                });
+
+            document
+                .getElementById("auditPageSize")
+                .addEventListener("change", () => {
+                    auditOffset = 0;
+                    loadAuditPage();
+                });
+
+            document
+                .getElementById("auditSearch")
+                .addEventListener("keyup", (e) => {
+                    if (e.key === "Enter") {
+                        auditOffset = 0;
+                        loadAuditPage();
+                    }
+                });
+
+            document
+                .getElementById("btnExportCsv")
+                .addEventListener("click", async () => {
+                    try {
+                        const q = encodeURIComponent(
+                            (
+                                document.getElementById("auditSearch").value ||
+                                ""
+                            ).trim(),
+                        );
+                        const limit = Number(
+                            document.getElementById("auditPageSize").value ||
+                                50,
+                        );
+                        const approver = encodeURIComponent(
+                            (
+                                document.getElementById("auditApprover")
+                                    .value || ""
+                            ).trim(),
+                        );
+                        const action = encodeURIComponent(
+                            (
+                                document.getElementById("auditAction").value ||
+                                ""
+                            ).trim(),
+                        );
+                        const from = encodeURIComponent(
+                            (
+                                document.getElementById("auditFrom").value || ""
+                            ).trim(),
+                        );
+                        const to = encodeURIComponent(
+                            (
+                                document.getElementById("auditTo").value || ""
+                            ).trim(),
+                        );
+                        const url = `/admin/background-memory/audit.csv?offset=${auditOffset}&limit=${Math.max(limit, 1000)}&q=${q}${approver ? "&approver=" + approver : ""}${action ? "&action=" + action : ""}${from ? "&from=" + from : ""}${to ? "&to=" + to : ""}`;
+                        // download
+                        const secret = document
+                            .getElementById("secret")
+                            .value.trim();
+                        const headers = {};
+                        if (secret)
+                            headers["Authorization"] = "Bearer " + secret;
+                        const resp = await fetch(url, { headers });
+                        if (!resp.ok)
+                            throw new Error(
+                                "export failed: HTTP " + resp.status,
+                            );
+                        const blob = await resp.blob();
+                        const link = document.createElement("a");
+                        link.href = URL.createObjectURL(blob);
+                        link.download = "background_audit.csv";
+                        document.body.appendChild(link);
+                        link.click();
+                        setTimeout(() => {
+                            URL.revokeObjectURL(link.href);
+                            link.remove();
+                        }, 5000);
+                    } catch (e) {
+                        alert("Export failed: " + (e.message || e));
+                    }
+                });
+
+            document
+                .getElementById("btnPreview")
+                .addEventListener("click", doPreview);
+            document
+                .getElementById("btnRefresh")
+                .addEventListener("click", () => location.reload());
+            document
+                .getElementById("btnApply")
+                .addEventListener("click", doApply);
+            document
+                .getElementById("btnAuditRefresh")
+                .addEventListener("click", () => loadAuditPage());
+            document
+                document.getElementById("btnRebuildIndex")
+                .addEventListener("click", async () => {
+                    const btn = document.getElementById('btnRebuildIndex');
+                    const progressEl = document.getElementById('auditProgressPre');
+                    try {
+                        btn.disabled = true;
+                        btn.textContent = 'Rebuilding...';
+                        progressEl.textContent = '(starting...)';
+
+                        const secret = document.getElementById('secret').value.trim();
+                        const headers = {};
+                        if (secret) headers['Authorization'] = 'Bearer ' + secret;
+
+                        const resp = await fetch('/admin/background-memory/audit/rebuild/stream', { method: 'GET', headers });
+                        if (!resp.ok) {
+                            throw new Error('HTTP ' + resp.status);
+                        }
+
+                        // animate admin avatar while rebuild is running
+                        exciteStart();
+
+                        const reader = resp.body.getReader();
+                        const decoder = new TextDecoder('utf-8');
+                        let buf = '';
+                        while (true) {
+                            const { done, value } = await reader.read();
+                            if (done) break;
+                            buf += decoder.decode(value, { stream: true });
+                            let idx;
+                            while ((idx = buf.indexOf('\n')) >= 0) {
+                                const line = buf.slice(0, idx).trim();
+                                buf = buf.slice(idx + 1);
+                                if (!line) continue;
+                                try {
+                                    const obj = JSON.parse(line);
+                                    if (obj.progress) {
+                                        const p = obj.progress;
+                                        progressEl.textContent = `processedLines=${p.processedLines||0} bytes=${p.bytesProcessed||0} total=${p.totalBytes||0} percent=${p.percent!==null?p.percent+'%':'n/a'}`;
+                                    } else if (obj.done) {
+                                        progressEl.textContent = `done: entries=${obj.entries||0} lastSize=${obj.lastSize||0}`;
+                                        // stop excitement when done
+                                        exciteStop();
+                                    } else if (obj.error) {
+                                        progressEl.textContent = `error: ${obj.error}`;
+                                        exciteStop();
+                                    } else {
+                                        // generic
+                                        progressEl.textContent = JSON.stringify(obj);
+                                    }
+                                } catch (e) {
+                                    // ignore parse errors
+                                    progressEl.textContent = line;
+                                }
+                            }
+                        }
+
+                        // flush remaining in buf
+                        if (buf.trim()) {
+                            try {
+                                const obj = JSON.parse(buf.trim());
+                                if (obj.done) {
+                                    progressEl.textContent = `done: entries=${obj.entries||0} lastSize=${obj.lastSize||0}`;
+                                    exciteStop();
+                                }
+                            } catch (e) {}
+                        }
+
+                        alert('Rebuild completed');
+                        exciteStop();
+                    } catch (e) {
+                        alert('Rebuild failed: ' + (e.message || e));
+                        document.getElementById('auditProgressPre').textContent = '(error) ' + (e.message || e);
+                        exciteStop();
+                    } finally {
+                        btn.disabled = false;
+                        btn.textContent = 'Rebuild Index';
+                        loadAuditPage();
+                    }
+                });
+
+                // Scan incremental handler
+                document.getElementById('btnScanIncremental').addEventListener('click', async () => {
+                    const btn = document.getElementById('btnScanIncremental');
+                    const progressEl = document.getElementById('auditProgressPre');
+                    try {
+                        btn.disabled = true;
+                        btn.textContent = 'Scanning...';
+                        progressEl.textContent = '(starting incremental scan...)';
+                        const secret = document.getElementById('secret').value.trim();
+                        const headers = {};
+                        if (secret) headers['Authorization'] = 'Bearer ' + secret;
+                        const resp = await fetch('/admin/retriever/scan-incremental', { method: 'POST', headers });
+                        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+                        const body = await resp.json();
+                        if (!body.ok) throw new Error(body.error || 'scan failed');
+                        progressEl.textContent = `scan: added=${body.result.added.length||0} updated=${body.result.updated.length||0} removed=${body.result.removed.length||0} count=${body.result.count}`;
+                        await loadIndexStatus();
+                        await loadAuditPage();
+                    } catch (e) {
+                        alert('Incremental scan failed: ' + (e.message || e));
+                        document.getElementById('auditProgressPre').textContent = '(error) ' + (e.message || e);
+                    } finally {
+                        btn.disabled = false;
+                        btn.textContent = 'Scan Incremental';
+                    }
+                });
+
+                // Index status refresh
+                async function loadIndexStatus() {
+                    try {
+                        const secret = document.getElementById('secret').value.trim();
+                        const headers = {};
+                        if (secret) headers['Authorization'] = 'Bearer ' + secret;
+                        const resp = await fetch('/admin/retriever/status', { headers });
+                        if (!resp.ok) {
+                            throw new Error('HTTP ' + resp.status);
+                        }
+                        const body = await resp.json();
+                        if (!body.ok) throw new Error(body.error || 'status failed');
+                        const idxEl = document.getElementById('auditIndexStatus');
+                        const meta = body.meta || {};
+                        idxEl.textContent = `(index: count=${body.count} lastBuilt=${body.builtAt||'n/a'})`;
+                        idxEl.style.color = '#0a0';
+                    } catch (e) {
+                        const idxEl = document.getElementById('auditIndexStatus');
+                        idxEl.textContent = `(index: error)`;
+                        idxEl.style.color = '#c00';
+                    }
+                }
+
+                document.getElementById('btnIndexStatus').addEventListener('click', loadIndexStatus);
+
+                // Helper: escape HTML
+                function escapeHtml(s) {
+                    return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+                }
+
+                // Highlight matched query tokens inside a snippet (returns HTML)
+                function highlightHtml(text, query) {
+                    const qtokens = (String(query || '').toLowerCase().split(/\s+/).map(t=>t.trim()).filter(Boolean));
+                    if (!qtokens.length) return escapeHtml(text).slice(0,2000);
+                    let html = escapeHtml(text);
+                    // For each token, wrap word-boundary matches with <mark>
+                    for (const t of qtokens) {
+                        const esc = t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                        const re = new RegExp('\\b' + esc + '\\b', 'gi');
+                        html = html.replace(re, (m) => '<mark>' + m + '</mark>');
+                    }
+                    return html.slice(0,2000);
+                }
+
+                // Retriever quick search
+                async function doRetrieverSearch() {
+                    try {
+                        const q = (document.getElementById('retrieverQuery').value || '').trim();
+                        const k = Math.max(1, Math.min(50, Number(document.getElementById('retrieverK').value || 5)));
+                        if (!q) return alert('query required');
+                        const secret = document.getElementById('secret').value.trim();
+                        const headers = {};
+                        if (secret) headers['Authorization'] = 'Bearer ' + secret;
+                        const resp = await fetch(`/admin/retriever/search?q=${encodeURIComponent(q)}&k=${k}`, { headers });
+                        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+                        const body = await resp.json();
+                        if (!body.ok) throw new Error(body.error || 'search failed');
+                        const results = body.results || [];
+                        const el = document.getElementById('retrieverResults');
+                        el.innerHTML = '';
+                        if (!results.length) { el.textContent = '(no results)'; return; }
+                        results.forEach((r, i) => {
+                            const row = document.createElement('div');
+                            row.className = 'file-row';
+                            const title = document.createElement('div');
+                            title.innerHTML = `<strong>${i+1}. ${r.path}</strong> <span style="color:#666">score:${r.score}</span>`;
+                            const snippet = document.createElement('pre');
+                            snippet.style.whiteSpace = 'pre-wrap';
+                            // highlight matches
+                            snippet.innerHTML = highlightHtml(r.snippet || '', q);
+                            row.appendChild(title);
+                            row.appendChild(snippet);
+                            el.appendChild(row);
+                        });
+                    } catch (e) { alert('Search failed: ' + (e.message || e)); }
+                }
+
+                document.getElementById('btnRetrieverSearch').addEventListener('click', doRetrieverSearch);
+                document.getElementById('btnRetrieverStatus').addEventListener('click', loadIndexStatus);
+
+                // Build Vector Store handler
+                document.getElementById('btnBuildVectorStore').addEventListener('click', async () => {
+                    const btn = document.getElementById('btnBuildVectorStore');
+                    const progressEl = document.getElementById('auditProgressPre');
+                    try {
+                        btn.disabled = true;
+                        btn.textContent = 'Building...';
+                        progressEl.textContent = '(starting vector store build...)';
+                        const secret = document.getElementById('secret').value.trim();
+                        const headers = { 'Content-Type': 'application/json' };
+                        if (secret) headers['Authorization'] = 'Bearer ' + secret;
+                        // Use streaming rebuild endpoint to get progress updates
+                        const streamResp = await fetch('/admin/retriever/vector/rebuild/stream', { method: 'GET', headers });
+                        if (!streamResp.ok) throw new Error('HTTP ' + streamResp.status);
+
+                        // animate admin avatar while vector rebuild runs
+                        exciteStart();
+
+                        const reader = streamResp.body.getReader();
+                        const decoder = new TextDecoder('utf-8');
+                        let buf = '';
+                        while (true) {
+                            const { done, value } = await reader.read();
+                            if (done) break;
+                            buf += decoder.decode(value, { stream: true });
+                            let idx;
+                            while ((idx = buf.indexOf('\n')) >= 0) {
+                                const line = buf.slice(0, idx).trim();
+                                buf = buf.slice(idx + 1);
+                                if (!line) continue;
+                                try {
+                                    const obj = JSON.parse(line);
+                                    if (obj.progress) {
+                                        const p = obj.progress;
+                                        progressEl.textContent = `processed=${p.processed||0}/${p.total||0} added=${p.added||0}`;
+                                    } else if (obj.warn) {
+                                        progressEl.textContent = `warn: ${obj.warn}`;
+                                    } else if (obj.done) {
+                                        progressEl.textContent = `done: entries=${obj.entries||0} added=${obj.added||0} lastBuilt=${obj.lastBuilt||'n/a'}`;
+                                        exciteStop();
+                                    } else if (obj.error) {
+                                        progressEl.textContent = `error: ${obj.error}`;
+                                        exciteStop();
+                                    } else {
+                                        progressEl.textContent = JSON.stringify(obj);
+                                    }
+                                } catch (e) {
+                                    progressEl.textContent = line;
+                                }
+                            }
+                        }
+                        // flush remaining
+                        if (buf.trim()) {
+                            try { const obj = JSON.parse(buf.trim()); if (obj.done) { progressEl.textContent = `done: entries=${obj.entries||0}`; exciteStop(); } } catch (e) {}
+                        }
+                        await loadVectorStatus();
+                        alert('Vector store build completed');
+                        exciteStop();
+                    } catch (e) {
+                        alert('Vector build failed: ' + (e.message || e));
+                        document.getElementById('auditProgressPre').textContent = '(error) ' + (e.message || e);
+                    } finally {
+                        btn.disabled = false;
+                        btn.textContent = 'Build Vector Store';
+                    }
+                });
+
+                // Vector status
+                async function loadVectorStatus() {
+                    try {
+                        const secret = document.getElementById('secret').value.trim();
+                        const headers = {};
+                        if (secret) headers['Authorization'] = 'Bearer ' + secret;
+                        const resp = await fetch('/admin/retriever/vector/status', { headers });
+                        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+                        const body = await resp.json();
+                        if (!body.ok) throw new Error(body.error || 'vector status failed');
+                        const idxEl = document.getElementById('auditIndexStatus');
+                        const text = `(index: count=${body.count||0} lastBuilt=${body.lastBuilt||'n/a'} vectorAvailable=${body.available===true})`;
+                        idxEl.textContent = text;
+                        idxEl.style.color = '#0a0';
+                    } catch (e) {
+                        const idxEl = document.getElementById('auditIndexStatus');
+                        idxEl.textContent = `(vector: error)`;
+                        idxEl.style.color = '#c00';
+                    }
+                }
+
+                document.getElementById('btnVectorStatus').addEventListener('click', loadVectorStatus);
+
+                // Auto-focus secret field and initial audit/index loads
+                document.getElementById("secret").focus();
+                // Start admin loading animation while initial calls run
+                startAdminLoadingAnimation();
+                Promise.allSettled([loadAuditPage(), loadIndexStatus(), loadVectorStatus()])
+                    .then(()=> stopAdminLoadingAnimation())
+                    .catch(()=> stopAdminLoadingAnimation());
+            </script>
+    </body>
+</html>

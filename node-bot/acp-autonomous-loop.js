@@ -2,6 +2,7 @@ const axios = require("axios");
 const fs = require("fs");
 const path = require("path");
 const { safeJsonParse } = require("./utils/json-extract");
+const { scanDir } = require("./tools/dir_scanner");
 
 const RETRIEVER_URL = process.env.RETRIEVER_URL || "http://127.0.0.1:9000";
 const REPO_ROOT = process.env.REPO_ROOT || path.resolve(__dirname, "..");
@@ -10,28 +11,29 @@ const MAX_FILE_READ_BYTES = Number(
 ); // 200 KB
 
 // File-write approval settings
-const FILE_WRITE_REQUIRE_APPROVAL =
-  (process.env.FILE_WRITE_REQUIRE_APPROVAL || "1") !== "0";
-const FILE_WRITE_APPROVAL_DIR = path.join(__dirname, "data", "pending_writes");
-const FILE_WRITE_APPROVAL_TIMEOUT_MS = Number(
-  process.env.FILE_WRITE_APPROVAL_TIMEOUT_MS || 5 * 60 * 1000,
-); // 5 minutes
+function getApprovalConfig() {
+  const requireApproval =
+    (process.env.FILE_WRITE_REQUIRE_APPROVAL || "1") !== "0";
+  const approvalDir = path.join(__dirname, "data", "pending_writes");
+  const approvalTimeoutMs = Number(
+    process.env.FILE_WRITE_APPROVAL_TIMEOUT_MS || 5 * 60 * 1000,
+  );
+  return { requireApproval, approvalDir, approvalTimeoutMs };
+}
 
 async function ensureApprovalDir() {
   try {
-    await fs.promises.mkdir(FILE_WRITE_APPROVAL_DIR, { recursive: true });
+    const { approvalDir } = getApprovalConfig();
+    await fs.promises.mkdir(approvalDir, { recursive: true });
   } catch (e) {
     // ignore
   }
 }
 
-function makeApprovalId() {
-  return `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
-}
-
 async function createPendingRequest(id, payload) {
   await ensureApprovalDir();
-  const filePath = path.join(FILE_WRITE_APPROVAL_DIR, `${id}.json`);
+  const { approvalDir } = getApprovalConfig();
+  const filePath = path.join(approvalDir, `${id}.json`);
   await fs.promises.writeFile(filePath, JSON.stringify(payload, null, 2), {
     encoding: "utf8",
   });
@@ -39,7 +41,8 @@ async function createPendingRequest(id, payload) {
 }
 
 function approvalPaths(id) {
-  const base = path.join(FILE_WRITE_APPROVAL_DIR, id);
+  const { approvalDir } = getApprovalConfig();
+  const base = path.join(approvalDir, id);
   return {
     pending: `${base}.json`,
     approved: `${base}.approved.json`,
@@ -47,13 +50,12 @@ function approvalPaths(id) {
   };
 }
 
-async function waitForApprovalResult(
-  id,
-  timeoutMs = FILE_WRITE_APPROVAL_TIMEOUT_MS,
-) {
+async function waitForApprovalResult(id, timeoutMs) {
+  const { approvalTimeoutMs } = getApprovalConfig();
   const paths = approvalPaths(id);
   const start = Date.now();
-  while (Date.now() - start < timeoutMs) {
+  const maxWait = typeof timeoutMs === "number" ? timeoutMs : approvalTimeoutMs;
+  while (Date.now() - start < maxWait) {
     try {
       if (fs.existsSync(paths.approved)) {
         const txt = await fs.promises.readFile(paths.approved, {
@@ -87,7 +89,8 @@ async function waitForApprovalResult(
 async function archivePendingRequest(id, status, approverMeta, pendingPayload) {
   try {
     await ensureApprovalDir();
-    const ARCHIVE_DIR = path.join(FILE_WRITE_APPROVAL_DIR, "archive");
+    const { approvalDir } = getApprovalConfig();
+    const ARCHIVE_DIR = path.join(approvalDir, "archive");
     await fs.promises.mkdir(ARCHIVE_DIR, { recursive: true });
     const outPath = path.join(ARCHIVE_DIR, `${id}.${status}.json`);
     const archiveObj = {
@@ -133,7 +136,8 @@ const RETENTION_DAYS = Number(
 );
 async function runArchiveRetention() {
   try {
-    const ARCHIVE_DIR = path.join(FILE_WRITE_APPROVAL_DIR, "archive");
+    const { approvalDir } = getApprovalConfig();
+    const ARCHIVE_DIR = path.join(approvalDir, "archive");
     const OLD_DIR = path.join(ARCHIVE_DIR, "old");
     await fs.promises.mkdir(OLD_DIR, { recursive: true });
     const files = await fs.promises.readdir(ARCHIVE_DIR);
@@ -165,14 +169,39 @@ async function runArchiveRetention() {
  */
 async function executeAutonomousStep(rawModelReply, sessionId) {
   // 1. Leverage your centralized safe extraction utility
-  const actions = safeJsonParse(rawModelReply);
+  let actions = safeJsonParse(rawModelReply);
+
+  // Fallback: some model outputs may include JSON with Windows-style backslashes
+  // or slight formatting that the extractor missed. Attempt a permissive regex parse.
+  if (!actions || !Array.isArray(actions)) {
+    try {
+      const firstBracket = rawModelReply.indexOf("[");
+      const lastBracket = rawModelReply.lastIndexOf("]");
+      if (
+        firstBracket !== -1 &&
+        lastBracket !== -1 &&
+        lastBracket > firstBracket
+      ) {
+        let candidate = rawModelReply.slice(firstBracket, lastBracket + 1);
+        try {
+          actions = JSON.parse(candidate);
+        } catch (e) {
+          // Try escaping stray backslashes (common in Windows paths inside loose JSON)
+          const escaped = candidate.replace(/\\(?!["\\/bfnrtu])/g, "\\\\");
+          actions = JSON.parse(escaped);
+        }
+      }
+    } catch (e) {
+      // ignore and treat as conversational below
+    }
+  }
 
   // If it's a standard text string with no JSON tool markers, return conversation directly
   if (!actions || !Array.isArray(actions)) {
     return { status: "conversational", data: rawModelReply };
   }
 
-  console.log(
+  console.error(
     `[Mana Agent Loop] ⚙️ Processing ${actions.length} autonomous action(s)...`,
   );
 
@@ -183,7 +212,7 @@ async function executeAutonomousStep(rawModelReply, sessionId) {
 
     if (tool === "local_retrieve") {
       const query = args && args.query ? String(args.query) : "";
-      console.log(
+      console.error(
         `[Mana Tool] 🔍 Executing codebase vector search for query: "${query}"`,
       );
 
@@ -218,7 +247,7 @@ async function executeAutonomousStep(rawModelReply, sessionId) {
           })
           .join("\n\n");
 
-        console.log(
+        console.error(
           `  ✅ Successfully retracted ${hits.length} matches from vector store.`,
         );
 
@@ -296,15 +325,19 @@ async function executeAutonomousStep(rawModelReply, sessionId) {
         }
 
         const injected = `FileRead: ${path.relative(REPO_ROOT, resolvedPath)} (size=${size}${truncated ? ", truncated" : ""})\n\n${content}`;
+        const relPath = path
+          .relative(REPO_ROOT, resolvedPath)
+          .split(path.sep)
+          .join("/");
         results.push({
           tool: "file_read",
           status: "ok",
-          path: path.relative(REPO_ROOT, resolvedPath),
+          path: relPath,
           size,
           truncated,
           injectedContext: injected,
         });
-        console.log(
+        console.error(
           `  ✅ file_read: ${resolvedPath} (${size} bytes${truncated ? ", truncated" : ""})`,
         );
       } catch (err) {
@@ -385,7 +418,8 @@ async function executeAutonomousStep(rawModelReply, sessionId) {
         let approvalId = null;
         let approvalPayload = null;
         let approvalMeta = null;
-        if (FILE_WRITE_REQUIRE_APPROVAL && !(args && args.approved === true)) {
+        const { requireApproval } = getApprovalConfig();
+        if (requireApproval && !(args && args.approved === true)) {
           const id = makeApprovalId();
           approvalId = id;
           const preview = String(content).slice(0, 2048);
@@ -401,7 +435,7 @@ async function executeAutonomousStep(rawModelReply, sessionId) {
           approvalPayload = payload;
           try {
             await createPendingRequest(id, payload);
-            console.log(
+            console.error(
               `  ⏳ file_write pending approval id=${id} path=${payload.path}`,
             );
             const appr = await waitForApprovalResult(id);
@@ -421,7 +455,7 @@ async function executeAutonomousStep(rawModelReply, sessionId) {
             }
             // else approved -> proceed
             approvalMeta = appr.meta;
-            console.log(
+            console.error(
               `  ✅ file_write approved id=${id} by ${appr.meta?.approver || "unknown"}`,
             );
           } catch (e) {
@@ -468,7 +502,7 @@ async function executeAutonomousStep(rawModelReply, sessionId) {
             action: "appended",
             size: newSize,
           });
-          console.log(
+          console.error(
             `  ✅ file_write append: ${resolvedPath} (+${Buffer.byteLength(content, "utf8")} bytes)`,
           );
           // archive approval if present
@@ -516,7 +550,7 @@ async function executeAutonomousStep(rawModelReply, sessionId) {
             action: "overwritten",
             size: finalStat.size,
           });
-          console.log(
+          console.error(
             `  ✅ file_write overwrite: ${resolvedPath} (${finalStat.size} bytes)`,
           );
           // archive approval if present
@@ -558,8 +592,118 @@ async function executeAutonomousStep(rawModelReply, sessionId) {
       continue;
     }
 
+    if (tool === "dir_scan") {
+      // Directory scanning tool: returns list of files within a repo-sandboxed path
+      const requestedPath = args && args.path ? String(args.path) : ".";
+      try {
+        let resolved = requestedPath;
+        if (!path.isAbsolute(requestedPath)) {
+          resolved = path.resolve(REPO_ROOT, requestedPath);
+        }
+
+        // Accept a nextToken from callers to continue a previous paginated scan.
+        // The nextToken is a base64 JSON string produced by the scanner that contains
+        // { root, offset, limit, fingerprint }.
+        if (args && args.nextToken) {
+          try {
+            const tok = JSON.parse(
+              Buffer.from(String(args.nextToken), "base64").toString("utf8"),
+            );
+            if (tok && tok.root) {
+              // Use the token's root if it's within the repo sandbox
+              const tokRoot = String(tok.root);
+              const relTok = path.relative(REPO_ROOT, tokRoot);
+              if (!relTok.startsWith("..")) {
+                resolved = tokRoot;
+              }
+            }
+            // If token supplies offset/limit, prefer those over explicit args
+            if (tok && typeof tok.offset === "number") {
+              args.offset = tok.offset;
+            }
+            if (tok && (typeof tok.limit === "number" || tok.limit === null)) {
+              args.limit = tok.limit;
+            }
+            // carry fingerprint along for potential future validation (not required here)
+            args.__tokenFingerprint =
+              tok && tok.fingerprint ? tok.fingerprint : null;
+          } catch (e) {
+            results.push({
+              tool: "dir_scan",
+              status: "error",
+              detail: "invalid_nextToken",
+            });
+            continue;
+          }
+        }
+
+        const rel = path.relative(REPO_ROOT, resolved);
+        if (rel.startsWith("..") || (path.isAbsolute(rel) && !rel)) {
+          results.push({
+            tool: "dir_scan",
+            status: "error",
+            detail: "path_outside_repo",
+          });
+          continue;
+        }
+        const maxDepth = Math.max(0, Number((args && args.maxDepth) || 5));
+        let exts = null;
+        if (args && args.ext) {
+          if (Array.isArray(args.ext))
+            exts = args.ext.map((s) => String(s).toLowerCase());
+          else
+            exts = String(args.ext)
+              .split(",")
+              .map((s) => s.trim().toLowerCase())
+              .filter(Boolean);
+        }
+        let exclude = [];
+        if (args && args.exclude) {
+          if (Array.isArray(args.exclude))
+            exclude = args.exclude.map((s) => String(s));
+          else
+            exclude = String(args.exclude)
+              .split(",")
+              .map((s) => s.trim())
+              .filter(Boolean);
+        }
+        const listObj = scanDir(resolved, {
+          path: resolved,
+          maxDepth,
+          exts,
+          exclude,
+          limit: args && args.limit ? Number(args.limit) : null,
+          offset: args && args.offset ? Number(args.offset) : 0,
+          useIndex: args && args.useIndex === true,
+        });
+        const items = Array.isArray(listObj) ? listObj : listObj.items || [];
+        const total =
+          listObj && typeof listObj.total === "number"
+            ? listObj.total
+            : items.length;
+        const nextToken =
+          listObj && listObj.nextToken ? listObj.nextToken : null;
+        results.push({
+          tool: "dir_scan",
+          status: "ok",
+          count: items.length,
+          total,
+          nextToken,
+          files: items,
+        });
+      } catch (e) {
+        results.push({
+          tool: "dir_scan",
+          status: "error",
+          detail: String(e.message || e),
+        });
+      }
+
+      continue;
+    }
+
     // Unknown / unsupported tool
-    console.warn(`[Mana Tool] ⚠️ Unsupported tool: ${tool}`);
+    console.error(`[Mana Tool] ⚠️ Unsupported tool: ${tool}`);
     results.push({ tool: tool || "unknown", status: "unsupported" });
   }
 
@@ -579,4 +723,36 @@ async function executeAutonomousStep(rawModelReply, sessionId) {
   return { status: "idle", results };
 }
 
-module.exports = { executeAutonomousStep };
+async function createAcpAutonomousLoop(options = {}) {
+  // Minimal autonomous loop factory used by the ACP agent in tests and runtime.
+  // The full implementation may orchestrate multiple iterations, call the backend bridge,
+  // run tests, and apply file edits. For unit tests we provide a simple noop loop
+  // that accepts params and returns an idle result or proxies to a provided runner.
+  const runner = options.runner || null;
+
+  return {
+    run: async (params = {}) => {
+      if (runner && typeof runner === "function") {
+        try {
+          return await runner(params);
+        } catch (e) {
+          return { status: "error", error: String(e?.message || e) };
+        }
+      }
+      // Default behavior: attempt to parse a provided 'modelReply' and execute a single step if present
+      if (params && typeof params.modelReply === "string") {
+        try {
+          return await executeAutonomousStep(
+            params.modelReply,
+            params.sessionId,
+          );
+        } catch (e) {
+          return { status: "error", error: String(e?.message || e) };
+        }
+      }
+      return { status: "idle", results: [] };
+    },
+  };
+}
+
+module.exports = { executeAutonomousStep, createAcpAutonomousLoop };

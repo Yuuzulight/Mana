@@ -1,5 +1,9 @@
 # Mana
 
+**License (code): Apache License 2.0 — © 2026 ManaAI.** If you redistribute this code, you must retain the copyright and NOTICE files and credit ManaAI.
+
+**Artwork (images/sprites): All rights reserved.** The images in `sprites/` are proprietary and may not be reused without permission; see LICENSE-ARTWORK.
+
 Mana is a local-first AI assistant for Windows. It listens from the desktop launcher, transcribes speech locally, replies with local GGUF models, speaks through local TTS services, and can read visible screen text after it is awake.
 
 The project is built for a personal Windows setup: one user, local models by default, clear setup checks, and optional companion features when you want phone access or avatar control.

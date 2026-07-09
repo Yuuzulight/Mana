@@ -100,7 +100,8 @@ function createTtsRuntime(options = {}) {
   const spawnSync = options.spawnSync || defaultSpawnSync;
   const baseDir = options.baseDir || __dirname;
   const tmpDir = options.tmpDir || path.join(baseDir, "tmp");
-  const nowMs = options.nowMs || (() => Number(process.hrtime.bigint() / 1000000n));
+  const nowMs =
+    options.nowMs || (() => Number(process.hrtime.bigint() / 1000000n));
   const logPerf = options.logPerf || (() => {});
   const postJson = options.postJsonBuffer || postJsonBuffer;
   const postFish =
@@ -295,39 +296,54 @@ function createTtsRuntime(options = {}) {
     };
   }
 
+  function estimateWordTimings(text, avgMsPerWord = 120) {
+    const words = String(text || "")
+      .split(/\s+/)
+      .filter(Boolean);
+    const out = [];
+    let t = 0;
+    for (const w of words) {
+      const start = t;
+      const dur = avgMsPerWord;
+      const end = start + dur;
+      out.push({ word: w, startMs: start, endMs: end });
+      t = end;
+    }
+    return out;
+  }
+
   async function synthesizeWithConfiguredProvider(provider, text) {
+    // Returns { audio: Buffer, timings: [{word,startMs,endMs}] }
+    let audio = null;
     if (provider === "fish") {
       const startedAt = nowMs();
-      const audio = await postFish(text);
+      audio = await postFish(text);
       logPerf("tts fish", startedAt);
-      return audio;
-    }
-
-    if (provider === "kokoro") {
+    } else if (provider === "kokoro") {
       const startedAt = nowMs();
       const kokoroProfile = pickKokoroLanguageProfile(text);
-      const audio = await postJson(`${kokoroTtsUrl}/synthesize`, {
+      audio = await postJson(`${kokoroTtsUrl}/synthesize`, {
         text,
         ...kokoroProfile,
       });
       logPerf("tts kokoro", startedAt);
-      return audio;
-    }
-
-    if (provider === "chatterbox") {
+    } else if (provider === "chatterbox") {
       const startedAt = nowMs();
-      const audio = await postJson(`${chatterboxTtsUrl}/synthesize`, {
+      audio = await postJson(`${chatterboxTtsUrl}/synthesize`, {
         text,
       });
       logPerf("tts chatterbox", startedAt);
-      return audio;
+    } else if (provider === "cli") {
+      audio = runTts(text);
+    } else {
+      throw new Error(`TTS provider not configured: ${provider}`);
     }
 
-    if (provider === "cli") {
-      return runTts(text);
-    }
-
-    throw new Error(`TTS provider not configured: ${provider}`);
+    // Try to extract precise timings if the provider returned metadata in a custom wrapper
+    // (future: providers that return {audio, timings} will be supported).
+    // For now, provide an estimated timing map per word.
+    const timings = estimateWordTimings(text, 120);
+    return { audio: Buffer.from(audio), timings };
   }
 
   async function synthesizeReply(text) {
@@ -337,7 +353,8 @@ function createTtsRuntime(options = {}) {
 
     if (ttsProvider === "fish") {
       try {
-        return await synthesizeWithConfiguredProvider("fish", text);
+        const res = await synthesizeWithConfiguredProvider("fish", text);
+        return res.audio;
       } catch (error) {
         if (fishTtsFallbackProvider === "none") {
           throw error;
@@ -346,16 +363,18 @@ function createTtsRuntime(options = {}) {
         console.warn(
           `Fish Speech TTS failed, falling back to ${fishTtsFallbackProvider}: ${error.message}`,
         );
-        return await synthesizeWithConfiguredProvider(
+        const res = await synthesizeWithConfiguredProvider(
           fishTtsFallbackProvider,
           text,
         );
+        return res.audio;
       }
     }
 
     if (ttsProvider === "kokoro") {
       try {
-        return await synthesizeWithConfiguredProvider("kokoro", text);
+        const res = await synthesizeWithConfiguredProvider("kokoro", text);
+        return res.audio;
       } catch (error) {
         if (kokoroTtsFallbackProvider === "none") {
           throw error;
@@ -364,19 +383,22 @@ function createTtsRuntime(options = {}) {
         console.warn(
           `Kokoro TTS failed, falling back to ${kokoroTtsFallbackProvider}: ${error.message}`,
         );
-        return await synthesizeWithConfiguredProvider(
+        const res = await synthesizeWithConfiguredProvider(
           kokoroTtsFallbackProvider,
           text,
         );
+        return res.audio;
       }
     }
 
     if (ttsProvider === "chatterbox") {
-      return await synthesizeWithConfiguredProvider("chatterbox", text);
+      const res = await synthesizeWithConfiguredProvider("chatterbox", text);
+      return res.audio;
     }
 
     if (ttsProvider === "cli") {
-      return await synthesizeWithConfiguredProvider("cli", text);
+      const res = await synthesizeWithConfiguredProvider("cli", text);
+      return res.audio;
     }
 
     throw new Error("TTS not configured");
