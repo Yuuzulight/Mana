@@ -229,7 +229,7 @@ function createAcpMemoryStore(options = {}) {
     return saved;
   }
 
-  async function buildPromptMemory(sessionId) {
+  function buildPromptMemory(sessionId) {
     const session = getSession(sessionId);
     if (!session || (!session.summary && !session.turns.length)) {
       return "";
@@ -263,7 +263,21 @@ function createAcpMemoryStore(options = {}) {
     for (let i = 0; i < parts.length; i++) {
       const candidate = (parts[i] || "").toString();
       const newText = (accText ? accText + "\n" : "") + candidate;
-      const estTokens = await Promise.resolve(tokenEstimator(newText));
+      // tokenEstimator may be async in some custom configs; prefer a synchronous fallback
+      let estTokens;
+      try {
+        const maybe = tokenEstimator(newText);
+        if (maybe && typeof maybe.then === "function") {
+          // async estimator detected; fall back to char-based heuristic
+          estTokens = Math.max(1, Math.ceil((newText.length || 0) / 4));
+        } else {
+          estTokens =
+            Number(maybe) || Math.max(1, Math.ceil((newText.length || 0) / 4));
+        }
+      } catch (e) {
+        estTokens = Math.max(1, Math.ceil((newText.length || 0) / 4));
+      }
+
       if (estTokens > maxPromptTokens) {
         // Stop adding more; if nothing added yet, truncate candidate to fit approximately
         if (!selected.length) {

@@ -1,0 +1,18 @@
+Mana
+
+Copyright (c) 2026 ManaAI
+
+This product includes software licensed under the Apache License, Version 2.0.
+
+Attribution and redistribution
+- If you redistribute this code or portions of it, you must retain the copyright
+  notice and this NOTICE file.
+- If you reuse the code, please credit ManaAI in your documentation or NOTICE.
+
+Artwork restrictions
+- The artwork, sprites, and images contained in the `sprites/` directory are
+  proprietary and not covered by the Apache 2.0 license. See LICENSE-ARTWORK for details.
+
+Third-party components
+- See THIRD_PARTY.md for a list of third-party dependencies, models, and their
+  respective license or usage restrictions.
