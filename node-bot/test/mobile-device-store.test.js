@@ -1,7 +1,7 @@
-import { strict as assert } from 'assert';
-import fs from 'fs';
-import path from 'path';
-import { MobileDeviceStore, sha256Hex } from '../mobile-device-store.js';
+const assert = require('assert');
+const fs = require('fs');
+const path = require('path');
+const { MobileDeviceStore } = require('../mobile-device-store');
 
 const TMP = path.join(__dirname, 'tmp-test-devices.json');
 
