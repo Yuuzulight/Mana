@@ -50,7 +50,21 @@ try{
     $shasumsFile = Join-Path $tmpDir.FullName 'SHASUMS256.txt'
     try{
         Write-Log "Downloading SHASUMS256 from $shasumsUrl"
-        Invoke-WebRequest -Uri $shasumsUrl -OutFile $shasumsFile -UseBasicParsing -ErrorAction Stop
+        $attempt = 0
+        $max = 3
+        while ($attempt -lt $max){
+            try{
+                Invoke-WebRequest -Uri $shasumsUrl -OutFile $shasumsFile -UseBasicParsing -TimeoutSec 120 -ErrorAction Stop
+                break
+            } catch {
+                $attempt++
+                Write-Log "Attempt $attempt to fetch SHASUMS256 failed: $($_.Exception.Message)"
+                if ($attempt -ge $max){
+                    Write-Log "Warning: Failed to download SHASUMS256.txt after $max attempts"
+                    $shasumsFile = $null
+                } else { Start-Sleep -Seconds 3 }
+            }
+        }
     } catch {
         Write-Log "Warning: Failed to download SHASUMS256.txt: $($_.Exception.Message)"
         $shasumsFile = $null
