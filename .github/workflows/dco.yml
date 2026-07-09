@@ -7,6 +7,8 @@ on:
 jobs:
   dco:
     runs-on: ubuntu-latest
+    env:
+      MAINTAINERS: "Yuuzulight"
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -17,10 +19,11 @@ jobs:
         run: |
           git fetch --no-tags --prune --unshallow || true
 
-      - name: Determine base ref
+      - name: Determine base ref and PR author
         run: |
           echo "BASE_REF=${{ github.event.pull_request.base.ref }}" >> $GITHUB_ENV
           echo "PR_SHA=${{ github.event.pull_request.head.sha }}" >> $GITHUB_ENV
+          echo "PR_AUTHOR=${{ github.event.pull_request.user.login }}" >> $GITHUB_ENV
 
       - name: Fetch base branch
         run: git fetch origin $BASE_REF
@@ -28,6 +31,17 @@ jobs:
       - name: Check commits for Signed-off-by or signed CLA in PR
         run: |
           set -euo pipefail
+
+          # Allow maintainers to bypass DCO enforcement
+          if [ -n "${MAINTAINERS}" ]; then
+            for m in $(echo "$MAINTAINERS" | tr ',' '\n'); do
+              if [ "${PR_AUTHOR}" = "$m" ]; then
+                echo "PR author $PR_AUTHOR is a maintainer; bypassing DCO check.";
+                exit 0;
+              fi
+            done
+          fi
+
           echo "Checking commits between origin/$BASE_REF and $PR_SHA"
           commits=$(git rev-list --no-merges origin/$BASE_REF..$PR_SHA || true)
           if [ -z "$commits" ]; then
