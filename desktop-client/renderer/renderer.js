@@ -155,5 +155,47 @@
     }
   }
 
+  // Onboarding helpers
+  function showOnboarding(details){
+    const modal = document.getElementById('onboardingModal');
+    const text = document.getElementById('onboardText');
+    const detailsEl = document.getElementById('onboardDetails');
+    text.textContent = 'System check results:';
+    detailsEl.textContent = details.join('\n');
+    modal.setAttribute('aria-hidden','false');
+  }
+  function hideOnboarding(){
+    const modal = document.getElementById('onboardingModal');
+    modal.setAttribute('aria-hidden','true');
+  }
+
+  document.getElementById('dismissOnboarding').addEventListener('click', ()=>{ localStorage.setItem('mana_seen_onboarding','1'); hideOnboarding(); });
+  document.getElementById('openDocsBtn').addEventListener('click', ()=>{ window.open('../BUILD_DESKTOP.md','_blank'); });
+
+  async function runOnboardingChecks(){
+    const details = [];
+    try{
+      const resp = await fetch('http://127.0.0.1:5005/doctor');
+      if (resp.ok){
+        const j = await resp.json();
+        details.push(JSON.stringify(j,null,2));
+      } else {
+        details.push('Doctor endpoint not reachable (backend may not be running).');
+      }
+    } catch (e){
+      details.push('Doctor check failed: ' + (e.message || e));
+    }
+    showOnboarding(details);
+  }
+
+  // show onboarding if not seen
+  try{
+    const seen = localStorage.getItem('mana_seen_onboarding');
+    if (!seen){
+      // run checks but still init app
+      runOnboardingChecks().catch(()=>{});
+    }
+  }catch(e){}
+
   init();
 })();
