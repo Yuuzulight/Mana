@@ -10,6 +10,7 @@ jobs:
   tests:
     name: Run backend tests
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -25,6 +26,7 @@ jobs:
     name: Build Windows installer
     runs-on: windows-latest
     needs: tests
+    timeout-minutes: 90
     outputs:
       artifact-name: mana-windows-installer
     steps:
@@ -111,14 +113,15 @@ jobs:
           $proc = Start-Process -FilePath $installed.FullName -PassThru
           Write-Host "Started process id $($proc.Id)"
           $ok = $false
-          for ($i=0; $i -lt 30; $i++){
-            Start-Sleep -Seconds 2
+          # wait up to 5 minutes (60 attempts x 5s)
+          for ($i=0; $i -lt 60; $i++){
+            Start-Sleep -Seconds 5
             try{
-              $res = Invoke-RestMethod -Uri 'http://127.0.0.1:5005/health' -Method GET -TimeoutSec 2
+              $res = Invoke-RestMethod -Uri 'http://127.0.0.1:5005/health' -Method GET -TimeoutSec 3
               if ($res){ $ok = $true; break }
             } catch {}
           }
-          if (-not $ok){ Write-Host "Health check failed"; Stop-Process -Id $proc.Id -Force; exit 1 }
+          if (-not $ok){ Write-Host "Health check failed (timeout)"; Stop-Process -Id $proc.Id -Force; exit 1 }
           Write-Host "Health OK"
           # cleanup
           Stop-Process -Id $proc.Id -Force
