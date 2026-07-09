@@ -167,6 +167,7 @@ function registerMobileRoutes(app, deps = {}) {
 
   // pairing: admin creates code (local-only)
   router.post('/pair/request', (req, res) => {
+    console.log('[mobile] pair/request called, deviceStore?', !!deviceStore);
     if (!isLocalRequest(req)) return res.status(403).json({ error: 'admin-only' });
     const ip = (req.ip || '').replace('::ffff:', '');
     if (!pairLimiter.allow(ip)) return res.status(429).json({ error: 'rate_limited' });
