@@ -4,5 +4,6 @@
   "main": "main.js",
   "scripts": {
     "start": "electron ."
-  }
+  },
+  "license": "Apache-2.0"
 }

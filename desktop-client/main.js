@@ -16,7 +16,7 @@ function createWindow() {
     },
   });
 
-  mainWindow.loadFile(path.join(__dirname, 'renderer', 'index.html'));
+  mainWindow.loadFile(path.join(__dirname, 'renderer', 'index_fixed.html'));
 }
 
 function spawnBackend() {
@@ -34,6 +34,12 @@ function spawnBackend() {
     console.log('[mana-backend]', s.trim());
     if (mainWindow && mainWindow.webContents) {
       mainWindow.webContents.send('backend-log', s);
+      // If backend emits a special excite marker, forward to renderer to animate
+      try {
+        if (String(s).includes('__MANA_EXCITE__')) {
+          mainWindow.webContents.send('excite');
+        }
+      } catch (e) {}
     }
   });
   backendProc.stderr.on('data', (b) => {
@@ -41,6 +47,11 @@ function spawnBackend() {
     console.error('[mana-backend]', s.trim());
     if (mainWindow && mainWindow.webContents) {
       mainWindow.webContents.send('backend-log', s);
+      try {
+        if (String(s).includes('__MANA_EXCITE__')) {
+          mainWindow.webContents.send('excite');
+        }
+      } catch (e) {}
     }
   });
   backendProc.on('exit', (code, sig) => {

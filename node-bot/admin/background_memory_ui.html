@@ -58,7 +58,22 @@
         </style>
     </head>
     <body>
-        <h1>Mana Background Memory Admin</h1>
+
+                <h1>Mana Background Memory Admin</h1>
+                <img id="adminAvatar" src="../../sprites/sprite-idle.png" alt="Mana avatar" style="width:72px;height:72px;display:block;margin-bottom:12px;">
+                <style>
+                    /* Admin avatar hop animation */
+                    @keyframes admin-hop {
+                        0% { transform: translateY(0); }
+                        25% { transform: translateY(-8px); }
+                        50% { transform: translateY(0); }
+                        75% { transform: translateY(-4px); }
+                        100% { transform: translateY(0); }
+                    }
+                    #adminAvatar.excited {
+                        animation: admin-hop 320ms ease-in-out infinite;
+                    }
+                </style>
 
         <div class="box">
             <label
@@ -165,14 +180,31 @@
                         </div>
 
                         <div class="box">
+                            <h3>Vector Rebuild Audit</h3>
+                            <div style="display:flex; gap:8px; align-items:center; margin-bottom:8px;">
+                                <input id="vAuditSearch" type="text" placeholder="search audit text" style="flex:1" />
+                                <input id="vAuditFrom" type="text" placeholder="from (ISO)" style="width:160px" />
+                                <input id="vAuditTo" type="text" placeholder="to (ISO)" style="width:160px" />
+                                <select id="vAuditPageSize"><option value="10">10</option><option value="25">25</option><option value="50" selected>50</option></select>
+select>                                <button id="vAuditPrev">Prev</button>
+                                <button id="vAuditNext">Next</button>
+                                <button id="vAuditExportCsv">Export CSV</button>
+                            </div>
+                            <div id="vAuditProgress" style="background:#fff9e6;padding:8px;border:1px solid #f0e0b0;">(idle)</div>
+                            <div id="vAuditList" class="audit-list" style="margin-top:8px; max-height:240px; overflow:auto;">(no audit)</div>
+                            <pre id="vAuditDetailPre">(select an entry)</pre>
+                        </div>
+
+                        <div class="box">
                             <h3>Retriever Quick Search</h3>
                             <div style="display:flex; gap:8px; align-items:center;">
                                 <input id="retrieverQuery" type="text" placeholder="search query" style="flex:1" />
-                                <select id="retrieverK"><option value="1">1</option><option value="3">3</option><option value="5" selected>5</option><option value="10">10</option></select>
+                                <select id="retrieverK"><option value="1">1</option</h3>><option value="3">3</option><option value="5" selected>5</option></option><option value="10">10</option></select>
                                 <button id="btnRetrieverSearch">Search</button>
                                 <button id="btnRetrieverStatus" style="margin-left:8px">Refresh Index Status</button>
                                 <button id="btnBuildVectorStore" style="margin-left:8px">Build Vector Store</button>
                                 <button id="btnVectorStatus" style="margin-left:8px">Vector Store Status</button>
+                                <button id="btnViewVectorAudit" style="margin-left:8px">View Rebuild Audit</button>
                             </div>
                             <div id="retrieverResults" class="files" style="margin-top:8px; max-height:260px;"></div>
                         </div>
@@ -199,6 +231,40 @@
                 } catch (e) {
                     return { ok: false, raw: txt, status: res.status };
                 }
+            }
+
+            // Admin avatar excitement helpers
+            function exciteStart() {
+                const a = document.getElementById('adminAvatar');
+                if (!a) return;
+                a.classList.add('excited');
+            }
+            function exciteStop() {
+                const a = document.getElementById('adminAvatar');
+                if (!a) return;
+                a.classList.remove('excited');
+            }
+
+            // Admin loading animation (cycles three loading sprites)
+            let _adminLoadingInterval = null;
+            let _adminLoadingIndex = 0;
+            function startAdminLoadingAnimation(){
+                const a = document.getElementById('adminAvatar');
+                if (!a) return;
+                if (_adminLoadingInterval) return;
+                _adminLoadingIndex = 0;
+                a.src = '../../sprites/sprite-loading-1.png';
+                _adminLoadingInterval = setInterval(()=>{
+                    _adminLoadingIndex = (_adminLoadingIndex + 1) % 3;
+                    a.src = `../../sprites/sprite-loading-${_adminLoadingIndex+1}.png`;
+                }, 300);
+            }
+            function stopAdminLoadingAnimation(){
+                const a = document.getElementById('adminAvatar');
+                try{ if (_adminLoadingInterval) clearInterval(_adminLoadingInterval); }catch(e){}
+                _adminLoadingInterval = null;
+                _adminLoadingIndex = 0;
+                if (a) a.src = '../../sprites/sprite-idle.png';
             }
 
             let lastProcessedFiles = [];
@@ -409,6 +475,78 @@
                 }
             }
 
+            // Vector rebuild audit paging
+            let vAuditOffset = 0;
+            let vAuditLimit = Number(document.getElementById('vAuditPageSize')?.value || 50);
+
+            async function loadVectorAuditPage() {
+                try {
+                    vAuditLimit = Number(document.getElementById('vAuditPageSize').value || 50);
+                    const q = (document.getElementById('vAuditSearch').value || '').trim();
+                    const from = encodeURIComponent((document.getElementById('vAuditFrom').value || '').trim());
+                    const to = encodeURIComponent((document.getElementById('vAuditTo').value || '').trim());
+                    const url = `/admin/retriever/vector/rebuild/audit?offset=${vAuditOffset}&limit=${vAuditLimit}&q=${encodeURIComponent(q)}${from? '&from=' + from : ''}${to? '&to=' + to : ''}`;
+                    const secret = document.getElementById('secret').value.trim();
+                    const headers = {};
+                    if (secret) headers['Authorization'] = 'Bearer ' + secret;
+                    const resp = await fetch(url, { headers });
+                    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+                    const body = await resp.json();
+                    if (!body.ok) throw new Error(body.error || 'failed');
+                    const entries = body.entries || [];
+                    const el = document.getElementById('vAuditList');
+                    el.innerHTML = '';
+                    if (!entries.length) { el.textContent = '(no audit)'; return; }
+                    entries.forEach((e,i)=>{
+                        const row = document.createElement('div');
+                        row.className = 'audit-row';
+                        row.dataset.idx = i;
+                        row.textContent = `${i+1+vAuditOffset}. ${e.at || ''} | ${e.approver||''} | ${e.action||''} | ${e.status||''}`;
+                        row.addEventListener('click', ()=>{ document.getElementById('vAuditDetailPre').textContent = JSON.stringify(entries[Number(row.dataset.idx)], null, 2); });
+                        el.appendChild(row);
+                    });
+                    document.getElementById('vAuditPrev').disabled = vAuditOffset <= 0;
+                    document.getElementById('vAuditNext').disabled = (body.total || 0) <= vAuditOffset + vAuditLimit;
+                } catch (e) { document.getElementById('vAuditList').textContent = 'Failed to load: ' + (e.message||e); }
+            }
+
+            document.getElementById('vAuditPrev').addEventListener('click', ()=>{ vAuditOffset = Math.max(0, vAuditOffset - vAuditLimit); loadVectorAuditPage(); });
+            document.getElementById('vAuditNext').addEventListener('click', ()=>{ vAuditOffset = vAuditOffset + vAuditLimit; loadVectorAuditPage(); });
+            document.getElementById('vAuditPageSize').addEventListener('change', ()=>{ vAuditOffset = 0; loadVectorAuditPage(); });
+            document.getElementById('vAuditSearch').addEventListener('keyup', (e)=>{ if (e.key==='Enter'){ vAuditOffset=0; loadVectorAuditPage(); }});
+            document.getElementById('vAuditExportCsv').addEventListener('click', async ()=>{
+                try {
+                    const q = encodeURIComponent((document.getElementById('vAuditSearch').value||'').trim());
+                    const from = encodeURIComponent((document.getElementById('vAuditFrom').value||'').trim());
+                    const to = encodeURIComponent((document.getElementById('vAuditTo').value||'').trim());
+                    const url = `/admin/retriever/vector/rebuild/audit.csv?q=${q}${from? '&from='+from:''}${to? '&to='+to:''}`;
+                    const secret = document.getElementById('secret').value.trim();
+                    const headers = {};
+                    if (secret) headers['Authorization'] = 'Bearer ' + secret;
+                    const resp = await fetch(url, { headers });
+                    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+                    const blob = await resp.blob();
+                    const link = document.createElement('a'); link.href = URL.createObjectURL(blob); link.download='vector_rebuild_audit.csv'; document.body.appendChild(link); link.click(); setTimeout(()=>{ URL.revokeObjectURL(link.href); link.remove(); },5000);
+                } catch (e){ alert('Export failed: '+(e.message||e)); }
+            });
+
+            // initial load for vector audit
+            loadVectorAuditPage();
+
+            // View Vector Audit button -> scroll/focus to the panel
+            document.getElementById('btnViewVectorAudit').addEventListener('click', ()=>{
+                try {
+                    const panel = document.getElementById('vAuditList');
+                    if (panel) {
+                        panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                    }
+                    const inp = document.getElementById('vAuditSearch');
+                    if (inp) inp.focus();
+                } catch (e) {}
+            });
+
+
+
             document
                 .getElementById("auditPrev")
                 .addEventListener("click", () => {
@@ -533,6 +671,9 @@
                             throw new Error('HTTP ' + resp.status);
                         }
 
+                        // animate admin avatar while rebuild is running
+                        exciteStart();
+
                         const reader = resp.body.getReader();
                         const decoder = new TextDecoder('utf-8');
                         let buf = '';
@@ -552,8 +693,11 @@
                                         progressEl.textContent = `processedLines=${p.processedLines||0} bytes=${p.bytesProcessed||0} total=${p.totalBytes||0} percent=${p.percent!==null?p.percent+'%':'n/a'}`;
                                     } else if (obj.done) {
                                         progressEl.textContent = `done: entries=${obj.entries||0} lastSize=${obj.lastSize||0}`;
+                                        // stop excitement when done
+                                        exciteStop();
                                     } else if (obj.error) {
                                         progressEl.textContent = `error: ${obj.error}`;
+                                        exciteStop();
                                     } else {
                                         // generic
                                         progressEl.textContent = JSON.stringify(obj);
@@ -571,14 +715,17 @@
                                 const obj = JSON.parse(buf.trim());
                                 if (obj.done) {
                                     progressEl.textContent = `done: entries=${obj.entries||0} lastSize=${obj.lastSize||0}`;
+                                    exciteStop();
                                 }
                             } catch (e) {}
                         }
 
                         alert('Rebuild completed');
+                        exciteStop();
                     } catch (e) {
                         alert('Rebuild failed: ' + (e.message || e));
                         document.getElementById('auditProgressPre').textContent = '(error) ' + (e.message || e);
+                        exciteStop();
                     } finally {
                         btn.disabled = false;
                         btn.textContent = 'Rebuild Index';
@@ -707,6 +854,10 @@
                         // Use streaming rebuild endpoint to get progress updates
                         const streamResp = await fetch('/admin/retriever/vector/rebuild/stream', { method: 'GET', headers });
                         if (!streamResp.ok) throw new Error('HTTP ' + streamResp.status);
+
+                        // animate admin avatar while vector rebuild runs
+                        exciteStart();
+
                         const reader = streamResp.body.getReader();
                         const decoder = new TextDecoder('utf-8');
                         let buf = '';
@@ -728,10 +879,10 @@
                                         progressEl.textContent = `warn: ${obj.warn}`;
                                     } else if (obj.done) {
                                         progressEl.textContent = `done: entries=${obj.entries||0} added=${obj.added||0} lastBuilt=${obj.lastBuilt||'n/a'}`;
+                                        exciteStop();
                                     } else if (obj.error) {
                                         progressEl.textContent = `error: ${obj.error}`;
-                                    } else if (obj.summary) {
-                                        progressEl.textContent = `summary: duration=${obj.summary.durationMs}ms added=${obj.summary.added} count=${obj.summary.count}`;
+                                        exciteStop();
                                     } else {
                                         progressEl.textContent = JSON.stringify(obj);
                                     }
@@ -742,10 +893,11 @@
                         }
                         // flush remaining
                         if (buf.trim()) {
-                            try { const obj = JSON.parse(buf.trim()); if (obj.done) progressEl.textContent = `done: entries=${obj.entries||0}`; } catch (e) {}
+                            try { const obj = JSON.parse(buf.trim()); if (obj.done) { progressEl.textContent = `done: entries=${obj.entries||0}`; exciteStop(); } } catch (e) {}
                         }
                         await loadVectorStatus();
                         alert('Vector store build completed');
+                        exciteStop();
                     } catch (e) {
                         alert('Vector build failed: ' + (e.message || e));
                         document.getElementById('auditProgressPre').textContent = '(error) ' + (e.message || e);
@@ -780,9 +932,11 @@
 
                 // Auto-focus secret field and initial audit/index loads
                 document.getElementById("secret").focus();
-                loadAuditPage();
-                loadIndexStatus();
-                loadVectorStatus();
+                // Start admin loading animation while initial calls run
+                startAdminLoadingAnimation();
+                Promise.allSettled([loadAuditPage(), loadIndexStatus(), loadVectorStatus()])
+                    .then(()=> stopAdminLoadingAnimation())
+                    .catch(()=> stopAdminLoadingAnimation());
             </script>
     </body>
 </html>

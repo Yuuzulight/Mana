@@ -13,15 +13,62 @@
     try {
       const st = await window.electronAPI.backendStatus();
       statusEl.textContent = st.running ? 'Backend running' : 'Backend not running';
-    } catch (e) { statusEl.textContent = 'Backend unknown'; }
+      if (!st.running) startLoadingAnimation();
+    } catch (e) { statusEl.textContent = 'Backend unknown'; startLoadingAnimation(); }
 
-    window.electronAPI.backendLog((s)=>{ logsEl.textContent += s + '\n'; logsEl.scrollTop = logsEl.scrollHeight; });
+    // backend logs: append and use first log to stop loading animation
+    window.electronAPI.backendLog((s)=>{ logsEl.textContent += s + '\n'; logsEl.scrollTop = logsEl.scrollHeight; stopLoadingAnimation();
+      // also detect excite marker
+      try{ if (String(s).includes('__MANA_EXCITE__')) setSprite('excited'); }catch(e){}
+    });
+
+    window.electronAPI.backendExit((info)=>{ statusEl.textContent = 'Backend exited'; startLoadingAnimation(); });
 
     setupRecording();
   }
 
+  let _prevSpriteState = 'idle';
   function setSprite(state){
-    spriteEl.className = 'sprite ' + (state||'idle');
+    // handle transient excited state which should hop but keep the underlying sprite (idle/speaking)
+    if (state === 'excited'){
+      // keep previous visual (or default to idle)
+      const base = _prevSpriteState || 'idle';
+      spriteEl.className = 'sprite ' + base + ' excited';
+      // remove excited after a few hops (duration * iterations)
+      const durationMs = 320; // must match CSS animation-duration
+      const iterations = 5; // number of hops
+      setTimeout(()=>{
+        // restore to base state
+        spriteEl.className = 'sprite ' + base;
+      }, durationMs * iterations);
+      return;
+    }
+    _prevSpriteState = state || 'idle';
+    spriteEl.className = 'sprite ' + _prevSpriteState;
+  }
+
+  // Loading animation (cycles the three loading sprites)
+  let _loadingInterval = null;
+  let _loadingIndex = 0;
+  function startLoadingAnimation(){
+    if (_loadingInterval) return;
+    _loadingIndex = 0;
+    // set initial loading sprite
+    try { spriteEl.style.backgroundImage = `url('../../sprites/sprite-loading-${_loadingIndex+1}.png')`; } catch(e){}
+    _loadingInterval = setInterval(()=>{
+      _loadingIndex = (_loadingIndex + 1) % 3;
+      try { spriteEl.style.backgroundImage = `url('../../sprites/sprite-loading-${_loadingIndex+1}.png')`; } catch(e){}
+    }, 300);
+    statusEl.textContent = 'Backend starting...';
+  }
+  function stopLoadingAnimation(){
+    if (!_loadingInterval) return;
+    clearInterval(_loadingInterval);
+    _loadingInterval = null;
+    _loadingIndex = 0;
+    // restore to current base sprite
+    try { spriteEl.style.backgroundImage = ''; } catch(e){}
+    statusEl.textContent = 'Backend running';
   }
 
   async function setupRecording(){

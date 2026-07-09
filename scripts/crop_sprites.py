@@ -4,7 +4,7 @@ import sys
 import os
 
 SRC = sys.argv[1] if len(sys.argv) > 1 else r"C:\ManaAI\Mana\Screenshot 2026-06-19 193421.png"
-OUT_DIR = sys.argv[2] if len(sys.argv) > 2 else os.path.join(os.path.dirname(__file__), '..', 'node-bot', 'admin')
+OUT_DIR = sys.argv[2] if len(sys.argv) > 2 else os.path.join(os.path.dirname(__file__), '..', 'sprites')
 
 os.makedirs(OUT_DIR, exist_ok=True)
 
