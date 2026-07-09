@@ -25,7 +25,7 @@ jobs:
       - name: Fetch base branch
         run: git fetch origin $BASE_REF
 
-      - name: Check commits for Signed-off-by
+      - name: Check commits for Signed-off-by or signed CLA in PR
         run: |
           set -euo pipefail
           echo "Checking commits between origin/$BASE_REF and $PR_SHA"
@@ -34,6 +34,7 @@ jobs:
             echo "No new commits to check."
             exit 0
           fi
+
           missing=0
           for c in $commits; do
             echo "Inspecting commit $c"
@@ -42,9 +43,33 @@ jobs:
               missing=1
             fi
           done
+
           if [ "$missing" -ne 0 ]; then
-            echo "One or more commits are missing Signed-off-by lines."
-            echo "Please sign your commits with DCO (add 'Signed-off-by: Your Name <you@example.com>' to commit messages) or submit a signed CLA as described in CONTRIBUTING.md/CLA.md."
-            exit 1
+            echo "One or more commits are missing Signed-off-by lines. Checking for a signed CLA file in the PR..."
+            # list files changed in the PR range
+            files_changed=$(git diff --name-only origin/$BASE_REF..$PR_SHA || true)
+            echo "Files changed in PR:
+$files_changed"
+
+            # look for obvious signed CLA filenames (case-insensitive)
+            cla_found=0
+            for f in $files_changed; do
+              lname=$(echo "$f" | tr '[:upper:]' '[:lower:]')
+              if echo "$lname" | grep -qE '(signed[_-]?cla|cla[_-]?signed|cla[_-]?scan|signed[_-]?agreement)'; then
+                echo "Found candidate signed CLA file: $f"
+                cla_found=1
+                break
+              fi
+            done
+
+            if [ "$cla_found" -eq 1 ]; then
+              echo "Signed CLA file detected in PR — allowing unsigned commits since contributor submitted a CLA in this PR."
+              exit 0
+            else
+              echo "No signed CLA file found in PR."
+              echo "Please sign your commits with DCO (add 'Signed-off-by: Your Name <you@example.com>' to commit messages) or submit a signed CLA as described in CONTRIBUTING.md/CLA.md."
+              # fail the job to require either DCO or CLA
+              exit 1
+            fi
           fi
           echo "All commits have DCO sign-offs."
