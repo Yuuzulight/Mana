@@ -4055,6 +4055,7 @@ function registerRoutes(app, upload, deps = {}) {
         ),
       }),
     mobileMemoryStore,
+    deviceStore: deps.deviceStore,
     buildAssistantReply: deps.buildAssistantReply || buildAssistantReply,
     synthesizeReply: deps.synthesizeReply || synthesizeReply,
     runWhisper: deps.runWhisper || runWhisper,
