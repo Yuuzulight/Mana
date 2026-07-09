@@ -1,0 +1,11 @@
+# Normalize text files and mark images as binary
+* text=auto
+*.sh eol=lf
+*.ps1 eol=crlf
+*.cmd eol=crlf
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+/sprites/* binary
