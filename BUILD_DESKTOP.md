@@ -12,8 +12,16 @@ Prerequisites
 
 Notes about the backend (node-bot)
 
-- The packaged installer will include the backend files under the app's resources (configured as extraResources). However, the packaged Electron app spawns the `node` executable to run the backend. Therefore, the target machine must have a compatible Node runtime installed and accessible via PATH.
-- If you prefer a truly standalone EXE that does not require a system Node, you must bundle a Node runtime (e.g., a portable node.exe) into the installer and update `desktop-client/main.js` to use the bundled Node executable. This repo currently assumes Node is available on target systems.
+- The packaged installer will include the backend files under the app's resources (configured as extraResources). The packaged installer can also include a bundled Node runtime so the app runs standalone without Node installed on target machines.
+
+Bundling Node runtime (standalone installer)
+
+- To create a truly standalone installer that does not require Node on the target machine, place a portable Node distribution into a folder named `node-bin` at the repository root. The packager will include this into the app resources as `node_bin` and the launcher will prefer the bundled node executable if present.
+
+  - Windows: place `node.exe` and its associated files into `node-bin/` (e.g., `node-bin/node.exe`, other DLLs if required).
+  - Linux/macOS: place the corresponding platform-specific Node binary under `node-bin/bin/node`.
+
+- Note: Please verify the Node distribution you bundle is permitted for redistribution. Official Node binaries are typically redistributable, but confirm licensing if you are unsure.
 
 Build steps (local)
 
@@ -21,7 +29,14 @@ Build steps (local)
 
    cd C:\ManaAI\Mana
 
-2. Install dependencies for backend (node-bot) and desktop client:
+2. Prepare a bundled Node runtime (optional for standalone)
+
+   - If you want a standalone installer, create a `node-bin` folder at the repo root and copy the platform-appropriate Node binary into it (see notes above). Example:
+
+     mkdir node-bin
+     copy C:\path\to\node.exe node-bin\node.exe
+
+3. Install dependencies for backend (node-bot) and desktop client:
 
    cd node-bot
    npm ci
@@ -29,21 +44,22 @@ Build steps (local)
    cd ..\desktop-client
    npm ci
 
-3. Run the build (this will produce an installer in desktop-client/dist):
+4. Run the build (this will produce an installer in desktop-client/dist):
 
    npm run dist
 
    - The command uses electron-builder to create an NSIS installer by default.
    - Build logs will appear in the console. The first build downloads Electron and can take several minutes.
 
-4. Find artifacts:
+5. Find artifacts:
 
    - After a successful build, installers will be in `desktop-client/dist/` (e.g., Mana Setup 0.1.0.exe).
 
-5. Test the installer on a clean Windows machine (or VM):
+6. Test the installer on a clean Windows machine (or VM):
 
-   - Ensure Node is installed on the test machine (same major/minor as your dev Node version recommended).
-   - Run the installer, then run the installed app and confirm it spawns the backend and that audio recording/transcription/reply flows work.
+   - If you bundled node into node-bin, the app should run standalone.
+   - If not bundled, ensure Node is installed on the target machine (same major/minor as your dev Node version recommended).
+   - Run the installed app and confirm it spawns the backend and that audio recording/transcription/reply flows work.
 
 Environment variables for code signing (optional)
 
@@ -57,12 +73,12 @@ Troubleshooting
 
 - makensis not found: ensure NSIS is installed and makensis is on PATH.
 - Build fails downloading Electron: check network, retry, or use a faster connection.
-- Packaged app cannot spawn backend: ensure Node is installed on target machine and in PATH.
+- Packaged app cannot spawn backend: if you did not bundle node, ensure Node is installed on target machine and in PATH. If you bundled node, ensure the bundled binary is valid and included in the installer.
 
-Optional: Bundle Node runtime
+Optional: Bundle Node runtime alternatives
 
-- To make the app fully standalone, bundle a node.exe next to the backend files in extraResources and change `desktop-client/main.js` to spawn that bundled binary. I can help implement this if you want a fully self-contained installer.
+- To avoid bundling Node, an alternative is to compile the backend into a single native executable using tools like pkg or nexe and include that in extraResources. This may simplify redistribution but has tradeoffs (native compilation complexity, OS/arch builds).
 
 Questions / Next steps
 
-- Would you like me to bundle a portable node binary into the installer and update `main.js` so the app runs without requiring Node on the target machine? If yes, tell me whether you want to include Node from official distribution (ensure license compatibility) or use another approach (e.g., pkg conversion of backend).
+- I can bundle an official Node binary into `node-bin` for you if you provide the binary or permit me to download and include it. I can also implement the bundling and test a local build here if you want me to run the build in this environment (it will consume time and download artifacts).
