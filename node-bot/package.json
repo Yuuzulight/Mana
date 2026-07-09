@@ -2,13 +2,13 @@
   "name": "local-llama-node-bot",
   "version": "0.1.0",
   "description": "Node backend that uses whisper.cpp and llama.cpp binaries for local STT and generation",
+  "author": "ManaAI",
   "main": "server.js",
   "scripts": {
     "doctor": "node doctor.js",
     "start": "node server.js",
     "test": "node --test test/*.test.js"
   },
-  "license": "Apache-2.0",
   "dependencies": {
     "axios": "^1.4.0",
     "cors": "^2.8.5",
@@ -18,5 +18,6 @@
     "tesseract.js": "^7.0.0",
     "uuid": "^14.0.1",
     "ws": "^8.21.0"
-  }
+  },
+  "license": "Apache-2.0"
 }
