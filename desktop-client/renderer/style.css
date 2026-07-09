@@ -55,5 +55,12 @@ body{
 .sprite.excited{animation:hop 320ms ease-in-out infinite}
 
 /* admin avatar excited and loading handled inline in admin page */
+
+/* Onboarding modal */
+.modal{ position:fixed; inset:0; display:none; align-items:center; justify-content:center; background:rgba(0,0,0,0.4); z-index:1000 }
+.modal[aria-hidden="false"], .modal.show { display:flex }
+.modal-content{ background:white; padding:18px; border-radius:12px; width:520px; max-width:92%; box-shadow:0 10px 30px rgba(0,0,0,0.15)}
+.modal-content h3{ margin:0 0 8px 0 }
+.modal-content .box{ background:#fafafa; padding:8px; border-radius:6px; border:1px solid var(--border); }
 #status { text-align:center; color:#666; }
 .logs { max-height:160px; overflow:auto; background:#f7f7f7; padding:6px; }
