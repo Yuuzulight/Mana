@@ -36,6 +36,18 @@ How to request contributor access
 Contact / CLA submissions
 
 - If you need to contact the maintainers outside of issues, or to submit a signed CLA, email: yuuzulight@gmail.com
-- To sign the CLA: complete the CLA form in CLA.md, sign it, and email a scanned/signed copy or a PDF to yuuzulight@gmail.com. The maintainers will confirm receipt and next steps.
+- To sign the CLA: complete the CLA form in CLA.md, sign it, and either:
+  - Email a scanned/signed copy or a PDF to yuuzulight@gmail.com, or
+  - Include the signed CLA file in your PR (recommended filename conventions below) so the automated checks can detect it.
+
+Signed CLA filename convention (recommended)
+
+- When including a signed CLA in a PR, name the file clearly so the repository's automated checks can detect it. Recommended filename patterns (case-insensitive):
+  - SIGNED_CLA_<YourName>.pdf
+  - signed-cla-<yourname>.pdf
+  - cla_signed_<yourname>.pdf
+  - signed-agreement-<yourname>.pdf
+
+- Place the signed CLA file at the repository root or in a top-level `cla/` directory within your PR. The automated workflow will scan changed files for names matching the patterns above and accept the PR as CLA-covered if found.
 
 Thank you for your interest in contributing to Mana. We welcome well-scoped proposals and will respond to request issues in due course.
