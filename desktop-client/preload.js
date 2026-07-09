@@ -7,4 +7,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   backendStatus: () => ipcRenderer.invoke('backend-status'),
   // allow renderer to react to an 'excite' event sent from main
   onExcite: (cb) => ipcRenderer.on('excite', () => cb()),
+  // open logs via main
+  openLogs: () => ipcRenderer.invoke('open-logs'),
+  openDocs: () => ipcRenderer.invoke('open-docs')
 });

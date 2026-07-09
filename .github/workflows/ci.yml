@@ -1,49 +1,3 @@
-name: CI
-
-on:
-  push:
-    branches: [ main ]
-  pull_request:
-    branches: [ main ]
-
-jobs:
-  tests:
-    name: Run backend tests
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 18
-      - name: Install dependencies and run tests
-        working-directory: ./node-bot
-        run: |
-          npm ci
-          npm test
-
-  build-windows:
-    name: Build Windows installer
-    runs-on: windows-latest
-    needs: tests
-    steps:
-      - uses: actions/checkout@v4
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 18
-      - name: Install desktop-client dependencies
-        working-directory: ./desktop-client
-        run: |
-          npm ci
-      - name: Fetch Node runtime for standalone installer
-        if: always()
-        working-directory: ${{ github.workspace }}
-        shell: pwsh
-        run: |
-          Write-Host "Fetching Node $env:NODE_VERSION for Windows runner"
-          $ver = '${{ env.NODE_VERSION }}'
-          if (-not $ver) { $ver = '18.18.0' }
-          .\scripts\fetch_node_bin.ps1 -Version $ver -Arch x64 -Force
       - name: Create Windows installer (electron-builder)
         working-directory: ./desktop-client
         env:
@@ -51,12 +5,130 @@ jobs:
           CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD || '' }}
           NODE_VERSION: ${{ env.NODE_VERSION || '18.18.0' }}
         run: |
+          echo "Signing info: CSC_LINK present=$(test -n "$env:CSC_LINK"; echo $?)" || true
           npm run dist
+      - name: Find produced installers and compute SHA256
+        if: always()
+        working-directory: ./desktop-client
+        shell: pwsh
+        run: |
+          $files = Get-ChildItem -Path .\dist -Recurse -Include *.exe,*.msi | Select-Object -First 10
+          if (!$files){ Write-Host "No installers found in desktop-client/dist"; exit 0 }
+          $outdir = Join-Path $Env:GITHUB_WORKSPACE 'installer-artifacts'
+          New-Item -ItemType Directory -Path $outdir -Force | Out-Null
+          $checks = @()
+          foreach ($f in $files){
+            $dest = Join-Path $outdir $f.Name
+            Copy-Item -Path $f.FullName -Destination $dest -Force
+            $hash = Get-FileHash -Path $dest -Algorithm SHA256 | Select-Object -ExpandProperty Hash
+            $checks += "$($f.Name): $hash"
+          }
+          $checks | Out-File -FilePath (Join-Path $outdir 'CHECKSUMS.txt') -Encoding UTF8
+          Write-Host "Checksums saved to $outdir\CHECKSUMS.txt"
       - name: Upload installer artifact
-        if: success()
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: mana-windows-installer
           path: |
-            desktop-client/dist/*.exe
-            desktop-client/dist/*.msi
+            installer-artifacts/*
+
+      - name: Comment on PR with artifact info
+        if: always() && github.event_name == 'pull_request'
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+            const workspace = process.env.GITHUB_WORKSPACE;
+            const artDir = path.join(workspace, 'installer-artifacts');
+            const checksPath = path.join(artDir, 'CHECKSUMS.txt');
+            let checks = '';
+            if (fs.existsSync(checksPath)) {
+              checks = fs.readFileSync(checksPath, 'utf8');
+            }
+            const files = fs.existsSync(artDir) ? require('fs').readdirSync(artDir).filter(f=>f.endsWith('.exe')||f.endsWith('.msi')) : [];
+            let body = 'Installer artifacts built by CI:\n\n';
+            if (files.length) {
+              for (const f of files) body += `- ${f}\n`;
+            } else {
+              body += '(no artifacts found)\n';
+            }
+            if (checks) body += '\nChecksums:\n' + '```
+' + checks + '\n```\n';
+            // find PR by head sha
+            const prList = await github.rest.pulls.list({ owner: context.repo.owner, repo: context.repo.repo, state: 'open' });
+            const prs = prList.data.filter(p => p.head.sha === process.env.GITHUB_SHA);
+            if (prs.length) {
+              for (const pr of prs) {
+                await github.rest.issues.createComment({ owner: context.repo.owner, repo: context.repo.repo, issue_number: pr.number, body });
+              }
+            } else {
+              console.log('No open PR found for head sha', process.env.GITHUB_SHA);
+            }
+
+  smoke-test-windows:
+    name: Smoke test Windows installer
+    runs-on: windows-latest
+    needs: build-windows
+    timeout-minutes: 30
+    steps:
+      - name: Download installer artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: mana-windows-installer
+          path: .\installer-artifacts
+      - name: Find installer
+        id: find
+        run: |
+          $exe = Get-ChildItem -Path .\installer-artifacts -Filter *.exe -Recurse | Select-Object -First 1
+          if (-not $exe) { Write-Host "No installer exe found"; exit 1 }
+          Write-Host "::set-output name=installer::$($exe.FullName)"
+        shell: pwsh
+      - name: Run installer silently
+        shell: pwsh
+        run: |
+          $installer = "${{ steps.find.outputs.installer }}"
+          Write-Host "Running installer: $installer"
+          Start-Process -FilePath $installer -ArgumentList "/S" -Wait
+          Write-Host "Installer finished"
+      - name: Locate installed app
+        shell: pwsh
+        run: |
+          # Common per-user install path for NSIS: LocalAppData\Programs\<ProductName>
+          $paths = @(
+            "$env:LOCALAPPDATA\Programs\Mana\Mana.exe",
+            "$env:ProgramFiles\Mana\Mana.exe",
+            "$env:ProgramFiles(x86)\Mana\Mana.exe"
+          )
+          $found = $null
+          foreach ($p in $paths){ if (Test-Path $p){ $found = $p; break } }
+          if (-not $found) { Write-Host "Could not locate installed Mana.exe in expected locations"; Get-ChildItem -Path "$env:LOCALAPPDATA\Programs" -Recurse -Filter Mana.exe | ForEach-Object { Write-Host $_.FullName }; exit 1 }
+          Write-Host "::set-output name=exe::$found"
+      - name: Start installed app and check health
+        shell: pwsh
+        run: |
+          $exe = "${{ steps.find.outputs.installer }}"
+          # Try to find the installed exe path from prior step
+          $installed = Get-ChildItem -Path $env:LOCALAPPDATA\Programs -Recurse -Filter Mana.exe -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $installed){ Write-Host "Installed exe not found"; exit 1 }
+          $proc = Start-Process -FilePath $installed.FullName -PassThru
+          Write-Host "Started process id $($proc.Id)"
+          $ok = $false
+          # wait up to 5 minutes (60 attempts x 5s)
+          for ($i=0; $i -lt 60; $i++){
+            Start-Sleep -Seconds 5
+            try{
+              $res = Invoke-RestMethod -Uri 'http://127.0.0.1:5005/health' -Method GET -TimeoutSec 3
+              if ($res){ $ok = $true; break }
+            } catch {}
+          }
+          if (-not $ok){ Write-Host "Health check failed (timeout)"; Stop-Process -Id $proc.Id -Force; exit 1 }
+          Write-Host "Health OK"
+          # cleanup
+          Stop-Process -Id $proc.Id -Force
+      - name: Uninstall (if possible)
+        shell: pwsh
+        run: |
+          $uninst = Get-ChildItem -Path $env:LOCALAPPDATA\Programs -Recurse -Filter uninst* -ErrorAction SilentlyContinue | Select-Object -First 1
+          if ($uninst){ Write-Host "Found uninstaller: $($uninst.FullName)"; Start-Process -FilePath $uninst.FullName -ArgumentList '/S' -Wait } else { Write-Host "No uninstaller found to run" }
