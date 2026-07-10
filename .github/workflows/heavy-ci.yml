@@ -11,6 +11,8 @@ jobs:
   heavy-node-tests:
     name: Heavy Node tests
     runs-on: ubuntu-latest
+    # Run on main pushes OR when a PR is labeled 'run/full-ci'
+    if: (github.event_name == 'push' && startsWith(github.ref, 'refs/heads/main')) || (github.event_name == 'pull_request' && github.event.action == 'labeled' && github.event.label.name == 'run/full-ci')
     steps:
       - name: Checkout
         uses: actions/checkout@v4
