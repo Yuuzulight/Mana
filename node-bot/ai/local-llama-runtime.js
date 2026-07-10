@@ -151,19 +151,22 @@ function createLocalLlamaRuntime(options = {}) {
         ];
 
     // Hardware/runtime optimizations (configurable via environment)
-    // Defaults: enable flash attention and 4-bit KV compression; allow overrides via env vars
-    const enableFlashAttn = !(env.LLAMA_ENABLE_FLASHATTN === "0");
-    const kvCompress = env.LLAMA_KV_COMPRESS || "q4_0"; // set to empty string to disable
+    // Defaults: conservative (disabled) to maximize compatibility with various llama binaries.
+    // Enable features explicitly by setting the corresponding env var to '1'.
+    const enableFlashAttn = env.LLAMA_ENABLE_FLASHATTN === "1"; // require explicit opt-in
+    const flashAttnValue = env.LLAMA_ARG_FLASH_ATTN || "auto"; // value to pass when flash-attn is enabled
+    const kvCompress = env.LLAMA_KV_COMPRESS || ""; // set to empty string to disable (explicit opt-in)
     const contextCap = env.LLAMA_CONTEXT || env.LLAMA_CONTEXT_CAP || "4096";
     const ngl = env.LLAMA_NGL || "99"; // number for offloading layers (model-specific)
 
-    // Smart context / KV-offload flags
-    const enableSmartContext = !(env.LLAMA_ENABLE_SMART_CONTEXT === "0");
-    const enableNoKvOffload = !(env.LLAMA_ENABLE_NO_KV_OFFLOAD === "0");
+    // Smart context / KV-offload flags: opt-in only
+    const enableSmartContext = env.LLAMA_ENABLE_SMART_CONTEXT === "1";
+    const enableNoKvOffload = env.LLAMA_ENABLE_NO_KV_OFFLOAD === "1";
 
     const extraArgs = [];
     if (enableFlashAttn) {
-      extraArgs.push("--flash-attn");
+      // pass a value (some llama binaries expect 'on|off|auto')
+      extraArgs.push("--flash-attn", flashAttnValue);
     }
     if (kvCompress) {
       // Both key and value compress flags if supported by the binary
@@ -171,7 +174,7 @@ function createLocalLlamaRuntime(options = {}) {
       extraArgs.push("-ctv", kvCompress);
     }
 
-    // Prefer smart-context if available; also provide no-kv-offload as alternative
+    // Smart context / no-kv-offload are only added when explicitly enabled
     if (enableSmartContext) {
       extraArgs.push("--smart-context");
     }
