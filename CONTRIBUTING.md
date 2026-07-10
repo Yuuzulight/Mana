@@ -50,4 +50,16 @@ Signed CLA filename convention (recommended)
 
 - Place the signed CLA file at the repository root or in a top-level `cla/` directory within your PR. The automated workflow will scan changed files for names matching the patterns above and accept the PR as CLA-covered if found.
 
+Unsigned commits and DCO
+
+- We allow contributors to submit unsigned commits, but any contribution requires a signed CLA to be accepted by maintainers.
+- If you prefer the DCO process, add a `Signed-off-by: Your Name <you@example.com>` line to your commit messages.
+- To include a signed CLA file in your PR, use one of the filename patterns above. The automation will detect the presence of a signed CLA file in the PR and mark the PR as CLA-covered.
+
+ADMIN_TOKEN for remote admin UI access
+
+- The admin endpoints (`/mobile/devices`, `/mobile/pair/request`, etc.) are localhost-only by default.
+- To allow remote access you may set an `ADMIN_TOKEN` environment variable on the server. When `ADMIN_TOKEN` is set, clients must present the token in the `Authorization: Bearer <token>` header or `x-admin-token` header.
+- CI and test jobs that exercise admin endpoints should set the `ADMIN_TOKEN` secret in the repository settings (name: `ADMIN_TOKEN`).
+
 Thank you for your interest in contributing to Mana. We welcome well-scoped proposals and will respond to request issues in due course.
