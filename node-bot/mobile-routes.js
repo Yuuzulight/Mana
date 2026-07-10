@@ -102,6 +102,29 @@ function isLocalRequest(req) {
   return ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1';
 }
 
+// Admin auth helper: if ADMIN_TOKEN is configured in env, require that token
+// be sent as Authorization: Bearer <token> or x-admin-token header. If no
+// ADMIN_TOKEN is configured, fall back to localhost-only enforcement to
+// preserve previous behavior.
+function adminAuthMiddleware(req, res) {
+  // Prefer deps/env when available (registerMobileRoutes will set appEnv from deps.env)
+  const appEnv = req.app && req.app.locals && req.app.locals.MOBILE_APP_ENV ? req.app.locals.MOBILE_APP_ENV : process.env;
+  const ADMIN_TOKEN = (appEnv && appEnv.ADMIN_TOKEN) || process.env.ADMIN_TOKEN || null;
+  if (ADMIN_TOKEN) {
+    const auth = (req.get('authorization') || '').trim();
+    const headerToken = auth.startsWith('Bearer ') ? auth.slice('Bearer '.length).trim() : null;
+    const alt = req.get('x-admin-token') || req.get('X-Admin-Token');
+    const token = headerToken || alt || null;
+    if (!token || token !== ADMIN_TOKEN) {
+      return { ok: false, status: 401, body: { error: 'admin_auth_required' } };
+    }
+    return { ok: true };
+  }
+  // No ADMIN_TOKEN configured: require localhost request (legacy behavior)
+  if (!isLocalRequest(req)) return { ok: false, status: 403, body: { error: 'admin-only' } };
+  return { ok: true };
+}
+
 // simple in-memory rate limiter per IP for pairing endpoints
 class RateLimiter {
   constructor(limit = 5, windowMs = 60 * 1000) {
@@ -165,10 +188,11 @@ function registerMobileRoutes(app, deps = {}) {
     });
   });
 
-  // pairing: admin creates code (local-only)
+  // pairing: admin creates code (local-only or token-protected)
   router.post('/pair/request', (req, res) => {
     console.log('[mobile] pair/request called, deviceStore?', !!deviceStore);
-    if (!isLocalRequest(req)) return res.status(403).json({ error: 'admin-only' });
+    const auth = adminAuthMiddleware(req, res);
+    if (!auth.ok) return res.status(auth.status).json(auth.body);
     const ip = (req.ip || '').replace('::ffff:', '');
     if (!pairLimiter.allow(ip)) return res.status(429).json({ error: 'rate_limited' });
     if (!deviceStore) return res.status(500).json({ error: 'device_store_not_configured' });
@@ -192,7 +216,8 @@ function registerMobileRoutes(app, deps = {}) {
 
   // Admin: list devices
   router.get('/devices', (req, res) => {
-    if (!isLocalRequest(req)) return res.status(403).json({ error: 'admin-only' });
+    const auth = adminAuthMiddleware(req, res);
+    if (!auth.ok) return res.status(auth.status).json(auth.body);
     if (!deviceStore) return res.status(500).json({ error: 'device_store_not_configured' });
     const list = deviceStore.listDevices();
     res.json({ devices: list });
@@ -200,7 +225,8 @@ function registerMobileRoutes(app, deps = {}) {
 
   // Admin revoke
   router.post('/devices/:id/revoke', (req, res) => {
-    if (!isLocalRequest(req)) return res.status(403).json({ error: 'admin-only' });
+    const auth = adminAuthMiddleware(req, res);
+    if (!auth.ok) return res.status(auth.status).json(auth.body);
     if (!deviceStore) return res.status(500).json({ error: 'device_store_not_configured' });
     const id = req.params.id;
     const ok = deviceStore.revokeDevice(id);
@@ -210,7 +236,8 @@ function registerMobileRoutes(app, deps = {}) {
 
   // Admin rotate token
   router.post('/devices/:id/rotate', (req, res) => {
-    if (!isLocalRequest(req)) return res.status(403).json({ error: 'admin-only' });
+    const auth = adminAuthMiddleware(req, res);
+    if (!auth.ok) return res.status(auth.status).json(auth.body);
     if (!deviceStore) return res.status(500).json({ error: 'device_store_not_configured' });
     const id = req.params.id;
     const newToken = randomToken();

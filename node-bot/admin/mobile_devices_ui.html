@@ -1,32 +1,53 @@
 <!doctype html>
 <html>
 <head>
-  <meta charset</html></head>="utf-8" />
-  <title>Mana</title> — Mobile Devices</title>
+  <meta charset="utf-8" />
+  <title>Mana — Mobile Devices</title>
   <style>
-   </style> body{font-family:Segoe UI,Arial; padding:16px}
+    body{font-family:Segoe UI,Arial; padding:16px}
     table{border-collapse:collapse;width:100%}
     th,td{border:1px solid #ddd;padding:8px}
     th{background:#f4f4f4}
     button{margin-right:6px}
     .small{font-size:12px;color:#666}
+    #tokenBar{margin-bottom:12px}
   </style>
 </head>
 <body>
-  <h2>Paired</body> Mobile Devices</h2>
- </h2> <div>
-    <button id</div>="newPair">Create pairing code</button>
+  <h2>Paired Mobile Devices</h2>
+  <div id="tokenBar">
+    <label for="adminTokenInput">Admin token (optional): </label>
+    <input id="adminTokenInput" placeholder="Paste ADMIN_TOKEN for remote access" style="width:320px" />
+    <button id="setToken">Set</button>
+    <span id="tokenHint" class="small">If ADMIN_TOKEN is configured on the server, provide it here to manage devices remotely. Leave blank when opening locally.</span>
+  </div>
+  <div>
+    <button id="newPair">Create pairing code</button>
     <span id="pairInfo" class="small"></span>
   </div>
   <table id="devicesTable">
-    <thead><tr><th>Name</th><th>Id</th><th>Created</th><</th>th>Last seen</th></th><th>Revoked</th><th>Actions</th></tr></thead>
-    <tbody></</th>tbody>
-  </table></th>
+    <thead><tr><th>Name</th><th>Id</th><th>Created</th><th>Last seen</th><th>Revoked</th><th>Actions</th></tr></thead>
+    <tbody></tbody>
+  </table>
 
   <script>
-    async function api(path, opts) {
-</script>      const res = await fetch(path, opts);
-      if (!res.ok) throw new Error('API error ' + res.status);
+    let adminToken = '';
+    const tokenInput = document.getElementById('adminTokenInput');
+    const setBtn = document.getElementById('setToken');
+    setBtn.onclick = ()=>{ adminToken = tokenInput.value.trim(); tokenInput.value=''; tokenInput.placeholder = adminToken ? 'Token set' : 'No token'; };
+
+    async function api(path, opts = {}) {
+      opts.headers = opts.headers || {};
+      if (adminToken) {
+        opts.headers['Authorization'] = 'Bearer ' + adminToken;
+      }
+      const res = await fetch(path, opts);
+      if (!res.ok) {
+        const text = await res.text();
+        let msg = res.status + ' ' + res.statusText;
+        try{ const j = JSON.parse(text); if (j && j.error) msg = j.error; } catch(e){}
+        throw new Error(msg);
+      }
       return res.json();
     }
 
@@ -46,7 +67,7 @@
           td.appendChild(revokeBtn); td.appendChild(rotateBtn);
           tbody.appendChild(tr);
         }
-      }catch(e){ console.error(e); alert('Failed to list devices: '+e.message) }
+      }catch(e){ console.error(e); /* don't spam users with alerts on initial load */ }
     }
 
     document.getElementById('newPair').onclick = async ()=>{
