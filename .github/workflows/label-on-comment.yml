@@ -1,0 +1,61 @@
+name: Label PR on comment
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+jobs:
+  add-label:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check comment and add label
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const comment = context.payload.comment && context.payload.comment.body && context.payload.comment.body.trim();
+            const issue = context.payload.issue || context.payload.pull_request;
+            if (!comment) return;
+            // only act on PR comments
+            if (!context.payload.issue || !context.payload.issue.pull_request) {
+              return;
+            }
+            const prNumber = context.payload.issue.number;
+            if (!/^\/run\/full-ci\s*$/i.test(comment)) return;
+
+            // check permission of commenter: allow write/admin
+            const username = context.payload.comment.user.login;
+            const permResp = await github.rest.repos.getCollaboratorPermissionLevel({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              username,
+            });
+            const perm = permResp.data && permResp.data.permission;
+            if (perm !== 'admin' && perm !== 'write') {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: prNumber,
+                body: `@${username} Sorry, you must be a collaborator with write or admin access to request full CI.`,
+              });
+              return;
+            }
+
+            // add label
+            await github.rest.issues.addLabels({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNumber,
+              labels: ['run/full-ci'],
+            });
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNumber,
+              body: `@${username} I added the label run/full-ci and triggered the heavy CI.`,
+            });
