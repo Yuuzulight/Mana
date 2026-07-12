@@ -84,6 +84,11 @@ Project goal
    - Keep `Gaming mode` checked when you want Mana to run lighter while a watched game is open.
    - Say `Mana` once to wake her for the session.
    - After that first wake-up, keep talking without repeating the wake word.
+   - Mana listens for your whole sentence and only treats it as your prompt
+     once you've paused for about 2.2 seconds — a long sentence isn't cut
+     off partway through. Tune the pause length with
+     `MANA_SILENCE_BUFFER_MS` (milliseconds) if that feels too short or
+     too long for how you talk.
    - The UI shows the transcript and model reply.
    - If Chatterbox is running, the reply is synthesized and played back by the app.
 

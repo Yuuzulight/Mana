@@ -25,7 +25,14 @@ tts_lock = threading.Lock()
 
 DEVICE = os.environ.get("CHATTERBOX_DEVICE", "cuda")
 MODEL_NAME = os.environ.get("CHATTERBOX_MODEL", "turbo")
-VOICE_REF = os.environ.get("CHATTERBOX_VOICE_REF", "")
+HERE = os.path.dirname(__file__)
+# Default to Mana's personal reference voice when it exists (git-ignored,
+# lives in references/). CHATTERBOX_VOICE_REF still overrides.
+_DEFAULT_VOICE_REF = os.path.join(HERE, "references", "mana-mitsuki.wav")
+VOICE_REF = os.environ.get(
+    "CHATTERBOX_VOICE_REF",
+    _DEFAULT_VOICE_REF if os.path.exists(_DEFAULT_VOICE_REF) else "",
+)
 EXAGGERATION = float(os.environ.get("CHATTERBOX_EXAGGERATION", "0.35"))
 CFG_WEIGHT = float(os.environ.get("CHATTERBOX_CFG_WEIGHT", "0.45"))
 TEMPERATURE = float(os.environ.get("CHATTERBOX_TEMPERATURE", "0.8"))
@@ -67,6 +74,32 @@ def get_model():
     return tts_model
 
 
+def resolve_voice_ref(voice_ref: str) -> Optional[str]:
+    """Accepts a full path or a bare name from the references/ voice bank."""
+    ref = (voice_ref or "").strip()
+    if not ref:
+        return None
+    if os.path.exists(ref):
+        return ref
+    references_dir = os.path.join(HERE, "references")
+    for candidate in (ref, f"{ref}.wav"):
+        candidate_path = os.path.join(references_dir, candidate)
+        if os.path.exists(candidate_path):
+            return candidate_path
+    raise ValueError(f"Unknown voice reference: {voice_ref}")
+
+
+def list_voice_bank() -> list[str]:
+    references_dir = os.path.join(HERE, "references")
+    if not os.path.isdir(references_dir):
+        return []
+    return sorted(
+        os.path.splitext(name)[0]
+        for name in os.listdir(references_dir)
+        if name.lower().endswith(".wav")
+    )
+
+
 def synthesize_to_wav_bytes(
     text: str,
     voice_ref: str,
@@ -78,16 +111,26 @@ def synthesize_to_wav_bytes(
         raise ValueError("No text provided")
 
     model = get_model()
-    voice_path = voice_ref or VOICE_REF or None
+    voice_path = resolve_voice_ref(voice_ref) or resolve_voice_ref(VOICE_REF)
+
+    generate_kwargs = dict(
+        text=text,
+        audio_prompt_path=voice_path,
+        exaggeration=exaggeration,
+        cfg_weight=cfg_weight,
+        temperature=temperature,
+    )
+    # chatterbox-tts 0.1.7 turbo: runtime loudness normalization promotes the
+    # reference to float64 and crashes with "expected scalar type Double but
+    # found Float". References in references/ are loudness-normalized offline
+    # instead. CHATTERBOX_NORM_LOUDNESS=1 re-enables the runtime path.
+    if MODEL_NAME.strip().lower() == "turbo" and os.environ.get(
+        "CHATTERBOX_NORM_LOUDNESS", "0"
+    ) != "1":
+        generate_kwargs["norm_loudness"] = False
 
     with tts_lock:
-        audio = model.generate(
-            text=text,
-            audio_prompt_path=voice_path,
-            exaggeration=exaggeration,
-            cfg_weight=cfg_weight,
-            temperature=temperature,
-        )
+        audio = model.generate(**generate_kwargs)
 
     if hasattr(audio, "detach"):
         audio = audio.detach().cpu().numpy()
@@ -131,6 +174,19 @@ def health():
         "model": MODEL_NAME,
         "device": resolve_device(),
         "voiceRefConfigured": bool(VOICE_REF),
+        "activeVoice": os.path.splitext(os.path.basename(VOICE_REF))[0]
+        if VOICE_REF
+        else None,
+    }
+
+
+@app.get("/voices")
+def voices():
+    return {
+        "active": os.path.splitext(os.path.basename(VOICE_REF))[0]
+        if VOICE_REF
+        else None,
+        "voices": list_voice_bank(),
     }
 
 
