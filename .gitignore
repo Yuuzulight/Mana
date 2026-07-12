@@ -45,3 +45,19 @@ mana-younger-sister-voice-test.wav
 tools/whisper/test.wav
 tts-language-tests*/
 tools/whisper/models/*.bin
+
+# Live2D runtime (proprietary, fetched by npm run fetch-live2d-core) and personal avatar model
+windows-launcher/assets/live2d/
+windows-launcher/avatar/model/
+
+# Personal voice references (never commit someone's voice)
+tts-service/references/
+
+# Local SearXNG install (fetched by tools/setup-searxng.ps1; large venv).
+# mana-searxng-settings.yml is tracked outside this tree so setup survives a
+# fresh clone; setup-searxng.ps1 copies it in as tools/searxng/mana-settings.yml.
+tools/searxng/
+
+# GPT-SoVITS trial voice provider (huge self-contained package, ~20GB extracted).
+# See docs/gpt_sovits_setup.md for setup; reference clips live in tts-service/references/.
+tools/gpt-sovits/

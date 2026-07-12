@@ -1,4 +1,4 @@
-const { app, BrowserWindow, desktopCapturer, dialog, ipcMain, screen } = require("electron");
+const { app, BrowserWindow, Menu, Tray, desktopCapturer, dialog, globalShortcut, ipcMain, nativeImage, screen } = require("electron");
 const fs = require("fs");
 const path = require("path");
 const { spawn } = require("child_process");
@@ -8,9 +8,13 @@ let avatarWindow;
 let backendProcess = null;
 let ttsProcess = null;
 let fallbackTtsProcess = null;
+let retrieverProcess = null;
+let fallbackKokoroProcess = null;
+let searxngProcess = null;
 const BACKEND_URL = "http://localhost:5005/health";
 const CHATTERBOX_TTS_URL = "http://127.0.0.1:5010/health";
 const KOKORO_TTS_URL = "http://127.0.0.1:5011/health";
+const GPT_SOVITS_TTS_URL = "http://127.0.0.1:9880/";
 const ROOT_DIR = path.join(__dirname, "..");
 const TTS_DIR = path.join(ROOT_DIR, "tts-service");
 const WHISPER_DIR = path.join(ROOT_DIR, "tools", "whisper");
@@ -35,6 +39,10 @@ const AVATAR_SIZE = {
 const AVATAR_LEFT = Number(process.env.MANA_AVATAR_LEFT || 782);
 const AVATAR_BOTTOM = Number(process.env.MANA_AVATAR_BOTTOM || 0);
 const AVATAR_TOP_LEVEL = process.env.MANA_AVATAR_TOP_LEVEL || "screen-saver";
+// Global "look at my screen" hotkey; set MANA_VISION_HOTKEY=off to disable.
+const VISION_HOTKEY = process.env.MANA_VISION_HOTKEY || "Control+Alt+M";
+// Global hotkey that toggles the Mana chat window; set to off to disable.
+const WINDOW_HOTKEY = process.env.MANA_WINDOW_HOTKEY || "Control+Alt+Space";
 
 async function isServiceRunning(url) {
   try {
@@ -50,9 +58,26 @@ async function isBackendRunning() {
 }
 
 async function isTtsRunning() {
-  const provider = process.env.TTS_PROVIDER || "kokoro";
-  const url = provider === "kokoro" ? KOKORO_TTS_URL : CHATTERBOX_TTS_URL;
-  return isServiceRunning(url);
+  const provider = process.env.TTS_PROVIDER || "chatterbox";
+  if (provider === "kokoro") {
+    return isServiceRunning(KOKORO_TTS_URL);
+  }
+  if (provider === "gpt_sovits") {
+    return isGptSovitsRunning();
+  }
+  return isServiceRunning(CHATTERBOX_TTS_URL);
+}
+
+// GPT-SoVITS's api_v2.py has no dedicated /health route, so any HTTP
+// response (even a 404/422 from an unmatched or param-less route) confirms
+// the process is alive; only a connection failure means it's not running.
+async function isGptSovitsRunning() {
+  try {
+    await fetch(GPT_SOVITS_TTS_URL);
+    return true;
+  } catch (error) {
+    return false;
+  }
 }
 
 async function isChatterboxRunning() {
@@ -64,15 +89,19 @@ function startTtsService() {
     return;
   }
 
-  const provider = process.env.TTS_PROVIDER || "kokoro";
-  if (!["kokoro", "chatterbox"].includes(provider)) {
+  const provider = process.env.TTS_PROVIDER || "chatterbox";
+  if (!["kokoro", "chatterbox", "gpt_sovits"].includes(provider)) {
     return;
   }
 
   if (provider === "kokoro") {
     ttsProcess = startKokoroService();
+  } else if (provider === "gpt_sovits") {
+    ttsProcess = startGptSovitsService();
+    startFallbackKokoroIfEnabled();
   } else {
     ttsProcess = startTtsSetupScript("start.ps1");
+    startFallbackKokoroIfEnabled();
   }
 
   ttsProcess.on("error", (error) => {
@@ -117,6 +146,61 @@ function startKokoroService() {
       windowsHide: true,
     },
   );
+}
+
+// Keep Kokoro warm as the fallback voice so Mana never goes silent if the
+// cloning model can't get GPU memory mid-game.
+function startFallbackKokoroIfEnabled() {
+  if (process.env.MANA_START_KOKORO_FALLBACK === "0" || fallbackKokoroProcess) {
+    return;
+  }
+  fallbackKokoroProcess = startKokoroService();
+  fallbackKokoroProcess.on("error", (error) => {
+    console.warn("Fallback Kokoro failed to start:", error.message);
+    fallbackKokoroProcess = null;
+  });
+  fallbackKokoroProcess.on("close", () => {
+    fallbackKokoroProcess = null;
+  });
+}
+
+// GPT-SoVITS is a trial voice option (see docs/gpt_sovits_setup.md): a large
+// self-contained package under tools/gpt-sovits with its own bundled Python
+// runtime, so it is launched via its own runtime.bat/python rather than a
+// venv python.exe like the other TTS services.
+function startGptSovitsService() {
+  const gptSovitsDir = path.join(ROOT_DIR, "tools", "gpt-sovits");
+  const runtimePython = path.join(gptSovitsDir, "runtime", "python.exe");
+  const apiScript = path.join(gptSovitsDir, "api_v2.py");
+
+  if (!fs.existsSync(runtimePython) || !fs.existsSync(apiScript)) {
+    console.warn(
+      `GPT-SoVITS not found at ${gptSovitsDir}; see docs/gpt_sovits_setup.md`,
+    );
+    dialog.showErrorBox(
+      "GPT-SoVITS not installed",
+      `TTS_PROVIDER is set to gpt_sovits, but ${gptSovitsDir} is missing its runtime. See docs/gpt_sovits_setup.md, or set TTS_PROVIDER back to chatterbox.`,
+    );
+    return startKokoroService();
+  }
+
+  console.log("Starting GPT-SoVITS:", runtimePython, apiScript);
+  return spawn(runtimePython, [apiScript, "-a", "127.0.0.1", "-p", "9880"], {
+    cwd: gptSovitsDir,
+    windowsHide: true,
+    env: {
+      ...process.env,
+      // GPT-SoVITS's TTS.py prints a Chinese debug line on every inference
+      // call. Windows' console defaults to cp1252, which cannot encode
+      // those characters, so the print() throws and GPT-SoVITS's own
+      // except-block "safety net" catches it and silently returns 1 second
+      // of digital silence instead of real audio, still as HTTP 200 — every
+      // reply synthesizes successfully but produces no sound. Forcing UTF-8
+      // stdio makes the print succeed so real inference actually runs.
+      PYTHONIOENCODING: "utf-8",
+      PYTHONUTF8: "1",
+    },
+  });
 }
 
 function startTtsSetupScript(scriptName) {
@@ -171,6 +255,100 @@ function startFallbackChatterboxService() {
   });
 }
 
+const RETRIEVER_URL = "http://127.0.0.1:9000/health";
+
+async function isRetrieverRunning() {
+  return isServiceRunning(RETRIEVER_URL);
+}
+
+// The Python retriever gives Mana retrieval context and exact token counts.
+// It is optional (the backend falls back to heuristics), so failures here
+// only warn. Set MANA_START_RETRIEVER=0 to skip starting it.
+function startRetrieverService() {
+  if (retrieverProcess || process.env.MANA_START_RETRIEVER === "0") {
+    return;
+  }
+
+  const retrieverScript = path.join(ROOT_DIR, "tools", "retriever_service.py");
+  const venvPython = path.join(ROOT_DIR, "venv", "Scripts", "python.exe");
+  if (!fs.existsSync(retrieverScript)) {
+    console.warn(`Retriever script not found at ${retrieverScript}; skipping`);
+    return;
+  }
+  const python = fs.existsSync(venvPython) ? venvPython : "python";
+
+  console.log("Starting Python retriever:", python, retrieverScript);
+  retrieverProcess = spawn(python, ["-u", retrieverScript], {
+    cwd: ROOT_DIR,
+    windowsHide: true,
+  });
+
+  retrieverProcess.on("error", (error) => {
+    console.warn("Failed to start Python retriever:", error.message);
+    retrieverProcess = null;
+  });
+  retrieverProcess.stdout.on("data", (data) => {
+    console.log(`Retriever: ${data}`);
+  });
+  retrieverProcess.stderr.on("data", (data) => {
+    console.error(`Retriever ERR: ${data}`);
+  });
+  retrieverProcess.on("close", (code) => {
+    console.log(`Python retriever exited with code ${code}`);
+    retrieverProcess = null;
+  });
+}
+
+const SEARXNG_URL = "http://127.0.0.1:8890/";
+
+async function isSearxngRunning() {
+  return isServiceRunning(SEARXNG_URL);
+}
+
+// Local SearXNG gives Mana web search, wiki lookups, and page browsing. It
+// is optional (those replies just fail gracefully without it), so failures
+// here only warn. Set MANA_START_SEARXNG=0 to skip starting it.
+function startSearxngService() {
+  if (searxngProcess || process.env.MANA_START_SEARXNG === "0") {
+    return;
+  }
+
+  const searxngDir = path.join(ROOT_DIR, "tools", "searxng");
+  const searxngVenvPython = path.join(searxngDir, "venv", "Scripts", "python.exe");
+  const settingsPath = path.join(searxngDir, "mana-settings.yml");
+  if (!fs.existsSync(searxngVenvPython)) {
+    console.warn(
+      `SearXNG venv not found at ${searxngVenvPython}; skipping. See docs/web_access_setup.md.`,
+    );
+    return;
+  }
+
+  console.log("Starting local SearXNG:", searxngVenvPython);
+  searxngProcess = spawn(searxngVenvPython, ["-m", "searx.webapp"], {
+    cwd: searxngDir,
+    windowsHide: true,
+    env: {
+      ...process.env,
+      SEARXNG_SETTINGS_PATH: settingsPath,
+    },
+  });
+
+  searxngProcess.on("error", (error) => {
+    console.warn("Failed to start SearXNG:", error.message);
+    searxngProcess = null;
+  });
+  searxngProcess.stdout.on("data", (data) => {
+    console.log(`SearXNG: ${data}`);
+  });
+  searxngProcess.stderr.on("data", (data) => {
+    console.error(`SearXNG ERR: ${data}`);
+  });
+  searxngProcess.on("close", (code) => {
+    console.log(`SearXNG exited with code ${code}`);
+    searxngProcess = null;
+  });
+}
+
 function startWindowsServices() {
   // Only start one backend process.
   if (backendProcess) {
@@ -186,7 +364,7 @@ function startWindowsServices() {
       // Quick note: these defaults let the launcher transcribe without a separate setup shell.
       WHISPER_BIN: process.env.WHISPER_BIN || DEFAULT_WHISPER_BIN,
       WHISPER_MODEL: process.env.WHISPER_MODEL || DEFAULT_WHISPER_MODEL,
-      TTS_PROVIDER: process.env.TTS_PROVIDER || "kokoro",
+      TTS_PROVIDER: process.env.TTS_PROVIDER || "chatterbox",
       KOKORO_TTS_URL:
         process.env.KOKORO_TTS_URL || "http://127.0.0.1:5011",
       CHATTERBOX_TTS_URL:
@@ -220,10 +398,12 @@ function startWindowsServices() {
 
 function createWindow() {
   mainWindow = new BrowserWindow({
-    width: 520,
-    height: 380,
+    width: 1020,
+    height: 720,
+    minWidth: 640,
+    minHeight: 480,
+    title: "Mana",
     show: !HIDE_MAIN_WINDOW_AFTER_STARTUP,
-    skipTaskbar: HIDE_MAIN_WINDOW_AFTER_STARTUP,
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
       nodeIntegration: true,
@@ -234,7 +414,8 @@ function createWindow() {
   mainWindow.loadFile(path.join(__dirname, "renderer", "index.html"));
   mainWindow.once("ready-to-show", () => {
     if (HIDE_MAIN_WINDOW_AFTER_STARTUP) {
-      // Quick rundown: keep the mic/listening page alive, just hide the control window.
+      // Quick rundown: keep the mic/listening page alive, just hide the chat
+      // window; Mana stays on screen as the avatar overlay.
       mainWindow.hide();
       return;
     }
@@ -242,10 +423,41 @@ function createWindow() {
     mainWindow.show();
   });
 
+  // The overlay is Mana's minimized form: it deploys whenever the chat
+  // window is hidden or minimized, and retracts when the window is up.
+  mainWindow.on("show", syncOverlayVisibility);
+  mainWindow.on("hide", syncOverlayVisibility);
+  mainWindow.on("minimize", syncOverlayVisibility);
+  mainWindow.on("restore", syncOverlayVisibility);
+
   mainWindow.on("closed", function () {
     mainWindow = null;
     app.quit();
   });
+}
+
+function isMainWindowActive() {
+  return Boolean(
+    mainWindow &&
+      !mainWindow.isDestroyed() &&
+      mainWindow.isVisible() &&
+      !mainWindow.isMinimized(),
+  );
+}
+
+function toggleMainWindow(forceShow = false) {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return;
+  }
+  if (!forceShow && isMainWindowActive()) {
+    mainWindow.hide();
+    return;
+  }
+  if (mainWindow.isMinimized()) {
+    mainWindow.restore();
+  }
+  mainWindow.show();
+  mainWindow.focus();
 }
 
 function getAvatarBounds() {
@@ -268,6 +480,31 @@ function positionAvatarWindow() {
   avatarWindow.setBounds(getAvatarBounds());
 }
 
+function showAvatarOverlay() {
+  if (!avatarWindow || avatarWindow.isDestroyed()) {
+    return;
+  }
+
+  positionAvatarWindow();
+  avatarWindow.show();
+  avatarWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+  avatarWindow.setAlwaysOnTop(true, AVATAR_TOP_LEVEL);
+  avatarWindow.moveTop();
+  avatarWindow.setIgnoreMouseEvents(true, { forward: true });
+}
+
+// Overlay = minimized Mana. Visible exactly when the chat window is not.
+function syncOverlayVisibility() {
+  if (!avatarWindow || avatarWindow.isDestroyed()) {
+    return;
+  }
+  if (isMainWindowActive()) {
+    avatarWindow.hide();
+    return;
+  }
+  showAvatarOverlay();
+}
+
 function createAvatarWindow() {
   let avatarShown = false;
   const showAvatarWindow = () => {
@@ -276,12 +513,7 @@ function createAvatarWindow() {
     }
 
     avatarShown = true;
-    positionAvatarWindow();
-    avatarWindow.show();
-    avatarWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
-    avatarWindow.setAlwaysOnTop(true, AVATAR_TOP_LEVEL);
-    avatarWindow.moveTop();
-    avatarWindow.setIgnoreMouseEvents(true, { forward: true });
+    syncOverlayVisibility();
   };
 
   avatarWindow = new BrowserWindow({
@@ -332,24 +564,47 @@ app.whenReady().then(() => {
   }
 
   // Start the local Node backend before opening the UI.
-  Promise.all([isBackendRunning(), isTtsRunning(), isChatterboxRunning()])
-    .then(([backendRunning, ttsRunning, chatterboxRunning]) => {
-      if (!ttsRunning) {
-        startTtsService();
-      }
-      if (START_FALLBACK_CHATTERBOX && !chatterboxRunning) {
-        startFallbackChatterboxService();
-      }
-      if (!backendRunning) {
-        startWindowsServices();
-      }
-    })
+  Promise.all([
+    isBackendRunning(),
+    isTtsRunning(),
+    isChatterboxRunning(),
+    isRetrieverRunning(),
+    isSearxngRunning(),
+  ])
+    .then(
+      ([
+        backendRunning,
+        ttsRunning,
+        chatterboxRunning,
+        retrieverRunning,
+        searxngRunning,
+      ]) => {
+        if (!ttsRunning) {
+          startTtsService();
+        }
+        if (START_FALLBACK_CHATTERBOX && !chatterboxRunning) {
+          startFallbackChatterboxService();
+        }
+        if (!retrieverRunning) {
+          startRetrieverService();
+        }
+        if (!searxngRunning) {
+          startSearxngService();
+        }
+        if (!backendRunning) {
+          startWindowsServices();
+        }
+      },
+    )
     .catch((e) => {
       dialog.showErrorBox("Start error", String(e));
     });
 
   createWindow();
   createAvatarWindow();
+  createTray();
+  registerVisionHotkey();
+  registerWindowHotkey();
 
   screen.on("display-metrics-changed", positionAvatarWindow);
   screen.on("display-added", positionAvatarWindow);
@@ -360,12 +615,104 @@ app.whenReady().then(() => {
   });
 });
 
+let tray = null;
+
+function createTray() {
+  try {
+    const icon = nativeImage
+      .createFromPath(path.join(ROOT_DIR, "sprites", "sprite-idle.png"))
+      .resize({ width: 16, height: 16 });
+    tray = new Tray(icon);
+    tray.setToolTip("Mana");
+    tray.setContextMenu(
+      Menu.buildFromTemplate([
+        { label: "Open Mana", click: () => toggleMainWindow(true) },
+        {
+          label: "Minimize to overlay",
+          click: () => {
+            if (mainWindow && !mainWindow.isDestroyed()) {
+              mainWindow.hide();
+            }
+          },
+        },
+        { type: "separator" },
+        { label: "Quit", click: () => app.quit() },
+      ]),
+    );
+    tray.on("click", () => toggleMainWindow());
+  } catch (error) {
+    console.warn(`Tray icon unavailable: ${error.message}`);
+  }
+}
+
+function registerWindowHotkey() {
+  const disabled =
+    !WINDOW_HOTKEY ||
+    WINDOW_HOTKEY === "0" ||
+    WINDOW_HOTKEY.toLowerCase() === "off";
+  if (disabled) {
+    return;
+  }
+
+  try {
+    const registered = globalShortcut.register(WINDOW_HOTKEY, () => {
+      toggleMainWindow();
+    });
+    if (registered) {
+      console.log(`Window hotkey registered: ${WINDOW_HOTKEY}`);
+    } else {
+      console.warn(
+        `Window hotkey ${WINDOW_HOTKEY} could not be registered (already in use by another app?). Set MANA_WINDOW_HOTKEY to change it.`,
+      );
+    }
+  } catch (error) {
+    console.warn(`Window hotkey registration failed: ${error.message}`);
+  }
+}
+
+function registerVisionHotkey() {
+  const disabled =
+    !VISION_HOTKEY ||
+    VISION_HOTKEY === "0" ||
+    VISION_HOTKEY.toLowerCase() === "off";
+  if (disabled) {
+    return;
+  }
+
+  try {
+    const registered = globalShortcut.register(VISION_HOTKEY, () => {
+      // The renderer owns the capture/reply/TTS flow; just poke it.
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send("vision:hotkey");
+      }
+    });
+    if (registered) {
+      console.log(`Vision hotkey registered: ${VISION_HOTKEY}`);
+    } else {
+      console.warn(
+        `Vision hotkey ${VISION_HOTKEY} could not be registered (already in use by another app?). Set MANA_VISION_HOTKEY to change it.`,
+      );
+    }
+  } catch (error) {
+    console.warn(`Vision hotkey registration failed: ${error.message}`);
+  }
+}
+
 ipcMain.on("avatar:set-state", (event, state) => {
   if (!avatarWindow) {
     return;
   }
 
   avatarWindow.webContents.send("avatar:state", state);
+});
+
+// Relays speech amplitude from the control window to the avatar for lip sync.
+ipcMain.on("avatar:set-mouth", (event, rms) => {
+  if (!avatarWindow) {
+    return;
+  }
+
+  avatarWindow.webContents.send("avatar:mouth", rms);
 });
 
 ipcMain.handle("screen:capture-primary", async () => {
@@ -395,6 +742,10 @@ app.on("window-all-closed", function () {
   if (process.platform !== "darwin") app.quit();
 });
 
+app.on("will-quit", () => {
+  globalShortcut.unregisterAll();
+});
+
 app.on("quit", () => {
   if (backendProcess) {
     try {
@@ -410,6 +761,21 @@ app.on("quit", () => {
   if (fallbackTtsProcess) {
     try {
       fallbackTtsProcess.kill();
+    } catch (e) {}
+  }
+  if (retrieverProcess) {
+    try {
+      retrieverProcess.kill();
+    } catch (e) {}
+  }
+  if (fallbackKokoroProcess) {
+    try {
+      fallbackKokoroProcess.kill();
+    } catch (e) {}
+  }
+  if (searxngProcess) {
+    try {
+      searxngProcess.kill();
     } catch (e) {}
   }
 });
