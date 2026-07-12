@@ -8,6 +8,11 @@ Node backend server (server.js)
 Environment variables (set before running):
 - WHISPER_BIN : full path to whisper.cpp main executable (e.g. C:\whisper.cpp\main.exe)
 - WHISPER_MODEL : full path to whisper model file (e.g. models/ggml-base.en.bin)
+- WHISPER_LANGUAGE : spoken language passed to whisper.cpp (default "en")
+- WHISPER_PROMPT : initial prompt biasing transcription toward Mana's wake
+  words and Singapore English/Singlish vocabulary by default
+- WHISPER_BEAM_SIZE, WHISPER_NO_SPEECH_THRESHOLD, WHISPER_TEMPERATURE :
+  whisper.cpp decoding tuning knobs, see docs/speech_recognition_improvement_plan.md
 - LLAMA_BIN : full path to llama.cpp/main executable (e.g. C:\llama.cpp\main.exe)
 - LLAMA_MODEL : full path to a GGUF model file, or an HF repo shorthand like user/model:Q4_K_M
 - TTS_PROVIDER : "cli", "chatterbox", "kokoro", or "fish"
@@ -166,6 +171,16 @@ const SCREEN_CONTEXT_MAX_CHARS = Number(
 const SCREEN_OCR_CACHE_PATH =
   process.env.SCREEN_OCR_CACHE_PATH || path.join(__dirname, "tmp", "tesseract");
 const WHISPER_THREADS = Number(process.env.WHISPER_THREADS || 2);
+// Biases whisper.cpp toward Mana's wake words and Singapore English/Singlish
+// vocabulary via an initial prompt, per docs/speech_recognition_improvement_plan.md.
+const WHISPER_LANGUAGE = process.env.WHISPER_LANGUAGE || "en";
+const WHISPER_PROMPT =
+  process.env.WHISPER_PROMPT ||
+  "Singapore English conversation with an AI assistant named Mana. Wake words include Mana, Manah, Manna, Mannah, Myna, My Na, and wake up. Common Singlish words include lah, leh, lor, meh, sia, can, cannot, already, alr, ok, and okay.";
+const WHISPER_BEAM_SIZE = process.env.WHISPER_BEAM_SIZE || "5";
+const WHISPER_NO_SPEECH_THRESHOLD =
+  process.env.WHISPER_NO_SPEECH_THRESHOLD || "0.45";
+const WHISPER_TEMPERATURE = process.env.WHISPER_TEMPERATURE || "0";
 const LLAMA_THREADS = Number(process.env.LLAMA_THREADS || 4);
 const LLAMA_MAX_TOKENS = Number(process.env.LLAMA_MAX_TOKENS || 180);
 const VTUBE_STUDIO_URL = process.env.VTUBE_STUDIO_URL || "ws://127.0.0.1:8001";
@@ -3311,10 +3326,21 @@ function registerRoutes(app, upload, deps = {}) {
       filePath,
       "-t",
       String(WHISPER_THREADS),
+      "-l",
+      WHISPER_LANGUAGE,
+      "-bs",
+      WHISPER_BEAM_SIZE,
+      "-nth",
+      WHISPER_NO_SPEECH_THRESHOLD,
+      "-tp",
+      WHISPER_TEMPERATURE,
       "--output-json",
       "-of",
       outBase,
     ];
+    if (WHISPER_PROMPT) {
+      args.push("--prompt", WHISPER_PROMPT, "--carry-initial-prompt");
+    }
     console.log("Running whisper:", whisperBin, args.join(" "));
     const r = spawnSync(whisperBin, args, {
       encoding: "utf8",
