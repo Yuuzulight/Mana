@@ -49,6 +49,8 @@ tools/whisper/models/*.bin
 # Live2D runtime (proprietary, fetched by npm run fetch-live2d-core) and personal avatar model
 windows-launcher/assets/live2d/
 windows-launcher/avatar/model/
+desktop-client/assets/live2d/
+desktop-client/avatar/model/
 
 # Personal voice references (never commit someone's voice)
 tts-service/references/

@@ -5,6 +5,14 @@ overlay — no VTube Studio required. She drives it herself: idle motions while
 waiting, lip sync from her own voice while speaking, and reaction motions
 based on the emotion of each reply.
 
+This doc covers the original `windows-launcher` implementation. The same
+driver has also been ported into `desktop-client` (the installer-packaged
+app) with a temporary testing placeholder model — see
+`desktop-client/AVATAR_NOTICE.md` for that model's attribution, and
+`desktop-client/package.json`'s `fetch-live2d-core` script / `avatar\model\`
+folder for the equivalent setup there. Everything below (tuning knobs,
+`mana-avatar.json`, env vars) applies to both.
+
 ## Setup
 
 1. **Fetch the Live2D runtime** (one-time; it is proprietary and never

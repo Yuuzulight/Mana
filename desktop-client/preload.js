@@ -1,6 +1,9 @@
-const { contextBridge, ipcRenderer } = require('electron');
+const { ipcRenderer } = require('electron');
 
-contextBridge.exposeInMainWorld('electronAPI', {
+// contextIsolation is off (see main.js), so the renderer already has full
+// require() access and this is just a plain global assignment rather than a
+// contextBridge call (contextBridge requires contextIsolation to be on).
+window.electronAPI = {
   backendLog: (cb) => ipcRenderer.on('backend-log', (evt, data) => cb(data)),
   backendExit: (cb) => ipcRenderer.on('backend-exit', (evt, data) => cb(data)),
   showError: (msg) => ipcRenderer.invoke('show-error', msg),
@@ -9,5 +12,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
   onExcite: (cb) => ipcRenderer.on('excite', () => cb()),
   // open logs via main
   openLogs: () => ipcRenderer.invoke('open-logs'),
-  openDocs: () => ipcRenderer.invoke('open-docs')
-});
+  openDocs: () => ipcRenderer.invoke('open-docs'),
+  openAvatarNotice: () => ipcRenderer.invoke('open-avatar-notice')
+};

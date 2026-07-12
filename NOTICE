@@ -13,8 +13,12 @@ Attribution and redistribution
 
 Artwork restrictions
 - The artwork, sprites, images, and avatar model files (for example the
-  `sprites/` directory and `windows-launcher/avatar/model/`) are proprietary
-  and not covered by the code license. See LICENSE-ARTWORK for details.
+  `sprites/` directory, `windows-launcher/avatar/model/`, and
+  `desktop-client/avatar/model/`) are proprietary and not covered by the
+  code license. See LICENSE-ARTWORK for details. The model currently loaded
+  in `desktop-client` is a temporary testing placeholder whose character
+  design rights belong to miHoYo/HoYoverse, not ManaAI — see
+  `desktop-client/AVATAR_NOTICE.md`.
 
 Third-party components
 - See THIRD_PARTY.md for a list of third-party dependencies, models, and their

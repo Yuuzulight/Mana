@@ -12,8 +12,15 @@ function createWindow() {
     height: 720,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
-      nodeIntegration: false,
-      contextIsolation: true,
+      // Temporary: nodeIntegration is enabled (matching windows-launcher's
+      // existing pattern) so the ported Live2D avatar driver, which reads
+      // the model/config off disk with fs/path directly in the renderer,
+      // can run unmodified. This is scoped to the testing-avatar port only
+      // (see AVATAR_NOTICE.md) — a context-isolation-safe rewrite of
+      // avatar/live2d-avatar.js is follow-up work once the avatar itself
+      // is final, not before.
+      nodeIntegration: true,
+      contextIsolation: false,
     },
   });
 
@@ -149,6 +156,18 @@ ipcMain.handle('open-logs', async () => {
       return { ok: true, path: logPath };
     }
     return { ok: false, error: 'Log file not found: ' + logPath };
+  } catch (e) { return { ok: false, error: String(e) }; }
+});
+
+ipcMain.handle('open-avatar-notice', async () => {
+  try{
+    const notice = path.join(__dirname, 'AVATAR_NOTICE.md');
+    if (fs.existsSync(notice)){
+      await shell.openPath(notice);
+      return { ok: true, path: notice };
+    }
+    await shell.openExternal('https://github.com/Yuuzulight/Mana/blob/main/desktop-client/AVATAR_NOTICE.md');
+    return { ok: true, url: 'https://github.com/Yuuzulight/Mana/blob/main/desktop-client/AVATAR_NOTICE.md' };
   } catch (e) { return { ok: false, error: String(e) }; }
 });
 

@@ -1,13 +1,20 @@
+const { createLive2dAvatar } = require('../avatar/live2d-avatar');
+const { detectReplyEmotion } = require('./reply-emotion');
+
 (async function(){
   const statusEl = document.getElementById('status');
   const transcriptEl = document.getElementById('transcript');
   const replyEl = document.getElementById('reply');
   const logsEl = document.getElementById('backendLogs');
   const spriteEl = document.getElementById('sprite');
+  const live2dCanvas = document.getElementById('live2dCanvas');
+  const avatarZoomBtn = document.getElementById('btnAvatarZoom');
+  const avatarNoticeLink = document.getElementById('avatarNoticeLink');
 
   let mediaStream = null;
   let recorder = null;
   let chunks = [];
+  let live2dAvatar = null;
 
   async function init() {
     try {
@@ -24,7 +31,44 @@
 
     window.electronAPI.backendExit((info)=>{ statusEl.textContent = 'Backend exited'; startLoadingAnimation(); });
 
+    initLive2dAvatar();
     setupRecording();
+  }
+
+  // Live2D speaks a richer state vocabulary (idle/talking/excited/angry/
+  // sad/disgusted) than the small header/input-bar PNG sprites do
+  // (idle/listening/speaking/excited); this maps the sprite's states onto
+  // the closest Live2D one for the generic (non-reply) cases. A reply's
+  // actual detected emotion (see onRecordingStop) overrides this afterward.
+  function live2dStateFor(spriteState){
+    if (spriteState === 'listening' || spriteState === 'speaking') return 'talking';
+    return spriteState || 'idle';
+  }
+
+  async function initLive2dAvatar(){
+    if (!live2dCanvas) return;
+    try {
+      live2dAvatar = await createLive2dAvatar({
+        canvas: live2dCanvas,
+        width: live2dCanvas.clientWidth,
+        height: live2dCanvas.clientHeight,
+      });
+      if (live2dAvatar) {
+        live2dAvatar.setState(live2dStateFor(_prevSpriteState));
+      }
+    } catch (e) {
+      console.warn('Live2D avatar failed to load; using sprite avatar:', e);
+    }
+  }
+
+  if (avatarZoomBtn) {
+    avatarZoomBtn.addEventListener('click', () => { if (live2dAvatar) live2dAvatar.cycleZoom(); });
+  }
+  if (avatarNoticeLink) {
+    avatarNoticeLink.addEventListener('click', async (e) => {
+      e.preventDefault();
+      try { await window.electronAPI.openAvatarNotice(); } catch (err) { window.open('../AVATAR_NOTICE.md', '_blank'); }
+    });
   }
 
   let _prevSpriteState = 'idle';
@@ -34,17 +78,20 @@
       // keep previous visual (or default to idle)
       const base = _prevSpriteState || 'idle';
       spriteEl.className = 'sprite ' + base + ' excited';
+      if (live2dAvatar) live2dAvatar.setState('excited');
       // remove excited after a few hops (duration * iterations)
       const durationMs = 320; // must match CSS animation-duration
       const iterations = 5; // number of hops
       setTimeout(()=>{
         // restore to base state
         spriteEl.className = 'sprite ' + base;
+        if (live2dAvatar) live2dAvatar.setState(live2dStateFor(base));
       }, durationMs * iterations);
       return;
     }
     _prevSpriteState = state || 'idle';
     spriteEl.className = 'sprite ' + _prevSpriteState;
+    if (live2dAvatar) live2dAvatar.setState(live2dStateFor(_prevSpriteState));
   }
 
   // Loading animation (cycles the three loading sprites)
@@ -69,6 +116,45 @@
     // restore to current base sprite
     try { spriteEl.style.backgroundImage = ''; } catch(e){}
     statusEl.textContent = 'Backend running';
+  }
+
+  // Lip sync: sample the playing reply audio's RMS amplitude and forward it
+  // to the Live2D avatar's mouth parameter. No-op when Live2D isn't loaded.
+  let lipSyncRafId = null;
+  function stopLipSync(){
+    if (lipSyncRafId !== null) {
+      cancelAnimationFrame(lipSyncRafId);
+      lipSyncRafId = null;
+    }
+    if (live2dAvatar) live2dAvatar.setMouthTarget(0);
+  }
+  function startLipSync(audioCtx, sourceNode){
+    if (!live2dAvatar) return;
+    try {
+      const analyser = audioCtx.createAnalyser();
+      analyser.fftSize = 512;
+      sourceNode.connect(analyser);
+      const samples = new Float32Array(analyser.fftSize);
+      let lastSentAt = 0;
+      const tick = (timestamp) => {
+        // ~30Hz is plenty for mouth movement.
+        if (timestamp - lastSentAt >= 33) {
+          lastSentAt = timestamp;
+          analyser.getFloatTimeDomainData(samples);
+          let sum = 0;
+          for (let i = 0; i < samples.length; i += 1) {
+            sum += samples[i] * samples[i];
+          }
+          const rms = Math.sqrt(sum / samples.length);
+          live2dAvatar.setMouthTarget(rms);
+        }
+        lipSyncRafId = requestAnimationFrame(tick);
+      };
+      lipSyncRafId = requestAnimationFrame(tick);
+    } catch (e) {
+      // Lip sync is a nicety; never let it break audio playback.
+      console.warn('Lip sync failed to start:', e);
+    }
   }
 
   async function setupRecording(){
@@ -130,6 +216,7 @@
       if (j && j.reply) {
         replyEl.textContent = j.reply;
         setSprite('speaking');
+        if (live2dAvatar) live2dAvatar.setState(detectReplyEmotion(j.reply));
         try {
           const sresp = await fetch('http://127.0.0.1:5005/synthesize', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: j.reply }) });
           if (sresp.ok) {
@@ -139,8 +226,9 @@
             const src = audioCtx.createBufferSource();
             src.buffer = buf;
             src.connect(audioCtx.destination);
-            src.onended = ()=> setSprite('idle');
+            src.onended = ()=> { stopLipSync(); setSprite('idle'); };
             src.start();
+            startLipSync(audioCtx, src);
           } else {
             setSprite('idle');
           }
