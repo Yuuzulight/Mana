@@ -11,19 +11,22 @@ accounting.
 
 ## [Unreleased]
 
-- Setup automation script to reduce first-run manual steps.
-- Live2D avatar ported into `desktop-client` (the installer-packaged app):
-  same driver as `windows-launcher`, with emotion-reactive states and RMS
-  lip sync wired into the reply/audio flow, plus a zoom control and an
+Nothing yet.
+
+## [0.2.0] - 2026-07-12
+
+### Added
+- **Live2D avatar ported into `desktop-client`** (the installer-packaged
+  app): same driver as `windows-launcher`, with emotion-reactive states and
+  RMS lip sync wired into the reply/audio flow, plus a zoom control and an
   always-visible in-app disclaimer banner. Clearly marked as a temporary
   testing placeholder, not the final avatar — see
   `desktop-client/AVATAR_NOTICE.md` for the miHoYo/HoYoverse attribution.
   Required temporarily enabling `nodeIntegration` for the desktop client's
   main window (documented tradeoff, scoped to this feature).
-
-## [0.2.0] - 2026-07-12
-
-### Added
+- **Setup automation script** (`tools/setup-mana.ps1`) for first-run npm
+  installs across all three subprojects, `.env` scaffolding, model/binary
+  directory creation, and a doctor report.
 - **Built-in Live2D avatar** (`windows-launcher`): renders a Cubism model
   directly in the desktop UI instead of requiring VTube Studio. Drives
   emotion-appropriate motions/expressions from reply text (including
