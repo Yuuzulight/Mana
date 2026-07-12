@@ -44,6 +44,10 @@ Build steps (local)
    cd ..\desktop-client
    npm ci
 
+   - Optional: fetch the Live2D Cubism Core runtime so the (currently
+     testing-placeholder) avatar renders instead of falling back to PNG
+     sprites: `npm run fetch-live2d-core`. See AVATAR_NOTICE.md.
+
 4. Run the build (this will produce an installer in desktop-client/dist):
 
    npm run dist

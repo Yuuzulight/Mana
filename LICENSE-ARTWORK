@@ -3,8 +3,14 @@ All rights reserved.
 
 The artwork and images included in or used with this repository (for
 example, the files under the `sprites/` directory and any Live2D avatar
-model files under `windows-launcher/avatar/model/`) are proprietary and are
-NOT covered by the repository's code license (Apache License, Version 2.0).
+model files under `windows-launcher/avatar/model/` or
+`desktop-client/avatar/model/`) are proprietary and are NOT covered by the
+repository's code license (Apache License, Version 2.0). Note: the model
+currently used for testing in `desktop-client` is itself a third-party
+placeholder (see `desktop-client/AVATAR_NOTICE.md`) — this file's
+proprietary/all-rights-reserved terms apply to ManaAI's own artwork, not
+to that placeholder's underlying character design, which remains the
+property of its original rights holder.
 They are provided for use with this project only and may NOT be copied,
 redistributed, or reused in whole or in part without express written
 permission from ManaAI.

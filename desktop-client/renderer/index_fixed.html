@@ -32,6 +32,15 @@
         </div>
       </header>
 
+      <div class="avatar-stage" id="avatarStage">
+        <canvas id="live2dCanvas"></canvas>
+        <button id="btnAvatarZoom" class="avatar-zoom-btn" title="Cycle avatar zoom">Zoom</button>
+        <div class="avatar-disclaimer">
+          Testing avatar, not final. Character design rights: miHoYo.
+          <a href="#" id="avatarNoticeLink">Details</a>
+        </div>
+      </div>
+
       <section id="messages" class="messages">
         <div id="transcript" class="message system">(transcript will appear here)</div>
         <div id="reply" class="message assistant">(reply will appear here)</div>
@@ -68,6 +77,12 @@
     </main>
   </div>
 
+  <!-- Live2D Cubism Core is proprietary and fetched at setup time
+       (npm run fetch-live2d-core); the avatar falls back to sprites
+       when it is absent. See ../AVATAR_NOTICE.md. -->
+  <script src="../assets/live2d/live2dcubismcore.min.js"></script>
+  <script src="../node_modules/pixi.js/dist/browser/pixi.min.js"></script>
+  <script src="../node_modules/pixi-live2d-display/dist/cubism4.min.js"></script>
   <script src="renderer.js"></script>
 </body>
 </html>
