@@ -1,8 +1,10 @@
 # Mana
 
-**License (code): Apache License 2.0 — © 2026 ManaAI.** If you redistribute this code, you must retain the copyright and NOTICE files and credit ManaAI.
+**License (code): PolyForm Noncommercial 1.0.0 — © 2026 ManaAI.** You may use, modify, and share this code for any noncommercial purpose; commercial rights remain with ManaAI. See LICENSE.
 
-**Artwork (images/sprites): All rights reserved.** The images in `sprites/` are proprietary and may not be reused without permission; see LICENSE-ARTWORK.
+**Artwork (images/sprites/avatar models): All rights reserved.** The images in `sprites/` and any avatar model files are proprietary and may not be reused without permission; see LICENSE-ARTWORK.
+
+**Live2D Cubism Core** is proprietary to Live2D Inc., is not part of this repository, and is fetched at setup time under Live2D's own terms; see THIRD_PARTY.md.
 
 Mana is a local-first AI assistant for Windows. It listens from the desktop launcher, transcribes speech locally, replies with local GGUF models, speaks through local TTS services, and can read visible screen text after it is awake.
 
@@ -31,8 +33,10 @@ For the full setup flow, including model paths, Whisper, TTS services, gaming mo
 - **Local text generation**: replies come from GGUF models through `llama.cpp`.
 - **Local speech output**: Kokoro, Chatterbox, and Fish Speech provider paths are supported.
 - **Screen text awareness**: after Mana is awake, the launcher can capture the primary display and OCR readable text locally.
+- **Local image understanding**: with a vision GGUF installed, Mana can look at screenshots and images and talk about them; see [docs/vision_setup.md](docs/vision_setup.md).
+- **Look-at-my-screen hotkey**: press `Ctrl+Alt+M` (configurable via `MANA_VISION_HOTKEY`) to have Mana capture the screen, describe it, and speak the answer.
 - **Gaming mode**: Mana reduces idle work while watched games are running.
-- **Desktop avatar support**: PNG overlay and optional VTube Studio hotkey control.
+- **Desktop avatar support**: built-in Live2D VTuber avatar with lip sync and emotion reactions ([docs/live2d_avatar_setup.md](docs/live2d_avatar_setup.md)), PNG overlay fallback, and optional VTube Studio hotkey control.
 - **Mobile companion path**: phone chat and summary sync are available through the local backend and optional tunnel setup.
 - **Editor coding handoff**: Mana can detect local Zed or VS Code CLIs and open projects or files for coding help without applying edits silently.
 - **FFXIV and market helpers**: Mana can query Universalis crafting/market data and Alpha Vantage stock summaries when configured.
@@ -60,6 +64,7 @@ Default behavior:
 - Audio transcription uses local Whisper binaries.
 - Screen awareness uses local OCR through `tesseract.js`.
 - Chat summaries and mobile memory are stored locally unless you intentionally sync or expose them.
+- Web search runs through a local SearXNG instance (no third-party search API, no key); wiki lookups and page reads Mana is pointed at do reach the public internet, since that's inherent to what they do. See [docs/web_access_setup.md](docs/web_access_setup.md). Set `MANA_WEB_ACCESS_ENABLED=0` to turn all of it off.
 
 Remote AI is an explicit escape hatch, not the default path.
 
@@ -102,6 +107,7 @@ The intended local model stack is:
 - **Fast fallback**: `qwen2.5-1.5b-instruct-q4_k_m.gguf`
 - **Quality mode**: `Qwen3-8B-Q4_K_M.gguf`
 - **Coding mode**: `qwen2.5-coder-7b-instruct-q4_k_m.gguf`
+- **Vision (optional)**: a multimodal GGUF such as `Qwen2.5-VL-3B-Instruct-Q4_K_M.gguf` plus its `mmproj` file; see [docs/vision_setup.md](docs/vision_setup.md)
 
 If `LLAMA_MODEL` is unset, Mana searches local model folders and chooses the default profile in order: 4B, 1.5B, then 8B.
 
@@ -143,11 +149,15 @@ Common troubleshooting:
 - [Windows quick start](docs/quick_start_windows.md): full setup and daily run flow.
 - [Mobile PWA and Cloudflare Tunnel](docs/mobile_pwa_cloudflare.md): phone companion setup.
 - [PNG avatar setup](docs/png_avatar_setup.md): desktop avatar overlay.
+- [Live2D avatar setup](docs/live2d_avatar_setup.md): built-in VTuber avatar with lip sync.
 - [VTube Studio setup](docs/vtube_studio_setup.md): avatar hotkeys and reactions.
 - [Native launcher plan](docs/native_launcher_plan.md): lower-memory launcher direction.
 - [Chatterbox voice tuning](docs/chatterbox_voice_tuning.md): Chatterbox voice settings.
+- [GPT-SoVITS setup](docs/gpt_sovits_setup.md): trial anime-style voice-cloning provider.
 - [Fish Speech TTS](docs/fish_speech_tts.md): optional Fish Speech provider.
 - [Market analysis helper](docs/market_analysis_helper.md): stock-market helper setup.
+- [Vision setup](docs/vision_setup.md): local image understanding with a vision GGUF.
+- [Web access setup](docs/web_access_setup.md): local search (SearXNG), wiki lookups, and page reading.
 - [Zed External Agent setup](docs/zed_external_agent.md): local Zed `agent_servers` configuration.
 
 ## Backend API
@@ -172,9 +182,13 @@ Useful endpoints:
 - `POST /zed/open`: open an existing file or folder in Zed.
 - `POST /transcribe`: audio upload, transcription, and reply.
 - `POST /transcribe-only`: audio upload and transcription only.
-- `POST /reply`: text reply from Mana.
+- `POST /reply`: text reply from Mana; accepts an optional `image` for vision replies.
+- `POST /vision/describe`: local vision-model reply about an image.
 - `POST /synthesize`: TTS audio for text.
 - `POST /screen/read`: local OCR for a screen image.
+- `POST /web/search`: web search via local SearXNG.
+- `POST /web/read`: read and summarize a specific page.
+- `GET /wiki/:term`: Wikipedia summary lookup.
 - `GET /ffxiv/market`: Universalis market lookup.
 - `GET /ffxiv/crafting/profit`: craft-profit scan.
 - `GET /market/stock/summary`: stock summary.
