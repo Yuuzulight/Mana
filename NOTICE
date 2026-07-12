@@ -2,17 +2,24 @@ Mana
 
 Copyright (c) 2026 ManaAI
 
-This product includes software licensed under the Apache License, Version 2.0.
+Required Notice: Copyright (c) 2026 ManaAI (https://github.com/Yuuzulight)
+
+This project is licensed under the PolyForm Noncommercial License 1.0.0.
+You may use, modify, and share it for any noncommercial purpose; commercial
+rights remain with ManaAI. See LICENSE for the full terms.
 
 Attribution and redistribution
-- If you redistribute this code or portions of it, you must retain the copyright
-  notice and this NOTICE file.
-- If you reuse the code, please credit ManaAI in your documentation or NOTICE.
+- If you redistribute this code or portions of it, you must include the
+  LICENSE terms (or their URL) and the Required Notice line above.
+- If you reuse the code, please credit ManaAI in your documentation.
 
 Artwork restrictions
-- The artwork, sprites, and images contained in the `sprites/` directory are
-  proprietary and not covered by the Apache 2.0 license. See LICENSE-ARTWORK for details.
+- The artwork, sprites, images, and avatar model files (for example the
+  `sprites/` directory and `windows-launcher/avatar/model/`) are proprietary
+  and not covered by the code license. See LICENSE-ARTWORK for details.
 
 Third-party components
 - See THIRD_PARTY.md for a list of third-party dependencies, models, and their
-  respective license or usage restrictions.
+  respective license or usage restrictions. In particular, the Live2D Cubism
+  Core runtime is proprietary to Live2D Inc., is not distributed with this
+  repository, and is downloaded at setup time under Live2D's own terms.
