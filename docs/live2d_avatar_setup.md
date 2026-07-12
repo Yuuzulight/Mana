@@ -44,9 +44,11 @@ based on the emotion of each reply.
   say — and drives them itself using the Live2D SDK's own randomized blink
   timer, rescaled so "open" holds at a fixed wide level
   (`MANA_LIVE2D_EYE_OPEN_SCALE`, default `1.5` ≈ 75% of the parameter's
-  0–2 range — awake and expressive without a startled full-max stare). The eye-smile squint curve
-  (`ParamEyeLSmile`/`RSmile`) and eyebrow movement
-  (`ParamBrowLY`/`RY`/`LAngle`/`RAngle`) are held neutral at the same time.
+  0–2 range — awake and expressive without a startled full-max stare). The
+  eye-smile squint curve (`ParamEyeLSmile`/`RSmile` by default, override
+  with `MANA_LIVE2D_SMILE_PARAMS`) and eyebrow movement (`ParamBrowLY`/`RY`/
+  `LAngle`/`RAngle` by default, override with `MANA_LIVE2D_BROW_PARAMS`) are
+  held neutral at the same time.
   Net effect: the iris reads as a constant size while she's talking or
   reacting, and only closes for an actual blink — nothing shrinks it by
   squinting, raising a brow, or a reaction motion's own baked animation.
@@ -59,6 +61,10 @@ based on the emotion of each reply.
   comma-separated; set to an empty string to disable the backfill for a
   model that needs its own, which also opts that model out of the fixed-iris
   behavior above).
+  All three `MANA_LIVE2D_*_PARAMS` vars share the same convention: unset
+  uses the standard Cubism 4 names above (harmless even if a model lacks
+  them — unknown ids are a no-op), comma-separated overrides them, and an
+  explicit empty string disables that particular override entirely.
 - **Speaking**: real-time lip sync — the launcher measures the loudness of
   Mana's TTS voice (~30 times/second) and drives the mouth parameter
   (`ParamMouthOpenY` by default; override with `MANA_LIVE2D_MOUTH_PARAM`).
@@ -99,10 +105,12 @@ based on the emotion of each reply.
   `mana-avatar.json` to use it instead.
 - **Idle tilt**: if the model's idle motion pitches the head back sharply,
   Mana eases it toward a gentle side tilt instead (reads as dozing off)
-  while idle only. Tune with `MANA_LIVE2D_IDLE_TILT_DEG` (target
-  `ParamAngleZ` side tilt, default `16`) and
-  `MANA_LIVE2D_IDLE_MAX_PITCH_DEG` (clamp on `ParamAngleY` pitch, default
-  `8`).
+  while idle only. Tune with `idleTiltDeg` (target `ParamAngleZ` side tilt,
+  default `16`) and `idleMaxPitchDeg` (clamp on `ParamAngleY` pitch, default
+  `8`) in `mana-avatar.json`, or the matching env vars for a quick test. A
+  model whose idle motion doesn't pitch back at all can opt out with
+  `idleTiltDeg: 0, idleMaxPitchDeg: 90` (90+ can never actually clamp a real
+  head angle, so the correction becomes a no-op).
 - **Zoom**: a button in the bottom-right corner of the avatar dock (main chat
   window only) cycles the framing through whole body → waist-up → bust-up.
   Per-model crop tightness can be tuned via `zoomFractions` in
@@ -133,7 +141,9 @@ registered in `model3.json`) are registered automatically.
 ### Per-model config (preferred)
 
 Put a `mana-avatar.json` next to the model's `.model3.json` (it travels with
-the model, so swapping stays clean):
+the model, so swapping stays clean — the whole personality/tuning setup for
+a new avatar lives in this one file, no code or env vars required). Every
+field is optional; anything omitted falls back to the built-in default:
 
 ```json
 {
@@ -143,18 +153,33 @@ the model, so swapping stays clean):
     { "group": "spirit", "minIntervalMs": 120000,
       "maxIntervalMs": 480000, "states": ["idle"] }
   ],
-  "zoomFractions": { "waist": 0.55, "bust": 0.28 }
+  "zoomFractions": { "waist": 0.55, "bust": 0.28 },
+  "mouthParam": "ParamMouthOpenY",
+  "mouthGain": 18,
+  "eyeOpenScale": 1.5,
+  "eyeBlinkParams": ["ParamEyeLOpen", "ParamEyeROpen"],
+  "smileParams": ["ParamEyeLSmile", "ParamEyeRSmile"],
+  "browParams": ["ParamBrowLY", "ParamBrowRY", "ParamBrowLAngle", "ParamBrowRAngle"],
+  "idleTiltDeg": 16,
+  "idleMaxPitchDeg": 8
 }
 ```
 
 - `stateMotions` / `stateExpressions` map Mana's states (`idle`, `talking`,
-  `excited`, `angry`) to this model's motion groups and expressions.
+  `excited`, `angry`, `sad`, `disgusted`) to this model's motion groups and
+  expressions.
 - The mapped idle motion becomes the model's auto-repeating idle loop.
 - `randomMotions` play ambient motions at a random interval within the
   configured range, only while Mana is in one of the listed states.
 - `zoomFractions` tunes how tightly the `waist`/`bust` zoom presets crop this
   model (`full` always shows the whole body). Values are the fraction of the
   model's total height kept on-screen — smaller means a tighter crop.
+- `mouthParam`/`mouthGain`, `eyeOpenScale`, `eyeBlinkParams`/`smileParams`/
+  `browParams`, and `idleTiltDeg`/`idleMaxPitchDeg` are the same knobs
+  described above under "How Mana drives the model" — see the quick
+  reference table below for the full list. For the three `*Params` array
+  fields, an explicit empty array (`[]`) disables that override entirely,
+  same convention as the env vars.
 
 ### Env overrides
 
@@ -168,9 +193,39 @@ $env:MANA_LIVE2D_STATE_MOTIONS = '{"excited":"curious","idle":"sleepy"}'
 $env:MANA_LIVE2D_STATE_EXPRESSIONS = '{"excited":"hug-pillow"}'
 ```
 
-States: `idle`, `talking`, `excited`, `angry`. Overrides are tried first,
-then the built-in names (`Idle`, `Talk`/`Speak`, `Happy`/`Joy`,
-`Angry`/`Shake`; expressions `happy`/`joy`/`smile`, `angry`/`mad`).
+States: `idle`, `talking`, `excited`, `angry`, `sad`, `disgusted`. Overrides
+are tried first, then the built-in names (`Idle`; `Talk`/`Speak`;
+`Happy`/`Joy` and expressions `happy`/`joy`/`smile`; `Angry`/`Shake` and
+`angry`/`mad`; `Sad`/`Cry` and `sad`/`cry`; `Disgusted`/`Recoil` and
+`disgusted`/`white-eyes`).
+
+### Tuning knobs quick reference
+
+Priority is env var > `mana-avatar.json` field > hardcoded default. A model
+swap only needs the `mana-avatar.json` column below (it travels with the
+model); env vars are mainly for quick one-off experiments without editing
+the model folder.
+
+| `mana-avatar.json` field | Env var | Default | Purpose |
+| --- | --- | --- | --- |
+| — | `MANA_LIVE2D_MODEL` | auto-detect | Explicit path to a `.model3.json` outside `avatar\model\` (env-only: applies before a model is even chosen) |
+| `mouthParam` | `MANA_LIVE2D_MOUTH_PARAM` | `ParamMouthOpenY` | Lip-sync parameter id |
+| `mouthGain` | `MANA_LIVE2D_MOUTH_GAIN` | `18` | Lip-sync sensitivity (openness per voice level) |
+| `eyeOpenScale` | `MANA_LIVE2D_EYE_OPEN_SCALE` | `1.5` | Non-idle "eyes open" level, as a multiplier on the blink timer's 0–1 output |
+| `eyeBlinkParams` | `MANA_LIVE2D_EYE_BLINK_PARAMS` | `ParamEyeLOpen,ParamEyeROpen` | Parameters the auto-blink/fixed-iris system drives |
+| `smileParams` | `MANA_LIVE2D_SMILE_PARAMS` | `ParamEyeLSmile,ParamEyeRSmile` | Parameters neutralized outside idle (fixed-iris) |
+| `browParams` | `MANA_LIVE2D_BROW_PARAMS` | `ParamBrowLY,ParamBrowRY,ParamBrowLAngle,ParamBrowRAngle` | Same, for eyebrows |
+| `idleTiltDeg` | `MANA_LIVE2D_IDLE_TILT_DEG` | `16` | Target `ParamAngleZ` side tilt while idle |
+| `idleMaxPitchDeg` | `MANA_LIVE2D_IDLE_MAX_PITCH_DEG` | `8` | Clamp on `ParamAngleY` pitch while idle (`90`+ disables) |
+| `stateMotions` | `MANA_LIVE2D_STATE_MOTIONS` | — | State → motion group override |
+| `stateExpressions` | `MANA_LIVE2D_STATE_EXPRESSIONS` | — | State → expression override |
+| `zoomFractions` | — | `{waist: 0.55, bust: 0.28}` | Zoom crop tightness |
+| — | `MANA_AVATAR_FPS` | `30` | Render cap (env-only, not model-specific) |
+
+For the three `*Params`/`*_PARAMS` fields: array or comma-separated list,
+unset/omitted falls back to the default, an explicit empty array/string
+disables that override entirely — a model that doesn't have (or doesn't
+want driven) one of these parameter groups just turns it off.
 
 ## Performance
 

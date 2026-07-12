@@ -7,7 +7,6 @@ const fs = require("fs");
 const path = require("path");
 const { pathToFileURL } = require("url");
 const {
-  DEFAULT_EYE_BLINK_PARAM_IDS,
   augmentModelSettings,
   computeZoomFraming,
   expressionForState,
@@ -18,6 +17,7 @@ const {
   nextRandomDelay,
   nextZoomLevel,
   normalizeAvatarConfig,
+  parseParamIdList,
   parseStateMappingOverrides,
   rmsToMouth,
   smoothMouthValue,
@@ -82,18 +82,31 @@ async function createLive2dAvatar({ canvas, width, height, env = process.env }) 
     return null;
   }
 
-  const mouthParam = env.MANA_LIVE2D_MOUTH_PARAM || "ParamMouthOpenY";
+  // Loaded first (needs only the model path) so every tuning knob below can
+  // fall back to it: env var (quick experiments) > mana-avatar.json (travels
+  // with the model, so a swap carries its own tuning) > hardcoded default.
+  const config = loadAvatarConfig(modelJson);
+
+  const mouthParam = env.MANA_LIVE2D_MOUTH_PARAM || config.mouthParam;
   // Lip-sync sensitivity. rmsToMouth's baseline gain is 9, which kept the
-  // mouth around a quarter open during ordinary speech — too subtle. 18
-  // doubles the openness for the same voice level, giving a much more
-  // exaggerated, expressive mouth (values clamp at the parameter's max, so
-  // loud passages simply hold fully open).
-  const mouthGain = Number(env.MANA_LIVE2D_MOUTH_GAIN ?? 18);
+  // mouth around a quarter open during ordinary speech — too subtle; the
+  // default of 18 doubles the openness for the same voice level, giving a
+  // much more exaggerated, expressive mouth (values clamp at the
+  // parameter's max, so loud passages simply hold fully open).
+  const mouthGain =
+    env.MANA_LIVE2D_MOUTH_GAIN !== undefined
+      ? Number(env.MANA_LIVE2D_MOUTH_GAIN)
+      : config.mouthGain;
   // How wide "eyes open" holds while she's not idle, as a multiplier on the
-  // blink manager's 0..1 output. ParamEyeL/ROpen runs 0..2 on this model
-  // (1 = resting, 2 = maximally wide), so 1.5 lands at ~75% wide — clearly
-  // awake and expressive without the startled full-max stare.
-  const eyeOpenScale = Number(env.MANA_LIVE2D_EYE_OPEN_SCALE ?? 1.5);
+  // blink manager's 0..1 output. Most models run ParamEyeL/ROpen 0..1
+  // (1 = fully open) or 0..2 (1 = resting, 2 = maximally wide) — the
+  // default of 1.5 lands at ~75% of a 0..2 range, clearly awake and
+  // expressive without a startled full-max stare; values clamp to
+  // whatever the model's own parameter range actually is.
+  const eyeOpenScale =
+    env.MANA_LIVE2D_EYE_OPEN_SCALE !== undefined
+      ? Number(env.MANA_LIVE2D_EYE_OPEN_SCALE)
+      : config.eyeOpenScale;
   const fps = Number(env.MANA_AVATAR_FPS || 30);
   const viewWidth = width || canvas.clientWidth || 234;
   const viewHeight = height || canvas.clientHeight || 288;
@@ -114,12 +127,21 @@ async function createLive2dAvatar({ canvas, width, height, env = process.env }) 
   // and backfill a blank EyeBlink parameter group so she blinks naturally
   // (see augmentModelSettings). Override the parameter names for a model
   // that uses non-standard ids; empty disables the auto-blink backfill.
-  const eyeBlinkParamIds =
-    env.MANA_LIVE2D_EYE_BLINK_PARAMS !== undefined
-      ? env.MANA_LIVE2D_EYE_BLINK_PARAMS.split(",")
-          .map((id) => id.trim())
-          .filter(Boolean)
-      : DEFAULT_EYE_BLINK_PARAM_IDS;
+  const eyeBlinkParamIds = parseParamIdList(
+    env.MANA_LIVE2D_EYE_BLINK_PARAMS,
+    config.eyeBlinkParams,
+  );
+  // Parameters neutralized outside idle to keep the iris constant-sized
+  // (see the fixed-iris block below). Same override/empty-disables
+  // convention as eyeBlinkParamIds.
+  const smileParamIds = parseParamIdList(
+    env.MANA_LIVE2D_SMILE_PARAMS,
+    config.smileParams,
+  );
+  const browParamIds = parseParamIdList(
+    env.MANA_LIVE2D_BROW_PARAMS,
+    config.browParams,
+  );
   const modelDir = path.dirname(modelJson);
   const rawSettings = JSON.parse(fs.readFileSync(modelJson, "utf8"));
   const dirFiles = fs.readdirSync(modelDir);
@@ -159,7 +181,6 @@ async function createLive2dAvatar({ canvas, width, height, env = process.env }) 
   model.y = fit.y;
   app.stage.addChild(model);
 
-  const config = loadAvatarConfig(modelJson);
   const motionOverrides = mergeStateMappings(
     parseStateMappingOverrides(env.MANA_LIVE2D_STATE_MOTIONS),
     config.stateMotions,
@@ -172,12 +193,24 @@ async function createLive2dAvatar({ canvas, width, height, env = process.env }) 
   const coreModel = model.internalModel.coreModel;
   const motionManager = model.internalModel.motionManager;
 
-  // The model's idle/sleepy motion pitches the head back dramatically
-  // (ParamAngleY swings past -25 degrees — "falling backwards"). Ease that
-  // toward a gentle side tilt instead, so idle reads as dozing off sideways.
-  // Tune via env; sign/magnitude depends on the model's rig.
-  const idleTiltAngleZ = Number(env.MANA_LIVE2D_IDLE_TILT_DEG ?? 16);
-  const idleTiltMaxAngleY = Number(env.MANA_LIVE2D_IDLE_MAX_PITCH_DEG ?? 8);
+  // Some idle motions pitch the head back dramatically ("falling
+  // backwards"); ease that toward a gentle side tilt instead, so idle reads
+  // as dozing off sideways. Tune per-model (mana-avatar.json) or via env;
+  // sign/magnitude depends on the model's rig — a model whose idle motion
+  // doesn't need this can zero both out in its config.
+  const idleTiltAngleZ =
+    env.MANA_LIVE2D_IDLE_TILT_DEG !== undefined
+      ? Number(env.MANA_LIVE2D_IDLE_TILT_DEG)
+      : config.idleTiltDeg;
+  const idleTiltMaxAngleY =
+    env.MANA_LIVE2D_IDLE_MAX_PITCH_DEG !== undefined
+      ? Number(env.MANA_LIVE2D_IDLE_MAX_PITCH_DEG)
+      : config.idleMaxPitchDeg;
+  // Real Cubism head-angle parameters rarely exceed ~30 degrees, so a max
+  // pitch at or above 90 can never actually clamp anything — that's the
+  // opt-out: set idleTiltDeg: 0, idleMaxPitchDeg: 90 in mana-avatar.json (or
+  // the matching env vars) for a model whose idle motion doesn't need this.
+  const idleTiltActive = idleTiltAngleZ !== 0 || idleTiltMaxAngleY < 90;
   const idleTiltBlendMs = 900;
   let idleTiltBlend = 0;
 
@@ -199,7 +232,7 @@ async function createLive2dAvatar({ canvas, width, height, env = process.env }) 
       coreModel.setParameterValueById(mouthParam, mouthValue);
     } catch (e) {}
 
-    if (idleTiltAngleZ || idleTiltMaxAngleY < 30) {
+    if (idleTiltActive) {
       const tiltTarget = currentState === "idle" ? 1 : 0;
       const tiltAlpha = Math.min(1, dt / idleTiltBlendMs);
       idleTiltBlend += (tiltTarget - idleTiltBlend) * tiltAlpha;
@@ -227,14 +260,16 @@ async function createLive2dAvatar({ canvas, width, height, env = process.env }) 
     // Keep the iris visually constant-sized outside of idle: hold the eye
     // at a fixed wide-open level (eyeOpenScale, ~75% of this parameter's
     // 0..2 range by default) except during an actual blink, and neutralize
-    // the smile-squint curve
-    // and any eyebrow movement that would otherwise cover part of the
-    // iris. Motions/expressions don't get a say in these while she's not
-    // idle; blinking itself is untouched, just driven by us instead of
-    // whatever clip happens to be playing, so it always reads as one
-    // consistent, naturally-timed blink rather than a motion's own baked
-    // beat repeating every loop. Idle keeps its own eyes — the sleepy
-    // motion's gradual doze-off close and brow relax are intentional.
+    // the smile-squint curve (smileParamIds) and any eyebrow movement
+    // (browParamIds) that would otherwise cover part of the iris.
+    // Motions/expressions don't get a say in these while she's not idle;
+    // blinking itself is untouched, just driven by us instead of whatever
+    // clip happens to be playing, so it always reads as one consistent,
+    // naturally-timed blink rather than a motion's own baked beat
+    // repeating every loop. Idle keeps its own eyes — the sleepy motion's
+    // gradual doze-off close and brow relax are intentional. All three
+    // param lists (eyeBlink/smile/brow) are overridable per model via env,
+    // and any parameter id a model doesn't have is a harmless no-op.
     if (currentState !== "idle") {
       if (eyeBlink) {
         try {
@@ -246,12 +281,12 @@ async function createLive2dAvatar({ canvas, width, height, env = process.env }) 
         } catch (e) {}
       }
       try {
-        coreModel.setParameterValueById("ParamEyeLSmile", 0);
-        coreModel.setParameterValueById("ParamEyeRSmile", 0);
-        coreModel.setParameterValueById("ParamBrowLY", 0);
-        coreModel.setParameterValueById("ParamBrowRY", 0);
-        coreModel.setParameterValueById("ParamBrowLAngle", 0);
-        coreModel.setParameterValueById("ParamBrowRAngle", 0);
+        for (const id of smileParamIds) {
+          coreModel.setParameterValueById(id, 0);
+        }
+        for (const id of browParamIds) {
+          coreModel.setParameterValueById(id, 0);
+        }
       } catch (e) {}
     }
 
