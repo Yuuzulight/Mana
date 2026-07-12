@@ -5,6 +5,53 @@ const {
   requireString,
   sendValidationError,
 } = require("./request-validation");
+const {
+  getRequestAddress,
+  isLoopbackAddress,
+  isRestartCommand,
+} = require("./admin-restart");
+
+const RESTART_LOCAL_ONLY_ERROR = "restart is only available from this PC";
+
+function getSocketAddress(req) {
+  return req?.socket?.remoteAddress || "";
+}
+
+function getFirstForwardedAddress(req) {
+  const forwardedFor =
+    typeof req.get === "function"
+      ? req.get("x-forwarded-for")
+      : req?.headers?.["x-forwarded-for"];
+  const value = Array.isArray(forwardedFor) ? forwardedFor[0] : forwardedFor;
+  return String(value || "")
+    .split(",")[0]
+    .trim();
+}
+
+// Loopback-only, and if a proxy claims the socket is loopback (e.g. a
+// LAN tunnel terminating on the same box), an X-Forwarded-For header
+// pointing elsewhere still disqualifies the request.
+function isLocalRestartRequest(req) {
+  const socketAddress = getSocketAddress(req);
+  const requestAddress = getRequestAddress(req);
+  const forwardedAddress = getFirstForwardedAddress(req);
+  return (
+    isLoopbackAddress(socketAddress || requestAddress) &&
+    (!forwardedAddress || isLoopbackAddress(forwardedAddress))
+  );
+}
+
+function hasRestartController(restartController) {
+  return (
+    restartController &&
+    typeof restartController.buildAcceptedPayload === "function" &&
+    typeof restartController.scheduleRestart === "function"
+  );
+}
+
+function scheduleRestartAfterFinish(res, restartController) {
+  res.once("finish", () => restartController.scheduleRestart());
+}
 
 async function buildOptionalPromptContext(label, builder) {
   try {
@@ -33,6 +80,7 @@ function registerCoreRoutes(app, upload, deps) {
     normalizeUploadedAudio,
     readScreenText,
     recordChatTurn,
+    restartController,
     runVisionReply,
     getVisionStatus,
     runWhisper,
@@ -43,6 +91,19 @@ function registerCoreRoutes(app, upload, deps) {
     textLooksLikeMarketQuestion,
     textLooksLikeStockMarketQuestion,
   } = deps;
+
+  app.post("/admin/restart", (req, res) => {
+    if (!hasRestartController(restartController)) {
+      return res.status(500).json({ error: "restart controller is not configured" });
+    }
+    if (!isLocalRestartRequest(req)) {
+      return res.status(403).json({ error: RESTART_LOCAL_ONLY_ERROR });
+    }
+
+    const payload = restartController.buildAcceptedPayload();
+    scheduleRestartAfterFinish(res, restartController);
+    return res.json(payload);
+  });
 
   app.post("/transcribe-only", upload.single("file"), async (req, res) => {
     try {
@@ -168,6 +229,20 @@ function registerCoreRoutes(app, upload, deps) {
       const transcript = image
         ? optionalString(req.body?.text, "text", "")
         : requireString(req.body?.text, "text");
+
+      if (isRestartCommand(transcript)) {
+        if (!hasRestartController(restartController)) {
+          return res.status(500).json({ error: "restart controller is not configured" });
+        }
+
+        const payload = restartController.buildAcceptedPayload();
+        scheduleRestartAfterFinish(res, restartController);
+        return res.json({
+          reply: payload.message,
+          restart: payload,
+          ttsConfigured: false,
+        });
+      }
 
       if (image) {
         const sessionId = optionalString(
