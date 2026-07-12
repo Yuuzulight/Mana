@@ -13,6 +13,7 @@ const {
   mergeStateMappings,
   motionGroupForState,
   normalizeAvatarConfig,
+  parseParamIdList,
   parseStateMappingOverrides,
 } = require("../avatar/live2d-logic");
 
@@ -85,19 +86,45 @@ console.log(
   `Expressions (${expressionNames.length}): ${expressionNames.join(", ") || "(none)"}`,
 );
 
-// Lip sync: report the configured mouth parameter and whether the model
-// declares it (best-effort via the cdi3 display-info file when present).
-const mouthParam = process.env.MANA_LIVE2D_MOUTH_PARAM || "ParamMouthOpenY";
-let mouthKnown = "unknown (no DisplayInfo file)";
+// Report the effective values of the tuning params (env > mana-avatar.json
+// > default, matching live2d-avatar.js) and whether the model declares each
+// one (best-effort via the cdi3 display-info file when present).
 const displayInfo = refs.DisplayInfo
   ? path.join(modelDir, refs.DisplayInfo)
   : null;
-if (displayInfo && fs.existsSync(displayInfo)) {
-  mouthKnown = fs.readFileSync(displayInfo, "utf8").includes(`"${mouthParam}"`)
-    ? "present"
-    : "NOT FOUND (set MANA_LIVE2D_MOUTH_PARAM to this model's mouth parameter)";
+const displayInfoText =
+  displayInfo && fs.existsSync(displayInfo)
+    ? fs.readFileSync(displayInfo, "utf8")
+    : null;
+
+function reportParam(label, ids, envVar) {
+  if (!ids.length) {
+    console.log(`${label}: (disabled)`);
+    return;
+  }
+  if (!displayInfoText) {
+    console.log(`${label}: ${ids.join(", ")} (unknown — no DisplayInfo file)`);
+    return;
+  }
+  const missing = ids.filter((id) => !displayInfoText.includes(`"${id}"`));
+  console.log(
+    missing.length
+      ? `${label}: ${ids.join(", ")} — NOT FOUND: ${missing.join(", ")} (set ${envVar} or the matching mana-avatar.json field to this model's real parameter ids)`
+      : `${label}: ${ids.join(", ")} (present)`,
+  );
 }
-console.log(`Lip sync parameter ${mouthParam}: ${mouthKnown}`);
+
+const mouthParam =
+  process.env.MANA_LIVE2D_MOUTH_PARAM || avatarConfig.mouthParam;
+reportParam("Lip sync parameter", [mouthParam], "MANA_LIVE2D_MOUTH_PARAM");
+reportParam(
+  "Eye-blink parameters",
+  parseParamIdList(
+    process.env.MANA_LIVE2D_EYE_BLINK_PARAMS,
+    avatarConfig.eyeBlinkParams,
+  ),
+  "MANA_LIVE2D_EYE_BLINK_PARAMS",
+);
 
 console.log("\nState mapping:");
 for (const state of Object.keys(STATE_MOTION_PREFERENCES)) {

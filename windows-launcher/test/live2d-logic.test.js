@@ -4,13 +4,16 @@ const test = require("node:test");
 const {
   augmentModelSettings,
   computeZoomFraming,
+  DEFAULT_BROW_PARAM_IDS,
   DEFAULT_EYE_BLINK_PARAM_IDS,
+  DEFAULT_SMILE_PARAM_IDS,
   DEFAULT_ZOOM_FRACTIONS,
   expressionForState,
   findModelJson,
   fitModelToView,
   motionGroupForState,
   nextZoomLevel,
+  parseParamIdList,
   rmsToMouth,
   smoothMouthValue,
 } = require("../avatar/live2d-logic");
@@ -189,6 +192,20 @@ test("augmentModelSettings adds a missing EyeBlink group, respects an already-po
   );
 });
 
+test("parseParamIdList falls back to defaults when unset, trims/filters when set, and an explicit empty string disables", () => {
+  assert.deepEqual(
+    parseParamIdList(undefined, DEFAULT_SMILE_PARAM_IDS),
+    DEFAULT_SMILE_PARAM_IDS,
+  );
+  assert.deepEqual(
+    parseParamIdList(" ParamA , ParamB ,, ParamC ", []),
+    ["ParamA", "ParamB", "ParamC"],
+  );
+  // An explicit empty string is how MANA_LIVE2D_*_PARAMS env vars opt out,
+  // same convention across eyeBlink/smile/brow.
+  assert.deepEqual(parseParamIdList("", DEFAULT_BROW_PARAM_IDS), []);
+});
+
 test("expressionForState maps emotions to expressions case-insensitively", () => {
   assert.equal(expressionForState("angry", ["Angry", "cry"]), "Angry");
   assert.equal(expressionForState("excited", ["happy", "angry"]), "happy");
@@ -275,6 +292,52 @@ test("normalizeAvatarConfig validates mappings and random motions", () => {
   // Random delays stay inside the configured range.
   assert.equal(nextRandomDelay(100, 200, () => 0), 100);
   assert.equal(nextRandomDelay(100, 200, () => 1), 200);
+});
+
+test("normalizeAvatarConfig fills in tuning-knob defaults for a swapped-in model with no config", () => {
+  const { normalizeAvatarConfig } = require("../avatar/live2d-logic");
+  const empty = normalizeAvatarConfig(null);
+
+  assert.equal(empty.mouthParam, "ParamMouthOpenY");
+  assert.equal(empty.mouthGain, 18);
+  assert.equal(empty.eyeOpenScale, 1.5);
+  assert.deepEqual(empty.eyeBlinkParams, ["ParamEyeLOpen", "ParamEyeROpen"]);
+  assert.deepEqual(empty.smileParams, ["ParamEyeLSmile", "ParamEyeRSmile"]);
+  assert.deepEqual(empty.browParams, [
+    "ParamBrowLY",
+    "ParamBrowRY",
+    "ParamBrowLAngle",
+    "ParamBrowRAngle",
+  ]);
+  assert.equal(empty.idleTiltDeg, 16);
+  assert.equal(empty.idleMaxPitchDeg, 8);
+});
+
+test("normalizeAvatarConfig honors tuning-knob overrides, including explicit zero/empty", () => {
+  const { normalizeAvatarConfig } = require("../avatar/live2d-logic");
+
+  const custom = normalizeAvatarConfig({
+    mouthParam: "ParamMouthForm",
+    mouthGain: 9,
+    eyeOpenScale: 1,
+    eyeBlinkParams: ["CustomEyeOpen"],
+    smileParams: [],
+    browParams: ["CustomBrowUp"],
+    idleTiltDeg: 0,
+    idleMaxPitchDeg: 90,
+  });
+
+  assert.equal(custom.mouthParam, "ParamMouthForm");
+  assert.equal(custom.mouthGain, 9);
+  assert.equal(custom.eyeOpenScale, 1);
+  assert.deepEqual(custom.eyeBlinkParams, ["CustomEyeOpen"]);
+  // An explicit empty array opts out entirely, same as env's empty string.
+  assert.deepEqual(custom.smileParams, []);
+  assert.deepEqual(custom.browParams, ["CustomBrowUp"]);
+  // 0 is a legitimate value (e.g. opting out of the idle-tilt bias), not
+  // "missing" — must not fall back to the default.
+  assert.equal(custom.idleTiltDeg, 0);
+  assert.equal(custom.idleMaxPitchDeg, 90);
 });
 
 test("fitModelToView scales to fit and anchors to the bottom", () => {

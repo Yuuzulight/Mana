@@ -49,6 +49,43 @@ function motionOrExpressionStem(file) {
 // a model genuinely doesn't have these parameters (unknown ids are a no-op).
 const DEFAULT_EYE_BLINK_PARAM_IDS = ["ParamEyeLOpen", "ParamEyeROpen"];
 
+// Standard Cubism 4 names for the eye-smile squint curve and eyebrow
+// height/angle. Used to keep the iris visually constant-sized outside of
+// idle (see live2d-avatar.js) — neutralizing these stops a motion's own
+// squint or brow animation from covering part of the iris. Overridable per
+// model via MANA_LIVE2D_SMILE_PARAMS / MANA_LIVE2D_BROW_PARAMS in case a
+// model uses non-standard ids; unknown ids are a harmless no-op, so leaving
+// the defaults in place is safe even for a model that lacks them entirely.
+const DEFAULT_SMILE_PARAM_IDS = ["ParamEyeLSmile", "ParamEyeRSmile"];
+const DEFAULT_BROW_PARAM_IDS = [
+  "ParamBrowLY",
+  "ParamBrowRY",
+  "ParamBrowLAngle",
+  "ParamBrowRAngle",
+];
+
+// Parses a comma-separated env var into a trimmed, non-empty parameter id
+// list, falling back to `defaults` when the var is unset. An explicit empty
+// string opts out entirely (returns []) — the same empty-disables
+// convention every MANA_LIVE2D_*_PARAMS var uses.
+function parseParamIdList(value, defaults) {
+  if (value === undefined) {
+    return defaults;
+  }
+  return value
+    .split(",")
+    .map((id) => id.trim())
+    .filter(Boolean);
+}
+
+// Hardcoded fallback defaults for the tuning knobs below, used when neither
+// mana-avatar.json nor an env var sets them.
+const DEFAULT_MOUTH_PARAM = "ParamMouthOpenY";
+const DEFAULT_MOUTH_GAIN = 18;
+const DEFAULT_EYE_OPEN_SCALE = 1.5;
+const DEFAULT_IDLE_TILT_DEG = 16;
+const DEFAULT_IDLE_MAX_PITCH_DEG = 8;
+
 // VTube Studio exports usually ship motions and expressions as loose files
 // without registering them in model3.json. Register them so the avatar can
 // actually play them; already-registered models are left untouched. Also
@@ -179,14 +216,43 @@ function parseStateMappingOverrides(jsonText) {
   }
 }
 
-// Normalizes a per-model avatar config (mana-avatar.json next to the model):
+// A number field that falls back to `def` when absent/non-finite, so a
+// model config can still explicitly set 0 (unlike `Number(x) || def`).
+function numberOrDefault(value, def) {
+  if (value === undefined) {
+    return def;
+  }
+  const n = Number(value);
+  return Number.isFinite(n) ? n : def;
+}
+
+// An id-list field: absent -> defaults, present (including []) -> used
+// as-is, so a model can explicitly disable a param list the same way the
+// MANA_LIVE2D_*_PARAMS env vars do.
+function idListOrDefault(value, defaults) {
+  if (!Array.isArray(value)) {
+    return defaults;
+  }
+  return value.map((id) => String(id)).filter(Boolean);
+}
+
+// Normalizes a per-model avatar config (mana-avatar.json next to the model).
+// Every field is optional; anything omitted falls back to the built-in
+// default so a model swap only needs to specify what's actually different.
 //   {
 //     "stateMotions": { "excited": "curious", "idle": "sleepy" },
 //     "stateExpressions": { "idle": "hug-pillow" },
 //     "randomMotions": [
 //       { "group": "spirit", "minIntervalMs": 120000,
 //         "maxIntervalMs": 480000, "states": ["idle"] }
-//     ]
+//     ],
+//     "zoomFractions": { "waist": 0.55, "bust": 0.28 },
+//     "mouthParam": "ParamMouthOpenY", "mouthGain": 18,
+//     "eyeOpenScale": 1.5,
+//     "eyeBlinkParams": ["ParamEyeLOpen", "ParamEyeROpen"],
+//     "smileParams": ["ParamEyeLSmile", "ParamEyeRSmile"],
+//     "browParams": ["ParamBrowLY", "ParamBrowRY"],
+//     "idleTiltDeg": 16, "idleMaxPitchDeg": 8
 //   }
 function normalizeAvatarConfig(config) {
   const source = config && typeof config === "object" ? config : {};
@@ -226,6 +292,23 @@ function normalizeAvatarConfig(config) {
     stateExpressions: normalizeStateMapping(source.stateExpressions),
     randomMotions,
     zoomFractions,
+    mouthParam:
+      typeof source.mouthParam === "string" && source.mouthParam
+        ? source.mouthParam
+        : DEFAULT_MOUTH_PARAM,
+    mouthGain: numberOrDefault(source.mouthGain, DEFAULT_MOUTH_GAIN),
+    eyeOpenScale: numberOrDefault(source.eyeOpenScale, DEFAULT_EYE_OPEN_SCALE),
+    eyeBlinkParams: idListOrDefault(
+      source.eyeBlinkParams,
+      DEFAULT_EYE_BLINK_PARAM_IDS,
+    ),
+    smileParams: idListOrDefault(source.smileParams, DEFAULT_SMILE_PARAM_IDS),
+    browParams: idListOrDefault(source.browParams, DEFAULT_BROW_PARAM_IDS),
+    idleTiltDeg: numberOrDefault(source.idleTiltDeg, DEFAULT_IDLE_TILT_DEG),
+    idleMaxPitchDeg: numberOrDefault(
+      source.idleMaxPitchDeg,
+      DEFAULT_IDLE_MAX_PITCH_DEG,
+    ),
   };
 }
 
@@ -330,11 +413,19 @@ function nextZoomLevel(current) {
 }
 
 module.exports = {
+  DEFAULT_BROW_PARAM_IDS,
   DEFAULT_EYE_BLINK_PARAM_IDS,
+  DEFAULT_EYE_OPEN_SCALE,
+  DEFAULT_IDLE_MAX_PITCH_DEG,
+  DEFAULT_IDLE_TILT_DEG,
+  DEFAULT_MOUTH_GAIN,
+  DEFAULT_MOUTH_PARAM,
+  DEFAULT_SMILE_PARAM_IDS,
   DEFAULT_ZOOM_FRACTIONS,
   ZOOM_LEVELS,
   computeZoomFraming,
   nextZoomLevel,
+  parseParamIdList,
   STATE_EXPRESSION_PREFERENCES,
   STATE_MOTION_PREFERENCES,
   augmentModelSettings,
