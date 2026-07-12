@@ -8,13 +8,19 @@
     "start": "electron .",
     "dev": "nodemon --config nodemon.json",
     "pack": "electron-builder --dir",
-    "dist": "electron-builder"
+    "dist": "electron-builder",
+    "fetch-live2d-core": "node scripts/fetch-live2d-core.js",
+    "check-live2d-model": "node scripts/check-live2d-model.js"
   },
   "author": "",
-  "license": "Apache-2.0",
+  "license": "PolyForm-Noncommercial-1.0.0",
   "devDependencies": {
     "electron": "^26.6.10",
     "electron-builder": "^24.7.0",
     "nodemon": "^3.1.14"
+  },
+  "dependencies": {
+    "pixi-live2d-display": "^0.4.0",
+    "pixi.js": "^6.5.10"
   }
 }

@@ -12,13 +12,43 @@ const doctorSummaryEl = document.getElementById("doctorSummary");
 const doctorChecksEl = document.getElementById("doctorChecks");
 const { ipcRenderer } = require("electron");
 const { formatDoctorPanel } = require("./doctor-panel");
+const {
+  DEFAULT_VISION_HOTKEY_PROMPT,
+  describeVisionHotkeyError,
+  extractReplyErrorDetail,
+} = require("./vision-hotkey");
+const { createLive2dAvatar } = require("../avatar/live2d-avatar");
+const {
+  DEFAULT_GAMING_MAX_WAIT_FOR_SPEECH_MS,
+  DEFAULT_MAX_UTTERANCE_MS,
+  DEFAULT_MAX_WAIT_FOR_SPEECH_MS,
+  DEFAULT_SILENCE_BUFFER_MS,
+  shouldStopRecording,
+} = require("./voice-endpointing");
+const { detectReplyEmotion } = require("./reply-emotion");
+
+const chatLogEl = document.getElementById("chatLog");
+const chatInputEl = document.getElementById("chatInput");
+const chatSendEl = document.getElementById("chatSend");
+const manaCanvasEl = document.getElementById("manaCanvas");
+const avatarZoomBtnEl = document.getElementById("avatarZoomBtn");
 
 const WAKE_WORDS = ["mana", "manah", "manna", "mannah", "wake up"];
-const LISTEN_CHUNK_MS = 3500;
 const LISTEN_PAUSE_MS = 250;
 const GAMING_IDLE_PAUSE_MS = 1800;
-const GAMING_LISTEN_CHUNK_MS = 5000;
 const GAMING_DEEP_IDLE_PAUSE_MS = 3200;
+// Voice endpointing: how long Mana waits after you stop talking before
+// treating the sentence as finished, rather than cutting speech off at a
+// fixed duration. Override via MANA_SILENCE_BUFFER_MS if 2.2s feels too
+// short/long for how you talk.
+const SILENCE_BUFFER_MS = Number(
+  process.env.MANA_SILENCE_BUFFER_MS || DEFAULT_SILENCE_BUFFER_MS,
+);
+const MAX_WAIT_FOR_SPEECH_MS = DEFAULT_MAX_WAIT_FOR_SPEECH_MS;
+const GAMING_MAX_WAIT_FOR_SPEECH_MS = DEFAULT_GAMING_MAX_WAIT_FOR_SPEECH_MS;
+const MAX_UTTERANCE_MS = DEFAULT_MAX_UTTERANCE_MS;
+// How often the live silence-detection meter samples audio energy.
+const SILENCE_METER_INTERVAL_MS = 150;
 const GAMING_STATUS_POLL_MS = 5000;
 const PERF_STATUS_POLL_MS = 3000;
 const AUTO_LISTEN_RETRY_MS = 1500;
@@ -82,8 +112,138 @@ let gamingStatusCheckPromise = null;
 let lastScreenContextAt = 0;
 let lastScreenText = "";
 
+// In-window avatar: the "maximized" Mana rendered inside the chat window.
+// The overlay window keeps its own instance for minimized mode.
+let windowAvatar = null;
+
+const ZOOM_BUTTON_TITLES = {
+  full: "Whole body — click to zoom to waist-up",
+  waist: "Waist-up — click to zoom to bust-up",
+  bust: "Bust-up — click to zoom to whole body",
+};
+
+function updateZoomButtonLabel(level) {
+  if (!avatarZoomBtnEl) {
+    return;
+  }
+  avatarZoomBtnEl.title = ZOOM_BUTTON_TITLES[level] || ZOOM_BUTTON_TITLES.full;
+}
+
+function initWindowAvatar() {
+  if (!manaCanvasEl) {
+    return;
+  }
+  createLive2dAvatar({
+    canvas: manaCanvasEl,
+    width: manaCanvasEl.clientWidth || 320,
+    height: manaCanvasEl.clientHeight || 480,
+  })
+    .then((instance) => {
+      windowAvatar = instance;
+      if (windowAvatar) {
+        updateZoomButtonLabel(windowAvatar.getZoom());
+      }
+    })
+    .catch((error) => {
+      console.warn("In-window avatar failed to load:", error);
+    });
+}
+
+if (avatarZoomBtnEl) {
+  avatarZoomBtnEl.addEventListener("click", () => {
+    if (!windowAvatar) {
+      return;
+    }
+    const level = windowAvatar.cycleZoom();
+    updateZoomButtonLabel(level);
+  });
+}
+
+function appendChatMessage(role, text) {
+  if (!chatLogEl || !text) {
+    return;
+  }
+  const bubble = document.createElement("div");
+  bubble.className = `chat-message ${role === "user" ? "chat-user" : "chat-mana"}`;
+  bubble.textContent = text;
+  chatLogEl.appendChild(bubble);
+  chatLogEl.scrollTop = chatLogEl.scrollHeight;
+}
+
 function setAvatarState(state) {
   ipcRenderer.send("avatar:set-state", state);
+  if (windowAvatar) {
+    windowAvatar.setState(state);
+  }
+}
+
+// Lip sync: sample the playing reply audio's RMS amplitude and forward it to
+// the avatar window, where it drives the Live2D mouth parameter.
+let lipSyncAudioContext = null;
+let lipSyncRafId = null;
+
+function stopLipSync() {
+  if (lipSyncRafId !== null) {
+    cancelAnimationFrame(lipSyncRafId);
+    lipSyncRafId = null;
+  }
+  ipcRenderer.send("avatar:set-mouth", 0);
+  if (windowAvatar) {
+    windowAvatar.setMouthTarget(0);
+  }
+}
+
+function startLipSync(audioElement) {
+  try {
+    if (!lipSyncAudioContext) {
+      lipSyncAudioContext = new AudioContext();
+    }
+    // createMediaElementSource reroutes ALL of this element's audio through
+    // the Web Audio graph below. Chromium starts/leaves AudioContexts
+    // suspended without a direct user-gesture resume, and can re-suspend
+    // them on window blur — which happens constantly here since the overlay
+    // deploys whenever the chat window isn't focused. A suspended context
+    // silently drops every sample with no error, so playback goes fully
+    // silent. Resume on every call, not just first creation.
+    if (lipSyncAudioContext.state === "suspended") {
+      lipSyncAudioContext.resume().catch((error) => {
+        console.warn("Failed to resume audio context:", error);
+      });
+    }
+    const source = lipSyncAudioContext.createMediaElementSource(audioElement);
+    const analyser = lipSyncAudioContext.createAnalyser();
+    analyser.fftSize = 512;
+    source.connect(analyser);
+    analyser.connect(lipSyncAudioContext.destination);
+
+    const samples = new Float32Array(analyser.fftSize);
+    let lastSentAt = 0;
+    const tick = (timestamp) => {
+      if (audioElement.ended || audioElement.paused) {
+        stopLipSync();
+        return;
+      }
+      // ~30Hz is plenty for mouth movement and keeps IPC traffic light.
+      if (timestamp - lastSentAt >= 33) {
+        lastSentAt = timestamp;
+        analyser.getFloatTimeDomainData(samples);
+        let sum = 0;
+        for (let i = 0; i < samples.length; i += 1) {
+          sum += samples[i] * samples[i];
+        }
+        const rms = Math.sqrt(sum / samples.length);
+        ipcRenderer.send("avatar:set-mouth", rms);
+        if (windowAvatar) {
+          windowAvatar.setMouthTarget(rms);
+        }
+      }
+      lipSyncRafId = requestAnimationFrame(tick);
+    };
+    lipSyncRafId = requestAnimationFrame(tick);
+  } catch (error) {
+    // Lip sync is a nicety; never let it break audio playback.
+    console.warn("Lip sync unavailable:", error);
+  }
 }
 
 openWebUIButton.addEventListener("click", () => {
@@ -179,22 +339,6 @@ function splitReplyForSpeech(text) {
   return chunks;
 }
 
-function detectReplyEmotion(text) {
-  const normalized = text.toLowerCase();
-  const excitedPattern =
-    /!{2,}|\b(yay|yes|nice|great|awesome|amazing|let'?s go|finally|hehe|haha)\b/;
-  const angryPattern =
-    /\b(angry|mad|annoyed|ugh|hmph|stupid|idiot|seriously|how dare|stop that)\b/;
-
-  if (angryPattern.test(normalized)) {
-    return "angry";
-  }
-  if (excitedPattern.test(normalized)) {
-    return "excited";
-  }
-  return "talking";
-}
-
 async function synthesizeSpeechChunk(index, chunks, playbackToken) {
   if (playbackToken !== replyPlaybackToken) {
     return null;
@@ -250,6 +394,7 @@ function playAudioBlob(audioBlob, playbackToken, avatarState) {
     currentReplyAudio.addEventListener(
       "ended",
       () => {
+        stopLipSync();
         if (currentReplyUrl) {
           URL.revokeObjectURL(currentReplyUrl);
           currentReplyUrl = null;
@@ -263,6 +408,7 @@ function playAudioBlob(audioBlob, playbackToken, avatarState) {
     currentReplyAudio.addEventListener(
       "error",
       () => {
+        stopLipSync();
         if (currentReplyUrl) {
           URL.revokeObjectURL(currentReplyUrl);
           currentReplyUrl = null;
@@ -273,7 +419,9 @@ function playAudioBlob(audioBlob, playbackToken, avatarState) {
       { once: true },
     );
 
-    currentReplyAudio.play().catch(reject);
+    const playback = currentReplyAudio.play();
+    startLipSync(currentReplyAudio);
+    playback.catch(reject);
   });
 }
 
@@ -384,29 +532,93 @@ async function ensureMediaStream() {
   return mediaStream;
 }
 
-async function recordAudioChunk(durationMs) {
+// Records continuously and stops once the user has been silent for
+// `silenceBufferMs` after speaking — so a long sentence is captured whole
+// instead of being cut off at a fixed duration. Uses the same MIN_SPEECH_RMS
+// threshold as the post-hoc noise filter below, so "is this speech" stays
+// consistent whether it's judged live or after the fact.
+async function recordUntilSilence({
+  maxWaitForSpeechMs = MAX_WAIT_FOR_SPEECH_MS,
+  silenceBufferMs = SILENCE_BUFFER_MS,
+  maxDurationMs = MAX_UTTERANCE_MS,
+} = {}) {
   await ensureMediaStream();
+
+  const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  const source = audioCtx.createMediaStreamSource(mediaStream);
+  const analyser = audioCtx.createAnalyser();
+  analyser.fftSize = 1024;
+  source.connect(analyser);
+  const samples = new Float32Array(analyser.fftSize);
+
+  function currentRms() {
+    analyser.getFloatTimeDomainData(samples);
+    let sum = 0;
+    for (let i = 0; i < samples.length; i += 1) {
+      sum += samples[i] * samples[i];
+    }
+    return Math.sqrt(sum / samples.length);
+  }
 
   return await new Promise((resolve, reject) => {
     const chunks = [];
     const recorder = new MediaRecorder(mediaStream, { mimeType: "audio/webm" });
+    let hasHeardSpeech = false;
+    let lastSpeechAt = 0;
+    let meterInterval = null;
+    const startedAt = performance.now();
+
+    function cleanup() {
+      if (meterInterval !== null) {
+        clearInterval(meterInterval);
+        meterInterval = null;
+      }
+      try {
+        source.disconnect();
+      } catch (e) {}
+      audioCtx.close().catch(() => {});
+    }
 
     recorder.ondataavailable = (event) => {
       if (event.data.size > 0) {
         chunks.push(event.data);
       }
     };
-    recorder.onerror = (event) => reject(event.error);
+    recorder.onerror = (event) => {
+      cleanup();
+      reject(event.error);
+    };
     recorder.onstop = () => {
+      cleanup();
       resolve(new Blob(chunks, { type: "audio/webm" }));
     };
 
-    recorder.start();
-    setTimeout(() => {
-      if (recorder.state !== "inactive") {
+    // A short timeslice keeps dataavailable events flowing so audio isn't
+    // lost if recording stops earlier than a browser's default flush cadence.
+    recorder.start(SILENCE_METER_INTERVAL_MS);
+
+    meterInterval = setInterval(() => {
+      const now = performance.now();
+      if (currentRms() >= MIN_SPEECH_RMS) {
+        if (!hasHeardSpeech) {
+          statusEl.textContent = "Mana is listening...";
+        }
+        hasHeardSpeech = true;
+        lastSpeechAt = now;
+      }
+
+      const stopReason = shouldStopRecording({
+        hasHeardSpeech,
+        elapsedMs: now - startedAt,
+        msSinceLastSpeech: hasHeardSpeech ? now - lastSpeechAt : 0,
+        maxWaitForSpeechMs,
+        silenceBufferMs,
+        maxDurationMs,
+      });
+      if (stopReason && recorder.state !== "inactive") {
         recorder.stop();
       }
-    }, durationMs);
+    }, SILENCE_METER_INTERVAL_MS);
   });
 }
 
@@ -700,6 +912,96 @@ async function requestScreenAwareReply(text, gamingModeActive) {
   return result;
 }
 
+let visionHotkeyBusy = false;
+
+async function handleVisionHotkey() {
+  if (visionHotkeyBusy) {
+    return;
+  }
+  visionHotkeyBusy = true;
+  processing = true;
+  // Pressing the hotkey is an explicit request, so it also wakes Mana.
+  awake = true;
+
+  try {
+    statusEl.textContent = "Mana is looking at your screen...";
+    transcriptEl.textContent = "You: (vision hotkey)";
+    appendChatMessage("user", "(asked Mana to look at the screen)");
+
+    const image = await ipcRenderer.invoke("screen:capture-primary");
+    const response = await fetch("http://localhost:5005/reply", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ text: DEFAULT_VISION_HOTKEY_PROMPT, image }),
+    });
+
+    if (!response.ok) {
+      const detail = await extractReplyErrorDetail(response);
+      statusEl.textContent = describeVisionHotkeyError(response.status, detail);
+      return;
+    }
+
+    const result = await response.json();
+    const reply = result.reply || "";
+    replyEl.textContent = `Mana: ${reply}`;
+    appendChatMessage("mana", reply);
+
+    if (result.ttsConfigured) {
+      await playReplyAudio(reply);
+    }
+
+    statusEl.textContent = listening
+      ? awake
+        ? "Mana is awake..."
+        : "Waiting for Mana..."
+      : "Stopped";
+  } catch (error) {
+    console.warn("Vision hotkey failed:", error);
+    statusEl.textContent = describeVisionHotkeyError(0, error.message);
+  } finally {
+    processing = false;
+    visionHotkeyBusy = false;
+  }
+}
+
+// Typed chat: the composer bypasses the wake word (typing at Mana is an
+// explicit request) and otherwise uses the exact same reply pipeline.
+async function sendTypedMessage() {
+  if (!chatInputEl) {
+    return;
+  }
+  const text = chatInputEl.value.trim();
+  if (!text || processing) {
+    return;
+  }
+  chatInputEl.value = "";
+  awake = true;
+  try {
+    const gaming = isGamingModeEnabled() && (await refreshGamingStatus());
+    await handleTranscript(text, Boolean(gaming));
+  } catch (error) {
+    console.warn("Typed message failed:", error);
+    statusEl.textContent = `Reply failed: ${error.message}`;
+  }
+}
+
+chatSendEl?.addEventListener("click", () => {
+  sendTypedMessage();
+});
+
+chatInputEl?.addEventListener("keydown", (event) => {
+  if (event.key === "Enter" && !event.shiftKey) {
+    event.preventDefault();
+    sendTypedMessage();
+  }
+});
+
+ipcRenderer.on("vision:hotkey", () => {
+  handleVisionHotkey();
+});
+
 async function handleTranscript(transcript, gamingModeActive = false) {
   if (isNoiseOnlyTranscript(transcript)) {
     return false;
@@ -728,11 +1030,13 @@ async function handleTranscript(transcript, gamingModeActive = false) {
   processing = true;
   statusEl.textContent = awake ? "Mana is thinking..." : "Mana heard her name...";
   transcriptEl.textContent = `You: ${cleanTranscript}`;
+  appendChatMessage("user", cleanTranscript);
 
   try {
     const replyResult = await requestScreenAwareReply(command, gamingModeActive);
     const reply = replyResult.reply || "";
     replyEl.textContent = `Mana: ${reply}`;
+    appendChatMessage("mana", reply);
 
     if (replyResult.ttsConfigured) {
       await playReplyAudio(reply);
@@ -761,8 +1065,11 @@ async function listenLoop() {
       const gamingModeActive = await refreshGamingStatus();
       statusEl.textContent = awake ? "Mana is awake..." : "Waiting for Mana...";
 
-      const chunkDuration = gamingModeActive ? GAMING_LISTEN_CHUNK_MS : LISTEN_CHUNK_MS;
-      const chunk = await recordAudioChunk(chunkDuration);
+      const chunk = await recordUntilSilence({
+        maxWaitForSpeechMs: gamingModeActive
+          ? GAMING_MAX_WAIT_FOR_SPEECH_MS
+          : MAX_WAIT_FOR_SPEECH_MS,
+      });
       if (!listening) {
         break;
       }
@@ -854,6 +1161,7 @@ async function startListeningOnLaunch() {
 
 startListeningOnLaunch();
 refreshGamingStatus(true);
+initWindowAvatar();
 refreshPerfStatus();
 runDoctorChecksFromLauncher();
 
