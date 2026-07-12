@@ -1,0 +1,23 @@
+# Mana's local SearXNG config: personal, single-user, localhost-only.
+# Merges with searx/settings.yml defaults (use_default_settings). Everything
+# else in the default file (engines, categories, etc.) is left as-is.
+use_default_settings: true
+
+general:
+  instance_name: "Mana Search"
+  enable_metrics: false
+
+search:
+  formats:
+    - html
+    - json
+
+server:
+  port: 8890
+  bind_address: "127.0.0.1"
+  # No public instance, no untrusted traffic; the rate limiter would just
+  # throttle Mana's own local requests for no benefit.
+  limiter: false
+  # Generated once for this local instance; only ever reachable from
+  # 127.0.0.1, so a leaked key has no real exposure.
+  secret_key: "mana-local-searxng-a1f9c3e7d2b8"
