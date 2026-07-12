@@ -42,6 +42,11 @@ function buildRestartAcceptedPayload() {
   };
 }
 
+// Address/loopback checking lives at the route layer (which knows about
+// X-Forwarded-For and proxy trust) rather than here, so this controller
+// just answers "what does an accepted restart look like" and "how do we
+// actually exit" for whichever caller (an HTTP route or a /reply command)
+// already decided the request is allowed.
 function createRestartController(options = {}) {
   const {
     exitProcess = process.exit,
@@ -49,18 +54,11 @@ function createRestartController(options = {}) {
     delayMs = 250,
   } = options;
 
-  return function restartController(req) {
-    if (!isLoopbackAddress(getRequestAddress(req))) {
-      return {
-        ok: false,
-        action: "restart",
-        scope: "backend",
-        message: "Mana backend soft restart is not allowed from this address.",
-      };
-    }
-
-    schedule(() => exitProcess(MANA_RESTART_EXIT_CODE), delayMs);
-    return buildRestartAcceptedPayload();
+  return {
+    buildAcceptedPayload: buildRestartAcceptedPayload,
+    scheduleRestart() {
+      schedule(() => exitProcess(MANA_RESTART_EXIT_CODE), delayMs);
+    },
   };
 }
 

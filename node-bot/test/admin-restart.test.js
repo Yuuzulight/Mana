@@ -63,7 +63,12 @@ test("getRequestAddress reads express request addresses", () => {
   );
 });
 
-test("createRestartController accepts loopback requests and schedules restart", () => {
+test("createRestartController.buildAcceptedPayload returns the standard payload", () => {
+  const controller = createRestartController();
+  assert.deepEqual(controller.buildAcceptedPayload(), buildRestartAcceptedPayload());
+});
+
+test("createRestartController.scheduleRestart schedules the exit after the configured delay", () => {
   const calls = [];
   const controller = createRestartController({
     exitProcess: (code) => calls.push(["exit", code]),
@@ -73,25 +78,10 @@ test("createRestartController accepts loopback requests and schedules restart", 
     },
   });
 
-  const result = controller({ ip: "127.0.0.1" });
+  controller.scheduleRestart();
 
-  assert.deepEqual(result, buildRestartAcceptedPayload());
   assert.deepEqual(calls, [
     ["schedule", 250],
     ["exit", MANA_RESTART_EXIT_CODE],
   ]);
-});
-
-test("createRestartController rejects non-loopback requests", () => {
-  const calls = [];
-  const controller = createRestartController({
-    exitProcess: (code) => calls.push(["exit", code]),
-    schedule: (fn, delayMs) => calls.push(["schedule", delayMs]),
-  });
-
-  const result = controller({ ip: "192.168.1.50" });
-
-  assert.equal(result.ok, false);
-  assert.match(result.message, /not allowed/i);
-  assert.deepEqual(calls, []);
 });
