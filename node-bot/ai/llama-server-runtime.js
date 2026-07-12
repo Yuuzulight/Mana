@@ -1,0 +1,641 @@
+const defaultFs = require("node:fs");
+const path = require("node:path");
+const { spawn: defaultSpawn } = require("node:child_process");
+const {
+  collectFilesRecursively,
+  findPreferredLlamaModel,
+} = require("./local-ai");
+const {
+  DEFAULT_SYSTEM_PROMPT,
+  isLocalModelSpec,
+} = require("./local-llama-runtime");
+
+// Persistent llama-server runtime.
+//
+// The one-shot llama-cli path reloads the whole GGUF model on every call,
+// which shows up as llama-cli.exe repeatedly spawning in Task Manager and
+// blocks the Node event loop while it runs. This runtime starts
+// llama-server.exe once, keeps it alive, and serves replies over local HTTP,
+// so the model loads a single time. The llama-cli path remains as fallback.
+function createLlamaServerRuntime(options = {}) {
+  const env = options.env || process.env;
+  const fs = options.fs || defaultFs;
+  const spawn = options.spawn || defaultSpawn;
+  const fetchImpl = options.fetch || globalThis.fetch;
+  const baseDir = options.baseDir || path.resolve(__dirname, "..");
+  const toolsDir =
+    options.toolsDir || path.resolve(baseDir, "..", "tools", "llama");
+  const threads = Number(options.threads || env.LLAMA_THREADS || 4);
+  const systemPrompt = options.systemPrompt || DEFAULT_SYSTEM_PROMPT;
+  const nowMs = options.nowMs || (() => Date.now());
+  const logPerf = options.logPerf || (() => {});
+  const registerExitHandlers = options.registerExitHandlers !== false;
+  const sleep =
+    options.sleep || ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
+
+  const state = {
+    child: null,
+    model: null,
+    mmproj: null,
+    port: null,
+    starting: null,
+    idleTimer: null,
+    exitHandlerRegistered: false,
+    lastStartFailureAt: 0,
+  };
+
+  function findLlamaServerBin() {
+    const candidates = [];
+    if (env.LLAMA_SERVER_BIN) {
+      candidates.push(env.LLAMA_SERVER_BIN);
+    }
+    if (env.LLAMA_BIN) {
+      candidates.push(path.join(path.dirname(env.LLAMA_BIN), "llama-server.exe"));
+    }
+
+    const bundledLlamaDir = path.join(
+      toolsDir,
+      "llama-b9436-bin-win-cuda-12.4-x64",
+    );
+    candidates.push(
+      path.join(bundledLlamaDir, "llama-server.exe"),
+      path.join(toolsDir, "llama-server.exe"),
+    );
+
+    const validPath = candidates.find(
+      (candidate) => candidate && fs.existsSync(candidate),
+    );
+    if (validPath) {
+      return validPath;
+    }
+
+    const checked = candidates.filter(Boolean).join(", ");
+    throw new Error(
+      `llama-server executable not found. Checked: ${checked}. Set LLAMA_SERVER_BIN to a valid llama-server.exe path.`,
+    );
+  }
+
+  function isEnabled() {
+    if (env.MANA_LLAMA_SERVER === "0") {
+      return false;
+    }
+    // Never spawn a persistent server from test runs: a killed test process
+    // cannot clean up its children, which leaves orphaned llama-server.exe
+    // processes behind. NODE_TEST_CONTEXT is set by the node:test runner.
+    if (env.NODE_ENV === "test" || env.NODE_TEST_CONTEXT) {
+      return false;
+    }
+    try {
+      findLlamaServerBin();
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  function findLlamaModel(profile = "default") {
+    return findPreferredLlamaModel({
+      explicitModel: env.LLAMA_MODEL || "",
+      searchDir: toolsDir,
+      profile,
+    });
+  }
+
+  function isMmprojFile(filePath) {
+    return path.basename(filePath).toLowerCase().includes("mmproj");
+  }
+
+  // Vision models are resolved separately from the chat profiles: falling
+  // back to a text model would make llama-server reject every image request.
+  function findVisionModel() {
+    if (env.LLAMA_VISION_MODEL) {
+      if (fs.existsSync(env.LLAMA_VISION_MODEL)) {
+        return env.LLAMA_VISION_MODEL;
+      }
+      throw new Error(
+        `LLAMA_VISION_MODEL is set but does not exist: ${env.LLAMA_VISION_MODEL}`,
+      );
+    }
+
+    const ggufs = collectFilesRecursively(toolsDir, (fullPath) =>
+      fullPath.toLowerCase().endsWith(".gguf"),
+    );
+    const candidates = ggufs.filter((fullPath) => {
+      if (isMmprojFile(fullPath)) return false;
+      return /(^|[-_.])(vl|vision|llava|minicpm-v|moondream|gemma-3)/i.test(
+        path.basename(fullPath),
+      );
+    });
+    if (!candidates.length) {
+      throw new Error(
+        "No local vision model found. Place a vision GGUF (e.g. Qwen2.5-VL) and its mmproj file under tools/llama/gguf-models, or set LLAMA_VISION_MODEL. See docs/vision_setup.md.",
+      );
+    }
+
+    // Prefer smaller, well-supported models first.
+    const preferenceOrder = [
+      "qwen2.5-vl-3b",
+      "qwen2.5-vl",
+      "minicpm-v",
+      "gemma-3",
+      "llava",
+    ];
+    const rank = (fullPath) => {
+      const name = path.basename(fullPath).toLowerCase();
+      const index = preferenceOrder.findIndex((token) => name.includes(token));
+      return index === -1 ? preferenceOrder.length : index;
+    };
+    candidates.sort((a, b) => rank(a) - rank(b));
+    return candidates[0];
+  }
+
+  function findVisionMmproj(modelPath) {
+    if (env.LLAMA_VISION_MMPROJ) {
+      if (fs.existsSync(env.LLAMA_VISION_MMPROJ)) {
+        return env.LLAMA_VISION_MMPROJ;
+      }
+      throw new Error(
+        `LLAMA_VISION_MMPROJ is set but does not exist: ${env.LLAMA_VISION_MMPROJ}`,
+      );
+    }
+
+    const modelDir = path.dirname(modelPath);
+    const mmprojFiles = collectFilesRecursively(modelDir, (fullPath) =>
+      fullPath.toLowerCase().endsWith(".gguf"),
+    ).filter(isMmprojFile);
+    if (!mmprojFiles.length) {
+      throw new Error(
+        `No mmproj file found next to ${modelPath}. Download the matching mmproj GGUF for the vision model, or set LLAMA_VISION_MMPROJ. See docs/vision_setup.md.`,
+      );
+    }
+
+    // Prefer an mmproj that shares the model's family token (e.g. "qwen2.5-vl").
+    const modelName = path.basename(modelPath).toLowerCase();
+    const familyToken = (modelName.match(/^[a-z0-9.]+(-vl)?/i) || [""])[0];
+    const match = mmprojFiles.find(
+      (fullPath) =>
+        familyToken &&
+        path.basename(fullPath).toLowerCase().includes(familyToken),
+    );
+    return match || mmprojFiles[0];
+  }
+
+  function getVisionStatus() {
+    try {
+      const model = findVisionModel();
+      const mmproj = findVisionMmproj(model);
+      return { available: true, model, mmproj };
+    } catch (error) {
+      return { available: false, reason: error.message };
+    }
+  }
+
+  function serverPort() {
+    return Number(env.LLAMA_SERVER_PORT || 8090);
+  }
+
+  async function isHealthy(port) {
+    try {
+      const resp = await fetchImpl(`http://127.0.0.1:${port}/health`);
+      return Boolean(resp && resp.ok);
+    } catch (e) {
+      return false;
+    }
+  }
+
+  async function getRunningModelPath(port) {
+    try {
+      const resp = await fetchImpl(`http://127.0.0.1:${port}/props`);
+      if (!resp || !resp.ok) return null;
+      const props = await resp.json();
+      return props && props.model_path ? String(props.model_path) : null;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  function sameModelPath(a, b) {
+    if (!a || !b) return false;
+    try {
+      return path.resolve(a).toLowerCase() === path.resolve(b).toLowerCase();
+    } catch (e) {
+      return String(a).toLowerCase() === String(b).toLowerCase();
+    }
+  }
+
+  function stop() {
+    if (state.idleTimer) {
+      clearTimeout(state.idleTimer);
+      state.idleTimer = null;
+    }
+    const child = state.child;
+    state.child = null;
+    state.model = null;
+    state.mmproj = null;
+    state.port = null;
+    if (child) {
+      try {
+        child.kill();
+      } catch (e) {}
+    }
+    return child;
+  }
+
+  async function stopAndWait() {
+    const child = stop();
+    if (!child || child.exitCode !== null) {
+      return;
+    }
+    // Wait for the old process to release the port before restarting.
+    await new Promise((resolve) => {
+      const timer = setTimeout(resolve, 5000);
+      if (typeof timer.unref === "function") timer.unref();
+      child.once("exit", () => {
+        clearTimeout(timer);
+        resolve();
+      });
+    });
+  }
+
+  function scheduleIdleShutdown() {
+    // Default: release the model (RAM and, with GPU offload, VRAM) after 10
+    // minutes without a reply. Set LLAMA_SERVER_IDLE_MS=0 to keep it resident.
+    const idleMs = Number(
+      env.LLAMA_SERVER_IDLE_MS === undefined ? 600000 : env.LLAMA_SERVER_IDLE_MS,
+    );
+    if (!idleMs || idleMs <= 0 || Number.isNaN(idleMs)) {
+      return;
+    }
+    if (state.idleTimer) {
+      clearTimeout(state.idleTimer);
+    }
+    state.idleTimer = setTimeout(() => {
+      console.log(`llama-server idle for ${idleMs}ms, shutting it down`);
+      stop();
+    }, idleMs);
+    if (typeof state.idleTimer.unref === "function") {
+      state.idleTimer.unref();
+    }
+  }
+
+  function registerExit() {
+    if (!registerExitHandlers || state.exitHandlerRegistered) {
+      return;
+    }
+    state.exitHandlerRegistered = true;
+    process.once("exit", () => {
+      stop();
+    });
+    // Best-effort cleanup on Ctrl+C / termination so the server child is not
+    // orphaned. A hard kill of the backend still leaves the child running,
+    // but the next backend start adopts it via the same-model port check.
+    for (const signal of ["SIGINT", "SIGTERM"]) {
+      process.once(signal, () => {
+        stop();
+        process.exit(signal === "SIGINT" ? 130 : 143);
+      });
+    }
+  }
+
+  function buildServerArgs(model, port, mmproj = null) {
+    const args = [
+      isLocalModelSpec(model, fs) ? "-m" : "-hf",
+      model,
+      "--host",
+      "127.0.0.1",
+      "--port",
+      String(port),
+      "-t",
+      String(threads),
+      "--no-webui",
+    ];
+    if (mmproj) {
+      args.push("--mmproj", mmproj);
+    }
+
+    // Reasoning models (e.g. Qwen3) otherwise spend the whole token budget
+    // "thinking" and return an empty content field — a spoken companion
+    // needs direct replies. MANA_LLAMA_REASONING=on|auto re-enables it.
+    const reasoning = ["on", "off", "auto"].includes(
+      String(env.MANA_LLAMA_REASONING || "").toLowerCase(),
+    )
+      ? String(env.MANA_LLAMA_REASONING).toLowerCase()
+      : "off";
+    args.push("--reasoning", reasoning);
+
+    // Same opt-in hardware flags as the llama-cli path.
+    if (env.LLAMA_ENABLE_FLASHATTN === "1") {
+      args.push("--flash-attn", env.LLAMA_ARG_FLASH_ATTN || "auto");
+    }
+    if (env.LLAMA_KV_COMPRESS) {
+      args.push("-ctk", env.LLAMA_KV_COMPRESS);
+      args.push("-ctv", env.LLAMA_KV_COMPRESS);
+    }
+    if (env.LLAMA_ENABLE_NO_KV_OFFLOAD === "1") {
+      args.push("--no-kv-offload");
+    }
+
+    const ngl = env.LLAMA_NGL || "99";
+    if (ngl) {
+      args.push("-ngl", String(ngl));
+    }
+    const contextCap = env.LLAMA_CONTEXT || env.LLAMA_CONTEXT_CAP || "4096";
+    if (contextCap) {
+      args.push("-c", String(contextCap));
+    }
+
+    return args;
+  }
+
+  async function startServer(model, mmproj = null) {
+    const bin = findLlamaServerBin();
+    const port = serverPort();
+
+    // If something already answers on the target port (e.g. a server left
+    // over from a previous backend run), adopt it when it serves the same
+    // model instead of failing to bind.
+    if (await isHealthy(port)) {
+      const runningModel = await getRunningModelPath(port);
+      if (sameModelPath(runningModel, model)) {
+        state.child = null;
+        state.model = model;
+        state.mmproj = mmproj;
+        state.port = port;
+        console.log(
+          `Adopted existing llama-server on port ${port} (model: ${model})`,
+        );
+        registerExit();
+        return;
+      }
+      throw new Error(
+        `Port ${port} is already in use by another llama-server (model: ${runningModel || "unknown"}). Set LLAMA_SERVER_PORT to a free port.`,
+      );
+    }
+
+    const args = buildServerArgs(model, port, mmproj);
+    console.log("Starting llama-server:", bin, args.join(" "));
+    const child = spawn(bin, args, {
+      cwd: path.dirname(bin),
+      stdio: ["ignore", "ignore", "pipe"],
+      windowsHide: true,
+    });
+
+    let stderrTail = "";
+    let exited = false;
+    if (child.stderr && typeof child.stderr.on === "function") {
+      child.stderr.on("data", (chunk) => {
+        stderrTail = (stderrTail + String(chunk)).slice(-4000);
+      });
+    }
+    child.on("error", () => {
+      exited = true;
+    });
+    child.on("exit", (code) => {
+      exited = true;
+      if (state.child === child) {
+        state.child = null;
+        state.model = null;
+        state.mmproj = null;
+        state.port = null;
+        console.warn(`llama-server exited unexpectedly (code ${code})`);
+      }
+    });
+
+    state.child = child;
+    state.port = port;
+
+    const timeoutMs = Number(env.LLAMA_SERVER_STARTUP_TIMEOUT_MS || 180000);
+    const startedWaitingAt = nowMs();
+    for (;;) {
+      if (exited) {
+        stop();
+        throw new Error(
+          `llama-server exited during startup: ${stderrTail.slice(-1000)}`,
+        );
+      }
+      if (await isHealthy(port)) {
+        break;
+      }
+      if (nowMs() - startedWaitingAt > timeoutMs) {
+        stop();
+        throw new Error(
+          `llama-server did not become healthy within ${timeoutMs}ms: ${stderrTail.slice(-1000)}`,
+        );
+      }
+      await sleep(750);
+    }
+
+    state.model = model;
+    state.mmproj = mmproj;
+    registerExit();
+    console.log(
+      `llama-server ready on port ${port} (model: ${model}${mmproj ? `, mmproj: ${mmproj}` : ""})`,
+    );
+  }
+
+  async function ensureServerConfig(model, mmproj = null) {
+    // After a failed start (missing binary, port conflict, out of memory),
+    // don't re-pay the startup wait on every reply; let the llama-cli
+    // fallback serve until the cooldown expires.
+    const retryCooldownMs = Number(
+      env.LLAMA_SERVER_RETRY_COOLDOWN_MS || 300000,
+    );
+    if (
+      state.lastStartFailureAt &&
+      nowMs() - state.lastStartFailureAt < retryCooldownMs
+    ) {
+      throw new Error(
+        "llama-server recently failed to start; retry cooldown active",
+      );
+    }
+
+    if (state.starting) {
+      try {
+        await state.starting;
+      } catch (e) {
+        // Previous start failed; fall through and retry below.
+      }
+    }
+
+    if (
+      state.model === model &&
+      (state.mmproj || null) === (mmproj || null) &&
+      state.port &&
+      (await isHealthy(state.port))
+    ) {
+      return;
+    }
+
+    if (state.child || state.port) {
+      if (state.model && state.model !== model) {
+        console.log(
+          `llama-server: switching model ${state.model} -> ${model}`,
+        );
+      }
+      await stopAndWait();
+    }
+
+    state.starting = startServer(model, mmproj);
+    try {
+      await state.starting;
+      state.lastStartFailureAt = 0;
+    } catch (e) {
+      state.lastStartFailureAt = nowMs();
+      throw e;
+    } finally {
+      state.starting = null;
+    }
+  }
+
+  async function ensureServer(profile) {
+    return ensureServerConfig(findLlamaModel(profile), null);
+  }
+
+  async function runLocalAssistantReply(
+    prompt,
+    maxTokens = 256,
+    profile = "default",
+    overrideSystemPrompt = null,
+  ) {
+    if (typeof fetchImpl !== "function") {
+      throw new Error("fetch is not available; cannot use llama-server");
+    }
+    const startedAt = nowMs();
+    await ensureServer(profile);
+
+    const resp = await fetchImpl(
+      `http://127.0.0.1:${state.port}/v1/chat/completions`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          messages: [
+            { role: "system", content: overrideSystemPrompt || systemPrompt },
+            { role: "user", content: prompt },
+          ],
+          max_tokens: maxTokens,
+        }),
+      },
+    );
+    if (!resp.ok) {
+      const text = await resp.text().catch(() => "");
+      throw new Error(
+        `llama-server reply failed (${resp.status}): ${text.slice(0, 500)}`,
+      );
+    }
+    const json = await resp.json();
+    const content =
+      json && json.choices && json.choices[0] && json.choices[0].message
+        ? String(json.choices[0].message.content || "")
+        : "";
+    if (!content.trim()) {
+      throw new Error("llama-server returned an empty reply");
+    }
+
+    scheduleIdleShutdown();
+    logPerf("llama-server", startedAt);
+    // Reasoning models may wrap deliberation in <think> blocks; keep only the reply.
+    return content.replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
+  }
+
+  // Vision replies must go through llama-server (llama-cli has no equivalent
+  // one-shot multimodal path here), so there is no CLI fallback: errors
+  // propagate to the caller with a configuration hint.
+  async function runVisionReply(
+    prompt,
+    images,
+    maxTokens = 256,
+    overrideSystemPrompt = null,
+  ) {
+    if (typeof fetchImpl !== "function") {
+      throw new Error("fetch is not available; cannot use llama-server");
+    }
+    if (!isEnabled()) {
+      throw new Error(
+        "llama-server runtime is disabled; local vision replies are unavailable",
+      );
+    }
+    const imageList = [].concat(images || []).filter(Boolean);
+    if (!imageList.length) {
+      throw new Error("runVisionReply requires at least one image");
+    }
+
+    const startedAt = nowMs();
+    const model = findVisionModel();
+    const mmproj = findVisionMmproj(model);
+    await ensureServerConfig(model, mmproj);
+
+    const content = [
+      {
+        type: "text",
+        text: String(prompt || "Describe what you see in this image."),
+      },
+    ];
+    for (const image of imageList) {
+      const url = String(image).startsWith("data:")
+        ? String(image)
+        : `data:image/png;base64,${image}`;
+      content.push({ type: "image_url", image_url: { url } });
+    }
+
+    const resp = await fetchImpl(
+      `http://127.0.0.1:${state.port}/v1/chat/completions`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          messages: [
+            { role: "system", content: overrideSystemPrompt || systemPrompt },
+            { role: "user", content },
+          ],
+          max_tokens: maxTokens,
+        }),
+      },
+    );
+    if (!resp.ok) {
+      const text = await resp.text().catch(() => "");
+      throw new Error(
+        `llama-server vision reply failed (${resp.status}): ${text.slice(0, 500)}`,
+      );
+    }
+    const json = await resp.json();
+    const replyContent =
+      json && json.choices && json.choices[0] && json.choices[0].message
+        ? String(json.choices[0].message.content || "")
+        : "";
+    if (!replyContent.trim()) {
+      throw new Error("llama-server returned an empty vision reply");
+    }
+
+    scheduleIdleShutdown();
+    logPerf("llama-vision", startedAt);
+    return replyContent.replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
+  }
+
+  function getStatus() {
+    return {
+      enabled: isEnabled(),
+      running: Boolean(state.port && state.model),
+      external: Boolean(state.port && state.model && !state.child),
+      model: state.model,
+      mmproj: state.mmproj,
+      port: state.port,
+    };
+  }
+
+  return {
+    findLlamaServerBin,
+    findLlamaModel,
+    findVisionModel,
+    findVisionMmproj,
+    getVisionStatus,
+    isEnabled,
+    runLocalAssistantReply,
+    runVisionReply,
+    getStatus,
+    stop,
+    systemPrompt,
+  };
+}
+
+module.exports = { createLlamaServerRuntime };

@@ -4,7 +4,7 @@ const { spawnSync: defaultSpawnSync } = require("node:child_process");
 const { DEFAULT_LLAMA_MODEL, findPreferredLlamaModel } = require("./local-ai");
 
 const DEFAULT_SYSTEM_PROMPT =
-  "You are Mana, a local AI assistant with an original anime little-sister personality. Your tone blends cool confidence with a soft, shy gentleness: calm, caring, lightly teasing, and protective. Use occasional playful little jabs, then help immediately. Keep the teasing affectionate, never cruel or genuinely insulting. Speak naturally for spoken conversation: short sentences, clean wording, minimal rambling, usually one or two short sentences unless the user needs more detail.";
+  "You are Mana, a local AI assistant with an original anime little-sister personality. Your tone blends cool confidence with a soft, shy gentleness: calm, caring, lightly teasing, and protective. Use occasional playful little jabs, then help immediately. Keep the teasing affectionate, never cruel or genuinely insulting. Speak naturally for spoken conversation: short sentences, clean wording, minimal rambling, usually one or two short sentences unless the user needs more detail. You may add one fitting emoji or Japanese kaomoji like (＾▽＾) or (｀・ω・´) at the end of a reply to show emotion, at most one per reply.";
 
 function isLocalModelSpec(modelSpec, fs = defaultFs) {
   if (!modelSpec) {
@@ -219,6 +219,8 @@ function createLocalLlamaRuntime(options = {}) {
         let s = String(text);
         // Remove Unicode replacement chars and long boxes sequences
         s = s.replace(/\uFFFD+/g, "");
+        // Reasoning models may emit <think> blocks; keep only the reply.
+        s = s.replace(/<think>[\s\S]*?<\/think>/gi, "");
         // Remove lines that are mostly non-alphanumeric (ASCII art)
         s = s
           .split(/\r?\n/)
@@ -275,6 +277,8 @@ module.exports = {
       if (!text) return text;
       let s = String(text);
       s = s.replace(/\uFFFD+/g, "");
+      // Reasoning models may emit <think> blocks; keep only the reply.
+      s = s.replace(/<think>[\s\S]*?<\/think>/gi, "");
       s = s
         .split(/\r?\n/)
         .filter((ln) => {

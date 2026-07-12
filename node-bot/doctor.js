@@ -372,6 +372,48 @@ async function probeZedExternalAgentBackend(env, probe = probeHttpHealth) {
   );
 }
 
+async function probeSearxngHealth(env, probe = probeHttpHealth) {
+  if (env.MANA_WEB_ACCESS_ENABLED === "0") {
+    return makeCheck(
+      "searxng",
+      "Web search (SearXNG)",
+      "warn",
+      "Web access is disabled (MANA_WEB_ACCESS_ENABLED=0).",
+      {},
+    );
+  }
+
+  const url = (env.SEARXNG_URL || "http://127.0.0.1:8890").replace(/\/+$/, "") + "/";
+  const result = await probe({ id: "searxng", url });
+  return makeCheck(
+    "searxng",
+    "Web search (SearXNG)",
+    result.ok ? "pass" : "warn",
+    result.ok
+      ? "Local SearXNG is reachable; web search is available."
+      : "Local SearXNG is not reachable. Web search will fail; wiki lookups and pointed-at page reads still work. See docs/web_access_setup.md.",
+    result,
+  );
+}
+
+// GPT-SoVITS's api_v2.py has no /health route, so this only checks whether
+// the port answers at all (see the matching launcher-side isGptSovitsRunning);
+// only relevant when it's the selected trial voice provider.
+async function probeGptSovitsHealth(env, probe = probeHttpHealth) {
+  const url = (env.GPT_SOVITS_TTS_URL || "http://127.0.0.1:9880") + "/";
+  const result = await probe({ id: "gpt-sovits", url });
+  const reachable = result.ok || Number.isInteger(result.statusCode);
+  return makeCheck(
+    "gpt-sovits",
+    "GPT-SoVITS (trial voice)",
+    reachable ? "pass" : "warn",
+    reachable
+      ? "GPT-SoVITS is reachable."
+      : "TTS_PROVIDER is gpt_sovits, but GPT-SoVITS is not reachable. See docs/gpt_sovits_setup.md.",
+    { ...result, ok: reachable },
+  );
+}
+
 function normalizePortNumber(value, fallback) {
   const port = Number(value || fallback);
   return Number.isInteger(port) && port > 0 && port <= 65535 ? port : fallback;
@@ -450,6 +492,18 @@ function runDoctorChecks(options = {}) {
       env.LLAMA_MODEL || "",
       "LLAMA_MODEL is not configured. Local replies will use a placeholder.",
     ),
+    checkRequiredFile(
+      "llama-server-binary",
+      "Llama server binary",
+      env.LLAMA_SERVER_BIN || "",
+      "LLAMA_SERVER_BIN is not configured. Mana auto-detects the bundled llama-server.exe and falls back to one-shot llama-cli replies.",
+    ),
+    checkRequiredFile(
+      "llama-vision-model",
+      "Llama vision model",
+      env.LLAMA_VISION_MODEL || "",
+      "LLAMA_VISION_MODEL is not configured. Mana auto-detects vision GGUF models under tools/llama; image replies stay unavailable until one is installed. See docs/vision_setup.md.",
+    ),
     checkWhisperConfig(env),
     checkTtsServices(options.services || []),
     checkMobileAuth(env),
@@ -475,6 +529,11 @@ async function runDoctorChecksAsync(options = {}) {
     env,
     options.zedExternalAgentBackendProbe,
   );
+  const searxngHealth = await probeSearxngHealth(env, options.searxngProbe);
+  const gptSovitsHealth =
+    String(env.TTS_PROVIDER || "").trim().toLowerCase() === "gpt_sovits"
+      ? await probeGptSovitsHealth(env, options.gptSovitsProbe)
+      : null;
   const portChecks = [...getDefaultPortChecks(env), ...(options.ports || [])];
   const portResults = await probePorts(portChecks);
   const checks = runDoctorChecks({
@@ -484,6 +543,10 @@ async function runDoctorChecksAsync(options = {}) {
   }).checks;
 
   checks.push(zedExternalAgentBackend);
+  checks.push(searxngHealth);
+  if (gptSovitsHealth) {
+    checks.push(gptSovitsHealth);
+  }
 
   if (portResults.length) {
     const unavailable = portResults.filter((port) => !port.ok);

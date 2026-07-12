@@ -24,8 +24,9 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+# ROOT is the node-bot package directory (this file lives in node-bot/tools/).
 ROOT = Path(__file__).resolve().parent.parent
-CACHE_PATH = ROOT.joinpath("node-bot", "data", "token_count_cache.json")
+CACHE_PATH = ROOT.joinpath("data", "token_count_cache.json")
 
 
 def ensure_cache_dir() -> None:
@@ -193,7 +194,7 @@ def cli(argv: List[str]) -> int:
     args = p.parse_args(argv)
 
     # Metrics (persisted) with debounced writes
-    METRICS_PATH = ROOT.joinpath("node-bot", "data", "token_metrics.json")
+    METRICS_PATH = ROOT.joinpath("data", "token_metrics.json")
 
     def ensure_metrics_dir():
         try:
