@@ -88,6 +88,7 @@ const {
   cleanLlamaOutput,
 } = require("./ai/local-llama-runtime");
 const { createLlamaServerRuntime } = require("./ai/llama-server-runtime");
+const { createRestartController } = require("./admin-restart");
 const {
   FFXIV_PROFIT_TOP_LIMIT,
   FFXIV_RECIPE_SOURCE,
@@ -1673,6 +1674,16 @@ function registerRoutes(app, upload, deps = {}) {
       }
       return true;
     }
+
+    // Soft restart: exits the backend process (code 77) so the launcher or
+    // an external supervisor restarts it. Gated by loopback address rather
+    // than ADMIN_SECRET, since it's meant to be triggered from the same
+    // machine (e.g. the desktop launcher's own UI), not a remote admin.
+    const restartController = createRestartController();
+    app.post("/admin/restart", (req, res) => {
+      const result = restartController(req);
+      res.status(result.ok ? 200 : 403).json(result);
+    });
 
     app.get("/admin/pending-writes", async (req, res) => {
       if (!checkAdminAuth(req, res)) return;
