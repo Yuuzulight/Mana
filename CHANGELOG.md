@@ -78,3 +78,4 @@ Initial local-first voice assistant: wake-word listening, local speech
 transcription (whisper.cpp), local reply generation (llama.cpp + GGUF
 models), local TTS playback (Kokoro/Chatterbox), and the Windows Electron
 launcher.
+<!-- DCO check verification: safe to delete -->
