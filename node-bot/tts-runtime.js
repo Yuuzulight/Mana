@@ -56,6 +56,19 @@ function postJsonBuffer(urlString, body) {
   });
 }
 
+// GPT-SoVITS's cross-lingual synthesis (same reference voice, different
+// target-text language) only covers these languages regardless of version;
+// see GPT_SoVITS/text/cleaner.py's language_module_map. Anything else
+// detected in the reply text routes to the fallback provider instead of
+// wasting a request GPT-SoVITS cannot serve (it would otherwise error or,
+// on older releases, silently return empty audio for an unknown code).
+const GPT_SOVITS_LANGUAGE_MAP = {
+  english: "en",
+  japanese: "ja",
+  chinese: "zh",
+  korean: "ko",
+};
+
 function detectTtsLanguage(text) {
   if (/[\u3040-\u30ff]/.test(text)) {
     return "japanese";
@@ -128,8 +141,23 @@ function createTtsRuntime(options = {}) {
   const fishTtsTemperature = Number(env.FISH_TTS_TEMPERATURE || 0.8);
   const fishTtsFallbackProvider = env.FISH_TTS_FALLBACK_PROVIDER || "kokoro";
   const kokoroTtsFallbackProvider = env.KOKORO_TTS_FALLBACK_PROVIDER || "none";
+  // Voice cloning on the GPU can fail when a game holds VRAM; keep Kokoro as
+  // the voice-of-last-resort so Mana never goes silent.
+  const chatterboxTtsFallbackProvider =
+    env.CHATTERBOX_TTS_FALLBACK_PROVIDER || "kokoro";
+  // Trial voice provider: GPT-SoVITS (see docs/gpt_sovits_setup.md). Not the
+  // default; opt in with TTS_PROVIDER=gpt_sovits.
+  const gptSovitsTtsUrl = env.GPT_SOVITS_TTS_URL || "http://127.0.0.1:9880";
+  const gptSovitsRefAudio = env.GPT_SOVITS_REF_AUDIO || "";
+  const gptSovitsPromptText = env.GPT_SOVITS_PROMPT_TEXT || "";
+  const gptSovitsPromptLang = env.GPT_SOVITS_PROMPT_LANG || "en";
+  const gptSovitsFallbackProvider =
+    env.GPT_SOVITS_TTS_FALLBACK_PROVIDER || "kokoro";
   const ttsProvider = env.TTS_PROVIDER || (ttsBin ? "cli" : "chatterbox");
   const kokoroManaVoice = env.KOKORO_MANA_VOICE || "jf_nezumi";
+  // Pitch lift for a brighter, younger voice; the Kokoro service compensates
+  // tempo so speech speed is unaffected. 1.0 disables.
+  const kokoroManaPitch = Number(env.KOKORO_MANA_PITCH || 1.05);
   const kokoroLanguageProfiles =
     options.kokoroLanguageProfiles || DEFAULT_KOKORO_LANGUAGE_PROFILES;
 
@@ -292,8 +320,21 @@ function createTtsRuntime(options = {}) {
     const language = detectTtsLanguage(text);
     return {
       voice: kokoroManaVoice,
+      pitch: kokoroManaPitch,
       ...(kokoroLanguageProfiles[language] || kokoroLanguageProfiles.english),
     };
+  }
+
+  // Returns a GPT-SoVITS text_lang code for this text, or null when the
+  // detected language isn't one GPT-SoVITS can synthesize (see
+  // GPT_SOVITS_LANGUAGE_MAP). GPT_SOVITS_TEXT_LANG forces a fixed code for
+  // every request, skipping detection entirely.
+  function pickGptSovitsTextLang(text) {
+    if (env.GPT_SOVITS_TEXT_LANG) {
+      return env.GPT_SOVITS_TEXT_LANG;
+    }
+    const language = detectTtsLanguage(text);
+    return GPT_SOVITS_LANGUAGE_MAP[language] || null;
   }
 
   function estimateWordTimings(text, avgMsPerWord = 120) {
@@ -333,6 +374,30 @@ function createTtsRuntime(options = {}) {
         text,
       });
       logPerf("tts chatterbox", startedAt);
+    } else if (provider === "gpt_sovits") {
+      if (!gptSovitsRefAudio || !gptSovitsPromptText) {
+        throw new Error(
+          "GPT_SOVITS_REF_AUDIO and GPT_SOVITS_PROMPT_TEXT must be set; see docs/gpt_sovits_setup.md",
+        );
+      }
+      const textLang = pickGptSovitsTextLang(text);
+      if (!textLang) {
+        throw new Error(
+          `GPT-SoVITS cannot speak the detected language of this text (supports English, Chinese, Japanese, Korean); see docs/gpt_sovits_setup.md`,
+        );
+      }
+      const startedAt = nowMs();
+      audio = await postJson(`${gptSovitsTtsUrl}/tts`, {
+        text,
+        text_lang: textLang,
+        ref_audio_path: gptSovitsRefAudio,
+        prompt_text: gptSovitsPromptText,
+        prompt_lang: gptSovitsPromptLang,
+        text_split_method: "cut5",
+        batch_size: 1,
+        media_type: "wav",
+      });
+      logPerf("tts gpt_sovits", startedAt);
     } else if (provider === "cli") {
       audio = runTts(text);
     } else {
@@ -349,6 +414,18 @@ function createTtsRuntime(options = {}) {
   async function synthesizeReply(text) {
     if (!text) {
       throw new Error("No text provided for synthesis");
+    }
+
+    // Emojis and kaomojis are spoken as short words ("smile") instead of
+    // Unicode names ("smiling face with smiling eyes").
+    try {
+      const { normalizeSpeechText } = require("./utils/speech-text");
+      const normalized = normalizeSpeechText(text);
+      if (normalized) {
+        text = normalized;
+      }
+    } catch (e) {
+      // Never let speech normalization break synthesis.
     }
 
     if (ttsProvider === "fish") {
@@ -392,8 +469,41 @@ function createTtsRuntime(options = {}) {
     }
 
     if (ttsProvider === "chatterbox") {
-      const res = await synthesizeWithConfiguredProvider("chatterbox", text);
-      return res.audio;
+      try {
+        const res = await synthesizeWithConfiguredProvider("chatterbox", text);
+        return res.audio;
+      } catch (error) {
+        if (chatterboxTtsFallbackProvider === "none") {
+          throw error;
+        }
+        console.warn(
+          `Chatterbox TTS failed, falling back to ${chatterboxTtsFallbackProvider}: ${error.message}`,
+        );
+        const res = await synthesizeWithConfiguredProvider(
+          chatterboxTtsFallbackProvider,
+          text,
+        );
+        return res.audio;
+      }
+    }
+
+    if (ttsProvider === "gpt_sovits") {
+      try {
+        const res = await synthesizeWithConfiguredProvider("gpt_sovits", text);
+        return res.audio;
+      } catch (error) {
+        if (gptSovitsFallbackProvider === "none") {
+          throw error;
+        }
+        console.warn(
+          `GPT-SoVITS TTS failed, falling back to ${gptSovitsFallbackProvider}: ${error.message}`,
+        );
+        const res = await synthesizeWithConfiguredProvider(
+          gptSovitsFallbackProvider,
+          text,
+        );
+        return res.audio;
+      }
     }
 
     if (ttsProvider === "cli") {
@@ -408,6 +518,7 @@ function createTtsRuntime(options = {}) {
     buildFishTtsRequest,
     buildTtsArgs,
     detectTtsLanguage,
+    pickGptSovitsTextLang,
     pickKokoroLanguageProfile,
     runTts,
     synthesizeReply,
@@ -417,12 +528,14 @@ function createTtsRuntime(options = {}) {
       chatterboxTtsUrl,
       fishTtsUrl,
       kokoroTtsUrl,
+      gptSovitsTtsUrl,
     },
   };
 }
 
 module.exports = {
   DEFAULT_KOKORO_LANGUAGE_PROFILES,
+  GPT_SOVITS_LANGUAGE_MAP,
   createTtsRuntime,
   detectTtsLanguage,
   postJsonBuffer,
