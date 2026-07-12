@@ -29,6 +29,10 @@ KOKORO_VOICES_PATH = os.environ.get(
 )
 KOKORO_VOICE = os.environ.get("KOKORO_VOICE", "jf_nezumi")
 KOKORO_SPEED = float(os.environ.get("KOKORO_SPEED", "1.18"))
+# Pitch lift factor (1.0 = neutral). Implemented by synthesizing slightly
+# slower and raising the WAV sample rate, so tempo stays constant while the
+# voice brightens; subtle values (1.03-1.12) read as a younger anime voice.
+KOKORO_PITCH = float(os.environ.get("KOKORO_PITCH", "1.05"))
 KOKORO_LANG = os.environ.get("KOKORO_LANG", "en-us")
 KOKORO_WARMUP = os.environ.get("KOKORO_WARMUP", "1") != "0"
 
@@ -37,6 +41,7 @@ class SynthesizeBody(BaseModel):
     text: str
     voice: str | None = None
     speed: float | None = None
+    pitch: float | None = None
     lang: str | None = None
 
 
@@ -51,21 +56,28 @@ def get_model():
     return kokoro_model
 
 
-def synthesize_to_wav_bytes(text: str, voice: str, speed: float, lang: str) -> bytes:
+def synthesize_to_wav_bytes(
+    text: str, voice: str, speed: float, lang: str, pitch: float = 1.0
+) -> bytes:
     if not text.strip():
         raise ValueError("No text provided")
+
+    pitch = max(0.8, min(1.3, float(pitch or 1.0)))
+    # Compensate tempo: synthesize slower by the pitch factor, then play back
+    # at a higher sample rate so duration lands where it started.
+    effective_speed = max(0.5, min(2.0, speed / pitch))
 
     model = get_model()
     with kokoro_lock:
         audio, sample_rate = model.create(
             text=text,
             voice=voice,
-            speed=speed,
+            speed=effective_speed,
             lang=lang,
         )
 
     buffer = io.BytesIO()
-    sf.write(buffer, audio, sample_rate, format="WAV")
+    sf.write(buffer, audio, int(round(sample_rate * pitch)), format="WAV")
     return buffer.getvalue()
 
 
@@ -75,7 +87,9 @@ def warmup_model():
 
     try:
         # Quick note: this loads the ONNX model before the first real reply.
-        synthesize_to_wav_bytes("Ready.", KOKORO_VOICE, KOKORO_SPEED, KOKORO_LANG)
+        synthesize_to_wav_bytes(
+            "Ready.", KOKORO_VOICE, KOKORO_SPEED, KOKORO_LANG, KOKORO_PITCH
+        )
         print("Kokoro warm-up complete", flush=True)
     except Exception as error:
         print(f"Kokoro warm-up failed: {error}", flush=True)
@@ -93,6 +107,7 @@ def health():
         "model": os.path.basename(KOKORO_MODEL_PATH),
         "voice": KOKORO_VOICE,
         "speed": KOKORO_SPEED,
+        "pitch": KOKORO_PITCH,
         "lang": KOKORO_LANG,
     }
 
@@ -105,6 +120,7 @@ def synthesize(body: SynthesizeBody):
             voice=body.voice or KOKORO_VOICE,
             speed=body.speed if body.speed is not None else KOKORO_SPEED,
             lang=body.lang or KOKORO_LANG,
+            pitch=body.pitch if body.pitch is not None else KOKORO_PITCH,
         )
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error))
