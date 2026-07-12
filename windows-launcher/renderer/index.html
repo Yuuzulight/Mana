@@ -222,7 +222,7 @@
 
       #systemBody { padding: 0 16px 12px; }
 
-      #perfPanel, #doctorPanel {
+      #perfPanel, #doctorPanel, #modelPanel {
         margin-top: 10px;
         padding: 10px;
         border: 1px solid var(--border);
@@ -232,6 +232,28 @@
       }
 
       #perfPanel pre { margin: 8px 0 0; white-space: pre-wrap; }
+
+      #modelModeControls {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        margin-top: 8px;
+      }
+      .modelModeButton {
+        padding: 6px 10px;
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        background: var(--panel);
+        color: inherit;
+        font-size: 12px;
+        cursor: pointer;
+      }
+      .modelModeButton.active {
+        background: #0b84ff;
+        border-color: #0b84ff;
+        color: white;
+      }
+      #modelStatus { margin-top: 8px; color: var(--muted); }
 
       #doctorHeader {
         display: flex;
@@ -302,6 +324,12 @@
         <div id="perfPanel">
           <strong>Performance</strong>
           <pre id="perfStatus">Waiting for metrics...</pre>
+        </div>
+
+        <div id="modelPanel">
+          <strong>Model</strong>
+          <div id="modelModeControls"></div>
+          <div id="modelStatus">Checking...</div>
         </div>
 
         <div id="doctorPanel">

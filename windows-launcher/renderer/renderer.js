@@ -10,6 +10,8 @@ const runDoctorButton = document.getElementById("runDoctor");
 const doctorTitleEl = document.getElementById("doctorTitle");
 const doctorSummaryEl = document.getElementById("doctorSummary");
 const doctorChecksEl = document.getElementById("doctorChecks");
+const modelModeControlsEl = document.getElementById("modelModeControls");
+const modelStatusEl = document.getElementById("modelStatus");
 const { ipcRenderer } = require("electron");
 const { formatDoctorPanel } = require("./doctor-panel");
 const {
@@ -272,9 +274,83 @@ async function checkServices() {
   }
 }
 
+// Model mode: lets you switch which local llama.cpp profile Mana replies
+// with (default/fast/quality/coding, see node-bot/ai/local-ai.js), backed
+// by the existing GET /models/status + POST /models/active-profile routes.
+let selectedModelProfile = "default";
+const MODEL_STATUS_POLL_MS = 15000;
+
+function renderModelModeButtons(profiles, activeProfile) {
+  if (!modelModeControlsEl) {
+    return;
+  }
+  modelModeControlsEl.innerHTML = "";
+  for (const [key, profile] of Object.entries(profiles || {})) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className =
+      "modelModeButton" + (key === activeProfile ? " active" : "");
+    button.dataset.modelProfile = key;
+    button.textContent = profile.label || key;
+    button.addEventListener("click", () => setActiveModelProfile(key));
+    modelModeControlsEl.appendChild(button);
+  }
+}
+
+function describeModelStatus(status) {
+  const active = status.profiles?.[status.activeProfile];
+  if (!active) {
+    return `Active: ${status.activeProfile}`;
+  }
+  return active.available
+    ? `Active: ${active.label} (${active.selectedModel || "model found"})`
+    : `Active: ${active.label} — no matching GGUF found in tools\\llama`;
+}
+
+function applyModelStatus(status) {
+  selectedModelProfile = status.activeProfile || selectedModelProfile;
+  renderModelModeButtons(status.profiles, status.activeProfile);
+  if (modelStatusEl) {
+    modelStatusEl.textContent = describeModelStatus(status);
+  }
+}
+
+async function refreshModelStatus() {
+  try {
+    const response = await fetch("http://localhost:5005/models/status");
+    if (!response.ok) {
+      throw new Error(`Model status returned ${response.status}`);
+    }
+    applyModelStatus(await response.json());
+  } catch (error) {
+    if (modelStatusEl) {
+      modelStatusEl.textContent = "Model status unavailable";
+    }
+    console.warn("Mana model status failed:", error);
+  }
+}
+
+async function setActiveModelProfile(profile) {
+  try {
+    const response = await fetch("http://localhost:5005/models/active-profile", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ profile }),
+    });
+    if (!response.ok) {
+      throw new Error(`Set active profile returned ${response.status}`);
+    }
+    applyModelStatus(await response.json());
+  } catch (error) {
+    console.warn("Mana set model profile failed:", error);
+  }
+}
+
 setAvatarState("idle");
 setInterval(checkServices, 5000);
 setInterval(refreshPerfStatus, PERF_STATUS_POLL_MS);
+refreshModelStatus();
+setInterval(refreshModelStatus, MODEL_STATUS_POLL_MS);
 
 async function waitForBackend() {
   for (let attempt = 0; attempt < AUTO_LISTEN_MAX_ATTEMPTS; attempt += 1) {
@@ -899,7 +975,7 @@ async function requestScreenAwareReply(text, gamingModeActive) {
     headers: {
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({ text, screenText }),
+    body: JSON.stringify({ text, screenText, modelProfile: selectedModelProfile }),
   });
 
   if (!response.ok) {
@@ -934,7 +1010,11 @@ async function handleVisionHotkey() {
       headers: {
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ text: DEFAULT_VISION_HOTKEY_PROMPT, image }),
+      body: JSON.stringify({
+        text: DEFAULT_VISION_HOTKEY_PROMPT,
+        image,
+        modelProfile: selectedModelProfile,
+      }),
     });
 
     if (!response.ok) {
