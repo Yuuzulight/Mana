@@ -52,6 +52,14 @@ windows-launcher/avatar/model/
 
 # Personal voice references (never commit someone's voice)
 tts-service/references/
+tts-service/voice-auditions/
+tts-service/*.wav
+tts-service/*.mp3
+tts-service/*-transcript*.txt
+
+# Python bytecode cache (build artifact, not source)
+__pycache__/
+*.pyc
 
 # Local SearXNG install (fetched by tools/setup-searxng.ps1; large venv).
 # mana-searxng-settings.yml is tracked outside this tree so setup survives a
