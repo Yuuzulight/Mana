@@ -3,6 +3,14 @@
 /ManaAIManatext-generation-webui/
 /text-generation-webui/
 
+# Bundled Node runtime staged for a standalone desktop-client installer
+# build (see BUILD_DESKTOP.md); never a source file, always a local copy
+# of an official Node.js binary.
+/node-bin/
+
+# electron-builder output (installer .exe, unpacked app, blockmap)
+desktop-client/dist/
+
 # Ignore virtualenvs and node modules
 **/venv/
 **/node_modules/
