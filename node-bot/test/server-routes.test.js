@@ -15,15 +15,121 @@ async function withServer(app, fn) {
   }
 }
 
-async function postJson(url, body) {
+async function postJson(url, body, headers = {}) {
   const response = await fetch(url, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...headers },
     body: JSON.stringify(body),
   });
-  const payload = await response.json();
+  const contentType = response.headers.get("content-type") || "";
+  const payload = contentType.includes("application/json")
+    ? await response.json()
+    : await response.text();
   return { response, payload };
 }
+
+test("admin restart accepts loopback requests and schedules restart once", async () => {
+  let buildPayloadCalls = 0;
+  let scheduleCalls = 0;
+  const acceptedPayload = {
+    ok: true,
+    action: "restart",
+    scope: "backend",
+    exitCode: 77,
+    message: "restart accepted",
+  };
+  const app = createApp({
+    restartController: {
+      buildAcceptedPayload: () => {
+        buildPayloadCalls += 1;
+        return acceptedPayload;
+      },
+      scheduleRestart: () => {
+        scheduleCalls += 1;
+      },
+    },
+  });
+
+  await withServer(app, async (baseUrl) => {
+    const { response, payload } = await postJson(`${baseUrl}/admin/restart`, {});
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(payload, acceptedPayload);
+    assert.equal(buildPayloadCalls, 1);
+    assert.equal(scheduleCalls, 1);
+  });
+});
+
+test("admin restart rejects non-loopback forwarded clients without scheduling restart", async () => {
+  let buildPayloadCalls = 0;
+  let scheduleCalls = 0;
+  const app = createApp({
+    restartController: {
+      buildAcceptedPayload: () => {
+        buildPayloadCalls += 1;
+        return { ok: true };
+      },
+      scheduleRestart: () => {
+        scheduleCalls += 1;
+      },
+    },
+  });
+
+  await withServer(app, async (baseUrl) => {
+    const { response, payload } = await postJson(
+      `${baseUrl}/admin/restart`,
+      {},
+      { "X-Forwarded-For": "192.168.1.50" },
+    );
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.equal(response.status, 403);
+    assert.deepEqual(payload, { error: "restart is only available from this PC" });
+    assert.equal(buildPayloadCalls, 0);
+    assert.equal(scheduleCalls, 0);
+  });
+});
+
+test("reply restart command acknowledges restart without model inference", async () => {
+  let buildAssistantReplyCalls = 0;
+  let scheduleCalls = 0;
+  const acceptedPayload = {
+    ok: true,
+    action: "restart",
+    scope: "backend",
+    exitCode: 77,
+    message: "restart accepted",
+  };
+  const app = createApp({
+    buildAssistantReply: async () => {
+      buildAssistantReplyCalls += 1;
+      return "should not run";
+    },
+    restartController: {
+      buildAcceptedPayload: () => acceptedPayload,
+      scheduleRestart: () => {
+        scheduleCalls += 1;
+      },
+    },
+  });
+
+  await withServer(app, async (baseUrl) => {
+    const { response, payload } = await postJson(`${baseUrl}/reply`, {
+      text: "/restart",
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(payload, {
+      reply: acceptedPayload.message,
+      restart: acceptedPayload,
+      ttsConfigured: false,
+    });
+    assert.equal(scheduleCalls, 1);
+    assert.equal(buildAssistantReplyCalls, 0);
+  });
+});
 
 test("reply rejects missing text with a stable validation error", async () => {
   let replyCalls = 0;
