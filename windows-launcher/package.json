@@ -13,7 +13,7 @@
     "check-live2d-model": "node scripts/check-live2d-model.js"
   },
   "author": "",
-  "license": "PolyForm-Noncommercial-1.0.0",
+  "license": "Apache-2.0",
   "devDependencies": {
     "electron": "^26.6.10",
     "electron-builder": "^24.7.0",

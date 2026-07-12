@@ -1,17 +1,15 @@
 Mana
+Copyright 2026 ManaAI (https://github.com/Yuuzulight)
 
-Copyright (c) 2026 ManaAI
-
-Required Notice: Copyright (c) 2026 ManaAI (https://github.com/Yuuzulight)
-
-This project is licensed under the PolyForm Noncommercial License 1.0.0.
-You may use, modify, and share it for any noncommercial purpose; commercial
-rights remain with ManaAI. See LICENSE for the full terms.
+This product is licensed under the Apache License, Version 2.0. You may
+obtain a copy of the License at http://www.apache.org/licenses/LICENSE-2.0.
+See LICENSE for the full terms.
 
 Attribution and redistribution
-- If you redistribute this code or portions of it, you must include the
-  LICENSE terms (or their URL) and the Required Notice line above.
-- If you reuse the code, please credit ManaAI in your documentation.
+- If you redistribute this code or portions of it (modified or not), you
+  must include a copy of the LICENSE, mark any files you changed, and
+  carry forward this NOTICE file's attribution content per License
+  section 4(d).
 
 Artwork restrictions
 - The artwork, sprites, images, and avatar model files (for example the
