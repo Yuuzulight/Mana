@@ -1,6 +1,6 @@
 # Mana
 
-**License (code): PolyForm Noncommercial 1.0.0 — © 2026 ManaAI.** You may use, modify, and share this code for any noncommercial purpose; commercial rights remain with ManaAI. See LICENSE.
+**License (code): Apache License 2.0 — © 2026 ManaAI.** See LICENSE and NOTICE.
 
 **Artwork (images/sprites/avatar models): All rights reserved.** The images in `sprites/` and any avatar model files are proprietary and may not be reused without permission; see LICENSE-ARTWORK.
 
