@@ -68,7 +68,7 @@ test("doctor checks return structured pass warn and fail results", () => {
 
     assert.equal(result.ok, false);
     assert.equal(result.summary.pass, 3);
-    assert.equal(result.summary.warn, 7);
+    assert.equal(result.summary.warn, 9);
     assert.equal(result.summary.fail, 1);
 
     assert.deepEqual(
@@ -78,6 +78,8 @@ test("doctor checks return structured pass warn and fail results", () => {
         "local-ai-policy",
         "llama-binary",
         "llama-model",
+        "llama-server-binary",
+        "llama-vision-model",
         "whisper-config",
         "tts-services",
         "mobile-auth",
@@ -267,6 +269,70 @@ test("async doctor probes configured TTS health URLs", async () => {
       recursive: true,
       force: true,
     });
+  });
+});
+
+test("async doctor checks GPT-SoVITS only when it is the selected provider", async () => {
+  await withRawServer((req, res) => {
+    // api_v2.py has no /health route; any response (even 404) means alive.
+    res.writeHead(404);
+    res.end();
+  }, async ({ url }) => {
+    const enabledResult = await runDoctorChecksAsync({
+      env: {
+        MANA_ALLOW_REMOTE_AI: "0",
+        LLAMA_BIN: "",
+        LLAMA_MODEL: "",
+        WHISPER_BIN: "",
+        WHISPER_MODEL: "",
+        MOBILE_PASSCODE_HASH: "",
+        MOBILE_SESSION_SECRET: "",
+        TTS_PROVIDER: "gpt_sovits",
+        GPT_SOVITS_TTS_URL: url,
+      },
+      paths: {
+        dataDir: fs.mkdtempSync(path.join(os.tmpdir(), "mana-doctor-sovits-")),
+      },
+      ports: [],
+      versions: { node: "v22.19.0" },
+    });
+
+    const sovits = enabledResult.checks.find((check) => check.id === "gpt-sovits");
+    assert.equal(sovits.status, "pass");
+    assert.match(sovits.message, /reachable/i);
+
+    fs.rmSync(
+      enabledResult.checks.find((check) => check.id === "storage").details.dataDir,
+      { recursive: true, force: true },
+    );
+
+    const disabledResult = await runDoctorChecksAsync({
+      env: {
+        MANA_ALLOW_REMOTE_AI: "0",
+        LLAMA_BIN: "",
+        LLAMA_MODEL: "",
+        WHISPER_BIN: "",
+        WHISPER_MODEL: "",
+        MOBILE_PASSCODE_HASH: "",
+        MOBILE_SESSION_SECRET: "",
+        TTS_PROVIDER: "chatterbox",
+      },
+      paths: {
+        dataDir: fs.mkdtempSync(path.join(os.tmpdir(), "mana-doctor-sovits-off-")),
+      },
+      ports: [],
+      versions: { node: "v22.19.0" },
+    });
+
+    assert.equal(
+      disabledResult.checks.find((check) => check.id === "gpt-sovits"),
+      undefined,
+    );
+
+    fs.rmSync(
+      disabledResult.checks.find((check) => check.id === "storage").details.dataDir,
+      { recursive: true, force: true },
+    );
   });
 });
 

@@ -23,6 +23,7 @@ function registerCoreRoutes(app, upload, deps) {
     buildCraftProfitContextForPrompt,
     buildMarketContextForPrompt,
     buildUniversalisContextForPrompt,
+    buildWebContextForPrompt,
     cleanupUploadedAudio,
     clampInteger,
     fs,
@@ -31,6 +32,9 @@ function registerCoreRoutes(app, upload, deps) {
     normalizeLlamaModelProfile,
     normalizeUploadedAudio,
     readScreenText,
+    recordChatTurn,
+    runVisionReply,
+    getVisionStatus,
     runWhisper,
     synthesizeReply,
     clampText,
@@ -120,9 +124,75 @@ function registerCoreRoutes(app, upload, deps) {
     }
   });
 
+  app.post("/vision/describe", async (req, res) => {
+    try {
+      const image = requireString(req.body?.image, "image");
+      const prompt = optionalString(req.body?.prompt, "prompt", "");
+      const sessionId = optionalString(req.body?.sessionId, "sessionId", null);
+
+      if (typeof getVisionStatus === "function") {
+        const vision = getVisionStatus();
+        if (!vision || !vision.available) {
+          return res.status(503).json({
+            error: "no local vision model available",
+            detail: vision ? vision.reason : undefined,
+          });
+        }
+      }
+
+      const reply = await runVisionReply(prompt, [image]);
+      if (sessionId && typeof recordChatTurn === "function") {
+        recordChatTurn(sessionId, prompt || "(shared an image)", reply);
+      }
+      return res.json({
+        reply,
+        ttsConfigured: TTS_PROVIDER !== "none",
+      });
+    } catch (e) {
+      if (e instanceof ValidationError) {
+        return sendValidationError(res, e);
+      }
+      console.error(e);
+      return res.status(500).json({ error: String(e) });
+    }
+  });
+
   app.post("/reply", async (req, res) => {
     try {
-      const transcript = requireString(req.body?.text, "text");
+      // An attached image routes the reply through the local vision model;
+      // text becomes optional because the image can carry the question.
+      const image =
+        typeof req.body?.image === "string" && req.body.image.trim()
+          ? req.body.image.trim()
+          : null;
+      const transcript = image
+        ? optionalString(req.body?.text, "text", "")
+        : requireString(req.body?.text, "text");
+
+      if (image) {
+        const sessionId = optionalString(
+          req.body?.sessionId,
+          "sessionId",
+          null,
+        );
+        if (typeof getVisionStatus === "function") {
+          const vision = getVisionStatus();
+          if (!vision || !vision.available) {
+            return res.status(503).json({
+              error: "no local vision model available",
+              detail: vision ? vision.reason : undefined,
+            });
+          }
+        }
+        const reply = await runVisionReply(transcript, [image]);
+        if (sessionId && typeof recordChatTurn === "function") {
+          recordChatTurn(sessionId, transcript || "(shared an image)", reply);
+        }
+        return res.json({
+          reply,
+          ttsConfigured: TTS_PROVIDER !== "none",
+        });
+      }
       const screenText = clampText(
         optionalString(req.body?.screenText, "screenText", ""),
         SCREEN_CONTEXT_MAX_CHARS,
@@ -171,6 +241,11 @@ function registerCoreRoutes(app, upload, deps) {
         (wantsStockMarket
           ? await buildOptionalPromptContext("market", () =>
               buildMarketContextForPrompt(transcript, marketDataClient),
+            )
+          : "") ||
+        (includeContext && typeof buildWebContextForPrompt === "function"
+          ? await buildOptionalPromptContext("web access", () =>
+              buildWebContextForPrompt(transcript),
             )
           : "");
       const sessionId = optionalString(req.body?.sessionId, "sessionId", null);

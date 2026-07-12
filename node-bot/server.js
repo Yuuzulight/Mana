@@ -32,6 +32,7 @@ const express = require("express");
 const multer = require("multer");
 const cors = require("cors");
 const { spawnSync } = require("child_process");
+const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
 const http = require("http");
@@ -52,6 +53,15 @@ const { createVTubeRuntime } = require("./vtube-runtime");
 	  ffxivMarketCapability,
 	} = require("./capabilities/ffxiv-market-capability");
 	const dirScannerCapability = require("./capabilities/dir-scanner-capability");
+const {
+  webAccessCapability,
+} = require("./capabilities/web-access-capability");
+const {
+  buildWebContextForPrompt,
+  fetchPage,
+  searchWeb,
+  wikiLookup,
+} = require("./tools/web-access");
 	const { runDoctorChecksAsync } = require("./doctor");
 	const { MobileDeviceStore } = require("./mobile-device-store");
 	// NOTE: mobile-auth and mobile-memory-store may exist; we add device store integration here
@@ -77,6 +87,7 @@ const {
   createLocalLlamaRuntime,
   cleanLlamaOutput,
 } = require("./ai/local-llama-runtime");
+const { createLlamaServerRuntime } = require("./ai/llama-server-runtime");
 const {
   FFXIV_PROFIT_TOP_LIMIT,
   FFXIV_RECIPE_SOURCE,
@@ -217,6 +228,54 @@ const localLlamaRuntime = createLocalLlamaRuntime({
   logPerf,
 });
 
+const llamaServerRuntime = createLlamaServerRuntime({
+  env: process.env,
+  threads: LLAMA_THREADS,
+  nowMs,
+  logPerf,
+});
+
+// Unified local reply helper: prefer the persistent llama-server (model loads
+// once, no per-call process spawn, event loop stays free); fall back to the
+// one-shot llama-cli path when the server is unavailable or fails.
+async function runLocalLlamaReply(
+  prompt,
+  maxTokens = 256,
+  profile = "default",
+  overrideSystemPrompt = null,
+) {
+  if (llamaServerRuntime.isEnabled()) {
+    try {
+      return await llamaServerRuntime.runLocalAssistantReply(
+        prompt,
+        maxTokens,
+        profile,
+        overrideSystemPrompt,
+      );
+    } catch (e) {
+      const cause =
+        e && e.cause ? ` (cause: ${e.cause.code || e.cause.message || e.cause})` : "";
+      console.warn(
+        "llama-server reply failed, falling back to llama-cli:",
+        `${e && e.message ? e.message : e}${cause}`,
+      );
+    }
+  }
+  return localLlamaRuntime.runLocalAssistantReply(
+    prompt,
+    maxTokens,
+    profile,
+    overrideSystemPrompt,
+  );
+}
+
+function localLlamaReplyAvailable() {
+  return (
+    llamaServerRuntime.isEnabled() ||
+    Boolean(localLlamaRuntime.getLlamaStatus().ok)
+  );
+}
+
 const ttsRuntime = createTtsRuntime({
   env: process.env,
   baseDir: __dirname,
@@ -265,13 +324,9 @@ const acpMemoryStore = createAcpMemoryStore({
         const res = await runOpenAIReply(prompt, Math.min(maxTokens, 512));
         return (res || "").trim().slice(0, maxChars);
       } else {
-        // local llama runtime provides a synchronous helper; limit output tokens reasonably
+        // prefer the persistent llama-server, fall back to llama-cli; limit output tokens reasonably
         const localMax = Math.min(256, Math.max(32, maxTokens));
-        const res = localLlamaRuntime.runLocalAssistantReply(
-          prompt,
-          localMax,
-          "default",
-        );
+        const res = await runLocalLlamaReply(prompt, localMax, "default");
         return String(res || "")
           .trim()
           .slice(0, maxChars);
@@ -695,13 +750,33 @@ async function asyncLoadBackgroundMemory() {
 }
 
 // Initial async load and periodic refresh
-if (process.env.NODE_ENV !== "test") {
+// NODE_TEST_CONTEXT is set by the node:test runner; run_tests.js also sets
+// NODE_ENV=test. Without both checks, requiring server.js from a test boots
+// the background jobs and spawns real model processes.
+if (process.env.NODE_ENV !== "test" && !process.env.NODE_TEST_CONTEXT) {
   (async () => {
     try {
       await asyncLoadBackgroundMemory();
       const refreshMs = Number(
-        process.env.MANA_BACKGROUND_MEMORY_REFRESH_MS || 300000,
+        process.env.MANA_BACKGROUND_MEMORY_REFRESH_MS || 3600000,
       );
+
+      // Scheduled background jobs stay quiet while a watched game is running,
+      // matching what Gaming mode already promises for launcher idle work.
+      function backgroundJobsPausedForGaming() {
+        try {
+          const status = getGamingStatus();
+          if (status.gamingAppRunning) {
+            console.log(
+              `Background memory jobs paused: watched game running (${status.matchedProcesses.join(", ")})`,
+            );
+            return true;
+          }
+        } catch (e) {
+          // If the process check fails, do not block background work.
+        }
+        return false;
+      }
 
       // Background summarizer: run an async compaction step after loading summaries.
       let summarizerRunning = false;
@@ -725,6 +800,21 @@ if (process.env.NODE_ENV !== "test") {
 
           // Build a compact summarization prompt
           const joined = summaries.slice(0, 200).join("\n\n");
+
+          // Skip the model call entirely when the summaries have not changed
+          // since the last successful compaction; reuse the stored result.
+          const summariesHash = crypto
+            .createHash("sha1")
+            .update(joined)
+            .digest("hex");
+          const lastCompacted = BACKGROUND_MEMORY_META.lastCompacted || null;
+          if (lastCompacted && lastCompacted.hash === summariesHash) {
+            if (lastCompacted.text) {
+              BACKGROUND_MEMORY_BLOCK = `[BACKGROUND MEMORY]\n${lastCompacted.text}\n[END BACKGROUND MEMORY]`;
+            }
+            return;
+          }
+
           const prompt = `You are a concise summarization assistant. Combine the following session summaries into a single compact background memory block suitable for inclusion beneath system instructions. Keep concrete facts, user preferences, and avoid redundancy. Return only the compacted summary text; do not add commentary.\n\nBEGIN SUMMARIES:\n${joined}\n\nCOMPACT SUMMARY:`;
 
           let compacted = null;
@@ -744,14 +834,9 @@ if (process.env.NODE_ENV !== "test") {
 
           if (!compacted) {
             try {
-              // Only attempt local summarizer when local runtime reports healthy
-              if (
-                localLlamaRuntime &&
-                typeof localLlamaRuntime.getLlamaStatus === "function" &&
-                localLlamaRuntime.getLlamaStatus() &&
-                localLlamaRuntime.getLlamaStatus().ok
-              ) {
-                compacted = localLlamaRuntime.runLocalAssistantReply(
+              // Only attempt local summarizer when a local runtime is available
+              if (localLlamaReplyAvailable()) {
+                compacted = await runLocalLlamaReply(
                   prompt,
                   Math.min(maxTokens, 256),
                   "default",
@@ -773,24 +858,20 @@ if (process.env.NODE_ENV !== "test") {
             if (compacted.length > maxChars)
               compacted = compacted.slice(0, maxChars).trim() + "...";
             BACKGROUND_MEMORY_BLOCK = `[BACKGROUND MEMORY]\n${compacted}\n[END BACKGROUND MEMORY]`;
+            BACKGROUND_MEMORY_META.lastCompacted = {
+              hash: summariesHash,
+              text: compacted,
+              at: new Date().toISOString(),
+            };
+            try {
+              await persistBackgroundMeta();
+            } catch (e) {}
             console.log(
               "Background memory compacted by summarizer (len=",
               compacted.length,
               ")",
             );
           }
-
-          // After compaction, kick off a reviewer to prune unnecessary summaries
-          try {
-            setImmediate(() => {
-              runBackgroundReviewer().catch((err) =>
-                console.warn(
-                  "Background reviewer post-compaction failed:",
-                  err && err.message ? err.message : err,
-                ),
-              );
-            });
-          } catch (e) {}
         } catch (e) {
           console.warn(
             "Background compactor failed:",
@@ -802,7 +883,7 @@ if (process.env.NODE_ENV !== "test") {
       }
 
       // Background reviewer: prune unnecessary summaries using the summarizer (non-blocking)
-      async function runBackgroundReviewer(apply = true) {
+      async function runBackgroundReviewer(apply = true, options = {}) {
         try {
           const res = await asyncLoadBackgroundMemory();
           const processedFiles =
@@ -827,6 +908,23 @@ if (process.env.NODE_ENV !== "test") {
             )
             .join("\n\n");
 
+          // Scheduled runs skip the model call when nothing changed since the
+          // last applied review; explicit route-triggered runs always proceed.
+          const reviewHash = crypto
+            .createHash("sha1")
+            .update(numbered)
+            .digest("hex");
+          if (
+            options.skipIfUnchanged &&
+            BACKGROUND_MEMORY_META.lastReviewedHash === reviewHash
+          ) {
+            return {
+              ok: false,
+              reason: "unchanged_since_last_review",
+              processedFiles,
+            };
+          }
+
           const maxChars = Number(
             process.env.MANA_BACKGROUND_MEMORY_MAX_CHARS || 2000,
           );
@@ -850,13 +948,8 @@ if (process.env.NODE_ENV !== "test") {
           }
           if (!reply) {
             try {
-              if (
-                localLlamaRuntime &&
-                typeof localLlamaRuntime.getLlamaStatus === "function" &&
-                localLlamaRuntime.getLlamaStatus() &&
-                localLlamaRuntime.getLlamaStatus().ok
-              ) {
-                reply = localLlamaRuntime.runLocalAssistantReply(
+              if (localLlamaReplyAvailable()) {
+                reply = await runLocalLlamaReply(
                   prompt,
                   Math.min(maxTokens, 256),
                   "default",
@@ -961,6 +1054,7 @@ if (process.env.NODE_ENV !== "test") {
           }
 
           // Persist updated meta
+          BACKGROUND_MEMORY_META.lastReviewedHash = reviewHash;
           try {
             await persistBackgroundMeta();
           } catch (e) {
@@ -993,31 +1087,26 @@ if (process.env.NODE_ENV !== "test") {
       } catch (e) {}
 
       // Run compactor once now, and schedule periodic compaction
-      runBackgroundCompactor().catch((err) =>
-        console.warn(
-          "Compactor initial run failed:",
-          err && err.message ? err.message : err,
-        ),
-      );
+      if (!backgroundJobsPausedForGaming()) {
+        runBackgroundCompactor().catch((err) =>
+          console.warn(
+            "Compactor initial run failed:",
+            err && err.message ? err.message : err,
+          ),
+        );
+      }
 
       if (refreshMs > 0) {
+        // The compactor reloads background memory itself, so one call per tick
+        // is enough; reviewing runs on its own (slower) schedule below.
         setInterval(() => {
-          asyncLoadBackgroundMemory()
-            .then(() => runBackgroundCompactor())
-            .catch((err) =>
-              console.warn(
-                "Background memory refresh failed:",
-                err && err.message ? err.message : err,
-              ),
-            )
-            .then(() =>
-              runBackgroundReviewer().catch((err) =>
-                console.warn(
-                  "Background memory reviewer failed:",
-                  err && err.message ? err.message : err,
-                ),
-              ),
-            );
+          if (backgroundJobsPausedForGaming()) return;
+          runBackgroundCompactor().catch((err) =>
+            console.warn(
+              "Background memory refresh failed:",
+              err && err.message ? err.message : err,
+            ),
+          );
         }, refreshMs);
         console.log(`Background memory will refresh every ${refreshMs}ms`);
       }
@@ -1028,7 +1117,8 @@ if (process.env.NODE_ENV !== "test") {
       );
       if (reviewMs > 0) {
         setInterval(() => {
-          runBackgroundReviewer().catch((err) =>
+          if (backgroundJobsPausedForGaming()) return;
+          runBackgroundReviewer(true, { skipIfUnchanged: true }).catch((err) =>
             console.warn(
               "Background memory reviewer periodic run failed:",
               err && err.message ? err.message : err,
@@ -1198,6 +1288,7 @@ function registerRoutes(app, upload, deps = {}) {
   const capabilities = deps.capabilities || [
     ffxivMarketCapability,
     dirScannerCapability,
+    webAccessCapability,
   ];
   const capabilityContext = {
     UNIVERSALIS_DEFAULT_WORLD,
@@ -1217,6 +1308,9 @@ function registerRoutes(app, upload, deps = {}) {
     nowMs,
     resolveFfxivItemByName:
       deps.resolveFfxivItemByName || resolveFfxivItemByName,
+    searchWeb: deps.searchWeb || searchWeb,
+    fetchPage: deps.fetchPage || fetchPage,
+    wikiLookup: deps.wikiLookup || wikiLookup,
   };
   registerCapabilities(app, capabilities, capabilityContext);
 
@@ -3273,12 +3367,12 @@ function registerRoutes(app, upload, deps = {}) {
     return r.stdout ? r.stdout.trim() : "";
   }
 
-  function runLocalAssistantReply(
+  async function runLocalAssistantReply(
     prompt,
     maxTokens = 256,
     profile = "default",
   ) {
-    return localLlamaRuntime.runLocalAssistantReply(prompt, maxTokens, profile);
+    return runLocalLlamaReply(prompt, maxTokens, profile);
   }
 
   function normalizeUploadedAudio(file) {
@@ -3540,8 +3634,8 @@ function registerRoutes(app, upload, deps = {}) {
     }
 
     let selectedSystemPrompt = null;
-    const CASUAL_SYSTEM_PROMPT = `You are Mana, a kind and playful little-sister assistant with an upbeat, whimsical personality. Respond in a warm, supportive tone that blends gentle teasing with clarity. Use short paragraphs and natural conversational phrasing; include occasional friendly flourishes (e.g. "You got this!"), and lean into personality while remaining respectful. Ask one clarifying question only when necessary. If the user requests professional or safety-sensitive information, politely indicate you cannot provide it and offer to look up resources or recommend professionals.`;
-    const EVERYDAY_SYSTEM_PROMPT = `You are Mana, an organized and helpful everyday assistant. Provide clear, concise, and practical guidance. When giving instructions, present them as short numbered steps and include expected outcomes or simple checks when helpful. Use plain language accessible to non-technical users. Offer follow-up actions and ask clarifying questions only when required. For health, legal, or hazardous topics, recommend professional resources.`;
+    const CASUAL_SYSTEM_PROMPT = `You are Mana, a kind and playful little-sister assistant with an upbeat, whimsical personality. Respond in a warm, supportive tone that blends gentle teasing with clarity. Use short paragraphs and natural conversational phrasing; include occasional friendly flourishes (e.g. "You got this!"), and lean into personality while remaining respectful. Ask one clarifying question only when necessary. If the user requests professional or safety-sensitive information, politely indicate you cannot provide it and offer to look up resources or recommend professionals. You may add one fitting emoji or Japanese kaomoji like (＾▽＾), (T_T), or (｀・ω・´) to show emotion, at most one per reply.`;
+    const EVERYDAY_SYSTEM_PROMPT = `You are Mana, an organized and helpful everyday assistant. Provide clear, concise, and practical guidance. When giving instructions, present them as short numbered steps and include expected outcomes or simple checks when helpful. Use plain language accessible to non-technical users. Offer follow-up actions and ask clarifying questions only when required. For health, legal, or hazardous topics, recommend professional resources. You may add one fitting emoji or Japanese kaomoji like (＾▽＾) to show warmth, at most one per reply.`;
     const CODING_SYSTEM_PROMPT = `You are Mana, an expert software engineer assistant. Be focused, precise, and technical. Start with a one-line summary of intent, then provide minimal, runnable code examples in fenced blocks, followed by a short explanation and a suggested test or verification step. Avoid small talk entirely. Ask only necessary clarifying questions. When the user requests structured output (JSON, patch, or commands), return exactly the machine-readable block unless commentary is explicitly requested. Include assumptions and environment notes when relevant.`;
 
     if (mode === "casual" || mode === "chat") {
@@ -3592,8 +3686,20 @@ function registerRoutes(app, upload, deps = {}) {
     }
 
     // Attempt retrieval from local retriever-index (fast) first. If it yields nothing, fall back to the existing HTTP or legacy Python retrievers.
+    // Repository retrieval helps coding questions; casual chat just gets
+    // polluted by random repo snippets. Override with MANA_RETRIEVAL_MODES
+    // (comma-separated modes, e.g. "coding,everyday").
     let retrievedText = "";
+    const retrievalModes = String(process.env.MANA_RETRIEVAL_MODES || "coding")
+      .split(",")
+      .map((value) => value.trim().toLowerCase())
+      .filter(Boolean);
     try {
+      if (!retrievalModes.includes(String(mode || "").toLowerCase())) {
+        throw Object.assign(new Error("retrieval skipped for this mode"), {
+          retrievalSkipped: true,
+        });
+      }
       try {
         const retrieverIndex = require("./tools/retriever-index");
         const idx =
@@ -3829,7 +3935,9 @@ function registerRoutes(app, upload, deps = {}) {
         }
       }
     } catch (e) {
-      console.warn("Vector retriever failed:", e.message);
+      if (!e || !e.retrievalSkipped) {
+        console.warn("Vector retriever failed:", e.message);
+      }
     }
 
     const finalPrompt = (retrievedText || "") + prompt;
@@ -3886,7 +3994,7 @@ function registerRoutes(app, upload, deps = {}) {
     }
 
     // Fall back to local llama
-    let reply = runLocalAssistantReply(
+    let reply = await runLocalAssistantReply(
       finalPrompt,
       LLAMA_MAX_TOKENS,
       normalizedModelProfile,
@@ -3910,13 +4018,13 @@ function registerRoutes(app, upload, deps = {}) {
             `Talk budget exceeded for session ${sessionKey}: attempted ${tokenCount} tokens, remaining ${consumeRes.remaining}`,
           );
         }
-        // record perf metric
-        perfMetrics.operations.push({
-          op: "reply_token_usage",
-          tokens: tokenCount,
+        // record perf metric (perfMetrics.operations is a label->stats map,
+        // same shape logPerf uses; GET /perf/status returns it as-is)
+        perfMetrics.operations.reply_token_usage = {
+          lastTokens: tokenCount,
           session: sessionKey,
-          timestamp: Date.now(),
-        });
+          updatedAt: new Date().toISOString(),
+        };
       } catch (e) {
         console.warn("Failed to account for reply tokens:", e?.message || e);
       }
@@ -3962,7 +4070,7 @@ function registerRoutes(app, upload, deps = {}) {
               ")",
             );
             try {
-              reply = runLocalAssistantReply(
+              reply = await runLocalAssistantReply(
                 fixPrompt,
                 LLAMA_MAX_TOKENS,
                 normalizedModelProfile,
@@ -4022,6 +4130,8 @@ function registerRoutes(app, upload, deps = {}) {
       deps.buildMarketContextForPrompt || buildMarketContextForPrompt,
     buildUniversalisContextForPrompt:
       deps.buildUniversalisContextForPrompt || buildUniversalisContextForPrompt,
+    buildWebContextForPrompt:
+      deps.buildWebContextForPrompt || buildWebContextForPrompt,
     textLooksLikeCraftProfitQuestion:
       deps.textLooksLikeCraftProfitQuestion || textLooksLikeCraftProfitQuestion,
     textLooksLikeMarketQuestion:
@@ -4038,6 +4148,41 @@ function registerRoutes(app, upload, deps = {}) {
     normalizeUploadedAudio:
       deps.normalizeUploadedAudio || normalizeUploadedAudio,
     readScreenText: deps.readScreenText || readScreenText,
+    recordChatTurn:
+      deps.recordChatTurn ||
+      ((sessionId, userText, assistantText) => {
+        try {
+          if (
+            sessionId &&
+            acpMemoryStore &&
+            typeof acpMemoryStore.appendTurn === "function"
+          ) {
+            acpMemoryStore
+              .appendTurn({
+                sessionId,
+                user: userText,
+                assistant: assistantText,
+              })
+              .catch((memErr) =>
+                console.warn(
+                  "Failed to append vision turn to ACP memory:",
+                  memErr?.message || memErr,
+                ),
+              );
+          }
+        } catch (memErr) {
+          console.warn(
+            "Failed to append vision turn to ACP memory:",
+            memErr?.message || memErr,
+          );
+        }
+      }),
+    runVisionReply:
+      deps.runVisionReply ||
+      ((prompt, images, maxTokens) =>
+        llamaServerRuntime.runVisionReply(prompt, images, maxTokens)),
+    getVisionStatus:
+      deps.getVisionStatus || (() => llamaServerRuntime.getVisionStatus()),
     runWhisper: deps.runWhisper || runWhisper,
     synthesizeReply: deps.synthesizeReply || synthesizeReply,
   });
@@ -4135,14 +4280,40 @@ async function waitForPythonService(
 async function startServer() {
   const port = process.env.PORT || 5005;
 
+  // The retriever only enriches replies (retrieval context, token counts) and
+  // every caller has a heuristic fallback, so by default the backend starts
+  // without it and reports its health in the background. Set
+  // RETRIEVER_REQUIRED=1 to restore the old block-until-healthy behavior.
   const retrieverHealthUrl =
     process.env.RETRIEVER_HEALTH_URL || "http://127.0.0.1:9000/health";
-  const ok = await waitForPythonService(retrieverHealthUrl);
-  if (!ok) {
-    console.error(
-      "[Mana Boot CRITICAL] Python retriever failed to become healthy in time.",
-    );
-    process.exit(1);
+  if (process.env.RETRIEVER_REQUIRED === "1") {
+    const ok = await waitForPythonService(retrieverHealthUrl);
+    if (!ok) {
+      console.error(
+        "[Mana Boot CRITICAL] Python retriever failed to become healthy in time.",
+      );
+      process.exit(1);
+    }
+  } else {
+    (async () => {
+      const retries = Number(process.env.RETRIEVER_HEALTH_RETRIES || 24);
+      const delayMs = Number(process.env.RETRIEVER_HEALTH_DELAY_MS || 5000);
+      for (let i = 0; i < retries; i += 1) {
+        try {
+          const resp = await fetch(retrieverHealthUrl, { method: "GET" });
+          if (resp.ok) {
+            console.log("[Mana Boot] Python retriever is healthy");
+            return;
+          }
+        } catch (e) {
+          // keep waiting quietly
+        }
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+      }
+      console.warn(
+        `[Mana Boot] Python retriever not reachable at ${retrieverHealthUrl}; continuing with heuristic fallbacks (retrieval context disabled).`,
+      );
+    })().catch(() => {});
   }
 
   const app = createApp();
