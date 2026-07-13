@@ -36,8 +36,10 @@ test("health includes component readiness while preserving top-level fields", as
       "localLlama",
       "localMemory",
       "mobileAuth",
+      "sessions",
       "tts",
       "vtubeStudio",
+      "webAccess",
       "whisper",
     ]);
     assert.equal(body.components.backend.status, "available");
