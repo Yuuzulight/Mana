@@ -67,7 +67,7 @@ test("doctor checks return structured pass warn and fail results", () => {
     });
 
     assert.equal(result.ok, false);
-    assert.equal(result.summary.pass, 3);
+    assert.equal(result.summary.pass, 4);
     assert.equal(result.summary.warn, 9);
     assert.equal(result.summary.fail, 1);
 
@@ -82,6 +82,7 @@ test("doctor checks return structured pass warn and fail results", () => {
         "llama-vision-model",
         "whisper-config",
         "tts-services",
+        "mcp-server",
         "mobile-auth",
         "storage",
         "zed-editor",
