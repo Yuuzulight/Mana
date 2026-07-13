@@ -255,6 +255,31 @@
       }
       #modelStatus { margin-top: 8px; color: var(--muted); }
 
+      #themePresetControls {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        margin-top: 8px;
+      }
+
+      #themeAccentRow {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin-top: 10px;
+        color: var(--muted);
+      }
+
+      #accentColorInput {
+        width: 32px;
+        height: 26px;
+        padding: 0;
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        background: none;
+        cursor: pointer;
+      }
+
       #doctorHeader {
         display: flex;
         align-items: center;
@@ -433,6 +458,10 @@
         gap: 8px;
       }
     </style>
+    <!-- Applies the persisted theme's CSS custom properties to :root as early
+         as possible, before the body paints, to avoid a flash of the default
+         theme. -->
+    <script src="theme.js"></script>
   </head>
   <body>
     <div id="sessionSidebar">
@@ -502,6 +531,16 @@
           </div>
           <div id="doctorSummary">Not checked yet</div>
           <div id="doctorChecks"></div>
+        </div>
+
+        <div id="themePanel">
+          <strong>Theme</strong>
+          <div id="themePresetControls"></div>
+          <div id="themeAccentRow">
+            <label for="accentColorInput">Accent color</label>
+            <input type="color" id="accentColorInput" />
+            <button id="resetAccentBtn">Reset</button>
+          </div>
         </div>
       </div>
     </details>
