@@ -43,6 +43,7 @@ function createEmptySession(input, now) {
   const sessionId = cleanText(input.sessionId || "default", 240);
   return {
     sessionId,
+    name: cleanText(input.name, 80) || null,
     cwd: cleanText(input.cwd, 1000),
     editor: cleanText(input.editor || "zed", 80),
     createdAt: now,
@@ -50,6 +51,14 @@ function createEmptySession(input, now) {
     summary: "",
     turns: [],
   };
+}
+
+function autoNameFromText(text) {
+  const full = String(text || "").replace(/\s+/g, " ").trim();
+  if (!full) {
+    return "";
+  }
+  return full.length > 60 ? `${full.slice(0, 60)}…` : full;
 }
 
 function summarizeTurn(user, assistant, maxSummaryChars) {
@@ -145,6 +154,7 @@ function createAcpMemoryStore(options = {}) {
     if (existing) {
       const updated = {
         ...existing,
+        name: input.name ? cleanText(input.name, 80) : existing.name || null,
         cwd: cleanText(input.cwd || existing.cwd, 1000),
         editor: cleanText(input.editor || existing.editor || "zed", 80),
         updatedAt: now(),
@@ -153,6 +163,59 @@ function createAcpMemoryStore(options = {}) {
     }
 
     return saveSession(createEmptySession({ ...input, sessionId }, now()));
+  }
+
+  function renameSession(sessionId, name) {
+    const existing = getSession(cleanText(sessionId, 240));
+    if (!existing) {
+      return null;
+    }
+
+    return saveSession({
+      ...existing,
+      name: cleanText(name, 80) || null,
+      updatedAt: now(),
+    });
+  }
+
+  function deleteSession(sessionId) {
+    const filePath = filePathForSession(cleanText(sessionId, 240));
+    if (!fs.existsSync(filePath)) {
+      return false;
+    }
+    fs.unlinkSync(filePath);
+    return true;
+  }
+
+  function listSessions() {
+    const files = fs
+      .readdirSync(sessionsDir)
+      .filter((file) => file.endsWith(".json"));
+
+    const sessions = files
+      .map((file) => {
+        try {
+          const parsed = readJsonObject(path.join(sessionsDir, file));
+          if (!parsed || !parsed.sessionId) {
+            return null;
+          }
+          return {
+            sessionId: parsed.sessionId,
+            name: parsed.name || null,
+            createdAt: parsed.createdAt || null,
+            updatedAt: parsed.updatedAt || null,
+            turnCount: Array.isArray(parsed.turns) ? parsed.turns.length : 0,
+          };
+        } catch (e) {
+          return null;
+        }
+      })
+      .filter(Boolean);
+
+    sessions.sort((a, b) =>
+      String(b.updatedAt || "").localeCompare(String(a.updatedAt || "")),
+    );
+    return sessions;
   }
 
   async function appendTurn(input = {}) {
@@ -178,8 +241,11 @@ function createAcpMemoryStore(options = {}) {
       maxSummaryChars,
     );
     const turns = [...session.turns, turn].slice(-maxRecentTurns);
+    const name =
+      session.name || (!session.turns.length && autoNameFromText(turn.user)) || null;
     const saved = saveSession({
       ...session,
+      name,
       summary,
       turns,
       updatedAt: timestamp,
@@ -305,6 +371,9 @@ function createAcpMemoryStore(options = {}) {
     appendTurn,
     buildPromptMemory,
     getSession,
+    listSessions,
+    renameSession,
+    deleteSession,
   };
 }
 

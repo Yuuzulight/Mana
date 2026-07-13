@@ -64,3 +64,88 @@ test("ACP memory store builds a compact local memory prompt block", () => {
   assert.match(promptBlock, /Recent turns/i);
   assert.ok(promptBlock.length <= 1200);
 });
+
+test("appendTurn auto-names a session from its first user turn", async () => {
+  const store = createAcpMemoryStore({
+    dataDir: createTempDir(),
+    now: () => "2026-06-29T00:00:00.000Z",
+  });
+
+  store.ensureSession({ sessionId: "session-auto-name" });
+  await store.appendTurn({
+    sessionId: "session-auto-name",
+    user: "What is the best way to gather Iron Ore in FFXIV?",
+    assistant: "Try the mining nodes in Central Thanalan.",
+  });
+
+  const session = store.getSession("session-auto-name");
+  assert.equal(session.name, "What is the best way to gather Iron Ore in FFXIV?");
+
+  await store.appendTurn({
+    sessionId: "session-auto-name",
+    user: "Anything else?",
+    assistant: "Not right now.",
+  });
+  assert.equal(
+    store.getSession("session-auto-name").name,
+    "What is the best way to gather Iron Ore in FFXIV?",
+  );
+});
+
+test("appendTurn truncates a long first message into a short auto-name", async () => {
+  const store = createAcpMemoryStore({ dataDir: createTempDir() });
+  const longMessage = "a".repeat(120);
+
+  store.ensureSession({ sessionId: "session-long-name" });
+  await store.appendTurn({ sessionId: "session-long-name", user: longMessage, assistant: "ok" });
+
+  const session = store.getSession("session-long-name");
+  assert.equal(session.name.length, 61);
+  assert.ok(session.name.endsWith("…"));
+});
+
+test("renameSession overrides the stored name and returns null for unknown sessions", () => {
+  const store = createAcpMemoryStore({
+    dataDir: createTempDir(),
+    now: () => "2026-06-29T00:00:00.000Z",
+  });
+
+  store.ensureSession({ sessionId: "session-rename" });
+  const renamed = store.renameSession("session-rename", "  FFXIV crafting plan  ");
+  assert.equal(renamed.name, "FFXIV crafting plan");
+  assert.equal(store.getSession("session-rename").name, "FFXIV crafting plan");
+
+  assert.equal(store.renameSession("does-not-exist", "x"), null);
+});
+
+test("deleteSession removes a session and reports whether it existed", () => {
+  const store = createAcpMemoryStore({ dataDir: createTempDir() });
+  store.ensureSession({ sessionId: "session-delete" });
+
+  assert.equal(store.deleteSession("session-delete"), true);
+  assert.equal(store.getSession("session-delete"), null);
+  assert.equal(store.deleteSession("session-delete"), false);
+});
+
+test("listSessions returns session metadata sorted by most recently updated", () => {
+  let clock = 0;
+  const store = createAcpMemoryStore({
+    dataDir: createTempDir(),
+    now: () => {
+      clock += 1;
+      return `2026-06-29T00:00:0${clock}.000Z`;
+    },
+  });
+
+  store.ensureSession({ sessionId: "session-a" });
+  store.ensureSession({ sessionId: "session-b" });
+  store.renameSession("session-b", "Newest session");
+
+  const sessions = store.listSessions();
+  assert.deepEqual(
+    sessions.map((s) => s.sessionId),
+    ["session-b", "session-a"],
+  );
+  assert.equal(sessions[0].name, "Newest session");
+  assert.equal(sessions[1].turnCount, 0);
+});
