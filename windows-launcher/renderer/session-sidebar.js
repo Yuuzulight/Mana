@@ -69,11 +69,7 @@ function clearChatLog() {
   }
 }
 
-async function switchToSession(sessionId) {
-  currentSessionId = sessionId;
-  localStorage.setItem(SESSION_STORAGE_KEY, sessionId);
-  clearChatLog();
-
+async function loadSessionHistory(sessionId) {
   try {
     const response = await fetch(
       `${SESSIONS_API_BASE}/sessions/${encodeURIComponent(sessionId)}`,
@@ -88,7 +84,22 @@ async function switchToSession(sessionId) {
   } catch (e) {
     console.warn("Mana: failed to load session history", e);
   }
+}
 
+async function switchToSession(sessionId) {
+  currentSessionId = sessionId;
+  localStorage.setItem(SESSION_STORAGE_KEY, sessionId);
+  clearChatLog();
+  await loadSessionHistory(sessionId);
+  await refreshSessionList();
+}
+
+// On launch, the active session's id already survives in localStorage, but
+// nothing had replayed its stored turns back into the chat log — so a
+// restart looked like history was lost even though it was still on disk.
+async function restoreCurrentSession() {
+  const sessionId = ensureSessionId();
+  await loadSessionHistory(sessionId);
   await refreshSessionList();
 }
 
@@ -323,5 +334,4 @@ newChatBtnEl.addEventListener("click", () => {
   startNewChat();
 });
 
-ensureSessionId();
-refreshSessionList();
+restoreCurrentSession();
