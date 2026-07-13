@@ -1,5 +1,17 @@
 # Issue 44: Add Named Chat Sessions With Rename, Delete, and Memory Management
 
+## Status
+
+Implemented. `node-bot/acp-memory-store.js` now tracks a `name` per session
+(auto-generated from the first user message, renamable), plus
+`listSessions`/`renameSession`/`deleteSession`. `capabilities/sessions-capability.js`
+exposes this over HTTP (`GET /sessions`, `GET/PATCH/DELETE /sessions/:id`).
+`windows-launcher/renderer/session-sidebar.js` adds the sidebar UI: a session
+list with relative dates, a "New chat" button, and a right-click menu for
+rename (inline edit), delete (with confirmation), and "open memory" (a modal
+showing the session's stored summary and recent turns). The existing
+single-session flow is unchanged for anyone who never opens the sidebar.
+
 ## Goal
 
 Give Mana a real session list so conversations can be organized, revisited,

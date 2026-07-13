@@ -64,6 +64,7 @@ const { createVTubeRuntime } = require("./vtube-runtime");
 const {
   webAccessCapability,
 } = require("./capabilities/web-access-capability");
+const { sessionsCapability } = require("./capabilities/sessions-capability");
 const {
   buildWebContextForPrompt,
   fetchPage,
@@ -1308,8 +1309,10 @@ function registerRoutes(app, upload, deps = {}) {
     ffxivMarketCapability,
     dirScannerCapability,
     webAccessCapability,
+    sessionsCapability,
   ];
   const capabilityContext = {
+    acpMemoryStore: deps.acpMemoryStore || acpMemoryStore,
     UNIVERSALIS_DEFAULT_WORLD,
     FFXIV_PROFIT_TOP_LIMIT,
     FFXIV_RECIPE_SOURCE,

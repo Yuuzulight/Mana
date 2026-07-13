@@ -1,5 +1,18 @@
 # Issue 45: Add a Theme Picker UI Using Existing CSS Custom Properties
 
+## Status
+
+Implemented. `windows-launcher/renderer/theme.js` defines three built-in
+presets (Violet — the existing default, Neutral dark, and Light) as sets of
+values for the `:root` custom properties `index.html` already used
+(`--bg`, `--panel`, `--panel-2`, `--border`, `--text`, `--muted`, `--accent`,
+`--user-bubble`, `--mana-bubble`), plus a manual accent-color override on top
+of whichever preset is active. The theme is persisted to `localStorage` and
+applied as early as possible (a `<script>` in `<head>`, before `<body>`) to
+avoid a flash of the default theme on launch. A "Theme" panel in the existing
+System status & tools section offers preset buttons and a color input; no
+other CSS changed, since every existing element already read these tokens.
+
 ## Goal
 
 Let users choose or customize Mana's color theme, building on the CSS

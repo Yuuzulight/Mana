@@ -1044,7 +1044,12 @@ async function requestScreenAwareReply(text, gamingModeActive) {
     headers: {
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({ text, screenText, modelProfile: selectedModelProfile }),
+    body: JSON.stringify({
+      text,
+      screenText,
+      modelProfile: selectedModelProfile,
+      sessionId: typeof ensureSessionId === "function" ? ensureSessionId() : undefined,
+    }),
   });
 
   if (!response.ok) {
@@ -1083,6 +1088,7 @@ async function handleVisionHotkey() {
         text: DEFAULT_VISION_HOTKEY_PROMPT,
         image,
         modelProfile: selectedModelProfile,
+        sessionId: typeof ensureSessionId === "function" ? ensureSessionId() : undefined,
       }),
     });
 
@@ -1096,6 +1102,9 @@ async function handleVisionHotkey() {
     const reply = result.reply || "";
     replyEl.textContent = `Mana: ${reply}`;
     appendChatMessage("mana", reply);
+    if (typeof refreshSessionList === "function") {
+      refreshSessionList();
+    }
 
     if (result.ttsConfigured) {
       await playReplyAudio(reply);
@@ -1186,6 +1195,9 @@ async function handleTranscript(transcript, gamingModeActive = false) {
     const reply = replyResult.reply || "";
     replyEl.textContent = `Mana: ${reply}`;
     appendChatMessage("mana", reply);
+    if (typeof refreshSessionList === "function") {
+      refreshSessionList();
+    }
 
     if (replyResult.ttsConfigured) {
       await playReplyAudio(reply);
