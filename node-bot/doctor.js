@@ -4,6 +4,7 @@ const os = require("node:os");
 const path = require("node:path");
 const { createEditorIntegrations } = require("./zed-integration");
 const { assertLocalAiPolicy } = require("./mana-acp-agent");
+const { isMcpServerEnabled } = require("./mcp-server");
 
 const DEFAULT_NODE_MAJOR = 18;
 const DEFAULT_BACKEND_PORT = 5005;
@@ -82,6 +83,24 @@ function checkLocalAiPolicy(env) {
     "Local AI policy",
     "warn",
     "Remote AI is enabled. Set MANA_ALLOW_REMOTE_AI=0 for strictly local replies.",
+  );
+}
+
+function checkMcpServer(env) {
+  if (!isMcpServerEnabled(env)) {
+    return makeCheck(
+      "mcp-server",
+      "MCP server",
+      "pass",
+      "MCP server is disabled (opt-in). Set MANA_MCP_SERVER_ENABLED=1 and run `npm run mcp` to expose Mana's tools over MCP.",
+    );
+  }
+
+  return makeCheck(
+    "mcp-server",
+    "MCP server",
+    "pass",
+    "MCP server is enabled. Run `npm run mcp` to start it over stdio for MCP clients like Claude Desktop or Claude Code.",
   );
 }
 
@@ -506,6 +525,7 @@ function runDoctorChecks(options = {}) {
     ),
     checkWhisperConfig(env),
     checkTtsServices(options.services || []),
+    checkMcpServer(env),
     checkMobileAuth(env),
     checkStorage(paths),
     ...checkEditorIntegrations({
