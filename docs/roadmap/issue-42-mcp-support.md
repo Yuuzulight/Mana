@@ -1,5 +1,15 @@
 # Issue 42: Add Model Context Protocol (MCP) Support
 
+## Status
+
+Phase 1 is implemented: `node-bot/mcp-server.js` exposes `ffxiv_market_lookup`,
+`web_search`, `web_read`, and `wiki_lookup` as MCP tools over stdio, reusing
+the same functions as the matching HTTP routes. It is opt-in via
+`MANA_MCP_SERVER_ENABLED=1` and disabled by default; Doctor reports its
+status. Run it with `npm run mcp` (from `node-bot/`) so an MCP client (Claude
+Desktop, Claude Code, etc.) can spawn it as a subprocess. Phase 2 (Mana as an
+MCP client) remains unstarted, see below.
+
 ## Goal
 
 Let Mana participate in the Model Context Protocol (MCP) ecosystem — start by

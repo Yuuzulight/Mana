@@ -29,6 +29,9 @@ Environment variables (set before running):
 - FISH_TTS_FALLBACK_PROVIDER : "kokoro", "chatterbox", or "none"
 - MANA_ALLOW_REMOTE_AI : set to "1" to allow OpenAI/proxy chat replies
 - GAMING_PROCESS_NAMES : optional comma-separated game process names for Gaming mode
+- MANA_MCP_SERVER_ENABLED : set to "1" to allow `npm run mcp` (mcp-server.js) to
+  start Mana as a local Model Context Protocol server over stdio, see
+  docs/roadmap/issue-42-mcp-support.md
 
 This server aims to avoid Python. You must download and place the whisper.cpp and llama.cpp binaries and model files yourself.
 */

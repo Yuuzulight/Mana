@@ -40,6 +40,7 @@ For the full setup flow, including model paths, Whisper, TTS services, gaming mo
 - **Mobile companion path**: phone chat and summary sync are available through the local backend and optional tunnel setup.
 - **Editor coding handoff**: Mana can detect local Zed or VS Code CLIs and open projects or files for coding help without applying edits silently.
 - **FFXIV and market helpers**: Mana can query Universalis crafting/market data and Alpha Vantage stock summaries when configured.
+- **MCP server (opt-in)**: Mana can expose its FFXIV market and web-access tools over the Model Context Protocol for local MCP clients like Claude Desktop or Claude Code; see [docs/roadmap/issue-42-mcp-support.md](docs/roadmap/issue-42-mcp-support.md).
 
 ## Architecture
 
@@ -160,6 +161,7 @@ Common troubleshooting:
 - [Vision setup](docs/vision_setup.md): local image understanding with a vision GGUF.
 - [Web access setup](docs/web_access_setup.md): local search (SearXNG), wiki lookups, and page reading.
 - [Zed External Agent setup](docs/zed_external_agent.md): local Zed `agent_servers` configuration.
+- [MCP support roadmap](docs/roadmap/issue-42-mcp-support.md): running Mana as an MCP server (`npm run mcp`) and the plan for MCP client support.
 
 ## Backend API
 
