@@ -66,6 +66,10 @@ const {
 } = require("./capabilities/web-access-capability");
 const { sessionsCapability } = require("./capabilities/sessions-capability");
 const {
+  deepResearchCapability,
+} = require("./capabilities/deep-research-capability");
+const { RESEARCH_SYSTEM_PROMPT } = require("./tools/deep-research");
+const {
   buildWebContextForPrompt,
   fetchPage,
   searchWeb,
@@ -1310,9 +1314,13 @@ function registerRoutes(app, upload, deps = {}) {
     dirScannerCapability,
     webAccessCapability,
     sessionsCapability,
+    deepResearchCapability,
   ];
   const capabilityContext = {
     acpMemoryStore: deps.acpMemoryStore || acpMemoryStore,
+    synthesize:
+      deps.synthesize ||
+      ((prompt) => runLocalLlamaReply(prompt, 800, "quality", RESEARCH_SYSTEM_PROMPT)),
     UNIVERSALIS_DEFAULT_WORLD,
     FFXIV_PROFIT_TOP_LIMIT,
     FFXIV_RECIPE_SOURCE,
