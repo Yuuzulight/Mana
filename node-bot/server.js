@@ -33,9 +33,9 @@ Environment variables (set before running):
   start Mana as a local Model Context Protocol server over stdio, see
   docs/roadmap/issue-42-mcp-support.md
 - MANA_RESEARCH_MAX_SOURCES, MANA_RESEARCH_MAX_TOTAL_MS,
-  MANA_RESEARCH_MAX_SUB_QUERIES : persistent defaults for Deep Research's
-  bounds (per-request body values still win; hard caps in
-  tools/deep-research.js apply regardless)
+  MANA_RESEARCH_MAX_SUB_QUERIES, MANA_RESEARCH_MAX_PER_DOMAIN : persistent
+  defaults for Deep Research's bounds (per-request body values still win;
+  hard caps in tools/deep-research.js apply regardless)
 - MANA_RESEARCH_JOB_TTL_MS : how long finished research jobs stay pollable
   before being pruned from memory (default 10 minutes)
 

@@ -2,10 +2,12 @@ const { randomUUID } = require("node:crypto");
 const {
   ValidationError,
   optionalInteger,
+  optionalString,
   requireString,
   sendValidationError,
 } = require("../request-validation");
 const {
+  MAX_PER_DOMAIN_CAP,
   MAX_SOURCES_CAP,
   MAX_SUB_QUERIES_CAP,
   MAX_TOTAL_MS_CAP,
@@ -39,6 +41,7 @@ function registerDeepResearchRoutes(app, context = {}) {
   const fetchPage = context.fetchPage;
   const synthesize = context.synthesize;
   const decompose = context.decompose;
+  const acpMemoryStore = context.acpMemoryStore;
   const jobs = context.jobs || createResearchJobStore();
   const runDeepResearch = context.runDeepResearch || defaultRunDeepResearch;
   const makeJobId = context.makeJobId || (() => randomUUID());
@@ -52,6 +55,25 @@ function registerDeepResearchRoutes(app, context = {}) {
   const envMaxSources = envInteger(env, "MANA_RESEARCH_MAX_SOURCES");
   const envMaxTotalMs = envInteger(env, "MANA_RESEARCH_MAX_TOTAL_MS");
   const envMaxSubQueries = envInteger(env, "MANA_RESEARCH_MAX_SUB_QUERIES");
+  const envMaxPerDomain = envInteger(env, "MANA_RESEARCH_MAX_PER_DOMAIN");
+
+  // Fire-and-forget, mirroring server.js's recordChatTurn: a research report
+  // is just another chat turn once it's done, so it replays in session
+  // history and future turns can refer back to it. Only persisted on a
+  // clean finish -- cancelled/errored jobs have nothing worth remembering.
+  function recordResearchTurn(sessionId, question, report) {
+    if (!sessionId || !acpMemoryStore || typeof acpMemoryStore.appendTurn !== "function") {
+      return;
+    }
+    acpMemoryStore
+      .appendTurn({ sessionId, user: question, assistant: report })
+      .catch((memErr) =>
+        console.warn(
+          "Failed to append research turn to ACP memory:",
+          memErr?.message || memErr,
+        ),
+      );
+  }
 
   function scheduleJobCleanup(jobId) {
     const timer = setTimeout(() => {
@@ -65,6 +87,7 @@ function registerDeepResearchRoutes(app, context = {}) {
   app.post("/research/start", (req, res) => {
     try {
       const question = requireString(req.body?.question, "question");
+      const sessionId = optionalString(req.body?.sessionId, "sessionId", null);
       const maxSources = optionalInteger(req.body?.maxSources, "maxSources", {
         min: 1,
         max: MAX_SOURCES_CAP,
@@ -82,6 +105,15 @@ function registerDeepResearchRoutes(app, context = {}) {
           min: 1,
           max: MAX_SUB_QUERIES_CAP,
           defaultValue: envMaxSubQueries,
+        },
+      );
+      const maxPerDomain = optionalInteger(
+        req.body?.maxPerDomain,
+        "maxPerDomain",
+        {
+          min: 1,
+          max: MAX_PER_DOMAIN_CAP,
+          defaultValue: envMaxPerDomain,
         },
       );
 
@@ -107,6 +139,7 @@ function registerDeepResearchRoutes(app, context = {}) {
         maxSources,
         maxTotalMs,
         maxSubQueries,
+        maxPerDomain,
         searchWeb,
         fetchPage,
         synthesize,
@@ -125,6 +158,7 @@ function registerDeepResearchRoutes(app, context = {}) {
           } else {
             job.status = "done";
             job.result = result;
+            recordResearchTurn(sessionId, question, result.report);
           }
           scheduleJobCleanup(jobId);
         })
@@ -194,7 +228,7 @@ const deepResearchCapability = {
       status: configured ? "configured" : "unavailable",
       configured,
       message: configured
-        ? "Deep research is available (POST /research/start, GET /research/:jobId, POST /research/:jobId/cancel)."
+        ? "Deep research is available (POST /research/start, GET /research/:jobId, POST /research/:jobId/cancel). Reports are saved to session memory when a sessionId is provided."
         : "Deep research is unavailable: no local model reply function configured.",
     };
   },

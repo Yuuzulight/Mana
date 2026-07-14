@@ -214,6 +214,161 @@ test("POST /research/:jobId/cancel stops a running job between steps", async () 
   });
 });
 
+test("POST /research/start records the finished report to session memory when sessionId is provided", async () => {
+  const app = express();
+  app.use(express.json());
+  let jobIdCounter = 0;
+  const appendedTurns = [];
+  const acpMemoryStore = {
+    appendTurn: async (turn) => {
+      appendedTurns.push(turn);
+    },
+  };
+  deepResearchCapability.registerRoutes(app, {
+    acpMemoryStore,
+    searchWeb: async () => [
+      { title: "R1", url: "https://example.com/1", snippet: "s1" },
+    ],
+    fetchPage: async (url) => ({ url, title: "T1", text: "page text" }),
+    synthesize: async () => "final report [1]",
+    makeJobId: () => `job-${++jobIdCounter}`,
+  });
+
+  await withServer(app, async (baseUrl) => {
+    await fetch(`${baseUrl}/research/start`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ question: "what is X?", sessionId: "sess-1" }),
+    });
+    await waitFor(async () => {
+      const res = await fetch(`${baseUrl}/research/job-1`);
+      return (await res.json()).status === "done";
+    });
+  });
+
+  assert.equal(appendedTurns.length, 1);
+  assert.deepEqual(appendedTurns[0], {
+    sessionId: "sess-1",
+    user: "what is X?",
+    assistant: "final report [1]",
+  });
+});
+
+test("POST /research/start does not touch session memory when sessionId is omitted", async () => {
+  const app = express();
+  app.use(express.json());
+  let jobIdCounter = 0;
+  let appendCalled = false;
+  const acpMemoryStore = {
+    appendTurn: async () => {
+      appendCalled = true;
+    },
+  };
+  deepResearchCapability.registerRoutes(app, {
+    acpMemoryStore,
+    searchWeb: async () => [],
+    synthesize: async () => "report",
+    makeJobId: () => `job-${++jobIdCounter}`,
+  });
+
+  await withServer(app, async (baseUrl) => {
+    await fetch(`${baseUrl}/research/start`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ question: "q" }),
+    });
+    await waitFor(async () => {
+      const res = await fetch(`${baseUrl}/research/job-1`);
+      return (await res.json()).status === "done";
+    });
+  });
+
+  assert.equal(appendCalled, false);
+});
+
+test("a cancelled research job does not record anything to session memory", async () => {
+  const app = express();
+  app.use(express.json());
+  let jobIdCounter = 0;
+  let appendCalled = false;
+  const acpMemoryStore = {
+    appendTurn: async () => {
+      appendCalled = true;
+    },
+  };
+  let releaseFirstRead;
+  const firstReadStarted = new Promise((resolveStarted) => {
+    let started = false;
+    deepResearchCapability.registerRoutes(app, {
+      acpMemoryStore,
+      searchWeb: async () => [
+        { title: "R1", url: "https://example.com/1", snippet: "s1" },
+        { title: "R2", url: "https://example.com/2", snippet: "s2" },
+      ],
+      fetchPage: (url) =>
+        new Promise((resolveRead) => {
+          if (!started) {
+            started = true;
+            releaseFirstRead = () => resolveRead({ url, title: "t", text: "x" });
+            resolveStarted();
+            return;
+          }
+          resolveRead({ url, title: "t", text: "x" });
+        }),
+      synthesize: async () => "should never be reached",
+      makeJobId: () => `job-${++jobIdCounter}`,
+    });
+  });
+
+  await withServer(app, async (baseUrl) => {
+    await fetch(`${baseUrl}/research/start`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ question: "q", sessionId: "sess-1", maxSources: 2 }),
+    });
+
+    await firstReadStarted;
+    await fetch(`${baseUrl}/research/job-1/cancel`, { method: "POST" });
+    releaseFirstRead();
+
+    await waitFor(async () => {
+      const res = await fetch(`${baseUrl}/research/job-1`);
+      return (await res.json()).status === "cancelled";
+    });
+  });
+
+  assert.equal(appendCalled, false);
+});
+
+test("MANA_RESEARCH_MAX_PER_DOMAIN env var sets the default maxPerDomain when the request omits it", async () => {
+  const app = express();
+  app.use(express.json());
+  const seen = {};
+  let jobIdCounter = 0;
+  deepResearchCapability.registerRoutes(app, {
+    env: { MANA_RESEARCH_MAX_PER_DOMAIN: "1" },
+    runDeepResearch: async (question, options) => {
+      seen.maxPerDomain = options.maxPerDomain;
+      return { question, subQueries: [], sources: [], report: "report", bounds: {} };
+    },
+    synthesize: async () => "report",
+    makeJobId: () => `job-${++jobIdCounter}`,
+  });
+
+  await withServer(app, async (baseUrl) => {
+    await fetch(`${baseUrl}/research/start`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ question: "q" }),
+    });
+    await waitFor(async () => {
+      const res = await fetch(`${baseUrl}/research/job-1`);
+      return (await res.json()).status === "done";
+    });
+  });
+  assert.equal(seen.maxPerDomain, 1);
+});
+
 test("MANA_RESEARCH_* env vars set the default bounds when the request omits them", async () => {
   const app = express();
   app.use(express.json());
