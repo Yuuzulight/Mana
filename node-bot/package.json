@@ -1,6 +1,6 @@
 {
   "name": "local-llama-node-bot",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Node backend that uses whisper.cpp and llama.cpp binaries for local STT and generation",
   "author": "ManaAI",
   "main": "server.js",

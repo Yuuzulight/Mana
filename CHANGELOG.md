@@ -13,6 +13,16 @@ accounting.
 
 Nothing yet.
 
+## [0.2.1] - 2026-07-14
+
+### Removed
+- **Sprite artwork removed from the public repo.** `sprites/` (all rights
+  reserved, see `LICENSE-ARTWORK`) is no longer tracked — it's gitignored
+  going forward, and its history was purged from the repository entirely.
+  The desktop app degrades gracefully without it (the same pattern already
+  used for the Live2D avatar model/runtime). This release supersedes
+  `v0.2.0`, which has been deleted.
+
 ## [0.2.0] - 2026-07-12
 
 ### Added
