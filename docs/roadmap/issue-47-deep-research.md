@@ -29,12 +29,31 @@ tool's hard caps apply regardless. Both the sub-query planner and the
 synthesizer deliberately use the same `"quality"` model profile so a
 research pass never triggers a mid-run llama-server model swap.
 
+Pooling also caps how many results come from a single hostname
+(`maxPerDomain`, default 2, capped at `maxSources`; persistent default via
+`MANA_RESEARCH_MAX_PER_DOMAIN`) so a "multi-source" report can't end up
+dominated by several pages of the same site -- URLs whose hostname can't be
+parsed are never capped.
+
+A finished report is saved to session memory when the request includes a
+`sessionId`: `deep-research-capability.js` calls
+`acpMemoryStore.appendTurn({sessionId, user: question, assistant: report})`
+on a clean finish (mirroring `server.js`'s `recordChatTurn`), so research
+turns replay alongside normal chat history (issue #44) and later turns in
+the same session can refer back to what was researched. Cancelled or
+errored jobs record nothing.
+
 `windows-launcher` gets a "Research" button next to the composer that posts
-the typed text as a research question, polls for progress (a pulsing status
-line with a Cancel button), and appends the final cited report (source
-list, plus the sub-queries actually searched) as a chat message once done.
-Existing single-shot search/read behavior (`web-access-capability.js`,
-`buildWebContextForPrompt`) is untouched.
+the typed text (plus the active session's id) as a research question, polls
+for progress (a pulsing status line with a Cancel button), and appends the
+final cited report (source list, plus the sub-queries actually searched) as
+a chat message once done. `desktop-client` gets the same Research button,
+progress line, and Cancel control in its input bar, adapted to its simpler
+single transcript/reply layout (question in the transcript slot, formatted
+report in the reply slot) -- it doesn't have a session concept, so its
+requests omit `sessionId` and reports aren't persisted to memory. Existing
+single-shot search/read behavior (`web-access-capability.js`,
+`buildWebContextForPrompt`) is untouched in both clients.
 
 ## Goal
 

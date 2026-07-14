@@ -3,6 +3,7 @@ const test = require("node:test");
 
 const {
   DEFAULT_MAX_SOURCES,
+  DEFAULT_MAX_PER_DOMAIN,
   MAX_SOURCES_CAP,
   MAX_TOTAL_MS_CAP,
   ResearchCancelledError,
@@ -25,6 +26,10 @@ test("runDeepResearch searches, reads bounded sources, and synthesizes a cited r
 
   const result = await runDeepResearch("what is the capital of France?", {
     maxSources: 2,
+    // All 3 fake results share a hostname; raise the per-domain cap so this
+    // test only exercises maxSources clamping, not the (separately tested)
+    // per-domain cap.
+    maxPerDomain: 3,
     searchWeb: async (query, options) => {
       assert.equal(query, "what is the capital of France?");
       assert.equal(options.limit, 2);
@@ -167,6 +172,10 @@ test("runDeepResearch decomposes into sub-queries, searches each, and dedupes po
   const result = await runDeepResearch("compare X and Y", {
     maxSources: 4,
     maxSubQueries: 3,
+    // All 3 pooled URLs share a hostname; raise the per-domain cap so this
+    // test only exercises cross-query URL dedup, not the (separately
+    // tested) per-domain cap.
+    maxPerDomain: 3,
     decompose: async (prompt) => {
       assert.match(prompt, /Research question: compare X and Y/);
       return "1. what is X\n2. what is Y\n";
@@ -280,6 +289,68 @@ test("runDeepResearch stops with ResearchCancelledError when isCancelled flips t
     (error) => error instanceof ResearchCancelledError,
   );
   assert.equal(reads, 1, "cancellation should stop before the second read");
+});
+
+test("runDeepResearch caps pooled results per domain while leaving other domains unaffected", async () => {
+  const result = await runDeepResearch("q", {
+    maxSources: 10,
+    searchWeb: async () => [
+      { title: "E1", url: "https://example.com/1", snippet: "s" },
+      { title: "E2", url: "https://example.com/2", snippet: "s" },
+      { title: "E3", url: "https://example.com/3", snippet: "s" },
+      { title: "O1", url: "https://other.com/1", snippet: "s" },
+      { title: "O2", url: "https://other.com/2", snippet: "s" },
+    ],
+    fetchPage: async (url) => ({ url, title: `T ${url}`, text: "text" }),
+    synthesize: async () => "report",
+  });
+
+  assert.deepEqual(
+    result.sources.map((s) => s.url),
+    [
+      "https://example.com/1",
+      "https://example.com/2",
+      "https://other.com/1",
+      "https://other.com/2",
+    ],
+    "example.com's third result should be dropped by the default per-domain cap",
+  );
+  assert.equal(result.bounds.maxPerDomain, DEFAULT_MAX_PER_DOMAIN);
+});
+
+test("runDeepResearch respects a custom maxPerDomain", async () => {
+  const result = await runDeepResearch("q", {
+    maxSources: 10,
+    maxPerDomain: 1,
+    searchWeb: async () => [
+      { title: "E1", url: "https://example.com/1", snippet: "s" },
+      { title: "E2", url: "https://example.com/2", snippet: "s" },
+      { title: "O1", url: "https://other.com/1", snippet: "s" },
+    ],
+    fetchPage: async (url) => ({ url, title: `T ${url}`, text: "text" }),
+    synthesize: async () => "report",
+  });
+
+  assert.deepEqual(result.sources.map((s) => s.url), [
+    "https://example.com/1",
+    "https://other.com/1",
+  ]);
+  assert.equal(result.bounds.maxPerDomain, 1);
+});
+
+test("runDeepResearch does not cap results whose URL has no parseable hostname", async () => {
+  const result = await runDeepResearch("q", {
+    maxSources: 10,
+    maxPerDomain: 1,
+    searchWeb: async () => [
+      { title: "Bad1", url: "not-a-url-1", snippet: "s" },
+      { title: "Bad2", url: "not-a-url-2", snippet: "s" },
+    ],
+    fetchPage: async (url) => ({ url, title: `T ${url}`, text: "text" }),
+    synthesize: async () => "report",
+  });
+
+  assert.equal(result.sources.length, 2);
 });
 
 test("buildResearchPrompt numbers sources and includes the question", () => {

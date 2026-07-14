@@ -13,6 +13,8 @@ const MAX_TOTAL_MS_CAP = 180000;
 const MAX_EXCERPT_CHARS = 2000;
 const DEFAULT_MAX_SUB_QUERIES = 3;
 const MAX_SUB_QUERIES_CAP = 4;
+const DEFAULT_MAX_PER_DOMAIN = 2;
+const MAX_PER_DOMAIN_CAP = MAX_SOURCES_CAP;
 
 const RESEARCH_SYSTEM_PROMPT =
   "You are a careful research assistant. You are given a research question " +
@@ -56,6 +58,21 @@ function clampMaxSubQueries(value) {
   const safe =
     Number.isFinite(n) && n > 0 ? Math.round(n) : DEFAULT_MAX_SUB_QUERIES;
   return Math.min(Math.max(safe, 1), MAX_SUB_QUERIES_CAP);
+}
+
+function clampMaxPerDomain(value) {
+  const n = Number(value);
+  const safe =
+    Number.isFinite(n) && n > 0 ? Math.round(n) : DEFAULT_MAX_PER_DOMAIN;
+  return Math.min(Math.max(safe, 1), MAX_PER_DOMAIN_CAP);
+}
+
+function hostnameOf(url) {
+  try {
+    return new URL(String(url || "")).hostname.toLowerCase();
+  } catch (e) {
+    return "";
+  }
 }
 
 function buildSubQueryPrompt(question, maxQueries) {
@@ -113,6 +130,7 @@ async function runDeepResearch(question, options = {}) {
   const maxSources = clampMaxSources(options.maxSources);
   const maxTotalMs = clampMaxTotalMs(options.maxTotalMs);
   const maxSubQueries = clampMaxSubQueries(options.maxSubQueries);
+  const maxPerDomain = clampMaxPerDomain(options.maxPerDomain);
   const decompose =
     typeof options.decompose === "function" ? options.decompose : null;
   const search = options.searchWeb || defaultSearchWeb;
@@ -149,9 +167,13 @@ async function runDeepResearch(question, options = {}) {
   }
   throwIfCancelled();
 
-  // Step 2: search each query, pooling results and deduping by URL.
+  // Step 2: search each query, pooling results and deduping by URL. A
+  // per-domain cap keeps the pool from being dominated by several pages of
+  // the same site (e.g. three Reddit threads), so the reader actually gets
+  // multiple perspectives. Results whose URL doesn't parse are never capped.
   const pooled = [];
   const seenUrls = new Set();
+  const domainCounts = new Map();
   const searchErrors = [];
   let hitTimeLimit = false;
   for (let qi = 0; qi < queries.length; qi += 1) {
@@ -182,6 +204,12 @@ async function runDeepResearch(question, options = {}) {
     for (const result of results) {
       const key = String(result.url || "").trim();
       if (!key || seenUrls.has(key)) continue;
+      const hostname = hostnameOf(key);
+      if (hostname) {
+        const count = domainCounts.get(hostname) || 0;
+        if (count >= maxPerDomain) continue;
+        domainCounts.set(hostname, count + 1);
+      }
       seenUrls.add(key);
       pooled.push(result);
     }
@@ -257,6 +285,7 @@ async function runDeepResearch(question, options = {}) {
       maxSources,
       maxTotalMs,
       maxSubQueries,
+      maxPerDomain,
       sourcesUsed: sources.length,
       elapsedMs: elapsed(),
       hitTimeLimit,
@@ -272,6 +301,8 @@ module.exports = {
   MAX_TOTAL_MS_CAP,
   DEFAULT_MAX_SUB_QUERIES,
   MAX_SUB_QUERIES_CAP,
+  DEFAULT_MAX_PER_DOMAIN,
+  MAX_PER_DOMAIN_CAP,
   RESEARCH_SYSTEM_PROMPT,
   SUB_QUERY_SYSTEM_PROMPT,
   ResearchCancelledError,

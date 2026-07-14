@@ -1240,7 +1240,10 @@ async function startDeepResearch() {
     const startResponse = await fetch("http://localhost:5005/research/start", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ question }),
+      body: JSON.stringify({
+        question,
+        sessionId: typeof ensureSessionId === "function" ? ensureSessionId() : undefined,
+      }),
     });
     if (!startResponse.ok) {
       const detail = await startResponse.text();

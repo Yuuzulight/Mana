@@ -66,7 +66,12 @@
           <textarea id="messageInput" placeholder="Write a message..." rows="1"></textarea>
           <div class="input-actions">
             <button id="btnRecord" class="primary">Hold to Talk</button>
+            <button id="btnResearch" title="Deep research: search and read several sources, then synthesize a cited report">Research</button>
             <button id="btnClear">Clear</button>
+          </div>
+          <div id="researchProgress" class="research-progress" hidden>
+            <span id="researchProgressLabel">Researching...</span>
+            <button id="researchCancelBtn" title="Stop this research run">Cancel</button>
           </div>
         </div>
       </div>
