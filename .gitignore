@@ -60,6 +60,11 @@ windows-launcher/avatar/model/
 desktop-client/assets/live2d/
 desktop-client/avatar/model/
 
+# Mana's sprite artwork (all rights reserved, see LICENSE-ARTWORK) is not
+# distributed with the public repo; the desktop app degrades gracefully
+# (sprite <img>/background-image calls silently no-op) if it's absent.
+/sprites/
+
 # Personal voice references (never commit someone's voice)
 tts-service/references/
 tts-service/voice-auditions/
