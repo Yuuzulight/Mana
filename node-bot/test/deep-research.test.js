@@ -5,7 +5,9 @@ const {
   DEFAULT_MAX_SOURCES,
   MAX_SOURCES_CAP,
   MAX_TOTAL_MS_CAP,
+  ResearchCancelledError,
   buildResearchPrompt,
+  parseSubQueries,
   runDeepResearch,
 } = require("../tools/deep-research");
 
@@ -137,6 +139,147 @@ test("runDeepResearch requires a question and a synthesize function", async () =
     () => runDeepResearch("q", {}),
     /synthesize function is required/,
   );
+});
+
+test("parseSubQueries strips numbering/bullets, dedupes, drops commentary, and caps the count", () => {
+  const raw = [
+    "Here are the queries:",
+    "1. RTX 5080 VRAM specs",
+    "- RTX 5080 release price",
+    "* RTX 5080 vram SPECS", // dupe of #1 modulo case
+    "2) RTX 5080 benchmarks",
+    "RTX 5080 availability",
+    "x".repeat(300), // too long to be a query
+  ].join("\n");
+
+  assert.deepEqual(parseSubQueries(raw, 3), [
+    "RTX 5080 VRAM specs",
+    "RTX 5080 release price",
+    "RTX 5080 benchmarks",
+  ]);
+  assert.deepEqual(parseSubQueries("", 3), []);
+});
+
+test("runDeepResearch decomposes into sub-queries, searches each, and dedupes pooled results", async () => {
+  const progress = [];
+  const searchedQueries = [];
+
+  const result = await runDeepResearch("compare X and Y", {
+    maxSources: 4,
+    maxSubQueries: 3,
+    decompose: async (prompt) => {
+      assert.match(prompt, /Research question: compare X and Y/);
+      return "1. what is X\n2. what is Y\n";
+    },
+    searchWeb: async (query) => {
+      searchedQueries.push(query);
+      // Both searches return an overlapping URL to exercise dedupe.
+      return [
+        { title: "Shared", url: "https://example.com/shared", snippet: "s" },
+        { title: query, url: `https://example.com/${searchedQueries.length}`, snippet: "s" },
+      ];
+    },
+    fetchPage: async (url) => ({ url, title: `T ${url}`, text: "text" }),
+    synthesize: async () => "report",
+    onProgress: (p) => progress.push(p),
+  });
+
+  assert.deepEqual(searchedQueries, ["what is X", "what is Y"]);
+  assert.deepEqual(result.subQueries, ["what is X", "what is Y"]);
+  assert.deepEqual(
+    result.sources.map((s) => s.url),
+    ["https://example.com/shared", "https://example.com/1", "https://example.com/2"],
+    "the shared URL should appear once despite being returned by both searches",
+  );
+
+  const steps = progress.map((p) => p.step);
+  assert.deepEqual(steps, [
+    "planning",
+    "searching",
+    "searching",
+    "reading",
+    "reading",
+    "reading",
+    "synthesizing",
+    "done",
+  ]);
+  assert.match(progress[1].label, /Searching \(1 of 2\)/);
+});
+
+test("runDeepResearch falls back to a single query when decompose fails or returns nothing", async () => {
+  const searchedQueries = [];
+  const base = {
+    maxSources: 1,
+    searchWeb: async (query) => {
+      searchedQueries.push(query);
+      return fakeSearchResults(1);
+    },
+    fetchPage: async (url) => ({ url, title: "t", text: "x" }),
+    synthesize: async () => "report",
+  };
+
+  const failed = await runDeepResearch("q1", {
+    ...base,
+    decompose: async () => {
+      throw new Error("model unavailable");
+    },
+  });
+  assert.deepEqual(failed.subQueries, []);
+
+  const empty = await runDeepResearch("q2", {
+    ...base,
+    decompose: async () => "Here are the queries:\n",
+  });
+  assert.deepEqual(empty.subQueries, []);
+
+  assert.deepEqual(searchedQueries, ["q1", "q2"]);
+});
+
+test("runDeepResearch tolerates one failing sub-search but throws when every search fails", async () => {
+  const tolerated = await runDeepResearch("q", {
+    decompose: async () => "alpha\nbeta",
+    searchWeb: async (query) => {
+      if (query === "alpha") {
+        throw new Error("SearXNG hiccup");
+      }
+      return fakeSearchResults(1);
+    },
+    fetchPage: async (url) => ({ url, title: "t", text: "x" }),
+    synthesize: async () => "report",
+  });
+  assert.equal(tolerated.sources.length, 1);
+
+  await assert.rejects(
+    () =>
+      runDeepResearch("q", {
+        decompose: async () => "alpha\nbeta",
+        searchWeb: async () => {
+          throw new Error("SearXNG down");
+        },
+        synthesize: async () => "unused",
+      }),
+    /SearXNG down/,
+  );
+});
+
+test("runDeepResearch stops with ResearchCancelledError when isCancelled flips true", async () => {
+  let reads = 0;
+  await assert.rejects(
+    () =>
+      runDeepResearch("q", {
+        maxSources: 3,
+        searchWeb: async () => fakeSearchResults(3),
+        fetchPage: async (url) => {
+          reads += 1;
+          return { url, title: "t", text: "x" };
+        },
+        synthesize: async () => "unused",
+        // Cancel after the first read completes.
+        isCancelled: () => reads >= 1,
+      }),
+    (error) => error instanceof ResearchCancelledError,
+  );
+  assert.equal(reads, 1, "cancellation should stop before the second read");
 });
 
 test("buildResearchPrompt numbers sources and includes the question", () => {

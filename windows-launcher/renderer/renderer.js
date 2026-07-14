@@ -35,6 +35,7 @@ const chatSendEl = document.getElementById("chatSend");
 const deepResearchBtnEl = document.getElementById("deepResearchBtn");
 const researchProgressEl = document.getElementById("researchProgress");
 const researchProgressLabelEl = document.getElementById("researchProgressLabel");
+const researchCancelBtnEl = document.getElementById("researchCancelBtn");
 const manaCanvasEl = document.getElementById("manaCanvas");
 const avatarZoomBtnEl = document.getElementById("avatarZoomBtn");
 
@@ -1160,6 +1161,7 @@ chatInputEl?.addEventListener("keydown", (event) => {
 });
 
 let deepResearchRunning = false;
+let currentResearchJobId = null;
 
 function setResearchProgress(label) {
   if (!researchProgressEl || !researchProgressLabelEl) {
@@ -1182,6 +1184,10 @@ function formatResearchReply(result) {
       lines.push(`[${source.index}] ${source.title || source.url} - ${source.url}${suffix}`);
     }
   }
+  if (result.subQueries?.length) {
+    lines.push("");
+    lines.push(`Searched: ${result.subQueries.join(" | ")}`);
+  }
   if (result.bounds.hitTimeLimit || result.bounds.hitSourceLimit) {
     lines.push("");
     lines.push(
@@ -1202,6 +1208,11 @@ async function pollResearchJob(jobId) {
     const job = await response.json();
     if (job.status === "done") {
       return job.result;
+    }
+    if (job.status === "cancelled") {
+      const cancelled = new Error("Research cancelled.");
+      cancelled.cancelled = true;
+      throw cancelled;
     }
     if (job.status === "error") {
       throw new Error(job.error || "Deep research failed");
@@ -1236,13 +1247,19 @@ async function startDeepResearch() {
       throw new Error(detail || `Failed to start research (${startResponse.status})`);
     }
     const { jobId } = await startResponse.json();
+    currentResearchJobId = jobId;
     const result = await pollResearchJob(jobId);
     appendChatMessage("mana", formatResearchReply(result));
   } catch (error) {
-    console.warn("Deep research failed:", error);
-    appendChatMessage("mana", `Research failed: ${error.message}`);
+    if (error.cancelled) {
+      appendChatMessage("mana", "Research cancelled.");
+    } else {
+      console.warn("Deep research failed:", error);
+      appendChatMessage("mana", `Research failed: ${error.message}`);
+    }
   } finally {
     deepResearchRunning = false;
+    currentResearchJobId = null;
     deepResearchBtnEl?.classList.remove("active");
     setResearchProgress(null);
   }
@@ -1250,6 +1267,20 @@ async function startDeepResearch() {
 
 deepResearchBtnEl?.addEventListener("click", () => {
   startDeepResearch();
+});
+
+researchCancelBtnEl?.addEventListener("click", async () => {
+  if (!currentResearchJobId) {
+    return;
+  }
+  setResearchProgress("Cancelling...");
+  try {
+    await fetch(`http://localhost:5005/research/${currentResearchJobId}/cancel`, {
+      method: "POST",
+    });
+  } catch (error) {
+    console.warn("Research cancel request failed:", error);
+  }
 });
 
 ipcRenderer.on("vision:hotkey", () => {
