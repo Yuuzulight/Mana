@@ -81,6 +81,52 @@ test("tts runtime builds Fish Speech requests with optional reference id", () =>
   });
 });
 
+test("tts runtime builds Fish Speech requests with inline reference audio", () => {
+  let readCalls = 0;
+  const fakeFs = {
+    readFileSync: (filePath) => {
+      readCalls += 1;
+      assert.equal(filePath, "tts-service/references/mana-mitsuki.wav");
+      return Buffer.from("fake-wav-bytes");
+    },
+  };
+  const runtime = createTtsRuntime({
+    fs: fakeFs,
+    env: {
+      FISH_TTS_REF_AUDIO: "tts-service/references/mana-mitsuki.wav",
+      FISH_TTS_REF_TEXT: "In a quiet village where the sky brushes the fields.",
+      FISH_TTS_REFERENCE_ID: "should-be-ignored",
+    },
+  });
+
+  const request = runtime.buildFishTtsRequest("hello");
+
+  assert.equal(request.reference_id, undefined);
+  assert.deepEqual(request.references, [
+    {
+      audio: Buffer.from("fake-wav-bytes").toString("base64"),
+      text: "In a quiet village where the sky brushes the fields.",
+    },
+  ]);
+
+  // A second call should reuse the cached base64 instead of re-reading the file.
+  runtime.buildFishTtsRequest("hello again");
+  assert.equal(readCalls, 1);
+});
+
+test("tts runtime rejects a Fish Speech reference audio/text mismatch", () => {
+  const runtime = createTtsRuntime({
+    env: {
+      FISH_TTS_REF_AUDIO: "tts-service/references/mana-mitsuki.wav",
+    },
+  });
+
+  assert.throws(
+    () => runtime.buildFishTtsRequest("hello"),
+    /FISH_TTS_REF_AUDIO and FISH_TTS_REF_TEXT must both be set together/,
+  );
+});
+
 test("tts runtime falls back from Fish Speech to Kokoro when configured", async () => {
   const calls = [];
   const runtime = createTtsRuntime({

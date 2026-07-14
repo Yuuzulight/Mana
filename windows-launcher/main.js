@@ -17,6 +17,7 @@ const IDLE_REPORT_INTERVAL_MS = 60000;
 const CHATTERBOX_TTS_URL = "http://127.0.0.1:5010/health";
 const KOKORO_TTS_URL = "http://127.0.0.1:5011/health";
 const GPT_SOVITS_TTS_URL = "http://127.0.0.1:9880/";
+const FISH_TTS_URL = "http://127.0.0.1:8080/v1/health";
 const ROOT_DIR = path.join(__dirname, "..");
 const TTS_DIR = path.join(ROOT_DIR, "tts-service");
 const WHISPER_DIR = path.join(ROOT_DIR, "tools", "whisper");
@@ -60,12 +61,19 @@ async function isBackendRunning() {
 }
 
 async function isTtsRunning() {
-  const provider = process.env.TTS_PROVIDER || "chatterbox";
+  const provider = process.env.TTS_PROVIDER || "fish";
   if (provider === "kokoro") {
     return isServiceRunning(KOKORO_TTS_URL);
   }
   if (provider === "gpt_sovits") {
     return isGptSovitsRunning();
+  }
+  if (provider === "fish") {
+    // Fish Speech's server setup is separate from Mana (see
+    // docs/fish_speech_tts.md) and not launcher-managed, but it can still be
+    // health-checked here so the UI reflects reality instead of silently
+    // checking Chatterbox's port instead.
+    return isServiceRunning(FISH_TTS_URL);
   }
   return isServiceRunning(CHATTERBOX_TTS_URL);
 }
@@ -91,8 +99,10 @@ function startTtsService() {
     return;
   }
 
-  const provider = process.env.TTS_PROVIDER || "chatterbox";
+  const provider = process.env.TTS_PROVIDER || "fish";
   if (!["kokoro", "chatterbox", "gpt_sovits"].includes(provider)) {
+    // Fish Speech's server (api_server.py, serving S1-mini) is started
+    // separately from Mana; see docs/fish_speech_tts.md.
     return;
   }
 
