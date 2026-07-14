@@ -130,6 +130,12 @@ function createTtsRuntime(options = {}) {
   const fishTtsUrl = env.FISH_TTS_URL || "http://127.0.0.1:8080";
   const fishTtsApiKey = env.FISH_TTS_API_KEY || null;
   const fishTtsReferenceId = env.FISH_TTS_REFERENCE_ID || null;
+  // Zero-shot in-context voice cloning: pass a reference clip's raw audio
+  // (base64-encoded) and its exact transcript with every request, per
+  // fish_speech's ServeReferenceAudio schema. Takes priority over
+  // FISH_TTS_REFERENCE_ID (a server-side pre-registered voice) when set.
+  const fishTtsRefAudio = env.FISH_TTS_REF_AUDIO || "";
+  const fishTtsRefText = env.FISH_TTS_REF_TEXT || "";
   const fishTtsFormat = env.FISH_TTS_FORMAT || "wav";
   const fishTtsLatency = env.FISH_TTS_LATENCY || "normal";
   const fishTtsMaxNewTokens = Number(env.FISH_TTS_MAX_NEW_TOKENS || 1024);
@@ -153,7 +159,7 @@ function createTtsRuntime(options = {}) {
   const gptSovitsPromptLang = env.GPT_SOVITS_PROMPT_LANG || "en";
   const gptSovitsFallbackProvider =
     env.GPT_SOVITS_TTS_FALLBACK_PROVIDER || "kokoro";
-  const ttsProvider = env.TTS_PROVIDER || (ttsBin ? "cli" : "chatterbox");
+  const ttsProvider = env.TTS_PROVIDER || (ttsBin ? "cli" : "fish");
   const kokoroManaVoice = env.KOKORO_MANA_VOICE || "jf_nezumi";
   // Pitch lift for a brighter, younger voice; the Kokoro service compensates
   // tempo so speech speed is unaffected. 1.0 disables.
@@ -244,6 +250,19 @@ function createTtsRuntime(options = {}) {
     return audio;
   }
 
+  let fishTtsRefAudioBase64Cache = null;
+  let fishTtsRefAudioBase64CachePath = null;
+
+  function loadFishTtsRefAudioBase64() {
+    if (fishTtsRefAudioBase64CachePath !== fishTtsRefAudio) {
+      fishTtsRefAudioBase64Cache = fs
+        .readFileSync(fishTtsRefAudio)
+        .toString("base64");
+      fishTtsRefAudioBase64CachePath = fishTtsRefAudio;
+    }
+    return fishTtsRefAudioBase64Cache;
+  }
+
   function buildFishTtsRequest(text) {
     const request = {
       text,
@@ -256,7 +275,16 @@ function createTtsRuntime(options = {}) {
       temperature: fishTtsTemperature,
     };
 
-    if (fishTtsReferenceId) {
+    if (fishTtsRefAudio || fishTtsRefText) {
+      if (!fishTtsRefAudio || !fishTtsRefText) {
+        throw new Error(
+          "FISH_TTS_REF_AUDIO and FISH_TTS_REF_TEXT must both be set together; see docs/fish_speech_tts.md",
+        );
+      }
+      request.references = [
+        { audio: loadFishTtsRefAudioBase64(), text: fishTtsRefText },
+      ];
+    } else if (fishTtsReferenceId) {
       request.reference_id = fishTtsReferenceId;
     }
 

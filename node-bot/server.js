@@ -15,7 +15,8 @@ Environment variables (set before running):
   whisper.cpp decoding tuning knobs, see docs/speech_recognition_improvement_plan.md
 - LLAMA_BIN : full path to llama.cpp/main executable (e.g. C:\llama.cpp\main.exe)
 - LLAMA_MODEL : full path to a GGUF model file, or an HF repo shorthand like user/model:Q4_K_M
-- TTS_PROVIDER : "cli", "chatterbox", "kokoro", or "fish"
+- TTS_PROVIDER : "cli", "chatterbox", "kokoro", or "fish" (default: "fish",
+  see docs/fish_speech_tts.md for the recommended S1-mini checkpoint)
 - TTS_BIN : full path to your TTS executable
 - TTS_MODEL : model path or model id for your TTS executable
 - TTS_ARGS_JSON : optional JSON array of CLI args with placeholders like {text}, {output}, {model}, {voice}, {speaker}
@@ -25,7 +26,10 @@ Environment variables (set before running):
 - KOKORO_TTS_URL : local Kokoro TTS microservice URL
 - FISH_TTS_URL : local Fish Speech server URL
 - FISH_TTS_API_KEY : optional Fish Speech bearer token
-- FISH_TTS_REFERENCE_ID : optional saved Fish Speech reference voice id
+- FISH_TTS_REFERENCE_ID : optional saved (server-side) Fish Speech reference voice id
+- FISH_TTS_REF_AUDIO, FISH_TTS_REF_TEXT : optional local reference clip path
+  + its exact transcript, for zero-shot in-context voice cloning on every
+  request (takes priority over FISH_TTS_REFERENCE_ID when both are set)
 - FISH_TTS_FALLBACK_PROVIDER : "kokoro", "chatterbox", or "none"
 - MANA_ALLOW_REMOTE_AI : set to "1" to allow OpenAI/proxy chat replies
 - GAMING_PROCESS_NAMES : optional comma-separated game process names for Gaming mode
@@ -209,7 +213,7 @@ const VTUBE_STUDIO_ENABLED = process.env.VTUBE_STUDIO_ENABLED !== "0";
 const VTUBE_STUDIO_REACTIONS_JSON =
   process.env.VTUBE_STUDIO_REACTIONS_JSON || "{}";
 const TTS_PROVIDER =
-  process.env.TTS_PROVIDER || (TTS_BIN ? "cli" : "chatterbox");
+  process.env.TTS_PROVIDER || (TTS_BIN ? "cli" : "fish");
 const DEFAULT_GAMING_PROCESS_NAMES = [
   "ffxiv_dx11.exe",
   "ffxiv.exe",
