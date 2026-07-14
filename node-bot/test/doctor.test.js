@@ -67,7 +67,7 @@ test("doctor checks return structured pass warn and fail results", () => {
     });
 
     assert.equal(result.ok, false);
-    assert.equal(result.summary.pass, 4);
+    assert.equal(result.summary.pass, 5);
     assert.equal(result.summary.warn, 9);
     assert.equal(result.summary.fail, 1);
 
@@ -83,6 +83,7 @@ test("doctor checks return structured pass warn and fail results", () => {
         "whisper-config",
         "tts-services",
         "mcp-server",
+        "recommended-model-profile",
         "mobile-auth",
         "storage",
         "zed-editor",
@@ -110,6 +111,32 @@ test("doctor checks return structured pass warn and fail results", () => {
   } finally {
     fs.rmSync(tempDir, { recursive: true, force: true });
   }
+});
+
+test("doctor surfaces the injected hardware model recommendation", () => {
+  const fakeRecommendation = {
+    profile: "fast",
+    label: "Fast fallback",
+    reason: "Detected ~6.0GB GPU VRAM (via nvidia-smi). Under 8GB...",
+    detected: { vramMb: 6144, ramMb: 32768 },
+  };
+  const result = runDoctorChecks({
+    env: { MANA_ALLOW_REMOTE_AI: "0" },
+    paths: { dataDir: fs.mkdtempSync(path.join(os.tmpdir(), "mana-doctor-test-")) },
+    ports: [],
+    services: [],
+    versions: { node: "v22.19.0" },
+    zedCommandResolver: () => null,
+    modelManagement: {
+      getRecommendedModelProfile: () => fakeRecommendation,
+    },
+  });
+
+  const check = result.checks.find((c) => c.id === "recommended-model-profile");
+  assert.equal(check.status, "pass");
+  assert.match(check.message, /Fast fallback \(fast\)/);
+  assert.match(check.message, /manual profile selection.*unaffected/i);
+  assert.deepEqual(check.details.recommendation, fakeRecommendation);
 });
 
 test("doctor reports Mana external agent entry point availability", () => {

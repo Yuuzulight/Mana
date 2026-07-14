@@ -1,5 +1,19 @@
 # Issue 46: Add Hardware-Aware Local Model Recommendations
 
+## Status
+
+Implemented. `node-bot/model-management.js` now detects GPU VRAM via
+`nvidia-smi` (best-effort, returns `null` gracefully if unavailable) and
+falls back to system RAM (`os.totalmem()`) as a rougher proxy, then
+recommends a starting profile (`fast`/`default`/`quality`) with the
+reasoning shown. No new dependency — both signals come from Node's
+built-ins or shelling out to a tool most local-CUDA users already have.
+Surfaced via `GET /models/status` (a new `recommendation` field) and a new
+Doctor check (`recommended-model-profile`), which `tools/setup-mana.ps1`
+already prints since it runs `node doctor.js` directly. The recommendation
+is purely informational — it doesn't change `LLAMA_MODEL`/profile
+selection, matching the acceptance criteria.
+
 ## Goal
 
 Help users pick a sensible default/fast/quality/coding model tier for their
