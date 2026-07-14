@@ -32,6 +32,12 @@ Environment variables (set before running):
 - MANA_MCP_SERVER_ENABLED : set to "1" to allow `npm run mcp` (mcp-server.js) to
   start Mana as a local Model Context Protocol server over stdio, see
   docs/roadmap/issue-42-mcp-support.md
+- MANA_RESEARCH_MAX_SOURCES, MANA_RESEARCH_MAX_TOTAL_MS,
+  MANA_RESEARCH_MAX_SUB_QUERIES : persistent defaults for Deep Research's
+  bounds (per-request body values still win; hard caps in
+  tools/deep-research.js apply regardless)
+- MANA_RESEARCH_JOB_TTL_MS : how long finished research jobs stay pollable
+  before being pruned from memory (default 10 minutes)
 
 This server aims to avoid Python. You must download and place the whisper.cpp and llama.cpp binaries and model files yourself.
 */
@@ -68,7 +74,10 @@ const { sessionsCapability } = require("./capabilities/sessions-capability");
 const {
   deepResearchCapability,
 } = require("./capabilities/deep-research-capability");
-const { RESEARCH_SYSTEM_PROMPT } = require("./tools/deep-research");
+const {
+  RESEARCH_SYSTEM_PROMPT,
+  SUB_QUERY_SYSTEM_PROMPT,
+} = require("./tools/deep-research");
 const {
   buildWebContextForPrompt,
   fetchPage,
@@ -1318,9 +1327,16 @@ function registerRoutes(app, upload, deps = {}) {
   ];
   const capabilityContext = {
     acpMemoryStore: deps.acpMemoryStore || acpMemoryStore,
+    env: deps.env || process.env,
     synthesize:
       deps.synthesize ||
       ((prompt) => runLocalLlamaReply(prompt, 800, "quality", RESEARCH_SYSTEM_PROMPT)),
+    // Deliberately the same profile as synthesize: a different profile here
+    // would force a llama-server model swap (kill/respawn) in the middle of
+    // every research pass. Sub-query planning is a short completion anyway.
+    decompose:
+      deps.decompose ||
+      ((prompt) => runLocalLlamaReply(prompt, 200, "quality", SUB_QUERY_SYSTEM_PROMPT)),
     UNIVERSALIS_DEFAULT_WORLD,
     FFXIV_PROFIT_TOP_LIMIT,
     FFXIV_RECIPE_SOURCE,

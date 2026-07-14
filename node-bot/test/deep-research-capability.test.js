@@ -154,6 +154,124 @@ test("a job that errors reports status error with the failure message", async ()
   });
 });
 
+test("POST /research/:jobId/cancel stops a running job between steps", async () => {
+  const app = express();
+  app.use(express.json());
+  let jobIdCounter = 0;
+  let releaseFirstRead;
+  const firstReadStarted = new Promise((resolveStarted) => {
+    let started = false;
+    deepResearchCapability.registerRoutes(app, {
+      searchWeb: async () => [
+        { title: "R1", url: "https://example.com/1", snippet: "s1" },
+        { title: "R2", url: "https://example.com/2", snippet: "s2" },
+      ],
+      fetchPage: (url) =>
+        new Promise((resolveRead) => {
+          if (!started) {
+            started = true;
+            releaseFirstRead = () => resolveRead({ url, title: "t", text: "x" });
+            resolveStarted();
+            return;
+          }
+          resolveRead({ url, title: "t", text: "x" });
+        }),
+      synthesize: async () => "should never be reached",
+      makeJobId: () => `job-${++jobIdCounter}`,
+    });
+  });
+
+  await withServer(app, async (baseUrl) => {
+    await fetch(`${baseUrl}/research/start`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ question: "q", maxSources: 2 }),
+    });
+
+    // Wait until the job is genuinely mid-read, then cancel while it hangs.
+    await firstReadStarted;
+    const cancelResp = await fetch(`${baseUrl}/research/job-1/cancel`, { method: "POST" });
+    const cancelBody = await cancelResp.json();
+    assert.equal(cancelResp.status, 200);
+    assert.equal(cancelBody.cancelRequested, true);
+
+    releaseFirstRead();
+    await waitFor(async () => {
+      const res = await fetch(`${baseUrl}/research/job-1`);
+      return (await res.json()).status === "cancelled";
+    });
+
+    const finalBody = await (await fetch(`${baseUrl}/research/job-1`)).json();
+    assert.equal(finalBody.status, "cancelled");
+    assert.equal(finalBody.result, null);
+
+    // Cancelling an already-finished job is an idempotent no-op.
+    const again = await fetch(`${baseUrl}/research/job-1/cancel`, { method: "POST" });
+    assert.equal((await again.json()).status, "cancelled");
+
+    const missing = await fetch(`${baseUrl}/research/nope/cancel`, { method: "POST" });
+    assert.equal(missing.status, 404);
+  });
+});
+
+test("MANA_RESEARCH_* env vars set the default bounds when the request omits them", async () => {
+  const app = express();
+  app.use(express.json());
+  const seen = {};
+  let jobIdCounter = 0;
+  deepResearchCapability.registerRoutes(app, {
+    env: { MANA_RESEARCH_MAX_SOURCES: "2" },
+    searchWeb: async (query, options) => {
+      seen.limit = options.limit;
+      return [];
+    },
+    synthesize: async () => "report",
+    makeJobId: () => `job-${++jobIdCounter}`,
+  });
+
+  await withServer(app, async (baseUrl) => {
+    await fetch(`${baseUrl}/research/start`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ question: "q" }),
+    });
+    await waitFor(async () => {
+      const res = await fetch(`${baseUrl}/research/job-1`);
+      return (await res.json()).status === "done";
+    });
+    assert.equal(seen.limit, 2, "env default should flow through to the search limit");
+  });
+});
+
+test("finished jobs are pruned from the store after the TTL", async () => {
+  const app = express();
+  app.use(express.json());
+  let jobIdCounter = 0;
+  deepResearchCapability.registerRoutes(app, {
+    jobTtlMs: 25,
+    searchWeb: async () => [],
+    synthesize: async () => "report",
+    makeJobId: () => `job-${++jobIdCounter}`,
+  });
+
+  await withServer(app, async (baseUrl) => {
+    await fetch(`${baseUrl}/research/start`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ question: "q" }),
+    });
+    await waitFor(async () => {
+      const res = await fetch(`${baseUrl}/research/job-1`);
+      return (await res.json()).status === "done";
+    });
+
+    await waitFor(async () => {
+      const res = await fetch(`${baseUrl}/research/job-1`);
+      return res.status === 404;
+    });
+  });
+});
+
 test("deep research capability reports health based on synthesize availability", () => {
   const configured = deepResearchCapability.getHealth({ synthesize: async () => "x" });
   assert.equal(configured.status, "configured");
