@@ -14,6 +14,15 @@ already prints since it runs `node doctor.js` directly. The recommendation
 is purely informational — it doesn't change `LLAMA_MODEL`/profile
 selection, matching the acceptance criteria.
 
+The VRAM tier boundary sits at 15GB, not 16GB: `nvidia-smi` reports usable
+VRAM, which comes in under a card's nominal size (driver/OS reservations),
+so a real 16GB card often reports ~16000-16300MB rather than the full
+16384. Cutting at 15360MB keeps 16GB cards correctly landing in `quality`
+instead of being silently under-recommended into `default`. The `quality`
+profile (`node-bot/ai/local-ai.js`) now prefers a 14B-class model ahead of
+the existing 8B one, so a 16GB upgrade actually gets used instead of
+recommending the same model `default` can already fall back to.
+
 ## Goal
 
 Help users pick a sensible default/fast/quality/coding model tier for their

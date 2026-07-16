@@ -22,6 +22,7 @@ const LLAMA_MODEL_PROFILES = {
   quality: {
     label: "Quality fallback",
     names: [
+      "Qwen3-14B-Q4_K_M.gguf",
       "Qwen3-8B-Q4_K_M.gguf",
       "Qwen3-4B-Q4_K_M.gguf",
       "qwen2.5-1.5b-instruct-q4_k_m.gguf",
