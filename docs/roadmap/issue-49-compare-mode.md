@@ -26,7 +26,30 @@ unit tests, matching the existing pattern for `reply-emotion.js` and
 loads the actual unmodified `renderer.js` with the backend and Electron
 APIs mocked.
 
-`desktop-client` is unchanged -- not in scope for this issue.
+Follow-up hardening, in both clients:
+
+- Each compare column's label shows which GGUF the selected profile is
+  actually using (e.g. "Quality fallback (Qwen3-14B-Q4_K_M.gguf)"), not
+  just the profile name -- profiles silently fall back to a smaller model
+  when the preferred file isn't downloaded, which would otherwise make two
+  "different" profiles compare identically with no indication why.
+- Profiles with no matching local GGUF (`available: false`) are disabled
+  and labeled "(unavailable)" in the dropdowns, and are excluded from the
+  default-pair selection, so a comparison can't silently run against
+  nothing.
+- A Cancel button appears while a comparison is in flight and aborts both
+  `/reply` calls client-side via `AbortController`; an aborted column
+  reads "Cancelled." instead of hanging indefinitely.
+- `desktop-client` now has the same Compare panel, adapted to its simpler
+  single transcript/reply layout: since it has no existing text-send flow
+  to hook into, Enter on the message box triggers the comparison only
+  while Compare mode is active, and the input's placeholder changes to
+  say so. `desktop-client/renderer/compare-mode.js` duplicates the pure
+  logic from the windows-launcher module (matching the existing
+  `reply-emotion.js` duplication pattern between the two clients);
+  desktop-client has no test runner of its own, so this half was verified
+  the same way the rest of desktop-client's UI work has been -- live in a
+  browser harness loading the real, unmodified `renderer.js`.
 
 ## Goal
 

@@ -28,7 +28,10 @@ const {
   shouldStopRecording,
 } = require("./voice-endpointing");
 const { detectReplyEmotion } = require("./reply-emotion");
-const { pickDefaultCompareProfiles } = require("./compare-mode");
+const {
+  formatCompareProfileLabel,
+  pickDefaultCompareProfiles,
+} = require("./compare-mode");
 
 const chatLogEl = document.getElementById("chatLog");
 const chatInputEl = document.getElementById("chatInput");
@@ -45,6 +48,7 @@ const comparePreferAEl = document.getElementById("comparePreferA");
 const comparePreferBEl = document.getElementById("comparePreferB");
 const compareColumnAEl = document.getElementById("compareColumnA");
 const compareColumnBEl = document.getElementById("compareColumnB");
+const compareCancelBtnEl = document.getElementById("compareCancelBtn");
 const manaCanvasEl = document.getElementById("manaCanvas");
 const avatarZoomBtnEl = document.getElementById("avatarZoomBtn");
 
@@ -382,29 +386,60 @@ async function setActiveModelProfile(profile) {
 // exploratory replies don't get saved to chat/session memory).
 let compareModeActive = false;
 let compareRunning = false;
+let compareAbortController = null;
+let latestCompareProfiles = {};
+
+function updateCompareLabels() {
+  if (compareLabelAEl) {
+    compareLabelAEl.textContent = formatCompareProfileLabel(
+      compareProfileAEl?.value,
+      latestCompareProfiles,
+    );
+  }
+  if (compareLabelBEl) {
+    compareLabelBEl.textContent = formatCompareProfileLabel(
+      compareProfileBEl?.value,
+      latestCompareProfiles,
+    );
+  }
+}
 
 function populateCompareSelects(profiles) {
   if (!compareProfileAEl || !compareProfileBEl) {
     return;
   }
-  const keys = Object.keys(profiles || {});
+  latestCompareProfiles = profiles || {};
+  const keys = Object.keys(latestCompareProfiles);
+  const availableKeys = keys.filter((key) => latestCompareProfiles[key]?.available);
   const previousA = compareProfileAEl.value;
   const previousB = compareProfileBEl.value;
 
   for (const selectEl of [compareProfileAEl, compareProfileBEl]) {
     selectEl.innerHTML = "";
     for (const key of keys) {
+      const profile = latestCompareProfiles[key];
       const option = document.createElement("option");
       option.value = key;
-      option.textContent = profiles[key]?.label || key;
+      option.textContent = profile?.available
+        ? profile.label || key
+        : `${profile?.label || key} (unavailable)`;
+      option.disabled = !profile?.available;
       selectEl.appendChild(option);
     }
   }
 
-  const [defaultA, defaultB] = pickDefaultCompareProfiles(keys);
-  compareProfileAEl.value = keys.includes(previousA) ? previousA : defaultA;
-  compareProfileBEl.value = keys.includes(previousB) ? previousB : defaultB;
+  // Prefer a profile that's actually usable; only fall back to an
+  // unavailable one if nothing on this machine is usable at all.
+  const pickFrom = availableKeys.length ? availableKeys : keys;
+  const [defaultA, defaultB] = pickDefaultCompareProfiles(pickFrom);
+  compareProfileAEl.value = availableKeys.includes(previousA) ? previousA : defaultA;
+  compareProfileBEl.value = availableKeys.includes(previousB) ? previousB : defaultB;
+
+  updateCompareLabels();
 }
+
+compareProfileAEl?.addEventListener("change", updateCompareLabels);
+compareProfileBEl?.addEventListener("change", updateCompareLabels);
 
 function setCompareModeActive(active) {
   compareModeActive = active;
@@ -426,11 +461,12 @@ function setComparePreferred(column) {
 comparePreferAEl?.addEventListener("click", () => setComparePreferred("a"));
 comparePreferBEl?.addEventListener("click", () => setComparePreferred("b"));
 
-async function fetchCompareReply(text, profile) {
+async function fetchCompareReply(text, profile, signal) {
   const response = await fetch("http://localhost:5005/reply", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ text, modelProfile: profile }),
+    signal,
   });
   if (!response.ok) {
     const message = await response.text();
@@ -438,6 +474,16 @@ async function fetchCompareReply(text, profile) {
   }
   const result = await response.json();
   return result.reply || "";
+}
+
+function describeCompareOutcome(settledResult) {
+  if (settledResult.status === "fulfilled") {
+    return settledResult.value;
+  }
+  if (settledResult.reason?.name === "AbortError") {
+    return "Cancelled.";
+  }
+  return `Failed: ${settledResult.reason.message}`;
 }
 
 async function runCompare() {
@@ -451,29 +497,40 @@ async function runCompare() {
   chatInputEl.value = "";
   compareRunning = true;
   setComparePreferred(null);
+  if (compareCancelBtnEl) {
+    compareCancelBtnEl.hidden = false;
+  }
 
   const profileA = compareProfileAEl?.value || "default";
   const profileB = compareProfileBEl?.value || "default";
-  if (compareLabelAEl) compareLabelAEl.textContent = profileA;
-  if (compareLabelBEl) compareLabelBEl.textContent = profileB;
+  updateCompareLabels();
   if (compareResultAEl) compareResultAEl.textContent = "Thinking...";
   if (compareResultBEl) compareResultBEl.textContent = "Thinking...";
 
+  compareAbortController = new AbortController();
+  const { signal } = compareAbortController;
+
   const [resultA, resultB] = await Promise.allSettled([
-    fetchCompareReply(text, profileA),
-    fetchCompareReply(text, profileB),
+    fetchCompareReply(text, profileA, signal),
+    fetchCompareReply(text, profileB, signal),
   ]);
 
   if (compareResultAEl) {
-    compareResultAEl.textContent =
-      resultA.status === "fulfilled" ? resultA.value : `Failed: ${resultA.reason.message}`;
+    compareResultAEl.textContent = describeCompareOutcome(resultA);
   }
   if (compareResultBEl) {
-    compareResultBEl.textContent =
-      resultB.status === "fulfilled" ? resultB.value : `Failed: ${resultB.reason.message}`;
+    compareResultBEl.textContent = describeCompareOutcome(resultB);
   }
+  compareAbortController = null;
   compareRunning = false;
+  if (compareCancelBtnEl) {
+    compareCancelBtnEl.hidden = true;
+  }
 }
+
+compareCancelBtnEl?.addEventListener("click", () => {
+  compareAbortController?.abort();
+});
 
 setAvatarState("idle");
 setInterval(checkServices, 5000);

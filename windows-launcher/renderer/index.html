@@ -288,6 +288,13 @@
         font-size: 12px;
       }
 
+      #compareSelectRow select option:disabled { color: var(--muted); }
+
+      #compareCancelBtn {
+        padding: 6px 10px;
+        font-size: 12px;
+      }
+
       #compareResults {
         display: flex;
         gap: 10px;
@@ -577,6 +584,7 @@
             <div id="compareSelectRow">
               <select id="compareProfileA"></select>
               <select id="compareProfileB"></select>
+              <button id="compareCancelBtn" title="Cancel the in-flight comparison" hidden>Cancel</button>
             </div>
             <div id="compareResults">
               <div class="compareColumn" id="compareColumnA">
