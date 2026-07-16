@@ -67,7 +67,7 @@ test("doctor checks return structured pass warn and fail results", () => {
     });
 
     assert.equal(result.ok, false);
-    assert.equal(result.summary.pass, 5);
+    assert.equal(result.summary.pass, 6);
     assert.equal(result.summary.warn, 9);
     assert.equal(result.summary.fail, 1);
 
