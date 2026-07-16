@@ -1589,8 +1589,8 @@ function registerRoutes(app, upload, deps = {}) {
         cloudflareConfigured ? "configured" : "unavailable",
         cloudflareConfigured,
         cloudflareConfigured
-          ? "Cloudflare Tunnel is configured."
-          : "Cloudflare Tunnel is not configured.",
+          ? `Cloudflare Tunnel is configured -- Mana's backend may be reachable from the internet through it. Keep the mobile passcode enabled and see docs/mobile_pwa_cloudflare.md.${mobileAuthConfigured ? "" : " Mobile auth is NOT currently configured; anyone who reaches the tunnel hostname can hit unauthenticated routes."}`
+          : "Cloudflare Tunnel is not configured. Mana is only reachable locally.",
       ),
       vtubeStudio: makeHealthComponent(
         vtubeEnabled ? "configured" : "unavailable",

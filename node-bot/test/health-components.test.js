@@ -73,6 +73,10 @@ test("health component details do not expose secret values", async () => {
     assert.equal(response.status, 200);
     assert.equal(body.components.mobileAuth.status, "available");
     assert.equal(body.components.cloudflareTunnel.status, "configured");
+    assert.match(
+      body.components.cloudflareTunnel.message,
+      /reachable from the internet/i,
+    );
     assert.equal(body.components.vtubeStudio.status, "configured");
     assert.equal(raw.includes("secret-passcode-hash"), false);
     assert.equal(raw.includes("secret-session-value"), false);
