@@ -5,6 +5,7 @@ const path = require("node:path");
 const { createEditorIntegrations } = require("./zed-integration");
 const { assertLocalAiPolicy } = require("./mana-acp-agent");
 const { isMcpServerEnabled } = require("./mcp-server");
+const { createModelManagement } = require("./model-management");
 
 const DEFAULT_NODE_MAJOR = 18;
 const DEFAULT_BACKEND_PORT = 5005;
@@ -101,6 +102,17 @@ function checkMcpServer(env) {
     "MCP server",
     "pass",
     "MCP server is enabled. Run `npm run mcp` to start it over stdio for MCP clients like Claude Desktop or Claude Code.",
+  );
+}
+
+function checkRecommendedModelProfile(modelManagement) {
+  const recommendation = modelManagement.getRecommendedModelProfile();
+  return makeCheck(
+    "recommended-model-profile",
+    "Recommended model profile",
+    "pass",
+    `Suggested starting profile: ${recommendation.label} (${recommendation.profile}). ${recommendation.reason} This is only a suggestion -- manual profile selection (LLAMA_MODEL, or TTS_PROVIDER-style overrides) is unaffected.`,
+    { recommendation },
   );
 }
 
@@ -540,6 +552,8 @@ function runDoctorChecks(options = {}) {
   const paths = options.paths || {
     dataDir: env.MOBILE_MEMORY_DIR || path.join(__dirname, "data"),
   };
+  const modelManagement =
+    options.modelManagement || createModelManagement({ env });
 
   const checks = [
     checkNodeRuntime(versions.node),
@@ -571,6 +585,7 @@ function runDoctorChecks(options = {}) {
     checkWhisperConfig(env),
     checkTtsServices(options.services || []),
     checkMcpServer(env),
+    checkRecommendedModelProfile(modelManagement),
     checkMobileAuth(env),
     checkRemoteExposure(env),
     checkStorage(paths),
