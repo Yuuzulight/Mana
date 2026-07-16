@@ -28,10 +28,23 @@ const {
   shouldStopRecording,
 } = require("./voice-endpointing");
 const { detectReplyEmotion } = require("./reply-emotion");
+const { pickDefaultCompareProfiles } = require("./compare-mode");
 
 const chatLogEl = document.getElementById("chatLog");
 const chatInputEl = document.getElementById("chatInput");
 const chatSendEl = document.getElementById("chatSend");
+const compareModeBtnEl = document.getElementById("compareModeBtn");
+const comparePanelEl = document.getElementById("comparePanel");
+const compareProfileAEl = document.getElementById("compareProfileA");
+const compareProfileBEl = document.getElementById("compareProfileB");
+const compareResultAEl = document.getElementById("compareResultA");
+const compareResultBEl = document.getElementById("compareResultB");
+const compareLabelAEl = document.getElementById("compareLabelA");
+const compareLabelBEl = document.getElementById("compareLabelB");
+const comparePreferAEl = document.getElementById("comparePreferA");
+const comparePreferBEl = document.getElementById("comparePreferB");
+const compareColumnAEl = document.getElementById("compareColumnA");
+const compareColumnBEl = document.getElementById("compareColumnB");
 const manaCanvasEl = document.getElementById("manaCanvas");
 const avatarZoomBtnEl = document.getElementById("avatarZoomBtn");
 
@@ -326,6 +339,7 @@ function describeModelStatus(status) {
 function applyModelStatus(status) {
   selectedModelProfile = status.activeProfile || selectedModelProfile;
   renderModelModeButtons(status.profiles, status.activeProfile);
+  populateCompareSelects(status.profiles);
   if (modelStatusEl) {
     modelStatusEl.textContent = describeModelStatus(status);
   }
@@ -360,6 +374,105 @@ async function setActiveModelProfile(profile) {
   } catch (error) {
     console.warn("Mana set model profile failed:", error);
   }
+}
+
+// Compare mode: an opt-in side-by-side view (not part of the normal chat
+// flow) that sends one prompt to two model profiles via the existing
+// /reply endpoint -- no new backend inference path, no sessionId (so these
+// exploratory replies don't get saved to chat/session memory).
+let compareModeActive = false;
+let compareRunning = false;
+
+function populateCompareSelects(profiles) {
+  if (!compareProfileAEl || !compareProfileBEl) {
+    return;
+  }
+  const keys = Object.keys(profiles || {});
+  const previousA = compareProfileAEl.value;
+  const previousB = compareProfileBEl.value;
+
+  for (const selectEl of [compareProfileAEl, compareProfileBEl]) {
+    selectEl.innerHTML = "";
+    for (const key of keys) {
+      const option = document.createElement("option");
+      option.value = key;
+      option.textContent = profiles[key]?.label || key;
+      selectEl.appendChild(option);
+    }
+  }
+
+  const [defaultA, defaultB] = pickDefaultCompareProfiles(keys);
+  compareProfileAEl.value = keys.includes(previousA) ? previousA : defaultA;
+  compareProfileBEl.value = keys.includes(previousB) ? previousB : defaultB;
+}
+
+function setCompareModeActive(active) {
+  compareModeActive = active;
+  compareModeBtnEl?.classList.toggle("active", active);
+  if (comparePanelEl) {
+    comparePanelEl.hidden = !active;
+  }
+}
+
+compareModeBtnEl?.addEventListener("click", () => {
+  setCompareModeActive(!compareModeActive);
+});
+
+function setComparePreferred(column) {
+  compareColumnAEl?.classList.toggle("preferred", column === "a");
+  compareColumnBEl?.classList.toggle("preferred", column === "b");
+}
+
+comparePreferAEl?.addEventListener("click", () => setComparePreferred("a"));
+comparePreferBEl?.addEventListener("click", () => setComparePreferred("b"));
+
+async function fetchCompareReply(text, profile) {
+  const response = await fetch("http://localhost:5005/reply", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ text, modelProfile: profile }),
+  });
+  if (!response.ok) {
+    const message = await response.text();
+    throw new Error(message || `Reply failed (${response.status})`);
+  }
+  const result = await response.json();
+  return result.reply || "";
+}
+
+async function runCompare() {
+  if (!chatInputEl || compareRunning) {
+    return;
+  }
+  const text = chatInputEl.value.trim();
+  if (!text) {
+    return;
+  }
+  chatInputEl.value = "";
+  compareRunning = true;
+  setComparePreferred(null);
+
+  const profileA = compareProfileAEl?.value || "default";
+  const profileB = compareProfileBEl?.value || "default";
+  if (compareLabelAEl) compareLabelAEl.textContent = profileA;
+  if (compareLabelBEl) compareLabelBEl.textContent = profileB;
+  if (compareResultAEl) compareResultAEl.textContent = "Thinking...";
+  if (compareResultBEl) compareResultBEl.textContent = "Thinking...";
+
+  const [resultA, resultB] = await Promise.allSettled([
+    fetchCompareReply(text, profileA),
+    fetchCompareReply(text, profileB),
+  ]);
+
+  if (compareResultAEl) {
+    compareResultAEl.textContent =
+      resultA.status === "fulfilled" ? resultA.value : `Failed: ${resultA.reason.message}`;
+  }
+  if (compareResultBEl) {
+    compareResultBEl.textContent =
+      resultB.status === "fulfilled" ? resultB.value : `Failed: ${resultB.reason.message}`;
+  }
+  compareRunning = false;
 }
 
 setAvatarState("idle");
@@ -1146,13 +1259,21 @@ async function sendTypedMessage() {
 }
 
 chatSendEl?.addEventListener("click", () => {
-  sendTypedMessage();
+  if (compareModeActive) {
+    runCompare();
+  } else {
+    sendTypedMessage();
+  }
 });
 
 chatInputEl?.addEventListener("keydown", (event) => {
   if (event.key === "Enter" && !event.shiftKey) {
     event.preventDefault();
-    sendTypedMessage();
+    if (compareModeActive) {
+      runCompare();
+    } else {
+      sendTypedMessage();
+    }
   }
 });
 
