@@ -48,6 +48,19 @@ body{
 #messageInput{width:100%;min-height:42px;max-height:140px;padding:10px;border-radius:16px;border:1px solid var(--border);resize:none;font-size:14px}
 .input-actions{display:flex;gap:8px;margin-top:8px}
 .primary{background:var(--accent);color:white;border:none;padding:8px 12px;border-radius:10px}
+#btnCompare.active{background:var(--accent);color:white;border-color:var(--accent)}
+
+.compare-panel{display:flex;flex-direction:column;gap:8px;padding:10px;border:1px solid var(--border);border-radius:8px;background:var(--panel);margin-top:8px}
+.compare-select-row{display:flex;align-items:center;gap:10px}
+.compare-select-row select{flex:1;padding:6px 8px;border-radius:6px;border:1px solid var(--border);background:#fff;font-size:12px}
+.compare-select-row select option:disabled{color:var(--muted)}
+#compareCancelBtn{padding:6px 10px;font-size:12px}
+.compare-results{display:flex;gap:10px}
+.compare-column{flex:1;min-width:0;padding:8px 10px;border:1px solid var(--border);border-radius:8px;background:#fff;font-size:13px;line-height:1.4}
+.compare-column.preferred{border-color:var(--accent)}
+.compare-column-header{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:6px;font-size:12px;color:var(--muted)}
+.compare-prefer-btn{padding:3px 8px;font-size:11px}
+.compare-column-body{white-space:pre-wrap}
 
 /* Logs footer */
 .logs-footer{padding:8px 20px;border-top:1px solid var(--border);background:#fafafa}
