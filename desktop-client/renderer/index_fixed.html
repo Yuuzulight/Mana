@@ -66,7 +66,31 @@
           <textarea id="messageInput" placeholder="Write a message..." rows="1"></textarea>
           <div class="input-actions">
             <button id="btnRecord" class="primary">Hold to Talk</button>
+            <button id="btnCompare" title="Compare mode: send this prompt to two model profiles and see both replies side by side">Compare</button>
             <button id="btnClear">Clear</button>
+          </div>
+          <div id="comparePanel" class="compare-panel" hidden>
+            <div class="compare-select-row">
+              <select id="compareProfileA"></select>
+              <select id="compareProfileB"></select>
+              <button id="compareCancelBtn" title="Cancel the in-flight comparison" hidden>Cancel</button>
+            </div>
+            <div class="compare-results">
+              <div class="compare-column" id="compareColumnA">
+                <div class="compare-column-header">
+                  <span id="compareLabelA">Profile A</span>
+                  <button class="compare-prefer-btn" id="comparePreferA">Prefer this</button>
+                </div>
+                <div class="compare-column-body" id="compareResultA">Type a prompt and click Compare.</div>
+              </div>
+              <div class="compare-column" id="compareColumnB">
+                <div class="compare-column-header">
+                  <span id="compareLabelB">Profile B</span>
+                  <button class="compare-prefer-btn" id="comparePreferB">Prefer this</button>
+                </div>
+                <div class="compare-column-body" id="compareResultB">Type a prompt and click Compare.</div>
+              </div>
+            </div>
           </div>
         </div>
       </div>
