@@ -54,15 +54,19 @@ function recommendModelProfile({ vramMb, ramMb }) {
         reason: `Detected ~${vramGb}GB GPU VRAM (via nvidia-smi). Under 8GB, the fast/1.5B-class profile leaves headroom for TTS and Whisper running alongside the LLM.`,
       };
     }
-    if (vramMb < 16384) {
+    // nvidia-smi reports usable VRAM, which comes in a bit under a card's
+    // nominal size (driver/OS reservations) -- a real 16GB card often
+    // reports ~16000-16300MB, not >=16384. Cut at 15360 (15GB) so it still
+    // lands in "quality" instead of being silently under-recommended.
+    if (vramMb < 15360) {
       return {
         profile: "default",
-        reason: `Detected ~${vramGb}GB GPU VRAM (via nvidia-smi). 8-16GB comfortably fits the default 4B-class profile.`,
+        reason: `Detected ~${vramGb}GB GPU VRAM (via nvidia-smi). 8-15GB comfortably fits the default 4B-class profile.`,
       };
     }
     return {
       profile: "quality",
-      reason: `Detected ~${vramGb}GB GPU VRAM (via nvidia-smi). 16GB+ comfortably fits the quality 8B-class profile.`,
+      reason: `Detected ~${vramGb}GB GPU VRAM (via nvidia-smi). 15GB+ comfortably fits the quality 8-14B-class profile.`,
     };
   }
 

@@ -41,6 +41,18 @@ test("model management reports available and missing profile candidates", () => 
   );
 });
 
+test("quality profile prefers a 14B-class model over the 8B fallback when both are present", () => {
+  const root = path.join("C:", "ManaAI", "Mana", "tools", "llama", "gguf-models");
+  const fourteenB = path.join(root, "Qwen3-14B-Q4_K_M.gguf");
+  const eightB = path.join(root, "Qwen3-8B-Q4_K_M.gguf");
+  const manager = createModelManagement({
+    env: {},
+    localGgufs: [eightB, fourteenB],
+  });
+
+  assert.equal(manager.getModelStatus().profiles.quality.selectedModel, fourteenB);
+});
+
 test("model management switches active profile and rejects unknown profiles", () => {
   const manager = createModelManagement({ env: {}, localGgufs: [] });
 
@@ -105,6 +117,15 @@ test("recommendModelProfile picks a tier from VRAM when available", () => {
   assert.equal(recommendModelProfile({ vramMb: 6144, ramMb: 65536 }).profile, "fast");
   assert.equal(recommendModelProfile({ vramMb: 16384, ramMb: 8192 }).profile, "quality");
   assert.match(recommendModelProfile({ vramMb: 6144, ramMb: null }).reason, /nvidia-smi/i);
+});
+
+test("recommendModelProfile treats a real 16GB card as quality despite nvidia-smi under-reporting", () => {
+  // A real 16GB card typically reports ~16000-16300MB via nvidia-smi
+  // (driver/OS reservations), never the full 16384 -- the tier boundary
+  // must sit below that or a genuine 16GB upgrade gets silently
+  // recommended "default" instead of "quality".
+  assert.equal(recommendModelProfile({ vramMb: 16043, ramMb: 8192 }).profile, "quality");
+  assert.equal(recommendModelProfile({ vramMb: 15359, ramMb: 8192 }).profile, "default");
 });
 
 test("recommendModelProfile falls back to system RAM when VRAM is unknown", () => {
