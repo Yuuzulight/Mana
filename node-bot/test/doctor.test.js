@@ -85,6 +85,7 @@ test("doctor checks return structured pass warn and fail results", () => {
         "mcp-server",
         "recommended-model-profile",
         "mobile-auth",
+        "remote-exposure",
         "storage",
         "zed-editor",
         "vscode-editor",
@@ -137,6 +138,52 @@ test("doctor surfaces the injected hardware model recommendation", () => {
   assert.match(check.message, /Fast fallback \(fast\)/);
   assert.match(check.message, /manual profile selection.*unaffected/i);
   assert.deepEqual(check.details.recommendation, fakeRecommendation);
+});
+
+test("doctor passes remote exposure when no tunnel is configured", () => {
+  const result = runDoctorChecks({
+    env: {},
+    paths: { dataDir: fs.mkdtempSync(path.join(os.tmpdir(), "mana-doctor-test-")) },
+    ports: [],
+    services: [],
+    versions: { node: "v22.19.0" },
+    zedCommandResolver: () => null,
+  });
+  const check = result.checks.find((c) => c.id === "remote-exposure");
+  assert.equal(check.status, "pass");
+  assert.match(check.message, /only reachable on localhost/i);
+});
+
+test("doctor warns on remote exposure when a tunnel and mobile auth are both configured", () => {
+  const result = runDoctorChecks({
+    env: {
+      MANA_TUNNEL_URL: "https://mana.example.com",
+      MOBILE_PASSCODE_HASH: "hash",
+      MOBILE_SESSION_SECRET: "secret",
+    },
+    paths: { dataDir: fs.mkdtempSync(path.join(os.tmpdir(), "mana-doctor-test-")) },
+    ports: [],
+    services: [],
+    versions: { node: "v22.19.0" },
+    zedCommandResolver: () => null,
+  });
+  const check = result.checks.find((c) => c.id === "remote-exposure");
+  assert.equal(check.status, "warn");
+  assert.match(check.message, /reachable from the internet/i);
+});
+
+test("doctor fails remote exposure when a tunnel is configured without mobile auth", () => {
+  const result = runDoctorChecks({
+    env: { CLOUDFLARE_TUNNEL_TOKEN: "token" },
+    paths: { dataDir: fs.mkdtempSync(path.join(os.tmpdir(), "mana-doctor-test-")) },
+    ports: [],
+    services: [],
+    versions: { node: "v22.19.0" },
+    zedCommandResolver: () => null,
+  });
+  const check = result.checks.find((c) => c.id === "remote-exposure");
+  assert.equal(check.status, "fail");
+  assert.match(check.message, /unauthenticated routes/i);
 });
 
 test("doctor reports Mana external agent entry point availability", () => {

@@ -211,6 +211,51 @@ function checkMobileAuth(env) {
   );
 }
 
+function hasEnvValue(env, names) {
+  return names.some((name) => typeof env[name] === "string" && env[name].trim());
+}
+
+// Cloudflare Tunnel (or an equivalent MANA_TUNNEL_URL) makes the backend
+// reachable from the internet, not just localhost -- this is a genuine
+// security-relevant heads-up, not just a "is it configured" status.
+function checkRemoteExposure(env) {
+  const tunnelConfigured = hasEnvValue(env, [
+    "CLOUDFLARE_TUNNEL_TOKEN",
+    "CLOUDFLARE_TUNNEL_ID",
+    "CLOUDFLARE_TUNNEL_URL",
+    "MANA_TUNNEL_URL",
+  ]);
+
+  if (!tunnelConfigured) {
+    return makeCheck(
+      "remote-exposure",
+      "Remote exposure",
+      "pass",
+      "No remote tunnel is configured. Mana is only reachable on localhost.",
+    );
+  }
+
+  const mobileAuthConfigured =
+    hasEnvValue(env, ["MOBILE_PASSCODE_HASH", "MANA_MOBILE_PASSCODE_HASH"]) &&
+    hasEnvValue(env, ["MOBILE_SESSION_SECRET", "MANA_MOBILE_SESSION_SECRET"]);
+
+  if (!mobileAuthConfigured) {
+    return makeCheck(
+      "remote-exposure",
+      "Remote exposure",
+      "fail",
+      "A remote tunnel is configured but mobile passcode auth is NOT. Anyone who reaches the tunnel hostname can hit unauthenticated routes. Set MOBILE_PASSCODE_HASH and MOBILE_SESSION_SECRET, or remove the tunnel config.",
+    );
+  }
+
+  return makeCheck(
+    "remote-exposure",
+    "Remote exposure",
+    "warn",
+    "A remote tunnel is configured -- Mana's backend may be reachable from the internet through it. Mobile passcode auth is configured, but double-check docs/mobile_pwa_cloudflare.md's hardening steps.",
+  );
+}
+
 function checkStorage(paths = {}) {
   const dataDir = paths.dataDir || path.join(__dirname, "data");
   try {
@@ -542,6 +587,7 @@ function runDoctorChecks(options = {}) {
     checkMcpServer(env),
     checkRecommendedModelProfile(modelManagement),
     checkMobileAuth(env),
+    checkRemoteExposure(env),
     checkStorage(paths),
     ...checkEditorIntegrations({
       env,
