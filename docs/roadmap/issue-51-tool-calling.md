@@ -38,8 +38,8 @@ requesting tools.
 
 ## Status
 
-Implemented, foundational scope only — one read-only tool, not wired into
-the default chat flow yet (see "Not done yet" below).
+Implemented and wired into the normal chat pipeline, opt-in and scoped to
+the one profile verified to support it reliably.
 
 ### Finding: tool-calling reliability depends on which model, not just the infra
 
@@ -89,21 +89,39 @@ its tool-calling could be trusted — not attempted here, out of scope for
   respond sensibly ("I can't read that file") instead of the whole reply
   failing.
 
-### Not done yet (deliberately)
+### Wired into the normal chat pipeline
 
-- **Not wired into `buildAssistantReply`/the normal chat pipeline.** Every
-  existing reply path (`/reply`, `/transcribe`, mobile routes) is
-  unaffected — this issue adds a new, tested, independently callable
-  capability, not a silent behavior change to how Mana already replies.
-  Turning it on for real conversations is a deliberate follow-up decision
-  (which profile(s), which tool(s), any UI indicator when a tool was used),
-  not bundled into this foundational pass.
-- No explicit user-approval UI, since the only tool that exists is
-  read-only and already policy-scoped to the project directory — the
-  acceptance criterion ("no destructive/write tool is auto-approved")
-  holds trivially because no destructive tool is defined. An approval flow
-  becomes necessary the moment a write/execute tool is proposed, not
-  before.
+`buildAssistantReply()` in `node-bot/server.js` now routes through a
+`replyMaybeWithTools()` helper before falling back to the existing plain
+reply path. Since `buildAssistantReply` is the single function every reply
+route already shares (`/reply`, `/transcribe`, both mobile routes), all of
+them get this automatically — nothing route-specific was added.
+
+Guardrails, all of which must hold before a tool-aware call is even
+attempted:
+
+- **Opt-in**: off unless `MANA_TOOL_CALLING_ENABLED=1` is set. Nothing
+  changes for anyone who hasn't turned it on.
+- **Profile-scoped**: only fires when the resolved profile is `"default"`
+  (Qwen3-4B) — the one profile the real-hardware testing above actually
+  verified. A `coding`/`fast`/`quality` request always uses the plain path,
+  regardless of the flag.
+- **Availability-checked**: skipped if llama-server isn't enabled (the
+  tool-calling API doesn't exist on the llama-cli fallback path).
+- **Fail-soft**: a thrown error or an empty final reply from the tool-aware
+  path falls straight back to the plain reply — a tool-calling problem
+  never turns into a broken or missing reply for the user, it just quietly
+  behaves like tool-calling was off for that turn.
+
+When a tool is actually used, it's logged (`Mana tool-calling:
+read_file(ok)`, or `(error)` if the policy rejected it) so tool use is
+visible in the server console without needing a dedicated UI yet.
+
+No explicit user-approval UI was added, since the only tool that exists is
+read-only and already policy-scoped to the project directory — the
+acceptance criterion ("no destructive/write tool is auto-approved") holds
+trivially because no destructive tool is defined. An approval flow becomes
+necessary the moment a write/execute tool is proposed, not before.
 
 ## Verified
 
@@ -116,6 +134,12 @@ its tool-calling could be trusted — not attempted here, out of scope for
   the model, no spurious tool round when none is needed, unknown tool name
   rejected via the real policy) — 14/14 pass in that file, all prior tests
   unaffected.
+- `node-bot/test/server-routes.test.js` — 6 new tests for the
+  `replyMaybeWithTools()` wiring through the real `/reply` route: off by
+  default, activates only for `default` + enabled + llama-server available,
+  stays off for a non-default profile even when enabled, and falls back
+  cleanly when llama-server is unavailable / the call throws / the result
+  is empty — 34/34 pass in that file.
 - Full `node run_tests.js` — all files pass, no regressions.
 - Real hardware verification (not simulated): drove the actual
   `llama-server.exe` + real Qwen3-4B and qwen2.5-coder-7b GGUF models
