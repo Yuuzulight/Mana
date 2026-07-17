@@ -591,6 +591,121 @@ function createLlamaServerRuntime(options = {}) {
     return content.replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
   }
 
+  // Foundational tool-calling loop (issue #51). Single round only: the
+  // model gets one chance to call tools, sees the results, and produces a
+  // final reply -- deliberately not a multi-step agent loop yet. Every tool
+  // call is executed through the caller-supplied toolPolicy (see
+  // ai/tool-policy.js), never dispatched by name without going through it,
+  // so the actual read/write/exec boundary lives in one place.
+  //
+  // Real-hardware finding behind this: Qwen3-4B (the "default" profile)
+  // reliably emits proper OpenAI-format tool_calls via llama-server's
+  // --jinja chat template (3/3 in testing). qwen2.5-coder-7b (the "coding"
+  // profile) does not -- it wraps the same well-formed JSON in a markdown
+  // code fence inside `content` instead of the <tool_call> XML tags its own
+  // template asks for, so llama-server's parser never recognizes it as a
+  // tool call. Tool-calling here is scoped to profiles that pass this check
+  // (currently: default), not assumed to work everywhere.
+  async function runToolAwareReply(
+    prompt,
+    toolPolicy,
+    { maxTokens = 512, profile = "default", overrideSystemPrompt = null } = {},
+  ) {
+    if (typeof fetchImpl !== "function") {
+      throw new Error("fetch is not available; cannot use llama-server");
+    }
+    if (!toolPolicy || typeof toolPolicy.executeTool !== "function") {
+      throw new Error(
+        "runToolAwareReply requires a toolPolicy with executeTool()",
+      );
+    }
+    const startedAt = nowMs();
+    await ensureServer(profile);
+
+    const messages = [
+      { role: "system", content: overrideSystemPrompt || systemPrompt },
+      { role: "user", content: prompt },
+    ];
+
+    async function complete() {
+      const resp = await fetchImpl(
+        `http://127.0.0.1:${state.port}/v1/chat/completions`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            messages,
+            tools: toolPolicy.tools,
+            tool_choice: "auto",
+            max_tokens: maxTokens,
+          }),
+        },
+      );
+      if (!resp.ok) {
+        const text = await resp.text().catch(() => "");
+        throw new Error(
+          `llama-server reply failed (${resp.status}): ${text.slice(0, 500)}`,
+        );
+      }
+      return resp.json();
+    }
+
+    let json = await complete();
+    let message = (json && json.choices && json.choices[0] && json.choices[0].message) || {};
+    const requestedToolCalls = Array.isArray(message.tool_calls)
+      ? message.tool_calls
+      : [];
+    const executedToolCalls = [];
+
+    if (requestedToolCalls.length) {
+      messages.push({
+        role: "assistant",
+        content: message.content || null,
+        tool_calls: requestedToolCalls,
+      });
+
+      for (const call of requestedToolCalls) {
+        const name = call.function && call.function.name;
+        let args = {};
+        try {
+          args = call.function && call.function.arguments
+            ? JSON.parse(call.function.arguments)
+            : {};
+        } catch (e) {
+          // Malformed arguments from the model -- report back as a tool
+          // error below instead of throwing and losing the whole reply.
+        }
+
+        let resultText;
+        try {
+          const result = toolPolicy.executeTool(name, args);
+          resultText = String(result);
+          executedToolCalls.push({ name, args, ok: true });
+        } catch (e) {
+          resultText = `Error: ${e.message}`;
+          executedToolCalls.push({ name, args, ok: false, error: e.message });
+        }
+
+        messages.push({
+          role: "tool",
+          tool_call_id: call.id,
+          content: resultText,
+        });
+      }
+
+      json = await complete();
+      message = (json && json.choices && json.choices[0] && json.choices[0].message) || {};
+    }
+
+    const content = String(message.content || "")
+      .replace(/<think>[\s\S]*?<\/think>/gi, "")
+      .trim();
+
+    scheduleIdleShutdown();
+    logPerf("llama-server-tool-reply", startedAt);
+    return { content, toolCalls: executedToolCalls };
+  }
+
   // Vision replies must go through llama-server (llama-cli has no equivalent
   // one-shot multimodal path here), so there is no CLI fallback: errors
   // propagate to the caller with a configuration hint.
@@ -685,6 +800,7 @@ function createLlamaServerRuntime(options = {}) {
     getVisionStatus,
     isEnabled,
     runLocalAssistantReply,
+    runToolAwareReply,
     runVisionReply,
     getStatus,
     stop,
