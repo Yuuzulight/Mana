@@ -570,3 +570,144 @@ test("runToolAwareReply rejects an unknown tool call name via the policy rather 
   assert.equal(result.toolCalls[0].ok, false);
   assert.match(result.toolCalls[0].error, /unknown tool: exec_shell_command/);
 });
+
+// Two independently controllable "models": runLocalAssistantReply resolves
+// via env.LLAMA_MODEL (chat "default" profile short-circuits to it directly,
+// see local-ai.js), runVisionReply resolves via env.LLAMA_VISION_MODEL. Both
+// funnel into the same ensureServerConfig/debounce state machine, so this is
+// a clean way to force a real cross-model swap without depending on the
+// real tools/llama directory contents.
+function makeTwoModelEnv() {
+  return {
+    ...makeFakeEnv(),
+    LLAMA_VISION_MODEL: "C:\\models\\vision.gguf",
+    LLAMA_VISION_MMPROJ: "C:\\models\\vision-mmproj.gguf",
+  };
+}
+
+function makeTwoModelFs() {
+  return {
+    existsSync: (target) =>
+      [
+        "C:\\llama\\llama-server.exe",
+        "C:\\models\\mana.gguf",
+        "C:\\models\\vision.gguf",
+        "C:\\models\\vision-mmproj.gguf",
+      ].includes(target),
+  };
+}
+
+function makeSwappingHarness(extraEnv = {}) {
+  const spawnCalls = [];
+  // Tracks liveness of whichever child is "current" -- reset on every spawn,
+  // flipped off when that specific child is killed, so a stopAndWait()
+  // between two swaps is correctly reflected in isHealthy() the way a real
+  // llama-server process exiting would be.
+  let liveChild = null;
+  let clock = 0;
+  const fakeFetch = async (url) => {
+    if (String(url).endsWith("/health")) {
+      return { ok: Boolean(liveChild && liveChild.exitCode === null) };
+    }
+    if (String(url).endsWith("/v1/chat/completions")) {
+      return {
+        ok: true,
+        json: async () => ({ choices: [{ message: { content: "ok" } }] }),
+      };
+    }
+    return { ok: false, status: 404, text: async () => "not found" };
+  };
+
+  const runtime = createLlamaServerRuntime({
+    env: { ...makeTwoModelEnv(), ...extraEnv },
+    fs: makeTwoModelFs(),
+    fetch: fakeFetch,
+    spawn: (command, args, options) => {
+      spawnCalls.push({ command, args, options });
+      liveChild = makeFakeChild();
+      clock += 5; // simulate the spawn+healthcheck loop taking real time
+      return liveChild;
+    },
+    sleep: async () => {},
+    nowMs: () => clock,
+    registerExitHandlers: false,
+  });
+
+  return {
+    runtime,
+    spawnCalls,
+    advanceClock: (ms) => {
+      clock += ms;
+    },
+  };
+}
+
+test("a real swap is timed and exposed via getStatus().lastSwapMs", async () => {
+  const { runtime, advanceClock } = makeSwappingHarness();
+
+  await runtime.runLocalAssistantReply("hello", 64, "default");
+  assert.equal(runtime.getStatus().lastSwapMs, null, "cold start is not a swap");
+
+  advanceClock(10000); // well past the default debounce window
+  const before = runtime.getStatus();
+  assert.equal(before.model, "C:\\models\\mana.gguf");
+
+  await runtime.runVisionReply("what is this?", ["abc"]);
+  const after = runtime.getStatus();
+  assert.equal(after.model, "C:\\models\\vision.gguf");
+  assert.equal(after.lastSwapMs, 5, "swap duration reflects the injected clock");
+});
+
+test("a second swap within the debounce window is skipped, serving the loaded model", async () => {
+  const { runtime, spawnCalls, advanceClock } = makeSwappingHarness({
+    LLAMA_SERVER_SWAP_DEBOUNCE_MS: "5000",
+  });
+
+  await runtime.runLocalAssistantReply("hello", 64, "default");
+  assert.equal(spawnCalls.length, 1);
+
+  // Immediately request the vision model, well inside the 5s debounce window.
+  advanceClock(500);
+  await runtime.runVisionReply("what is this?", ["abc"]);
+  assert.equal(spawnCalls.length, 1, "debounced: no second spawn");
+  assert.equal(
+    runtime.getStatus().model,
+    "C:\\models\\mana.gguf",
+    "still serving the original model",
+  );
+
+  // Past the debounce window, the same request now actually swaps.
+  advanceClock(5000);
+  await runtime.runVisionReply("what is this?", ["abc"]);
+  assert.equal(spawnCalls.length, 2, "debounce window elapsed: real swap happens");
+  assert.equal(runtime.getStatus().model, "C:\\models\\vision.gguf");
+});
+
+test("LLAMA_SERVER_SWAP_DEBOUNCE_MS=0 disables debouncing entirely", async () => {
+  const { runtime, spawnCalls } = makeSwappingHarness({
+    LLAMA_SERVER_SWAP_DEBOUNCE_MS: "0",
+  });
+
+  await runtime.runLocalAssistantReply("hello", 64, "default");
+  await runtime.runVisionReply("what is this?", ["abc"]);
+  assert.equal(spawnCalls.length, 2, "every swap happens immediately");
+});
+
+test("GGML_CUDA_ENABLE_UNIFIED_MEMORY is set by default (measurably faster on real hardware)", async () => {
+  const { runtime, spawnCalls } = makeSwappingHarness();
+
+  await runtime.runLocalAssistantReply("hello", 64, "default");
+  assert.equal(spawnCalls[0].options.env.GGML_CUDA_ENABLE_UNIFIED_MEMORY, "1");
+});
+
+test("MANA_LLAMA_UNIFIED_MEMORY=0 opts out of GGML_CUDA_ENABLE_UNIFIED_MEMORY", async () => {
+  const { runtime, spawnCalls } = makeSwappingHarness({
+    MANA_LLAMA_UNIFIED_MEMORY: "0",
+  });
+
+  await runtime.runLocalAssistantReply("hello", 64, "default");
+  assert.equal(
+    spawnCalls[0].options.env.GGML_CUDA_ENABLE_UNIFIED_MEMORY,
+    undefined,
+  );
+});

@@ -420,6 +420,57 @@ try {
 } catch (e) {}
 
 let runBackgroundReviewerPublic = null;
+let runBackgroundCompactorPublic = null;
+
+// Human-readable counterpart to background_meta.json's internal bookkeeping
+// (issue #69) -- written whenever a compaction/review pass actually changes
+// the compacted summary or important facts, whether triggered by idle
+// detection or the hourly timer.
+const MEMORY_MD_PATH = path.join(
+  __dirname,
+  "data",
+  "acp-memory",
+  "MEMORY.md",
+);
+
+function formatMemoryMarkdown(compacted, facts) {
+  const lines = [
+    "# Mana Memory",
+    "",
+    `_Last updated: ${new Date().toISOString()}_`,
+    "",
+    "## Summary",
+    "",
+    compacted || "_(no summary yet)_",
+  ];
+  if (facts && facts.length) {
+    lines.push("", "## Key Facts", "", ...facts.map((f) => `- ${f}`));
+  }
+  return lines.join("\n") + "\n";
+}
+
+async function writeMemoryMarkdown() {
+  try {
+    const compacted =
+      (BACKGROUND_MEMORY_META.lastCompacted &&
+        BACKGROUND_MEMORY_META.lastCompacted.text) ||
+      "";
+    const facts = BACKGROUND_MEMORY_META.important_facts || [];
+    await fs.promises.mkdir(path.dirname(MEMORY_MD_PATH), {
+      recursive: true,
+    });
+    await fs.promises.writeFile(
+      MEMORY_MD_PATH,
+      formatMemoryMarkdown(compacted, facts),
+      "utf8",
+    );
+  } catch (e) {
+    console.warn(
+      "Failed to write MEMORY.md:",
+      e && e.message ? e.message : e,
+    );
+  }
+}
 
 async function persistBackgroundMeta() {
   try {
@@ -908,6 +959,7 @@ if (process.env.NODE_ENV !== "test" && !process.env.NODE_TEST_CONTEXT) {
             };
             try {
               await persistBackgroundMeta();
+              await writeMemoryMarkdown();
             } catch (e) {}
             console.log(
               "Background memory compacted by summarizer (len=",
@@ -1100,6 +1152,7 @@ if (process.env.NODE_ENV !== "test" && !process.env.NODE_TEST_CONTEXT) {
           BACKGROUND_MEMORY_META.lastReviewedHash = reviewHash;
           try {
             await persistBackgroundMeta();
+            await writeMemoryMarkdown();
           } catch (e) {
             console.warn(
               "Failed to persist background meta after review:",
@@ -1124,9 +1177,10 @@ if (process.env.NODE_ENV !== "test" && !process.env.NODE_TEST_CONTEXT) {
         }
       }
 
-      // expose reviewer to other modules/routes for preview/apply
+      // expose reviewer/compactor to other modules/routes (preview/apply, idle-report)
       try {
         runBackgroundReviewerPublic = runBackgroundReviewer;
+        runBackgroundCompactorPublic = runBackgroundCompactor;
       } catch (e) {}
 
       // Run compactor once now, and schedule periodic compaction
@@ -1315,6 +1369,69 @@ function ensureDirectory(dirPath) {
 ensureDirectory(path.join(__dirname, "tmp"));
 
 function registerRoutes(app, upload, deps = {}) {
+  // Fires the same compaction/review pass the hourly timer runs, but on the
+  // idle signal (issue #69). Deliberately per-registerRoutes-call state (not
+  // module-level) so each app instance -- and each test -- starts fresh.
+  let idleConsolidationFiredForCurrentIdlePeriod = false;
+  const idleGamingStatusCheck = deps.getGamingStatus || getGamingStatus;
+  const triggerIdleConsolidation =
+    deps.triggerIdleConsolidation ||
+    (async function triggerIdleConsolidation() {
+      if (typeof runBackgroundCompactorPublic === "function") {
+        await runBackgroundCompactorPublic().catch((err) =>
+          console.warn(
+            "Idle-triggered compactor failed:",
+            err && err.message ? err.message : err,
+          ),
+        );
+      }
+      if (typeof runBackgroundReviewerPublic === "function") {
+        await runBackgroundReviewerPublic(true, {
+          skipIfUnchanged: true,
+        }).catch((err) =>
+          console.warn(
+            "Idle-triggered reviewer failed:",
+            err && err.message ? err.message : err,
+          ),
+        );
+      }
+    });
+
+  // Reported by windows-launcher's powerMonitor.getSystemIdleTime() poll.
+  // Fires consolidation once per idle period (resets when the user is seen
+  // active again below the threshold), so staying idle for hours doesn't
+  // re-trigger it on every ~60s report.
+  app.post("/internal/idle-report", (req, res) => {
+    const idleSeconds = Number(req.body?.idleSeconds) || 0;
+    const thresholdSeconds =
+      Number(process.env.MANA_IDLE_THRESHOLD_MS || 20 * 60 * 1000) / 1000;
+
+    if (idleSeconds < thresholdSeconds) {
+      idleConsolidationFiredForCurrentIdlePeriod = false;
+      return res.json({ ok: true, idleTriggered: false });
+    }
+    if (idleConsolidationFiredForCurrentIdlePeriod) {
+      return res.json({ ok: true, idleTriggered: false });
+    }
+
+    let gamingRunning = false;
+    try {
+      gamingRunning = idleGamingStatusCheck().gamingAppRunning;
+    } catch (e) {}
+    if (gamingRunning) {
+      return res.json({ ok: true, idleTriggered: false, pausedForGaming: true });
+    }
+
+    idleConsolidationFiredForCurrentIdlePeriod = true;
+    triggerIdleConsolidation().catch((err) =>
+      console.warn(
+        "Idle-triggered consolidation failed:",
+        err && err.message ? err.message : err,
+      ),
+    );
+    return res.json({ ok: true, idleTriggered: true });
+  });
+
   let editorIntegrations = deps.editors || null;
   const mobileMemoryStore = deps.mobileMemoryStore || createMobileMemoryStore();
   function getEditorIntegrations() {
@@ -4531,6 +4648,7 @@ module.exports = {
   createApp,
   ensureDirectory,
   formatCraftRankingDetails,
+  formatMemoryMarkdown,
   getCraftMarketabilityRequirement,
   getCraftRankingValue,
   getGarlandNodeGatheringJob,

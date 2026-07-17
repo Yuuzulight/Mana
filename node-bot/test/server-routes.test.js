@@ -1,7 +1,7 @@
 const assert = require("node:assert/strict");
 const test = require("node:test");
 
-const { createApp } = require("../server");
+const { createApp, formatMemoryMarkdown } = require("../server");
 const { withServer } = require("./helpers");
 
 async function postJson(url, body, headers = {}) {
@@ -911,4 +911,120 @@ test("reply skips web context when includeContext is false", async () => {
   });
 
   assert.equal(webContextCalls, 0);
+});
+
+async function withIdleThresholdMs(value, fn) {
+  const original = process.env.MANA_IDLE_THRESHOLD_MS;
+  process.env.MANA_IDLE_THRESHOLD_MS = String(value);
+  try {
+    await fn();
+  } finally {
+    if (original === undefined) delete process.env.MANA_IDLE_THRESHOLD_MS;
+    else process.env.MANA_IDLE_THRESHOLD_MS = original;
+  }
+}
+
+test("idle-report does not trigger consolidation below the idle threshold", async () => {
+  let triggerCalls = 0;
+  const app = createApp({
+    triggerIdleConsolidation: async () => {
+      triggerCalls += 1;
+    },
+    getGamingStatus: () => ({ gamingAppRunning: false }),
+  });
+
+  await withIdleThresholdMs(60000, async () => {
+    await withServer(app, async (baseUrl) => {
+      const { payload } = await postJson(`${baseUrl}/internal/idle-report`, {
+        idleSeconds: 5,
+      });
+      assert.equal(payload.idleTriggered, false);
+    });
+  });
+
+  assert.equal(triggerCalls, 0);
+});
+
+test("idle-report triggers consolidation once idle time crosses the threshold", async () => {
+  let triggerCalls = 0;
+  const app = createApp({
+    triggerIdleConsolidation: async () => {
+      triggerCalls += 1;
+    },
+    getGamingStatus: () => ({ gamingAppRunning: false }),
+  });
+
+  await withIdleThresholdMs(1000, async () => {
+    await withServer(app, async (baseUrl) => {
+      const { payload } = await postJson(`${baseUrl}/internal/idle-report`, {
+        idleSeconds: 5,
+      });
+      assert.equal(payload.idleTriggered, true);
+      await new Promise((resolve) => setImmediate(resolve));
+    });
+  });
+
+  assert.equal(triggerCalls, 1);
+});
+
+test("idle-report does not re-trigger on repeated reports during the same idle period", async () => {
+  let triggerCalls = 0;
+  const app = createApp({
+    triggerIdleConsolidation: async () => {
+      triggerCalls += 1;
+    },
+    getGamingStatus: () => ({ gamingAppRunning: false }),
+  });
+
+  await withIdleThresholdMs(1000, async () => {
+    await withServer(app, async (baseUrl) => {
+      await postJson(`${baseUrl}/internal/idle-report`, { idleSeconds: 5 });
+      const { payload } = await postJson(`${baseUrl}/internal/idle-report`, {
+        idleSeconds: 10,
+      });
+      assert.equal(payload.idleTriggered, false);
+      await new Promise((resolve) => setImmediate(resolve));
+    });
+  });
+
+  assert.equal(triggerCalls, 1);
+});
+
+test("idle-report fires again after the user goes active and idles out a second time", async () => {
+  let triggerCalls = 0;
+  const app = createApp({
+    triggerIdleConsolidation: async () => {
+      triggerCalls += 1;
+    },
+    getGamingStatus: () => ({ gamingAppRunning: false }),
+  });
+
+  await withIdleThresholdMs(1000, async () => {
+    await withServer(app, async (baseUrl) => {
+      await postJson(`${baseUrl}/internal/idle-report`, { idleSeconds: 5 });
+      await postJson(`${baseUrl}/internal/idle-report`, { idleSeconds: 0 });
+      const { payload } = await postJson(`${baseUrl}/internal/idle-report`, {
+        idleSeconds: 5,
+      });
+      assert.equal(payload.idleTriggered, true);
+      await new Promise((resolve) => setImmediate(resolve));
+    });
+  });
+
+  assert.equal(triggerCalls, 2);
+});
+
+test("formatMemoryMarkdown renders a placeholder with no summary or facts", () => {
+  const md = formatMemoryMarkdown("", []);
+  assert.match(md, /_\(no summary yet\)_/);
+  assert.doesNotMatch(md, /## Key Facts/);
+});
+
+test("formatMemoryMarkdown renders the compacted summary and key facts", () => {
+  const md = formatMemoryMarkdown("User prefers concise replies.", [
+    "Likes FFXIV crafting",
+    "Uses windows-launcher",
+  ]);
+  assert.match(md, /## Summary\n\nUser prefers concise replies\./);
+  assert.match(md, /## Key Facts\n\n- Likes FFXIV crafting\n- Uses windows-launcher/);
 });

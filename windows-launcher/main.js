@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Menu, Tray, desktopCapturer, dialog, globalShortcut, ipcMain, nativeImage, screen, session } = require("electron");
+const { app, BrowserWindow, Menu, Tray, desktopCapturer, dialog, globalShortcut, ipcMain, nativeImage, powerMonitor, screen, session } = require("electron");
 const fs = require("fs");
 const path = require("path");
 const { spawn } = require("child_process");
@@ -12,6 +12,8 @@ let retrieverProcess = null;
 let fallbackKokoroProcess = null;
 let searxngProcess = null;
 const BACKEND_URL = "http://localhost:5005/health";
+const IDLE_REPORT_URL = "http://localhost:5005/internal/idle-report";
+const IDLE_REPORT_INTERVAL_MS = 60000;
 const CHATTERBOX_TTS_URL = "http://127.0.0.1:5010/health";
 const KOKORO_TTS_URL = "http://127.0.0.1:5011/health";
 const GPT_SOVITS_TTS_URL = "http://127.0.0.1:9880/";
@@ -619,6 +621,19 @@ app.whenReady().then(() => {
   screen.on("display-metrics-changed", positionAvatarWindow);
   screen.on("display-added", positionAvatarWindow);
   screen.on("display-removed", positionAvatarWindow);
+
+  // Real OS idle detection (issue #69), reported to the backend so it can
+  // trigger Dream Mode memory consolidation instead of only running on the
+  // fixed hourly timer. Best-effort: the backend may not be up yet, or the
+  // user may be running without windows-launcher at all -- either way the
+  // hourly timer keeps working as the fallback.
+  setInterval(() => {
+    fetch(IDLE_REPORT_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ idleSeconds: powerMonitor.getSystemIdleTime() }),
+    }).catch(() => {});
+  }, IDLE_REPORT_INTERVAL_MS);
 
   app.on("activate", function () {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
