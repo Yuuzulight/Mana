@@ -426,6 +426,171 @@ test("no preset selected leaves the local model's system prompt unchanged", asyn
   });
 });
 
+// Tool-calling wiring (issue #51): opt-in via MANA_TOOL_CALLING_ENABLED,
+// scoped to the "default" profile only (the one profile verified to emit
+// reliable tool_calls -- see docs/roadmap/issue-51-tool-calling.md), and
+// falls back to the plain reply path on any failure or empty result.
+async function withToolCallingEnv(value, fn) {
+  const prior = process.env.MANA_TOOL_CALLING_ENABLED;
+  process.env.MANA_TOOL_CALLING_ENABLED = value;
+  try {
+    await fn();
+  } finally {
+    if (prior === undefined) delete process.env.MANA_TOOL_CALLING_ENABLED;
+    else process.env.MANA_TOOL_CALLING_ENABLED = prior;
+  }
+}
+
+test("tool-calling stays off by default even when a runToolAwareReply is provided", async () => {
+  await withToolCallingEnv(undefined, async () => {
+    let toolAwareCalls = 0;
+    let plainCalls = 0;
+    const app = createApp({
+      buildCraftProfitContextForPrompt: async () => "",
+      buildUniversalisContextForPrompt: async () => "",
+      buildMarketContextForPrompt: async () => "",
+      isLlamaServerEnabled: () => true,
+      runToolAwareReply: async () => {
+        toolAwareCalls += 1;
+        return { content: "tool reply", toolCalls: [] };
+      },
+      runLocalAssistantReply: async () => {
+        plainCalls += 1;
+        return "plain reply";
+      },
+    });
+
+    await withServer(app, async (baseUrl) => {
+      const { payload } = await postJson(`${baseUrl}/reply`, { text: "hello" });
+      assert.equal(payload.reply, "plain reply");
+      assert.equal(toolAwareCalls, 0);
+      assert.equal(plainCalls, 1);
+    });
+  });
+});
+
+test("tool-calling activates for the default profile when enabled and llama-server is available", async () => {
+  await withToolCallingEnv("1", async () => {
+    let capturedPrompt = null;
+    let plainCalls = 0;
+    const app = createApp({
+      buildCraftProfitContextForPrompt: async () => "",
+      buildUniversalisContextForPrompt: async () => "",
+      buildMarketContextForPrompt: async () => "",
+      isLlamaServerEnabled: () => true,
+      runToolAwareReply: async (prompt) => {
+        capturedPrompt = prompt;
+        return {
+          content: "The file says hello",
+          toolCalls: [{ name: "read_file", args: { path: "notes.txt" }, ok: true }],
+        };
+      },
+      runLocalAssistantReply: async () => {
+        plainCalls += 1;
+        return "plain reply";
+      },
+    });
+
+    await withServer(app, async (baseUrl) => {
+      const { payload } = await postJson(`${baseUrl}/reply`, {
+        text: "what does notes.txt say?",
+        modelProfile: "default",
+      });
+      assert.equal(payload.reply, "The file says hello");
+      assert.match(capturedPrompt, /notes\.txt/);
+      assert.equal(plainCalls, 0);
+    });
+  });
+});
+
+test("tool-calling does not activate for a non-default profile even when enabled", async () => {
+  await withToolCallingEnv("1", async () => {
+    let toolAwareCalls = 0;
+    const app = createApp({
+      buildCraftProfitContextForPrompt: async () => "",
+      buildUniversalisContextForPrompt: async () => "",
+      buildMarketContextForPrompt: async () => "",
+      isLlamaServerEnabled: () => true,
+      runToolAwareReply: async () => {
+        toolAwareCalls += 1;
+        return { content: "should not happen", toolCalls: [] };
+      },
+      runLocalAssistantReply: async () => "plain coding reply",
+    });
+
+    await withServer(app, async (baseUrl) => {
+      const { payload } = await postJson(`${baseUrl}/reply`, {
+        text: "debug this function",
+        modelProfile: "coding",
+      });
+      assert.equal(payload.reply, "plain coding reply");
+      assert.equal(toolAwareCalls, 0);
+    });
+  });
+});
+
+test("tool-calling falls back to the plain reply when llama-server isn't available", async () => {
+  await withToolCallingEnv("1", async () => {
+    let toolAwareCalls = 0;
+    const app = createApp({
+      buildCraftProfitContextForPrompt: async () => "",
+      buildUniversalisContextForPrompt: async () => "",
+      buildMarketContextForPrompt: async () => "",
+      isLlamaServerEnabled: () => false,
+      runToolAwareReply: async () => {
+        toolAwareCalls += 1;
+        return { content: "should not happen", toolCalls: [] };
+      },
+      runLocalAssistantReply: async () => "plain reply",
+    });
+
+    await withServer(app, async (baseUrl) => {
+      const { payload } = await postJson(`${baseUrl}/reply`, { text: "hello" });
+      assert.equal(payload.reply, "plain reply");
+      assert.equal(toolAwareCalls, 0);
+    });
+  });
+});
+
+test("tool-calling falls back to the plain reply when runToolAwareReply throws", async () => {
+  await withToolCallingEnv("1", async () => {
+    const app = createApp({
+      buildCraftProfitContextForPrompt: async () => "",
+      buildUniversalisContextForPrompt: async () => "",
+      buildMarketContextForPrompt: async () => "",
+      isLlamaServerEnabled: () => true,
+      runToolAwareReply: async () => {
+        throw new Error("llama-server executable not found");
+      },
+      runLocalAssistantReply: async () => "plain reply",
+    });
+
+    await withServer(app, async (baseUrl) => {
+      const { response, payload } = await postJson(`${baseUrl}/reply`, { text: "hello" });
+      assert.equal(response.status, 200);
+      assert.equal(payload.reply, "plain reply");
+    });
+  });
+});
+
+test("tool-calling falls back to the plain reply when runToolAwareReply returns empty content", async () => {
+  await withToolCallingEnv("1", async () => {
+    const app = createApp({
+      buildCraftProfitContextForPrompt: async () => "",
+      buildUniversalisContextForPrompt: async () => "",
+      buildMarketContextForPrompt: async () => "",
+      isLlamaServerEnabled: () => true,
+      runToolAwareReply: async () => ({ content: "", toolCalls: [] }),
+      runLocalAssistantReply: async () => "plain reply",
+    });
+
+    await withServer(app, async (baseUrl) => {
+      const { payload } = await postJson(`${baseUrl}/reply`, { text: "hello" });
+      assert.equal(payload.reply, "plain reply");
+    });
+  });
+});
+
 test("reply continues when optional market context fails", async () => {
   const app = createApp({
     buildCraftProfitContextForPrompt: async () => "",

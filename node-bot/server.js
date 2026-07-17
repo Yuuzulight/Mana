@@ -96,6 +96,7 @@ const {
 const { createTtsRuntime } = require("./tts-runtime");
 const { createAcpMemoryStore } = require("./acp-memory-store");
 const { createPresetsStore } = require("./presets-store");
+const { createToolPolicy } = require("./ai/tool-policy");
 const {
   createEditorIntegrations,
   createZedIntegration,
@@ -375,6 +376,10 @@ const acpMemoryStore = createAcpMemoryStore({
 
 // Named prompt/behavior presets (see presets-store.js)
 const presetsStore = createPresetsStore({});
+
+// Foundational tool-calling (issue #51): one read-only tool, scoped to the
+// repo root by default. See ai/tool-policy.js.
+const toolPolicy = createToolPolicy({});
 
 // Background memory block that can be refreshed periodically from ACP session files.
 let BACKGROUND_MEMORY_BLOCK = "";
@@ -3560,6 +3565,18 @@ function registerRoutes(app, upload, deps = {}) {
       return runLocalLlamaReply(prompt, maxTokens, profile, overrideSystemPrompt);
     });
 
+  // Foundational tool-calling (issue #51): only llama-server (not the
+  // llama-cli fallback) exposes an OpenAI-compatible tools API, so this has
+  // no CLI equivalent -- callers check llamaServerRuntime.isEnabled() first.
+  const runToolAwareReply =
+    deps.runToolAwareReply ||
+    (async function runToolAwareReply(prompt, toolPolicyArg, options) {
+      return llamaServerRuntime.runToolAwareReply(prompt, toolPolicyArg, options);
+    });
+  const activeToolPolicy = deps.toolPolicy || toolPolicy;
+  const isLlamaServerEnabledForTools =
+    deps.isLlamaServerEnabled || (() => llamaServerRuntime.isEnabled());
+
   function normalizeUploadedAudio(file) {
     if (!file) {
       throw new Error("no file");
@@ -4193,13 +4210,59 @@ function registerRoutes(app, upload, deps = {}) {
       }
     }
 
+    // Foundational tool-calling (issue #51), opt-in and scoped to the one
+    // profile that's actually been verified to emit reliable tool_calls
+    // (Qwen3-4B / "default" -- see docs/roadmap/issue-51-tool-calling.md).
+    // Any failure or empty result falls straight back to the plain path
+    // rather than surfacing a broken reply.
+    const toolCallingEnabled =
+      String(process.env.MANA_TOOL_CALLING_ENABLED || "0") === "1";
+    async function replyMaybeWithTools(promptText) {
+      if (
+        toolCallingEnabled &&
+        normalizedModelProfile === "default" &&
+        isLlamaServerEnabledForTools()
+      ) {
+        try {
+          const toolResult = await runToolAwareReply(
+            promptText,
+            activeToolPolicy,
+            {
+              maxTokens: LLAMA_MAX_TOKENS,
+              profile: normalizedModelProfile,
+              overrideSystemPrompt: selectedSystemPrompt,
+            },
+          );
+          if (toolResult.content && toolResult.content.trim()) {
+            if (toolResult.toolCalls.length) {
+              console.log(
+                `Mana tool-calling: ${toolResult.toolCalls
+                  .map((call) => `${call.name}(${call.ok ? "ok" : "error"})`)
+                  .join(", ")}`,
+              );
+            }
+            return toolResult.content;
+          }
+          console.warn(
+            "Tool-aware reply returned empty content; falling back to the plain reply path",
+          );
+        } catch (e) {
+          console.warn(
+            "Tool-aware reply failed, falling back to plain reply:",
+            e && e.message ? e.message : e,
+          );
+        }
+      }
+      return runLocalAssistantReply(
+        promptText,
+        LLAMA_MAX_TOKENS,
+        normalizedModelProfile,
+        selectedSystemPrompt,
+      );
+    }
+
     // Fall back to local llama
-    let reply = await runLocalAssistantReply(
-      finalPrompt,
-      LLAMA_MAX_TOKENS,
-      normalizedModelProfile,
-      selectedSystemPrompt,
-    );
+    let reply = await replyMaybeWithTools(finalPrompt);
     queueVTubeReaction(reply);
 
     // Token-budget accounting: estimate reply tokens and deduct from session budget
@@ -4271,12 +4334,7 @@ function registerRoutes(app, upload, deps = {}) {
               ")",
             );
             try {
-              reply = await runLocalAssistantReply(
-                fixPrompt,
-                LLAMA_MAX_TOKENS,
-                normalizedModelProfile,
-                selectedSystemPrompt,
-              );
+              reply = await replyMaybeWithTools(fixPrompt);
               queueVTubeReaction(reply);
               continue; // re-verify
             } catch (retryErr) {

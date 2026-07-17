@@ -317,6 +317,260 @@ test("adopts an existing llama-server that already serves the same model", async
   assert.equal(runtime.getStatus().external, true);
 });
 
+// runToolAwareReply (issue #51): a policy-gated, single-round tool loop.
+// Verified against real hardware separately (Qwen3-4B reliably emits proper
+// tool_calls via llama-server's --jinja template); these tests exercise the
+// loop's own logic -- request tool schema, execute via the injected policy,
+// feed results back, return the final content -- without needing a real GPU.
+function makeFakePolicy(overrides = {}) {
+  return {
+    tools: [
+      {
+        type: "function",
+        function: { name: "read_file", description: "read a file", parameters: {} },
+      },
+    ],
+    executeTool: overrides.executeTool || (() => "default fake result"),
+  };
+}
+
+test("runToolAwareReply executes a requested tool call and returns the follow-up reply", async () => {
+  const calls = [];
+  const executedArgs = [];
+  let serverUp = false;
+  const fakeFetch = async (url, init) => {
+    if (String(url).endsWith("/health")) return { ok: serverUp };
+    if (String(url).endsWith("/v1/chat/completions")) {
+      const body = JSON.parse(init.body);
+      calls.push(body);
+      if (calls.length === 1) {
+        assert.deepEqual(body.tools[0].function.name, "read_file");
+        return {
+          ok: true,
+          json: async () => ({
+            choices: [
+              {
+                message: {
+                  content: "",
+                  tool_calls: [
+                    {
+                      id: "call_1",
+                      type: "function",
+                      function: { name: "read_file", arguments: JSON.stringify({ path: "notes.txt" }) },
+                    },
+                  ],
+                },
+              },
+            ],
+          }),
+        };
+      }
+      // Second call: the tool result should now be in the conversation.
+      const toolMessage = body.messages.find((m) => m.role === "tool");
+      assert.equal(toolMessage.content, "file contents here");
+      assert.equal(toolMessage.tool_call_id, "call_1");
+      return {
+        ok: true,
+        json: async () => ({
+          choices: [{ message: { content: "The file says: file contents here" } }],
+        }),
+      };
+    }
+    return { ok: false, status: 404, text: async () => "not found" };
+  };
+
+  const runtime = createLlamaServerRuntime({
+    env: makeFakeEnv(),
+    fs: makeFakeFs(),
+    fetch: fakeFetch,
+    spawn: () => {
+      serverUp = true;
+      return makeFakeChild();
+    },
+    sleep: async () => {},
+    registerExitHandlers: false,
+  });
+
+  const policy = makeFakePolicy({
+    executeTool: (name, args) => {
+      executedArgs.push({ name, args });
+      return "file contents here";
+    },
+  });
+
+  const result = await runtime.runToolAwareReply("what does notes.txt say?", policy);
+
+  assert.equal(result.content, "The file says: file contents here");
+  assert.equal(calls.length, 2);
+  assert.deepEqual(executedArgs, [{ name: "read_file", args: { path: "notes.txt" } }]);
+  assert.deepEqual(result.toolCalls, [
+    { name: "read_file", args: { path: "notes.txt" }, ok: true },
+  ]);
+});
+
+test("runToolAwareReply reports a policy error back to the model instead of throwing", async () => {
+  let secondCallToolMessage = null;
+  let serverUp = false;
+  const fakeFetch = async (url, init) => {
+    if (String(url).endsWith("/health")) return { ok: serverUp };
+    if (String(url).endsWith("/v1/chat/completions")) {
+      const body = JSON.parse(init.body);
+      const isFirstCall = !body.messages.some((m) => m.role === "tool");
+      if (isFirstCall) {
+        return {
+          ok: true,
+          json: async () => ({
+            choices: [
+              {
+                message: {
+                  content: "",
+                  tool_calls: [
+                    {
+                      id: "call_1",
+                      type: "function",
+                      function: { name: "read_file", arguments: JSON.stringify({ path: "../secret.txt" }) },
+                    },
+                  ],
+                },
+              },
+            ],
+          }),
+        };
+      }
+      secondCallToolMessage = body.messages.find((m) => m.role === "tool");
+      return {
+        ok: true,
+        json: async () => ({ choices: [{ message: { content: "I can't read that file." } }] }),
+      };
+    }
+    return { ok: false, status: 404, text: async () => "not found" };
+  };
+
+  const runtime = createLlamaServerRuntime({
+    env: makeFakeEnv(),
+    fs: makeFakeFs(),
+    fetch: fakeFetch,
+    spawn: () => {
+      serverUp = true;
+      return makeFakeChild();
+    },
+    sleep: async () => {},
+    registerExitHandlers: false,
+  });
+
+  const policy = makeFakePolicy({
+    executeTool: () => {
+      throw new Error("path escapes the allowed project directory: ../secret.txt");
+    },
+  });
+
+  const result = await runtime.runToolAwareReply("read ../secret.txt", policy);
+
+  assert.equal(result.content, "I can't read that file.");
+  assert.match(secondCallToolMessage.content, /path escapes the allowed project directory/);
+  assert.deepEqual(result.toolCalls, [
+    {
+      name: "read_file",
+      args: { path: "../secret.txt" },
+      ok: false,
+      error: "path escapes the allowed project directory: ../secret.txt",
+    },
+  ]);
+});
+
+test("runToolAwareReply skips the tool round entirely when the model doesn't request one", async () => {
+  let callCount = 0;
+  let serverUp = false;
+  const fakeFetch = async (url) => {
+    if (String(url).endsWith("/health")) return { ok: serverUp };
+    if (String(url).endsWith("/v1/chat/completions")) {
+      callCount += 1;
+      return {
+        ok: true,
+        json: async () => ({ choices: [{ message: { content: "2 + 2 is 4." } }] }),
+      };
+    }
+    return { ok: false, status: 404, text: async () => "not found" };
+  };
+
+  const runtime = createLlamaServerRuntime({
+    env: makeFakeEnv(),
+    fs: makeFakeFs(),
+    fetch: fakeFetch,
+    spawn: () => {
+      serverUp = true;
+      return makeFakeChild();
+    },
+    sleep: async () => {},
+    registerExitHandlers: false,
+  });
+
+  const result = await runtime.runToolAwareReply("what is 2+2?", makeFakePolicy());
+
+  assert.equal(result.content, "2 + 2 is 4.");
+  assert.equal(callCount, 1, "no follow-up round when there's nothing to execute");
+  assert.deepEqual(result.toolCalls, []);
+});
+
+test("runToolAwareReply rejects an unknown tool call name via the policy rather than guessing", async () => {
+  let serverUp = false;
+  const fakeFetch = async (url, init) => {
+    if (String(url).endsWith("/health")) return { ok: serverUp };
+    if (String(url).endsWith("/v1/chat/completions")) {
+      const body = JSON.parse(init.body);
+      const isFirstCall = !body.messages.some((m) => m.role === "tool");
+      if (isFirstCall) {
+        return {
+          ok: true,
+          json: async () => ({
+            choices: [
+              {
+                message: {
+                  content: "",
+                  tool_calls: [
+                    {
+                      id: "call_1",
+                      type: "function",
+                      function: { name: "exec_shell_command", arguments: "{}" },
+                    },
+                  ],
+                },
+              },
+            ],
+          }),
+        };
+      }
+      return {
+        ok: true,
+        json: async () => ({ choices: [{ message: { content: "I can't do that." } }] }),
+      };
+    }
+    return { ok: false, status: 404, text: async () => "not found" };
+  };
+
+  const runtime = createLlamaServerRuntime({
+    env: makeFakeEnv(),
+    fs: makeFakeFs(),
+    fetch: fakeFetch,
+    spawn: () => {
+      serverUp = true;
+      return makeFakeChild();
+    },
+    sleep: async () => {},
+    registerExitHandlers: false,
+  });
+
+  // The real tool-policy module (not a fake) never registers write/exec
+  // tools at all, so this exercises the actual "unknown tool" rejection.
+  const { createToolPolicy } = require("../ai/tool-policy");
+  const realPolicy = createToolPolicy({ allowedRoot: "C:\\project" });
+
+  const result = await runtime.runToolAwareReply("run a command", realPolicy);
+
+  assert.equal(result.toolCalls[0].ok, false);
+  assert.match(result.toolCalls[0].error, /unknown tool: exec_shell_command/);
+});
+
 // Two independently controllable "models": runLocalAssistantReply resolves
 // via env.LLAMA_MODEL (chat "default" profile short-circuits to it directly,
 // see local-ai.js), runVisionReply resolves via env.LLAMA_VISION_MODEL. Both
