@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Menu, Tray, desktopCapturer, dialog, globalShortcut, ipcMain, nativeImage, screen } = require("electron");
+const { app, BrowserWindow, Menu, Tray, desktopCapturer, dialog, globalShortcut, ipcMain, nativeImage, screen, session } = require("electron");
 const fs = require("fs");
 const path = require("path");
 const { spawn } = require("child_process");
@@ -562,6 +562,16 @@ app.whenReady().then(() => {
     app.quit();
     return;
   }
+
+  // The renderer loads over file://, which Chromium doesn't reliably
+  // persist media permission grants for -- without this, getUserMedia()
+  // re-prompts on every call (e.g. every Start listening after a Stop),
+  // no matter what the user already allowed. This app's mic access is
+  // always for the bundled local content, so auto-grant just "media".
+  session.defaultSession.setPermissionRequestHandler((webContents, permission, callback) => {
+    callback(permission === "media");
+  });
+  session.defaultSession.setPermissionCheckHandler((webContents, permission) => permission === "media");
 
   // Start the local Node backend before opening the UI.
   Promise.all([
