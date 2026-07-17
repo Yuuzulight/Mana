@@ -65,6 +65,7 @@ const {
   webAccessCapability,
 } = require("./capabilities/web-access-capability");
 const { sessionsCapability } = require("./capabilities/sessions-capability");
+const { presetsCapability } = require("./capabilities/presets-capability");
 const {
   buildWebContextForPrompt,
   fetchPage,
@@ -81,6 +82,7 @@ const {
 	} = require("./market-data");
 const { createTtsRuntime } = require("./tts-runtime");
 const { createAcpMemoryStore } = require("./acp-memory-store");
+const { createPresetsStore } = require("./presets-store");
 const {
   createEditorIntegrations,
   createZedIntegration,
@@ -357,6 +359,9 @@ const acpMemoryStore = createAcpMemoryStore({
     }
   },
 });
+
+// Named prompt/behavior presets (see presets-store.js)
+const presetsStore = createPresetsStore({});
 
 // Background memory block that can be refreshed periodically from ACP session files.
 let BACKGROUND_MEMORY_BLOCK = "";
@@ -1310,9 +1315,12 @@ function registerRoutes(app, upload, deps = {}) {
     dirScannerCapability,
     webAccessCapability,
     sessionsCapability,
+    presetsCapability,
   ];
+  const activePresetsStore = deps.presetsStore || presetsStore;
   const capabilityContext = {
     acpMemoryStore: deps.acpMemoryStore || acpMemoryStore,
+    presetsStore: activePresetsStore,
     UNIVERSALIS_DEFAULT_WORLD,
     FFXIV_PROFIT_TOP_LIMIT,
     FFXIV_RECIPE_SOURCE,
@@ -3400,13 +3408,16 @@ function registerRoutes(app, upload, deps = {}) {
     return r.stdout ? r.stdout.trim() : "";
   }
 
-  async function runLocalAssistantReply(
-    prompt,
-    maxTokens = 256,
-    profile = "default",
-  ) {
-    return runLocalLlamaReply(prompt, maxTokens, profile);
-  }
+  const runLocalAssistantReply =
+    deps.runLocalAssistantReply ||
+    (async function runLocalAssistantReply(
+      prompt,
+      maxTokens = 256,
+      profile = "default",
+      overrideSystemPrompt = null,
+    ) {
+      return runLocalLlamaReply(prompt, maxTokens, profile, overrideSystemPrompt);
+    });
 
   function normalizeUploadedAudio(file) {
     if (!file) {
@@ -3637,6 +3648,7 @@ function registerRoutes(app, upload, deps = {}) {
     modelProfile = "default",
     sessionId = null,
     assistantMode = null,
+    presetId = null,
   ) {
     const prompt = buildScreenAwarePrompt(transcript, screenText, marketText);
     const normalizedModelProfile = selectLlamaModelProfileForPrompt(
@@ -3677,6 +3689,20 @@ function registerRoutes(app, upload, deps = {}) {
       selectedSystemPrompt = CODING_SYSTEM_PROMPT;
     } else {
       selectedSystemPrompt = EVERYDAY_SYSTEM_PROMPT;
+    }
+
+    // A saved preset layers its instructions on top of the base persona
+    // prompt rather than replacing it -- Mana stays Mana, just tuned. No
+    // preset selected (the common case) leaves this untouched.
+    if (presetId) {
+      try {
+        const preset = activePresetsStore.getPreset(presetId);
+        if (preset && preset.instructions) {
+          selectedSystemPrompt = `${selectedSystemPrompt}\n\n${preset.instructions}`;
+        }
+      } catch (presetErr) {
+        console.warn("Failed to apply preset:", presetErr.message || presetErr);
+      }
     }
 
     // Small server log for selected mode
@@ -4031,6 +4057,7 @@ function registerRoutes(app, upload, deps = {}) {
       finalPrompt,
       LLAMA_MAX_TOKENS,
       normalizedModelProfile,
+      selectedSystemPrompt,
     );
     queueVTubeReaction(reply);
 
@@ -4107,6 +4134,7 @@ function registerRoutes(app, upload, deps = {}) {
                 fixPrompt,
                 LLAMA_MAX_TOKENS,
                 normalizedModelProfile,
+                selectedSystemPrompt,
               );
               queueVTubeReaction(reply);
               continue; // re-verify

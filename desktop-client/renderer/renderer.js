@@ -25,6 +25,19 @@ const { formatCompareProfileLabel, pickDefaultCompareProfiles } = require('./com
   const compareColumnAEl = document.getElementById('compareColumnA');
   const compareColumnBEl = document.getElementById('compareColumnB');
   const compareCancelBtnEl = document.getElementById('compareCancelBtn');
+  const navHomeBtnEl = document.getElementById('navHomeBtn');
+  const navSettingsBtnEl = document.getElementById('navSettingsBtn');
+  const homeViewEl = document.getElementById('homeView');
+  const settingsViewEl = document.getElementById('settingsView');
+  const presetSelectEl = document.getElementById('presetSelect');
+  const presetNewBtnEl = document.getElementById('presetNewBtn');
+  const presetEditBtnEl = document.getElementById('presetEditBtn');
+  const presetDeleteBtnEl = document.getElementById('presetDeleteBtn');
+  const presetEditorEl = document.getElementById('presetEditor');
+  const presetNameInputEl = document.getElementById('presetNameInput');
+  const presetInstructionsInputEl = document.getElementById('presetInstructionsInput');
+  const presetSaveBtnEl = document.getElementById('presetSaveBtn');
+  const presetCancelBtnEl = document.getElementById('presetCancelBtn');
 
   let mediaStream = null;
   let recorder = null;
@@ -216,6 +229,7 @@ const { formatCompareProfileLabel, pickDefaultCompareProfiles } = require('./com
       // send to /transcribe-only or /transcribe
       const form = new FormData();
       form.append('file', blob, 'voice.webm');
+      if (selectedPresetId) form.append('presetId', selectedPresetId);
       const resp = await fetch('http://127.0.0.1:5005/transcribe', { method: 'POST', body: form });
       if (!resp.ok) {
         const txt = await resp.text();
@@ -257,6 +271,139 @@ const { formatCompareProfileLabel, pickDefaultCompareProfiles } = require('./com
       setSprite('idle');
     }
   }
+
+  // Nav: Home/Settings toggle between the normal chat view and the
+  // Settings view (Presets, etc). "Code" is an existing unimplemented stub
+  // left as-is.
+  function showView(view) {
+    const isSettings = view === 'settings';
+    if (homeViewEl) homeViewEl.hidden = isSettings;
+    if (settingsViewEl) settingsViewEl.hidden = !isSettings;
+    navHomeBtnEl?.classList.toggle('active', !isSettings);
+    navSettingsBtnEl?.classList.toggle('active', isSettings);
+  }
+  navHomeBtnEl?.addEventListener('click', () => showView('home'));
+  navSettingsBtnEl?.addEventListener('click', () => showView('settings'));
+
+  // Presets: saved persona/behavior instructions the user can select to be
+  // appended to the base system prompt server-side (see buildAssistantReply
+  // in node-bot/server.js). Backed by GET/POST/PATCH/DELETE /presets;
+  // selected preset id is sent as presetId on /transcribe.
+  const PRESET_STORAGE_KEY = 'manaSelectedPresetId';
+  let selectedPresetId = localStorage.getItem(PRESET_STORAGE_KEY) || '';
+  let editingPresetId = null;
+  let latestPresets = [];
+
+  function setSelectedPresetId(presetId) {
+    selectedPresetId = presetId || '';
+    if (selectedPresetId) {
+      localStorage.setItem(PRESET_STORAGE_KEY, selectedPresetId);
+    } else {
+      localStorage.removeItem(PRESET_STORAGE_KEY);
+    }
+    if (presetEditBtnEl) presetEditBtnEl.hidden = !selectedPresetId;
+    if (presetDeleteBtnEl) presetDeleteBtnEl.hidden = !selectedPresetId;
+  }
+
+  function renderPresetSelect(presets) {
+    if (!presetSelectEl) return;
+    presetSelectEl.innerHTML = '';
+    const noneOption = document.createElement('option');
+    noneOption.value = '';
+    noneOption.textContent = 'None';
+    presetSelectEl.appendChild(noneOption);
+    for (const preset of presets) {
+      const option = document.createElement('option');
+      option.value = preset.id;
+      option.textContent = preset.name;
+      presetSelectEl.appendChild(option);
+    }
+    const stillExists = presets.some((preset) => preset.id === selectedPresetId);
+    presetSelectEl.value = stillExists ? selectedPresetId : '';
+    setSelectedPresetId(presetSelectEl.value);
+  }
+
+  async function refreshPresetList() {
+    try {
+      const resp = await fetch('http://127.0.0.1:5005/presets');
+      if (!resp.ok) throw new Error(`Preset list returned ${resp.status}`);
+      const result = await resp.json();
+      latestPresets = result.presets || [];
+      renderPresetSelect(latestPresets);
+    } catch (e) {
+      console.warn('Mana preset list failed:', e);
+    }
+  }
+
+  function closePresetEditor() {
+    editingPresetId = null;
+    if (presetEditorEl) presetEditorEl.hidden = true;
+    if (presetNameInputEl) presetNameInputEl.value = '';
+    if (presetInstructionsInputEl) presetInstructionsInputEl.value = '';
+  }
+
+  function openPresetEditor(preset) {
+    editingPresetId = preset ? preset.id : null;
+    if (presetNameInputEl) presetNameInputEl.value = preset ? preset.name : '';
+    if (presetInstructionsInputEl) presetInstructionsInputEl.value = preset ? preset.instructions : '';
+    if (presetEditorEl) presetEditorEl.hidden = false;
+    presetNameInputEl?.focus();
+  }
+
+  presetSelectEl?.addEventListener('change', () => {
+    setSelectedPresetId(presetSelectEl.value);
+  });
+
+  presetNewBtnEl?.addEventListener('click', () => openPresetEditor(null));
+
+  presetEditBtnEl?.addEventListener('click', () => {
+    const preset = latestPresets.find((item) => item.id === selectedPresetId);
+    if (preset) openPresetEditor(preset);
+  });
+
+  presetCancelBtnEl?.addEventListener('click', closePresetEditor);
+
+  presetSaveBtnEl?.addEventListener('click', async () => {
+    const name = presetNameInputEl?.value.trim();
+    const instructions = presetInstructionsInputEl?.value.trim();
+    if (!name || !instructions) return;
+    try {
+      const url = editingPresetId
+        ? `http://127.0.0.1:5005/presets/${editingPresetId}`
+        : 'http://127.0.0.1:5005/presets';
+      const resp = await fetch(url, {
+        method: editingPresetId ? 'PATCH' : 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, instructions }),
+      });
+      if (!resp.ok) throw new Error(`Save preset returned ${resp.status}`);
+      const saved = await resp.json();
+      closePresetEditor();
+      await refreshPresetList();
+      presetSelectEl.value = saved.id;
+      setSelectedPresetId(saved.id);
+    } catch (e) {
+      console.warn('Mana save preset failed:', e);
+    }
+  });
+
+  presetDeleteBtnEl?.addEventListener('click', async () => {
+    const preset = latestPresets.find((item) => item.id === selectedPresetId);
+    if (!preset) return;
+    const confirmed = window.confirm(`Delete preset "${preset.name}"? This cannot be undone.`);
+    if (!confirmed) return;
+    try {
+      const resp = await fetch(`http://127.0.0.1:5005/presets/${preset.id}`, { method: 'DELETE' });
+      if (!resp.ok) throw new Error(`Delete preset returned ${resp.status}`);
+      setSelectedPresetId('');
+      await refreshPresetList();
+    } catch (e) {
+      console.warn('Mana delete preset failed:', e);
+    }
+  });
+
+  refreshPresetList();
+  setSelectedPresetId(selectedPresetId);
 
   // Compare mode: an opt-in side-by-side view (not part of the normal
   // record/transcribe flow) that sends one typed prompt to two model

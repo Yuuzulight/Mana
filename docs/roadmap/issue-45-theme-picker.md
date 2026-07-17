@@ -13,6 +13,10 @@ avoid a flash of the default theme on launch. A "Theme" panel in the existing
 System status & tools section offers preset buttons and a color input; no
 other CSS changed, since every existing element already read these tokens.
 
+The Violet preset's token values were later reused (not via this picker,
+just the same hex values) as desktop-client's new default theme when it was
+restyled from its original light theme — see `docs/roadmap/issue-50-presets.md`.
+
 ## Goal
 
 Let users choose or customize Mana's color theme, building on the CSS
