@@ -42,7 +42,20 @@ function createLlamaServerRuntime(options = {}) {
     idleTimer: null,
     exitHandlerRegistered: false,
     lastStartFailureAt: 0,
+    loadedAt: null,
+    lastSwapMs: null,
   };
+
+  // Debounce: back-to-back requests for different profiles (e.g. one coding
+  // question right after a casual one) would otherwise force a full
+  // kill/respawn per reply. Within this window after a swap, a *different*
+  // second swap is skipped and the reply is served from whatever model is
+  // already loaded instead. Set LLAMA_SERVER_SWAP_DEBOUNCE_MS=0 to disable.
+  const swapDebounceMs = Number(
+    env.LLAMA_SERVER_SWAP_DEBOUNCE_MS === undefined
+      ? 3000
+      : env.LLAMA_SERVER_SWAP_DEBOUNCE_MS,
+  );
 
   function findLlamaServerBin() {
     const candidates = [];
@@ -297,6 +310,22 @@ function createLlamaServerRuntime(options = {}) {
     }
   }
 
+  // GGML_CUDA_ENABLE_UNIFIED_MEMORY is a ggml-cuda runtime env var (not a
+  // llama-server CLI flag): it switches the CUDA backend to cudaMallocManaged
+  // allocations, letting inactive weights page to system RAM under memory
+  // pressure instead of the driver hard-failing the allocation. Measured
+  // real cold-start/swap latency on an RTX 3070 Ti (see
+  // docs/roadmap/issue-68-vram-hotswap-tuning.md): ~64% faster cold start
+  // (11.4s -> 4.1s) and ~32% faster on the larger 4B->7B swap direction,
+  // with no regression the other way -- on by default. Set
+  // MANA_LLAMA_UNIFIED_MEMORY=0 to opt out.
+  function buildServerEnv() {
+    if (env.MANA_LLAMA_UNIFIED_MEMORY === "0") {
+      return env;
+    }
+    return { ...env, GGML_CUDA_ENABLE_UNIFIED_MEMORY: "1" };
+  }
+
   function buildServerArgs(model, port, mmproj = null) {
     const args = [
       isLocalModelSpec(model, fs) ? "-m" : "-hf",
@@ -378,6 +407,7 @@ function createLlamaServerRuntime(options = {}) {
       cwd: path.dirname(bin),
       stdio: ["ignore", "ignore", "pipe"],
       windowsHide: true,
+      env: buildServerEnv(),
     });
 
     let stderrTail = "";
@@ -466,7 +496,24 @@ function createLlamaServerRuntime(options = {}) {
       return;
     }
 
-    if (state.child || state.port) {
+    const isRunning = Boolean(state.child || state.port);
+    if (
+      isRunning &&
+      state.model &&
+      state.model !== model &&
+      swapDebounceMs > 0 &&
+      state.loadedAt !== null &&
+      nowMs() - state.loadedAt < swapDebounceMs
+    ) {
+      console.log(
+        `llama-server: swap to ${model} debounced (current model loaded ${nowMs() - state.loadedAt}ms ago, ` +
+          `window ${swapDebounceMs}ms); serving from ${state.model} instead`,
+      );
+      return;
+    }
+
+    const swapStartedAt = nowMs();
+    if (isRunning) {
       if (state.model && state.model !== model) {
         console.log(
           `llama-server: switching model ${state.model} -> ${model}`,
@@ -479,6 +526,12 @@ function createLlamaServerRuntime(options = {}) {
     try {
       await state.starting;
       state.lastStartFailureAt = 0;
+      state.loadedAt = nowMs();
+      if (isRunning) {
+        state.lastSwapMs = state.loadedAt - swapStartedAt;
+        logPerf("llama-server-swap", swapStartedAt);
+        console.log(`llama-server: swap completed in ${state.lastSwapMs}ms`);
+      }
     } catch (e) {
       state.lastStartFailureAt = nowMs();
       throw e;
@@ -735,6 +788,7 @@ function createLlamaServerRuntime(options = {}) {
       model: state.model,
       mmproj: state.mmproj,
       port: state.port,
+      lastSwapMs: state.lastSwapMs,
     };
   }
 
