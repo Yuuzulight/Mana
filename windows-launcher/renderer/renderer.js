@@ -45,6 +45,10 @@ const {
 const chatLogEl = document.getElementById("chatLog");
 const chatInputEl = document.getElementById("chatInput");
 const chatSendEl = document.getElementById("chatSend");
+const deepResearchBtnEl = document.getElementById("deepResearchBtn");
+const researchProgressEl = document.getElementById("researchProgress");
+const researchProgressLabelEl = document.getElementById("researchProgressLabel");
+const researchCancelBtnEl = document.getElementById("researchCancelBtn");
 const compareModeBtnEl = document.getElementById("compareModeBtn");
 const comparePanelEl = document.getElementById("comparePanel");
 const compareProfileAEl = document.getElementById("compareProfileA");
@@ -1480,6 +1484,132 @@ chatInputEl?.addEventListener("keydown", (event) => {
     } else {
       sendTypedMessage();
     }
+  }
+});
+
+let deepResearchRunning = false;
+let currentResearchJobId = null;
+
+function setResearchProgress(label) {
+  if (!researchProgressEl || !researchProgressLabelEl) {
+    return;
+  }
+  if (!label) {
+    researchProgressEl.hidden = true;
+    return;
+  }
+  researchProgressEl.hidden = false;
+  researchProgressLabelEl.textContent = label;
+}
+
+function formatResearchReply(result) {
+  const lines = [result.report, ""];
+  if (result.sources.length) {
+    lines.push("Sources:");
+    for (const source of result.sources) {
+      const suffix = source.readFailed ? " (couldn't be read; used search snippet)" : "";
+      lines.push(`[${source.index}] ${source.title || source.url} - ${source.url}${suffix}`);
+    }
+  }
+  if (result.subQueries?.length) {
+    lines.push("");
+    lines.push(`Searched: ${result.subQueries.join(" | ")}`);
+  }
+  if (result.bounds.hitTimeLimit || result.bounds.hitSourceLimit) {
+    lines.push("");
+    lines.push(
+      `(Stopped early: ${result.bounds.sourcesUsed} of up to ${result.bounds.maxSources} sources read${
+        result.bounds.hitTimeLimit ? `, ${Math.round(result.bounds.elapsedMs / 1000)}s time budget reached` : ""
+      }.)`,
+    );
+  }
+  return lines.join("\n");
+}
+
+async function pollResearchJob(jobId) {
+  for (;;) {
+    const response = await fetch(`http://localhost:5005/research/${jobId}`);
+    if (!response.ok) {
+      throw new Error(`Research status check failed (${response.status})`);
+    }
+    const job = await response.json();
+    if (job.status === "done") {
+      return job.result;
+    }
+    if (job.status === "cancelled") {
+      const cancelled = new Error("Research cancelled.");
+      cancelled.cancelled = true;
+      throw cancelled;
+    }
+    if (job.status === "error") {
+      throw new Error(job.error || "Deep research failed");
+    }
+    setResearchProgress(job.progress?.label || "Researching...");
+    await wait(600);
+  }
+}
+
+async function startDeepResearch() {
+  if (deepResearchRunning || !chatInputEl) {
+    return;
+  }
+  const question = chatInputEl.value.trim();
+  if (!question) {
+    return;
+  }
+  chatInputEl.value = "";
+  deepResearchRunning = true;
+  deepResearchBtnEl?.classList.add("active");
+  appendChatMessage("user", question);
+  setResearchProgress("Starting research...");
+
+  try {
+    const startResponse = await fetch("http://localhost:5005/research/start", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        question,
+        sessionId: typeof ensureSessionId === "function" ? ensureSessionId() : undefined,
+      }),
+    });
+    if (!startResponse.ok) {
+      const detail = await startResponse.text();
+      throw new Error(detail || `Failed to start research (${startResponse.status})`);
+    }
+    const { jobId } = await startResponse.json();
+    currentResearchJobId = jobId;
+    const result = await pollResearchJob(jobId);
+    appendChatMessage("mana", formatResearchReply(result));
+  } catch (error) {
+    if (error.cancelled) {
+      appendChatMessage("mana", "Research cancelled.");
+    } else {
+      console.warn("Deep research failed:", error);
+      appendChatMessage("mana", `Research failed: ${error.message}`);
+    }
+  } finally {
+    deepResearchRunning = false;
+    currentResearchJobId = null;
+    deepResearchBtnEl?.classList.remove("active");
+    setResearchProgress(null);
+  }
+}
+
+deepResearchBtnEl?.addEventListener("click", () => {
+  startDeepResearch();
+});
+
+researchCancelBtnEl?.addEventListener("click", async () => {
+  if (!currentResearchJobId) {
+    return;
+  }
+  setResearchProgress("Cancelling...");
+  try {
+    await fetch(`http://localhost:5005/research/${currentResearchJobId}/cancel`, {
+      method: "POST",
+    });
+  } catch (error) {
+    console.warn("Research cancel request failed:", error);
   }
 });
 
