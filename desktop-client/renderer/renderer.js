@@ -12,6 +12,10 @@ const { formatCompareProfileLabel, pickDefaultCompareProfiles } = require('./com
   const avatarZoomBtn = document.getElementById('btnAvatarZoom');
   const avatarNoticeLink = document.getElementById('avatarNoticeLink');
   const messageInputEl = document.getElementById('messageInput');
+  const btnResearchEl = document.getElementById('btnResearch');
+  const researchProgressEl = document.getElementById('researchProgress');
+  const researchProgressLabelEl = document.getElementById('researchProgressLabel');
+  const researchCancelBtnEl = document.getElementById('researchCancelBtn');
   const btnCompareEl = document.getElementById('btnCompare');
   const comparePanelEl = document.getElementById('comparePanel');
   const compareProfileAEl = document.getElementById('compareProfileA');
@@ -43,6 +47,8 @@ const { formatCompareProfileLabel, pickDefaultCompareProfiles } = require('./com
   let recorder = null;
   let chunks = [];
   let live2dAvatar = null;
+  let deepResearchRunning = false;
+  let currentResearchJobId = null;
 
   async function init() {
     try {
@@ -271,6 +277,115 @@ const { formatCompareProfileLabel, pickDefaultCompareProfiles } = require('./com
       setSprite('idle');
     }
   }
+
+  // Deep research: reuses the single transcript/reply pair this UI already
+  // has (no scrolling chat log here, unlike windows-launcher) -- the
+  // question goes into #transcript, the cited report into #reply.
+  function setResearchProgress(label){
+    if (!researchProgressEl || !researchProgressLabelEl) return;
+    if (!label) { researchProgressEl.hidden = true; return; }
+    researchProgressEl.hidden = false;
+    researchProgressLabelEl.textContent = label;
+  }
+
+  function formatResearchReply(result){
+    const lines = [result.report, ''];
+    if (result.sources.length) {
+      lines.push('Sources:');
+      for (const source of result.sources) {
+        const suffix = source.readFailed ? " (couldn't be read; used search snippet)" : '';
+        lines.push(`[${source.index}] ${source.title || source.url} - ${source.url}${suffix}`);
+      }
+    }
+    if (result.subQueries && result.subQueries.length) {
+      lines.push('');
+      lines.push(`Searched: ${result.subQueries.join(' | ')}`);
+    }
+    if (result.bounds && (result.bounds.hitTimeLimit || result.bounds.hitSourceLimit)) {
+      lines.push('');
+      lines.push(
+        `(Stopped early: ${result.bounds.sourcesUsed} of up to ${result.bounds.maxSources} sources read${
+          result.bounds.hitTimeLimit ? `, ${Math.round(result.bounds.elapsedMs / 1000)}s time budget reached` : ''
+        }.)`,
+      );
+    }
+    return lines.join('\n');
+  }
+
+  async function pollResearchJob(jobId){
+    for (;;) {
+      const response = await fetch(`http://127.0.0.1:5005/research/${jobId}`);
+      if (!response.ok) {
+        throw new Error(`Research status check failed (${response.status})`);
+      }
+      const job = await response.json();
+      if (job.status === 'done') return job.result;
+      if (job.status === 'cancelled') {
+        const cancelled = new Error('Research cancelled.');
+        cancelled.cancelled = true;
+        throw cancelled;
+      }
+      if (job.status === 'error') {
+        throw new Error(job.error || 'Deep research failed');
+      }
+      setResearchProgress(job.progress?.label || 'Researching...');
+      await new Promise((resolve) => setTimeout(resolve, 600));
+    }
+  }
+
+  async function startDeepResearch(){
+    if (deepResearchRunning || !messageInputEl) return;
+    const question = messageInputEl.value.trim();
+    if (!question) return;
+    messageInputEl.value = '';
+    deepResearchRunning = true;
+    btnResearchEl?.classList.add('active');
+    transcriptEl.textContent = question;
+    replyEl.textContent = '';
+    setResearchProgress('Starting research...');
+
+    try {
+      const startResponse = await fetch('http://127.0.0.1:5005/research/start', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ question }),
+      });
+      if (!startResponse.ok) {
+        const detail = await startResponse.text();
+        throw new Error(detail || `Failed to start research (${startResponse.status})`);
+      }
+      const { jobId } = await startResponse.json();
+      currentResearchJobId = jobId;
+      const result = await pollResearchJob(jobId);
+      replyEl.textContent = formatResearchReply(result);
+      setSprite('speaking');
+      setTimeout(() => setSprite('idle'), 400);
+    } catch (error) {
+      if (error.cancelled) {
+        replyEl.textContent = 'Research cancelled.';
+      } else {
+        console.warn('Deep research failed:', error);
+        replyEl.textContent = `Research failed: ${error.message}`;
+      }
+    } finally {
+      deepResearchRunning = false;
+      currentResearchJobId = null;
+      btnResearchEl?.classList.remove('active');
+      setResearchProgress(null);
+    }
+  }
+
+  btnResearchEl?.addEventListener('click', () => { startDeepResearch(); });
+
+  researchCancelBtnEl?.addEventListener('click', async () => {
+    if (!currentResearchJobId) return;
+    setResearchProgress('Cancelling...');
+    try {
+      await fetch(`http://127.0.0.1:5005/research/${currentResearchJobId}/cancel`, { method: 'POST' });
+    } catch (e) {
+      console.warn('Failed to cancel research job:', e);
+    }
+  });
 
   // Nav: Home/Settings toggle between the normal chat view and the
   // Settings view (Presets, etc). "Code" is an existing unimplemented stub

@@ -197,6 +197,40 @@
 
       #chatInput:focus { outline: 1px solid var(--accent); }
 
+      #deepResearchBtn.active {
+        background: var(--accent);
+        border-color: var(--accent);
+        color: #fff;
+      }
+
+      #researchProgress {
+        margin-top: 6px;
+        font-size: 12px;
+        color: var(--muted);
+        display: flex;
+        align-items: center;
+        gap: 6px;
+      }
+
+      #researchProgress::before {
+        content: "";
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: var(--accent);
+        animation: research-pulse 1.2s ease-in-out infinite;
+      }
+
+      @keyframes research-pulse {
+        0%, 100% { opacity: 0.3; }
+        50% { opacity: 1; }
+      }
+
+      #researchCancelBtn {
+        padding: 2px 8px;
+        font-size: 11px;
+      }
+
       #controlsRow {
         display: flex;
         align-items: center;
@@ -616,6 +650,12 @@
               id="chatInput"
               placeholder="Message Mana... (Enter to send, Shift+Enter for a new line)"
             ></textarea>
+            <button
+              id="deepResearchBtn"
+              title="Deep research: search and read several sources, then synthesize a cited report"
+            >
+              Research
+            </button>
             <button id="chatSend">Send</button>
             <button
               id="compareModeBtn"
@@ -644,6 +684,10 @@
                 <div class="compareColumnBody" id="compareResultB">Type a prompt and send it to compare.</div>
               </div>
             </div>
+          </div>
+          <div id="researchProgress" hidden>
+            <span id="researchProgressLabel">Researching...</span>
+            <button id="researchCancelBtn" title="Stop this research run">Cancel</button>
           </div>
         </div>
       </div>
