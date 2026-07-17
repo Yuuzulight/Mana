@@ -53,11 +53,28 @@ Implemented.
   chat `/reply` call. No pure logic was extracted into its own module (unlike
   compare-mode.js) — there wasn't anything here worth unit-testing beyond
   DOM wiring, which was instead verified live in a browser harness.
-- **desktop-client**: not ported. Not requested for this issue and, unlike
-  Compare mode, there's been no follow-up ask to add it there.
+- **UI (desktop-client)**: a Presets panel behind the previously-inert
+  "Settings" nav button (`index_fixed.html`, wired in `renderer.js`), same
+  select/New/Edit/Delete/editor pattern as windows-launcher, persisted the
+  same way via `localStorage`. desktop-client's primary interaction is voice
+  (`POST /transcribe`, not `/reply`), so `/transcribe` now also accepts and
+  forwards `presetId` to `buildAssistantReply` (`node-bot/server-routes.js`),
+  covered by dedicated tests mirroring the existing `/reply` presetId tests.
+  Compare mode there still deliberately omits `presetId`, matching
+  windows-launcher's Compare mode.
+- **Theme (desktop-client)**: restyled `desktop-client/renderer/style.css`
+  from its original hardcoded light theme to the same Violet dark-purple
+  token system windows-launcher's theme picker (issue #45) already uses
+  (`--bg`, `--panel`, `--panel-2`, `--border`, `--text`, `--muted`,
+  `--accent`, `--user-bubble`, `--mana-bubble`), including recoloring the
+  avatar-stage and input-bar gradients so they read correctly on a dark
+  background. No theme *picker* was added to desktop-client (not requested
+  here) — just the Violet palette as its new default/only look.
 - **Verified**: full node-bot test suite (backend CRUD, validation,
-  persistence, and the system-prompt regression tests) and the
-  windows-launcher suite both pass. The Presets panel was exercised live in
-  a browser harness (create, edit, delete, reload-persistence, and
-  confirming `presetId` reaches `/reply` and is omitted when no preset is
-  selected).
+  persistence, and both the `/reply` and `/transcribe` system-prompt
+  regression tests) and the windows-launcher suite both pass. Both the
+  windows-launcher and desktop-client Presets panels were exercised live in
+  separate browser harnesses (create, edit, delete, reload-persistence, and
+  confirming `presetId` reaches the backend and is omitted when no preset is
+  selected); the desktop-client Violet theme was verified via computed
+  styles matching the expected token values.

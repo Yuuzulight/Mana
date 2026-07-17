@@ -11,9 +11,9 @@
     <aside class="sidebar">
       <div class="brand">Mana</div>
       <nav class="nav">
-        <button class="nav-btn active">Home</button>
+        <button class="nav-btn active" id="navHomeBtn">Home</button>
         <button class="nav-btn">Code</button>
-        <button class="nav-btn">Settings</button>
+        <button class="nav-btn" id="navSettingsBtn">Settings</button>
       </nav>
       <div class="side-footer">v0.1 • Local</div>
     </aside>
@@ -32,19 +32,90 @@
         </div>
       </header>
 
-      <div class="avatar-stage" id="avatarStage">
-        <canvas id="live2dCanvas"></canvas>
-        <button id="btnAvatarZoom" class="avatar-zoom-btn" title="Cycle avatar zoom">Zoom</button>
-        <div class="avatar-disclaimer">
-          Testing avatar, not final. Character design rights: miHoYo.
-          <a href="#" id="avatarNoticeLink">Details</a>
+      <div class="home-content" id="homeView">
+        <div class="avatar-stage" id="avatarStage">
+          <canvas id="live2dCanvas"></canvas>
+          <button id="btnAvatarZoom" class="avatar-zoom-btn" title="Cycle avatar zoom">Zoom</button>
+          <div class="avatar-disclaimer">
+            Testing avatar, not final. Character design rights: miHoYo.
+            <a href="#" id="avatarNoticeLink">Details</a>
+          </div>
         </div>
+
+        <section id="messages" class="messages">
+          <div id="transcript" class="message system">(transcript will appear here)</div>
+          <div id="reply" class="message assistant">(reply will appear here)</div>
+        </section>
+
+        <div class="input-bar">
+          <div class="avatar-wrap"><img id="adminSpriteSmall" src="../../sprites/sprite-idle.png" alt="avatar"/></div>
+          <div class="input-wrap">
+            <textarea id="messageInput" placeholder="Write a message..." rows="1"></textarea>
+            <div class="input-actions">
+              <button id="btnRecord" class="primary">Hold to Talk</button>
+              <button id="btnCompare" title="Compare mode: send this prompt to two model profiles and see both replies side by side">Compare</button>
+              <button id="btnClear">Clear</button>
+            </div>
+            <div id="comparePanel" class="compare-panel" hidden>
+              <div class="compare-select-row">
+                <select id="compareProfileA"></select>
+                <select id="compareProfileB"></select>
+                <button id="compareCancelBtn" title="Cancel the in-flight comparison" hidden>Cancel</button>
+              </div>
+              <div class="compare-results">
+                <div class="compare-column" id="compareColumnA">
+                  <div class="compare-column-header">
+                    <span id="compareLabelA">Profile A</span>
+                    <button class="compare-prefer-btn" id="comparePreferA">Prefer this</button>
+                  </div>
+                  <div class="compare-column-body" id="compareResultA">Type a prompt and click Compare.</div>
+                </div>
+                <div class="compare-column" id="compareColumnB">
+                  <div class="compare-column-header">
+                    <span id="compareLabelB">Profile B</span>
+                    <button class="compare-prefer-btn" id="comparePreferB">Prefer this</button>
+                  </div>
+                  <div class="compare-column-body" id="compareResultB">Type a prompt and click Compare.</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <footer class="logs-footer">
+          <pre id="backendLogs" class="logs">(backend logs)</pre>
+        </footer>
       </div>
 
-      <section id="messages" class="messages">
-        <div id="transcript" class="message system">(transcript will appear here)</div>
-        <div id="reply" class="message assistant">(reply will appear here)</div>
-      </section>
+      <div class="settings-view" id="settingsView" hidden>
+        <div class="settings-section" id="presetsSection">
+          <h3>Presets</h3>
+          <div class="preset-select-row">
+            <select id="presetSelect">
+              <option value="">None</option>
+            </select>
+            <button id="presetNewBtn">New</button>
+            <button id="presetEditBtn" hidden>Edit</button>
+            <button id="presetDeleteBtn" hidden>Delete</button>
+          </div>
+          <div class="preset-editor" id="presetEditor" hidden>
+            <input
+              id="presetNameInput"
+              type="text"
+              placeholder="Preset name"
+              maxlength="80"
+            />
+            <textarea
+              id="presetInstructionsInput"
+              placeholder="Instructions Mana should follow while this preset is active..."
+            ></textarea>
+            <div class="preset-editor-actions">
+              <button id="presetSaveBtn">Save</button>
+              <button id="presetCancelBtn">Cancel</button>
+            </div>
+          </div>
+        </div>
+      </div>
 
       <!-- Onboarding modal -->
       <div id="onboardingModal" class="modal" aria-hidden="true">
@@ -59,45 +130,6 @@
           </div>
         </div>
       </div>
-
-      <div class="input-bar">
-        <div class="avatar-wrap"><img id="adminSpriteSmall" src="../../sprites/sprite-idle.png" alt="avatar"/></div>
-        <div class="input-wrap">
-          <textarea id="messageInput" placeholder="Write a message..." rows="1"></textarea>
-          <div class="input-actions">
-            <button id="btnRecord" class="primary">Hold to Talk</button>
-            <button id="btnCompare" title="Compare mode: send this prompt to two model profiles and see both replies side by side">Compare</button>
-            <button id="btnClear">Clear</button>
-          </div>
-          <div id="comparePanel" class="compare-panel" hidden>
-            <div class="compare-select-row">
-              <select id="compareProfileA"></select>
-              <select id="compareProfileB"></select>
-              <button id="compareCancelBtn" title="Cancel the in-flight comparison" hidden>Cancel</button>
-            </div>
-            <div class="compare-results">
-              <div class="compare-column" id="compareColumnA">
-                <div class="compare-column-header">
-                  <span id="compareLabelA">Profile A</span>
-                  <button class="compare-prefer-btn" id="comparePreferA">Prefer this</button>
-                </div>
-                <div class="compare-column-body" id="compareResultA">Type a prompt and click Compare.</div>
-              </div>
-              <div class="compare-column" id="compareColumnB">
-                <div class="compare-column-header">
-                  <span id="compareLabelB">Profile B</span>
-                  <button class="compare-prefer-btn" id="comparePreferB">Prefer this</button>
-                </div>
-                <div class="compare-column-body" id="compareResultB">Type a prompt and click Compare.</div>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <footer class="logs-footer">
-        <pre id="backendLogs" class="logs">(backend logs)</pre>
-      </footer>
     </main>
   </div>
 

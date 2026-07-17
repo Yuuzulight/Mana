@@ -309,6 +309,67 @@ test("reply omits presetId as null when the request doesn't select one", async (
   });
 });
 
+test("transcribe passes presetId through to buildAssistantReply", async () => {
+  let receivedPresetId = "not-set";
+  const app = createApp({
+    normalizeUploadedAudio: (file) => ({ tmpPath: file.path, audioPath: file.path }),
+    runWhisper: () => "hello",
+    cleanupUploadedAudio: () => {},
+    buildAssistantReply: async (
+      transcript,
+      screenText,
+      marketText,
+      modelProfile,
+      sessionId,
+      assistantMode,
+      presetId,
+    ) => {
+      receivedPresetId = presetId;
+      return "ok";
+    },
+  });
+
+  await withServer(app, async (baseUrl) => {
+    const form = new FormData();
+    form.append("file", new Blob(["fake audio"], { type: "audio/wav" }), "voice.wav");
+    form.append("presetId", "preset-123");
+    const response = await fetch(`${baseUrl}/transcribe`, { method: "POST", body: form });
+
+    assert.equal(response.status, 200);
+    assert.equal(receivedPresetId, "preset-123");
+  });
+});
+
+test("transcribe omits presetId as null when the request doesn't select one", async () => {
+  let receivedPresetId = "not-set";
+  const app = createApp({
+    normalizeUploadedAudio: (file) => ({ tmpPath: file.path, audioPath: file.path }),
+    runWhisper: () => "hello",
+    cleanupUploadedAudio: () => {},
+    buildAssistantReply: async (
+      transcript,
+      screenText,
+      marketText,
+      modelProfile,
+      sessionId,
+      assistantMode,
+      presetId,
+    ) => {
+      receivedPresetId = presetId;
+      return "ok";
+    },
+  });
+
+  await withServer(app, async (baseUrl) => {
+    const form = new FormData();
+    form.append("file", new Blob(["fake audio"], { type: "audio/wav" }), "voice.wav");
+    const response = await fetch(`${baseUrl}/transcribe`, { method: "POST", body: form });
+
+    assert.equal(response.status, 200);
+    assert.equal(receivedPresetId, null);
+  });
+});
+
 // Regression test for a real bug this feature surfaced: buildAssistantReply
 // computes a mode/preset-aware system prompt (selectedSystemPrompt), but the
 // local-inference call site never forwarded it, so presets (and the
