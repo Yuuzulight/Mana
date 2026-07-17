@@ -329,6 +329,7 @@ function registerCoreRoutes(app, upload, deps) {
         "assistantMode",
         null,
       );
+      const presetId = optionalString(req.body?.presetId, "presetId", null);
       const reply = await buildAssistantReply(
         transcript,
         screenText,
@@ -336,6 +337,7 @@ function registerCoreRoutes(app, upload, deps) {
         modelProfile,
         sessionId,
         assistantMode,
+        presetId,
       );
       return res.json({
         reply,
@@ -376,6 +378,7 @@ function registerCoreRoutes(app, upload, deps) {
         "assistantMode",
         null,
       );
+      const presetId = optionalString(req.body?.presetId, "presetId", null);
       const reply = await buildAssistantReply(
         transcript,
         "",
@@ -383,6 +386,7 @@ function registerCoreRoutes(app, upload, deps) {
         "default",
         sessionId,
         assistantMode,
+        presetId,
       );
       cleanupUploadedAudio(tmpPath, audioPath);
 

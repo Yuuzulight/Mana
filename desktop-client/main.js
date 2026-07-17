@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, dialog, shell } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell, session } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const { spawn } = require('child_process');
@@ -62,7 +62,7 @@ function showBackendErrorDialog(title, message){
         else dialog.showMessageBox(mainWindow, { type:'info', message:'Logs not found: ' + logPath });
       } else if (res.response === 1){
         // Open docs
-        const docs = path.join(path.dirname(__dirname), '..', 'BUILD_DESKTOP.md');
+        const docs = path.join(path.dirname(__dirname), 'BUILD_DESKTOP.md');
         shell.openPath(docs);
       }
     });
@@ -124,6 +124,16 @@ function spawnBackend() {
 }
 
 app.whenReady().then(() => {
+  // The renderer loads over file://, which Chromium doesn't reliably
+  // persist media permission grants for -- without this, getUserMedia()
+  // re-prompts on every launch no matter what the user already allowed.
+  // This app's mic access is always for the bundled local content, so
+  // auto-grant just "media".
+  session.defaultSession.setPermissionRequestHandler((webContents, permission, callback) => {
+    callback(permission === 'media');
+  });
+  session.defaultSession.setPermissionCheckHandler((webContents, permission) => permission === 'media');
+
   spawnBackend();
   createWindow();
 
@@ -173,7 +183,7 @@ ipcMain.handle('open-avatar-notice', async () => {
 
 ipcMain.handle('open-docs', async () => {
   try{
-    const docs = path.join(path.dirname(__dirname), '..', 'BUILD_DESKTOP.md');
+    const docs = path.join(path.dirname(__dirname), 'BUILD_DESKTOP.md');
     if (fs.existsSync(docs)){
       await shell.openPath(docs);
       return { ok: true, path: docs };

@@ -1,6 +1,5 @@
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
-const http = require("node:http");
 const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
@@ -13,17 +12,7 @@ const {
   createEditorWorkspaceStore,
   createZedIntegration,
 } = require("../zed-integration");
-
-async function withServer(app, fn) {
-  const server = http.createServer(app);
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const { port } = server.address();
-  try {
-    await fn(`http://127.0.0.1:${port}`);
-  } finally {
-    await new Promise((resolve) => server.close(resolve));
-  }
-}
+const { withServer } = require("./helpers");
 
 test("createZedIntegration reports configured env binary when it exists", () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mana-zed-test-"));

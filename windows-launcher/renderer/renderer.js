@@ -12,6 +12,15 @@ const doctorSummaryEl = document.getElementById("doctorSummary");
 const doctorChecksEl = document.getElementById("doctorChecks");
 const modelModeControlsEl = document.getElementById("modelModeControls");
 const modelStatusEl = document.getElementById("modelStatus");
+const presetSelectEl = document.getElementById("presetSelect");
+const presetNewBtnEl = document.getElementById("presetNewBtn");
+const presetEditBtnEl = document.getElementById("presetEditBtn");
+const presetDeleteBtnEl = document.getElementById("presetDeleteBtn");
+const presetEditorEl = document.getElementById("presetEditor");
+const presetNameInputEl = document.getElementById("presetNameInput");
+const presetInstructionsInputEl = document.getElementById("presetInstructionsInput");
+const presetSaveBtnEl = document.getElementById("presetSaveBtn");
+const presetCancelBtnEl = document.getElementById("presetCancelBtn");
 const { ipcRenderer } = require("electron");
 const { formatDoctorPanel } = require("./doctor-panel");
 const {
@@ -28,6 +37,10 @@ const {
   shouldStopRecording,
 } = require("./voice-endpointing");
 const { detectReplyEmotion } = require("./reply-emotion");
+const {
+  formatCompareProfileLabel,
+  pickDefaultCompareProfiles,
+} = require("./compare-mode");
 
 const chatLogEl = document.getElementById("chatLog");
 const chatInputEl = document.getElementById("chatInput");
@@ -36,6 +49,19 @@ const deepResearchBtnEl = document.getElementById("deepResearchBtn");
 const researchProgressEl = document.getElementById("researchProgress");
 const researchProgressLabelEl = document.getElementById("researchProgressLabel");
 const researchCancelBtnEl = document.getElementById("researchCancelBtn");
+const compareModeBtnEl = document.getElementById("compareModeBtn");
+const comparePanelEl = document.getElementById("comparePanel");
+const compareProfileAEl = document.getElementById("compareProfileA");
+const compareProfileBEl = document.getElementById("compareProfileB");
+const compareResultAEl = document.getElementById("compareResultA");
+const compareResultBEl = document.getElementById("compareResultB");
+const compareLabelAEl = document.getElementById("compareLabelA");
+const compareLabelBEl = document.getElementById("compareLabelB");
+const comparePreferAEl = document.getElementById("comparePreferA");
+const comparePreferBEl = document.getElementById("comparePreferB");
+const compareColumnAEl = document.getElementById("compareColumnA");
+const compareColumnBEl = document.getElementById("compareColumnB");
+const compareCancelBtnEl = document.getElementById("compareCancelBtn");
 const manaCanvasEl = document.getElementById("manaCanvas");
 const avatarZoomBtnEl = document.getElementById("avatarZoomBtn");
 
@@ -330,6 +356,7 @@ function describeModelStatus(status) {
 function applyModelStatus(status) {
   selectedModelProfile = status.activeProfile || selectedModelProfile;
   renderModelModeButtons(status.profiles, status.activeProfile);
+  populateCompareSelects(status.profiles);
   if (modelStatusEl) {
     modelStatusEl.textContent = describeModelStatus(status);
   }
@@ -366,11 +393,301 @@ async function setActiveModelProfile(profile) {
   }
 }
 
+// Presets: saved persona/behavior instructions the user can select to be
+// appended to the base system prompt (see buildAssistantReply in
+// node-bot/server.js). Backed by GET/POST/PATCH/DELETE /presets, editing
+// happens in-place in an inline form rather than a modal since there's only
+// ever one preset being edited at a time.
+const PRESET_STORAGE_KEY = "manaSelectedPresetId";
+let selectedPresetId = localStorage.getItem(PRESET_STORAGE_KEY) || "";
+let editingPresetId = null;
+let latestPresets = [];
+
+function setSelectedPresetId(presetId) {
+  selectedPresetId = presetId || "";
+  if (selectedPresetId) {
+    localStorage.setItem(PRESET_STORAGE_KEY, selectedPresetId);
+  } else {
+    localStorage.removeItem(PRESET_STORAGE_KEY);
+  }
+  presetEditBtnEl.hidden = !selectedPresetId;
+  presetDeleteBtnEl.hidden = !selectedPresetId;
+}
+
+function renderPresetSelect(presets) {
+  presetSelectEl.innerHTML = "";
+  const noneOption = document.createElement("option");
+  noneOption.value = "";
+  noneOption.textContent = "None";
+  presetSelectEl.appendChild(noneOption);
+  for (const preset of presets) {
+    const option = document.createElement("option");
+    option.value = preset.id;
+    option.textContent = preset.name;
+    presetSelectEl.appendChild(option);
+  }
+  const stillExists = presets.some((preset) => preset.id === selectedPresetId);
+  presetSelectEl.value = stillExists ? selectedPresetId : "";
+  setSelectedPresetId(presetSelectEl.value);
+}
+
+async function refreshPresetList() {
+  try {
+    const response = await fetch("http://localhost:5005/presets");
+    if (!response.ok) {
+      throw new Error(`Preset list returned ${response.status}`);
+    }
+    const result = await response.json();
+    latestPresets = result.presets || [];
+    renderPresetSelect(latestPresets);
+  } catch (error) {
+    console.warn("Mana preset list failed:", error);
+  }
+}
+
+function closePresetEditor() {
+  editingPresetId = null;
+  presetEditorEl.hidden = true;
+  presetNameInputEl.value = "";
+  presetInstructionsInputEl.value = "";
+}
+
+function openPresetEditor(preset) {
+  editingPresetId = preset ? preset.id : null;
+  presetNameInputEl.value = preset ? preset.name : "";
+  presetInstructionsInputEl.value = preset ? preset.instructions : "";
+  presetEditorEl.hidden = false;
+  presetNameInputEl.focus();
+}
+
+presetSelectEl.addEventListener("change", () => {
+  setSelectedPresetId(presetSelectEl.value);
+});
+
+presetNewBtnEl.addEventListener("click", () => openPresetEditor(null));
+
+presetEditBtnEl.addEventListener("click", () => {
+  const preset = latestPresets.find((item) => item.id === selectedPresetId);
+  if (preset) {
+    openPresetEditor(preset);
+  }
+});
+
+presetCancelBtnEl.addEventListener("click", closePresetEditor);
+
+presetSaveBtnEl.addEventListener("click", async () => {
+  const name = presetNameInputEl.value.trim();
+  const instructions = presetInstructionsInputEl.value.trim();
+  if (!name || !instructions) {
+    return;
+  }
+  try {
+    const url = editingPresetId
+      ? `http://localhost:5005/presets/${editingPresetId}`
+      : "http://localhost:5005/presets";
+    const response = await fetch(url, {
+      method: editingPresetId ? "PATCH" : "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, instructions }),
+    });
+    if (!response.ok) {
+      throw new Error(`Save preset returned ${response.status}`);
+    }
+    const saved = await response.json();
+    closePresetEditor();
+    await refreshPresetList();
+    presetSelectEl.value = saved.id;
+    setSelectedPresetId(saved.id);
+  } catch (error) {
+    console.warn("Mana save preset failed:", error);
+  }
+});
+
+presetDeleteBtnEl.addEventListener("click", async () => {
+  const preset = latestPresets.find((item) => item.id === selectedPresetId);
+  if (!preset) {
+    return;
+  }
+  const confirmed =
+    typeof showConfirmModal === "function"
+      ? await showConfirmModal(`Delete preset "${preset.name}"? This cannot be undone.`)
+      : window.confirm(`Delete preset "${preset.name}"?`);
+  if (!confirmed) {
+    return;
+  }
+  try {
+    const response = await fetch(`http://localhost:5005/presets/${preset.id}`, {
+      method: "DELETE",
+    });
+    if (!response.ok) {
+      throw new Error(`Delete preset returned ${response.status}`);
+    }
+    setSelectedPresetId("");
+    await refreshPresetList();
+  } catch (error) {
+    console.warn("Mana delete preset failed:", error);
+  }
+});
+
+// Compare mode: an opt-in side-by-side view (not part of the normal chat
+// flow) that sends one prompt to two model profiles via the existing
+// /reply endpoint -- no new backend inference path, no sessionId (so these
+// exploratory replies don't get saved to chat/session memory).
+let compareModeActive = false;
+let compareRunning = false;
+let compareAbortController = null;
+let latestCompareProfiles = {};
+
+function updateCompareLabels() {
+  if (compareLabelAEl) {
+    compareLabelAEl.textContent = formatCompareProfileLabel(
+      compareProfileAEl?.value,
+      latestCompareProfiles,
+    );
+  }
+  if (compareLabelBEl) {
+    compareLabelBEl.textContent = formatCompareProfileLabel(
+      compareProfileBEl?.value,
+      latestCompareProfiles,
+    );
+  }
+}
+
+function populateCompareSelects(profiles) {
+  if (!compareProfileAEl || !compareProfileBEl) {
+    return;
+  }
+  latestCompareProfiles = profiles || {};
+  const keys = Object.keys(latestCompareProfiles);
+  const availableKeys = keys.filter((key) => latestCompareProfiles[key]?.available);
+  const previousA = compareProfileAEl.value;
+  const previousB = compareProfileBEl.value;
+
+  for (const selectEl of [compareProfileAEl, compareProfileBEl]) {
+    selectEl.innerHTML = "";
+    for (const key of keys) {
+      const profile = latestCompareProfiles[key];
+      const option = document.createElement("option");
+      option.value = key;
+      option.textContent = profile?.available
+        ? profile.label || key
+        : `${profile?.label || key} (unavailable)`;
+      option.disabled = !profile?.available;
+      selectEl.appendChild(option);
+    }
+  }
+
+  // Prefer a profile that's actually usable; only fall back to an
+  // unavailable one if nothing on this machine is usable at all.
+  const pickFrom = availableKeys.length ? availableKeys : keys;
+  const [defaultA, defaultB] = pickDefaultCompareProfiles(pickFrom);
+  compareProfileAEl.value = availableKeys.includes(previousA) ? previousA : defaultA;
+  compareProfileBEl.value = availableKeys.includes(previousB) ? previousB : defaultB;
+
+  updateCompareLabels();
+}
+
+compareProfileAEl?.addEventListener("change", updateCompareLabels);
+compareProfileBEl?.addEventListener("change", updateCompareLabels);
+
+function setCompareModeActive(active) {
+  compareModeActive = active;
+  compareModeBtnEl?.classList.toggle("active", active);
+  if (comparePanelEl) {
+    comparePanelEl.hidden = !active;
+  }
+}
+
+compareModeBtnEl?.addEventListener("click", () => {
+  setCompareModeActive(!compareModeActive);
+});
+
+function setComparePreferred(column) {
+  compareColumnAEl?.classList.toggle("preferred", column === "a");
+  compareColumnBEl?.classList.toggle("preferred", column === "b");
+}
+
+comparePreferAEl?.addEventListener("click", () => setComparePreferred("a"));
+comparePreferBEl?.addEventListener("click", () => setComparePreferred("b"));
+
+async function fetchCompareReply(text, profile, signal) {
+  const response = await fetch("http://localhost:5005/reply", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ text, modelProfile: profile }),
+    signal,
+  });
+  if (!response.ok) {
+    const message = await response.text();
+    throw new Error(message || `Reply failed (${response.status})`);
+  }
+  const result = await response.json();
+  return result.reply || "";
+}
+
+function describeCompareOutcome(settledResult) {
+  if (settledResult.status === "fulfilled") {
+    return settledResult.value;
+  }
+  if (settledResult.reason?.name === "AbortError") {
+    return "Cancelled.";
+  }
+  return `Failed: ${settledResult.reason.message}`;
+}
+
+async function runCompare() {
+  if (!chatInputEl || compareRunning) {
+    return;
+  }
+  const text = chatInputEl.value.trim();
+  if (!text) {
+    return;
+  }
+  chatInputEl.value = "";
+  compareRunning = true;
+  setComparePreferred(null);
+  if (compareCancelBtnEl) {
+    compareCancelBtnEl.hidden = false;
+  }
+
+  const profileA = compareProfileAEl?.value || "default";
+  const profileB = compareProfileBEl?.value || "default";
+  updateCompareLabels();
+  if (compareResultAEl) compareResultAEl.textContent = "Thinking...";
+  if (compareResultBEl) compareResultBEl.textContent = "Thinking...";
+
+  compareAbortController = new AbortController();
+  const { signal } = compareAbortController;
+
+  const [resultA, resultB] = await Promise.allSettled([
+    fetchCompareReply(text, profileA, signal),
+    fetchCompareReply(text, profileB, signal),
+  ]);
+
+  if (compareResultAEl) {
+    compareResultAEl.textContent = describeCompareOutcome(resultA);
+  }
+  if (compareResultBEl) {
+    compareResultBEl.textContent = describeCompareOutcome(resultB);
+  }
+  compareAbortController = null;
+  compareRunning = false;
+  if (compareCancelBtnEl) {
+    compareCancelBtnEl.hidden = true;
+  }
+}
+
+compareCancelBtnEl?.addEventListener("click", () => {
+  compareAbortController?.abort();
+});
+
 setAvatarState("idle");
 setInterval(checkServices, 5000);
 setInterval(refreshPerfStatus, PERF_STATUS_POLL_MS);
 refreshModelStatus();
 setInterval(refreshModelStatus, MODEL_STATUS_POLL_MS);
+refreshPresetList();
+setSelectedPresetId(selectedPresetId);
 
 async function waitForBackend() {
   for (let attempt = 0; attempt < AUTO_LISTEN_MAX_ATTEMPTS; attempt += 1) {
@@ -1053,6 +1370,7 @@ async function requestScreenAwareReply(text, gamingModeActive) {
       screenText,
       modelProfile: selectedModelProfile,
       sessionId: typeof ensureSessionId === "function" ? ensureSessionId() : undefined,
+      presetId: selectedPresetId || undefined,
     }),
   });
 
@@ -1093,6 +1411,7 @@ async function handleVisionHotkey() {
         image,
         modelProfile: selectedModelProfile,
         sessionId: typeof ensureSessionId === "function" ? ensureSessionId() : undefined,
+        presetId: selectedPresetId || undefined,
       }),
     });
 
@@ -1150,13 +1469,21 @@ async function sendTypedMessage() {
 }
 
 chatSendEl?.addEventListener("click", () => {
-  sendTypedMessage();
+  if (compareModeActive) {
+    runCompare();
+  } else {
+    sendTypedMessage();
+  }
 });
 
 chatInputEl?.addEventListener("keydown", (event) => {
   if (event.key === "Enter" && !event.shiftKey) {
     event.preventDefault();
-    sendTypedMessage();
+    if (compareModeActive) {
+      runCompare();
+    } else {
+      sendTypedMessage();
+    }
   }
 });
 

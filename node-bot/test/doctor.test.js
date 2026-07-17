@@ -1,6 +1,5 @@
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
-const http = require("node:http");
 const net = require("node:net");
 const os = require("node:os");
 const path = require("node:path");
@@ -8,29 +7,7 @@ const test = require("node:test");
 
 const { createApp } = require("../server");
 const { runDoctorChecks, runDoctorChecksAsync } = require("../doctor");
-
-async function withServer(app, fn) {
-  const server = http.createServer(app);
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const { port } = server.address();
-  const baseUrl = `http://127.0.0.1:${port}`;
-  try {
-    await fn(baseUrl);
-  } finally {
-    await new Promise((resolve) => server.close(resolve));
-  }
-}
-
-async function withRawServer(handler, fn) {
-  const server = http.createServer(handler);
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const { port } = server.address();
-  try {
-    await fn({ port, url: `http://127.0.0.1:${port}` });
-  } finally {
-    await new Promise((resolve) => server.close(resolve));
-  }
-}
+const { withServer, withRawServer } = require("./helpers");
 
 async function getFreePort() {
   const server = net.createServer();
@@ -67,7 +44,7 @@ test("doctor checks return structured pass warn and fail results", () => {
     });
 
     assert.equal(result.ok, false);
-    assert.equal(result.summary.pass, 5);
+    assert.equal(result.summary.pass, 6);
     assert.equal(result.summary.warn, 9);
     assert.equal(result.summary.fail, 1);
 
@@ -83,6 +60,7 @@ test("doctor checks return structured pass warn and fail results", () => {
         "whisper-config",
         "tts-services",
         "mcp-server",
+        "recommended-model-profile",
         "mobile-auth",
         "remote-exposure",
         "storage",
@@ -111,6 +89,32 @@ test("doctor checks return structured pass warn and fail results", () => {
   } finally {
     fs.rmSync(tempDir, { recursive: true, force: true });
   }
+});
+
+test("doctor surfaces the injected hardware model recommendation", () => {
+  const fakeRecommendation = {
+    profile: "fast",
+    label: "Fast fallback",
+    reason: "Detected ~6.0GB GPU VRAM (via nvidia-smi). Under 8GB...",
+    detected: { vramMb: 6144, ramMb: 32768 },
+  };
+  const result = runDoctorChecks({
+    env: { MANA_ALLOW_REMOTE_AI: "0" },
+    paths: { dataDir: fs.mkdtempSync(path.join(os.tmpdir(), "mana-doctor-test-")) },
+    ports: [],
+    services: [],
+    versions: { node: "v22.19.0" },
+    zedCommandResolver: () => null,
+    modelManagement: {
+      getRecommendedModelProfile: () => fakeRecommendation,
+    },
+  });
+
+  const check = result.checks.find((c) => c.id === "recommended-model-profile");
+  assert.equal(check.status, "pass");
+  assert.match(check.message, /Fast fallback \(fast\)/);
+  assert.match(check.message, /manual profile selection.*unaffected/i);
+  assert.deepEqual(check.details.recommendation, fakeRecommendation);
 });
 
 test("doctor passes remote exposure when no tunnel is configured", () => {

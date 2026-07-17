@@ -1,20 +1,9 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const http = require("node:http");
 
 // createApp from server
 const { createApp } = require("../server");
-
-async function withServer(app, fn) {
-  const server = http.createServer(app);
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const { port } = server.address();
-  try {
-    await fn(`http://127.0.0.1:${port}`);
-  } finally {
-    await new Promise((resolve) => server.close(resolve));
-  }
-}
+const { withServer } = require("./helpers");
 
 // Helper to POST JSON
 async function postJson(url, body) {

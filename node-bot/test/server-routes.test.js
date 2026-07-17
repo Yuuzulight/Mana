@@ -1,19 +1,8 @@
 const assert = require("node:assert/strict");
-const http = require("node:http");
 const test = require("node:test");
 
 const { createApp } = require("../server");
-
-async function withServer(app, fn) {
-  const server = http.createServer(app);
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const { port } = server.address();
-  try {
-    await fn(`http://127.0.0.1:${port}`);
-  } finally {
-    await new Promise((resolve) => server.close(resolve));
-  }
-}
+const { withServer } = require("./helpers");
 
 async function postJson(url, body, headers = {}) {
   const response = await fetch(url, {
@@ -260,6 +249,180 @@ test("reply keeps explicit modelProfile above active profile", async () => {
 
     assert.equal(response.status, 200);
     assert.equal(receivedProfile, "coding");
+  });
+});
+
+test("reply passes presetId through to buildAssistantReply", async () => {
+  let receivedPresetId = "not-set";
+  const app = createApp({
+    buildCraftProfitContextForPrompt: async () => "",
+    buildUniversalisContextForPrompt: async () => "",
+    buildMarketContextForPrompt: async () => "",
+    buildAssistantReply: async (
+      transcript,
+      screenText,
+      marketText,
+      modelProfile,
+      sessionId,
+      assistantMode,
+      presetId,
+    ) => {
+      receivedPresetId = presetId;
+      return "ok";
+    },
+  });
+
+  await withServer(app, async (baseUrl) => {
+    const { response } = await postJson(`${baseUrl}/reply`, {
+      text: "hello",
+      presetId: "preset-123",
+    });
+
+    assert.equal(response.status, 200);
+    assert.equal(receivedPresetId, "preset-123");
+  });
+});
+
+test("reply omits presetId as null when the request doesn't select one", async () => {
+  let receivedPresetId = "not-set";
+  const app = createApp({
+    buildCraftProfitContextForPrompt: async () => "",
+    buildUniversalisContextForPrompt: async () => "",
+    buildMarketContextForPrompt: async () => "",
+    buildAssistantReply: async (
+      transcript,
+      screenText,
+      marketText,
+      modelProfile,
+      sessionId,
+      assistantMode,
+      presetId,
+    ) => {
+      receivedPresetId = presetId;
+      return "ok";
+    },
+  });
+
+  await withServer(app, async (baseUrl) => {
+    await postJson(`${baseUrl}/reply`, { text: "hello" });
+    assert.equal(receivedPresetId, null);
+  });
+});
+
+test("transcribe passes presetId through to buildAssistantReply", async () => {
+  let receivedPresetId = "not-set";
+  const app = createApp({
+    normalizeUploadedAudio: (file) => ({ tmpPath: file.path, audioPath: file.path }),
+    runWhisper: () => "hello",
+    cleanupUploadedAudio: () => {},
+    buildAssistantReply: async (
+      transcript,
+      screenText,
+      marketText,
+      modelProfile,
+      sessionId,
+      assistantMode,
+      presetId,
+    ) => {
+      receivedPresetId = presetId;
+      return "ok";
+    },
+  });
+
+  await withServer(app, async (baseUrl) => {
+    const form = new FormData();
+    form.append("file", new Blob(["fake audio"], { type: "audio/wav" }), "voice.wav");
+    form.append("presetId", "preset-123");
+    const response = await fetch(`${baseUrl}/transcribe`, { method: "POST", body: form });
+
+    assert.equal(response.status, 200);
+    assert.equal(receivedPresetId, "preset-123");
+  });
+});
+
+test("transcribe omits presetId as null when the request doesn't select one", async () => {
+  let receivedPresetId = "not-set";
+  const app = createApp({
+    normalizeUploadedAudio: (file) => ({ tmpPath: file.path, audioPath: file.path }),
+    runWhisper: () => "hello",
+    cleanupUploadedAudio: () => {},
+    buildAssistantReply: async (
+      transcript,
+      screenText,
+      marketText,
+      modelProfile,
+      sessionId,
+      assistantMode,
+      presetId,
+    ) => {
+      receivedPresetId = presetId;
+      return "ok";
+    },
+  });
+
+  await withServer(app, async (baseUrl) => {
+    const form = new FormData();
+    form.append("file", new Blob(["fake audio"], { type: "audio/wav" }), "voice.wav");
+    const response = await fetch(`${baseUrl}/transcribe`, { method: "POST", body: form });
+
+    assert.equal(response.status, 200);
+    assert.equal(receivedPresetId, null);
+  });
+});
+
+// Regression test for a real bug this feature surfaced: buildAssistantReply
+// computes a mode/preset-aware system prompt (selectedSystemPrompt), but the
+// local-inference call site never forwarded it, so presets (and the
+// pre-existing casual/everyday/coding modes) had zero effect on local
+// replies -- only the opt-in remote/OpenAI path ever received it. This
+// exercises the REAL buildAssistantReply (not mocked) end to end and checks
+// what actually reaches the model call.
+test("a selected preset's instructions reach the local model's system prompt", async () => {
+  let capturedSystemPrompt = null;
+  const presetsStore = {
+    getPreset: (id) =>
+      id === "preset-1"
+        ? { id: "preset-1", name: "Concise", instructions: "Keep every reply under two sentences." }
+        : null,
+  };
+  const app = createApp({
+    presetsStore,
+    buildCraftProfitContextForPrompt: async () => "",
+    buildUniversalisContextForPrompt: async () => "",
+    buildMarketContextForPrompt: async () => "",
+    runLocalAssistantReply: async (prompt, maxTokens, profile, overrideSystemPrompt) => {
+      capturedSystemPrompt = overrideSystemPrompt;
+      return "ok";
+    },
+  });
+
+  await withServer(app, async (baseUrl) => {
+    const { response, payload } = await postJson(`${baseUrl}/reply`, {
+      text: "hello",
+      presetId: "preset-1",
+    });
+
+    assert.equal(response.status, 200);
+    assert.equal(payload.reply, "ok");
+    assert.match(capturedSystemPrompt, /Keep every reply under two sentences\./);
+  });
+});
+
+test("no preset selected leaves the local model's system prompt unchanged", async () => {
+  let capturedSystemPrompt = null;
+  const app = createApp({
+    buildCraftProfitContextForPrompt: async () => "",
+    buildUniversalisContextForPrompt: async () => "",
+    buildMarketContextForPrompt: async () => "",
+    runLocalAssistantReply: async (prompt, maxTokens, profile, overrideSystemPrompt) => {
+      capturedSystemPrompt = overrideSystemPrompt;
+      return "ok";
+    },
+  });
+
+  await withServer(app, async (baseUrl) => {
+    await postJson(`${baseUrl}/reply`, { text: "hello" });
+    assert.doesNotMatch(capturedSystemPrompt || "", /Keep every reply under two sentences\./);
   });
 });
 

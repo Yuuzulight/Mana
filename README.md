@@ -108,7 +108,7 @@ The intended local model stack is:
 
 - **Primary chat**: `Qwen3-4B-Q4_K_M.gguf`
 - **Fast fallback**: `qwen2.5-1.5b-instruct-q4_k_m.gguf`
-- **Quality mode**: `Qwen3-8B-Q4_K_M.gguf`
+- **Quality mode**: `Qwen3-14B-Q4_K_M.gguf` (falls back to `Qwen3-8B-Q4_K_M.gguf` if not downloaded)
 - **Coding mode**: `qwen2.5-coder-7b-instruct-q4_k_m.gguf`
 - **Vision (optional)**: a multimodal GGUF such as `Qwen2.5-VL-3B-Instruct-Q4_K_M.gguf` plus its `mmproj` file; see [docs/vision_setup.md](docs/vision_setup.md)
 
