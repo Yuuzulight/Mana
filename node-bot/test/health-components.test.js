@@ -25,6 +25,7 @@ test("health includes component readiness while preserving top-level fields", as
       "localLlama",
       "localMemory",
       "mobileAuth",
+      "presets",
       "sessions",
       "tts",
       "vtubeStudio",
