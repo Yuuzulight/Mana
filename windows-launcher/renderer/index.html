@@ -222,7 +222,7 @@
 
       #systemBody { padding: 0 16px 12px; }
 
-      #perfPanel, #doctorPanel, #modelPanel {
+      #perfPanel, #doctorPanel, #modelPanel, #presetPanel {
         margin-top: 10px;
         padding: 10px;
         border: 1px solid var(--border);
@@ -254,6 +254,48 @@
         color: white;
       }
       #modelStatus { margin-top: 8px; color: var(--muted); }
+
+      #presetSelectRow {
+        display: flex;
+        gap: 8px;
+        margin-top: 8px;
+      }
+
+      #presetSelectRow select {
+        flex: 1;
+        padding: 6px 8px;
+        border-radius: 6px;
+        border: 1px solid var(--border);
+        background: var(--panel);
+        color: var(--text);
+        font-size: 12px;
+      }
+
+      #presetSelectRow button { padding: 6px 10px; font-size: 12px; }
+
+      #presetEditor {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        margin-top: 8px;
+      }
+
+      #presetEditor[hidden] { display: none; }
+
+      #presetNameInput, #presetInstructionsInput {
+        padding: 8px 10px;
+        border-radius: 6px;
+        border: 1px solid var(--border);
+        background: var(--panel);
+        color: var(--text);
+        font-family: inherit;
+        font-size: 12px;
+      }
+
+      #presetInstructionsInput { resize: vertical; min-height: 70px; }
+
+      #presetEditorActions { display: flex; gap: 8px; }
+      #presetEditorActions button { padding: 6px 10px; font-size: 12px; }
 
       #compareModeBtn.active {
         background: var(--accent);
@@ -624,6 +666,35 @@
           <strong>Model</strong>
           <div id="modelModeControls"></div>
           <div id="modelStatus">Checking...</div>
+        </div>
+
+        <div id="presetPanel">
+          <strong>Presets</strong>
+          <div id="presetSelectRow">
+            <select id="presetSelect">
+              <option value="">None</option>
+            </select>
+            <button id="presetNewBtn">New</button>
+            <button id="presetEditBtn" hidden>Edit</button>
+            <button id="presetDeleteBtn" hidden>Delete</button>
+          </div>
+          <div id="presetEditor" hidden>
+            <input
+              id="presetNameInput"
+              type="text"
+              placeholder="Preset name"
+              maxlength="80"
+            />
+            <textarea
+              id="presetInstructionsInput"
+              placeholder="Instructions Mana should follow while this preset is active..."
+              maxlength="4000"
+            ></textarea>
+            <div id="presetEditorActions">
+              <button id="presetSaveBtn">Save</button>
+              <button id="presetCancelBtn">Cancel</button>
+            </div>
+          </div>
         </div>
 
         <div id="doctorPanel">

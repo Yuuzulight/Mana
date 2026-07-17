@@ -1,6 +1,5 @@
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
-const http = require("node:http");
 const net = require("node:net");
 const os = require("node:os");
 const path = require("node:path");
@@ -8,29 +7,7 @@ const test = require("node:test");
 
 const { createApp } = require("../server");
 const { runDoctorChecks, runDoctorChecksAsync } = require("../doctor");
-
-async function withServer(app, fn) {
-  const server = http.createServer(app);
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const { port } = server.address();
-  const baseUrl = `http://127.0.0.1:${port}`;
-  try {
-    await fn(baseUrl);
-  } finally {
-    await new Promise((resolve) => server.close(resolve));
-  }
-}
-
-async function withRawServer(handler, fn) {
-  const server = http.createServer(handler);
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const { port } = server.address();
-  try {
-    await fn({ port, url: `http://127.0.0.1:${port}` });
-  } finally {
-    await new Promise((resolve) => server.close(resolve));
-  }
-}
+const { withServer, withRawServer } = require("./helpers");
 
 async function getFreePort() {
   const server = net.createServer();

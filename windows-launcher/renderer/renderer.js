@@ -12,6 +12,15 @@ const doctorSummaryEl = document.getElementById("doctorSummary");
 const doctorChecksEl = document.getElementById("doctorChecks");
 const modelModeControlsEl = document.getElementById("modelModeControls");
 const modelStatusEl = document.getElementById("modelStatus");
+const presetSelectEl = document.getElementById("presetSelect");
+const presetNewBtnEl = document.getElementById("presetNewBtn");
+const presetEditBtnEl = document.getElementById("presetEditBtn");
+const presetDeleteBtnEl = document.getElementById("presetDeleteBtn");
+const presetEditorEl = document.getElementById("presetEditor");
+const presetNameInputEl = document.getElementById("presetNameInput");
+const presetInstructionsInputEl = document.getElementById("presetInstructionsInput");
+const presetSaveBtnEl = document.getElementById("presetSaveBtn");
+const presetCancelBtnEl = document.getElementById("presetCancelBtn");
 const { ipcRenderer } = require("electron");
 const { formatDoctorPanel } = require("./doctor-panel");
 const {
@@ -380,6 +389,142 @@ async function setActiveModelProfile(profile) {
   }
 }
 
+// Presets: saved persona/behavior instructions the user can select to be
+// appended to the base system prompt (see buildAssistantReply in
+// node-bot/server.js). Backed by GET/POST/PATCH/DELETE /presets, editing
+// happens in-place in an inline form rather than a modal since there's only
+// ever one preset being edited at a time.
+const PRESET_STORAGE_KEY = "manaSelectedPresetId";
+let selectedPresetId = localStorage.getItem(PRESET_STORAGE_KEY) || "";
+let editingPresetId = null;
+let latestPresets = [];
+
+function setSelectedPresetId(presetId) {
+  selectedPresetId = presetId || "";
+  if (selectedPresetId) {
+    localStorage.setItem(PRESET_STORAGE_KEY, selectedPresetId);
+  } else {
+    localStorage.removeItem(PRESET_STORAGE_KEY);
+  }
+  presetEditBtnEl.hidden = !selectedPresetId;
+  presetDeleteBtnEl.hidden = !selectedPresetId;
+}
+
+function renderPresetSelect(presets) {
+  presetSelectEl.innerHTML = "";
+  const noneOption = document.createElement("option");
+  noneOption.value = "";
+  noneOption.textContent = "None";
+  presetSelectEl.appendChild(noneOption);
+  for (const preset of presets) {
+    const option = document.createElement("option");
+    option.value = preset.id;
+    option.textContent = preset.name;
+    presetSelectEl.appendChild(option);
+  }
+  const stillExists = presets.some((preset) => preset.id === selectedPresetId);
+  presetSelectEl.value = stillExists ? selectedPresetId : "";
+  setSelectedPresetId(presetSelectEl.value);
+}
+
+async function refreshPresetList() {
+  try {
+    const response = await fetch("http://localhost:5005/presets");
+    if (!response.ok) {
+      throw new Error(`Preset list returned ${response.status}`);
+    }
+    const result = await response.json();
+    latestPresets = result.presets || [];
+    renderPresetSelect(latestPresets);
+  } catch (error) {
+    console.warn("Mana preset list failed:", error);
+  }
+}
+
+function closePresetEditor() {
+  editingPresetId = null;
+  presetEditorEl.hidden = true;
+  presetNameInputEl.value = "";
+  presetInstructionsInputEl.value = "";
+}
+
+function openPresetEditor(preset) {
+  editingPresetId = preset ? preset.id : null;
+  presetNameInputEl.value = preset ? preset.name : "";
+  presetInstructionsInputEl.value = preset ? preset.instructions : "";
+  presetEditorEl.hidden = false;
+  presetNameInputEl.focus();
+}
+
+presetSelectEl.addEventListener("change", () => {
+  setSelectedPresetId(presetSelectEl.value);
+});
+
+presetNewBtnEl.addEventListener("click", () => openPresetEditor(null));
+
+presetEditBtnEl.addEventListener("click", () => {
+  const preset = latestPresets.find((item) => item.id === selectedPresetId);
+  if (preset) {
+    openPresetEditor(preset);
+  }
+});
+
+presetCancelBtnEl.addEventListener("click", closePresetEditor);
+
+presetSaveBtnEl.addEventListener("click", async () => {
+  const name = presetNameInputEl.value.trim();
+  const instructions = presetInstructionsInputEl.value.trim();
+  if (!name || !instructions) {
+    return;
+  }
+  try {
+    const url = editingPresetId
+      ? `http://localhost:5005/presets/${editingPresetId}`
+      : "http://localhost:5005/presets";
+    const response = await fetch(url, {
+      method: editingPresetId ? "PATCH" : "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, instructions }),
+    });
+    if (!response.ok) {
+      throw new Error(`Save preset returned ${response.status}`);
+    }
+    const saved = await response.json();
+    closePresetEditor();
+    await refreshPresetList();
+    presetSelectEl.value = saved.id;
+    setSelectedPresetId(saved.id);
+  } catch (error) {
+    console.warn("Mana save preset failed:", error);
+  }
+});
+
+presetDeleteBtnEl.addEventListener("click", async () => {
+  const preset = latestPresets.find((item) => item.id === selectedPresetId);
+  if (!preset) {
+    return;
+  }
+  const confirmed =
+    typeof showConfirmModal === "function"
+      ? await showConfirmModal(`Delete preset "${preset.name}"? This cannot be undone.`)
+      : window.confirm(`Delete preset "${preset.name}"?`);
+  if (!confirmed) {
+    return;
+  }
+  try {
+    const response = await fetch(`http://localhost:5005/presets/${preset.id}`, {
+      method: "DELETE",
+    });
+    if (!response.ok) {
+      throw new Error(`Delete preset returned ${response.status}`);
+    }
+    setSelectedPresetId("");
+    await refreshPresetList();
+  } catch (error) {
+    console.warn("Mana delete preset failed:", error);
+  }
+});
+
 // Compare mode: an opt-in side-by-side view (not part of the normal chat
 // flow) that sends one prompt to two model profiles via the existing
 // /reply endpoint -- no new backend inference path, no sessionId (so these
@@ -537,6 +682,8 @@ setInterval(checkServices, 5000);
 setInterval(refreshPerfStatus, PERF_STATUS_POLL_MS);
 refreshModelStatus();
 setInterval(refreshModelStatus, MODEL_STATUS_POLL_MS);
+refreshPresetList();
+setSelectedPresetId(selectedPresetId);
 
 async function waitForBackend() {
   for (let attempt = 0; attempt < AUTO_LISTEN_MAX_ATTEMPTS; attempt += 1) {
@@ -1219,6 +1366,7 @@ async function requestScreenAwareReply(text, gamingModeActive) {
       screenText,
       modelProfile: selectedModelProfile,
       sessionId: typeof ensureSessionId === "function" ? ensureSessionId() : undefined,
+      presetId: selectedPresetId || undefined,
     }),
   });
 
@@ -1259,6 +1407,7 @@ async function handleVisionHotkey() {
         image,
         modelProfile: selectedModelProfile,
         sessionId: typeof ensureSessionId === "function" ? ensureSessionId() : undefined,
+        presetId: selectedPresetId || undefined,
       }),
     });
 
