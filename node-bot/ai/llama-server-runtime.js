@@ -42,7 +42,20 @@ function createLlamaServerRuntime(options = {}) {
     idleTimer: null,
     exitHandlerRegistered: false,
     lastStartFailureAt: 0,
+    loadedAt: null,
+    lastSwapMs: null,
   };
+
+  // Debounce: back-to-back requests for different profiles (e.g. one coding
+  // question right after a casual one) would otherwise force a full
+  // kill/respawn per reply. Within this window after a swap, a *different*
+  // second swap is skipped and the reply is served from whatever model is
+  // already loaded instead. Set LLAMA_SERVER_SWAP_DEBOUNCE_MS=0 to disable.
+  const swapDebounceMs = Number(
+    env.LLAMA_SERVER_SWAP_DEBOUNCE_MS === undefined
+      ? 3000
+      : env.LLAMA_SERVER_SWAP_DEBOUNCE_MS,
+  );
 
   function findLlamaServerBin() {
     const candidates = [];
@@ -297,6 +310,22 @@ function createLlamaServerRuntime(options = {}) {
     }
   }
 
+  // GGML_CUDA_ENABLE_UNIFIED_MEMORY is a ggml-cuda runtime env var (not a
+  // llama-server CLI flag): it switches the CUDA backend to cudaMallocManaged
+  // allocations, letting inactive weights page to system RAM under memory
+  // pressure instead of the driver hard-failing the allocation. Measured
+  // real cold-start/swap latency on an RTX 3070 Ti (see
+  // docs/roadmap/issue-68-vram-hotswap-tuning.md): ~64% faster cold start
+  // (11.4s -> 4.1s) and ~32% faster on the larger 4B->7B swap direction,
+  // with no regression the other way -- on by default. Set
+  // MANA_LLAMA_UNIFIED_MEMORY=0 to opt out.
+  function buildServerEnv() {
+    if (env.MANA_LLAMA_UNIFIED_MEMORY === "0") {
+      return env;
+    }
+    return { ...env, GGML_CUDA_ENABLE_UNIFIED_MEMORY: "1" };
+  }
+
   function buildServerArgs(model, port, mmproj = null) {
     const args = [
       isLocalModelSpec(model, fs) ? "-m" : "-hf",
@@ -378,6 +407,7 @@ function createLlamaServerRuntime(options = {}) {
       cwd: path.dirname(bin),
       stdio: ["ignore", "ignore", "pipe"],
       windowsHide: true,
+      env: buildServerEnv(),
     });
 
     let stderrTail = "";
@@ -466,7 +496,24 @@ function createLlamaServerRuntime(options = {}) {
       return;
     }
 
-    if (state.child || state.port) {
+    const isRunning = Boolean(state.child || state.port);
+    if (
+      isRunning &&
+      state.model &&
+      state.model !== model &&
+      swapDebounceMs > 0 &&
+      state.loadedAt !== null &&
+      nowMs() - state.loadedAt < swapDebounceMs
+    ) {
+      console.log(
+        `llama-server: swap to ${model} debounced (current model loaded ${nowMs() - state.loadedAt}ms ago, ` +
+          `window ${swapDebounceMs}ms); serving from ${state.model} instead`,
+      );
+      return;
+    }
+
+    const swapStartedAt = nowMs();
+    if (isRunning) {
       if (state.model && state.model !== model) {
         console.log(
           `llama-server: switching model ${state.model} -> ${model}`,
@@ -479,6 +526,12 @@ function createLlamaServerRuntime(options = {}) {
     try {
       await state.starting;
       state.lastStartFailureAt = 0;
+      state.loadedAt = nowMs();
+      if (isRunning) {
+        state.lastSwapMs = state.loadedAt - swapStartedAt;
+        logPerf("llama-server-swap", swapStartedAt);
+        console.log(`llama-server: swap completed in ${state.lastSwapMs}ms`);
+      }
     } catch (e) {
       state.lastStartFailureAt = nowMs();
       throw e;
@@ -536,6 +589,225 @@ function createLlamaServerRuntime(options = {}) {
     logPerf("llama-server", startedAt);
     // Reasoning models may wrap deliberation in <think> blocks; keep only the reply.
     return content.replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
+  }
+
+  // Foundational tool-calling loop (issue #51). Single round only: the
+  // model gets one chance to call tools, sees the results, and produces a
+  // final reply -- deliberately not a multi-step agent loop yet. Every tool
+  // call is executed through the caller-supplied toolPolicy (see
+  // ai/tool-policy.js), never dispatched by name without going through it,
+  // so the actual read/write/exec boundary lives in one place.
+  //
+  // Real-hardware finding behind this: Qwen3-4B (the "default" profile)
+  // reliably emits proper OpenAI-format tool_calls via llama-server's
+  // --jinja chat template (3/3 in testing). qwen2.5-coder-7b (the "coding"
+  // profile) does not -- it wraps the same well-formed JSON in a markdown
+  // code fence inside `content` instead of the <tool_call> XML tags its own
+  // template asks for, so llama-server's parser never recognizes it as a
+  // tool call. Tool-calling here is scoped to profiles that pass this check
+  // (currently: default), not assumed to work everywhere.
+  async function runToolAwareReply(
+    prompt,
+    toolPolicy,
+    { maxTokens = 512, profile = "default", overrideSystemPrompt = null } = {},
+  ) {
+    if (typeof fetchImpl !== "function") {
+      throw new Error("fetch is not available; cannot use llama-server");
+    }
+    if (!toolPolicy || typeof toolPolicy.executeTool !== "function") {
+      throw new Error(
+        "runToolAwareReply requires a toolPolicy with executeTool()",
+      );
+    }
+    const startedAt = nowMs();
+    await ensureServer(profile);
+
+    const messages = [
+      { role: "system", content: overrideSystemPrompt || systemPrompt },
+      { role: "user", content: prompt },
+    ];
+
+    async function complete() {
+      const resp = await fetchImpl(
+        `http://127.0.0.1:${state.port}/v1/chat/completions`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            messages,
+            tools: toolPolicy.tools,
+            tool_choice: "auto",
+            max_tokens: maxTokens,
+          }),
+        },
+      );
+      if (!resp.ok) {
+        const text = await resp.text().catch(() => "");
+        throw new Error(
+          `llama-server reply failed (${resp.status}): ${text.slice(0, 500)}`,
+        );
+      }
+      return resp.json();
+    }
+
+    let json = await complete();
+    let message = (json && json.choices && json.choices[0] && json.choices[0].message) || {};
+    const requestedToolCalls = Array.isArray(message.tool_calls)
+      ? message.tool_calls
+      : [];
+    const executedToolCalls = [];
+
+    if (requestedToolCalls.length) {
+      messages.push({
+        role: "assistant",
+        content: message.content || null,
+        tool_calls: requestedToolCalls,
+      });
+
+      for (const call of requestedToolCalls) {
+        const name = call.function && call.function.name;
+        let args = {};
+        try {
+          args = call.function && call.function.arguments
+            ? JSON.parse(call.function.arguments)
+            : {};
+        } catch (e) {
+          // Malformed arguments from the model -- report back as a tool
+          // error below instead of throwing and losing the whole reply.
+        }
+
+        let resultText;
+        try {
+          const result = toolPolicy.executeTool(name, args);
+          resultText = String(result);
+          executedToolCalls.push({ name, args, ok: true });
+        } catch (e) {
+          resultText = `Error: ${e.message}`;
+          executedToolCalls.push({ name, args, ok: false, error: e.message });
+        }
+
+        messages.push({
+          role: "tool",
+          tool_call_id: call.id,
+          content: resultText,
+        });
+      }
+
+      json = await complete();
+      message = (json && json.choices && json.choices[0] && json.choices[0].message) || {};
+    }
+
+    const content = String(message.content || "")
+      .replace(/<think>[\s\S]*?<\/think>/gi, "")
+      .trim();
+
+    scheduleIdleShutdown();
+    logPerf("llama-server-tool-reply", startedAt);
+    return { content, toolCalls: executedToolCalls };
+  }
+
+  // Best-of-N self-voting (issue #70): generate N candidates at varied
+  // temperature, then a temp-0 judge call picks the best one. Sequential,
+  // not parallel -- this llama-server instance runs with the default single
+  // parallel slot (no --parallel flag), so concurrent requests would just
+  // queue behind each other on this hardware anyway, not actually overlap.
+  // See docs/roadmap/issue-70-best-of-n.md for the measured latency cost.
+  async function runBestOfNReply(
+    prompt,
+    {
+      n = 3,
+      maxTokens = 512,
+      profile = "coding",
+      overrideSystemPrompt = null,
+    } = {},
+  ) {
+    if (typeof fetchImpl !== "function") {
+      throw new Error("fetch is not available; cannot use llama-server");
+    }
+    const startedAt = nowMs();
+    await ensureServer(profile);
+
+    async function completeChat(messages, temperature, tokenLimit) {
+      const resp = await fetchImpl(
+        `http://127.0.0.1:${state.port}/v1/chat/completions`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            messages,
+            max_tokens: tokenLimit,
+            temperature,
+          }),
+        },
+      );
+      if (!resp.ok) {
+        const text = await resp.text().catch(() => "");
+        throw new Error(
+          `llama-server reply failed (${resp.status}): ${text.slice(0, 500)}`,
+        );
+      }
+      const json = await resp.json();
+      const content =
+        json && json.choices && json.choices[0] && json.choices[0].message
+          ? String(json.choices[0].message.content || "")
+          : "";
+      return content.replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
+    }
+
+    const baseMessages = [
+      { role: "system", content: overrideSystemPrompt || systemPrompt },
+      { role: "user", content: prompt },
+    ];
+    // Fixed ladder from a safe low-temperature baseline up to more varied
+    // alternatives, rather than N identical low-temp calls that would just
+    // reproduce the same candidate.
+    const temperatures = Array.from({ length: n }, (_, i) =>
+      n === 1
+        ? 0.2
+        : Math.round((0.2 + (0.8 * i) / (n - 1)) * 100) / 100,
+    );
+
+    const candidates = [];
+    for (const temperature of temperatures) {
+      const content = await completeChat(baseMessages, temperature, maxTokens);
+      if (content) candidates.push(content);
+    }
+    if (!candidates.length) {
+      throw new Error("llama-server returned no usable candidates");
+    }
+
+    let judgeIndex = 0;
+    if (candidates.length > 1) {
+      const judgeMessages = [
+        {
+          role: "system",
+          content:
+            "You are a terse code reviewer. Reply with only the number of the best candidate, nothing else.",
+        },
+        {
+          role: "user",
+          content:
+            `You are judging ${candidates.length} candidate answers to the same coding question. ` +
+            "Pick the single best one for correctness, edge-case handling, and efficiency.\n\n" +
+            candidates
+              .map((c, i) => `Candidate ${i + 1}:\n${c}`)
+              .join("\n\n") +
+            "\n\nBest candidate number:",
+        },
+      ];
+      const judgeReply = await completeChat(judgeMessages, 0, 16);
+      const parsed = parseInt((judgeReply.match(/\d+/) || [])[0], 10);
+      // Falls back to candidate 1 (the lowest-temperature, safest one) if
+      // the judge doesn't return a clean, in-range number.
+      judgeIndex =
+        Number.isInteger(parsed) && parsed >= 1 && parsed <= candidates.length
+          ? parsed - 1
+          : 0;
+    }
+
+    scheduleIdleShutdown();
+    logPerf("llama-server-best-of-n", startedAt);
+    return { content: candidates[judgeIndex], candidates, judgeIndex };
   }
 
   // Vision replies must go through llama-server (llama-cli has no equivalent
@@ -620,6 +892,7 @@ function createLlamaServerRuntime(options = {}) {
       model: state.model,
       mmproj: state.mmproj,
       port: state.port,
+      lastSwapMs: state.lastSwapMs,
     };
   }
 
@@ -630,7 +903,9 @@ function createLlamaServerRuntime(options = {}) {
     findVisionMmproj,
     getVisionStatus,
     isEnabled,
+    runBestOfNReply,
     runLocalAssistantReply,
+    runToolAwareReply,
     runVisionReply,
     getStatus,
     stop,
