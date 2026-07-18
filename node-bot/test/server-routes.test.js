@@ -591,6 +591,149 @@ test("tool-calling falls back to the plain reply when runToolAwareReply returns 
   });
 });
 
+// Best-of-N wiring (issue #70): opt-in via MANA_BEST_OF_N_ENABLED, scoped to
+// coding-mode replies only, layered on top of the tool-calling/plain path so
+// any failure or empty result falls straight through to it.
+async function withBestOfNEnv(value, fn) {
+  const prior = process.env.MANA_BEST_OF_N_ENABLED;
+  process.env.MANA_BEST_OF_N_ENABLED = value;
+  try {
+    await fn();
+  } finally {
+    if (prior === undefined) delete process.env.MANA_BEST_OF_N_ENABLED;
+    else process.env.MANA_BEST_OF_N_ENABLED = prior;
+  }
+}
+
+test("best-of-N stays off by default even when a runBestOfNReply is provided", async () => {
+  await withBestOfNEnv(undefined, async () => {
+    let bestOfNCalls = 0;
+    const app = createApp({
+      buildCraftProfitContextForPrompt: async () => "",
+      buildUniversalisContextForPrompt: async () => "",
+      buildMarketContextForPrompt: async () => "",
+      isLlamaServerEnabled: () => true,
+      runBestOfNReply: async () => {
+        bestOfNCalls += 1;
+        return { content: "best-of-n reply", candidates: [], judgeIndex: 0 };
+      },
+      runLocalAssistantReply: async () => "plain coding reply",
+    });
+
+    await withServer(app, async (baseUrl) => {
+      const { payload } = await postJson(`${baseUrl}/reply`, {
+        text: "debug this function",
+        modelProfile: "coding",
+      });
+      assert.equal(payload.reply, "plain coding reply");
+      assert.equal(bestOfNCalls, 0);
+    });
+  });
+});
+
+test("best-of-N activates for coding-mode replies when enabled and llama-server is available", async () => {
+  await withBestOfNEnv("1", async () => {
+    let capturedOptions = null;
+    const app = createApp({
+      buildCraftProfitContextForPrompt: async () => "",
+      buildUniversalisContextForPrompt: async () => "",
+      buildMarketContextForPrompt: async () => "",
+      isLlamaServerEnabled: () => true,
+      runBestOfNReply: async (prompt, options) => {
+        capturedOptions = options;
+        return {
+          content: "the judged best fix",
+          candidates: ["a", "b", "c"],
+          judgeIndex: 1,
+        };
+      },
+      runLocalAssistantReply: async () => "plain coding reply",
+    });
+
+    await withServer(app, async (baseUrl) => {
+      const { payload } = await postJson(`${baseUrl}/reply`, {
+        text: "debug this function",
+        modelProfile: "coding",
+      });
+      assert.equal(payload.reply, "the judged best fix");
+      assert.equal(capturedOptions.profile, "coding");
+    });
+  });
+});
+
+test("best-of-N does not activate for a non-coding reply even when enabled", async () => {
+  await withBestOfNEnv("1", async () => {
+    let bestOfNCalls = 0;
+    const app = createApp({
+      buildCraftProfitContextForPrompt: async () => "",
+      buildUniversalisContextForPrompt: async () => "",
+      buildMarketContextForPrompt: async () => "",
+      isLlamaServerEnabled: () => true,
+      runBestOfNReply: async () => {
+        bestOfNCalls += 1;
+        return { content: "should not happen", candidates: [], judgeIndex: 0 };
+      },
+      runLocalAssistantReply: async () => "plain reply",
+    });
+
+    await withServer(app, async (baseUrl) => {
+      const { payload } = await postJson(`${baseUrl}/reply`, { text: "hello there" });
+      assert.equal(payload.reply, "plain reply");
+      assert.equal(bestOfNCalls, 0);
+    });
+  });
+});
+
+test("best-of-N falls back to the plain reply when llama-server isn't available", async () => {
+  await withBestOfNEnv("1", async () => {
+    let bestOfNCalls = 0;
+    const app = createApp({
+      buildCraftProfitContextForPrompt: async () => "",
+      buildUniversalisContextForPrompt: async () => "",
+      buildMarketContextForPrompt: async () => "",
+      isLlamaServerEnabled: () => false,
+      runBestOfNReply: async () => {
+        bestOfNCalls += 1;
+        return { content: "should not happen", candidates: [], judgeIndex: 0 };
+      },
+      runLocalAssistantReply: async () => "plain coding reply",
+    });
+
+    await withServer(app, async (baseUrl) => {
+      const { payload } = await postJson(`${baseUrl}/reply`, {
+        text: "debug this function",
+        modelProfile: "coding",
+      });
+      assert.equal(payload.reply, "plain coding reply");
+      assert.equal(bestOfNCalls, 0);
+    });
+  });
+});
+
+test("best-of-N falls back to the plain reply when runBestOfNReply throws", async () => {
+  await withBestOfNEnv("1", async () => {
+    const app = createApp({
+      buildCraftProfitContextForPrompt: async () => "",
+      buildUniversalisContextForPrompt: async () => "",
+      buildMarketContextForPrompt: async () => "",
+      isLlamaServerEnabled: () => true,
+      runBestOfNReply: async () => {
+        throw new Error("llama-server returned no usable candidates");
+      },
+      runLocalAssistantReply: async () => "plain coding reply",
+    });
+
+    await withServer(app, async (baseUrl) => {
+      const { response, payload } = await postJson(`${baseUrl}/reply`, {
+        text: "debug this function",
+        modelProfile: "coding",
+      });
+      assert.equal(response.status, 200);
+      assert.equal(payload.reply, "plain coding reply");
+    });
+  });
+});
+
 test("reply continues when optional market context fails", async () => {
   const app = createApp({
     buildCraftProfitContextForPrompt: async () => "",

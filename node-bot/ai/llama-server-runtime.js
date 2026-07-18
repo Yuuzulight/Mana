@@ -706,6 +706,110 @@ function createLlamaServerRuntime(options = {}) {
     return { content, toolCalls: executedToolCalls };
   }
 
+  // Best-of-N self-voting (issue #70): generate N candidates at varied
+  // temperature, then a temp-0 judge call picks the best one. Sequential,
+  // not parallel -- this llama-server instance runs with the default single
+  // parallel slot (no --parallel flag), so concurrent requests would just
+  // queue behind each other on this hardware anyway, not actually overlap.
+  // See docs/roadmap/issue-70-best-of-n.md for the measured latency cost.
+  async function runBestOfNReply(
+    prompt,
+    {
+      n = 3,
+      maxTokens = 512,
+      profile = "coding",
+      overrideSystemPrompt = null,
+    } = {},
+  ) {
+    if (typeof fetchImpl !== "function") {
+      throw new Error("fetch is not available; cannot use llama-server");
+    }
+    const startedAt = nowMs();
+    await ensureServer(profile);
+
+    async function completeChat(messages, temperature, tokenLimit) {
+      const resp = await fetchImpl(
+        `http://127.0.0.1:${state.port}/v1/chat/completions`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            messages,
+            max_tokens: tokenLimit,
+            temperature,
+          }),
+        },
+      );
+      if (!resp.ok) {
+        const text = await resp.text().catch(() => "");
+        throw new Error(
+          `llama-server reply failed (${resp.status}): ${text.slice(0, 500)}`,
+        );
+      }
+      const json = await resp.json();
+      const content =
+        json && json.choices && json.choices[0] && json.choices[0].message
+          ? String(json.choices[0].message.content || "")
+          : "";
+      return content.replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
+    }
+
+    const baseMessages = [
+      { role: "system", content: overrideSystemPrompt || systemPrompt },
+      { role: "user", content: prompt },
+    ];
+    // Fixed ladder from a safe low-temperature baseline up to more varied
+    // alternatives, rather than N identical low-temp calls that would just
+    // reproduce the same candidate.
+    const temperatures = Array.from({ length: n }, (_, i) =>
+      n === 1
+        ? 0.2
+        : Math.round((0.2 + (0.8 * i) / (n - 1)) * 100) / 100,
+    );
+
+    const candidates = [];
+    for (const temperature of temperatures) {
+      const content = await completeChat(baseMessages, temperature, maxTokens);
+      if (content) candidates.push(content);
+    }
+    if (!candidates.length) {
+      throw new Error("llama-server returned no usable candidates");
+    }
+
+    let judgeIndex = 0;
+    if (candidates.length > 1) {
+      const judgeMessages = [
+        {
+          role: "system",
+          content:
+            "You are a terse code reviewer. Reply with only the number of the best candidate, nothing else.",
+        },
+        {
+          role: "user",
+          content:
+            `You are judging ${candidates.length} candidate answers to the same coding question. ` +
+            "Pick the single best one for correctness, edge-case handling, and efficiency.\n\n" +
+            candidates
+              .map((c, i) => `Candidate ${i + 1}:\n${c}`)
+              .join("\n\n") +
+            "\n\nBest candidate number:",
+        },
+      ];
+      const judgeReply = await completeChat(judgeMessages, 0, 16);
+      const parsed = parseInt((judgeReply.match(/\d+/) || [])[0], 10);
+      // Falls back to candidate 1 (the lowest-temperature, safest one) if
+      // the judge doesn't return a clean, in-range number.
+      judgeIndex =
+        Number.isInteger(parsed) && parsed >= 1 && parsed <= candidates.length
+          ? parsed - 1
+          : 0;
+    }
+
+    scheduleIdleShutdown();
+    logPerf("llama-server-best-of-n", startedAt);
+    return { content: candidates[judgeIndex], candidates, judgeIndex };
+  }
+
   // Vision replies must go through llama-server (llama-cli has no equivalent
   // one-shot multimodal path here), so there is no CLI fallback: errors
   // propagate to the caller with a configuration hint.
@@ -799,6 +903,7 @@ function createLlamaServerRuntime(options = {}) {
     findVisionMmproj,
     getVisionStatus,
     isEnabled,
+    runBestOfNReply,
     runLocalAssistantReply,
     runToolAwareReply,
     runVisionReply,
