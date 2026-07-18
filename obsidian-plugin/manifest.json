@@ -1,0 +1,10 @@
+{
+  "id": "mana-memory-sync",
+  "name": "Mana Memory Sync",
+  "version": "0.1.0",
+  "minAppVersion": "1.0.0",
+  "description": "Pulls Mana's consolidated memory (GET /api/memory) into a note in your vault.",
+  "author": "Yuuzulight",
+  "authorUrl": "https://github.com/Yuuzulight/Mana",
+  "isDesktopOnly": false
+}
