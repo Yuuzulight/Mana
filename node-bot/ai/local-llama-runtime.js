@@ -37,7 +37,7 @@ function cleanLlamaOutput(text, { sysPrompt, prompt } = {}) {
     s = s.replace(/\[start thinking\][\s\S]*?\[end thinking\]/gi, "");
     // Boot banner/shutdown chatter that can appear inline, not just on its own line.
     s = s.replace(/loading model\.\.\./gi, "");
-    s = s.replace(/exiting\.\.\.\s*$/gi, "");
+    s = s.replace(/exiting\.\.\./gi, "");
     // Remove lines that are mostly non-alphanumeric (ASCII art)
     s = s
       .split(/\r?\n/)
