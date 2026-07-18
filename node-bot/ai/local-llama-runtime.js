@@ -6,6 +6,70 @@ const { DEFAULT_LLAMA_MODEL, findPreferredLlamaModel } = require("./local-ai");
 const DEFAULT_SYSTEM_PROMPT =
   "You are Mana, a local AI assistant with an original anime little-sister personality. Your tone blends cool confidence with a soft, shy gentleness: calm, caring, lightly teasing, and protective. Use occasional playful little jabs, then help immediately. Keep the teasing affectionate, never cruel or genuinely insulting. Speak naturally for spoken conversation: short sentences, clean wording, minimal rambling, usually one or two short sentences unless the user needs more detail. You may add one fitting emoji or Japanese kaomoji like (＾▽＾) or (｀・ω・´) at the end of a reply to show emotion, at most one per reply.";
 
+// Cleans up known llama.cpp CLI noise (boot banner, echoed prompt, reasoning
+// narration) from raw stdout. sysPrompt/prompt are optional -- pass them
+// when the caller has the exact strings sent to the CLI, so an echo that
+// slipped past --no-display-prompt can be stripped precisely; callers
+// cleaning already-generated reply text (no CLI prompt context) can omit
+// them and the strip step is just skipped.
+function cleanLlamaOutput(text, { sysPrompt, prompt } = {}) {
+  if (!text) return text;
+  try {
+    let s = String(text);
+    // Remove Unicode replacement chars and long boxes sequences
+    s = s.replace(/�+/g, "");
+    // --no-display-prompt doesn't always suppress the echo on every llama-cli
+    // build; strip the exact strings we passed in if they leaked into stdout.
+    // Only the first occurrence -- a reply that legitimately repeats the
+    // prompt text (e.g. prompt "Hello" -> reply "Hello! How can I help?")
+    // must keep every occurrence after the echoed one.
+    const stripFirst = (str, needle) => {
+      if (!needle) return str;
+      const idx = str.indexOf(needle);
+      if (idx === -1) return str;
+      return str.slice(0, idx) + str.slice(idx + needle.length);
+    };
+    s = stripFirst(s, sysPrompt);
+    s = stripFirst(s, prompt);
+    // Reasoning models may emit <think> blocks, or bracketed
+    // [Start thinking]/[End thinking] narration; keep only the reply.
+    s = s.replace(/<think>[\s\S]*?<\/think>/gi, "");
+    s = s.replace(/\[start thinking\][\s\S]*?\[end thinking\]/gi, "");
+    // Boot banner/shutdown chatter that can appear inline, not just on its own line.
+    s = s.replace(/loading model\.\.\./gi, "");
+    s = s.replace(/exiting\.\.\.\s*$/gi, "");
+    // Remove lines that are mostly non-alphanumeric (ASCII art)
+    s = s
+      .split(/\r?\n/)
+      .filter((ln) => {
+        const trimmed = ln.trim();
+        if (!trimmed) return false;
+        // drop lines that are mostly punctuation/box characters
+        const alphaNumCount = (trimmed.match(/[A-Za-z0-9]/g) || []).length;
+        if (alphaNumCount / Math.max(1, trimmed.length) < 0.15)
+          return false;
+        // drop lines that look like banner metadata
+        if (/^build\s*:/i.test(trimmed)) return false;
+        if (/^model\s*:/i.test(trimmed)) return false;
+        if (/^modalities\s*:/i.test(trimmed)) return false;
+        if (/using custom system prompt/i.test(trimmed)) return false;
+        if (/^available commands\s*:/i.test(trimmed)) return false;
+        if (/^\/\w+/.test(trimmed)) return false; // command lines like /exit /regen
+        return true;
+      })
+      .join("\n");
+
+    // Also try to remove any leading chunk until a blank line after known headings
+    const re =
+      /[\s\S]*?(?:available commands:|loading model)[\s\S]*?\n\s*\n/im;
+    s = s.replace(re, "");
+
+    return s.trim();
+  } catch (e) {
+    return String(text).trim();
+  }
+}
+
 function isLocalModelSpec(modelSpec, fs = defaultFs) {
   if (!modelSpec) {
     return false;
@@ -212,66 +276,7 @@ function createLocalLlamaRuntime(options = {}) {
     }
 
     logPerf("llama", startedAt);
-    // Cleanup known startup banner lines that llama.cpp may print before the actual reply
-    function cleanLlamaOutput(text) {
-      if (!text) return text;
-      try {
-        let s = String(text);
-        // Remove Unicode replacement chars and long boxes sequences
-        s = s.replace(/\uFFFD+/g, "");
-        // --no-display-prompt doesn't always suppress the echo on every llama-cli
-        // build; strip the exact strings we passed in if they leaked into stdout.
-        // Only the first occurrence -- a reply that legitimately repeats the
-        // prompt text (e.g. prompt "Hello" -> reply "Hello! How can I help?")
-        // must keep every occurrence after the echoed one.
-        const stripFirst = (str, needle) => {
-          if (!needle) return str;
-          const idx = str.indexOf(needle);
-          if (idx === -1) return str;
-          return str.slice(0, idx) + str.slice(idx + needle.length);
-        };
-        s = stripFirst(s, sysPrompt);
-        s = stripFirst(s, prompt);
-        // Reasoning models may emit <think> blocks, or bracketed
-        // [Start thinking]/[End thinking] narration; keep only the reply.
-        s = s.replace(/<think>[\s\S]*?<\/think>/gi, "");
-        s = s.replace(/\[start thinking\][\s\S]*?\[end thinking\]/gi, "");
-        // Boot banner/shutdown chatter that can appear inline, not just on its own line.
-        s = s.replace(/loading model\.\.\./gi, "");
-        s = s.replace(/exiting\.\.\.\s*$/gi, "");
-        // Remove lines that are mostly non-alphanumeric (ASCII art)
-        s = s
-          .split(/\r?\n/)
-          .filter((ln) => {
-            const trimmed = ln.trim();
-            if (!trimmed) return false;
-            // drop lines that are mostly punctuation/box characters
-            const alphaNumCount = (trimmed.match(/[A-Za-z0-9]/g) || []).length;
-            if (alphaNumCount / Math.max(1, trimmed.length) < 0.15)
-              return false;
-            // drop lines that look like banner metadata
-            if (/^build\s*:/i.test(trimmed)) return false;
-            if (/^model\s*:/i.test(trimmed)) return false;
-            if (/^modalities\s*:/i.test(trimmed)) return false;
-            if (/using custom system prompt/i.test(trimmed)) return false;
-            if (/^available commands\s*:/i.test(trimmed)) return false;
-            if (/^\/\w+/.test(trimmed)) return false; // command lines like /exit /regen
-            return true;
-          })
-          .join("\n");
-
-        // Also try to remove any leading chunk until a blank line after known headings
-        const re =
-          /[\s\S]*?(?:available commands:|loading model)[\s\S]*?\n\s*\n/im;
-        s = s.replace(re, "");
-
-        return s.trim();
-      } catch (e) {
-        return String(text).trim();
-      }
-    }
-
-    return cleanLlamaOutput(String(result.stdout || ""));
+    return cleanLlamaOutput(String(result.stdout || ""), { sysPrompt, prompt });
   }
 
   return {
@@ -287,42 +292,5 @@ module.exports = {
   DEFAULT_SYSTEM_PROMPT,
   createLocalLlamaRuntime,
   isLocalModelSpec,
-  // export cleaner for other modules
-  cleanLlamaOutput: (text) => {
-    try {
-      // reuse a runtime instance's cleaner by creating a dummy runtime to access function
-      // but cleaner is local to run; replicate logic here minimally
-      if (!text) return text;
-      let s = String(text);
-      s = s.replace(/\uFFFD+/g, "");
-      // Reasoning models may emit <think> blocks, or bracketed
-      // [Start thinking]/[End thinking] narration; keep only the reply.
-      s = s.replace(/<think>[\s\S]*?<\/think>/gi, "");
-      s = s.replace(/\[start thinking\][\s\S]*?\[end thinking\]/gi, "");
-      s = s.replace(/loading model\.\.\./gi, "");
-      s = s.replace(/exiting\.\.\.\s*$/gi, "");
-      s = s
-        .split(/\r?\n/)
-        .filter((ln) => {
-          const trimmed = ln.trim();
-          if (!trimmed) return false;
-          const alphaNumCount = (trimmed.match(/[A-Za-z0-9]/g) || []).length;
-          if (alphaNumCount / Math.max(1, trimmed.length) < 0.15) return false;
-          if (/^build\s*:/i.test(trimmed)) return false;
-          if (/^model\s*:/i.test(trimmed)) return false;
-          if (/^modalities\s*:/i.test(trimmed)) return false;
-          if (/using custom system prompt/i.test(trimmed)) return false;
-          if (/^available commands\s*:/i.test(trimmed)) return false;
-          if (/^\/\w+/.test(trimmed)) return false;
-          return true;
-        })
-        .join("\n");
-      const re =
-        /[\s\S]*?(?:available commands:|loading model)[\s\S]*?\n\s*\n/im;
-      s = s.replace(re, "");
-      return s.trim();
-    } catch (e) {
-      return String(text).trim();
-    }
-  },
+  cleanLlamaOutput,
 };

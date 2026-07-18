@@ -4,6 +4,7 @@ const test = require("node:test");
 const {
   createLocalLlamaRuntime,
   isLocalModelSpec,
+  cleanLlamaOutput,
 } = require("../ai/local-llama-runtime");
 
 test("isLocalModelSpec detects local GGUF paths and rejects HF repo shorthands", () => {
@@ -11,6 +12,33 @@ test("isLocalModelSpec detects local GGUF paths and rejects HF repo shorthands",
   assert.equal(isLocalModelSpec("models/mana.gguf"), true);
   assert.equal(isLocalModelSpec("Qwen/Qwen2.5-0.5B-Instruct-GGUF:Q4_K_M"), false);
   assert.equal(isLocalModelSpec(""), false);
+});
+
+// The exported cleanLlamaOutput is the one acp-memory-store.js and server.js
+// actually import (see issue #91: "the shared cleaner both the per-session
+// summarizer and the background compactor route through"). It must get the
+// same prompt/sysPrompt-echo stripping as the runtime's internal cleaner,
+// not just the banner/reasoning stripping -- these tests exercise it
+// directly, independent of runLocalAssistantReply, so a future caller that
+// feeds raw CLI stdout straight to the export (bypassing the runtime) still
+// gets the full cleanup.
+test("exported cleanLlamaOutput strips echoed prompt/sysPrompt when given context", () => {
+  const noisy = "Loading model... system prompt here the actual prompt here Here is the real reply.";
+  const cleaned = cleanLlamaOutput(noisy, {
+    sysPrompt: "system prompt here",
+    prompt: "the actual prompt here",
+  });
+  assert.equal(cleaned, "Here is the real reply.");
+});
+
+test("exported cleanLlamaOutput skips the strip step when no prompt context is given", () => {
+  const text = "Hello! How can I help you today?";
+  assert.equal(cleanLlamaOutput(text), text);
+});
+
+test("exported cleanLlamaOutput still strips banner/reasoning noise with no prompt context", () => {
+  const noisy = "[Start thinking] pondering [End thinking] The actual reply. Exiting...";
+  assert.equal(cleanLlamaOutput(noisy), "The actual reply.");
 });
 
 test("local llama runtime builds llama.cpp args for local GGUF replies", () => {
