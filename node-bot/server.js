@@ -3574,7 +3574,9 @@ function registerRoutes(app, upload, deps = {}) {
       return llamaServerRuntime.runToolAwareReply(prompt, toolPolicyArg, options);
     });
   const activeToolPolicy = deps.toolPolicy || toolPolicy;
-  const isLlamaServerEnabledForTools =
+  // Shared by tool-calling and best-of-N (issue #70): both require
+  // llama-server specifically, not the llama-cli fallback.
+  const isLlamaServerAvailable =
     deps.isLlamaServerEnabled || (() => llamaServerRuntime.isEnabled());
 
   // Best-of-N self-voting (issue #70): same "llama-server only" constraint
@@ -3585,8 +3587,6 @@ function registerRoutes(app, upload, deps = {}) {
     (async function runBestOfNReply(prompt, options) {
       return llamaServerRuntime.runBestOfNReply(prompt, options);
     });
-  const isLlamaServerEnabledForBestOfN =
-    deps.isLlamaServerEnabled || (() => llamaServerRuntime.isEnabled());
 
   function normalizeUploadedAudio(file) {
     if (!file) {
@@ -4232,7 +4232,7 @@ function registerRoutes(app, upload, deps = {}) {
       if (
         toolCallingEnabled &&
         normalizedModelProfile === "default" &&
-        isLlamaServerEnabledForTools()
+        isLlamaServerAvailable()
       ) {
         try {
           const toolResult = await runToolAwareReply(
@@ -4284,7 +4284,7 @@ function registerRoutes(app, upload, deps = {}) {
       if (
         bestOfNEnabled &&
         mode === "coding" &&
-        isLlamaServerEnabledForBestOfN()
+        isLlamaServerAvailable()
       ) {
         try {
           const n = Number(process.env.MANA_BEST_OF_N_COUNT || 3);
