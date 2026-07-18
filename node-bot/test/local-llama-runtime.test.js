@@ -41,6 +41,11 @@ test("exported cleanLlamaOutput still strips banner/reasoning noise with no prom
   assert.equal(cleanLlamaOutput(noisy), "The actual reply.");
 });
 
+test("exported cleanLlamaOutput strips Exiting... even when it isn't the trailing text", () => {
+  const noisy = "The actual reply. Exiting...\nllama_perf_context_print: total time = 42ms";
+  assert.equal(cleanLlamaOutput(noisy), "The actual reply. \nllama_perf_context_print: total time = 42ms");
+});
+
 test("local llama runtime builds llama.cpp args for local GGUF replies", () => {
   const calls = [];
   const runtime = createLocalLlamaRuntime({
