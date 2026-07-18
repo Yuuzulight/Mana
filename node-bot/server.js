@@ -3577,6 +3577,17 @@ function registerRoutes(app, upload, deps = {}) {
   const isLlamaServerEnabledForTools =
     deps.isLlamaServerEnabled || (() => llamaServerRuntime.isEnabled());
 
+  // Best-of-N self-voting (issue #70): same "llama-server only" constraint
+  // as tool-calling -- sampling-parameter (temperature) control isn't
+  // available through the llama-cli fallback path.
+  const runBestOfNReply =
+    deps.runBestOfNReply ||
+    (async function runBestOfNReply(prompt, options) {
+      return llamaServerRuntime.runBestOfNReply(prompt, options);
+    });
+  const isLlamaServerEnabledForBestOfN =
+    deps.isLlamaServerEnabled || (() => llamaServerRuntime.isEnabled());
+
   function normalizeUploadedAudio(file) {
     if (!file) {
       throw new Error("no file");
@@ -4261,8 +4272,49 @@ function registerRoutes(app, upload, deps = {}) {
       );
     }
 
+    // Best-of-N self-voting (issue #70), opt-in and scoped to coding-mode
+    // replies. Layers on top of replyMaybeWithTools rather than replacing
+    // the reply pipeline: on any failure or empty result it falls through
+    // to the same tool-calling-or-plain path above, and the existing
+    // verify/retry pass below still gates whatever reply comes out of here,
+    // exactly as it already does for every other reply path.
+    const bestOfNEnabled =
+      String(process.env.MANA_BEST_OF_N_ENABLED || "0") === "1";
+    async function replyMaybeWithBestOfN(promptText) {
+      if (
+        bestOfNEnabled &&
+        mode === "coding" &&
+        isLlamaServerEnabledForBestOfN()
+      ) {
+        try {
+          const n = Number(process.env.MANA_BEST_OF_N_COUNT || 3);
+          const result = await runBestOfNReply(promptText, {
+            n,
+            maxTokens: LLAMA_MAX_TOKENS,
+            profile: normalizedModelProfile,
+            overrideSystemPrompt: selectedSystemPrompt,
+          });
+          if (result.content && result.content.trim()) {
+            console.log(
+              `Mana best-of-N: judge picked candidate ${result.judgeIndex + 1}/${result.candidates.length}`,
+            );
+            return result.content;
+          }
+          console.warn(
+            "Best-of-N reply returned empty content; falling back to the plain reply path",
+          );
+        } catch (e) {
+          console.warn(
+            "Best-of-N reply failed, falling back to plain reply:",
+            e && e.message ? e.message : e,
+          );
+        }
+      }
+      return replyMaybeWithTools(promptText);
+    }
+
     // Fall back to local llama
-    let reply = await replyMaybeWithTools(finalPrompt);
+    let reply = await replyMaybeWithBestOfN(finalPrompt);
     queueVTubeReaction(reply);
 
     // Token-budget accounting: estimate reply tokens and deduct from session budget
@@ -4334,7 +4386,7 @@ function registerRoutes(app, upload, deps = {}) {
               ")",
             );
             try {
-              reply = await replyMaybeWithTools(fixPrompt);
+              reply = await replyMaybeWithBestOfN(fixPrompt);
               queueVTubeReaction(reply);
               continue; // re-verify
             } catch (retryErr) {
