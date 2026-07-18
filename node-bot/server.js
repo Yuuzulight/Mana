@@ -421,6 +421,7 @@ try {
 
 let runBackgroundReviewerPublic = null;
 let runBackgroundCompactorPublic = null;
+let runBackgroundConnectionsPublic = null;
 
 // Human-readable counterpart to background_meta.json's internal bookkeeping
 // (issue #69) -- written whenever a compaction/review pass actually changes
@@ -433,7 +434,7 @@ const MEMORY_MD_PATH = path.join(
   "MEMORY.md",
 );
 
-function formatMemoryMarkdown(compacted, facts) {
+function formatMemoryMarkdown(compacted, facts, connections = []) {
   const lines = [
     "# Mana Memory",
     "",
@@ -446,6 +447,11 @@ function formatMemoryMarkdown(compacted, facts) {
   if (facts && facts.length) {
     lines.push("", "## Key Facts", "", ...facts.map((f) => `- ${f}`));
   }
+  // Issue #75: kept in its own section, separate from the compacted
+  // summary, so a later compaction pass can't silently merge/drop them.
+  if (connections && connections.length) {
+    lines.push("", "## Connections", "", ...connections.map((c) => `- ${c}`));
+  }
   return lines.join("\n") + "\n";
 }
 
@@ -456,12 +462,13 @@ async function writeMemoryMarkdown() {
         BACKGROUND_MEMORY_META.lastCompacted.text) ||
       "";
     const facts = BACKGROUND_MEMORY_META.important_facts || [];
+    const connections = BACKGROUND_MEMORY_META.connections || [];
     await fs.promises.mkdir(path.dirname(MEMORY_MD_PATH), {
       recursive: true,
     });
     await fs.promises.writeFile(
       MEMORY_MD_PATH,
-      formatMemoryMarkdown(compacted, facts),
+      formatMemoryMarkdown(compacted, facts, connections),
       "utf8",
     );
   } catch (e) {
@@ -1177,10 +1184,101 @@ if (process.env.NODE_ENV !== "test" && !process.env.NODE_TEST_CONTEXT) {
         }
       }
 
-      // expose reviewer/compactor to other modules/routes (preview/apply, idle-report)
+      // Cross-session connections (issue #75): a distinct pass from
+      // compaction/pruning -- looks for real relationships *between*
+      // separate session summaries (same topic revisited days apart, one
+      // session following up on another) rather than summarizing each in
+      // isolation. Kept as its own MEMORY.md section (see
+      // formatMemoryMarkdown) so a later compaction pass can't silently
+      // merge or drop what it found.
+      async function runBackgroundConnections() {
+        try {
+          const res = await asyncLoadBackgroundMemory();
+          const processedFiles =
+            res && res.processedFiles ? res.processedFiles : [];
+          const minSummaries = Number(
+            process.env.MANA_BACKGROUND_CONNECTIONS_MIN_SUMMARIES || 2,
+          );
+          if (!processedFiles || processedFiles.length < minSummaries) {
+            // Not enough session history to find a real connection --
+            // matches the acceptance criteria's "skip on noise" requirement.
+            return { ok: false, reason: "not_enough_summaries" };
+          }
+
+          const maxSummaries = Number(
+            process.env.MANA_BACKGROUND_CONNECTIONS_MAX_SUMMARIES || 30,
+          );
+          const numbered = processedFiles
+            .slice(0, maxSummaries)
+            .map(
+              (p, idx) =>
+                `${idx + 1}. [session: ${p.file}] ${String(p.summary || "").slice(0, 300)}`,
+            )
+            .join("\n\n");
+
+          const prompt = `You are finding real connections between separate chat session summaries -- e.g. two sessions touching the same topic days apart, or one session following up on an earlier one. Given the numbered summaries below (each tagged with its session file), list at most 5 short connection lines, each naming which numbered summaries relate and why, formatted like "Summary #1 <-> Summary #3: both discuss the FFXIV crafting rework". Only report connections that are actually there -- if the summaries are all unrelated one-off topics, reply with exactly the single word NONE and nothing else.\n\nBEGIN SUMMARIES:\n${numbered}\n\nEND SUMMARIES\n\nCONNECTIONS:`;
+
+          let reply = null;
+          try {
+            if (shouldUseRemoteAi()) {
+              reply = await runOpenAIReply(prompt, 300);
+            }
+          } catch (e) {
+            console.warn(
+              "Background connections (remote) failed:",
+              e && e.message ? e.message : e,
+            );
+          }
+          if (!reply) {
+            try {
+              if (localLlamaReplyAvailable()) {
+                reply = await runLocalLlamaReply(prompt, 300, "default");
+              }
+            } catch (e) {
+              console.warn(
+                "Background connections (local) failed:",
+                e && e.message ? e.message : e,
+              );
+            }
+          }
+          if (!reply || typeof reply !== "string") {
+            return { ok: false, reason: "no_reply" };
+          }
+
+          const trimmed = reply.trim();
+          const connections =
+            !trimmed || /^NONE$/i.test(trimmed)
+              ? []
+              : trimmed
+                  .split(/\r?\n/)
+                  .map((line) => line.trim())
+                  .filter(Boolean)
+                  .slice(0, 5);
+
+          BACKGROUND_MEMORY_META.connections = connections;
+          try {
+            await persistBackgroundMeta();
+            await writeMemoryMarkdown();
+          } catch (e) {}
+
+          console.log(
+            `Background connections pass found ${connections.length} connection(s)`,
+          );
+          return { ok: true, connections };
+        } catch (e) {
+          console.warn(
+            "Background connections failed:",
+            e && e.message ? e.message : e,
+          );
+          return { ok: false, reason: "exception", error: String(e) };
+        }
+      }
+
+      // expose reviewer/compactor/connections to other modules/routes (preview/apply, idle-report)
       try {
         runBackgroundReviewerPublic = runBackgroundReviewer;
         runBackgroundCompactorPublic = runBackgroundCompactor;
+        runBackgroundConnectionsPublic = runBackgroundConnections;
       } catch (e) {}
 
       // Run compactor once now, and schedule periodic compaction
@@ -1391,6 +1489,14 @@ function registerRoutes(app, upload, deps = {}) {
         }).catch((err) =>
           console.warn(
             "Idle-triggered reviewer failed:",
+            err && err.message ? err.message : err,
+          ),
+        );
+      }
+      if (typeof runBackgroundConnectionsPublic === "function") {
+        await runBackgroundConnectionsPublic().catch((err) =>
+          console.warn(
+            "Idle-triggered connections pass failed:",
             err && err.message ? err.message : err,
           ),
         );

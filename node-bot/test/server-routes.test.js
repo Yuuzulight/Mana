@@ -1171,3 +1171,24 @@ test("formatMemoryMarkdown renders the compacted summary and key facts", () => {
   assert.match(md, /## Summary\n\nUser prefers concise replies\./);
   assert.match(md, /## Key Facts\n\n- Likes FFXIV crafting\n- Uses windows-launcher/);
 });
+
+test("formatMemoryMarkdown omits the Connections section when there are none (issue #75)", () => {
+  const md = formatMemoryMarkdown("Summary text.", ["a fact"]);
+  assert.doesNotMatch(md, /## Connections/);
+});
+
+test("formatMemoryMarkdown renders connections in their own section, separate from facts (issue #75)", () => {
+  const md = formatMemoryMarkdown(
+    "Summary text.",
+    ["a fact"],
+    ["Summary #1 <-> Summary #3: both discuss the FFXIV Weaver crafting rotation."],
+  );
+  assert.match(
+    md,
+    /## Connections\n\n- Summary #1 <-> Summary #3: both discuss the FFXIV Weaver crafting rotation\./,
+  );
+  // Connections must stay a distinct section, not folded into Key Facts.
+  const factsIndex = md.indexOf("## Key Facts");
+  const connectionsIndex = md.indexOf("## Connections");
+  assert.ok(factsIndex > -1 && connectionsIndex > factsIndex);
+});
