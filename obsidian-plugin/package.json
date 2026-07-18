@@ -1,0 +1,17 @@
+{
+  "name": "mana-memory-sync",
+  "version": "0.1.0",
+  "description": "Obsidian plugin that syncs Mana's memory into a vault note.",
+  "main": "main.js",
+  "scripts": {
+    "build": "node esbuild.config.mjs production",
+    "dev": "node esbuild.config.mjs",
+    "test": "node --test test/*.test.js"
+  },
+  "license": "Apache-2.0",
+  "devDependencies": {
+    "esbuild": "^0.21.0",
+    "obsidian": "^1.5.0",
+    "typescript": "^5.4.0"
+  }
+}
