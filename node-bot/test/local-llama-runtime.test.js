@@ -110,6 +110,33 @@ test("local llama runtime strips echoed prompt, boot banner, and bracketed think
   assert.equal(reply, "Here is the real reply.");
 });
 
+test("local llama runtime preserves prompt text that legitimately repeats in the reply", () => {
+  const runtime = createLocalLlamaRuntime({
+    env: {
+      LLAMA_BIN: "C:\\llama\\llama-cli.exe",
+      LLAMA_MODEL: "C:\\models\\mana.gguf",
+    },
+    fs: {
+      existsSync: (target) =>
+        target === "C:\\llama\\llama-cli.exe" || target === "C:\\models\\mana.gguf",
+    },
+    spawnSync: () => ({
+      status: 0,
+      // Echo happens once, up front, exactly like real llama-cli output --
+      // the real reply after it happens to repeat "Hello" again.
+      stdout: "Hello Hello! How can I help you today?",
+      stderr: "",
+    }),
+    nowMs: () => 1,
+    logPerf: () => {},
+    systemPrompt: "",
+  });
+
+  const reply = runtime.runLocalAssistantReply("Hello", 64, "default");
+
+  assert.equal(reply, "Hello! How can I help you today?");
+});
+
 test("local llama runtime reports status and placeholder when binary is missing", () => {
   const runtime = createLocalLlamaRuntime({
     env: {},
