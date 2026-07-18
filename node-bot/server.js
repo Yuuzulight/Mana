@@ -58,7 +58,7 @@ const { createVTubeRuntime } = require("./vtube-runtime");
 	const { registerMobileRoutes } = require("./mobile-routes");
 	const { createMobileAuth } = require("./mobile-auth");
 	const { createMobileMemoryStore } = require("./mobile-memory-store");
-	const { registerCoreRoutes } = require("./server-routes");
+	const { registerCoreRoutes, isLocalRestartRequest } = require("./server-routes");
 	const {
 	  buildCapabilityHealth,
 	  registerCapabilities,
@@ -4744,6 +4744,32 @@ function registerRoutes(app, upload, deps = {}) {
     next();
   }
 
+  // Admin-only middleware for account create/revoke (must run after
+  // authMiddleware, which sets req.user). Account management is more
+  // sensitive than the read-only /api/memory routes -- which are
+  // intentionally remote-accessible by design, per issue #93 -- so it gets
+  // an extra layer beyond just "the API key has role=admin": same
+  // local-unless-explicit-token pattern this codebase already uses for
+  // /admin/restart (see isLocalRestartRequest, which also accounts for a
+  // LAN tunnel terminating on loopback but forwarding from elsewhere), so a
+  // leaked admin API key alone isn't enough to manage accounts remotely.
+  function requireAdmin(req, res, next) {
+    if (req.user.role !== "admin") {
+      return res.status(403).json({ error: "Admin role required" });
+    }
+    const ADMIN_TOKEN = process.env.ADMIN_TOKEN || null;
+    if (ADMIN_TOKEN && req.get("x-admin-token") === ADMIN_TOKEN) {
+      return next();
+    }
+    if (isLocalRestartRequest(req)) {
+      return next();
+    }
+    return res.status(403).json({
+      error:
+        "admin-only: request must be local, or present a valid ADMIN_TOKEN via the x-admin-token header",
+    });
+  }
+
   // GET /api/memory — return Mana's consolidated memory to any authenticated
   // key (admin or user role). Mana has one shared memory store, not
   // per-account partitions, so this is the same content for every valid key;
@@ -4803,11 +4829,8 @@ function registerRoutes(app, upload, deps = {}) {
   });
 
   // Admin only: POST /admin/accounts — create a new account
-  app.post("/admin/accounts", authMiddleware, (req, res) => {
+  app.post("/admin/accounts", authMiddleware, requireAdmin, (req, res) => {
     try {
-      if (req.user.role !== "admin") {
-        return res.status(403).json({ error: "Admin role required" });
-      }
       const { email, role = "user" } = req.body;
       if (!email) {
         return res.status(400).json({ error: "email is required" });
@@ -4826,11 +4849,8 @@ function registerRoutes(app, upload, deps = {}) {
   });
 
   // Admin only: GET /admin/accounts — list all accounts
-  app.get("/admin/accounts", authMiddleware, (req, res) => {
+  app.get("/admin/accounts", authMiddleware, requireAdmin, (req, res) => {
     try {
-      if (req.user.role !== "admin") {
-        return res.status(403).json({ error: "Admin role required" });
-      }
       const accounts = authStore.listAccounts();
       res.json(accounts);
     } catch (e) {
@@ -4839,11 +4859,8 @@ function registerRoutes(app, upload, deps = {}) {
   });
 
   // Admin only: DELETE /admin/accounts/:userId — revoke an account
-  app.delete("/admin/accounts/:userId", authMiddleware, (req, res) => {
+  app.delete("/admin/accounts/:userId", authMiddleware, requireAdmin, (req, res) => {
     try {
-      if (req.user.role !== "admin") {
-        return res.status(403).json({ error: "Admin role required" });
-      }
       authStore.deleteAccount(req.params.userId);
       res.json({ ok: true });
     } catch (e) {
