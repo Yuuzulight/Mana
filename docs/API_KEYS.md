@@ -78,9 +78,12 @@ curl -X DELETE http://mana-machine:5005/admin/accounts/USER_ID \
 ## Account Roles
 
 - **admin**: Can create accounts, list accounts, revoke accounts, and access the memory API.
-- **user**: Can only access their own consolidated memory via `/api/memory`. No admin privileges.
+- **user**: Can access the memory API. No admin privileges (can't create/list/revoke accounts).
 
-Each user (including other people) can only read their own memory, not anyone else's.
+Mana is a single local AI companion with one shared memory store — there is no per-account
+memory partitioning. Any valid key, admin or user, sees the same consolidated memory via
+`/api/memory`; the role only controls whether the key can also manage accounts. Only give a
+user-role key to someone you're comfortable having read access to that memory.
 
 ## Security Notes
 
@@ -88,3 +91,4 @@ Each user (including other people) can only read their own memory, not anyone el
 - Always transmit keys over HTTPS or a secure tunnel (SSH).
 - Keep your admin key safe — it can create and revoke all accounts.
 - Each user should store their own key securely (password manager recommended).
+- Revoking a user-role account immediately cuts off their memory access (see Admin Dashboard above).

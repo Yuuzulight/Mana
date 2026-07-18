@@ -137,3 +137,30 @@ test("auth-store: SETUP.txt written once on admin account creation", async (t) =
     fs.rmSync(tempDir, { recursive: true });
   }
 });
+
+test("auth-store: SETUP.txt is overwritten with the new admin's key when accounts.json is reset but the old file lingers", async (t) => {
+  const tempDir = createTempDir();
+  try {
+    const authStore = createAuthStore({ dataDir: tempDir });
+    const first = authStore.ensureAdminAccount();
+
+    // Simulate accounts.json being wiped/corrupted while the stale
+    // SETUP.txt from the first admin is left behind on disk.
+    fs.rmSync(path.join(tempDir, "auth", "accounts.json"));
+
+    const second = authStore.ensureAdminAccount();
+    assert.notEqual(second.userId, first.userId);
+
+    const setupPath = path.join(tempDir, "auth", "SETUP.txt");
+    const content = fs.readFileSync(setupPath, "utf8");
+    const match = content.match(/API Key: (\S+)/);
+    assert.ok(match, "SETUP.txt must contain the new admin's key, not be skipped because a stale file existed");
+
+    // The key written to SETUP.txt must actually validate as the *new* admin.
+    const validated = authStore.validateKey(match[1]);
+    assert.ok(validated);
+    assert.equal(validated.userId, second.userId);
+  } finally {
+    fs.rmSync(tempDir, { recursive: true });
+  }
+});
