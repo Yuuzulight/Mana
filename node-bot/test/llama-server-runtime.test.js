@@ -711,3 +711,142 @@ test("MANA_LLAMA_UNIFIED_MEMORY=0 opts out of GGML_CUDA_ENABLE_UNIFIED_MEMORY", 
     undefined,
   );
 });
+
+// runBestOfNReply (issue #70): N candidates at varied temperature, then a
+// temp-0 judge call picks the best one. Sequential, not parallel -- matches
+// how the actual llama-server instance is spawned here (default single
+// parallel slot). These tests exercise the loop/judge-parsing logic without
+// needing a real GPU; real latency is measured separately (see
+// docs/roadmap/issue-70-best-of-n.md).
+test("runBestOfNReply generates N candidates and returns the judge's pick", async () => {
+  const candidateTemps = [];
+  let judgeCall = null;
+  let serverUp = false;
+  const fakeFetch = async (url, init) => {
+    if (String(url).endsWith("/health")) return { ok: serverUp };
+    if (String(url).endsWith("/v1/chat/completions")) {
+      const body = JSON.parse(init.body);
+      const isJudge = body.messages.some((m) =>
+        String(m.content).includes("Best candidate number"),
+      );
+      if (isJudge) {
+        judgeCall = body;
+        return {
+          ok: true,
+          json: async () => ({ choices: [{ message: { content: "2" } }] }),
+        };
+      }
+      candidateTemps.push(body.temperature);
+      return {
+        ok: true,
+        json: async () => ({
+          choices: [
+            { message: { content: `candidate at temp ${body.temperature}` } },
+          ],
+        }),
+      };
+    }
+    return { ok: false, status: 404, text: async () => "not found" };
+  };
+
+  const runtime = createLlamaServerRuntime({
+    env: makeFakeEnv(),
+    fs: makeFakeFs(),
+    fetch: fakeFetch,
+    spawn: () => {
+      serverUp = true;
+      return makeFakeChild();
+    },
+    sleep: async () => {},
+    registerExitHandlers: false,
+  });
+
+  const result = await runtime.runBestOfNReply("write a fibonacci function", {
+    n: 3,
+    profile: "default",
+  });
+
+  assert.equal(candidateTemps.length, 3);
+  assert.deepEqual(candidateTemps, [0.2, 0.6, 1]);
+  assert.equal(result.candidates.length, 3);
+  assert.equal(result.judgeIndex, 1);
+  assert.equal(result.content, "candidate at temp 0.6");
+  assert.ok(judgeCall, "judge call happened");
+});
+
+test("runBestOfNReply falls back to the first candidate when the judge reply is unparseable", async () => {
+  let serverUp = false;
+  const fakeFetch = async (url, init) => {
+    if (String(url).endsWith("/health")) return { ok: serverUp };
+    if (String(url).endsWith("/v1/chat/completions")) {
+      const body = JSON.parse(init.body);
+      const isJudge = body.messages.some((m) =>
+        String(m.content).includes("Best candidate number"),
+      );
+      if (isJudge) {
+        return {
+          ok: true,
+          json: async () => ({
+            choices: [{ message: { content: "I'm not sure, honestly." } }],
+          }),
+        };
+      }
+      return {
+        ok: true,
+        json: async () => ({ choices: [{ message: { content: "safe candidate" } }] }),
+      };
+    }
+    return { ok: false, status: 404, text: async () => "not found" };
+  };
+
+  const runtime = createLlamaServerRuntime({
+    env: makeFakeEnv(),
+    fs: makeFakeFs(),
+    fetch: fakeFetch,
+    spawn: () => {
+      serverUp = true;
+      return makeFakeChild();
+    },
+    sleep: async () => {},
+    registerExitHandlers: false,
+  });
+
+  const result = await runtime.runBestOfNReply("hello", { n: 2, profile: "default" });
+
+  assert.equal(result.judgeIndex, 0);
+  assert.equal(result.content, "safe candidate");
+});
+
+test("runBestOfNReply skips the judge call entirely when n is 1", async () => {
+  let callCount = 0;
+  let serverUp = false;
+  const fakeFetch = async (url) => {
+    if (String(url).endsWith("/health")) return { ok: serverUp };
+    if (String(url).endsWith("/v1/chat/completions")) {
+      callCount += 1;
+      return {
+        ok: true,
+        json: async () => ({ choices: [{ message: { content: "only answer" } }] }),
+      };
+    }
+    return { ok: false, status: 404, text: async () => "not found" };
+  };
+
+  const runtime = createLlamaServerRuntime({
+    env: makeFakeEnv(),
+    fs: makeFakeFs(),
+    fetch: fakeFetch,
+    spawn: () => {
+      serverUp = true;
+      return makeFakeChild();
+    },
+    sleep: async () => {},
+    registerExitHandlers: false,
+  });
+
+  const result = await runtime.runBestOfNReply("hello", { n: 1, profile: "default" });
+
+  assert.equal(callCount, 1, "no judge round when there's only one candidate");
+  assert.equal(result.content, "only answer");
+  assert.equal(result.judgeIndex, 0);
+});
