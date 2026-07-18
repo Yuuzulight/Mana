@@ -1171,3 +1171,18 @@ test("formatMemoryMarkdown renders the compacted summary and key facts", () => {
   assert.match(md, /## Summary\n\nUser prefers concise replies\./);
   assert.match(md, /## Key Facts\n\n- Likes FFXIV crafting\n- Uses windows-launcher/);
 });
+
+test("createApp wires the memory inbox watcher with a usable appendTurn/runVisionReply/runWhisper", async () => {
+  let capturedOptions = null;
+  createApp({
+    startMemoryInboxWatcher: (options) => {
+      capturedOptions = options;
+    },
+  });
+
+  assert.ok(capturedOptions, "watcher start was called");
+  assert.equal(typeof capturedOptions.inboxDir, "string");
+  assert.equal(typeof capturedOptions.appendTurn, "function");
+  assert.equal(typeof capturedOptions.runVisionReply, "function");
+  assert.equal(typeof capturedOptions.runWhisper, "function");
+});
