@@ -126,6 +126,56 @@ test("spawns llama-server once and reuses it for subsequent replies", async () =
   assert.equal(runtime.getStatus().running, true);
 });
 
+test("proxyChatCompletion forwards the request body untouched and returns the raw response", async () => {
+  const spawnCalls = [];
+  let serverUp = false;
+  let capturedBody = null;
+
+  const fakeFetch = async (url, init) => {
+    if (String(url).endsWith("/health")) {
+      return { ok: serverUp };
+    }
+    if (String(url).endsWith("/v1/chat/completions")) {
+      capturedBody = JSON.parse(init.body);
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: () => "application/json" },
+        body: "raw-upstream-body",
+      };
+    }
+    return { ok: false, status: 404, text: async () => "not found" };
+  };
+
+  const runtime = createLlamaServerRuntime({
+    env: makeFakeEnv(),
+    fs: makeFakeFs(),
+    fetch: fakeFetch,
+    spawn: (command, args, options) => {
+      spawnCalls.push({ command, args, options });
+      serverUp = true;
+      return makeFakeChild();
+    },
+    sleep: async () => {},
+    registerExitHandlers: false,
+  });
+
+  // Unlike runLocalAssistantReply, no persona system prompt is injected --
+  // external OpenAI-compatible clients (Obsidian Copilot, etc.) bring their
+  // own messages, so the body must reach llama-server exactly as given.
+  const requestBody = {
+    messages: [{ role: "user", content: "hi" }],
+    stream: false,
+    temperature: 0.2,
+  };
+  const resp = await runtime.proxyChatCompletion(requestBody);
+
+  assert.equal(resp.ok, true);
+  assert.equal(resp.body, "raw-upstream-body");
+  assert.deepEqual(capturedBody, requestBody);
+  assert.equal(spawnCalls.length, 1);
+});
+
 test("throws when the port is held by a llama-server with a different model", async () => {
   const fakeFetch = async (url) => {
     if (String(url).endsWith("/health")) {

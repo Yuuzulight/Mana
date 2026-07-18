@@ -591,6 +591,26 @@ function createLlamaServerRuntime(options = {}) {
     return content.replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
   }
 
+  // Raw OpenAI-compatible passthrough (issue #95). Unlike runLocalAssistantReply,
+  // this does not inject Mana's persona system prompt or post-process the
+  // reply -- external clients (Obsidian Copilot, etc.) bring their own
+  // messages/system prompt and expect a standard OpenAI response shape,
+  // streaming or not. Returns the raw fetch Response so the HTTP layer can
+  // relay status/JSON/SSE as-is without this runtime needing to understand
+  // Express or SSE framing.
+  async function proxyChatCompletion(body, profile = "default") {
+    if (typeof fetchImpl !== "function") {
+      throw new Error("fetch is not available; cannot use llama-server");
+    }
+    await ensureServer(profile);
+    scheduleIdleShutdown();
+    return fetchImpl(`http://127.0.0.1:${state.port}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  }
+
   // Foundational tool-calling loop (issue #51). Single round only: the
   // model gets one chance to call tools, sees the results, and produces a
   // final reply -- deliberately not a multi-step agent loop yet. Every tool
@@ -903,6 +923,7 @@ function createLlamaServerRuntime(options = {}) {
     findVisionMmproj,
     getVisionStatus,
     isEnabled,
+    proxyChatCompletion,
     runBestOfNReply,
     runLocalAssistantReply,
     runToolAwareReply,
