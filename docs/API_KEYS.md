@@ -59,24 +59,27 @@ curl http://mana-machine:5005/v1/embeddings \
 ### Setting up the local embedder
 
 `/v1/embeddings` (and Mana's own memory retriever, when `USE_EMBEDDINGS` is on) needs the
-local embedder service running:
+local embedder service running. The Windows launcher starts and stops it automatically
+alongside the rest of Mana's services (same lifecycle as the retriever and SearXNG), and
+sets `USE_EMBEDDINGS=1`/`RETRIEVER_EMBEDDER_URL` on the backend for you — you only need to
+install its dependencies once:
 
 ```bash
 pip install fastapi uvicorn sentence-transformers
+```
+
+(into `venv/` at the repo root if you have one there — the launcher prefers it, falling back
+to plain `python` otherwise.) Set `MANA_START_EMBEDDER=0` to opt out if you don't want it
+running (e.g. to save the ~100MB model load), or `USE_EMBEDDINGS=0` to keep it running but
+unused. To run it manually instead (e.g. running node-bot outside the launcher):
+
+```bash
 python node-bot/tools/local_embedder.py --port 9001 --model all-MiniLM-L6-v2
 ```
 
-Then set on the Mana server (before starting `node-bot`):
-
-```bash
-USE_EMBEDDINGS=1
-RETRIEVER_EMBEDDER_URL=http://127.0.0.1:9001
-RETRIEVER_EMBEDDER_MODEL=all-MiniLM-L6-v2
-# optional: RETRIEVER_EMBEDDER_SECRET=some-shared-secret (also pass --http-secret to local_embedder.py)
-```
-
-Without `USE_EMBEDDINGS=1` or with the embedder unreachable, `/v1/embeddings` returns a
-`503` rather than silently returning empty vectors.
+and set `USE_EMBEDDINGS=1`/`RETRIEVER_EMBEDDER_URL=http://127.0.0.1:9001` before starting
+`node-bot` yourself. Without `USE_EMBEDDINGS=1` or with the embedder unreachable,
+`/v1/embeddings` returns a `503` rather than silently returning empty vectors.
 
 ### Connecting Obsidian Copilot
 

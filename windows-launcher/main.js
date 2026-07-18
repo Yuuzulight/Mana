@@ -11,6 +11,7 @@ let fallbackTtsProcess = null;
 let retrieverProcess = null;
 let fallbackKokoroProcess = null;
 let searxngProcess = null;
+let embedderProcess = null;
 const BACKEND_URL = "http://localhost:5005/health";
 const IDLE_REPORT_URL = "http://localhost:5005/internal/idle-report";
 const IDLE_REPORT_INTERVAL_MS = 60000;
@@ -301,6 +302,56 @@ function startRetrieverService() {
   });
 }
 
+const EMBEDDER_URL = "http://127.0.0.1:9001/health";
+
+async function isEmbedderRunning() {
+  return isServiceRunning(EMBEDDER_URL);
+}
+
+// Local embedder (tools/local_embedder.py) computes the sentence-transformer
+// embeddings behind /v1/embeddings and Mana's own memory retriever (when
+// USE_EMBEDDINGS=1). Optional like the retriever/SearXNG services above --
+// USE_EMBEDDINGS just stays off if this doesn't come up. Set
+// MANA_START_EMBEDDER=0 to skip starting it.
+function startEmbedderService() {
+  if (embedderProcess || process.env.MANA_START_EMBEDDER === "0") {
+    return;
+  }
+
+  const embedderScript = path.join(ROOT_DIR, "node-bot", "tools", "local_embedder.py");
+  const venvPython = path.join(ROOT_DIR, "venv", "Scripts", "python.exe");
+  if (!fs.existsSync(embedderScript)) {
+    console.warn(`Embedder script not found at ${embedderScript}; skipping`);
+    return;
+  }
+  const python = fs.existsSync(venvPython) ? venvPython : "python";
+
+  console.log("Starting local embedder:", python, embedderScript);
+  embedderProcess = spawn(
+    python,
+    [embedderScript, "--port", "9001", "--model", "all-MiniLM-L6-v2"],
+    {
+      cwd: ROOT_DIR,
+      windowsHide: true,
+    },
+  );
+
+  embedderProcess.on("error", (error) => {
+    console.warn("Failed to start local embedder:", error.message);
+    embedderProcess = null;
+  });
+  embedderProcess.stdout.on("data", (data) => {
+    console.log(`Embedder: ${data}`);
+  });
+  embedderProcess.stderr.on("data", (data) => {
+    console.error(`Embedder ERR: ${data}`);
+  });
+  embedderProcess.on("close", (code) => {
+    console.log(`Local embedder exited with code ${code}`);
+    embedderProcess = null;
+  });
+}
+
 const SEARXNG_URL = "http://127.0.0.1:8890/";
 
 async function isSearxngRunning() {
@@ -374,6 +425,12 @@ function startWindowsServices() {
       VTUBE_STUDIO_URL:
         process.env.VTUBE_STUDIO_URL || "ws://127.0.0.1:8001",
       VTUBE_STUDIO_ENABLED: process.env.VTUBE_STUDIO_ENABLED || "1",
+      // Embeddings power /v1/embeddings and Mana's own semantic memory
+      // retrieval; on by default now that the launcher starts the local
+      // embedder above. Set USE_EMBEDDINGS=0 to opt back out.
+      USE_EMBEDDINGS: process.env.USE_EMBEDDINGS || "1",
+      RETRIEVER_EMBEDDER_URL:
+        process.env.RETRIEVER_EMBEDDER_URL || "http://127.0.0.1:9001",
     },
   });
 
@@ -582,6 +639,7 @@ app.whenReady().then(() => {
     isChatterboxRunning(),
     isRetrieverRunning(),
     isSearxngRunning(),
+    isEmbedderRunning(),
   ])
     .then(
       ([
@@ -590,6 +648,7 @@ app.whenReady().then(() => {
         chatterboxRunning,
         retrieverRunning,
         searxngRunning,
+        embedderRunning,
       ]) => {
         if (!ttsRunning) {
           startTtsService();
@@ -602,6 +661,9 @@ app.whenReady().then(() => {
         }
         if (!searxngRunning) {
           startSearxngService();
+        }
+        if (!embedderRunning) {
+          startEmbedderService();
         }
         if (!backendRunning) {
           startWindowsServices();
@@ -801,6 +863,11 @@ app.on("quit", () => {
   if (searxngProcess) {
     try {
       searxngProcess.kill();
+    } catch (e) {}
+  }
+  if (embedderProcess) {
+    try {
+      embedderProcess.kill();
     } catch (e) {}
   }
 });
