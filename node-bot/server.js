@@ -615,11 +615,9 @@ let BACKGROUND_AUDIT_REBUILD_LOCK = false;
 let BACKGROUND_AUDIT_LAST_REBUILD = null;
 let VECTOR_STORE_REBUILD_LOCK = false;
 
-const VECTOR_REBUILD_AUDIT_PATH = path.join(
-  __dirname,
-  "data",
-  "vector_rebuild_audit.jsonl",
-);
+const VECTOR_REBUILD_AUDIT_PATH =
+  process.env.MANA_VECTOR_AUDIT_PATH ||
+  path.join(__dirname, "data", "vector_rebuild_audit.jsonl");
 
 async function appendVectorRebuildAudit(entry) {
   try {
