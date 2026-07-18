@@ -4,7 +4,7 @@ const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
 
-const { createAcpMemoryStore } = require("../acp-memory-store");
+const { createAcpMemoryStore, extractEntities } = require("../acp-memory-store");
 
 function createTempDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), "mana-acp-memory-"));
@@ -148,4 +148,83 @@ test("listSessions returns session metadata sorted by most recently updated", ()
   );
   assert.equal(sessions[0].name, "Newest session");
   assert.equal(sessions[1].turnCount, 0);
+});
+
+// Entity tagging (issue #78): pure pattern matching, zero LLM calls.
+
+test("extractEntities finds multi-word Title Case entities without a stopword check", () => {
+  const entities = extractEntities(
+    "We discussed Acme Corp and New York over lunch with John Smith.",
+  );
+  assert.ok(entities.includes("Acme Corp"));
+  assert.ok(entities.includes("New York"));
+  assert.ok(entities.includes("John Smith"));
+});
+
+test("extractEntities filters common stopwords when they're the only capitalized word", () => {
+  const entities = extractEntities("The plan is solid. What do you think?");
+  assert.ok(!entities.includes("The"));
+  assert.ok(!entities.includes("What"));
+});
+
+test("extractEntities keeps a real single-word proper noun", () => {
+  const entities = extractEntities("Have you tried FFXIV yet?");
+  assert.ok(entities.includes("FFXIV"));
+});
+
+test("entity index is retrievable across sessions that mention the same entity", () => {
+  const dataDir = createTempDir();
+  const store = createAcpMemoryStore({
+    dataDir,
+    now: () => "2026-06-29T00:00:00.000Z",
+  });
+
+  store.appendTurn({
+    sessionId: "session-a",
+    user: "Let's talk about Acme Corp's roadmap.",
+    assistant: "Sure, what about Acme Corp interests you?",
+  });
+  store.appendTurn({
+    sessionId: "session-b",
+    user: "Following up on Acme Corp from last week.",
+    assistant: "Got it, continuing on Acme Corp.",
+  });
+
+  const mentions = store.lookupEntity("acme corp");
+  const sessionIds = new Set(mentions.map((m) => m.sessionId));
+  assert.ok(sessionIds.has("session-a"));
+  assert.ok(sessionIds.has("session-b"));
+});
+
+test("entity lookup is case-insensitive and returns nothing for an unmentioned entity", () => {
+  const dataDir = createTempDir();
+  const store = createAcpMemoryStore({
+    dataDir,
+    now: () => "2026-06-29T00:00:00.000Z",
+  });
+
+  store.appendTurn({
+    sessionId: "session-a",
+    user: "New York is a great city.",
+    assistant: "It really is.",
+  });
+
+  assert.equal(store.lookupEntity("NEW YORK").length, 1);
+  assert.deepEqual(store.lookupEntity("Nonexistent Place"), []);
+});
+
+test("entity index survives across separate store instances (persisted to disk)", () => {
+  const dataDir = createTempDir();
+  const first = createAcpMemoryStore({
+    dataDir,
+    now: () => "2026-06-29T00:00:00.000Z",
+  });
+  first.appendTurn({
+    sessionId: "session-a",
+    user: "Talking about Acme Corp again.",
+    assistant: "Noted.",
+  });
+
+  const second = createAcpMemoryStore({ dataDir });
+  assert.equal(second.lookupEntity("Acme Corp").length, 1);
 });
