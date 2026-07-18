@@ -1,7 +1,7 @@
 const assert = require("node:assert/strict");
 const test = require("node:test");
 
-const { createApp, formatMemoryMarkdown } = require("../server");
+const { createApp, formatMemoryMarkdown, buildMemoryNotes } = require("../server");
 const { withServer } = require("./helpers");
 
 async function postJson(url, body, headers = {}) {
@@ -1191,6 +1191,61 @@ test("formatMemoryMarkdown renders connections in their own section, separate fr
   const factsIndex = md.indexOf("## Key Facts");
   const connectionsIndex = md.indexOf("## Connections");
   assert.ok(factsIndex > -1 && connectionsIndex > factsIndex);
+});
+
+test("buildMemoryNotes creates one note per entity, empty otherwise", () => {
+  const notes = buildMemoryNotes(
+    { "acme corp": [{ sessionId: "s1", at: "2026-07-01", display: "Acme Corp" }] },
+    [],
+    [],
+  );
+  assert.equal(notes.length, 1);
+  assert.equal(notes[0].slug, "acme-corp");
+  assert.equal(notes[0].title, "Acme Corp");
+  assert.match(notes[0].body, /# Acme Corp/);
+  assert.match(notes[0].body, /session `s1`/);
+  assert.deepEqual(notes[0].links, []);
+});
+
+test("buildMemoryNotes links entities that co-occur in the same session", () => {
+  const notes = buildMemoryNotes(
+    {
+      "acme corp": [{ sessionId: "s1", at: "t1", display: "Acme Corp" }],
+      "jane doe": [{ sessionId: "s1", at: "t1", display: "Jane Doe" }],
+      "unrelated topic": [{ sessionId: "s2", at: "t2", display: "Unrelated Topic" }],
+    },
+    [],
+    [],
+  );
+  const acme = notes.find((n) => n.slug === "acme-corp");
+  const jane = notes.find((n) => n.slug === "jane-doe");
+  const unrelated = notes.find((n) => n.slug === "unrelated-topic");
+
+  assert.deepEqual(acme.links, ["jane-doe"]);
+  assert.deepEqual(jane.links, ["acme-corp"]);
+  assert.match(acme.body, /\[\[jane-doe\]\]/);
+  assert.deepEqual(unrelated.links, []);
+});
+
+test("buildMemoryNotes creates a Key Facts note linking to mentioned entities", () => {
+  const notes = buildMemoryNotes(
+    { "ffxiv": [{ sessionId: "s1", at: "t1", display: "FFXIV" }] },
+    ["Plays FFXIV on weekends", "Prefers concise replies"],
+    [],
+  );
+  const facts = notes.find((n) => n.slug === "key-facts");
+  assert.ok(facts);
+  assert.match(facts.body, /- Plays FFXIV on weekends \(\[\[ffxiv\]\]\)/);
+  assert.match(facts.body, /- Prefers concise replies\n/);
+});
+
+test("buildMemoryNotes creates a Connections note verbatim, and omits empty sections", () => {
+  const notes = buildMemoryNotes({}, [], [
+    "Summary #1 <-> Summary #3: both discuss the same crafting rotation.",
+  ]);
+  assert.equal(notes.length, 1);
+  assert.equal(notes[0].slug, "connections");
+  assert.match(notes[0].body, /both discuss the same crafting rotation/);
 });
 
 test("createApp wires the memory inbox watcher with a usable appendTurn/runVisionReply/runWhisper", async () => {

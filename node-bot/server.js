@@ -459,6 +459,101 @@ function formatMemoryMarkdown(compacted, facts, connections = []) {
   return lines.join("\n") + "\n";
 }
 
+function slugifyEntityName(name) {
+  return (
+    String(name || "")
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "") || "untitled"
+  );
+}
+
+// Splits Mana's memory into one Obsidian-style note per cross-session entity
+// (issue #78's entity-index.json) plus a facts note and a connections note,
+// instead of one flat blob -- each entity note links to every other entity
+// it co-occurred with in the same session, so Obsidian's own graph view does
+// the clustering. No new clustering algorithm: this is entirely a reshape of
+// data Mana already computes (entity-index.json, important_facts,
+// connections).
+function buildMemoryNotes(entityIndex, facts, connections) {
+  const notes = [];
+  const entityNames = Object.keys(entityIndex || {});
+  const slugFor = {};
+  for (const key of entityNames) {
+    slugFor[key] = slugifyEntityName(key);
+  }
+
+  for (const key of entityNames) {
+    const mentions = entityIndex[key] || [];
+    if (!mentions.length) continue;
+    const display = mentions[mentions.length - 1].display || key;
+    const sessionIds = new Set(mentions.map((m) => m.sessionId));
+
+    const linkedKeys = entityNames.filter(
+      (other) =>
+        other !== key &&
+        (entityIndex[other] || []).some((m) => sessionIds.has(m.sessionId)),
+    );
+
+    const body = [
+      `# ${display}`,
+      "",
+      "## Mentioned in",
+      "",
+      ...mentions
+        .slice()
+        .reverse()
+        .map((m) => `- ${m.at || "unknown time"} (session \`${m.sessionId}\`)`),
+    ];
+    if (linkedKeys.length) {
+      body.push(
+        "",
+        "## Related",
+        "",
+        ...linkedKeys.map((k) => `- [[${slugFor[k]}]]`),
+      );
+    }
+
+    notes.push({
+      slug: slugFor[key],
+      title: display,
+      body: body.join("\n") + "\n",
+      links: linkedKeys.map((k) => slugFor[k]),
+    });
+  }
+
+  if (facts && facts.length) {
+    const factLines = facts.map((f) => {
+      const mentioned = entityNames.filter((key) =>
+        String(f).toLowerCase().includes(key),
+      );
+      const linkSuffix = mentioned.length
+        ? ` (${mentioned.map((k) => `[[${slugFor[k]}]]`).join(", ")})`
+        : "";
+      return `- ${f}${linkSuffix}`;
+    });
+    notes.push({
+      slug: "key-facts",
+      title: "Key Facts",
+      body: ["# Key Facts", "", ...factLines].join("\n") + "\n",
+      links: [],
+    });
+  }
+
+  if (connections && connections.length) {
+    notes.push({
+      slug: "connections",
+      title: "Connections",
+      body:
+        ["# Connections", "", ...connections.map((c) => `- ${c}`)].join("\n") +
+        "\n",
+      links: [],
+    });
+  }
+
+  return notes;
+}
+
 async function writeMemoryMarkdown() {
   try {
     const compacted =
@@ -4685,6 +4780,28 @@ function registerRoutes(app, upload, deps = {}) {
     }
   });
 
+  // GET /api/memory/notes — same access as /api/memory, but split into one
+  // note per cross-session entity (see buildMemoryNotes) for clients that
+  // want to sync Mana's memory as a linked set of notes (e.g. the Obsidian
+  // plugin) instead of one flat markdown blob.
+  app.get("/api/memory/notes", authMiddleware, async (req, res) => {
+    try {
+      const entityIndexPath = path.join(
+        acpMemoryStore.dataDir,
+        "entity-index.json",
+      );
+      let entityIndex = {};
+      if (fs.existsSync(entityIndexPath)) {
+        entityIndex = JSON.parse(fs.readFileSync(entityIndexPath, "utf8") || "{}");
+      }
+      const facts = BACKGROUND_MEMORY_META.important_facts || [];
+      const connections = BACKGROUND_MEMORY_META.connections || [];
+      res.json(buildMemoryNotes(entityIndex, facts, connections));
+    } catch (e) {
+      res.status(500).json({ error: e?.message || String(e) });
+    }
+  });
+
   // Admin only: POST /admin/accounts — create a new account
   app.post("/admin/accounts", authMiddleware, (req, res) => {
     try {
@@ -4954,6 +5071,7 @@ if (require.main === module) {
 
 module.exports = {
   createApp,
+  buildMemoryNotes,
   ensureDirectory,
   formatCraftRankingDetails,
   formatMemoryMarkdown,
