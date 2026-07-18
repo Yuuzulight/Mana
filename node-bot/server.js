@@ -83,6 +83,7 @@ const {
 const { createTtsRuntime } = require("./tts-runtime");
 const { createAcpMemoryStore } = require("./acp-memory-store");
 const { createPresetsStore } = require("./presets-store");
+const { createAuthStore } = require("./auth-store");
 const {
   createEditorIntegrations,
   createZedIntegration,
@@ -362,6 +363,9 @@ const acpMemoryStore = createAcpMemoryStore({
 
 // Named prompt/behavior presets (see presets-store.js)
 const presetsStore = createPresetsStore({});
+
+// Multi-account auth with admin/user roles and API keys (see auth-store.js)
+const authStore = createAuthStore({});
 
 // Background memory block that can be refreshed periodically from ACP session files.
 let BACKGROUND_MEMORY_BLOCK = "";
@@ -4272,6 +4276,102 @@ function registerRoutes(app, upload, deps = {}) {
     mobileUnlockRateLimiter: deps.mobileUnlockRateLimiter,
     mobileUnlockRateLimit: deps.mobileUnlockRateLimit,
   });
+
+  // Auth middleware: check Authorization header for protected routes
+  function authMiddleware(req, res, next) {
+    const authHeader = req.get("Authorization") || "";
+    const match = authHeader.match(/^Bearer\s+(.+)$/);
+    if (!match) {
+      return res.status(401).json({ error: "Missing Authorization header" });
+    }
+    const auth = authStore.validateKey(match[1]);
+    if (!auth) {
+      return res.status(401).json({ error: "Invalid API key" });
+    }
+    req.user = auth;
+    next();
+  }
+
+  // GET /api/memory — return authenticated user's consolidated memory
+  app.get("/api/memory", authMiddleware, async (req, res) => {
+    try {
+      const compacted =
+        (BACKGROUND_MEMORY_META.lastCompacted &&
+          BACKGROUND_MEMORY_META.lastCompacted.text) ||
+        "";
+      const facts = BACKGROUND_MEMORY_META.important_facts || [];
+      const connections = BACKGROUND_MEMORY_META.connections || [];
+      // Format memory as markdown with summary, facts, and connections
+      const lines = [
+        "# Mana Memory",
+        "",
+        `_Last updated: ${new Date().toISOString()}_`,
+        "",
+        "## Summary",
+        "",
+        compacted || "_(no summary yet)_",
+      ];
+      if (facts && facts.length) {
+        lines.push("", "## Key Facts", "", ...facts.map((f) => `- ${f}`));
+      }
+      if (connections && connections.length) {
+        lines.push("", "## Connections", "", ...connections.map((c) => `- ${c}`));
+      }
+      const markdown = lines.join("\n") + "\n";
+      res.type("text/markdown").send(markdown);
+    } catch (e) {
+      res.status(500).json({ error: e?.message || String(e) });
+    }
+  });
+
+  // Admin only: POST /admin/accounts — create a new account
+  app.post("/admin/accounts", authMiddleware, (req, res) => {
+    try {
+      if (req.user.role !== "admin") {
+        return res.status(403).json({ error: "Admin role required" });
+      }
+      const { email, role = "user" } = req.body;
+      if (!email) {
+        return res.status(400).json({ error: "email is required" });
+      }
+      const result = authStore.createAccount({ email, role });
+      res.status(201).json({
+        userId: result.userId,
+        email: result.email,
+        role: result.role,
+        apiKey: result.apiKey,
+        message: "Save your API key somewhere safe; it will not be shown again",
+      });
+    } catch (e) {
+      res.status(400).json({ error: e?.message || String(e) });
+    }
+  });
+
+  // Admin only: GET /admin/accounts — list all accounts
+  app.get("/admin/accounts", authMiddleware, (req, res) => {
+    try {
+      if (req.user.role !== "admin") {
+        return res.status(403).json({ error: "Admin role required" });
+      }
+      const accounts = authStore.listAccounts();
+      res.json(accounts);
+    } catch (e) {
+      res.status(500).json({ error: e?.message || String(e) });
+    }
+  });
+
+  // Admin only: DELETE /admin/accounts/:userId — revoke an account
+  app.delete("/admin/accounts/:userId", authMiddleware, (req, res) => {
+    try {
+      if (req.user.role !== "admin") {
+        return res.status(403).json({ error: "Admin role required" });
+      }
+      authStore.deleteAccount(req.params.userId);
+      res.json({ ok: true });
+    } catch (e) {
+      res.status(400).json({ error: e?.message || String(e) });
+    }
+  });
 }
 
 async function waitForPythonService(
@@ -4379,6 +4479,10 @@ async function startServer() {
   }
 
   const app = createApp();
+
+  // Ensure admin account exists on first startup
+  authStore.ensureAdminAccount();
+
   const http = require("http");
   const server = http.createServer(app);
 
@@ -4420,6 +4524,16 @@ async function startServer() {
   app.get("/admin/background-memory-ui", (req, res) => {
     try {
       const f = path.join(__dirname, "admin", "background_memory_ui.html");
+      if (!fs.existsSync(f)) return res.status(404).send("not found");
+      return res.sendFile(f);
+    } catch (e) {
+      return res.status(500).send(String(e));
+    }
+  });
+
+  app.get("/admin/accounts-ui", (req, res) => {
+    try {
+      const f = path.join(__dirname, "admin", "accounts_ui.html");
       if (!fs.existsSync(f)) return res.status(404).send("not found");
       return res.sendFile(f);
     } catch (e) {
