@@ -219,8 +219,17 @@ function createLocalLlamaRuntime(options = {}) {
         let s = String(text);
         // Remove Unicode replacement chars and long boxes sequences
         s = s.replace(/\uFFFD+/g, "");
-        // Reasoning models may emit <think> blocks; keep only the reply.
+        // --no-display-prompt doesn't always suppress the echo on every llama-cli
+        // build; strip the exact strings we passed in if they leaked into stdout.
+        if (sysPrompt && s.includes(sysPrompt)) s = s.split(sysPrompt).join("");
+        if (prompt && s.includes(prompt)) s = s.split(prompt).join("");
+        // Reasoning models may emit <think> blocks, or bracketed
+        // [Start thinking]/[End thinking] narration; keep only the reply.
         s = s.replace(/<think>[\s\S]*?<\/think>/gi, "");
+        s = s.replace(/\[start thinking\][\s\S]*?\[end thinking\]/gi, "");
+        // Boot banner/shutdown chatter that can appear inline, not just on its own line.
+        s = s.replace(/loading model\.\.\./gi, "");
+        s = s.replace(/exiting\.\.\.\s*$/gi, "");
         // Remove lines that are mostly non-alphanumeric (ASCII art)
         s = s
           .split(/\r?\n/)
@@ -277,8 +286,12 @@ module.exports = {
       if (!text) return text;
       let s = String(text);
       s = s.replace(/\uFFFD+/g, "");
-      // Reasoning models may emit <think> blocks; keep only the reply.
+      // Reasoning models may emit <think> blocks, or bracketed
+      // [Start thinking]/[End thinking] narration; keep only the reply.
       s = s.replace(/<think>[\s\S]*?<\/think>/gi, "");
+      s = s.replace(/\[start thinking\][\s\S]*?\[end thinking\]/gi, "");
+      s = s.replace(/loading model\.\.\./gi, "");
+      s = s.replace(/exiting\.\.\.\s*$/gi, "");
       s = s
         .split(/\r?\n/)
         .filter((ln) => {

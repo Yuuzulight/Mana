@@ -76,6 +76,40 @@ test("local llama runtime builds HF repo args when model is not a local spec", (
   ]);
 });
 
+test("local llama runtime strips echoed prompt, boot banner, and bracketed thinking blocks", () => {
+  const calls = [];
+  const noisyStdout =
+    "Loading model... > system prompt here > the actual prompt here " +
+    "__ __ _ __ _ _ _ _ _\nbuild: b9436-d6588daa8\nmodel: qwen2.5-coder-7b\n" +
+    "[Start thinking] let me figure out how to respond [End thinking] " +
+    "Here is the real reply.\nExiting...";
+  const runtime = createLocalLlamaRuntime({
+    env: {
+      LLAMA_BIN: "C:\\llama\\llama-cli.exe",
+      LLAMA_MODEL: "C:\\models\\mana.gguf",
+    },
+    fs: {
+      existsSync: (target) =>
+        target === "C:\\llama\\llama-cli.exe" || target === "C:\\models\\mana.gguf",
+    },
+    spawnSync: (command, args, options) => {
+      calls.push({ command, args, options });
+      return { status: 0, stdout: noisyStdout, stderr: "" };
+    },
+    nowMs: () => 1,
+    logPerf: () => {},
+    systemPrompt: "system prompt here",
+  });
+
+  const reply = runtime.runLocalAssistantReply(
+    "the actual prompt here",
+    64,
+    "default",
+  );
+
+  assert.equal(reply, "Here is the real reply.");
+});
+
 test("local llama runtime reports status and placeholder when binary is missing", () => {
   const runtime = createLocalLlamaRuntime({
     env: {},
