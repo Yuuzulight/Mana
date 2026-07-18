@@ -1192,3 +1192,18 @@ test("formatMemoryMarkdown renders connections in their own section, separate fr
   const connectionsIndex = md.indexOf("## Connections");
   assert.ok(factsIndex > -1 && connectionsIndex > factsIndex);
 });
+
+test("createApp wires the memory inbox watcher with a usable appendTurn/runVisionReply/runWhisper", async () => {
+  let capturedOptions = null;
+  createApp({
+    startMemoryInboxWatcher: (options) => {
+      capturedOptions = options;
+    },
+  });
+
+  assert.ok(capturedOptions, "watcher start was called");
+  assert.equal(typeof capturedOptions.inboxDir, "string");
+  assert.equal(typeof capturedOptions.appendTurn, "function");
+  assert.equal(typeof capturedOptions.runVisionReply, "function");
+  assert.equal(typeof capturedOptions.runWhisper, "function");
+});
