@@ -1,6 +1,14 @@
 # Mana Memory Sync (Obsidian plugin)
 
-Pulls Mana's consolidated memory (`GET /api/memory`, see [docs/API_KEYS.md](../docs/API_KEYS.md)) into a note in your vault.
+Pulls Mana's memory into your vault as linked notes, so Obsidian's own graph view clusters
+them by what they're actually about instead of one flat blob.
+
+- `GET /api/memory` → a single summary note (default `Mana Memory.md`).
+- `GET /api/memory/notes` → one note per cross-session entity Mana has tracked, each linking
+  to every other entity it co-occurred with in the same conversation, plus a Key Facts note
+  and a Connections note (default folder `Mana/`).
+
+See [docs/API_KEYS.md](../docs/API_KEYS.md) for the server side.
 
 ## Install (manual, not yet on the community store)
 
@@ -11,7 +19,9 @@ Pulls Mana's consolidated memory (`GET /api/memory`, see [docs/API_KEYS.md](../d
 
 ## Use
 
-Click the brain-circuit ribbon icon, or run the "Sync Mana memory" command — overwrites the configured note (default `Mana Memory.md`) with Mana's current memory markdown.
+Click the brain-circuit ribbon icon, or run the "Sync Mana memory" command — overwrites the
+summary note and every note in the notes folder with Mana's current memory. Notes for
+entities Mana no longer tracks aren't deleted automatically (only overwritten in place).
 
 ## Dev
 
