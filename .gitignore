@@ -40,7 +40,8 @@ Thumbs.db
 # Local implementation worktrees
 .worktrees/
 
-# Local Mana mobile memory store
+# Local Mana runtime data: memory store, sessions, auth keys, accounts
+# (includes node-bot/data/auth/SETUP.txt with admin key and accounts.json with user keys)
 node-bot/data/
 
 # Vector store (local index/embeddings)

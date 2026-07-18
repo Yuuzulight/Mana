@@ -1,0 +1,336 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Mana Account Management</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: #0a0e27;
+      color: #e0e0e0;
+      padding: 20px;
+    }
+    .container { max-width: 900px; margin: 0 auto; }
+    h1 { margin-bottom: 30px; font-size: 28px; color: #fff; }
+    .section { background: #1a1f3a; border-radius: 8px; padding: 24px; margin-bottom: 24px; }
+    .section h2 { font-size: 18px; margin-bottom: 16px; color: #fff; }
+
+    .form-group { margin-bottom: 16px; }
+    label { display: block; font-size: 13px; font-weight: 500; margin-bottom: 6px; color: #b0b0b0; }
+    input, select {
+      width: 100%;
+      padding: 10px 12px;
+      border: 1px solid #333;
+      border-radius: 6px;
+      background: #0a0e27;
+      color: #e0e0e0;
+      font-size: 14px;
+    }
+    input:focus, select:focus { outline: none; border-color: #4a7c9e; box-shadow: 0 0 0 2px rgba(74, 124, 158, 0.2); }
+
+    .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    .form-row.full { grid-template-columns: 1fr; }
+
+    button {
+      padding: 10px 16px;
+      border: none;
+      border-radius: 6px;
+      font-size: 14px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .btn-primary {
+      background: #4a7c9e;
+      color: #fff;
+    }
+    .btn-primary:hover { background: #5a8cae; }
+    .btn-primary:active { transform: scale(0.98); }
+
+    .btn-danger {
+      background: #d32f2f;
+      color: #fff;
+      padding: 6px 12px;
+      font-size: 13px;
+    }
+    .btn-danger:hover { background: #e53935; }
+
+    .btn-small {
+      padding: 6px 12px;
+      font-size: 13px;
+      background: #333;
+      color: #e0e0e0;
+    }
+    .btn-small:hover { background: #444; }
+
+    .account-item {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 12px;
+      background: #0a0e27;
+      border-radius: 6px;
+      margin-bottom: 8px;
+      border: 1px solid #222;
+    }
+    .account-info { flex: 1; }
+    .account-email { color: #fff; font-weight: 500; }
+    .account-role { font-size: 12px; color: #999; margin-top: 2px; }
+    .account-role.admin { color: #ff9800; }
+    .account-role.user { color: #4caf50; }
+
+    .modal {
+      display: none;
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background: rgba(0, 0, 0, 0.7);
+      align-items: center;
+      justify-content: center;
+      z-index: 1000;
+    }
+    .modal.active { display: flex; }
+
+    .modal-content {
+      background: #1a1f3a;
+      border-radius: 8px;
+      padding: 32px;
+      max-width: 500px;
+      width: 90%;
+      text-align: center;
+    }
+    .modal-content h2 { font-size: 20px; margin-bottom: 16px; color: #fff; }
+    .modal-content p { font-size: 14px; color: #b0b0b0; margin-bottom: 20px; }
+
+    .key-display {
+      background: #0a0e27;
+      border: 2px solid #4a7c9e;
+      border-radius: 6px;
+      padding: 16px;
+      margin-bottom: 20px;
+      word-break: break-all;
+      font-family: "Courier New", monospace;
+      font-size: 13px;
+      color: #4caf50;
+      user-select: all;
+    }
+
+    .modal-buttons { display: flex; gap: 12px; }
+    .modal-buttons button { flex: 1; }
+
+    .status-message {
+      margin-top: 12px;
+      padding: 12px;
+      border-radius: 6px;
+      font-size: 13px;
+    }
+    .status-error { background: rgba(211, 47, 47, 0.2); color: #ff6b6b; }
+    .status-success { background: rgba(76, 175, 80, 0.2); color: #4caf50; }
+
+    .loading { opacity: 0.6; pointer-events: none; }
+    .spinner {
+      display: inline-block;
+      width: 14px;
+      height: 14px;
+      border: 2px solid #4a7c9e;
+      border-top-color: transparent;
+      border-radius: 50%;
+      animation: spin 0.6s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .no-accounts { color: #999; font-size: 14px; padding: 20px; text-align: center; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 30px;">
+      <h1 style="margin: 0;">Mana Account Management</h1>
+      <button class="btn-small" onclick="logOut()">Log Out</button>
+    </div>
+
+    <div class="section">
+      <h2>Create New User Account</h2>
+      <div class="form-row full">
+        <div class="form-group">
+          <label for="email">Email Address</label>
+          <input type="email" id="email" placeholder="user@example.com" autocomplete="off">
+        </div>
+      </div>
+      <button class="btn-primary" onclick="createAccount()">Create Account</button>
+      <div id="createStatus"></div>
+    </div>
+
+    <div class="section">
+      <h2>Active Accounts</h2>
+      <div id="accountsList"></div>
+    </div>
+  </div>
+
+  <!-- Key Display Modal -->
+  <div class="modal" id="keyModal">
+    <div class="modal-content">
+      <h2>Save Your API Key</h2>
+      <p id="newUserEmail" style="font-weight: 500; color: #4caf50;"></p>
+      <p>This key will only be shown once. Save it somewhere safe!</p>
+      <div class="key-display" id="keyDisplay"></div>
+      <div class="modal-buttons">
+        <button class="btn-primary" onclick="copyKey()">Copy to Clipboard</button>
+        <button class="btn-small" onclick="closeKeyModal()">Done</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    let API_KEY = localStorage.getItem("manaAdminKey");
+
+    if (!API_KEY) {
+      const key = prompt("Enter your admin API key (from node-bot/data/auth/SETUP.txt or docs/API_KEYS.md):");
+      if (key) {
+        localStorage.setItem("manaAdminKey", key);
+        API_KEY = key;
+      } else {
+        document.body.innerHTML = "<div style='padding:40px; text-align:center;'><p>Admin key required. Check docs/API_KEYS.md for setup instructions.</p></div>";
+      }
+    }
+
+    function logOut() {
+      if (confirm("Clear stored admin key?")) {
+        localStorage.removeItem("manaAdminKey");
+        location.reload();
+      }
+    }
+
+    async function createAccount() {
+      const email = document.getElementById("email").value.trim();
+      if (!email) {
+        showStatus("createStatus", "Email is required", false);
+        return;
+      }
+
+      const btn = event.target;
+      btn.classList.add("loading");
+      btn.innerHTML = '<span class="spinner"></span> Creating...';
+
+      try {
+        const res = await fetch("/admin/accounts", {
+          method: "POST",
+          headers: {
+            "Authorization": `Bearer ${API_KEY}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ email, role: "user" }),
+        });
+
+        const data = await res.json();
+
+        if (!res.ok) {
+          showStatus("createStatus", data.error || "Failed to create account", false);
+          btn.classList.remove("loading");
+          btn.innerHTML = "Create Account";
+          return;
+        }
+
+        // Show key modal
+        showKeyModal(email, data.apiKey);
+        document.getElementById("email").value = "";
+        showStatus("createStatus", "", true);
+        loadAccounts();
+      } catch (err) {
+        showStatus("createStatus", err.message, false);
+      } finally {
+        btn.classList.remove("loading");
+        btn.innerHTML = "Create Account";
+      }
+    }
+
+    function showKeyModal(email, key) {
+      document.getElementById("newUserEmail").textContent = email;
+      document.getElementById("keyDisplay").textContent = key;
+      document.getElementById("keyModal").classList.add("active");
+    }
+
+    function closeKeyModal() {
+      document.getElementById("keyModal").classList.remove("active");
+    }
+
+    function copyKey() {
+      const keyText = document.getElementById("keyDisplay").textContent;
+      navigator.clipboard.writeText(keyText).then(() => {
+        const btn = event.target;
+        const orig = btn.textContent;
+        btn.textContent = "Copied!";
+        setTimeout(() => { btn.textContent = orig; }, 2000);
+      });
+    }
+
+    async function revokeAccount(userId) {
+      if (!confirm("Revoke this account? The user will no longer be able to access the memory API.")) return;
+
+      try {
+        const res = await fetch(`/admin/accounts/${userId}`, {
+          method: "DELETE",
+          headers: { "Authorization": `Bearer ${API_KEY}` },
+        });
+        if (!res.ok) throw new Error(await res.text());
+        loadAccounts();
+      } catch (err) {
+        alert("Error revoking account: " + err.message);
+      }
+    }
+
+    async function loadAccounts() {
+      try {
+        const res = await fetch("/admin/accounts", {
+          headers: { "Authorization": `Bearer ${API_KEY}` },
+        });
+        const accounts = await res.json();
+        const list = document.getElementById("accountsList");
+
+        if (!accounts.length) {
+          list.innerHTML = "<div class='no-accounts'>No accounts yet</div>";
+          return;
+        }
+
+        list.innerHTML = accounts.map(acc => `
+          <div class="account-item">
+            <div class="account-info">
+              <div class="account-email">${escapeHtml(acc.email)}</div>
+              <div class="account-role ${acc.role}">${acc.role}</div>
+            </div>
+            ${acc.role !== "admin" ? `<button class="btn-danger" onclick="revokeAccount('${acc.userId}')">Revoke</button>` : ""}
+          </div>
+        `).join("");
+      } catch (err) {
+        document.getElementById("accountsList").innerHTML = `<div class="status-error" style="padding:12px;">Error loading accounts: ${err.message}</div>`;
+      }
+    }
+
+    function showStatus(id, msg, isSuccess) {
+      const el = document.getElementById(id);
+      if (!msg) {
+        el.innerHTML = "";
+        return;
+      }
+      el.innerHTML = `<div class="status-message ${isSuccess ? "status-success" : "status-error"}">${escapeHtml(msg)}</div>`;
+    }
+
+    function escapeHtml(text) {
+      const map = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;" };
+      return text.replace(/[&<>"']/g, m => map[m]);
+    }
+
+    // Load accounts on page load
+    loadAccounts();
+
+    // Close modal on Escape
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") closeKeyModal();
+    });
+  </script>
+</body>
+</html>
