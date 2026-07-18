@@ -1,6 +1,6 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { buildMemoryUrl, fetchManaMemory } = require("../mana-client.js");
+const { buildMemoryUrl, buildMemoryNotesUrl, fetchManaMemory, fetchManaMemoryNotes } = require("../mana-client.js");
 
 test("buildMemoryUrl strips trailing slashes", () => {
   assert.equal(buildMemoryUrl("http://localhost:5005/"), "http://localhost:5005/api/memory");
@@ -32,5 +32,31 @@ test("fetchManaMemory throws on other non-ok responses", async () => {
   await assert.rejects(
     () => fetchManaMemory("http://localhost:5005", "key", fakeFetch),
     /500/
+  );
+});
+
+test("buildMemoryNotesUrl strips trailing slashes", () => {
+  assert.equal(buildMemoryNotesUrl("http://localhost:5005/"), "http://localhost:5005/api/memory/notes");
+  assert.equal(buildMemoryNotesUrl("http://localhost:5005"), "http://localhost:5005/api/memory/notes");
+});
+
+test("fetchManaMemoryNotes sends Bearer auth and returns parsed notes", async () => {
+  const calls = [];
+  const notes = [{ slug: "acme-corp", title: "Acme Corp", body: "# Acme Corp\n", links: [] }];
+  const fakeFetch = async (url, opts) => {
+    calls.push({ url, opts });
+    return { ok: true, status: 200, json: async () => notes };
+  };
+  const result = await fetchManaMemoryNotes("http://localhost:5005", "secret-key", fakeFetch);
+  assert.deepEqual(result, notes);
+  assert.equal(calls[0].url, "http://localhost:5005/api/memory/notes");
+  assert.equal(calls[0].opts.headers.Authorization, "Bearer secret-key");
+});
+
+test("fetchManaMemoryNotes throws a clear error on invalid key", async () => {
+  const fakeFetch = async () => ({ ok: false, status: 401, statusText: "Unauthorized" });
+  await assert.rejects(
+    () => fetchManaMemoryNotes("http://localhost:5005", "bad-key", fakeFetch),
+    /rejected the API key/
   );
 });
