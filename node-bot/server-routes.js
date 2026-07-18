@@ -426,4 +426,5 @@ function registerCoreRoutes(app, upload, deps) {
 
 module.exports = {
   registerCoreRoutes,
+  isLocalRestartRequest,
 };

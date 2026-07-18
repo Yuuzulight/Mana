@@ -58,7 +58,7 @@ const { createVTubeRuntime } = require("./vtube-runtime");
 	const { registerMobileRoutes } = require("./mobile-routes");
 	const { createMobileAuth } = require("./mobile-auth");
 	const { createMobileMemoryStore } = require("./mobile-memory-store");
-	const { registerCoreRoutes } = require("./server-routes");
+	const { registerCoreRoutes, isLocalRestartRequest } = require("./server-routes");
 	const {
 	  buildCapabilityHealth,
 	  registerCapabilities,
@@ -96,6 +96,7 @@ const {
 const { createTtsRuntime } = require("./tts-runtime");
 const { createAcpMemoryStore } = require("./acp-memory-store");
 const { createPresetsStore } = require("./presets-store");
+const { createAuthStore } = require("./auth-store");
 const { createToolPolicy } = require("./ai/tool-policy");
 const {
   createEditorIntegrations,
@@ -377,6 +378,9 @@ const acpMemoryStore = createAcpMemoryStore({
 // Named prompt/behavior presets (see presets-store.js)
 const presetsStore = createPresetsStore({});
 
+// Multi-account auth with admin/user roles and API keys (see auth-store.js)
+const authStore = createAuthStore({});
+
 // Foundational tool-calling (issue #51): one read-only tool, scoped to the
 // repo root by default. See ai/tool-policy.js.
 const toolPolicy = createToolPolicy({});
@@ -453,6 +457,101 @@ function formatMemoryMarkdown(compacted, facts, connections = []) {
     lines.push("", "## Connections", "", ...connections.map((c) => `- ${c}`));
   }
   return lines.join("\n") + "\n";
+}
+
+function slugifyEntityName(name) {
+  return (
+    String(name || "")
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "") || "untitled"
+  );
+}
+
+// Splits Mana's memory into one Obsidian-style note per cross-session entity
+// (issue #78's entity-index.json) plus a facts note and a connections note,
+// instead of one flat blob -- each entity note links to every other entity
+// it co-occurred with in the same session, so Obsidian's own graph view does
+// the clustering. No new clustering algorithm: this is entirely a reshape of
+// data Mana already computes (entity-index.json, important_facts,
+// connections).
+function buildMemoryNotes(entityIndex, facts, connections) {
+  const notes = [];
+  const entityNames = Object.keys(entityIndex || {});
+  const slugFor = {};
+  for (const key of entityNames) {
+    slugFor[key] = slugifyEntityName(key);
+  }
+
+  for (const key of entityNames) {
+    const mentions = entityIndex[key] || [];
+    if (!mentions.length) continue;
+    const display = mentions[mentions.length - 1].display || key;
+    const sessionIds = new Set(mentions.map((m) => m.sessionId));
+
+    const linkedKeys = entityNames.filter(
+      (other) =>
+        other !== key &&
+        (entityIndex[other] || []).some((m) => sessionIds.has(m.sessionId)),
+    );
+
+    const body = [
+      `# ${display}`,
+      "",
+      "## Mentioned in",
+      "",
+      ...mentions
+        .slice()
+        .reverse()
+        .map((m) => `- ${m.at || "unknown time"} (session \`${m.sessionId}\`)`),
+    ];
+    if (linkedKeys.length) {
+      body.push(
+        "",
+        "## Related",
+        "",
+        ...linkedKeys.map((k) => `- [[${slugFor[k]}]]`),
+      );
+    }
+
+    notes.push({
+      slug: slugFor[key],
+      title: display,
+      body: body.join("\n") + "\n",
+      links: linkedKeys.map((k) => slugFor[k]),
+    });
+  }
+
+  if (facts && facts.length) {
+    const factLines = facts.map((f) => {
+      const mentioned = entityNames.filter((key) =>
+        String(f).toLowerCase().includes(key),
+      );
+      const linkSuffix = mentioned.length
+        ? ` (${mentioned.map((k) => `[[${slugFor[k]}]]`).join(", ")})`
+        : "";
+      return `- ${f}${linkSuffix}`;
+    });
+    notes.push({
+      slug: "key-facts",
+      title: "Key Facts",
+      body: ["# Key Facts", "", ...factLines].join("\n") + "\n",
+      links: [],
+    });
+  }
+
+  if (connections && connections.length) {
+    notes.push({
+      slug: "connections",
+      title: "Connections",
+      body:
+        ["# Connections", "", ...connections.map((c) => `- ${c}`)].join("\n") +
+        "\n",
+      links: [],
+    });
+  }
+
+  return notes;
 }
 
 async function writeMemoryMarkdown() {
@@ -4630,6 +4729,145 @@ function registerRoutes(app, upload, deps = {}) {
     mobileUnlockRateLimit: deps.mobileUnlockRateLimit,
   });
 
+  // Auth middleware: check Authorization header for protected routes
+  function authMiddleware(req, res, next) {
+    const authHeader = req.get("Authorization") || "";
+    const match = authHeader.match(/^Bearer\s+(.+)$/);
+    if (!match) {
+      return res.status(401).json({ error: "Missing Authorization header" });
+    }
+    const auth = authStore.validateKey(match[1]);
+    if (!auth) {
+      return res.status(401).json({ error: "Invalid API key" });
+    }
+    req.user = auth;
+    next();
+  }
+
+  // Admin-only middleware for account create/revoke (must run after
+  // authMiddleware, which sets req.user). Account management is more
+  // sensitive than the read-only /api/memory routes -- which are
+  // intentionally remote-accessible by design, per issue #93 -- so it gets
+  // an extra layer beyond just "the API key has role=admin": same
+  // local-unless-explicit-token pattern this codebase already uses for
+  // /admin/restart (see isLocalRestartRequest, which also accounts for a
+  // LAN tunnel terminating on loopback but forwarding from elsewhere), so a
+  // leaked admin API key alone isn't enough to manage accounts remotely.
+  function requireAdmin(req, res, next) {
+    if (req.user.role !== "admin") {
+      return res.status(403).json({ error: "Admin role required" });
+    }
+    const ADMIN_TOKEN = process.env.ADMIN_TOKEN || null;
+    if (ADMIN_TOKEN && req.get("x-admin-token") === ADMIN_TOKEN) {
+      return next();
+    }
+    if (isLocalRestartRequest(req)) {
+      return next();
+    }
+    return res.status(403).json({
+      error:
+        "admin-only: request must be local, or present a valid ADMIN_TOKEN via the x-admin-token header",
+    });
+  }
+
+  // GET /api/memory — return Mana's consolidated memory to any authenticated
+  // key (admin or user role). Mana has one shared memory store, not
+  // per-account partitions, so this is the same content for every valid key;
+  // the role only gates the /admin/* account-management routes below. See
+  // docs/API_KEYS.md "Account Roles".
+  app.get("/api/memory", authMiddleware, async (req, res) => {
+    try {
+      const compacted =
+        (BACKGROUND_MEMORY_META.lastCompacted &&
+          BACKGROUND_MEMORY_META.lastCompacted.text) ||
+        "";
+      const facts = BACKGROUND_MEMORY_META.important_facts || [];
+      const connections = BACKGROUND_MEMORY_META.connections || [];
+      // Format memory as markdown with summary, facts, and connections
+      const lines = [
+        "# Mana Memory",
+        "",
+        `_Last updated: ${new Date().toISOString()}_`,
+        "",
+        "## Summary",
+        "",
+        compacted || "_(no summary yet)_",
+      ];
+      if (facts && facts.length) {
+        lines.push("", "## Key Facts", "", ...facts.map((f) => `- ${f}`));
+      }
+      if (connections && connections.length) {
+        lines.push("", "## Connections", "", ...connections.map((c) => `- ${c}`));
+      }
+      const markdown = lines.join("\n") + "\n";
+      res.type("text/markdown").send(markdown);
+    } catch (e) {
+      res.status(500).json({ error: e?.message || String(e) });
+    }
+  });
+
+  // GET /api/memory/notes — same access as /api/memory, but split into one
+  // note per cross-session entity (see buildMemoryNotes) for clients that
+  // want to sync Mana's memory as a linked set of notes (e.g. the Obsidian
+  // plugin) instead of one flat markdown blob.
+  app.get("/api/memory/notes", authMiddleware, async (req, res) => {
+    try {
+      const entityIndexPath = path.join(
+        acpMemoryStore.dataDir,
+        "entity-index.json",
+      );
+      let entityIndex = {};
+      if (fs.existsSync(entityIndexPath)) {
+        entityIndex = JSON.parse(fs.readFileSync(entityIndexPath, "utf8") || "{}");
+      }
+      const facts = BACKGROUND_MEMORY_META.important_facts || [];
+      const connections = BACKGROUND_MEMORY_META.connections || [];
+      res.json(buildMemoryNotes(entityIndex, facts, connections));
+    } catch (e) {
+      res.status(500).json({ error: e?.message || String(e) });
+    }
+  });
+
+  // Admin only: POST /admin/accounts — create a new account
+  app.post("/admin/accounts", authMiddleware, requireAdmin, (req, res) => {
+    try {
+      const { email, role = "user" } = req.body;
+      if (!email) {
+        return res.status(400).json({ error: "email is required" });
+      }
+      const result = authStore.createAccount({ email, role });
+      res.status(201).json({
+        userId: result.userId,
+        email: result.email,
+        role: result.role,
+        apiKey: result.apiKey,
+        message: "Save your API key somewhere safe; it will not be shown again",
+      });
+    } catch (e) {
+      res.status(400).json({ error: e?.message || String(e) });
+    }
+  });
+
+  // Admin only: GET /admin/accounts — list all accounts
+  app.get("/admin/accounts", authMiddleware, requireAdmin, (req, res) => {
+    try {
+      const accounts = authStore.listAccounts();
+      res.json(accounts);
+    } catch (e) {
+      res.status(500).json({ error: e?.message || String(e) });
+    }
+  });
+
+  // Admin only: DELETE /admin/accounts/:userId — revoke an account
+  app.delete("/admin/accounts/:userId", authMiddleware, requireAdmin, (req, res) => {
+    try {
+      authStore.deleteAccount(req.params.userId);
+      res.json({ ok: true });
+    } catch (e) {
+      res.status(400).json({ error: e?.message || String(e) });
+    }
+  });
+
   // Watched inbox folder for passive multimodal memory ingestion (issue
   // #76). deps.startMemoryInboxWatcher lets tests inject a fake and verify
   // the wiring without a real fs watcher; otherwise this is skipped under
@@ -4768,6 +5006,10 @@ async function startServer() {
   }
 
   const app = createApp();
+
+  // Ensure admin account exists on first startup
+  authStore.ensureAdminAccount();
+
   const http = require("http");
   const server = http.createServer(app);
 
@@ -4816,6 +5058,16 @@ async function startServer() {
     }
   });
 
+  app.get("/admin/accounts-ui", (req, res) => {
+    try {
+      const f = path.join(__dirname, "admin", "accounts_ui.html");
+      if (!fs.existsSync(f)) return res.status(404).send("not found");
+      return res.sendFile(f);
+    } catch (e) {
+      return res.status(500).send(String(e));
+    }
+  });
+
   return server.listen(port, () =>
     console.log("Node local bot listening on", port),
   );
@@ -4836,6 +5088,7 @@ if (require.main === module) {
 
 module.exports = {
   createApp,
+  buildMemoryNotes,
   ensureDirectory,
   formatCraftRankingDetails,
   formatMemoryMarkdown,
