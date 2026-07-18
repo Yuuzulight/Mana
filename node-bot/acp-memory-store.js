@@ -71,12 +71,45 @@ function summarizeTurn(user, assistant, maxSummaryChars) {
   return `- User: ${userText}${assistantText ? ` Assistant: ${assistantText}` : ""}`;
 }
 
+// Issue #78: lightweight cross-session entity tagging, zero LLM calls --
+// matches runs of 1-3 Title Case words. Multi-word runs (e.g. "New York",
+// "Acme Corp") are reliably real entities on their own; single-word matches
+// are filtered against a short stopword list to cut down on sentence-initial
+// capitalization noise ("The", "What", ...).
+// ponytail: naive regex heuristic, not real NER -- upgrade if the
+// false-positive rate on real usage becomes a problem.
+const ENTITY_STOPWORDS = new Set([
+  "i", "the", "a", "an", "this", "that", "these", "those", "we", "you",
+  "he", "she", "it", "they", "what", "how", "why", "when", "where", "who",
+  "is", "are", "can", "do", "does", "did", "will", "would", "should",
+  "could", "please", "thanks", "ok", "okay", "yes", "no",
+]);
+
+function extractEntities(text) {
+  const matches =
+    String(text || "").match(/\b[A-Z][a-zA-Z0-9]*(?:\s+[A-Z][a-zA-Z0-9]*){0,2}\b/g) ||
+    [];
+  const entities = new Set();
+  for (const raw of matches) {
+    const trimmed = raw.trim();
+    const isSingleWord = !trimmed.includes(" ");
+    if (isSingleWord && ENTITY_STOPWORDS.has(trimmed.toLowerCase())) continue;
+    entities.add(trimmed);
+  }
+  return [...entities];
+}
+
 function createAcpMemoryStore(options = {}) {
   const dataDir =
     options.dataDir ||
     process.env.MANA_ACP_MEMORY_DIR ||
     path.join(__dirname, "data", "acp-memory");
   const sessionsDir = path.join(dataDir, "sessions");
+  const entityIndexPath = path.join(dataDir, "entity-index.json");
+  // ponytail: fixed cap per entity, not age-based pruning -- revisit if a
+  // heavily-recurring entity's mention list needs trimming by more than
+  // "keep the most recent N".
+  const maxMentionsPerEntity = 100;
   const now = options.now || (() => new Date().toISOString());
   const maxRecentTurns = Math.max(1, Number(options.maxRecentTurns || 20));
   const maxSummaryChars = Math.max(
@@ -104,6 +137,31 @@ function createAcpMemoryStore(options = {}) {
 
   function filePathForSession(sessionId) {
     return path.join(sessionsDir, sessionFilename(sessionId));
+  }
+
+  function loadEntityIndex() {
+    return readJsonObject(entityIndexPath) || {};
+  }
+
+  function recordEntityMentions(entities, sessionId, at) {
+    if (!entities.length) return;
+    const index = loadEntityIndex();
+    for (const entity of entities) {
+      const key = entity.toLowerCase();
+      const mentions = index[key] || [];
+      mentions.push({ sessionId, at, display: entity });
+      index[key] = mentions.slice(-maxMentionsPerEntity);
+    }
+    writeJsonObject(entityIndexPath, index);
+  }
+
+  // Given a name/topic, returns which sessions mentioned it -- e.g. for a
+  // future "what did we say about X" lookup that reaches beyond the
+  // current session's own summary.
+  function lookupEntity(name) {
+    const key = String(name || "").trim().toLowerCase();
+    if (!key) return [];
+    return loadEntityIndex()[key] || [];
   }
 
   function getSession(sessionId) {
@@ -230,6 +288,12 @@ function createAcpMemoryStore(options = {}) {
     if (!turn.user && !turn.assistant) {
       return session;
     }
+
+    recordEntityMentions(
+      extractEntities(`${turn.user} ${turn.assistant}`),
+      session.sessionId,
+      timestamp,
+    );
 
     const summaryLine = summarizeTurn(
       turn.user,
@@ -374,9 +438,11 @@ function createAcpMemoryStore(options = {}) {
     listSessions,
     renameSession,
     deleteSession,
+    lookupEntity,
   };
 }
 
 module.exports = {
   createAcpMemoryStore,
+  extractEntities,
 };
