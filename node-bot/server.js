@@ -4629,6 +4629,38 @@ function registerRoutes(app, upload, deps = {}) {
     mobileUnlockRateLimiter: deps.mobileUnlockRateLimiter,
     mobileUnlockRateLimit: deps.mobileUnlockRateLimit,
   });
+
+  // Watched inbox folder for passive multimodal memory ingestion (issue
+  // #76). deps.startMemoryInboxWatcher lets tests inject a fake and verify
+  // the wiring without a real fs watcher; otherwise this is skipped under
+  // test the same way the background memory jobs are (see the
+  // NODE_ENV/NODE_TEST_CONTEXT guard near the top of this file) -- real
+  // usage would spin up a watcher that's never closed once per test.
+  const inboxWatcherOptions = {
+    inboxDir:
+      process.env.MANA_MEMORY_INBOX_DIR ||
+      path.join(acpMemoryStore.dataDir, "inbox"),
+    appendTurn: (input) => acpMemoryStore.appendTurn(input),
+    runVisionReply: (prompt, images) =>
+      llamaServerRuntime.runVisionReply(prompt, images),
+    runWhisper: (filePath) => runWhisper(filePath),
+  };
+  if (deps.startMemoryInboxWatcher) {
+    deps.startMemoryInboxWatcher(inboxWatcherOptions);
+  } else if (
+    process.env.NODE_ENV !== "test" &&
+    !process.env.NODE_TEST_CONTEXT
+  ) {
+    try {
+      const { createMemoryInboxWatcher } = require("./memory-inbox");
+      createMemoryInboxWatcher(inboxWatcherOptions);
+    } catch (e) {
+      console.warn(
+        "Memory inbox watcher failed to start:",
+        e && e.message ? e.message : e,
+      );
+    }
+  }
 }
 
 async function waitForPythonService(

@@ -16,14 +16,23 @@ const MAX_SUB_QUERIES_CAP = 4;
 const DEFAULT_MAX_PER_DOMAIN = 2;
 const MAX_PER_DOMAIN_CAP = MAX_SOURCES_CAP;
 
+// Issue #77: the trailing "Note:" line is deliberately conditional -- only
+// meaningfully-stale/incomplete/conflicting sources should trigger it, never
+// a generic disclaimer glued onto every report.
 const RESEARCH_SYSTEM_PROMPT =
   "You are a careful research assistant. You are given a research question " +
   "and excerpts from several web sources, each labeled with a number and its " +
   "URL. Write a structured summary that directly answers the question, " +
   "citing sources inline like [1] or [2] matching the provided numbering. " +
-  "Do not invent URLs or facts that are not present in the sources. If the " +
-  "sources are insufficient or conflicting, say so plainly instead of " +
-  "guessing.";
+  "Do not invent URLs or facts that are not present in the sources.\n\n" +
+  "Before you finish, check: do any two sources give a different answer, " +
+  "does any source look outdated relative to another, or is there an " +
+  "obvious gap the sources don't cover? If so, you must end your summary " +
+  "with a line starting with \"Note:\" that names the specific sources and " +
+  "the specific disagreement, date gap, or missing coverage -- do not just " +
+  "silently pick the newer or more confident-sounding source. If the " +
+  "sources are clean, consistent, and sufficient, skip the Note line " +
+  "entirely -- never add a generic disclaimer to every answer.";
 
 const SUB_QUERY_SYSTEM_PROMPT =
   "You split a research question into short, self-contained web search " +
