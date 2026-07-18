@@ -221,8 +221,17 @@ function createLocalLlamaRuntime(options = {}) {
         s = s.replace(/\uFFFD+/g, "");
         // --no-display-prompt doesn't always suppress the echo on every llama-cli
         // build; strip the exact strings we passed in if they leaked into stdout.
-        if (sysPrompt && s.includes(sysPrompt)) s = s.split(sysPrompt).join("");
-        if (prompt && s.includes(prompt)) s = s.split(prompt).join("");
+        // Only the first occurrence -- a reply that legitimately repeats the
+        // prompt text (e.g. prompt "Hello" -> reply "Hello! How can I help?")
+        // must keep every occurrence after the echoed one.
+        const stripFirst = (str, needle) => {
+          if (!needle) return str;
+          const idx = str.indexOf(needle);
+          if (idx === -1) return str;
+          return str.slice(0, idx) + str.slice(idx + needle.length);
+        };
+        s = stripFirst(s, sysPrompt);
+        s = stripFirst(s, prompt);
         // Reasoning models may emit <think> blocks, or bracketed
         // [Start thinking]/[End thinking] narration; keep only the reply.
         s = s.replace(/<think>[\s\S]*?<\/think>/gi, "");
