@@ -37,9 +37,17 @@ The dashboard lets you:
 - View all active accounts
 - Revoke accounts (immediate revocation, key becomes useless)
 
+**Account management is local-only by default.** Unlike `/api/memory` (deliberately
+remote-accessible via API key), creating/listing/revoking accounts additionally requires
+either a request from `mana-machine` itself, or a matching `ADMIN_TOKEN` — an admin API key
+alone isn't enough from another device or over a tunnel. To manage accounts remotely, set an
+`ADMIN_TOKEN` environment variable on the server and send it as the `x-admin-token` header
+(same pattern the existing `/mobile/*` admin endpoints use).
+
 ### Via curl (CLI)
 
-Alternatively, manage accounts from the command line:
+Alternatively, manage accounts from the command line (run locally, or add
+`-H "x-admin-token: YOUR_ADMIN_TOKEN"` if calling remotely with `ADMIN_TOKEN` configured):
 
 **Create a User Account:**
 
@@ -89,6 +97,9 @@ user-role key to someone you're comfortable having read access to that memory.
 
 - API keys are hashed before storage; raw keys are never logged.
 - Always transmit keys over HTTPS or a secure tunnel (SSH).
-- Keep your admin key safe — it can create and revoke all accounts.
+- Keep your admin key safe — it can create and revoke all accounts. It's not the only thing
+  standing between an attacker and account management, though: `/admin/*` also requires the
+  request to be local or carry a matching `ADMIN_TOKEN`, so a leaked admin key alone can't be
+  used to manage accounts from an arbitrary network origin.
 - Each user should store their own key securely (password manager recommended).
 - Revoking a user-role account immediately cuts off their memory access (see Admin Dashboard above).
