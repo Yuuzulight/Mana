@@ -57,6 +57,12 @@ select{font-family:inherit;color:var(--text)}
 #messageInput{width:100%;min-height:42px;max-height:140px;padding:10px;border-radius:16px;border:1px solid var(--border);background:var(--panel-2);color:var(--text);resize:none;font-size:14px}
 .input-actions{display:flex;gap:8px;margin-top:8px}
 .primary{background:var(--accent);color:white;border:none;padding:8px 12px;border-radius:10px}
+#btnResearch.active{background:var(--accent);color:white;border-color:var(--accent)}
+.research-progress{display:flex;align-items:center;gap:8px;margin-top:8px;font-size:12px;color:var(--muted)}
+.research-progress::before{content:"";width:7px;height:7px;border-radius:50%;background:var(--accent);animation:research-pulse 1s ease-in-out infinite}
+@keyframes research-pulse{0%,100%{opacity:0.3}50%{opacity:1}}
+#researchCancelBtn{padding:2px 8px;font-size:11px;border:1px solid var(--border);background:transparent;border-radius:8px;cursor:pointer}
+
 #btnCompare.active{background:var(--accent);color:white;border-color:var(--accent)}
 
 .compare-panel{display:flex;flex-direction:column;gap:8px;padding:10px;border:1px solid var(--border);border-radius:8px;background:var(--panel);margin-top:8px}

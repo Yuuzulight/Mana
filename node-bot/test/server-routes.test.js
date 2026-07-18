@@ -1,7 +1,7 @@
 const assert = require("node:assert/strict");
 const test = require("node:test");
 
-const { createApp } = require("../server");
+const { createApp, formatMemoryMarkdown } = require("../server");
 const { withServer } = require("./helpers");
 
 async function postJson(url, body, headers = {}) {
@@ -426,6 +426,314 @@ test("no preset selected leaves the local model's system prompt unchanged", asyn
   });
 });
 
+// Tool-calling wiring (issue #51): opt-in via MANA_TOOL_CALLING_ENABLED,
+// scoped to the "default" profile only (the one profile verified to emit
+// reliable tool_calls -- see docs/roadmap/issue-51-tool-calling.md), and
+// falls back to the plain reply path on any failure or empty result.
+async function withToolCallingEnv(value, fn) {
+  const prior = process.env.MANA_TOOL_CALLING_ENABLED;
+  process.env.MANA_TOOL_CALLING_ENABLED = value;
+  try {
+    await fn();
+  } finally {
+    if (prior === undefined) delete process.env.MANA_TOOL_CALLING_ENABLED;
+    else process.env.MANA_TOOL_CALLING_ENABLED = prior;
+  }
+}
+
+test("tool-calling stays off by default even when a runToolAwareReply is provided", async () => {
+  await withToolCallingEnv(undefined, async () => {
+    let toolAwareCalls = 0;
+    let plainCalls = 0;
+    const app = createApp({
+      buildCraftProfitContextForPrompt: async () => "",
+      buildUniversalisContextForPrompt: async () => "",
+      buildMarketContextForPrompt: async () => "",
+      isLlamaServerEnabled: () => true,
+      runToolAwareReply: async () => {
+        toolAwareCalls += 1;
+        return { content: "tool reply", toolCalls: [] };
+      },
+      runLocalAssistantReply: async () => {
+        plainCalls += 1;
+        return "plain reply";
+      },
+    });
+
+    await withServer(app, async (baseUrl) => {
+      const { payload } = await postJson(`${baseUrl}/reply`, { text: "hello" });
+      assert.equal(payload.reply, "plain reply");
+      assert.equal(toolAwareCalls, 0);
+      assert.equal(plainCalls, 1);
+    });
+  });
+});
+
+test("tool-calling activates for the default profile when enabled and llama-server is available", async () => {
+  await withToolCallingEnv("1", async () => {
+    let capturedPrompt = null;
+    let plainCalls = 0;
+    const app = createApp({
+      buildCraftProfitContextForPrompt: async () => "",
+      buildUniversalisContextForPrompt: async () => "",
+      buildMarketContextForPrompt: async () => "",
+      isLlamaServerEnabled: () => true,
+      runToolAwareReply: async (prompt) => {
+        capturedPrompt = prompt;
+        return {
+          content: "The file says hello",
+          toolCalls: [{ name: "read_file", args: { path: "notes.txt" }, ok: true }],
+        };
+      },
+      runLocalAssistantReply: async () => {
+        plainCalls += 1;
+        return "plain reply";
+      },
+    });
+
+    await withServer(app, async (baseUrl) => {
+      const { payload } = await postJson(`${baseUrl}/reply`, {
+        text: "what does notes.txt say?",
+        modelProfile: "default",
+      });
+      assert.equal(payload.reply, "The file says hello");
+      assert.match(capturedPrompt, /notes\.txt/);
+      assert.equal(plainCalls, 0);
+    });
+  });
+});
+
+test("tool-calling does not activate for a non-default profile even when enabled", async () => {
+  await withToolCallingEnv("1", async () => {
+    let toolAwareCalls = 0;
+    const app = createApp({
+      buildCraftProfitContextForPrompt: async () => "",
+      buildUniversalisContextForPrompt: async () => "",
+      buildMarketContextForPrompt: async () => "",
+      isLlamaServerEnabled: () => true,
+      runToolAwareReply: async () => {
+        toolAwareCalls += 1;
+        return { content: "should not happen", toolCalls: [] };
+      },
+      runLocalAssistantReply: async () => "plain coding reply",
+    });
+
+    await withServer(app, async (baseUrl) => {
+      const { payload } = await postJson(`${baseUrl}/reply`, {
+        text: "debug this function",
+        modelProfile: "coding",
+      });
+      assert.equal(payload.reply, "plain coding reply");
+      assert.equal(toolAwareCalls, 0);
+    });
+  });
+});
+
+test("tool-calling falls back to the plain reply when llama-server isn't available", async () => {
+  await withToolCallingEnv("1", async () => {
+    let toolAwareCalls = 0;
+    const app = createApp({
+      buildCraftProfitContextForPrompt: async () => "",
+      buildUniversalisContextForPrompt: async () => "",
+      buildMarketContextForPrompt: async () => "",
+      isLlamaServerEnabled: () => false,
+      runToolAwareReply: async () => {
+        toolAwareCalls += 1;
+        return { content: "should not happen", toolCalls: [] };
+      },
+      runLocalAssistantReply: async () => "plain reply",
+    });
+
+    await withServer(app, async (baseUrl) => {
+      const { payload } = await postJson(`${baseUrl}/reply`, { text: "hello" });
+      assert.equal(payload.reply, "plain reply");
+      assert.equal(toolAwareCalls, 0);
+    });
+  });
+});
+
+test("tool-calling falls back to the plain reply when runToolAwareReply throws", async () => {
+  await withToolCallingEnv("1", async () => {
+    const app = createApp({
+      buildCraftProfitContextForPrompt: async () => "",
+      buildUniversalisContextForPrompt: async () => "",
+      buildMarketContextForPrompt: async () => "",
+      isLlamaServerEnabled: () => true,
+      runToolAwareReply: async () => {
+        throw new Error("llama-server executable not found");
+      },
+      runLocalAssistantReply: async () => "plain reply",
+    });
+
+    await withServer(app, async (baseUrl) => {
+      const { response, payload } = await postJson(`${baseUrl}/reply`, { text: "hello" });
+      assert.equal(response.status, 200);
+      assert.equal(payload.reply, "plain reply");
+    });
+  });
+});
+
+test("tool-calling falls back to the plain reply when runToolAwareReply returns empty content", async () => {
+  await withToolCallingEnv("1", async () => {
+    const app = createApp({
+      buildCraftProfitContextForPrompt: async () => "",
+      buildUniversalisContextForPrompt: async () => "",
+      buildMarketContextForPrompt: async () => "",
+      isLlamaServerEnabled: () => true,
+      runToolAwareReply: async () => ({ content: "", toolCalls: [] }),
+      runLocalAssistantReply: async () => "plain reply",
+    });
+
+    await withServer(app, async (baseUrl) => {
+      const { payload } = await postJson(`${baseUrl}/reply`, { text: "hello" });
+      assert.equal(payload.reply, "plain reply");
+    });
+  });
+});
+
+// Best-of-N wiring (issue #70): opt-in via MANA_BEST_OF_N_ENABLED, scoped to
+// coding-mode replies only, layered on top of the tool-calling/plain path so
+// any failure or empty result falls straight through to it.
+async function withBestOfNEnv(value, fn) {
+  const prior = process.env.MANA_BEST_OF_N_ENABLED;
+  process.env.MANA_BEST_OF_N_ENABLED = value;
+  try {
+    await fn();
+  } finally {
+    if (prior === undefined) delete process.env.MANA_BEST_OF_N_ENABLED;
+    else process.env.MANA_BEST_OF_N_ENABLED = prior;
+  }
+}
+
+test("best-of-N stays off by default even when a runBestOfNReply is provided", async () => {
+  await withBestOfNEnv(undefined, async () => {
+    let bestOfNCalls = 0;
+    const app = createApp({
+      buildCraftProfitContextForPrompt: async () => "",
+      buildUniversalisContextForPrompt: async () => "",
+      buildMarketContextForPrompt: async () => "",
+      isLlamaServerEnabled: () => true,
+      runBestOfNReply: async () => {
+        bestOfNCalls += 1;
+        return { content: "best-of-n reply", candidates: [], judgeIndex: 0 };
+      },
+      runLocalAssistantReply: async () => "plain coding reply",
+    });
+
+    await withServer(app, async (baseUrl) => {
+      const { payload } = await postJson(`${baseUrl}/reply`, {
+        text: "debug this function",
+        modelProfile: "coding",
+      });
+      assert.equal(payload.reply, "plain coding reply");
+      assert.equal(bestOfNCalls, 0);
+    });
+  });
+});
+
+test("best-of-N activates for coding-mode replies when enabled and llama-server is available", async () => {
+  await withBestOfNEnv("1", async () => {
+    let capturedOptions = null;
+    const app = createApp({
+      buildCraftProfitContextForPrompt: async () => "",
+      buildUniversalisContextForPrompt: async () => "",
+      buildMarketContextForPrompt: async () => "",
+      isLlamaServerEnabled: () => true,
+      runBestOfNReply: async (prompt, options) => {
+        capturedOptions = options;
+        return {
+          content: "the judged best fix",
+          candidates: ["a", "b", "c"],
+          judgeIndex: 1,
+        };
+      },
+      runLocalAssistantReply: async () => "plain coding reply",
+    });
+
+    await withServer(app, async (baseUrl) => {
+      const { payload } = await postJson(`${baseUrl}/reply`, {
+        text: "debug this function",
+        modelProfile: "coding",
+      });
+      assert.equal(payload.reply, "the judged best fix");
+      assert.equal(capturedOptions.profile, "coding");
+    });
+  });
+});
+
+test("best-of-N does not activate for a non-coding reply even when enabled", async () => {
+  await withBestOfNEnv("1", async () => {
+    let bestOfNCalls = 0;
+    const app = createApp({
+      buildCraftProfitContextForPrompt: async () => "",
+      buildUniversalisContextForPrompt: async () => "",
+      buildMarketContextForPrompt: async () => "",
+      isLlamaServerEnabled: () => true,
+      runBestOfNReply: async () => {
+        bestOfNCalls += 1;
+        return { content: "should not happen", candidates: [], judgeIndex: 0 };
+      },
+      runLocalAssistantReply: async () => "plain reply",
+    });
+
+    await withServer(app, async (baseUrl) => {
+      const { payload } = await postJson(`${baseUrl}/reply`, { text: "hello there" });
+      assert.equal(payload.reply, "plain reply");
+      assert.equal(bestOfNCalls, 0);
+    });
+  });
+});
+
+test("best-of-N falls back to the plain reply when llama-server isn't available", async () => {
+  await withBestOfNEnv("1", async () => {
+    let bestOfNCalls = 0;
+    const app = createApp({
+      buildCraftProfitContextForPrompt: async () => "",
+      buildUniversalisContextForPrompt: async () => "",
+      buildMarketContextForPrompt: async () => "",
+      isLlamaServerEnabled: () => false,
+      runBestOfNReply: async () => {
+        bestOfNCalls += 1;
+        return { content: "should not happen", candidates: [], judgeIndex: 0 };
+      },
+      runLocalAssistantReply: async () => "plain coding reply",
+    });
+
+    await withServer(app, async (baseUrl) => {
+      const { payload } = await postJson(`${baseUrl}/reply`, {
+        text: "debug this function",
+        modelProfile: "coding",
+      });
+      assert.equal(payload.reply, "plain coding reply");
+      assert.equal(bestOfNCalls, 0);
+    });
+  });
+});
+
+test("best-of-N falls back to the plain reply when runBestOfNReply throws", async () => {
+  await withBestOfNEnv("1", async () => {
+    const app = createApp({
+      buildCraftProfitContextForPrompt: async () => "",
+      buildUniversalisContextForPrompt: async () => "",
+      buildMarketContextForPrompt: async () => "",
+      isLlamaServerEnabled: () => true,
+      runBestOfNReply: async () => {
+        throw new Error("llama-server returned no usable candidates");
+      },
+      runLocalAssistantReply: async () => "plain coding reply",
+    });
+
+    await withServer(app, async (baseUrl) => {
+      const { response, payload } = await postJson(`${baseUrl}/reply`, {
+        text: "debug this function",
+        modelProfile: "coding",
+      });
+      assert.equal(response.status, 200);
+      assert.equal(payload.reply, "plain coding reply");
+    });
+  });
+});
+
 test("reply continues when optional market context fails", async () => {
   const app = createApp({
     buildCraftProfitContextForPrompt: async () => "",
@@ -746,4 +1054,156 @@ test("reply skips web context when includeContext is false", async () => {
   });
 
   assert.equal(webContextCalls, 0);
+});
+
+async function withIdleThresholdMs(value, fn) {
+  const original = process.env.MANA_IDLE_THRESHOLD_MS;
+  process.env.MANA_IDLE_THRESHOLD_MS = String(value);
+  try {
+    await fn();
+  } finally {
+    if (original === undefined) delete process.env.MANA_IDLE_THRESHOLD_MS;
+    else process.env.MANA_IDLE_THRESHOLD_MS = original;
+  }
+}
+
+test("idle-report does not trigger consolidation below the idle threshold", async () => {
+  let triggerCalls = 0;
+  const app = createApp({
+    triggerIdleConsolidation: async () => {
+      triggerCalls += 1;
+    },
+    getGamingStatus: () => ({ gamingAppRunning: false }),
+  });
+
+  await withIdleThresholdMs(60000, async () => {
+    await withServer(app, async (baseUrl) => {
+      const { payload } = await postJson(`${baseUrl}/internal/idle-report`, {
+        idleSeconds: 5,
+      });
+      assert.equal(payload.idleTriggered, false);
+    });
+  });
+
+  assert.equal(triggerCalls, 0);
+});
+
+test("idle-report triggers consolidation once idle time crosses the threshold", async () => {
+  let triggerCalls = 0;
+  const app = createApp({
+    triggerIdleConsolidation: async () => {
+      triggerCalls += 1;
+    },
+    getGamingStatus: () => ({ gamingAppRunning: false }),
+  });
+
+  await withIdleThresholdMs(1000, async () => {
+    await withServer(app, async (baseUrl) => {
+      const { payload } = await postJson(`${baseUrl}/internal/idle-report`, {
+        idleSeconds: 5,
+      });
+      assert.equal(payload.idleTriggered, true);
+      await new Promise((resolve) => setImmediate(resolve));
+    });
+  });
+
+  assert.equal(triggerCalls, 1);
+});
+
+test("idle-report does not re-trigger on repeated reports during the same idle period", async () => {
+  let triggerCalls = 0;
+  const app = createApp({
+    triggerIdleConsolidation: async () => {
+      triggerCalls += 1;
+    },
+    getGamingStatus: () => ({ gamingAppRunning: false }),
+  });
+
+  await withIdleThresholdMs(1000, async () => {
+    await withServer(app, async (baseUrl) => {
+      await postJson(`${baseUrl}/internal/idle-report`, { idleSeconds: 5 });
+      const { payload } = await postJson(`${baseUrl}/internal/idle-report`, {
+        idleSeconds: 10,
+      });
+      assert.equal(payload.idleTriggered, false);
+      await new Promise((resolve) => setImmediate(resolve));
+    });
+  });
+
+  assert.equal(triggerCalls, 1);
+});
+
+test("idle-report fires again after the user goes active and idles out a second time", async () => {
+  let triggerCalls = 0;
+  const app = createApp({
+    triggerIdleConsolidation: async () => {
+      triggerCalls += 1;
+    },
+    getGamingStatus: () => ({ gamingAppRunning: false }),
+  });
+
+  await withIdleThresholdMs(1000, async () => {
+    await withServer(app, async (baseUrl) => {
+      await postJson(`${baseUrl}/internal/idle-report`, { idleSeconds: 5 });
+      await postJson(`${baseUrl}/internal/idle-report`, { idleSeconds: 0 });
+      const { payload } = await postJson(`${baseUrl}/internal/idle-report`, {
+        idleSeconds: 5,
+      });
+      assert.equal(payload.idleTriggered, true);
+      await new Promise((resolve) => setImmediate(resolve));
+    });
+  });
+
+  assert.equal(triggerCalls, 2);
+});
+
+test("formatMemoryMarkdown renders a placeholder with no summary or facts", () => {
+  const md = formatMemoryMarkdown("", []);
+  assert.match(md, /_\(no summary yet\)_/);
+  assert.doesNotMatch(md, /## Key Facts/);
+});
+
+test("formatMemoryMarkdown renders the compacted summary and key facts", () => {
+  const md = formatMemoryMarkdown("User prefers concise replies.", [
+    "Likes FFXIV crafting",
+    "Uses windows-launcher",
+  ]);
+  assert.match(md, /## Summary\n\nUser prefers concise replies\./);
+  assert.match(md, /## Key Facts\n\n- Likes FFXIV crafting\n- Uses windows-launcher/);
+});
+
+test("formatMemoryMarkdown omits the Connections section when there are none (issue #75)", () => {
+  const md = formatMemoryMarkdown("Summary text.", ["a fact"]);
+  assert.doesNotMatch(md, /## Connections/);
+});
+
+test("formatMemoryMarkdown renders connections in their own section, separate from facts (issue #75)", () => {
+  const md = formatMemoryMarkdown(
+    "Summary text.",
+    ["a fact"],
+    ["Summary #1 <-> Summary #3: both discuss the FFXIV Weaver crafting rotation."],
+  );
+  assert.match(
+    md,
+    /## Connections\n\n- Summary #1 <-> Summary #3: both discuss the FFXIV Weaver crafting rotation\./,
+  );
+  // Connections must stay a distinct section, not folded into Key Facts.
+  const factsIndex = md.indexOf("## Key Facts");
+  const connectionsIndex = md.indexOf("## Connections");
+  assert.ok(factsIndex > -1 && connectionsIndex > factsIndex);
+});
+
+test("createApp wires the memory inbox watcher with a usable appendTurn/runVisionReply/runWhisper", async () => {
+  let capturedOptions = null;
+  createApp({
+    startMemoryInboxWatcher: (options) => {
+      capturedOptions = options;
+    },
+  });
+
+  assert.ok(capturedOptions, "watcher start was called");
+  assert.equal(typeof capturedOptions.inboxDir, "string");
+  assert.equal(typeof capturedOptions.appendTurn, "function");
+  assert.equal(typeof capturedOptions.runVisionReply, "function");
+  assert.equal(typeof capturedOptions.runWhisper, "function");
 });

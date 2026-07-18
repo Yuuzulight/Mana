@@ -316,3 +316,537 @@ test("adopts an existing llama-server that already serves the same model", async
   assert.equal(completions, 1);
   assert.equal(runtime.getStatus().external, true);
 });
+
+// runToolAwareReply (issue #51): a policy-gated, single-round tool loop.
+// Verified against real hardware separately (Qwen3-4B reliably emits proper
+// tool_calls via llama-server's --jinja template); these tests exercise the
+// loop's own logic -- request tool schema, execute via the injected policy,
+// feed results back, return the final content -- without needing a real GPU.
+function makeFakePolicy(overrides = {}) {
+  return {
+    tools: [
+      {
+        type: "function",
+        function: { name: "read_file", description: "read a file", parameters: {} },
+      },
+    ],
+    executeTool: overrides.executeTool || (() => "default fake result"),
+  };
+}
+
+test("runToolAwareReply executes a requested tool call and returns the follow-up reply", async () => {
+  const calls = [];
+  const executedArgs = [];
+  let serverUp = false;
+  const fakeFetch = async (url, init) => {
+    if (String(url).endsWith("/health")) return { ok: serverUp };
+    if (String(url).endsWith("/v1/chat/completions")) {
+      const body = JSON.parse(init.body);
+      calls.push(body);
+      if (calls.length === 1) {
+        assert.deepEqual(body.tools[0].function.name, "read_file");
+        return {
+          ok: true,
+          json: async () => ({
+            choices: [
+              {
+                message: {
+                  content: "",
+                  tool_calls: [
+                    {
+                      id: "call_1",
+                      type: "function",
+                      function: { name: "read_file", arguments: JSON.stringify({ path: "notes.txt" }) },
+                    },
+                  ],
+                },
+              },
+            ],
+          }),
+        };
+      }
+      // Second call: the tool result should now be in the conversation.
+      const toolMessage = body.messages.find((m) => m.role === "tool");
+      assert.equal(toolMessage.content, "file contents here");
+      assert.equal(toolMessage.tool_call_id, "call_1");
+      return {
+        ok: true,
+        json: async () => ({
+          choices: [{ message: { content: "The file says: file contents here" } }],
+        }),
+      };
+    }
+    return { ok: false, status: 404, text: async () => "not found" };
+  };
+
+  const runtime = createLlamaServerRuntime({
+    env: makeFakeEnv(),
+    fs: makeFakeFs(),
+    fetch: fakeFetch,
+    spawn: () => {
+      serverUp = true;
+      return makeFakeChild();
+    },
+    sleep: async () => {},
+    registerExitHandlers: false,
+  });
+
+  const policy = makeFakePolicy({
+    executeTool: (name, args) => {
+      executedArgs.push({ name, args });
+      return "file contents here";
+    },
+  });
+
+  const result = await runtime.runToolAwareReply("what does notes.txt say?", policy);
+
+  assert.equal(result.content, "The file says: file contents here");
+  assert.equal(calls.length, 2);
+  assert.deepEqual(executedArgs, [{ name: "read_file", args: { path: "notes.txt" } }]);
+  assert.deepEqual(result.toolCalls, [
+    { name: "read_file", args: { path: "notes.txt" }, ok: true },
+  ]);
+});
+
+test("runToolAwareReply reports a policy error back to the model instead of throwing", async () => {
+  let secondCallToolMessage = null;
+  let serverUp = false;
+  const fakeFetch = async (url, init) => {
+    if (String(url).endsWith("/health")) return { ok: serverUp };
+    if (String(url).endsWith("/v1/chat/completions")) {
+      const body = JSON.parse(init.body);
+      const isFirstCall = !body.messages.some((m) => m.role === "tool");
+      if (isFirstCall) {
+        return {
+          ok: true,
+          json: async () => ({
+            choices: [
+              {
+                message: {
+                  content: "",
+                  tool_calls: [
+                    {
+                      id: "call_1",
+                      type: "function",
+                      function: { name: "read_file", arguments: JSON.stringify({ path: "../secret.txt" }) },
+                    },
+                  ],
+                },
+              },
+            ],
+          }),
+        };
+      }
+      secondCallToolMessage = body.messages.find((m) => m.role === "tool");
+      return {
+        ok: true,
+        json: async () => ({ choices: [{ message: { content: "I can't read that file." } }] }),
+      };
+    }
+    return { ok: false, status: 404, text: async () => "not found" };
+  };
+
+  const runtime = createLlamaServerRuntime({
+    env: makeFakeEnv(),
+    fs: makeFakeFs(),
+    fetch: fakeFetch,
+    spawn: () => {
+      serverUp = true;
+      return makeFakeChild();
+    },
+    sleep: async () => {},
+    registerExitHandlers: false,
+  });
+
+  const policy = makeFakePolicy({
+    executeTool: () => {
+      throw new Error("path escapes the allowed project directory: ../secret.txt");
+    },
+  });
+
+  const result = await runtime.runToolAwareReply("read ../secret.txt", policy);
+
+  assert.equal(result.content, "I can't read that file.");
+  assert.match(secondCallToolMessage.content, /path escapes the allowed project directory/);
+  assert.deepEqual(result.toolCalls, [
+    {
+      name: "read_file",
+      args: { path: "../secret.txt" },
+      ok: false,
+      error: "path escapes the allowed project directory: ../secret.txt",
+    },
+  ]);
+});
+
+test("runToolAwareReply skips the tool round entirely when the model doesn't request one", async () => {
+  let callCount = 0;
+  let serverUp = false;
+  const fakeFetch = async (url) => {
+    if (String(url).endsWith("/health")) return { ok: serverUp };
+    if (String(url).endsWith("/v1/chat/completions")) {
+      callCount += 1;
+      return {
+        ok: true,
+        json: async () => ({ choices: [{ message: { content: "2 + 2 is 4." } }] }),
+      };
+    }
+    return { ok: false, status: 404, text: async () => "not found" };
+  };
+
+  const runtime = createLlamaServerRuntime({
+    env: makeFakeEnv(),
+    fs: makeFakeFs(),
+    fetch: fakeFetch,
+    spawn: () => {
+      serverUp = true;
+      return makeFakeChild();
+    },
+    sleep: async () => {},
+    registerExitHandlers: false,
+  });
+
+  const result = await runtime.runToolAwareReply("what is 2+2?", makeFakePolicy());
+
+  assert.equal(result.content, "2 + 2 is 4.");
+  assert.equal(callCount, 1, "no follow-up round when there's nothing to execute");
+  assert.deepEqual(result.toolCalls, []);
+});
+
+test("runToolAwareReply rejects an unknown tool call name via the policy rather than guessing", async () => {
+  let serverUp = false;
+  const fakeFetch = async (url, init) => {
+    if (String(url).endsWith("/health")) return { ok: serverUp };
+    if (String(url).endsWith("/v1/chat/completions")) {
+      const body = JSON.parse(init.body);
+      const isFirstCall = !body.messages.some((m) => m.role === "tool");
+      if (isFirstCall) {
+        return {
+          ok: true,
+          json: async () => ({
+            choices: [
+              {
+                message: {
+                  content: "",
+                  tool_calls: [
+                    {
+                      id: "call_1",
+                      type: "function",
+                      function: { name: "exec_shell_command", arguments: "{}" },
+                    },
+                  ],
+                },
+              },
+            ],
+          }),
+        };
+      }
+      return {
+        ok: true,
+        json: async () => ({ choices: [{ message: { content: "I can't do that." } }] }),
+      };
+    }
+    return { ok: false, status: 404, text: async () => "not found" };
+  };
+
+  const runtime = createLlamaServerRuntime({
+    env: makeFakeEnv(),
+    fs: makeFakeFs(),
+    fetch: fakeFetch,
+    spawn: () => {
+      serverUp = true;
+      return makeFakeChild();
+    },
+    sleep: async () => {},
+    registerExitHandlers: false,
+  });
+
+  // The real tool-policy module (not a fake) never registers write/exec
+  // tools at all, so this exercises the actual "unknown tool" rejection.
+  const { createToolPolicy } = require("../ai/tool-policy");
+  const realPolicy = createToolPolicy({ allowedRoot: "C:\\project" });
+
+  const result = await runtime.runToolAwareReply("run a command", realPolicy);
+
+  assert.equal(result.toolCalls[0].ok, false);
+  assert.match(result.toolCalls[0].error, /unknown tool: exec_shell_command/);
+});
+
+// Two independently controllable "models": runLocalAssistantReply resolves
+// via env.LLAMA_MODEL (chat "default" profile short-circuits to it directly,
+// see local-ai.js), runVisionReply resolves via env.LLAMA_VISION_MODEL. Both
+// funnel into the same ensureServerConfig/debounce state machine, so this is
+// a clean way to force a real cross-model swap without depending on the
+// real tools/llama directory contents.
+function makeTwoModelEnv() {
+  return {
+    ...makeFakeEnv(),
+    LLAMA_VISION_MODEL: "C:\\models\\vision.gguf",
+    LLAMA_VISION_MMPROJ: "C:\\models\\vision-mmproj.gguf",
+  };
+}
+
+function makeTwoModelFs() {
+  return {
+    existsSync: (target) =>
+      [
+        "C:\\llama\\llama-server.exe",
+        "C:\\models\\mana.gguf",
+        "C:\\models\\vision.gguf",
+        "C:\\models\\vision-mmproj.gguf",
+      ].includes(target),
+  };
+}
+
+function makeSwappingHarness(extraEnv = {}) {
+  const spawnCalls = [];
+  // Tracks liveness of whichever child is "current" -- reset on every spawn,
+  // flipped off when that specific child is killed, so a stopAndWait()
+  // between two swaps is correctly reflected in isHealthy() the way a real
+  // llama-server process exiting would be.
+  let liveChild = null;
+  let clock = 0;
+  const fakeFetch = async (url) => {
+    if (String(url).endsWith("/health")) {
+      return { ok: Boolean(liveChild && liveChild.exitCode === null) };
+    }
+    if (String(url).endsWith("/v1/chat/completions")) {
+      return {
+        ok: true,
+        json: async () => ({ choices: [{ message: { content: "ok" } }] }),
+      };
+    }
+    return { ok: false, status: 404, text: async () => "not found" };
+  };
+
+  const runtime = createLlamaServerRuntime({
+    env: { ...makeTwoModelEnv(), ...extraEnv },
+    fs: makeTwoModelFs(),
+    fetch: fakeFetch,
+    spawn: (command, args, options) => {
+      spawnCalls.push({ command, args, options });
+      liveChild = makeFakeChild();
+      clock += 5; // simulate the spawn+healthcheck loop taking real time
+      return liveChild;
+    },
+    sleep: async () => {},
+    nowMs: () => clock,
+    registerExitHandlers: false,
+  });
+
+  return {
+    runtime,
+    spawnCalls,
+    advanceClock: (ms) => {
+      clock += ms;
+    },
+  };
+}
+
+test("a real swap is timed and exposed via getStatus().lastSwapMs", async () => {
+  const { runtime, advanceClock } = makeSwappingHarness();
+
+  await runtime.runLocalAssistantReply("hello", 64, "default");
+  assert.equal(runtime.getStatus().lastSwapMs, null, "cold start is not a swap");
+
+  advanceClock(10000); // well past the default debounce window
+  const before = runtime.getStatus();
+  assert.equal(before.model, "C:\\models\\mana.gguf");
+
+  await runtime.runVisionReply("what is this?", ["abc"]);
+  const after = runtime.getStatus();
+  assert.equal(after.model, "C:\\models\\vision.gguf");
+  assert.equal(after.lastSwapMs, 5, "swap duration reflects the injected clock");
+});
+
+test("a second swap within the debounce window is skipped, serving the loaded model", async () => {
+  const { runtime, spawnCalls, advanceClock } = makeSwappingHarness({
+    LLAMA_SERVER_SWAP_DEBOUNCE_MS: "5000",
+  });
+
+  await runtime.runLocalAssistantReply("hello", 64, "default");
+  assert.equal(spawnCalls.length, 1);
+
+  // Immediately request the vision model, well inside the 5s debounce window.
+  advanceClock(500);
+  await runtime.runVisionReply("what is this?", ["abc"]);
+  assert.equal(spawnCalls.length, 1, "debounced: no second spawn");
+  assert.equal(
+    runtime.getStatus().model,
+    "C:\\models\\mana.gguf",
+    "still serving the original model",
+  );
+
+  // Past the debounce window, the same request now actually swaps.
+  advanceClock(5000);
+  await runtime.runVisionReply("what is this?", ["abc"]);
+  assert.equal(spawnCalls.length, 2, "debounce window elapsed: real swap happens");
+  assert.equal(runtime.getStatus().model, "C:\\models\\vision.gguf");
+});
+
+test("LLAMA_SERVER_SWAP_DEBOUNCE_MS=0 disables debouncing entirely", async () => {
+  const { runtime, spawnCalls } = makeSwappingHarness({
+    LLAMA_SERVER_SWAP_DEBOUNCE_MS: "0",
+  });
+
+  await runtime.runLocalAssistantReply("hello", 64, "default");
+  await runtime.runVisionReply("what is this?", ["abc"]);
+  assert.equal(spawnCalls.length, 2, "every swap happens immediately");
+});
+
+test("GGML_CUDA_ENABLE_UNIFIED_MEMORY is set by default (measurably faster on real hardware)", async () => {
+  const { runtime, spawnCalls } = makeSwappingHarness();
+
+  await runtime.runLocalAssistantReply("hello", 64, "default");
+  assert.equal(spawnCalls[0].options.env.GGML_CUDA_ENABLE_UNIFIED_MEMORY, "1");
+});
+
+test("MANA_LLAMA_UNIFIED_MEMORY=0 opts out of GGML_CUDA_ENABLE_UNIFIED_MEMORY", async () => {
+  const { runtime, spawnCalls } = makeSwappingHarness({
+    MANA_LLAMA_UNIFIED_MEMORY: "0",
+  });
+
+  await runtime.runLocalAssistantReply("hello", 64, "default");
+  assert.equal(
+    spawnCalls[0].options.env.GGML_CUDA_ENABLE_UNIFIED_MEMORY,
+    undefined,
+  );
+});
+
+// runBestOfNReply (issue #70): N candidates at varied temperature, then a
+// temp-0 judge call picks the best one. Sequential, not parallel -- matches
+// how the actual llama-server instance is spawned here (default single
+// parallel slot). These tests exercise the loop/judge-parsing logic without
+// needing a real GPU; real latency is measured separately (see
+// docs/roadmap/issue-70-best-of-n.md).
+test("runBestOfNReply generates N candidates and returns the judge's pick", async () => {
+  const candidateTemps = [];
+  let judgeCall = null;
+  let serverUp = false;
+  const fakeFetch = async (url, init) => {
+    if (String(url).endsWith("/health")) return { ok: serverUp };
+    if (String(url).endsWith("/v1/chat/completions")) {
+      const body = JSON.parse(init.body);
+      const isJudge = body.messages.some((m) =>
+        String(m.content).includes("Best candidate number"),
+      );
+      if (isJudge) {
+        judgeCall = body;
+        return {
+          ok: true,
+          json: async () => ({ choices: [{ message: { content: "2" } }] }),
+        };
+      }
+      candidateTemps.push(body.temperature);
+      return {
+        ok: true,
+        json: async () => ({
+          choices: [
+            { message: { content: `candidate at temp ${body.temperature}` } },
+          ],
+        }),
+      };
+    }
+    return { ok: false, status: 404, text: async () => "not found" };
+  };
+
+  const runtime = createLlamaServerRuntime({
+    env: makeFakeEnv(),
+    fs: makeFakeFs(),
+    fetch: fakeFetch,
+    spawn: () => {
+      serverUp = true;
+      return makeFakeChild();
+    },
+    sleep: async () => {},
+    registerExitHandlers: false,
+  });
+
+  const result = await runtime.runBestOfNReply("write a fibonacci function", {
+    n: 3,
+    profile: "default",
+  });
+
+  assert.equal(candidateTemps.length, 3);
+  assert.deepEqual(candidateTemps, [0.2, 0.6, 1]);
+  assert.equal(result.candidates.length, 3);
+  assert.equal(result.judgeIndex, 1);
+  assert.equal(result.content, "candidate at temp 0.6");
+  assert.ok(judgeCall, "judge call happened");
+});
+
+test("runBestOfNReply falls back to the first candidate when the judge reply is unparseable", async () => {
+  let serverUp = false;
+  const fakeFetch = async (url, init) => {
+    if (String(url).endsWith("/health")) return { ok: serverUp };
+    if (String(url).endsWith("/v1/chat/completions")) {
+      const body = JSON.parse(init.body);
+      const isJudge = body.messages.some((m) =>
+        String(m.content).includes("Best candidate number"),
+      );
+      if (isJudge) {
+        return {
+          ok: true,
+          json: async () => ({
+            choices: [{ message: { content: "I'm not sure, honestly." } }],
+          }),
+        };
+      }
+      return {
+        ok: true,
+        json: async () => ({ choices: [{ message: { content: "safe candidate" } }] }),
+      };
+    }
+    return { ok: false, status: 404, text: async () => "not found" };
+  };
+
+  const runtime = createLlamaServerRuntime({
+    env: makeFakeEnv(),
+    fs: makeFakeFs(),
+    fetch: fakeFetch,
+    spawn: () => {
+      serverUp = true;
+      return makeFakeChild();
+    },
+    sleep: async () => {},
+    registerExitHandlers: false,
+  });
+
+  const result = await runtime.runBestOfNReply("hello", { n: 2, profile: "default" });
+
+  assert.equal(result.judgeIndex, 0);
+  assert.equal(result.content, "safe candidate");
+});
+
+test("runBestOfNReply skips the judge call entirely when n is 1", async () => {
+  let callCount = 0;
+  let serverUp = false;
+  const fakeFetch = async (url) => {
+    if (String(url).endsWith("/health")) return { ok: serverUp };
+    if (String(url).endsWith("/v1/chat/completions")) {
+      callCount += 1;
+      return {
+        ok: true,
+        json: async () => ({ choices: [{ message: { content: "only answer" } }] }),
+      };
+    }
+    return { ok: false, status: 404, text: async () => "not found" };
+  };
+
+  const runtime = createLlamaServerRuntime({
+    env: makeFakeEnv(),
+    fs: makeFakeFs(),
+    fetch: fakeFetch,
+    spawn: () => {
+      serverUp = true;
+      return makeFakeChild();
+    },
+    sleep: async () => {},
+    registerExitHandlers: false,
+  });
+
+  const result = await runtime.runBestOfNReply("hello", { n: 1, profile: "default" });
+
+  assert.equal(callCount, 1, "no judge round when there's only one candidate");
+  assert.equal(result.content, "only answer");
+  assert.equal(result.judgeIndex, 0);
+});

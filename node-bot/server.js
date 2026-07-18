@@ -32,6 +32,12 @@ Environment variables (set before running):
 - MANA_MCP_SERVER_ENABLED : set to "1" to allow `npm run mcp` (mcp-server.js) to
   start Mana as a local Model Context Protocol server over stdio, see
   docs/roadmap/issue-42-mcp-support.md
+- MANA_RESEARCH_MAX_SOURCES, MANA_RESEARCH_MAX_TOTAL_MS,
+  MANA_RESEARCH_MAX_SUB_QUERIES, MANA_RESEARCH_MAX_PER_DOMAIN : persistent
+  defaults for Deep Research's bounds (per-request body values still win;
+  hard caps in tools/deep-research.js apply regardless)
+- MANA_RESEARCH_JOB_TTL_MS : how long finished research jobs stay pollable
+  before being pruned from memory (default 10 minutes)
 
 This server aims to avoid Python. You must download and place the whisper.cpp and llama.cpp binaries and model files yourself.
 */
@@ -67,6 +73,13 @@ const {
 const { sessionsCapability } = require("./capabilities/sessions-capability");
 const { presetsCapability } = require("./capabilities/presets-capability");
 const {
+  deepResearchCapability,
+} = require("./capabilities/deep-research-capability");
+const {
+  RESEARCH_SYSTEM_PROMPT,
+  SUB_QUERY_SYSTEM_PROMPT,
+} = require("./tools/deep-research");
+const {
   buildWebContextForPrompt,
   fetchPage,
   searchWeb,
@@ -84,6 +97,7 @@ const { createTtsRuntime } = require("./tts-runtime");
 const { createAcpMemoryStore } = require("./acp-memory-store");
 const { createPresetsStore } = require("./presets-store");
 const { createAuthStore } = require("./auth-store");
+const { createToolPolicy } = require("./ai/tool-policy");
 const {
   createEditorIntegrations,
   createZedIntegration,
@@ -367,6 +381,10 @@ const presetsStore = createPresetsStore({});
 // Multi-account auth with admin/user roles and API keys (see auth-store.js)
 const authStore = createAuthStore({});
 
+// Foundational tool-calling (issue #51): one read-only tool, scoped to the
+// repo root by default. See ai/tool-policy.js.
+const toolPolicy = createToolPolicy({});
+
 // Background memory block that can be refreshed periodically from ACP session files.
 let BACKGROUND_MEMORY_BLOCK = "";
 let BACKGROUND_MEMORY_LOCK = false;
@@ -406,6 +424,64 @@ try {
 } catch (e) {}
 
 let runBackgroundReviewerPublic = null;
+let runBackgroundCompactorPublic = null;
+let runBackgroundConnectionsPublic = null;
+
+// Human-readable counterpart to background_meta.json's internal bookkeeping
+// (issue #69) -- written whenever a compaction/review pass actually changes
+// the compacted summary or important facts, whether triggered by idle
+// detection or the hourly timer.
+const MEMORY_MD_PATH = path.join(
+  __dirname,
+  "data",
+  "acp-memory",
+  "MEMORY.md",
+);
+
+function formatMemoryMarkdown(compacted, facts, connections = []) {
+  const lines = [
+    "# Mana Memory",
+    "",
+    `_Last updated: ${new Date().toISOString()}_`,
+    "",
+    "## Summary",
+    "",
+    compacted || "_(no summary yet)_",
+  ];
+  if (facts && facts.length) {
+    lines.push("", "## Key Facts", "", ...facts.map((f) => `- ${f}`));
+  }
+  // Issue #75: kept in its own section, separate from the compacted
+  // summary, so a later compaction pass can't silently merge/drop them.
+  if (connections && connections.length) {
+    lines.push("", "## Connections", "", ...connections.map((c) => `- ${c}`));
+  }
+  return lines.join("\n") + "\n";
+}
+
+async function writeMemoryMarkdown() {
+  try {
+    const compacted =
+      (BACKGROUND_MEMORY_META.lastCompacted &&
+        BACKGROUND_MEMORY_META.lastCompacted.text) ||
+      "";
+    const facts = BACKGROUND_MEMORY_META.important_facts || [];
+    const connections = BACKGROUND_MEMORY_META.connections || [];
+    await fs.promises.mkdir(path.dirname(MEMORY_MD_PATH), {
+      recursive: true,
+    });
+    await fs.promises.writeFile(
+      MEMORY_MD_PATH,
+      formatMemoryMarkdown(compacted, facts, connections),
+      "utf8",
+    );
+  } catch (e) {
+    console.warn(
+      "Failed to write MEMORY.md:",
+      e && e.message ? e.message : e,
+    );
+  }
+}
 
 async function persistBackgroundMeta() {
   try {
@@ -894,6 +970,7 @@ if (process.env.NODE_ENV !== "test" && !process.env.NODE_TEST_CONTEXT) {
             };
             try {
               await persistBackgroundMeta();
+              await writeMemoryMarkdown();
             } catch (e) {}
             console.log(
               "Background memory compacted by summarizer (len=",
@@ -1086,6 +1163,7 @@ if (process.env.NODE_ENV !== "test" && !process.env.NODE_TEST_CONTEXT) {
           BACKGROUND_MEMORY_META.lastReviewedHash = reviewHash;
           try {
             await persistBackgroundMeta();
+            await writeMemoryMarkdown();
           } catch (e) {
             console.warn(
               "Failed to persist background meta after review:",
@@ -1110,9 +1188,101 @@ if (process.env.NODE_ENV !== "test" && !process.env.NODE_TEST_CONTEXT) {
         }
       }
 
-      // expose reviewer to other modules/routes for preview/apply
+      // Cross-session connections (issue #75): a distinct pass from
+      // compaction/pruning -- looks for real relationships *between*
+      // separate session summaries (same topic revisited days apart, one
+      // session following up on another) rather than summarizing each in
+      // isolation. Kept as its own MEMORY.md section (see
+      // formatMemoryMarkdown) so a later compaction pass can't silently
+      // merge or drop what it found.
+      async function runBackgroundConnections() {
+        try {
+          const res = await asyncLoadBackgroundMemory();
+          const processedFiles =
+            res && res.processedFiles ? res.processedFiles : [];
+          const minSummaries = Number(
+            process.env.MANA_BACKGROUND_CONNECTIONS_MIN_SUMMARIES || 2,
+          );
+          if (!processedFiles || processedFiles.length < minSummaries) {
+            // Not enough session history to find a real connection --
+            // matches the acceptance criteria's "skip on noise" requirement.
+            return { ok: false, reason: "not_enough_summaries" };
+          }
+
+          const maxSummaries = Number(
+            process.env.MANA_BACKGROUND_CONNECTIONS_MAX_SUMMARIES || 30,
+          );
+          const numbered = processedFiles
+            .slice(0, maxSummaries)
+            .map(
+              (p, idx) =>
+                `${idx + 1}. [session: ${p.file}] ${String(p.summary || "").slice(0, 300)}`,
+            )
+            .join("\n\n");
+
+          const prompt = `You are finding real connections between separate chat session summaries -- e.g. two sessions touching the same topic days apart, or one session following up on an earlier one. Given the numbered summaries below (each tagged with its session file), list at most 5 short connection lines, each naming which numbered summaries relate and why, formatted like "Summary #1 <-> Summary #3: both discuss the FFXIV crafting rework". Only report connections that are actually there -- if the summaries are all unrelated one-off topics, reply with exactly the single word NONE and nothing else.\n\nBEGIN SUMMARIES:\n${numbered}\n\nEND SUMMARIES\n\nCONNECTIONS:`;
+
+          let reply = null;
+          try {
+            if (shouldUseRemoteAi()) {
+              reply = await runOpenAIReply(prompt, 300);
+            }
+          } catch (e) {
+            console.warn(
+              "Background connections (remote) failed:",
+              e && e.message ? e.message : e,
+            );
+          }
+          if (!reply) {
+            try {
+              if (localLlamaReplyAvailable()) {
+                reply = await runLocalLlamaReply(prompt, 300, "default");
+              }
+            } catch (e) {
+              console.warn(
+                "Background connections (local) failed:",
+                e && e.message ? e.message : e,
+              );
+            }
+          }
+          if (!reply || typeof reply !== "string") {
+            return { ok: false, reason: "no_reply" };
+          }
+
+          const trimmed = reply.trim();
+          const connections =
+            !trimmed || /^NONE$/i.test(trimmed)
+              ? []
+              : trimmed
+                  .split(/\r?\n/)
+                  .map((line) => line.trim())
+                  .filter(Boolean)
+                  .slice(0, 5);
+
+          BACKGROUND_MEMORY_META.connections = connections;
+          try {
+            await persistBackgroundMeta();
+            await writeMemoryMarkdown();
+          } catch (e) {}
+
+          console.log(
+            `Background connections pass found ${connections.length} connection(s)`,
+          );
+          return { ok: true, connections };
+        } catch (e) {
+          console.warn(
+            "Background connections failed:",
+            e && e.message ? e.message : e,
+          );
+          return { ok: false, reason: "exception", error: String(e) };
+        }
+      }
+
+      // expose reviewer/compactor/connections to other modules/routes (preview/apply, idle-report)
       try {
         runBackgroundReviewerPublic = runBackgroundReviewer;
+        runBackgroundCompactorPublic = runBackgroundCompactor;
+        runBackgroundConnectionsPublic = runBackgroundConnections;
       } catch (e) {}
 
       // Run compactor once now, and schedule periodic compaction
@@ -1301,6 +1471,77 @@ function ensureDirectory(dirPath) {
 ensureDirectory(path.join(__dirname, "tmp"));
 
 function registerRoutes(app, upload, deps = {}) {
+  // Fires the same compaction/review pass the hourly timer runs, but on the
+  // idle signal (issue #69). Deliberately per-registerRoutes-call state (not
+  // module-level) so each app instance -- and each test -- starts fresh.
+  let idleConsolidationFiredForCurrentIdlePeriod = false;
+  const idleGamingStatusCheck = deps.getGamingStatus || getGamingStatus;
+  const triggerIdleConsolidation =
+    deps.triggerIdleConsolidation ||
+    (async function triggerIdleConsolidation() {
+      if (typeof runBackgroundCompactorPublic === "function") {
+        await runBackgroundCompactorPublic().catch((err) =>
+          console.warn(
+            "Idle-triggered compactor failed:",
+            err && err.message ? err.message : err,
+          ),
+        );
+      }
+      if (typeof runBackgroundReviewerPublic === "function") {
+        await runBackgroundReviewerPublic(true, {
+          skipIfUnchanged: true,
+        }).catch((err) =>
+          console.warn(
+            "Idle-triggered reviewer failed:",
+            err && err.message ? err.message : err,
+          ),
+        );
+      }
+      if (typeof runBackgroundConnectionsPublic === "function") {
+        await runBackgroundConnectionsPublic().catch((err) =>
+          console.warn(
+            "Idle-triggered connections pass failed:",
+            err && err.message ? err.message : err,
+          ),
+        );
+      }
+    });
+
+  // Reported by windows-launcher's powerMonitor.getSystemIdleTime() poll.
+  // Fires consolidation once per idle period (resets when the user is seen
+  // active again below the threshold), so staying idle for hours doesn't
+  // re-trigger it on every ~60s report.
+  app.post("/internal/idle-report", (req, res) => {
+    const idleSeconds = Number(req.body?.idleSeconds) || 0;
+    const thresholdSeconds =
+      Number(process.env.MANA_IDLE_THRESHOLD_MS || 20 * 60 * 1000) / 1000;
+
+    if (idleSeconds < thresholdSeconds) {
+      idleConsolidationFiredForCurrentIdlePeriod = false;
+      return res.json({ ok: true, idleTriggered: false });
+    }
+    if (idleConsolidationFiredForCurrentIdlePeriod) {
+      return res.json({ ok: true, idleTriggered: false });
+    }
+
+    let gamingRunning = false;
+    try {
+      gamingRunning = idleGamingStatusCheck().gamingAppRunning;
+    } catch (e) {}
+    if (gamingRunning) {
+      return res.json({ ok: true, idleTriggered: false, pausedForGaming: true });
+    }
+
+    idleConsolidationFiredForCurrentIdlePeriod = true;
+    triggerIdleConsolidation().catch((err) =>
+      console.warn(
+        "Idle-triggered consolidation failed:",
+        err && err.message ? err.message : err,
+      ),
+    );
+    return res.json({ ok: true, idleTriggered: true });
+  });
+
   let editorIntegrations = deps.editors || null;
   const mobileMemoryStore = deps.mobileMemoryStore || createMobileMemoryStore();
   function getEditorIntegrations() {
@@ -1319,11 +1560,22 @@ function registerRoutes(app, upload, deps = {}) {
     dirScannerCapability,
     webAccessCapability,
     sessionsCapability,
+    deepResearchCapability,
     presetsCapability,
   ];
   const activePresetsStore = deps.presetsStore || presetsStore;
   const capabilityContext = {
     acpMemoryStore: deps.acpMemoryStore || acpMemoryStore,
+    env: deps.env || process.env,
+    synthesize:
+      deps.synthesize ||
+      ((prompt) => runLocalLlamaReply(prompt, 800, "quality", RESEARCH_SYSTEM_PROMPT)),
+    // Deliberately the same profile as synthesize: a different profile here
+    // would force a llama-server model swap (kill/respawn) in the middle of
+    // every research pass. Sub-query planning is a short completion anyway.
+    decompose:
+      deps.decompose ||
+      ((prompt) => runLocalLlamaReply(prompt, 200, "quality", SUB_QUERY_SYSTEM_PROMPT)),
     presetsStore: activePresetsStore,
     UNIVERSALIS_DEFAULT_WORLD,
     FFXIV_PROFIT_TOP_LIMIT,
@@ -3423,6 +3675,29 @@ function registerRoutes(app, upload, deps = {}) {
       return runLocalLlamaReply(prompt, maxTokens, profile, overrideSystemPrompt);
     });
 
+  // Foundational tool-calling (issue #51): only llama-server (not the
+  // llama-cli fallback) exposes an OpenAI-compatible tools API, so this has
+  // no CLI equivalent -- callers check llamaServerRuntime.isEnabled() first.
+  const runToolAwareReply =
+    deps.runToolAwareReply ||
+    (async function runToolAwareReply(prompt, toolPolicyArg, options) {
+      return llamaServerRuntime.runToolAwareReply(prompt, toolPolicyArg, options);
+    });
+  const activeToolPolicy = deps.toolPolicy || toolPolicy;
+  // Shared by tool-calling and best-of-N (issue #70): both require
+  // llama-server specifically, not the llama-cli fallback.
+  const isLlamaServerAvailable =
+    deps.isLlamaServerEnabled || (() => llamaServerRuntime.isEnabled());
+
+  // Best-of-N self-voting (issue #70): same "llama-server only" constraint
+  // as tool-calling -- sampling-parameter (temperature) control isn't
+  // available through the llama-cli fallback path.
+  const runBestOfNReply =
+    deps.runBestOfNReply ||
+    (async function runBestOfNReply(prompt, options) {
+      return llamaServerRuntime.runBestOfNReply(prompt, options);
+    });
+
   function normalizeUploadedAudio(file) {
     if (!file) {
       throw new Error("no file");
@@ -4056,13 +4331,100 @@ function registerRoutes(app, upload, deps = {}) {
       }
     }
 
+    // Foundational tool-calling (issue #51), opt-in and scoped to the one
+    // profile that's actually been verified to emit reliable tool_calls
+    // (Qwen3-4B / "default" -- see docs/roadmap/issue-51-tool-calling.md).
+    // Any failure or empty result falls straight back to the plain path
+    // rather than surfacing a broken reply.
+    const toolCallingEnabled =
+      String(process.env.MANA_TOOL_CALLING_ENABLED || "0") === "1";
+    async function replyMaybeWithTools(promptText) {
+      if (
+        toolCallingEnabled &&
+        normalizedModelProfile === "default" &&
+        isLlamaServerAvailable()
+      ) {
+        try {
+          const toolResult = await runToolAwareReply(
+            promptText,
+            activeToolPolicy,
+            {
+              maxTokens: LLAMA_MAX_TOKENS,
+              profile: normalizedModelProfile,
+              overrideSystemPrompt: selectedSystemPrompt,
+            },
+          );
+          if (toolResult.content && toolResult.content.trim()) {
+            if (toolResult.toolCalls.length) {
+              console.log(
+                `Mana tool-calling: ${toolResult.toolCalls
+                  .map((call) => `${call.name}(${call.ok ? "ok" : "error"})`)
+                  .join(", ")}`,
+              );
+            }
+            return toolResult.content;
+          }
+          console.warn(
+            "Tool-aware reply returned empty content; falling back to the plain reply path",
+          );
+        } catch (e) {
+          console.warn(
+            "Tool-aware reply failed, falling back to plain reply:",
+            e && e.message ? e.message : e,
+          );
+        }
+      }
+      return runLocalAssistantReply(
+        promptText,
+        LLAMA_MAX_TOKENS,
+        normalizedModelProfile,
+        selectedSystemPrompt,
+      );
+    }
+
+    // Best-of-N self-voting (issue #70), opt-in and scoped to coding-mode
+    // replies. Layers on top of replyMaybeWithTools rather than replacing
+    // the reply pipeline: on any failure or empty result it falls through
+    // to the same tool-calling-or-plain path above, and the existing
+    // verify/retry pass below still gates whatever reply comes out of here,
+    // exactly as it already does for every other reply path.
+    const bestOfNEnabled =
+      String(process.env.MANA_BEST_OF_N_ENABLED || "0") === "1";
+    async function replyMaybeWithBestOfN(promptText) {
+      if (
+        bestOfNEnabled &&
+        mode === "coding" &&
+        isLlamaServerAvailable()
+      ) {
+        try {
+          const n = Number(process.env.MANA_BEST_OF_N_COUNT || 3);
+          const result = await runBestOfNReply(promptText, {
+            n,
+            maxTokens: LLAMA_MAX_TOKENS,
+            profile: normalizedModelProfile,
+            overrideSystemPrompt: selectedSystemPrompt,
+          });
+          if (result.content && result.content.trim()) {
+            console.log(
+              `Mana best-of-N: judge picked candidate ${result.judgeIndex + 1}/${result.candidates.length}`,
+            );
+            return result.content;
+          }
+          console.warn(
+            "Best-of-N reply returned empty content; falling back to the plain reply path",
+          );
+        } catch (e) {
+          console.warn(
+            "Best-of-N reply failed, falling back to plain reply:",
+            e && e.message ? e.message : e,
+          );
+        }
+      }
+      return replyMaybeWithTools(promptText);
+    }
+
     // Fall back to local llama
-    let reply = await runLocalAssistantReply(
-      finalPrompt,
-      LLAMA_MAX_TOKENS,
-      normalizedModelProfile,
-      selectedSystemPrompt,
-    );
+    let reply = await replyMaybeWithBestOfN(finalPrompt);
     queueVTubeReaction(reply);
 
     // Token-budget accounting: estimate reply tokens and deduct from session budget
@@ -4134,12 +4496,7 @@ function registerRoutes(app, upload, deps = {}) {
               ")",
             );
             try {
-              reply = await runLocalAssistantReply(
-                fixPrompt,
-                LLAMA_MAX_TOKENS,
-                normalizedModelProfile,
-                selectedSystemPrompt,
-              );
+              reply = await replyMaybeWithBestOfN(fixPrompt);
               queueVTubeReaction(reply);
               continue; // re-verify
             } catch (retryErr) {
@@ -4372,6 +4729,38 @@ function registerRoutes(app, upload, deps = {}) {
       res.status(400).json({ error: e?.message || String(e) });
     }
   });
+
+  // Watched inbox folder for passive multimodal memory ingestion (issue
+  // #76). deps.startMemoryInboxWatcher lets tests inject a fake and verify
+  // the wiring without a real fs watcher; otherwise this is skipped under
+  // test the same way the background memory jobs are (see the
+  // NODE_ENV/NODE_TEST_CONTEXT guard near the top of this file) -- real
+  // usage would spin up a watcher that's never closed once per test.
+  const inboxWatcherOptions = {
+    inboxDir:
+      process.env.MANA_MEMORY_INBOX_DIR ||
+      path.join(acpMemoryStore.dataDir, "inbox"),
+    appendTurn: (input) => acpMemoryStore.appendTurn(input),
+    runVisionReply: (prompt, images) =>
+      llamaServerRuntime.runVisionReply(prompt, images),
+    runWhisper: (filePath) => runWhisper(filePath),
+  };
+  if (deps.startMemoryInboxWatcher) {
+    deps.startMemoryInboxWatcher(inboxWatcherOptions);
+  } else if (
+    process.env.NODE_ENV !== "test" &&
+    !process.env.NODE_TEST_CONTEXT
+  ) {
+    try {
+      const { createMemoryInboxWatcher } = require("./memory-inbox");
+      createMemoryInboxWatcher(inboxWatcherOptions);
+    } catch (e) {
+      console.warn(
+        "Memory inbox watcher failed to start:",
+        e && e.message ? e.message : e,
+      );
+    }
+  }
 }
 
 async function waitForPythonService(
@@ -4563,6 +4952,7 @@ module.exports = {
   createApp,
   ensureDirectory,
   formatCraftRankingDetails,
+  formatMemoryMarkdown,
   getCraftMarketabilityRequirement,
   getCraftRankingValue,
   getGarlandNodeGatheringJob,

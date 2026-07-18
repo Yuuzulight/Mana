@@ -41,6 +41,7 @@ For the full setup flow, including model paths, Whisper, TTS services, gaming mo
 - **Editor coding handoff**: Mana can detect local Zed or VS Code CLIs and open projects or files for coding help without applying edits silently.
 - **FFXIV and market helpers**: Mana can query Universalis crafting/market data and Alpha Vantage stock summaries when configured.
 - **MCP server (opt-in)**: Mana can expose its FFXIV market and web-access tools over the Model Context Protocol for local MCP clients like Claude Desktop or Claude Code; see [docs/roadmap/issue-42-mcp-support.md](docs/roadmap/issue-42-mcp-support.md).
+- **Deep Research**: a "Research" button next to the composer runs a bounded, multi-source search-and-read pass and replies with a cited report instead of a single search-and-answer; see [docs/roadmap/issue-47-deep-research.md](docs/roadmap/issue-47-deep-research.md).
 
 ## Architecture
 
@@ -162,6 +163,7 @@ Common troubleshooting:
 - [Web access setup](docs/web_access_setup.md): local search (SearXNG), wiki lookups, and page reading.
 - [Zed External Agent setup](docs/zed_external_agent.md): local Zed `agent_servers` configuration.
 - [MCP support roadmap](docs/roadmap/issue-42-mcp-support.md): running Mana as an MCP server (`npm run mcp`) and the plan for MCP client support.
+- [Deep Research roadmap](docs/roadmap/issue-47-deep-research.md): multi-step, multi-source research with a cited report, bounded steps/time, and a "Research" button in windows-launcher.
 
 ## Backend API
 
