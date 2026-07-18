@@ -111,23 +111,25 @@ function createAuthStore(options = {}) {
     const adminEmail = "admin@localhost";
     const adminResult = createAccount({ email: adminEmail, role: "admin" });
 
-    // Write setup info to a marker file so the user knows their key
+    // Write setup info to a marker file so the user knows their key. This
+    // branch only runs when no admin account exists (see the `if (admin)`
+    // check above), so any pre-existing SETUP.txt necessarily belongs to a
+    // now-gone admin -- always overwrite it with the key we just generated,
+    // otherwise a stale file silently swallows the only copy of the new key.
     const setupPath = path.join(path.dirname(filePath), "SETUP.txt");
-    if (!fs.existsSync(setupPath)) {
-      fs.writeFileSync(
-        setupPath,
-        `Mana Admin Setup\n` +
-        `================\n\n` +
-        `Email: ${adminResult.email}\n` +
-        `API Key: ${adminResult.apiKey}\n\n` +
-        `Save this key somewhere safe. You'll need it to manage accounts and access the memory API.\n` +
-        `After saving, you can delete this file.\n`,
-        "utf8"
-      );
-      console.log(
-        `Admin account created. Save your API key from ${setupPath}`
-      );
-    }
+    fs.writeFileSync(
+      setupPath,
+      `Mana Admin Setup\n` +
+      `================\n\n` +
+      `Email: ${adminResult.email}\n` +
+      `API Key: ${adminResult.apiKey}\n\n` +
+      `Save this key somewhere safe. You'll need it to manage accounts and access the memory API.\n` +
+      `After saving, you can delete this file.\n`,
+      "utf8"
+    );
+    console.log(
+      `Admin account created. Save your API key from ${setupPath}`
+    );
 
     return {
       userId: adminResult.userId,

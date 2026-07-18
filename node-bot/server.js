@@ -4649,7 +4649,11 @@ function registerRoutes(app, upload, deps = {}) {
     next();
   }
 
-  // GET /api/memory — return authenticated user's consolidated memory
+  // GET /api/memory — return Mana's consolidated memory to any authenticated
+  // key (admin or user role). Mana has one shared memory store, not
+  // per-account partitions, so this is the same content for every valid key;
+  // the role only gates the /admin/* account-management routes below. See
+  // docs/API_KEYS.md "Account Roles".
   app.get("/api/memory", authMiddleware, async (req, res) => {
     try {
       const compacted =
