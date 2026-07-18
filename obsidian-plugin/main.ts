@@ -41,18 +41,32 @@ export default class ManaMemorySyncPlugin extends Plugin {
       const markdown = await fetchManaMemory(this.settings.serverUrl, this.settings.apiKey);
       await this.writeNote(this.settings.notePath, markdown);
 
-      const notes = await fetchManaMemoryNotes(this.settings.serverUrl, this.settings.apiKey);
-      const folder = normalizePath(this.settings.notesFolder);
-      if (notes.length && !this.app.vault.getAbstractFileByPath(folder)) {
-        await this.app.vault.createFolder(folder);
-      }
-      for (const note of notes) {
-        await this.writeNote(`${folder}/${note.slug}.md`, note.body);
+      // Per-entity linked notes require a Mana server new enough to expose
+      // /api/memory/notes. Older servers 404 here; that shouldn't undo the
+      // primary note write above or report the whole sync as failed.
+      let notesWritten = 0;
+      let notesError: string | null = null;
+      try {
+        const notes = await fetchManaMemoryNotes(this.settings.serverUrl, this.settings.apiKey);
+        const folder = normalizePath(this.settings.notesFolder);
+        if (notes.length && !this.app.vault.getAbstractFileByPath(folder)) {
+          await this.app.vault.createFolder(folder);
+        }
+        for (const note of notes) {
+          await this.writeNote(`${folder}/${note.slug}.md`, note.body);
+        }
+        notesWritten = notes.length;
+      } catch (err) {
+        notesError = (err as Error).message;
       }
 
       new Notice(
         `Mana Memory Sync: updated ${this.settings.notePath}` +
-          (notes.length ? ` and ${notes.length} note${notes.length === 1 ? "" : "s"} in ${folder}/` : "")
+          (notesWritten
+            ? ` and ${notesWritten} note${notesWritten === 1 ? "" : "s"} in ${this.settings.notesFolder}/`
+            : notesError
+              ? ` (linked notes skipped: ${notesError})`
+              : "")
       );
     } catch (err) {
       new Notice(`Mana Memory Sync failed: ${(err as Error).message}`);
