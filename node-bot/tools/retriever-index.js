@@ -14,6 +14,12 @@ const EMBEDDING_MODEL =
 const OPENAI_API_KEY =
   process.env.OPENAI_API_KEY || process.env.OPENAI_KEY || "";
 const OPENAI_BASE_URL = process.env.OPENAI_BASE_URL || "https://api.openai.com";
+// Merely having OPENAI_API_KEY set (e.g. for an unrelated feature) must not
+// silently start billing OpenAI every time the local embedder happens to be
+// down -- that fallback needs its own explicit opt-in.
+const ALLOW_OPENAI_EMBEDDING_FALLBACK =
+  String(process.env.RETRIEVER_EMBEDDER_OPENAI_FALLBACK || "").toLowerCase() === "1" ||
+  String(process.env.RETRIEVER_EMBEDDER_OPENAI_FALLBACK || "").toLowerCase() === "true";
 
 // Vector store adapter (FAISS or JS fallback)
 const { createStore } = require("./vector-store");
@@ -358,8 +364,11 @@ async function computeEmbeddings(inputs) {
     // local embedder not available
   }
 
-  // Fallback to OpenAI batch embeddings
-  if (!OPENAI_API_KEY) return inputs.map(() => null);
+  // Fallback to OpenAI batch embeddings -- opt-in only, see
+  // ALLOW_OPENAI_EMBEDDING_FALLBACK above.
+  if (!ALLOW_OPENAI_EMBEDDING_FALLBACK || !OPENAI_API_KEY) {
+    return inputs.map(() => null);
+  }
   try {
     const url =
       (OPENAI_BASE_URL || "https://api.openai.com").replace(/\/$/, "") +
