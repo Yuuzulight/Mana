@@ -230,6 +230,7 @@ function beginInlineRename(sessionId) {
 
 function showConfirmModal(message) {
   return new Promise((resolve) => {
+    memoryModalEl.hidden = true;
     confirmModalMessageEl.textContent = message;
     confirmModalEl.hidden = false;
 
@@ -274,6 +275,7 @@ async function deleteSessionWithConfirm(sessionId) {
 }
 
 async function openMemoryModal(sessionId) {
+  confirmModalEl.hidden = true;
   memoryModalTitleEl.textContent = "Session memory";
   memoryModalBodyEl.textContent = "Loading...";
   memoryModalEl.hidden = false;

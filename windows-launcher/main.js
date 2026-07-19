@@ -33,7 +33,7 @@ const DEFAULT_WHISPER_MODEL = path.join(
 const START_FALLBACK_CHATTERBOX =
   process.env.START_FALLBACK_CHATTERBOX === "1";
 const HIDE_MAIN_WINDOW_AFTER_STARTUP =
-  process.env.HIDE_MAIN_WINDOW_AFTER_STARTUP !== "0";
+  process.env.HIDE_MAIN_WINDOW_AFTER_STARTUP === "1";
 const AVATAR_SIZE = {
   width: Number(process.env.MANA_AVATAR_WIDTH || 234),
   height: Number(process.env.MANA_AVATAR_HEIGHT || 288),
