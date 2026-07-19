@@ -360,6 +360,17 @@ function applyModelStatus(status) {
   if (modelStatusEl) {
     modelStatusEl.textContent = describeModelStatus(status);
   }
+
+  const active = status.profiles?.[status.activeProfile];
+  const shortLabel = active?.label || status.activeProfile || "Model";
+  const composerModelNameEl = document.getElementById("composerModelName");
+  const sidebarModelLabelEl = document.getElementById("sidebarModelLabel");
+  if (composerModelNameEl) {
+    composerModelNameEl.textContent = shortLabel;
+  }
+  if (sidebarModelLabelEl) {
+    sidebarModelLabelEl.textContent = shortLabel;
+  }
 }
 
 async function refreshModelStatus() {
@@ -1264,6 +1275,7 @@ function renderDoctorPanel(result) {
   doctorSummaryEl.textContent = panel.summary;
   doctorChecksEl.innerHTML = "";
 
+  let worstStatus = "pass";
   for (const row of panel.rows) {
     const item = document.createElement("div");
     item.className = row.className;
@@ -1277,6 +1289,30 @@ function renderDoctorPanel(result) {
 
     item.append(title, message);
     doctorChecksEl.appendChild(item);
+
+    if (row.status === "fail") {
+      worstStatus = "fail";
+    } else if (row.status === "warn" && worstStatus !== "fail") {
+      worstStatus = "warn";
+    }
+
+    if (row.id === "searxng") {
+      const webAccessDotEl = document.getElementById("webAccessDot");
+      const webAccessStatusEl = document.getElementById("webAccessStatus");
+      const dotClass = row.status === "pass" ? "ok" : row.status === "warn" ? "warn" : "fail";
+      if (webAccessDotEl) {
+        webAccessDotEl.className = `nav-dot ${dotClass}`;
+      }
+      if (webAccessStatusEl) {
+        webAccessStatusEl.textContent = row.message;
+      }
+    }
+  }
+
+  const doctorNavDotEl = document.getElementById("doctorNavDot");
+  if (doctorNavDotEl) {
+    const dotClass = worstStatus === "pass" ? "ok" : worstStatus === "warn" ? "warn" : "fail";
+    doctorNavDotEl.className = `nav-dot ${dotClass}`;
   }
 }
 
