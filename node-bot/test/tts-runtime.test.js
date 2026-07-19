@@ -1,5 +1,6 @@
 const assert = require("node:assert/strict");
 const test = require("node:test");
+const http = require("node:http");
 
 const {
   createTtsRuntime,
@@ -363,4 +364,66 @@ test("fish request times out and falls back to Kokoro instead of hanging", async
   const audio = await runtime.synthesizeReply("hello");
   assert.equal(audio.toString("utf8"), "kokoro-audio");
   assert.equal(kokoroCalls.length, 1);
+});
+
+test("swapFishDevice hits POST /admin/device and skips repeat requests for the same target", async () => {
+  const swapRequests = [];
+  const server = http.createServer((req, res) => {
+    swapRequests.push({ method: req.method, url: req.url });
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ ok: true }));
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const { port } = server.address();
+
+  try {
+    const runtime = createTtsRuntime({
+      env: { FISH_TTS_URL: `http://127.0.0.1:${port}` },
+    });
+
+    await runtime.swapFishDevice("cpu");
+    assert.equal(swapRequests.length, 1);
+    assert.equal(swapRequests[0].method, "POST");
+    assert.equal(swapRequests[0].url, "/admin/device?target=cpu");
+
+    // Same target again: should not refire the request.
+    await runtime.swapFishDevice("cpu");
+    assert.equal(swapRequests.length, 1);
+
+    // Different target: fires again.
+    await runtime.swapFishDevice("cuda");
+    assert.equal(swapRequests.length, 2);
+    assert.equal(swapRequests[1].url, "/admin/device?target=cuda");
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("swapFishDevice retries after a failed swap instead of getting stuck", async () => {
+  let requestCount = 0;
+  const server = http.createServer((req, res) => {
+    requestCount += 1;
+    if (requestCount === 1) {
+      res.writeHead(500);
+      res.end("device busy");
+      return;
+    }
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ ok: true }));
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const { port } = server.address();
+
+  try {
+    const runtime = createTtsRuntime({
+      env: { FISH_TTS_URL: `http://127.0.0.1:${port}` },
+    });
+
+    await assert.rejects(runtime.swapFishDevice("cpu"));
+    // Retried instead of silently no-op'ing because the last attempt failed.
+    await runtime.swapFishDevice("cpu");
+    assert.equal(requestCount, 2);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
 });

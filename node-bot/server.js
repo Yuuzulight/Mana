@@ -3582,6 +3582,15 @@ function registerRoutes(app, upload, deps = {}) {
       try {
         const gaming = getGamingStatus();
         ttsRuntime.setProviderOverride(gaming.gamingAppRunning ? "kokoro" : null);
+        // Fire-and-forget: also park S1-mini's weights in system RAM while
+        // the game holds the GPU, and pull them back once it closes. Swaps
+        // take 30-100s+ under contention, so this must never block the
+        // reply that's about to go out over Kokoro.
+        ttsRuntime
+          .swapFishDevice(gaming.gamingAppRunning ? "cpu" : "cuda")
+          .catch((err) =>
+            console.warn("Fish device swap failed:", err.message),
+          );
       } catch (e) {
         // Best-effort; fall through with whatever provider is configured.
       }
