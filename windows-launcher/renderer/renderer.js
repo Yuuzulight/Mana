@@ -901,7 +901,7 @@ function updateGamingStatusText(matchedProcesses = []) {
   }
 
   gamingStatusEl.textContent = gamingAppRunning
-    ? `Active: ${matchedProcesses.join(", ")}`
+    ? `Active: ${matchedProcesses.join(", ")} (using Kokoro voice)`
     : "No watched game running";
 }
 

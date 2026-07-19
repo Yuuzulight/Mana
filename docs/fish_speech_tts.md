@@ -1,6 +1,9 @@
 Fish Speech TTS
 
-Mana can optionally call a local Fish Speech server as a TTS provider.
+Fish Speech (S1-mini) is Mana's default TTS provider. Chatterbox and Kokoro
+are secondary choices, available by setting `TTS_PROVIDER` explicitly. Kokoro
+also runs as S1-mini's automatic fallback voice so Mana never goes silent if
+S1-mini is unreachable or errors.
 
 Recommended checkpoint: S1-mini
 - Model: https://huggingface.co/fishaudio/s1-mini
@@ -37,6 +40,11 @@ Important notes
 - **VRAM headroom is thin.** With the model loaded and idle, an 8GB card
   has only a few hundred MB free. This has been reliable for the verified
   Mitsuki reference clip below, but see the known issue further down.
+- **Under real GPU contention (e.g. a game running) this gets much worse**,
+  not just slower in the same proportion: generation speed measured as low
+  as ~0.4 tokens/sec (vs. ~2.7 idle), turning a short reply into a 3+ minute
+  wait. See "Automatic Kokoro switch during gaming" below for how Mana
+  handles this.
 
 Setting up S1-mini's server (verified working, WSL2 + Ubuntu)
 
@@ -79,7 +87,12 @@ Mana environment variables
   server.js's header comment — so this line is only needed to be explicit
   or to override a different default).
 - `$env:FISH_TTS_URL = "http://127.0.0.1:8080"`
-- `$env:FISH_TTS_FALLBACK_PROVIDER = "kokoro"`
+- `$env:FISH_TTS_FALLBACK_PROVIDER = "kokoro"` (this is the default; set to
+  `chatterbox` or `none` to change it)
+- `$env:FISH_TTS_TIMEOUT_MS = "20000"` (default) — a request past this
+  timeout counts as a failure and triggers `FISH_TTS_FALLBACK_PROVIDER`,
+  since under GPU contention S1-mini tends to slow to a crawl rather than
+  fail outright; see "Automatic Kokoro switch during gaming" below.
 - `$env:FISH_TTS_REFERENCE_ID = "your-reference-id"` if you have a
   server-side pre-registered Fish Speech reference voice.
 - `$env:FISH_TTS_REF_AUDIO` / `$env:FISH_TTS_REF_TEXT` for zero-shot
@@ -144,7 +157,7 @@ Mana's replies do automatically yet.
 Expected Fish Speech server
 - Mana calls `POST /v1/tts` on `FISH_TTS_URL`.
 - Mana expects the server to return audio bytes.
-- Mana uses Kokoro or Chatterbox fallback if Fish Speech fails, unless `FISH_TTS_FALLBACK_PROVIDER=none`.
+- By default, Mana falls back to Kokoro if Fish Speech fails. Set `FISH_TTS_FALLBACK_PROVIDER=chatterbox` to use Chatterbox instead, or `=none` to surface Fish failures immediately with no fallback.
 
 Quick test
 - Start Fish Speech separately using its official instructions.
@@ -160,3 +173,46 @@ Fallback behavior
 - `FISH_TTS_FALLBACK_PROVIDER=kokoro` uses Kokoro if Fish Speech is unavailable.
 - `FISH_TTS_FALLBACK_PROVIDER=chatterbox` uses Chatterbox if Fish Speech is unavailable.
 - `FISH_TTS_FALLBACK_PROVIDER=none` makes Fish failures visible immediately.
+
+Automatic Kokoro switch during gaming
+- S1-mini needs the GPU largely to itself; under real VRAM contention from a
+  running game it doesn't fail outright, it just gets slow enough (10-50x)
+  to be unusable for real-time chat.
+- `node-bot/server.js`'s `synthesizeReply` checks the same watched-process
+  gaming detection the launcher's "Gaming mode" indicator uses
+  (`GAMING_PROCESS_NAMES`) on every reply. When a watched game is running
+  and `TTS_PROVIDER=fish`, it calls `ttsRuntime.setProviderOverride("kokoro")`
+  automatically; once the game closes, it clears the override and Mana goes
+  back to S1-mini on the next reply.
+- This is fully automatic — no manual toggle needed. The windows-launcher's
+  "Gaming mode" status text shows "(using Kokoro voice)" while the override
+  is active, so it's visible rather than a silent switch.
+- The override can also be driven manually via `GET`/`POST
+  http://localhost:5005/tts/override` (body `{"provider": "kokoro"}` or
+  `{"provider": null}` to clear), mainly useful for debugging.
+
+Live GPU/CPU hotswap (parking S1-mini's weights in system RAM)
+- Switching to Kokoro during gaming only changes *routing* — by itself it
+  does not free the ~4.9-5.1GB of VRAM S1-mini's weights hold while loaded,
+  since the fish-speech process keeps them GPU-resident regardless of which
+  provider is actually answering requests.
+- To actually free that VRAM for the game, fish-speech's server exposes
+  `POST /admin/device?target=cpu` (park weights in system RAM) and
+  `POST /admin/device?target=cuda` (move them back). This moves the
+  already-loaded PyTorch tensors between devices in place — no reload from
+  disk — and blocks until the move is applied.
+- Implementation lives in the (locally pinned, see above) fish-speech
+  submodule: `fish_speech/models/text2semantic/inference.py` adds a
+  `DeviceSwapRequest` sent through the same single-worker queue that
+  serializes real generation requests, so a swap can never land mid-request.
+  `tools/server/model_manager.py`'s `swap_device()` drives it (llama model
+  via the queue, decoder model directly, both behind a lock) and
+  `tools/server/views.py` exposes the route. Because this patches
+  third-party vendored code, re-applying it is needed if the submodule pin
+  ever moves.
+- Cost: ~4-4.5GB of system RAM while parked (comfortably affordable on a
+  32GB machine with ~14GB free under normal load), and a few seconds each
+  way to actually move the tensors across PCIe.
+- Not yet wired into the automatic gaming switch above (that only flips
+  `setProviderOverride`) — worth doing as a follow-up if VRAM pressure on
+  the game itself turns out to matter more than S1-mini's own latency.

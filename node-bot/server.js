@@ -3513,6 +3513,24 @@ function registerRoutes(app, upload, deps = {}) {
     }
   });
 
+  const TTS_OVERRIDE_PROVIDERS = ["fish", "kokoro", "chatterbox", "gpt_sovits", "cli"];
+
+  app.get("/tts/override", (req, res) => {
+    res.json({ ok: true, override: ttsRuntime.getProviderOverride() });
+  });
+
+  app.post("/tts/override", (req, res) => {
+    const { provider } = req.body || {};
+    if (provider !== null && provider !== undefined && !TTS_OVERRIDE_PROVIDERS.includes(provider)) {
+      return res.status(400).json({
+        ok: false,
+        error: `provider must be one of ${TTS_OVERRIDE_PROVIDERS.join(", ")}, or null to clear`,
+      });
+    }
+    ttsRuntime.setProviderOverride(provider || null);
+    return res.json({ ok: true, override: ttsRuntime.getProviderOverride() });
+  });
+
   app.get("/gaming/status", (req, res) => {
     try {
       return res.json({
@@ -3556,6 +3574,19 @@ function registerRoutes(app, upload, deps = {}) {
   const turnArbiter = require("./utils/turn_arbiter");
 
   async function synthesizeReply(text, opts = {}) {
+    // S1-mini needs the GPU largely to itself -- under real VRAM contention
+    // from a running game it doesn't fail, it just gets slow enough (10-50x)
+    // to be unusable for real-time chat. Switch to Kokoro automatically
+    // whenever a watched game is running, and back once it closes.
+    if (ttsRuntime.ttsProvider === "fish") {
+      try {
+        const gaming = getGamingStatus();
+        ttsRuntime.setProviderOverride(gaming.gamingAppRunning ? "kokoro" : null);
+      } catch (e) {
+        // Best-effort; fall through with whatever provider is configured.
+      }
+    }
+
     // Acquire a voice turn (priority 0 = highest for direct voice turns)
     const release = await turnArbiter.acquireTurn(0, {
       timeoutMs: 2 * 60 * 1000,
