@@ -12,4 +12,9 @@ source .venv/bin/activate
 
 # Quick rundown: Mana expects Fish Speech on http://127.0.0.1:8080.
 # Install dependencies first with: /home/user/.local/bin/uv sync --extra cu128
-python tools/api_server.py --listen 0.0.0.0:8080
+# This build's own default checkpoint is checkpoints/s2-pro, which we don't
+# have -- point it at the S1-mini weights instead:
+# huggingface-cli download fishaudio/openaudio-s1-mini --local-dir checkpoints/openaudio-s1-mini
+python tools/api_server.py --listen 0.0.0.0:8080 \
+  --llama-checkpoint-path checkpoints/openaudio-s1-mini \
+  --decoder-checkpoint-path checkpoints/openaudio-s1-mini/codec.pth

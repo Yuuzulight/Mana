@@ -81,6 +81,52 @@ test("tts runtime builds Fish Speech requests with optional reference id", () =>
   });
 });
 
+test("tts runtime builds Fish Speech requests with inline reference audio", () => {
+  let readCalls = 0;
+  const fakeFs = {
+    readFileSync: (filePath) => {
+      readCalls += 1;
+      assert.equal(filePath, "tts-service/references/mana-mitsuki.wav");
+      return Buffer.from("fake-wav-bytes");
+    },
+  };
+  const runtime = createTtsRuntime({
+    fs: fakeFs,
+    env: {
+      FISH_TTS_REF_AUDIO: "tts-service/references/mana-mitsuki.wav",
+      FISH_TTS_REF_TEXT: "In a quiet village where the sky brushes the fields.",
+      FISH_TTS_REFERENCE_ID: "should-be-ignored",
+    },
+  });
+
+  const request = runtime.buildFishTtsRequest("hello");
+
+  assert.equal(request.reference_id, undefined);
+  assert.deepEqual(request.references, [
+    {
+      audio: Buffer.from("fake-wav-bytes").toString("base64"),
+      text: "In a quiet village where the sky brushes the fields.",
+    },
+  ]);
+
+  // A second call should reuse the cached base64 instead of re-reading the file.
+  runtime.buildFishTtsRequest("hello again");
+  assert.equal(readCalls, 1);
+});
+
+test("tts runtime rejects a Fish Speech reference audio/text mismatch", () => {
+  const runtime = createTtsRuntime({
+    env: {
+      FISH_TTS_REF_AUDIO: "tts-service/references/mana-mitsuki.wav",
+    },
+  });
+
+  assert.throws(
+    () => runtime.buildFishTtsRequest("hello"),
+    /FISH_TTS_REF_AUDIO and FISH_TTS_REF_TEXT must both be set together/,
+  );
+});
+
 test("tts runtime falls back from Fish Speech to Kokoro when configured", async () => {
   const calls = [];
   const runtime = createTtsRuntime({
@@ -258,4 +304,63 @@ test("tts runtime falls back to Kokoro for languages GPT-SoVITS cannot speak", a
   assert.equal(sovitsCalls.length, 0);
   assert.equal(kokoroCalls.length, 1);
   assert.equal(kokoroCalls[0].lang, "de");
+});
+
+test("manual provider override wins over the configured provider", async () => {
+  const fishCalls = [];
+  const kokoroCalls = [];
+  const runtime = createTtsRuntime({
+    env: {
+      TTS_PROVIDER: "fish",
+      KOKORO_TTS_URL: "http://kokoro.local",
+    },
+    postFishTtsBuffer: async (text) => {
+      fishCalls.push(text);
+      return Buffer.from("fish-audio");
+    },
+    postJsonBuffer: async (url, body) => {
+      kokoroCalls.push(body);
+      return Buffer.from("kokoro-audio");
+    },
+    nowMs: () => 1,
+    logPerf: () => {},
+  });
+
+  assert.equal(runtime.getProviderOverride(), null);
+
+  runtime.setProviderOverride("kokoro");
+  assert.equal(runtime.getProviderOverride(), "kokoro");
+
+  const audio = await runtime.synthesizeReply("hello");
+  assert.equal(audio.toString("utf8"), "kokoro-audio");
+  assert.equal(fishCalls.length, 0);
+  assert.equal(kokoroCalls.length, 1);
+
+  runtime.setProviderOverride(null);
+  const audioAfterClear = await runtime.synthesizeReply("hello again");
+  assert.equal(audioAfterClear.toString("utf8"), "fish-audio");
+});
+
+test("fish request times out and falls back to Kokoro instead of hanging", async () => {
+  const kokoroCalls = [];
+  const runtime = createTtsRuntime({
+    env: {
+      TTS_PROVIDER: "fish",
+      FISH_TTS_FALLBACK_PROVIDER: "kokoro",
+      KOKORO_TTS_URL: "http://kokoro.local",
+    },
+    postFishTtsBuffer: async () => {
+      throw new Error("Fish Speech request timed out after 20000ms");
+    },
+    postJsonBuffer: async (url, body) => {
+      kokoroCalls.push(body);
+      return Buffer.from("kokoro-audio");
+    },
+    nowMs: () => 1,
+    logPerf: () => {},
+  });
+
+  const audio = await runtime.synthesizeReply("hello");
+  assert.equal(audio.toString("utf8"), "kokoro-audio");
+  assert.equal(kokoroCalls.length, 1);
 });
