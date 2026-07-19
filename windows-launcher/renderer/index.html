@@ -5,15 +5,15 @@
     <title>Mana</title>
     <style>
       :root {
-        --bg: #16161d;
-        --panel: #1f1f29;
-        --panel-2: #262633;
-        --border: #33334a;
-        --text: #e8e8f0;
-        --muted: #9c9cb0;
-        --accent: #8a7cff;
-        --user-bubble: #35355a;
-        --mana-bubble: #24243a;
+        --bg: #1c1a18;
+        --panel: #242220;
+        --panel-2: #2c2a27;
+        --border: #3a3733;
+        --text: #e8e4de;
+        --muted: #948d84;
+        --accent: #9d8ce0;
+        --user-bubble: #3a3560;
+        --mana-bubble: #2a2725;
       }
 
       * { box-sizing: border-box; }
@@ -21,43 +21,20 @@
       html, body {
         height: 100%;
         margin: 0;
-        font-family: "Segoe UI", Arial, sans-serif;
+        font-family: "Cascadia Code", "JetBrains Mono", Consolas, "Courier New", monospace;
         background: var(--bg);
         color: var(--text);
       }
 
       body {
         display: flex;
-        flex-direction: column;
-      }
-
-      /* Header */
-      #header {
-        display: flex;
-        align-items: center;
-        gap: 12px;
-        padding: 10px 16px;
-        background: var(--panel);
-        border-bottom: 1px solid var(--border);
-      }
-
-      #header h1 {
-        font-size: 16px;
-        margin: 0;
-      }
-
-      #status {
-        color: var(--muted);
-        font-size: 12px;
-        flex: 1;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
+        flex-direction: row;
       }
 
       button {
         padding: 7px 12px;
         font-size: 13px;
+        font-family: inherit;
         border: 1px solid var(--border);
         border-radius: 8px;
         background: var(--panel-2);
@@ -70,17 +47,293 @@
       #listenToggle {
         background: var(--accent);
         border: none;
-        color: #fff;
+        color: #171513;
+        font-weight: 600;
       }
 
-      #listenToggle.active { background: #c0392b; }
+      #listenToggle.active { background: #c0392b; color: #fff; }
 
-      /* Main column: scrollable chat on top, Mana + composer docked below. */
+      /* ---------------- Sidebar ---------------- */
+      #sessionSidebar {
+        width: 240px;
+        flex-shrink: 0;
+        display: flex;
+        flex-direction: column;
+        background: var(--panel);
+        border-right: 1px solid var(--border);
+        transition: width 0.15s ease;
+        overflow: hidden;
+      }
+
+      #sessionSidebar.collapsed { width: 56px; }
+      #sessionSidebar.collapsed .sidebar-label,
+      #sessionSidebar.collapsed #sidebarPanels,
+      #sessionSidebar.collapsed #sidebarAvatarCard,
+      #sessionSidebar.collapsed #sidebarSearchRow,
+      #sessionSidebar.collapsed #newChatBtn span { display: none; }
+
+      #sidebarHeader {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 14px 14px 8px;
+      }
+
+      #sidebarLogo {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        color: var(--accent);
+        font-weight: 700;
+        font-size: 15px;
+      }
+
+      #sidebarCollapseBtn {
+        padding: 4px 7px;
+        font-size: 13px;
+        background: none;
+        border: none;
+      }
+
+      #newChatBtn {
+        margin: 4px 12px 10px;
+        background: var(--accent);
+        border: none;
+        color: #171513;
+        font-weight: 600;
+        text-align: left;
+      }
+
+      #sidebarSearchRow {
+        margin: 0 12px 10px;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 6px 10px;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        color: var(--muted);
+      }
+
+      #sidebarSearchInput {
+        flex: 1;
+        min-width: 0;
+        background: none;
+        border: none;
+        color: var(--text);
+        font-family: inherit;
+        font-size: 12px;
+        outline: none;
+      }
+
+      .sidebar-divider {
+        height: 1px;
+        margin: 6px 12px;
+        background: var(--border);
+      }
+
+      #sidebarNav {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+        padding: 0 8px;
+      }
+
+      .nav-item {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 8px 8px;
+        border-radius: 8px;
+        cursor: pointer;
+        color: var(--muted);
+        font-size: 13px;
+      }
+
+      .nav-item:hover { background: var(--panel-2); color: var(--text); }
+
+      .nav-item.active {
+        background: color-mix(in srgb, var(--accent) 20%, transparent);
+        color: var(--accent);
+      }
+
+      .nav-icon { width: 16px; text-align: center; flex-shrink: 0; }
+      .nav-label { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .nav-meta { font-size: 11px; color: var(--muted); flex-shrink: 0; }
+      .nav-chevron { font-size: 11px; opacity: 0.6; }
+
+      .nav-dot {
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: #999;
+        flex-shrink: 0;
+      }
+      .nav-dot.ok { background: #3fb96a; }
+      .nav-dot.warn { background: #d99a2b; }
+      .nav-dot.fail { background: #d15b5b; }
+
+      #sidebarPanels {
+        flex: 1;
+        min-height: 0;
+        overflow-y: auto;
+        padding: 8px 12px 12px;
+      }
+
+      .sidebar-panel[hidden] { display: none; }
+
+      .sidebar-panel-title {
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        color: var(--muted);
+        margin: 6px 2px 8px;
+      }
+
+      #sessionList {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+      }
+
+      .session-item {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+        padding: 8px 10px;
+        border-radius: 8px;
+        cursor: pointer;
+        border: 1px solid transparent;
+      }
+
+      .session-item:hover { background: var(--panel-2); }
+      .session-item.active {
+        background: var(--panel-2);
+        border-color: var(--accent);
+      }
+
+      .session-item.filtered-out { display: none; }
+
+      .session-item .session-name {
+        font-size: 13px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .session-item .session-meta {
+        font-size: 11px;
+        color: var(--muted);
+      }
+
+      .session-item .session-name-input {
+        width: 100%;
+        font-size: 13px;
+        font-family: inherit;
+        background: var(--bg);
+        color: var(--text);
+        border: 1px solid var(--accent);
+        border-radius: 4px;
+        padding: 2px 4px;
+      }
+
+      #sessionEmpty {
+        padding: 10px;
+        font-size: 12px;
+        color: var(--muted);
+      }
+
+      .sidebar-field {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        margin-bottom: 10px;
+        font-size: 12px;
+      }
+
+      .sidebar-field input[type="text"],
+      .sidebar-field select {
+        padding: 7px 9px;
+        border-radius: 6px;
+        border: 1px solid var(--border);
+        background: var(--panel-2);
+        color: var(--text);
+        font-family: inherit;
+        font-size: 12px;
+      }
+
+      .sidebar-note { font-size: 12px; color: var(--muted); line-height: 1.5; }
+
+      #sidebarAvatarCard {
+        margin: 8px 12px 12px;
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        background: var(--panel-2);
+        position: relative;
+        overflow: hidden;
+        aspect-ratio: 1 / 1;
+      }
+
+      #sidebarAvatarThumb {
+        width: 100%;
+        height: 100%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        color: var(--accent);
+        font-size: 40px;
+      }
+
+      #sidebarAvatarLabel {
+        position: absolute;
+        left: 8px;
+        bottom: 6px;
+        font-size: 11px;
+        font-weight: 600;
+      }
+
+      #sidebarAvatarStatus {
+        position: absolute;
+        right: 8px;
+        bottom: 6px;
+        font-size: 10px;
+        color: var(--muted);
+        display: flex;
+        align-items: center;
+        gap: 4px;
+      }
+
+      /* ---------------- Main column ---------------- */
+      #appColumn {
+        flex: 1;
+        min-width: 0;
+        display: flex;
+        flex-direction: column;
+      }
+
+      #header {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 8px 16px;
+        border-bottom: 1px solid var(--border);
+      }
+
+      #status {
+        color: var(--muted);
+        font-size: 12px;
+        flex: 1;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
       #main {
         flex: 1;
         display: flex;
         flex-direction: column;
         min-height: 0;
+        position: relative;
       }
 
       #chatLog {
@@ -91,6 +344,51 @@
         display: flex;
         flex-direction: column;
         gap: 10px;
+      }
+
+      #chatEmptyState {
+        position: absolute;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 110px;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 16px;
+        text-align: center;
+        padding: 24px;
+        pointer-events: none;
+      }
+
+      #chatEmptyState.hidden { display: none; }
+
+      #chatEmptyState h2 {
+        font-size: 34px;
+        margin: 0;
+        color: var(--accent);
+      }
+
+      #chatEmptyState p {
+        max-width: 460px;
+        margin: 0;
+        color: var(--muted);
+        font-size: 13px;
+        line-height: 1.6;
+      }
+
+      #chatEmptyState .status-pill {
+        pointer-events: auto;
+        padding: 6px 14px;
+        border-radius: 999px;
+        border: 1px solid var(--border);
+        background: var(--panel);
+        font-size: 12px;
+        color: var(--muted);
+        display: flex;
+        align-items: center;
+        gap: 7px;
       }
 
       .chat-message {
@@ -176,9 +474,32 @@
         min-width: 0;
       }
 
-      #composer {
+      #composerCard {
         display: flex;
+        flex-direction: column;
         gap: 8px;
+        padding: 10px;
+        border-radius: 14px;
+        border: 1px solid var(--border);
+        background: var(--panel-2);
+      }
+
+      #composerIconRow {
+        display: flex;
+        gap: 6px;
+      }
+
+      #composerIconRow button {
+        padding: 6px 9px;
+        font-size: 13px;
+        background: none;
+        border: 1px solid transparent;
+      }
+
+      #composerIconRow button:hover { border-color: var(--border); background: var(--panel); }
+      #composerIconRow button.active {
+        color: var(--accent);
+        border-color: var(--accent);
       }
 
       #chatInput {
@@ -186,25 +507,58 @@
         resize: none;
         min-height: 42px;
         max-height: 140px;
-        padding: 10px 12px;
-        border-radius: 10px;
-        border: 1px solid var(--border);
-        background: var(--panel-2);
+        padding: 6px 4px;
+        border: none;
+        background: none;
         color: var(--text);
         font-family: inherit;
         font-size: 14px;
+        outline: none;
       }
 
-      #chatInput:focus { outline: 1px solid var(--accent); }
+      #composerBottomRow {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
 
-      #deepResearchBtn.active {
+      #composerBottomRow .spacer { flex: 1; }
+
+      #composerModelLabel {
+        font-size: 11px;
+        color: var(--muted);
+        padding: 6px 8px;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        white-space: nowrap;
+      }
+
+      #voiceProviderSelect {
+        padding: 6px 8px;
+        font-size: 11px;
+        font-family: inherit;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        background: var(--panel);
+        color: var(--text);
+      }
+
+      #chatSend {
         background: var(--accent);
-        border-color: var(--accent);
-        color: #fff;
+        border: none;
+        color: #171513;
+        border-radius: 50%;
+        width: 34px;
+        height: 34px;
+        padding: 0;
+        font-size: 16px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
       }
 
       #researchProgress {
-        margin-top: 6px;
+        margin-top: 0;
         font-size: 12px;
         color: var(--muted);
         display: flex;
@@ -231,36 +585,12 @@
         font-size: 11px;
       }
 
-      #controlsRow {
-        display: flex;
-        align-items: center;
-        gap: 12px;
-        font-size: 12px;
-        color: var(--muted);
-      }
-
-      /* System panel */
-      #systemDetails {
-        border-top: 1px solid var(--border);
-        background: var(--panel);
-        font-size: 12px;
-        max-height: 45vh;
-        overflow-y: auto;
-      }
-
-      #systemDetails summary {
-        cursor: pointer;
-        padding: 8px 16px;
-        color: var(--muted);
-      }
-
-      #systemBody { padding: 0 16px 12px; }
-
-      #perfPanel, #doctorPanel, #modelPanel, #presetPanel {
-        margin-top: 10px;
+      /* Panels reused inside the sidebar (Model / Doctor / Settings) */
+      #perfPanel, #doctorPanel, #modelPanel, #presetPanel, #themePanel {
+        margin-bottom: 12px;
         padding: 10px;
         border: 1px solid var(--border);
-        border-radius: 6px;
+        border-radius: 8px;
         background: var(--panel-2);
         font-size: 12px;
       }
@@ -283,9 +613,9 @@
         cursor: pointer;
       }
       .modelModeButton.active {
-        background: #0b84ff;
-        border-color: #0b84ff;
-        color: white;
+        background: var(--accent);
+        border-color: var(--accent);
+        color: #171513;
       }
       #modelStatus { margin-top: 8px; color: var(--muted); }
 
@@ -332,9 +662,8 @@
       #presetEditorActions button { padding: 6px 10px; font-size: 12px; }
 
       #compareModeBtn.active {
-        background: var(--accent);
+        color: var(--accent);
         border-color: var(--accent);
-        color: #fff;
       }
 
       #comparePanel {
@@ -446,93 +775,30 @@
         border-left: 4px solid #999;
         background: var(--panel);
       }
-      .doctor-check-pass { border-left-color: #1f8f4d; }
-      .doctor-check-warn { border-left-color: #c98200; }
-      .doctor-check-fail { border-left-color: #c0392b; }
+      .doctor-check-pass { border-left-color: #3fb96a; }
+      .doctor-check-warn { border-left-color: #d99a2b; }
+      .doctor-check-fail { border-left-color: #d15b5b; }
       .doctor-check-title { font-weight: bold; }
+
+      #gamingModeRow {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        font-size: 12px;
+        color: var(--muted);
+        margin-bottom: 12px;
+      }
+
+      #marketWatchForm {
+        display: flex;
+        gap: 6px;
+        margin-bottom: 10px;
+      }
+      #marketWatchForm input { flex: 1; }
+      #marketWatchResult { font-size: 12px; color: var(--text); white-space: pre-wrap; }
 
       /* Legacy single-line elements kept for compatibility; chat log is the UI. */
       #transcript, #modelReply { display: none; }
-
-      /* Session sidebar */
-      body { flex-direction: row; }
-
-      #sessionSidebar {
-        width: 220px;
-        flex-shrink: 0;
-        display: flex;
-        flex-direction: column;
-        background: var(--panel);
-        border-right: 1px solid var(--border);
-      }
-
-      #newChatBtn {
-        margin: 12px;
-        background: var(--accent);
-        border: none;
-        color: #fff;
-      }
-
-      #sessionList {
-        flex: 1;
-        overflow-y: auto;
-        padding: 0 8px 8px;
-        display: flex;
-        flex-direction: column;
-        gap: 4px;
-      }
-
-      .session-item {
-        display: flex;
-        flex-direction: column;
-        gap: 2px;
-        padding: 8px 10px;
-        border-radius: 8px;
-        cursor: pointer;
-        border: 1px solid transparent;
-      }
-
-      .session-item:hover { background: var(--panel-2); }
-      .session-item.active {
-        background: var(--panel-2);
-        border-color: var(--accent);
-      }
-
-      .session-item .session-name {
-        font-size: 13px;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-      }
-
-      .session-item .session-meta {
-        font-size: 11px;
-        color: var(--muted);
-      }
-
-      .session-item .session-name-input {
-        width: 100%;
-        font-size: 13px;
-        font-family: inherit;
-        background: var(--bg);
-        color: var(--text);
-        border: 1px solid var(--accent);
-        border-radius: 4px;
-        padding: 2px 4px;
-      }
-
-      #sessionEmpty {
-        padding: 10px;
-        font-size: 12px;
-        color: var(--muted);
-      }
-
-      #appColumn {
-        flex: 1;
-        min-width: 0;
-        display: flex;
-        flex-direction: column;
-      }
 
       /* Session context menu */
       .context-menu {
@@ -569,6 +835,8 @@
         justify-content: center;
         z-index: 60;
       }
+
+      .modal-overlay[hidden] { display: none; }
 
       .modal {
         background: var(--panel);
@@ -616,154 +884,266 @@
   </head>
   <body>
     <div id="sessionSidebar">
-      <button id="newChatBtn">+ New chat</button>
-      <div id="sessionList">
-        <div id="sessionEmpty">No saved sessions yet — start chatting to create one.</div>
+      <div id="sidebarHeader">
+        <div id="sidebarLogo">⛰ <span class="sidebar-label">Mana</span></div>
+        <button id="sidebarCollapseBtn" title="Collapse sidebar">☰</button>
       </div>
-    </div>
 
-    <div id="appColumn">
-    <div id="header">
-      <h1>Mana</h1>
-      <div id="status">Status: <span id="statustxt">Starting...</span></div>
-      <button id="listenToggle">Start listening</button>
-    </div>
+      <button id="newChatBtn">+ <span>New chat</span></button>
 
-    <div id="main">
-      <div id="chatLog"></div>
+      <div id="sidebarSearchRow">
+        🔍
+        <input id="sidebarSearchInput" type="text" placeholder="Search sessions" />
+      </div>
 
-      <div id="bottomBar">
-        <div id="avatarDock">
-          <canvas id="manaCanvas"></canvas>
-          <button id="avatarZoomBtn" title="Zoom avatar view">⤢</button>
+      <div class="sidebar-divider"></div>
+
+      <div id="sidebarNav">
+        <div class="nav-item active" data-panel="sessions">
+          <span class="nav-icon">💬</span>
+          <span class="nav-label">Sessions</span>
+          <span class="nav-chevron">›</span>
         </div>
-        <div id="composerColumn">
-          <div id="controlsRow">
+        <div class="nav-item" data-panel="avatar">
+          <span class="nav-icon">◑</span>
+          <span class="nav-label">Avatar</span>
+          <span class="nav-meta">live2d</span>
+        </div>
+        <div class="nav-item" data-panel="webAccess">
+          <span class="nav-icon">◎</span>
+          <span class="nav-label">Web access</span>
+          <span class="nav-dot" id="webAccessDot"></span>
+        </div>
+        <div class="nav-item" data-panel="marketWatch">
+          <span class="nav-icon">▤</span>
+          <span class="nav-label">Market watch</span>
+        </div>
+        <div class="nav-item" data-panel="vision">
+          <span class="nav-icon">◉</span>
+          <span class="nav-label">Vision</span>
+        </div>
+      </div>
+
+      <div class="sidebar-divider"></div>
+
+      <div id="sidebarNav2">
+        <div class="nav-item" data-panel="model">
+          <span class="nav-icon">♪</span>
+          <span class="nav-label">Model</span>
+          <span class="nav-meta" id="sidebarModelLabel">...</span>
+        </div>
+        <div class="nav-item" data-panel="doctor">
+          <span class="nav-icon">✓</span>
+          <span class="nav-label">Doctor</span>
+          <span class="nav-dot" id="doctorNavDot"></span>
+        </div>
+        <div class="nav-item" data-panel="settings">
+          <span class="nav-icon">⚙</span>
+          <span class="nav-label">Settings</span>
+        </div>
+      </div>
+
+      <div id="sidebarPanels">
+        <div class="sidebar-panel" data-panel="sessions">
+          <div id="sessionList">
+            <div id="sessionEmpty">No saved sessions yet — start chatting to create one.</div>
+          </div>
+        </div>
+
+        <div class="sidebar-panel" data-panel="avatar" hidden>
+          <div class="sidebar-panel-title">Avatar</div>
+          <p class="sidebar-note">Live2D avatar rendered in the composer dock. Click the ⤢ button on the avatar to cycle framing.</p>
+          <div class="sidebar-field">
+            <label id="avatarZoomLabel">Framing: whole body</label>
+          </div>
+        </div>
+
+        <div class="sidebar-panel" data-panel="webAccess" hidden>
+          <div class="sidebar-panel-title">Web access</div>
+          <p class="sidebar-note" id="webAccessStatus">Checking...</p>
+        </div>
+
+        <div class="sidebar-panel" data-panel="marketWatch" hidden>
+          <div class="sidebar-panel-title">Market watch</div>
+          <div id="marketWatchForm">
+            <input id="marketWatchItemInput" type="text" placeholder="Item name (e.g. Cloud Cotton)" />
+            <button id="marketWatchCheckBtn">Check</button>
+          </div>
+          <div id="marketWatchResult"></div>
+        </div>
+
+        <div class="sidebar-panel" data-panel="vision" hidden>
+          <div class="sidebar-panel-title">Vision</div>
+          <p class="sidebar-note">Ask Mana to describe your screen without saying it out loud. Default hotkey: <strong>Ctrl+Alt+M</strong>.</p>
+          <button id="visionLookNowBtn">Look at my screen now</button>
+        </div>
+
+        <div class="sidebar-panel" data-panel="model" hidden>
+          <div id="modelPanel">
+            <div id="modelModeControls"></div>
+            <div id="modelStatus">Checking...</div>
+          </div>
+        </div>
+
+        <div class="sidebar-panel" data-panel="doctor" hidden>
+          <div id="doctorPanel">
+            <div id="doctorHeader">
+              <strong id="doctorTitle">Doctor</strong>
+              <button id="runDoctor">Run checks</button>
+            </div>
+            <div id="doctorSummary">Not checked yet</div>
+            <div id="doctorChecks"></div>
+          </div>
+        </div>
+
+        <div class="sidebar-panel" data-panel="settings" hidden>
+          <div id="gamingModeRow">
             <label>
               <input id="gamingMode" type="checkbox" checked />
               Gaming mode
             </label>
             <span id="gamingStatus">Checking games...</span>
           </div>
-          <div id="composer">
-            <textarea
-              id="chatInput"
-              placeholder="Message Mana... (Enter to send, Shift+Enter for a new line)"
-            ></textarea>
-            <button
-              id="deepResearchBtn"
-              title="Deep research: search and read several sources, then synthesize a cited report"
-            >
-              Research
-            </button>
-            <button id="chatSend">Send</button>
-            <button
-              id="compareModeBtn"
-              title="Compare mode: send this prompt to two model profiles and see both replies side by side"
-            >Compare</button>
+
+          <div style="margin-bottom: 12px">
+            <button id="openWebUI">Open Model Web UI</button>
+            <div class="sidebar-note" style="margin-top: 4px">http://localhost:7860</div>
           </div>
-          <div id="comparePanel" hidden>
-            <div id="compareSelectRow">
-              <select id="compareProfileA"></select>
-              <select id="compareProfileB"></select>
-              <button id="compareCancelBtn" title="Cancel the in-flight comparison" hidden>Cancel</button>
+
+          <div id="perfPanel">
+            <strong>Performance</strong>
+            <pre id="perfStatus">Waiting for metrics...</pre>
+          </div>
+
+          <div id="presetPanel">
+            <strong>Presets</strong>
+            <div id="presetSelectRow">
+              <select id="presetSelect">
+                <option value="">None</option>
+              </select>
+              <button id="presetNewBtn">New</button>
+              <button id="presetEditBtn" hidden>Edit</button>
+              <button id="presetDeleteBtn" hidden>Delete</button>
             </div>
-            <div id="compareResults">
-              <div class="compareColumn" id="compareColumnA">
-                <div class="compareColumnHeader">
-                  <span id="compareLabelA">Profile A</span>
-                  <button class="comparePreferBtn" id="comparePreferA">Prefer this</button>
-                </div>
-                <div class="compareColumnBody" id="compareResultA">Type a prompt and send it to compare.</div>
-              </div>
-              <div class="compareColumn" id="compareColumnB">
-                <div class="compareColumnHeader">
-                  <span id="compareLabelB">Profile B</span>
-                  <button class="comparePreferBtn" id="comparePreferB">Prefer this</button>
-                </div>
-                <div class="compareColumnBody" id="compareResultB">Type a prompt and send it to compare.</div>
+            <div id="presetEditor" hidden>
+              <input
+                id="presetNameInput"
+                type="text"
+                placeholder="Preset name"
+                maxlength="80"
+              />
+              <textarea
+                id="presetInstructionsInput"
+                placeholder="Instructions Mana should follow while this preset is active..."
+                maxlength="4000"
+              ></textarea>
+              <div id="presetEditorActions">
+                <button id="presetSaveBtn">Save</button>
+                <button id="presetCancelBtn">Cancel</button>
               </div>
             </div>
           </div>
-          <div id="researchProgress" hidden>
-            <span id="researchProgressLabel">Researching...</span>
-            <button id="researchCancelBtn" title="Stop this research run">Cancel</button>
+
+          <div id="themePanel">
+            <strong>Theme</strong>
+            <div id="themePresetControls"></div>
+            <div id="themeAccentRow">
+              <label for="accentColorInput">Accent color</label>
+              <input type="color" id="accentColorInput" />
+              <button id="resetAccentBtn">Reset</button>
+            </div>
           </div>
         </div>
+      </div>
+
+      <div id="sidebarAvatarCard">
+        <div id="sidebarAvatarThumb">◑</div>
+        <div id="sidebarAvatarLabel">Mana</div>
+        <div id="sidebarAvatarStatus"><span class="nav-dot ok"></span> Idle</div>
       </div>
     </div>
 
-    <details id="systemDetails">
-      <summary>System status &amp; tools</summary>
-      <div id="systemBody">
-        <div style="margin-top: 8px">
-          <button id="openWebUI">Open Model Web UI</button>
-          <span style="margin-left: 8px; color: var(--muted)">(http://localhost:7860)</span>
+    <div id="appColumn">
+      <div id="header">
+        <div id="status">Status: <span id="statustxt">Starting...</span></div>
+        <button id="listenToggle">Start listening</button>
+      </div>
+
+      <div id="main">
+        <div id="chatLog"></div>
+
+        <div id="chatEmptyState">
+          <h2>Mana</h2>
+          <p>Tip: right-click a session to rename, delete, or open its memory. The avatar reacts to what you say — try asking her to look at your screen.</p>
+          <div class="status-pill"><span class="nav-dot ok"></span> Idle — awaiting wake word</div>
         </div>
 
-        <div id="perfPanel">
-          <strong>Performance</strong>
-          <pre id="perfStatus">Waiting for metrics...</pre>
-        </div>
-
-        <div id="modelPanel">
-          <strong>Model</strong>
-          <div id="modelModeControls"></div>
-          <div id="modelStatus">Checking...</div>
-        </div>
-
-        <div id="presetPanel">
-          <strong>Presets</strong>
-          <div id="presetSelectRow">
-            <select id="presetSelect">
-              <option value="">None</option>
-            </select>
-            <button id="presetNewBtn">New</button>
-            <button id="presetEditBtn" hidden>Edit</button>
-            <button id="presetDeleteBtn" hidden>Delete</button>
+        <div id="bottomBar">
+          <div id="avatarDock">
+            <canvas id="manaCanvas"></canvas>
+            <button id="avatarZoomBtn" title="Zoom avatar view">⤢</button>
           </div>
-          <div id="presetEditor" hidden>
-            <input
-              id="presetNameInput"
-              type="text"
-              placeholder="Preset name"
-              maxlength="80"
-            />
-            <textarea
-              id="presetInstructionsInput"
-              placeholder="Instructions Mana should follow while this preset is active..."
-              maxlength="4000"
-            ></textarea>
-            <div id="presetEditorActions">
-              <button id="presetSaveBtn">Save</button>
-              <button id="presetCancelBtn">Cancel</button>
+          <div id="composerColumn">
+            <div id="composerCard">
+              <div id="composerIconRow">
+                <button
+                  id="deepResearchBtn"
+                  title="Deep research: search and read several sources, then synthesize a cited report"
+                >⌕ Research</button>
+                <button
+                  id="compareModeBtn"
+                  title="Compare mode: send this prompt to two model profiles and see both replies side by side"
+                >⇄ Compare</button>
+              </div>
+              <textarea
+                id="chatInput"
+                placeholder="Message Mana... (Enter to send, Shift+Enter for a new line)"
+              ></textarea>
+              <div id="composerBottomRow">
+                <span id="composerModelLabel">◈ <span id="composerModelName">Model</span></span>
+                <select id="voiceProviderSelect" title="Voice provider">
+                  <option value="">Voice: default</option>
+                  <option value="fish">Voice: S1-mini</option>
+                  <option value="kokoro">Voice: Kokoro</option>
+                  <option value="chatterbox">Voice: Chatterbox</option>
+                </select>
+                <span class="spacer"></span>
+                <button id="chatSend" title="Send">↑</button>
+              </div>
+            </div>
+            <div id="comparePanel" hidden>
+              <div id="compareSelectRow">
+                <select id="compareProfileA"></select>
+                <select id="compareProfileB"></select>
+                <button id="compareCancelBtn" title="Cancel the in-flight comparison" hidden>Cancel</button>
+              </div>
+              <div id="compareResults">
+                <div class="compareColumn" id="compareColumnA">
+                  <div class="compareColumnHeader">
+                    <span id="compareLabelA">Profile A</span>
+                    <button class="comparePreferBtn" id="comparePreferA">Prefer this</button>
+                  </div>
+                  <div class="compareColumnBody" id="compareResultA">Type a prompt and send it to compare.</div>
+                </div>
+                <div class="compareColumn" id="compareColumnB">
+                  <div class="compareColumnHeader">
+                    <span id="compareLabelB">Profile B</span>
+                    <button class="comparePreferBtn" id="comparePreferB">Prefer this</button>
+                  </div>
+                  <div class="compareColumnBody" id="compareResultB">Type a prompt and send it to compare.</div>
+                </div>
+              </div>
+            </div>
+            <div id="researchProgress" hidden>
+              <span id="researchProgressLabel">Researching...</span>
+              <button id="researchCancelBtn" title="Stop this research run">Cancel</button>
             </div>
           </div>
         </div>
-
-        <div id="doctorPanel">
-          <div id="doctorHeader">
-            <strong id="doctorTitle">Doctor</strong>
-            <button id="runDoctor">Run checks</button>
-          </div>
-          <div id="doctorSummary">Not checked yet</div>
-          <div id="doctorChecks"></div>
-        </div>
-
-        <div id="themePanel">
-          <strong>Theme</strong>
-          <div id="themePresetControls"></div>
-          <div id="themeAccentRow">
-            <label for="accentColorInput">Accent color</label>
-            <input type="color" id="accentColorInput" />
-            <button id="resetAccentBtn">Reset</button>
-          </div>
-        </div>
       </div>
-    </details>
 
-    <div id="transcript"></div>
-    <div id="modelReply"></div>
+      <div id="transcript"></div>
+      <div id="modelReply"></div>
     </div>
 
     <div id="sessionContextMenu" class="context-menu" hidden>
@@ -799,5 +1179,6 @@
     <script src="../node_modules/pixi-live2d-display/dist/cubism4.min.js"></script>
     <script src="renderer.js"></script>
     <script src="session-sidebar.js"></script>
+    <script src="sidebar-nav.js"></script>
   </body>
 </html>
