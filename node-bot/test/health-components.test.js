@@ -19,6 +19,7 @@ test("health includes component readiness while preserving top-level fields", as
 
     assert.deepEqual(Object.keys(body.components).sort(), [
       "backend",
+      "backgroundMemory",
       "cloudflareTunnel",
       "deepResearch",
       "dirScanner",
@@ -27,6 +28,7 @@ test("health includes component readiness while preserving top-level fields", as
       "localMemory",
       "mobileAuth",
       "presets",
+      "retrieverAdmin",
       "sessions",
       "tts",
       "vtubeStudio",
