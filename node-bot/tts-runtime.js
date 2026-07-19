@@ -169,6 +169,14 @@ function createTtsRuntime(options = {}) {
   // Manual runtime override (e.g. "use Kokoro while gaming"), set via
   // setProviderOverride(); null means "use ttsProvider as configured".
   let providerOverride = null;
+  // Last device we asked Fish Speech to swap to, so the gaming-detection
+  // hook (called on every synthesizeReply) doesn't refire the same swap
+  // request every turn -- swaps take 30-100s+ under GPU contention.
+  let fishDeviceSwapTarget = null;
+  let fishDeviceSwapInFlight = null;
+  const fishDeviceSwapTimeoutMs = Number(
+    env.FISH_DEVICE_SWAP_TIMEOUT_MS || 3 * 60 * 1000,
+  );
   const kokoroManaVoice = env.KOKORO_MANA_VOICE || "jf_nezumi";
   // Pitch lift for a brighter, younger voice; the Kokoro service compensates
   // tempo so speech speed is unaffected. 1.0 disables.
@@ -357,6 +365,58 @@ function createTtsRuntime(options = {}) {
       req.write(payload);
       req.end();
     });
+  }
+
+  // Parks Fish Speech's weights in system RAM (target "cpu") while a game
+  // holds the GPU, or pulls them back (target "cuda") once it closes -- see
+  // fish-speech's POST /admin/device. Call this fire-and-forget: a swap
+  // takes 30-100s+ under contention, and awaiting it would make whatever
+  // reply triggered the check as slow as the thing it's avoiding. Skips the
+  // request entirely if we already asked for this target.
+  function swapFishDevice(target) {
+    if (fishDeviceSwapTarget === target) {
+      return fishDeviceSwapInFlight || Promise.resolve();
+    }
+    fishDeviceSwapTarget = target;
+
+    const url = new URL("/admin/device", fishTtsUrl);
+    url.searchParams.set("target", target);
+    const transport = url.protocol === "https:" ? https : http;
+
+    fishDeviceSwapInFlight = new Promise((resolve, reject) => {
+      const req = transport.request(
+        {
+          hostname: url.hostname,
+          port: url.port,
+          path: `${url.pathname}${url.search}`,
+          method: "POST",
+          timeout: fishDeviceSwapTimeoutMs,
+        },
+        (res) => {
+          res.on("data", () => {});
+          res.on("end", () => {
+            if (res.statusCode && res.statusCode >= 200 && res.statusCode < 300) {
+              resolve();
+            } else {
+              reject(new Error(`Fish device swap failed (${res.statusCode})`));
+            }
+          });
+        },
+      );
+      req.on("error", reject);
+      req.on("timeout", () => {
+        req.destroy(
+          new Error(`Fish device swap timed out after ${fishDeviceSwapTimeoutMs}ms`),
+        );
+      });
+      req.end();
+    }).catch((error) => {
+      // Let the next check retry instead of getting stuck on a failed target.
+      fishDeviceSwapTarget = null;
+      throw error;
+    });
+
+    return fishDeviceSwapInFlight;
   }
 
   function pickKokoroLanguageProfile(text) {
@@ -575,6 +635,7 @@ function createTtsRuntime(options = {}) {
     setProviderOverride: (provider) => {
       providerOverride = provider || null;
     },
+    swapFishDevice,
     urls: {
       chatterboxTtsUrl,
       fishTtsUrl,
