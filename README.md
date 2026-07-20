@@ -39,7 +39,7 @@ For the full setup flow, including model paths, Whisper, TTS services, gaming mo
 - **Desktop avatar support**: Mana emotes through a built-in Live2D VTuber avatar with lip sync and emotion reactions ([docs/live2d_avatar_setup.md](docs/live2d_avatar_setup.md)), PNG overlay fallback, and optional VTube Studio hotkey control. A fully 3D model option is planned as a future alternative.
 - **Mobile companion path**: phone chat and summary sync are available through the local backend and optional tunnel setup.
 - **Editor coding handoff**: Mana can detect local Zed or VS Code CLIs and open projects or files for coding help without applying edits silently.
-- **FFXIV and market helpers**: Mana can query Universalis crafting/market data and Alpha Vantage stock summaries when configured.
+- **FFXIV and market helpers**: Mana can query Universalis crafting/market data and Alpha Vantage stock summaries when configured, as self-contained optional plugins that also inject context into chat replies; see [Plugins](plugins/README.md).
 - **MCP server (opt-in)**: Mana can expose its FFXIV market and web-access tools over the Model Context Protocol for local MCP clients like Claude Desktop or Claude Code; see [docs/roadmap/issue-42-mcp-support.md](docs/roadmap/issue-42-mcp-support.md).
 - **Deep Research**: a "Research" button next to the composer runs a bounded, multi-source search-and-read pass and replies with a cited report instead of a single search-and-answer; see [docs/roadmap/issue-47-deep-research.md](docs/roadmap/issue-47-deep-research.md).
 
@@ -49,7 +49,8 @@ Mana is intentionally split into small runtime pieces:
 
 - `windows-launcher`: Electron desktop launcher, microphone capture, avatar overlay control, screen capture, performance panel, and Doctor panel.
 - `desktop-client`: Electron chat client packaged with a real Windows installer (electron-builder/NSIS), including a built-in Live2D avatar — currently loaded with a temporary testing placeholder model, see `desktop-client/AVATAR_NOTICE.md`.
-- `node-bot`: local backend API for transcription, replies, TTS calls, screen OCR, mobile routes, market helpers, and setup checks.
+- `node-bot`: local backend API for transcription, replies, TTS calls, screen OCR, mobile routes, and setup checks.
+- `plugins`: self-contained optional feature plugins (FFXIV market/crafting, real-world stock market data) that register their own routes, contribute chat-reply context, and are discoverable via `GET /plugins`; see [plugins/README.md](plugins/README.md).
 - `tts-service`: local Python services for Chatterbox and Kokoro TTS.
 - `tools/whisper`: expected location for local `whisper.cpp` binaries and models.
 - `tools/llama`: expected location for local `llama.cpp` binaries and GGUF models.
@@ -174,6 +175,7 @@ Useful endpoints:
 - `GET /health`: basic backend status.
 - `GET /doctor`: setup and readiness checks.
 - `GET /perf/status`: local performance and process metrics.
+- `GET /plugins`: discover loaded plugins grouped by category (see [plugins/README.md](plugins/README.md)).
 - `GET /editors/status`: local editor CLI availability.
 - `POST /editors/open`: open an existing file or folder in Zed or VS Code.
 - `GET /editors/workspace`: active local coding workspace.
