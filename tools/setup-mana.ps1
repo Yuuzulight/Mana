@@ -65,6 +65,20 @@ if ($gitCmd) {
   Write-Warn "Git not found on PATH. Install Git for Windows if you'll be pulling updates."
 }
 
+# Obsidian is optional (Mana's Memory Sync plugin, see obsidian-plugin\README.md)
+# so this only nudges, it never installs anything on your behalf.
+$obsidianExe = Join-Path $env:LOCALAPPDATA "Obsidian\Obsidian.exe"
+$obsidianInstalled = (Test-Path $obsidianExe) -or [bool](
+  Get-ItemProperty "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*" -ErrorAction SilentlyContinue |
+    Where-Object { $_.DisplayName -like "*Obsidian*" }
+)
+if ($obsidianInstalled) {
+  Write-Ok "Obsidian found - see obsidian-plugin\README.md to install Mana's Memory Sync plugin"
+} else {
+  Write-Warn "Obsidian not found (optional). Mana can sync its memory into an Obsidian vault as linked notes."
+  Write-Host "       Get it from https://obsidian.md, then see obsidian-plugin\README.md to install the plugin." -ForegroundColor Yellow
+}
+
 # --- npm install ----------------------------------------------------------
 if (-not $SkipInstall) {
   Write-Step "Installing npm dependencies"
