@@ -44,6 +44,9 @@ Thumbs.db
 # (includes node-bot/data/auth/SETUP.txt with admin key and accounts.json with user keys)
 node-bot/data/
 
+# Job application tracker + answer knowledge base -- personal job-search data
+plugins/job-applications/data/
+
 # Vector store (local index/embeddings)
 /tools/vector_store/
 tools/vector_store/

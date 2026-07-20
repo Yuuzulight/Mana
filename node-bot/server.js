@@ -94,6 +94,8 @@ const { fetchPage, searchWeb, wikiLookup } = require("./tools/web-access");
 	// NOTE: mobile-auth and mobile-memory-store may exist; we add device store integration here
 	const stockMarketPlugin = require("../plugins/stock-market");
 	const { createMarketDataClient } = stockMarketPlugin;
+	const jobApplicationsPlugin = require("../plugins/job-applications");
+	const { createJobApplicationsStore } = jobApplicationsPlugin;
 const { createTtsRuntime } = require("./tts-runtime");
 const { createAcpMemoryStore } = require("./acp-memory-store");
 const { createPresetsStore } = require("./presets-store");
@@ -227,6 +229,7 @@ const vtubeRuntime = createVTubeRuntime({
   vtubeStudioUrl: VTUBE_STUDIO_URL,
 });
 const marketDataClient = createMarketDataClient();
+const jobApplicationsStore = createJobApplicationsStore();
 
 function nowMs() {
   return Number(process.hrtime.bigint() / 1000000n);
@@ -1457,6 +1460,7 @@ function registerRoutes(app, upload, deps = {}) {
   const capabilities = deps.capabilities || [
     ffxivMarketPlugin,
     stockMarketPlugin,
+    jobApplicationsPlugin,
     dirScannerCapability,
     webAccessCapability,
     sessionsCapability,
@@ -1478,8 +1482,20 @@ function registerRoutes(app, upload, deps = {}) {
     decompose:
       deps.decompose ||
       ((prompt) => runLocalLlamaReply(prompt, 200, "quality", SUB_QUERY_SYSTEM_PROMPT)),
+    // Same bound-completion pattern as synthesize/decompose above, just with
+    // job-applications' own system prompt (issue #116).
+    synthesizeJobMatch:
+      deps.synthesizeJobMatch ||
+      ((prompt) =>
+        runLocalLlamaReply(
+          prompt,
+          jobApplicationsPlugin.JOB_MATCH_MAX_TOKENS,
+          "quality",
+          jobApplicationsPlugin.JOB_MATCH_SYSTEM_PROMPT,
+        )),
     presetsStore: activePresetsStore,
     marketDataClient,
+    jobApplicationsStore,
     UNIVERSALIS_DEFAULT_WORLD,
     FFXIV_PROFIT_TOP_LIMIT,
     FFXIV_RECIPE_SOURCE,
@@ -3324,6 +3340,7 @@ function registerRoutes(app, upload, deps = {}) {
     fs,
     getActiveModelProfile: () => modelManagement.getActiveProfile(),
     marketDataClient,
+    jobApplicationsStore,
     normalizeLlamaModelProfile,
     normalizeUploadedAudio:
       deps.normalizeUploadedAudio || normalizeUploadedAudio,
