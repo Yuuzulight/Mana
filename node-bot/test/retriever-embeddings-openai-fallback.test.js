@@ -53,18 +53,23 @@ async function withFakeOpenAi(fn) {
 }
 
 // Fresh require with NODE_ENV cleared so computeEmbeddings() runs its real
-// logic instead of the NODE_ENV=test short-circuit. Safe to clear here:
-// llama-server-runtime's own spawn guard checks NODE_TEST_CONTEXT (set by
-// node:test itself), not NODE_ENV, so nothing else in this process starts
-// spawning real processes because of this.
-function loadRetrieverIndex(envOverrides) {
+// logic instead of the NODE_ENV=test short-circuit. Keeps NODE_ENV cleared
+// for the whole callback (not just the require) -- computeEmbeddings()
+// re-checks process.env.NODE_ENV on every call, so restoring it any earlier
+// than that makes the "real logic" assertions silently exercise the
+// short-circuit path instead. Safe to clear here: llama-server-runtime's own
+// spawn guard checks NODE_TEST_CONTEXT (set by node:test itself), not
+// NODE_ENV, so nothing else in this process starts spawning real processes
+// because of this.
+async function withRetrieverIndex(envOverrides, fn) {
   const modulePath = require.resolve("../tools/retriever-index");
   delete require.cache[modulePath];
   const previousNodeEnv = process.env.NODE_ENV;
   delete process.env.NODE_ENV;
   Object.assign(process.env, envOverrides);
   try {
-    return require("../tools/retriever-index");
+    const retrieverIndex = require("../tools/retriever-index");
+    await fn(retrieverIndex);
   } finally {
     if (previousNodeEnv === undefined) {
       delete process.env.NODE_ENV;
@@ -77,33 +82,39 @@ function loadRetrieverIndex(envOverrides) {
 test("computeEmbeddings does not call OpenAI when RETRIEVER_EMBEDDER_OPENAI_FALLBACK is unset, even with a key present", async () => {
   await withFakeOpenAi(async (baseUrl, requests) => {
     const closedPort = await closedLocalPort();
-    const retrieverIndex = loadRetrieverIndex({
-      USE_EMBEDDINGS: "1",
-      RETRIEVER_EMBEDDER_URL: `http://127.0.0.1:${closedPort}`,
-      OPENAI_API_KEY: "sk-test-unused",
-      OPENAI_BASE_URL: baseUrl,
-      RETRIEVER_EMBEDDER_OPENAI_FALLBACK: "",
-    });
-
-    const result = await retrieverIndex.computeEmbeddings(["hello"]);
-    assert.deepEqual(result, [null]);
-    assert.equal(requests.length, 0);
+    await withRetrieverIndex(
+      {
+        USE_EMBEDDINGS: "1",
+        RETRIEVER_EMBEDDER_URL: `http://127.0.0.1:${closedPort}`,
+        OPENAI_API_KEY: "sk-test-unused",
+        OPENAI_BASE_URL: baseUrl,
+        RETRIEVER_EMBEDDER_OPENAI_FALLBACK: "",
+      },
+      async (retrieverIndex) => {
+        const result = await retrieverIndex.computeEmbeddings(["hello"]);
+        assert.deepEqual(result, [null]);
+        assert.equal(requests.length, 0);
+      },
+    );
   });
 });
 
 test("computeEmbeddings calls OpenAI once RETRIEVER_EMBEDDER_OPENAI_FALLBACK=1 is explicitly set", async () => {
   await withFakeOpenAi(async (baseUrl, requests) => {
     const closedPort = await closedLocalPort();
-    const retrieverIndex = loadRetrieverIndex({
-      USE_EMBEDDINGS: "1",
-      RETRIEVER_EMBEDDER_URL: `http://127.0.0.1:${closedPort}`,
-      OPENAI_API_KEY: "sk-test-unused",
-      OPENAI_BASE_URL: baseUrl,
-      RETRIEVER_EMBEDDER_OPENAI_FALLBACK: "1",
-    });
-
-    const result = await retrieverIndex.computeEmbeddings(["hello"]);
-    assert.deepEqual(result, [[0.1, 0.2, 0.3]]);
-    assert.equal(requests.length, 1);
+    await withRetrieverIndex(
+      {
+        USE_EMBEDDINGS: "1",
+        RETRIEVER_EMBEDDER_URL: `http://127.0.0.1:${closedPort}`,
+        OPENAI_API_KEY: "sk-test-unused",
+        OPENAI_BASE_URL: baseUrl,
+        RETRIEVER_EMBEDDER_OPENAI_FALLBACK: "1",
+      },
+      async (retrieverIndex) => {
+        const result = await retrieverIndex.computeEmbeddings(["hello"]);
+        assert.deepEqual(result, [[0.1, 0.2, 0.3]]);
+        assert.equal(requests.length, 1);
+      },
+    );
   });
 });
