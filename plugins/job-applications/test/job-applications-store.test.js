@@ -32,6 +32,10 @@ test("starts empty and creates an application with trimmed fields and defaults",
     url: "",
     notes: "",
     appliedAt: "2026-01-01T00:00:00.000Z",
+    postingText: "",
+    fitSummary: "",
+    tailoredResume: "",
+    tailoredCoverLetter: "",
     createdAt: "2026-01-01T00:00:00.000Z",
     updatedAt: "2026-01-01T00:00:00.000Z",
   });
@@ -83,6 +87,37 @@ test("updateApplication updates individual fields and validates status", () => {
     /status must be one of/,
   );
   assert.equal(store.updateApplication("missing", { status: "offer" }), null);
+});
+
+test("createApplication accepts ready_to_apply status and job-match fields", () => {
+  const store = createJobApplicationsStore({ dataDir: tempDir(), makeId: () => "id-1" });
+  const application = store.createApplication({
+    company: "Acme",
+    role: "Engineer",
+    status: "ready_to_apply",
+    postingText: "We are hiring a...",
+    fitSummary: "Strong match on frontend experience.",
+    tailoredResume: "Tailored resume text",
+    tailoredCoverLetter: "Tailored cover letter text",
+  });
+
+  assert.equal(application.status, "ready_to_apply");
+  assert.equal(application.postingText, "We are hiring a...");
+  assert.equal(application.fitSummary, "Strong match on frontend experience.");
+  assert.equal(application.tailoredResume, "Tailored resume text");
+  assert.equal(application.tailoredCoverLetter, "Tailored cover letter text");
+});
+
+test("updateApplication updates job-match fields", () => {
+  const store = createJobApplicationsStore({ dataDir: tempDir(), makeId: () => "id-1" });
+  store.createApplication({ company: "Acme", role: "Engineer", status: "ready_to_apply" });
+
+  const updated = store.updateApplication("id-1", {
+    tailoredResume: "Revised resume",
+    fitSummary: "Revised fit summary",
+  });
+  assert.equal(updated.tailoredResume, "Revised resume");
+  assert.equal(updated.fitSummary, "Revised fit summary");
 });
 
 test("deleteApplication removes an application and reports whether one was removed", () => {

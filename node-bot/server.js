@@ -1482,6 +1482,17 @@ function registerRoutes(app, upload, deps = {}) {
     decompose:
       deps.decompose ||
       ((prompt) => runLocalLlamaReply(prompt, 200, "quality", SUB_QUERY_SYSTEM_PROMPT)),
+    // Same bound-completion pattern as synthesize/decompose above, just with
+    // job-applications' own system prompt (issue #116).
+    synthesizeJobMatch:
+      deps.synthesizeJobMatch ||
+      ((prompt) =>
+        runLocalLlamaReply(
+          prompt,
+          jobApplicationsPlugin.JOB_MATCH_MAX_TOKENS,
+          "quality",
+          jobApplicationsPlugin.JOB_MATCH_SYSTEM_PROMPT,
+        )),
     presetsStore: activePresetsStore,
     marketDataClient,
     jobApplicationsStore,
