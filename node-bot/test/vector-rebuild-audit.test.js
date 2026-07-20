@@ -1,16 +1,33 @@
+// Points the server at a temp audit file instead of the real
+// node-bot/data/vector_rebuild_audit.jsonl before requiring server.js --
+// VECTOR_REBUILD_AUDIT_PATH is a module-level const resolved at require
+// time, so this must happen first. Without it, this test overwrote
+// Aurora's real audit log with its 2-line fixture on every run.
+const os = require('node:os');
+const path = require('path');
+const fs = require('fs');
+
+const tempAuditPath = path.join(
+  fs.mkdtempSync(path.join(os.tmpdir(), 'mana-vector-audit-test-')),
+  'vector_rebuild_audit.jsonl',
+);
+process.env.MANA_VECTOR_AUDIT_PATH = tempAuditPath;
+
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const fs = require('fs');
-const path = require('path');
 
 const { createApp } = require('../server');
 const { withServer } = require('./helpers');
 
+test.after(() => {
+  fs.rmSync(path.dirname(tempAuditPath), { recursive: true, force: true });
+  delete process.env.MANA_VECTOR_AUDIT_PATH;
+});
+
 // helper to write audit sample
 function writeAuditLines(lines) {
-  const p = path.join(__dirname, '..', 'data', 'vector_rebuild_audit.jsonl');
-  fs.mkdirSync(path.dirname(p), { recursive: true });
-  fs.writeFileSync(p, lines.map(l => JSON.stringify(l)).join('\n') + '\n', 'utf8');
+  fs.mkdirSync(path.dirname(tempAuditPath), { recursive: true });
+  fs.writeFileSync(tempAuditPath, lines.map(l => JSON.stringify(l)).join('\n') + '\n', 'utf8');
 }
 
 test('vector rebuild audit endpoints', async () => {
