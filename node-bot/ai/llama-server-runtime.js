@@ -929,6 +929,7 @@ function createLlamaServerRuntime(options = {}) {
     runToolAwareReply,
     runVisionReply,
     getStatus,
+    scheduleIdleShutdown,
     stop,
     systemPrompt,
   };
