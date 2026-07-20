@@ -4,7 +4,7 @@ Mana as an MCP server (Phase 1 of docs/roadmap/issue-42-mcp-support.md).
 Exposes a subset of Mana's existing capabilities as Model Context Protocol
 tools over stdio, so MCP clients (Claude Desktop, Claude Code, etc.) running
 on the same machine can call them. Tool handlers reuse the same functions as
-the matching HTTP routes in capabilities/ffxiv-market-capability.js and
+the matching HTTP routes in ../plugins/ffxiv-market/index.js and
 capabilities/web-access-capability.js rather than duplicating logic.
 
 Opt-in: disabled unless MANA_MCP_SERVER_ENABLED=1. Run directly with
@@ -23,7 +23,7 @@ const {
   UNIVERSALIS_DEFAULT_WORLD,
   getUniversalisMarketSummary: defaultGetUniversalisMarketSummary,
   resolveFfxivItemByName: defaultResolveFfxivItemByName,
-} = require("./ffxiv-market");
+} = require("../plugins/ffxiv-market");
 const {
   fetchPage: defaultFetchPage,
   searchWeb: defaultSearchWeb,
