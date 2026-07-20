@@ -5,6 +5,7 @@ const {
   sendValidationError,
 } = require("../request-validation");
 const {
+  buildWebContextForPrompt,
   fetchPage: defaultFetchPage,
   getSearxngUrl,
   isWebAccessEnabled,
@@ -83,6 +84,11 @@ async function checkSearxngHealth() {
 const webAccessCapability = {
   key: KEY,
   registerRoutes: registerWebAccessRoutes,
+  // Chat-reply prompt context (issue #108); last resort in the priority
+  // chain, so it stays a plain pass-through -- buildWebContextForPrompt
+  // already self-guards on isWebAccessEnabled and its own URL/wiki/search
+  // detection.
+  contributePromptContext: (text) => buildWebContextForPrompt(text),
   getHealth: () => ({
     status: isWebAccessEnabled() ? "configured" : "disabled",
     configured: isWebAccessEnabled(),
