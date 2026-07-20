@@ -176,6 +176,54 @@ test("proxyChatCompletion forwards the request body untouched and returns the ra
   assert.equal(spawnCalls.length, 1);
 });
 
+// Regression for the streaming idle-shutdown bug: proxyChatCompletion
+// schedules the idle timer at dispatch time, but fetch() resolves once
+// headers arrive -- a slow `stream: true` response can still be mid-flight
+// when that timer fires, and stop() hard-kills the child process out from
+// under the client. server.js now calls scheduleIdleShutdown() again once
+// the piped response actually finishes; this confirms that a fresh call
+// pushes the shutdown out past the original deadline instead of the process
+// dying on schedule regardless.
+test("scheduleIdleShutdown can be refreshed after dispatch to push shutdown past a still-streaming response", async () => {
+  let serverUp = false;
+  const runtime = createLlamaServerRuntime({
+    env: { ...makeFakeEnv(), LLAMA_SERVER_IDLE_MS: "30" },
+    fs: makeFakeFs(),
+    fetch: async (url) => {
+      if (String(url).endsWith("/health")) return { ok: serverUp };
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: () => "text/event-stream" },
+        body: "raw-upstream-body",
+      };
+    },
+    spawn: () => {
+      serverUp = true;
+      return makeFakeChild();
+    },
+    sleep: async () => {},
+    registerExitHandlers: false,
+  });
+
+  await runtime.proxyChatCompletion({ messages: [], stream: true });
+  assert.equal(runtime.getStatus().running, true);
+
+  // Simulate the response still streaming past the original 30ms deadline:
+  // refresh the timer partway through, before it would have fired.
+  await new Promise((resolve) => setTimeout(resolve, 15));
+  runtime.scheduleIdleShutdown();
+
+  // Past the original (unrefreshed) deadline -- still running because the
+  // refresh pushed shutdown out further.
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(runtime.getStatus().running, true);
+
+  // Past the refreshed deadline -- now shut down.
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(runtime.getStatus().running, false);
+});
+
 test("throws when the port is held by a llama-server with a different model", async () => {
   const fakeFetch = async (url) => {
     if (String(url).endsWith("/health")) {

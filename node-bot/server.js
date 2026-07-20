@@ -4852,6 +4852,14 @@ function registerRoutes(app, upload, deps = {}) {
       if (!upstream.body) {
         return res.end();
       }
+      // proxyChatCompletion already scheduled the idle-shutdown timer when
+      // the request was dispatched, but that only covers the time-to-first-byte:
+      // fetch() resolves once headers arrive, so a slow SSE stream (stream:
+      // true) can still outlive that timer while this pipe is mid-flight,
+      // killing the persistent llama-server process out from under the
+      // client. Reschedule once the response is actually done so the idle
+      // window is measured from real completion, not dispatch time.
+      res.on("close", () => llamaServerRuntime.scheduleIdleShutdown());
       Readable.fromWeb(upstream.body).pipe(res);
     } catch (e) {
       res.status(502).json({ error: { message: e?.message || String(e) } });
