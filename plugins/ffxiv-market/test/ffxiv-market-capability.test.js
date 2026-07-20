@@ -1,15 +1,19 @@
 const assert = require("node:assert/strict");
-const express = require("express");
+// This plugin always runs hosted inside node-bot's Express app in
+// production (it never requires express itself -- node-bot hands it an
+// already-built `app`); reaching back for express here only for the test's
+// own throwaway app avoids vendoring a second copy of it just for tests.
+const express = require("../../../node-bot/node_modules/express");
 const test = require("node:test");
 
-const { ffxivMarketCapability } = require("../capabilities/ffxiv-market-capability");
+const ffxivMarketPlugin = require("../index");
 const { withServer } = require("./helpers");
 
-test("ffxiv capability market route rejects requests without item id or item name", async () => {
+test("ffxiv plugin market route rejects requests without item id or item name", async () => {
   let resolveCalls = 0;
   const app = express();
   app.use(express.json());
-  ffxivMarketCapability.registerRoutes(app, {
+  ffxivMarketPlugin.registerRoutes(app, {
     UNIVERSALIS_DEFAULT_WORLD: "Kujata",
     resolveFfxivItemByName: async () => {
       resolveCalls += 1;
@@ -28,11 +32,11 @@ test("ffxiv capability market route rejects requests without item id or item nam
   });
 });
 
-test("ffxiv capability crafting route normalizes valid query options", async () => {
+test("ffxiv plugin crafting route normalizes valid query options", async () => {
   let received = null;
   const app = express();
   app.use(express.json());
-  ffxivMarketCapability.registerRoutes(app, {
+  ffxivMarketPlugin.registerRoutes(app, {
     UNIVERSALIS_DEFAULT_WORLD: "Kujata",
     FFXIV_PROFIT_TOP_LIMIT: 10,
     FFXIV_RECIPE_SOURCE: "garland",
@@ -64,10 +68,10 @@ test("ffxiv capability crafting route normalizes valid query options", async () 
   });
 });
 
-test("ffxiv capability from-screen route resolves hovered item names", async () => {
+test("ffxiv plugin from-screen route resolves hovered item names", async () => {
   const app = express();
   app.use(express.json());
-  ffxivMarketCapability.registerRoutes(app, {
+  ffxivMarketPlugin.registerRoutes(app, {
     UNIVERSALIS_DEFAULT_WORLD: "Kujata",
     extractExplicitItemNameFromText: () => "",
     extractHoveredItemName: () => "Iron Ore",
@@ -94,12 +98,19 @@ test("ffxiv capability from-screen route resolves hovered item names", async () 
   });
 });
 
-test("ffxiv capability contributes market health status", () => {
-  assert.deepEqual(ffxivMarketCapability.getHealth(), {
+test("ffxiv plugin contributes market health status", () => {
+  assert.deepEqual(ffxivMarketPlugin.getHealth(), {
     status: "configured",
     configured: true,
     message: "FFXIV market providers are configured from local defaults.",
     universalisConfigured: true,
     xivapiConfigured: true,
   });
+});
+
+test("ffxiv plugin declares discoverable plugin metadata", () => {
+  assert.equal(ffxivMarketPlugin.key, "ffxivMarket");
+  assert.equal(ffxivMarketPlugin.category, "Game Integrations");
+  assert.equal(typeof ffxivMarketPlugin.name, "string");
+  assert.equal(typeof ffxivMarketPlugin.description, "string");
 });
