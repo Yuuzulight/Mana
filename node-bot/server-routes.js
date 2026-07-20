@@ -138,52 +138,11 @@ function registerCoreRoutes(app, upload, deps) {
     }
   });
 
-  app.get("/market/stock/summary", async (req, res) => {
-    try {
-      const symbol =
-        typeof req.query.symbol === "string" ? req.query.symbol : "";
-      const summary = await marketDataClient.getStockSummary(symbol);
-      return res.json({
-        ...summary,
-        disclaimer: "Market analysis only. Not financial advice.",
-      });
-    } catch (e) {
-      console.error(e);
-      return res.status(500).json({ error: String(e) });
-    }
-  });
-
-  app.get("/market/stock/compare", async (req, res) => {
-    try {
-      const symbols =
-        typeof req.query.symbols === "string" ? req.query.symbols : "";
-      const results = await marketDataClient.compareStocks(symbols);
-      return res.json({
-        source: "Alpha Vantage",
-        symbols: results.map((item) => item.symbol),
-        results,
-        disclaimer: "Market analysis only. Not financial advice.",
-      });
-    } catch (e) {
-      console.error(e);
-      return res.status(500).json({ error: String(e) });
-    }
-  });
-
-  app.get("/market/watchlist", async (req, res) => {
-    try {
-      const results = await marketDataClient.getWatchlistSummary();
-      return res.json({
-        source: "Alpha Vantage",
-        symbols: results.map((item) => item.symbol),
-        results,
-        disclaimer: "Market analysis only. Not financial advice.",
-      });
-    } catch (e) {
-      console.error(e);
-      return res.status(500).json({ error: String(e) });
-    }
-  });
+  // /market/stock/* and /market/watchlist now live in
+  // plugins/stock-market/index.js, registered via the capabilities array
+  // (see server.js). marketDataClient/buildMarketContextForPrompt stay in
+  // this file's deps because /reply and /transcribe below still call them
+  // directly for prompt context (see issue #108).
 
   app.post("/vision/describe", async (req, res) => {
     try {
