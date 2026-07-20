@@ -11,7 +11,12 @@ const MAX_SHORT_TEXT_CHARS = 200;
 const MAX_NOTES_CHARS = 4000;
 const MAX_ANSWER_CHARS = 8000;
 const MAX_KEY_CHARS = 80;
+const MAX_POSTING_CHARS = 6000;
+const MAX_FIT_SUMMARY_CHARS = 1000;
 const VALID_STATUSES = [
+  // Staged by the job-match flow: a tailored resume/cover letter exist but
+  // nothing has been submitted anywhere yet -- the user applies by hand.
+  "ready_to_apply",
   "applied",
   "interviewing",
   "offer",
@@ -97,7 +102,18 @@ function createJobApplicationsStore(options = {}) {
     return readState().applications.find((app) => app.id === id) || null;
   }
 
-  function createApplication({ company, role, status, url, notes, appliedAt }) {
+  function createApplication({
+    company,
+    role,
+    status,
+    url,
+    notes,
+    appliedAt,
+    postingText,
+    fitSummary,
+    tailoredResume,
+    tailoredCoverLetter,
+  }) {
     const cleanCompany = cleanShortText(company);
     const cleanRole = cleanShortText(role);
     if (!cleanCompany) {
@@ -117,6 +133,12 @@ function createJobApplicationsStore(options = {}) {
       url: cleanShortText(url, 2000),
       notes: cleanLongText(notes, MAX_NOTES_CHARS),
       appliedAt: cleanShortText(appliedAt) || timestamp,
+      // Populated by the /jobs/match flow (issue #116); empty strings for
+      // applications added by hand via POST /jobs/applications.
+      postingText: cleanLongText(postingText, MAX_POSTING_CHARS),
+      fitSummary: cleanLongText(fitSummary, MAX_FIT_SUMMARY_CHARS),
+      tailoredResume: cleanLongText(tailoredResume, MAX_ANSWER_CHARS),
+      tailoredCoverLetter: cleanLongText(tailoredCoverLetter, MAX_ANSWER_CHARS),
       createdAt: timestamp,
       updatedAt: timestamp,
     };
@@ -158,6 +180,21 @@ function createJobApplicationsStore(options = {}) {
     }
     if (updates.appliedAt !== undefined) {
       updated.appliedAt = cleanShortText(updates.appliedAt) || updated.appliedAt;
+    }
+    if (updates.postingText !== undefined) {
+      updated.postingText = cleanLongText(updates.postingText, MAX_POSTING_CHARS);
+    }
+    if (updates.fitSummary !== undefined) {
+      updated.fitSummary = cleanLongText(updates.fitSummary, MAX_FIT_SUMMARY_CHARS);
+    }
+    if (updates.tailoredResume !== undefined) {
+      updated.tailoredResume = cleanLongText(updates.tailoredResume, MAX_ANSWER_CHARS);
+    }
+    if (updates.tailoredCoverLetter !== undefined) {
+      updated.tailoredCoverLetter = cleanLongText(
+        updates.tailoredCoverLetter,
+        MAX_ANSWER_CHARS,
+      );
     }
     updated.updatedAt = now();
 
@@ -260,6 +297,8 @@ module.exports = {
   MAX_NOTES_CHARS,
   MAX_ANSWER_CHARS,
   MAX_KEY_CHARS,
+  MAX_POSTING_CHARS,
+  MAX_FIT_SUMMARY_CHARS,
   VALID_STATUSES,
   DEFAULT_STATUS,
   createJobApplicationsStore,
