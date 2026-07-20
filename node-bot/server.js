@@ -66,6 +66,7 @@ const { createVTubeRuntime } = require("./vtube-runtime");
 	const { registerCoreRoutes, isLocalRestartRequest } = require("./server-routes");
 	const {
 	  buildCapabilityHealth,
+	  contributePluginPromptContext,
 	  registerCapabilities,
 	} = require("./capabilities/registry");
 	const dirScannerCapability = require("./capabilities/dir-scanner-capability");
@@ -87,21 +88,12 @@ const {
   RESEARCH_SYSTEM_PROMPT,
   SUB_QUERY_SYSTEM_PROMPT,
 } = require("./tools/deep-research");
-const {
-  buildWebContextForPrompt,
-  fetchPage,
-  searchWeb,
-  wikiLookup,
-} = require("./tools/web-access");
+const { fetchPage, searchWeb, wikiLookup } = require("./tools/web-access");
 	const { runDoctorChecksAsync } = require("./doctor");
 	const { MobileDeviceStore } = require("./mobile-device-store");
 	// NOTE: mobile-auth and mobile-memory-store may exist; we add device store integration here
 	const stockMarketPlugin = require("../plugins/stock-market");
-	const {
-	  buildMarketContextForPrompt,
-	  createMarketDataClient,
-	  isMarketQuestion,
-	} = stockMarketPlugin;
+	const { createMarketDataClient } = stockMarketPlugin;
 const { createTtsRuntime } = require("./tts-runtime");
 const { createAcpMemoryStore } = require("./acp-memory-store");
 const { createPresetsStore } = require("./presets-store");
@@ -131,8 +123,6 @@ const {
   XIVAPI_RECIPE_PAGE_SIZE,
   XIVAPI_RECIPE_SCAN_LIMIT,
   UNIVERSALIS_DEFAULT_WORLD,
-  buildCraftProfitContextForPrompt,
-  buildUniversalisContextForPrompt,
   clampInteger,
   cleanItemNameCandidate,
   configureFfxivMarketTools,
@@ -154,8 +144,6 @@ const {
   resolveFfxivItemByName,
   resolveGatherableRecipeMaterials,
   summarizeSalesHistory,
-  textLooksLikeCraftProfitQuestion,
-  textLooksLikeMarketQuestion,
 } = ffxivMarketPlugin;
 
 function createApp(deps = {}) {
@@ -3327,20 +3315,9 @@ function registerRoutes(app, upload, deps = {}) {
     SCREEN_CONTEXT_MAX_CHARS,
     restartController: deps.restartController || createRestartController(),
     buildAssistantReply: deps.buildAssistantReply || buildAssistantReply,
-    buildCraftProfitContextForPrompt:
-      deps.buildCraftProfitContextForPrompt || buildCraftProfitContextForPrompt,
-    buildMarketContextForPrompt:
-      deps.buildMarketContextForPrompt || buildMarketContextForPrompt,
-    buildUniversalisContextForPrompt:
-      deps.buildUniversalisContextForPrompt || buildUniversalisContextForPrompt,
-    buildWebContextForPrompt:
-      deps.buildWebContextForPrompt || buildWebContextForPrompt,
-    textLooksLikeCraftProfitQuestion:
-      deps.textLooksLikeCraftProfitQuestion || textLooksLikeCraftProfitQuestion,
-    textLooksLikeMarketQuestion:
-      deps.textLooksLikeMarketQuestion || textLooksLikeMarketQuestion,
-    textLooksLikeStockMarketQuestion:
-      deps.textLooksLikeStockMarketQuestion || isMarketQuestion,
+    capabilities,
+    contributePluginPromptContext:
+      deps.contributePluginPromptContext || contributePluginPromptContext,
     cleanupUploadedAudio: deps.cleanupUploadedAudio || cleanupUploadedAudio,
     clampInteger,
     clampText,

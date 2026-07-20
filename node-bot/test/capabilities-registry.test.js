@@ -3,6 +3,7 @@ const test = require("node:test");
 
 const {
   buildCapabilityHealth,
+  contributePluginPromptContext,
   registerCapabilities,
 } = require("../capabilities/registry");
 
@@ -77,4 +78,68 @@ test("registry rejects capabilities without stable keys", () => {
     () => buildCapabilityHealth([{ key: "   ", getHealth: () => ({}) }], {}),
     /capability key is required/,
   );
+});
+
+test("contributePluginPromptContext returns the first non-empty result in array order", async () => {
+  const calls = [];
+  const capabilities = [
+    {
+      key: "alpha",
+      contributePromptContext: async (text) => {
+        calls.push("alpha");
+        return "";
+      },
+    },
+    {
+      key: "beta",
+      contributePromptContext: async (text, context) => {
+        calls.push("beta");
+        return `beta says ${text} to ${context.who}`;
+      },
+    },
+    {
+      key: "gamma",
+      contributePromptContext: async () => {
+        calls.push("gamma");
+        return "should not run";
+      },
+    },
+  ];
+
+  const result = await contributePluginPromptContext(capabilities, "hi", {
+    who: "world",
+  });
+
+  assert.equal(result, "beta says hi to world");
+  assert.deepEqual(calls, ["alpha", "beta"]);
+});
+
+test("contributePluginPromptContext skips capabilities without the hook and swallows errors", async () => {
+  const result = await contributePluginPromptContext(
+    [
+      { key: "noHook" },
+      {
+        key: "broken",
+        contributePromptContext: async () => {
+          throw new Error("boom");
+        },
+      },
+      {
+        key: "fallback",
+        contributePromptContext: async () => "fallback context",
+      },
+    ],
+    "hi",
+  );
+
+  assert.equal(result, "fallback context");
+});
+
+test("contributePluginPromptContext returns empty string when nothing contributes", async () => {
+  const result = await contributePluginPromptContext(
+    [{ key: "alpha", contributePromptContext: async () => "" }],
+    "hi",
+  );
+
+  assert.equal(result, "");
 });
