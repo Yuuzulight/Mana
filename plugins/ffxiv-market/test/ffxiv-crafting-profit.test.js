@@ -14,7 +14,7 @@ const {
   resolveGatherableRecipeMaterials,
   summarizeSalesHistory,
   getSalesHistoryAdjustedPrice,
-} = require("../server");
+} = require("../ffxiv-market");
 
 const now = Date.parse("2026-06-28T00:00:00.000Z");
 const dayMs = 24 * 60 * 60 * 1000;

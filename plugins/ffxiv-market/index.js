@@ -5,7 +5,8 @@ const {
   optionalString,
   requireOneOf,
   sendValidationError,
-} = require("../request-validation");
+} = require("../../node-bot/request-validation");
+const ffxivMarket = require("./ffxiv-market");
 
 function registerFfxivMarketRoutes(app, deps) {
   const {
@@ -187,8 +188,17 @@ function registerFfxivMarketRoutes(app, deps) {
   });
 }
 
-const ffxivMarketCapability = {
+// This is Mana's plugin entry point convention: everything ffxiv-market.js
+// exports (Universalis/Garland/XIVAPI functions and consts), plus the
+// route registration + metadata a plugin needs to show up in GET /plugins
+// and get wired into node-bot's capabilities array. See plugins/README.md.
+module.exports = {
+  ...ffxivMarket,
   key: "ffxivMarket",
+  name: "FFXIV Market & Crafting",
+  category: "Game Integrations",
+  description:
+    "Universalis market-board prices and Garland/XIVAPI craft-profitability lookups for Final Fantasy XIV.",
   registerRoutes: registerFfxivMarketRoutes,
   getHealth: () => ({
     status: "configured",
@@ -197,9 +207,4 @@ const ffxivMarketCapability = {
     universalisConfigured: true,
     xivapiConfigured: true,
   }),
-};
-
-module.exports = {
-  ffxivMarketCapability,
-  registerFfxivMarketRoutes,
 };
