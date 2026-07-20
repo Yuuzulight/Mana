@@ -126,6 +126,104 @@ test("spawns llama-server once and reuses it for subsequent replies", async () =
   assert.equal(runtime.getStatus().running, true);
 });
 
+test("proxyChatCompletion forwards the request body untouched and returns the raw response", async () => {
+  const spawnCalls = [];
+  let serverUp = false;
+  let capturedBody = null;
+
+  const fakeFetch = async (url, init) => {
+    if (String(url).endsWith("/health")) {
+      return { ok: serverUp };
+    }
+    if (String(url).endsWith("/v1/chat/completions")) {
+      capturedBody = JSON.parse(init.body);
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: () => "application/json" },
+        body: "raw-upstream-body",
+      };
+    }
+    return { ok: false, status: 404, text: async () => "not found" };
+  };
+
+  const runtime = createLlamaServerRuntime({
+    env: makeFakeEnv(),
+    fs: makeFakeFs(),
+    fetch: fakeFetch,
+    spawn: (command, args, options) => {
+      spawnCalls.push({ command, args, options });
+      serverUp = true;
+      return makeFakeChild();
+    },
+    sleep: async () => {},
+    registerExitHandlers: false,
+  });
+
+  // Unlike runLocalAssistantReply, no persona system prompt is injected --
+  // external OpenAI-compatible clients (Obsidian Copilot, etc.) bring their
+  // own messages, so the body must reach llama-server exactly as given.
+  const requestBody = {
+    messages: [{ role: "user", content: "hi" }],
+    stream: false,
+    temperature: 0.2,
+  };
+  const resp = await runtime.proxyChatCompletion(requestBody);
+
+  assert.equal(resp.ok, true);
+  assert.equal(resp.body, "raw-upstream-body");
+  assert.deepEqual(capturedBody, requestBody);
+  assert.equal(spawnCalls.length, 1);
+});
+
+// Regression for the streaming idle-shutdown bug: proxyChatCompletion
+// schedules the idle timer at dispatch time, but fetch() resolves once
+// headers arrive -- a slow `stream: true` response can still be mid-flight
+// when that timer fires, and stop() hard-kills the child process out from
+// under the client. server.js now calls scheduleIdleShutdown() again once
+// the piped response actually finishes; this confirms that a fresh call
+// pushes the shutdown out past the original deadline instead of the process
+// dying on schedule regardless.
+test("scheduleIdleShutdown can be refreshed after dispatch to push shutdown past a still-streaming response", async () => {
+  let serverUp = false;
+  const runtime = createLlamaServerRuntime({
+    env: { ...makeFakeEnv(), LLAMA_SERVER_IDLE_MS: "30" },
+    fs: makeFakeFs(),
+    fetch: async (url) => {
+      if (String(url).endsWith("/health")) return { ok: serverUp };
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: () => "text/event-stream" },
+        body: "raw-upstream-body",
+      };
+    },
+    spawn: () => {
+      serverUp = true;
+      return makeFakeChild();
+    },
+    sleep: async () => {},
+    registerExitHandlers: false,
+  });
+
+  await runtime.proxyChatCompletion({ messages: [], stream: true });
+  assert.equal(runtime.getStatus().running, true);
+
+  // Simulate the response still streaming past the original 30ms deadline:
+  // refresh the timer partway through, before it would have fired.
+  await new Promise((resolve) => setTimeout(resolve, 15));
+  runtime.scheduleIdleShutdown();
+
+  // Past the original (unrefreshed) deadline -- still running because the
+  // refresh pushed shutdown out further.
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(runtime.getStatus().running, true);
+
+  // Past the refreshed deadline -- now shut down.
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(runtime.getStatus().running, false);
+});
+
 test("throws when the port is held by a llama-server with a different model", async () => {
   const fakeFetch = async (url) => {
     if (String(url).endsWith("/health")) {
