@@ -1,0 +1,10 @@
+{
+  "name": "mana-plugin-job-search-adzuna",
+  "version": "1.0.0",
+  "description": "Live job-posting search via the Adzuna API for Mana.",
+  "main": "index.js",
+  "scripts": {
+    "test": "node --test test/"
+  },
+  "private": true
+}
