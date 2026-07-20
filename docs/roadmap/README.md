@@ -1,55 +1,35 @@
 # Mana Project Roadmap
 
-Last synced: 2026-06-29
+Last synced: 2026-07-20
 
-This roadmap reflects the current GitHub Project board, merged PRs, open issues, and repository docs on `main`.
+This roadmap reflects the current GitHub Project board, merged PRs, open issues, and repository docs on `main`. The board has moved a lot since the last sync (2026-06-29) — everything that was tracked as "In Progress"/"In Review"/most of the "Backlog" at that point (issues #1–#25 and dozens more since) is now closed and merged; see `git log` / `gh issue list --state closed` for the full history rather than an itemized table here, which is what let this doc drift stale in the first place.
 
-## Completed
+## Open
 
-| Area | Status | Notes |
-| --- | --- | --- |
-| Backend module split | Done | Issue #8 closed. PR #15 merged. `server.js` now delegates local AI, llama runtime, FFXIV/Universalis, TTS, VTube, and core route registration to focused modules. |
-| Local setup Doctor checks | Done | Issue #9 closed. PR #16 merged. Doctor checks cover local setup, local-only policy, editor integration, and async backend probes. |
-| Zed editor CLI integration | Done | Issue #22 closed. PR #23 merged. Mana can detect/open Zed and VS Code, track active workspaces, inspect files explicitly, and create safe edit proposals. |
-| Zed External Agent entry point | Done | Issue #24 closed. PR #25 merged. Mana has a local ACP entry point for Zed External Agents with local-first reply behavior and approval-required editor writes. |
-| Shared editor approval flow | Done | Merged to `main` on 2026-06-29. Editor proposals can be applied through `POST /editors/workspace/proposals/:id/approve` only after content verification. |
-| Mobile PWA companion foundation | Done outside current board | Mobile PWA docs, auth, local summary persistence, Cloudflare access notes, and mobile voice/chat flows exist. Future mobile security work is tracked in issue #14. |
-| Local-only AI baseline | Done outside current board | Remote AI is disabled by default. Local model profile selection and llama runtime helpers are now separated into `node-bot/ai/`. |
+| Issue | Area | Status | Notes |
+| --- | --- | --- | --- |
+| [#4](https://github.com/Yuuzulight/Mana/issues/4) | Speech recognition accuracy | Open | Whisper model profiles, wake-word fuzzy matching, noise rejection tuning, mic gain/normalization, a local test harness with sample WAVs. |
+| [#48](https://github.com/Yuuzulight/Mana/issues/48) | Mobile 2FA | Open | Opt-in TOTP second factor for mobile device pairing, on top of the existing passcode. Should land alongside/after issue #14's device list/rotation/revocation work (closed) so mobile security stays one coherent story. |
+| [#65](https://github.com/Yuuzulight/Mana/issues/65) | Fish Audio S2 Pro TTS | Blocked | Follow-up to the (closed) Fish Speech evaluation. S2 Pro's BF16 weights (~10GB) don't fit the current dev GPU (RTX 3070 Ti, 8GB); blocked on an RTX 5080 upgrade. Recheck the model card periodically in case a quantized release appears. |
 
-## In Progress
+## Recently completed (since the last sync)
 
-| Area | Status | Linked Work |
-| --- | --- | --- |
-| Component-level health status | In progress | Issue #10, PR #17. Expand `/health` into structured component readiness. |
-| API request validation | In progress | Issue #11, PR #18. Add consistent validation and stable 400 responses. |
-| Local model management/status | In progress | Issue #12, PR #19. Expose model list/status and switching controls. |
-| Capability module boundaries | In progress | Issue #13, PR #20. Define a simple internal capability pattern. |
-| Mobile device security controls | In progress | Issue #14, PR #21. Add device visibility, token rotation, revocation, and remote exposure warnings. |
+Non-exhaustive highlights — see individual issue/PR history for full detail:
 
-## In Review
-
-| Area | Status | Linked Work |
-| --- | --- | --- |
-| Speech recognition improvements | In review | Issue #4, PR #5. Plan exists; implementation should continue local Whisper accuracy and wake-word reliability work. |
-
-## Backlog
-
-| Area | Status | Notes |
-| --- | --- | --- |
-| Screen perception and understanding | Backlog | Issue #1. First version should stay opt-in, local-first, screenshot-based, and avoid saving screenshots by default. |
-| Gaming performance mode | Backlog | Issue #2. Needs testing with FFXIV running and should prioritize low overhead over response speed. |
-| Fish Speech TTS evaluation | Backlog | Issue #3. Fish provider support and docs exist, but the issue remains open for evaluation, health reporting, and smoke-test confirmation. |
-| Stock market analysis helper | Backlog / needs triage | Issue #6 remains open, but the repo already includes `node-bot/market-data.js`, stock endpoints, tests, and `docs/market_analysis_helper.md`. Decide whether to close it or narrow it to remaining SEC/news/watchlist enhancements. |
+- Extracted FFXIV market/crafting and real-world stock market data into standalone, self-contained plugins under `plugins/` (issues #106, #109), plus a generic `contributePromptContext` hook (issue #108) so plugins inject chat-reply context without `server-routes.js` hardcoding each one by name. See [plugins/README.md](../../plugins/README.md).
+- OpenAI-compatible API (`/v1/chat/completions`, `/v1/embeddings`, `/v1/models`) so external tools like Obsidian Copilot can talk to Mana directly (issue #95).
+- Obsidian plugin (Mana Memory Sync) that pulls Mana's memory into a vault as linked notes (issue #89), plus setup-time Obsidian detection.
+- Reorganized `node-bot/server.js`'s admin routes into focused capability modules under `node-bot/capabilities/`.
+- Fish Speech (S1-mini) as Mana's default TTS provider, with inline reference-audio voice cloning and automatic gaming-mode device swap.
+- Best-of-N self-voting inference, idle-triggered Dream Mode memory consolidation, and cross-session memory connections/entity tagging.
+- Deep Research mode (multi-step, multi-source, cited report) with a UI entry point in `windows-launcher`.
 
 ## Untracked Roadmap Items
 
-- Native Windows launcher: `docs/native_launcher_plan.md` documents a scaffold and next steps, but there is no matching GitHub issue on the current board. Create an issue before continuing feature work.
-- Installer/model-download improvements: existing worktrees and docs suggest installer work has started, but the current board does not track it directly. Add an issue if this should stay on the active roadmap.
+- Native Windows launcher: `docs/native_launcher_plan.md` documents a scaffold and next steps; still no matching GitHub issue. Create one before continuing feature work there.
 
 ## Recommended Next Order
 
-1. Finish and merge the open PR stack for issues #10 through #14.
-2. During issue #13, separate FFXIV/Universalis helpers into a clearer capability folder or section while preserving public endpoint URLs.
-3. Resolve PR #5 and decide the first implementation slice for speech recognition accuracy.
-4. Triage issue #6 because much of the market-analysis MVP appears implemented already.
-5. Choose the next new feature lane: screen perception (#1), gaming performance (#2), or native launcher parity.
+1. Issue #4 (speech recognition accuracy) — no hardware blocker, most directly improves daily use.
+2. Issue #48 (mobile 2FA) — coordinate scope with the mobile security work already merged for issue #14 rather than diverging.
+3. Issue #65 (Fish Audio S2 Pro) stays blocked until the GPU upgrade; revisit the model card for a quantized release in the meantime.
