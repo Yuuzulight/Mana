@@ -50,7 +50,7 @@ Mana is intentionally split into small runtime pieces:
 - `windows-launcher`: Electron desktop launcher, microphone capture, avatar overlay control, screen capture, performance panel, and Doctor panel.
 - `desktop-client`: Electron chat client packaged with a real Windows installer (electron-builder/NSIS), including a built-in Live2D avatar — currently loaded with a temporary testing placeholder model, see `desktop-client/AVATAR_NOTICE.md`.
 - `node-bot`: local backend API for transcription, replies, TTS calls, screen OCR, mobile routes, and setup checks.
-- `plugins`: self-contained optional feature plugins (FFXIV market/crafting, real-world stock market data) that register their own routes, contribute chat-reply context, and are discoverable via `GET /plugins`; see [plugins/README.md](plugins/README.md).
+- `plugins`: self-contained optional feature plugins (FFXIV market/crafting, real-world stock market data, a local job-application tracker) that register their own routes, contribute chat-reply context, and are discoverable via `GET /plugins`; see [plugins/README.md](plugins/README.md).
 - `tts-service`: local Python services for Chatterbox and Kokoro TTS.
 - `tools/whisper`: expected location for local `whisper.cpp` binaries and models.
 - `tools/llama`: expected location for local `llama.cpp` binaries and GGUF models.

@@ -65,6 +65,7 @@ function registerCoreRoutes(app, upload, deps) {
     fs,
     getActiveModelProfile,
     marketDataClient,
+    jobApplicationsStore,
     normalizeLlamaModelProfile,
     normalizeUploadedAudio,
     readScreenText,
@@ -241,6 +242,7 @@ function registerCoreRoutes(app, upload, deps) {
       const marketText = includeContext
         ? await contributePluginPromptContext(capabilities, transcript, {
             marketDataClient,
+            jobApplicationsStore,
             world,
             screenText,
           })
@@ -296,7 +298,12 @@ function registerCoreRoutes(app, upload, deps) {
       const marketText = await contributePluginPromptContext(
         capabilities,
         transcript,
-        { marketDataClient, world: UNIVERSALIS_DEFAULT_WORLD, screenText: "" },
+        {
+          marketDataClient,
+          jobApplicationsStore,
+          world: UNIVERSALIS_DEFAULT_WORLD,
+          screenText: "",
+        },
       );
       const sessionId = optionalString(req.body?.sessionId, "sessionId", null);
       const assistantMode = optionalString(

@@ -1,0 +1,10 @@
+{
+  "name": "mana-plugin-job-applications",
+  "version": "1.0.0",
+  "description": "Local job-application tracker and reusable answer knowledge base plugin for Mana.",
+  "main": "index.js",
+  "scripts": {
+    "test": "node --test test/"
+  },
+  "private": true
+}
