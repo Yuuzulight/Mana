@@ -25,6 +25,7 @@ test("health includes component readiness while preserving top-level fields", as
       "dirScanner",
       "ffxivMarket",
       "jobApplications",
+      "jobSearchAdzuna",
       "localLlama",
       "localMemory",
       "mobileAuth",
@@ -54,6 +55,14 @@ test("health includes component readiness while preserving top-level fields", as
       configured: false,
       message:
         "Set ALPHA_VANTAGE_API_KEY to enable real-world stock market data (see docs/API_KEYS.md).",
+    });
+    // No ADZUNA_APP_ID/ADZUNA_APP_KEY in the test env either -- same
+    // graceful-degradation shape as stockMarket above.
+    assert.deepEqual(body.components.jobSearchAdzuna, {
+      status: "unconfigured",
+      configured: false,
+      message:
+        "Set ADZUNA_APP_ID and ADZUNA_APP_KEY to enable live job search (see plugins/job-search-adzuna/README.md).",
     });
     assert.equal(typeof body.components.localLlama.message, "string");
   });

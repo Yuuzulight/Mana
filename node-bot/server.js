@@ -96,6 +96,8 @@ const { fetchPage, searchWeb, wikiLookup } = require("./tools/web-access");
 	const { createMarketDataClient } = stockMarketPlugin;
 	const jobApplicationsPlugin = require("../plugins/job-applications");
 	const { createJobApplicationsStore } = jobApplicationsPlugin;
+	const jobSearchAdzunaPlugin = require("../plugins/job-search-adzuna");
+	const { createAdzunaClient } = jobSearchAdzunaPlugin;
 const { createTtsRuntime } = require("./tts-runtime");
 const { createAcpMemoryStore } = require("./acp-memory-store");
 const { createPresetsStore } = require("./presets-store");
@@ -230,6 +232,7 @@ const vtubeRuntime = createVTubeRuntime({
 });
 const marketDataClient = createMarketDataClient();
 const jobApplicationsStore = createJobApplicationsStore();
+const adzunaClient = createAdzunaClient();
 
 function nowMs() {
   return Number(process.hrtime.bigint() / 1000000n);
@@ -1461,6 +1464,7 @@ function registerRoutes(app, upload, deps = {}) {
     ffxivMarketPlugin,
     stockMarketPlugin,
     jobApplicationsPlugin,
+    jobSearchAdzunaPlugin,
     dirScannerCapability,
     webAccessCapability,
     sessionsCapability,
@@ -1496,6 +1500,7 @@ function registerRoutes(app, upload, deps = {}) {
     presetsStore: activePresetsStore,
     marketDataClient,
     jobApplicationsStore,
+    adzunaClient,
     UNIVERSALIS_DEFAULT_WORLD,
     FFXIV_PROFIT_TOP_LIMIT,
     FFXIV_RECIPE_SOURCE,
