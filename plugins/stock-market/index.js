@@ -63,6 +63,13 @@ module.exports = {
   description:
     "Real-world stock quotes, comparisons, and watchlist summaries via Alpha Vantage, plus market-analysis context for Mana's replies.",
   registerRoutes: registerStockMarketRoutes,
+  // Chat-reply prompt context (issue #108). buildMarketContextForPrompt
+  // self-guards on isMarketQuestion and returns "" when irrelevant.
+  // marketDataClient is created per-server in server.js (needs
+  // ALPHA_VANTAGE_API_KEY at runtime), so it has to come through the call-time
+  // context rather than a module-level closure here.
+  contributePromptContext: (text, context = {}) =>
+    marketData.buildMarketContextForPrompt(text, context.marketDataClient),
   getHealth: (context) => ({
     status: context.marketDataClient.isConfigured ? "configured" : "unconfigured",
     configured: context.marketDataClient.isConfigured,

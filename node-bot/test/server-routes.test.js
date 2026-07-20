@@ -4,6 +4,15 @@ const test = require("node:test");
 const { createApp, formatMemoryMarkdown, buildMemoryNotes } = require("../server");
 const { withServer } = require("./helpers");
 
+// Stands in for a real plugin/capability's contributePromptContext (issue
+// #108) so /reply's context chain can be tested deterministically -- the
+// real ffxivMarket/stockMarket/webAccess capabilities self-guard on text
+// detection internally and webAccess can reach real network calls, neither
+// of which belongs in a unit test.
+function fakeContextCapability(key, contributePromptContext) {
+  return { key, contributePromptContext };
+}
+
 async function postJson(url, body, headers = {}) {
   const response = await fetch(url, {
     method: "POST",
@@ -204,9 +213,6 @@ test("reply uses active model profile when request omits modelProfile", async ()
       getModelStatus: () => ({ activeProfile: "fast", profiles: {} }),
       setActiveProfile: () => ({ activeProfile: "fast", profiles: {} }),
     },
-    buildCraftProfitContextForPrompt: async () => "",
-    buildUniversalisContextForPrompt: async () => "",
-    buildMarketContextForPrompt: async () => "",
     buildAssistantReply: async (transcript, screenText, marketText, modelProfile) => {
       receivedProfile = modelProfile;
       return "ok";
@@ -232,9 +238,6 @@ test("reply keeps explicit modelProfile above active profile", async () => {
       getModelStatus: () => ({ activeProfile: "fast", profiles: {} }),
       setActiveProfile: () => ({ activeProfile: "fast", profiles: {} }),
     },
-    buildCraftProfitContextForPrompt: async () => "",
-    buildUniversalisContextForPrompt: async () => "",
-    buildMarketContextForPrompt: async () => "",
     buildAssistantReply: async (transcript, screenText, marketText, modelProfile) => {
       receivedProfile = modelProfile;
       return "ok";
@@ -255,9 +258,6 @@ test("reply keeps explicit modelProfile above active profile", async () => {
 test("reply passes presetId through to buildAssistantReply", async () => {
   let receivedPresetId = "not-set";
   const app = createApp({
-    buildCraftProfitContextForPrompt: async () => "",
-    buildUniversalisContextForPrompt: async () => "",
-    buildMarketContextForPrompt: async () => "",
     buildAssistantReply: async (
       transcript,
       screenText,
@@ -286,9 +286,6 @@ test("reply passes presetId through to buildAssistantReply", async () => {
 test("reply omits presetId as null when the request doesn't select one", async () => {
   let receivedPresetId = "not-set";
   const app = createApp({
-    buildCraftProfitContextForPrompt: async () => "",
-    buildUniversalisContextForPrompt: async () => "",
-    buildMarketContextForPrompt: async () => "",
     buildAssistantReply: async (
       transcript,
       screenText,
@@ -387,9 +384,6 @@ test("a selected preset's instructions reach the local model's system prompt", a
   };
   const app = createApp({
     presetsStore,
-    buildCraftProfitContextForPrompt: async () => "",
-    buildUniversalisContextForPrompt: async () => "",
-    buildMarketContextForPrompt: async () => "",
     runLocalAssistantReply: async (prompt, maxTokens, profile, overrideSystemPrompt) => {
       capturedSystemPrompt = overrideSystemPrompt;
       return "ok";
@@ -411,9 +405,6 @@ test("a selected preset's instructions reach the local model's system prompt", a
 test("no preset selected leaves the local model's system prompt unchanged", async () => {
   let capturedSystemPrompt = null;
   const app = createApp({
-    buildCraftProfitContextForPrompt: async () => "",
-    buildUniversalisContextForPrompt: async () => "",
-    buildMarketContextForPrompt: async () => "",
     runLocalAssistantReply: async (prompt, maxTokens, profile, overrideSystemPrompt) => {
       capturedSystemPrompt = overrideSystemPrompt;
       return "ok";
@@ -446,9 +437,6 @@ test("tool-calling stays off by default even when a runToolAwareReply is provide
     let toolAwareCalls = 0;
     let plainCalls = 0;
     const app = createApp({
-      buildCraftProfitContextForPrompt: async () => "",
-      buildUniversalisContextForPrompt: async () => "",
-      buildMarketContextForPrompt: async () => "",
       isLlamaServerEnabled: () => true,
       runToolAwareReply: async () => {
         toolAwareCalls += 1;
@@ -474,9 +462,6 @@ test("tool-calling activates for the default profile when enabled and llama-serv
     let capturedPrompt = null;
     let plainCalls = 0;
     const app = createApp({
-      buildCraftProfitContextForPrompt: async () => "",
-      buildUniversalisContextForPrompt: async () => "",
-      buildMarketContextForPrompt: async () => "",
       isLlamaServerEnabled: () => true,
       runToolAwareReply: async (prompt) => {
         capturedPrompt = prompt;
@@ -507,9 +492,6 @@ test("tool-calling does not activate for a non-default profile even when enabled
   await withToolCallingEnv("1", async () => {
     let toolAwareCalls = 0;
     const app = createApp({
-      buildCraftProfitContextForPrompt: async () => "",
-      buildUniversalisContextForPrompt: async () => "",
-      buildMarketContextForPrompt: async () => "",
       isLlamaServerEnabled: () => true,
       runToolAwareReply: async () => {
         toolAwareCalls += 1;
@@ -533,9 +515,6 @@ test("tool-calling falls back to the plain reply when llama-server isn't availab
   await withToolCallingEnv("1", async () => {
     let toolAwareCalls = 0;
     const app = createApp({
-      buildCraftProfitContextForPrompt: async () => "",
-      buildUniversalisContextForPrompt: async () => "",
-      buildMarketContextForPrompt: async () => "",
       isLlamaServerEnabled: () => false,
       runToolAwareReply: async () => {
         toolAwareCalls += 1;
@@ -555,9 +534,6 @@ test("tool-calling falls back to the plain reply when llama-server isn't availab
 test("tool-calling falls back to the plain reply when runToolAwareReply throws", async () => {
   await withToolCallingEnv("1", async () => {
     const app = createApp({
-      buildCraftProfitContextForPrompt: async () => "",
-      buildUniversalisContextForPrompt: async () => "",
-      buildMarketContextForPrompt: async () => "",
       isLlamaServerEnabled: () => true,
       runToolAwareReply: async () => {
         throw new Error("llama-server executable not found");
@@ -576,9 +552,6 @@ test("tool-calling falls back to the plain reply when runToolAwareReply throws",
 test("tool-calling falls back to the plain reply when runToolAwareReply returns empty content", async () => {
   await withToolCallingEnv("1", async () => {
     const app = createApp({
-      buildCraftProfitContextForPrompt: async () => "",
-      buildUniversalisContextForPrompt: async () => "",
-      buildMarketContextForPrompt: async () => "",
       isLlamaServerEnabled: () => true,
       runToolAwareReply: async () => ({ content: "", toolCalls: [] }),
       runLocalAssistantReply: async () => "plain reply",
@@ -609,9 +582,6 @@ test("best-of-N stays off by default even when a runBestOfNReply is provided", a
   await withBestOfNEnv(undefined, async () => {
     let bestOfNCalls = 0;
     const app = createApp({
-      buildCraftProfitContextForPrompt: async () => "",
-      buildUniversalisContextForPrompt: async () => "",
-      buildMarketContextForPrompt: async () => "",
       isLlamaServerEnabled: () => true,
       runBestOfNReply: async () => {
         bestOfNCalls += 1;
@@ -635,9 +605,6 @@ test("best-of-N activates for coding-mode replies when enabled and llama-server 
   await withBestOfNEnv("1", async () => {
     let capturedOptions = null;
     const app = createApp({
-      buildCraftProfitContextForPrompt: async () => "",
-      buildUniversalisContextForPrompt: async () => "",
-      buildMarketContextForPrompt: async () => "",
       isLlamaServerEnabled: () => true,
       runBestOfNReply: async (prompt, options) => {
         capturedOptions = options;
@@ -665,9 +632,6 @@ test("best-of-N does not activate for a non-coding reply even when enabled", asy
   await withBestOfNEnv("1", async () => {
     let bestOfNCalls = 0;
     const app = createApp({
-      buildCraftProfitContextForPrompt: async () => "",
-      buildUniversalisContextForPrompt: async () => "",
-      buildMarketContextForPrompt: async () => "",
       isLlamaServerEnabled: () => true,
       runBestOfNReply: async () => {
         bestOfNCalls += 1;
@@ -688,9 +652,6 @@ test("best-of-N falls back to the plain reply when llama-server isn't available"
   await withBestOfNEnv("1", async () => {
     let bestOfNCalls = 0;
     const app = createApp({
-      buildCraftProfitContextForPrompt: async () => "",
-      buildUniversalisContextForPrompt: async () => "",
-      buildMarketContextForPrompt: async () => "",
       isLlamaServerEnabled: () => false,
       runBestOfNReply: async () => {
         bestOfNCalls += 1;
@@ -713,9 +674,6 @@ test("best-of-N falls back to the plain reply when llama-server isn't available"
 test("best-of-N falls back to the plain reply when runBestOfNReply throws", async () => {
   await withBestOfNEnv("1", async () => {
     const app = createApp({
-      buildCraftProfitContextForPrompt: async () => "",
-      buildUniversalisContextForPrompt: async () => "",
-      buildMarketContextForPrompt: async () => "",
       isLlamaServerEnabled: () => true,
       runBestOfNReply: async () => {
         throw new Error("llama-server returned no usable candidates");
@@ -736,11 +694,11 @@ test("best-of-N falls back to the plain reply when runBestOfNReply throws", asyn
 
 test("reply continues when optional market context fails", async () => {
   const app = createApp({
-    buildCraftProfitContextForPrompt: async () => "",
-    buildUniversalisContextForPrompt: async () => "",
-    buildMarketContextForPrompt: async () => {
-      throw new Error("Alpha Vantage API key is not configured");
-    },
+    capabilities: [
+      fakeContextCapability("stockMarket", async () => {
+        throw new Error("Alpha Vantage API key is not configured");
+      }),
+    ],
     buildAssistantReply: async (transcript, screenText, marketText) => {
       assert.equal(transcript, "can you read the current repository's readme?");
       assert.equal(marketText, "");
@@ -759,27 +717,21 @@ test("reply continues when optional market context fails", async () => {
   });
 });
 
-test("reply skips optional context builders for general repository prompts", async () => {
+test("reply falls through the whole plugin chain when nothing contributes context", async () => {
   const calls = [];
-  let contextCalls = 0;
   const app = createApp({
-    buildCraftProfitContextForPrompt: async () => {
-      contextCalls += 1;
-      throw new Error("craft context should not run");
-    },
-    buildUniversalisContextForPrompt: async () => {
-      contextCalls += 1;
-      throw new Error("universalis context should not run");
-    },
-    buildMarketContextForPrompt: async () => {
-      contextCalls += 1;
-      throw new Error("market context should not run");
-    },
-    textLooksLikeCraftProfitQuestion: () => false,
-    textLooksLikeMarketQuestion: () => false,
-    textLooksLikeStockMarketQuestion: () => false,
+    capabilities: [
+      fakeContextCapability("ffxivMarket", async () => {
+        calls.push("ffxivMarket");
+        return "";
+      }),
+      fakeContextCapability("stockMarket", async () => {
+        calls.push("stockMarket");
+        return "";
+      }),
+    ],
     buildAssistantReply: async (transcript, screenText, marketText) => {
-      calls.push({ transcript, screenText, marketText });
+      assert.equal(marketText, "");
       return "README summary";
     },
   });
@@ -792,29 +744,23 @@ test("reply skips optional context builders for general repository prompts", asy
 
     assert.equal(response.status, 200);
     assert.equal(payload.reply, "README summary");
-    assert.equal(calls[0].marketText, "");
-    assert.equal(contextCalls, 0);
+    assert.deepEqual(calls, ["ffxivMarket", "stockMarket"]);
   });
 });
 
 test("reply skips optional context builders when includeContext is false", async () => {
   let contextCalls = 0;
   const app = createApp({
-    buildCraftProfitContextForPrompt: async () => {
-      contextCalls += 1;
-      return "craft context";
-    },
-    buildUniversalisContextForPrompt: async () => {
-      contextCalls += 1;
-      return "universalis context";
-    },
-    buildMarketContextForPrompt: async () => {
-      contextCalls += 1;
-      return "market context";
-    },
-    textLooksLikeCraftProfitQuestion: () => true,
-    textLooksLikeMarketQuestion: () => true,
-    textLooksLikeStockMarketQuestion: () => true,
+    capabilities: [
+      fakeContextCapability("ffxivMarket", async () => {
+        contextCalls += 1;
+        return "craft or universalis context";
+      }),
+      fakeContextCapability("stockMarket", async () => {
+        contextCalls += 1;
+        return "market context";
+      }),
+    ],
     buildAssistantReply: async (transcript, screenText, marketText) => {
       assert.match(transcript, /Repository README/);
       assert.equal(marketText, "");
@@ -1007,13 +953,12 @@ test("GET /wiki/:term returns 404 when nothing matches", async () => {
 
 test("reply falls back to web context when no market question is detected", async () => {
   const app = createApp({
-    buildCraftProfitContextForPrompt: async () => "",
-    buildUniversalisContextForPrompt: async () => "",
-    buildMarketContextForPrompt: async () => "",
-    buildWebContextForPrompt: async (text) => {
-      assert.equal(text, "search for FFXIV patch notes");
-      return "Web search results:\n1. Patch Notes\n   https://example.com\n   ...\n\n";
-    },
+    capabilities: [
+      fakeContextCapability("webAccess", async (text) => {
+        assert.equal(text, "search for FFXIV patch notes");
+        return "Web search results:\n1. Patch Notes\n   https://example.com\n   ...\n\n";
+      }),
+    ],
     buildAssistantReply: async (transcript, screenText, marketText) => {
       assert.match(marketText, /Web search results/);
       return "Here's what I found.";
@@ -1033,13 +978,12 @@ test("reply falls back to web context when no market question is detected", asyn
 test("reply skips web context when includeContext is false", async () => {
   let webContextCalls = 0;
   const app = createApp({
-    buildCraftProfitContextForPrompt: async () => "",
-    buildUniversalisContextForPrompt: async () => "",
-    buildMarketContextForPrompt: async () => "",
-    buildWebContextForPrompt: async () => {
-      webContextCalls += 1;
-      return "Web search results:\n...";
-    },
+    capabilities: [
+      fakeContextCapability("webAccess", async () => {
+        webContextCalls += 1;
+        return "Web search results:\n...";
+      }),
+    ],
     buildAssistantReply: async (transcript, screenText, marketText) => {
       assert.equal(marketText, "");
       return "ok";

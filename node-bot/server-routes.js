@@ -53,24 +53,13 @@ function scheduleRestartAfterFinish(res, restartController) {
   res.once("finish", () => restartController.scheduleRestart());
 }
 
-async function buildOptionalPromptContext(label, builder) {
-  try {
-    return (await builder()) || "";
-  } catch (error) {
-    console.warn(`Optional ${label} context unavailable:`, error.message);
-    return "";
-  }
-}
-
 function registerCoreRoutes(app, upload, deps) {
   const {
     UNIVERSALIS_DEFAULT_WORLD,
     TTS_PROVIDER,
     buildAssistantReply,
-    buildCraftProfitContextForPrompt,
-    buildMarketContextForPrompt,
-    buildUniversalisContextForPrompt,
-    buildWebContextForPrompt,
+    capabilities,
+    contributePluginPromptContext,
     cleanupUploadedAudio,
     clampInteger,
     fs,
@@ -87,9 +76,6 @@ function registerCoreRoutes(app, upload, deps) {
     synthesizeReply,
     clampText,
     SCREEN_CONTEXT_MAX_CHARS,
-    textLooksLikeCraftProfitQuestion,
-    textLooksLikeMarketQuestion,
-    textLooksLikeStockMarketQuestion,
   } = deps;
 
   app.post("/admin/restart", (req, res) => {
@@ -140,9 +126,10 @@ function registerCoreRoutes(app, upload, deps) {
 
   // /market/stock/* and /market/watchlist now live in
   // plugins/stock-market/index.js, registered via the capabilities array
-  // (see server.js). marketDataClient/buildMarketContextForPrompt stay in
-  // this file's deps because /reply and /transcribe below still call them
-  // directly for prompt context (see issue #108).
+  // (see server.js). marketDataClient stays in this file's deps because
+  // /reply and /transcribe below pass it through to
+  // contributePluginPromptContext (issue #108) for stock market prompt
+  // context.
 
   app.post("/vision/describe", async (req, res) => {
     try {
@@ -248,40 +235,16 @@ function registerCoreRoutes(app, upload, deps) {
         "ffxivWorld",
         UNIVERSALIS_DEFAULT_WORLD,
       );
-      const wantsCraftProfit =
-        includeContext && typeof textLooksLikeCraftProfitQuestion === "function"
-          ? textLooksLikeCraftProfitQuestion(transcript)
-          : false;
-      const wantsUniversalis =
-        includeContext && typeof textLooksLikeMarketQuestion === "function"
-          ? textLooksLikeMarketQuestion(transcript)
-          : false;
-      const wantsStockMarket =
-        includeContext && typeof textLooksLikeStockMarketQuestion === "function"
-          ? textLooksLikeStockMarketQuestion(transcript)
-          : false;
-      const craftProfitText = wantsCraftProfit
-        ? await buildOptionalPromptContext("craft profit", () =>
-            buildCraftProfitContextForPrompt(transcript, world),
-          )
+      // Tries each plugin's contributePromptContext in capabilities-array
+      // order, first non-empty result wins (issue #108) -- each plugin's own
+      // builder decides relevance, this just picks the first that answers.
+      const marketText = includeContext
+        ? await contributePluginPromptContext(capabilities, transcript, {
+            marketDataClient,
+            world,
+            screenText,
+          })
         : "";
-      const marketText =
-        craftProfitText ||
-        (wantsUniversalis
-          ? await buildOptionalPromptContext("Universalis", () =>
-              buildUniversalisContextForPrompt(transcript, world, screenText),
-            )
-          : "") ||
-        (wantsStockMarket
-          ? await buildOptionalPromptContext("market", () =>
-              buildMarketContextForPrompt(transcript, marketDataClient),
-            )
-          : "") ||
-        (includeContext && typeof buildWebContextForPrompt === "function"
-          ? await buildOptionalPromptContext("web access", () =>
-              buildWebContextForPrompt(transcript),
-            )
-          : "");
       const sessionId = optionalString(req.body?.sessionId, "sessionId", null);
       const assistantMode = optionalString(
         req.body?.assistantMode,
@@ -327,9 +290,13 @@ function registerCoreRoutes(app, upload, deps) {
       );
       const transcript = runWhisper(audioPath);
 
-      const stockMarketText = await buildMarketContextForPrompt(
+      // Same generic plugin prompt-context chain /reply uses (issue #108).
+      // No screenText/ffxivWorld here since /transcribe has no OCR or
+      // per-request world override -- UNIVERSALIS_DEFAULT_WORLD covers it.
+      const marketText = await contributePluginPromptContext(
+        capabilities,
         transcript,
-        marketDataClient,
+        { marketDataClient, world: UNIVERSALIS_DEFAULT_WORLD, screenText: "" },
       );
       const sessionId = optionalString(req.body?.sessionId, "sessionId", null);
       const assistantMode = optionalString(
@@ -341,7 +308,7 @@ function registerCoreRoutes(app, upload, deps) {
       const reply = await buildAssistantReply(
         transcript,
         "",
-        stockMarketText,
+        marketText,
         "default",
         sessionId,
         assistantMode,
