@@ -1,6 +1,58 @@
 Node bot (Mana) — local backend
 
-[... existing README content ...]
+Local-first Express backend for Mana: transcription, chat replies, TTS
+calls, screen OCR, mobile routes, and setup checks. Listens on
+`http://localhost:5005` by default. See the root [README.md](../README.md)
+for the full endpoint list, model stack, and Doctor checks — this file
+covers the backend package itself: what's in it, how to run it, and how
+to test it.
+
+## Layout
+
+- `server.js` / `server-routes.js` — Express app setup and the core
+  chat/transcription/vision routes.
+- `capabilities/` — self-contained feature modules (sessions, presets,
+  deep research, background memory, retriever admin, web access, dir
+  scanner) registered through `capabilities/registry.js`. See
+  `capabilities/registry.js` for the registration/health/prompt-context
+  hooks a capability can implement.
+- `../plugins/` — optional plugins (FFXIV market/crafting, real-world
+  stock market data) that follow the same shape as a capability but live
+  outside `node-bot/` so they're independently testable packages; see
+  [plugins/README.md](../plugins/README.md).
+- `ai/` — local model runtime: the persistent `llama-server` runtime,
+  the one-shot `llama-cli` fallback, and model-profile selection.
+- `tools/` — Whisper/llama discovery helpers, the retriever/embedding
+  index, deep research, and web access.
+- `test/` — `node:test` files, one roughly per module; run individually
+  or via `npm test`.
+- `mcp-server.js` — exposes FFXIV market and web-access tools over MCP
+  for local MCP clients (`npm run mcp`).
+- `doctor.js` — local setup/readiness checks (`npm run doctor`).
+
+## Run
+
+```powershell
+npm install
+npm start
+```
+
+## Test
+
+```powershell
+npm test
+```
+
+Runs `run_tests.js`, which sets `NODE_ENV=test` (so `llama-server` and
+other real processes never spawn from a test run) and executes
+`test/*.test.js`. Plugins under `../plugins/*/test/` have their own
+`npm test` and aren't included in this run — see
+[plugins/README.md](../plugins/README.md).
+
+For a large machine already running other heavy applications, prefer
+running one test file at a time (`node --test test/<file>.test.js`)
+rather than the full batch, so memory is released between files instead
+of held for the whole run.
 
 Local Embedding Service (optional, local-only)
 

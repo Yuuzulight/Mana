@@ -12,8 +12,9 @@ watchlist.
   (`MARKET_WATCHLIST`, default `NVDA,AMD,AAPL,MSFT`).
 
 Also contributes prompt context directly into Mana's chat replies when a
-message looks like a stock-market question (see `isMarketQuestion` and
-`buildMarketContextForPrompt`, wired in by `node-bot/server-routes.js`).
+message looks like a stock-market question, via `contributePromptContext`
+(self-guards on `isMarketQuestion`) — see [../README.md](../README.md) for
+how the plugin hook works.
 
 Requires `ALPHA_VANTAGE_API_KEY` (free tier at alphavantage.co). Without it,
 the plugin reports "unconfigured" in `/health` and its routes/prompt
