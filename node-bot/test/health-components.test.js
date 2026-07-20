@@ -30,6 +30,7 @@ test("health includes component readiness while preserving top-level fields", as
       "presets",
       "retrieverAdmin",
       "sessions",
+      "stockMarket",
       "tts",
       "vtubeStudio",
       "webAccess",
@@ -43,6 +44,15 @@ test("health includes component readiness while preserving top-level fields", as
       message: "FFXIV market providers are configured from local defaults.",
       universalisConfigured: true,
       xivapiConfigured: true,
+    });
+    // No ALPHA_VANTAGE_API_KEY in the test env, so this reports unconfigured
+    // rather than failing -- same "optional, degrades gracefully" shape as
+    // the other API-key-gated capabilities (webAccess, cloudflareTunnel).
+    assert.deepEqual(body.components.stockMarket, {
+      status: "unconfigured",
+      configured: false,
+      message:
+        "Set ALPHA_VANTAGE_API_KEY to enable real-world stock market data (see docs/API_KEYS.md).",
     });
     assert.equal(typeof body.components.localLlama.message, "string");
   });

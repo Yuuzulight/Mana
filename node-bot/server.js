@@ -96,11 +96,12 @@ const {
 	const { runDoctorChecksAsync } = require("./doctor");
 	const { MobileDeviceStore } = require("./mobile-device-store");
 	// NOTE: mobile-auth and mobile-memory-store may exist; we add device store integration here
+	const stockMarketPlugin = require("../plugins/stock-market");
 	const {
 	  buildMarketContextForPrompt,
 	  createMarketDataClient,
 	  isMarketQuestion,
-	} = require("./market-data");
+	} = stockMarketPlugin;
 const { createTtsRuntime } = require("./tts-runtime");
 const { createAcpMemoryStore } = require("./acp-memory-store");
 const { createPresetsStore } = require("./presets-store");
@@ -192,7 +193,6 @@ const TTS_BIN = process.env.TTS_BIN || null;
 const CHATTERBOX_TTS_URL =
   process.env.CHATTERBOX_TTS_URL || "http://127.0.0.1:5010";
 const KOKORO_TTS_URL = process.env.KOKORO_TTS_URL || "http://127.0.0.1:5011";
-const MARKET_PROVIDER = process.env.MARKET_PROVIDER || "alphavantage";
 const FISH_TTS_URL = process.env.FISH_TTS_URL || "http://127.0.0.1:8080";
 const SCREEN_CONTEXT_ENABLED = process.env.SCREEN_CONTEXT_ENABLED !== "0";
 const SCREEN_CONTEXT_MAX_CHARS = Number(
@@ -1468,6 +1468,7 @@ function registerRoutes(app, upload, deps = {}) {
 
   const capabilities = deps.capabilities || [
     ffxivMarketPlugin,
+    stockMarketPlugin,
     dirScannerCapability,
     webAccessCapability,
     sessionsCapability,
@@ -1490,6 +1491,7 @@ function registerRoutes(app, upload, deps = {}) {
       deps.decompose ||
       ((prompt) => runLocalLlamaReply(prompt, 200, "quality", SUB_QUERY_SYSTEM_PROMPT)),
     presetsStore: activePresetsStore,
+    marketDataClient,
     UNIVERSALIS_DEFAULT_WORLD,
     FFXIV_PROFIT_TOP_LIMIT,
     FFXIV_RECIPE_SOURCE,
@@ -1818,8 +1820,6 @@ function registerRoutes(app, upload, deps = {}) {
       remoteAiEnabled: shouldUseRemoteAi(),
       vtubeStudioConfigured: Boolean(vtubeStudio),
       vtubeStudioUrl: VTUBE_STUDIO_URL,
-      marketProvider: MARKET_PROVIDER,
-      marketConfigured: marketDataClient.isConfigured,
       components,
     });
 
