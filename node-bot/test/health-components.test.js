@@ -24,6 +24,7 @@ test("health includes component readiness while preserving top-level fields", as
       "deepResearch",
       "dirScanner",
       "ffxivMarket",
+      "jobApplications",
       "localLlama",
       "localMemory",
       "mobileAuth",
