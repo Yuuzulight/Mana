@@ -67,9 +67,6 @@ const { createVTubeRuntime } = require("./vtube-runtime");
 	  buildCapabilityHealth,
 	  registerCapabilities,
 	} = require("./capabilities/registry");
-	const {
-	  ffxivMarketCapability,
-	} = require("./capabilities/ffxiv-market-capability");
 	const dirScannerCapability = require("./capabilities/dir-scanner-capability");
 const {
   webAccessCapability,
@@ -119,6 +116,7 @@ const {
 } = require("./ai/local-llama-runtime");
 const { createLlamaServerRuntime } = require("./ai/llama-server-runtime");
 const { createRestartController } = require("./admin-restart");
+const ffxivMarketPlugin = require("../plugins/ffxiv-market");
 const {
   FFXIV_PROFIT_TOP_LIMIT,
   FFXIV_RECIPE_SOURCE,
@@ -150,7 +148,7 @@ const {
   summarizeSalesHistory,
   textLooksLikeCraftProfitQuestion,
   textLooksLikeMarketQuestion,
-} = require("./ffxiv-market");
+} = ffxivMarketPlugin;
 
 function createApp(deps = {}) {
   const app = express();
@@ -1655,7 +1653,7 @@ function registerRoutes(app, upload, deps = {}) {
       env: deps.env || process.env,
     });
   const capabilities = deps.capabilities || [
-    ffxivMarketCapability,
+    ffxivMarketPlugin,
     dirScannerCapability,
     webAccessCapability,
     sessionsCapability,
@@ -3571,6 +3569,24 @@ function registerRoutes(app, upload, deps = {}) {
     }
   });
 
+  // Lists capabilities that opt in with a `category` (e.g. the FFXIV plugin
+  // under ../plugins/), grouped by category. Built-in capabilities without
+  // a category (sessions, presets, etc.) aren't "plugins" in this sense and
+  // don't appear here -- see /health for the full component list.
+  app.get("/plugins", (req, res) => {
+    const grouped = {};
+    for (const capability of capabilities) {
+      if (!capability.category) continue;
+      const bucket = grouped[capability.category] || (grouped[capability.category] = []);
+      bucket.push({
+        key: capability.key,
+        name: capability.name || capability.key,
+        description: capability.description || null,
+      });
+    }
+    return res.json({ ok: true, plugins: grouped });
+  });
+
   const turnArbiter = require("./utils/turn_arbiter");
 
   async function synthesizeReply(text, opts = {}) {
@@ -5134,22 +5150,10 @@ module.exports = {
   createApp,
   buildMemoryNotes,
   ensureDirectory,
-  formatCraftRankingDetails,
   formatMemoryMarkdown,
-  getCraftMarketabilityRequirement,
-  getCraftRankingValue,
-  getGarlandNodeGatheringJob,
-  getGarlandNodeGatheringSources,
-  getSalesHistoryAdjustedPrice,
-  isIgnoredGatheringMaterial,
-  materialPassesGatheringFilters,
   normalizeLlamaModelProfile,
-  normalizeCraftRankingMode,
-  normalizeGatheringSourceFilter,
   pickPreferredLlamaModel,
-  resolveGatherableRecipeMaterials,
   selectLlamaModelProfileForPrompt,
   shouldUseRemoteAi,
   startServer,
-  summarizeSalesHistory,
 };
