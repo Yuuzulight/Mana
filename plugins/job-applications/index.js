@@ -272,6 +272,28 @@ function registerJobApplicationsRoutes(app, context = {}) {
   });
 }
 
+// Codex review on PR #115 (issue #114): unbounded application count/note
+// length could push a llama-server prompt past its context window for a
+// heavy user. Most recent N is what a "what have I applied to" question
+// actually needs; older ones are summarized by count instead of dropped
+// silently.
+const PROMPT_CONTEXT_MAX_APPLICATIONS = 10;
+const PROMPT_CONTEXT_NOTE_MAX_CHARS = 200;
+
+function escapeRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+// Codex review on PR #115: a plain .includes() let a short key/label (e.g.
+// "go") match inside an unrelated word ("going"), leaking answer content
+// into replies it wasn't asked for. \b requires the match to sit on a word
+// boundary, so "go" no longer matches inside "going" but a real mention (or
+// a multi-word label like "AI experience") still does.
+function textMentionsAnswer(text, value) {
+  if (!value) return false;
+  return new RegExp(`\\b${escapeRegExp(value)}\\b`, "i").test(text);
+}
+
 // Chat-reply prompt context (same shape as ffxiv-market/stock-market, see
 // issue #108): self-guards on job-application-shaped text, then surfaces a
 // compact summary of tracked applications plus any saved answer whose key
@@ -290,20 +312,29 @@ async function contributePromptContext(text, context = {}) {
   const clean = String(text || "").toLowerCase();
   const lines = [];
 
+  // listApplications() already sorts most-recent appliedAt first.
   const applications = store.listApplications();
   if (applications.length) {
     lines.push("Tracked job applications:");
-    for (const application of applications) {
-      const suffix = application.notes ? ` -- ${application.notes}` : "";
+    for (const application of applications.slice(0, PROMPT_CONTEXT_MAX_APPLICATIONS)) {
+      const notes =
+        application.notes.length > PROMPT_CONTEXT_NOTE_MAX_CHARS
+          ? `${application.notes.slice(0, PROMPT_CONTEXT_NOTE_MAX_CHARS)}...`
+          : application.notes;
+      const suffix = notes ? ` -- ${notes}` : "";
       lines.push(
         `- ${application.company} (${application.role}): ${application.status}${suffix}`,
       );
+    }
+    const remaining = applications.length - PROMPT_CONTEXT_MAX_APPLICATIONS;
+    if (remaining > 0) {
+      lines.push(`...and ${remaining} more.`);
     }
   }
 
   const answers = store.listAnswers();
   for (const answer of answers) {
-    if (clean.includes(answer.key) || clean.includes(answer.label.toLowerCase())) {
+    if (textMentionsAnswer(clean, answer.key) || textMentionsAnswer(clean, answer.label.toLowerCase())) {
       lines.push(`\nSaved answer "${answer.label}":\n${answer.content}`);
     }
   }

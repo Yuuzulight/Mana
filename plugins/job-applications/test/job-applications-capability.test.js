@@ -257,3 +257,38 @@ test("contributePromptContext only includes a saved answer the message actually 
   assert.match(result, /my real answer/);
   assert.doesNotMatch(result, /unrelated answer/);
 });
+
+test("contributePromptContext requires a whole-word match, not a substring inside another word", async () => {
+  const store = createJobApplicationsStore({ dataDir: tempDir() });
+  store.saveAnswer({ key: "go", label: "Go", content: "golang answer content" });
+
+  const result = await jobApplicationsPlugin.contributePromptContext(
+    "how is my job search going?",
+    { jobApplicationsStore: store },
+  );
+  assert.doesNotMatch(result, /golang answer content/);
+});
+
+test("contributePromptContext caps tracked applications shown and truncates long notes", async () => {
+  const store = createJobApplicationsStore({ dataDir: tempDir() });
+  for (let i = 0; i < 12; i += 1) {
+    store.createApplication({ company: `Company${i}`, role: "Engineer", appliedAt: `2026-01-${String(i + 1).padStart(2, "0")}` });
+  }
+  store.createApplication({
+    company: "Verbose Co",
+    role: "Engineer",
+    notes: "x".repeat(500),
+    appliedAt: "2026-02-01",
+  });
+
+  const result = await jobApplicationsPlugin.contributePromptContext(
+    "what's the status of my job applications?",
+    { jobApplicationsStore: store },
+  );
+
+  const shownCompanies = [...result.matchAll(/^- (\S+)/gm)].map((m) => m[1]);
+  assert.equal(shownCompanies.length, 10);
+  assert.match(result, /\.\.\.and 3 more\./);
+  assert.match(result, /x{200}\.\.\./);
+  assert.doesNotMatch(result, /x{201}/);
+});
