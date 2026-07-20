@@ -13,15 +13,23 @@ read, tested, and reasoned about without the rest of the backend.
   and watchlist summaries via Alpha Vantage.
 - [`job-applications`](job-applications/): local job-application tracker
   plus a reusable answer knowledge base (resume bullets, project
-  descriptions, canned Q&A). No LinkedIn or other third-party integration
-  -- local storage only.
+  descriptions, canned Q&A), and a `POST /jobs/match` flow that tailors a
+  resume/cover letter from a pasted posting. No LinkedIn or other
+  third-party integration, and never auto-submits anywhere -- local storage
+  only, prep for you to send by hand.
+- [`job-search-adzuna`](job-search-adzuna/): live job postings via the
+  Adzuna API (search-only -- no auto-apply, no scraping). Paste a result's
+  description into job-applications' `POST /jobs/match` for a tailored
+  resume/cover letter; the two plugins are independent.
 
-All are always loaded (no separate install step). FFXIV/stock-market are
-effectively opt-in since their routes/prompt-context return nothing useful
-without network access (FFXIV) or an API key (`ALPHA_VANTAGE_API_KEY` for
-stock market); job-applications works out of the box since it's pure local
-storage. `GET /plugins` on the running backend lists everything currently
-loaded, grouped by category.
+All four are always loaded (no separate install step). FFXIV/stock-market/
+job-search-adzuna are effectively opt-in since their routes/prompt-context
+return nothing useful without network access (FFXIV) or an API key
+(`ALPHA_VANTAGE_API_KEY` for stock market, `ADZUNA_APP_ID`/`ADZUNA_APP_KEY`
+for job search); job-applications works out of the box since it's pure
+local storage (its `/jobs/match` tailoring still needs a local model
+configured). `GET /plugins` on the running backend lists everything
+currently loaded, grouped by category.
 
 ## The plugin shape
 
