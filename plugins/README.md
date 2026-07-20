@@ -11,12 +11,17 @@ read, tested, and reasoned about without the rest of the backend.
   Garland/XIVAPI craft-profitability lookups for Final Fantasy XIV.
 - [`stock-market`](stock-market/): real-world stock quotes, comparisons,
   and watchlist summaries via Alpha Vantage.
+- [`job-applications`](job-applications/): local job-application tracker
+  plus a reusable answer knowledge base (resume bullets, project
+  descriptions, canned Q&A). No LinkedIn or other third-party integration
+  -- local storage only.
 
-Both are always loaded (no separate install step), but effectively opt-in
-since their routes/prompt-context return nothing useful without network
-access (FFXIV) or an API key (`ALPHA_VANTAGE_API_KEY` for stock market).
-`GET /plugins` on the running backend lists everything currently loaded,
-grouped by category.
+All are always loaded (no separate install step). FFXIV/stock-market are
+effectively opt-in since their routes/prompt-context return nothing useful
+without network access (FFXIV) or an API key (`ALPHA_VANTAGE_API_KEY` for
+stock market); job-applications works out of the box since it's pure local
+storage. `GET /plugins` on the running backend lists everything currently
+loaded, grouped by category.
 
 ## The plugin shape
 
