@@ -1,9 +1,13 @@
 Chatterbox Turbo TTS service
 ============================
 
-This folder contains two local TTS services for Mana.
+This folder contains two local TTS services for Mana. Fish Speech
+(S1-mini) is Mana's actual **default** `TTS_PROVIDER` and runs separately
+via `tools/api_server.py`, not from this folder — see
+[docs/fish_speech_tts.md](../docs/fish_speech_tts.md). The two services here
+are Mana's secondary/fallback voice paths:
 
-- Kokoro ONNX is the faster primary test path on `http://127.0.0.1:5011`.
+- Kokoro ONNX is the faster primary test path on `http://127.0.0.1:5011`, and also runs as S1-mini's automatic fallback voice.
 - Chatterbox Turbo is the higher-quality fallback path on `http://127.0.0.1:5010`.
 
 Endpoints

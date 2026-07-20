@@ -12,10 +12,9 @@ and "what's profitable to craft right now" questions.
   (via OCR text) and looks up its price.
 
 Also contributes prompt context directly into Mana's chat replies when a
-message looks like a market or crafting-profit question (see
-`textLooksLikeMarketQuestion`/`textLooksLikeCraftProfitQuestion` and
-`buildUniversalisContextForPrompt`/`buildCraftProfitContextForPrompt`,
-wired in by `node-bot/server-routes.js`).
+message looks like a market or crafting-profit question, via
+`contributePromptContext` (craft-profit checked before a plain market
+lookup) — see [../README.md](../README.md) for how the plugin hook works.
 
 No API keys required — Universalis, Garland Tools, and XIVAPI are all
 public, unauthenticated APIs. Optional env vars (`UNIVERSALIS_API_URL`,
