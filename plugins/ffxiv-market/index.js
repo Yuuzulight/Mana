@@ -188,6 +188,25 @@ function registerFfxivMarketRoutes(app, deps) {
   });
 }
 
+// Chat-reply prompt context (issue #108): craft-profit takes priority over a
+// plain market lookup, matching the order server-routes.js used to hardcode.
+// Both builders already self-guard on their own textLooksLike* detection and
+// return "" when the text isn't relevant, so this just tries craft-profit
+// first and falls through to the market lookup.
+async function contributePromptContext(text, opts = {}) {
+  const world = opts.world || ffxivMarket.UNIVERSALIS_DEFAULT_WORLD;
+  const craftProfitText = await ffxivMarket.buildCraftProfitContextForPrompt(
+    text,
+    world,
+  );
+  if (craftProfitText) return craftProfitText;
+  return ffxivMarket.buildUniversalisContextForPrompt(
+    text,
+    world,
+    opts.screenText || "",
+  );
+}
+
 // This is Mana's plugin entry point convention: everything ffxiv-market.js
 // exports (Universalis/Garland/XIVAPI functions and consts), plus the
 // route registration + metadata a plugin needs to show up in GET /plugins
@@ -200,6 +219,7 @@ module.exports = {
   description:
     "Universalis market-board prices and Garland/XIVAPI craft-profitability lookups for Final Fantasy XIV.",
   registerRoutes: registerFfxivMarketRoutes,
+  contributePromptContext,
   getHealth: () => ({
     status: "configured",
     configured: true,
