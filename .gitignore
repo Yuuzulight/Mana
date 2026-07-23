@@ -69,6 +69,11 @@ desktop-client/avatar/model/
 # (sprite <img>/background-image calls silently no-op) if it's absent.
 /sprites/
 
+# Mana's PNG avatar overlay art (all rights reserved, see LICENSE-ARTWORK) is
+# not distributed with the public repo; the launcher falls back to the
+# generic idle.svg/talking.svg placeholders if these are absent.
+windows-launcher/assets/avatar/*.png
+
 # Personal voice references (never commit someone's voice)
 tts-service/references/
 tts-service/voice-auditions/
