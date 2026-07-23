@@ -165,6 +165,7 @@ Common troubleshooting:
 - [Zed External Agent setup](docs/zed_external_agent.md): local Zed `agent_servers` configuration.
 - [MCP support roadmap](docs/roadmap/issue-42-mcp-support.md): running Mana as an MCP server (`npm run mcp`) and the plan for MCP client support.
 - [Deep Research roadmap](docs/roadmap/issue-47-deep-research.md): multi-step, multi-source research with a cited report, bounded steps/time, and a "Research" button in windows-launcher.
+- [Code signing setup](docs/code_signing_setup.md): what's needed to get a signed, SmartScreen-clean desktop-client installer.
 
 ## Backend API
 
