@@ -1,7 +1,10 @@
 const fs = require('fs');
 const path = require('path');
 
-const DATA_PATH = path.join(__dirname, '..', 'data', 'talk_budget.json');
+const DATA_PATH = path.join(
+  process.env.MANA_TALK_BUDGET_DIR || path.join(__dirname, '..', 'data'),
+  'talk_budget.json',
+);
 let store = null;
 
 function ensureLoaded() {

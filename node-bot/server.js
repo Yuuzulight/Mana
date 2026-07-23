@@ -1869,7 +1869,9 @@ function registerRoutes(app, upload, deps = {}) {
     });
 
     // Admin endpoints for file write approvals
-    const PENDING_DIR = path.join(__dirname, "data", "pending_writes");
+    const PENDING_DIR =
+      process.env.MANA_PENDING_WRITES_DIR ||
+      path.join(__dirname, "data", "pending_writes");
 
     app.get("/admin/pending-writes", async (req, res) => {
       if (!checkAdminAuth(req, res)) return;

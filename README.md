@@ -167,6 +167,7 @@ Common troubleshooting:
 - [Deep Research roadmap](docs/roadmap/issue-47-deep-research.md): multi-step, multi-source research with a cited report, bounded steps/time, and a "Research" button in windows-launcher.
 - [Code signing setup](docs/code_signing_setup.md): what's needed to get a signed, SmartScreen-clean desktop-client installer.
 - [Auto-update setup](docs/auto_update_setup.md): how desktop-client checks for and installs updates, and what a release needs to include for it to work.
+- [Local data storage and uninstalling](docs/local_data_and_uninstall.md): where desktop-client's local data lives and what the uninstaller does (and doesn't) delete.
 
 ## Backend API
 

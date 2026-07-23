@@ -3,6 +3,7 @@ const path = require('path');
 const fs = require('fs');
 const { spawn } = require('child_process');
 const { isAutoUpdateEnabled, createUpdateManager } = require('./update-manager');
+const { getManaDataRoot, buildDataDirEnv, migrateLegacyData } = require('./data-dir-manager');
 
 let mainWindow = null;
 let backendProc = null;
@@ -78,11 +79,28 @@ function spawnBackend() {
   const bundled = findBundledNode();
   const nodeBin = bundled || 'node';
   const serverPath = path.join(__dirname, '..', 'node-bot', 'server.js');
+
+  // Packaged builds only: node-bot's stores default to writing inside their
+  // own directory, which for a packaged app is inside the install
+  // directory -- normally wiped on uninstall with no prompt (issue #121).
+  // Point them at the standard per-user Electron data directory instead,
+  // migrating anything already sitting in the old (in-install-dir)
+  // location so an upgrade doesn't lose data. Left untouched in dev
+  // (`npm start`) so node-bot/data/ in the source tree keeps working the
+  // way developers already expect.
+  let dataDirEnv = {};
+  if (app.isPackaged) {
+    const dataRoot = getManaDataRoot(app);
+    const legacyDataDir = path.join(path.dirname(serverPath), 'data');
+    migrateLegacyData(legacyDataDir, dataRoot);
+    dataDirEnv = buildDataDirEnv(dataRoot);
+  }
+
   // Start backend in project root
   try{
     backendProc = spawn(nodeBin, [serverPath], {
       cwd: path.join(__dirname, '..'),
-      env: Object.assign({}, process.env, { NODE_ENV: process.env.NODE_ENV || '' }),
+      env: Object.assign({}, process.env, { NODE_ENV: process.env.NODE_ENV || '' }, dataDirEnv),
       stdio: ['ignore', 'pipe', 'pipe'],
     });
   } catch (e){

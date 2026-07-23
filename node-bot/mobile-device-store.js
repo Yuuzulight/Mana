@@ -2,7 +2,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 
-const DATA_DIR = path.join(__dirname, 'data');
+const DATA_DIR = process.env.MANA_MOBILE_DEVICES_DIR || path.join(__dirname, 'data');
 const FILE_PATH = path.join(DATA_DIR, 'mobile-devices.json');
 
 function ensureDataDir() {
