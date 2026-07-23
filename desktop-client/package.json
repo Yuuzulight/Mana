@@ -5,6 +5,7 @@
   "author": "ManaAI",
   "main": "main.js",
   "scripts": {
+    "test": "node --test test/*.test.js",
     "start": "electron .",
     "pack": "electron-builder --dir",
     "dist": "electron-builder --win nsis --publish never",
@@ -17,6 +18,7 @@
     "electron-builder": "^24.7.0"
   },
   "dependencies": {
+    "electron-updater": "^6.8.9",
     "pixi-live2d-display": "^0.4.0",
     "pixi.js": "^6.5.10"
   },
@@ -30,12 +32,18 @@
     "directories": {
       "buildResources": "build"
     },
+    "publish": {
+      "provider": "github",
+      "owner": "Yuuzulight",
+      "repo": "Mana"
+    },
     "win": {
       "target": [
         "nsis"
       ],
       "signAndEditExecutable": false
     },
+    "artifactName": "Mana-Setup-${version}.${ext}",
     "nsis": {
       "oneClick": false,
       "perMachine": false,

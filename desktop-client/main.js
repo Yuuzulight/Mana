@@ -2,9 +2,11 @@ const { app, BrowserWindow, ipcMain, dialog, shell, session } = require('electro
 const path = require('path');
 const fs = require('fs');
 const { spawn } = require('child_process');
+const { isAutoUpdateEnabled, createUpdateManager } = require('./update-manager');
 
 let mainWindow = null;
 let backendProc = null;
+let updateManager = null;
 
 function createWindow() {
   mainWindow = new BrowserWindow({
@@ -137,6 +139,14 @@ app.whenReady().then(() => {
   spawnBackend();
   createWindow();
 
+  if (isAutoUpdateEnabled()) {
+    updateManager = createUpdateManager({ getMainWindow: () => mainWindow });
+    // Silent: don't pop an error dialog just because a startup check failed
+    // (offline, GitHub hiccup, etc.) -- only explicit "Check for Updates"
+    // clicks should surface a failure to the user.
+    updateManager.checkForUpdates({ silent: true });
+  }
+
   app.on('activate', function () {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });
@@ -179,6 +189,15 @@ ipcMain.handle('open-avatar-notice', async () => {
     await shell.openExternal('https://github.com/Yuuzulight/Mana/blob/main/desktop-client/AVATAR_NOTICE.md');
     return { ok: true, url: 'https://github.com/Yuuzulight/Mana/blob/main/desktop-client/AVATAR_NOTICE.md' };
   } catch (e) { return { ok: false, error: String(e) }; }
+});
+
+ipcMain.handle('get-app-version', async () => app.getVersion());
+
+ipcMain.handle('check-for-updates', async () => {
+  if (!updateManager) {
+    return { ok: false, message: isAutoUpdateEnabled() ? 'Updater not initialized yet.' : 'Update checks are disabled (MANA_AUTO_UPDATE_ENABLED=0).' };
+  }
+  return updateManager.checkForUpdates({ silent: false });
 });
 
 ipcMain.handle('open-docs', async () => {

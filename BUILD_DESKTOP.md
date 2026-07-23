@@ -57,7 +57,11 @@ Build steps (local)
 
 5. Find artifacts:
 
-   - After a successful build, installers will be in `desktop-client/dist/` (e.g., Mana Setup 0.1.0.exe).
+   - After a successful build, the installer will be in `desktop-client/dist/`
+     (e.g., `Mana-Setup-0.2.1.exe`), alongside a `latest.yml` -- if you're
+     publishing a release, upload **both** files as release assets, not just
+     the installer. `latest.yml` is what the auto-updater reads to know a
+     new version exists; see [docs/auto_update_setup.md](docs/auto_update_setup.md).
 
 6. Test the installer on a clean Windows machine (or VM):
 

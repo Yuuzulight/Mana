@@ -42,6 +42,9 @@ const { formatCompareProfileLabel, pickDefaultCompareProfiles } = require('./com
   const presetInstructionsInputEl = document.getElementById('presetInstructionsInput');
   const presetSaveBtnEl = document.getElementById('presetSaveBtn');
   const presetCancelBtnEl = document.getElementById('presetCancelBtn');
+  const updateVersionEl = document.getElementById('updateVersion');
+  const updateStatusEl = document.getElementById('updateStatus');
+  const checkUpdatesBtnEl = document.getElementById('checkUpdatesBtn');
 
   let mediaStream = null;
   let recorder = null;
@@ -686,6 +689,27 @@ const { formatCompareProfileLabel, pickDefaultCompareProfiles } = require('./com
   document.getElementById('dismissOnboarding').addEventListener('click', ()=>{ localStorage.setItem('mana_seen_onboarding','1'); hideOnboarding(); });
   document.getElementById('openDocsBtn').addEventListener('click', async ()=>{ try{ await window.electronAPI.openDocs(); } catch(e){ window.open('../BUILD_DESKTOP.md','_blank'); } });
   document.getElementById('runDoctorBtn').addEventListener('click', ()=>{ runOnboardingChecks(); });
+
+  if (updateVersionEl && window.electronAPI.getAppVersion) {
+    window.electronAPI.getAppVersion().then((v) => { updateVersionEl.textContent = `Version ${v}`; }).catch(()=>{});
+  }
+  if (window.electronAPI.onUpdateStatus) {
+    window.electronAPI.onUpdateStatus((status) => {
+      if (updateStatusEl) updateStatusEl.textContent = status.message || status.state;
+    });
+  }
+  if (checkUpdatesBtnEl) {
+    checkUpdatesBtnEl.addEventListener('click', async () => {
+      checkUpdatesBtnEl.disabled = true;
+      if (updateStatusEl) updateStatusEl.textContent = 'Checking for updates...';
+      try {
+        const res = await window.electronAPI.checkForUpdates();
+        if (res && !res.ok && updateStatusEl) updateStatusEl.textContent = res.message || 'Check failed.';
+      } finally {
+        checkUpdatesBtnEl.disabled = false;
+      }
+    });
+  }
 
   async function runOnboardingChecks(){
     const details = [];
