@@ -7,11 +7,9 @@ based on the emotion of each reply.
 
 This doc covers the original `windows-launcher` implementation. The same
 driver has also been ported into `desktop-client` (the installer-packaged
-app) with a temporary testing placeholder model — see
-`desktop-client/AVATAR_NOTICE.md` for that model's attribution, and
-`desktop-client/package.json`'s `fetch-live2d-core` script / `avatar\model\`
-folder for the equivalent setup there. Everything below (tuning knobs,
-`mana-avatar.json`, env vars) applies to both.
+app) — `desktop-client/package.json`'s `fetch-live2d-core` / `fetch-sample-avatar`
+scripts and `avatar\model\` folder work the same way there. Everything below
+(tuning knobs, `mana-avatar.json`, env vars) applies to both.
 
 ## Setup
 
@@ -24,15 +22,30 @@ folder for the equivalent setup there. Everything below (tuning knobs,
    npm run fetch-live2d-core
    ```
 
-2. **Add your model**: copy the whole model folder (the one containing
-   `*.model3.json`, `*.moc3`, textures, and motions) into:
+2. **Add a model** — two options:
 
-   ```text
-   C:\ManaAI\Mana\windows-launcher\avatar\model\
-   ```
+   - **Don't have one yet?** Fetch Live2D's own free "Hiyori" sample model
+     (Live2D Original Character, Free Material License Agreement — see
+     [Free Material License Agreement](https://www.live2d.com/eula/live2d-free-material-license-agreement_en.html)).
+     This downloads straight from Live2D's CDN, the same way the "Download"
+     button on their site does, and is never committed to or redistributed by
+     this repo:
 
-   The launcher auto-detects the first `.model3.json` it finds there, or you
-   can point somewhere else explicitly:
+     ```powershell
+     npm run fetch-sample-avatar
+     ```
+
+   - **Have your own model?** Copy the whole model folder (the one
+     containing `*.model3.json`, `*.moc3`, textures, and motions) into:
+
+     ```text
+     C:\ManaAI\Mana\windows-launcher\avatar\model\
+     ```
+
+   Either way, the launcher auto-detects the first `.model3.json` it finds
+   there (`fetch-sample-avatar` skips itself entirely if one is already
+   present, so it never clobbers a model you dropped in), or you can point
+   somewhere else explicitly:
 
    ```powershell
    $env:MANA_LIVE2D_MODEL = "D:\my-models\mana\mana.model3.json"

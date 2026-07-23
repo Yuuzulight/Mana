@@ -1,21 +1,32 @@
 # Avatar Notice
 
-The Live2D avatar shown in the desktop client is a **temporary testing
-placeholder**, not Mana's final avatar. It exists so the avatar rendering
-pipeline (Live2D driving, lip sync, emotion states, zoom) can be built and
-exercised end to end while a final, original avatar is still pending.
+No avatar model is committed to this repository or bundled into any
+installer build — the desktop client always falls back to PNG sprites (or
+no avatar) until `avatar/model/` is populated locally, either by hand or via
+`npm run fetch-sample-avatar` (see below). A final, original Mana-specific
+avatar is still pending; everything described here is an interim default,
+not that final art.
 
 ## Attribution
 
-The placeholder model currently loaded (HuoHuo) is a character from
-**Genshin Impact**. All character design rights belong to **miHoYo /
-HoYoverse**. This project does not claim any ownership over the character
-design, and the model file itself is never committed to this repository
-(it's git-ignored — see `.gitignore`) or bundled into any installer build.
-It is used strictly for local, non-distributed development and testing.
+`npm run fetch-sample-avatar` downloads **Hiyori Momose**, a free sample
+model distributed by **Live2D Inc.** under their
+[Free Material License Agreement](https://www.live2d.com/eula/live2d-free-material-license-agreement_en.html)
+and [Cubism Sample Data Terms of Use](https://www.live2d.com/learn/sample/model-terms/).
+Hiyori is an original character illustrated by **Kani Biimu**. The download
+comes straight from Live2D's own CDN at setup time — the same URL their own
+"Download" button uses — and is never committed to this repository or
+redistributed by Mana, since Live2D's license does not permit third-party
+redistribution of the Material. This is a legally-clean interim default,
+usable in a public build, not a placeholder needing replacement before
+shipping.
 
-This placeholder will be replaced before any public release build ships
-with an avatar enabled by default.
+Developers may also still drop in other local-only test models (e.g. an
+earlier build used a Genshin Impact character as a throwaway placeholder,
+gitignored and never bundled) — see `windows-launcher/avatar/model/` for
+the equivalent bring-your-own-model setup. Anything placed there manually is
+subject to its own license, not this one, and stays local/non-distributed
+same as always.
 
 ## Scope of this port
 

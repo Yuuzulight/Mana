@@ -8,7 +8,8 @@
     "start": "electron .",
     "pack": "electron-builder --dir",
     "dist": "electron-builder --win nsis --publish never",
-    "fetch-live2d-core": "node scripts/fetch-live2d-core.js"
+    "fetch-live2d-core": "node scripts/fetch-live2d-core.js",
+    "fetch-sample-avatar": "node scripts/fetch-sample-avatar.js"
   },
   "license": "Apache-2.0",
   "devDependencies": {

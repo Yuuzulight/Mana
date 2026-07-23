@@ -10,6 +10,7 @@
     "pack": "electron-builder --dir",
     "dist": "electron-builder",
     "fetch-live2d-core": "node scripts/fetch-live2d-core.js",
+    "fetch-sample-avatar": "node scripts/fetch-sample-avatar.js",
     "check-live2d-model": "node scripts/check-live2d-model.js"
   },
   "author": "",
