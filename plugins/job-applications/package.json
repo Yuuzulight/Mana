@@ -4,7 +4,7 @@
   "description": "Local job-application tracker and reusable answer knowledge base plugin for Mana.",
   "main": "index.js",
   "scripts": {
-    "test": "node --test test/"
+    "test": "node --test test/*.test.js"
   },
   "private": true
 }

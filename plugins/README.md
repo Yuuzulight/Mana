@@ -75,8 +75,11 @@ actually relevant before doing any real work.
 ## Adding a plugin
 
 1. New directory under `plugins/` with its own `package.json` (`private:
-   true`, `main: "index.js"`, `scripts.test: "node --test test/"`) and
-   `test/`.
+   true`, `main: "index.js"`, `scripts.test: "node --test test/*.test.js"`)
+   and `test/`. Use the glob form, not a bare directory path -- Node's test
+   runner directory-argument handling isn't consistent across Node versions
+   (verified broken on Node 22, working on Node 18), while the glob form
+   works on both and is what CI's pinned Node 18.18.0 already exercises.
 2. `index.js` exports the shape above.
 3. Add it to the `capabilities` array in `node-bot/server.js` (and to
    `capabilityContext` if it needs config/clients only your plugin uses).

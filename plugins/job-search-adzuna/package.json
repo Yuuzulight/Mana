@@ -4,7 +4,7 @@
   "description": "Live job-posting search via the Adzuna API for Mana.",
   "main": "index.js",
   "scripts": {
-    "test": "node --test test/"
+    "test": "node --test test/*.test.js"
   },
   "private": true
 }
