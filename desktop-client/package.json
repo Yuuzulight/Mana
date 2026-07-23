@@ -59,6 +59,11 @@
         "filter": ["**/*"]
       },
       {
+        "from": "../plugins",
+        "to": "plugins",
+        "filter": ["**/*", "!**/test/**"]
+      },
+      {
         "from": "../node-bin",
         "to": "node_bin",
         "filter": ["**/*"]
