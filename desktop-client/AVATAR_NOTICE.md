@@ -31,14 +31,17 @@ same as always.
 ## Scope of this port
 
 Porting the Live2D driver into `desktop-client` (from `windows-launcher`,
-where it was originally built) also required temporarily enabling
+where it was originally built) originally required temporarily enabling
 `nodeIntegration`/disabling `contextIsolation` for the desktop client's main
-window — see the comment in `desktop-client/main.js`'s `createWindow()`.
-This is a deliberate, documented tradeoff scoped to this testing feature,
-not a permanent security posture. A context-isolation-safe rewrite of
-`avatar/live2d-avatar.js` (resolving model/config over IPC instead of
-`fs`/`path` directly in the renderer) is follow-up work once the avatar
-itself is finalized.
+window, since `avatar/live2d-avatar.js` read model/config files directly
+off disk in the renderer. This has since been fixed (issue #122): model
+resolution now happens in the main process (`avatar/resolve-model.js`) and
+reaches the renderer over IPC via a `contextBridge`-exposed
+`window.electronAPI.resolveAvatarModel()`, so the window runs with
+`nodeIntegration: false` / `contextIsolation: true` like a normal Electron
+app. `windows-launcher`'s own avatar window still uses the old
+nodeIntegration-enabled pattern -- out of scope for #122, which only
+covered desktop-client.
 
 See also `windows-launcher/avatar/model/` (the original, also git-ignored
 copy of this same placeholder model) and the repository-wide

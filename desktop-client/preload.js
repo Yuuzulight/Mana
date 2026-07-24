@@ -1,9 +1,11 @@
-const { ipcRenderer } = require('electron');
+const { contextBridge, ipcRenderer } = require('electron');
 
-// contextIsolation is off (see main.js), so the renderer already has full
-// require() access and this is just a plain global assignment rather than a
-// contextBridge call (contextBridge requires contextIsolation to be on).
-window.electronAPI = {
+// contextIsolation is on (see main.js) -- the renderer has no Node access
+// of its own, so this is the only bridge between it and the main process.
+// Preload scripts always keep full Node/require access regardless of the
+// renderer's own contextIsolation setting; that's what makes contextBridge
+// possible here.
+contextBridge.exposeInMainWorld('electronAPI', {
   backendLog: (cb) => ipcRenderer.on('backend-log', (evt, data) => cb(data)),
   backendExit: (cb) => ipcRenderer.on('backend-exit', (evt, data) => cb(data)),
   showError: (msg) => ipcRenderer.invoke('show-error', msg),
@@ -16,5 +18,9 @@ window.electronAPI = {
   openAvatarNotice: () => ipcRenderer.invoke('open-avatar-notice'),
   getAppVersion: () => ipcRenderer.invoke('get-app-version'),
   checkForUpdates: () => ipcRenderer.invoke('check-for-updates'),
-  onUpdateStatus: (cb) => ipcRenderer.on('update-status', (evt, status) => cb(status))
-};
+  onUpdateStatus: (cb) => ipcRenderer.on('update-status', (evt, status) => cb(status)),
+  // Live2D model/config resolution (see avatar/resolve-model.js) -- the
+  // renderer has no fs/path access of its own, so this is how it finds out
+  // whether a model is configured and what's in it.
+  resolveAvatarModel: () => ipcRenderer.invoke('avatar:resolve-model'),
+});

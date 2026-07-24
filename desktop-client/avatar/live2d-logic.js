@@ -1,5 +1,12 @@
 // Pure helpers for the Live2D avatar window. Kept DOM- and PIXI-free so the
 // launcher tests can cover them directly.
+//
+// Required in the main process (avatar/resolve-model.js, CommonJS) and
+// loaded as a plain classic <script> in the context-isolated renderer (see
+// index_fixed.html) -- wrapped in an IIFE so its top-level declarations
+// don't leak into the shared global scope classic scripts otherwise all
+// share, which would collide with live2d-avatar.js's own declarations.
+(function () {
 
 // Finds the lexicographically first .model3.json under rootDir (recursive),
 // or null. Sorted so the pick stays deterministic when several models exist.
@@ -412,7 +419,7 @@ function nextZoomLevel(current) {
   return ZOOM_LEVELS[(index + 1 + ZOOM_LEVELS.length) % ZOOM_LEVELS.length];
 }
 
-module.exports = {
+const exportsObj = {
   DEFAULT_BROW_PARAM_IDS,
   DEFAULT_EYE_BLINK_PARAM_IDS,
   DEFAULT_EYE_OPEN_SCALE,
@@ -442,3 +449,14 @@ module.exports = {
   rmsToMouth,
   smoothMouthValue,
 };
+
+// Required in the main process (module/module.exports exist there);
+// loaded as a plain classic <script> in the renderer, where neither does.
+if (typeof module !== "undefined" && module.exports) {
+  module.exports = exportsObj;
+}
+if (typeof window !== "undefined") {
+  window.Live2DLogic = exportsObj;
+}
+
+})();

@@ -1,6 +1,12 @@
 // Compare mode picks two starting model profiles to preselect in the two
 // dropdowns so the panel opens with a meaningful contrast (default vs.
 // quality) rather than the same profile twice, when both are available.
+//
+// Wrapped in an IIFE so its top-level declarations don't leak into the
+// shared global scope classic scripts otherwise all share -- see
+// avatar/live2d-logic.js for why that matters.
+(function () {
+
 function pickDefaultCompareProfiles(profileKeys) {
   const keys = Array.from(profileKeys || []);
   if (!keys.length) {
@@ -32,7 +38,16 @@ function formatCompareProfileLabel(key, profiles) {
   return modelFile ? `${profile.label || key} (${modelFile})` : profile.label || key;
 }
 
-module.exports = {
+const exportsObj = {
   formatCompareProfileLabel,
   pickDefaultCompareProfiles,
 };
+
+if (typeof module !== "undefined" && module.exports) {
+  module.exports = exportsObj;
+}
+if (typeof window !== "undefined") {
+  window.ManaCompareMode = exportsObj;
+}
+
+})();

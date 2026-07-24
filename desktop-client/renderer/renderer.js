@@ -1,6 +1,9 @@
-const { createLive2dAvatar } = require('../avatar/live2d-avatar');
-const { detectReplyEmotion } = require('./reply-emotion');
-const { formatCompareProfileLabel, pickDefaultCompareProfiles } = require('./compare-mode');
+// nodeIntegration is off (see main.js) -- these come from plain classic
+// <script> tags loaded before this one (see index_fixed.html), same as
+// PIXI/Live2DCubismCore already do, not require().
+const { createLive2dAvatar } = window.ManaLive2DAvatar;
+const { detectReplyEmotion } = window.ManaReplyEmotion;
+const { formatCompareProfileLabel, pickDefaultCompareProfiles } = window.ManaCompareMode;
 
 (async function(){
   const statusEl = document.getElementById('status');

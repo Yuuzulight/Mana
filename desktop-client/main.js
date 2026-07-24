@@ -4,6 +4,7 @@ const fs = require('fs');
 const { spawn } = require('child_process');
 const { isAutoUpdateEnabled, createUpdateManager } = require('./update-manager');
 const { getManaDataRoot, buildDataDirEnv, migrateLegacyData } = require('./data-dir-manager');
+const { resolveAvatarModel } = require('./avatar/resolve-model');
 
 let mainWindow = null;
 let backendProc = null;
@@ -15,15 +16,14 @@ function createWindow() {
     height: 720,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
-      // Temporary: nodeIntegration is enabled (matching windows-launcher's
-      // existing pattern) so the ported Live2D avatar driver, which reads
-      // the model/config off disk with fs/path directly in the renderer,
-      // can run unmodified. This is scoped to the testing-avatar port only
-      // (see AVATAR_NOTICE.md) — a context-isolation-safe rewrite of
-      // avatar/live2d-avatar.js is follow-up work once the avatar itself
-      // is final, not before.
-      nodeIntegration: true,
-      contextIsolation: false,
+      // The Live2D avatar driver used to read model/config files directly
+      // off disk in the renderer, which required nodeIntegration on and
+      // contextIsolation off. It now resolves that data over IPC (see
+      // avatar/resolve-model.js + the 'avatar:resolve-model' handler
+      // below) instead, so the renderer runs fully sandboxed like a normal
+      // Electron app (see issue #122).
+      nodeIntegration: false,
+      contextIsolation: true,
     },
   });
 
@@ -181,6 +181,15 @@ app.on('before-quit', () => {
 
 ipcMain.handle('show-error', async (ev, msg) => {
   dialog.showErrorBox('Mana Client Error', String(msg || ''));
+});
+
+ipcMain.handle('avatar:resolve-model', async () => {
+  try {
+    return resolveAvatarModel();
+  } catch (e) {
+    console.error('resolveAvatarModel failed:', e);
+    return { modelJson: null };
+  }
 });
 
 // allow renderer to request backend logs or status via IPC if needed

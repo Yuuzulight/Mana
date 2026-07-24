@@ -151,6 +151,14 @@
   <script src="../assets/live2d/live2dcubismcore.min.js"></script>
   <script src="../node_modules/pixi.js/dist/browser/pixi.min.js"></script>
   <script src="../node_modules/pixi-live2d-display/dist/cubism4.min.js"></script>
+  <!-- Context-isolated renderer (see issue #122): these are plain classic
+       scripts attaching to window, not require()'d modules, so load order
+       matters -- each of the next four expects the previous ones already
+       loaded. -->
+  <script src="../avatar/live2d-logic.js"></script>
+  <script src="../avatar/live2d-avatar.js"></script>
+  <script src="reply-emotion.js"></script>
+  <script src="compare-mode.js"></script>
   <script src="renderer.js"></script>
 </body>
 </html>

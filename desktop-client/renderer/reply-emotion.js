@@ -4,6 +4,11 @@
 // to a small set of English mood words for replies that have neither.
 // (Mirrors the mood taxonomy in node-bot/utils/speech-text.js, which uses
 // the same signals to choose what she *says* aloud for an emoji/kaomoji.)
+//
+// Wrapped in an IIFE so its top-level declarations don't leak into the
+// shared global scope classic scripts otherwise all share -- see
+// avatar/live2d-logic.js for why that matters.
+(function () {
 
 const EMOJI_MOODS = [
   [/[\u{1F60A}\u{1F642}\u{1F604}\u{1F600}\u{1F601}\u{263A}\u{1F638}]/gu, "smile"],
@@ -141,8 +146,17 @@ function detectReplyEmotion(text) {
   return "talking";
 }
 
-module.exports = {
+const exportsObj = {
   detectReplyEmotion,
   detectTextMood,
   moodToState,
 };
+
+if (typeof module !== "undefined" && module.exports) {
+  module.exports = exportsObj;
+}
+if (typeof window !== "undefined") {
+  window.ManaReplyEmotion = exportsObj;
+}
+
+})();

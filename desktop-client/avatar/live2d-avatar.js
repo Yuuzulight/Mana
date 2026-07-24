@@ -1,47 +1,35 @@
 // Shared Live2D avatar driver, ported from windows-launcher/avatar/live2d-avatar.js
-// for the desktop-client chat window. See desktop-client/AVATAR_NOTICE.md: the
-// currently-loaded model is a temporary testing placeholder, not the final
-// avatar, and its character design rights remain with the original IP holder.
+// for the desktop-client chat window. See desktop-client/AVATAR_NOTICE.md
+// for the current default-avatar situation.
 // Expects the page to have loaded (in order):
 //   assets/live2d/live2dcubismcore.min.js
 //   node_modules/pixi.js/dist/browser/pixi.min.js
 //   node_modules/pixi-live2d-display/dist/cubism4.min.js
-const fs = require("fs");
-const path = require("path");
-const { pathToFileURL } = require("url");
+//   avatar/live2d-logic.js
+// This file runs in the renderer, which has no fs/path/require access
+// (context-isolated, see issue #122) -- model/config discovery and file
+// reads happen in the main process (avatar/resolve-model.js) and reach
+// here over IPC via window.electronAPI.resolveAvatarModel().
+//
+// Wrapped in an IIFE (renderer-only, no Node/CJS consumer) so its top-level
+// declarations don't leak into the shared global scope classic scripts
+// otherwise all share -- see live2d-logic.js for why that matters.
+(function () {
+
 const {
   augmentModelSettings,
   computeZoomFraming,
   expressionForState,
-  findModelJson,
   fitModelToView,
   mergeStateMappings,
   motionGroupForState,
   nextRandomDelay,
   nextZoomLevel,
-  normalizeAvatarConfig,
   parseParamIdList,
   parseStateMappingOverrides,
   rmsToMouth,
   smoothMouthValue,
-} = require("./live2d-logic");
-
-const MODEL_DIR = path.join(__dirname, "model");
-// Dev convenience only: if desktop-client has no model of its own (avoids
-// duplicating the large, personal, gitignored Live2D model in two places
-// during local testing), fall back to windows-launcher's copy when present.
-// A packaged installer build only bundles desktop-client itself, so this
-// path won't exist there — that's fine, it just means no fallback is found
-// and the avatar gracefully degrades to the sprite UI, same as any other
-// missing-model case.
-const FALLBACK_MODEL_DIR = path.join(
-  __dirname,
-  "..",
-  "..",
-  "windows-launcher",
-  "avatar",
-  "model",
-);
+} = window.Live2DLogic;
 
 function live2dRuntimeAvailable() {
   return (
@@ -52,59 +40,23 @@ function live2dRuntimeAvailable() {
   );
 }
 
-function findConfiguredModelJson(env = process.env) {
-  const explicit = env.MANA_LIVE2D_MODEL || "";
-  if (explicit) {
-    return fs.existsSync(explicit) ? explicit : null;
-  }
-  return findModelJson(MODEL_DIR, fs) || findModelJson(FALLBACK_MODEL_DIR, fs);
-}
-
-function loadAvatarConfig(modelJson) {
-  const candidates = [
-    path.join(path.dirname(modelJson), "mana-avatar.json"),
-    path.join(MODEL_DIR, "mana-avatar.json"),
-    path.join(FALLBACK_MODEL_DIR, "mana-avatar.json"),
-  ];
-  for (const candidate of candidates) {
-    try {
-      if (fs.existsSync(candidate)) {
-        const config = normalizeAvatarConfig(
-          JSON.parse(fs.readFileSync(candidate, "utf8")),
-        );
-        console.log(`Loaded avatar config: ${candidate}`);
-        return config;
-      }
-    } catch (error) {
-      console.warn(`Ignoring invalid avatar config ${candidate}:`, error);
-    }
-  }
-  return normalizeAvatarConfig(null);
-}
-
 // Creates a Live2D avatar bound to `canvas`. Returns null when the runtime
 // or model is unavailable (callers fall back to sprites), otherwise:
 //   { setState(state), setMouthTarget(rms), setZoom(level), cycleZoom(),
 //     getZoom(), stop() }
 // Zoom levels are "full" | "waist" | "bust" (see live2d-logic's ZOOM_LEVELS).
-async function createLive2dAvatar({ canvas, width, height, env = process.env }) {
+async function createLive2dAvatar({ canvas, width, height }) {
   if (!live2dRuntimeAvailable()) {
     console.log("Live2D runtime not available; using sprite avatar");
     return null;
   }
 
-  const modelJson = findConfiguredModelJson(env);
-  if (!modelJson) {
-    console.log(
-      `No Live2D model found (looked in ${MODEL_DIR}, ${FALLBACK_MODEL_DIR}, and MANA_LIVE2D_MODEL); using sprite avatar`,
-    );
+  const resolved = await window.electronAPI.resolveAvatarModel();
+  if (!resolved || !resolved.modelJson) {
+    console.log("No Live2D model found; using sprite avatar");
     return null;
   }
-
-  // Loaded first (needs only the model path) so every tuning knob below can
-  // fall back to it: env var (quick experiments) > mana-avatar.json (travels
-  // with the model, so a swap carries its own tuning) > hardcoded default.
-  const config = loadAvatarConfig(modelJson);
+  const { modelJson, config, env } = resolved;
 
   const mouthParam = env.MANA_LIVE2D_MOUTH_PARAM || config.mouthParam;
   // Lip-sync sensitivity. rmsToMouth's baseline gain is 9, which kept the
@@ -161,16 +113,13 @@ async function createLive2dAvatar({ canvas, width, height, env = process.env }) 
     env.MANA_LIVE2D_BROW_PARAMS,
     config.browParams,
   );
-  const modelDir = path.dirname(modelJson);
-  const rawSettings = JSON.parse(fs.readFileSync(modelJson, "utf8"));
-  const dirFiles = fs.readdirSync(modelDir);
   const settings = augmentModelSettings(
-    rawSettings,
-    dirFiles.filter((name) => name.toLowerCase().endsWith(".motion3.json")),
-    dirFiles.filter((name) => name.toLowerCase().endsWith(".exp3.json")),
+    resolved.rawSettings,
+    resolved.motionFileNames,
+    resolved.expressionFileNames,
     eyeBlinkParamIds,
   );
-  settings.url = pathToFileURL(modelJson).href;
+  settings.url = resolved.settingsUrl;
 
   const model = await PIXI.live2d.Live2DModel.from(settings, {
     autoInteract: false,
@@ -475,4 +424,6 @@ async function createLive2dAvatar({ canvas, width, height, env = process.env }) 
   };
 }
 
-module.exports = { createLive2dAvatar, live2dRuntimeAvailable };
+window.ManaLive2DAvatar = { createLive2dAvatar, live2dRuntimeAvailable };
+
+})();

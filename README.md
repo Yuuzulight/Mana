@@ -48,7 +48,7 @@ For the full setup flow, including model paths, Whisper, TTS services, gaming mo
 Mana is intentionally split into small runtime pieces:
 
 - `windows-launcher`: Electron desktop launcher, microphone capture, avatar overlay control, screen capture, performance panel, and Doctor panel.
-- `desktop-client`: Electron chat client packaged with a real Windows installer (electron-builder/NSIS), including a built-in Live2D avatar — currently loaded with a temporary testing placeholder model, see `desktop-client/AVATAR_NOTICE.md`.
+- `desktop-client`: Electron chat client packaged with a real Windows installer (electron-builder/NSIS), including a built-in Live2D avatar (see `desktop-client/AVATAR_NOTICE.md`) and a fully context-isolated renderer (`nodeIntegration: false`).
 - `node-bot`: local backend API for transcription, replies, TTS calls, screen OCR, mobile routes, and setup checks.
 - `plugins`: self-contained optional feature plugins (FFXIV market/crafting, real-world stock market data, a local job-application tracker, live Adzuna job search) that register their own routes, contribute chat-reply context, and are discoverable via `GET /plugins`; see [plugins/README.md](plugins/README.md).
 - `tts-service`: local Python services for Chatterbox and Kokoro TTS.
