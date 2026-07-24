@@ -113,5 +113,13 @@ select{font-family:inherit;color:var(--text)}
 .modal-content{ background:var(--panel); color:var(--text); padding:18px; border-radius:12px; width:520px; max-width:92%; box-shadow:0 10px 30px rgba(0,0,0,0.4)}
 .modal-content h3{ margin:0 0 8px 0 }
 .modal-content .box{ background:var(--panel-2); padding:8px; border-radius:6px; border:1px solid var(--border); }
+.setup-item{ background:var(--panel-2); padding:10px 12px; border-radius:8px; border:1px solid var(--border); margin-bottom:10px; }
+.setup-item-header{ display:flex; align-items:center; gap:8px; }
+.setup-status-icon{ display:inline-flex; align-items:center; justify-content:center; width:18px; height:18px; border-radius:50%; font-size:12px; font-weight:bold; background:var(--border); flex-shrink:0; }
+.setup-status-icon.pass{ background:#2e7d32; color:#fff; }
+.setup-status-icon.warn{ background:#c77c00; color:#fff; }
+.setup-status-icon.fail{ background:#c62828; color:#fff; }
+.setup-item .subtitle{ margin-top:4px; }
+.setup-item button{ margin-top:8px; }
 #status { text-align:center; color:var(--muted); }
 .logs { max-height:160px; overflow:auto; background:var(--panel-2); color:var(--text); padding:6px; }

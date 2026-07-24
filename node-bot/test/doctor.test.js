@@ -35,6 +35,7 @@ test("doctor checks return structured pass warn and fail results", () => {
       paths: {
         dataDir: tempDir,
       },
+      whisperToolsDir: tempDir,
       ports: [],
       services: [],
       versions: {
@@ -177,6 +178,7 @@ test("doctor reports Mana external agent entry point availability", () => {
     paths: {
       dataDir: fs.mkdtempSync(path.join(os.tmpdir(), "mana-doctor-acp-")),
     },
+    whisperToolsDir: fs.mkdtempSync(path.join(os.tmpdir(), "mana-doctor-acp-whisper-")),
     services: [],
     versions: {
       node: "v22.19.0",
@@ -222,6 +224,7 @@ test("doctor reports configured Zed editor availability", () => {
       paths: {
         dataDir: tempDir,
       },
+      whisperToolsDir: tempDir,
       services: [],
       versions: {
         node: "v22.19.0",
@@ -300,6 +303,7 @@ test("async doctor probes configured TTS health URLs", async () => {
       paths: {
         dataDir: fs.mkdtempSync(path.join(os.tmpdir(), "mana-doctor-tts-")),
       },
+      whisperToolsDir: fs.mkdtempSync(path.join(os.tmpdir(), "mana-doctor-tts-whisper-")),
       ports: [],
       versions: {
         node: "v22.19.0",
@@ -345,6 +349,7 @@ test("async doctor checks GPT-SoVITS only when it is the selected provider", asy
       paths: {
         dataDir: fs.mkdtempSync(path.join(os.tmpdir(), "mana-doctor-sovits-")),
       },
+      whisperToolsDir: fs.mkdtempSync(path.join(os.tmpdir(), "mana-doctor-sovits-whisper-")),
       ports: [],
       versions: { node: "v22.19.0" },
     });
@@ -372,6 +377,7 @@ test("async doctor checks GPT-SoVITS only when it is the selected provider", asy
       paths: {
         dataDir: fs.mkdtempSync(path.join(os.tmpdir(), "mana-doctor-sovits-off-")),
       },
+      whisperToolsDir: fs.mkdtempSync(path.join(os.tmpdir(), "mana-doctor-sovits-off-whisper-")),
       ports: [],
       versions: { node: "v22.19.0" },
     });
@@ -408,6 +414,7 @@ test("async doctor reports backend port availability", async () => {
       paths: {
         dataDir: fs.mkdtempSync(path.join(os.tmpdir(), "mana-doctor-port-")),
       },
+      whisperToolsDir: fs.mkdtempSync(path.join(os.tmpdir(), "mana-doctor-port-whisper-")),
       ports: [{ id: "occupied-test", host: "127.0.0.1", port }],
       versions: {
         node: "v22.19.0",
@@ -455,6 +462,7 @@ test("async doctor reports Zed external agent backend health", async () => {
       paths: {
         dataDir: fs.mkdtempSync(path.join(os.tmpdir(), "mana-doctor-acp-backend-")),
       },
+      whisperToolsDir: fs.mkdtempSync(path.join(os.tmpdir(), "mana-doctor-acp-backend-whisper-")),
       ports: [],
       services: [],
       versions: {

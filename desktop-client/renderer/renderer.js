@@ -675,23 +675,129 @@ const { formatCompareProfileLabel, pickDefaultCompareProfiles } = window.ManaCom
 
   refreshCompareModelStatus();
 
-  // Onboarding helpers
-  function showOnboarding(details){
-    const modal = document.getElementById('onboardingModal');
-    const text = document.getElementById('onboardText');
-    const detailsEl = document.getElementById('onboardDetails');
-    text.textContent = 'System check results:';
-    detailsEl.textContent = details.join('\n');
-    modal.setAttribute('aria-hidden','false');
+  // First-run setup wizard (issue #123). Structured per-item status instead
+  // of a raw /doctor JSON dump, and shown whenever the local model or
+  // Whisper genuinely aren't set up yet -- not a one-time "seen it" flag,
+  // so it keeps helping until the thing it's nudging about is actually
+  // fixed, then stays out of the way for good.
+  function showOnboarding(){
+    document.getElementById('onboardingModal').setAttribute('aria-hidden','false');
   }
   function hideOnboarding(){
-    const modal = document.getElementById('onboardingModal');
-    modal.setAttribute('aria-hidden','true');
+    document.getElementById('onboardingModal').setAttribute('aria-hidden','true');
+  }
+  function setSetupStatus(iconEl, detailEl, status, message){
+    iconEl.className = 'setup-status-icon' + (status ? ' ' + status : '');
+    iconEl.textContent = status === 'pass' ? '✓' : status === 'fail' ? '!' : '-';
+    detailEl.textContent = message;
+  }
+  function basename(p){
+    return String(p || '').split(/[\\/]/).pop();
   }
 
-  document.getElementById('dismissOnboarding').addEventListener('click', ()=>{ localStorage.setItem('mana_seen_onboarding','1'); hideOnboarding(); });
+  const setupModelIconEl = document.getElementById('setupModelIcon');
+  const setupModelDetailEl = document.getElementById('setupModelDetail');
+  const setupWhisperIconEl = document.getElementById('setupWhisperIcon');
+  const setupWhisperDetailEl = document.getElementById('setupWhisperDetail');
+  const setupAvatarIconEl = document.getElementById('setupAvatarIcon');
+  const setupAvatarDetailEl = document.getElementById('setupAvatarDetail');
+  const fetchAvatarBtnEl = document.getElementById('fetchAvatarBtn');
+  const onboardDetailsEl = document.getElementById('onboardDetails');
+  const onboardTextEl = document.getElementById('onboardText');
+
+  async function runOnboardingChecks(){
+    let modelOk = false;
+    let whisperOk = false;
+    onboardDetailsEl.hidden = true;
+
+    try {
+      // /doctor deliberately returns HTTP 503 whenever any check fails --
+      // that's a real, parseable "here's what's wrong" response, not an
+      // unreachable backend, so read the body regardless of .ok. Only a
+      // network-level failure (caught below) means the backend truly isn't
+      // reachable yet.
+      const [doctorResp, modelsResp] = await Promise.all([
+        fetch('http://127.0.0.1:5005/doctor'),
+        fetch('http://127.0.0.1:5005/models/status'),
+      ]);
+      const doctor = await doctorResp.json();
+      const models = await modelsResp.json();
+
+      const whisperCheck = (doctor.checks || []).find((c) => c.id === 'whisper-config');
+      whisperOk = Boolean(whisperCheck && whisperCheck.status === 'pass');
+      if (whisperOk) {
+        setSetupStatus(setupWhisperIconEl, setupWhisperDetailEl, 'pass',
+          `Using ${basename(whisperCheck.details.bin)} + ${basename(whisperCheck.details.model)}.`);
+      } else {
+        setSetupStatus(setupWhisperIconEl, setupWhisperDetailEl, 'warn',
+          'Not found. Get whisper.cpp (whisper-cli.exe) and a ggml model (e.g. ggml-base.en.bin), place them under tools/whisper/, then click Recheck. See docs/quick_start_windows.md.');
+      }
+
+      const rec = models.recommendation;
+      const profile = rec && models.profiles ? models.profiles[rec.profile] : null;
+      modelOk = Boolean(profile && profile.available);
+      if (modelOk) {
+        setSetupStatus(setupModelIconEl, setupModelDetailEl, 'pass',
+          `Using ${profile.label}: ${basename(profile.selectedModel) || profile.selectedModel}.`);
+      } else if (profile) {
+        setSetupStatus(setupModelIconEl, setupModelDetailEl, 'warn',
+          `Recommended for your hardware: ${profile.label}. ${rec.reason} Download one of: ${profile.missing.join(', ')}, place it under tools/llama/, then click Recheck.`);
+      } else {
+        setSetupStatus(setupModelIconEl, setupModelDetailEl, 'warn', 'Could not determine a recommendation.');
+      }
+    } catch (e) {
+      setSetupStatus(setupModelIconEl, setupModelDetailEl, 'warn', 'Backend not reachable yet.');
+      setSetupStatus(setupWhisperIconEl, setupWhisperDetailEl, 'warn', 'Backend not reachable yet.');
+      onboardDetailsEl.hidden = false;
+      onboardDetailsEl.textContent = 'Setup check failed: ' + (e.message || e);
+    }
+
+    try {
+      const resolved = window.electronAPI.resolveAvatarModel
+        ? await window.electronAPI.resolveAvatarModel()
+        : null;
+      if (resolved && resolved.modelJson) {
+        setSetupStatus(setupAvatarIconEl, setupAvatarDetailEl, 'pass', 'Avatar model found.');
+        fetchAvatarBtnEl.hidden = true;
+      } else {
+        setSetupStatus(setupAvatarIconEl, setupAvatarDetailEl, 'warn',
+          "No avatar model yet -- Mana falls back to a simple sprite. Optional, and free to fetch below.");
+        fetchAvatarBtnEl.hidden = false;
+      }
+    } catch (e) {
+      setSetupStatus(setupAvatarIconEl, setupAvatarDetailEl, 'warn', 'Could not check.');
+    }
+
+    onboardTextEl.textContent = (modelOk && whisperOk)
+      ? "You're all set!"
+      : 'A couple of things still need setup for the full experience:';
+
+    return { modelOk, whisperOk };
+  }
+
+  document.getElementById('recheckSetupBtn').addEventListener('click', async () => {
+    const { modelOk, whisperOk } = await runOnboardingChecks();
+    if (modelOk && whisperOk) {
+      hideOnboarding();
+    }
+  });
+  fetchAvatarBtnEl.addEventListener('click', async () => {
+    fetchAvatarBtnEl.disabled = true;
+    const prevText = fetchAvatarBtnEl.textContent;
+    fetchAvatarBtnEl.textContent = 'Fetching...';
+    try {
+      const res = await window.electronAPI.fetchSampleAvatar();
+      if (!res || !res.ok) {
+        setupAvatarDetailEl.textContent = 'Fetch failed: ' + (res && res.message ? res.message : 'unknown error');
+      }
+      await runOnboardingChecks();
+    } finally {
+      fetchAvatarBtnEl.disabled = false;
+      fetchAvatarBtnEl.textContent = prevText;
+    }
+  });
+  document.getElementById('dismissOnboarding').addEventListener('click', ()=>{ hideOnboarding(); });
   document.getElementById('openDocsBtn').addEventListener('click', async ()=>{ try{ await window.electronAPI.openDocs(); } catch(e){ window.open('../BUILD_DESKTOP.md','_blank'); } });
-  document.getElementById('runDoctorBtn').addEventListener('click', ()=>{ runOnboardingChecks(); });
 
   if (updateVersionEl && window.electronAPI.getAppVersion) {
     window.electronAPI.getAppVersion().then((v) => { updateVersionEl.textContent = `Version ${v}`; }).catch(()=>{});
@@ -714,30 +820,19 @@ const { formatCompareProfileLabel, pickDefaultCompareProfiles } = window.ManaCom
     });
   }
 
-  async function runOnboardingChecks(){
-    const details = [];
-    try{
-      const resp = await fetch('http://127.0.0.1:5005/doctor');
-      if (resp.ok){
-        const j = await resp.json();
-        details.push(JSON.stringify(j,null,2));
-      } else {
-        details.push('Doctor endpoint not reachable (backend may not be running).');
+  // Show whenever the model or Whisper setup genuinely isn't done yet --
+  // not a one-time flag, so dismissing just means "later, this session,"
+  // and it naturally stops appearing once actually fixed.
+  (async () => {
+    try {
+      const { modelOk, whisperOk } = await runOnboardingChecks();
+      if (!modelOk || !whisperOk) {
+        showOnboarding();
       }
-    } catch (e){
-      details.push('Doctor check failed: ' + (e.message || e));
+    } catch (e) {
+      showOnboarding();
     }
-    showOnboarding(details);
-  }
-
-  // show onboarding if not seen
-  try{
-    const seen = localStorage.getItem('mana_seen_onboarding');
-    if (!seen){
-      // run checks but still init app
-      runOnboardingChecks().catch(()=>{});
-    }
-  }catch(e){}
+  })();
 
   init();
 })();

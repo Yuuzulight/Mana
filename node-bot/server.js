@@ -108,6 +108,7 @@ const {
   createZedIntegration,
 } = require("./zed-integration");
 const { createModelManagement } = require("./model-management");
+const whisperDiscovery = require("./whisper-discovery");
 const {
   normalizeLlamaModelProfile,
   pickPreferredLlamaModel,
@@ -172,8 +173,6 @@ function createApp(deps = {}) {
 	  return app;
 }
 
-const WHISPER_BIN = process.env.WHISPER_BIN || null;
-const WHISPER_MODEL = process.env.WHISPER_MODEL || null;
 // Remote AI is disabled by default. Set MANA_ALLOW_REMOTE_AI=1 with
 // OPENAI_API_KEY only when you intentionally want paid/proxy chat replies.
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || null;
@@ -1807,8 +1806,8 @@ function registerRoutes(app, upload, deps = {}) {
       mobileMemoryStore,
       ttsBin: TTS_BIN,
       ttsProvider: TTS_PROVIDER,
-      whisperBin: WHISPER_BIN,
-      whisperModel: WHISPER_MODEL,
+      whisperBin: whisperDiscovery.findWhisperBin({ env }),
+      whisperModel: whisperDiscovery.findWhisperModel({ env }),
     });
     Object.assign(
       components,
@@ -2334,28 +2333,12 @@ function registerRoutes(app, upload, deps = {}) {
     return vtubeRuntime.queueVTubeReaction(reply);
   }
   function findWhisperBin() {
-    const candidates = [];
-    if (WHISPER_BIN) {
-      candidates.push(WHISPER_BIN);
+    const found = whisperDiscovery.findWhisperBin({ env: process.env });
+    if (found) {
+      return found;
     }
-
-    const localToolDir = path.join(__dirname, "..", "tools", "whisper");
-    candidates.push(
-      path.join(localToolDir, "Release", "whisper-cli.exe"),
-      path.join(localToolDir, "whisper-cli.exe"),
-      path.join(localToolDir, "main.exe"),
-    );
-
-    const validPath = candidates.find(
-      (candidate) => candidate && fs.existsSync(candidate),
-    );
-    if (validPath) {
-      return validPath;
-    }
-
-    const checked = candidates.filter(Boolean).join(", ");
     throw new Error(
-      `Whisper executable not found. Checked: ${checked}. Set WHISPER_BIN to a valid whisper-cli.exe path.`,
+      "Whisper executable not found under tools/whisper. Set WHISPER_BIN to a valid whisper-cli.exe path.",
     );
   }
 
@@ -2372,8 +2355,11 @@ function registerRoutes(app, upload, deps = {}) {
   }
 
   function runWhisper(filePath) {
-    if (!WHISPER_MODEL) {
-      throw new Error("WHISPER_MODEL not configured");
+    const whisperModel = whisperDiscovery.findWhisperModel({ env: process.env });
+    if (!whisperModel) {
+      throw new Error(
+        "Whisper model not found under tools/whisper. Set WHISPER_MODEL to a valid ggml *.bin path.",
+      );
     }
     const whisperBin = findWhisperBin();
     const startedAt = nowMs();
@@ -2382,7 +2368,7 @@ function registerRoutes(app, upload, deps = {}) {
     const outJson = outBase + ".json";
     const args = [
       "-m",
-      WHISPER_MODEL,
+      whisperModel,
       "-f",
       filePath,
       "-t",

@@ -1,7 +1,7 @@
 const { app, BrowserWindow, ipcMain, dialog, shell, session } = require('electron');
 const path = require('path');
 const fs = require('fs');
-const { spawn } = require('child_process');
+const { spawn, execFile } = require('child_process');
 const { isAutoUpdateEnabled, createUpdateManager } = require('./update-manager');
 const { getManaDataRoot, buildDataDirEnv, migrateLegacyData } = require('./data-dir-manager');
 const { resolveAvatarModel } = require('./avatar/resolve-model');
@@ -190,6 +190,32 @@ ipcMain.handle('avatar:resolve-model', async () => {
     console.error('resolveAvatarModel failed:', e);
     return { modelJson: null };
   }
+});
+
+// Runs scripts/fetch-sample-avatar.js (same as `npm run fetch-sample-avatar`)
+// from the setup wizard, so getting a legally-clean default Live2D avatar
+// doesn't require opening a terminal -- see issue #123.
+ipcMain.handle('avatar:fetch-sample', async () => {
+  return new Promise((resolve) => {
+    execFile(
+      process.execPath,
+      [path.join(__dirname, 'scripts', 'fetch-sample-avatar.js')],
+      {
+        cwd: __dirname,
+        // Runs the Electron binary as plain Node (no GUI) so this doesn't
+        // depend on a bundled node.exe existing.
+        env: Object.assign({}, process.env, { ELECTRON_RUN_AS_NODE: '1' }),
+        timeout: 60000,
+      },
+      (error, stdout, stderr) => {
+        if (error) {
+          resolve({ ok: false, message: (stderr || error.message || '').trim() });
+        } else {
+          resolve({ ok: true, message: stdout.trim() });
+        }
+      },
+    );
+  });
 });
 
 // allow renderer to request backend logs or status via IPC if needed

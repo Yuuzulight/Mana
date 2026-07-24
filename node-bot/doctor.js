@@ -6,6 +6,10 @@ const { createEditorIntegrations } = require("./zed-integration");
 const { assertLocalAiPolicy } = require("./mana-acp-agent");
 const { isMcpServerEnabled } = require("./mcp-server");
 const { createModelManagement } = require("./model-management");
+const {
+  findWhisperBin,
+  findWhisperModel,
+} = require("./whisper-discovery");
 
 const DEFAULT_NODE_MAJOR = 18;
 const DEFAULT_BACKEND_PORT = 5005;
@@ -132,9 +136,15 @@ function checkRequiredFile(id, label, filePath, missingConfigMessage) {
   });
 }
 
-function checkWhisperConfig(env) {
-  const bin = env.WHISPER_BIN || "";
-  const model = env.WHISPER_MODEL || "";
+// Reflects the same auto-detection server.js's actual whisper-cli
+// invocation uses (see whisper-discovery.js), not just whether the env
+// vars happen to be set -- a model dropped into tools/whisper/ by hand (or
+// via a setup wizard) counts as configured even with no env var at all.
+// `toolsDir` is injectable so tests can point it at an empty directory
+// instead of this machine's real tools/whisper/.
+function checkWhisperConfig(env, toolsDir) {
+  const bin = findWhisperBin({ env, toolsDir });
+  const model = findWhisperModel({ env, toolsDir });
 
   if (!bin && !model) {
     return makeCheck(
@@ -145,7 +155,7 @@ function checkWhisperConfig(env) {
     );
   }
 
-  if (checkPathExists(bin) && checkPathExists(model)) {
+  if (bin && model) {
     return makeCheck(
       "whisper-config",
       "Whisper config",
@@ -582,7 +592,7 @@ function runDoctorChecks(options = {}) {
       env.LLAMA_VISION_MODEL || "",
       "LLAMA_VISION_MODEL is not configured. Mana auto-detects vision GGUF models under tools/llama; image replies stay unavailable until one is installed. See docs/vision_setup.md.",
     ),
-    checkWhisperConfig(env),
+    checkWhisperConfig(env, options.whisperToolsDir),
     checkTtsServices(options.services || []),
     checkMcpServer(env),
     checkRecommendedModelProfile(modelManagement),

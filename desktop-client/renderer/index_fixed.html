@@ -129,16 +129,43 @@
         </div>
       </div>
 
-      <!-- Onboarding modal -->
+      <!-- First-run setup wizard (issue #123) -->
       <div id="onboardingModal" class="modal" aria-hidden="true">
         <div class="modal-content">
-          <h3>Welcome to Mana (Developer Preview)</h3>
-          <p id="onboardText">Checking your system requirements...</p>
-          <pre id="onboardDetails" class="box" style="max-height:160px;overflow:auto"></pre>
+          <h3>Welcome to Mana</h3>
+          <p id="onboardText">Checking what's set up on this machine...</p>
+
+          <div class="setup-item" id="setupModelItem">
+            <div class="setup-item-header">
+              <span id="setupModelIcon" class="setup-status-icon">-</span>
+              <strong>Local AI model</strong>
+            </div>
+            <div id="setupModelDetail" class="subtitle">Checking...</div>
+          </div>
+
+          <div class="setup-item" id="setupWhisperItem">
+            <div class="setup-item-header">
+              <span id="setupWhisperIcon" class="setup-status-icon">-</span>
+              <strong>Voice transcription (Whisper)</strong>
+            </div>
+            <div id="setupWhisperDetail" class="subtitle">Checking...</div>
+          </div>
+
+          <div class="setup-item" id="setupAvatarItem">
+            <div class="setup-item-header">
+              <span id="setupAvatarIcon" class="setup-status-icon">-</span>
+              <strong>Desktop avatar (optional)</strong>
+            </div>
+            <div id="setupAvatarDetail" class="subtitle">Checking...</div>
+            <button id="fetchAvatarBtn" hidden>Fetch a free default avatar</button>
+          </div>
+
+          <pre id="onboardDetails" class="box" style="max-height:100px;overflow:auto" hidden></pre>
+
           <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px;">
-            <button id="runDoctorBtn">Run Doctor</button>
+            <button id="recheckSetupBtn">Recheck</button>
             <button id="openDocsBtn">Open Setup Docs</button>
-            <button id="dismissOnboarding">Got it</button>
+            <button id="dismissOnboarding">Remind Me Later</button>
           </div>
         </div>
       </div>

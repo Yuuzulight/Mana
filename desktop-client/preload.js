@@ -23,4 +23,5 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // renderer has no fs/path access of its own, so this is how it finds out
   // whether a model is configured and what's in it.
   resolveAvatarModel: () => ipcRenderer.invoke('avatar:resolve-model'),
+  fetchSampleAvatar: () => ipcRenderer.invoke('avatar:fetch-sample'),
 });
