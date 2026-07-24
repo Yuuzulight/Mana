@@ -9,46 +9,93 @@
 <body>
   <div class="layout">
     <aside class="sidebar">
-      <div class="brand">Mana</div>
-      <nav class="nav">
-        <button class="nav-btn active" id="navHomeBtn">Home</button>
-        <button class="nav-btn">Code</button>
-        <button class="nav-btn" id="navSettingsBtn">Settings</button>
+      <div class="brand">
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 20l6-13 4 8 3-5 5 10" stroke-linejoin="round" stroke-linecap="round"/></svg>
+        Mana
+      </div>
+
+      <nav class="nav-group">
+        <button class="nav-item" id="navNewChatBtn">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14" stroke-linecap="round"/></svg>
+          <span class="label">New chat</span>
+        </button>
+        <button class="nav-item" id="navSearchBtn">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3" stroke-linecap="round"/></svg>
+          <span class="label">Search</span>
+        </button>
       </nav>
+
+      <nav class="nav-group">
+        <button class="nav-item active" id="navHomeBtn">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+          <span class="label">Sessions</span>
+        </button>
+        <button class="nav-item" id="navAvatarBtn">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="8" r="3"/><path d="M5 21v-1a7 7 0 0 1 14 0v1"/></svg>
+          <span class="label">Avatar</span>
+          <span class="tag">live2d</span>
+        </button>
+        <button class="nav-item" id="navWebBtn">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M12 3a12 12 0 0 0 0 18M12 3a12 12 0 0 1 0 18M3 12h18" stroke-linecap="round"/></svg>
+          <span class="label">Web access</span>
+        </button>
+        <button class="nav-item" id="navMarketBtn">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 19V6a2 2 0 0 1 2-2h9l5 5v10a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2z"/><path d="M14 4v5h5"/></svg>
+          <span class="label">Market watch</span>
+        </button>
+        <button class="nav-item" id="navVisionBtn">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg>
+          <span class="label">Vision</span>
+        </button>
+      </nav>
+
+      <nav class="nav-group">
+        <button class="nav-item" id="navModelBtn">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 2a5 5 0 0 0-5 5v2a5 5 0 0 0 10 0V7a5 5 0 0 0-5-5z"/><path d="M8 14v1a4 4 0 0 0 8 0v-1M12 19v3"/></svg>
+          <span class="label">Model</span>
+        </button>
+        <button class="nav-item" id="navDoctorBtn">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M9 12l2 2 4-4"/><circle cx="12" cy="12" r="9"/></svg>
+          <span class="label">Doctor</span>
+        </button>
+        <button class="nav-item" id="navSettingsBtn">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.9.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.9-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.9V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>
+          <span class="label">Settings</span>
+        </button>
+      </nav>
+
+      <div class="avatar-panel">
+        <div class="avatar-stage" id="avatarStage">
+          <canvas id="live2dCanvas"></canvas>
+          <button id="btnAvatarZoom" class="avatar-zoom-btn" title="Cycle avatar zoom">⤢</button>
+        </div>
+        <div class="avatar-meta">
+          <span class="name">Mana</span>
+          <span id="status">Starting...</span>
+        </div>
+        <div class="avatar-disclaimer">
+          Avatar: Hiyori, © Live2D Inc. / Kani Biimu. Placeholder — please swap in a model of your choosing.
+          <a href="#" id="avatarNoticeLink">Details</a>
+        </div>
+      </div>
+
       <div class="side-footer">v0.1 • Local</div>
     </aside>
 
     <main class="chat-area">
       <header class="chat-header">
-        <div class="header-left">
-          <img id="sprite" class="sprite idle" role="img" aria-label="Mana avatar">
-          <div class="title-block">
-            <div class="title">Speak to Mana</div>
-            <div id="status" class="subtitle">Starting...</div>
-          </div>
-        </div>
         <div class="header-right">
           <button id="btnStop" class="icon-btn">Stop</button>
         </div>
       </header>
 
       <div class="home-content" id="homeView">
-        <div class="avatar-stage" id="avatarStage">
-          <canvas id="live2dCanvas"></canvas>
-          <button id="btnAvatarZoom" class="avatar-zoom-btn" title="Cycle avatar zoom">Zoom</button>
-          <div class="avatar-disclaimer">
-            Testing avatar, not final. Character design rights: miHoYo.
-            <a href="#" id="avatarNoticeLink">Details</a>
-          </div>
-        </div>
-
         <section id="messages" class="messages">
-          <div id="transcript" class="message system">(transcript will appear here)</div>
-          <div id="reply" class="message assistant">(reply will appear here)</div>
+          <div id="transcript" class="message system"></div>
+          <div id="reply" class="message assistant"></div>
         </section>
 
         <div class="input-bar">
-          <div class="avatar-wrap"><img id="adminSpriteSmall" src="../../sprites/sprite-idle.png" alt="avatar"/></div>
           <div class="input-wrap">
             <textarea id="messageInput" placeholder="Write a message..." rows="1"></textarea>
             <div class="input-actions">
@@ -169,12 +216,28 @@
           </div>
         </div>
       </div>
+
+      <!-- Generic info panel for sidebar nav items (Search/Avatar/Web
+           access/Market watch/Vision/Model/Doctor) -- content is filled in
+           per-item by renderer.js rather than one modal per item. -->
+      <div id="navInfoModal" class="modal" aria-hidden="true">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h3 id="navInfoTitle">Info</h3>
+            <button id="navInfoXBtn" class="modal-x-btn" title="Close" aria-label="Close">×</button>
+          </div>
+          <div id="navInfoBody"></div>
+          <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px;">
+            <button id="navInfoCloseBtn">Close</button>
+          </div>
+        </div>
+      </div>
     </main>
   </div>
 
   <!-- Live2D Cubism Core is proprietary and fetched at setup time
-       (npm run fetch-live2d-core); the avatar falls back to sprites
-       when it is absent. See ../AVATAR_NOTICE.md. -->
+       (npm run fetch-live2d-core); the avatar stage stays empty when it's
+       absent. See ../AVATAR_NOTICE.md. -->
   <script src="../assets/live2d/live2dcubismcore.min.js"></script>
   <script src="../node_modules/pixi.js/dist/browser/pixi.min.js"></script>
   <script src="../node_modules/pixi-live2d-display/dist/cubism4.min.js"></script>

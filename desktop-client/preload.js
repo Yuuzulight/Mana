@@ -16,6 +16,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   openLogs: () => ipcRenderer.invoke('open-logs'),
   openDocs: () => ipcRenderer.invoke('open-docs'),
   openAvatarNotice: () => ipcRenderer.invoke('open-avatar-notice'),
+  openExternal: (url) => ipcRenderer.invoke('open-external', url),
   getAppVersion: () => ipcRenderer.invoke('get-app-version'),
   checkForUpdates: () => ipcRenderer.invoke('check-for-updates'),
   onUpdateStatus: (cb) => ipcRenderer.on('update-status', (evt, status) => cb(status)),

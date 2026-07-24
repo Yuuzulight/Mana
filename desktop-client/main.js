@@ -244,6 +244,17 @@ ipcMain.handle('open-avatar-notice', async () => {
   } catch (e) { return { ok: false, error: String(e) }; }
 });
 
+ipcMain.handle('open-external', async (ev, url) => {
+  try {
+    const parsed = new URL(String(url || ''));
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      return { ok: false, error: 'refusing to open non-http(s) URL' };
+    }
+    await shell.openExternal(parsed.href);
+    return { ok: true };
+  } catch (e) { return { ok: false, error: String(e) }; }
+});
+
 ipcMain.handle('get-app-version', async () => app.getVersion());
 
 ipcMain.handle('check-for-updates', async () => {

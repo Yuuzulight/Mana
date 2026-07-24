@@ -10,7 +10,6 @@ const { formatCompareProfileLabel, pickDefaultCompareProfiles } = window.ManaCom
   const transcriptEl = document.getElementById('transcript');
   const replyEl = document.getElementById('reply');
   const logsEl = document.getElementById('backendLogs');
-  const spriteEl = document.getElementById('sprite');
   const live2dCanvas = document.getElementById('live2dCanvas');
   const avatarZoomBtn = document.getElementById('btnAvatarZoom');
   const avatarNoticeLink = document.getElementById('avatarNoticeLink');
@@ -34,6 +33,19 @@ const { formatCompareProfileLabel, pickDefaultCompareProfiles } = window.ManaCom
   const compareCancelBtnEl = document.getElementById('compareCancelBtn');
   const navHomeBtnEl = document.getElementById('navHomeBtn');
   const navSettingsBtnEl = document.getElementById('navSettingsBtn');
+  const navNewChatBtnEl = document.getElementById('navNewChatBtn');
+  const navSearchBtnEl = document.getElementById('navSearchBtn');
+  const navAvatarBtnEl = document.getElementById('navAvatarBtn');
+  const navWebBtnEl = document.getElementById('navWebBtn');
+  const navMarketBtnEl = document.getElementById('navMarketBtn');
+  const navVisionBtnEl = document.getElementById('navVisionBtn');
+  const navModelBtnEl = document.getElementById('navModelBtn');
+  const navDoctorBtnEl = document.getElementById('navDoctorBtn');
+  const navInfoModalEl = document.getElementById('navInfoModal');
+  const navInfoTitleEl = document.getElementById('navInfoTitle');
+  const navInfoBodyEl = document.getElementById('navInfoBody');
+  const navInfoCloseBtnEl = document.getElementById('navInfoCloseBtn');
+  const navInfoXBtnEl = document.getElementById('navInfoXBtn');
   const homeViewEl = document.getElementById('homeView');
   const settingsViewEl = document.getElementById('settingsView');
   const presetSelectEl = document.getElementById('presetSelect');
@@ -76,10 +88,10 @@ const { formatCompareProfileLabel, pickDefaultCompareProfiles } = window.ManaCom
   }
 
   // Live2D speaks a richer state vocabulary (idle/talking/excited/angry/
-  // sad/disgusted) than the small header/input-bar PNG sprites do
-  // (idle/listening/speaking/excited); this maps the sprite's states onto
-  // the closest Live2D one for the generic (non-reply) cases. A reply's
-  // actual detected emotion (see onRecordingStop) overrides this afterward.
+  // sad/disgusted) than the simple state names used elsewhere in this file
+  // (idle/listening/speaking/excited); this maps those onto the closest
+  // Live2D one for the generic (non-reply) cases. A reply's actual detected
+  // emotion (see onRecordingStop) overrides this afterward.
   function live2dStateFor(spriteState){
     if (spriteState === 'listening' || spriteState === 'speaking') return 'talking';
     return spriteState || 'idle';
@@ -97,7 +109,7 @@ const { formatCompareProfileLabel, pickDefaultCompareProfiles } = window.ManaCom
         live2dAvatar.setState(live2dStateFor(_prevSpriteState));
       }
     } catch (e) {
-      console.warn('Live2D avatar failed to load; using sprite avatar:', e);
+      console.warn('Live2D avatar failed to load:', e);
     }
   }
 
@@ -113,48 +125,26 @@ const { formatCompareProfileLabel, pickDefaultCompareProfiles } = window.ManaCom
 
   let _prevSpriteState = 'idle';
   function setSprite(state){
-    // handle transient excited state which should hop but keep the underlying sprite (idle/speaking)
+    // handle transient excited state, which should revert to the underlying
+    // state (idle/speaking) after a beat
     if (state === 'excited'){
-      // keep previous visual (or default to idle)
       const base = _prevSpriteState || 'idle';
-      spriteEl.className = 'sprite ' + base + ' excited';
       if (live2dAvatar) live2dAvatar.setState('excited');
-      // remove excited after a few hops (duration * iterations)
-      const durationMs = 320; // must match CSS animation-duration
-      const iterations = 5; // number of hops
+      const durationMs = 320;
+      const iterations = 5;
       setTimeout(()=>{
-        // restore to base state
-        spriteEl.className = 'sprite ' + base;
         if (live2dAvatar) live2dAvatar.setState(live2dStateFor(base));
       }, durationMs * iterations);
       return;
     }
     _prevSpriteState = state || 'idle';
-    spriteEl.className = 'sprite ' + _prevSpriteState;
     if (live2dAvatar) live2dAvatar.setState(live2dStateFor(_prevSpriteState));
   }
 
-  // Loading animation (cycles the three loading sprites)
-  let _loadingInterval = null;
-  let _loadingIndex = 0;
   function startLoadingAnimation(){
-    if (_loadingInterval) return;
-    _loadingIndex = 0;
-    // set initial loading sprite
-    try { spriteEl.style.backgroundImage = `url('../../sprites/sprite-loading-${_loadingIndex+1}.png')`; } catch(e){}
-    _loadingInterval = setInterval(()=>{
-      _loadingIndex = (_loadingIndex + 1) % 3;
-      try { spriteEl.style.backgroundImage = `url('../../sprites/sprite-loading-${_loadingIndex+1}.png')`; } catch(e){}
-    }, 300);
     statusEl.textContent = 'Backend starting...';
   }
   function stopLoadingAnimation(){
-    if (!_loadingInterval) return;
-    clearInterval(_loadingInterval);
-    _loadingInterval = null;
-    _loadingIndex = 0;
-    // restore to current base sprite
-    try { spriteEl.style.backgroundImage = ''; } catch(e){}
     statusEl.textContent = 'Backend running';
   }
 
@@ -405,6 +395,244 @@ const { formatCompareProfileLabel, pickDefaultCompareProfiles } = window.ManaCom
   }
   navHomeBtnEl?.addEventListener('click', () => showView('home'));
   navSettingsBtnEl?.addEventListener('click', () => showView('settings'));
+
+  // Sidebar nav items (New chat/Search/Avatar/Web access/Market watch/
+  // Vision/Model/Doctor): each backend capability already exists (see
+  // node-bot's web-access/sessions/ffxiv-market capabilities, /doctor,
+  // /models/status, /vision/describe), so these just surface it through one
+  // shared info panel rather than a bespoke view per item.
+  const BACKEND_URL = 'http://127.0.0.1:5005';
+
+  function escapeHtml(s) {
+    return String(s ?? '').replace(/[&<>"']/g, (c) => ({
+      '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+    }[c]));
+  }
+
+  function openNavInfo(title, bodyHtml) {
+    navInfoTitleEl.textContent = title;
+    navInfoBodyEl.innerHTML = bodyHtml;
+    navInfoModalEl.setAttribute('aria-hidden', 'false');
+  }
+  function closeNavInfo() {
+    navInfoModalEl.setAttribute('aria-hidden', 'true');
+  }
+  navInfoCloseBtnEl?.addEventListener('click', closeNavInfo);
+  navInfoXBtnEl?.addEventListener('click', closeNavInfo);
+  // Clicking the dimmed backdrop (not the panel itself) closes it too.
+  navInfoModalEl?.addEventListener('click', (e) => {
+    if (e.target === navInfoModalEl) closeNavInfo();
+  });
+  // Result links (Search) open in the real browser, not a new Electron window.
+  navInfoBodyEl?.addEventListener('click', (e) => {
+    const a = e.target.closest('a[data-external]');
+    if (a) { e.preventDefault(); window.electronAPI.openExternal(a.href); }
+  });
+
+  async function fetchJson(url, options) {
+    const resp = await fetch(url, options);
+    const body = await resp.json().catch(() => ({}));
+    if (!resp.ok) throw new Error(body.error || `${resp.status} ${resp.statusText}`);
+    return body;
+  }
+
+  navNewChatBtnEl?.addEventListener('click', () => {
+    transcriptEl.textContent = '';
+    replyEl.textContent = '';
+    if (messageInputEl) messageInputEl.value = '';
+    showView('home');
+  });
+
+  navAvatarBtnEl?.addEventListener('click', async () => {
+    try { await window.electronAPI.openAvatarNotice(); } catch (e) {}
+  });
+
+  navSearchBtnEl?.addEventListener('click', () => {
+    openNavInfo('Search the web', `
+      <div class="info-row">
+        <input type="text" id="webSearchInput" placeholder="Search the web..." />
+        <button id="webSearchBtn" class="primary">Search</button>
+        <div id="webSearchResults" class="info-results"></div>
+      </div>
+    `);
+    const inputEl = document.getElementById('webSearchInput');
+    const resultsEl = document.getElementById('webSearchResults');
+    const runSearch = async () => {
+      const query = inputEl.value.trim();
+      if (!query) return;
+      resultsEl.innerHTML = '<p class="subtitle">Searching...</p>';
+      try {
+        const j = await fetchJson(`${BACKEND_URL}/web/search`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ query, limit: 5 }),
+        });
+        resultsEl.innerHTML = (j.results || []).map((r) => `
+          <div class="info-result">
+            <a href="${escapeHtml(r.url)}" data-external class="r-title">${escapeHtml(r.title || r.url)}</a>
+            <div class="r-url">${escapeHtml(r.url)}</div>
+            <div class="r-snippet">${escapeHtml(r.snippet || '')}</div>
+          </div>`).join('') || '<p class="subtitle">No results.</p>';
+      } catch (e) {
+        resultsEl.innerHTML = `<p class="subtitle">Search failed: ${escapeHtml(e.message)} (needs local SearXNG running)</p>`;
+      }
+    };
+    document.getElementById('webSearchBtn').addEventListener('click', runSearch);
+    inputEl.addEventListener('keydown', (e) => { if (e.key === 'Enter') runSearch(); });
+    inputEl.focus();
+  });
+
+  navWebBtnEl?.addEventListener('click', async () => {
+    openNavInfo('Web Access', '<p class="subtitle">Checking...</p>');
+    try {
+      const j = await fetchJson(`${BACKEND_URL}/health`);
+      const w = j?.components?.webAccess;
+      if (!w) { navInfoBodyEl.innerHTML = '<p class="subtitle">No web access status reported.</p>'; return; }
+      navInfoBodyEl.innerHTML = `
+        <div class="info-list-item"><span>Status</span><strong>${escapeHtml(w.status)}</strong></div>
+        <p class="subtitle" style="margin-top:8px">${escapeHtml(w.message || '')}</p>
+        ${w.searxngUrl ? `<p class="subtitle">SearXNG: ${escapeHtml(w.searxngUrl)}</p>` : ''}
+      `;
+    } catch (e) {
+      navInfoBodyEl.innerHTML = `<p class="subtitle">Failed to reach backend: ${escapeHtml(e.message)}</p>`;
+    }
+  });
+
+  navMarketBtnEl?.addEventListener('click', () => {
+    openNavInfo('Market Watch (FFXIV)', `
+      <div class="info-row">
+        <input type="text" id="marketItemInput" placeholder="Item name (e.g. Ragstone Whetstone)" />
+        <input type="text" id="marketWorldInput" placeholder="World (optional, e.g. Odin)" />
+        <button id="marketSearchBtn" class="primary">Look up price</button>
+        <div id="marketResults" class="info-results"></div>
+      </div>
+    `);
+    document.getElementById('marketSearchBtn').addEventListener('click', async () => {
+      const itemName = document.getElementById('marketItemInput').value.trim();
+      const world = document.getElementById('marketWorldInput').value.trim();
+      const resultsEl = document.getElementById('marketResults');
+      if (!itemName) { resultsEl.innerHTML = '<p class="subtitle">Enter an item name.</p>'; return; }
+      resultsEl.innerHTML = '<p class="subtitle">Looking up...</p>';
+      try {
+        const params = new URLSearchParams({ itemName });
+        if (world) params.set('world', world);
+        const j = await fetchJson(`${BACKEND_URL}/ffxiv/market?${params}`);
+        const cheapest = (j.lowestListings || [])[0];
+        resultsEl.innerHTML = `
+          <div class="info-list-item"><span>${escapeHtml(j.itemName || itemName)}</span><strong>${escapeHtml(j.world || world || '')}</strong></div>
+          ${cheapest ? `<div class="info-list-item"><span>Cheapest listing</span><strong>${cheapest.pricePerUnit.toLocaleString()} gil${cheapest.hq ? ' (HQ)' : ''}</strong></div>` : '<p class="subtitle">No active listings.</p>'}
+          <pre class="box" style="white-space:pre-wrap;margin-top:8px">${escapeHtml(JSON.stringify(j, null, 2))}</pre>
+        `;
+      } catch (e) {
+        resultsEl.innerHTML = `<p class="subtitle">Lookup failed: ${escapeHtml(e.message)}</p>`;
+      }
+    });
+  });
+
+  navVisionBtnEl?.addEventListener('click', () => {
+    openNavInfo('Vision', `
+      <div class="info-row">
+        <input type="file" id="visionFileInput" accept="image/*" />
+        <input type="text" id="visionPromptInput" placeholder="What should Mana look for? (optional)" />
+        <button id="visionDescribeBtn" class="primary">Describe image</button>
+        <div id="visionResult" class="subtitle"></div>
+      </div>
+    `);
+    document.getElementById('visionDescribeBtn').addEventListener('click', async () => {
+      const fileInput = document.getElementById('visionFileInput');
+      const promptInput = document.getElementById('visionPromptInput');
+      const resultEl = document.getElementById('visionResult');
+      const file = fileInput.files?.[0];
+      if (!file) { resultEl.textContent = 'Choose an image first.'; return; }
+      resultEl.textContent = 'Looking...';
+      try {
+        const dataUrl = await new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(reader.result);
+          reader.onerror = reject;
+          reader.readAsDataURL(file);
+        });
+        const j = await fetchJson(`${BACKEND_URL}/vision/describe`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ image: dataUrl, prompt: promptInput.value || 'Describe this image.' }),
+        });
+        resultEl.textContent = j.reply || '(no reply)';
+      } catch (e) {
+        resultEl.textContent = 'Failed: ' + e.message + ' (needs a local vision GGUF model -- see docs/vision_setup.md)';
+      }
+    });
+  });
+
+  navModelBtnEl?.addEventListener('click', async () => {
+    openNavInfo('Model', '<p class="subtitle">Checking...</p>');
+    try {
+      const j = await fetchJson(`${BACKEND_URL}/models/status`);
+      const rows = Object.values(j.profiles || {}).map((p) => `
+        <div class="info-list-item">
+          <span>${escapeHtml(p.label || p.key)}${p.key === j.activeProfile ? ' (active)' : ''}</span>
+          <strong>${p.available ? escapeHtml(p.selectedModel || '—') : 'not found'}</strong>
+        </div>`).join('');
+      navInfoBodyEl.innerHTML = `
+        <p class="subtitle">Active profile: ${escapeHtml(j.activeProfile || 'none')}</p>
+        <div class="info-list" style="margin-top:8px">${rows || '<p class="subtitle">No profiles reported.</p>'}</div>
+        ${j.recommendation ? `<p class="subtitle" style="margin-top:8px">Recommended: ${escapeHtml(j.recommendation.label || j.recommendation.profile)} — ${escapeHtml(j.recommendation.reason || '')}</p>` : ''}
+      `;
+    } catch (e) {
+      navInfoBodyEl.innerHTML = `<p class="subtitle">Failed to reach backend: ${escapeHtml(e.message)}</p>`;
+    }
+  });
+
+  navDoctorBtnEl?.addEventListener('click', async () => {
+    openNavInfo('Doctor', '<p class="subtitle">Running checks...</p>');
+    try {
+      // /doctor returns HTTP 503 whenever any check fails -- a real,
+      // parseable response, not an unreachable backend (see the setup
+      // wizard's own fetch above) -- so read the body regardless of .ok
+      // rather than going through fetchJson's throw-on-!ok behavior.
+      const resp = await fetch(`${BACKEND_URL}/doctor`);
+      const j = await resp.json();
+      const checks = j.checks || [];
+      const counts = { pass: 0, warn: 0, fail: 0 };
+      checks.forEach((c) => { counts[c.status] = (counts[c.status] || 0) + 1; });
+      // Most checks pass on a working install -- put the ones that need
+      // action up top with full detail, and collapse the rest into a
+      // compact list instead of a wall of identical green cards.
+      const needsAttention = checks.filter((c) => c.status !== 'pass');
+      const passing = checks.filter((c) => c.status === 'pass');
+
+      const attentionHtml = needsAttention.map((c) => `
+        <div class="setup-item">
+          <div class="setup-item-header">
+            <span class="setup-status-icon ${c.status}">${c.status === 'warn' ? '!' : '✕'}</span>
+            <strong>${escapeHtml(c.label || c.id)}</strong>
+          </div>
+          <div class="subtitle">${escapeHtml(c.message || '')}</div>
+        </div>`).join('');
+
+      const passingHtml = passing.map((c) => `
+        <div class="doctor-pass-row">
+          <span class="setup-status-icon pass">✓</span>
+          <span>${escapeHtml(c.label || c.id)}</span>
+        </div>`).join('');
+
+      navInfoBodyEl.innerHTML = `
+        <div class="doctor-summary">
+          <span class="doctor-count pass">${counts.pass || 0} passing</span>
+          <span class="doctor-count warn">${counts.warn || 0} need attention</span>
+          <span class="doctor-count fail">${counts.fail || 0} failing</span>
+        </div>
+        ${needsAttention.length
+          ? `<div class="doctor-section-label">Needs attention</div>${attentionHtml}`
+          : '<p class="subtitle">Everything needed is configured.</p>'}
+        ${passing.length
+          ? `<div class="doctor-section-label">All good (${passing.length})</div><div class="doctor-pass-list">${passingHtml}</div>`
+          : ''}
+      `;
+    } catch (e) {
+      navInfoBodyEl.innerHTML = `<p class="subtitle">Failed to reach backend: ${escapeHtml(e.message)}</p>`;
+    }
+  });
 
   // Presets: saved persona/behavior instructions the user can select to be
   // appended to the base system prompt server-side (see buildAssistantReply
