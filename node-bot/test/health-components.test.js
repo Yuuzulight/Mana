@@ -68,6 +68,21 @@ test("health includes component readiness while preserving top-level fields", as
   });
 });
 
+test("repeated /health requests do not grow the Express route stack", async () => {
+  const app = createApp();
+
+  await withServer(app, async (baseUrl) => {
+    await fetch(`${baseUrl}/health`);
+    const stackLengthAfterFirstCall = app._router.stack.length;
+
+    for (let i = 0; i < 5; i++) {
+      await fetch(`${baseUrl}/health`);
+    }
+
+    assert.equal(app._router.stack.length, stackLengthAfterFirstCall);
+  });
+});
+
 test("health component details do not expose secret values", async () => {
   const app = createApp({
     env: {

@@ -1825,288 +1825,292 @@ function registerRoutes(app, upload, deps = {}) {
       llamaModel: llamaStatus.model,
       llamaBin: llamaStatus.bin,
       llamaStatus: llamaStatus.message,
+      // Distinct from llamaConfigured (paths resolved): whether the
+      // persistent llama-server process is actually up right now -- see
+      // MANA_EAGER_LLAMA_SERVER above. false is a legitimate steady state
+      // when it hasn't been asked to start yet, not an error.
+      llamaServerRunning: llamaServerRuntime.getStatus().running,
       remoteAiEnabled: shouldUseRemoteAi(),
       vtubeStudioConfigured: Boolean(vtubeStudio),
       vtubeStudioUrl: VTUBE_STUDIO_URL,
       components,
     });
+  });
 
-    // Lightweight debug endpoint for frontend intent preview
-    app.post("/debug/intent", (req, res) => {
-      const { text } = req.body || {};
-      if (text === undefined || typeof text !== "string") {
-        return res.status(400).json({
-          success: false,
-          error: "Bad Request",
-          message:
-            "Missing or invalid 'text' property in the JSON body payload.",
-        });
-      }
+  // Lightweight debug endpoint for frontend intent preview
+  app.post("/debug/intent", (req, res) => {
+    const { text } = req.body || {};
+    if (text === undefined || typeof text !== "string") {
+      return res.status(400).json({
+        success: false,
+        error: "Bad Request",
+        message:
+          "Missing or invalid 'text' property in the JSON body payload.",
+      });
+    }
 
-      try {
-        const evaluation = classifyIntent(text);
-        return res.status(200).json(
-          Object.assign(
-            {
-              success: true,
-              input_length: text.length,
-            },
-            evaluation,
-          ),
-        );
-      } catch (err) {
-        console.error(
-          "🚨 [/debug/intent] Router checkpoint failed:",
-          err?.message || err,
-        );
-        return res.status(500).json({
-          success: false,
-          error: "Internal Server Error",
-          message: err?.message || String(err),
-        });
-      }
-    });
+    try {
+      const evaluation = classifyIntent(text);
+      return res.status(200).json(
+        Object.assign(
+          {
+            success: true,
+            input_length: text.length,
+          },
+          evaluation,
+        ),
+      );
+    } catch (err) {
+      console.error(
+        "🚨 [/debug/intent] Router checkpoint failed:",
+        err?.message || err,
+      );
+      return res.status(500).json({
+        success: false,
+        error: "Internal Server Error",
+        message: err?.message || String(err),
+      });
+    }
+  });
 
-    // Admin endpoints for file write approvals
-    const PENDING_DIR =
-      process.env.MANA_PENDING_WRITES_DIR ||
-      path.join(__dirname, "data", "pending_writes");
+  // Admin endpoints for file write approvals
+  const PENDING_DIR =
+    process.env.MANA_PENDING_WRITES_DIR ||
+    path.join(__dirname, "data", "pending_writes");
 
-    app.get("/admin/pending-writes", async (req, res) => {
-      if (!checkAdminAuth(req, res)) return;
-      try {
-        await fs.promises.mkdir(PENDING_DIR, { recursive: true });
-        const files = await fs.promises.readdir(PENDING_DIR);
-        const pending = [];
-        for (const f of files) {
-          if (
-            f.endsWith(".json") &&
-            !f.endsWith(".approved.json") &&
-            !f.endsWith(".rejected.json")
-          ) {
-            const id = f.replace(/\.json$/i, "");
-            const base = path.join(PENDING_DIR, id);
-            const pendingPath = `${base}.json`;
-            let payload = null;
-            try {
-              payload = JSON.parse(
-                await fs.promises.readFile(pendingPath, "utf8"),
-              );
-            } catch (e) {
-              payload = null;
-            }
-            const approved = fs.existsSync(`${base}.approved.json`);
-            const rejected = fs.existsSync(`${base}.rejected.json`);
-            pending.push({ id, payload, approved, rejected });
-          }
-        }
-        return res.json({ ok: true, pending });
-      } catch (err) {
-        return res.status(500).json({ ok: false, error: err.message });
-      }
-    });
-
-    app.post("/admin/pending-writes/:id/approve", async (req, res) => {
-      if (!checkAdminAuth(req, res)) return;
-      try {
-        const id = req.params.id;
-        const base = path.join(PENDING_DIR, id);
-        const approvedPath = `${base}.approved.json`;
-        const data = {
-          approver: req.body?.approver || "local-user",
-          at: new Date().toISOString(),
-          note: req.body?.note || null,
-        };
-        await fs.promises.writeFile(
-          approvedPath,
-          JSON.stringify(data, null, 2),
-          "utf8",
-        );
-        // Optionally archive immediately
-        try {
-          const archiveDir = path.join(PENDING_DIR, "archive");
-          await fs.promises.mkdir(archiveDir, { recursive: true });
+  app.get("/admin/pending-writes", async (req, res) => {
+    if (!checkAdminAuth(req, res)) return;
+    try {
+      await fs.promises.mkdir(PENDING_DIR, { recursive: true });
+      const files = await fs.promises.readdir(PENDING_DIR);
+      const pending = [];
+      for (const f of files) {
+        if (
+          f.endsWith(".json") &&
+          !f.endsWith(".approved.json") &&
+          !f.endsWith(".rejected.json")
+        ) {
+          const id = f.replace(/\.json$/i, "");
+          const base = path.join(PENDING_DIR, id);
           const pendingPath = `${base}.json`;
-          let pendingPayload = null;
+          let payload = null;
           try {
-            pendingPayload = JSON.parse(
+            payload = JSON.parse(
               await fs.promises.readFile(pendingPath, "utf8"),
             );
           } catch (e) {
-            pendingPayload = null;
+            payload = null;
           }
-          const outPath = path.join(archiveDir, `${id}.approved.json`);
-          const archiveObj = {
-            id,
-            status: "approved",
-            pending: pendingPayload,
-            action: data,
-            archivedAt: new Date().toISOString(),
-          };
-          await fs.promises.writeFile(
-            outPath,
-            JSON.stringify(archiveObj, null, 2),
-            "utf8",
-          );
-          // remove originals
-          try {
-            if (fs.existsSync(pendingPath))
-              await fs.promises.unlink(pendingPath);
-          } catch (e) {}
-          try {
-            if (fs.existsSync(approvedPath))
-              await fs.promises.unlink(approvedPath);
-          } catch (e) {}
-        } catch (e) {
-          // ignore archive errors
+          const approved = fs.existsSync(`${base}.approved.json`);
+          const rejected = fs.existsSync(`${base}.rejected.json`);
+          pending.push({ id, payload, approved, rejected });
         }
-
-        return res.json({ ok: true, id });
-      } catch (err) {
-        return res.status(500).json({ ok: false, error: err.message });
       }
-    });
+      return res.json({ ok: true, pending });
+    } catch (err) {
+      return res.status(500).json({ ok: false, error: err.message });
+    }
+  });
 
-    app.post("/admin/pending-writes/:id/reject", async (req, res) => {
-      if (!checkAdminAuth(req, res)) return;
+  app.post("/admin/pending-writes/:id/approve", async (req, res) => {
+    if (!checkAdminAuth(req, res)) return;
+    try {
+      const id = req.params.id;
+      const base = path.join(PENDING_DIR, id);
+      const approvedPath = `${base}.approved.json`;
+      const data = {
+        approver: req.body?.approver || "local-user",
+        at: new Date().toISOString(),
+        note: req.body?.note || null,
+      };
+      await fs.promises.writeFile(
+        approvedPath,
+        JSON.stringify(data, null, 2),
+        "utf8",
+      );
+      // Optionally archive immediately
       try {
-        const id = req.params.id;
-        const base = path.join(PENDING_DIR, id);
-        const rejectedPath = `${base}.rejected.json`;
-        const data = {
-          approver: req.body?.approver || "local-user",
-          at: new Date().toISOString(),
-          reason: req.body?.reason || null,
+        const archiveDir = path.join(PENDING_DIR, "archive");
+        await fs.promises.mkdir(archiveDir, { recursive: true });
+        const pendingPath = `${base}.json`;
+        let pendingPayload = null;
+        try {
+          pendingPayload = JSON.parse(
+            await fs.promises.readFile(pendingPath, "utf8"),
+          );
+        } catch (e) {
+          pendingPayload = null;
+        }
+        const outPath = path.join(archiveDir, `${id}.approved.json`);
+        const archiveObj = {
+          id,
+          status: "approved",
+          pending: pendingPayload,
+          action: data,
+          archivedAt: new Date().toISOString(),
         };
         await fs.promises.writeFile(
-          rejectedPath,
-          JSON.stringify(data, null, 2),
+          outPath,
+          JSON.stringify(archiveObj, null, 2),
           "utf8",
         );
-        // Optionally archive immediately
+        // remove originals
         try {
-          const archiveDir = path.join(PENDING_DIR, "archive");
-          await fs.promises.mkdir(archiveDir, { recursive: true });
-          const pendingPath = `${base}.json`;
-          let pendingPayload = null;
-          try {
-            pendingPayload = JSON.parse(
-              await fs.promises.readFile(pendingPath, "utf8"),
-            );
-          } catch (e) {
-            pendingPayload = null;
-          }
-          const outPath = path.join(archiveDir, `${id}.rejected.json`);
-          const archiveObj = {
-            id,
-            status: "rejected",
-            pending: pendingPayload,
-            action: data,
-            archivedAt: new Date().toISOString(),
-          };
-          await fs.promises.writeFile(
-            outPath,
-            JSON.stringify(archiveObj, null, 2),
-            "utf8",
+          if (fs.existsSync(pendingPath))
+            await fs.promises.unlink(pendingPath);
+        } catch (e) {}
+        try {
+          if (fs.existsSync(approvedPath))
+            await fs.promises.unlink(approvedPath);
+        } catch (e) {}
+      } catch (e) {
+        // ignore archive errors
+      }
+
+      return res.json({ ok: true, id });
+    } catch (err) {
+      return res.status(500).json({ ok: false, error: err.message });
+    }
+  });
+
+  app.post("/admin/pending-writes/:id/reject", async (req, res) => {
+    if (!checkAdminAuth(req, res)) return;
+    try {
+      const id = req.params.id;
+      const base = path.join(PENDING_DIR, id);
+      const rejectedPath = `${base}.rejected.json`;
+      const data = {
+        approver: req.body?.approver || "local-user",
+        at: new Date().toISOString(),
+        reason: req.body?.reason || null,
+      };
+      await fs.promises.writeFile(
+        rejectedPath,
+        JSON.stringify(data, null, 2),
+        "utf8",
+      );
+      // Optionally archive immediately
+      try {
+        const archiveDir = path.join(PENDING_DIR, "archive");
+        await fs.promises.mkdir(archiveDir, { recursive: true });
+        const pendingPath = `${base}.json`;
+        let pendingPayload = null;
+        try {
+          pendingPayload = JSON.parse(
+            await fs.promises.readFile(pendingPath, "utf8"),
           );
-          // remove originals
-          try {
-            if (fs.existsSync(pendingPath))
-              await fs.promises.unlink(pendingPath);
-          } catch (e) {}
-          try {
-            if (fs.existsSync(rejectedPath))
-              await fs.promises.unlink(rejectedPath);
-          } catch (e) {}
         } catch (e) {
-          // ignore archive errors
+          pendingPayload = null;
         }
-
-        return res.json({ ok: true, id });
-      } catch (err) {
-        return res.status(500).json({ ok: false, error: err.message });
-      }
-    });
-
-    // Admin token-cache endpoints
-    app.get("/admin/token-cache", async (req, res) => {
-      if (!checkAdminAuth(req, res)) return;
-      try {
-        const cachePath = path.join(
-          __dirname,
-          "data",
-          "token_count_cache.json",
-        );
-        if (!fs.existsSync(cachePath))
-          return res.json({ ok: true, keys: [], count: 0 });
-        const txt = await fs.promises.readFile(cachePath, "utf8");
-        const obj = JSON.parse(txt || "{}");
-        const keys = Object.keys(obj);
-        return res.json({ ok: true, keys, count: keys.length });
-      } catch (e) {
-        return res.status(500).json({ ok: false, error: String(e) });
-      }
-    });
-
-    app.post("/admin/token-cache/evict", async (req, res) => {
-      if (!checkAdminAuth(req, res)) return;
-      try {
-        const p = typeof req.body?.path === "string" ? req.body.path : null;
-        if (!p)
-          return res.status(400).json({ ok: false, error: "path required" });
-        const cachePath = path.join(
-          __dirname,
-          "data",
-          "token_count_cache.json",
-        );
-        let cache = {};
-        try {
-          if (fs.existsSync(cachePath))
-            cache = JSON.parse(
-              (await fs.promises.readFile(cachePath, "utf8")) || "{}",
-            );
-        } catch (e) {
-          cache = {};
-        }
-        const key = path.resolve(p);
-        if (cache[key]) delete cache[key];
-        await fs.promises.mkdir(path.dirname(cachePath), { recursive: true });
+        const outPath = path.join(archiveDir, `${id}.rejected.json`);
+        const archiveObj = {
+          id,
+          status: "rejected",
+          pending: pendingPayload,
+          action: data,
+          archivedAt: new Date().toISOString(),
+        };
         await fs.promises.writeFile(
-          cachePath,
-          JSON.stringify(cache, null, 2),
+          outPath,
+          JSON.stringify(archiveObj, null, 2),
           "utf8",
         );
-        return res.json({ ok: true, evicted: key });
-      } catch (e) {
-        return res.status(500).json({ ok: false, error: String(e) });
-      }
-    });
-
-    // proxy metrics from Python token HTTP server if available
-    app.get("/admin/token-cache-metrics", async (req, res) => {
-      if (!checkAdminAuth(req, res)) return;
-      try {
-        const pyPort = Number(process.env.PY_TOKEN_SERVER_PORT || 9000);
-        const pySecret = process.env.PY_TOKEN_SERVER_SECRET || null;
-        const url = `http://127.0.0.1:${pyPort}/metrics`;
-        const headers = {};
-        if (pySecret) headers["Authorization"] = `Bearer ${pySecret}`;
-        const fetch = require("node-fetch");
-        const resp = await fetch(url, { headers, method: "GET" });
-        const body = await resp.text();
+        // remove originals
         try {
-          const parsed = JSON.parse(body);
-          return res.json({ ok: true, metrics: parsed.metrics || parsed });
-        } catch (e) {
-          return res
-            .status(502)
-            .json({ ok: false, error: "invalid_metrics_response" });
-        }
+          if (fs.existsSync(pendingPath))
+            await fs.promises.unlink(pendingPath);
+        } catch (e) {}
+        try {
+          if (fs.existsSync(rejectedPath))
+            await fs.promises.unlink(rejectedPath);
+        } catch (e) {}
       } catch (e) {
-        return res.status(500).json({ ok: false, error: String(e) });
+        // ignore archive errors
       }
-    });
 
+      return res.json({ ok: true, id });
+    } catch (err) {
+      return res.status(500).json({ ok: false, error: err.message });
+    }
+  });
+
+  // Admin token-cache endpoints
+  app.get("/admin/token-cache", async (req, res) => {
+    if (!checkAdminAuth(req, res)) return;
+    try {
+      const cachePath = path.join(
+        __dirname,
+        "data",
+        "token_count_cache.json",
+      );
+      if (!fs.existsSync(cachePath))
+        return res.json({ ok: true, keys: [], count: 0 });
+      const txt = await fs.promises.readFile(cachePath, "utf8");
+      const obj = JSON.parse(txt || "{}");
+      const keys = Object.keys(obj);
+      return res.json({ ok: true, keys, count: keys.length });
+    } catch (e) {
+      return res.status(500).json({ ok: false, error: String(e) });
+    }
+  });
+
+  app.post("/admin/token-cache/evict", async (req, res) => {
+    if (!checkAdminAuth(req, res)) return;
+    try {
+      const p = typeof req.body?.path === "string" ? req.body.path : null;
+      if (!p)
+        return res.status(400).json({ ok: false, error: "path required" });
+      const cachePath = path.join(
+        __dirname,
+        "data",
+        "token_count_cache.json",
+      );
+      let cache = {};
+      try {
+        if (fs.existsSync(cachePath))
+          cache = JSON.parse(
+            (await fs.promises.readFile(cachePath, "utf8")) || "{}",
+          );
+      } catch (e) {
+        cache = {};
+      }
+      const key = path.resolve(p);
+      if (cache[key]) delete cache[key];
+      await fs.promises.mkdir(path.dirname(cachePath), { recursive: true });
+      await fs.promises.writeFile(
+        cachePath,
+        JSON.stringify(cache, null, 2),
+        "utf8",
+      );
+      return res.json({ ok: true, evicted: key });
+    } catch (e) {
+      return res.status(500).json({ ok: false, error: String(e) });
+    }
+  });
+
+  // proxy metrics from Python token HTTP server if available
+  app.get("/admin/token-cache-metrics", async (req, res) => {
+    if (!checkAdminAuth(req, res)) return;
+    try {
+      const pyPort = Number(process.env.PY_TOKEN_SERVER_PORT || 9000);
+      const pySecret = process.env.PY_TOKEN_SERVER_SECRET || null;
+      const url = `http://127.0.0.1:${pyPort}/metrics`;
+      const headers = {};
+      if (pySecret) headers["Authorization"] = `Bearer ${pySecret}`;
+      const fetch = require("node-fetch");
+      const resp = await fetch(url, { headers, method: "GET" });
+      const body = await resp.text();
+      try {
+        const parsed = JSON.parse(body);
+        return res.json({ ok: true, metrics: parsed.metrics || parsed });
+      } catch (e) {
+        return res
+          .status(502)
+          .json({ ok: false, error: "invalid_metrics_response" });
+      }
+    } catch (e) {
+      return res.status(500).json({ ok: false, error: String(e) });
+    }
   });
 
   // Admin endpoint: send a tray notification (protected)
@@ -3842,9 +3846,6 @@ async function startServer() {
     }
   });
 
-  return server.listen(port, () =>
-    console.log("Node local bot listening on", port),
-  );
   return server.listen(port, () =>
     console.log("Node local bot listening on", port),
   );
