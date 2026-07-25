@@ -20,7 +20,10 @@ function createUpdateManager({ getMainWindow, log = console } = {}) {
   function setStatus(state, message) {
     lastStatus = { state, message };
     const win = getMainWindow && getMainWindow();
-    if (win && win.webContents) {
+    // win can be non-null but already destroyed (e.g. an in-flight update
+    // check resolving during app quit) -- .send() on a destroyed
+    // webContents throws, so isDestroyed() has to gate this too.
+    if (win && !win.isDestroyed() && win.webContents && !win.webContents.isDestroyed()) {
       win.webContents.send("update-status", lastStatus);
     }
   }
