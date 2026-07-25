@@ -7,6 +7,23 @@ const {
   registerCapabilities,
 } = require("../capabilities/registry");
 
+function fakePluginSettingsStore(overrides = {}) {
+  return {
+    isEnabled: (key, defaultEnabled) =>
+      Object.prototype.hasOwnProperty.call(overrides, key) ? overrides[key] : defaultEnabled,
+  };
+}
+
+function fakeExpressApp() {
+  const routes = [];
+  const app = {};
+  for (const method of ["get", "post", "put", "patch", "delete"]) {
+    app[method] = (routePath, handler) => routes.push({ method, routePath, handler });
+  }
+  app.routes = routes;
+  return app;
+}
+
 test("registerCapabilities calls route registration for each routed capability", () => {
   const calls = [];
   const app = { name: "app" };
@@ -142,4 +159,146 @@ test("contributePluginPromptContext returns empty string when nothing contribute
   );
 
   assert.equal(result, "");
+});
+
+// Plugin gating (Settings > Plugins enable/disable): only capabilities with
+// a `category` are gated at all -- core capabilities (sessions, presets,
+// etc.) have no category and must stay unaffected by the store either way.
+
+test("registerCapabilities lets a disabled plugin's route registration through but 403s each request", () => {
+  const app = fakeExpressApp();
+  const pluginSettingsStore = fakePluginSettingsStore({ ffxivMarket: false });
+  let handlerRan = false;
+  const capabilities = [
+    {
+      key: "ffxivMarket",
+      category: "Game Integrations",
+      registerRoutes: (routedApp) => {
+        routedApp.get("/market/price", (req, res) => {
+          handlerRan = true;
+          res.status(200).json({ ok: true });
+        });
+      },
+    },
+  ];
+
+  registerCapabilities(app, capabilities, { pluginSettingsStore });
+
+  assert.equal(app.routes.length, 1, "route still registers at startup");
+  const res = { status(code) { this.code = code; return this; }, json(body) { this.body = body; return this; } };
+  app.routes[0].handler({}, res);
+  assert.equal(handlerRan, false, "the actual handler must not run for a disabled plugin");
+  assert.equal(res.code, 403);
+  assert.match(res.body.error, /disabled/i);
+});
+
+test("registerCapabilities does not gate a capability without a category, even when disabled by key in the store", () => {
+  const app = fakeExpressApp();
+  const pluginSettingsStore = fakePluginSettingsStore({ sessions: false });
+  let handlerRan = false;
+  registerCapabilities(
+    app,
+    [
+      {
+        key: "sessions",
+        registerRoutes: (routedApp) => {
+          routedApp.get("/sessions", (req, res) => {
+            handlerRan = true;
+          });
+        },
+      },
+    ],
+    { pluginSettingsStore },
+  );
+
+  app.routes[0].handler({}, {});
+  assert.equal(handlerRan, true, "core capabilities have no category and are never gated");
+});
+
+test("registerCapabilities respects a plugin's defaultEnabled:false with no stored override", () => {
+  const app = fakeExpressApp();
+  const pluginSettingsStore = fakePluginSettingsStore();
+  registerCapabilities(
+    app,
+    [
+      {
+        key: "ffxivMarket",
+        category: "Game Integrations",
+        defaultEnabled: false,
+        registerRoutes: (routedApp) => {
+          routedApp.get("/market/price", (req, res) => res.status(200).json({ ok: true }));
+        },
+      },
+    ],
+    { pluginSettingsStore },
+  );
+
+  const res = { status(code) { this.code = code; return this; }, json(body) { this.body = body; return this; } };
+  app.routes[0].handler({}, res);
+  assert.equal(res.code, 403);
+});
+
+test("buildCapabilityHealth reports a disabled component for a gated plugin instead of calling getHealth", () => {
+  let getHealthCalled = false;
+  const health = buildCapabilityHealth(
+    [
+      {
+        key: "ffxivMarket",
+        category: "Game Integrations",
+        getHealth: () => {
+          getHealthCalled = true;
+          return { status: "configured" };
+        },
+      },
+    ],
+    { pluginSettingsStore: fakePluginSettingsStore({ ffxivMarket: false }) },
+  );
+
+  assert.equal(getHealthCalled, false);
+  assert.equal(health.ffxivMarket.status, "disabled");
+  assert.equal(health.ffxivMarket.configured, false);
+});
+
+test("contributePluginPromptContext skips a disabled plugin's contributePromptContext", async () => {
+  let called = false;
+  const result = await contributePluginPromptContext(
+    [
+      {
+        key: "ffxivMarket",
+        category: "Game Integrations",
+        contributePromptContext: async () => {
+          called = true;
+          return "should not run";
+        },
+      },
+    ],
+    "hi",
+    { pluginSettingsStore: fakePluginSettingsStore({ ffxivMarket: false }) },
+  );
+
+  assert.equal(called, false);
+  assert.equal(result, "");
+});
+
+test("an enabled plugin behaves exactly as if ungated", () => {
+  const app = fakeExpressApp();
+  let handlerRan = false;
+  registerCapabilities(
+    app,
+    [
+      {
+        key: "ffxivMarket",
+        category: "Game Integrations",
+        registerRoutes: (routedApp) => {
+          routedApp.get("/market/price", (req, res) => {
+            handlerRan = true;
+          });
+        },
+      },
+    ],
+    { pluginSettingsStore: fakePluginSettingsStore({ ffxivMarket: true }) },
+  );
+
+  app.routes[0].handler({}, {});
+  assert.equal(handlerRan, true);
 });
