@@ -505,14 +505,17 @@ function normalizePortNumber(value, fallback) {
   return Number.isInteger(port) && port > 0 && port <= 65535 ? port : fallback;
 }
 
+// No default port checks: a "is this port free" probe against node-bot's
+// own configured port only makes sense *before* node-bot has started (a
+// pre-flight check for something about to bind it). The only real caller
+// of runDoctorChecksAsync is this same server's own /doctor route -- by
+// the time anything can query it, that port is trivially always "in use"
+// by the very process answering the request, so this always reported a
+// false "port unavailable" warning with no actionable fix. Callers that
+// genuinely need a pre-start port check can still pass one via
+// options.ports.
 function getDefaultPortChecks(env) {
-  return [
-    {
-      id: "mana-backend",
-      host: "127.0.0.1",
-      port: normalizePortNumber(env.PORT, DEFAULT_BACKEND_PORT),
-    },
-  ];
+  return [];
 }
 
 function probePortAvailability({ id = "port", host = "127.0.0.1", port, timeoutMs = 500 }) {

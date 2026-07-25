@@ -1,6 +1,5 @@
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
-const net = require("node:net");
 const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
@@ -8,14 +7,6 @@ const test = require("node:test");
 const { createApp } = require("../server");
 const { runDoctorChecks, runDoctorChecksAsync } = require("../doctor");
 const { withServer, withRawServer } = require("./helpers");
-
-async function getFreePort() {
-  const server = net.createServer();
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const { port } = server.address();
-  await new Promise((resolve) => server.close(resolve));
-  return port;
-}
 
 test("doctor checks return structured pass warn and fail results", () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mana-doctor-test-"));
@@ -394,12 +385,18 @@ test("async doctor checks GPT-SoVITS only when it is the selected provider", asy
   });
 });
 
-test("async doctor reports backend port availability", async () => {
+// No default port check runs here -- see getDefaultPortChecks's comment in
+// doctor.js: checking whether node-bot's own configured port is "free"
+// only makes sense before it's started, and the only real caller of
+// runDoctorChecksAsync is this same server's own /doctor route, where that
+// port is trivially always in use by the process answering the request.
+// This test only exercises a caller-supplied port check (options.ports),
+// which is still real and still useful (e.g. a plugin's own service port).
+test("async doctor reports availability of a caller-supplied port", async () => {
   await withRawServer((req, res) => {
     res.writeHead(200);
     res.end("ok");
   }, async ({ port }) => {
-    const freePort = await getFreePort();
     const result = await runDoctorChecksAsync({
       env: {
         MANA_ALLOW_REMOTE_AI: "0",
@@ -409,7 +406,6 @@ test("async doctor reports backend port availability", async () => {
         WHISPER_MODEL: "",
         MOBILE_PASSCODE_HASH: "",
         MOBILE_SESSION_SECRET: "",
-        PORT: String(freePort),
       },
       paths: {
         dataDir: fs.mkdtempSync(path.join(os.tmpdir(), "mana-doctor-port-")),
@@ -424,11 +420,9 @@ test("async doctor reports backend port availability", async () => {
     const ports = result.checks.find((check) => check.id === "ports");
 
     assert.equal(ports.status, "warn");
-    assert.equal(ports.details.ports.length, 2);
-    assert.equal(ports.details.ports[0].id, "mana-backend");
-    assert.equal(ports.details.ports[0].ok, true);
-    assert.equal(ports.details.ports[1].id, "occupied-test");
-    assert.equal(ports.details.ports[1].ok, false);
+    assert.equal(ports.details.ports.length, 1);
+    assert.equal(ports.details.ports[0].id, "occupied-test");
+    assert.equal(ports.details.ports[0].ok, false);
 
     fs.rmSync(result.checks.find((check) => check.id === "storage").details.dataDir, {
       recursive: true,
