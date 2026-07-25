@@ -90,6 +90,13 @@ __pycache__/
 # fresh clone; setup-searxng.ps1 copies it in as tools/searxng/mana-settings.yml.
 tools/searxng/
 
+# Self-contained portable Python builds for the packaged installer (see
+# desktop-client/scripts/prepare-portable-python.js) -- large, machine-built
+# artifacts, not source. .gitkeep keeps the folder present so package.json's
+# extraResources entry doesn't break a build that skips this optional step.
+desktop-client/portable-python/*
+!desktop-client/portable-python/.gitkeep
+
 # GPT-SoVITS trial voice provider (huge self-contained package, ~20GB extracted).
 # See docs/gpt_sovits_setup.md for setup; reference clips live in tts-service/references/.
 tools/gpt-sovits/

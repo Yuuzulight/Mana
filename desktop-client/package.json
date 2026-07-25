@@ -10,7 +10,8 @@
     "pack": "electron-builder --dir",
     "dist": "electron-builder --win nsis --publish never",
     "fetch-live2d-core": "node scripts/fetch-live2d-core.js",
-    "fetch-sample-avatar": "node scripts/fetch-sample-avatar.js"
+    "fetch-sample-avatar": "node scripts/fetch-sample-avatar.js",
+    "prepare-portable-python": "node scripts/prepare-portable-python.js"
   },
   "license": "Apache-2.0",
   "devDependencies": {
@@ -66,6 +67,29 @@
       {
         "from": "../node-bin",
         "to": "node_bin",
+        "filter": ["**/*"]
+      },
+      {
+        "from": "../tools/searxng",
+        "to": "tools/searxng",
+        "filter": ["**/*", "!venv/**", "!__pycache__/**"]
+      },
+      {
+        "from": "../tools/mana-searxng-settings.yml",
+        "to": "tools/mana-searxng-settings.yml"
+      },
+      {
+        "from": "../tts-service",
+        "to": "tts-service",
+        "filter": [
+          "kokoro_service.py",
+          "requirements-packaged.txt",
+          "kokoro/**/*"
+        ]
+      },
+      {
+        "from": "portable-python",
+        "to": "portable-python",
         "filter": ["**/*"]
       }
     ]
