@@ -216,6 +216,10 @@ module.exports = {
   key: "ffxivMarket",
   name: "FFXIV Market & Crafting",
   category: "Game Integrations",
+  // Off until a user opts in from Settings > Plugins -- most installs
+  // don't play FFXIV, unlike the other plugins which are broadly useful
+  // by default (see capabilities/registry.js's gating).
+  defaultEnabled: false,
   description:
     "Universalis market-board prices and Garland/XIVAPI craft-profitability lookups for Final Fantasy XIV.",
   registerRoutes: registerFfxivMarketRoutes,

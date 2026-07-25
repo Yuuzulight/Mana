@@ -66,6 +66,7 @@ function registerCoreRoutes(app, upload, deps) {
     getActiveModelProfile,
     marketDataClient,
     jobApplicationsStore,
+    pluginSettingsStore,
     normalizeLlamaModelProfile,
     normalizeUploadedAudio,
     readScreenText,
@@ -243,6 +244,7 @@ function registerCoreRoutes(app, upload, deps) {
         ? await contributePluginPromptContext(capabilities, transcript, {
             marketDataClient,
             jobApplicationsStore,
+            pluginSettingsStore,
             world,
             screenText,
           })
@@ -301,6 +303,7 @@ function registerCoreRoutes(app, upload, deps) {
         {
           marketDataClient,
           jobApplicationsStore,
+          pluginSettingsStore,
           world: UNIVERSALIS_DEFAULT_WORLD,
           screenText: "",
         },
