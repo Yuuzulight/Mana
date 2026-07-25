@@ -276,6 +276,31 @@ function createAcpMemoryStore(options = {}) {
     return sessions;
   }
 
+  // Paginated read of a session's turns for chat-history scrollback: turns
+  // are stored oldest-first, so "the next page going back in time" is the
+  // slice immediately before `before` (defaulting to the tail, i.e. the
+  // most recent page). hasMore/nextBefore tell the caller whether -- and
+  // where -- to fetch the next page up when the user scrolls further.
+  function getSessionTurnsPage(sessionId, { before, limit = 20 } = {}) {
+    const session = getSession(sessionId);
+    if (!session) {
+      return null;
+    }
+    const turns = session.turns;
+    const boundedLimit = Math.max(1, Math.min(200, Number(limit) || 20));
+    const end =
+      before === undefined || before === null
+        ? turns.length
+        : Math.max(0, Math.min(turns.length, Number(before) || 0));
+    const start = Math.max(0, end - boundedLimit);
+    return {
+      turns: turns.slice(start, end),
+      hasMore: start > 0,
+      nextBefore: start,
+      total: turns.length,
+    };
+  }
+
   async function appendTurn(input = {}) {
     const session = ensureSession({ sessionId: input.sessionId });
     const timestamp = now();
@@ -304,7 +329,11 @@ function createAcpMemoryStore(options = {}) {
       [session.summary, summaryLine].filter(Boolean).join("\n"),
       maxSummaryChars,
     );
-    const turns = [...session.turns, turn].slice(-maxRecentTurns);
+    // Full history is kept on disk (unbounded) so the desktop UI can scroll
+    // back through an entire session -- only buildPromptMemory()'s own
+    // slice (below) bounds what actually reaches the AI's prompt, so
+    // keeping everything here doesn't affect reply latency or cost.
+    const turns = [...session.turns, turn];
     const name =
       session.name || (!session.turns.length && autoNameFromText(turn.user)) || null;
     const saved = saveSession({
@@ -435,6 +464,7 @@ function createAcpMemoryStore(options = {}) {
     appendTurn,
     buildPromptMemory,
     getSession,
+    getSessionTurnsPage,
     listSessions,
     renameSession,
     deleteSession,

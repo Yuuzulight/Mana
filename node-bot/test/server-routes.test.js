@@ -205,6 +205,56 @@ test("active profile route switches profile and rejects invalid profiles", async
   });
 });
 
+test("models scan route returns the scanner's result and validation errors", async () => {
+  let receivedRoots = "not-called";
+  const app = createApp({
+    modelManagement: {
+      scanForModels: (roots) => {
+        receivedRoots = roots;
+        if (roots) throw new Error("boom");
+        return { found: [{ path: "C:\\models\\a.gguf", name: "a.gguf", sizeBytes: 10 }], truncated: false, dirsVisited: 3 };
+      },
+    },
+  });
+
+  await withServer(app, async (baseUrl) => {
+    const ok = await postJson(`${baseUrl}/models/scan`, {});
+    assert.equal(ok.response.status, 200);
+    assert.equal(ok.payload.found.length, 1);
+    assert.equal(receivedRoots, undefined);
+
+    const failed = await postJson(`${baseUrl}/models/scan`, { roots: ["D:\\"] });
+    assert.equal(failed.response.status, 400);
+    assert.deepEqual(failed.payload, { error: "boom" });
+  });
+});
+
+test("models path route sets the explicit model path and surfaces validation errors", async () => {
+  let storedPath = null;
+  const app = createApp({
+    modelManagement: {
+      setModelPath: (modelPath) => {
+        if (modelPath && !String(modelPath).endsWith(".gguf")) {
+          throw new Error("Model path must point to a .gguf file");
+        }
+        storedPath = modelPath || null;
+        return { activeProfile: "default", profiles: {}, selectedModelPath: storedPath };
+      },
+    },
+  });
+
+  await withServer(app, async (baseUrl) => {
+    const ok = await postJson(`${baseUrl}/models/path`, { modelPath: "C:\\models\\a.gguf" });
+    assert.equal(ok.response.status, 200);
+    assert.equal(ok.payload.selectedModelPath, "C:\\models\\a.gguf");
+    assert.equal(storedPath, "C:\\models\\a.gguf");
+
+    const rejected = await postJson(`${baseUrl}/models/path`, { modelPath: "C:\\models\\a.txt" });
+    assert.equal(rejected.response.status, 400);
+    assert.deepEqual(rejected.payload, { error: "Model path must point to a .gguf file" });
+  });
+});
+
 test("reply uses active model profile when request omits modelProfile", async () => {
   let receivedProfile = null;
   const app = createApp({

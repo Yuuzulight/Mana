@@ -29,6 +29,7 @@ function createLlamaServerRuntime(options = {}) {
   const systemPrompt = options.systemPrompt || DEFAULT_SYSTEM_PROMPT;
   const nowMs = options.nowMs || (() => Date.now());
   const logPerf = options.logPerf || (() => {});
+  const modelSettingsStore = options.modelSettingsStore || null;
   const registerExitHandlers = options.registerExitHandlers !== false;
   const sleep =
     options.sleep || ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
@@ -107,8 +108,9 @@ function createLlamaServerRuntime(options = {}) {
   }
 
   function findLlamaModel(profile = "default") {
+    const storedPath = modelSettingsStore ? modelSettingsStore.getModelPath() : null;
     return findPreferredLlamaModel({
-      explicitModel: env.LLAMA_MODEL || "",
+      explicitModel: storedPath || env.LLAMA_MODEL || "",
       searchDir: toolsDir,
       profile,
     });
@@ -917,6 +919,7 @@ function createLlamaServerRuntime(options = {}) {
   }
 
   return {
+    ensureServerConfig,
     findLlamaServerBin,
     findLlamaModel,
     findVisionModel,

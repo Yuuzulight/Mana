@@ -41,6 +41,28 @@ function makeFakeFs() {
   };
 }
 
+test("findLlamaModel prefers a modelSettingsStore path over env.LLAMA_MODEL", () => {
+  const runtime = createLlamaServerRuntime({
+    env: makeFakeEnv(),
+    fs: makeFakeFs(),
+    registerExitHandlers: false,
+    modelSettingsStore: { getModelPath: () => "C:\\models\\mana.gguf" },
+  });
+  // "default" profile is the only one where an explicit model short-circuits
+  // the filename search (see pickPreferredLlamaModel in ai/local-ai.js).
+  assert.equal(runtime.findLlamaModel("default"), "C:\\models\\mana.gguf");
+});
+
+test("findLlamaModel falls back to env.LLAMA_MODEL when the store has no override", () => {
+  const runtime = createLlamaServerRuntime({
+    env: makeFakeEnv(),
+    fs: makeFakeFs(),
+    registerExitHandlers: false,
+    modelSettingsStore: { getModelPath: () => null },
+  });
+  assert.equal(runtime.findLlamaModel("default"), makeFakeEnv().LLAMA_MODEL);
+});
+
 test("llama-server runtime is disabled by MANA_LLAMA_SERVER=0", () => {
   const runtime = createLlamaServerRuntime({
     env: { ...makeFakeEnv(), MANA_LLAMA_SERVER: "0" },

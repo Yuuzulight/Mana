@@ -9,6 +9,7 @@ function fakeStore(overrides = {}) {
   return {
     listSessions: () => [],
     getSession: () => null,
+    getSessionTurnsPage: () => null,
     renameSession: () => null,
     deleteSession: () => false,
     ...overrides,
@@ -50,6 +51,34 @@ test("sessions capability returns a single session or 404", async () => {
     assert.equal((await ok.json()).sessionId, "known");
 
     const missing = await fetch(`${baseUrl}/sessions/unknown`);
+    assert.equal(missing.status, 404);
+  });
+});
+
+test("sessions capability pages a session's turns and reports 404 for unknown sessions", async () => {
+  const app = express();
+  app.use(express.json());
+  let lastCall = null;
+  sessionsCapability.registerRoutes(app, {
+    acpMemoryStore: fakeStore({
+      getSessionTurnsPage: (id, opts) => {
+        lastCall = [id, opts];
+        return id === "known"
+          ? { turns: [{ user: "hi", assistant: "hello" }], hasMore: true, nextBefore: 3, total: 25 }
+          : null;
+      },
+    }),
+  });
+
+  await withServer(app, async (baseUrl) => {
+    const ok = await fetch(`${baseUrl}/sessions/known/turns?limit=20&before=23`);
+    assert.equal(ok.status, 200);
+    const body = await ok.json();
+    assert.equal(body.hasMore, true);
+    assert.equal(body.total, 25);
+    assert.deepEqual(lastCall, ["known", { before: 23, limit: 20 }]);
+
+    const missing = await fetch(`${baseUrl}/sessions/unknown/turns`);
     assert.equal(missing.status, 404);
   });
 });

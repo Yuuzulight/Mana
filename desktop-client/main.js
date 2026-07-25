@@ -5,15 +5,42 @@ const { spawn, execFile } = require('child_process');
 const { isAutoUpdateEnabled, createUpdateManager } = require('./update-manager');
 const { getManaDataRoot, buildDataDirEnv, migrateLegacyData } = require('./data-dir-manager');
 const { resolveAvatarModel } = require('./avatar/resolve-model');
+const { createServiceManager } = require('./service-manager');
+const { createFirstRunSetup } = require('./first-run-setup');
+const { createLogFile } = require('./log-file');
 
 let mainWindow = null;
 let backendProc = null;
 let updateManager = null;
+let serviceManager = null;
+let logFile = null;
+let isQuitting = false;
+const manaRoot = path.join(__dirname, '..');
+// Snapshot of the latest startup-progress event per service, so the
+// renderer can catch up on anything that happened before its IPC listener
+// was ready (Electron doesn't replay missed ipcRenderer events -- the
+// first 'backend: starting' can easily fire before the page has finished
+// loading and attaching its listener).
+const startupState = {};
+// Shutdown doesn't need the same catch-up snapshot -- it only ever starts
+// once this renderer is already up and listening (see before-quit below) --
+// but the same reportProgress() feeds both, routed by isQuitting.
+const shutdownState = {};
+
+function reportProgress(update) {
+  if (isQuitting) {
+    shutdownState[update.id] = update;
+    sendToRenderer('shutdown-progress', update);
+  } else {
+    startupState[update.id] = update;
+    sendToRenderer('startup-progress', update);
+  }
+}
 
 function createWindow() {
   mainWindow = new BrowserWindow({
-    width: 420,
-    height: 720,
+    width: 1280,
+    height: 800,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       // The Live2D avatar driver used to read model/config files directly
@@ -60,9 +87,9 @@ function showBackendErrorDialog(title, message){
     }).then((res)=>{
       if (res.response === 0){
         // View logs
-        const logPath = path.join(path.dirname(__dirname), 'node-bot', 'data', 'backend.out.log');
-        if (fs.existsSync(logPath)) shell.openPath(logPath);
-        else dialog.showMessageBox(mainWindow, { type:'info', message:'Logs not found: ' + logPath });
+        const logPath = logFile?.filePath;
+        if (logPath && fs.existsSync(logPath)) shell.openPath(logPath);
+        else dialog.showMessageBox(mainWindow, { type:'info', message:'No log entries yet.' });
       } else if (res.response === 1){
         // Open docs
         const docs = path.join(path.dirname(__dirname), 'BUILD_DESKTOP.md');
@@ -71,6 +98,23 @@ function showBackendErrorDialog(title, message){
     });
   } catch (e) {
     console.warn('Failed to show backend error dialog', e && e.message ? e.message : e);
+  }
+}
+
+// mainWindow being non-null doesn't mean it's still alive -- on quit, the
+// window is destroyed before the backend child process's async 'exit'
+// event fires, and calling .send() on a destroyed webContents throws
+// "Object has been destroyed" as an uncaught exception in the main
+// process. Every backendProc listener below routes through this instead
+// of checking mainWindow directly.
+function sendToRenderer(channel, payload) {
+  if (
+    mainWindow &&
+    !mainWindow.isDestroyed() &&
+    mainWindow.webContents &&
+    !mainWindow.webContents.isDestroyed()
+  ) {
+    mainWindow.webContents.send(channel, payload);
   }
 }
 
@@ -100,7 +144,12 @@ function spawnBackend() {
   try{
     backendProc = spawn(nodeBin, [serverPath], {
       cwd: path.join(__dirname, '..'),
-      env: Object.assign({}, process.env, { NODE_ENV: process.env.NODE_ENV || '' }, dataDirEnv),
+      env: Object.assign(
+        {},
+        process.env,
+        { NODE_ENV: process.env.NODE_ENV || '', MANA_EAGER_LLAMA_SERVER: '1' },
+        dataDirEnv,
+      ),
       stdio: ['ignore', 'pipe', 'pipe'],
     });
   } catch (e){
@@ -112,38 +161,30 @@ function spawnBackend() {
   backendProc.stdout.on('data', (b) => {
     const s = b.toString();
     console.log('[mana-backend]', s.trim());
-    if (mainWindow && mainWindow.webContents) {
-      mainWindow.webContents.send('backend-log', s);
-      // If backend emits a special excite marker, forward to renderer to animate
-      try {
-        if (String(s).includes('__MANA_EXCITE__')) {
-          mainWindow.webContents.send('excite');
-        }
-      } catch (e) {}
+    sendToRenderer('backend-log', s);
+    // If backend emits a special excite marker, forward to renderer to animate
+    if (String(s).includes('__MANA_EXCITE__')) {
+      sendToRenderer('excite');
     }
   });
   backendProc.stderr.on('data', (b) => {
     const s = b.toString();
     console.error('[mana-backend]', s.trim());
-    if (mainWindow && mainWindow.webContents) {
-      mainWindow.webContents.send('backend-log', s);
-      try {
-        if (String(s).includes('__MANA_EXCITE__')) {
-          mainWindow.webContents.send('excite');
-        }
-      } catch (e) {}
+    sendToRenderer('backend-log', s);
+    if (String(s).includes('__MANA_EXCITE__')) {
+      sendToRenderer('excite');
     }
   });
   backendProc.on('exit', (code, sig) => {
     console.log('backend exited', code, sig);
-    if (mainWindow && mainWindow.webContents) mainWindow.webContents.send('backend-exit', { code, sig });
+    sendToRenderer('backend-exit', { code, sig });
     if (code && code !== 0) {
       showBackendErrorDialog('Backend exited', `Backend exited with code ${code} (signal: ${sig})`);
     }
   });
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   // The renderer loads over file://, which Chromium doesn't reliably
   // persist media permission grants for -- without this, getUserMedia()
   // re-prompts on every launch no matter what the user already allowed.
@@ -154,8 +195,45 @@ app.whenReady().then(() => {
   });
   session.defaultSession.setPermissionCheckHandler((webContents, permission) => permission === 'media');
 
+  logFile = createLogFile(app.getPath('userData'));
   spawnBackend();
   createWindow();
+
+  // First launch only: tools/searxng and tts-service ship as source (see
+  // extraResources in package.json) because a venv baked into the
+  // installer isn't portable -- pyvenv.cfg hardcodes an absolute path to
+  // the machine that built it. Build them locally here instead, once.
+  // Kokoro's model files are bundled as plain data and need no download,
+  // so "use the included voice" is just building its venv -- the prompt
+  // below only asks whether to spend the time/disk on that now.
+  const firstRunSetup = createFirstRunSetup({ manaRoot, onProgress: reportProgress });
+  const needs = firstRunSetup.needsSetup();
+  const setupTasks = [];
+  if (needs.searxng) setupTasks.push(firstRunSetup.setupSearxng());
+  if (needs.kokoro) {
+    const promptFlag = path.join(app.getPath('userData'), '.mana-tts-setup-prompted');
+    if (!fs.existsSync(promptFlag)) {
+      try {
+        fs.mkdirSync(path.dirname(promptFlag), { recursive: true });
+        fs.writeFileSync(promptFlag, String(Date.now()));
+      } catch (e) {}
+      const choice = dialog.showMessageBoxSync(mainWindow, {
+        type: 'question',
+        buttons: ['Use Included Voice (Recommended)', 'Skip For Now'],
+        defaultId: 0,
+        cancelId: 1,
+        title: 'Set Up Voice',
+        message: 'Mana includes a local voice (Kokoro TTS) with this installer.',
+        detail:
+          'Use the included voice now, or skip -- you can set up your own model later in tts-service and it will be picked up automatically.',
+      });
+      if (choice === 0) setupTasks.push(firstRunSetup.setupKokoro());
+    }
+  }
+  if (setupTasks.length) await Promise.all(setupTasks);
+
+  serviceManager = createServiceManager({ manaRoot, onProgress: reportProgress, logFile });
+  serviceManager.startAll();
 
   if (isAutoUpdateEnabled()) {
     updateManager = createUpdateManager({ getMainWindow: () => mainWindow });
@@ -170,18 +248,58 @@ app.whenReady().then(() => {
   });
 });
 
-app.on('before-quit', () => {
-  try {
-    if (backendProc) {
-      backendProc.kill();
-      backendProc = null;
+// Shows the closing screen (see #shutdownOverlay / renderer.js) and waits
+// for each service to actually stop -- including asking node-bot to
+// release llama-server's VRAM/RAM first, see server.js's
+// POST /admin/shutdown -- before really exiting, instead of just killing
+// everything and hoping. Bounded overall so a hung service can't leave the
+// app stuck open: service-manager.js's stopAll already times out each step
+// individually (6-8s), this is just a second, coarser backstop.
+const SHUTDOWN_OVERALL_TIMEOUT_MS = 15000;
+
+app.on('before-quit', (event) => {
+  if (isQuitting) return; // shutdown already ran (or is running); let this one through
+  event.preventDefault();
+  isQuitting = true;
+
+  (async () => {
+    try {
+      const stop = serviceManager
+        ? serviceManager.stopAll(backendProc, { adminSecret: process.env.ADMIN_SECRET })
+        : Promise.resolve();
+      let timedOut = false;
+      await Promise.race([
+        stop,
+        new Promise((resolve) => {
+          setTimeout(() => {
+            timedOut = true;
+            resolve();
+          }, SHUTDOWN_OVERALL_TIMEOUT_MS);
+        }),
+      ]);
+      if (timedOut) {
+        logFile?.append('[shutdown] overall shutdown timed out -- forcing exit');
+        try {
+          backendProc?.kill('SIGKILL');
+        } catch (e) {}
+      }
+    } catch (e) {
+      logFile?.append(`[shutdown] unexpected error: ${e && e.message ? e.message : e}`);
     }
-  } catch (e) {}
+    // Brief grace period so the closing screen's final state (all rows
+    // resolved) actually gets a frame to render before the process dies,
+    // instead of the window vanishing the instant the last IPC message is
+    // sent.
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    app.exit(0);
+  })();
 });
 
 ipcMain.handle('show-error', async (ev, msg) => {
   dialog.showErrorBox('Mana Client Error', String(msg || ''));
 });
+
+ipcMain.handle('get-startup-status', async () => startupState);
 
 ipcMain.handle('avatar:resolve-model', async () => {
   try {
@@ -221,14 +339,34 @@ ipcMain.handle('avatar:fetch-sample', async () => {
 // allow renderer to request backend logs or status via IPC if needed
 ipcMain.handle('backend-status', async () => ({ running: !!backendProc && !backendProc.killed }));
 
+// Manual "link a model file" path for Settings > Model and the first-run
+// wizard -- the renderer has no filesystem access of its own (contextIsolation),
+// so the native file picker has to run here. The picked path is only
+// returned to the renderer; it still has to POST it to node-bot's
+// /models/path route to actually take effect.
+ipcMain.handle('browse-model-file', async () => {
+  const result = await dialog.showOpenDialog(mainWindow, {
+    title: 'Select a local LLM model file',
+    properties: ['openFile'],
+    filters: [
+      { name: 'GGUF model', extensions: ['gguf'] },
+      { name: 'All files', extensions: ['*'] },
+    ],
+  });
+  if (result.canceled || !result.filePaths.length) {
+    return { canceled: true };
+  }
+  return { canceled: false, filePath: result.filePaths[0] };
+});
+
 ipcMain.handle('open-logs', async () => {
   try{
-    const logPath = path.join(path.dirname(__dirname), 'node-bot', 'data', 'backend.out.log');
-    if (fs.existsSync(logPath)){
+    const logPath = logFile?.filePath;
+    if (logPath && fs.existsSync(logPath)){
       await shell.openPath(logPath);
       return { ok: true, path: logPath };
     }
-    return { ok: false, error: 'Log file not found: ' + logPath };
+    return { ok: false, error: 'No log entries yet.' };
   } catch (e) { return { ok: false, error: String(e) }; }
 });
 
