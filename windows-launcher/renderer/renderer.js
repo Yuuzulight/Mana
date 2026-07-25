@@ -41,6 +41,11 @@ const {
   formatCompareProfileLabel,
   pickDefaultCompareProfiles,
 } = require("./compare-mode");
+const {
+  createSileroVad,
+  FRAME_SAMPLES: VAD_FRAME_SAMPLES,
+  SAMPLE_RATE: VAD_SAMPLE_RATE,
+} = require("./silero-vad");
 
 const chatLogEl = document.getElementById("chatLog");
 const chatInputEl = document.getElementById("chatInput");
@@ -121,6 +126,15 @@ const SCREEN_CONTEXT_KEYWORDS = [
 const MIN_SPEECH_RMS = 0.012;
 const MIN_SPEECH_PEAK = 0.04;
 const MAX_CLICKY_ZERO_CROSSING_RATE = 0.28;
+// Live speech/silence detection in recordUntilSilence() prefers Silero VAD
+// (issue #135) over the plain RMS threshold above -- a neural model tells
+// speech apart from a loud fan or game audio far better than an energy
+// threshold can. MANA_VAD_THRESHOLD overrides Silero's own speech-probability
+// cutoff; MANA_DISABLE_VAD=1 forces the RMS fallback even if the model is
+// available (useful for A/B comparing the two, or if VAD misbehaves).
+const VAD_THRESHOLD = Number(process.env.MANA_VAD_THRESHOLD || 0.5);
+const VAD_DISABLED = process.env.MANA_DISABLE_VAD === "1";
+const VAD_MODEL_URL = "../assets/vad/silero_vad.onnx";
 // Per-session transcription debug logging (docs/speech_recognition_improvement_plan.md):
 // enable with ?speechDebug=1 or localStorage.manaSpeechDebug = "1".
 const SPEECH_DEBUG_ENABLED =
@@ -148,6 +162,24 @@ const NOISE_ONLY_TRANSCRIPTS = [
 ];
 
 let mediaStream = null;
+// Lazily created on first use (not at load time) so a missing/broken ONNX
+// runtime never blocks the app from starting -- just falls back to RMS.
+let sileroVad = null;
+let sileroVadLoadFailed = false;
+
+function getSileroVad() {
+  if (VAD_DISABLED || sileroVadLoadFailed || typeof window.ort === "undefined") {
+    return null;
+  }
+  if (!sileroVad) {
+    sileroVad = createSileroVad({
+      ort: window.ort,
+      modelUrl: VAD_MODEL_URL,
+      threshold: VAD_THRESHOLD,
+    });
+  }
+  return sileroVad;
+}
 let currentReplyAudio = null;
 let currentReplyUrl = null;
 let replyPlaybackToken = 0;
@@ -969,9 +1001,13 @@ async function ensureMediaStream() {
 
 // Records continuously and stops once the user has been silent for
 // `silenceBufferMs` after speaking — so a long sentence is captured whole
-// instead of being cut off at a fixed duration. Uses the same MIN_SPEECH_RMS
-// threshold as the post-hoc noise filter below, so "is this speech" stays
-// consistent whether it's judged live or after the fact.
+// instead of being cut off at a fixed duration. Prefers Silero VAD's speech
+// probability (issue #135) over the plain MIN_SPEECH_RMS threshold for the
+// live "is this speech" decision -- a neural VAD tells speech apart from a
+// loud fan or game audio far better than an energy threshold can -- and
+// falls back to RMS if the model isn't available or inference fails. The
+// post-hoc noise filter below (getSpeechRejectReason) still uses RMS/ZCR
+// either way; it's a separate second-layer check on the finished recording.
 async function recordUntilSilence({
   maxWaitForSpeechMs = MAX_WAIT_FOR_SPEECH_MS,
   silenceBufferMs = SILENCE_BUFFER_MS,
@@ -979,7 +1015,17 @@ async function recordUntilSilence({
 } = {}) {
   await ensureMediaStream();
 
-  const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  const vad = getSileroVad();
+  if (vad) {
+    vad.reset();
+  }
+
+  // 16kHz is what Silero VAD expects; the browser resamples for us, so
+  // there's no hand-written resampling code either way -- the RMS fallback
+  // doesn't care what sample rate it runs at.
+  const audioCtx = new (window.AudioContext || window.webkitAudioContext)({
+    sampleRate: VAD_SAMPLE_RATE,
+  });
   const source = audioCtx.createMediaStreamSource(mediaStream);
   const analyser = audioCtx.createAnalyser();
   analyser.fftSize = 1024;
@@ -995,18 +1041,37 @@ async function recordUntilSilence({
     return Math.sqrt(sum / samples.length);
   }
 
+  async function isSpeechNow() {
+    if (vad) {
+      try {
+        analyser.getFloatTimeDomainData(samples);
+        // Silero wants exactly VAD_FRAME_SAMPLES; take the most recent ones
+        // from the analyser's larger ring buffer.
+        const frame = samples.subarray(samples.length - VAD_FRAME_SAMPLES);
+        const probability = await vad.processFrame(frame);
+        return vad.isSpeech(probability);
+      } catch (e) {
+        console.warn("Silero VAD inference failed, falling back to RMS for this session:", e);
+        sileroVadLoadFailed = true;
+      }
+    }
+    return currentRms() >= MIN_SPEECH_RMS;
+  }
+
   return await new Promise((resolve, reject) => {
     const chunks = [];
     const recorder = new MediaRecorder(mediaStream, { mimeType: "audio/webm" });
     let hasHeardSpeech = false;
     let lastSpeechAt = 0;
-    let meterInterval = null;
+    let meterTimer = null;
+    let stopped = false;
     const startedAt = performance.now();
 
     function cleanup() {
-      if (meterInterval !== null) {
-        clearInterval(meterInterval);
-        meterInterval = null;
+      stopped = true;
+      if (meterTimer !== null) {
+        clearTimeout(meterTimer);
+        meterTimer = null;
       }
       try {
         source.disconnect();
@@ -1032,28 +1097,37 @@ async function recordUntilSilence({
     // lost if recording stops earlier than a browser's default flush cadence.
     recorder.start(SILENCE_METER_INTERVAL_MS);
 
-    meterInterval = setInterval(() => {
-      const now = performance.now();
-      if (currentRms() >= MIN_SPEECH_RMS) {
+    // Self-scheduling instead of setInterval: VAD inference is async, and
+    // this guarantees one tick's inference finishes before the next tick
+    // starts rather than risking overlapping calls.
+    async function tick() {
+      if (stopped) return;
+      if (await isSpeechNow()) {
         if (!hasHeardSpeech) {
           statusEl.textContent = "Mana is listening...";
         }
         hasHeardSpeech = true;
-        lastSpeechAt = now;
+        lastSpeechAt = performance.now();
       }
+      if (stopped) return;
 
       const stopReason = shouldStopRecording({
         hasHeardSpeech,
-        elapsedMs: now - startedAt,
-        msSinceLastSpeech: hasHeardSpeech ? now - lastSpeechAt : 0,
+        elapsedMs: performance.now() - startedAt,
+        msSinceLastSpeech: hasHeardSpeech ? performance.now() - lastSpeechAt : 0,
         maxWaitForSpeechMs,
         silenceBufferMs,
         maxDurationMs,
       });
-      if (stopReason && recorder.state !== "inactive") {
-        recorder.stop();
+      if (stopReason) {
+        if (recorder.state !== "inactive") {
+          recorder.stop();
+        }
+        return;
       }
-    }, SILENCE_METER_INTERVAL_MS);
+      meterTimer = setTimeout(tick, SILENCE_METER_INTERVAL_MS);
+    }
+    meterTimer = setTimeout(tick, SILENCE_METER_INTERVAL_MS);
   });
 }
 

@@ -23,6 +23,7 @@ Non-exhaustive highlights — see individual issue/PR history for full detail:
 - Fish Speech (S1-mini) as Mana's default TTS provider, with inline reference-audio voice cloning and automatic gaming-mode device swap.
 - Best-of-N self-voting inference, idle-triggered Dream Mode memory consolidation, and cross-session memory connections/entity tagging.
 - Deep Research mode (multi-step, multi-source, cited report) with a UI entry point in `windows-launcher`.
+- Silero VAD replaces the RMS-threshold live speech/silence detection in `windows-launcher`'s continuous-listening loop, with a graceful fallback if the model is unavailable (issue #135). See [issue-135-silero-vad.md](issue-135-silero-vad.md).
 
 ## Untracked Roadmap Items
 

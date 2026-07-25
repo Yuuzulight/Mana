@@ -11,6 +11,7 @@
     "dist": "electron-builder",
     "fetch-live2d-core": "node scripts/fetch-live2d-core.js",
     "fetch-sample-avatar": "node scripts/fetch-sample-avatar.js",
+    "fetch-silero-vad": "node scripts/fetch-silero-vad.js",
     "check-live2d-model": "node scripts/check-live2d-model.js"
   },
   "author": "",
@@ -21,6 +22,7 @@
     "nodemon": "^3.1.14"
   },
   "dependencies": {
+    "onnxruntime-web": "^1.27.0",
     "pixi-live2d-display": "^0.4.0",
     "pixi.js": "^6.5.10"
   }
