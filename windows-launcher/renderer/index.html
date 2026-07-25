@@ -1163,6 +1163,22 @@
     <script src="../assets/live2d/live2dcubismcore.min.js"></script>
     <script src="../node_modules/pixi.js/dist/browser/pixi.min.js"></script>
     <script src="../node_modules/pixi-live2d-display/dist/cubism4.min.js"></script>
+    <!-- Silero VAD's ONNX runtime (issue #135). Loaded as a classic script,
+         not require()'d, since nodeIntegration's renderer would otherwise
+         resolve onnxruntime-web to its Node-native build instead of this
+         browser/WASM one. wasmPaths is intentionally left unset -- ort.min.js
+         auto-detects its own <script src> location and finds the .wasm/.mjs
+         files that already ship alongside it in the same dist/ folder;
+         setting wasmPaths ourselves double-resolves that path (verified live
+         -- it 404s on a doubled node_modules/onnxruntime-web/node_modules/...
+         path instead). numThreads=1 avoids needing cross-origin-isolation
+         headers for SharedArrayBuffer. -->
+    <script src="../node_modules/onnxruntime-web/dist/ort.min.js"></script>
+    <script>
+      if (typeof ort !== "undefined") {
+        ort.env.wasm.numThreads = 1;
+      }
+    </script>
     <script src="renderer.js"></script>
     <script src="session-sidebar.js"></script>
     <script src="sidebar-nav.js"></script>
