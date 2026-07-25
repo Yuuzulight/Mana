@@ -10,6 +10,15 @@ Mana is a local-first AI assistant for Windows. It listens from the desktop laun
 
 The project is built for a personal Windows setup: one user, local models by default, clear setup checks, and optional companion features when you want phone access or avatar control.
 
+## Preview
+
+<p align="center">
+  <img src="windows-launcher/assets/avatar/idle.svg" alt="Mana idle avatar state" width="220">
+  <img src="windows-launcher/assets/avatar/talking.svg" alt="Mana talking avatar state" width="220">
+</p>
+
+The two states above are the built-in fallback avatar (`windows-launcher/assets/avatar/idle.svg` / `talking.svg`), shown when no Live2D model or custom PNG overlay is configured — the actual Mana avatar art is proprietary and excluded from the public repo (see `LICENSE-ARTWORK`). Real UI/avatar screenshots and a demo reel are tracked as [issue #137](https://github.com/Yuuzulight/Mana/issues/137).
+
 ## Quick Start
 
 The current supported path is the Windows launcher plus the local Node backend.
@@ -31,7 +40,8 @@ For the full setup flow, including model paths, Whisper, TTS services, gaming mo
 - **Voice loop**: wake Mana once with `Mana` or `wake up`, then keep talking without repeating the wake word.
 - **Local transcription**: audio is transcribed through `whisper.cpp`.
 - **Local text generation**: replies come from GGUF models through `llama.cpp`.
-- **Local speech output**: Kokoro, Chatterbox, and Fish Speech provider paths are supported.
+- **Local speech output**: Fish Speech (S1-mini) is the default TTS provider, with inline reference-audio voice cloning; Kokoro, Chatterbox, and GPT-SoVITS provider paths are also supported.
+- **Neural voice-activity detection**: the launcher's continuous-listening loop uses Silero VAD to detect speech/silence, with a graceful fallback to RMS-threshold detection if the model is unavailable.
 - **Screen text awareness**: after Mana is awake, the launcher can capture the primary display and OCR readable text locally.
 - **Local image understanding**: with a vision GGUF installed, Mana can look at screenshots and images and talk about them; see [docs/vision_setup.md](docs/vision_setup.md).
 - **Look-at-my-screen hotkey**: press `Ctrl+Alt+M` (configurable via `MANA_VISION_HOTKEY`) to have Mana capture the screen, describe it, and speak the answer.
@@ -42,13 +52,16 @@ For the full setup flow, including model paths, Whisper, TTS services, gaming mo
 - **FFXIV, market, and job-search helpers**: Mana can query Universalis crafting/market data, Alpha Vantage stock summaries, and live Adzuna job postings when configured, plus a local job-application tracker with resume/cover-letter tailoring, as self-contained optional plugins that also inject context into chat replies; see [Plugins](plugins/README.md).
 - **MCP server (opt-in)**: Mana can expose its FFXIV market and web-access tools over the Model Context Protocol for local MCP clients like Claude Desktop or Claude Code; see [docs/roadmap/issue-42-mcp-support.md](docs/roadmap/issue-42-mcp-support.md).
 - **Deep Research**: a "Research" button next to the composer runs a bounded, multi-source search-and-read pass and replies with a cited report instead of a single search-and-answer; see [docs/roadmap/issue-47-deep-research.md](docs/roadmap/issue-47-deep-research.md).
+- **Better replies over time**: idle-triggered Dream Mode consolidates recent memory, Best-of-N self-voting picks the strongest of several candidate replies, and memories get cross-session connections and entity tagging instead of staying siloed per conversation.
+- **OpenAI-compatible API**: `/v1/chat/completions`, `/v1/embeddings`, and `/v1/models` let external tools (e.g. Obsidian Copilot) talk to Mana's local backend directly.
+- **Obsidian plugin**: Mana Memory Sync pulls Mana's memory into an Obsidian vault as linked notes; the setup flow also detects a local Obsidian install. See [obsidian-plugin/README.md](obsidian-plugin/README.md).
 
 ## Architecture
 
 Mana is intentionally split into small runtime pieces:
 
 - `windows-launcher`: Electron desktop launcher, microphone capture, avatar overlay control, screen capture, performance panel, and Doctor panel.
-- `desktop-client`: Electron chat client packaged with a real Windows installer (electron-builder/NSIS), including a built-in Live2D avatar (see `desktop-client/AVATAR_NOTICE.md`) and a fully context-isolated renderer (`nodeIntegration: false`).
+- `desktop-client`: Electron chat client packaged with a real Windows installer (electron-builder/NSIS), including a built-in Live2D avatar (see `desktop-client/AVATAR_NOTICE.md`), a fully context-isolated renderer (`nodeIntegration: false`), a guided first-run setup wizard, and auto-update checking.
 - `node-bot`: local backend API for transcription, replies, TTS calls, screen OCR, mobile routes, and setup checks.
 - `plugins`: self-contained optional feature plugins (FFXIV market/crafting, real-world stock market data, a local job-application tracker, live Adzuna job search) that register their own routes, contribute chat-reply context, and are discoverable via `GET /plugins`; see [plugins/README.md](plugins/README.md).
 - `tts-service`: local Python services for Chatterbox and Kokoro TTS.
@@ -180,6 +193,7 @@ Useful endpoints:
 - `GET /doctor`: setup and readiness checks.
 - `GET /perf/status`: local performance and process metrics.
 - `GET /plugins`: discover loaded plugins grouped by category (see [plugins/README.md](plugins/README.md)).
+- `POST /v1/chat/completions`, `POST /v1/embeddings`, `GET /v1/models`: OpenAI-compatible routes for external tools.
 - `GET /editors/status`: local editor CLI availability.
 - `POST /editors/open`: open an existing file or folder in Zed or VS Code.
 - `GET /editors/workspace`: active local coding workspace.
