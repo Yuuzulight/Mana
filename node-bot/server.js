@@ -101,6 +101,7 @@ const { fetchPage, searchWeb, wikiLookup } = require("./tools/web-access");
 const { createTtsRuntime } = require("./tts-runtime");
 const { createAcpMemoryStore } = require("./acp-memory-store");
 const { createPresetsStore } = require("./presets-store");
+const { createPluginSettingsStore } = require("./plugin-settings-store");
 const { createAuthStore } = require("./auth-store");
 const { createToolPolicy } = require("./ai/tool-policy");
 const {
@@ -379,6 +380,10 @@ const acpMemoryStore = createAcpMemoryStore({
 
 // Named prompt/behavior presets (see presets-store.js)
 const presetsStore = createPresetsStore({});
+
+// Which optional plugins (capabilities with a category) are enabled --
+// see plugin-settings-store.js and capabilities/registry.js's gating.
+const pluginSettingsStore = createPluginSettingsStore({});
 
 // Multi-account auth with admin/user roles and API keys (see auth-store.js)
 const authStore = createAuthStore({});
@@ -1473,8 +1478,10 @@ function registerRoutes(app, upload, deps = {}) {
     retrieverAdminCapability,
   ];
   const activePresetsStore = deps.presetsStore || presetsStore;
+  const activePluginSettingsStore = deps.pluginSettingsStore || pluginSettingsStore;
   const capabilityContext = {
     acpMemoryStore: deps.acpMemoryStore || acpMemoryStore,
+    pluginSettingsStore: activePluginSettingsStore,
     env: deps.env || process.env,
     synthesize:
       deps.synthesize ||
@@ -2221,9 +2228,28 @@ function registerRoutes(app, upload, deps = {}) {
         key: capability.key,
         name: capability.name || capability.key,
         description: capability.description || null,
+        enabled: activePluginSettingsStore.isEnabled(
+          capability.key,
+          capability.defaultEnabled !== false,
+        ),
       });
     }
     return res.json({ ok: true, plugins: grouped });
+  });
+
+  app.post("/plugins/:key/enabled", (req, res) => {
+    const capability = capabilities.find(
+      (c) => c.category && c.key === req.params.key,
+    );
+    if (!capability) {
+      return res.status(404).json({ ok: false, error: "no such plugin" });
+    }
+    const { enabled } = req.body || {};
+    if (typeof enabled !== "boolean") {
+      return res.status(400).json({ ok: false, error: "enabled must be a boolean" });
+    }
+    const resolved = activePluginSettingsStore.setEnabled(capability.key, enabled);
+    return res.json({ ok: true, key: capability.key, enabled: resolved });
   });
 
   const turnArbiter = require("./utils/turn_arbiter");
@@ -3329,6 +3355,7 @@ function registerRoutes(app, upload, deps = {}) {
     restartController: deps.restartController || createRestartController(),
     buildAssistantReply: deps.buildAssistantReply || buildAssistantReply,
     capabilities,
+    pluginSettingsStore: activePluginSettingsStore,
     contributePluginPromptContext:
       deps.contributePluginPromptContext || contributePluginPromptContext,
     cleanupUploadedAudio: deps.cleanupUploadedAudio || cleanupUploadedAudio,

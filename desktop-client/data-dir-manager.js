@@ -34,6 +34,7 @@ function buildDataDirEnv(dataRoot) {
     MANA_MOBILE_DEVICES_DIR: dataRoot,
     MANA_PENDING_WRITES_DIR: path.join(dataRoot, "pending_writes"),
     MANA_TALK_BUDGET_DIR: dataRoot,
+    MANA_PLUGIN_SETTINGS_DIR: dataRoot,
   };
 }
 

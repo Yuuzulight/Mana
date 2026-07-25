@@ -40,12 +40,13 @@ test("health includes component readiness while preserving top-level fields", as
     ]);
     assert.equal(body.components.backend.status, "available");
     assert.equal(body.components.backend.configured, true);
+    // ffxivMarket defaults to disabled (Settings > Plugins) unlike the
+    // other plugins, so its health reflects that instead of the
+    // "configured from local defaults" status it'd report if enabled.
     assert.deepEqual(body.components.ffxivMarket, {
-      status: "configured",
-      configured: true,
-      message: "FFXIV market providers are configured from local defaults.",
-      universalisConfigured: true,
-      xivapiConfigured: true,
+      status: "disabled",
+      configured: false,
+      message: "FFXIV Market & Crafting is disabled. Enable it in Settings > Plugins.",
     });
     // No ALPHA_VANTAGE_API_KEY in the test env, so this reports unconfigured
     // rather than failing -- same "optional, degrades gracefully" shape as
