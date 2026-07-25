@@ -10,7 +10,7 @@ This roadmap reflects the current GitHub Project board, merged PRs, open issues,
 | --- | --- | --- | --- |
 | [#4](https://github.com/Yuuzulight/Mana/issues/4) | Speech recognition accuracy | Open | Whisper model profiles, wake-word fuzzy matching, noise rejection tuning, mic gain/normalization, a local test harness with sample WAVs. |
 | [#48](https://github.com/Yuuzulight/Mana/issues/48) | Mobile 2FA | Open | Opt-in TOTP second factor for mobile device pairing, on top of the existing passcode. Should land alongside/after issue #14's device list/rotation/revocation work (closed) so mobile security stays one coherent story. |
-| [#65](https://github.com/Yuuzulight/Mana/issues/65) | Fish Audio S2 Pro TTS | Blocked | Follow-up to the (closed) Fish Speech evaluation. S2 Pro's BF16 weights (~10GB) don't fit the current dev GPU (RTX 3070 Ti, 8GB); blocked on an RTX 5080 upgrade. Recheck the model card periodically in case a quantized release appears. |
+| [#65](https://github.com/Yuuzulight/Mana/issues/65) | Fish Audio S2 Pro TTS | Open | Follow-up to the (closed) Fish Speech evaluation. S2 Pro's BF16 weights (~10GB) didn't fit the previous dev GPU (RTX 3070 Ti, 8GB); an RTX 5080 upgrade has been ordered (ETA within the week), unblocking this once it arrives. |
 
 ## Recently completed (since the last sync)
 
@@ -33,4 +33,4 @@ Non-exhaustive highlights — see individual issue/PR history for full detail:
 
 1. Issue #4 (speech recognition accuracy) — no hardware blocker, most directly improves daily use.
 2. Issue #48 (mobile 2FA) — coordinate scope with the mobile security work already merged for issue #14 rather than diverging.
-3. Issue #65 (Fish Audio S2 Pro) stays blocked until the GPU upgrade; revisit the model card for a quantized release in the meantime.
+3. Issue #65 (Fish Audio S2 Pro) — RTX 5080 upgrade ordered, ETA within the week; pick this back up once the new GPU is in.
