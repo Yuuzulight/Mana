@@ -13,11 +13,8 @@ The project is built for a personal Windows setup: one user, local models by def
 ## Preview
 
 <p align="center">
-  <img src="windows-launcher/assets/avatar/idle.svg" alt="Mana idle avatar state" width="220">
-  <img src="windows-launcher/assets/avatar/talking.svg" alt="Mana talking avatar state" width="220">
+  <img src="docs/images/windows-launcher-main.png" alt="Mana windows-launcher main screen" width="640">
 </p>
-
-The two states above are the built-in fallback avatar (`windows-launcher/assets/avatar/idle.svg` / `talking.svg`), shown when no Live2D model or custom PNG overlay is configured — the actual Mana avatar art is proprietary and excluded from the public repo (see `LICENSE-ARTWORK`). Real UI/avatar screenshots and a demo reel are tracked as [issue #137](https://github.com/Yuuzulight/Mana/issues/137).
 
 ## Quick Start
 
