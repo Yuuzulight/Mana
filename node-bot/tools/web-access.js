@@ -79,18 +79,27 @@ async function assertPublicUrl(rawUrl, label = "url") {
 
 // --- HTML -> text (no HTML parser dependency in this project) ----------
 
+const HTML_ENTITY_DECODE = {
+  nbsp: " ",
+  amp: "&",
+  lt: "<",
+  gt: ">",
+  quot: '"',
+};
+
 function htmlToText(html) {
   return String(html || "")
     .replace(/<!--[\s\S]*?-->/g, " ")
     .replace(/<(script|style|noscript|template)[\s\S]*?<\/\1>/gi, " ")
     .replace(/<(br|p|div|li|tr|h[1-6])[^>]*>/gi, "\n")
     .replace(/<[^>]+>/g, " ")
-    .replace(/&nbsp;/gi, " ")
-    .replace(/&amp;/gi, "&")
-    .replace(/&lt;/gi, "<")
-    .replace(/&gt;/gi, ">")
-    .replace(/&quot;/gi, '"')
-    .replace(/&#0?39;/gi, "'")
+    // Decoding entities in one pass (instead of chained replaces, where an
+    // earlier rule's output like "&amp;" -> "&" can feed a later rule like
+    // "&lt;" -> "<") avoids double-unescaping "&amp;lt;" into a literal "<".
+    .replace(/&(nbsp|amp|lt|gt|quot|#0?39);/gi, (match, entity) => {
+      const key = entity.toLowerCase();
+      return key in HTML_ENTITY_DECODE ? HTML_ENTITY_DECODE[key] : "'";
+    })
     .replace(/[ \t]+/g, " ")
     .replace(/\n{3,}/g, "\n\n")
     .trim();

@@ -75,15 +75,26 @@ def get_model():
 
 
 def resolve_voice_ref(voice_ref: str) -> Optional[str]:
-    """Accepts a full path or a bare name from the references/ voice bank."""
+    """Accepts a full path (this is a local, single-user service, so
+    pointing it at any file already on disk is intentional -- same as
+    Mana's editor-integration "open any local path" features) or a bare
+    name from the references/ voice bank."""
     ref = (voice_ref or "").strip()
     if not ref:
         return None
     if os.path.exists(ref):
         return ref
     references_dir = os.path.join(HERE, "references")
+    resolved_dir = os.path.realpath(references_dir)
     for candidate in (ref, f"{ref}.wav"):
         candidate_path = os.path.join(references_dir, candidate)
+        resolved_candidate = os.path.realpath(candidate_path)
+        # A bare name is only meant to select a file *inside* the voice
+        # bank -- unlike the absolute-path branch above, "../../secret.wav"
+        # escaping references_dir here would be an accidental traversal,
+        # not the intended behavior, so it's rejected rather than resolved.
+        if os.path.commonpath([resolved_dir, resolved_candidate]) != resolved_dir:
+            continue
         if os.path.exists(candidate_path):
             return candidate_path
     raise ValueError(f"Unknown voice reference: {voice_ref}")

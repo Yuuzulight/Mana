@@ -13,9 +13,17 @@ function createAuthStore(options = {}) {
     path.join(__dirname, "data");
   const filePath = path.join(dataDir, "auth", "accounts.json");
   const makeKey = options.makeKey || (() => crypto.randomBytes(32).toString("hex"));
-  const hashKey = options.hashKey || ((key) => {
-    return crypto.createHash("sha256").update(key).digest("hex");
-  });
+  // API keys are 256-bit random tokens, not human-chosen passwords, so the
+  // threat scrypt defends against (brute-forcing a low-entropy secret) does
+  // not apply -- scrypt is used anyway to satisfy verifier-leak defense in
+  // depth (accounts.json exposure shouldn't hand back the raw key) with a
+  // per-account salt so leaked hashes can't be looked up in a rainbow table.
+  const makeSalt = options.makeSalt || (() => crypto.randomBytes(16).toString("hex"));
+  const hashKey = options.hashKey || ((key, salt) => crypto.scryptSync(key, salt, 32).toString("hex"));
+  // Old accounts (pre-migration) stored an unsalted sha256 hash with no
+  // `salt` field; validateKey below upgrades them to salted scrypt in place
+  // on first successful login so existing local installs don't get locked out.
+  const legacyHashKey = (key) => crypto.createHash("sha256").update(key).digest("hex");
 
   function ensureDir() {
     fs.mkdirSync(path.dirname(filePath), { recursive: true });
@@ -53,13 +61,31 @@ function createAuthStore(options = {}) {
     return account ? { ...account, keyHash: undefined } : null;
   }
 
+  function timingSafeStringEqual(a, b) {
+    const bufA = Buffer.from(a, "hex");
+    const bufB = Buffer.from(b, "hex");
+    if (bufA.length !== bufB.length) return false;
+    return crypto.timingSafeEqual(bufA, bufB);
+  }
+
   // Returns null if key invalid; { userId, role } if valid
   function validateKey(rawKey) {
     if (!rawKey || typeof rawKey !== "string") return null;
     const accounts = readAll();
-    const hashedKey = hashKey(rawKey);
-    const account = accounts.find((a) => a.keyHash === hashedKey);
-    return account ? { userId: account.userId, role: account.role } : null;
+    for (const account of accounts) {
+      if (account.salt) {
+        if (timingSafeStringEqual(hashKey(rawKey, account.salt), account.keyHash)) {
+          return { userId: account.userId, role: account.role };
+        }
+      } else if (timingSafeStringEqual(legacyHashKey(rawKey), account.keyHash)) {
+        // Migrate this account to a salted hash now that we know the raw key.
+        account.salt = makeSalt();
+        account.keyHash = hashKey(rawKey, account.salt);
+        writeAll(accounts);
+        return { userId: account.userId, role: account.role };
+      }
+    }
+    return null;
   }
 
   function createAccount({ email, role = "user" }) {
@@ -77,12 +103,14 @@ function createAuthStore(options = {}) {
 
     const userId = crypto.randomUUID();
     const rawKey = makeKey();
-    const keyHash = hashKey(rawKey);
+    const salt = makeSalt();
+    const keyHash = hashKey(rawKey, salt);
 
     const account = {
       userId,
       email,
       role,
+      salt,
       keyHash,
       createdAt: new Date().toISOString(),
     };

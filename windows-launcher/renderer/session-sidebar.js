@@ -27,7 +27,8 @@ function makeSessionId() {
   if (window.crypto && typeof window.crypto.randomUUID === "function") {
     return window.crypto.randomUUID();
   }
-  return `session-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const bytes = window.crypto.getRandomValues(new Uint8Array(8));
+  return `session-${Date.now()}-${Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("")}`;
 }
 
 function ensureSessionId() {

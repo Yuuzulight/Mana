@@ -49,6 +49,7 @@ This server aims to avoid Python. You must download and place the whisper.cpp an
 const express = require("express");
 const multer = require("multer");
 const cors = require("cors");
+const rateLimit = require("express-rate-limit");
 const { spawnSync } = require("child_process");
 const crypto = require("crypto");
 const fs = require("fs");
@@ -160,6 +161,24 @@ function createApp(deps = {}) {
   const appEnv = deps.env || process.env;
   app.use(cors());
   app.use(express.json({ limit: "15mb" }));
+
+  // App-wide rate limit so every route (server.js, mobile-routes.js,
+  // vtube-routes.js, server-routes.js -- all mounted on this same `app`)
+  // gets baseline abuse protection without annotating each one. Auth-heavy
+  // routes (unlock, pairing) still layer their own tighter, failure-aware
+  // limiters on top of this for brute-force protection specifically.
+  const isTestContext =
+    process.env.NODE_ENV === "test" || Boolean(process.env.NODE_TEST_CONTEXT);
+  app.use(
+    rateLimit({
+      windowMs: Number(process.env.MANA_RATE_LIMIT_WINDOW_MS || 60 * 1000),
+      limit: isTestContext
+        ? Number.MAX_SAFE_INTEGER
+        : Number(process.env.MANA_RATE_LIMIT_MAX || 300),
+      standardHeaders: true,
+      legacyHeaders: false,
+    }),
+  );
   	const upload = multer({ dest: path.join(__dirname, "tmp") });
 
   	  // wire mobile device store (allow override via deps for tests)
@@ -1612,6 +1631,10 @@ function registerRoutes(app, upload, deps = {}) {
   });
 
   app.post("/zed/open", async (req, res) => {
+    // Opens an arbitrary local path in an editor -- CORS is wide open
+    // app-wide, so without this any site the user has loaded in a browser
+    // tab could otherwise trigger it via a background fetch().
+    if (!checkAdminAuth(req, res)) return;
     try {
       const zed = deps.zed || createZedIntegration();
       const result = await zed.open({
@@ -1634,6 +1657,7 @@ function registerRoutes(app, upload, deps = {}) {
   });
 
   app.post("/editors/open", async (req, res) => {
+    if (!checkAdminAuth(req, res)) return;
     try {
       const editors = getEditorIntegrations();
       const result = await editors.open({
@@ -1652,11 +1676,13 @@ function registerRoutes(app, upload, deps = {}) {
   });
 
   app.get("/editors/workspace", (req, res) => {
+    if (!checkAdminAuth(req, res)) return;
     const editors = getEditorIntegrations();
     return res.json({ workspace: editors.getWorkspace() });
   });
 
   app.post("/editors/workspace", (req, res) => {
+    if (!checkAdminAuth(req, res)) return;
     try {
       const editors = getEditorIntegrations();
       const workspace = editors.setWorkspace(req.body?.path, {
@@ -1673,6 +1699,7 @@ function registerRoutes(app, upload, deps = {}) {
   });
 
   app.get("/editors/workspace/files", (req, res) => {
+    if (!checkAdminAuth(req, res)) return;
     try {
       const editors = getEditorIntegrations();
       return res.json(editors.listWorkspaceFiles());
@@ -1685,6 +1712,7 @@ function registerRoutes(app, upload, deps = {}) {
   });
 
   app.get("/editors/workspace/file", (req, res) => {
+    if (!checkAdminAuth(req, res)) return;
     try {
       const editors = getEditorIntegrations();
       const filePath = typeof req.query.path === "string" ? req.query.path : "";
@@ -1698,11 +1726,13 @@ function registerRoutes(app, upload, deps = {}) {
   });
 
   app.get("/editors/workspace/proposals", (req, res) => {
+    if (!checkAdminAuth(req, res)) return;
     const editors = getEditorIntegrations();
     return res.json({ proposals: editors.listEditProposals() });
   });
 
   app.post("/editors/workspace/proposals", (req, res) => {
+    if (!checkAdminAuth(req, res)) return;
     try {
       const editors = getEditorIntegrations();
       const proposal = editors.createEditProposal({
@@ -1720,6 +1750,7 @@ function registerRoutes(app, upload, deps = {}) {
   });
 
   app.get("/editors/workspace/proposals/:id", (req, res) => {
+    if (!checkAdminAuth(req, res)) return;
     try {
       const editors = getEditorIntegrations();
       return res.json({ proposal: editors.getEditProposal(req.params.id) });
@@ -1732,6 +1763,7 @@ function registerRoutes(app, upload, deps = {}) {
   });
 
   app.post("/editors/workspace/proposals/:id/approve", (req, res) => {
+    if (!checkAdminAuth(req, res)) return;
     try {
       const editors = getEditorIntegrations();
       return res.json({ proposal: editors.approveEditProposal(req.params.id) });
@@ -1982,6 +2014,13 @@ function registerRoutes(app, upload, deps = {}) {
     process.env.MANA_PENDING_WRITES_DIR ||
     path.join(__dirname, "data", "pending_writes");
 
+  // Pending-write ids come straight from the URL (:id) into path.join()
+  // below; without this check "../../whatever" would let an admin-auth'd
+  // request read/write/delete files outside PENDING_DIR.
+  function isSafePendingWriteId(id) {
+    return typeof id === "string" && /^[A-Za-z0-9_-]+$/.test(id);
+  }
+
   app.get("/admin/pending-writes", async (req, res) => {
     if (!checkAdminAuth(req, res)) return;
     try {
@@ -2020,6 +2059,9 @@ function registerRoutes(app, upload, deps = {}) {
     if (!checkAdminAuth(req, res)) return;
     try {
       const id = req.params.id;
+      if (!isSafePendingWriteId(id)) {
+        return res.status(400).json({ ok: false, error: "invalid id" });
+      }
       const base = path.join(PENDING_DIR, id);
       const approvedPath = `${base}.approved.json`;
       const data = {
@@ -2081,6 +2123,9 @@ function registerRoutes(app, upload, deps = {}) {
     if (!checkAdminAuth(req, res)) return;
     try {
       const id = req.params.id;
+      if (!isSafePendingWriteId(id)) {
+        return res.status(400).json({ ok: false, error: "invalid id" });
+      }
       const base = path.join(PENDING_DIR, id);
       const rejectedPath = `${base}.rejected.json`;
       const data = {
@@ -3532,11 +3577,14 @@ function registerRoutes(app, upload, deps = {}) {
   // Auth middleware: check Authorization header for protected routes
   function authMiddleware(req, res, next) {
     const authHeader = req.get("Authorization") || "";
-    const match = authHeader.match(/^Bearer\s+(.+)$/);
-    if (!match) {
+    // Plain prefix-check instead of /^Bearer\s+(.+)$/ -- \s+ and .+ both
+    // match spaces, so a header of many repeated spaces gave the regex
+    // engine a quadratic number of equivalent ways to split them.
+    const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7).trim() : "";
+    if (!token) {
       return res.status(401).json({ error: "Missing Authorization header" });
     }
-    const auth = authStore.validateKey(match[1]);
+    const auth = authStore.validateKey(token);
     if (!auth) {
       return res.status(401).json({ error: "Invalid API key" });
     }
@@ -3946,7 +3994,8 @@ async function startServer() {
       if (!fs.existsSync(f)) return res.status(404).send("not found");
       return res.sendFile(f);
     } catch (e) {
-      return res.status(500).send(String(e));
+      console.error("Failed to serve admin UI file:", e);
+      return res.status(500).send("internal error");
     }
   });
 
@@ -3956,7 +4005,8 @@ async function startServer() {
       if (!fs.existsSync(f)) return res.status(404).send("not found");
       return res.sendFile(f);
     } catch (e) {
-      return res.status(500).send(String(e));
+      console.error("Failed to serve admin UI file:", e);
+      return res.status(500).send("internal error");
     }
   });
 
@@ -3966,7 +4016,8 @@ async function startServer() {
       if (!fs.existsSync(f)) return res.status(404).send("not found");
       return res.sendFile(f);
     } catch (e) {
-      return res.status(500).send(String(e));
+      console.error("Failed to serve admin UI file:", e);
+      return res.status(500).send("internal error");
     }
   });
 
