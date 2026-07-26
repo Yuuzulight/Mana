@@ -9,12 +9,11 @@ const KEY = "retrieverAdmin";
 // shared context needed beyond app itself.
 let VECTOR_STORE_REBUILD_LOCK = false;
 
-const VECTOR_REBUILD_AUDIT_PATH = path.join(
-  __dirname,
-  "..",
-  "data",
-  "vector_rebuild_audit.jsonl",
-);
+// Overridable so tests can point this at a temp file instead of clobbering
+// the real audit log on every run (see node-bot/test/vector-rebuild-audit.test.js).
+const VECTOR_REBUILD_AUDIT_PATH =
+  process.env.MANA_VECTOR_AUDIT_PATH ||
+  path.join(__dirname, "..", "data", "vector_rebuild_audit.jsonl");
 
 async function appendVectorRebuildAudit(entry) {
   try {
