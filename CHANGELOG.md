@@ -38,8 +38,10 @@ never shipped in a tagged release.
   Avatar/Web access/Vision/Model/Doctor, a redesigned horizontal Doctor
   panel, a startup loading screen, the Mana Crystal logo, a fuller Settings
   menu (Logs/Plugins), and a themed scrollbar (issue #138).
-- A legally-clean default sample Live2D avatar, bundled so the app has a
-  working out-of-box appearance.
+- A legally-clean default sample Live2D avatar (`npm run fetch-sample-avatar`),
+  downloaded at setup time from Live2D's own CDN under their Free Material
+  License -- not bundled into the installer, since that license doesn't
+  permit redistribution.
 
 ### Changed
 - `desktop-client`'s local data relocated out of the install directory,
