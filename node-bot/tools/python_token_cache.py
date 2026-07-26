@@ -554,7 +554,12 @@ def cli(argv: List[str]) -> int:
                 self._send_json({"ok": False, "error": "unknown_endpoint"}, 404)
 
         port = int(os.environ.get("PY_TOKEN_SERVER_PORT", "9000"))
-        server = HTTPServer(("0.0.0.0", port), Handler)
+        # Localhost by default -- this serves file paths/token counts for
+        # whatever --path the caller sends, so binding wide (0.0.0.0) would
+        # let anyone on the network probe the filesystem when no
+        # --http-secret is set. Only opt into a wider bind deliberately.
+        bind_host = os.environ.get("PY_TOKEN_SERVER_HOST", "127.0.0.1")
+        server = HTTPServer((bind_host, port), Handler)
         print(json.dumps({"ok": True, "server": "http", "port": port}))
         try:
             server.serve_forever()

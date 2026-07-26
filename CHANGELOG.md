@@ -11,7 +11,25 @@ accounting.
 
 ## [Unreleased]
 
-Nothing yet.
+### Security
+- Cleared all 98 open Dependabot alerts: bumped `multer` (1.x -> 2.x),
+  `electron-builder`/`app-builder-lib`/`builder-util-runtime` (24.x -> 26.x),
+  `esbuild`, `requests`, `python-multipart`; overrode the dead-weight
+  `gh-pages` transitive dep pulled in by `pixi-live2d-display` and the
+  unreachable `@hono/node-server` pulled in by `@modelcontextprotocol/sdk`.
+  `torch` stays pinned to `2.6.0` -- `chatterbox-tts==0.1.7` hard-requires
+  that exact version, so the newer-torch CVEs stay open until upstream moves.
+- Fixed all 70 open CodeQL alerts: added an app-wide rate limiter
+  (`express-rate-limit`) covering every node-bot route; gated the
+  editor/workspace-control routes (`/zed/*`, `/editors/*`) behind admin auth
+  after finding they were reachable unauthenticated with CORS wide open;
+  added path-traversal validation to the pending-writes admin routes and
+  `resolve_voice_ref` (tts-service); fixed a genuine ReDoS-shaped ambiguous
+  regex in the mobile auth header parser and three others; fixed a real
+  double-unescaping bug in `web-access.js`'s HTML-entity decoding; switched
+  `auth-store.js`'s API-key hashing to salted scrypt with a migration path
+  for existing accounts; added explicit `permissions:` blocks to all GitHub
+  Actions workflows; and more (see PR for the full list).
 
 ## [0.2.2] - 2026-07-27
 
