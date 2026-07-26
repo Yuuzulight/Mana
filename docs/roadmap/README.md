@@ -12,7 +12,6 @@ This roadmap reflects the current GitHub Project board, merged PRs, open issues,
 | [#48](https://github.com/Yuuzulight/Mana/issues/48) | Mobile 2FA | Open | Opt-in TOTP second factor for mobile device pairing, on top of the existing passcode. Should land alongside/after issue #14's device list/rotation/revocation work (closed) so mobile security stays one coherent story. |
 | [#65](https://github.com/Yuuzulight/Mana/issues/65) | Fish Audio S2 Pro TTS | Open | Follow-up to the (closed) Fish Speech evaluation. S2 Pro's BF16 weights (~10GB) didn't fit the previous dev GPU (RTX 3070 Ti, 8GB); an RTX 5080 upgrade has been ordered (ETA within the week), unblocking this once it arrives. |
 | [#137](https://github.com/Yuuzulight/Mana/issues/137) | Docs / media | Open | Demo reel and real screenshots to replace the generic fallback-avatar SVGs in the root README's Preview section. |
-| [#140](https://github.com/Yuuzulight/Mana/issues/140) | Procedural memory | In review | A `node-bot/skills/` store (cheap index + on-demand full content, idle-gated stale/archive pruning) for "how I did X last time" knowledge, separate from Dream Mode's factual memory. PR open, not yet merged. See [issue-140-skills-layer.md](issue-140-skills-layer.md). |
 
 ## Recently completed (since the last sync)
 
@@ -27,6 +26,7 @@ Non-exhaustive highlights — see individual issue/PR history for full detail:
 - Deep Research mode (multi-step, multi-source, cited report) with a UI entry point in `windows-launcher`.
 - Silero VAD replaces the RMS-threshold live speech/silence detection in `windows-launcher`'s continuous-listening loop, with a graceful fallback if the model is unavailable (issue #135). See [issue-135-silero-vad.md](issue-135-silero-vad.md).
 - `windows-launcher` UI overhaul: popup info bubbles, redesigned Doctor panel, startup loading screen, the Mana Crystal logo, a fuller Settings menu (Logs/Plugins), and a themed scrollbar -- brings it up to par with `desktop-client`'s recent reskin (issue #138). See [issue-138-windows-launcher-ui-overhaul.md](issue-138-windows-launcher-ui-overhaul.md).
+- Procedural skills layer: a `node-bot/skills/` store for "how I did X last time" knowledge, separate from Dream Mode's factual memory -- cheap always-available index, full content loaded only on demand, idle-gated stale/archive pruning (issue #140). See [issue-140-skills-layer.md](issue-140-skills-layer.md).
 
 ## Untracked Roadmap Items
 
