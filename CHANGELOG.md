@@ -30,6 +30,16 @@ accounting.
   `auth-store.js`'s API-key hashing to salted scrypt with a migration path
   for existing accounts; added explicit `permissions:` blocks to all GitHub
   Actions workflows; and more (see PR for the full list).
+- Bumped `electron` from 26.x to 39.8.10 in both `windows-launcher` and
+  `desktop-client`, closing the remaining 34 Dependabot alerts. Verified by
+  launching both apps and checking for real errors, and a full
+  `electron-builder` packaging build for `desktop-client`.
+
+### Changed
+- `desktop-client`'s sidebar had Avatar/Web access/Market watch/Vision/
+  Model/Doctor as top-level buttons alongside Settings; moved them inside
+  Settings (a new "Status" section) to match `windows-launcher`, where
+  they'd already been nested there since the issue #138 UI overhaul.
 
 ## [0.2.2] - 2026-07-27
 

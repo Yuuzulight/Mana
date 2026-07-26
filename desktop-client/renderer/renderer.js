@@ -756,11 +756,11 @@ document.getElementById('themeToggle')?.addEventListener('click', (e) => {
   });
   navSettingsBtnEl?.addEventListener('click', () => showView('settings'));
 
-  // Sidebar nav items (New chat/Search/Avatar/Web access/Market watch/
-  // Vision/Model/Doctor): each backend capability already exists (see
-  // node-bot's web-access/sessions/ffxiv-market capabilities, /doctor,
-  // /models/status, /vision/describe), so these just surface it through one
-  // shared info panel rather than a bespoke view per item.
+  // Settings info-nav items (Avatar/Web access/Market watch/Vision/Model/
+  // Doctor, under Settings > Status): each backend capability already
+  // exists (see node-bot's web-access/sessions/ffxiv-market capabilities,
+  // /doctor, /models/status, /vision/describe), so these just surface it
+  // through one shared info panel rather than a bespoke view per item.
   const BACKEND_URL = 'http://127.0.0.1:5005';
 
   function escapeHtml(s) {

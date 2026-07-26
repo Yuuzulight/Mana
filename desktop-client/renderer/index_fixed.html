@@ -34,34 +34,6 @@
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
           <span class="label">Sessions</span>
         </button>
-        <button class="nav-item" id="navAvatarBtn">
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="8" r="3"/><path d="M5 21v-1a7 7 0 0 1 14 0v1"/></svg>
-          <span class="label">Avatar</span>
-          <span class="tag">live2d</span>
-        </button>
-        <button class="nav-item" id="navWebBtn">
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M12 3a12 12 0 0 0 0 18M12 3a12 12 0 0 1 0 18M3 12h18" stroke-linecap="round"/></svg>
-          <span class="label">Web access</span>
-        </button>
-        <button class="nav-item" id="navMarketBtn">
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 19V6a2 2 0 0 1 2-2h9l5 5v10a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2z"/><path d="M14 4v5h5"/></svg>
-          <span class="label">Market watch</span>
-        </button>
-        <button class="nav-item" id="navVisionBtn">
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg>
-          <span class="label">Vision</span>
-        </button>
-      </nav>
-
-      <nav class="nav-group">
-        <button class="nav-item" id="navModelBtn">
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 2a5 5 0 0 0-5 5v2a5 5 0 0 0 10 0V7a5 5 0 0 0-5-5z"/><path d="M8 14v1a4 4 0 0 0 8 0v-1M12 19v3"/></svg>
-          <span class="label">Model</span>
-        </button>
-        <button class="nav-item" id="navDoctorBtn">
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M9 12l2 2 4-4"/><circle cx="12" cy="12" r="9"/></svg>
-          <span class="label">Doctor</span>
-        </button>
         <button class="nav-item" id="navSettingsBtn">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.9.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.9-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.9V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>
           <span class="label">Settings</span>
@@ -143,6 +115,37 @@
       </div>
 
       <div class="settings-view" id="settingsView" hidden>
+        <div class="settings-section" id="infoNavSection">
+          <h3>Status</h3>
+          <nav class="nav-group" id="settingsInfoNav">
+            <button class="nav-item" id="navAvatarBtn">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="8" r="3"/><path d="M5 21v-1a7 7 0 0 1 14 0v1"/></svg>
+              <span class="label">Avatar</span>
+              <span class="tag">live2d</span>
+            </button>
+            <button class="nav-item" id="navWebBtn">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M12 3a12 12 0 0 0 0 18M12 3a12 12 0 0 1 0 18M3 12h18" stroke-linecap="round"/></svg>
+              <span class="label">Web access</span>
+            </button>
+            <button class="nav-item" id="navMarketBtn">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 19V6a2 2 0 0 1 2-2h9l5 5v10a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2z"/><path d="M14 4v5h5"/></svg>
+              <span class="label">Market watch</span>
+            </button>
+            <button class="nav-item" id="navVisionBtn">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg>
+              <span class="label">Vision</span>
+            </button>
+            <button class="nav-item" id="navModelBtn">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 2a5 5 0 0 0-5 5v2a5 5 0 0 0 10 0V7a5 5 0 0 0-5-5z"/><path d="M8 14v1a4 4 0 0 0 8 0v-1M12 19v3"/></svg>
+              <span class="label">Model</span>
+            </button>
+            <button class="nav-item" id="navDoctorBtn">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M9 12l2 2 4-4"/><circle cx="12" cy="12" r="9"/></svg>
+              <span class="label">Doctor</span>
+            </button>
+          </nav>
+        </div>
+
         <div class="settings-section" id="appearanceSection">
           <h3>Appearance</h3>
           <div class="theme-toggle" id="themeToggle">
