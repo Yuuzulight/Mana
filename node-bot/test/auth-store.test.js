@@ -3,6 +3,7 @@ const assert = require("node:assert");
 const fs = require("node:fs");
 const path = require("node:path");
 const os = require("node:os");
+const crypto = require("node:crypto");
 
 const { createAuthStore } = require("../auth-store");
 
@@ -133,6 +134,39 @@ test("auth-store: SETUP.txt written once on admin account creation", async (t) =
     const content = fs.readFileSync(setupPath, "utf8");
     assert.ok(content.includes("Mana Admin Setup"));
     assert.ok(content.includes("API Key:"));
+  } finally {
+    fs.rmSync(tempDir, { recursive: true });
+  }
+});
+
+test("auth-store: legacy unsalted account migrates to salted hash on successful login", async (t) => {
+  const tempDir = createTempDir();
+  try {
+    const authStore = createAuthStore({ dataDir: tempDir });
+    const accountsPath = path.join(tempDir, "auth", "accounts.json");
+    const rawKey = "legacy-raw-key-abc123";
+    const legacyAccount = {
+      userId: "legacy-user-1",
+      email: "legacy@test.com",
+      role: "user",
+      keyHash: crypto.createHash("sha256").update(rawKey).digest("hex"),
+      createdAt: new Date().toISOString(),
+    };
+    fs.mkdirSync(path.dirname(accountsPath), { recursive: true });
+    fs.writeFileSync(accountsPath, JSON.stringify([legacyAccount], null, 2));
+
+    const validated = authStore.validateKey(rawKey);
+    assert.ok(validated);
+    assert.equal(validated.userId, "legacy-user-1");
+
+    const onDisk = JSON.parse(fs.readFileSync(accountsPath, "utf8"));
+    assert.ok(onDisk[0].salt, "account should now have a salt after migration");
+    assert.notEqual(onDisk[0].keyHash, legacyAccount.keyHash);
+
+    // Re-validating with the same key must still work post-migration.
+    const revalidated = authStore.validateKey(rawKey);
+    assert.ok(revalidated);
+    assert.equal(revalidated.userId, "legacy-user-1");
   } finally {
     fs.rmSync(tempDir, { recursive: true });
   }

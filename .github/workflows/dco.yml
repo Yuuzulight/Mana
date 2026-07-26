@@ -4,9 +4,15 @@ on:
   pull_request:
     types: [opened, synchronize, reopened, edited]
 
+permissions:
+  contents: read
+
 jobs:
   dco:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
     env:
       MAINTAINERS: "Yuuzulight"
     steps:

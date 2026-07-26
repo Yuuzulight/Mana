@@ -7,6 +7,9 @@ on:
       - main
       - 'feature/**'
 
+permissions:
+  contents: read
+
 jobs:
   fast-node-tests:
     name: Fast Node tests (unit + pairing smoke)

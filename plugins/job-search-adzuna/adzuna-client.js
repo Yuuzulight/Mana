@@ -45,9 +45,16 @@ function clampResultsPerPage(value) {
 }
 
 function stripHtml(value) {
-  return String(value || "")
-    .replace(/<[^>]*>/g, "")
-    .trim();
+  // A single replace pass can be defeated by nested tags (e.g.
+  // "<scr<script>ipt>" leaves "<script>" behind after one pass) -- looping
+  // to a fixed point removes tags revealed by earlier removals too.
+  let str = String(value || "");
+  let previous;
+  do {
+    previous = str;
+    str = str.replace(/<[^>]*>/g, "");
+  } while (str !== previous);
+  return str.trim();
 }
 
 // Adzuna's raw listing shape has more fields than we need; this keeps only

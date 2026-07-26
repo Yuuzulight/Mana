@@ -65,7 +65,12 @@ const JOB_MATCH_SECTION_KEYS = {
 // asks for plain delimited sections instead -- this walks the reply
 // line-by-line and buckets text under whichever marker was last seen.
 function parseJobMatchResponse(raw) {
-  const markerRe = /^(COMPANY|ROLE|FIT|RESUME|COVER LETTER):\s*(.*)$/i;
+  // No \s* before the capture group: (.*)  already matches leading
+  // whitespace, and pairing it with an adjacent \s* let the engine try many
+  // equivalent ways to split runs of spaces between the two, which is what
+  // made this quadratic on crafted input. The trailing .trim() below (each
+  // section, once fully assembled) cleans up any leading space this now lets through.
+  const markerRe = /^(COMPANY|ROLE|FIT|RESUME|COVER LETTER):(.*)$/i;
   const sections = { company: "", role: "", fit: "", resume: "", coverLetter: "" };
   let current = null;
 

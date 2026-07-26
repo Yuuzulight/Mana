@@ -95,8 +95,9 @@ async def transcribe_audio(file: UploadFile = File(...)):
     try:
         data, sr = sf.read(bio)
     except Exception as e:
+        print(f"could not read audio file: {e}")
         return JSONResponse(
-            {"error": "could not read audio file", "detail": str(e)}, status_code=400
+            {"error": "could not read audio file"}, status_code=400
         )
 
     # Convert to mono 16-bit float32 array if needed
@@ -119,7 +120,8 @@ async def transcribe_audio(file: UploadFile = File(...)):
         wav_bytes = synthesize_audio(model_reply)
     except Exception as e:
         # return transcript and model reply even if TTS fails
-        return {"text": text, "model_response": model_reply, "tts_error": str(e)}
+        print(f"synthesize_audio failed: {e}")
+        return {"text": text, "model_response": model_reply, "tts_error": "synthesis failed"}
 
     # Return transcription, reply, and audio as base64 or as streaming endpoint
     return StreamingResponse(
