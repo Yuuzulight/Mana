@@ -17,8 +17,9 @@ accounting.
   `esbuild`, `requests`, `python-multipart`; overrode the dead-weight
   `gh-pages` transitive dep pulled in by `pixi-live2d-display` and the
   unreachable `@hono/node-server` pulled in by `@modelcontextprotocol/sdk`.
-  `torch` stays pinned to `2.6.0` -- `chatterbox-tts==0.1.7` hard-requires
-  that exact version, so the newer-torch CVEs stay open until upstream moves.
+  (`torch` was initially left pinned to `2.6.0` here because
+  `chatterbox-tts==0.1.7` hard-required that exact version -- see below,
+  since removed, so this no longer applies.)
 - Fixed all 70 open CodeQL alerts: added an app-wide rate limiter
   (`express-rate-limit`) covering every node-bot route; gated the
   editor/workspace-control routes (`/zed/*`, `/editors/*`) behind admin auth
@@ -34,6 +35,16 @@ accounting.
   `desktop-client`, closing the remaining 34 Dependabot alerts. Verified by
   launching both apps and checking for real errors, and a full
   `electron-builder` packaging build for `desktop-client`.
+
+### Removed
+- **Chatterbox TTS provider**, at the user's request: deleted
+  `tts-service/service.py` and `start.ps1`, and every `chatterbox`
+  reference across `tts-runtime.js`, `server.js`, `doctor.js`, the
+  `windows-launcher` process-management/UI code, and docs. This also
+  freed `tts-service/requirements.txt`'s `torch`/`torchaudio` pins
+  entirely (nothing else there needed them -- `kokoro-onnx` only needs
+  `onnxruntime`), which is what was blocking the remaining torch
+  Dependabot alerts.
 
 ### Changed
 - `desktop-client`'s sidebar had Avatar/Web access/Market watch/Vision/

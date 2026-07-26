@@ -1321,7 +1321,6 @@ function formatPerfStatus(status) {
     formatOperationMetric("OCR", operations["screen ocr"]),
     formatOperationMetric("Llama", operations.llama),
     formatOperationMetric("TTS Kokoro", operations["tts kokoro"]),
-    formatOperationMetric("TTS Chatterbox", operations["tts chatterbox"]),
   ].join("\n");
 }
 

@@ -7,7 +7,6 @@ let mainWindow;
 let avatarWindow;
 let backendProcess = null;
 let ttsProcess = null;
-let fallbackTtsProcess = null;
 let retrieverProcess = null;
 let fallbackKokoroProcess = null;
 let searxngProcess = null;
@@ -15,7 +14,6 @@ let embedderProcess = null;
 const BACKEND_URL = "http://localhost:5005/health";
 const IDLE_REPORT_URL = "http://localhost:5005/internal/idle-report";
 const IDLE_REPORT_INTERVAL_MS = 60000;
-const CHATTERBOX_TTS_URL = "http://127.0.0.1:5010/health";
 const KOKORO_TTS_URL = "http://127.0.0.1:5011/health";
 const GPT_SOVITS_TTS_URL = "http://127.0.0.1:9880/";
 const FISH_TTS_URL = "http://127.0.0.1:8080/v1/health";
@@ -32,8 +30,6 @@ const DEFAULT_WHISPER_MODEL = path.join(
   "models",
   "ggml-tiny.en.bin",
 );
-const START_FALLBACK_CHATTERBOX =
-  process.env.START_FALLBACK_CHATTERBOX === "1";
 const HIDE_MAIN_WINDOW_AFTER_STARTUP =
   process.env.HIDE_MAIN_WINDOW_AFTER_STARTUP !== "0";
 const AVATAR_SIZE = {
@@ -72,11 +68,11 @@ async function isTtsRunning() {
   if (provider === "fish") {
     // Fish Speech's server setup is separate from Mana (see
     // docs/fish_speech_tts.md) and not launcher-managed, but it can still be
-    // health-checked here so the UI reflects reality instead of silently
-    // checking Chatterbox's port instead.
+    // health-checked here so the UI reflects reality.
     return isServiceRunning(FISH_TTS_URL);
   }
-  return isServiceRunning(CHATTERBOX_TTS_URL);
+  // "cli" (or anything unrecognized) has no URL-based service to check.
+  return false;
 }
 
 // GPT-SoVITS's api_v2.py has no dedicated /health route, so any HTTP
@@ -91,10 +87,6 @@ async function isGptSovitsRunning() {
   }
 }
 
-async function isChatterboxRunning() {
-  return isServiceRunning(CHATTERBOX_TTS_URL);
-}
-
 async function isKokoroRunning() {
   return isServiceRunning(KOKORO_TTS_URL);
 }
@@ -105,7 +97,7 @@ function startTtsService() {
   }
 
   const provider = process.env.TTS_PROVIDER || "fish";
-  if (!["kokoro", "chatterbox", "gpt_sovits"].includes(provider)) {
+  if (!["kokoro", "gpt_sovits"].includes(provider)) {
     // Fish Speech's server (api_server.py, serving S1-mini) is started
     // separately from Mana; see docs/fish_speech_tts.md.
     return;
@@ -113,11 +105,8 @@ function startTtsService() {
 
   if (provider === "kokoro") {
     ttsProcess = startKokoroService();
-  } else if (provider === "gpt_sovits") {
-    ttsProcess = startGptSovitsService();
-    startFallbackKokoroIfEnabled();
   } else {
-    ttsProcess = startTtsSetupScript("start.ps1");
+    ttsProcess = startGptSovitsService();
     startFallbackKokoroIfEnabled();
   }
 
@@ -125,7 +114,7 @@ function startTtsService() {
     console.error("Failed to start TTS service:", error);
     dialog.showErrorBox(
       "TTS start error",
-      `Failed to start Chatterbox TTS service: ${error.message}`,
+      `Failed to start ${provider} TTS service: ${error.message}`,
     );
   });
 
@@ -196,7 +185,7 @@ function startGptSovitsService() {
     );
     dialog.showErrorBox(
       "GPT-SoVITS not installed",
-      `TTS_PROVIDER is set to gpt_sovits, but ${gptSovitsDir} is missing its runtime. See docs/gpt_sovits_setup.md, or set TTS_PROVIDER back to chatterbox.`,
+      `TTS_PROVIDER is set to gpt_sovits, but ${gptSovitsDir} is missing its runtime. See docs/gpt_sovits_setup.md, or set TTS_PROVIDER back to fish or kokoro.`,
     );
     return startKokoroService();
   }
@@ -231,45 +220,6 @@ function startTtsSetupScript(scriptName) {
       windowsHide: true,
     },
   );
-}
-
-function startFallbackChatterboxService() {
-  if (fallbackTtsProcess) {
-    return;
-  }
-
-  if (!START_FALLBACK_CHATTERBOX) {
-    return;
-  }
-
-  if ((process.env.TTS_PROVIDER || "kokoro") !== "kokoro") {
-    return;
-  }
-
-  const ttsStartScript = path.join(ROOT_DIR, "tts-service", "start.ps1");
-  console.log("Starting fallback Chatterbox TTS service:", ttsStartScript);
-  fallbackTtsProcess = spawn(
-    "powershell",
-    ["-ExecutionPolicy", "Bypass", "-File", ttsStartScript],
-    {
-      cwd: path.join(ROOT_DIR, "tts-service"),
-    },
-  );
-
-  fallbackTtsProcess.on("error", (error) => {
-    console.error("Failed to start fallback Chatterbox TTS:", error);
-  });
-
-  fallbackTtsProcess.stdout.on("data", (data) => {
-    console.log(`Fallback TTS: ${data}`);
-  });
-  fallbackTtsProcess.stderr.on("data", (data) => {
-    console.error(`Fallback TTS ERR: ${data}`);
-  });
-  fallbackTtsProcess.on("close", (code) => {
-    console.log(`Fallback Chatterbox TTS exited with code ${code}`);
-    fallbackTtsProcess = null;
-  });
 }
 
 const RETRIEVER_URL = "http://127.0.0.1:9000/health";
@@ -451,8 +401,6 @@ function startWindowsServices() {
       TTS_PROVIDER: process.env.TTS_PROVIDER || "fish",
       KOKORO_TTS_URL:
         process.env.KOKORO_TTS_URL || "http://127.0.0.1:5011",
-      CHATTERBOX_TTS_URL:
-        process.env.CHATTERBOX_TTS_URL || "http://127.0.0.1:5010",
       VTUBE_STUDIO_URL:
         process.env.VTUBE_STUDIO_URL || "ws://127.0.0.1:8001",
       VTUBE_STUDIO_ENABLED: process.env.VTUBE_STUDIO_ENABLED || "1",
@@ -672,16 +620,16 @@ function reportStartupProgress(id, status, label) {
   }
 }
 
-// fish/chatterbox/gpt_sovits all fall back to Kokoro if their configured
-// primary never comes up (see the service-start block in app.whenReady
-// below) -- voice output still works via the fallback, so this has to
-// check both instead of just the primary, or the default fish setup would
-// wait forever for a Fish Speech server this app never starts itself (see
+// fish/gpt_sovits both fall back to Kokoro if their configured primary
+// never comes up (see the service-start block in app.whenReady below) --
+// voice output still works via the fallback, so this has to check both
+// instead of just the primary, or the default fish setup would wait
+// forever for a Fish Speech server this app never starts itself (see
 // docs/fish_speech_tts.md).
 async function isVoiceReady() {
   if (await isTtsRunning()) return true;
   const provider = process.env.TTS_PROVIDER || "fish";
-  if (["fish", "chatterbox", "gpt_sovits"].includes(provider)) {
+  if (["fish", "gpt_sovits"].includes(provider)) {
     return isKokoroRunning();
   }
   return false;
@@ -768,7 +716,6 @@ app.whenReady().then(() => {
   Promise.all([
     isBackendRunning(),
     isTtsRunning(),
-    isChatterboxRunning(),
     isKokoroRunning(),
     isRetrieverRunning(),
     isSearxngRunning(),
@@ -778,7 +725,6 @@ app.whenReady().then(() => {
       ([
         backendRunning,
         ttsRunning,
-        chatterboxRunning,
         kokoroRunning,
         retrieverRunning,
         searxngRunning,
@@ -788,24 +734,18 @@ app.whenReady().then(() => {
           startTtsService();
         }
         // startTtsService() is what normally kicks off the Kokoro fallback
-        // alongside chatterbox, but it's skipped whenever the primary is
+        // alongside gpt_sovits, but it's skipped whenever the primary is
         // already running (e.g. a leftover process from a previous launch)
         // -- and it never runs at all for fish, which the launcher doesn't
-        // spawn itself. Kokoro is the fallback voice for fish, chatterbox,
-        // and gpt_sovits alike, so check for it independently of whether
-        // the primary provider needed starting, or Mana goes silent the
-        // moment the primary has a bad day.
+        // spawn itself. Kokoro is the fallback voice for fish and
+        // gpt_sovits alike, so check for it independently of whether the
+        // primary provider needed starting, or Mana goes silent the moment
+        // the primary has a bad day.
         {
           const provider = process.env.TTS_PROVIDER || "fish";
-          if (
-            ["fish", "chatterbox", "gpt_sovits"].includes(provider) &&
-            !kokoroRunning
-          ) {
+          if (["fish", "gpt_sovits"].includes(provider) && !kokoroRunning) {
             startFallbackKokoroIfEnabled();
           }
-        }
-        if (START_FALLBACK_CHATTERBOX && !chatterboxRunning) {
-          startFallbackChatterboxService();
         }
         if (!retrieverRunning) {
           startRetrieverService();

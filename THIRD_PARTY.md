@@ -19,7 +19,7 @@ Common items referenced by Mana:
   - Native binding may be required for performance. Follow FAISS's license and
     installation instructions if you choose to enable it.
 
-- TTS providers (Kokoro, Chatterbox, Fish Speech)
+- TTS providers (Kokoro, Fish Speech, GPT-SoVITS)
   - Some integrations rely on external services or binaries. See their docs for
     licensing and usage restrictions.
 
