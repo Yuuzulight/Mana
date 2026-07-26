@@ -1,4 +1,6 @@
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
 
@@ -9,6 +11,17 @@ const {
   recommendModelProfile,
 } = require("../model-management");
 
+function fakeModelSettingsStore(initialPath = null) {
+  let modelPath = initialPath;
+  return {
+    getModelPath: () => modelPath,
+    setModelPath: (p) => {
+      modelPath = p || null;
+      return modelPath;
+    },
+  };
+}
+
 test("model management reports available and missing profile candidates", () => {
   const root = path.join("C:", "ManaAI", "Mana", "tools", "llama", "gguf-models");
   const fourB = path.join(root, "Qwen3-4B-Q4_K_M.gguf");
@@ -16,6 +29,7 @@ test("model management reports available and missing profile candidates", () => 
   const manager = createModelManagement({
     env: {},
     localGgufs: [fourB, onePointFiveB],
+    modelSettingsStore: fakeModelSettingsStore(),
   });
 
   const status = manager.getModelStatus();
@@ -48,13 +62,18 @@ test("quality profile prefers a 14B-class model over the 8B fallback when both a
   const manager = createModelManagement({
     env: {},
     localGgufs: [eightB, fourteenB],
+    modelSettingsStore: fakeModelSettingsStore(),
   });
 
   assert.equal(manager.getModelStatus().profiles.quality.selectedModel, fourteenB);
 });
 
 test("model management switches active profile and rejects unknown profiles", () => {
-  const manager = createModelManagement({ env: {}, localGgufs: [] });
+  const manager = createModelManagement({
+    env: {},
+    localGgufs: [],
+    modelSettingsStore: fakeModelSettingsStore(),
+  });
 
   assert.equal(manager.getActiveProfile(), "default");
   assert.equal(manager.setActiveProfile("coding").activeProfile, "coding");
@@ -73,6 +92,7 @@ test("model management warns when remote AI is enabled", () => {
       MANA_ALLOW_REMOTE_AI: "1",
     },
     localGgufs: [],
+    modelSettingsStore: fakeModelSettingsStore(),
   });
 
   const status = manager.getModelStatus();
@@ -160,6 +180,7 @@ test("model management surfaces and caches a hardware recommendation", () => {
       return { status: 0, stdout: "6144\n" };
     },
     totalmem: () => 34_359_738_368,
+    modelSettingsStore: fakeModelSettingsStore(),
   });
 
   const first = manager.getRecommendedModelProfile();
@@ -172,4 +193,69 @@ test("model management surfaces and caches a hardware recommendation", () => {
   assert.equal(spawnCalls, 1, "hardware detection should be cached, not re-run per call");
 
   assert.deepEqual(manager.getModelStatus().recommendation, first);
+});
+
+test("setModelPath persists a valid .gguf file and reports it in getModelStatus", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "mana-model-select-"));
+  const picked = path.join(root, "custom.gguf");
+  fs.writeFileSync(picked, "model");
+  const store = fakeModelSettingsStore();
+  const manager = createModelManagement({
+    env: {},
+    localGgufs: [],
+    modelSettingsStore: store,
+  });
+
+  try {
+    const status = manager.setModelPath(picked);
+    assert.equal(status.selectedModelPath, picked);
+    assert.equal(manager.getModelStatus().selectedModelPath, picked);
+    assert.equal(manager.getModelStatus().profiles.default.selectedModel, picked);
+
+    const cleared = manager.setModelPath(null);
+    assert.equal(cleared.selectedModelPath, null);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("setModelPath rejects non-gguf paths and missing files", () => {
+  const manager = createModelManagement({
+    env: {},
+    localGgufs: [],
+    modelSettingsStore: fakeModelSettingsStore(),
+  });
+
+  assert.throws(() => manager.setModelPath("C:\\models\\a.txt"), /must point to a \.gguf file/);
+  assert.throws(
+    () => manager.setModelPath("C:\\does\\not\\exist.gguf"),
+    /Model file not found/,
+  );
+});
+
+test("scanForModels finds .gguf files under the given roots and skips unreadable directories", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "mana-model-scan-"));
+  const nested = path.join(root, "sub");
+  fs.mkdirSync(nested);
+  fs.writeFileSync(path.join(root, "top.gguf"), "model");
+  fs.writeFileSync(path.join(nested, "nested.gguf"), "model");
+  fs.writeFileSync(path.join(nested, "not-a-model.txt"), "nope");
+  // A directory entry that doesn't actually exist as readable: exercises the
+  // scanner's per-directory try/catch instead of aborting the whole scan.
+  const ghostDir = path.join(root, "ghost");
+
+  const manager = createModelManagement({
+    env: {},
+    localGgufs: [],
+    modelSettingsStore: fakeModelSettingsStore(),
+  });
+
+  try {
+    const result = manager.scanForModels([root, ghostDir]);
+    const names = result.found.map((m) => m.name).sort();
+    assert.deepEqual(names, ["nested.gguf", "top.gguf"]);
+    assert.equal(result.truncated, false);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });

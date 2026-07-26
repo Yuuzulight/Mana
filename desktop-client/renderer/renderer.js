@@ -5,10 +5,121 @@ const { createLive2dAvatar } = window.ManaLive2DAvatar;
 const { detectReplyEmotion } = window.ManaReplyEmotion;
 const { formatCompareProfileLabel, pickDefaultCompareProfiles } = window.ManaCompareMode;
 
+// Theme (Settings > Appearance): applied at the top level, before the async
+// IIFE below does anything else, so there's no flash of the wrong theme
+// while backend calls are still in flight. "System" (the default) just
+// means no data-theme attribute -- style.css's prefers-color-scheme media
+// query is then the only source of truth; Light/Dark set the attribute,
+// which wins over that media query regardless of the OS setting (see the
+// :root[data-theme] rules in style.css).
+const THEME_STORAGE_KEY = 'manaTheme';
+function applyTheme(choice) {
+  if (choice === 'light' || choice === 'dark') {
+    document.documentElement.setAttribute('data-theme', choice);
+  } else {
+    document.documentElement.removeAttribute('data-theme');
+  }
+  document.querySelectorAll('#themeToggle button[data-theme-choice]').forEach((btn) => {
+    btn.classList.toggle('active', btn.dataset.themeChoice === choice);
+  });
+}
+applyTheme(localStorage.getItem(THEME_STORAGE_KEY) || 'system');
+document.getElementById('themeToggle')?.addEventListener('click', (e) => {
+  const btn = e.target.closest('button[data-theme-choice]');
+  if (!btn) return;
+  const choice = btn.dataset.themeChoice;
+  localStorage.setItem(THEME_STORAGE_KEY, choice);
+  applyTheme(choice);
+});
+
+// Startup loading screen: labels are generic (Mana/Voice/Web search/AI)
+// rather than naming node-bot/Kokoro/SearXNG/llama-server specifically,
+// since any of those could be swapped for a different tool later without
+// this screen needing to change. Wired independently of the IIFE below
+// (and its backend fetches) since it only talks to main.js over IPC --
+// see service-manager.js and main.js's startupState/get-startup-status.
+(function () {
+  const overlayEl = document.getElementById('startupOverlay');
+  const subtitleEl = document.getElementById('startupSubtitle');
+  const skipBtnEl = document.getElementById('startupSkipBtn');
+  const SERVICE_IDS = ['backend', 'kokoro', 'searxng', 'llama'];
+  const DONE_STATUSES = ['ready', 'failed', 'skipped'];
+  const STATUS_TEXT = { starting: 'Starting...', ready: 'Ready', failed: 'Failed', skipped: 'Skipped' };
+
+  function hideOverlay() {
+    overlayEl?.classList.add('hidden');
+  }
+
+  function refreshSubtitle() {
+    const readyCount = SERVICE_IDS.filter((id) =>
+      document.getElementById(`startupBar-${id}`)?.classList.contains('ready'),
+    ).length;
+    if (subtitleEl) subtitleEl.textContent = `${readyCount} of ${SERVICE_IDS.length} ready`;
+    const allDone = SERVICE_IDS.every((id) => {
+      const el = document.getElementById(`startupBar-${id}`);
+      return el && DONE_STATUSES.some((status) => el.classList.contains(status));
+    });
+    if (allDone) hideOverlay();
+  }
+
+  function applyUpdate({ id, status, message }) {
+    const statusEl = document.getElementById(`startupStatus-${id}`);
+    const barEl = document.getElementById(`startupBar-${id}`);
+    if (!statusEl || !barEl) return;
+    statusEl.textContent = (status === 'failed' || status === 'skipped') && message
+      ? message
+      : STATUS_TEXT[status] || status;
+    statusEl.className = 'startup-row-status ' + status;
+    barEl.className = 'startup-bar-fill ' + status;
+    refreshSubtitle();
+  }
+
+  skipBtnEl?.addEventListener('click', hideOverlay);
+  // Catches up on anything that happened before this listener was
+  // attached, then the live listener covers everything after.
+  window.electronAPI?.getStartupStatus?.().then((snapshot) => {
+    Object.values(snapshot || {}).forEach(applyUpdate);
+  });
+  window.electronAPI?.onStartupProgress?.(applyUpdate);
+})();
+
+// Closing screen: mirrors the startup screen above (see main.js's
+// before-quit handler and service-manager.js's stopAll/stopChild), just
+// reversed and hidden until shutdown actually starts. No snapshot fetch on
+// load like startup has -- shutdown only ever begins after this renderer
+// is already up, so there's nothing to catch up on.
+(function () {
+  const overlayEl = document.getElementById('shutdownOverlay');
+  const subtitleEl = document.getElementById('shutdownSubtitle');
+  const SERVICE_IDS = ['backend', 'kokoro', 'searxng', 'llama'];
+  const DONE_STATUSES = ['ready', 'failed', 'skipped'];
+  const STATUS_TEXT = { starting: 'Stopping...', ready: 'Stopped', failed: 'Failed', skipped: 'Skipped' };
+
+  function refreshSubtitle() {
+    const doneCount = SERVICE_IDS.filter((id) =>
+      DONE_STATUSES.some((status) => document.getElementById(`shutdownBar-${id}`)?.classList.contains(status)),
+    ).length;
+    if (subtitleEl) subtitleEl.textContent = `${doneCount} of ${SERVICE_IDS.length} stopped`;
+  }
+
+  function applyUpdate({ id, status, message }) {
+    const statusEl = document.getElementById(`shutdownStatus-${id}`);
+    const barEl = document.getElementById(`shutdownBar-${id}`);
+    if (!statusEl || !barEl) return;
+    overlayEl?.classList.remove('hidden');
+    statusEl.textContent = message || STATUS_TEXT[status] || status;
+    statusEl.className = 'startup-row-status ' + status;
+    barEl.className = 'startup-bar-fill ' + status;
+    refreshSubtitle();
+  }
+
+  window.electronAPI?.onShutdownProgress?.(applyUpdate);
+})();
+
 (async function(){
   const statusEl = document.getElementById('status');
-  const transcriptEl = document.getElementById('transcript');
-  const replyEl = document.getElementById('reply');
+  const messagesEl = document.getElementById('messages');
+  const historyLoadingEl = document.getElementById('historyLoading');
   const logsEl = document.getElementById('backendLogs');
   const live2dCanvas = document.getElementById('live2dCanvas');
   const avatarZoomBtn = document.getElementById('btnAvatarZoom');
@@ -48,6 +159,8 @@ const { formatCompareProfileLabel, pickDefaultCompareProfiles } = window.ManaCom
   const navInfoXBtnEl = document.getElementById('navInfoXBtn');
   const homeViewEl = document.getElementById('homeView');
   const settingsViewEl = document.getElementById('settingsView');
+  const sessionsViewEl = document.getElementById('sessionsView');
+  const sessionListEl = document.getElementById('sessionList');
   const presetSelectEl = document.getElementById('presetSelect');
   const presetNewBtnEl = document.getElementById('presetNewBtn');
   const presetEditBtnEl = document.getElementById('presetEditBtn');
@@ -60,6 +173,12 @@ const { formatCompareProfileLabel, pickDefaultCompareProfiles } = window.ManaCom
   const updateVersionEl = document.getElementById('updateVersion');
   const updateStatusEl = document.getElementById('updateStatus');
   const checkUpdatesBtnEl = document.getElementById('checkUpdatesBtn');
+  const pluginsListEl = document.getElementById('pluginsList');
+  const modelCurrentEl = document.getElementById('modelCurrent');
+  const modelScanBtnEl = document.getElementById('modelScanBtn');
+  const modelBrowseBtnEl = document.getElementById('modelBrowseBtn');
+  const modelClearBtnEl = document.getElementById('modelClearBtn');
+  const modelScanResultsEl = document.getElementById('modelScanResults');
 
   let mediaStream = null;
   let recorder = null;
@@ -67,6 +186,261 @@ const { formatCompareProfileLabel, pickDefaultCompareProfiles } = window.ManaCom
   let live2dAvatar = null;
   let deepResearchRunning = false;
   let currentResearchJobId = null;
+
+  // Chat sessions (New chat / Sessions nav buttons): backed by node-bot's
+  // acp-memory-store.js + capabilities/sessions-capability.js, which already
+  // persist/name/rename sessions server-side -- this just has to generate
+  // and remember a sessionId, send it along with every message, and render
+  // what comes back. sessionId lives in localStorage (same pattern as the
+  // theme choice above) so relaunching Mana resumes the same conversation
+  // instead of silently starting a new one.
+  const SESSION_STORAGE_KEY = 'manaCurrentSessionId';
+  const SESSIONS_API = 'http://127.0.0.1:5005';
+  let currentSessionId = localStorage.getItem(SESSION_STORAGE_KEY) || null;
+  let nextBeforeCursor = null;
+  let hasMoreHistory = false;
+  let loadingHistory = false;
+
+  function makeSessionId() {
+    if (window.crypto && typeof window.crypto.randomUUID === 'function') return window.crypto.randomUUID();
+    return `session-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  }
+  function ensureSessionId() {
+    if (!currentSessionId) {
+      currentSessionId = makeSessionId();
+      localStorage.setItem(SESSION_STORAGE_KEY, currentSessionId);
+    }
+    return currentSessionId;
+  }
+
+  // Appends one new bubble to the live end of the conversation (a message
+  // just sent or just replied to) -- as opposed to prependTurns() below,
+  // which inserts older history at the top during scroll-back.
+  function appendMessage(role, text) {
+    if (!messagesEl || !text) return null;
+    const div = document.createElement('div');
+    div.className = 'message ' + (role === 'user' ? 'system' : 'assistant');
+    div.textContent = text;
+    messagesEl.appendChild(div);
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+    return div;
+  }
+
+  function prependTurns(turns) {
+    if (!messagesEl || !turns || !turns.length) return;
+    const frag = document.createDocumentFragment();
+    for (const turn of turns) {
+      if (turn.user) {
+        const u = document.createElement('div');
+        u.className = 'message system';
+        u.textContent = turn.user;
+        frag.appendChild(u);
+      }
+      if (turn.assistant) {
+        const a = document.createElement('div');
+        a.className = 'message assistant';
+        a.textContent = turn.assistant;
+        frag.appendChild(a);
+      }
+    }
+    const anchor = historyLoadingEl?.nextSibling || null;
+    messagesEl.insertBefore(frag, anchor);
+  }
+
+  function clearMessages() {
+    messagesEl?.querySelectorAll('.message').forEach((el) => el.remove());
+    nextBeforeCursor = null;
+    hasMoreHistory = false;
+  }
+
+  async function fetchHistoryPage(sessionId, before) {
+    const params = new URLSearchParams({ limit: '20' });
+    if (before !== undefined && before !== null) params.set('before', String(before));
+    const resp = await fetch(`${SESSIONS_API}/sessions/${encodeURIComponent(sessionId)}/turns?${params}`);
+    if (!resp.ok) return null;
+    return resp.json();
+  }
+
+  async function loadInitialHistory(sessionId) {
+    const page = await fetchHistoryPage(sessionId);
+    if (!page) return;
+    prependTurns(page.turns);
+    hasMoreHistory = page.hasMore;
+    nextBeforeCursor = page.nextBefore;
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+  }
+
+  // Scrolling near the top loads the next chunk further back in time.
+  // Scroll position is preserved by measuring how much the content grew and
+  // shifting scrollTop by exactly that -- otherwise prepending content above
+  // the viewport yanks the view down to a random spot.
+  async function loadOlderMessages() {
+    if (loadingHistory || !hasMoreHistory || !currentSessionId || !messagesEl) return;
+    loadingHistory = true;
+    if (historyLoadingEl) historyLoadingEl.hidden = false;
+    const previousScrollHeight = messagesEl.scrollHeight;
+    try {
+      const page = await fetchHistoryPage(currentSessionId, nextBeforeCursor);
+      if (page) {
+        prependTurns(page.turns);
+        hasMoreHistory = page.hasMore;
+        nextBeforeCursor = page.nextBefore;
+        messagesEl.scrollTop = messagesEl.scrollHeight - previousScrollHeight + messagesEl.scrollTop;
+      }
+    } finally {
+      loadingHistory = false;
+      if (historyLoadingEl) historyLoadingEl.hidden = true;
+    }
+  }
+
+  async function switchToSession(sessionId) {
+    currentSessionId = sessionId;
+    localStorage.setItem(SESSION_STORAGE_KEY, sessionId);
+    clearMessages();
+    showView('home');
+    await loadInitialHistory(sessionId);
+    refreshSessionList();
+  }
+
+  function startNewChat() {
+    currentSessionId = makeSessionId();
+    localStorage.setItem(SESSION_STORAGE_KEY, currentSessionId);
+    clearMessages();
+    if (messageInputEl) messageInputEl.value = '';
+    showView('home');
+  }
+
+  function formatSessionDate(iso) {
+    if (!iso) return '';
+    try {
+      return new Date(iso).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+    } catch (e) {
+      return '';
+    }
+  }
+
+  function beginInlineRename(sessionId, currentName) {
+    const item = sessionListEl?.querySelector(`[data-session-id="${CSS.escape(sessionId)}"]`);
+    if (!item) return;
+    const nameEl = item.querySelector('.session-name');
+    const input = document.createElement('input');
+    input.className = 'session-name-input';
+    input.value = currentName || sessionId;
+    nameEl.replaceWith(input);
+    input.focus();
+    input.select();
+
+    let settled = false;
+    async function commit() {
+      if (settled) return;
+      settled = true;
+      const newName = input.value.trim();
+      if (newName && newName !== currentName) {
+        try {
+          await fetch(`${SESSIONS_API}/sessions/${encodeURIComponent(sessionId)}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: newName }),
+          });
+        } catch (e) {
+          console.warn('Failed to rename session:', e);
+        }
+      }
+      refreshSessionList();
+    }
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        commit();
+      } else if (e.key === 'Escape') {
+        settled = true;
+        refreshSessionList();
+      }
+    });
+    input.addEventListener('blur', commit);
+  }
+
+  function renderSessionList(sessions) {
+    if (!sessionListEl) return;
+    sessionListEl.innerHTML = '';
+    if (!sessions.length) {
+      sessionListEl.innerHTML = '<p class="subtitle">No saved sessions yet -- start chatting to create one.</p>';
+      return;
+    }
+    for (const session of sessions) {
+      const item = document.createElement('div');
+      item.className = 'session-item' + (session.sessionId === currentSessionId ? ' active' : '');
+      item.dataset.sessionId = session.sessionId;
+
+      const nameEl = document.createElement('div');
+      nameEl.className = 'session-name';
+      nameEl.textContent = session.name || session.sessionId;
+
+      const metaEl = document.createElement('div');
+      metaEl.className = 'session-meta';
+      metaEl.textContent = formatSessionDate(session.updatedAt);
+
+      const renameBtn = document.createElement('button');
+      renameBtn.className = 'session-rename-btn';
+      renameBtn.title = 'Rename';
+      renameBtn.type = 'button';
+      renameBtn.textContent = '✎';
+      renameBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        beginInlineRename(session.sessionId, session.name);
+      });
+
+      item.appendChild(nameEl);
+      item.appendChild(metaEl);
+      item.appendChild(renameBtn);
+      item.addEventListener('click', () => {
+        if (session.sessionId !== currentSessionId) switchToSession(session.sessionId);
+      });
+      sessionListEl.appendChild(item);
+    }
+  }
+
+  async function refreshSessionList() {
+    if (!sessionListEl) return;
+    try {
+      const resp = await fetch(`${SESSIONS_API}/sessions`);
+      const j = await resp.json();
+      renderSessionList(Array.isArray(j.sessions) ? j.sessions : []);
+    } catch (e) {
+      sessionListEl.innerHTML = `<p class="subtitle">Failed to load sessions: ${String(e.message || e)}</p>`;
+    }
+  }
+
+  messagesEl?.addEventListener('scroll', () => {
+    if (messagesEl.scrollTop < 80) loadOlderMessages();
+  });
+
+  async function speakReply(replyText) {
+    setSprite('speaking');
+    if (live2dAvatar) live2dAvatar.setState(detectReplyEmotion(replyText));
+    try {
+      const sresp = await fetch('http://127.0.0.1:5005/synthesize', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: replyText }),
+      });
+      if (sresp.ok) {
+        const arr = await sresp.arrayBuffer();
+        const audioCtx = new AudioContext();
+        const buf = await audioCtx.decodeAudioData(arr);
+        const src = audioCtx.createBufferSource();
+        src.buffer = buf;
+        src.connect(audioCtx.destination);
+        src.onended = () => { stopLipSync(); setSprite('idle'); };
+        src.start();
+        startLipSync(audioCtx, src);
+      } else {
+        setSprite('idle');
+      }
+    } catch (e) {
+      setSprite('idle');
+    }
+  }
 
   async function init() {
     try {
@@ -205,7 +579,7 @@ const { formatCompareProfileLabel, pickDefaultCompareProfiles } = window.ManaCom
     btn.addEventListener('mouseup', stopRecording);
     btn.addEventListener('touchend', stopRecording);
     stopBtn.addEventListener('click', stopRecording);
-    clearBtn.addEventListener('click', ()=>{ transcriptEl.textContent=''; replyEl.textContent=''; });
+    clearBtn.addEventListener('click', ()=>{ clearMessages(); });
   }
 
   function startRecording(){
@@ -231,6 +605,7 @@ const { formatCompareProfileLabel, pickDefaultCompareProfiles } = window.ManaCom
       // send to /transcribe-only or /transcribe
       const form = new FormData();
       form.append('file', blob, 'voice.webm');
+      form.append('sessionId', ensureSessionId());
       if (selectedPresetId) form.append('presetId', selectedPresetId);
       const resp = await fetch('http://127.0.0.1:5005/transcribe', { method: 'POST', body: form });
       if (!resp.ok) {
@@ -238,32 +613,12 @@ const { formatCompareProfileLabel, pickDefaultCompareProfiles } = window.ManaCom
         throw new Error('transcribe failed: ' + resp.status + ' ' + txt);
       }
       const j = await resp.json().catch(()=>null);
-      // show transcript or reply
-      if (j && j.transcript) transcriptEl.textContent = j.transcript;
-      else if (j && j.reply) transcriptEl.textContent = j.reply;
-      else transcriptEl.textContent = JSON.stringify(j);
+      if (j && j.transcript) appendMessage('user', j.transcript);
+      else if (!j?.reply) appendMessage('user', JSON.stringify(j));
 
-      // if reply present, show and optionally synthesize
       if (j && j.reply) {
-        replyEl.textContent = j.reply;
-        setSprite('speaking');
-        if (live2dAvatar) live2dAvatar.setState(detectReplyEmotion(j.reply));
-        try {
-          const sresp = await fetch('http://127.0.0.1:5005/synthesize', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: j.reply }) });
-          if (sresp.ok) {
-            const arr = await sresp.arrayBuffer();
-            const audioCtx = new AudioContext();
-            const buf = await audioCtx.decodeAudioData(arr);
-            const src = audioCtx.createBufferSource();
-            src.buffer = buf;
-            src.connect(audioCtx.destination);
-            src.onended = ()=> { stopLipSync(); setSprite('idle'); };
-            src.start();
-            startLipSync(audioCtx, src);
-          } else {
-            setSprite('idle');
-          }
-        } catch (e) { setSprite('idle'); }
+        appendMessage('assistant', j.reply);
+        await speakReply(j.reply);
       }
 
       statusEl.textContent = 'Idle';
@@ -336,15 +691,14 @@ const { formatCompareProfileLabel, pickDefaultCompareProfiles } = window.ManaCom
     messageInputEl.value = '';
     deepResearchRunning = true;
     btnResearchEl?.classList.add('active');
-    transcriptEl.textContent = question;
-    replyEl.textContent = '';
+    appendMessage('user', question);
     setResearchProgress('Starting research...');
 
     try {
       const startResponse = await fetch('http://127.0.0.1:5005/research/start', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ question }),
+        body: JSON.stringify({ question, sessionId: ensureSessionId() }),
       });
       if (!startResponse.ok) {
         const detail = await startResponse.text();
@@ -353,15 +707,15 @@ const { formatCompareProfileLabel, pickDefaultCompareProfiles } = window.ManaCom
       const { jobId } = await startResponse.json();
       currentResearchJobId = jobId;
       const result = await pollResearchJob(jobId);
-      replyEl.textContent = formatResearchReply(result);
+      appendMessage('assistant', formatResearchReply(result));
       setSprite('speaking');
       setTimeout(() => setSprite('idle'), 400);
     } catch (error) {
       if (error.cancelled) {
-        replyEl.textContent = 'Research cancelled.';
+        appendMessage('assistant', 'Research cancelled.');
       } else {
         console.warn('Deep research failed:', error);
-        replyEl.textContent = `Research failed: ${error.message}`;
+        appendMessage('assistant', `Research failed: ${error.message}`);
       }
     } finally {
       deepResearchRunning = false;
@@ -383,17 +737,22 @@ const { formatCompareProfileLabel, pickDefaultCompareProfiles } = window.ManaCom
     }
   });
 
-  // Nav: Home/Settings toggle between the normal chat view and the
-  // Settings view (Presets, etc). "Code" is an existing unimplemented stub
-  // left as-is.
+  // Nav: Home (live chat) / Sessions (saved chat list) / Settings. "Code" is
+  // an existing unimplemented stub left as-is.
   function showView(view) {
     const isSettings = view === 'settings';
-    if (homeViewEl) homeViewEl.hidden = isSettings;
+    const isSessions = view === 'sessions';
+    const isHome = view === 'home';
+    if (homeViewEl) homeViewEl.hidden = !isHome;
     if (settingsViewEl) settingsViewEl.hidden = !isSettings;
-    navHomeBtnEl?.classList.toggle('active', !isSettings);
+    if (sessionsViewEl) sessionsViewEl.hidden = !isSessions;
+    navHomeBtnEl?.classList.toggle('active', isSessions);
     navSettingsBtnEl?.classList.toggle('active', isSettings);
   }
-  navHomeBtnEl?.addEventListener('click', () => showView('home'));
+  navHomeBtnEl?.addEventListener('click', () => {
+    showView('sessions');
+    refreshSessionList();
+  });
   navSettingsBtnEl?.addEventListener('click', () => showView('settings'));
 
   // Sidebar nav items (New chat/Search/Avatar/Web access/Market watch/
@@ -409,13 +768,45 @@ const { formatCompareProfileLabel, pickDefaultCompareProfiles } = window.ManaCom
     }[c]));
   }
 
+  // Doctor issue detail popover: cards show just the label, click one to
+  // see the full message in a small bubble anchored to it. position:fixed
+  // (see style.css) so it's placed relative to the viewport, not clipped
+  // by navInfoBody's own overflow-y:auto scroll area.
+  const doctorBubbleEl = document.getElementById('doctorBubble');
+  const doctorBubbleTitleEl = doctorBubbleEl?.querySelector('.doctor-bubble-title');
+  const doctorBubbleMessageEl = doctorBubbleEl?.querySelector('.doctor-bubble-message');
+  function showDoctorBubble(issueBtn) {
+    if (!doctorBubbleEl) return;
+    doctorBubbleTitleEl.textContent = issueBtn.querySelector('strong')?.textContent || '';
+    doctorBubbleMessageEl.textContent = issueBtn.dataset.doctorMessage || '';
+    doctorBubbleEl.hidden = false;
+    const rect = issueBtn.getBoundingClientRect();
+    const bubbleRect = doctorBubbleEl.getBoundingClientRect();
+    const left = Math.min(rect.left, window.innerWidth - bubbleRect.width - 12);
+    const fitsBelow = rect.bottom + 8 + bubbleRect.height <= window.innerHeight - 12;
+    const top = fitsBelow ? rect.bottom + 8 : Math.max(12, rect.top - bubbleRect.height - 8);
+    doctorBubbleEl.style.left = `${Math.max(12, left)}px`;
+    doctorBubbleEl.style.top = `${top}px`;
+  }
+  function hideDoctorBubble() {
+    if (doctorBubbleEl) doctorBubbleEl.hidden = true;
+  }
+  document.addEventListener('click', (e) => {
+    if (!doctorBubbleEl || doctorBubbleEl.hidden) return;
+    if (!doctorBubbleEl.contains(e.target) && !e.target.closest('.doctor-issue')) {
+      hideDoctorBubble();
+    }
+  });
+
   function openNavInfo(title, bodyHtml) {
+    hideDoctorBubble();
     navInfoTitleEl.textContent = title;
     navInfoBodyEl.innerHTML = bodyHtml;
     navInfoModalEl.setAttribute('aria-hidden', 'false');
   }
   function closeNavInfo() {
     navInfoModalEl.setAttribute('aria-hidden', 'true');
+    hideDoctorBubble();
   }
   navInfoCloseBtnEl?.addEventListener('click', closeNavInfo);
   navInfoXBtnEl?.addEventListener('click', closeNavInfo);
@@ -426,7 +817,9 @@ const { formatCompareProfileLabel, pickDefaultCompareProfiles } = window.ManaCom
   // Result links (Search) open in the real browser, not a new Electron window.
   navInfoBodyEl?.addEventListener('click', (e) => {
     const a = e.target.closest('a[data-external]');
-    if (a) { e.preventDefault(); window.electronAPI.openExternal(a.href); }
+    if (a) { e.preventDefault(); window.electronAPI.openExternal(a.href); return; }
+    const issueBtn = e.target.closest('.doctor-issue');
+    if (issueBtn) showDoctorBubble(issueBtn);
   });
 
   async function fetchJson(url, options) {
@@ -436,12 +829,7 @@ const { formatCompareProfileLabel, pickDefaultCompareProfiles } = window.ManaCom
     return body;
   }
 
-  navNewChatBtnEl?.addEventListener('click', () => {
-    transcriptEl.textContent = '';
-    replyEl.textContent = '';
-    if (messageInputEl) messageInputEl.value = '';
-    showView('home');
-  });
+  navNewChatBtnEl?.addEventListener('click', () => { startNewChat(); });
 
   navAvatarBtnEl?.addEventListener('click', async () => {
     try { await window.electronAPI.openAvatarNotice(); } catch (e) {}
@@ -602,13 +990,10 @@ const { formatCompareProfileLabel, pickDefaultCompareProfiles } = window.ManaCom
       const passing = checks.filter((c) => c.status === 'pass');
 
       const attentionHtml = needsAttention.map((c) => `
-        <div class="setup-item">
-          <div class="setup-item-header">
-            <span class="setup-status-icon ${c.status}">${c.status === 'warn' ? '!' : '✕'}</span>
-            <strong>${escapeHtml(c.label || c.id)}</strong>
-          </div>
-          <div class="subtitle">${escapeHtml(c.message || '')}</div>
-        </div>`).join('');
+        <button type="button" class="doctor-issue" data-doctor-message="${escapeHtml(c.message || '')}">
+          <span class="setup-status-icon ${c.status}">${c.status === 'warn' ? '!' : '✕'}</span>
+          <strong>${escapeHtml(c.label || c.id)}</strong>
+        </button>`).join('');
 
       const passingHtml = passing.map((c) => `
         <div class="doctor-pass-row">
@@ -623,7 +1008,7 @@ const { formatCompareProfileLabel, pickDefaultCompareProfiles } = window.ManaCom
           <span class="doctor-count fail">${counts.fail || 0} failing</span>
         </div>
         ${needsAttention.length
-          ? `<div class="doctor-section-label">Needs attention</div>${attentionHtml}`
+          ? `<div class="doctor-section-label">Needs attention</div><div class="doctor-attention-grid">${attentionHtml}</div>`
           : '<p class="subtitle">Everything needed is configured.</p>'}
         ${passing.length
           ? `<div class="doctor-section-label">All good (${passing.length})</div><div class="doctor-pass-list">${passingHtml}</div>`
@@ -750,6 +1135,159 @@ const { formatCompareProfileLabel, pickDefaultCompareProfiles } = window.ManaCom
       console.warn('Mana delete preset failed:', e);
     }
   });
+
+  // Plugins (Settings > Plugins): optional integrations -- FFXIV Market
+  // Watch, stock market, job search -- toggled per plugin, backed by
+  // node-bot's plugin-settings-store.js via GET/POST /plugins.
+  async function loadPlugins() {
+    if (!pluginsListEl) return;
+    try {
+      const j = await fetchJson(`${BACKEND_URL}/plugins`);
+      const rows = [];
+      for (const category of Object.keys(j.plugins || {})) {
+        for (const plugin of j.plugins[category]) {
+          rows.push(`
+            <div class="plugin-row">
+              <div class="plugin-row-info">
+                <strong>${escapeHtml(plugin.name)}</strong>
+                <span>${escapeHtml(plugin.description || category)}</span>
+              </div>
+              <button class="plugin-switch ${plugin.enabled ? 'on' : ''}" data-plugin-key="${escapeHtml(plugin.key)}" aria-pressed="${plugin.enabled}" title="${plugin.enabled ? 'Enabled' : 'Disabled'}"></button>
+            </div>`);
+        }
+      }
+      pluginsListEl.innerHTML = rows.join('') || '<p class="subtitle">No plugins installed.</p>';
+    } catch (e) {
+      pluginsListEl.innerHTML = `<p class="subtitle">Failed to load plugins: ${escapeHtml(e.message)}</p>`;
+    }
+  }
+  pluginsListEl?.addEventListener('click', async (e) => {
+    const btn = e.target.closest('.plugin-switch');
+    if (!btn || btn.disabled) return;
+    const key = btn.dataset.pluginKey;
+    const nextEnabled = !btn.classList.contains('on');
+    btn.disabled = true;
+    try {
+      await fetchJson(`${BACKEND_URL}/plugins/${encodeURIComponent(key)}/enabled`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled: nextEnabled }),
+      });
+      btn.classList.toggle('on', nextEnabled);
+      btn.setAttribute('aria-pressed', String(nextEnabled));
+      btn.title = nextEnabled ? 'Enabled' : 'Disabled';
+    } catch (e) {
+      console.warn('Mana plugin toggle failed:', e);
+      loadPlugins();
+    } finally {
+      btn.disabled = false;
+    }
+  });
+  loadPlugins();
+
+  // Model selection (Settings > Model + onboarding's "Local AI model" item):
+  // scan the PC for .gguf files or browse to one directly, then persist the
+  // pick via node-bot's /models/path -- see model-management.js's
+  // scanForModels/setModelPath on the backend.
+  function formatModelBytes(n) {
+    if (!Number.isFinite(n)) return '';
+    const gb = n / (1024 ** 3);
+    if (gb >= 1) return `${gb.toFixed(1)} GB`;
+    return `${(n / (1024 ** 2)).toFixed(0)} MB`;
+  }
+
+  function renderModelScanList(containerEl, scanResult, onPick) {
+    const models = scanResult.found || [];
+    if (!models.length) {
+      containerEl.innerHTML = `<p class="subtitle">No .gguf files found${scanResult.truncated ? ' (scan stopped early -- try Browse instead for a specific file).' : '.'}</p>`;
+    } else {
+      containerEl.innerHTML = models.map((m, i) => `
+        <div class="model-scan-item" data-scan-index="${i}">
+          <div class="model-scan-item-info">
+            <strong>${escapeHtml(m.name)}</strong>
+            <span>${escapeHtml(m.path)}</span>
+          </div>
+          <span class="model-scan-item-size">${escapeHtml(formatModelBytes(m.sizeBytes))}</span>
+        </div>`).join('');
+      containerEl.querySelectorAll('[data-scan-index]').forEach((row) => {
+        row.addEventListener('click', () => onPick(models[Number(row.dataset.scanIndex)].path));
+      });
+    }
+    containerEl.hidden = false;
+  }
+
+  async function selectModelPath(modelPath) {
+    return fetchJson(`${BACKEND_URL}/models/path`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ modelPath }),
+    });
+  }
+
+  async function loadModelSettings() {
+    if (!modelCurrentEl) return;
+    try {
+      const status = await fetchJson(`${BACKEND_URL}/models/status`);
+      if (status.selectedModelPath) {
+        modelCurrentEl.textContent = `Using: ${basename(status.selectedModelPath)}`;
+      } else {
+        const active = status.profiles ? status.profiles[status.activeProfile] : null;
+        modelCurrentEl.textContent = active && active.available
+          ? `Auto-detected: ${basename(active.selectedModel)} (${active.label})`
+          : 'No local model detected yet.';
+      }
+      if (modelClearBtnEl) modelClearBtnEl.hidden = !status.selectedModelPath;
+    } catch (e) {
+      modelCurrentEl.textContent = `Failed to load model status: ${e.message}`;
+    }
+  }
+
+  modelScanBtnEl?.addEventListener('click', async () => {
+    modelScanBtnEl.disabled = true;
+    const prevText = modelScanBtnEl.textContent;
+    modelScanBtnEl.textContent = 'Scanning...';
+    try {
+      const result = await fetchJson(`${BACKEND_URL}/models/scan`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+      });
+      renderModelScanList(modelScanResultsEl, result, async (path) => {
+        await selectModelPath(path);
+        modelScanResultsEl.hidden = true;
+        await loadModelSettings();
+      });
+    } catch (e) {
+      modelScanResultsEl.innerHTML = `<p class="subtitle">Scan failed: ${escapeHtml(e.message)}</p>`;
+      modelScanResultsEl.hidden = false;
+    } finally {
+      modelScanBtnEl.disabled = false;
+      modelScanBtnEl.textContent = prevText;
+    }
+  });
+
+  modelBrowseBtnEl?.addEventListener('click', async () => {
+    if (!window.electronAPI?.browseModelFile) return;
+    const picked = await window.electronAPI.browseModelFile();
+    if (picked.canceled) return;
+    try {
+      await selectModelPath(picked.filePath);
+      await loadModelSettings();
+    } catch (e) {
+      modelCurrentEl.textContent = `Failed to use that file: ${e.message}`;
+    }
+  });
+
+  modelClearBtnEl?.addEventListener('click', async () => {
+    try {
+      await selectModelPath(null);
+      await loadModelSettings();
+    } catch (e) {
+      modelCurrentEl.textContent = `Failed to clear: ${e.message}`;
+    }
+  });
+
+  loadModelSettings();
 
   refreshPresetList();
   setSelectedPresetId(selectedPresetId);
@@ -891,14 +1429,45 @@ const { formatCompareProfileLabel, pickDefaultCompareProfiles } = window.ManaCom
 
   compareCancelBtnEl?.addEventListener('click', () => { compareAbortController?.abort(); });
 
-  // desktop-client has no existing text-send flow to hook into (messageInput
-  // is otherwise unwired), so Enter only does anything here while Compare
-  // mode is active -- it's not stealing behavior from anything else.
-  messageInputEl?.addEventListener('keydown', (event) => {
-    if (compareModeActive && event.key === 'Enter' && !event.shiftKey) {
-      event.preventDefault();
-      runCompare();
+  let sendingTextMessage = false;
+  async function sendTextMessage() {
+    if (!messageInputEl || sendingTextMessage) return;
+    const text = messageInputEl.value.trim();
+    if (!text) return;
+    messageInputEl.value = '';
+    sendingTextMessage = true;
+    appendMessage('user', text);
+    statusEl.textContent = 'Thinking...';
+    try {
+      const resp = await fetch('http://127.0.0.1:5005/reply', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text, sessionId: ensureSessionId(), presetId: selectedPresetId || undefined }),
+      });
+      if (!resp.ok) {
+        const detail = await resp.text();
+        throw new Error(detail || `Reply failed (${resp.status})`);
+      }
+      const j = await resp.json();
+      if (j.reply) {
+        appendMessage('assistant', j.reply);
+        await speakReply(j.reply);
+      }
+      statusEl.textContent = 'Idle';
+    } catch (e) {
+      statusEl.textContent = 'Error';
+      await window.electronAPI.showError(String(e));
+      setSprite('idle');
+    } finally {
+      sendingTextMessage = false;
     }
+  }
+
+  messageInputEl?.addEventListener('keydown', (event) => {
+    if (event.key !== 'Enter' || event.shiftKey) return;
+    event.preventDefault();
+    if (compareModeActive) runCompare();
+    else sendTextMessage();
   });
 
   refreshCompareModelStatus();
@@ -925,6 +1494,10 @@ const { formatCompareProfileLabel, pickDefaultCompareProfiles } = window.ManaCom
 
   const setupModelIconEl = document.getElementById('setupModelIcon');
   const setupModelDetailEl = document.getElementById('setupModelDetail');
+  const setupModelActionsEl = document.getElementById('setupModelActions');
+  const setupModelScanBtnEl = document.getElementById('setupModelScanBtn');
+  const setupModelBrowseBtnEl = document.getElementById('setupModelBrowseBtn');
+  const setupModelScanResultsEl = document.getElementById('setupModelScanResults');
   const setupWhisperIconEl = document.getElementById('setupWhisperIcon');
   const setupWhisperDetailEl = document.getElementById('setupWhisperDetail');
   const setupAvatarIconEl = document.getElementById('setupAvatarIcon');
@@ -969,13 +1542,16 @@ const { formatCompareProfileLabel, pickDefaultCompareProfiles } = window.ManaCom
           `Using ${profile.label}: ${basename(profile.selectedModel) || profile.selectedModel}.`);
       } else if (profile) {
         setSetupStatus(setupModelIconEl, setupModelDetailEl, 'warn',
-          `Recommended for your hardware: ${profile.label}. ${rec.reason} Download one of: ${profile.missing.join(', ')}, place it under tools/llama/, then click Recheck.`);
+          `Recommended for your hardware: ${profile.label}. ${rec.reason} Scan for a model on this PC, browse to one directly, or download one of: ${profile.missing.join(', ')} and place it under tools/llama/, then click Recheck.`);
       } else {
         setSetupStatus(setupModelIconEl, setupModelDetailEl, 'warn', 'Could not determine a recommendation.');
       }
+      if (setupModelActionsEl) setupModelActionsEl.hidden = modelOk;
+      if (modelOk && setupModelScanResultsEl) setupModelScanResultsEl.hidden = true;
     } catch (e) {
       setSetupStatus(setupModelIconEl, setupModelDetailEl, 'warn', 'Backend not reachable yet.');
       setSetupStatus(setupWhisperIconEl, setupWhisperDetailEl, 'warn', 'Backend not reachable yet.');
+      if (setupModelActionsEl) setupModelActionsEl.hidden = true;
       onboardDetailsEl.hidden = false;
       onboardDetailsEl.textContent = 'Setup check failed: ' + (e.message || e);
     }
@@ -1003,6 +1579,38 @@ const { formatCompareProfileLabel, pickDefaultCompareProfiles } = window.ManaCom
     return { modelOk, whisperOk };
   }
 
+  setupModelScanBtnEl?.addEventListener('click', async () => {
+    setupModelScanBtnEl.disabled = true;
+    const prevText = setupModelScanBtnEl.textContent;
+    setupModelScanBtnEl.textContent = 'Scanning...';
+    try {
+      const result = await fetchJson(`${BACKEND_URL}/models/scan`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+      });
+      renderModelScanList(setupModelScanResultsEl, result, async (path) => {
+        await selectModelPath(path);
+        setupModelScanResultsEl.hidden = true;
+        await runOnboardingChecks();
+      });
+    } catch (e) {
+      setupModelScanResultsEl.innerHTML = `<p class="subtitle">Scan failed: ${escapeHtml(e.message)}</p>`;
+      setupModelScanResultsEl.hidden = false;
+    } finally {
+      setupModelScanBtnEl.disabled = false;
+      setupModelScanBtnEl.textContent = prevText;
+    }
+  });
+
+  setupModelBrowseBtnEl?.addEventListener('click', async () => {
+    if (!window.electronAPI?.browseModelFile) return;
+    const picked = await window.electronAPI.browseModelFile();
+    if (picked.canceled) return;
+    await selectModelPath(picked.filePath);
+    await runOnboardingChecks();
+  });
+
   document.getElementById('recheckSetupBtn').addEventListener('click', async () => {
     const { modelOk, whisperOk } = await runOnboardingChecks();
     if (modelOk && whisperOk) {
@@ -1027,10 +1635,10 @@ const { formatCompareProfileLabel, pickDefaultCompareProfiles } = window.ManaCom
   document.getElementById('dismissOnboarding').addEventListener('click', ()=>{ hideOnboarding(); });
   document.getElementById('openDocsBtn').addEventListener('click', async ()=>{ try{ await window.electronAPI.openDocs(); } catch(e){ window.open('../BUILD_DESKTOP.md','_blank'); } });
 
-  if (updateVersionEl && window.electronAPI.getAppVersion) {
+  if (updateVersionEl && window.electronAPI?.getAppVersion) {
     window.electronAPI.getAppVersion().then((v) => { updateVersionEl.textContent = `Version ${v}`; }).catch(()=>{});
   }
-  if (window.electronAPI.onUpdateStatus) {
+  if (window.electronAPI?.onUpdateStatus) {
     window.electronAPI.onUpdateStatus((status) => {
       if (updateStatusEl) updateStatusEl.textContent = status.message || status.state;
     });
@@ -1051,16 +1659,32 @@ const { formatCompareProfileLabel, pickDefaultCompareProfiles } = window.ManaCom
   // Show whenever the model or Whisper setup genuinely isn't done yet --
   // not a one-time flag, so dismissing just means "later, this session,"
   // and it naturally stops appearing once actually fixed.
+  //
+  // This runs the instant the renderer loads, which routinely races
+  // spawnBackend() in main.js -- the backend does background-memory setup
+  // before it ever calls app.listen(), so the very first fetch attempt on
+  // a normal launch can hit a port nothing is listening on yet ("Failed to
+  // fetch") well before anything is actually wrong. Retry a few times
+  // before concluding it's really unreachable, so a normal launch doesn't
+  // flash a false "not reachable" that only a manual Recheck would clear.
   (async () => {
-    try {
-      const { modelOk, whisperOk } = await runOnboardingChecks();
-      if (!modelOk || !whisperOk) {
-        showOnboarding();
+    const maxAttempts = 10;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        const { modelOk, whisperOk } = await runOnboardingChecks();
+        if (!modelOk || !whisperOk) showOnboarding();
+        return;
+      } catch (e) {
+        if (attempt === maxAttempts) { showOnboarding(); return; }
+        await new Promise((resolve) => setTimeout(resolve, 1000));
       }
-    } catch (e) {
-      showOnboarding();
     }
   })();
 
   init();
+  // Resume whatever session was active last launch (id already survives in
+  // localStorage) by replaying its most recent turns back into the chat log
+  // -- otherwise a restart looks like history was lost even though it's
+  // still on disk.
+  loadInitialHistory(ensureSessionId());
 })();

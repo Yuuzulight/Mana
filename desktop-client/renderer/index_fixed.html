@@ -10,7 +10,11 @@
   <div class="layout">
     <aside class="sidebar">
       <div class="brand">
-        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 20l6-13 4 8 3-5 5 10" stroke-linejoin="round" stroke-linecap="round"/></svg>
+        <svg width="17" height="17" viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M12,3 L5.1,12 L12,21 Z" fill="var(--accent-dim)"/>
+          <path d="M12,3 L18.9,12 L12,21 Z" fill="var(--accent)"/>
+          <path d="M12,3 L15,8.1 L9,8.1 Z" fill="#c9b8f0" opacity="0.85"/>
+        </svg>
         Mana
       </div>
 
@@ -91,8 +95,11 @@
 
       <div class="home-content" id="homeView">
         <section id="messages" class="messages">
-          <div id="transcript" class="message system"></div>
-          <div id="reply" class="message assistant"></div>
+          <div id="greetingView" class="greeting-view">
+            <div class="greeting-mark">Hello, what would you like to do today?</div>
+            <p class="greeting-hint">Type a message below, or hold "Hold to Talk" to speak.</p>
+          </div>
+          <div id="historyLoading" class="history-loading" hidden>Loading earlier messages...</div>
         </section>
 
         <div class="input-bar">
@@ -133,13 +140,36 @@
             </div>
           </div>
         </div>
-
-        <footer class="logs-footer">
-          <pre id="backendLogs" class="logs">(backend logs)</pre>
-        </footer>
       </div>
 
       <div class="settings-view" id="settingsView" hidden>
+        <div class="settings-section" id="appearanceSection">
+          <h3>Appearance</h3>
+          <div class="theme-toggle" id="themeToggle">
+            <button data-theme-choice="light">Light</button>
+            <button data-theme-choice="dark">Dark</button>
+            <button data-theme-choice="system">System</button>
+          </div>
+        </div>
+
+        <div class="settings-section" id="modelSection">
+          <h3>Model</h3>
+          <div id="modelCurrent" class="subtitle">Checking...</div>
+          <div class="model-actions">
+            <button id="modelScanBtn">Scan for Models</button>
+            <button id="modelBrowseBtn">Browse...</button>
+            <button id="modelClearBtn" hidden>Use Auto-Detected</button>
+          </div>
+          <div id="modelScanResults" class="model-scan-results" hidden></div>
+        </div>
+
+        <div class="settings-section" id="pluginsSection">
+          <h3>Plugins</h3>
+          <div id="pluginsList" class="plugin-list">
+            <p class="subtitle">Loading...</p>
+          </div>
+        </div>
+
         <div class="settings-section" id="presetsSection">
           <h3>Presets</h3>
           <div class="preset-select-row">
@@ -168,11 +198,26 @@
           </div>
         </div>
 
+        <div class="settings-section" id="logsSection">
+          <h3>Backend Logs</h3>
+          <pre id="backendLogs" class="logs">(backend logs)</pre>
+        </div>
+
         <div class="settings-section" id="updatesSection">
           <h3>Updates</h3>
           <div id="updateVersion" class="subtitle">Version --</div>
           <div id="updateStatus" class="subtitle">Not checked yet.</div>
           <button id="checkUpdatesBtn">Check for Updates</button>
+        </div>
+      </div>
+
+      <!-- Sessions list: every saved chat (see node-bot's acp-memory-store.js
+           + capabilities/sessions-capability.js), click to open, edit icon
+           to rename in place. -->
+      <div class="sessions-view" id="sessionsView" hidden>
+        <h3 class="sessions-view-title">Sessions</h3>
+        <div id="sessionList" class="session-list">
+          <p class="subtitle">Loading...</p>
         </div>
       </div>
 
@@ -188,6 +233,11 @@
               <strong>Local AI model</strong>
             </div>
             <div id="setupModelDetail" class="subtitle">Checking...</div>
+            <div class="model-actions" id="setupModelActions" hidden>
+              <button id="setupModelScanBtn">Scan for Models</button>
+              <button id="setupModelBrowseBtn">Browse...</button>
+            </div>
+            <div id="setupModelScanResults" class="model-scan-results" hidden></div>
           </div>
 
           <div class="setup-item" id="setupWhisperItem">
@@ -221,18 +271,99 @@
            access/Market watch/Vision/Model/Doctor) -- content is filled in
            per-item by renderer.js rather than one modal per item. -->
       <div id="navInfoModal" class="modal" aria-hidden="true">
-        <div class="modal-content">
+        <div class="modal-content sized">
           <div class="modal-header">
             <h3 id="navInfoTitle">Info</h3>
             <button id="navInfoXBtn" class="modal-x-btn" title="Close" aria-label="Close">×</button>
           </div>
-          <div id="navInfoBody"></div>
-          <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px;">
+          <div id="navInfoBody" class="modal-body"></div>
+          <div class="modal-footer">
             <button id="navInfoCloseBtn">Close</button>
           </div>
         </div>
       </div>
+
+      <!-- Popover for a single Doctor issue's detail message (see
+           navInfoBody's .doctor-issue click handling in renderer.js).
+           position:fixed so it's never clipped by navInfoBody's own
+           overflow-y:auto scroll area. -->
+      <div id="doctorBubble" class="doctor-bubble" hidden>
+        <div class="doctor-bubble-title"></div>
+        <div class="doctor-bubble-message"></div>
+      </div>
     </main>
+  </div>
+
+  <!-- Startup loading screen: one row per local service Mana starts on
+       launch. Labels are generic (Mana/Voice/Web Search/AI) rather than
+       naming the specific tool behind each one (node-bot/Kokoro/SearXNG/
+       llama-server), since a user could swap any of those out later --
+       see service-manager.js and renderer.js's startup-progress handling. -->
+  <div id="startupOverlay" class="startup-overlay">
+    <div class="startup-card">
+      <svg width="40" height="40" viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M12,3 L5.1,12 L12,21 Z" fill="var(--accent-dim)"></path>
+        <path d="M12,3 L18.9,12 L12,21 Z" fill="var(--accent)"></path>
+        <path d="M12,3 L15,8.1 L9,8.1 Z" fill="#c9b8f0" opacity="0.85"></path>
+      </svg>
+      <div class="startup-title">Starting Mana</div>
+      <div class="startup-subtitle" id="startupSubtitle">Starting...</div>
+      <div class="startup-rows">
+        <div class="startup-row">
+          <div class="startup-row-top"><span>Mana</span><span class="startup-row-status" id="startupStatus-backend">Waiting...</span></div>
+          <div class="startup-bar"><div class="startup-bar-fill" id="startupBar-backend"></div></div>
+        </div>
+        <div class="startup-row">
+          <div class="startup-row-top"><span>Voice</span><span class="startup-row-status" id="startupStatus-kokoro">Waiting...</span></div>
+          <div class="startup-bar"><div class="startup-bar-fill" id="startupBar-kokoro"></div></div>
+        </div>
+        <div class="startup-row">
+          <div class="startup-row-top"><span>Web search</span><span class="startup-row-status" id="startupStatus-searxng">Waiting...</span></div>
+          <div class="startup-bar"><div class="startup-bar-fill" id="startupBar-searxng"></div></div>
+        </div>
+        <div class="startup-row">
+          <div class="startup-row-top"><span>AI</span><span class="startup-row-status" id="startupStatus-llama">Waiting...</span></div>
+          <div class="startup-bar"><div class="startup-bar-fill" id="startupBar-llama"></div></div>
+        </div>
+      </div>
+      <button id="startupSkipBtn" class="startup-skip" type="button">Skip and continue anyway</button>
+    </div>
+  </div>
+
+  <!-- Closing screen: reuses the startup-* classes/layout (same card, same
+       row/bar styling, already themed for Light/Dark) since it's showing
+       the same four services in reverse -- see main.js's before-quit
+       handler and service-manager.js's stopAll/stopChild. Hidden until
+       shutdown actually begins; no skip button, since every step here is
+       already bounded by its own timeout so it can't hang the app open. -->
+  <div id="shutdownOverlay" class="startup-overlay hidden">
+    <div class="startup-card">
+      <svg width="40" height="40" viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M12,3 L5.1,12 L12,21 Z" fill="var(--accent-dim)"></path>
+        <path d="M12,3 L18.9,12 L12,21 Z" fill="var(--accent)"></path>
+        <path d="M12,3 L15,8.1 L9,8.1 Z" fill="#c9b8f0" opacity="0.85"></path>
+      </svg>
+      <div class="startup-title">Closing Mana</div>
+      <div class="startup-subtitle" id="shutdownSubtitle">Shutting down...</div>
+      <div class="startup-rows">
+        <div class="startup-row">
+          <div class="startup-row-top"><span>Mana</span><span class="startup-row-status" id="shutdownStatus-backend">Waiting...</span></div>
+          <div class="startup-bar"><div class="startup-bar-fill" id="shutdownBar-backend"></div></div>
+        </div>
+        <div class="startup-row">
+          <div class="startup-row-top"><span>Voice</span><span class="startup-row-status" id="shutdownStatus-kokoro">Waiting...</span></div>
+          <div class="startup-bar"><div class="startup-bar-fill" id="shutdownBar-kokoro"></div></div>
+        </div>
+        <div class="startup-row">
+          <div class="startup-row-top"><span>Web search</span><span class="startup-row-status" id="shutdownStatus-searxng">Waiting...</span></div>
+          <div class="startup-bar"><div class="startup-bar-fill" id="shutdownBar-searxng"></div></div>
+        </div>
+        <div class="startup-row">
+          <div class="startup-row-top"><span>AI</span><span class="startup-row-status" id="shutdownStatus-llama">Waiting...</span></div>
+          <div class="startup-bar"><div class="startup-bar-fill" id="shutdownBar-llama"></div></div>
+        </div>
+      </div>
+    </div>
   </div>
 
   <!-- Live2D Cubism Core is proprietary and fetched at setup time

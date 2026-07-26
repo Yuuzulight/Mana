@@ -35,6 +35,29 @@ function registerSessionsRoutes(app, context = {}) {
     }
   });
 
+  // Paginated scrollback for the desktop chat log: turns are stored
+  // oldest-first, so "before" is a turn-index cursor -- omitted, it
+  // returns the most recent page; passing back nextBefore fetches the
+  // page immediately before that one.
+  app.get("/sessions/:id/turns", (req, res) => {
+    try {
+      const sessionId = requireString(req.params?.id, "sessionId");
+      const limit = req.query?.limit !== undefined ? Number(req.query.limit) : undefined;
+      const before = req.query?.before !== undefined ? Number(req.query.before) : undefined;
+      const page = acpMemoryStore.getSessionTurnsPage(sessionId, { before, limit });
+      if (!page) {
+        return res.status(404).json({ error: "session not found" });
+      }
+      return res.json(page);
+    } catch (e) {
+      if (e instanceof ValidationError) {
+        return sendValidationError(res, e);
+      }
+      console.error(e);
+      return res.status(500).json({ error: String(e) });
+    }
+  });
+
   app.patch("/sessions/:id", (req, res) => {
     try {
       const sessionId = requireString(req.params?.id, "sessionId");
