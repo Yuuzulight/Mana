@@ -64,6 +64,7 @@ For the full setup flow, including model paths, Whisper, TTS services, gaming mo
 - **MCP server (opt-in)**: Mana can expose its FFXIV market and web-access tools over the Model Context Protocol for local MCP clients like Claude Desktop or Claude Code; see [docs/roadmap/issue-42-mcp-support.md](docs/roadmap/issue-42-mcp-support.md).
 - **Deep Research**: a "Research" button next to the composer runs a bounded, multi-source search-and-read pass and replies with a cited report instead of a single search-and-answer; see [docs/roadmap/issue-47-deep-research.md](docs/roadmap/issue-47-deep-research.md).
 - **Better replies over time**: idle-triggered Dream Mode consolidates recent memory, Best-of-N self-voting picks the strongest of several candidate replies, and memories get cross-session connections and entity tagging instead of staying siloed per conversation.
+- **Procedural memory (skills)**: a `node-bot/skills/` store holds "how I did X last time" knowledge as small, human-readable files -- a cheap always-available index plus full content loaded only when a skill is actually relevant, with idle-time pruning for skills nobody's touched in a while.
 - **OpenAI-compatible API**: `/v1/chat/completions`, `/v1/embeddings`, and `/v1/models` let external tools (e.g. Obsidian Copilot) talk to Mana's local backend directly.
 - **Obsidian plugin**: Mana Memory Sync pulls Mana's memory into an Obsidian vault as linked notes; the setup flow also detects a local Obsidian install. See [obsidian-plugin/README.md](obsidian-plugin/README.md).
 
