@@ -84,6 +84,8 @@ const {
 const {
   retrieverAdminCapability,
 } = require("./capabilities/retriever-admin-capability");
+const { skillsCapability } = require("./capabilities/skills-capability");
+const { createSkillsStore } = require("./skills-store");
 const {
   RESEARCH_SYSTEM_PROMPT,
   SUB_QUERY_SYSTEM_PROMPT,
@@ -388,6 +390,9 @@ const acpMemoryStore = createAcpMemoryStore({
 
 // Named prompt/behavior presets (see presets-store.js)
 const presetsStore = createPresetsStore({});
+
+// Procedural-memory skills store (see skills-store.js, issue #140)
+const skillsStore = createSkillsStore({});
 
 // Which optional plugins (capabilities with a category) are enabled --
 // see plugin-settings-store.js and capabilities/registry.js's gating.
@@ -1398,6 +1403,24 @@ function registerRoutes(app, upload, deps = {}) {
           ),
         );
       }
+      // Deterministic, no-LLM skill pruning (issue #140) -- same idle
+      // signal as the memory consolidation above, but this pass never
+      // calls the model: it just flags/archives skills nobody's used in
+      // a while so the cheap skills index doesn't grow forever.
+      const idleSkillsStore = deps.skillsStore || skillsStore;
+      if (idleSkillsStore && typeof idleSkillsStore.pruneStaleSkills === "function") {
+        try {
+          idleSkillsStore.pruneStaleSkills({
+            staleDays: Number(process.env.MANA_SKILL_STALE_DAYS) || undefined,
+            archiveDays: Number(process.env.MANA_SKILL_ARCHIVE_DAYS) || undefined,
+          });
+        } catch (err) {
+          console.warn(
+            "Idle-triggered skill pruning failed:",
+            err && err.message ? err.message : err,
+          );
+        }
+      }
     });
 
   // Reported by windows-launcher's powerMonitor.getSystemIdleTime() poll.
@@ -1505,12 +1528,15 @@ function registerRoutes(app, upload, deps = {}) {
     presetsCapability,
     backgroundMemoryCapability,
     retrieverAdminCapability,
+    skillsCapability,
   ];
   const activePresetsStore = deps.presetsStore || presetsStore;
   const activePluginSettingsStore = deps.pluginSettingsStore || pluginSettingsStore;
+  const activeSkillsStore = deps.skillsStore || skillsStore;
   const capabilityContext = {
     acpMemoryStore: deps.acpMemoryStore || acpMemoryStore,
     pluginSettingsStore: activePluginSettingsStore,
+    skillsStore: activeSkillsStore,
     env: deps.env || process.env,
     synthesize:
       deps.synthesize ||
