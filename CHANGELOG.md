@@ -13,6 +13,61 @@ accounting.
 
 Nothing yet.
 
+## [0.2.2] - 2026-07-27
+
+This release exists primarily to verify the auto-update mechanism
+(issue #120) end-to-end against a real published GitHub Release -- it also
+folds in everything else that had accumulated on `main` since 0.2.1 but
+never shipped in a tagged release.
+
+### Added
+- **Auto-update checking for `desktop-client`** via `electron-updater`
+  against GitHub Releases. Both download and install are gated behind their
+  own confirmation dialog, never automatic; `MANA_AUTO_UPDATE_ENABLED=0`
+  disables checks entirely (issue #120).
+- **First-run setup wizard for `desktop-client`** (issue #123).
+- **Portable Python bundled into the packaged installer**, so a system
+  Python install is no longer required (issue #127).
+- **Per-plugin enable/disable settings**, exposed in Settings (issue #131).
+- **`desktop-client`**: closing screen, session browser, local model picker,
+  and plugin toggle UI (issue #134 area).
+- **Silero VAD** replaces the RMS-threshold speech/silence heuristic in
+  `windows-launcher`'s continuous-listening loop, with a graceful fallback
+  if the model is unavailable (issue #135).
+- **`windows-launcher` UI overhaul**: popup info bubbles for
+  Avatar/Web access/Vision/Model/Doctor, a redesigned horizontal Doctor
+  panel, a startup loading screen, the Mana Crystal logo, a fuller Settings
+  menu (Logs/Plugins), and a themed scrollbar (issue #138).
+- A legally-clean default sample Live2D avatar (`npm run fetch-sample-avatar`),
+  downloaded at setup time from Live2D's own CDN under their Free Material
+  License -- not bundled into the installer, since that license doesn't
+  permit redistribution.
+
+### Changed
+- `desktop-client`'s local data relocated out of the install directory,
+  so an uninstall/reinstall doesn't touch user data in-place
+  (issue #121).
+- `desktop-client`'s avatar renderer rewritten to be context-isolation-safe
+  (issue #122).
+- `desktop-client` reskinned; sidebar nav wired to real functionality
+  instead of placeholders.
+- `plugins/` bundled into the packaged `desktop-client` build so the
+  installed app can actually boot standalone (issue #124).
+- Root README brought up to date with the actual current feature set,
+  including a real screenshot instead of placeholder art.
+
+### Fixed
+- Several small backend/desktop-client reliability bugs (issue #129).
+- `vector-rebuild-audit` test no longer clobbers the real audit log.
+- Plugin test scripts fixed to survive a Node version change.
+- Live2D avatar sizing and startup-timing bugs in `windows-launcher`.
+
+### Docs
+- Code-signing options documented for the desktop-client installer
+  (groundwork for issue #119; signing itself isn't implemented yet -- builds
+  are still unsigned, so both install and update still trigger a SmartScreen
+  warning).
+
 ## [0.2.1] - 2026-07-14
 
 ### Removed
