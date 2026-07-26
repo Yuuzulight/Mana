@@ -22,7 +22,17 @@ read, tested, and reasoned about without the rest of the backend.
   description into job-applications' `POST /jobs/match` for a tailored
   resume/cover letter; the two plugins are independent.
 
-All four are always loaded (no separate install step). FFXIV/stock-market/
+All four are always loaded (no separate install step).
+
+### A different kind of plugin: `obsidian-plugin`
+
+[`obsidian-plugin`](obsidian-plugin/) also lives here for repo tidiness,
+but it isn't a node-bot capability -- it's a real Obsidian.md plugin
+(TypeScript, bundled with esbuild, loaded by Obsidian itself via
+`manifest.json`) that pulls Mana's memory into a vault as linked notes. It
+does **not** follow the plugin shape below, isn't in `node-bot/server.js`'s
+`capabilities` array, and won't show up in `GET /plugins`. See its own
+[README](obsidian-plugin/README.md) for installation. FFXIV/stock-market/
 job-search-adzuna are effectively opt-in since their routes/prompt-context
 return nothing useful without network access (FFXIV) or an API key
 (`ALPHA_VANTAGE_API_KEY` for stock market, `ADZUNA_APP_ID`/`ADZUNA_APP_KEY`
