@@ -488,12 +488,23 @@ function startWindowsServices() {
   });
 }
 
+// Chat-UI size vs. the startup-loading-screen size (issue #138) -- the
+// window opens small, sized to the loading card itself, and grows to the
+// real chat-UI size in finishStartup() once startup actually completes,
+// instead of floating a small centered card inside a mostly-empty
+// full-size window the whole time.
+const MAIN_WINDOW_WIDTH = 1020;
+const MAIN_WINDOW_HEIGHT = 720;
+const MAIN_WINDOW_MIN_WIDTH = 640;
+const MAIN_WINDOW_MIN_HEIGHT = 480;
+const STARTUP_WINDOW_WIDTH = 440;
+const STARTUP_WINDOW_HEIGHT = 460;
+
 function createWindow() {
   mainWindow = new BrowserWindow({
-    width: 1020,
-    height: 720,
-    minWidth: 640,
-    minHeight: 480,
+    width: STARTUP_WINDOW_WIDTH,
+    height: STARTUP_WINDOW_HEIGHT,
+    center: true,
     title: "Mana",
     show: false,
     webPreferences: {
@@ -716,6 +727,16 @@ async function runStartupSequence() {
     pollUntilReady("localai", "Local AI", isLocalAiReady, deadline),
   ]);
   if (mainWindow && !mainWindow.isDestroyed()) {
+    // Grow from the small startup-card size to the real chat-UI size now
+    // that there's real chat UI to show -- min size is only applied here
+    // too, so the loading screen was never clamped up to a size bigger
+    // than its own content. Resized *before* the IPC signal below: the
+    // renderer's handleStartupComplete() measures the avatar canvas's real
+    // box to size Live2D's renderer, so the window has to already be at
+    // full size by the time that fires.
+    mainWindow.setMinimumSize(MAIN_WINDOW_MIN_WIDTH, MAIN_WINDOW_MIN_HEIGHT);
+    mainWindow.setSize(MAIN_WINDOW_WIDTH, MAIN_WINDOW_HEIGHT);
+    mainWindow.center();
     mainWindow.webContents.send("startup-complete");
   }
   if (HIDE_MAIN_WINDOW_AFTER_STARTUP && mainWindow && !mainWindow.isDestroyed()) {

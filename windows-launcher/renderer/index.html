@@ -825,6 +825,15 @@
       .doctor-check-fail { border-left-color: #d15b5b; }
       .doctor-check-title { font-weight: bold; }
 
+      #settingsInfoNav {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+        margin: 0 -4px 14px;
+        padding-bottom: 12px;
+        border-bottom: 1px solid var(--border);
+      }
+
       #gamingModeRow {
         display: flex;
         align-items: center;
@@ -833,14 +842,6 @@
         color: var(--muted);
         margin-bottom: 12px;
       }
-
-      #marketWatchForm {
-        display: flex;
-        gap: 6px;
-        margin-bottom: 10px;
-      }
-      #marketWatchForm input { flex: 1; }
-      #marketWatchResult { font-size: 12px; color: var(--text); white-space: pre-wrap; }
 
       /* Legacy single-line elements kept for compatibility; chat log is the UI. */
       #transcript, #modelReply { display: none; }
@@ -1108,39 +1109,11 @@
           <span class="nav-label">Sessions</span>
           <span class="nav-chevron">›</span>
         </div>
-        <div class="nav-item" data-panel="avatar">
-          <span class="nav-icon">◑</span>
-          <span class="nav-label">Avatar</span>
-          <span class="nav-meta">live2d</span>
-        </div>
-        <div class="nav-item" data-panel="webAccess">
-          <span class="nav-icon">◎</span>
-          <span class="nav-label">Web access</span>
-          <span class="nav-dot" id="webAccessDot"></span>
-        </div>
-        <div class="nav-item" data-panel="marketWatch">
-          <span class="nav-icon">▤</span>
-          <span class="nav-label">Market watch</span>
-        </div>
-        <div class="nav-item" data-panel="vision">
-          <span class="nav-icon">◉</span>
-          <span class="nav-label">Vision</span>
-        </div>
       </div>
 
       <div class="sidebar-divider"></div>
 
       <div id="sidebarNav2">
-        <div class="nav-item" data-panel="model">
-          <span class="nav-icon">♪</span>
-          <span class="nav-label">Model</span>
-          <span class="nav-meta" id="sidebarModelLabel">...</span>
-        </div>
-        <div class="nav-item" data-panel="doctor">
-          <span class="nav-icon">✓</span>
-          <span class="nav-label">Doctor</span>
-          <span class="nav-dot" id="doctorNavDot"></span>
-        </div>
         <div class="nav-item" data-panel="settings">
           <span class="nav-icon">⚙</span>
           <span class="nav-label">Settings</span>
@@ -1151,90 +1124,6 @@
         <div class="sidebar-panel" data-panel="sessions">
           <div id="sessionList">
             <div id="sessionEmpty">No saved sessions yet — start chatting to create one.</div>
-          </div>
-        </div>
-
-        <div class="sidebar-panel" data-panel="marketWatch" hidden>
-          <div class="sidebar-panel-title">Market watch</div>
-          <div id="marketWatchForm">
-            <input id="marketWatchItemInput" type="text" placeholder="Item name (e.g. Cloud Cotton)" />
-            <button id="marketWatchCheckBtn">Check</button>
-          </div>
-          <div id="marketWatchResult"></div>
-        </div>
-
-        <div class="sidebar-panel" data-panel="settings" hidden>
-          <div id="gamingModeRow">
-            <label>
-              <input id="gamingMode" type="checkbox" checked />
-              Gaming mode
-            </label>
-            <span id="gamingStatus">Checking games...</span>
-          </div>
-
-          <div style="margin-bottom: 12px">
-            <button id="openWebUI">Open Model Web UI</button>
-            <div class="sidebar-note" style="margin-top: 4px">http://localhost:7860</div>
-          </div>
-
-          <div id="perfPanel">
-            <strong>Performance</strong>
-            <pre id="perfStatus">Waiting for metrics...</pre>
-          </div>
-
-          <div id="presetPanel">
-            <strong>Presets</strong>
-            <div id="presetSelectRow">
-              <select id="presetSelect">
-                <option value="">None</option>
-              </select>
-              <button id="presetNewBtn">New</button>
-              <button id="presetEditBtn" hidden>Edit</button>
-              <button id="presetDeleteBtn" hidden>Delete</button>
-            </div>
-            <div id="presetEditor" hidden>
-              <input
-                id="presetNameInput"
-                type="text"
-                placeholder="Preset name"
-                maxlength="80"
-              />
-              <textarea
-                id="presetInstructionsInput"
-                placeholder="Instructions Mana should follow while this preset is active..."
-                maxlength="4000"
-              ></textarea>
-              <div id="presetEditorActions">
-                <button id="presetSaveBtn">Save</button>
-                <button id="presetCancelBtn">Cancel</button>
-              </div>
-            </div>
-          </div>
-
-          <div id="themePanel">
-            <strong>Theme</strong>
-            <div id="themePresetControls"></div>
-            <div id="themeAccentRow">
-              <label for="accentColorInput">Accent color</label>
-              <input type="color" id="accentColorInput" />
-              <button id="resetAccentBtn">Reset</button>
-            </div>
-          </div>
-
-          <div id="pluginsPanel">
-            <div id="pluginsHeader">
-              <strong>Plugins</strong>
-              <button id="pluginsAddBtn" title="Open the plugins guide">+ Add</button>
-            </div>
-            <input id="pluginsSearchInput" type="text" placeholder="Search plugins..." />
-            <div id="pluginsList">
-              <p class="sidebar-note">Loading...</p>
-            </div>
-          </div>
-
-          <div id="logsPanel">
-            <strong>Logs</strong>
-            <pre id="backendLogs">(backend logs)</pre>
           </div>
         </div>
       </div>
@@ -1373,6 +1262,108 @@
               <div id="doctorChecks" class="doctor-checks-grid"></div>
               <div id="doctorPassLabel" class="doctor-section-label" hidden></div>
               <div id="doctorPassChecks" class="doctor-checks-grid"></div>
+            </div>
+          </div>
+
+          <div class="sidebar-panel" data-panel="settings" hidden>
+            <div id="settingsInfoNav">
+              <div class="nav-item" data-panel="avatar">
+                <span class="nav-icon">◑</span>
+                <span class="nav-label">Avatar</span>
+                <span class="nav-meta">live2d</span>
+              </div>
+              <div class="nav-item" data-panel="webAccess">
+                <span class="nav-icon">◎</span>
+                <span class="nav-label">Web access</span>
+                <span class="nav-dot" id="webAccessDot"></span>
+              </div>
+              <div class="nav-item" data-panel="vision">
+                <span class="nav-icon">◉</span>
+                <span class="nav-label">Vision</span>
+              </div>
+              <div class="nav-item" data-panel="model">
+                <span class="nav-icon">♪</span>
+                <span class="nav-label">Model</span>
+                <span class="nav-meta" id="sidebarModelLabel">...</span>
+              </div>
+              <div class="nav-item" data-panel="doctor">
+                <span class="nav-icon">✓</span>
+                <span class="nav-label">Doctor</span>
+                <span class="nav-dot" id="doctorNavDot"></span>
+              </div>
+            </div>
+
+            <div id="gamingModeRow">
+              <label>
+                <input id="gamingMode" type="checkbox" checked />
+                Gaming mode
+              </label>
+              <span id="gamingStatus">Checking games...</span>
+            </div>
+
+            <div style="margin-bottom: 12px">
+              <button id="openWebUI">Open Model Web UI</button>
+              <div class="sidebar-note" style="margin-top: 4px">http://localhost:7860</div>
+            </div>
+
+            <div id="perfPanel">
+              <strong>Performance</strong>
+              <pre id="perfStatus">Waiting for metrics...</pre>
+            </div>
+
+            <div id="presetPanel">
+              <strong>Presets</strong>
+              <div id="presetSelectRow">
+                <select id="presetSelect">
+                  <option value="">None</option>
+                </select>
+                <button id="presetNewBtn">New</button>
+                <button id="presetEditBtn" hidden>Edit</button>
+                <button id="presetDeleteBtn" hidden>Delete</button>
+              </div>
+              <div id="presetEditor" hidden>
+                <input
+                  id="presetNameInput"
+                  type="text"
+                  placeholder="Preset name"
+                  maxlength="80"
+                />
+                <textarea
+                  id="presetInstructionsInput"
+                  placeholder="Instructions Mana should follow while this preset is active..."
+                  maxlength="4000"
+                ></textarea>
+                <div id="presetEditorActions">
+                  <button id="presetSaveBtn">Save</button>
+                  <button id="presetCancelBtn">Cancel</button>
+                </div>
+              </div>
+            </div>
+
+            <div id="themePanel">
+              <strong>Theme</strong>
+              <div id="themePresetControls"></div>
+              <div id="themeAccentRow">
+                <label for="accentColorInput">Accent color</label>
+                <input type="color" id="accentColorInput" />
+                <button id="resetAccentBtn">Reset</button>
+              </div>
+            </div>
+
+            <div id="pluginsPanel">
+              <div id="pluginsHeader">
+                <strong>Plugins</strong>
+                <button id="pluginsAddBtn" title="Open the plugins guide">+ Add</button>
+              </div>
+              <input id="pluginsSearchInput" type="text" placeholder="Search plugins..." />
+              <div id="pluginsList">
+                <p class="sidebar-note">Loading...</p>
+              </div>
+            </div>
+
+            <div id="logsPanel">
+              <strong>Logs</strong>
+              <pre id="backendLogs">(backend logs)</pre>
             </div>
           </div>
         </div>
