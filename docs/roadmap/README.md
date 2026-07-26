@@ -12,7 +12,6 @@ This roadmap reflects the current GitHub Project board, merged PRs, open issues,
 | [#48](https://github.com/Yuuzulight/Mana/issues/48) | Mobile 2FA | Open | Opt-in TOTP second factor for mobile device pairing, on top of the existing passcode. Should land alongside/after issue #14's device list/rotation/revocation work (closed) so mobile security stays one coherent story. |
 | [#65](https://github.com/Yuuzulight/Mana/issues/65) | Fish Audio S2 Pro TTS | Open | Follow-up to the (closed) Fish Speech evaluation. S2 Pro's BF16 weights (~10GB) didn't fit the previous dev GPU (RTX 3070 Ti, 8GB); an RTX 5080 upgrade has been ordered (ETA within the week), unblocking this once it arrives. |
 | [#137](https://github.com/Yuuzulight/Mana/issues/137) | Docs / media | Open | Demo reel and real screenshots to replace the generic fallback-avatar SVGs in the root README's Preview section. |
-| [#138](https://github.com/Yuuzulight/Mana/issues/138) | windows-launcher UI | In review | Popup info bubbles, redesigned Doctor, startup loading screen, crystal logo, and a fuller Settings (Logs/Plugins) -- brings `windows-launcher` up to par with `desktop-client`'s recent reskin. PR open, not yet merged. See [issue-138-windows-launcher-ui-overhaul.md](issue-138-windows-launcher-ui-overhaul.md). |
 
 ## Recently completed (since the last sync)
 
@@ -26,6 +25,7 @@ Non-exhaustive highlights — see individual issue/PR history for full detail:
 - Best-of-N self-voting inference, idle-triggered Dream Mode memory consolidation, and cross-session memory connections/entity tagging.
 - Deep Research mode (multi-step, multi-source, cited report) with a UI entry point in `windows-launcher`.
 - Silero VAD replaces the RMS-threshold live speech/silence detection in `windows-launcher`'s continuous-listening loop, with a graceful fallback if the model is unavailable (issue #135). See [issue-135-silero-vad.md](issue-135-silero-vad.md).
+- `windows-launcher` UI overhaul: popup info bubbles, redesigned Doctor panel, startup loading screen, the Mana Crystal logo, a fuller Settings menu (Logs/Plugins), and a themed scrollbar -- brings it up to par with `desktop-client`'s recent reskin (issue #138). See [issue-138-windows-launcher-ui-overhaul.md](issue-138-windows-launcher-ui-overhaul.md).
 
 ## Untracked Roadmap Items
 
