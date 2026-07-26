@@ -25,4 +25,18 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // whether a model is configured and what's in it.
   resolveAvatarModel: () => ipcRenderer.invoke('avatar:resolve-model'),
   fetchSampleAvatar: () => ipcRenderer.invoke('avatar:fetch-sample'),
+  // Native file picker for manually linking a local GGUF model (Settings >
+  // Model and the first-run wizard) -- see model-management.js's
+  // /models/scan + /models/path on the backend for the other half.
+  browseModelFile: () => ipcRenderer.invoke('browse-model-file'),
+  // Startup loading screen: getStartupStatus() catches up on whatever
+  // already happened before this listener was attached (see
+  // main.js's startupState), onStartupProgress() streams what happens
+  // after that.
+  getStartupStatus: () => ipcRenderer.invoke('get-startup-status'),
+  onStartupProgress: (cb) => ipcRenderer.on('startup-progress', (evt, update) => cb(update)),
+  // Closing screen: no snapshot getter like startup has -- shutdown always
+  // begins while this renderer is already up and listening (see main.js's
+  // before-quit handler), so there's nothing that could have been missed.
+  onShutdownProgress: (cb) => ipcRenderer.on('shutdown-progress', (evt, update) => cb(update)),
 });

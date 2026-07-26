@@ -109,6 +109,7 @@ const {
   createZedIntegration,
 } = require("./zed-integration");
 const { createModelManagement } = require("./model-management");
+const { createModelSettingsStore } = require("./model-settings-store");
 const whisperDiscovery = require("./whisper-discovery");
 const {
   normalizeLlamaModelProfile,
@@ -268,11 +269,18 @@ const localLlamaRuntime = createLocalLlamaRuntime({
   logPerf,
 });
 
+// Shared with modelManagement below so a model picked via /models/path (scan
+// or browse, from the desktop client's Settings > Model or the onboarding
+// wizard) is what llama-server actually loads next -- not just what
+// /models/status reports.
+const modelSettingsStore = createModelSettingsStore({});
+
 const llamaServerRuntime = createLlamaServerRuntime({
   env: process.env,
   threads: LLAMA_THREADS,
   nowMs,
   logPerf,
+  modelSettingsStore,
 });
 
 // Unified local reply helper: prefer the persistent llama-server (model loads
@@ -1439,7 +1447,28 @@ function registerRoutes(app, upload, deps = {}) {
     deps.modelManagement ||
     createModelManagement({
       env: deps.env || process.env,
+      modelSettingsStore,
     });
+
+  // llama-server normally starts lazily on the first chat reply. Desktop
+  // clients that want a startup loading screen to actually mean something
+  // (see desktop-client's service-manager.js) can set this to make node-bot
+  // warm it up immediately instead, using whatever model the active profile
+  // already resolves to. Best-effort: a missing binary/model here just means
+  // replies fall back to on-demand startup (or llama-cli) like today, same
+  // as any other ensureServerConfig failure.
+  if (
+    String((deps.env || process.env).MANA_EAGER_LLAMA_SERVER || "") === "1" &&
+    llamaServerRuntime.isEnabled()
+  ) {
+    const eagerProfile = modelManagement.getActiveProfile();
+    const eagerStatus = modelManagement.getModelStatus().profiles[eagerProfile];
+    if (eagerStatus && eagerStatus.available && eagerStatus.selectedModel) {
+      llamaServerRuntime
+        .ensureServerConfig(eagerStatus.selectedModel)
+        .catch((e) => console.warn("Eager llama-server startup skipped:", e.message));
+    }
+  }
 
   // Shared by every /admin/* route (moved here, out of the GET /health
   // handler it used to be nested in -- see checkAdminAuth's git history for
@@ -1700,6 +1729,29 @@ function registerRoutes(app, upload, deps = {}) {
     }
   });
 
+  // Full-storage scan for .gguf files (issue #123 install flow): best-effort,
+  // time/dir-capped -- see scanForGgufFiles in model-management.js. Optional
+  // body.roots lets the desktop client scope it (e.g. just a chosen drive)
+  // instead of the default home-dir + every drive letter.
+  app.post("/models/scan", (req, res) => {
+    try {
+      const roots = Array.isArray(req.body?.roots) ? req.body.roots : undefined;
+      return res.json(modelManagement.scanForModels(roots));
+    } catch (error) {
+      return res.status(400).json({ error: error.message });
+    }
+  });
+
+  // Explicitly select (or clear, with modelPath: null/"") which local .gguf
+  // file to use, from either a scan result or a manual file browse.
+  app.post("/models/path", (req, res) => {
+    try {
+      return res.json(modelManagement.setModelPath(req.body?.modelPath));
+    } catch (error) {
+      return res.status(400).json({ error: error.message });
+    }
+  });
+
   function makeHealthComponent(status, configured, message, details = {}) {
     return {
       status,
@@ -1803,6 +1855,25 @@ function registerRoutes(app, upload, deps = {}) {
       ),
     };
   }
+
+  // Graceful shutdown for the desktop client's closing UI: releases
+  // llama-server's VRAM/RAM before this process exits, instead of leaving
+  // it orphaned. A plain process kill from the parent doesn't work for
+  // this on Windows -- child_process.kill() force-terminates rather than
+  // delivering a catchable signal, so llamaServerRuntime's own SIGTERM
+  // handler (registered for the POSIX case) never runs. desktop-client's
+  // shutdown-manager.js calls this instead, then waits for this process to
+  // actually exit.
+  app.post("/admin/shutdown", (req, res) => {
+    if (!checkAdminAuth(req, res)) return;
+    try {
+      llamaServerRuntime.stop();
+    } catch (e) {
+      console.error("Error stopping llama-server during shutdown:", e?.message || e);
+    }
+    res.json({ ok: true });
+    setTimeout(() => process.exit(0), 150);
+  });
 
   app.get("/health", (req, res) => {
     const env = deps.env || process.env;

@@ -150,6 +150,51 @@ test("listSessions returns session metadata sorted by most recently updated", ()
   assert.equal(sessions[1].turnCount, 0);
 });
 
+test("appendTurn keeps full turn history instead of capping at maxRecentTurns", async () => {
+  const store = createAcpMemoryStore({
+    dataDir: createTempDir(),
+    now: () => "2026-06-29T00:00:00.000Z",
+    maxRecentTurns: 3,
+  });
+
+  for (let i = 0; i < 5; i += 1) {
+    await store.appendTurn({ sessionId: "session-full-history", user: `msg ${i}`, assistant: `reply ${i}` });
+  }
+
+  const session = store.getSession("session-full-history");
+  assert.equal(session.turns.length, 5);
+  assert.equal(session.turns[0].user, "msg 0");
+  assert.equal(session.turns[4].user, "msg 4");
+});
+
+test("getSessionTurnsPage pages a session's turns oldest-first, newest page by default", async () => {
+  const store = createAcpMemoryStore({ dataDir: createTempDir() });
+
+  for (let i = 0; i < 25; i += 1) {
+    await store.appendTurn({ sessionId: "session-paged", user: `msg ${i}`, assistant: `reply ${i}` });
+  }
+
+  const latest = store.getSessionTurnsPage("session-paged", { limit: 20 });
+  assert.equal(latest.turns.length, 20);
+  assert.equal(latest.turns[0].user, "msg 5");
+  assert.equal(latest.turns[19].user, "msg 24");
+  assert.equal(latest.hasMore, true);
+  assert.equal(latest.nextBefore, 5);
+  assert.equal(latest.total, 25);
+
+  const older = store.getSessionTurnsPage("session-paged", { before: latest.nextBefore, limit: 20 });
+  assert.equal(older.turns.length, 5);
+  assert.equal(older.turns[0].user, "msg 0");
+  assert.equal(older.turns[4].user, "msg 4");
+  assert.equal(older.hasMore, false);
+  assert.equal(older.nextBefore, 0);
+});
+
+test("getSessionTurnsPage returns null for an unknown session", () => {
+  const store = createAcpMemoryStore({ dataDir: createTempDir() });
+  assert.equal(store.getSessionTurnsPage("does-not-exist"), null);
+});
+
 // Entity tagging (issue #78): pure pattern matching, zero LLM calls.
 
 test("extractEntities finds multi-word Title Case entities without a stopword check", () => {
