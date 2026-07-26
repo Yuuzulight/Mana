@@ -75,7 +75,16 @@ function buildVsCodeOpenArgs(options = {}) {
 }
 
 function quoteWindowsCmdArg(value) {
-  return `"${String(value).replace(/"/g, '\\"')}"`;
+  const str = String(value);
+  // cmd.exe has no escape sequence for a literal " inside a /c "..."
+  // command line -- backslash means nothing to its tokenizer, so \" just
+  // closes the quote early and lets whatever follows (e.g. "& calc.exe")
+  // parse as a new command. Windows forbids " in real file paths anyway,
+  // so refusing it here costs nothing legitimate while closing that gap.
+  if (str.includes('"')) {
+    throw new Error("argument cannot contain a double quote");
+  }
+  return `"${str}"`;
 }
 
 function buildSpawnInvocation(command, args, platform = process.platform) {
@@ -94,6 +103,11 @@ function buildSpawnInvocation(command, args, platform = process.platform) {
   };
 }
 
+// Intentionally accepts any local path -- "pick which folder Mana's editor
+// integration points at" is the feature, so there's no narrower path to
+// sanitize down to. The HTTP routes that reach this (server.js's
+// /editors/workspace, /editors/open, /zed/open) are gated behind
+// checkAdminAuth precisely because this has no path containment of its own.
 function normalizeWorkspacePath(targetPath) {
   const cleanPath = typeof targetPath === "string" ? targetPath.trim() : "";
   if (!cleanPath) {

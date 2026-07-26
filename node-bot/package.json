@@ -16,11 +16,15 @@
     "cors": "^2.8.5",
     "esprima": "^4.0.1",
     "express": "^4.18.2",
-    "multer": "^1.4.5-lts.1",
+    "express-rate-limit": "^8.6.0",
+    "multer": "^2.2.0",
     "tesseract.js": "^7.0.0",
     "uuid": "^14.0.1",
     "ws": "^8.21.0",
     "zod": "^4.4.3"
+  },
+  "overrides": {
+    "@hono/node-server": "^2.0.5"
   },
   "license": "Apache-2.0"
 }

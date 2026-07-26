@@ -614,8 +614,11 @@ const RECIPE_PROFIT_FIELDS =
   "ItemResult.Name,AmountResult,Ingredient[].Name,AmountIngredient,CanHq";
 
 function extractItemIdFromText(text) {
+  // A single [\s:#-]* (rather than \s*[:#-]?\s*) avoids two adjacent \s*
+  // quantifiers that could split a run of spaces many equivalent ways --
+  // the quadratic-backtracking shape CodeQL flagged here.
   const itemIdMatch = String(text || "").match(
-    /\b(?:item\s*id|itemid|id)\s*[:#-]?\s*(\d{1,8})\b/i,
+    /\b(?:item\s*id|itemid|id)[\s:#-]*(\d{1,8})\b/i,
   );
   if (itemIdMatch) {
     return Number(itemIdMatch[1]);
@@ -648,9 +651,12 @@ function extractTopLimitFromText(text, fallback = FFXIV_PROFIT_TOP_LIMIT) {
 }
 
 function cleanItemNameCandidate(text) {
+  // Bracket/paren content in item names is always short; bounding the
+  // quantifier keeps a run of unterminated brackets (e.g. "[[[[[[...")
+  // from costing quadratic work across every /g match attempt.
   return String(text || "")
-    .replace(/\[[^\]]+\]/g, " ")
-    .replace(/\([^)]+\)/g, " ")
+    .replace(/\[[^\]]{1,100}\]/g, " ")
+    .replace(/\([^)]{1,100}\)/g, " ")
     .replace(/^[^A-Za-z0-9]+|[^A-Za-z0-9]+$/g, "")
     .replace(/\s+/g, " ")
     .trim();

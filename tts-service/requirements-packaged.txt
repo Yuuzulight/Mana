@@ -7,7 +7,7 @@
 fastapi>=0.115.2,<1.0
 uvicorn[standard]==0.30.6
 soundfile==0.12.1
-python-multipart>=0.0.18
-requests==2.32.3
+python-multipart>=0.0.32
+requests==2.34.2
 numpy>=2.0.0
 kokoro-onnx==0.5.0
