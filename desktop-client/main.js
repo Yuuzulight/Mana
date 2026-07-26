@@ -55,6 +55,17 @@ function createWindow() {
   });
 
   mainWindow.loadFile(path.join(__dirname, 'renderer', 'index_fixed.html'));
+
+  // Intercept the window's own close (X button / Alt+F4) so the closing
+  // screen has a live window to render the shutdown overlay in -- letting
+  // this fall through to 'window-all-closed' would destroy mainWindow
+  // first, and every sendToRenderer() the graceful-shutdown flow makes
+  // would silently no-op on an already-destroyed webContents.
+  mainWindow.on('close', (event) => {
+    if (isQuitting) return; // shutdown already running; let this one through
+    event.preventDefault();
+    runGracefulShutdown();
+  });
 }
 
 function findBundledNode() {
@@ -257,11 +268,12 @@ app.whenReady().then(async () => {
 // individually (6-8s), this is just a second, coarser backstop.
 const SHUTDOWN_OVERALL_TIMEOUT_MS = 15000;
 
-app.on('before-quit', (event) => {
-  if (isQuitting) return; // shutdown already ran (or is running); let this one through
-  event.preventDefault();
+// Shared by both quit paths below: the window's own 'close' (the only way
+// this app is normally closed -- no tray icon, no quit menu item) and
+// 'before-quit' (a fallback for quits that don't originate from a window
+// close, e.g. OS logoff/shutdown sending it directly).
+function runGracefulShutdown() {
   isQuitting = true;
-
   (async () => {
     try {
       const stop = serviceManager
@@ -293,6 +305,12 @@ app.on('before-quit', (event) => {
     await new Promise((resolve) => setTimeout(resolve, 400));
     app.exit(0);
   })();
+}
+
+app.on('before-quit', (event) => {
+  if (isQuitting) return; // shutdown already ran (or is running); let this one through
+  event.preventDefault();
+  runGracefulShutdown();
 });
 
 ipcMain.handle('show-error', async (ev, msg) => {
