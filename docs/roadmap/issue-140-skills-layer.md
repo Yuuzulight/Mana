@@ -11,11 +11,10 @@ scratch again next time.
 
 Dream Mode already consolidates *facts* during idle time, but nothing turns
 "here's how to fix a stuck TTS provider" into something Mana can cheaply
-reach for later. [Hermes Agent's Skills System](https://hermes-agent.nousresearch.com/docs/user-guide/features/skills)
-does this with standalone `SKILL.md` files loaded in two levels -- a cheap
-index (name/description only) always available, full content loaded only
-when a skill is actually used -- plus an idle-gated curator that prunes
-skills nobody's touched in a while.
+reach for later. The fix is standalone `SKILL.md` files loaded in two
+levels -- a cheap index (name/description only) always available, full
+content loaded only when a skill is actually used -- plus an idle-gated
+curator that prunes skills nobody's touched in a while.
 
 ## Status: Implemented
 
@@ -43,7 +42,7 @@ skills nobody's touched in a while.
   issue #69) now also calls `pruneStaleSkills` as a fourth, deterministic
   phase -- no model call, just frontmatter age checks. Configurable via
   `MANA_SKILL_STALE_DAYS` (default 30) / `MANA_SKILL_ARCHIVE_DAYS`
-  (default 90), matching Hermes' own defaults.
+  (default 90).
 - **Example skill**: `node-bot/skills/diagnosing-a-stuck-tts-provider.md`
   ships as a real, usable starting skill rather than a placeholder.
 
@@ -69,10 +68,10 @@ fixed by touching first, then reading.
   calls it without a human (or Mana, with a human actually invoking it)
   deciding to. Full autonomous write-after-task-success, and the approval
   gate in front of it, are out of scope here -- see issue #152.
-- **No LLM-assisted consolidation phase.** Hermes' curator has an optional
-  (off-by-default) LLM pass that reviews and merges skills; only the
-  deterministic stale/archive transitions are implemented here, matching
-  what the issue's acceptance criteria actually require.
+- **No LLM-assisted consolidation phase.** An optional (off-by-default) LLM
+  pass that reviews and merges skills is a reasonable future addition, but
+  only the deterministic stale/archive transitions are implemented here,
+  matching what the issue's acceptance criteria actually require.
 - **No skills marketplace/hub.** Purely local, per the issue's explicit
   scope.
 
