@@ -416,6 +416,23 @@ function startSearxngService() {
   });
 }
 
+// Backend log tail for Settings > Logs (issue #138). Ring buffer so a
+// Settings panel opened well after launch can still show recent history
+// via ipcMain.handle("get-backend-log") instead of only what streams in
+// from that point on.
+const BACKEND_LOG_MAX_LINES = 500;
+let backendLogBuffer = [];
+function appendBackendLog(text) {
+  backendLogBuffer.push(...text.split("\n").filter((line) => line.length > 0));
+  if (backendLogBuffer.length > BACKEND_LOG_MAX_LINES) {
+    backendLogBuffer = backendLogBuffer.slice(-BACKEND_LOG_MAX_LINES);
+  }
+  if (mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents && !mainWindow.webContents.isDestroyed()) {
+    mainWindow.webContents.send("backend-log", text);
+  }
+}
+ipcMain.handle("get-backend-log", async () => backendLogBuffer.join("\n"));
+
 function startWindowsServices() {
   // Only start one backend process.
   if (backendProcess) {
@@ -459,9 +476,11 @@ function startWindowsServices() {
 
   backendProcess.stdout.on("data", (data) => {
     console.log(`Node: ${data}`);
+    appendBackendLog(String(data));
   });
   backendProcess.stderr.on("data", (data) => {
     console.error(`Node ERR: ${data}`);
+    appendBackendLog(String(data));
   });
   backendProcess.on("close", (code) => {
     console.log(`Node server exited with code ${code}`);
@@ -469,14 +488,25 @@ function startWindowsServices() {
   });
 }
 
+// Chat-UI size vs. the startup-loading-screen size (issue #138) -- the
+// window opens small, sized to the loading card itself, and grows to the
+// real chat-UI size in finishStartup() once startup actually completes,
+// instead of floating a small centered card inside a mostly-empty
+// full-size window the whole time.
+const MAIN_WINDOW_WIDTH = 1020;
+const MAIN_WINDOW_HEIGHT = 720;
+const MAIN_WINDOW_MIN_WIDTH = 640;
+const MAIN_WINDOW_MIN_HEIGHT = 480;
+const STARTUP_WINDOW_WIDTH = 440;
+const STARTUP_WINDOW_HEIGHT = 460;
+
 function createWindow() {
   mainWindow = new BrowserWindow({
-    width: 1020,
-    height: 720,
-    minWidth: 640,
-    minHeight: 480,
+    width: STARTUP_WINDOW_WIDTH,
+    height: STARTUP_WINDOW_HEIGHT,
+    center: true,
     title: "Mana",
-    show: !HIDE_MAIN_WINDOW_AFTER_STARTUP,
+    show: false,
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
       nodeIntegration: true,
@@ -485,14 +515,10 @@ function createWindow() {
   });
 
   mainWindow.loadFile(path.join(__dirname, "renderer", "index.html"));
+  // Always show first so the startup loading screen (issue #138) is
+  // visible -- whether the window then hides into avatar-only mode is
+  // decided once startup actually finishes, in runStartupSequence().
   mainWindow.once("ready-to-show", () => {
-    if (HIDE_MAIN_WINDOW_AFTER_STARTUP) {
-      // Quick rundown: keep the mic/listening page alive, just hide the chat
-      // window; Mana stays on screen as the avatar overlay.
-      mainWindow.hide();
-      return;
-    }
-
     mainWindow.show();
   });
 
@@ -628,6 +654,98 @@ function createAvatarWindow() {
   });
 }
 
+// Startup loading screen (issue #138): shows the window immediately with a
+// per-service progress list instead of an unexplained pause, then either
+// reveals the chat UI or hides into avatar-only mode per
+// HIDE_MAIN_WINDOW_AFTER_STARTUP once everything meaningful is up.
+const STARTUP_OVERALL_TIMEOUT_MS = 25000;
+const STARTUP_POLL_INTERVAL_MS = 600;
+// Snapshot of the latest event per row, so a renderer that attaches its
+// listener slightly late (e.g. after a reload) can still catch up via
+// ipcMain.handle("get-startup-status") instead of missing early events.
+const startupState = {};
+
+function reportStartupProgress(id, status, label) {
+  startupState[id] = { id, status, label };
+  if (mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents && !mainWindow.webContents.isDestroyed()) {
+    mainWindow.webContents.send("startup-progress", startupState[id]);
+  }
+}
+
+// fish/chatterbox/gpt_sovits all fall back to Kokoro if their configured
+// primary never comes up (see the service-start block in app.whenReady
+// below) -- voice output still works via the fallback, so this has to
+// check both instead of just the primary, or the default fish setup would
+// wait forever for a Fish Speech server this app never starts itself (see
+// docs/fish_speech_tts.md).
+async function isVoiceReady() {
+  if (await isTtsRunning()) return true;
+  const provider = process.env.TTS_PROVIDER || "fish";
+  if (["fish", "chatterbox", "gpt_sovits"].includes(provider)) {
+    return isKokoroRunning();
+  }
+  return false;
+}
+
+// Local AI (llama-server) is lazy-started on the first chat message unless
+// MANA_EAGER_LLAMA_SERVER=1 -- with nothing eagerly starting, there's
+// nothing to wait for, so this reports ready immediately instead of
+// blocking the loading screen on a service that was never asked to start.
+async function isLocalAiReady() {
+  if (process.env.MANA_EAGER_LLAMA_SERVER !== "1") return true;
+  try {
+    const response = await fetch(BACKEND_URL);
+    if (!response.ok) return false;
+    const body = await response.json();
+    return Boolean(body.llamaServerRunning);
+  } catch (error) {
+    return false;
+  }
+}
+
+async function pollUntilReady(id, label, checkFn, deadline) {
+  reportStartupProgress(id, "starting", label);
+  while (Date.now() < deadline) {
+    if (await checkFn()) {
+      reportStartupProgress(id, "ready", label);
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, STARTUP_POLL_INTERVAL_MS));
+  }
+  // Not fatal -- the app is still usable, this just stops making the user
+  // wait on something that's taking unusually long (or isn't launcher-
+  // managed at all, e.g. a Fish Speech server started outside Mana).
+  reportStartupProgress(id, "timeout", label);
+}
+
+async function runStartupSequence() {
+  const deadline = Date.now() + STARTUP_OVERALL_TIMEOUT_MS;
+  await Promise.all([
+    pollUntilReady("backend", "Backend", isBackendRunning, deadline),
+    pollUntilReady("voice", "Voice", isVoiceReady, deadline),
+    pollUntilReady("websearch", "Web search", isSearxngRunning, deadline),
+    pollUntilReady("localai", "Local AI", isLocalAiReady, deadline),
+  ]);
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    // Grow from the small startup-card size to the real chat-UI size now
+    // that there's real chat UI to show -- min size is only applied here
+    // too, so the loading screen was never clamped up to a size bigger
+    // than its own content. Resized *before* the IPC signal below: the
+    // renderer's handleStartupComplete() measures the avatar canvas's real
+    // box to size Live2D's renderer, so the window has to already be at
+    // full size by the time that fires.
+    mainWindow.setMinimumSize(MAIN_WINDOW_MIN_WIDTH, MAIN_WINDOW_MIN_HEIGHT);
+    mainWindow.setSize(MAIN_WINDOW_WIDTH, MAIN_WINDOW_HEIGHT);
+    mainWindow.center();
+    mainWindow.webContents.send("startup-complete");
+  }
+  if (HIDE_MAIN_WINDOW_AFTER_STARTUP && mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.hide();
+  }
+}
+
+ipcMain.handle("get-startup-status", async () => startupState);
+
 app.whenReady().then(() => {
   // single instance check
   const gotLock = app.requestSingleInstanceLock();
@@ -712,6 +830,7 @@ app.whenReady().then(() => {
   createTray();
   registerVisionHotkey();
   registerWindowHotkey();
+  runStartupSequence();
 
   screen.on("display-metrics-changed", positionAvatarWindow);
   screen.on("display-added", positionAvatarWindow);

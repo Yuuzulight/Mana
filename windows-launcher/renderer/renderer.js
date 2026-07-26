@@ -10,6 +10,12 @@ const runDoctorButton = document.getElementById("runDoctor");
 const doctorTitleEl = document.getElementById("doctorTitle");
 const doctorSummaryEl = document.getElementById("doctorSummary");
 const doctorChecksEl = document.getElementById("doctorChecks");
+const doctorAttentionLabelEl = document.getElementById("doctorAttentionLabel");
+const doctorPassLabelEl = document.getElementById("doctorPassLabel");
+const doctorPassChecksEl = document.getElementById("doctorPassChecks");
+const doctorBubbleEl = document.getElementById("doctorBubble");
+const doctorBubbleTitleEl = doctorBubbleEl?.querySelector(".doctor-bubble-title");
+const doctorBubbleMessageEl = doctorBubbleEl?.querySelector(".doctor-bubble-message");
 const modelModeControlsEl = document.getElementById("modelModeControls");
 const modelStatusEl = document.getElementById("modelStatus");
 const presetSelectEl = document.getElementById("presetSelect");
@@ -1339,31 +1345,176 @@ async function refreshPerfStatus() {
   }
 }
 
+// Startup loading screen (issue #138): driven by main.js's
+// runStartupSequence() over IPC. get-startup-status catches up on any
+// row events that fired before this listener attached (page load timing),
+// but "done" is derived from row state client-side rather than trusted to
+// the one-shot startup-complete event alone -- if every row already
+// finished before this script ran (e.g. services still warm from a
+// previous launch), that event fired and was missed with nothing left to
+// replay it, and the overlay would otherwise never hide.
+const startupOverlayEl = document.getElementById("startupOverlay");
+const STARTUP_ROW_IDS = ["backend", "voice", "websearch", "localai"];
+const startupRowState = {};
+let startupCompleteHandled = false;
+
+// The window opens small (sized to the loading card) and only grows to its
+// real chat-UI dimensions once startup finishes (see main.js's
+// runStartupSequence). initWindowAvatar() measures manaCanvasEl's box to
+// size PixiJS's renderer -- calling it while the window is still small
+// bakes in a near-zero render size that never recovers even after the
+// window grows, since live2d-avatar.js has no resize() to call later. So
+// it's deferred to here instead of running unconditionally at script load.
+// Polls an element's client box until two consecutive reads agree (or
+// maxWaitMs runs out), then calls back. A single rAF pair wasn't enough --
+// verified live that the avatar canvas's measured height was still
+// mid-reflow one full frame after the OS-level window resize
+// (mainWindow.setSize() in main.js), landing PixiJS's autoDensity-set
+// inline canvas size at a wrong, permanently-stuck value (no resize() to
+// fix it later). Real setTimeout ticks (not rAF) so each check is its own
+// full event-loop turn, giving style/layout/paint an actual chance to
+// finish rather than possibly landing inside the same reflow batch.
+function waitForStableSize(el, callback, maxWaitMs = 1000, checkIntervalMs = 50) {
+  let lastWidth = -1;
+  let lastHeight = -1;
+  const deadline = Date.now() + maxWaitMs;
+  function check() {
+    const { clientWidth, clientHeight } = el;
+    if (clientWidth > 0 && clientWidth === lastWidth && clientHeight === lastHeight) {
+      callback();
+      return;
+    }
+    lastWidth = clientWidth;
+    lastHeight = clientHeight;
+    if (Date.now() >= deadline) {
+      callback();
+      return;
+    }
+    setTimeout(check, checkIntervalMs);
+  }
+  check();
+}
+
+function handleStartupComplete() {
+  if (startupCompleteHandled) return;
+  startupCompleteHandled = true;
+  if (startupOverlayEl) startupOverlayEl.hidden = true;
+  if (manaCanvasEl) {
+    waitForStableSize(manaCanvasEl, initWindowAvatar);
+  } else {
+    initWindowAvatar();
+  }
+}
+
+function applyStartupProgress(update) {
+  if (!update || !update.id) return;
+  const row = document.querySelector(`.startup-row[data-startup-row="${update.id}"]`);
+  if (row) {
+    row.dataset.status = update.status;
+    const statusEl = row.querySelector(".startup-row-status");
+    if (statusEl) {
+      statusEl.textContent =
+        update.status === "ready" ? "Ready" : update.status === "timeout" ? "Taking a while" : "Starting...";
+    }
+  }
+  startupRowState[update.id] = update.status;
+  const allTerminal = STARTUP_ROW_IDS.every(
+    (id) => startupRowState[id] === "ready" || startupRowState[id] === "timeout",
+  );
+  if (allTerminal) handleStartupComplete();
+}
+
+ipcRenderer.on("startup-progress", (event, update) => applyStartupProgress(update));
+ipcRenderer.on("startup-complete", handleStartupComplete);
+ipcRenderer
+  .invoke("get-startup-status")
+  .then((state) => {
+    Object.values(state || {}).forEach(applyStartupProgress);
+  })
+  .catch(() => {});
+
+// Doctor issue detail popover: chips show just the name, click one to see
+// its full message in a small bubble anchored to it. position:fixed (see
+// index.html) so it's placed relative to the viewport, not clipped by
+// navInfoBody's own overflow-y:auto scroll area.
+function showDoctorBubble(chipEl) {
+  if (!doctorBubbleEl) return;
+  doctorBubbleTitleEl.textContent = chipEl.querySelector("strong")?.textContent || "";
+  doctorBubbleMessageEl.textContent = chipEl.dataset.doctorMessage || "";
+  doctorBubbleEl.hidden = false;
+  const rect = chipEl.getBoundingClientRect();
+  const bubbleRect = doctorBubbleEl.getBoundingClientRect();
+  const left = Math.min(rect.left, window.innerWidth - bubbleRect.width - 12);
+  const fitsBelow = rect.bottom + 8 + bubbleRect.height <= window.innerHeight - 12;
+  const top = fitsBelow ? rect.bottom + 8 : Math.max(12, rect.top - bubbleRect.height - 8);
+  doctorBubbleEl.style.left = `${Math.max(12, left)}px`;
+  doctorBubbleEl.style.top = `${top}px`;
+}
+function hideDoctorBubble() {
+  if (doctorBubbleEl) doctorBubbleEl.hidden = true;
+}
+document.addEventListener("click", (event) => {
+  if (!doctorBubbleEl || doctorBubbleEl.hidden) return;
+  if (!doctorBubbleEl.contains(event.target) && !event.target.closest(".doctor-chip")) {
+    hideDoctorBubble();
+  }
+});
+
+function doctorChip(row) {
+  const chip = document.createElement("button");
+  chip.type = "button";
+  chip.className = `doctor-chip doctor-chip-${row.status}`;
+  chip.dataset.doctorMessage = row.message || "No further detail.";
+
+  const dot = document.createElement("span");
+  dot.className = "doctor-chip-dot";
+
+  const label = document.createElement("strong");
+  label.textContent = row.label;
+
+  chip.append(dot, label);
+  chip.addEventListener("click", () => showDoctorBubble(chip));
+  return chip;
+}
+
 function renderDoctorPanel(result) {
   if (!doctorTitleEl || !doctorSummaryEl || !doctorChecksEl) {
     return;
   }
+  hideDoctorBubble();
 
   const panel = formatDoctorPanel(result);
   doctorTitleEl.textContent = panel.heading;
-  doctorSummaryEl.textContent = panel.summary;
+
+  const counts = { pass: 0, warn: 0, fail: 0 };
+  for (const row of panel.rows) {
+    counts[row.status] = (counts[row.status] || 0) + 1;
+  }
+  doctorSummaryEl.innerHTML = "";
+  for (const status of ["pass", "warn", "fail"]) {
+    const pill = document.createElement("span");
+    pill.className = `doctor-pill doctor-pill-${status}`;
+    const noun = status === "pass" ? "passing" : status === "warn" ? "need attention" : "failing";
+    pill.textContent = `${counts[status]} ${noun}`;
+    doctorSummaryEl.appendChild(pill);
+  }
+
+  const needsAttention = panel.rows.filter((row) => row.status !== "pass");
+  const passing = panel.rows.filter((row) => row.status === "pass");
+
   doctorChecksEl.innerHTML = "";
+  needsAttention.forEach((row) => doctorChecksEl.appendChild(doctorChip(row)));
+  if (doctorAttentionLabelEl) doctorAttentionLabelEl.hidden = needsAttention.length === 0;
+
+  doctorPassChecksEl.innerHTML = "";
+  passing.forEach((row) => doctorPassChecksEl.appendChild(doctorChip(row)));
+  if (doctorPassLabelEl) {
+    doctorPassLabelEl.hidden = passing.length === 0;
+    doctorPassLabelEl.textContent = `All good (${passing.length})`;
+  }
 
   let worstStatus = "pass";
   for (const row of panel.rows) {
-    const item = document.createElement("div");
-    item.className = row.className;
-
-    const title = document.createElement("div");
-    title.className = "doctor-check-title";
-    title.textContent = `${row.label} (${row.status})`;
-
-    const message = document.createElement("div");
-    message.textContent = row.message;
-
-    item.append(title, message);
-    doctorChecksEl.appendChild(item);
-
     if (row.status === "fail") {
       worstStatus = "fail";
     } else if (row.status === "warn" && worstStatus !== "fail") {
@@ -1889,7 +2040,9 @@ async function startListeningOnLaunch() {
 
 startListeningOnLaunch();
 refreshGamingStatus(true);
-initWindowAvatar();
+// initWindowAvatar() is deferred to handleStartupComplete() (see above) --
+// the window opens small and grows once startup finishes, and Live2D's
+// canvas-size measurement has to happen after that resize, not before it.
 refreshPerfStatus();
 runDoctorChecksFromLauncher();
 
