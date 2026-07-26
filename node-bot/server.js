@@ -15,14 +15,13 @@ Environment variables (set before running):
   whisper.cpp decoding tuning knobs, see docs/speech_recognition_improvement_plan.md
 - LLAMA_BIN : full path to llama.cpp/main executable (e.g. C:\llama.cpp\main.exe)
 - LLAMA_MODEL : full path to a GGUF model file, or an HF repo shorthand like user/model:Q4_K_M
-- TTS_PROVIDER : "cli", "chatterbox", "kokoro", or "fish" (default: "fish",
+- TTS_PROVIDER : "cli", "kokoro", or "fish" (default: "fish",
   see docs/fish_speech_tts.md for the recommended S1-mini checkpoint)
 - TTS_BIN : full path to your TTS executable
 - TTS_MODEL : model path or model id for your TTS executable
 - TTS_ARGS_JSON : optional JSON array of CLI args with placeholders like {text}, {output}, {model}, {voice}, {speaker}
 - TTS_VOICE : optional voice value used by your TTS args
 - TTS_SPEAKER : optional speaker value used by your TTS args
-- CHATTERBOX_TTS_URL : local Chatterbox TTS microservice URL
 - KOKORO_TTS_URL : local Kokoro TTS microservice URL
 - FISH_TTS_URL : local Fish Speech server URL
 - FISH_TTS_API_KEY : optional Fish Speech bearer token
@@ -30,7 +29,7 @@ Environment variables (set before running):
 - FISH_TTS_REF_AUDIO, FISH_TTS_REF_TEXT : optional local reference clip path
   + its exact transcript, for zero-shot in-context voice cloning on every
   request (takes priority over FISH_TTS_REFERENCE_ID when both are set)
-- FISH_TTS_FALLBACK_PROVIDER : "kokoro", "chatterbox", or "none"
+- FISH_TTS_FALLBACK_PROVIDER : "kokoro" or "none"
 - MANA_ALLOW_REMOTE_AI : set to "1" to allow OpenAI/proxy chat replies
 - GAMING_PROCESS_NAMES : optional comma-separated game process names for Gaming mode
 - MANA_MCP_SERVER_ENABLED : set to "1" to allow `npm run mcp` (mcp-server.js) to
@@ -204,8 +203,6 @@ const OPENAI_BASE_URL =
   process.env.OPENAI_BASE_URL || "https://api.openai.com";
 const OPENAI_MODEL = process.env.OPENAI_MODEL || "codex-gpt-5.5";
 const TTS_BIN = process.env.TTS_BIN || null;
-const CHATTERBOX_TTS_URL =
-  process.env.CHATTERBOX_TTS_URL || "http://127.0.0.1:5010";
 const KOKORO_TTS_URL = process.env.KOKORO_TTS_URL || "http://127.0.0.1:5011";
 const FISH_TTS_URL = process.env.FISH_TTS_URL || "http://127.0.0.1:8080";
 const SCREEN_CONTEXT_ENABLED = process.env.SCREEN_CONTEXT_ENABLED !== "0";
@@ -1374,7 +1371,6 @@ function getManaProcessSnapshot() {
 function getManaProcessRole(commandLine) {
   const text = commandLine.toLowerCase();
   if (text.includes("kokoro_service")) return "kokoro tts";
-  if (text.includes("uvicorn service:app")) return "chatterbox tts";
   if (text.includes("node-bot\\server.js")) return "backend";
   if (text.includes("nodemon")) return "dev restart";
   if (text.includes("electron")) return "launcher";
@@ -1955,7 +1951,6 @@ function registerRoutes(app, upload, deps = {}) {
       ttsConfigured: TTS_PROVIDER !== "none",
       ttsProvider: TTS_PROVIDER,
       kokoroTtsUrl: KOKORO_TTS_URL,
-      chatterboxTtsUrl: CHATTERBOX_TTS_URL,
       fishTtsUrl: FISH_TTS_URL,
       llamaConfigured: llamaStatus.ok,
       llamaModel: llamaStatus.model,
@@ -2299,7 +2294,7 @@ function registerRoutes(app, upload, deps = {}) {
     }
   });
 
-  const TTS_OVERRIDE_PROVIDERS = ["fish", "kokoro", "chatterbox", "gpt_sovits", "cli"];
+  const TTS_OVERRIDE_PROVIDERS = ["fish", "kokoro", "gpt_sovits", "cli"];
 
   app.get("/tts/override", (req, res) => {
     res.json({ ok: true, override: ttsRuntime.getProviderOverride() });

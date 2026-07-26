@@ -1060,8 +1060,8 @@
          driven by main.js's "startup-progress"/"startup-complete" IPC
          events (see renderer.js). Rows are generic (Backend/Voice/Web
          search/Local AI) rather than naming the specific tool behind each
-         one, since that's swappable (Fish/Kokoro/Chatterbox/GPT-SoVITS
-         for voice, etc). -->
+         one, since that's swappable (Fish/Kokoro/GPT-SoVITS for voice,
+         etc). -->
     <div id="startupOverlay">
       <div id="startupCard">
         <svg width="40" height="40" viewBox="0 0 24 24" aria-hidden="true">
@@ -1185,7 +1185,6 @@
                   <option value="">Voice: default</option>
                   <option value="fish">Voice: S1-mini</option>
                   <option value="kokoro">Voice: Kokoro</option>
-                  <option value="chatterbox">Voice: Chatterbox</option>
                 </select>
                 <span class="spacer"></span>
                 <button id="chatSend" title="Send">↑</button>

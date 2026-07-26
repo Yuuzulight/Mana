@@ -1,10 +1,10 @@
 # GPT-SoVITS (Trial Voice Provider)
 
-GPT-SoVITS is a trial alternative to Chatterbox for Mana's voice. It's the
+GPT-SoVITS is a trial alternative to Fish Speech for Mana's voice. It's the
 model most of the anime/VTuber voice-cloning community actually uses, and
-can be a better stylistic fit for an anime-character voice than Chatterbox.
-It runs entirely locally, alongside Chatterbox and Kokoro — nothing is
-removed, and switching back is one environment variable.
+can be a better stylistic fit for an anime-character voice. It runs
+entirely locally, alongside Fish Speech and Kokoro — nothing is removed,
+and switching back is one environment variable.
 
 ## Setup
 
@@ -31,7 +31,7 @@ missing, which may prompt for admin approval once.
 
 GPT-SoVITS clones from a short reference clip **and an exact transcript**
 of what's said in it — an inaccurate transcript measurably hurts output
-quality, more so than for Chatterbox. A 5-15 second clean clip works well.
+quality. A 5-15 second clean clip works well.
 
 1. Pick a short segment of the recording with clear, unaccompanied speech.
 2. Get its exact transcript. The most reliable way is Mana's own local
@@ -45,7 +45,7 @@ quality, more so than for Chatterbox. A 5-15 second clean clip works well.
    effects-heavy audio; if that happens, transcribe by ear instead of
    trusting a bad automatic transcript.
 3. Save the clip as a plain 16-bit PCM WAV under `tts-service\references\`
-   (the same folder Chatterbox's voice bank uses).
+   (the same folder Fish Speech's reference clips use).
 
 ## Configuration
 
@@ -91,13 +91,13 @@ Japanese, Korean, German, Russian, and Malay — just with two different
 voices depending on the language of that specific reply.
 
 The launcher starts GPT-SoVITS automatically when `TTS_PROVIDER=gpt_sovits`
-and keeps Kokoro warm alongside it as the fallback voice (same pattern as
-Chatterbox). Set `MANA_START_KOKORO_FALLBACK=0` to skip that.
+and keeps Kokoro warm alongside it as the fallback voice. Set
+`MANA_START_KOKORO_FALLBACK=0` to skip that.
 
 ## Switching back
 
 ```powershell
-$env:TTS_PROVIDER = "chatterbox"   # or "kokoro"
+$env:TTS_PROVIDER = "fish"   # or "kokoro"
 ```
 
 Restart the launcher. GPT-SoVITS's process only starts when it's the
@@ -108,12 +108,12 @@ runtime — only the disk space of the install.
 
 - First reply after starting pays a model-load cost (checkpoints load into
   VRAM); subsequent replies are fast.
-- Reference clip and prompt text quality matter more here than for
-  Chatterbox — if the cloned voice sounds off, try a cleaner/shorter
-  reference clip before assuming the model itself is the problem.
+- Reference clip and prompt text quality matter a lot here — if the
+  cloned voice sounds off, try a cleaner/shorter reference clip before
+  assuming the model itself is the problem.
 - The trial reference clip and transcript shipped with this setup are cut
   from Mana's Mitsuki source recording (the same one used for her default
-  Chatterbox voice), for a consistent voice identity across providers.
+  Fish Speech voice), for a consistent voice identity across providers.
 
 ## Known issue: silent audio despite HTTP 200 (fixed by the launcher)
 

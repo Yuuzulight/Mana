@@ -51,7 +51,7 @@ For the full setup flow, including model paths, Whisper, TTS services, gaming mo
 - **Voice loop**: wake Mana once with `Mana` or `wake up`, then keep talking without repeating the wake word.
 - **Local transcription**: audio is transcribed through `whisper.cpp`.
 - **Local text generation**: replies come from GGUF models through `llama.cpp`.
-- **Local speech output**: Fish Speech (S1-mini) is the default TTS provider, with inline reference-audio voice cloning; Kokoro, Chatterbox, and GPT-SoVITS provider paths are also supported.
+- **Local speech output**: Fish Speech (S1-mini) is the default TTS provider, with inline reference-audio voice cloning; Kokoro and GPT-SoVITS provider paths are also supported.
 - **Neural voice-activity detection**: the launcher's continuous-listening loop uses Silero VAD to detect speech/silence, with a graceful fallback to RMS-threshold detection if the model is unavailable.
 - **Screen text awareness**: after Mana is awake, the launcher can capture the primary display and OCR readable text locally.
 - **Local image understanding**: with a vision GGUF installed, Mana can look at screenshots and images and talk about them; see [docs/vision_setup.md](docs/vision_setup.md).
@@ -82,7 +82,7 @@ Mana is intentionally split into small runtime pieces:
 - `desktop-client`: Electron chat client packaged with a real Windows installer (electron-builder/NSIS), including a built-in Live2D avatar (see `desktop-client/AVATAR_NOTICE.md`), a fully context-isolated renderer (`nodeIntegration: false`), a guided first-run setup wizard, and auto-update checking.
 - `node-bot`: local backend API for transcription, replies, TTS calls, screen OCR, mobile routes, and setup checks.
 - `plugins`: self-contained optional feature plugins (FFXIV market/crafting, real-world stock market data, a local job-application tracker, live Adzuna job search) that register their own routes, contribute chat-reply context, and are discoverable via `GET /plugins`; see [plugins/README.md](plugins/README.md).
-- `tts-service`: local Python services for Chatterbox and Kokoro TTS.
+- `tts-service`: local Python service for Kokoro TTS.
 - `tools/whisper`: expected location for local `whisper.cpp` binaries and models.
 - `tools/llama`: expected location for local `llama.cpp` binaries and GGUF models.
 - `windows-native-launcher`: planned lower-memory native Windows launcher.
@@ -187,7 +187,6 @@ Common troubleshooting:
 - [Live2D avatar setup](docs/live2d_avatar_setup.md): built-in VTuber avatar with lip sync.
 - [VTube Studio setup](docs/vtube_studio_setup.md): avatar hotkeys and reactions.
 - [Native launcher plan](docs/native_launcher_plan.md): lower-memory launcher direction.
-- [Chatterbox voice tuning](docs/chatterbox_voice_tuning.md): Chatterbox voice settings.
 - [GPT-SoVITS setup](docs/gpt_sovits_setup.md): trial anime-style voice-cloning provider.
 - [Fish Speech TTS](docs/fish_speech_tts.md): optional Fish Speech provider.
 - [Market analysis helper](docs/market_analysis_helper.md): stock-market helper setup.
