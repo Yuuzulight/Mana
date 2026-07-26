@@ -575,7 +575,7 @@
       }
 
       /* Panels reused inside the sidebar (Model / Doctor / Settings) */
-      #perfPanel, #doctorPanel, #modelPanel, #presetPanel, #themePanel {
+      #perfPanel, #doctorPanel, #modelPanel, #presetPanel, #themePanel, #pluginsPanel, #logsPanel {
         margin-bottom: 12px;
         padding: 10px;
         border: 1px solid var(--border);
@@ -585,6 +585,62 @@
       }
 
       #perfPanel pre { margin: 8px 0 0; white-space: pre-wrap; }
+
+      #pluginsHeader { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+      #pluginsAddBtn { padding: 3px 9px; font-size: 11px; }
+      #pluginsSearchInput { width: 100%; margin-bottom: 8px; }
+      .plugin-category-label {
+        font-size: 10px;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        color: var(--muted);
+        margin: 8px 0 4px;
+      }
+      .plugin-category-label:first-child { margin-top: 0; }
+      .plugin-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        padding: 6px 0;
+        border-top: 1px solid var(--border);
+      }
+      .plugin-category-label + .plugin-row { border-top: none; }
+      .plugin-row-info { display: flex; flex-direction: column; overflow: hidden; }
+      .plugin-row-info strong { font-size: 12px; }
+      .plugin-row-info span { font-size: 11px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .plugin-switch {
+        flex-shrink: 0;
+        width: 34px;
+        height: 19px;
+        border-radius: 999px;
+        border: 1px solid var(--border);
+        background: var(--panel);
+        position: relative;
+        padding: 0;
+        cursor: pointer;
+      }
+      .plugin-switch::after {
+        content: "";
+        position: absolute;
+        top: 2px;
+        left: 2px;
+        width: 13px;
+        height: 13px;
+        border-radius: 50%;
+        background: var(--muted);
+        transition: left 0.15s ease, background 0.15s ease;
+      }
+      .plugin-switch.on { border-color: var(--accent); }
+      .plugin-switch.on::after { left: 17px; background: var(--accent); }
+
+      #backendLogs {
+        max-height: 220px;
+        overflow-y: auto;
+        white-space: pre-wrap;
+        font-size: 11px;
+        margin: 8px 0 0;
+      }
 
       #modelModeControls {
         display: flex;
@@ -865,6 +921,122 @@
         justify-content: flex-end;
         gap: 8px;
       }
+
+      /* Nav info popup (issue #138): Avatar/Web access/Vision/Model/Doctor
+         open in a popup bubble instead of an always-expanded inline panel.
+         Reuses the existing .modal-overlay/.modal/.modal-header/.modal-body
+         shell above (already used by memoryModal/confirmModal) so the
+         [hidden]{display:none} override doesn't need repeating. */
+      .modal-wide { width: min(640px, 92vw); }
+      /* .modal-body's shared white-space:pre-wrap (needed by memoryModal's
+         raw preformatted text) makes literal indentation/newlines between
+         navInfoBody's structured HTML tags render as real blank lines --
+         normal HTML whitespace collapsing is what this content needs. */
+      #navInfoBody { white-space: normal; }
+
+      .doctor-summary-pills { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
+      .doctor-pill {
+        font-size: 11px;
+        padding: 4px 10px;
+        border-radius: 999px;
+        border: 1px solid var(--border);
+        color: var(--muted);
+      }
+      .doctor-pill-pass { color: #3fb96a; border-color: rgba(63, 185, 106, 0.35); }
+      .doctor-pill-warn { color: #d99a2b; border-color: rgba(217, 154, 43, 0.35); }
+      .doctor-pill-fail { color: #d15b5b; border-color: rgba(209, 91, 91, 0.35); }
+
+      .doctor-section-label {
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+        color: var(--muted);
+        margin: 12px 0 6px;
+      }
+
+      .doctor-checks-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; }
+      .doctor-chip {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        width: 100%;
+        background: var(--panel-2);
+        padding: 9px 11px;
+        border-radius: 8px;
+        border: 1px solid var(--border);
+        cursor: pointer;
+        text-align: left;
+        font-family: inherit;
+        font-size: 12px;
+        color: var(--text);
+      }
+      .doctor-chip:hover { border-color: var(--accent); }
+      .doctor-chip-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+      .doctor-chip-pass .doctor-chip-dot { background: #3fb96a; }
+      .doctor-chip-warn .doctor-chip-dot { background: #d99a2b; }
+      .doctor-chip-fail .doctor-chip-dot { background: #d15b5b; }
+      .doctor-chip strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+      .doctor-bubble {
+        position: fixed;
+        max-width: 280px;
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 10px 12px;
+        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+        z-index: 70;
+      }
+      .doctor-bubble[hidden] { display: none; }
+      .doctor-bubble-title { font-size: 13px; font-weight: bold; margin-bottom: 4px; }
+      .doctor-bubble-message { font-size: 12px; color: var(--muted); line-height: 1.4; }
+
+      /* Startup loading screen (issue #138) */
+      #startupOverlay {
+        position: fixed;
+        inset: 0;
+        z-index: 200;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: var(--bg);
+      }
+      #startupOverlay[hidden] { display: none; }
+      #startupCard {
+        width: min(360px, 88vw);
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        text-align: center;
+        gap: 4px;
+      }
+      #startupTitle { font-size: 17px; font-weight: bold; margin-top: 10px; }
+      #startupSubtitle { font-size: 12px; color: var(--muted); margin-bottom: 18px; }
+      #startupRows { width: 100%; display: flex; flex-direction: column; gap: 12px; }
+      .startup-row-top {
+        display: flex;
+        justify-content: space-between;
+        font-size: 12px;
+        margin-bottom: 5px;
+      }
+      .startup-row-status { color: var(--muted); }
+      .startup-row[data-status="ready"] .startup-row-status { color: #3fb96a; }
+      .startup-row[data-status="timeout"] .startup-row-status { color: #d99a2b; }
+      .startup-bar {
+        height: 4px;
+        border-radius: 999px;
+        background: var(--panel-2);
+        overflow: hidden;
+      }
+      .startup-bar-fill {
+        height: 100%;
+        width: 6%;
+        border-radius: 999px;
+        background: var(--accent);
+        transition: width 0.4s ease;
+      }
+      .startup-row[data-status="ready"] .startup-bar-fill,
+      .startup-row[data-status="timeout"] .startup-bar-fill { width: 100%; }
     </style>
     <!-- Applies the persisted theme's CSS custom properties to :root as early
          as possible, before the body paints, to avoid a flash of the default
@@ -872,9 +1044,52 @@
     <script src="theme.js"></script>
   </head>
   <body>
+    <!-- Startup loading screen (issue #138): visible from first paint,
+         driven by main.js's "startup-progress"/"startup-complete" IPC
+         events (see renderer.js). Rows are generic (Backend/Voice/Web
+         search/Local AI) rather than naming the specific tool behind each
+         one, since that's swappable (Fish/Kokoro/Chatterbox/GPT-SoVITS
+         for voice, etc). -->
+    <div id="startupOverlay">
+      <div id="startupCard">
+        <svg width="40" height="40" viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M12,3 L5.1,12 L12,21 Z" fill="var(--accent)" opacity="0.6" />
+          <path d="M12,3 L18.9,12 L12,21 Z" fill="var(--accent)" />
+          <path d="M12,3 L15,8.1 L9,8.1 Z" fill="#c9b8f0" opacity="0.85" />
+        </svg>
+        <div id="startupTitle">Starting Mana</div>
+        <div id="startupSubtitle">Starting...</div>
+        <div id="startupRows">
+          <div class="startup-row" data-startup-row="backend">
+            <div class="startup-row-top"><span>Backend</span><span class="startup-row-status">Waiting...</span></div>
+            <div class="startup-bar"><div class="startup-bar-fill"></div></div>
+          </div>
+          <div class="startup-row" data-startup-row="voice">
+            <div class="startup-row-top"><span>Voice</span><span class="startup-row-status">Waiting...</span></div>
+            <div class="startup-bar"><div class="startup-bar-fill"></div></div>
+          </div>
+          <div class="startup-row" data-startup-row="websearch">
+            <div class="startup-row-top"><span>Web search</span><span class="startup-row-status">Waiting...</span></div>
+            <div class="startup-bar"><div class="startup-bar-fill"></div></div>
+          </div>
+          <div class="startup-row" data-startup-row="localai">
+            <div class="startup-row-top"><span>Local AI</span><span class="startup-row-status">Waiting...</span></div>
+            <div class="startup-bar"><div class="startup-bar-fill"></div></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <div id="sessionSidebar">
       <div id="sidebarHeader">
-        <div id="sidebarLogo">⛰ <span class="sidebar-label">Mana</span></div>
+        <div id="sidebarLogo">
+          <svg width="17" height="17" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M12,3 L5.1,12 L12,21 Z" fill="var(--accent-dim, var(--accent))" />
+            <path d="M12,3 L18.9,12 L12,21 Z" fill="var(--accent)" />
+            <path d="M12,3 L15,8.1 L9,8.1 Z" fill="#c9b8f0" opacity="0.85" />
+          </svg>
+          <span class="sidebar-label">Mana</span>
+        </div>
         <button id="sidebarCollapseBtn" title="Collapse sidebar">☰</button>
       </div>
 
@@ -939,19 +1154,6 @@
           </div>
         </div>
 
-        <div class="sidebar-panel" data-panel="avatar" hidden>
-          <div class="sidebar-panel-title">Avatar</div>
-          <p class="sidebar-note">Live2D avatar rendered in the composer dock. Click the ⤢ button on the avatar to cycle framing.</p>
-          <div class="sidebar-field">
-            <label id="avatarZoomLabel">Framing: whole body</label>
-          </div>
-        </div>
-
-        <div class="sidebar-panel" data-panel="webAccess" hidden>
-          <div class="sidebar-panel-title">Web access</div>
-          <p class="sidebar-note" id="webAccessStatus">Checking...</p>
-        </div>
-
         <div class="sidebar-panel" data-panel="marketWatch" hidden>
           <div class="sidebar-panel-title">Market watch</div>
           <div id="marketWatchForm">
@@ -959,30 +1161,6 @@
             <button id="marketWatchCheckBtn">Check</button>
           </div>
           <div id="marketWatchResult"></div>
-        </div>
-
-        <div class="sidebar-panel" data-panel="vision" hidden>
-          <div class="sidebar-panel-title">Vision</div>
-          <p class="sidebar-note">Ask Mana to describe your screen without saying it out loud. Default hotkey: <strong>Ctrl+Alt+M</strong>.</p>
-          <button id="visionLookNowBtn">Look at my screen now</button>
-        </div>
-
-        <div class="sidebar-panel" data-panel="model" hidden>
-          <div id="modelPanel">
-            <div id="modelModeControls"></div>
-            <div id="modelStatus">Checking...</div>
-          </div>
-        </div>
-
-        <div class="sidebar-panel" data-panel="doctor" hidden>
-          <div id="doctorPanel">
-            <div id="doctorHeader">
-              <strong id="doctorTitle">Doctor</strong>
-              <button id="runDoctor">Run checks</button>
-            </div>
-            <div id="doctorSummary">Not checked yet</div>
-            <div id="doctorChecks"></div>
-          </div>
         </div>
 
         <div class="sidebar-panel" data-panel="settings" hidden>
@@ -1041,6 +1219,22 @@
               <input type="color" id="accentColorInput" />
               <button id="resetAccentBtn">Reset</button>
             </div>
+          </div>
+
+          <div id="pluginsPanel">
+            <div id="pluginsHeader">
+              <strong>Plugins</strong>
+              <button id="pluginsAddBtn" title="Open the plugins guide">+ Add</button>
+            </div>
+            <input id="pluginsSearchInput" type="text" placeholder="Search plugins..." />
+            <div id="pluginsList">
+              <p class="sidebar-note">Loading...</p>
+            </div>
+          </div>
+
+          <div id="logsPanel">
+            <strong>Logs</strong>
+            <pre id="backendLogs">(backend logs)</pre>
           </div>
         </div>
       </div>
@@ -1130,6 +1324,66 @@
 
       <div id="transcript"></div>
       <div id="modelReply"></div>
+    </div>
+
+    <!-- Nav info popup (issue #138): Avatar/Web access/Vision/Model/Doctor
+         open here instead of an always-expanded inline sidebar panel.
+         Content divs below keep their original ids so existing renderer.js
+         logic (avatarZoomLabel, webAccessStatus, visionLookNowBtn,
+         modelModeControls/modelStatus, doctor*) works unchanged -- only
+         where they live in the DOM, and how they're shown, changed. -->
+    <div id="navInfoModal" class="modal-overlay" hidden>
+      <div class="modal modal-wide">
+        <div class="modal-header">
+          <strong id="navInfoTitle">Info</strong>
+          <button id="navInfoCloseBtn" title="Close" aria-label="Close">✕</button>
+        </div>
+        <div id="navInfoBody" class="modal-body">
+          <div class="sidebar-panel" data-panel="avatar" hidden>
+            <p class="sidebar-note">Live2D avatar rendered in the composer dock. Click the ⤢ button on the avatar to cycle framing.</p>
+            <div class="sidebar-field">
+              <label id="avatarZoomLabel">Framing: whole body</label>
+            </div>
+          </div>
+
+          <div class="sidebar-panel" data-panel="webAccess" hidden>
+            <p class="sidebar-note" id="webAccessStatus">Checking...</p>
+          </div>
+
+          <div class="sidebar-panel" data-panel="vision" hidden>
+            <p class="sidebar-note">Ask Mana to describe your screen without saying it out loud. Default hotkey: <strong>Ctrl+Alt+M</strong>.</p>
+            <button id="visionLookNowBtn">Look at my screen now</button>
+          </div>
+
+          <div class="sidebar-panel" data-panel="model" hidden>
+            <div id="modelPanel">
+              <div id="modelModeControls"></div>
+              <div id="modelStatus">Checking...</div>
+            </div>
+          </div>
+
+          <div class="sidebar-panel" data-panel="doctor" hidden>
+            <div id="doctorPanel">
+              <div id="doctorHeader">
+                <strong id="doctorTitle">Doctor</strong>
+                <button id="runDoctor">Run checks</button>
+              </div>
+              <div id="doctorSummary" class="doctor-summary-pills">Not checked yet</div>
+              <div id="doctorAttentionLabel" class="doctor-section-label" hidden>Needs attention</div>
+              <div id="doctorChecks" class="doctor-checks-grid"></div>
+              <div id="doctorPassLabel" class="doctor-section-label" hidden></div>
+              <div id="doctorPassChecks" class="doctor-checks-grid"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Popover for a single Doctor check's detail message; position:fixed
+         so it's never clipped by navInfoBody's own overflow-y:auto. -->
+    <div id="doctorBubble" class="doctor-bubble" hidden>
+      <div class="doctor-bubble-title"></div>
+      <div class="doctor-bubble-message"></div>
     </div>
 
     <div id="sessionContextMenu" class="context-menu" hidden>
