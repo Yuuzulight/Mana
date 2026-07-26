@@ -32,6 +32,7 @@ test("health includes component readiness while preserving top-level fields", as
       "presets",
       "retrieverAdmin",
       "sessions",
+      "skills",
       "stockMarket",
       "tts",
       "vtubeStudio",
