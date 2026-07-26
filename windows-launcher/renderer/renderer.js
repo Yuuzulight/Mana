@@ -1356,14 +1356,20 @@ async function refreshPerfStatus() {
 const startupOverlayEl = document.getElementById("startupOverlay");
 const STARTUP_ROW_IDS = ["backend", "voice", "websearch", "localai"];
 const startupRowState = {};
+let startupCompleteHandled = false;
 
-function maybeHideStartupOverlay() {
-  const allTerminal = STARTUP_ROW_IDS.every(
-    (id) => startupRowState[id] === "ready" || startupRowState[id] === "timeout",
-  );
-  if (allTerminal && startupOverlayEl) {
-    startupOverlayEl.hidden = true;
-  }
+// The window opens small (sized to the loading card) and only grows to its
+// real chat-UI dimensions once startup finishes (see main.js's
+// runStartupSequence). initWindowAvatar() measures manaCanvasEl's box to
+// size PixiJS's renderer -- calling it while the window is still small
+// bakes in a near-zero render size that never recovers even after the
+// window grows, since live2d-avatar.js has no resize() to call later. So
+// it's deferred to here instead of running unconditionally at script load.
+function handleStartupComplete() {
+  if (startupCompleteHandled) return;
+  startupCompleteHandled = true;
+  if (startupOverlayEl) startupOverlayEl.hidden = true;
+  initWindowAvatar();
 }
 
 function applyStartupProgress(update) {
@@ -1378,13 +1384,14 @@ function applyStartupProgress(update) {
     }
   }
   startupRowState[update.id] = update.status;
-  maybeHideStartupOverlay();
+  const allTerminal = STARTUP_ROW_IDS.every(
+    (id) => startupRowState[id] === "ready" || startupRowState[id] === "timeout",
+  );
+  if (allTerminal) handleStartupComplete();
 }
 
 ipcRenderer.on("startup-progress", (event, update) => applyStartupProgress(update));
-ipcRenderer.on("startup-complete", () => {
-  if (startupOverlayEl) startupOverlayEl.hidden = true;
-});
+ipcRenderer.on("startup-complete", handleStartupComplete);
 ipcRenderer
   .invoke("get-startup-status")
   .then((state) => {
@@ -1999,7 +2006,9 @@ async function startListeningOnLaunch() {
 
 startListeningOnLaunch();
 refreshGamingStatus(true);
-initWindowAvatar();
+// initWindowAvatar() is deferred to handleStartupComplete() (see above) --
+// the window opens small and grows once startup finishes, and Live2D's
+// canvas-size measurement has to happen after that resize, not before it.
 refreshPerfStatus();
 runDoctorChecksFromLauncher();
 

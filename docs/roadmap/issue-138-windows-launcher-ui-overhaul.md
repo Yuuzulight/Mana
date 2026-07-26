@@ -17,14 +17,24 @@ no real Plugins UI.
 
 ## Status: Implemented
 
-- **Nav info popup**: clicking Avatar, Web access, Vision, Model, or Doctor
-  now opens a popup (`#navInfoModal`, reusing the existing
+- **Nav info popup, then everything-is-a-popup**: this went through three
+  rounds of iteration. First, Avatar/Web access/Vision/Model/Doctor opened
+  in a popup (`#navInfoModal`, reusing the existing
   `.modal-overlay`/`.modal`/`.modal-header` shell already used by
-  memoryModal/confirmModal) instead of an always-expanded inline panel.
-  Sessions/Market watch/Settings stay regular inline panels. The panel
-  content divs kept their original element ids, just relocated in the DOM,
-  so all existing renderer.js logic (avatar zoom, web access status
-  polling, vision hotkey button, model controls) works unchanged.
+  memoryModal/confirmModal) while Sessions/Market watch/Settings stayed
+  inline. Then those five moved to live *inside* Settings (a
+  `#settingsInfoNav` row of the same nav-items, nested). Finally, Market
+  watch and Settings themselves became popups too -- Sessions is now the
+  only persistent inline panel; everything else opens in the single shared
+  modal and closes (X, backdrop click, or Escape) back to Sessions. Market
+  watch's standalone UI (a bespoke item-lookup form hitting `/ffxiv/market`)
+  was removed outright rather than also turned into a popup: it duplicated
+  the "FFXIV Market & Crafting" entry already in Settings > Plugins, which
+  is `defaultEnabled: false` there -- one off-by-default toggle instead of
+  two different UIs for the same data. The panel content divs kept their
+  original element ids throughout, just relocated in the DOM, so all
+  existing renderer.js logic (avatar zoom, web access status polling,
+  vision hotkey button, model controls) works unchanged.
 - **Doctor redesign**: shows a pass/warn/fail pill summary, then a
   "Needs attention" chip grid (name + colored dot only) and an "All good
   (N)" chip grid for the rest, reusing `doctor-panel.js`'s existing
@@ -81,6 +91,26 @@ no real Plugins UI.
   indentation/newlines between HTML tags in the source, rendering them as
   real blank lines. Scoped `white-space: normal` to `#navInfoBody`
   specifically rather than touching the shared rule.
+- **The in-window Live2D avatar's PixiJS renderer could get initialized at
+  a broken size**: `initWindowAvatar()` ran unconditionally at script load,
+  reading `manaCanvasEl.clientWidth/clientHeight` at that moment to size
+  PixiJS -- but the window now opens small (see the startup screen below)
+  and only grows to full size once startup finishes, and `live2d-avatar.js`
+  has no `resize()` to call afterward if the initial measurement was wrong.
+  Deferred the call to `handleStartupComplete()` (guarded so it only ever
+  runs once, whichever of the three completion paths -- live event, catch-up
+  snapshot, or the race-condition fix above -- fires first), and reordered
+  `runStartupSequence()` in main.js to resize the window *before* sending
+  the IPC signal, so the renderer never measures the canvas at the small
+  size. Separately investigated a real user report that the avatar "cannot
+  be seen": confirmed unrelated to this branch (identical blank canvas via
+  direct pixel readback on an unmodified checkout of `main`, before this
+  session's changes), and ultimately inconclusive as a real bug at all --
+  a subsequent live screenshot showed the avatar rendering correctly, and
+  the earlier "blank canvas" reads were most likely `readPixels()` without
+  `preserveDrawingBuffer` returning stale/cleared buffer contents rather
+  than reflecting an actual empty frame. Not chased further since it
+  predates and is out of scope for this issue either way.
 
 ### Deliberate simplifications
 
@@ -106,14 +136,19 @@ no real Plugins UI.
   a time): 62/62 pass, no regressions (`doctor-panel.js` itself was never
   touched -- only how its output is rendered).
 - Live, end-to-end over Chrome DevTools Protocol against the real running
-  app (`--remote-debugging-port`, `Page.captureScreenshot` +
-  `Runtime.evaluate`, not a mock): startup overlay shows and correctly
-  hides itself; crystal logo renders in the sidebar; clicking each of the
-  5 popup nav items opens `#navInfoModal` with the right title and closes
-  via the X button; Doctor popup renders real pass/warn/fail counts (14
-  passing / 4 need attention / 0 failing on this machine) with working
-  chip-click detail bubbles; Settings' Plugins section renders real
-  category-grouped data from the backend (2 categories, 2 toggles) with a
-  working search filter (4 rows -> 1 on a query -> 4 again on clear); Logs
-  section shows real streamed backend output (confirmed non-empty,
-  containing actual startup log lines).
+  app (`--remote-debugging-port`, `Runtime.evaluate` for interaction,
+  `Page.captureScreenshot` where occlusion allowed it, `PrintWindow` with
+  `PW_RENDERFULLCONTENT` as a fallback when the real desktop window was
+  covered by other windows -- not a mock either way): startup overlay
+  shows and correctly hides itself; the window opens at its small
+  startup-card size and grows to full size once startup completes; crystal
+  logo renders in the sidebar; top-level nav is exactly Sessions and
+  Settings (confirmed no `marketWatch` string anywhere in the DOM); Doctor
+  popup renders real pass/warn/fail counts with working chip-click detail
+  bubbles; opening Settings then Doctor from `#settingsInfoNav` correctly
+  swaps the *same* modal's title/content; closing any popup (X button,
+  simulated backdrop click, Escape) lands back on Sessions with its
+  nav-item marked active and its panel visible again, not a blank sidebar;
+  Settings' Plugins section renders real category-grouped data from the
+  backend with a working search filter; Logs section shows real streamed
+  backend output.

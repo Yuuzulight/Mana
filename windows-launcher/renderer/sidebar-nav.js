@@ -16,14 +16,16 @@ const chatEmptyStateEl = document.getElementById("chatEmptyState");
 const chatLogElForNav = document.getElementById("chatLog");
 
 // Popup info bubbles (issue #138): these panels live inside #navInfoModal
-// rather than the always-visible #sidebarPanels flow. Sessions/Market
-// watch/Settings stay regular inline panels.
+// rather than the always-visible #sidebarPanels flow. Sessions is the only
+// one left as a regular inline panel -- everything else, including
+// Settings, opens as a popup closable by clicking outside it.
 const NAV_INFO_PANELS = {
   avatar: "Avatar",
   webAccess: "Web access",
   vision: "Vision",
   model: "Model",
   doctor: "Doctor",
+  settings: "Settings",
 };
 const navInfoModalEl = document.getElementById("navInfoModal");
 const navInfoTitleEl = document.getElementById("navInfoTitle");
@@ -31,7 +33,7 @@ const navInfoCloseBtnEl = document.getElementById("navInfoCloseBtn");
 // doctorBubbleEl is already declared by renderer.js (loaded before this
 // file, shared global scope -- see the file header comment above).
 
-function closeNavInfoModal() {
+function hideNavInfoModal() {
   if (navInfoModalEl) navInfoModalEl.hidden = true;
   if (doctorBubbleEl) doctorBubbleEl.hidden = true;
 }
@@ -48,22 +50,33 @@ function switchSidebarPanel(panelName) {
     if (navInfoTitleEl) navInfoTitleEl.textContent = NAV_INFO_PANELS[panelName];
     if (navInfoModalEl) navInfoModalEl.hidden = false;
   } else {
-    closeNavInfoModal();
+    hideNavInfoModal();
   }
+}
+
+// Sessions is the only surviving persistent panel -- closing any popup
+// (Market watch, Settings, or one of the info panels reached from inside
+// Settings) has to land back there explicitly, not just hide the modal, or
+// switchSidebarPanel(whatever-was-open)'s own hidden-toggling (nothing but
+// that one panel matches) would have already hidden Sessions too, leaving
+// the sidebar showing nothing at all.
+function closeNavInfoPopup() {
+  hideNavInfoModal();
+  switchSidebarPanel("sessions");
 }
 
 document.querySelectorAll(".nav-item[data-panel]").forEach((el) => {
   el.addEventListener("click", () => switchSidebarPanel(el.dataset.panel));
 });
 
-navInfoCloseBtnEl?.addEventListener("click", closeNavInfoModal);
+navInfoCloseBtnEl?.addEventListener("click", closeNavInfoPopup);
 // Clicking the dimmed backdrop (not the panel itself) closes it too --
 // same pattern as memoryModal/confirmModal below.
 navInfoModalEl?.addEventListener("click", (e) => {
-  if (e.target === navInfoModalEl) closeNavInfoModal();
+  if (e.target === navInfoModalEl) closeNavInfoPopup();
 });
 document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape" && navInfoModalEl && !navInfoModalEl.hidden) closeNavInfoModal();
+  if (e.key === "Escape" && navInfoModalEl && !navInfoModalEl.hidden) closeNavInfoPopup();
 });
 
 sidebarCollapseBtnEl?.addEventListener("click", () => {
@@ -113,37 +126,6 @@ document.getElementById("avatarZoomBtn")?.addEventListener("click", () => {
 document.getElementById("visionLookNowBtn")?.addEventListener("click", () => {
   if (typeof handleVisionHotkey === "function") {
     handleVisionHotkey();
-  }
-});
-
-// Market watch: GET /ffxiv/market?itemName=... (existing backend route).
-async function checkMarketWatch() {
-  const input = document.getElementById("marketWatchItemInput");
-  const resultEl = document.getElementById("marketWatchResult");
-  const itemName = input?.value.trim();
-  if (!itemName || !resultEl) {
-    return;
-  }
-  resultEl.textContent = "Checking...";
-  try {
-    const response = await fetch(
-      `http://localhost:5005/ffxiv/market?itemName=${encodeURIComponent(itemName)}`,
-    );
-    const data = await response.json();
-    if (!response.ok) {
-      resultEl.textContent = data.error || `Request failed (${response.status})`;
-      return;
-    }
-    resultEl.textContent = JSON.stringify(data, null, 2);
-  } catch (error) {
-    resultEl.textContent = `Failed to reach Mana: ${error.message}`;
-  }
-}
-document.getElementById("marketWatchCheckBtn")?.addEventListener("click", checkMarketWatch);
-document.getElementById("marketWatchItemInput")?.addEventListener("keydown", (event) => {
-  if (event.key === "Enter") {
-    event.preventDefault();
-    checkMarketWatch();
   }
 });
 
