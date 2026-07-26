@@ -5,12 +5,36 @@
 // global scope (classic scripts, not modules), so it can call functions
 // like handleVisionHotkey() and runDoctorChecksFromLauncher() directly.
 
+const { shell } = require("electron");
+const path = require("path");
+
 const sidebarEl = document.getElementById("sessionSidebar");
 const sidebarCollapseBtnEl = document.getElementById("sidebarCollapseBtn");
 const sidebarPanelsEl = document.getElementById("sidebarPanels");
 const sidebarSearchInputEl = document.getElementById("sidebarSearchInput");
 const chatEmptyStateEl = document.getElementById("chatEmptyState");
 const chatLogElForNav = document.getElementById("chatLog");
+
+// Popup info bubbles (issue #138): these panels live inside #navInfoModal
+// rather than the always-visible #sidebarPanels flow. Sessions/Market
+// watch/Settings stay regular inline panels.
+const NAV_INFO_PANELS = {
+  avatar: "Avatar",
+  webAccess: "Web access",
+  vision: "Vision",
+  model: "Model",
+  doctor: "Doctor",
+};
+const navInfoModalEl = document.getElementById("navInfoModal");
+const navInfoTitleEl = document.getElementById("navInfoTitle");
+const navInfoCloseBtnEl = document.getElementById("navInfoCloseBtn");
+// doctorBubbleEl is already declared by renderer.js (loaded before this
+// file, shared global scope -- see the file header comment above).
+
+function closeNavInfoModal() {
+  if (navInfoModalEl) navInfoModalEl.hidden = true;
+  if (doctorBubbleEl) doctorBubbleEl.hidden = true;
+}
 
 function switchSidebarPanel(panelName) {
   document.querySelectorAll(".nav-item[data-panel]").forEach((el) => {
@@ -19,10 +43,27 @@ function switchSidebarPanel(panelName) {
   document.querySelectorAll(".sidebar-panel[data-panel]").forEach((el) => {
     el.hidden = el.dataset.panel !== panelName;
   });
+
+  if (Object.prototype.hasOwnProperty.call(NAV_INFO_PANELS, panelName)) {
+    if (navInfoTitleEl) navInfoTitleEl.textContent = NAV_INFO_PANELS[panelName];
+    if (navInfoModalEl) navInfoModalEl.hidden = false;
+  } else {
+    closeNavInfoModal();
+  }
 }
 
 document.querySelectorAll(".nav-item[data-panel]").forEach((el) => {
   el.addEventListener("click", () => switchSidebarPanel(el.dataset.panel));
+});
+
+navInfoCloseBtnEl?.addEventListener("click", closeNavInfoModal);
+// Clicking the dimmed backdrop (not the panel itself) closes it too --
+// same pattern as memoryModal/confirmModal below.
+navInfoModalEl?.addEventListener("click", (e) => {
+  if (e.target === navInfoModalEl) closeNavInfoModal();
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && navInfoModalEl && !navInfoModalEl.hidden) closeNavInfoModal();
 });
 
 sidebarCollapseBtnEl?.addEventListener("click", () => {
@@ -135,4 +176,113 @@ if (voiceProviderSelectEl) {
 // aren't stuck grey until the user opens the Doctor panel manually.
 if (typeof runDoctorChecksFromLauncher === "function") {
   runDoctorChecksFromLauncher();
+}
+
+// Plugins (issue #138): grouped by category, filterable, backed by
+// node-bot's plugin-settings-store.js via GET/POST /plugins (issue #131).
+const pluginsListEl = document.getElementById("pluginsList");
+const pluginsSearchInputEl = document.getElementById("pluginsSearchInput");
+const pluginsAddBtnEl = document.getElementById("pluginsAddBtn");
+let latestPluginsByCategory = {};
+
+function renderPluginsList(query = "") {
+  if (!pluginsListEl) return;
+  const normalizedQuery = query.trim().toLowerCase();
+  const rows = [];
+  for (const category of Object.keys(latestPluginsByCategory)) {
+    const plugins = latestPluginsByCategory[category].filter(
+      (plugin) =>
+        !normalizedQuery ||
+        plugin.name.toLowerCase().includes(normalizedQuery) ||
+        (plugin.description || "").toLowerCase().includes(normalizedQuery),
+    );
+    if (plugins.length === 0) continue;
+    rows.push(`<div class="plugin-category-label">${escapeHtmlForPlugins(category)}</div>`);
+    for (const plugin of plugins) {
+      rows.push(`
+        <div class="plugin-row">
+          <div class="plugin-row-info">
+            <strong>${escapeHtmlForPlugins(plugin.name)}</strong>
+            <span>${escapeHtmlForPlugins(plugin.description || category)}</span>
+          </div>
+          <button class="plugin-switch ${plugin.enabled ? "on" : ""}" data-plugin-key="${escapeHtmlForPlugins(plugin.key)}" aria-pressed="${plugin.enabled}" title="${plugin.enabled ? "Enabled" : "Disabled"}"></button>
+        </div>`);
+    }
+  }
+  pluginsListEl.innerHTML = rows.join("") || `<p class="sidebar-note">No plugins match "${escapeHtmlForPlugins(query)}".</p>`;
+}
+
+function escapeHtmlForPlugins(text) {
+  return String(text ?? "").replace(/[&<>"']/g, (char) => (
+    { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[char]
+  ));
+}
+
+async function loadPlugins() {
+  if (!pluginsListEl) return;
+  try {
+    const response = await fetch("http://localhost:5005/plugins");
+    const body = await response.json();
+    latestPluginsByCategory = body.plugins || {};
+    renderPluginsList(pluginsSearchInputEl?.value || "");
+  } catch (error) {
+    pluginsListEl.innerHTML = `<p class="sidebar-note">Failed to load plugins: ${escapeHtmlForPlugins(error.message)}</p>`;
+  }
+}
+loadPlugins();
+
+pluginsSearchInputEl?.addEventListener("input", () => {
+  renderPluginsList(pluginsSearchInputEl.value);
+});
+
+pluginsListEl?.addEventListener("click", async (event) => {
+  const switchBtn = event.target.closest(".plugin-switch");
+  if (!switchBtn) return;
+  const key = switchBtn.dataset.pluginKey;
+  const enabled = !switchBtn.classList.contains("on");
+  switchBtn.disabled = true;
+  try {
+    const response = await fetch(`http://localhost:5005/plugins/${encodeURIComponent(key)}/enabled`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled }),
+    });
+    if (!response.ok) throw new Error(`Request failed (${response.status})`);
+    await loadPlugins();
+  } catch (error) {
+    console.warn("Failed to toggle plugin:", error.message);
+    switchBtn.disabled = false;
+  }
+});
+
+// No plugin marketplace/installer -- this just points at the docs that
+// list what's available and how to add one (see plugins/README.md).
+pluginsAddBtnEl?.addEventListener("click", () => {
+  shell.openPath(path.join(__dirname, "..", "..", "plugins", "README.md"));
+});
+
+// Logs (issue #138): tail of the backend process's stdout/stderr, streamed
+// over IPC from main.js's appendBackendLog(). get-backend-log catches up
+// on anything that arrived before this listener attached.
+const backendLogsEl = document.getElementById("backendLogs");
+const BACKEND_LOG_DISPLAY_MAX_CHARS = 20000;
+
+function appendToLogsDisplay(text) {
+  if (!backendLogsEl) return;
+  const atBottom = backendLogsEl.scrollTop + backendLogsEl.clientHeight >= backendLogsEl.scrollHeight - 4;
+  backendLogsEl.textContent += text.endsWith("\n") ? text : `${text}\n`;
+  if (backendLogsEl.textContent.length > BACKEND_LOG_DISPLAY_MAX_CHARS) {
+    backendLogsEl.textContent = backendLogsEl.textContent.slice(-BACKEND_LOG_DISPLAY_MAX_CHARS);
+  }
+  if (atBottom) backendLogsEl.scrollTop = backendLogsEl.scrollHeight;
+}
+
+if (backendLogsEl && typeof ipcRenderer !== "undefined") {
+  ipcRenderer.on("backend-log", (event, text) => appendToLogsDisplay(text));
+  ipcRenderer
+    .invoke("get-backend-log")
+    .then((buffered) => {
+      if (buffered) backendLogsEl.textContent = buffered;
+    })
+    .catch(() => {});
 }
