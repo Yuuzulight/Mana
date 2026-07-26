@@ -1,5 +1,7 @@
 # Mana
 
+Talking to a cloud AI assistant means handing your voice, your screen, and every conversation to someone else's servers — **Mana runs the whole loop locally on your Windows PC instead**, so it listens, thinks, and talks back without an internet connection or a subscription.
+
 **License (code): Apache License 2.0 — © 2026 ManaAI.** See LICENSE and NOTICE.
 
 **Artwork (images/sprites/avatar models): All rights reserved.** The images in `sprites/` and any avatar model files are proprietary and may not be reused without permission; see LICENSE-ARTWORK.
@@ -9,6 +11,18 @@
 Mana is a local-first AI assistant for Windows. It listens from the desktop launcher, transcribes speech locally, replies with local GGUF models, speaks through local TTS services, and can read visible screen text after it is awake.
 
 The project is built for a personal Windows setup: one user, local models by default, clear setup checks, and optional companion features when you want phone access or avatar control.
+
+### Why Mana?
+
+Mana is for people who want an always-listening voice assistant on their desktop without handing everything they say to a third party. It's built for one real Windows setup rather than as a hosted product, so setup, configuration, and troubleshooting stay in your hands instead of waiting on a vendor. If you've wanted a JARVIS-style companion that lives on your machine, has a face, and doesn't come with a monthly bill, this is that project.
+
+### How is Mana different?
+
+- 🔒 **Privacy-first, not privacy-optional** — local `llama.cpp` replies, local Whisper transcription, local TTS, and local OCR by default; `OPENAI_API_KEY` is ignored unless you explicitly opt into remote AI.
+- 🎙️ **Voice-native, not one-shot** — say the wake word once (`Mana` or `wake up`) and keep talking, instead of re-triggering per question like a push-to-talk command.
+- 🧩 **One integrated loop, not five disconnected tools** — transcription, LLM reply, TTS, and screen OCR are wired together into a single conversation instead of scripts you have to glue yourself.
+- 🛠️ **Developer-friendly, not a black box** — Mana can open files in Zed or VS Code, propose edits for review instead of silently applying them, and can even run as a Zed External Agent.
+- 🎭 **A presence, not just a reply** — a Live2D avatar with lip sync and emotion reactions, plus a gaming mode that backs off while you're playing, so it feels like a companion on your desktop rather than a chatbot tab.
 
 ## Preview
 
@@ -52,6 +66,12 @@ For the full setup flow, including model paths, Whisper, TTS services, gaming mo
 - **Better replies over time**: idle-triggered Dream Mode consolidates recent memory, Best-of-N self-voting picks the strongest of several candidate replies, and memories get cross-session connections and entity tagging instead of staying siloed per conversation.
 - **OpenAI-compatible API**: `/v1/chat/completions`, `/v1/embeddings`, and `/v1/models` let external tools (e.g. Obsidian Copilot) talk to Mana's local backend directly.
 - **Obsidian plugin**: Mana Memory Sync pulls Mana's memory into an Obsidian vault as linked notes; the setup flow also detects a local Obsidian install. See [obsidian-plugin/README.md](obsidian-plugin/README.md).
+
+## Support Development
+
+Building Mana is a one-person, after-hours effort — every wake-word fix, every plugin, every avatar animation gets built in whatever time is left after everything else. If Mana's saved you time, gotten you excited about running AI locally, or just been fun to talk to, sponsoring keeps that work moving: it's what turns roadmap items like the native launcher and a fully 3D avatar into shipped features instead of permanent "planned" notes.
+
+**[Sponsor development on GitHub Sponsors](https://github.com/sponsors/Yuuzulight)** — even a small monthly amount helps, and every sponsor is genuinely appreciated. No pressure if not; using Mana and filing issues is already a real help.
 
 ## Architecture
 
@@ -218,6 +238,12 @@ Useful endpoints:
 - `GET /market/watchlist`: configured watchlist summary.
 
 See [node-bot/README.md](node-bot/README.md) for backend-specific details.
+
+## Getting Help
+
+- **Found a bug?** Open a [GitHub Issue](https://github.com/Yuuzulight/Mana/issues) — including your `npm run doctor` output for setup-related problems saves a round trip.
+- **Have an idea or a feature request?** Start a thread in [GitHub Discussions](https://github.com/Yuuzulight/Mana/discussions) — it's a better fit than Issues for "what if Mana could..." conversations.
+- If Mana's useful to you, starring or sharing the repo is a small, free way to help a local-first alternative get found.
 
 ## Development
 
