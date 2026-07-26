@@ -1365,11 +1365,45 @@ let startupCompleteHandled = false;
 // bakes in a near-zero render size that never recovers even after the
 // window grows, since live2d-avatar.js has no resize() to call later. So
 // it's deferred to here instead of running unconditionally at script load.
+// Polls an element's client box until two consecutive reads agree (or
+// maxWaitMs runs out), then calls back. A single rAF pair wasn't enough --
+// verified live that the avatar canvas's measured height was still
+// mid-reflow one full frame after the OS-level window resize
+// (mainWindow.setSize() in main.js), landing PixiJS's autoDensity-set
+// inline canvas size at a wrong, permanently-stuck value (no resize() to
+// fix it later). Real setTimeout ticks (not rAF) so each check is its own
+// full event-loop turn, giving style/layout/paint an actual chance to
+// finish rather than possibly landing inside the same reflow batch.
+function waitForStableSize(el, callback, maxWaitMs = 1000, checkIntervalMs = 50) {
+  let lastWidth = -1;
+  let lastHeight = -1;
+  const deadline = Date.now() + maxWaitMs;
+  function check() {
+    const { clientWidth, clientHeight } = el;
+    if (clientWidth > 0 && clientWidth === lastWidth && clientHeight === lastHeight) {
+      callback();
+      return;
+    }
+    lastWidth = clientWidth;
+    lastHeight = clientHeight;
+    if (Date.now() >= deadline) {
+      callback();
+      return;
+    }
+    setTimeout(check, checkIntervalMs);
+  }
+  check();
+}
+
 function handleStartupComplete() {
   if (startupCompleteHandled) return;
   startupCompleteHandled = true;
   if (startupOverlayEl) startupOverlayEl.hidden = true;
-  initWindowAvatar();
+  if (manaCanvasEl) {
+    waitForStableSize(manaCanvasEl, initWindowAvatar);
+  } else {
+    initWindowAvatar();
+  }
 }
 
 function applyStartupProgress(update) {

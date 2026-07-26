@@ -101,16 +101,28 @@ no real Plugins UI.
   runs once, whichever of the three completion paths -- live event, catch-up
   snapshot, or the race-condition fix above -- fires first), and reordered
   `runStartupSequence()` in main.js to resize the window *before* sending
-  the IPC signal, so the renderer never measures the canvas at the small
-  size. Separately investigated a real user report that the avatar "cannot
-  be seen": confirmed unrelated to this branch (identical blank canvas via
-  direct pixel readback on an unmodified checkout of `main`, before this
-  session's changes), and ultimately inconclusive as a real bug at all --
-  a subsequent live screenshot showed the avatar rendering correctly, and
-  the earlier "blank canvas" reads were most likely `readPixels()` without
+  the IPC signal. That alone wasn't sufficient, though -- live measurement
+  showed the canvas's height still landed wrong (116px against a 215px
+  square card) even after the resize and even after a double
+  `requestAnimationFrame` defer, and the exact wrong value differed between
+  runs (116px, then 198px on an earlier attempt), confirming a genuine
+  layout-settling race rather than a fixed offset. `requestAnimationFrame`
+  wasn't a strong enough guarantee that the sidebar's flex column had
+  finished reflowing after the OS-level resize. Replaced it with
+  `waitForStableSize()`, which polls the canvas's client box on real
+  `setTimeout` ticks (each one a full event-loop turn, not just a paint
+  frame) until two consecutive reads agree, bounded to 1s. Verified live
+  the canvas now measures a correct 213x213 square matching its card, and
+  the avatar fills the frame instead of floating small with empty space
+  below it. Separately investigated a real user report that the avatar
+  "cannot be seen": confirmed unrelated to this branch (identical blank
+  canvas via direct pixel readback on an unmodified checkout of `main`,
+  before this session's changes), and ultimately inconclusive as a real
+  bug at all -- a subsequent live screenshot showed the avatar rendering
+  (just undersized, which the fix above addresses), and the earlier "blank
+  canvas" reads were most likely `readPixels()` without
   `preserveDrawingBuffer` returning stale/cleared buffer contents rather
-  than reflecting an actual empty frame. Not chased further since it
-  predates and is out of scope for this issue either way.
+  than reflecting an actual empty frame.
 
 ### Deliberate simplifications
 
