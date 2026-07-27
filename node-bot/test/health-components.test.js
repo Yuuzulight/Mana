@@ -26,6 +26,7 @@ test("health includes component readiness while preserving top-level fields", as
       "cronScheduler",
       "deepResearch",
       "dirScanner",
+      "discordBot",
       "documentReader",
       "ffxivMarket",
       "imageGeneration",
