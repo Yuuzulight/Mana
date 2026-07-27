@@ -68,6 +68,12 @@ accounting.
   in both apps -- separate, independently-configurable knob from the
   existing sleepy idle-tilt (`idleGazeDeg`/`idleGazePeriodMs` in
   `mana-avatar.json`, 0 opts out).
+- **`tools/script-runner.js`** (issue #142): a general-purpose primitive
+  for running a generated script in an isolated child process with a
+  whitelisted set of tool functions it can call (round-tripped over IPC to
+  the real implementations) -- no `require`/`fs`/network access of its
+  own. Not yet wired into a specific capability; see the roadmap doc for
+  why Deep Research (the issue's suggested first caller) didn't need it.
 
 ### Fixed
 - `runOpenAIReply` referenced removed `OPENAI_API_KEY`/`OPENAI_BASE_URL`/
