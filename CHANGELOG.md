@@ -151,6 +151,15 @@ accounting.
   persisted on each turn going forward (`acp-memory-store.js`'s
   `appendTurn`) -- previously it was only ever logged to console, never
   stored, so there was nothing for an export to preserve.
+- **`video-watch` plugin** (issue #154): download (`yt-dlp`) or accept a
+  local video, pull captions or fall back to local Whisper transcription
+  (both free -- no external API key needed), extract a duration-scaled
+  set of frames (keyframe-only by default), and answer a question
+  grounded in what's actually shown/said via the existing local vision
+  pipeline. New `POST /video/watch` route. Off by default -- enable in
+  Settings > Plugins. `yt-dlp` is a new external dependency. No real
+  video/binaries were exercised this session -- verified via injected
+  fake process calls.
 
 ### Fixed
 - Session-level conversation memory (`buildPromptMemory`) was computed on
