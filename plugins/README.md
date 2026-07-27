@@ -26,8 +26,13 @@ read, tested, and reasoned about without the rest of the backend.
   so Mana can recall and cite it in replies -- no separate document store,
   the ingested text becomes part of the same index every chat reply already
   searches.
+- [`cron-scheduler`](cron-scheduler/): run a script action or a full agent
+  prompt on a fixed interval or daily-at-time schedule, independent of chat
+  or idle activity. **Off by default** (`defaultEnabled: false`) -- enable
+  it in Settings > Plugins before adding jobs.
 
-All five are always loaded (no separate install step).
+All six are always loaded (no separate install step); `cron-scheduler` is
+disabled by default, the rest are enabled by default.
 
 ### A different kind of plugin: `obsidian-plugin`
 
