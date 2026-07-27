@@ -20,6 +20,7 @@ test("health includes component readiness while preserving top-level fields", as
     assert.deepEqual(Object.keys(body.components).sort(), [
       "backend",
       "backgroundMemory",
+      "browserAutomation",
       "cloudflareTunnel",
       "cronScheduler",
       "deepResearch",

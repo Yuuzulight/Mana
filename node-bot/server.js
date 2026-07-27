@@ -103,6 +103,7 @@ const { fetchPage, searchWeb, wikiLookup } = require("./tools/web-access");
 	const documentReaderPlugin = require("../plugins/document-reader");
 	const cronSchedulerPlugin = require("../plugins/cron-scheduler");
 	const imageGenerationPlugin = require("../plugins/image-generation");
+	const browserAutomationPlugin = require("../plugins/browser-automation");
 const { createTtsRuntime } = require("./tts-runtime");
 const { createAcpMemoryStore } = require("./acp-memory-store");
 const persona = require("./persona");
@@ -1578,6 +1579,7 @@ function registerRoutes(app, upload, deps = {}) {
     documentReaderPlugin,
     cronSchedulerPlugin,
     imageGenerationPlugin,
+    browserAutomationPlugin,
     dirScannerCapability,
     webAccessCapability,
     sessionsCapability,
@@ -1595,6 +1597,10 @@ function registerRoutes(app, upload, deps = {}) {
     // Only cron-scheduler's agent-job executor uses this today -- every
     // other capability builds its own scoped model-reply function above.
     buildAssistantReply: deps.buildAssistantReply || buildAssistantReply,
+    // Only browser-automation's routes use this today -- everywhere else
+    // that needs a loopback-only guard builds it inline (e.g. the
+    // brain-provider test route above).
+    isLocalRestartRequest: deps.isLocalRestartRequest || isLocalRestartRequest,
     pluginSettingsStore: activePluginSettingsStore,
     skillsStore: activeSkillsStore,
     env: deps.env || process.env,

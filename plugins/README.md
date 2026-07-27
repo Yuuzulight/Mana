@@ -33,10 +33,14 @@ read, tested, and reasoned about without the rest of the backend.
 - [`image-generation`](image-generation/): generate or edit an image from a
   text description. Local-first (Automatic1111-compatible HTTP API) with
   an opt-in external-API fallback. **Off by default.**
+- [`browser-automation`](browser-automation/): navigate/click/type/read a
+  live page via a local Chromium-family browser (Edge by default on
+  Windows) -- for driving a specific site interaction, not general
+  search-and-extract. **Off by default.**
 
-All seven are always loaded (no separate install step); `cron-scheduler`
-and `image-generation` are disabled by default, the rest are enabled by
-default.
+All eight are always loaded (no separate install step); `cron-scheduler`,
+`image-generation`, and `browser-automation` are disabled by default, the
+rest are enabled by default.
 
 ### A different kind of plugin: `obsidian-plugin`
 
