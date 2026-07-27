@@ -111,6 +111,14 @@ accounting.
   dominating a chat bubble. **Sanitization could not be visually verified
   this session** (Browser pane was unresponsive) -- worth an explicit
   script-injection click-through before/soon after this ships.
+- **`image-generation` plugin** (issue #149): text-to-image and
+  image-editing, local-first via an Automatic1111-compatible HTTP API
+  (`MANA_IMAGE_BACKEND_URL`), with an opt-in external API fallback
+  (`MANA_IMAGE_API_KEY`), never a default. No dedicated chat UI needed --
+  a result renders inline through issue #148's markdown pipeline. Off by
+  default -- enable in Settings > Plugins. No local SD backend was
+  available to verify against a live generation this session; the
+  Automatic1111 request/response shape is verified via mocked HTTP calls.
 
 ### Fixed
 - Session-level conversation memory (`buildPromptMemory`) was computed on

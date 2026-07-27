@@ -1,0 +1,10 @@
+{
+  "name": "mana-plugin-image-generation",
+  "version": "1.0.0",
+  "description": "Generate or edit an image from a text description, local-first with an opt-in external-API fallback.",
+  "main": "index.js",
+  "scripts": {
+    "test": "node --test test/*.test.js"
+  },
+  "private": true
+}

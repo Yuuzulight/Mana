@@ -26,6 +26,7 @@ test("health includes component readiness while preserving top-level fields", as
       "dirScanner",
       "documentReader",
       "ffxivMarket",
+      "imageGeneration",
       "jobApplications",
       "jobSearchAdzuna",
       "localLlama",

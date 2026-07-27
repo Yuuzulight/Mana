@@ -30,9 +30,13 @@ read, tested, and reasoned about without the rest of the backend.
   prompt on a fixed interval or daily-at-time schedule, independent of chat
   or idle activity. **Off by default** (`defaultEnabled: false`) -- enable
   it in Settings > Plugins before adding jobs.
+- [`image-generation`](image-generation/): generate or edit an image from a
+  text description. Local-first (Automatic1111-compatible HTTP API) with
+  an opt-in external-API fallback. **Off by default.**
 
-All six are always loaded (no separate install step); `cron-scheduler` is
-disabled by default, the rest are enabled by default.
+All seven are always loaded (no separate install step); `cron-scheduler`
+and `image-generation` are disabled by default, the rest are enabled by
+default.
 
 ### A different kind of plugin: `obsidian-plugin`
 
