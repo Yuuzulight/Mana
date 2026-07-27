@@ -119,6 +119,14 @@ accounting.
   default -- enable in Settings > Plugins. No local SD backend was
   available to verify against a live generation this session; the
   Automatic1111 request/response shape is verified via mocked HTTP calls.
+- **`browser-automation` plugin** (issue #150): navigate/click/type/read a
+  live page for a specific site interaction, distinct from `web-access.js`'s
+  search-and-extract. Launches Edge by default (ships on every Windows
+  install) via `playwright-core`, no bundled browser download. Ref-based
+  element addressing (`data-mana-ref`), text-mode reads by default,
+  local-only routes. Off by default -- enable in Settings > Plugins. No
+  real browser was launched to verify this session (no Windows/Edge on CI,
+  Browser pane unresponsive) -- verified against a fake page-like object.
 
 ### Fixed
 - Session-level conversation memory (`buildPromptMemory`) was computed on
