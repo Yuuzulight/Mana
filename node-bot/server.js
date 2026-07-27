@@ -3067,7 +3067,10 @@ function registerRoutes(app, upload, deps = {}) {
       // ignore failures here
     }
 
-    // Load short session memory (if provided) and prepend to prompt
+    // Load short session memory (if provided) and inject into the system
+    // prompt -- this is the small, hard-capped "always in context" tier
+    // (bounded by maxPromptTokens in acp-memory-store.js, same pattern as
+    // BACKGROUND_MEMORY_BLOCK above).
     let memoryBlock = "";
     try {
       if (sessionId) {
@@ -3086,6 +3089,26 @@ function registerRoutes(app, upload, deps = {}) {
     } catch (e) {
       console.warn("ACP memory unavailable:", e.message);
       memoryBlock = "";
+    }
+    if (memoryBlock) {
+      selectedSystemPrompt = `${selectedSystemPrompt}\n\n${memoryBlock.trim()}`;
+    }
+
+    // Issue #141: the larger, on-demand tier -- only pulled in when the
+    // current message actually names something previously discussed in a
+    // *different* session. Bounded by maxChars in getRelatedFacts, so it
+    // never grows with total memory volume.
+    try {
+      if (typeof acpMemoryStore.getRelatedFacts === "function") {
+        const relatedFacts = acpMemoryStore.getRelatedFacts(transcript, {
+          excludeSessionId: sessionId,
+        });
+        if (relatedFacts) {
+          selectedSystemPrompt = `${selectedSystemPrompt}\n\n${relatedFacts}`;
+        }
+      }
+    } catch (relErr) {
+      console.warn("Failed to look up related facts:", relErr.message);
     }
 
     // Attempt retrieval from local retriever-index (fast) first. If it yields nothing, fall back to the existing HTTP or legacy Python retrievers.
