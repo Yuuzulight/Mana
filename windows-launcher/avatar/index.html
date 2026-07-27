@@ -13,7 +13,8 @@
         background: transparent;
       }
 
-      #live2d {
+      #live2d,
+      #vrm {
         display: block;
         width: 100%;
         height: 100%;
@@ -24,6 +25,14 @@
           transform 120ms ease,
           filter 120ms ease;
         transform-origin: bottom center;
+      }
+
+      /* One canvas is picked at load time (VRM preferred, Live2D fallback,
+         see renderer.js) -- the id selectors above set display:block
+         unconditionally, so [hidden] needs its own rule to actually win. */
+      #live2d[hidden],
+      #vrm[hidden] {
+        display: none;
       }
 
       body[data-state="talking"] #live2d {
@@ -61,10 +70,16 @@
     </style>
   </head>
   <body data-state="idle">
+    <!-- VRM is preferred when a model is configured (issue #161), Live2D
+         is the fallback -- renderer.js picks one at load time and
+         unhides it; three.js/@pixiv/three-vrm are required() directly in
+         vrm-avatar.js (no separate <script> tag needed, unlike Live2D's
+         UMD globals below). -->
+    <canvas id="vrm" hidden></canvas>
     <canvas id="live2d"></canvas>
     <!-- Live2D Cubism Core is proprietary and fetched at setup time
-         (npm run fetch-live2d-core); the avatar model is the only
-         renderer -- no sprite/image fallback. -->
+         (npm run fetch-live2d-core); Live2D/VRM are the only renderers --
+         no sprite/image fallback. -->
     <script src="../assets/live2d/live2dcubismcore.min.js"></script>
     <script src="../node_modules/pixi.js/dist/browser/pixi.min.js"></script>
     <script src="../node_modules/pixi-live2d-display/dist/cubism4.min.js"></script>
