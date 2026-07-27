@@ -177,6 +177,19 @@ accounting.
   change. Pairs with windows-launcher's existing `reply-emotion.js`
   rather than replacing it. `MANA_PHRASING_VARIATION_ENABLED` (default
   on), `MANA_PHRASING_LOOKBACK` tune it.
+- **VRM (3D) avatar support** (issue #161): a second avatar renderer
+  alongside Live2D (`three` + `@pixiv/three-vrm`), driven by the exact
+  same lip-sync/emotion signal pipeline (`avatar/lip-sync.js`, extracted
+  and shared between both renderers). VRM is preferred when a `.vrm`
+  model is configured (drop it in `windows-launcher/avatar/model/`, or
+  set `MANA_VRM_MODEL`); falls back to Live2D otherwise, same as Mana
+  already degrades when the Live2D model is missing. Wired into both
+  windows-launcher avatar surfaces (the overlay and the inline chat-
+  window avatar); `desktop-client` doesn't have it yet, following the
+  same incremental path Live2D itself took. See
+  `docs/vrm_avatar_setup.md`. No real VRM model/GPU rendering was
+  exercised this session -- verified via unit tests on the pure logic and
+  confirming the new dependencies load correctly.
 
 ### Fixed
 - Session-level conversation memory (`buildPromptMemory`) was computed on
