@@ -143,6 +143,14 @@ accounting.
   instead of writing immediately; `always-allow` persists per action type
   so it doesn't nag once trusted. Optional off-by-default keyword/pattern
   content scan flags a pending request for the approver's attention.
+- **Session trajectory export** (issue #153): `GET /sessions/:id/export`
+  writes a session's full turn history as ShareGPT-style JSONL (tool calls
+  included as `function_call`/`observation` entries); a new "Export
+  (ShareGPT JSONL)" entry in windows-launcher's session sidebar context
+  menu saves it via a native dialog. Tool-call metadata is now also
+  persisted on each turn going forward (`acp-memory-store.js`'s
+  `appendTurn`) -- previously it was only ever logged to console, never
+  stored, so there was nothing for an export to preserve.
 
 ### Fixed
 - Session-level conversation memory (`buildPromptMemory`) was computed on
