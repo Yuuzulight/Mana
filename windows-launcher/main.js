@@ -383,6 +383,23 @@ function appendBackendLog(text) {
 }
 ipcMain.handle("get-backend-log", async () => backendLogBuffer.join("\n"));
 
+// Structured crash-forensic logging for the voice pipeline (issue #147):
+// a failed recordUntilSilence()/listenLoop() attempt writes a timestamped
+// entry here instead of only console.error, which is easy to lose once
+// the window closes. userData (not the install directory) so it survives
+// an uninstall/reinstall, matching desktop-client's local-data placement
+// (issue #121).
+const VOICE_CRASH_LOG_PATH = path.join(app.getPath("userData"), "logs", "voice-crash.log");
+ipcMain.handle("log-voice-crash", async (event, details = {}) => {
+  try {
+    await fs.promises.mkdir(path.dirname(VOICE_CRASH_LOG_PATH), { recursive: true });
+    const entry = { at: new Date().toISOString(), ...details };
+    await fs.promises.appendFile(VOICE_CRASH_LOG_PATH, `${JSON.stringify(entry)}\n`, "utf8");
+  } catch (e) {
+    console.error("Failed to write voice crash log:", e);
+  }
+});
+
 // Native file picker for Settings > Model's "brain"/vision GGUF pickers --
 // the renderer POSTs the chosen path to node-bot's /models/path,
 // /models/brain-provider, or /models/vision-path routes to actually take
