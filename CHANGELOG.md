@@ -135,6 +135,14 @@ accounting.
   `MANA_TELEGRAM_BOT_TOKEN`. No real bot token was available to verify
   against the live Telegram API this session -- verified via a fake
   `getUpdates`/`sendMessage` client.
+- **Approval gate for agent-authored content** (issue #152): a shared
+  primitive (`approval-gate.js`) both the skills layer (#140) and
+  programmatic tool calling (#142) can call into before trusting content
+  Mana wrote herself. `POST /skills` now pauses for approval
+  (`allow-once`/`always-allow`/`deny` via `POST /approvals/:id/decide`)
+  instead of writing immediately; `always-allow` persists per action type
+  so it doesn't nag once trusted. Optional off-by-default keyword/pattern
+  content scan flags a pending request for the approver's attention.
 
 ### Fixed
 - Session-level conversation memory (`buildPromptMemory`) was computed on

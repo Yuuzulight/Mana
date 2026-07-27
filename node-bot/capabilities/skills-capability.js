@@ -36,15 +36,26 @@ function registerSkillsRoutes(app, context = {}) {
     }
   });
 
-  app.post("/skills", (req, res) => {
+  // Gated (issue #152): a skill write is agent-authored content, so it
+  // pauses for approval before taking effect instead of landing silently --
+  // see approval-gate.js. The actual write only happens once approved (via
+  // the "skill-write" executor registered in server.js), so a 202 here
+  // means "queued for review," not "created."
+  app.post("/skills", async (req, res) => {
     try {
       const name = requireString(req.body?.name, "name");
       const description = requireString(req.body?.description, "description");
       const body = requireString(req.body?.body, "body");
       const category =
         typeof req.body?.category === "string" ? req.body.category : undefined;
-      const skill = skillsStore.createSkill({ name, description, body, category });
-      return res.status(201).json(skill);
+      const approvalGate = context.approvalGate;
+      const outcome = await approvalGate.requestApproval("skill-write", {
+        summary: `Create skill "${name}"`,
+        payload: { name, description, body, category },
+        scanText: body,
+      });
+      if (outcome.status === "approved") return res.status(201).json(outcome.result);
+      return res.status(202).json(outcome);
     } catch (e) {
       if (e instanceof ValidationError) return sendValidationError(res, e);
       console.error(e);
