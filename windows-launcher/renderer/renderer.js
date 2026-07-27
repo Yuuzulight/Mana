@@ -58,6 +58,7 @@ const {
   shouldStopRecording,
 } = require("./voice-endpointing");
 const { detectReplyEmotion } = require("./reply-emotion");
+const { isLikelyWhisperHallucination } = require("./speech-filters");
 const {
   formatCompareProfileLabel,
   pickDefaultCompareProfiles,
@@ -1363,6 +1364,7 @@ async function prepareSpeechWavBlob(blob) {
   try {
     const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
     const stats = getAudioStats(audioBuffer);
+    stats.durationSeconds = audioBuffer.duration;
     const rejectReason = getSpeechRejectReason(stats);
     logSpeechDebug("audio-stats", {
       durationSeconds: Number(audioBuffer.duration.toFixed(2)),
@@ -1419,6 +1421,19 @@ async function transcribeBlob(blob) {
   }
 
   const result = await response.json();
+  if (
+    result.transcript &&
+    isLikelyWhisperHallucination(
+      cleanTranscriptText(result.transcript).toLowerCase(),
+      preparedAudio.stats.durationSeconds,
+    )
+  ) {
+    logSpeechDebug("transcript-hallucination-filtered", {
+      transcript: result.transcript,
+      durationSeconds: preparedAudio.stats.durationSeconds,
+    });
+    result.transcript = "";
+  }
   logSpeechDebug("transcribe-result", {
     transcript: result.transcript || "",
     elapsedMs: Math.round(performance.now() - startedAt),
@@ -2143,6 +2158,22 @@ async function listenLoop() {
     } catch (error) {
       console.error(error);
       statusEl.textContent = `Listening error: ${error.message}`;
+      ipcRenderer
+        .invoke("log-voice-crash", {
+          error: error.message,
+          stack: error.stack || null,
+          audioBackend: VAD_DISABLED
+            ? "vad-disabled"
+            : sileroVadLoadFailed
+              ? "rms-fallback (silero failed mid-session)"
+              : getSileroVad()
+                ? "silero-vad"
+                : "rms-only (silero unavailable)",
+          inputDeviceLabel: mediaStream?.getAudioTracks?.()[0]?.label || null,
+          awake,
+          listening,
+        })
+        .catch(() => {});
       await wait(1500);
     }
   }
