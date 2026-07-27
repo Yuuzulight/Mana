@@ -25,15 +25,24 @@ was built from.
   `WHISPER_BIN`/`WHISPER_MODEL` auto-detection -- no separate setup beyond
   what the voice pipeline already needs.
 
-## Frame budget: duration-scaled, hard 2fps ceiling
+## Frame budget: duration-scaled, hard 2fps ceiling, downscaled
 
-`computeFrameBudget(durationSeconds)` targets roughly 1 frame per 3
-seconds for the first two minutes (matching the reference
-implementation's "~12-30 frames for a short clip"), tapering to roughly 1
-frame per 10 seconds beyond that, capped at 100 frames total. A hard 2fps
-ceiling always wins for very short clips. This matters more for Mana than
-for a cloud model -- every frame is a local GPU vision inference, not
-just a context token.
+`computeFrameBudget(durationSeconds)` targets roughly 1 frame per 5
+seconds, capped at 20 frames total (8 at minimum). A hard 2fps ceiling
+always wins for very short clips. Every extracted frame is also
+downscaled to 336px wide by default (`DEFAULT_FRAME_MAX_DIMENSION`,
+override via `frameMaxDimension`/`MANA_VIDEO_FRAME_MAX_DIMENSION`).
+
+These numbers -- and the downscaling -- exist because a local vision
+model pays real context-window cost per frame, unlike a cloud model with
+a huge context window: measured directly against this codebase's own
+default local vision setup (Qwen2.5-VL-3B, llama-server's default `-c
+4096`), a full-resolution 1280x720 frame costs ~1210 prompt tokens (so
+even a handful of frames blows the entire context on images alone),
+while a frame downscaled to 336px wide costs ~88 tokens. The original
+numbers here were carried over from the reference implementation's
+cloud-model assumptions and confirmed broken via real manual testing
+before being fixed -- see `docs/roadmap/issue-154-video-watch.md`.
 
 ## Keyframe-only by default, optional scene-change mode
 
@@ -67,11 +76,11 @@ filter instead of whatever the encoder happened to keyframe on.
 
 ## Verification note
 
-No real `yt-dlp`/`ffmpeg`/`whisper-cli` binaries were invoked in the
-environment that built this -- every external process is injected as a
-`spawnFn` in tests (same DI pattern the rest of Mana's plugins use for
-network/filesystem access), so the actual download/extraction/
-transcription commands are verified for correctness of their arguments
-and output parsing, not against real video files. Worth a manual
-end-to-end run (a real YouTube URL and a local .mp4) before relying on
-this.
+Verified with real end-to-end runs against two live YouTube videos (a
+39-second clip and a ~20-minute one) through the actual local stack
+(real `yt-dlp`, `ffmpeg`, `whisper-cli`, and `llama-server` with
+Qwen2.5-VL-3B) -- both succeed and produce a grounded, in-persona answer.
+This surfaced and fixed two real bugs (oversized frame budget/resolution,
+unbounded transcript length in the prompt -- see
+`docs/roadmap/issue-154-video-watch.md`) that unit tests with injected
+`spawnFn` fakes couldn't have caught on their own.
