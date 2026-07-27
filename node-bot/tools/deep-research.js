@@ -5,6 +5,7 @@
 // local model to synthesize a cited report -- rather than a single
 // search-and-answer.
 const { searchWeb: defaultSearchWeb, fetchPage: defaultFetchPage } = require("./web-access");
+const { runWithBoundedConcurrency, DEFAULT_MAX_CONCURRENCY } = require("./subagent-delegation");
 
 const DEFAULT_MAX_SOURCES = 4;
 const MAX_SOURCES_CAP = 8;
@@ -15,6 +16,7 @@ const DEFAULT_MAX_SUB_QUERIES = 3;
 const MAX_SUB_QUERIES_CAP = 4;
 const DEFAULT_MAX_PER_DOMAIN = 2;
 const MAX_PER_DOMAIN_CAP = MAX_SOURCES_CAP;
+const MAX_CONCURRENCY_CAP = 5;
 
 // Issue #77: the trailing "Note:" line is deliberately conditional -- only
 // meaningfully-stale/incomplete/conflicting sources should trigger it, never
@@ -74,6 +76,13 @@ function clampMaxPerDomain(value) {
   const safe =
     Number.isFinite(n) && n > 0 ? Math.round(n) : DEFAULT_MAX_PER_DOMAIN;
   return Math.min(Math.max(safe, 1), MAX_PER_DOMAIN_CAP);
+}
+
+function clampMaxConcurrency(value) {
+  const n = Number(value);
+  const safe =
+    Number.isFinite(n) && n > 0 ? Math.round(n) : DEFAULT_MAX_CONCURRENCY;
+  return Math.min(Math.max(safe, 1), MAX_CONCURRENCY_CAP);
 }
 
 function hostnameOf(url) {
@@ -140,6 +149,7 @@ async function runDeepResearch(question, options = {}) {
   const maxTotalMs = clampMaxTotalMs(options.maxTotalMs);
   const maxSubQueries = clampMaxSubQueries(options.maxSubQueries);
   const maxPerDomain = clampMaxPerDomain(options.maxPerDomain);
+  const maxConcurrency = clampMaxConcurrency(options.maxConcurrency);
   const decompose =
     typeof options.decompose === "function" ? options.decompose : null;
   const search = options.searchWeb || defaultSearchWeb;
@@ -231,46 +241,72 @@ async function runDeepResearch(question, options = {}) {
   const consideredCount = Math.min(pooled.length, maxSources);
   const hitSourceLimit = pooled.length > maxSources;
 
-  // Step 3: read the pooled sources, bounded by count and time.
-  const sources = [];
-  for (let i = 0; i < consideredCount; i += 1) {
-    if (elapsed() >= maxTotalMs) {
-      hitTimeLimit = true;
-      break;
-    }
-    throwIfCancelled();
-
-    const result = pooled[i];
-    onProgress({
-      step: "reading",
-      label: `Reading source ${i + 1} of ${consideredCount}...`,
-      index: i + 1,
-      total: consideredCount,
-      url: result.url,
+  // Step 3 (issue #145): read the pooled sources concurrently, capped by
+  // maxConcurrency -- each read is fully independent of the others (a
+  // different URL, no shared state), the clearest case of parallelizable
+  // sub-work in this pipeline. Results are written to fixed array slots by
+  // pool position, so citation numbering stays stable regardless of which
+  // read finishes first. Each task checks cancellation for itself right
+  // before starting its own read -- a global check before the whole batch
+  // wouldn't stop tasks that haven't started their read yet once
+  // isCancelled() flips true partway through (worker slots pick up the
+  // next task as soon as they free up, same as the old sequential loop
+  // checked between each iteration).
+  throwIfCancelled();
+  let sources = [];
+  if (consideredCount > 0 && elapsed() < maxTotalMs) {
+    sources = new Array(consideredCount);
+    const readTasks = pooled.slice(0, consideredCount).map((result, i) => async () => {
+      throwIfCancelled();
+      try {
+        const page = await read(result.url);
+        return {
+          index: i + 1,
+          url: page.url,
+          title: page.title || result.title,
+          excerpt: page.text.slice(0, MAX_EXCERPT_CHARS),
+          readFailed: false,
+        };
+      } catch (e) {
+        if (e instanceof ResearchCancelledError) throw e;
+        // A single unreadable source shouldn't sink the whole research pass
+        // -- fall back to the search snippet so it's still citable.
+        return {
+          index: i + 1,
+          url: result.url,
+          title: result.title,
+          excerpt: result.snippet,
+          readFailed: true,
+        };
+      }
     });
 
-    try {
-      const page = await read(result.url);
-      sources.push({
-        index: sources.length + 1,
-        url: page.url,
-        title: page.title || result.title,
-        excerpt: page.text.slice(0, MAX_EXCERPT_CHARS),
-        readFailed: false,
-      });
-    } catch (e) {
-      // A single unreadable source shouldn't sink the whole research pass --
-      // fall back to the search snippet so it's still citable.
-      sources.push({
-        index: sources.length + 1,
-        url: result.url,
-        title: result.title,
-        excerpt: result.snippet,
-        readFailed: true,
-      });
-    }
+    const settledResults = await runWithBoundedConcurrency(readTasks, {
+      maxConcurrency,
+      onTaskSettled: (i, settled) => {
+        if (!settled.ok) return; // cancellation -- surfaced below
+        sources[i] = settled.value;
+        onProgress({
+          step: "reading",
+          label: `Reading source ${i + 1} of ${consideredCount}...`,
+          index: i + 1,
+          total: consideredCount,
+          url: pooled[i].url,
+        });
+      },
+    });
+
+    const cancelled = settledResults.find(
+      (r) => !r.ok && r.error instanceof ResearchCancelledError,
+    );
+    if (cancelled) throw cancelled.error;
+  } else if (consideredCount > 0) {
+    hitTimeLimit = true;
   }
 
+  if (elapsed() >= maxTotalMs) {
+    hitTimeLimit = true;
+  }
   throwIfCancelled();
   onProgress({ step: "synthesizing", label: "Synthesizing report..." });
 
@@ -295,6 +331,7 @@ async function runDeepResearch(question, options = {}) {
       maxTotalMs,
       maxSubQueries,
       maxPerDomain,
+      maxConcurrency,
       sourcesUsed: sources.length,
       elapsedMs: elapsed(),
       hitTimeLimit,
@@ -312,6 +349,8 @@ module.exports = {
   MAX_SUB_QUERIES_CAP,
   DEFAULT_MAX_PER_DOMAIN,
   MAX_PER_DOMAIN_CAP,
+  DEFAULT_MAX_CONCURRENCY,
+  MAX_CONCURRENCY_CAP,
   RESEARCH_SYSTEM_PROMPT,
   SUB_QUERY_SYSTEM_PROMPT,
   ResearchCancelledError,
