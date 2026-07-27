@@ -164,6 +164,49 @@ function createAcpMemoryStore(options = {}) {
     return loadEntityIndex()[key] || [];
   }
 
+  // Issue #141: the "searchable, on-demand" half of the two-tier memory
+  // split -- buildPromptMemory() above is the small always-injected tier
+  // (hard-capped by maxPromptTokens); this is the much larger archive
+  // (every entity ever mentioned, across every session) pulled in only
+  // when the current message actually names something from it. Kept as a
+  // plain entity-index lookup rather than real full-text search -- cheap,
+  // deterministic, and reuses the index appendTurn() already maintains.
+  function getRelatedFacts(text, options = {}) {
+    const excludeSessionId = options.excludeSessionId;
+    const maxEntities = Math.max(
+      1,
+      Number(
+        options.maxEntities || process.env.MANA_RELATED_FACTS_MAX_ENTITIES || 3,
+      ),
+    );
+    const maxChars = Math.max(
+      50,
+      Number(
+        options.maxChars || process.env.MANA_RELATED_FACTS_MAX_CHARS || 300,
+      ),
+    );
+
+    const entities = extractEntities(text).slice(0, maxEntities);
+    if (!entities.length) return "";
+
+    const index = loadEntityIndex();
+    const lines = [];
+    for (const entity of entities) {
+      const mentions = (index[entity.toLowerCase()] || []).filter(
+        (m) => m.sessionId !== excludeSessionId,
+      );
+      if (!mentions.length) continue;
+      const last = mentions[mentions.length - 1];
+      lines.push(
+        `- ${entity}: previously discussed in another session (${last.at})`,
+      );
+    }
+    if (!lines.length) return "";
+
+    const block = `Related from other sessions:\n${lines.join("\n")}`;
+    return block.length > maxChars ? block.slice(0, maxChars).trim() : block;
+  }
+
   function getSession(sessionId) {
     const existing = readJsonObject(filePathForSession(sessionId));
     if (!existing) {
@@ -469,6 +512,7 @@ function createAcpMemoryStore(options = {}) {
     renameSession,
     deleteSession,
     lookupEntity,
+    getRelatedFacts,
   };
 }
 

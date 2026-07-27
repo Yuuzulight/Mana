@@ -68,6 +68,13 @@ accounting.
   in both apps -- separate, independently-configurable knob from the
   existing sleepy idle-tilt (`idleGazeDeg`/`idleGazePeriodMs` in
   `mana-avatar.json`, 0 opts out).
+- `acp-memory-store.js`'s `getRelatedFacts()` (issue #141): a bounded,
+  on-demand lookup that surfaces facts from *other* sessions when the
+  current message names an entity previously discussed elsewhere, reusing
+  the existing entity index (issue #78). Capped independently
+  (`MANA_RELATED_FACTS_MAX_ENTITIES`/`MANA_RELATED_FACTS_MAX_CHARS`) so it
+  never grows with total memory volume -- the on-demand half of the
+  two-tier memory design alongside the existing always-injected summary.
 - **`tools/script-runner.js`** (issue #142): a general-purpose primitive
   for running a generated script in an isolated child process with a
   whitelisted set of tool functions it can call (round-tripped over IPC to
@@ -76,6 +83,11 @@ accounting.
   why Deep Research (the issue's suggested first caller) didn't need it.
 
 ### Fixed
+- Session-level conversation memory (`buildPromptMemory`) was computed on
+  every turn but never actually appended to the prompt -- `memoryBlock`
+  was built and then silently discarded, so Mana's own session summary
+  never reached the model. Fixed by appending it to the system prompt,
+  matching how `BACKGROUND_MEMORY_BLOCK` was already injected (issue #141).
 - `runOpenAIReply` referenced removed `OPENAI_API_KEY`/`OPENAI_BASE_URL`/
   `OPENAI_MODEL` consts left over from the brain-provider refactor above --
   would have thrown at runtime the moment remote AI was actually used.

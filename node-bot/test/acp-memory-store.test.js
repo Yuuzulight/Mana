@@ -258,6 +258,68 @@ test("entity lookup is case-insensitive and returns nothing for an unmentioned e
   assert.deepEqual(store.lookupEntity("Nonexistent Place"), []);
 });
 
+test("getRelatedFacts surfaces an entity mentioned in a different session", () => {
+  const store = createAcpMemoryStore({
+    dataDir: createTempDir(),
+    now: () => "2026-06-29T00:00:00.000Z",
+  });
+
+  store.appendTurn({
+    sessionId: "session-a",
+    user: "Let's talk about Acme Corp's roadmap.",
+    assistant: "Sure thing.",
+  });
+
+  const facts = store.getRelatedFacts("What did we say about Acme Corp?", {
+    excludeSessionId: "session-b",
+  });
+  assert.match(facts, /Related from other sessions/i);
+  assert.match(facts, /Acme Corp/);
+});
+
+test("getRelatedFacts excludes mentions from the current session", () => {
+  const store = createAcpMemoryStore({
+    dataDir: createTempDir(),
+    now: () => "2026-06-29T00:00:00.000Z",
+  });
+
+  store.appendTurn({
+    sessionId: "session-a",
+    user: "Acme Corp again.",
+    assistant: "Noted.",
+  });
+
+  assert.equal(
+    store.getRelatedFacts("Acme Corp?", { excludeSessionId: "session-a" }),
+    "",
+  );
+});
+
+test("getRelatedFacts returns empty for text with no known entities or no mentions", () => {
+  const store = createAcpMemoryStore({ dataDir: createTempDir() });
+  assert.equal(store.getRelatedFacts("what time is it?"), "");
+  assert.equal(store.getRelatedFacts("Tell me about Wakanda"), "");
+});
+
+test("getRelatedFacts stays within maxChars regardless of how many entities match", () => {
+  const store = createAcpMemoryStore({
+    dataDir: createTempDir(),
+    now: () => "2026-06-29T00:00:00.000Z",
+  });
+
+  store.appendTurn({
+    sessionId: "session-a",
+    user: "Acme Corp, Beta Corp, and Gamma Corp all merged with Delta Corp.",
+    assistant: "Big news.",
+  });
+
+  const facts = store.getRelatedFacts(
+    "Update me on Acme Corp, Beta Corp, Gamma Corp, and Delta Corp.",
+    { excludeSessionId: "session-b", maxEntities: 4, maxChars: 60 },
+  );
+  assert.ok(facts.length <= 60);
+});
+
 test("entity index survives across separate store instances (persisted to disk)", () => {
   const dataDir = createTempDir();
   const first = createAcpMemoryStore({
