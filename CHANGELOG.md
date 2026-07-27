@@ -135,6 +135,15 @@ accounting.
   `MANA_TELEGRAM_BOT_TOKEN`. No real bot token was available to verify
   against the live Telegram API this session -- verified via a fake
   `getUpdates`/`sendMessage` client.
+- **`discord-bot` plugin** (issue #185): a second remote-messaging option
+  alongside `telegram-bridge`, added rather than replacing it. Uses
+  `discord.js`'s Gateway `Client` (a websocket, since Discord has no
+  long-poll equivalent to Telegram's `getUpdates`) with the same
+  pairing-code approval gate (`POST /discord/approve`). DM-only,
+  text-only. Off by default -- enable in Settings > Plugins and set
+  `MANA_DISCORD_BOT_TOKEN`. No real bot token was available to verify
+  against the live Discord API this session -- verified via a fake
+  `message` object matching `discord.js`'s real `Message` shape.
 - **Approval gate for agent-authored content** (issue #152): a shared
   primitive (`approval-gate.js`) both the skills layer (#140) and
   programmatic tool calling (#142) can call into before trusting content

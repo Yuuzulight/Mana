@@ -14,6 +14,7 @@
     "@modelcontextprotocol/sdk": "^1.29.0",
     "axios": "^1.4.0",
     "cors": "^2.8.5",
+    "discord.js": "^14.27.0",
     "esprima": "^4.0.1",
     "express": "^4.18.2",
     "express-rate-limit": "^8.6.0",
