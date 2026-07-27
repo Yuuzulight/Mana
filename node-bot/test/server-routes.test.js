@@ -372,6 +372,34 @@ test("brain-provider test route surfaces the connection result", async () => {
   });
 });
 
+test("brain-provider test route rejects non-loopback forwarded clients without calling testBrainConnection", async () => {
+  // node-bot listens on all interfaces with CORS wide open, and this is the
+  // one /models/* route that makes it issue an outbound request to a
+  // user-supplied URL -- local-only (same isLocalRestartRequest check as
+  // /admin/restart) so a remote visitor can't use it as an SSRF probe
+  // against arbitrary hosts.
+  let testCalls = 0;
+  const app = createApp({
+    modelManagement: {
+      testBrainConnection: async () => {
+        testCalls += 1;
+        return { ok: true };
+      },
+    },
+  });
+
+  await withServer(app, async (baseUrl) => {
+    const { response, payload } = await postJson(
+      `${baseUrl}/models/brain-provider/test`,
+      { baseUrl: "http://127.0.0.1:11434/v1" },
+      { "X-Forwarded-For": "192.168.1.50" },
+    );
+    assert.equal(response.status, 403);
+    assert.deepEqual(payload, { error: "this endpoint is only available from this PC" });
+    assert.equal(testCalls, 0);
+  });
+});
+
 test("reply uses active model profile when request omits modelProfile", async () => {
   let receivedProfile = null;
   const app = createApp({
