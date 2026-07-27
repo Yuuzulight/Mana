@@ -135,7 +135,7 @@ document.getElementById("visionLookNowBtn")?.addEventListener("click", () => {
 // underneath the dropdown; this just gives an explicit way to force one.
 const voiceProviderSelectEl = document.getElementById("voiceProviderSelect");
 if (voiceProviderSelectEl) {
-  fetch("http://localhost:5005/tts/override")
+  fetch(`${BACKEND_BASE_URL}/tts/override`)
     .then((response) => response.json())
     .then((data) => {
       voiceProviderSelectEl.value = data.override || "";
@@ -144,7 +144,7 @@ if (voiceProviderSelectEl) {
 
   voiceProviderSelectEl.addEventListener("change", () => {
     const provider = voiceProviderSelectEl.value || null;
-    fetch("http://localhost:5005/tts/override", {
+    fetch(`${BACKEND_BASE_URL}/tts/override`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ provider }),
@@ -203,7 +203,7 @@ function escapeHtmlForPlugins(text) {
 async function loadPlugins() {
   if (!pluginsListEl) return;
   try {
-    const response = await fetch("http://localhost:5005/plugins");
+    const response = await fetch(`${BACKEND_BASE_URL}/plugins`);
     const body = await response.json();
     latestPluginsByCategory = body.plugins || {};
     renderPluginsList(pluginsSearchInputEl?.value || "");
@@ -224,7 +224,7 @@ pluginsListEl?.addEventListener("click", async (event) => {
   const enabled = !switchBtn.classList.contains("on");
   switchBtn.disabled = true;
   try {
-    const response = await fetch(`http://localhost:5005/plugins/${encodeURIComponent(key)}/enabled`, {
+    const response = await fetch(`${BACKEND_BASE_URL}/plugins/${encodeURIComponent(key)}/enabled`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ enabled }),
@@ -268,3 +268,32 @@ if (backendLogsEl && typeof ipcRenderer !== "undefined") {
     })
     .catch(() => {});
 }
+
+// Connection (issue #190): lets the backend URL point at a remote node-bot
+// instead of only a co-located one. BACKEND_BASE_URL itself (from
+// backend-config.js) is only read once at startup, so this just persists
+// the new value and tells the user to restart -- no live-reload wiring.
+const backendUrlInputEl = document.getElementById("backendUrlInput");
+const backendUrlSaveBtnEl = document.getElementById("backendUrlSaveBtn");
+
+if (backendUrlInputEl) {
+  backendUrlInputEl.value = BACKEND_BASE_URL;
+}
+
+backendUrlSaveBtnEl?.addEventListener("click", async () => {
+  const url = backendUrlInputEl?.value.trim();
+  if (!url) return;
+  backendUrlSaveBtnEl.disabled = true;
+  const originalLabel = backendUrlSaveBtnEl.textContent;
+  try {
+    await setBackendBaseUrl(url);
+    backendUrlSaveBtnEl.textContent = "Saved -- restart to apply";
+  } catch (error) {
+    backendUrlSaveBtnEl.textContent = `Failed: ${error.message}`;
+  } finally {
+    setTimeout(() => {
+      backendUrlSaveBtnEl.textContent = originalLabel;
+      backendUrlSaveBtnEl.disabled = false;
+    }, 2500);
+  }
+});

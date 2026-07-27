@@ -397,7 +397,7 @@ async function checkServices() {
   }
 
   try {
-    const response = await fetch("http://localhost:5005/health", {
+    const response = await fetch(`${BACKEND_BASE_URL}/health`, {
       method: "GET",
     });
     if (!response.ok) {
@@ -453,7 +453,7 @@ let brainProviderPresets = [];
 async function loadBrainProviderPresets() {
   if (!brainProviderSelectEl) return;
   try {
-    const response = await fetch("http://localhost:5005/models/brain-providers");
+    const response = await fetch(`${BACKEND_BASE_URL}/models/brain-providers`);
     brainProviderPresets = await response.json();
     brainProviderSelectEl.innerHTML = "";
     for (const preset of brainProviderPresets) {
@@ -514,7 +514,7 @@ function applyModelStatus(status) {
 
 async function refreshModelStatus() {
   try {
-    const response = await fetch("http://localhost:5005/models/status");
+    const response = await fetch(`${BACKEND_BASE_URL}/models/status`);
     if (!response.ok) {
       throw new Error(`Model status returned ${response.status}`);
     }
@@ -529,7 +529,7 @@ async function refreshModelStatus() {
 
 async function setActiveModelProfile(profile) {
   try {
-    const response = await fetch("http://localhost:5005/models/active-profile", {
+    const response = await fetch(`${BACKEND_BASE_URL}/models/active-profile`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ profile }),
@@ -580,7 +580,7 @@ function currentBrainProviderBody() {
 brainProviderConnectBtnEl?.addEventListener("click", async () => {
   if (brainProviderStatusEl) brainProviderStatusEl.textContent = "Connecting...";
   try {
-    const response = await fetch("http://localhost:5005/models/brain-provider/test", {
+    const response = await fetch(`${BACKEND_BASE_URL}/models/brain-provider/test`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ baseUrl: brainBaseUrlEl?.value || "", apiKey: brainApiKeyEl?.value || "" }),
@@ -600,7 +600,7 @@ brainProviderSaveBtnEl?.addEventListener("click", async () => {
   const body = currentBrainProviderBody();
   if (brainProviderStatusEl) brainProviderStatusEl.textContent = "Saving...";
   try {
-    const response = await fetch("http://localhost:5005/models/brain-provider", {
+    const response = await fetch(`${BACKEND_BASE_URL}/models/brain-provider`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
@@ -626,7 +626,7 @@ async function browseAndSetVisionField(targetEl, fieldName) {
     const picked = await ipcRenderer.invoke("browse-model-file");
     if (picked.canceled) return;
     const body = { [fieldName]: picked.filePath };
-    const response = await fetch("http://localhost:5005/models/vision-path", {
+    const response = await fetch(`${BACKEND_BASE_URL}/models/vision-path`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
@@ -645,7 +645,7 @@ visionMmprojBrowseBtnEl?.addEventListener("click", () => browseAndSetVisionField
 
 visionModelClearBtnEl?.addEventListener("click", async () => {
   try {
-    const response = await fetch("http://localhost:5005/models/vision-path", {
+    const response = await fetch(`${BACKEND_BASE_URL}/models/vision-path`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ modelPath: "", mmprojPath: "" }),
@@ -701,7 +701,7 @@ function renderPresetSelect(presets) {
 
 async function refreshPresetList() {
   try {
-    const response = await fetch("http://localhost:5005/presets");
+    const response = await fetch(`${BACKEND_BASE_URL}/presets`);
     if (!response.ok) {
       throw new Error(`Preset list returned ${response.status}`);
     }
@@ -751,8 +751,8 @@ presetSaveBtnEl.addEventListener("click", async () => {
   }
   try {
     const url = editingPresetId
-      ? `http://localhost:5005/presets/${editingPresetId}`
-      : "http://localhost:5005/presets";
+      ? `${BACKEND_BASE_URL}/presets/${editingPresetId}`
+      : `${BACKEND_BASE_URL}/presets`;
     const response = await fetch(url, {
       method: editingPresetId ? "PATCH" : "POST",
       headers: { "Content-Type": "application/json" },
@@ -784,7 +784,7 @@ presetDeleteBtnEl.addEventListener("click", async () => {
     return;
   }
   try {
-    const response = await fetch(`http://localhost:5005/presets/${preset.id}`, {
+    const response = await fetch(`${BACKEND_BASE_URL}/presets/${preset.id}`, {
       method: "DELETE",
     });
     if (!response.ok) {
@@ -879,7 +879,7 @@ comparePreferAEl?.addEventListener("click", () => setComparePreferred("a"));
 comparePreferBEl?.addEventListener("click", () => setComparePreferred("b"));
 
 async function fetchCompareReply(text, profile, signal) {
-  const response = await fetch("http://localhost:5005/reply", {
+  const response = await fetch(`${BACKEND_BASE_URL}/reply`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ text, modelProfile: profile }),
@@ -960,7 +960,7 @@ setSelectedPresetId(selectedPresetId);
 async function waitForBackend() {
   for (let attempt = 0; attempt < AUTO_LISTEN_MAX_ATTEMPTS; attempt += 1) {
     try {
-      const response = await fetch("http://localhost:5005/health", {
+      const response = await fetch(`${BACKEND_BASE_URL}/health`, {
         method: "GET",
       });
       if (response.ok) {
@@ -1032,7 +1032,7 @@ async function synthesizeSpeechChunk(index, chunks, playbackToken) {
       ? `Synthesizing reply ${index + 1}/${total}...`
       : "Synthesizing reply...";
 
-  const response = await fetch("http://localhost:5005/synthesize", {
+  const response = await fetch(`${BACKEND_BASE_URL}/synthesize`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -1188,7 +1188,7 @@ async function refreshGamingStatus(force = false) {
     return gamingStatusCheckPromise;
   }
 
-  gamingStatusCheckPromise = fetch("http://localhost:5005/gaming/status", {
+  gamingStatusCheckPromise = fetch(`${BACKEND_BASE_URL}/gaming/status`, {
     method: "GET",
   })
     .then(async (response) => {
@@ -1448,7 +1448,7 @@ async function transcribeBlob(blob) {
     formData.append("debug", "1");
   }
 
-  const response = await fetch("http://localhost:5005/transcribe-only", {
+  const response = await fetch(`${BACKEND_BASE_URL}/transcribe-only`, {
     method: "POST",
     body: formData,
   });
@@ -1563,7 +1563,7 @@ async function refreshPerfStatus() {
   }
 
   try {
-    const response = await fetch("http://localhost:5005/perf/status", {
+    const response = await fetch(`${BACKEND_BASE_URL}/perf/status`, {
       method: "GET",
     });
     if (!response.ok) {
@@ -1785,7 +1785,7 @@ async function runDoctorChecksFromLauncher() {
   }
 
   try {
-    const response = await fetch("http://localhost:5005/doctor", {
+    const response = await fetch(`${BACKEND_BASE_URL}/doctor`, {
       method: "GET",
     });
     const result = await response.json();
@@ -1828,7 +1828,7 @@ async function readScreenContext(text, gamingModeActive) {
   try {
     statusEl.textContent = "Mana is reading the screen...";
     const image = await ipcRenderer.invoke("screen:capture-primary");
-    const response = await fetch("http://localhost:5005/screen/read", {
+    const response = await fetch(`${BACKEND_BASE_URL}/screen/read`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -1853,7 +1853,7 @@ async function readScreenContext(text, gamingModeActive) {
 async function requestScreenAwareReply(text, gamingModeActive) {
   const screenText = await readScreenContext(text, gamingModeActive);
   const startedAt = performance.now();
-  const response = await fetch("http://localhost:5005/reply", {
+  const response = await fetch(`${BACKEND_BASE_URL}/reply`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -1894,7 +1894,7 @@ async function handleVisionHotkey() {
     appendChatMessage("user", "(asked Mana to look at the screen)");
 
     const image = await ipcRenderer.invoke("screen:capture-primary");
-    const response = await fetch("http://localhost:5005/reply", {
+    const response = await fetch(`${BACKEND_BASE_URL}/reply`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -2021,7 +2021,7 @@ function formatResearchReply(result) {
 
 async function pollResearchJob(jobId) {
   for (;;) {
-    const response = await fetch(`http://localhost:5005/research/${jobId}`);
+    const response = await fetch(`${BACKEND_BASE_URL}/research/${jobId}`);
     if (!response.ok) {
       throw new Error(`Research status check failed (${response.status})`);
     }
@@ -2057,7 +2057,7 @@ async function startDeepResearch() {
   setResearchProgress("Starting research...");
 
   try {
-    const startResponse = await fetch("http://localhost:5005/research/start", {
+    const startResponse = await fetch(`${BACKEND_BASE_URL}/research/start`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -2098,7 +2098,7 @@ researchCancelBtnEl?.addEventListener("click", async () => {
   }
   setResearchProgress("Cancelling...");
   try {
-    await fetch(`http://localhost:5005/research/${currentResearchJobId}/cancel`, {
+    await fetch(`${BACKEND_BASE_URL}/research/${currentResearchJobId}/cancel`, {
       method: "POST",
     });
   } catch (error) {

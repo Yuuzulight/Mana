@@ -2,6 +2,7 @@ const { app, BrowserWindow, Menu, Tray, desktopCapturer, dialog, globalShortcut,
 const fs = require("fs");
 const path = require("path");
 const { spawn } = require("child_process");
+const { createBackendConfigStore } = require("./backend-config");
 
 let mainWindow;
 let avatarWindow;
@@ -12,8 +13,32 @@ let retrieverProcess = null;
 let fallbackKokoroProcess = null;
 let searxngProcess = null;
 let embedderProcess = null;
-const BACKEND_URL = "http://localhost:5005/health";
-const IDLE_REPORT_URL = "http://localhost:5005/internal/idle-report";
+// Issue #190: the backend base URL used to be a hardcoded constant here and
+// in 3 renderer files (32 occurrences total) -- now persisted so the
+// Electron client can point at a remote node-bot instead of only a
+// co-located one, the first step toward an always-on dedicated Mana box.
+const backendConfigStore = createBackendConfigStore({
+  configPath: path.join(app.getPath("userData"), "mana-config.json"),
+});
+const { getBackendBaseUrl, isBackendUrlLoopback } = backendConfigStore;
+
+function getHealthUrl() {
+  return `${getBackendBaseUrl()}/health`;
+}
+
+function getIdleReportUrl() {
+  return `${getBackendBaseUrl()}/internal/idle-report`;
+}
+
+ipcMain.handle("get-backend-url", async () => getBackendBaseUrl());
+ipcMain.on("get-backend-url-sync", (event) => {
+  event.returnValue = getBackendBaseUrl();
+});
+ipcMain.handle("set-backend-url", async (event, url) => {
+  backendConfigStore.setBackendBaseUrl(url);
+  return { ok: true };
+});
+
 const IDLE_REPORT_INTERVAL_MS = 60000;
 const KOKORO_TTS_URL = "http://127.0.0.1:5011/health";
 const GPT_SOVITS_TTS_URL = "http://127.0.0.1:9880/";
@@ -55,7 +80,7 @@ async function isServiceRunning(url) {
 }
 
 async function isBackendRunning() {
-  return isServiceRunning(BACKEND_URL);
+  return isServiceRunning(getHealthUrl());
 }
 
 async function isTtsRunning() {
@@ -480,6 +505,14 @@ function startWindowsServices() {
   if (backendProcess) {
     return;
   }
+  // Issue #190: pointing Settings > Connection at a remote box means that
+  // box's own launcher (or a plain `node server.js`) is what starts
+  // node-bot -- this client should not also spawn a second, redundant
+  // local copy.
+  if (!isBackendUrlLoopback()) {
+    console.log(`Backend URL (${getBackendBaseUrl()}) is remote -- not spawning a local node-bot.`);
+    return;
+  }
 
   const nodeServer = path.join(ROOT_DIR, "node-bot", "server.js");
   console.log("Starting Node bot:", nodeServer);
@@ -734,7 +767,7 @@ async function isVoiceReady() {
 async function isLocalAiReady() {
   if (process.env.MANA_EAGER_LLAMA_SERVER !== "1") return true;
   try {
-    const response = await fetch(BACKEND_URL);
+    const response = await fetch(getHealthUrl());
     if (!response.ok) return false;
     const body = await response.json();
     return Boolean(body.llamaServerRunning);
@@ -874,7 +907,7 @@ app.whenReady().then(() => {
   // user may be running without windows-launcher at all -- either way the
   // hourly timer keeps working as the fallback.
   setInterval(() => {
-    fetch(IDLE_REPORT_URL, {
+    fetch(getIdleReportUrl(), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ idleSeconds: powerMonitor.getSystemIdleTime() }),
