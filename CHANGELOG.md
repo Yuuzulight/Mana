@@ -53,6 +53,18 @@ accounting.
   they'd already been nested there since the issue #138 UI overhaul.
 
 ### Added
+- **Outbound MCP client** (issue #169): Mana can now connect *outward* to
+  third-party MCP servers and use their tools, not just expose her own
+  capabilities as a server (`mcp-server.js`). New `mcp-client-registry.js`
+  -- per-server tool allowlisting, an env-var allowlist for stdio-spawned
+  servers (starts from the SDK's safe default environment, never
+  `process.env`), and registration routed through the approval gate
+  (#152) with a uniquely-scoped decision per server. Also fixes a real bug
+  found while wiring this in: the tool-calling loop
+  (`runToolAwareReply`) called `executeTool()` without awaiting it --
+  harmless for the one existing synchronous tool, but would have silently
+  corrupted every async MCP tool result into the literal string
+  `"[object Promise]"`.
 - **Configurable backend URL** (issue #190, `windows-launcher`): the
   hardcoded `http://localhost:5005` (32 occurrences across `main.js` and
   three renderer files) is now a persisted setting (Settings >

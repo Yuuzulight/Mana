@@ -587,6 +587,67 @@ test("runToolAwareReply executes a requested tool call and returns the follow-up
   ]);
 });
 
+test("runToolAwareReply awaits an async executeTool (issue #169's MCP-tool prerequisite)", async () => {
+  // Before issue #169, this loop called toolPolicy.executeTool(name, args)
+  // without awaiting it, then did String(result) immediately -- fine for
+  // tool-policy.js's synchronous read_file, but String(aPromise) would have
+  // produced the literal text "[object Promise]" for anything async
+  // (an MCP tool call is inherently network/child-process I/O). This test
+  // fails on the old bare-call code the same way a real MCP tool would.
+  let serverUp = false;
+  const fakeFetch = async (url, init) => {
+    if (String(url).endsWith("/health")) return { ok: serverUp };
+    const body = JSON.parse(init.body);
+    if (!body.messages.some((m) => m.role === "tool")) {
+      return {
+        ok: true,
+        json: async () => ({
+          choices: [
+            {
+              message: {
+                content: "",
+                tool_calls: [
+                  { id: "call_1", type: "function", function: { name: "async_tool", arguments: "{}" } },
+                ],
+              },
+            },
+          ],
+        }),
+      };
+    }
+    const toolMessage = body.messages.find((m) => m.role === "tool");
+    return {
+      ok: true,
+      json: async () => ({
+        choices: [{ message: { content: `got: ${toolMessage.content}` } }],
+      }),
+    };
+  };
+
+  const runtime = createLlamaServerRuntime({
+    env: makeFakeEnv(),
+    fs: makeFakeFs(),
+    fetch: fakeFetch,
+    spawn: () => {
+      serverUp = true;
+      return makeFakeChild();
+    },
+    sleep: async () => {},
+    registerExitHandlers: false,
+  });
+
+  const policy = makeFakePolicy({
+    executeTool: async () => {
+      await new Promise((resolve) => setTimeout(resolve, 1));
+      return "resolved async result";
+    },
+  });
+
+  const result = await runtime.runToolAwareReply("use the async tool", policy);
+  assert.equal(result.content, "got: resolved async result");
+  assert.doesNotMatch(result.content, /object Promise/);
+});
+
 test("runToolAwareReply reports a policy error back to the model instead of throwing", async () => {
   let secondCallToolMessage = null;
   let serverUp = false;
