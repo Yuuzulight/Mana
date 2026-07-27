@@ -104,6 +104,39 @@ test("appendTurn truncates a long first message into a short auto-name", async (
   assert.ok(session.name.endsWith("…"));
 });
 
+test("appendTurn persists toolCalls when provided, and omits the field entirely when not", async () => {
+  const store = createAcpMemoryStore({ dataDir: createTempDir() });
+
+  await store.appendTurn({
+    sessionId: "session-with-tools",
+    user: "what's NVDA trading at",
+    assistant: "NVDA is at $123.45",
+    toolCalls: [{ name: "stock_quote", ok: true, args: { symbol: "NVDA" }, result: "123.45" }],
+  });
+  await store.appendTurn({
+    sessionId: "session-with-tools",
+    user: "thanks",
+    assistant: "you're welcome",
+  });
+
+  const session = store.getSession("session-with-tools");
+  assert.deepEqual(session.turns[0].toolCalls, [
+    { name: "stock_quote", ok: true, args: { symbol: "NVDA" }, result: "123.45" },
+  ]);
+  assert.equal(session.turns[1].toolCalls, undefined);
+});
+
+test("appendTurn ignores an empty toolCalls array rather than storing it", async () => {
+  const store = createAcpMemoryStore({ dataDir: createTempDir() });
+  await store.appendTurn({
+    sessionId: "session-empty-tools",
+    user: "hi",
+    assistant: "hello",
+    toolCalls: [],
+  });
+  assert.equal(store.getSession("session-empty-tools").turns[0].toolCalls, undefined);
+});
+
 test("renameSession overrides the stored name and returns null for unknown sessions", () => {
   const store = createAcpMemoryStore({
     dataDir: createTempDir(),

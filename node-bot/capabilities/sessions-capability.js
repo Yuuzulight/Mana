@@ -3,6 +3,7 @@ const {
   requireString,
   sendValidationError,
 } = require("../request-validation");
+const { exportSessionAsShareGPTJSONL } = require("../session-export");
 
 const KEY = "sessions";
 
@@ -49,6 +50,33 @@ function registerSessionsRoutes(app, context = {}) {
         return res.status(404).json({ error: "session not found" });
       }
       return res.json(page);
+    } catch (e) {
+      if (e instanceof ValidationError) {
+        return sendValidationError(res, e);
+      }
+      console.error(e);
+      return res.status(500).json({ error: String(e) });
+    }
+  });
+
+  // Issue #153: full turn history as ShareGPT-style JSONL, for the user's
+  // own analysis or fine-tuning. Local file output only -- this just
+  // returns the JSONL text; the caller (windows-launcher's renderer, via
+  // a native save dialog) is what actually writes it to disk.
+  app.get("/sessions/:id/export", (req, res) => {
+    try {
+      const sessionId = requireString(req.params?.id, "sessionId");
+      const session = acpMemoryStore.getSession(sessionId);
+      if (!session) {
+        return res.status(404).json({ error: "session not found" });
+      }
+      const jsonl = exportSessionAsShareGPTJSONL(session);
+      res.setHeader("Content-Type", "application/x-ndjson");
+      res.setHeader(
+        "Content-Disposition",
+        `attachment; filename="${encodeURIComponent(sessionId)}.jsonl"`,
+      );
+      return res.send(jsonl);
     } catch (e) {
       if (e instanceof ValidationError) {
         return sendValidationError(res, e);

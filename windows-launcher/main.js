@@ -455,6 +455,26 @@ ipcMain.handle("browse-model-file", async () => {
   return { canceled: false, filePath: result.filePaths[0] };
 });
 
+// Issue #153: session export writes to disk via a native save dialog
+// instead of a browser-style auto-download, since this is Electron, not a
+// browser tab -- the renderer fetches the JSONL text from node-bot and
+// hands it here to actually write.
+ipcMain.handle("save-export-file", async (event, { defaultFileName, content }) => {
+  const result = await dialog.showSaveDialog(mainWindow, {
+    title: "Export session",
+    defaultPath: defaultFileName,
+    filters: [
+      { name: "JSON Lines", extensions: ["jsonl"] },
+      { name: "All files", extensions: ["*"] },
+    ],
+  });
+  if (result.canceled || !result.filePath) {
+    return { canceled: true };
+  }
+  fs.writeFileSync(result.filePath, content, "utf8");
+  return { canceled: false, filePath: result.filePath };
+});
+
 function startWindowsServices() {
   // Only start one backend process.
   if (backendProcess) {

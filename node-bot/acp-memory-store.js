@@ -352,6 +352,17 @@ function createAcpMemoryStore(options = {}) {
       user: cleanText(input.user, 4000),
       assistant: cleanText(input.assistant, 4000),
     };
+    // Optional (issue #153): only the tool-calling reply path ever has
+    // these, so most turns simply omit the field rather than storing an
+    // empty array on every single turn.
+    if (Array.isArray(input.toolCalls) && input.toolCalls.length) {
+      turn.toolCalls = input.toolCalls.map((call) => ({
+        name: cleanText(call?.name, 200),
+        ok: Boolean(call?.ok),
+        args: call?.args,
+        result: call?.result,
+      }));
+    }
 
     if (!turn.user && !turn.assistant) {
       return session;
