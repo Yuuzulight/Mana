@@ -214,6 +214,27 @@ test("testBrainConnection reports ok with a model count on success", async () =>
   }
 });
 
+test("testBrainConnection trims trailing slashes from baseUrl without a regex", async () => {
+  const manager = createModelManagement({
+    env: {},
+    localGgufs: [],
+    modelSettingsStore: fakeModelSettingsStore(),
+  });
+  const originalFetch = global.fetch;
+  global.fetch = async (url) => {
+    assert.equal(String(url), "http://127.0.0.1:11434/v1/models");
+    return { ok: true, status: 200, json: async () => ({ data: [] }) };
+  };
+  try {
+    const result = await manager.testBrainConnection({
+      baseUrl: "http://127.0.0.1:11434/v1///",
+    });
+    assert.equal(result.ok, true);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
 test("testBrainConnection sends the API key and surfaces a non-ok status", async () => {
   const manager = createModelManagement({
     env: {},

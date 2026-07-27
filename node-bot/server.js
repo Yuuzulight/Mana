@@ -1867,7 +1867,18 @@ function registerRoutes(app, upload, deps = {}) {
   });
 
   // "Connect" button: tests reachability/auth against baseUrl before saving.
+  // Local-only (same isLocalRestartRequest check as /admin/restart): this is
+  // the one /models/* route that makes node-bot issue an outbound request to
+  // a user-supplied URL, and node-bot listens on all interfaces with CORS
+  // wide open, so an unrestricted version of this route would let anyone who
+  // can reach this machine's port make it probe arbitrary hosts (SSRF). The
+  // fix is restricting *who can call it*, not the destination -- the whole
+  // point of this button is testing local/LAN endpoints (Ollama, LM
+  // Studio), so blocking private addresses would defeat the feature.
   app.post("/models/brain-provider/test", async (req, res) => {
+    if (!isLocalRestartRequest(req)) {
+      return res.status(403).json({ error: "this endpoint is only available from this PC" });
+    }
     const result = await modelManagement.testBrainConnection({
       baseUrl: req.body?.baseUrl,
       apiKey: req.body?.apiKey,

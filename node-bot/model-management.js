@@ -447,9 +447,16 @@ function createModelManagement(options = {}) {
     if (!baseUrl) {
       return { ok: false, error: "baseUrl is required" };
     }
+    // Trim trailing slashes without a regex -- a user-controlled string fed
+    // into a repetition-quantifier regex is a ReDoS shape CodeQL flags even
+    // when (as here) the pattern itself can't actually backtrack.
+    let trimmedBaseUrl = String(baseUrl);
+    while (trimmedBaseUrl.endsWith("/")) {
+      trimmedBaseUrl = trimmedBaseUrl.slice(0, -1);
+    }
     let url;
     try {
-      url = new URL(baseUrl.replace(/\/+$/, "") + "/models");
+      url = new URL(trimmedBaseUrl + "/models");
     } catch (e) {
       return { ok: false, error: `baseUrl is not a valid URL: ${baseUrl}` };
     }
