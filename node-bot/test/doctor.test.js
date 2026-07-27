@@ -288,8 +288,8 @@ test("async doctor probes configured TTS health URLs", async () => {
         WHISPER_MODEL: "",
         MOBILE_PASSCODE_HASH: "",
         MOBILE_SESSION_SECRET: "",
-        TTS_PROVIDER: "chatterbox",
-        CHATTERBOX_TTS_URL: url,
+        TTS_PROVIDER: "kokoro",
+        KOKORO_TTS_URL: url,
       },
       paths: {
         dataDir: fs.mkdtempSync(path.join(os.tmpdir(), "mana-doctor-tts-")),
@@ -306,7 +306,7 @@ test("async doctor probes configured TTS health URLs", async () => {
     assert.equal(tts.status, "pass");
     assert.equal(tts.details.services.length, 1);
     assert.deepEqual(tts.details.services[0], {
-      id: "chatterbox",
+      id: "kokoro",
       url: `${url}/health`,
       ok: true,
       statusCode: 200,
@@ -363,7 +363,7 @@ test("async doctor checks GPT-SoVITS only when it is the selected provider", asy
         WHISPER_MODEL: "",
         MOBILE_PASSCODE_HASH: "",
         MOBILE_SESSION_SECRET: "",
-        TTS_PROVIDER: "chatterbox",
+        TTS_PROVIDER: "kokoro",
       },
       paths: {
         dataDir: fs.mkdtempSync(path.join(os.tmpdir(), "mana-doctor-sovits-off-")),

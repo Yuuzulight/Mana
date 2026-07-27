@@ -1,0 +1,13 @@
+{
+  "name": "mana-plugin-document-reader",
+  "version": "1.0.0",
+  "description": "Ingest local PDFs or a specific web page into Mana's existing memory retriever.",
+  "main": "index.js",
+  "scripts": {
+    "test": "node --test test/*.test.js"
+  },
+  "private": true,
+  "dependencies": {
+    "pdf-parse": "^1.1.1"
+  }
+}

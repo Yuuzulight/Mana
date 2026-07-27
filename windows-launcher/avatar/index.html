@@ -13,7 +13,6 @@
         background: transparent;
       }
 
-      #avatar,
       #live2d {
         display: block;
         width: 100%;
@@ -27,30 +26,15 @@
         transform-origin: bottom center;
       }
 
-      #live2d {
-        display: none;
-      }
-
-      body[data-renderer="live2d"] #avatar {
-        display: none;
-      }
-
-      body[data-renderer="live2d"] #live2d {
-        display: block;
-      }
-
-      body[data-state="talking"] #avatar,
       body[data-state="talking"] #live2d {
         transform: translateY(-3px) scale(1.015);
         filter: drop-shadow(0 16px 22px rgba(0, 0, 0, 0.38));
       }
 
-      body[data-state="excited"] #avatar,
       body[data-state="excited"] #live2d {
         animation: excited-hop 420ms ease-in-out infinite;
       }
 
-      body[data-state="angry"] #avatar,
       body[data-state="angry"] #live2d {
         animation: angry-hop 300ms ease-in-out infinite;
       }
@@ -76,12 +60,11 @@
       }
     </style>
   </head>
-  <body data-state="idle" data-renderer="sprite">
-    <img id="avatar" src="../assets/avatar/idle.svg" alt="" />
+  <body data-state="idle">
     <canvas id="live2d"></canvas>
     <!-- Live2D Cubism Core is proprietary and fetched at setup time
-         (npm run fetch-live2d-core); the avatar falls back to sprites
-         when it is absent. -->
+         (npm run fetch-live2d-core); the avatar model is the only
+         renderer -- no sprite/image fallback. -->
     <script src="../assets/live2d/live2dcubismcore.min.js"></script>
     <script src="../node_modules/pixi.js/dist/browser/pixi.min.js"></script>
     <script src="../node_modules/pixi-live2d-display/dist/cubism4.min.js"></script>

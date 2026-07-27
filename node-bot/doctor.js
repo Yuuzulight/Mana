@@ -371,13 +371,6 @@ function getConfiguredTtsHealthTargets(env) {
   const provider = String(env.TTS_PROVIDER || "").trim().toLowerCase();
   const targets = [];
 
-  if ((!provider || provider === "chatterbox") && env.CHATTERBOX_TTS_URL) {
-    targets.push({
-      id: "chatterbox",
-      url: withHealthPath(env.CHATTERBOX_TTS_URL),
-    });
-  }
-
   if ((!provider || provider === "kokoro") && env.KOKORO_TTS_URL) {
     targets.push({
       id: "kokoro",

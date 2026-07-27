@@ -1,9 +1,6 @@
 # Trimmed subset of requirements.txt used by the packaged installer's
 # first-run setup (see desktop-client/first-run-setup.js). kokoro_service.py
 # -- the only thing the desktop app actually spawns -- only needs these.
-# requirements.txt's torch/chatterbox-tts entries belong to service.py (an
-# unused alternate provider) and pull a multi-GB CUDA-specific torch wheel
-# that a bundled first-run install shouldn't force on every user.
 fastapi>=0.115.2,<1.0
 uvicorn[standard]==0.30.6
 soundfile==0.12.1

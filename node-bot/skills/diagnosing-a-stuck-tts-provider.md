@@ -16,11 +16,11 @@ assuming the TTS service itself is broken:
    provider dropdown can disagree about which provider *should* be active
    versus which one actually loaded.
 2. **Check the provider process is really running.** Fish (S1-mini),
-   Kokoro, and Chatterbox each run as a separate local process
-   (`kokoro_service.py`, the Chatterbox uvicorn service, etc.) --
-   `npm run doctor` reports each one's reachability. A provider swap that
-   killed the old process but failed to fully start the new one leaves
-   Mana silently falling back to no audio rather than erroring loudly.
+   Kokoro, and GPT-SoVITS each run as a separate local process
+   (`kokoro_service.py`, `api_v2.py`, etc.) -- `npm run doctor` reports
+   each one's reachability. A provider swap that killed the old process
+   but failed to fully start the new one leaves Mana silently falling
+   back to no audio rather than erroring loudly.
 3. **Look for a stale swap-debounce lock.** `ensureServerConfig`'s swap
    debounce (added for issue #68) exists specifically to stop back-to-back
    swap requests from racing each other -- if a swap got interrupted

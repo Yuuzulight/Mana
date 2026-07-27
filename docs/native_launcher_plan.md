@@ -19,7 +19,7 @@ The `windows-native-launcher` project currently includes:
 - tray icon
 - transparent click-through PNG overlay
 - existing Mana avatar asset reuse
-- Kokoro startup without Chatterbox fallback
+- Kokoro startup
 - `node-bot` startup
 - `/perf/status` integration
 

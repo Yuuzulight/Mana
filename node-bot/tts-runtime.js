@@ -125,7 +125,6 @@ function createTtsRuntime(options = {}) {
   const ttsArgsJson = env.TTS_ARGS_JSON || null;
   const ttsVoice = env.TTS_VOICE || null;
   const ttsSpeaker = env.TTS_SPEAKER || null;
-  const chatterboxTtsUrl = env.CHATTERBOX_TTS_URL || "http://127.0.0.1:5010";
   const kokoroTtsUrl = env.KOKORO_TTS_URL || "http://127.0.0.1:5011";
   const fishTtsUrl = env.FISH_TTS_URL || "http://127.0.0.1:8080";
   // S1-mini can slow to a crawl (not fail outright) when the GPU is under
@@ -153,10 +152,6 @@ function createTtsRuntime(options = {}) {
   // never goes silent if S1-mini is unreachable or errors.
   const fishTtsFallbackProvider = env.FISH_TTS_FALLBACK_PROVIDER || "kokoro";
   const kokoroTtsFallbackProvider = env.KOKORO_TTS_FALLBACK_PROVIDER || "none";
-  // Voice cloning on the GPU can fail when a game holds VRAM; keep Kokoro as
-  // the voice-of-last-resort so Mana never goes silent.
-  const chatterboxTtsFallbackProvider =
-    env.CHATTERBOX_TTS_FALLBACK_PROVIDER || "kokoro";
   // Trial voice provider: GPT-SoVITS (see docs/gpt_sovits_setup.md). Not the
   // default; opt in with TTS_PROVIDER=gpt_sovits.
   const gptSovitsTtsUrl = env.GPT_SOVITS_TTS_URL || "http://127.0.0.1:9880";
@@ -471,12 +466,6 @@ function createTtsRuntime(options = {}) {
         ...kokoroProfile,
       });
       logPerf("tts kokoro", startedAt);
-    } else if (provider === "chatterbox") {
-      const startedAt = nowMs();
-      audio = await postJson(`${chatterboxTtsUrl}/synthesize`, {
-        text,
-      });
-      logPerf("tts chatterbox", startedAt);
     } else if (provider === "gpt_sovits") {
       if (!gptSovitsRefAudio || !gptSovitsPromptText) {
         throw new Error(
@@ -575,25 +564,6 @@ function createTtsRuntime(options = {}) {
       }
     }
 
-    if (activeProvider === "chatterbox") {
-      try {
-        const res = await synthesizeWithConfiguredProvider("chatterbox", text);
-        return res.audio;
-      } catch (error) {
-        if (chatterboxTtsFallbackProvider === "none") {
-          throw error;
-        }
-        console.warn(
-          `Chatterbox TTS failed, falling back to ${chatterboxTtsFallbackProvider}: ${error.message}`,
-        );
-        const res = await synthesizeWithConfiguredProvider(
-          chatterboxTtsFallbackProvider,
-          text,
-        );
-        return res.audio;
-      }
-    }
-
     if (activeProvider === "gpt_sovits") {
       try {
         const res = await synthesizeWithConfiguredProvider("gpt_sovits", text);
@@ -637,7 +607,6 @@ function createTtsRuntime(options = {}) {
     },
     swapFishDevice,
     urls: {
-      chatterboxTtsUrl,
       fishTtsUrl,
       kokoroTtsUrl,
       gptSovitsTtsUrl,

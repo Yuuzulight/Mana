@@ -6,7 +6,7 @@ Architecture
 - `windows-launcher` runs the Electron UI.
 - The Electron main process starts `node-bot/server.js`.
 - `node-bot` calls local `whisper.cpp` and `llama.cpp` binaries.
-- `node-bot` can call local Kokoro ONNX, Chatterbox Turbo, or Fish Speech TTS services to synthesize reply audio.
+- `node-bot` can call local Kokoro ONNX, Fish Speech, or GPT-SoVITS TTS services to synthesize reply audio.
 - The renderer records short audio chunks in the browser, converts them to WAV, and uses the local backend for transcription and replies.
 
 Project goal
@@ -20,7 +20,7 @@ Project goal
    - `ffmpeg` on `PATH` if you want server-side audio conversion fallback
    - A Windows build of `whisper.cpp`
    - A Windows build of `llama.cpp`
-   - Python 3.10+ for the Chatterbox TTS service
+   - Python 3.10+ for the Kokoro TTS service
    - Local model files for Whisper and Llama
 
 2) Configure backend environment variables
@@ -31,15 +31,9 @@ Project goal
      - `$env:WHISPER_PROMPT = "Singapore English conversation with an AI assistant named Mana. Wake words include Mana, Manah, Manna, Mannah, Myna, My Na, and wake up."`
      - `$env:LLAMA_BIN = "C:\path\to\llama-cli.exe"`
      - `$env:LLAMA_MODEL = "C:\path\to\model.gguf"`
-     - `$env:TTS_PROVIDER = "chatterbox"`
+     - `$env:TTS_PROVIDER = "fish"`
      - `$env:KOKORO_TTS_URL = "http://127.0.0.1:5011"`
-     - `$env:CHATTERBOX_TTS_URL = "http://127.0.0.1:5010"`
      - `$env:FISH_TTS_URL = "http://127.0.0.1:8080"`
-     - `$env:CHATTERBOX_MODEL = "turbo"`
-     - `$env:CHATTERBOX_VOICE_REF = "C:\path\to\evil-style-reference.wav"`
-     - `$env:CHATTERBOX_EXAGGERATION = "0.35"`
-     - `$env:CHATTERBOX_CFG_WEIGHT = "0.45"`
-     - `$env:CHATTERBOX_TEMPERATURE = "0.8"`
 
    Notes:
    - `WHISPER_BIN` should point to the Whisper CLI executable you want to use.
@@ -48,13 +42,10 @@ Project goal
    - For Singaporean-accent recognition, `ggml-base.en.bin` or `ggml-small.en.bin` should be more accurate than `ggml-tiny.en.bin`.
    - `LLAMA_BIN` should point to the Llama CLI executable you want to use.
    - `TTS_PROVIDER=kokoro` tells Mana to use the faster Kokoro ONNX service.
-   - `TTS_PROVIDER=chatterbox` tells Mana to use the local Chatterbox TTS microservice.
-   - `TTS_PROVIDER=fish` tells Mana to call a separately running Fish Speech server.
+   - `TTS_PROVIDER=fish` (the default) tells Mana to call a separately running Fish Speech server; see docs/fish_speech_tts.md.
    - `FISH_TTS_FALLBACK_PROVIDER=kokoro` keeps Mana speaking through Kokoro if Fish Speech is unavailable.
-   - `CHATTERBOX_VOICE_REF` should point to a short reference clip that matches the direction you want.
-   - Lower `CHATTERBOX_CFG_WEIGHT` and a moderate `CHATTERBOX_EXAGGERATION` help push the voice toward a sharper, more stylized agent delivery.
    - If `LLAMA_BIN` or `LLAMA_MODEL` is not set, the backend returns a placeholder reply so you can still test audio capture and transcription.
-   - If the Chatterbox service is not running, the UI still shows the text reply but will not play synthesized audio.
+   - If the configured TTS service is not running, the UI still shows the text reply but will not play synthesized audio.
 
 3) Install launcher and backend dependencies
    - In PowerShell:
@@ -76,7 +67,7 @@ Project goal
      - `cd C:\ManaAI\Mana\windows-launcher`
      - `npm run start`
 
-   The launcher starts `node-bot` automatically and will also try to start Kokoro as primary TTS and Chatterbox as fallback.
+   The launcher starts `node-bot` automatically and will also try to start whichever launcher-managed TTS provider is configured (Kokoro or GPT-SoVITS; Fish Speech runs separately, see docs/fish_speech_tts.md).
 
 6) Use Mana
    - Start the Windows launcher.
@@ -90,7 +81,7 @@ Project goal
      `MANA_SILENCE_BUFFER_MS` (milliseconds) if that feels too short or
      too long for how you talk.
    - The UI shows the transcript and model reply.
-   - If Chatterbox is running, the reply is synthesized and played back by the app.
+   - If the configured TTS service is running, the reply is synthesized and played back by the app.
 
 Performance notes
 - `Gaming mode` checks Windows for watched game processes such as FFXIV.
@@ -107,7 +98,7 @@ Troubleshooting
 - If the UI reports `Local backend not reachable`, check that `node-bot` started successfully and that nothing else is using port `5005`.
 - If transcription fails immediately, verify `WHISPER_BIN` and `WHISPER_MODEL`.
 - If replies are placeholders, verify `LLAMA_BIN` and `LLAMA_MODEL`.
-- If text replies work but no audio plays, verify `TTS_PROVIDER`, `CHATTERBOX_TTS_URL`, and that the TTS service is healthy on port `5010`.
+- If text replies work but no audio plays, verify `TTS_PROVIDER` and that the configured TTS service is healthy (Kokoro on port `5011`, Fish Speech on port `8080`).
 - If the `Open Model Web UI` button is not relevant to your local setup, ignore it. It is only useful if you separately run a model UI on `http://localhost:7860`.
 
 Legacy paths
