@@ -1,0 +1,10 @@
+{
+  "name": "mana-plugin-browser-automation",
+  "version": "1.0.0",
+  "description": "Navigate/click/type/read a live page via a local Chromium-family browser.",
+  "main": "index.js",
+  "scripts": {
+    "test": "node --test test/*.test.js"
+  },
+  "private": true
+}
