@@ -79,7 +79,18 @@ begin with, so neither of those call sites needed to change.
   404 for an unknown session.
 - `node-bot/test/server-routes.test.js`: full regression pass after the
   `lastToolCalls` capture change.
-- **windows-launcher UI not live-verified.** No windows-launcher Electron
-  instance was running to click through the new context-menu entry and
-  save dialog this session -- worth a manual export-and-open-the-file
-  check before relying on this.
+- **Manual verification (2026-07-28): real Electron instance, no bugs
+  found.** Launched the actual `windows-launcher` app (`electron .`),
+  which spawned its own real `node-bot` backend as a child process exactly
+  as production does. Drove the real renderer's `exportSession()` for a
+  real 15-turn session (`60972697-...`) via a raw CDP call into the
+  running "Mana" window -- same function the context-menu's "Export"
+  button calls, exercising the real `fetch` to the real
+  `GET /sessions/:id/export` route and the real
+  `ipcRenderer.invoke("save-export-file")` call into `main.js`. The real
+  native Windows save dialog appeared and the user manually clicked Save
+  on it (the one piece that can't be scripted -- a genuine native OS
+  modal). Result: a real `.jsonl` file written to disk containing 30
+  conversation entries (15 human + 15 gpt, correctly alternating,
+  matching the session's 15 real turns exactly), all non-empty strings.
+  No bugs found.

@@ -75,6 +75,30 @@ verified:
   `<script>alert(1)</script>` or an `onerror` image tag, confirm nothing
   executes) before or shortly after this ships.
 
+### Manual verification (2026-07-28): real Electron instance, no bugs found
+
+Launched the real `windows-launcher` app (`electron .`, with its own real
+`node-bot` backend spawned as normal) and called the real
+`appendChatMessage("user", text)` -- the exact chokepoint this doc's audit
+identified -- with three live payloads, then read back the actual bubble
+`innerHTML` and listened for `Page.javascriptDialogOpening` CDP events
+(which would fire if an `alert()` actually executed):
+
+- `<script>window.__xss1 = true; alert(1)</script>` -> bubble ended up
+  empty; the `<script>` tag was stripped entirely, `window.__xss1` stayed
+  `false`, no dialog opened.
+- `<img src="x" onerror="window.__xss2 = true">` -> rendered as
+  `<img src="x">` -- the `onerror` attribute itself was stripped,
+  `window.__xss2` stayed `false`.
+- `<svg onload="window.__xss3 = true"><script>window.__xss3b = true</script></svg>`
+  -> rendered as an empty `<svg></svg>` -- both the `onload` handler and
+  the nested `<script>` were stripped, neither flag flipped.
+
+No bugs found -- `purify.sanitize(marked.parse(text))` behaves exactly as
+DOMPurify's own documentation promises against all three of the most
+common injection shapes (script tag, event-handler attribute, nested
+script inside a non-script element).
+
 ## Deliberate simplifications
 
 - **No new node-bot routes or capability.** "Mana can produce content that
