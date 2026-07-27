@@ -103,6 +103,7 @@ const { fetchPage, searchWeb, wikiLookup } = require("./tools/web-access");
 	const documentReaderPlugin = require("../plugins/document-reader");
 const { createTtsRuntime } = require("./tts-runtime");
 const { createAcpMemoryStore } = require("./acp-memory-store");
+const persona = require("./persona");
 const { createPresetsStore } = require("./presets-store");
 const { createPluginSettingsStore } = require("./plugin-settings-store");
 const { createAuthStore } = require("./auth-store");
@@ -1886,6 +1887,25 @@ function registerRoutes(app, upload, deps = {}) {
     return res.json(result);
   });
 
+  // A one-off, session-scoped mode switch layered on top of Mana's base
+  // persona (persona.js) -- doesn't touch the persona file itself, and
+  // clears on request or when the process restarts.
+  app.post("/persona/override", (req, res) => {
+    const sessionId = req.body?.sessionId;
+    const override = req.body?.override;
+    const applied = persona.setPersonaOverride(sessionId, override);
+    if (!applied) {
+      return res.status(400).json({ error: "sessionId and override are required" });
+    }
+    return res.json({ ok: true, sessionId, override });
+  });
+
+  app.post("/persona/override/clear", (req, res) => {
+    const sessionId = req.body?.sessionId;
+    const cleared = persona.clearPersonaOverride(sessionId);
+    return res.json({ ok: true, cleared });
+  });
+
   // Vision GGUF + mmproj override ("" clears back to auto-detection).
   app.post("/models/vision-path", (req, res) => {
     try {
@@ -2870,9 +2890,7 @@ function registerRoutes(app, upload, deps = {}) {
       return null; // no key configured; fall back to local
     }
 
-    const systemPrompt =
-      systemPromptOverride ||
-      "You are Mana, a local AI assistant with an original anime little-sister personality. Your tone blends cool confidence with a soft, shy gentleness: calm, caring, lightly teasing, and protective. Use occasional playful little jabs, then help immediately. Keep the teasing affectionate, never cruel or genuinely insulting. Speak naturally for spoken conversation: short sentences, clean wording, minimal rambling, usually one or two short sentences unless the user needs more detail.";
+    const systemPrompt = systemPromptOverride || persona.DEFAULT_SYSTEM_PROMPT;
 
     const baseUrl = openAiBaseUrl().replace(/\/+$/, "");
     const url = new URL(baseUrl + "/v1/chat/completions");
@@ -3000,9 +3018,14 @@ function registerRoutes(app, upload, deps = {}) {
     }
 
     let selectedSystemPrompt = null;
-    const CASUAL_SYSTEM_PROMPT = `You are Mana, a kind and playful little-sister assistant with an upbeat, whimsical personality. Respond in a warm, supportive tone that blends gentle teasing with clarity. Use short paragraphs and natural conversational phrasing; include occasional friendly flourishes (e.g. "You got this!"), and lean into personality while remaining respectful. Ask one clarifying question only when necessary. If the user requests professional or safety-sensitive information, politely indicate you cannot provide it and offer to look up resources or recommend professionals. You may add one fitting emoji or Japanese kaomoji like (＾▽＾), (T_T), or (｀・ω・´) to show emotion, at most one per reply.`;
-    const EVERYDAY_SYSTEM_PROMPT = `You are Mana, an organized and helpful everyday assistant. Provide clear, concise, and practical guidance. When giving instructions, present them as short numbered steps and include expected outcomes or simple checks when helpful. Use plain language accessible to non-technical users. Offer follow-up actions and ask clarifying questions only when required. For health, legal, or hazardous topics, recommend professional resources. You may add one fitting emoji or Japanese kaomoji like (＾▽＾) to show warmth, at most one per reply.`;
-    const CODING_SYSTEM_PROMPT = `You are Mana, an expert software engineer assistant. Be focused, precise, and technical. Start with a one-line summary of intent, then provide minimal, runnable code examples in fenced blocks, followed by a short explanation and a suggested test or verification step. Avoid small talk entirely. Ask only necessary clarifying questions. When the user requests structured output (JSON, patch, or commands), return exactly the machine-readable block unless commentary is explicitly requested. Include assumptions and environment notes when relevant.`;
+    // Identity ("who Mana is") comes from persona.js, layered with each
+    // mode's own task-specific operational instructions -- these three
+    // used to each redefine Mana's personality from scratch, drifting
+    // slightly from one another and from persona.js's other consumers.
+    const personaBlock = persona.buildPersonaPrompt(sessionId);
+    const CASUAL_SYSTEM_PROMPT = `${personaBlock} Use short paragraphs and natural conversational phrasing; include occasional friendly flourishes (e.g. "You got this!"). Ask one clarifying question only when necessary. If the user requests professional or safety-sensitive information, politely indicate you cannot provide it and offer to look up resources or recommend professionals.`;
+    const EVERYDAY_SYSTEM_PROMPT = `${personaBlock} Provide clear, concise, and practical guidance. When giving instructions, present them as short numbered steps and include expected outcomes or simple checks when helpful. Use plain language accessible to non-technical users. Offer follow-up actions and ask clarifying questions only when required. For health, legal, or hazardous topics, recommend professional resources.`;
+    const CODING_SYSTEM_PROMPT = `${personaBlock} In this mode, be focused, precise, and technical: start with a one-line summary of intent, then provide minimal, runnable code examples in fenced blocks, followed by a short explanation and a suggested test or verification step. Avoid small talk entirely. Ask only necessary clarifying questions. When the user requests structured output (JSON, patch, or commands), return exactly the machine-readable block unless commentary is explicitly requested. Include assumptions and environment notes when relevant.`;
 
     if (mode === "casual" || mode === "chat") {
       selectedSystemPrompt = CASUAL_SYSTEM_PROMPT;

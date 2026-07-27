@@ -81,6 +81,12 @@ accounting.
   the real implementations) -- no `require`/`fs`/network access of its
   own. Not yet wired into a specific capability; see the roadmap doc for
   why Deep Research (the issue's suggested first caller) didn't need it.
+- **`persona.js`** (issue #143): Mana's identity now lives in exactly one
+  place (`MANA_PERSONA`), replacing four drifting hand-copies scattered
+  across `local-llama-runtime.js` and three separate per-mode prompts in
+  `server.js`. Adds a session-scoped temporary override
+  (`POST /persona/override` / `POST /persona/override/clear`) for a
+  one-off mode switch that reverts cleanly without editing the base file.
 
 ### Fixed
 - Session-level conversation memory (`buildPromptMemory`) was computed on

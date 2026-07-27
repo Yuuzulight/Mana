@@ -1401,3 +1401,53 @@ test("createApp wires the memory inbox watcher with a usable appendTurn/runVisio
   assert.equal(typeof capturedOptions.runVisionReply, "function");
   assert.equal(typeof capturedOptions.runWhisper, "function");
 });
+
+// Persona override routes: real persona.js module (module-cache singleton,
+// same as production), each test uses its own sessionId to avoid
+// cross-test state bleed within this one process.
+test("POST /persona/override sets a session override and reports it back", async () => {
+  const app = createApp({});
+  await withServer(app, async (baseUrl) => {
+    const { response, payload } = await postJson(`${baseUrl}/persona/override`, {
+      sessionId: "route-test-session-a",
+      override: "Stay extra quiet today.",
+    });
+    assert.equal(response.status, 200);
+    assert.deepEqual(payload, {
+      ok: true,
+      sessionId: "route-test-session-a",
+      override: "Stay extra quiet today.",
+    });
+  });
+
+  const persona = require("../persona");
+  assert.equal(persona.getPersonaOverride("route-test-session-a"), "Stay extra quiet today.");
+  persona.clearPersonaOverride("route-test-session-a");
+});
+
+test("POST /persona/override rejects a missing sessionId or override", async () => {
+  const app = createApp({});
+  await withServer(app, async (baseUrl) => {
+    const { response, payload } = await postJson(`${baseUrl}/persona/override`, {
+      override: "no sessionId here",
+    });
+    assert.equal(response.status, 400);
+    assert.deepEqual(payload, { error: "sessionId and override are required" });
+  });
+});
+
+test("POST /persona/override/clear removes a session's override", async () => {
+  const persona = require("../persona");
+  persona.setPersonaOverride("route-test-session-b", "Be a little more teasing.");
+
+  const app = createApp({});
+  await withServer(app, async (baseUrl) => {
+    const { response, payload } = await postJson(`${baseUrl}/persona/override/clear`, {
+      sessionId: "route-test-session-b",
+    });
+    assert.equal(response.status, 200);
+    assert.deepEqual(payload, { ok: true, cleared: true });
+  });
+
+  assert.equal(persona.getPersonaOverride("route-test-session-b"), null);
+});
