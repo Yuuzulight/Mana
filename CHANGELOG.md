@@ -87,6 +87,11 @@ accounting.
   `server.js`. Adds a session-scoped temporary override
   (`POST /persona/override` / `POST /persona/override/clear`) for a
   one-off mode switch that reverts cleanly without editing the base file.
+- **`cron-scheduler` plugin** (issue #144): run a script action or a full
+  agent prompt on a fixed interval or daily-at-time schedule, independent
+  of chat or idle activity. Results deliver as a chat turn via the
+  existing `acpMemoryStore.appendTurn`, visible in the Sessions list UI
+  with no new frontend work. Off by default -- enable in Settings > Plugins.
 
 ### Fixed
 - Session-level conversation memory (`buildPromptMemory`) was computed on
