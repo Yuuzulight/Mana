@@ -3516,7 +3516,7 @@ function registerRoutes(app, upload, deps = {}) {
             if (toolResult.toolCalls.length) {
               lastToolCalls = toolResult.toolCalls;
               console.log(
-                `Mana tool-calling: ${toolResult.toolCalls
+                `Mana tool-calling (${toolResult.rounds} round(s)): ${toolResult.toolCalls
                   .map((call) => `${call.name}(${call.ok ? "ok" : "error"})`)
                   .join(", ")}`,
               );
