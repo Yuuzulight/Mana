@@ -7,6 +7,7 @@ const test = require("node:test");
 const {
   MIN_FRAMES,
   MAX_FRAMES,
+  MAX_TRANSCRIPT_CHARS_FOR_PROMPT,
   computeFrameBudget,
   parseCaptions,
   formatTimestamp,
@@ -24,13 +25,13 @@ function createTempDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), "mana-video-watch-"));
 }
 
-test("computeFrameBudget respects the hard 2fps ceiling for very short clips", () => {
-  assert.equal(computeFrameBudget(5), 10);
+test("computeFrameBudget respects the MIN_FRAMES floor for very short clips (below the 2fps ceiling)", () => {
+  assert.equal(computeFrameBudget(5), MIN_FRAMES);
 });
 
-test("computeFrameBudget targets ~12-30 frames for a short clip", () => {
+test("computeFrameBudget targets a conservative frame count for a short clip", () => {
   const frames = computeFrameBudget(60);
-  assert.ok(frames >= MIN_FRAMES && frames <= 30, `expected 12-30, got ${frames}`);
+  assert.ok(frames >= MIN_FRAMES && frames <= MAX_FRAMES, `expected ${MIN_FRAMES}-${MAX_FRAMES}, got ${frames}`);
 });
 
 test("computeFrameBudget caps at MAX_FRAMES for a long video", () => {
@@ -190,6 +191,31 @@ test("extractFrames in scene mode uses a scene-change select filter", () => {
   assert.ok(!usedArgs.includes("-skip_frame"));
 });
 
+test("extractFrames downscales to DEFAULT_FRAME_MAX_DIMENSION by default, and honors a custom frameMaxDimension", () => {
+  const outputDir = createTempDir();
+  let usedArgs = null;
+  extractFrames("video.mp4", {
+    outputDir,
+    frameBudget: 2,
+    spawnFn: (bin, args) => {
+      usedArgs = args;
+      return { status: 0 };
+    },
+  });
+  assert.ok(usedArgs.some((a) => String(a).includes("scale='min(336,iw)':-2")));
+
+  extractFrames("video.mp4", {
+    outputDir,
+    frameBudget: 2,
+    frameMaxDimension: 512,
+    spawnFn: (bin, args) => {
+      usedArgs = args;
+      return { status: 0 };
+    },
+  });
+  assert.ok(usedArgs.some((a) => String(a).includes("scale='min(512,iw)':-2")));
+});
+
 test("transcribeVideoAudio parses whisper-cli's JSON segments with timestamps", () => {
   const workDir = createTempDir();
   const fakeSpawn = (bin, args) => {
@@ -312,6 +338,34 @@ test("answerAboutVideo builds a prompt with the question and transcript, then ca
   assert.match(receivedPrompt, /what's in this video\?/);
   assert.match(receivedPrompt, /meow/);
   assert.deepEqual(receivedFrames, ["base64frame"]);
+});
+
+test("answerAboutVideo truncates an overlong transcript before sending it to the vision model", async () => {
+  let receivedPrompt = null;
+  const runVisionReply = async (prompt) => {
+    receivedPrompt = prompt;
+    return "ok";
+  };
+  const longTranscript = "word ".repeat(MAX_TRANSCRIPT_CHARS_FOR_PROMPT);
+
+  await answerAboutVideo("what happens?", { transcript: longTranscript, frames: [] }, { runVisionReply });
+
+  assert.ok(receivedPrompt.length < longTranscript.length);
+  assert.match(receivedPrompt, /\[transcript truncated\]/);
+});
+
+test("answerAboutVideo does not truncate a transcript within the limit", async () => {
+  let receivedPrompt = null;
+  const runVisionReply = async (prompt) => {
+    receivedPrompt = prompt;
+    return "ok";
+  };
+  const shortTranscript = "a short transcript";
+
+  await answerAboutVideo("what happens?", { transcript: shortTranscript, frames: [] }, { runVisionReply });
+
+  assert.match(receivedPrompt, /a short transcript/);
+  assert.ok(!receivedPrompt.includes("[transcript truncated]"));
 });
 
 test("answerAboutVideo requires runVisionReply", async () => {

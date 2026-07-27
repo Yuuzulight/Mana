@@ -36,6 +36,9 @@ async function registerVideoWatchRoutes(app, deps = {}) {
         whisperBin,
         whisperModel,
         spawnFn: deps.spawnFn,
+        frameMaxDimension: env.MANA_VIDEO_FRAME_MAX_DIMENSION
+          ? Number(env.MANA_VIDEO_FRAME_MAX_DIMENSION)
+          : undefined,
       });
       const answer = await videoWatch.answerAboutVideo(question, watchResult, {
         runVisionReply,

@@ -13,21 +13,38 @@ const fs = require("fs");
 const path = require("path");
 const { spawnSync } = require("child_process");
 
-const MIN_FRAMES = 12;
-const MAX_FRAMES = 100;
+const MIN_FRAMES = 8;
+const MAX_FRAMES = 20;
 const HARD_FPS_CEILING = 2;
+// Downscale extracted frames to this max width before handing them to the
+// vision model (see extractFrames) -- a local small-context vision model
+// pays real context-window cost per frame, unlike a cloud model with a
+// huge context window. Measured directly against this codebase's own
+// default local vision setup (Qwen2.5-VL-3B, llama-server's default -c
+// 4096): a full 1280x720 frame costs ~1210 prompt tokens (so even
+// MIN_FRAMES would blow the entire context on images alone), while a
+// frame downscaled to 336px wide costs ~88 tokens. The original
+// MIN_FRAMES=12/MAX_FRAMES=100 budget (matching the reference
+// implementation's cloud-model-oriented numbers) was never checked
+// against a real local model's context window before this was first
+// built -- confirmed broken in manual verification (both a 39s and a
+// ~20-minute test video failed with "exceeds context size" at full
+// resolution and the original frame counts) and fixed here.
+const DEFAULT_FRAME_MAX_DIMENSION = 336;
 
-// Duration-scaled frame budget: ~1 frame/3s for the first two minutes
-// (matching the reference implementation's "~12-30 frames for a short
-// clip"), tapering to ~1 frame/10s beyond that so a long video doesn't
-// demand 100+ separate local GPU vision inferences. The hard 2fps ceiling
-// wins over the floor for very short clips (a 3-second video can't
-// produce 12 distinct frames).
+// Duration-scaled frame budget: roughly 1 frame per 5 seconds up to
+// MAX_FRAMES worth of duration, then flat at MAX_FRAMES for anything
+// longer -- deliberately conservative (not the reference implementation's
+// "~12-30 short, up to 100 long" cloud-model numbers) so that, combined
+// with the downscaling above, a typical video's frames + transcript +
+// question comfortably fit inside a local model's default context window.
+// The hard 2fps ceiling still wins over the floor for very short clips (a
+// 2-second video can't produce 8 distinct frames).
 function computeFrameBudget(durationSeconds) {
   const duration = Math.max(0, Number(durationSeconds) || 0);
   if (duration <= 0) return MIN_FRAMES;
 
-  const raw = duration <= 120 ? duration / 3 : 40 + (duration - 120) / 10;
+  const raw = duration / 5;
   const scaled = Math.max(MIN_FRAMES, Math.min(Math.round(raw), MAX_FRAMES));
   const ceiling = Math.max(1, Math.floor(duration * HARD_FPS_CEILING));
   return Math.min(scaled, ceiling);
@@ -168,17 +185,21 @@ function extractFrames(videoPath, options = {}) {
   const frameBudget = Math.max(1, Number(options.frameBudget) || MIN_FRAMES);
   const mode = options.mode === "scene" ? "scene" : "keyframe";
   const ffmpegBin = options.ffmpegBin || "ffmpeg";
+  const maxDimension = Math.max(64, Number(options.frameMaxDimension) || DEFAULT_FRAME_MAX_DIMENSION);
   const run = options.spawnFn || spawnSync;
   fs.mkdirSync(outputDir, { recursive: true });
 
   const selectFilter =
     mode === "scene" ? "select='gt(scene,0.3)'" : "select='eq(pict_type,I)'";
+  // scale=min(maxDimension,iw):-2 never upscales a frame already smaller
+  // than maxDimension, and -2 keeps the height even (required by many
+  // encoders) while preserving aspect ratio.
   const args = [
     ...(mode === "keyframe" ? ["-skip_frame", "nokey"] : []),
     "-i",
     videoPath,
     "-vf",
-    selectFilter,
+    `${selectFilter},scale='min(${maxDimension},iw)':-2`,
     "-vsync",
     "vfr",
     "-frames:v",
@@ -295,6 +316,17 @@ async function watchVideo(source, options = {}) {
   };
 }
 
+// Confirmed broken in manual verification: a long video's transcript (auto
+// captions especially -- YouTube's overlapping caption windows repeat
+// most of each line 2-3 times, as seen directly in this plugin's own test
+// output) was embedded in the vision prompt with no length cap at all, so
+// a ~20-minute video blew the context budget on transcript text alone even
+// after the frame-count/resolution fix above. Truncated here, not at the
+// source (formatTimestampedTranscript) -- the full transcript is still
+// returned to the caller in the route response; only the copy actually
+// sent to the model is capped.
+const MAX_TRANSCRIPT_CHARS_FOR_PROMPT = 4000;
+
 // Hands the watch result to the existing local vision pipeline for a
 // grounded answer -- no new model-calling code, this just builds the
 // prompt runVisionReply already expects.
@@ -303,11 +335,16 @@ async function answerAboutVideo(question, watchResult, options = {}) {
   if (typeof runVisionReply !== "function") {
     throw new Error("runVisionReply is required");
   }
+  const transcript = watchResult.transcript || "";
+  const promptTranscript =
+    transcript.length > MAX_TRANSCRIPT_CHARS_FOR_PROMPT
+      ? `${transcript.slice(0, MAX_TRANSCRIPT_CHARS_FOR_PROMPT)}\n[transcript truncated]`
+      : transcript;
   const prompt = [
     `Question about this video: ${question}`,
     "",
     "Timestamped transcript:",
-    watchResult.transcript || "(no transcript available)",
+    promptTranscript || "(no transcript available)",
   ].join("\n");
   return runVisionReply(prompt, watchResult.frames, options.maxTokens || 400);
 }
@@ -316,6 +353,8 @@ module.exports = {
   MIN_FRAMES,
   MAX_FRAMES,
   HARD_FPS_CEILING,
+  DEFAULT_FRAME_MAX_DIMENSION,
+  MAX_TRANSCRIPT_CHARS_FOR_PROMPT,
   computeFrameBudget,
   parseCaptions,
   formatTimestamp,
