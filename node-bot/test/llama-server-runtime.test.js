@@ -750,6 +750,228 @@ test("runToolAwareReply rejects an unknown tool call name via the policy rather 
   assert.match(result.toolCalls[0].error, /unknown tool: exec_shell_command/);
 });
 
+// Multi-round tool calling (issue #183): runToolAwareReply used to be a
+// fixed two-call sequence (one tool round, then a forced final answer). It
+// now loops -- these tests exercise the loop itself and its safety caps
+// (round limit, per-round call limit, consecutive-error limit, wall-clock
+// budget), each verified via a fake fetch rather than a real GPU.
+function makeToolCallResponse(toolNames) {
+  return {
+    ok: true,
+    json: async () => ({
+      choices: [
+        {
+          message: {
+            content: "",
+            tool_calls: toolNames.map((name, i) => ({
+              id: `call_${name}_${i}`,
+              type: "function",
+              function: { name, arguments: "{}" },
+            })),
+          },
+        },
+      ],
+    }),
+  };
+}
+
+function makeAnswerResponse(content) {
+  return { ok: true, json: async () => ({ choices: [{ message: { content } }] }) };
+}
+
+test("runToolAwareReply loops across multiple rounds when the model keeps requesting tools", async () => {
+  let callCount = 0;
+  let serverUp = false;
+  const fakeFetch = async (url) => {
+    if (String(url).endsWith("/health")) return { ok: serverUp };
+    if (String(url).endsWith("/v1/chat/completions")) {
+      callCount += 1;
+      if (callCount <= 2) return makeToolCallResponse(["read_file"]);
+      return makeAnswerResponse("Done after two rounds of tool calls.");
+    }
+    return { ok: false, status: 404, text: async () => "not found" };
+  };
+
+  const runtime = createLlamaServerRuntime({
+    env: makeFakeEnv(),
+    fs: makeFakeFs(),
+    fetch: fakeFetch,
+    spawn: () => {
+      serverUp = true;
+      return makeFakeChild();
+    },
+    sleep: async () => {},
+    registerExitHandlers: false,
+  });
+
+  const policy = makeFakePolicy({ executeTool: () => "ok" });
+  const result = await runtime.runToolAwareReply("do a multi-step task", policy);
+
+  assert.equal(result.content, "Done after two rounds of tool calls.");
+  assert.equal(callCount, 3, "two tool rounds plus the final real answer");
+  assert.equal(result.rounds, 3);
+  assert.equal(result.toolCalls.length, 2, "one executed call per tool round");
+});
+
+test("runToolAwareReply hits the round cap and forces a tools-disabled final answer", async () => {
+  const bodies = [];
+  let serverUp = false;
+  const fakeFetch = async (url, init) => {
+    if (String(url).endsWith("/health")) return { ok: serverUp };
+    if (String(url).endsWith("/v1/chat/completions")) {
+      const body = JSON.parse(init.body);
+      bodies.push(body);
+      // Always wants another tool -- this response never actually stops.
+      return makeToolCallResponse(["read_file"]);
+    }
+    return { ok: false, status: 404, text: async () => "not found" };
+  };
+
+  const runtime = createLlamaServerRuntime({
+    env: makeFakeEnv(),
+    fs: makeFakeFs(),
+    fetch: fakeFetch,
+    spawn: () => {
+      serverUp = true;
+      return makeFakeChild();
+    },
+    sleep: async () => {},
+    registerExitHandlers: false,
+  });
+
+  const policy = makeFakePolicy({ executeTool: () => "ok" });
+  const result = await runtime.runToolAwareReply("loop forever", policy, { maxRounds: 2 });
+
+  // 2 rounds (both requesting tools) + 1 forced tools-disabled final call.
+  assert.equal(bodies.length, 3);
+  assert.equal(bodies[0].tool_choice, "auto");
+  assert.equal(bodies[1].tool_choice, "auto");
+  assert.equal(bodies[2].tool_choice, "none");
+  assert.equal(bodies[2].tools, undefined, "tools omitted entirely on the forced final call");
+  assert.equal(result.rounds, 2);
+  assert.equal(result.toolCalls.length, 2, "tools still executed for both allowed rounds");
+});
+
+test("runToolAwareReply caps how many tool calls execute in a single round", async () => {
+  let round = 0;
+  let serverUp = false;
+  const fakeFetch = async (url) => {
+    if (String(url).endsWith("/health")) return { ok: serverUp };
+    if (String(url).endsWith("/v1/chat/completions")) {
+      round += 1;
+      if (round === 1) return makeToolCallResponse(["read_file", "read_file", "read_file"]);
+      return makeAnswerResponse("done");
+    }
+    return { ok: false, status: 404, text: async () => "not found" };
+  };
+
+  const runtime = createLlamaServerRuntime({
+    env: makeFakeEnv(),
+    fs: makeFakeFs(),
+    fetch: fakeFetch,
+    spawn: () => {
+      serverUp = true;
+      return makeFakeChild();
+    },
+    sleep: async () => {},
+    registerExitHandlers: false,
+  });
+
+  const executed = [];
+  const policy = makeFakePolicy({
+    executeTool: (name) => {
+      executed.push(name);
+      return "ok";
+    },
+  });
+  const result = await runtime.runToolAwareReply("call three tools", policy, {
+    maxToolCallsPerRound: 1,
+  });
+
+  assert.equal(executed.length, 1, "only the first tool call in the round actually executed");
+  assert.equal(result.content, "done");
+});
+
+test("runToolAwareReply stops after consecutive tool errors and forces a final answer", async () => {
+  const bodies = [];
+  let serverUp = false;
+  const fakeFetch = async (url, init) => {
+    if (String(url).endsWith("/health")) return { ok: serverUp };
+    if (String(url).endsWith("/v1/chat/completions")) {
+      const body = JSON.parse(init.body);
+      bodies.push(body);
+      if (body.tool_choice === "none") return makeAnswerResponse("giving up gracefully");
+      return makeToolCallResponse(["read_file"]);
+    }
+    return { ok: false, status: 404, text: async () => "not found" };
+  };
+
+  const runtime = createLlamaServerRuntime({
+    env: makeFakeEnv(),
+    fs: makeFakeFs(),
+    fetch: fakeFetch,
+    spawn: () => {
+      serverUp = true;
+      return makeFakeChild();
+    },
+    sleep: async () => {},
+    registerExitHandlers: false,
+  });
+
+  const policy = makeFakePolicy({
+    executeTool: () => {
+      throw new Error("always broken");
+    },
+  });
+  // Round cap set high so the error cap (3 consecutive) is what actually
+  // ends the loop, not running out of rounds.
+  const result = await runtime.runToolAwareReply("keep trying a broken tool", policy, {
+    maxRounds: 10,
+  });
+
+  assert.equal(result.content, "giving up gracefully");
+  assert.equal(bodies.length, 4, "3 failing tool rounds + 1 forced final call");
+  assert.equal(result.toolCalls.filter((c) => !c.ok).length, 3);
+});
+
+test("runToolAwareReply respects a wall-clock time budget across rounds", async () => {
+  let clock = 0;
+  let serverUp = false;
+  const fakeFetch = async (url) => {
+    if (String(url).endsWith("/health")) return { ok: serverUp };
+    if (String(url).endsWith("/v1/chat/completions")) {
+      clock += 40000; // each round "takes" 40s
+      return makeToolCallResponse(["read_file"]);
+    }
+    return { ok: false, status: 404, text: async () => "not found" };
+  };
+
+  const runtime = createLlamaServerRuntime({
+    env: makeFakeEnv(),
+    fs: makeFakeFs(),
+    fetch: fakeFetch,
+    spawn: () => {
+      serverUp = true;
+      return makeFakeChild();
+    },
+    sleep: async () => {},
+    nowMs: () => clock,
+    registerExitHandlers: false,
+  });
+
+  const policy = makeFakePolicy({ executeTool: () => "ok" });
+  // maxMs=60000: the budget check happens after each round's own call
+  // resolves, using the clock at that point -- round 1 ends at 40s (still
+  // under budget, loop continues), round 2 ends at 80s (over budget), so
+  // the loop stops after 2 rounds rather than running the full maxRounds.
+  const result = await runtime.runToolAwareReply("slow task", policy, {
+    maxRounds: 10,
+    maxMs: 60000,
+  });
+
+  assert.equal(result.rounds, 2, "time budget exhausted partway through, not the full maxRounds");
+});
+
 // Two independently controllable "models": runLocalAssistantReply resolves
 // via env.LLAMA_MODEL (chat "default" profile short-circuits to it directly,
 // see local-ai.js), runVisionReply resolves via env.LLAMA_VISION_MODEL. Both

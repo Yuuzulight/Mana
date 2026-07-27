@@ -190,6 +190,18 @@ accounting.
   `docs/vrm_avatar_setup.md`. No real VRM model/GPU rendering was
   exercised this session -- verified via unit tests on the pure logic and
   confirming the new dependencies load correctly.
+- **Multi-round tool-calling loop** (issue #183): `runToolAwareReply` was
+  a fixed two-call sequence -- one round of tool calls, then a forced
+  final answer, with any *further* tool calls the model requested in that
+  final response silently ignored. Now loops (bounded by
+  `MANA_TOOL_CALLING_MAX_ROUNDS`, default 4) so a tool's results can
+  inform another tool call -- the actual prerequisite for issue #169's
+  outbound MCP client support. New caps: per-round tool-call limit
+  (`MANA_TOOL_CALLING_MAX_CALLS_PER_ROUND`), a wall-clock budget
+  (`MANA_TOOL_CALLING_MAX_MS`), and a consecutive-tool-error backstop --
+  hitting any of them forces one final `tool_choice: "none"` completion so
+  the reply is always something the model actually generated, never a
+  blank or synthetic fallback.
 
 ### Fixed
 - Session-level conversation memory (`buildPromptMemory`) was computed on
