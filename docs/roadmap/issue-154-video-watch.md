@@ -10,11 +10,12 @@ reference implementation this was built from.
 
 ## Status: Implemented (`plugins/video-watch/`, toggleable, off by default)
 
-- **`video-watch.js`**: `computeFrameBudget(durationSeconds)` -- ~1
-  frame/3s for the first two minutes (matching "~12-30 frames for a short
-  clip"), tapering to ~1 frame/10s beyond that, hard-capped at 100 frames
-  and by a hard 2fps ceiling (which wins over the 12-frame floor for very
-  short clips -- a 5-second video can't produce 12 distinct frames).
+- **`video-watch.js`**: `computeFrameBudget(durationSeconds)` -- ~1 frame/5s,
+  hard-capped at 20 frames and by a hard 2fps ceiling (which wins over the
+  8-frame floor for very short clips -- a 2-second video can't produce 8
+  distinct frames). These numbers were revised after real manual testing
+  found the original ones broken against a local vision model -- see
+  "Manual verification found and fixed two real bugs" below.
   `downloadVideo`/`getVideoDurationSeconds`/`extractFrames`/
   `transcribeVideoAudio` each wrap one external process (`yt-dlp`/
   `ffprobe`/`ffmpeg`/`whisper-cli`) with an injectable `spawnFn`, same DI
@@ -67,25 +68,66 @@ touches nothing else.
   win or lose -- this is a one-shot "watch and answer," not a video
   library, matching the issue's scope (no batch/library feature requested).
 
-## Verification note
+## Manual verification found and fixed two real bugs
 
-No real `yt-dlp`/`ffmpeg`/`whisper-cli` binaries were invoked in the
-environment that built this -- every external process is injected as a
-`spawnFn` in tests, so the actual command construction (arguments,
-output-file parsing) is verified directly, but never against a real
-video file or a live YouTube URL. Worth a manual end-to-end run (a real
-URL and a local .mp4, both with and without captions) before relying on
-this.
+The original build (above) disclosed that no real `yt-dlp`/`ffmpeg`/
+`whisper-cli`/vision-model run had been exercised -- only injected
+`spawnFn` fakes. A later manual verification pass ran the plugin
+end-to-end against two real YouTube videos (a 39-second clip and a
+~20-minute one) through the actual local stack (real `yt-dlp` install,
+real `ffmpeg`/`whisper-cli`, real `llama-server` with Qwen2.5-VL-3B).
+Both failed on the first pass, and both failures were real, not test
+artifacts:
+
+1. **Frame budget/resolution vastly exceeded the local vision model's
+   context window.** The original numbers (12-30 frames for a short
+   clip, up to 100 for longer ones) were carried over from the reference
+   implementation's cloud-model assumptions and never checked against a
+   real local model's context size. Measured directly against this
+   codebase's own default local vision setup (llama-server's default
+   `-c 4096`): a full-resolution 1280x720 frame costs **~1210 prompt
+   tokens** -- so even the 8-12 frame floor would blow the entire context
+   on images alone. The 39-second test video (13 frames at full
+   resolution) failed at 30,301 tokens; the 20-minute one (100 frames)
+   failed at 299,045 tokens. Fixed by downscaling every extracted frame
+   to 336px wide by default (`DEFAULT_FRAME_MAX_DIMENSION`, configurable
+   via `frameMaxDimension`/`MANA_VIDEO_FRAME_MAX_DIMENSION`) -- measured
+   at ~88 tokens/frame at that resolution -- and lowering `MIN_FRAMES`/
+   `MAX_FRAMES` from 12/100 to 8/20 to match what a small local context
+   window can actually afford, not what a cloud model with a huge context
+   window could.
+2. **The transcript had no length cap before being embedded in the vision
+   prompt.** Even after fixing (1), the 20-minute video still failed --
+   this time at 31,465 tokens, almost entirely transcript text. YouTube's
+   auto-generated captions repeat most of each line 2-3 times across
+   overlapping caption windows (visible directly in this plugin's own
+   transcript output), so a long video's transcript can run to tens of
+   thousands of characters. `answerAboutVideo` now truncates the copy of
+   the transcript sent to the model at `MAX_TRANSCRIPT_CHARS_FOR_PROMPT`
+   (4000 chars) -- the full, untruncated transcript is still returned to
+   the API caller in the route response; only the model-facing copy is
+   capped.
+
+Both videos now complete successfully end-to-end after both fixes,
+including a real grounded, in-persona answer from the vision model
+describing each video's actual content.
 
 ## Verified
 
-- `plugins/video-watch/test/video-watch.test.js` (23 tests): frame-budget
-  math (ceiling, floor, short-clip target, long-video cap), WEBVTT caption
+- **Real end-to-end runs** against two live YouTube videos (39s and
+  ~20min) through the actual local stack (real `yt-dlp`, `ffmpeg`,
+  `whisper-cli`, and `llama-server` with Qwen2.5-VL-3B) -- both now
+  return `200` with a coherent, grounded answer. This is the manual
+  verification the original build disclosed as missing.
+- `plugins/video-watch/test/video-watch.test.js` (26 tests): frame-budget
+  math (ceiling, floor, conservative target, long-video cap), WEBVTT caption
   parsing (including inline tag stripping and empty-cue skipping),
   timestamp formatting, URL-vs-local-path detection, `yt-dlp`/`ffprobe`/
   `ffmpeg`/`whisper-cli` invocation and error handling (each verified via
-  a fake `spawnFn`), `watchVideo`'s captions-vs-whisper branching, and
-  `answerAboutVideo`'s prompt construction.
+  a fake `spawnFn`), frame downscaling (default and custom
+  `frameMaxDimension`), `watchVideo`'s captions-vs-whisper branching, and
+  `answerAboutVideo`'s prompt construction including transcript
+  truncation.
 - `plugins/video-watch/test/video-watch-capability.test.js` (4 tests):
   the route's required-field validation, a full local-file-through-
   whisper-fallback request against a fake `spawnFn` and a fake
