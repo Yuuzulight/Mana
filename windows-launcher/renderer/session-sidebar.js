@@ -309,6 +309,28 @@ async function openMemoryModal(sessionId) {
   }
 }
 
+// Issue #153: pulls the session's ShareGPT JSONL from node-bot and hands
+// it to main.js's native save dialog -- this is Electron, not a browser
+// tab, so a plain <a download> anchor isn't the right tool here.
+async function exportSession(sessionId) {
+  try {
+    const response = await fetch(
+      `${SESSIONS_API_BASE}/sessions/${encodeURIComponent(sessionId)}/export`,
+    );
+    if (!response.ok) {
+      console.warn("Mana: session export failed", await response.text());
+      return;
+    }
+    const content = await response.text();
+    await ipcRenderer.invoke("save-export-file", {
+      defaultFileName: `${sessionId}.jsonl`,
+      content,
+    });
+  } catch (e) {
+    console.warn("Mana: failed to export session", e);
+  }
+}
+
 memoryModalCloseEl.addEventListener("click", () => {
   memoryModalEl.hidden = true;
 });
@@ -327,6 +349,8 @@ sessionContextMenuEl.querySelectorAll("button[data-action]").forEach((button) =>
       deleteSessionWithConfirm(sessionId);
     } else if (action === "memory") {
       openMemoryModal(sessionId);
+    } else if (action === "export") {
+      exportSession(sessionId);
     }
   });
 });

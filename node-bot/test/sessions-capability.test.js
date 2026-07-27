@@ -55,6 +55,37 @@ test("sessions capability returns a single session or 404", async () => {
   });
 });
 
+test("sessions capability exports a known session as ShareGPT JSONL, and 404s for an unknown one", async () => {
+  const app = express();
+  app.use(express.json());
+  sessionsCapability.registerRoutes(app, {
+    acpMemoryStore: fakeStore({
+      getSession: (id) =>
+        id === "known"
+          ? { sessionId: "known", turns: [{ user: "hi", assistant: "hello" }] }
+          : null,
+    }),
+  });
+
+  await withServer(app, async (baseUrl) => {
+    const ok = await fetch(`${baseUrl}/sessions/known/export`);
+    assert.equal(ok.status, 200);
+    assert.match(ok.headers.get("content-type") || "", /application\/x-ndjson/);
+    assert.match(ok.headers.get("content-disposition") || "", /attachment.*known\.jsonl/);
+    const body = await ok.text();
+    assert.deepEqual(JSON.parse(body.trim()), {
+      id: "known",
+      conversations: [
+        { from: "human", value: "hi" },
+        { from: "gpt", value: "hello" },
+      ],
+    });
+
+    const missing = await fetch(`${baseUrl}/sessions/unknown/export`);
+    assert.equal(missing.status, 404);
+  });
+});
+
 test("sessions capability pages a session's turns and reports 404 for unknown sessions", async () => {
   const app = express();
   app.use(express.json());
