@@ -45,6 +45,29 @@ function timeToSeconds(value) {
   return Number(h) * 3600 + Number(m) * 60 + Number(s);
 }
 
+// A single-pass character scan rather than a regex -- caption text is
+// downloaded from wherever yt-dlp/the source pulled it from, so it's
+// effectively untrusted input. A regex-based tag stripper (`<[^>]+>`)
+// flagged as both an incomplete sanitizer (a malformed/nested `<<script>`
+// can survive one pass) and a polynomial-regex risk on CodeQL; this scan
+// has neither problem since it just tracks in/out of a tag byte-by-byte.
+function stripInlineTags(text) {
+  let result = "";
+  let insideTag = false;
+  for (const ch of String(text || "")) {
+    if (ch === "<") {
+      insideTag = true;
+      continue;
+    }
+    if (ch === ">") {
+      insideTag = false;
+      continue;
+    }
+    if (!insideTag) result += ch;
+  }
+  return result;
+}
+
 function parseCaptions(raw) {
   const lines = String(raw || "").split(/\r?\n/);
   const segments = [];
@@ -58,7 +81,7 @@ function parseCaptions(raw) {
       continue;
     }
     if (!current) continue;
-    const clean = line.replace(/<[^>]+>/g, "").trim();
+    const clean = stripInlineTags(line).trim();
     if (clean && clean.toUpperCase() !== "WEBVTT") {
       current.text = current.text ? `${current.text} ${clean}` : clean;
     }
