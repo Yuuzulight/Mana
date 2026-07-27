@@ -75,6 +75,12 @@ accounting.
   (`MANA_RELATED_FACTS_MAX_ENTITIES`/`MANA_RELATED_FACTS_MAX_CHARS`) so it
   never grows with total memory volume -- the on-demand half of the
   two-tier memory design alongside the existing always-injected summary.
+- **`tools/script-runner.js`** (issue #142): a general-purpose primitive
+  for running a generated script in an isolated child process with a
+  whitelisted set of tool functions it can call (round-tripped over IPC to
+  the real implementations) -- no `require`/`fs`/network access of its
+  own. Not yet wired into a specific capability; see the roadmap doc for
+  why Deep Research (the issue's suggested first caller) didn't need it.
 
 ### Fixed
 - Session-level conversation memory (`buildPromptMemory`) was computed on
