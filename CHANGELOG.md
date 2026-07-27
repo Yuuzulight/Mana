@@ -92,6 +92,11 @@ accounting.
   of chat or idle activity. Results deliver as a chat turn via the
   existing `acpMemoryStore.appendTurn`, visible in the Sessions list UI
   with no new frontend work. Off by default -- enable in Settings > Plugins.
+- **`tools/subagent-delegation.js`** (issue #145): a flat, capped-concurrency
+  task-delegation primitive. Deep Research's source-reading step now reads
+  up to `maxConcurrency` (default 3) sources at once instead of strictly
+  one at a time, with citation numbering staying stable regardless of
+  which read finishes first.
 
 ### Fixed
 - Session-level conversation memory (`buildPromptMemory`) was computed on
