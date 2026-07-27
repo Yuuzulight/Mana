@@ -20,6 +20,20 @@ function fakeStore(overrides = {}) {
   };
 }
 
+// A minimal fake approval gate -- immediately "approves" every request by
+// running the executor synchronously, mirroring what a real gate does once
+// an action type is always-allowed. approval-gate.js's own pending/deny/
+// always-allow logic is covered by approval-gate.test.js, not here.
+function fakeApprovalGate(skillsStore) {
+  return {
+    requestApproval: async (actionType, { payload }) => ({
+      status: "approved",
+      actionType,
+      result: skillsStore.createSkill(payload),
+    }),
+  };
+}
+
 test("skills capability lists the cheap index from the store", async () => {
   const app = express();
   app.use(express.json());
@@ -57,17 +71,19 @@ test("skills capability returns full content for a specific skill", async () => 
   });
 });
 
-test("skills capability creates a skill from name/description/body", async () => {
+test("skills capability creates a skill from name/description/body once the gate approves it", async () => {
   const app = express();
   app.use(express.json());
   let received = null;
+  const skillsStore = fakeStore({
+    createSkill: (input) => {
+      received = input;
+      return { ...input, fileName: "slug.md" };
+    },
+  });
   skillsCapability.registerRoutes(app, {
-    skillsStore: fakeStore({
-      createSkill: (input) => {
-        received = input;
-        return { ...input, fileName: "slug.md" };
-      },
-    }),
+    skillsStore,
+    approvalGate: fakeApprovalGate(skillsStore),
   });
 
   await withServer(app, async (baseUrl) => {
@@ -83,10 +99,36 @@ test("skills capability creates a skill from name/description/body", async () =>
   });
 });
 
+test("skills capability's create route returns the gate's pending response when not yet approved", async () => {
+  const app = express();
+  app.use(express.json());
+  skillsCapability.registerRoutes(app, {
+    skillsStore: fakeStore(),
+    approvalGate: {
+      requestApproval: async () => ({ status: "pending", requestId: "abc123", summary: "Create skill \"New Skill\"" }),
+    },
+  });
+
+  await withServer(app, async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/skills`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: "New Skill", description: "d", body: "b" }),
+    });
+    const payload = await response.json();
+    assert.equal(response.status, 202);
+    assert.equal(payload.status, "pending");
+    assert.equal(payload.requestId, "abc123");
+  });
+});
+
 test("skills capability rejects creation missing required fields", async () => {
   const app = express();
   app.use(express.json());
-  skillsCapability.registerRoutes(app, { skillsStore: fakeStore() });
+  skillsCapability.registerRoutes(app, {
+    skillsStore: fakeStore(),
+    approvalGate: fakeApprovalGate(fakeStore()),
+  });
 
   await withServer(app, async (baseUrl) => {
     const response = await fetch(`${baseUrl}/skills`, {
