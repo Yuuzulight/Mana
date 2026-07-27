@@ -101,6 +101,7 @@ const { fetchPage, searchWeb, wikiLookup } = require("./tools/web-access");
 	const jobSearchAdzunaPlugin = require("../plugins/job-search-adzuna");
 	const { createAdzunaClient } = jobSearchAdzunaPlugin;
 	const documentReaderPlugin = require("../plugins/document-reader");
+	const cronSchedulerPlugin = require("../plugins/cron-scheduler");
 const { createTtsRuntime } = require("./tts-runtime");
 const { createAcpMemoryStore } = require("./acp-memory-store");
 const persona = require("./persona");
@@ -1574,6 +1575,7 @@ function registerRoutes(app, upload, deps = {}) {
     jobApplicationsPlugin,
     jobSearchAdzunaPlugin,
     documentReaderPlugin,
+    cronSchedulerPlugin,
     dirScannerCapability,
     webAccessCapability,
     sessionsCapability,
@@ -1588,6 +1590,9 @@ function registerRoutes(app, upload, deps = {}) {
   const activeSkillsStore = deps.skillsStore || skillsStore;
   const capabilityContext = {
     acpMemoryStore: deps.acpMemoryStore || acpMemoryStore,
+    // Only cron-scheduler's agent-job executor uses this today -- every
+    // other capability builds its own scoped model-reply function above.
+    buildAssistantReply: deps.buildAssistantReply || buildAssistantReply,
     pluginSettingsStore: activePluginSettingsStore,
     skillsStore: activeSkillsStore,
     env: deps.env || process.env,

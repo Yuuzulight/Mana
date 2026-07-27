@@ -1,0 +1,10 @@
+{
+  "name": "mana-plugin-cron-scheduler",
+  "version": "1.0.0",
+  "description": "Run a script action or agent prompt on a fixed schedule, independent of chat or idle activity.",
+  "main": "index.js",
+  "scripts": {
+    "test": "node --test test/*.test.js"
+  },
+  "private": true
+}
