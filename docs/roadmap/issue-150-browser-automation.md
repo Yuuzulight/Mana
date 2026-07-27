@@ -61,18 +61,39 @@ default, and Mana already only targets Windows.
   `Map`-keyed extension of the same module-level-singleton pattern
   `cron-scheduler`/`image-generation` already use, if ever needed.
 
-## Verification note
+## Manual verification (2026-07-28): real browsers, no bugs found
 
-No real browser was launched in the environment that built this -- CI
-runners have no Windows/Edge install, and this session's own Browser pane
-was unresponsive throughout (same limitation noted in issue #148's
-roadmap doc). Every behavior in `browser-automation.js` is verified
-against a fake page-like object; the route-level wiring (executable-path
-resolution, loopback gating, an injected fake `chromium`/page driving a
-full navigate-then-click flow) is verified directly. The actual browser
-launch, real DOM snapshotting, and real click/type against a live page
-are not -- worth a manual click-through (navigate to a real site, confirm
-refs and clicks work) before relying on this.
+Ran the actual routes (not the fake-page unit tests) against two real,
+locally-installed Chromium-family browsers via a real `playwright-core`
+launch, driving a full navigate -> snapshot -> type -> type -> click ->
+snapshot -> close flow against a live public login page
+(`https://the-internet.herokuapp.com/login`, using its own published demo
+credentials):
+
+- **Edge**, auto-detected via `resolveExecutablePath`'s default path
+  (`C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe`, no env
+  override) -- typed into both real `<input>` refs, clicked the real
+  "Login" button ref, and the resulting snapshot showed the real
+  post-login page (`/secure`, "You logged into a secure area!").
+- **Opera GX**, via `MANA_BROWSER_EXECUTABLE_PATH` pointed at
+  `C:\Apps\Opera Gx\opera.exe` -- identical flow, identical result,
+  confirming the override path works against a real non-Edge Chromium
+  browser (not just Edge's own hardcoded default).
+
+Both runs: ref-based `click`/`type` worked against real DOM elements
+(refs assigned by the real `snapshotInPage` `data-mana-ref` logic, not a
+fake), `snapshot()`'s parallel `evaluate`/`title`/`url` calls resolved
+correctly against the real page, and `close` tore down the real browser
+handle cleanly. No bugs found -- the fake-page unit tests' shape matched
+the real Playwright `Page` API exactly, as the module's own design
+intended.
+
+Chrome itself isn't actually installed on this machine (no registry
+`App Paths` entry, no Start Menu shortcut, no exe under either Program
+Files or the per-user install location) so it wasn't separately tested,
+but since the plugin treats every non-Edge browser identically through
+the same `MANA_BROWSER_EXECUTABLE_PATH` + `playwright-core.chromium`
+path, Opera GX passing is strong evidence Chrome would too.
 
 ## Verified
 
@@ -90,3 +111,5 @@ refs and clicks work) before relying on this.
 - `node-bot/test/health-components.test.js` (3 tests): updated snapshot
   for the new `browserAutomation` component key.
 - `node-bot/test/server-routes.test.js` (62 tests): unaffected.
+- Manual: real end-to-end run against real Edge and real Opera GX (see
+  above) -- no bugs found.
