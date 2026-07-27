@@ -18,6 +18,7 @@ test("health includes component readiness while preserving top-level fields", as
     assert.equal(typeof body.remoteAiEnabled, "boolean");
 
     assert.deepEqual(Object.keys(body.components).sort(), [
+      "approvalGate",
       "backend",
       "backgroundMemory",
       "browserAutomation",

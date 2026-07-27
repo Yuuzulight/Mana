@@ -86,6 +86,8 @@ const {
 } = require("./capabilities/retriever-admin-capability");
 const { skillsCapability } = require("./capabilities/skills-capability");
 const { createSkillsStore } = require("./skills-store");
+const { createApprovalGate } = require("./approval-gate");
+const { approvalGateCapability } = require("./capabilities/approval-gate-capability");
 const {
   RESEARCH_SYSTEM_PROMPT,
   SUB_QUERY_SYSTEM_PROMPT,
@@ -450,6 +452,12 @@ const presetsStore = createPresetsStore({});
 
 // Procedural-memory skills store (see skills-store.js, issue #140)
 const skillsStore = createSkillsStore({});
+
+// Approval gate for agent-authored content -- skill writes today, whatever
+// #142's script-runner gets wired into next (see approval-gate.js, #152).
+// Executor registration happens in createApp below, against whichever
+// skillsStore/approvalGate that specific call actually uses.
+const approvalGate = createApprovalGate({});
 
 // Which optional plugins (capabilities with a category) are enabled --
 // see plugin-settings-store.js and capabilities/registry.js's gating.
@@ -1590,10 +1598,17 @@ function registerRoutes(app, upload, deps = {}) {
     backgroundMemoryCapability,
     retrieverAdminCapability,
     skillsCapability,
+    approvalGateCapability,
   ];
   const activePresetsStore = deps.presetsStore || presetsStore;
   const activePluginSettingsStore = deps.pluginSettingsStore || pluginSettingsStore;
   const activeSkillsStore = deps.skillsStore || skillsStore;
+  // Registered against whichever store this createApp call actually uses
+  // (real singleton, or a test's injected fake) -- registering it at
+  // module load time against the module-level skillsStore would silently
+  // bypass a test's deps.skillsStore override.
+  const activeApprovalGate = deps.approvalGate || approvalGate;
+  activeApprovalGate.registerExecutor("skill-write", (payload) => activeSkillsStore.createSkill(payload));
   const capabilityContext = {
     acpMemoryStore: deps.acpMemoryStore || acpMemoryStore,
     // Only cron-scheduler's agent-job executor uses this today -- every
@@ -1603,6 +1618,7 @@ function registerRoutes(app, upload, deps = {}) {
     // that needs a loopback-only guard builds it inline (e.g. the
     // brain-provider test route above).
     isLocalRestartRequest: deps.isLocalRestartRequest || isLocalRestartRequest,
+    approvalGate: activeApprovalGate,
     pluginSettingsStore: activePluginSettingsStore,
     skillsStore: activeSkillsStore,
     env: deps.env || process.env,
