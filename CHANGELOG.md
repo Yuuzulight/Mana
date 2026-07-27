@@ -127,6 +127,14 @@ accounting.
   local-only routes. Off by default -- enable in Settings > Plugins. No
   real browser was launched to verify this session (no Windows/Edge on CI,
   Browser pane unresponsive) -- verified against a fake page-like object.
+- **`telegram-bridge` plugin** (issue #151): message Mana remotely over
+  Telegram via long-polling (no webhook, nothing exposed to the internet),
+  gated by a one-time pairing code so a stranger's DM can't reach her
+  without approval (`POST /telegram/approve`). DM-only, text-only. Off by
+  default -- enable in Settings > Plugins and set
+  `MANA_TELEGRAM_BOT_TOKEN`. No real bot token was available to verify
+  against the live Telegram API this session -- verified via a fake
+  `getUpdates`/`sendMessage` client.
 
 ### Fixed
 - Session-level conversation memory (`buildPromptMemory`) was computed on

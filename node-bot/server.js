@@ -104,6 +104,7 @@ const { fetchPage, searchWeb, wikiLookup } = require("./tools/web-access");
 	const cronSchedulerPlugin = require("../plugins/cron-scheduler");
 	const imageGenerationPlugin = require("../plugins/image-generation");
 	const browserAutomationPlugin = require("../plugins/browser-automation");
+	const telegramBridgePlugin = require("../plugins/telegram-bridge");
 const { createTtsRuntime } = require("./tts-runtime");
 const { createAcpMemoryStore } = require("./acp-memory-store");
 const persona = require("./persona");
@@ -1580,6 +1581,7 @@ function registerRoutes(app, upload, deps = {}) {
     cronSchedulerPlugin,
     imageGenerationPlugin,
     browserAutomationPlugin,
+    telegramBridgePlugin,
     dirScannerCapability,
     webAccessCapability,
     sessionsCapability,
