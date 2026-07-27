@@ -119,6 +119,14 @@ accounting.
   `.gguf` extension, before handing a file to llama-server; brain-provider
   `baseUrl` is now restricted to `http/https` (was any URL scheme).
 
+### Docs
+- **Issue #146 investigation**: Mana has no outbound MCP *client*
+  capability today (`mcp-server.js` is server-only) -- but the already-
+  installed `@modelcontextprotocol/sdk` ships a full client module, so
+  building one needs no new dependency. Scoped, not built, since it
+  depends on the tool-calling loop (issue #51) supporting more than one
+  tool/round first; follow-up tracked as issue #169.
+
 ## [0.2.2] - 2026-07-27
 
 This release exists primarily to verify the auto-update mechanism
