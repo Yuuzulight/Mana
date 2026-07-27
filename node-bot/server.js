@@ -3457,7 +3457,14 @@ function registerRoutes(app, upload, deps = {}) {
     // rather than surfacing a broken reply.
     const toolCallingEnabled =
       String(process.env.MANA_TOOL_CALLING_ENABLED || "0") === "1";
+    // Captured here rather than threaded through replyMaybeWithBestOfN's and
+    // the verify/retry loop's return values (both currently just `string`)
+    // -- issue #153 needs whatever tool calls actually produced the reply
+    // that gets appended to session memory, and a closure-scoped variable
+    // gets that without changing any other reply path's signature.
+    let lastToolCalls = [];
     async function replyMaybeWithTools(promptText) {
+      lastToolCalls = [];
       if (
         toolCallingEnabled &&
         normalizedModelProfile === "default" &&
@@ -3475,6 +3482,7 @@ function registerRoutes(app, upload, deps = {}) {
           );
           if (toolResult.content && toolResult.content.trim()) {
             if (toolResult.toolCalls.length) {
+              lastToolCalls = toolResult.toolCalls;
               console.log(
                 `Mana tool-calling: ${toolResult.toolCalls
                   .map((call) => `${call.name}(${call.ok ? "ok" : "error"})`)
@@ -3646,6 +3654,7 @@ function registerRoutes(app, upload, deps = {}) {
               typeof cleanLlamaOutput === "function"
                 ? cleanLlamaOutput(reply)
                 : reply,
+            toolCalls: lastToolCalls,
           })
           .catch((memErr) =>
             console.warn(
