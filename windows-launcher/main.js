@@ -5,6 +5,7 @@ const { spawn } = require("child_process");
 
 let mainWindow;
 let avatarWindow;
+let artifactWindow = null;
 let backendProcess = null;
 let ttsProcess = null;
 let retrieverProcess = null;
@@ -382,6 +383,41 @@ function appendBackendLog(text) {
   }
 }
 ipcMain.handle("get-backend-log", async () => backendLogBuffer.join("\n"));
+
+// Standalone view for a renderable artifact (issue #148) -- a plain
+// resizable/framed window, unlike the frameless overlay avatarWindow uses,
+// since this is meant to be read/scrolled like a real document. Reused
+// across multiple "open in new window" clicks rather than spawning one
+// per artifact.
+ipcMain.on("open-artifact", (event, artifact) => {
+  if (!artifactWindow || artifactWindow.isDestroyed()) {
+    artifactWindow = new BrowserWindow({
+      width: 900,
+      height: 700,
+      title: "Mana Artifact",
+      webPreferences: {
+        nodeIntegration: true,
+        contextIsolation: false,
+      },
+    });
+    artifactWindow.loadFile(path.join(__dirname, "artifact", "index.html"));
+    artifactWindow.on("closed", () => {
+      artifactWindow = null;
+    });
+  }
+
+  const sendArtifact = () => {
+    if (artifactWindow && !artifactWindow.isDestroyed()) {
+      artifactWindow.webContents.send("artifact:show", artifact);
+      artifactWindow.focus();
+    }
+  };
+  if (artifactWindow.webContents.isLoadingMainFrame()) {
+    artifactWindow.webContents.once("did-finish-load", sendArtifact);
+  } else {
+    sendArtifact();
+  }
+});
 
 // Structured crash-forensic logging for the voice pipeline (issue #147):
 // a failed recordUntilSilence()/listenLoop() attempt writes a timestamped

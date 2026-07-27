@@ -1,4 +1,12 @@
 const { contextBridge, ipcRenderer } = require('electron');
+const { createMarkdownRenderer } = require('./renderer/markdown-render');
+const { extractArtifact } = require('./renderer/artifact-detector');
+
+// marked/DOMPurify need real Node module resolution + a DOM to construct
+// the sanitizer -- both available here in preload (issue #148), not in
+// the sandboxed renderer itself. Only the resulting plain functions
+// (string in, string/object out) cross the contextBridge.
+const renderMarkdownToSafeHtml = createMarkdownRenderer();
 
 // contextIsolation is on (see main.js) -- the renderer has no Node access
 // of its own, so this is the only bridge between it and the main process.
@@ -39,4 +47,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // begins while this renderer is already up and listening (see main.js's
   // before-quit handler), so there's nothing that could have been missed.
   onShutdownProgress: (cb) => ipcRenderer.on('shutdown-progress', (evt, update) => cb(update)),
+  // Renderable artifacts (issue #148): markdown->sanitized-HTML for the
+  // chat log, extracting a big/```html fenced block so it can open in its
+  // own window instead of dominating a chat bubble.
+  renderMarkdownToSafeHtml: (text) => renderMarkdownToSafeHtml(text),
+  extractArtifact: (text) => extractArtifact(text),
+  openArtifact: (artifact) => ipcRenderer.send('open-artifact', artifact),
 });

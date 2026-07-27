@@ -19,7 +19,9 @@
     "electron-builder": "^26.15.3"
   },
   "dependencies": {
+    "dompurify": "^3.4.12",
     "electron-updater": "^6.8.9",
+    "marked": "^18.0.7",
     "pixi-live2d-display": "^0.4.0",
     "pixi.js": "^6.5.10"
   },
@@ -60,22 +62,33 @@
       {
         "from": "../node-bot",
         "to": "node-bot",
-        "filter": ["**/*"]
+        "filter": [
+          "**/*"
+        ]
       },
       {
         "from": "../plugins",
         "to": "plugins",
-        "filter": ["**/*", "!**/test/**"]
+        "filter": [
+          "**/*",
+          "!**/test/**"
+        ]
       },
       {
         "from": "../node-bin",
         "to": "node_bin",
-        "filter": ["**/*"]
+        "filter": [
+          "**/*"
+        ]
       },
       {
         "from": "../tools/searxng",
         "to": "tools/searxng",
-        "filter": ["**/*", "!venv/**", "!__pycache__/**"]
+        "filter": [
+          "**/*",
+          "!venv/**",
+          "!__pycache__/**"
+        ]
       },
       {
         "from": "../tools/mana-searxng-settings.yml",
@@ -93,7 +106,9 @@
       {
         "from": "portable-python",
         "to": "portable-python",
-        "filter": ["**/*"]
+        "filter": [
+          "**/*"
+        ]
       }
     ]
   }
