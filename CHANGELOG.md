@@ -52,6 +52,39 @@ accounting.
   Settings (a new "Status" section) to match `windows-launcher`, where
   they'd already been nested there since the issue #138 UI overhaul.
 
+### Added
+- **"Use Remote AI" brain provider**: a toggle under Model Selection (both
+  apps) opening a provider dropdown (OpenAI/OpenRouter/Groq/Ollama/LM
+  Studio/Custom, sourced from `GET /models/brain-providers` so the two
+  apps' dropdowns can't drift apart), an API key field, and a "Connect"
+  button that actually tests the endpoint (`POST /models/brain-provider/test`)
+  before saving. `shouldUseRemoteAi` already exempted local/LAN endpoints
+  from the remote-AI consent gate; this is the Settings UI for it.
+- **`document-reader` plugin**: ingest a local PDF or a specific web page
+  into Mana's existing memory retriever, so she can recall and cite it in
+  replies. Reuses the retriever end-to-end (no new vector store) and
+  `web-access.js`'s SSRF-guarded `fetchPage` for URL ingestion.
+- Subtle idle "looking around" drift (head + eyes) for the Live2D avatar,
+  in both apps -- separate, independently-configurable knob from the
+  existing sleepy idle-tilt (`idleGazeDeg`/`idleGazePeriodMs` in
+  `mana-avatar.json`, 0 opts out).
+
+### Fixed
+- `runOpenAIReply` referenced removed `OPENAI_API_KEY`/`OPENAI_BASE_URL`/
+  `OPENAI_MODEL` consts left over from the brain-provider refactor above --
+  would have thrown at runtime the moment remote AI was actually used.
+- The `windows-launcher` overlay always rendered a static SVG sprite first
+  and only switched to the Live2D model once/if it finished loading;
+  removed the sprite fallback entirely so only the Live2D model ever
+  renders, and deleted the leftover placeholder assets.
+- The compact 440x460 startup window showed a horizontal scrollbar because
+  the underlying sidebar+chat layout (hidden behind the startup overlay,
+  but still occupying flex space) didn't shrink below the overlay's width;
+  added `overflow-x: hidden` in both apps.
+- Model-file loading now checks the actual GGUF magic bytes, not just the
+  `.gguf` extension, before handing a file to llama-server; brain-provider
+  `baseUrl` is now restricted to `http/https` (was any URL scheme).
+
 ## [0.2.2] - 2026-07-27
 
 This release exists primarily to verify the auto-update mechanism

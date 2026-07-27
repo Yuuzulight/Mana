@@ -123,12 +123,16 @@ function createLlamaServerRuntime(options = {}) {
   // Vision models are resolved separately from the chat profiles: falling
   // back to a text model would make llama-server reject every image request.
   function findVisionModel() {
-    if (env.LLAMA_VISION_MODEL) {
-      if (fs.existsSync(env.LLAMA_VISION_MODEL)) {
-        return env.LLAMA_VISION_MODEL;
+    const storedPath = modelSettingsStore
+      ? modelSettingsStore.getVisionSettings().modelPath
+      : "";
+    const explicitVisionModel = storedPath || env.LLAMA_VISION_MODEL;
+    if (explicitVisionModel) {
+      if (fs.existsSync(explicitVisionModel)) {
+        return explicitVisionModel;
       }
       throw new Error(
-        `LLAMA_VISION_MODEL is set but does not exist: ${env.LLAMA_VISION_MODEL}`,
+        `Vision model is set but does not exist: ${explicitVisionModel}`,
       );
     }
 
@@ -165,12 +169,16 @@ function createLlamaServerRuntime(options = {}) {
   }
 
   function findVisionMmproj(modelPath) {
-    if (env.LLAMA_VISION_MMPROJ) {
-      if (fs.existsSync(env.LLAMA_VISION_MMPROJ)) {
-        return env.LLAMA_VISION_MMPROJ;
+    const storedPath = modelSettingsStore
+      ? modelSettingsStore.getVisionSettings().mmprojPath
+      : "";
+    const explicitMmproj = storedPath || env.LLAMA_VISION_MMPROJ;
+    if (explicitMmproj) {
+      if (fs.existsSync(explicitMmproj)) {
+        return explicitMmproj;
       }
       throw new Error(
-        `LLAMA_VISION_MMPROJ is set but does not exist: ${env.LLAMA_VISION_MMPROJ}`,
+        `Vision mmproj is set but does not exist: ${explicitMmproj}`,
       );
     }
 

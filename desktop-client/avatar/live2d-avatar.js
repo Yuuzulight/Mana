@@ -18,6 +18,7 @@
 
 const {
   augmentModelSettings,
+  computeIdleGazeOffset,
   computeZoomFraming,
   expressionForState,
   fitModelToView,
@@ -182,6 +183,20 @@ async function createLive2dAvatar({ canvas, width, height }) {
   const idleTiltBlendMs = 900;
   let idleTiltBlend = 0;
 
+  // Subtle idle "looking around" drift (head + eyes) -- separate concern
+  // from the sleepy tilt above, so a model can enable/disable either
+  // independently. Fades in/out with the same idleBlend used by the tilt so
+  // both settle together instead of drifting in and out of sync.
+  const idleGazeDeg =
+    env.MANA_LIVE2D_IDLE_GAZE_DEG !== undefined
+      ? Number(env.MANA_LIVE2D_IDLE_GAZE_DEG)
+      : config.idleGazeDeg;
+  const idleGazePeriodMs =
+    env.MANA_LIVE2D_IDLE_GAZE_PERIOD_MS !== undefined
+      ? Number(env.MANA_LIVE2D_IDLE_GAZE_PERIOD_MS)
+      : config.idleGazePeriodMs;
+  const idleGazeActive = idleGazeDeg !== 0;
+
   // Drive the mouth parameter and idle head tilt after each motion update,
   // so the underlying motion clip cannot overwrite them.
   let mouthTarget = 0;
@@ -200,11 +215,12 @@ async function createLive2dAvatar({ canvas, width, height }) {
       coreModel.setParameterValueById(mouthParam, mouthValue);
     } catch (e) {}
 
-    if (idleTiltActive) {
+    if (idleTiltActive || idleGazeActive) {
       const tiltTarget = currentState === "idle" ? 1 : 0;
       const tiltAlpha = Math.min(1, dt / idleTiltBlendMs);
       idleTiltBlend += (tiltTarget - idleTiltBlend) * tiltAlpha;
-      if (idleTiltBlend > 0.001) {
+
+      if (idleTiltActive && idleTiltBlend > 0.001) {
         try {
           const rawY = coreModel.getParameterValueById("ParamAngleY");
           const clampedY = Math.max(
@@ -220,6 +236,27 @@ async function createLive2dAvatar({ canvas, width, height }) {
           coreModel.setParameterValueById(
             "ParamAngleZ",
             rawZ + (idleTiltAngleZ - rawZ) * idleTiltBlend,
+          );
+        } catch (e) {}
+      }
+
+      if (idleGazeActive && idleTiltBlend > 0.001) {
+        try {
+          const gaze = computeIdleGazeOffset(now, idleGazeDeg, idleGazePeriodMs);
+          const rawX = coreModel.getParameterValueById("ParamAngleX");
+          coreModel.setParameterValueById(
+            "ParamAngleX",
+            rawX + gaze.angleX * idleTiltBlend,
+          );
+          const rawEyeX = coreModel.getParameterValueById("ParamEyeBallX");
+          coreModel.setParameterValueById(
+            "ParamEyeBallX",
+            rawEyeX + gaze.eyeBallX * idleTiltBlend,
+          );
+          const rawEyeY = coreModel.getParameterValueById("ParamEyeBallY");
+          coreModel.setParameterValueById(
+            "ParamEyeBallY",
+            rawEyeY + gaze.eyeBallY * idleTiltBlend,
           );
         } catch (e) {}
       }

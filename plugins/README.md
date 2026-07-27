@@ -21,8 +21,13 @@ read, tested, and reasoned about without the rest of the backend.
   Adzuna API (search-only -- no auto-apply, no scraping). Paste a result's
   description into job-applications' `POST /jobs/match` for a tailored
   resume/cover letter; the two plugins are independent.
+- [`document-reader`](document-reader/): ingest a local PDF or a specific
+  web page into node-bot's existing memory retriever (`tools/retriever-index.js`),
+  so Mana can recall and cite it in replies -- no separate document store,
+  the ingested text becomes part of the same index every chat reply already
+  searches.
 
-All four are always loaded (no separate install step).
+All five are always loaded (no separate install step).
 
 ### A different kind of plugin: `obsidian-plugin`
 

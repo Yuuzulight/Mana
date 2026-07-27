@@ -40,10 +40,44 @@ const LLAMA_MODEL_PROFILES = {
   },
 };
 
+// Loopback + RFC1918/link-local ranges: a server Mana can only reach on
+// this machine or LAN, as opposed to genuinely public internet.
+function isLocalOrPrivateHost(hostname) {
+  if (!hostname) return false;
+  const host = String(hostname).toLowerCase().replace(/^\[|\]$/g, "");
+  if (host === "localhost" || host === "127.0.0.1" || host === "::1") {
+    return true;
+  }
+  return (
+    /^10\./.test(host) ||
+    /^192\.168\./.test(host) ||
+    /^172\.(1[6-9]|2\d|3[01])\./.test(host) ||
+    /^169\.254\./.test(host)
+  );
+}
+
+// MANA_ALLOW_REMOTE_AI exists to require deliberate opt-in before Mana can
+// send conversation text to a genuinely external service -- accidental
+// spend or data leakage to a paid third-party API. A self-hosted
+// OpenAI-compatible server (Ollama, LM Studio, vLLM,
+// text-generation-webui, llama-server itself, etc.) running on this
+// machine or LAN isn't what that gate is protecting against, so it's
+// exempt from both the opt-in flag and the API-key requirement -- many
+// such servers don't need auth at all.
 function shouldUseRemoteAi({
   apiKey = process.env.OPENAI_API_KEY || null,
   allowRemoteAi = process.env.MANA_ALLOW_REMOTE_AI || "",
+  baseUrl = process.env.OPENAI_BASE_URL || "https://api.openai.com",
 } = {}) {
+  let hostname = null;
+  try {
+    hostname = new URL(baseUrl).hostname;
+  } catch (e) {
+    // Malformed URL: fall through to the explicit-consent path below.
+  }
+  if (isLocalOrPrivateHost(hostname)) {
+    return true;
+  }
   return Boolean(apiKey && allowRemoteAi === "1");
 }
 
@@ -177,6 +211,7 @@ module.exports = {
   findPreferredLlamaModel,
   getKnownLlamaModelProfiles,
   isKnownLlamaModelProfile,
+  isLocalOrPrivateHost,
   normalizeLlamaModelProfile,
   pickPreferredLlamaModel,
   selectLlamaModelProfileForPrompt,

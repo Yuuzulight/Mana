@@ -35,6 +35,51 @@ test("local AI module keeps remote AI disabled unless explicitly allowed", () =>
   );
 });
 
+test("shouldUseRemoteAi exempts local/LAN OpenAI-compatible endpoints from the consent gate", () => {
+  // No API key, no opt-in flag -- still true, because the endpoint is local.
+  assert.equal(
+    shouldUseRemoteAi({
+      apiKey: null,
+      allowRemoteAi: "",
+      baseUrl: "http://127.0.0.1:11434/v1",
+    }),
+    true,
+  );
+  assert.equal(
+    shouldUseRemoteAi({
+      apiKey: null,
+      allowRemoteAi: "",
+      baseUrl: "http://localhost:1234/v1",
+    }),
+    true,
+  );
+  assert.equal(
+    shouldUseRemoteAi({
+      apiKey: null,
+      allowRemoteAi: "",
+      baseUrl: "http://192.168.1.50:8000/v1",
+    }),
+    true,
+  );
+  // A genuinely remote host still needs the full consent gate.
+  assert.equal(
+    shouldUseRemoteAi({
+      apiKey: null,
+      allowRemoteAi: "",
+      baseUrl: "https://api.openai.com",
+    }),
+    false,
+  );
+  assert.equal(
+    shouldUseRemoteAi({
+      apiKey: "sk-test",
+      allowRemoteAi: "1",
+      baseUrl: "https://openrouter.ai/api/v1",
+    }),
+    true,
+  );
+});
+
 test("local AI module selects preferred default and coding models", () => {
   const root = path.join("C:", "ManaAI", "Mana", "tools", "llama", "gguf-models");
   const models = [

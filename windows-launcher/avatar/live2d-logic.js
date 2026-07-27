@@ -85,6 +85,11 @@ const DEFAULT_MOUTH_GAIN = 18;
 const DEFAULT_EYE_OPEN_SCALE = 1.5;
 const DEFAULT_IDLE_TILT_DEG = 16;
 const DEFAULT_IDLE_MAX_PITCH_DEG = 8;
+// Subtle idle "looking around" drift (head + eyes), separate from the
+// sleepy idle-tilt above -- gives idle some life beyond the motion clip
+// alone. 0 opts out for a model whose own idle motion already covers this.
+const DEFAULT_IDLE_GAZE_DEG = 6;
+const DEFAULT_IDLE_GAZE_PERIOD_MS = 9000;
 
 // VTube Studio exports usually ship motions and expressions as loose files
 // without registering them in model3.json. Register them so the avatar can
@@ -309,7 +314,36 @@ function normalizeAvatarConfig(config) {
       source.idleMaxPitchDeg,
       DEFAULT_IDLE_MAX_PITCH_DEG,
     ),
+    idleGazeDeg: numberOrDefault(source.idleGazeDeg, DEFAULT_IDLE_GAZE_DEG),
+    idleGazePeriodMs: numberOrDefault(
+      source.idleGazePeriodMs,
+      DEFAULT_IDLE_GAZE_PERIOD_MS,
+    ),
   };
+}
+
+// Deterministic idle "looking around" offset: slow, out-of-phase sine
+// waves per axis (eyes lead the head slightly, on a slightly different
+// period) so the drift reads as a natural glance-then-head-catches-up
+// rather than one mechanical oscillation. Pure function of (nowMs,
+// amplitudeDeg, periodMs) so it's testable without a live model.
+function computeIdleGazeOffset(nowMs, amplitudeDeg, periodMs) {
+  const amp = Number(amplitudeDeg) || 0;
+  if (amp === 0) {
+    return { angleX: 0, eyeBallX: 0, eyeBallY: 0 };
+  }
+  const period = Math.max(1000, Number(periodMs) || DEFAULT_IDLE_GAZE_PERIOD_MS);
+  const t = (Number(nowMs) || 0) / period;
+  const angleX = amp * Math.sin(t * Math.PI * 2);
+  const eyeBallX = Math.max(
+    -1,
+    Math.min(1, Math.sin(t * 0.7 * Math.PI * 2 + 0.6) * (amp / 12)),
+  );
+  const eyeBallY = Math.max(
+    -1,
+    Math.min(1, Math.sin(t * 1.3 * Math.PI * 2 + 1.1) * (amp / 20)),
+  );
+  return { angleX, eyeBallX, eyeBallY };
 }
 
 // Merges mapping sources so env overrides beat the model config file.
@@ -416,6 +450,8 @@ module.exports = {
   DEFAULT_BROW_PARAM_IDS,
   DEFAULT_EYE_BLINK_PARAM_IDS,
   DEFAULT_EYE_OPEN_SCALE,
+  DEFAULT_IDLE_GAZE_DEG,
+  DEFAULT_IDLE_GAZE_PERIOD_MS,
   DEFAULT_IDLE_MAX_PITCH_DEG,
   DEFAULT_IDLE_TILT_DEG,
   DEFAULT_MOUTH_GAIN,
@@ -429,6 +465,7 @@ module.exports = {
   STATE_EXPRESSION_PREFERENCES,
   STATE_MOTION_PREFERENCES,
   augmentModelSettings,
+  computeIdleGazeOffset,
   expressionForState,
   findModelJson,
   fitModelToView,
