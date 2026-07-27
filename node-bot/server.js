@@ -107,6 +107,7 @@ const { fetchPage, searchWeb, wikiLookup } = require("./tools/web-access");
 	const imageGenerationPlugin = require("../plugins/image-generation");
 	const browserAutomationPlugin = require("../plugins/browser-automation");
 	const telegramBridgePlugin = require("../plugins/telegram-bridge");
+	const videoWatchPlugin = require("../plugins/video-watch");
 const { createTtsRuntime } = require("./tts-runtime");
 const { createAcpMemoryStore } = require("./acp-memory-store");
 const persona = require("./persona");
@@ -1590,6 +1591,7 @@ function registerRoutes(app, upload, deps = {}) {
     imageGenerationPlugin,
     browserAutomationPlugin,
     telegramBridgePlugin,
+    videoWatchPlugin,
     dirScannerCapability,
     webAccessCapability,
     sessionsCapability,
@@ -1619,6 +1621,13 @@ function registerRoutes(app, upload, deps = {}) {
     // brain-provider test route above).
     isLocalRestartRequest: deps.isLocalRestartRequest || isLocalRestartRequest,
     approvalGate: activeApprovalGate,
+    // Only video-watch's route uses this today -- everywhere else that
+    // needs a vision reply builds its own scoped call (see the
+    // recordChatTurn/vision block below).
+    runVisionReply:
+      deps.runVisionReply ||
+      ((prompt, images, maxTokens) =>
+        llamaServerRuntime.runVisionReply(prompt, images, maxTokens)),
     pluginSettingsStore: activePluginSettingsStore,
     skillsStore: activeSkillsStore,
     env: deps.env || process.env,

@@ -40,10 +40,14 @@ read, tested, and reasoned about without the rest of the backend.
 - [`telegram-bridge`](telegram-bridge/): message Mana remotely from a phone
   over Telegram (long-polling, DM-only), gated by a pairing-code approval so
   a stranger can't reach her. **Off by default.**
+- [`video-watch`](video-watch/): download (`yt-dlp`) or accept a local
+  video, pull captions or fall back to local Whisper transcription,
+  extract a duration-scaled set of frames, and answer questions grounded
+  in what's shown/said -- no external API key required. **Off by default.**
 
-All nine are always loaded (no separate install step); `cron-scheduler`,
-`image-generation`, `browser-automation`, and `telegram-bridge` are disabled
-by default, the rest are enabled by default.
+All ten are always loaded (no separate install step); `cron-scheduler`,
+`image-generation`, `browser-automation`, `telegram-bridge`, and
+`video-watch` are disabled by default, the rest are enabled by default.
 
 ### A different kind of plugin: `obsidian-plugin`
 

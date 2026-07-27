@@ -1,0 +1,10 @@
+{
+  "name": "mana-plugin-video-watch",
+  "version": "1.0.0",
+  "description": "Download or accept a local video, transcribe/caption it, extract frames, and answer questions grounded in what's shown/said.",
+  "main": "index.js",
+  "scripts": {
+    "test": "node --test test/*.test.js"
+  },
+  "private": true
+}
