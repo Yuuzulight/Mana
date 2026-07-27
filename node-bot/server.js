@@ -87,6 +87,7 @@ const {
 const { skillsCapability } = require("./capabilities/skills-capability");
 const { createSkillsStore } = require("./skills-store");
 const { createApprovalGate } = require("./approval-gate");
+const { createRutDetector } = require("./rut-detection");
 const { approvalGateCapability } = require("./capabilities/approval-gate-capability");
 const {
   RESEARCH_SYSTEM_PROMPT,
@@ -459,6 +460,19 @@ const skillsStore = createSkillsStore({});
 // Executor registration happens in createApp below, against whichever
 // skillsStore/approvalGate that specific call actually uses.
 const approvalGate = createApprovalGate({});
+
+// Conversational rut detection (issue #159): flags a reply too similar to
+// Mana's own recent replies so it can be swapped for a less-repetitive
+// Best-of-N candidate, or regenerated with a "say this differently" nudge
+// on the general reply path. Env-var configurable, matching how other
+// tuning knobs in this codebase work -- see rut-detection.js.
+const rutDetector = createRutDetector({
+  lookback: Number(process.env.MANA_RUT_LOOKBACK) || undefined,
+  similarityThreshold: process.env.MANA_RUT_SIMILARITY_THRESHOLD
+    ? Number(process.env.MANA_RUT_SIMILARITY_THRESHOLD)
+    : undefined,
+  cooldownReplies: Number(process.env.MANA_RUT_COOLDOWN_REPLIES) || undefined,
+});
 
 // Which optional plugins (capabilities with a category) are enabled --
 // see plugin-settings-store.js and capabilities/registry.js's gating.
@@ -3541,10 +3555,31 @@ function registerRoutes(app, upload, deps = {}) {
             overrideSystemPrompt: selectedSystemPrompt,
           });
           if (result.content && result.content.trim()) {
+            // Issue #159: rather than trusting the judge's pick blindly,
+            // prefer whichever already-generated candidate is least
+            // similar to Mana's recent replies in this session -- no
+            // extra network call, since Best-of-N already paid for all N.
+            let selected = { content: result.content, index: result.judgeIndex, switched: false };
+            if (sessionId && acpMemoryStore && result.candidates.length > 1) {
+              const recentReplies = (acpMemoryStore.getSession(sessionId)?.turns || [])
+                .map((t) => t.assistant)
+                .filter(Boolean);
+              selected = rutDetector.pickLeastRepetitive(
+                sessionId,
+                result.candidates,
+                result.judgeIndex,
+                recentReplies,
+              );
+              if (selected.switched) {
+                console.log(
+                  `Mana rut detection: swapped judge's pick for candidate ${selected.index + 1}/${result.candidates.length} (less repetitive)`,
+                );
+              }
+            }
             console.log(
               `Mana best-of-N: judge picked candidate ${result.judgeIndex + 1}/${result.candidates.length}`,
             );
-            return result.content;
+            return selected.content;
           }
           console.warn(
             "Best-of-N reply returned empty content; falling back to the plain reply path",
@@ -3561,6 +3596,34 @@ function registerRoutes(app, upload, deps = {}) {
 
     // Fall back to local llama
     let reply = await replyMaybeWithBestOfN(finalPrompt);
+
+    // Conversational rut detection (issue #159), general reply path: the
+    // Best-of-N branch above already prefers a less-repetitive candidate
+    // when one exists, but every reply -- Best-of-N or not -- funnels
+    // through here, so this is where casual/everyday replies (where
+    // verbal-tic repetition actually shows up) get covered too. Only one
+    // regeneration attempt, with an explicit nudge -- if that's still a
+    // rut, send it rather than looping.
+    try {
+      const rutEnabled = String(process.env.MANA_RUT_DETECTION_ENABLED || "1") === "1";
+      if (rutEnabled && sessionId && acpMemoryStore && typeof reply === "string") {
+        const recentReplies = (acpMemoryStore.getSession(sessionId)?.turns || [])
+          .map((t) => t.assistant)
+          .filter(Boolean);
+        const check = rutDetector.checkReply(sessionId, reply, recentReplies);
+        if (check.isRut) {
+          const nudgedPrompt = `${finalPrompt}\n\nYour last several replies have repeated similar phrasing. Say this differently -- vary your wording and sentence structure instead of reusing recent lines.`;
+          const regenerated = await replyMaybeWithBestOfN(nudgedPrompt);
+          if (typeof regenerated === "string" && regenerated.trim()) {
+            reply = regenerated;
+            rutDetector.recordIntervention(sessionId);
+            console.log("Mana rut detection: regenerated a repetitive reply with a phrasing nudge");
+          }
+        }
+      }
+    } catch (e) {
+      console.warn("Rut detection check failed:", e?.message || e);
+    }
     queueVTubeReaction(reply);
 
     // Token-budget accounting: estimate reply tokens and deduct from session budget

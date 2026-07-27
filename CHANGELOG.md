@@ -160,6 +160,15 @@ accounting.
   Settings > Plugins. `yt-dlp` is a new external dependency. No real
   video/binaries were exercised this session -- verified via injected
   fake process calls.
+- **Conversational rut detection** (issue #159): a cheap n-gram-similarity
+  check (`rut-detection.js`) flags when a reply is too similar to Mana's
+  own recent replies. Wired into both Best-of-N's candidate selection
+  (prefers a less-repetitive already-generated candidate over the judge's
+  blind pick) and the general reply path (one regeneration with a "say
+  this differently" nudge). A per-session cooldown stops it from
+  triggering constant regeneration once a rut is broken.
+  `MANA_RUT_DETECTION_ENABLED` (default on), `MANA_RUT_LOOKBACK`,
+  `MANA_RUT_SIMILARITY_THRESHOLD`, `MANA_RUT_COOLDOWN_REPLIES` tune it.
 
 ### Fixed
 - Session-level conversation memory (`buildPromptMemory`) was computed on
