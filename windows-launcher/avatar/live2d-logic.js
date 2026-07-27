@@ -161,27 +161,10 @@ function expressionForState(state, availableNames, overrides = null) {
   return pickByPreference(preferences, names);
 }
 
-// Maps speech RMS amplitude to a 0..1 mouth-open value with a noise floor.
-function rmsToMouth(rms, options = {}) {
-  const floor = options.floor === undefined ? 0.01 : options.floor;
-  const gain = options.gain === undefined ? 9 : options.gain;
-  const value = (Number(rms) || 0) - floor;
-  if (value <= 0) {
-    return 0;
-  }
-  return Math.min(1, value * gain);
-}
-
-// Fast attack, slower decay so the mouth snaps open but closes smoothly.
-function smoothMouthValue(previous, target, dtMs, options = {}) {
-  const attackMs = options.attackMs === undefined ? 40 : options.attackMs;
-  const decayMs = options.decayMs === undefined ? 140 : options.decayMs;
-  const prev = Number(previous) || 0;
-  const next = Number(target) || 0;
-  const tau = next > prev ? attackMs : decayMs;
-  const alpha = Math.min(1, (Number(dtMs) || 0) / Math.max(1, tau));
-  return prev + (next - prev) * alpha;
-}
+// rmsToMouth/smoothMouthValue moved to lip-sync.js (issue #161) so the VRM
+// avatar renderer can share the exact same signal math -- re-exported here
+// so existing callers/tests of live2d-logic.js don't need to change.
+const { rmsToMouth, smoothMouthValue } = require("./lip-sync");
 
 // Preferred Live2D motion groups per avatar state; returns the first group
 // the loaded model actually has, or null when nothing matches.

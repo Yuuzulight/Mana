@@ -50,6 +50,7 @@ const {
   extractReplyErrorDetail,
 } = require("./vision-hotkey");
 const { createLive2dAvatar } = require("../avatar/live2d-avatar");
+const { createVrmAvatar } = require("../avatar/vrm-avatar");
 const {
   DEFAULT_GAMING_MAX_WAIT_FOR_SPEECH_MS,
   DEFAULT_MAX_UTTERANCE_MS,
@@ -234,24 +235,41 @@ function updateZoomButtonLabel(level) {
   avatarZoomBtnEl.title = ZOOM_BUTTON_TITLES[level] || ZOOM_BUTTON_TITLES.full;
 }
 
-function initWindowAvatar() {
+// VRM is preferred when a model is configured (issue #161); Live2D is the
+// fallback -- both bind to the same canvas element since only one is ever
+// active at a time, so no second canvas/HTML change was needed here
+// (unlike the overlay window, which keeps two canvases for a simpler
+// initial-load hide/show).
+async function initWindowAvatar() {
   if (!manaCanvasEl) {
     return;
   }
-  createLive2dAvatar({
+  const dimensions = {
     canvas: manaCanvasEl,
     width: manaCanvasEl.clientWidth || 320,
     height: manaCanvasEl.clientHeight || 480,
-  })
-    .then((instance) => {
-      windowAvatar = instance;
-      if (windowAvatar) {
-        updateZoomButtonLabel(windowAvatar.getZoom());
-      }
-    })
-    .catch((error) => {
-      console.warn("In-window avatar failed to load:", error);
-    });
+  };
+
+  try {
+    const vrmInstance = await createVrmAvatar(dimensions);
+    if (vrmInstance) {
+      windowAvatar = vrmInstance;
+      updateZoomButtonLabel(windowAvatar.getZoom());
+      return;
+    }
+  } catch (error) {
+    console.warn("In-window VRM avatar failed to load, falling back to Live2D:", error);
+  }
+
+  try {
+    const live2dInstance = await createLive2dAvatar(dimensions);
+    windowAvatar = live2dInstance;
+    if (windowAvatar) {
+      updateZoomButtonLabel(windowAvatar.getZoom());
+    }
+  } catch (error) {
+    console.warn("In-window avatar failed to load:", error);
+  }
 }
 
 if (avatarZoomBtnEl) {
