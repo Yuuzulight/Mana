@@ -636,10 +636,28 @@ function createLlamaServerRuntime(options = {}) {
   // template asks for, so llama-server's parser never recognizes it as a
   // tool call. Tool-calling here is scoped to profiles that pass this check
   // (currently: default), not assumed to work everywhere.
+  // Issue #183: bounded multi-round loop, not a fixed two-call sequence --
+  // the model can call tools, see results, and call more tools across
+  // several rounds (needed for #169's outbound MCP client tools to be
+  // useful at all; a single-round loop can't let a remote tool's results
+  // inform a second tool call). Every cap below exists because an LLM tool
+  // loop is exactly the kind of thing that can run away: too many rounds,
+  // too many calls in one round, too long wall-clock, or stuck repeatedly
+  // calling the same broken tool. Whenever a cap is hit, one final
+  // tools-disabled completion call forces the model to synthesize an
+  // answer from whatever it already knows, rather than returning a blank
+  // or synthetic fallback string.
   async function runToolAwareReply(
     prompt,
     toolPolicy,
-    { maxTokens = 512, profile = "default", overrideSystemPrompt = null } = {},
+    {
+      maxTokens = 512,
+      profile = "default",
+      overrideSystemPrompt = null,
+      maxRounds,
+      maxToolCallsPerRound,
+      maxMs,
+    } = {},
   ) {
     if (typeof fetchImpl !== "function") {
       throw new Error("fetch is not available; cannot use llama-server");
@@ -652,12 +670,27 @@ function createLlamaServerRuntime(options = {}) {
     const startedAt = nowMs();
     await ensureServer(profile);
 
+    const roundLimit = Math.max(
+      1,
+      Number(maxRounds ?? env.MANA_TOOL_CALLING_MAX_ROUNDS ?? 4),
+    );
+    const callsPerRoundLimit = Math.max(
+      1,
+      Number(maxToolCallsPerRound ?? env.MANA_TOOL_CALLING_MAX_CALLS_PER_ROUND ?? 5),
+    );
+    const timeLimitMs = Math.max(
+      1,
+      Number(maxMs ?? env.MANA_TOOL_CALLING_MAX_MS ?? 60000),
+    );
+    const deadline = startedAt + timeLimitMs;
+    const MAX_CONSECUTIVE_TOOL_ERRORS = 3;
+
     const messages = [
       { role: "system", content: overrideSystemPrompt || systemPrompt },
       { role: "user", content: prompt },
     ];
 
-    async function complete() {
+    async function complete(toolsEnabled) {
       const resp = await fetchImpl(
         `http://127.0.0.1:${state.port}/v1/chat/completions`,
         {
@@ -665,8 +698,9 @@ function createLlamaServerRuntime(options = {}) {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             messages,
-            tools: toolPolicy.tools,
-            tool_choice: "auto",
+            ...(toolsEnabled
+              ? { tools: toolPolicy.tools, tool_choice: "auto" }
+              : { tool_choice: "none" }),
             max_tokens: maxTokens,
           }),
         },
@@ -680,21 +714,31 @@ function createLlamaServerRuntime(options = {}) {
       return resp.json();
     }
 
-    let json = await complete();
-    let message = (json && json.choices && json.choices[0] && json.choices[0].message) || {};
-    const requestedToolCalls = Array.isArray(message.tool_calls)
-      ? message.tool_calls
-      : [];
     const executedToolCalls = [];
+    let message = {};
+    let rounds = 0;
+    let consecutiveToolErrors = 0;
 
-    if (requestedToolCalls.length) {
+    for (let round = 1; round <= roundLimit; round += 1) {
+      rounds = round;
+      const json = await complete(true);
+      message = (json && json.choices && json.choices[0] && json.choices[0].message) || {};
+      const requestedToolCalls = Array.isArray(message.tool_calls)
+        ? message.tool_calls
+        : [];
+
+      if (!requestedToolCalls.length) {
+        break; // model produced a real answer -- no more tools requested
+      }
+
+      const boundedCalls = requestedToolCalls.slice(0, callsPerRoundLimit);
       messages.push({
         role: "assistant",
         content: message.content || null,
-        tool_calls: requestedToolCalls,
+        tool_calls: boundedCalls,
       });
 
-      for (const call of requestedToolCalls) {
+      for (const call of boundedCalls) {
         const name = call.function && call.function.name;
         let args = {};
         try {
@@ -711,9 +755,11 @@ function createLlamaServerRuntime(options = {}) {
           const result = toolPolicy.executeTool(name, args);
           resultText = String(result);
           executedToolCalls.push({ name, args, ok: true });
+          consecutiveToolErrors = 0;
         } catch (e) {
           resultText = `Error: ${e.message}`;
           executedToolCalls.push({ name, args, ok: false, error: e.message });
+          consecutiveToolErrors += 1;
         }
 
         messages.push({
@@ -723,8 +769,18 @@ function createLlamaServerRuntime(options = {}) {
         });
       }
 
-      json = await complete();
-      message = (json && json.choices && json.choices[0] && json.choices[0].message) || {};
+      const budgetExhausted =
+        round >= roundLimit ||
+        nowMs() > deadline ||
+        consecutiveToolErrors >= MAX_CONSECUTIVE_TOOL_ERRORS;
+      if (budgetExhausted) {
+        // Force a real answer from whatever's been learned so far instead
+        // of looping again (or returning nothing) -- tool_choice: "none"
+        // means the model cannot request yet another tool call here.
+        const finalJson = await complete(false);
+        message = (finalJson && finalJson.choices && finalJson.choices[0] && finalJson.choices[0].message) || {};
+        break;
+      }
     }
 
     const content = String(message.content || "")
@@ -733,7 +789,7 @@ function createLlamaServerRuntime(options = {}) {
 
     scheduleIdleShutdown();
     logPerf("llama-server-tool-reply", startedAt);
-    return { content, toolCalls: executedToolCalls };
+    return { content, toolCalls: executedToolCalls, rounds };
   }
 
   // Best-of-N self-voting (issue #70): generate N candidates at varied
