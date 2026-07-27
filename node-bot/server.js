@@ -88,6 +88,7 @@ const { skillsCapability } = require("./capabilities/skills-capability");
 const { createSkillsStore } = require("./skills-store");
 const { createApprovalGate } = require("./approval-gate");
 const { createRutDetector } = require("./rut-detection");
+const { createPhrasingVariator, rewritePhrase } = require("./phrasing-variation");
 const { approvalGateCapability } = require("./capabilities/approval-gate-capability");
 const {
   RESEARCH_SYSTEM_PROMPT,
@@ -472,6 +473,14 @@ const rutDetector = createRutDetector({
     ? Number(process.env.MANA_RUT_SIMILARITY_THRESHOLD)
     : undefined,
   cooldownReplies: Number(process.env.MANA_RUT_COOLDOWN_REPLIES) || undefined,
+});
+
+// Anti-formulaic-phrasing rewrite pass (issue #160): catches Mana's own
+// well-worn catchphrases/openers/kaomoji recurring too often and asks the
+// model for one alternate phrasing of just that part -- see
+// phrasing-variation.js. A hand-curated lexicon, not learned.
+const phrasingVariator = createPhrasingVariator({
+  lookback: Number(process.env.MANA_PHRASING_LOOKBACK) || undefined,
 });
 
 // Which optional plugins (capabilities with a category) are enabled --
@@ -3709,6 +3718,37 @@ function registerRoutes(app, upload, deps = {}) {
       }
     } catch (e) {
       console.warn("Reply verification unavailable:", e?.message || e);
+    }
+
+    // Anti-formulaic-phrasing rewrite pass (issue #160): runs last, right
+    // before the reply is recorded/returned, since the verify/retry loop
+    // above can still replace `reply` wholesale -- this needs to see
+    // whatever text will actually be spoken, not an intermediate draft.
+    try {
+      const phrasingEnabled =
+        String(process.env.MANA_PHRASING_VARIATION_ENABLED || "1") === "1";
+      if (phrasingEnabled && sessionId && typeof reply === "string") {
+        const check = phrasingVariator.checkReply(sessionId, reply);
+        if (check.isPredictable) {
+          const alt = await rewritePhrase(check.match.matchedText, {
+            synthesize: (prompt) =>
+              runLocalAssistantReply(
+                prompt,
+                40,
+                normalizedModelProfile,
+                "You are a concise writing assistant. Follow instructions exactly and reply with only what was asked for.",
+              ),
+          });
+          if (alt && alt.trim() && alt.toLowerCase() !== check.match.matchedText.toLowerCase()) {
+            reply = reply.replace(check.match.matchedText, alt.trim());
+            console.log("Mana phrasing variation: rewrote a repeated catchphrase/opener");
+          }
+        }
+        const finalMatch = phrasingVariator.findLexiconMatch(reply);
+        if (finalMatch) phrasingVariator.recordUsage(sessionId, finalMatch.id);
+      }
+    } catch (e) {
+      console.warn("Phrasing variation check failed:", e?.message || e);
     }
 
     try {
