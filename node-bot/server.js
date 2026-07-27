@@ -15,14 +15,13 @@ Environment variables (set before running):
   whisper.cpp decoding tuning knobs, see docs/speech_recognition_improvement_plan.md
 - LLAMA_BIN : full path to llama.cpp/main executable (e.g. C:\llama.cpp\main.exe)
 - LLAMA_MODEL : full path to a GGUF model file, or an HF repo shorthand like user/model:Q4_K_M
-- TTS_PROVIDER : "cli", "chatterbox", "kokoro", or "fish" (default: "fish",
+- TTS_PROVIDER : "cli", "kokoro", or "fish" (default: "fish",
   see docs/fish_speech_tts.md for the recommended S1-mini checkpoint)
 - TTS_BIN : full path to your TTS executable
 - TTS_MODEL : model path or model id for your TTS executable
 - TTS_ARGS_JSON : optional JSON array of CLI args with placeholders like {text}, {output}, {model}, {voice}, {speaker}
 - TTS_VOICE : optional voice value used by your TTS args
 - TTS_SPEAKER : optional speaker value used by your TTS args
-- CHATTERBOX_TTS_URL : local Chatterbox TTS microservice URL
 - KOKORO_TTS_URL : local Kokoro TTS microservice URL
 - FISH_TTS_URL : local Fish Speech server URL
 - FISH_TTS_API_KEY : optional Fish Speech bearer token
@@ -30,7 +29,7 @@ Environment variables (set before running):
 - FISH_TTS_REF_AUDIO, FISH_TTS_REF_TEXT : optional local reference clip path
   + its exact transcript, for zero-shot in-context voice cloning on every
   request (takes priority over FISH_TTS_REFERENCE_ID when both are set)
-- FISH_TTS_FALLBACK_PROVIDER : "kokoro", "chatterbox", or "none"
+- FISH_TTS_FALLBACK_PROVIDER : "kokoro" or "none"
 - MANA_ALLOW_REMOTE_AI : set to "1" to allow OpenAI/proxy chat replies
 - GAMING_PROCESS_NAMES : optional comma-separated game process names for Gaming mode
 - MANA_MCP_SERVER_ENABLED : set to "1" to allow `npm run mcp` (mcp-server.js) to
@@ -101,6 +100,7 @@ const { fetchPage, searchWeb, wikiLookup } = require("./tools/web-access");
 	const { createJobApplicationsStore } = jobApplicationsPlugin;
 	const jobSearchAdzunaPlugin = require("../plugins/job-search-adzuna");
 	const { createAdzunaClient } = jobSearchAdzunaPlugin;
+	const documentReaderPlugin = require("../plugins/document-reader");
 const { createTtsRuntime } = require("./tts-runtime");
 const { createAcpMemoryStore } = require("./acp-memory-store");
 const { createPresetsStore } = require("./presets-store");
@@ -118,7 +118,7 @@ const {
   normalizeLlamaModelProfile,
   pickPreferredLlamaModel,
   selectLlamaModelProfileForPrompt,
-  shouldUseRemoteAi,
+  shouldUseRemoteAi: shouldUseRemoteAiCore,
 } = require("./ai/local-ai");
 const {
   createLocalLlamaRuntime,
@@ -196,16 +196,49 @@ function createApp(deps = {}) {
 	  return app;
 }
 
-// Remote AI is disabled by default. Set MANA_ALLOW_REMOTE_AI=1 with
-// OPENAI_API_KEY only when you intentionally want paid/proxy chat replies.
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY || null;
+// Remote AI is disabled by default for a genuinely external endpoint --
+// set MANA_ALLOW_REMOTE_AI=1 with OPENAI_API_KEY only when you
+// intentionally want paid/proxy chat replies (see shouldUseRemoteAi in
+// ai/local-ai.js: a self-hosted OpenAI-compatible server on this machine
+// or LAN is exempt from that gate). Settings > Brain provider (see
+// /models/brain-provider below) can override base URL/key/model at
+// runtime; these three getters are what every call site should use
+// instead of reading process.env directly, so that override takes effect
+// without a restart.
+function openAiBrainOverride() {
+  const brain = modelSettingsStore.getBrainSettings();
+  return brain.type === "openai_compatible" ? brain : null;
+}
+function openAiApiKey() {
+  const override = openAiBrainOverride();
+  if (override && override.apiKey) return override.apiKey;
+  return process.env.OPENAI_API_KEY || null;
+}
+function openAiBaseUrl() {
+  const override = openAiBrainOverride();
+  if (override && override.baseUrl) return override.baseUrl;
+  return process.env.OPENAI_BASE_URL || "https://api.openai.com";
+}
+function openAiModel() {
+  const override = openAiBrainOverride();
+  if (override && override.model) return override.model;
+  return process.env.OPENAI_MODEL || "codex-gpt-5.5";
+}
 const MANA_ALLOW_REMOTE_AI = process.env.MANA_ALLOW_REMOTE_AI || "";
-const OPENAI_BASE_URL =
-  process.env.OPENAI_BASE_URL || "https://api.openai.com";
-const OPENAI_MODEL = process.env.OPENAI_MODEL || "codex-gpt-5.5";
+
+// Threads the dynamic Settings-driven apiKey/baseUrl through to every
+// existing shouldUseRemoteAi() call site in this file without touching
+// them -- explicit overrides (as local-ai-policy.test.js passes) still
+// win, since they're spread in last.
+function shouldUseRemoteAi(overrides = {}) {
+  return shouldUseRemoteAiCore({
+    apiKey: openAiApiKey(),
+    allowRemoteAi: MANA_ALLOW_REMOTE_AI,
+    baseUrl: openAiBaseUrl(),
+    ...overrides,
+  });
+}
 const TTS_BIN = process.env.TTS_BIN || null;
-const CHATTERBOX_TTS_URL =
-  process.env.CHATTERBOX_TTS_URL || "http://127.0.0.1:5010";
 const KOKORO_TTS_URL = process.env.KOKORO_TTS_URL || "http://127.0.0.1:5011";
 const FISH_TTS_URL = process.env.FISH_TTS_URL || "http://127.0.0.1:8080";
 const SCREEN_CONTEXT_ENABLED = process.env.SCREEN_CONTEXT_ENABLED !== "0";
@@ -1374,7 +1407,6 @@ function getManaProcessSnapshot() {
 function getManaProcessRole(commandLine) {
   const text = commandLine.toLowerCase();
   if (text.includes("kokoro_service")) return "kokoro tts";
-  if (text.includes("uvicorn service:app")) return "chatterbox tts";
   if (text.includes("node-bot\\server.js")) return "backend";
   if (text.includes("nodemon")) return "dev restart";
   if (text.includes("electron")) return "launcher";
@@ -1540,6 +1572,7 @@ function registerRoutes(app, upload, deps = {}) {
     stockMarketPlugin,
     jobApplicationsPlugin,
     jobSearchAdzunaPlugin,
+    documentReaderPlugin,
     dirScannerCapability,
     webAccessCapability,
     sessionsCapability,
@@ -1810,6 +1843,63 @@ function registerRoutes(app, upload, deps = {}) {
     }
   });
 
+  // Switch Mana's brain between local (llama-server + a GGUF) and any
+  // OpenAI-compatible endpoint. apiKey is write-only from here on out --
+  // /models/status never echoes it back (see model-management.js).
+  app.post("/models/brain-provider", (req, res) => {
+    try {
+      return res.json(
+        modelManagement.setBrainSettings({
+          type: req.body?.type,
+          baseUrl: req.body?.baseUrl,
+          apiKey: req.body?.apiKey,
+          model: req.body?.model,
+        }),
+      );
+    } catch (error) {
+      return res.status(400).json({ error: error.message });
+    }
+  });
+
+  // Presets for the brain-provider dropdown (Settings' "Use Remote AI" UI).
+  app.get("/models/brain-providers", (req, res) => {
+    return res.json(modelManagement.getKnownBrainProviders());
+  });
+
+  // "Connect" button: tests reachability/auth against baseUrl before saving.
+  // Local-only (same isLocalRestartRequest check as /admin/restart): this is
+  // the one /models/* route that makes node-bot issue an outbound request to
+  // a user-supplied URL, and node-bot listens on all interfaces with CORS
+  // wide open, so an unrestricted version of this route would let anyone who
+  // can reach this machine's port make it probe arbitrary hosts (SSRF). The
+  // fix is restricting *who can call it*, not the destination -- the whole
+  // point of this button is testing local/LAN endpoints (Ollama, LM
+  // Studio), so blocking private addresses would defeat the feature.
+  app.post("/models/brain-provider/test", async (req, res) => {
+    if (!isLocalRestartRequest(req)) {
+      return res.status(403).json({ error: "this endpoint is only available from this PC" });
+    }
+    const result = await modelManagement.testBrainConnection({
+      baseUrl: req.body?.baseUrl,
+      apiKey: req.body?.apiKey,
+    });
+    return res.json(result);
+  });
+
+  // Vision GGUF + mmproj override ("" clears back to auto-detection).
+  app.post("/models/vision-path", (req, res) => {
+    try {
+      return res.json(
+        modelManagement.setVisionSettings({
+          modelPath: req.body?.modelPath,
+          mmprojPath: req.body?.mmprojPath,
+        }),
+      );
+    } catch (error) {
+      return res.status(400).json({ error: error.message });
+    }
+  });
+
   function makeHealthComponent(status, configured, message, details = {}) {
     return {
       status,
@@ -1955,7 +2045,6 @@ function registerRoutes(app, upload, deps = {}) {
       ttsConfigured: TTS_PROVIDER !== "none",
       ttsProvider: TTS_PROVIDER,
       kokoroTtsUrl: KOKORO_TTS_URL,
-      chatterboxTtsUrl: CHATTERBOX_TTS_URL,
       fishTtsUrl: FISH_TTS_URL,
       llamaConfigured: llamaStatus.ok,
       llamaModel: llamaStatus.model,
@@ -2299,7 +2388,7 @@ function registerRoutes(app, upload, deps = {}) {
     }
   });
 
-  const TTS_OVERRIDE_PROVIDERS = ["fish", "kokoro", "chatterbox", "gpt_sovits", "cli"];
+  const TTS_OVERRIDE_PROVIDERS = ["fish", "kokoro", "gpt_sovits", "cli"];
 
   app.get("/tts/override", (req, res) => {
     res.json({ ok: true, override: ttsRuntime.getProviderOverride() });
@@ -2785,12 +2874,12 @@ function registerRoutes(app, upload, deps = {}) {
       systemPromptOverride ||
       "You are Mana, a local AI assistant with an original anime little-sister personality. Your tone blends cool confidence with a soft, shy gentleness: calm, caring, lightly teasing, and protective. Use occasional playful little jabs, then help immediately. Keep the teasing affectionate, never cruel or genuinely insulting. Speak naturally for spoken conversation: short sentences, clean wording, minimal rambling, usually one or two short sentences unless the user needs more detail.";
 
-    const baseUrl = OPENAI_BASE_URL.replace(/\/+$/, "");
+    const baseUrl = openAiBaseUrl().replace(/\/+$/, "");
     const url = new URL(baseUrl + "/v1/chat/completions");
     const transport = url.protocol === "https:" ? https : http;
 
     const body = JSON.stringify({
-      model: OPENAI_MODEL,
+      model: openAiModel(),
       messages: [
         { role: "system", content: systemPrompt },
         { role: "user", content: prompt },
@@ -2808,7 +2897,11 @@ function registerRoutes(app, upload, deps = {}) {
         headers: {
           "Content-Type": "application/json",
           "Content-Length": Buffer.byteLength(body),
-          Authorization: `Bearer ${OPENAI_API_KEY}`,
+          // Many self-hosted OpenAI-compatible servers (Ollama, llama.cpp's
+          // own llama-server, etc.) don't require auth at all -- only send
+          // the header when there's actually a key configured, rather than
+          // sending a literal "Bearer null" to a server that might choke on it.
+          ...(openAiApiKey() ? { Authorization: `Bearer ${openAiApiKey()}` } : {}),
         },
       };
 

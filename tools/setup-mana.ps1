@@ -171,10 +171,9 @@ rather than auto-downloaded by this script:
        tools\llama\gguf-models\
      - Point LLAMA_BIN / LLAMA_MODEL at them in node-bot\.env
 
-  3. Local TTS voice services (from tts-service\):
-       .\start.ps1          # Chatterbox
-       .\start_kokoro.ps1   # Kokoro
-     Each installs its own Python dependencies and downloads its models on
+  3. Local Kokoro TTS voice service (from tts-service\):
+       .\start_kokoro.ps1
+     Installs its own Python dependencies and downloads its models on
      first run.
 
   4. Optional extras (each has its own setup doc under docs\):

@@ -14,6 +14,22 @@ const {
 } = require("./ai/local-ai");
 const { createModelSettingsStore } = require("./model-settings-store");
 
+// "Use Remote AI" provider presets for Settings' brain-provider dropdown --
+// each is an OpenAI-compatible endpoint (Mana's runOpenAIReply in
+// server.js always POSTs the standard {model, messages, max_tokens}
+// shape to {baseUrl}/v1/chat/completions), so this only lists servers
+// that actually speak that shape. "custom" leaves baseUrl for the user to
+// fill in -- any other OpenAI-compatible server (a different local
+// runtime, a proxy, another host on the LAN) works the same way.
+const BRAIN_PROVIDER_PRESETS = {
+  openai: { label: "OpenAI", baseUrl: "https://api.openai.com/v1", needsKey: true },
+  openrouter: { label: "OpenRouter", baseUrl: "https://openrouter.ai/api/v1", needsKey: true },
+  groq: { label: "Groq", baseUrl: "https://api.groq.com/openai/v1", needsKey: true },
+  ollama: { label: "Ollama (local)", baseUrl: "http://127.0.0.1:11434/v1", needsKey: false },
+  lmstudio: { label: "LM Studio (local)", baseUrl: "http://127.0.0.1:1234/v1", needsKey: false },
+  custom: { label: "Custom", baseUrl: "", needsKey: false },
+};
+
 // Directory names skipped during a full-storage scan for .gguf files: OS
 // internals and huge dev-tool caches that are never where a downloaded model
 // lives, but would otherwise blow the time/dir budget below. Best-effort
@@ -261,6 +277,22 @@ function createModelManagement(options = {}) {
     return cachedRecommendation;
   }
 
+  // The Settings-configured brain override, if the user has switched to
+  // "openai_compatible" -- falls back to the matching env var per field
+  // when that field wasn't explicitly set in Settings, same override
+  // convention as explicitModelPath() above.
+  function effectiveOpenAiConfig() {
+    const brain = modelSettingsStore.getBrainSettings();
+    const usingOverride = brain.type === "openai_compatible";
+    return {
+      apiKey: (usingOverride && brain.apiKey) || env.OPENAI_API_KEY || null,
+      baseUrl:
+        (usingOverride && brain.baseUrl) ||
+        env.OPENAI_BASE_URL ||
+        "https://api.openai.com",
+    };
+  }
+
   function getModelStatus() {
     const localGgufs = collectLocalGgufs();
     const profiles = {};
@@ -268,9 +300,11 @@ function createModelManagement(options = {}) {
       profiles[profile] = buildProfileStatus(profile, localGgufs);
     }
 
+    const { apiKey, baseUrl } = effectiveOpenAiConfig();
     const remoteAiEnabled = shouldUseRemoteAi({
-      apiKey: env.OPENAI_API_KEY || null,
+      apiKey,
       allowRemoteAi: env.MANA_ALLOW_REMOTE_AI || "",
+      baseUrl,
     });
 
     return {
@@ -282,6 +316,13 @@ function createModelManagement(options = {}) {
       profiles,
       recommendation: getRecommendedModelProfile(),
       selectedModelPath: modelSettingsStore.getModelPath(),
+      // apiKey is never echoed back -- /models/status has no auth check,
+      // same reasoning as auth-store.js never returning a stored keyHash.
+      brain: (() => {
+        const { apiKey, ...rest } = modelSettingsStore.getBrainSettings();
+        return { ...rest, hasApiKey: Boolean(apiKey) };
+      })(),
+      vision: modelSettingsStore.getVisionSettings(),
     };
   }
 
@@ -296,6 +337,25 @@ function createModelManagement(options = {}) {
   }
 
   // User-picked override (from a scan result or a manual browse), persisted
+  // GGUF files open with the 4-byte magic "GGUF" (see ggml's gguf spec).
+  // Since setModelPath/setVisionSettings accept any path the user browses
+  // to or types in, this catches a truncated download or a mislabeled
+  // non-GGUF file before it's ever handed to llama-server, rather than
+  // trusting the ".gguf" extension alone.
+  function isValidGgufFile(filePath) {
+    let fd;
+    try {
+      fd = fs.openSync(filePath, "r");
+      const buf = Buffer.alloc(4);
+      fs.readSync(fd, buf, 0, 4, 0);
+      return buf.toString("ascii") === "GGUF";
+    } catch (e) {
+      return false;
+    } finally {
+      if (fd !== undefined) fs.closeSync(fd);
+    }
+  }
+
   // via model-settings-store.js. Only takes effect for the "default" profile
   // -- same rule pickPreferredLlamaModel already applies to LLAMA_MODEL, so
   // switching to "coding"/"quality"/"fast" still auto-discovers by filename.
@@ -308,6 +368,9 @@ function createModelManagement(options = {}) {
       if (!fs.existsSync(resolved)) {
         throw new Error(`Model file not found: ${resolved}`);
       }
+      if (!isValidGgufFile(resolved)) {
+        throw new Error(`File does not look like a valid GGUF model: ${resolved}`);
+      }
     }
     modelSettingsStore.setModelPath(resolved || null);
     return getModelStatus();
@@ -318,13 +381,117 @@ function createModelManagement(options = {}) {
     return scanForGgufFiles({ roots: searchRoots });
   }
 
+  // Switches Mana's "brain" between the local llama-server path (default)
+  // and any OpenAI-compatible endpoint -- a self-hosted server (Ollama, LM
+  // Studio, vLLM, text-generation-webui, llama-server's own OpenAI-shaped
+  // API, ...) or a real third-party API. See shouldUseRemoteAi in
+  // ai/local-ai.js for how baseUrl's host decides whether that counts as
+  // "remote" for consent purposes.
+  function setBrainSettings(partial = {}) {
+    if (
+      partial.type !== undefined &&
+      !["local", "openai_compatible"].includes(partial.type)
+    ) {
+      throw new Error('type must be "local" or "openai_compatible"');
+    }
+    if (partial.baseUrl) {
+      let parsed;
+      try {
+        parsed = new URL(partial.baseUrl);
+      } catch (e) {
+        throw new Error(`baseUrl is not a valid URL: ${partial.baseUrl}`);
+      }
+      if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+        throw new Error(`baseUrl must be http:// or https://: ${partial.baseUrl}`);
+      }
+    }
+    modelSettingsStore.setBrainSettings(partial);
+    return getModelStatus();
+  }
+
+  // Vision GGUF + mmproj override (see findVisionModel/findVisionMmproj in
+  // ai/llama-server-runtime.js) -- empty string clears back to
+  // auto-detection under tools/llama/gguf-models.
+  function setVisionSettings(partial = {}) {
+    for (const key of ["modelPath", "mmprojPath"]) {
+      const value = partial[key];
+      if (value === undefined || value === "") continue;
+      if (!String(value).toLowerCase().endsWith(".gguf")) {
+        throw new Error(`${key} must point to a .gguf file`);
+      }
+      if (!fs.existsSync(value)) {
+        throw new Error(`File not found: ${value}`);
+      }
+      if (!isValidGgufFile(value)) {
+        throw new Error(`${key} does not look like a valid GGUF model: ${value}`);
+      }
+    }
+    modelSettingsStore.setVisionSettings(partial);
+    return getModelStatus();
+  }
+
+  // Preset list for Settings' brain-provider dropdown -- baseUrl/needsKey
+  // are pre-filled from BRAIN_PROVIDER_PRESETS, apiKey is never included.
+  function getKnownBrainProviders() {
+    return Object.entries(BRAIN_PROVIDER_PRESETS).map(([id, preset]) => ({
+      id,
+      ...preset,
+    }));
+  }
+
+  // "Connect" button backend: hits the standard OpenAI-compatible
+  // GET {baseUrl}/models endpoint (supported by OpenAI, OpenRouter, Groq,
+  // Ollama, and LM Studio alike) to confirm the server is reachable and,
+  // if a key was given, that it's accepted.
+  async function testBrainConnection({ baseUrl, apiKey } = {}) {
+    if (!baseUrl) {
+      return { ok: false, error: "baseUrl is required" };
+    }
+    // Trim trailing slashes without a regex -- a user-controlled string fed
+    // into a repetition-quantifier regex is a ReDoS shape CodeQL flags even
+    // when (as here) the pattern itself can't actually backtrack.
+    let trimmedBaseUrl = String(baseUrl);
+    while (trimmedBaseUrl.endsWith("/")) {
+      trimmedBaseUrl = trimmedBaseUrl.slice(0, -1);
+    }
+    let url;
+    try {
+      url = new URL(trimmedBaseUrl + "/models");
+    } catch (e) {
+      return { ok: false, error: `baseUrl is not a valid URL: ${baseUrl}` };
+    }
+    if (url.protocol !== "http:" && url.protocol !== "https:") {
+      return { ok: false, error: `baseUrl must be http:// or https://: ${baseUrl}` };
+    }
+    try {
+      const resp = await fetch(url, {
+        method: "GET",
+        headers: apiKey ? { Authorization: `Bearer ${apiKey}` } : {},
+        signal: AbortSignal.timeout(8000),
+      });
+      const status = resp.status;
+      if (!resp.ok) {
+        return { ok: false, status, error: `Server responded ${status}` };
+      }
+      const data = await resp.json().catch(() => null);
+      const modelCount = Array.isArray(data?.data) ? data.data.length : null;
+      return { ok: true, status, modelCount };
+    } catch (error) {
+      return { ok: false, error: error.message };
+    }
+  }
+
   return {
     getActiveProfile,
+    getKnownBrainProviders,
     getModelStatus,
     getRecommendedModelProfile,
     scanForModels,
     setActiveProfile,
+    setBrainSettings,
     setModelPath,
+    setVisionSettings,
+    testBrainConnection,
   };
 }
 

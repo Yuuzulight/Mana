@@ -17,8 +17,9 @@ accounting.
   `esbuild`, `requests`, `python-multipart`; overrode the dead-weight
   `gh-pages` transitive dep pulled in by `pixi-live2d-display` and the
   unreachable `@hono/node-server` pulled in by `@modelcontextprotocol/sdk`.
-  `torch` stays pinned to `2.6.0` -- `chatterbox-tts==0.1.7` hard-requires
-  that exact version, so the newer-torch CVEs stay open until upstream moves.
+  (`torch` was initially left pinned to `2.6.0` here because
+  `chatterbox-tts==0.1.7` hard-required that exact version -- see below,
+  since removed, so this no longer applies.)
 - Fixed all 70 open CodeQL alerts: added an app-wide rate limiter
   (`express-rate-limit`) covering every node-bot route; gated the
   editor/workspace-control routes (`/zed/*`, `/editors/*`) behind admin auth
@@ -30,6 +31,59 @@ accounting.
   `auth-store.js`'s API-key hashing to salted scrypt with a migration path
   for existing accounts; added explicit `permissions:` blocks to all GitHub
   Actions workflows; and more (see PR for the full list).
+- Bumped `electron` from 26.x to 39.8.10 in both `windows-launcher` and
+  `desktop-client`, closing the remaining 34 Dependabot alerts. Verified by
+  launching both apps and checking for real errors, and a full
+  `electron-builder` packaging build for `desktop-client`.
+
+### Removed
+- **Chatterbox TTS provider**, at the user's request: deleted
+  `tts-service/service.py` and `start.ps1`, and every `chatterbox`
+  reference across `tts-runtime.js`, `server.js`, `doctor.js`, the
+  `windows-launcher` process-management/UI code, and docs. This also
+  freed `tts-service/requirements.txt`'s `torch`/`torchaudio` pins
+  entirely (nothing else there needed them -- `kokoro-onnx` only needs
+  `onnxruntime`), which is what was blocking the remaining torch
+  Dependabot alerts.
+
+### Changed
+- `desktop-client`'s sidebar had Avatar/Web access/Market watch/Vision/
+  Model/Doctor as top-level buttons alongside Settings; moved them inside
+  Settings (a new "Status" section) to match `windows-launcher`, where
+  they'd already been nested there since the issue #138 UI overhaul.
+
+### Added
+- **"Use Remote AI" brain provider**: a toggle under Model Selection (both
+  apps) opening a provider dropdown (OpenAI/OpenRouter/Groq/Ollama/LM
+  Studio/Custom, sourced from `GET /models/brain-providers` so the two
+  apps' dropdowns can't drift apart), an API key field, and a "Connect"
+  button that actually tests the endpoint (`POST /models/brain-provider/test`)
+  before saving. `shouldUseRemoteAi` already exempted local/LAN endpoints
+  from the remote-AI consent gate; this is the Settings UI for it.
+- **`document-reader` plugin**: ingest a local PDF or a specific web page
+  into Mana's existing memory retriever, so she can recall and cite it in
+  replies. Reuses the retriever end-to-end (no new vector store) and
+  `web-access.js`'s SSRF-guarded `fetchPage` for URL ingestion.
+- Subtle idle "looking around" drift (head + eyes) for the Live2D avatar,
+  in both apps -- separate, independently-configurable knob from the
+  existing sleepy idle-tilt (`idleGazeDeg`/`idleGazePeriodMs` in
+  `mana-avatar.json`, 0 opts out).
+
+### Fixed
+- `runOpenAIReply` referenced removed `OPENAI_API_KEY`/`OPENAI_BASE_URL`/
+  `OPENAI_MODEL` consts left over from the brain-provider refactor above --
+  would have thrown at runtime the moment remote AI was actually used.
+- The `windows-launcher` overlay always rendered a static SVG sprite first
+  and only switched to the Live2D model once/if it finished loading;
+  removed the sprite fallback entirely so only the Live2D model ever
+  renders, and deleted the leftover placeholder assets.
+- The compact 440x460 startup window showed a horizontal scrollbar because
+  the underlying sidebar+chat layout (hidden behind the startup overlay,
+  but still occupying flex space) didn't shrink below the overlay's width;
+  added `overflow-x: hidden` in both apps.
+- Model-file loading now checks the actual GGUF magic bytes, not just the
+  `.gguf` extension, before handing a file to llama-server; brain-provider
+  `baseUrl` is now restricted to `http/https` (was any URL scheme).
 
 ## [0.2.2] - 2026-07-27
 

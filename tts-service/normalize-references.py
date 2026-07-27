@@ -4,10 +4,8 @@ Run after adding new reference audio (uses the tts-service venv):
 
   .\\venv\\Scripts\\python.exe normalize-references.py
 
-Keeps files as 16-bit PCM so the Chatterbox loader always sees float32.
-Runtime loudness normalization is disabled in service.py (dtype bug in
-chatterbox-tts 0.1.7 turbo), so this offline pass is what keeps reference
-levels consistent.
+Keeps files as 16-bit PCM, which is what every TTS provider's reference-clip
+loader here expects (e.g. the fish provider's FISH_TTS_REF_AUDIO).
 """
 import os
 

@@ -1,6 +1,6 @@
 Fish Speech TTS
 
-Fish Speech (S1-mini) is Mana's default TTS provider. Chatterbox and Kokoro
+Fish Speech (S1-mini) is Mana's default TTS provider. Kokoro and GPT-SoVITS
 are secondary choices, available by setting `TTS_PROVIDER` explicitly. Kokoro
 also runs as S1-mini's automatic fallback voice so Mana never goes silent if
 S1-mini is unreachable or errors.
@@ -28,7 +28,7 @@ Reference
 - S1-mini model card: https://huggingface.co/fishaudio/s1-mini
 
 Important notes
-- Fish Speech is heavier than Kokoro and Chatterbox.
+- Fish Speech is heavier than Kokoro.
 - The official setup path is separate from Mana and needs WSL2 (native Windows is
   not supported upstream) plus a CUDA GPU.
 - **Latency is not real-time.** On an 8GB RTX 3070 Ti, a short reply
@@ -88,7 +88,7 @@ Mana environment variables
   or to override a different default).
 - `$env:FISH_TTS_URL = "http://127.0.0.1:8080"`
 - `$env:FISH_TTS_FALLBACK_PROVIDER = "kokoro"` (this is the default; set to
-  `chatterbox` or `none` to change it)
+  `none` to change it)
 - `$env:FISH_TTS_TIMEOUT_MS = "20000"` (default) — a request past this
   timeout counts as a failure and triggers `FISH_TTS_FALLBACK_PROVIDER`,
   since under GPU contention S1-mini tends to slow to a crawl rather than
@@ -157,7 +157,7 @@ Mana's replies do automatically yet.
 Expected Fish Speech server
 - Mana calls `POST /v1/tts` on `FISH_TTS_URL`.
 - Mana expects the server to return audio bytes.
-- By default, Mana falls back to Kokoro if Fish Speech fails. Set `FISH_TTS_FALLBACK_PROVIDER=chatterbox` to use Chatterbox instead, or `=none` to surface Fish failures immediately with no fallback.
+- By default, Mana falls back to Kokoro if Fish Speech fails. Set `FISH_TTS_FALLBACK_PROVIDER=none` to surface Fish failures immediately with no fallback.
 
 Quick test
 - Start Fish Speech separately using its official instructions.
@@ -171,7 +171,6 @@ Invoke-WebRequest -Uri "http://localhost:5005/synthesize" -Method Post -ContentT
 
 Fallback behavior
 - `FISH_TTS_FALLBACK_PROVIDER=kokoro` uses Kokoro if Fish Speech is unavailable.
-- `FISH_TTS_FALLBACK_PROVIDER=chatterbox` uses Chatterbox if Fish Speech is unavailable.
 - `FISH_TTS_FALLBACK_PROVIDER=none` makes Fish failures visible immediately.
 
 Automatic Kokoro switch during gaming
