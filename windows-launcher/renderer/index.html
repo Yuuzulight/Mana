@@ -418,8 +418,35 @@
         border-radius: 14px;
         line-height: 1.45;
         font-size: 14px;
-        white-space: pre-wrap;
         word-wrap: break-word;
+      }
+
+      /* Content is rendered markdown->HTML now (issue #148), not raw text
+         -- paragraph/list tags already provide spacing, so pre-wrap would
+         double it up. First/last child margins are zeroed so a lone
+         paragraph doesn't add extra padding inside the bubble. */
+      .chat-message > *:first-child {
+        margin-top: 0;
+      }
+      .chat-message > *:last-child {
+        margin-bottom: 0;
+      }
+      .chat-message pre {
+        background: rgba(0, 0, 0, 0.2);
+        border-radius: 8px;
+        padding: 8px 10px;
+        overflow-x: auto;
+      }
+      .chat-message code {
+        font-family: "Cascadia Code", Consolas, monospace;
+        font-size: 13px;
+      }
+      .chat-artifact-open {
+        display: block;
+        margin-top: 8px;
+        font-size: 12px;
+        padding: 4px 10px;
+        border-radius: 8px;
       }
 
       .chat-user {
