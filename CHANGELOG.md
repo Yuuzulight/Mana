@@ -211,6 +211,23 @@ accounting.
 - Model-file loading now checks the actual GGUF magic bytes, not just the
   `.gguf` extension, before handing a file to llama-server; brain-provider
   `baseUrl` is now restricted to `http/https` (was any URL scheme).
+- **`video-watch` plugin (issue #154), found via real manual testing**:
+  the original frame budget (12-30 frames, up to 100 for long videos) was
+  carried over from the reference implementation's cloud-model
+  assumptions and never checked against a local vision model's context
+  window -- a full-resolution frame costs ~1210 prompt tokens against
+  llama-server's default 4096-token context, so even a short test video
+  failed with "exceeds context size." Fixed by downscaling extracted
+  frames to 336px wide by default (~88 tokens/frame) and lowering the
+  frame budget to 8-20. Separately, a long video's transcript had no
+  length cap before being embedded in the vision prompt (YouTube's
+  auto-captions repeat most lines 2-3 times across overlapping windows,
+  so a 20-minute video's transcript ran to 70k+ characters) -- now
+  truncated to 4000 chars for the model-facing prompt only; the full
+  transcript is still returned to the API caller. Both fixes verified
+  against two real YouTube videos end-to-end (real `yt-dlp`/`ffmpeg`/
+  `whisper-cli`/`llama-server`), closing the manual-verification gap
+  disclosed when this plugin first shipped.
 
 ### Docs
 - **Issue #146 investigation**: Mana has no outbound MCP *client*
