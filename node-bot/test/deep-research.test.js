@@ -6,6 +6,7 @@ const {
   DEFAULT_MAX_PER_DOMAIN,
   MAX_SOURCES_CAP,
   MAX_TOTAL_MS_CAP,
+  MAX_CONCURRENCY_CAP,
   ResearchCancelledError,
   buildResearchPrompt,
   parseSubQueries,
@@ -136,6 +137,50 @@ test("runDeepResearch clamps maxSources and maxTotalMs to their documented bound
   });
   assert.equal(seen.defaultLimit, DEFAULT_MAX_SOURCES);
   assert.equal(withDefaults.bounds.maxTotalMs <= MAX_TOTAL_MS_CAP, true);
+});
+
+test("runDeepResearch reads sources concurrently instead of strictly sequentially", async () => {
+  let inFlight = 0;
+  let maxObservedInFlight = 0;
+
+  const result = await runDeepResearch("q", {
+    maxSources: 4,
+    maxPerDomain: 4,
+    maxConcurrency: 2,
+    searchWeb: async () => fakeSearchResults(4),
+    fetchPage: async (url) => {
+      inFlight += 1;
+      maxObservedInFlight = Math.max(maxObservedInFlight, inFlight);
+      await new Promise((r) => setTimeout(r, 10));
+      inFlight -= 1;
+      return { url, title: "t", text: "x" };
+    },
+    synthesize: async () => "report",
+  });
+
+  assert.equal(
+    maxObservedInFlight,
+    2,
+    "should read up to maxConcurrency sources at once, not one at a time",
+  );
+  assert.equal(result.bounds.maxConcurrency, 2);
+  // Citation numbering stays stable by pool position, independent of which
+  // read actually finished first.
+  assert.deepEqual(
+    result.sources.map((s) => s.index),
+    [1, 2, 3, 4],
+  );
+});
+
+test("runDeepResearch clamps maxConcurrency to its documented bound", async () => {
+  const result = await runDeepResearch("q", {
+    maxSources: 2,
+    maxConcurrency: 999,
+    searchWeb: async () => fakeSearchResults(2),
+    fetchPage: async (url) => ({ url, title: "t", text: "x" }),
+    synthesize: async () => "report",
+  });
+  assert.equal(result.bounds.maxConcurrency, MAX_CONCURRENCY_CAP);
 });
 
 test("runDeepResearch requires a question and a synthesize function", async () => {
