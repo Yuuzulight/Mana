@@ -118,6 +118,8 @@ const { createPresetsStore } = require("./presets-store");
 const { createPluginSettingsStore } = require("./plugin-settings-store");
 const { createAuthStore } = require("./auth-store");
 const { createToolPolicy } = require("./ai/tool-policy");
+const { createMcpClientRegistry, buildToolPolicyWithMcp } = require("./mcp-client-registry");
+const { mcpClientCapability } = require("./capabilities/mcp-client-capability");
 const {
   createEditorIntegrations,
   createZedIntegration,
@@ -494,6 +496,13 @@ const authStore = createAuthStore({});
 // Foundational tool-calling (issue #51): one read-only tool, scoped to the
 // repo root by default. See ai/tool-policy.js.
 const toolPolicy = createToolPolicy({});
+
+// Outbound MCP client (issue #169): registered remote servers' tools merge
+// with toolPolicy's own at reply time (see replyMaybeWithTools below), not
+// into toolPolicy itself -- MCP tool discovery is async, tool-policy.js's
+// tools stay a plain synchronous array. New server registrations route
+// through the same approvalGate every other gated action uses.
+const mcpClientRegistry = createMcpClientRegistry({ approvalGate });
 
 // Background memory block that can be refreshed periodically from ACP session files.
 let BACKGROUND_MEMORY_BLOCK = "";
@@ -1626,6 +1635,7 @@ function registerRoutes(app, upload, deps = {}) {
     retrieverAdminCapability,
     skillsCapability,
     approvalGateCapability,
+    mcpClientCapability,
   ];
   const activePresetsStore = deps.presetsStore || presetsStore;
   const activePluginSettingsStore = deps.pluginSettingsStore || pluginSettingsStore;
@@ -1636,6 +1646,7 @@ function registerRoutes(app, upload, deps = {}) {
   // bypass a test's deps.skillsStore override.
   const activeApprovalGate = deps.approvalGate || approvalGate;
   activeApprovalGate.registerExecutor("skill-write", (payload) => activeSkillsStore.createSkill(payload));
+  const activeMcpClientRegistry = deps.mcpClientRegistry || mcpClientRegistry;
   const capabilityContext = {
     acpMemoryStore: deps.acpMemoryStore || acpMemoryStore,
     // Only cron-scheduler's agent-job executor uses this today -- every
@@ -1646,6 +1657,7 @@ function registerRoutes(app, upload, deps = {}) {
     // brain-provider test route above).
     isLocalRestartRequest: deps.isLocalRestartRequest || isLocalRestartRequest,
     approvalGate: activeApprovalGate,
+    mcpClientRegistry: activeMcpClientRegistry,
     // Only video-watch's route uses this today -- everywhere else that
     // needs a vision reply builds its own scoped call (see the
     // recordChatTurn/vision block below).
@@ -3505,9 +3517,14 @@ function registerRoutes(app, upload, deps = {}) {
         isLlamaServerAvailable()
       ) {
         try {
+          // Issue #169: merged fresh per reply, not cached -- MCP tool
+          // discovery is async and the registered-server list is small
+          // enough that re-listing costs little once a connection is
+          // already established (see mcp-client-registry.js).
+          const mergedToolPolicy = await buildToolPolicyWithMcp(activeToolPolicy, activeMcpClientRegistry);
           const toolResult = await runToolAwareReply(
             promptText,
-            activeToolPolicy,
+            mergedToolPolicy,
             {
               maxTokens: LLAMA_MAX_TOKENS,
               profile: normalizedModelProfile,

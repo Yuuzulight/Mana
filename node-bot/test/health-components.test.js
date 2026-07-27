@@ -34,6 +34,7 @@ test("health includes component readiness while preserving top-level fields", as
       "jobSearchAdzuna",
       "localLlama",
       "localMemory",
+      "mcpClients",
       "mobileAuth",
       "presets",
       "retrieverAdmin",
