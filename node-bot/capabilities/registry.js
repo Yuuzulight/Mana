@@ -112,4 +112,5 @@ module.exports = {
   buildCapabilityHealth,
   contributePluginPromptContext,
   registerCapabilities,
+  isPluginEnabled,
 };
