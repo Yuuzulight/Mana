@@ -169,6 +169,14 @@ accounting.
   triggering constant regeneration once a rut is broken.
   `MANA_RUT_DETECTION_ENABLED` (default on), `MANA_RUT_LOOKBACK`,
   `MANA_RUT_SIMILARITY_THRESHOLD`, `MANA_RUT_COOLDOWN_REPLIES` tune it.
+- **Anti-formulaic-phrasing rewrite pass** (issue #160): a hand-curated
+  lexicon of Mana's known catchphrases/openers/kaomoji
+  (`phrasing-variation.js`) catches one recurring within the last few
+  replies and asks the model for one alternate phrasing of just that
+  fragment -- not a full regeneration, and never a content/meaning
+  change. Pairs with windows-launcher's existing `reply-emotion.js`
+  rather than replacing it. `MANA_PHRASING_VARIATION_ENABLED` (default
+  on), `MANA_PHRASING_LOOKBACK` tune it.
 
 ### Fixed
 - Session-level conversation memory (`buildPromptMemory`) was computed on
