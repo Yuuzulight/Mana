@@ -255,6 +255,123 @@ test("models path route sets the explicit model path and surfaces validation err
   });
 });
 
+test("brain provider route persists the openai_compatible switch and surfaces validation errors", async () => {
+  let received = null;
+  const app = createApp({
+    modelManagement: {
+      setBrainSettings: (partial) => {
+        if (partial.type && !["local", "openai_compatible"].includes(partial.type)) {
+          throw new Error('type must be "local" or "openai_compatible"');
+        }
+        received = partial;
+        return {
+          activeProfile: "default",
+          profiles: {},
+          brain: { type: partial.type || "local", baseUrl: partial.baseUrl || "", model: partial.model || "", hasApiKey: Boolean(partial.apiKey) },
+        };
+      },
+    },
+  });
+
+  await withServer(app, async (baseUrl) => {
+    const ok = await postJson(`${baseUrl}/models/brain-provider`, {
+      type: "openai_compatible",
+      baseUrl: "http://127.0.0.1:11434/v1",
+      apiKey: "sk-local",
+      model: "llama3",
+    });
+    assert.equal(ok.response.status, 200);
+    assert.equal(ok.payload.brain.type, "openai_compatible");
+    assert.equal(ok.payload.brain.hasApiKey, true);
+    // apiKey must never round-trip in the response.
+    assert.equal(ok.payload.brain.apiKey, undefined);
+    assert.equal(received.apiKey, "sk-local");
+
+    const rejected = await postJson(`${baseUrl}/models/brain-provider`, {
+      type: "not-a-real-type",
+    });
+    assert.equal(rejected.response.status, 400);
+    assert.deepEqual(rejected.payload, {
+      error: 'type must be "local" or "openai_compatible"',
+    });
+  });
+});
+
+test("vision path route persists the model/mmproj override and surfaces validation errors", async () => {
+  const app = createApp({
+    modelManagement: {
+      setVisionSettings: (partial) => {
+        if (partial.modelPath && !String(partial.modelPath).endsWith(".gguf")) {
+          throw new Error("modelPath must point to a .gguf file");
+        }
+        return {
+          activeProfile: "default",
+          profiles: {},
+          vision: { modelPath: partial.modelPath || "", mmprojPath: partial.mmprojPath || "" },
+        };
+      },
+    },
+  });
+
+  await withServer(app, async (baseUrl) => {
+    const ok = await postJson(`${baseUrl}/models/vision-path`, {
+      modelPath: "C:\\models\\vision.gguf",
+      mmprojPath: "C:\\models\\vision-mmproj.gguf",
+    });
+    assert.equal(ok.response.status, 200);
+    assert.equal(ok.payload.vision.modelPath, "C:\\models\\vision.gguf");
+
+    const rejected = await postJson(`${baseUrl}/models/vision-path`, {
+      modelPath: "C:\\models\\vision.txt",
+    });
+    assert.equal(rejected.response.status, 400);
+    assert.deepEqual(rejected.payload, {
+      error: "modelPath must point to a .gguf file",
+    });
+  });
+});
+
+test("brain-providers route lists presets from model-management", async () => {
+  const app = createApp({
+    modelManagement: {
+      getKnownBrainProviders: () => [
+        { id: "ollama", label: "Ollama (local)", baseUrl: "http://127.0.0.1:11434/v1", needsKey: false },
+        { id: "custom", label: "Custom", baseUrl: "", needsKey: false },
+      ],
+    },
+  });
+
+  await withServer(app, async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/models/brain-providers`);
+    const payload = await response.json();
+    assert.equal(response.status, 200);
+    assert.equal(payload.length, 2);
+    assert.equal(payload[0].id, "ollama");
+  });
+});
+
+test("brain-provider test route surfaces the connection result", async () => {
+  let received = null;
+  const app = createApp({
+    modelManagement: {
+      testBrainConnection: async (args) => {
+        received = args;
+        return { ok: true, status: 200, modelCount: 3 };
+      },
+    },
+  });
+
+  await withServer(app, async (baseUrl) => {
+    const result = await postJson(`${baseUrl}/models/brain-provider/test`, {
+      baseUrl: "http://127.0.0.1:11434/v1",
+      apiKey: "sk-local",
+    });
+    assert.equal(result.response.status, 200);
+    assert.deepEqual(result.payload, { ok: true, status: 200, modelCount: 3 });
+    assert.deepEqual(received, { baseUrl: "http://127.0.0.1:11434/v1", apiKey: "sk-local" });
+  });
+});
+
 test("reply uses active model profile when request omits modelProfile", async () => {
   let receivedProfile = null;
   const app = createApp({

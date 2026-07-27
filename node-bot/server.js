@@ -100,6 +100,7 @@ const { fetchPage, searchWeb, wikiLookup } = require("./tools/web-access");
 	const { createJobApplicationsStore } = jobApplicationsPlugin;
 	const jobSearchAdzunaPlugin = require("../plugins/job-search-adzuna");
 	const { createAdzunaClient } = jobSearchAdzunaPlugin;
+	const documentReaderPlugin = require("../plugins/document-reader");
 const { createTtsRuntime } = require("./tts-runtime");
 const { createAcpMemoryStore } = require("./acp-memory-store");
 const { createPresetsStore } = require("./presets-store");
@@ -117,7 +118,7 @@ const {
   normalizeLlamaModelProfile,
   pickPreferredLlamaModel,
   selectLlamaModelProfileForPrompt,
-  shouldUseRemoteAi,
+  shouldUseRemoteAi: shouldUseRemoteAiCore,
 } = require("./ai/local-ai");
 const {
   createLocalLlamaRuntime,
@@ -195,13 +196,48 @@ function createApp(deps = {}) {
 	  return app;
 }
 
-// Remote AI is disabled by default. Set MANA_ALLOW_REMOTE_AI=1 with
-// OPENAI_API_KEY only when you intentionally want paid/proxy chat replies.
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY || null;
+// Remote AI is disabled by default for a genuinely external endpoint --
+// set MANA_ALLOW_REMOTE_AI=1 with OPENAI_API_KEY only when you
+// intentionally want paid/proxy chat replies (see shouldUseRemoteAi in
+// ai/local-ai.js: a self-hosted OpenAI-compatible server on this machine
+// or LAN is exempt from that gate). Settings > Brain provider (see
+// /models/brain-provider below) can override base URL/key/model at
+// runtime; these three getters are what every call site should use
+// instead of reading process.env directly, so that override takes effect
+// without a restart.
+function openAiBrainOverride() {
+  const brain = modelSettingsStore.getBrainSettings();
+  return brain.type === "openai_compatible" ? brain : null;
+}
+function openAiApiKey() {
+  const override = openAiBrainOverride();
+  if (override && override.apiKey) return override.apiKey;
+  return process.env.OPENAI_API_KEY || null;
+}
+function openAiBaseUrl() {
+  const override = openAiBrainOverride();
+  if (override && override.baseUrl) return override.baseUrl;
+  return process.env.OPENAI_BASE_URL || "https://api.openai.com";
+}
+function openAiModel() {
+  const override = openAiBrainOverride();
+  if (override && override.model) return override.model;
+  return process.env.OPENAI_MODEL || "codex-gpt-5.5";
+}
 const MANA_ALLOW_REMOTE_AI = process.env.MANA_ALLOW_REMOTE_AI || "";
-const OPENAI_BASE_URL =
-  process.env.OPENAI_BASE_URL || "https://api.openai.com";
-const OPENAI_MODEL = process.env.OPENAI_MODEL || "codex-gpt-5.5";
+
+// Threads the dynamic Settings-driven apiKey/baseUrl through to every
+// existing shouldUseRemoteAi() call site in this file without touching
+// them -- explicit overrides (as local-ai-policy.test.js passes) still
+// win, since they're spread in last.
+function shouldUseRemoteAi(overrides = {}) {
+  return shouldUseRemoteAiCore({
+    apiKey: openAiApiKey(),
+    allowRemoteAi: MANA_ALLOW_REMOTE_AI,
+    baseUrl: openAiBaseUrl(),
+    ...overrides,
+  });
+}
 const TTS_BIN = process.env.TTS_BIN || null;
 const KOKORO_TTS_URL = process.env.KOKORO_TTS_URL || "http://127.0.0.1:5011";
 const FISH_TTS_URL = process.env.FISH_TTS_URL || "http://127.0.0.1:8080";
@@ -1536,6 +1572,7 @@ function registerRoutes(app, upload, deps = {}) {
     stockMarketPlugin,
     jobApplicationsPlugin,
     jobSearchAdzunaPlugin,
+    documentReaderPlugin,
     dirScannerCapability,
     webAccessCapability,
     sessionsCapability,
@@ -1801,6 +1838,52 @@ function registerRoutes(app, upload, deps = {}) {
   app.post("/models/path", (req, res) => {
     try {
       return res.json(modelManagement.setModelPath(req.body?.modelPath));
+    } catch (error) {
+      return res.status(400).json({ error: error.message });
+    }
+  });
+
+  // Switch Mana's brain between local (llama-server + a GGUF) and any
+  // OpenAI-compatible endpoint. apiKey is write-only from here on out --
+  // /models/status never echoes it back (see model-management.js).
+  app.post("/models/brain-provider", (req, res) => {
+    try {
+      return res.json(
+        modelManagement.setBrainSettings({
+          type: req.body?.type,
+          baseUrl: req.body?.baseUrl,
+          apiKey: req.body?.apiKey,
+          model: req.body?.model,
+        }),
+      );
+    } catch (error) {
+      return res.status(400).json({ error: error.message });
+    }
+  });
+
+  // Presets for the brain-provider dropdown (Settings' "Use Remote AI" UI).
+  app.get("/models/brain-providers", (req, res) => {
+    return res.json(modelManagement.getKnownBrainProviders());
+  });
+
+  // "Connect" button: tests reachability/auth against baseUrl before saving.
+  app.post("/models/brain-provider/test", async (req, res) => {
+    const result = await modelManagement.testBrainConnection({
+      baseUrl: req.body?.baseUrl,
+      apiKey: req.body?.apiKey,
+    });
+    return res.json(result);
+  });
+
+  // Vision GGUF + mmproj override ("" clears back to auto-detection).
+  app.post("/models/vision-path", (req, res) => {
+    try {
+      return res.json(
+        modelManagement.setVisionSettings({
+          modelPath: req.body?.modelPath,
+          mmprojPath: req.body?.mmprojPath,
+        }),
+      );
     } catch (error) {
       return res.status(400).json({ error: error.message });
     }
@@ -2780,12 +2863,12 @@ function registerRoutes(app, upload, deps = {}) {
       systemPromptOverride ||
       "You are Mana, a local AI assistant with an original anime little-sister personality. Your tone blends cool confidence with a soft, shy gentleness: calm, caring, lightly teasing, and protective. Use occasional playful little jabs, then help immediately. Keep the teasing affectionate, never cruel or genuinely insulting. Speak naturally for spoken conversation: short sentences, clean wording, minimal rambling, usually one or two short sentences unless the user needs more detail.";
 
-    const baseUrl = OPENAI_BASE_URL.replace(/\/+$/, "");
+    const baseUrl = openAiBaseUrl().replace(/\/+$/, "");
     const url = new URL(baseUrl + "/v1/chat/completions");
     const transport = url.protocol === "https:" ? https : http;
 
     const body = JSON.stringify({
-      model: OPENAI_MODEL,
+      model: openAiModel(),
       messages: [
         { role: "system", content: systemPrompt },
         { role: "user", content: prompt },
@@ -2803,7 +2886,11 @@ function registerRoutes(app, upload, deps = {}) {
         headers: {
           "Content-Type": "application/json",
           "Content-Length": Buffer.byteLength(body),
-          Authorization: `Bearer ${OPENAI_API_KEY}`,
+          // Many self-hosted OpenAI-compatible servers (Ollama, llama.cpp's
+          // own llama-server, etc.) don't require auth at all -- only send
+          // the header when there's actually a key configured, rather than
+          // sending a literal "Bearer null" to a server that might choke on it.
+          ...(openAiApiKey() ? { Authorization: `Bearer ${openAiApiKey()}` } : {}),
         },
       };
 

@@ -166,6 +166,46 @@
           <div id="modelScanResults" class="model-scan-results" hidden></div>
         </div>
 
+        <div class="settings-section" id="brainProviderSection">
+          <h3>Brain provider</h3>
+          <p class="subtitle">Run local GGUFs above, or point Mana at any OpenAI-compatible server instead (Ollama, LM Studio, vLLM, text-generation-webui, or a real API).</p>
+          <div class="brain-provider-toggle-row">
+            <label><input type="checkbox" id="useRemoteAiToggle" /> Use Remote AI</label>
+          </div>
+          <div id="brainProviderFields" hidden>
+            <label class="field-label" for="brainProviderSelect">Provider</label>
+            <select id="brainProviderSelect"></select>
+            <label class="field-label" for="brainBaseUrl">Base URL</label>
+            <input type="text" id="brainBaseUrl" placeholder="http://127.0.0.1:11434/v1" />
+            <label class="field-label" for="brainModel">Model name</label>
+            <input type="text" id="brainModel" placeholder="llama3" />
+            <label class="field-label" for="brainApiKey">API key (only if the server needs one)</label>
+            <input type="password" id="brainApiKey" placeholder="leave blank for local servers" />
+            <div class="model-actions">
+              <button id="brainProviderConnectBtn" type="button">Connect</button>
+              <button id="brainProviderSaveBtn">Save brain provider</button>
+            </div>
+            <div id="brainProviderStatus" class="subtitle"></div>
+          </div>
+        </div>
+
+        <div class="settings-section" id="visionModelSection">
+          <h3>Vision model</h3>
+          <p class="subtitle">Leave blank to auto-detect a vision GGUF under tools\llama\gguf-models.</p>
+          <label class="field-label" for="visionModelPath">Vision model (.gguf)</label>
+          <div class="model-actions">
+            <input type="text" id="visionModelPath" placeholder="auto-detected" readonly />
+            <button id="visionModelBrowseBtn">Browse...</button>
+          </div>
+          <label class="field-label" for="visionMmprojPath">mmproj (.gguf)</label>
+          <div class="model-actions">
+            <input type="text" id="visionMmprojPath" placeholder="auto-detected" readonly />
+            <button id="visionMmprojBrowseBtn">Browse...</button>
+          </div>
+          <button id="visionModelClearBtn">Clear (back to auto-detect)</button>
+          <div id="visionModelStatus" class="subtitle"></div>
+        </div>
+
         <div class="settings-section" id="pluginsSection">
           <h3>Plugins</h3>
           <div id="pluginsList" class="plugin-list">

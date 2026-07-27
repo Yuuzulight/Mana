@@ -179,6 +179,21 @@ document.getElementById('themeToggle')?.addEventListener('click', (e) => {
   const modelBrowseBtnEl = document.getElementById('modelBrowseBtn');
   const modelClearBtnEl = document.getElementById('modelClearBtn');
   const modelScanResultsEl = document.getElementById('modelScanResults');
+  const useRemoteAiToggleEl = document.getElementById('useRemoteAiToggle');
+  const brainProviderFieldsEl = document.getElementById('brainProviderFields');
+  const brainProviderSelectEl = document.getElementById('brainProviderSelect');
+  const brainBaseUrlEl = document.getElementById('brainBaseUrl');
+  const brainModelEl = document.getElementById('brainModel');
+  const brainApiKeyEl = document.getElementById('brainApiKey');
+  const brainProviderConnectBtnEl = document.getElementById('brainProviderConnectBtn');
+  const brainProviderSaveBtnEl = document.getElementById('brainProviderSaveBtn');
+  const brainProviderStatusEl = document.getElementById('brainProviderStatus');
+  const visionModelPathEl = document.getElementById('visionModelPath');
+  const visionMmprojPathEl = document.getElementById('visionMmprojPath');
+  const visionModelBrowseBtnEl = document.getElementById('visionModelBrowseBtn');
+  const visionMmprojBrowseBtnEl = document.getElementById('visionMmprojBrowseBtn');
+  const visionModelClearBtnEl = document.getElementById('visionModelClearBtn');
+  const visionModelStatusEl = document.getElementById('visionModelStatus');
 
   let mediaStream = null;
   let recorder = null;
@@ -1289,6 +1304,145 @@ document.getElementById('themeToggle')?.addEventListener('click', (e) => {
   });
 
   loadModelSettings();
+
+  // Brain provider: local llama-server (profile buttons above) vs. any
+  // OpenAI-compatible endpoint -- self-hosted (Ollama, LM Studio, vLLM,
+  // text-generation-webui, ...) or a real API. See node-bot's
+  // shouldUseRemoteAi (ai/local-ai.js) for why a local endpoint here doesn't
+  // need MANA_ALLOW_REMOTE_AI. Vision GGUF + mmproj override behaves the
+  // same way as the desktop-side model picker above.
+  let brainProviderPresets = [];
+
+  async function loadBrainProviderPresets() {
+    if (!brainProviderSelectEl) return;
+    try {
+      brainProviderPresets = await fetchJson(`${BACKEND_URL}/models/brain-providers`);
+      brainProviderSelectEl.innerHTML = '';
+      for (const preset of brainProviderPresets) {
+        const option = document.createElement('option');
+        option.value = preset.id;
+        option.textContent = preset.label;
+        brainProviderSelectEl.appendChild(option);
+      }
+    } catch (e) {
+      console.warn('Mana brain provider presets failed:', e);
+    }
+  }
+
+  // Only overwrite the brain/vision fields with what the backend has stored
+  // when the user isn't actively mid-edit, since this polls alongside the
+  // rest of Settings.
+  async function loadBrainAndVisionSettings() {
+    try {
+      const status = await fetchJson(`${BACKEND_URL}/models/status`);
+      const brain = status.brain || { type: 'local', baseUrl: '', model: '' };
+      const isEditing = [brainBaseUrlEl, brainModelEl, brainApiKeyEl].includes(document.activeElement);
+      if (!isEditing) {
+        if (useRemoteAiToggleEl) useRemoteAiToggleEl.checked = brain.type === 'openai_compatible';
+        if (brainProviderFieldsEl) brainProviderFieldsEl.hidden = brain.type !== 'openai_compatible';
+        if (brainProviderSelectEl) {
+          const matched = brainProviderPresets.find((p) => p.baseUrl === brain.baseUrl);
+          brainProviderSelectEl.value = matched ? matched.id : 'custom';
+        }
+        if (brainBaseUrlEl) brainBaseUrlEl.value = brain.baseUrl || '';
+        if (brainModelEl) brainModelEl.value = brain.model || '';
+        if (brainApiKeyEl) brainApiKeyEl.placeholder = brain.hasApiKey ? '(key saved -- leave blank to keep it)' : 'leave blank for local servers';
+      }
+      const vision = status.vision || { modelPath: '', mmprojPath: '' };
+      if (visionModelPathEl) visionModelPathEl.value = vision.modelPath || '';
+      if (visionMmprojPathEl) visionMmprojPathEl.value = vision.mmprojPath || '';
+    } catch (e) {
+      console.warn('Mana brain/vision status failed:', e);
+    }
+  }
+
+  function toggleBrainProviderFields() {
+    if (brainProviderFieldsEl) brainProviderFieldsEl.hidden = !useRemoteAiToggleEl?.checked;
+  }
+  useRemoteAiToggleEl?.addEventListener('change', toggleBrainProviderFields);
+
+  // Picking a preset auto-fills its baseUrl; "Custom" clears it for manual entry.
+  brainProviderSelectEl?.addEventListener('change', () => {
+    const preset = brainProviderPresets.find((p) => p.id === brainProviderSelectEl.value);
+    if (brainBaseUrlEl) brainBaseUrlEl.value = preset?.baseUrl || '';
+  });
+
+  brainProviderConnectBtnEl?.addEventListener('click', async () => {
+    if (brainProviderStatusEl) brainProviderStatusEl.textContent = 'Connecting...';
+    try {
+      const result = await fetchJson(`${BACKEND_URL}/models/brain-provider/test`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ baseUrl: brainBaseUrlEl?.value || '', apiKey: brainApiKeyEl?.value || '' }),
+      });
+      if (brainProviderStatusEl) {
+        brainProviderStatusEl.textContent = result.ok
+          ? `Connected${typeof result.modelCount === 'number' ? ` -- ${result.modelCount} model(s) available` : ''}.`
+          : `Connection failed: ${result.error || `HTTP ${result.status}`}`;
+      }
+    } catch (e) {
+      if (brainProviderStatusEl) brainProviderStatusEl.textContent = `Connection failed: ${e.message}`;
+    }
+  });
+
+  brainProviderSaveBtnEl?.addEventListener('click', async () => {
+    const type = useRemoteAiToggleEl?.checked ? 'openai_compatible' : 'local';
+    const body = { type };
+    if (type === 'openai_compatible') {
+      body.baseUrl = brainBaseUrlEl?.value || '';
+      body.model = brainModelEl?.value || '';
+      // Blank means "keep whatever's already saved" -- re-saving
+      // baseUrl/model shouldn't wipe a key the user isn't looking at.
+      if (brainApiKeyEl?.value) body.apiKey = brainApiKeyEl.value;
+    }
+    if (brainProviderStatusEl) brainProviderStatusEl.textContent = 'Saving...';
+    try {
+      await fetchJson(`${BACKEND_URL}/models/brain-provider`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      if (brainApiKeyEl) brainApiKeyEl.value = '';
+      await loadBrainAndVisionSettings();
+      if (brainProviderStatusEl) brainProviderStatusEl.textContent = 'Saved.';
+    } catch (e) {
+      if (brainProviderStatusEl) brainProviderStatusEl.textContent = `Failed to save: ${e.message}`;
+    }
+  });
+
+  async function browseAndSetVisionField(fieldName) {
+    if (!window.electronAPI?.browseModelFile) return;
+    try {
+      const picked = await window.electronAPI.browseModelFile();
+      if (picked.canceled) return;
+      await fetchJson(`${BACKEND_URL}/models/vision-path`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ [fieldName]: picked.filePath }),
+      });
+      await loadBrainAndVisionSettings();
+    } catch (e) {
+      if (visionModelStatusEl) visionModelStatusEl.textContent = `Failed: ${e.message}`;
+    }
+  }
+  visionModelBrowseBtnEl?.addEventListener('click', () => browseAndSetVisionField('modelPath'));
+  visionMmprojBrowseBtnEl?.addEventListener('click', () => browseAndSetVisionField('mmprojPath'));
+
+  visionModelClearBtnEl?.addEventListener('click', async () => {
+    try {
+      await fetchJson(`${BACKEND_URL}/models/vision-path`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ modelPath: '', mmprojPath: '' }),
+      });
+      await loadBrainAndVisionSettings();
+      if (visionModelStatusEl) visionModelStatusEl.textContent = 'Cleared -- back to auto-detect.';
+    } catch (e) {
+      if (visionModelStatusEl) visionModelStatusEl.textContent = `Failed: ${e.message}`;
+    }
+  });
+
+  loadBrainProviderPresets().then(loadBrainAndVisionSettings);
 
   refreshPresetList();
   setSelectedPresetId(selectedPresetId);

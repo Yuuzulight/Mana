@@ -63,6 +63,65 @@ test("findLlamaModel falls back to env.LLAMA_MODEL when the store has no overrid
   assert.equal(runtime.findLlamaModel("default"), makeFakeEnv().LLAMA_MODEL);
 });
 
+test("findVisionModel/findVisionMmproj prefer a modelSettingsStore override over env vars", () => {
+  const env = {
+    ...makeFakeEnv(),
+    LLAMA_VISION_MODEL: "C:\\models\\env-vision.gguf",
+    LLAMA_VISION_MMPROJ: "C:\\models\\env-vision-mmproj.gguf",
+  };
+  const fs = {
+    existsSync: (target) =>
+      [
+        "C:\\llama\\llama-server.exe",
+        "C:\\models\\mana.gguf",
+        "C:\\models\\env-vision.gguf",
+        "C:\\models\\env-vision-mmproj.gguf",
+        "C:\\models\\store-vision.gguf",
+        "C:\\models\\store-vision-mmproj.gguf",
+      ].includes(target),
+  };
+  const runtime = createLlamaServerRuntime({
+    env,
+    fs,
+    registerExitHandlers: false,
+    modelSettingsStore: {
+      getModelPath: () => null,
+      getVisionSettings: () => ({
+        modelPath: "C:\\models\\store-vision.gguf",
+        mmprojPath: "C:\\models\\store-vision-mmproj.gguf",
+      }),
+    },
+  });
+  assert.equal(runtime.findVisionModel(), "C:\\models\\store-vision.gguf");
+  assert.equal(
+    runtime.findVisionMmproj(),
+    "C:\\models\\store-vision-mmproj.gguf",
+  );
+});
+
+test("findVisionModel falls back to env.LLAMA_VISION_MODEL when the store has no override", () => {
+  const env = {
+    ...makeFakeEnv(),
+    LLAMA_VISION_MODEL: "C:\\models\\env-vision.gguf",
+  };
+  const fs = {
+    existsSync: (target) =>
+      target === "C:\\llama\\llama-server.exe" ||
+      target === "C:\\models\\mana.gguf" ||
+      target === "C:\\models\\env-vision.gguf",
+  };
+  const runtime = createLlamaServerRuntime({
+    env,
+    fs,
+    registerExitHandlers: false,
+    modelSettingsStore: {
+      getModelPath: () => null,
+      getVisionSettings: () => ({ modelPath: "", mmprojPath: "" }),
+    },
+  });
+  assert.equal(runtime.findVisionModel(), "C:\\models\\env-vision.gguf");
+});
+
 test("llama-server runtime is disabled by MANA_LLAMA_SERVER=0", () => {
   const runtime = createLlamaServerRuntime({
     env: { ...makeFakeEnv(), MANA_LLAMA_SERVER: "0" },

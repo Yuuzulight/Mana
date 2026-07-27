@@ -13,11 +13,23 @@ const {
 
 function fakeModelSettingsStore(initialPath = null) {
   let modelPath = initialPath;
+  let brain = { type: "local", baseUrl: "", apiKey: "", model: "" };
+  let vision = { modelPath: "", mmprojPath: "" };
   return {
     getModelPath: () => modelPath,
     setModelPath: (p) => {
       modelPath = p || null;
       return modelPath;
+    },
+    getBrainSettings: () => ({ ...brain }),
+    setBrainSettings: (partial = {}) => {
+      brain = { ...brain, ...partial };
+      return { ...brain };
+    },
+    getVisionSettings: () => ({ ...vision }),
+    setVisionSettings: (partial = {}) => {
+      vision = { ...vision, ...partial };
+      return { ...vision };
     },
   };
 }
@@ -99,6 +111,199 @@ test("model management warns when remote AI is enabled", () => {
 
   assert.equal(status.remoteAiEnabled, true);
   assert.match(status.remoteAiWarning, /Remote AI is enabled/i);
+});
+
+test("setBrainSettings switches to a local OpenAI-compatible endpoint without needing MANA_ALLOW_REMOTE_AI", () => {
+  const manager = createModelManagement({
+    env: {}, // no OPENAI_API_KEY, no MANA_ALLOW_REMOTE_AI
+    localGgufs: [],
+    modelSettingsStore: fakeModelSettingsStore(),
+  });
+
+  // Before switching: local brain, remote AI stays off.
+  assert.equal(manager.getModelStatus().remoteAiEnabled, false);
+
+  const status = manager.setBrainSettings({
+    type: "openai_compatible",
+    baseUrl: "http://127.0.0.1:11434/v1",
+    model: "llama3",
+  });
+
+  assert.equal(status.remoteAiEnabled, true);
+  assert.equal(status.brain.type, "openai_compatible");
+  assert.equal(status.brain.baseUrl, "http://127.0.0.1:11434/v1");
+  assert.equal(status.brain.model, "llama3");
+});
+
+test("getModelStatus never echoes back a stored apiKey", () => {
+  const manager = createModelManagement({
+    env: {},
+    localGgufs: [],
+    modelSettingsStore: fakeModelSettingsStore(),
+  });
+
+  const status = manager.setBrainSettings({
+    type: "openai_compatible",
+    baseUrl: "http://127.0.0.1:11434/v1",
+    apiKey: "sk-super-secret",
+  });
+
+  assert.equal(status.brain.apiKey, undefined);
+  assert.equal(status.brain.hasApiKey, true);
+  assert.equal(JSON.stringify(status).includes("sk-super-secret"), false);
+});
+
+test("setBrainSettings rejects an invalid type or baseUrl", () => {
+  const manager = createModelManagement({
+    env: {},
+    localGgufs: [],
+    modelSettingsStore: fakeModelSettingsStore(),
+  });
+
+  assert.throws(
+    () => manager.setBrainSettings({ type: "not-a-real-type" }),
+    /type must be/,
+  );
+  assert.throws(
+    () => manager.setBrainSettings({ baseUrl: "not a url" }),
+    /not a valid URL/,
+  );
+  assert.throws(
+    () => manager.setBrainSettings({ baseUrl: "file:///etc/passwd" }),
+    /must be http:\/\/ or https:\/\//,
+  );
+});
+
+test("getKnownBrainProviders lists presets without leaking anything key-shaped", () => {
+  const manager = createModelManagement({
+    env: {},
+    localGgufs: [],
+    modelSettingsStore: fakeModelSettingsStore(),
+  });
+
+  const providers = manager.getKnownBrainProviders();
+  const ollama = providers.find((p) => p.id === "ollama");
+  assert.equal(ollama.label, "Ollama (local)");
+  assert.equal(ollama.baseUrl, "http://127.0.0.1:11434/v1");
+  assert.equal(ollama.needsKey, false);
+  assert.equal(providers.some((p) => p.id === "custom"), true);
+});
+
+test("testBrainConnection reports ok with a model count on success", async () => {
+  const manager = createModelManagement({
+    env: {},
+    localGgufs: [],
+    modelSettingsStore: fakeModelSettingsStore(),
+  });
+  const originalFetch = global.fetch;
+  global.fetch = async (url, options) => {
+    assert.equal(String(url), "http://127.0.0.1:11434/v1/models");
+    assert.equal(options.headers.Authorization, undefined);
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({ data: [{ id: "llama3" }, { id: "qwen" }] }),
+    };
+  };
+  try {
+    const result = await manager.testBrainConnection({ baseUrl: "http://127.0.0.1:11434/v1" });
+    assert.equal(result.ok, true);
+    assert.equal(result.modelCount, 2);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test("testBrainConnection sends the API key and surfaces a non-ok status", async () => {
+  const manager = createModelManagement({
+    env: {},
+    localGgufs: [],
+    modelSettingsStore: fakeModelSettingsStore(),
+  });
+  const originalFetch = global.fetch;
+  global.fetch = async (url, options) => {
+    assert.equal(options.headers.Authorization, "Bearer sk-test");
+    return { ok: false, status: 401 };
+  };
+  try {
+    const result = await manager.testBrainConnection({
+      baseUrl: "https://api.openai.com/v1",
+      apiKey: "sk-test",
+    });
+    assert.equal(result.ok, false);
+    assert.equal(result.status, 401);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test("testBrainConnection rejects a missing or invalid baseUrl", async () => {
+  const manager = createModelManagement({
+    env: {},
+    localGgufs: [],
+    modelSettingsStore: fakeModelSettingsStore(),
+  });
+
+  assert.equal((await manager.testBrainConnection({})).ok, false);
+  assert.match(
+    (await manager.testBrainConnection({ baseUrl: "not a url" })).error,
+    /not a valid URL/,
+  );
+  assert.match(
+    (await manager.testBrainConnection({ baseUrl: "file:///etc/passwd" })).error,
+    /must be http:\/\/ or https:\/\//,
+  );
+});
+
+test("setVisionSettings persists a valid .gguf pair and rejects a missing file", () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mana-vision-test-"));
+  try {
+    const modelPath = path.join(tempDir, "qwen2.5-vl-3b.gguf");
+    const mmprojPath = path.join(tempDir, "qwen2.5-vl-mmproj.gguf");
+    fs.writeFileSync(modelPath, "GGUF" + "\0".repeat(12));
+    fs.writeFileSync(mmprojPath, "GGUF" + "\0".repeat(12));
+
+    const manager = createModelManagement({
+      env: {},
+      localGgufs: [],
+      modelSettingsStore: fakeModelSettingsStore(),
+    });
+
+    const status = manager.setVisionSettings({ modelPath, mmprojPath });
+    assert.equal(status.vision.modelPath, modelPath);
+    assert.equal(status.vision.mmprojPath, mmprojPath);
+
+    assert.throws(
+      () =>
+        manager.setVisionSettings({
+          modelPath: path.join(tempDir, "does-not-exist.gguf"),
+        }),
+      /File not found/,
+    );
+  } finally {
+    fs.rmSync(tempDir, { recursive: true });
+  }
+});
+
+test("setVisionSettings rejects a .gguf-named file that isn't actually a GGUF", () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mana-vision-magic-test-"));
+  try {
+    const fakePath = path.join(tempDir, "not-really-a-model.gguf");
+    fs.writeFileSync(fakePath, "this is not a gguf file");
+
+    const manager = createModelManagement({
+      env: {},
+      localGgufs: [],
+      modelSettingsStore: fakeModelSettingsStore(),
+    });
+
+    assert.throws(
+      () => manager.setVisionSettings({ modelPath: fakePath }),
+      /does not look like a valid GGUF/,
+    );
+  } finally {
+    fs.rmSync(tempDir, { recursive: true });
+  }
 });
 
 test("detectGpuVramMb parses nvidia-smi output and returns null on failure", () => {
@@ -198,7 +403,7 @@ test("model management surfaces and caches a hardware recommendation", () => {
 test("setModelPath persists a valid .gguf file and reports it in getModelStatus", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "mana-model-select-"));
   const picked = path.join(root, "custom.gguf");
-  fs.writeFileSync(picked, "model");
+  fs.writeFileSync(picked, "GGUF" + "\0".repeat(12));
   const store = fakeModelSettingsStore();
   const manager = createModelManagement({
     env: {},
@@ -231,6 +436,25 @@ test("setModelPath rejects non-gguf paths and missing files", () => {
     () => manager.setModelPath("C:\\does\\not\\exist.gguf"),
     /Model file not found/,
   );
+});
+
+test("setModelPath rejects a .gguf-named file that isn't actually a GGUF", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "mana-model-magic-"));
+  try {
+    const fakePath = path.join(root, "definitely-not-a-model.gguf");
+    fs.writeFileSync(fakePath, "not a gguf");
+    const manager = createModelManagement({
+      env: {},
+      localGgufs: [],
+      modelSettingsStore: fakeModelSettingsStore(),
+    });
+    assert.throws(
+      () => manager.setModelPath(fakePath),
+      /does not look like a valid GGUF/,
+    );
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("scanForModels finds .gguf files under the given roots and skips unreadable directories", () => {

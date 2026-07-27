@@ -92,7 +92,7 @@
   --mana-bubble: #f2f0eb;
 }
 *{box-sizing:border-box}
-html,body{height:100%;}
+html,body{height:100%;overflow-x:hidden;}
 body{
   margin:0; font-family: var(--font-mono); background:var(--bg-deep); color:var(--fg); font-size:13.5px; -webkit-font-smoothing:antialiased;
 }
@@ -253,6 +253,16 @@ select{font-family:inherit;color:var(--text)}
 .model-scan-results[hidden]{display:none}
 .model-scan-item{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:8px 10px;border:1px solid var(--border-soft);border-radius:6px;background:var(--panel-2);cursor:pointer;}
 .model-scan-item:hover{border-color:var(--accent-dim)}
+
+/* Brain provider + Vision model (Settings) */
+.brain-provider-toggle-row{display:flex;align-items:center;gap:8px;margin:8px 0;font-size:13px;}
+#brainProviderFields{display:flex;flex-direction:column;gap:6px;margin-top:8px;}
+.field-label{font-size:12px;color:var(--muted);margin-top:6px;}
+#brainProviderFields input[type="text"],
+#brainProviderFields input[type="password"],
+#brainProviderFields select,
+.model-actions input[type="text"]{flex:1;min-width:0;padding:8px 10px;border-radius:6px;border:1px solid var(--border-soft);background:var(--bg-deep);color:var(--text);font-family:inherit;font-size:13px;}
+#visionModelClearBtn{border:1px solid var(--border-soft);background:var(--panel-2);border-radius:6px;padding:6px 10px;font-size:12.5px;color:var(--text);align-self:flex-start;margin-top:4px;}
 .model-scan-item-info{display:flex;flex-direction:column;gap:2px;min-width:0;}
 .model-scan-item-info strong{font-size:12.5px;color:var(--text);font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 .model-scan-item-info span{font-size:11px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}

@@ -311,6 +311,8 @@ test("normalizeAvatarConfig fills in tuning-knob defaults for a swapped-in model
   ]);
   assert.equal(empty.idleTiltDeg, 16);
   assert.equal(empty.idleMaxPitchDeg, 8);
+  assert.equal(empty.idleGazeDeg, 6);
+  assert.equal(empty.idleGazePeriodMs, 9000);
 });
 
 test("normalizeAvatarConfig honors tuning-knob overrides, including explicit zero/empty", () => {
@@ -325,6 +327,8 @@ test("normalizeAvatarConfig honors tuning-knob overrides, including explicit zer
     browParams: ["CustomBrowUp"],
     idleTiltDeg: 0,
     idleMaxPitchDeg: 90,
+    idleGazeDeg: 0,
+    idleGazePeriodMs: 12000,
   });
 
   assert.equal(custom.mouthParam, "ParamMouthForm");
@@ -338,6 +342,39 @@ test("normalizeAvatarConfig honors tuning-knob overrides, including explicit zer
   // "missing" — must not fall back to the default.
   assert.equal(custom.idleTiltDeg, 0);
   assert.equal(custom.idleMaxPitchDeg, 90);
+  assert.equal(custom.idleGazeDeg, 0);
+  assert.equal(custom.idleGazePeriodMs, 12000);
+});
+
+test("computeIdleGazeOffset returns a deterministic, amplitude-scaled drift that opts out at amplitude 0", () => {
+  const { computeIdleGazeOffset } = require("../avatar/live2d-logic");
+
+  // Amplitude 0 -> no drift at all, regardless of time.
+  assert.deepEqual(computeIdleGazeOffset(4000, 0, 9000), {
+    angleX: 0,
+    eyeBallX: 0,
+    eyeBallY: 0,
+  });
+
+  // Same (nowMs, amplitude, period) must always produce the same offset --
+  // this drives per-frame rendering, so it has to be a pure function of its
+  // inputs rather than depending on hidden internal state.
+  const a = computeIdleGazeOffset(2500, 6, 9000);
+  const b = computeIdleGazeOffset(2500, 6, 9000);
+  assert.deepEqual(a, b);
+
+  // Doubling the amplitude roughly doubles the head-angle swing (eyeball
+  // offsets are separately clamped to [-1, 1], so only angleX scales cleanly
+  // at these magnitudes).
+  const small = computeIdleGazeOffset(2500, 6, 9000);
+  const big = computeIdleGazeOffset(2500, 12, 9000);
+  assert.ok(Math.abs(big.angleX) > Math.abs(small.angleX));
+
+  // Eyeball offsets never exceed their normal Cubism range regardless of a
+  // large configured amplitude.
+  const extreme = computeIdleGazeOffset(2500, 60, 9000);
+  assert.ok(extreme.eyeBallX >= -1 && extreme.eyeBallX <= 1);
+  assert.ok(extreme.eyeBallY >= -1 && extreme.eyeBallY <= 1);
 });
 
 test("fitModelToView scales to fit and anchors to the bottom", () => {

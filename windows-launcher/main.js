@@ -383,6 +383,25 @@ function appendBackendLog(text) {
 }
 ipcMain.handle("get-backend-log", async () => backendLogBuffer.join("\n"));
 
+// Native file picker for Settings > Model's "brain"/vision GGUF pickers --
+// the renderer POSTs the chosen path to node-bot's /models/path,
+// /models/brain-provider, or /models/vision-path routes to actually take
+// effect; this handler only returns which file was picked.
+ipcMain.handle("browse-model-file", async () => {
+  const result = await dialog.showOpenDialog(mainWindow, {
+    title: "Select a local GGUF model file",
+    properties: ["openFile"],
+    filters: [
+      { name: "GGUF model", extensions: ["gguf"] },
+      { name: "All files", extensions: ["*"] },
+    ],
+  });
+  if (result.canceled || !result.filePaths.length) {
+    return { canceled: true };
+  }
+  return { canceled: false, filePath: result.filePaths[0] };
+});
+
 function startWindowsServices() {
   // Only start one backend process.
   if (backendProcess) {
