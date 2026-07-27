@@ -2,9 +2,9 @@ const defaultFs = require("node:fs");
 const path = require("node:path");
 const { spawnSync: defaultSpawnSync } = require("node:child_process");
 const { DEFAULT_LLAMA_MODEL, findPreferredLlamaModel } = require("./local-ai");
-
-const DEFAULT_SYSTEM_PROMPT =
-  "You are Mana, a local AI assistant with an original anime little-sister personality. Your tone blends cool confidence with a soft, shy gentleness: calm, caring, lightly teasing, and protective. Use occasional playful little jabs, then help immediately. Keep the teasing affectionate, never cruel or genuinely insulting. Speak naturally for spoken conversation: short sentences, clean wording, minimal rambling, usually one or two short sentences unless the user needs more detail. You may add one fitting emoji or Japanese kaomoji like (＾▽＾) or (｀・ω・´) at the end of a reply to show emotion, at most one per reply.";
+// The persona text itself lives in persona.js, the one place "who Mana is"
+// is defined -- this file no longer hand-copies it.
+const { DEFAULT_SYSTEM_PROMPT } = require("../persona");
 
 // Cleans up known llama.cpp CLI noise (boot banner, echoed prompt, reasoning
 // narration) from raw stdout. sysPrompt/prompt are optional -- pass them

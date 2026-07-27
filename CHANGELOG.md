@@ -68,6 +68,12 @@ accounting.
   in both apps -- separate, independently-configurable knob from the
   existing sleepy idle-tilt (`idleGazeDeg`/`idleGazePeriodMs` in
   `mana-avatar.json`, 0 opts out).
+- **`persona.js`** (issue #143): Mana's identity now lives in exactly one
+  place (`MANA_PERSONA`), replacing four drifting hand-copies scattered
+  across `local-llama-runtime.js` and three separate per-mode prompts in
+  `server.js`. Adds a session-scoped temporary override
+  (`POST /persona/override` / `POST /persona/override/clear`) for a
+  one-off mode switch that reverts cleanly without editing the base file.
 
 ### Fixed
 - `runOpenAIReply` referenced removed `OPENAI_API_KEY`/`OPENAI_BASE_URL`/
