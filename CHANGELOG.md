@@ -105,6 +105,12 @@ accounting.
   failed recording attempt now writes a timestamped entry (error, audio
   backend, input device, app state) to a local `voice-crash.log` under
   the app's `userData` directory instead of console-only.
+- **Renderable artifacts** (issue #148, both apps): chat replies render as
+  sanitized markdown (`marked` + `DOMPurify`) instead of raw text; a large
+  or ```` ```html ```` fenced block opens in its own window instead of
+  dominating a chat bubble. **Sanitization could not be visually verified
+  this session** (Browser pane was unresponsive) -- worth an explicit
+  script-injection click-through before/soon after this ships.
 
 ### Fixed
 - Session-level conversation memory (`buildPromptMemory`) was computed on

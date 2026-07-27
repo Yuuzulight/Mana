@@ -1,0 +1,44 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Mana Artifact</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        background: #1b1a17;
+        color: #f0ece4;
+        font-family: -apple-system, "Segoe UI", sans-serif;
+      }
+
+      #artifact-container {
+        box-sizing: border-box;
+        height: 100%;
+        overflow: auto;
+        padding: 20px 28px;
+        line-height: 1.5;
+      }
+
+      #artifact-container pre {
+        background: #26241f;
+        border-radius: 6px;
+        padding: 12px;
+        overflow-x: auto;
+      }
+
+      #artifact-container code {
+        font-family: "Cascadia Code", Consolas, monospace;
+      }
+
+      #artifact-container a {
+        color: #e0b04c;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="artifact-container">Loading...</div>
+    <script src="renderer.js"></script>
+  </body>
+</html>

@@ -229,6 +229,25 @@ document.getElementById('themeToggle')?.addEventListener('click', (e) => {
     return currentSessionId;
   }
 
+  // Renders `text` as sanitized markdown into `div`, and -- if a big or
+  // ```html fenced block is found (issue #148) -- replaces it with a
+  // button that opens the full content in its own window instead of
+  // dominating the bubble.
+  function renderBubbleContent(div, text) {
+    const artifact = window.electronAPI.extractArtifact(text);
+    const displayText = artifact ? text.replace(artifact.matchedText, '').trim() : text;
+    div.innerHTML = window.electronAPI.renderMarkdownToSafeHtml(displayText);
+
+    if (artifact) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'chat-artifact-open';
+      button.textContent = `Open ${artifact.language} content in new window`;
+      button.addEventListener('click', () => window.electronAPI.openArtifact(artifact));
+      div.appendChild(button);
+    }
+  }
+
   // Appends one new bubble to the live end of the conversation (a message
   // just sent or just replied to) -- as opposed to prependTurns() below,
   // which inserts older history at the top during scroll-back.
@@ -236,7 +255,7 @@ document.getElementById('themeToggle')?.addEventListener('click', (e) => {
     if (!messagesEl || !text) return null;
     const div = document.createElement('div');
     div.className = 'message ' + (role === 'user' ? 'system' : 'assistant');
-    div.textContent = text;
+    renderBubbleContent(div, text);
     messagesEl.appendChild(div);
     messagesEl.scrollTop = messagesEl.scrollHeight;
     return div;
@@ -249,13 +268,13 @@ document.getElementById('themeToggle')?.addEventListener('click', (e) => {
       if (turn.user) {
         const u = document.createElement('div');
         u.className = 'message system';
-        u.textContent = turn.user;
+        renderBubbleContent(u, turn.user);
         frag.appendChild(u);
       }
       if (turn.assistant) {
         const a = document.createElement('div');
         a.className = 'message assistant';
-        a.textContent = turn.assistant;
+        renderBubbleContent(a, turn.assistant);
         frag.appendChild(a);
       }
     }

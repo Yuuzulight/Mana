@@ -377,6 +377,44 @@ ipcMain.handle('browse-model-file', async () => {
   return { canceled: false, filePath: result.filePaths[0] };
 });
 
+// Standalone view for a renderable artifact (issue #148). Sandboxed like
+// mainWindow (contextIsolation on, its own preload) rather than the
+// nodeIntegration:true shortcut windows-launcher's equivalent window uses
+// -- this app already moved away from that (issue #122). Reused across
+// multiple "open in new window" clicks rather than spawning one per
+// artifact.
+let artifactWindow = null;
+ipcMain.on('open-artifact', (event, artifact) => {
+  if (!artifactWindow || artifactWindow.isDestroyed()) {
+    artifactWindow = new BrowserWindow({
+      width: 900,
+      height: 700,
+      title: 'Mana Artifact',
+      webPreferences: {
+        preload: path.join(__dirname, 'artifact', 'preload.js'),
+        nodeIntegration: false,
+        contextIsolation: true,
+      },
+    });
+    artifactWindow.loadFile(path.join(__dirname, 'artifact', 'index.html'));
+    artifactWindow.on('closed', () => {
+      artifactWindow = null;
+    });
+  }
+
+  const sendArtifact = () => {
+    if (artifactWindow && !artifactWindow.isDestroyed()) {
+      artifactWindow.webContents.send('artifact:show', artifact);
+      artifactWindow.focus();
+    }
+  };
+  if (artifactWindow.webContents.isLoadingMainFrame()) {
+    artifactWindow.webContents.once('did-finish-load', sendArtifact);
+  } else {
+    sendArtifact();
+  }
+});
+
 ipcMain.handle('open-logs', async () => {
   try{
     const logPath = logFile?.filePath;
