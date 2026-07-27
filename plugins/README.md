@@ -37,10 +37,13 @@ read, tested, and reasoned about without the rest of the backend.
   live page via a local Chromium-family browser (Edge by default on
   Windows) -- for driving a specific site interaction, not general
   search-and-extract. **Off by default.**
+- [`telegram-bridge`](telegram-bridge/): message Mana remotely from a phone
+  over Telegram (long-polling, DM-only), gated by a pairing-code approval so
+  a stranger can't reach her. **Off by default.**
 
-All eight are always loaded (no separate install step); `cron-scheduler`,
-`image-generation`, and `browser-automation` are disabled by default, the
-rest are enabled by default.
+All nine are always loaded (no separate install step); `cron-scheduler`,
+`image-generation`, `browser-automation`, and `telegram-bridge` are disabled
+by default, the rest are enabled by default.
 
 ### A different kind of plugin: `obsidian-plugin`
 
