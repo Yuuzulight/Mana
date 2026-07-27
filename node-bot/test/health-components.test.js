@@ -41,6 +41,7 @@ test("health includes component readiness while preserving top-level fields", as
       "stockMarket",
       "telegramBridge",
       "tts",
+      "videoWatch",
       "vtubeStudio",
       "webAccess",
       "whisper",
