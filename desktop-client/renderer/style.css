@@ -145,6 +145,14 @@ select{font-family:inherit;color:var(--text)}
 .message:empty{display:none}
 .message.assistant{align-self:flex-start;background:var(--mana-bubble)}
 .message.system{align-self:flex-end;background:var(--user-bubble)}
+/* Content is rendered markdown->HTML now (issue #148) -- paragraph/list
+   tags already provide spacing, so zero the outer margins so a lone
+   paragraph doesn't add extra padding inside the bubble. */
+.message>*:first-child{margin-top:0}
+.message>*:last-child{margin-bottom:0}
+.message pre{background:rgba(0,0,0,0.2);border-radius:8px;padding:8px 10px;overflow-x:auto}
+.message code{font-family:"Cascadia Code",Consolas,monospace;font-size:13px}
+.chat-artifact-open{display:block;margin-top:8px;font-size:12px;padding:4px 10px;border-radius:8px}
 
 /* Shown until the first message bubble exists; hidden via :has() rather
    than a JS state flag, so appendMessage() in renderer.js doesn't need to

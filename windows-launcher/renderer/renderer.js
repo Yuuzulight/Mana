@@ -59,6 +59,9 @@ const {
 } = require("./voice-endpointing");
 const { detectReplyEmotion } = require("./reply-emotion");
 const { isLikelyWhisperHallucination } = require("./speech-filters");
+const { extractArtifact } = require("./artifact-detector");
+const { createMarkdownRenderer } = require("./markdown-render");
+const renderMarkdownToSafeHtml = createMarkdownRenderer();
 const {
   formatCompareProfileLabel,
   pickDefaultCompareProfiles,
@@ -267,7 +270,24 @@ function appendChatMessage(role, text) {
   }
   const bubble = document.createElement("div");
   bubble.className = `chat-message ${role === "user" ? "chat-user" : "chat-mana"}`;
-  bubble.textContent = text;
+
+  // A big or ```html fenced block gets pulled out of the bubble into its
+  // own window (issue #148) instead of dominating the chat log.
+  const artifact = extractArtifact(text);
+  const displayText = artifact ? text.replace(artifact.matchedText, "").trim() : text;
+  bubble.innerHTML = renderMarkdownToSafeHtml(displayText);
+
+  if (artifact) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "chat-artifact-open";
+    button.textContent = `Open ${artifact.language} content in new window`;
+    button.addEventListener("click", () => {
+      ipcRenderer.send("open-artifact", artifact);
+    });
+    bubble.appendChild(button);
+  }
+
   chatLogEl.appendChild(bubble);
   chatLogEl.scrollTop = chatLogEl.scrollHeight;
 }
