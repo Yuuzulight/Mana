@@ -122,6 +122,11 @@ module.exports = {
   description:
     "Navigate/click/type/read a live page via a local Chromium-family browser (Edge by default on Windows) -- for driving a specific site interaction, not general search-and-extract (see web-access.js for that). Local-only routes.",
   registerRoutes: registerBrowserAutomationRoutes,
+  // Issue #188: exported so the tool-calling adapter
+  // (browser-automation-tool-source.js) shares this exact singleton
+  // session -- a tool-calling-initiated action and an HTTP-route-initiated
+  // one operate on the same live browser tab, not two Chromium instances.
+  getSession,
   getHealth: (deps = {}) => {
     const env = deps.env || process.env;
     const executablePath = resolveExecutablePath(env);

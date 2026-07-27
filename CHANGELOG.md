@@ -53,6 +53,15 @@ accounting.
   they'd already been nested there since the issue #138 UI overhaul.
 
 ### Added
+- **Unified tool-execution audit/approval layer** (issue #188): every tool
+  call Mana makes during a reply -- local `read_file`, browser-automation,
+  or a remote MCP tool (#169) -- now shares one audit trail
+  (`GET /tool-calls/recent`, JSON-lines on disk) regardless of source.
+  `browser-automation`'s navigate/click/type/snapshot are now also
+  available as tool-calling actions (not just HTTP routes), gated behind a
+  one-time approval the first time they're used as a tool -- after that,
+  calls execute immediately, same as any other already-trusted approval-
+  gate action.
 - **Outbound MCP client** (issue #169): Mana can now connect *outward* to
   third-party MCP servers and use their tools, not just expose her own
   capabilities as a server (`mcp-server.js`). New `mcp-client-registry.js`
