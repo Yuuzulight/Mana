@@ -97,6 +97,14 @@ accounting.
   up to `maxConcurrency` (default 3) sources at once instead of strictly
   one at a time, with citation numbering staying stable regardless of
   which read finishes first.
+- **Whisper hallucination filter** (issue #147, `windows-launcher`): known
+  short "phantom" transcriptions ("thank you", "please subscribe",
+  "subtitles by", ...) are filtered when the recorded clip was very short
+  -- a real utterance with the same wording, spoken normally, is trusted.
+- **Voice-pipeline crash logging** (issue #147, `windows-launcher`): a
+  failed recording attempt now writes a timestamped entry (error, audio
+  backend, input device, app state) to a local `voice-crash.log` under
+  the app's `userData` directory instead of console-only.
 
 ### Fixed
 - Session-level conversation memory (`buildPromptMemory`) was computed on
