@@ -752,7 +752,13 @@ function createLlamaServerRuntime(options = {}) {
 
         let resultText;
         try {
-          const result = toolPolicy.executeTool(name, args);
+          // Issue #169: await, not a bare call -- an MCP-sourced tool's
+          // executeTool() is inherently async (network/child-process I/O),
+          // unlike the local read_file tool this loop originally only ever
+          // saw. Awaiting a plain (non-Promise) return value is a no-op, so
+          // this stays exactly backward-compatible with tool-policy.js's
+          // synchronous executeTool().
+          const result = await toolPolicy.executeTool(name, args);
           resultText = String(result);
           executedToolCalls.push({ name, args, ok: true });
           consecutiveToolErrors = 0;
