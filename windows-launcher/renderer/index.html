@@ -1448,6 +1448,22 @@
               </div>
             </div>
 
+            <div id="connectionPanel">
+              <strong>Connection</strong>
+              <div id="connectionUrlRow">
+                <input
+                  id="backendUrlInput"
+                  type="text"
+                  placeholder="http://localhost:5005"
+                />
+                <button id="backendUrlSaveBtn">Save</button>
+              </div>
+              <p class="sidebar-note">
+                Point this at a remote node-bot instead of a co-located one.
+                Takes effect after restarting Mana.
+              </p>
+            </div>
+
             <div id="pluginsPanel">
               <div id="pluginsHeader">
                 <strong>Plugins</strong>
@@ -1523,6 +1539,7 @@
         ort.env.wasm.numThreads = 1;
       }
     </script>
+    <script src="backend-config.js"></script>
     <script src="renderer.js"></script>
     <script src="session-sidebar.js"></script>
     <script src="sidebar-nav.js"></script>
