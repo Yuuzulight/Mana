@@ -5,7 +5,7 @@
 // not modules) so it can call appendChatMessage/chatLogEl directly and
 // exposes ensureSessionId()/refreshSessionList() back to renderer.js.
 
-const SESSIONS_API_BASE = "http://localhost:5005";
+const SESSIONS_API_BASE = BACKEND_BASE_URL;
 const SESSION_STORAGE_KEY = "manaCurrentSessionId";
 
 const sessionListEl = document.getElementById("sessionList");

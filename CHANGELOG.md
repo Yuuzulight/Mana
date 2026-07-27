@@ -53,6 +53,13 @@ accounting.
   they'd already been nested there since the issue #138 UI overhaul.
 
 ### Added
+- **Configurable backend URL** (issue #190, `windows-launcher`): the
+  hardcoded `http://localhost:5005` (32 occurrences across `main.js` and
+  three renderer files) is now a persisted setting (Settings >
+  Connection) -- the first step toward pointing the Electron client at a
+  remote `node-bot` instead of only a co-located one. `main.js` no longer
+  spawns a local `node-bot` child process when the configured backend is
+  remote. Takes effect on next launch, not live.
 - **"Use Remote AI" brain provider**: a toggle under Model Selection (both
   apps) opening a provider dropdown (OpenAI/OpenRouter/Groq/Ollama/LM
   Studio/Custom, sourced from `GET /models/brain-providers` so the two
