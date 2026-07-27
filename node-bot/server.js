@@ -68,6 +68,7 @@ const { createVTubeRuntime } = require("./vtube-runtime");
 	  buildCapabilityHealth,
 	  contributePluginPromptContext,
 	  registerCapabilities,
+	  isPluginEnabled,
 	} = require("./capabilities/registry");
 	const dirScannerCapability = require("./capabilities/dir-scanner-capability");
 const {
@@ -120,6 +121,12 @@ const { createAuthStore } = require("./auth-store");
 const { createToolPolicy } = require("./ai/tool-policy");
 const { createMcpClientRegistry, buildToolPolicyWithMcp } = require("./mcp-client-registry");
 const { mcpClientCapability } = require("./capabilities/mcp-client-capability");
+const { createToolCallLog, wrapWithToolCallLog } = require("./tool-call-log");
+const { toolCallLogCapability } = require("./capabilities/tool-call-log-capability");
+const {
+  createBrowserAutomationToolSource,
+  buildToolPolicyWithBrowserAutomation,
+} = require("../plugins/browser-automation/browser-automation-tool-source");
 const {
   createEditorIntegrations,
   createZedIntegration,
@@ -503,6 +510,19 @@ const toolPolicy = createToolPolicy({});
 // tools stay a plain synchronous array. New server registrations route
 // through the same approvalGate every other gated action uses.
 const mcpClientRegistry = createMcpClientRegistry({ approvalGate });
+
+// Issue #188: the shared audit/trace log every tool call gets routed
+// through in replyMaybeWithTools below, regardless of source.
+const toolCallLog = createToolCallLog({});
+
+// Issue #188: browser-automation's navigate/click/type/snapshot as
+// tool-calling schemas, sharing the plugin's own singleton browser session
+// (see plugins/browser-automation/index.js's exported getSession) rather
+// than opening a second Chromium instance.
+const browserAutomationToolSource = createBrowserAutomationToolSource({
+  getSession: browserAutomationPlugin.getSession,
+  approvalGate,
+});
 
 // Background memory block that can be refreshed periodically from ACP session files.
 let BACKGROUND_MEMORY_BLOCK = "";
@@ -1636,6 +1656,7 @@ function registerRoutes(app, upload, deps = {}) {
     skillsCapability,
     approvalGateCapability,
     mcpClientCapability,
+    toolCallLogCapability,
   ];
   const activePresetsStore = deps.presetsStore || presetsStore;
   const activePluginSettingsStore = deps.pluginSettingsStore || pluginSettingsStore;
@@ -1647,6 +1668,8 @@ function registerRoutes(app, upload, deps = {}) {
   const activeApprovalGate = deps.approvalGate || approvalGate;
   activeApprovalGate.registerExecutor("skill-write", (payload) => activeSkillsStore.createSkill(payload));
   const activeMcpClientRegistry = deps.mcpClientRegistry || mcpClientRegistry;
+  const activeToolCallLog = deps.toolCallLog || toolCallLog;
+  const activeBrowserAutomationToolSource = deps.browserAutomationToolSource || browserAutomationToolSource;
   const capabilityContext = {
     acpMemoryStore: deps.acpMemoryStore || acpMemoryStore,
     // Only cron-scheduler's agent-job executor uses this today -- every
@@ -1658,6 +1681,7 @@ function registerRoutes(app, upload, deps = {}) {
     isLocalRestartRequest: deps.isLocalRestartRequest || isLocalRestartRequest,
     approvalGate: activeApprovalGate,
     mcpClientRegistry: activeMcpClientRegistry,
+    toolCallLog: deps.toolCallLog || toolCallLog,
     // Only video-watch's route uses this today -- everywhere else that
     // needs a vision reply builds its own scoped call (see the
     // recordChatTurn/vision block below).
@@ -3521,7 +3545,20 @@ function registerRoutes(app, upload, deps = {}) {
           // discovery is async and the registered-server list is small
           // enough that re-listing costs little once a connection is
           // already established (see mcp-client-registry.js).
-          const mergedToolPolicy = await buildToolPolicyWithMcp(activeToolPolicy, activeMcpClientRegistry);
+          let mergedToolPolicy = await buildToolPolicyWithMcp(activeToolPolicy, activeMcpClientRegistry);
+          // Issue #188: only offered when the plugin is actually enabled
+          // (Settings > Plugins) -- same gate every other browser-automation
+          // entry point (its own HTTP routes, GET /plugins) already respects.
+          if (isPluginEnabled(browserAutomationPlugin, activePluginSettingsStore)) {
+            mergedToolPolicy = await buildToolPolicyWithBrowserAutomation(
+              mergedToolPolicy,
+              activeBrowserAutomationToolSource,
+            );
+          }
+          // Issue #188: applied last so it catches every tool call from
+          // every source (local read_file, browser-automation, MCP) in one
+          // shared audit/trace log.
+          mergedToolPolicy = wrapWithToolCallLog(mergedToolPolicy, activeToolCallLog);
           const toolResult = await runToolAwareReply(
             promptText,
             mergedToolPolicy,
