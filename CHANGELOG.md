@@ -412,6 +412,17 @@ accounting.
   disclosed when this plugin first shipped.
 
 ### Docs
+- **Issue #220 investigation**: benchmarked two GitHub-sourced candidates
+  found via a broad survey for Mana improvements. `--cache-ram` (llama-
+  server's prompt cache): already active by default on Mana's installed
+  build -- real benchmark confirmed a ~94% prompt-processing time cut on
+  repeated system prompts, exactly matching Mana's actual usage pattern,
+  with zero configuration needed. `sqlite-vec`: the assumed `better-
+  sqlite3` pairing fails to install on this dev machine (needs a native
+  compile, no usable VS C++ toolchain); found and verified a working
+  alternative via Node 22's built-in `node:sqlite` + `loadExtension()`
+  instead, but a real benchmark showed no meaningful speed difference at
+  Mana's actual retriever scale (2,000 entries) -- not adopted.
 - **Issue #200 investigation**: compared `langchain-ai/context_engineering`'s
   compression notebook against Mana's actual memory/retriever code.
   Correction to the issue's own premise: `acp-memory-store.js` already has
