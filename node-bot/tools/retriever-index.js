@@ -357,8 +357,18 @@ async function computeEmbeddings(inputs) {
     });
     if (resp.ok) {
       const j = await resp.json();
-      if (j && Array.isArray(j.embeddings))
-        return j.embeddings.map((arr) => (Array.isArray(arr) ? arr : null));
+      // Issue #195: local_embedder.py wraps its response as
+      // {embeddings: [[float,...],...]}, but huggingface/text-embeddings-
+      // inference's /embed (a real candidate replacement) returns a bare
+      // [[float,...],...] array instead -- accept either shape rather than
+      // silently returning nulls against a compatible-but-differently-
+      // shaped embedder.
+      const embeddings = Array.isArray(j)
+        ? j
+        : Array.isArray(j?.embeddings)
+          ? j.embeddings
+          : null;
+      if (embeddings) return embeddings.map((arr) => (Array.isArray(arr) ? arr : null));
     }
   } catch (e) {
     // local embedder not available
