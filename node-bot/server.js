@@ -95,6 +95,7 @@ const {
   RESEARCH_SYSTEM_PROMPT,
   SUB_QUERY_SYSTEM_PROMPT,
   REFLECT_SYSTEM_PROMPT,
+  COMPRESS_SYSTEM_PROMPT,
 } = require("./tools/deep-research");
 const { fetchPage, searchWeb, wikiLookup } = require("./tools/web-access");
 const { readGgufMetadata } = require("./tools/gguf-metadata");
@@ -1717,6 +1718,13 @@ function registerRoutes(app, upload, deps = {}) {
     reflect:
       deps.reflect ||
       ((prompt) => runLocalLlamaReply(prompt, 100, "quality", REFLECT_SYSTEM_PROMPT)),
+    // Issue #208: same bound-completion pattern and "quality" profile as
+    // decompose/reflect above -- condensing up to maxSources excerpts down
+    // to what's relevant needs more headroom than reflect's one-line
+    // decision, hence the larger token budget.
+    compress:
+      deps.compress ||
+      ((prompt) => runLocalLlamaReply(prompt, 1200, "quality", COMPRESS_SYSTEM_PROMPT)),
     // Same bound-completion pattern as synthesize/decompose above, just with
     // job-applications' own system prompt (issue #116).
     synthesizeJobMatch:

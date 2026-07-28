@@ -53,6 +53,14 @@ accounting.
   they'd already been nested there since the issue #138 UI overhaul.
 
 ### Added
+- **Compress Deep Research excerpts instead of flat char-truncation**
+  (issue #208, follow-up from #200): a new opt-in `compress` step condenses
+  each newly-read source's excerpt down to what's relevant to the research
+  question, one batched LLM call per search cycle covering every source
+  read in that cycle rather than one call per source. Falls back to the
+  original (flat-truncated) excerpt if `compress` isn't provided, doesn't
+  cover a given source, or the call itself fails -- a research pass never
+  breaks over a compression failure.
 - **Explicit hot-path memory tool + update policies** (issue #198): a new
   `memory__remember` tool-calling action (`{key, text?, action?}`) lets
   Mana explicitly save, patch, or forget a specific fact mid-reply --
