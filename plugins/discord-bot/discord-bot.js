@@ -133,9 +133,23 @@ function createDiscordBridge(options = {}) {
 // fake message object.
 const DISCORD_DM_CHANNEL_TYPE = 1;
 
-async function handleDiscordMessage({ message, bridge }) {
+// Issue #187: "!join <voiceChannelId>" / "!leave" are the only two special
+// commands, intercepted before the normal text-reply pipeline -- and only
+// for already-approved channels, since joining a voice channel is an
+// action within an already-trusted DM relationship, not a new trust
+// decision (the existing pairing *is* the trust boundary here, same as it
+// already is for text). voiceCommands is optional and kept out of this
+// file's own dependency surface (no @discordjs/voice import here) so this
+// stays testable with a plain fake message object, same as the rest of
+// this module -- index.js wires the real handler.
+async function handleDiscordMessage({ message, bridge, voiceCommands }) {
   if (!message || message.author?.bot) return;
   if (message.channel?.type !== DISCORD_DM_CHANNEL_TYPE) return;
+
+  if (voiceCommands && bridge.isApproved(message.channel.id)) {
+    const handled = await voiceCommands.tryHandle(message);
+    if (handled) return;
+  }
 
   const reply = await bridge.handleIncomingMessage({
     channelId: message.channel.id,
