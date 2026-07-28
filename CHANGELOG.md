@@ -53,6 +53,24 @@ accounting.
   they'd already been nested there since the issue #138 UI overhaul.
 
 ### Added
+- **Discord voice channel support** (issue #187, `discord-bot` plugin): send
+  `!join <channelId>` in an already-paired DM and Mana joins that voice
+  channel, transcribes each speaker with Whisper (a new async,
+  FIFO-serialized `whisper-queue.js`, since the existing `/transcribe`
+  route's `runWhisper` is blocking and unsafe to share), replies through the
+  same pipeline DM text already uses, and speaks the reply back with full
+  TTS (provider switching, VTube reactions, captions -- newly exposed via
+  `capabilityContext.synthesizeReply`). Barge-in comes free from Discord's
+  own speaking-start signal (stop in-progress playback the moment a new
+  speaker starts) rather than needing new detection logic. Also corrects a
+  wrong assumption in the issue's own original scope: `@discordjs/voice`
+  already provides silence-based endpointing
+  (`EndBehaviorType.AfterSilence`), so no custom VAD needed to be built.
+  Along the way, found and fixed an npm optional-peer-dependency trap where
+  `prism-media` silently pulled in `@discordjs/opus`'s unpatched critical
+  CVE chain even after switching to `opusscript`; `.npmrc`'s `omit=optional`
+  plus a fresh lockfile closed it (`npm audit --omit=dev`: 0
+  vulnerabilities).
 - **Unified tool-execution audit/approval layer** (issue #188): every tool
   call Mana makes during a reply -- local `read_file`, browser-automation,
   or a remote MCP tool (#169) -- now shares one audit trail

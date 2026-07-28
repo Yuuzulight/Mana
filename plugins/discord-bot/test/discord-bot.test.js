@@ -128,3 +128,52 @@ test("handleDiscordMessage routes an approved DM through the real reply pipeline
   await handleDiscordMessage({ message, bridge });
   assert.deepEqual(sent, ["pong"]);
 });
+
+function fakeVoiceCommands(handledResult) {
+  const tryHandleCalls = [];
+  return {
+    tryHandleCalls,
+    tryHandle: async (message) => {
+      tryHandleCalls.push(message);
+      return handledResult;
+    },
+  };
+}
+
+test("handleDiscordMessage routes voice commands to voiceCommands.tryHandle only for approved channels", async () => {
+  const dataDir = createTempDir();
+  const bridge = createDiscordBridge({ dataDir, replyFn: async () => "pong" });
+  const code = (await bridge.handleIncomingMessage({ channelId: "chan-1", text: "hi" })).match(/: (\w{6})$/)[1];
+  bridge.approvePairing(code);
+
+  const voiceCommands = fakeVoiceCommands(true);
+  const { message, sent } = fakeMessage({ content: "!join 123456789012345" });
+  await handleDiscordMessage({ message, bridge, voiceCommands });
+
+  assert.equal(voiceCommands.tryHandleCalls.length, 1);
+  assert.deepEqual(sent, []); // voiceCommands handled it and sent its own reply -- bridge never ran
+});
+
+test("handleDiscordMessage never calls voiceCommands.tryHandle for an unapproved channel (pairing can't be bypassed)", async () => {
+  const bridge = createDiscordBridge({ dataDir: createTempDir() });
+  const voiceCommands = fakeVoiceCommands(true);
+  const { message, sent } = fakeMessage({ content: "!join 123456789012345" });
+  await handleDiscordMessage({ message, bridge, voiceCommands });
+
+  assert.equal(voiceCommands.tryHandleCalls.length, 0);
+  assert.match(sent[0], /This chat isn't paired/);
+});
+
+test("handleDiscordMessage falls through to the normal reply pipeline when voiceCommands.tryHandle returns false", async () => {
+  const dataDir = createTempDir();
+  const bridge = createDiscordBridge({ dataDir, replyFn: async () => "pong" });
+  const code = (await bridge.handleIncomingMessage({ channelId: "chan-1", text: "hi" })).match(/: (\w{6})$/)[1];
+  bridge.approvePairing(code);
+
+  const voiceCommands = fakeVoiceCommands(false);
+  const { message, sent } = fakeMessage({ content: "not a voice command" });
+  await handleDiscordMessage({ message, bridge, voiceCommands });
+
+  assert.equal(voiceCommands.tryHandleCalls.length, 1);
+  assert.deepEqual(sent, ["pong"]);
+});
