@@ -44,12 +44,20 @@ read, tested, and reasoned about without the rest of the backend.
   video, pull captions or fall back to local Whisper transcription,
   extract a duration-scaled set of frames, and answer questions grounded
   in what's shown/said -- no external API key required. **Off by default.**
+- [`context-push`](context-push/): lets Mana reference the page or video
+  you're currently looking at, fed by the companion
+  [`context-push-extension`](context-push-extension/) browser extension.
+  Ephemeral only (2-minute expiry, never written to memory), loopback-only
+  routes, and only contributes to a reply when the message actually
+  references "this page"/"this video". **Off by default**, and needs the
+  separate browser extension installed to do anything.
 
-All ten are always loaded (no separate install step); `cron-scheduler`,
-`image-generation`, `browser-automation`, `telegram-bridge`, and
-`video-watch` are disabled by default, the rest are enabled by default.
+All eleven are always loaded (no separate install step); `cron-scheduler`,
+`image-generation`, `browser-automation`, `telegram-bridge`,
+`video-watch`, and `context-push` are disabled by default, the rest are
+enabled by default.
 
-### A different kind of plugin: `obsidian-plugin`
+### A different kind of plugin: `obsidian-plugin` and `context-push-extension`
 
 [`obsidian-plugin`](obsidian-plugin/) also lives here for repo tidiness,
 but it isn't a node-bot capability -- it's a real Obsidian.md plugin
@@ -57,7 +65,15 @@ but it isn't a node-bot capability -- it's a real Obsidian.md plugin
 `manifest.json`) that pulls Mana's memory into a vault as linked notes. It
 does **not** follow the plugin shape below, isn't in `node-bot/server.js`'s
 `capabilities` array, and won't show up in `GET /plugins`. See its own
-[README](obsidian-plugin/README.md) for installation. FFXIV/stock-market/
+[README](obsidian-plugin/README.md) for installation.
+
+Likewise, [`context-push-extension`](context-push-extension/) is a real
+Manifest V3 browser extension (plain JS, loaded by Chrome/Edge itself via
+its own `manifest.json`, "Load unpacked") -- not a node-bot capability
+either. It's the companion to the `context-push` plugin above; see its own
+[README](context-push-extension/README.md) for installation.
+
+FFXIV/stock-market/
 job-search-adzuna are effectively opt-in since their routes/prompt-context
 return nothing useful without network access (FFXIV) or an API key
 (`ALPHA_VANTAGE_API_KEY` for stock market, `ADZUNA_APP_ID`/`ADZUNA_APP_KEY`
