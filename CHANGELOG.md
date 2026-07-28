@@ -371,6 +371,24 @@ accounting.
   blank or synthetic fallback.
 
 ### Fixed
+- **Loading screen stuck forever, whole renderer script silently dead**
+  (issue #226): `backend-config.js` and `renderer.js` both declared
+  `const { ipcRenderer } = require("electron");` at top level -- since
+  `index.html` loads them (plus `session-sidebar.js`/`sidebar-nav.js`) as
+  sibling classic `<script>` tags sharing one lexical scope (deliberately,
+  so those files can reference things like `appendChatMessage` as bare
+  identifiers), the duplicate threw `SyntaxError: Identifier 'ipcRenderer'
+  has already been declared` and killed the entire `renderer.js` script
+  before a single line ran -- including the loading screen's own
+  `startup-progress`/`startup-complete` listeners. The main process's side
+  of startup (spawning services, resizing the window) was unaffected, which
+  is why the window still grew to full size while the overlay stayed stuck
+  on top of it. Found live while smoke-testing issue #219's barge-in
+  default-on change, unrelated to barge-in itself. Fixed by removing
+  `renderer.js`'s duplicate (`backend-config.js` loads first, so its
+  binding is already in scope); added a regression test
+  (`renderer-script-scope.test.js`) that scans every sibling script
+  `index.html` actually loads for duplicate top-level `const`/`let` names.
 - **Deep Research/retriever excerpt compression (issue #211) had zero
   effect in the common case** (issue #217, follow-up from #211/#208): the
   coding-mode repo-retrieval block in `server.js` has a vector-store-direct

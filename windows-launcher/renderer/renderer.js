@@ -42,7 +42,13 @@ const presetNameInputEl = document.getElementById("presetNameInput");
 const presetInstructionsInputEl = document.getElementById("presetInstructionsInput");
 const presetSaveBtnEl = document.getElementById("presetSaveBtn");
 const presetCancelBtnEl = document.getElementById("presetCancelBtn");
-const { ipcRenderer } = require("electron");
+// ipcRenderer comes from backend-config.js's top-level `const { ipcRenderer }`
+// -- index.html loads these as sibling classic <script> tags (not modules),
+// which share one lexical scope, and backend-config.js loads first. A second
+// `const` of the same name here throws "Identifier has already been
+// declared" and silently kills this entire script before any of it runs
+// (including the loading-screen listeners below) -- a real, pre-existing bug
+// found while live-testing issue #219, unrelated to barge-in itself.
 const { formatDoctorPanel } = require("./doctor-panel");
 const {
   DEFAULT_VISION_HOTKEY_PROMPT,
