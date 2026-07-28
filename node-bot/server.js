@@ -1682,6 +1682,11 @@ function registerRoutes(app, upload, deps = {}) {
     approvalGate: activeApprovalGate,
     mcpClientRegistry: activeMcpClientRegistry,
     toolCallLog: deps.toolCallLog || toolCallLog,
+    // Issue #187: discord-bot's voice session needs the same full
+    // "speak this reply" pipeline (gaming-aware TTS provider switching,
+    // VTube reactions, captions) every other surface already uses, not a
+    // bare ttsRuntime.synthesizeReply call.
+    synthesizeReply: deps.synthesizeReply || synthesizeReply,
     // Only video-watch's route uses this today -- everywhere else that
     // needs a vision reply builds its own scoped call (see the
     // recordChatTurn/vision block below).
