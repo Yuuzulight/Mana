@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Mana Passive Web Context -- Before you start</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 560px; margin: 48px auto; padding: 0 16px; line-height: 1.5; color: #1f2937; }
+  h1 { font-size: 1.3rem; }
+  .indicator { display: inline-flex; align-items: center; gap: 8px; padding: 4px 10px; border-radius: 999px; background: #dcfce7; color: #166534; font-weight: 600; font-size: 0.9rem; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; background: #22c55e; }
+  ul { padding-left: 20px; }
+  button { margin-top: 24px; padding: 10px 20px; font-size: 1rem; border: none; border-radius: 6px; background: #22c55e; color: white; cursor: pointer; }
+  button:hover { background: #16a34a; }
+</style>
+</head>
+<body>
+  <h1>Before Mana starts reading your pages</h1>
+  <p>This extension lets Mana see the page (or video captions) you're currently looking at, so she can answer things like "what does this say" or "what am I watching" -- only when you actually ask something that sounds like it's about the current page.</p>
+  <p><strong>What this means:</strong></p>
+  <ul>
+    <li>Once enabled, it reads page text continuously, not just when you ask -- like a webcam, always-on but always visible when it's active.</li>
+    <li>Whenever it's active, the toolbar icon shows a clear indicator: <span class="indicator"><span class="dot"></span>green = reading</span> -- grey means off.</li>
+    <li>A single click on the toolbar icon turns it off completely, and it stays off until you click it again -- even across browser restarts.</li>
+    <li>Nothing is stored permanently -- Mana only ever holds the most recent page for 2 minutes, and it's never written to her memory.</li>
+    <li>Bilibili isn't supported, and this only reads visible caption text on YouTube, not audio/video itself.</li>
+  </ul>
+  <p>This is one of the more invasive things Mana can do -- it can see whatever page you have open. The indicator and off switch above are the safeguard: you can always tell it's on, and always turn it off in one click.</p>
+  <button id="start">Got it, start reading pages</button>
+  <script src="onboarding.js"></script>
+</body>
+</html>

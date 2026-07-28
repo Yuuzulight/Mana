@@ -112,6 +112,7 @@ const { fetchPage, searchWeb, wikiLookup } = require("./tools/web-access");
 	const telegramBridgePlugin = require("../plugins/telegram-bridge");
 	const discordBotPlugin = require("../plugins/discord-bot");
 	const videoWatchPlugin = require("../plugins/video-watch");
+	const contextPushPlugin = require("../plugins/context-push");
 const { createTtsRuntime } = require("./tts-runtime");
 const { createAcpMemoryStore } = require("./acp-memory-store");
 const persona = require("./persona");
@@ -1646,6 +1647,7 @@ function registerRoutes(app, upload, deps = {}) {
     telegramBridgePlugin,
     discordBotPlugin,
     videoWatchPlugin,
+    contextPushPlugin,
     dirScannerCapability,
     webAccessCapability,
     sessionsCapability,
