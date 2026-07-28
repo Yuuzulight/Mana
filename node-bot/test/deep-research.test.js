@@ -12,8 +12,10 @@ const {
   ResearchCancelledError,
   buildResearchPrompt,
   buildReflectPrompt,
+  buildCompressPrompt,
   parseSubQueries,
   parseReflectDecision,
+  parseCompressedExcerpts,
   runDeepResearch,
 } = require("../tools/deep-research");
 
@@ -584,4 +586,93 @@ test("runDeepResearch stops reflecting when the gap query finds nothing new", as
   });
   assert.equal(synthesizeCalls, 1, "should not re-synthesize when the gap cycle added no new sources");
   assert.equal(result.bounds.reflectCycles, 0);
+});
+
+test("buildCompressPrompt numbers sources and includes the question", () => {
+  const prompt = buildCompressPrompt("why is the sky blue?", [
+    { index: 1, url: "https://a.com", title: "A", excerpt: "excerpt a" },
+    { index: 2, url: "https://b.com", title: "B", excerpt: "excerpt b" },
+  ]);
+  assert.match(prompt, /Research question: why is the sky blue\?/);
+  assert.match(prompt, /\[1\] A\nURL: https:\/\/a\.com\nexcerpt a/);
+  assert.match(prompt, /\[2\] B\nURL: https:\/\/b\.com\nexcerpt b/);
+});
+
+test("parseCompressedExcerpts splits [N] blocks back into a Map by index", () => {
+  const map = parseCompressedExcerpts("[1] condensed excerpt one\n[2] condensed excerpt two\nmore text for two");
+  assert.equal(map.get(1), "condensed excerpt one");
+  assert.equal(map.get(2), "condensed excerpt two\nmore text for two");
+  assert.equal(map.size, 2);
+});
+
+test("parseCompressedExcerpts ignores a missing/malformed response", () => {
+  assert.equal(parseCompressedExcerpts("").size, 0);
+  assert.equal(parseCompressedExcerpts(undefined).size, 0);
+  assert.equal(parseCompressedExcerpts("no bracket markers here").size, 0);
+});
+
+test("runDeepResearch never compresses when options.compress is not provided", async () => {
+  const result = await runDeepResearch("what is the capital of France?", {
+    searchWeb: async () => fakeSearchResults(1),
+    fetchPage: async (url) => ({ url, title: "T", text: "Full page text ".repeat(50) }),
+    synthesize: async () => "Paris [1].",
+  });
+  assert.equal(result.report, "Paris [1].");
+});
+
+test("runDeepResearch compresses newly-read excerpts in one batched call and uses the result in synthesis", async () => {
+  const compressCalls = [];
+  const synthCalls = [];
+  const result = await runDeepResearch("what is the capital of France?", {
+    maxSources: 2,
+    maxPerDomain: 2,
+    searchWeb: async () => fakeSearchResults(2),
+    fetchPage: async (url) => ({ url, title: `Title for ${url}`, text: `Full page text for ${url}`.repeat(20) }),
+    compress: async (prompt) => {
+      compressCalls.push(prompt);
+      return "[1] condensed one\n[2] condensed two";
+    },
+    synthesize: async (prompt) => {
+      synthCalls.push(prompt);
+      return "Paris [1].";
+    },
+  });
+  assert.equal(compressCalls.length, 1, "one batched compress call, not one per source");
+  assert.match(compressCalls[0], /\[1\] Title for https:\/\/example\.com\/1/);
+  assert.match(compressCalls[0], /\[2\] Title for https:\/\/example\.com\/2/);
+  assert.match(synthCalls[0], /\[1\] Title for https:\/\/example\.com\/1\nURL: https:\/\/example\.com\/1\ncondensed one/);
+  assert.match(synthCalls[0], /\[2\] Title for https:\/\/example\.com\/2\nURL: https:\/\/example\.com\/2\ncondensed two/);
+  assert.equal(result.report, "Paris [1].");
+});
+
+test("runDeepResearch keeps the original excerpt for a source the compress response didn't cover", async () => {
+  const synthCalls = [];
+  await runDeepResearch("what is the capital of France?", {
+    maxSources: 2,
+    maxPerDomain: 2,
+    searchWeb: async () => fakeSearchResults(2),
+    fetchPage: async (url) => ({ url, title: `Title for ${url}`, text: `original excerpt for ${url}` }),
+    compress: async () => "[1] condensed one only",
+    synthesize: async (prompt) => {
+      synthCalls.push(prompt);
+      return "report";
+    },
+  });
+  assert.match(synthCalls[0], /condensed one only/);
+  assert.match(synthCalls[0], /original excerpt for https:\/\/example\.com\/2/);
+});
+
+test("runDeepResearch keeps original excerpts (never sinks the pass) when compress itself fails", async () => {
+  const result = await runDeepResearch("what is the capital of France?", {
+    searchWeb: async () => fakeSearchResults(1),
+    fetchPage: async (url) => ({ url, title: "T", text: "original page text" }),
+    compress: async () => {
+      throw new Error("compressor unavailable");
+    },
+    synthesize: async (prompt) => {
+      assert.match(prompt, /original page text/);
+      return "report";
+    },
+  });
+  assert.equal(result.report, "report");
 });

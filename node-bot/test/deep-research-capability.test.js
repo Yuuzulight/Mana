@@ -402,6 +402,36 @@ test("MANA_RESEARCH_MAX_REFLECT_CYCLES env var sets the default maxReflectCycles
   assert.equal(seen.reflect, fakeReflect);
 });
 
+test("compress is forwarded to runDeepResearch (issue #208)", async () => {
+  const app = express();
+  app.use(express.json());
+  const seen = {};
+  let jobIdCounter = 0;
+  const fakeCompress = async () => "[1] condensed";
+  deepResearchCapability.registerRoutes(app, {
+    runDeepResearch: async (question, options) => {
+      seen.compress = options.compress;
+      return { question, subQueries: [], sources: [], report: "report", bounds: {} };
+    },
+    synthesize: async () => "report",
+    compress: fakeCompress,
+    makeJobId: () => `job-${++jobIdCounter}`,
+  });
+
+  await withServer(app, async (baseUrl) => {
+    await fetch(`${baseUrl}/research/start`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ question: "q" }),
+    });
+    await waitFor(async () => {
+      const res = await fetch(`${baseUrl}/research/job-1`);
+      return (await res.json()).status === "done";
+    });
+  });
+  assert.equal(seen.compress, fakeCompress);
+});
+
 test("MANA_RESEARCH_* env vars set the default bounds when the request omits them", async () => {
   const app = express();
   app.use(express.json());
