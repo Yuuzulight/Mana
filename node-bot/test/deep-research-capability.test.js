@@ -369,6 +369,39 @@ test("MANA_RESEARCH_MAX_PER_DOMAIN env var sets the default maxPerDomain when th
   assert.equal(seen.maxPerDomain, 1);
 });
 
+test("MANA_RESEARCH_MAX_REFLECT_CYCLES env var sets the default maxReflectCycles when the request omits it, and reflect is forwarded", async () => {
+  const app = express();
+  app.use(express.json());
+  const seen = {};
+  let jobIdCounter = 0;
+  const fakeReflect = async () => "NONE";
+  deepResearchCapability.registerRoutes(app, {
+    env: { MANA_RESEARCH_MAX_REFLECT_CYCLES: "2" },
+    runDeepResearch: async (question, options) => {
+      seen.maxReflectCycles = options.maxReflectCycles;
+      seen.reflect = options.reflect;
+      return { question, subQueries: [], sources: [], report: "report", bounds: {} };
+    },
+    synthesize: async () => "report",
+    reflect: fakeReflect,
+    makeJobId: () => `job-${++jobIdCounter}`,
+  });
+
+  await withServer(app, async (baseUrl) => {
+    await fetch(`${baseUrl}/research/start`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ question: "q" }),
+    });
+    await waitFor(async () => {
+      const res = await fetch(`${baseUrl}/research/job-1`);
+      return (await res.json()).status === "done";
+    });
+  });
+  assert.equal(seen.maxReflectCycles, 2);
+  assert.equal(seen.reflect, fakeReflect);
+});
+
 test("MANA_RESEARCH_* env vars set the default bounds when the request omits them", async () => {
   const app = express();
   app.use(express.json());
