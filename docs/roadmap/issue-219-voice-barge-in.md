@@ -1,6 +1,6 @@
 # Issue 219: Voice barge-in (interrupt Mana mid-speech)
 
-## Status: Phase 1 built (hotkey interrupt). Phase 2 (wake-word-during-speech) out of scope.
+## Status: Phase 1 (hotkey) and Phase 2 (voice, experimental/opt-in) both built.
 
 ## Background
 
@@ -79,11 +79,59 @@ logic to extract, so there's nothing to add a dedicated test for beyond
 what already covers `stopReplyAudio()` itself. Verified manually instead
 via `node --check` on both edited files.
 
-## Phase 2 (explicitly out of scope): wake-word-during-speech
+## Phase 2 (built, experimental, OFF by default): voice barge-in
 
-Interrupting by voice (saying Mana's name, or any speech) while she's still
-talking, instead of only via hotkey. Deferred because it needs real
-mitigation for the echo/false-positive risk described above (e.g. actual
-echo cancellation, or gating on a wake-word-only pass that ignores audio
-matching Mana's own output) -- none of which exists yet. Revisit if hotkey
-interrupt proves insufficient in practice.
+Interrupting by just talking over Mana, instead of only via hotkey. Set
+`MANA_BARGE_IN_VOICE=1` to enable.
+
+### Why this is safe enough to ship as opt-in, unlike a blanket "always listen"
+
+The mic-pause-during-playback gate exists specifically to avoid the mic
+picking up Mana's own TTS voice through the speakers. Two things make
+listening during playback less risky than it sounds, without solving full
+echo cancellation from scratch:
+
+1. `ensureMediaStream()` has only ever called
+   `getUserMedia({ audio: true })` -- Chromium's default constraints for
+   that call already include `echoCancellation: true`. Because Mana's reply
+   audio is played back through an `<audio>` element in the same renderer
+   process, Chromium's WebRTC-derived AEC can use what it's currently
+   rendering to that output device as a reference signal and subtract it
+   from the mic input before this feature ever sees the samples -- the same
+   mechanism that makes speakerphone video calls not pick up their own
+   audio. This isn't new code; it's already active for every mic capture
+   Mana does, this feature just runs during a window it didn't run in
+   before.
+2. On top of that, `nextBargeInState()` (`renderer/voice-endpointing.js`)
+   requires `MANA_BARGE_IN_HOLD_MS` (350ms default) of *continuous*
+   Silero-VAD-positive speech before triggering -- a single echo blip or
+   pop that leaks past AEC resets the timer instead of accumulating toward
+   a trigger.
+
+### Why it's still off by default
+
+Real acoustic paths (mic gain, speaker volume, distance, room reflections)
+vary a lot by hardware, and AEC quality varies by OS/driver. Nothing here
+was verified against real speakers and a real mic in this session -- there's
+no way to drive live audio hardware from this environment to confirm actual
+echo-rejection behavior, only to verify the code is wired correctly and the
+pure hold-time logic is correct in isolation (`voice-endpointing.test.js`).
+Treat this as a build the user should audition on their own hardware before
+trusting it, not a verified-working feature -- if it misfires (Mana cuts
+herself off on her own echoed voice), raise `MANA_BARGE_IN_HOLD_MS` first;
+if that's not enough, it needs to stay off.
+
+### Implementation
+
+- `renderer/voice-endpointing.js`: `nextBargeInState({ isSpeech,
+  speechStartedAt, now, holdMs })` -- pure hold-time gate, mirrors the
+  existing `shouldStopRecording()` pattern in the same file (a pure
+  decision function separated from the mic/DOM plumbing so it's unit
+  testable). Tested in `test/voice-endpointing.test.js`.
+- `renderer/renderer.js`: `watchForBargeIn()` -- runs only while
+  `currentReplyAudio` is set, reusing the same `mediaStream` and
+  `getSileroVad()` instance normal listening uses (one audio pipeline, not
+  two), polling every `BARGE_IN_POLL_MS` (50ms) and calling
+  `stopReplyAudio()` once `nextBargeInState()` reports `triggered`. Started
+  from `playAudioBlob()` right after playback begins, gated on
+  `BARGE_IN_VOICE_ENABLED` (`MANA_BARGE_IN_VOICE === "1"`).
