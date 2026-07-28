@@ -121,6 +121,7 @@ const { createPresetsStore } = require("./presets-store");
 const { createPluginSettingsStore } = require("./plugin-settings-store");
 const { createAuthStore } = require("./auth-store");
 const { createToolPolicy } = require("./ai/tool-policy");
+const { createMemoryToolSource, buildToolPolicyWithMemory } = require("./ai/memory-tool-source");
 const { createMcpClientRegistry, buildToolPolicyWithMcp } = require("./mcp-client-registry");
 const { mcpClientCapability } = require("./capabilities/mcp-client-capability");
 const { createToolCallLog, wrapWithToolCallLog } = require("./tool-call-log");
@@ -3573,6 +3574,13 @@ function registerRoutes(app, upload, deps = {}) {
           // enough that re-listing costs little once a connection is
           // already established (see mcp-client-registry.js).
           let mergedToolPolicy = await buildToolPolicyWithMcp(activeToolPolicy, activeMcpClientRegistry);
+          // Issue #198: bound to this reply's sessionId (not model-supplied),
+          // built fresh per reply for the same reason -- cheap, and the
+          // session the fact should be attributed to only exists per-call.
+          mergedToolPolicy = await buildToolPolicyWithMemory(
+            mergedToolPolicy,
+            createMemoryToolSource({ acpMemoryStore, sessionId }),
+          );
           // Issue #188: only offered when the plugin is actually enabled
           // (Settings > Plugins) -- same gate every other browser-automation
           // entry point (its own HTTP routes, GET /plugins) already respects.

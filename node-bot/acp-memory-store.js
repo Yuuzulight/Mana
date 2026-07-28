@@ -106,6 +106,10 @@ function createAcpMemoryStore(options = {}) {
     path.join(__dirname, "data", "acp-memory");
   const sessionsDir = path.join(dataDir, "sessions");
   const entityIndexPath = path.join(dataDir, "entity-index.json");
+  const factsPath = path.join(dataDir, "facts.json");
+  // ponytail: fixed cap, not age-based pruning -- revisit if explicit
+  // facts genuinely need trimming by more than "keep the most recent N".
+  const maxFacts = 500;
   // ponytail: fixed cap per entity, not age-based pruning -- revisit if a
   // heavily-recurring entity's mention list needs trimming by more than
   // "keep the most recent N".
@@ -164,13 +168,88 @@ function createAcpMemoryStore(options = {}) {
     return loadEntityIndex()[key] || [];
   }
 
+  // Issue #198: explicit facts the model itself chose to persist via the
+  // hot-path "remember" tool -- distinct from the passive entity-mention
+  // index above, which only ever records "X was mentioned somewhere", never
+  // a specific asserted fact, and never updates/removes a prior entry.
+  // Stored as {facts: [...]} (not a bare array) so readJsonObject's
+  // object-only guard doesn't reject it.
+  function loadFacts() {
+    const parsed = readJsonObject(factsPath);
+    return Array.isArray(parsed?.facts) ? parsed.facts : [];
+  }
+
+  function saveFacts(facts) {
+    writeJsonObject(factsPath, { facts });
+  }
+
+  // action: "insert" (default) always creates a new fact. "patch" updates
+  // the existing active fact with this key if one exists, otherwise falls
+  // back to insert (nothing to patch yet). "remove" marks an existing
+  // active fact as stale (soft delete -- preserves history, matches this
+  // store's general append-safe philosophy elsewhere) and is a no-op if
+  // nothing with that key exists.
+  function rememberFact({ sessionId, key, text, action } = {}) {
+    const cleanKey = cleanText(key, 200);
+    if (!cleanKey) {
+      throw new Error("key is required");
+    }
+    const normalizedAction = ["insert", "patch", "remove"].includes(action)
+      ? action
+      : "insert";
+    const facts = loadFacts();
+    const existing = facts.find(
+      (f) => f.status === "active" && f.key.toLowerCase() === cleanKey.toLowerCase(),
+    );
+    const timestamp = now();
+
+    if (normalizedAction === "remove") {
+      if (!existing) {
+        return { ok: true, action: "remove", key: cleanKey, found: false };
+      }
+      existing.status = "stale";
+      existing.updatedAt = timestamp;
+      saveFacts(facts);
+      return { ok: true, action: "remove", key: cleanKey, found: true };
+    }
+
+    const cleanTextValue = cleanText(text, 500);
+    if (!cleanTextValue) {
+      throw new Error("text is required for insert/patch");
+    }
+
+    if (existing && normalizedAction === "patch") {
+      existing.text = cleanTextValue;
+      existing.updatedAt = timestamp;
+      saveFacts(facts);
+      return { ok: true, action: "patch", key: cleanKey, text: cleanTextValue };
+    }
+
+    // insert -- either explicitly requested, or "patch" with nothing yet
+    // to patch.
+    facts.push({
+      id: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+      key: cleanKey,
+      text: cleanTextValue,
+      sessionId: cleanText(sessionId || "default", 240),
+      status: "active",
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    });
+    saveFacts(facts.slice(-maxFacts));
+    return { ok: true, action: "insert", key: cleanKey, text: cleanTextValue };
+  }
+
   // Issue #141: the "searchable, on-demand" half of the two-tier memory
   // split -- buildPromptMemory() above is the small always-injected tier
   // (hard-capped by maxPromptTokens); this is the much larger archive
-  // (every entity ever mentioned, across every session) pulled in only
-  // when the current message actually names something from it. Kept as a
-  // plain entity-index lookup rather than real full-text search -- cheap,
-  // deterministic, and reuses the index appendTurn() already maintains.
+  // (every entity ever mentioned, across every session, plus explicit
+  // remembered facts) pulled in only when the current message actually
+  // names something from it. Entity mentions are a plain index lookup
+  // rather than real full-text search -- cheap, deterministic, and reuses
+  // the index appendTurn() already maintains; explicit facts match by
+  // direct key substring rather than the Title-Case entity heuristic,
+  // since a fact's key ("Aurora's GPU") isn't necessarily Title Case.
   function getRelatedFacts(text, options = {}) {
     const excludeSessionId = options.excludeSessionId;
     const maxEntities = Math.max(
@@ -187,23 +266,37 @@ function createAcpMemoryStore(options = {}) {
     );
 
     const entities = extractEntities(text).slice(0, maxEntities);
-    if (!entities.length) return "";
-
     const index = loadEntityIndex();
-    const lines = [];
+    const mentionLines = [];
     for (const entity of entities) {
       const mentions = (index[entity.toLowerCase()] || []).filter(
         (m) => m.sessionId !== excludeSessionId,
       );
       if (!mentions.length) continue;
       const last = mentions[mentions.length - 1];
-      lines.push(
+      mentionLines.push(
         `- ${entity}: previously discussed in another session (${last.at})`,
       );
     }
-    if (!lines.length) return "";
 
-    const block = `Related from other sessions:\n${lines.join("\n")}`;
+    const lowerText = String(text || "").toLowerCase();
+    const factLines = [];
+    for (const fact of loadFacts()) {
+      if (fact.status !== "active") continue;
+      if (!lowerText.includes(fact.key.toLowerCase())) continue;
+      factLines.push(`- ${fact.key}: ${fact.text}`);
+    }
+
+    const blocks = [];
+    if (mentionLines.length) {
+      blocks.push(`Related from other sessions:\n${mentionLines.join("\n")}`);
+    }
+    if (factLines.length) {
+      blocks.push(`Remembered:\n${factLines.join("\n")}`);
+    }
+    if (!blocks.length) return "";
+
+    const block = blocks.join("\n\n");
     return block.length > maxChars ? block.slice(0, maxChars).trim() : block;
   }
 
@@ -524,6 +617,7 @@ function createAcpMemoryStore(options = {}) {
     deleteSession,
     lookupEntity,
     getRelatedFacts,
+    rememberFact,
   };
 }
 
