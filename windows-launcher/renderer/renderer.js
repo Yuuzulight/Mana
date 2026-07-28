@@ -181,16 +181,17 @@ const SPEECH_GAIN_MAX_BOOST = Number(process.env.MANA_SPEECH_GAIN_MAX_BOOST || 6
 const VAD_THRESHOLD = Number(process.env.MANA_VAD_THRESHOLD || 0.5);
 const VAD_DISABLED = process.env.MANA_DISABLE_VAD === "1";
 const VAD_MODEL_URL = "../assets/vad/silero_vad.onnx";
-// Issue #219 phase 2, experimental and OFF by default: interrupt Mana by just
-// talking over her, instead of only via the hotkey. getUserMedia's default
+// Issue #219 phase 2, on by default: interrupt Mana by just talking over
+// her, instead of only via the hotkey. getUserMedia's default
 // echoCancellation constraint (on since ensureMediaStream() only ever
 // requests `audio: true`) already tries to cancel Mana's own TTS voice out
 // of the mic before this ever sees it, but real speaker/mic acoustic paths
 // vary a lot by hardware -- unlike the hotkey, this can misfire on residual
-// echo, so it needs the user's own speakers/mic to validate before trusting
-// it. MANA_BARGE_IN_HOLD_MS requires that many ms of continuous VAD-positive
-// speech before triggering, to reject brief echo pops/clicks.
-const BARGE_IN_VOICE_ENABLED = process.env.MANA_BARGE_IN_VOICE === "1";
+// echo. Set MANA_BARGE_IN_VOICE=0 to fall back to hotkey-only if it
+// misfires; raising MANA_BARGE_IN_HOLD_MS (continuous VAD-positive speech
+// required before triggering, rejects brief echo pops/clicks) is worth
+// trying first.
+const BARGE_IN_VOICE_ENABLED = process.env.MANA_BARGE_IN_VOICE !== "0";
 const BARGE_IN_HOLD_MS = Number(process.env.MANA_BARGE_IN_HOLD_MS || 350);
 const BARGE_IN_POLL_MS = 50;
 // Per-session transcription debug logging (docs/speech_recognition_improvement_plan.md):

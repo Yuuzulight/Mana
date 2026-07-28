@@ -1,6 +1,6 @@
 # Issue 219: Voice barge-in (interrupt Mana mid-speech)
 
-## Status: Phase 1 (hotkey) and Phase 2 (voice, experimental/opt-in) both built.
+## Status: Phase 1 (hotkey) and Phase 2 (voice, on by default) both built.
 
 ## Background
 
@@ -79,12 +79,12 @@ logic to extract, so there's nothing to add a dedicated test for beyond
 what already covers `stopReplyAudio()` itself. Verified manually instead
 via `node --check` on both edited files.
 
-## Phase 2 (built, experimental, OFF by default): voice barge-in
+## Phase 2 (built, on by default): voice barge-in
 
 Interrupting by just talking over Mana, instead of only via hotkey. Set
-`MANA_BARGE_IN_VOICE=1` to enable.
+`MANA_BARGE_IN_VOICE=0` to fall back to hotkey-only.
 
-### Why this is safe enough to ship as opt-in, unlike a blanket "always listen"
+### Why this is safe enough to run always-on, unlike a blanket "always listen"
 
 The mic-pause-during-playback gate exists specifically to avoid the mic
 picking up Mana's own TTS voice through the speakers. Two things make
@@ -108,7 +108,7 @@ echo cancellation from scratch:
    pop that leaks past AEC resets the timer instead of accumulating toward
    a trigger.
 
-### Why it's still off by default
+### Known risk, now accepted by the user rather than defaulted away
 
 Real acoustic paths (mic gain, speaker volume, distance, room reflections)
 vary a lot by hardware, and AEC quality varies by OS/driver. Nothing here
@@ -116,10 +116,12 @@ was verified against real speakers and a real mic in this session -- there's
 no way to drive live audio hardware from this environment to confirm actual
 echo-rejection behavior, only to verify the code is wired correctly and the
 pure hold-time logic is correct in isolation (`voice-endpointing.test.js`).
-Treat this as a build the user should audition on their own hardware before
-trusting it, not a verified-working feature -- if it misfires (Mana cuts
-herself off on her own echoed voice), raise `MANA_BARGE_IN_HOLD_MS` first;
-if that's not enough, it needs to stay off.
+This was originally shipped opt-in (`MANA_BARGE_IN_VOICE=1`) for exactly
+that reason; the user asked for it always-on instead, so the default
+flipped (`MANA_BARGE_IN_VOICE=0` now opts back out) -- the risk itself
+didn't change, just who's carrying it. If Mana ever cuts herself off on her
+own echoed voice, raise `MANA_BARGE_IN_HOLD_MS` first; set
+`MANA_BARGE_IN_VOICE=0` if that's not enough.
 
 ### Implementation
 
@@ -134,4 +136,4 @@ if that's not enough, it needs to stay off.
   two), polling every `BARGE_IN_POLL_MS` (50ms) and calling
   `stopReplyAudio()` once `nextBargeInState()` reports `triggered`. Started
   from `playAudioBlob()` right after playback begins, gated on
-  `BARGE_IN_VOICE_ENABLED` (`MANA_BARGE_IN_VOICE === "1"`).
+  `BARGE_IN_VOICE_ENABLED` (`MANA_BARGE_IN_VOICE !== "0"` -- on by default).
