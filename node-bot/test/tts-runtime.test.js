@@ -427,3 +427,49 @@ test("swapFishDevice retries after a failed swap instead of getting stuck", asyn
     await new Promise((resolve) => server.close(resolve));
   }
 });
+
+test("warmupFishTts skips (status 'skipped') when the provider isn't fish", async () => {
+  const runtime = createTtsRuntime({
+    env: { TTS_PROVIDER: "kokoro" },
+    postFishTtsBuffer: async () => {
+      throw new Error("should never be called for a non-fish provider");
+    },
+  });
+
+  assert.equal(runtime.getFishWarmupStatus(), "idle");
+  const status = await runtime.warmupFishTts();
+  assert.equal(status, "skipped");
+  assert.equal(runtime.getFishWarmupStatus(), "skipped");
+});
+
+test("warmupFishTts goes idle -> warming -> ready on a successful warmup call, using the longer warmup timeout", async () => {
+  const calls = [];
+  const runtime = createTtsRuntime({
+    env: { TTS_PROVIDER: "fish", FISH_TTS_WARMUP_TIMEOUT_MS: "111000" },
+    postFishTtsBuffer: async (text, timeoutMs) => {
+      calls.push({ text, timeoutMs });
+      assert.equal(runtime.getFishWarmupStatus(), "warming", "should be 'warming' while the call is in flight");
+      return Buffer.from("warmup-audio");
+    },
+  });
+
+  assert.equal(runtime.getFishWarmupStatus(), "idle");
+  const status = await runtime.warmupFishTts();
+  assert.equal(status, "ready");
+  assert.equal(runtime.getFishWarmupStatus(), "ready");
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].timeoutMs, 111000);
+});
+
+test("warmupFishTts goes idle -> warming -> failed (never throws) when the warmup call itself fails", async () => {
+  const runtime = createTtsRuntime({
+    env: { TTS_PROVIDER: "fish" },
+    postFishTtsBuffer: async () => {
+      throw new Error("Fish Speech request timed out after 300000ms");
+    },
+  });
+
+  const status = await runtime.warmupFishTts();
+  assert.equal(status, "failed");
+  assert.equal(runtime.getFishWarmupStatus(), "failed");
+});

@@ -109,6 +109,50 @@ test("doctor surfaces the injected hardware model recommendation", () => {
   assert.deepEqual(check.details.recommendation, fakeRecommendation);
 });
 
+function runDoctorForFishWarmup(fishTtsWarmup) {
+  return runDoctorChecks({
+    env: { MANA_ALLOW_REMOTE_AI: "0" },
+    paths: { dataDir: fs.mkdtempSync(path.join(os.tmpdir(), "mana-doctor-test-")) },
+    ports: [],
+    services: [],
+    versions: { node: "v22.19.0" },
+    zedCommandResolver: () => null,
+    fishTtsWarmup,
+  });
+}
+
+test("doctor omits the voice-warmup check entirely when there's nothing to report (issue #215)", () => {
+  for (const status of [undefined, "idle", "skipped"]) {
+    const result = runDoctorForFishWarmup(status);
+    assert.equal(
+      result.checks.find((c) => c.id === "fish-tts-warmup"),
+      undefined,
+      `expected no fish-tts-warmup check for status ${status}`,
+    );
+  }
+});
+
+test("doctor warns while Fish Speech's torch.compile warmup is in progress", () => {
+  const result = runDoctorForFishWarmup("warming");
+  const check = result.checks.find((c) => c.id === "fish-tts-warmup");
+  assert.equal(check.status, "warn");
+  assert.match(check.message, /compiling/i);
+});
+
+test("doctor warns (not fails) when Fish Speech's warmup call itself failed", () => {
+  const result = runDoctorForFishWarmup("failed");
+  const check = result.checks.find((c) => c.id === "fish-tts-warmup");
+  assert.equal(check.status, "warn");
+  assert.match(check.message, /warmup request failed/i);
+});
+
+test("doctor passes once Fish Speech's warmup has completed", () => {
+  const result = runDoctorForFishWarmup("ready");
+  const check = result.checks.find((c) => c.id === "fish-tts-warmup");
+  assert.equal(check.status, "pass");
+  assert.match(check.message, /warmed up/i);
+});
+
 test("doctor passes remote exposure when no tunnel is configured", () => {
   const result = runDoctorChecks({
     env: {},
