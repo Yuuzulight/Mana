@@ -115,19 +115,18 @@ function registerRetrieverAdminRoutes(app, context = {}) {
             if (qembed) {
               try {
                 const hits = await store.search(qembed, k);
-                const out = [];
-                for (const h of hits) {
-                  const p = h.path || h.id;
-                  let snippet = "";
-                  try {
-                    snippet = String(
-                      await fs.promises.readFile(p, "utf8"),
-                    ).slice(0, 800);
-                  } catch (e) {
-                    snippet = "";
-                  }
-                  out.push({ id: h.id, path: p, score: h.score, snippet });
-                }
+                // Issue #217: dedupes this against the same read-file-then-
+                // slice(0, 800) loop retriever-index.js's own search() used
+                // to have before issue #211 -- no compress argument here on
+                // purpose, this admin debug route intentionally stays raw
+                // ground truth (a human debugging the index wants to see
+                // exactly what's stored, not a query-shaped summary).
+                const candidates = hits.map((h) => ({
+                  id: h.id,
+                  path: h.path || h.id,
+                  score: h.score,
+                }));
+                const out = await retrieverIndex.buildSnippets(candidates, q, null);
                 return res.json({ ok: true, results: out, vectorStore: true });
               } catch (e) {
                 // continue to fallback
