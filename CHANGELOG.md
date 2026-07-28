@@ -357,6 +357,17 @@ accounting.
   disclosed when this plugin first shipped.
 
 ### Docs
+- **Issue #199 investigation**: compared Deep Research's issue #145
+  "parallel subagent delegation" against `langchain-ai/deep_research_from_scratch`'s
+  supervisor/subagent pattern. Finding: Mana's #145 delegates concurrent
+  *I/O* (page fetches via a bounded worker pool), not concurrent *LLM
+  reasoning* -- there's no `ConductResearch`/`ResearchComplete`-style
+  handoff contract and no context-isolation boundary before the final
+  synthesis call. This is a reasonable adaptation to Mana's single local
+  `llama-server` instance (true parallel LLM subagents would contend for
+  the same model), not an oversight. No code changes; the one concrete
+  gap (pre-synthesis context isolation) folds into issue #200's already-
+  scoped compression investigation rather than a new issue.
 - **Issue #146 investigation**: Mana has no outbound MCP *client*
   capability today (`mcp-server.js` is server-only) -- but the already-
   installed `@modelcontextprotocol/sdk` ships a full client module, so
