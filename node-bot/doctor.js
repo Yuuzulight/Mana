@@ -200,6 +200,44 @@ function checkTtsServices(services = []) {
   });
 }
 
+// Issue #215: surfaces node-bot's own eager warmupFishTts() status (issue
+// #213 enabled torch.compile, which makes the first real generate() call
+// after each restart take ~4 minutes) as a Doctor check instead of a
+// startup-loading-screen row -- both apps' loading screens use a fixed
+// row list that all must reach a terminal state before the overlay hides,
+// so an open-ended multi-minute wait doesn't fit there without blocking
+// startup. The Doctor popup's existing pass/warn/fail display has no such
+// constraint. Returns null (filtered out below) when there's nothing
+// warmup-related worth surfacing -- "idle" (never fired) and "skipped"
+// (Fish Speech isn't the configured provider) are both non-issues.
+function checkFishTtsWarmup(status) {
+  if (!status || status === "idle" || status === "skipped") {
+    return null;
+  }
+  if (status === "warming") {
+    return makeCheck(
+      "fish-tts-warmup",
+      "Voice warmup",
+      "warn",
+      "Fish Speech is compiling its model for faster replies (about 4 minutes on a cold start) -- the first real reply this session may be slow or briefly use the fallback voice instead.",
+    );
+  }
+  if (status === "failed") {
+    return makeCheck(
+      "fish-tts-warmup",
+      "Voice warmup",
+      "warn",
+      "Fish Speech's warmup request failed -- the first real reply may be slow or use the fallback voice instead.",
+    );
+  }
+  return makeCheck(
+    "fish-tts-warmup",
+    "Voice warmup",
+    "pass",
+    "Fish Speech is warmed up and ready for fast replies.",
+  );
+}
+
 function checkMobileAuth(env) {
   const hash = env.MOBILE_PASSCODE_HASH || env.MANA_MOBILE_PASSCODE_HASH || "";
   const secret = env.MOBILE_SESSION_SECRET || "";
@@ -590,6 +628,7 @@ function runDoctorChecks(options = {}) {
     ),
     checkWhisperConfig(env, options.whisperToolsDir),
     checkTtsServices(options.services || []),
+    checkFishTtsWarmup(options.fishTtsWarmup),
     checkMcpServer(env),
     checkRecommendedModelProfile(modelManagement),
     checkMobileAuth(env),
@@ -604,7 +643,7 @@ function runDoctorChecks(options = {}) {
       entryPoint: options.zedExternalAgentEntryPoint,
       allowRemoteOverride: options.allowRemoteOverride,
     }),
-  ];
+  ].filter(Boolean);
 
   return buildDoctorResult(checks, options.now);
 }

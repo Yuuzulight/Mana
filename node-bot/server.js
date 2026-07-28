@@ -1624,6 +1624,26 @@ function registerRoutes(app, upload, deps = {}) {
     }
   }
 
+  // Issue #215: unlike the llama-server warmup above (opt-in, since eagerly
+  // starting it has real GPU/resource cost even when never asked for), this
+  // always fires when Fish Speech is the configured provider -- torch.compile
+  // (issue #213) makes the first real generate() call after each restart
+  // take ~4 minutes instead of ~1-3s, and without this, that first call is
+  // whatever the user's next chat message happens to trigger, which blows
+  // through fishTtsTimeoutMs and silently falls back to Kokoro for one reply.
+  // warmupFishTts() itself no-ops (status "skipped") when the provider isn't
+  // fish, so this is a no-op for every other TTS setup. Skipped under tests
+  // -- every test file that builds an app via createApp() would otherwise
+  // fire a real outbound request to a Fish Speech server that isn't running,
+  // slowing (or hanging, on a leaked open handle) the whole suite.
+  if (
+    !(process.env.NODE_ENV === "test" || Boolean(process.env.NODE_TEST_CONTEXT))
+  ) {
+    ttsRuntime
+      .warmupFishTts()
+      .catch((e) => console.warn("Fish Speech warmup skipped:", e.message));
+  }
+
   // Shared by every /admin/* route (moved here, out of the GET /health
   // handler it used to be nested in -- see checkAdminAuth's git history for
   // why that mattered).
@@ -1778,7 +1798,9 @@ function registerRoutes(app, upload, deps = {}) {
   app.get("/doctor", async (req, res) => {
     try {
       const doctor = deps.doctor || runDoctorChecksAsync;
-      const result = await doctor();
+      const result = await doctor({
+        fishTtsWarmup: ttsRuntime.getFishWarmupStatus(),
+      });
       return res.status(result.ok ? 200 : 503).json(result);
     } catch (error) {
       return res.status(500).json({
@@ -2223,6 +2245,10 @@ function registerRoutes(app, upload, deps = {}) {
       // MANA_EAGER_LLAMA_SERVER above. false is a legitimate steady state
       // when it hasn't been asked to start yet, not an error.
       llamaServerRunning: llamaServerRuntime.getStatus().running,
+      // Issue #215: "idle" (fish isn't the configured provider or the
+      // warmup hasn't fired yet) | "warming" (compile trace in progress) |
+      // "ready" | "skipped" (provider isn't fish) | "failed".
+      fishTtsWarmup: ttsRuntime.getFishWarmupStatus(),
       remoteAiEnabled: shouldUseRemoteAi(),
       vtubeStudioConfigured: Boolean(vtubeStudio),
       vtubeStudioUrl: VTUBE_STUDIO_URL,

@@ -348,6 +348,21 @@ accounting.
   blank or synthetic fallback.
 
 ### Fixed
+- **Fish Speech's first reply after each restart could silently use the
+  wrong voice** (issue #215, follow-up from #213): enabling
+  `torch.compile` made the first real generate() call after each restart
+  take ~4 minutes, but nothing warned callers -- that first call was
+  whatever the user's first real chat message triggered, which blew past
+  `fishTtsTimeoutMs` (20s) and silently fell back to Kokoro for one
+  reply. `server.js` now fires a throwaway warmup synthesis eagerly at
+  startup (on its own much longer timeout) whenever Fish Speech is the
+  configured provider, so the compile trace happens before any real
+  reply needs it. Status (`idle|warming|ready|skipped|failed`) surfaces
+  on `GET /health` and as a new Doctor popup check ("Voice warmup") in
+  both apps -- not on the startup loading screen, since both apps' rows
+  are a fixed list that must all reach a terminal state before the
+  overlay hides, and an open-ended ~4 minute wait doesn't fit there
+  without blocking startup.
 - Session-level conversation memory (`buildPromptMemory`) was computed on
   every turn but never actually appended to the prompt -- `memoryBlock`
   was built and then silently discarded, so Mana's own session summary
