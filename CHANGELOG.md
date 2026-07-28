@@ -53,6 +53,15 @@ accounting.
   they'd already been nested there since the issue #138 UI overhaul.
 
 ### Added
+- **Reflect-on-gaps step for Deep Research** (issue #197): after the
+  initial report synthesizes, an opt-in `reflect` step asks the model for
+  a structured decision -- one specific search query to close a genuine
+  gap, or "NONE" -- and, if a gap is found, runs one more bounded
+  search-and-read cycle (capped at `maxReflectCycles`, default 1, hard cap
+  2) before re-synthesizing, rather than the old single-pass-only loop.
+  Each source is now tagged with which cycle found it. Inspired by
+  `langchain-ai/local-deep-researcher`'s search-reflect-repeat loop, not a
+  LangGraph/LangChain adoption.
 - **Real GGUF metadata parsing** (issue #196): a new `GET /models/gguf-metadata`
   route (on-demand, kept separate from the frequently-polled
   `/models/status` since real header parsing is real file I/O) uses

@@ -11,6 +11,7 @@ const {
   MAX_SOURCES_CAP,
   MAX_SUB_QUERIES_CAP,
   MAX_TOTAL_MS_CAP,
+  MAX_REFLECT_CYCLES_CAP,
   runDeepResearch: defaultRunDeepResearch,
 } = require("../tools/deep-research");
 
@@ -41,6 +42,7 @@ function registerDeepResearchRoutes(app, context = {}) {
   const fetchPage = context.fetchPage;
   const synthesize = context.synthesize;
   const decompose = context.decompose;
+  const reflect = context.reflect;
   const acpMemoryStore = context.acpMemoryStore;
   const jobs = context.jobs || createResearchJobStore();
   const runDeepResearch = context.runDeepResearch || defaultRunDeepResearch;
@@ -56,6 +58,7 @@ function registerDeepResearchRoutes(app, context = {}) {
   const envMaxTotalMs = envInteger(env, "MANA_RESEARCH_MAX_TOTAL_MS");
   const envMaxSubQueries = envInteger(env, "MANA_RESEARCH_MAX_SUB_QUERIES");
   const envMaxPerDomain = envInteger(env, "MANA_RESEARCH_MAX_PER_DOMAIN");
+  const envMaxReflectCycles = envInteger(env, "MANA_RESEARCH_MAX_REFLECT_CYCLES");
 
   // Fire-and-forget, mirroring server.js's recordChatTurn: a research report
   // is just another chat turn once it's done, so it replays in session
@@ -116,6 +119,15 @@ function registerDeepResearchRoutes(app, context = {}) {
           defaultValue: envMaxPerDomain,
         },
       );
+      const maxReflectCycles = optionalInteger(
+        req.body?.maxReflectCycles,
+        "maxReflectCycles",
+        {
+          min: 0,
+          max: MAX_REFLECT_CYCLES_CAP,
+          defaultValue: envMaxReflectCycles,
+        },
+      );
 
       if (typeof synthesize !== "function") {
         return res
@@ -140,10 +152,12 @@ function registerDeepResearchRoutes(app, context = {}) {
         maxTotalMs,
         maxSubQueries,
         maxPerDomain,
+        maxReflectCycles,
         searchWeb,
         fetchPage,
         synthesize,
         decompose,
+        reflect,
         isCancelled: () => job.cancelRequested,
         onProgress: (progress) => {
           job.progress = progress;
