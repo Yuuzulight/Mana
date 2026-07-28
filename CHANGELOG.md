@@ -53,6 +53,18 @@ accounting.
   they'd already been nested there since the issue #138 UI overhaul.
 
 ### Added
+- **Explicit hot-path memory tool + update policies** (issue #198): a new
+  `memory__remember` tool-calling action (`{key, text?, action?}`) lets
+  Mana explicitly save, patch, or forget a specific fact mid-reply --
+  distinct from the passive automatic entity-mention index and idle
+  consolidation, which only ever inferred and inserted, never updated or
+  removed anything. New `acp-memory-store.js` explicit-facts store
+  (`data/acp-memory/facts.json`) with a real `insert`/`patch`/`remove`
+  lifecycle (soft-delete via a `stale` status, not hard deletion); active
+  facts surface under a new "Remembered:" block in the existing
+  `getRelatedFacts()` injection point alongside entity mentions. Wired
+  into the same tool-merge chain (#169/#188) and audit log (#188) every
+  other tool source already uses.
 - **Real GGUF metadata parsing** (issue #196): a new `GET /models/gguf-metadata`
   route (on-demand, kept separate from the frequently-polled
   `/models/status` since real header parsing is real file I/O) uses

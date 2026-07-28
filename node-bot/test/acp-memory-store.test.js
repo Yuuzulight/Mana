@@ -368,3 +368,99 @@ test("entity index survives across separate store instances (persisted to disk)"
   const second = createAcpMemoryStore({ dataDir });
   assert.equal(second.lookupEntity("Acme Corp").length, 1);
 });
+
+test("rememberFact requires a key, and text for insert/patch", () => {
+  const store = createAcpMemoryStore({ dataDir: createTempDir() });
+  assert.throws(() => store.rememberFact({ text: "no key" }), /key is required/);
+  assert.throws(
+    () => store.rememberFact({ key: "GPU" }),
+    /text is required for insert\/patch/,
+  );
+});
+
+test("rememberFact insert (default action) creates a new active fact", () => {
+  const store = createAcpMemoryStore({ dataDir: createTempDir() });
+  const result = store.rememberFact({
+    sessionId: "session-a",
+    key: "Aurora's GPU",
+    text: "Aurora has an RTX 3070 Ti, upgrading to a 5080 soon.",
+  });
+  assert.deepEqual(result, {
+    ok: true,
+    action: "insert",
+    key: "Aurora's GPU",
+    text: "Aurora has an RTX 3070 Ti, upgrading to a 5080 soon.",
+  });
+});
+
+test("rememberFact patch updates the existing active fact with the same key", () => {
+  const store = createAcpMemoryStore({ dataDir: createTempDir() });
+  store.rememberFact({ key: "Aurora's GPU", text: "RTX 3070 Ti" });
+  const patched = store.rememberFact({
+    key: "Aurora's GPU",
+    text: "RTX 5080, upgraded",
+    action: "patch",
+  });
+  assert.equal(patched.action, "patch");
+
+  const surfaced = store.getRelatedFacts("what's Aurora's GPU these days?");
+  assert.match(surfaced, /RTX 5080, upgraded/);
+  assert.doesNotMatch(surfaced, /RTX 3070 Ti/);
+});
+
+test("rememberFact patch falls back to insert when nothing exists yet to patch", () => {
+  const store = createAcpMemoryStore({ dataDir: createTempDir() });
+  const result = store.rememberFact({
+    key: "New Fact",
+    text: "first time seeing this",
+    action: "patch",
+  });
+  assert.equal(result.action, "insert");
+});
+
+test("rememberFact remove marks the fact stale so it stops surfacing, and reports found:false for an unknown key", () => {
+  const store = createAcpMemoryStore({ dataDir: createTempDir() });
+  store.rememberFact({ key: "Old Fact", text: "no longer true" });
+  const removed = store.rememberFact({ key: "Old Fact", action: "remove" });
+  assert.deepEqual(removed, { ok: true, action: "remove", key: "Old Fact", found: true });
+  assert.equal(store.getRelatedFacts("tell me about Old Fact"), "");
+
+  const removedAgain = store.rememberFact({ key: "Never Existed", action: "remove" });
+  assert.deepEqual(removedAgain, {
+    ok: true,
+    action: "remove",
+    key: "Never Existed",
+    found: false,
+  });
+});
+
+test("getRelatedFacts surfaces a remembered fact under its own 'Remembered:' block", () => {
+  const store = createAcpMemoryStore({ dataDir: createTempDir() });
+  store.rememberFact({
+    key: "gaming schedule",
+    text: "Aurora usually plays FFXIV in the evenings.",
+  });
+  const surfaced = store.getRelatedFacts("what's Aurora's gaming schedule like?");
+  assert.match(surfaced, /Remembered:/);
+  assert.match(surfaced, /Aurora usually plays FFXIV in the evenings\./);
+});
+
+test("getRelatedFacts includes both entity mentions and remembered facts together when both match", () => {
+  const store = createAcpMemoryStore({
+    dataDir: createTempDir(),
+    now: () => "2026-06-29T00:00:00.000Z",
+  });
+  store.appendTurn({
+    sessionId: "session-a",
+    user: "We're discussing Acme Corp's roadmap.",
+    assistant: "Noted.",
+  });
+  store.rememberFact({ key: "Acme Corp", text: "Deal signed in June 2026." });
+
+  const surfaced = store.getRelatedFacts("What's up with Acme Corp lately?", {
+    excludeSessionId: "session-b",
+  });
+  assert.match(surfaced, /Related from other sessions:/);
+  assert.match(surfaced, /Remembered:/);
+  assert.match(surfaced, /Deal signed in June 2026\./);
+});
