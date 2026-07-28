@@ -40,6 +40,7 @@ Project goal
    - If `WHISPER_BIN` is unset or wrong, Mana will also try common local paths under `tools\whisper\`.
    - `WHISPER_PROMPT` helps Whisper understand accents, wake words, and common local phrasing.
    - For Singaporean-accent recognition, `ggml-base.en.bin` or `ggml-small.en.bin` should be more accurate than `ggml-tiny.en.bin`.
+   - `$env:WHISPER_MODEL_PROFILE = "small"` (`tiny`/`base`/`small`/`medium`) picks a size tier by name instead of a raw file path, if you keep more than one model under `tools\whisper\models`. Smaller is faster but less accurate; falls back to whatever's actually present if the requested tier's file isn't there.
    - `LLAMA_BIN` should point to the Llama CLI executable you want to use.
    - `TTS_PROVIDER=kokoro` tells Mana to use the faster Kokoro ONNX service.
    - `TTS_PROVIDER=fish` (the default) tells Mana to call a separately running Fish Speech server; see docs/fish_speech_tts.md.
@@ -92,7 +93,13 @@ Performance notes
 Speech recognition debugging
 - In the Electron dev console, run `localStorage.manaSpeechDebug = "1"` to log audio stats and skip reasons.
 - Set `$env:SPEECH_DEBUG = "1"` before launching Mana to include backend Whisper debug metadata.
+- With `manaSpeechDebug` on, transcription events (audio stats, skip/reject reasons, gain applied, wake-word matches, hallucination filtering) are also written to a per-session log file so you can review a "why didn't Mana hear me" report after the fact, not just live in devtools: `%APPDATA%\local-voice-bot-launcher\logs\speech-debug.log` (JSON lines, next to the existing `voice-crash.log`).
 - Use short `.wav` samples for testing your voice. Mono 16-bit PCM at 16kHz or 48kHz is preferred.
+- Mana recognizes a close mis-transcription of a wake word too (e.g. Whisper hearing "Manaa" or "Mona"), not just the exact spellings in the wake-word list -- no setting needed, this is always on.
+- If quiet speech keeps getting skipped, or too much keyboard/mouse/fan noise gets through, tune these (defaults shown):
+  - `$env:MANA_MIN_SPEECH_RMS = "0.012"` / `$env:MANA_MIN_SPEECH_PEAK = "0.04"` -- lower to stop skipping quiet real speech, raise to reject more background noise.
+  - `$env:MANA_MAX_CLICKY_ZCR = "0.28"` -- lower to reject more clicky noise (keyboard/mouse), raise if real speech (especially sibilant sounds) is getting rejected as "clicky".
+  - `$env:MANA_SPEECH_GAIN_TARGET_PEAK = "0.2"` / `$env:MANA_SPEECH_GAIN_MAX_BOOST = "6"` -- a quiet clip is boosted toward this target peak (capped at the max boost multiplier) before Whisper sees it, so soft-spoken speech both clears the thresholds above and transcribes more accurately. Set `MANA_SPEECH_GAIN_TARGET_PEAK = "0"` to disable.
 
 Troubleshooting
 - If the UI reports `Local backend not reachable`, check that `node-bot` started successfully and that nothing else is using port `5005`.

@@ -53,6 +53,15 @@ accounting.
   they'd already been nested there since the issue #138 UI overhaul.
 
 ### Added
+- **Speech recognition accuracy improvements** (issue #4): fuzzy wake-word
+  matching catches close Whisper mis-transcriptions of "Mana" (e.g. "Manaa",
+  "Mona") the exact word list can't enumerate; a new microphone gain step
+  boosts quiet clips before Whisper sees them, rescuing soft-spoken speech
+  without loosening noise-rejection thresholds; those thresholds
+  (`MANA_MIN_SPEECH_RMS`/`MANA_MIN_SPEECH_PEAK`/`MANA_MAX_CLICKY_ZCR`) and a
+  new `WHISPER_MODEL_PROFILE` (tiny/base/small/medium) knob are now
+  configurable via env vars; and a per-session `speech-debug.log` persists
+  transcription debug events to disk for after-the-fact diagnosis.
 - **Discord voice channel support** (issue #187, `discord-bot` plugin): send
   `!join <channelId>` in an already-paired DM and Mana joins that voice
   channel, transcribes each speaker with Whisper (a new async,

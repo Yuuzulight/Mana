@@ -92,3 +92,40 @@ test("findWhisperModel returns null when nothing is found", () => {
   const toolsDir = tempToolsDir();
   assert.equal(findWhisperModel({ env: {}, toolsDir }), null);
 });
+
+test("findWhisperModel prefers the WHISPER_MODEL_PROFILE tier over the default preference order", () => {
+  const toolsDir = tempToolsDir();
+  fs.mkdirSync(path.join(toolsDir, "models"), { recursive: true });
+  fs.writeFileSync(path.join(toolsDir, "models", "ggml-base.en.bin"), ""); // the usual default winner
+  const tinyModel = path.join(toolsDir, "models", "ggml-tiny.en.bin");
+  fs.writeFileSync(tinyModel, "");
+  const found = findWhisperModel({ env: { WHISPER_MODEL_PROFILE: "tiny" }, toolsDir });
+  assert.equal(found, tinyModel);
+});
+
+test("findWhisperModel is case-insensitive for WHISPER_MODEL_PROFILE", () => {
+  const toolsDir = tempToolsDir();
+  fs.mkdirSync(path.join(toolsDir, "models"), { recursive: true });
+  const smallModel = path.join(toolsDir, "models", "ggml-small.en.bin");
+  fs.writeFileSync(smallModel, "");
+  const found = findWhisperModel({ env: { WHISPER_MODEL_PROFILE: "SMALL" }, toolsDir });
+  assert.equal(found, smallModel);
+});
+
+test("findWhisperModel falls back to the normal preference order when the requested profile's files aren't present", () => {
+  const toolsDir = tempToolsDir();
+  fs.mkdirSync(path.join(toolsDir, "models"), { recursive: true });
+  const baseModel = path.join(toolsDir, "models", "ggml-base.en.bin");
+  fs.writeFileSync(baseModel, ""); // no medium model exists, so requesting it shouldn't come up empty
+  const found = findWhisperModel({ env: { WHISPER_MODEL_PROFILE: "medium" }, toolsDir });
+  assert.equal(found, baseModel);
+});
+
+test("findWhisperModel ignores an unrecognized WHISPER_MODEL_PROFILE value", () => {
+  const toolsDir = tempToolsDir();
+  fs.mkdirSync(path.join(toolsDir, "models"), { recursive: true });
+  const baseModel = path.join(toolsDir, "models", "ggml-base.en.bin");
+  fs.writeFileSync(baseModel, "");
+  const found = findWhisperModel({ env: { WHISPER_MODEL_PROFILE: "xlarge" }, toolsDir });
+  assert.equal(found, baseModel);
+});
