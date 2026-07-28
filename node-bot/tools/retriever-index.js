@@ -1,7 +1,18 @@
 const fs = require("fs");
 const path = require("path");
+const {
+  buildCompressPrompt,
+  parseCompressedExcerpts,
+} = require("./deep-research");
 
 const INDEX_PATH = path.join(__dirname, "..", "data", "retriever_index.json");
+// Issue #211: same flat truncation search() results always got, now the
+// fallback when no compress function is supplied (or it fails).
+const RAW_SNIPPET_CHARS = 800;
+// Cap on how much raw file text feeds the compress prompt per result --
+// keeps the batched compress call itself bounded even though the on-disk
+// per-file cap (20000 chars, buildIndex/incrementalScan) is much larger.
+const COMPRESS_EXCERPT_CHARS = 4000;
 
 // Embedding settings
 const USE_EMBEDDINGS =
@@ -454,10 +465,59 @@ function searchSync(query, k = 5) {
   return top;
 }
 
-async function search(query, k = 5) {
+// Issue #211: shared by all three search() branches below (each did the
+// same read-file-then-flat-truncate work, just from a different score
+// source) -- reads each candidate's file once, then, if a compress
+// function is supplied, condenses every result in one batched call
+// (deep-research.js's own buildCompressPrompt/parseCompressedExcerpts
+// shape) instead of every result flat-truncating to RAW_SNIPPET_CHARS.
+// A missing compress function, a response that doesn't cover every
+// result, or the call itself failing all fall back to the flat-truncated
+// snippet -- a search must never break over a compression failure.
+async function buildSnippets(tops, query, compress) {
+  const out = [];
+  for (const t of tops) {
+    let raw = "";
+    try {
+      raw = await fs.promises.readFile(t.path, "utf8");
+    } catch (e) {
+      raw = "";
+    }
+    out.push({
+      id: t.id,
+      path: t.path,
+      score: t.score,
+      snippet: String(raw).slice(0, RAW_SNIPPET_CHARS),
+      _raw: raw,
+    });
+  }
+
+  if (typeof compress === "function" && out.some((r) => r._raw)) {
+    try {
+      const sources = out.map((r, i) => ({
+        index: i + 1,
+        url: r.path,
+        title: path.basename(r.path),
+        excerpt: String(r._raw || "").slice(0, COMPRESS_EXCERPT_CHARS),
+      }));
+      const raw = await compress(buildCompressPrompt(query, sources));
+      const compressed = parseCompressedExcerpts(raw);
+      for (let i = 0; i < out.length; i += 1) {
+        const c = compressed.get(i + 1);
+        if (c) out[i].snippet = c;
+      }
+    } catch (e) {
+      // keep the flat-truncated snippets already set above
+    }
+  }
+
+  return out.map(({ _raw, ...rest }) => rest);
+}
+
+async function search(query, k = 5, options = {}) {
+  const compress = options.compress;
   // If embeddings are enabled and index entries have embeddings, perform embedding search
   const idx = loadIndexSync();
-  const out = [];
   const hasEmbedding =
     idx &&
     Array.isArray(idx.entries) &&
@@ -468,19 +528,7 @@ async function search(query, k = 5) {
     const qembed = await computeEmbedding(query);
     if (!qembed) {
       // fall back to tf search
-      const tops = searchSync(query, k);
-      for (const t of tops) {
-        try {
-          const raw = await fs.promises
-            .readFile(t.path, "utf8")
-            .catch(() => "");
-          const snippet = String(raw).slice(0, 800);
-          out.push({ id: t.id, path: t.path, score: t.score, snippet });
-        } catch (e) {
-          out.push({ id: t.id, path: t.path, score: t.score, snippet: "" });
-        }
-      }
-      return out;
+      return buildSnippets(searchSync(query, k), query, compress);
     }
     // score by cosine similarity
     const scored = [];
@@ -490,32 +538,13 @@ async function search(query, k = 5) {
       scored.push({ e, score: s });
     }
     scored.sort((a, b) => b.score - a.score);
-    const top = scored.slice(0, k);
-    for (const t of top) {
-      try {
-        const raw = await fs.promises
-          .readFile(t.e.path, "utf8")
-          .catch(() => "");
-        const snippet = String(raw).slice(0, 800);
-        out.push({ id: t.e.id, path: t.e.path, score: t.score, snippet });
-      } catch (e) {
-        out.push({ id: t.e.id, path: t.e.path, score: t.score, snippet: "" });
-      }
-    }
-    return out;
+    const top = scored
+      .slice(0, k)
+      .map((t) => ({ id: t.e.id, path: t.e.path, score: t.score }));
+    return buildSnippets(top, query, compress);
   }
   // fallback to tf
-  const tops = searchSync(query, k);
-  for (const t of tops) {
-    try {
-      const raw = await fs.promises.readFile(t.path, "utf8").catch(() => "");
-      const snippet = String(raw).slice(0, 800);
-      out.push({ id: t.id, path: t.path, score: t.score, snippet });
-    } catch (e) {
-      out.push({ id: t.id, path: t.path, score: t.score, snippet: "" });
-    }
-  }
-  return out;
+  return buildSnippets(searchSync(query, k), query, compress);
 }
 
 async function buildVectorStore(options = {}) {
@@ -571,6 +600,7 @@ module.exports = {
   buildVectorStore,
   search,
   searchSync,
+  buildSnippets,
   loadIndexSync,
   INDEX_PATH,
   computeEmbedding,

@@ -403,6 +403,14 @@ function localLlamaReplyAvailable() {
   );
 }
 
+// Issue #208/#211: shared compress step -- one place decides how excerpts
+// get condensed, reused by both Deep Research's compress wiring below and
+// retriever-index.js's search() when called from the coding-mode
+// repo-retrieval block later in this file.
+function compressExcerpts(prompt) {
+  return runLocalLlamaReply(prompt, 1200, "quality", COMPRESS_SYSTEM_PROMPT);
+}
+
 const ttsRuntime = createTtsRuntime({
   env: process.env,
   baseDir: __dirname,
@@ -1718,13 +1726,9 @@ function registerRoutes(app, upload, deps = {}) {
     reflect:
       deps.reflect ||
       ((prompt) => runLocalLlamaReply(prompt, 100, "quality", REFLECT_SYSTEM_PROMPT)),
-    // Issue #208: same bound-completion pattern and "quality" profile as
-    // decompose/reflect above -- condensing up to maxSources excerpts down
-    // to what's relevant needs more headroom than reflect's one-line
-    // decision, hence the larger token budget.
-    compress:
-      deps.compress ||
-      ((prompt) => runLocalLlamaReply(prompt, 1200, "quality", COMPRESS_SYSTEM_PROMPT)),
+    // Issue #208: same shared compressExcerpts helper the coding-mode
+    // repo-retrieval block (issue #211) also reuses.
+    compress: deps.compress || compressExcerpts,
     // Same bound-completion pattern as synthesize/decompose above, just with
     // job-applications' own system prompt (issue #116).
     synthesizeJobMatch:
@@ -3331,7 +3335,10 @@ function registerRoutes(app, upload, deps = {}) {
               hits = null;
             }
 
-            if (!hits) hits = await retrieverIndex.search(transcript, 5);
+            if (!hits)
+              hits = await retrieverIndex.search(transcript, 5, {
+                compress: compressExcerpts,
+              });
             if (Array.isArray(hits) && hits.length) {
               const maxChars = Number(process.env.RETRIEVER_MAX_CHARS || 3000);
               const pieces = [];
