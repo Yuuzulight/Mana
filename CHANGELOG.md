@@ -357,6 +357,14 @@ accounting.
   disclosed when this plugin first shipped.
 
 ### Docs
+- **Issue #200 investigation**: compared `langchain-ai/context_engineering`'s
+  compression notebook against Mana's actual memory/retriever code.
+  Correction to the issue's own premise: `acp-memory-store.js` already has
+  real LLM summarization-on-write for the rolling session summary (issue
+  #141's `summarizeFn`) -- not truncation-only as assumed. The real gap:
+  neither `retriever-index.js`'s search snippets nor Deep Research's
+  per-source read excerpts are ever summarized, only flat char-truncated
+  (800 / 2000 chars respectively) -- filed as issue #208.
 - **Issue #199 investigation**: compared Deep Research's issue #145
   "parallel subagent delegation" against `langchain-ai/deep_research_from_scratch`'s
   supervisor/subagent pattern. Finding: Mana's #145 delegates concurrent
