@@ -69,6 +69,13 @@ const AVATAR_TOP_LEVEL = process.env.MANA_AVATAR_TOP_LEVEL || "screen-saver";
 const VISION_HOTKEY = process.env.MANA_VISION_HOTKEY || "Control+Alt+M";
 // Global hotkey that toggles the Mana chat window; set to off to disable.
 const WINDOW_HOTKEY = process.env.MANA_WINDOW_HOTKEY || "Control+Alt+Space";
+// Issue #219: interrupts Mana mid-speech (calls the renderer's existing
+// stopReplyAudio()) -- listenLoop() deliberately pauses mic recording
+// while Mana is speaking (avoids the mic hearing Mana's own voice through
+// the speakers), so a manual/hotkey interrupt is the low-risk way to let
+// the user cut in without needing real echo cancellation. Set to off to
+// disable.
+const INTERRUPT_HOTKEY = process.env.MANA_INTERRUPT_HOTKEY || "Control+Alt+I";
 
 async function isServiceRunning(url) {
   try {
@@ -912,6 +919,7 @@ app.whenReady().then(() => {
   createTray();
   registerVisionHotkey();
   registerWindowHotkey();
+  registerInterruptHotkey();
   runStartupSequence();
 
   screen.on("display-metrics-changed", positionAvatarWindow);
@@ -1016,6 +1024,34 @@ function registerVisionHotkey() {
     }
   } catch (error) {
     console.warn(`Vision hotkey registration failed: ${error.message}`);
+  }
+}
+
+function registerInterruptHotkey() {
+  const disabled =
+    !INTERRUPT_HOTKEY ||
+    INTERRUPT_HOTKEY === "0" ||
+    INTERRUPT_HOTKEY.toLowerCase() === "off";
+  if (disabled) {
+    return;
+  }
+
+  try {
+    const registered = globalShortcut.register(INTERRUPT_HOTKEY, () => {
+      // The renderer owns stopReplyAudio()/the speech flow; just poke it.
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send("interrupt-speech");
+      }
+    });
+    if (registered) {
+      console.log(`Interrupt hotkey registered: ${INTERRUPT_HOTKEY}`);
+    } else {
+      console.warn(
+        `Interrupt hotkey ${INTERRUPT_HOTKEY} could not be registered (already in use by another app?). Set MANA_INTERRUPT_HOTKEY to change it.`,
+      );
+    }
+  } catch (error) {
+    console.warn(`Interrupt hotkey registration failed: ${error.message}`);
   }
 }
 
