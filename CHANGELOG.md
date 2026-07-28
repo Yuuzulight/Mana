@@ -72,8 +72,8 @@ accounting.
   in without needing real echo cancellation. Reuses the existing
   `stopReplyAudio()` renderer function; `desktop-client` has no
   speech/listening loop so this is windows-launcher-only.
-- **Voice barge-in, phase 2: talk-over-Mana interrupt** (issue #219,
-  experimental, OFF by default -- `MANA_BARGE_IN_VOICE=1` to enable): while
+- **Voice barge-in, phase 2: talk-over-Mana interrupt** (issue #219, on by
+  default -- `MANA_BARGE_IN_VOICE=0` to fall back to hotkey-only): while
   Mana is speaking, watches the mic (reusing the same stream and Silero VAD
   as normal listening) and interrupts her once real speech has held for
   `MANA_BARGE_IN_HOLD_MS` (350ms default) continuously, via the same
@@ -83,8 +83,9 @@ accounting.
   echo-cancellation code. Not verified against real speakers/mic in this
   session -- there's no way to drive live audio hardware here, only to
   verify the wiring and the pure hold-time logic (new tests in
-  `voice-endpointing.test.js`) -- so it stays opt-in until someone auditions
-  it on real hardware.
+  `voice-endpointing.test.js`). Shipped opt-in at first for that reason;
+  turned on by default at the user's request -- if Mana ever cuts herself
+  off on her own echo, raise `MANA_BARGE_IN_HOLD_MS` first.
 - **Compress retriever-index.js search snippets instead of flat
   char-truncation** (issue #211, follow-up from #208): `search()`'s three
   branches (tf-fallback, embedding-similarity, embedding-query-failure
