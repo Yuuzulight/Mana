@@ -94,6 +94,7 @@ const { approvalGateCapability } = require("./capabilities/approval-gate-capabil
 const {
   RESEARCH_SYSTEM_PROMPT,
   SUB_QUERY_SYSTEM_PROMPT,
+  REFLECT_SYSTEM_PROMPT,
 } = require("./tools/deep-research");
 const { fetchPage, searchWeb, wikiLookup } = require("./tools/web-access");
 	const { runDoctorChecksAsync } = require("./doctor");
@@ -1708,6 +1709,12 @@ function registerRoutes(app, upload, deps = {}) {
     decompose:
       deps.decompose ||
       ((prompt) => runLocalLlamaReply(prompt, 200, "quality", SUB_QUERY_SYSTEM_PROMPT)),
+    // Issue #197: same bound-completion pattern and "quality" profile as
+    // decompose above -- a short structured decision (a follow-up query or
+    // NONE), not a full reply.
+    reflect:
+      deps.reflect ||
+      ((prompt) => runLocalLlamaReply(prompt, 100, "quality", REFLECT_SYSTEM_PROMPT)),
     // Same bound-completion pattern as synthesize/decompose above, just with
     // job-applications' own system prompt (issue #116).
     synthesizeJobMatch:

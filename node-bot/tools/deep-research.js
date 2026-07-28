@@ -17,6 +17,25 @@ const MAX_SUB_QUERIES_CAP = 4;
 const DEFAULT_MAX_PER_DOMAIN = 2;
 const MAX_PER_DOMAIN_CAP = MAX_SOURCES_CAP;
 const MAX_CONCURRENCY_CAP = 5;
+// Issue #197: how many extra search-reflect-synthesize cycles are allowed
+// beyond the initial pass. Small and capped on purpose -- this is meant to
+// close one genuine, named gap the model itself flagged, not turn into an
+// open-ended research loop with no bound.
+const DEFAULT_MAX_REFLECT_CYCLES = 1;
+const MAX_REFLECT_CYCLES_CAP = 2;
+
+const NO_GAP_MARKER = "NONE";
+// Issue #197: reuses the existing gap-detection instinct already baked
+// into RESEARCH_SYSTEM_PROMPT's "Note:" line, but as a structured decision
+// (a follow-up query or NONE) instead of free text glued onto the report.
+const REFLECT_SYSTEM_PROMPT =
+  `You are reviewing a research report for a genuine gap: a question the ` +
+  `sources didn't answer, a real disagreement between sources, or an ` +
+  `obviously outdated source with no more recent one to check against. ` +
+  `If you find one, reply with exactly one line: a single, specific web ` +
+  `search query that would find a source to close that gap. If the report ` +
+  `is already sufficient, reply with exactly "${NO_GAP_MARKER}" and ` +
+  `nothing else. Never invent a gap just to have something to say.`;
 
 // Issue #77: the trailing "Note:" line is deliberately conditional -- only
 // meaningfully-stale/incomplete/conflicting sources should trigger it, never
@@ -85,6 +104,13 @@ function clampMaxConcurrency(value) {
   return Math.min(Math.max(safe, 1), MAX_CONCURRENCY_CAP);
 }
 
+function clampMaxReflectCycles(value) {
+  const n = Number(value);
+  const safe =
+    Number.isFinite(n) && n >= 0 ? Math.round(n) : DEFAULT_MAX_REFLECT_CYCLES;
+  return Math.min(Math.max(safe, 0), MAX_REFLECT_CYCLES_CAP);
+}
+
 function hostnameOf(url) {
   try {
     return new URL(String(url || "")).hostname.toLowerCase();
@@ -128,6 +154,24 @@ function buildResearchPrompt(question, sources) {
   return [`Research question: ${question}`, "", "Sources:", ...sourceBlocks].join(
     "\n\n",
   );
+}
+
+function buildReflectPrompt(question, report) {
+  return [`Research question: ${question}`, "", "Current report:", report].join(
+    "\n\n",
+  );
+}
+
+// Returns null when the model reports no gap (or the response can't be
+// read as a plausible single search query) -- a malformed or chatty
+// response is treated the same as "no gap" rather than risking a garbage
+// query, matching parseSubQueries' own "silently degrade" philosophy.
+function parseReflectDecision(text) {
+  const trimmed = String(text || "").trim();
+  if (!trimmed || trimmed.toUpperCase() === NO_GAP_MARKER) return null;
+  const firstLine = trimmed.split(/\r?\n/)[0].trim();
+  if (!firstLine || firstLine.length > 200) return null;
+  return firstLine;
 }
 
 // options.synthesize: required, (prompt) => Promise<string>.
@@ -186,97 +230,122 @@ async function runDeepResearch(question, options = {}) {
   }
   throwIfCancelled();
 
-  // Step 2: search each query, pooling results and deduping by URL. A
-  // per-domain cap keeps the pool from being dominated by several pages of
-  // the same site (e.g. three Reddit threads), so the reader actually gets
-  // multiple perspectives. Results whose URL doesn't parse are never capped.
+  // Steps 2+3: search a set of queries, pooling/deduping results, then read
+  // the new ones concurrently. Extracted into a reusable closure (issue
+  // #197) so the reflect loop below can run the exact same search-then-read
+  // logic for one follow-up query, instead of duplicating it -- citation
+  // numbering continues from sources.length rather than restarting, and
+  // each source is tagged with which cycle (0 = initial, 1+ = reflect)
+  // found it.
   const pooled = [];
   const seenUrls = new Set();
   const domainCounts = new Map();
   const searchErrors = [];
+  const sources = [];
   let hitTimeLimit = false;
-  for (let qi = 0; qi < queries.length; qi += 1) {
+  let hitSourceLimit = false;
+
+  async function searchAndRead(queriesToRun, cycle) {
+    // Step 2: search each query, pooling results and deduping by URL. A
+    // per-domain cap keeps the pool from being dominated by several pages
+    // of the same site (e.g. three Reddit threads), so the reader actually
+    // gets multiple perspectives. Results whose URL doesn't parse are
+    // never capped.
+    const newlyPooled = [];
+    for (let qi = 0; qi < queriesToRun.length; qi += 1) {
+      if (elapsed() >= maxTotalMs) {
+        hitTimeLimit = true;
+        break;
+      }
+      throwIfCancelled();
+      onProgress({
+        step: "searching",
+        label:
+          queriesToRun.length > 1
+            ? `Searching (${qi + 1} of ${queriesToRun.length}): "${queriesToRun[qi]}"...`
+            : `Searching for "${queriesToRun[qi]}"...`,
+        index: qi + 1,
+        total: queriesToRun.length,
+      });
+
+      let results = [];
+      try {
+        results = await search(queriesToRun[qi], { limit: maxSources });
+      } catch (e) {
+        // One failing sub-search shouldn't sink the pass; only give up if
+        // every search failed (checked below, cycle 0 only).
+        searchErrors.push(e);
+        continue;
+      }
+      for (const result of results) {
+        const key = String(result.url || "").trim();
+        if (!key || seenUrls.has(key)) continue;
+        const hostname = hostnameOf(key);
+        if (hostname) {
+          const count = domainCounts.get(hostname) || 0;
+          if (count >= maxPerDomain) continue;
+          domainCounts.set(hostname, count + 1);
+        }
+        seenUrls.add(key);
+        pooled.push(result);
+        newlyPooled.push(result);
+      }
+    }
+
+    if (
+      cycle === 0 &&
+      !pooled.length &&
+      searchErrors.length === queriesToRun.length &&
+      searchErrors.length
+    ) {
+      throw searchErrors[0];
+    }
+
+    if (pooled.length > maxSources) hitSourceLimit = true;
+
+    // Step 3 (issue #145): read the newly pooled sources concurrently,
+    // capped by maxConcurrency -- each read is fully independent of the
+    // others (a different URL, no shared state), the clearest case of
+    // parallelizable sub-work in this pipeline. Each task checks
+    // cancellation for itself right before starting its own read -- a
+    // global check before the whole batch wouldn't stop tasks that
+    // haven't started their read yet once isCancelled() flips true
+    // partway through (worker slots pick up the next task as soon as
+    // they free up, same as a sequential loop checked between each
+    // iteration).
+    throwIfCancelled();
+    const toRead = newlyPooled.slice(0, maxSources);
+    if (!toRead.length) return 0;
     if (elapsed() >= maxTotalMs) {
       hitTimeLimit = true;
-      break;
+      return 0;
     }
-    throwIfCancelled();
-    onProgress({
-      step: "searching",
-      label:
-        queries.length > 1
-          ? `Searching (${qi + 1} of ${queries.length}): "${queries[qi]}"...`
-          : `Searching for "${queries[qi]}"...`,
-      index: qi + 1,
-      total: queries.length,
-    });
 
-    let results = [];
-    try {
-      results = await search(queries[qi], { limit: maxSources });
-    } catch (e) {
-      // One failing sub-search shouldn't sink the pass; only give up if
-      // every search failed (checked below).
-      searchErrors.push(e);
-      continue;
-    }
-    for (const result of results) {
-      const key = String(result.url || "").trim();
-      if (!key || seenUrls.has(key)) continue;
-      const hostname = hostnameOf(key);
-      if (hostname) {
-        const count = domainCounts.get(hostname) || 0;
-        if (count >= maxPerDomain) continue;
-        domainCounts.set(hostname, count + 1);
-      }
-      seenUrls.add(key);
-      pooled.push(result);
-    }
-  }
-
-  if (!pooled.length && searchErrors.length === queries.length && searchErrors.length) {
-    throw searchErrors[0];
-  }
-
-  const consideredCount = Math.min(pooled.length, maxSources);
-  const hitSourceLimit = pooled.length > maxSources;
-
-  // Step 3 (issue #145): read the pooled sources concurrently, capped by
-  // maxConcurrency -- each read is fully independent of the others (a
-  // different URL, no shared state), the clearest case of parallelizable
-  // sub-work in this pipeline. Results are written to fixed array slots by
-  // pool position, so citation numbering stays stable regardless of which
-  // read finishes first. Each task checks cancellation for itself right
-  // before starting its own read -- a global check before the whole batch
-  // wouldn't stop tasks that haven't started their read yet once
-  // isCancelled() flips true partway through (worker slots pick up the
-  // next task as soon as they free up, same as the old sequential loop
-  // checked between each iteration).
-  throwIfCancelled();
-  let sources = [];
-  if (consideredCount > 0 && elapsed() < maxTotalMs) {
-    sources = new Array(consideredCount);
-    const readTasks = pooled.slice(0, consideredCount).map((result, i) => async () => {
+    const startIndex = sources.length;
+    const localResults = new Array(toRead.length);
+    const readTasks = toRead.map((result, i) => async () => {
       throwIfCancelled();
       try {
         const page = await read(result.url);
         return {
-          index: i + 1,
+          index: startIndex + i + 1,
           url: page.url,
           title: page.title || result.title,
           excerpt: page.text.slice(0, MAX_EXCERPT_CHARS),
           readFailed: false,
+          cycle,
         };
       } catch (e) {
         if (e instanceof ResearchCancelledError) throw e;
         // A single unreadable source shouldn't sink the whole research pass
         // -- fall back to the search snippet so it's still citable.
         return {
-          index: i + 1,
+          index: startIndex + i + 1,
           url: result.url,
           title: result.title,
           excerpt: result.snippet,
           readFailed: true,
+          cycle,
         };
       }
     });
@@ -285,13 +354,13 @@ async function runDeepResearch(question, options = {}) {
       maxConcurrency,
       onTaskSettled: (i, settled) => {
         if (!settled.ok) return; // cancellation -- surfaced below
-        sources[i] = settled.value;
+        localResults[i] = settled.value;
         onProgress({
           step: "reading",
-          label: `Reading source ${i + 1} of ${consideredCount}...`,
-          index: i + 1,
-          total: consideredCount,
-          url: pooled[i].url,
+          label: `Reading source ${startIndex + i + 1} of ${startIndex + toRead.length}...`,
+          index: startIndex + i + 1,
+          total: startIndex + toRead.length,
+          url: toRead[i].url,
         });
       },
     });
@@ -300,9 +369,13 @@ async function runDeepResearch(question, options = {}) {
       (r) => !r.ok && r.error instanceof ResearchCancelledError,
     );
     if (cancelled) throw cancelled.error;
-  } else if (consideredCount > 0) {
-    hitTimeLimit = true;
+
+    const added = localResults.filter(Boolean);
+    sources.push(...added);
+    return added.length;
   }
+
+  await searchAndRead(queries, 0);
 
   if (elapsed() >= maxTotalMs) {
     hitTimeLimit = true;
@@ -310,20 +383,66 @@ async function runDeepResearch(question, options = {}) {
   throwIfCancelled();
   onProgress({ step: "synthesizing", label: "Synthesizing report..." });
 
-  const report = sources.length
+  let report = sources.length
     ? await options.synthesize(buildResearchPrompt(cleanQuestion, sources))
     : "No sources could be found or read for this question.";
+
+  // Issue #197: reflect on the synthesized report for a genuine, named gap
+  // and -- if the caller opted in and one is found -- run one more bounded
+  // search-read-synthesize cycle to close it. Never runs by default
+  // (options.reflect is opt-in, same pattern as options.decompose) and
+  // never loops more than maxReflectCycles times regardless of what the
+  // model keeps claiming needs closing.
+  const reflect =
+    typeof options.reflect === "function" ? options.reflect : null;
+  const maxReflectCycles = clampMaxReflectCycles(options.maxReflectCycles);
+  let reflectCycles = 0;
+  if (reflect && sources.length && maxReflectCycles > 0) {
+    for (let cycle = 1; cycle <= maxReflectCycles; cycle += 1) {
+      if (elapsed() >= maxTotalMs) {
+        hitTimeLimit = true;
+        break;
+      }
+      throwIfCancelled();
+      onProgress({ step: "reflecting", label: "Checking for gaps..." });
+
+      let gapQuery = null;
+      try {
+        const raw = await reflect(buildReflectPrompt(cleanQuestion, report));
+        gapQuery = parseReflectDecision(raw);
+      } catch (e) {
+        // A failing reflect call must never sink an already-good report --
+        // just stop cycling, same resilience philosophy as decompose above.
+        gapQuery = null;
+      }
+      if (!gapQuery) break;
+
+      throwIfCancelled();
+      const added = await searchAndRead([gapQuery], cycle);
+      if (!added) break; // nothing new found for the flagged gap
+      reflectCycles = cycle;
+
+      if (elapsed() >= maxTotalMs) {
+        hitTimeLimit = true;
+        break;
+      }
+      throwIfCancelled();
+      onProgress({ step: "synthesizing", label: "Synthesizing updated report..." });
+      report = await options.synthesize(buildResearchPrompt(cleanQuestion, sources));
+    }
+  }
 
   onProgress({ step: "done", label: "Research complete." });
 
   return {
     question: cleanQuestion,
     subQueries,
-    sources: sources.map(({ index, url, title, readFailed }) => ({
+    sources: sources.map(({ index, url, title, readFailed, cycle }) => ({
       index,
       url,
       title,
       readFailed,
+      cycle,
     })),
     report,
     bounds: {
@@ -332,6 +451,8 @@ async function runDeepResearch(question, options = {}) {
       maxSubQueries,
       maxPerDomain,
       maxConcurrency,
+      maxReflectCycles,
+      reflectCycles,
       sourcesUsed: sources.length,
       elapsedMs: elapsed(),
       hitTimeLimit,
@@ -351,11 +472,17 @@ module.exports = {
   MAX_PER_DOMAIN_CAP,
   DEFAULT_MAX_CONCURRENCY,
   MAX_CONCURRENCY_CAP,
+  DEFAULT_MAX_REFLECT_CYCLES,
+  MAX_REFLECT_CYCLES_CAP,
+  NO_GAP_MARKER,
   RESEARCH_SYSTEM_PROMPT,
   SUB_QUERY_SYSTEM_PROMPT,
+  REFLECT_SYSTEM_PROMPT,
   ResearchCancelledError,
   buildResearchPrompt,
   buildSubQueryPrompt,
+  buildReflectPrompt,
   parseSubQueries,
+  parseReflectDecision,
   runDeepResearch,
 };
