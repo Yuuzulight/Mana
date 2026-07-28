@@ -118,7 +118,8 @@ function createTtsRuntime(options = {}) {
   const logPerf = options.logPerf || (() => {});
   const postJson = options.postJsonBuffer || postJsonBuffer;
   const postFish =
-    options.postFishTtsBuffer || ((text) => postFishTtsBuffer(text));
+    options.postFishTtsBuffer ||
+    ((text, timeoutMs) => postFishTtsBuffer(text, timeoutMs));
 
   const ttsBin = env.TTS_BIN || null;
   const ttsModel = env.TTS_MODEL || null;
@@ -303,7 +304,7 @@ function createTtsRuntime(options = {}) {
     return request;
   }
 
-  function postFishTtsBuffer(text) {
+  function postFishTtsBuffer(text, timeoutMs = fishTtsTimeoutMs) {
     return new Promise((resolve, reject) => {
       const url = new URL("/v1/tts", fishTtsUrl);
       const transport = url.protocol === "https:" ? https : http;
@@ -327,7 +328,7 @@ function createTtsRuntime(options = {}) {
           path: `${url.pathname}${url.search}`,
           method: "POST",
           headers,
-          timeout: fishTtsTimeoutMs,
+          timeout: timeoutMs,
         },
         (res) => {
           const chunks = [];
@@ -354,12 +355,47 @@ function createTtsRuntime(options = {}) {
       req.on("error", reject);
       req.on("timeout", () => {
         req.destroy(
-          new Error(`Fish Speech request timed out after ${fishTtsTimeoutMs}ms`),
+          new Error(`Fish Speech request timed out after ${timeoutMs}ms`),
         );
       });
       req.write(payload);
       req.end();
     });
+  }
+
+  // Issue #215: torch.compile (issue #213) makes the *first* real generate()
+  // call after each Fish Speech (re)start take ~4 minutes (a one-time
+  // compile trace), not the usual ~1-3s. Without a proactive warmup, that
+  // first call would be whatever the user's first real chat message
+  // triggers -- and it would blow straight through fishTtsTimeoutMs
+  // (20s default), silently falling back to Kokoro for that one reply
+  // rather than actually waiting out the compile. This fires one
+  // throwaway synthesis at startup instead, on its own much longer
+  // timeout, so the compile trace happens before any user is waiting on
+  // it. Best-effort: a failure here just means the first real reply pays
+  // the compile cost (or times out) like it would have anyway.
+  let fishWarmupStatus = "idle";
+  const fishTtsWarmupTimeoutMs = Number(
+    env.FISH_TTS_WARMUP_TIMEOUT_MS || 5 * 60 * 1000,
+  );
+
+  function getFishWarmupStatus() {
+    return fishWarmupStatus;
+  }
+
+  async function warmupFishTts() {
+    if (ttsProvider !== "fish") {
+      fishWarmupStatus = "skipped";
+      return fishWarmupStatus;
+    }
+    fishWarmupStatus = "warming";
+    try {
+      await postFish("Warming up.", fishTtsWarmupTimeoutMs);
+      fishWarmupStatus = "ready";
+    } catch (e) {
+      fishWarmupStatus = "failed";
+    }
+    return fishWarmupStatus;
   }
 
   // Parks Fish Speech's weights in system RAM (target "cpu") while a game
@@ -606,6 +642,8 @@ function createTtsRuntime(options = {}) {
       providerOverride = provider || null;
     },
     swapFishDevice,
+    warmupFishTts,
+    getFishWarmupStatus,
     urls: {
       fishTtsUrl,
       kokoroTtsUrl,
