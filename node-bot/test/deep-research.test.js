@@ -7,9 +7,13 @@ const {
   MAX_SOURCES_CAP,
   MAX_TOTAL_MS_CAP,
   MAX_CONCURRENCY_CAP,
+  MAX_REFLECT_CYCLES_CAP,
+  NO_GAP_MARKER,
   ResearchCancelledError,
   buildResearchPrompt,
+  buildReflectPrompt,
   parseSubQueries,
+  parseReflectDecision,
   runDeepResearch,
 } = require("../tools/deep-research");
 
@@ -55,6 +59,7 @@ test("runDeepResearch searches, reads bounded sources, and synthesizes a cited r
     url: "https://example.com/1",
     title: "Title for https://example.com/1",
     readFailed: false,
+    cycle: 0,
   });
   assert.equal(result.report, "Paris is the capital of France [1].");
   assert.equal(result.bounds.maxSources, 2);
@@ -406,4 +411,177 @@ test("buildResearchPrompt numbers sources and includes the question", () => {
   assert.match(prompt, /Research question: why is the sky blue\?/);
   assert.match(prompt, /\[1\] A\nURL: https:\/\/a\.com\nexcerpt a/);
   assert.match(prompt, /\[2\] B\nURL: https:\/\/b\.com\nexcerpt b/);
+});
+
+test("buildReflectPrompt includes the question and the current report", () => {
+  const prompt = buildReflectPrompt("why is the sky blue?", "Because of Rayleigh scattering [1].");
+  assert.match(prompt, /Research question: why is the sky blue\?/);
+  assert.match(prompt, /Because of Rayleigh scattering \[1\]\./);
+});
+
+test("parseReflectDecision returns null for the NO_GAP_MARKER, case-insensitively, and for empty text", () => {
+  assert.equal(parseReflectDecision(NO_GAP_MARKER), null);
+  assert.equal(parseReflectDecision("none"), null);
+  assert.equal(parseReflectDecision("  None  "), null);
+  assert.equal(parseReflectDecision(""), null);
+  assert.equal(parseReflectDecision(undefined), null);
+});
+
+test("parseReflectDecision returns the first line as a query when a gap is flagged", () => {
+  assert.equal(parseReflectDecision("latest 2026 population figures for France"), "latest 2026 population figures for France");
+  assert.equal(
+    parseReflectDecision("latest population figures\nsome extra commentary the model added"),
+    "latest population figures",
+  );
+});
+
+test("parseReflectDecision rejects an implausibly long single line", () => {
+  assert.equal(parseReflectDecision("x".repeat(201)), null);
+});
+
+test("runDeepResearch never reflects when options.reflect is not provided", async () => {
+  const result = await runDeepResearch("what is the capital of France?", {
+    searchWeb: async () => fakeSearchResults(1),
+    fetchPage: async (url) => ({ url, title: "T", text: "text" }),
+    synthesize: async () => "Paris [1].",
+  });
+  assert.equal(result.bounds.reflectCycles, 0);
+  assert.equal(result.report, "Paris [1].");
+});
+
+test("runDeepResearch skips the reflect step entirely when reflect reports NO_GAP_MARKER", async () => {
+  let reflectCalls = 0;
+  let synthesizeCalls = 0;
+  const result = await runDeepResearch("what is the capital of France?", {
+    searchWeb: async () => fakeSearchResults(1),
+    fetchPage: async (url) => ({ url, title: "T", text: "text" }),
+    synthesize: async () => {
+      synthesizeCalls += 1;
+      return "Paris [1].";
+    },
+    reflect: async () => {
+      reflectCalls += 1;
+      return NO_GAP_MARKER;
+    },
+  });
+  assert.equal(reflectCalls, 1);
+  assert.equal(synthesizeCalls, 1, "should not re-synthesize when no gap was found");
+  assert.equal(result.bounds.reflectCycles, 0);
+  assert.equal(result.report, "Paris [1].");
+});
+
+test("runDeepResearch runs one reflect cycle: searches the gap query, appends the new source, and re-synthesizes", async () => {
+  const searchQueries = [];
+  const synthesizePrompts = [];
+  let reflectCalls = 0;
+
+  const result = await runDeepResearch("what is the capital of France?", {
+    searchWeb: async (query) => {
+      searchQueries.push(query);
+      if (query === "what is the capital of France?") {
+        return [{ title: "Result 1", url: "https://example.com/1", snippet: "s1" }];
+      }
+      // the reflect-flagged follow-up query
+      return [{ title: "Result 2", url: "https://example.com/2", snippet: "s2" }];
+    },
+    fetchPage: async (url) => ({ url, title: `Title for ${url}`, text: `text for ${url}` }),
+    synthesize: async (prompt) => {
+      synthesizePrompts.push(prompt);
+      return synthesizePrompts.length === 1 ? "Paris [1]." : "Paris [1], population per [2].";
+    },
+    reflect: async (prompt) => {
+      reflectCalls += 1;
+      assert.match(prompt, /Paris \[1\]\./);
+      return "current population of Paris";
+    },
+  });
+
+  assert.deepEqual(searchQueries, ["what is the capital of France?", "current population of Paris"]);
+  assert.equal(reflectCalls, 1);
+  assert.equal(synthesizePrompts.length, 2, "should re-synthesize once after the reflect cycle adds a source");
+  assert.equal(result.bounds.reflectCycles, 1);
+  assert.equal(result.sources.length, 2);
+  assert.equal(result.sources[0].cycle, 0);
+  assert.equal(result.sources[1].cycle, 1);
+  assert.equal(result.sources[1].index, 2, "citation numbering should continue, not restart");
+  assert.equal(result.report, "Paris [1], population per [2].");
+});
+
+test("runDeepResearch never exceeds maxReflectCycles even if reflect keeps flagging gaps", async () => {
+  let reflectCalls = 0;
+  let searchCallCount = 0;
+
+  const result = await runDeepResearch("what is the capital of France?", {
+    maxReflectCycles: 2,
+    // Distinct hostnames per call -- otherwise the (correct, shared-across-
+    // cycles) per-domain cap would reject the 2nd/3rd same-domain result
+    // before ever exercising the reflect-cycle-count logic this test wants.
+    searchWeb: async () => {
+      searchCallCount += 1;
+      return [{ title: `Result ${searchCallCount}`, url: `https://example${searchCallCount}.com/1`, snippet: "s" }];
+    },
+    fetchPage: async (url) => ({ url, title: "T", text: "text" }),
+    synthesize: async () => "report",
+    reflect: async () => {
+      reflectCalls += 1;
+      return "always claims a gap remains";
+    },
+  });
+
+  assert.equal(reflectCalls, 2, "should stop asking after maxReflectCycles, not loop forever");
+  assert.equal(result.bounds.reflectCycles, 2);
+});
+
+test("runDeepResearch clamps maxReflectCycles to MAX_REFLECT_CYCLES_CAP", async () => {
+  let searchCallCount = 0;
+  const result = await runDeepResearch("what is the capital of France?", {
+    maxReflectCycles: 999,
+    searchWeb: async () => {
+      searchCallCount += 1;
+      return [{ title: `Result ${searchCallCount}`, url: `https://example${searchCallCount}.com/1`, snippet: "s" }];
+    },
+    fetchPage: async (url) => ({ url, title: "T", text: "text" }),
+    synthesize: async () => "report",
+    reflect: async () => "always claims a gap remains",
+  });
+  assert.equal(result.bounds.maxReflectCycles, MAX_REFLECT_CYCLES_CAP);
+  assert.equal(result.bounds.reflectCycles, MAX_REFLECT_CYCLES_CAP);
+});
+
+test("runDeepResearch stops reflecting (without throwing) when the reflect call itself fails", async () => {
+  let synthesizeCalls = 0;
+  const result = await runDeepResearch("what is the capital of France?", {
+    searchWeb: async () => fakeSearchResults(1),
+    fetchPage: async (url) => ({ url, title: "T", text: "text" }),
+    synthesize: async () => {
+      synthesizeCalls += 1;
+      return "Paris [1].";
+    },
+    reflect: async () => {
+      throw new Error("reflect model unavailable");
+    },
+  });
+  assert.equal(result.bounds.reflectCycles, 0);
+  assert.equal(synthesizeCalls, 1);
+  assert.equal(result.report, "Paris [1].");
+});
+
+test("runDeepResearch stops reflecting when the gap query finds nothing new", async () => {
+  let synthesizeCalls = 0;
+  const result = await runDeepResearch("what is the capital of France?", {
+    searchWeb: async (query) => {
+      if (query === "what is the capital of France?") {
+        return [{ title: "Result 1", url: "https://example.com/1", snippet: "s1" }];
+      }
+      return []; // the gap query finds nothing
+    },
+    fetchPage: async (url) => ({ url, title: "T", text: "text" }),
+    synthesize: async () => {
+      synthesizeCalls += 1;
+      return "Paris [1].";
+    },
+    reflect: async () => "a query that finds nothing",
+  });
+  assert.equal(synthesizeCalls, 1, "should not re-synthesize when the gap cycle added no new sources");
+  assert.equal(result.bounds.reflectCycles, 0);
 });
