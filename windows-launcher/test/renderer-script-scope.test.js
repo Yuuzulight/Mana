@@ -20,7 +20,11 @@ const INDEX_HTML = path.join(RENDERER_DIR, "index.html");
 
 function localSiblingScripts() {
   const html = fs.readFileSync(INDEX_HTML, "utf8");
-  const srcs = [...html.matchAll(/<script src="([^"]+)"><\/script>/g)].map((m) => m[1]);
+  // Only matches the opening tag -- no need to also match `</script>` (which
+  // CodeQL flags as a fragile "HTML filtering" pattern since real end tags
+  // can have whitespace like `</script >`); the src attribute is all this
+  // needs to extract.
+  const srcs = [...html.matchAll(/<script\s+src="([^"]+)"\s*>/g)].map((m) => m[1]);
   // Only same-directory, non-vendor scripts run in the shared classic-script
   // scope this bug affects -- ../assets/, ../node_modules/, etc. are vendor
   // bundles (already their own IIFEs/UMDs), not part of this app's own
