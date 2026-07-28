@@ -62,6 +62,13 @@ accounting.
   Each source is now tagged with which cycle found it. Inspired by
   `langchain-ai/local-deep-researcher`'s search-reflect-repeat loop, not a
   LangGraph/LangChain adoption.
+- **Real GGUF metadata parsing** (issue #196): a new `GET /models/gguf-metadata`
+  route (on-demand, kept separate from the frequently-polled
+  `/models/status` since real header parsing is real file I/O) uses
+  `@huggingface/gguf` to read a model's actual architecture, quantization,
+  context length, and computed parameter count, instead of only validating
+  the 4-byte magic bytes as before. The magic-byte check (issue #125)
+  stays the fast first-pass gate, unchanged.
 - **Evaluated text-embeddings-inference (TEI) as the local embedder backend**
   (issue #195) -- **not adopted**: TEI has no official native Windows
   build (Homebrew binary is Apple-Silicon-only, everything else is Docker
