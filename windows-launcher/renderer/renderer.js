@@ -56,6 +56,7 @@ const {
   DEFAULT_MAX_UTTERANCE_MS,
   DEFAULT_MAX_WAIT_FOR_SPEECH_MS,
   DEFAULT_SILENCE_BUFFER_MS,
+  nextBargeInState,
   shouldStopRecording,
 } = require("./voice-endpointing");
 const { detectReplyEmotion } = require("./reply-emotion");
@@ -180,6 +181,18 @@ const SPEECH_GAIN_MAX_BOOST = Number(process.env.MANA_SPEECH_GAIN_MAX_BOOST || 6
 const VAD_THRESHOLD = Number(process.env.MANA_VAD_THRESHOLD || 0.5);
 const VAD_DISABLED = process.env.MANA_DISABLE_VAD === "1";
 const VAD_MODEL_URL = "../assets/vad/silero_vad.onnx";
+// Issue #219 phase 2, experimental and OFF by default: interrupt Mana by just
+// talking over her, instead of only via the hotkey. getUserMedia's default
+// echoCancellation constraint (on since ensureMediaStream() only ever
+// requests `audio: true`) already tries to cancel Mana's own TTS voice out
+// of the mic before this ever sees it, but real speaker/mic acoustic paths
+// vary a lot by hardware -- unlike the hotkey, this can misfire on residual
+// echo, so it needs the user's own speakers/mic to validate before trusting
+// it. MANA_BARGE_IN_HOLD_MS requires that many ms of continuous VAD-positive
+// speech before triggering, to reject brief echo pops/clicks.
+const BARGE_IN_VOICE_ENABLED = process.env.MANA_BARGE_IN_VOICE === "1";
+const BARGE_IN_HOLD_MS = Number(process.env.MANA_BARGE_IN_HOLD_MS || 350);
+const BARGE_IN_POLL_MS = 50;
 // Per-session transcription debug logging (docs/speech_recognition_improvement_plan.md):
 // enable with ?speechDebug=1 or localStorage.manaSpeechDebug = "1".
 const SPEECH_DEBUG_ENABLED =
@@ -1071,6 +1084,79 @@ async function synthesizeSpeechChunk(index, chunks, playbackToken) {
   return await response.blob();
 }
 
+let bargeInMonitor = null;
+
+// Issue #219 phase 2: runs only while Mana is speaking and BARGE_IN_VOICE_ENABLED
+// is on. Reuses the same mic stream + Silero VAD as normal listening (so
+// whatever echo cancellation getUserMedia is already doing applies here too)
+// instead of opening a second audio pipeline. Requires BARGE_IN_HOLD_MS of
+// continuous VAD-positive speech -- not just one positive frame -- before
+// calling stopReplyAudio(), so a single echo/pop blip can't trigger it.
+async function watchForBargeIn() {
+  if (bargeInMonitor) {
+    return;
+  }
+  const self = { stopped: false };
+  bargeInMonitor = self;
+
+  try {
+    await ensureMediaStream();
+    const vad = getSileroVad();
+    if (!vad) {
+      return;
+    }
+    vad.reset();
+
+    const audioCtx = new (window.AudioContext || window.webkitAudioContext)({
+      sampleRate: VAD_SAMPLE_RATE,
+    });
+    const source = audioCtx.createMediaStreamSource(mediaStream);
+    const analyser = audioCtx.createAnalyser();
+    analyser.fftSize = 1024;
+    source.connect(analyser);
+    const samples = new Float32Array(analyser.fftSize);
+
+    let speechStartedAt = null;
+    try {
+      while (!self.stopped && currentReplyAudio) {
+        await wait(BARGE_IN_POLL_MS);
+        if (self.stopped || !currentReplyAudio) {
+          break;
+        }
+
+        let isSpeech = false;
+        try {
+          analyser.getFloatTimeDomainData(samples);
+          const frame = samples.subarray(samples.length - VAD_FRAME_SAMPLES);
+          const probability = await vad.processFrame(frame);
+          isSpeech = vad.isSpeech(probability);
+        } catch (e) {
+          isSpeech = false;
+        }
+
+        const state = nextBargeInState({
+          isSpeech,
+          speechStartedAt,
+          now: performance.now(),
+          holdMs: BARGE_IN_HOLD_MS,
+        });
+        speechStartedAt = state.speechStartedAt;
+        if (state.triggered) {
+          stopReplyAudio();
+          break;
+        }
+      }
+    } finally {
+      try {
+        source.disconnect();
+      } catch (e) {}
+      audioCtx.close().catch(() => {});
+    }
+  } finally {
+    bargeInMonitor = null;
+  }
+}
+
 function playAudioBlob(audioBlob, playbackToken, avatarState) {
   return new Promise((resolve, reject) => {
     if (playbackToken !== replyPlaybackToken) {
@@ -1121,6 +1207,11 @@ function playAudioBlob(audioBlob, playbackToken, avatarState) {
 
     const playback = currentReplyAudio.play();
     startLipSync(currentReplyAudio);
+    if (BARGE_IN_VOICE_ENABLED) {
+      watchForBargeIn().catch((e) =>
+        console.warn("Voice barge-in monitor failed:", e.message),
+      );
+    }
     playback.catch(reject);
   });
 }
