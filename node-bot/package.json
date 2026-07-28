@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@discordjs/voice": "^0.19.2",
+    "@huggingface/gguf": "^0.4.4",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "axios": "^1.4.0",
     "cors": "^2.8.5",

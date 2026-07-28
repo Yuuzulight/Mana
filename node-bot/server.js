@@ -97,6 +97,7 @@ const {
   REFLECT_SYSTEM_PROMPT,
 } = require("./tools/deep-research");
 const { fetchPage, searchWeb, wikiLookup } = require("./tools/web-access");
+const { readGgufMetadata } = require("./tools/gguf-metadata");
 	const { runDoctorChecksAsync } = require("./doctor");
 	const { MobileDeviceStore } = require("./mobile-device-store");
 	// NOTE: mobile-auth and mobile-memory-store may exist; we add device store integration here
@@ -1926,6 +1927,25 @@ function registerRoutes(app, upload, deps = {}) {
 
   app.get("/models/status", (req, res) => {
     return res.json(modelManagement.getModelStatus());
+  });
+
+  // Issue #196: separate from /models/status (polled frequently) on
+  // purpose -- real GGUF header parsing is real file I/O, not something to
+  // add to a hot poll path. Called on-demand when a user actually wants to
+  // see a model's real metadata instead of just its filename. Reuses the
+  // same magic-byte gate setModelPath()/setVisionSettings() already use
+  // before ever trusting a path is a real GGUF file.
+  const activeReadGgufMetadata = deps.readGgufMetadata || readGgufMetadata;
+  app.get("/models/gguf-metadata", async (req, res) => {
+    const filePath = String(req.query?.path || "");
+    if (!filePath || !modelManagement.isValidGgufFile(filePath)) {
+      return res.status(400).json({ error: "path must point to a valid GGUF file" });
+    }
+    const metadata = await activeReadGgufMetadata(filePath);
+    if (!metadata) {
+      return res.status(422).json({ error: "could not parse GGUF metadata for this file" });
+    }
+    return res.json(metadata);
   });
 
   app.post("/models/active-profile", (req, res) => {
