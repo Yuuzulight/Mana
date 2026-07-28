@@ -59,7 +59,12 @@ const {
   shouldStopRecording,
 } = require("./voice-endpointing");
 const { detectReplyEmotion } = require("./reply-emotion");
-const { isLikelyWhisperHallucination } = require("./speech-filters");
+const {
+  isLikelyWhisperHallucination,
+  fuzzyMatchesWakeWord,
+  computeGainFactor,
+  getSpeechRejectReason: getSpeechRejectReasonPure,
+} = require("./speech-filters");
 const { extractArtifact } = require("./artifact-detector");
 const { createMarkdownRenderer } = require("./markdown-render");
 const renderMarkdownToSafeHtml = createMarkdownRenderer();
@@ -149,9 +154,23 @@ const SCREEN_CONTEXT_KEYWORDS = [
   "quest",
   "window",
 ];
-const MIN_SPEECH_RMS = 0.012;
-const MIN_SPEECH_PEAK = 0.04;
-const MAX_CLICKY_ZERO_CROSSING_RATE = 0.28;
+// Issue #4: quiet real speech (soft-spoken, further from the mic) can sit
+// right at these thresholds -- override via env if the defaults are
+// skipping speech you know was real, or letting through more noise than
+// you'd like. Same override pattern as SILENCE_BUFFER_MS above.
+const MIN_SPEECH_RMS = Number(process.env.MANA_MIN_SPEECH_RMS || 0.012);
+const MIN_SPEECH_PEAK = Number(process.env.MANA_MIN_SPEECH_PEAK || 0.04);
+const MAX_CLICKY_ZERO_CROSSING_RATE = Number(
+  process.env.MANA_MAX_CLICKY_ZCR || 0.28,
+);
+// Gain applied to a recorded clip before computing reject stats and
+// sending to Whisper, when its peak amplitude is below this target --
+// rescues quiet-but-real speech without loosening MIN_SPEECH_RMS/PEAK
+// themselves (which would also let more noise through). 0 disables.
+const SPEECH_GAIN_TARGET_PEAK = Number(
+  process.env.MANA_SPEECH_GAIN_TARGET_PEAK || 0.2,
+);
+const SPEECH_GAIN_MAX_BOOST = Number(process.env.MANA_SPEECH_GAIN_MAX_BOOST || 6);
 // Live speech/silence detection in recordUntilSilence() prefers Silero VAD
 // (issue #135) over the plain RMS threshold above -- a neural model tells
 // speech apart from a loud fan or game audio far better than an energy
@@ -1152,6 +1171,10 @@ function logSpeechDebug(eventName, details = {}) {
     event: eventName,
     ...details,
   });
+  // Issue #4: persist to disk too, not just the devtools console -- so a
+  // missed-speech report can be debugged after the fact instead of only
+  // during a live session with devtools open.
+  ipcRenderer.send("log-speech-debug", { event: eventName, ...details });
 }
 
 function isGamingModeEnabled() {
@@ -1385,15 +1408,29 @@ function getAudioStats(audioBuffer) {
 }
 
 function getSpeechRejectReason(stats) {
-  if (stats.rms < MIN_SPEECH_RMS || stats.peak < MIN_SPEECH_PEAK) {
-    return "quiet";
-  }
+  return getSpeechRejectReasonPure(stats, {
+    minRms: MIN_SPEECH_RMS,
+    minPeak: MIN_SPEECH_PEAK,
+    maxClickyZcr: MAX_CLICKY_ZERO_CROSSING_RATE,
+  });
+}
 
-  if (stats.zeroCrossingRate > MAX_CLICKY_ZERO_CROSSING_RATE) {
-    return "clicky";
-  }
+// Issue #4: boosts a quiet clip's gain in place (clamped to avoid clipping)
+// before stats/reject-checks run, so soft-spoken real speech both clears
+// MIN_SPEECH_RMS/PEAK and reaches Whisper with a stronger signal. No-op
+// (gain factor 1) for anything already loud enough.
+function applySpeechGain(audioBuffer) {
+  const rawPeak = getAudioStats(audioBuffer).peak;
+  const gain = computeGainFactor(rawPeak, SPEECH_GAIN_TARGET_PEAK, SPEECH_GAIN_MAX_BOOST);
+  if (gain === 1) return { gain };
 
-  return null;
+  for (let c = 0; c < audioBuffer.numberOfChannels; c++) {
+    const channel = audioBuffer.getChannelData(c);
+    for (let i = 0; i < channel.length; i++) {
+      channel[i] = Math.max(-1, Math.min(1, channel[i] * gain));
+    }
+  }
+  return { gain };
 }
 
 async function prepareSpeechWavBlob(blob) {
@@ -1401,6 +1438,7 @@ async function prepareSpeechWavBlob(blob) {
   const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
   try {
     const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
+    const { gain } = applySpeechGain(audioBuffer);
     const stats = getAudioStats(audioBuffer);
     stats.durationSeconds = audioBuffer.duration;
     const rejectReason = getSpeechRejectReason(stats);
@@ -1409,6 +1447,7 @@ async function prepareSpeechWavBlob(blob) {
       rms: Number(stats.rms.toFixed(5)),
       peak: Number(stats.peak.toFixed(5)),
       zeroCrossingRate: Number(stats.zeroCrossingRate.toFixed(5)),
+      gain: Number(gain.toFixed(2)),
       rejectReason,
     });
     // Quick rundown: skip quiet chunks and sharp clicky noise before Whisper sees them.
@@ -1496,12 +1535,24 @@ function extractWakeCommand(transcript) {
     "i",
   );
   const wakeMatch = normalized.match(wakePattern);
-  if (!wakeMatch) {
-    return null;
+  if (wakeMatch) {
+    const command = normalized.slice(wakeMatch.index + wakeMatch[0].length).trim();
+    return command || normalized;
   }
 
-  const command = normalized.slice(wakeMatch.index + wakeMatch[0].length).trim();
-  return command || normalized;
+  // Issue #4: the exact WAKE_WORDS list can't enumerate every way Whisper
+  // mis-transcribes "Mana" -- check the first couple words for a close
+  // (edit-distance-1) match before giving up on this utterance entirely.
+  const words = normalized.split(/\s+/).filter(Boolean);
+  for (let i = 0; i < Math.min(words.length, 3); i++) {
+    const stripped = words[i].replace(/[.,!?;:]+$/, "");
+    if (fuzzyMatchesWakeWord(stripped, WAKE_WORDS)) {
+      const command = words.slice(i + 1).join(" ").trim();
+      return command || normalized;
+    }
+  }
+
+  return null;
 }
 
 function cleanTranscriptText(transcript) {
