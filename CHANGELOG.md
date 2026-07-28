@@ -53,6 +53,18 @@ accounting.
   they'd already been nested there since the issue #138 UI overhaul.
 
 ### Added
+- **Passive web context** (issue #189, `context-push` plugin +
+  `context-push-extension` browser extension, both off by default): a new
+  Manifest V3 Chrome/Edge extension reads the current page's text (and,
+  on YouTube, visible captions) and pushes it to a new loopback-only
+  `POST /context/push` route, so Mana can answer "what does this page say"
+  or "what am I watching" when asked -- ephemeral only (2-minute expiry,
+  never written to memory), and only contributed to a reply when the
+  message actually references the current page/video. Always-on once
+  enabled, with a non-negotiable indicator (toolbar icon color swap,
+  green/grey) and a one-click, restart-persistent off switch, plus a
+  first-install onboarding page explaining the behavior before capture
+  ever starts.
 - **Speech recognition accuracy improvements** (issue #4): fuzzy wake-word
   matching catches close Whisper mis-transcriptions of "Mana" (e.g. "Manaa",
   "Mona") the exact word list can't enumerate; a new microphone gain step

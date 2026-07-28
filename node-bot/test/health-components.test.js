@@ -23,6 +23,7 @@ test("health includes component readiness while preserving top-level fields", as
       "backgroundMemory",
       "browserAutomation",
       "cloudflareTunnel",
+      "contextPush",
       "cronScheduler",
       "deepResearch",
       "dirScanner",

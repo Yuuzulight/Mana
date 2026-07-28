@@ -1,0 +1,10 @@
+{
+  "name": "mana-plugin-context-push",
+  "version": "1.0.0",
+  "description": "Ephemeral 'what the user is currently looking at' context, fed by a companion browser extension.",
+  "main": "index.js",
+  "scripts": {
+    "test": "node --test test/*.test.js"
+  },
+  "private": true
+}
