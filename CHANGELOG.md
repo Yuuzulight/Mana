@@ -348,6 +348,17 @@ accounting.
   blank or synthetic fallback.
 
 ### Fixed
+- **Deep Research/retriever excerpt compression (issue #211) had zero
+  effect in the common case** (issue #217, follow-up from #211/#208): the
+  coding-mode repo-retrieval block in `server.js` has a vector-store-direct
+  fast path that returns early whenever a vector store has entries --
+  exactly the common case once one's built -- with its own duplicated
+  read-file-then-`slice(0, 800)` loop that never went through #211's
+  compression at all. Now calls the same shared `buildSnippets()` helper
+  #211 built, so whichever path actually produces hits gets compressed.
+  Same dedupe applied to `retriever-admin-capability.js`'s debug route
+  (with `compress: null` there on purpose -- that route intentionally
+  stays raw ground truth).
 - **Fish Speech's first reply after each restart could silently use the
   wrong voice** (issue #215, follow-up from #213): enabling
   `torch.compile` made the first real generate() call after each restart

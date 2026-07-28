@@ -3330,26 +3330,24 @@ function registerRoutes(app, upload, deps = {}) {
                     if (qembed) {
                       const s = await store.search(qembed, 5);
                       if (Array.isArray(s) && s.length) {
-                        // adapt store result shape to expected hits with path/score/snippet
-                        const adapted = [];
-                        for (const it of s) {
-                          const p = it.path || it.id;
-                          let snippet = "";
-                          try {
-                            snippet = String(
-                              await fs.promises.readFile(p, "utf8"),
-                            ).slice(0, 800);
-                          } catch (e) {
-                            snippet = "";
-                          }
-                          adapted.push({
-                            id: it.id,
-                            path: p,
-                            score: it.score,
-                            snippet,
-                          });
-                        }
-                        hits = adapted;
+                        // Issue #217: this vector-store-direct fast path used
+                        // to duplicate the read-file-then-slice(0, 800) loop
+                        // retriever-index.js's search() itself replaced with
+                        // buildSnippets() in issue #211 -- meaning whenever
+                        // this fast path succeeded (the common case once a
+                        // vector store exists), #211's compression never
+                        // actually ran. Reusing the same shared helper here
+                        // closes that gap.
+                        const candidates = s.map((it) => ({
+                          id: it.id,
+                          path: it.path || it.id,
+                          score: it.score,
+                        }));
+                        hits = await retrieverIndex.buildSnippets(
+                          candidates,
+                          transcript,
+                          compressExcerpts,
+                        );
                       }
                     }
                   } catch (e) {
