@@ -60,6 +60,17 @@ accounting.
   context length, and computed parameter count, instead of only validating
   the 4-byte magic bytes as before. The magic-byte check (issue #125)
   stays the fast first-pass gate, unchanged.
+- **Evaluated text-embeddings-inference (TEI) as the local embedder backend**
+  (issue #195) -- **not adopted**: TEI has no official native Windows
+  build (Homebrew binary is Apple-Silicon-only, everything else is Docker
+  or a from-source CUDA-kernel compile), which doesn't fit Mana's
+  Windows-native, no-Docker-dependency toolchain. The investigation still
+  surfaced a real, low-risk fix: `computeEmbeddings()` in
+  `tools/retriever-index.js` now accepts either the wrapped
+  `{embeddings: [...]}` shape `local_embedder.py` returns or a bare
+  `[[float,...],...]` array (TEI's actual shape, and a more common
+  convention generally) -- previously it silently returned nulls against
+  anything but the wrapped shape.
 - **Passive web context** (issue #189, `context-push` plugin +
   `context-push-extension` browser extension, both off by default): a new
   Manifest V3 Chrome/Edge extension reads the current page's text (and,
