@@ -43,6 +43,7 @@ function registerDeepResearchRoutes(app, context = {}) {
   const synthesize = context.synthesize;
   const decompose = context.decompose;
   const reflect = context.reflect;
+  const compress = context.compress;
   const acpMemoryStore = context.acpMemoryStore;
   const jobs = context.jobs || createResearchJobStore();
   const runDeepResearch = context.runDeepResearch || defaultRunDeepResearch;
@@ -158,6 +159,7 @@ function registerDeepResearchRoutes(app, context = {}) {
         synthesize,
         decompose,
         reflect,
+        compress,
         isCancelled: () => job.cancelRequested,
         onProgress: (progress) => {
           job.progress = progress;

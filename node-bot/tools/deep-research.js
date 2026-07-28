@@ -37,6 +37,17 @@ const REFLECT_SYSTEM_PROMPT =
   `is already sufficient, reply with exactly "${NO_GAP_MARKER}" and ` +
   `nothing else. Never invent a gap just to have something to say.`;
 
+// Issue #208: condenses each newly-read source's raw excerpt down to what's
+// actually relevant to the research question, instead of the flat
+// MAX_EXCERPT_CHARS position-cut every source got before. One batched call
+// per cycle covers every source read in that cycle, not one call per source.
+const COMPRESS_SYSTEM_PROMPT =
+  `You condense research source excerpts. For each numbered source, keep ` +
+  `only the sentences relevant to the research question and drop the ` +
+  `rest -- do not add commentary or facts not present in the excerpt. ` +
+  `Reply with one block per source in the exact format "[N] condensed ` +
+  `excerpt", one per line-separated source, nothing else.`;
+
 // Issue #77: the trailing "Note:" line is deliberately conditional -- only
 // meaningfully-stale/incomplete/conflicting sources should trigger it, never
 // a generic disclaimer glued onto every report.
@@ -156,6 +167,33 @@ function buildResearchPrompt(question, sources) {
   );
 }
 
+function buildCompressPrompt(question, newSources) {
+  const sourceBlocks = newSources.map(
+    (s) => `[${s.index}] ${s.title || "(untitled)"}\nURL: ${s.url}\n${s.excerpt}`,
+  );
+  return [`Research question: ${question}`, "", "Sources:", ...sourceBlocks].join(
+    "\n\n",
+  );
+}
+
+// Parses "[N] condensed excerpt" blocks back into a Map<index, text>. A
+// source whose index doesn't appear in the response (partial/malformed
+// reply) simply keeps its original excerpt at the call site -- same
+// "degrade, don't break" philosophy as parseSubQueries/parseReflectDecision.
+function parseCompressedExcerpts(text) {
+  const map = new Map();
+  const raw = String(text || "");
+  const matches = [...raw.matchAll(/^\[(\d+)\]\s*/gm)];
+  for (let i = 0; i < matches.length; i += 1) {
+    const start = matches[i].index + matches[i][0].length;
+    const end = i + 1 < matches.length ? matches[i + 1].index : raw.length;
+    const index = Number(matches[i][1]);
+    const excerpt = raw.slice(start, end).trim();
+    if (index && excerpt) map.set(index, excerpt);
+  }
+  return map;
+}
+
 function buildReflectPrompt(question, report) {
   return [`Research question: ${question}`, "", "Current report:", report].join(
     "\n\n",
@@ -196,6 +234,11 @@ async function runDeepResearch(question, options = {}) {
   const maxConcurrency = clampMaxConcurrency(options.maxConcurrency);
   const decompose =
     typeof options.decompose === "function" ? options.decompose : null;
+  // Issue #208: optional, same injected-dependency shape as decompose/reflect
+  // -- this module stays unaware of which LLM/profile actually condenses
+  // excerpts.
+  const compress =
+    typeof options.compress === "function" ? options.compress : null;
   const search = options.searchWeb || defaultSearchWeb;
   const read = options.fetchPage || defaultFetchPage;
   const onProgress = options.onProgress || (() => {});
@@ -371,6 +414,26 @@ async function runDeepResearch(question, options = {}) {
     if (cancelled) throw cancelled.error;
 
     const added = localResults.filter(Boolean);
+
+    // Issue #208: condense the excerpts just read, one batched call
+    // covering every source from this cycle rather than one call per
+    // source. A failing/unavailable compressor must never sink the
+    // research pass -- sources simply keep their original (flat-truncated)
+    // excerpt, same resilience philosophy as decompose/reflect above.
+    if (compress && added.length) {
+      throwIfCancelled();
+      try {
+        const raw = await compress(buildCompressPrompt(cleanQuestion, added));
+        const compressed = parseCompressedExcerpts(raw);
+        for (const s of added) {
+          const c = compressed.get(s.index);
+          if (c) s.excerpt = c;
+        }
+      } catch (e) {
+        if (e instanceof ResearchCancelledError) throw e;
+      }
+    }
+
     sources.push(...added);
     return added.length;
   }
@@ -478,11 +541,14 @@ module.exports = {
   RESEARCH_SYSTEM_PROMPT,
   SUB_QUERY_SYSTEM_PROMPT,
   REFLECT_SYSTEM_PROMPT,
+  COMPRESS_SYSTEM_PROMPT,
   ResearchCancelledError,
   buildResearchPrompt,
   buildSubQueryPrompt,
   buildReflectPrompt,
+  buildCompressPrompt,
   parseSubQueries,
   parseReflectDecision,
+  parseCompressedExcerpts,
   runDeepResearch,
 };
