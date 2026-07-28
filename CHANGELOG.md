@@ -71,9 +71,20 @@ accounting.
   speakers), so a manual interrupt is the low-risk way to let the user cut
   in without needing real echo cancellation. Reuses the existing
   `stopReplyAudio()` renderer function; `desktop-client` has no
-  speech/listening loop so this is windows-launcher-only. Wake-word-during-
-  speech (interrupting by voice instead of hotkey) is out of scope for this
-  pass -- it needs real echo mitigation first.
+  speech/listening loop so this is windows-launcher-only.
+- **Voice barge-in, phase 2: talk-over-Mana interrupt** (issue #219,
+  experimental, OFF by default -- `MANA_BARGE_IN_VOICE=1` to enable): while
+  Mana is speaking, watches the mic (reusing the same stream and Silero VAD
+  as normal listening) and interrupts her once real speech has held for
+  `MANA_BARGE_IN_HOLD_MS` (350ms default) continuously, via the same
+  `stopReplyAudio()` phase 1 uses. Leans on `getUserMedia`'s default
+  echo-cancellation constraint (already active today for every mic capture)
+  plus the hold-time gate to reject echo/pop blips rather than adding new
+  echo-cancellation code. Not verified against real speakers/mic in this
+  session -- there's no way to drive live audio hardware here, only to
+  verify the wiring and the pure hold-time logic (new tests in
+  `voice-endpointing.test.js`) -- so it stays opt-in until someone auditions
+  it on real hardware.
 - **Compress retriever-index.js search snippets instead of flat
   char-truncation** (issue #211, follow-up from #208): `search()`'s three
   branches (tf-fallback, embedding-similarity, embedding-query-failure

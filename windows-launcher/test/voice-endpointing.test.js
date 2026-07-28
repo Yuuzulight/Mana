@@ -2,9 +2,11 @@ const assert = require("node:assert/strict");
 const test = require("node:test");
 
 const {
+  DEFAULT_BARGE_IN_HOLD_MS,
   DEFAULT_MAX_UTTERANCE_MS,
   DEFAULT_MAX_WAIT_FOR_SPEECH_MS,
   DEFAULT_SILENCE_BUFFER_MS,
+  nextBargeInState,
   shouldStopRecording,
 } = require("../renderer/voice-endpointing");
 
@@ -104,4 +106,59 @@ test("custom silence buffer and timeouts are respected", () => {
     }),
     "no-speech-timeout",
   );
+});
+
+// Issue #219 phase 2: barge-in-while-Mana-speaks hold-time gating.
+test("nextBargeInState does not trigger on a single speech-positive frame", () => {
+  const state = nextBargeInState({
+    isSpeech: true,
+    speechStartedAt: null,
+    now: 1000,
+  });
+  assert.equal(state.triggered, false);
+  assert.equal(state.speechStartedAt, 1000);
+});
+
+test("nextBargeInState triggers once speech has held for the full duration", () => {
+  const first = nextBargeInState({ isSpeech: true, speechStartedAt: null, now: 1000 });
+  const stillHolding = nextBargeInState({
+    isSpeech: true,
+    speechStartedAt: first.speechStartedAt,
+    now: 1000 + DEFAULT_BARGE_IN_HOLD_MS - 1,
+  });
+  assert.equal(stillHolding.triggered, false);
+
+  const triggered = nextBargeInState({
+    isSpeech: true,
+    speechStartedAt: first.speechStartedAt,
+    now: 1000 + DEFAULT_BARGE_IN_HOLD_MS,
+  });
+  assert.equal(triggered.triggered, true);
+});
+
+test("nextBargeInState resets on a gap, so an echo blip can't accumulate toward the hold time", () => {
+  const first = nextBargeInState({ isSpeech: true, speechStartedAt: null, now: 1000 });
+  const gap = nextBargeInState({ isSpeech: false, speechStartedAt: first.speechStartedAt, now: 1100 });
+  assert.equal(gap.speechStartedAt, null);
+  assert.equal(gap.triggered, false);
+
+  // Even well past the original start time, a fresh speech run must restart the clock.
+  const resumed = nextBargeInState({
+    isSpeech: true,
+    speechStartedAt: gap.speechStartedAt,
+    now: 1000 + DEFAULT_BARGE_IN_HOLD_MS,
+  });
+  assert.equal(resumed.triggered, false);
+  assert.equal(resumed.speechStartedAt, 1000 + DEFAULT_BARGE_IN_HOLD_MS);
+});
+
+test("nextBargeInState respects a custom holdMs", () => {
+  const first = nextBargeInState({ isSpeech: true, speechStartedAt: null, now: 0, holdMs: 100 });
+  const triggered = nextBargeInState({
+    isSpeech: true,
+    speechStartedAt: first.speechStartedAt,
+    now: 100,
+    holdMs: 100,
+  });
+  assert.equal(triggered.triggered, true);
 });
