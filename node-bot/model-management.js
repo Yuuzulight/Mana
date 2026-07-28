@@ -486,6 +486,7 @@ function createModelManagement(options = {}) {
     getKnownBrainProviders,
     getModelStatus,
     getRecommendedModelProfile,
+    isValidGgufFile,
     scanForModels,
     setActiveProfile,
     setBrainSettings,
