@@ -47,6 +47,16 @@ accounting.
   Dependabot alerts.
 
 ### Changed
+- **Enabled `torch.compile` for the Fish Speech TTS service** (issue
+  #213): `start_fish_speech_wsl.sh` now passes `--compile` (an existing
+  upstream flag Mana never enabled). Measured on the dev machine (RTX
+  3070 Ti): ~2.5 tokens/sec baseline vs ~31 tokens/sec steady-state --
+  roughly 12x, at negligible extra VRAM cost. Trade-off: `torch.compile`
+  is lazy, so the first generation *request* after each service (re)start
+  pays a one-time ~4 minute compile trace. Requires a C compiler for
+  Triton's codegen (`sudo apt-get install -y build-essential` in the WSL
+  distro if missing). Not yet surfaced in the startup loading screen --
+  tracked separately.
 - `desktop-client`'s sidebar had Avatar/Web access/Market watch/Vision/
   Model/Doctor as top-level buttons alongside Settings; moved them inside
   Settings (a new "Status" section) to match `windows-launcher`, where

@@ -31,12 +31,18 @@ Important notes
 - Fish Speech is heavier than Kokoro.
 - The official setup path is separate from Mana and needs WSL2 (native Windows is
   not supported upstream) plus a CUDA GPU.
-- **Latency is not real-time.** On an 8GB RTX 3070 Ti, a short reply
-  (~150 semantic tokens) takes roughly 1-3 minutes end to end: reference
-  encoding (under a second once warm), text-to-semantic generation
-  (~2.5-2.7 tokens/sec), and audio decode. This is batch-style, not a live
-  conversational voice — keep Kokoro as the default fast provider for
-  actual voice interaction until this is meaningfully faster.
+- **Latency is not real-time, but `--compile` (issue #213) helps a lot.**
+  Without it, text-to-semantic generation on an 8GB RTX 3070 Ti runs
+  ~2.5-2.7 tokens/sec, making a short reply (~150 tokens) take roughly
+  1-3 minutes end to end. With `--compile` enabled (now the default in
+  `start_fish_speech_wsl.sh`), steady-state generation measured ~31
+  tokens/sec on the same hardware -- ~12x faster, at negligible extra
+  VRAM. The trade-off: `torch.compile` is lazy, so the *first* generation
+  request after each (re)start of the service pays a one-time ~4 minute
+  compile trace before that speedup kicks in. This is still batch-style,
+  not a live conversational voice, and keep Kokoro as the default fast
+  provider for actual voice interaction -- but a short reply after warmup
+  is now closer to seconds than minutes.
 - **VRAM headroom is thin.** With the model loaded and idle, an 8GB card
   has only a few hundred MB free. This has been reliable for the verified
   Mitsuki reference clip below, but see the known issue further down.
