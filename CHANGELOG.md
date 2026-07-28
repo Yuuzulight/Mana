@@ -53,6 +53,13 @@ accounting.
   they'd already been nested there since the issue #138 UI overhaul.
 
 ### Added
+- **Real GGUF metadata parsing** (issue #196): a new `GET /models/gguf-metadata`
+  route (on-demand, kept separate from the frequently-polled
+  `/models/status` since real header parsing is real file I/O) uses
+  `@huggingface/gguf` to read a model's actual architecture, quantization,
+  context length, and computed parameter count, instead of only validating
+  the 4-byte magic bytes as before. The magic-byte check (issue #125)
+  stays the fast first-pass gate, unchanged.
 - **Passive web context** (issue #189, `context-push` plugin +
   `context-push-extension` browser extension, both off by default): a new
   Manifest V3 Chrome/Edge extension reads the current page's text (and,
