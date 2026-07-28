@@ -53,6 +53,17 @@ accounting.
   they'd already been nested there since the issue #138 UI overhaul.
 
 ### Added
+- **Compress retriever-index.js search snippets instead of flat
+  char-truncation** (issue #211, follow-up from #208): `search()`'s three
+  branches (tf-fallback, embedding-similarity, embedding-query-failure
+  fallback) each did their own duplicated read-file-then-`slice(0, 800)`
+  work -- now one shared `buildSnippets()` helper, reusing #208's own
+  `buildCompressPrompt`/`parseCompressedExcerpts` so both surfaces share
+  the same batching/parsing logic. Wired into the coding-mode
+  repo-retrieval block in `server.js` (the one real model-facing consumer
+  of these snippets); `retriever-admin-capability.js`'s debug route is
+  left untouched since a human debugging the index wants the raw
+  ground-truth snippet, not a query-shaped summary.
 - **Compress Deep Research excerpts instead of flat char-truncation**
   (issue #208, follow-up from #200): a new opt-in `compress` step condenses
   each newly-read source's excerpt down to what's relevant to the research
