@@ -30,10 +30,28 @@ function shouldStopRecording({
   return null;
 }
 
+// Issue #219 phase 2: pure hold-time decision for the "Mana is speaking, did
+// the user just start talking over her" monitor -- split out from the
+// mic/VAD/AudioContext plumbing so the hold-time gating (which is what
+// keeps a single echo/pop blip from triggering an interrupt) is unit
+// testable on its own. Callers track `speechStartedAt` across calls the
+// same way `hasHeardSpeech`/`msSinceLastSpeech` are tracked above.
+const DEFAULT_BARGE_IN_HOLD_MS = 350;
+
+function nextBargeInState({ isSpeech, speechStartedAt, now, holdMs = DEFAULT_BARGE_IN_HOLD_MS }) {
+  if (!isSpeech) {
+    return { speechStartedAt: null, triggered: false };
+  }
+  const startedAt = speechStartedAt === null ? now : speechStartedAt;
+  return { speechStartedAt: startedAt, triggered: now - startedAt >= holdMs };
+}
+
 module.exports = {
+  DEFAULT_BARGE_IN_HOLD_MS,
   DEFAULT_GAMING_MAX_WAIT_FOR_SPEECH_MS,
   DEFAULT_MAX_UTTERANCE_MS,
   DEFAULT_MAX_WAIT_FOR_SPEECH_MS,
   DEFAULT_SILENCE_BUFFER_MS,
+  nextBargeInState,
   shouldStopRecording,
 };
