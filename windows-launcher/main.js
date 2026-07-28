@@ -461,6 +461,23 @@ ipcMain.handle("log-voice-crash", async (event, details = {}) => {
   }
 });
 
+// Issue #4: per-session transcription debug trail (wake-word matches,
+// audio-stats/reject reasons, hallucination filtering, gain applied) --
+// same JSON-lines-on-userData pattern as VOICE_CRASH_LOG_PATH above, so a
+// "why didn't Mana hear me" report can be diagnosed after the fact. Only
+// ever sent by the renderer when SPEECH_DEBUG_ENABLED is on, so this is a
+// no-op file by default.
+const SPEECH_DEBUG_LOG_PATH = path.join(app.getPath("userData"), "logs", "speech-debug.log");
+ipcMain.on("log-speech-debug", async (event, details = {}) => {
+  try {
+    await fs.promises.mkdir(path.dirname(SPEECH_DEBUG_LOG_PATH), { recursive: true });
+    const entry = { at: new Date().toISOString(), ...details };
+    await fs.promises.appendFile(SPEECH_DEBUG_LOG_PATH, `${JSON.stringify(entry)}\n`, "utf8");
+  } catch (e) {
+    console.error("Failed to write speech debug log:", e);
+  }
+});
+
 // Native file picker for Settings > Model's "brain"/vision GGUF pickers --
 // the renderer POSTs the chosen path to node-bot's /models/path,
 // /models/brain-provider, or /models/vision-path routes to actually take

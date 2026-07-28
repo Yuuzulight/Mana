@@ -47,6 +47,20 @@ const PREFERRED_NAME_ORDER = [
   "ggml-large.bin",
 ];
 
+// Issue #4: a friendlier knob than hunting down a raw ggml-*.bin path --
+// set WHISPER_MODEL_PROFILE=tiny|base|small|medium to prefer that size
+// tier's files over PREFERRED_NAME_ORDER's own default (base > small >
+// tiny > medium), without needing every tier's file to actually be
+// present. Falls through to the normal PREFERRED_NAME_ORDER/first-found
+// behavior for any tier whose files aren't there, so an unrecognized or
+// unmet profile never means "no model" when one exists.
+const WHISPER_MODEL_PROFILES = {
+  tiny: ["ggml-tiny.en.bin", "ggml-tiny.bin"],
+  base: ["ggml-base.en.bin", "ggml-base.bin"],
+  small: ["ggml-small.en.bin", "ggml-small.bin"],
+  medium: ["ggml-medium.en.bin", "ggml-medium.bin"],
+};
+
 function findWhisperModel(options = {}) {
   const env = options.env || process.env;
   const fs = options.fs || require("node:fs");
@@ -69,7 +83,10 @@ function findWhisperModel(options = {}) {
     return null;
   }
 
-  for (const preferredName of PREFERRED_NAME_ORDER) {
+  const profile = WHISPER_MODEL_PROFILES[String(env.WHISPER_MODEL_PROFILE || "").toLowerCase()];
+  const nameOrder = profile ? [...profile, ...PREFERRED_NAME_ORDER] : PREFERRED_NAME_ORDER;
+
+  for (const preferredName of nameOrder) {
     const match = found.find(
       (fullPath) => path.basename(fullPath).toLowerCase() === preferredName,
     );
@@ -80,4 +97,4 @@ function findWhisperModel(options = {}) {
   return found[0];
 }
 
-module.exports = { findWhisperBin, findWhisperModel };
+module.exports = { findWhisperBin, findWhisperModel, WHISPER_MODEL_PROFILES };
