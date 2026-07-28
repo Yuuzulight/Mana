@@ -2161,6 +2161,15 @@ ipcRenderer.on("vision:hotkey", () => {
   handleVisionHotkey();
 });
 
+// Issue #219: lets the user cut Mana off mid-speech (MANA_INTERRUPT_HOTKEY,
+// "Control+Alt+I" by default) -- stopReplyAudio() already does everything
+// needed (bumps replyPlaybackToken, pauses the audio, resets avatar state);
+// this just exposes it as a user action instead of only firing internally
+// when a new reply supersedes an old one.
+ipcRenderer.on("interrupt-speech", () => {
+  stopReplyAudio();
+});
+
 async function handleTranscript(transcript, gamingModeActive = false) {
   if (isNoiseOnlyTranscript(transcript)) {
     return false;

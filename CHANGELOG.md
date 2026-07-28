@@ -63,6 +63,17 @@ accounting.
   they'd already been nested there since the issue #138 UI overhaul.
 
 ### Added
+- **Voice barge-in, phase 1: hotkey interrupt** (issue #219): a global
+  hotkey (`Control+Alt+I` by default, `MANA_INTERRUPT_HOTKEY` to change or
+  `off` to disable) lets the user cut Mana off mid-speech in
+  `windows-launcher`. `listenLoop()` deliberately pauses mic recording while
+  Mana is speaking (avoids the mic hearing Mana's own voice through the
+  speakers), so a manual interrupt is the low-risk way to let the user cut
+  in without needing real echo cancellation. Reuses the existing
+  `stopReplyAudio()` renderer function; `desktop-client` has no
+  speech/listening loop so this is windows-launcher-only. Wake-word-during-
+  speech (interrupting by voice instead of hotkey) is out of scope for this
+  pass -- it needs real echo mitigation first.
 - **Compress retriever-index.js search snippets instead of flat
   char-truncation** (issue #211, follow-up from #208): `search()`'s three
   branches (tf-fallback, embedding-similarity, embedding-query-failure
