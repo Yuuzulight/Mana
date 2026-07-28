@@ -172,6 +172,61 @@ test("model status route reports active profile and configured profiles", async 
   });
 });
 
+test("gguf-metadata route rejects a missing or invalid path before ever parsing", async () => {
+  const app = createApp({
+    modelManagement: { isValidGgufFile: () => false },
+  });
+
+  await withServer(app, async (baseUrl) => {
+    const missing = await fetch(`${baseUrl}/models/gguf-metadata`);
+    assert.equal(missing.status, 400);
+
+    const invalid = await fetch(
+      `${baseUrl}/models/gguf-metadata?path=${encodeURIComponent("C:\\fake\\not-real.gguf")}`,
+    );
+    assert.equal(invalid.status, 400);
+  });
+});
+
+test("gguf-metadata route returns parsed metadata for a valid GGUF path", async () => {
+  const app = createApp({
+    modelManagement: { isValidGgufFile: () => true },
+    readGgufMetadata: async (filePath) => ({
+      architecture: "llama",
+      name: "Test Model",
+      quantization: "MOSTLY_Q4_K_M",
+      contextLength: 4096,
+      parameterCount: "7000000000",
+      tensorCount: 291,
+    }),
+  });
+
+  await withServer(app, async (baseUrl) => {
+    const response = await fetch(
+      `${baseUrl}/models/gguf-metadata?path=${encodeURIComponent("C:\\models\\test.gguf")}`,
+    );
+    const payload = await response.json();
+    assert.equal(response.status, 200);
+    assert.equal(payload.architecture, "llama");
+    assert.equal(payload.quantization, "MOSTLY_Q4_K_M");
+    assert.equal(payload.contextLength, 4096);
+  });
+});
+
+test("gguf-metadata route returns 422 when parsing fails for an otherwise-valid-looking file", async () => {
+  const app = createApp({
+    modelManagement: { isValidGgufFile: () => true },
+    readGgufMetadata: async () => null,
+  });
+
+  await withServer(app, async (baseUrl) => {
+    const response = await fetch(
+      `${baseUrl}/models/gguf-metadata?path=${encodeURIComponent("C:\\models\\corrupt.gguf")}`,
+    );
+    assert.equal(response.status, 422);
+  });
+});
+
 test("active profile route switches profile and rejects invalid profiles", async () => {
   let activeProfile = "default";
   const app = createApp({
