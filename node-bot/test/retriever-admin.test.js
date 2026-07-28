@@ -74,6 +74,11 @@ test("admin retriever vector endpoints and vector-backed search", async () => {
     search: async (q, k) => [
       { id: "id1", path: "p1", score: 3, snippet: "SAMPLE SNIPPET" },
     ],
+    // Issue #217: the admin route's vector-store-direct branch now calls
+    // this instead of its own inline read-file-then-truncate loop.
+    buildSnippets: async (candidates, query, compress) => [
+      { id: "x", path: "p", score: 0.9, snippet: "VECTOR SNIPPET" },
+    ],
   };
   injectMockRetriever(mock);
 
@@ -121,7 +126,63 @@ test("admin retriever vector endpoints and vector-backed search", async () => {
     assert.equal(searchResp.status, 200);
     const searchBody = await searchResp.json();
     assert.equal(searchBody.ok, true);
+    assert.equal(searchBody.vectorStore, true);
     assert.ok(Array.isArray(searchBody.results));
-    assert.ok(searchBody.results.length >= 1);
+    assert.equal(searchBody.results[0].snippet, "VECTOR SNIPPET");
   });
+});
+
+test("admin retriever search dedupes the vector-store-direct branch through buildSnippets, without compression (issue #217)", async () => {
+  const buildSnippetsCalls = [];
+  const mock = {
+    loadIndexSync: () => ({
+      entries: [{ id: "x", path: "p", embedding: [0.1, 0.2] }],
+    }),
+    computeEmbedding: async (q) => [0.1, 0.2],
+    search: async () => {
+      throw new Error("should not fall back to search() when the vector store succeeds");
+    },
+    buildSnippets: async (candidates, query, compress) => {
+      buildSnippetsCalls.push({ candidates, query, compress });
+      return [{ id: "x", path: "p", score: 0.9, snippet: "VECTOR SNIPPET" }];
+    },
+  };
+  injectMockRetriever(mock);
+
+  const pvs = require.resolve("../tools/vector-store");
+  const mockVsModule = {
+    createStore: () => ({
+      async init() {},
+      async load() {},
+      async count() {
+        return 1;
+      },
+      async search() {
+        return [{ id: "x", score: 0.9, path: "p" }];
+      },
+    }),
+  };
+  require.cache[pvs] = { id: pvs, filename: pvs, exports: mockVsModule };
+
+  const app = createApp();
+  await withServer(app, async (baseUrl) => {
+    const searchResp = await fetch(
+      `${baseUrl}/admin/retriever/search?q=test&k=3`,
+    );
+    assert.equal(searchResp.status, 200);
+    const searchBody = await searchResp.json();
+    assert.equal(searchBody.vectorStore, true);
+    assert.equal(searchBody.results[0].snippet, "VECTOR SNIPPET");
+  });
+
+  assert.equal(buildSnippetsCalls.length, 1);
+  assert.deepEqual(buildSnippetsCalls[0].candidates, [
+    { id: "x", path: "p", score: 0.9 },
+  ]);
+  assert.equal(buildSnippetsCalls[0].query, "test");
+  assert.equal(
+    buildSnippetsCalls[0].compress,
+    null,
+    "the admin debug route must never compress -- raw ground truth on purpose",
+  );
 });
