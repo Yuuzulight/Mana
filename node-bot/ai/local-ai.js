@@ -38,11 +38,11 @@ const LLAMA_MODEL_PROFILES = {
       "Qwen3-8B-Q4_K_M.gguf",
     ],
   },
-  // Ported from Project AIRI's "Hermes Agent" research: idle-triggered
-  // background memory review (server.js's runBackgroundReviewer) doesn't
-  // need the same model quality as a live reply, and during genuine idle
-  // time nothing else needs the main brain model anyway -- so it prefers
-  // the smallest model available, same list as "fast" but named for its
+  // Idle-triggered background memory review (server.js's
+  // runBackgroundReviewer) doesn't need the same model quality as a live
+  // reply, and during genuine idle time nothing else needs the main brain
+  // model anyway -- so it prefers the smallest model available, same list
+  // as "fast" but named for its
   // own purpose (a low-RAM main-brain choice and a background-only choice
   // are different concerns even when they happen to pick the same model).
   background: {

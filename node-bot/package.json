@@ -15,7 +15,7 @@
     "@huggingface/gguf": "^0.4.4",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "axios": "^1.4.0",
-    "better-sqlite3": "^13.0.2",
+    "better-sqlite3": "^11.10.0",
     "cors": "^2.8.5",
     "discord.js": "^14.27.0",
     "esprima": "^4.0.1",

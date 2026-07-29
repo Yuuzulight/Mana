@@ -50,11 +50,10 @@ function isMemoryToolName(name) {
 // args -- same "server-managed context, not model-supplied identifiers"
 // principle browser-automation's tool source already follows for its
 // session.
-// options.approvalGate: optional (ported from Project AIRI's "Hermes Agent"
-// research, matching issue #152's existing skill-write gating) -- when
-// provided, a remember call is staged for approval the same way a skill
-// write is, instead of landing immediately. Omitted in tests/callers that
-// don't wire one, which write immediately (back-compat).
+// options.approvalGate: optional, matching issue #152's existing skill-write
+// gating -- when provided, a remember call is staged for approval the same
+// way a skill write is, instead of landing immediately. Omitted in
+// tests/callers that don't wire one, which write immediately (back-compat).
 function createMemoryToolSource(options = {}) {
   const acpMemoryStore = options.acpMemoryStore;
   const sessionId = options.sessionId || null;

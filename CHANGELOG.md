@@ -47,8 +47,8 @@ accounting.
   Dependabot alerts.
 
 ### Added
-- **Full-text session search, ported from Nous Research's Hermes Agent**
-  (issue #260): new `session-search-index.js` -- a SQLite FTS5 index over
+- **Full-text session search** (issue #260): new `session-search-index.js`
+  -- a SQLite FTS5 index over
   every past conversation turn's raw text, independent of the curated
   summary `acp-memory-store.js` already kept. Wired into `appendTurn()`
   (fire-and-forget; an indexing failure never breaks the actual
@@ -73,7 +73,7 @@ accounting.
   even when they happen to pick the same model file). Overridable via
   `MANA_BACKGROUND_REVIEW_PROFILE`.
 - Investigated (not adopted) Honcho, a pluggable "dialectic" user-modeling
-  memory backend Hermes Agent supports -- full pros/cons in
+  memory backend -- full pros/cons in
   `docs/roadmap/issue-260-honcho-vs-manas-memory.md`. Recommendation:
   Mana's current memory design plus the new FTS5 search already covers the
   gap Honcho would fill, with far less operational complexity; revisit

@@ -1,11 +1,10 @@
-// Full-text search across every past conversation turn, ported from
-// Project AIRI's "Hermes Agent" research: SQLite FTS5 over all session
-// messages, so "what did we talk about regarding X" is answerable without
-// relying on the curated MEMORY.md-style summaries (acp-memory-store.js),
-// which only ever keep a compacted gist, not the raw text. This module is
-// purely an index -- acp-memory-store.js remains the source of truth for
-// session content; losing this DB just means search stops working, nothing
-// is lost.
+// Full-text search across every past conversation turn: SQLite FTS5 over
+// all session messages, so "what did we talk about regarding X" is
+// answerable without relying on the curated MEMORY.md-style summaries
+// (acp-memory-store.js), which only ever keep a compacted gist, not the raw
+// text. This module is purely an index -- acp-memory-store.js remains the
+// source of truth for session content; losing this DB just means search
+// stops working, nothing is lost.
 const fs = require("node:fs");
 const path = require("node:path");
 const Database = require("better-sqlite3");
@@ -52,9 +51,8 @@ function createSessionSearchIndex(options = {}) {
   }
 
   // FTS5 query syntax is passed straight through (phrases in quotes,
-  // AND/OR/NOT, prefix* -- see https://sqlite.org/fts5.html#full_text_query_syntax),
-  // matching Hermes Agent's own session_search tool so the model doesn't
-  // need a second query language to learn.
+  // AND/OR/NOT, prefix* -- see https://sqlite.org/fts5.html#full_text_query_syntax)
+  // so the model doesn't need a second query language to learn.
   function search({ query, limit = 20, sort = "relevance", roleFilter, sessionId } = {}) {
     if (!query || !String(query).trim()) return [];
     const safeLimit = Math.max(1, Math.min(200, Number(limit) || 20));

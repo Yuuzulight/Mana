@@ -136,11 +136,10 @@ function createAcpMemoryStore(options = {}) {
   );
   const summarizeFn =
     typeof options.summarizeFn === "function" ? options.summarizeFn : null;
-  // Optional (full-text session search, ported from Project AIRI's "Hermes
-  // Agent" research): indexes every turn's raw text so past conversations
-  // are searchable by keyword, independent of the curated summary above.
-  // Not constructed here -- server.js wires the real one in, tests simply
-  // omit it, same pattern as summarizeFn.
+  // Optional (full-text session search): indexes every turn's raw text so
+  // past conversations are searchable by keyword, independent of the
+  // curated summary above. Not constructed here -- server.js wires the real
+  // one in, tests simply omit it, same pattern as summarizeFn.
   const sessionSearchIndex = options.sessionSearchIndex || null;
 
   ensureDir(sessionsDir);
