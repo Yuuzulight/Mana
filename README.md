@@ -1,3 +1,9 @@
+<picture>
+  <source srcset="docs/images/banner-dark.svg" media="(prefers-color-scheme: dark)">
+  <source srcset="docs/images/banner-light.svg" media="(prefers-color-scheme: light), (prefers-color-scheme: no-preference)">
+  <img src="docs/images/banner-dark.svg" alt="Mana banner" width="100%">
+</picture>
+
 <h1 align="center">Mana</h1>
 
 <p align="center">A local-first AI companion for Windows — she listens, thinks, remembers, and talks back without your voice or your conversations ever leaving your PC.</p>
