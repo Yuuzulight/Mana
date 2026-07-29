@@ -132,6 +132,53 @@ test("using a stale skill un-stales it", () => {
   assert.equal(nowStore.listSkills()[0].status, "active");
 });
 
+test("updateSkill patches only the fields provided and persists them", () => {
+  const dir = tempDir();
+  const store = createSkillsStore({ skillsDir: dir, now: () => "2026-01-01T00:00:00.000Z" });
+  store.createSkill({ name: "Editable", description: "old desc", body: "old body", category: "general" });
+
+  const updated = store.updateSkill("Editable", { description: "new desc" });
+  assert.equal(updated.description, "new desc");
+  assert.equal(updated.body, "old body");
+  assert.equal(updated.category, "general");
+
+  const updated2 = store.updateSkill("Editable", { body: "new body", category: "custom" });
+  assert.equal(updated2.description, "new desc");
+  assert.equal(updated2.body, "new body");
+  assert.equal(updated2.category, "custom");
+
+  // Persisted, not just returned in-memory.
+  const store2 = createSkillsStore({ skillsDir: dir });
+  const viewed = store2.viewSkill("Editable");
+  assert.equal(viewed.description, "new desc");
+  assert.equal(viewed.body, "new body");
+  assert.equal(viewed.category, "custom");
+});
+
+test("updateSkill returns null for an unknown skill", () => {
+  const store = createSkillsStore({ skillsDir: tempDir() });
+  assert.equal(store.updateSkill("nope", { description: "x" }), null);
+});
+
+test("deleteSkill permanently removes the skill file", () => {
+  const dir = tempDir();
+  const store = createSkillsStore({ skillsDir: dir });
+  store.createSkill({ name: "Removable", description: "d", body: "b" });
+  assert.equal(fs.existsSync(path.join(dir, "removable.md")), true);
+
+  assert.equal(store.deleteSkill("Removable"), true);
+  assert.equal(fs.existsSync(path.join(dir, "removable.md")), false);
+  assert.deepEqual(store.listSkills(), []);
+
+  // Not archived -- gone entirely, unlike pruneStaleSkills.
+  assert.equal(fs.existsSync(path.join(dir, ".archive", "removable.md")), false);
+});
+
+test("deleteSkill returns false for an unknown skill", () => {
+  const store = createSkillsStore({ skillsDir: tempDir() });
+  assert.equal(store.deleteSkill("nope"), false);
+});
+
 test("parseSkillFile falls back to a bare body when frontmatter is missing", () => {
   const parsed = parseSkillFile("just some text, no frontmatter", "fallback-name");
   assert.equal(parsed.name, "fallback-name");

@@ -63,6 +63,48 @@ function registerSkillsRoutes(app, context = {}) {
     }
   });
 
+  // Direct human edit from the Settings > Skills UI -- unlike POST /skills
+  // above, not approval-gated: a Settings form submission already is the
+  // human decision the gate exists to require for agent-authored writes.
+  app.patch("/skills/:name", (req, res) => {
+    try {
+      const name = requireString(req.params?.name, "name");
+      const updates = {};
+      if (Object.prototype.hasOwnProperty.call(req.body || {}, "description")) {
+        updates.description = requireString(req.body.description, "description");
+      }
+      if (Object.prototype.hasOwnProperty.call(req.body || {}, "body")) {
+        updates.body = requireString(req.body.body, "body");
+      }
+      if (Object.prototype.hasOwnProperty.call(req.body || {}, "category")) {
+        updates.category =
+          typeof req.body.category === "string" ? req.body.category : undefined;
+      }
+      const skill = skillsStore.updateSkill(name, updates);
+      if (!skill) return res.status(404).json({ error: "skill not found" });
+      return res.json(skill);
+    } catch (e) {
+      if (e instanceof ValidationError) return sendValidationError(res, e);
+      console.error(e);
+      return res.status(400).json({ error: e.message || String(e) });
+    }
+  });
+
+  // Direct human delete from Settings > Skills -- permanent, distinct from
+  // the idle prune pass's archive-to-.archive/ behavior below.
+  app.delete("/skills/:name", (req, res) => {
+    try {
+      const name = requireString(req.params?.name, "name");
+      const deleted = skillsStore.deleteSkill(name);
+      if (!deleted) return res.status(404).json({ error: "skill not found" });
+      return res.json({ deleted: true, name });
+    } catch (e) {
+      if (e instanceof ValidationError) return sendValidationError(res, e);
+      console.error(e);
+      return res.status(500).json({ error: String(e) });
+    }
+  });
+
   // Manual trigger for the idle-gated prune pass -- lets the Doctor panel
   // (or a test) exercise it without waiting for real idle time. The actual
   // idle trigger lives in server.js's triggerIdleConsolidation, same as the
@@ -73,6 +115,27 @@ function registerSkillsRoutes(app, context = {}) {
       const archiveDays = Number(req.body?.archiveDays) || DEFAULT_ARCHIVE_DAYS;
       const result = skillsStore.pruneStaleSkills({ staleDays, archiveDays });
       return res.json({ ok: true, ...result });
+    } catch (e) {
+      console.error(e);
+      return res.status(500).json({ ok: false, error: String(e) });
+    }
+  });
+
+  // Manual trigger for the idle-gated skill-proposal pass (issue #262) --
+  // same "let the Doctor panel/tests exercise it without waiting for real
+  // idle time" reasoning as /skills/prune above. The actual idle trigger
+  // lives in server.js's triggerIdleConsolidation.
+  app.post("/skills/propose", async (req, res) => {
+    try {
+      const runSkillProposal = context.runSkillProposalPublic;
+      if (typeof runSkillProposal !== "function") {
+        return res.status(500).json({ ok: false, error: "skill proposal pass not available" });
+      }
+      const result = await runSkillProposal({
+        skillsStore: context.skillsStore,
+        approvalGate: context.approvalGate,
+      });
+      return res.json(result);
     } catch (e) {
       console.error(e);
       return res.status(500).json({ ok: false, error: String(e) });

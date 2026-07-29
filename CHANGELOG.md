@@ -47,6 +47,37 @@ accounting.
   Dependabot alerts.
 
 ### Added
+- **Conversational skill creation** (issue #262 follow-up): a new
+  `skill__create` model tool lets Mana save a skill when the user directly
+  asks mid-conversation ("make a skill that does X"), distinct from the
+  idle-triggered autonomous proposal pass below -- the user is asking right
+  now, so a "pending" approval-gate outcome auto-clears the same way the
+  Settings > Skills UI's create flow does, instead of sitting pending with
+  no conversational review surface. The tool's description also asks Mana
+  to quote the saved skill back in a fenced markdown block in her reply --
+  no new backend plumbing needed, that's exactly what issue #148's existing
+  renderable-artifacts detection already turns into an openable preview.
+- **Settings > Skills UI** (issue #262 follow-up): create, edit, and delete
+  skills directly from Settings in both windows-launcher and desktop-client,
+  backed by the new `updateSkill`/`deleteSkill` methods on `skills-store.js`
+  and matching `PATCH`/`DELETE /skills/:name` routes. Unlike `POST /skills`,
+  these direct edits/deletes aren't approval-gated -- a Settings form
+  submission already is the human decision the gate exists to require for
+  agent-authored writes. Creating a skill still goes through the same
+  `approval-gate.js` path the idle-triggered proposal pass uses; since a
+  human is right there filling out the form, a "pending" response is
+  auto-approved client-side instead of surfacing a second confirmation step.
+- **Idle-triggered skill proposal** (issue #262): a new pass in
+  `triggerIdleConsolidation` reviews recent session summaries for a
+  genuinely reusable, repeated multi-step workflow and stages -- never
+  writes directly -- a new skill proposal through the existing
+  `approval-gate.js` skill-write path (issue #152). Closes the gap where
+  skill creation existed in storage/approval form but nothing ever
+  triggered it. Conservative by design: skipped when fewer than 5 recent
+  session summaries exist, skipped when an existing skill already covers
+  the pattern (reuses `findMatchingSkill`), and disableable via
+  `MANA_SKILL_PROPOSAL_MODE=off`. Manual trigger at `POST /skills/propose`
+  mirrors the existing `/skills/prune` pattern for Doctor-panel/test use.
 - **Full-text session search** (issue #260): new `session-search-index.js`
   -- a SQLite FTS5 index over
   every past conversation turn's raw text, independent of the curated
