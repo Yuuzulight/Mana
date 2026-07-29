@@ -1,6 +1,19 @@
-# Mana
+<h1 align="center">Mana</h1>
 
-Talking to a cloud AI assistant means handing your voice, your screen, and every conversation to someone else's servers — **Mana runs the whole loop locally on your Windows PC instead**, so it listens, thinks, and talks back without an internet connection or a subscription.
+<p align="center">A local-first AI companion for Windows — she listens, thinks, remembers, and talks back without your voice or your conversations ever leaving your PC.</p>
+
+<p align="center">
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/Yuuzulight/Mana.svg?style=flat&colorA=080f12&colorB=1fa669" alt="License"></a>
+  <a href="https://github.com/Yuuzulight/Mana/issues"><img src="https://img.shields.io/github/issues/Yuuzulight/Mana.svg?style=flat&colorA=080f12&colorB=1fa669" alt="Open issues"></a>
+  <a href="https://github.com/sponsors/Yuuzulight"><img src="https://img.shields.io/github/sponsors/Yuuzulight?style=flat&colorA=080f12&colorB=1fa669" alt="Sponsors"></a>
+</p>
+
+<p align="center">
+  [<a href="https://github.com/Yuuzulight/Mana/issues">Report a bug</a>]
+  [<a href="https://github.com/Yuuzulight/Mana/discussions">Discussions</a>]
+  [<a href="https://github.com/sponsors/Yuuzulight">Sponsor</a>]
+  [<a href="docs/quick_start_windows.md">Quick start</a>]
+</p>
 
 **License (code): Apache License 2.0 — © 2026 ManaAI.** See LICENSE and NOTICE.
 
@@ -8,7 +21,7 @@ Talking to a cloud AI assistant means handing your voice, your screen, and every
 
 **Live2D Cubism Core** is proprietary to Live2D Inc., is not part of this repository, and is fetched at setup time under Live2D's own terms; see THIRD_PARTY.md.
 
-Mana is a local-first AI assistant for Windows. It listens from the desktop launcher, transcribes speech locally, replies with local GGUF models, speaks through local TTS services, and can read visible screen text after it is awake.
+Talking to a cloud AI assistant means handing your voice, your screen, and every conversation to someone else's servers. Character platforms and cloud VTuber stacks get you a voice and a face, but the moment their servers go down or the subscription lapses, so does the companion. Mana takes the other path: transcription, replies, TTS, memory, and screen awareness all run on your own Windows PC, so the assistant is actually yours — it works offline, it doesn't meter you, and nothing you say to it leaves the machine unless you explicitly turn that on.
 
 The project is built for a personal Windows setup: one user, local models by default, clear setup checks, and optional companion features when you want phone access or avatar control.
 
@@ -19,10 +32,15 @@ Mana is for people who want an always-listening voice assistant on their desktop
 ### How is Mana different?
 
 - 🔒 **Privacy-first, not privacy-optional** — local `llama.cpp` replies, local Whisper transcription, local TTS, and local OCR by default; `OPENAI_API_KEY` is ignored unless you explicitly opt into remote AI.
-- 🎙️ **Voice-native, not one-shot** — say the wake word once (`Mana` or `wake up`) and keep talking, instead of re-triggering per question like a push-to-talk command.
+- 🎙️ **Voice-native, not one-shot** — say the wake word once (`Mana` or `wake up`) and keep talking, instead of re-triggering per question like a push-to-talk command. Talk over her mid-reply (hotkey or just your voice) and she stops to listen, instead of finishing a sentence you already interrupted.
 - 🧩 **One integrated loop, not five disconnected tools** — transcription, LLM reply, TTS, and screen OCR are wired together into a single conversation instead of scripts you have to glue yourself.
 - 🛠️ **Developer-friendly, not a black box** — Mana can open files in Zed or VS Code, propose edits for review instead of silently applying them, and can even run as a Zed External Agent.
-- 🎭 **A presence, not just a reply** — a Live2D avatar with lip sync and emotion reactions, plus a gaming mode that backs off while you're playing, so it feels like a companion on your desktop rather than a chatbot tab.
+- 🎭 **A presence, not just a reply** — a Live2D or VRM avatar with lip sync and emotion reactions, plus a gaming mode that backs off while you're playing, so it feels like a companion on your desktop rather than a chatbot tab.
+- 🧠 **Remembers between conversations, not just within one** — idle-triggered memory consolidation, cross-session entity tagging, and a durable persona file mean Mana's sense of "you" outlives any single chat window.
+
+### Related projects
+
+Mana isn't the only project chasing a local, always-on AI companion. [Project AIRI](https://github.com/moeru-ai/airi) (web/desktop, Vue + WebGPU, aiming for a Neuro-sama-style streamer) and [Open-LLM-VTuber](https://github.com/t41372/Open-LLM-VTuber) (Python, cross-platform) both explore the same space from different angles, and Mana's voice barge-in feature specifically was inspired by seeing how both projects treat mid-speech interruption as a UX baseline rather than an afterthought. Where Mana differs: it's built for one specific Windows setup rather than a general audience, ships an Electron launcher plus a packaged installer client instead of a browser-first stage, and leans hard into practical daily-driver features (editor handoff, plugin ecosystem, Deep Research) alongside the avatar.
 
 ## Preview
 
@@ -49,6 +67,7 @@ For the full setup flow, including model paths, Whisper, TTS services, gaming mo
 
 - **Local AI by default**: Mana uses local `llama.cpp` models unless remote AI is explicitly enabled.
 - **Voice loop**: wake Mana once with `Mana` or `wake up`, then keep talking without repeating the wake word.
+- **Voice barge-in**: interrupt Mana mid-reply with a hotkey or just by talking over her (on by default) instead of waiting out a sentence you already cut off.
 - **Local transcription**: audio is transcribed through `whisper.cpp`.
 - **Local text generation**: replies come from GGUF models through `llama.cpp`.
 - **Local speech output**: Fish Speech (S1-mini) is the default TTS provider, with inline reference-audio voice cloning; Kokoro and GPT-SoVITS provider paths are also supported.
@@ -58,13 +77,15 @@ For the full setup flow, including model paths, Whisper, TTS services, gaming mo
 - **Look-at-my-screen hotkey**: press `Ctrl+Alt+M` (configurable via `MANA_VISION_HOTKEY`) to have Mana capture the screen, describe it, and speak the answer.
 - **Gaming mode**: Mana reduces idle work while watched games are running.
 - **Desktop avatar support**: Mana emotes through a built-in Live2D VTuber avatar with lip sync and emotion reactions ([docs/live2d_avatar_setup.md](docs/live2d_avatar_setup.md)), PNG overlay fallback, and optional VTube Studio hotkey control. A VRM (3D) model option is also available in `windows-launcher` ([docs/vrm_avatar_setup.md](docs/vrm_avatar_setup.md)), driven by the same lip-sync/emotion signals, with automatic fallback to Live2D when no VRM model is configured.
-- **Mobile companion path**: phone chat and summary sync are available through the local backend and optional tunnel setup.
+- **Mobile and remote companion paths**: phone chat and summary sync over the local backend and an optional tunnel, plus opt-in Telegram and Discord bridges (DM pairing-code approval, Discord voice-channel join with per-speaker transcription and barge-in) for messaging Mana from somewhere other than your desktop.
 - **Editor coding handoff**: Mana can detect local Zed or VS Code CLIs and open projects or files for coding help without applying edits silently.
 - **FFXIV, market, and job-search helpers**: Mana can query Universalis crafting/market data, Alpha Vantage stock summaries, and live Adzuna job postings when configured, plus a local job-application tracker with resume/cover-letter tailoring, as self-contained optional plugins that also inject context into chat replies; see [Plugins](plugins/README.md).
 - **MCP server (opt-in)**: Mana can expose its FFXIV market and web-access tools over the Model Context Protocol for local MCP clients like Claude Desktop or Claude Code; see [docs/roadmap/issue-42-mcp-support.md](docs/roadmap/issue-42-mcp-support.md).
-- **Deep Research**: a "Research" button next to the composer runs a bounded, multi-source search-and-read pass and replies with a cited report instead of a single search-and-answer; see [docs/roadmap/issue-47-deep-research.md](docs/roadmap/issue-47-deep-research.md).
-- **Better replies over time**: idle-triggered Dream Mode consolidates recent memory, Best-of-N self-voting picks the strongest of several candidate replies, and memories get cross-session connections and entity tagging instead of staying siloed per conversation.
+- **Deep Research**: a "Research" button next to the composer runs a bounded, multi-source search-and-read pass — with programmatic tool calling and parallel subagent delegation for harder queries — and replies with a cited report instead of a single search-and-answer; see [docs/roadmap/issue-47-deep-research.md](docs/roadmap/issue-47-deep-research.md).
+- **Better replies over time**: idle-triggered Dream Mode consolidates recent memory, Best-of-N self-voting picks the strongest of several candidate replies, conversational-rut and formulaic-phrasing detection keep replies from going stale, and memories get cross-session connections and entity tagging instead of staying siloed per conversation.
 - **Procedural memory (skills)**: a `node-bot/skills/` store holds "how I did X last time" knowledge as small, human-readable files -- a cheap always-available index plus full content loaded only when a skill is actually relevant, with idle-time pruning for skills nobody's touched in a while.
+- **Renderable artifacts**: HTML or long markdown in a reply renders inline instead of dumping raw source into the chat, with a standalone viewer window for a closer look.
+- **Session trajectory export**: pull any session's full turn history — including tool calls — out as ShareGPT-style JSONL for your own analysis or fine-tuning.
 - **OpenAI-compatible API**: `/v1/chat/completions`, `/v1/embeddings`, and `/v1/models` let external tools (e.g. Obsidian Copilot) talk to Mana's local backend directly.
 - **Obsidian plugin**: Mana Memory Sync pulls Mana's memory into an Obsidian vault as linked notes; the setup flow also detects a local Obsidian install. See [plugins/obsidian-plugin/README.md](plugins/obsidian-plugin/README.md).
 
@@ -81,7 +102,7 @@ Mana is intentionally split into small runtime pieces:
 - `windows-launcher`: Electron desktop launcher, microphone capture, avatar overlay control, screen capture, performance panel, and Doctor panel.
 - `desktop-client`: Electron chat client packaged with a real Windows installer (electron-builder/NSIS), including a built-in Live2D avatar (see `desktop-client/AVATAR_NOTICE.md`), a fully context-isolated renderer (`nodeIntegration: false`), a guided first-run setup wizard, and auto-update checking.
 - `node-bot`: local backend API for transcription, replies, TTS calls, screen OCR, mobile routes, and setup checks.
-- `plugins`: self-contained optional feature plugins (FFXIV market/crafting, real-world stock market data, a local job-application tracker, live Adzuna job search) that register their own routes, contribute chat-reply context, and are discoverable via `GET /plugins`; see [plugins/README.md](plugins/README.md).
+- `plugins`: self-contained optional feature plugins (FFXIV market/crafting, real-world stock market data, a local job-application tracker, live Adzuna job search, Telegram/Discord remote bridges, document ingestion, and more) that register their own routes, contribute chat-reply context, and are discoverable via `GET /plugins`; see [plugins/README.md](plugins/README.md).
 - `tts-service`: local Python service for Kokoro TTS.
 - `tools/whisper`: expected location for local `whisper.cpp` binaries and models.
 - `tools/llama`: expected location for local `llama.cpp` binaries and GGUF models.
@@ -195,6 +216,8 @@ Common troubleshooting:
 - [Zed External Agent setup](docs/zed_external_agent.md): local Zed `agent_servers` configuration.
 - [MCP support roadmap](docs/roadmap/issue-42-mcp-support.md): running Mana as an MCP server (`npm run mcp`) and the plan for MCP client support.
 - [Deep Research roadmap](docs/roadmap/issue-47-deep-research.md): multi-step, multi-source research with a cited report, bounded steps/time, and a "Research" button in windows-launcher.
+- [Voice barge-in roadmap](docs/roadmap/issue-219-voice-barge-in.md): interrupting Mana mid-speech by hotkey or by voice.
+- [Discord bot roadmap](docs/roadmap/issue-185-discord-bot.md) and [Discord voice channels roadmap](docs/roadmap/issue-187-discord-voice-channels.md): remote messaging and voice-channel companion support.
 - [Code signing setup](docs/code_signing_setup.md): what's needed to get a signed, SmartScreen-clean desktop-client installer.
 - [Auto-update setup](docs/auto_update_setup.md): how desktop-client checks for and installs updates, and what a release needs to include for it to work.
 - [Local data storage and uninstalling](docs/local_data_and_uninstall.md): where desktop-client's local data lives and what the uninstaller does (and doesn't) delete.
