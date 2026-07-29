@@ -50,9 +50,14 @@ function isMemoryToolName(name) {
 // args -- same "server-managed context, not model-supplied identifiers"
 // principle browser-automation's tool source already follows for its
 // session.
+// options.approvalGate: optional, matching issue #152's existing skill-write
+// gating -- when provided, a remember call is staged for approval the same
+// way a skill write is, instead of landing immediately. Omitted in
+// tests/callers that don't wire one, which write immediately (back-compat).
 function createMemoryToolSource(options = {}) {
   const acpMemoryStore = options.acpMemoryStore;
   const sessionId = options.sessionId || null;
+  const approvalGate = options.approvalGate || null;
   if (!acpMemoryStore) {
     throw new Error("acpMemoryStore is required");
   }
@@ -66,13 +71,23 @@ function createMemoryToolSource(options = {}) {
     if (action !== "remember") {
       throw new Error(`unknown memory tool: ${qualifiedName}`);
     }
-    const result = acpMemoryStore.rememberFact({
+    const payload = {
       sessionId,
       key: args?.key,
       text: args?.text,
       action: args?.action,
+    };
+
+    if (!approvalGate) {
+      return JSON.stringify(acpMemoryStore.rememberFact(payload));
+    }
+
+    const outcome = await approvalGate.requestApproval("memory-write", {
+      summary: `Remember "${payload.key}"${payload.text ? `: ${payload.text}` : ""}`,
+      payload,
+      scanText: payload.text,
     });
-    return JSON.stringify(result);
+    return JSON.stringify(outcome);
   }
 
   return { listToolSchemas, executeTool };
