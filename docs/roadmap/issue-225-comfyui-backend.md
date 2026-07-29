@@ -1,6 +1,7 @@
 # Issue 225: ComfyUI Backend for Image Generation
 
-Status: Scoped, not yet implemented. Tracks
+Status: Implemented (legacy single-checkpoint shape only -- split-loader
+support is #271, not yet implemented). Tracks
 [GitHub issue #225](https://github.com/Yuuzulight/Mana/issues/225).
 
 ## Background
@@ -59,23 +60,42 @@ that's the original ask (a working ComfyUI backend for the common case)
 and doesn't need to block on the split-loader work to be useful on its
 own.
 
-## Proposed design
+## Implemented design
 
-- `createComfyUiBackend({ baseUrl, workflowTemplate, fetchImpl, wsImpl })`
+- `createComfyUiBackend({ baseUrl, checkpointName, workflowTemplate, fetchImpl, pollIntervalMs, timeoutMs })`
   in `image-generation.js`, matching the existing backend function shape.
-- Bundle one default workflow JSON,
+  No `wsImpl` param -- websockets stayed out of scope per below, so it
+  would have been dead weight in the signature.
+- `checkpointName` (from `MANA_IMAGE_COMFYUI_CHECKPOINT`) is required and
+  throws at construction if missing -- ComfyUI's graph always names an
+  exact checkpoint file, unlike Automatic1111 which just uses whatever's
+  loaded. This throw is caught in `getHealth()` (see below) so a bad
+  config reports `unavailable` in `/health` instead of crashing it.
+- Bundled default workflow JSON,
   `plugins/image-generation/workflows/comfyui-txt2img-checkpoint.json`
-  (legacy single-checkpoint shape), with the target node ids for prompt
-  substitution documented in a comment at the top of the backend function.
-- `index.js`: add `MANA_IMAGE_BACKEND_TYPE` (`"automatic1111"` default when
+  (legacy single-checkpoint shape). Node ids are exported constants
+  (`COMFYUI_CHECKPOINT_NODE_ID` etc.) documented at the top of
+  `image-generation.js`, not hardcoded inline, so a future change to the
+  bundled graph has one place to update.
+- Backend flow: deep-clones the template (shared across calls, must not
+  mutate in place), sets the checkpoint name + prompt text + a fresh random
+  seed on the relevant nodes, `POST /prompt`, polls `GET /history/{id}`
+  every `pollIntervalMs` (default 1000ms) until it reports outputs or
+  `timeoutMs` (default 120000ms) elapses, then `GET /view` for each output
+  image's bytes and returns them as base64.
+- `editImageBase64` is rejected with a clear error (txt2img only this
+  pass), rather than silently ignored.
+- `index.js`: `MANA_IMAGE_BACKEND_TYPE` (`"automatic1111"` default when
   `MANA_IMAGE_BACKEND_URL` is set, `"comfyui"` to select the new backend
-  against the same URL) since a bare URL alone doesn't disambiguate which
-  API shape is behind it. Update `resolveBackend()`, `getHealth()`, and the
-  plugin's `description` accordingly.
+  against the same URL), plus `MANA_IMAGE_COMFYUI_CHECKPOINT` and optional
+  `MANA_IMAGE_COMFYUI_TIMEOUT_MS`. `resolveBackend()`, `getHealth()`
+  (now reports ComfyUI distinctly and catches construction-time
+  misconfiguration), and the plugin's `description` all updated.
 - Tests follow the exact pattern already used for
   `createAutomatic1111Backend`/`createOpenAiImagesBackend`: injected/mocked
-  `fetch` (and a minimal mocked poll response), not a live ComfyUI
-  instance -- same verification gap the existing plugin already has and
+  `fetch` covering the queue/poll/fetch-bytes sequence, a multi-poll case,
+  a non-ok-response case, and a timeout case -- not a live ComfyUI
+  instance, same verification gap the existing plugin already has and
   documents in its README.
 
 ## Out of scope for this pass
@@ -97,9 +117,28 @@ own.
 
 ## Open questions
 
-- Poll interval/timeout for `/history/{id}` -- needs a sensible default
-  that won't hang the request forever on a slow/large model, but also
-  won't give up on a legitimately slow generation.
+- Poll interval/timeout for `/history/{id}` -- shipped with 1000ms/120000ms
+  defaults, tunable via `MANA_IMAGE_COMFYUI_TIMEOUT_MS`. Not validated
+  against a real slow/large model; revisit the default if it proves too
+  short or too chatty in practice.
 - Whether `MANA_IMAGE_BACKEND_TYPE` is the right name/shape, versus e.g.
-  inferring it from a `comfyui://` URL scheme -- leaning toward the
-  explicit env var since it's harder to get wrong silently.
+  inferring it from a `comfyui://` URL scheme -- shipped with the explicit
+  env var since it's harder to get wrong silently.
+
+## Verified
+
+- `plugins/image-generation/test/image-generation.test.js`: checkpoint-name
+  requirement, image-editing rejection, full queue/poll/view happy path
+  (asserts checkpoint name + prompt land on the right nodes), multi-poll
+  case, non-ok `/prompt` response, and a timeout case -- 21 tests total in
+  this file, all passing.
+- `plugins/image-generation/test/image-generation-capability.test.js`:
+  `getHealth` reports the ComfyUI backend distinctly when configured, and
+  reports `unavailable` with the underlying error message (not a crash)
+  when `MANA_IMAGE_BACKEND_TYPE=comfyui` is set without
+  `MANA_IMAGE_COMFYUI_CHECKPOINT`.
+- `node-bot/test/health-components.test.js`: unaffected (still passes;
+  only checks component keys, not exact message text).
+- Not verified against a real ComfyUI instance -- no local GPU/ComfyUI
+  install available in this environment, same disclosed gap as issue #149
+  and the existing Automatic1111/OpenAI backends.

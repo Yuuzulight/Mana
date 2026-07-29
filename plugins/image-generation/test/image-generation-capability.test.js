@@ -85,3 +85,25 @@ test("getHealth reports unavailable with no backend configured, configured once 
   assert.equal(configured.status, "configured");
   assert.match(configured.message, /Local image backend/);
 });
+
+test("getHealth reports the ComfyUI backend distinctly, and misconfiguration without crashing", () => {
+  imageGenerationPlugin._resetForTests();
+  const configured = imageGenerationPlugin.getHealth({
+    env: {
+      MANA_IMAGE_BACKEND_URL: "http://127.0.0.1:8188",
+      MANA_IMAGE_BACKEND_TYPE: "comfyui",
+      MANA_IMAGE_COMFYUI_CHECKPOINT: "sd_xl_base_1.0.safetensors",
+    },
+  });
+  assert.equal(configured.status, "configured");
+  assert.match(configured.message, /ComfyUI/);
+
+  // comfyui selected but no checkpoint name -- createComfyUiBackend throws
+  // during construction; getHealth must catch that, not crash GET /health.
+  const misconfigured = imageGenerationPlugin.getHealth({
+    env: { MANA_IMAGE_BACKEND_URL: "http://127.0.0.1:8188", MANA_IMAGE_BACKEND_TYPE: "comfyui" },
+  });
+  assert.equal(misconfigured.status, "unavailable");
+  assert.match(misconfigured.message, /misconfigured/);
+  assert.match(misconfigured.message, /checkpoint name is required/);
+});

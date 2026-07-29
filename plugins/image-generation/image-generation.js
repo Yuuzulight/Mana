@@ -12,6 +12,24 @@ const crypto = require("crypto");
 const DEFAULT_IMAGES_DIR = path.join(__dirname, "..", "..", "node-bot", "data", "images");
 const MAX_PROMPT_CHARS = 2000;
 
+// Node ids inside workflows/comfyui-txt2img-checkpoint.json -- the bundled
+// graph is the legacy single-checkpoint shape (CheckpointLoaderSimple ->
+// CLIPTextEncode -> KSampler -> VAEDecode -> SaveImage). The split-loader
+// shape FLUX/Qwen-Image/Mage-Flow-style models need (separate
+// UNETLoader/CLIPLoader/VAELoader nodes) is a different graph, tracked
+// separately in issue #271 -- not this one.
+const COMFYUI_CHECKPOINT_NODE_ID = "4";
+const COMFYUI_SAMPLER_NODE_ID = "3";
+const COMFYUI_POSITIVE_PROMPT_NODE_ID = "6";
+const COMFYUI_SAVE_IMAGE_NODE_ID = "9";
+const DEFAULT_COMFYUI_WORKFLOW_PATH = path.join(__dirname, "workflows", "comfyui-txt2img-checkpoint.json");
+const DEFAULT_COMFYUI_POLL_INTERVAL_MS = 1000;
+const DEFAULT_COMFYUI_TIMEOUT_MS = 120000;
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 // Only http/https -- same validation model-management.js's brain-provider
 // settings use, since this is the same shape of concern (a user-configured
 // local or LAN endpoint, not a fixed trusted host).
@@ -138,11 +156,105 @@ function createOpenAiImagesBackend({ apiKey, baseUrl = "https://api.openai.com/v
   };
 }
 
+// ComfyUI backend -- fundamentally different shape from Automatic1111's
+// flat-params API (see docs/roadmap/issue-225-comfyui-backend.md for why):
+// 1. POST a whole workflow graph to /prompt (not {prompt: "..."}).
+// 2. Results are async: poll /history/{prompt_id} until it reports outputs,
+//    then fetch the actual PNG bytes from /view. No websocket in this pass
+//    (out of scope for #225 -- polling is simpler and more testable).
+// 3. The workflow's checkpoint filename must be given explicitly --
+//    ComfyUI's graph always names an exact checkpoint file, unlike
+//    Automatic1111 which just uses whatever's already loaded.
+function createComfyUiBackend({
+  baseUrl,
+  checkpointName,
+  workflowTemplate,
+  fetchImpl = fetch,
+  pollIntervalMs = DEFAULT_COMFYUI_POLL_INTERVAL_MS,
+  timeoutMs = DEFAULT_COMFYUI_TIMEOUT_MS,
+} = {}) {
+  const validatedUrl = assertValidBackendUrl(baseUrl);
+  if (!checkpointName) {
+    throw new Error(
+      "a checkpoint name is required (MANA_IMAGE_COMFYUI_CHECKPOINT) -- ComfyUI's workflow graph must name an exact checkpoint file, unlike Automatic1111 which uses whatever's already loaded",
+    );
+  }
+  const template = workflowTemplate || JSON.parse(fs.readFileSync(DEFAULT_COMFYUI_WORKFLOW_PATH, "utf8"));
+
+  async function pollHistory(promptId) {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const response = await fetchImpl(`${validatedUrl.origin}/history/${promptId}`);
+      if (response.ok) {
+        const history = await response.json();
+        const entry = history[promptId];
+        if (entry && entry.outputs) {
+          return entry.outputs;
+        }
+      }
+      await sleep(pollIntervalMs);
+    }
+    throw new Error(`ComfyUI generation timed out after ${timeoutMs}ms`);
+  }
+
+  return async function backend({ prompt, editImageBase64 }) {
+    if (editImageBase64) {
+      throw new Error("ComfyUI backend does not support image editing yet (txt2img only -- see issue #225)");
+    }
+
+    // Deep clone -- the template is shared across every call, must not be mutated in place.
+    const graph = JSON.parse(JSON.stringify(template));
+    graph[COMFYUI_CHECKPOINT_NODE_ID].inputs.ckpt_name = checkpointName;
+    graph[COMFYUI_POSITIVE_PROMPT_NODE_ID].inputs.text = prompt;
+    graph[COMFYUI_SAMPLER_NODE_ID].inputs.seed = Math.floor(Math.random() * 1e15);
+
+    const queueResponse = await fetchImpl(`${validatedUrl.origin}/prompt`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ prompt: graph, client_id: crypto.randomUUID() }),
+    });
+    if (!queueResponse.ok) {
+      throw new Error(`ComfyUI queue request failed: ${queueResponse.status}`);
+    }
+    const { prompt_id: promptId } = await queueResponse.json();
+    if (!promptId) {
+      throw new Error("ComfyUI did not return a prompt_id");
+    }
+
+    const outputs = await pollHistory(promptId);
+    const images = outputs[COMFYUI_SAVE_IMAGE_NODE_ID]?.images || [];
+    if (!images.length) {
+      throw new Error("ComfyUI reported no output images");
+    }
+
+    const imagesBase64 = [];
+    for (const image of images) {
+      const params = new URLSearchParams({
+        filename: image.filename,
+        subfolder: image.subfolder || "",
+        type: image.type || "output",
+      });
+      const viewResponse = await fetchImpl(`${validatedUrl.origin}/view?${params}`);
+      if (!viewResponse.ok) {
+        throw new Error(`ComfyUI image fetch failed: ${viewResponse.status}`);
+      }
+      const buffer = Buffer.from(await viewResponse.arrayBuffer());
+      imagesBase64.push(buffer.toString("base64"));
+    }
+    return { imagesBase64 };
+  };
+}
+
 module.exports = {
   DEFAULT_IMAGES_DIR,
   MAX_PROMPT_CHARS,
+  COMFYUI_CHECKPOINT_NODE_ID,
+  COMFYUI_SAMPLER_NODE_ID,
+  COMFYUI_POSITIVE_PROMPT_NODE_ID,
+  COMFYUI_SAVE_IMAGE_NODE_ID,
   assertValidBackendUrl,
   createImageGenerationStore,
   createAutomatic1111Backend,
   createOpenAiImagesBackend,
+  createComfyUiBackend,
 };
