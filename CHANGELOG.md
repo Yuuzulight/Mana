@@ -395,6 +395,18 @@ accounting.
   blank or synthetic fallback.
 
 ### Fixed
+- **Blank taskbar/tray icon and a stray native menu bar** (issue #230,
+  `windows-launcher`): the tray icon loaded `sprites/sprite-idle.png`, a
+  file deleted from the repo a while ago (issue #45/#46 purged the whole
+  `sprites/` folder) -- `nativeImage.createFromPath()` doesn't throw on a
+  missing file, it silently returns an empty image, which is why this
+  never surfaced as a crash, just a blank icon. The main window had no
+  `icon:` option at all either, so it fell back to Electron's default for
+  both the taskbar entry and title bar. Fixed by rasterizing the existing
+  Mana Crystal SVG (same design as the sidebar logo/startup screen) into
+  `windows-launcher/assets/icon.png` and wiring it into both. Also added
+  `Menu.setApplicationMenu(null)` -- the default File/Edit/View/Window/Help
+  bar was never intentionally added, just never explicitly removed.
 - **Loading screen stuck forever, whole renderer script silently dead**
   (issue #226): `backend-config.js` and `renderer.js` both declared
   `const { ipcRenderer } = require("electron");` at top level -- since

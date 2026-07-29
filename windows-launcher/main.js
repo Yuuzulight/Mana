@@ -44,6 +44,13 @@ const KOKORO_TTS_URL = "http://127.0.0.1:5011/health";
 const GPT_SOVITS_TTS_URL = "http://127.0.0.1:9880/";
 const FISH_TTS_URL = "http://127.0.0.1:8080/v1/health";
 const ROOT_DIR = path.join(__dirname, "..");
+// Used for the taskbar/window icon and the tray icon. Previously the tray
+// loaded sprites/sprite-idle.png, a file deleted from the repo a while ago
+// (issue #45/#46 purged the whole sprites/ folder for licensing reasons) --
+// nativeImage.createFromPath() doesn't throw on a missing file, it just
+// silently returns an empty image, which is why both showed up as a
+// generic/blank icon instead of erroring visibly.
+const APP_ICON_PATH = path.join(__dirname, "assets", "icon.png");
 const TTS_DIR = path.join(ROOT_DIR, "tts-service");
 const WHISPER_DIR = path.join(ROOT_DIR, "tools", "whisper");
 const DEFAULT_WHISPER_BIN = path.join(
@@ -603,6 +610,7 @@ function createWindow() {
     height: STARTUP_WINDOW_HEIGHT,
     center: true,
     title: "Mana",
+    icon: APP_ICON_PATH,
     show: false,
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
@@ -1042,6 +1050,13 @@ app.whenReady().then(() => {
     return;
   }
 
+  // Mana has its own chat UI, not a document-editing app -- the default
+  // Electron File/Edit/View/Window/Help menu bar (Chromium devtools/reload/
+  // zoom shortcuts, an "Edit" menu with nothing in this app to cut/copy/
+  // paste in the traditional sense) doesn't apply here and was never
+  // intentionally added, just never explicitly removed either.
+  Menu.setApplicationMenu(null);
+
   // The renderer loads over file://, which Chromium doesn't reliably
   // persist media permission grants for -- without this, getUserMedia()
   // re-prompts on every call (e.g. every Start listening after a Stop),
@@ -1139,9 +1154,7 @@ let tray = null;
 
 function createTray() {
   try {
-    const icon = nativeImage
-      .createFromPath(path.join(ROOT_DIR, "sprites", "sprite-idle.png"))
-      .resize({ width: 16, height: 16 });
+    const icon = nativeImage.createFromPath(APP_ICON_PATH).resize({ width: 16, height: 16 });
     tray = new Tray(icon);
     tray.setToolTip("Mana");
     tray.setContextMenu(
