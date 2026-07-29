@@ -61,6 +61,7 @@ tools/whisper/models/*.bin
 # Live2D runtime (proprietary, fetched by npm run fetch-live2d-core) and personal avatar model
 windows-launcher/assets/live2d/
 windows-launcher/avatar/model/
+windows-launcher/avatar/model-disabled/
 desktop-client/assets/live2d/
 desktop-client/avatar/model/
 

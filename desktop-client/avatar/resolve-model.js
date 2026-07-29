@@ -8,7 +8,12 @@
 const fs = require("fs");
 const path = require("path");
 const { pathToFileURL } = require("url");
-const { findModelJson, normalizeAvatarConfig } = require("./live2d-logic");
+const {
+  augmentModelSettings,
+  findModelJson,
+  normalizeAvatarConfig,
+  validateModelReferences,
+} = require("./live2d-logic");
 
 const MODEL_DIR = path.join(__dirname, "model");
 // Dev convenience only: if desktop-client has no model of its own, fall
@@ -59,9 +64,11 @@ function loadAvatarConfig(modelJson) {
 // build a Live2D model without touching fs itself: parsed model3.json
 // (`rawSettings`), the motion/expression filenames in that model's
 // directory, a `file://` URL for the model (for PIXI's own asset loading),
-// the normalized mana-avatar.json config, and a snapshot of the
+// the normalized mana-avatar.json config, a snapshot of the
 // MANA_LIVE2D_*/MANA_AVATAR_FPS tuning env vars (the renderer can no
-// longer read process.env directly either).
+// longer read process.env directly either), and a `validation` report
+// (see validateModelReferences) the renderer checks before attempting to
+// load.
 function resolveAvatarModel(env = process.env) {
   const modelJson = findConfiguredModelJson(env);
   if (!modelJson) {
@@ -83,6 +90,28 @@ function resolveAvatarModel(env = process.env) {
   );
   const settingsUrl = pathToFileURL(modelJson).href;
 
+  // Catch a broken/incomplete model (missing texture, deleted Moc, a typo'd
+  // Expression path) here, where fs access actually lives, so live2d-avatar.js
+  // (context-isolated, no fs) can bail with a clear reason instead of
+  // Live2DModel.from() failing deep inside pixi-live2d-display. Runs
+  // augmentModelSettings a second time purely for this check -- cheap, and
+  // keeps the renderer's own augmentModelSettings call (which builds the
+  // settings actually used to load) untouched.
+  const augmentedForValidation = augmentModelSettings(
+    rawSettings,
+    motionFileNames,
+    expressionFileNames,
+  );
+  const validation = validateModelReferences(augmentedForValidation, modelDir, fs);
+  if (validation.missing.length) {
+    const describe = (entry) =>
+      `${entry.type}${entry.name ? ` "${entry.name}"` : ""}: ${entry.resolvedPath}`;
+    console[validation.valid ? "warn" : "error"](
+      `Live2D model (${modelJson}) is missing ${validation.valid ? "non-critical" : "required"} file(s):`,
+      validation.missing.map(describe),
+    );
+  }
+
   const tuningEnv = {};
   for (const [key, value] of Object.entries(env)) {
     if (key.startsWith("MANA_LIVE2D_") || key === "MANA_AVATAR_FPS") {
@@ -98,6 +127,7 @@ function resolveAvatarModel(env = process.env) {
     settingsUrl,
     config,
     env: tuningEnv,
+    validation,
   };
 }
 
