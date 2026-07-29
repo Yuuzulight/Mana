@@ -420,10 +420,9 @@ const ttsRuntime = createTtsRuntime({
   logPerf,
 });
 
-// Full-text search over past conversation turns (ported from Project
-// AIRI's "Hermes Agent" research) -- an independent SQLite FTS5 index, not
-// the source of truth for session content (acp-memory-store.js's own
-// per-session JSON files still are).
+// Full-text search over past conversation turns -- an independent SQLite
+// FTS5 index, not the source of truth for session content
+// (acp-memory-store.js's own per-session JSON files still are).
 const sessionSearchIndex = createSessionSearchIndex();
 
 // ACP memory store (conversation/session memory)
@@ -1094,8 +1093,7 @@ if (process.env.NODE_ENV !== "test" && !process.env.NODE_TEST_CONTEXT) {
           if (!reply) {
             try {
               if (localLlamaReplyAvailable()) {
-                // Ported from Project AIRI's "Hermes Agent" research:
-                // background review doesn't need live-reply quality, and
+                // Background review doesn't need live-reply quality, and
                 // during genuine idle time nothing else needs the main
                 // brain model anyway -- defaults to the "background"
                 // profile (smallest available model) instead of paying
@@ -3648,9 +3646,8 @@ function registerRoutes(app, upload, deps = {}) {
             mergedToolPolicy,
             createMemoryToolSource({ acpMemoryStore, sessionId, approvalGate: activeApprovalGate }),
           );
-          // Ported from Project AIRI's "Hermes Agent" research: full-text
-          // search across past conversations, independent of the curated
-          // memory summary above.
+          // Full-text search across past conversations, independent of
+          // the curated memory summary above.
           mergedToolPolicy = await buildToolPolicyWithSessionSearch(
             mergedToolPolicy,
             createSessionSearchToolSource({ acpMemoryStore, sessionId }),

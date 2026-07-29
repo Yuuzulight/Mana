@@ -1,9 +1,9 @@
 // Procedural-memory store (issue #140): each skill is a standalone,
-// human-readable `.md` file with a small YAML-like frontmatter block,
-// mirroring Hermes Agent's SKILL.md convention. Kept as individual files
-// (not one JSON blob like presets-store.js) deliberately -- skills are meant
-// to be hand-authored/reviewed one at a time, and a plain .md file is
-// something a person can open and edit directly.
+// human-readable `.md` file with a small YAML-like frontmatter block.
+// Kept as individual files (not one JSON blob like presets-store.js)
+// deliberately -- skills are meant to be hand-authored/reviewed one at a
+// time, and a plain .md file is something a person can open and edit
+// directly.
 const fs = require("node:fs");
 const path = require("node:path");
 

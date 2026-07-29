@@ -1,9 +1,9 @@
-// A "session_search" tool, ported from Project AIRI's "Hermes Agent"
-// research: lets the model search past conversations by keyword instead of
-// only ever relying on the curated MEMORY.md-style summary
-// (acp-memory-store.js's buildPromptMemory/getRelatedFacts), which only
-// keeps a compacted gist, not the raw text. Same merge shape #169/#188/#198
-// already established (buildToolPolicyWithMcp/buildToolPolicyWithMemory).
+// A "session_search" tool: lets the model search past conversations by
+// keyword instead of only ever relying on the curated MEMORY.md-style
+// summary (acp-memory-store.js's buildPromptMemory/getRelatedFacts), which
+// only keeps a compacted gist, not the raw text. Same merge shape
+// #169/#188/#198 already established (buildToolPolicyWithMcp/
+// buildToolPolicyWithMemory).
 const SESSION_SEARCH_TOOL_PREFIX = "session_search__";
 
 const TOOL_SCHEMAS = [

@@ -2,12 +2,13 @@
 
 ## Status: Investigated, not adopted -- recommendation is "don't," with a named condition for revisiting
 
-Found while researching Nous Research's "Hermes Agent" for issue #260's
-other three items (session search, memory-write approval, background
-review model profile). Honcho (plastic-labs/honcho, open source,
-self-hostable) is one of several pluggable memory *providers* Hermes
-supports -- this is a genuinely different idea from anything Mana does, so
-it gets its own comparison rather than a quick port.
+Found while researching alternative memory-provider designs for issue
+#260's other three items (session search, memory-write approval,
+background review model profile). Honcho (plastic-labs/honcho, open
+source, self-hostable) is a pluggable "dialectic" memory provider some
+other agent projects support -- this is a genuinely different idea from
+anything Mana does, so it gets its own comparison rather than a quick
+port.
 
 ## Mana's current approach (verified against real code, not assumed)
 
@@ -29,16 +30,16 @@ it gets its own comparison rather than a quick port.
 All of this is plain JSON/text on disk -- inspectable, hand-editable, fully
 local, zero external service or account.
 
-## Honcho's approach (from Hermes's docs -- not independently verified against Honcho itself)
+## Honcho's approach (from its own docs -- not independently verified against Honcho itself)
 
 A separate service (self-hostable or hosted at app.honcho.dev) that ingests
 raw conversation turns and builds a "theory of mind" model of the user via
 a "dialectic" API: you ask it a natural-language question about the user
 ("what does this person care about in their work") and it synthesizes an
 answer from the *entire* conversation corpus using its own internal
-representations -- not from pre-written facts or a fixed summary. Hermes
-treats it as one of several swappable memory backends (alongside "OpenViking"
-and its own MEMORY.md-file default), not a single fixed design.
+representations -- not from pre-written facts or a fixed summary. Some other
+agent projects treat it as one of several swappable memory backends, not a
+single fixed design.
 
 ## Pros of Honcho over Mana's current approach
 
@@ -67,8 +68,8 @@ and its own MEMORY.md-file default), not a single fixed design.
    with tooling Mana already has (Node, SQLite). Mana's own stated design
    philosophy (README: "everything runs on your own Windows PC... it works
    offline") leans hard into minimal moving parts -- this cuts against that
-   more than it would for Hermes, which already embraces a much larger,
-   more distributed architecture (6 terminal backends, cron, a gateway
+   more than it would for an agent that already embraces a much larger,
+   more distributed architecture (multiple backends, cron, a gateway
    process, etc.) as a baseline.
 3. **Redundant with what issue #260 already ships.** The concrete gap that
    would have motivated reaching for Honcho -- "can't search raw history,
@@ -80,7 +81,7 @@ and its own MEMORY.md-file default), not a single fixed design.
    answers over raw context. Mana's default local brain is a small Qwen
    model (0.5B-8B, chosen for a modest home PC); it's untested whether
    Honcho's approach holds up as well against that as against whatever
-   larger models a typical Hermes user wires up via Nous Portal/OpenRouter.
+   larger models a typical agent deployment would wire up via a cloud API.
 
 ## Recommendation: don't adopt Honcho
 
