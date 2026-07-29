@@ -6,10 +6,13 @@ const test = require("node:test");
 
 const {
   MAX_PROMPT_CHARS,
+  COMFYUI_CHECKPOINT_NODE_ID,
+  COMFYUI_POSITIVE_PROMPT_NODE_ID,
   assertValidBackendUrl,
   createImageGenerationStore,
   createAutomatic1111Backend,
   createOpenAiImagesBackend,
+  createComfyUiBackend,
 } = require("../image-generation");
 
 function createTempDir() {
@@ -102,6 +105,125 @@ test("createAutomatic1111Backend surfaces a non-ok response as an error", async 
     fetchImpl: async () => ({ ok: false, status: 500 }),
   });
   await assert.rejects(() => backend({ prompt: "x" }), /request failed: 500/);
+});
+
+test("createComfyUiBackend requires a checkpoint name", () => {
+  assert.throws(
+    () => createComfyUiBackend({ baseUrl: "http://127.0.0.1:8188" }),
+    /checkpoint name is required/,
+  );
+});
+
+test("createComfyUiBackend rejects image editing (txt2img only for now)", async () => {
+  const backend = createComfyUiBackend({
+    baseUrl: "http://127.0.0.1:8188",
+    checkpointName: "sd_xl_base_1.0.safetensors",
+    fetchImpl: async () => {
+      throw new Error("fetch should not be called");
+    },
+  });
+  await assert.rejects(
+    () => backend({ prompt: "a cat", editImageBase64: "base64data" }),
+    /does not support image editing yet/,
+  );
+});
+
+// Mocks the three-call ComfyUI shape: POST /prompt (queue) -> GET
+// /history/{id} (poll) -> GET /view (fetch bytes) -- mirrors how a real
+// ComfyUI server behaves, not a live instance (same documented
+// verification gap as the Automatic1111/OpenAI backends above).
+function createMockComfyUiFetch({ promptId = "abc123", historyResponses = null } = {}) {
+  const requests = [];
+  let historyCallCount = 0;
+  const responses = historyResponses || [
+    { [promptId]: { outputs: { 9: { images: [{ filename: "mana_00001_.png", subfolder: "", type: "output" }] } } } },
+  ];
+  const fetchImpl = async (url, options) => {
+    requests.push({ url: String(url), body: options?.body ? JSON.parse(options.body) : null });
+    if (String(url).endsWith("/prompt")) {
+      return { ok: true, json: async () => ({ prompt_id: promptId }) };
+    }
+    if (String(url).includes("/history/")) {
+      const response = responses[Math.min(historyCallCount, responses.length - 1)];
+      historyCallCount += 1;
+      return { ok: true, json: async () => response };
+    }
+    if (String(url).includes("/view")) {
+      return { ok: true, arrayBuffer: async () => Buffer.from(TINY_PNG_BASE64, "base64") };
+    }
+    throw new Error(`unexpected mock fetch call: ${url}`);
+  };
+  return { fetchImpl, requests };
+}
+
+test("createComfyUiBackend queues a workflow, polls history, and fetches image bytes", async () => {
+  const { fetchImpl, requests } = createMockComfyUiFetch();
+  const backend = createComfyUiBackend({
+    baseUrl: "http://127.0.0.1:8188",
+    checkpointName: "sd_xl_base_1.0.safetensors",
+    fetchImpl,
+    pollIntervalMs: 1,
+  });
+
+  const result = await backend({ prompt: "a dragon", editImageBase64: null });
+
+  assert.deepEqual(result.imagesBase64, [TINY_PNG_BASE64]);
+
+  const queueRequest = requests.find((r) => r.url.endsWith("/prompt"));
+  assert.equal(
+    queueRequest.body.prompt[COMFYUI_CHECKPOINT_NODE_ID].inputs.ckpt_name,
+    "sd_xl_base_1.0.safetensors",
+  );
+  assert.equal(queueRequest.body.prompt[COMFYUI_POSITIVE_PROMPT_NODE_ID].inputs.text, "a dragon");
+  assert.ok(queueRequest.body.client_id);
+
+  const viewRequest = requests.find((r) => r.url.includes("/view"));
+  assert.match(viewRequest.url, /filename=mana_00001_\.png/);
+});
+
+test("createComfyUiBackend polls until history reports outputs", async () => {
+  const { fetchImpl, requests } = createMockComfyUiFetch({
+    historyResponses: [
+      { abc123: {} },
+      { abc123: {} },
+      { abc123: { outputs: { 9: { images: [{ filename: "mana_00002_.png", type: "output" }] } } } },
+    ],
+  });
+  const backend = createComfyUiBackend({
+    baseUrl: "http://127.0.0.1:8188",
+    checkpointName: "sd_xl_base_1.0.safetensors",
+    fetchImpl,
+    pollIntervalMs: 1,
+  });
+
+  const result = await backend({ prompt: "a castle" });
+  assert.deepEqual(result.imagesBase64, [TINY_PNG_BASE64]);
+  assert.equal(requests.filter((r) => r.url.includes("/history/")).length, 3);
+});
+
+test("createComfyUiBackend surfaces a non-ok /prompt response as an error", async () => {
+  const backend = createComfyUiBackend({
+    baseUrl: "http://127.0.0.1:8188",
+    checkpointName: "sd_xl_base_1.0.safetensors",
+    fetchImpl: async () => ({ ok: false, status: 500 }),
+  });
+  await assert.rejects(() => backend({ prompt: "x" }), /queue request failed: 500/);
+});
+
+test("createComfyUiBackend times out if history never reports outputs", async () => {
+  const backend = createComfyUiBackend({
+    baseUrl: "http://127.0.0.1:8188",
+    checkpointName: "sd_xl_base_1.0.safetensors",
+    fetchImpl: async (url) => {
+      if (String(url).endsWith("/prompt")) {
+        return { ok: true, json: async () => ({ prompt_id: "abc123" }) };
+      }
+      return { ok: true, json: async () => ({ abc123: {} }) };
+    },
+    pollIntervalMs: 1,
+    timeoutMs: 5,
+  });
+  await assert.rejects(() => backend({ prompt: "x" }), /timed out/);
 });
 
 test("createOpenAiImagesBackend requires an API key and sends bearer auth", async () => {

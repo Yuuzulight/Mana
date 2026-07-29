@@ -31,7 +31,7 @@ read, tested, and reasoned about without the rest of the backend.
   or idle activity. **Off by default** (`defaultEnabled: false`) -- enable
   it in Settings > Plugins before adding jobs.
 - [`image-generation`](image-generation/): generate or edit an image from a
-  text description. Local-first (Automatic1111-compatible HTTP API) with
+  text description. Local-first (Automatic1111 or ComfyUI HTTP API) with
   an opt-in external-API fallback. **Off by default.**
 - [`browser-automation`](browser-automation/): navigate/click/type/read a
   live page via a local Chromium-family browser (Edge by default on
