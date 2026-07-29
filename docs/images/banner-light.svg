@@ -17,10 +17,17 @@
       <feGaussianBlur stdDeviation="26"/>
     </filter>
 
-    <radialGradient id="crystalHalo" cx="50%" cy="46%" r="62%">
-      <stop offset="0%" stop-color="#b3a0ee" stop-opacity="0.35"/>
+    <radialGradient id="crystalHalo" cx="50%" cy="46%" r="100%">
+      <stop offset="0%" stop-color="#b3a0ee" stop-opacity="0.5"/>
+      <stop offset="20%" stop-color="#b3a0ee" stop-opacity="0.42"/>
+      <stop offset="40%" stop-color="#b3a0ee" stop-opacity="0.28"/>
+      <stop offset="60%" stop-color="#b3a0ee" stop-opacity="0.15"/>
+      <stop offset="80%" stop-color="#b3a0ee" stop-opacity="0.06"/>
       <stop offset="100%" stop-color="#b3a0ee" stop-opacity="0"/>
     </radialGradient>
+    <filter id="haloBlur" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="1.4"/>
+    </filter>
     <filter id="crystalShadow" x="-60%" y="-60%" width="220%" height="220%">
       <feDropShadow dx="0" dy="0.5" stdDeviation="0.7" flood-color="#4a3f6d" flood-opacity="0.28"/>
     </filter>
@@ -41,7 +48,7 @@
 
   <!-- Mana Crystal emblem, large, off right edge -->
   <g transform="translate(760,20) scale(17) rotate(-6 12 12)">
-    <ellipse cx="12" cy="13" rx="13" ry="13" fill="url(#crystalHalo)"/>
+    <ellipse cx="12" cy="13" rx="13" ry="13" fill="url(#crystalHalo)" filter="url(#haloBlur)"/>
     <circle cx="22" cy="10" r="0.7" fill="#8a76d4" opacity="0.6"/>
     <circle cx="19" cy="4" r="0.5" fill="#b39ee6" opacity="0.55"/>
     <circle cx="12" cy="2.5" r="0.6" fill="#8a76d4" opacity="0.55"/>
@@ -81,7 +88,7 @@
 
   <!-- small crisp crystal beside wordmark -->
   <g transform="translate(96,150) scale(2.6)">
-    <ellipse cx="12" cy="13" rx="13" ry="13" fill="url(#crystalHalo)"/>
+    <ellipse cx="12" cy="13" rx="13" ry="13" fill="url(#crystalHalo)" filter="url(#haloBlur)"/>
     <circle cx="22" cy="10" r="0.7" fill="#8a76d4" opacity="0.6"/>
     <circle cx="19" cy="4" r="0.5" fill="#b39ee6" opacity="0.55"/>
     <circle cx="12" cy="2.5" r="0.6" fill="#8a76d4" opacity="0.55"/>
