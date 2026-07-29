@@ -254,7 +254,7 @@ function createAcpMemoryStore(options = {}) {
   // rather than real full-text search -- cheap, deterministic, and reuses
   // the index appendTurn() already maintains; explicit facts match by
   // direct key substring rather than the Title-Case entity heuristic,
-  // since a fact's key ("Aurora's GPU") isn't necessarily Title Case.
+  // since a fact's key ("the user's GPU") isn't necessarily Title Case.
   function getRelatedFacts(text, options = {}) {
     const excludeSessionId = options.excludeSessionId;
     const maxEntities = Math.max(

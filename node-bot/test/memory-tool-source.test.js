@@ -40,12 +40,12 @@ test("executeTool forwards key/text/action to acpMemoryStore.rememberFact, with 
   const acpMemoryStore = fakeAcpMemoryStore();
   const source = createMemoryToolSource({ acpMemoryStore, sessionId: "session-a" });
   const result = await source.executeTool(`${MEMORY_TOOL_PREFIX}remember`, {
-    key: "Aurora's GPU",
+    key: "the user's GPU",
     text: "RTX 5080",
     action: "patch",
   });
   assert.deepEqual(acpMemoryStore.calls, [
-    { sessionId: "session-a", key: "Aurora's GPU", text: "RTX 5080", action: "patch" },
+    { sessionId: "session-a", key: "the user's GPU", text: "RTX 5080", action: "patch" },
   ]);
   assert.equal(result, JSON.stringify({ ok: true, action: "patch" }));
 });
@@ -81,7 +81,7 @@ test("executeTool stages the write through approvalGate.requestApproval when one
   const source = createMemoryToolSource({ acpMemoryStore, sessionId: "session-a", approvalGate });
 
   const result = await source.executeTool(`${MEMORY_TOOL_PREFIX}remember`, {
-    key: "Aurora's GPU",
+    key: "the user's GPU",
     text: "RTX 5080",
     action: "patch",
   });
@@ -92,7 +92,7 @@ test("executeTool stages the write through approvalGate.requestApproval when one
   assert.equal(approvalCalls[0].actionType, "memory-write");
   assert.deepEqual(approvalCalls[0].details.payload, {
     sessionId: "session-a",
-    key: "Aurora's GPU",
+    key: "the user's GPU",
     text: "RTX 5080",
     action: "patch",
   });

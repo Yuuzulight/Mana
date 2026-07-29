@@ -22,7 +22,7 @@ const TOOL_SCHEMAS = [
           key: {
             type: "string",
             description:
-              "A short, stable label for this fact (e.g. \"Aurora's GPU\"), used to find/update/forget it later. Reuse the same key to update or forget an existing fact.",
+              "A short, stable label for this fact (e.g. \"the user's GPU\"), used to find/update/forget it later. Reuse the same key to update or forget an existing fact.",
           },
           text: {
             type: "string",
