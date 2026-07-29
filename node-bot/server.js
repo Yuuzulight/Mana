@@ -85,7 +85,7 @@ const {
 const {
   retrieverAdminCapability,
 } = require("./capabilities/retriever-admin-capability");
-const { skillsCapability, findMatchingSkill } = require("./capabilities/skills-capability");
+const { skillsCapability } = require("./capabilities/skills-capability");
 const { createSkillsStore } = require("./skills-store");
 const { createApprovalGate } = require("./approval-gate");
 const { createRutDetector } = require("./rut-detection");
@@ -119,6 +119,7 @@ const { readGgufMetadata } = require("./tools/gguf-metadata");
 const { createTtsRuntime } = require("./tts-runtime");
 const { createAcpMemoryStore } = require("./acp-memory-store");
 const { createSessionSearchIndex } = require("./session-search-index");
+const { createSkillProposalRunner } = require("./skill-proposal");
 const persona = require("./persona");
 const { createPresetsStore } = require("./presets-store");
 const { createPluginSettingsStore } = require("./plugin-settings-store");
@@ -1325,158 +1326,18 @@ if (process.env.NODE_ENV !== "test" && !process.env.NODE_TEST_CONTEXT) {
         }
       }
 
-      // Idle-triggered skill-proposal pass (issue #262): reviews recent
-      // session summaries for a genuinely reusable, repeated multi-step
-      // pattern and stages -- never writes directly -- a new skill
-      // proposal through the same approval-gate path a human-authored
-      // skill write already goes through (issue #152). Conservative by
-      // design: most idle reviews find nothing, and finding something
-      // never skips approval -- there's no "auto-apply" mode here, only
-      // "propose" (default) or "off".
-      async function runSkillProposal(deps = {}) {
-        try {
-          if (
-            String(process.env.MANA_SKILL_PROPOSAL_MODE || "").toLowerCase() ===
-            "off"
-          ) {
-            return { ok: false, reason: "disabled" };
-          }
-
-          const idleSkillsStore = deps.skillsStore || skillsStore;
-          const idleApprovalGate = deps.approvalGate || approvalGate;
-          if (!idleSkillsStore || !idleApprovalGate) {
-            return { ok: false, reason: "missing_dependencies" };
-          }
-
-          const res = await asyncLoadBackgroundMemory();
-          const processedFiles =
-            res && res.processedFiles ? res.processedFiles : [];
-          const minSummaries = Number(
-            process.env.MANA_SKILL_PROPOSAL_MIN_SUMMARIES || 5,
-          );
-          if (!processedFiles || processedFiles.length < minSummaries) {
-            return { ok: false, reason: "not_enough_summaries" };
-          }
-
-          const maxSummaries = Number(
-            process.env.MANA_SKILL_PROPOSAL_MAX_SUMMARIES || 20,
-          );
-          const numbered = processedFiles
-            .slice(0, maxSummaries)
-            .map(
-              (p, idx) => `${idx + 1}. ${String(p.summary || "").slice(0, 300)}`,
-            )
-            .join("\n\n");
-
-          const existingSkills = idleSkillsStore.listSkills();
-          const existingList = existingSkills.length
-            ? existingSkills
-                .map((s) => `- ${s.name}: ${s.description}`)
-                .join("\n")
-            : "(none yet)";
-
-          const prompt = `You are reviewing recent session summaries for a genuinely reusable, repeated multi-step workflow -- something done the same way at least twice, that would save future tool/model calls if captured as a skill. Be conservative: most reviews find nothing. Never propose something already covered by an existing skill.\n\nEXISTING SKILLS:\n${existingList}\n\nBEGIN SUMMARIES:\n${numbered}\n\nEND SUMMARIES\n\nIf you find a genuinely reusable pattern not already covered, respond with strict JSON: {"found": true, "name": "kebab-case-skill-name", "description": "one sentence: when to use this", "body": "the general step-by-step procedure, written for future reuse, not tied to this one instance", "category": "optional short category"}. If nothing qualifies, respond with exactly: {"found": false}. Respond with valid JSON only, no commentary.`;
-
-          let reply = null;
-          try {
-            if (shouldUseRemoteAi()) {
-              reply = await runOpenAIReply(prompt, 400);
-            }
-          } catch (e) {
-            console.warn(
-              "Skill proposal (remote) failed:",
-              e && e.message ? e.message : e,
-            );
-          }
-          if (!reply) {
-            try {
-              if (localLlamaReplyAvailable()) {
-                reply = await runLocalLlamaReply(
-                  prompt,
-                  300,
-                  process.env.MANA_BACKGROUND_REVIEW_PROFILE || "background",
-                );
-              }
-            } catch (e) {
-              console.warn(
-                "Skill proposal (local) failed:",
-                e && e.message ? e.message : e,
-              );
-              reply = null;
-            }
-          }
-
-          if (!reply || typeof reply !== "string") {
-            return { ok: false, reason: "no_reply" };
-          }
-
-          let parsed = null;
-          try {
-            parsed = JSON.parse(reply);
-          } catch (e) {
-            const m = reply.match(/\{[\s\S]*\}/m);
-            if (m) {
-              try {
-                parsed = JSON.parse(m[0]);
-              } catch (e2) {
-                parsed = null;
-              }
-            }
-          }
-
-          if (!parsed || !parsed.found) {
-            return { ok: true, found: false };
-          }
-
-          const name = String(parsed.name || "").trim();
-          const description = String(parsed.description || "").trim();
-          const body = String(parsed.body || "").trim();
-          if (!name || !description || !body) {
-            return { ok: false, reason: "incomplete_proposal" };
-          }
-
-          // Skip if an existing skill already matches this name/description
-          // -- same keyword-overlap matcher the retrieval path already
-          // uses, so a proposal never duplicates a skill that would
-          // already surface on its own.
-          const alreadyCovered = findMatchingSkill(
-            existingSkills,
-            `${name} ${description}`,
-          );
-          if (alreadyCovered) {
-            return {
-              ok: true,
-              found: false,
-              reason: "already_covered",
-              matched: alreadyCovered.name,
-            };
-          }
-
-          const outcome = await idleApprovalGate.requestApproval("skill-write", {
-            summary: `Auto-detected reusable pattern: create skill "${name}"`,
-            payload: { name, description, body, category: parsed.category },
-            scanText: body,
-          });
-
-          console.log(
-            `Idle-triggered skill proposal staged: "${name}" (status: ${outcome.status})`,
-          );
-          return { ok: true, found: true, name, outcome };
-        } catch (e) {
-          console.warn(
-            "Skill proposal pass failed:",
-            e && e.message ? e.message : e,
-          );
-          return { ok: false, reason: "exception", error: String(e) };
-        }
-      }
-
       // expose reviewer/compactor/connections to other modules/routes (preview/apply, idle-report)
       try {
         runBackgroundReviewerPublic = runBackgroundReviewer;
         runBackgroundCompactorPublic = runBackgroundCompactor;
         runBackgroundConnectionsPublic = runBackgroundConnections;
-        runSkillProposalPublic = runSkillProposal;
+        // runSkillProposalPublic is constructed in registerRoutes below,
+        // not here -- runOpenAIReply only exists in that scope (unlike
+        // shouldUseRemoteAi/runLocalLlamaReply/localLlamaReplyAvailable,
+        // which really are module-level). Building it eagerly here with a
+        // bare `runOpenAIReply` reference would throw immediately at
+        // startup (ReferenceError), not just fail quietly when actually
+        // invoked -- caught by this same eager-construction refactor.
       } catch (e) {}
 
       // Run compactor once now, and schedule periodic compaction
@@ -1880,7 +1741,31 @@ function registerRoutes(app, upload, deps = {}) {
   // bypass a test's deps.skillsStore override.
   const activeApprovalGate = deps.approvalGate || approvalGate;
   activeApprovalGate.registerExecutor("skill-write", (payload) => activeSkillsStore.createSkill(payload));
+  // Distinct action type for the idle-triggered autonomous pass (issue
+  // #262/skill-proposal.js) -- same executor, but kept separate from
+  // "skill-write" above so an "always-allow" decision on a manual/
+  // conversational skill write doesn't silently also disable review for
+  // every future proposal nobody's actually looked at.
+  activeApprovalGate.registerExecutor("skill-write-idle", (payload) => activeSkillsStore.createSkill(payload));
   activeApprovalGate.registerExecutor("memory-write", (payload) => acpMemoryStore.rememberFact(payload));
+
+  // Idle-triggered skill-proposal pass (issue #262) -- extracted to
+  // skill-proposal.js so its actual logic is directly unit testable; built
+  // here (not in the earlier module-load-time startup block) because
+  // runOpenAIReply only exists in this function's scope, unlike
+  // shouldUseRemoteAi/runLocalLlamaReply/localLlamaReplyAvailable, which
+  // really are module-level. Rebuilt on every registerRoutes call (once
+  // per real server start, once per test's createApp()), matching
+  // activeSkillsStore/activeApprovalGate just above.
+  runSkillProposalPublic = createSkillProposalRunner({
+    asyncLoadBackgroundMemory,
+    shouldUseRemoteAi,
+    runOpenAIReply,
+    localLlamaReplyAvailable,
+    runLocalLlamaReply,
+    skillsStore: activeSkillsStore,
+    approvalGate: activeApprovalGate,
+  }).run;
   const activeMcpClientRegistry = deps.mcpClientRegistry || mcpClientRegistry;
   const activeToolCallLog = deps.toolCallLog || toolCallLog;
   const activeBrowserAutomationToolSource = deps.browserAutomationToolSource || browserAutomationToolSource;
@@ -3820,10 +3705,13 @@ function registerRoutes(app, upload, deps = {}) {
           // User-requested skill creation mid-conversation ("make a skill
           // that does X") -- distinct from the idle-triggered autonomous
           // proposal pass (issue #262's runSkillProposal), which nobody
-          // explicitly asked for and so always stays pending for later
-          // review; here the user is directly asking right now, so a
-          // pending outcome auto-clears the same way the Settings > Skills
-          // UI's own create flow does (see ai/skill-tool-source.js).
+          // explicitly asked for. Despite the direct ask, this still stays
+          // genuinely pending like the idle pass does, not auto-approved
+          // like the Settings UI's own create flow -- the drafted content
+          // is the model's own text, not the user's verbatim words, and a
+          // page Mana read earlier in the same turn could otherwise talk
+          // it into staging attacker-authored content (see
+          // ai/skill-tool-source.js).
           mergedToolPolicy = await buildToolPolicyWithSkillCreate(
             mergedToolPolicy,
             createSkillToolSource({ approvalGate: activeApprovalGate }),

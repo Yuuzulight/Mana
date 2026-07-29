@@ -73,6 +73,26 @@ test("skills capability returns full content for a specific skill", async () => 
   });
 });
 
+test("skills capability's get-one route defaults touch to true but respects ?touch=false", async () => {
+  const app = express();
+  app.use(express.json());
+  const touchCalls = [];
+  skillsCapability.registerRoutes(app, {
+    skillsStore: fakeStore({
+      viewSkill: (name, opts) => {
+        touchCalls.push(opts);
+        return { name, body: "b" };
+      },
+    }),
+  });
+
+  await withServer(app, async (baseUrl) => {
+    await fetch(`${baseUrl}/skills/Skill%20A`);
+    await fetch(`${baseUrl}/skills/Skill%20A?touch=false`);
+    assert.deepEqual(touchCalls, [{ touch: true }, { touch: false }]);
+  });
+});
+
 test("skills capability creates a skill from name/description/body once the gate approves it", async () => {
   const app = express();
   app.use(express.json());
@@ -165,6 +185,29 @@ test("skills capability's patch route updates a skill and is not gated by approv
     assert.equal(response.status, 200);
     assert.equal(payload.description, "updated desc");
     assert.deepEqual(received, { name: "Skill A", updates: { description: "updated desc" } });
+  });
+});
+
+test("skills capability's patch route passes category: null through explicitly, distinct from omitting it", async () => {
+  const app = express();
+  app.use(express.json());
+  let received = null;
+  skillsCapability.registerRoutes(app, {
+    skillsStore: fakeStore({
+      updateSkill: (name, updates) => {
+        received = updates;
+        return { name, description: "d", body: "b", category: "general" };
+      },
+    }),
+  });
+
+  await withServer(app, async (baseUrl) => {
+    await fetch(`${baseUrl}/skills/${encodeURIComponent("Skill A")}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ category: null }),
+    });
+    assert.deepEqual(received, { category: null });
   });
 });
 

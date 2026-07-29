@@ -46,16 +46,45 @@ accounting.
   `onnxruntime`), which is what was blocking the remaining torch
   Dependabot alerts.
 
+### Fixed
+- **Skill-write review, closed for real** (multi-pass review of #270):
+  `skill__create` (the conversational tool) no longer auto-decides itself
+  -- a model-drafted skill is the model's own inference of what the user
+  meant, not their verbatim words, and auto-approving it was the one place
+  "approval-gated" and "not actually gated" diverged, especially with
+  browser-automation live in the same tool policy. The idle-triggered
+  autonomous proposal pass now uses its own `skill-write-idle` action type
+  (an "always-allow" on a manual write no longer silently disables review
+  for proposals nobody's looked at), skips re-proposing a pattern that's
+  already sitting pending, and neuters literal `BEGIN/END SUMMARIES` text
+  inside a session summary before it reaches the prompt. `serializeSkillFile`
+  now rejects embedded line breaks in name/description/category (previously
+  unescaped, so LLM-generated content could inject bogus frontmatter keys),
+  and `createSkill`'s duplicate check compares the actual target filename
+  instead of the exact display name, closing a case-insensitive
+  silent-overwrite bug ("Restart SearXNG" vs "restart searxng" both
+  slugify to the same file). Settings > Skills now has a pending-review
+  list (Approve/Deny) for anything that stays genuinely pending, visible
+  errors on save/delete instead of console-only, a `touch:false` option so
+  opening Edit and cancelling doesn't silently un-stale a skill, and
+  `runSkillProposal`'s core logic moved to its own module
+  (`skill-proposal.js`) specifically so it's directly unit tested instead
+  of only reachable through a fully-mocked route -- which caught a real
+  latent bug in the process: eager construction exposed that `runOpenAIReply`
+  was never actually in scope where the idle pass called it, a
+  ReferenceError that would have crashed the remote-AI path the first time
+  it fired.
+
 ### Added
 - **Conversational skill creation** (issue #262 follow-up): a new
   `skill__create` model tool lets Mana save a skill when the user directly
   asks mid-conversation ("make a skill that does X"), distinct from the
-  idle-triggered autonomous proposal pass below -- the user is asking right
-  now, so a "pending" approval-gate outcome auto-clears the same way the
-  Settings > Skills UI's create flow does, instead of sitting pending with
-  no conversational review surface. The tool's description also asks Mana
-  to quote the saved skill back in a fenced markdown block in her reply --
-  no new backend plumbing needed, that's exactly what issue #148's existing
+  idle-triggered autonomous proposal pass below. Stays genuinely pending
+  for review in Settings > Skills, same as the idle pass -- see Fixed,
+  above, for why this doesn't auto-decide. The tool's description also
+  asks Mana to quote the saved skill back in a fenced markdown block in
+  her reply -- no new backend plumbing needed, that's exactly what issue
+  #148's existing
   renderable-artifacts detection already turns into an openable preview.
 - **Settings > Skills UI** (issue #262 follow-up): create, edit, and delete
   skills directly from Settings in both windows-launcher and desktop-client,
