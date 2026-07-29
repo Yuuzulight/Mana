@@ -75,6 +75,24 @@ test("deny removes the pending request without running the executor", async () =
   assert.equal(gate.listPending().length, 0);
 });
 
+test("a thrown executor leaves the pending entry retrievable instead of losing it", async () => {
+  const gate = createApprovalGate({ dataDir: createTempDir() });
+  let attempts = 0;
+  gate.registerExecutor("skill-write", () => {
+    attempts += 1;
+    if (attempts === 1) throw new Error("disk full");
+    return "created";
+  });
+
+  const outcome = await gate.requestApproval("skill-write", { payload: {} });
+  await assert.rejects(() => gate.decide(outcome.requestId, "allow-once"), /disk full/);
+  assert.equal(gate.listPending().length, 1, "the entry must not be deleted when the executor fails");
+
+  const retried = await gate.decide(outcome.requestId, "allow-once");
+  assert.equal(retried.status, "approved");
+  assert.equal(gate.listPending().length, 0);
+});
+
 test("deciding on an unknown requestId returns null", async () => {
   const gate = createApprovalGate({ dataDir: createTempDir() });
   assert.equal(await gate.decide("nope", "allow-once"), null);

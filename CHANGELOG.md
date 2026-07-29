@@ -74,6 +74,21 @@ accounting.
   was never actually in scope where the idle pass called it, a
   ReferenceError that would have crashed the remote-AI path the first time
   it fired.
+- **Skill-write review, round 3** (further review of #270): `approval-gate.js`'s
+  `decide()` no longer deletes a pending entry until its executor actually
+  succeeds, so a failing "skill-write" write (disk full, bad payload) leaves
+  the request retriable instead of silently disappearing. The idle proposal's
+  duplicate check now also compares against pending *manual* `skill-write`
+  requests, not just other idle ones. `PATCH /skills/:name` 400s when
+  `category` is neither a string nor `null` instead of silently no-op'ing.
+  `contentScanEnabled` (the optional shell/fs/credential-pattern flagger) is
+  now a real opt-in via `MANA_APPROVAL_CONTENT_SCAN_ENABLED=1`, still off by
+  default. Settings > Skills now polls the pending-review list every 15s in
+  both apps, so a proposal staged while the panel just sits open actually
+  shows up. Added an integration test that boots the real `createApp()` and
+  drives `/skills/propose` and the real `skill-write-idle` executor end to
+  end -- the exact kind of test that would have caught the `runOpenAIReply`
+  scope bug above without needing a live server to notice it.
 
 ### Added
 - **Conversational skill creation** (issue #262 follow-up): a new

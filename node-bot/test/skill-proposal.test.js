@@ -175,8 +175,31 @@ test("run() skips a proposal that duplicates an already-pending idle proposal", 
         actionType: IDLE_SKILL_WRITE_ACTION,
         payload: { name: "Restart SearXNG", description: "restart search when it dies" },
       },
-      // A pending *manual* skill-write with the same name shouldn't count
-      // -- only idle-vs-idle duplicates should be suppressed here.
+    ],
+  });
+  const runner = createSkillProposalRunner(
+    baseOptions({
+      approvalGate,
+      runLocalLlamaReply: async () =>
+        JSON.stringify({
+          found: true,
+          name: "Restart SearXNG",
+          description: "restart search when it dies",
+          body: "steps",
+        }),
+    }),
+  );
+  const result = await runner.run();
+  assert.equal(result.reason, "already_pending");
+  assert.equal(approvalGate.requestCalls.length, 0);
+});
+
+test("run() also skips a proposal that duplicates an already-pending manual skill-write", async () => {
+  // A human staging the same skill through the conversational/manual
+  // "skill-write" path shouldn't get a duplicate idle proposal piled on top
+  // of it while it's still sitting unreviewed.
+  const approvalGate = fakeApprovalGate({
+    pending: [
       { actionType: "skill-write", payload: { name: "Restart SearXNG", description: "restart search when it dies" } },
     ],
   });
