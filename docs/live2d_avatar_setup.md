@@ -152,8 +152,13 @@ The model is fully drop-in:
    npm run check-live2d-model
    ```
 
-   This prints the detected model, its motion groups, expressions, whether
-   the lip-sync parameter exists, and the state → motion/expression mapping.
+   This prints the detected model, whether every file it references
+   (Moc/Textures/Physics/Expression/Motion files) actually exists on disk,
+   its motion groups, expressions, whether the lip-sync parameter exists,
+   and the state → motion/expression mapping. A missing Moc or Texture is
+   fatal (the avatar falls back to the sprite avatar at runtime); anything
+   else missing is just a warning -- that one feature won't work, the rest
+   of the model still loads.
 3. Restart the launcher.
 
 Models whose motions/expressions are loose VTube Studio-style files (not
