@@ -47,6 +47,22 @@ accounting.
   Dependabot alerts.
 
 ### Changed
+- **VRM avatar parity fixes, ported from Project AIRI's stage-ui-three**
+  (issue #257): the VRM renderer had no auto-blink, instant (unblended)
+  expression snaps, no idle eye movement, frustum culling left on, and no
+  FPS cap. Added a manually-timed blink (VRM has no built-in blink manager
+  the way Cubism/Live2D does), a 300ms eased expression crossfade
+  (replacing an instant zero-then-one snap that AIRI's own history cites
+  fixing for the same "too raw" complaint), idle eye saccades reusing the
+  exact same randomized-interval distribution already shipped for Live2D,
+  disabled frustum culling (an always-animated character's rest-pose
+  bounding box goes stale once bones move), a VRM-version facing-direction
+  correction, and multi-shape mouth blending (aa/ih/ou) reusing the
+  spectral-centroid signal from the Live2D mouth-form work instead of a new
+  wlipsync dependency. Also capped VRM's render loop to the same
+  `MANA_AVATAR_FPS` Live2D already respects -- it had no cap at all
+  previously. No VRM model is present in this checkout to visually verify
+  against; every new pure function has full unit test coverage instead.
 - **Live2D model reference validation, ported from Project AIRI** (issue
   #255, follow-up to #253): a broken/incomplete model (missing texture,
   deleted Moc, a typo'd Expression path) now produces a clear "here's
