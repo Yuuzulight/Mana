@@ -79,9 +79,30 @@ function centroidToMouthForm(centroidHz, options = {}) {
   return clamped * 2 - 1;
 }
 
+// Blends VRM's discrete mouth blend-shape presets from the same two
+// signals already driving Live2D's ParamMouthOpenY/ParamMouthForm:
+// openness (mouthValue, 0..1 from rmsToMouth) and brightness (form, -1..1
+// from centroidToMouthForm). "aa" is the dominant open-mouth shape; the
+// secondary shape leans toward "ih" (bright/wide) or "ou" (bassy/rounded)
+// depending on which way brightness leans. A coarse two-shape
+// approximation of Project AIRI's phoneme-classifier-driven "winner +
+// runner" wlipsync blend, built from signals Mana already has instead of
+// a new WASM dependency.
+function vrmMouthBlendShapes(mouthValue, form) {
+  const openness = Math.max(0, Math.min(1, Number(mouthValue) || 0));
+  const brightness = Math.max(-1, Math.min(1, Number(form) || 0));
+  const secondaryWeight = openness * Math.abs(brightness);
+  return {
+    aa: openness * (1 - Math.abs(brightness) * 0.5),
+    ih: brightness > 0 ? secondaryWeight : 0,
+    ou: brightness < 0 ? secondaryWeight : 0,
+  };
+}
+
 module.exports = {
   rmsToMouth,
   smoothMouthValue,
   spectralCentroidHz,
   centroidToMouthForm,
+  vrmMouthBlendShapes,
 };
