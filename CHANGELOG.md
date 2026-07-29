@@ -47,6 +47,23 @@ accounting.
   Dependabot alerts.
 
 ### Changed
+- **Live2D idle saccades and mouth shape, inspired by Project AIRI** (issue
+  #252): the idle "looking around" drift was a fixed-period sine wave that
+  read as mechanical over a long idle stretch; replaced with AIRI's
+  `eye-motions.ts`-style randomized saccade timing (mostly quick 0-800ms
+  glances, tailing into rarer longer holds, modeled on real human
+  microsaccade statistics). Also added a spectral-centroid-driven
+  `ParamMouthForm` signal (new `mouthFormParam`/`mouthFormGain` tuning
+  knobs, default gain 0.6) so talking varies mouth *shape*, not just
+  openness -- reuses the `AnalyserNode` the lip-sync pipeline already
+  creates for RMS rather than adding AIRI's `wlipsync` WASM dependency,
+  after finding AIRI's own Live2D integration only consumes a single mouth-
+  open scalar too. Landed in both `windows-launcher` and `desktop-client`.
+  Also added a PixiJS render-loop guard (found in the same AIRI review) so a
+  bad frame stops the ticker cleanly with a log line instead of a silent
+  crash loop. Beat-sync head-sway, an LLM-callable expression-tool system,
+  and a Live2D model validator were also found in AIRI's code but scoped
+  out as future ideas (issue #253), not implemented here.
 - **Enabled `torch.compile` for the Fish Speech TTS service** (issue
   #213): `start_fish_speech_wsl.sh` now passes `--compile` (an existing
   upstream flag Mana never enabled). Measured on the dev machine (RTX

@@ -57,6 +57,7 @@ const {
 } = require("./vision-hotkey");
 const { createLive2dAvatar } = require("../avatar/live2d-avatar");
 const { createVrmAvatar } = require("../avatar/vrm-avatar");
+const { spectralCentroidHz } = require("../avatar/lip-sync");
 const {
   DEFAULT_GAMING_MAX_WAIT_FOR_SPEECH_MS,
   DEFAULT_MAX_UTTERANCE_MS,
@@ -366,9 +367,9 @@ function stopLipSync() {
     cancelAnimationFrame(lipSyncRafId);
     lipSyncRafId = null;
   }
-  ipcRenderer.send("avatar:set-mouth", 0);
+  ipcRenderer.send("avatar:set-mouth", 0, 0);
   if (windowAvatar) {
-    windowAvatar.setMouthTarget(0);
+    windowAvatar.setMouthTarget(0, 0);
   }
 }
 
@@ -396,6 +397,11 @@ function startLipSync(audioElement) {
     analyser.connect(lipSyncAudioContext.destination);
 
     const samples = new Float32Array(analyser.fftSize);
+    // Frequency-domain read alongside the time-domain one above, used only
+    // for a spectral-centroid estimate (mouth *shape*) -- no extra audio
+    // graph, just a second read of the same analyser (see lip-sync.js's
+    // spectralCentroidHz).
+    const magnitudesDb = new Float32Array(analyser.frequencyBinCount);
     let lastSentAt = 0;
     const tick = (timestamp) => {
       if (audioElement.ended || audioElement.paused) {
@@ -411,9 +417,15 @@ function startLipSync(audioElement) {
           sum += samples[i] * samples[i];
         }
         const rms = Math.sqrt(sum / samples.length);
-        ipcRenderer.send("avatar:set-mouth", rms);
+        analyser.getFloatFrequencyData(magnitudesDb);
+        const centroidHz = spectralCentroidHz(
+          magnitudesDb,
+          lipSyncAudioContext.sampleRate,
+          analyser.fftSize,
+        );
+        ipcRenderer.send("avatar:set-mouth", rms, centroidHz);
         if (windowAvatar) {
-          windowAvatar.setMouthTarget(rms);
+          windowAvatar.setMouthTarget(rms, centroidHz);
         }
       }
       lipSyncRafId = requestAnimationFrame(tick);

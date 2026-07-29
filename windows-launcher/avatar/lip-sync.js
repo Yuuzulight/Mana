@@ -27,4 +27,61 @@ function smoothMouthValue(previous, target, dtMs, options = {}) {
   return prev + (next - prev) * alpha;
 }
 
-module.exports = { rmsToMouth, smoothMouthValue };
+// Spectral centroid (Hz) from a Web Audio AnalyserNode's frequency-domain
+// magnitudes (dB, as returned by getFloatFrequencyData). A rough
+// "brightness" proxy -- higher for front/unrounded vowels and sibilants,
+// lower for back/rounded vowels -- used to vary mouth *shape* alongside the
+// existing RMS-driven mouth *openness*, so talking doesn't read as one flat
+// jaw-flap regardless of what's being said. Reuses the AnalyserNode the lip
+// sync pipeline already creates for RMS -- no new audio graph or dependency
+// (inspired by Project AIRI's wlipsync-based phoneme lip sync, but adapted
+// to Mana's existing signal instead of pulling in a WASM classifier).
+function spectralCentroidHz(magnitudesDb, sampleRate, fftSize) {
+  const binHz = sampleRate / fftSize;
+  const floorDb = -100;
+  let weighted = 0;
+  let total = 0;
+  for (let i = 0; i < magnitudesDb.length; i += 1) {
+    const db = magnitudesDb[i];
+    if (!Number.isFinite(db) || db <= floorDb) {
+      continue;
+    }
+    const magnitude = 10 ** (db / 20);
+    weighted += magnitude * (i * binHz);
+    total += magnitude;
+  }
+  return total > 0 ? weighted / total : 0;
+}
+
+// Maps a spectral centroid (Hz) to a -1..1 mouth-form target: negative
+// (rounder, e.g. "o"/"u") for bassy/low-centroid audio, positive (wider,
+// e.g. "i"/"e") for bright/high-centroid audio. A coarse heuristic -- not a
+// phoneme classifier -- meant to add shape variation, not linguistic
+// accuracy. centroidLowHz/HighHz bound the range that maps to -1/+1; the
+// defaults sit roughly where voiced speech centroids fall in practice.
+function centroidToMouthForm(centroidHz, options = {}) {
+  const value = Number(centroidHz) || 0;
+  // spectralCentroidHz returns exactly 0 for true silence (no magnitude
+  // above its noise floor) -- treat that as "no signal, stay neutral"
+  // rather than mapping it into the low end of the bassy/rounded range.
+  if (value <= 0) {
+    return 0;
+  }
+  const low =
+    options.centroidLowHz === undefined ? 600 : options.centroidLowHz;
+  const high =
+    options.centroidHighHz === undefined ? 2600 : options.centroidHighHz;
+  if (high <= low) {
+    return 0;
+  }
+  const t = (value - low) / (high - low);
+  const clamped = Math.max(0, Math.min(1, t));
+  return clamped * 2 - 1;
+}
+
+module.exports = {
+  rmsToMouth,
+  smoothMouthValue,
+  spectralCentroidHz,
+  centroidToMouthForm,
+};

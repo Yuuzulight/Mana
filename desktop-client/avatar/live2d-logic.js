@@ -89,6 +89,13 @@ function parseParamIdList(value, defaults) {
 // mana-avatar.json nor an env var sets them.
 const DEFAULT_MOUTH_PARAM = "ParamMouthOpenY";
 const DEFAULT_MOUTH_GAIN = 18;
+// Varies mouth *shape* (not just openness) with the voice's spectral
+// brightness -- see spectralCentroidHz/centroidToMouthForm below. 0.6 keeps
+// the swing inside a typical Cubism ParamMouthForm range (-1..1) without
+// looking exaggerated; 0 opts out entirely for a model whose mouth-form
+// curve is better left to its own motions/expressions.
+const DEFAULT_MOUTH_FORM_PARAM = "ParamMouthForm";
+const DEFAULT_MOUTH_FORM_GAIN = 0.6;
 const DEFAULT_EYE_OPEN_SCALE = 1.5;
 const DEFAULT_IDLE_TILT_DEG = 16;
 const DEFAULT_IDLE_MAX_PITCH_DEG = 8;
@@ -190,6 +197,57 @@ function smoothMouthValue(previous, target, dtMs, options = {}) {
   return prev + (next - prev) * alpha;
 }
 
+// Spectral centroid (Hz) from a Web Audio AnalyserNode's frequency-domain
+// magnitudes (dB, as returned by getFloatFrequencyData). A rough
+// "brightness" proxy -- higher for front/unrounded vowels and sibilants,
+// lower for back/rounded vowels -- used to vary mouth *shape* alongside the
+// existing RMS-driven mouth *openness*, so talking doesn't read as one flat
+// jaw-flap regardless of what's being said. Reuses the AnalyserNode the lip
+// sync pipeline already creates for RMS -- no new audio graph or dependency
+// (inspired by Project AIRI's wlipsync-based phoneme lip sync, but adapted
+// to Mana's existing signal instead of pulling in a WASM classifier).
+function spectralCentroidHz(magnitudesDb, sampleRate, fftSize) {
+  const binHz = sampleRate / fftSize;
+  const floorDb = -100;
+  let weighted = 0;
+  let total = 0;
+  for (let i = 0; i < magnitudesDb.length; i += 1) {
+    const db = magnitudesDb[i];
+    if (!Number.isFinite(db) || db <= floorDb) {
+      continue;
+    }
+    const magnitude = 10 ** (db / 20);
+    weighted += magnitude * (i * binHz);
+    total += magnitude;
+  }
+  return total > 0 ? weighted / total : 0;
+}
+
+// Maps a spectral centroid (Hz) to a -1..1 mouth-form target: negative
+// (rounder, e.g. "o"/"u") for bassy/low-centroid audio, positive (wider,
+// e.g. "i"/"e") for bright/high-centroid audio. A coarse heuristic -- not a
+// phoneme classifier -- meant to add shape variation, not linguistic
+// accuracy.
+function centroidToMouthForm(centroidHz, options = {}) {
+  const value = Number(centroidHz) || 0;
+  // spectralCentroidHz returns exactly 0 for true silence (no magnitude
+  // above its noise floor) -- treat that as "no signal, stay neutral"
+  // rather than mapping it into the low end of the bassy/rounded range.
+  if (value <= 0) {
+    return 0;
+  }
+  const low =
+    options.centroidLowHz === undefined ? 600 : options.centroidLowHz;
+  const high =
+    options.centroidHighHz === undefined ? 2600 : options.centroidHighHz;
+  if (high <= low) {
+    return 0;
+  }
+  const t = (value - low) / (high - low);
+  const clamped = Math.max(0, Math.min(1, t));
+  return clamped * 2 - 1;
+}
+
 // Preferred Live2D motion groups per avatar state; returns the first group
 // the loaded model actually has, or null when nothing matches.
 const STATE_MOTION_PREFERENCES = {
@@ -260,6 +318,7 @@ function idListOrDefault(value, defaults) {
 //     ],
 //     "zoomFractions": { "waist": 0.55, "bust": 0.28 },
 //     "mouthParam": "ParamMouthOpenY", "mouthGain": 18,
+//     "mouthFormParam": "ParamMouthForm", "mouthFormGain": 0.6,
 //     "eyeOpenScale": 1.5,
 //     "eyeBlinkParams": ["ParamEyeLOpen", "ParamEyeROpen"],
 //     "smileParams": ["ParamEyeLSmile", "ParamEyeRSmile"],
@@ -309,6 +368,14 @@ function normalizeAvatarConfig(config) {
         ? source.mouthParam
         : DEFAULT_MOUTH_PARAM,
     mouthGain: numberOrDefault(source.mouthGain, DEFAULT_MOUTH_GAIN),
+    mouthFormParam:
+      typeof source.mouthFormParam === "string" && source.mouthFormParam
+        ? source.mouthFormParam
+        : DEFAULT_MOUTH_FORM_PARAM,
+    mouthFormGain: numberOrDefault(
+      source.mouthFormGain,
+      DEFAULT_MOUTH_FORM_GAIN,
+    ),
     eyeOpenScale: numberOrDefault(source.eyeOpenScale, DEFAULT_EYE_OPEN_SCALE),
     eyeBlinkParams: idListOrDefault(
       source.eyeBlinkParams,
@@ -329,28 +396,80 @@ function normalizeAvatarConfig(config) {
   };
 }
 
-// Deterministic idle "looking around" offset: slow, out-of-phase sine
-// waves per axis (eyes lead the head slightly, on a slightly different
-// period) so the drift reads as a natural glance-then-head-catches-up
-// rather than one mechanical oscillation. Pure function of (nowMs,
-// amplitudeDeg, periodMs) so it's testable without a live model.
-function computeIdleGazeOffset(nowMs, amplitudeDeg, periodMs) {
+// Weighted intervals between idle eye saccades: [probabilityMass, msOffset]
+// pairs before cumulative summing. Ported from Project AIRI's
+// stage-ui-live2d eye-motions.ts (MIT) -- modeled on real human microsaccade
+// timing (mostly quick 0-800ms corrective glances, tailing off into rarer
+// longer holds) rather than a fixed-period oscillation, which read as
+// mechanical over a long idle stretch. The final [1.0, 0] entry is an
+// intentional catch-all bucket (not a literal 100%-weighted one) that
+// guarantees coverage past floating-point rounding on `rng()`.
+const SACCADE_INTERVAL_STEP_MS = 400;
+const SACCADE_INTERVAL_TABLE = (() => {
+  const raw = [
+    [0.075, 800],
+    [0.11, 0],
+    [0.125, 0],
+    [0.14, 0],
+    [0.125, 0],
+    [0.05, 0],
+    [0.04, 0],
+    [0.03, 0],
+    [0.02, 0],
+    [1.0, 0],
+  ];
+  const table = raw.map((row) => row.slice());
+  for (let i = 1; i < table.length; i += 1) {
+    table[i][0] += table[i - 1][0];
+    table[i][1] = table[i - 1][1] + SACCADE_INTERVAL_STEP_MS;
+  }
+  return table;
+})();
+
+// Random interval (ms) until the next idle eye saccade. `scale` lets a
+// model's idleGazePeriodMs config speed up/slow down the whole distribution
+// without changing its bursty shape; rng is injectable for deterministic
+// tests.
+function randomSaccadeInterval(rng = Math.random, scale = 1) {
+  const factor = Number.isFinite(scale) && scale > 0 ? scale : 1;
+  const r = rng();
+  for (let i = 0; i < SACCADE_INTERVAL_TABLE.length; i += 1) {
+    const [cumProb, base] = SACCADE_INTERVAL_TABLE[i];
+    if (r <= cumProb) {
+      return (base + rng() * SACCADE_INTERVAL_STEP_MS) * factor;
+    }
+  }
+  const last = SACCADE_INTERVAL_TABLE[SACCADE_INTERVAL_TABLE.length - 1];
+  return (last[1] + rng() * SACCADE_INTERVAL_STEP_MS) * factor;
+}
+
+// Picks a new random idle-saccade target: head-angle offset in
+// [-amplitudeDeg, amplitudeDeg] and eyeball offsets in Cubism's normal
+// [-1, 1] range, independently randomized so eyes and head don't always
+// move in lockstep. Replaces the old fixed-period sine drift -- see
+// randomSaccadeInterval for why. rng is injectable for deterministic tests.
+function pickIdleSaccadeTarget(amplitudeDeg, rng = Math.random) {
   const amp = Number(amplitudeDeg) || 0;
   if (amp === 0) {
     return { angleX: 0, eyeBallX: 0, eyeBallY: 0 };
   }
-  const period = Math.max(1000, Number(periodMs) || DEFAULT_IDLE_GAZE_PERIOD_MS);
-  const t = (Number(nowMs) || 0) / period;
-  const angleX = amp * Math.sin(t * Math.PI * 2);
-  const eyeBallX = Math.max(
-    -1,
-    Math.min(1, Math.sin(t * 0.7 * Math.PI * 2 + 0.6) * (amp / 12)),
-  );
-  const eyeBallY = Math.max(
-    -1,
-    Math.min(1, Math.sin(t * 1.3 * Math.PI * 2 + 1.1) * (amp / 20)),
-  );
-  return { angleX, eyeBallX, eyeBallY };
+  return {
+    angleX: (rng() * 2 - 1) * amp,
+    eyeBallX: rng() * 2 - 1,
+    eyeBallY: (rng() * 2 - 1) * 0.7,
+  };
+}
+
+// Exponential smoothing toward a target, generalized from smoothMouthValue
+// for values with no attack/decay asymmetry (idle saccade drift, mouth
+// form): a symmetric time-based lerp so it settles the same regardless of
+// frame rate.
+function smoothTowardTarget(previous, target, dtMs, windowMs) {
+  const prev = Number(previous) || 0;
+  const next = Number(target) || 0;
+  const win = Math.max(1, Number(windowMs) || 1);
+  const alpha = Math.min(1, (Number(dtMs) || 0) / win);
+  return prev + (next - prev) * alpha;
 }
 
 // Merges mapping sources so env overrides beat the model config file.
@@ -461,18 +580,25 @@ const exportsObj = {
   DEFAULT_IDLE_GAZE_PERIOD_MS,
   DEFAULT_IDLE_MAX_PITCH_DEG,
   DEFAULT_IDLE_TILT_DEG,
+  DEFAULT_MOUTH_FORM_GAIN,
+  DEFAULT_MOUTH_FORM_PARAM,
   DEFAULT_MOUTH_GAIN,
   DEFAULT_MOUTH_PARAM,
   DEFAULT_SMILE_PARAM_IDS,
   DEFAULT_ZOOM_FRACTIONS,
+  SACCADE_INTERVAL_STEP_MS,
   ZOOM_LEVELS,
+  centroidToMouthForm,
   computeZoomFraming,
   nextZoomLevel,
   parseParamIdList,
+  pickIdleSaccadeTarget,
+  randomSaccadeInterval,
+  smoothTowardTarget,
+  spectralCentroidHz,
   STATE_EXPRESSION_PREFERENCES,
   STATE_MOTION_PREFERENCES,
   augmentModelSettings,
-  computeIdleGazeOffset,
   expressionForState,
   findModelJson,
   fitModelToView,

@@ -232,6 +232,8 @@ the model folder.
 | — | `MANA_LIVE2D_MODEL` | auto-detect | Explicit path to a `.model3.json` outside `avatar\model\` (env-only: applies before a model is even chosen) |
 | `mouthParam` | `MANA_LIVE2D_MOUTH_PARAM` | `ParamMouthOpenY` | Lip-sync parameter id |
 | `mouthGain` | `MANA_LIVE2D_MOUTH_GAIN` | `18` | Lip-sync sensitivity (openness per voice level) |
+| `mouthFormParam` | `MANA_LIVE2D_MOUTH_FORM_PARAM` | `ParamMouthForm` | Mouth-*shape* parameter id, driven by the voice's spectral brightness (empty disables) |
+| `mouthFormGain` | `MANA_LIVE2D_MOUTH_FORM_GAIN` | `0.6` | Mouth-shape sensitivity (`0` disables) |
 | `eyeOpenScale` | `MANA_LIVE2D_EYE_OPEN_SCALE` | `1.5` | Non-idle "eyes open" level, as a multiplier on the blink timer's 0–1 output |
 | `eyeBlinkParams` | `MANA_LIVE2D_EYE_BLINK_PARAMS` | `ParamEyeLOpen,ParamEyeROpen` | Parameters the auto-blink/fixed-iris system drives |
 | `smileParams` | `MANA_LIVE2D_SMILE_PARAMS` | `ParamEyeLSmile,ParamEyeRSmile` | Parameters neutralized outside idle (fixed-iris) |
