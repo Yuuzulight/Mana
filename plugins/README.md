@@ -40,6 +40,11 @@ read, tested, and reasoned about without the rest of the backend.
 - [`telegram-bridge`](telegram-bridge/): message Mana remotely from a phone
   over Telegram (long-polling, DM-only), gated by a pairing-code approval so
   a stranger can't reach her. **Off by default.**
+- [`discord-bot`](discord-bot/): a second remote-messaging option alongside
+  `telegram-bridge`, not a replacement -- Discord DMs (Gateway websocket,
+  same pairing-code approval), plus joining a Discord voice channel for
+  per-speaker transcription, spoken replies, and barge-in. **Off by
+  default.**
 - [`video-watch`](video-watch/): download (`yt-dlp`) or accept a local
   video, pull captions or fall back to local Whisper transcription,
   extract a duration-scaled set of frames, and answer questions grounded
@@ -52,10 +57,10 @@ read, tested, and reasoned about without the rest of the backend.
   references "this page"/"this video". **Off by default**, and needs the
   separate browser extension installed to do anything.
 
-All eleven are always loaded (no separate install step); `cron-scheduler`,
+All twelve are always loaded (no separate install step); `cron-scheduler`,
 `image-generation`, `browser-automation`, `telegram-bridge`,
-`video-watch`, and `context-push` are disabled by default, the rest are
-enabled by default.
+`discord-bot`, `video-watch`, and `context-push` are disabled by default,
+the rest are enabled by default.
 
 ### A different kind of plugin: `obsidian-plugin` and `context-push-extension`
 

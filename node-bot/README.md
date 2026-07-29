@@ -17,9 +17,10 @@ to test it.
   `capabilities/registry.js` for the registration/health/prompt-context
   hooks a capability can implement.
 - `../plugins/` — optional plugins (FFXIV market/crafting, real-world
-  stock market data) that follow the same shape as a capability but live
-  outside `node-bot/` so they're independently testable packages; see
-  [plugins/README.md](../plugins/README.md).
+  stock market data, job search/tracking, Telegram/Discord remote bridges,
+  document ingestion, and more) that follow the same shape as a capability
+  but live outside `node-bot/` so they're independently testable packages;
+  see [plugins/README.md](../plugins/README.md).
 - `ai/` — local model runtime: the persistent `llama-server` runtime,
   the one-shot `llama-cli` fallback, and model-profile selection.
 - `tools/` — Whisper/llama discovery helpers, the retriever/embedding
