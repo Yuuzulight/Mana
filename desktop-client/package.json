@@ -38,6 +38,7 @@
     "directories": {
       "buildResources": "build"
     },
+    "icon": "build/icon.png",
     "publish": {
       "provider": "github",
       "owner": "Yuuzulight",

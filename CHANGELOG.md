@@ -407,6 +407,15 @@ accounting.
   `windows-launcher/assets/icon.png` and wiring it into both. Also added
   `Menu.setApplicationMenu(null)` -- the default File/Edit/View/Window/Help
   bar was never intentionally added, just never explicitly removed.
+- **Packaged .exe/installer had no app icon configured** (issue #232,
+  follow-up from #230): #230 only fixed the *runtime* window/tray icon --
+  the packaged binary is controlled by a completely separate electron-builder
+  `build.icon` config, which neither app had set. `windows-launcher` had no
+  `build` section in its `package.json` at all; `desktop-client` had one but
+  no `icon` key, and no icon file existed anywhere under either app's
+  `build/` folder. Added a 512x512 Mana Crystal PNG at `build/icon.png` in
+  both apps and pointed `build.icon` at it (electron-builder generates the
+  multi-resolution `.ico` from a single square PNG automatically).
 - **Loading screen stuck forever, whole renderer script silently dead**
   (issue #226): `backend-config.js` and `renderer.js` both declared
   `const { ipcRenderer } = require("electron");` at top level -- since
