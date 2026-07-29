@@ -1267,13 +1267,14 @@ ipcMain.on("avatar:set-state", (event, state) => {
   avatarWindow.webContents.send("avatar:state", state);
 });
 
-// Relays speech amplitude from the control window to the avatar for lip sync.
-ipcMain.on("avatar:set-mouth", (event, rms) => {
+// Relays speech amplitude (and spectral centroid, for mouth shape) from the
+// control window to the avatar for lip sync.
+ipcMain.on("avatar:set-mouth", (event, rms, centroidHz) => {
   if (!avatarWindow) {
     return;
   }
 
-  avatarWindow.webContents.send("avatar:mouth", rms);
+  avatarWindow.webContents.send("avatar:mouth", rms, centroidHz);
 });
 
 ipcMain.handle("screen:capture-primary", async () => {

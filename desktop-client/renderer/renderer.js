@@ -565,15 +565,20 @@ document.getElementById('themeToggle')?.addEventListener('click', (e) => {
       cancelAnimationFrame(lipSyncRafId);
       lipSyncRafId = null;
     }
-    if (live2dAvatar) live2dAvatar.setMouthTarget(0);
+    if (live2dAvatar) live2dAvatar.setMouthTarget(0, 0);
   }
   function startLipSync(audioCtx, sourceNode){
     if (!live2dAvatar) return;
     try {
+      const { spectralCentroidHz } = window.Live2DLogic;
       const analyser = audioCtx.createAnalyser();
       analyser.fftSize = 512;
       sourceNode.connect(analyser);
       const samples = new Float32Array(analyser.fftSize);
+      // Frequency-domain read alongside the time-domain one above, used
+      // only for a spectral-centroid estimate (mouth *shape*) -- no extra
+      // audio graph, just a second read of the same analyser.
+      const magnitudesDb = new Float32Array(analyser.frequencyBinCount);
       let lastSentAt = 0;
       const tick = (timestamp) => {
         // ~30Hz is plenty for mouth movement.
@@ -585,7 +590,9 @@ document.getElementById('themeToggle')?.addEventListener('click', (e) => {
             sum += samples[i] * samples[i];
           }
           const rms = Math.sqrt(sum / samples.length);
-          live2dAvatar.setMouthTarget(rms);
+          analyser.getFloatFrequencyData(magnitudesDb);
+          const centroidHz = spectralCentroidHz(magnitudesDb, audioCtx.sampleRate, analyser.fftSize);
+          live2dAvatar.setMouthTarget(rms, centroidHz);
         }
         lipSyncRafId = requestAnimationFrame(tick);
       };
