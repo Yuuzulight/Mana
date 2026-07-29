@@ -69,6 +69,42 @@ test("executeTool propagates a validation error from acpMemoryStore.rememberFact
   );
 });
 
+test("executeTool stages the write through approvalGate.requestApproval when one is provided, instead of writing immediately", async () => {
+  const acpMemoryStore = fakeAcpMemoryStore();
+  const approvalCalls = [];
+  const approvalGate = {
+    requestApproval: async (actionType, details) => {
+      approvalCalls.push({ actionType, details });
+      return { status: "pending", requestId: "req-1", summary: details.summary, flags: [] };
+    },
+  };
+  const source = createMemoryToolSource({ acpMemoryStore, sessionId: "session-a", approvalGate });
+
+  const result = await source.executeTool(`${MEMORY_TOOL_PREFIX}remember`, {
+    key: "Aurora's GPU",
+    text: "RTX 5080",
+    action: "patch",
+  });
+
+  // Nothing written to the store yet -- only staged as a pending request.
+  assert.equal(acpMemoryStore.calls.length, 0);
+  assert.equal(approvalCalls.length, 1);
+  assert.equal(approvalCalls[0].actionType, "memory-write");
+  assert.deepEqual(approvalCalls[0].details.payload, {
+    sessionId: "session-a",
+    key: "Aurora's GPU",
+    text: "RTX 5080",
+    action: "patch",
+  });
+  assert.equal(approvalCalls[0].details.scanText, "RTX 5080");
+  assert.deepEqual(JSON.parse(result), {
+    status: "pending",
+    requestId: "req-1",
+    summary: approvalCalls[0].details.summary,
+    flags: [],
+  });
+});
+
 test("buildToolPolicyWithMemory merges the remember tool into an existing base policy", async () => {
   const acpMemoryStore = fakeAcpMemoryStore();
   const memorySource = createMemoryToolSource({ acpMemoryStore, sessionId: "s1" });

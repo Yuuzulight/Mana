@@ -46,7 +46,40 @@ accounting.
   `onnxruntime`), which is what was blocking the remaining torch
   Dependabot alerts.
 
+### Added
+- **Full-text session search** (issue #260): new `session-search-index.js`
+  -- a SQLite FTS5 index over
+  every past conversation turn's raw text, independent of the curated
+  summary `acp-memory-store.js` already kept. Wired into `appendTurn()`
+  (fire-and-forget; an indexing failure never breaks the actual
+  conversation), exposed as `acpMemoryStore.searchSessions()` and a new
+  `session_search` tool the model can call mid-reply for "what did I say
+  about X" / "where did we leave off with Y" questions the curated summary
+  doesn't cover. Requires the new `better-sqlite3` dependency.
+
 ### Changed
+- **Memory writes now stage for approval, same as skill writes** (issue
+  #260, follow-up to #152/#198): the model-initiated `memory__remember`
+  tool used to write directly; skill writes already staged for human
+  approve/reject via `approval-gate.js`. Now memory writes go through the
+  same gate when one is wired in (callers/tests that don't wire a gate keep
+  writing immediately, unchanged).
+- **Background memory review runs on a separate, cheaper model profile**
+  (issue #260): `runBackgroundReviewer` always called the local model on
+  the same `"default"` profile as a live reply. New `background` entry in
+  `LLAMA_MODEL_PROFILES` (prefers the smallest available model, same
+  preference list as `fast` but a distinct concern from it -- a low-RAM
+  main-brain choice and a background-only choice aren't the same thing
+  even when they happen to pick the same model file). Overridable via
+  `MANA_BACKGROUND_REVIEW_PROFILE`.
+- Investigated (not adopted) Honcho, a pluggable "dialectic" user-modeling
+  memory backend -- full pros/cons in
+  `docs/roadmap/issue-260-honcho-vs-manas-memory.md`. Recommendation:
+  Mana's current memory design plus the new FTS5 search already covers the
+  gap Honcho would fill, with far less operational complexity; revisit
+  only if keyword search proves insufficient for real recall (in which
+  case local embeddings -- issue #195 already evaluated a backend for this
+  -- are the better next step, not an external service).
 - **VRM avatar parity fixes, ported from Project AIRI's stage-ui-three**
   (issue #257): the VRM renderer had no auto-blink, instant (unblended)
   expression snaps, no idle eye movement, frustum culling left on, and no
