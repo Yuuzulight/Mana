@@ -5,6 +5,17 @@ port to the internet. Added alongside `telegram-bridge` (issue #151) as a
 second remote-messaging option (issue #185), not a replacement -- disabled
 by default (Settings > Plugins).
 
+Also supports joining a Discord voice channel (issue #187): DM `!join
+<voiceChannelId>` (Developer Mode > right-click a voice channel > Copy
+Channel ID -- no slash commands, buttons, or embeds, text-only by design)
+to have Mana join, transcribe each speaker's utterance with Whisper via
+Discord's own client-side speaking-start/speaking-stop signal for turn
+boundaries, reply through her normal pipeline, and speak the reply back
+with barge-in (a new speaker interrupts playback instead of queuing behind
+it). `!leave` to disconnect. See `discord-voice-commands.js` and
+`discord-voice-session.js`, and
+[docs/roadmap/issue-187-discord-voice-channels.md](../../docs/roadmap/issue-187-discord-voice-channels.md).
+
 ## Pairing, not an allowlist config
 
 A Discord channel can message *any* bot it can DM, so the plugin can't
