@@ -31,6 +31,76 @@ function findModelJson(rootDir, fsLike) {
   return matches[0] || null;
 }
 
+// Checks that every file model3.json's FileReferences actually points to a
+// real file on disk, so a broken/incomplete model produces a clear "here's
+// what's missing" list instead of a silent Live2DModel.from() failure deep
+// inside pixi-live2d-display. A portable subset of Project AIRI's
+// live2d-validator.ts -- AIRI's version also checks zip-internal concerns
+// (basename collisions, case-sensitivity from a zip's stored paths) that
+// don't apply here, since Mana loads a real folder Electron's main process
+// already has direct filesystem access to, not an uploaded zip.
+//
+// `settings` should be model3.json's contents AFTER augmentModelSettings
+// has run, so VTube-Studio-style loose motion/expression files are already
+// registered under FileReferences and get checked too, not just files the
+// model author explicitly listed. `modelDir` is the directory containing
+// the .model3.json itself (every FileReferences path is relative to it).
+//
+// Moc and Textures are "fatal" (rendering can't proceed without them);
+// Physics/Pose/DisplayInfo and individual Expression/Motion files are not
+// (that one feature just won't work, the rest of the model still renders).
+function validateModelReferences(settings, modelDir, fsLike) {
+  const missing = [];
+
+  function resolve(relPath) {
+    return `${modelDir}\\${relPath}`.replace(/[\\/]+/g, "\\");
+  }
+
+  function check(type, name, file, fatal) {
+    if (!file) {
+      return;
+    }
+    const resolvedPath = resolve(file);
+    if (!fsLike.existsSync(resolvedPath)) {
+      missing.push({ type, name: name || null, file, resolvedPath, fatal });
+    }
+  }
+
+  const refs = (settings && settings.FileReferences) || {};
+
+  check("Moc", null, refs.Moc, true);
+  (Array.isArray(refs.Textures) ? refs.Textures : []).forEach((file) =>
+    check("Texture", null, file, true),
+  );
+  check("Physics", null, refs.Physics, false);
+  check("Pose", null, refs.Pose, false);
+  check("DisplayInfo", null, refs.DisplayInfo, false);
+
+  (Array.isArray(refs.Expressions) ? refs.Expressions : []).forEach(
+    (expression) => {
+      check(
+        "Expression",
+        expression && expression.Name,
+        expression && expression.File,
+        false,
+      );
+    },
+  );
+
+  const motionGroups =
+    refs.Motions && typeof refs.Motions === "object" ? refs.Motions : {};
+  for (const [group, motions] of Object.entries(motionGroups)) {
+    (Array.isArray(motions) ? motions : []).forEach((motion) => {
+      check("Motion", group, motion && motion.File, false);
+    });
+  }
+
+  return {
+    valid: !missing.some((entry) => entry.fatal),
+    missing,
+  };
+}
+
 function motionOrExpressionStem(file) {
   return String(file)
     .replace(/\\/g, "/")
@@ -534,4 +604,5 @@ module.exports = {
   parseStateMappingOverrides,
   rmsToMouth,
   smoothMouthValue,
+  validateModelReferences,
 };

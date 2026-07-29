@@ -19,6 +19,7 @@ const {
   rmsToMouth,
   smoothMouthValue,
   smoothTowardTarget,
+  validateModelReferences,
 } = require("../avatar/live2d-logic");
 
 function makeFakeFs(tree) {
@@ -452,6 +453,91 @@ test("computeZoomFraming honors custom per-model fractions", () => {
   const defaultWaist = computeZoomFraming("waist", 1000, 2000, 234, 288);
   // A larger visible fraction means less scale is needed.
   assert.equal(custom.scale < defaultWaist.scale, true);
+});
+
+function fakeFsWithFiles(existingPaths) {
+  const set = new Set(existingPaths);
+  return { existsSync: (p) => set.has(p) };
+}
+
+test("validateModelReferences finds nothing missing when every file exists", () => {
+  const settings = {
+    FileReferences: {
+      Moc: "model.moc3",
+      Textures: ["tex/00.png"],
+      Physics: "model.physics3.json",
+      Expressions: [{ Name: "happy", File: "happy.exp3.json" }],
+      Motions: { Idle: [{ File: "idle.motion3.json" }] },
+    },
+  };
+  const fsLike = fakeFsWithFiles([
+    "C:\\model\\model.moc3",
+    "C:\\model\\tex\\00.png",
+    "C:\\model\\model.physics3.json",
+    "C:\\model\\happy.exp3.json",
+    "C:\\model\\idle.motion3.json",
+  ]);
+  const result = validateModelReferences(settings, "C:\\model", fsLike);
+  assert.equal(result.valid, true);
+  assert.deepEqual(result.missing, []);
+});
+
+test("validateModelReferences flags a missing Moc/Texture as fatal (invalid)", () => {
+  const settings = {
+    FileReferences: {
+      Moc: "model.moc3",
+      Textures: ["tex/00.png", "tex/01.png"],
+    },
+  };
+  // Only tex/00.png actually exists; Moc and tex/01.png are both missing.
+  const fsLike = fakeFsWithFiles(["C:\\model\\tex\\00.png"]);
+  const result = validateModelReferences(settings, "C:\\model", fsLike);
+  assert.equal(result.valid, false);
+  assert.equal(result.missing.length, 2);
+  assert.ok(result.missing.every((entry) => entry.fatal));
+  assert.deepEqual(
+    result.missing.map((entry) => entry.type).sort(),
+    ["Moc", "Texture"],
+  );
+});
+
+test("validateModelReferences flags a missing Expression/Motion/Physics as non-fatal (still valid)", () => {
+  const settings = {
+    FileReferences: {
+      Moc: "model.moc3",
+      Textures: ["tex/00.png"],
+      Physics: "missing.physics3.json",
+      Expressions: [{ Name: "sad", File: "missing.exp3.json" }],
+      Motions: { Idle: [{ File: "missing.motion3.json" }] },
+    },
+  };
+  const fsLike = fakeFsWithFiles([
+    "C:\\model\\model.moc3",
+    "C:\\model\\tex\\00.png",
+  ]);
+  const result = validateModelReferences(settings, "C:\\model", fsLike);
+  assert.equal(result.valid, true);
+  assert.equal(result.missing.length, 3);
+  assert.ok(result.missing.every((entry) => !entry.fatal));
+  assert.deepEqual(
+    result.missing.map((entry) => entry.type).sort(),
+    ["Expression", "Motion", "Physics"],
+  );
+  const expressionEntry = result.missing.find((e) => e.type === "Expression");
+  assert.equal(expressionEntry.name, "sad");
+  const motionEntry = result.missing.find((e) => e.type === "Motion");
+  assert.equal(motionEntry.name, "Idle"); // motion group name
+});
+
+test("validateModelReferences tolerates missing/malformed FileReferences", () => {
+  assert.deepEqual(validateModelReferences({}, "C:\\model", fakeFsWithFiles([])), {
+    valid: true,
+    missing: [],
+  });
+  assert.deepEqual(
+    validateModelReferences(null, "C:\\model", fakeFsWithFiles([])),
+    { valid: true, missing: [] },
+  );
 });
 
 test("nextZoomLevel cycles full -> waist -> bust -> full", () => {

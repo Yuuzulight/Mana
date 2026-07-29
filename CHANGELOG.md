@@ -47,6 +47,25 @@ accounting.
   Dependabot alerts.
 
 ### Changed
+- **Live2D model reference validation, ported from Project AIRI** (issue
+  #255, follow-up to #253): a broken/incomplete model (missing texture,
+  deleted Moc, a typo'd Expression path) now produces a clear "here's
+  what's missing" list before `Live2DModel.from()` fails deep inside
+  pixi-live2d-display. New `validateModelReferences` checks every file
+  model3.json references -- Moc/Textures are fatal (falls back to sprites,
+  same as "no model found"); Physics/Pose/DisplayInfo/individual
+  Expression/Motion files are non-fatal (logged as a warning, model still
+  loads). AIRI's own validator also checks zip-upload-specific concerns
+  (basename collisions, case-sensitivity from a zip's stored paths) that
+  don't apply to Mana's folder-based model discovery -- only the portable
+  existence-check part was ported.
+- **Switched the default avatar model from `huohuo2` to Live2D's official
+  free Hiyori sample** in `windows-launcher` (`desktop-client` was already
+  on Hiyori). `huohuo2` was never committed to the repo; moved to a new
+  gitignored `avatar/model-disabled/` rather than deleted, so it's
+  recoverable. Checked whether Project AIRI itself ships a distinct "AIRI"
+  character model -- it doesn't; their own default avatar is the same
+  Live2D free Hiyori sample.
 - **Live2D idle saccades and mouth shape, inspired by Project AIRI** (issue
   #252): the idle "looking around" drift was a fixed-period sine wave that
   read as mechanical over a long idle stretch; replaced with AIRI's

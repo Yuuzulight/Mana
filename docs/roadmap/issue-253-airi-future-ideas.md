@@ -1,11 +1,12 @@
 # Issue 253: AIRI-inspired future ideas (parking lot, not scoped)
 
-## Status: Investigated, not implemented -- revisit only if a concrete need shows up
+## Status: 1 of 3 shipped (Live2D model validator, see below); the other two remain un-scoped
 
 Found while doing a deep read-through of Project AIRI's (moeru-ai/airi)
 `stage-ui-live2d` package for issue #252 (randomized idle saccades +
-spectral-centroid mouth shape, both shipped). These three ideas are real and
-distinct but none are scoped, estimated, or committed to.
+spectral-centroid mouth shape, both shipped). Beat-sync head-sway and the
+LLM-callable expression-tool system are still real, distinct ideas that
+aren't scoped, estimated, or committed to.
 
 ## 1. Beat-sync head sway
 
@@ -44,7 +45,7 @@ expressions are safe to expose to the model unsupervised, and UI for
 reviewing/toggling exposure. Bigger scope than the other two items here;
 deserves its own design pass if picked up.
 
-## 3. Live2D model validator
+## 3. Live2D model validator -- Shipped (issue #255)
 
 AIRI's `live2d-validator.ts` pre-flight-checks a Live2D model archive before
 load: MOC3 header/version/size sanity, missing/case-mismatched file
@@ -52,19 +53,21 @@ references, basename collisions. It's built around AIRI's own zip-upload
 flow (validating a `.zip` before extracting), which doesn't map directly
 onto Mana's setup (`findModelJson` walks a local folder Electron's main
 process already has direct filesystem access to -- no zip, no upload step,
-no case-sensitivity risk from a zip's stored paths).
+no case-sensitivity risk from a zip's stored paths), so those specific
+checks weren't ported.
 
-**Why not now**: the specific problems AIRI's validator catches (zip
-basename collisions, case-sensitivity mismatches from a zip's internal
-paths) mostly don't apply to Mana's folder-based model discovery. The
-genuinely portable part -- checking that `model3.json`'s referenced
-Moc/Textures/Physics/Expression files actually exist on disk before
-`Live2DModel.from()` is called, with a clear "here's what's missing"
-message instead of a runtime failure -- could be a small, real
-quality-of-life win for `docs/live2d_avatar_setup.md`'s custom-model flow.
-Worth a small standalone issue if a user ever reports a confusing failure
-when dropping in a broken VTube-Studio export; not worth building
-speculatively today.
+The genuinely portable part *was* built: `validateModelReferences` in
+`live2d-logic.js` (both apps) checks that `model3.json`'s referenced
+Moc/Textures/Physics/Pose/DisplayInfo/Expression/Motion files -- including
+VTube-Studio-style loose files, after `augmentModelSettings` registers them
+-- actually exist on disk before `Live2DModel.from()` is called. Moc/Texture
+misses are fatal (falls back to the sprite avatar with a clear log line,
+same as "no model found"); a missing Physics/Pose/DisplayInfo/Expression/
+Motion file is non-fatal (that one feature won't work, logged as a warning,
+model still loads). Wired into `live2d-avatar.js` directly in
+windows-launcher (real fs access in the renderer); in desktop-client it runs
+in `resolve-model.js` (main process, since the context-isolated renderer
+has no fs) and the result travels over IPC as `resolved.validation`.
 
 ## Not a commitment
 

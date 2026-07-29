@@ -61,6 +61,13 @@ async function createLive2dAvatar({ canvas, width, height }) {
     console.log("No Live2D model found; using sprite avatar");
     return null;
   }
+  if (resolved.validation && !resolved.validation.valid) {
+    // resolve-model.js already logged the detailed missing-file list from
+    // the main process; bail the same way as "no model found" rather than
+    // letting Live2DModel.from() fail deep inside pixi-live2d-display.
+    console.log("Live2D model is missing required file(s); using sprite avatar");
+    return null;
+  }
   const { modelJson, config, env } = resolved;
 
   const mouthParam = env.MANA_LIVE2D_MOUTH_PARAM || config.mouthParam;

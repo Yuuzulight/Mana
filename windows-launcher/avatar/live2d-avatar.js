@@ -25,6 +25,7 @@ const {
   rmsToMouth,
   smoothMouthValue,
   smoothTowardTarget,
+  validateModelReferences,
 } = require("./live2d-logic");
 const { centroidToMouthForm } = require("./lip-sync");
 
@@ -178,6 +179,26 @@ async function createLive2dAvatar({ canvas, width, height, env = process.env }) 
     eyeBlinkParamIds,
   );
   settings.url = pathToFileURL(modelJson).href;
+
+  // Catch a broken/incomplete model (missing texture, deleted Moc, a typo'd
+  // Expression path) before Live2DModel.from() fails deep inside
+  // pixi-live2d-display with a much less diagnosable error.
+  const validation = validateModelReferences(settings, modelDir, fs);
+  if (validation.missing.length) {
+    const describe = (entry) =>
+      `${entry.type}${entry.name ? ` "${entry.name}"` : ""}: ${entry.resolvedPath}`;
+    if (!validation.valid) {
+      console.error(
+        `Live2D model is missing required file(s), cannot load:`,
+        validation.missing.filter((entry) => entry.fatal).map(describe),
+      );
+      return null;
+    }
+    console.warn(
+      `Live2D model is missing non-critical file(s) (that feature won't work, loading anyway):`,
+      validation.missing.map(describe),
+    );
+  }
 
   const model = await PIXI.live2d.Live2DModel.from(settings, {
     autoInteract: false,
