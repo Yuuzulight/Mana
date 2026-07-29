@@ -61,6 +61,14 @@ accounting.
   Model/Doctor as top-level buttons alongside Settings; moved them inside
   Settings (a new "Status" section) to match `windows-launcher`, where
   they'd already been nested there since the issue #138 UI overhaul.
+- **Redesigned the Mana Crystal mark** (issue #238): the flat, evenly-lit
+  3-triangle mark is now a smaller gem surrounded by 8 small drifting
+  motes (concept "AG" from an extended multi-round concept review with the
+  user, including live research into Obsidian's own logo technique).
+  Updated everywhere it appears -- both apps' sidebar logo and startup/
+  shutdown overlays, the runtime window/tray icon, the packaged `.exe`
+  icon, and the README banner. The gem still uses each file's theme
+  accent variables where applicable; only the motes are fixed-color.
 
 ### Added
 - **Graceful quit with a closing progress screen** (issue #228,
