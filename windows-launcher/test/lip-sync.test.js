@@ -6,6 +6,7 @@ const {
   rmsToMouth,
   smoothMouthValue,
   spectralCentroidHz,
+  vrmMouthBlendShapes,
 } = require("../avatar/lip-sync");
 
 test("rmsToMouth and smoothMouthValue still work via lip-sync.js directly", () => {
@@ -54,4 +55,29 @@ test("centroidToMouthForm treats 0 (silence sentinel) as neutral, and maps low/h
   // range, so it should map to fully wide (+1), unlike the default range
   // where 1000Hz would still be well below the midpoint.
   assert.equal(centroidToMouthForm(1000, { centroidLowHz: 900, centroidHighHz: 1000 }), 1);
+});
+
+test("vrmMouthBlendShapes puts all weight on 'aa' when brightness is neutral", () => {
+  const shapes = vrmMouthBlendShapes(0.8, 0);
+  assert.equal(shapes.aa, 0.8);
+  assert.equal(shapes.ih, 0);
+  assert.equal(shapes.ou, 0);
+});
+
+test("vrmMouthBlendShapes leans 'ih' for bright audio and 'ou' for bassy audio", () => {
+  const bright = vrmMouthBlendShapes(0.8, 1);
+  assert.ok(bright.ih > 0);
+  assert.equal(bright.ou, 0);
+  assert.ok(bright.aa < 0.8); // aa yields some weight to the secondary shape
+
+  const bassy = vrmMouthBlendShapes(0.8, -1);
+  assert.ok(bassy.ou > 0);
+  assert.equal(bassy.ih, 0);
+});
+
+test("vrmMouthBlendShapes stays silent (all zero) when mouth is closed", () => {
+  const shapes = vrmMouthBlendShapes(0, 1);
+  assert.equal(shapes.aa, 0);
+  assert.equal(shapes.ih, 0);
+  assert.equal(shapes.ou, 0);
 });
