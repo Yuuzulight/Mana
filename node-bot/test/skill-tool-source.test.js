@@ -9,20 +9,14 @@ const {
   buildToolPolicyWithSkillCreate,
 } = require("../ai/skill-tool-source");
 
-function fakeApprovalGate({ decideResult, decideThrows } = {}) {
+function fakeApprovalGate({ requestThrows } = {}) {
   const requestCalls = [];
-  const decideCalls = [];
   return {
     requestCalls,
-    decideCalls,
     requestApproval: async (actionType, details) => {
       requestCalls.push({ actionType, details });
+      if (requestThrows) throw requestThrows;
       return { status: "pending", requestId: "req-1", summary: details.summary, flags: [] };
-    },
-    decide: async (requestId, decision) => {
-      decideCalls.push({ requestId, decision });
-      if (decideThrows) throw decideThrows;
-      return decideResult || { status: "approved", requestId, actionType: "skill-write", result: { name: "ok" } };
     },
   };
 }
@@ -42,7 +36,7 @@ test("listToolSchemas returns the create tool schema", () => {
   assert.deepEqual(source.listToolSchemas(), TOOL_SCHEMAS);
 });
 
-test("executeTool stages through approvalGate then auto-decides allow-once, since the user asked for this directly", async () => {
+test("executeTool stages through approvalGate and leaves it pending -- never auto-decides", async () => {
   const approvalGate = fakeApprovalGate();
   const source = createSkillToolSource({ approvalGate });
 
@@ -62,19 +56,19 @@ test("executeTool stages through approvalGate then auto-decides allow-once, sinc
   });
   assert.equal(approvalGate.requestCalls[0].details.scanText, "1. Check the process.\n2. Restart it.");
 
-  assert.equal(approvalGate.decideCalls.length, 1);
-  assert.deepEqual(approvalGate.decideCalls[0], { requestId: "req-1", decision: "allow-once" });
-
+  // No approvalGate.decide anywhere on this source -- a model-drafted
+  // skill is never self-approved, unlike the Settings UI's own create flow.
+  assert.equal(typeof approvalGate.decide, "undefined");
   assert.deepEqual(JSON.parse(result), {
-    status: "approved",
+    status: "pending",
     requestId: "req-1",
-    actionType: "skill-write",
-    result: { name: "ok" },
+    summary: approvalGate.requestCalls[0].details.summary,
+    flags: [],
   });
 });
 
-test("executeTool returns a JSON error instead of throwing when the skill write fails (e.g. duplicate name)", async () => {
-  const approvalGate = fakeApprovalGate({ decideThrows: new Error('a skill named "Dup" already exists') });
+test("executeTool returns a JSON error instead of throwing when requestApproval itself fails", async () => {
+  const approvalGate = fakeApprovalGate({ requestThrows: new Error("approval gate unavailable") });
   const source = createSkillToolSource({ approvalGate });
 
   const result = await source.executeTool(`${SKILL_TOOL_PREFIX}create`, {
@@ -85,7 +79,7 @@ test("executeTool returns a JSON error instead of throwing when the skill write 
 
   assert.deepEqual(JSON.parse(result), {
     status: "error",
-    error: 'a skill named "Dup" already exists',
+    error: "approval gate unavailable",
   });
 });
 

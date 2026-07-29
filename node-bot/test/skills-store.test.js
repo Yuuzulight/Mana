@@ -59,6 +59,43 @@ test("createSkill rejects missing fields and duplicate names", () => {
   );
 });
 
+test("createSkill rejects a name that only differs in case from an existing skill's slug", () => {
+  const store = createSkillsStore({ skillsDir: tempDir() });
+  store.createSkill({ name: "Restart SearXNG", description: "d", body: "b" });
+  // Different display-name casing, same slugified filename -- must not
+  // silently overwrite the first skill's file.
+  assert.throws(
+    () => store.createSkill({ name: "restart searxng", description: "d2", body: "b2" }),
+    /already exists/,
+  );
+});
+
+test("createSkill and updateSkill reject line breaks in name/description/category", () => {
+  const store = createSkillsStore({ skillsDir: tempDir() });
+  assert.throws(
+    () => store.createSkill({ name: "Bad\nName", description: "d", body: "b" }),
+    /name cannot contain line breaks/,
+  );
+  assert.throws(
+    () => store.createSkill({ name: "n", description: "bad\ndesc", body: "b" }),
+    /description cannot contain line breaks/,
+  );
+  assert.throws(
+    () => store.createSkill({ name: "n2", description: "d", category: "bad\ncat", body: "b" }),
+    /category cannot contain line breaks/,
+  );
+
+  store.createSkill({ name: "Editable", description: "d", body: "b" });
+  assert.throws(
+    () => store.updateSkill("Editable", { description: "bad\ndesc" }),
+    /description cannot contain line breaks/,
+  );
+  assert.throws(
+    () => store.updateSkill("Editable", { category: "bad\ncat" }),
+    /category cannot contain line breaks/,
+  );
+});
+
 test("viewSkill returns the full body and touches lastUsed", () => {
   const dir = tempDir();
   let clock = "2026-01-01T00:00:00.000Z";
@@ -75,6 +112,19 @@ test("viewSkill returns the full body and touches lastUsed", () => {
   const store2 = createSkillsStore({ skillsDir: dir });
   const listed = store2.listSkills();
   assert.equal(listed[0].lastUsed, "2026-02-01T00:00:00.000Z");
+});
+
+test("viewSkill with touch:false leaves lastUsed/status untouched", () => {
+  const dir = tempDir();
+  let clock = "2026-01-01T00:00:00.000Z";
+  const store = createSkillsStore({ skillsDir: dir, now: () => clock });
+  store.createSkill({ name: "Browsed Only", description: "desc", body: "body" });
+
+  clock = "2026-02-01T00:00:00.000Z";
+  const viewed = store.viewSkill("Browsed Only", { touch: false });
+  assert.equal(viewed.body, "body");
+  assert.equal(viewed.lastUsed, "2026-01-01T00:00:00.000Z");
+  assert.equal(store.listSkills()[0].lastUsed, "2026-01-01T00:00:00.000Z");
 });
 
 test("viewSkill returns null for an unknown skill", () => {
@@ -153,6 +203,13 @@ test("updateSkill patches only the fields provided and persists them", () => {
   assert.equal(viewed.description, "new desc");
   assert.equal(viewed.body, "new body");
   assert.equal(viewed.category, "custom");
+});
+
+test("updateSkill treats category: null as an explicit reset to general", () => {
+  const store = createSkillsStore({ skillsDir: tempDir() });
+  store.createSkill({ name: "Categorized", description: "d", body: "b", category: "custom" });
+  const updated = store.updateSkill("Categorized", { category: null });
+  assert.equal(updated.category, "general");
 });
 
 test("updateSkill returns null for an unknown skill", () => {

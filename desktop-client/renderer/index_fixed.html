@@ -279,6 +279,10 @@
 
         <div class="settings-section" id="skillsSection">
           <h3>Skills</h3>
+          <div id="skillsPending" class="skills-pending" hidden>
+            <div class="skills-pending-label">Pending review</div>
+            <div id="skillsPendingList"></div>
+          </div>
           <div class="preset-select-row">
             <select id="skillsSelect">
               <option value="">None</option>
@@ -303,12 +307,14 @@
             <textarea
               id="skillBodyInput"
               placeholder="Step-by-step procedure Mana should follow..."
+              maxlength="4000"
             ></textarea>
             <div class="preset-editor-actions">
               <button id="skillSaveBtn">Save</button>
               <button id="skillCancelBtn">Cancel</button>
             </div>
           </div>
+          <p id="skillsStatus" class="subtitle" hidden></p>
         </div>
 
         <div class="settings-section" id="logsSection">

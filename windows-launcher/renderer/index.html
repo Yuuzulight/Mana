@@ -808,6 +808,33 @@
       #skillEditorActions { display: flex; gap: 8px; }
       #skillEditorActions button { padding: 6px 10px; font-size: 12px; }
 
+      #skillsStatus { margin-top: 8px; }
+      #skillsStatus.error { color: #e07070; }
+
+      #skillsPending { margin-bottom: 10px; }
+      .skills-pending-label {
+        font-size: 10px;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        color: var(--muted);
+        margin-bottom: 4px;
+      }
+      .skills-pending-item {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        padding: 8px;
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        background: var(--panel);
+        margin-bottom: 6px;
+        font-size: 12px;
+      }
+      .skills-pending-item-summary { color: var(--text); }
+      .skills-pending-item-flags { color: #e0a030; font-size: 11px; }
+      .skills-pending-item-actions { display: flex; gap: 8px; margin-top: 2px; }
+      .skills-pending-item-actions button { padding: 4px 8px; font-size: 11px; }
+
       #compareModeBtn.active {
         color: var(--accent);
         border-color: var(--accent);
@@ -1599,6 +1626,10 @@
               <div id="skillsHeader">
                 <strong>Skills</strong>
               </div>
+              <div id="skillsPending" hidden>
+                <div class="skills-pending-label">Pending review</div>
+                <div id="skillsPendingList"></div>
+              </div>
               <div id="skillsSelectRow">
                 <select id="skillsSelect">
                   <option value="">None</option>
@@ -1630,6 +1661,7 @@
                   <button id="skillCancelBtn">Cancel</button>
                 </div>
               </div>
+              <p id="skillsStatus" class="sidebar-note" hidden></p>
             </div>
 
             <div id="logsPanel">

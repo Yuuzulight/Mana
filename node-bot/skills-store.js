@@ -55,6 +55,18 @@ function serializeSkillFile(skill) {
   ].join("\n");
 }
 
+// name/description/category are written raw into a line-based frontmatter
+// block (no escaping -- see serializeSkillFile), so a newline here would
+// inject bogus frontmatter keys or corrupt the file's own "---" delimiters
+// on next parse. Rejected outright rather than silently stripped, since
+// these fields are meant to be short single-line values regardless of
+// where they came from (a form, the idle-proposal LLM, a model tool call).
+function assertSingleLine(value, fieldName) {
+  if (/[\r\n]/.test(value)) {
+    throw new Error(`${fieldName} cannot contain line breaks`);
+  }
+}
+
 function slugify(name) {
   return (
     String(name || "")
@@ -160,7 +172,18 @@ function createSkillsStore(options = {}) {
     if (!cleanDescription) throw new Error("description is required");
     const cleanBody = String(body || "").trim();
     if (!cleanBody) throw new Error("body is required");
-    if (findFileForName(cleanName)) {
+    const cleanCategory = String(category || "general").trim() || "general";
+    assertSingleLine(cleanName, "name");
+    assertSingleLine(cleanDescription, "description");
+    assertSingleLine(cleanCategory, "category");
+
+    // Checked against the actual target filename, not findFileForName's
+    // exact-name match -- slugify() lowercases, so "Restart SearXNG" and
+    // "restart searxng" collide on disk (restart-searxng.md) even though
+    // their display names differ. Catching that here is what actually
+    // prevents the second create from silently overwriting the first.
+    const fileName = `${slugify(cleanName)}.md`;
+    if (fs.existsSync(path.join(skillsDir, fileName))) {
       throw new Error(`a skill named "${cleanName}" already exists`);
     }
 
@@ -168,13 +191,12 @@ function createSkillsStore(options = {}) {
     const skill = {
       name: cleanName,
       description: cleanDescription,
-      category: String(category || "general").trim() || "general",
+      category: cleanCategory,
       created: timestamp,
       lastUsed: timestamp,
       status: "active",
       body: cleanBody,
     };
-    const fileName = `${slugify(cleanName)}.md`;
     fs.writeFileSync(
       path.join(skillsDir, fileName),
       serializeSkillFile(skill),
@@ -193,13 +215,21 @@ function createSkillsStore(options = {}) {
     if (!fileName) return null;
     const skill = readSkill(fileName);
     if (description !== undefined) {
-      skill.description = String(description).trim();
+      const cleanDescription = String(description).trim();
+      assertSingleLine(cleanDescription, "description");
+      skill.description = cleanDescription;
     }
     if (body !== undefined) {
       skill.body = String(body).trim();
     }
     if (category !== undefined) {
-      skill.category = String(category).trim() || "general";
+      // null is an explicit "clear it back to the default" request (see
+      // skills-capability.js's PATCH route), distinct from omitting the
+      // field entirely (the `category !== undefined` guard above) -- both
+      // land here as the empty-string fallback either way.
+      const cleanCategory = category === null ? "" : String(category).trim();
+      assertSingleLine(cleanCategory, "category");
+      skill.category = cleanCategory || "general";
     }
     fs.writeFileSync(
       path.join(skillsDir, fileName),

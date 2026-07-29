@@ -271,13 +271,16 @@ if (backendLogsEl && typeof ipcRenderer !== "undefined") {
 
 // Skills (issue #262 follow-up): create/edit/delete procedural-memory
 // skills from Settings, backed by node-bot's skills-store.js via
-// GET/POST/PATCH/DELETE /skills. Create still goes through the same
-// approval-gate path the idle-triggered skill-proposal pass (issue #262)
-// uses -- but since a human is right here filling out the form, a "pending"
-// response is immediately auto-approved rather than shown as a separate
-// step; edit/delete aren't gated at all (see skills-capability.js), since a
-// Settings form submission already is the human decision the gate exists
-// to require for agent-authored writes.
+// GET/POST/PATCH/DELETE /skills. Edit/delete aren't approval-gated (see
+// skills-capability.js) -- a Settings form submission already is the human
+// decision the gate exists to require for agent-authored writes. Create
+// still goes through the same approval-gate path the idle-triggered
+// skill-proposal pass (issue #262) uses; a human is right here filling out
+// the form, so a "pending" outcome with nothing flagged auto-clears
+// instead of surfacing a second confirmation step -- but if the gate's
+// content scan actually flagged something (scanContent in
+// approval-gate.js), that's specifically the case worth a second look, so
+// it's left pending and shown below for explicit review instead.
 const skillsSelectEl = document.getElementById("skillsSelect");
 const skillsNewBtnEl = document.getElementById("skillsNewBtn");
 const skillsEditBtnEl = document.getElementById("skillsEditBtn");
@@ -288,10 +291,31 @@ const skillDescriptionInputEl = document.getElementById("skillDescriptionInput")
 const skillBodyInputEl = document.getElementById("skillBodyInput");
 const skillSaveBtnEl = document.getElementById("skillSaveBtn");
 const skillCancelBtnEl = document.getElementById("skillCancelBtn");
+const skillsStatusEl = document.getElementById("skillsStatus");
+const skillsPendingEl = document.getElementById("skillsPending");
+const skillsPendingListEl = document.getElementById("skillsPendingList");
 
 let selectedSkillName = "";
 let editingSkillName = null; // null while creating a new skill
 let latestSkills = [];
+
+// The two skill-write action types (server.js/skill-proposal.js) --
+// manual/conversational vs. the idle-triggered autonomous pass -- share
+// this one review surface, since either way it's a skill sitting pending
+// for a human to look at.
+const SKILL_WRITE_ACTION_TYPES = ["skill-write", "skill-write-idle"];
+
+function setSkillsStatus(message, isError = false) {
+  if (!skillsStatusEl) return;
+  if (!message) {
+    skillsStatusEl.hidden = true;
+    skillsStatusEl.textContent = "";
+    return;
+  }
+  skillsStatusEl.hidden = false;
+  skillsStatusEl.textContent = message;
+  skillsStatusEl.classList.toggle("error", Boolean(isError));
+}
 
 function setSelectedSkillName(name) {
   selectedSkillName = name || "";
@@ -317,6 +341,66 @@ function renderSkillsSelect(skills) {
   setSelectedSkillName(skillsSelectEl.value);
 }
 
+function renderPendingSkills(pending) {
+  if (!skillsPendingEl || !skillsPendingListEl) return;
+  const skillPending = pending.filter((p) => SKILL_WRITE_ACTION_TYPES.includes(p.actionType));
+  skillsPendingEl.hidden = skillPending.length === 0;
+  skillsPendingListEl.innerHTML = "";
+  for (const item of skillPending) {
+    const row = document.createElement("div");
+    row.className = "skills-pending-item";
+    const summary = document.createElement("div");
+    summary.className = "skills-pending-item-summary";
+    summary.textContent = item.summary || item.payload?.name || "Pending skill";
+    row.appendChild(summary);
+    if (item.flags?.length) {
+      const flags = document.createElement("div");
+      flags.className = "skills-pending-item-flags";
+      flags.textContent = `Flagged: ${item.flags.join(", ")}`;
+      row.appendChild(flags);
+    }
+    const actions = document.createElement("div");
+    actions.className = "skills-pending-item-actions";
+    const approveBtn = document.createElement("button");
+    approveBtn.textContent = "Approve";
+    approveBtn.addEventListener("click", () => decidePendingSkill(item.id, "allow-once"));
+    const denyBtn = document.createElement("button");
+    denyBtn.textContent = "Deny";
+    denyBtn.addEventListener("click", () => decidePendingSkill(item.id, "deny"));
+    actions.appendChild(approveBtn);
+    actions.appendChild(denyBtn);
+    row.appendChild(actions);
+    skillsPendingListEl.appendChild(row);
+  }
+}
+
+async function decidePendingSkill(requestId, decision) {
+  try {
+    const response = await fetch(`${BACKEND_BASE_URL}/approvals/${requestId}/decide`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ decision }),
+    });
+    if (!response.ok) throw new Error(`Decide returned ${response.status}`);
+    setSkillsStatus(decision === "deny" ? "Skill proposal denied." : "Skill approved.");
+    await refreshSkillsList();
+  } catch (error) {
+    setSkillsStatus(`Failed to ${decision === "deny" ? "deny" : "approve"}: ${error.message}`, true);
+  }
+}
+
+async function refreshPendingSkills() {
+  if (!skillsPendingEl) return;
+  try {
+    const response = await fetch(`${BACKEND_BASE_URL}/approvals/pending`);
+    if (!response.ok) throw new Error(`Pending approvals returned ${response.status}`);
+    const result = await response.json();
+    renderPendingSkills(result.pending || []);
+  } catch (error) {
+    console.warn("Mana pending skills list failed:", error.message);
+  }
+}
+
 async function refreshSkillsList() {
   if (!skillsSelectEl) return;
   try {
@@ -326,8 +410,9 @@ async function refreshSkillsList() {
     latestSkills = result.skills || [];
     renderSkillsSelect(latestSkills);
   } catch (error) {
-    console.warn("Mana skills list failed:", error.message);
+    setSkillsStatus(`Failed to load skills: ${error.message}`, true);
   }
+  await refreshPendingSkills();
 }
 refreshSkillsList();
 
@@ -360,16 +445,25 @@ skillsSelectEl?.addEventListener("change", () => {
   setSelectedSkillName(skillsSelectEl.value);
 });
 
-skillsNewBtnEl?.addEventListener("click", () => openSkillEditor(null));
+skillsNewBtnEl?.addEventListener("click", () => {
+  setSkillsStatus(null);
+  openSkillEditor(null);
+});
 
 skillsEditBtnEl?.addEventListener("click", async () => {
   if (!selectedSkillName) return;
   try {
-    const response = await fetch(`${BACKEND_BASE_URL}/skills/${encodeURIComponent(selectedSkillName)}`);
+    // touch=false: browsing into Edit isn't Mana actually reaching for the
+    // skill -- shouldn't bump lastUsed/un-stale it just because the user
+    // opened (and maybe cancelled) the editor.
+    const response = await fetch(
+      `${BACKEND_BASE_URL}/skills/${encodeURIComponent(selectedSkillName)}?touch=false`,
+    );
     if (!response.ok) throw new Error(`Load skill returned ${response.status}`);
+    setSkillsStatus(null);
     openSkillEditor(await response.json());
   } catch (error) {
-    console.warn("Mana load skill failed:", error.message);
+    setSkillsStatus(`Failed to load skill: ${error.message}`, true);
   }
 });
 
@@ -390,6 +484,7 @@ skillSaveBtnEl?.addEventListener("click", async () => {
         body: JSON.stringify({ description, body }),
       });
       if (!response.ok) throw new Error(`Save skill returned ${response.status}`);
+      setSkillsStatus("Skill updated.");
     } else {
       const response = await fetch(`${BACKEND_BASE_URL}/skills`, {
         method: "POST",
@@ -398,24 +493,33 @@ skillSaveBtnEl?.addEventListener("click", async () => {
       });
       if (!response.ok) throw new Error(`Create skill returned ${response.status}`);
       const outcome = await response.json();
-      // A human just filled out this form directly -- auto-clear the
-      // approval-gate hold immediately instead of surfacing a second
-      // confirmation step (the idle-triggered proposal pass is the case
-      // that's meant to sit pending for later human review).
       if (outcome.status === "pending" && outcome.requestId) {
-        const decideResponse = await fetch(`${BACKEND_BASE_URL}/approvals/${outcome.requestId}/decide`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ decision: "allow-once" }),
-        });
-        if (!decideResponse.ok) throw new Error(`Approve skill returned ${decideResponse.status}`);
+        if (!outcome.flags || outcome.flags.length === 0) {
+          // Nothing the content scan flagged, and a human just typed this
+          // in directly -- auto-clear the hold instead of a redundant
+          // second confirmation step.
+          const decideResponse = await fetch(`${BACKEND_BASE_URL}/approvals/${outcome.requestId}/decide`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ decision: "allow-once" }),
+          });
+          if (!decideResponse.ok) throw new Error(`Approve skill returned ${decideResponse.status}`);
+          setSkillsStatus("Skill created.");
+        } else {
+          // Flagged -- leave it genuinely pending rather than rubber-
+          // stamping past the scan's own tripwire; shows up in the
+          // pending-review list above for an explicit decision.
+          setSkillsStatus(`Staged for review (flagged: ${outcome.flags.join(", ")}).`);
+        }
+      } else {
+        setSkillsStatus("Skill created.");
       }
     }
     closeSkillEditor();
     setSelectedSkillName(name);
     await refreshSkillsList();
   } catch (error) {
-    console.warn("Mana save skill failed:", error.message);
+    setSkillsStatus(`Failed to save skill: ${error.message}`, true);
   } finally {
     skillSaveBtnEl.disabled = false;
   }
@@ -433,10 +537,11 @@ skillsDeleteBtnEl?.addEventListener("click", async () => {
       method: "DELETE",
     });
     if (!response.ok) throw new Error(`Delete skill returned ${response.status}`);
+    setSkillsStatus("Skill deleted.");
     setSelectedSkillName("");
     await refreshSkillsList();
   } catch (error) {
-    console.warn("Mana delete skill failed:", error.message);
+    setSkillsStatus(`Failed to delete skill: ${error.message}`, true);
   }
 });
 

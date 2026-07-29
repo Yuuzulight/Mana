@@ -22,11 +22,15 @@ function registerSkillsRoutes(app, context = {}) {
   });
 
   // The expensive call: full content, only hit when a specific skill is
-  // actually being used.
+  // actually being used. ?touch=false skips the lastUsed/un-stale bump --
+  // opening a skill to *browse or edit* isn't the same as Mana actually
+  // reaching for it, and skipping the write is what the editor's Cancel
+  // button needs to be a true no-op instead of quietly touching usage.
   app.get("/skills/:name", (req, res) => {
     try {
       const name = requireString(req.params?.name, "name");
-      const skill = skillsStore.viewSkill(name);
+      const touch = req.query?.touch !== "false";
+      const skill = skillsStore.viewSkill(name, { touch });
       if (!skill) return res.status(404).json({ error: "skill not found" });
       return res.json(skill);
     } catch (e) {
@@ -77,8 +81,14 @@ function registerSkillsRoutes(app, context = {}) {
         updates.body = requireString(req.body.body, "body");
       }
       if (Object.prototype.hasOwnProperty.call(req.body || {}, "category")) {
+        // null is an explicit "clear it back to general" request, distinct
+        // from omitting the field entirely (which the hasOwnProperty guard
+        // above already excludes) -- passed straight through so
+        // updateSkill can tell the two apart.
         updates.category =
-          typeof req.body.category === "string" ? req.body.category : undefined;
+          req.body.category === null || typeof req.body.category === "string"
+            ? req.body.category
+            : undefined;
       }
       const skill = skillsStore.updateSkill(name, updates);
       if (!skill) return res.status(404).json({ error: "skill not found" });

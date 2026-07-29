@@ -15,7 +15,7 @@ const TOOL_SCHEMAS = [
     function: {
       name: `${SKILL_TOOL_PREFIX}create`,
       description:
-        "Save a new procedural-memory skill when the user explicitly asks to create/save one, or asks Mana to remember a specific named procedure for reuse. Ask clarifying questions first if the name, when-to-use, or steps are unclear or underspecified -- don't guess at a vague procedure. Not for routine facts (use memory__remember) and not something to call speculatively; only when the user is clearly asking for a reusable skill. After a successful create, show the user what was actually saved by quoting the full skill (name, description, and body from the tool result) back in a fenced markdown code block in your reply -- that lets them review or reopen it as its own artifact, the same as any other long content Mana produces.",
+        "Draft a new procedural-memory skill when the user explicitly asks to create/save one, or asks Mana to remember a specific named procedure for reuse. Ask clarifying questions first if the name, when-to-use, or steps are unclear or underspecified -- don't guess at a vague procedure. Not for routine facts (use memory__remember) and not something to call speculatively; only when the user is clearly asking for a reusable skill. This stages the skill for approval -- it isn't saved yet, even though the user asked for it, since the draft is still your own text, not theirs verbatim; tell them it's ready to review in Settings > Skills. Quote the drafted skill (name, description, body from the tool result's payload) back in a fenced markdown code block in your reply so they can read it right away -- that also lets Mana's existing renderable-artifacts view open it as its own preview.",
       parameters: {
         type: "object",
         properties: {
@@ -49,11 +49,16 @@ function isSkillToolName(name) {
 
 // options.approvalGate: required -- a skill write always goes through the
 // same "skill-write" gate a human-authored Settings write does (issue #152).
-// Unlike the idle-triggered proposal pass, though, the user is directly
-// present asking for this right now -- same "human is right here" reasoning
-// the Settings > Skills UI already uses for its own create flow -- so a
-// "pending" outcome is immediately auto-decided ("allow-once") instead of
-// left stuck pending with no conversational review surface.
+// Deliberately NOT auto-decided here, unlike the Settings UI's own create
+// flow: a Settings form submission is a human typing their own words
+// directly; this tool call is the model's own inference of what the user
+// meant, drafted in the model's own text. That's exactly the trust
+// boundary the approval gate exists to enforce, and it stays real even
+// when the user's request was genuine -- a page Mana read earlier in the
+// same turn (browser automation is merged into this same tool policy)
+// could otherwise talk the model into staging attacker-authored content
+// that lands with no human ever looking at it. Always stays pending;
+// reviewed via the Settings > Skills pending-approvals list.
 function createSkillToolSource(options = {}) {
   const approvalGate = options.approvalGate;
   if (!approvalGate) {
@@ -82,9 +87,6 @@ function createSkillToolSource(options = {}) {
         payload,
         scanText: payload.body,
       });
-      if (outcome.status === "pending" && outcome.requestId) {
-        return JSON.stringify(await approvalGate.decide(outcome.requestId, "allow-once"));
-      }
       return JSON.stringify(outcome);
     } catch (e) {
       return JSON.stringify({ status: "error", error: e.message || String(e) });
