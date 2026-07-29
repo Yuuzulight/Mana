@@ -21,10 +21,11 @@ ipcRenderer.on("avatar:state", (event, state) => {
   setAvatarState(state);
 });
 
-// Speech amplitude from the main window (0..1-ish RMS) drives the mouth.
-ipcRenderer.on("avatar:mouth", (event, rms) => {
+// Speech amplitude (0..1-ish RMS) plus the audio's spectral centroid (Hz,
+// used to vary mouth shape) from the main window drive the mouth.
+ipcRenderer.on("avatar:mouth", (event, rms, centroidHz) => {
   if (activeAvatar) {
-    activeAvatar.setMouthTarget(rms);
+    activeAvatar.setMouthTarget(rms, centroidHz);
   }
 });
 

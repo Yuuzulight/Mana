@@ -14,8 +14,11 @@ const {
   motionGroupForState,
   nextZoomLevel,
   parseParamIdList,
+  pickIdleSaccadeTarget,
+  randomSaccadeInterval,
   rmsToMouth,
   smoothMouthValue,
+  smoothTowardTarget,
 } = require("../avatar/live2d-logic");
 
 function makeFakeFs(tree) {
@@ -300,6 +303,8 @@ test("normalizeAvatarConfig fills in tuning-knob defaults for a swapped-in model
 
   assert.equal(empty.mouthParam, "ParamMouthOpenY");
   assert.equal(empty.mouthGain, 18);
+  assert.equal(empty.mouthFormParam, "ParamMouthForm");
+  assert.equal(empty.mouthFormGain, 0.6);
   assert.equal(empty.eyeOpenScale, 1.5);
   assert.deepEqual(empty.eyeBlinkParams, ["ParamEyeLOpen", "ParamEyeROpen"]);
   assert.deepEqual(empty.smileParams, ["ParamEyeLSmile", "ParamEyeRSmile"]);
@@ -321,6 +326,8 @@ test("normalizeAvatarConfig honors tuning-knob overrides, including explicit zer
   const custom = normalizeAvatarConfig({
     mouthParam: "ParamMouthForm",
     mouthGain: 9,
+    mouthFormParam: "ParamCustomForm",
+    mouthFormGain: 0,
     eyeOpenScale: 1,
     eyeBlinkParams: ["CustomEyeOpen"],
     smileParams: [],
@@ -333,6 +340,9 @@ test("normalizeAvatarConfig honors tuning-knob overrides, including explicit zer
 
   assert.equal(custom.mouthParam, "ParamMouthForm");
   assert.equal(custom.mouthGain, 9);
+  assert.equal(custom.mouthFormParam, "ParamCustomForm");
+  // 0 is a legitimate opt-out value, same as idleTiltDeg/idleGazeDeg below.
+  assert.equal(custom.mouthFormGain, 0);
   assert.equal(custom.eyeOpenScale, 1);
   assert.deepEqual(custom.eyeBlinkParams, ["CustomEyeOpen"]);
   // An explicit empty array opts out entirely, same as env's empty string.
@@ -346,35 +356,51 @@ test("normalizeAvatarConfig honors tuning-knob overrides, including explicit zer
   assert.equal(custom.idleGazePeriodMs, 12000);
 });
 
-test("computeIdleGazeOffset returns a deterministic, amplitude-scaled drift that opts out at amplitude 0", () => {
-  const { computeIdleGazeOffset } = require("../avatar/live2d-logic");
-
-  // Amplitude 0 -> no drift at all, regardless of time.
-  assert.deepEqual(computeIdleGazeOffset(4000, 0, 9000), {
+test("pickIdleSaccadeTarget opts out at amplitude 0 and stays in range otherwise", () => {
+  assert.deepEqual(pickIdleSaccadeTarget(0), {
     angleX: 0,
     eyeBallX: 0,
     eyeBallY: 0,
   });
 
-  // Same (nowMs, amplitude, period) must always produce the same offset --
-  // this drives per-frame rendering, so it has to be a pure function of its
-  // inputs rather than depending on hidden internal state.
-  const a = computeIdleGazeOffset(2500, 6, 9000);
-  const b = computeIdleGazeOffset(2500, 6, 9000);
-  assert.deepEqual(a, b);
+  // rng() = 0 and rng() = 1 (as close as a real generator gets) bound the
+  // extremes of each axis.
+  const low = pickIdleSaccadeTarget(6, () => 0);
+  assert.equal(low.angleX, -6);
+  assert.equal(low.eyeBallX, -1);
+  assert.equal(low.eyeBallY, -0.7);
 
-  // Doubling the amplitude roughly doubles the head-angle swing (eyeball
-  // offsets are separately clamped to [-1, 1], so only angleX scales cleanly
-  // at these magnitudes).
-  const small = computeIdleGazeOffset(2500, 6, 9000);
-  const big = computeIdleGazeOffset(2500, 12, 9000);
-  assert.ok(Math.abs(big.angleX) > Math.abs(small.angleX));
+  const high = pickIdleSaccadeTarget(6, () => 1);
+  assert.equal(high.angleX, 6);
+  assert.equal(high.eyeBallX, 1);
+  assert.equal(high.eyeBallY, 0.7);
+});
 
-  // Eyeball offsets never exceed their normal Cubism range regardless of a
-  // large configured amplitude.
-  const extreme = computeIdleGazeOffset(2500, 60, 9000);
-  assert.ok(extreme.eyeBallX >= -1 && extreme.eyeBallX <= 1);
-  assert.ok(extreme.eyeBallY >= -1 && extreme.eyeBallY <= 1);
+test("randomSaccadeInterval stays inside its weighted table's bounds and scales linearly", () => {
+  // rng() = 0 always lands in the first bucket (800-1200ms).
+  const first = randomSaccadeInterval(() => 0);
+  assert.ok(first >= 800 && first <= 1200);
+
+  // rng() just under 1 always lands in the final catch-all bucket.
+  const last = randomSaccadeInterval(() => 0.999999);
+  assert.ok(last >= 4000);
+
+  // scale multiplies the whole distribution, e.g. for a model tuned to
+  // saccade twice as often on average.
+  const base = randomSaccadeInterval(() => 0, 1);
+  const scaled = randomSaccadeInterval(() => 0, 2);
+  assert.equal(scaled, base * 2);
+
+  // A non-finite or non-positive scale degrades to 1x rather than NaN/0.
+  assert.equal(randomSaccadeInterval(() => 0, 0), base);
+  assert.equal(randomSaccadeInterval(() => 0, Number.NaN), base);
+});
+
+test("smoothTowardTarget settles toward target over time and holds steady at dt=0", () => {
+  assert.equal(smoothTowardTarget(0, 1, 0, 500), 0);
+  assert.ok(smoothTowardTarget(0, 1, 250, 500) > 0);
+  // Converges fully once enough time has passed.
+  assert.equal(smoothTowardTarget(0, 1, 5000, 500), 1);
 });
 
 test("fitModelToView scales to fit and anchors to the bottom", () => {

@@ -18,8 +18,9 @@
 
 const {
   augmentModelSettings,
-  computeIdleGazeOffset,
+  centroidToMouthForm,
   computeZoomFraming,
+  DEFAULT_IDLE_GAZE_PERIOD_MS,
   expressionForState,
   fitModelToView,
   mergeStateMappings,
@@ -28,8 +29,11 @@ const {
   nextZoomLevel,
   parseParamIdList,
   parseStateMappingOverrides,
+  pickIdleSaccadeTarget,
+  randomSaccadeInterval,
   rmsToMouth,
   smoothMouthValue,
+  smoothTowardTarget,
 } = window.Live2DLogic;
 
 function live2dRuntimeAvailable() {
@@ -69,6 +73,14 @@ async function createLive2dAvatar({ canvas, width, height }) {
     env.MANA_LIVE2D_MOUTH_GAIN !== undefined
       ? Number(env.MANA_LIVE2D_MOUTH_GAIN)
       : config.mouthGain;
+  // Mouth *shape* (not openness) driven by the voice's spectral brightness,
+  // layered on top of mouthParam -- see live2d-logic.js's
+  // centroidToMouthForm. 0 (or an empty mouthFormParam) opts out.
+  const mouthFormParam = env.MANA_LIVE2D_MOUTH_FORM_PARAM || config.mouthFormParam;
+  const mouthFormGain =
+    env.MANA_LIVE2D_MOUTH_FORM_GAIN !== undefined
+      ? Number(env.MANA_LIVE2D_MOUTH_FORM_GAIN)
+      : config.mouthFormGain;
   // How wide "eyes open" holds while she's not idle, as a multiplier on the
   // blink manager's 0..1 output. Most models run ParamEyeL/ROpen 0..1
   // (1 = fully open) or 0..2 (1 = resting, 2 = maximally wide) — the
@@ -94,6 +106,19 @@ async function createLive2dAvatar({ canvas, width, height }) {
     resolution: window.devicePixelRatio || 1,
   });
   app.ticker.maxFPS = fps;
+
+  // Guard against a bad frame (e.g. a corrupt/incompatible model triggering
+  // a WebGL error) taking down the render loop silently forever instead of
+  // stopping cleanly with a diagnosable log line.
+  app.ticker.remove(app.render, app);
+  app.ticker.add(() => {
+    try {
+      app.render();
+    } catch (error) {
+      console.error("Live2D render error, stopping ticker:", error);
+      app.ticker.stop();
+    }
+  });
 
   // Register loose VTube-Studio-style motion/expression files before load,
   // and backfill a blank EyeBlink parameter group so she blinks naturally
@@ -196,11 +221,20 @@ async function createLive2dAvatar({ canvas, width, height }) {
       ? Number(env.MANA_LIVE2D_IDLE_GAZE_PERIOD_MS)
       : config.idleGazePeriodMs;
   const idleGazeActive = idleGazeDeg !== 0;
+  // Ratio against the old fixed-period default, so a per-model
+  // idleGazePeriodMs override still means "faster/slower saccades" even
+  // though the underlying distribution is now randomized, not periodic.
+  const saccadeIntervalScale = idleGazePeriodMs / DEFAULT_IDLE_GAZE_PERIOD_MS;
+  let saccadeTarget = { angleX: 0, eyeBallX: 0, eyeBallY: 0 };
+  const saccadeCurrent = { angleX: 0, eyeBallX: 0, eyeBallY: 0 };
+  let nextSaccadeAt = 0;
 
   // Drive the mouth parameter and idle head tilt after each motion update,
   // so the underlying motion clip cannot overwrite them.
   let mouthTarget = 0;
   let mouthValue = 0;
+  let formTarget = 0;
+  let formValue = 0;
   let lastTick = performance.now();
   const eyeBlink = model.internalModel.eyeBlink;
   const originalUpdate = motionManager.update.bind(motionManager);
@@ -214,6 +248,20 @@ async function createLive2dAvatar({ canvas, width, height }) {
     try {
       coreModel.setParameterValueById(mouthParam, mouthValue);
     } catch (e) {}
+
+    // Mouth *shape* from spectral brightness (see setMouthTarget), layered
+    // on top of mouthParam above. Only touches mouthFormParam while talking
+    // or while there's still a nonzero release tail to smooth out --
+    // otherwise it would fight an idle motion/expression's own mouth-form
+    // value (e.g. a smile) every frame even while she's not speaking.
+    if (mouthFormParam && mouthFormGain !== 0) {
+      formValue = smoothTowardTarget(formValue, formTarget, dt, 180);
+      if (currentState === "talking" || Math.abs(formValue) > 0.01) {
+        try {
+          coreModel.setParameterValueById(mouthFormParam, formValue * mouthFormGain);
+        } catch (e) {}
+      }
+    }
 
     if (idleTiltActive || idleGazeActive) {
       const tiltTarget = currentState === "idle" ? 1 : 0;
@@ -242,21 +290,48 @@ async function createLive2dAvatar({ canvas, width, height }) {
 
       if (idleGazeActive && idleTiltBlend > 0.001) {
         try {
-          const gaze = computeIdleGazeOffset(now, idleGazeDeg, idleGazePeriodMs);
+          // Randomized "look around" saccades (see live2d-logic.js's
+          // randomSaccadeInterval/pickIdleSaccadeTarget) instead of a
+          // fixed-period sine drift, which read as mechanical over a long
+          // idle stretch.
+          if (now >= nextSaccadeAt) {
+            saccadeTarget = pickIdleSaccadeTarget(idleGazeDeg);
+            nextSaccadeAt =
+              now + randomSaccadeInterval(Math.random, saccadeIntervalScale);
+          }
+          saccadeCurrent.angleX = smoothTowardTarget(
+            saccadeCurrent.angleX,
+            saccadeTarget.angleX,
+            dt,
+            500,
+          );
+          saccadeCurrent.eyeBallX = smoothTowardTarget(
+            saccadeCurrent.eyeBallX,
+            saccadeTarget.eyeBallX,
+            dt,
+            500,
+          );
+          saccadeCurrent.eyeBallY = smoothTowardTarget(
+            saccadeCurrent.eyeBallY,
+            saccadeTarget.eyeBallY,
+            dt,
+            500,
+          );
+
           const rawX = coreModel.getParameterValueById("ParamAngleX");
           coreModel.setParameterValueById(
             "ParamAngleX",
-            rawX + gaze.angleX * idleTiltBlend,
+            rawX + saccadeCurrent.angleX * idleTiltBlend,
           );
           const rawEyeX = coreModel.getParameterValueById("ParamEyeBallX");
           coreModel.setParameterValueById(
             "ParamEyeBallX",
-            rawEyeX + gaze.eyeBallX * idleTiltBlend,
+            rawEyeX + saccadeCurrent.eyeBallX * idleTiltBlend,
           );
           const rawEyeY = coreModel.getParameterValueById("ParamEyeBallY");
           coreModel.setParameterValueById(
             "ParamEyeBallY",
-            rawEyeY + gaze.eyeBallY * idleTiltBlend,
+            rawEyeY + saccadeCurrent.eyeBallY * idleTiltBlend,
           );
         } catch (e) {}
       }
@@ -429,12 +504,16 @@ async function createLive2dAvatar({ canvas, width, height }) {
       setAutoLoopMotionGroup(nextState);
       if (nextState !== "talking") {
         mouthTarget = 0;
+        formTarget = 0;
       }
       playStateMotion(nextState);
       applyStateExpression(nextState);
     },
-    setMouthTarget(rms) {
+    setMouthTarget(rms, centroidHz) {
       mouthTarget = rmsToMouth(rms, { gain: mouthGain });
+      if (centroidHz !== undefined && centroidHz !== null) {
+        formTarget = centroidToMouthForm(centroidHz);
+      }
     },
     setZoom(level) {
       zoomLevel = String(level || "full");
