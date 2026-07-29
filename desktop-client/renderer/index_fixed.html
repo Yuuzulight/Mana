@@ -277,6 +277,40 @@
           </div>
         </div>
 
+        <div class="settings-section" id="skillsSection">
+          <h3>Skills</h3>
+          <div class="preset-select-row">
+            <select id="skillsSelect">
+              <option value="">None</option>
+            </select>
+            <button id="skillsNewBtn">New</button>
+            <button id="skillsEditBtn" hidden>Edit</button>
+            <button id="skillsDeleteBtn" hidden>Delete</button>
+          </div>
+          <div class="preset-editor" id="skillsEditor" hidden>
+            <input
+              id="skillNameInput"
+              type="text"
+              placeholder="Skill name"
+              maxlength="80"
+            />
+            <input
+              id="skillDescriptionInput"
+              type="text"
+              placeholder="One-line description: when should this be used?"
+              maxlength="200"
+            />
+            <textarea
+              id="skillBodyInput"
+              placeholder="Step-by-step procedure Mana should follow..."
+            ></textarea>
+            <div class="preset-editor-actions">
+              <button id="skillSaveBtn">Save</button>
+              <button id="skillCancelBtn">Cancel</button>
+            </div>
+          </div>
+        </div>
+
         <div class="settings-section" id="logsSection">
           <h3>Backend Logs</h3>
           <pre id="backendLogs" class="logs">(backend logs)</pre>

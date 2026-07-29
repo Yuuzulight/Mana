@@ -15,6 +15,8 @@ function fakeStore(overrides = {}) {
     createSkill: () => {
       throw new Error("createSkill not stubbed");
     },
+    updateSkill: () => null,
+    deleteSkill: () => false,
     pruneStaleSkills: () => ({ staled: [], archived: [] }),
     ...overrides,
   };
@@ -140,6 +142,82 @@ test("skills capability rejects creation missing required fields", async () => {
   });
 });
 
+test("skills capability's patch route updates a skill and is not gated by approval", async () => {
+  const app = express();
+  app.use(express.json());
+  let received = null;
+  skillsCapability.registerRoutes(app, {
+    skillsStore: fakeStore({
+      updateSkill: (name, updates) => {
+        received = { name, updates };
+        return { name, description: updates.description, body: "b", category: "general" };
+      },
+    }),
+  });
+
+  await withServer(app, async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/skills/${encodeURIComponent("Skill A")}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ description: "updated desc" }),
+    });
+    const payload = await response.json();
+    assert.equal(response.status, 200);
+    assert.equal(payload.description, "updated desc");
+    assert.deepEqual(received, { name: "Skill A", updates: { description: "updated desc" } });
+  });
+});
+
+test("skills capability's patch route 404s for an unknown skill", async () => {
+  const app = express();
+  app.use(express.json());
+  skillsCapability.registerRoutes(app, { skillsStore: fakeStore() });
+
+  await withServer(app, async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/skills/nope`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ description: "x" }),
+    });
+    assert.equal(response.status, 404);
+  });
+});
+
+test("skills capability's delete route removes a skill", async () => {
+  const app = express();
+  app.use(express.json());
+  let received = null;
+  skillsCapability.registerRoutes(app, {
+    skillsStore: fakeStore({
+      deleteSkill: (name) => {
+        received = name;
+        return true;
+      },
+    }),
+  });
+
+  await withServer(app, async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/skills/${encodeURIComponent("Skill A")}`, {
+      method: "DELETE",
+    });
+    const payload = await response.json();
+    assert.equal(response.status, 200);
+    assert.deepEqual(payload, { deleted: true, name: "Skill A" });
+    assert.equal(received, "Skill A");
+  });
+});
+
+test("skills capability's delete route 404s for an unknown skill", async () => {
+  const app = express();
+  app.use(express.json());
+  skillsCapability.registerRoutes(app, { skillsStore: fakeStore() });
+
+  await withServer(app, async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/skills/nope`, { method: "DELETE" });
+    assert.equal(response.status, 404);
+  });
+});
+
 test("skills capability's prune route delegates to the store with the request's thresholds", async () => {
   const app = express();
   app.use(express.json());
@@ -163,6 +241,44 @@ test("skills capability's prune route delegates to the store with the request's 
     assert.equal(response.status, 200);
     assert.deepEqual(payload, { ok: true, staled: ["A"], archived: [] });
     assert.deepEqual(received, { staleDays: 10, archiveDays: 20 });
+  });
+});
+
+test("skills capability's propose route delegates to runSkillProposalPublic", async () => {
+  const app = express();
+  app.use(express.json());
+  let received = null;
+  const skillsStore = fakeStore();
+  const approvalGate = fakeApprovalGate(skillsStore);
+  skillsCapability.registerRoutes(app, {
+    skillsStore,
+    approvalGate,
+    runSkillProposalPublic: async (deps) => {
+      received = deps;
+      return { ok: true, found: true, name: "new-skill" };
+    },
+  });
+
+  await withServer(app, async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/skills/propose`, { method: "POST" });
+    const payload = await response.json();
+    assert.equal(response.status, 200);
+    assert.deepEqual(payload, { ok: true, found: true, name: "new-skill" });
+    assert.equal(received.skillsStore, skillsStore);
+    assert.equal(received.approvalGate, approvalGate);
+  });
+});
+
+test("skills capability's propose route reports unavailable when no proposal pass is wired", async () => {
+  const app = express();
+  app.use(express.json());
+  skillsCapability.registerRoutes(app, { skillsStore: fakeStore() });
+
+  await withServer(app, async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/skills/propose`, { method: "POST" });
+    const payload = await response.json();
+    assert.equal(response.status, 500);
+    assert.equal(payload.ok, false);
   });
 });
 

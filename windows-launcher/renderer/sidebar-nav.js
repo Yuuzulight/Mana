@@ -269,6 +269,177 @@ if (backendLogsEl && typeof ipcRenderer !== "undefined") {
     .catch(() => {});
 }
 
+// Skills (issue #262 follow-up): create/edit/delete procedural-memory
+// skills from Settings, backed by node-bot's skills-store.js via
+// GET/POST/PATCH/DELETE /skills. Create still goes through the same
+// approval-gate path the idle-triggered skill-proposal pass (issue #262)
+// uses -- but since a human is right here filling out the form, a "pending"
+// response is immediately auto-approved rather than shown as a separate
+// step; edit/delete aren't gated at all (see skills-capability.js), since a
+// Settings form submission already is the human decision the gate exists
+// to require for agent-authored writes.
+const skillsSelectEl = document.getElementById("skillsSelect");
+const skillsNewBtnEl = document.getElementById("skillsNewBtn");
+const skillsEditBtnEl = document.getElementById("skillsEditBtn");
+const skillsDeleteBtnEl = document.getElementById("skillsDeleteBtn");
+const skillsEditorEl = document.getElementById("skillsEditor");
+const skillNameInputEl = document.getElementById("skillNameInput");
+const skillDescriptionInputEl = document.getElementById("skillDescriptionInput");
+const skillBodyInputEl = document.getElementById("skillBodyInput");
+const skillSaveBtnEl = document.getElementById("skillSaveBtn");
+const skillCancelBtnEl = document.getElementById("skillCancelBtn");
+
+let selectedSkillName = "";
+let editingSkillName = null; // null while creating a new skill
+let latestSkills = [];
+
+function setSelectedSkillName(name) {
+  selectedSkillName = name || "";
+  if (skillsEditBtnEl) skillsEditBtnEl.hidden = !selectedSkillName;
+  if (skillsDeleteBtnEl) skillsDeleteBtnEl.hidden = !selectedSkillName;
+}
+
+function renderSkillsSelect(skills) {
+  if (!skillsSelectEl) return;
+  skillsSelectEl.innerHTML = "";
+  const noneOption = document.createElement("option");
+  noneOption.value = "";
+  noneOption.textContent = "None";
+  skillsSelectEl.appendChild(noneOption);
+  for (const skill of skills) {
+    const option = document.createElement("option");
+    option.value = skill.name;
+    option.textContent = skill.name;
+    skillsSelectEl.appendChild(option);
+  }
+  const stillExists = skills.some((skill) => skill.name === selectedSkillName);
+  skillsSelectEl.value = stillExists ? selectedSkillName : "";
+  setSelectedSkillName(skillsSelectEl.value);
+}
+
+async function refreshSkillsList() {
+  if (!skillsSelectEl) return;
+  try {
+    const response = await fetch(`${BACKEND_BASE_URL}/skills`);
+    if (!response.ok) throw new Error(`Skill list returned ${response.status}`);
+    const result = await response.json();
+    latestSkills = result.skills || [];
+    renderSkillsSelect(latestSkills);
+  } catch (error) {
+    console.warn("Mana skills list failed:", error.message);
+  }
+}
+refreshSkillsList();
+
+function closeSkillEditor() {
+  editingSkillName = null;
+  if (skillsEditorEl) skillsEditorEl.hidden = true;
+  if (skillNameInputEl) {
+    skillNameInputEl.value = "";
+    skillNameInputEl.disabled = false;
+  }
+  if (skillDescriptionInputEl) skillDescriptionInputEl.value = "";
+  if (skillBodyInputEl) skillBodyInputEl.value = "";
+}
+
+function openSkillEditor(skill) {
+  editingSkillName = skill ? skill.name : null;
+  if (skillNameInputEl) {
+    skillNameInputEl.value = skill ? skill.name : "";
+    // Renaming isn't supported by skills-store.js's updateSkill -- keep the
+    // name field locked once a skill already exists.
+    skillNameInputEl.disabled = Boolean(skill);
+  }
+  if (skillDescriptionInputEl) skillDescriptionInputEl.value = skill ? skill.description : "";
+  if (skillBodyInputEl) skillBodyInputEl.value = skill ? skill.body : "";
+  if (skillsEditorEl) skillsEditorEl.hidden = false;
+  (skillNameInputEl?.disabled ? skillDescriptionInputEl : skillNameInputEl)?.focus();
+}
+
+skillsSelectEl?.addEventListener("change", () => {
+  setSelectedSkillName(skillsSelectEl.value);
+});
+
+skillsNewBtnEl?.addEventListener("click", () => openSkillEditor(null));
+
+skillsEditBtnEl?.addEventListener("click", async () => {
+  if (!selectedSkillName) return;
+  try {
+    const response = await fetch(`${BACKEND_BASE_URL}/skills/${encodeURIComponent(selectedSkillName)}`);
+    if (!response.ok) throw new Error(`Load skill returned ${response.status}`);
+    openSkillEditor(await response.json());
+  } catch (error) {
+    console.warn("Mana load skill failed:", error.message);
+  }
+});
+
+skillCancelBtnEl?.addEventListener("click", closeSkillEditor);
+
+skillSaveBtnEl?.addEventListener("click", async () => {
+  const name = skillNameInputEl?.value.trim();
+  const description = skillDescriptionInputEl?.value.trim();
+  const body = skillBodyInputEl?.value.trim();
+  if (!name || !description || !body) return;
+
+  skillSaveBtnEl.disabled = true;
+  try {
+    if (editingSkillName) {
+      const response = await fetch(`${BACKEND_BASE_URL}/skills/${encodeURIComponent(editingSkillName)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ description, body }),
+      });
+      if (!response.ok) throw new Error(`Save skill returned ${response.status}`);
+    } else {
+      const response = await fetch(`${BACKEND_BASE_URL}/skills`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name, description, body }),
+      });
+      if (!response.ok) throw new Error(`Create skill returned ${response.status}`);
+      const outcome = await response.json();
+      // A human just filled out this form directly -- auto-clear the
+      // approval-gate hold immediately instead of surfacing a second
+      // confirmation step (the idle-triggered proposal pass is the case
+      // that's meant to sit pending for later human review).
+      if (outcome.status === "pending" && outcome.requestId) {
+        const decideResponse = await fetch(`${BACKEND_BASE_URL}/approvals/${outcome.requestId}/decide`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ decision: "allow-once" }),
+        });
+        if (!decideResponse.ok) throw new Error(`Approve skill returned ${decideResponse.status}`);
+      }
+    }
+    closeSkillEditor();
+    setSelectedSkillName(name);
+    await refreshSkillsList();
+  } catch (error) {
+    console.warn("Mana save skill failed:", error.message);
+  } finally {
+    skillSaveBtnEl.disabled = false;
+  }
+});
+
+skillsDeleteBtnEl?.addEventListener("click", async () => {
+  if (!selectedSkillName) return;
+  const confirmed =
+    typeof showConfirmModal === "function"
+      ? await showConfirmModal(`Delete skill "${selectedSkillName}"? This cannot be undone.`)
+      : window.confirm(`Delete skill "${selectedSkillName}"?`);
+  if (!confirmed) return;
+  try {
+    const response = await fetch(`${BACKEND_BASE_URL}/skills/${encodeURIComponent(selectedSkillName)}`, {
+      method: "DELETE",
+    });
+    if (!response.ok) throw new Error(`Delete skill returned ${response.status}`);
+    setSelectedSkillName("");
+    await refreshSkillsList();
+  } catch (error) {
+    console.warn("Mana delete skill failed:", error.message);
+  }
+});
+
 // Connection (issue #190): lets the backend URL point at a remote node-bot
 // instead of only a co-located one. BACKEND_BASE_URL itself (from
 // backend-config.js) is only read once at startup, so this just persists

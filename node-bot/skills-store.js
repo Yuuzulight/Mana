@@ -183,6 +183,42 @@ function createSkillsStore(options = {}) {
     return { ...skill, fileName };
   }
 
+  // Direct human edit via Settings (issue #262 follow-up) -- deliberately
+  // NOT approval-gated like createSkill: a Settings form submission already
+  // IS the human decision the approval gate exists to require for
+  // agent-authored content. Only updates fields actually provided; renaming
+  // is out of scope here to avoid file-rename bookkeeping.
+  function updateSkill(name, { description, body, category } = {}) {
+    const fileName = findFileForName(name);
+    if (!fileName) return null;
+    const skill = readSkill(fileName);
+    if (description !== undefined) {
+      skill.description = String(description).trim();
+    }
+    if (body !== undefined) {
+      skill.body = String(body).trim();
+    }
+    if (category !== undefined) {
+      skill.category = String(category).trim() || "general";
+    }
+    fs.writeFileSync(
+      path.join(skillsDir, fileName),
+      serializeSkillFile(skill),
+      "utf8",
+    );
+    return { ...skill, fileName };
+  }
+
+  // Direct human delete via Settings -- permanent, unlike pruneStaleSkills'
+  // archive-to-.archive/ path below (that's idle cleanup of things nobody
+  // chose to remove; this is someone explicitly choosing to).
+  function deleteSkill(name) {
+    const fileName = findFileForName(name);
+    if (!fileName) return false;
+    fs.unlinkSync(path.join(skillsDir, fileName));
+    return true;
+  }
+
   // Deterministic, no-LLM pass (issue #140 acceptance criterion): skills
   // unused past staleDays get flagged stale (still listed, still usable --
   // and touchSkillUsage un-stales them the moment they're used again);
@@ -235,6 +271,8 @@ function createSkillsStore(options = {}) {
     viewSkill,
     touchSkillUsage,
     createSkill,
+    updateSkill,
+    deleteSkill,
     pruneStaleSkills,
   };
 }
