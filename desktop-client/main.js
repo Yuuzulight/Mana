@@ -51,6 +51,11 @@ function createWindow() {
       // Electron app (see issue #122).
       nodeIntegration: false,
       contextIsolation: true,
+      // Chromium throttles rAF-driven rendering (the Live2D avatar's idle
+      // tilt/gaze/blink loop) to ~1fps once the window loses OS focus,
+      // turning smooth idle drift into visible snapping between poses --
+      // see the matching fix in windows-launcher/main.js.
+      backgroundThrottling: false,
     },
   });
 
@@ -276,8 +281,15 @@ function runGracefulShutdown() {
   isQuitting = true;
   (async () => {
     try {
+      // node-bot's checkAdminAuth reads MANA_ADMIN_SECRET (server.js), not
+      // ADMIN_SECRET -- that mismatch meant this always sent no/invalid
+      // auth once a user actually set the real env var, so every graceful
+      // shutdown 401'd and silently fell back to the timeout+hard-kill
+      // path (checkAdminAuth only lets requests through unauthenticated
+      // when no secret is configured at all, which is why this never
+      // surfaced before).
       const stop = serviceManager
-        ? serviceManager.stopAll(backendProc, { adminSecret: process.env.ADMIN_SECRET })
+        ? serviceManager.stopAll(backendProc, { adminSecret: process.env.MANA_ADMIN_SECRET })
         : Promise.resolve();
       let timedOut = false;
       await Promise.race([

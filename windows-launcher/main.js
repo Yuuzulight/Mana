@@ -608,6 +608,12 @@ function createWindow() {
       preload: path.join(__dirname, "preload.js"),
       nodeIntegration: true,
       contextIsolation: false,
+      // Chromium throttles rAF-driven rendering (the Live2D avatar's idle
+      // tilt/gaze/blink loop) to ~1fps once the window loses OS focus,
+      // turning smooth idle drift into visible snapping between poses.
+      // Mana is meant to keep animating while the user is elsewhere
+      // (chatting, tabbed away), so that throttling defeats the point.
+      backgroundThrottling: false,
     },
   });
 
@@ -625,6 +631,17 @@ function createWindow() {
   mainWindow.on("hide", syncOverlayVisibility);
   mainWindow.on("minimize", syncOverlayVisibility);
   mainWindow.on("restore", syncOverlayVisibility);
+
+  // Intercepts the native close (the X button) -- the only quit path that
+  // doesn't go through app.quit() first, so before-quit alone would fire
+  // too late here (the window would already be destroyed by the time it
+  // runs). The second attempt, once isQuitting is already true, is let
+  // through normally so the window can actually finish closing.
+  mainWindow.on("close", (event) => {
+    if (isQuitting) return;
+    event.preventDefault();
+    runGracefulShutdown();
+  });
 
   mainWindow.on("closed", function () {
     mainWindow = null;
@@ -728,6 +745,12 @@ function createAvatarWindow() {
     webPreferences: {
       nodeIntegration: true,
       contextIsolation: false,
+      // focusable:false means this overlay never becomes the OS-focused
+      // window, so Chromium's background rAF throttling (~1fps) kicks in
+      // permanently even while it's visibly on top of the desktop -- the
+      // idle motion ends up snapping between poses instead of drifting
+      // smoothly. Disable it; this window is never truly "background".
+      backgroundThrottling: false,
     },
   });
 
@@ -842,6 +865,174 @@ async function runStartupSequence() {
 }
 
 ipcMain.handle("get-startup-status", async () => startupState);
+
+// Graceful quit (issue #228): today's app.on("quit", ...) below just kills
+// every child process silently and instantly, and by the time it runs the
+// window is already gone (late Electron lifecycle event) so there's nowhere
+// to show progress even if it wanted to. This reuses the exact same
+// #startupOverlay/#startupTitle/#startupSubtitle/.startup-row markup from
+// startup (issue #138) via new shutdown-begin/shutdown-progress IPC events,
+// and windows-launcher's own 3-state status vocabulary (starting/ready/
+// timeout, already styled in CSS) rather than importing a separate one --
+// see desktop-client/service-manager.js + main.js for the sibling app's
+// already-shipped version of this same feature, which this mirrors.
+const SHUTDOWN_OVERALL_TIMEOUT_MS = 15000;
+const SHUTDOWN_STEP_TIMEOUT_MS = 8000;
+let isQuitting = false;
+
+function reportShutdownProgress(id, status, label) {
+  if (mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents && !mainWindow.webContents.isDestroyed()) {
+    mainWindow.webContents.send("shutdown-progress", { id, status, label });
+  }
+}
+
+// Force-kills once maxWaitMs is up so a hung process can't leave quitting
+// (or one row's own wait) stuck open indefinitely.
+function waitForExit(child, maxWaitMs) {
+  return new Promise((resolve) => {
+    if (!child || child.exitCode !== null) {
+      resolve(true);
+      return;
+    }
+    const timer = setTimeout(() => {
+      try {
+        child.kill("SIGKILL");
+      } catch (e) {}
+      resolve(false);
+    }, maxWaitMs);
+    child.once("exit", () => {
+      clearTimeout(timer);
+      resolve(true);
+    });
+  });
+}
+
+// Backend + Local AI: one graceful POST /admin/shutdown call releases
+// llama-server's VRAM/RAM before node-bot exits -- a plain kill() alone
+// can't deliver a catchable signal to child processes on Windows and would
+// orphan llama-server.exe (see node-bot/server.js's own comment on that
+// route). Reported as two rows since the startup screen already splits
+// Backend/Local AI the same way.
+async function stopBackendAndLocalAi() {
+  if (!backendProcess || backendProcess.exitCode !== null) {
+    reportShutdownProgress("backend", "ready", "Backend");
+    reportShutdownProgress("localai", "ready", "Local AI");
+    return;
+  }
+  reportShutdownProgress("backend", "starting", "Backend");
+  reportShutdownProgress("localai", "starting", "Local AI");
+
+  try {
+    const adminSecret = process.env.MANA_ADMIN_SECRET || "";
+    const headers = adminSecret ? { Authorization: `Bearer ${adminSecret}` } : undefined;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 3000);
+    await fetch(`${getBackendBaseUrl()}/admin/shutdown`, {
+      method: "POST",
+      headers,
+      signal: controller.signal,
+    });
+    clearTimeout(timer);
+  } catch (e) {
+    console.warn("Graceful /admin/shutdown request failed:", e.message);
+  }
+
+  const exited = await waitForExit(backendProcess, SHUTDOWN_STEP_TIMEOUT_MS);
+  if (exited) {
+    reportShutdownProgress("backend", "ready", "Backend");
+    reportShutdownProgress("localai", "ready", "Local AI");
+  } else {
+    console.warn(`backendProcess did not exit within ${SHUTDOWN_STEP_TIMEOUT_MS}ms -- force killed`);
+    reportShutdownProgress("backend", "timeout", "Backend");
+    reportShutdownProgress("localai", "timeout", "Local AI");
+  }
+}
+
+// Kills every currently-running process behind one row and waits (bounded)
+// for all of them to exit -- windows-launcher can have more than one
+// process behind a single row (voice's primary TTS + its Kokoro fallback),
+// unlike desktop-client's one-process-per-row shape.
+async function stopRow(id, label, processes, maxWaitMs = SHUTDOWN_STEP_TIMEOUT_MS) {
+  const running = processes.filter((p) => p && p.exitCode === null);
+  if (!running.length) {
+    reportShutdownProgress(id, "ready", label);
+    return;
+  }
+  reportShutdownProgress(id, "starting", label);
+  running.forEach((p) => {
+    try {
+      p.kill();
+    } catch (e) {}
+  });
+  const results = await Promise.all(running.map((p) => waitForExit(p, maxWaitMs)));
+  if (results.every(Boolean)) {
+    reportShutdownProgress(id, "ready", label);
+  } else {
+    console.warn(`${id} did not exit within ${maxWaitMs}ms -- force killed`);
+    reportShutdownProgress(id, "timeout", label);
+  }
+}
+
+async function runGracefulShutdown() {
+  isQuitting = true;
+  try {
+    if (avatarWindow && !avatarWindow.isDestroyed()) {
+      avatarWindow.hide();
+    }
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      // The window may currently be minimized to the tray overlay (hidden,
+      // still at full chat-UI size) -- shrink it back down to the startup
+      // card size (lowering the minimum size first, same as the reverse
+      // main->startup transition would need) and show it so the closing
+      // screen is actually visible, regardless of what state it was in.
+      mainWindow.setMinimumSize(STARTUP_WINDOW_WIDTH, STARTUP_WINDOW_HEIGHT);
+      mainWindow.setSize(STARTUP_WINDOW_WIDTH, STARTUP_WINDOW_HEIGHT);
+      mainWindow.center();
+      mainWindow.show();
+      mainWindow.webContents.send("shutdown-begin");
+    }
+  } catch (e) {}
+
+  // Retriever/embedder have no dedicated row (same as startup, which never
+  // surfaces them either) -- kill them alongside backend, not blocking any
+  // visible row.
+  try {
+    retrieverProcess?.kill();
+  } catch (e) {}
+  try {
+    embedderProcess?.kill();
+  } catch (e) {}
+
+  const stop = Promise.all([
+    stopBackendAndLocalAi(),
+    stopRow("voice", "Voice", [ttsProcess, fallbackKokoroProcess]),
+    stopRow("websearch", "Web search", [searxngProcess]),
+  ]);
+
+  let timedOut = false;
+  await Promise.race([
+    stop,
+    new Promise((resolve) => {
+      setTimeout(() => {
+        timedOut = true;
+        resolve();
+      }, SHUTDOWN_OVERALL_TIMEOUT_MS);
+    }),
+  ]);
+  if (timedOut) {
+    console.warn("Overall shutdown timed out -- forcing exit");
+    try {
+      backendProcess?.kill("SIGKILL");
+    } catch (e) {}
+  }
+
+  // Brief grace period so the closing screen's final state (all rows
+  // resolved) actually gets a frame to render before the process dies,
+  // instead of the window vanishing the instant the last IPC message is
+  // sent.
+  await new Promise((resolve) => setTimeout(resolve, 400));
+  app.exit(0);
+}
 
 app.whenReady().then(() => {
   // single instance check
@@ -1099,10 +1290,29 @@ app.on("window-all-closed", function () {
   if (process.platform !== "darwin") app.quit();
 });
 
+// Fallback for quits that don't originate from mainWindow's own close
+// (already intercepted above) -- the tray's "Quit" item and
+// window-all-closed both call app.quit() directly.
+app.on("before-quit", (event) => {
+  if (isQuitting) return; // shutdown already ran (or is running); let this one through
+  event.preventDefault();
+  runGracefulShutdown();
+});
+
 app.on("will-quit", () => {
   globalShortcut.unregisterAll();
 });
 
+// Last-resort safety net for any quit path that somehow reaches here
+// without going through runGracefulShutdown()'s own cleanup above (that
+// path already kills everything itself before app.exit(0), which skips
+// this event entirely) -- e.g. a bug in that new code, or some other quit
+// trigger this wasn't updated to intercept. Was previously referencing a
+// fallbackTtsProcess variable that was never declared anywhere in this
+// file (a real pre-existing bug -- ReferenceError, silently swallowed by
+// Electron's own event dispatch, meant retrieverProcess/
+// fallbackKokoroProcess/searxngProcess/embedderProcess below it never
+// actually got killed via this path either).
 app.on("quit", () => {
   if (backendProcess) {
     try {
@@ -1113,11 +1323,6 @@ app.on("quit", () => {
   if (ttsProcess) {
     try {
       ttsProcess.kill();
-    } catch (e) {}
-  }
-  if (fallbackTtsProcess) {
-    try {
-      fallbackTtsProcess.kill();
     } catch (e) {}
   }
   if (retrieverProcess) {

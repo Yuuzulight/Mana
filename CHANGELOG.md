@@ -63,6 +63,30 @@ accounting.
   they'd already been nested there since the issue #138 UI overhaul.
 
 ### Added
+- **Graceful quit with a closing progress screen** (issue #228,
+  `windows-launcher`): quitting used to be silent and instant --
+  `app.on("quit", ...)` just called `.kill()` on every child process with
+  no UI, and by the time that handler ran the window was already gone.
+  Now intercepts both the window's own close (the X button) and
+  `before-quit` (the tray's "Quit" item, `window-all-closed`), reuses the
+  exact same startup-screen markup in reverse ("Closing Mana" /
+  "Shutting down...", Backend/Voice/Web search/Local AI rows going from
+  Stopping to Stopped), and holds the app open until each service actually
+  exits -- gracefully, via node-bot's existing `POST /admin/shutdown`
+  route for Backend/Local AI (releases llama-server's VRAM/RAM before it
+  exits, since Windows can't deliver a catchable signal via a plain
+  `kill()` and would otherwise orphan `llama-server.exe`), and kill+wait
+  for Voice/Web search. Bounded overall (15s) so a hung process can't
+  leave the app stuck open. Ports `desktop-client`'s already-shipped
+  version of this same feature; along the way, fixed two real pre-existing
+  bugs found while researching it: `desktop-client/main.js` was passing
+  `process.env.ADMIN_SECRET` (never set by anything) instead of the actual
+  `MANA_ADMIN_SECRET` node-bot checks, silently 401ing every graceful
+  shutdown attempt for any user who'd actually configured that secret; and
+  `windows-launcher`'s own old quit handler referenced an undeclared
+  `fallbackTtsProcess` variable, throwing partway through and meaning
+  `retrieverProcess`/`fallbackKokoroProcess`/`searxngProcess`/
+  `embedderProcess` never actually got killed via that path.
 - **Voice barge-in, phase 1: hotkey interrupt** (issue #219): a global
   hotkey (`Control+Alt+I` by default, `MANA_INTERRUPT_HOTKEY` to change or
   `off` to disable) lets the user cut Mana off mid-speech in
