@@ -136,6 +136,12 @@ function createAcpMemoryStore(options = {}) {
   );
   const summarizeFn =
     typeof options.summarizeFn === "function" ? options.summarizeFn : null;
+  // Optional (full-text session search, ported from Project AIRI's "Hermes
+  // Agent" research): indexes every turn's raw text so past conversations
+  // are searchable by keyword, independent of the curated summary above.
+  // Not constructed here -- server.js wires the real one in, tests simply
+  // omit it, same pattern as summarizeFn.
+  const sessionSearchIndex = options.sessionSearchIndex || null;
 
   ensureDir(sessionsDir);
 
@@ -461,6 +467,17 @@ function createAcpMemoryStore(options = {}) {
       return session;
     }
 
+    if (sessionSearchIndex) {
+      try {
+        sessionSearchIndex.indexTurn({ sessionId: session.sessionId, turn });
+      } catch (e) {
+        // Search is a nicety layered on top of the real session record
+        // (saveSession below) -- never let an indexing failure break the
+        // actual conversation flow.
+        console.warn("Session search indexing failed:", e?.message || e);
+      }
+    }
+
     recordEntityMentions(
       extractEntities(`${turn.user} ${turn.assistant}`),
       session.sessionId,
@@ -604,6 +621,13 @@ function createAcpMemoryStore(options = {}) {
     return block;
   }
 
+  // Full-text search across every indexed turn (see sessionSearchIndex
+  // above); [] when no index was wired in (tests, or search disabled).
+  function searchSessions(params = {}) {
+    if (!sessionSearchIndex) return [];
+    return sessionSearchIndex.search(params);
+  }
+
   return {
     dataDir,
     sessionsDir,
@@ -618,6 +642,7 @@ function createAcpMemoryStore(options = {}) {
     lookupEntity,
     getRelatedFacts,
     rememberFact,
+    searchSessions,
   };
 }
 

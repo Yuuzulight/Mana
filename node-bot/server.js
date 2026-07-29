@@ -118,12 +118,14 @@ const { readGgufMetadata } = require("./tools/gguf-metadata");
 	const contextPushPlugin = require("../plugins/context-push");
 const { createTtsRuntime } = require("./tts-runtime");
 const { createAcpMemoryStore } = require("./acp-memory-store");
+const { createSessionSearchIndex } = require("./session-search-index");
 const persona = require("./persona");
 const { createPresetsStore } = require("./presets-store");
 const { createPluginSettingsStore } = require("./plugin-settings-store");
 const { createAuthStore } = require("./auth-store");
 const { createToolPolicy } = require("./ai/tool-policy");
 const { createMemoryToolSource, buildToolPolicyWithMemory } = require("./ai/memory-tool-source");
+const { createSessionSearchToolSource, buildToolPolicyWithSessionSearch } = require("./ai/session-search-tool-source");
 const { createMcpClientRegistry, buildToolPolicyWithMcp } = require("./mcp-client-registry");
 const { mcpClientCapability } = require("./capabilities/mcp-client-capability");
 const { createToolCallLog, wrapWithToolCallLog } = require("./tool-call-log");
@@ -418,8 +420,15 @@ const ttsRuntime = createTtsRuntime({
   logPerf,
 });
 
+// Full-text search over past conversation turns (ported from Project
+// AIRI's "Hermes Agent" research) -- an independent SQLite FTS5 index, not
+// the source of truth for session content (acp-memory-store.js's own
+// per-session JSON files still are).
+const sessionSearchIndex = createSessionSearchIndex();
+
 // ACP memory store (conversation/session memory)
 const acpMemoryStore = createAcpMemoryStore({
+  sessionSearchIndex,
   // tokenEstimator will call the local Python retriever service /tokenize endpoint when available
   tokenEstimator: async (text) => {
     try {
@@ -1085,10 +1094,18 @@ if (process.env.NODE_ENV !== "test" && !process.env.NODE_TEST_CONTEXT) {
           if (!reply) {
             try {
               if (localLlamaReplyAvailable()) {
+                // Ported from Project AIRI's "Hermes Agent" research:
+                // background review doesn't need live-reply quality, and
+                // during genuine idle time nothing else needs the main
+                // brain model anyway -- defaults to the "background"
+                // profile (smallest available model) instead of paying
+                // main-model cost/latency for a maintenance pass the user
+                // isn't waiting on. Overridable (e.g. back to "default" to
+                // reuse whatever's already loaded and skip a model swap).
                 reply = await runLocalLlamaReply(
                   prompt,
                   Math.min(maxTokens, 256),
-                  "default",
+                  process.env.MANA_BACKGROUND_REVIEW_PROFILE || "background",
                 );
               } else {
                 reply = null;
@@ -1701,6 +1718,7 @@ function registerRoutes(app, upload, deps = {}) {
   // bypass a test's deps.skillsStore override.
   const activeApprovalGate = deps.approvalGate || approvalGate;
   activeApprovalGate.registerExecutor("skill-write", (payload) => activeSkillsStore.createSkill(payload));
+  activeApprovalGate.registerExecutor("memory-write", (payload) => acpMemoryStore.rememberFact(payload));
   const activeMcpClientRegistry = deps.mcpClientRegistry || mcpClientRegistry;
   const activeToolCallLog = deps.toolCallLog || toolCallLog;
   const activeBrowserAutomationToolSource = deps.browserAutomationToolSource || browserAutomationToolSource;
@@ -3623,9 +3641,19 @@ function registerRoutes(app, upload, deps = {}) {
           // Issue #198: bound to this reply's sessionId (not model-supplied),
           // built fresh per reply for the same reason -- cheap, and the
           // session the fact should be attributed to only exists per-call.
+          // approvalGate: a model-asserted memory write is agent-authored
+          // content same as a skill write (issue #152) -- gated the same
+          // way, see ai/memory-tool-source.js.
           mergedToolPolicy = await buildToolPolicyWithMemory(
             mergedToolPolicy,
-            createMemoryToolSource({ acpMemoryStore, sessionId }),
+            createMemoryToolSource({ acpMemoryStore, sessionId, approvalGate: activeApprovalGate }),
+          );
+          // Ported from Project AIRI's "Hermes Agent" research: full-text
+          // search across past conversations, independent of the curated
+          // memory summary above.
+          mergedToolPolicy = await buildToolPolicyWithSessionSearch(
+            mergedToolPolicy,
+            createSessionSearchToolSource({ acpMemoryStore, sessionId }),
           );
           // Issue #188: only offered when the plugin is actually enabled
           // (Settings > Plugins) -- same gate every other browser-automation

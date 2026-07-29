@@ -110,14 +110,28 @@ test("local AI module can discover preferred models from a search directory", ()
   assert.equal(modelPath, path.join("C:", "models", "Qwen3-4B-Q4_K_M.gguf"));
 });
 
-test("local AI module exposes known profiles including fast fallback", () => {
+test("local AI module exposes known profiles including fast fallback and background review", () => {
   assert.deepEqual(getKnownLlamaModelProfiles(), [
     "default",
     "fast",
     "quality",
     "coding",
+    "background",
   ]);
   assert.equal(normalizeLlamaModelProfile("FAST"), "fast");
+});
+
+test("background profile prefers the smallest available model, same as fast", () => {
+  const root = path.join("C:", "ManaAI", "Mana", "tools", "llama", "gguf-models");
+  const models = [
+    path.join(root, "Qwen3-8B-Q4_K_M.gguf"),
+    path.join(root, "Qwen3-4B-Q4_K_M.gguf"),
+    path.join(root, "qwen2.5-1.5b-instruct-q4_k_m.gguf"),
+  ];
+  assert.equal(
+    pickPreferredLlamaModel({ localGgufs: models, profile: "background" }),
+    path.join(root, "qwen2.5-1.5b-instruct-q4_k_m.gguf"),
+  );
 });
 
 test("local AI module routes coding prompts to the coding profile", () => {

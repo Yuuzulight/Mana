@@ -5,6 +5,7 @@ const path = require("node:path");
 const test = require("node:test");
 
 const { createAcpMemoryStore, extractEntities } = require("../acp-memory-store");
+const { createSessionSearchIndex } = require("../session-search-index");
 
 function createTempDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), "mana-acp-memory-"));
@@ -124,6 +125,51 @@ test("appendTurn persists toolCalls when provided, and omits the field entirely 
     { name: "stock_quote", ok: true, args: { symbol: "NVDA" }, result: "123.45" },
   ]);
   assert.equal(session.turns[1].toolCalls, undefined);
+});
+
+test("searchSessions returns [] when no index was wired in", async () => {
+  const store = createAcpMemoryStore({ dataDir: createTempDir() });
+  await store.appendTurn({ sessionId: "s1", user: "docker deployment question", assistant: "use compose" });
+  assert.deepEqual(store.searchSessions({ query: "docker" }), []);
+});
+
+test("appendTurn indexes turns into the wired sessionSearchIndex, searchable via searchSessions", async () => {
+  const sessionSearchIndex = createSessionSearchIndex({ dbPath: ":memory:" });
+  const store = createAcpMemoryStore({
+    dataDir: createTempDir(),
+    sessionSearchIndex,
+  });
+
+  await store.appendTurn({
+    sessionId: "s1",
+    user: "How do I deploy with Docker",
+    assistant: "Use docker compose up",
+  });
+
+  const results = store.searchSessions({ query: "docker" });
+  assert.equal(results.length, 2);
+  assert.ok(results.some((r) => r.role === "user"));
+  assert.ok(results.some((r) => r.role === "assistant"));
+  sessionSearchIndex.close();
+});
+
+test("a broken sessionSearchIndex.indexTurn never breaks appendTurn itself", async () => {
+  const store = createAcpMemoryStore({
+    dataDir: createTempDir(),
+    sessionSearchIndex: {
+      indexTurn: () => {
+        throw new Error("index is down");
+      },
+      search: () => [],
+    },
+  });
+
+  const session = await store.appendTurn({
+    sessionId: "s1",
+    user: "hello",
+    assistant: "hi there",
+  });
+  assert.equal(session.turns.length, 1);
 });
 
 test("appendTurn ignores an empty toolCalls array rather than storing it", async () => {

@@ -38,6 +38,21 @@ const LLAMA_MODEL_PROFILES = {
       "Qwen3-8B-Q4_K_M.gguf",
     ],
   },
+  // Ported from Project AIRI's "Hermes Agent" research: idle-triggered
+  // background memory review (server.js's runBackgroundReviewer) doesn't
+  // need the same model quality as a live reply, and during genuine idle
+  // time nothing else needs the main brain model anyway -- so it prefers
+  // the smallest model available, same list as "fast" but named for its
+  // own purpose (a low-RAM main-brain choice and a background-only choice
+  // are different concerns even when they happen to pick the same model).
+  background: {
+    label: "Background review (small/cheap)",
+    names: [
+      "qwen2.5-1.5b-instruct-q4_k_m.gguf",
+      "Qwen3-4B-Q4_K_M.gguf",
+      "Qwen3-8B-Q4_K_M.gguf",
+    ],
+  },
 };
 
 // Loopback + RFC1918/link-local ranges: a server Mana can only reach on
