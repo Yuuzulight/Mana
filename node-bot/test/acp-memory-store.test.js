@@ -428,28 +428,28 @@ test("rememberFact insert (default action) creates a new active fact", () => {
   const store = createAcpMemoryStore({ dataDir: createTempDir() });
   const result = store.rememberFact({
     sessionId: "session-a",
-    key: "Aurora's GPU",
-    text: "Aurora has an RTX 3070 Ti, upgrading to a 5080 soon.",
+    key: "the user's GPU",
+    text: "The user has an RTX 3070 Ti, upgrading to a 5080 soon.",
   });
   assert.deepEqual(result, {
     ok: true,
     action: "insert",
-    key: "Aurora's GPU",
-    text: "Aurora has an RTX 3070 Ti, upgrading to a 5080 soon.",
+    key: "the user's GPU",
+    text: "The user has an RTX 3070 Ti, upgrading to a 5080 soon.",
   });
 });
 
 test("rememberFact patch updates the existing active fact with the same key", () => {
   const store = createAcpMemoryStore({ dataDir: createTempDir() });
-  store.rememberFact({ key: "Aurora's GPU", text: "RTX 3070 Ti" });
+  store.rememberFact({ key: "the user's GPU", text: "RTX 3070 Ti" });
   const patched = store.rememberFact({
-    key: "Aurora's GPU",
+    key: "the user's GPU",
     text: "RTX 5080, upgraded",
     action: "patch",
   });
   assert.equal(patched.action, "patch");
 
-  const surfaced = store.getRelatedFacts("what's Aurora's GPU these days?");
+  const surfaced = store.getRelatedFacts("what's the user's GPU these days?");
   assert.match(surfaced, /RTX 5080, upgraded/);
   assert.doesNotMatch(surfaced, /RTX 3070 Ti/);
 });
@@ -484,11 +484,11 @@ test("getRelatedFacts surfaces a remembered fact under its own 'Remembered:' blo
   const store = createAcpMemoryStore({ dataDir: createTempDir() });
   store.rememberFact({
     key: "gaming schedule",
-    text: "Aurora usually plays FFXIV in the evenings.",
+    text: "The user usually plays FFXIV in the evenings.",
   });
-  const surfaced = store.getRelatedFacts("what's Aurora's gaming schedule like?");
+  const surfaced = store.getRelatedFacts("what's the user's gaming schedule like?");
   assert.match(surfaced, /Remembered:/);
-  assert.match(surfaced, /Aurora usually plays FFXIV in the evenings\./);
+  assert.match(surfaced, /The user usually plays FFXIV in the evenings\./);
 });
 
 test("getRelatedFacts includes both entity mentions and remembered facts together when both match", () => {
