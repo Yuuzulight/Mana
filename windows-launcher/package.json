@@ -32,5 +32,18 @@
   },
   "overrides": {
     "gh-pages": "^6.3.0"
+  },
+  "build": {
+    "appId": "com.mana.ai.launcher",
+    "productName": "Mana",
+    "directories": {
+      "buildResources": "build"
+    },
+    "icon": "build/icon.png",
+    "win": {
+      "target": [
+        "nsis"
+      ]
+    }
   }
 }
