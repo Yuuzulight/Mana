@@ -69,6 +69,15 @@ accounting.
   shutdown overlays, the runtime window/tray icon, the packaged `.exe`
   icon, and the README banner. The gem still uses each file's theme
   accent variables where applicable; only the motes are fixed-color.
+- **Upgraded the Mana Crystal gem to an organic low-poly render** (issue
+  #240, follow-up to #238): the gem's 3 flat triangles were still
+  obviously simple vector shapes at larger sizes. Now a ~24-facet
+  deterministic mesh with per-facet brightness variation and a soft blurred
+  highlight bloom instead of crisp stroke lines, so it reads as an actual
+  cut gem. The sidebar/startup/shutdown markup uses
+  `color-mix(in srgb, var(--accent), black/white N%)` per facet instead of
+  fixed colors, so shading stays correct on both the dark and light theme
+  presets (plain opacity dimming would have inverted on light backgrounds).
 
 ### Added
 - **Graceful quit with a closing progress screen** (issue #228,
