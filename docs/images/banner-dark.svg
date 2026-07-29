@@ -43,11 +43,11 @@
 
   <rect width="1280" height="640" fill="url(#bg)"/>
 
-  <circle cx="960" cy="220" r="260" fill="url(#glow1)" filter="url(#soft)"/>
-  <circle cx="1040" cy="440" r="220" fill="url(#glow2)" filter="url(#soft)"/>
+  <circle cx="960" cy="305" r="260" fill="url(#glow1)" filter="url(#soft)"/>
+  <circle cx="1040" cy="525" r="220" fill="url(#glow2)" filter="url(#soft)"/>
 
   <!-- Mana Crystal emblem, large, off right edge -->
-  <g transform="translate(760,20) scale(17) rotate(-6 12 12)">
+  <g transform="translate(760,105) scale(17) rotate(-6 12 12)">
     <ellipse cx="12" cy="13" rx="13" ry="13" fill="url(#crystalHalo)" filter="url(#haloBlur)"/>
     <circle cx="22" cy="10" r="0.7" fill="#e6dafa" opacity="0.8"/>
     <circle cx="19" cy="4" r="0.5" fill="#c9b8f0" opacity="0.7"/>
@@ -87,7 +87,7 @@
   </g>
 
   <!-- small crisp crystal beside wordmark -->
-  <g transform="translate(96,150) scale(2.6)">
+  <g transform="translate(96,235) scale(2.6)">
     <ellipse cx="12" cy="13" rx="13" ry="13" fill="url(#crystalHalo)" filter="url(#haloBlur)"/>
     <circle cx="22" cy="10" r="0.7" fill="#e6dafa" opacity="0.8"/>
     <circle cx="19" cy="4" r="0.5" fill="#c9b8f0" opacity="0.7"/>
@@ -126,7 +126,7 @@
     <ellipse cx="10.3" cy="9.4" rx="3.2" ry="3.2" fill="url(#bloom2)"/>
   </g>
 
-  <text x="182" y="230" font-family="'Segoe UI','Helvetica Neue',Arial,sans-serif" font-size="108" font-weight="700" fill="#f4eefc" letter-spacing="1">Mana</text>
-  <text x="98" y="300" font-family="'Segoe UI','Helvetica Neue',Arial,sans-serif" font-size="30" fill="#b6a7da">A local-first AI companion for Windows</text>
-  <text x="98" y="342" font-family="'Segoe UI','Helvetica Neue',Arial,sans-serif" font-size="22" fill="#8577a8">Voice · avatar · memory — all running on your own PC</text>
+  <text x="182" y="315" font-family="'Segoe UI','Helvetica Neue',Arial,sans-serif" font-size="108" font-weight="700" fill="#f4eefc" letter-spacing="1">Mana</text>
+  <text x="98" y="385" font-family="'Segoe UI','Helvetica Neue',Arial,sans-serif" font-size="30" fill="#b6a7da">A local-first AI companion for Windows</text>
+  <text x="98" y="427" font-family="'Segoe UI','Helvetica Neue',Arial,sans-serif" font-size="22" fill="#8577a8">Voice · avatar · memory — all running on your own PC</text>
 </svg>
