@@ -84,11 +84,12 @@ function registerSkillsRoutes(app, context = {}) {
         // null is an explicit "clear it back to general" request, distinct
         // from omitting the field entirely (which the hasOwnProperty guard
         // above already excludes) -- passed straight through so
-        // updateSkill can tell the two apart.
-        updates.category =
-          req.body.category === null || typeof req.body.category === "string"
-            ? req.body.category
-            : undefined;
+        // updateSkill can tell the two apart. Anything else (a number,
+        // array, object) is a malformed request, not a silent no-op.
+        if (req.body.category !== null && typeof req.body.category !== "string") {
+          throw new ValidationError("category must be a string or null");
+        }
+        updates.category = req.body.category;
       }
       const skill = skillsStore.updateSkill(name, updates);
       if (!skill) return res.status(404).json({ error: "skill not found" });

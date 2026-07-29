@@ -157,19 +157,20 @@ function createSkillProposalRunner(options = {}) {
         };
       }
 
-      // Also skip if an earlier idle pass already staged the same pattern
-      // and it's still sitting pending -- it isn't a persisted skill yet
-      // (so the check above wouldn't catch it), but re-proposing it every
-      // idle period until a human gets around to reviewing the first one
-      // just piles up duplicate pending requests.
-      const pendingIdleProposals =
+      // Also skip if the same pattern is already sitting pending -- either
+      // from an earlier idle pass, or because a human separately staged it
+      // through the conversational/manual "skill-write" path. Neither is a
+      // persisted skill yet (so the check above wouldn't catch it), but
+      // re-proposing it every idle period until someone reviews the first
+      // one just piles up duplicate pending requests.
+      const pendingProposals =
         typeof idleApprovalGate.listPending === "function"
           ? idleApprovalGate
               .listPending()
-              .filter((p) => p.actionType === IDLE_SKILL_WRITE_ACTION)
+              .filter((p) => p.actionType === IDLE_SKILL_WRITE_ACTION || p.actionType === "skill-write")
               .map((p) => ({ name: p.payload?.name, description: p.payload?.description }))
           : [];
-      const alreadyPending = findMatchingSkill(pendingIdleProposals, `${name} ${description}`);
+      const alreadyPending = findMatchingSkill(pendingProposals, `${name} ${description}`);
       if (alreadyPending) {
         return {
           ok: true,

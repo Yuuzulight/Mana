@@ -493,7 +493,12 @@ const skillsStore = createSkillsStore({});
 // #142's script-runner gets wired into next (see approval-gate.js, #152).
 // Executor registration happens in createApp below, against whichever
 // skillsStore/approvalGate that specific call actually uses.
-const approvalGate = createApprovalGate({});
+// Content scanning (flagging a pending request for shell/fs/credential-like
+// patterns) stays off by default -- opt in once the flagged-pending UI is
+// something you actually want surfaced.
+const approvalGate = createApprovalGate({
+  contentScanEnabled: process.env.MANA_APPROVAL_CONTENT_SCAN_ENABLED === "1",
+});
 
 // Conversational rut detection (issue #159): flags a reply too similar to
 // Mana's own recent replies so it can be swapped for a less-repetitive

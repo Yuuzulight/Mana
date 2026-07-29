@@ -211,6 +211,30 @@ test("skills capability's patch route passes category: null through explicitly, 
   });
 });
 
+test("skills capability's patch route 400s when category is neither a string nor null", async () => {
+  const app = express();
+  app.use(express.json());
+  let updateCalled = false;
+  skillsCapability.registerRoutes(app, {
+    skillsStore: fakeStore({
+      updateSkill: (name, updates) => {
+        updateCalled = true;
+        return { name, description: "d", body: "b", category: "general" };
+      },
+    }),
+  });
+
+  await withServer(app, async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/skills/${encodeURIComponent("Skill A")}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ category: 42 }),
+    });
+    assert.equal(response.status, 400);
+    assert.equal(updateCalled, false, "a malformed category must not silently reach the store as a no-op");
+  });
+});
+
 test("skills capability's patch route 404s for an unknown skill", async () => {
   const app = express();
   app.use(express.json());

@@ -1317,6 +1317,10 @@ document.getElementById('themeToggle')?.addEventListener('click', (e) => {
     await refreshPendingSkills();
   }
   refreshSkillsList();
+  // A proposal (idle or from elsewhere) can land while Settings just sits
+  // open -- poll the lightweight pending-only endpoint so it shows up
+  // without requiring a local save/delete/decide action first.
+  setInterval(refreshPendingSkills, 15000);
 
   function closeSkillEditor() {
     editingSkillName = null;

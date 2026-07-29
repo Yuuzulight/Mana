@@ -116,9 +116,9 @@ function createApprovalGate(options = {}) {
   async function decide(requestId, decision) {
     const entry = pending.get(requestId);
     if (!entry) return null;
-    pending.delete(requestId);
 
     if (decision === "deny") {
+      pending.delete(requestId);
       return { status: "denied", requestId, actionType: entry.actionType };
     }
     if (decision === "always-allow") {
@@ -127,7 +127,12 @@ function createApprovalGate(options = {}) {
       throw new Error(`unknown decision: ${decision}`);
     }
 
+    // Only removed from `pending` once the executor actually succeeds --
+    // if it throws, the entry stays retrievable instead of being silently
+    // lost (a thrown skill-write executor would otherwise strand the
+    // approved request nowhere: not pending, not written).
     const result = await runExecutor(entry.actionType, entry.payload);
+    pending.delete(requestId);
     return { status: "approved", requestId, actionType: entry.actionType, result };
   }
 
