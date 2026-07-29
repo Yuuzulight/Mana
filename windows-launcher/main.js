@@ -608,6 +608,12 @@ function createWindow() {
       preload: path.join(__dirname, "preload.js"),
       nodeIntegration: true,
       contextIsolation: false,
+      // Chromium throttles rAF-driven rendering (the Live2D avatar's idle
+      // tilt/gaze/blink loop) to ~1fps once the window loses OS focus,
+      // turning smooth idle drift into visible snapping between poses.
+      // Mana is meant to keep animating while the user is elsewhere
+      // (chatting, tabbed away), so that throttling defeats the point.
+      backgroundThrottling: false,
     },
   });
 
@@ -728,6 +734,12 @@ function createAvatarWindow() {
     webPreferences: {
       nodeIntegration: true,
       contextIsolation: false,
+      // focusable:false means this overlay never becomes the OS-focused
+      // window, so Chromium's background rAF throttling (~1fps) kicks in
+      // permanently even while it's visibly on top of the desktop -- the
+      // idle motion ends up snapping between poses instead of drifting
+      // smoothly. Disable it; this window is never truly "background".
+      backgroundThrottling: false,
     },
   });
 

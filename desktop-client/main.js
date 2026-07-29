@@ -51,6 +51,11 @@ function createWindow() {
       // Electron app (see issue #122).
       nodeIntegration: false,
       contextIsolation: true,
+      // Chromium throttles rAF-driven rendering (the Live2D avatar's idle
+      // tilt/gaze/blink loop) to ~1fps once the window loses OS focus,
+      // turning smooth idle drift into visible snapping between poses --
+      // see the matching fix in windows-launcher/main.js.
+      backgroundThrottling: false,
     },
   });
 
