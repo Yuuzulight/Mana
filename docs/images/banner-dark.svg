@@ -1,0 +1,91 @@
+<svg width="1280" height="640" viewBox="0 0 1280 640" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0b0a13"/>
+      <stop offset="55%" stop-color="#151027"/>
+      <stop offset="100%" stop-color="#211a3a"/>
+    </linearGradient>
+    <radialGradient id="glow1" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#9d8ce0" stop-opacity="0.35"/>
+      <stop offset="100%" stop-color="#9d8ce0" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="glow2" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#c9b8f0" stop-opacity="0.25"/>
+      <stop offset="100%" stop-color="#c9b8f0" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="soft" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="26"/>
+    </filter>
+
+    <linearGradient id="facetL" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#c3b3f2"/>
+      <stop offset="100%" stop-color="#6c59bd"/>
+    </linearGradient>
+    <linearGradient id="facetR" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#a996e8"/>
+      <stop offset="100%" stop-color="#4f3f92"/>
+    </linearGradient>
+    <linearGradient id="facetT" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#f6f0ff"/>
+      <stop offset="100%" stop-color="#c9b8f0"/>
+    </linearGradient>
+    <radialGradient id="crystalHalo" cx="50%" cy="46%" r="62%">
+      <stop offset="0%" stop-color="#b3a0ee" stop-opacity="0.5"/>
+      <stop offset="100%" stop-color="#b3a0ee" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="crystalShadow" x="-60%" y="-60%" width="220%" height="220%">
+      <feDropShadow dx="0" dy="0.5" stdDeviation="0.7" flood-color="#0b0a13" flood-opacity="0.55"/>
+    </filter>
+  </defs>
+
+  <rect width="1280" height="640" fill="url(#bg)"/>
+
+  <circle cx="960" cy="220" r="260" fill="url(#glow1)" filter="url(#soft)"/>
+  <circle cx="1040" cy="440" r="220" fill="url(#glow2)" filter="url(#soft)"/>
+
+  <!-- Mana Crystal emblem, large, off right edge -->
+  <g transform="translate(760,20) scale(17) rotate(-6 12 12)">
+    <ellipse cx="12" cy="13" rx="13" ry="13" fill="url(#crystalHalo)"/>
+    <circle cx="22" cy="10" r="0.7" fill="#e6dafa" opacity="0.8"/>
+    <circle cx="19" cy="4" r="0.5" fill="#c9b8f0" opacity="0.7"/>
+    <circle cx="12" cy="2.5" r="0.6" fill="#e6dafa" opacity="0.75"/>
+    <circle cx="4" cy="5" r="0.55" fill="#c9b8f0" opacity="0.7"/>
+    <circle cx="1.5" cy="12" r="0.7" fill="#e6dafa" opacity="0.8"/>
+    <circle cx="4" cy="20" r="0.5" fill="#c9b8f0" opacity="0.65"/>
+    <circle cx="13" cy="23" r="0.6" fill="#e6dafa" opacity="0.75"/>
+    <circle cx="21" cy="19" r="0.55" fill="#c9b8f0" opacity="0.7"/>
+    <g filter="url(#crystalShadow)">
+      <path d="M12,7 L8,13 L12,19 Z" fill="url(#facetL)" opacity="0.94"/>
+      <path d="M12,7 L16,13 L12,19 Z" fill="url(#facetR)"/>
+      <path d="M12,7 L13.5,10 L10.5,10 Z" fill="url(#facetT)"/>
+      <path d="M12,7 L12,19" stroke="#ffffff" stroke-opacity="0.32" stroke-width="0.3"/>
+      <path d="M12,7 L10.5,10" stroke="#ffffff" stroke-opacity="0.55" stroke-width="0.28"/>
+      <path d="M12,7 L13.5,10" stroke="#ffffff" stroke-opacity="0.3" stroke-width="0.26"/>
+      <path d="M10.5,10 L12,19" stroke="#241a3d" stroke-opacity="0.2" stroke-width="0.22"/>
+    </g>
+  </g>
+
+  <!-- small crisp crystal beside wordmark -->
+  <g transform="translate(96,150) scale(2.6)">
+    <ellipse cx="12" cy="13" rx="13" ry="13" fill="url(#crystalHalo)"/>
+    <circle cx="22" cy="10" r="0.7" fill="#e6dafa" opacity="0.8"/>
+    <circle cx="19" cy="4" r="0.5" fill="#c9b8f0" opacity="0.7"/>
+    <circle cx="12" cy="2.5" r="0.6" fill="#e6dafa" opacity="0.75"/>
+    <circle cx="4" cy="5" r="0.55" fill="#c9b8f0" opacity="0.7"/>
+    <circle cx="1.5" cy="12" r="0.7" fill="#e6dafa" opacity="0.8"/>
+    <circle cx="4" cy="20" r="0.5" fill="#c9b8f0" opacity="0.65"/>
+    <circle cx="13" cy="23" r="0.6" fill="#e6dafa" opacity="0.75"/>
+    <circle cx="21" cy="19" r="0.55" fill="#c9b8f0" opacity="0.7"/>
+    <g filter="url(#crystalShadow)">
+      <path d="M12,7 L8,13 L12,19 Z" fill="url(#facetL)" opacity="0.94"/>
+      <path d="M12,7 L16,13 L12,19 Z" fill="url(#facetR)"/>
+      <path d="M12,7 L13.5,10 L10.5,10 Z" fill="url(#facetT)"/>
+      <path d="M12,7 L12,19" stroke="#ffffff" stroke-opacity="0.32" stroke-width="0.3"/>
+      <path d="M12,7 L10.5,10" stroke="#ffffff" stroke-opacity="0.55" stroke-width="0.28"/>
+    </g>
+  </g>
+
+  <text x="182" y="230" font-family="'Segoe UI','Helvetica Neue',Arial,sans-serif" font-size="108" font-weight="700" fill="#f4eefc" letter-spacing="1">Mana</text>
+  <text x="98" y="300" font-family="'Segoe UI','Helvetica Neue',Arial,sans-serif" font-size="30" fill="#b6a7da">A local-first AI companion for Windows</text>
+  <text x="98" y="342" font-family="'Segoe UI','Helvetica Neue',Arial,sans-serif" font-size="22" fill="#8577a8">Voice · avatar · memory — all running on your own PC</text>
+</svg>
