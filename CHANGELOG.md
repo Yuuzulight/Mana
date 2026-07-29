@@ -412,6 +412,16 @@ accounting.
   blank or synthetic fallback.
 
 ### Fixed
+- **Banner crystal's halo read as a flat circle with a hard edge** (issue
+  #242, follow-up from #240): the `crystalHalo` radial gradient used
+  `r="62%"`, so it hit fully transparent before the ellipse's actual edge
+  -- SVG's default `spreadMethod="pad"` then held that flat transparent
+  value out to the true boundary instead of continuing to fade, which read
+  as a hard edge rather than a soft glow. Extended the gradient to
+  `r="100%"` so the fade reaches the real edge, plus added a real
+  `feGaussianBlur` as a second guarantee. Also standardized
+  `banner-light.svg`'s halo to the same gradient stops as
+  `banner-dark.svg`, rather than keeping two separately-tuned intensities.
 - **Blank taskbar/tray icon and a stray native menu bar** (issue #230,
   `windows-launcher`): the tray icon loaded `sprites/sprite-idle.png`, a
   file deleted from the repo a while ago (issue #45/#46 purged the whole
