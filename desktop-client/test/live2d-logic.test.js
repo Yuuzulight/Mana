@@ -17,7 +17,13 @@ const {
   randomSaccadeInterval,
   smoothTowardTarget,
   spectralCentroidHz,
+  validateModelReferences,
 } = require("../avatar/live2d-logic");
+
+function fakeFsWithFiles(existingPaths) {
+  const set = new Set(existingPaths);
+  return { existsSync: (p) => set.has(p) };
+}
 
 test("pickIdleSaccadeTarget opts out at amplitude 0 and stays in range otherwise", () => {
   assert.deepEqual(pickIdleSaccadeTarget(0), {
@@ -74,6 +80,33 @@ test("centroidToMouthForm treats 0 as the silence sentinel and maps low/high cen
   assert.equal(centroidToMouthForm(0), 0);
   assert.equal(centroidToMouthForm(200), -1);
   assert.equal(centroidToMouthForm(3000), 1);
+});
+
+test("validateModelReferences distinguishes fatal (Moc/Texture) from non-fatal missing files", () => {
+  const settings = {
+    FileReferences: {
+      Moc: "model.moc3",
+      Textures: ["tex/00.png"],
+      Physics: "missing.physics3.json",
+      Expressions: [{ Name: "sad", File: "missing.exp3.json" }],
+    },
+  };
+  const fsLike = fakeFsWithFiles([
+    "C:\\model\\model.moc3",
+    "C:\\model\\tex\\00.png",
+  ]);
+  const result = validateModelReferences(settings, "C:\\model", fsLike);
+  assert.equal(result.valid, true); // only non-fatal entries missing
+  assert.equal(result.missing.length, 2);
+  assert.ok(result.missing.every((entry) => !entry.fatal));
+
+  const brokenMoc = validateModelReferences(
+    { FileReferences: { Moc: "missing.moc3" } },
+    "C:\\model",
+    fakeFsWithFiles([]),
+  );
+  assert.equal(brokenMoc.valid, false);
+  assert.equal(brokenMoc.missing[0].fatal, true);
 });
 
 test("normalizeAvatarConfig fills in mouthForm defaults and honors overrides including 0", () => {

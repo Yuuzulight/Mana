@@ -15,6 +15,7 @@ const {
   normalizeAvatarConfig,
   parseParamIdList,
   parseStateMappingOverrides,
+  validateModelReferences,
 } = require("../avatar/live2d-logic");
 
 const MODEL_DIR = path.join(__dirname, "..", "avatar", "model");
@@ -72,6 +73,23 @@ const EXPRESSION_OVERRIDES = mergeStateMappings(
   parseStateMappingOverrides(process.env.MANA_LIVE2D_STATE_EXPRESSIONS),
   avatarConfig.stateExpressions,
 );
+
+const validation = validateModelReferences(settings, modelDir, fs);
+if (validation.missing.length) {
+  console.log(
+    `\n${validation.valid ? "Warnings" : "ERRORS"} (${validation.missing.length} missing reference(s)):`,
+  );
+  for (const entry of validation.missing) {
+    console.log(
+      `  ${entry.fatal ? "FATAL" : "warn "} ${entry.type}${entry.name ? ` "${entry.name}"` : ""}: ${entry.resolvedPath}`,
+    );
+  }
+  if (!validation.valid) {
+    console.log("This model will NOT load -- fatal reference(s) missing above.");
+  }
+} else {
+  console.log("\nAll referenced files present.");
+}
 
 const refs = settings.FileReferences || {};
 const motionGroups = Object.keys(refs.Motions || {});
