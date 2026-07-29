@@ -45,8 +45,10 @@ Mana isn't the only project chasing a local, always-on AI companion. [Project AI
 ## Preview
 
 <p align="center">
-  <img src="docs/images/windows-launcher-main.png" alt="Mana windows-launcher main screen" width="640">
+  <img src="docs/images/windows-launcher-main.png" alt="Mana windows-launcher main screen" width="490">
+  <img src="docs/images/desktop-client-main.png" alt="Mana desktop-client main screen" width="490">
 </p>
+<p align="center"><sub>windows-launcher (left) and desktop-client (right) — see <a href="#architecture">Architecture</a> for how the two differ.</sub></p>
 
 ## Quick Start
 
