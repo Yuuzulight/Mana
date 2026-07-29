@@ -1814,6 +1814,43 @@ ipcRenderer
   })
   .catch(() => {});
 
+// Closing screen (issue #228): reuses the exact same #startupOverlay/
+// .startup-row markup and CSS as the boot screen above -- just swaps the
+// title/subtitle text and re-shows it -- rather than a second parallel
+// overlay. No catch-up handler needed the way startup has one: shutdown
+// only ever starts once this renderer is already up and its IPC listeners
+// are already attached (main.js's runGracefulShutdown() shows the window
+// and sends shutdown-begin itself), unlike startup rows which can fire
+// before the page finishes loading.
+const startupTitleEl = document.getElementById("startupTitle");
+const startupSubtitleEl = document.getElementById("startupSubtitle");
+
+function applyShutdownProgress(update) {
+  if (!update || !update.id) return;
+  const row = document.querySelector(`.startup-row[data-startup-row="${update.id}"]`);
+  if (!row) return;
+  row.dataset.status = update.status;
+  const statusEl = row.querySelector(".startup-row-status");
+  if (statusEl) {
+    statusEl.textContent =
+      update.status === "ready" ? "Stopped" : update.status === "timeout" ? "Force-stopping" : "Stopping...";
+  }
+}
+
+ipcRenderer.on("shutdown-begin", () => {
+  if (startupTitleEl) startupTitleEl.textContent = "Closing Mana";
+  if (startupSubtitleEl) startupSubtitleEl.textContent = "Shutting down...";
+  STARTUP_ROW_IDS.forEach((id) => {
+    const row = document.querySelector(`.startup-row[data-startup-row="${id}"]`);
+    if (!row) return;
+    row.dataset.status = "";
+    const statusEl = row.querySelector(".startup-row-status");
+    if (statusEl) statusEl.textContent = "Waiting...";
+  });
+  if (startupOverlayEl) startupOverlayEl.hidden = false;
+});
+ipcRenderer.on("shutdown-progress", (event, update) => applyShutdownProgress(update));
+
 // Doctor issue detail popover: chips show just the name, click one to see
 // its full message in a small bubble anchored to it. position:fixed (see
 // index.html) so it's placed relative to the viewport, not clipped by
