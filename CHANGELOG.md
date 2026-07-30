@@ -47,6 +47,22 @@ accounting.
   Dependabot alerts.
 
 ### Fixed
+- **`tools/script-runner.js`'s vm sandbox was not actually a security
+  boundary** (found reviewing the new `skill__run` tool, but the bug
+  predates it and affects every script run through this primitive since
+  issue #142): any object or function value injected into the sandbox --
+  the `tools` proxy, `console`, `setTimeout`/`clearTimeout`, the previously-
+  injected `Promise` -- kept its outer-realm `.constructor` chain, so
+  `injectedValue.constructor.constructor("return process")()` compiled and
+  ran code in the real parent process with full `require`/`fs`/`process`
+  access, completely outside the vm context. Verified empirically (a PoC
+  script returned the real `process` object) before landing the fix:
+  `script-runner-worker.js` now recursively strips the prototype off every
+  value crossing into the sandbox (including the sandbox object itself, to
+  close the same escape via `this`/`globalThis`) and no longer injects the
+  outer `Promise` at all (a fresh vm context already has its own). New
+  regression tests exercise the exact escape pattern against the real
+  forked worker, not a mock.
 - **Skill-write review, closed for real** (multi-pass review of #270):
   `skill__create` (the conversational tool) no longer auto-decides itself
   -- a model-drafted skill is the model's own inference of what the user
@@ -107,10 +123,13 @@ accounting.
   proposal prompt and `skill__create`'s description field now explicitly
   ask for a specific, assertive "when to use this" sentence instead of a
   vague summary, since that description is the only thing the new index
-  shows. Skills also track `useCount` now (bumped whenever `skill__view`
-  or the Settings UI actually opens one) so an approved-but-never-used
-  proposal is visibly flagged `(unused)` in both apps' skill picker instead
-  of being indistinguishable from a genuinely useful one.
+  shows. Skills also track `useCount` now (bumped whenever `skill__view` is
+  called, or a skill's script actually runs via `skill__run`; note the
+  Settings UI's own Edit panel deliberately does *not* bump it, same
+  `touch=false` reasoning as browsing without un-staling) so an
+  approved-but-never-used proposal is visibly flagged `(unused)` in both
+  apps' skill picker instead of being indistinguishable from a genuinely
+  useful one.
 
 ### Added
 - **Conversational skill creation** (issue #262 follow-up): a new

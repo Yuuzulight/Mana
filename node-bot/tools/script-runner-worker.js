@@ -4,7 +4,32 @@
 // proxy: no `require`, no `process`, no `fs`/network globals of its own, so
 // the only thing the script can do beyond plain JS is call a named tool,
 // which round-trips over IPC to the real function running in the parent.
+//
+// That comment was the intended design, but plain `vm` does not actually
+// enforce it: any object or function value that crosses from this trusted
+// parent realm into the sandbox keeps its outer `.constructor` chain, and
+// `someInjectedValue.constructor.constructor("return process")()` reaches
+// the OUTER Function constructor -- fully escaping the vm context with real
+// process/fs/network access, no different from running the string directly
+// in this file. Verified empirically before this fix landed. `seal()` below
+// strips the prototype off every injected object/function (recursively) so
+// there is no `.constructor` to walk back through; nothing here relies on
+// Node's `vm` module as a hard security boundary against genuinely hostile
+// code, only as isolation from Mana's own generated scripts making an
+// honest mistake.
 const vm = require("node:vm");
+
+function seal(value, seen = new Set()) {
+  if (!value || (typeof value !== "object" && typeof value !== "function")) return value;
+  if (seen.has(value)) return value;
+  seen.add(value);
+  Object.setPrototypeOf(value, null);
+  for (const key of Object.getOwnPropertyNames(value)) {
+    if (key === "length" || key === "name" || key === "prototype") continue;
+    seal(value[key], seen);
+  }
+  return value;
+}
 
 let nextCallId = 0;
 const pending = new Map();
@@ -29,10 +54,15 @@ async function runScript(code, toolNames) {
       log: (...args) =>
         process.send({ type: "log", args: args.map(String) }),
     },
-    setTimeout,
-    clearTimeout,
-    Promise,
+    setTimeout: (fn, ms) => setTimeout(fn, ms),
+    clearTimeout: (id) => clearTimeout(id),
+    // Deliberately not injecting the outer `Promise` -- a fresh vm context
+    // already gets its own realm-native Promise for async/await and `new
+    // Promise(...)` to work with (verified), and injecting the outer one
+    // would just be another instance of the same escape `seal()` exists to
+    // close.
   };
+  seal(sandbox);
   vm.createContext(sandbox);
 
   try {
