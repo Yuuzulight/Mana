@@ -85,6 +85,47 @@ test("skill__run executes a skill's bundled script and returns its result", asyn
   assert.deepEqual(JSON.parse(result), { status: "ok", result: 42, logs: [] });
 });
 
+test("skill__view includes declared inputs when the skill has a ```skill-inputs block", async () => {
+  const skillsStore = fakeSkillsStore({
+    Greeter: {
+      name: "Greeter",
+      description: "d",
+      body: "Steps:\n```skill-inputs\nname: the person to greet\n```\n```skill-script\nreturn `hi ${inputs.name}`;\n```",
+    },
+  });
+  const source = createSkillToolSource({ approvalGate: fakeApprovalGate(), skillsStore });
+
+  const result = await source.executeTool(`${SKILL_TOOL_PREFIX}view`, { name: "Greeter" });
+  assert.deepEqual(JSON.parse(result).inputs, [{ name: "name", description: "the person to greet" }]);
+});
+
+test("skill__view omits the inputs field for a skill with no ```skill-inputs block", async () => {
+  const skillsStore = fakeSkillsStore({
+    "Restart SearXNG": { name: "Restart SearXNG", description: "d", body: "1. do a thing" },
+  });
+  const source = createSkillToolSource({ approvalGate: fakeApprovalGate(), skillsStore });
+
+  const result = await source.executeTool(`${SKILL_TOOL_PREFIX}view`, { name: "Restart SearXNG" });
+  assert.equal("inputs" in JSON.parse(result), false);
+});
+
+test("skill__run passes a model-supplied inputs object through to runScript", async () => {
+  const skillsStore = fakeSkillsStore({
+    Greeter: {
+      name: "Greeter",
+      body: "```skill-inputs\nname: the person to greet\n```\n```skill-script\nreturn `hi ${inputs.name}`;\n```",
+    },
+  });
+  const runScript = async (code, options) => {
+    assert.deepEqual(options, { inputs: { name: "Mana" } });
+    return { result: "hi Mana", logs: [] };
+  };
+  const source = createSkillToolSource({ approvalGate: fakeApprovalGate(), skillsStore, runScript });
+
+  const result = await source.executeTool(`${SKILL_TOOL_PREFIX}run`, { name: "Greeter", inputs: { name: "Mana" } });
+  assert.deepEqual(JSON.parse(result), { status: "ok", result: "hi Mana", logs: [] });
+});
+
 test("skill__run returns a JSON error when the skill has no script block", async () => {
   const skillsStore = fakeSkillsStore({ Prose: { name: "Prose", body: "just steps, no code" } });
   const source = createSkillToolSource({ approvalGate: fakeApprovalGate(), skillsStore });

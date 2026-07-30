@@ -778,6 +778,71 @@ test("tool-calling activates for the default profile when enabled and llama-serv
   });
 });
 
+test("a successful expression__set tool call surfaces as /reply's expression field (issue #253)", async () => {
+  await withToolCallingEnv("1", async () => {
+    const app = createApp({
+      isLlamaServerEnabled: () => true,
+      runToolAwareReply: async () => ({
+        content: "Here's a wink for you~",
+        toolCalls: [{ name: "expression__set", args: { name: "wink" }, ok: true }],
+      }),
+      runLocalAssistantReply: async () => "plain reply",
+    });
+
+    await withServer(app, async (baseUrl) => {
+      const { payload } = await postJson(`${baseUrl}/reply`, {
+        text: "give me a wink",
+        modelProfile: "default",
+      });
+      assert.equal(payload.reply, "Here's a wink for you~");
+      assert.equal(payload.expression, "wink");
+    });
+  });
+});
+
+test("a failed expression__set tool call does NOT surface an expression field", async () => {
+  await withToolCallingEnv("1", async () => {
+    const app = createApp({
+      isLlamaServerEnabled: () => true,
+      runToolAwareReply: async () => ({
+        content: "reply text",
+        toolCalls: [{ name: "expression__set", args: { name: "wink" }, ok: false, error: "boom" }],
+      }),
+      runLocalAssistantReply: async () => "plain reply",
+    });
+
+    await withServer(app, async (baseUrl) => {
+      const { payload } = await postJson(`${baseUrl}/reply`, {
+        text: "give me a wink",
+        modelProfile: "default",
+      });
+      assert.equal(payload.reply, "reply text");
+      assert.equal("expression" in payload, false);
+    });
+  });
+});
+
+test("no expression field is present in /reply's response when no expression__set call happened", async () => {
+  await withToolCallingEnv("1", async () => {
+    const app = createApp({
+      isLlamaServerEnabled: () => true,
+      runToolAwareReply: async () => ({
+        content: "The file says hello",
+        toolCalls: [{ name: "read_file", args: { path: "notes.txt" }, ok: true }],
+      }),
+      runLocalAssistantReply: async () => "plain reply",
+    });
+
+    await withServer(app, async (baseUrl) => {
+      const { payload } = await postJson(`${baseUrl}/reply`, {
+        text: "what does notes.txt say?",
+        modelProfile: "default",
+      });
+      assert.equal("expression" in payload, false);
+    });
+  });
+});
+
 test("tool-calling does not activate for a non-default profile even when enabled", async () => {
   await withToolCallingEnv("1", async () => {
     let toolAwareCalls = 0;

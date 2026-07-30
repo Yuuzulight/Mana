@@ -454,6 +454,87 @@ test("rememberFact patch updates the existing active fact with the same key", ()
   assert.doesNotMatch(surfaced, /RTX 3070 Ti/);
 });
 
+test("rememberFact patch keeps a bounded correction history instead of discarding the prior text (issue #273)", () => {
+  const store = createAcpMemoryStore({ dataDir: createTempDir() });
+  store.rememberFact({ key: "favorite color", text: "blue" });
+  store.rememberFact({ key: "favorite color", text: "green", action: "patch" });
+  store.rememberFact({ key: "favorite color", text: "purple", action: "patch" });
+
+  const facts = JSON.parse(
+    require("node:fs").readFileSync(
+      require("node:path").join(store.dataDir, "facts.json"),
+      "utf8",
+    ),
+  ).facts;
+  const fact = facts.find((f) => f.key === "favorite color");
+  assert.equal(fact.text, "purple");
+  assert.deepEqual(
+    fact.history.map((h) => h.text),
+    ["blue", "green"],
+  );
+});
+
+test("rememberFact insert flags a possible conflict when the new fact overlaps an existing differently-keyed fact, without overwriting it", () => {
+  const store = createAcpMemoryStore({ dataDir: createTempDir() });
+  store.rememberFact({
+    key: "the user's GPU",
+    text: "the user's graphics card is an RTX 3070 Ti",
+  });
+  const result = store.rememberFact({
+    key: "graphics card model",
+    text: "the user's graphics card is now an RTX 5080",
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.action, "insert");
+  assert.ok(result.possibleConflict, "expected a possibleConflict hint");
+  assert.equal(result.possibleConflict.key, "the user's GPU");
+
+  // Never auto-overwrites -- both facts still exist and are both surfaced.
+  const surfaced = store.getRelatedFacts(
+    "remind me about the user's GPU and graphics card model please",
+  );
+  assert.match(surfaced, /3070 Ti/);
+  assert.match(surfaced, /5080/);
+});
+
+test("rememberFact insert reports no possibleConflict for genuinely unrelated facts", () => {
+  const store = createAcpMemoryStore({ dataDir: createTempDir() });
+  store.rememberFact({ key: "favorite color", text: "the user likes blue" });
+  const result = store.rememberFact({ key: "gaming schedule", text: "plays FFXIV in the evenings" });
+  assert.equal("possibleConflict" in result, false);
+});
+
+test("rememberFact archive marks a fact archived (distinct from stale) and it stops auto-surfacing but isn't deleted (issue #277)", () => {
+  const store = createAcpMemoryStore({ dataDir: createTempDir() });
+  store.rememberFact({ key: "Old Project", text: "still true, just not relevant right now" });
+  const archived = store.rememberFact({ key: "Old Project", action: "archive" });
+  assert.deepEqual(archived, { ok: true, action: "archive", key: "Old Project", found: true });
+
+  // Archived facts stop auto-surfacing via getRelatedFacts...
+  assert.equal(store.getRelatedFacts("tell me about Old Project"), "");
+  // ...and stop appearing in listFactKeys' tool-description index...
+  assert.deepEqual(store.listFactKeys(), []);
+  // ...but the underlying data is preserved, not deleted.
+  const facts = JSON.parse(
+    require("node:fs").readFileSync(
+      require("node:path").join(store.dataDir, "facts.json"),
+      "utf8",
+    ),
+  ).facts;
+  const fact = facts.find((f) => f.key === "Old Project");
+  assert.equal(fact.status, "archived");
+  assert.equal(fact.text, "still true, just not relevant right now");
+
+  const archivedAgain = store.rememberFact({ key: "Never Existed", action: "archive" });
+  assert.deepEqual(archivedAgain, {
+    ok: true,
+    action: "archive",
+    key: "Never Existed",
+    found: false,
+  });
+});
+
 test("rememberFact patch falls back to insert when nothing exists yet to patch", () => {
   const store = createAcpMemoryStore({ dataDir: createTempDir() });
   const result = store.rememberFact({

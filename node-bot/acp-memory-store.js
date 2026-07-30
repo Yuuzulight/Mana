@@ -12,6 +12,41 @@ function cleanText(value, maxLength) {
     .slice(0, maxLength);
 }
 
+function significantWords(text) {
+  return [
+    ...new Set(
+      String(text || "")
+        .toLowerCase()
+        .split(/[^a-z0-9]+/)
+        .filter((w) => w.length > 3),
+    ),
+  ];
+}
+
+// Issue #273 (Soul-of-Waifu-inspired self-healing memory): a deterministic,
+// keyword-overlap check -- same technique skills-capability.js's
+// findMatchingSkill() already uses, not a new LLM call -- for whether a
+// new fact's key+text significantly overlaps an EXISTING active fact under
+// a *different* key. Never auto-overwrites: a lexical heuristic has real
+// false-positive risk (two facts sharing several words aren't necessarily
+// contradictory), so this only surfaces a possible conflict for the model
+// to judge and follow up on with an explicit patch, rather than risking
+// silent data loss from an auto-merge.
+const MIN_CONFLICT_WORD_HITS = 3;
+function findConflictingFact(facts, key, text) {
+  const words = significantWords(`${key} ${text}`);
+  if (!words.length) return null;
+  const lowerKey = key.toLowerCase();
+  for (const fact of facts) {
+    if (fact.status !== "active" || fact.key.toLowerCase() === lowerKey) continue;
+    const factWords = significantWords(`${fact.key} ${fact.text}`);
+    if (!factWords.length) continue;
+    const hits = factWords.filter((w) => words.includes(w));
+    if (hits.length >= Math.min(MIN_CONFLICT_WORD_HITS, factWords.length)) return fact;
+  }
+  return null;
+}
+
 function sessionFilename(sessionId) {
   return `${Buffer.from(String(sessionId || "default")).toString("base64url")}.json`;
 }
@@ -204,13 +239,18 @@ function createAcpMemoryStore(options = {}) {
   // back to insert (nothing to patch yet). "remove" marks an existing
   // active fact as stale (soft delete -- preserves history, matches this
   // store's general append-safe philosophy elsewhere) and is a no-op if
-  // nothing with that key exists.
+  // nothing with that key exists. "archive" (issue #277) marks a fact
+  // still-true-but-no-longer-worth-automatically-surfacing: distinct from
+  // "stale" (no longer true) -- an archived fact is excluded from
+  // getRelatedFacts' automatic key-match surfacing and listFactKeys' tool
+  // description, but never deleted.
+  const MAX_FACT_HISTORY = 5;
   function rememberFact({ sessionId, key, text, action } = {}) {
     const cleanKey = cleanText(key, 200);
     if (!cleanKey) {
       throw new Error("key is required");
     }
-    const normalizedAction = ["insert", "patch", "remove"].includes(action)
+    const normalizedAction = ["insert", "patch", "remove", "archive"].includes(action)
       ? action
       : "insert";
     const facts = loadFacts();
@@ -219,14 +259,14 @@ function createAcpMemoryStore(options = {}) {
     );
     const timestamp = now();
 
-    if (normalizedAction === "remove") {
+    if (normalizedAction === "remove" || normalizedAction === "archive") {
       if (!existing) {
-        return { ok: true, action: "remove", key: cleanKey, found: false };
+        return { ok: true, action: normalizedAction, key: cleanKey, found: false };
       }
-      existing.status = "stale";
+      existing.status = normalizedAction === "remove" ? "stale" : "archived";
       existing.updatedAt = timestamp;
       saveFacts(facts);
-      return { ok: true, action: "remove", key: cleanKey, found: true };
+      return { ok: true, action: normalizedAction, key: cleanKey, found: true };
     }
 
     const cleanTextValue = cleanText(text, 500);
@@ -235,6 +275,13 @@ function createAcpMemoryStore(options = {}) {
     }
 
     if (existing && normalizedAction === "patch") {
+      // Issue #273: keep a bounded correction history instead of silently
+      // discarding the prior value -- "what did I used to think was true"
+      // stays inspectable, matching the self-healing-memory pattern this
+      // issue is built around.
+      const history = Array.isArray(existing.history) ? existing.history : [];
+      history.push({ text: existing.text, updatedAt: existing.updatedAt });
+      existing.history = history.slice(-MAX_FACT_HISTORY);
       existing.text = cleanTextValue;
       existing.updatedAt = timestamp;
       saveFacts(facts);
@@ -243,6 +290,7 @@ function createAcpMemoryStore(options = {}) {
 
     // insert -- either explicitly requested, or "patch" with nothing yet
     // to patch.
+    const conflict = findConflictingFact(facts, cleanKey, cleanTextValue);
     facts.push({
       id: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
       key: cleanKey,
@@ -253,7 +301,15 @@ function createAcpMemoryStore(options = {}) {
       updatedAt: timestamp,
     });
     saveFacts(facts.slice(-maxFacts));
-    return { ok: true, action: "insert", key: cleanKey, text: cleanTextValue };
+    return {
+      ok: true,
+      action: "insert",
+      key: cleanKey,
+      text: cleanTextValue,
+      ...(conflict
+        ? { possibleConflict: { key: conflict.key, preview: cleanText(conflict.text, 80) } }
+        : {}),
+    };
   }
 
   // Issue #141: the "searchable, on-demand" half of the two-tier memory

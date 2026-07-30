@@ -256,6 +256,7 @@ function registerCoreRoutes(app, upload, deps) {
         null,
       );
       const presetId = optionalString(req.body?.presetId, "presetId", null);
+      const replyMeta = {};
       const reply = await buildAssistantReply(
         transcript,
         screenText,
@@ -264,10 +265,12 @@ function registerCoreRoutes(app, upload, deps) {
         sessionId,
         assistantMode,
         presetId,
+        replyMeta,
       );
       return res.json({
         reply,
         ttsConfigured: TTS_PROVIDER !== "none",
+        ...(replyMeta.expression ? { expression: replyMeta.expression } : {}),
       });
     } catch (e) {
       if (e instanceof ValidationError) {
@@ -315,6 +318,7 @@ function registerCoreRoutes(app, upload, deps) {
         null,
       );
       const presetId = optionalString(req.body?.presetId, "presetId", null);
+      const replyMeta = {};
       const reply = await buildAssistantReply(
         transcript,
         "",
@@ -323,6 +327,7 @@ function registerCoreRoutes(app, upload, deps) {
         sessionId,
         assistantMode,
         presetId,
+        replyMeta,
       );
       cleanupUploadedAudio(tmpPath, audioPath);
 
@@ -330,6 +335,7 @@ function registerCoreRoutes(app, upload, deps) {
         transcript,
         reply,
         ttsConfigured: TTS_PROVIDER !== "none",
+        ...(replyMeta.expression ? { expression: replyMeta.expression } : {}),
       });
     } catch (e) {
       if (e instanceof ValidationError) {

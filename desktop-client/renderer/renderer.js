@@ -463,9 +463,13 @@ document.getElementById('themeToggle')?.addEventListener('click', (e) => {
     if (messagesEl.scrollTop < 80) loadOlderMessages();
   });
 
-  async function speakReply(replyText) {
+  // Issue #253: preferredExpression is the model's own expression__set tool
+  // choice for this reply (from the /reply or /transcribe response's
+  // `expression` field, if any) -- passed alongside the automatically-
+  // detected state, not instead of it.
+  async function speakReply(replyText, preferredExpression) {
     setSprite('speaking');
-    if (live2dAvatar) live2dAvatar.setState(detectReplyEmotion(replyText));
+    if (live2dAvatar) live2dAvatar.setState(detectReplyEmotion(replyText), preferredExpression);
     try {
       const sresp = await fetch('http://127.0.0.1:5005/synthesize', {
         method: 'POST',
@@ -583,7 +587,7 @@ document.getElementById('themeToggle')?.addEventListener('click', (e) => {
   function startLipSync(audioCtx, sourceNode){
     if (!live2dAvatar) return;
     try {
-      const { spectralCentroidHz } = window.Live2DLogic;
+      const { spectralCentroidHz, computeMfcc, classifyViseme } = window.Live2DLogic;
       const analyser = audioCtx.createAnalyser();
       analyser.fftSize = 512;
       sourceNode.connect(analyser);
@@ -605,7 +609,11 @@ document.getElementById('themeToggle')?.addEventListener('click', (e) => {
           const rms = Math.sqrt(sum / samples.length);
           analyser.getFloatFrequencyData(magnitudesDb);
           const centroidHz = spectralCentroidHz(magnitudesDb, audioCtx.sampleRate, analyser.fftSize);
-          live2dAvatar.setMouthTarget(rms, centroidHz);
+          // Issue #275: MFCC-based viseme classification, computed
+          // alongside (not instead of) the older centroid -- see
+          // live2d-avatar.js's setMouthTarget for the fallback order.
+          const viseme = classifyViseme(computeMfcc(magnitudesDb, audioCtx.sampleRate, analyser.fftSize));
+          live2dAvatar.setMouthTarget(rms, centroidHz, viseme);
         }
         lipSyncRafId = requestAnimationFrame(tick);
       };
@@ -673,7 +681,7 @@ document.getElementById('themeToggle')?.addEventListener('click', (e) => {
 
       if (j && j.reply) {
         appendMessage('assistant', j.reply);
-        await speakReply(j.reply);
+        await speakReply(j.reply, j.expression);
       }
 
       statusEl.textContent = 'Idle';
@@ -1897,7 +1905,7 @@ document.getElementById('themeToggle')?.addEventListener('click', (e) => {
       const j = await resp.json();
       if (j.reply) {
         appendMessage('assistant', j.reply);
-        await speakReply(j.reply);
+        await speakReply(j.reply, j.expression);
       }
       statusEl.textContent = 'Idle';
     } catch (e) {

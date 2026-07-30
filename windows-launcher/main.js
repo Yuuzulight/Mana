@@ -1259,22 +1259,22 @@ function registerInterruptHotkey() {
   }
 }
 
-ipcMain.on("avatar:set-state", (event, state) => {
+ipcMain.on("avatar:set-state", (event, state, preferredExpression) => {
   if (!avatarWindow) {
     return;
   }
 
-  avatarWindow.webContents.send("avatar:state", state);
+  avatarWindow.webContents.send("avatar:state", state, preferredExpression);
 });
 
 // Relays speech amplitude (and spectral centroid, for mouth shape) from the
 // control window to the avatar for lip sync.
-ipcMain.on("avatar:set-mouth", (event, rms, centroidHz) => {
+ipcMain.on("avatar:set-mouth", (event, rms, centroidHz, viseme) => {
   if (!avatarWindow) {
     return;
   }
 
-  avatarWindow.webContents.send("avatar:mouth", rms, centroidHz);
+  avatarWindow.webContents.send("avatar:mouth", rms, centroidHz, viseme);
 });
 
 ipcMain.handle("screen:capture-primary", async () => {

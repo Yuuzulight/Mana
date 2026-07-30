@@ -75,13 +75,13 @@ function buildToolSchemas(existingKeys) {
             },
             text: {
               type: "string",
-              description: "The fact itself, as a short sentence. Required unless action is \"remove\".",
+              description: "The fact itself, as a short sentence. Required unless action is \"remove\" or \"archive\".",
             },
             action: {
               type: "string",
-              enum: ["insert", "patch", "remove"],
+              enum: ["insert", "patch", "remove", "archive"],
               description:
-                "\"insert\" (default): save as a new fact. \"patch\": update the existing fact with this key (or insert if none exists yet). \"remove\": mark the existing fact with this key as no longer current.",
+                "\"insert\" (default): save as a new fact. \"patch\": update the existing fact with this key (or insert if none exists yet). \"remove\": mark the existing fact with this key as no longer true. \"archive\": the fact is still true but no longer worth automatically surfacing (e.g. it's context for a project that's now finished) -- unlike \"remove\", the fact isn't treated as false, just deprioritized.",
             },
           },
           required: ["key"],
