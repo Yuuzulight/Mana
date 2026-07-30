@@ -112,7 +112,7 @@ function createBrowserAutomationToolSource(options = {}) {
     return JSON.stringify(result);
   }
 
-  return { listToolSchemas, executeTool };
+  return { listToolSchemas, executeTool, isKnownToolName: isBrowserAutomationToolName };
 }
 
 // Same merge shape #169's buildToolPolicyWithMcp already established --

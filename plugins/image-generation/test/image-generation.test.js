@@ -8,6 +8,9 @@ const {
   MAX_PROMPT_CHARS,
   COMFYUI_CHECKPOINT_NODE_ID,
   COMFYUI_POSITIVE_PROMPT_NODE_ID,
+  COMFYUI_UNET_LOADER_NODE_ID,
+  COMFYUI_CLIP_LOADER_NODE_ID,
+  COMFYUI_VAE_LOADER_NODE_ID,
   assertValidBackendUrl,
   createImageGenerationStore,
   createAutomatic1111Backend,
@@ -114,6 +117,27 @@ test("createComfyUiBackend requires a checkpoint name", () => {
   );
 });
 
+// Issue #271: the split-loader workflow shape has no single checkpoint to
+// fall back to -- all four of unet/clip/clip-type/vae are required.
+test("createComfyUiBackend (split shape) requires unet/clip/clip-type/vae, not a checkpoint", () => {
+  assert.throws(
+    () => createComfyUiBackend({ baseUrl: "http://127.0.0.1:8188", workflowShape: "split" }),
+    /unet\/clip\/clip-type\/vae/,
+  );
+  assert.throws(
+    () =>
+      createComfyUiBackend({
+        baseUrl: "http://127.0.0.1:8188",
+        workflowShape: "split",
+        unetName: "flux1-dev.safetensors",
+        clipName: "qwen3vl_4b_bf16.safetensors",
+        // clipType deliberately omitted
+        vaeName: "ae.safetensors",
+      }),
+    /unet\/clip\/clip-type\/vae/,
+  );
+});
+
 test("createComfyUiBackend rejects image editing (txt2img only for now)", async () => {
   const backend = createComfyUiBackend({
     baseUrl: "http://127.0.0.1:8188",
@@ -179,6 +203,34 @@ test("createComfyUiBackend queues a workflow, polls history, and fetches image b
 
   const viewRequest = requests.find((r) => r.url.includes("/view"));
   assert.match(viewRequest.url, /filename=mana_00001_\.png/);
+});
+
+test("createComfyUiBackend (split shape) queues the split-loader workflow with unet/clip/clip-type/vae set", async () => {
+  const { fetchImpl, requests } = createMockComfyUiFetch();
+  const backend = createComfyUiBackend({
+    baseUrl: "http://127.0.0.1:8188",
+    workflowShape: "split",
+    unetName: "Mage-Flow-4B.safetensors",
+    clipName: "qwen3vl_4b_bf16.safetensors",
+    clipType: "qwen_image",
+    vaeName: "ae.safetensors",
+    fetchImpl,
+    pollIntervalMs: 1,
+  });
+
+  const result = await backend({ prompt: "a dragon", editImageBase64: null });
+  assert.deepEqual(result.imagesBase64, [TINY_PNG_BASE64]);
+
+  const queueRequest = requests.find((r) => r.url.endsWith("/prompt"));
+  const graph = queueRequest.body.prompt;
+  assert.equal(graph[COMFYUI_UNET_LOADER_NODE_ID].inputs.unet_name, "Mage-Flow-4B.safetensors");
+  assert.equal(graph[COMFYUI_CLIP_LOADER_NODE_ID].inputs.clip_name, "qwen3vl_4b_bf16.safetensors");
+  assert.equal(graph[COMFYUI_CLIP_LOADER_NODE_ID].inputs.type, "qwen_image");
+  assert.equal(graph[COMFYUI_VAE_LOADER_NODE_ID].inputs.vae_name, "ae.safetensors");
+  assert.equal(graph[COMFYUI_POSITIVE_PROMPT_NODE_ID].inputs.text, "a dragon");
+  // The split shape never touches the checkpoint node -- it doesn't exist
+  // in this workflow graph at all.
+  assert.equal(graph[COMFYUI_CHECKPOINT_NODE_ID], undefined);
 });
 
 test("createComfyUiBackend polls until history reports outputs", async () => {

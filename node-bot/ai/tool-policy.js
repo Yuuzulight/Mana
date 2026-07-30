@@ -28,6 +28,24 @@ const MAX_READ_FILE_CHARS = 20000;
 
 class ToolPolicyError extends Error {}
 
+// Issue #268: read_file's allowedRoot defaults to the repo root (below),
+// which is exactly where .env lives -- a prompt-injected read_file call (a
+// page Mana read, a doc she was asked to summarize) could otherwise read
+// and exfiltrate real secrets (Discord/Telegram bot tokens, TTS provider
+// keys) through a completely legitimate-looking "read this file" tool call.
+// The risk isn't the model reading .env through its own reasoning -- it's
+// never asked to -- it's an untrusted instruction hiding in content Mana
+// reads. Blocked by basename regardless of allowedRoot, not just at the
+// default root, since a narrower allowedRoot could still happen to contain
+// a project's own .env. .env.sample/.example/.template stay readable --
+// placeholder templates with no real values, meant to be read as docs.
+const CREDENTIAL_BASENAME_RE =
+  /^\.env(?!\.(?:sample|example|template)$)(\..+)?$|^(id_rsa|id_ed25519|id_ecdsa)(\.pub)?$|\.(pem|pfx|p12)$|^credentials\.json$/i;
+
+function isCredentialPath(basename) {
+  return CREDENTIAL_BASENAME_RE.test(basename);
+}
+
 // Resolves requestedPath against allowedRoot and throws unless the result
 // is actually inside allowedRoot -- blocks both ../ traversal and absolute
 // paths that point elsewhere on disk.
@@ -58,6 +76,9 @@ function createToolPolicy(options = {}) {
       throw new ToolPolicyError("path is required");
     }
     const resolved = resolveWithinRoot(allowedRoot, requestedPath);
+    if (isCredentialPath(path.basename(resolved))) {
+      throw new ToolPolicyError(`refusing to read a credential-bearing file: ${requestedPath}`);
+    }
     if (!existsSync(resolved)) {
       throw new ToolPolicyError(`file not found: ${requestedPath}`);
     }

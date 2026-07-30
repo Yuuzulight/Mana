@@ -156,7 +156,7 @@ function createSkillToolSource(options = {}) {
     }
   }
 
-  return { listToolSchemas, executeTool };
+  return { listToolSchemas, executeTool, isKnownToolName: isSkillToolName };
 }
 
 async function buildToolPolicyWithSkillCreate(basePolicy, skillToolSource) {

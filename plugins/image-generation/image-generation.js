@@ -14,15 +14,28 @@ const MAX_PROMPT_CHARS = 2000;
 
 // Node ids inside workflows/comfyui-txt2img-checkpoint.json -- the bundled
 // graph is the legacy single-checkpoint shape (CheckpointLoaderSimple ->
-// CLIPTextEncode -> KSampler -> VAEDecode -> SaveImage). The split-loader
-// shape FLUX/Qwen-Image/Mage-Flow-style models need (separate
-// UNETLoader/CLIPLoader/VAELoader nodes) is a different graph, tracked
-// separately in issue #271 -- not this one.
+// CLIPTextEncode -> KSampler -> VAEDecode -> SaveImage).
 const COMFYUI_CHECKPOINT_NODE_ID = "4";
 const COMFYUI_SAMPLER_NODE_ID = "3";
 const COMFYUI_POSITIVE_PROMPT_NODE_ID = "6";
 const COMFYUI_SAVE_IMAGE_NODE_ID = "9";
 const DEFAULT_COMFYUI_WORKFLOW_PATH = path.join(__dirname, "workflows", "comfyui-txt2img-checkpoint.json");
+
+// Issue #271: node ids inside workflows/comfyui-txt2img-split.json -- the
+// split-loader shape FLUX/Qwen-Image/Mage-Flow-style models need, where the
+// checkpoint ships as separate files (UNETLoader/CLIPLoader/VAELoader)
+// instead of one combined file. Same KSampler/CLIPTextEncode/VAEDecode/
+// SaveImage tail as the checkpoint graph, just fed by three loaders instead
+// of one. CLIPLoader's "type" input (a model-type string selecting the text
+// encoder architecture -- e.g. Mage-Flow needs a specific value for its
+// qwen3vl_4b_bf16.safetensors encoder) has no safe default across models;
+// it's a required per-model config point (MANA_IMAGE_COMFYUI_CLIP_TYPE),
+// same as clip_name/unet_name/vae_name themselves.
+const COMFYUI_UNET_LOADER_NODE_ID = "10";
+const COMFYUI_CLIP_LOADER_NODE_ID = "11";
+const COMFYUI_VAE_LOADER_NODE_ID = "12";
+const DEFAULT_COMFYUI_SPLIT_WORKFLOW_PATH = path.join(__dirname, "workflows", "comfyui-txt2img-split.json");
+
 const DEFAULT_COMFYUI_POLL_INTERVAL_MS = 1000;
 const DEFAULT_COMFYUI_TIMEOUT_MS = 120000;
 
@@ -167,19 +180,32 @@ function createOpenAiImagesBackend({ apiKey, baseUrl = "https://api.openai.com/v
 //    Automatic1111 which just uses whatever's already loaded.
 function createComfyUiBackend({
   baseUrl,
+  workflowShape = "checkpoint",
   checkpointName,
+  unetName,
+  clipName,
+  clipType,
+  vaeName,
   workflowTemplate,
   fetchImpl = fetch,
   pollIntervalMs = DEFAULT_COMFYUI_POLL_INTERVAL_MS,
   timeoutMs = DEFAULT_COMFYUI_TIMEOUT_MS,
 } = {}) {
   const validatedUrl = assertValidBackendUrl(baseUrl);
-  if (!checkpointName) {
+  const isSplit = workflowShape === "split";
+  if (isSplit) {
+    if (!unetName || !clipName || !clipType || !vaeName) {
+      throw new Error(
+        "the split workflow needs unet/clip/clip-type/vae all set (MANA_IMAGE_COMFYUI_UNET, MANA_IMAGE_COMFYUI_CLIP, MANA_IMAGE_COMFYUI_CLIP_TYPE, MANA_IMAGE_COMFYUI_VAE) -- the split-loader shape has no single checkpoint file to fall back to",
+      );
+    }
+  } else if (!checkpointName) {
     throw new Error(
       "a checkpoint name is required (MANA_IMAGE_COMFYUI_CHECKPOINT) -- ComfyUI's workflow graph must name an exact checkpoint file, unlike Automatic1111 which uses whatever's already loaded",
     );
   }
-  const template = workflowTemplate || JSON.parse(fs.readFileSync(DEFAULT_COMFYUI_WORKFLOW_PATH, "utf8"));
+  const defaultWorkflowPath = isSplit ? DEFAULT_COMFYUI_SPLIT_WORKFLOW_PATH : DEFAULT_COMFYUI_WORKFLOW_PATH;
+  const template = workflowTemplate || JSON.parse(fs.readFileSync(defaultWorkflowPath, "utf8"));
 
   async function pollHistory(promptId) {
     const deadline = Date.now() + timeoutMs;
@@ -204,7 +230,14 @@ function createComfyUiBackend({
 
     // Deep clone -- the template is shared across every call, must not be mutated in place.
     const graph = JSON.parse(JSON.stringify(template));
-    graph[COMFYUI_CHECKPOINT_NODE_ID].inputs.ckpt_name = checkpointName;
+    if (isSplit) {
+      graph[COMFYUI_UNET_LOADER_NODE_ID].inputs.unet_name = unetName;
+      graph[COMFYUI_CLIP_LOADER_NODE_ID].inputs.clip_name = clipName;
+      graph[COMFYUI_CLIP_LOADER_NODE_ID].inputs.type = clipType;
+      graph[COMFYUI_VAE_LOADER_NODE_ID].inputs.vae_name = vaeName;
+    } else {
+      graph[COMFYUI_CHECKPOINT_NODE_ID].inputs.ckpt_name = checkpointName;
+    }
     graph[COMFYUI_POSITIVE_PROMPT_NODE_ID].inputs.text = prompt;
     graph[COMFYUI_SAMPLER_NODE_ID].inputs.seed = Math.floor(Math.random() * 1e15);
 
@@ -252,6 +285,9 @@ module.exports = {
   COMFYUI_SAMPLER_NODE_ID,
   COMFYUI_POSITIVE_PROMPT_NODE_ID,
   COMFYUI_SAVE_IMAGE_NODE_ID,
+  COMFYUI_UNET_LOADER_NODE_ID,
+  COMFYUI_CLIP_LOADER_NODE_ID,
+  COMFYUI_VAE_LOADER_NODE_ID,
   assertValidBackendUrl,
   createImageGenerationStore,
   createAutomatic1111Backend,

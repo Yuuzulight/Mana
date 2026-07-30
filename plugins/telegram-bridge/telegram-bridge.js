@@ -3,39 +3,11 @@
 // getUpdates), not a webhook -- Mana runs locally with no public HTTPS
 // endpoint to receive a webhook callback on, and polling needs nothing
 // exposed to the internet at all.
-const fs = require("fs");
 const path = require("path");
-const crypto = require("crypto");
+const { createChannelPairingBridge } = require("../shared/channel-pairing-bridge");
 
 const DEFAULT_DATA_DIR = path.join(__dirname, "..", "..", "node-bot", "data", "telegram-bridge");
 const MAX_TEXT_CHARS = 4000; // Telegram's own message-length ceiling is ~4096
-
-function ensureDir(dir) {
-  fs.mkdirSync(dir, { recursive: true });
-}
-
-function readJson(filePath, fallback) {
-  if (!fs.existsSync(filePath)) return fallback;
-  try {
-    const raw = fs.readFileSync(filePath, "utf8").trim();
-    return raw ? JSON.parse(raw) : fallback;
-  } catch (e) {
-    return fallback;
-  }
-}
-
-function writeJson(filePath, value) {
-  const tmp = `${filePath}.tmp`;
-  fs.writeFileSync(tmp, `${JSON.stringify(value, null, 2)}\n`, "utf8");
-  fs.renameSync(tmp, filePath);
-}
-
-function generatePairingCode() {
-  // Short, easy to type back from a phone -- 6 uppercase alphanumeric
-  // characters is plenty of entropy for a short-lived local pairing
-  // code (not a long-term secret).
-  return crypto.randomBytes(4).toString("hex").slice(0, 6).toUpperCase();
-}
 
 // options.dataDir: injectable so tests don't write into node-bot's real
 // data directory (same pattern as acp-memory-store.js/cron-scheduler.js).
@@ -43,94 +15,30 @@ function generatePairingCode() {
 // approved chat's message through the same reply pipeline every other
 // surface already shares; kept as a single injected function so this
 // module has no direct knowledge of buildAssistantReply.
+//
+// The actual pairing-store logic (issue #265) lives in the shared
+// channel-pairing-bridge.js, extracted after this and discord-bot.js's
+// createDiscordBridge turned out near-identical apart from the id field
+// name/message cap/session prefix. This wrapper exists so callers keep
+// their existing chatId-shaped API (handleIncomingMessage({chatId, ...}))
+// without needing to know about the shared bridge's generic `id` field.
 function createTelegramBridge(options = {}) {
-  const dataDir = options.dataDir || DEFAULT_DATA_DIR;
-  const pendingPath = path.join(dataDir, "pending.json");
-  const approvedPath = path.join(dataDir, "approved.json");
-  const replyFn = options.replyFn || null;
-
-  function loadPending() {
-    ensureDir(dataDir);
-    return readJson(pendingPath, {});
-  }
-  function savePending(pending) {
-    ensureDir(dataDir);
-    writeJson(pendingPath, pending);
-  }
-  function loadApproved() {
-    ensureDir(dataDir);
-    return readJson(approvedPath, {});
-  }
-  function saveApproved(approved) {
-    ensureDir(dataDir);
-    writeJson(approvedPath, approved);
-  }
-
-  function isApproved(chatId) {
-    return Boolean(loadApproved()[String(chatId)]);
-  }
-
-  function listPending() {
-    return Object.entries(loadPending()).map(([chatId, entry]) => ({ chatId, ...entry }));
-  }
-
-  function listApproved() {
-    return Object.entries(loadApproved()).map(([chatId, entry]) => ({ chatId, ...entry }));
-  }
-
-  // Approves whichever chatId most recently requested `code`. Returns the
-  // approved chatId, or null if the code doesn't match any pending entry.
-  function approvePairing(code) {
-    const pending = loadPending();
-    const match = Object.entries(pending).find(([, entry]) => entry.code === code);
-    if (!match) return null;
-
-    const [chatId, entry] = match;
-    const approved = loadApproved();
-    approved[chatId] = { approvedAt: new Date().toISOString(), name: entry.name || null };
-    saveApproved(approved);
-
-    delete pending[chatId];
-    savePending(pending);
-    return chatId;
-  }
-
-  // The entry point for one incoming DM. An unapproved chat gets back a
-  // one-time pairing code instead of a real reply; an approved chat's
-  // message is routed through the normal reply pipeline. DM-only by
-  // design -- there's no group-chat handling here at all, matching the
-  // pairing model's one-user-per-approved-chat assumption.
-  async function handleIncomingMessage({ chatId, text, senderName }) {
-    const cleanText = String(text || "").trim().slice(0, MAX_TEXT_CHARS);
-    if (!chatId) throw new Error("chatId is required");
-
-    if (!isApproved(chatId)) {
-      const pending = loadPending();
-      const existing = pending[String(chatId)];
-      const code = existing?.code || generatePairingCode();
-      pending[String(chatId)] = {
-        code,
-        name: senderName || existing?.name || null,
-        firstSeenAt: existing?.firstSeenAt || new Date().toISOString(),
-      };
-      savePending(pending);
-      return `This chat isn't paired with Mana yet. Give this code to whoever owns Mana to approve it: ${code}`;
-    }
-
-    if (!cleanText) return null;
-    if (typeof replyFn !== "function") {
-      throw new Error("no reply function configured");
-    }
-    return replyFn(cleanText, { sessionId: `telegram-${chatId}` });
-  }
+  const shared = createChannelPairingBridge({
+    dataDir: options.dataDir || DEFAULT_DATA_DIR,
+    idField: "chatId",
+    maxTextChars: MAX_TEXT_CHARS,
+    sessionPrefix: "telegram",
+    replyFn: options.replyFn,
+  });
 
   return {
-    dataDir,
-    isApproved,
-    listPending,
-    listApproved,
-    approvePairing,
-    handleIncomingMessage,
+    dataDir: shared.dataDir,
+    isApproved: shared.isApproved,
+    listPending: shared.listPending,
+    listApproved: shared.listApproved,
+    approvePairing: shared.approvePairing,
+    handleIncomingMessage: ({ chatId, text, senderName }) =>
+      shared.handleIncomingMessage({ id: chatId, text, senderName }),
   };
 }
 

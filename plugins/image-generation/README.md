@@ -15,16 +15,20 @@ Generate or edit an image from a text description. Disabled by default
     `/prompt`, poll `/history/{id}`, fetch bytes via `/view`) -- see
     `docs/roadmap/issue-225-comfyui-backend.md` for why this isn't a
     simple third case in `createAutomatic1111Backend`'s shape. **txt2img
-    only, legacy single-checkpoint workflow shape only** for this pass --
-    requires `MANA_IMAGE_COMFYUI_CHECKPOINT` (ComfyUI's graph always names
-    an exact checkpoint file, unlike Automatic1111 which uses whatever's
-    already loaded). Split-loader models (FLUX, Qwen-Image, Mage-Flow) use
-    a different graph shape and aren't supported yet -- tracked in issue
-    #271.
-  - Nothing is bundled or downloaded by this plugin beyond the one default
-    ComfyUI workflow JSON (`workflows/comfyui-txt2img-checkpoint.json`); it
-    speaks each API's existing contract to whatever you already have
-    running.
+    only** for this pass (no editing). Two bundled workflow graph shapes,
+    picked via `MANA_IMAGE_COMFYUI_WORKFLOW` (issue #271):
+    - `checkpoint` (default): the legacy single-checkpoint shape
+      (SD1.5/SDXL-era) -- requires `MANA_IMAGE_COMFYUI_CHECKPOINT`.
+    - `split`: the split-loader shape FLUX/Qwen-Image/Mage-Flow-era models
+      need (`UNETLoader`/`CLIPLoader`/`VAELoader` as separate files instead
+      of one combined checkpoint) -- requires `MANA_IMAGE_COMFYUI_UNET`,
+      `MANA_IMAGE_COMFYUI_CLIP`, `MANA_IMAGE_COMFYUI_CLIP_TYPE`, and
+      `MANA_IMAGE_COMFYUI_VAE` all set. Both shapes use only core ComfyUI
+      nodes, no custom-node install required.
+  - Nothing is bundled or downloaded by this plugin beyond the two default
+    ComfyUI workflow JSONs (`workflows/comfyui-txt2img-checkpoint.json`,
+    `workflows/comfyui-txt2img-split.json`); it speaks each API's existing
+    contract to whatever you already have running.
 - **External API** (opt-in only, never a default): set `MANA_IMAGE_API_KEY`
   (and optionally `MANA_IMAGE_API_BASE_URL`) to use an OpenAI-compatible
   images endpoint instead.
@@ -35,8 +39,22 @@ Generate or edit an image from a text description. Disabled by default
 
 - `MANA_IMAGE_BACKEND_TYPE=comfyui` -- selects the ComfyUI backend against
   `MANA_IMAGE_BACKEND_URL`.
-- `MANA_IMAGE_COMFYUI_CHECKPOINT` -- required. The exact checkpoint
-  filename as it appears in your ComfyUI install's `models/checkpoints/`.
+- `MANA_IMAGE_COMFYUI_WORKFLOW` -- optional, `checkpoint` (default) or
+  `split`. Picks which bundled workflow graph shape to use.
+- `MANA_IMAGE_COMFYUI_CHECKPOINT` -- required when `MANA_IMAGE_COMFYUI_WORKFLOW`
+  is `checkpoint` (or unset). The exact checkpoint filename as it appears in
+  your ComfyUI install's `models/checkpoints/`.
+- `MANA_IMAGE_COMFYUI_UNET` -- required when `MANA_IMAGE_COMFYUI_WORKFLOW=split`.
+  The UNet filename as it appears in `models/diffusion_models/`.
+- `MANA_IMAGE_COMFYUI_CLIP` -- required when `MANA_IMAGE_COMFYUI_WORKFLOW=split`.
+  The text encoder filename as it appears in `models/text_encoders/` (e.g.
+  `qwen3vl_4b_bf16.safetensors` for Mage-Flow).
+- `MANA_IMAGE_COMFYUI_CLIP_TYPE` -- required when `MANA_IMAGE_COMFYUI_WORKFLOW=split`.
+  `CLIPLoader`'s model-type parameter, selecting the text encoder
+  architecture -- matches whichever value ComfyUI's `CLIPLoader` node
+  expects for your specific model; no safe default across models.
+- `MANA_IMAGE_COMFYUI_VAE` -- required when `MANA_IMAGE_COMFYUI_WORKFLOW=split`.
+  The VAE filename as it appears in `models/vae/`.
 - `MANA_IMAGE_COMFYUI_TIMEOUT_MS` -- optional, default `120000`. How long
   to keep polling `/history` before giving up on a generation.
 

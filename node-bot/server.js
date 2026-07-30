@@ -125,16 +125,20 @@ const { createPresetsStore } = require("./presets-store");
 const { createPluginSettingsStore } = require("./plugin-settings-store");
 const { createAuthStore } = require("./auth-store");
 const { createToolPolicy } = require("./ai/tool-policy");
-const { createMemoryToolSource, buildToolPolicyWithMemory } = require("./ai/memory-tool-source");
-const { createSessionSearchToolSource, buildToolPolicyWithSessionSearch } = require("./ai/session-search-tool-source");
-const { createSkillToolSource, buildToolPolicyWithSkillCreate } = require("./ai/skill-tool-source");
-const { createMcpClientRegistry, buildToolPolicyWithMcp } = require("./mcp-client-registry");
+// Issue #267: one generic composer instead of a buildToolPolicyWithX per
+// tool source -- see ai/tool-source.js. Each create*ToolSource() factory
+// below already returns the {listToolSchemas, executeTool, isKnownToolName}
+// shape buildToolPolicy expects.
+const { buildToolPolicy } = require("./ai/tool-source");
+const { createMemoryToolSource } = require("./ai/memory-tool-source");
+const { createSessionSearchToolSource } = require("./ai/session-search-tool-source");
+const { createSkillToolSource } = require("./ai/skill-tool-source");
+const { createMcpClientRegistry } = require("./mcp-client-registry");
 const { mcpClientCapability } = require("./capabilities/mcp-client-capability");
 const { createToolCallLog, wrapWithToolCallLog } = require("./tool-call-log");
 const { toolCallLogCapability } = require("./capabilities/tool-call-log-capability");
 const {
   createBrowserAutomationToolSource,
-  buildToolPolicyWithBrowserAutomation,
 } = require("../plugins/browser-automation/browser-automation-tool-source");
 const {
   createEditorIntegrations,
@@ -267,6 +271,14 @@ function shouldUseRemoteAi(overrides = {}) {
     ...overrides,
   });
 }
+// Issue #269: opt-in profile for Deep Research's short/structured subtask
+// calls (decompose, reflect) -- see the fuller reasoning where these
+// closures are built. Off by default ("quality", matching prior behavior)
+// because llama-server's model swap is multi-second and a reflect-cycle
+// pass alternates enough that switching by default could cost more time
+// than it saves.
+const DEEP_RESEARCH_SUBTASK_PROFILE =
+  process.env.MANA_DEEP_RESEARCH_SUBTASK_PROFILES === "1" ? "fast" : "quality";
 const TTS_BIN = process.env.TTS_BIN || null;
 const KOKORO_TTS_URL = process.env.KOKORO_TTS_URL || "http://127.0.0.1:5011";
 const FISH_TTS_URL = process.env.FISH_TTS_URL || "http://127.0.0.1:8080";
@@ -1835,18 +1847,26 @@ function registerRoutes(app, upload, deps = {}) {
     synthesize:
       deps.synthesize ||
       ((prompt) => runLocalLlamaReply(prompt, 800, "quality", RESEARCH_SYSTEM_PROMPT)),
-    // Deliberately the same profile as synthesize: a different profile here
-    // would force a llama-server model swap (kill/respawn) in the middle of
-    // every research pass. Sub-query planning is a short completion anyway.
+    // Issue #269: decompose/reflect are short, structured triage calls
+    // (a handful of search-query lines, or one line naming a gap) -- a
+    // materially different shape from synthesize/compress's long-form,
+    // citation-fidelity-sensitive output, and "fast" (a smaller model) is
+    // the intended fit per LLAMA_MODEL_PROFILES' own labels. Left off by
+    // default (DEEP_RESEARCH_SUBTASK_PROFILE stays "quality" throughout,
+    // matching prior behavior exactly) because the swap it would cause is a
+    // real cost -- llama-server-runtime.js's swap is a multi-second
+    // kill/respawn, and a reflect-cycle pass alternates decompose/reflect
+    // with synthesize/compress enough times that switching profiles by
+    // default could spend more of maxTotalMs swapping than the smaller
+    // model saves. Opt in via MANA_DEEP_RESEARCH_SUBTASK_PROFILES=1 on
+    // hardware where the swap cost is low (fast storage, small models, or
+    // LLAMA_SERVER_SWAP_DEBOUNCE_MS tuned down).
     decompose:
       deps.decompose ||
-      ((prompt) => runLocalLlamaReply(prompt, 200, "quality", SUB_QUERY_SYSTEM_PROMPT)),
-    // Issue #197: same bound-completion pattern and "quality" profile as
-    // decompose above -- a short structured decision (a follow-up query or
-    // NONE), not a full reply.
+      ((prompt) => runLocalLlamaReply(prompt, 200, DEEP_RESEARCH_SUBTASK_PROFILE, SUB_QUERY_SYSTEM_PROMPT)),
     reflect:
       deps.reflect ||
-      ((prompt) => runLocalLlamaReply(prompt, 100, "quality", REFLECT_SYSTEM_PROMPT)),
+      ((prompt) => runLocalLlamaReply(prompt, 100, DEEP_RESEARCH_SUBTASK_PROFILE, REFLECT_SYSTEM_PROMPT)),
     // Issue #208: same shared compressExcerpts helper the coding-mode
     // repo-retrieval block (issue #211) also reuses.
     compress: deps.compress || compressExcerpts,
@@ -3731,30 +3751,26 @@ function registerRoutes(app, upload, deps = {}) {
         isLlamaServerAvailable()
       ) {
         try {
-          // Issue #169: merged fresh per reply, not cached -- MCP tool
+          // Issue #169/#267: merged fresh per reply, not cached -- MCP tool
           // discovery is async and the registered-server list is small
           // enough that re-listing costs little once a connection is
-          // already established (see mcp-client-registry.js).
-          let mergedToolPolicy = await buildToolPolicyWithMcp(activeToolPolicy, activeMcpClientRegistry);
-          // Issue #198: bound to this reply's sessionId (not model-supplied),
-          // built fresh per reply for the same reason -- cheap, and the
-          // session the fact should be attributed to only exists per-call.
-          // approvalGate: a model-asserted memory write is agent-authored
-          // content same as a skill write (issue #152) -- gated the same
-          // way, see ai/memory-tool-source.js.
-          mergedToolPolicy = await buildToolPolicyWithMemory(
-            mergedToolPolicy,
-            createMemoryToolSource({ acpMemoryStore, sessionId, approvalGate: activeApprovalGate }),
-          );
-          // Full-text search across past conversations, independent of
-          // the curated memory summary above.
-          mergedToolPolicy = await buildToolPolicyWithSessionSearch(
-            mergedToolPolicy,
-            createSessionSearchToolSource({ acpMemoryStore, sessionId }),
-          );
-          // User-requested skill creation mid-conversation ("make a skill
-          // that does X") -- distinct from the idle-triggered autonomous
-          // proposal pass (issue #262's runSkillProposal), which nobody
+          // already established (see mcp-client-registry.js). One generic
+          // buildToolPolicy call folds in every source at once instead of
+          // a hand-rolled buildToolPolicyWithX chain.
+          //
+          // Memory (issue #198): bound to this reply's sessionId (not
+          // model-supplied), built fresh per reply for the same reason --
+          // cheap, and the session the fact should be attributed to only
+          // exists per-call. approvalGate: a model-asserted memory write is
+          // agent-authored content same as a skill write (issue #152) --
+          // gated the same way, see ai/memory-tool-source.js.
+          //
+          // Session search: full-text search across past conversations,
+          // independent of the curated memory summary above.
+          //
+          // Skill creation (issue #262 follow-up): user-requested mid-
+          // conversation ("make a skill that does X") -- distinct from the
+          // idle-triggered autonomous proposal pass, which nobody
           // explicitly asked for. Despite the direct ask, this still stays
           // genuinely pending like the idle pass does, not auto-approved
           // like the Settings UI's own create flow -- the drafted content
@@ -3762,19 +3778,20 @@ function registerRoutes(app, upload, deps = {}) {
           // page Mana read earlier in the same turn could otherwise talk
           // it into staging attacker-authored content (see
           // ai/skill-tool-source.js).
-          mergedToolPolicy = await buildToolPolicyWithSkillCreate(
-            mergedToolPolicy,
+          //
+          // Browser automation (issue #188): only offered when the plugin
+          // is actually enabled (Settings > Plugins) -- same gate every
+          // other browser-automation entry point (its own HTTP routes,
+          // GET /plugins) already respects.
+          let mergedToolPolicy = await buildToolPolicy(activeToolPolicy, [
+            activeMcpClientRegistry,
+            createMemoryToolSource({ acpMemoryStore, sessionId, approvalGate: activeApprovalGate }),
+            createSessionSearchToolSource({ acpMemoryStore, sessionId }),
             createSkillToolSource({ approvalGate: activeApprovalGate, skillsStore: activeSkillsStore }),
-          );
-          // Issue #188: only offered when the plugin is actually enabled
-          // (Settings > Plugins) -- same gate every other browser-automation
-          // entry point (its own HTTP routes, GET /plugins) already respects.
-          if (isPluginEnabled(browserAutomationPlugin, activePluginSettingsStore)) {
-            mergedToolPolicy = await buildToolPolicyWithBrowserAutomation(
-              mergedToolPolicy,
-              activeBrowserAutomationToolSource,
-            );
-          }
+            ...(isPluginEnabled(browserAutomationPlugin, activePluginSettingsStore)
+              ? [activeBrowserAutomationToolSource]
+              : []),
+          ]);
           // Issue #188: applied last so it catches every tool call from
           // every source (local read_file, browser-automation, MCP) in one
           // shared audit/trace log.
