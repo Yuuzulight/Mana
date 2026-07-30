@@ -6,6 +6,8 @@ const test = require("node:test");
 
 const {
   MAX_PROMPT_CHARS,
+  DEFAULT_COMFYUI_TIMEOUT_MS,
+  DEFAULT_COMFYUI_SPLIT_TIMEOUT_MS,
   COMFYUI_CHECKPOINT_NODE_ID,
   COMFYUI_POSITIVE_PROMPT_NODE_ID,
   COMFYUI_UNET_LOADER_NODE_ID,
@@ -231,6 +233,54 @@ test("createComfyUiBackend (split shape) queues the split-loader workflow with u
   // The split shape never touches the checkpoint node -- it doesn't exist
   // in this workflow graph at all.
   assert.equal(graph[COMFYUI_CHECKPOINT_NODE_ID], undefined);
+});
+
+test("createComfyUiBackend (split shape) requests 1024x1024 by default, matching the native resolution split-loader models expect", async () => {
+  const { fetchImpl, requests } = createMockComfyUiFetch();
+  const backend = createComfyUiBackend({
+    baseUrl: "http://127.0.0.1:8188",
+    workflowShape: "split",
+    unetName: "Mage-Flow-4B.safetensors",
+    clipName: "qwen3vl_4b_bf16.safetensors",
+    clipType: "qwen_image",
+    vaeName: "ae.safetensors",
+    fetchImpl,
+    pollIntervalMs: 1,
+  });
+  await backend({ prompt: "a dragon" });
+
+  const queueRequest = requests.find((r) => r.url.endsWith("/prompt"));
+  const latentInputs = queueRequest.body.prompt["5"].inputs;
+  assert.equal(latentInputs.width, 1024);
+  assert.equal(latentInputs.height, 1024);
+});
+
+test("DEFAULT_COMFYUI_SPLIT_TIMEOUT_MS gives split-shape backends more runway than the checkpoint default", () => {
+  assert.ok(
+    DEFAULT_COMFYUI_SPLIT_TIMEOUT_MS > DEFAULT_COMFYUI_TIMEOUT_MS,
+    "split-shape default timeout should exceed the checkpoint-shape default",
+  );
+});
+
+test("createComfyUiBackend (split shape) still honors an explicit timeoutMs override instead of the shape default", async () => {
+  const timedOutFetch = async (url) => {
+    if (String(url).endsWith("/prompt")) {
+      return { ok: true, json: async () => ({ prompt_id: "abc123" }) };
+    }
+    return { ok: true, json: async () => ({ abc123: {} }) };
+  };
+  const backend = createComfyUiBackend({
+    baseUrl: "http://127.0.0.1:8188",
+    workflowShape: "split",
+    unetName: "u",
+    clipName: "c",
+    clipType: "t",
+    vaeName: "v",
+    fetchImpl: timedOutFetch,
+    pollIntervalMs: 1,
+    timeoutMs: 5,
+  });
+  await assert.rejects(() => backend({ prompt: "x" }), /timed out after 5ms/);
 });
 
 test("createComfyUiBackend polls until history reports outputs", async () => {
