@@ -55,8 +55,11 @@ Generate or edit an image from a text description. Disabled by default
   expects for your specific model; no safe default across models.
 - `MANA_IMAGE_COMFYUI_VAE` -- required when `MANA_IMAGE_COMFYUI_WORKFLOW=split`.
   The VAE filename as it appears in `models/vae/`.
-- `MANA_IMAGE_COMFYUI_TIMEOUT_MS` -- optional, default `120000`. How long
-  to keep polling `/history` before giving up on a generation.
+- `MANA_IMAGE_COMFYUI_TIMEOUT_MS` -- optional, default `120000` for the
+  checkpoint shape, `240000` for the split shape (split-loader models tend
+  to be larger/slower per generation on the same hardware). Set explicitly
+  to override either default. How long to keep polling `/history` before
+  giving up on a generation.
 
 ## Routes
 

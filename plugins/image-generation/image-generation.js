@@ -38,6 +38,11 @@ const DEFAULT_COMFYUI_SPLIT_WORKFLOW_PATH = path.join(__dirname, "workflows", "c
 
 const DEFAULT_COMFYUI_POLL_INTERVAL_MS = 1000;
 const DEFAULT_COMFYUI_TIMEOUT_MS = 120000;
+// Split-loader models (FLUX/Qwen-Image/Mage-Flow-class) are commonly larger
+// and slower per-generation on the same hardware than the SDXL-era
+// checkpoint models the shorter default was tuned for -- give them more
+// runway before giving up, unless the caller overrides timeoutMs directly.
+const DEFAULT_COMFYUI_SPLIT_TIMEOUT_MS = 240000;
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -189,10 +194,16 @@ function createComfyUiBackend({
   workflowTemplate,
   fetchImpl = fetch,
   pollIntervalMs = DEFAULT_COMFYUI_POLL_INTERVAL_MS,
-  timeoutMs = DEFAULT_COMFYUI_TIMEOUT_MS,
+  timeoutMs,
 } = {}) {
   const validatedUrl = assertValidBackendUrl(baseUrl);
   const isSplit = workflowShape === "split";
+  const resolvedTimeoutMs =
+    timeoutMs != null
+      ? timeoutMs
+      : isSplit
+        ? DEFAULT_COMFYUI_SPLIT_TIMEOUT_MS
+        : DEFAULT_COMFYUI_TIMEOUT_MS;
   if (isSplit) {
     if (!unetName || !clipName || !clipType || !vaeName) {
       throw new Error(
@@ -208,7 +219,7 @@ function createComfyUiBackend({
   const template = workflowTemplate || JSON.parse(fs.readFileSync(defaultWorkflowPath, "utf8"));
 
   async function pollHistory(promptId) {
-    const deadline = Date.now() + timeoutMs;
+    const deadline = Date.now() + resolvedTimeoutMs;
     while (Date.now() < deadline) {
       const response = await fetchImpl(`${validatedUrl.origin}/history/${promptId}`);
       if (response.ok) {
@@ -220,7 +231,7 @@ function createComfyUiBackend({
       }
       await sleep(pollIntervalMs);
     }
-    throw new Error(`ComfyUI generation timed out after ${timeoutMs}ms`);
+    throw new Error(`ComfyUI generation timed out after ${resolvedTimeoutMs}ms`);
   }
 
   return async function backend({ prompt, editImageBase64 }) {
@@ -281,6 +292,8 @@ function createComfyUiBackend({
 module.exports = {
   DEFAULT_IMAGES_DIR,
   MAX_PROMPT_CHARS,
+  DEFAULT_COMFYUI_TIMEOUT_MS,
+  DEFAULT_COMFYUI_SPLIT_TIMEOUT_MS,
   COMFYUI_CHECKPOINT_NODE_ID,
   COMFYUI_SAMPLER_NODE_ID,
   COMFYUI_POSITIVE_PROMPT_NODE_ID,

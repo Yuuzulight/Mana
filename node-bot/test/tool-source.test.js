@@ -1,7 +1,14 @@
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
 const test = require("node:test");
 
 const { buildToolPolicy } = require("../ai/tool-source");
+const { createMemoryToolSource } = require("../ai/memory-tool-source");
+const { createSessionSearchToolSource } = require("../ai/session-search-tool-source");
+const { createSkillToolSource } = require("../ai/skill-tool-source");
+const { createMcpClientRegistry } = require("../mcp-client-registry");
 
 function fakeBasePolicy() {
   return {
@@ -80,4 +87,58 @@ test("buildToolPolicy with an empty/missing source list just passes the base pol
 
   const mergedNoArg = await buildToolPolicy(base, undefined);
   assert.deepEqual(mergedNoArg.tools, base.tools);
+});
+
+// Issue #267 pass 5's finding: the tests above only ever exercise
+// buildToolPolicy against hand-rolled fakeToolSource() objects, never the
+// real factories server.js actually assembles (createMemoryToolSource,
+// createSessionSearchToolSource, createSkillToolSource,
+// createMcpClientRegistry). A copy-paste miss on any one factory's
+// isKnownToolName/listToolSchemas alias would only surface as a runtime
+// TypeError the first time a model actually calls a tool from that source --
+// exactly the "mocks passed, real wiring was broken" failure class this
+// codebase already hit once (see CHANGELOG's runOpenAIReply scope bug).
+test("buildToolPolicy works end to end with the real memory/session-search/skill/mcp-registry factories, not just fakes", async () => {
+  const rememberCalls = [];
+  const acpMemoryStore = {
+    rememberFact: (args) => {
+      rememberCalls.push(args);
+      return { ok: true, action: args.action || "insert" };
+    },
+    searchSessions: () => [],
+  };
+  const memorySource = createMemoryToolSource({ acpMemoryStore, sessionId: "s1" });
+  const sessionSearchSource = createSessionSearchToolSource({ acpMemoryStore, sessionId: "s1" });
+  const skillSource = createSkillToolSource({
+    approvalGate: { requestApproval: async () => ({ status: "pending" }) },
+    skillsStore: { viewSkill: () => null },
+  });
+  const mcpDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "mana-tool-source-mcp-"));
+  const mcpRegistry = createMcpClientRegistry({ dataDir: mcpDataDir });
+
+  const sources = [memorySource, sessionSearchSource, skillSource, mcpRegistry];
+  for (const source of sources) {
+    assert.equal(typeof source.isKnownToolName, "function", "every real source must expose isKnownToolName");
+    assert.equal(typeof source.listToolSchemas, "function", "every real source must expose listToolSchemas");
+  }
+
+  const basePolicy = {
+    tools: [{ type: "function", function: { name: "read_file" } }],
+    isKnownTool: (name) => name === "read_file",
+    executeTool: async (name) => `base:${name}`,
+  };
+  const merged = await buildToolPolicy(basePolicy, sources);
+
+  // Real dispatch through the merged policy, not just presence checks --
+  // proves the aliases actually route to the right underlying source.
+  const result = await merged.executeTool("memory__remember", { key: "k", text: "t" });
+  assert.deepEqual(JSON.parse(result), { ok: true, action: "insert" });
+  assert.equal(rememberCalls.length, 1);
+
+  assert.equal(merged.isKnownTool("memory__remember"), true);
+  assert.equal(merged.isKnownTool("session_search__query"), true);
+  assert.equal(merged.isKnownTool("skill__view"), true);
+  assert.equal(merged.isKnownTool("mcp__anything"), true);
+  assert.equal(merged.isKnownTool("read_file"), true);
+  assert.equal(merged.isKnownTool("totally_unrelated"), false);
 });

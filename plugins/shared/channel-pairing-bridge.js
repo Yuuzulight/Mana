@@ -34,9 +34,9 @@ function writeJson(filePath, value) {
 }
 
 function generatePairingCode() {
-  // Short, easy to type back from a phone -- 6 uppercase alphanumeric
-  // characters is plenty of entropy for a short-lived local pairing
-  // code (not a long-term secret).
+  // Short, easy to type back from a phone -- 6 uppercase hex characters
+  // (16^6 ≈ 16.7M combinations) is plenty of entropy for a short-lived
+  // local pairing code (not a long-term secret).
   return crypto.randomBytes(4).toString("hex").slice(0, 6).toUpperCase();
 }
 

@@ -39,10 +39,16 @@ class ToolPolicyError extends Error {}
 // default root, since a narrower allowedRoot could still happen to contain
 // a project's own .env. .env.sample/.example/.template stay readable --
 // placeholder templates with no real values, meant to be read as docs.
+const ENV_EXEMPT_RE = /^\.env\.(sample|example|template)$/i;
 const CREDENTIAL_BASENAME_RE =
-  /^\.env(?!\.(?:sample|example|template)$)(\..+)?$|^(id_rsa|id_ed25519|id_ecdsa)(\.pub)?$|\.(pem|pfx|p12)$|^credentials\.json$/i;
+  /\.env(?:\.|$)|^\.env\w|^(id_rsa|id_ed25519|id_ecdsa)(\.pub)?$|\.(pem|pfx|p12)$|^credentials(\.json)?$|^secrets\.(ya?ml|json)$/i;
 
-function isCredentialPath(basename) {
+function isCredentialPath(basenameRaw) {
+  // Windows silently drops trailing dots/spaces when it resolves a path, so
+  // ".env " / ".env." IS the real .env on disk even though the string
+  // itself doesn't match -- test the name the OS will actually open.
+  const basename = String(basenameRaw).replace(/[.\s]+$/, "");
+  if (ENV_EXEMPT_RE.test(basename)) return false;
   return CREDENTIAL_BASENAME_RE.test(basename);
 }
 

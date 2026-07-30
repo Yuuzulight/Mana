@@ -4624,6 +4624,7 @@ module.exports = {
   createApp,
   buildMemoryNotes,
   buildSkillsIndexBlock,
+  DEEP_RESEARCH_SUBTASK_PROFILE,
   ensureDirectory,
   formatMemoryMarkdown,
   normalizeLlamaModelProfile,
