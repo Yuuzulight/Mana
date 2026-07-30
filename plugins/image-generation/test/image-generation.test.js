@@ -303,6 +303,66 @@ test("createComfyUiBackend polls until history reports outputs", async () => {
   assert.equal(requests.filter((r) => r.url.includes("/history/")).length, 3);
 });
 
+test("createComfyUiBackend surfaces ComfyUI's own execution error instead of a generic 'no output images' message", async () => {
+  const { fetchImpl } = createMockComfyUiFetch({
+    historyResponses: [
+      {
+        abc123: {
+          outputs: {},
+          status: {
+            status_str: "error",
+            completed: true,
+            messages: [
+              ["execution_error", { exception_message: "Checkpoint file 'nonexistent.safetensors' not found" }],
+            ],
+          },
+        },
+      },
+    ],
+  });
+  const backend = createComfyUiBackend({
+    baseUrl: "http://127.0.0.1:8188",
+    checkpointName: "sd_xl_base_1.0.safetensors",
+    fetchImpl,
+    pollIntervalMs: 1,
+  });
+  await assert.rejects(
+    () => backend({ prompt: "x" }),
+    /ComfyUI execution failed: Checkpoint file 'nonexistent.safetensors' not found/,
+  );
+});
+
+test("createComfyUiBackend still reports 'no output images' when outputs is genuinely empty with no error status", async () => {
+  const { fetchImpl } = createMockComfyUiFetch({
+    historyResponses: [{ abc123: { outputs: { 9: { images: [] } } } }],
+  });
+  const backend = createComfyUiBackend({
+    baseUrl: "http://127.0.0.1:8188",
+    checkpointName: "sd_xl_base_1.0.safetensors",
+    fetchImpl,
+    pollIntervalMs: 1,
+  });
+  await assert.rejects(() => backend({ prompt: "x" }), /ComfyUI reported no output images/);
+});
+
+test("createComfyUiBackend surfaces a non-ok /view response as an error", async () => {
+  const backend = createComfyUiBackend({
+    baseUrl: "http://127.0.0.1:8188",
+    checkpointName: "sd_xl_base_1.0.safetensors",
+    fetchImpl: async (url) => {
+      if (String(url).endsWith("/prompt")) {
+        return { ok: true, json: async () => ({ prompt_id: "abc123" }) };
+      }
+      if (String(url).includes("/history/")) {
+        return { ok: true, json: async () => ({ abc123: { outputs: { 9: { images: [{ filename: "x.png" }] } } } }) };
+      }
+      return { ok: false, status: 404 };
+    },
+    pollIntervalMs: 1,
+  });
+  await assert.rejects(() => backend({ prompt: "x" }), /ComfyUI image fetch failed: 404/);
+});
+
 test("createComfyUiBackend surfaces a non-ok /prompt response as an error", async () => {
   const backend = createComfyUiBackend({
     baseUrl: "http://127.0.0.1:8188",

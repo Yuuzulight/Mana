@@ -18,7 +18,10 @@ Generate or edit an image from a text description. Disabled by default
     only** for this pass (no editing). Two bundled workflow graph shapes,
     picked via `MANA_IMAGE_COMFYUI_WORKFLOW` (issue #271):
     - `checkpoint` (default): the legacy single-checkpoint shape
-      (SD1.5/SDXL-era) -- requires `MANA_IMAGE_COMFYUI_CHECKPOINT`.
+      (SD1.5/SDXL-era) -- requires `MANA_IMAGE_COMFYUI_CHECKPOINT`. The
+      bundled graph's `EmptyLatentImage` is fixed at 512x512, correct for
+      SD1.5 but a native-resolution mismatch for SDXL (1024x1024) --
+      pass your own `workflowTemplate` if you need a different default.
     - `split`: the split-loader shape FLUX/Qwen-Image/Mage-Flow-era models
       need (`UNETLoader`/`CLIPLoader`/`VAELoader` as separate files instead
       of one combined checkpoint) -- requires `MANA_IMAGE_COMFYUI_UNET`,

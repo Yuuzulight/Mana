@@ -40,8 +40,12 @@ class ToolPolicyError extends Error {}
 // a project's own .env. .env.sample/.example/.template stay readable --
 // placeholder templates with no real values, meant to be read as docs.
 const ENV_EXEMPT_RE = /^\.env\.(sample|example|template)$/i;
+// `^\.envrc$` is an exact match for direnv's real secrets file, not a `\w`
+// wildcard -- an earlier version of this regex used `^\.env\w`, which also
+// caught unrelated dotfiles like `.environment` that merely start with
+// "env" but hold no secrets.
 const CREDENTIAL_BASENAME_RE =
-  /\.env(?:\.|$)|^\.env\w|^(id_rsa|id_ed25519|id_ecdsa)(\.pub)?$|\.(pem|pfx|p12)$|^credentials(\.json)?$|^secrets\.(ya?ml|json)$/i;
+  /\.env(?:\.|$)|^\.envrc$|^(id_rsa|id_ed25519|id_ecdsa)(\.pub)?$|\.(pem|pfx|p12)$|^credentials(\.json)?$|^secrets\.(ya?ml|json)$/i;
 
 function isCredentialPath(basenameRaw) {
   // Windows silently drops trailing dots/spaces when it resolves a path, so

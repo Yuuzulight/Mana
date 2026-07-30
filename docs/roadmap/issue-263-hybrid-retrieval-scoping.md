@@ -95,12 +95,22 @@ pipeline to a second corpus," not "build embeddings from scratch."
 
 This is a write-path change to the single most heavily-exercised piece of
 Mana's memory system (every chat turn calls `appendTurn`), plus a new
-runtime dependency (`node:sqlite`, still explicitly experimental in Node
-22, with no `engines` field in `node-bot/package.json` pinning a minimum
-version yet). Both are real, tractable pieces of work -- the investigation
-above is what makes them tractable -- but they deserve a dedicated pass
-with room for real regression testing against live conversation flow, not
-a rushed addition at the tail end of an unrelated batch of fixes.
+runtime dependency (`node:sqlite`, still Stability-1 experimental on the
+Node 22.x line this project actually targets -- it only reaches release
+candidate in Node 25.7.0, so re-check its current stability tier before
+implementing, since this is a version-dependent classification that may
+have moved on by the time this is picked up; still no `engines` field in
+`node-bot/package.json` pinning a minimum version). Both are real,
+tractable pieces of work -- the investigation above is what makes them
+tractable -- but they deserve a dedicated pass with room for real
+regression testing against live conversation flow, not a rushed addition
+at the tail end of an unrelated batch of fixes.
+
+_Last re-verified against commit `e9d1029` (2026-07-30): `session-search-index.js`
+is still FTS5-only with no embedding column, `retriever-index.js`'s
+`computeEmbeddings()` still handles both response shapes from issue #195,
+and `acp-memory-store.js`'s `appendTurn` has not been touched by any commit
+since -- the reasoning above still holds._
 
 ## Part 2: cursor-based re-summarization -- concrete plan, not yet built
 

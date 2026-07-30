@@ -10,6 +10,9 @@
 // existing pattern) so its actual logic -- JSON-parse-with-fallback, the
 // min-summaries/mode gating, the dedup check -- is directly unit testable
 // instead of only reachable through a fully-mocked HTTP route.
+const fs = require("node:fs");
+const path = require("node:path");
+const crypto = require("node:crypto");
 const { findMatchingSkill } = require("./capabilities/skills-capability");
 
 // Uses its own distinct action type ("skill-write-idle") rather than
@@ -61,6 +64,35 @@ function createSkillProposalRunner(options = {}) {
     throw new Error("asyncLoadBackgroundMemory is required");
   }
 
+  // Issue #262 improvement: this pass has only one caller (the idle-trigger
+  // block in server.js), which re-fires every idle period even when the
+  // session summaries haven't changed since last time -- without a guard,
+  // that's an LLM call burned on identical input indefinitely. Mirrors the
+  // background reviewer's own `skipIfUnchanged`/`lastReviewedHash` pattern
+  // (server.js), but scoped to this module's own small meta file since
+  // skill-proposal.js has no other persisted state.
+  const dataDir = options.dataDir || path.join(__dirname, "data", "acp-memory");
+  const metaPath = path.join(dataDir, "skill_proposal_meta.json");
+
+  function loadMeta() {
+    try {
+      if (fs.existsSync(metaPath)) {
+        const parsed = JSON.parse(fs.readFileSync(metaPath, "utf8") || "{}");
+        if (parsed && typeof parsed === "object") return parsed;
+      }
+    } catch (e) {}
+    return {};
+  }
+
+  function saveLastProposedHash(hash) {
+    try {
+      fs.mkdirSync(dataDir, { recursive: true });
+      fs.writeFileSync(metaPath, JSON.stringify({ lastProposedHash: hash }));
+    } catch (e) {
+      console.warn("Failed to persist skill-proposal meta:", e && e.message ? e.message : e);
+    }
+  }
+
   async function run(deps = {}) {
     try {
       if (
@@ -97,6 +129,11 @@ function createSkillProposalRunner(options = {}) {
         )
         .join("\n\n");
 
+      const summaryHash = crypto.createHash("sha1").update(numbered).digest("hex");
+      if (loadMeta().lastProposedHash === summaryHash) {
+        return { ok: true, found: false, reason: "unchanged_since_last_proposal" };
+      }
+
       const existingSkills = idleSkillsStore.listSkills();
       const existingList = existingSkills.length
         ? existingSkills.map((s) => `- ${s.name}: ${s.description}`).join("\n")
@@ -130,6 +167,14 @@ function createSkillProposalRunner(options = {}) {
       if (!reply || typeof reply !== "string") {
         return { ok: false, reason: "no_reply" };
       }
+
+      // A reply was obtained and parsed (whether it found something or
+      // not) -- this exact input has now genuinely been reviewed, so
+      // record it regardless of outcome. A failed/missing reply above
+      // returns before this point and does NOT save, so a real call
+      // failure still retries next idle period instead of being wrongly
+      // marked done.
+      saveLastProposedHash(summaryHash);
 
       const parsed = extractJson(reply);
       if (!parsed || !parsed.found) {
