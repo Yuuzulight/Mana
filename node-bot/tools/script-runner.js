@@ -37,6 +37,12 @@ async function runToolScript(code, options = {}) {
 
     let settled = false;
     const logs = [];
+    let logsCharCount = 0;
+    // A script looping console.log() for the full timeout could otherwise
+    // buffer unbounded output into this long-lived parent process before
+    // the timeout fires -- cap total buffered log size the same way every
+    // other unbounded-text sink in this codebase does (a fixed char cap).
+    const MAX_LOGS_CHARS = 20000;
     const timer = setTimeout(() => {
       if (settled) return;
       settled = true;
@@ -80,7 +86,11 @@ async function runToolScript(code, options = {}) {
       }
 
       if (msg.type === "log") {
-        logs.push((msg.args || []).join(" "));
+        if (logsCharCount < MAX_LOGS_CHARS) {
+          const line = (msg.args || []).join(" ");
+          logs.push(line);
+          logsCharCount += line.length;
+        }
         return;
       }
 

@@ -609,11 +609,21 @@ const SKILLS_INDEX_MAX_CHARS = 2000;
 
 function buildSkillsIndexBlock(skills) {
   if (!skills || !skills.length) return "";
-  const lines = skills
-    .map((s) => `- ${s.name}: ${s.description}`)
-    .join("\n")
-    .slice(0, SKILLS_INDEX_MAX_CHARS);
-  return `[AVAILABLE SKILLS]\nNamed procedures you have memorized. If one clearly matches what's being asked, call skill__view with its exact name to read the full steps before acting -- don't guess at them from the description alone.\n${lines}\n[END AVAILABLE SKILLS]`;
+  const allLines = skills.map((s) => `- ${s.name}: ${s.description}`);
+  // Truncate at a whole-line boundary, never mid-line -- a flat char slice
+  // would risk cutting a description mid-sentence with no indication it's
+  // incomplete, which the model could otherwise misread as a full entry.
+  const kept = [];
+  let charCount = 0;
+  for (const line of allLines) {
+    if (charCount + line.length + 1 > SKILLS_INDEX_MAX_CHARS) break;
+    kept.push(line);
+    charCount += line.length + 1;
+  }
+  if (kept.length < allLines.length) {
+    kept.push(`- (${allLines.length - kept.length} more skill(s) omitted for length)`);
+  }
+  return `[AVAILABLE SKILLS]\nNamed procedures you have memorized. If one clearly matches what's being asked, call skill__view with its exact name to read the full steps before acting -- don't guess at them from the description alone.\n${kept.join("\n")}\n[END AVAILABLE SKILLS]`;
 }
 
 // Human-readable counterpart to background_meta.json's internal bookkeeping
@@ -3334,8 +3344,12 @@ function registerRoutes(app, upload, deps = {}) {
     }
 
     // Always-visible skill index (see buildSkillsIndexBlock above).
+    // activeSkillsStore, not the module-level skillsStore singleton --
+    // otherwise this would silently bypass a test's (or any future caller's)
+    // deps.skillsStore override, the exact trap already called out where
+    // activeSkillsStore is defined above.
     try {
-      const skillsIndexBlock = buildSkillsIndexBlock(skillsStore.listSkills());
+      const skillsIndexBlock = buildSkillsIndexBlock(activeSkillsStore.listSkills());
       if (skillsIndexBlock) {
         selectedSystemPrompt = `${selectedSystemPrompt}\n\n${skillsIndexBlock}`;
       }
