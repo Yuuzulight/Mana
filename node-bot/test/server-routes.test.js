@@ -1,8 +1,25 @@
 const assert = require("node:assert/strict");
 const test = require("node:test");
 
-const { createApp, formatMemoryMarkdown, buildMemoryNotes } = require("../server");
+const { createApp, formatMemoryMarkdown, buildMemoryNotes, buildSkillsIndexBlock } = require("../server");
 const { withServer } = require("./helpers");
+
+test("buildSkillsIndexBlock returns nothing when there are no skills", () => {
+  assert.equal(buildSkillsIndexBlock([]), "");
+  assert.equal(buildSkillsIndexBlock(null), "");
+});
+
+test("buildSkillsIndexBlock lists every skill's name and description, wrapped in delimiters", () => {
+  const block = buildSkillsIndexBlock([
+    { name: "Restart SearXNG", description: "web search is down" },
+    { name: "Deploy notes", description: "when asked to draft release notes" },
+  ]);
+  assert.match(block, /^\[AVAILABLE SKILLS\]/);
+  assert.match(block, /\[END AVAILABLE SKILLS\]$/);
+  assert.match(block, /- Restart SearXNG: web search is down/);
+  assert.match(block, /- Deploy notes: when asked to draft release notes/);
+  assert.match(block, /skill__view/);
+});
 
 // Stands in for a real plugin/capability's contributePromptContext (issue
 // #108) so /reply's context chain can be tested deterministically -- the
