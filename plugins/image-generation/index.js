@@ -25,9 +25,18 @@ function getStore(deps = {}) {
 function resolveBackend(env) {
   if (env.MANA_IMAGE_BACKEND_URL) {
     if (env.MANA_IMAGE_BACKEND_TYPE === "comfyui") {
+      // Issue #271: which bundled workflow graph shape to use -- explicit
+      // env var, not auto-detection (ComfyUI doesn't expose "what shape is
+      // your loaded model" cheaply over the API, and guessing wrong
+      // silently is worse than asking).
       return createComfyUiBackend({
         baseUrl: env.MANA_IMAGE_BACKEND_URL,
+        workflowShape: env.MANA_IMAGE_COMFYUI_WORKFLOW === "split" ? "split" : "checkpoint",
         checkpointName: env.MANA_IMAGE_COMFYUI_CHECKPOINT,
+        unetName: env.MANA_IMAGE_COMFYUI_UNET,
+        clipName: env.MANA_IMAGE_COMFYUI_CLIP,
+        clipType: env.MANA_IMAGE_COMFYUI_CLIP_TYPE,
+        vaeName: env.MANA_IMAGE_COMFYUI_VAE,
         timeoutMs: env.MANA_IMAGE_COMFYUI_TIMEOUT_MS ? Number(env.MANA_IMAGE_COMFYUI_TIMEOUT_MS) : undefined,
       });
     }

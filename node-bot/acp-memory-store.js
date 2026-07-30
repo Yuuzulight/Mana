@@ -184,6 +184,17 @@ function createAcpMemoryStore(options = {}) {
     return Array.isArray(parsed?.facts) ? parsed.facts : [];
   }
 
+  // Issue #264: a cheap index (key + a short text preview, no full detail)
+  // of every active fact -- lets a caller (memory-tool-source.js's
+  // remember-tool description) show the model what's already remembered,
+  // so it can reuse an existing key instead of always inserting a fresh
+  // one for a rephrased version of the same fact.
+  function listFactKeys() {
+    return loadFacts()
+      .filter((f) => f.status === "active")
+      .map((f) => ({ key: f.key, preview: cleanText(f.text, 80) }));
+  }
+
   function saveFacts(facts) {
     writeJsonObject(factsPath, { facts });
   }
@@ -641,6 +652,7 @@ function createAcpMemoryStore(options = {}) {
     lookupEntity,
     getRelatedFacts,
     rememberFact,
+    listFactKeys,
     searchSessions,
   };
 }

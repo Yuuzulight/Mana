@@ -11,6 +11,79 @@ accounting.
 
 ## [Unreleased]
 
+### Added
+- **`.env`/credential-file access blocked from `read_file`** (issue #268
+  part 1): the model-facing `read_file` tool's default `allowedRoot` is the
+  repo root, which is exactly where `.env` lives -- a prompt-injected
+  `read_file` call (hidden in a page Mana read or a doc she was asked to
+  summarize) could otherwise read and exfiltrate real secrets through an
+  otherwise-legitimate tool call. `ai/tool-policy.js` now refuses `.env`
+  (and `.env.*` variants, excluding `.sample`/`.example`/`.template`),
+  `credentials.json`, SSH private keys, and `.pem`/`.pfx`/`.p12` files
+  regardless of `allowedRoot`. Part 2 (a local credential broker design for
+  a future OAuth-gated plugin) is scoping-only --
+  `docs/roadmap/issue-268-credential-broker-scoping.md`.
+- **LLM-judgment dedup for `memory__remember`** (issue #264): the tool's
+  description now includes a live snapshot of existing fact keys+previews
+  (`acp-memory-store.js`'s new `listFactKeys()`), rebuilt fresh per reply,
+  with an explicit instruction to reuse an existing key (`action: "patch"`)
+  for an already-covered fact instead of always inserting a new one for a
+  rephrased version of the same thing.
+- **Deep Research subtask model-profile routing** (issue #269, opt-in): the
+  short/structured `decompose`/`reflect` calls can now run on the `fast`
+  profile instead of always matching `synthesize`/`compress`'s `quality`
+  profile -- gated behind `MANA_DEEP_RESEARCH_SUBTASK_PROFILES=1`, off by
+  default, since llama-server's model swap is multi-second and a
+  reflect-cycle pass alternates enough that switching by default could
+  cost more time than it saves on typical hardware.
+- **ComfyUI split-loader workflow support** (issue #271): a second bundled
+  ComfyUI workflow graph (`workflows/comfyui-txt2img-split.json`) for
+  split-checkpoint models (FLUX, Qwen-Image, Mage-Flow -- separate
+  `UNETLoader`/`CLIPLoader`/`VAELoader` instead of one combined
+  checkpoint), selected via `MANA_IMAGE_COMFYUI_WORKFLOW=split` alongside
+  the new `MANA_IMAGE_COMFYUI_UNET`/`_CLIP`/`_CLIP_TYPE`/`_VAE` env vars.
+- **Shared `ChannelPlugin` pairing logic** (issue #265): extracted the
+  near-identical pending/approved pairing-code store that
+  `telegram-bridge.js` and `discord-bot.js` had each independently copied
+  into `plugins/shared/channel-pairing-bridge.js`. Both plugins now
+  delegate to it with zero behavior change (verified against their
+  existing test suites); the actual messaging mechanism (Telegram
+  long-polling vs. Discord's Gateway websocket) stays separate, since
+  forcing that into one shape would be speculative generality, not a real
+  simplification.
+- **One generic tool-source composer** (issue #267): `ai/tool-source.js`'s
+  `buildToolPolicy(basePolicy, toolSources)` replaces server.js's
+  sequential `buildToolPolicyWithMcp` → `WithMemory` → `WithSessionSearch`
+  → `WithSkillCreate` → `WithBrowserAutomation` chain with one call over
+  an array. Each tool source now exposes `isKnownToolName` as an alias for
+  its existing prefix-check export, so the next tool source needs no new
+  `buildToolPolicyWithX` function at all. The individual `buildToolPolicyWithX`
+  functions and their own tests are untouched for backward compatibility.
+
+### Investigated, no code change
+- **Issue #197** (Deep Research reflect-on-gaps step): already fully
+  implemented and on `main` (`tools/deep-research.js`'s reflect-cycle loop,
+  commit `c4598e5`) -- closed as done.
+- **Issue #266** (subagent result delivery mechanism): reviewed
+  `tools/subagent-delegation.js`'s bounded-concurrency runner against the
+  issue's own friction checklist -- stable position-based result delivery,
+  total task isolation, already reused cleanly by #197's reflect cycle, no
+  existing event-bus to piggyback on. No real friction found; closed with
+  findings instead of a scope-creep redesign.
+- **Issue #263** (hybrid keyword+vector memory retrieval + cursor
+  resummarization): scoped, not implemented -- both remaining pieces touch
+  `acp-memory-store.js`'s `appendTurn`, the single most-exercised write
+  path in the whole system, and deserve a dedicated pass with room for
+  real regression testing rather than a rushed addition here. Concrete
+  implementation plans for both, plus the storage-scale question answered
+  directly (SQLite stays sufficient; `node:sqlite` + `sqlite-vec`, per
+  issue #220's verified benchmark, is the path if/when it's built), in
+  `docs/roadmap/issue-263-hybrid-retrieval-scoping.md`.
+- **Issues #253/#258**: both are deliberately-parked "not scheduled"
+  reference issues that already contain their own complete investigation
+  write-ups (AIRI-inspired Live2D ideas; mobile app architecture scoping).
+  Confirmed correctly camped in Backlog, left as-is.
+
 ### Security
 - Cleared all 98 open Dependabot alerts: bumped `multer` (1.x -> 2.x),
   `electron-builder`/`app-builder-lib`/`builder-util-runtime` (24.x -> 26.x),

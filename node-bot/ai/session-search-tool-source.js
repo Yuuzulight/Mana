@@ -73,7 +73,7 @@ function createSessionSearchToolSource(options = {}) {
     return JSON.stringify({ results });
   }
 
-  return { listToolSchemas, executeTool };
+  return { listToolSchemas, executeTool, isKnownToolName: isSessionSearchToolName };
 }
 
 async function buildToolPolicyWithSessionSearch(basePolicy, sessionSearchToolSource) {

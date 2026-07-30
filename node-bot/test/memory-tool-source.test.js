@@ -9,7 +9,7 @@ const {
   buildToolPolicyWithMemory,
 } = require("../ai/memory-tool-source");
 
-function fakeAcpMemoryStore(rememberFactImpl) {
+function fakeAcpMemoryStore(rememberFactImpl, listFactKeysImpl) {
   const calls = [];
   return {
     calls,
@@ -17,6 +17,7 @@ function fakeAcpMemoryStore(rememberFactImpl) {
       calls.push(args);
       return rememberFactImpl ? rememberFactImpl(args) : { ok: true, action: args.action || "insert" };
     },
+    ...(listFactKeysImpl ? { listFactKeys: listFactKeysImpl } : {}),
   };
 }
 
@@ -34,6 +35,27 @@ test("isMemoryToolName distinguishes memory tool names from anything else", () =
 test("listToolSchemas returns the remember tool schema", () => {
   const source = createMemoryToolSource({ acpMemoryStore: fakeAcpMemoryStore() });
   assert.deepEqual(source.listToolSchemas(), TOOL_SCHEMAS);
+});
+
+test("listToolSchemas skims existing fact keys into the tool description so the model reuses a key instead of duplicating", () => {
+  const acpMemoryStore = fakeAcpMemoryStore(null, () => [
+    { key: "the user's GPU", preview: "RTX 5080" },
+    { key: "favorite color", preview: "teal" },
+  ]);
+  const source = createMemoryToolSource({ acpMemoryStore });
+  const description = source.listToolSchemas()[0].function.description;
+  assert.match(description, /the user's GPU/);
+  assert.match(description, /RTX 5080/);
+  assert.match(description, /favorite color/);
+  assert.match(description, /reuse that exact key with action "patch"/);
+});
+
+test("listToolSchemas falls back to the static baseline when acpMemoryStore has no listFactKeys or no facts yet", () => {
+  const noMethodSource = createMemoryToolSource({ acpMemoryStore: fakeAcpMemoryStore() });
+  assert.deepEqual(noMethodSource.listToolSchemas(), TOOL_SCHEMAS);
+
+  const emptySource = createMemoryToolSource({ acpMemoryStore: fakeAcpMemoryStore(null, () => []) });
+  assert.deepEqual(emptySource.listToolSchemas(), TOOL_SCHEMAS);
 });
 
 test("executeTool forwards key/text/action to acpMemoryStore.rememberFact, with the bound sessionId", async () => {

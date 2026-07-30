@@ -110,3 +110,46 @@ test("read_file requires a path argument", () => {
   const policy = createToolPolicy({ allowedRoot: "C:\\project" });
   assert.throws(() => policy.executeTool("read_file", {}), /path is required/);
 });
+
+// Issue #268: .env sits inside the default allowedRoot (the repo root), so
+// without this guard a prompt-injected read_file call could read and
+// exfiltrate real secrets through an otherwise-legitimate "read this file"
+// tool call.
+test("read_file refuses to read .env even though it's inside the allowed root", () => {
+  const fakeFs = makeFakeFileSystem({ "C:\\project\\.env": "DISCORD_BOT_TOKEN=real-secret-value" });
+  const policy = createToolPolicy({ allowedRoot: "C:\\project", ...fakeFs });
+  assert.throws(
+    () => policy.executeTool("read_file", { path: ".env" }),
+    /refusing to read a credential-bearing file/,
+  );
+});
+
+test("read_file refuses .env variants (.env.local, .env.production) but allows .env.sample", () => {
+  const fakeFs = makeFakeFileSystem({
+    "C:\\project\\.env.local": "SECRET=x",
+    "C:\\project\\.env.production": "SECRET=y",
+    "C:\\project\\.env.sample": "SECRET=fill-me-in",
+  });
+  const policy = createToolPolicy({ allowedRoot: "C:\\project", ...fakeFs });
+  assert.throws(() => policy.executeTool("read_file", { path: ".env.local" }), ToolPolicyError);
+  assert.throws(() => policy.executeTool("read_file", { path: ".env.production" }), ToolPolicyError);
+  assert.equal(policy.executeTool("read_file", { path: ".env.sample" }), "SECRET=fill-me-in");
+});
+
+test("read_file refuses other common credential-bearing filenames", () => {
+  const fakeFs = makeFakeFileSystem({
+    "C:\\project\\credentials.json": "{}",
+    "C:\\project\\id_rsa": "-----BEGIN OPENSSH PRIVATE KEY-----",
+    "C:\\project\\server.pem": "-----BEGIN CERTIFICATE-----",
+  });
+  const policy = createToolPolicy({ allowedRoot: "C:\\project", ...fakeFs });
+  for (const p of ["credentials.json", "id_rsa", "server.pem"]) {
+    assert.throws(() => policy.executeTool("read_file", { path: p }), ToolPolicyError, p);
+  }
+});
+
+test("read_file still reads a nested .env-adjacent but non-credential file normally", () => {
+  const fakeFs = makeFakeFileSystem({ "C:\\project\\src\\environment.js": "export const x = 1;" });
+  const policy = createToolPolicy({ allowedRoot: "C:\\project", ...fakeFs });
+  assert.equal(policy.executeTool("read_file", { path: "src\\environment.js" }), "export const x = 1;");
+});
