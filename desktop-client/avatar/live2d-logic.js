@@ -236,10 +236,17 @@ const STATE_EXPRESSION_PREFERENCES = {
   disgusted: ["disgusted", "disgust", "white-eyes", "dead-eyes", "blank"],
 };
 
-function expressionForState(state, availableNames, overrides = null) {
+// Issue #253: preferredName is the model's own expression__set tool choice
+// for this reply, if any -- tried first (fuzzy-matched, same as everything
+// else here), falling straight through to the normal state-based
+// preferences on no match. An invalid/unrecognized name is silently
+// ignored this way, exactly as if the tool had never been called; no
+// separate validation layer needed.
+function expressionForState(state, availableNames, overrides = null, preferredName = null) {
   const names = Array.isArray(availableNames) ? availableNames : [];
   const custom = overrides && overrides[state] ? overrides[state] : [];
-  const preferences = custom.concat(
+  const preferred = preferredName ? [preferredName] : [];
+  const preferences = preferred.concat(custom).concat(
     STATE_EXPRESSION_PREFERENCES[state] || STATE_EXPRESSION_PREFERENCES.idle,
   );
   return pickByPreference(preferences, names);
@@ -316,6 +323,171 @@ function centroidToMouthForm(centroidHz, options = {}) {
   const t = (value - low) / (high - low);
   const clamped = Math.max(0, Math.min(1, t));
   return clamped * 2 - 1;
+}
+
+// Issue #275: MFCC (Mel-Frequency Cepstral Coefficients) extraction --
+// mel filterbank + log energy + DCT-II -- run over the same AnalyserNode
+// frequency-domain data spectralCentroidHz already reads. Genuine viseme
+// discrimination (below) is a formant-band read of the filterbank's
+// pre-DCT mel energies, not the DCT'd coefficients themselves -- formant
+// frequencies (F1/F2, the vocal-tract resonances that actually distinguish
+// "ah"/"ee"/"oo") live directly in the frequency-banded energy, and reading
+// them there is verifiable against textbook formant tables in a way that
+// classifying on abstract cepstral coefficients (which would need labeled
+// training data this project doesn't have) is not. Kept in sync with
+// windows-launcher/avatar/lip-sync.js -- same duplication convention this
+// file already uses for spectralCentroidHz/centroidToMouthForm/rmsToMouth,
+// since desktop-client's renderer has no bundler/require for a shared
+// module.
+const melFilterbankCache = new Map();
+
+function hzToMel(hz) {
+  return 2595 * Math.log10(1 + hz / 700);
+}
+
+function melToHz(mel) {
+  return 700 * (10 ** (mel / 2595) - 1);
+}
+
+function buildMelFilterbank(numFilters, fftSize, sampleRate, minHz, maxHz) {
+  const numBins = fftSize / 2 + 1;
+  const minMel = hzToMel(minHz);
+  const maxMel = hzToMel(maxHz);
+  const melPoints = new Array(numFilters + 2);
+  for (let i = 0; i < melPoints.length; i += 1) {
+    melPoints[i] = minMel + ((maxMel - minMel) * i) / (numFilters + 1);
+  }
+  const hzPoints = melPoints.map(melToHz);
+  const binPoints = hzPoints.map((hz) => Math.floor(((fftSize + 1) * hz) / sampleRate));
+
+  const filters = [];
+  const centerHz = [];
+  for (let f = 0; f < numFilters; f += 1) {
+    const left = binPoints[f];
+    const center = binPoints[f + 1];
+    const right = binPoints[f + 2];
+    const weights = new Float64Array(numBins);
+    for (let bin = left; bin < center; bin += 1) {
+      if (bin >= 0 && bin < numBins && center > left) {
+        weights[bin] = (bin - left) / (center - left);
+      }
+    }
+    for (let bin = center; bin < right; bin += 1) {
+      if (bin >= 0 && bin < numBins && right > center) {
+        weights[bin] = (right - bin) / (right - center);
+      }
+    }
+    filters.push(weights);
+    centerHz.push(hzPoints[f + 1]);
+  }
+  return { filters, centerHz };
+}
+
+function getMelFilterbank(numFilters, fftSize, sampleRate, minHz, maxHz) {
+  const key = `${numFilters}:${fftSize}:${sampleRate}:${minHz}:${maxHz}`;
+  let filterbank = melFilterbankCache.get(key);
+  if (!filterbank) {
+    filterbank = buildMelFilterbank(numFilters, fftSize, sampleRate, minHz, maxHz);
+    melFilterbankCache.set(key, filterbank);
+  }
+  return filterbank;
+}
+
+function dct2(input, numCoefficients) {
+  const n = input.length;
+  const output = new Float64Array(numCoefficients);
+  for (let k = 0; k < numCoefficients; k += 1) {
+    let sum = 0;
+    for (let i = 0; i < n; i += 1) {
+      sum += input[i] * Math.cos((Math.PI / n) * (i + 0.5) * k);
+    }
+    output[k] = sum;
+  }
+  return output;
+}
+
+function computeMfcc(magnitudesDb, sampleRate, fftSize, options = {}) {
+  const numFilters = options.numFilters === undefined ? 26 : options.numFilters;
+  const numCoefficients = options.numCoefficients === undefined ? 13 : options.numCoefficients;
+  const minHz = options.minHz === undefined ? 0 : options.minHz;
+  const maxHz = options.maxHz === undefined ? sampleRate / 2 : options.maxHz;
+  const { filters, centerHz } = getMelFilterbank(numFilters, fftSize, sampleRate, minHz, maxHz);
+
+  const numBins = magnitudesDb.length;
+  const power = new Float64Array(numBins);
+  for (let i = 0; i < numBins; i += 1) {
+    const db = magnitudesDb[i];
+    power[i] = Number.isFinite(db) ? 10 ** (db / 10) : 0;
+  }
+
+  const melEnergies = new Float64Array(numFilters);
+  for (let f = 0; f < numFilters; f += 1) {
+    const weights = filters[f];
+    let sum = 0;
+    for (let i = 0; i < numBins; i += 1) {
+      sum += weights[i] * power[i];
+    }
+    melEnergies[f] = sum;
+  }
+
+  const logEnergies = new Float64Array(numFilters);
+  const floor = 1e-10;
+  for (let f = 0; f < numFilters; f += 1) {
+    logEnergies[f] = Math.log(Math.max(floor, melEnergies[f]));
+  }
+
+  return {
+    mfcc: Array.from(dct2(logEnergies, numCoefficients)),
+    melEnergies: Array.from(melEnergies),
+    melCenterHz: centerHz,
+  };
+}
+
+const VISEME_FORMANT_BANDS = {
+  aa: { f1: [600, 1000], f2: [1000, 1900] },
+  ee: { f1: [250, 450], f2: [1900, 3000] },
+  oo: { f1: [250, 450], f2: [600, 1100] },
+};
+
+function bandEnergy(melEnergies, melCenterHz, loHz, hiHz) {
+  let sum = 0;
+  for (let i = 0; i < melEnergies.length; i += 1) {
+    if (melCenterHz[i] >= loHz && melCenterHz[i] < hiHz) {
+      sum += melEnergies[i];
+    }
+  }
+  return sum;
+}
+
+function classifyViseme(mfccResult, options = {}) {
+  const { melEnergies, melCenterHz } = mfccResult || {};
+  if (!melEnergies || !melCenterHz) {
+    return "neutral";
+  }
+  const totalEnergy = melEnergies.reduce((sum, value) => sum + value, 0);
+  const silenceFloor = options.silenceFloor === undefined ? 1e-6 : options.silenceFloor;
+  if (totalEnergy <= silenceFloor) {
+    return "neutral";
+  }
+
+  let best = "neutral";
+  let bestScore = 0;
+  for (const [viseme, bands] of Object.entries(VISEME_FORMANT_BANDS)) {
+    const f1 = bandEnergy(melEnergies, melCenterHz, bands.f1[0], bands.f1[1]);
+    const f2 = bandEnergy(melEnergies, melCenterHz, bands.f2[0], bands.f2[1]);
+    const score = (f1 + f2) / totalEnergy;
+    if (score > bestScore) {
+      bestScore = score;
+      best = viseme;
+    }
+  }
+  return best;
+}
+
+function visemeToMouthForm(viseme) {
+  if (viseme === "ee") return 1;
+  if (viseme === "oo") return -1;
+  return 0;
 }
 
 // Preferred Live2D motion groups per avatar state; returns the first group
@@ -659,6 +831,8 @@ const exportsObj = {
   SACCADE_INTERVAL_STEP_MS,
   ZOOM_LEVELS,
   centroidToMouthForm,
+  classifyViseme,
+  computeMfcc,
   computeZoomFraming,
   nextZoomLevel,
   parseParamIdList,
@@ -682,6 +856,7 @@ const exportsObj = {
   rmsToMouth,
   smoothMouthValue,
   validateModelReferences,
+  visemeToMouthForm,
 };
 
 // Required in the main process (module/module.exports exist there);

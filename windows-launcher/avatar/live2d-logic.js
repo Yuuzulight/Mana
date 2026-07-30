@@ -229,10 +229,17 @@ const STATE_EXPRESSION_PREFERENCES = {
   disgusted: ["disgusted", "disgust", "white-eyes", "dead-eyes", "blank"],
 };
 
-function expressionForState(state, availableNames, overrides = null) {
+// Issue #253: preferredName is the model's own expression__set tool choice
+// for this reply, if any -- tried first (fuzzy-matched, same as everything
+// else here), falling straight through to the normal state-based
+// preferences on no match. An invalid/unrecognized name is silently
+// ignored this way, exactly as if the tool had never been called; no
+// separate validation layer needed.
+function expressionForState(state, availableNames, overrides = null, preferredName = null) {
   const names = Array.isArray(availableNames) ? availableNames : [];
   const custom = overrides && overrides[state] ? overrides[state] : [];
-  const preferences = custom.concat(
+  const preferred = preferredName ? [preferredName] : [];
+  const preferences = preferred.concat(custom).concat(
     STATE_EXPRESSION_PREFERENCES[state] || STATE_EXPRESSION_PREFERENCES.idle,
   );
   return pickByPreference(preferences, names);

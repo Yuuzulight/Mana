@@ -42,7 +42,7 @@ function callTool(name, args) {
   });
 }
 
-async function runScript(code, toolNames) {
+async function runScript(code, toolNames, inputs) {
   const tools = {};
   for (const name of toolNames) {
     tools[name] = (...args) => callTool(name, args);
@@ -50,6 +50,11 @@ async function runScript(code, toolNames) {
 
   const sandbox = {
     tools,
+    // Issue #278: a plain data object (a recipe-shaped skill's declared
+    // inputs), not capabilities -- sealed below like everything else
+    // crossing into the sandbox, but never round-trips over IPC the way a
+    // tools[name] call does.
+    inputs: inputs && typeof inputs === "object" ? { ...inputs } : {},
     console: {
       log: (...args) =>
         process.send({ type: "log", args: args.map(String) }),
@@ -90,6 +95,6 @@ process.on("message", (msg) => {
     return;
   }
   if (msg.type === "run") {
-    runScript(msg.code, msg.toolNames || []);
+    runScript(msg.code, msg.toolNames || [], msg.inputs || {});
   }
 });

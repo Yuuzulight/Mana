@@ -26,6 +26,11 @@ async function runToolScript(code, options = {}) {
   const toolNames = Object.keys(tools).filter(
     (name) => typeof tools[name] === "function",
   );
+  // Issue #278: plain (non-function) named values a skill's declared
+  // "inputs" are called with -- distinct from `tools`, which are only ever
+  // functions round-tripped back to this parent process. Passed straight
+  // through as sandbox data, not a capability, so no IPC round-trip needed.
+  const inputs = options.inputs && typeof options.inputs === "object" ? options.inputs : {};
   const timeoutMs = Math.max(1000, Number(options.timeoutMs) || DEFAULT_TIMEOUT_MS);
   const forkFn = options.fork || fork;
   const workerPath = options.workerPath || WORKER_PATH;
@@ -113,7 +118,7 @@ async function runToolScript(code, options = {}) {
       reject(new Error(`script process exited early (code ${exitCode})`));
     });
 
-    child.send({ type: "run", code, toolNames });
+    child.send({ type: "run", code, toolNames, inputs });
   });
 }
 

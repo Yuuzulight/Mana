@@ -218,6 +218,31 @@ test("expressionForState maps emotions to expressions case-insensitively", () =>
   assert.equal(expressionForState("angry", []), null);
 });
 
+test("expressionForState tries preferredName first, before state-based preferences", () => {
+  // Issue #253: an LLM-chosen expression wins over the automatic
+  // state-based guess when the model's name matches something the loaded
+  // model actually has.
+  assert.equal(
+    expressionForState("excited", ["happy", "wink"], null, "wink"),
+    "wink",
+  );
+  // Case-insensitive, same as everything else here.
+  assert.equal(
+    expressionForState("excited", ["Smirk"], null, "smirk"),
+    "Smirk",
+  );
+});
+
+test("expressionForState falls through to state-based preferences when preferredName doesn't match anything", () => {
+  // An invalid/unrecognized expression name is silently ignored, exactly
+  // as if the tool had never been called -- no separate validation layer.
+  assert.equal(
+    expressionForState("excited", ["happy", "joy"], null, "not-a-real-expression"),
+    "happy",
+  );
+  assert.equal(expressionForState("idle", ["happy"], null, "nonexistent"), null);
+});
+
 test("state mapping overrides beat the built-in preferences", () => {
   const { parseStateMappingOverrides } = require("../avatar/live2d-logic");
   const overrides = parseStateMappingOverrides(
