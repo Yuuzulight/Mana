@@ -12,12 +12,12 @@ function createTempDir() {
 
 test("an unapproved chat's message gets back a pairing code, not a real reply", async () => {
   const bridge = createTelegramBridge({ dataDir: createTempDir() });
-  const reply = await bridge.handleIncomingMessage({ chatId: 111, text: "hi", senderName: "aurora" });
+  const reply = await bridge.handleIncomingMessage({ chatId: 111, text: "hi", senderName: "someuser" });
 
   assert.match(reply, /^This chat isn't paired with Mana yet\..*: [A-Z0-9]{6}$/);
   assert.equal(bridge.isApproved(111), false);
   assert.equal(bridge.listPending().length, 1);
-  assert.equal(bridge.listPending()[0].name, "aurora");
+  assert.equal(bridge.listPending()[0].name, "someuser");
 });
 
 test("the same unapproved chat reuses its existing pairing code across messages", async () => {
