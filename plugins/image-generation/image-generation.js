@@ -12,6 +12,59 @@ const crypto = require("crypto");
 const DEFAULT_IMAGES_DIR = path.join(__dirname, "..", "..", "node-bot", "data", "images");
 const MAX_PROMPT_CHARS = 2000;
 
+// Node ids inside workflows/comfyui-txt2img-checkpoint.json -- the bundled
+// graph is the legacy single-checkpoint shape (CheckpointLoaderSimple ->
+// CLIPTextEncode -> KSampler -> VAEDecode -> SaveImage).
+const COMFYUI_CHECKPOINT_NODE_ID = "4";
+const COMFYUI_SAMPLER_NODE_ID = "3";
+const COMFYUI_POSITIVE_PROMPT_NODE_ID = "6";
+const COMFYUI_SAVE_IMAGE_NODE_ID = "9";
+const DEFAULT_COMFYUI_WORKFLOW_PATH = path.join(__dirname, "workflows", "comfyui-txt2img-checkpoint.json");
+
+// Issue #271: node ids inside workflows/comfyui-txt2img-split.json -- the
+// split-loader shape FLUX/Qwen-Image/Mage-Flow-style models need, where the
+// checkpoint ships as separate files (UNETLoader/CLIPLoader/VAELoader)
+// instead of one combined file. Same KSampler/CLIPTextEncode/VAEDecode/
+// SaveImage tail as the checkpoint graph, just fed by three loaders instead
+// of one. CLIPLoader's "type" input (a model-type string selecting the text
+// encoder architecture -- e.g. Mage-Flow needs a specific value for its
+// qwen3vl_4b_bf16.safetensors encoder) has no safe default across models;
+// it's a required per-model config point (MANA_IMAGE_COMFYUI_CLIP_TYPE),
+// same as clip_name/unet_name/vae_name themselves.
+const COMFYUI_UNET_LOADER_NODE_ID = "10";
+const COMFYUI_CLIP_LOADER_NODE_ID = "11";
+const COMFYUI_VAE_LOADER_NODE_ID = "12";
+const DEFAULT_COMFYUI_SPLIT_WORKFLOW_PATH = path.join(__dirname, "workflows", "comfyui-txt2img-split.json");
+
+const DEFAULT_COMFYUI_POLL_INTERVAL_MS = 1000;
+const DEFAULT_COMFYUI_TIMEOUT_MS = 120000;
+// Split-loader models (FLUX/Qwen-Image/Mage-Flow-class) are commonly larger
+// and slower per-generation on the same hardware than the SDXL-era
+// checkpoint models the shorter default was tuned for -- give them more
+// runway before giving up, unless the caller overrides timeoutMs directly.
+const DEFAULT_COMFYUI_SPLIT_TIMEOUT_MS = 240000;
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// ComfyUI's `/history/{id}` response's `status.messages` is a list of
+// `[eventName, eventData]` tuples; on a genuine execution failure one entry
+// has eventName "execution_error" with the real cause in
+// `eventData.exception_message`. Defensive since the exact shape isn't
+// verifiable against a live instance here (same disclosed gap as the rest
+// of this backend) -- falls back to a plain stringified status rather than
+// throwing on an unexpected shape.
+function extractComfyUiErrorMessage(status) {
+  const messages = Array.isArray(status?.messages) ? status.messages : [];
+  for (const [eventName, eventData] of messages) {
+    if (eventName === "execution_error" && eventData?.exception_message) {
+      return eventData.exception_message;
+    }
+  }
+  return "unknown error (see ComfyUI server logs)";
+}
+
 // Only http/https -- same validation model-management.js's brain-provider
 // settings use, since this is the same shape of concern (a user-configured
 // local or LAN endpoint, not a fixed trusted host).
@@ -138,11 +191,147 @@ function createOpenAiImagesBackend({ apiKey, baseUrl = "https://api.openai.com/v
   };
 }
 
+// ComfyUI backend -- fundamentally different shape from Automatic1111's
+// flat-params API (see docs/roadmap/issue-225-comfyui-backend.md for why):
+// 1. POST a whole workflow graph to /prompt (not {prompt: "..."}).
+// 2. Results are async: poll /history/{prompt_id} until it reports outputs,
+//    then fetch the actual PNG bytes from /view. No websocket in this pass
+//    (out of scope for #225 -- polling is simpler and more testable).
+// 3. The workflow's checkpoint filename must be given explicitly --
+//    ComfyUI's graph always names an exact checkpoint file, unlike
+//    Automatic1111 which just uses whatever's already loaded.
+function createComfyUiBackend({
+  baseUrl,
+  workflowShape = "checkpoint",
+  checkpointName,
+  unetName,
+  clipName,
+  clipType,
+  vaeName,
+  workflowTemplate,
+  fetchImpl = fetch,
+  pollIntervalMs = DEFAULT_COMFYUI_POLL_INTERVAL_MS,
+  timeoutMs,
+} = {}) {
+  const validatedUrl = assertValidBackendUrl(baseUrl);
+  const isSplit = workflowShape === "split";
+  const resolvedTimeoutMs =
+    timeoutMs != null
+      ? timeoutMs
+      : isSplit
+        ? DEFAULT_COMFYUI_SPLIT_TIMEOUT_MS
+        : DEFAULT_COMFYUI_TIMEOUT_MS;
+  if (isSplit) {
+    if (!unetName || !clipName || !clipType || !vaeName) {
+      throw new Error(
+        "the split workflow needs unet/clip/clip-type/vae all set (MANA_IMAGE_COMFYUI_UNET, MANA_IMAGE_COMFYUI_CLIP, MANA_IMAGE_COMFYUI_CLIP_TYPE, MANA_IMAGE_COMFYUI_VAE) -- the split-loader shape has no single checkpoint file to fall back to",
+      );
+    }
+  } else if (!checkpointName) {
+    throw new Error(
+      "a checkpoint name is required (MANA_IMAGE_COMFYUI_CHECKPOINT) -- ComfyUI's workflow graph must name an exact checkpoint file, unlike Automatic1111 which uses whatever's already loaded",
+    );
+  }
+  const defaultWorkflowPath = isSplit ? DEFAULT_COMFYUI_SPLIT_WORKFLOW_PATH : DEFAULT_COMFYUI_WORKFLOW_PATH;
+  const template = workflowTemplate || JSON.parse(fs.readFileSync(defaultWorkflowPath, "utf8"));
+
+  async function pollHistory(promptId) {
+    const deadline = Date.now() + resolvedTimeoutMs;
+    while (Date.now() < deadline) {
+      const response = await fetchImpl(`${validatedUrl.origin}/history/${promptId}`);
+      if (response.ok) {
+        const history = await response.json();
+        const entry = history[promptId];
+        if (entry) {
+          // A real ComfyUI execution failure (bad checkpoint filename, a
+          // node exception, OOM) still comes back as a 200 with a truthy
+          // but empty `outputs: {}` -- checking only `entry.outputs` would
+          // silently swallow the real error and report a useless generic
+          // "no output images" later. `entry.status` carries the actual
+          // cause in `messages`.
+          if (entry.status?.status_str === "error") {
+            throw new Error(`ComfyUI execution failed: ${extractComfyUiErrorMessage(entry.status)}`);
+          }
+          if (entry.outputs && Object.keys(entry.outputs).length) {
+            return entry.outputs;
+          }
+        }
+      }
+      await sleep(pollIntervalMs);
+    }
+    throw new Error(`ComfyUI generation timed out after ${resolvedTimeoutMs}ms`);
+  }
+
+  return async function backend({ prompt, editImageBase64 }) {
+    if (editImageBase64) {
+      throw new Error("ComfyUI backend does not support image editing yet (txt2img only -- see issue #225)");
+    }
+
+    // Deep clone -- the template is shared across every call, must not be mutated in place.
+    const graph = JSON.parse(JSON.stringify(template));
+    if (isSplit) {
+      graph[COMFYUI_UNET_LOADER_NODE_ID].inputs.unet_name = unetName;
+      graph[COMFYUI_CLIP_LOADER_NODE_ID].inputs.clip_name = clipName;
+      graph[COMFYUI_CLIP_LOADER_NODE_ID].inputs.type = clipType;
+      graph[COMFYUI_VAE_LOADER_NODE_ID].inputs.vae_name = vaeName;
+    } else {
+      graph[COMFYUI_CHECKPOINT_NODE_ID].inputs.ckpt_name = checkpointName;
+    }
+    graph[COMFYUI_POSITIVE_PROMPT_NODE_ID].inputs.text = prompt;
+    graph[COMFYUI_SAMPLER_NODE_ID].inputs.seed = Math.floor(Math.random() * 1e15);
+
+    const queueResponse = await fetchImpl(`${validatedUrl.origin}/prompt`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ prompt: graph, client_id: crypto.randomUUID() }),
+    });
+    if (!queueResponse.ok) {
+      throw new Error(`ComfyUI queue request failed: ${queueResponse.status}`);
+    }
+    const { prompt_id: promptId } = await queueResponse.json();
+    if (!promptId) {
+      throw new Error("ComfyUI did not return a prompt_id");
+    }
+
+    const outputs = await pollHistory(promptId);
+    const images = outputs[COMFYUI_SAVE_IMAGE_NODE_ID]?.images || [];
+    if (!images.length) {
+      throw new Error("ComfyUI reported no output images");
+    }
+
+    const imagesBase64 = [];
+    for (const image of images) {
+      const params = new URLSearchParams({
+        filename: image.filename,
+        subfolder: image.subfolder || "",
+        type: image.type || "output",
+      });
+      const viewResponse = await fetchImpl(`${validatedUrl.origin}/view?${params}`);
+      if (!viewResponse.ok) {
+        throw new Error(`ComfyUI image fetch failed: ${viewResponse.status}`);
+      }
+      const buffer = Buffer.from(await viewResponse.arrayBuffer());
+      imagesBase64.push(buffer.toString("base64"));
+    }
+    return { imagesBase64 };
+  };
+}
+
 module.exports = {
   DEFAULT_IMAGES_DIR,
   MAX_PROMPT_CHARS,
+  DEFAULT_COMFYUI_TIMEOUT_MS,
+  DEFAULT_COMFYUI_SPLIT_TIMEOUT_MS,
+  COMFYUI_CHECKPOINT_NODE_ID,
+  COMFYUI_SAMPLER_NODE_ID,
+  COMFYUI_POSITIVE_PROMPT_NODE_ID,
+  COMFYUI_SAVE_IMAGE_NODE_ID,
+  COMFYUI_UNET_LOADER_NODE_ID,
+  COMFYUI_CLIP_LOADER_NODE_ID,
+  COMFYUI_VAE_LOADER_NODE_ID,
   assertValidBackendUrl,
   createImageGenerationStore,
   createAutomatic1111Backend,
   createOpenAiImagesBackend,
+  createComfyUiBackend,
 };

@@ -119,20 +119,26 @@ const { readGgufMetadata } = require("./tools/gguf-metadata");
 const { createTtsRuntime } = require("./tts-runtime");
 const { createAcpMemoryStore } = require("./acp-memory-store");
 const { createSessionSearchIndex } = require("./session-search-index");
+const { createSkillProposalRunner } = require("./skill-proposal");
 const persona = require("./persona");
 const { createPresetsStore } = require("./presets-store");
 const { createPluginSettingsStore } = require("./plugin-settings-store");
 const { createAuthStore } = require("./auth-store");
 const { createToolPolicy } = require("./ai/tool-policy");
-const { createMemoryToolSource, buildToolPolicyWithMemory } = require("./ai/memory-tool-source");
-const { createSessionSearchToolSource, buildToolPolicyWithSessionSearch } = require("./ai/session-search-tool-source");
-const { createMcpClientRegistry, buildToolPolicyWithMcp } = require("./mcp-client-registry");
+// Issue #267: one generic composer instead of a buildToolPolicyWithX per
+// tool source -- see ai/tool-source.js. Each create*ToolSource() factory
+// below already returns the {listToolSchemas, executeTool, isKnownToolName}
+// shape buildToolPolicy expects.
+const { buildToolPolicy } = require("./ai/tool-source");
+const { createMemoryToolSource } = require("./ai/memory-tool-source");
+const { createSessionSearchToolSource } = require("./ai/session-search-tool-source");
+const { createSkillToolSource } = require("./ai/skill-tool-source");
+const { createMcpClientRegistry } = require("./mcp-client-registry");
 const { mcpClientCapability } = require("./capabilities/mcp-client-capability");
 const { createToolCallLog, wrapWithToolCallLog } = require("./tool-call-log");
 const { toolCallLogCapability } = require("./capabilities/tool-call-log-capability");
 const {
   createBrowserAutomationToolSource,
-  buildToolPolicyWithBrowserAutomation,
 } = require("../plugins/browser-automation/browser-automation-tool-source");
 const {
   createEditorIntegrations,
@@ -265,6 +271,14 @@ function shouldUseRemoteAi(overrides = {}) {
     ...overrides,
   });
 }
+// Issue #269: opt-in profile for Deep Research's short/structured subtask
+// calls (decompose, reflect) -- see the fuller reasoning where these
+// closures are built. Off by default ("quality", matching prior behavior)
+// because llama-server's model swap is multi-second and a reflect-cycle
+// pass alternates enough that switching by default could cost more time
+// than it saves.
+const DEEP_RESEARCH_SUBTASK_PROFILE =
+  process.env.MANA_DEEP_RESEARCH_SUBTASK_PROFILES === "1" ? "fast" : "quality";
 const TTS_BIN = process.env.TTS_BIN || null;
 const KOKORO_TTS_URL = process.env.KOKORO_TTS_URL || "http://127.0.0.1:5011";
 const FISH_TTS_URL = process.env.FISH_TTS_URL || "http://127.0.0.1:8080";
@@ -491,7 +505,12 @@ const skillsStore = createSkillsStore({});
 // #142's script-runner gets wired into next (see approval-gate.js, #152).
 // Executor registration happens in createApp below, against whichever
 // skillsStore/approvalGate that specific call actually uses.
-const approvalGate = createApprovalGate({});
+// Content scanning (flagging a pending request for shell/fs/credential-like
+// patterns) stays off by default -- opt in once the flagged-pending UI is
+// something you actually want surfaced.
+const approvalGate = createApprovalGate({
+  contentScanEnabled: process.env.MANA_APPROVAL_CONTENT_SCAN_ENABLED === "1",
+});
 
 // Conversational rut detection (issue #159): flags a reply too similar to
 // Mana's own recent replies so it can be swapped for a less-repetitive
@@ -586,6 +605,38 @@ try {
 let runBackgroundReviewerPublic = null;
 let runBackgroundCompactorPublic = null;
 let runBackgroundConnectionsPublic = null;
+let runSkillProposalPublic = null;
+
+// Always-visible index of every active skill's name+description, injected
+// straight into the system prompt -- independent of
+// contributePluginPromptContext's "first plugin wins" contest (registry.js),
+// since unconditionally returning a non-empty result there would starve
+// every other plugin's context on every single turn (see
+// skills-capability.js's own contributePromptContext, kept unchanged as the
+// keyword-matched full-body fallback). This is the cheap index tier only;
+// skill__view (ai/skill-tool-source.js) is how Mana reads a matched skill's
+// full body on demand, closer to how Claude's own Skills feature works --
+// the model judges relevance from the description, not a regex heuristic.
+const SKILLS_INDEX_MAX_CHARS = 2000;
+
+function buildSkillsIndexBlock(skills) {
+  if (!skills || !skills.length) return "";
+  const allLines = skills.map((s) => `- ${s.name}: ${s.description}`);
+  // Truncate at a whole-line boundary, never mid-line -- a flat char slice
+  // would risk cutting a description mid-sentence with no indication it's
+  // incomplete, which the model could otherwise misread as a full entry.
+  const kept = [];
+  let charCount = 0;
+  for (const line of allLines) {
+    if (charCount + line.length + 1 > SKILLS_INDEX_MAX_CHARS) break;
+    kept.push(line);
+    charCount += line.length + 1;
+  }
+  if (kept.length < allLines.length) {
+    kept.push(`- (${allLines.length - kept.length} more skill(s) omitted for length)`);
+  }
+  return `[AVAILABLE SKILLS]\nNamed procedures you have memorized. If one clearly matches what's being asked, call skill__view with its exact name to read the full steps before acting -- don't guess at them from the description alone.\n${kept.join("\n")}\n[END AVAILABLE SKILLS]`;
+}
 
 // Human-readable counterpart to background_meta.json's internal bookkeeping
 // (issue #69) -- written whenever a compaction/review pass actually changes
@@ -1328,6 +1379,13 @@ if (process.env.NODE_ENV !== "test" && !process.env.NODE_TEST_CONTEXT) {
         runBackgroundReviewerPublic = runBackgroundReviewer;
         runBackgroundCompactorPublic = runBackgroundCompactor;
         runBackgroundConnectionsPublic = runBackgroundConnections;
+        // runSkillProposalPublic is constructed in registerRoutes below,
+        // not here -- runOpenAIReply only exists in that scope (unlike
+        // shouldUseRemoteAi/runLocalLlamaReply/localLlamaReplyAvailable,
+        // which really are module-level). Building it eagerly here with a
+        // bare `runOpenAIReply` reference would throw immediately at
+        // startup (ReferenceError), not just fail quietly when actually
+        // invoked -- caught by this same eager-construction refactor.
       } catch (e) {}
 
       // Run compactor once now, and schedule periodic compaction
@@ -1549,6 +1607,21 @@ function registerRoutes(app, upload, deps = {}) {
           ),
         );
       }
+      // Idle-triggered skill proposal (issue #262) -- runs after the
+      // memory passes above so it benefits from whatever they just
+      // refreshed, and before pruning below so a newly-staged proposal
+      // isn't immediately at risk of being considered for staleness.
+      if (typeof runSkillProposalPublic === "function") {
+        await runSkillProposalPublic({
+          skillsStore: deps.skillsStore,
+          approvalGate: deps.approvalGate,
+        }).catch((err) =>
+          console.warn(
+            "Idle-triggered skill proposal failed:",
+            err && err.message ? err.message : err,
+          ),
+        );
+      }
       // Deterministic, no-LLM skill pruning (issue #140) -- same idle
       // signal as the memory consolidation above, but this pass never
       // calls the model: it just flags/archives skills nobody's used in
@@ -1716,7 +1789,31 @@ function registerRoutes(app, upload, deps = {}) {
   // bypass a test's deps.skillsStore override.
   const activeApprovalGate = deps.approvalGate || approvalGate;
   activeApprovalGate.registerExecutor("skill-write", (payload) => activeSkillsStore.createSkill(payload));
+  // Distinct action type for the idle-triggered autonomous pass (issue
+  // #262/skill-proposal.js) -- same executor, but kept separate from
+  // "skill-write" above so an "always-allow" decision on a manual/
+  // conversational skill write doesn't silently also disable review for
+  // every future proposal nobody's actually looked at.
+  activeApprovalGate.registerExecutor("skill-write-idle", (payload) => activeSkillsStore.createSkill(payload));
   activeApprovalGate.registerExecutor("memory-write", (payload) => acpMemoryStore.rememberFact(payload));
+
+  // Idle-triggered skill-proposal pass (issue #262) -- extracted to
+  // skill-proposal.js so its actual logic is directly unit testable; built
+  // here (not in the earlier module-load-time startup block) because
+  // runOpenAIReply only exists in this function's scope, unlike
+  // shouldUseRemoteAi/runLocalLlamaReply/localLlamaReplyAvailable, which
+  // really are module-level. Rebuilt on every registerRoutes call (once
+  // per real server start, once per test's createApp()), matching
+  // activeSkillsStore/activeApprovalGate just above.
+  runSkillProposalPublic = createSkillProposalRunner({
+    asyncLoadBackgroundMemory,
+    shouldUseRemoteAi,
+    runOpenAIReply,
+    localLlamaReplyAvailable,
+    runLocalLlamaReply,
+    skillsStore: activeSkillsStore,
+    approvalGate: activeApprovalGate,
+  }).run;
   const activeMcpClientRegistry = deps.mcpClientRegistry || mcpClientRegistry;
   const activeToolCallLog = deps.toolCallLog || toolCallLog;
   const activeBrowserAutomationToolSource = deps.browserAutomationToolSource || browserAutomationToolSource;
@@ -1750,18 +1847,26 @@ function registerRoutes(app, upload, deps = {}) {
     synthesize:
       deps.synthesize ||
       ((prompt) => runLocalLlamaReply(prompt, 800, "quality", RESEARCH_SYSTEM_PROMPT)),
-    // Deliberately the same profile as synthesize: a different profile here
-    // would force a llama-server model swap (kill/respawn) in the middle of
-    // every research pass. Sub-query planning is a short completion anyway.
+    // Issue #269: decompose/reflect are short, structured triage calls
+    // (a handful of search-query lines, or one line naming a gap) -- a
+    // materially different shape from synthesize/compress's long-form,
+    // citation-fidelity-sensitive output, and "fast" (a smaller model) is
+    // the intended fit per LLAMA_MODEL_PROFILES' own labels. Left off by
+    // default (DEEP_RESEARCH_SUBTASK_PROFILE stays "quality" throughout,
+    // matching prior behavior exactly) because the swap it would cause is a
+    // real cost -- llama-server-runtime.js's swap is a multi-second
+    // kill/respawn, and a reflect-cycle pass alternates decompose/reflect
+    // with synthesize/compress enough times that switching profiles by
+    // default could spend more of maxTotalMs swapping than the smaller
+    // model saves. Opt in via MANA_DEEP_RESEARCH_SUBTASK_PROFILES=1 on
+    // hardware where the swap cost is low (fast storage, small models, or
+    // LLAMA_SERVER_SWAP_DEBOUNCE_MS tuned down).
     decompose:
       deps.decompose ||
-      ((prompt) => runLocalLlamaReply(prompt, 200, "quality", SUB_QUERY_SYSTEM_PROMPT)),
-    // Issue #197: same bound-completion pattern and "quality" profile as
-    // decompose above -- a short structured decision (a follow-up query or
-    // NONE), not a full reply.
+      ((prompt) => runLocalLlamaReply(prompt, 200, DEEP_RESEARCH_SUBTASK_PROFILE, SUB_QUERY_SYSTEM_PROMPT)),
     reflect:
       deps.reflect ||
-      ((prompt) => runLocalLlamaReply(prompt, 100, "quality", REFLECT_SYSTEM_PROMPT)),
+      ((prompt) => runLocalLlamaReply(prompt, 100, DEEP_RESEARCH_SUBTASK_PROFILE, REFLECT_SYSTEM_PROMPT)),
     // Issue #208: same shared compressExcerpts helper the coding-mode
     // repo-retrieval block (issue #211) also reuses.
     compress: deps.compress || compressExcerpts,
@@ -1802,6 +1907,7 @@ function registerRoutes(app, upload, deps = {}) {
     wikiLookup: deps.wikiLookup || wikiLookup,
     checkAdminAuth,
     runBackgroundReviewerPublic: deps.runBackgroundReviewerPublic || runBackgroundReviewerPublic,
+    runSkillProposalPublic: deps.runSkillProposalPublic || runSkillProposalPublic,
     asyncLoadBackgroundMemory: deps.asyncLoadBackgroundMemory || asyncLoadBackgroundMemory,
     persistBackgroundMeta: deps.persistBackgroundMeta || persistBackgroundMeta,
     getBackgroundMemoryMeta: () => BACKGROUND_MEMORY_META,
@@ -3257,6 +3363,20 @@ function registerRoutes(app, upload, deps = {}) {
       // ignore failures here
     }
 
+    // Always-visible skill index (see buildSkillsIndexBlock above).
+    // activeSkillsStore, not the module-level skillsStore singleton --
+    // otherwise this would silently bypass a test's (or any future caller's)
+    // deps.skillsStore override, the exact trap already called out where
+    // activeSkillsStore is defined above.
+    try {
+      const skillsIndexBlock = buildSkillsIndexBlock(activeSkillsStore.listSkills());
+      if (skillsIndexBlock) {
+        selectedSystemPrompt = `${selectedSystemPrompt}\n\n${skillsIndexBlock}`;
+      }
+    } catch (e) {
+      // ignore failures here
+    }
+
     // Load short session memory (if provided) and inject into the system
     // prompt -- this is the small, hard-capped "always in context" tier
     // (bounded by maxPromptTokens in acp-memory-store.js, same pattern as
@@ -3631,36 +3751,47 @@ function registerRoutes(app, upload, deps = {}) {
         isLlamaServerAvailable()
       ) {
         try {
-          // Issue #169: merged fresh per reply, not cached -- MCP tool
+          // Issue #169/#267: merged fresh per reply, not cached -- MCP tool
           // discovery is async and the registered-server list is small
           // enough that re-listing costs little once a connection is
-          // already established (see mcp-client-registry.js).
-          let mergedToolPolicy = await buildToolPolicyWithMcp(activeToolPolicy, activeMcpClientRegistry);
-          // Issue #198: bound to this reply's sessionId (not model-supplied),
-          // built fresh per reply for the same reason -- cheap, and the
-          // session the fact should be attributed to only exists per-call.
-          // approvalGate: a model-asserted memory write is agent-authored
-          // content same as a skill write (issue #152) -- gated the same
-          // way, see ai/memory-tool-source.js.
-          mergedToolPolicy = await buildToolPolicyWithMemory(
-            mergedToolPolicy,
+          // already established (see mcp-client-registry.js). One generic
+          // buildToolPolicy call folds in every source at once instead of
+          // a hand-rolled buildToolPolicyWithX chain.
+          //
+          // Memory (issue #198): bound to this reply's sessionId (not
+          // model-supplied), built fresh per reply for the same reason --
+          // cheap, and the session the fact should be attributed to only
+          // exists per-call. approvalGate: a model-asserted memory write is
+          // agent-authored content same as a skill write (issue #152) --
+          // gated the same way, see ai/memory-tool-source.js.
+          //
+          // Session search: full-text search across past conversations,
+          // independent of the curated memory summary above.
+          //
+          // Skill creation (issue #262 follow-up): user-requested mid-
+          // conversation ("make a skill that does X") -- distinct from the
+          // idle-triggered autonomous proposal pass, which nobody
+          // explicitly asked for. Despite the direct ask, this still stays
+          // genuinely pending like the idle pass does, not auto-approved
+          // like the Settings UI's own create flow -- the drafted content
+          // is the model's own text, not the user's verbatim words, and a
+          // page Mana read earlier in the same turn could otherwise talk
+          // it into staging attacker-authored content (see
+          // ai/skill-tool-source.js).
+          //
+          // Browser automation (issue #188): only offered when the plugin
+          // is actually enabled (Settings > Plugins) -- same gate every
+          // other browser-automation entry point (its own HTTP routes,
+          // GET /plugins) already respects.
+          let mergedToolPolicy = await buildToolPolicy(activeToolPolicy, [
+            activeMcpClientRegistry,
             createMemoryToolSource({ acpMemoryStore, sessionId, approvalGate: activeApprovalGate }),
-          );
-          // Full-text search across past conversations, independent of
-          // the curated memory summary above.
-          mergedToolPolicy = await buildToolPolicyWithSessionSearch(
-            mergedToolPolicy,
             createSessionSearchToolSource({ acpMemoryStore, sessionId }),
-          );
-          // Issue #188: only offered when the plugin is actually enabled
-          // (Settings > Plugins) -- same gate every other browser-automation
-          // entry point (its own HTTP routes, GET /plugins) already respects.
-          if (isPluginEnabled(browserAutomationPlugin, activePluginSettingsStore)) {
-            mergedToolPolicy = await buildToolPolicyWithBrowserAutomation(
-              mergedToolPolicy,
-              activeBrowserAutomationToolSource,
-            );
-          }
+            createSkillToolSource({ approvalGate: activeApprovalGate, skillsStore: activeSkillsStore }),
+            ...(isPluginEnabled(browserAutomationPlugin, activePluginSettingsStore)
+              ? [activeBrowserAutomationToolSource]
+              : []),
+          ]);
           // Issue #188: applied last so it catches every tool call from
           // every source (local read_file, browser-automation, MCP) in one
           // shared audit/trace log.
@@ -4492,6 +4623,8 @@ if (require.main === module) {
 module.exports = {
   createApp,
   buildMemoryNotes,
+  buildSkillsIndexBlock,
+  DEEP_RESEARCH_SUBTASK_PROFILE,
   ensureDirectory,
   formatMemoryMarkdown,
   normalizeLlamaModelProfile,

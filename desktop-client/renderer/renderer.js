@@ -174,6 +174,19 @@ document.getElementById('themeToggle')?.addEventListener('click', (e) => {
   const updateStatusEl = document.getElementById('updateStatus');
   const checkUpdatesBtnEl = document.getElementById('checkUpdatesBtn');
   const pluginsListEl = document.getElementById('pluginsList');
+  const skillsSelectEl = document.getElementById('skillsSelect');
+  const skillsNewBtnEl = document.getElementById('skillsNewBtn');
+  const skillsEditBtnEl = document.getElementById('skillsEditBtn');
+  const skillsDeleteBtnEl = document.getElementById('skillsDeleteBtn');
+  const skillsEditorEl = document.getElementById('skillsEditor');
+  const skillNameInputEl = document.getElementById('skillNameInput');
+  const skillDescriptionInputEl = document.getElementById('skillDescriptionInput');
+  const skillBodyInputEl = document.getElementById('skillBodyInput');
+  const skillSaveBtnEl = document.getElementById('skillSaveBtn');
+  const skillCancelBtnEl = document.getElementById('skillCancelBtn');
+  const skillsStatusEl = document.getElementById('skillsStatus');
+  const skillsPendingEl = document.getElementById('skillsPending');
+  const skillsPendingListEl = document.getElementById('skillsPendingList');
   const modelCurrentEl = document.getElementById('modelCurrent');
   const modelScanBtnEl = document.getElementById('modelScanBtn');
   const modelBrowseBtnEl = document.getElementById('modelBrowseBtn');
@@ -1175,6 +1188,258 @@ document.getElementById('themeToggle')?.addEventListener('click', (e) => {
       await refreshPresetList();
     } catch (e) {
       console.warn('Mana delete preset failed:', e);
+    }
+  });
+
+  // Skills (Settings > Skills, issue #262 follow-up): create/edit/delete
+  // procedural-memory skills, backed by node-bot's skills-store.js via
+  // GET/POST/PATCH/DELETE /skills. Edit/delete aren't gated at all (see
+  // skills-capability.js) since a Settings form submission already is the
+  // human decision the gate exists to require for agent-authored writes.
+  // Create still goes through the same approval-gate path the idle-
+  // triggered skill-proposal pass (issue #262) uses; a human is right here
+  // filling out the form, so a "pending" outcome with nothing flagged
+  // auto-clears instead of a redundant second confirmation -- but if the
+  // gate's content scan actually flagged something, that's specifically
+  // the case worth a second look, so it's left pending and shown below.
+  let selectedSkillName = '';
+  let editingSkillName = null;
+  let latestSkills = [];
+
+  // The two skill-write action types (server.js/skill-proposal.js) --
+  // manual/conversational vs. the idle-triggered autonomous pass -- share
+  // this one review surface, since either way it's a skill sitting pending
+  // for a human to look at.
+  const SKILL_WRITE_ACTION_TYPES = ['skill-write', 'skill-write-idle'];
+
+  function setSkillsStatus(message, isError) {
+    if (!skillsStatusEl) return;
+    if (!message) {
+      skillsStatusEl.hidden = true;
+      skillsStatusEl.textContent = '';
+      return;
+    }
+    skillsStatusEl.hidden = false;
+    skillsStatusEl.textContent = message;
+    skillsStatusEl.classList.toggle('error', Boolean(isError));
+  }
+
+  function setSelectedSkillName(name) {
+    selectedSkillName = name || '';
+    if (skillsEditBtnEl) skillsEditBtnEl.hidden = !selectedSkillName;
+    if (skillsDeleteBtnEl) skillsDeleteBtnEl.hidden = !selectedSkillName;
+  }
+
+  function renderSkillsSelect(skills) {
+    if (!skillsSelectEl) return;
+    skillsSelectEl.innerHTML = '';
+    const noneOption = document.createElement('option');
+    noneOption.value = '';
+    noneOption.textContent = 'None';
+    skillsSelectEl.appendChild(noneOption);
+    for (const skill of skills) {
+      const option = document.createElement('option');
+      option.value = skill.name;
+      // Flags a skill nobody's actually reached for again since it was
+      // approved -- the useCount signal from skills-store.js -- so an
+      // approved-but-never-mattered proposal is visible, not indistinguishable
+      // from a genuinely useful one.
+      option.textContent = skill.useCount ? skill.name : `${skill.name} (unused)`;
+      skillsSelectEl.appendChild(option);
+    }
+    const stillExists = skills.some((skill) => skill.name === selectedSkillName);
+    skillsSelectEl.value = stillExists ? selectedSkillName : '';
+    setSelectedSkillName(skillsSelectEl.value);
+  }
+
+  function renderPendingSkills(pending) {
+    if (!skillsPendingEl || !skillsPendingListEl) return;
+    const skillPending = pending.filter((p) => SKILL_WRITE_ACTION_TYPES.includes(p.actionType));
+    skillsPendingEl.hidden = skillPending.length === 0;
+    skillsPendingListEl.innerHTML = '';
+    for (const item of skillPending) {
+      const row = document.createElement('div');
+      row.className = 'skills-pending-item';
+      const summary = document.createElement('div');
+      summary.className = 'skills-pending-item-summary';
+      summary.textContent = item.summary || item.payload?.name || 'Pending skill';
+      row.appendChild(summary);
+      if (item.flags?.length) {
+        const flags = document.createElement('div');
+        flags.className = 'skills-pending-item-flags';
+        flags.textContent = `Flagged: ${item.flags.join(', ')}`;
+        row.appendChild(flags);
+      }
+      const actions = document.createElement('div');
+      actions.className = 'skills-pending-item-actions';
+      const approveBtn = document.createElement('button');
+      approveBtn.textContent = 'Approve';
+      approveBtn.addEventListener('click', () => decidePendingSkill(item.id, 'allow-once'));
+      const denyBtn = document.createElement('button');
+      denyBtn.textContent = 'Deny';
+      denyBtn.addEventListener('click', () => decidePendingSkill(item.id, 'deny'));
+      actions.appendChild(approveBtn);
+      actions.appendChild(denyBtn);
+      row.appendChild(actions);
+      skillsPendingListEl.appendChild(row);
+    }
+  }
+
+  async function decidePendingSkill(requestId, decision) {
+    try {
+      await fetchJson(`${BACKEND_URL}/approvals/${requestId}/decide`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ decision }),
+      });
+      setSkillsStatus(decision === 'deny' ? 'Skill proposal denied.' : 'Skill approved.');
+      await refreshSkillsList();
+    } catch (e) {
+      setSkillsStatus(`Failed to ${decision === 'deny' ? 'deny' : 'approve'}: ${e.message}`, true);
+    }
+  }
+
+  async function refreshPendingSkills() {
+    if (!skillsPendingEl) return;
+    try {
+      const result = await fetchJson(`${BACKEND_URL}/approvals/pending`);
+      renderPendingSkills(result.pending || []);
+    } catch (e) {
+      console.warn('Mana pending skills list failed:', e);
+    }
+  }
+
+  async function refreshSkillsList() {
+    if (!skillsSelectEl) return;
+    try {
+      const result = await fetchJson(`${BACKEND_URL}/skills`);
+      latestSkills = result.skills || [];
+      renderSkillsSelect(latestSkills);
+    } catch (e) {
+      setSkillsStatus(`Failed to load skills: ${e.message}`, true);
+    }
+    await refreshPendingSkills();
+  }
+  refreshSkillsList();
+  // A proposal (idle or from elsewhere) can land while Settings just sits
+  // open -- poll the lightweight pending-only endpoint so it shows up
+  // without requiring a local save/delete/decide action first.
+  setInterval(refreshPendingSkills, 15000);
+
+  function closeSkillEditor() {
+    editingSkillName = null;
+    if (skillsEditorEl) skillsEditorEl.hidden = true;
+    if (skillNameInputEl) {
+      skillNameInputEl.value = '';
+      skillNameInputEl.disabled = false;
+    }
+    if (skillDescriptionInputEl) skillDescriptionInputEl.value = '';
+    if (skillBodyInputEl) skillBodyInputEl.value = '';
+  }
+
+  function openSkillEditor(skill) {
+    editingSkillName = skill ? skill.name : null;
+    if (skillNameInputEl) {
+      skillNameInputEl.value = skill ? skill.name : '';
+      // Renaming isn't supported by skills-store.js's updateSkill -- keep
+      // the name field locked once a skill already exists.
+      skillNameInputEl.disabled = Boolean(skill);
+    }
+    if (skillDescriptionInputEl) skillDescriptionInputEl.value = skill ? skill.description : '';
+    if (skillBodyInputEl) skillBodyInputEl.value = skill ? skill.body : '';
+    if (skillsEditorEl) skillsEditorEl.hidden = false;
+    (skillNameInputEl?.disabled ? skillDescriptionInputEl : skillNameInputEl)?.focus();
+  }
+
+  skillsSelectEl?.addEventListener('change', () => {
+    setSelectedSkillName(skillsSelectEl.value);
+  });
+
+  skillsNewBtnEl?.addEventListener('click', () => {
+    setSkillsStatus(null);
+    openSkillEditor(null);
+  });
+
+  skillsEditBtnEl?.addEventListener('click', async () => {
+    if (!selectedSkillName) return;
+    try {
+      // touch=false: browsing into Edit isn't Mana actually reaching for
+      // the skill -- shouldn't bump lastUsed/un-stale it just because the
+      // user opened (and maybe cancelled) the editor.
+      const skill = await fetchJson(
+        `${BACKEND_URL}/skills/${encodeURIComponent(selectedSkillName)}?touch=false`,
+      );
+      setSkillsStatus(null);
+      openSkillEditor(skill);
+    } catch (e) {
+      setSkillsStatus(`Failed to load skill: ${e.message}`, true);
+    }
+  });
+
+  skillCancelBtnEl?.addEventListener('click', closeSkillEditor);
+
+  skillSaveBtnEl?.addEventListener('click', async () => {
+    const name = skillNameInputEl?.value.trim();
+    const description = skillDescriptionInputEl?.value.trim();
+    const body = skillBodyInputEl?.value.trim();
+    if (!name || !description || !body) return;
+    skillSaveBtnEl.disabled = true;
+    try {
+      if (editingSkillName) {
+        await fetchJson(`${BACKEND_URL}/skills/${encodeURIComponent(editingSkillName)}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ description, body }),
+        });
+        setSkillsStatus('Skill updated.');
+      } else {
+        const outcome = await fetchJson(`${BACKEND_URL}/skills`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name, description, body }),
+        });
+        if (outcome.status === 'pending' && outcome.requestId) {
+          if (!outcome.flags || outcome.flags.length === 0) {
+            // Nothing the content scan flagged, and a human just typed
+            // this in directly -- auto-clear the hold instead of a
+            // redundant second confirmation step.
+            await fetchJson(`${BACKEND_URL}/approvals/${outcome.requestId}/decide`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ decision: 'allow-once' }),
+            });
+            setSkillsStatus('Skill created.');
+          } else {
+            // Flagged -- leave it genuinely pending rather than rubber-
+            // stamping past the scan's own tripwire; shows up in the
+            // pending-review list above for an explicit decision.
+            setSkillsStatus(`Staged for review (flagged: ${outcome.flags.join(', ')}).`);
+          }
+        } else {
+          setSkillsStatus('Skill created.');
+        }
+      }
+      closeSkillEditor();
+      setSelectedSkillName(name);
+      await refreshSkillsList();
+    } catch (e) {
+      setSkillsStatus(`Failed to save skill: ${e.message}`, true);
+    } finally {
+      skillSaveBtnEl.disabled = false;
+    }
+  });
+
+  skillsDeleteBtnEl?.addEventListener('click', async () => {
+    if (!selectedSkillName) return;
+    const confirmed = window.confirm(`Delete skill "${selectedSkillName}"? This cannot be undone.`);
+    if (!confirmed) return;
+    try {
+      await fetchJson(`${BACKEND_URL}/skills/${encodeURIComponent(selectedSkillName)}`, { method: 'DELETE' });
+      setSkillsStatus('Skill deleted.');
+      setSelectedSkillName('');
+      await refreshSkillsList();
+    } catch (e) {
+      setSkillsStatus(`Failed to delete skill: ${e.message}`, true);
     }
   });
 

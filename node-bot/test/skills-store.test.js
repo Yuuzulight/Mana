@@ -4,7 +4,7 @@ const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
 
-const { createSkillsStore, parseSkillFile, serializeSkillFile } = require("../skills-store");
+const { createSkillsStore, parseSkillFile, serializeSkillFile, extractSkillScript } = require("../skills-store");
 
 function tempDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), "mana-skills-test-"));
@@ -59,6 +59,43 @@ test("createSkill rejects missing fields and duplicate names", () => {
   );
 });
 
+test("createSkill rejects a name that only differs in case from an existing skill's slug", () => {
+  const store = createSkillsStore({ skillsDir: tempDir() });
+  store.createSkill({ name: "Restart SearXNG", description: "d", body: "b" });
+  // Different display-name casing, same slugified filename -- must not
+  // silently overwrite the first skill's file.
+  assert.throws(
+    () => store.createSkill({ name: "restart searxng", description: "d2", body: "b2" }),
+    /already exists/,
+  );
+});
+
+test("createSkill and updateSkill reject line breaks in name/description/category", () => {
+  const store = createSkillsStore({ skillsDir: tempDir() });
+  assert.throws(
+    () => store.createSkill({ name: "Bad\nName", description: "d", body: "b" }),
+    /name cannot contain line breaks/,
+  );
+  assert.throws(
+    () => store.createSkill({ name: "n", description: "bad\ndesc", body: "b" }),
+    /description cannot contain line breaks/,
+  );
+  assert.throws(
+    () => store.createSkill({ name: "n2", description: "d", category: "bad\ncat", body: "b" }),
+    /category cannot contain line breaks/,
+  );
+
+  store.createSkill({ name: "Editable", description: "d", body: "b" });
+  assert.throws(
+    () => store.updateSkill("Editable", { description: "bad\ndesc" }),
+    /description cannot contain line breaks/,
+  );
+  assert.throws(
+    () => store.updateSkill("Editable", { category: "bad\ncat" }),
+    /category cannot contain line breaks/,
+  );
+});
+
 test("viewSkill returns the full body and touches lastUsed", () => {
   const dir = tempDir();
   let clock = "2026-01-01T00:00:00.000Z";
@@ -77,9 +114,48 @@ test("viewSkill returns the full body and touches lastUsed", () => {
   assert.equal(listed[0].lastUsed, "2026-02-01T00:00:00.000Z");
 });
 
+test("viewSkill with touch:false leaves lastUsed/status untouched", () => {
+  const dir = tempDir();
+  let clock = "2026-01-01T00:00:00.000Z";
+  const store = createSkillsStore({ skillsDir: dir, now: () => clock });
+  store.createSkill({ name: "Browsed Only", description: "desc", body: "body" });
+
+  clock = "2026-02-01T00:00:00.000Z";
+  const viewed = store.viewSkill("Browsed Only", { touch: false });
+  assert.equal(viewed.body, "body");
+  assert.equal(viewed.lastUsed, "2026-01-01T00:00:00.000Z");
+  assert.equal(store.listSkills()[0].lastUsed, "2026-01-01T00:00:00.000Z");
+});
+
 test("viewSkill returns null for an unknown skill", () => {
   const store = createSkillsStore({ skillsDir: tempDir() });
   assert.equal(store.viewSkill("nope"), null);
+});
+
+test("useCount starts at 0 and increments each time the skill is actually viewed", () => {
+  const dir = tempDir();
+  const store = createSkillsStore({ skillsDir: dir });
+  store.createSkill({ name: "Counted", description: "desc", body: "body" });
+  assert.equal(store.listSkills()[0].useCount, 0);
+
+  store.viewSkill("Counted");
+  assert.equal(store.listSkills()[0].useCount, 1);
+  store.viewSkill("Counted");
+  assert.equal(store.listSkills()[0].useCount, 2);
+
+  // touch:false must not count as a use -- browsing into Edit isn't Mana
+  // actually reaching for the skill (same reasoning as the lastUsed test
+  // above).
+  store.viewSkill("Counted", { touch: false });
+  assert.equal(store.listSkills()[0].useCount, 2);
+});
+
+test("extractSkillScript pulls the fenced skill-script block out of a body, or returns null", () => {
+  assert.equal(extractSkillScript("just prose steps, no code"), null);
+  assert.equal(
+    extractSkillScript("Steps:\n1. do a thing\n```skill-script\nreturn 1 + 1;\n```\n2. done"),
+    "return 1 + 1;",
+  );
 });
 
 test("pruneStaleSkills flags skills unused past staleDays and archives past archiveDays", () => {
@@ -132,6 +208,60 @@ test("using a stale skill un-stales it", () => {
   assert.equal(nowStore.listSkills()[0].status, "active");
 });
 
+test("updateSkill patches only the fields provided and persists them", () => {
+  const dir = tempDir();
+  const store = createSkillsStore({ skillsDir: dir, now: () => "2026-01-01T00:00:00.000Z" });
+  store.createSkill({ name: "Editable", description: "old desc", body: "old body", category: "general" });
+
+  const updated = store.updateSkill("Editable", { description: "new desc" });
+  assert.equal(updated.description, "new desc");
+  assert.equal(updated.body, "old body");
+  assert.equal(updated.category, "general");
+
+  const updated2 = store.updateSkill("Editable", { body: "new body", category: "custom" });
+  assert.equal(updated2.description, "new desc");
+  assert.equal(updated2.body, "new body");
+  assert.equal(updated2.category, "custom");
+
+  // Persisted, not just returned in-memory.
+  const store2 = createSkillsStore({ skillsDir: dir });
+  const viewed = store2.viewSkill("Editable");
+  assert.equal(viewed.description, "new desc");
+  assert.equal(viewed.body, "new body");
+  assert.equal(viewed.category, "custom");
+});
+
+test("updateSkill treats category: null as an explicit reset to general", () => {
+  const store = createSkillsStore({ skillsDir: tempDir() });
+  store.createSkill({ name: "Categorized", description: "d", body: "b", category: "custom" });
+  const updated = store.updateSkill("Categorized", { category: null });
+  assert.equal(updated.category, "general");
+});
+
+test("updateSkill returns null for an unknown skill", () => {
+  const store = createSkillsStore({ skillsDir: tempDir() });
+  assert.equal(store.updateSkill("nope", { description: "x" }), null);
+});
+
+test("deleteSkill permanently removes the skill file", () => {
+  const dir = tempDir();
+  const store = createSkillsStore({ skillsDir: dir });
+  store.createSkill({ name: "Removable", description: "d", body: "b" });
+  assert.equal(fs.existsSync(path.join(dir, "removable.md")), true);
+
+  assert.equal(store.deleteSkill("Removable"), true);
+  assert.equal(fs.existsSync(path.join(dir, "removable.md")), false);
+  assert.deepEqual(store.listSkills(), []);
+
+  // Not archived -- gone entirely, unlike pruneStaleSkills.
+  assert.equal(fs.existsSync(path.join(dir, ".archive", "removable.md")), false);
+});
+
+test("deleteSkill returns false for an unknown skill", () => {
+  const store = createSkillsStore({ skillsDir: tempDir() });
+  assert.equal(store.deleteSkill("nope"), false);
+});
+
 test("parseSkillFile falls back to a bare body when frontmatter is missing", () => {
   const parsed = parseSkillFile("just some text, no frontmatter", "fallback-name");
   assert.equal(parsed.name, "fallback-name");
@@ -146,6 +276,7 @@ test("serializeSkillFile round-trips through parseSkillFile", () => {
     category: "general",
     created: "2026-01-01T00:00:00.000Z",
     lastUsed: "2026-01-01T00:00:00.000Z",
+    useCount: 3,
     status: "active",
     body: "line one\nline two",
   };

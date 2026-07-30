@@ -1,8 +1,48 @@
 const assert = require("node:assert/strict");
 const test = require("node:test");
 
-const { createApp, formatMemoryMarkdown, buildMemoryNotes } = require("../server");
+const { createApp, formatMemoryMarkdown, buildMemoryNotes, buildSkillsIndexBlock } = require("../server");
 const { withServer } = require("./helpers");
+
+test("buildSkillsIndexBlock returns nothing when there are no skills", () => {
+  assert.equal(buildSkillsIndexBlock([]), "");
+  assert.equal(buildSkillsIndexBlock(null), "");
+});
+
+test("buildSkillsIndexBlock lists every skill's name and description, wrapped in delimiters", () => {
+  const block = buildSkillsIndexBlock([
+    { name: "Restart SearXNG", description: "web search is down" },
+    { name: "Deploy notes", description: "when asked to draft release notes" },
+  ]);
+  assert.match(block, /^\[AVAILABLE SKILLS\]/);
+  assert.match(block, /\[END AVAILABLE SKILLS\]$/);
+  assert.match(block, /- Restart SearXNG: web search is down/);
+  assert.match(block, /- Deploy notes: when asked to draft release notes/);
+  assert.match(block, /skill__view/);
+});
+
+test("buildSkillsIndexBlock truncates at a whole-line boundary, never mid-line", () => {
+  // Each description is long enough that a handful of skills exceeds the
+  // 2000-char budget -- a flat slice() would cut the last kept line
+  // mid-sentence with no indication anything was omitted.
+  const longDescription = "x".repeat(300);
+  const skills = Array.from({ length: 10 }, (_, i) => ({
+    name: `Skill ${i}`,
+    description: longDescription,
+  }));
+  const block = buildSkillsIndexBlock(skills);
+
+  const lines = block.split("\n").filter((l) => l.startsWith("- "));
+  for (const line of lines) {
+    // Every kept entry is either a full "- Skill N: xxx...x" line or the
+    // omission marker -- never a description chopped mid-word.
+    assert.ok(
+      /^- Skill \d+: x+$/.test(line) || /^- \(\d+ more skill\(s\) omitted for length\)$/.test(line),
+      `unexpectedly truncated line: ${line.slice(0, 60)}...`,
+    );
+  }
+  assert.match(block, /more skill\(s\) omitted for length/);
+});
 
 // Stands in for a real plugin/capability's contributePromptContext (issue
 // #108) so /reply's context chain can be tested deterministically -- the

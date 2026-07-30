@@ -629,7 +629,7 @@
       }
 
       /* Panels reused inside the sidebar (Model / Doctor / Settings) */
-      #perfPanel, #doctorPanel, #modelPanel, #presetPanel, #themePanel, #pluginsPanel, #logsPanel {
+      #perfPanel, #doctorPanel, #modelPanel, #presetPanel, #themePanel, #pluginsPanel, #logsPanel, #skillsPanel {
         margin-bottom: 12px;
         padding: 10px;
         border: 1px solid var(--border);
@@ -759,6 +759,81 @@
 
       #presetEditorActions { display: flex; gap: 8px; }
       #presetEditorActions button { padding: 6px 10px; font-size: 12px; }
+
+      #skillsHeader { margin-bottom: 4px; }
+
+      #skillsSelectRow {
+        display: flex;
+        gap: 8px;
+        margin-top: 8px;
+        flex-wrap: wrap;
+      }
+
+      #skillsSelectRow select {
+        flex: 1;
+        min-width: 100px;
+        padding: 6px 8px;
+        border-radius: 6px;
+        border: 1px solid var(--border);
+        background: var(--panel);
+        color: var(--text);
+        font-size: 12px;
+      }
+
+      #skillsSelectRow button { padding: 6px 10px; font-size: 12px; }
+
+      #skillsEditor {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        margin-top: 8px;
+      }
+
+      #skillsEditor[hidden] { display: none; }
+
+      #skillNameInput, #skillDescriptionInput, #skillBodyInput {
+        padding: 8px 10px;
+        border-radius: 6px;
+        border: 1px solid var(--border);
+        background: var(--panel);
+        color: var(--text);
+        font-family: inherit;
+        font-size: 12px;
+      }
+
+      #skillNameInput:disabled { opacity: 0.6; }
+
+      #skillBodyInput { resize: vertical; min-height: 90px; }
+
+      #skillEditorActions { display: flex; gap: 8px; }
+      #skillEditorActions button { padding: 6px 10px; font-size: 12px; }
+
+      #skillsStatus { margin-top: 8px; }
+      #skillsStatus.error { color: #e07070; }
+
+      #skillsPending { margin-bottom: 10px; }
+      .skills-pending-label {
+        font-size: 10px;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        color: var(--muted);
+        margin-bottom: 4px;
+      }
+      .skills-pending-item {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        padding: 8px;
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        background: var(--panel);
+        margin-bottom: 6px;
+        font-size: 12px;
+      }
+      .skills-pending-item-summary { color: var(--text); }
+      .skills-pending-item-flags { color: #e0a030; font-size: 11px; }
+      .skills-pending-item-actions { display: flex; gap: 8px; margin-top: 2px; }
+      .skills-pending-item-actions button { padding: 4px 8px; font-size: 11px; }
 
       #compareModeBtn.active {
         color: var(--accent);
@@ -1545,6 +1620,48 @@
               <div id="pluginsList">
                 <p class="sidebar-note">Loading...</p>
               </div>
+            </div>
+
+            <div id="skillsPanel">
+              <div id="skillsHeader">
+                <strong>Skills</strong>
+              </div>
+              <div id="skillsPending" hidden>
+                <div class="skills-pending-label">Pending review</div>
+                <div id="skillsPendingList"></div>
+              </div>
+              <div id="skillsSelectRow">
+                <select id="skillsSelect">
+                  <option value="">None</option>
+                </select>
+                <button id="skillsNewBtn">New</button>
+                <button id="skillsEditBtn" hidden>Edit</button>
+                <button id="skillsDeleteBtn" hidden>Delete</button>
+              </div>
+              <div id="skillsEditor" hidden>
+                <input
+                  id="skillNameInput"
+                  type="text"
+                  placeholder="Skill name"
+                  maxlength="80"
+                />
+                <input
+                  id="skillDescriptionInput"
+                  type="text"
+                  placeholder="One-line description: when should this be used?"
+                  maxlength="200"
+                />
+                <textarea
+                  id="skillBodyInput"
+                  placeholder="Step-by-step procedure Mana should follow..."
+                  maxlength="4000"
+                ></textarea>
+                <div id="skillEditorActions">
+                  <button id="skillSaveBtn">Save</button>
+                  <button id="skillCancelBtn">Cancel</button>
+                </div>
+              </div>
+              <p id="skillsStatus" class="sidebar-note" hidden></p>
             </div>
 
             <div id="logsPanel">

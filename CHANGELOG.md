@@ -11,6 +11,79 @@ accounting.
 
 ## [Unreleased]
 
+### Added
+- **`.env`/credential-file access blocked from `read_file`** (issue #268
+  part 1): the model-facing `read_file` tool's default `allowedRoot` is the
+  repo root, which is exactly where `.env` lives -- a prompt-injected
+  `read_file` call (hidden in a page Mana read or a doc she was asked to
+  summarize) could otherwise read and exfiltrate real secrets through an
+  otherwise-legitimate tool call. `ai/tool-policy.js` now refuses `.env`
+  (and `.env.*` variants, excluding `.sample`/`.example`/`.template`),
+  `credentials.json`, SSH private keys, and `.pem`/`.pfx`/`.p12` files
+  regardless of `allowedRoot`. Part 2 (a local credential broker design for
+  a future OAuth-gated plugin) is scoping-only --
+  `docs/roadmap/issue-268-credential-broker-scoping.md`.
+- **LLM-judgment dedup for `memory__remember`** (issue #264): the tool's
+  description now includes a live snapshot of existing fact keys+previews
+  (`acp-memory-store.js`'s new `listFactKeys()`), rebuilt fresh per reply,
+  with an explicit instruction to reuse an existing key (`action: "patch"`)
+  for an already-covered fact instead of always inserting a new one for a
+  rephrased version of the same thing.
+- **Deep Research subtask model-profile routing** (issue #269, opt-in): the
+  short/structured `decompose`/`reflect` calls can now run on the `fast`
+  profile instead of always matching `synthesize`/`compress`'s `quality`
+  profile -- gated behind `MANA_DEEP_RESEARCH_SUBTASK_PROFILES=1`, off by
+  default, since llama-server's model swap is multi-second and a
+  reflect-cycle pass alternates enough that switching by default could
+  cost more time than it saves on typical hardware.
+- **ComfyUI split-loader workflow support** (issue #271): a second bundled
+  ComfyUI workflow graph (`workflows/comfyui-txt2img-split.json`) for
+  split-checkpoint models (FLUX, Qwen-Image, Mage-Flow -- separate
+  `UNETLoader`/`CLIPLoader`/`VAELoader` instead of one combined
+  checkpoint), selected via `MANA_IMAGE_COMFYUI_WORKFLOW=split` alongside
+  the new `MANA_IMAGE_COMFYUI_UNET`/`_CLIP`/`_CLIP_TYPE`/`_VAE` env vars.
+- **Shared `ChannelPlugin` pairing logic** (issue #265): extracted the
+  near-identical pending/approved pairing-code store that
+  `telegram-bridge.js` and `discord-bot.js` had each independently copied
+  into `plugins/shared/channel-pairing-bridge.js`. Both plugins now
+  delegate to it with zero behavior change (verified against their
+  existing test suites); the actual messaging mechanism (Telegram
+  long-polling vs. Discord's Gateway websocket) stays separate, since
+  forcing that into one shape would be speculative generality, not a real
+  simplification.
+- **One generic tool-source composer** (issue #267): `ai/tool-source.js`'s
+  `buildToolPolicy(basePolicy, toolSources)` replaces server.js's
+  sequential `buildToolPolicyWithMcp` → `WithMemory` → `WithSessionSearch`
+  → `WithSkillCreate` → `WithBrowserAutomation` chain with one call over
+  an array. Each tool source now exposes `isKnownToolName` as an alias for
+  its existing prefix-check export, so the next tool source needs no new
+  `buildToolPolicyWithX` function at all. The individual `buildToolPolicyWithX`
+  functions and their own tests are untouched for backward compatibility.
+
+### Investigated, no code change
+- **Issue #197** (Deep Research reflect-on-gaps step): already fully
+  implemented and on `main` (`tools/deep-research.js`'s reflect-cycle loop,
+  commit `c4598e5`) -- closed as done.
+- **Issue #266** (subagent result delivery mechanism): reviewed
+  `tools/subagent-delegation.js`'s bounded-concurrency runner against the
+  issue's own friction checklist -- stable position-based result delivery,
+  total task isolation, already reused cleanly by #197's reflect cycle, no
+  existing event-bus to piggyback on. No real friction found; closed with
+  findings instead of a scope-creep redesign.
+- **Issue #263** (hybrid keyword+vector memory retrieval + cursor
+  resummarization): scoped, not implemented -- both remaining pieces touch
+  `acp-memory-store.js`'s `appendTurn`, the single most-exercised write
+  path in the whole system, and deserve a dedicated pass with room for
+  real regression testing rather than a rushed addition here. Concrete
+  implementation plans for both, plus the storage-scale question answered
+  directly (SQLite stays sufficient; `node:sqlite` + `sqlite-vec`, per
+  issue #220's verified benchmark, is the path if/when it's built), in
+  `docs/roadmap/issue-263-hybrid-retrieval-scoping.md`.
+- **Issues #253/#258**: both are deliberately-parked "not scheduled"
+  reference issues that already contain their own complete investigation
+  write-ups (AIRI-inspired Live2D ideas; mobile app architecture scoping).
+  Confirmed correctly camped in Backlog, left as-is.
+
 ### Security
 - Cleared all 98 open Dependabot alerts: bumped `multer` (1.x -> 2.x),
   `electron-builder`/`app-builder-lib`/`builder-util-runtime` (24.x -> 26.x),
@@ -46,7 +119,123 @@ accounting.
   `onnxruntime`), which is what was blocking the remaining torch
   Dependabot alerts.
 
+### Fixed
+- **`tools/script-runner.js`'s vm sandbox was not actually a security
+  boundary** (found reviewing the new `skill__run` tool, but the bug
+  predates it and affects every script run through this primitive since
+  issue #142): any object or function value injected into the sandbox --
+  the `tools` proxy, `console`, `setTimeout`/`clearTimeout`, the previously-
+  injected `Promise` -- kept its outer-realm `.constructor` chain, so
+  `injectedValue.constructor.constructor("return process")()` compiled and
+  ran code in the real parent process with full `require`/`fs`/`process`
+  access, completely outside the vm context. Verified empirically (a PoC
+  script returned the real `process` object) before landing the fix:
+  `script-runner-worker.js` now recursively strips the prototype off every
+  value crossing into the sandbox (including the sandbox object itself, to
+  close the same escape via `this`/`globalThis`) and no longer injects the
+  outer `Promise` at all (a fresh vm context already has its own). New
+  regression tests exercise the exact escape pattern against the real
+  forked worker, not a mock.
+- **Skill-write review, closed for real** (multi-pass review of #270):
+  `skill__create` (the conversational tool) no longer auto-decides itself
+  -- a model-drafted skill is the model's own inference of what the user
+  meant, not their verbatim words, and auto-approving it was the one place
+  "approval-gated" and "not actually gated" diverged, especially with
+  browser-automation live in the same tool policy. The idle-triggered
+  autonomous proposal pass now uses its own `skill-write-idle` action type
+  (an "always-allow" on a manual write no longer silently disables review
+  for proposals nobody's looked at), skips re-proposing a pattern that's
+  already sitting pending, and neuters literal `BEGIN/END SUMMARIES` text
+  inside a session summary before it reaches the prompt. `serializeSkillFile`
+  now rejects embedded line breaks in name/description/category (previously
+  unescaped, so LLM-generated content could inject bogus frontmatter keys),
+  and `createSkill`'s duplicate check compares the actual target filename
+  instead of the exact display name, closing a case-insensitive
+  silent-overwrite bug ("Restart SearXNG" vs "restart searxng" both
+  slugify to the same file). Settings > Skills now has a pending-review
+  list (Approve/Deny) for anything that stays genuinely pending, visible
+  errors on save/delete instead of console-only, a `touch:false` option so
+  opening Edit and cancelling doesn't silently un-stale a skill, and
+  `runSkillProposal`'s core logic moved to its own module
+  (`skill-proposal.js`) specifically so it's directly unit tested instead
+  of only reachable through a fully-mocked route -- which caught a real
+  latent bug in the process: eager construction exposed that `runOpenAIReply`
+  was never actually in scope where the idle pass called it, a
+  ReferenceError that would have crashed the remote-AI path the first time
+  it fired.
+- **Skill-write review, round 3** (further review of #270): `approval-gate.js`'s
+  `decide()` no longer deletes a pending entry until its executor actually
+  succeeds, so a failing "skill-write" write (disk full, bad payload) leaves
+  the request retriable instead of silently disappearing. The idle proposal's
+  duplicate check now also compares against pending *manual* `skill-write`
+  requests, not just other idle ones. `PATCH /skills/:name` 400s when
+  `category` is neither a string nor `null` instead of silently no-op'ing.
+  `contentScanEnabled` (the optional shell/fs/credential-pattern flagger) is
+  now a real opt-in via `MANA_APPROVAL_CONTENT_SCAN_ENABLED=1`, still off by
+  default. Settings > Skills now polls the pending-review list every 15s in
+  both apps, so a proposal staged while the panel just sits open actually
+  shows up. Added an integration test that boots the real `createApp()` and
+  drives `/skills/propose` and the real `skill-write-idle` executor end to
+  end -- the exact kind of test that would have caught the `runOpenAIReply`
+  scope bug above without needing a live server to notice it.
+
 ### Added
+- **Skills, closer to how Claude's own Skills feature works** (comparison
+  review of #270): a small always-visible `[AVAILABLE SKILLS]` index
+  (name+description of every active skill) is now injected straight into
+  the system prompt, independent of `contributePluginPromptContext`'s
+  "first plugin wins" contest -- the existing keyword-match full-body
+  auto-injection stays as a fallback, unchanged. A new `skill__view` tool
+  lets Mana pull a matched skill's full body on demand instead of relying
+  only on the keyword heuristic to guess relevance for her. A skill's body
+  can now optionally embed one fenced ` ```skill-script ` block --
+  deterministic code for the procedure's mechanical part -- and a new
+  `skill__run` tool executes it through `tools/script-runner.js`'s existing
+  sandbox (no filesystem/network access of its own) instead of the model
+  re-deriving the same steps by reasoning every time. Both the idle
+  proposal prompt and `skill__create`'s description field now explicitly
+  ask for a specific, assertive "when to use this" sentence instead of a
+  vague summary, since that description is the only thing the new index
+  shows. Skills also track `useCount` now (bumped whenever `skill__view` is
+  called, or a skill's script actually runs via `skill__run`; note the
+  Settings UI's own Edit panel deliberately does *not* bump it, same
+  `touch=false` reasoning as browsing without un-staling) so an
+  approved-but-never-used proposal is visibly flagged `(unused)` in both
+  apps' skill picker instead of being indistinguishable from a genuinely
+  useful one.
+
+### Added
+- **Conversational skill creation** (issue #262 follow-up): a new
+  `skill__create` model tool lets Mana save a skill when the user directly
+  asks mid-conversation ("make a skill that does X"), distinct from the
+  idle-triggered autonomous proposal pass below. Stays genuinely pending
+  for review in Settings > Skills, same as the idle pass -- see Fixed,
+  above, for why this doesn't auto-decide. The tool's description also
+  asks Mana to quote the saved skill back in a fenced markdown block in
+  her reply -- no new backend plumbing needed, that's exactly what issue
+  #148's existing
+  renderable-artifacts detection already turns into an openable preview.
+- **Settings > Skills UI** (issue #262 follow-up): create, edit, and delete
+  skills directly from Settings in both windows-launcher and desktop-client,
+  backed by the new `updateSkill`/`deleteSkill` methods on `skills-store.js`
+  and matching `PATCH`/`DELETE /skills/:name` routes. Unlike `POST /skills`,
+  these direct edits/deletes aren't approval-gated -- a Settings form
+  submission already is the human decision the gate exists to require for
+  agent-authored writes. Creating a skill still goes through the same
+  `approval-gate.js` path the idle-triggered proposal pass uses; since a
+  human is right there filling out the form, a "pending" response is
+  auto-approved client-side instead of surfacing a second confirmation step.
+- **Idle-triggered skill proposal** (issue #262): a new pass in
+  `triggerIdleConsolidation` reviews recent session summaries for a
+  genuinely reusable, repeated multi-step workflow and stages -- never
+  writes directly -- a new skill proposal through the existing
+  `approval-gate.js` skill-write path (issue #152). Closes the gap where
+  skill creation existed in storage/approval form but nothing ever
+  triggered it. Conservative by design: skipped when fewer than 5 recent
+  session summaries exist, skipped when an existing skill already covers
+  the pattern (reuses `findMatchingSkill`), and disableable via
+  `MANA_SKILL_PROPOSAL_MODE=off`. Manual trigger at `POST /skills/propose`
+  mirrors the existing `/skills/prune` pattern for Doctor-panel/test use.
 - **Full-text session search** (issue #260): new `session-search-index.js`
   -- a SQLite FTS5 index over
   every past conversation turn's raw text, independent of the curated

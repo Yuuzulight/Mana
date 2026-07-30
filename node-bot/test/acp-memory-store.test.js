@@ -480,6 +480,16 @@ test("rememberFact remove marks the fact stale so it stops surfacing, and report
   });
 });
 
+test("listFactKeys returns only active facts' key+short preview, not removed ones", () => {
+  const store = createAcpMemoryStore({ dataDir: createTempDir() });
+  store.rememberFact({ key: "the user's GPU", text: "RTX 5080, upgraded from a 3070 Ti" });
+  store.rememberFact({ key: "Old Fact", text: "no longer true" });
+  store.rememberFact({ key: "Old Fact", action: "remove" });
+
+  const keys = store.listFactKeys();
+  assert.deepEqual(keys, [{ key: "the user's GPU", preview: "RTX 5080, upgraded from a 3070 Ti" }]);
+});
+
 test("getRelatedFacts surfaces a remembered fact under its own 'Remembered:' block", () => {
   const store = createAcpMemoryStore({ dataDir: createTempDir() });
   store.rememberFact({

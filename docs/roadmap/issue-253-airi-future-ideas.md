@@ -34,16 +34,23 @@ expression group).
 
 This is a materially different design from Mana's current approach
 (`live2d-logic.js`'s `expressionForState`, a fixed state->expression lookup
-table driven by `reply-emotion.js`'s keyword-based emotion detection) -- it
-would let the model choose an expression directly rather than only reacting
-to a coarse detected-emotion bucket.
+table driven by `reply-emotion.js`'s emotion detection -- emoji/kaomoji
+signals are checked first, with keyword regexes only as the fallback when
+neither matches) -- it would let the model choose an expression directly
+rather than only reacting to a coarse detected-emotion bucket.
 
-**Why not now**: this is a real feature, not a tweak. It needs a node-bot
-tool-calling wire-up (the plumbing pattern already exists per issue #142's
-programmatic tool calling for Deep Research), a decision on which
-expressions are safe to expose to the model unsupervised, and UI for
-reviewing/toggling exposure. Bigger scope than the other two items here;
-deserves its own design pass if picked up.
+**Why not now**: this is a real feature, not a tweak, but the tool-calling
+plumbing itself is actually cheap -- a single `expression_set(name)` tool
+following the existing `{listToolSchemas, executeTool, isKnownToolName}`
+shape (`ai/tool-source.js`'s `buildToolPolicy`, same pattern as
+`memory-tool-source.js`/`skill-tool-source.js`) wouldn't need AIRI's own
+per-expression allowlist/approval-gate machinery, since picking an
+expression isn't a persisted write the way `skill__create` is. **The real
+blocker is that node-bot currently has no channel to the Electron renderer
+at all** -- `expressionForState` lives entirely client-side in
+`live2d-logic.js`, and node-bot has no existing IPC/event bridge to reach
+it. That bridge, not the tool schema or an allowlist UI, is the actual
+scope this needs if picked up.
 
 ## 3. Live2D model validator -- Shipped (issue #255)
 

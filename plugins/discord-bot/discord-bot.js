@@ -7,120 +7,35 @@
 // messageCreate listener) is the standard, correct way to receive
 // messages, so this plugin listens for real-time events instead of
 // polling.
-const fs = require("fs");
 const path = require("path");
-const crypto = require("crypto");
+const { createChannelPairingBridge } = require("../shared/channel-pairing-bridge");
 
 const DEFAULT_DATA_DIR = path.join(__dirname, "..", "..", "node-bot", "data", "discord-bot");
 const MAX_TEXT_CHARS = 2000; // Discord's own default message-length ceiling
 
-function ensureDir(dir) {
-  fs.mkdirSync(dir, { recursive: true });
-}
-
-function readJson(filePath, fallback) {
-  if (!fs.existsSync(filePath)) return fallback;
-  try {
-    const raw = fs.readFileSync(filePath, "utf8").trim();
-    return raw ? JSON.parse(raw) : fallback;
-  } catch (e) {
-    return fallback;
-  }
-}
-
-function writeJson(filePath, value) {
-  const tmp = `${filePath}.tmp`;
-  fs.writeFileSync(tmp, `${JSON.stringify(value, null, 2)}\n`, "utf8");
-  fs.renameSync(tmp, filePath);
-}
-
-function generatePairingCode() {
-  return crypto.randomBytes(4).toString("hex").slice(0, 6).toUpperCase();
-}
-
 // options.dataDir/replyFn: same injection pattern as createTelegramBridge.
+//
+// The actual pairing-store logic (issue #265) lives in the shared
+// channel-pairing-bridge.js -- see telegram-bridge.js's createTelegramBridge
+// for the fuller rationale. This wrapper keeps the existing channelId-shaped
+// API (handleIncomingMessage({channelId, ...})).
 function createDiscordBridge(options = {}) {
-  const dataDir = options.dataDir || DEFAULT_DATA_DIR;
-  const pendingPath = path.join(dataDir, "pending.json");
-  const approvedPath = path.join(dataDir, "approved.json");
-  const replyFn = options.replyFn || null;
-
-  function loadPending() {
-    ensureDir(dataDir);
-    return readJson(pendingPath, {});
-  }
-  function savePending(pending) {
-    ensureDir(dataDir);
-    writeJson(pendingPath, pending);
-  }
-  function loadApproved() {
-    ensureDir(dataDir);
-    return readJson(approvedPath, {});
-  }
-  function saveApproved(approved) {
-    ensureDir(dataDir);
-    writeJson(approvedPath, approved);
-  }
-
-  function isApproved(channelId) {
-    return Boolean(loadApproved()[String(channelId)]);
-  }
-
-  function listPending() {
-    return Object.entries(loadPending()).map(([channelId, entry]) => ({ channelId, ...entry }));
-  }
-
-  function listApproved() {
-    return Object.entries(loadApproved()).map(([channelId, entry]) => ({ channelId, ...entry }));
-  }
-
-  function approvePairing(code) {
-    const pending = loadPending();
-    const match = Object.entries(pending).find(([, entry]) => entry.code === code);
-    if (!match) return null;
-
-    const [channelId, entry] = match;
-    const approved = loadApproved();
-    approved[channelId] = { approvedAt: new Date().toISOString(), name: entry.name || null };
-    saveApproved(approved);
-
-    delete pending[channelId];
-    savePending(pending);
-    return channelId;
-  }
-
-  // DM-only by design, same as Telegram's pairing model.
-  async function handleIncomingMessage({ channelId, text, senderName }) {
-    const cleanText = String(text || "").trim().slice(0, MAX_TEXT_CHARS);
-    if (!channelId) throw new Error("channelId is required");
-
-    if (!isApproved(channelId)) {
-      const pending = loadPending();
-      const existing = pending[String(channelId)];
-      const code = existing?.code || generatePairingCode();
-      pending[String(channelId)] = {
-        code,
-        name: senderName || existing?.name || null,
-        firstSeenAt: existing?.firstSeenAt || new Date().toISOString(),
-      };
-      savePending(pending);
-      return `This chat isn't paired with Mana yet. Give this code to whoever owns Mana to approve it: ${code}`;
-    }
-
-    if (!cleanText) return null;
-    if (typeof replyFn !== "function") {
-      throw new Error("no reply function configured");
-    }
-    return replyFn(cleanText, { sessionId: `discord-${channelId}` });
-  }
+  const shared = createChannelPairingBridge({
+    dataDir: options.dataDir || DEFAULT_DATA_DIR,
+    idField: "channelId",
+    maxTextChars: MAX_TEXT_CHARS,
+    sessionPrefix: "discord",
+    replyFn: options.replyFn,
+  });
 
   return {
-    dataDir,
-    isApproved,
-    listPending,
-    listApproved,
-    approvePairing,
-    handleIncomingMessage,
+    dataDir: shared.dataDir,
+    isApproved: shared.isApproved,
+    listPending: shared.listPending,
+    listApproved: shared.listApproved,
+    approvePairing: shared.approvePairing,
+    handleIncomingMessage: ({ channelId, text, senderName }) =>
+      shared.handleIncomingMessage({ id: channelId, text, senderName }),
   };
 }
 
