@@ -7,9 +7,42 @@
 // procedure is underspecified before calling this, not guess. Same merge
 // shape #169/#188/#198/#260 already established (buildToolPolicyWithMcp/
 // WithMemory/WithBrowserAutomation/WithSessionSearch).
+const { extractSkillScript } = require("../skills-store");
+const { runToolScript } = require("../tools/script-runner");
+
 const SKILL_TOOL_PREFIX = "skill__";
 
 const TOOL_SCHEMAS = [
+  {
+    type: "function",
+    function: {
+      name: `${SKILL_TOOL_PREFIX}view`,
+      description:
+        "Read a named skill's full step-by-step body. Every skill you have is listed by name and description in the system prompt's [AVAILABLE SKILLS] index -- call this when one clearly matches what's being asked, before acting, instead of guessing at the steps from the description alone.",
+      parameters: {
+        type: "object",
+        properties: {
+          name: { type: "string", description: "The exact skill name, as shown in the skills index." },
+        },
+        required: ["name"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: `${SKILL_TOOL_PREFIX}run`,
+      description:
+        "Execute a skill's bundled script (a fenced ```skill-script block in its body) instead of re-deriving the same computation by reasoning through the prose. Only works for skills that actually have one -- call skill__view first if you're not sure. The script runs in an isolated sandbox with no filesystem/network access of its own and returns whatever it returns.",
+      parameters: {
+        type: "object",
+        properties: {
+          name: { type: "string", description: "The exact skill name, as shown in the skills index." },
+        },
+        required: ["name"],
+      },
+    },
+  },
   {
     type: "function",
     function: {
@@ -25,12 +58,13 @@ const TOOL_SCHEMAS = [
           },
           description: {
             type: "string",
-            description: "One sentence: when should this skill be used? Shown in the retrieval index.",
+            description:
+              "A specific, assertive sentence naming exactly when to reach for this skill -- name the concrete trigger phrases or situations, not a vague summary of the steps. This is the only thing shown in the always-visible skill index (other than the name), so a vague description means this skill effectively never gets noticed later.",
           },
           body: {
             type: "string",
             description:
-              "The general step-by-step procedure, written for future reuse -- not tied to this one conversation's specific instance of it.",
+              "The general step-by-step procedure, written for future reuse -- not tied to this one conversation's specific instance of it. If the procedure has a genuinely deterministic, mechanical part (a computation, a format conversion), you may embed it as a fenced ```skill-script code block so skill__run can execute it directly later instead of you re-deriving it by reasoning every time -- the script has no filesystem/network access of its own, pure computation only.",
           },
           category: {
             type: "string",
@@ -59,11 +93,20 @@ function isSkillToolName(name) {
 // could otherwise talk the model into staging attacker-authored content
 // that lands with no human ever looking at it. Always stays pending;
 // reviewed via the Settings > Skills pending-approvals list.
+// options.skillsStore: required for skill__view/skill__run -- both read a
+// skill's actual body, unlike skill__create which only stages one.
+// options.runScript: injectable for tests; defaults to the real sandboxed
+// runner (tools/script-runner.js).
 function createSkillToolSource(options = {}) {
   const approvalGate = options.approvalGate;
   if (!approvalGate) {
     throw new Error("approvalGate is required");
   }
+  const skillsStore = options.skillsStore;
+  if (!skillsStore) {
+    throw new Error("skillsStore is required");
+  }
+  const runScript = options.runScript || runToolScript;
 
   function listToolSchemas() {
     return TOOL_SCHEMAS;
@@ -71,6 +114,26 @@ function createSkillToolSource(options = {}) {
 
   async function executeTool(qualifiedName, args) {
     const action = qualifiedName.slice(SKILL_TOOL_PREFIX.length);
+
+    if (action === "view") {
+      const skill = skillsStore.viewSkill(args?.name);
+      if (!skill) return JSON.stringify({ status: "error", error: `no skill named "${args?.name}"` });
+      return JSON.stringify({ status: "ok", name: skill.name, description: skill.description, body: skill.body });
+    }
+
+    if (action === "run") {
+      const skill = skillsStore.viewSkill(args?.name);
+      if (!skill) return JSON.stringify({ status: "error", error: `no skill named "${args?.name}"` });
+      const code = extractSkillScript(skill.body);
+      if (!code) return JSON.stringify({ status: "error", error: `"${skill.name}" has no \`\`\`skill-script block` });
+      try {
+        const { result, logs } = await runScript(code, {});
+        return JSON.stringify({ status: "ok", result, logs });
+      } catch (e) {
+        return JSON.stringify({ status: "error", error: e.message || String(e) });
+      }
+    }
+
     if (action !== "create") {
       throw new Error(`unknown skill tool: ${qualifiedName}`);
     }

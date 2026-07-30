@@ -4,7 +4,7 @@ const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
 
-const { createSkillsStore, parseSkillFile, serializeSkillFile } = require("../skills-store");
+const { createSkillsStore, parseSkillFile, serializeSkillFile, extractSkillScript } = require("../skills-store");
 
 function tempDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), "mana-skills-test-"));
@@ -132,6 +132,32 @@ test("viewSkill returns null for an unknown skill", () => {
   assert.equal(store.viewSkill("nope"), null);
 });
 
+test("useCount starts at 0 and increments each time the skill is actually viewed", () => {
+  const dir = tempDir();
+  const store = createSkillsStore({ skillsDir: dir });
+  store.createSkill({ name: "Counted", description: "desc", body: "body" });
+  assert.equal(store.listSkills()[0].useCount, 0);
+
+  store.viewSkill("Counted");
+  assert.equal(store.listSkills()[0].useCount, 1);
+  store.viewSkill("Counted");
+  assert.equal(store.listSkills()[0].useCount, 2);
+
+  // touch:false must not count as a use -- browsing into Edit isn't Mana
+  // actually reaching for the skill (same reasoning as the lastUsed test
+  // above).
+  store.viewSkill("Counted", { touch: false });
+  assert.equal(store.listSkills()[0].useCount, 2);
+});
+
+test("extractSkillScript pulls the fenced skill-script block out of a body, or returns null", () => {
+  assert.equal(extractSkillScript("just prose steps, no code"), null);
+  assert.equal(
+    extractSkillScript("Steps:\n1. do a thing\n```skill-script\nreturn 1 + 1;\n```\n2. done"),
+    "return 1 + 1;",
+  );
+});
+
 test("pruneStaleSkills flags skills unused past staleDays and archives past archiveDays", () => {
   const dir = tempDir();
   const store = createSkillsStore({
@@ -250,6 +276,7 @@ test("serializeSkillFile round-trips through parseSkillFile", () => {
     category: "general",
     created: "2026-01-01T00:00:00.000Z",
     lastUsed: "2026-01-01T00:00:00.000Z",
+    useCount: 3,
     status: "active",
     body: "line one\nline two",
   };

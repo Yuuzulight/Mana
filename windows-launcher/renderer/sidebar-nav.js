@@ -333,7 +333,11 @@ function renderSkillsSelect(skills) {
   for (const skill of skills) {
     const option = document.createElement("option");
     option.value = skill.name;
-    option.textContent = skill.name;
+    // Flags a skill nobody's actually reached for again since it was
+    // approved -- the useCount signal from skills-store.js -- so an
+    // approved-but-never-mattered proposal is visible, not indistinguishable
+    // from a genuinely useful one.
+    option.textContent = skill.useCount ? skill.name : `${skill.name} (unused)`;
     skillsSelectEl.appendChild(option);
   }
   const stillExists = skills.some((skill) => skill.name === selectedSkillName);

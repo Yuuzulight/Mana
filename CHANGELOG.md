@@ -91,6 +91,28 @@ accounting.
   scope bug above without needing a live server to notice it.
 
 ### Added
+- **Skills, closer to how Claude's own Skills feature works** (comparison
+  review of #270): a small always-visible `[AVAILABLE SKILLS]` index
+  (name+description of every active skill) is now injected straight into
+  the system prompt, independent of `contributePluginPromptContext`'s
+  "first plugin wins" contest -- the existing keyword-match full-body
+  auto-injection stays as a fallback, unchanged. A new `skill__view` tool
+  lets Mana pull a matched skill's full body on demand instead of relying
+  only on the keyword heuristic to guess relevance for her. A skill's body
+  can now optionally embed one fenced ` ```skill-script ` block --
+  deterministic code for the procedure's mechanical part -- and a new
+  `skill__run` tool executes it through `tools/script-runner.js`'s existing
+  sandbox (no filesystem/network access of its own) instead of the model
+  re-deriving the same steps by reasoning every time. Both the idle
+  proposal prompt and `skill__create`'s description field now explicitly
+  ask for a specific, assertive "when to use this" sentence instead of a
+  vague summary, since that description is the only thing the new index
+  shows. Skills also track `useCount` now (bumped whenever `skill__view`
+  or the Settings UI actually opens one) so an approved-but-never-used
+  proposal is visibly flagged `(unused)` in both apps' skill picker instead
+  of being indistinguishable from a genuinely useful one.
+
+### Added
 - **Conversational skill creation** (issue #262 follow-up): a new
   `skill__create` model tool lets Mana save a skill when the user directly
   asks mid-conversation ("make a skill that does X"), distinct from the

@@ -18,6 +18,7 @@ function parseSkillFile(raw, fallbackName) {
       category: "general",
       created: null,
       lastUsed: null,
+      useCount: 0,
       status: "active",
       body: raw.trim(),
     };
@@ -34,6 +35,11 @@ function parseSkillFile(raw, fallbackName) {
     category: frontmatter.category || "general",
     created: frontmatter.created || null,
     lastUsed: frontmatter.lastUsed || null,
+    // How many times this skill has actually been reached for again since
+    // it was approved -- not a moderation signal, just makes an
+    // approved-but-never-used proposal visible instead of indistinguishable
+    // from one that's genuinely useful (issue: skill system review).
+    useCount: Number(frontmatter.useCount) || 0,
     status: frontmatter.status || "active",
     body: match[2].trim(),
   };
@@ -47,6 +53,7 @@ function serializeSkillFile(skill) {
     `category: ${skill.category}`,
     `created: ${skill.created}`,
     `lastUsed: ${skill.lastUsed}`,
+    `useCount: ${skill.useCount || 0}`,
     `status: ${skill.status}`,
     "---",
     "",
@@ -65,6 +72,21 @@ function assertSingleLine(value, fieldName) {
   if (/[\r\n]/.test(value)) {
     throw new Error(`${fieldName} cannot contain line breaks`);
   }
+}
+
+// A skill body can optionally embed one ```skill-script fenced block --
+// deterministic code for the procedure's mechanical part, so skill__run
+// (ai/skill-tool-source.js) can execute it directly through
+// tools/script-runner.js's sandbox instead of the model re-deriving the same
+// steps by reasoning through prose every single time. Pure convention (a
+// specific fence tag inside the existing body text), not a new stored
+// field -- a skill with no such block is just a prose-only skill, same as
+// before this existed.
+const SKILL_SCRIPT_RE = /```skill-script\r?\n([\s\S]*?)```/;
+
+function extractSkillScript(body) {
+  const match = SKILL_SCRIPT_RE.exec(String(body || ""));
+  return match ? match[1].trim() : null;
 }
 
 function slugify(name) {
@@ -122,6 +144,7 @@ function createSkillsStore(options = {}) {
             category: skill.category,
             status: skill.status,
             lastUsed: skill.lastUsed,
+            useCount: skill.useCount,
           };
         } catch (e) {
           return null;
@@ -149,6 +172,7 @@ function createSkillsStore(options = {}) {
     if (!fileName) return false;
     const skill = readSkill(fileName);
     skill.lastUsed = now();
+    skill.useCount = (skill.useCount || 0) + 1;
     if (skill.status === "stale") skill.status = "active";
     fs.writeFileSync(
       path.join(skillsDir, fileName),
@@ -194,6 +218,7 @@ function createSkillsStore(options = {}) {
       category: cleanCategory,
       created: timestamp,
       lastUsed: timestamp,
+      useCount: 0,
       status: "active",
       body: cleanBody,
     };
@@ -312,4 +337,5 @@ module.exports = {
   parseSkillFile,
   serializeSkillFile,
   slugify,
+  extractSkillScript,
 };

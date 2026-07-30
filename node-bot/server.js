@@ -595,6 +595,27 @@ let runBackgroundCompactorPublic = null;
 let runBackgroundConnectionsPublic = null;
 let runSkillProposalPublic = null;
 
+// Always-visible index of every active skill's name+description, injected
+// straight into the system prompt -- independent of
+// contributePluginPromptContext's "first plugin wins" contest (registry.js),
+// since unconditionally returning a non-empty result there would starve
+// every other plugin's context on every single turn (see
+// skills-capability.js's own contributePromptContext, kept unchanged as the
+// keyword-matched full-body fallback). This is the cheap index tier only;
+// skill__view (ai/skill-tool-source.js) is how Mana reads a matched skill's
+// full body on demand, closer to how Claude's own Skills feature works --
+// the model judges relevance from the description, not a regex heuristic.
+const SKILLS_INDEX_MAX_CHARS = 2000;
+
+function buildSkillsIndexBlock(skills) {
+  if (!skills || !skills.length) return "";
+  const lines = skills
+    .map((s) => `- ${s.name}: ${s.description}`)
+    .join("\n")
+    .slice(0, SKILLS_INDEX_MAX_CHARS);
+  return `[AVAILABLE SKILLS]\nNamed procedures you have memorized. If one clearly matches what's being asked, call skill__view with its exact name to read the full steps before acting -- don't guess at them from the description alone.\n${lines}\n[END AVAILABLE SKILLS]`;
+}
+
 // Human-readable counterpart to background_meta.json's internal bookkeeping
 // (issue #69) -- written whenever a compaction/review pass actually changes
 // the compacted summary or important facts, whether triggered by idle
@@ -3312,6 +3333,16 @@ function registerRoutes(app, upload, deps = {}) {
       // ignore failures here
     }
 
+    // Always-visible skill index (see buildSkillsIndexBlock above).
+    try {
+      const skillsIndexBlock = buildSkillsIndexBlock(skillsStore.listSkills());
+      if (skillsIndexBlock) {
+        selectedSystemPrompt = `${selectedSystemPrompt}\n\n${skillsIndexBlock}`;
+      }
+    } catch (e) {
+      // ignore failures here
+    }
+
     // Load short session memory (if provided) and inject into the system
     // prompt -- this is the small, hard-capped "always in context" tier
     // (bounded by maxPromptTokens in acp-memory-store.js, same pattern as
@@ -3719,7 +3750,7 @@ function registerRoutes(app, upload, deps = {}) {
           // ai/skill-tool-source.js).
           mergedToolPolicy = await buildToolPolicyWithSkillCreate(
             mergedToolPolicy,
-            createSkillToolSource({ approvalGate: activeApprovalGate }),
+            createSkillToolSource({ approvalGate: activeApprovalGate, skillsStore: activeSkillsStore }),
           );
           // Issue #188: only offered when the plugin is actually enabled
           // (Settings > Plugins) -- same gate every other browser-automation
@@ -4561,6 +4592,7 @@ if (require.main === module) {
 module.exports = {
   createApp,
   buildMemoryNotes,
+  buildSkillsIndexBlock,
   ensureDirectory,
   formatMemoryMarkdown,
   normalizeLlamaModelProfile,
