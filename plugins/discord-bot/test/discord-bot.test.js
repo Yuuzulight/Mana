@@ -17,12 +17,12 @@ function createTempDir() {
 
 test("an unapproved channel's message gets back a pairing code, not a real reply", async () => {
   const bridge = createDiscordBridge({ dataDir: createTempDir() });
-  const reply = await bridge.handleIncomingMessage({ channelId: "111", text: "hi", senderName: "aurora" });
+  const reply = await bridge.handleIncomingMessage({ channelId: "111", text: "hi", senderName: "someuser" });
 
   assert.match(reply, /^This chat isn't paired with Mana yet\..*: [A-Z0-9]{6}$/);
   assert.equal(bridge.isApproved("111"), false);
   assert.equal(bridge.listPending().length, 1);
-  assert.equal(bridge.listPending()[0].name, "aurora");
+  assert.equal(bridge.listPending()[0].name, "someuser");
 });
 
 test("the same unapproved channel reuses its existing pairing code across messages", async () => {
@@ -82,7 +82,7 @@ test("handleIncomingMessage truncates to MAX_TEXT_CHARS and requires a channelId
   await assert.rejects(() => bridge.handleIncomingMessage({ text: "hi" }), /channelId is required/);
 });
 
-function fakeMessage({ authorBot = false, channelType = DISCORD_DM_CHANNEL_TYPE, content = "hi", username = "aurora" } = {}) {
+function fakeMessage({ authorBot = false, channelType = DISCORD_DM_CHANNEL_TYPE, content = "hi", username = "someuser" } = {}) {
   const sent = [];
   return {
     message: {
