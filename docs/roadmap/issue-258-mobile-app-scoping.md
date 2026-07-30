@@ -2,11 +2,17 @@
 
 ## Status: Scoped from Project AIRI's mobile investigation, not started
 
-Mana is Windows-only today: two Electron apps (`windows-launcher`, `desktop-client`)
-plus a local Node backend (`node-bot`), no mobile client of any kind. This
-document exists so a future "let's actually build the mobile app" session
-starts from a real blueprint instead of from zero -- it is explicitly **not**
-a commitment or an estimate.
+Mana's native desktop presence is two Electron apps (`windows-launcher`,
+`desktop-client`) plus a local Node backend (`node-bot`) -- there is no
+native mobile app, and specifically no mobile avatar rendering of any kind.
+There is already a working mobile *companion*, though: a chat/text PWA
+(`node-bot/mobile-routes.js`, `mobile-auth.js`, `mobile-device-store.js`,
+`admin/mobile_devices_ui.html`, backed by `docs/mobile_pwa_cloudflare.md`)
+with passcode auth, per-device pairing, and Cloudflare Tunnel remote access
+-- it has no avatar rendering at all, which is exactly the problem this doc
+is about. This document exists so a future "let's actually build a native
+avatar-rendering mobile app" session starts from a real blueprint instead of
+from zero -- it is explicitly **not** a commitment or an estimate.
 
 ## The problem, in one sentence
 
@@ -75,15 +81,17 @@ guess baked into this document:
   renderer (Godot's own VRM importer exists per its Godot addon
   ecosystem; Live2D has an official Cocos/native Cubism SDK for
   non-web engines that would need separate integration).
-- **Backend connectivity**: Mana's `node-bot` backend currently assumes it
-  runs on the same Windows machine as the Electron client. A phone app
-  needs either (a) talking to that same desktop backend over the local
-  network/tunnel -- which the README already gestures at ("phone chat and
-  summary sync over the local backend and an optional tunnel") -- or (b)
-  a lighter on-device inference path, which is a much bigger and separate
-  question (model size/quantization for phone hardware, no discrete GPU).
-  Option (a) is almost certainly the right starting scope: a mobile
-  *client* to the existing desktop brain, not a standalone on-device Mana.
+- **Backend connectivity**: option (a) -- talking to the same desktop
+  backend over the local network/tunnel -- isn't just a plan, it's a
+  working feature already: `node-bot/mobile-routes.js`'s passcode auth and
+  rate-limited unlock, `mobile-device-store.js`'s per-device pairing, and
+  the Cloudflare Tunnel path in `docs/mobile_pwa_cloudflare.md`. A native
+  avatar-rendering app would almost certainly reuse this auth/tunnel layer
+  rather than build its own -- the open question narrows to "reuse this
+  directly, or does a native (non-WebView) client need its own transport
+  layer instead of hitting the same HTTP routes." Option (b) (on-device
+  inference, no discrete GPU) remains a much bigger, genuinely separate
+  question, unaffected by this.
 - **Platform priority**: AIRI's writeup shows Android as the easier path
   (no official plugin needed, direct `Activity` access) and iOS as
   meaningfully harder (custom Godot plugin, Objective-C/Swift bridge).

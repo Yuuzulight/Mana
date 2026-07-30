@@ -1,7 +1,14 @@
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
 const test = require("node:test");
 
 const { createSkillProposalRunner, IDLE_SKILL_WRITE_ACTION } = require("../skill-proposal");
+
+function createTempDir() {
+  return fs.mkdtempSync(path.join(os.tmpdir(), "mana-skill-proposal-"));
+}
 
 function fakeSkillsStore(skills = []) {
   return { listSkills: () => skills };
@@ -34,6 +41,10 @@ function baseOptions(overrides = {}) {
     runLocalLlamaReply: async () => JSON.stringify({ found: false }),
     skillsStore: fakeSkillsStore(),
     approvalGate: fakeApprovalGate(),
+    // Fresh temp dir per test -- the skip-if-unchanged hash persists to
+    // disk, and tests must not share that state with each other or with
+    // the real node-bot/data/acp-memory directory.
+    dataDir: createTempDir(),
     ...overrides,
   };
 }
@@ -276,6 +287,75 @@ test("run() neuters literal BEGIN/END SUMMARIES markers inside summary text befo
   assert.equal(endCount, 1);
   assert.ok(capturedPrompt.includes("[begin summaries]"));
   assert.ok(capturedPrompt.includes("[end summaries]"));
+});
+
+test("run() skips the model call entirely when summaries are unchanged since the last proposal", async () => {
+  const dataDir = createTempDir();
+  let modelCallCount = 0;
+  const runner = createSkillProposalRunner(
+    baseOptions({
+      dataDir,
+      runLocalLlamaReply: async () => {
+        modelCallCount += 1;
+        return JSON.stringify({ found: false });
+      },
+    }),
+  );
+
+  const first = await runner.run();
+  assert.deepEqual(first, { ok: true, found: false });
+  assert.equal(modelCallCount, 1);
+
+  // Same runner, same underlying summaries -- must not call the model again.
+  const second = await runner.run();
+  assert.deepEqual(second, { ok: true, found: false, reason: "unchanged_since_last_proposal" });
+  assert.equal(modelCallCount, 1);
+});
+
+test("run() calls the model again once the underlying summaries actually change", async () => {
+  const dataDir = createTempDir();
+  let modelCallCount = 0;
+  let summaries = summariesOf(5);
+  const runner = createSkillProposalRunner(
+    baseOptions({
+      dataDir,
+      asyncLoadBackgroundMemory: async () => ({ processedFiles: summaries }),
+      runLocalLlamaReply: async () => {
+        modelCallCount += 1;
+        return JSON.stringify({ found: false });
+      },
+    }),
+  );
+
+  await runner.run();
+  assert.equal(modelCallCount, 1);
+
+  summaries = summariesOf(6);
+  await runner.run();
+  assert.equal(modelCallCount, 2);
+});
+
+test("run() does NOT persist the skip-hash when the model call fails, so a real failure still retries next time", async () => {
+  const dataDir = createTempDir();
+  const runner = createSkillProposalRunner(
+    baseOptions({ dataDir, localLlamaReplyAvailable: () => false }),
+  );
+
+  const first = await runner.run();
+  assert.deepEqual(first, { ok: false, reason: "no_reply" });
+
+  let modelCalled = false;
+  const retryRunner = createSkillProposalRunner(
+    baseOptions({
+      dataDir,
+      runLocalLlamaReply: async () => {
+        modelCalled = true;
+        return JSON.stringify({ found: false });
+      },
+    }),
+  );
+  await retryRunner.run();
+  assert.equal(modelCalled, true);
 });
 
 test("run() catches an unexpected exception and reports it instead of throwing", async () => {

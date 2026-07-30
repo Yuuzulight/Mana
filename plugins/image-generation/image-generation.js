@@ -48,6 +48,23 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+// ComfyUI's `/history/{id}` response's `status.messages` is a list of
+// `[eventName, eventData]` tuples; on a genuine execution failure one entry
+// has eventName "execution_error" with the real cause in
+// `eventData.exception_message`. Defensive since the exact shape isn't
+// verifiable against a live instance here (same disclosed gap as the rest
+// of this backend) -- falls back to a plain stringified status rather than
+// throwing on an unexpected shape.
+function extractComfyUiErrorMessage(status) {
+  const messages = Array.isArray(status?.messages) ? status.messages : [];
+  for (const [eventName, eventData] of messages) {
+    if (eventName === "execution_error" && eventData?.exception_message) {
+      return eventData.exception_message;
+    }
+  }
+  return "unknown error (see ComfyUI server logs)";
+}
+
 // Only http/https -- same validation model-management.js's brain-provider
 // settings use, since this is the same shape of concern (a user-configured
 // local or LAN endpoint, not a fixed trusted host).
@@ -225,8 +242,19 @@ function createComfyUiBackend({
       if (response.ok) {
         const history = await response.json();
         const entry = history[promptId];
-        if (entry && entry.outputs) {
-          return entry.outputs;
+        if (entry) {
+          // A real ComfyUI execution failure (bad checkpoint filename, a
+          // node exception, OOM) still comes back as a 200 with a truthy
+          // but empty `outputs: {}` -- checking only `entry.outputs` would
+          // silently swallow the real error and report a useless generic
+          // "no output images" later. `entry.status` carries the actual
+          // cause in `messages`.
+          if (entry.status?.status_str === "error") {
+            throw new Error(`ComfyUI execution failed: ${extractComfyUiErrorMessage(entry.status)}`);
+          }
+          if (entry.outputs && Object.keys(entry.outputs).length) {
+            return entry.outputs;
+          }
         }
       }
       await sleep(pollIntervalMs);

@@ -153,3 +153,52 @@ test("read_file still reads a nested .env-adjacent but non-credential file norma
   const policy = createToolPolicy({ allowedRoot: "C:\\project", ...fakeFs });
   assert.equal(policy.executeTool("read_file", { path: "src\\environment.js" }), "export const x = 1;");
 });
+
+// A 5-independent-reviewer pass on the #268 fix found two real bypasses of
+// the original regex (a Windows trailing-dot/space quirk, and a
+// starts-with-only match that let .envrc/prod.env.local/app.env through),
+// plus missing secrets.yaml/bare-credentials coverage. These tests lock in
+// the fix for each.
+test("read_file refuses .envrc, and dotfiles with .env anywhere in the name, not just at the start", () => {
+  const fakeFs = makeFakeFileSystem({
+    "C:\\project\\.envrc": "export SECRET=x",
+    "C:\\project\\prod.env.local": "SECRET=y",
+    "C:\\project\\app.env": "SECRET=z",
+  });
+  const policy = createToolPolicy({ allowedRoot: "C:\\project", ...fakeFs });
+  for (const p of [".envrc", "prod.env.local", "app.env"]) {
+    assert.throws(() => policy.executeTool("read_file", { path: p }), ToolPolicyError, p);
+  }
+});
+
+test("read_file refuses secrets.yaml/secrets.json and a bare credentials file", () => {
+  const fakeFs = makeFakeFileSystem({
+    "C:\\project\\secrets.yaml": "token: x",
+    "C:\\project\\secrets.json": "{}",
+    "C:\\project\\credentials": "aws_access_key_id=x",
+  });
+  const policy = createToolPolicy({ allowedRoot: "C:\\project", ...fakeFs });
+  for (const p of ["secrets.yaml", "secrets.json", "credentials"]) {
+    assert.throws(() => policy.executeTool("read_file", { path: p }), ToolPolicyError, p);
+  }
+});
+
+test("read_file refuses .env with a trailing dot or space, matching what Windows actually opens", () => {
+  // Windows silently strips a trailing dot/space when resolving a path, so
+  // a request for ".env " or ".env." really does open the real .env file --
+  // the credential check must reject these even though the raw string
+  // isn't an exact ".env" match.
+  const fakeFs = makeFakeFileSystem({ "C:\\project\\.env": "DISCORD_BOT_TOKEN=real-secret-value" });
+  const policy = createToolPolicy({ allowedRoot: "C:\\project", ...fakeFs });
+  assert.throws(() => policy.executeTool("read_file", { path: ".env " }), ToolPolicyError);
+  assert.throws(() => policy.executeTool("read_file", { path: ".env." }), ToolPolicyError);
+});
+
+test("read_file does NOT refuse .environment or other unrelated .env-prefixed dotfiles", () => {
+  // A narrower fix for .envrc (`^\.env\w`) previously over-blocked any
+  // dotfile merely starting with "env" -- .environment holds no secrets and
+  // must stay readable.
+  const fakeFs = makeFakeFileSystem({ "C:\\project\\.environment": "APP_ENV=development" });
+  const policy = createToolPolicy({ allowedRoot: "C:\\project", ...fakeFs });
+  assert.equal(policy.executeTool("read_file", { path: ".environment" }), "APP_ENV=development");
+});
