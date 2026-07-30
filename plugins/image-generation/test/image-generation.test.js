@@ -6,10 +6,18 @@ const test = require("node:test");
 
 const {
   MAX_PROMPT_CHARS,
+  DEFAULT_COMFYUI_TIMEOUT_MS,
+  DEFAULT_COMFYUI_SPLIT_TIMEOUT_MS,
+  COMFYUI_CHECKPOINT_NODE_ID,
+  COMFYUI_POSITIVE_PROMPT_NODE_ID,
+  COMFYUI_UNET_LOADER_NODE_ID,
+  COMFYUI_CLIP_LOADER_NODE_ID,
+  COMFYUI_VAE_LOADER_NODE_ID,
   assertValidBackendUrl,
   createImageGenerationStore,
   createAutomatic1111Backend,
   createOpenAiImagesBackend,
+  createComfyUiBackend,
 } = require("../image-generation");
 
 function createTempDir() {
@@ -102,6 +110,282 @@ test("createAutomatic1111Backend surfaces a non-ok response as an error", async 
     fetchImpl: async () => ({ ok: false, status: 500 }),
   });
   await assert.rejects(() => backend({ prompt: "x" }), /request failed: 500/);
+});
+
+test("createComfyUiBackend requires a checkpoint name", () => {
+  assert.throws(
+    () => createComfyUiBackend({ baseUrl: "http://127.0.0.1:8188" }),
+    /checkpoint name is required/,
+  );
+});
+
+// Issue #271: the split-loader workflow shape has no single checkpoint to
+// fall back to -- all four of unet/clip/clip-type/vae are required.
+test("createComfyUiBackend (split shape) requires unet/clip/clip-type/vae, not a checkpoint", () => {
+  assert.throws(
+    () => createComfyUiBackend({ baseUrl: "http://127.0.0.1:8188", workflowShape: "split" }),
+    /unet\/clip\/clip-type\/vae/,
+  );
+  assert.throws(
+    () =>
+      createComfyUiBackend({
+        baseUrl: "http://127.0.0.1:8188",
+        workflowShape: "split",
+        unetName: "flux1-dev.safetensors",
+        clipName: "qwen3vl_4b_bf16.safetensors",
+        // clipType deliberately omitted
+        vaeName: "ae.safetensors",
+      }),
+    /unet\/clip\/clip-type\/vae/,
+  );
+});
+
+test("createComfyUiBackend rejects image editing (txt2img only for now)", async () => {
+  const backend = createComfyUiBackend({
+    baseUrl: "http://127.0.0.1:8188",
+    checkpointName: "sd_xl_base_1.0.safetensors",
+    fetchImpl: async () => {
+      throw new Error("fetch should not be called");
+    },
+  });
+  await assert.rejects(
+    () => backend({ prompt: "a cat", editImageBase64: "base64data" }),
+    /does not support image editing yet/,
+  );
+});
+
+// Mocks the three-call ComfyUI shape: POST /prompt (queue) -> GET
+// /history/{id} (poll) -> GET /view (fetch bytes) -- mirrors how a real
+// ComfyUI server behaves, not a live instance (same documented
+// verification gap as the Automatic1111/OpenAI backends above).
+function createMockComfyUiFetch({ promptId = "abc123", historyResponses = null } = {}) {
+  const requests = [];
+  let historyCallCount = 0;
+  const responses = historyResponses || [
+    { [promptId]: { outputs: { 9: { images: [{ filename: "mana_00001_.png", subfolder: "", type: "output" }] } } } },
+  ];
+  const fetchImpl = async (url, options) => {
+    requests.push({ url: String(url), body: options?.body ? JSON.parse(options.body) : null });
+    if (String(url).endsWith("/prompt")) {
+      return { ok: true, json: async () => ({ prompt_id: promptId }) };
+    }
+    if (String(url).includes("/history/")) {
+      const response = responses[Math.min(historyCallCount, responses.length - 1)];
+      historyCallCount += 1;
+      return { ok: true, json: async () => response };
+    }
+    if (String(url).includes("/view")) {
+      return { ok: true, arrayBuffer: async () => Buffer.from(TINY_PNG_BASE64, "base64") };
+    }
+    throw new Error(`unexpected mock fetch call: ${url}`);
+  };
+  return { fetchImpl, requests };
+}
+
+test("createComfyUiBackend queues a workflow, polls history, and fetches image bytes", async () => {
+  const { fetchImpl, requests } = createMockComfyUiFetch();
+  const backend = createComfyUiBackend({
+    baseUrl: "http://127.0.0.1:8188",
+    checkpointName: "sd_xl_base_1.0.safetensors",
+    fetchImpl,
+    pollIntervalMs: 1,
+  });
+
+  const result = await backend({ prompt: "a dragon", editImageBase64: null });
+
+  assert.deepEqual(result.imagesBase64, [TINY_PNG_BASE64]);
+
+  const queueRequest = requests.find((r) => r.url.endsWith("/prompt"));
+  assert.equal(
+    queueRequest.body.prompt[COMFYUI_CHECKPOINT_NODE_ID].inputs.ckpt_name,
+    "sd_xl_base_1.0.safetensors",
+  );
+  assert.equal(queueRequest.body.prompt[COMFYUI_POSITIVE_PROMPT_NODE_ID].inputs.text, "a dragon");
+  assert.ok(queueRequest.body.client_id);
+
+  const viewRequest = requests.find((r) => r.url.includes("/view"));
+  assert.match(viewRequest.url, /filename=mana_00001_\.png/);
+});
+
+test("createComfyUiBackend (split shape) queues the split-loader workflow with unet/clip/clip-type/vae set", async () => {
+  const { fetchImpl, requests } = createMockComfyUiFetch();
+  const backend = createComfyUiBackend({
+    baseUrl: "http://127.0.0.1:8188",
+    workflowShape: "split",
+    unetName: "Mage-Flow-4B.safetensors",
+    clipName: "qwen3vl_4b_bf16.safetensors",
+    clipType: "qwen_image",
+    vaeName: "ae.safetensors",
+    fetchImpl,
+    pollIntervalMs: 1,
+  });
+
+  const result = await backend({ prompt: "a dragon", editImageBase64: null });
+  assert.deepEqual(result.imagesBase64, [TINY_PNG_BASE64]);
+
+  const queueRequest = requests.find((r) => r.url.endsWith("/prompt"));
+  const graph = queueRequest.body.prompt;
+  assert.equal(graph[COMFYUI_UNET_LOADER_NODE_ID].inputs.unet_name, "Mage-Flow-4B.safetensors");
+  assert.equal(graph[COMFYUI_CLIP_LOADER_NODE_ID].inputs.clip_name, "qwen3vl_4b_bf16.safetensors");
+  assert.equal(graph[COMFYUI_CLIP_LOADER_NODE_ID].inputs.type, "qwen_image");
+  assert.equal(graph[COMFYUI_VAE_LOADER_NODE_ID].inputs.vae_name, "ae.safetensors");
+  assert.equal(graph[COMFYUI_POSITIVE_PROMPT_NODE_ID].inputs.text, "a dragon");
+  // The split shape never touches the checkpoint node -- it doesn't exist
+  // in this workflow graph at all.
+  assert.equal(graph[COMFYUI_CHECKPOINT_NODE_ID], undefined);
+});
+
+test("createComfyUiBackend (split shape) requests 1024x1024 by default, matching the native resolution split-loader models expect", async () => {
+  const { fetchImpl, requests } = createMockComfyUiFetch();
+  const backend = createComfyUiBackend({
+    baseUrl: "http://127.0.0.1:8188",
+    workflowShape: "split",
+    unetName: "Mage-Flow-4B.safetensors",
+    clipName: "qwen3vl_4b_bf16.safetensors",
+    clipType: "qwen_image",
+    vaeName: "ae.safetensors",
+    fetchImpl,
+    pollIntervalMs: 1,
+  });
+  await backend({ prompt: "a dragon" });
+
+  const queueRequest = requests.find((r) => r.url.endsWith("/prompt"));
+  const latentInputs = queueRequest.body.prompt["5"].inputs;
+  assert.equal(latentInputs.width, 1024);
+  assert.equal(latentInputs.height, 1024);
+});
+
+test("DEFAULT_COMFYUI_SPLIT_TIMEOUT_MS gives split-shape backends more runway than the checkpoint default", () => {
+  assert.ok(
+    DEFAULT_COMFYUI_SPLIT_TIMEOUT_MS > DEFAULT_COMFYUI_TIMEOUT_MS,
+    "split-shape default timeout should exceed the checkpoint-shape default",
+  );
+});
+
+test("createComfyUiBackend (split shape) still honors an explicit timeoutMs override instead of the shape default", async () => {
+  const timedOutFetch = async (url) => {
+    if (String(url).endsWith("/prompt")) {
+      return { ok: true, json: async () => ({ prompt_id: "abc123" }) };
+    }
+    return { ok: true, json: async () => ({ abc123: {} }) };
+  };
+  const backend = createComfyUiBackend({
+    baseUrl: "http://127.0.0.1:8188",
+    workflowShape: "split",
+    unetName: "u",
+    clipName: "c",
+    clipType: "t",
+    vaeName: "v",
+    fetchImpl: timedOutFetch,
+    pollIntervalMs: 1,
+    timeoutMs: 5,
+  });
+  await assert.rejects(() => backend({ prompt: "x" }), /timed out after 5ms/);
+});
+
+test("createComfyUiBackend polls until history reports outputs", async () => {
+  const { fetchImpl, requests } = createMockComfyUiFetch({
+    historyResponses: [
+      { abc123: {} },
+      { abc123: {} },
+      { abc123: { outputs: { 9: { images: [{ filename: "mana_00002_.png", type: "output" }] } } } },
+    ],
+  });
+  const backend = createComfyUiBackend({
+    baseUrl: "http://127.0.0.1:8188",
+    checkpointName: "sd_xl_base_1.0.safetensors",
+    fetchImpl,
+    pollIntervalMs: 1,
+  });
+
+  const result = await backend({ prompt: "a castle" });
+  assert.deepEqual(result.imagesBase64, [TINY_PNG_BASE64]);
+  assert.equal(requests.filter((r) => r.url.includes("/history/")).length, 3);
+});
+
+test("createComfyUiBackend surfaces ComfyUI's own execution error instead of a generic 'no output images' message", async () => {
+  const { fetchImpl } = createMockComfyUiFetch({
+    historyResponses: [
+      {
+        abc123: {
+          outputs: {},
+          status: {
+            status_str: "error",
+            completed: true,
+            messages: [
+              ["execution_error", { exception_message: "Checkpoint file 'nonexistent.safetensors' not found" }],
+            ],
+          },
+        },
+      },
+    ],
+  });
+  const backend = createComfyUiBackend({
+    baseUrl: "http://127.0.0.1:8188",
+    checkpointName: "sd_xl_base_1.0.safetensors",
+    fetchImpl,
+    pollIntervalMs: 1,
+  });
+  await assert.rejects(
+    () => backend({ prompt: "x" }),
+    /ComfyUI execution failed: Checkpoint file 'nonexistent.safetensors' not found/,
+  );
+});
+
+test("createComfyUiBackend still reports 'no output images' when outputs is genuinely empty with no error status", async () => {
+  const { fetchImpl } = createMockComfyUiFetch({
+    historyResponses: [{ abc123: { outputs: { 9: { images: [] } } } }],
+  });
+  const backend = createComfyUiBackend({
+    baseUrl: "http://127.0.0.1:8188",
+    checkpointName: "sd_xl_base_1.0.safetensors",
+    fetchImpl,
+    pollIntervalMs: 1,
+  });
+  await assert.rejects(() => backend({ prompt: "x" }), /ComfyUI reported no output images/);
+});
+
+test("createComfyUiBackend surfaces a non-ok /view response as an error", async () => {
+  const backend = createComfyUiBackend({
+    baseUrl: "http://127.0.0.1:8188",
+    checkpointName: "sd_xl_base_1.0.safetensors",
+    fetchImpl: async (url) => {
+      if (String(url).endsWith("/prompt")) {
+        return { ok: true, json: async () => ({ prompt_id: "abc123" }) };
+      }
+      if (String(url).includes("/history/")) {
+        return { ok: true, json: async () => ({ abc123: { outputs: { 9: { images: [{ filename: "x.png" }] } } } }) };
+      }
+      return { ok: false, status: 404 };
+    },
+    pollIntervalMs: 1,
+  });
+  await assert.rejects(() => backend({ prompt: "x" }), /ComfyUI image fetch failed: 404/);
+});
+
+test("createComfyUiBackend surfaces a non-ok /prompt response as an error", async () => {
+  const backend = createComfyUiBackend({
+    baseUrl: "http://127.0.0.1:8188",
+    checkpointName: "sd_xl_base_1.0.safetensors",
+    fetchImpl: async () => ({ ok: false, status: 500 }),
+  });
+  await assert.rejects(() => backend({ prompt: "x" }), /queue request failed: 500/);
+});
+
+test("createComfyUiBackend times out if history never reports outputs", async () => {
+  const backend = createComfyUiBackend({
+    baseUrl: "http://127.0.0.1:8188",
+    checkpointName: "sd_xl_base_1.0.safetensors",
+    fetchImpl: async (url) => {
+      if (String(url).endsWith("/prompt")) {
+        return { ok: true, json: async () => ({ prompt_id: "abc123" }) };
+      }
+      return { ok: true, json: async () => ({ abc123: {} }) };
+    },
+    pollIntervalMs: 1,
+    timeoutMs: 5,
+  });
+  await assert.rejects(() => backend({ prompt: "x" }), /timed out/);
 });
 
 test("createOpenAiImagesBackend requires an API key and sends bearer auth", async () => {

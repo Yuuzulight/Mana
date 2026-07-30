@@ -299,6 +299,13 @@ function createMcpClientRegistry(options = {}) {
     removeServer,
     listApprovedToolSchemas,
     isMcpToolName,
+    // Issue #267: aliases matching the generic tool-source shape
+    // (ai/tool-source.js's buildToolPolicy) so this registry can be passed
+    // directly into a toolSources array -- listApprovedToolSchemas/
+    // isMcpToolName above stay as the names every other caller/test
+    // already uses.
+    listToolSchemas: listApprovedToolSchemas,
+    isKnownToolName: isMcpToolName,
     executeTool,
     disconnectAll,
     _resetForTests: () => disconnectAll(),

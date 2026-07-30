@@ -70,6 +70,41 @@ test("runToolScript has no require/process/fs access in the sandbox", async () =
   );
 });
 
+// Regression coverage for a real vm sandbox escape: any injected object or
+// function crossing into the sandbox keeps its outer `.constructor` chain
+// by default, so `injectedValue.constructor.constructor("return process")()`
+// reaches the parent process's real Function constructor -- full
+// fs/network/process access, no different from running the string directly
+// in node-bot. Verified against the real forked worker, not a mock, since
+// that's exactly the class of gap a mocked test would never catch.
+test("runToolScript blocks the .constructor escape via an injected tool function", async () => {
+  await assert.rejects(
+    () =>
+      runToolScript("return tools.echo.constructor('return process')().pid;", {
+        tools: { echo: (x) => x },
+      }),
+    /constructor is not a function/,
+  );
+});
+
+test("runToolScript blocks the .constructor escape via the global object itself", async () => {
+  await assert.rejects(
+    () => runToolScript("return this.constructor.constructor('return process')();"),
+    /process is not defined/,
+  );
+});
+
+test("runToolScript blocks the .constructor escape via setTimeout/console", async () => {
+  await assert.rejects(
+    () => runToolScript("return setTimeout.constructor('return process')();"),
+    /constructor is not a function/,
+  );
+  await assert.rejects(
+    () => runToolScript("return console.log.constructor('return process')();"),
+    /constructor is not a function/,
+  );
+});
+
 test("runToolScript surfaces a thrown error from the script itself", async () => {
   await assert.rejects(
     () => runToolScript("throw new Error('script blew up');"),
@@ -93,4 +128,14 @@ test("runToolScript captures console.log calls from the script as logs", async (
   );
   assert.equal(result, "done");
   assert.deepEqual(logs, ["hello 1"]);
+});
+
+test("runToolScript caps total buffered log output instead of growing unbounded", async () => {
+  const { logs } = await runToolScript(
+    `for (let i = 0; i < 5000; i++) { console.log("x".repeat(50)); } return "done";`,
+  );
+  const totalChars = logs.reduce((sum, line) => sum + line.length, 0);
+  // 5000 lines * 50 chars = 250000 chars if uncapped; the cap should have
+  // stopped well short of that.
+  assert.ok(totalChars < 25000, `expected capped log output, got ${totalChars} chars`);
 });

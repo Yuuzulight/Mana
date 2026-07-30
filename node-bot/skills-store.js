@@ -18,6 +18,7 @@ function parseSkillFile(raw, fallbackName) {
       category: "general",
       created: null,
       lastUsed: null,
+      useCount: 0,
       status: "active",
       body: raw.trim(),
     };
@@ -34,6 +35,11 @@ function parseSkillFile(raw, fallbackName) {
     category: frontmatter.category || "general",
     created: frontmatter.created || null,
     lastUsed: frontmatter.lastUsed || null,
+    // How many times this skill has actually been reached for again since
+    // it was approved -- not a moderation signal, just makes an
+    // approved-but-never-used proposal visible instead of indistinguishable
+    // from one that's genuinely useful (issue: skill system review).
+    useCount: Number(frontmatter.useCount) || 0,
     status: frontmatter.status || "active",
     body: match[2].trim(),
   };
@@ -47,12 +53,40 @@ function serializeSkillFile(skill) {
     `category: ${skill.category}`,
     `created: ${skill.created}`,
     `lastUsed: ${skill.lastUsed}`,
+    `useCount: ${skill.useCount || 0}`,
     `status: ${skill.status}`,
     "---",
     "",
     skill.body,
     "",
   ].join("\n");
+}
+
+// name/description/category are written raw into a line-based frontmatter
+// block (no escaping -- see serializeSkillFile), so a newline here would
+// inject bogus frontmatter keys or corrupt the file's own "---" delimiters
+// on next parse. Rejected outright rather than silently stripped, since
+// these fields are meant to be short single-line values regardless of
+// where they came from (a form, the idle-proposal LLM, a model tool call).
+function assertSingleLine(value, fieldName) {
+  if (/[\r\n]/.test(value)) {
+    throw new Error(`${fieldName} cannot contain line breaks`);
+  }
+}
+
+// A skill body can optionally embed one ```skill-script fenced block --
+// deterministic code for the procedure's mechanical part, so skill__run
+// (ai/skill-tool-source.js) can execute it directly through
+// tools/script-runner.js's sandbox instead of the model re-deriving the same
+// steps by reasoning through prose every single time. Pure convention (a
+// specific fence tag inside the existing body text), not a new stored
+// field -- a skill with no such block is just a prose-only skill, same as
+// before this existed.
+const SKILL_SCRIPT_RE = /```skill-script\r?\n([\s\S]*?)```/;
+
+function extractSkillScript(body) {
+  const match = SKILL_SCRIPT_RE.exec(String(body || ""));
+  return match ? match[1].trim() : null;
 }
 
 function slugify(name) {
@@ -110,6 +144,7 @@ function createSkillsStore(options = {}) {
             category: skill.category,
             status: skill.status,
             lastUsed: skill.lastUsed,
+            useCount: skill.useCount,
           };
         } catch (e) {
           return null;
@@ -137,6 +172,7 @@ function createSkillsStore(options = {}) {
     if (!fileName) return false;
     const skill = readSkill(fileName);
     skill.lastUsed = now();
+    skill.useCount = (skill.useCount || 0) + 1;
     if (skill.status === "stale") skill.status = "active";
     fs.writeFileSync(
       path.join(skillsDir, fileName),
@@ -160,7 +196,18 @@ function createSkillsStore(options = {}) {
     if (!cleanDescription) throw new Error("description is required");
     const cleanBody = String(body || "").trim();
     if (!cleanBody) throw new Error("body is required");
-    if (findFileForName(cleanName)) {
+    const cleanCategory = String(category || "general").trim() || "general";
+    assertSingleLine(cleanName, "name");
+    assertSingleLine(cleanDescription, "description");
+    assertSingleLine(cleanCategory, "category");
+
+    // Checked against the actual target filename, not findFileForName's
+    // exact-name match -- slugify() lowercases, so "Restart SearXNG" and
+    // "restart searxng" collide on disk (restart-searxng.md) even though
+    // their display names differ. Catching that here is what actually
+    // prevents the second create from silently overwriting the first.
+    const fileName = `${slugify(cleanName)}.md`;
+    if (fs.existsSync(path.join(skillsDir, fileName))) {
       throw new Error(`a skill named "${cleanName}" already exists`);
     }
 
@@ -168,19 +215,63 @@ function createSkillsStore(options = {}) {
     const skill = {
       name: cleanName,
       description: cleanDescription,
-      category: String(category || "general").trim() || "general",
+      category: cleanCategory,
       created: timestamp,
       lastUsed: timestamp,
+      useCount: 0,
       status: "active",
       body: cleanBody,
     };
-    const fileName = `${slugify(cleanName)}.md`;
     fs.writeFileSync(
       path.join(skillsDir, fileName),
       serializeSkillFile(skill),
       "utf8",
     );
     return { ...skill, fileName };
+  }
+
+  // Direct human edit via Settings (issue #262 follow-up) -- deliberately
+  // NOT approval-gated like createSkill: a Settings form submission already
+  // IS the human decision the approval gate exists to require for
+  // agent-authored content. Only updates fields actually provided; renaming
+  // is out of scope here to avoid file-rename bookkeeping.
+  function updateSkill(name, { description, body, category } = {}) {
+    const fileName = findFileForName(name);
+    if (!fileName) return null;
+    const skill = readSkill(fileName);
+    if (description !== undefined) {
+      const cleanDescription = String(description).trim();
+      assertSingleLine(cleanDescription, "description");
+      skill.description = cleanDescription;
+    }
+    if (body !== undefined) {
+      skill.body = String(body).trim();
+    }
+    if (category !== undefined) {
+      // null is an explicit "clear it back to the default" request (see
+      // skills-capability.js's PATCH route), distinct from omitting the
+      // field entirely (the `category !== undefined` guard above) -- both
+      // land here as the empty-string fallback either way.
+      const cleanCategory = category === null ? "" : String(category).trim();
+      assertSingleLine(cleanCategory, "category");
+      skill.category = cleanCategory || "general";
+    }
+    fs.writeFileSync(
+      path.join(skillsDir, fileName),
+      serializeSkillFile(skill),
+      "utf8",
+    );
+    return { ...skill, fileName };
+  }
+
+  // Direct human delete via Settings -- permanent, unlike pruneStaleSkills'
+  // archive-to-.archive/ path below (that's idle cleanup of things nobody
+  // chose to remove; this is someone explicitly choosing to).
+  function deleteSkill(name) {
+    const fileName = findFileForName(name);
+    if (!fileName) return false;
+    fs.unlinkSync(path.join(skillsDir, fileName));
+    return true;
   }
 
   // Deterministic, no-LLM pass (issue #140 acceptance criterion): skills
@@ -235,6 +326,8 @@ function createSkillsStore(options = {}) {
     viewSkill,
     touchSkillUsage,
     createSkill,
+    updateSkill,
+    deleteSkill,
     pruneStaleSkills,
   };
 }
@@ -244,4 +337,5 @@ module.exports = {
   parseSkillFile,
   serializeSkillFile,
   slugify,
+  extractSkillScript,
 };

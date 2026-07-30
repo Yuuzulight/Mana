@@ -17,8 +17,12 @@ search-summarize-reflect-repeat loop, bounded so it can't run away.
 - **`options.reflect: (prompt) => Promise<string>`**, optional -- same
   injection pattern as the existing `options.decompose`. Never runs unless
   the caller supplies it (server.js wires a real one by default, same as
-  `decompose`/`synthesize`, using a new `REFLECT_SYSTEM_PROMPT` and the
-  same "quality" model profile to avoid a mid-research model swap).
+  `decompose`/`synthesize`, using a new `REFLECT_SYSTEM_PROMPT` and, by
+  default, the same "quality" model profile as `synthesize`/`compress` to
+  avoid a mid-research model swap -- issue #269 later added an opt-in flag
+  that lets `decompose`/`reflect` use a different profile instead; see
+  `docs/roadmap/issue-269-deep-research-subtask-profiles.md` for why that's
+  off by default).
 - After the initial report synthesizes, `buildReflectPrompt(question,
   report)` asks the model for a structured decision: reply with exactly
   one search query that would close a genuine gap, or reply `"NONE"` if
