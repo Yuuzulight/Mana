@@ -445,6 +445,11 @@ const sessionSearchIndex = createSessionSearchIndex();
 // ACP memory store (conversation/session memory)
 const acpMemoryStore = createAcpMemoryStore({
   sessionSearchIndex,
+  // Issue #263 part 1: same computeEmbeddings the coding-mode/Deep Research
+  // file retriever already uses (tools/retriever-index.js) -- off by
+  // default (USE_EMBEDDINGS env var), so hybrid session search is a pure
+  // opt-in enhancement over the FTS5 keyword search above.
+  computeEmbeddingsFn: require("./tools/retriever-index").computeEmbeddings,
   // tokenEstimator will call the local Python retriever service /tokenize endpoint when available
   tokenEstimator: async (text) => {
     try {

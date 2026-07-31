@@ -130,7 +130,7 @@ test("appendTurn persists toolCalls when provided, and omits the field entirely 
 test("searchSessions returns [] when no index was wired in", async () => {
   const store = createAcpMemoryStore({ dataDir: createTempDir() });
   await store.appendTurn({ sessionId: "s1", user: "docker deployment question", assistant: "use compose" });
-  assert.deepEqual(store.searchSessions({ query: "docker" }), []);
+  assert.deepEqual(await store.searchSessions({ query: "docker" }), []);
 });
 
 test("appendTurn indexes turns into the wired sessionSearchIndex, searchable via searchSessions", async () => {
@@ -146,10 +146,112 @@ test("appendTurn indexes turns into the wired sessionSearchIndex, searchable via
     assistant: "Use docker compose up",
   });
 
-  const results = store.searchSessions({ query: "docker" });
+  const results = await store.searchSessions({ query: "docker" });
   assert.equal(results.length, 2);
   assert.ok(results.some((r) => r.role === "user"));
   assert.ok(results.some((r) => r.role === "assistant"));
+  sessionSearchIndex.close();
+});
+
+// Issue #263 part 1: hybrid keyword+vector session search. appendTurn's
+// embedding indexing is fire-and-forget (mirrors part 2's compaction IIFE
+// above), so these tests use the same deferred-promise pattern to await it
+// actually completing rather than just the appendTurn call that triggered
+// it. embedDim: 3 keeps this fast/deterministic -- see
+// session-search-index.test.js for the real 384-dim default and this
+// module's own merge/diversity logic, already covered there; these tests
+// only cover the wiring between acp-memory-store.js and that module.
+test("appendTurn computes and indexes an embedding for the turn via the wired computeEmbeddingsFn", async () => {
+  const sessionSearchIndex = createSessionSearchIndex({ dbPath: ":memory:", embedDim: 3 });
+  const embeddingIndexed = deferred();
+  let capturedText = null;
+  const store = createAcpMemoryStore({
+    dataDir: createTempDir(),
+    sessionSearchIndex,
+    computeEmbeddingsFn: async (texts) => {
+      capturedText = texts[0];
+      return [[1, 0, 0]];
+    },
+  });
+
+  // Wrap indexEmbedding so the test can await the fire-and-forget call
+  // actually landing, without changing what it does.
+  const realIndexEmbedding = sessionSearchIndex.indexEmbedding;
+  sessionSearchIndex.indexEmbedding = (args) => {
+    const result = realIndexEmbedding(args);
+    embeddingIndexed.resolve();
+    return result;
+  };
+
+  await store.appendTurn({ sessionId: "s1", user: "How do I deploy with Docker", assistant: "Use docker compose up" });
+  await embeddingIndexed.promise;
+
+  assert.match(capturedText, /User: How do I deploy with Docker/);
+  assert.match(capturedText, /Assistant: Use docker compose up/);
+
+  const semanticResults = sessionSearchIndex.search({
+    query: "containerization orchestration", // zero keyword overlap
+    queryEmbedding: [0.9, 0.1, 0],
+  });
+  assert.equal(semanticResults.length, 1);
+  assert.equal(semanticResults[0].matchType, "semantic");
+  sessionSearchIndex.close();
+});
+
+test("appendTurn never breaks the turn append when computeEmbeddingsFn rejects", async () => {
+  const sessionSearchIndex = createSessionSearchIndex({ dbPath: ":memory:", embedDim: 3 });
+  const attempted = deferred();
+  const store = createAcpMemoryStore({
+    dataDir: createTempDir(),
+    sessionSearchIndex,
+    computeEmbeddingsFn: async () => {
+      attempted.resolve();
+      throw new Error("embedder unavailable");
+    },
+  });
+
+  const session = await store.appendTurn({ sessionId: "s1", user: "docker question", assistant: "docker answer" });
+  await attempted.promise;
+
+  assert.equal(session.turns.length, 1);
+  // Keyword search still works even though the embedding call failed.
+  const results = await store.searchSessions({ query: "docker" });
+  assert.ok(results.length >= 1);
+  sessionSearchIndex.close();
+});
+
+test("searchSessions computes a query embedding via computeEmbeddingsFn and blends it into the results", async () => {
+  const sessionSearchIndex = createSessionSearchIndex({ dbPath: ":memory:", embedDim: 3 });
+  const store = createAcpMemoryStore({
+    dataDir: createTempDir(),
+    sessionSearchIndex,
+    computeEmbeddingsFn: async (texts) => {
+      // The write-path turn text and the read-path query text get the same
+      // fixed vector here purely so this test can assert a semantic match
+      // without depending on any real embedding model's behavior.
+      return [[1, 0, 0]];
+    },
+  });
+
+  await store.appendTurn({ sessionId: "s1", user: "How do I deploy with Docker", assistant: "Use docker compose up" });
+  // appendTurn's own embedding indexing is fire-and-forget -- give it a
+  // turn of the event loop plus the actual async computeEmbeddingsFn call
+  // inside it a chance to land before searching.
+  await new Promise((r) => setImmediate(r));
+
+  const results = await store.searchSessions({ query: "containerization orchestration" });
+  assert.ok(results.some((r) => r.matchType === "semantic"));
+  sessionSearchIndex.close();
+});
+
+test("searchSessions falls back to keyword-only results when computeEmbeddingsFn isn't wired", async () => {
+  const sessionSearchIndex = createSessionSearchIndex({ dbPath: ":memory:", embedDim: 3 });
+  const store = createAcpMemoryStore({ dataDir: createTempDir(), sessionSearchIndex });
+
+  await store.appendTurn({ sessionId: "s1", user: "How do I deploy with Docker", assistant: "Use docker compose up" });
+  const results = await store.searchSessions({ query: "docker" });
+  assert.ok(results.length >= 1);
+  assert.ok(results.every((r) => r.matchType === "keyword"));
   sessionSearchIndex.close();
 });
 

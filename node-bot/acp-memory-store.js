@@ -178,6 +178,14 @@ function createAcpMemoryStore(options = {}) {
   // curated summary above. Not constructed here -- server.js wires the real
   // one in, tests simply omit it, same pattern as summarizeFn.
   const sessionSearchIndex = options.sessionSearchIndex || null;
+  // Optional (issue #263 part 1: hybrid keyword+vector session search).
+  // Same shape as tools/retriever-index.js's computeEmbeddings: an async
+  // (texts: string[]) => Promise<(number[]|null)[]>. Injected rather than
+  // required directly so this module stays free of the embedder's own
+  // network-calling code -- server.js wires the real one in, tests omit it
+  // (or inject a fake), same pattern as summarizeFn/sessionSearchIndex.
+  const computeEmbeddingsFn =
+    typeof options.computeEmbeddingsFn === "function" ? options.computeEmbeddingsFn : null;
 
   ensureDir(sessionsDir);
 
@@ -544,6 +552,26 @@ function createAcpMemoryStore(options = {}) {
         // actual conversation flow.
         console.warn("Session search indexing failed:", e?.message || e);
       }
+
+      // Issue #263 part 1: fire-and-forget, matching the compaction IIFE
+      // below -- appendTurn never awaits this, so a slow or unavailable
+      // embedder can't add latency to the actual reply path, and any
+      // failure here only means this one turn stays keyword-searchable
+      // instead of also semantically searchable.
+      if (computeEmbeddingsFn && typeof sessionSearchIndex.indexEmbedding === "function") {
+        (async () => {
+          try {
+            const text = `User: ${turn.user}\nAssistant: ${turn.assistant}`.trim();
+            if (!text) return;
+            const [embedding] = await computeEmbeddingsFn([text]);
+            if (Array.isArray(embedding) && embedding.length) {
+              sessionSearchIndex.indexEmbedding({ sessionId: session.sessionId, turn, embedding });
+            }
+          } catch (e) {
+            console.warn("Session embedding indexing failed:", e?.message || e);
+          }
+        })();
+      }
     }
 
     recordEntityMentions(
@@ -701,11 +729,22 @@ function createAcpMemoryStore(options = {}) {
     return block;
   }
 
-  // Full-text search across every indexed turn (see sessionSearchIndex
+  // Full-text (+ semantic, when computeEmbeddingsFn is wired -- issue #263
+  // part 1) search across every indexed turn (see sessionSearchIndex
   // above); [] when no index was wired in (tests, or search disabled).
-  function searchSessions(params = {}) {
+  async function searchSessions(params = {}) {
     if (!sessionSearchIndex) return [];
-    return sessionSearchIndex.search(params);
+    let queryEmbedding = null;
+    if (computeEmbeddingsFn && params?.query) {
+      try {
+        const [embedding] = await computeEmbeddingsFn([String(params.query)]);
+        if (Array.isArray(embedding) && embedding.length) queryEmbedding = embedding;
+      } catch (e) {
+        // Semantic search is additive -- keyword search below still runs
+        // fine without it.
+      }
+    }
+    return sessionSearchIndex.search({ ...params, queryEmbedding });
   }
 
   return {

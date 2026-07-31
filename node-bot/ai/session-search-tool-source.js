@@ -12,7 +12,7 @@ const TOOL_SCHEMAS = [
     function: {
       name: `${SESSION_SEARCH_TOOL_PREFIX}query`,
       description:
-        "Search past conversations by keyword when the user references something from an earlier session that isn't in the current memory summary (e.g. \"what did I say about X\", \"where did we leave off with Y\"). Supports FTS5 query syntax: phrases in quotes, AND/OR/NOT, and prefix* matching.",
+        "Search past conversations when the user references something from an earlier session that isn't in the current memory summary (e.g. \"what did I say about X\", \"where did we leave off with Y\"). Matches both by keyword (supports FTS5 query syntax: phrases in quotes, AND/OR/NOT, and prefix* matching) and, when available, by meaning -- so a differently-worded question about the same topic can still surface a match.",
       parameters: {
         type: "object",
         properties: {
@@ -64,7 +64,7 @@ function createSessionSearchToolSource(options = {}) {
       throw new Error(`unknown session_search tool: ${qualifiedName}`);
     }
     const scope = args?.scope === "all_sessions" ? "all_sessions" : "this_session";
-    const results = acpMemoryStore.searchSessions({
+    const results = await acpMemoryStore.searchSessions({
       query: args?.query,
       sort: args?.sort,
       sessionId: scope === "this_session" ? sessionId : undefined,
