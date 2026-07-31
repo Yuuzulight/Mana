@@ -116,6 +116,7 @@ const { readGgufMetadata } = require("./tools/gguf-metadata");
 	const discordBotPlugin = require("../plugins/discord-bot");
 	const videoWatchPlugin = require("../plugins/video-watch");
 	const contextPushPlugin = require("../plugins/context-push");
+	const screenSensingPlugin = require("../plugins/screen-sensing");
 const { createTtsRuntime } = require("./tts-runtime");
 const { createAcpMemoryStore } = require("./acp-memory-store");
 const { createSessionSearchIndex } = require("./session-search-index");
@@ -133,6 +134,8 @@ const { buildToolPolicy } = require("./ai/tool-source");
 const { createMemoryToolSource } = require("./ai/memory-tool-source");
 const { createSessionSearchToolSource } = require("./ai/session-search-tool-source");
 const { createSkillToolSource } = require("./ai/skill-tool-source");
+const { createExpressionToolSource, isExpressionToolName } = require("./ai/expression-tool-source");
+const { createCodingToolSource } = require("./ai/coding-tool-source");
 const { createMcpClientRegistry } = require("./mcp-client-registry");
 const { mcpClientCapability } = require("./capabilities/mcp-client-capability");
 const { createToolCallLog, wrapWithToolCallLog } = require("./tool-call-log");
@@ -1768,6 +1771,7 @@ function registerRoutes(app, upload, deps = {}) {
     discordBotPlugin,
     videoWatchPlugin,
     contextPushPlugin,
+    screenSensingPlugin,
     dirScannerCapability,
     webAccessCapability,
     sessionsCapability,
@@ -3284,6 +3288,12 @@ function registerRoutes(app, upload, deps = {}) {
     sessionId = null,
     assistantMode = null,
     presetId = null,
+    // Issue #253: optional out-parameter -- a caller that cares about the
+    // model's own expression__set tool call passes a fresh {} and reads
+    // `.expression` back off it after the await, instead of this function's
+    // return type (a plain string, unchanged, everywhere else) needing to
+    // grow a second shape for the one caller that wants it.
+    replyMeta = null,
   ) {
     const prompt = buildScreenAwarePrompt(transcript, screenText, marketText);
     const normalizedModelProfile = selectLlamaModelProfileForPrompt(
@@ -3603,7 +3613,16 @@ function registerRoutes(app, upload, deps = {}) {
               "tools",
               "retriever.py",
             );
-            if (fs.existsSync(vectorDir) && fs.existsSync(retrieverScript)) {
+            // NODE_ENV/NODE_TEST_CONTEXT guard (same convention used
+            // throughout this file): this fallback is otherwise gated only
+            // by fs.existsSync(vectorDir/retrieverScript), both real files
+            // present in this repo, so without it a real `spawnSync` to a
+            // real (but test-irrelevant) Python vector index runs on every
+            // coding-mode reply a test exercises -- ~20s and fails anyway
+            // since there's no matching index.
+            const skipUnderTest =
+              process.env.NODE_ENV === "test" || Boolean(process.env.NODE_TEST_CONTEXT);
+            if (!skipUnderTest && fs.existsSync(vectorDir) && fs.existsSync(retrieverScript)) {
               const args = [
                 retrieverScript,
                 "--index",
@@ -3788,6 +3807,17 @@ function registerRoutes(app, upload, deps = {}) {
             createMemoryToolSource({ acpMemoryStore, sessionId, approvalGate: activeApprovalGate }),
             createSessionSearchToolSource({ acpMemoryStore, sessionId }),
             createSkillToolSource({ approvalGate: activeApprovalGate, skillsStore: activeSkillsStore }),
+            // Issue #253: lets Mana pick her own Live2D expression for this
+            // reply, alongside (not instead of) reply-emotion.js's automatic
+            // detection. No approvalGate/store needed -- see
+            // ai/expression-tool-source.js's own header comment for why.
+            createExpressionToolSource(),
+            // Issue #276: draft a proposed code change as a diff file
+            // instead of editing live -- reuses the existing editor
+            // workspace/proposal machinery (zed-integration.js) that
+            // already backs the /editors/* admin routes, just stops short
+            // of ever calling approveEditProposal.
+            createCodingToolSource({ editors: getEditorIntegrations() }),
             ...(isPluginEnabled(browserAutomationPlugin, activePluginSettingsStore)
               ? [activeBrowserAutomationToolSource]
               : []),
@@ -3813,6 +3843,25 @@ function registerRoutes(app, upload, deps = {}) {
                   .map((call) => `${call.name}(${call.ok ? "ok" : "error"})`)
                   .join(", ")}`,
               );
+              // Issue #253: reported via the replyMeta out-parameter, not a
+              // return-value change -- buildAssistantReply's return type
+              // stays a plain string for every one of its 5 call sites
+              // (mana-acp-agent.js, mobile-routes.js x2, server-routes.js x2),
+              // same reasoning already documented above for lastToolCalls.
+              if (replyMeta) {
+                // Last successful call wins, not first -- runToolAwareReply
+                // supports multiple tool-calling rounds, so a model that
+                // calls expression__set more than once in one reply is
+                // revising its choice; the final pick is the one that
+                // reflects "Mana's expression for this reply."
+                const expressionCall = [...toolResult.toolCalls]
+                  .reverse()
+                  .find((call) => isExpressionToolName(call.name) && call.ok);
+                if (expressionCall) {
+                  const name = String(expressionCall.args?.name || "").trim();
+                  if (name) replyMeta.expression = name;
+                }
+              }
             }
             return toolResult.content;
           }

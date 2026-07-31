@@ -10,15 +10,32 @@ const test = require("node:test");
 // here.
 const {
   centroidToMouthForm,
+  classifyViseme,
+  computeMfcc,
   DEFAULT_MOUTH_FORM_GAIN,
   DEFAULT_MOUTH_FORM_PARAM,
+  expressionForState,
   normalizeAvatarConfig,
   pickIdleSaccadeTarget,
   randomSaccadeInterval,
   smoothTowardTarget,
   spectralCentroidHz,
   validateModelReferences,
+  visemeToMouthForm,
 } = require("../avatar/live2d-logic");
+
+const FFT_SIZE = 512;
+const SAMPLE_RATE = 48000;
+const NUM_BINS = FFT_SIZE / 2 + 1;
+const BIN_HZ = SAMPLE_RATE / FFT_SIZE;
+
+function spectrumForHz(hzList, loudDb = -10, floorDb = -100) {
+  const mags = new Float32Array(NUM_BINS).fill(floorDb);
+  for (const hz of hzList) {
+    mags[Math.round(hz / BIN_HZ)] = loudDb;
+  }
+  return mags;
+}
 
 function fakeFsWithFiles(existingPaths) {
   const set = new Set(existingPaths);
@@ -82,6 +99,35 @@ test("centroidToMouthForm treats 0 as the silence sentinel and maps low/high cen
   assert.equal(centroidToMouthForm(3000), 1);
 });
 
+// Issue #275: MFCC-based viseme classification, duplicated here from
+// windows-launcher/avatar/lip-sync.js per this file's own existing
+// duplication convention (see the top-of-file note on module.exports).
+test("computeMfcc returns the expected shape and neutral classifyViseme for silence", () => {
+  const silent = new Float32Array(NUM_BINS).fill(-100);
+  const result = computeMfcc(silent, SAMPLE_RATE, FFT_SIZE);
+  assert.equal(result.mfcc.length, 13);
+  assert.equal(result.melEnergies.length, 26);
+  assert.equal(classifyViseme(result), "neutral");
+});
+
+test("classifyViseme distinguishes aa/ee/oo from their typical formant bands", () => {
+  const aa = computeMfcc(spectrumForHz([800, 1450]), SAMPLE_RATE, FFT_SIZE);
+  assert.equal(classifyViseme(aa), "aa");
+
+  const ee = computeMfcc(spectrumForHz([350, 2450]), SAMPLE_RATE, FFT_SIZE);
+  assert.equal(classifyViseme(ee), "ee");
+
+  const oo = computeMfcc(spectrumForHz([350, 850]), SAMPLE_RATE, FFT_SIZE);
+  assert.equal(classifyViseme(oo), "oo");
+});
+
+test("visemeToMouthForm maps ee/oo to +1/-1 and anything else to neutral", () => {
+  assert.equal(visemeToMouthForm("ee"), 1);
+  assert.equal(visemeToMouthForm("oo"), -1);
+  assert.equal(visemeToMouthForm("aa"), 0);
+  assert.equal(visemeToMouthForm(undefined), 0);
+});
+
 test("validateModelReferences distinguishes fatal (Moc/Texture) from non-fatal missing files", () => {
   const settings = {
     FileReferences: {
@@ -120,4 +166,28 @@ test("normalizeAvatarConfig fills in mouthForm defaults and honors overrides inc
   });
   assert.equal(custom.mouthFormParam, "ParamCustomForm");
   assert.equal(custom.mouthFormGain, 0);
+});
+
+test("expressionForState tries preferredName first, before state-based preferences", () => {
+  // Issue #253: an LLM-chosen expression wins over the automatic
+  // state-based guess when the model's name matches something the loaded
+  // model actually has.
+  assert.equal(
+    expressionForState("excited", ["happy", "wink"], null, "wink"),
+    "wink",
+  );
+  assert.equal(
+    expressionForState("excited", ["Smirk"], null, "smirk"),
+    "Smirk",
+  );
+});
+
+test("expressionForState falls through to state-based preferences when preferredName doesn't match anything", () => {
+  // An invalid/unrecognized expression name is silently ignored, exactly
+  // as if the tool had never been called -- no separate validation layer.
+  assert.equal(
+    expressionForState("excited", ["happy", "joy"], null, "not-a-real-expression"),
+    "happy",
+  );
+  assert.equal(expressionForState("idle", ["happy"], null, "nonexistent"), null);
 });

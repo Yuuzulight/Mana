@@ -4,7 +4,7 @@ const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
 
-const { createSkillsStore, parseSkillFile, serializeSkillFile, extractSkillScript } = require("../skills-store");
+const { createSkillsStore, parseSkillFile, serializeSkillFile, extractSkillScript, extractSkillInputs } = require("../skills-store");
 
 function tempDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), "mana-skills-test-"));
@@ -156,6 +156,23 @@ test("extractSkillScript pulls the fenced skill-script block out of a body, or r
     extractSkillScript("Steps:\n1. do a thing\n```skill-script\nreturn 1 + 1;\n```\n2. done"),
     "return 1 + 1;",
   );
+});
+
+test("extractSkillInputs returns an empty array when the body has no skill-inputs block", () => {
+  assert.deepEqual(extractSkillInputs("just prose steps, no code"), []);
+});
+
+test("extractSkillInputs parses name: description lines out of a fenced skill-inputs block", () => {
+  const body = "Steps:\n```skill-inputs\nname: the person to greet\nformal: whether to use a formal greeting\n```\n```skill-script\nreturn inputs.name;\n```";
+  assert.deepEqual(extractSkillInputs(body), [
+    { name: "name", description: "the person to greet" },
+    { name: "formal", description: "whether to use a formal greeting" },
+  ]);
+});
+
+test("extractSkillInputs skips malformed lines (no colon) instead of failing", () => {
+  const body = "```skill-inputs\nname: the person to greet\njust garbage\n```";
+  assert.deepEqual(extractSkillInputs(body), [{ name: "name", description: "the person to greet" }]);
 });
 
 test("pruneStaleSkills flags skills unused past staleDays and archives past archiveDays", () => {

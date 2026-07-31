@@ -454,6 +454,87 @@ test("rememberFact patch updates the existing active fact with the same key", ()
   assert.doesNotMatch(surfaced, /RTX 3070 Ti/);
 });
 
+test("rememberFact patch keeps a bounded correction history instead of discarding the prior text (issue #273)", () => {
+  const store = createAcpMemoryStore({ dataDir: createTempDir() });
+  store.rememberFact({ key: "favorite color", text: "blue" });
+  store.rememberFact({ key: "favorite color", text: "green", action: "patch" });
+  store.rememberFact({ key: "favorite color", text: "purple", action: "patch" });
+
+  const facts = JSON.parse(
+    require("node:fs").readFileSync(
+      require("node:path").join(store.dataDir, "facts.json"),
+      "utf8",
+    ),
+  ).facts;
+  const fact = facts.find((f) => f.key === "favorite color");
+  assert.equal(fact.text, "purple");
+  assert.deepEqual(
+    fact.history.map((h) => h.text),
+    ["blue", "green"],
+  );
+});
+
+test("rememberFact insert flags a possible conflict when the new fact overlaps an existing differently-keyed fact, without overwriting it", () => {
+  const store = createAcpMemoryStore({ dataDir: createTempDir() });
+  store.rememberFact({
+    key: "the user's GPU",
+    text: "the user's graphics card is an RTX 3070 Ti",
+  });
+  const result = store.rememberFact({
+    key: "graphics card model",
+    text: "the user's graphics card is now an RTX 5080",
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.action, "insert");
+  assert.ok(result.possibleConflict, "expected a possibleConflict hint");
+  assert.equal(result.possibleConflict.key, "the user's GPU");
+
+  // Never auto-overwrites -- both facts still exist and are both surfaced.
+  const surfaced = store.getRelatedFacts(
+    "remind me about the user's GPU and graphics card model please",
+  );
+  assert.match(surfaced, /3070 Ti/);
+  assert.match(surfaced, /5080/);
+});
+
+test("rememberFact insert reports no possibleConflict for genuinely unrelated facts", () => {
+  const store = createAcpMemoryStore({ dataDir: createTempDir() });
+  store.rememberFact({ key: "favorite color", text: "the user likes blue" });
+  const result = store.rememberFact({ key: "gaming schedule", text: "plays FFXIV in the evenings" });
+  assert.equal("possibleConflict" in result, false);
+});
+
+test("rememberFact archive marks a fact archived (distinct from stale) and it stops auto-surfacing but isn't deleted (issue #277)", () => {
+  const store = createAcpMemoryStore({ dataDir: createTempDir() });
+  store.rememberFact({ key: "Old Project", text: "still true, just not relevant right now" });
+  const archived = store.rememberFact({ key: "Old Project", action: "archive" });
+  assert.deepEqual(archived, { ok: true, action: "archive", key: "Old Project", found: true });
+
+  // Archived facts stop auto-surfacing via getRelatedFacts...
+  assert.equal(store.getRelatedFacts("tell me about Old Project"), "");
+  // ...and stop appearing in listFactKeys' tool-description index...
+  assert.deepEqual(store.listFactKeys(), []);
+  // ...but the underlying data is preserved, not deleted.
+  const facts = JSON.parse(
+    require("node:fs").readFileSync(
+      require("node:path").join(store.dataDir, "facts.json"),
+      "utf8",
+    ),
+  ).facts;
+  const fact = facts.find((f) => f.key === "Old Project");
+  assert.equal(fact.status, "archived");
+  assert.equal(fact.text, "still true, just not relevant right now");
+
+  const archivedAgain = store.rememberFact({ key: "Never Existed", action: "archive" });
+  assert.deepEqual(archivedAgain, {
+    ok: true,
+    action: "archive",
+    key: "Never Existed",
+    found: false,
+  });
+});
+
 test("rememberFact patch falls back to insert when nothing exists yet to patch", () => {
   const store = createAcpMemoryStore({ dataDir: createTempDir() });
   const result = store.rememberFact({
@@ -519,4 +600,123 @@ test("getRelatedFacts includes both entity mentions and remembered facts togethe
   assert.match(surfaced, /Related from other sessions:/);
   assert.match(surfaced, /Remembered:/);
   assert.match(surfaced, /Deal signed in June 2026\./);
+});
+
+// Issue #263 part 2: cursor-based re-summarization. summarizeFn fires as a
+// fire-and-forget async IIFE inside appendTurn, not awaited by appendTurn
+// itself -- these tests use a deferred promise summarizeFn resolves so the
+// test can await the actual compaction completing, not just the appendTurn
+// call that triggered it.
+function deferred() {
+  let resolve;
+  const promise = new Promise((r) => (resolve = r));
+  return { promise, resolve };
+}
+
+test("a successful compaction advances lastSummarizedTurnIndex to the turn count at compaction time", async () => {
+  const compactionDone = deferred();
+  let capturedTurns = null;
+  const store = createAcpMemoryStore({
+    dataDir: createTempDir(),
+    now: () => "2026-06-29T00:00:00.000Z",
+    maxSummaryChars: 40,
+    maxSummaryTokens: 10,
+    summarizeFn: async ({ turns }) => {
+      capturedTurns = turns;
+      compactionDone.resolve();
+      return "condensed summary";
+    },
+  });
+
+  store.ensureSession({ sessionId: "cursor-session" });
+  await store.appendTurn({
+    sessionId: "cursor-session",
+    user: "This is a long enough message to push the summary over its cap quickly.",
+    assistant: "Understood, noting that down.",
+  });
+  await compactionDone.promise;
+
+  const session = store.getSession("cursor-session");
+  assert.equal(session.summary, "condensed summary");
+  assert.equal(session.lastSummarizedTurnIndex, session.turns.length);
+  assert.equal(capturedTurns.length, session.turns.length);
+});
+
+test("a second compaction only includes turns added since the cursor, not a fixed last-10 window", async () => {
+  const firstCompactionDone = deferred();
+  const secondCompactionDone = deferred();
+  let callCount = 0;
+  let secondCallTurns = null;
+  const store = createAcpMemoryStore({
+    dataDir: createTempDir(),
+    now: () => "2026-06-29T00:00:00.000Z",
+    maxSummaryChars: 40,
+    maxSummaryTokens: 10,
+    maxRecentTurns: 20,
+    summarizeFn: async ({ turns }) => {
+      callCount += 1;
+      if (callCount === 1) {
+        firstCompactionDone.resolve();
+        return "first condensed summary";
+      }
+      secondCallTurns = turns;
+      secondCompactionDone.resolve();
+      return "second condensed summary";
+    },
+  });
+
+  store.ensureSession({ sessionId: "cursor-session-2" });
+  await store.appendTurn({
+    sessionId: "cursor-session-2",
+    user: "First long enough message to trigger the first compaction pass here.",
+    assistant: "Okay.",
+  });
+  await firstCompactionDone.promise;
+
+  const afterFirst = store.getSession("cursor-session-2");
+  const cursorAfterFirst = afterFirst.lastSummarizedTurnIndex;
+  assert.equal(cursorAfterFirst, 1);
+
+  await store.appendTurn({
+    sessionId: "cursor-session-2",
+    user: "Second long enough message to trigger the second compaction pass too.",
+    assistant: "Got it.",
+  });
+  await secondCompactionDone.promise;
+
+  // Only the ONE turn added since the cursor -- not a fixed window that
+  // would include turn 1 again just because it fits inside "last 10".
+  assert.equal(secondCallTurns.length, 1);
+  assert.match(secondCallTurns[0].user, /Second long enough message/);
+});
+
+test("truncateKeepingRecent behavior: an overflowing summary keeps the newest content, not the oldest, when no summarizer is configured", async () => {
+  // maxSummaryChars has a hard floor of 100 (Math.max(100, ...) inside
+  // createAcpMemoryStore) -- passing anything lower is silently clamped up,
+  // so the input turns below are sized to comfortably exceed even that
+  // floor once combined.
+  const store = createAcpMemoryStore({
+    dataDir: createTempDir(),
+    now: () => "2026-06-29T00:00:00.000Z",
+    maxSummaryChars: 100,
+    // No summarizeFn -- proves the raw truncation direction on its own,
+    // without compaction ever kicking in to rewrite the summary.
+  });
+
+  store.ensureSession({ sessionId: "truncate-session" });
+  await store.appendTurn({
+    sessionId: "truncate-session",
+    user: "OLDEST_MARKER this turn should eventually fall off the front of the rolling summary once it overflows.",
+    assistant: "Acknowledged, an old turn that should not survive truncation.",
+  });
+  await store.appendTurn({
+    sessionId: "truncate-session",
+    user: "NEWEST_MARKER this is the most recent turn and must survive truncation.",
+    assistant: "ok",
+  });
+
+  const session = store.getSession("truncate-session");
+  assert.ok(session.summary.length <= 100);
+  assert.match(session.summary, /NEWEST_MARKER/);
+  assert.doesNotMatch(session.summary, /OLDEST_MARKER/);
 });

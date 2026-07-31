@@ -8,24 +8,25 @@ const vrmCanvas = document.getElementById("vrm");
 let activeAvatar = null;
 let currentState = "idle";
 
-function setAvatarState(state) {
+function setAvatarState(state, preferredExpression) {
   const nextState = ["idle", "talking", "excited", "angry"].includes(state) ? state : "idle";
   currentState = nextState;
   document.body.dataset.state = nextState;
   if (activeAvatar) {
-    activeAvatar.setState(nextState);
+    activeAvatar.setState(nextState, preferredExpression);
   }
 }
 
-ipcRenderer.on("avatar:state", (event, state) => {
-  setAvatarState(state);
+ipcRenderer.on("avatar:state", (event, state, preferredExpression) => {
+  setAvatarState(state, preferredExpression);
 });
 
-// Speech amplitude (0..1-ish RMS) plus the audio's spectral centroid (Hz,
-// used to vary mouth shape) from the main window drive the mouth.
-ipcRenderer.on("avatar:mouth", (event, rms, centroidHz) => {
+// Speech amplitude (0..1-ish RMS) plus the audio's classified viseme
+// (issue #275, falls back to the older spectral centroid in Hz when
+// unavailable) from the main window drive the mouth.
+ipcRenderer.on("avatar:mouth", (event, rms, centroidHz, viseme) => {
   if (activeAvatar) {
-    activeAvatar.setMouthTarget(rms, centroidHz);
+    activeAvatar.setMouthTarget(rms, centroidHz, viseme);
   }
 });
 

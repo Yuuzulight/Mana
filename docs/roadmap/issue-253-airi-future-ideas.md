@@ -1,13 +1,12 @@
-# Issue 253: AIRI-inspired future ideas -- scoped, not implemented
+# Issue 253: AIRI-inspired future ideas
 
-## Status: 1 of 3 shipped (Live2D model validator, see below); the other two are now concretely scoped below, not just parked
+## Status: 2 of 3 shipped (Live2D model validator; LLM-callable expression-tool system, see below); beat-sync head-sway remains scoped-not-implemented
 
 Found while doing a deep read-through of Project AIRI's (moeru-ai/airi)
 `stage-ui-live2d` package for issue #252 (randomized idle saccades +
-spectral-centroid mouth shape, both shipped). Beat-sync head-sway and the
-LLM-callable expression-tool system are real, distinct ideas -- neither is
-scheduled, but both now have a concrete implementation shape (below)
-instead of only a "why not now."
+spectral-centroid mouth shape, both shipped). Beat-sync head-sway is a real,
+distinct idea that now has a concrete implementation shape (below) instead
+of only a "why not now," but remains gated on an audio-source decision.
 
 ## 1. Beat-sync head sway
 
@@ -49,7 +48,20 @@ tracking) would be a much bigger lift than the head-sway animation itself.
 4. **Not scheduled**: still gated entirely on deciding an audio-source
    approach; nothing here is committed to.
 
-## 2. LLM-callable expression-tool system
+## 2. LLM-callable expression-tool system -- Shipped
+
+Implemented per the concrete shape below, with one refinement made during
+implementation: `setState`'s side effects (motion/mouth reset) stay gated on
+an actual state-bucket change, but expression re-application now *also*
+fires whenever a `preferredName` is supplied, even on a same-state reply --
+otherwise a model-requested expression on a second consecutive same-state
+reply would have been silently dropped by the pre-existing early-return
+guard. `node-bot/ai/expression-tool-source.js` is the new tool source;
+`buildAssistantReply` threads the chosen name through an `expression` field
+(mirroring the existing `lastToolCalls` out-parameter pattern rather than
+changing its return type); both apps' `/reply` handlers surface it; both
+apps' `expressionForState`/`setState`/IPC chains prioritize it over the
+automatic mood-based pick when present, falling back gracefully otherwise.
 
 AIRI's `expression-store.ts` + `expression-tools.ts` expose
 `expression_set`/`expression_get`/`expression_toggle`/
@@ -162,9 +174,7 @@ has no fs) and the result travels over IPC as `resolved.validation`.
 
 ## Not a commitment
 
-Neither remaining idea is scheduled. Idea 2 is now cheap enough (small,
-reuses existing infrastructure end to end) that it's a reasonable pickup
-whenever there's room; idea 1 still needs an audio-source decision before
-any code gets written. Revisit if a concrete need shows up (a
-music-reactive feature request, a tool-calling expression request, or a
-user hitting a confusing broken-model failure).
+Beat-sync head-sway (idea 1) remains unscheduled, still gated on an
+audio-source decision before any code gets written. Revisit if a concrete
+need shows up (a music-reactive feature request, or a user hitting a
+confusing broken-model failure for idea 3's remaining zip-upload checks).

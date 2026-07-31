@@ -130,6 +130,29 @@ test("runToolScript captures console.log calls from the script as logs", async (
   assert.deepEqual(logs, ["hello 1"]);
 });
 
+test("runToolScript exposes options.inputs as a plain sandbox.inputs object", async () => {
+  const { result } = await runToolScript("return inputs.name;", { inputs: { name: "Mana" } });
+  assert.equal(result, "Mana");
+});
+
+test("runToolScript defaults inputs to an empty object when omitted", async () => {
+  const { result } = await runToolScript("return typeof inputs;");
+  assert.equal(result, "object");
+});
+
+// inputs are plain data, not capabilities like tools -- an object value
+// passed as an input shouldn't keep its outer-realm .constructor chain
+// crossing into the sandbox, same as everything else seal() strips.
+test("runToolScript blocks the .constructor escape via an injected inputs value", async () => {
+  await assert.rejects(
+    () =>
+      runToolScript("return inputs.value.constructor.constructor('return process')().pid;", {
+        inputs: { value: {} },
+      }),
+    /Cannot read propert/,
+  );
+});
+
 test("runToolScript caps total buffered log output instead of growing unbounded", async () => {
   const { logs } = await runToolScript(
     `for (let i = 0; i < 5000; i++) { console.log("x".repeat(50)); } return "done";`,

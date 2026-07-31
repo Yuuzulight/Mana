@@ -12,6 +12,48 @@ accounting.
 ## [Unreleased]
 
 ### Added
+- **Mana can pick her own Live2D expression** (issue #253): a new
+  `expression__set` tool lets a reply nominate an expression by name,
+  threaded through `buildAssistantReply`/`/reply`/`/transcribe` as an
+  additive `expression` field alongside the existing automatic
+  mood-based detection, all the way through IPC to both apps' avatar
+  renderers -- it takes priority over the automatic pick when the model
+  supplies one, and falls back gracefully otherwise.
+- **Contradiction-aware memory writes** (issue #273): `rememberFact`'s
+  `insert` action now flags a `possibleConflict` (existing fact, lexically
+  overlapping) in its return value instead of silently overwriting --
+  the model judges and follows up with an explicit `patch` if it agrees.
+- **Memory `archive` action** (issue #277): a fact can now be marked
+  `archived` (still true, just deprioritized from automatic surfacing)
+  distinct from `remove` (no longer true) -- same `memory__remember` tool,
+  new `action` value.
+- **Parameterized skill recipes** (issue #278): a skill can declare named
+  inputs via a fenced ` ```skill-inputs ` block (mirroring the existing
+  ` ```skill-script ` convention); `skill__view` surfaces them and
+  `skill__run` accepts a matching `inputs` object, threaded into the
+  sandboxed script as `inputs.<name>`.
+- **Sandboxed diff-and-apply for coding-mode** (issue #276): a new
+  `coding__propose_edit` tool drafts a proposed file change as a `.diff`
+  file in a scratch location and hands back its path -- reuses the
+  existing editor-workspace/edit-proposal machinery
+  (`zed-integration.js`) that already backs the `/editors/*` admin routes,
+  but never calls the file-writing `approveEditProposal` step itself, so
+  node-bot never mutates a real source file through this path.
+- **MFCC-based viseme lip-sync** (issue #275): `lip-sync.js` (both apps)
+  now extracts real MFCCs (mel filterbank + DCT) from the same
+  AnalyserNode data the old spectral-centroid heuristic used, and
+  classifies each frame into a small "aa"/"ee"/"oo"/neutral viseme set
+  from typical adult vowel formant bands -- drives Live2D's mouth-form
+  parameter with priority over the older centroid-based heuristic
+  (which stays as the fallback).
+- **Ambient screen-sensing with an attention gate** (issue #272, off by
+  default -- `plugins/screen-sensing`, `MANA_SCREEN_SENSING_ENABLED=1` in
+  windows-launcher): a periodic (not continuous) screen glance routes
+  through the existing local vision model for a one-sentence summary,
+  discards the image immediately, and an attention gate skips near-duplicate
+  glances, gaming mode, and enforces a cooldown -- only a genuinely new,
+  worth-mentioning glance gets surfaced into the real chat log as a
+  proactive message.
 - **`.env`/credential-file access blocked from `read_file`** (issue #268
   part 1): the model-facing `read_file` tool's default `allowedRoot` is the
   repo root, which is exactly where `.env` lives -- a prompt-injected
@@ -36,6 +78,16 @@ accounting.
   default, since llama-server's model swap is multi-second and a
   reflect-cycle pass alternates enough that switching by default could
   cost more time than it saves on typical hardware.
+- **Cursor-based re-summarization** (issue #263 part 2): session memory
+  compaction now tracks a `lastSummarizedTurnIndex` cursor and only
+  re-summarizes turns added since the last successful compaction, instead of
+  always re-deriving from a fixed last-10-turn window regardless of what had
+  already been compacted. Also fixes a pre-existing bug in the rolling
+  `summary` field's truncation direction: it was keeping the *start* of the
+  accumulated string, silently dropping the newest turn once the summary
+  overflowed its char cap, instead of keeping the most recent content.
+  Part 1 (hybrid keyword+vector search) remains deferred --
+  `docs/roadmap/issue-263-hybrid-retrieval-scoping.md`.
 - **ComfyUI split-loader workflow support** (issue #271): a second bundled
   ComfyUI workflow graph (`workflows/comfyui-txt2img-split.json`) for
   split-checkpoint models (FLUX, Qwen-Image, Mage-Flow -- separate
@@ -70,19 +122,20 @@ accounting.
   total task isolation, already reused cleanly by #197's reflect cycle, no
   existing event-bus to piggyback on. No real friction found; closed with
   findings instead of a scope-creep redesign.
-- **Issue #263** (hybrid keyword+vector memory retrieval + cursor
-  resummarization): scoped, not implemented -- both remaining pieces touch
-  `acp-memory-store.js`'s `appendTurn`, the single most-exercised write
-  path in the whole system, and deserve a dedicated pass with room for
-  real regression testing rather than a rushed addition here. Concrete
-  implementation plans for both, plus the storage-scale question answered
-  directly (SQLite stays sufficient; `node:sqlite` + `sqlite-vec`, per
-  issue #220's verified benchmark, is the path if/when it's built), in
-  `docs/roadmap/issue-263-hybrid-retrieval-scoping.md`.
-- **Issues #253/#258**: both are deliberately-parked "not scheduled"
-  reference issues that already contain their own complete investigation
-  write-ups (AIRI-inspired Live2D ideas; mobile app architecture scoping).
-  Confirmed correctly camped in Backlog, left as-is.
+- **Issue #263 part 1** (hybrid keyword+vector memory retrieval): scoped,
+  not implemented -- it's a write-path change to `acp-memory-store.js`'s
+  `appendTurn`, the single most-exercised write path in the whole system,
+  plus a new runtime dependency (`node:sqlite` + `sqlite-vec`) still
+  Stability-1 experimental on this project's Node 22.x line, and deserves
+  a dedicated pass with room for real regression testing rather than a
+  rushed addition here. The storage-scale question is answered directly
+  (SQLite stays sufficient; `node:sqlite` + `sqlite-vec`, per issue #220's
+  verified benchmark, is the path if/when it's built), and a concrete
+  implementation plan is in `docs/roadmap/issue-263-hybrid-retrieval-scoping.md`.
+  Part 2 (cursor-based re-summarization) is implemented -- see Added, above.
+- **Issue #258**: a deliberately-parked "not scheduled" reference issue that
+  already contains its own complete investigation write-up (mobile app
+  architecture scoping). Confirmed correctly camped in Backlog, left as-is.
 
 ### Security
 - Cleared all 98 open Dependabot alerts: bumped `multer` (1.x -> 2.x),

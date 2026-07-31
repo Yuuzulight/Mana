@@ -131,4 +131,5 @@ module.exports = {
   READ_FILE_TOOL_SCHEMA,
   createToolPolicy,
   resolveWithinRoot,
+  isCredentialPath,
 };

@@ -89,6 +89,29 @@ function extractSkillScript(body) {
   return match ? match[1].trim() : null;
 }
 
+// Issue #278: a "recipe"-shaped skill optionally declares named inputs
+// (like a function signature) instead of only being retrieved by
+// description-similarity -- same convention as ```skill-script (a specific
+// fence tag inside the existing body, not a new frontmatter field or
+// storage format). Each line is `name: description`; malformed lines are
+// skipped rather than failing the whole skill, matching this codebase's
+// general "degrade gracefully on user/model-authored text" posture.
+const SKILL_INPUTS_RE = /```skill-inputs\r?\n([\s\S]*?)```/;
+
+function extractSkillInputs(body) {
+  const match = SKILL_INPUTS_RE.exec(String(body || ""));
+  if (!match) return [];
+  const inputs = [];
+  for (const line of match[1].split(/\r?\n/)) {
+    const idx = line.indexOf(":");
+    if (idx === -1) continue;
+    const name = line.slice(0, idx).trim();
+    const description = line.slice(idx + 1).trim();
+    if (name) inputs.push({ name, description });
+  }
+  return inputs;
+}
+
 function slugify(name) {
   return (
     String(name || "")
@@ -338,4 +361,5 @@ module.exports = {
   serializeSkillFile,
   slugify,
   extractSkillScript,
+  extractSkillInputs,
 };
