@@ -30,7 +30,13 @@ accounting.
   or with embeddings disabled/unavailable, behavior is unchanged
   keyword-only search. Results from both signals are interleaved and
   reranked for diversity (drops a semantic hit that just restates an
-  already-kept keyword hit) rather than blindly concatenated.
+  already-kept keyword hit) rather than blindly concatenated. `sqlite-vec`'s
+  platform binary is a genuinely optional dependency (`node-bot/.npmrc`'s
+  `omit=optional`, a deliberate issue #187 decision, skips it) -- when
+  unavailable, `session-search-index.js` degrades to keyword-only
+  automatically (`vectorEnabled()`), which is also what this project's own
+  CI runs under, so CI verifies the fallback path while local Windows
+  installs (with the platform binary present) get the real one.
 - **Mana can pick her own Live2D expression** (issue #253): a new
   `expression__set` tool lets a reply nominate an expression by name,
   threaded through `buildAssistantReply`/`/reply`/`/transcribe` as an

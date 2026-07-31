@@ -105,15 +105,40 @@ clears `NODE_ENV` specifically to exercise the real HTTP-calling logic
 against a fake server, and a `NODE_TEST_CONTEXT` fallback there would defeat
 that (confirmed by trying it -- broke 3 subtests, reverted).
 
-Also found and fixed a real packaging gap while installing `sqlite-vec`:
-its platform binary (`sqlite-vec-windows-x64`) is declared as an
-`optionalDependency`, which `node-bot/.npmrc`'s `omit=optional` (a
-deliberate issue #187 setting, to keep a vulnerable native-build optional
-peer out) silently skips on every `npm ci`/`npm install` -- including in
-CI. Listed `sqlite-vec-windows-x64` as a direct dependency in
-`node-bot/package.json` instead, verified with a genuine clean
-`rm -rf node_modules && npm ci` that it now installs and the extension
-loads correctly.
+Also found a real, still-open packaging tension while installing
+`sqlite-vec`: its platform binaries (`sqlite-vec-windows-x64`,
+`-linux-x64`, etc.) are declared as `optionalDependencies`, which
+`node-bot/.npmrc`'s `omit=optional` (a deliberate issue #187 setting, to
+keep `@discordjs/opus`'s vulnerable native-build optional peer out)
+silently skips on every `npm ci`/`npm install`, on every platform --
+including this project's own CI (which runs on Linux, per the "Fix CI
+SIGSEGV" commit pinning `better-sqlite3@11.10.0`). Tried listing
+`sqlite-vec-windows-x64` as a direct (non-optional) dependency first; that
+broke CI outright (`npm ERR! notsup Unsupported platform ... wanted
+{"os":"win32"} (current: {"os":"linux"...})`), since a plain dependency's
+`os`/`cpu` fields are enforced as a hard error, not a silent skip, and the
+project's own CI genuinely needs the Linux binary while this laptop needs
+the Windows one -- no single non-optional entry satisfies both.
+
+Reverted to the correct npm-native shape (`sqlite-vec-windows-x64` back
+under `optionalDependencies`, matching what `sqlite-vec`'s own package.json
+already declares) and, instead of fighting `.npmrc`, made the actual
+unavailability something the code and tests handle as a first-class,
+expected state rather than an assumption: `createSessionSearchIndex()` now
+returns a `vectorEnabled()` getter, and every hybrid-specific test checks
+it and calls `t.skip(...)` with a clear reason when the extension didn't
+load, instead of either fighting the platform gap or silently asserting
+nothing meaningful. Verified both sides for real: a genuine clean
+`rm -rf node_modules && npm ci` (matching `.npmrc`, matching CI) runs the
+full suite green with those tests skipped; a manual
+`npm install sqlite-vec-windows-x64 --no-save --include=optional` (not
+committed) runs the exact same suite with 0 skips, confirming the hybrid
+logic itself is correct, not just gracefully absent. This means CI
+verifies the keyword-only fallback path for real, and the real vector path
+is verified locally on the actual target platform (Windows) -- an accepted
+limitation of this project's CI running on a different OS than it ships
+for, not something this change could fix without touching the deliberate
+`.npmrc` security setting, which was out of scope here.
 
 ## Part 2: cursor-based re-summarization -- implemented
 
