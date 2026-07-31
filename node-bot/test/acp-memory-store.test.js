@@ -601,3 +601,122 @@ test("getRelatedFacts includes both entity mentions and remembered facts togethe
   assert.match(surfaced, /Remembered:/);
   assert.match(surfaced, /Deal signed in June 2026\./);
 });
+
+// Issue #263 part 2: cursor-based re-summarization. summarizeFn fires as a
+// fire-and-forget async IIFE inside appendTurn, not awaited by appendTurn
+// itself -- these tests use a deferred promise summarizeFn resolves so the
+// test can await the actual compaction completing, not just the appendTurn
+// call that triggered it.
+function deferred() {
+  let resolve;
+  const promise = new Promise((r) => (resolve = r));
+  return { promise, resolve };
+}
+
+test("a successful compaction advances lastSummarizedTurnIndex to the turn count at compaction time", async () => {
+  const compactionDone = deferred();
+  let capturedTurns = null;
+  const store = createAcpMemoryStore({
+    dataDir: createTempDir(),
+    now: () => "2026-06-29T00:00:00.000Z",
+    maxSummaryChars: 40,
+    maxSummaryTokens: 10,
+    summarizeFn: async ({ turns }) => {
+      capturedTurns = turns;
+      compactionDone.resolve();
+      return "condensed summary";
+    },
+  });
+
+  store.ensureSession({ sessionId: "cursor-session" });
+  await store.appendTurn({
+    sessionId: "cursor-session",
+    user: "This is a long enough message to push the summary over its cap quickly.",
+    assistant: "Understood, noting that down.",
+  });
+  await compactionDone.promise;
+
+  const session = store.getSession("cursor-session");
+  assert.equal(session.summary, "condensed summary");
+  assert.equal(session.lastSummarizedTurnIndex, session.turns.length);
+  assert.equal(capturedTurns.length, session.turns.length);
+});
+
+test("a second compaction only includes turns added since the cursor, not a fixed last-10 window", async () => {
+  const firstCompactionDone = deferred();
+  const secondCompactionDone = deferred();
+  let callCount = 0;
+  let secondCallTurns = null;
+  const store = createAcpMemoryStore({
+    dataDir: createTempDir(),
+    now: () => "2026-06-29T00:00:00.000Z",
+    maxSummaryChars: 40,
+    maxSummaryTokens: 10,
+    maxRecentTurns: 20,
+    summarizeFn: async ({ turns }) => {
+      callCount += 1;
+      if (callCount === 1) {
+        firstCompactionDone.resolve();
+        return "first condensed summary";
+      }
+      secondCallTurns = turns;
+      secondCompactionDone.resolve();
+      return "second condensed summary";
+    },
+  });
+
+  store.ensureSession({ sessionId: "cursor-session-2" });
+  await store.appendTurn({
+    sessionId: "cursor-session-2",
+    user: "First long enough message to trigger the first compaction pass here.",
+    assistant: "Okay.",
+  });
+  await firstCompactionDone.promise;
+
+  const afterFirst = store.getSession("cursor-session-2");
+  const cursorAfterFirst = afterFirst.lastSummarizedTurnIndex;
+  assert.equal(cursorAfterFirst, 1);
+
+  await store.appendTurn({
+    sessionId: "cursor-session-2",
+    user: "Second long enough message to trigger the second compaction pass too.",
+    assistant: "Got it.",
+  });
+  await secondCompactionDone.promise;
+
+  // Only the ONE turn added since the cursor -- not a fixed window that
+  // would include turn 1 again just because it fits inside "last 10".
+  assert.equal(secondCallTurns.length, 1);
+  assert.match(secondCallTurns[0].user, /Second long enough message/);
+});
+
+test("truncateKeepingRecent behavior: an overflowing summary keeps the newest content, not the oldest, when no summarizer is configured", async () => {
+  // maxSummaryChars has a hard floor of 100 (Math.max(100, ...) inside
+  // createAcpMemoryStore) -- passing anything lower is silently clamped up,
+  // so the input turns below are sized to comfortably exceed even that
+  // floor once combined.
+  const store = createAcpMemoryStore({
+    dataDir: createTempDir(),
+    now: () => "2026-06-29T00:00:00.000Z",
+    maxSummaryChars: 100,
+    // No summarizeFn -- proves the raw truncation direction on its own,
+    // without compaction ever kicking in to rewrite the summary.
+  });
+
+  store.ensureSession({ sessionId: "truncate-session" });
+  await store.appendTurn({
+    sessionId: "truncate-session",
+    user: "OLDEST_MARKER this turn should eventually fall off the front of the rolling summary once it overflows.",
+    assistant: "Acknowledged, an old turn that should not survive truncation.",
+  });
+  await store.appendTurn({
+    sessionId: "truncate-session",
+    user: "NEWEST_MARKER this is the most recent turn and must survive truncation.",
+    assistant: "ok",
+  });
+
+  const session = store.getSession("truncate-session");
+  assert.ok(session.summary.length <= 100);
+  assert.match(session.summary, /NEWEST_MARKER/);
+  assert.doesNotMatch(session.summary, /OLDEST_MARKER/);
+});

@@ -13,6 +13,18 @@ function cleanText(value, maxLength) {
     .slice(0, maxLength);
 }
 
+// Issue #263 part 2: cleanText's .slice(0, maxLength) keeps the START of
+// the string -- correct for most uses here (a user/assistant turn that's
+// too long should keep its beginning), but wrong for the rolling session
+// summary specifically: the newest turn's summaryLine is always appended
+// at the END, so once the accumulated string exceeds maxSummaryChars,
+// cleanText would silently drop the just-added newest content and keep
+// stale early material instead. This keeps the END (most recent) instead.
+function truncateKeepingRecent(value, maxLength) {
+  const cleaned = String(value || "").replace(/\s+/g, " ").trim();
+  return cleaned.length > maxLength ? cleaned.slice(-maxLength) : cleaned;
+}
+
 // Issue #273 (Soul-of-Waifu-inspired self-healing memory): a deterministic,
 // keyword-overlap check -- same technique skills-capability.js's
 // findMatchingSkill() already uses, not a new LLM call -- for whether a
@@ -545,7 +557,7 @@ function createAcpMemoryStore(options = {}) {
       turn.assistant,
       maxSummaryChars,
     );
-    const summary = cleanText(
+    const summary = truncateKeepingRecent(
       [session.summary, summaryLine].filter(Boolean).join("\n"),
       maxSummaryChars,
     );
@@ -577,9 +589,20 @@ function createAcpMemoryStore(options = {}) {
         // fire-and-forget async compaction
         (async () => {
           try {
-            const recentTurns = saved.turns.slice(
-              -Math.min(10, maxRecentTurns),
+            // Issue #263 part 2: an explicit cursor instead of always just
+            // "the last min(10, maxRecentTurns) turns" -- if compaction has
+            // been failing (summarizeFn throwing, or simply not configured
+            // in some earlier session state) for longer than 10 turns, the
+            // fixed-window version would silently never include the older
+            // unsummarized turns in the next attempt. Still bounded by
+            // maxRecentTurns so a compaction that's been broken for a very
+            // long time doesn't build an unbounded prompt.
+            const cursor = Number(saved.lastSummarizedTurnIndex) || 0;
+            const windowStart = Math.max(
+              cursor,
+              saved.turns.length - maxRecentTurns,
             );
+            const recentTurns = saved.turns.slice(windowStart);
             const newSummary = await summarizeFn({
               sessionId: saved.sessionId,
               summary: saved.summary,
@@ -591,6 +614,7 @@ function createAcpMemoryStore(options = {}) {
               const reloaded = getSession(saved.sessionId) || saved;
               if (compacted !== reloaded.summary) {
                 reloaded.summary = compacted;
+                reloaded.lastSummarizedTurnIndex = saved.turns.length;
                 reloaded.updatedAt = now();
                 saveSession(reloaded);
               }
