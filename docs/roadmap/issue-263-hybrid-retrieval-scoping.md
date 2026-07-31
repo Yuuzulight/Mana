@@ -1,20 +1,23 @@
 # Issue 263: hybrid keyword+vector retrieval + cursor resummarization -- scoping
 
-## Status: part 2 implemented; part 1 still scoped and deliberately deferred
+## Status: both parts implemented
 
-This issue has three parts. Part 3 (this doc) and enough investigation to make
-part 1 concrete are done here. **Part 2 (cursor-based re-summarization) is now
-implemented** -- see the "Part 2" section below for what shipped. Part 1
-(hybrid keyword+vector search) remains deliberately not implemented: it's a
-write-path change to code that runs on every single chat turn
-(`acp-memory-store.js`'s `appendTurn`), plus a new runtime dependency
-(`node:sqlite` + `sqlite-vec`) that's still Stability-1 experimental on the
-Node 22.x line this project actually targets (re-checked: `node --version`
-reports v22.23.1, no `engines` field in `node-bot/package.json`). Landing it
-without the runway for real regression testing against that path is a worse
-outcome than scoping it properly and picking it up with room to verify. Part 2
-was independently implementable and shipped on its own, exactly as this doc
-anticipated.
+**Part 1 (hybrid keyword+vector search) and part 2 (cursor-based
+re-summarization) are both now implemented** -- see their sections below for
+what shipped.
+
+Part 1 was originally deferred twice on the belief that it needed
+`node:sqlite` (still Stability-1 experimental) instead of `better-sqlite3`,
+because issue #220's investigation found `better-sqlite3` "fails to install
+on this dev machine (no Visual Studio C++ toolchain)". That premise turned
+out to be stale by the time this was picked back up: `session-search-index.js`
+(built for issue #260, the day *after* #220's investigation) already depends
+on `better-sqlite3` directly and works fine -- `better-sqlite3@11.10.0` ships
+prebuilt binaries for Node's ABI, sidestepping the toolchain issue entirely,
+which #220's investigation (against a different version) didn't hit. Part 1
+was re-scoped and built on the already-shipped `better-sqlite3` connection
+instead of introducing `node:sqlite`, which turned out to be a smaller change
+than the original plan (one SQLite driver in this file, not two).
 
 ## Part 3: the storage-scale decision, answered directly
 
@@ -38,86 +41,104 @@ assumed.** Two prior investigations already did the real legwork:
   `tools/retriever-index.js`'s `computeEmbeddings()` so it already accepts
   either response shape.
 
-**Conclusion**: no Postgres/pgvector, no new service. If/when hybrid search
-is implemented (part 1 below), it should use the already-verified
-`node:sqlite` + `sqlite-vec` pairing, not a new database.
+**Conclusion**: no Postgres/pgvector, no new service. Part 1 uses SQLite (via
+the already-shipped `better-sqlite3`, see the corrected note above), not a
+new database.
 
-## Part 1: hybrid keyword+vector search -- concrete plan, not yet built
+## Part 1: hybrid keyword+vector search -- implemented
 
-### What exists today (verified by reading the real code, not assumed)
+`session-search-index.js` now loads `sqlite-vec`'s extension into its
+existing `better-sqlite3` connection and creates a `turns_vec` (`vec0`)
+table plus a plain `turns_vec_meta` table (sessionId/text/at, keyed by the
+same rowid) alongside the existing FTS5 `messages_fts` table -- one
+database file, one driver, matching this issue's own scope.
 
-- `node-bot/session-search-index.js`: SQLite FTS5 full-text index over every
-  raw turn, exact/keyword match only. This is what part 1 extends.
-- `node-bot/tools/retriever-index.js`'s `computeEmbeddings()`: already
-  calls the local embedder for the **file/document retriever** path (Deep
-  Research sources, coding-mode repo context) -- a real, working embedding
-  pipeline exists, it's just not wired to session search.
-- `node-bot/tools/vector-store.js`'s `makeFallbackStore`: a JS brute-force
-  cosine-similarity search over that same file-retriever's vectors --
-  proof the embedding + search shape already works end-to-end for a
-  different corpus.
+- **Write path**: `acp-memory-store.js`'s `appendTurn` fires a
+  fire-and-forget async block (mirroring the compaction IIFE part 2 added)
+  that computes one embedding for the whole turn (`User: ...\nAssistant:
+  ...`, not per-role -- half the embedding calls of FTS5's per-role rows)
+  via an injected `computeEmbeddingsFn` (same shape as
+  `retriever-index.js`'s `computeEmbeddings`), then calls the new
+  `sessionSearchIndex.indexEmbedding()`. Never awaited by `appendTurn`, so a
+  slow/unavailable embedder can't add latency to the reply path, and any
+  failure just means that turn stays keyword-searchable only.
+- **Read path**: `acpMemoryStore.searchSessions()` computes a query
+  embedding the same way before calling `sessionSearchIndex.search()`.
+  `search()` blends the FTS5 keyword results with a `vec0` KNN query only
+  when a valid `queryEmbedding` is present, sort is the default
+  `"relevance"`, and no `roleFilter` was given (vector hits are whole-turn,
+  not per-role, so they can't honestly satisfy a role filter) -- otherwise
+  behavior is byte-for-byte the same as before this issue. The two ranked
+  lists are interleaved (best-first from each) and reranked for diversity:
+  a candidate whose text overlaps an already-kept result by more than 70%
+  of its own significant words (same token-overlap technique
+  `acp-memory-store.js`'s conflict detection already uses) is dropped, so a
+  semantic hit that just restates a keyword hit doesn't eat a results slot.
+- **Everything stays additive by construction**: `USE_EMBEDDINGS` is off by
+  default, so with no embedder configured, `computeEmbeddingsFn` returns
+  `null` embeddings and every search silently stays keyword-only -- zero
+  behavior change for anyone not opted in. If `sqlite-vec`'s extension
+  fails to load on some platform, `vectorEnabled` stays `false` and FTS5
+  search is completely unaffected.
+- **Backfill**: not implemented -- existing sessions get embeddings
+  indexed only for turns appended *after* this change (same "compute going
+  forward, don't migrate the past" choice the original scoping left open,
+  now resolved by not building it: at Mana's actual scale, backfill wasn't
+  worth the extra machinery for a first cut).
+- **Tests**: `session-search-index.test.js` -- 7 new tests (semantic match
+  with zero keyword overlap, hybrid-skip for `newest`/`oldest` sort and an
+  explicit `roleFilter`, session-scoped vector search correctness,
+  diversity dedup, dimension-mismatch handling on both the query and index
+  side, and no-op safety on missing fields) using `embedDim: 4` for fast
+  deterministic vectors. `acp-memory-store.test.js` -- 4 new tests covering
+  the write-path/read-path wiring specifically (the merge/diversity logic
+  itself is tested where it lives, in `session-search-index.test.js`).
 
-### The actual gap
+While building this, found and fixed a real (if narrow) pre-existing gap in
+`retriever-index.js`: two of its "skip real work under test" guards
+(`buildIndex`, `incrementalScan`) were missing the `NODE_TEST_CONTEXT`
+fallback the rest of this codebase's equivalent guards use -- only matters
+when `USE_EMBEDDINGS=1` is explicitly set (off by default) and a test file
+runs outside `run_tests.js`. Fixed both. `computeEmbeddings()`'s own guard
+was deliberately left `NODE_ENV`-only: `retriever-embeddings-*.test.js`
+clears `NODE_ENV` specifically to exercise the real HTTP-calling logic
+against a fake server, and a `NODE_TEST_CONTEXT` fallback there would defeat
+that (confirmed by trying it -- broke 3 subtests, reverted).
 
-Session turns (`acp-memory-store.js`'s `appendTurn`, indexed into
-`session-search-index.js` via `indexTurn`) never get an embedding computed
-or stored -- only FTS5 tokenizes them. Closing this is "wire an existing
-pipeline to a second corpus," not "build embeddings from scratch."
+Also found a real, still-open packaging tension while installing
+`sqlite-vec`: its platform binaries (`sqlite-vec-windows-x64`,
+`-linux-x64`, etc.) are declared as `optionalDependencies`, which
+`node-bot/.npmrc`'s `omit=optional` (a deliberate issue #187 setting, to
+keep `@discordjs/opus`'s vulnerable native-build optional peer out)
+silently skips on every `npm ci`/`npm install`, on every platform --
+including this project's own CI (which runs on Linux, per the "Fix CI
+SIGSEGV" commit pinning `better-sqlite3@11.10.0`). Tried listing
+`sqlite-vec-windows-x64` as a direct (non-optional) dependency first; that
+broke CI outright (`npm ERR! notsup Unsupported platform ... wanted
+{"os":"win32"} (current: {"os":"linux"...})`), since a plain dependency's
+`os`/`cpu` fields are enforced as a hard error, not a silent skip, and the
+project's own CI genuinely needs the Linux binary while this laptop needs
+the Windows one -- no single non-optional entry satisfies both.
 
-### Concrete implementation shape (for whoever picks this up)
-
-1. **Storage**: add a `vec0` virtual table (via `sqlite-vec`, loaded through
-   `node:sqlite`'s `loadExtension()`, matching issue #220's verified
-   pairing) alongside the existing FTS5 table in
-   `session-search-index.js`'s own SQLite database file -- not a separate
-   database, per this issue's own scope.
-2. **Write path**: in `appendTurn` (or `indexTurn`), after the existing
-   FTS5 `indexTurn` call, also compute an embedding for the turn text via
-   the same `computeEmbeddings()`-shaped call `retriever-index.js` already
-   uses, and insert it into the vec0 table keyed by the same turn id FTS5
-   uses. Must be async/best-effort, same "never let indexing failure break
-   the actual conversation flow" guarantee `appendTurn` already gives FTS5
-   indexing (see the `try/catch` around `sessionSearchIndex.indexTurn`).
-3. **Read path**: `session-search-index.js`'s `search()` runs the FTS5
-   query as today, plus a `vec0` similarity query against the same
-   question's embedding; merge the two ranked lists (a simple approach:
-   normalize each list's scores to [0,1], take a weighted sum, e.g.
-   `0.5*ftsScore + 0.5*vecScore` -- tune once real usage data exists, not
-   guessed here) and **rerank for diversity** (e.g. skip a result whose
-   text is near-duplicate of one already kept, by simple token-overlap
-   check -- avoids returning three near-identical turns just because they
-   all score high on both signals).
-4. **Backfill**: existing sessions have no stored embeddings. Either
-   backfill lazily (compute+store on first search miss) or via a one-time
-   migration script -- not designed further here since it depends on
-   whether backfill-on-read or a batch job fits better once this is
-   actually being built.
-5. **Tests**: `session-search-index.test.js` already exists and covers
-   FTS5 behavior with a real (temp-dir) SQLite database -- extend the same
-   pattern with real (small, deterministic) embedding vectors, not a
-   live embedder call, matching how `retriever-embeddings-*.test.js`
-   already test the file-retriever's embedding path.
-
-### Why not implemented now
-
-This is a write-path change to the single most heavily-exercised piece of
-Mana's memory system (every chat turn calls `appendTurn`), plus a new
-runtime dependency (`node:sqlite`, still Stability-1 experimental on the
-Node 22.x line this project actually targets -- it only reaches release
-candidate in Node 25.7.0, so re-check its current stability tier before
-implementing, since this is a version-dependent classification that may
-have moved on by the time this is picked up; still no `engines` field in
-`node-bot/package.json` pinning a minimum version). Both are real,
-tractable pieces of work -- the investigation above is what makes them
-tractable -- but they deserve a dedicated pass with room for real
-regression testing against live conversation flow, not a rushed addition
-at the tail end of an unrelated batch of fixes.
-
-_Last re-verified against commit `e9d1029` (2026-07-30): `session-search-index.js`
-is still FTS5-only with no embedding column, `retriever-index.js`'s
-`computeEmbeddings()` still handles both response shapes from issue #195,
-and `acp-memory-store.js`'s `appendTurn` has not been touched by any commit
-since -- the reasoning above still holds._
+Reverted to the correct npm-native shape (`sqlite-vec-windows-x64` back
+under `optionalDependencies`, matching what `sqlite-vec`'s own package.json
+already declares) and, instead of fighting `.npmrc`, made the actual
+unavailability something the code and tests handle as a first-class,
+expected state rather than an assumption: `createSessionSearchIndex()` now
+returns a `vectorEnabled()` getter, and every hybrid-specific test checks
+it and calls `t.skip(...)` with a clear reason when the extension didn't
+load, instead of either fighting the platform gap or silently asserting
+nothing meaningful. Verified both sides for real: a genuine clean
+`rm -rf node_modules && npm ci` (matching `.npmrc`, matching CI) runs the
+full suite green with those tests skipped; a manual
+`npm install sqlite-vec-windows-x64 --no-save --include=optional` (not
+committed) runs the exact same suite with 0 skips, confirming the hybrid
+logic itself is correct, not just gracefully absent. This means CI
+verifies the keyword-only fallback path for real, and the real vector path
+is verified locally on the actual target platform (Windows) -- an accepted
+limitation of this project's CI running on a different OS than it ships
+for, not something this change could fix without touching the deliberate
+`.npmrc` security setting, which was out of scope here.
 
 ## Part 2: cursor-based re-summarization -- implemented
 
