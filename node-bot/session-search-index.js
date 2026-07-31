@@ -269,7 +269,11 @@ function createSessionSearchIndex(options = {}) {
     db.close();
   }
 
-  return { indexTurn, indexEmbedding, search, close };
+  // Exposed so callers (and tests) can tell whether the vector index
+  // actually loaded -- e.g. sqlite-vec's platform binary being unavailable
+  // in an environment (see the `catch` above) is a real, expected state,
+  // not just an internal implementation detail.
+  return { indexTurn, indexEmbedding, search, close, vectorEnabled: () => vectorEnabled };
 }
 
 module.exports = { createSessionSearchIndex, DEFAULT_DB_PATH, DEFAULT_EMBED_DIM };

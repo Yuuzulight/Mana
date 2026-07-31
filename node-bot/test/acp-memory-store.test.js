@@ -161,8 +161,13 @@ test("appendTurn indexes turns into the wired sessionSearchIndex, searchable via
 // session-search-index.test.js for the real 384-dim default and this
 // module's own merge/diversity logic, already covered there; these tests
 // only cover the wiring between acp-memory-store.js and that module.
-test("appendTurn computes and indexes an embedding for the turn via the wired computeEmbeddingsFn", async () => {
+test("appendTurn computes and indexes an embedding for the turn via the wired computeEmbeddingsFn", async (t) => {
   const sessionSearchIndex = createSessionSearchIndex({ dbPath: ":memory:", embedDim: 3 });
+  if (!sessionSearchIndex.vectorEnabled()) {
+    t.skip("sqlite-vec extension unavailable in this environment");
+    sessionSearchIndex.close();
+    return;
+  }
   const embeddingIndexed = deferred();
   let capturedText = null;
   const store = createAcpMemoryStore({
@@ -220,8 +225,13 @@ test("appendTurn never breaks the turn append when computeEmbeddingsFn rejects",
   sessionSearchIndex.close();
 });
 
-test("searchSessions computes a query embedding via computeEmbeddingsFn and blends it into the results", async () => {
+test("searchSessions computes a query embedding via computeEmbeddingsFn and blends it into the results", async (t) => {
   const sessionSearchIndex = createSessionSearchIndex({ dbPath: ":memory:", embedDim: 3 });
+  if (!sessionSearchIndex.vectorEnabled()) {
+    t.skip("sqlite-vec extension unavailable in this environment");
+    sessionSearchIndex.close();
+    return;
+  }
   const store = createAcpMemoryStore({
     dataDir: createTempDir(),
     sessionSearchIndex,

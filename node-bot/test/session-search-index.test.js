@@ -86,8 +86,19 @@ function makeHybridIndex() {
   return createSessionSearchIndex({ dbPath: ":memory:", embedDim: 4 });
 }
 
-test("search finds a semantic match with zero keyword overlap when queryEmbedding is provided", () => {
+test("search finds a semantic match with zero keyword overlap when queryEmbedding is provided", (t) => {
   const index = makeHybridIndex();
+  // sqlite-vec's platform binary is a genuinely optional dependency (see
+  // package.json/CHANGELOG) -- unavailable in this environment means
+  // vectorEnabled() is false and every hybrid test below degrades to
+  // keyword-only, which is exactly the behavior this skip is confirming
+  // rather than working around.
+  if (!index.vectorEnabled()) {
+    t.skip("sqlite-vec extension unavailable in this environment -- keyword-only fallback covered by other tests");
+    index.close();
+    return;
+  }
+
   const turn = { at: "t1", user: "How do I deploy with Docker", assistant: "Use docker compose up" };
   index.indexTurn({ sessionId: "s1", turn });
   index.indexEmbedding({ sessionId: "s1", turn, embedding: [1, 0, 0, 0] });
@@ -121,8 +132,14 @@ test("queryEmbedding is ignored (keyword-only behavior) for newest/oldest sort a
   index.close();
 });
 
-test("vector search respects the sessionId filter even when the nearest global neighbor is in a different session", () => {
+test("vector search respects the sessionId filter even when the nearest global neighbor is in a different session", (t) => {
   const index = makeHybridIndex();
+  if (!index.vectorEnabled()) {
+    t.skip("sqlite-vec extension unavailable in this environment");
+    index.close();
+    return;
+  }
+
   const otherTurn = { at: "t1", user: "s2's own unrelated turn", assistant: "" };
   index.indexTurn({ sessionId: "s2", turn: otherTurn });
   index.indexEmbedding({ sessionId: "s2", turn: otherTurn, embedding: [1, 0, 0, 0] }); // closest to the query
@@ -141,8 +158,14 @@ test("vector search respects the sessionId filter even when the nearest global n
   index.close();
 });
 
-test("a semantic hit that near-duplicates an already-kept keyword hit is dropped by the diversity filter", () => {
+test("a semantic hit that near-duplicates an already-kept keyword hit is dropped by the diversity filter", (t) => {
   const index = makeHybridIndex();
+  if (!index.vectorEnabled()) {
+    t.skip("sqlite-vec extension unavailable in this environment");
+    index.close();
+    return;
+  }
+
   const turn = {
     at: "t1",
     user: "How do I deploy my application with Docker containers",
