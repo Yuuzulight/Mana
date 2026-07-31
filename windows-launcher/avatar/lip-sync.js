@@ -99,10 +99,209 @@ function vrmMouthBlendShapes(mouthValue, form) {
   };
 }
 
+// Issue #275: MFCC (Mel-Frequency Cepstral Coefficients) extraction --
+// mel filterbank + log energy + DCT-II -- run over the same AnalyserNode
+// frequency-domain data spectralCentroidHz already reads. Genuine viseme
+// discrimination (below) is a formant-band read of the filterbank's
+// pre-DCT mel energies, not the DCT'd coefficients themselves -- formant
+// frequencies (F1/F2, the vocal-tract resonances that actually distinguish
+// "ah"/"ee"/"oo") live directly in the frequency-banded energy, and reading
+// them there is verifiable against textbook formant tables in a way that
+// classifying on abstract cepstral coefficients (which would need labeled
+// training data this project doesn't have) is not. The two stay paired in
+// one extraction pass -- computeMfcc returns both -- because they're the
+// same mel-filterbank computation; splitting them would mean building the
+// filterbank twice per frame.
+const melFilterbankCache = new Map();
+
+function hzToMel(hz) {
+  return 2595 * Math.log10(1 + hz / 700);
+}
+
+function melToHz(mel) {
+  return 700 * (10 ** (mel / 2595) - 1);
+}
+
+// Standard triangular mel filterbank: numFilters overlapping triangles
+// spaced evenly on the mel scale between minHz/maxHz, each expressed as a
+// weight per FFT bin. Built once per (numFilters, fftSize, sampleRate,
+// minHz, maxHz) combination and cached -- these are all constant for the
+// life of an audio context, and rebuilding ~26 x 257 weights on every
+// ~30Hz lip-sync tick would be wasted work.
+function buildMelFilterbank(numFilters, fftSize, sampleRate, minHz, maxHz) {
+  const numBins = fftSize / 2 + 1;
+  const minMel = hzToMel(minHz);
+  const maxMel = hzToMel(maxHz);
+  const melPoints = new Array(numFilters + 2);
+  for (let i = 0; i < melPoints.length; i += 1) {
+    melPoints[i] = minMel + ((maxMel - minMel) * i) / (numFilters + 1);
+  }
+  const hzPoints = melPoints.map(melToHz);
+  const binPoints = hzPoints.map((hz) => Math.floor(((fftSize + 1) * hz) / sampleRate));
+
+  const filters = [];
+  const centerHz = [];
+  for (let f = 0; f < numFilters; f += 1) {
+    const left = binPoints[f];
+    const center = binPoints[f + 1];
+    const right = binPoints[f + 2];
+    const weights = new Float64Array(numBins);
+    for (let bin = left; bin < center; bin += 1) {
+      if (bin >= 0 && bin < numBins && center > left) {
+        weights[bin] = (bin - left) / (center - left);
+      }
+    }
+    for (let bin = center; bin < right; bin += 1) {
+      if (bin >= 0 && bin < numBins && right > center) {
+        weights[bin] = (right - bin) / (right - center);
+      }
+    }
+    filters.push(weights);
+    centerHz.push(hzPoints[f + 1]);
+  }
+  return { filters, centerHz };
+}
+
+function getMelFilterbank(numFilters, fftSize, sampleRate, minHz, maxHz) {
+  const key = `${numFilters}:${fftSize}:${sampleRate}:${minHz}:${maxHz}`;
+  let filterbank = melFilterbankCache.get(key);
+  if (!filterbank) {
+    filterbank = buildMelFilterbank(numFilters, fftSize, sampleRate, minHz, maxHz);
+    melFilterbankCache.set(key, filterbank);
+  }
+  return filterbank;
+}
+
+// DCT-II, the same transform classic MFCC pipelines use to decorrelate log
+// mel energies into cepstral coefficients.
+function dct2(input, numCoefficients) {
+  const n = input.length;
+  const output = new Float64Array(numCoefficients);
+  for (let k = 0; k < numCoefficients; k += 1) {
+    let sum = 0;
+    for (let i = 0; i < n; i += 1) {
+      sum += input[i] * Math.cos((Math.PI / n) * (i + 0.5) * k);
+    }
+    output[k] = sum;
+  }
+  return output;
+}
+
+// magnitudesDb: Float32Array from AnalyserNode.getFloatFrequencyData (dB).
+// Returns { mfcc, melEnergies, melCenterHz } -- melEnergies/melCenterHz are
+// classifyViseme's input, mfcc is the literal cepstral fingerprint (kept
+// for callers that want the classic MFCC vector itself, e.g. future
+// per-voice calibration per issue #275's own "out of scope for now" note).
+function computeMfcc(magnitudesDb, sampleRate, fftSize, options = {}) {
+  const numFilters = options.numFilters === undefined ? 26 : options.numFilters;
+  const numCoefficients = options.numCoefficients === undefined ? 13 : options.numCoefficients;
+  const minHz = options.minHz === undefined ? 0 : options.minHz;
+  const maxHz = options.maxHz === undefined ? sampleRate / 2 : options.maxHz;
+  const { filters, centerHz } = getMelFilterbank(numFilters, fftSize, sampleRate, minHz, maxHz);
+
+  const numBins = magnitudesDb.length;
+  const power = new Float64Array(numBins);
+  for (let i = 0; i < numBins; i += 1) {
+    const db = magnitudesDb[i];
+    // Power, not amplitude -- dB is 10*log10(power), not 20*log10(power).
+    power[i] = Number.isFinite(db) ? 10 ** (db / 10) : 0;
+  }
+
+  const melEnergies = new Float64Array(numFilters);
+  for (let f = 0; f < numFilters; f += 1) {
+    const weights = filters[f];
+    let sum = 0;
+    for (let i = 0; i < numBins; i += 1) {
+      sum += weights[i] * power[i];
+    }
+    melEnergies[f] = sum;
+  }
+
+  const logEnergies = new Float64Array(numFilters);
+  const floor = 1e-10;
+  for (let f = 0; f < numFilters; f += 1) {
+    logEnergies[f] = Math.log(Math.max(floor, melEnergies[f]));
+  }
+
+  return {
+    mfcc: Array.from(dct2(logEnergies, numCoefficients)),
+    melEnergies: Array.from(melEnergies),
+    melCenterHz: centerHz,
+  };
+}
+
+// A small, fixed viseme set -- not a full phoneme inventory, just enough to
+// distinguish the mouth shapes that actually read differently on an avatar:
+// "aa" (open, e.g. father), "ee" (close/front, e.g. see), "oo" (close/back,
+// e.g. boot), "neutral" (silence or ambiguous). Bands are typical adult
+// vowel formant ranges (F1 = jaw openness, F2 = tongue front/back) -- a
+// generic classifier per issue #275's explicit scope, not a per-voice
+// calibrated one.
+const VISEME_FORMANT_BANDS = {
+  aa: { f1: [600, 1000], f2: [1000, 1900] },
+  ee: { f1: [250, 450], f2: [1900, 3000] },
+  oo: { f1: [250, 450], f2: [600, 1100] },
+};
+
+function bandEnergy(melEnergies, melCenterHz, loHz, hiHz) {
+  let sum = 0;
+  for (let i = 0; i < melEnergies.length; i += 1) {
+    if (melCenterHz[i] >= loHz && melCenterHz[i] < hiHz) {
+      sum += melEnergies[i];
+    }
+  }
+  return sum;
+}
+
+// mfccResult: the object computeMfcc returns. Picks whichever viseme's
+// formant bands hold the largest share of this frame's mel energy;
+// "neutral" only when there's essentially no signal (silence). There is no
+// tie-margin -- a genuinely ambiguous frame still deterministically picks
+// whichever viseme scores highest (ties go to "aa", first in
+// VISEME_FORMANT_BANDS' iteration order), not "neutral"; that's an
+// acceptable simplification for a coarse mouth-shape signal, not a bug.
+function classifyViseme(mfccResult, options = {}) {
+  const { melEnergies, melCenterHz } = mfccResult || {};
+  if (!melEnergies || !melCenterHz) {
+    return "neutral";
+  }
+  const totalEnergy = melEnergies.reduce((sum, value) => sum + value, 0);
+  const silenceFloor = options.silenceFloor === undefined ? 1e-6 : options.silenceFloor;
+  if (totalEnergy <= silenceFloor) {
+    return "neutral";
+  }
+
+  let best = "neutral";
+  let bestScore = 0;
+  for (const [viseme, bands] of Object.entries(VISEME_FORMANT_BANDS)) {
+    const f1 = bandEnergy(melEnergies, melCenterHz, bands.f1[0], bands.f1[1]);
+    const f2 = bandEnergy(melEnergies, melCenterHz, bands.f2[0], bands.f2[1]);
+    const score = (f1 + f2) / totalEnergy;
+    if (score > bestScore) {
+      bestScore = score;
+      best = viseme;
+    }
+  }
+  return best;
+}
+
+// Maps a classified viseme to the same -1..1 mouth-form range
+// centroidToMouthForm already drives ParamMouthForm with (negative =
+// rounder/"o"/"u", positive = wider/"i"/"e") so it can be dropped in at the
+// exact same call site.
+function visemeToMouthForm(viseme) {
+  if (viseme === "ee") return 1;
+  if (viseme === "oo") return -1;
+  return 0;
+}
+
 module.exports = {
   rmsToMouth,
   smoothMouthValue,
   spectralCentroidHz,
   centroidToMouthForm,
   vrmMouthBlendShapes,
+  computeMfcc,
+  classifyViseme,
+  visemeToMouthForm,
 };

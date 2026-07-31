@@ -57,7 +57,7 @@ const {
 } = require("./vision-hotkey");
 const { createLive2dAvatar } = require("../avatar/live2d-avatar");
 const { createVrmAvatar } = require("../avatar/vrm-avatar");
-const { spectralCentroidHz } = require("../avatar/lip-sync");
+const { spectralCentroidHz, computeMfcc, classifyViseme } = require("../avatar/lip-sync");
 const {
   DEFAULT_GAMING_MAX_WAIT_FOR_SPEECH_MS,
   DEFAULT_MAX_UTTERANCE_MS,
@@ -201,6 +201,13 @@ const VAD_MODEL_URL = "../assets/vad/silero_vad.onnx";
 const BARGE_IN_VOICE_ENABLED = process.env.MANA_BARGE_IN_VOICE !== "0";
 const BARGE_IN_HOLD_MS = Number(process.env.MANA_BARGE_IN_HOLD_MS || 350);
 const BARGE_IN_POLL_MS = 50;
+// Issue #272: ambient screen-sensing is off by default -- opt in with
+// MANA_SCREEN_SENSING_ENABLED=1. The interval is deliberately coarse
+// (default 2 minutes, not seconds) since this is a periodic glance, not
+// continuous capture -- see plugins/screen-sensing for the backend side
+// that summarizes-and-discards each captured frame.
+const SCREEN_SENSING_ENABLED = process.env.MANA_SCREEN_SENSING_ENABLED === "1";
+const SCREEN_SENSING_INTERVAL_MS = Number(process.env.MANA_SCREEN_SENSING_INTERVAL_MS || 120000);
 // Per-session transcription debug logging (docs/speech_recognition_improvement_plan.md):
 // enable with ?speechDebug=1 or localStorage.manaSpeechDebug = "1".
 const SPEECH_DEBUG_ENABLED =
@@ -350,10 +357,10 @@ function appendChatMessage(role, text) {
   chatLogEl.scrollTop = chatLogEl.scrollHeight;
 }
 
-function setAvatarState(state) {
-  ipcRenderer.send("avatar:set-state", state);
+function setAvatarState(state, preferredExpression) {
+  ipcRenderer.send("avatar:set-state", state, preferredExpression);
   if (windowAvatar) {
-    windowAvatar.setState(state);
+    windowAvatar.setState(state, preferredExpression);
   }
 }
 
@@ -423,9 +430,15 @@ function startLipSync(audioElement) {
           lipSyncAudioContext.sampleRate,
           analyser.fftSize,
         );
-        ipcRenderer.send("avatar:set-mouth", rms, centroidHz);
+        // Issue #275: MFCC-based viseme classification, computed alongside
+        // (not instead of) the older centroid -- see live2d-avatar.js's
+        // setMouthTarget for why centroidHz still travels as a fallback.
+        const viseme = classifyViseme(
+          computeMfcc(magnitudesDb, lipSyncAudioContext.sampleRate, analyser.fftSize),
+        );
+        ipcRenderer.send("avatar:set-mouth", rms, centroidHz, viseme);
         if (windowAvatar) {
-          windowAvatar.setMouthTarget(rms, centroidHz);
+          windowAvatar.setMouthTarget(rms, centroidHz, viseme);
         }
       }
       lipSyncRafId = requestAnimationFrame(tick);
@@ -1005,6 +1018,9 @@ setInterval(checkServices, 5000);
 setInterval(refreshPerfStatus, PERF_STATUS_POLL_MS);
 refreshModelStatus();
 setInterval(refreshModelStatus, MODEL_STATUS_POLL_MS);
+if (SCREEN_SENSING_ENABLED) {
+  setInterval(runScreenSensingGlance, SCREEN_SENSING_INTERVAL_MS);
+}
 refreshPresetList();
 setSelectedPresetId(selectedPresetId);
 
@@ -1176,7 +1192,7 @@ async function watchForBargeIn() {
   }
 }
 
-function playAudioBlob(audioBlob, playbackToken, avatarState) {
+function playAudioBlob(audioBlob, playbackToken, avatarState, preferredExpression) {
   return new Promise((resolve, reject) => {
     if (playbackToken !== replyPlaybackToken) {
       resolve();
@@ -1192,7 +1208,7 @@ function playAudioBlob(audioBlob, playbackToken, avatarState) {
       currentReplyUrl = null;
     }
 
-    setAvatarState(avatarState);
+    setAvatarState(avatarState, preferredExpression);
     currentReplyUrl = URL.createObjectURL(audioBlob);
     currentReplyAudio = new Audio(currentReplyUrl);
 
@@ -1235,7 +1251,12 @@ function playAudioBlob(audioBlob, playbackToken, avatarState) {
   });
 }
 
-async function playReplyAudio(text) {
+// Issue #253: preferredExpression is the model's own expression__set tool
+// choice for this reply (from the /reply response's `expression` field, if
+// any) -- passed alongside the automatically-detected avatarState, not
+// instead of it, since the coarse state still drives motion/idle-reset
+// behavior; only the specific expression face is overridden.
+async function playReplyAudio(text, preferredExpression) {
   const chunks = splitReplyForSpeech(text);
   if (chunks.length === 0) {
     return;
@@ -1259,7 +1280,7 @@ async function playReplyAudio(text) {
         : null;
 
     if (audioBlob) {
-      await playAudioBlob(audioBlob, playbackToken, avatarState);
+      await playAudioBlob(audioBlob, playbackToken, avatarState, preferredExpression);
     }
   }
 
@@ -2075,6 +2096,50 @@ async function requestScreenAwareReply(text, gamingModeActive) {
   return result;
 }
 
+// Issue #272: periodic ambient screen glance -- captures via the same
+// screen:capture-primary IPC the vision hotkey uses, but the raw image
+// never persists here either: it's a local const inside this one function
+// call, sent straight to the backend, and goes out of scope the moment
+// this function returns (the backend itself discards it after summarizing,
+// see plugins/screen-sensing/index.js). Only ever runs while
+// SCREEN_SENSING_ENABLED and skips entirely while Mana is mid-reply/
+// mid-listen so it can't step on an actual conversation turn.
+let screenSensingRunning = false;
+async function runScreenSensingGlance() {
+  if (!SCREEN_SENSING_ENABLED || screenSensingRunning || processing || currentReplyAudio) {
+    return;
+  }
+  screenSensingRunning = true;
+  try {
+    const gamingModeActive = await refreshGamingStatus();
+    const image = await ipcRenderer.invoke("screen:capture-primary");
+    const response = await fetch(`${BACKEND_BASE_URL}/screen-sensing/glance`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ image, gamingModeActive }),
+    });
+    if (!response.ok) {
+      throw new Error(await response.text());
+    }
+    const result = await response.json();
+    // Re-check: a real conversation turn (voice reply, playback) can start
+    // during the awaits above (gaming-status check, screen capture, the
+    // vision-model round-trip itself) -- without this, a glance that was
+    // fine to run when it started could still land on top of it.
+    if (result.shouldSurface && result.summary && !processing && !currentReplyAudio) {
+      replyEl.textContent = `Mana: ${result.summary}`;
+      appendChatMessage("mana", result.summary);
+      if (typeof refreshSessionList === "function") {
+        refreshSessionList();
+      }
+    }
+  } catch (error) {
+    console.warn("Screen sensing glance failed:", error.message);
+  } finally {
+    screenSensingRunning = false;
+  }
+}
+
 let visionHotkeyBusy = false;
 
 async function handleVisionHotkey() {
@@ -2121,7 +2186,7 @@ async function handleVisionHotkey() {
     }
 
     if (result.ttsConfigured) {
-      await playReplyAudio(reply);
+      await playReplyAudio(reply, result.expression);
     }
 
     statusEl.textContent = listening
@@ -2357,7 +2422,7 @@ async function handleTranscript(transcript, gamingModeActive = false) {
     }
 
     if (replyResult.ttsConfigured) {
-      await playReplyAudio(reply);
+      await playReplyAudio(reply, replyResult.expression);
     }
 
     statusEl.textContent = listening

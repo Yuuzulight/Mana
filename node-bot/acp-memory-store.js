@@ -1,5 +1,6 @@
 const fs = require("node:fs");
 const path = require("node:path");
+const { significantWords, sharedWordCount } = require("./utils/word-overlap");
 
 function ensureDir(dir) {
   fs.mkdirSync(dir, { recursive: true });
@@ -10,6 +11,42 @@ function cleanText(value, maxLength) {
     .replace(/\s+/g, " ")
     .trim()
     .slice(0, maxLength);
+}
+
+// Issue #263 part 2: cleanText's .slice(0, maxLength) keeps the START of
+// the string -- correct for most uses here (a user/assistant turn that's
+// too long should keep its beginning), but wrong for the rolling session
+// summary specifically: the newest turn's summaryLine is always appended
+// at the END, so once the accumulated string exceeds maxSummaryChars,
+// cleanText would silently drop the just-added newest content and keep
+// stale early material instead. This keeps the END (most recent) instead.
+function truncateKeepingRecent(value, maxLength) {
+  const cleaned = String(value || "").replace(/\s+/g, " ").trim();
+  return cleaned.length > maxLength ? cleaned.slice(-maxLength) : cleaned;
+}
+
+// Issue #273 (Soul-of-Waifu-inspired self-healing memory): a deterministic,
+// keyword-overlap check -- same technique skills-capability.js's
+// findMatchingSkill() already uses, not a new LLM call -- for whether a
+// new fact's key+text significantly overlaps an EXISTING active fact under
+// a *different* key. Never auto-overwrites: a lexical heuristic has real
+// false-positive risk (two facts sharing several words aren't necessarily
+// contradictory), so this only surfaces a possible conflict for the model
+// to judge and follow up on with an explicit patch, rather than risking
+// silent data loss from an auto-merge.
+const MIN_CONFLICT_WORD_HITS = 3;
+function findConflictingFact(facts, key, text) {
+  const words = significantWords(`${key} ${text}`);
+  if (!words.length) return null;
+  const lowerKey = key.toLowerCase();
+  for (const fact of facts) {
+    if (fact.status !== "active" || fact.key.toLowerCase() === lowerKey) continue;
+    const factWords = significantWords(`${fact.key} ${fact.text}`);
+    if (!factWords.length) continue;
+    const hits = sharedWordCount(factWords, words);
+    if (hits >= Math.min(MIN_CONFLICT_WORD_HITS, factWords.length)) return fact;
+  }
+  return null;
 }
 
 function sessionFilename(sessionId) {
@@ -204,13 +241,18 @@ function createAcpMemoryStore(options = {}) {
   // back to insert (nothing to patch yet). "remove" marks an existing
   // active fact as stale (soft delete -- preserves history, matches this
   // store's general append-safe philosophy elsewhere) and is a no-op if
-  // nothing with that key exists.
+  // nothing with that key exists. "archive" (issue #277) marks a fact
+  // still-true-but-no-longer-worth-automatically-surfacing: distinct from
+  // "stale" (no longer true) -- an archived fact is excluded from
+  // getRelatedFacts' automatic key-match surfacing and listFactKeys' tool
+  // description, but never deleted.
+  const MAX_FACT_HISTORY = 5;
   function rememberFact({ sessionId, key, text, action } = {}) {
     const cleanKey = cleanText(key, 200);
     if (!cleanKey) {
       throw new Error("key is required");
     }
-    const normalizedAction = ["insert", "patch", "remove"].includes(action)
+    const normalizedAction = ["insert", "patch", "remove", "archive"].includes(action)
       ? action
       : "insert";
     const facts = loadFacts();
@@ -219,14 +261,14 @@ function createAcpMemoryStore(options = {}) {
     );
     const timestamp = now();
 
-    if (normalizedAction === "remove") {
+    if (normalizedAction === "remove" || normalizedAction === "archive") {
       if (!existing) {
-        return { ok: true, action: "remove", key: cleanKey, found: false };
+        return { ok: true, action: normalizedAction, key: cleanKey, found: false };
       }
-      existing.status = "stale";
+      existing.status = normalizedAction === "remove" ? "stale" : "archived";
       existing.updatedAt = timestamp;
       saveFacts(facts);
-      return { ok: true, action: "remove", key: cleanKey, found: true };
+      return { ok: true, action: normalizedAction, key: cleanKey, found: true };
     }
 
     const cleanTextValue = cleanText(text, 500);
@@ -235,6 +277,13 @@ function createAcpMemoryStore(options = {}) {
     }
 
     if (existing && normalizedAction === "patch") {
+      // Issue #273: keep a bounded correction history instead of silently
+      // discarding the prior value -- "what did I used to think was true"
+      // stays inspectable, matching the self-healing-memory pattern this
+      // issue is built around.
+      const history = Array.isArray(existing.history) ? existing.history : [];
+      history.push({ text: existing.text, updatedAt: existing.updatedAt });
+      existing.history = history.slice(-MAX_FACT_HISTORY);
       existing.text = cleanTextValue;
       existing.updatedAt = timestamp;
       saveFacts(facts);
@@ -243,6 +292,7 @@ function createAcpMemoryStore(options = {}) {
 
     // insert -- either explicitly requested, or "patch" with nothing yet
     // to patch.
+    const conflict = findConflictingFact(facts, cleanKey, cleanTextValue);
     facts.push({
       id: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
       key: cleanKey,
@@ -253,7 +303,15 @@ function createAcpMemoryStore(options = {}) {
       updatedAt: timestamp,
     });
     saveFacts(facts.slice(-maxFacts));
-    return { ok: true, action: "insert", key: cleanKey, text: cleanTextValue };
+    return {
+      ok: true,
+      action: "insert",
+      key: cleanKey,
+      text: cleanTextValue,
+      ...(conflict
+        ? { possibleConflict: { key: conflict.key, preview: cleanText(conflict.text, 80) } }
+        : {}),
+    };
   }
 
   // Issue #141: the "searchable, on-demand" half of the two-tier memory
@@ -499,7 +557,7 @@ function createAcpMemoryStore(options = {}) {
       turn.assistant,
       maxSummaryChars,
     );
-    const summary = cleanText(
+    const summary = truncateKeepingRecent(
       [session.summary, summaryLine].filter(Boolean).join("\n"),
       maxSummaryChars,
     );
@@ -531,9 +589,20 @@ function createAcpMemoryStore(options = {}) {
         // fire-and-forget async compaction
         (async () => {
           try {
-            const recentTurns = saved.turns.slice(
-              -Math.min(10, maxRecentTurns),
+            // Issue #263 part 2: an explicit cursor instead of always just
+            // "the last min(10, maxRecentTurns) turns" -- if compaction has
+            // been failing (summarizeFn throwing, or simply not configured
+            // in some earlier session state) for longer than 10 turns, the
+            // fixed-window version would silently never include the older
+            // unsummarized turns in the next attempt. Still bounded by
+            // maxRecentTurns so a compaction that's been broken for a very
+            // long time doesn't build an unbounded prompt.
+            const cursor = Number(saved.lastSummarizedTurnIndex) || 0;
+            const windowStart = Math.max(
+              cursor,
+              saved.turns.length - maxRecentTurns,
             );
+            const recentTurns = saved.turns.slice(windowStart);
             const newSummary = await summarizeFn({
               sessionId: saved.sessionId,
               summary: saved.summary,
@@ -545,6 +614,7 @@ function createAcpMemoryStore(options = {}) {
               const reloaded = getSession(saved.sessionId) || saved;
               if (compacted !== reloaded.summary) {
                 reloaded.summary = compacted;
+                reloaded.lastSummarizedTurnIndex = saved.turns.length;
                 reloaded.updatedAt = now();
                 saveSession(reloaded);
               }

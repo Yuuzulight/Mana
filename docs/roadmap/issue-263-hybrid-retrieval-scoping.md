@@ -1,13 +1,20 @@
 # Issue 263: hybrid keyword+vector retrieval + cursor resummarization -- scoping
 
-## Status: scoped and de-risked, not implemented this pass
+## Status: part 2 implemented; part 1 still scoped and deliberately deferred
 
 This issue has three parts. Part 3 (this doc) and enough investigation to make
-part 1 concrete are done here; parts 1 and 2 themselves are deliberately not
-implemented in this pass -- both touch code that runs on every single chat
-turn (`acp-memory-store.js`'s `appendTurn`), and landing them without the
-runway for real regression testing against that path is a worse outcome than
-scoping them properly and picking them up with room to verify.
+part 1 concrete are done here. **Part 2 (cursor-based re-summarization) is now
+implemented** -- see the "Part 2" section below for what shipped. Part 1
+(hybrid keyword+vector search) remains deliberately not implemented: it's a
+write-path change to code that runs on every single chat turn
+(`acp-memory-store.js`'s `appendTurn`), plus a new runtime dependency
+(`node:sqlite` + `sqlite-vec`) that's still Stability-1 experimental on the
+Node 22.x line this project actually targets (re-checked: `node --version`
+reports v22.23.1, no `engines` field in `node-bot/package.json`). Landing it
+without the runway for real regression testing against that path is a worse
+outcome than scoping it properly and picking it up with room to verify. Part 2
+was independently implementable and shipped on its own, exactly as this doc
+anticipated.
 
 ## Part 3: the storage-scale decision, answered directly
 
@@ -112,9 +119,29 @@ is still FTS5-only with no embedding column, `retriever-index.js`'s
 and `acp-memory-store.js`'s `appendTurn` has not been touched by any commit
 since -- the reasoning above still holds._
 
-## Part 2: cursor-based re-summarization -- concrete plan, not yet built
+## Part 2: cursor-based re-summarization -- implemented
 
-### Current mechanism (verified against `acp-memory-store.js`)
+Shipped: a `lastSummarizedTurnIndex` field on the persisted session object,
+advanced to the current turn count on every successful compaction. Each
+compaction now only re-summarizes turns added since that cursor (bounded by
+`maxRecentTurns`), rather than always re-deriving from a fixed last-10-turn
+window regardless of what had already been compacted.
+
+While implementing this, also found and fixed a pre-existing bug in the
+rolling `summary` field's truncation direction: `cleanText`'s
+`.slice(0, maxLength)` keeps the start of a string, which is correct for a
+single too-long turn but wrong for `summary` specifically, since new content
+is always appended at the end -- once the accumulated string exceeded
+`maxSummaryChars`, the old truncation silently dropped the just-added newest
+content and kept stale early material instead. Added `truncateKeepingRecent`
+(keeps the tail) and used it only for the `summary` field.
+
+Tests: `node-bot/test/acp-memory-store.test.js` -- 3 new tests covering cursor
+advancement, cursor-scoped (not fixed-window) re-summarization on a second
+compaction, and the truncation-direction fix. Full `node-bot` suite verified
+green after the change (all files pass via `run_tests.js`).
+
+### Current mechanism (verified against `acp-memory-store.js`, pre-fix baseline)
 
 - `appendTurn` appends a fresh one-line summary of each new turn onto the
   session's rolling `summary` string immediately (cheap, already

@@ -20,6 +20,7 @@ const {
   augmentModelSettings,
   centroidToMouthForm,
   computeZoomFraming,
+  visemeToMouthForm,
   DEFAULT_IDLE_GAZE_PERIOD_MS,
   expressionForState,
   fitModelToView,
@@ -432,7 +433,7 @@ async function createLive2dAvatar({ canvas, width, height }) {
     }
   }
 
-  function applyStateExpression(state) {
+  function applyStateExpression(state, preferredName) {
     try {
       const expressionManager = motionManager.expressionManager;
       if (!expressionManager) {
@@ -441,7 +442,7 @@ async function createLive2dAvatar({ canvas, width, height }) {
       const names = (expressionManager.definitions || [])
         .map((definition) => definition.Name || definition.name)
         .filter(Boolean);
-      const expression = expressionForState(state, names, expressionOverrides);
+      const expression = expressionForState(state, names, expressionOverrides, preferredName);
       if (expression) {
         model.expression(expression);
       } else if (
@@ -502,23 +503,39 @@ async function createLive2dAvatar({ canvas, width, height }) {
   } catch (e) {}
 
   return {
-    setState(state) {
+    // Issue #253: preferredName is an LLM-chosen expression for this
+    // specific reply. State-driven side effects (motion, mouth reset) stay
+    // gated on an actual state change, same as before -- but the expression
+    // itself is re-applied whenever preferredName is given even if the
+    // coarse state bucket didn't change (e.g. two "excited" replies in a
+    // row), since the model asking for a specific expression is a deliberate
+    // per-reply signal, not something that should get silently dropped just
+    // because the surrounding state happened to already be the same.
+    setState(state, preferredName) {
       const nextState = String(state || "idle");
-      if (nextState === currentState) {
-        return;
+      const stateChanged = nextState !== currentState;
+      if (stateChanged) {
+        currentState = nextState;
+        setAutoLoopMotionGroup(nextState);
+        if (nextState !== "talking") {
+          mouthTarget = 0;
+          formTarget = 0;
+        }
+        playStateMotion(nextState);
       }
-      currentState = nextState;
-      setAutoLoopMotionGroup(nextState);
-      if (nextState !== "talking") {
-        mouthTarget = 0;
-        formTarget = 0;
+      if (stateChanged || preferredName) {
+        applyStateExpression(nextState, preferredName);
       }
-      playStateMotion(nextState);
-      applyStateExpression(nextState);
     },
-    setMouthTarget(rms, centroidHz) {
+    // Issue #275: viseme (the classified "aa"/"ee"/"oo" mouth shape from
+    // live2d-logic.js's MFCC-based classifyViseme) takes priority over the
+    // older centroidHz-driven form when supplied, same additive shape as
+    // setState's preferredName above.
+    setMouthTarget(rms, centroidHz, viseme) {
       mouthTarget = rmsToMouth(rms, { gain: mouthGain });
-      if (centroidHz !== undefined && centroidHz !== null) {
+      if (viseme) {
+        formTarget = visemeToMouthForm(viseme);
+      } else if (centroidHz !== undefined && centroidHz !== null) {
         formTarget = centroidToMouthForm(centroidHz);
       }
     },

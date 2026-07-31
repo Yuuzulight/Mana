@@ -218,7 +218,16 @@ async function countTokensForText(text, ext = ".py", rebuild = false) {
   }
 }
 
-if (process.env.NODE_ENV === "test") {
+// NODE_TEST_CONTEXT is set automatically by the node:test runner itself
+// (confirmed: `node --test` sets it even when NODE_ENV isn't explicitly
+// "test") -- without this fallback, running any test file directly via
+// `node --test <file>` instead of through run_tests.js (which does set
+// NODE_ENV=test) spawns a real, never-torn-down
+// `python_token_cache.py --serve-stdio` worker process per module load,
+// which keeps the whole process alive indefinitely after all tests pass.
+// Same guard shape server.js/llama-server-runtime.js/cron-scheduler/
+// discord-bot/telegram-bridge already use.
+if (process.env.NODE_ENV === "test" || process.env.NODE_TEST_CONTEXT) {
   // In tests, avoid spawning Python workers — use fast JS fallback implementations to keep tests deterministic and avoid lingering child processes.
   module.exports = {
     countTokensForPath: fallbackCountPath,

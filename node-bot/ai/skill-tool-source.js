@@ -7,7 +7,7 @@
 // procedure is underspecified before calling this, not guess. Same merge
 // shape #169/#188/#198/#260 already established (buildToolPolicyWithMcp/
 // WithMemory/WithBrowserAutomation/WithSessionSearch).
-const { extractSkillScript } = require("../skills-store");
+const { extractSkillScript, extractSkillInputs } = require("../skills-store");
 const { runToolScript } = require("../tools/script-runner");
 
 const SKILL_TOOL_PREFIX = "skill__";
@@ -33,11 +33,15 @@ const TOOL_SCHEMAS = [
     function: {
       name: `${SKILL_TOOL_PREFIX}run`,
       description:
-        "Execute a skill's bundled script (a fenced ```skill-script block in its body) instead of re-deriving the same computation by reasoning through the prose. Only works for skills that actually have one -- call skill__view first if you're not sure. The script runs in an isolated sandbox with no filesystem/network access of its own and returns whatever it returns.",
+        "Execute a skill's bundled script (a fenced ```skill-script block in its body) instead of re-deriving the same computation by reasoning through the prose. Only works for skills that actually have one -- call skill__view first if you're not sure. If the skill declares inputs (shown in skill__view's result), pass them via `inputs`, matching the declared names. The script runs in an isolated sandbox with no filesystem/network access of its own and returns whatever it returns.",
       parameters: {
         type: "object",
         properties: {
           name: { type: "string", description: "The exact skill name, as shown in the skills index." },
+          inputs: {
+            type: "object",
+            description: "Optional named input values, matching the skill's declared ```skill-inputs (if any). Available inside the script as the `inputs` object.",
+          },
         },
         required: ["name"],
       },
@@ -118,7 +122,14 @@ function createSkillToolSource(options = {}) {
     if (action === "view") {
       const skill = skillsStore.viewSkill(args?.name);
       if (!skill) return JSON.stringify({ status: "error", error: `no skill named "${args?.name}"` });
-      return JSON.stringify({ status: "ok", name: skill.name, description: skill.description, body: skill.body });
+      const inputs = extractSkillInputs(skill.body);
+      return JSON.stringify({
+        status: "ok",
+        name: skill.name,
+        description: skill.description,
+        body: skill.body,
+        ...(inputs.length ? { inputs } : {}),
+      });
     }
 
     if (action === "run") {
@@ -127,7 +138,7 @@ function createSkillToolSource(options = {}) {
       const code = extractSkillScript(skill.body);
       if (!code) return JSON.stringify({ status: "error", error: `"${skill.name}" has no \`\`\`skill-script block` });
       try {
-        const { result, logs } = await runScript(code, {});
+        const { result, logs } = await runScript(code, { inputs: args?.inputs });
         return JSON.stringify({ status: "ok", result, logs });
       } catch (e) {
         return JSON.stringify({ status: "error", error: e.message || String(e) });
