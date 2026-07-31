@@ -78,6 +78,16 @@ accounting.
   default, since llama-server's model swap is multi-second and a
   reflect-cycle pass alternates enough that switching by default could
   cost more time than it saves on typical hardware.
+- **Cursor-based re-summarization** (issue #263 part 2): session memory
+  compaction now tracks a `lastSummarizedTurnIndex` cursor and only
+  re-summarizes turns added since the last successful compaction, instead of
+  always re-deriving from a fixed last-10-turn window regardless of what had
+  already been compacted. Also fixes a pre-existing bug in the rolling
+  `summary` field's truncation direction: it was keeping the *start* of the
+  accumulated string, silently dropping the newest turn once the summary
+  overflowed its char cap, instead of keeping the most recent content.
+  Part 1 (hybrid keyword+vector search) remains deferred --
+  `docs/roadmap/issue-263-hybrid-retrieval-scoping.md`.
 - **ComfyUI split-loader workflow support** (issue #271): a second bundled
   ComfyUI workflow graph (`workflows/comfyui-txt2img-split.json`) for
   split-checkpoint models (FLUX, Qwen-Image, Mage-Flow -- separate
@@ -112,15 +122,17 @@ accounting.
   total task isolation, already reused cleanly by #197's reflect cycle, no
   existing event-bus to piggyback on. No real friction found; closed with
   findings instead of a scope-creep redesign.
-- **Issue #263** (hybrid keyword+vector memory retrieval + cursor
-  resummarization): scoped, not implemented -- both remaining pieces touch
-  `acp-memory-store.js`'s `appendTurn`, the single most-exercised write
-  path in the whole system, and deserve a dedicated pass with room for
-  real regression testing rather than a rushed addition here. Concrete
-  implementation plans for both, plus the storage-scale question answered
-  directly (SQLite stays sufficient; `node:sqlite` + `sqlite-vec`, per
-  issue #220's verified benchmark, is the path if/when it's built), in
-  `docs/roadmap/issue-263-hybrid-retrieval-scoping.md`.
+- **Issue #263 part 1** (hybrid keyword+vector memory retrieval): scoped,
+  not implemented -- it's a write-path change to `acp-memory-store.js`'s
+  `appendTurn`, the single most-exercised write path in the whole system,
+  plus a new runtime dependency (`node:sqlite` + `sqlite-vec`) still
+  Stability-1 experimental on this project's Node 22.x line, and deserves
+  a dedicated pass with room for real regression testing rather than a
+  rushed addition here. The storage-scale question is answered directly
+  (SQLite stays sufficient; `node:sqlite` + `sqlite-vec`, per issue #220's
+  verified benchmark, is the path if/when it's built), and a concrete
+  implementation plan is in `docs/roadmap/issue-263-hybrid-retrieval-scoping.md`.
+  Part 2 (cursor-based re-summarization) is implemented -- see Added, above.
 - **Issue #258**: a deliberately-parked "not scheduled" reference issue that
   already contains its own complete investigation write-up (mobile app
   architecture scoping). Confirmed correctly camped in Backlog, left as-is.
