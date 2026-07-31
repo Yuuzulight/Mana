@@ -12,6 +12,31 @@ accounting.
 ## [Unreleased]
 
 ### Added
+- **Hybrid keyword+vector session search** (issue #263 part 1, opt-in via
+  `USE_EMBEDDINGS=1` -- same flag `tools/retriever-index.js`'s file
+  retriever already uses, off by default): `session-search-index.js` now
+  also indexes a per-turn embedding into a `vec0` (sqlite-vec) table in the
+  same SQLite database as the existing FTS5 keyword index, so "what did we
+  talk about regarding X" can match a differently-worded question about the
+  same topic, not just exact keyword overlap. Uses the already-shipped
+  `better-sqlite3` connection (issue #260's FTS5 index already depends on
+  it) rather than a separate database or a new driver -- the roadmap doc's
+  original plan assumed `better-sqlite3` didn't install on this dev machine
+  and reached for the still-experimental `node:sqlite` instead; that
+  premise turned out to be stale (see the roadmap doc's updated status).
+  Both the write path (`acp-memory-store.js`'s `appendTurn`, fire-and-forget
+  so a slow/unavailable embedder never adds reply latency) and the read
+  path (`searchSessions`) are additive: with no `computeEmbeddingsFn` wired,
+  or with embeddings disabled/unavailable, behavior is unchanged
+  keyword-only search. Results from both signals are interleaved and
+  reranked for diversity (drops a semantic hit that just restates an
+  already-kept keyword hit) rather than blindly concatenated. `sqlite-vec`'s
+  platform binary is a genuinely optional dependency (`node-bot/.npmrc`'s
+  `omit=optional`, a deliberate issue #187 decision, skips it) -- when
+  unavailable, `session-search-index.js` degrades to keyword-only
+  automatically (`vectorEnabled()`), which is also what this project's own
+  CI runs under, so CI verifies the fallback path while local Windows
+  installs (with the platform binary present) get the real one.
 - **Mana can pick her own Live2D expression** (issue #253): a new
   `expression__set` tool lets a reply nominate an expression by name,
   threaded through `buildAssistantReply`/`/reply`/`/transcribe` as an
@@ -122,17 +147,11 @@ accounting.
   total task isolation, already reused cleanly by #197's reflect cycle, no
   existing event-bus to piggyback on. No real friction found; closed with
   findings instead of a scope-creep redesign.
-- **Issue #263 part 1** (hybrid keyword+vector memory retrieval): scoped,
-  not implemented -- it's a write-path change to `acp-memory-store.js`'s
-  `appendTurn`, the single most-exercised write path in the whole system,
-  plus a new runtime dependency (`node:sqlite` + `sqlite-vec`) still
-  Stability-1 experimental on this project's Node 22.x line, and deserves
-  a dedicated pass with room for real regression testing rather than a
-  rushed addition here. The storage-scale question is answered directly
-  (SQLite stays sufficient; `node:sqlite` + `sqlite-vec`, per issue #220's
-  verified benchmark, is the path if/when it's built), and a concrete
-  implementation plan is in `docs/roadmap/issue-263-hybrid-retrieval-scoping.md`.
-  Part 2 (cursor-based re-summarization) is implemented -- see Added, above.
+- **Issue #263** (hybrid keyword+vector memory retrieval + cursor
+  resummarization): both parts now implemented -- see Added, above. The
+  storage-scale question from the original scoping is also answered
+  directly: SQLite stays sufficient at Mana's actual scale (issue #220's
+  verified benchmark).
 - **Issue #258**: a deliberately-parked "not scheduled" reference issue that
   already contains its own complete investigation write-up (mobile app
   architecture scoping). Confirmed correctly camped in Backlog, left as-is.

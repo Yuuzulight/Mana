@@ -167,7 +167,12 @@ async function buildIndex(options = {}) {
         tf,
       };
       // optionally compute embedding (skip in tests)
-      if (USE_EMBEDDINGS && process.env.NODE_ENV !== "test" && OPENAI_API_KEY) {
+      if (
+        USE_EMBEDDINGS &&
+        process.env.NODE_ENV !== "test" &&
+        !process.env.NODE_TEST_CONTEXT &&
+        OPENAI_API_KEY
+      ) {
         try {
           const emb = await computeEmbedding(text);
           if (emb && Array.isArray(emb)) entry.embedding = emb;
@@ -289,7 +294,7 @@ async function incrementalScan(options = {}) {
       if (prev) updated.push(abs);
       else added.push(abs);
       // Optionally compute embedding (async) when enabled (skip during tests)
-      if (USE_EMBEDDINGS && process.env.NODE_ENV !== "test") {
+      if (USE_EMBEDDINGS && process.env.NODE_ENV !== "test" && !process.env.NODE_TEST_CONTEXT) {
         try {
           const emb = await computeEmbedding(text);
           if (emb && Array.isArray(emb)) map[abs].embedding = emb;
@@ -346,6 +351,13 @@ async function computeEmbedding(text) {
 
 async function computeEmbeddings(inputs) {
   // inputs: array of strings
+  // NOTE: intentionally NODE_ENV-only, not NODE_TEST_CONTEXT -- see
+  // test/retriever-embeddings-local-shapes.test.js and
+  // -openai-fallback.test.js's withRetrieverIndex() helper, which
+  // deliberately `delete process.env.NODE_ENV` (but never clears
+  // NODE_TEST_CONTEXT) specifically to defeat this guard and exercise the
+  // real HTTP-calling logic below against a fake local server. Adding a
+  // NODE_TEST_CONTEXT fallback here breaks that deliberate test technique.
   if (!USE_EMBEDDINGS) return inputs.map(() => null);
   if (process.env.NODE_ENV === "test") return inputs.map(() => null);
 

@@ -78,3 +78,145 @@ test("search respects the limit parameter and clamps out-of-range values", () =>
   assert.equal(index.search({ query: "matchme", limit: 0 }).length, 5);
   index.close();
 });
+
+// Issue #263 part 1: hybrid keyword+vector search. embedDim: 4 keeps these
+// deterministic and fast -- real usage is 384-dim (all-MiniLM-L6-v2), the
+// dimension itself doesn't change any of this module's own logic.
+function makeHybridIndex() {
+  return createSessionSearchIndex({ dbPath: ":memory:", embedDim: 4 });
+}
+
+test("search finds a semantic match with zero keyword overlap when queryEmbedding is provided", (t) => {
+  const index = makeHybridIndex();
+  // sqlite-vec's platform binary is a genuinely optional dependency (see
+  // package.json/CHANGELOG) -- unavailable in this environment means
+  // vectorEnabled() is false and every hybrid test below degrades to
+  // keyword-only, which is exactly the behavior this skip is confirming
+  // rather than working around.
+  if (!index.vectorEnabled()) {
+    t.skip("sqlite-vec extension unavailable in this environment -- keyword-only fallback covered by other tests");
+    index.close();
+    return;
+  }
+
+  const turn = { at: "t1", user: "How do I deploy with Docker", assistant: "Use docker compose up" };
+  index.indexTurn({ sessionId: "s1", turn });
+  index.indexEmbedding({ sessionId: "s1", turn, embedding: [1, 0, 0, 0] });
+
+  // "containerization orchestration" shares zero words with the indexed
+  // turn, so keyword search alone would find nothing.
+  assert.deepEqual(index.search({ query: "containerization orchestration" }), []);
+
+  const hybrid = index.search({ query: "containerization orchestration", queryEmbedding: [0.9, 0.1, 0, 0] });
+  assert.equal(hybrid.length, 1);
+  assert.equal(hybrid[0].matchType, "semantic");
+  assert.equal(hybrid[0].role, "turn");
+  assert.match(hybrid[0].text, /docker/i);
+  index.close();
+});
+
+test("queryEmbedding is ignored (keyword-only behavior) for newest/oldest sort and an explicit roleFilter", () => {
+  const index = makeHybridIndex();
+  const turn = { at: "t1", user: "unrelated words entirely", assistant: "nothing shared" };
+  index.indexTurn({ sessionId: "s1", turn });
+  index.indexEmbedding({ sessionId: "s1", turn, embedding: [1, 0, 0, 0] });
+
+  assert.deepEqual(
+    index.search({ query: "containerization", queryEmbedding: [1, 0, 0, 0], sort: "newest" }),
+    [],
+  );
+  assert.deepEqual(
+    index.search({ query: "containerization", queryEmbedding: [1, 0, 0, 0], roleFilter: ["user"] }),
+    [],
+  );
+  index.close();
+});
+
+test("vector search respects the sessionId filter even when the nearest global neighbor is in a different session", (t) => {
+  const index = makeHybridIndex();
+  if (!index.vectorEnabled()) {
+    t.skip("sqlite-vec extension unavailable in this environment");
+    index.close();
+    return;
+  }
+
+  const otherTurn = { at: "t1", user: "s2's own unrelated turn", assistant: "" };
+  index.indexTurn({ sessionId: "s2", turn: otherTurn });
+  index.indexEmbedding({ sessionId: "s2", turn: otherTurn, embedding: [1, 0, 0, 0] }); // closest to the query
+
+  const ownTurn = { at: "t2", user: "s1's own less-close turn", assistant: "" };
+  index.indexTurn({ sessionId: "s1", turn: ownTurn });
+  index.indexEmbedding({ sessionId: "s1", turn: ownTurn, embedding: [0.5, 0.5, 0, 0] }); // farther, but the only s1 candidate
+
+  const results = index.search({
+    query: "own",
+    queryEmbedding: [0.9, 0.1, 0, 0],
+    sessionId: "s1",
+  });
+  assert.ok(results.length >= 1);
+  assert.ok(results.every((r) => r.sessionId === "s1"));
+  index.close();
+});
+
+test("a semantic hit that near-duplicates an already-kept keyword hit is dropped by the diversity filter", (t) => {
+  const index = makeHybridIndex();
+  if (!index.vectorEnabled()) {
+    t.skip("sqlite-vec extension unavailable in this environment");
+    index.close();
+    return;
+  }
+
+  const turn = {
+    at: "t1",
+    user: "How do I deploy my application with Docker containers",
+    assistant: "Run docker compose up to deploy your application",
+  };
+  index.indexTurn({ sessionId: "s1", turn });
+  index.indexEmbedding({ sessionId: "s1", turn, embedding: [1, 0, 0, 0] });
+
+  // Query text keyword-matches the turn directly AND is semantically close
+  // to it -- without dedup this would return the same turn's user line
+  // (keyword) and its combined-text vector row (semantic) as two "results"
+  // that are really the same underlying content.
+  const results = index.search({ query: "docker deploy", queryEmbedding: [1, 0, 0, 0], limit: 5 });
+  const semanticHits = results.filter((r) => r.matchType === "semantic");
+  assert.equal(semanticHits.length, 0, "near-duplicate semantic hit should be filtered out");
+  assert.ok(results.some((r) => r.matchType === "keyword"));
+  index.close();
+});
+
+test("a queryEmbedding with the wrong dimension falls back to keyword-only results instead of throwing", () => {
+  const index = makeHybridIndex();
+  const turn = { at: "t1", user: "docker deployment question", assistant: "use compose" };
+  index.indexTurn({ sessionId: "s1", turn });
+  index.indexEmbedding({ sessionId: "s1", turn, embedding: [1, 0, 0, 0] });
+
+  assert.doesNotThrow(() => {
+    const results = index.search({ query: "docker", queryEmbedding: [1, 0] });
+    assert.ok(results.length >= 1);
+    assert.ok(results.every((r) => r.matchType === "keyword"));
+  });
+  index.close();
+});
+
+test("indexEmbedding silently skips an embedding whose dimension doesn't match this index's table", () => {
+  const index = makeHybridIndex();
+  const turn = { at: "t1", user: "docker deployment question", assistant: "use compose" };
+  index.indexTurn({ sessionId: "s1", turn });
+  assert.doesNotThrow(() => {
+    index.indexEmbedding({ sessionId: "s1", turn, embedding: [1, 0] }); // wrong dim (2, not 4)
+  });
+  // Nothing indexed -- a query embedding that would match [1,0,0,0]-shaped
+  // data finds no semantic hits, only the keyword one.
+  const results = index.search({ query: "docker", queryEmbedding: [1, 0, 0, 0] });
+  assert.ok(results.every((r) => r.matchType === "keyword"));
+  index.close();
+});
+
+test("indexEmbedding and vector search are no-ops (never throw) when called before any turn exists, or with missing fields", () => {
+  const index = makeHybridIndex();
+  assert.doesNotThrow(() => index.indexEmbedding({}));
+  assert.doesNotThrow(() => index.indexEmbedding({ sessionId: "s1" }));
+  assert.deepEqual(index.search({ query: "anything", queryEmbedding: [1, 0, 0, 0] }), []);
+  index.close();
+});
