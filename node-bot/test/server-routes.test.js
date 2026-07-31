@@ -822,6 +822,30 @@ test("a failed expression__set tool call does NOT surface an expression field", 
   });
 });
 
+test("when expression__set is called twice in one reply, the LAST successful call wins", async () => {
+  await withToolCallingEnv("1", async () => {
+    const app = createApp({
+      isLlamaServerEnabled: () => true,
+      runToolAwareReply: async () => ({
+        content: "changed my mind~",
+        toolCalls: [
+          { name: "expression__set", args: { name: "wink" }, ok: true },
+          { name: "expression__set", args: { name: "happy" }, ok: true },
+        ],
+      }),
+      runLocalAssistantReply: async () => "plain reply",
+    });
+
+    await withServer(app, async (baseUrl) => {
+      const { payload } = await postJson(`${baseUrl}/reply`, {
+        text: "give me an expression",
+        modelProfile: "default",
+      });
+      assert.equal(payload.expression, "happy");
+    });
+  });
+});
+
 test("no expression field is present in /reply's response when no expression__set call happened", async () => {
   await withToolCallingEnv("1", async () => {
     const app = createApp({

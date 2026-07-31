@@ -1,5 +1,6 @@
 const fs = require("node:fs");
 const path = require("node:path");
+const { significantWords, sharedWordCount } = require("./utils/word-overlap");
 
 function ensureDir(dir) {
   fs.mkdirSync(dir, { recursive: true });
@@ -10,17 +11,6 @@ function cleanText(value, maxLength) {
     .replace(/\s+/g, " ")
     .trim()
     .slice(0, maxLength);
-}
-
-function significantWords(text) {
-  return [
-    ...new Set(
-      String(text || "")
-        .toLowerCase()
-        .split(/[^a-z0-9]+/)
-        .filter((w) => w.length > 3),
-    ),
-  ];
 }
 
 // Issue #273 (Soul-of-Waifu-inspired self-healing memory): a deterministic,
@@ -41,8 +31,8 @@ function findConflictingFact(facts, key, text) {
     if (fact.status !== "active" || fact.key.toLowerCase() === lowerKey) continue;
     const factWords = significantWords(`${fact.key} ${fact.text}`);
     if (!factWords.length) continue;
-    const hits = factWords.filter((w) => words.includes(w));
-    if (hits.length >= Math.min(MIN_CONFLICT_WORD_HITS, factWords.length)) return fact;
+    const hits = sharedWordCount(factWords, words);
+    if (hits >= Math.min(MIN_CONFLICT_WORD_HITS, factWords.length)) return fact;
   }
   return null;
 }

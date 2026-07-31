@@ -9,6 +9,7 @@
 // through this tool.
 const fs = require("node:fs");
 const path = require("node:path");
+const { isCredentialPath } = require("./tool-policy");
 
 const CODING_TOOL_PREFIX = "coding__";
 
@@ -74,6 +75,17 @@ function createCodingToolSource(options = {}) {
     const action = qualifiedName.slice(CODING_TOOL_PREFIX.length);
     if (action !== "propose_edit") {
       throw new Error(`unknown coding tool: ${qualifiedName}`);
+    }
+
+    // Issue #268's own fix for read_file applies here too: this tool's
+    // createEditProposal() call reads whatever file the model names inside
+    // the active workspace, a different code path from read_file's
+    // allowedRoot/credential check -- without this, a prompt-injected
+    // instruction (hiding in a page Mana read, a doc she was asked to
+    // summarize) could get a real .env's contents copied into a scratch
+    // diff file and reflected back through the tool result.
+    if (isCredentialPath(path.basename(String(args?.path || "")))) {
+      return JSON.stringify({ status: "error", error: "refusing to read a credential file" });
     }
 
     try {

@@ -3,6 +3,7 @@ const {
   requireString,
   sendValidationError,
 } = require("../request-validation");
+const { significantWords: sharedSignificantWords } = require("../utils/word-overlap");
 
 const KEY = "skills";
 const DEFAULT_STALE_DAYS = 30;
@@ -159,13 +160,7 @@ function normalizeText(text) {
 }
 
 function significantWords(text) {
-  return [
-    ...new Set(
-      normalizeText(text)
-        .split(/[^a-z0-9]+/)
-        .filter((w) => w.length > 3),
-    ),
-  ];
+  return sharedSignificantWords(normalizeText(text));
 }
 
 // Keyword-match a skill's name/description against the message. Only
