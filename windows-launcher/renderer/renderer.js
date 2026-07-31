@@ -2122,7 +2122,11 @@ async function runScreenSensingGlance() {
       throw new Error(await response.text());
     }
     const result = await response.json();
-    if (result.shouldSurface && result.summary) {
+    // Re-check: a real conversation turn (voice reply, playback) can start
+    // during the awaits above (gaming-status check, screen capture, the
+    // vision-model round-trip itself) -- without this, a glance that was
+    // fine to run when it started could still land on top of it.
+    if (result.shouldSurface && result.summary && !processing && !currentReplyAudio) {
       replyEl.textContent = `Mana: ${result.summary}`;
       appendChatMessage("mana", result.summary);
       if (typeof refreshSessionList === "function") {

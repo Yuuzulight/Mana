@@ -3613,7 +3613,16 @@ function registerRoutes(app, upload, deps = {}) {
               "tools",
               "retriever.py",
             );
-            if (fs.existsSync(vectorDir) && fs.existsSync(retrieverScript)) {
+            // NODE_ENV/NODE_TEST_CONTEXT guard (same convention used
+            // throughout this file): this fallback is otherwise gated only
+            // by fs.existsSync(vectorDir/retrieverScript), both real files
+            // present in this repo, so without it a real `spawnSync` to a
+            // real (but test-irrelevant) Python vector index runs on every
+            // coding-mode reply a test exercises -- ~20s and fails anyway
+            // since there's no matching index.
+            const skipUnderTest =
+              process.env.NODE_ENV === "test" || Boolean(process.env.NODE_TEST_CONTEXT);
+            if (!skipUnderTest && fs.existsSync(vectorDir) && fs.existsSync(retrieverScript)) {
               const args = [
                 retrieverScript,
                 "--index",
@@ -3840,9 +3849,14 @@ function registerRoutes(app, upload, deps = {}) {
               // (mana-acp-agent.js, mobile-routes.js x2, server-routes.js x2),
               // same reasoning already documented above for lastToolCalls.
               if (replyMeta) {
-                const expressionCall = toolResult.toolCalls.find(
-                  (call) => isExpressionToolName(call.name) && call.ok,
-                );
+                // Last successful call wins, not first -- runToolAwareReply
+                // supports multiple tool-calling rounds, so a model that
+                // calls expression__set more than once in one reply is
+                // revising its choice; the final pick is the one that
+                // reflects "Mana's expression for this reply."
+                const expressionCall = [...toolResult.toolCalls]
+                  .reverse()
+                  .find((call) => isExpressionToolName(call.name) && call.ok);
                 if (expressionCall) {
                   const name = String(expressionCall.args?.name || "").trim();
                   if (name) replyMeta.expression = name;

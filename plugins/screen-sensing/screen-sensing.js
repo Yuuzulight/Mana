@@ -5,12 +5,10 @@
 // glance is worth proactively interrupting the user with, inspired by
 // Miru's (github.com/kiyotakali/Miru) "glance, summarize, discard, then
 // gate" shape.
+const { significantWords, sharedWordCount } = require("../../node-bot/utils/word-overlap");
+
 const SUMMARY_PROMPT =
   "In one short sentence, describe what the user currently appears to be doing on screen -- their apparent activity or focus, not exact on-screen text or UI details.";
-
-function significantWords(text) {
-  return [...new Set(String(text || "").toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length > 3))];
-}
 
 // Cheap word-overlap ratio, same style as acp-memory-store.js's
 // findConflictingFact -- good enough to tell "same activity, nothing
@@ -20,8 +18,7 @@ function similarity(a, b) {
   const wordsA = significantWords(a);
   const wordsB = significantWords(b);
   if (!wordsA.length || !wordsB.length) return 0;
-  const overlap = wordsA.filter((word) => wordsB.includes(word)).length;
-  return overlap / Math.min(wordsA.length, wordsB.length);
+  return sharedWordCount(wordsA, wordsB) / Math.min(wordsA.length, wordsB.length);
 }
 
 // options.cooldownMs: minimum time between two *surfaced* interruptions --

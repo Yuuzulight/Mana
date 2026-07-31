@@ -81,6 +81,42 @@ test("propose_edit returns a JSON error instead of throwing when there's no acti
   assert.deepEqual(JSON.parse(result), { status: "error", error: "active workspace is not set" });
 });
 
+// Issue #268's own vulnerability class: createEditProposal reads whatever
+// file the model names inside the workspace, a different code path from
+// read_file's allowedRoot/credential check -- must refuse the same way.
+test("propose_edit refuses a credential-shaped path without ever calling createEditProposal", async () => {
+  let createEditProposalCalled = false;
+  const editors = fakeEditors({
+    createEditProposalImpl: () => {
+      createEditProposalCalled = true;
+      return { id: "x", relativePath: ".env", summary: "", diff: "" };
+    },
+  });
+  const source = createCodingToolSource({ editors, diffsDir: tempDir() });
+
+  const result = await source.executeTool(`${CODING_TOOL_PREFIX}propose_edit`, {
+    path: ".env",
+    proposedContent: "SECRET=leaked",
+  });
+
+  assert.deepEqual(JSON.parse(result), { status: "error", error: "refusing to read a credential file" });
+  assert.equal(createEditProposalCalled, false);
+});
+
+test("propose_edit writes the diff even when diffsDir's parent directory doesn't exist yet", async () => {
+  const diffsDir = path.join(tempDir(), "nested", "diffs");
+  const source = createCodingToolSource({ editors: fakeEditors(), diffsDir });
+
+  const result = await source.executeTool(`${CODING_TOOL_PREFIX}propose_edit`, {
+    path: "src/foo.js",
+    proposedContent: "const x = 2;",
+  });
+  const parsed = JSON.parse(result);
+
+  assert.equal(parsed.status, "ok");
+  assert.ok(fs.existsSync(parsed.diffPath));
+});
+
 test("executeTool rejects an unrecognized coding tool name", async () => {
   const source = createCodingToolSource({ editors: fakeEditors() });
   await assert.rejects(

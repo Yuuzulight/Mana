@@ -255,8 +255,11 @@ function bandEnergy(melEnergies, melCenterHz, loHz, hiHz) {
 
 // mfccResult: the object computeMfcc returns. Picks whichever viseme's
 // formant bands hold the largest share of this frame's mel energy;
-// "neutral" when there's essentially no signal (silence) or nothing
-// clearly wins.
+// "neutral" only when there's essentially no signal (silence). There is no
+// tie-margin -- a genuinely ambiguous frame still deterministically picks
+// whichever viseme scores highest (ties go to "aa", first in
+// VISEME_FORMANT_BANDS' iteration order), not "neutral"; that's an
+// acceptable simplification for a coarse mouth-shape signal, not a bug.
 function classifyViseme(mfccResult, options = {}) {
   const { melEnergies, melCenterHz } = mfccResult || {};
   if (!melEnergies || !melCenterHz) {
