@@ -1,6 +1,7 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const { significantWords, sharedWordCount } = require("./utils/word-overlap");
+const { detectTextValence } = require("./utils/text-mood");
 
 function ensureDir(dir) {
   fs.mkdirSync(dir, { recursive: true });
@@ -144,6 +145,7 @@ function createAcpMemoryStore(options = {}) {
   const sessionsDir = path.join(dataDir, "sessions");
   const entityIndexPath = path.join(dataDir, "entity-index.json");
   const factsPath = path.join(dataDir, "facts.json");
+  const emotionalStatePath = path.join(dataDir, "emotional-state.json");
   // ponytail: fixed cap, not age-based pruning -- revisit if explicit
   // facts genuinely need trimming by more than "keep the most recent N".
   const maxFacts = 500;
@@ -441,6 +443,62 @@ function createAcpMemoryStore(options = {}) {
     return { entries };
   }
 
+  // Issue #295 (piece 2 of #285): userAffectState tracks a decaying read on
+  // the user's affect, built from the same mood signal reply-emotion.js
+  // already detects for the avatar's own expression -- just applied to the
+  // user's text instead of Mana's reply, and accumulated over time instead
+  // of labeling one reply. manaSelfState's inputs (loneliness from session
+  // gap, rutScore from rut-detection.js) are deliberately NOT stored here:
+  // both are already derivable on demand from data this module (session
+  // timestamps) or rut-detection.js (a live per-session score) already
+  // owns, so persisting a second, potentially-stale copy would just be a
+  // sync bug waiting to happen. Only the genuinely accumulated value
+  // (positivity, built from many small per-turn nudges) needs its own
+  // persisted, decaying state.
+  const AFFECT_DECAY_HALF_LIFE_HOURS = 12;
+  const AFFECT_NUDGE = 0.2;
+
+  function loadEmotionalState() {
+    const parsed = readJsonObject(emotionalStatePath);
+    const userAffect = parsed?.userAffect;
+    if (userAffect && typeof userAffect.positivity === "number" && userAffect.lastUpdatedAt) {
+      return { userAffect };
+    }
+    return { userAffect: { positivity: 0, lastUpdatedAt: null } };
+  }
+
+  function decayedPositivity(userAffect, at) {
+    if (!userAffect.lastUpdatedAt) return 0;
+    const elapsedHours =
+      (new Date(at).getTime() - new Date(userAffect.lastUpdatedAt).getTime()) / 3600000;
+    if (!Number.isFinite(elapsedHours) || elapsedHours <= 0) return userAffect.positivity;
+    return userAffect.positivity * Math.pow(0.5, elapsedHours / AFFECT_DECAY_HALF_LIFE_HOURS);
+  }
+
+  // Applies decay since the last update, then nudges by AFFECT_NUDGE toward
+  // whatever valence text carries (positive/negative/none), clamped to
+  // [-1, 1]. Called once per turn from appendTurn -- never throws (a
+  // corrupt/missing state file just resets to neutral, same as any other
+  // JSON file in this store).
+  function updateUserAffect(text, at) {
+    const { userAffect } = loadEmotionalState();
+    const decayed = decayedPositivity(userAffect, at);
+    const valence = detectTextValence(text);
+    const next = Math.max(-1, Math.min(1, decayed + valence * AFFECT_NUDGE));
+    writeJsonObject(emotionalStatePath, {
+      userAffect: { positivity: next, lastUpdatedAt: at },
+    });
+    return next;
+  }
+
+  // Returns the current decayed positivity without recording a new
+  // observation -- for a caller (server.js's periodic reflex check) that
+  // just wants to read the value, not nudge it.
+  function getUserAffect(at) {
+    const { userAffect } = loadEmotionalState();
+    return decayedPositivity(userAffect, at || now());
+  }
+
   function getSession(sessionId) {
     const existing = readJsonObject(filePathForSession(sessionId));
     if (!existing) {
@@ -652,6 +710,13 @@ function createAcpMemoryStore(options = {}) {
       } catch (e) {
         console.warn("Memory graph reinforcement failed:", e?.message || e);
       }
+    }
+    // Issue #295: nudges userAffectState from this turn's user text. Never
+    // blocks the turn append, same failure-safety as the graph above.
+    try {
+      updateUserAffect(turn.user, timestamp);
+    } catch (e) {
+      console.warn("User affect update failed:", e?.message || e);
     }
 
     const summaryLine = summarizeTurn(
@@ -943,6 +1008,7 @@ function createAcpMemoryStore(options = {}) {
     listFactKeys,
     searchSessions,
     memoryGraph,
+    getUserAffect,
   };
 }
 

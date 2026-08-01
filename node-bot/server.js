@@ -517,6 +517,37 @@ const acpMemoryStore = createAcpMemoryStore({
   },
 });
 
+// Issue #295 (piece 2 of #285): folds a decay+threshold check into the
+// existing periodic reviewer tick below (not just the idle-report handler)
+// -- "hours since we last talked" needs to be checkable on a clock tick
+// even while the launcher (idle-report's only source) isn't running at
+// all. One real reflex, not a framework of hypothetical ones: fires a
+// journal-style fact via the already-existing rememberFact() when the gap
+// since the last real conversation crosses a threshold. Uses action:
+// "patch" against a fixed key, so a threshold that stays crossed across
+// several ticks updates the same fact in place instead of piling up
+// duplicates (rememberFact's patch already falls back to insert on the
+// first fire).
+const LONELINESS_THRESHOLD_HOURS = Number(
+  process.env.MANA_LONELINESS_THRESHOLD_HOURS || 48,
+);
+// store: defaults to the module's real acpMemoryStore singleton -- same
+// pattern as this file's other deps-injectable helpers, overridden in
+// tests so this never touches the real data directory.
+async function checkEmotionalReflexes(store = acpMemoryStore) {
+  const sessions = store.listSessions();
+  const lastUpdatedAt = sessions[0]?.updatedAt;
+  if (!lastUpdatedAt) return;
+  const hoursSince = (Date.now() - new Date(lastUpdatedAt).getTime()) / 3600000;
+  if (!Number.isFinite(hoursSince) || hoursSince < LONELINESS_THRESHOLD_HOURS) return;
+
+  await store.rememberFact({
+    key: "journal-loneliness",
+    text: `It's been about ${Math.round(hoursSince)} hours since we last talked.`,
+    action: "patch",
+  });
+}
+
 // Named prompt/behavior presets (see presets-store.js)
 const presetsStore = createPresetsStore({});
 
@@ -1452,6 +1483,12 @@ if (process.env.NODE_ENV !== "test" && !process.env.NODE_TEST_CONTEXT) {
           runBackgroundReviewer(true, { skipIfUnchanged: true }).catch((err) =>
             console.warn(
               "Background memory reviewer periodic run failed:",
+              err && err.message ? err.message : err,
+            ),
+          );
+          checkEmotionalReflexes().catch((err) =>
+            console.warn(
+              "Emotional reflex check failed:",
               err && err.message ? err.message : err,
             ),
           );
@@ -4716,6 +4753,7 @@ module.exports = {
   createApp,
   buildMemoryNotes,
   buildSkillsIndexBlock,
+  checkEmotionalReflexes,
   DEEP_RESEARCH_SUBTASK_PROFILE,
   ensureDirectory,
   formatMemoryMarkdown,
