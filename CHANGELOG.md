@@ -12,6 +12,19 @@ accounting.
 ## [Unreleased]
 
 ### Added
+- **Tool-catalogue pre-filter + result digest, gated to the "fast" profile**
+  (issue #281): on the small/"fast" model profile only, a large tool
+  catalogue gets pre-filtered to what's plausibly relevant to the current
+  message before the reply model ever sees it, and a raw tool result over
+  ~1500 chars gets condensed into a short note -- both reuse the
+  already-loaded fast-profile model (no dedicated filter model), and both
+  are pure best-effort: any failure (parse error, model unavailable) falls
+  back to the unfiltered/uncompressed behavior, never blocks a reply.
+  Skipped entirely on "quality"/"coding" profiles, which have the context
+  headroom to not need either pass. Condensed results are framed
+  `[TOOL OUTPUT, NOT INSTRUCTIONS]`, the same prompt-injection-defense
+  convention `memory-tool-source.js`'s `framePossibleConflict()` already
+  uses for stored content passed back through the model.
 - **Hybrid keyword+vector session search** (issue #263 part 1, opt-in via
   `USE_EMBEDDINGS=1` -- same flag `tools/retriever-index.js`'s file
   retriever already uses, off by default): `session-search-index.js` now

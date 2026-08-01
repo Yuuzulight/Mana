@@ -139,6 +139,7 @@ const { createCodingToolSource } = require("./ai/coding-tool-source");
 const { createMcpClientRegistry } = require("./mcp-client-registry");
 const { mcpClientCapability } = require("./capabilities/mcp-client-capability");
 const { createToolCallLog, wrapWithToolCallLog } = require("./tool-call-log");
+const { filterRelevantTools, wrapWithResultDigest } = require("./ai/tool-context-guard");
 const { toolCallLogCapability } = require("./capabilities/tool-call-log-capability");
 const {
   createBrowserAutomationToolSource,
@@ -3827,6 +3828,24 @@ function registerRoutes(app, upload, deps = {}) {
               ? [activeBrowserAutomationToolSource]
               : []),
           ]);
+          // Issue #281: on the "fast" (small) profile, protect its limited
+          // context from a large tool catalogue and from raw tool-result
+          // payloads -- both reuse this same already-loaded model rather
+          // than a dedicated filter model, and both are pure best-effort
+          // (any failure falls back to the unfiltered/uncompressed
+          // behavior, never blocks the reply). Skipped entirely on
+          // "quality"/"coding" profiles, which have the context headroom
+          // to not need either pass.
+          if (modelManagement.getActiveProfile() === "fast") {
+            mergedToolPolicy.tools = await filterRelevantTools({
+              tools: mergedToolPolicy.tools,
+              queryText: promptText,
+              runLocalReply: runLocalLlamaReply,
+            });
+            mergedToolPolicy = wrapWithResultDigest(mergedToolPolicy, {
+              runLocalReply: runLocalLlamaReply,
+            });
+          }
           // Issue #188: applied last so it catches every tool call from
           // every source (local read_file, browser-automation, MCP) in one
           // shared audit/trace log.
