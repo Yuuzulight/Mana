@@ -83,6 +83,26 @@ test("POST /approvals/:id/decide returns 404 for an unknown request id", async (
   });
 });
 
+test("GET /approvals/guardian-audit lists guardian-cleared entries", async () => {
+  const gate = createApprovalGate({
+    dataDir: createTempDir(),
+    guardianEnabled: true,
+    guardianPreCheck: async () => ({ safe: true }),
+  });
+  gate.registerExecutor("skill-write", () => "created");
+  await gate.requestApproval("skill-write", { summary: "trivial change", payload: {} });
+
+  const app = buildApp(gate);
+  await withServer(app, async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/approvals/guardian-audit`);
+    const payload = await response.json();
+    assert.equal(response.status, 200);
+    assert.equal(payload.entries.length, 1);
+    assert.equal(payload.entries[0].name, "skill-write");
+    assert.equal(payload.entries[0].guardianCleared, true);
+  });
+});
+
 test("getHealth reports the current pending count", () => {
   const gate = createApprovalGate({ dataDir: createTempDir() });
   const empty = approvalGateCapability.getHealth({ approvalGate: gate });
