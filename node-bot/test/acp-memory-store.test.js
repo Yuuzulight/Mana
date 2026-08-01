@@ -714,6 +714,85 @@ test("getRelatedFacts includes both entity mentions and remembered facts togethe
   assert.match(surfaced, /Deal signed in June 2026\./);
 });
 
+// Issue #282: structured entry-array form of buildPromptMemory/getRelatedFacts.
+test("buildPromptMemoryEntries returns positionable entries with the same content buildPromptMemory would combine", () => {
+  const store = createAcpMemoryStore({
+    dataDir: createTempDir(),
+    now: () => "2026-06-29T00:00:00.000Z",
+    maxRecentTurns: 3,
+    maxPromptChars: 1200,
+  });
+
+  store.ensureSession({ sessionId: "zed-session-entries", cwd: "C:\\ManaAI\\Mana" });
+  store.appendTurn({
+    sessionId: "zed-session-entries",
+    user: "The preferred editor on this PC is Zed.",
+    assistant: "Understood. I will prefer Zed locally.",
+  });
+
+  const { entries } = store.buildPromptMemoryEntries("zed-session-entries");
+  // A fresh single-turn session already has a session.summary (see the
+  // "auto-names a session from its first user turn" behavior), so this
+  // produces two entries: the summary (early) and the recent-turns block
+  // (late) -- same content buildPromptMemory would combine into one string.
+  assert.equal(entries.length, 2);
+  assert.ok(entries.every((e) => e.role === "system"));
+  const [summaryEntry, recentTurnsEntry] = entries;
+  assert.equal(summaryEntry.position, "early");
+  assert.equal(recentTurnsEntry.position, "late");
+  assert.match(recentTurnsEntry.content, /Recent turns/i);
+  assert.match(recentTurnsEntry.content, /preferred editor on this PC is Zed/i);
+});
+
+test("buildPromptMemoryEntries honors summaryPosition/recentTurnsPosition overrides", () => {
+  const store = createAcpMemoryStore({
+    dataDir: createTempDir(),
+    now: () => "2026-06-29T00:00:00.000Z",
+  });
+  store.ensureSession({ sessionId: "zed-session-positions", cwd: "C:\\ManaAI\\Mana" });
+  store.appendTurn({
+    sessionId: "zed-session-positions",
+    user: "The preferred editor on this PC is Zed.",
+    assistant: "Understood.",
+  });
+
+  const { entries } = store.buildPromptMemoryEntries("zed-session-positions", {
+    recentTurnsPosition: "early",
+  });
+  assert.ok(entries.every((e) => e.position === "early"));
+});
+
+test("buildPromptMemoryEntries returns no entries for an unknown/empty session", () => {
+  const store = createAcpMemoryStore({ dataDir: createTempDir() });
+  assert.deepEqual(store.buildPromptMemoryEntries("no-such-session"), { entries: [] });
+});
+
+test("getRelatedFactsEntries returns mentions and facts as separate entries, defaulting to late position", () => {
+  const store = createAcpMemoryStore({
+    dataDir: createTempDir(),
+    now: () => "2026-06-29T00:00:00.000Z",
+  });
+  store.appendTurn({
+    sessionId: "session-a",
+    user: "We're discussing Acme Corp's roadmap.",
+    assistant: "Noted.",
+  });
+  store.rememberFact({ key: "Acme Corp", text: "Deal signed in June 2026." });
+
+  const { entries } = store.getRelatedFactsEntries("What's up with Acme Corp lately?", {
+    excludeSessionId: "session-b",
+  });
+  assert.equal(entries.length, 2);
+  assert.ok(entries.every((e) => e.role === "system" && e.position === "late"));
+  assert.ok(entries.some((e) => /Related from other sessions:/.test(e.content)));
+  assert.ok(entries.some((e) => /Remembered:.*Deal signed in June 2026\./s.test(e.content)));
+});
+
+test("getRelatedFactsEntries returns no entries for text with no known entities or mentions", () => {
+  const store = createAcpMemoryStore({ dataDir: createTempDir() });
+  assert.deepEqual(store.getRelatedFactsEntries("what time is it?"), { entries: [] });
+});
+
 // Issue #263 part 2: cursor-based re-summarization. summarizeFn fires as a
 // fire-and-forget async IIFE inside appendTurn, not awaited by appendTurn
 // itself -- these tests use a deferred promise summarizeFn resolves so the

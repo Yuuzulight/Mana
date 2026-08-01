@@ -554,11 +554,28 @@ function createLlamaServerRuntime(options = {}) {
     return ensureServerConfig(findLlamaModel(profile), null);
   }
 
+  // Issue #282: splices caller-supplied memory entries into the message
+  // array at either end -- "early" right after the persona system message,
+  // "late" right before the live user message (the higher-salience
+  // position, closest to what's actually being asked). Omitting
+  // extraMessages entirely preserves today's exact 2-message shape.
+  function buildMessages(systemContent, prompt, extraMessages) {
+    const early = extraMessages?.early || [];
+    const late = extraMessages?.late || [];
+    return [
+      { role: "system", content: systemContent },
+      ...early,
+      ...late,
+      { role: "user", content: prompt },
+    ];
+  }
+
   async function runLocalAssistantReply(
     prompt,
     maxTokens = 256,
     profile = "default",
     overrideSystemPrompt = null,
+    extraMessages = null,
   ) {
     if (typeof fetchImpl !== "function") {
       throw new Error("fetch is not available; cannot use llama-server");
@@ -572,10 +589,11 @@ function createLlamaServerRuntime(options = {}) {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          messages: [
-            { role: "system", content: overrideSystemPrompt || systemPrompt },
-            { role: "user", content: prompt },
-          ],
+          messages: buildMessages(
+            overrideSystemPrompt || systemPrompt,
+            prompt,
+            extraMessages,
+          ),
           max_tokens: maxTokens,
         }),
       },
@@ -657,6 +675,7 @@ function createLlamaServerRuntime(options = {}) {
       maxRounds,
       maxToolCallsPerRound,
       maxMs,
+      extraMessages = null,
     } = {},
   ) {
     if (typeof fetchImpl !== "function") {
@@ -685,10 +704,11 @@ function createLlamaServerRuntime(options = {}) {
     const deadline = startedAt + timeLimitMs;
     const MAX_CONSECUTIVE_TOOL_ERRORS = 3;
 
-    const messages = [
-      { role: "system", content: overrideSystemPrompt || systemPrompt },
-      { role: "user", content: prompt },
-    ];
+    const messages = buildMessages(
+      overrideSystemPrompt || systemPrompt,
+      prompt,
+      extraMessages,
+    );
 
     async function complete(toolsEnabled) {
       const resp = await fetchImpl(
