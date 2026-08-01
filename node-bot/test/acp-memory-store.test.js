@@ -6,6 +6,7 @@ const test = require("node:test");
 
 const { createAcpMemoryStore, extractEntities } = require("../acp-memory-store");
 const { createSessionSearchIndex } = require("../session-search-index");
+const { createMemoryGraph } = require("../memory-graph");
 
 function createTempDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), "mana-acp-memory-"));
@@ -151,6 +152,140 @@ test("appendTurn indexes turns into the wired sessionSearchIndex, searchable via
   assert.ok(results.some((r) => r.role === "user"));
   assert.ok(results.some((r) => r.role === "assistant"));
   sessionSearchIndex.close();
+});
+
+// Issue #295 (round-2 scoping of #285): appendTurn reinforces this turn's
+// co-occurring entities in the memory graph, and searchSessions() surfaces
+// associatively-linked memories as a second pass after the base
+// keyword/semantic hits.
+test("appendTurn reinforces co-occurring entities in the wired memory graph", async () => {
+  const memoryGraph = createMemoryGraph({ dbPath: ":memory:" });
+  const store = createAcpMemoryStore({ dataDir: createTempDir(), memoryGraph });
+
+  await store.appendTurn({
+    sessionId: "s1",
+    user: "Alice Smith introduced me to Bob Jones at the conference.",
+    assistant: "That sounds like a great connection to make.",
+  });
+
+  const neighbors = memoryGraph.getNeighbors("Alice Smith");
+  assert.deepEqual(neighbors.map((n) => n.node), ["bob jones"]);
+  memoryGraph.close();
+});
+
+test("searchSessions surfaces an associatively-linked entity from a different session with zero lexical overlap", async () => {
+  const sessionSearchIndex = createSessionSearchIndex({ dbPath: ":memory:" });
+  const memoryGraph = createMemoryGraph({ dbPath: ":memory:" });
+  const store = createAcpMemoryStore({
+    dataDir: createTempDir(),
+    sessionSearchIndex,
+    memoryGraph,
+  });
+
+  // Assistant replies deliberately avoid a leading capitalized word --
+  // extractEntities() (acp-memory-store.js) is a naive Title-Case-run
+  // heuristic, not real NER, so a sentence-initial word like "Sounds" or
+  // "Agreed" would itself get treated as a phantom entity and add noise
+  // edges unrelated to what this test is actually checking.
+  await store.appendTurn({
+    sessionId: "s1",
+    user: "Alice Smith and Bob Jones went hiking together.",
+    assistant: "that sounds like fun",
+  });
+  await store.appendTurn({
+    sessionId: "s2",
+    user: "Bob Jones is a great software engineer.",
+    assistant: "yes, very skilled indeed",
+  });
+
+  const results = await store.searchSessions({ query: "software engineer" });
+  const associative = results.filter((r) => r.matchType === "associative");
+  assert.equal(associative.length, 1);
+  assert.match(associative[0].text, /Alice Smith/);
+  assert.equal(associative[0].sessionId, "s1");
+
+  sessionSearchIndex.close();
+  memoryGraph.close();
+});
+
+test("searchSessions excludes an associative hit whose only mention is in the session being searched", async () => {
+  const sessionSearchIndex = createSessionSearchIndex({ dbPath: ":memory:" });
+  const memoryGraph = createMemoryGraph({ dbPath: ":memory:" });
+  const store = createAcpMemoryStore({
+    dataDir: createTempDir(),
+    sessionSearchIndex,
+    memoryGraph,
+  });
+
+  await store.appendTurn({
+    sessionId: "s1",
+    user: "Alice Smith and Bob Jones went hiking together.",
+    assistant: "that sounds like fun",
+  });
+
+  const results = await store.searchSessions({ query: "Bob Jones", sessionId: "s1" });
+  assert.ok(!results.some((r) => r.matchType === "associative"));
+
+  sessionSearchIndex.close();
+  memoryGraph.close();
+});
+
+test("searchSessions never includes associative results when no memory graph was wired", async () => {
+  const sessionSearchIndex = createSessionSearchIndex({ dbPath: ":memory:" });
+  const store = createAcpMemoryStore({ dataDir: createTempDir(), sessionSearchIndex });
+
+  await store.appendTurn({
+    sessionId: "s1",
+    user: "Alice Smith and Bob Jones went hiking together.",
+    assistant: "Sounds fun!",
+  });
+
+  const results = await store.searchSessions({ query: "Alice Smith" });
+  assert.ok(!results.some((r) => r.matchType === "associative"));
+  sessionSearchIndex.close();
+});
+
+test("searchSessions falls back to the base results when the memory graph lookup throws", async () => {
+  const sessionSearchIndex = createSessionSearchIndex({ dbPath: ":memory:" });
+  const brokenMemoryGraph = {
+    reinforce: () => {},
+    getNeighbors: () => {
+      throw new Error("graph unavailable");
+    },
+  };
+  const store = createAcpMemoryStore({
+    dataDir: createTempDir(),
+    sessionSearchIndex,
+    memoryGraph: brokenMemoryGraph,
+  });
+
+  await store.appendTurn({
+    sessionId: "s1",
+    user: "Alice Smith and Bob Jones went hiking together.",
+    assistant: "Sounds fun!",
+  });
+
+  const results = await store.searchSessions({ query: "Alice Smith" });
+  assert.ok(results.length > 0, "the base keyword results must still come back");
+  assert.ok(!results.some((r) => r.matchType === "associative"));
+  sessionSearchIndex.close();
+});
+
+test("appendTurn never breaks the turn append when memory graph reinforcement throws", async () => {
+  const brokenMemoryGraph = {
+    reinforce: () => {
+      throw new Error("db locked");
+    },
+    getNeighbors: () => [],
+  };
+  const store = createAcpMemoryStore({ dataDir: createTempDir(), memoryGraph: brokenMemoryGraph });
+
+  const saved = await store.appendTurn({
+    sessionId: "s1",
+    user: "Alice Smith and Bob Jones went hiking together.",
+    assistant: "Sounds fun!",
+  });
+  assert.equal(saved.turns.length, 1);
 });
 
 // Issue #263 part 1: hybrid keyword+vector session search. appendTurn's
