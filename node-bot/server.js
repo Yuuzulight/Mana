@@ -140,6 +140,7 @@ const { createCodingToolSource } = require("./ai/coding-tool-source");
 const { createMcpClientRegistry } = require("./mcp-client-registry");
 const { mcpClientCapability } = require("./capabilities/mcp-client-capability");
 const { createToolCallLog, wrapWithToolCallLog } = require("./tool-call-log");
+const { filterRelevantTools, wrapWithResultDigest } = require("./ai/tool-context-guard");
 const { toolCallLogCapability } = require("./capabilities/tool-call-log-capability");
 const {
   createBrowserAutomationToolSource,
@@ -390,6 +391,7 @@ async function runLocalLlamaReply(
   maxTokens = 256,
   profile = "default",
   overrideSystemPrompt = null,
+  extraMessages = null,
 ) {
   if (llamaServerRuntime.isEnabled()) {
     try {
@@ -398,6 +400,7 @@ async function runLocalLlamaReply(
         maxTokens,
         profile,
         overrideSystemPrompt,
+        extraMessages,
       );
     } catch (e) {
       const cause =
@@ -3042,8 +3045,9 @@ function registerRoutes(app, upload, deps = {}) {
       maxTokens = 256,
       profile = "default",
       overrideSystemPrompt = null,
+      extraMessages = null,
     ) {
-      return runLocalLlamaReply(prompt, maxTokens, profile, overrideSystemPrompt);
+      return runLocalLlamaReply(prompt, maxTokens, profile, overrideSystemPrompt, extraMessages);
     });
 
   // Foundational tool-calling (issue #51): only llama-server (not the
@@ -3400,44 +3404,40 @@ function registerRoutes(app, upload, deps = {}) {
       // ignore failures here
     }
 
-    // Load short session memory (if provided) and inject into the system
-    // prompt -- this is the small, hard-capped "always in context" tier
-    // (bounded by maxPromptTokens in acp-memory-store.js, same pattern as
-    // BACKGROUND_MEMORY_BLOCK above).
-    let memoryBlock = "";
+    // Issue #282: memory (session summary/recent-turns, cross-session
+    // facts) becomes its own positionable system-role messages -- "early"
+    // (right after the persona) or "late" (right before the live user
+    // turn, the higher-salience slot) -- for the two reply paths that can
+    // take a real messages array (runToolAwareReply, runLocalAssistantReply
+    // below). Paths that only take a flat system-prompt string (the OpenAI
+    // proxy, Best-of-N) fall back to the old flattened text via
+    // flatMemorySuffix so they don't lose memory context entirely.
+    const memoryExtraMessages = { early: [], late: [] };
+    let flatMemorySuffix = "";
     try {
       if (sessionId) {
-        try {
-          memoryBlock =
-            (await acpMemoryStore.buildPromptMemory(sessionId)) || "";
-          if (memoryBlock) {
-            memoryBlock = memoryBlock.trim();
-            memoryBlock = "Conversation memory:\n" + memoryBlock + "\n\n";
-          }
-        } catch (memErr) {
-          console.warn("Failed to build session memory:", memErr.message);
-          memoryBlock = "";
+        const { entries } = await acpMemoryStore.buildPromptMemoryEntries(sessionId);
+        for (const entry of entries) {
+          memoryExtraMessages[entry.position].push({ role: entry.role, content: entry.content });
+          flatMemorySuffix += `\n\n${entry.content}`;
         }
       }
-    } catch (e) {
-      console.warn("ACP memory unavailable:", e.message);
-      memoryBlock = "";
-    }
-    if (memoryBlock) {
-      selectedSystemPrompt = `${selectedSystemPrompt}\n\n${memoryBlock.trim()}`;
+    } catch (memErr) {
+      console.warn("Failed to build session memory:", memErr.message);
     }
 
     // Issue #141: the larger, on-demand tier -- only pulled in when the
     // current message actually names something previously discussed in a
-    // *different* session. Bounded by maxChars in getRelatedFacts, so it
-    // never grows with total memory volume.
+    // *different* session. Bounded by maxChars in getRelatedFactsEntries,
+    // so it never grows with total memory volume.
     try {
-      if (typeof acpMemoryStore.getRelatedFacts === "function") {
-        const relatedFacts = acpMemoryStore.getRelatedFacts(transcript, {
+      if (typeof acpMemoryStore.getRelatedFactsEntries === "function") {
+        const { entries } = acpMemoryStore.getRelatedFactsEntries(transcript, {
           excludeSessionId: sessionId,
         });
-        if (relatedFacts) {
-          selectedSystemPrompt = `${selectedSystemPrompt}\n\n${relatedFacts}`;
+        for (const entry of entries) {
+          memoryExtraMessages[entry.position].push({ role: entry.role, content: entry.content });
+          flatMemorySuffix += `\n\n${entry.content}`;
         }
       }
     } catch (relErr) {
@@ -3717,7 +3717,7 @@ function registerRoutes(app, upload, deps = {}) {
         const openAiReply = await runOpenAIReply(
           finalPrompt,
           LLAMA_MAX_TOKENS,
-          selectedSystemPrompt,
+          selectedSystemPrompt + flatMemorySuffix,
         );
         if (openAiReply) {
           console.log("Using OpenAI proxy reply.");
@@ -3835,6 +3835,24 @@ function registerRoutes(app, upload, deps = {}) {
               ? [activeBrowserAutomationToolSource]
               : []),
           ]);
+          // Issue #281: on the "fast" (small) profile, protect its limited
+          // context from a large tool catalogue and from raw tool-result
+          // payloads -- both reuse this same already-loaded model rather
+          // than a dedicated filter model, and both are pure best-effort
+          // (any failure falls back to the unfiltered/uncompressed
+          // behavior, never blocks the reply). Skipped entirely on
+          // "quality"/"coding" profiles, which have the context headroom
+          // to not need either pass.
+          if (modelManagement.getActiveProfile() === "fast") {
+            mergedToolPolicy.tools = await filterRelevantTools({
+              tools: mergedToolPolicy.tools,
+              queryText: promptText,
+              runLocalReply: runLocalLlamaReply,
+            });
+            mergedToolPolicy = wrapWithResultDigest(mergedToolPolicy, {
+              runLocalReply: runLocalLlamaReply,
+            });
+          }
           // Issue #188: applied last so it catches every tool call from
           // every source (local read_file, browser-automation, MCP) in one
           // shared audit/trace log.
@@ -3846,6 +3864,7 @@ function registerRoutes(app, upload, deps = {}) {
               maxTokens: LLAMA_MAX_TOKENS,
               profile: normalizedModelProfile,
               overrideSystemPrompt: selectedSystemPrompt,
+              extraMessages: memoryExtraMessages,
             },
           );
           if (toolResult.content && toolResult.content.trim()) {
@@ -3893,6 +3912,7 @@ function registerRoutes(app, upload, deps = {}) {
         LLAMA_MAX_TOKENS,
         normalizedModelProfile,
         selectedSystemPrompt,
+        memoryExtraMessages,
       );
     }
 
@@ -3916,7 +3936,7 @@ function registerRoutes(app, upload, deps = {}) {
             n,
             maxTokens: LLAMA_MAX_TOKENS,
             profile: normalizedModelProfile,
-            overrideSystemPrompt: selectedSystemPrompt,
+            overrideSystemPrompt: selectedSystemPrompt + flatMemorySuffix,
           });
           if (result.content && result.content.trim()) {
             // Issue #159: rather than trusting the judge's pick blindly,
