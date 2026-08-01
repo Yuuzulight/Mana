@@ -159,24 +159,141 @@ real architectural choice, but *either* answer reuses
 `triggerIdleConsolidation`'s existing batch-of-independent-passes pattern
 for what actually runs once triggered.
 
+## Round 2: deeper technical scoping
+
+The round-1 pass above narrowed both pieces to concrete, codebase-grounded
+questions but stopped short of an actual design. This round answers those
+questions directly -- piece 1 needed no product decision to go deeper;
+piece 2 needed one, and got it: **track both** Mana's own inferred state
+and a read on the user's affect, as two separate values, rather than
+conflating them into one vector.
+
+### Piece 1: Hebbian graph -- storage, schema, and wiring
+
+**Storage: SQLite, not a JSON file.** Round 1 already established
+`recordEntityMentions()`'s full-file read-modify-write as the write-
+amplification risk to avoid. A graph's edges get reinforced far more often
+per turn than `entity-index.json`'s per-entity mention lists do (every
+pairwise combination of a turn's entities, not one append per entity), so
+JSON's full-rewrite cost is a *worse* fit here than it already is for that
+file. `session-search-index.js` already established the precedent for
+reaching for `better-sqlite3` (not a new dependency) when data needs
+frequent, indexed, atomic updates rather than whole-file rewrites --
+reused here, not a new pattern.
+
+```sql
+CREATE TABLE memory_graph_edges (
+  node_a TEXT NOT NULL,
+  node_b TEXT NOT NULL,
+  weight REAL NOT NULL DEFAULT 1.0,
+  last_reinforced_at TEXT NOT NULL,
+  PRIMARY KEY (node_a, node_b)
+);
+CREATE INDEX idx_memory_graph_edges_node_a ON memory_graph_edges(node_a);
+CREATE INDEX idx_memory_graph_edges_node_b ON memory_graph_edges(node_b);
+```
+
+`node_a`/`node_b` are the same lowercased entity keys `entity-index.json`
+already uses (`entity.toLowerCase()`), with `node_a < node_b` enforced at
+write time so each unordered pair has exactly one row. Reinforcement is one
+atomic upsert (`INSERT ... ON CONFLICT(node_a, node_b) DO UPDATE SET
+weight = weight + 1, last_reinforced_at = ?`) -- no read-then-write race,
+unlike `entity-index.json`'s load-whole-file-then-save pattern.
+
+**What counts as co-occurrence, and where it's computed:** the entities
+`extractEntities()` already pulls from a turn's text for
+`recordEntityMentions()` -- every pairwise combination among that same
+list reinforces an edge, computed in the same call, not a second
+extraction pass. Zero new NLP.
+
+**Caps:** `maxEdges` (e.g. 5000 -- an order of magnitude above `maxFacts`'s
+500 since edges are pairs, not single facts), pruned periodically (see the
+trigger-reuse note below) by deleting the lowest-weight rows past the cap.
+`maxDegree` per node (e.g. 50) stops one hub entity (Mana herself, likely
+mentioned in nearly every turn) from accumulating an edge to everything --
+reinforcing a pair where one side is already at `maxDegree` evicts that
+node's own weakest existing edge first rather than growing further.
+
+**Batching:** never synchronous inside `appendTurn()`'s hot path. Precedent
+already in this file: `appendTurn()`'s embedding indexing (issue #263)
+fires-and-forgets via an unawaited async call. Same pattern for edge
+reinforcement -- WAL mode (already enabled by `session-search-index.js`)
+makes a single-row upsert cheap enough that "batching" mainly means
+"off the critical path," not a separate flush queue.
+
+**Module boundary:** a new sibling module, `memory-graph.js`, mirroring
+`session-search-index.js`'s shape (`createMemoryGraph({dbPath})` returning
+`{reinforce(entities), getNeighbors(nodeKey, {minWeight, limit}), close}`),
+optionally injected into `acp-memory-store.js`'s `appendTurn()` exactly
+like `sessionSearchIndex`/`computeEmbeddingsFn` already are.
+
+**Retrieval wiring, made concrete:** after `session-search-index.js`'s
+`search()` returns its top-K keyword+vector hits, extract entities from
+those hit texts (same `extractEntities()` call), look up 1-hop neighbors
+above a weight threshold via `getNeighbors()`, and any neighbor with
+mentions in `entity-index.json` becomes a candidate result tagged
+`matchType: "associative"` -- appended to the merged list, subject to the
+same diversity-dedup `mergeResults()` already applies to keyword/semantic
+hits. `session-search-index.js` itself stays unchanged; the composition
+happens one layer up, at whatever currently calls `search()`.
+
+### Piece 2: emotional-state tracking -- two separate values
+
+**A. `userAffectState`** (per-user, cross-session, decaying): inputs reuse
+`windows-launcher/renderer/reply-emotion.js`'s existing
+`detectTextMood()`/keyword-detection logic, ported server-side (it's
+currently renderer-only, so this needs extraction into a shared module,
+not a rewrite) and run against the *user's* message text each turn instead
+of Mana's reply. Each turn: apply exponential decay based on elapsed time
+since `lastUpdatedAt`, then nudge the relevant score if a mood was
+detected. Storage: a new persistent JSON file (`emotional-state.json`,
+sibling to `facts.json`), matching this codebase's flat-file convention for
+small state that updates at most once per turn -- unlike the graph's
+edge-churn case above, JSON's full-rewrite cost is fine here.
+
+**B. `manaSelfState`** (Mana's own inferred state, cross-session, decaying):
+cheapest-first inputs, no new LLM call required by default:
+- **Gap since last real conversation** -- `now - session.updatedAt` for the
+  most recent session (`acp-memory-store.js` already stores `updatedAt`
+  per session) is a free, direct signal for something like "loneliness."
+- **Recent reply repetitiveness** -- `rut-detection.js`'s
+  `similarityAgainstRecent()` (issue #159) already computes a 0-1 n-gram
+  similarity score per reply; a sustained high score is a free,
+  already-computed proxy for "stuck in a rut" / low novelty.
+- **Optional heavier alternative:** an idle-triggered LLM self-assessment
+  call, same pattern as Guardian pre-check's judge call (issue #284) --
+  more expensive (one more model round-trip per idle cycle), more
+  flexible, and should stay opt-in/env-gated the same way Guardian
+  pre-check and the content scan already are, not the default.
+
+Storage: same `emotional-state.json` file, a second top-level key.
+
+**Trigger wiring, corrected:** round 1 said the idle-report handler was
+*the* existing trigger mechanism. Reading further, `server.js` already
+runs two independent `setInterval` timers unrelated to idle-report -- a
+background-memory compactor tick (`server.js:1420-1433`) and an hourly
+reviewer tick (`server.js:1435-1450`), both gated by the same
+`backgroundJobsPausedForGaming()` check. These are a better fit for the
+decay+threshold check than the idle-report handler alone: "has it been N
+hours since we last talked" needs to be checkable on a clock tick even
+while the user is present-but-not-yet-idle, or while the launcher (and
+therefore the only source of idle-reports) isn't even running. Recommend a
+third interval -- or folding the check into the existing hourly reviewer
+tick -- that applies decay, checks both states' thresholds, and fires
+reflex passes, reusing `triggerIdleConsolidation`'s established
+"independent try/catch-wrapped passes" composition pattern for what
+actually runs once a threshold trips.
+
 ## Recommendation
 
-Both pieces are still genuinely investigate-only, not ready to scope into
-an implementation task in the same pass as this doc -- consistent with the
-issue's own framing. The concrete blockers, in priority order:
-
-1. **Piece 2 needs a source-of-truth decision first**: what specifically
-   produces Mana's emotional-state score, and whether it models her state
-   or the user's. Nothing in this pass can resolve that without a product
-   decision.
-2. **Piece 1's edge-storage design** (batched, capped writes, chosen
-   independently of piece 2) is more mechanical and could reasonably be
-   scoped into its own implementation doc without waiting on piece 2 --
-   the issue's own note that the two pieces "could end up being separately
-   scoped" looks right after this investigation, not just a hedge.
+Both pieces now have a concrete enough design (schema, cap strategy,
+trigger wiring, module boundaries) to be handed to a real implementation
+pass as two separate issues -- consistent with the issue's own "could end
+up being separately scoped" note. Still no code written in this pass;
+that's a deliberate stop before implementation, not a remaining blocker.
 
 ## Out of scope for this doc
 
-No code changes. No decision made on the open questions above -- this doc
-narrows them to concrete, codebase-grounded choices rather than resolving
-them, per the issue's own "not scheduled" framing.
+No code changes. Round 2 resolved the piece-2 product question (track both
+values, per an explicit decision) and went deep enough on piece 1 to reach
+an implementable design, but neither piece has been built.
