@@ -207,6 +207,83 @@ test("spawns llama-server once and reuses it for subsequent replies", async () =
   assert.equal(runtime.getStatus().running, true);
 });
 
+// Issue #282: extraMessages splices memory entries into the messages array
+// at either end -- "early" right after the persona system message, "late"
+// right before the live user message.
+test("runLocalAssistantReply splices extraMessages.early/late around the system/user pair", async () => {
+  let capturedMessages = null;
+  let serverUp = false;
+  const fakeFetch = async (url, init) => {
+    if (String(url).endsWith("/health")) return { ok: serverUp };
+    if (String(url).endsWith("/v1/chat/completions")) {
+      capturedMessages = JSON.parse(init.body).messages;
+      return {
+        ok: true,
+        json: async () => ({ choices: [{ message: { content: "ok" } }] }),
+      };
+    }
+    return { ok: false, status: 404, text: async () => "not found" };
+  };
+
+  const runtime = createLlamaServerRuntime({
+    env: makeFakeEnv(),
+    fs: makeFakeFs(),
+    fetch: fakeFetch,
+    spawn: () => {
+      serverUp = true;
+      return makeFakeChild();
+    },
+    sleep: async () => {},
+    registerExitHandlers: false,
+  });
+
+  await runtime.runLocalAssistantReply("hello", 64, "default", null, {
+    early: [{ role: "system", content: "early note" }],
+    late: [{ role: "system", content: "late note" }],
+  });
+
+  assert.equal(capturedMessages.length, 4);
+  assert.equal(capturedMessages[0].role, "system");
+  assert.deepEqual(capturedMessages[1], { role: "system", content: "early note" });
+  assert.deepEqual(capturedMessages[2], { role: "system", content: "late note" });
+  assert.deepEqual(capturedMessages[3], { role: "user", content: "hello" });
+});
+
+test("runLocalAssistantReply keeps the plain 2-message shape when extraMessages is omitted", async () => {
+  let capturedMessages = null;
+  let serverUp = false;
+  const fakeFetch = async (url, init) => {
+    if (String(url).endsWith("/health")) return { ok: serverUp };
+    if (String(url).endsWith("/v1/chat/completions")) {
+      capturedMessages = JSON.parse(init.body).messages;
+      return {
+        ok: true,
+        json: async () => ({ choices: [{ message: { content: "ok" } }] }),
+      };
+    }
+    return { ok: false, status: 404, text: async () => "not found" };
+  };
+
+  const runtime = createLlamaServerRuntime({
+    env: makeFakeEnv(),
+    fs: makeFakeFs(),
+    fetch: fakeFetch,
+    spawn: () => {
+      serverUp = true;
+      return makeFakeChild();
+    },
+    sleep: async () => {},
+    registerExitHandlers: false,
+  });
+
+  await runtime.runLocalAssistantReply("hello", 64, "default");
+
+  assert.equal(capturedMessages.length, 2);
+  assert.equal(capturedMessages[0].role, "system");
+  assert.equal(capturedMessages[1], capturedMessages[capturedMessages.length - 1]);
+  assert.equal(capturedMessages[1].content, "hello");
+});
+
 test("proxyChatCompletion forwards the request body untouched and returns the raw response", async () => {
   const spawnCalls = [];
   let serverUp = false;
@@ -750,6 +827,48 @@ test("runToolAwareReply skips the tool round entirely when the model doesn't req
   assert.equal(result.content, "2 + 2 is 4.");
   assert.equal(callCount, 1, "no follow-up round when there's nothing to execute");
   assert.deepEqual(result.toolCalls, []);
+});
+
+// Issue #282: same early/late splicing as runLocalAssistantReply, applies
+// to the initial messages array before any tool-calling rounds run.
+test("runToolAwareReply splices options.extraMessages.early/late into the initial messages array", async () => {
+  let serverUp = false;
+  let capturedMessages = null;
+  const fakeFetch = async (url, init) => {
+    if (String(url).endsWith("/health")) return { ok: serverUp };
+    if (String(url).endsWith("/v1/chat/completions")) {
+      capturedMessages = JSON.parse(init.body).messages;
+      return {
+        ok: true,
+        json: async () => ({ choices: [{ message: { content: "answer" } }] }),
+      };
+    }
+    return { ok: false, status: 404, text: async () => "not found" };
+  };
+
+  const runtime = createLlamaServerRuntime({
+    env: makeFakeEnv(),
+    fs: makeFakeFs(),
+    fetch: fakeFetch,
+    spawn: () => {
+      serverUp = true;
+      return makeFakeChild();
+    },
+    sleep: async () => {},
+    registerExitHandlers: false,
+  });
+
+  await runtime.runToolAwareReply("what is 2+2?", makeFakePolicy(), {
+    extraMessages: {
+      early: [{ role: "system", content: "early note" }],
+      late: [{ role: "system", content: "late note" }],
+    },
+  });
+
+  assert.equal(capturedMessages.length, 4);
+  assert.deepEqual(capturedMessages[1], { role: "system", content: "early note" });
+  assert.deepEqual(capturedMessages[2], { role: "system", content: "late note" });
+  assert.equal(capturedMessages[3].role, "user");
 });
 
 test("runToolAwareReply rejects an unknown tool call name via the policy rather than guessing", async () => {

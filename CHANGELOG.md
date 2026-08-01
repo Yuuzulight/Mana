@@ -12,6 +12,24 @@ accounting.
 ## [Unreleased]
 
 ### Added
+- **Positionable memory injection** (issue #282): the session summary,
+  recent-turn history, and cross-session related facts that used to get
+  flattened into one block of system-prompt text now become their own
+  system-role chat messages, each independently placed "early" (right after
+  the persona system message) or "late" (right before the live user
+  message -- SillyTavern's high-salience "depth 0" equivalent). `llama-server`
+  already speaks a standard OpenAI-compatible `messages` array over
+  `/v1/chat/completions`; only the application code that built exactly two
+  messages (`system`, `user`) needed to change --
+  `ai/llama-server-runtime.js`'s `runLocalAssistantReply`/`runToolAwareReply`
+  take a new optional `extraMessages: {early, late}` param, falling back to
+  the old 2-message shape when omitted. `acp-memory-store.js` gains
+  `buildPromptMemoryEntries`/`getRelatedFactsEntries` -- structured-entry
+  siblings of the existing `buildPromptMemory`/`getRelatedFacts`, built on
+  shared internal helpers so neither existing string-returning function (or
+  its ~15 existing test assertions) changed. Paths that only take a flat
+  system-prompt string (the OpenAI proxy, Best-of-N) still get memory via
+  the old flattened text, so they don't lose context.
 - **Tool-catalogue pre-filter + result digest, gated to the "fast" profile**
   (issue #281): on the small/"fast" model profile only, a large tool
   catalogue gets pre-filtered to what's plausibly relevant to the current

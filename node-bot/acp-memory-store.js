@@ -332,18 +332,15 @@ function createAcpMemoryStore(options = {}) {
   // the index appendTurn() already maintains; explicit facts match by
   // direct key substring rather than the Title-Case entity heuristic,
   // since a fact's key ("the user's GPU") isn't necessarily Title Case.
-  function getRelatedFacts(text, options = {}) {
+  // Shared by getRelatedFacts (string, unchanged) and getRelatedFactsEntries
+  // (issue #282, structured) -- gathers the same two raw blocks either
+  // caller then formats/caps its own way.
+  function gatherRelatedFactsBlocks(text, options = {}) {
     const excludeSessionId = options.excludeSessionId;
     const maxEntities = Math.max(
       1,
       Number(
         options.maxEntities || process.env.MANA_RELATED_FACTS_MAX_ENTITIES || 3,
-      ),
-    );
-    const maxChars = Math.max(
-      50,
-      Number(
-        options.maxChars || process.env.MANA_RELATED_FACTS_MAX_CHARS || 300,
       ),
     );
 
@@ -369,17 +366,74 @@ function createAcpMemoryStore(options = {}) {
       factLines.push(`- ${fact.key}: ${fact.text}`);
     }
 
-    const blocks = [];
-    if (mentionLines.length) {
-      blocks.push(`Related from other sessions:\n${mentionLines.join("\n")}`);
-    }
-    if (factLines.length) {
-      blocks.push(`Remembered:\n${factLines.join("\n")}`);
-    }
+    return {
+      mentionsBlock: mentionLines.length
+        ? `Related from other sessions:\n${mentionLines.join("\n")}`
+        : "",
+      factsBlock: factLines.length ? `Remembered:\n${factLines.join("\n")}` : "",
+    };
+  }
+
+  function getRelatedFacts(text, options = {}) {
+    const maxChars = Math.max(
+      50,
+      Number(
+        options.maxChars || process.env.MANA_RELATED_FACTS_MAX_CHARS || 300,
+      ),
+    );
+    const { mentionsBlock, factsBlock } = gatherRelatedFactsBlocks(text, options);
+    const blocks = [mentionsBlock, factsBlock].filter(Boolean);
     if (!blocks.length) return "";
 
     const block = blocks.join("\n\n");
     return block.length > maxChars ? block.slice(0, maxChars).trim() : block;
+  }
+
+  // Issue #282: structured form of getRelatedFacts -- mentions and facts as
+  // two independently-positionable entries instead of one joined string, so
+  // a caller building a real chat-message array can place each as its own
+  // system-role message wherever it wants (e.g. close to the live user
+  // turn, matching SillyTavern's "depth" concept) rather than always
+  // gluing them into one block. Each entry is capped at maxChars on its
+  // own -- unlike getRelatedFacts' shared combined cap -- since the two are
+  // now independent messages, not one joined block.
+  //
+  // options.mentionsPosition / options.factsPosition: "early" (right after
+  // the persona/system prompt) or "late" (right before the live user
+  // message, the higher-salience position). Both default to "late" --
+  // cross-session mentions and remembered facts are specifically relevant
+  // to what's being asked *right now*, so they read better close to the
+  // live message than buried near the persona definition.
+  function getRelatedFactsEntries(text, options = {}) {
+    const maxChars = Math.max(
+      50,
+      Number(
+        options.maxChars || process.env.MANA_RELATED_FACTS_MAX_CHARS || 300,
+      ),
+    );
+    const mentionsPosition = options.mentionsPosition === "early" ? "early" : "late";
+    const factsPosition = options.factsPosition === "early" ? "early" : "late";
+    const { mentionsBlock, factsBlock } = gatherRelatedFactsBlocks(text, options);
+
+    const entries = [];
+    if (mentionsBlock) {
+      entries.push({
+        role: "system",
+        position: mentionsPosition,
+        content:
+          mentionsBlock.length > maxChars
+            ? mentionsBlock.slice(0, maxChars).trim()
+            : mentionsBlock,
+      });
+    }
+    if (factsBlock) {
+      entries.push({
+        role: "system",
+        position: factsPosition,
+        content: factsBlock.length > maxChars ? factsBlock.slice(0, maxChars).trim() : factsBlock,
+      });
+    }
+    return { entries };
   }
 
   function getSession(sessionId) {
@@ -660,35 +714,12 @@ function createAcpMemoryStore(options = {}) {
     return saved;
   }
 
-  function buildPromptMemory(sessionId) {
-    const session = getSession(sessionId);
-    if (!session || (!session.summary && !session.turns.length)) {
-      return "";
-    }
-
-    const recentTurns = session.turns
-      .slice(-Math.min(5, maxRecentTurns))
-      .map((turn) =>
-        [
-          `User: ${turn.user}`,
-          turn.assistant ? `Assistant: ${turn.assistant}` : "",
-        ]
-          .filter(Boolean)
-          .join("\n"),
-      );
-
-    // Build token-bounded block: iterate parts and stop when tokenEstimator exceeds maxPromptTokens
-    const parts = [];
-    parts.push("Conversation memory:");
-    if (session.summary) parts.push(session.summary);
-    if (recentTurns.length) {
-      parts.push("");
-      parts.push("Recent turns:");
-      for (const rt of recentTurns) {
-        parts.push(rt);
-      }
-    }
-
+  // Shared by buildPromptMemory (string, unchanged) and
+  // buildPromptMemoryEntries (issue #282, structured) -- iterates parts and
+  // stops once tokenEstimator says the accumulated text would exceed
+  // maxPromptTokens, truncating the first part by chars if even it alone
+  // doesn't fit.
+  function selectPartsWithinTokenBudget(parts) {
     const selected = [];
     let accText = "";
     for (let i = 0; i < parts.length; i++) {
@@ -725,8 +756,74 @@ function createAcpMemoryStore(options = {}) {
       accText = newText;
     }
 
-    const block = selected.join("\n").trim();
-    return block;
+    return selected.join("\n").trim();
+  }
+
+  function recentTurnStrings(session) {
+    return session.turns
+      .slice(-Math.min(5, maxRecentTurns))
+      .map((turn) =>
+        [
+          `User: ${turn.user}`,
+          turn.assistant ? `Assistant: ${turn.assistant}` : "",
+        ]
+          .filter(Boolean)
+          .join("\n"),
+      );
+  }
+
+  function buildPromptMemory(sessionId) {
+    const session = getSession(sessionId);
+    if (!session || (!session.summary && !session.turns.length)) {
+      return "";
+    }
+
+    const recentTurns = recentTurnStrings(session);
+
+    const parts = [];
+    parts.push("Conversation memory:");
+    if (session.summary) parts.push(session.summary);
+    if (recentTurns.length) {
+      parts.push("");
+      parts.push("Recent turns:");
+      for (const rt of recentTurns) {
+        parts.push(rt);
+      }
+    }
+
+    return selectPartsWithinTokenBudget(parts);
+  }
+
+  // Issue #282: structured form of buildPromptMemory -- the summary and the
+  // recent-turns block as two independently-positionable entries instead of
+  // one joined string. Defaults: summary "early" (durable background,
+  // belongs near the persona definition), recent turns "late" (right
+  // before the live user message -- SillyTavern's high-salience "depth 0"
+  // equivalent, since what was *just* discussed is most relevant to what's
+  // being asked now). Each entry is token-bounded independently with the
+  // same budget buildPromptMemory applies to the combined block.
+  function buildPromptMemoryEntries(sessionId, options = {}) {
+    const session = getSession(sessionId);
+    if (!session || (!session.summary && !session.turns.length)) {
+      return { entries: [] };
+    }
+
+    const summaryPosition = options.summaryPosition === "late" ? "late" : "early";
+    const recentTurnsPosition = options.recentTurnsPosition === "early" ? "early" : "late";
+
+    const entries = [];
+    if (session.summary) {
+      const content = selectPartsWithinTokenBudget(["Conversation memory:", session.summary]);
+      if (content) entries.push({ role: "system", position: summaryPosition, content });
+    }
+
+    const recentTurns = recentTurnStrings(session);
+    if (recentTurns.length) {
+      const content = selectPartsWithinTokenBudget(["Recent turns:", ...recentTurns]);
+      if (content) entries.push({ role: "system", position: recentTurnsPosition, content });
+    }
+
+    return { entries };
   }
 
   // Full-text (+ semantic, when computeEmbeddingsFn is wired -- issue #263
@@ -753,6 +850,7 @@ function createAcpMemoryStore(options = {}) {
     ensureSession,
     appendTurn,
     buildPromptMemory,
+    buildPromptMemoryEntries,
     getSession,
     getSessionTurnsPage,
     listSessions,
@@ -760,6 +858,7 @@ function createAcpMemoryStore(options = {}) {
     deleteSession,
     lookupEntity,
     getRelatedFacts,
+    getRelatedFactsEntries,
     rememberFact,
     listFactKeys,
     searchSessions,
