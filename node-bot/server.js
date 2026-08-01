@@ -121,6 +121,7 @@ const { readGgufMetadata } = require("./tools/gguf-metadata");
 const { createTtsRuntime } = require("./tts-runtime");
 const { createAcpMemoryStore } = require("./acp-memory-store");
 const { createSessionSearchIndex } = require("./session-search-index");
+const { createMemoryGraph } = require("./memory-graph");
 const { createSkillProposalRunner } = require("./skill-proposal");
 const persona = require("./persona");
 const { createPresetsStore } = require("./presets-store");
@@ -446,9 +447,18 @@ const ttsRuntime = createTtsRuntime({
 // (acp-memory-store.js's own per-session JSON files still are).
 const sessionSearchIndex = createSessionSearchIndex();
 
+// Issue #295 (round-2 scoping of #285): a Hebbian associative graph over
+// entity keys, reinforced on every appendTurn() and consulted as a second
+// pass after searchSessions()'s hybrid keyword/semantic results. Always on
+// (not opt-in like hybrid vector search) -- reinforcement is a cheap local
+// SQLite upsert with no model call, and every consumer of it degrades
+// gracefully to today's behavior on any failure.
+const memoryGraph = createMemoryGraph();
+
 // ACP memory store (conversation/session memory)
 const acpMemoryStore = createAcpMemoryStore({
   sessionSearchIndex,
+  memoryGraph,
   // Issue #263 part 1: same computeEmbeddings the coding-mode/Deep Research
   // file retriever already uses (tools/retriever-index.js) -- off by
   // default (USE_EMBEDDINGS env var), so hybrid session search is a pure

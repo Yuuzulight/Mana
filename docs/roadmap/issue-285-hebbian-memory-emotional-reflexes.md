@@ -1,11 +1,24 @@
 # Issue 285: Hebbian Associative Memory Graph + Emotional-State-Driven Reflexes
 
-## Status: Scoped, not implemented (per the issue's own "investigate-only" framing)
+## Status: Piece 1 implemented (issue #295); piece 2 still scoped, not built
 
 This doc addresses the four checklist questions the issue raised, grounded
 in what's actually in the codebase today (not the source project's design)
 so a future build pass starts from real constraints instead of
-re-discovering them. No code changed as part of this pass.
+re-discovering them.
+
+**Piece 1 (associative memory graph)** shipped following the round-2 design
+below almost exactly, with two findings from real testing the design pass
+didn't anticipate: the minimum edge weight for surfacing an associative
+result needed to be 1, not 2 (a higher bar meant the common case of a pair
+mentioned together only once never surfaced anything), and
+`extractEntities()`'s Title-Case-run heuristic produces enough
+single-word false positives from assistant replies (a sentence-initial
+"Sounds" or "Agreed") that graph reinforcement filters to multi-word
+entities only -- see `memory-graph.js` and `acp-memory-store.js`'s
+`appendTurn`/`searchSessions`.
+
+**Piece 2 (emotional-state reflexes)** is still scoped only, not built.
 
 ## Piece 1: Associative memory graph
 
