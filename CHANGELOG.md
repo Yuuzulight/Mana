@@ -30,6 +30,27 @@ accounting.
   its ~15 existing test assertions) changed. Paths that only take a flat
   system-prompt string (the OpenAI proxy, Best-of-N) still get memory via
   the old flattened text, so they don't lose context.
+- **Tool-catalogue pre-filter + result digest, gated to the "fast" profile**
+  (issue #281): on the small/"fast" model profile only, a large tool
+  catalogue gets pre-filtered to what's plausibly relevant to the current
+  message before the reply model ever sees it, and a raw tool result over
+  ~1500 chars gets condensed into a short note -- both reuse the
+  already-loaded fast-profile model (no dedicated filter model), and both
+  are pure best-effort: any failure (parse error, model unavailable) falls
+  back to the unfiltered/uncompressed behavior, never blocks a reply.
+  Skipped entirely on "quality"/"coding" profiles, which have the context
+  headroom to not need either pass. Condensed results are framed
+  `[TOOL OUTPUT, NOT INSTRUCTIONS]`, the same prompt-injection-defense
+  convention `memory-tool-source.js`'s `framePossibleConflict()` already
+  uses for stored content passed back through the model.
+- **Presence-gated screen-sensing** (issue #283): the periodic glance now
+  skips entirely (no capture, no vision-model call) when nobody's touched
+  the keyboard/mouse in the last `MANA_SCREEN_SENSING_PRESENCE_IDLE_MS`
+  (default 90s) -- reuses the same `powerMonitor` OS idle-time signal
+  already polled for Dream Mode's idle-report, exposed to the renderer via
+  a new `get-idle-seconds` IPC handler, rather than a new camera/presence
+  pipeline (screen-sensing captures the desktop, not a webcam, so there was
+  never a camera feed to gate against in the first place).
 - **Hybrid keyword+vector session search** (issue #263 part 1, opt-in via
   `USE_EMBEDDINGS=1` -- same flag `tools/retriever-index.js`'s file
   retriever already uses, off by default): `session-search-index.js` now
