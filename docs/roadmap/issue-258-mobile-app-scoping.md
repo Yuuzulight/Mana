@@ -1,6 +1,12 @@
 # Issue 258: Mobile app -- scoping notes (not scheduled)
 
-## Status: Scoped from Project AIRI's mobile investigation, not started
+## Status: Open questions decided, still not started
+
+The four open questions below (engine, backend connectivity, platform
+priority, feature scope) now have decisions behind them -- see "Decisions"
+further down. This still isn't a commitment to build the app; it means a
+future build session has a concrete spec to start from instead of a menu of
+options to argue over first.
 
 Mana's native desktop presence is two Electron apps (`windows-launcher`,
 `desktop-client`) plus a local Node backend (`node-bot`) -- there is no
@@ -66,10 +72,10 @@ avatar; a thin transparent web overlay (reusing all of Mana's existing
 HTML/CSS/JS) handles everything else. This is a genuine architecture
 decision, not a WebGL optimization pass.
 
-## What this means for Mana specifically, if picked up later
+## What this means for Mana specifically
 
-Open questions, not answers -- these need a real decision session, not a
-guess baked into this document:
+Background for each call, kept for context even though these are now
+decided:
 
 - **Engine choice**: Godot (free, open-source, matches AIRI's own choice
   and their published Android/iOS overlay code) is the most-derisked
@@ -87,24 +93,43 @@ guess baked into this document:
   rate-limited unlock, `mobile-device-store.js`'s per-device pairing, and
   the Cloudflare Tunnel path in `docs/mobile_pwa_cloudflare.md`. A native
   avatar-rendering app would almost certainly reuse this auth/tunnel layer
-  rather than build its own -- the open question narrows to "reuse this
-  directly, or does a native (non-WebView) client need its own transport
-  layer instead of hitting the same HTTP routes." Option (b) (on-device
-  inference, no discrete GPU) remains a much bigger, genuinely separate
-  question, unaffected by this.
+  rather than build its own. Option (b) (on-device inference, no discrete
+  GPU) remains a much bigger, genuinely separate question, unaffected by
+  this.
 - **Platform priority**: AIRI's writeup shows Android as the easier path
   (no official plugin needed, direct `Activity` access) and iOS as
   meaningfully harder (custom Godot plugin, Objective-C/Swift bridge).
-  Worth deciding whether iOS support is in scope at all before starting,
-  since the two platforms don't share an implementation path the way a
-  pure web/Capacitor app would.
-- **What "the avatar" needs to do on phone**: probably a reduced feature
-  set initially (idle + talking + basic expressions) rather than parity
-  with the desktop avatar's full state machine, given screen space and
-  battery constraints are both much tighter.
+- **What "the avatar" needs to do on phone**: screen space and battery
+  constraints are both much tighter than desktop.
+
+## Decisions
+
+Resolved in a scoping conversation, not baked in speculatively:
+
+1. **Engine: Godot.** Follows directly from it being the only option with
+   a published, working reference implementation (AIRI's own
+   Android/iOS overlay code) to study instead of prototyping the
+   engine-hosts-a-transparent-WebView trick from scratch.
+2. **Backend connectivity: reuse the existing mobile PWA's auth/tunnel
+   layer directly**, not a separate transport. The native avatar shell
+   talks to `node-bot` the same way the PWA already does --
+   `mobile-routes.js`'s passcode auth, `mobile-device-store.js`'s
+   per-device pairing, Cloudflare Tunnel for remote access. No new backend
+   surface to build or secure.
+3. **Platform priority: Android first.** Matches AIRI's own finding that
+   Android needs no official plugin (direct `Activity`/`FrameLayout`
+   access) while iOS requires writing a custom Godot plugin with an
+   Objective-C/Swift bridge -- meaningfully more work before anything
+   renders. iOS stays a possible follow-up, not committed to.
+4. **Feature scope: reduced set for the first build** -- idle, talking,
+   and basic expressions only. Full parity with the desktop avatar's state
+   machine (zoom framing, gaze drift, the full expression set) is
+   explicitly deferred past a first working proof-of-concept.
 
 ## Not a commitment
 
-Nothing here is scheduled, estimated, or scoped into tasks. The value of
-this document is entirely in not having to re-derive "why can't I just put
-the avatar in a WebView" from scratch when this is actually picked up.
+Deciding these four questions removes the "which direction do we even go"
+ambiguity, but nothing here is scheduled, estimated, or broken into tasks.
+The value of this document is in not having to re-derive "why can't I just
+put the avatar in a WebView" -- or re-litigate engine/platform/scope choices
+-- from scratch whenever this is actually picked up.
