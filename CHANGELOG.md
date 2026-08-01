@@ -12,6 +12,26 @@ accounting.
 ## [Unreleased]
 
 ### Added
+- **Hebbian associative memory graph** (issue #295, piece 1 of #285):
+  entities that co-occur in the same turn get an edge in a new SQLite graph
+  (`memory-graph.js`), reinforced on every `appendTurn()` -- `weight`
+  increments via an atomic upsert (`ON CONFLICT ... DO UPDATE`), no
+  read-then-write race like `entity-index.json`'s own mention tracking has.
+  `searchSessions()` now runs a second pass after its existing
+  keyword/semantic hits: entities from those results get one hop of
+  neighbor lookup, and any linked entity with real mentions elsewhere
+  becomes an `matchType: "associative"` result -- surfacing a memory with
+  zero lexical or semantic overlap with the query, the way an unrelated
+  detail can trigger a linked memory by association. Capped by `maxEdges`
+  (lowest-weight eviction) and `maxDegree` per node (stops one hub entity
+  from accumulating an edge to everything), and always additive: any
+  failure anywhere in the graph path falls back to today's keyword/semantic
+  results exactly, reinforcement never blocks a turn append. Graph edges
+  are reinforced from multi-word entities only ("Alice Smith", not a
+  sentence-initial "Sounds" or "Agreed") -- `extractEntities()`'s
+  Title-Case-run heuristic treats either the same, and a lone capitalized
+  word from an assistant reply's opening word is common enough to become
+  real noise once it's shown back as an "associative" result.
 - **Guardian pre-check on the approval gate** (issue #284, off by default via
   `MANA_GUARDIAN_PRECHECK_ENABLED=1`): before a gated action (a skill write,
   a generated script run, ...) lands in the human approval queue, a small

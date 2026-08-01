@@ -186,6 +186,11 @@ function createAcpMemoryStore(options = {}) {
   // (or inject a fake), same pattern as summarizeFn/sessionSearchIndex.
   const computeEmbeddingsFn =
     typeof options.computeEmbeddingsFn === "function" ? options.computeEmbeddingsFn : null;
+  // Optional (issue #295, round-2 scoping of #285): the Hebbian associative
+  // graph over entity keys. Same injection convention as
+  // sessionSearchIndex/computeEmbeddingsFn -- server.js wires the real one
+  // in, tests omit it (or inject a fake).
+  const memoryGraph = options.memoryGraph || null;
 
   ensureDir(sessionsDir);
 
@@ -628,11 +633,26 @@ function createAcpMemoryStore(options = {}) {
       }
     }
 
-    recordEntityMentions(
-      extractEntities(`${turn.user} ${turn.assistant}`),
-      session.sessionId,
-      timestamp,
-    );
+    const turnEntities = extractEntities(`${turn.user} ${turn.assistant}`);
+    recordEntityMentions(turnEntities, session.sessionId, timestamp);
+    // Issue #295: reinforces this turn's co-occurring entity pairs. Never
+    // blocks the turn append -- a graph write failure only means this
+    // turn's associations aren't recorded, not that memory itself broke.
+    // Multi-word entities only ("Alice Smith", not "Sounds") -- extractEntities()
+    // is a naive Title-Case-run heuristic (already documented above as
+    // "not real NER"), and a lone sentence-initial capitalized word (an
+    // assistant reply starting "Sounds great!" or "Agreed, ...") is common
+    // enough to turn into real noise once it becomes a graph edge shown
+    // back as an "associative" result -- entity-index.json's own mention
+    // tracking is untouched by this filter, only graph reinforcement is.
+    if (memoryGraph) {
+      try {
+        const multiWordEntities = turnEntities.filter((e) => e.includes(" "));
+        memoryGraph.reinforce(multiWordEntities);
+      } catch (e) {
+        console.warn("Memory graph reinforcement failed:", e?.message || e);
+      }
+    }
 
     const summaryLine = summarizeTurn(
       turn.user,
@@ -826,6 +846,56 @@ function createAcpMemoryStore(options = {}) {
     return { entries };
   }
 
+  // Issue #295 (round-2 scoping of #285): a second pass chained after the
+  // base keyword/semantic results, not a third parallel signal computed
+  // from the query string -- spreading activation needs a starting point
+  // (an already-activated node) that the query alone doesn't give it. Pulls
+  // entities out of the base hits, walks one hop in the graph, and turns
+  // any neighbor with real mentions in entity-index.json into a candidate
+  // result. Deliberately simple dedup (skip a node already surfaced this
+  // call) rather than reusing session-search-index.js's text-similarity
+  // diversity filter, which isn't exported and isn't needed at this scale.
+  const MAX_ASSOCIATIVE_RESULTS = 5;
+  // 1, not a higher bar -- an edge's weight already starts at 1.0 on its
+  // first reinforcement (see memory-graph.js), and most real co-occurring
+  // pairs in normal usage will only ever be mentioned together once or
+  // twice. Requiring more than that before anything can surface would mean
+  // the common case never shows an associative result at all.
+  const ASSOCIATIVE_MIN_WEIGHT = 1;
+  function associativeResultsFor(baseResults, excludeSessionId) {
+    if (!memoryGraph || !baseResults.length) return [];
+    const seedEntities = new Set();
+    for (const r of baseResults) {
+      for (const e of extractEntities(r.text)) seedEntities.add(e);
+    }
+    const candidates = [];
+    const seenNodes = new Set();
+    for (const entity of seedEntities) {
+      const neighbors = memoryGraph.getNeighbors(entity, {
+        minWeight: ASSOCIATIVE_MIN_WEIGHT,
+        limit: MAX_ASSOCIATIVE_RESULTS,
+      });
+      for (const { node, weight } of neighbors) {
+        if (seenNodes.has(node)) continue;
+        const mentions = lookupEntity(node);
+        if (!mentions.length) continue;
+        const last = mentions[mentions.length - 1];
+        if (excludeSessionId && last.sessionId === excludeSessionId) continue;
+        seenNodes.add(node);
+        candidates.push({
+          sessionId: last.sessionId,
+          role: "associative",
+          text: `${last.display}: associatively linked (mentioned in another session around ${last.at})`,
+          at: last.at,
+          matchType: "associative",
+          weight,
+        });
+      }
+    }
+    candidates.sort((a, b) => b.weight - a.weight);
+    return candidates.slice(0, MAX_ASSOCIATIVE_RESULTS);
+  }
+
   // Full-text (+ semantic, when computeEmbeddingsFn is wired -- issue #263
   // part 1) search across every indexed turn (see sessionSearchIndex
   // above); [] when no index was wired in (tests, or search disabled).
@@ -841,7 +911,17 @@ function createAcpMemoryStore(options = {}) {
         // fine without it.
       }
     }
-    return sessionSearchIndex.search({ ...params, queryEmbedding });
+    const results = sessionSearchIndex.search({ ...params, queryEmbedding });
+    if (!memoryGraph) return results;
+    try {
+      const associative = associativeResultsFor(results, params.sessionId);
+      return associative.length ? [...results, ...associative] : results;
+    } catch (e) {
+      // Associative retrieval is additive -- keyword/semantic results above
+      // still stand on their own if the graph lookup fails.
+      console.warn("Associative memory graph lookup failed:", e?.message || e);
+      return results;
+    }
   }
 
   return {
@@ -862,6 +942,7 @@ function createAcpMemoryStore(options = {}) {
     rememberFact,
     listFactKeys,
     searchSessions,
+    memoryGraph,
   };
 }
 
