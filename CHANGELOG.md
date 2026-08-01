@@ -12,6 +12,14 @@ accounting.
 ## [Unreleased]
 
 ### Added
+- **Presence-gated screen-sensing** (issue #283): the periodic glance now
+  skips entirely (no capture, no vision-model call) when nobody's touched
+  the keyboard/mouse in the last `MANA_SCREEN_SENSING_PRESENCE_IDLE_MS`
+  (default 90s) -- reuses the same `powerMonitor` OS idle-time signal
+  already polled for Dream Mode's idle-report, exposed to the renderer via
+  a new `get-idle-seconds` IPC handler, rather than a new camera/presence
+  pipeline (screen-sensing captures the desktop, not a webcam, so there was
+  never a camera feed to gate against in the first place).
 - **Hybrid keyword+vector session search** (issue #263 part 1, opt-in via
   `USE_EMBEDDINGS=1` -- same flag `tools/retriever-index.js`'s file
   retriever already uses, off by default): `session-search-index.js` now
