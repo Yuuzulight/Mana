@@ -12,6 +12,25 @@ accounting.
 ## [Unreleased]
 
 ### Added
+- **Emotional-state-driven reflexes** (issue #295, piece 2 of #285):
+  `userAffectState` -- a decaying positivity score built from the same
+  emoji/kaomoji/keyword mood signal `reply-emotion.js` already detects for
+  the avatar's expression (ported server-side as `utils/text-mood.js`),
+  just applied to the user's own message text each turn instead of
+  labeling one reply. Decays with a 12h half-life so a single strong
+  reaction doesn't linger forever, persisted in a new
+  `emotional-state.json` sibling to `facts.json`. A decay+threshold check
+  now runs inside the existing hourly background-memory-reviewer timer
+  (not a new interval, and not only the idle-report handler, which never
+  fires at all when the launcher isn't running) -- once the gap since the
+  last real conversation crosses 48h
+  (`MANA_LONELINESS_THRESHOLD_HOURS`), it patches a `journal-loneliness`
+  fact via the already-existing `rememberFact()`, one real reflex rather
+  than a framework of hypothetical ones. `rutScore` (from
+  `rut-detection.js`) and an opt-in LLM self-assessment were both scoped
+  in the design doc but deliberately deferred -- loneliness alone is
+  already a real, working, testable trigger; the other two inputs are
+  future work, not silently dropped.
 - **Hebbian associative memory graph** (issue #295, piece 1 of #285):
   entities that co-occur in the same turn get an edge in a new SQLite graph
   (`memory-graph.js`), reinforced on every `appendTurn()` -- `weight`
