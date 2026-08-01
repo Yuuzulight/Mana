@@ -208,6 +208,18 @@ const BARGE_IN_POLL_MS = 50;
 // that summarizes-and-discards each captured frame.
 const SCREEN_SENSING_ENABLED = process.env.MANA_SCREEN_SENSING_ENABLED === "1";
 const SCREEN_SENSING_INTERVAL_MS = Number(process.env.MANA_SCREEN_SENSING_INTERVAL_MS || 120000);
+// Issue #283: skip a glance entirely when nobody's been at the keyboard/
+// mouse recently, so an empty room doesn't spend a vision-model call for
+// nothing. Reuses powerMonitor's OS-level idle time (same signal Dream
+// Mode's idle-report already polls, see main.js's "get-idle-seconds"
+// handler) rather than a new camera/presence pipeline -- screen-sensing
+// captures the desktop, not a webcam, so there's no camera feed to check
+// presence against in the first place. Short threshold on purpose (default
+// 90s): this just needs "did they step away a moment ago", not Dream
+// Mode's "have they been gone for a while" bar.
+const SCREEN_SENSING_PRESENCE_IDLE_MS = Number(
+  process.env.MANA_SCREEN_SENSING_PRESENCE_IDLE_MS || 90000,
+);
 // Per-session transcription debug logging (docs/speech_recognition_improvement_plan.md):
 // enable with ?speechDebug=1 or localStorage.manaSpeechDebug = "1".
 const SPEECH_DEBUG_ENABLED =
@@ -2111,6 +2123,10 @@ async function runScreenSensingGlance() {
   }
   screenSensingRunning = true;
   try {
+    const idleSeconds = await ipcRenderer.invoke("get-idle-seconds").catch(() => 0);
+    if (idleSeconds * 1000 >= SCREEN_SENSING_PRESENCE_IDLE_MS) {
+      return;
+    }
     const gamingModeActive = await refreshGamingStatus();
     const image = await ipcRenderer.invoke("screen:capture-primary");
     const response = await fetch(`${BACKEND_BASE_URL}/screen-sensing/glance`, {

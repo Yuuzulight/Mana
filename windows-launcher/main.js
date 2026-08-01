@@ -1277,6 +1277,12 @@ ipcMain.on("avatar:set-mouth", (event, rms, centroidHz, viseme) => {
   avatarWindow.webContents.send("avatar:mouth", rms, centroidHz, viseme);
 });
 
+// Issue #283: lets the renderer presence-gate a screen-sensing glance
+// before spending a vision-model call on an empty room -- reuses the same
+// powerMonitor API already polled for Dream Mode's idle-report (issue #69),
+// just exposed to the renderer too instead of being main-process-only.
+ipcMain.handle("get-idle-seconds", async () => powerMonitor.getSystemIdleTime());
+
 ipcMain.handle("screen:capture-primary", async () => {
   const primaryDisplay = screen.getPrimaryDisplay();
   const sources = await desktopCapturer.getSources({
