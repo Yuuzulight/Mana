@@ -12,6 +12,22 @@ accounting.
 ## [Unreleased]
 
 ### Added
+- **Guardian pre-check on the approval gate** (issue #284, off by default via
+  `MANA_GUARDIAN_PRECHECK_ENABLED=1`): before a gated action (a skill write,
+  a generated script run, ...) lands in the human approval queue, a small
+  model judges that *specific* action's risk -- not a fixed allowlist --
+  and auto-clears it only when it confidently judges the action low-risk.
+  Reuses whatever model is already loaded for the "fast" profile
+  (`ai/guardian-precheck.js`'s `judgeActionRisk`), same reasoning as #281's
+  tool-catalogue filter/result digest. Every auto-clearance is written to
+  its own audit log (`approval-gate.js`'s `guardianAuditLog`, built on the
+  existing `tool-call-log.js` JSON-lines format) and readable via
+  `GET /approvals/guardian-audit`, mirroring `/tool-calls/recent`. The
+  deterministic content scan (`contentScanEnabled`) always wins over the
+  model's judgment -- Guardian is skipped entirely once the scan already
+  flagged something -- and any Guardian failure (model unavailable,
+  unclear verdict) falls straight through to the normal pending-queue path,
+  never silently auto-approving.
 - **Hybrid keyword+vector session search** (issue #263 part 1, opt-in via
   `USE_EMBEDDINGS=1` -- same flag `tools/retriever-index.js`'s file
   retriever already uses, off by default): `session-search-index.js` now

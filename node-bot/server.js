@@ -88,6 +88,7 @@ const {
 const { skillsCapability } = require("./capabilities/skills-capability");
 const { createSkillsStore } = require("./skills-store");
 const { createApprovalGate } = require("./approval-gate");
+const { judgeActionRisk } = require("./ai/guardian-precheck");
 const { createRutDetector } = require("./rut-detection");
 const { createPhrasingVariator, rewritePhrase } = require("./phrasing-variation");
 const { approvalGateCapability } = require("./capabilities/approval-gate-capability");
@@ -516,8 +517,15 @@ const skillsStore = createSkillsStore({});
 // Content scanning (flagging a pending request for shell/fs/credential-like
 // patterns) stays off by default -- opt in once the flagged-pending UI is
 // something you actually want surfaced.
+// Issue #284: Guardian pre-check, also off by default -- a small model
+// judges one specific action's risk before it reaches the human queue.
+// Reuses runLocalLlamaReply (already defined above) on the "fast" profile,
+// same reasoning as #281's tool-catalogue filter/result digest.
 const approvalGate = createApprovalGate({
   contentScanEnabled: process.env.MANA_APPROVAL_CONTENT_SCAN_ENABLED === "1",
+  guardianEnabled: process.env.MANA_GUARDIAN_PRECHECK_ENABLED === "1",
+  guardianPreCheck: (actionType, ctx) =>
+    judgeActionRisk({ actionType, ...ctx, runLocalReply: runLocalLlamaReply }),
 });
 
 // Conversational rut detection (issue #159): flags a reply too similar to

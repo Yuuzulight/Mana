@@ -18,6 +18,20 @@ function registerApprovalGateRoutes(app, context = {}) {
     }
   });
 
+  // Issue #284: read-only surface for the Guardian pre-check audit log --
+  // same reasoning as tool-call-log-capability.js's /tool-calls/recent,
+  // "one place to see what got auto-cleared" instead of just a file on
+  // disk nobody looks at.
+  app.get("/approvals/guardian-audit", (req, res) => {
+    try {
+      const limit = Number(req.query?.limit) || undefined;
+      return res.json({ entries: approvalGate.guardianAuditLog.readRecent(limit) });
+    } catch (e) {
+      console.error(e);
+      return res.status(500).json({ error: String(e) });
+    }
+  });
+
   app.post("/approvals/:id/decide", async (req, res) => {
     try {
       const id = requireString(req.params?.id, "id");
