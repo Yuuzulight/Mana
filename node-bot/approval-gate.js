@@ -8,6 +8,7 @@
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
+const { createToolCallLog } = require("./tool-call-log");
 
 const DEFAULT_DATA_DIR = path.join(__dirname, "data", "approval-gate");
 
@@ -47,12 +48,25 @@ function writeJson(filePath, value) {
 // options.dataDir: injectable so tests never write into node-bot's real
 // data directory (same pattern as acp-memory-store.js/cron-scheduler.js).
 // options.contentScanEnabled: off by default, per the issue.
+// options.guardianEnabled/guardianPreCheck (issue #284): off by default,
+// same convention as contentScanEnabled. guardianPreCheck is an injected
+// async (actionType, {summary, payload, scanText}) => {safe, reason} --
+// server.js wires the real model-judged one (ai/guardian-precheck.js),
+// tests inject a fake. options.guardianAuditLog: injectable
+// tool-call-log.js instance so tests never write into the real data dir;
+// defaults to its own file under dataDir.
 function createApprovalGate(options = {}) {
   const dataDir = options.dataDir || DEFAULT_DATA_DIR;
   const alwaysAllowPath = path.join(dataDir, "always-allow.json");
   const now = options.now || (() => new Date().toISOString());
   const makeId = options.makeId || (() => crypto.randomBytes(4).toString("hex"));
   const contentScanEnabled = Boolean(options.contentScanEnabled);
+  const guardianEnabled = Boolean(options.guardianEnabled);
+  const guardianPreCheck =
+    typeof options.guardianPreCheck === "function" ? options.guardianPreCheck : null;
+  const guardianAuditLog =
+    options.guardianAuditLog ||
+    createToolCallLog({ logPath: path.join(dataDir, "guardian-audit.jsonl"), now });
 
   // Executors are registered once per actionType at wiring time (server.js),
   // not stored per-request -- a pending request only needs to remember its
@@ -102,8 +116,42 @@ function createApprovalGate(options = {}) {
       return { status: "approved", actionType, result };
     }
 
-    const id = makeId();
     const flags = contentScanEnabled ? scanContent(scanText ?? JSON.stringify(payload)) : [];
+
+    // Issue #284: Guardian pre-check. Deliberately skipped when the
+    // deterministic content scan already flagged something -- that scan
+    // exists specifically to catch shell-exec/filesystem-write/credential
+    // patterns, and a model's own risk judgment shouldn't be able to
+    // override a hit on those. Any Guardian failure (exception, unclear
+    // verdict) falls straight through to the normal pending path below.
+    if (guardianEnabled && guardianPreCheck && !flags.length) {
+      let verdict = null;
+      try {
+        verdict = await guardianPreCheck(actionType, { summary, payload, scanText });
+      } catch (e) {
+        // fall through to the human queue -- a Guardian failure must never
+        // block the request or silently auto-approve it
+        verdict = null;
+      }
+      if (verdict && verdict.safe) {
+        // Not caught here, deliberately -- if the executor itself throws,
+        // that's a real failure that should propagate exactly like it
+        // already does on the isAlwaysAllowed path above, rather than
+        // silently falling to the pending queue and risking the executor
+        // running a second time once a human later approves it.
+        const result = await runExecutor(actionType, payload);
+        guardianAuditLog.append({
+          name: actionType,
+          args: payload,
+          ok: true,
+          guardianCleared: true,
+          summary: summary || "",
+        });
+        return { status: "approved", actionType, result, guardianCleared: true };
+      }
+    }
+
+    const id = makeId();
     pending.set(id, { id, actionType, summary: summary || "", payload, flags, createdAt: now() });
     return { status: "pending", requestId: id, summary: summary || "", flags };
   }
@@ -142,6 +190,7 @@ function createApprovalGate(options = {}) {
     listPending,
     decide,
     isAlwaysAllowed,
+    guardianAuditLog,
   };
 }
 

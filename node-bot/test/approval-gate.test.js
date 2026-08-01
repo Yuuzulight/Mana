@@ -132,6 +132,126 @@ test("content scan is off by default and only flags when explicitly enabled", as
   assert.ok(outcomeB.flags.includes("credential-like-string"));
 });
 
+// Issue #284: Guardian pre-check -- a small model judges one specific
+// action's risk before it reaches the human queue.
+test("guardian pre-check auto-approves when the injected judge says safe, and logs it", async () => {
+  let callCount = 0;
+  const gate = createApprovalGate({
+    dataDir: createTempDir(),
+    guardianEnabled: true,
+    guardianPreCheck: async () => ({ safe: true, reason: "" }),
+  });
+  gate.registerExecutor("skill-write", () => {
+    callCount += 1;
+    return "created";
+  });
+
+  const outcome = await gate.requestApproval("skill-write", { summary: "trivial change", payload: {} });
+  assert.equal(outcome.status, "approved");
+  assert.equal(outcome.guardianCleared, true);
+  assert.equal(callCount, 1);
+  assert.equal(gate.listPending().length, 0);
+
+  const audited = gate.guardianAuditLog.readRecent();
+  assert.equal(audited.length, 1);
+  assert.equal(audited[0].name, "skill-write");
+  assert.equal(audited[0].guardianCleared, true);
+});
+
+test("guardian pre-check falls through to the pending queue when the judge says risky", async () => {
+  let ran = false;
+  const gate = createApprovalGate({
+    dataDir: createTempDir(),
+    guardianEnabled: true,
+    guardianPreCheck: async () => ({ safe: false, reason: "" }),
+  });
+  gate.registerExecutor("skill-write", () => {
+    ran = true;
+  });
+
+  const outcome = await gate.requestApproval("skill-write", { payload: {} });
+  assert.equal(outcome.status, "pending");
+  assert.equal(ran, false);
+  assert.equal(gate.guardianAuditLog.readRecent().length, 0);
+});
+
+test("guardian pre-check falls through to the pending queue when the judge throws", async () => {
+  let ran = false;
+  const gate = createApprovalGate({
+    dataDir: createTempDir(),
+    guardianEnabled: true,
+    guardianPreCheck: async () => {
+      throw new Error("model unavailable");
+    },
+  });
+  gate.registerExecutor("skill-write", () => {
+    ran = true;
+  });
+
+  const outcome = await gate.requestApproval("skill-write", { payload: {} });
+  assert.equal(outcome.status, "pending");
+  assert.equal(ran, false);
+});
+
+test("guardian pre-check is off by default even when a judge function is injected", async () => {
+  let judgeCalled = false;
+  const gate = createApprovalGate({
+    dataDir: createTempDir(),
+    guardianPreCheck: async () => {
+      judgeCalled = true;
+      return { safe: true };
+    },
+  });
+  gate.registerExecutor("skill-write", () => "created");
+
+  const outcome = await gate.requestApproval("skill-write", { payload: {} });
+  assert.equal(outcome.status, "pending");
+  assert.equal(judgeCalled, false);
+});
+
+test("guardian pre-check never overrides a content-scan flag -- the deterministic scan wins", async () => {
+  let judgeCalled = false;
+  let ran = false;
+  const gate = createApprovalGate({
+    dataDir: createTempDir(),
+    contentScanEnabled: true,
+    guardianEnabled: true,
+    guardianPreCheck: async () => {
+      judgeCalled = true;
+      return { safe: true };
+    },
+  });
+  gate.registerExecutor("generated-script-run", () => {
+    ran = true;
+  });
+
+  const outcome = await gate.requestApproval("generated-script-run", {
+    payload: {},
+    scanText: 'child_process.exec("rm -rf /")',
+  });
+  assert.equal(outcome.status, "pending");
+  assert.ok(outcome.flags.includes("shell-execution"));
+  assert.equal(judgeCalled, false, "guardian should never even be consulted once the scan already flagged it");
+  assert.equal(ran, false);
+});
+
+test("a thrown executor after a safe guardian verdict propagates instead of silently falling to pending", async () => {
+  const gate = createApprovalGate({
+    dataDir: createTempDir(),
+    guardianEnabled: true,
+    guardianPreCheck: async () => ({ safe: true }),
+  });
+  gate.registerExecutor("skill-write", () => {
+    throw new Error("disk full");
+  });
+
+  await assert.rejects(
+    () => gate.requestApproval("skill-write", { payload: {} }),
+    /disk full/,
+  );
+  assert.equal(gate.listPending().length, 0, "must not also land in the pending queue");
+});
+
 test("scanContent recognizes each heuristic pattern independently", () => {
   assert.deepEqual(scanContent("nothing suspicious here"), []);
   assert.ok(scanContent("await execSync('ls')").includes("shell-execution"));
