@@ -288,6 +288,77 @@ test("appendTurn never breaks the turn append when memory graph reinforcement th
   assert.equal(saved.turns.length, 1);
 });
 
+// Issue #295 (piece 2 of #285): userAffectState -- a decaying read on the
+// user's affect, nudged per turn from the user's own message text.
+test("getUserAffect starts at 0 (neutral) for a fresh store", () => {
+  const store = createAcpMemoryStore({ dataDir: createTempDir() });
+  assert.equal(store.getUserAffect(), 0);
+});
+
+test("appendTurn nudges userAffectState positive from positive user text", async () => {
+  let clock = "2026-01-01T00:00:00.000Z";
+  const store = createAcpMemoryStore({ dataDir: createTempDir(), now: () => clock });
+
+  await store.appendTurn({ sessionId: "s1", user: "this is awesome, finally!", assistant: "glad to hear it" });
+  assert.ok(store.getUserAffect(clock) > 0);
+});
+
+test("appendTurn nudges userAffectState negative from negative user text", async () => {
+  let clock = "2026-01-01T00:00:00.000Z";
+  const store = createAcpMemoryStore({ dataDir: createTempDir(), now: () => clock });
+
+  await store.appendTurn({ sessionId: "s1", user: "ugh, that's so annoying", assistant: "sorry to hear that" });
+  assert.ok(store.getUserAffect(clock) < 0);
+});
+
+test("appendTurn with neutral text doesn't move userAffectState", async () => {
+  let clock = "2026-01-01T00:00:00.000Z";
+  const store = createAcpMemoryStore({ dataDir: createTempDir(), now: () => clock });
+
+  await store.appendTurn({ sessionId: "s1", user: "what time is the meeting tomorrow", assistant: "3pm" });
+  assert.equal(store.getUserAffect(clock), 0);
+});
+
+test("userAffectState decays back toward 0 over time", async () => {
+  let clock = "2026-01-01T00:00:00.000Z";
+  const store = createAcpMemoryStore({ dataDir: createTempDir(), now: () => clock });
+
+  await store.appendTurn({ sessionId: "s1", user: "this is awesome, finally!", assistant: "glad to hear it" });
+  const fresh = store.getUserAffect(clock);
+  assert.ok(fresh > 0);
+
+  // One full decay half-life (12h) later, without any new turn -- the
+  // stored value hasn't changed, but the decayed READ should be about half.
+  const later = store.getUserAffect("2026-01-01T12:00:00.000Z");
+  assert.ok(later > 0 && later < fresh);
+  assert.ok(Math.abs(later - fresh / 2) < 0.01, `expected ~half-decay, got ${later} vs ${fresh}`);
+});
+
+test("appendTurn's userAffectState accumulates decayed-and-then-nudged, not just the latest turn's raw valence", async () => {
+  let clock = "2026-01-01T00:00:00.000Z";
+  const store = createAcpMemoryStore({ dataDir: createTempDir(), now: () => clock });
+
+  await store.appendTurn({ sessionId: "s1", user: "awesome, great!", assistant: "yay" });
+  const afterFirst = store.getUserAffect(clock);
+
+  clock = "2026-01-01T01:00:00.000Z";
+  await store.appendTurn({ sessionId: "s1", user: "awesome, great!", assistant: "yay" });
+  const afterSecond = store.getUserAffect(clock);
+
+  assert.ok(afterSecond > afterFirst, "a second positive nudge on top of barely-decayed positivity should push it higher");
+});
+
+// Issue #295: emotional-state.json corruption/absence never breaks appendTurn.
+test("appendTurn never breaks the turn append when the emotional state file is corrupt", async () => {
+  const dataDir = createTempDir();
+  fs.mkdirSync(dataDir, { recursive: true });
+  fs.writeFileSync(path.join(dataDir, "emotional-state.json"), "not valid json{{{", "utf8");
+  const store = createAcpMemoryStore({ dataDir });
+
+  const saved = await store.appendTurn({ sessionId: "s1", user: "hello", assistant: "hi" });
+  assert.equal(saved.turns.length, 1);
+});
+
 // Issue #263 part 1: hybrid keyword+vector session search. appendTurn's
 // embedding indexing is fire-and-forget (mirrors part 2's compaction IIFE
 // above), so these tests use the same deferred-promise pattern to await it

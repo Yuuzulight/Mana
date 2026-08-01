@@ -1,6 +1,6 @@
 # Issue 285: Hebbian Associative Memory Graph + Emotional-State-Driven Reflexes
 
-## Status: Piece 1 implemented (issue #295); piece 2 still scoped, not built
+## Status: Both pieces implemented (issue #295)
 
 This doc addresses the four checklist questions the issue raised, grounded
 in what's actually in the codebase today (not the source project's design)
@@ -18,7 +18,19 @@ single-word false positives from assistant replies (a sentence-initial
 entities only -- see `memory-graph.js` and `acp-memory-store.js`'s
 `appendTurn`/`searchSessions`.
 
-**Piece 2 (emotional-state reflexes)** is still scoped only, not built.
+**Piece 2 (emotional-state reflexes)** shipped with two of the design's
+three planned `manaSelfState` inputs deliberately deferred, not silently
+dropped: `userAffectState` (decaying positivity, ported detection logic in
+`utils/text-mood.js`) and the loneliness trigger (folded into the existing
+hourly reviewer timer, firing one real reflex via the already-existing
+`rememberFact()`) are both live. `rutScore` and the opt-in LLM
+self-assessment weren't wired in -- loneliness alone from session-gap
+timestamps already gives a working, testable trigger, and the other two
+inputs add real design surface (rutScore needs `rut-detection.js`'s live
+per-session state threaded through; the LLM call needs its own opt-in
+gating like Guardian pre-check's) that wasn't needed to ship a functioning
+first cut. See `acp-memory-store.js`'s `updateUserAffect`/`getUserAffect`
+and `server.js`'s `checkEmotionalReflexes`.
 
 ## Piece 1: Associative memory graph
 
