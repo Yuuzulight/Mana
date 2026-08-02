@@ -241,6 +241,25 @@ accounting.
   same seeded demo conversation), replacing its own mockup.
 
 ### Fixed
+- **`acp-autonomous-loop.js`'s `file_read`/`file_write`/`dir_scan` path guard
+  accepted foreign-OS absolute paths as if they were relative** (found while
+  preparing a release: `heavy-ci.yml`'s full test suite had been failing on
+  every push to `main` since before this file's Unreleased section started,
+  silently blocking the Windows installer build job that depends on it).
+  `path.isAbsolute()` only recognizes the *host OS's own* absolute-path
+  syntax -- on a POSIX CI runner, a model-supplied path like
+  `C:\Windows\system.ini` isn't recognized as absolute, so it fell through
+  to the "treat as relative" branch and got silently joined onto
+  `REPO_ROOT` instead of being rejected as foreign/absolute. Since these
+  paths come from untrusted model tool-call output, the guard needs to
+  reject cross-platform absolute-path syntax regardless of which OS
+  actually runs it, not just the host's own -- added a shared
+  `resolveWithinRepo()` helper (replacing three copies of the same
+  vulnerable inline logic) that explicitly rejects Windows drive-letter/UNC
+  syntax the host doesn't recognize natively, used by all three tools plus
+  `dir_scan`'s pagination-token `root` field (same class of gap). Verified:
+  full `node-bot` suite (89 files), `windows-launcher` (129 tests),
+  `desktop-client` (26 tests), and `plugins/**` (287 tests) all pass.
 - **windows-launcher's research-progress indicator ignored its own
   `hidden` attribute** (issue #137, found while capturing real README
   screenshots): `#researchProgress { display: flex; ... }` in
