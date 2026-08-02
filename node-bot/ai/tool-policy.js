@@ -28,6 +28,20 @@ const MAX_READ_FILE_CHARS = 20000;
 
 class ToolPolicyError extends Error {}
 
+// allowedRoot is either the real default (host-native, whatever OS this
+// actually runs on) or an explicitly configured Windows path (Mana only
+// ever runs on Windows in production, and tests fix Windows-style roots
+// like "C:\\project"). Detect which one we've got rather than assuming the
+// host's native path module: native path.resolve on a POSIX host silently
+// misparses "C:\\project" as a relative path, since "\\" isn't its
+// separator -- picking path.win32 for a string that looks Windows-shaped
+// keeps that deterministic regardless of the host actually running tests.
+const WIN_DRIVE_OR_UNC_RE = /^(?:[a-zA-Z]:[\\/]|\\\\)/;
+
+function pathImplFor(root) {
+  return WIN_DRIVE_OR_UNC_RE.test(String(root || "")) ? path.win32 : path;
+}
+
 // Issue #268: read_file's allowedRoot defaults to the repo root (below),
 // which is exactly where .env lives -- a prompt-injected read_file call (a
 // page Mana read, a doc she was asked to summarize) could otherwise read
@@ -60,9 +74,10 @@ function isCredentialPath(basenameRaw) {
 // is actually inside allowedRoot -- blocks both ../ traversal and absolute
 // paths that point elsewhere on disk.
 function resolveWithinRoot(allowedRoot, requestedPath) {
-  const root = path.resolve(allowedRoot);
-  const resolved = path.resolve(root, String(requestedPath || ""));
-  const rootWithSep = root.endsWith(path.sep) ? root : root + path.sep;
+  const p = pathImplFor(allowedRoot);
+  const root = p.resolve(allowedRoot);
+  const resolved = p.resolve(root, String(requestedPath || ""));
+  const rootWithSep = root.endsWith(p.sep) ? root : root + p.sep;
   if (resolved !== root && !resolved.startsWith(rootWithSep)) {
     throw new ToolPolicyError(
       `path escapes the allowed project directory: ${requestedPath}`,
@@ -72,9 +87,8 @@ function resolveWithinRoot(allowedRoot, requestedPath) {
 }
 
 function createToolPolicy(options = {}) {
-  const allowedRoot = path.resolve(
-    options.allowedRoot || path.join(__dirname, "..", ".."),
-  );
+  const rawRoot = options.allowedRoot || path.join(__dirname, "..", "..");
+  const allowedRoot = pathImplFor(rawRoot).resolve(rawRoot);
   const readFileSync = options.readFileSync || fs.readFileSync;
   const existsSync = options.existsSync || fs.existsSync;
   const statSync = options.statSync || fs.statSync;
@@ -86,7 +100,7 @@ function createToolPolicy(options = {}) {
       throw new ToolPolicyError("path is required");
     }
     const resolved = resolveWithinRoot(allowedRoot, requestedPath);
-    if (isCredentialPath(path.basename(resolved))) {
+    if (isCredentialPath(pathImplFor(allowedRoot).basename(resolved))) {
       throw new ToolPolicyError(`refusing to read a credential-bearing file: ${requestedPath}`);
     }
     if (!existsSync(resolved)) {
