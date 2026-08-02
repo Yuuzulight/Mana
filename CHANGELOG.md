@@ -241,6 +241,22 @@ accounting.
   same seeded demo conversation), replacing its own mockup.
 
 ### Fixed
+- **`acp-path-guard.test.js` built its own expected values with native
+  `path.resolve`/`path.join`** (found immediately after merging the
+  `acp-path-guard.js` fix above: the merge's push-event `heavy-ci.yml` run
+  failed a *third* time, on `main`, right after the second fix had just gone
+  green on its own PR). The module fix above made `acp-path-guard.js` itself
+  correctly use `path.win32` for `platform: "win32"` -- but the test file's
+  assertions still compared that against values built with the host-native
+  `path`, so on the Linux runner the "expected" side stayed POSIX-resolved
+  while the (now-correct) "actual" side was genuinely Windows-resolved. Two
+  tests that happened to be *consistently* wrong on both sides before (so
+  they passed by accident) started failing once only one side got fixed.
+  Switched every `path.join`/`path.resolve` in this test file to
+  `path.win32.join`/`path.win32.resolve`, matching the `platform: "win32"`
+  every test in the file already declares. Verified: full `node-bot` suite
+  (89 files) passes locally; this file's own 5 tests build no host-dependent
+  strings anymore, so they should read identically on the CI Linux runner.
 - **`acp-path-guard.js` claimed a testable `platform` option but only honored
   it for splitting `allowedPaths`** (found immediately after merging the
   `acp-autonomous-loop.js` fix above: that merge triggered a real push-event
