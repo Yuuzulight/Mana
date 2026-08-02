@@ -265,7 +265,7 @@ function createComfyUiBackend({
     }
 
     // Deep clone -- the template is shared across every call, must not be mutated in place.
-    const graph = JSON.parse(JSON.stringify(template));
+    const graph = structuredClone(template);
     if (isSplit) {
       graph[COMFYUI_UNET_LOADER_NODE_ID].inputs.unet_name = unetName;
       graph[COMFYUI_CLIP_LOADER_NODE_ID].inputs.clip_name = clipName;
