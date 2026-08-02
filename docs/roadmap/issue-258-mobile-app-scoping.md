@@ -141,7 +141,12 @@ the standalone command-line tools) plus `adb`. Deliverable: `godot
 --version` succeeds and a brand-new empty Godot project exports a debug
 APK that installs and opens on a device/emulator. This phase alone is a
 multi-GB download and a real chunk of setup time -- worth doing in its own
-sitting, not folded into "start the app."
+sitting, not folded into "start the app." Prefer a real Android device
+over an emulator for every later phase's testing if one is available --
+Godot's rendering (and GDExtension native code in Phase 4) is a much
+less reliable signal on emulated GPU/Vulkan support than on real hardware,
+and a rendering failure that's actually an emulator limitation is easy to
+misdiagnose as a Godot/plugin bug.
 
 **Phase 1 -- project skeleton.** New Godot project as a sibling of
 `windows-launcher`/`desktop-client` (e.g. `mobile/`), Android export preset
@@ -149,17 +154,20 @@ configured against a real package id and debug keystore. Deliverable: an
 installable APK showing just a blank/colored screen -- proves the full
 toolchain end to end before touching anything AIRI-specific.
 
-**Phase 2 -- the transparent-WebView-overlay trick.** ⚠️ *Real open risk,
-not just effort*: AIRI's writeup hooks `GodotApp.java`'s
-`onGodotMainLoopStarted()` directly, but that's Godot's older Java-based
-Android runtime -- current Godot 4.x versions (4.2+) moved substantial
-Android-side plugin machinery to Kotlin and a formal Android plugin API
-(`godot-android-plugin` template). **This needs to be re-verified against
-whatever Godot version Phase 0 actually installs**, not assumed to match
-AIRI's exact hook. The underlying technique (grab the root `FrameLayout`,
-stack a `WebView` with `setBackgroundColor(Color.TRANSPARENT)`) should
-still be possible via a custom Android plugin either way, but the specific
-integration point from the writeup may not exist verbatim anymore.
+**Phase 2 -- the transparent-WebView-overlay trick.** AIRI's writeup hooks
+`GodotApp.java`'s `onGodotMainLoopStarted()` directly, but that's Godot's
+older Java-based Android runtime. **Confirmed** (not just assumed): Godot
+4.2+ replaced that with a new v2 Android plugin architecture -- a Kotlin
+`GodotAndroidPlugin` class extending `GodotPlugin`, with methods exposed to
+GDScript via `@UsedByGodot` annotations, per Godot's own docs and the
+official [Godot-Android-Plugin-Template](https://github.com/m4gr3d/Godot-Android-Plugin-Template)
+(see also the [Godot 4.4 Android plugin docs](https://docs.godotengine.org/en/4.4/tutorials/platform/android/android_plugin.html)).
+So the specific hook from the writeup won't exist verbatim in a current
+Godot project -- **the plugin needs to be written against this v2 API**,
+re-verified against whatever exact Godot version Phase 0 installs. The
+underlying technique (grab the root `FrameLayout`, stack a `WebView` with
+`setBackgroundColor(Color.TRANSPARENT)`) is still the right approach, just
+reached through a current-generation plugin instead of AIRI's older hook.
 Deliverable: an APK where a transparent WebView renders a placeholder HTML
 page on top of a visibly different-colored Godot background, proving the
 compositing actually works.
@@ -168,46 +176,76 @@ compositing actually works.
 already-existing mobile API, reusing it exactly as decided (see
 Decisions #2) rather than writing new client code: `/mobile/pair/request`
 + `/mobile/pair/complete` for device pairing, `/mobile/auth/unlock` for
-session unlock, `/mobile/chat/text` for text chat, `/mobile/synthesize`
-for TTS playback (all in `node-bot/mobile-routes.js`). The existing PWA
-client at `node-bot/mobile-app/app.js` already implements this exact
-pairing/auth/chat flow against these routes -- load it into the WebView
-(or adapt it directly) instead of re-deriving the request shapes from
-scratch. Deliverable: the WebView shows a real chat that round-trips
-through the actual backend (needs the desktop machine reachable, per
-`docs/mobile_pwa_cloudflare.md`).
+session unlock, `/mobile/chat/text` for text chat, `/mobile/chat/audio`
+for voice (uploads a recorded clip, runs it through the same Whisper
+transcription the desktop apps use, then the same reply pipeline), and
+`/mobile/synthesize` for TTS playback (all in `node-bot/mobile-routes.js`).
+The existing PWA client at `node-bot/mobile-app/app.js` already implements
+this exact pairing/auth/chat flow against these routes -- load it into the
+WebView (or adapt it directly) instead of re-deriving the request shapes
+from scratch. Note the voice UX this API implies is fundamentally
+different from desktop's: `/mobile/chat/audio` is upload-a-recorded-clip,
+not the continuous wake-word/VAD listening loop `windows-launcher` and
+`desktop-client` run -- there's no backend route for streaming/continuous
+audio at all. Whether the mobile app gets a "hold to talk and release"
+button (matching the existing PWA) or something closer to always-listening
+is a real product decision to make in this phase, not an assumption to
+carry over from desktop. Deliverable: the WebView shows a real chat
+(including at least one voice round-trip through `/mobile/chat/audio`)
+that actually reaches the backend (needs the desktop machine reachable,
+per `docs/mobile_pwa_cloudflare.md`).
 
-**Phase 4 -- avatar rendering in Godot.** ⚠️ *Real open risk*: no Live2D
-integration path for Godot has been confirmed to exist. AIRI's own writeup
-only mentions "Live2D has an official Cocos/native Cubism SDK for non-web
-engines" -- not a Godot one specifically. Before writing any avatar-render
-code, this needs its own short investigation: does a maintained Godot
-GDExtension/plugin for Cubism SDK 5 exist (search the Godot Asset Library
-and GitHub), or does this require hand-binding the native Cubism SDK into
-a custom GDExtension. That answer changes this phase's actual scope
-significantly. Deliverable (once unblocked): the reduced feature set from
-Decisions #4 -- idle animation renders inside the Godot layer.
+**Phase 4 -- avatar rendering in Godot.** A real candidate now exists,
+narrowing this from "no known path" to "evaluate this specific option":
+[GDCubism](https://github.com/MizunagiKB/gd_cubism) (`MizunagiKB/gd_cubism`)
+is an actively-maintained, unofficial GDExtension bridging the Live2D
+Cubism Native Framework into Godot 4.1.1+ via GDScript/C#, with a v0.9+
+rewrite specifically aimed at reducing GPU/memory load through direct
+rendering -- the same problem AIRI's writeup hit head-on in the WebView
+path. **Still an open question, not fully resolved**: GDCubism's
+documented baseline targets are Godot 4.1.1+/4.3+, but Mana's actual
+runtime models are Cubism SDK **5.1.0** (per `Live2D Cubism Core version:
+05.01.0000` in the real windows-launcher console log captured for issue
+#137) -- whether GDCubism's bundled Cubism Native Framework build actually
+supports Cubism 5-format models needs checking against its own docs/repo
+before assuming it "just works" with Hiyori or any of Mana's real models.
+If it doesn't, the fallback is still hand-binding the native Cubism SDK
+into a custom GDExtension, just with GDCubism's source available as a
+working reference instead of starting from nothing. Deliverable, staged:
+first checkpoint is idle animation rendering inside the Godot layer with a
+real model; "talking" and the basic expression set (Decisions #4's full
+reduced scope) layer on once idle is proven, not required for this phase's
+first deliverable.
 
 **Phase 5 -- state sync between the WebView and the Godot layer.** ⚠️ *Real
 open risk*: the WebView (chat UI, text) and Godot (avatar) run in separate
 rendering contexts once split this way, and AIRI's writeup doesn't detail
 how they pass state to each other (e.g. "user is talking" -> avatar's
 talking animation). Options to evaluate: Android's `Intent`/broadcast
-mechanism between the WebView's JS-to-native bridge and a custom Godot
-Android plugin, or a tiny loopback WebSocket/HTTP bridge between the two
-processes. Deliverable: sending a chat message in the WebView visibly
+mechanism between the WebView's JS-to-native bridge and the same Phase 2
+Godot Android plugin, or a tiny loopback WebSocket/HTTP bridge between the
+two processes. Deliverable: sending a chat message in the WebView visibly
 drives the Godot avatar into its talking state.
 
-**Phase 6 -- packaging.** Debug keystore -> a real release-signing setup.
-Shares the "we haven't set up code signing yet" gap with the already-open
-issue #119 (desktop-client Windows installer signing) -- different
-platform, same unaddressed problem, worth solving with half an eye on both
-at once rather than twice independently.
+**Phase 6 -- packaging.** Debug keystore -> a real release-signing setup,
+plus an equivalent to desktop's `AVATAR_NOTICE.md`/`LICENSE-ARTWORK` split
+for whatever avatar model actually ships in a public APK (Hiyori's Live2D
+Free Material License terms apply the same way on mobile as on desktop --
+see issue #137's PR history for how that was verified there). Shares the
+"we haven't set up code signing yet" gap with the already-open issue #119
+(desktop-client Windows installer signing) -- different platform, same
+unaddressed problem, worth solving with half an eye on both at once rather
+than twice independently. Deliverable: a signed release APK, installable
+outside Godot's own debug/export flow, with its avatar licensing story as
+clear as the desktop apps' already is.
 
-Phases 0-1 are pure setup with no open questions. Phases 2, 4, and 5 each
-carry a real technical unknown that should be resolved (or at least
-time-boxed as its own investigation) before estimating the phase, not
-discovered mid-implementation.
+Phases 0-1 are pure setup with no open questions. Phase 2's risk is now
+resolved into a concrete implementation target (the v2 plugin API) rather
+than an open unknown. Phase 4's risk is narrowed to one checkable question
+(Cubism 5 support in GDCubism) instead of "does anything exist at all."
+Phase 5 remains the least-scoped of the three -- worth resolving (or at
+least time-boxing as its own short investigation) before estimating it,
+not discovered mid-implementation.
 
 ## Not a commitment
 
