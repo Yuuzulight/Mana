@@ -2542,6 +2542,7 @@ function registerRoutes(app, upload, deps = {}) {
         at: new Date().toISOString(),
         note: req.body?.note || null,
       };
+      await fs.promises.mkdir(PENDING_DIR, { recursive: true });
       await fs.promises.writeFile(
         approvedPath,
         JSON.stringify(data, null, 2),
@@ -2606,6 +2607,7 @@ function registerRoutes(app, upload, deps = {}) {
         at: new Date().toISOString(),
         reason: req.body?.reason || null,
       };
+      await fs.promises.mkdir(PENDING_DIR, { recursive: true });
       await fs.promises.writeFile(
         rejectedPath,
         JSON.stringify(data, null, 2),
