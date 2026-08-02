@@ -235,8 +235,10 @@ accounting.
   against a real `windows-launcher` instance) instead of a hand-built HTML
   mockup, showing the actual Live2D avatar (Hiyori, Live2D's free sample
   model -- explicitly cleared for public use in `desktop-client/AVATAR_NOTICE.md`)
-  and a seeded demo conversation. `desktop-client`'s Preview image is still
-  the illustrative mockup -- not covered in this pass.
+  and a seeded demo conversation.
+- **Real desktop-client screenshot** (issue #137): `docs/images/desktop-client-main.png`
+  is likewise now a real capture (same CDP technique, same Hiyori avatar,
+  same seeded demo conversation), replacing its own mockup.
 
 ### Fixed
 - **windows-launcher's research-progress indicator ignored its own
@@ -247,6 +249,22 @@ accounting.
   status bar rendered permanently regardless of whether a research job
   was actually running. Added `#researchProgress[hidden] { display: none; }`
   so the element actually respects being hidden.
+- **desktop-client's startup screen hung forever on "AI: Starting..."**
+  (issue #137, found capturing the desktop-client screenshot): Electron
+  defaults `sandbox: true` for any window with a preload script regardless
+  of `contextIsolation`, which restricts the preload's own `require()` to a
+  small built-in allowlist. `preload.js`'s `require('./renderer/markdown-render')`
+  (and the artifact window's `dompurify`/`markdown-render` requires) threw
+  `module not found` under that restriction, silently aborting
+  `contextBridge` setup before `window.electronAPI` was ever exposed --
+  every renderer call depending on it (including the startup sequence)
+  then failed with `Cannot read properties of undefined`. This has likely
+  been broken since the Electron 26 -> 39 bump earlier in this file, which
+  predates sandbox defaulting to true for preload-bearing windows. Fixed
+  by setting `sandbox: false` on both the main and artifact `BrowserWindow`s
+  in `main.js`, restoring the preload script's normal Node module
+  resolution while leaving `contextIsolation`/`nodeIntegration` (the
+  renderer's own isolation) untouched.
 
 ### Investigated, no code change
 - **Issue #197** (Deep Research reflect-on-gaps step): already fully
