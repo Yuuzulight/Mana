@@ -11,6 +11,23 @@ accounting.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-08-03
+
+91 merged PRs' worth of changes since 0.2.2 -- a minor bump rather than a
+patch, since a 0.2.3 would badly undersell the volume here. Highlights:
+the skills system (proposal/review/approval loop, bundled scripts, an
+always-on skill index), the Hebbian associative memory graph and
+emotional-state reflexes, ~15 issue-workflow batches spanning security
+hardening (.env access restriction, credential broker scoping, regex
+bypass fixes), Deep Research improvements (reflect-on-gaps, per-profile
+routing, tool-catalogue pre-filtering), the sandboxed coding-mode
+diff-and-apply flow, and this release's own prep work: a chain of 10 CI
+fixes (a cross-platform path-guard bug found and fixed across five
+files, a missing-directory 500, and a stale CI Node pin plus a
+never-before-exercised installer artifact-path bug) that got
+`heavy-ci.yml` fully green -- including a real Windows installer build --
+for the first time in this repo's CI history.
+
 ### Added
 - **Emotional-state-driven reflexes** (issue #295, piece 2 of #285):
   `userAffectState` -- a decaying positivity score built from the same
