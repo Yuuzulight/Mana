@@ -230,6 +230,23 @@ accounting.
   its existing prefix-check export, so the next tool source needs no new
   `buildToolPolicyWithX` function at all. The individual `buildToolPolicyWithX`
   functions and their own tests are untouched for backward compatibility.
+- **Real windows-launcher screenshot** (issue #137): `docs/images/windows-launcher-main.png`
+  is now a genuine capture of the running app (via CDP `Page.captureScreenshot`
+  against a real `windows-launcher` instance) instead of a hand-built HTML
+  mockup, showing the actual Live2D avatar (Hiyori, Live2D's free sample
+  model -- explicitly cleared for public use in `desktop-client/AVATAR_NOTICE.md`)
+  and a seeded demo conversation. `desktop-client`'s Preview image is still
+  the illustrative mockup -- not covered in this pass.
+
+### Fixed
+- **windows-launcher's research-progress indicator ignored its own
+  `hidden` attribute** (issue #137, found while capturing real README
+  screenshots): `#researchProgress { display: flex; ... }` in
+  `renderer/index.html` outranks the browser's built-in
+  `[hidden] { display: none }` rule, so the "Researching... / Cancel"
+  status bar rendered permanently regardless of whether a research job
+  was actually running. Added `#researchProgress[hidden] { display: none; }`
+  so the element actually respects being hidden.
 
 ### Investigated, no code change
 - **Issue #197** (Deep Research reflect-on-gaps step): already fully
