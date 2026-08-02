@@ -108,7 +108,3 @@ Troubleshooting
 - If text replies work but no audio plays, verify `TTS_PROVIDER` and that the configured TTS service is healthy (Kokoro on port `5011`, Fish Speech on port `8080`).
 - If the `Open Model Web UI` button is not relevant to your local setup, ignore it. It is only useful if you separately run a model UI on `http://localhost:7860`.
 
-Legacy paths
-- `wsl-bot` and `win-bot` contain older Python-based experiments using FastAPI, `faster-whisper`, and Coqui TTS.
-- Those paths are not the primary launcher integration described in this document.
-

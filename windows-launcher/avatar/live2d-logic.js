@@ -178,7 +178,7 @@ function augmentModelSettings(
   looseExpressionFiles = [],
   eyeBlinkParamIds = DEFAULT_EYE_BLINK_PARAM_IDS,
 ) {
-  const augmented = JSON.parse(JSON.stringify(settings || {}));
+  const augmented = structuredClone(settings || {});
   augmented.FileReferences = augmented.FileReferences || {};
   const refs = augmented.FileReferences;
 
