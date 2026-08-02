@@ -51,6 +51,16 @@ function createWindow() {
       // Electron app (see issue #122).
       nodeIntegration: false,
       contextIsolation: true,
+      // Electron defaults sandbox:true for any window with a preload script
+      // (regardless of contextIsolation), which restricts the preload's own
+      // require() to a small built-in allowlist -- breaking this preload's
+      // local requires (markdown-render, artifact-detector) with a
+      // "module not found" error that silently aborts contextBridge setup,
+      // stalling the startup screen forever. The renderer itself stays
+      // fully isolated (contextIsolation/nodeIntegration above are
+      // untouched); this only lets the trusted preload script use normal
+      // Node module resolution, which it already needs.
+      sandbox: false,
       // Chromium throttles rAF-driven rendering (the Live2D avatar's idle
       // tilt/gaze/blink loop) to ~1fps once the window loses OS focus,
       // turning smooth idle drift into visible snapping between poses --
@@ -406,6 +416,10 @@ ipcMain.on('open-artifact', (event, artifact) => {
         preload: path.join(__dirname, 'artifact', 'preload.js'),
         nodeIntegration: false,
         contextIsolation: true,
+        // Same fix as the main window above -- this preload also does
+        // local requires (markdown-render, dompurify) that Electron's
+        // default sandboxed preload can't resolve.
+        sandbox: false,
       },
     });
     artifactWindow.loadFile(path.join(__dirname, 'artifact', 'index.html'));
