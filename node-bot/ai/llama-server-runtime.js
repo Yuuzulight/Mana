@@ -64,7 +64,14 @@ function createLlamaServerRuntime(options = {}) {
       candidates.push(env.LLAMA_SERVER_BIN);
     }
     if (env.LLAMA_BIN) {
-      candidates.push(path.join(path.dirname(env.LLAMA_BIN), "llama-server.exe"));
+      // LLAMA_BIN always names a Windows .exe (this module only supports
+      // the bundled Windows/CUDA llama-server build) -- use path.win32
+      // explicitly so this resolves the same way regardless of which OS
+      // Node itself is running on (native path.dirname/join would silently
+      // misparse a "C:\..." string as a relative path on a POSIX host).
+      candidates.push(
+        path.win32.join(path.win32.dirname(env.LLAMA_BIN), "llama-server.exe"),
+      );
     }
 
     const bundledLlamaDir = path.join(
@@ -414,7 +421,10 @@ function createLlamaServerRuntime(options = {}) {
     const args = buildServerArgs(model, port, mmproj);
     console.log("Starting llama-server:", bin, args.join(" "));
     const child = spawn(bin, args, {
-      cwd: path.dirname(bin),
+      // bin always names a Windows llama-server.exe -- path.win32 so this
+      // resolves the same way regardless of which OS Node itself is
+      // running on (bin can come straight from LLAMA_SERVER_BIN unchanged).
+      cwd: path.win32.dirname(bin),
       stdio: ["ignore", "ignore", "pipe"],
       windowsHide: true,
       env: buildServerEnv(),
