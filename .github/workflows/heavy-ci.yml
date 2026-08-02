@@ -67,7 +67,7 @@ jobs:
         if: always()
         shell: pwsh
         run: |
-          $files = Get-ChildItem -Path .\dist -Recurse -Include *.exe,*.msi | Select-Object -First 10
+          $files = Get-ChildItem -Path .\desktop-client\dist -Recurse -Include *.exe,*.msi | Select-Object -First 10
           if ($files) { New-Item -ItemType Directory -Path installer-artifacts -Force | Out-Null; foreach ($f in $files){ Copy-Item $f.FullName -Destination (Join-Path $Env:GITHUB_WORKSPACE 'installer-artifacts' $f.Name) -Force } }
 
       - name: Upload installer artifacts
