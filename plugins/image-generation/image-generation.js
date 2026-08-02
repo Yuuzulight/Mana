@@ -8,6 +8,7 @@
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
+const { setTimeout: sleep } = require("node:timers/promises");
 
 const DEFAULT_IMAGES_DIR = path.join(__dirname, "..", "..", "node-bot", "data", "images");
 const MAX_PROMPT_CHARS = 2000;
@@ -43,10 +44,6 @@ const DEFAULT_COMFYUI_TIMEOUT_MS = 120000;
 // checkpoint models the shorter default was tuned for -- give them more
 // runway before giving up, unless the caller overrides timeoutMs directly.
 const DEFAULT_COMFYUI_SPLIT_TIMEOUT_MS = 240000;
-
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
 
 // ComfyUI's `/history/{id}` response's `status.messages` is a list of
 // `[eventName, eventData]` tuples; on a genuine execution failure one entry

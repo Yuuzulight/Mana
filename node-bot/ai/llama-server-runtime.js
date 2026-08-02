@@ -1,6 +1,7 @@
 const defaultFs = require("node:fs");
 const path = require("node:path");
 const { spawn: defaultSpawn } = require("node:child_process");
+const { setTimeout: defaultSleep } = require("node:timers/promises");
 const {
   collectFilesRecursively,
   findPreferredLlamaModel,
@@ -31,8 +32,7 @@ function createLlamaServerRuntime(options = {}) {
   const logPerf = options.logPerf || (() => {});
   const modelSettingsStore = options.modelSettingsStore || null;
   const registerExitHandlers = options.registerExitHandlers !== false;
-  const sleep =
-    options.sleep || ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
+  const sleep = options.sleep || defaultSleep;
 
   const state = {
     child: null,

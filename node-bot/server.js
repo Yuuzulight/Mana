@@ -54,6 +54,7 @@ const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
 const { Readable } = require("node:stream");
+const { setTimeout: sleep } = require("node:timers/promises");
 const http = require("http");
 const https = require("https");
 const { createWorker } = require("tesseract.js");
@@ -4660,7 +4661,7 @@ async function startServer() {
         } catch (e) {
           // keep waiting quietly
         }
-        await new Promise((resolve) => setTimeout(resolve, delayMs));
+        await sleep(delayMs);
       }
       console.warn(
         `[Mana Boot] Python retriever not reachable at ${retrieverHealthUrl}; continuing with heuristic fallbacks (retrieval context disabled).`,
