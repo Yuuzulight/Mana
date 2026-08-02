@@ -35,7 +35,11 @@ function buildZedAgentServerConfig(options = {}) {
       mana: {
         type: "custom",
         command: nodeCommand,
-        args: [path.join(repoRoot, "node-bot", "mana-acp-agent.js"), "--acp"],
+        // repoRoot is always a Windows path (this snippet is consumed by
+        // the Zed editor's own config on the user's Windows machine) --
+        // path.win32 so this resolves the same way regardless of which OS
+        // Node itself runs on when generating the snippet.
+        args: [path.win32.join(repoRoot, "node-bot", "mana-acp-agent.js"), "--acp"],
         env: {
           MANA_ALLOW_REMOTE_AI: "0",
           MANA_DEFAULT_EDITOR: "zed",
@@ -256,7 +260,11 @@ function getAgentLimits(env = process.env) {
     autonomousEnabled: isAutonomousEnabled(env),
     maxIterations: Math.max(1, Number(env.MANA_AGENT_MAX_ITERATIONS || 3)),
     maxFilesChanged: Math.max(1, Number(env.MANA_AGENT_MAX_FILES_CHANGED || 5)),
-    allowedPaths: parseAllowedPathList(env.MANA_AGENT_ALLOWED_PATHS || ""),
+    // MANA_AGENT_ALLOWED_PATHS is always Windows-style (drive letters,
+    // semicolons) since this agent only ever runs on Windows -- pass
+    // platform explicitly rather than deferring to process.platform, so
+    // parsing is deterministic regardless of which OS actually runs it.
+    allowedPaths: parseAllowedPathList(env.MANA_AGENT_ALLOWED_PATHS || "", "win32"),
   };
 }
 
