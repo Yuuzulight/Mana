@@ -259,7 +259,10 @@ function createLocalLlamaRuntime(options = {}) {
     const result = spawnSync(llamaBin, args, {
       encoding: "utf8",
       maxBuffer: 50 * 1024 * 1024,
-      cwd: path.dirname(llamaBin),
+      // llamaBin always names a Windows .exe (this module only supports the
+      // bundled Windows/CUDA llama build) -- path.win32 so this resolves
+      // the same way regardless of which OS Node itself is running on.
+      cwd: path.win32.dirname(llamaBin),
     });
     if (result.error) throw result.error;
     console.log(

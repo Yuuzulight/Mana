@@ -241,6 +241,29 @@ accounting.
   same seeded demo conversation), replacing its own mockup.
 
 ### Fixed
+- **`llama-server-runtime.js`/`local-llama-runtime.js` decomposed a Windows
+  executable path with native `path.dirname`** (found immediately after
+  merging the `acp-path-guard.test.js` fix above: `run_tests.js` exits on
+  the first failing test file, so every earlier `heavy-ci.yml` run in this
+  chain stopped at the `acp-*` files before ever reaching
+  `llama-server-runtime.test.js` -- fixing those unmasked this pre-existing,
+  fourth instance of the same bug class). `findLlamaServerBin()` built a
+  candidate path via `path.join(path.dirname(env.LLAMA_BIN), ...)`, and
+  `startServer()` passed the resolved binary's path to
+  `path.dirname(bin)` for the spawned process's `cwd` -- both native calls,
+  even though `LLAMA_BIN`/the binary path always names a Windows `.exe`
+  (this module only supports the bundled Windows/CUDA llama-server build,
+  never a cross-platform one). On the Linux CI runner, native
+  `path.dirname("C:\\llama\\llama-cli.exe")` doesn't recognize `\` as a
+  separator and returns `"."`, so the derived candidate stopped matching the
+  real file and `findLlamaServerBin()` failed to find it. Twin-checked
+  `local-llama-runtime.js`'s analogous `spawnSync(..., { cwd:
+  path.dirname(llamaBin) })` and found the identical gap (confirmed via its
+  own test's `LLAMA_BIN: "C:\\llama\\llama-cli.exe"` fixture, which would
+  fail the same way once CI got that far). Switched all three sites to
+  `path.win32.dirname`/`path.win32.join`, matching how these paths are
+  always meant to be interpreted regardless of host OS. Verified: full
+  `node-bot` suite (89 files) passes locally.
 - **`acp-path-guard.test.js` built its own expected values with native
   `path.resolve`/`path.join`** (found immediately after merging the
   `acp-path-guard.js` fix above: the merge's push-event `heavy-ci.yml` run
