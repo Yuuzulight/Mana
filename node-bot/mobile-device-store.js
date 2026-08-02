@@ -88,7 +88,7 @@ class MobileDeviceStore {
   }
 
   listDevices() {
-    return JSON.parse(JSON.stringify(this.devices));
+    return structuredClone(this.devices);
   }
 
   findDeviceByToken(token) {
