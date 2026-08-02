@@ -241,6 +241,26 @@ accounting.
   same seeded demo conversation), replacing its own mockup.
 
 ### Fixed
+- **`acp-path-guard.js` claimed a testable `platform` option but only honored
+  it for splitting `allowedPaths`** (found immediately after merging the
+  `acp-autonomous-loop.js` fix above: that merge triggered a real push-event
+  `heavy-ci.yml` run on `main`, which failed again -- a second, previously
+  undiscovered instance of the same bug class in a different module). Its
+  `isInsideRoot()`/`resolveAllowedPath()` called the global, host-native
+  `path.resolve`/`isAbsolute`/`relative` directly instead of respecting the
+  `platform` constructor option, so `platform: "win32"` only worked by
+  accident when the actual host also happened to be Windows -- on the Linux
+  CI runner, 3 of 5 `acp-path-guard.test.js` tests failed (Windows-style
+  absolute paths misread as relative, so an outside path silently resolved
+  as if it were nested inside the workspace/allowed root). Switched all path
+  operations in the module to `path.win32`/`path.posix` based on `platform`
+  (`pathImpl()` helper), matching what `parseAllowedPathList()` already did
+  -- makes the module's behavior deterministic regardless of host OS, as its
+  own `platform` option always implied it should be. Not yet wired into any
+  production code path (`createAcpPathGuard`/`isInsideRoot` are currently
+  only exercised by their own test file), so this has no runtime behavior
+  change today, only fixes the test-vs-CI-host mismatch. Verified: full
+  `node-bot` suite (89 files) passes locally.
 - **`acp-autonomous-loop.js`'s `file_read`/`file_write`/`dir_scan` path guard
   accepted foreign-OS absolute paths as if they were relative** (found while
   preparing a release: `heavy-ci.yml`'s full test suite had been failing on
