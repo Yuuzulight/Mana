@@ -1,21 +1,27 @@
 const path = require("node:path");
 
+function pathImpl(platform) {
+  return platform === "win32" ? path.win32 : path.posix;
+}
+
 function parseAllowedPathList(value = "", platform = process.platform) {
+  const p = pathImpl(platform);
   const separator = platform === "win32" ? ";" : ":";
   return String(value || "")
     .split(separator)
     .map((item) => item.trim())
     .filter(Boolean)
-    .map((item) => path.resolve(item));
+    .map((item) => p.resolve(item));
 }
 
-function isInsideRoot(targetPath, rootPath) {
-  const resolvedTarget = path.resolve(targetPath);
-  const resolvedRoot = path.resolve(rootPath);
-  const relativePath = path.relative(resolvedRoot, resolvedTarget);
+function isInsideRoot(targetPath, rootPath, platform = process.platform) {
+  const p = pathImpl(platform);
+  const resolvedTarget = p.resolve(targetPath);
+  const resolvedRoot = p.resolve(rootPath);
+  const relativePath = p.relative(resolvedRoot, resolvedTarget);
   return (
     relativePath === "" ||
-    (!relativePath.startsWith("..") && !path.isAbsolute(relativePath))
+    (!relativePath.startsWith("..") && !p.isAbsolute(relativePath))
   );
 }
 
@@ -24,7 +30,8 @@ function createAcpPathGuard({
   allowedPaths = "",
   platform = process.platform,
 } = {}) {
-  const workspaceRoot = workspacePath ? path.resolve(workspacePath) : null;
+  const p = pathImpl(platform);
+  const workspaceRoot = workspacePath ? p.resolve(workspacePath) : null;
   const allowedRoots = parseAllowedPathList(allowedPaths, platform);
 
   function resolveAllowedPath(targetPath) {
@@ -33,11 +40,11 @@ function createAcpPathGuard({
     }
 
     const fullPath =
-      workspaceRoot && !path.isAbsolute(targetPath)
-        ? path.resolve(workspaceRoot, targetPath)
-        : path.resolve(targetPath);
+      workspaceRoot && !p.isAbsolute(targetPath)
+        ? p.resolve(workspaceRoot, targetPath)
+        : p.resolve(targetPath);
 
-    if (workspaceRoot && isInsideRoot(fullPath, workspaceRoot)) {
+    if (workspaceRoot && isInsideRoot(fullPath, workspaceRoot, platform)) {
       return {
         allowed: true,
         fullPath,
@@ -46,7 +53,9 @@ function createAcpPathGuard({
       };
     }
 
-    const matchedRoot = allowedRoots.find((root) => isInsideRoot(fullPath, root));
+    const matchedRoot = allowedRoots.find((root) =>
+      isInsideRoot(fullPath, root, platform),
+    );
     if (matchedRoot) {
       return {
         allowed: true,
