@@ -241,6 +241,23 @@ accounting.
   same seeded demo conversation), replacing its own mockup.
 
 ### Fixed
+- **`mana-acp-agent.js`'s Zed config generator and agent path-limit parser
+  used native path handling for Windows-only data** (found immediately after
+  merging the `llama-server-runtime.js` fix above: `heavy-ci.yml` failed a
+  *fifth* time on `main`, this time in `mana-acp-agent.test.js`, once
+  `run_tests.js`'s alphabetical fail-fast finally got past the `l*` files).
+  Two separate instances of the same bug class: `buildZedAgentServerConfig()`
+  joined a Windows `repoRoot` with native `path.join` (the Zed editor
+  external-agent config this generates is always consumed on the user's own
+  Windows machine); and `getAgentLimits()` called `parseAllowedPathList()`
+  (from the `acp-path-guard.js` fix earlier in this chain) without its
+  `platform` argument, silently defaulting to `process.platform` -- on the
+  Linux runner that meant splitting `MANA_AGENT_ALLOWED_PATHS` on `:`
+  instead of `;`, so a single Windows path like `C:\Shared` got split into
+  two bogus entries at its own drive-letter colon. Fixed by switching to
+  `path.win32.join` and passing `platform: "win32"` explicitly, matching
+  every other fix in this chain. Verified: full `node-bot` suite (89 files)
+  passes locally.
 - **`llama-server-runtime.js`/`local-llama-runtime.js` decomposed a Windows
   executable path with native `path.dirname`** (found immediately after
   merging the `acp-path-guard.test.js` fix above: `run_tests.js` exits on
