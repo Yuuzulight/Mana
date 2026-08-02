@@ -10,6 +10,37 @@ const MAX_FILE_READ_BYTES = Number(
   process.env.MAX_FILE_READ_BYTES || 200 * 1024,
 ); // 200 KB
 
+// Windows drive-letter ("C:\" / "C:/") or UNC ("\\server\share") syntax.
+// path.isAbsolute() only recognizes the *host OS's own* absolute-path
+// syntax -- on a POSIX host it doesn't know a drive letter is absolute, so
+// a model-supplied path like "C:\Windows\system.ini" was silently treated
+// as a relative path segment and joined onto REPO_ROOT instead of being
+// rejected as foreign/absolute. These tool-call paths come from untrusted
+// model output, so the guard needs to reject foreign-absolute syntax
+// regardless of which OS actually runs it, not just the host's own.
+const WIN_DRIVE_OR_UNC_RE = /^(?:[a-zA-Z]:[\\/]|\\\\)/;
+
+// Resolves a model-supplied path against REPO_ROOT and confirms it stays
+// inside it, returning the resolved absolute path or null if the request
+// should be rejected. Shared by file_read/file_write/dir_scan so the guard
+// only needs fixing in one place.
+function resolveWithinRepo(requestedPath) {
+  if (
+    WIN_DRIVE_OR_UNC_RE.test(requestedPath) &&
+    !path.isAbsolute(requestedPath)
+  ) {
+    return null;
+  }
+  const resolvedPath = path.isAbsolute(requestedPath)
+    ? path.resolve(requestedPath)
+    : path.resolve(REPO_ROOT, requestedPath);
+  const rel = path.relative(REPO_ROOT, resolvedPath);
+  if (rel.startsWith("..") || (path.isAbsolute(rel) && !rel)) {
+    return null;
+  }
+  return resolvedPath;
+}
+
 // File-write approval settings
 function getApprovalConfig() {
   const requireApproval =
@@ -286,16 +317,8 @@ async function executeAutonomousStep(rawModelReply, sessionId) {
 
       try {
         // Resolve requested path safely within the repository root
-        let resolvedPath;
-        if (path.isAbsolute(requestedPath)) {
-          resolvedPath = path.resolve(requestedPath);
-        } else {
-          resolvedPath = path.resolve(REPO_ROOT, requestedPath);
-        }
-
-        // Ensure the resolved path is inside REPO_ROOT
-        const rel = path.relative(REPO_ROOT, resolvedPath);
-        if (rel.startsWith("..") || (path.isAbsolute(rel) && !rel)) {
+        const resolvedPath = resolveWithinRepo(requestedPath);
+        if (!resolvedPath) {
           results.push({
             tool: "file_read",
             status: "error",
@@ -381,13 +404,8 @@ async function executeAutonomousStep(rawModelReply, sessionId) {
       }
 
       try {
-        let resolvedPath = path.isAbsolute(requestedPath)
-          ? path.resolve(requestedPath)
-          : path.resolve(REPO_ROOT, requestedPath);
-
-        // Ensure inside repo
-        const rel = path.relative(REPO_ROOT, resolvedPath);
-        if (rel.startsWith("..") || (path.isAbsolute(rel) && !rel)) {
+        const resolvedPath = resolveWithinRepo(requestedPath);
+        if (!resolvedPath) {
           results.push({
             tool: "file_write",
             status: "error",
@@ -598,10 +616,7 @@ async function executeAutonomousStep(rawModelReply, sessionId) {
       // Directory scanning tool: returns list of files within a repo-sandboxed path
       const requestedPath = args && args.path ? String(args.path) : ".";
       try {
-        let resolved = requestedPath;
-        if (!path.isAbsolute(requestedPath)) {
-          resolved = path.resolve(REPO_ROOT, requestedPath);
-        }
+        let resolved = resolveWithinRepo(requestedPath);
 
         // Accept a nextToken from callers to continue a previous paginated scan.
         // The nextToken is a base64 JSON string produced by the scanner that contains
@@ -614,9 +629,9 @@ async function executeAutonomousStep(rawModelReply, sessionId) {
             if (tok && tok.root) {
               // Use the token's root if it's within the repo sandbox
               const tokRoot = String(tok.root);
-              const relTok = path.relative(REPO_ROOT, tokRoot);
-              if (!relTok.startsWith("..")) {
-                resolved = tokRoot;
+              const resolvedTokRoot = resolveWithinRepo(tokRoot);
+              if (resolvedTokRoot) {
+                resolved = resolvedTokRoot;
               }
             }
             // If token supplies offset/limit, prefer those over explicit args
@@ -639,8 +654,7 @@ async function executeAutonomousStep(rawModelReply, sessionId) {
           }
         }
 
-        const rel = path.relative(REPO_ROOT, resolved);
-        if (rel.startsWith("..") || (path.isAbsolute(rel) && !rel)) {
+        if (!resolved) {
           results.push({
             tool: "dir_scan",
             status: "error",
