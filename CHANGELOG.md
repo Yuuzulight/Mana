@@ -241,6 +241,18 @@ accounting.
   same seeded demo conversation), replacing its own mockup.
 
 ### Fixed
+- **`heavy-ci.yml`'s `Collect installers` step looked for `.\dist` at the
+  repo root instead of `.\desktop-client\dist`** (found immediately after
+  the Node-version bump above let `Build installer` succeed for the first
+  time ever in this repo's CI history -- so this step had simply never run
+  successfully before, and the bug was never exposed). `electron-builder`
+  runs from `working-directory: ./desktop-client` and writes its output to
+  `desktop-client/dist`, but the next step has no `working-directory`
+  override, so `Get-ChildItem -Path .\dist` resolved from the repo root and
+  always came up empty (`Cannot find path 'D:\a\Mana\Mana\dist'`). Fixed the
+  path to `.\desktop-client\dist`. Verified against this machine's own
+  `desktop-client/dist` from an earlier real local build (issue #104-108),
+  confirming that's genuinely where electron-builder places its output.
 - **`heavy-ci.yml`'s `build-windows` job failed with `ERR_REQUIRE_ESM`
   because its Node pin was stale relative to `desktop-client`'s toolchain**
   (found right after the `tool-policy.js` fix above finally got
