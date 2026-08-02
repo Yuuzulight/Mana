@@ -114,8 +114,7 @@ Mana is intentionally split into small runtime pieces:
 - `tts-service`: local Python service for Kokoro TTS.
 - `tools/whisper`: expected location for local `whisper.cpp` binaries and models.
 - `tools/llama`: expected location for local `llama.cpp` binaries and GGUF models.
-- `windows-native-launcher`: planned lower-memory native Windows launcher.
-- `wsl-bot` and `win-bot`: older experimental paths, not the primary launcher flow.
+- `windows-native-launcher`: planned lower-memory native Windows launcher (see `docs/native_launcher_plan.md`).
 
 ## Local AI And Privacy
 
