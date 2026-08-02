@@ -241,6 +241,23 @@ accounting.
   same seeded demo conversation), replacing its own mockup.
 
 ### Fixed
+- **`/admin/pending-writes/:id/approve` and `/reject` 500'd on a fresh
+  checkout because `PENDING_DIR` was never created before writing into it**
+  (found immediately after merging the `mana-acp-agent.js` fix above:
+  `heavy-ci.yml` failed a *sixth* time on `main`, in
+  `pending-writes-path-safety.test.js` -- a genuinely different, unrelated
+  bug from the Windows-path chain above it). `node-bot/data/` is gitignored,
+  so `PENDING_DIR` only existed on this dev machine because a year of local
+  testing had already created it; a clean CI checkout has no such directory.
+  The sibling `GET /admin/pending-writes` route already does `mkdir(PENDING_DIR,
+  { recursive: true })` before reading it, but `/approve` and `/reject` went
+  straight to `fs.promises.writeFile()`, so their very first real write threw
+  `ENOENT` and got caught by the generic try/catch as a 500. Added the same
+  `mkdir` call to both handlers. Verified by moving `data/pending_writes`
+  aside locally to reproduce a clean-checkout state (test failed exactly as
+  on CI), applying the fix, and confirming both tests pass with the
+  directory absent; full `node-bot` suite (89 files) passes locally with the
+  real local data directory restored afterward.
 - **`mana-acp-agent.js`'s Zed config generator and agent path-limit parser
   used native path handling for Windows-only data** (found immediately after
   merging the `llama-server-runtime.js` fix above: `heavy-ci.yml` failed a
