@@ -241,6 +241,21 @@ accounting.
   same seeded demo conversation), replacing its own mockup.
 
 ### Fixed
+- **`heavy-ci.yml`'s `build-windows` job failed with `ERR_REQUIRE_ESM`
+  because its Node pin was stale relative to `desktop-client`'s toolchain**
+  (found right after the `tool-policy.js` fix above finally got
+  `heavy-node-tests` fully green on `main` for the first time this session --
+  a different, unrelated problem one stage further down the pipeline).
+  `desktop-client`'s `electron-builder@26.15.3` pulls in `@noble/hashes@2.x`,
+  which ships ESM-only; requiring it under the workflow's pinned Node
+  `18.18.0` throws `ERR_REQUIRE_ESM`, and the `npm ci` log was full of
+  `EBADENGINE` warnings for transitive deps now declaring `engines.node`
+  requirements as high as `>=22.12.0`. Bumped both `actions/setup-node`
+  `node-version` pins in `heavy-ci.yml` (the `heavy-node-tests` job and the
+  `build-windows` job) from `'18.18.0'` to `'22'`. Left the *bundled* Node
+  runtime version (`fetch_node_bin.ps1 -Version 18.18.0`, the Node that
+  ships inside the packaged app to run `node-bot`) untouched -- that's a
+  separate, deliberate product decision, not the CI toolchain's own version.
 - **`tool-policy.js`'s `resolveWithinRoot`/`createToolPolicy` used native
   `path` on Windows-style test roots** (found immediately after merging the
   `pending-writes` fix above: `heavy-ci.yml` failed a *seventh* time on
