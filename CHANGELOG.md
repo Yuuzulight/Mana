@@ -241,6 +241,24 @@ accounting.
   same seeded demo conversation), replacing its own mockup.
 
 ### Fixed
+- **`tool-policy.js`'s `resolveWithinRoot`/`createToolPolicy` used native
+  `path` on Windows-style test roots** (found immediately after merging the
+  `pending-writes` fix above: `heavy-ci.yml` failed a *seventh* time on
+  `main`, in `tool-policy.test.js` -- back to the same cross-platform-path
+  bug class as the first five fixes in this chain). Unlike those, this
+  module's real default root (`path.join(__dirname, "..", "..")`) is
+  genuinely host-native and gets exercised by `server.js` on every test file
+  that requires it, so blindly switching to `path.win32` everywhere risked
+  breaking that real default on the Linux CI host. Instead, added a
+  `pathImplFor(root)` helper (the same `WIN_DRIVE_OR_UNC_RE` foreign-path
+  detection used in the very first fix, `acp-autonomous-loop.js`'s
+  `resolveWithinRepo()`): if the root string looks like a Windows drive/UNC
+  path, resolve it with `path.win32`; otherwise fall through to the host's
+  own `path`, preserving the untouched default-root behavior exactly.
+  `resolveWithinRoot`, `createToolPolicy`'s root resolution, and its
+  `readFile`'s credential-basename check all route through this. Verified:
+  full `node-bot` suite (89 files) passes locally, including `server.js`'s
+  own `createToolPolicy({})` call with the real default root untouched.
 - **`/admin/pending-writes/:id/approve` and `/reject` 500'd on a fresh
   checkout because `PENDING_DIR` was never created before writing into it**
   (found immediately after merging the `mana-acp-agent.js` fix above:
