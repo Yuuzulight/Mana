@@ -22,6 +22,14 @@ test("extractArtifact always flags an html fence regardless of size", () => {
   assert.equal(artifact.content, "<p>hi</p>");
 });
 
+test("extractArtifact always flags a mermaid fence regardless of size", () => {
+  const text = "Here's a diagram:\n```mermaid\ngraph TD;\nA-->B;\n```\n";
+  const artifact = extractArtifact(text);
+  assert.ok(artifact);
+  assert.equal(artifact.language, "mermaid");
+  assert.equal(artifact.content, "graph TD;\nA-->B;");
+});
+
 test("extractArtifact flags a non-html fenced block once it's long enough", () => {
   const longContent = "line\n".repeat(100); // well over ARTIFACT_MIN_CHARS
   const text = `Here's the report:\n\`\`\`markdown\n${longContent}\`\`\`\n`;
