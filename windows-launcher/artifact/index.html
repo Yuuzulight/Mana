@@ -39,6 +39,12 @@
   </head>
   <body>
     <div id="artifact-container">Loading...</div>
+    <!-- Plain global-bundle build, not the npm package's ESM entry point --
+         Electron's renderer resolves import()/require() through Chromium's
+         module loader here, which can't resolve mermaid's bare ESM
+         specifier at all, so the browser-global IIFE build loaded as a
+         normal script tag is what actually works. -->
+    <script src="../node_modules/mermaid/dist/mermaid.min.js"></script>
     <script src="renderer.js"></script>
   </body>
 </html>

@@ -5,11 +5,13 @@
 // a real DOM (DOMPurify), so it isn't unit-tested the same way; this part
 // -- the "should we" decision -- doesn't need one and is fully covered.
 
-// An explicit ```html fence is always artifact-worthy regardless of size
-// (it's meant to be viewed, not read as chat text); any other fenced block
-// only qualifies once it's long enough that inlining it would dominate the
-// chat bubble.
+// An explicit ```html or ```mermaid fence is always artifact-worthy
+// regardless of size (both are meant to be viewed/rendered, not read as
+// chat text -- a compact 5-node flowchart is often well under the length
+// threshold below); any other fenced block only qualifies once it's long
+// enough that inlining it would dominate the chat bubble.
 const ARTIFACT_MIN_CHARS = 400;
+const ALWAYS_ARTIFACT_LANGUAGES = new Set(["html", "mermaid"]);
 
 // Returns the first artifact-worthy fenced block in `markdownText`, or
 // null. Only the first match -- a reply naming a second one is treated as
@@ -21,7 +23,7 @@ function extractArtifact(markdownText) {
   while ((match = fenceRegex.exec(text))) {
     const language = (match[1] || "").toLowerCase();
     const content = match[2];
-    if (language === "html" || content.length >= ARTIFACT_MIN_CHARS) {
+    if (ALWAYS_ARTIFACT_LANGUAGES.has(language) || content.length >= ARTIFACT_MIN_CHARS) {
       return {
         language: language || "text",
         content: content.replace(/\s+$/, ""),
@@ -32,4 +34,4 @@ function extractArtifact(markdownText) {
   return null;
 }
 
-module.exports = { ARTIFACT_MIN_CHARS, extractArtifact };
+module.exports = { ARTIFACT_MIN_CHARS, ALWAYS_ARTIFACT_LANGUAGES, extractArtifact };
