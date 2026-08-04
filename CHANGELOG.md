@@ -11,6 +11,15 @@ accounting.
 
 ## [Unreleased]
 
+- Added Mermaid diagram rendering to the artifact system: a ```` ```mermaid ```` fence
+  now opens the standalone artifact window as a real rendered SVG diagram
+  instead of raw text, in both windows-launcher and desktop-client. Mermaid
+  is loaded as its own trusted, Mana-bundled global script (not through the
+  DOMPurify-sanitized HTML-artifact path), with `securityLevel: 'strict'`
+  since diagram text can originate from summarized web content, not just the
+  user. A short diagram now qualifies as an artifact regardless of length,
+  matching how ```` ```html ```` fences already work.
+
 ## [0.3.0] - 2026-08-03
 
 91 merged PRs' worth of changes since 0.2.2 -- a minor bump rather than a
