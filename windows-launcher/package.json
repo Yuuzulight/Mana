@@ -25,6 +25,7 @@
     "@pixiv/three-vrm": "^3.5.5",
     "dompurify": "^3.4.12",
     "marked": "^18.0.7",
+    "mermaid": "^11.16.0",
     "onnxruntime-web": "^1.27.0",
     "pixi-live2d-display": "^0.4.0",
     "pixi.js": "^6.5.10",
