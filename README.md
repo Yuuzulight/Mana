@@ -1,9 +1,3 @@
-<picture>
-  <source srcset="docs/images/banner-dark.svg" media="(prefers-color-scheme: dark)">
-  <source srcset="docs/images/banner-light.svg" media="(prefers-color-scheme: light), (prefers-color-scheme: no-preference)">
-  <img src="docs/images/banner-dark.svg" alt="Mana banner" width="100%">
-</picture>
-
 <h1 align="center">Mana</h1>
 
 <p align="center">A local-first AI companion for Windows — she listens, thinks, remembers, and talks back without your voice or your conversations ever leaving your PC.</p>
@@ -12,6 +6,15 @@
   <a href="LICENSE"><img src="https://img.shields.io/github/license/Yuuzulight/Mana.svg?style=flat&colorA=080f12&colorB=1fa669" alt="License"></a>
   <a href="https://github.com/Yuuzulight/Mana/issues"><img src="https://img.shields.io/github/issues/Yuuzulight/Mana.svg?style=flat&colorA=080f12&colorB=1fa669" alt="Open issues"></a>
   <a href="https://github.com/sponsors/Yuuzulight"><img src="https://img.shields.io/github/sponsors/Yuuzulight?style=flat&colorA=080f12&colorB=1fa669" alt="Sponsors"></a>
+</p>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/Electron-Windows-47848F?logo=electron&logoColor=white" alt="Electron">
+  <img src="https://img.shields.io/badge/Node.js-Backend-339933?logo=nodedotjs&logoColor=white" alt="Node.js">
+  <img src="https://img.shields.io/badge/llama.cpp-Local_LLM-e0b04c" alt="llama.cpp">
+  <img src="https://img.shields.io/badge/whisper.cpp-Local_STT-6cd48a" alt="whisper.cpp">
+  <img src="https://img.shields.io/badge/Live2D-Avatar-ff8fb5" alt="Live2D">
+  <img src="https://img.shields.io/badge/Privacy-Local--first-1fa669" alt="Local-first">
 </p>
 
 <p align="center">
@@ -105,16 +108,45 @@ Building Mana is a one-person, after-hours effort — every wake-word fix, every
 
 ## Architecture
 
-Mana is intentionally split into small runtime pieces:
+Mana is intentionally split into small runtime pieces, all talking to one local backend over `http://localhost:5005`. Nothing below the "Remote AI" box at the bottom leaves your PC unless you explicitly turn it on.
 
-- `windows-launcher`: Electron desktop launcher, microphone capture, avatar overlay control, screen capture, performance panel, and Doctor panel.
-- `desktop-client`: Electron chat client packaged with a real Windows installer (electron-builder/NSIS), including a built-in Live2D avatar (see `desktop-client/AVATAR_NOTICE.md`), a fully context-isolated renderer (`nodeIntegration: false`), a guided first-run setup wizard, and auto-update checking.
-- `node-bot`: local backend API for transcription, replies, TTS calls, screen OCR, mobile routes, and setup checks.
-- `plugins`: self-contained optional feature plugins (FFXIV market/crafting, real-world stock market data, a local job-application tracker, live Adzuna job search, Telegram/Discord remote bridges, document ingestion, and more) that register their own routes, contribute chat-reply context, and are discoverable via `GET /plugins`; see [plugins/README.md](plugins/README.md).
-- `tts-service`: local Python service for Kokoro TTS.
-- `tools/whisper`: expected location for local `whisper.cpp` binaries and models.
-- `tools/llama`: expected location for local `llama.cpp` binaries and GGUF models.
-- `windows-native-launcher`: planned lower-memory native Windows launcher (see `docs/native_launcher_plan.md`).
+<p align="center">
+  <img src="docs/images/mana-architecture.svg" alt="Mana system architecture" width="100%">
+</p>
+
+```text
+Mana/
+├── windows-launcher/         # Electron desktop launcher — mic capture, avatar overlay, Doctor panel
+├── desktop-client/           # Electron chat client — packaged NSIS installer, context-isolated renderer
+├── node-bot/                 # Local backend API (http://localhost:5005)
+│   ├── server.js             # Request routing, tool-calling loop, approval-gate
+│   ├── ai/                   # LLM prompt assembly, tool sources, memory tooling
+│   ├── acp-memory-store.js   # Hebbian memory graph, session memory, contradiction-detection
+│   ├── skills/               # Procedural memory ("how I did X last time")
+│   ├── capabilities/         # Extracted admin/retriever route modules
+│   ├── mcp-server.js         # Model Context Protocol server (opt-in)
+│   └── test/                 # node:test suite
+├── plugins/                  # Self-contained optional feature plugins — see plugins/README.md
+│   ├── ffxiv-market/         # Universalis crafting/market data
+│   ├── stock-market/         # Alpha Vantage stock summaries
+│   ├── job-search-adzuna/    # Live job postings
+│   ├── job-applications/     # Local application tracker
+│   ├── document-reader/      # PDF/URL ingestion into the retriever
+│   ├── image-generation/     # Automatic1111/ComfyUI text-to-image (off by default)
+│   ├── video-watch/          # yt-dlp + Whisper + vision video summarization
+│   ├── screen-sensing/       # Privacy-gated ambient screen awareness
+│   ├── browser-automation/   # Playwright-driven browser control
+│   ├── telegram-bridge/      # Remote messaging via Telegram
+│   ├── discord-bot/          # Remote messaging + voice channels via Discord
+│   ├── cron-scheduler/       # Built-in scheduled tasks
+│   └── obsidian-plugin/      # Syncs Mana's memory into an Obsidian vault
+├── tools/
+│   ├── whisper/               # Expected location for local whisper.cpp binaries and models
+│   └── llama/                 # Expected location for local llama.cpp binaries and GGUF models
+├── tts-service/               # Local Python service for Kokoro TTS
+├── docs/                      # Setup guides and roadmap notes
+└── windows-native-launcher/   # Planned lower-memory native launcher (docs/native_launcher_plan.md)
+```
 
 ## Local AI And Privacy
 
@@ -130,6 +162,25 @@ Default behavior:
 - Web search runs through a local SearXNG instance (no third-party search API, no key); wiki lookups and page reads Mana is pointed at do reach the public internet, since that's inherent to what they do. See [docs/web_access_setup.md](docs/web_access_setup.md). Set `MANA_WEB_ACCESS_ENABLED=0` to turn all of it off.
 
 Remote AI is an explicit escape hatch, not the default path.
+
+## Configuration
+
+| Variable | Purpose |
+|---|---|
+| `LLAMA_BIN` | Path to the `llama.cpp` binary used for local replies |
+| `LLAMA_MODEL` | Path to the active GGUF model; unset searches local folders (see [Model Stack](#model-stack)) |
+| `WHISPER_BIN` | Path to the `whisper.cpp` binary used for transcription |
+| `WHISPER_MODEL` | Path to the active Whisper model |
+| `TTS_PROVIDER` | TTS backend: Fish Speech (`fish`, default), Kokoro, or GPT-SoVITS |
+| `OPENAI_API_KEY` | Remote AI key — ignored unless `MANA_ALLOW_REMOTE_AI=1` |
+| `MANA_ALLOW_REMOTE_AI` | Set to `1` to opt into remote AI; unset/`0` keeps everything local |
+| `MANA_WEB_ACCESS_ENABLED` | Set to `0` to disable local SearXNG web search, wiki lookups, and page reads |
+| `MANA_VISION_HOTKEY` | Screen-description hotkey (default `Ctrl+Alt+M`) |
+| `ZED_BIN` | Path to the Zed CLI, for editor handoff |
+| `VSCODE_BIN` | Path to the VS Code CLI, for editor handoff |
+| `MANA_DEFAULT_EDITOR` | Default editor when none is specified in an open request (`zed` or `code`) |
+
+See [docs/quick_start_windows.md](docs/quick_start_windows.md) for the full setup flow, and the per-feature docs linked in [Docs By Goal](#docs-by-goal) for feature-specific variables.
 
 ## Editor Integration
 
@@ -164,13 +215,13 @@ Current behavior:
 
 ## Model Stack
 
-The intended local model stack is:
-
-- **Primary chat**: `Qwen3-4B-Q4_K_M.gguf`
-- **Fast fallback**: `qwen2.5-1.5b-instruct-q4_k_m.gguf`
-- **Quality mode**: `Qwen3-14B-Q4_K_M.gguf` (falls back to `Qwen3-8B-Q4_K_M.gguf` if not downloaded)
-- **Coding mode**: `qwen2.5-coder-7b-instruct-q4_k_m.gguf`
-- **Vision (optional)**: a multimodal GGUF such as `Qwen2.5-VL-3B-Instruct-Q4_K_M.gguf` plus its `mmproj` file; see [docs/vision_setup.md](docs/vision_setup.md)
+| Profile | Model | Notes |
+|---|---|---|
+| Primary chat | `Qwen3-4B-Q4_K_M.gguf` | Default profile |
+| Fast fallback | `qwen2.5-1.5b-instruct-q4_k_m.gguf` | Used when `LLAMA_MODEL` is unset and the 4B model isn't found |
+| Quality mode | `Qwen3-14B-Q4_K_M.gguf` | Falls back to `Qwen3-8B-Q4_K_M.gguf` if not downloaded |
+| Coding mode | `qwen2.5-coder-7b-instruct-q4_k_m.gguf` | Used for editor-handoff and coding replies |
+| Vision (optional) | `Qwen2.5-VL-3B-Instruct-Q4_K_M.gguf` + its `mmproj` file | See [docs/vision_setup.md](docs/vision_setup.md) |
 
 If `LLAMA_MODEL` is unset, Mana searches local model folders and chooses the default profile in order: 4B, 1.5B, then 8B.
 
@@ -236,36 +287,37 @@ The main backend listens on `http://localhost:5005` by default.
 
 Useful endpoints:
 
-- `GET /health`: basic backend status.
-- `GET /doctor`: setup and readiness checks.
-- `GET /perf/status`: local performance and process metrics.
-- `GET /plugins`: discover loaded plugins grouped by category (see [plugins/README.md](plugins/README.md)).
-- `POST /v1/chat/completions`, `POST /v1/embeddings`, `GET /v1/models`: OpenAI-compatible routes for external tools.
-- `GET /editors/status`: local editor CLI availability.
-- `POST /editors/open`: open an existing file or folder in Zed or VS Code.
-- `GET /editors/workspace`: active local coding workspace.
-- `POST /editors/workspace`: set the active local coding workspace.
-- `GET /editors/workspace/files`: list active workspace files.
-- `GET /editors/workspace/file`: read one bounded file inside the active workspace.
-- `GET /editors/workspace/proposals`: list pending edit proposals.
-- `POST /editors/workspace/proposals`: create an in-memory edit proposal.
-- `GET /editors/workspace/proposals/:id`: inspect one edit proposal and preview diff.
-- `GET /zed/status`: Zed CLI availability.
-- `POST /zed/open`: open an existing file or folder in Zed.
-- `POST /transcribe`: audio upload, transcription, and reply.
-- `POST /transcribe-only`: audio upload and transcription only.
-- `POST /reply`: text reply from Mana; accepts an optional `image` for vision replies.
-- `POST /vision/describe`: local vision-model reply about an image.
-- `POST /synthesize`: TTS audio for text.
-- `POST /screen/read`: local OCR for a screen image.
-- `POST /web/search`: web search via local SearXNG.
-- `POST /web/read`: read and summarize a specific page.
-- `GET /wiki/:term`: Wikipedia summary lookup.
-- `GET /ffxiv/market`: Universalis market lookup.
-- `GET /ffxiv/crafting/profit`: craft-profit scan.
-- `GET /market/stock/summary`: stock summary.
-- `GET /market/stock/compare`: stock comparison.
-- `GET /market/watchlist`: configured watchlist summary.
+| Method &amp; Path | Description |
+|---|---|
+| `GET /health` | Basic backend status |
+| `GET /doctor` | Setup and readiness checks |
+| `GET /perf/status` | Local performance and process metrics |
+| `GET /plugins` | Discover loaded plugins grouped by category (see [plugins/README.md](plugins/README.md)) |
+| `POST /v1/chat/completions`, `POST /v1/embeddings`, `GET /v1/models` | OpenAI-compatible routes for external tools |
+| `GET /editors/status` | Local editor CLI availability |
+| `POST /editors/open` | Open an existing file or folder in Zed or VS Code |
+| `GET /editors/workspace` / `POST /editors/workspace` | Read or set the active local coding workspace |
+| `GET /editors/workspace/files` | List active workspace files |
+| `GET /editors/workspace/file` | Read one bounded file inside the active workspace |
+| `GET /editors/workspace/proposals` | List pending edit proposals |
+| `POST /editors/workspace/proposals` | Create an in-memory edit proposal |
+| `GET /editors/workspace/proposals/:id` | Inspect one edit proposal and preview diff |
+| `GET /zed/status` | Zed CLI availability |
+| `POST /zed/open` | Open an existing file or folder in Zed |
+| `POST /transcribe` | Audio upload, transcription, and reply |
+| `POST /transcribe-only` | Audio upload and transcription only |
+| `POST /reply` | Text reply from Mana; accepts an optional `image` for vision replies |
+| `POST /vision/describe` | Local vision-model reply about an image |
+| `POST /synthesize` | TTS audio for text |
+| `POST /screen/read` | Local OCR for a screen image |
+| `POST /web/search` | Web search via local SearXNG |
+| `POST /web/read` | Read and summarize a specific page |
+| `GET /wiki/:term` | Wikipedia summary lookup |
+| `GET /ffxiv/market` | Universalis market lookup |
+| `GET /ffxiv/crafting/profit` | Craft-profit scan |
+| `GET /market/stock/summary` | Stock summary |
+| `GET /market/stock/compare` | Stock comparison |
+| `GET /market/watchlist` | Configured watchlist summary |
 
 See [node-bot/README.md](node-bot/README.md) for backend-specific details.
 
