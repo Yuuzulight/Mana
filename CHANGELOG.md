@@ -20,6 +20,18 @@ accounting.
   user. A short diagram now qualifies as an artifact regardless of length,
   matching how ```` ```html ```` fences already work.
 
+- Added a speaker-attribution guard on memory writes (issue #317): the
+  `memory__remember` tool now checks whether the fact it's about to save
+  actually overlaps something the user said in the current turn (via a
+  deterministic keyword-overlap ratio, the same technique the existing
+  fact-conflict check already uses -- no extra LLM call). A fact that fails
+  the check is stored as `unverifiedSource: true` rather than rejected --
+  visible to the model so a later correction still patches the same key, but
+  excluded from automatic surfacing into future replies as trusted context.
+  Checked against the raw transcript specifically, not the assembled prompt
+  (which is already blended with screen OCR, market data, and retrieved web
+  content by the time a tool call happens).
+
 ## [0.3.0] - 2026-08-03
 
 91 merged PRs' worth of changes since 0.2.2 -- a minor bump rather than a

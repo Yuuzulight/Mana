@@ -3867,7 +3867,18 @@ function registerRoutes(app, upload, deps = {}) {
           // GET /plugins) already respects.
           let mergedToolPolicy = await buildToolPolicy(activeToolPolicy, [
             activeMcpClientRegistry,
-            createMemoryToolSource({ acpMemoryStore, sessionId, approvalGate: activeApprovalGate }),
+            createMemoryToolSource({
+              acpMemoryStore,
+              sessionId,
+              approvalGate: activeApprovalGate,
+              // Issue #317: deliberately `transcript` (the raw user turn),
+              // not `prompt`/`finalPrompt` -- both of those are already
+              // blended with screen OCR, market data, and retrieved web
+              // content by this point, which would let a memory__remember
+              // call "attribute" itself to injected content instead of
+              // something the user actually said.
+              userMessage: transcript,
+            }),
             createSessionSearchToolSource({ acpMemoryStore, sessionId }),
             createSkillToolSource({ approvalGate: activeApprovalGate, skillsStore: activeSkillsStore }),
             // Issue #253: lets Mana pick her own Live2D expression for this
