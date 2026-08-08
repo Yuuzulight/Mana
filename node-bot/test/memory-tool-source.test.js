@@ -87,6 +87,61 @@ test("executeTool forwards key/text/action to acpMemoryStore.rememberFact, with 
   assert.equal(result, JSON.stringify({ ok: true, action: "patch" }));
 });
 
+test("executeTool flags unverifiedSource when the fact text doesn't overlap the current turn's userMessage (issue #317)", async () => {
+  const acpMemoryStore = fakeAcpMemoryStore();
+  const source = createMemoryToolSource({
+    acpMemoryStore,
+    sessionId: "session-a",
+    userMessage: "let's talk about the weather today",
+  });
+  await source.executeTool(`${MEMORY_TOOL_PREFIX}remember`, {
+    key: "the user's GPU",
+    text: "The user owns an RTX 5080 graphics card",
+    action: "insert",
+  });
+  assert.equal(acpMemoryStore.calls[0].unverifiedSource, true);
+});
+
+test("executeTool does NOT flag unverifiedSource when the fact text overlaps the current turn's userMessage", async () => {
+  const acpMemoryStore = fakeAcpMemoryStore();
+  const source = createMemoryToolSource({
+    acpMemoryStore,
+    sessionId: "session-a",
+    userMessage: "I just picked up an RTX 5080 graphics card for my build",
+  });
+  await source.executeTool(`${MEMORY_TOOL_PREFIX}remember`, {
+    key: "the user's GPU",
+    text: "The user owns an RTX 5080 graphics card",
+    action: "insert",
+  });
+  assert.equal("unverifiedSource" in acpMemoryStore.calls[0], false);
+});
+
+test("executeTool leaves unverifiedSource unset when no userMessage is available (fail open, back-compat)", async () => {
+  const acpMemoryStore = fakeAcpMemoryStore();
+  const source = createMemoryToolSource({ acpMemoryStore, sessionId: "session-a" });
+  await source.executeTool(`${MEMORY_TOOL_PREFIX}remember`, {
+    key: "the user's GPU",
+    text: "The user owns an RTX 5080 graphics card",
+    action: "insert",
+  });
+  assert.equal("unverifiedSource" in acpMemoryStore.calls[0], false);
+});
+
+test("executeTool skips the attribution check for remove/archive, which carry no text to attribute", async () => {
+  const acpMemoryStore = fakeAcpMemoryStore();
+  const source = createMemoryToolSource({
+    acpMemoryStore,
+    sessionId: "session-a",
+    userMessage: "totally unrelated message",
+  });
+  await source.executeTool(`${MEMORY_TOOL_PREFIX}remember`, {
+    key: "the user's GPU",
+    action: "remove",
+  });
+  assert.equal("unverifiedSource" in acpMemoryStore.calls[0], false);
+});
+
 test("executeTool wraps a possibleConflict.preview with a data-not-instructions framing, same as the already-remembered index", async () => {
   const acpMemoryStore = fakeAcpMemoryStore(() => ({
     ok: true,

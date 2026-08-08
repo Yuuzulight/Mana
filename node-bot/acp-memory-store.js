@@ -262,7 +262,15 @@ function createAcpMemoryStore(options = {}) {
   // getRelatedFacts' automatic key-match surfacing and listFactKeys' tool
   // description, but never deleted.
   const MAX_FACT_HISTORY = 5;
-  function rememberFact({ sessionId, key, text, action } = {}) {
+  // unverifiedSource (issue #317): set by the caller (memory-tool-source.js's
+  // speaker-attribution guard) when the proposed text doesn't look
+  // traceable to anything the user actually said this turn. Stored as its
+  // own flag, orthogonal to `status` -- a fact can be freshly-inserted,
+  // active, AND unverified all at once. Excluded from gatherRelatedFactsBlocks'
+  // automatic surfacing below (same treatment as an archived fact), but NOT
+  // from listFactKeys -- the model still needs to see it exists so a later
+  // correction patches this key instead of creating a duplicate.
+  function rememberFact({ sessionId, key, text, action, unverifiedSource } = {}) {
     const cleanKey = cleanText(key, 200);
     if (!cleanKey) {
       throw new Error("key is required");
@@ -301,8 +309,19 @@ function createAcpMemoryStore(options = {}) {
       existing.history = history.slice(-MAX_FACT_HISTORY);
       existing.text = cleanTextValue;
       existing.updatedAt = timestamp;
+      if (unverifiedSource) {
+        existing.unverifiedSource = true;
+      } else {
+        delete existing.unverifiedSource;
+      }
       saveFacts(facts);
-      return { ok: true, action: "patch", key: cleanKey, text: cleanTextValue };
+      return {
+        ok: true,
+        action: "patch",
+        key: cleanKey,
+        text: cleanTextValue,
+        ...(unverifiedSource ? { unverifiedSource: true } : {}),
+      };
     }
 
     // insert -- either explicitly requested, or "patch" with nothing yet
@@ -316,6 +335,7 @@ function createAcpMemoryStore(options = {}) {
       status: "active",
       createdAt: timestamp,
       updatedAt: timestamp,
+      ...(unverifiedSource ? { unverifiedSource: true } : {}),
     });
     saveFacts(facts.slice(-maxFacts));
     return {
@@ -323,6 +343,7 @@ function createAcpMemoryStore(options = {}) {
       action: "insert",
       key: cleanKey,
       text: cleanTextValue,
+      ...(unverifiedSource ? { unverifiedSource: true } : {}),
       ...(conflict
         ? { possibleConflict: { key: conflict.key, preview: cleanText(conflict.text, 80) } }
         : {}),
@@ -368,7 +389,11 @@ function createAcpMemoryStore(options = {}) {
     const lowerText = String(text || "").toLowerCase();
     const factLines = [];
     for (const fact of loadFacts()) {
-      if (fact.status !== "active") continue;
+      // Issue #317: unverifiedSource facts stay in the store (and in
+      // listFactKeys, so a later correction patches this key instead of
+      // duplicating it) but never get surfaced here as trusted context --
+      // same "don't auto-inject" treatment status !== "active" already gets.
+      if (fact.status !== "active" || fact.unverifiedSource) continue;
       if (!lowerText.includes(fact.key.toLowerCase())) continue;
       factLines.push(`- ${fact.key}: ${fact.text}`);
     }
