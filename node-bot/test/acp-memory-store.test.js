@@ -823,6 +823,48 @@ test("rememberFact insert reports no possibleConflict for genuinely unrelated fa
   assert.equal("possibleConflict" in result, false);
 });
 
+test("rememberFact insert stores unverifiedSource and it stops auto-surfacing but isn't deleted (issue #317)", () => {
+  const store = createAcpMemoryStore({ dataDir: createTempDir() });
+  const result = store.rememberFact({
+    key: "the user's GPU",
+    text: "the user owns an RTX 5080",
+    unverifiedSource: true,
+  });
+  assert.equal(result.unverifiedSource, true);
+
+  // Stops auto-surfacing as trusted context...
+  assert.equal(store.getRelatedFacts("what's the user's GPU?"), "");
+
+  // ...but listFactKeys still shows it exists, so a later correction
+  // patches this key instead of duplicating it.
+  const keys = store.listFactKeys();
+  assert.ok(keys.some((k) => k.key === "the user's GPU"));
+});
+
+test("rememberFact patch clears unverifiedSource once a later correction is attributable, and re-sets it if the correction isn't", () => {
+  const store = createAcpMemoryStore({ dataDir: createTempDir() });
+  store.rememberFact({ key: "the user's GPU", text: "an old value", unverifiedSource: true });
+  assert.equal(store.getRelatedFacts("what's the user's GPU?"), "");
+
+  store.rememberFact({ key: "the user's GPU", text: "RTX 5080, confirmed", action: "patch" });
+  assert.match(store.getRelatedFacts("what's the user's GPU?"), /RTX 5080, confirmed/);
+
+  store.rememberFact({
+    key: "the user's GPU",
+    text: "something else entirely",
+    action: "patch",
+    unverifiedSource: true,
+  });
+  assert.equal(store.getRelatedFacts("what's the user's GPU?"), "");
+});
+
+test("rememberFact insert without unverifiedSource behaves exactly as before (back-compat, no stray field on the stored fact)", () => {
+  const store = createAcpMemoryStore({ dataDir: createTempDir() });
+  const result = store.rememberFact({ key: "favorite color", text: "teal" });
+  assert.equal("unverifiedSource" in result, false);
+  assert.match(store.getRelatedFacts("what's the favorite color?"), /teal/);
+});
+
 test("rememberFact archive marks a fact archived (distinct from stale) and it stops auto-surfacing but isn't deleted (issue #277)", () => {
   const store = createAcpMemoryStore({ dataDir: createTempDir() });
   store.rememberFact({ key: "Old Project", text: "still true, just not relevant right now" });

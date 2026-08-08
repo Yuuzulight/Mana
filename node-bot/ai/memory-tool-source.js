@@ -7,7 +7,28 @@
 // established (buildToolPolicyWithMcp/buildToolPolicyWithBrowserAutomation)
 // -- combines a base {tools, isKnownTool, executeTool} policy with this
 // source's tool into one object matching that exact shape.
+const { significantWords, sharedWordCount } = require("../utils/word-overlap");
+
 const MEMORY_TOOL_PREFIX = "memory__";
+
+// Issue #317: a speaker-attribution guard, distinct from findConflictingFact's
+// existing contradiction-detection in acp-memory-store.js -- that checks
+// "does this fact disagree with something else already stored", this checks
+// "did the user actually say this, or is the model writing its own
+// improvisation into memory as if they did". Same deterministic
+// keyword-overlap technique as findConflictingFact (not an LLM call), just a
+// ratio instead of an absolute count: a short fact only needs a couple of
+// words to match, a long one needs proportionally more.
+const MIN_ATTRIBUTION_RATIO = 0.5;
+function looksAttributableToUser(factText, userMessage) {
+  const factWords = significantWords(factText);
+  // Nothing meaningful to check (e.g. a fact that's all short/common
+  // words), or no current-turn user text available to check against --
+  // fail open rather than flag something this check can't actually judge.
+  if (!factWords.length || !userMessage) return true;
+  const userWords = significantWords(userMessage);
+  return sharedWordCount(factWords, userWords) / factWords.length >= MIN_ATTRIBUTION_RATIO;
+}
 
 const REMEMBER_BASE_DESCRIPTION =
   "Explicitly save, update, or forget a specific fact worth remembering across future conversations -- for something clearly worth persisting right now (a stated preference, a correction, a decision), not for routine chat, which is already remembered automatically.";
@@ -126,10 +147,17 @@ function framePossibleConflict(result) {
 // gating -- when provided, a remember call is staged for approval the same
 // way a skill write is, instead of landing immediately. Omitted in
 // tests/callers that don't wire one, which write immediately (back-compat).
+// options.userMessage: optional, the current turn's raw transcript (server.js
+// passes its own `transcript` param here, deliberately NOT `prompt`/
+// `finalPrompt` -- both of those are already blended with screen OCR, market
+// data, and retrieved web content by the time they reach this call site,
+// which would defeat the point of an attribution check). Omitted callers
+// fail open (see looksAttributableToUser) rather than flag everything.
 function createMemoryToolSource(options = {}) {
   const acpMemoryStore = options.acpMemoryStore;
   const sessionId = options.sessionId || null;
   const approvalGate = options.approvalGate || null;
+  const userMessage = options.userMessage || null;
   if (!acpMemoryStore) {
     throw new Error("acpMemoryStore is required");
   }
@@ -150,6 +178,11 @@ function createMemoryToolSource(options = {}) {
       key: args?.key,
       text: args?.text,
       action: args?.action,
+      // Only insert/patch actually carry text to check -- remove/archive
+      // don't assert a new fact, nothing to attribute.
+      ...(args?.text && !looksAttributableToUser(args.text, userMessage)
+        ? { unverifiedSource: true }
+        : {}),
     };
 
     if (!approvalGate) {
