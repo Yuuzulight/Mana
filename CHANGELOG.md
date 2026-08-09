@@ -11,6 +11,18 @@ accounting.
 
 ## [Unreleased]
 
+- Added proactive Doctor tray notifications (issue #325): a periodic Doctor poll
+  (`node-bot/doctor-tray-poll.js`) now notifies the tray only on a fresh warn/fail
+  transition, and windows-launcher connects to the existing `/ws/tray` broadcast
+  pipeline to show it via the tray tooltip/balloon -- previously Doctor only ran
+  on-demand (when the popup opened) and nothing ever listened to that pipeline.
+  Along the way, fixed a real, previously-undetected bug: `caption-server.js` and
+  `tray-server.js` both attached `WebSocket.Server({ server, path })` directly to
+  the same HTTP server, and `ws`'s internal handler aborts the handshake with 400
+  for any path it doesn't own rather than leaving the socket for the next
+  listener -- so every `/ws/tray` upgrade was silently killed by caption-server's
+  listener (registered first) before tray-server ever saw it. Both now use
+  `noServer: true` with their own path check.
 - Added a Memory browser to Settings (issue #324): `acp-memory-store.js`'s remembered-fact
   store (`memory__remember`) previously had no admin surface at all -- the only way to see a
   fact's `unverifiedSource` flag (issue #317), status, or text was reading `facts.json` by
