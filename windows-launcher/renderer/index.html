@@ -633,7 +633,7 @@
       }
 
       /* Panels reused inside the sidebar (Model / Doctor / Settings) */
-      #perfPanel, #doctorPanel, #modelPanel, #presetPanel, #themePanel, #pluginsPanel, #logsPanel, #skillsPanel {
+      #perfPanel, #doctorPanel, #modelPanel, #presetPanel, #themePanel, #pluginsPanel, #logsPanel, #skillsPanel, #memoryPanel {
         margin-bottom: 12px;
         padding: 10px;
         border: 1px solid var(--border);
@@ -691,6 +691,10 @@
       }
       .plugin-switch.on { border-color: var(--accent); }
       .plugin-switch.on::after { left: 17px; background: var(--accent); }
+
+      #memorySearchInput { width: 100%; margin: 8px 0; }
+      .memory-fact-flag { color: #e0a030; font-size: 11px; }
+      .memory-archive-btn { flex-shrink: 0; padding: 3px 9px; font-size: 11px; }
 
       #backendLogs {
         max-height: 220px;
@@ -1622,6 +1626,14 @@
               </div>
               <input id="pluginsSearchInput" type="text" placeholder="Search plugins..." />
               <div id="pluginsList">
+                <p class="sidebar-note">Loading...</p>
+              </div>
+            </div>
+
+            <div id="memoryPanel">
+              <strong>Memory</strong>
+              <input id="memorySearchInput" type="text" placeholder="Search remembered facts..." />
+              <div id="memoryFactsList">
                 <p class="sidebar-note">Loading...</p>
               </div>
             </div>

@@ -931,6 +931,21 @@ test("listFactKeys returns only active facts' key+short preview, not removed one
   assert.deepEqual(keys, [{ key: "the user's GPU", preview: "RTX 5080, upgraded from a 3070 Ti" }]);
 });
 
+test("listFacts returns every status and field, including unverifiedSource, unlike listFactKeys", () => {
+  const store = createAcpMemoryStore({ dataDir: createTempDir() });
+  store.rememberFact({ key: "gpu", text: "RTX 5080", unverifiedSource: true });
+  store.rememberFact({ key: "Old Fact", text: "no longer true" });
+  store.rememberFact({ key: "Old Fact", action: "remove" });
+
+  const facts = store.listFacts();
+  assert.equal(facts.length, 2);
+  const gpuFact = facts.find((f) => f.key === "gpu");
+  assert.equal(gpuFact.unverifiedSource, true);
+  assert.equal(gpuFact.status, "active");
+  const removedFact = facts.find((f) => f.key === "Old Fact");
+  assert.equal(removedFact.status, "stale");
+});
+
 test("getRelatedFacts surfaces a remembered fact under its own 'Remembered:' block", () => {
   const store = createAcpMemoryStore({ dataDir: createTempDir() });
   store.rememberFact({

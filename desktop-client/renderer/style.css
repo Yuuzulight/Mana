@@ -261,6 +261,9 @@ select{font-family:inherit;color:var(--text)}
 .plugin-switch.on{background:var(--accent-glow);border-color:var(--accent-dim);}
 .plugin-switch.on::after{transform:translateX(14px);background:var(--accent);}
 .plugin-switch:disabled{opacity:0.6;cursor:default;}
+.memory-fact-flag{color:#e0a030;font-size:11px;}
+.memory-archive-btn{flex-shrink:0;}
+#memorySearchInput{width:100%;margin-bottom:10px;}
 
 /* Model selection (Settings > Model + onboarding's Local AI model item) */
 .model-actions{display:flex;gap:8px;margin-top:8px;}
