@@ -247,6 +247,14 @@ function createAcpMemoryStore(options = {}) {
       .map((f) => ({ key: f.key, preview: cleanText(f.text, 80) }));
   }
 
+  // Issue #324: full-detail listing (every status, every field including
+  // unverifiedSource) for the Settings "Memory" browser -- distinct from
+  // listFactKeys above, which deliberately strips detail down to what the
+  // model's own tool description needs.
+  function listFacts() {
+    return loadFacts();
+  }
+
   function saveFacts(facts) {
     writeJsonObject(factsPath, { facts });
   }
@@ -1031,6 +1039,7 @@ function createAcpMemoryStore(options = {}) {
     getRelatedFactsEntries,
     rememberFact,
     listFactKeys,
+    listFacts,
     searchSessions,
     memoryGraph,
     getUserAffect,
