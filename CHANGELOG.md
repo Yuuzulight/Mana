@@ -11,6 +11,12 @@ accounting.
 
 ## [Unreleased]
 
+- Added a Memory browser to Settings (issue #324): `acp-memory-store.js`'s remembered-fact
+  store (`memory__remember`) previously had no admin surface at all -- the only way to see a
+  fact's `unverifiedSource` flag (issue #317), status, or text was reading `facts.json` by
+  hand. Added `GET /admin/memory/facts` and `POST /admin/memory/facts/:key/archive`
+  (`node-bot/capabilities/memory-facts-capability.js`) and a searchable "Memory" panel in
+  both apps' Settings.
 - Added a Doctor panel check for session search's vector index (issue #321):
   `session-search-index.js` already exposed a `vectorEnabled()` getter so
   callers could tell whether sqlite-vec's native extension actually loaded,
