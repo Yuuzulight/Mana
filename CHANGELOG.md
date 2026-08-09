@@ -17,6 +17,11 @@ accounting.
   hand. Added `GET /admin/memory/facts` and `POST /admin/memory/facts/:key/archive`
   (`node-bot/capabilities/memory-facts-capability.js`) and a searchable "Memory" panel in
   both apps' Settings.
+- Fixed the auto-update download step being able to hang forever with no error (issue #323):
+  `desktop-client/update-manager.js`'s `downloadUpdate()` call now races against a 5-minute
+  timeout (configurable via `MANA_UPDATE_DOWNLOAD_TIMEOUT_MS`), surfacing a clear "timed out"
+  error through the existing status UI instead of leaving the user stuck on "Downloading
+  update..." indefinitely.
 - Added a Doctor panel check for session search's vector index (issue #321):
   `session-search-index.js` already exposed a `vectorEnabled()` getter so
   callers could tell whether sqlite-vec's native extension actually loaded,
