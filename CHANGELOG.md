@@ -11,6 +11,11 @@ accounting.
 
 ## [Unreleased]
 
+- Added `node-bot/service/check-mana-service.ps1` (issue #326): one-shot health
+  summary for the NSSM-managed `ManaNodeBot` service -- `Get-Service` status,
+  `/health`, and a per-check `/doctor` summary -- without opening either
+  Electron app. Exits non-zero on a down service/unreachable backend/any
+  `/doctor` `fail`, so it's usable from a scheduled task.
 - Added proactive Doctor tray notifications (issue #325): a periodic Doctor poll
   (`node-bot/doctor-tray-poll.js`) now notifies the tray only on a fresh warn/fail
   transition, and windows-launcher connects to the existing `/ws/tray` broadcast
