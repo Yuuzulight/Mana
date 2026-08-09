@@ -11,6 +11,14 @@ accounting.
 
 ## [Unreleased]
 
+- Added a Doctor panel check for session search's vector index (issue #321):
+  `session-search-index.js` already exposed a `vectorEnabled()` getter so
+  callers could tell whether sqlite-vec's native extension actually loaded,
+  but nothing outside a startup console warning ever read it -- a failed
+  load (a missing platform-specific `sqlite-vec-<platform>-<arch>` package,
+  even when correctly pinned) silently degraded session search to
+  keyword-only with no visible signal. Now surfaced as a pass/warn check in
+  the Doctor panel.
 - Added Mermaid diagram rendering to the artifact system: a ```` ```mermaid ```` fence
   now opens the standalone artifact window as a real rendered SVG diagram
   instead of raw text, in both windows-launcher and desktop-client. Mermaid
