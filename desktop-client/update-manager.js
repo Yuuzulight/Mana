@@ -8,6 +8,14 @@ function isAutoUpdateEnabled(env = process.env) {
   return env.MANA_AUTO_UPDATE_ENABLED !== "0";
 }
 
+// Issue #323: downloadUpdate() has been observed to hang indefinitely on
+// this machine -- neither resolving nor rejecting -- which left the UI
+// stuck on "Downloading update..." forever with no error and no way to
+// retry short of restarting the app. Racing it against a timeout turns
+// that hang into a normal, displayable error instead.
+const DOWNLOAD_TIMEOUT_MS =
+  Number(process.env.MANA_UPDATE_DOWNLOAD_TIMEOUT_MS) || 5 * 60 * 1000;
+
 function createUpdateManager({ getMainWindow, log = console } = {}) {
   const { autoUpdater } = require("electron-updater");
   const { dialog } = require("electron");
@@ -16,6 +24,22 @@ function createUpdateManager({ getMainWindow, log = console } = {}) {
   autoUpdater.autoInstallOnAppQuit = false;
 
   let lastStatus = { state: "idle", message: "" };
+
+  function downloadWithTimeout() {
+    // The loser of the race keeps running in the background -- if the real
+    // download settles after the timeout already won, swallow it here so a
+    // late rejection doesn't surface as an unhandled promise rejection.
+    const realDownload = autoUpdater.downloadUpdate();
+    realDownload.catch(() => {});
+    return Promise.race([
+      realDownload,
+      new Promise((_resolve, reject) => {
+        setTimeout(() => {
+          reject(new Error(`Download timed out after ${Math.round(DOWNLOAD_TIMEOUT_MS / 1000)}s -- check your connection and try again`));
+        }, DOWNLOAD_TIMEOUT_MS);
+      }),
+    ]);
+  }
 
   function setStatus(state, message) {
     lastStatus = { state, message };
@@ -52,7 +76,7 @@ function createUpdateManager({ getMainWindow, log = console } = {}) {
       .then((res) => {
         if (res.response === 0) {
           setStatus("downloading", "Downloading update...");
-          autoUpdater.downloadUpdate().catch((err) => {
+          downloadWithTimeout().catch((err) => {
             setStatus("error", `Download failed: ${err.message}`);
           });
         } else {
