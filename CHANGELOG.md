@@ -11,6 +11,18 @@ accounting.
 
 ## [Unreleased]
 
+- Added proactive Doctor tray notifications (issue #325): a periodic Doctor poll
+  (`node-bot/doctor-tray-poll.js`) now notifies the tray only on a fresh warn/fail
+  transition, and windows-launcher connects to the existing `/ws/tray` broadcast
+  pipeline to show it via the tray tooltip/balloon -- previously Doctor only ran
+  on-demand (when the popup opened) and nothing ever listened to that pipeline.
+  Along the way, fixed a real, previously-undetected bug: `caption-server.js` and
+  `tray-server.js` both attached `WebSocket.Server({ server, path })` directly to
+  the same HTTP server, and `ws`'s internal handler aborts the handshake with 400
+  for any path it doesn't own rather than leaving the socket for the next
+  listener -- so every `/ws/tray` upgrade was silently killed by caption-server's
+  listener (registered first) before tray-server ever saw it. Both now use
+  `noServer: true` with their own path check.
 - Added a Doctor panel check for session search's vector index (issue #321):
   `session-search-index.js` already exposed a `vectorEnabled()` getter so
   callers could tell whether sqlite-vec's native extension actually loaded,
