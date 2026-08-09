@@ -1990,6 +1990,7 @@ function registerRoutes(app, upload, deps = {}) {
       const doctor = deps.doctor || runDoctorChecksAsync;
       const result = await doctor({
         fishTtsWarmup: ttsRuntime.getFishWarmupStatus(),
+        sessionSearchVectorEnabled: sessionSearchIndex.vectorEnabled(),
       });
       return res.status(result.ok ? 200 : 503).json(result);
     } catch (error) {
