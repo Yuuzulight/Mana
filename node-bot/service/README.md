@@ -52,6 +52,21 @@ install script sets this and the other launcher-supplied defaults
 (`WHISPER_BIN`, `TTS_PROVIDER`, etc.) explicitly so the service behaves
 identically to the launcher-spawned path.
 
+## Checking on it
+
+```powershell
+cd node-bot\service
+.\check-mana-service.ps1
+```
+
+One-shot health summary: `Get-Service ManaNodeBot` status, `/health`, and a
+per-check `/doctor` summary -- without opening either Electron app. No
+elevation needed (read-only). Exits non-zero if the service isn't running,
+`/health` doesn't respond, or any `/doctor` check reports `fail` (a `warn`
+alone doesn't fail it), so it's usable from a scheduled task, not just
+interactively. Pass `-BaseUrl` if the service isn't on the default port
+5005.
+
 ## Removing it
 
 From an elevated PowerShell:
