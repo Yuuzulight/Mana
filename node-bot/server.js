@@ -105,6 +105,8 @@ const {
 const { fetchPage, searchWeb, wikiLookup } = require("./tools/web-access");
 const { readGgufMetadata } = require("./tools/gguf-metadata");
 	const { runDoctorChecksAsync } = require("./doctor");
+	const { createDoctorTrayPoller } = require("./doctor-tray-poll");
+	const { notifyTray } = require("./tray-notifier");
 	const { MobileDeviceStore } = require("./mobile-device-store");
 	// NOTE: mobile-auth and mobile-memory-store may exist; we add device store integration here
 	const stockMarketPlugin = require("../plugins/stock-market");
@@ -2004,6 +2006,21 @@ function registerRoutes(app, upload, deps = {}) {
       });
     }
   });
+
+  // Issue #325: periodic Doctor poll so a warn/fail check reaches the user
+  // proactively (tray tooltip + balloon in windows-launcher) instead of
+  // only being visible when the Doctor popup happens to be opened.
+  const doctorTrayPoller = createDoctorTrayPoller({
+    doctor: deps.doctor || runDoctorChecksAsync,
+    notifyTray: deps.notifyTray || notifyTray,
+    doctorOptions: () => ({
+      fishTtsWarmup: ttsRuntime.getFishWarmupStatus(),
+      sessionSearchVectorEnabled: sessionSearchIndex.vectorEnabled(),
+    }),
+  });
+  if (!(process.env.NODE_ENV === "test" || Boolean(process.env.NODE_TEST_CONTEXT))) {
+    doctorTrayPoller.start();
+  }
 
   app.get("/zed/status", (req, res) => {
     const zed = deps.zed || createZedIntegration();
