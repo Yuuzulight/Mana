@@ -238,6 +238,36 @@ function checkFishTtsWarmup(status) {
   );
 }
 
+// Issue #321: session-search-index.js's createSessionSearchIndex() already
+// exposes vectorEnabled() so callers can tell whether sqlite-vec's native
+// extension actually loaded, but nothing outside a startup console.warn
+// ever read it -- this surfaces that in the Doctor panel instead. Not
+// gated on USE_EMBEDDINGS: createSessionSearchIndex() attempts to load
+// sqlite-vec unconditionally, so vectorEnabled === false is always a
+// genuine load failure, never an intentional "embeddings off" state.
+// Same "return null when there's nothing to report" shape as
+// checkFishTtsWarmup -- undefined means the caller didn't pass a
+// sessionSearchIndex at all (e.g. an older test setup), not a failure.
+function checkSessionSearchVectorIndex(vectorEnabled) {
+  if (vectorEnabled === undefined) {
+    return null;
+  }
+  if (vectorEnabled) {
+    return makeCheck(
+      "session-search-vector-index",
+      "Session search (semantic)",
+      "pass",
+      "The sqlite-vec vector index loaded; session search uses hybrid keyword + semantic matching.",
+    );
+  }
+  return makeCheck(
+    "session-search-vector-index",
+    "Session search (semantic)",
+    "warn",
+    "The sqlite-vec vector index failed to load; session search is keyword-only. Check that the platform-specific sqlite-vec-<platform>-<arch> package actually installed under node_modules -- this can silently fail to install even when correctly pinned in package-lock.json.",
+  );
+}
+
 function checkMobileAuth(env) {
   const hash = env.MOBILE_PASSCODE_HASH || env.MANA_MOBILE_PASSCODE_HASH || "";
   const secret = env.MOBILE_SESSION_SECRET || "";
@@ -629,6 +659,7 @@ function runDoctorChecks(options = {}) {
     checkWhisperConfig(env, options.whisperToolsDir),
     checkTtsServices(options.services || []),
     checkFishTtsWarmup(options.fishTtsWarmup),
+    checkSessionSearchVectorIndex(options.sessionSearchVectorEnabled),
     checkMcpServer(env),
     checkRecommendedModelProfile(modelManagement),
     checkMobileAuth(env),
