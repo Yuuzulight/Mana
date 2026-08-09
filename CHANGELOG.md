@@ -11,6 +11,11 @@ accounting.
 
 ## [Unreleased]
 
+- Added `node-bot/service/check-mana-service.ps1` (issue #326): one-shot health
+  summary for the NSSM-managed `ManaNodeBot` service -- `Get-Service` status,
+  `/health`, and a per-check `/doctor` summary -- without opening either
+  Electron app. Exits non-zero on a down service/unreachable backend/any
+  `/doctor` `fail`, so it's usable from a scheduled task.
 - Added a Doctor panel check for session search's vector index (issue #321):
   `session-search-index.js` already exposed a `vectorEnabled()` getter so
   callers could tell whether sqlite-vec's native extension actually loaded,
