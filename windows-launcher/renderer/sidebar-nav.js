@@ -243,6 +243,82 @@ pluginsAddBtnEl?.addEventListener("click", () => {
   shell.openPath(path.join(__dirname, "..", "..", "plugins", "README.md"));
 });
 
+// Memory (issue #324): browse/manage acp-memory-store's remembered facts
+// (memory__remember), including the unverifiedSource flag from issue #317 --
+// previously only inspectable by reading facts.json by hand. Mirrors the
+// Plugins panel's fetch/search/list pattern above.
+const memoryFactsListEl = document.getElementById("memoryFactsList");
+const memorySearchInputEl = document.getElementById("memorySearchInput");
+let latestMemoryFacts = [];
+
+function renderMemoryFactsList(query = "") {
+  if (!memoryFactsListEl) return;
+  const normalizedQuery = query.trim().toLowerCase();
+  const facts = latestMemoryFacts.filter(
+    (fact) =>
+      !normalizedQuery ||
+      fact.key.toLowerCase().includes(normalizedQuery) ||
+      (fact.text || "").toLowerCase().includes(normalizedQuery),
+  );
+  if (facts.length === 0) {
+    memoryFactsListEl.innerHTML = `<p class="sidebar-note">${
+      latestMemoryFacts.length ? `No facts match "${escapeHtmlForPlugins(query)}".` : "No remembered facts yet."
+    }</p>`;
+    return;
+  }
+  memoryFactsListEl.innerHTML = facts
+    .map(
+      (fact) => `
+        <div class="plugin-row">
+          <div class="plugin-row-info">
+            <strong>${escapeHtmlForPlugins(fact.key)}</strong>
+            <span>${escapeHtmlForPlugins(fact.text)}</span>
+            ${fact.unverifiedSource ? '<span class="memory-fact-flag">Unverified source</span>' : ""}
+          </div>
+          ${
+            fact.status === "active"
+              ? `<button class="memory-archive-btn" data-fact-key="${escapeHtmlForPlugins(fact.key)}" title="Archive">Archive</button>`
+              : `<span class="sidebar-note">${escapeHtmlForPlugins(fact.status)}</span>`
+          }
+        </div>`,
+    )
+    .join("");
+}
+
+async function loadMemoryFacts() {
+  if (!memoryFactsListEl) return;
+  try {
+    const response = await fetch(`${BACKEND_BASE_URL}/admin/memory/facts`);
+    const body = await response.json();
+    latestMemoryFacts = body.facts || [];
+    renderMemoryFactsList(memorySearchInputEl?.value || "");
+  } catch (error) {
+    memoryFactsListEl.innerHTML = `<p class="sidebar-note">Failed to load memory: ${escapeHtmlForPlugins(error.message)}</p>`;
+  }
+}
+loadMemoryFacts();
+
+memorySearchInputEl?.addEventListener("input", () => {
+  renderMemoryFactsList(memorySearchInputEl.value);
+});
+
+memoryFactsListEl?.addEventListener("click", async (event) => {
+  const archiveBtn = event.target.closest(".memory-archive-btn");
+  if (!archiveBtn) return;
+  const key = archiveBtn.dataset.factKey;
+  archiveBtn.disabled = true;
+  try {
+    const response = await fetch(`${BACKEND_BASE_URL}/admin/memory/facts/${encodeURIComponent(key)}/archive`, {
+      method: "POST",
+    });
+    if (!response.ok) throw new Error(`Request failed (${response.status})`);
+    await loadMemoryFacts();
+  } catch (error) {
+    console.warn("Failed to archive fact:", error.message);
+    archiveBtn.disabled = false;
+  }
+});
+
 // Logs (issue #138): tail of the backend process's stdout/stderr, streamed
 // over IPC from main.js's appendBackendLog(). get-backend-log catches up
 // on anything that arrived before this listener attached.
