@@ -1500,6 +1500,76 @@ document.getElementById('themeToggle')?.addEventListener('click', (e) => {
   });
   loadPlugins();
 
+  // Memory (Settings > Memory, issue #324): browse/manage acp-memory-store's
+  // remembered facts (memory__remember), including the unverifiedSource flag
+  // from issue #317 -- previously only inspectable by reading facts.json by
+  // hand. Mirrors the Plugins panel above.
+  const memoryFactsListEl = document.getElementById('memoryFactsList');
+  const memorySearchInputEl = document.getElementById('memorySearchInput');
+  let latestMemoryFacts = [];
+
+  function renderMemoryFactsList(query = '') {
+    if (!memoryFactsListEl) return;
+    const normalizedQuery = query.trim().toLowerCase();
+    const facts = latestMemoryFacts.filter(
+      (fact) =>
+        !normalizedQuery ||
+        fact.key.toLowerCase().includes(normalizedQuery) ||
+        (fact.text || '').toLowerCase().includes(normalizedQuery),
+    );
+    if (facts.length === 0) {
+      memoryFactsListEl.innerHTML = `<p class="subtitle">${
+        latestMemoryFacts.length ? `No facts match "${escapeHtml(query)}".` : 'No remembered facts yet.'
+      }</p>`;
+      return;
+    }
+    memoryFactsListEl.innerHTML = facts
+      .map(
+        (fact) => `
+          <div class="plugin-row">
+            <div class="plugin-row-info">
+              <strong>${escapeHtml(fact.key)}</strong>
+              <span>${escapeHtml(fact.text)}</span>
+              ${fact.unverifiedSource ? '<span class="memory-fact-flag">Unverified source</span>' : ''}
+            </div>
+            ${
+              fact.status === 'active'
+                ? `<button class="memory-archive-btn" data-fact-key="${escapeHtml(fact.key)}" title="Archive">Archive</button>`
+                : `<span class="subtitle">${escapeHtml(fact.status)}</span>`
+            }
+          </div>`,
+      )
+      .join('');
+  }
+
+  async function loadMemoryFacts() {
+    if (!memoryFactsListEl) return;
+    try {
+      const j = await fetchJson(`${BACKEND_URL}/admin/memory/facts`);
+      latestMemoryFacts = j.facts || [];
+      renderMemoryFactsList(memorySearchInputEl?.value || '');
+    } catch (e) {
+      memoryFactsListEl.innerHTML = `<p class="subtitle">Failed to load memory: ${escapeHtml(e.message)}</p>`;
+    }
+  }
+  memorySearchInputEl?.addEventListener('input', () => {
+    renderMemoryFactsList(memorySearchInputEl.value);
+  });
+  memoryFactsListEl?.addEventListener('click', async (e) => {
+    const btn = e.target.closest('.memory-archive-btn');
+    if (!btn || btn.disabled) return;
+    const key = btn.dataset.factKey;
+    btn.disabled = true;
+    try {
+      await fetchJson(`${BACKEND_URL}/admin/memory/facts/${encodeURIComponent(key)}/archive`, { method: 'POST' });
+      await loadMemoryFacts();
+    } catch (e) {
+      console.warn('Mana fact archive failed:', e);
+      btn.disabled = false;
+    }
+  });
+  loadMemoryFacts();
+
   // Model selection (Settings > Model + onboarding's "Local AI model" item):
   // scan the PC for .gguf files or browse to one directly, then persist the
   // pick via node-bot's /models/path -- see model-management.js's

@@ -11,6 +11,12 @@ accounting.
 
 ## [Unreleased]
 
+- Added a Memory browser to Settings (issue #324): `acp-memory-store.js`'s remembered-fact
+  store (`memory__remember`) previously had no admin surface at all -- the only way to see a
+  fact's `unverifiedSource` flag (issue #317), status, or text was reading `facts.json` by
+  hand. Added `GET /admin/memory/facts` and `POST /admin/memory/facts/:key/archive`
+  (`node-bot/capabilities/memory-facts-capability.js`) and a searchable "Memory" panel in
+  both apps' Settings.
 - Fixed the auto-update download step being able to hang forever with no error (issue #323):
   `desktop-client/update-manager.js`'s `downloadUpdate()` call now races against a 5-minute
   timeout (configurable via `MANA_UPDATE_DOWNLOAD_TIMEOUT_MS`), surfacing a clear "timed out"

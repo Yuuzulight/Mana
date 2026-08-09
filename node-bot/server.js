@@ -84,6 +84,9 @@ const {
   backgroundMemoryCapability,
 } = require("./capabilities/background-memory-capability");
 const {
+  memoryFactsCapability,
+} = require("./capabilities/memory-facts-capability");
+const {
   retrieverAdminCapability,
 } = require("./capabilities/retriever-admin-capability");
 const { skillsCapability } = require("./capabilities/skills-capability");
@@ -1842,6 +1845,7 @@ function registerRoutes(app, upload, deps = {}) {
     deepResearchCapability,
     presetsCapability,
     backgroundMemoryCapability,
+    memoryFactsCapability,
     retrieverAdminCapability,
     skillsCapability,
     approvalGateCapability,
