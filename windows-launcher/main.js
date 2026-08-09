@@ -30,6 +30,10 @@ function getIdleReportUrl() {
   return `${getBackendBaseUrl()}/internal/idle-report`;
 }
 
+function getTrayWebSocketUrl() {
+  return `${getBackendBaseUrl().replace(/^http/, "ws")}/ws/tray`;
+}
+
 ipcMain.handle("get-backend-url", async () => getBackendBaseUrl());
 ipcMain.on("get-backend-url-sync", (event) => {
   event.returnValue = getBackendBaseUrl();
@@ -1123,6 +1127,7 @@ app.whenReady().then(() => {
   createWindow();
   createAvatarWindow();
   createTray();
+  connectTrayNotifications();
   registerVisionHotkey();
   registerWindowHotkey();
   registerInterruptHotkey();
@@ -1176,6 +1181,48 @@ function createTray() {
   } catch (error) {
     console.warn(`Tray icon unavailable: ${error.message}`);
   }
+}
+
+// Issue #325: node-bot already broadcasts tray notifications over this
+// WebSocket -- background-memory audit events, and now periodic Doctor
+// warn/fail transitions (doctor-tray-poll.js) -- but nothing in
+// windows-launcher ever listened, so every broadcast reached zero
+// listeners. Surfaces a Doctor problem via the existing tray icon
+// (tooltip + balloon) without requiring the user to open the Doctor popup.
+// Uses Node's built-in WebSocket global (stable since Node 22, which
+// Electron 39 bundles) rather than adding the `ws` package as a new
+// windows-launcher dependency.
+const TRAY_SOCKET_RECONNECT_DELAY_MS = 15000;
+
+function connectTrayNotifications() {
+  let socket;
+  try {
+    socket = new WebSocket(getTrayWebSocketUrl());
+  } catch (error) {
+    setTimeout(connectTrayNotifications, TRAY_SOCKET_RECONNECT_DELAY_MS);
+    return;
+  }
+
+  socket.addEventListener("message", (event) => {
+    let payload;
+    try {
+      payload = JSON.parse(event.data);
+    } catch (error) {
+      return;
+    }
+    if (payload && payload.type === "doctor" && tray) {
+      tray.setToolTip(`Mana - ${payload.title}: ${payload.text}`);
+      if (typeof tray.displayBalloon === "function") {
+        tray.displayBalloon({ title: payload.title, content: payload.text });
+      }
+    }
+  });
+  // "close" fires after "error" for a failed/dropped connection, so one
+  // reconnect-on-close handler covers both -- the backend may not be up
+  // yet (e.g. running without windows-launcher, or a slow-starting node-bot).
+  socket.addEventListener("close", () => {
+    setTimeout(connectTrayNotifications, TRAY_SOCKET_RECONNECT_DELAY_MS);
+  });
 }
 
 function registerWindowHotkey() {
