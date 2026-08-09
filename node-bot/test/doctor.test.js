@@ -153,6 +153,41 @@ test("doctor passes once Fish Speech's warmup has completed", () => {
   assert.match(check.message, /warmed up/i);
 });
 
+function runDoctorForSessionSearchVector(sessionSearchVectorEnabled) {
+  return runDoctorChecks({
+    env: { MANA_ALLOW_REMOTE_AI: "0" },
+    paths: { dataDir: fs.mkdtempSync(path.join(os.tmpdir(), "mana-doctor-test-")) },
+    ports: [],
+    services: [],
+    versions: { node: "v22.19.0" },
+    zedCommandResolver: () => null,
+    sessionSearchVectorEnabled,
+  });
+}
+
+test("doctor omits the session-search-vector-index check when no sessionSearchIndex was passed at all (issue #321)", () => {
+  const result = runDoctorForSessionSearchVector(undefined);
+  assert.equal(
+    result.checks.find((c) => c.id === "session-search-vector-index"),
+    undefined,
+  );
+});
+
+test("doctor warns when sqlite-vec's vector index failed to load", () => {
+  const result = runDoctorForSessionSearchVector(false);
+  const check = result.checks.find((c) => c.id === "session-search-vector-index");
+  assert.equal(check.status, "warn");
+  assert.match(check.message, /keyword-only/i);
+  assert.match(check.message, /package-lock\.json/);
+});
+
+test("doctor passes when sqlite-vec's vector index loaded", () => {
+  const result = runDoctorForSessionSearchVector(true);
+  const check = result.checks.find((c) => c.id === "session-search-vector-index");
+  assert.equal(check.status, "pass");
+  assert.match(check.message, /hybrid keyword \+ semantic/i);
+});
+
 test("doctor passes remote exposure when no tunnel is configured", () => {
   const result = runDoctorChecks({
     env: {},
