@@ -501,8 +501,14 @@ ipcMain.on("log-speech-debug", async (event, details = {}) => {
 // /models/brain-provider, or /models/vision-path routes to actually take
 // effect; this handler only returns which file was picked.
 ipcMain.handle("browse-model-file", async () => {
+  const ggufModelsDir = path.join(ROOT_DIR, "tools", "llama", "gguf-models");
   const result = await dialog.showOpenDialog(mainWindow, {
     title: "Select a local GGUF model file",
+    // Electron 43 dropped the OS-remembered-last-directory default in favor
+    // of always opening to Downloads when defaultPath is unset; point it at
+    // where GGUF models actually live instead (fs.existsSync isn't needed --
+    // Electron falls back gracefully if this path doesn't exist yet).
+    defaultPath: ggufModelsDir,
     properties: ["openFile"],
     filters: [
       { name: "GGUF model", extensions: ["gguf"] },
