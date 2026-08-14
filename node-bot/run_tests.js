@@ -16,7 +16,10 @@ try {
 const testDir = path.join(process.cwd(), 'test');
 
 function run(cmd, args, opts={}){
-  const r = spawnSync(cmd, args, { stdio: 'inherit', shell: true, ...opts });
+  // shell:false: `node` is invoked directly with no shell features needed,
+  // and shell:true's Windows argument quoting corrupts any path containing
+  // a space (e.g. mangles "C:\GitHub Projects\..." into "C:\GitHub, Projects\...").
+  const r = spawnSync(cmd, args, { stdio: 'inherit', shell: false, ...opts });
   if (r.status !== 0) process.exit(r.status);
 }
 
