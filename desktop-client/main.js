@@ -385,8 +385,14 @@ ipcMain.handle('backend-status', async () => ({ running: !!backendProc && !backe
 // returned to the renderer; it still has to POST it to node-bot's
 // /models/path route to actually take effect.
 ipcMain.handle('browse-model-file', async () => {
+  const ggufModelsDir = path.join(manaRoot, 'tools', 'llama', 'gguf-models');
   const result = await dialog.showOpenDialog(mainWindow, {
     title: 'Select a local LLM model file',
+    // Electron 43 dropped the OS-remembered-last-directory default in favor
+    // of always opening to Downloads when defaultPath is unset; point it at
+    // where GGUF models actually live instead (fs.existsSync isn't needed --
+    // Electron falls back gracefully if this path doesn't exist yet).
+    defaultPath: ggufModelsDir,
     properties: ['openFile'],
     filters: [
       { name: 'GGUF model', extensions: ['gguf'] },
