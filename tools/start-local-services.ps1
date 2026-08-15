@@ -53,14 +53,12 @@ if (Test-Health "http://127.0.0.1:8090/health") {
         Write-Warning "No .gguf model found under tools\llama\gguf-models\."
     } else {
         Write-Host "Starting llama-server with $($model.Name)..."
-        Start-Process -FilePath $llamaExe -ArgumentList @(
-            "-m", $model.FullName,
-            "--host", "127.0.0.1",
-            "--port", "8090",
-            "-t", "8",
-            "-c", "8192",
-            "--no-webui"
-        ) -WorkingDirectory $llamaDir `
+        # ArgumentList as an array doesn't reliably quote elements containing
+        # spaces in Windows PowerShell 5.1's Start-Process -- it silently
+        # split "C:\GitHub Projects\..." into two args. A single pre-quoted
+        # string avoids that.
+        $llamaArgs = "-m `"$($model.FullName)`" --host 127.0.0.1 --port 8090 -t 8 -c 8192 --no-webui"
+        Start-Process -FilePath $llamaExe -ArgumentList $llamaArgs -WorkingDirectory $llamaDir `
           -RedirectStandardOutput (Join-Path $llamaDir "llama-server.out.log") `
           -RedirectStandardError (Join-Path $llamaDir "llama-server.err.log") `
           -WindowStyle Hidden
