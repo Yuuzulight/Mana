@@ -12,6 +12,16 @@ search:
     - html
     - json
 
+# StackOverflow uses Stack Exchange's real API (not fragile HTML scraping
+# like Brave/DuckDuckGo/Startpage), so it's a genuinely resilient addition
+# to the general category rather than one more scraped engine that'll earn
+# its own rate-limit ban under real traffic. Doesn't replace the default
+# engines, just gives general-category searches a fallback for technical
+# queries that isn't already vulnerable to the same blocking.
+engines:
+  - name: stackoverflow
+    categories: ['it', 'q&a', 'general']
+
 server:
   port: 8890
   bind_address: "127.0.0.1"
