@@ -196,6 +196,21 @@ function createAcpMemoryStore(options = {}) {
   const maxMentionsPerEntity = 100;
   const now = options.now || (() => new Date().toISOString());
   const maxRecentTurns = Math.max(1, Number(options.maxRecentTurns || 20));
+  // Issue #338: the existing caps are size-based. They stop one unusually
+  // large stretch from dominating the injected block, but nothing stops a
+  // stale tail: a session picked back up after a fortnight would still
+  // inject its last turns as though they were the live thread. This bounds
+  // them by age as well as by count. Nothing is lost, only un-preloaded --
+  // older turns stay reachable through searchSessions(). Set to 0 to
+  // disable the window and keep the previous count-only behavior.
+  const maxRecentTurnAgeMs = Math.max(
+    0,
+    Number(
+      options.maxRecentTurnAgeMs ||
+        process.env.MANA_RECENT_TURN_MAX_AGE_MS ||
+        2 * 24 * 60 * 60 * 1000,
+    ),
+  );
   const maxSummaryChars = Math.max(
     100,
     Number(options.maxSummaryChars || 4000),
@@ -952,8 +967,23 @@ function createAcpMemoryStore(options = {}) {
     return selected.join("\n").trim();
   }
 
+  // Issue #338: the age half of the bound. A turn carrying no timestamp
+  // predates this and cannot be dated -- it is kept rather than silently
+  // dropped, since discarding content we simply can't evaluate is worse
+  // than injecting one stale line.
+  function freshTurns(session) {
+    if (!maxRecentTurnAgeMs) return session.turns;
+    const cutoff = Date.parse(now()) - maxRecentTurnAgeMs;
+    if (Number.isNaN(cutoff)) return session.turns;
+    return session.turns.filter((turn) => {
+      if (!turn?.at) return true;
+      const at = Date.parse(turn.at);
+      return Number.isNaN(at) || at >= cutoff;
+    });
+  }
+
   function recentTurnStrings(session) {
-    return session.turns
+    return freshTurns(session)
       .slice(-Math.min(5, maxRecentTurns))
       .map((turn) =>
         [
@@ -972,6 +1002,11 @@ function createAcpMemoryStore(options = {}) {
     }
 
     const recentTurns = recentTurnStrings(session);
+    // Issue #338: with every turn aged out and no summary yet, the header
+    // would be all that is left -- and "Conversation memory:" on its own
+    // says nothing while still costing tokens. Same reasoning as #364's
+    // dangling-header drop.
+    if (!session.summary && !recentTurns.length) return "";
 
     const parts = [];
     parts.push("Conversation memory:");

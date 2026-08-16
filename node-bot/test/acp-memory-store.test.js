@@ -1356,3 +1356,78 @@ test("an explicit since/until from the caller wins over the query text (issue #3
   assert.equal(results.length, 0);
   sessionSearchIndex.close();
 });
+
+test("buildPromptMemory drops turns older than the recency window (issue #338)", async () => {
+  const dataDir = createTempDir();
+  const old = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000).toISOString();
+  const stale = createAcpMemoryStore({ dataDir, now: () => old });
+  await stale.appendTurn({ sessionId: "s1", user: "ancient question", assistant: "ancient answer" });
+
+  const store = createAcpMemoryStore({ dataDir });
+  const injected = store.buildPromptMemory("s1");
+  // The window bounds the verbatim recent-turns block. The rolling summary
+  // is deliberately left alone -- ageing it out would discard the whole
+  // thread, not just its stale tail.
+  assert.doesNotMatch(injected, /Recent turns:/);
+});
+
+test("buildPromptMemory keeps turns inside the recency window (issue #338)", async () => {
+  const dataDir = createTempDir();
+  const recent = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+  const writer = createAcpMemoryStore({ dataDir, now: () => recent });
+  await writer.appendTurn({ sessionId: "s1", user: "fresh question", assistant: "fresh answer" });
+
+  const store = createAcpMemoryStore({ dataDir });
+  assert.match(store.buildPromptMemory("s1"), /fresh question/);
+});
+
+test("buildPromptMemory returns nothing rather than a bare header (issue #338)", () => {
+  const dataDir = createTempDir();
+  const sessionsDir = path.join(dataDir, "sessions");
+  fs.mkdirSync(sessionsDir, { recursive: true });
+  const old = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000).toISOString();
+  // Written directly: a session holding only aged-out turns and no summary.
+  fs.writeFileSync(
+    path.join(sessionsDir, `${Buffer.from("s1").toString("base64url")}.json`),
+    JSON.stringify({
+      sessionId: "s1",
+      summary: "",
+      turns: [{ at: old, user: "ancient", assistant: "ancient" }],
+    }),
+    "utf8",
+  );
+
+  const store = createAcpMemoryStore({ dataDir });
+  // Every turn aged out and no summary -- "Conversation memory:" alone says
+  // nothing and still costs tokens.
+  assert.equal(store.buildPromptMemory("s1"), "");
+});
+
+test("a zero recency window keeps the previous count-only behavior (issue #338)", async () => {
+  const dataDir = createTempDir();
+  const old = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000).toISOString();
+  const stale = createAcpMemoryStore({ dataDir, now: () => old });
+  await stale.appendTurn({ sessionId: "s1", user: "ancient question", assistant: "ancient answer" });
+
+  const store = createAcpMemoryStore({ dataDir, maxRecentTurnAgeMs: 0 });
+  assert.match(store.buildPromptMemory("s1"), /ancient question/);
+});
+
+test("a turn with no timestamp is kept rather than aged out (issue #338)", async () => {
+  const dataDir = createTempDir();
+  const writer = createAcpMemoryStore({ dataDir });
+  await writer.appendTurn({ sessionId: "s1", user: "undated question", assistant: "ok" });
+
+  // Strip the timestamp the way a record predating this field would lack one.
+  const sessionPath = path.join(
+    writer.dataDir,
+    "sessions",
+    `${Buffer.from("s1").toString("base64url")}.json`,
+  );
+  const session = JSON.parse(fs.readFileSync(sessionPath, "utf8"));
+  for (const turn of session.turns) delete turn.at;
+  fs.writeFileSync(sessionPath, JSON.stringify(session), "utf8");
+
+  const store = createAcpMemoryStore({ dataDir });
+  assert.match(store.buildPromptMemory("s1"), /undated question/);
+});
