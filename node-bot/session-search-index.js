@@ -211,11 +211,26 @@ function createSessionSearchIndex(options = {}) {
   // explicit roleFilter (vector hits are whole-turn, not per-role, so they
   // can't honestly satisfy a user/assistant-only filter) -- in both cases
   // behavior is unchanged from keyword-only search.
-  function search({ query, limit = 20, sort = "relevance", roleFilter, sessionId, queryEmbedding } = {}) {
-    if (!query || !String(query).trim()) return [];
+  function search({
+    query,
+    limit = 20,
+    sort = "relevance",
+    roleFilter,
+    sessionId,
+    queryEmbedding,
+    since,
+    until,
+  } = {}) {
+    const hasQuery = Boolean(query && String(query).trim());
+    // Issue #337: a purely temporal question ("what did we discuss
+    // yesterday") has no keywords left once the date expression is removed,
+    // so a time window on its own is a valid search. Only a request with
+    // neither is empty.
+    if (!hasQuery && !since && !until) return [];
     const safeLimit = Math.max(1, Math.min(200, Number(limit) || 20));
 
     const useHybrid =
+      hasQuery &&
       vectorEnabled &&
       Array.isArray(queryEmbedding) &&
       queryEmbedding.length === embedDim &&
@@ -228,8 +243,12 @@ function createSessionSearchIndex(options = {}) {
     // dropped as near-duplicates of vector hits.
     const fetchLimit = useHybrid ? Math.min(200, safeLimit * 3) : safeLimit;
 
-    const conditions = ["messages_fts MATCH ?"];
-    const params = [String(query)];
+    const conditions = [];
+    const params = [];
+    if (hasQuery) {
+      conditions.push("messages_fts MATCH ?");
+      params.push(String(query));
+    }
     if (sessionId) {
       conditions.push("sessionId = ?");
       params.push(String(sessionId));
@@ -238,9 +257,27 @@ function createSessionSearchIndex(options = {}) {
       conditions.push(`role IN (${roleFilter.map(() => "?").join(",")})`);
       params.push(...roleFilter);
     }
+    // Issue #337: half-open [since, until) so adjacent windows -- yesterday
+    // and today -- cannot both claim the same midnight turn.
+    if (since) {
+      conditions.push("at >= ?");
+      params.push(String(since));
+    }
+    if (until) {
+      conditions.push("at < ?");
+      params.push(String(until));
+    }
 
+    // `rank` is only meaningful alongside a MATCH, so a time-only search
+    // falls back to newest-first -- which is the order a "what did we
+    // discuss yesterday" question wants anyway. An explicit "oldest" is
+    // still honored: it is a request about ordering, not about ranking.
     const orderClause =
-      sort === "newest" ? "at DESC" : sort === "oldest" ? "at ASC" : "rank";
+      sort === "oldest"
+        ? "at ASC"
+        : sort === "newest" || !hasQuery
+          ? "at DESC"
+          : "rank";
 
     const rows = db
       .prepare(

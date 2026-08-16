@@ -1298,3 +1298,61 @@ test("existing facts without the new fields still load and surface (issue #336)"
   const reopened = createAcpMemoryStore({ dataDir });
   assert.match(reopened.getRelatedFacts("tell me about the legacy fact"), /still here/);
 });
+
+test("searchSessions filters to a stated day and drops the date word from the query (issue #337)", async () => {
+  const sessionSearchIndex = createSessionSearchIndex({ dbPath: ":memory:" });
+  const dataDir = createTempDir();
+  const threeDaysAgo = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString();
+  const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+
+  const older = createAcpMemoryStore({ dataDir, sessionSearchIndex, now: () => threeDaysAgo });
+  await older.appendTurn({ sessionId: "s1", user: "the deploy broke badly", assistant: "ok" });
+
+  const recent = createAcpMemoryStore({ dataDir, sessionSearchIndex, now: () => yesterday });
+  await recent.appendTurn({ sessionId: "s1", user: "the deploy broke again", assistant: "ok" });
+
+  const results = await recent.searchSessions({ query: "deploy yesterday" });
+  const texts = results.map((r) => r.text);
+  assert.ok(texts.some((t) => /broke again/.test(t)), "yesterday's turn should be found");
+  assert.ok(!texts.some((t) => /broke badly/.test(t)), "the older turn is outside the window");
+  sessionSearchIndex.close();
+});
+
+test("searchSessions answers a purely temporal question with no keywords left (issue #337)", async () => {
+  const sessionSearchIndex = createSessionSearchIndex({ dbPath: ":memory:" });
+  const dataDir = createTempDir();
+  const lastMonth = new Date(Date.now() - 40 * 24 * 60 * 60 * 1000).toISOString();
+  const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+
+  const older = createAcpMemoryStore({ dataDir, sessionSearchIndex, now: () => lastMonth });
+  await older.appendTurn({ sessionId: "s1", user: "ancient chatter", assistant: "ok" });
+
+  const recent = createAcpMemoryStore({ dataDir, sessionSearchIndex, now: () => yesterday });
+  await recent.appendTurn({ sessionId: "s1", user: "fresh chatter", assistant: "ok" });
+
+  // "yesterday" alone leaves no keywords -- the window is the whole query.
+  const results = await recent.searchSessions({ query: "yesterday" });
+  const texts = results.map((r) => r.text);
+  assert.ok(texts.some((t) => /fresh chatter/.test(t)));
+  assert.ok(!texts.some((t) => /ancient chatter/.test(t)));
+  sessionSearchIndex.close();
+});
+
+test("an explicit since/until from the caller wins over the query text (issue #337)", async () => {
+  const sessionSearchIndex = createSessionSearchIndex({ dbPath: ":memory:" });
+  const dataDir = createTempDir();
+  const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+
+  const store = createAcpMemoryStore({ dataDir, sessionSearchIndex, now: () => yesterday });
+  await store.appendTurn({ sessionId: "s1", user: "the deploy broke", assistant: "ok" });
+
+  // A window that deliberately excludes everything, despite the text
+  // naming a day that would have matched.
+  const results = await store.searchSessions({
+    query: "deploy yesterday",
+    since: "2000-01-01T00:00:00.000Z",
+    until: "2000-01-02T00:00:00.000Z",
+  });
+  assert.equal(results.length, 0);
+  sessionSearchIndex.close();
+});

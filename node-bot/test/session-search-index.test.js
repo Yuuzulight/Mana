@@ -220,3 +220,35 @@ test("indexEmbedding and vector search are no-ops (never throw) when called befo
   assert.deepEqual(index.search({ query: "anything", queryEmbedding: [1, 0, 0, 0] }), []);
   index.close();
 });
+
+test("an explicit oldest sort survives a time-only search (issue #337)", () => {
+  const index = createSessionSearchIndex({ dbPath: ":memory:" });
+  index.indexTurn({
+    sessionId: "s1",
+    turn: { at: "2026-05-01T00:00:00.000Z", user: "first", assistant: "" },
+  });
+  index.indexTurn({
+    sessionId: "s1",
+    turn: { at: "2026-05-02T00:00:00.000Z", user: "second", assistant: "" },
+  });
+
+  // No query at all -- the window is the whole search. "oldest" is a
+  // request about ordering and must not be overridden by that.
+  const results = index.search({
+    since: "2026-04-01T00:00:00.000Z",
+    until: "2026-06-01T00:00:00.000Z",
+    sort: "oldest",
+  });
+  assert.equal(results[0].text, "first");
+  index.close();
+});
+
+test("a search with neither query nor window returns nothing (issue #337)", () => {
+  const index = createSessionSearchIndex({ dbPath: ":memory:" });
+  index.indexTurn({
+    sessionId: "s1",
+    turn: { at: "2026-05-01T00:00:00.000Z", user: "anything", assistant: "" },
+  });
+  assert.deepEqual(index.search({ sessionId: "s1" }), []);
+  index.close();
+});
