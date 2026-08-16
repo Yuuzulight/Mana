@@ -1220,3 +1220,81 @@ test("getRelatedFactsEntries omits an entry that truncates to nothing (issue #36
   // The header alone carries no information, so no message should be emitted.
   assert.equal(entries.length, 0);
 });
+
+test("rememberFact stamps a schemaVersion on new facts (issue #336)", () => {
+  const store = createAcpMemoryStore({ dataDir: createTempDir() });
+  store.rememberFact({ key: "hometown", text: "Singapore" });
+
+  const [fact] = store.listFacts();
+  assert.equal(fact.schemaVersion, 1);
+});
+
+test("rememberFact records epistemic and occurredAt when supplied (issue #336)", () => {
+  const store = createAcpMemoryStore({ dataDir: createTempDir() });
+  store.rememberFact({
+    key: "house move",
+    text: "moved to a new flat",
+    epistemic: "self_report",
+    occurredAt: "2026-03-14",
+  });
+
+  const [fact] = store.listFacts();
+  assert.equal(fact.epistemic, "self_report");
+  assert.equal(fact.occurredAt, "2026-03-14");
+});
+
+test("rememberFact drops an unrecognized epistemic instead of throwing (issue #336)", () => {
+  const store = createAcpMemoryStore({ dataDir: createTempDir() });
+  store.rememberFact({ key: "mood", text: "cheerful", epistemic: "vibes" });
+
+  const [fact] = store.listFacts();
+  assert.equal(fact.epistemic, undefined);
+});
+
+test("epistemic is orthogonal to unverifiedSource, not a replacement (issue #336)", () => {
+  const store = createAcpMemoryStore({ dataDir: createTempDir() });
+  store.rememberFact({
+    key: "commute time",
+    text: "about 40 minutes",
+    epistemic: "inferred",
+    unverifiedSource: true,
+  });
+
+  const [fact] = store.listFacts();
+  assert.equal(fact.epistemic, "inferred");
+  assert.equal(fact.unverifiedSource, true);
+});
+
+test("patch keeps epistemic and occurredAt when they are not restated (issue #336)", () => {
+  const store = createAcpMemoryStore({ dataDir: createTempDir() });
+  store.rememberFact({
+    key: "job title",
+    text: "data engineer",
+    epistemic: "self_report",
+    occurredAt: "2026-01-05",
+  });
+  store.rememberFact({ key: "job title", text: "senior data engineer", action: "patch" });
+
+  const [fact] = store.listFacts();
+  assert.equal(fact.text, "senior data engineer");
+  // A later correction that does not restate them must not erase them --
+  // unlike unverifiedSource, which describes that specific write.
+  assert.equal(fact.epistemic, "self_report");
+  assert.equal(fact.occurredAt, "2026-01-05");
+});
+
+test("existing facts without the new fields still load and surface (issue #336)", () => {
+  const dataDir = createTempDir();
+  // A record written before this schema existed: no schemaVersion, no
+  // epistemic, no occurredAt.
+  fs.mkdirSync(path.join(dataDir, "acp-memory"), { recursive: true });
+  const store = createAcpMemoryStore({ dataDir });
+  store.rememberFact({ key: "legacy fact", text: "still here" });
+  const factsPath = path.join(store.dataDir, "facts.json");
+  const parsed = JSON.parse(fs.readFileSync(factsPath, "utf8"));
+  delete parsed.facts[0].schemaVersion;
+  fs.writeFileSync(factsPath, JSON.stringify(parsed), "utf8");
+
+  const reopened = createAcpMemoryStore({ dataDir });
+  assert.match(reopened.getRelatedFacts("tell me about the legacy fact"), /still here/);
+});

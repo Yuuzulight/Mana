@@ -47,6 +47,25 @@ function truncateWholeLines(block, maxChars) {
   return kept.join("\n");
 }
 
+// Issue #336: the record shape's own version, stamped on every new fact so
+// a later shape change can migrate existing data instead of guessing at it.
+// Facts written before this simply have no schemaVersion, and that absence
+// is exactly what a migration needs in order to recognize them.
+const FACT_SCHEMA_VERSION = 1;
+
+// Issue #336: what kind of claim a fact is. Sits alongside unverifiedSource
+// (#317) rather than replacing it -- "not traceable to anything the user
+// said this turn" is a different statement from "this is an inference", and
+// one does not imply the other. No migration: existing facts keep working
+// with this field simply absent.
+const EPISTEMIC_KINDS = ["fact", "self_report", "preference", "inferred"];
+
+function normalizeEpistemic(value) {
+  // An unrecognized value falls back to absent rather than throwing, the
+  // same way an unrecognized `action` falls back to "insert" below.
+  return EPISTEMIC_KINDS.includes(value) ? value : undefined;
+}
+
 // Issue #273 (Soul-of-Waifu-inspired self-healing memory): a deterministic,
 // keyword-overlap check -- same technique skills-capability.js's
 // findMatchingSkill() already uses, not a new LLM call -- for whether a
@@ -299,7 +318,15 @@ function createAcpMemoryStore(options = {}) {
   // automatic surfacing below (same treatment as an archived fact), but NOT
   // from listFactKeys -- the model still needs to see it exists so a later
   // correction patches this key instead of creating a duplicate.
-  function rememberFact({ sessionId, key, text, action, unverifiedSource } = {}) {
+  function rememberFact({
+    sessionId,
+    key,
+    text,
+    action,
+    unverifiedSource,
+    epistemic,
+    occurredAt,
+  } = {}) {
     const cleanKey = cleanText(key, 200);
     if (!cleanKey) {
       throw new Error("key is required");
@@ -328,6 +355,12 @@ function createAcpMemoryStore(options = {}) {
       throw new Error("text is required for insert/patch");
     }
 
+    const normalizedEpistemic = normalizeEpistemic(epistemic);
+    // Issue #336: when the event happened, as opposed to createdAt/updatedAt
+    // which record when Mana was told. "I moved house in March" is a fact
+    // recorded today about something months old.
+    const cleanOccurredAt = cleanText(occurredAt, 40);
+
     if (existing && normalizedAction === "patch") {
       // Issue #273: keep a bounded correction history instead of silently
       // discarding the prior value -- "what did I used to think was true"
@@ -343,6 +376,13 @@ function createAcpMemoryStore(options = {}) {
       } else {
         delete existing.unverifiedSource;
       }
+      // Issue #336: unlike unverifiedSource above, these are only written
+      // when supplied and are never cleared by omission. unverifiedSource
+      // describes *this* write, so a clean re-statement should drop it;
+      // what kind of claim a fact is, and when it happened, do not stop
+      // being true because a later correction did not restate them.
+      if (normalizedEpistemic) existing.epistemic = normalizedEpistemic;
+      if (cleanOccurredAt) existing.occurredAt = cleanOccurredAt;
       saveFacts(facts);
       return {
         ok: true,
@@ -362,9 +402,12 @@ function createAcpMemoryStore(options = {}) {
       text: cleanTextValue,
       sessionId: cleanText(sessionId || "default", 240),
       status: "active",
+      schemaVersion: FACT_SCHEMA_VERSION,
       createdAt: timestamp,
       updatedAt: timestamp,
       ...(unverifiedSource ? { unverifiedSource: true } : {}),
+      ...(normalizedEpistemic ? { epistemic: normalizedEpistemic } : {}),
+      ...(cleanOccurredAt ? { occurredAt: cleanOccurredAt } : {}),
     });
     saveFacts(facts.slice(-maxFacts));
     return {
