@@ -26,6 +26,27 @@ function truncateKeepingRecent(value, maxLength) {
   return cleaned.length > maxLength ? cleaned.slice(-maxLength) : cleaned;
 }
 
+// Issue #364: the related-facts blocks get cut to a character budget by
+// their callers. A plain .slice() lands mid-line, and a clipped fact still
+// reads as a whole one -- "- coffee: likes it, but not after 6pm" becomes
+// "- coffee: likes it," and inverts its own meaning, which is worse than
+// dropping it. Drop whole lines instead, then drop any trailing header
+// left with nothing under it ("Remembered:" on its own says nothing).
+// A single line longer than the budget is dropped rather than clipped.
+function truncateWholeLines(block, maxChars) {
+  if (block.length <= maxChars) return block;
+  const kept = [];
+  let used = 0;
+  for (const line of block.split("\n")) {
+    const cost = kept.length ? line.length + 1 : line.length;
+    if (used + cost > maxChars) break;
+    kept.push(line);
+    used += cost;
+  }
+  while (kept.length && !kept[kept.length - 1].startsWith("- ")) kept.pop();
+  return kept.join("\n");
+}
+
 // Issue #273 (Soul-of-Waifu-inspired self-healing memory): a deterministic,
 // keyword-overlap check -- same technique skills-capability.js's
 // findMatchingSkill() already uses, not a new LLM call -- for whether a
@@ -395,7 +416,7 @@ function createAcpMemoryStore(options = {}) {
     }
 
     const lowerText = String(text || "").toLowerCase();
-    const factLines = [];
+    const matchedFacts = [];
     for (const fact of loadFacts()) {
       // Issue #317: unverifiedSource facts stay in the store (and in
       // listFactKeys, so a later correction patches this key instead of
@@ -403,8 +424,19 @@ function createAcpMemoryStore(options = {}) {
       // same "don't auto-inject" treatment status !== "active" already gets.
       if (fact.status !== "active" || fact.unverifiedSource) continue;
       if (!lowerText.includes(fact.key.toLowerCase())) continue;
-      factLines.push(`- ${fact.key}: ${fact.text}`);
+      matchedFacts.push(fact);
     }
+    // Issue #364: order before the caller truncates. Unsorted, the facts
+    // that survive a tight budget are just whichever happened to be stored
+    // first. A longer matched key is a more specific hit than a short one;
+    // freshest updatedAt wins ties. Deliberately not a stored score -- see
+    // #336, where a `confidence` field was cut for having no writer.
+    matchedFacts.sort(
+      (a, b) =>
+        b.key.length - a.key.length ||
+        String(b.updatedAt || "").localeCompare(String(a.updatedAt || "")),
+    );
+    const factLines = matchedFacts.map((fact) => `- ${fact.key}: ${fact.text}`);
 
     return {
       mentionsBlock: mentionLines.length
@@ -426,7 +458,7 @@ function createAcpMemoryStore(options = {}) {
     if (!blocks.length) return "";
 
     const block = blocks.join("\n\n");
-    return block.length > maxChars ? block.slice(0, maxChars).trim() : block;
+    return truncateWholeLines(block, maxChars);
   }
 
   // Issue #282: structured form of getRelatedFacts -- mentions and facts as
@@ -456,22 +488,21 @@ function createAcpMemoryStore(options = {}) {
     const { mentionsBlock, factsBlock } = gatherRelatedFactsBlocks(text, options);
 
     const entries = [];
+    // Issue #364: an over-budget block can truncate down to nothing (its
+    // header alone carries no information), so each entry is only pushed
+    // if something survived -- previously a clipped header was emitted as
+    // a system message on its own.
     if (mentionsBlock) {
-      entries.push({
-        role: "system",
-        position: mentionsPosition,
-        content:
-          mentionsBlock.length > maxChars
-            ? mentionsBlock.slice(0, maxChars).trim()
-            : mentionsBlock,
-      });
+      const content = truncateWholeLines(mentionsBlock, maxChars);
+      if (content) {
+        entries.push({ role: "system", position: mentionsPosition, content });
+      }
     }
     if (factsBlock) {
-      entries.push({
-        role: "system",
-        position: factsPosition,
-        content: factsBlock.length > maxChars ? factsBlock.slice(0, maxChars).trim() : factsBlock,
-      });
+      const content = truncateWholeLines(factsBlock, maxChars);
+      if (content) {
+        entries.push({ role: "system", position: factsPosition, content });
+      }
     }
     return { entries };
   }

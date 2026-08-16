@@ -1174,3 +1174,49 @@ test("truncateKeepingRecent behavior: an overflowing summary keeps the newest co
   assert.match(session.summary, /NEWEST_MARKER/);
   assert.doesNotMatch(session.summary, /OLDEST_MARKER/);
 });
+
+test("getRelatedFacts drops whole fact lines instead of clipping one mid-line (issue #364)", () => {
+  const store = createAcpMemoryStore({ dataDir: createTempDir() });
+  store.rememberFact({ key: "coffee", text: "likes it, but not after 6pm" });
+  store.rememberFact({ key: "commute", text: "cycles in unless it is raining" });
+  store.rememberFact({ key: "standup", text: "prefers the later slot on Fridays" });
+
+  const surfaced = store.getRelatedFacts(
+    "remind me about coffee, commute, and standup",
+    { maxChars: 80 },
+  );
+
+  const stored = store.listFacts().map((f) => `- ${f.key}: ${f.text}`);
+  const lines = surfaced.split("\n").filter((l) => l.startsWith("- "));
+  assert.ok(lines.length >= 1, "at least one fact should survive the budget");
+  for (const line of lines) {
+    // A clipped fact still reads as a complete one, so every surfaced line
+    // has to match a stored fact exactly rather than be a prefix of one.
+    assert.ok(stored.includes(line), `partial fact line surfaced: ${line}`);
+  }
+  assert.ok(surfaced.length <= 80);
+});
+
+test("getRelatedFacts orders the more specific key first (issue #364)", () => {
+  const store = createAcpMemoryStore({ dataDir: createTempDir() });
+  store.rememberFact({ key: "car", text: "a blue hatchback" });
+  store.rememberFact({ key: "car insurance", text: "renews in March" });
+
+  const surfaced = store.getRelatedFacts("what about my car insurance?");
+  const lines = surfaced.split("\n").filter((l) => l.startsWith("- "));
+  assert.equal(lines[0], "- car insurance: renews in March");
+});
+
+test("getRelatedFactsEntries omits an entry that truncates to nothing (issue #364)", () => {
+  const store = createAcpMemoryStore({ dataDir: createTempDir() });
+  store.rememberFact({
+    key: "deployment",
+    text: "a very long remembered detail that cannot possibly fit inside a tiny budget",
+  });
+
+  const { entries } = store.getRelatedFactsEntries("tell me about deployment", {
+    maxChars: 50,
+  });
+  // The header alone carries no information, so no message should be emitted.
+  assert.equal(entries.length, 0);
+});
