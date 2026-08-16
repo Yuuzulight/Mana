@@ -2,6 +2,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { significantWords, sharedWordCount } = require("./utils/word-overlap");
 const { detectTextValence } = require("./utils/text-mood");
+const { parseTemporalWindow } = require("./utils/temporal-query");
 
 function ensureDir(dir) {
   fs.mkdirSync(dir, { recursive: true });
@@ -1073,17 +1074,33 @@ function createAcpMemoryStore(options = {}) {
   // above); [] when no index was wired in (tests, or search disabled).
   async function searchSessions(params = {}) {
     if (!sessionSearchIndex) return [];
+    // Issue #337: a stated time window becomes a filter, and the date
+    // expression is stripped from the keyword query rather than left to run
+    // through FTS -- the stored turn says "the deploy broke", not
+    // "yesterday the deploy broke", so matching on the word finds nothing.
+    // An explicit since/until from the caller wins over what the text says.
+    const temporal =
+      params?.since || params?.until ? null : parseTemporalWindow(params?.query);
+    const effective = temporal
+      ? {
+          ...params,
+          query: temporal.residualQuery,
+          since: temporal.since,
+          until: temporal.until,
+        }
+      : params;
+
     let queryEmbedding = null;
-    if (computeEmbeddingsFn && params?.query) {
+    if (computeEmbeddingsFn && effective?.query) {
       try {
-        const [embedding] = await computeEmbeddingsFn([String(params.query)]);
+        const [embedding] = await computeEmbeddingsFn([String(effective.query)]);
         if (Array.isArray(embedding) && embedding.length) queryEmbedding = embedding;
       } catch (e) {
         // Semantic search is additive -- keyword search below still runs
         // fine without it.
       }
     }
-    const results = sessionSearchIndex.search({ ...params, queryEmbedding });
+    const results = sessionSearchIndex.search({ ...effective, queryEmbedding });
     if (!memoryGraph) return results;
     try {
       const associative = associativeResultsFor(results, params.sessionId);
