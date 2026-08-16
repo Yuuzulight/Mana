@@ -37,11 +37,22 @@ function getPersonaOverride(sessionId) {
   return sessionOverrides.get(String(sessionId || "").trim()) || null;
 }
 
-// The identity block a caller should actually inject: MANA_PERSONA, plus
-// the session's temporary override if one is set.
-function buildPersonaPrompt(sessionId) {
+// The identity block a caller should actually inject: MANA_PERSONA, then
+// the persisted personality layer (issue #357), then the session's
+// temporary override if one is set.
+//
+// The order is the design. The core comes first so it always frames what
+// follows, and neither later layer can rewrite it -- they only add. After
+// that, precedence runs shortest-lived last: a single-session override says
+// more about right now than a persisted preference does.
+//
+// personalityTraits is passed in rather than read here, so this module stays
+// what its header claims -- the persona in exactly one place, owning no
+// storage. Called with one argument it behaves exactly as it did before.
+function buildPersonaPrompt(sessionId, personalityTraits) {
   const override = sessionId ? getPersonaOverride(sessionId) : null;
-  return override ? `${MANA_PERSONA}\n\n${override}` : MANA_PERSONA;
+  const traits = String(personalityTraits || "").trim();
+  return [MANA_PERSONA, traits, override].filter(Boolean).join("\n\n");
 }
 
 module.exports = {

@@ -77,6 +77,7 @@ const {
 } = require("./capabilities/web-access-capability");
 const { sessionsCapability } = require("./capabilities/sessions-capability");
 const { presetsCapability } = require("./capabilities/presets-capability");
+const { personalityCapability } = require("./capabilities/personality-capability");
 const {
   deepResearchCapability,
 } = require("./capabilities/deep-research-capability");
@@ -131,6 +132,7 @@ const { createMemoryGraph } = require("./memory-graph");
 const { createSkillProposalRunner } = require("./skill-proposal");
 const persona = require("./persona");
 const { createPresetsStore } = require("./presets-store");
+const { createPersonalityStore } = require("./personality-store");
 const { createPluginSettingsStore } = require("./plugin-settings-store");
 const { createAuthStore } = require("./auth-store");
 const { createToolPolicy } = require("./ai/tool-policy");
@@ -556,6 +558,9 @@ async function checkEmotionalReflexes(store = acpMemoryStore) {
 
 // Named prompt/behavior presets (see presets-store.js)
 const presetsStore = createPresetsStore({});
+// Issue #357: the editable personality layer, persisted so an adjustment
+// survives a restart. persona.js owns the immutable core and no storage.
+const personalityStore = createPersonalityStore({});
 
 // Procedural-memory skills store (see skills-store.js, issue #140)
 const skillsStore = createSkillsStore({});
@@ -1846,6 +1851,7 @@ function registerRoutes(app, upload, deps = {}) {
     sessionsCapability,
     deepResearchCapability,
     presetsCapability,
+    personalityCapability,
     backgroundMemoryCapability,
     memoryFactsCapability,
     retrieverAdminCapability,
@@ -1855,6 +1861,7 @@ function registerRoutes(app, upload, deps = {}) {
     toolCallLogCapability,
   ];
   const activePresetsStore = deps.presetsStore || presetsStore;
+  const activePersonalityStore = deps.personalityStore || personalityStore;
   const activePluginSettingsStore = deps.pluginSettingsStore || pluginSettingsStore;
   const activeSkillsStore = deps.skillsStore || skillsStore;
   // Registered against whichever store this createApp call actually uses
@@ -1956,6 +1963,7 @@ function registerRoutes(app, upload, deps = {}) {
           jobApplicationsPlugin.JOB_MATCH_SYSTEM_PROMPT,
         )),
     presetsStore: activePresetsStore,
+    personalityStore: activePersonalityStore,
     marketDataClient,
     jobApplicationsStore,
     adzunaClient,
@@ -3417,7 +3425,10 @@ function registerRoutes(app, upload, deps = {}) {
     // mode's own task-specific operational instructions -- these three
     // used to each redefine Mana's personality from scratch, drifting
     // slightly from one another and from persona.js's other consumers.
-    const personaBlock = persona.buildPersonaPrompt(sessionId);
+    const personaBlock = persona.buildPersonaPrompt(
+      sessionId,
+      personalityStore.get().traits,
+    );
     const CASUAL_SYSTEM_PROMPT = `${personaBlock} Use short paragraphs and natural conversational phrasing; include occasional friendly flourishes (e.g. "You got this!"). Ask one clarifying question only when necessary. If the user requests professional or safety-sensitive information, politely indicate you cannot provide it and offer to look up resources or recommend professionals.`;
     const EVERYDAY_SYSTEM_PROMPT = `${personaBlock} Provide clear, concise, and practical guidance. When giving instructions, present them as short numbered steps and include expected outcomes or simple checks when helpful. Use plain language accessible to non-technical users. Offer follow-up actions and ask clarifying questions only when required. For health, legal, or hazardous topics, recommend professional resources.`;
     const CODING_SYSTEM_PROMPT = `${personaBlock} In this mode, be focused, precise, and technical: start with a one-line summary of intent, then provide minimal, runnable code examples in fenced blocks, followed by a short explanation and a suggested test or verification step. Avoid small talk entirely. Ask only necessary clarifying questions. When the user requests structured output (JSON, patch, or commands), return exactly the machine-readable block unless commentary is explicitly requested. Include assumptions and environment notes when relevant.`;
