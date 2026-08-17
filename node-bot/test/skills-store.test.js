@@ -4,7 +4,7 @@ const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
 
-const { createSkillsStore, parseSkillFile, serializeSkillFile, extractSkillScript, extractSkillInputs } = require("../skills-store");
+const { createSkillsStore, parseSkillFile, serializeSkillFile, extractSkillScript, extractSkillInputs, verifySkillScript } = require("../skills-store");
 
 function tempDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), "mana-skills-test-"));
@@ -370,4 +370,43 @@ test("availability is unevaluated when no checker is supplied (issue #354)", () 
   store.createSkill({ name: "Plain", description: "d", body: "s", requires: ["x"] });
   // Callers that do not know about tools keep working unchanged.
   assert.equal(store.listSkills()[0].available, true);
+});
+
+test("a skill whose script does not parse is refused (issue #356)", () => {
+  const store = createSkillsStore({ skillsDir: tempDir() });
+  assert.throws(
+    () =>
+      store.createSkill({
+        name: "Broken",
+        description: "d",
+        body: "steps\n\n```skill-script\nreturn (;\n```",
+      }),
+    /does not parse/,
+  );
+  // Storing it would only defer the failure to whoever reached for it next.
+  assert.equal(store.listSkills().length, 0);
+});
+
+test("a skill with a valid script is stored (issue #356)", () => {
+  const store = createSkillsStore({ skillsDir: tempDir() });
+  store.createSkill({
+    name: "Fine",
+    description: "d",
+    body: "steps\n\n```skill-script\nconst x = await tools.read_file({ path: 'a' });\nreturn x;\n```",
+  });
+  assert.equal(store.listSkills().length, 1);
+});
+
+test("await at the top level parses, matching how the worker wraps it (issue #356)", () => {
+  // The worker compiles `(async () => { ... })()`, so bare await is legal
+  // inside a skill script. Checking it any other way would reject scripts
+  // that actually run fine.
+  assert.equal(verifySkillScript("```skill-script\nawait tools.noop();\n```").ok, true);
+});
+
+test("a skill with no script block is not rejected (issue #356)", () => {
+  const store = createSkillsStore({ skillsDir: tempDir() });
+  store.createSkill({ name: "Prose Only", description: "d", body: "just instructions" });
+  assert.equal(store.listSkills().length, 1);
+  assert.equal(verifySkillScript("just instructions").checked, false);
 });
