@@ -1363,7 +1363,8 @@ test("buildPromptMemory drops turns older than the recency window (issue #338)",
   const stale = createAcpMemoryStore({ dataDir, now: () => old });
   await stale.appendTurn({ sessionId: "s1", user: "ancient question", assistant: "ancient answer" });
 
-  const store = createAcpMemoryStore({ dataDir });
+  // Floor disabled (issue #385) so this keeps testing the pure age window.
+  const store = createAcpMemoryStore({ dataDir, minRecentTurns: 0 });
   const injected = store.buildPromptMemory("s1");
   // The window bounds the verbatim recent-turns block. The rolling summary
   // is deliberately left alone -- ageing it out would discard the whole
@@ -1397,7 +1398,8 @@ test("buildPromptMemory returns nothing rather than a bare header (issue #338)",
     "utf8",
   );
 
-  const store = createAcpMemoryStore({ dataDir });
+  // Floor disabled (issue #385): with it on, the newest turn survives.
+  const store = createAcpMemoryStore({ dataDir, minRecentTurns: 0 });
   // Every turn aged out and no summary -- "Conversation memory:" alone says
   // nothing and still costs tokens.
   assert.equal(store.buildPromptMemory("s1"), "");
@@ -1479,4 +1481,46 @@ test("a fork appears in listSessions and can be resumed by id (issue #350)", asy
   assert.ok(store.listSessions().some((s) => s.sessionId === "attempt-2"));
   // Resuming needed no new API -- a session is a file keyed by id.
   assert.equal(store.getSession(fork.sessionId).forkedFrom, "coding-1");
+});
+
+test("the newest turn survives the recency window as a floor (issue #385)", async () => {
+  const dataDir = createTempDir();
+  const old = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000).toISOString();
+  const stale = createAcpMemoryStore({ dataDir, now: () => old });
+  await stale.appendTurn({ sessionId: "s1", user: "first old", assistant: "ok" });
+  await stale.appendTurn({ sessionId: "s1", user: "last old", assistant: "ok" });
+
+  const store = createAcpMemoryStore({ dataDir });
+  const injected = store.buildPromptMemory("s1");
+  // Coming back after a long gap should still show where the thread stopped.
+  assert.match(injected, /Recent turns:/);
+  const recentBlock = injected.slice(injected.indexOf("Recent turns:"));
+  assert.match(recentBlock, /last old/);
+  // Only the floor, not the whole stale tail. Asserted against the block
+  // rather than the whole string -- the rolling summary legitimately
+  // contains every turn and is deliberately not age-bounded.
+  assert.doesNotMatch(recentBlock, /first old/);
+});
+
+test("a zero floor restores the pure age window (issue #385)", async () => {
+  const dataDir = createTempDir();
+  const old = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000).toISOString();
+  const stale = createAcpMemoryStore({ dataDir, now: () => old });
+  await stale.appendTurn({ sessionId: "s1", user: "ancient", assistant: "ok" });
+
+  const store = createAcpMemoryStore({ dataDir, minRecentTurns: 0 });
+  assert.doesNotMatch(store.buildPromptMemory("s1"), /Recent turns:/);
+});
+
+test("turns inside the window are unaffected by the floor (issue #385)", async () => {
+  const dataDir = createTempDir();
+  const recent = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+  const writer = createAcpMemoryStore({ dataDir, now: () => recent });
+  await writer.appendTurn({ sessionId: "s1", user: "one", assistant: "ok" });
+  await writer.appendTurn({ sessionId: "s1", user: "two", assistant: "ok" });
+
+  const store = createAcpMemoryStore({ dataDir });
+  const injected = store.buildPromptMemory("s1");
+  assert.match(injected, /one/);
+  assert.match(injected, /two/);
 });

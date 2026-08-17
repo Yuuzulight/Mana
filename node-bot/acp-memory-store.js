@@ -211,6 +211,17 @@ function createAcpMemoryStore(options = {}) {
         2 * 24 * 60 * 60 * 1000,
     ),
   );
+  // Issue #385: how many of the newest turns survive the age window
+  // regardless. Deliberately 1 -- the point is "where were we", not
+  // replaying a session. 0 restores #338's pure age-window behavior.
+  const minRecentTurns = Math.max(
+    0,
+    Number(
+      options.minRecentTurns === undefined
+        ? process.env.MANA_MIN_RECENT_TURNS || 1
+        : options.minRecentTurns,
+    ),
+  );
   const maxSummaryChars = Math.max(
     100,
     Number(options.maxSummaryChars || 4000),
@@ -1014,11 +1025,21 @@ function createAcpMemoryStore(options = {}) {
     if (!maxRecentTurnAgeMs) return session.turns;
     const cutoff = Date.parse(now()) - maxRecentTurnAgeMs;
     if (Number.isNaN(cutoff)) return session.turns;
-    return session.turns.filter((turn) => {
+    const fresh = session.turns.filter((turn) => {
       if (!turn?.at) return true;
       const at = Date.parse(turn.at);
       return Number.isNaN(at) || at >= cutoff;
     });
+
+    // Issue #385: a floor under the age window. #338's rule is right for
+    // bulk -- a fortnight of old turns must not masquerade as the live
+    // thread -- but on its own it has a cliff: come back after a long gap
+    // and *every* turn is outside the window, so the verbatim block empties
+    // completely. The last thing said is disproportionately useful even
+    // when it is old, precisely because it is where the thread stopped.
+    // Position, not age, so the newest turns are the ones kept.
+    if (fresh.length >= minRecentTurns) return fresh;
+    return session.turns.slice(-minRecentTurns);
   }
 
   function recentTurnStrings(session) {
