@@ -410,3 +410,56 @@ test("a skill with no script block is not rejected (issue #356)", () => {
   assert.equal(store.listSkills().length, 1);
   assert.equal(verifySkillScript("just instructions").checked, false);
 });
+
+test("a hand-dropped skill file is reported as unmanaged (issue #393)", () => {
+  const dir = tempDir();
+  const store = createSkillsStore({ skillsDir: dir });
+  store.createSkill({ name: "Proper", description: "made properly", body: "steps" });
+  // Someone writes a skill by hand, or copies one in from a backup.
+  fs.writeFileSync(path.join(dir, "hand-written.md"), "just some instructions\n", "utf8");
+
+  const unmanaged = store.listUnmanagedSkills();
+  assert.equal(unmanaged.length, 1);
+  assert.equal(unmanaged[0].fileName, "hand-written.md");
+  assert.ok(unmanaged[0].reasons.includes("no frontmatter"));
+});
+
+test("a properly created skill is never reported as unmanaged (issue #393)", () => {
+  const store = createSkillsStore({ skillsDir: tempDir() });
+  store.createSkill({ name: "Proper", description: "made properly", body: "steps" });
+  assert.deepEqual(store.listUnmanagedSkills(), []);
+});
+
+test("a filename that disagrees with the name inside is flagged (issue #393)", () => {
+  const dir = tempDir();
+  const store = createSkillsStore({ skillsDir: dir });
+  fs.writeFileSync(
+    path.join(dir, "wrong-name.md"),
+    "---\nname: Actual Name\ndescription: d\ncategory: general\ncreated: 2026-01-01\nlastUsed: 2026-01-01\nuseCount: 0\nstatus: active\n---\n\nbody\n",
+    "utf8",
+  );
+
+  const [entry] = store.listUnmanagedSkills();
+  assert.equal(entry.name, "Actual Name");
+  assert.ok(entry.reasons.some((r) => /filename does not match/.test(r)));
+});
+
+test("adopting fills in bookkeeping without touching the body (issue #393)", () => {
+  const dir = tempDir();
+  const store = createSkillsStore({ skillsDir: dir });
+  fs.writeFileSync(path.join(dir, "hand-written.md"), "the actual instructions\n", "utf8");
+
+  const before = store.listUnmanagedSkills();
+  const adopted = store.adoptSkill(before[0].name);
+  assert.ok(adopted.created);
+  assert.equal(adopted.useCount, 0);
+  assert.equal(adopted.status, "active");
+  // The instructions are the part the user cared about.
+  assert.match(adopted.body, /the actual instructions/);
+  assert.ok(!store.listUnmanagedSkills().some((u) => u.reasons.includes("no frontmatter")));
+});
+
+test("adopting an unknown skill returns null (issue #393)", () => {
+  const store = createSkillsStore({ skillsDir: tempDir() });
+  assert.equal(store.adoptSkill("nope"), null);
+});
