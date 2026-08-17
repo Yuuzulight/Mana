@@ -20,6 +20,11 @@
     <div id="reply" class="box">(reply will appear here)</div>
     <pre id="backendLogs" class="logs"></pre>
   </div>
+  <!-- Issue #362: on-screen equivalent of spoken output. aria-live
+     polite so a screen reader announces a caption without cutting off
+     whatever it is already reading. -->
+  <div id="mana-captions" class="mana-captions" role="status" aria-live="polite" aria-atomic="true" hidden></div>
+  <script src="caption-client.js"></script>
   <script src="renderer.js"></script>
 </body>
 </html>
