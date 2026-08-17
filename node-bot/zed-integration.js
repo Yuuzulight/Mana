@@ -690,11 +690,33 @@ function createEditorIntegrations(options = {}) {
     }
 
     const currentContent = fs.readFileSync(target.fullPath, "utf8");
+    // Issue #387: the file already holding exactly what was proposed is not
+    // a conflict -- it is the edit, already applied. Reporting that as a
+    // failure describes a correct outcome as a broken one, and invites the
+    // caller to "fix" a file that is right.
+    if (currentContent === proposal.proposedContent) {
+      return { ...proposalStore.markApplied(id), alreadyApplied: true };
+    }
     if (currentContent !== proposal.originalContent) {
       throw new Error("edit proposal conflict: current file content changed");
     }
 
     fs.writeFileSync(target.fullPath, proposal.proposedContent, "utf8");
+
+    // Issue #387: read back before claiming success. writeFileSync throwing
+    // is handled by the caller; the uncovered cases are the quiet ones --
+    // a partial write on a full or failing disk, an encoding or
+    // line-ending transformation somewhere in the path (a live concern on
+    // Windows, not a hypothetical), or a watcher racing the write. In each
+    // the proposal would be recorded as applied while the file says
+    // otherwise, which is worse than a visible failure.
+    const writtenContent = fs.readFileSync(target.fullPath, "utf8");
+    if (writtenContent !== proposal.proposedContent) {
+      throw new Error(
+        "edit proposal failed verification: file on disk does not match the approved content",
+      );
+    }
+
     const applied = proposalStore.markApplied(id);
 
     // Issue #349: opt-in, and never allowed to fail the edit. The file is
