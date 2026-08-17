@@ -329,6 +329,69 @@ function assertNotTruncated({
   }
 }
 
+// Issue #349: git sits *underneath* the proposal flow, not in place of it.
+// Review-before-apply is unchanged, and a commit only happens once the user
+// has already accepted -- so unreviewed work never enters history, which is
+// the failure mode of the "commit first, revert to undo" alternative. What
+// it adds is durability (an in-memory proposal dies with the process; a
+// commit does not) and a real record of what Mana changed.
+//
+// Three hard constraints:
+//   - Only the accepted file is committed. A bare `git add -A` would sweep
+//     whatever the user had in progress into a commit describing Mana's
+//     edit. The pathspec on commit keeps it scoped even when other things
+//     are already staged.
+//   - Never pushes. Nothing here talks to a remote.
+//   - A failed commit never undoes the applied edit. The write already
+//     succeeded, and reverting real work to keep git tidy would be the
+//     destructive choice.
+function buildEditCommitMessage({ relativePath, summary }) {
+  const subject = String(summary || "")
+    .trim()
+    .split(/\r?\n/)[0]
+    .slice(0, 72);
+  const head = subject || `Update ${relativePath}`;
+  return `${head}\n\nApproved Mana edit to ${relativePath}.`;
+}
+
+function commitAppliedEdit({ workspacePath, relativePath, summary, runGit } = {}) {
+  const git =
+    runGit ||
+    ((args) =>
+      spawnSync("git", args, {
+        cwd: workspacePath,
+        encoding: "utf8",
+        shell: false,
+        windowsHide: true,
+      }));
+
+  const inRepo = git(["rev-parse", "--is-inside-work-tree"]);
+  if (!inRepo || inRepo.status !== 0) {
+    return { committed: false, reason: "workspace is not a git repository" };
+  }
+
+  // Needed before the commit below only so a previously-untracked file has
+  // something for the pathspec to match.
+  const staged = git(["add", "--", relativePath]);
+  if (staged.status !== 0) {
+    return {
+      committed: false,
+      reason: `git add failed: ${String(staged.stderr || "").trim()}`,
+    };
+  }
+
+  const message = buildEditCommitMessage({ relativePath, summary });
+  const result = git(["commit", "-m", message, "--", relativePath]);
+  if (result.status !== 0) {
+    return {
+      committed: false,
+      reason: `git commit failed: ${String(result.stderr || result.stdout || "").trim()}`,
+    };
+  }
+
+  return { committed: true, message };
+}
+
 function createEditProposalStore(options = {}) {
   const now = options.now || (() => new Date());
   // Generous by default -- the aim is catching a cliff, not policing edits.
@@ -530,6 +593,10 @@ function createEditorIntegrations(options = {}) {
       maxFiles: options.maxWorkspaceFiles,
       maxReadBytes: options.maxWorkspaceReadBytes,
     });
+  // Issue #349: off unless asked for. Committing into a user's repository is
+  // not something to start doing by default.
+  const commitOnApprove = Boolean(options.commitOnApprove);
+  const runGit = options.runGit;
   const proposalStore =
     options.proposalStore ||
     createEditProposalStore({
@@ -610,7 +677,7 @@ function createEditorIntegrations(options = {}) {
     return proposalStore.getProposal(id);
   }
 
-  function approveEditProposal(id) {
+  function approveEditProposal(id, { commit } = {}) {
     const workspace = requireActiveWorkspace(workspaceStore);
     const proposal = proposalStore.getProposal(id);
     if (proposal.status !== "pending") {
@@ -628,7 +695,22 @@ function createEditorIntegrations(options = {}) {
     }
 
     fs.writeFileSync(target.fullPath, proposal.proposedContent, "utf8");
-    return proposalStore.markApplied(id);
+    const applied = proposalStore.markApplied(id);
+
+    // Issue #349: opt-in, and never allowed to fail the edit. The file is
+    // already written by this point -- a commit problem is reported, not
+    // raised, because throwing here would misrepresent an applied edit as a
+    // failed one and tempt a caller into "cleaning up" real work.
+    const shouldCommit = commit === undefined ? commitOnApprove : Boolean(commit);
+    if (!shouldCommit) return applied;
+
+    const git = commitAppliedEdit({
+      workspacePath: workspace.path,
+      relativePath: target.relativePath,
+      summary: proposal.summary,
+      runGit,
+    });
+    return { ...applied, git };
   }
 
   return {
