@@ -175,3 +175,55 @@ test("append keeps a shared (non-circular) object reference intact (issue #348)"
   assert.doesNotMatch(entry.args, /circular/);
   assert.equal((entry.args.match(/eu-west/g) || []).length, 2);
 });
+
+test("a name that merely mentions a credential is not redacted (issue #386)", () => {
+  const log = createToolCallLog({ logPath: createTempLogPath() });
+  log.append({
+    name: "generate",
+    args: {
+      token_count: 4096,
+      password_policy: "12 chars minimum",
+      authorization_flow: "pkce",
+      secret_santa_list: ["a", "b"],
+    },
+    ok: true,
+  });
+
+  const [entry] = log.readRecent();
+  // The tail carries the meaning: access_token is a token, token_count is a count.
+  assert.match(entry.args, /4096/);
+  assert.match(entry.args, /12 chars minimum/);
+  assert.match(entry.args, /pkce/);
+  assert.doesNotMatch(entry.args, /\[redacted\]/);
+});
+
+test("credential-tailed names are still redacted (issue #386)", () => {
+  const log = createToolCallLog({ logPath: createTempLogPath() });
+  log.append({
+    name: "call",
+    args: {
+      api_key: "aaaaaaaaaaaa",
+      access_token: "bbbbbbbbbbbb",
+      apiKey: "cccccccccccc",
+      "x-api-key": "dddddddddddd",
+      refresh_token: "eeeeeeeeeeee",
+      password: "ffffffffffff",
+    },
+    ok: true,
+  });
+
+  const [entry] = log.readRecent();
+  for (const secret of ["aaaaaaaaaaaa", "bbbbbbbbbbbb", "cccccccccccc", "dddddddddddd", "eeeeeeeeeeee", "ffffffffffff"]) {
+    assert.doesNotMatch(entry.args, new RegExp(secret));
+  }
+});
+
+test("a bare key stays, a bare token goes (issue #386)", () => {
+  const log = createToolCallLog({ logPath: createTempLogPath() });
+  log.append({ name: "remember", args: { key: "favorite color", token: "zzzzzzzzzzzz" }, ok: true });
+
+  const [entry] = log.readRecent();
+  // The #348 carve-out, now a rule rather than a special case.
+  assert.match(entry.args, /favorite color/);
+  assert.doesNotMatch(entry.args, /zzzzzzzzzzzz/);
+});
