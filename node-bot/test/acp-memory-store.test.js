@@ -1431,3 +1431,52 @@ test("a turn with no timestamp is kept rather than aged out (issue #338)", async
   const store = createAcpMemoryStore({ dataDir });
   assert.match(store.buildPromptMemory("s1"), /undated question/);
 });
+
+test("forkSession carries the thread into a new session (issue #350)", async () => {
+  const store = createAcpMemoryStore({ dataDir: createTempDir() });
+  await store.appendTurn({ sessionId: "coding-1", user: "refactor the parser", assistant: "ok" });
+
+  const fork = store.forkSession("coding-1");
+  assert.notEqual(fork.sessionId, "coding-1");
+  assert.equal(fork.forkedFrom, "coding-1");
+  assert.equal(fork.turns.length, 1);
+  assert.match(fork.turns[0].user, /refactor the parser/);
+});
+
+test("a fork diverges without touching the original (issue #350)", async () => {
+  const store = createAcpMemoryStore({ dataDir: createTempDir() });
+  await store.appendTurn({ sessionId: "coding-1", user: "first approach", assistant: "ok" });
+  const fork = store.forkSession("coding-1");
+
+  await store.appendTurn({ sessionId: fork.sessionId, user: "second approach", assistant: "ok" });
+
+  // The whole point: trying something else must not destroy the thread that
+  // got you there.
+  assert.equal(store.getSession("coding-1").turns.length, 1);
+  assert.equal(store.getSession(fork.sessionId).turns.length, 2);
+});
+
+test("forking accepts an explicit id and refuses to clobber one (issue #350)", async () => {
+  const store = createAcpMemoryStore({ dataDir: createTempDir() });
+  await store.appendTurn({ sessionId: "coding-1", user: "x", assistant: "y" });
+
+  const fork = store.forkSession("coding-1", { sessionId: "attempt-2", name: "Attempt 2" });
+  assert.equal(fork.sessionId, "attempt-2");
+  assert.equal(fork.name, "Attempt 2");
+  assert.throws(() => store.forkSession("coding-1", { sessionId: "attempt-2" }), /already exists/);
+});
+
+test("forking an unknown session returns null (issue #350)", () => {
+  const store = createAcpMemoryStore({ dataDir: createTempDir() });
+  assert.equal(store.forkSession("nope"), null);
+});
+
+test("a fork appears in listSessions and can be resumed by id (issue #350)", async () => {
+  const store = createAcpMemoryStore({ dataDir: createTempDir() });
+  await store.appendTurn({ sessionId: "coding-1", user: "x", assistant: "y" });
+  const fork = store.forkSession("coding-1", { sessionId: "attempt-2" });
+
+  assert.ok(store.listSessions().some((s) => s.sessionId === "attempt-2"));
+  // Resuming needed no new API -- a session is a file keyed by id.
+  assert.equal(store.getSession(fork.sessionId).forkedFrom, "coding-1");
+});
