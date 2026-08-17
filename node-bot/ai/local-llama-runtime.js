@@ -258,6 +258,9 @@ function createLocalLlamaRuntime(options = {}) {
     console.log("Running llama:", llamaBin, args.join(" "));
     const result = spawnSync(llamaBin, args, {
       encoding: "utf8",
+      // Issue #388: no console flash. Mana is a desktop assistant; a
+      // window blinking on screen during a background call is visible.
+      windowsHide: true,
       maxBuffer: 50 * 1024 * 1024,
       // llamaBin always names a Windows .exe (this module only supports the
       // bundled Windows/CUDA llama build) -- path.win32 so this resolves

@@ -128,7 +128,8 @@ function detectGpuVramMb(spawnSync = defaultSpawnSync) {
     const result = spawnSync(
       "nvidia-smi",
       ["--query-gpu=memory.total", "--format=csv,noheader,nounits"],
-      { encoding: "utf8", timeout: 5000 },
+      // Issue #388: windowsHide so the probe does not flash a console.
+      { encoding: "utf8", timeout: 5000, windowsHide: true },
     );
     if (result.error || result.status !== 0 || !result.stdout) {
       return null;

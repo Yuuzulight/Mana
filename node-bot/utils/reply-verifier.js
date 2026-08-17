@@ -53,7 +53,8 @@ function checkPythonSyntax(code) {
     const res = spawnSync(
       process.env.PYTHON || "python",
       ["-m", "py_compile", tmp],
-      { encoding: "utf8", timeout: 5000 },
+      // Issue #388: windowsHide -- this runs inline while verifying a reply.
+      { encoding: "utf8", timeout: 5000, windowsHide: true },
     );
     fs.unlinkSync(tmp);
     if (res.status === 0) return { ok: true };
@@ -243,6 +244,8 @@ function analyzePythonForRisks(code) {
       const res = spawnSync(process.env.PYTHON || "python", [scriptPath, tmp], {
         encoding: "utf8",
         timeout: 5000,
+        // Issue #388: windowsHide, same reason as the py_compile call above.
+        windowsHide: true,
       });
       try {
         fs.unlinkSync(tmp);
