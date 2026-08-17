@@ -20,6 +20,7 @@ function parseSkillFile(raw, fallbackName) {
       lastUsed: null,
       useCount: 0,
       status: "active",
+      requires: [],
       body: raw.trim(),
     };
   }
@@ -41,8 +42,37 @@ function parseSkillFile(raw, fallbackName) {
     // from one that's genuinely useful (issue: skill system review).
     useCount: Number(frontmatter.useCount) || 0,
     status: frontmatter.status || "active",
+    // Issue #354: tools this skill's steps depend on. Without it a skill
+    // whose tool has gone away stays status: "active" and fails only when
+    // someone finally reaches for it -- and neither useCount nor lastUsed
+    // exposes that, since a skill that never runs successfully simply stops
+    // incrementing them.
+    requires: parseRequires(frontmatter.requires),
     body: match[2].trim(),
   };
+}
+
+// Comma-separated in the frontmatter because the format is one flat
+// `key: value` line per field -- a YAML list would mean parsing real YAML
+// for one field.
+function parseRequires(value) {
+  return String(value || "")
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+}
+
+// A skill is unavailable when something it declared it needs is not there.
+// Reported rather than hidden: "this exists but cannot run right now, and
+// here is what is missing" is far more useful than a skill silently not
+// being offered.
+function evaluateSkillAvailability(skill, isToolAvailable) {
+  const requires = Array.isArray(skill?.requires) ? skill.requires : [];
+  if (!requires.length || typeof isToolAvailable !== "function") {
+    return { available: true, missingRequirements: [] };
+  }
+  const missingRequirements = requires.filter((tool) => !isToolAvailable(tool));
+  return { available: missingRequirements.length === 0, missingRequirements };
 }
 
 function serializeSkillFile(skill) {
@@ -55,6 +85,11 @@ function serializeSkillFile(skill) {
     `lastUsed: ${skill.lastUsed}`,
     `useCount: ${skill.useCount || 0}`,
     `status: ${skill.status}`,
+    // Omitted entirely when empty rather than written as a blank line, so
+    // an existing skill file is unchanged by a round-trip through this.
+    ...(Array.isArray(skill.requires) && skill.requires.length
+      ? [`requires: ${skill.requires.join(", ")}`]
+      : []),
     "---",
     "",
     skill.body,
@@ -156,11 +191,15 @@ function createSkillsStore(options = {}) {
 
   // The cheap call: name/description/category/status only, no body -- this
   // is what stays affordable to keep around even as the skill count grows.
-  function listSkills() {
+  // options.isToolAvailable: issue #354. Passed in rather than imported so
+  // this store keeps knowing nothing about the tool registry -- it only
+  // knows what each skill declared it needs.
+  function listSkills({ isToolAvailable } = {}) {
     return listSkillFiles()
       .map((fileName) => {
         try {
           const skill = readSkill(fileName);
+          const availability = evaluateSkillAvailability(skill, isToolAvailable);
           return {
             name: skill.name,
             description: skill.description,
@@ -168,6 +207,8 @@ function createSkillsStore(options = {}) {
             status: skill.status,
             lastUsed: skill.lastUsed,
             useCount: skill.useCount,
+            requires: skill.requires,
+            ...availability,
           };
         } catch (e) {
           return null;
@@ -211,7 +252,7 @@ function createSkillsStore(options = {}) {
   // out of scope until the read/prune path is proven, and any future
   // approval-gate work (issue #152) sits in front of whoever calls this,
   // not inside it.
-  function createSkill({ name, description, category, body }) {
+  function createSkill({ name, description, category, body, requires }) {
     ensureDir();
     const cleanName = String(name || "").trim();
     if (!cleanName) throw new Error("name is required");
@@ -243,6 +284,9 @@ function createSkillsStore(options = {}) {
       lastUsed: timestamp,
       useCount: 0,
       status: "active",
+      requires: parseRequires(
+        Array.isArray(requires) ? requires.join(",") : requires,
+      ),
       body: cleanBody,
     };
     fs.writeFileSync(
