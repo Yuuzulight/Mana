@@ -110,7 +110,12 @@ test("buildToolPolicy works end to end with the real memory/session-search/skill
   const memorySource = createMemoryToolSource({ acpMemoryStore, sessionId: "s1" });
   const sessionSearchSource = createSessionSearchToolSource({ acpMemoryStore, sessionId: "s1" });
   const skillSource = createSkillToolSource({
-    approvalGate: { requestApproval: async () => ({ status: "pending" }) },
+    approvalGate: {
+      requestApproval: async () => ({ status: "pending" }),
+      // Issue #355: the tool source registers a "skill-run" executor at
+      // construction, so a stub has to match the real gate's interface.
+      registerExecutor: () => {},
+    },
     skillsStore: { viewSkill: () => null },
   });
   const mcpDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "mana-tool-source-mcp-"));
