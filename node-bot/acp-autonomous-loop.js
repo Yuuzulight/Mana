@@ -200,6 +200,48 @@ async function runArchiveRetention() {
  * @param {string} rawModelReply
  * @param {string} sessionId
  */
+// Issue #396: per-session ceilings on how many times each tool may run.
+//
+// Individual actions were already bounded -- file writes by size, scripts by
+// wall clock, delegation by concurrency -- but nothing counted the
+// aggregate. A loop that finds a task it cannot finish can retry
+// indefinitely, every action perfectly legal and bounded, and nothing stops
+// it. For Mana that is worse than a wasted bill: each retry occupies the
+// single local model on the single GPU, so a runaway loop makes her
+// unresponsive to the person sitting in front of her.
+//
+// Generous by design. This should never fire in normal use, and should
+// catch a loop in seconds rather than minutes when it does.
+const MAX_TOOL_CALLS_PER_SESSION = Math.max(
+  1,
+  Number(process.env.MANA_MAX_TOOL_CALLS_PER_SESSION) || 50,
+);
+
+// Keyed by session, so one conversation's runaway loop cannot spend
+// another's budget. In-memory: a cap is about the session in progress, not
+// a quota that should follow the user across a restart.
+const sessionToolCounts = new Map();
+
+function countToolCall(sessionId, tool) {
+  const key = String(sessionId || "default");
+  let counts = sessionToolCounts.get(key);
+  if (!counts) {
+    counts = new Map();
+    sessionToolCounts.set(key, counts);
+  }
+  const next = (counts.get(tool) || 0) + 1;
+  counts.set(tool, next);
+  return next;
+}
+
+function resetSessionToolCounts(sessionId) {
+  if (sessionId === undefined) {
+    sessionToolCounts.clear();
+    return true;
+  }
+  return sessionToolCounts.delete(String(sessionId || "default"));
+}
+
 async function executeAutonomousStep(rawModelReply, sessionId) {
   // 1. Leverage your centralized safe extraction utility
   let actions = safeJsonParse(rawModelReply);
@@ -242,6 +284,24 @@ async function executeAutonomousStep(rawModelReply, sessionId) {
 
   for (const action of actions) {
     const { tool, args } = action;
+
+    // Issue #396: checked before dispatch, so a capped tool costs nothing
+    // beyond the check. Reported in the results rather than thrown, so the
+    // model is told it hit a ceiling and can stop, instead of seeing an
+    // exception it may read as transient and retry.
+    const callCount = countToolCall(sessionId, tool);
+    if (callCount > MAX_TOOL_CALLS_PER_SESSION) {
+      console.error(
+        `[Mana Agent Loop] 🛑 ${tool} hit the per-session cap of ${MAX_TOOL_CALLS_PER_SESSION}; refusing further calls this session.`,
+      );
+      results.push({
+        tool,
+        status: "error",
+        detail: "session_cap_exceeded",
+        cap: MAX_TOOL_CALLS_PER_SESSION,
+      });
+      continue;
+    }
 
     if (tool === "local_retrieve") {
       const query = args && args.query ? String(args.query) : "";
@@ -771,4 +831,9 @@ async function createAcpAutonomousLoop(options = {}) {
   };
 }
 
-module.exports = { executeAutonomousStep, createAcpAutonomousLoop };
+module.exports = {
+  executeAutonomousStep,
+  createAcpAutonomousLoop,
+  resetSessionToolCounts,
+  MAX_TOOL_CALLS_PER_SESSION,
+};
