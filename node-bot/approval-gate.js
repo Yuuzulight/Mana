@@ -77,8 +77,39 @@ function createApprovalGate(options = {}) {
   // should survive a server restart.
   const pending = new Map();
 
+  // Issue #384: consecutive denials per action type. In-memory for the same
+  // reason `pending` is -- "they have said no three times in a row just
+  // now" is live state about this session, not a verdict that should follow
+  // the user across a restart.
+  //
+  // Without it, a denial resolves exactly one request and the agent may ask
+  // again immediately. #355 made that sharper rather than softer: a skill
+  // marked `permission: confirm` asks on *every* invocation, so one the
+  // user keeps declining keeps asking until they give in.
+  const denialCounts = new Map();
+  // Small on purpose. A wrongly-broken loop costs one manual retry; an
+  // unbroken one costs an assistant that nags.
+  const maxConsecutiveDenials = Math.max(
+    1,
+    Number(options.maxConsecutiveDenials) || 3,
+  );
+
   function registerExecutor(actionType, fn) {
     executors.set(actionType, fn);
+  }
+
+  function denialCount(actionType) {
+    return denialCounts.get(actionType) || 0;
+  }
+
+  // Exported so a user who genuinely wants to allow the action after all is
+  // not locked out until restart.
+  function resetDenials(actionType) {
+    if (actionType === undefined) {
+      denialCounts.clear();
+      return true;
+    }
+    return denialCounts.delete(actionType);
   }
 
   function loadAlwaysAllowed() {
@@ -114,6 +145,19 @@ function createApprovalGate(options = {}) {
     if (isAlwaysAllowed(actionType)) {
       const result = await runExecutor(actionType, payload);
       return { status: "approved", actionType, result };
+    }
+
+    // Issue #384: stop asking rather than prompting a fourth time. Reported,
+    // not thrown -- the caller should be able to tell the model it was
+    // refused and why, which is more useful than an exception it will
+    // interpret as a transient failure and retry.
+    if (denialCount(actionType) >= maxConsecutiveDenials) {
+      return {
+        status: "blocked",
+        actionType,
+        deniedCount: denialCount(actionType),
+        reason: `denied ${denialCount(actionType)} times in a row; not asking again until this is reset`,
+      };
     }
 
     const flags = contentScanEnabled ? scanContent(scanText ?? JSON.stringify(payload)) : [];
@@ -167,7 +211,9 @@ function createApprovalGate(options = {}) {
 
     if (decision === "deny") {
       pending.delete(requestId);
-      return { status: "denied", requestId, actionType: entry.actionType };
+      const deniedCount = denialCount(entry.actionType) + 1;
+      denialCounts.set(entry.actionType, deniedCount);
+      return { status: "denied", requestId, actionType: entry.actionType, deniedCount };
     }
     if (decision === "always-allow") {
       persistAlwaysAllow(entry.actionType);
@@ -181,6 +227,9 @@ function createApprovalGate(options = {}) {
     // approved request nowhere: not pending, not written).
     const result = await runExecutor(entry.actionType, entry.payload);
     pending.delete(requestId);
+    // Approving breaks the streak: the run is what the counter was watching
+    // for, so it is no longer consecutive.
+    denialCounts.delete(entry.actionType);
     return { status: "approved", requestId, actionType: entry.actionType, result };
   }
 
@@ -189,6 +238,8 @@ function createApprovalGate(options = {}) {
     requestApproval,
     listPending,
     decide,
+    denialCount,
+    resetDenials,
     isAlwaysAllowed,
     guardianAuditLog,
   };
