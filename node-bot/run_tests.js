@@ -23,7 +23,22 @@ function run(cmd, args, opts={}){
   if (r.status !== 0) process.exit(r.status);
 }
 
-const skipHeavy = process.env.SKIP_HEAVY_MODEL_TESTS === '1' || process.env.SKIP_HEAVY_MODEL_TESTS === 'true' || process.env.GITHUB_EVENT_NAME === 'pull_request' || (process.env.GITHUB_REF && process.env.GITHUB_REF.startsWith('refs/pull/'));
+// Issue #361: the reduced run is opt-in via this env var and nothing else.
+//
+// It used to also trigger on GITHUB_EVENT_NAME === 'pull_request' (and a
+// refs/pull/ GITHUB_REF), which made it involuntary: every pull request
+// silently ran two files out of ~94 regardless of what the workflow asked
+// for. fast-node-tests.yml sets the variable and still gets its two files;
+// heavy-ci.yml sets nothing, so a run/full-ci-labelled pull request now
+// runs the whole suite instead of being reduced behind the label's back.
+//
+// Measured before this change: a labelled PR's "Heavy Node tests" finished
+// in 13s (the two-file path) while the same job on a main push took 44s.
+// Two regressions reached main that way, each caught the moment the full
+// suite was allowed to run.
+const skipHeavy =
+  process.env.SKIP_HEAVY_MODEL_TESTS === '1' ||
+  process.env.SKIP_HEAVY_MODEL_TESTS === 'true';
 if (skipHeavy){
   // Run only fast, focused tests (paths resolved from current working directory)
   const tests = [
