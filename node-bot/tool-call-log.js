@@ -22,24 +22,53 @@ const MAX_ARGS_CHARS = 2000;
 // site means a newly-added tool source can't forget to do it.
 const REDACTED = "[redacted]";
 
-// Matched against argument *names*. Deliberately does not include a bare
-// "key" -- the remember tool's `key` argument is a memory key, not a
-// credential, and blanking it would destroy the most useful field in the
-// audit trail while protecting nothing.
-const SECRET_KEY_PATTERNS = [
-  /secret/i,
-  /token/i,
-  /passwo?rd/i,
-  /\bpwd\b/i,
-  /credential/i,
-  /authorization/i,
-  /api[_\-.]?key/i,
-  /access[_\-.]?key/i,
-  /private[_\-.]?key/i,
-];
+// Issue #386: matched against argument *names*, on the last name segment
+// rather than anywhere in the string.
+//
+// Substring matching was too eager: `token_count` contains "token", so a
+// plain token count -- a perfectly ordinary argument in an LLM harness,
+// holding no secret -- was blanked, and the audit trail lost a genuinely
+// useful number. Same for `password_policy`, `authorization_flow`,
+// `secret_santa_list`.
+//
+// The tail carries the meaning. `access_token` is a token; `token_count`
+// is a count. So the rule is: split the name into segments and look at the
+// last one.
+const CREDENTIAL_TAILS = new Set([
+  "secret",
+  "secrets",
+  "token",
+  "password",
+  "passwd",
+  "pwd",
+  "credential",
+  "credentials",
+  "authorization",
+  "signature",
+  "key",
+]);
+
+// "key" and "auth" are only credential-ish in company. A bare `key` is the
+// remember tool's memory key (the #348 carve-out, now expressed as a rule
+// rather than a special case); `api_key` plainly is not.
+const AMBIGUOUS_ALONE = new Set(["key", "auth"]);
+
+function nameSegments(name) {
+  return String(name || "")
+    // camelCase and PascalCase boundaries, so apiKey splits like api_key
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .split(/[^A-Za-z0-9]+/)
+    .filter(Boolean)
+    .map((segment) => segment.toLowerCase());
+}
 
 function isSecretKey(name) {
-  return SECRET_KEY_PATTERNS.some((re) => re.test(name));
+  const segments = nameSegments(name);
+  if (!segments.length) return false;
+  const tail = segments[segments.length - 1];
+  if (!CREDENTIAL_TAILS.has(tail)) return false;
+  // A single ambiguous segment stands alone and means something else.
+  return segments.length > 1 || !AMBIGUOUS_ALONE.has(tail);
 }
 
 function redactSecrets(value, seen = new Set()) {
