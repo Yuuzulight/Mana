@@ -3068,6 +3068,9 @@ function registerRoutes(app, upload, deps = {}) {
     console.log("Running whisper:", whisperBin, args.join(" "));
     const r = spawnSync(whisperBin, args, {
       encoding: "utf8",
+      // Issue #388: runs on every spoken utterance -- a console flash here
+      // would be constant.
+      windowsHide: true,
       maxBuffer: 50 * 1024 * 1024,
     });
     if (r.error) throw r.error;
@@ -3166,6 +3169,8 @@ function registerRoutes(app, upload, deps = {}) {
     try {
       const conv = spawnSync("ffmpeg", ["-y", "-i", tmpPath, wavPath], {
         encoding: "utf8",
+        // Issue #388: no console flash on audio conversion.
+        windowsHide: true,
         maxBuffer: 20 * 1024 * 1024,
       });
       if (conv.status === 0) {
@@ -3730,6 +3735,8 @@ function registerRoutes(app, upload, deps = {}) {
               ];
               const r = spawnSync(pythonBin, args, {
                 encoding: "utf8",
+                // Issue #388: no console flash on the retriever call.
+                windowsHide: true,
                 maxBuffer: 20 * 1024 * 1024,
               });
               if (!r.error && r.status === 0 && r.stdout) {

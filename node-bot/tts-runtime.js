@@ -244,6 +244,9 @@ function createTtsRuntime(options = {}) {
 
     const result = spawnSync(ttsBin, args, {
       encoding: "utf8",
+      // Issue #388: runs on every spoken reply -- the most visible place
+      // for a console flash.
+      windowsHide: true,
       maxBuffer: 50 * 1024 * 1024,
     });
     if (result.error) throw result.error;
