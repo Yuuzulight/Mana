@@ -694,6 +694,45 @@ function createAcpMemoryStore(options = {}) {
     });
   }
 
+  // Issue #350: branch a session into a new one carrying its history, so a
+  // different approach can be tried without destroying the thread that got
+  // you there. Resuming needed nothing new -- a session is a file keyed by
+  // id, so reopening one is just using its id again, and listSessions()
+  // already enumerates them. Forking was the actual gap.
+  //
+  // The copy carries summary and turns, which is what lets the fork keep
+  // talking with context. It deliberately does not re-index the inherited
+  // turns under the new id: those exchanges happened in the original
+  // session, and searchSessions() should keep attributing them there rather
+  // than reporting the same conversation twice under two ids.
+  function forkSession(sessionId, input = {}) {
+    const source = getSession(cleanText(sessionId, 240));
+    if (!source) {
+      return null;
+    }
+
+    const targetId = cleanText(
+      input.sessionId || `${source.sessionId}-fork-${Date.now().toString(36)}`,
+      240,
+    );
+    if (getSession(targetId)) {
+      throw new Error("fork target session already exists");
+    }
+
+    const timestamp = now();
+    return saveSession({
+      ...source,
+      sessionId: targetId,
+      name: input.name ? cleanText(input.name, 80) : `${source.name || source.sessionId} (fork)`,
+      // Kept so a fork's origin stays answerable after the fact.
+      forkedFrom: source.sessionId,
+      forkedAt: timestamp,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+      turns: Array.isArray(source.turns) ? [...source.turns] : [],
+    });
+  }
+
   function deleteSession(sessionId) {
     const filePath = filePathForSession(cleanText(sessionId, 240));
     if (!fs.existsSync(filePath)) {
@@ -1159,6 +1198,7 @@ function createAcpMemoryStore(options = {}) {
     getSessionTurnsPage,
     listSessions,
     renameSession,
+    forkSession,
     deleteSession,
     lookupEntity,
     getRelatedFacts,
