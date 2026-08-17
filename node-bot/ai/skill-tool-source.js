@@ -112,6 +112,21 @@ function createSkillToolSource(options = {}) {
   }
   const runScript = options.runScript || runToolScript;
 
+  // Issue #355: registered here rather than in server.js because this module
+  // already owns both the script runner and the skill lookup. Without it an
+  // approved "skill-run" request would resolve to nothing.
+  //
+  // touch: false -- executeTool already counted this invocation when it
+  // looked the skill up to check its permission, and one run should not
+  // increment useCount twice.
+  approvalGate.registerExecutor("skill-run", async (payload) => {
+    const skill = skillsStore.viewSkill(payload?.name, { touch: false });
+    if (!skill) throw new Error(`no skill named "${payload?.name}"`);
+    const code = extractSkillScript(skill.body);
+    if (!code) throw new Error(`"${skill.name}" has no skill-script block`);
+    return runScript(code, { inputs: payload?.inputs });
+  });
+
   function listToolSchemas() {
     return TOOL_SCHEMAS;
   }
@@ -137,6 +152,30 @@ function createSkillToolSource(options = {}) {
       if (!skill) return JSON.stringify({ status: "error", error: `no skill named "${args?.name}"` });
       const code = extractSkillScript(skill.body);
       if (!code) return JSON.stringify({ status: "error", error: `"${skill.name}" has no \`\`\`skill-script block` });
+
+      // Issue #355: approval-to-exist and permission-to-run are separate
+      // checks. The approval gate already decided this skill was safe to
+      // keep; that says nothing about whether performing it right now,
+      // unwatched, is safe. A skill marked "confirm" routes through the
+      // gate on every invocation instead of executing.
+      //
+      // A distinct action type, for the same reason skill-proposal.js keeps
+      // "skill-write-idle" apart from "skill-write": an "always allow"
+      // chosen while approving a skill's *text* must not also stand as
+      // blanket consent to *run* it from then on.
+      if (skill.permission === "confirm") {
+        try {
+          const outcome = await approvalGate.requestApproval("skill-run", {
+            summary: `Run skill "${skill.name}"`,
+            payload: { name: skill.name, inputs: args?.inputs },
+            scanText: code,
+          });
+          return JSON.stringify(outcome);
+        } catch (e) {
+          return JSON.stringify({ status: "error", error: e.message || String(e) });
+        }
+      }
+
       try {
         const { result, logs } = await runScript(code, { inputs: args?.inputs });
         return JSON.stringify({ status: "ok", result, logs });
