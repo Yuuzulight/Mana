@@ -6,6 +6,7 @@
 // directly.
 const fs = require("node:fs");
 const path = require("node:path");
+const vm = require("node:vm");
 
 const FRONTMATTER_RE = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/;
 
@@ -71,6 +72,38 @@ const DEFAULT_PERMISSION = "always";
 function normalizePermission(value) {
   const clean = String(value || "").trim();
   return PERMISSIONS.includes(clean) ? clean : DEFAULT_PERMISSION;
+}
+
+// Issue #356: a real check, run by the JavaScript engine itself, rather
+// than a model re-reading the code it just wrote. Self-review by the
+// generating model is weak verification -- whatever it got wrong while
+// writing, it tends to consider fine while checking, because the same
+// distribution is doing both.
+//
+// What is actually verifiable about a generated skill is narrower than
+// "run its tests": a skill belongs to no test suite, and running node-bot's
+// own suite would exercise Mana, not the skill. What can be checked
+// deterministically is that the script parses -- and today nothing does
+// that until the worker compiles it at run time, so a skill with a syntax
+// error can be approved, stored, and only fail when someone finally reaches
+// for it.
+//
+// Compiled exactly the way script-runner-worker.js will compile it, wrapper
+// included, so this validates the same text that actually runs. Compiling
+// is not executing: no sandbox, no tools, no side effects.
+function verifySkillScript(body) {
+  const code = extractSkillScript(body);
+  if (!code) return { ok: true, checked: false };
+  try {
+    new vm.Script(`(async () => {
+${code}
+})()`, {
+      filename: "mana-generated-script.js",
+    });
+    return { ok: true, checked: true };
+  } catch (e) {
+    return { ok: false, checked: true, error: e.message || String(e) };
+  }
 }
 
 function parseRequires(value) {
@@ -282,6 +315,13 @@ function createSkillsStore(options = {}) {
     const cleanBody = String(body || "").trim();
     if (!cleanBody) throw new Error("body is required");
     const cleanCategory = String(category || "general").trim() || "general";
+
+    // Blocking, not advisory. A skill that cannot parse is not a skill, and
+    // storing it only defers the failure to whoever reaches for it next.
+    const verified = verifySkillScript(cleanBody);
+    if (!verified.ok) {
+      throw new Error(`skill-script does not parse: ${verified.error}`);
+    }
     assertSingleLine(cleanName, "name");
     assertSingleLine(cleanDescription, "description");
     assertSingleLine(cleanCategory, "category");
@@ -422,6 +462,7 @@ function createSkillsStore(options = {}) {
 }
 
 module.exports = {
+  verifySkillScript,
   createSkillsStore,
   parseSkillFile,
   serializeSkillFile,
