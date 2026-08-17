@@ -1744,7 +1744,12 @@
         ort.env.wasm.numThreads = 1;
       }
     </script>
+    <!-- Issue #362: on-screen equivalent of spoken output. aria-live
+         polite so a screen reader announces a caption without cutting off
+         whatever it is already reading. -->
+    <div id="mana-captions" class="mana-captions" role="status" aria-live="polite" aria-atomic="true" hidden></div>
     <script src="backend-config.js"></script>
+    <script src="caption-client.js"></script>
     <script src="renderer.js"></script>
     <script src="session-sidebar.js"></script>
     <script src="sidebar-nav.js"></script>
