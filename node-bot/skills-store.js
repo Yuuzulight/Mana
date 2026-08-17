@@ -233,6 +233,63 @@ function createSkillsStore(options = {}) {
     return { ...parseSkillFile(raw, fileName.replace(/\.md$/, "")), fileName };
   }
 
+  // Issue #393: skills are plain files, so one can arrive without ever
+  // going through createSkill -- hand-written, copied in, or restored from
+  // a backup. parseSkillFile falls back to defaults for those rather than
+  // failing, which keeps them usable but leaves them invisible to the
+  // managed flow: no real created date, no useCount, and a filename that
+  // may not match the name inside.
+  //
+  // Reports rather than fixes. A file the user wrote by hand is theirs, and
+  // rewriting it unasked is the wrong default -- adoptSkill() is the
+  // explicit action.
+  function listUnmanagedSkills() {
+    const unmanaged = [];
+    for (const fileName of listSkillFiles()) {
+      let skill;
+      try {
+        skill = readSkill(fileName);
+      } catch (e) {
+        unmanaged.push({ fileName, name: null, reasons: ["unreadable"] });
+        continue;
+      }
+
+      const reasons = [];
+      // No `created` means parseSkillFile never found frontmatter at all.
+      if (!skill.created) reasons.push("no frontmatter");
+      if (!skill.description) reasons.push("no description");
+      const expected = `${slugify(skill.name)}.md`;
+      if (fileName !== expected) reasons.push(`filename does not match name (expected ${expected})`);
+
+      if (reasons.length) unmanaged.push({ fileName, name: skill.name, reasons });
+    }
+    return unmanaged;
+  }
+
+  // Brings one file into the managed shape without touching its body --
+  // the instructions are the part the user cared about, and this only
+  // fills in the bookkeeping around them. Deliberately does not rename the
+  // file: findFileForName resolves by parsed name, so a mismatched filename
+  // is untidy rather than broken, and renaming risks breaking whatever
+  // pointed at the old path.
+  function adoptSkill(name) {
+    const fileName = findFileForName(name);
+    if (!fileName) return null;
+    const skill = readSkill(fileName);
+    const timestamp = now();
+    const adopted = {
+      ...skill,
+      description: skill.description || `Adopted from ${fileName}`,
+      category: skill.category || "general",
+      created: skill.created || timestamp,
+      lastUsed: skill.lastUsed || timestamp,
+      useCount: Number(skill.useCount) || 0,
+      status: skill.status || "active",
+    };
+    fs.writeFileSync(path.join(skillsDir, fileName), serializeSkillFile(adopted), "utf8");
+    return { ...adopted, fileName };
+  }
+
   function findFileForName(name) {
     return listSkillFiles().find((fileName) => {
       try {
@@ -452,6 +509,8 @@ function createSkillsStore(options = {}) {
   return {
     skillsDir,
     listSkills,
+    listUnmanagedSkills,
+    adoptSkill,
     viewSkill,
     touchSkillUsage,
     createSkill,
