@@ -295,8 +295,77 @@ test("serializeSkillFile round-trips through parseSkillFile", () => {
     lastUsed: "2026-01-01T00:00:00.000Z",
     useCount: 3,
     status: "active",
+    // Issue #354: the parsed shape now always carries requires, empty when
+    // the skill declared none.
+    requires: [],
     body: "line one\nline two",
   };
   const parsed = parseSkillFile(serializeSkillFile(skill), "unused");
   assert.deepEqual(parsed, skill);
+});
+
+test("a skill declaring no requirements serializes without the field (issue #354)", () => {
+  const serialized = serializeSkillFile({
+    name: "No Deps",
+    description: "desc",
+    category: "general",
+    created: "2026-01-01T00:00:00.000Z",
+    lastUsed: "2026-01-01T00:00:00.000Z",
+    useCount: 0,
+    status: "active",
+    requires: [],
+    body: "body",
+  });
+  // An existing skill file has to be unchanged by a round-trip through this.
+  assert.doesNotMatch(serialized, /requires:/);
+});
+
+test("requires round-trips as a list (issue #354)", () => {
+  const skill = {
+    name: "Needs Tools",
+    description: "desc",
+    category: "general",
+    created: "2026-01-01T00:00:00.000Z",
+    lastUsed: "2026-01-01T00:00:00.000Z",
+    useCount: 0,
+    status: "active",
+    requires: ["read_file", "web_search"],
+    body: "body",
+  };
+  assert.deepEqual(parseSkillFile(serializeSkillFile(skill), "unused"), skill);
+});
+
+test("listSkills marks a skill unavailable when a required tool is missing (issue #354)", () => {
+  const store = createSkillsStore({ skillsDir: tempDir() });
+  store.createSkill({
+    name: "Search The Web",
+    description: "looks things up",
+    body: "steps",
+    requires: ["web_search"],
+  });
+
+  const available = store.listSkills({ isToolAvailable: () => true });
+  assert.equal(available[0].available, true);
+  assert.deepEqual(available[0].missingRequirements, []);
+
+  // The tool has gone away -- a plugin turned off, an MCP server down.
+  const degraded = store.listSkills({ isToolAvailable: () => false });
+  assert.equal(degraded[0].available, false);
+  assert.deepEqual(degraded[0].missingRequirements, ["web_search"]);
+  // Reported, not hidden: "exists but cannot run, and here is why" beats
+  // silently not offering it.
+  assert.equal(degraded[0].status, "active");
+});
+
+test("a skill with no declared requirements is always available (issue #354)", () => {
+  const store = createSkillsStore({ skillsDir: tempDir() });
+  store.createSkill({ name: "Plain", description: "d", body: "steps" });
+  assert.equal(store.listSkills({ isToolAvailable: () => false })[0].available, true);
+});
+
+test("availability is unevaluated when no checker is supplied (issue #354)", () => {
+  const store = createSkillsStore({ skillsDir: tempDir() });
+  store.createSkill({ name: "Plain", description: "d", body: "s", requires: ["x"] });
+  // Callers that do not know about tools keep working unchanged.
+  assert.equal(store.listSkills()[0].available, true);
 });
