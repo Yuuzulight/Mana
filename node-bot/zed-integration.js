@@ -290,8 +290,51 @@ function createSimpleLineDiff({ relativePath, originalContent, proposedContent }
   return `${lines.join("\n")}\n`;
 }
 
+// Issue #372: the type check on proposedContent cannot tell a complete file
+// from a truncated one. A model that runs out of output tokens partway
+// through returns a perfectly valid string that happens to stop early, and
+// approving it writes that over the real file. The generated diff renders
+// the loss honestly as a large deletion, but on a big change that is easy
+// to read past -- and the bigger the file, the likelier the truncation and
+// the worse the loss.
+//
+// These catch a cliff, not real deletions: a deliberate large cut is still
+// possible via allowShrink. Deliberately no syntax parsing -- balanced
+// brackets would be a stronger tell but only for known languages, and the
+// two checks here need nothing but lengths.
+const DEFAULT_MIN_RETAINED_RATIO = 0.5;
+
+function assertNotTruncated({
+  originalContent,
+  proposedContent,
+  allowShrink,
+  minRetainedRatio,
+}) {
+  if (allowShrink) return;
+  // No original to compare against (a new file) means nothing to lose.
+  if (typeof originalContent !== "string" || !originalContent.length) return;
+
+  if (!proposedContent.length) {
+    throw new Error(
+      "edit proposal rejected: empty content would erase a non-empty file (pass allowShrink to override)",
+    );
+  }
+
+  const retained = proposedContent.length / originalContent.length;
+  if (retained < minRetainedRatio) {
+    const percent = Math.round(retained * 100);
+    throw new Error(
+      `edit proposal rejected: content is ${percent}% of the original, which looks truncated rather than edited (pass allowShrink to override)`,
+    );
+  }
+}
+
 function createEditProposalStore(options = {}) {
   const now = options.now || (() => new Date());
+  // Generous by default -- the aim is catching a cliff, not policing edits.
+  const minRetainedRatio = Number.isFinite(options.minRetainedRatio)
+    ? options.minRetainedRatio
+    : DEFAULT_MIN_RETAINED_RATIO;
   const idFactory =
     options.idFactory ||
     (() => `proposal-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`);
@@ -302,10 +345,12 @@ function createEditProposalStore(options = {}) {
     originalContent,
     proposedContent,
     summary = "",
+    allowShrink = false,
   } = {}) {
     if (typeof proposedContent !== "string") {
       throw new Error("proposedContent is required");
     }
+    assertNotTruncated({ originalContent, proposedContent, allowShrink, minRetainedRatio });
 
     const proposal = {
       id: idFactory(),
@@ -490,6 +535,7 @@ function createEditorIntegrations(options = {}) {
     createEditProposalStore({
       idFactory: options.idFactory,
       now: options.now,
+      minRetainedRatio: options.minRetainedRatio,
     });
   const editors = Object.fromEntries(
     Object.entries(EDITOR_CONFIGS).map(([id, config]) => [
@@ -540,13 +586,19 @@ function createEditorIntegrations(options = {}) {
     return workspaceInspector.readFile(relativeFilePath);
   }
 
-  function createEditProposal({ path: proposalPath, proposedContent, summary } = {}) {
+  function createEditProposal({
+    path: proposalPath,
+    proposedContent,
+    summary,
+    allowShrink,
+  } = {}) {
     const original = workspaceInspector.readFile(proposalPath);
     return proposalStore.createProposal({
       relativePath: original.relativePath,
       originalContent: original.content,
       proposedContent,
       summary,
+      allowShrink,
     });
   }
 

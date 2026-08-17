@@ -742,3 +742,103 @@ test("createApp returns an error when approving a missing proposal", async () =>
     fs.rmSync(tempDir, { recursive: true, force: true });
   }
 });
+
+// Issue #372 -- exercised through the real createEditProposal path rather
+// than the proposal store directly, which is not exported.
+function withTruncationWorkspace(originalContent, run) {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mana-zed-trunc-"));
+  fs.mkdirSync(path.join(tempDir, "src"), { recursive: true });
+  fs.writeFileSync(path.join(tempDir, "src", "app.js"), originalContent);
+  try {
+    const workspaceStore = createEditorWorkspaceStore({
+      now: () => new Date("2026-08-17T00:00:00.000Z"),
+    });
+    workspaceStore.setWorkspace(tempDir, { editor: "zed" });
+    run(
+      createEditorIntegrations({
+        env: {},
+        commandResolver: (command) => command,
+        workspaceStore,
+      }),
+    );
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
+test("a proposal that erases a non-empty file is rejected (issue #372)", () => {
+  withTruncationWorkspace("line one\nline two\nline three\n", (editors) => {
+    assert.throws(
+      () => editors.createEditProposal({ path: "src/app.js", proposedContent: "" }),
+      /would erase a non-empty file/,
+    );
+  });
+});
+
+test("a proposal that collapses to a fraction of the original is rejected (issue #372)", () => {
+  // What a model hitting its output token limit partway through produces: a
+  // perfectly valid string that simply stops early.
+  withTruncationWorkspace("x".repeat(1000), (editors) => {
+    assert.throws(
+      () => editors.createEditProposal({ path: "src/app.js", proposedContent: "x".repeat(100) }),
+      /looks truncated rather than edited/,
+    );
+  });
+});
+
+test("allowShrink permits a deliberate large deletion (issue #372)", () => {
+  withTruncationWorkspace("x".repeat(1000), (editors) => {
+    const proposal = editors.createEditProposal({
+      path: "src/app.js",
+      proposedContent: "x".repeat(10),
+      allowShrink: true,
+    });
+    assert.equal(proposal.status, "pending");
+  });
+});
+
+test("an ordinary edit is unaffected by the truncation check (issue #372)", () => {
+  withTruncationWorkspace("const a = 1;\nconst b = 2;\n", (editors) => {
+    const proposal = editors.createEditProposal({
+      path: "src/app.js",
+      proposedContent: "const a = 1;\nconst b = 3;\n",
+    });
+    assert.equal(proposal.status, "pending");
+  });
+});
+
+test("a proposal against an empty original is not treated as truncation (issue #372)", () => {
+  withTruncationWorkspace("", (editors) => {
+    const proposal = editors.createEditProposal({
+      path: "src/app.js",
+      proposedContent: "const created = true;\n",
+    });
+    assert.equal(proposal.status, "pending");
+  });
+});
+
+test("the truncation threshold is configurable (issue #372)", () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mana-zed-trunc-cfg-"));
+  fs.mkdirSync(path.join(tempDir, "src"), { recursive: true });
+  fs.writeFileSync(path.join(tempDir, "src", "app.js"), "x".repeat(1000));
+  try {
+    const workspaceStore = createEditorWorkspaceStore({
+      now: () => new Date("2026-08-17T00:00:00.000Z"),
+    });
+    workspaceStore.setWorkspace(tempDir, { editor: "zed" });
+    const strict = createEditorIntegrations({
+      env: {},
+      commandResolver: (command) => command,
+      workspaceStore,
+      minRetainedRatio: 0.95,
+    });
+
+    // A shrink the default 0.5 would have allowed through.
+    assert.throws(
+      () => strict.createEditProposal({ path: "src/app.js", proposedContent: "x".repeat(900) }),
+      /looks truncated/,
+    );
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
