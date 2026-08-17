@@ -1042,6 +1042,49 @@ function createAcpMemoryStore(options = {}) {
     return session.turns.slice(-minRecentTurns);
   }
 
+  // Issue #383: a skill body enters context as the result of a skill__view
+  // call inside one turn. Once that turn falls out of the injected window,
+  // the body is gone -- but the model's own earlier statements about having
+  // consulted the skill remain in the rolling summary. It can then keep
+  // reasoning as though it still holds the steps, and describe ones it no
+  // longer has in front of it. Worse than never having loaded the skill,
+  // because the history contains evidence that it did.
+  //
+  // A marker names the skill and says the content is gone, so recovery is
+  // one skill__view call rather than improvisation. Deliberately one line
+  // per skill: summarizing what was pruned would defeat the pruning.
+  const SKILL_VIEW_TOOL = "skill__view";
+
+  function skillNameFromCall(call) {
+    const raw = call?.args?.name ?? call?.args?.skill;
+    const name = cleanText(raw, 200);
+    return name || null;
+  }
+
+  // Only skills whose body is *no longer anywhere* in the injected turns.
+  // Viewing the same skill twice, with one view still in the window, means
+  // the body is present and there is nothing to warn about.
+  function prunedSkillNames(session, injectedTurns) {
+    const injected = new Set(injectedTurns);
+    const present = new Set();
+    const pruned = new Set();
+    for (const turn of session.turns || []) {
+      for (const call of turn?.toolCalls || []) {
+        if (call?.name !== SKILL_VIEW_TOOL) continue;
+        const name = skillNameFromCall(call);
+        if (!name) continue;
+        (injected.has(turn) ? present : pruned).add(name);
+      }
+    }
+    return [...pruned].filter((name) => !present.has(name));
+  }
+
+  function prunedSkillLines(session, injectedTurns) {
+    return prunedSkillNames(session, injectedTurns).map(
+      (name) => `- ${name}: body no longer in context; call skill__view to reload it`,
+    );
+  }
+
   function recentTurnStrings(session) {
     return freshTurns(session)
       .slice(-Math.min(5, maxRecentTurns))
@@ -1068,6 +1111,8 @@ function createAcpMemoryStore(options = {}) {
     // dangling-header drop.
     if (!session.summary && !recentTurns.length) return "";
 
+    const pruned = prunedSkillLines(session, freshTurns(session).slice(-Math.min(5, maxRecentTurns)));
+
     const parts = [];
     parts.push("Conversation memory:");
     if (session.summary) parts.push(session.summary);
@@ -1076,6 +1121,13 @@ function createAcpMemoryStore(options = {}) {
       parts.push("Recent turns:");
       for (const rt of recentTurns) {
         parts.push(rt);
+      }
+    }
+    if (pruned.length) {
+      parts.push("");
+      parts.push("Skills consulted earlier, no longer loaded:");
+      for (const line of pruned) {
+        parts.push(line);
       }
     }
 

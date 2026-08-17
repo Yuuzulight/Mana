@@ -1524,3 +1524,76 @@ test("turns inside the window are unaffected by the floor (issue #385)", async (
   assert.match(injected, /one/);
   assert.match(injected, /two/);
 });
+
+test("a skill whose body dropped out of context is marked (issue #383)", async () => {
+  const dataDir = createTempDir();
+  const old = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000).toISOString();
+  const past = createAcpMemoryStore({ dataDir, now: () => old });
+  await past.appendTurn({
+    sessionId: "s1",
+    user: "how do I restart search",
+    assistant: "let me check the skill",
+    toolCalls: [{ name: "skill__view", ok: true, args: { name: "Restart SearXNG" } }],
+  });
+  // Enough newer turns that the skill-view turn falls out of the window.
+  const recent = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+  const now = createAcpMemoryStore({ dataDir, now: () => recent });
+  for (let i = 0; i < 6; i++) {
+    await now.appendTurn({ sessionId: "s1", user: `filler ${i}`, assistant: "ok" });
+  }
+
+  const injected = createAcpMemoryStore({ dataDir }).buildPromptMemory("s1");
+  // The body is gone but the history still shows it was consulted, so the
+  // model needs telling rather than left to improvise.
+  assert.match(injected, /Skills consulted earlier, no longer loaded:/);
+  assert.match(injected, /Restart SearXNG/);
+  assert.match(injected, /skill__view to reload/);
+});
+
+test("a skill still inside the window is not marked (issue #383)", async () => {
+  const dataDir = createTempDir();
+  const recent = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+  const store = createAcpMemoryStore({ dataDir, now: () => recent });
+  await store.appendTurn({
+    sessionId: "s1",
+    user: "restart search",
+    assistant: "on it",
+    toolCalls: [{ name: "skill__view", ok: true, args: { name: "Restart SearXNG" } }],
+  });
+
+  const injected = createAcpMemoryStore({ dataDir }).buildPromptMemory("s1");
+  assert.doesNotMatch(injected, /no longer loaded/);
+});
+
+test("re-viewing a skill clears its pruned marker (issue #383)", async () => {
+  const dataDir = createTempDir();
+  const old = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000).toISOString();
+  const past = createAcpMemoryStore({ dataDir, now: () => old });
+  await past.appendTurn({
+    sessionId: "s1",
+    user: "first look",
+    assistant: "ok",
+    toolCalls: [{ name: "skill__view", ok: true, args: { name: "Restart SearXNG" } }],
+  });
+
+  const recent = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+  const now = createAcpMemoryStore({ dataDir, now: () => recent });
+  await now.appendTurn({
+    sessionId: "s1",
+    user: "look again",
+    assistant: "ok",
+    toolCalls: [{ name: "skill__view", ok: true, args: { name: "Restart SearXNG" } }],
+  });
+
+  // The body is present again, so there is nothing to warn about.
+  const injected = createAcpMemoryStore({ dataDir }).buildPromptMemory("s1");
+  assert.doesNotMatch(injected, /no longer loaded/);
+});
+
+test("a session that never viewed a skill gets no marker block (issue #383)", async () => {
+  const dataDir = createTempDir();
+  const recent = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+  const store = createAcpMemoryStore({ dataDir, now: () => recent });
+  await store.appendTurn({ sessionId: "s1", user: "hello", assistant: "hi" });
+  assert.doesNotMatch(createAcpMemoryStore({ dataDir }).buildPromptMemory("s1"), /no longer loaded/);
+});
