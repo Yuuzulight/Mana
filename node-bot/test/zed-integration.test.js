@@ -842,3 +842,147 @@ test("the truncation threshold is configurable (issue #372)", () => {
     fs.rmSync(tempDir, { recursive: true, force: true });
   }
 });
+
+// Issue #349 -- a real git repo in a temp dir, so the commit path is
+// exercised rather than mocked.
+function withGitWorkspace(run) {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mana-zed-git-"));
+  const git = (args) =>
+    require("node:child_process").spawnSync("git", args, {
+      cwd: tempDir,
+      encoding: "utf8",
+      shell: false,
+    });
+  git(["init", "-q"]);
+  git(["config", "user.email", "test@example.test"]);
+  git(["config", "user.name", "Mana Test"]);
+  fs.mkdirSync(path.join(tempDir, "src"), { recursive: true });
+  fs.writeFileSync(path.join(tempDir, "src", "app.js"), "const a = 1;\n");
+  git(["add", "-A"]);
+  git(["commit", "-q", "-m", "initial"]);
+  try {
+    const workspaceStore = createEditorWorkspaceStore({
+      now: () => new Date("2026-08-17T00:00:00.000Z"),
+    });
+    workspaceStore.setWorkspace(tempDir, { editor: "zed" });
+    run({ tempDir, git, workspaceStore });
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
+test("approving with commit enabled lands the edit as its own commit (issue #349)", () => {
+  withGitWorkspace(({ git, workspaceStore }) => {
+    const editors = createEditorIntegrations({
+      env: {},
+      commandResolver: (c) => c,
+      workspaceStore,
+      commitOnApprove: true,
+    });
+    const proposal = editors.createEditProposal({
+      path: "src/app.js",
+      proposedContent: "const a = 2;\n",
+      summary: "Bump the value",
+    });
+    const applied = editors.approveEditProposal(proposal.id);
+
+    assert.equal(applied.git.committed, true);
+    assert.match(git(["log", "-1", "--pretty=%s"]).stdout, /Bump the value/);
+  });
+});
+
+test("commit is off unless asked for (issue #349)", () => {
+  withGitWorkspace(({ git, workspaceStore }) => {
+    const editors = createEditorIntegrations({
+      env: {},
+      commandResolver: (c) => c,
+      workspaceStore,
+    });
+    const proposal = editors.createEditProposal({
+      path: "src/app.js",
+      proposedContent: "const a = 3;\n",
+    });
+    const applied = editors.approveEditProposal(proposal.id);
+
+    assert.equal(applied.git, undefined);
+    assert.match(git(["log", "-1", "--pretty=%s"]).stdout, /initial/);
+  });
+});
+
+test("an unrelated in-progress change is not swept into the commit (issue #349)", () => {
+  withGitWorkspace(({ tempDir, git, workspaceStore }) => {
+    // The user is midway through editing something else entirely.
+    fs.writeFileSync(path.join(tempDir, "src", "other.js"), "const untouched = true;\n");
+    git(["add", "-A"]);
+
+    const editors = createEditorIntegrations({
+      env: {},
+      commandResolver: (c) => c,
+      workspaceStore,
+      commitOnApprove: true,
+    });
+    const proposal = editors.createEditProposal({
+      path: "src/app.js",
+      proposedContent: "const a = 4;\n",
+      summary: "Only this file",
+    });
+    editors.approveEditProposal(proposal.id);
+
+    const files = git(["show", "--name-only", "--pretty=format:", "HEAD"]).stdout;
+    assert.match(files, /src\/app\.js/);
+    assert.doesNotMatch(files, /other\.js/);
+  });
+});
+
+test("a commit failure does not undo the applied edit (issue #349)", () => {
+  withGitWorkspace(({ tempDir, workspaceStore }) => {
+    const editors = createEditorIntegrations({
+      env: {},
+      commandResolver: (c) => c,
+      workspaceStore,
+      commitOnApprove: true,
+      // Every git call fails.
+      runGit: () => ({ status: 1, stderr: "git exploded", stdout: "" }),
+    });
+    const proposal = editors.createEditProposal({
+      path: "src/app.js",
+      proposedContent: "const a = 5;\n",
+    });
+    const applied = editors.approveEditProposal(proposal.id);
+
+    assert.equal(applied.git.committed, false);
+    assert.equal(applied.status, "applied");
+    // The write already succeeded; reverting real work to keep git tidy
+    // would be the destructive choice.
+    assert.equal(fs.readFileSync(path.join(tempDir, "src", "app.js"), "utf8"), "const a = 5;\n");
+  });
+});
+
+test("a non-git workspace reports why rather than failing the edit (issue #349)", () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mana-zed-nogit-"));
+  fs.mkdirSync(path.join(tempDir, "src"), { recursive: true });
+  fs.writeFileSync(path.join(tempDir, "src", "app.js"), "const a = 1;\n");
+  try {
+    const workspaceStore = createEditorWorkspaceStore({
+      now: () => new Date("2026-08-17T00:00:00.000Z"),
+    });
+    workspaceStore.setWorkspace(tempDir, { editor: "zed" });
+    const editors = createEditorIntegrations({
+      env: {},
+      commandResolver: (c) => c,
+      workspaceStore,
+      commitOnApprove: true,
+    });
+    const proposal = editors.createEditProposal({
+      path: "src/app.js",
+      proposedContent: "const a = 6;\n",
+    });
+    const applied = editors.approveEditProposal(proposal.id);
+
+    assert.equal(applied.git.committed, false);
+    assert.match(applied.git.reason, /not a git repository/);
+    assert.equal(applied.status, "applied");
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
