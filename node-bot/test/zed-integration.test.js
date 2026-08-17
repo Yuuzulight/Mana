@@ -986,3 +986,71 @@ test("a non-git workspace reports why rather than failing the edit (issue #349)"
     fs.rmSync(tempDir, { recursive: true, force: true });
   }
 });
+
+test("an already-applied edit is a no-op success, not a conflict (issue #387)", () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mana-zed-idem-"));
+  fs.mkdirSync(path.join(tempDir, "src"), { recursive: true });
+  fs.writeFileSync(path.join(tempDir, "src", "app.js"), "const a = 1;\n");
+  try {
+    const workspaceStore = createEditorWorkspaceStore({
+      now: () => new Date("2026-08-17T00:00:00.000Z"),
+    });
+    workspaceStore.setWorkspace(tempDir, { editor: "zed" });
+    const editors = createEditorIntegrations({
+      env: {},
+      commandResolver: (c) => c,
+      workspaceStore,
+    });
+    const proposal = editors.createEditProposal({
+      path: "src/app.js",
+      proposedContent: "const a = 2;\n",
+    });
+
+    // Something else lands exactly the proposed content first.
+    fs.writeFileSync(path.join(tempDir, "src", "app.js"), "const a = 2;\n");
+
+    const applied = editors.approveEditProposal(proposal.id);
+    assert.equal(applied.alreadyApplied, true);
+    assert.equal(applied.status, "applied");
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("a write that does not land is reported, not marked applied (issue #387)", () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mana-zed-verify-"));
+  fs.mkdirSync(path.join(tempDir, "src"), { recursive: true });
+  const filePath = path.join(tempDir, "src", "app.js");
+  fs.writeFileSync(filePath, "const a = 1;\n");
+  const realWriteFileSync = fs.writeFileSync;
+  try {
+    const workspaceStore = createEditorWorkspaceStore({
+      now: () => new Date("2026-08-17T00:00:00.000Z"),
+    });
+    workspaceStore.setWorkspace(tempDir, { editor: "zed" });
+    const editors = createEditorIntegrations({
+      env: {},
+      commandResolver: (c) => c,
+      workspaceStore,
+    });
+    const proposal = editors.createEditProposal({
+      path: "src/app.js",
+      proposedContent: "const a = 2;\nconst b = 3;\n",
+    });
+
+    // A write that silently lands only part of the content -- a full disk,
+    // or something transforming the bytes on the way through.
+    fs.writeFileSync = (p, data, enc) =>
+      realWriteFileSync(p, String(data).slice(0, 8), enc);
+
+    assert.throws(
+      () => editors.approveEditProposal(proposal.id),
+      /does not match the approved content/,
+    );
+    // Still pending: a proposal whose content never landed must not read as applied.
+    assert.equal(editors.getEditProposal(proposal.id).status, "pending");
+  } finally {
+    fs.writeFileSync = realWriteFileSync;
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
