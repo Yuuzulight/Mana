@@ -298,6 +298,7 @@ test("serializeSkillFile round-trips through parseSkillFile", () => {
     // Issue #354: the parsed shape now always carries requires, empty when
     // the skill declared none.
     requires: [],
+    permission: "always",
     body: "line one\nline two",
   };
   const parsed = parseSkillFile(serializeSkillFile(skill), "unused");
@@ -330,6 +331,7 @@ test("requires round-trips as a list (issue #354)", () => {
     useCount: 0,
     status: "active",
     requires: ["read_file", "web_search"],
+    permission: "always",
     body: "body",
   };
   assert.deepEqual(parseSkillFile(serializeSkillFile(skill), "unused"), skill);

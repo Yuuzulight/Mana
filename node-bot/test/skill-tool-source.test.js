@@ -11,8 +11,13 @@ const {
 
 function fakeApprovalGate({ requestThrows } = {}) {
   const requestCalls = [];
+  const executors = new Map();
   return {
     requestCalls,
+    executors,
+    // Issue #355: the real gate has this, and the tool source now registers
+    // a "skill-run" executor against it at construction.
+    registerExecutor: (actionType, fn) => executors.set(actionType, fn),
     requestApproval: async (actionType, details) => {
       requestCalls.push({ actionType, details });
       if (requestThrows) throw requestThrows;
@@ -221,4 +226,72 @@ test("buildToolPolicyWithSkillCreate merges skill tools into an existing base po
   assert.equal(await merged.executeTool("read_file", {}), "base:read_file");
   await merged.executeTool(`${SKILL_TOOL_PREFIX}create`, { name: "n", description: "d", body: "b" });
   assert.equal(approvalGate.requestCalls.length, 1);
+});
+
+test("a confirm-permission skill routes each run through the gate (issue #355)", async () => {
+  const approvalGate = fakeApprovalGate();
+  const skillsStore = {
+    viewSkill: () => ({
+      name: "Toggle The Lights",
+      body: "steps\n\n```skill-script\nreturn 1;\n```",
+      permission: "confirm",
+    }),
+  };
+  const source = createSkillToolSource({
+    approvalGate,
+    skillsStore,
+    runScript: async () => {
+      throw new Error("must not execute without confirmation");
+    },
+  });
+
+  const out = JSON.parse(await source.executeTool("skill__run", { name: "Toggle The Lights" }));
+  assert.equal(out.status, "pending");
+  // A distinct action type: an "always allow" chosen while approving a
+  // skill's text must not double as consent to run it from then on.
+  assert.equal(approvalGate.requestCalls[0].actionType, "skill-run");
+});
+
+test("an always-permission skill runs without confirmation (issue #355)", async () => {
+  const approvalGate = fakeApprovalGate();
+  const skillsStore = {
+    viewSkill: () => ({
+      name: "Check The Lights",
+      body: "steps\n\n```skill-script\nreturn 1;\n```",
+      permission: "always",
+    }),
+  };
+  const source = createSkillToolSource({
+    approvalGate,
+    skillsStore,
+    runScript: async () => ({ result: "on", logs: [] }),
+  });
+
+  const out = JSON.parse(await source.executeTool("skill__run", { name: "Check The Lights" }));
+  assert.equal(out.status, "ok");
+  assert.equal(approvalGate.requestCalls.length, 0);
+});
+
+test("the registered skill-run executor actually runs the script (issue #355)", async () => {
+  const approvalGate = fakeApprovalGate();
+  let touched = false;
+  const skillsStore = {
+    viewSkill: (name, opts) => {
+      if (opts && opts.touch === false) touched = true;
+      return { name, body: "steps\n\n```skill-script\nreturn 1;\n```", permission: "confirm" };
+    },
+  };
+  createSkillToolSource({
+    approvalGate,
+    skillsStore,
+    runScript: async () => ({ result: "ran", logs: [] }),
+  });
+
+  const executor = approvalGate.executors.get("skill-run");
+  assert.equal(typeof executor, "function");
+  const result = await executor({ name: "Toggle The Lights" });
+  assert.equal(result.result, "ran");
+  // One run must not increment useCount twice -- executeTool already
+  // counted it when checking the permission.
+  assert.equal(touched, true);
 });

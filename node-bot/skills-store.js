@@ -21,6 +21,7 @@ function parseSkillFile(raw, fallbackName) {
       useCount: 0,
       status: "active",
       requires: [],
+      permission: DEFAULT_PERMISSION,
       body: raw.trim(),
     };
   }
@@ -48,6 +49,11 @@ function parseSkillFile(raw, fallbackName) {
     // exposes that, since a skill that never runs successfully simply stops
     // incrementing them.
     requires: parseRequires(frontmatter.requires),
+    // Issue #355: whether *this invocation* needs confirming, which is a
+    // different question from whether the skill was allowed to exist.
+    // Approving a skill says the instructions are safe to keep; it does not
+    // follow that every future run of them is safe to perform unwatched.
+    permission: normalizePermission(frontmatter.permission),
     body: match[2].trim(),
   };
 }
@@ -55,6 +61,18 @@ function parseSkillFile(raw, fallbackName) {
 // Comma-separated in the frontmatter because the format is one flat
 // `key: value` line per field -- a YAML list would mean parsing real YAML
 // for one field.
+// "always" keeps today's behaviour, which is what every existing skill was
+// written and approved against -- flipping the default to "confirm" would
+// silently make every one of them start interrupting, a surprising outcome
+// for a change that only adds a field. Effectful skills opt in.
+const PERMISSIONS = ["always", "confirm"];
+const DEFAULT_PERMISSION = "always";
+
+function normalizePermission(value) {
+  const clean = String(value || "").trim();
+  return PERMISSIONS.includes(clean) ? clean : DEFAULT_PERMISSION;
+}
+
 function parseRequires(value) {
   return String(value || "")
     .split(",")
@@ -89,6 +107,9 @@ function serializeSkillFile(skill) {
     // an existing skill file is unchanged by a round-trip through this.
     ...(Array.isArray(skill.requires) && skill.requires.length
       ? [`requires: ${skill.requires.join(", ")}`]
+      : []),
+    ...(skill.permission && skill.permission !== DEFAULT_PERMISSION
+      ? [`permission: ${skill.permission}`]
       : []),
     "---",
     "",
@@ -252,7 +273,7 @@ function createSkillsStore(options = {}) {
   // out of scope until the read/prune path is proven, and any future
   // approval-gate work (issue #152) sits in front of whoever calls this,
   // not inside it.
-  function createSkill({ name, description, category, body, requires }) {
+  function createSkill({ name, description, category, body, requires, permission }) {
     ensureDir();
     const cleanName = String(name || "").trim();
     if (!cleanName) throw new Error("name is required");
@@ -287,6 +308,7 @@ function createSkillsStore(options = {}) {
       requires: parseRequires(
         Array.isArray(requires) ? requires.join(",") : requires,
       ),
+      permission: normalizePermission(permission),
       body: cleanBody,
     };
     fs.writeFileSync(
