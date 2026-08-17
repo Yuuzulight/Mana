@@ -261,3 +261,50 @@ test("acp-autonomous-loop: file_write overwrite backups and writes when enabled"
     fs.promises.writeFile = origWrite;
   }
 });
+
+test("a tool that runs past the per-session cap is refused (issue #396)", async () => {
+  const { resetSessionToolCounts, MAX_TOOL_CALLS_PER_SESSION } = require("../acp-autonomous-loop");
+  resetSessionToolCounts("cap-session");
+
+  const step = JSON.stringify([{ tool: "unknown_tool", args: {} }]);
+  let last;
+  for (let i = 0; i < MAX_TOOL_CALLS_PER_SESSION + 1; i++) {
+    last = await executeAutonomousStep(step, "cap-session");
+  }
+
+  const capped = last.results.find((r) => r.detail === "session_cap_exceeded");
+  assert.ok(capped, "the call past the cap should be refused");
+  assert.equal(capped.status, "error");
+  assert.equal(capped.cap, MAX_TOOL_CALLS_PER_SESSION);
+  resetSessionToolCounts("cap-session");
+});
+
+test("the cap is counted per session, not globally (issue #396)", async () => {
+  const { resetSessionToolCounts, MAX_TOOL_CALLS_PER_SESSION } = require("../acp-autonomous-loop");
+  resetSessionToolCounts();
+
+  const step = JSON.stringify([{ tool: "unknown_tool", args: {} }]);
+  for (let i = 0; i < MAX_TOOL_CALLS_PER_SESSION; i++) {
+    await executeAutonomousStep(step, "session-a");
+  }
+
+  // One conversation's runaway loop must not spend another's budget.
+  const other = await executeAutonomousStep(step, "session-b");
+  assert.ok(!other.results.some((r) => r.detail === "session_cap_exceeded"));
+  resetSessionToolCounts();
+});
+
+test("resetSessionToolCounts clears a session's budget (issue #396)", async () => {
+  const { resetSessionToolCounts, MAX_TOOL_CALLS_PER_SESSION } = require("../acp-autonomous-loop");
+  resetSessionToolCounts("reset-session");
+
+  const step = JSON.stringify([{ tool: "unknown_tool", args: {} }]);
+  for (let i = 0; i < MAX_TOOL_CALLS_PER_SESSION + 1; i++) {
+    await executeAutonomousStep(step, "reset-session");
+  }
+  resetSessionToolCounts("reset-session");
+
+  const after = await executeAutonomousStep(step, "reset-session");
+  assert.ok(!after.results.some((r) => r.detail === "session_cap_exceeded"));
+  resetSessionToolCounts("reset-session");
+});
