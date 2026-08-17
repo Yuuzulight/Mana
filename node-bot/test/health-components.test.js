@@ -38,6 +38,10 @@ test("health includes component readiness while preserving top-level fields", as
       "mcpClients",
       "memoryFacts",
       "mobileAuth",
+      // Issue #357: the editable personality layer reports whether it has
+      // been adjusted. Running on the base persona is a healthy state, not
+      // a missing configuration.
+      "personality",
       "presets",
       "retrieverAdmin",
       "screenSensing",
