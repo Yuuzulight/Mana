@@ -2212,3 +2212,22 @@ document.getElementById('themeToggle')?.addEventListener('click', (e) => {
   // still on disk.
   loadInitialHistory(ensureSessionId());
 })();
+
+// Issue #362: consume the caption feed node-bot has been broadcasting on
+// /ws/captions since caption-server.js landed. Purely additive -- if the
+// socket never connects, everything else behaves exactly as before.
+(function initCaptions() {
+  try {
+    if (typeof createCaptionClient !== "function") return;
+    const el = document.getElementById("mana-captions");
+    if (!el) return;
+    createCaptionClient({
+      onCaption: ({ text }) => {
+        el.textContent = text;
+        el.hidden = false;
+      },
+    }).connect();
+  } catch (e) {
+    // Captions must never take the conversation down with them.
+  }
+})();
