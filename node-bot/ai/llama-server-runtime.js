@@ -1,4 +1,5 @@
 const defaultFs = require("node:fs");
+const { streamSentences } = require("../utils/sse-sentence-stream");
 const path = require("node:path");
 const { spawn: defaultSpawn } = require("node:child_process");
 const { setTimeout: defaultSleep } = require("node:timers/promises");
@@ -629,6 +630,71 @@ function createLlamaServerRuntime(options = {}) {
     return content.replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
   }
 
+  // Issue #331: the streaming counterpart of runLocalAssistantReply. Same
+  // prompt construction and the same post-processing, but the reply is
+  // consumed as it is generated so each finished sentence can go to TTS
+  // while the model is still writing the next one.
+  //
+  // onSentence is called with each completed sentence, in order. The full
+  // reply is still returned, so a caller that only wants the text can use
+  // this exactly like the blocking version and ignore the callback.
+  //
+  // Two filters sit between the wire and the caller, and the order matters:
+  // think-block suppression runs FIRST, so reasoning never reaches the
+  // sentence chunker and therefore never reaches TTS. Doing it the other
+  // way round would speak the model's deliberation aloud before the closing
+  // tag arrived.
+  async function streamLocalAssistantReply(
+    prompt,
+    {
+      maxTokens = 256,
+      profile = "default",
+      overrideSystemPrompt = null,
+      extraMessages = null,
+      onSentence = null,
+      maxSentenceChars,
+    } = {},
+  ) {
+    if (typeof fetchImpl !== "function") {
+      throw new Error("fetch is not available; cannot use llama-server");
+    }
+    const startedAt = nowMs();
+    await ensureServer(profile);
+
+    const resp = await fetchImpl(
+      `http://127.0.0.1:${state.port}/v1/chat/completions`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          messages: buildMessages(
+            overrideSystemPrompt || systemPrompt,
+            prompt,
+            extraMessages,
+          ),
+          max_tokens: maxTokens,
+          stream: true,
+        }),
+      },
+    );
+    if (!resp.ok) {
+      const text = await resp.text().catch(() => "");
+      throw new Error(
+        `llama-server stream failed (${resp.status}): ${text.slice(0, 500)}`,
+      );
+    }
+
+    const full = await streamSentences(resp, { onSentence, maxSentenceChars });
+
+    if (!full.trim()) {
+      throw new Error("llama-server returned an empty reply");
+    }
+
+    scheduleIdleShutdown();
+    logPerf("llama-server-stream", startedAt);
+    return full;
+  }
+
   // Raw OpenAI-compatible passthrough (issue #95). Unlike runLocalAssistantReply,
   // this does not inject Mana's persona system prompt or post-process the
   // reply -- external clients (Obsidian Copilot, etc.) bring their own
@@ -1027,6 +1093,7 @@ function createLlamaServerRuntime(options = {}) {
     getVisionStatus,
     isEnabled,
     proxyChatCompletion,
+    streamLocalAssistantReply,
     runBestOfNReply,
     runLocalAssistantReply,
     runToolAwareReply,
