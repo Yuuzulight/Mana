@@ -64,3 +64,37 @@ install required artifacts.
     process (Windows self-contained package incl. its own Python runtime);
     Mana's backend talks to it only over localhost HTTP. See
     https://github.com/RVC-Boss/GPT-SoVITS for terms.
+
+What the built installer adds back in (issue #363)
+--------------------------------------------------
+
+The notes above describe this *repository*, which deliberately excludes
+large binaries and model weights. The `desktop-client` installer is a
+different artifact and bundles more than the repo contains.
+
+- SearXNG (`tools/searxng`) is bundled into the desktop-client installer via
+  electron-builder `extraResources`, and is licensed **AGPL-3.0**. It is
+  gitignored and untracked here, so the repository distributes no AGPL code
+  -- but an installer built from a working checkout does.
+
+  SearXNG runs as a separate process reached over HTTP on localhost, so this
+  is mere aggregation rather than a derivative work: Mana's own Apache-2.0
+  licensing is unaffected. Distributing it does carry AGPL obligations for
+  that component -- ship the licence text, offer corresponding source, and
+  state whether it was modified. The copy here is unmodified upstream, with
+  Mana's configuration kept outside it in `tools/mana-searxng-settings.yml`.
+
+- Also bundled: `node-bot` and `plugins` (Mana's own, Apache-2.0), an
+  official Node.js binary (MIT), `tts-service` (Mana's own wrappers; heavy
+  dependencies install at runtime rather than being bundled), and a
+  portable Python runtime.
+
+- `windows-launcher` declares no `extraResources`, so its installer is not
+  affected.
+
+Model weights -- GGUF, whisper, and the TTS voices -- are never bundled by
+either installer. Their licences (including the non-commercial terms on
+S1-mini and S2-Pro) govern the user's own copies and do not constrain the
+installer.
+
+Full analysis: `docs/roadmap/issue-363-installer-licensing-audit.md`.
