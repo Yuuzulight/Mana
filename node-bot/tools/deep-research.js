@@ -5,6 +5,7 @@
 // local model to synthesize a cited report -- rather than a single
 // search-and-answer.
 const { searchWeb: defaultSearchWeb, fetchPage: defaultFetchPage } = require("./web-access");
+const { checkCitations } = require("../utils/citation-check");
 const { runWithBoundedConcurrency, DEFAULT_MAX_CONCURRENCY } = require("./subagent-delegation");
 
 const DEFAULT_MAX_SOURCES = 4;
@@ -508,6 +509,16 @@ async function runDeepResearch(question, options = {}) {
       cycle,
     })),
     report,
+    // Issue #392: mechanical check of what the report claims against what
+    // the run actually fetched. No model judges its own output here -- the
+    // same reasoning as #356, since whatever a model got wrong while
+    // writing it tends to consider fine while checking.
+    //
+    // Attached rather than enforced: a citation problem makes a report less
+    // trustworthy, not unusable, and silently withholding a report the user
+    // asked for would be worse than handing it over with the caveat
+    // attached.
+    citations: checkCitations(report, sources),
     bounds: {
       maxSources,
       maxTotalMs,
