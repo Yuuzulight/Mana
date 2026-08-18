@@ -1,0 +1,6 @@
+# Issue #358: CPU-only on purpose -- 200M parameters is trivial on CPU, and
+# the forecaster must not compete with the LLM for VRAM.
+# Install torch from the CPU index:
+#   pip install torch --index-url https://download.pytorch.org/whl/cpu
+timesfm==2.0.2
+torch>=2.13.0
