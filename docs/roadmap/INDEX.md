@@ -118,6 +118,7 @@ Status definitions:
 | issue-271-comfyui-split-loader-workflow.md | #271 | ComfyUI split-loader (Flux-shape) workflow | Scoped, unresolved open questions |
 | issue-359-mac-linux-scoping.md | #359 | Mac/Linux launcher and packaging | Scoping only, no code changes yet |
 | oss-inspiration-survey-2026-07.md | -- | OSS survey: companions, assistants, coding agents, Live2D | Research only, nothing implemented from it yet |
+| oss-inspiration-survey-2026-08.md | -- | OSS survey: companions, coding-agent tooling, voice stack, memory, integrations | Research only, nothing implemented from it yet |
 
 ## Open (3)
 
