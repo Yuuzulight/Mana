@@ -1362,6 +1362,16 @@ function createStreamingChunkQueue(playbackToken, preferredExpression) {
     }
   }
 
+  // Issue #331 review: for a changed:true restart, drop whatever's still
+  // queued but not yet in flight instead of draining the full streamed
+  // backlog first. The chunk already being synthesized/played (if any)
+  // still finishes naturally -- see playStreamingReply's hang-avoidance
+  // comment for why that one can't be cut short too.
+  function cancelPending() {
+    pending.length = 0;
+    markDone();
+  }
+
   function nextChunk() {
     if (pending.length) {
       return Promise.resolve({ text: pending.shift(), done: false });
@@ -1410,12 +1420,20 @@ function createStreamingChunkQueue(playbackToken, preferredExpression) {
         await playAudioBlob(audioBlob, playbackToken, avatarState, preferredExpression);
       }
 
-      if (next.done) return;
+      if (next.done) {
+        // Mirrors playReplyAudio's own tail: reset to idle once the queue
+        // has genuinely run out, but only if nothing else has taken over
+        // playback in the meantime.
+        if (replyPlaybackToken === playbackToken) {
+          setAvatarState("idle");
+        }
+        return;
+      }
       current = next;
     }
   }
 
-  return { pushChunk, markDone, run };
+  return { pushChunk, markDone, cancelPending, run };
 }
 
 // Issue #331: replaces the fetch("/reply") -> res.json() -> playReplyAudio
@@ -1451,13 +1469,20 @@ async function playStreamingReply(requestBody, preferredExpression) {
         queue.pushChunk(event.text);
       } else if (event.type === "final") {
         finalEvent = event;
+        if (event.changed) {
+          // Known now, as early as the final event itself arrives (which is
+          // always after every sentence event, so this can't miss any
+          // pending chunk) -- drop the rest of the backlog instead of
+          // letting the whole stale draft play out before restarting.
+          queue.cancelPending();
+        }
       }
     }
   } finally {
     // Always run to completion so the queue's promise settles even if the
-    // stream read fails or playback was superseded partway through -- this
-    // also means every chunk that was already queued finishes playing
-    // before the changed:true check below ever runs.
+    // stream read fails or playback was superseded partway through. Thanks
+    // to cancelPending() above, a changed:true run only finishes whatever
+    // chunk it was already synthesizing/playing, not the full backlog.
     queue.markDone();
     await runPromise;
   }
