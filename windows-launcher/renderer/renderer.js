@@ -67,6 +67,7 @@ const {
   shouldStopRecording,
 } = require("./voice-endpointing");
 const { detectReplyEmotion } = require("./reply-emotion");
+const { waitForPlayback } = require("./reply-audio-playback");
 const {
   isLikelyWhisperHallucination,
   fuzzyMatchesWakeWord,
@@ -1224,33 +1225,19 @@ function playAudioBlob(audioBlob, playbackToken, avatarState, preferredExpressio
     currentReplyUrl = URL.createObjectURL(audioBlob);
     currentReplyAudio = new Audio(currentReplyUrl);
 
-    currentReplyAudio.addEventListener(
-      "ended",
-      () => {
-        stopLipSync();
-        if (currentReplyUrl) {
-          URL.revokeObjectURL(currentReplyUrl);
-          currentReplyUrl = null;
-        }
-        currentReplyAudio = null;
-        resolve();
-      },
-      { once: true },
-    );
-
-    currentReplyAudio.addEventListener(
-      "error",
-      () => {
-        stopLipSync();
-        if (currentReplyUrl) {
-          URL.revokeObjectURL(currentReplyUrl);
-          currentReplyUrl = null;
-        }
-        currentReplyAudio = null;
-        reject(new Error("Reply audio playback failed"));
-      },
-      { once: true },
-    );
+    // See reply-audio-playback.js: this resolves on 'pause' too (not just
+    // 'ended'/'error'), so interrupting playback via stopReplyAudio() --
+    // barge-in, the interrupt hotkey, a fresh reply superseding this one --
+    // can't hang this promise (and whatever awaits it, e.g.
+    // handleTranscript's `processing` gate) forever.
+    waitForPlayback(currentReplyAudio, () => {
+      stopLipSync();
+      if (currentReplyUrl) {
+        URL.revokeObjectURL(currentReplyUrl);
+        currentReplyUrl = null;
+      }
+      currentReplyAudio = null;
+    }).then(resolve, reject);
 
     const playback = currentReplyAudio.play();
     startLipSync(currentReplyAudio);
