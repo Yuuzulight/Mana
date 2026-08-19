@@ -281,6 +281,131 @@ function registerCoreRoutes(app, upload, deps) {
     }
   });
 
+  app.post("/reply/stream", async (req, res) => {
+    res.setHeader("Content-Type", "application/x-ndjson; charset=utf-8");
+    res.setHeader("Cache-Control", "no-cache");
+    res.setHeader("Connection", "keep-alive");
+
+    const writeEvent = (event) => res.write(JSON.stringify(event) + "\n");
+
+    try {
+      const image =
+        typeof req.body?.image === "string" && req.body.image.trim()
+          ? req.body.image.trim()
+          : null;
+      const transcript = image
+        ? optionalString(req.body?.text, "text", "")
+        : requireString(req.body?.text, "text");
+
+      if (isRestartCommand(transcript)) {
+        if (!hasRestartController(restartController)) {
+          writeEvent({ type: "final", error: "restart controller is not configured" });
+          return res.end();
+        }
+        const payload = restartController.buildAcceptedPayload();
+        scheduleRestartAfterFinish(res, restartController);
+        writeEvent({
+          type: "final",
+          reply: payload.message,
+          restart: payload,
+          ttsConfigured: false,
+          changed: true,
+        });
+        return res.end();
+      }
+
+      if (image) {
+        const sessionId = optionalString(req.body?.sessionId, "sessionId", null);
+        if (typeof getVisionStatus === "function") {
+          const vision = getVisionStatus();
+          if (!vision || !vision.available) {
+            writeEvent({
+              type: "final",
+              error: "no local vision model available",
+              detail: vision ? vision.reason : undefined,
+            });
+            return res.end();
+          }
+        }
+        const reply = await runVisionReply(transcript, [image]);
+        if (sessionId && typeof recordChatTurn === "function") {
+          recordChatTurn(sessionId, transcript || "(shared an image)", reply);
+        }
+        writeEvent({
+          type: "final",
+          reply,
+          ttsConfigured: TTS_PROVIDER !== "none",
+          changed: true,
+        });
+        return res.end();
+      }
+
+      const screenText = clampText(
+        optionalString(req.body?.screenText, "screenText", ""),
+        SCREEN_CONTEXT_MAX_CHARS,
+      );
+      const hasModelProfile = Object.prototype.hasOwnProperty.call(
+        req.body || {},
+        "modelProfile",
+      );
+      const modelProfile = hasModelProfile
+        ? normalizeLlamaModelProfile(req.body?.modelProfile)
+        : normalizeLlamaModelProfile(
+            typeof getActiveModelProfile === "function"
+              ? getActiveModelProfile()
+              : "default",
+          );
+      const includeContext = req.body?.includeContext !== false;
+      const world = optionalString(
+        req.body?.ffxivWorld,
+        "ffxivWorld",
+        UNIVERSALIS_DEFAULT_WORLD,
+      );
+      const marketText = includeContext
+        ? await contributePluginPromptContext(capabilities, transcript, {
+            marketDataClient,
+            jobApplicationsStore,
+            pluginSettingsStore,
+            world,
+            screenText,
+          })
+        : "";
+      const sessionId = optionalString(req.body?.sessionId, "sessionId", null);
+      const assistantMode = optionalString(req.body?.assistantMode, "assistantMode", null);
+      const presetId = optionalString(req.body?.presetId, "presetId", null);
+      const replyMeta = {};
+
+      const reply = await buildAssistantReply(
+        transcript,
+        screenText,
+        marketText,
+        modelProfile,
+        sessionId,
+        assistantMode,
+        presetId,
+        replyMeta,
+        (sentence) => writeEvent({ type: "sentence", text: sentence }),
+      );
+
+      writeEvent({
+        type: "final",
+        reply,
+        ttsConfigured: TTS_PROVIDER !== "none",
+        changed: !replyMeta.streamedMatchesFinal,
+        ...(replyMeta.expression ? { expression: replyMeta.expression } : {}),
+      });
+      return res.end();
+    } catch (e) {
+      if (e instanceof ValidationError) {
+        writeEvent({ type: "final", error: e.message });
+        return res.end();
+      }
+      console.error(e);
+      writeEvent({ type: "final", error: String(e) });
+      return res.end();
+    }
+  });
+
   app.post("/transcribe", upload.single("file"), async (req, res) => {
     try {
       requireFile(req.file, "file");
