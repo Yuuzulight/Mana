@@ -14,6 +14,7 @@ const { createDesktopStreamingChunkQueue } = window.ManaStreamingChunkQueue;
 // which wins over that media query regardless of the OS setting (see the
 // :root[data-theme] rules in style.css).
 const THEME_STORAGE_KEY = 'manaTheme';
+const LISTENING_AUTOSTART_STORAGE_KEY = 'mana_listening_autostart';
 function applyTheme(choice) {
   if (choice === 'light' || choice === 'dark') {
     document.documentElement.setAttribute('data-theme', choice);
@@ -194,6 +195,13 @@ document.getElementById('themeToggle')?.addEventListener('click', (e) => {
   const modelClearBtnEl = document.getElementById('modelClearBtn');
   const modelScanResultsEl = document.getElementById('modelScanResults');
   const useRemoteAiToggleEl = document.getElementById('useRemoteAiToggle');
+  const listeningAutostartToggleEl = document.getElementById('listeningAutostartToggle');
+  if (listeningAutostartToggleEl) {
+    listeningAutostartToggleEl.checked = localStorage.getItem(LISTENING_AUTOSTART_STORAGE_KEY) === '1';
+    listeningAutostartToggleEl.addEventListener('change', () => {
+      localStorage.setItem(LISTENING_AUTOSTART_STORAGE_KEY, listeningAutostartToggleEl.checked ? '1' : '0');
+    });
+  }
   const brainProviderFieldsEl = document.getElementById('brainProviderFields');
   const brainProviderSelectEl = document.getElementById('brainProviderSelect');
   const brainBaseUrlEl = document.getElementById('brainBaseUrl');
@@ -817,6 +825,9 @@ document.getElementById('themeToggle')?.addEventListener('click', (e) => {
 
     initLive2dAvatar();
     setupRecording();
+    if (localStorage.getItem(LISTENING_AUTOSTART_STORAGE_KEY) === '1') {
+      startListening();
+    }
   }
 
   // Live2D speaks a richer state vocabulary (idle/talking/excited/angry/
