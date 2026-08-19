@@ -11,6 +11,7 @@
     "dist": "electron-builder --win nsis --publish never",
     "fetch-live2d-core": "node scripts/fetch-live2d-core.js",
     "fetch-sample-avatar": "node scripts/fetch-sample-avatar.js",
+    "fetch-silero-vad": "node scripts/fetch-silero-vad.js",
     "prepare-portable-python": "node scripts/prepare-portable-python.js"
   },
   "license": "Apache-2.0",
@@ -23,6 +24,7 @@
     "electron-updater": "^6.8.9",
     "marked": "^18.0.7",
     "mermaid": "^11.16.0",
+    "onnxruntime-web": "^1.27.0",
     "pixi-live2d-display": "^0.4.0",
     "pixi.js": "^6.5.10"
   },

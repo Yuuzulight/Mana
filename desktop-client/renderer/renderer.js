@@ -209,6 +209,62 @@ document.getElementById('themeToggle')?.addEventListener('click', (e) => {
   const visionModelClearBtnEl = document.getElementById('visionModelClearBtn');
   const visionModelStatusEl = document.getElementById('visionModelStatus');
 
+  // silero-vad.js/voice-endpointing.js are loaded as classic <script> tags
+  // (see index_fixed.html), not require()'d -- same reasoning as
+  // window.ManaLive2DAvatar etc. at the top of this file, since this
+  // renderer runs with nodeIntegration:false/contextIsolation:true.
+  const { createSileroVad } = window.ManaSileroVad;
+  const {
+    FRAME_SAMPLES: VAD_FRAME_SAMPLES,
+    SAMPLE_RATE: VAD_SAMPLE_RATE,
+  } = window.ManaSileroVad;
+  const {
+    shouldStopRecording,
+    nextBargeInState,
+    DEFAULT_MAX_WAIT_FOR_SPEECH_MS: MAX_WAIT_FOR_SPEECH_MS,
+    DEFAULT_SILENCE_BUFFER_MS: SILENCE_BUFFER_MS,
+    DEFAULT_MAX_UTTERANCE_MS: MAX_UTTERANCE_MS,
+  } = window.ManaVoiceEndpointing;
+
+  // process.env isn't available here (nodeIntegration:false, unlike
+  // windows-launcher's renderer, which this block otherwise matches) -- so
+  // these are just fixed defaults rather than env-var-overridable knobs.
+  const VAD_THRESHOLD = 0.5;
+  const VAD_DISABLED = false;
+  const VAD_MODEL_URL = '../assets/vad/silero_vad.onnx';
+  const MIN_SPEECH_RMS = 0.012;
+  const SILENCE_METER_INTERVAL_MS = 150;
+  const LISTEN_PAUSE_MS = 250;
+
+  let sileroVad = null;
+  let sileroVadLoadFailed = false;
+  let listening = false;
+
+  function getSileroVad() {
+    if (VAD_DISABLED || sileroVadLoadFailed || typeof window.ort === 'undefined') {
+      return null;
+    }
+    if (!sileroVad) {
+      sileroVad = createSileroVad({
+        ort: window.ort,
+        modelUrl: VAD_MODEL_URL,
+        threshold: VAD_THRESHOLD,
+      });
+    }
+    return sileroVad;
+  }
+
+  function wait(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  async function ensureMediaStream() {
+    if (!mediaStream) {
+      mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    }
+    return mediaStream;
+  }
+
   let mediaStream = null;
   let recorder = null;
   let chunks = [];
@@ -555,6 +611,13 @@ document.getElementById('themeToggle')?.addEventListener('click', (e) => {
   }
 
   let desktopReplyPlaybackToken = 0;
+  // Set for the full duration of speakStreamingReply -- the /reply/stream
+  // fetch, every streamed chunk's synthesis/playback, and (if the streamed
+  // draft turned out stale) the speakReply fallback it awaits before
+  // returning. listenLoop's gate below reads this to avoid starting a new
+  // recording while Mana is still talking, e.g. if push-to-talk is used
+  // while continuous listening is also toggled on.
+  let replyInProgress = false;
 
   function stopStreamingReply() {
     desktopReplyPlaybackToken += 1;
@@ -576,55 +639,60 @@ document.getElementById('themeToggle')?.addEventListener('click', (e) => {
   // the chat log as soon as it's known, instead of waiting for this whole
   // function (and therefore all queued audio) to finish playing first.
   async function speakStreamingReply(requestBody, onFinal) {
-    stopStreamingReply();
-    const playbackToken = desktopReplyPlaybackToken;
-    const audioCtx = new AudioContext();
-    const queue = createDesktopStreamingChunkQueue({
-      synthesize: (text) => synthesizeAndDecodeChunk(text, audioCtx),
-      play: (audioBuffer, text) => playDecodedChunk(audioCtx, audioBuffer, text),
-      isCurrent: () => desktopReplyPlaybackToken === playbackToken,
-      onIdle: () => setSprite('idle'),
-    });
-    const runPromise = queue.run();
-
-    let finalEvent = null;
+    replyInProgress = true;
     try {
-      const response = await fetch('http://127.0.0.1:5005/reply/stream', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(requestBody),
+      stopStreamingReply();
+      const playbackToken = desktopReplyPlaybackToken;
+      const audioCtx = new AudioContext();
+      const queue = createDesktopStreamingChunkQueue({
+        synthesize: (text) => synthesizeAndDecodeChunk(text, audioCtx),
+        play: (audioBuffer, text) => playDecodedChunk(audioCtx, audioBuffer, text),
+        isCurrent: () => desktopReplyPlaybackToken === playbackToken,
+        onIdle: () => setSprite('idle'),
       });
+      const runPromise = queue.run();
 
-      for await (const event of readNdjsonEvents(response)) {
-        if (event.type === 'sentence') {
-          queue.pushChunk(event.text);
-        } else if (event.type === 'final') {
-          finalEvent = event;
-          if (typeof onFinal === 'function') {
-            onFinal(finalEvent);
-          }
-          if (event.changed) {
-            // Known now, as early as the final event itself arrives (always
-            // after every sentence event, so this can't miss a pending
-            // chunk) -- drop the rest of the backlog instead of letting the
-            // whole stale draft play out before restarting.
-            queue.cancelPending();
+      let finalEvent = null;
+      try {
+        const response = await fetch('http://127.0.0.1:5005/reply/stream', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(requestBody),
+        });
+
+        for await (const event of readNdjsonEvents(response)) {
+          if (event.type === 'sentence') {
+            queue.pushChunk(event.text);
+          } else if (event.type === 'final') {
+            finalEvent = event;
+            if (typeof onFinal === 'function') {
+              onFinal(finalEvent);
+            }
+            if (event.changed) {
+              // Known now, as early as the final event itself arrives (always
+              // after every sentence event, so this can't miss a pending
+              // chunk) -- drop the rest of the backlog instead of letting the
+              // whole stale draft play out before restarting.
+              queue.cancelPending();
+            }
           }
         }
+      } finally {
+        queue.markDone();
+        await runPromise;
       }
+
+      const result = finalEvent || { reply: '', ttsConfigured: false };
+
+      if (desktopReplyPlaybackToken === playbackToken && result.changed && result.reply) {
+        stopStreamingReply();
+        await speakReply(result.reply, result.expression);
+      }
+
+      return result;
     } finally {
-      queue.markDone();
-      await runPromise;
+      replyInProgress = false;
     }
-
-    const result = finalEvent || { reply: '', ttsConfigured: false };
-
-    if (desktopReplyPlaybackToken === playbackToken && result.changed && result.reply) {
-      stopStreamingReply();
-      await speakReply(result.reply, result.expression);
-    }
-
-    return result;
   }
 
   async function init() {
@@ -795,8 +863,10 @@ document.getElementById('themeToggle')?.addEventListener('click', (e) => {
     statusEl.textContent = 'Processing...';
   }
 
-  async function onRecordingStop(){
-    const blob = new Blob(chunks, { type: chunks[0]?.type || 'audio/webm' });
+  // Shared by push-to-talk (onRecordingStop) and continuous listening
+  // (listenLoop) -- both produce a recorded utterance as a Blob and need
+  // the exact same transcribe-then-reply handling.
+  async function handleVoiceTurn(blob) {
     try{
       // Issue #331: transcription and reply generation are now two calls
       // instead of one -- /transcribe-only has no streaming equivalent
@@ -840,6 +910,182 @@ document.getElementById('themeToggle')?.addEventListener('click', (e) => {
       setSprite('idle');
     }
   }
+
+  async function onRecordingStop(){
+    const blob = new Blob(chunks, { type: chunks[0]?.type || 'audio/webm' });
+    await handleVoiceTurn(blob);
+  }
+
+  // Continuous listening (issue #135 port): records one utterance at a
+  // time, using Silero VAD (falling back to a plain RMS threshold if the
+  // model failed to load) to detect when the user has stopped talking,
+  // instead of requiring a held-down button. Uses local recorder/chunks
+  // variables rather than the module-scope ones startRecording/stopRecording
+  // use above -- push-to-talk and continuous listening must not share
+  // mutable state, since a user could in principle trigger both at once.
+  async function recordUntilSilence({
+    maxWaitForSpeechMs = MAX_WAIT_FOR_SPEECH_MS,
+    silenceBufferMs = SILENCE_BUFFER_MS,
+    maxDurationMs = MAX_UTTERANCE_MS,
+  } = {}) {
+    await ensureMediaStream();
+
+    const vad = getSileroVad();
+    if (vad) {
+      vad.reset();
+    }
+
+    const audioCtx = new (window.AudioContext || window.webkitAudioContext)({
+      sampleRate: VAD_SAMPLE_RATE,
+    });
+    const source = audioCtx.createMediaStreamSource(mediaStream);
+    const analyser = audioCtx.createAnalyser();
+    analyser.fftSize = 1024;
+    source.connect(analyser);
+    const samples = new Float32Array(analyser.fftSize);
+
+    function currentRms() {
+      analyser.getFloatTimeDomainData(samples);
+      let sum = 0;
+      for (let i = 0; i < samples.length; i += 1) {
+        sum += samples[i] * samples[i];
+      }
+      return Math.sqrt(sum / samples.length);
+    }
+
+    async function isSpeechNow() {
+      if (vad) {
+        try {
+          analyser.getFloatTimeDomainData(samples);
+          const frame = samples.subarray(samples.length - VAD_FRAME_SAMPLES);
+          const probability = await vad.processFrame(frame);
+          return vad.isSpeech(probability);
+        } catch (e) {
+          console.warn('Silero VAD inference failed, falling back to RMS for this session:', e);
+          sileroVadLoadFailed = true;
+        }
+      }
+      return currentRms() >= MIN_SPEECH_RMS;
+    }
+
+    return await new Promise((resolve, reject) => {
+      const localChunks = [];
+      const localRecorder = new MediaRecorder(mediaStream, { mimeType: 'audio/webm' });
+      let hasHeardSpeech = false;
+      let lastSpeechAt = 0;
+      let meterTimer = null;
+      let stopped = false;
+      const startedAt = performance.now();
+
+      function cleanup() {
+        stopped = true;
+        if (meterTimer !== null) {
+          clearTimeout(meterTimer);
+          meterTimer = null;
+        }
+        try {
+          source.disconnect();
+        } catch (e) {}
+        audioCtx.close().catch(() => {});
+      }
+
+      localRecorder.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+          localChunks.push(event.data);
+        }
+      };
+      localRecorder.onerror = (event) => {
+        cleanup();
+        reject(event.error);
+      };
+      localRecorder.onstop = () => {
+        cleanup();
+        resolve(new Blob(localChunks, { type: 'audio/webm' }));
+      };
+
+      localRecorder.start(SILENCE_METER_INTERVAL_MS);
+
+      async function tick() {
+        if (stopped) return;
+        if (await isSpeechNow()) {
+          if (!hasHeardSpeech) {
+            statusEl.textContent = 'Listening...';
+          }
+          hasHeardSpeech = true;
+          lastSpeechAt = performance.now();
+        }
+        if (stopped) return;
+
+        const stopReason = shouldStopRecording({
+          hasHeardSpeech,
+          elapsedMs: performance.now() - startedAt,
+          msSinceLastSpeech: hasHeardSpeech ? performance.now() - lastSpeechAt : 0,
+          maxWaitForSpeechMs,
+          silenceBufferMs,
+          maxDurationMs,
+        });
+        if (stopReason) {
+          if (localRecorder.state !== 'inactive') {
+            localRecorder.stop();
+          }
+          return;
+        }
+        meterTimer = setTimeout(tick, SILENCE_METER_INTERVAL_MS);
+      }
+      meterTimer = setTimeout(tick, SILENCE_METER_INTERVAL_MS);
+    });
+  }
+
+  async function listenLoop() {
+    while (listening) {
+      // replyInProgress is set for the full duration of speakStreamingReply
+      // (see its declaration above) -- covers both push-to-talk's and this
+      // loop's own reply, so two recordings can never overlap a reply.
+      if (replyInProgress) {
+        await wait(LISTEN_PAUSE_MS);
+        continue;
+      }
+      try {
+        statusEl.textContent = 'Waiting for you...';
+        const blob = await recordUntilSilence();
+        if (!listening) break;
+        await handleVoiceTurn(blob);
+      } catch (error) {
+        console.error(error);
+        statusEl.textContent = `Listening error: ${error.message}`;
+        await wait(1500);
+      }
+    }
+  }
+
+  function startListening() {
+    if (listening) return;
+    listening = true;
+    const btn = document.getElementById('btnListen');
+    if (btn) {
+      btn.textContent = 'Stop Listening';
+      btn.classList.add('active');
+    }
+    listenLoop();
+  }
+
+  function stopListening() {
+    listening = false;
+    const btn = document.getElementById('btnListen');
+    if (btn) {
+      btn.textContent = 'Start Listening';
+      btn.classList.remove('active');
+    }
+    statusEl.textContent = 'Idle';
+  }
+
+  document.getElementById('btnListen')?.addEventListener('click', () => {
+    if (listening) {
+      stopListening();
+    } else {
+      startListening();
+    }
+  });
 
   // Deep research: reuses the single transcript/reply pair this UI already
   // has (no scrolling chat log here, unlike windows-launcher) -- the

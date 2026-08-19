@@ -115,6 +115,7 @@
             <textarea id="messageInput" placeholder="Write a message..." rows="1"></textarea>
             <div class="input-actions">
               <button id="btnRecord" class="primary">Hold to Talk</button>
+              <button id="btnListen">Start Listening</button>
               <button id="btnResearch" title="Deep research: search and read several sources, then synthesize a cited report">Research</button>
               <button id="btnCompare" title="Compare mode: send this prompt to two model profiles and see both replies side by side">Compare</button>
               <button id="btnClear">Clear</button>
@@ -580,6 +581,22 @@
   <script src="reply-emotion.js"></script>
   <script src="compare-mode.js"></script>
   <script src="streaming-chunk-queue.js"></script>
+  <!-- Silero VAD's ONNX runtime (issue #135, ported from windows-launcher).
+       Loaded as a classic script, not require()'d, since this renderer's
+       nodeIntegration:false/contextIsolation:true (see main.js) would
+       otherwise have no `require` at all. wasmPaths is intentionally left
+       unset -- ort.min.js auto-detects its own <script src> location and
+       finds the .wasm/.mjs files that already ship alongside it in the same
+       dist/ folder. numThreads=1 avoids needing cross-origin-isolation
+       headers for SharedArrayBuffer. -->
+  <script src="../node_modules/onnxruntime-web/dist/ort.min.js"></script>
+  <script>
+    if (typeof ort !== "undefined") {
+      ort.env.wasm.numThreads = 1;
+    }
+  </script>
+  <script src="silero-vad.js"></script>
+  <script src="voice-endpointing.js"></script>
   <script src="renderer.js"></script>
 </body>
 </html>
