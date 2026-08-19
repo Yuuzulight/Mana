@@ -224,6 +224,7 @@ document.getElementById('themeToggle')?.addEventListener('click', (e) => {
     DEFAULT_MAX_WAIT_FOR_SPEECH_MS: MAX_WAIT_FOR_SPEECH_MS,
     DEFAULT_SILENCE_BUFFER_MS: SILENCE_BUFFER_MS,
     DEFAULT_MAX_UTTERANCE_MS: MAX_UTTERANCE_MS,
+    DEFAULT_BARGE_IN_HOLD_MS: BARGE_IN_HOLD_MS,
   } = window.ManaVoiceEndpointing;
 
   // process.env isn't available here (nodeIntegration:false, unlike
@@ -235,6 +236,8 @@ document.getElementById('themeToggle')?.addEventListener('click', (e) => {
   const MIN_SPEECH_RMS = 0.012;
   const SILENCE_METER_INTERVAL_MS = 150;
   const LISTEN_PAUSE_MS = 250;
+  const BARGE_IN_VOICE_ENABLED = true;
+  const BARGE_IN_POLL_MS = 50;
 
   let sileroVad = null;
   let sileroVadLoadFailed = false;
@@ -597,6 +600,80 @@ document.getElementById('themeToggle')?.addEventListener('click', (e) => {
     return audioCtx.decodeAudioData(arrayBuffer);
   }
 
+  let bargeInMonitor = null;
+
+  // Ported from windows-launcher's watchForBargeIn(): while a reply chunk is
+  // playing, polls the mic VAD and stops playback once speech has been
+  // continuously detected for BARGE_IN_HOLD_MS (so one cough/tap doesn't
+  // trigger it). Stop-and-discard only -- no hold/resume, matching today's
+  // shipped windows-launcher behavior. `isStillPlaying` stands in for that
+  // app's `currentReplyAudio` truthiness check, adapted to this app's
+  // token-based playback-supersession pattern (desktopReplyPlaybackToken).
+  async function watchForBargeIn(isStillPlaying) {
+    if (bargeInMonitor) {
+      return;
+    }
+    const self = { stopped: false };
+    bargeInMonitor = self;
+
+    try {
+      await ensureMediaStream();
+      const vad = getSileroVad();
+      if (!vad) {
+        return;
+      }
+      vad.reset();
+
+      const audioCtx = new (window.AudioContext || window.webkitAudioContext)({
+        sampleRate: VAD_SAMPLE_RATE,
+      });
+      const source = audioCtx.createMediaStreamSource(mediaStream);
+      const analyser = audioCtx.createAnalyser();
+      analyser.fftSize = 1024;
+      source.connect(analyser);
+      const samples = new Float32Array(analyser.fftSize);
+
+      let speechStartedAt = null;
+      try {
+        while (!self.stopped && isStillPlaying()) {
+          await wait(BARGE_IN_POLL_MS);
+          if (self.stopped || !isStillPlaying()) {
+            break;
+          }
+
+          let isSpeech = false;
+          try {
+            analyser.getFloatTimeDomainData(samples);
+            const frame = samples.subarray(samples.length - VAD_FRAME_SAMPLES);
+            const probability = await vad.processFrame(frame);
+            isSpeech = vad.isSpeech(probability);
+          } catch (e) {
+            isSpeech = false;
+          }
+
+          const state = nextBargeInState({
+            isSpeech,
+            speechStartedAt,
+            now: performance.now(),
+            holdMs: BARGE_IN_HOLD_MS,
+          });
+          speechStartedAt = state.speechStartedAt;
+          if (state.triggered) {
+            stopStreamingReply();
+            break;
+          }
+        }
+      } finally {
+        try {
+          source.disconnect();
+        } catch (e) {}
+        audioCtx.close().catch(() => {});
+      }
+    } finally {
+      bargeInMonitor = null;
+    }
+  }
+
   function playDecodedChunk(audioCtx, audioBuffer, text) {
     return new Promise((resolve) => {
       setSprite('speaking');
@@ -604,9 +681,23 @@ document.getElementById('themeToggle')?.addEventListener('click', (e) => {
       const src = audioCtx.createBufferSource();
       src.buffer = audioBuffer;
       src.connect(audioCtx.destination);
-      src.onended = () => { stopLipSync(); resolve(); };
+      // Unlike windows-launcher's currentReplyAudio (nulled the instant its
+      // Audio element's playback ends), desktopReplyPlaybackToken only
+      // changes on an explicit stop/supersede -- never on a chunk's natural
+      // end. Without this local flag, watchForBargeIn's isStillPlaying()
+      // would stay true forever after a reply finishes normally, so its
+      // bargeInMonitor singleton guard would never release and no later
+      // reply would ever get barge-in monitoring again.
+      let chunkActive = true;
+      src.onended = () => { chunkActive = false; stopLipSync(); resolve(); };
       src.start();
       startLipSync(audioCtx, src);
+      if (BARGE_IN_VOICE_ENABLED) {
+        const playbackTokenAtStart = desktopReplyPlaybackToken;
+        watchForBargeIn(() => chunkActive && desktopReplyPlaybackToken === playbackTokenAtStart).catch((e) =>
+          console.warn('Voice barge-in monitor failed:', e.message),
+        );
+      }
     });
   }
 
