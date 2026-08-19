@@ -609,7 +609,13 @@ document.getElementById('themeToggle')?.addEventListener('click', (e) => {
   // shipped windows-launcher behavior. `isStillPlaying` stands in for that
   // app's `currentReplyAudio` truthiness check, adapted to this app's
   // token-based playback-supersession pattern (desktopReplyPlaybackToken).
-  async function watchForBargeIn(isStillPlaying) {
+  // `onTrigger` is the actual stop action -- windows-launcher's
+  // stopReplyAudio() both pauses the live element AND advances its token in
+  // one call, so this takes a caller-supplied callback rather than
+  // hardcoding stopStreamingReply() here, letting playDecodedChunk stop its
+  // own live AudioBufferSourceNode (immediate, audible cutoff) instead of
+  // only marking the reply superseded and letting the current chunk play out.
+  async function watchForBargeIn(isStillPlaying, onTrigger) {
     if (bargeInMonitor) {
       return;
     }
@@ -659,7 +665,7 @@ document.getElementById('themeToggle')?.addEventListener('click', (e) => {
           });
           speechStartedAt = state.speechStartedAt;
           if (state.triggered) {
-            stopStreamingReply();
+            onTrigger();
             break;
           }
         }
@@ -694,9 +700,17 @@ document.getElementById('themeToggle')?.addEventListener('click', (e) => {
       startLipSync(audioCtx, src);
       if (BARGE_IN_VOICE_ENABLED) {
         const playbackTokenAtStart = desktopReplyPlaybackToken;
-        watchForBargeIn(() => chunkActive && desktopReplyPlaybackToken === playbackTokenAtStart).catch((e) =>
-          console.warn('Voice barge-in monitor failed:', e.message),
-        );
+        watchForBargeIn(
+          () => chunkActive && desktopReplyPlaybackToken === playbackTokenAtStart,
+          // src.stop() on an already-started node is valid and fires
+          // onended exactly once (whether triggered here or by natural
+          // completion) -- the same resolve()/chunkActive=false path above
+          // runs either way, so there's no double-resolve risk to guard
+          // against here (unlike windows-launcher's <audio> element, which
+          // has three distinct terminal events -- ended/error/pause -- and
+          // needs waitForPlayback's `settled` guard for that reason).
+          () => { src.stop(); stopStreamingReply(); },
+        ).catch((e) => console.warn('Voice barge-in monitor failed:', e.message));
       }
     });
   }
