@@ -35,7 +35,14 @@ function resolveWithinRepo(requestedPath) {
     ? path.resolve(requestedPath)
     : path.resolve(REPO_ROOT, requestedPath);
   const rel = path.relative(REPO_ROOT, resolvedPath);
-  if (rel.startsWith("..") || (path.isAbsolute(rel) && !rel)) {
+  // On Windows, path.relative() between paths on different drives (or a
+  // drive vs. a UNC root) can't express the difference as a relative path,
+  // so it returns the "to" path back out unchanged -- which does NOT start
+  // with "..". That let paths like "C:\Windows\system.ini" slip past the
+  // ".." check above when REPO_ROOT is on a different drive/root. Any rel
+  // that is still absolute means resolvedPath never actually descended from
+  // REPO_ROOT, so treat that as outside the repo too.
+  if (rel.startsWith("..") || path.isAbsolute(rel)) {
     return null;
   }
   return resolvedPath;
