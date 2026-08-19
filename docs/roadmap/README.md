@@ -22,6 +22,20 @@ from actually reading each doc rather than hand-tracked here.
 | [#421](https://github.com/Yuuzulight/Mana/issues/421) | Remote AI | Open | Per-session token/cost meter, only relevant when remote AI is enabled. See [issue-421-token-cost-meter.md](issue-421-token-cost-meter.md). |
 | [#422](https://github.com/Yuuzulight/Mana/issues/422) | Coding agent | Open | Run test verification against a scratch copy of the workspace, not the live tree. See [issue-422-scratch-copy-test-sandbox.md](issue-422-scratch-copy-test-sandbox.md). |
 | [#423](https://github.com/Yuuzulight/Mana/issues/423) | Notifications | Open | Native Windows toast notifications for proactive check-ins. See [issue-423-windows-toast-notifications.md](issue-423-windows-toast-notifications.md). |
+| [#424](https://github.com/Yuuzulight/Mana/issues/424) | Plugins | Open | Sandboxed plugin widget UI, manifest-declared. See [issue-424-plugin-widget-ui.md](issue-424-plugin-widget-ui.md). |
+| [#425](https://github.com/Yuuzulight/Mana/issues/425) | Avatar | Open | Evaluate Spine2D as a third avatar format -- low priority. See [issue-425-spine2d-avatar-format.md](issue-425-spine2d-avatar-format.md). |
+| [#426](https://github.com/Yuuzulight/Mana/issues/426) | Coding agent | Open | User-configurable PreToolUse/PostToolUse-style hooks. See [issue-426-user-extensible-hooks.md](issue-426-user-extensible-hooks.md). |
+| [#427](https://github.com/Yuuzulight/Mana/issues/427) | Coding agent | Open | Hunk-level accept/reject in editor-handoff proposals. See [issue-427-hunk-level-proposal-review.md](issue-427-hunk-level-proposal-review.md). |
+| [#428](https://github.com/Yuuzulight/Mana/issues/428) | Coding agent | Open | Restorable snapshots for applied edits, independent of git. See [issue-428-restore-points.md](issue-428-restore-points.md). |
+| [#429](https://github.com/Yuuzulight/Mana/issues/429) | Speech | Open | Add Whisper large-v3-turbo as a selectable model profile. See [issue-429-whisper-large-v3-turbo.md](issue-429-whisper-large-v3-turbo.md). |
+| [#430](https://github.com/Yuuzulight/Mana/issues/430) | Speech | Open | Evaluate local speaker diarization for single-mic multi-person audio. See [issue-430-speaker-diarization.md](issue-430-speaker-diarization.md). |
+| [#431](https://github.com/Yuuzulight/Mana/issues/431) | Memory | Open | Bi-temporal fact invalidation in the memory graph. See [issue-431-bitemporal-fact-invalidation.md](issue-431-bitemporal-fact-invalidation.md). |
+| [#432](https://github.com/Yuuzulight/Mana/issues/432) | Memory | Open | Ontology-typed entity extraction + derived-facts inference pass. See [issue-432-ontology-typed-extraction.md](issue-432-ontology-typed-extraction.md). |
+| [#433](https://github.com/Yuuzulight/Mana/issues/433) | Memory | Open | Evaluate a mem0-style CRUD memory engine -- likely redundant. See [issue-433-mem0-style-crud-engine.md](issue-433-mem0-style-crud-engine.md). |
+| [#434](https://github.com/Yuuzulight/Mana/issues/434) | Integrations | Open | Home Assistant / Wyoming voice-satellite integration. See [issue-434-home-assistant-integration.md](issue-434-home-assistant-integration.md). |
+| [#435](https://github.com/Yuuzulight/Mana/issues/435) | Integrations | Open | Matrix bridge alongside Discord/Telegram. See [issue-435-matrix-bridge.md](issue-435-matrix-bridge.md). |
+| [#436](https://github.com/Yuuzulight/Mana/issues/436) | Integrations | Open | Evaluate a Signal bridge -- Docker dependency tradeoff. See [issue-436-signal-bridge.md](issue-436-signal-bridge.md). |
+| [#437](https://github.com/Yuuzulight/Mana/issues/437) | Integrations | Open | Evaluate WhatsApp/Slack bridges -- likely not viable. See [issue-437-whatsapp-slack-bridges.md](issue-437-whatsapp-slack-bridges.md). |
 
 ## Recently completed (since the last sync)
 

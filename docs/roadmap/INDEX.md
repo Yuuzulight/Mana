@@ -120,7 +120,7 @@ Status definitions:
 | oss-inspiration-survey-2026-07.md | -- | OSS survey: companions, assistants, coding agents, Live2D | Research only, nothing implemented from it yet |
 | oss-inspiration-survey-2026-08.md | -- | OSS survey: companions, coding-agent tooling, voice stack, memory, integrations | Research only, nothing implemented from it yet |
 
-## Open (10)
+## Open (24)
 
 | Doc | Issue | Topic |
 | --- | --- | --- |
@@ -134,6 +134,20 @@ Status definitions:
 | issue-421-token-cost-meter.md | #421 | Per-session token/cost meter for remote AI |
 | issue-422-scratch-copy-test-sandbox.md | #422 | Run test verification against a scratch copy of the workspace |
 | issue-423-windows-toast-notifications.md | #423 | Native Windows toast notifications for proactive check-ins |
+| issue-424-plugin-widget-ui.md | #424 | Sandboxed plugin widget UI (iframe-sandboxed, manifest-declared) |
+| issue-425-spine2d-avatar-format.md | #425 | Evaluate Spine2D as a third avatar format |
+| issue-426-user-extensible-hooks.md | #426 | User-configurable PreToolUse/PostToolUse-style hooks |
+| issue-427-hunk-level-proposal-review.md | #427 | Hunk-level accept/reject in editor-handoff diff proposals |
+| issue-428-restore-points.md | #428 | Restorable snapshots for applied agent edits, independent of git |
+| issue-429-whisper-large-v3-turbo.md | #429 | Add Whisper large-v3-turbo as a selectable model profile |
+| issue-430-speaker-diarization.md | #430 | Evaluate local speaker diarization for single-mic multi-person audio |
+| issue-431-bitemporal-fact-invalidation.md | #431 | Bi-temporal fact invalidation in the memory graph |
+| issue-432-ontology-typed-extraction.md | #432 | Ontology-typed entity extraction + derived-facts inference pass |
+| issue-433-mem0-style-crud-engine.md | #433 | Evaluate a mem0-style ADD/UPDATE/DELETE/NOOP memory engine |
+| issue-434-home-assistant-integration.md | #434 | Home Assistant / Wyoming voice-satellite integration |
+| issue-435-matrix-bridge.md | #435 | Matrix bridge alongside Discord/Telegram |
+| issue-436-signal-bridge.md | #436 | Evaluate a Signal bridge (Docker dependency tradeoff) |
+| issue-437-whatsapp-slack-bridges.md | #437 | Evaluate WhatsApp/Slack bridges (likely not viable, local-first) |
 
 ## Unclear -- check the GitHub issue directly (1)
 
