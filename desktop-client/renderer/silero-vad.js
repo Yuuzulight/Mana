@@ -18,6 +18,16 @@
 //            sr int64 scalar (16000)
 //   outputs: output float32 [1, 1] speech probability (0-1),
 //            stateN float32 [2, 1, 128] (feed back in as `state` next call)
+//
+// Unlike windows-launcher (nodeIntegration:true, so its renderer.js can
+// require() this directly), desktop-client's renderer runs with
+// nodeIntegration:false/contextIsolation:true (see main.js), so this file
+// is also loaded as a classic <script> tag and needs to attach itself to
+// `window` -- same dual module.exports/window pattern already used by
+// streaming-chunk-queue.js in this directory. Wrapped in an IIFE so the
+// top-level consts below don't leak into the shared global scope.
+(function () {
+
 const FRAME_SAMPLES = 512;
 const CONTEXT_SIZE = 64;
 const SAMPLE_RATE = 16000;
@@ -82,7 +92,7 @@ function createSileroVad({ ort, modelUrl, threshold = DEFAULT_THRESHOLD } = {}) 
   return { processFrame, reset, isSpeech, load };
 }
 
-module.exports = {
+const exportsObj = {
   createSileroVad,
   FRAME_SAMPLES,
   CONTEXT_SIZE,
@@ -90,3 +100,12 @@ module.exports = {
   STATE_SHAPE,
   DEFAULT_THRESHOLD,
 };
+
+if (typeof module !== "undefined" && module.exports) {
+  module.exports = exportsObj;
+}
+if (typeof window !== "undefined") {
+  window.ManaSileroVad = exportsObj;
+}
+
+})();

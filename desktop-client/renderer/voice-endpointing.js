@@ -1,6 +1,15 @@
 // Decides when a voice recording should stop, based on live RMS readings
 // rather than a fixed duration — so a long sentence isn't cut off mid-way,
 // and Mana only treats speech as "done" once the user has actually paused.
+//
+// Unlike windows-launcher (nodeIntegration:true, so its renderer.js can
+// require() this directly), desktop-client's renderer runs with
+// nodeIntegration:false/contextIsolation:true (see main.js), so this file
+// is also loaded as a classic <script> tag and needs to attach itself to
+// `window` -- same dual module.exports/window pattern already used by
+// streaming-chunk-queue.js in this directory. Wrapped in an IIFE so the
+// top-level consts below don't leak into the shared global scope.
+(function () {
 
 const DEFAULT_SILENCE_BUFFER_MS = 2200;
 const DEFAULT_MAX_WAIT_FOR_SPEECH_MS = 6000;
@@ -46,7 +55,7 @@ function nextBargeInState({ isSpeech, speechStartedAt, now, holdMs = DEFAULT_BAR
   return { speechStartedAt: startedAt, triggered: now - startedAt >= holdMs };
 }
 
-module.exports = {
+const exportsObj = {
   DEFAULT_BARGE_IN_HOLD_MS,
   DEFAULT_GAMING_MAX_WAIT_FOR_SPEECH_MS,
   DEFAULT_MAX_UTTERANCE_MS,
@@ -55,3 +64,12 @@ module.exports = {
   nextBargeInState,
   shouldStopRecording,
 };
+
+if (typeof module !== "undefined" && module.exports) {
+  module.exports = exportsObj;
+}
+if (typeof window !== "undefined") {
+  window.ManaVoiceEndpointing = exportsObj;
+}
+
+})();
