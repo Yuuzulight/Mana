@@ -53,7 +53,6 @@ const { formatDoctorPanel } = require("./doctor-panel");
 const {
   DEFAULT_VISION_HOTKEY_PROMPT,
   describeVisionHotkeyError,
-  extractReplyErrorDetail,
 } = require("./vision-hotkey");
 const { createLive2dAvatar } = require("../avatar/live2d-avatar");
 const { createVrmAvatar } = require("../avatar/vrm-avatar");
@@ -1301,6 +1300,191 @@ async function playReplyAudio(text, preferredExpression) {
   }
 }
 
+// Issue #331: POST /reply/stream sends newline-delimited JSON objects over
+// a chunked response -- one "sentence" event per completed sentence, then
+// exactly one "final" event. This mirrors node-bot/utils/sse-sentence-
+// stream.js's readSseDeltas shape (buffer partial lines across network
+// chunks) but for plain NDJSON instead of "data:"-prefixed SSE frames.
+async function* readNdjsonEvents(response) {
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    let newline;
+    while ((newline = buffer.indexOf("\n")) !== -1) {
+      const line = buffer.slice(0, newline);
+      buffer = buffer.slice(newline + 1);
+      if (!line.trim()) continue;
+      try {
+        yield JSON.parse(line);
+      } catch (e) {
+        // A malformed line costs one event, not the whole stream.
+      }
+    }
+  }
+}
+
+// Issue #331: same one-ahead pipelining and playbackToken cancellation
+// playReplyAudio already does over a fixed chunks[] array, generalized to a
+// queue that new sentences can still be pushed into while it's running --
+// needed because streamed sentences arrive over time, not all at once.
+// pushChunk(text) may be called after playback has started; markDone()
+// signals no more chunks are coming, so the loop can exit after the last
+// one plays instead of waiting forever.
+//
+// Each sentence gets its own avatar-mood read (rather than one mood for the
+// whole reply, like playReplyAudio does) since moods aren't known upfront
+// here -- the full reply text isn't available until the final event.
+function createStreamingChunkQueue(playbackToken, preferredExpression) {
+  const pending = [];
+  let waiter = null; // resolve function for a consumer awaiting the next chunk
+  let closed = false;
+
+  function pushChunk(text) {
+    if (waiter) {
+      const resolve = waiter;
+      waiter = null;
+      resolve({ text, done: false });
+    } else {
+      pending.push(text);
+    }
+  }
+
+  function markDone() {
+    closed = true;
+    if (waiter) {
+      const resolve = waiter;
+      waiter = null;
+      resolve({ text: null, done: true });
+    }
+  }
+
+  function nextChunk() {
+    if (pending.length) {
+      return Promise.resolve({ text: pending.shift(), done: false });
+    }
+    if (closed) {
+      return Promise.resolve({ text: null, done: true });
+    }
+    return new Promise((resolve) => {
+      waiter = resolve;
+    });
+  }
+
+  // Synthesis failing (e.g. TTS not configured -- unknown until the final
+  // event arrives, well after chunks may already be queued) costs this one
+  // chunk, not the whole reply: skip playback for it instead of throwing.
+  //
+  // synthesizeSpeechChunk(index, chunks, ...) reads chunks[index] -- every
+  // call here passes a fresh one-element array, so the index into *that*
+  // array is always 0, never the running sentence count.
+  async function synthesizeChunk(text) {
+    try {
+      return await synthesizeSpeechChunk(0, [text], playbackToken);
+    } catch (e) {
+      console.warn("Speech synthesis failed for a streamed chunk:", e.message);
+      return null;
+    }
+  }
+
+  async function run() {
+    let current = await nextChunk();
+    if (current.done) {
+      return;
+    }
+    let inFlight = synthesizeChunk(current.text);
+
+    for (;;) {
+      if (replyPlaybackToken !== playbackToken) return; // superseded, stop silently
+      const audioBlob = await inFlight;
+      if (replyPlaybackToken !== playbackToken) return;
+
+      const next = await nextChunk();
+      inFlight = next.done ? null : synthesizeChunk(next.text);
+
+      if (audioBlob) {
+        const avatarState = detectReplyEmotion(current.text);
+        await playAudioBlob(audioBlob, playbackToken, avatarState, preferredExpression);
+      }
+
+      if (next.done) return;
+      current = next;
+    }
+  }
+
+  return { pushChunk, markDone, run };
+}
+
+// Issue #331: replaces the fetch("/reply") -> res.json() -> playReplyAudio
+// flow at this app's two reply call sites. Sentences arrive incrementally
+// from POST /reply/stream and are queued for TTS/playback as they arrive;
+// on the final event, if what was already streamed doesn't match the true
+// final reply (changed:true -- covers both "nothing streamed" and "a
+// regeneration pass rewrote it"), cancel the queue and fall back to today's
+// synthesize-the-whole-thing-at-once path unchanged.
+async function playStreamingReply(requestBody, preferredExpression) {
+  stopReplyAudio();
+  const playbackToken = replyPlaybackToken;
+  const queue = createStreamingChunkQueue(playbackToken, preferredExpression);
+  const runPromise = queue.run();
+
+  let finalEvent = null;
+  try {
+    const response = await fetch(`${BACKEND_BASE_URL}/reply/stream`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(requestBody),
+    });
+
+    // Deliberately keeps reading every event -- including after this
+    // playback has been superseded -- so the full reply text is always
+    // available for the chat log even if a barge-in or a newer request cut
+    // the *audio* short. The queue itself already stops synthesizing/
+    // playing once replyPlaybackToken moves past playbackToken.
+    for await (const event of readNdjsonEvents(response)) {
+      if (event.type === "sentence") {
+        queue.pushChunk(event.text);
+      } else if (event.type === "final") {
+        finalEvent = event;
+      }
+    }
+  } finally {
+    // Always run to completion so the queue's promise settles even if the
+    // stream read fails or playback was superseded partway through -- this
+    // also means every chunk that was already queued finishes playing
+    // before the changed:true check below ever runs.
+    queue.markDone();
+    await runPromise;
+  }
+
+  const result = finalEvent || { reply: "", ttsConfigured: false };
+
+  // Nothing was streamed (image replies, restart commands) or a
+  // verification/retry pass rewrote the reply -- what (if anything) already
+  // played doesn't match the true final text, so speak the corrected
+  // version from scratch. This intentionally waits for the queue above to
+  // fully drain first: calling stopReplyAudio() while a chunk from the
+  // *same* queue is still mid-playback would pause its <audio> element
+  // without ever firing "ended", leaving playAudioBlob()'s promise (and so
+  // this whole function) hung forever.
+  if (
+    replyPlaybackToken === playbackToken &&
+    result.changed &&
+    result.reply &&
+    result.ttsConfigured
+  ) {
+    stopReplyAudio();
+    await playReplyAudio(result.reply, result.expression);
+  }
+
+  return result;
+}
+
 function wait(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -2084,26 +2268,25 @@ async function readScreenContext(text, gamingModeActive) {
 async function requestScreenAwareReply(text, gamingModeActive) {
   const screenText = await readScreenContext(text, gamingModeActive);
   const startedAt = performance.now();
-  const response = await fetch(`${BACKEND_BASE_URL}/reply`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      text,
-      screenText,
-      modelProfile: selectedModelProfile,
-      sessionId: typeof ensureSessionId === "function" ? ensureSessionId() : undefined,
-      presetId: selectedPresetId || undefined,
-    }),
+  // playStreamingReply already speaks the reply as sentences stream in (and
+  // handles the changed:true fallback/restart), so callers just get the
+  // final {reply, ttsConfigured, expression, error?} the same shape /reply
+  // used to return -- no separate playReplyAudio call needed at the call site.
+  const result = await playStreamingReply({
+    text,
+    screenText,
+    modelProfile: selectedModelProfile,
+    sessionId: typeof ensureSessionId === "function" ? ensureSessionId() : undefined,
+    presetId: selectedPresetId || undefined,
   });
 
-  if (!response.ok) {
-    const message = await response.text();
-    throw new Error(message);
+  // /reply/stream has no HTTP-level error status (always 200); errors
+  // surface as an `error` field on the final event instead. Throwing here
+  // preserves the old !response.ok behavior for handleTranscript's callers.
+  if (result.error) {
+    throw new Error(result.error);
   }
 
-  const result = await response.json();
   console.info(`Mana perf: reply ${Math.round(performance.now() - startedAt)}ms`);
   return result;
 }
@@ -2173,36 +2356,29 @@ async function handleVisionHotkey() {
     appendChatMessage("user", "(asked Mana to look at the screen)");
 
     const image = await ipcRenderer.invoke("screen:capture-primary");
-    const response = await fetch(`${BACKEND_BASE_URL}/reply`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        text: DEFAULT_VISION_HOTKEY_PROMPT,
-        image,
-        modelProfile: selectedModelProfile,
-        sessionId: typeof ensureSessionId === "function" ? ensureSessionId() : undefined,
-        presetId: selectedPresetId || undefined,
-      }),
+    const result = await playStreamingReply({
+      text: DEFAULT_VISION_HOTKEY_PROMPT,
+      image,
+      modelProfile: selectedModelProfile,
+      sessionId: typeof ensureSessionId === "function" ? ensureSessionId() : undefined,
+      presetId: selectedPresetId || undefined,
     });
 
-    if (!response.ok) {
-      const detail = await extractReplyErrorDetail(response);
-      statusEl.textContent = describeVisionHotkeyError(response.status, detail);
+    // /reply/stream has no HTTP-level error status (always 200) -- errors
+    // surface as an `error` field on the final event instead. The vision-
+    // model-missing case is the one describeVisionHotkeyError special-cases
+    // by status code, so match its literal backend message here.
+    if (result.error) {
+      const status = result.error === "no local vision model available" ? 503 : 0;
+      statusEl.textContent = describeVisionHotkeyError(status, result.detail || result.error);
       return;
     }
 
-    const result = await response.json();
     const reply = result.reply || "";
     replyEl.textContent = `Mana: ${reply}`;
     appendChatMessage("mana", reply);
     if (typeof refreshSessionList === "function") {
       refreshSessionList();
-    }
-
-    if (result.ttsConfigured) {
-      await playReplyAudio(reply, result.expression);
     }
 
     statusEl.textContent = listening
@@ -2435,10 +2611,6 @@ async function handleTranscript(transcript, gamingModeActive = false) {
     appendChatMessage("mana", reply);
     if (typeof refreshSessionList === "function") {
       refreshSessionList();
-    }
-
-    if (replyResult.ttsConfigured) {
-      await playReplyAudio(reply, replyResult.expression);
     }
 
     statusEl.textContent = listening
