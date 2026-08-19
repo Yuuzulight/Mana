@@ -494,6 +494,214 @@ document.getElementById('themeToggle')?.addEventListener('click', (e) => {
     }
   }
 
+  // --- Issue #331: streaming TTS pipeline -------------------------------
+  // POST /reply/stream sends newline-delimited JSON objects over a chunked
+  // response -- one {"type":"sentence","text":...} event per completed
+  // sentence, then exactly one {"type":"final",...} event. Ported from
+  // windows-launcher/renderer/renderer.js's Task 4 implementation (same
+  // event shapes, same cancel-on-changed queue discipline -- see
+  // createStreamingChunkQueue/cancelPending there), adapted to this app's
+  // AudioContext/AudioBufferSourceNode playback instead of <audio> blobs.
+
+  async function* readNdjsonEvents(response) {
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let newline;
+      while ((newline = buffer.indexOf('\n')) !== -1) {
+        const line = buffer.slice(0, newline);
+        buffer = buffer.slice(newline + 1);
+        if (!line.trim()) continue;
+        try {
+          yield JSON.parse(line);
+        } catch (e) {
+          // A malformed line costs one event, not the whole stream.
+        }
+      }
+    }
+  }
+
+  // A BufferSourceNode's start() can only be called once ever, so a fresh
+  // node is created per chunk (same one-shot constraint speakReply's
+  // existing playback already works within, just repeated per chunk here
+  // instead of once per whole reply).
+  async function synthesizeAndDecodeChunk(text, audioCtx) {
+    const response = await fetch('http://127.0.0.1:5005/synthesize', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text }),
+    });
+    if (!response.ok) throw new Error('synthesize failed: ' + response.status);
+    const arrayBuffer = await response.arrayBuffer();
+    return audioCtx.decodeAudioData(arrayBuffer);
+  }
+
+  function playDecodedChunk(audioCtx, audioBuffer, text) {
+    return new Promise((resolve) => {
+      setSprite('speaking');
+      if (live2dAvatar) live2dAvatar.setState(detectReplyEmotion(text));
+      const src = audioCtx.createBufferSource();
+      src.buffer = audioBuffer;
+      src.connect(audioCtx.destination);
+      src.onended = () => { stopLipSync(); resolve(); };
+      src.start();
+      startLipSync(audioCtx, src);
+    });
+  }
+
+  let desktopReplyPlaybackToken = 0;
+
+  function stopStreamingReply() {
+    desktopReplyPlaybackToken += 1;
+  }
+
+  // Same pushChunk/markDone/cancelPending/run shape as windows-launcher's
+  // createStreamingChunkQueue (Task 4), adapted to this app's synthesize-
+  // then-decode-then-play primitives instead of blob-based Audio elements.
+  // Kept as a near-duplicate rather than a shared module, matching how
+  // desktop-client and windows-launcher already each define their own
+  // stopLipSync/startLipSync rather than sharing one.
+  //
+  // cancelPending() only drops chunks that haven't started synthesizing or
+  // playing yet -- whatever's already in flight (synthesizing or mid-
+  // playback) always finishes naturally. Unlike windows-launcher's <audio>
+  // element (where a mid-chunk pause() can leave a playback promise waiting
+  // on an "ended" event that never fires), a BufferSourceNode here is never
+  // stopped early at all -- playDecodedChunk's promise only ever resolves
+  // via the node's own onended, so there's no abrupt cut and no equivalent
+  // hang risk to design around. cancelPending() just stops new chunks from
+  // being queued/started after the one already running.
+  function createDesktopStreamingChunkQueue(playbackToken, audioCtx) {
+    const pending = [];
+    let waiter = null;
+    let closed = false;
+
+    function pushChunk(text) {
+      if (waiter) {
+        const resolve = waiter;
+        waiter = null;
+        resolve({ text, done: false });
+      } else {
+        pending.push(text);
+      }
+    }
+
+    function markDone() {
+      closed = true;
+      if (waiter) {
+        const resolve = waiter;
+        waiter = null;
+        resolve({ text: null, done: true });
+      }
+    }
+
+    function cancelPending() {
+      pending.length = 0;
+      markDone();
+    }
+
+    function nextChunk() {
+      if (pending.length) return Promise.resolve({ text: pending.shift(), done: false });
+      if (closed) return Promise.resolve({ text: null, done: true });
+      return new Promise((resolve) => { waiter = resolve; });
+    }
+
+    async function synthesizeChunk(text) {
+      try {
+        return await synthesizeAndDecodeChunk(text, audioCtx);
+      } catch (e) {
+        console.warn('Speech synthesis failed for a streamed chunk:', e.message);
+        return null;
+      }
+    }
+
+    async function run() {
+      let current = await nextChunk();
+      if (current.done) return;
+      let inFlight = synthesizeChunk(current.text);
+
+      for (;;) {
+        if (desktopReplyPlaybackToken !== playbackToken) return;
+        const audioBuffer = await inFlight;
+        if (desktopReplyPlaybackToken !== playbackToken) return;
+
+        const next = await nextChunk();
+        inFlight = next.done ? null : synthesizeChunk(next.text);
+
+        if (audioBuffer) {
+          await playDecodedChunk(audioCtx, audioBuffer, current.text);
+        }
+
+        if (next.done) {
+          // Mirrors speakReply's own tail: reset to idle once the queue has
+          // genuinely run out, but only if nothing else has taken over
+          // playback in the meantime.
+          if (desktopReplyPlaybackToken === playbackToken) setSprite('idle');
+          return;
+        }
+        current = next;
+      }
+    }
+
+    return { pushChunk, markDone, cancelPending, run };
+  }
+
+  // Replaces the fetch('/reply') -> res.json() -> speakReply flow at this
+  // app's two reply call sites. Sentences arrive incrementally from POST
+  // /reply/stream and are queued for TTS/playback as they arrive; on the
+  // final event, if what was already streamed doesn't match the true final
+  // reply (changed:true -- covers both "nothing streamed" and a
+  // regeneration pass rewriting it), drop whatever's still queued but not
+  // yet in flight and fall back to speakReply's synthesize-the-whole-thing-
+  // at-once path once the in-flight chunk (if any) has finished.
+  async function speakStreamingReply(requestBody) {
+    stopStreamingReply();
+    const playbackToken = desktopReplyPlaybackToken;
+    const audioCtx = new AudioContext();
+    const queue = createDesktopStreamingChunkQueue(playbackToken, audioCtx);
+    const runPromise = queue.run();
+
+    let finalEvent = null;
+    try {
+      const response = await fetch('http://127.0.0.1:5005/reply/stream', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(requestBody),
+      });
+
+      for await (const event of readNdjsonEvents(response)) {
+        if (event.type === 'sentence') {
+          queue.pushChunk(event.text);
+        } else if (event.type === 'final') {
+          finalEvent = event;
+          if (event.changed) {
+            // Known now, as early as the final event itself arrives (always
+            // after every sentence event, so this can't miss a pending
+            // chunk) -- drop the rest of the backlog instead of letting the
+            // whole stale draft play out before restarting.
+            queue.cancelPending();
+          }
+        }
+      }
+    } finally {
+      queue.markDone();
+      await runPromise;
+    }
+
+    const result = finalEvent || { reply: '', ttsConfigured: false };
+
+    if (desktopReplyPlaybackToken === playbackToken && result.changed && result.reply) {
+      stopStreamingReply();
+      await speakReply(result.reply, result.expression);
+    }
+
+    return result;
+  }
+
   async function init() {
     try {
       const st = await window.electronAPI.backendStatus();
@@ -665,23 +873,31 @@ document.getElementById('themeToggle')?.addEventListener('click', (e) => {
   async function onRecordingStop(){
     const blob = new Blob(chunks, { type: chunks[0]?.type || 'audio/webm' });
     try{
-      // send to /transcribe-only or /transcribe
+      // Issue #331: transcription and reply generation are now two calls
+      // instead of one -- /transcribe-only has no streaming equivalent
+      // (it's a plain multipart upload), so it just gets the transcript;
+      // the reply itself goes through /reply/stream (via
+      // speakStreamingReply) the same way sendTextMessage's does, so voice
+      // replies get the same early-audio-start pipelining as typed ones.
       const form = new FormData();
       form.append('file', blob, 'voice.webm');
-      form.append('sessionId', ensureSessionId());
-      if (selectedPresetId) form.append('presetId', selectedPresetId);
-      const resp = await fetch('http://127.0.0.1:5005/transcribe', { method: 'POST', body: form });
+      const resp = await fetch('http://127.0.0.1:5005/transcribe-only', { method: 'POST', body: form });
       if (!resp.ok) {
         const txt = await resp.text();
         throw new Error('transcribe failed: ' + resp.status + ' ' + txt);
       }
       const j = await resp.json().catch(()=>null);
       if (j && j.transcript) appendMessage('user', j.transcript);
-      else if (!j?.reply) appendMessage('user', JSON.stringify(j));
+      else appendMessage('user', JSON.stringify(j));
 
-      if (j && j.reply) {
-        appendMessage('assistant', j.reply);
-        await speakReply(j.reply, j.expression);
+      if (j && j.transcript) {
+        const result = await speakStreamingReply({
+          text: j.transcript,
+          sessionId: ensureSessionId(),
+          presetId: selectedPresetId || undefined,
+        });
+        if (result.error) throw new Error(result.error);
+        if (result.reply) appendMessage('assistant', result.reply);
       }
 
       statusEl.textContent = 'Idle';
@@ -1963,19 +2179,16 @@ document.getElementById('themeToggle')?.addEventListener('click', (e) => {
     appendMessage('user', text);
     statusEl.textContent = 'Thinking...';
     try {
-      const resp = await fetch('http://127.0.0.1:5005/reply', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text, sessionId: ensureSessionId(), presetId: selectedPresetId || undefined }),
+      const result = await speakStreamingReply({
+        text,
+        sessionId: ensureSessionId(),
+        presetId: selectedPresetId || undefined,
       });
-      if (!resp.ok) {
-        const detail = await resp.text();
-        throw new Error(detail || `Reply failed (${resp.status})`);
-      }
-      const j = await resp.json();
-      if (j.reply) {
-        appendMessage('assistant', j.reply);
-        await speakReply(j.reply, j.expression);
+      // /reply/stream has no HTTP-level error status (always 200) -- errors
+      // surface as an `error` field on the final event instead.
+      if (result.error) throw new Error(result.error);
+      if (result.reply) {
+        appendMessage('assistant', result.reply);
       }
       statusEl.textContent = 'Idle';
     } catch (e) {
