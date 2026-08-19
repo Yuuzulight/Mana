@@ -15,6 +15,7 @@ const { createDesktopStreamingChunkQueue } = window.ManaStreamingChunkQueue;
 // :root[data-theme] rules in style.css).
 const THEME_STORAGE_KEY = 'manaTheme';
 const LISTENING_AUTOSTART_STORAGE_KEY = 'mana_listening_autostart';
+const BARGE_IN_STORAGE_KEY = 'mana_barge_in_enabled';
 function applyTheme(choice) {
   if (choice === 'light' || choice === 'dark') {
     document.documentElement.setAttribute('data-theme', choice);
@@ -202,6 +203,13 @@ document.getElementById('themeToggle')?.addEventListener('click', (e) => {
       localStorage.setItem(LISTENING_AUTOSTART_STORAGE_KEY, listeningAutostartToggleEl.checked ? '1' : '0');
     });
   }
+  const bargeInToggleEl = document.getElementById('bargeInToggle');
+  if (bargeInToggleEl) {
+    bargeInToggleEl.checked = localStorage.getItem(BARGE_IN_STORAGE_KEY) !== '0';
+    bargeInToggleEl.addEventListener('change', () => {
+      localStorage.setItem(BARGE_IN_STORAGE_KEY, bargeInToggleEl.checked ? '1' : '0');
+    });
+  }
   const brainProviderFieldsEl = document.getElementById('brainProviderFields');
   const brainProviderSelectEl = document.getElementById('brainProviderSelect');
   const brainBaseUrlEl = document.getElementById('brainBaseUrl');
@@ -244,8 +252,19 @@ document.getElementById('themeToggle')?.addEventListener('click', (e) => {
   const MIN_SPEECH_RMS = 0.012;
   const SILENCE_METER_INTERVAL_MS = 150;
   const LISTEN_PAUSE_MS = 250;
-  const BARGE_IN_VOICE_ENABLED = true;
   const BARGE_IN_POLL_MS = 50;
+
+  // Barge-in can misfire on residual echo -- windows-launcher gates it
+  // behind MANA_BARGE_IN_VOICE (env var, default on) as the documented
+  // remedy. process.env isn't available here, so this is a localStorage-
+  // backed on/off switch instead (settable via devtools console, or the
+  // Settings toggle below), same pattern as LISTENING_AUTOSTART_STORAGE_KEY.
+  // Default on. Also gated on `listening` -- barge-in should only run while
+  // continuous listening is actually on, not for every reply regardless of
+  // trigger (push-to-talk-only users shouldn't get this behavior change).
+  function bargeInEnabled() {
+    return listening && localStorage.getItem(BARGE_IN_STORAGE_KEY) !== '0';
+  }
 
   let sileroVad = null;
   let sileroVadLoadFailed = false;
@@ -551,9 +570,27 @@ document.getElementById('themeToggle')?.addEventListener('click', (e) => {
         const src = audioCtx.createBufferSource();
         src.buffer = buf;
         src.connect(audioCtx.destination);
-        src.onended = () => { stopLipSync(); setSprite('idle'); };
+        // Reply-scoped barge-in tracking (see playDecodedChunk/Finding 3):
+        // this is the fallback path (queue.run()'s streamed draft turned out
+        // stale), which plays through its own AudioContext/source outside
+        // playDecodedChunk, but shares the same currentChunkSource variable
+        // and watchForBargeIn() so it isn't left unmonitored.
+        currentChunkSource = src;
+        src.onended = () => {
+          if (currentChunkSource === src) currentChunkSource = null;
+          stopLipSync();
+          setSprite('idle');
+          audioCtx.close().catch(() => {}); // Finding 6: don't leak AudioContexts
+        };
         src.start();
         startLipSync(audioCtx, src);
+        if (bargeInEnabled()) {
+          const playbackTokenAtStart = desktopReplyPlaybackToken;
+          watchForBargeIn(
+            () => currentChunkSource !== null && desktopReplyPlaybackToken === playbackTokenAtStart,
+            () => { if (currentChunkSource) currentChunkSource.stop(); stopStreamingReply(); },
+          ).catch((e) => console.warn('Voice barge-in monitor failed:', e.message));
+        }
       } else {
         setSprite('idle');
       }
@@ -688,6 +725,23 @@ document.getElementById('themeToggle')?.addEventListener('click', (e) => {
     }
   }
 
+  // Tracks the AudioBufferSourceNode currently playing, across ALL chunks of
+  // the current reply (not just one) -- reply-scoped, not chunk-scoped.
+  // Issue #331 review (Finding 3): a chunk-scoped liveness flag broke
+  // monitoring on chunk boundaries -- the streaming-chunk-queue starts the
+  // next chunk in the same microtask the previous one's onended fires in,
+  // but the *old* watchForBargeIn() call wouldn't notice its chunk had ended
+  // until its next ~50ms poll tick, so it held the bargeInMonitor singleton
+  // and the new chunk's watchForBargeIn() call silently no-op'd. Matching
+  // windows-launcher's actual design (one monitor spans the whole reply, via
+  // its single currentReplyAudio), each chunk's playDecodedChunk call (and
+  // speakReply's fallback) just reassigns this variable rather than using a
+  // per-call flag, so isStillPlaying() stays true across the boundary and
+  // the same monitor instance keeps running instead of restarting. Cleared
+  // only if it's still the same node that's ending (`onended` guard below),
+  // so a stale callback from a superseded node can't wipe out a newer one.
+  let currentChunkSource = null;
+
   function playDecodedChunk(audioCtx, audioBuffer, text) {
     return new Promise((resolve) => {
       setSprite('speaking');
@@ -695,29 +749,28 @@ document.getElementById('themeToggle')?.addEventListener('click', (e) => {
       const src = audioCtx.createBufferSource();
       src.buffer = audioBuffer;
       src.connect(audioCtx.destination);
-      // Unlike windows-launcher's currentReplyAudio (nulled the instant its
-      // Audio element's playback ends), desktopReplyPlaybackToken only
-      // changes on an explicit stop/supersede -- never on a chunk's natural
-      // end. Without this local flag, watchForBargeIn's isStillPlaying()
-      // would stay true forever after a reply finishes normally, so its
-      // bargeInMonitor singleton guard would never release and no later
-      // reply would ever get barge-in monitoring again.
-      let chunkActive = true;
-      src.onended = () => { chunkActive = false; stopLipSync(); resolve(); };
+      currentChunkSource = src;
+      src.onended = () => {
+        if (currentChunkSource === src) currentChunkSource = null;
+        stopLipSync();
+        resolve();
+      };
       src.start();
       startLipSync(audioCtx, src);
-      if (BARGE_IN_VOICE_ENABLED) {
+      if (bargeInEnabled()) {
         const playbackTokenAtStart = desktopReplyPlaybackToken;
         watchForBargeIn(
-          () => chunkActive && desktopReplyPlaybackToken === playbackTokenAtStart,
-          // src.stop() on an already-started node is valid and fires
-          // onended exactly once (whether triggered here or by natural
-          // completion) -- the same resolve()/chunkActive=false path above
-          // runs either way, so there's no double-resolve risk to guard
+          () => currentChunkSource !== null && desktopReplyPlaybackToken === playbackTokenAtStart,
+          // Stops whichever chunk is actually live when the trigger fires --
+          // by the time it does, that may be a later chunk than the one
+          // that started this monitor (see currentChunkSource comment
+          // above). src.stop() on an already-started node is valid and
+          // fires onended exactly once (whether triggered here or by
+          // natural completion), so there's no double-resolve risk to guard
           // against here (unlike windows-launcher's <audio> element, which
           // has three distinct terminal events -- ended/error/pause -- and
           // needs waitForPlayback's `settled` guard for that reason).
-          () => { src.stop(); stopStreamingReply(); },
+          () => { if (currentChunkSource) currentChunkSource.stop(); stopStreamingReply(); },
         ).catch((e) => console.warn('Voice barge-in monitor failed:', e.message));
       }
     });
@@ -795,6 +848,14 @@ document.getElementById('themeToggle')?.addEventListener('click', (e) => {
         await runPromise;
       }
 
+      // Finding 6: this reply's audio queue has fully drained (every
+      // streamed chunk synthesized/played) -- this AudioContext is done
+      // being used, whether or not the speakReply fallback below runs next
+      // (that one creates and closes its own). Chromium caps concurrent
+      // AudioContext instances (~6); never closing these would eventually
+      // wedge voice output in a long continuous-listening session.
+      audioCtx.close().catch(() => {});
+
       const result = finalEvent || { reply: '', ttsConfigured: false };
 
       if (desktopReplyPlaybackToken === playbackToken && result.changed && result.reply) {
@@ -824,7 +885,14 @@ document.getElementById('themeToggle')?.addEventListener('click', (e) => {
     window.electronAPI.backendExit((info)=>{ statusEl.textContent = 'Backend exited'; startLoadingAnimation(); });
 
     initLive2dAvatar();
-    setupRecording();
+    // Finding 2: awaited so getUserMedia() has resolved and `mediaStream` is
+    // set before the autostart check below can call startListening() -->
+    // listenLoop() --> recordUntilSilence() --> ensureMediaStream(). Without
+    // this, ensureMediaStream() could see mediaStream still null and open a
+    // second, orphaned MediaStream (duplicate device capture, and
+    // push-to-talk possibly ending up bound to a different stream than the
+    // listen loop).
+    await setupRecording();
     if (localStorage.getItem(LISTENING_AUTOSTART_STORAGE_KEY) === '1') {
       startListening();
     }
@@ -998,10 +1066,14 @@ document.getElementById('themeToggle')?.addEventListener('click', (e) => {
         throw new Error('transcribe failed: ' + resp.status + ' ' + txt);
       }
       const j = await resp.json().catch(()=>null);
-      if (j && j.transcript) appendMessage('user', j.transcript);
-      else appendMessage('user', JSON.stringify(j));
-
-      if (j && j.transcript) {
+      // Issue #331 review (Finding 1): only act on a genuinely non-empty
+      // transcript. /transcribe-only returning nothing meaningful (empty
+      // string, or no j.transcript at all) must not reach the chat log or
+      // trigger a reply -- previously the else branch appended a raw
+      // JSON.stringify(j) debug bubble for this case, which continuous
+      // listening's no-speech recordings would otherwise hit constantly.
+      if (j?.transcript) {
+        appendMessage('user', j.transcript);
         // Issue #331 review (Finding 1): append to the chat log as soon as
         // the final event names the reply, not after speakStreamingReply
         // resolves -- that await also waits for every queued chunk to
@@ -1084,6 +1156,13 @@ document.getElementById('themeToggle')?.addEventListener('click', (e) => {
       return currentRms() >= MIN_SPEECH_RMS;
     }
 
+    // Issue #331 review (Finding 1): resolves null instead of a Blob when
+    // there's no real utterance to hand off -- either nobody spoke at all
+    // (no-speech-timeout) or a reply started elsewhere mid-recording
+    // (Finding 4, see the replyInProgress check in tick() below) and
+    // whatever got captured is stale/possibly Mana's own TTS audio picked
+    // up by the mic. Callers (listenLoop) must skip handleVoiceTurn for a
+    // null result instead of transcribing it.
     return await new Promise((resolve, reject) => {
       const localChunks = [];
       const localRecorder = new MediaRecorder(mediaStream, { mimeType: 'audio/webm' });
@@ -1091,6 +1170,7 @@ document.getElementById('themeToggle')?.addEventListener('click', (e) => {
       let lastSpeechAt = 0;
       let meterTimer = null;
       let stopped = false;
+      let noSpeechResult = false;
       const startedAt = performance.now();
 
       function cleanup() {
@@ -1116,13 +1196,26 @@ document.getElementById('themeToggle')?.addEventListener('click', (e) => {
       };
       localRecorder.onstop = () => {
         cleanup();
-        resolve(new Blob(localChunks, { type: 'audio/webm' }));
+        resolve(noSpeechResult ? null : new Blob(localChunks, { type: 'audio/webm' }));
       };
 
       localRecorder.start(SILENCE_METER_INTERVAL_MS);
 
       async function tick() {
         if (stopped) return;
+
+        // Finding 4: a reply started via another path (typing/push-to-talk)
+        // while this recording was already in progress -- stop now rather
+        // than let the VAD keep picking up Mana's own TTS audio as "speech"
+        // for up to MAX_UTTERANCE_MS, then submit that as the user's turn.
+        if (replyInProgress) {
+          noSpeechResult = true;
+          if (localRecorder.state !== 'inactive') {
+            localRecorder.stop();
+          }
+          return;
+        }
+
         if (await isSpeechNow()) {
           if (!hasHeardSpeech) {
             statusEl.textContent = 'Listening...';
@@ -1141,6 +1234,9 @@ document.getElementById('themeToggle')?.addEventListener('click', (e) => {
           maxDurationMs,
         });
         if (stopReason) {
+          if (stopReason === 'no-speech-timeout') {
+            noSpeechResult = true;
+          }
           if (localRecorder.state !== 'inactive') {
             localRecorder.stop();
           }
@@ -1152,8 +1248,20 @@ document.getElementById('themeToggle')?.addEventListener('click', (e) => {
     });
   }
 
-  async function listenLoop() {
-    while (listening) {
+  // Issue #331 review (Finding 7): a loop-generation counter so a rapid
+  // Stop -> Start click can't leave two listenLoop()s running at once.
+  // stopListening() sets `listening = false` but can't interrupt an
+  // in-flight recordUntilSilence() call (up to MAX_UTTERANCE_MS = 20s); if
+  // the user re-enables listening inside that window, startListening()'s
+  // `if (listening) return;` guard alone would pass (listening is false
+  // again by then) and start a second loop while the first one's pending
+  // recordUntilSilence() is still going to resume its own iteration once it
+  // resolves. Each startListening() call mints a new generation, and a
+  // loop only keeps iterating while it's still holding the current one.
+  let listenGeneration = 0;
+
+  async function listenLoop(myGeneration) {
+    while (listening && listenGeneration === myGeneration) {
       // replyInProgress is set for the full duration of speakStreamingReply
       // (see its declaration above) -- covers both push-to-talk's and this
       // loop's own reply, so two recordings can never overlap a reply.
@@ -1164,7 +1272,8 @@ document.getElementById('themeToggle')?.addEventListener('click', (e) => {
       try {
         statusEl.textContent = 'Waiting for you...';
         const blob = await recordUntilSilence();
-        if (!listening) break;
+        if (!listening || listenGeneration !== myGeneration) break;
+        if (!blob) continue; // Finding 1: nothing was actually said -- don't transcribe/display it
         await handleVoiceTurn(blob);
       } catch (error) {
         console.error(error);
@@ -1177,12 +1286,13 @@ document.getElementById('themeToggle')?.addEventListener('click', (e) => {
   function startListening() {
     if (listening) return;
     listening = true;
+    const myGeneration = ++listenGeneration;
     const btn = document.getElementById('btnListen');
     if (btn) {
       btn.textContent = 'Stop Listening';
       btn.classList.add('active');
     }
-    listenLoop();
+    listenLoop(myGeneration);
   }
 
   function stopListening() {
