@@ -4,11 +4,14 @@ Last synced: 2026-07-20
 
 This roadmap reflects the current GitHub Project board, merged PRs, open issues, and repository docs on `main`. The board has moved a lot since the last sync (2026-06-29) — everything that was tracked as "In Progress"/"In Review"/most of the "Backlog" at that point (issues #1–#25 and dozens more since) is now closed and merged; see `git log` / `gh issue list --state closed` for the full history rather than an itemized table here, which is what let this doc drift stale in the first place.
 
+See [INDEX.md](INDEX.md) for a full status table across every doc in this
+directory (implemented / partial / scoped out / design-only / open), built
+from actually reading each doc rather than hand-tracked here.
+
 ## Open
 
 | Issue | Area | Status | Notes |
 | --- | --- | --- | --- |
-| [#4](https://github.com/Yuuzulight/Mana/issues/4) | Speech recognition accuracy | Open | Whisper model profiles, wake-word fuzzy matching, noise rejection tuning, mic gain/normalization, a local test harness with sample WAVs. |
 | [#48](https://github.com/Yuuzulight/Mana/issues/48) | Mobile 2FA | Open | Opt-in TOTP second factor for mobile device pairing, on top of the existing passcode. Should land alongside/after issue #14's device list/rotation/revocation work (closed) so mobile security stays one coherent story. |
 | [#65](https://github.com/Yuuzulight/Mana/issues/65) | Fish Audio S2 Pro TTS | Open | Follow-up to the (closed) Fish Speech evaluation. S2 Pro's BF16 weights (~10GB) didn't fit the previous dev GPU (RTX 3070 Ti, 8GB); an RTX 5080 upgrade has been ordered (ETA within the week), unblocking this once it arrives. |
 | [#137](https://github.com/Yuuzulight/Mana/issues/137) | Docs / media | Open | Demo reel and real screenshots to replace the generic fallback-avatar SVGs in the root README's Preview section. |
