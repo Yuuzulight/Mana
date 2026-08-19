@@ -172,6 +172,7 @@ const {
   cleanLlamaOutput,
 } = require("./ai/local-llama-runtime");
 const { createLlamaServerRuntime } = require("./ai/llama-server-runtime");
+const { streamedMatchesFinal } = require("./utils/reply-stream-diff");
 const { createRestartController } = require("./admin-restart");
 const ffxivMarketPlugin = require("../plugins/ffxiv-market");
 const {
@@ -3142,10 +3143,14 @@ function registerRoutes(app, upload, deps = {}) {
       return llamaServerRuntime.runToolAwareReply(prompt, toolPolicyArg, options);
     });
   const activeToolPolicy = deps.toolPolicy || toolPolicy;
+  // Issue #331: lets tests swap in a fake llamaServerRuntime (isEnabled,
+  // streamLocalAssistantReply, ...) the same way every other local-model
+  // call in this function is already overridable via deps.
+  const activeLlamaServerRuntime = deps.llamaServerRuntime || llamaServerRuntime;
   // Shared by tool-calling and best-of-N (issue #70): both require
   // llama-server specifically, not the llama-cli fallback.
   const isLlamaServerAvailable =
-    deps.isLlamaServerEnabled || (() => llamaServerRuntime.isEnabled());
+    deps.isLlamaServerEnabled || (() => activeLlamaServerRuntime.isEnabled());
 
   // Best-of-N self-voting (issue #70): same "llama-server only" constraint
   // as tool-calling -- sampling-parameter (temperature) control isn't
@@ -3396,6 +3401,10 @@ function registerRoutes(app, upload, deps = {}) {
     // return type (a plain string, unchanged, everywhere else) needing to
     // grow a second shape for the one caller that wants it.
     replyMeta = null,
+    // Issue #331: optional streaming callback, called with each completed
+    // sentence during the first plain local-completion attempt only. See
+    // the firstPassStreamed comment below for why it's first-attempt-only.
+    onSentence = null,
   ) {
     const prompt = buildScreenAwarePrompt(transcript, screenText, marketText);
     const normalizedModelProfile = selectLlamaModelProfileForPrompt(
@@ -3865,6 +3874,22 @@ function registerRoutes(app, upload, deps = {}) {
     // that gets appended to session memory, and a closure-scoped variable
     // gets that without changing any other reply path's signature.
     let lastToolCalls = [];
+
+    // Issue #331: onSentence streams only the very first plain local-
+    // completion attempt. Regeneration (rut-detection nudge, verify/retry)
+    // reuses replyMaybeWithBestOfN/replyMaybeWithTools too, but must not
+    // stream again -- multiple overlapping sentence streams from separate
+    // generation attempts would be nonsensical to a client. This flag makes
+    // "first call only" explicit rather than relying on call order.
+    let firstPassStreamed = false;
+    const streamedSentences = [];
+    const wrappedOnSentence = onSentence
+      ? async (sentence) => {
+          streamedSentences.push(sentence);
+          await onSentence(sentence);
+        }
+      : null;
+
     async function replyMaybeWithTools(promptText) {
       lastToolCalls = [];
       if (
@@ -4004,6 +4029,26 @@ function registerRoutes(app, upload, deps = {}) {
         } catch (e) {
           console.warn(
             "Tool-aware reply failed, falling back to plain reply:",
+            e && e.message ? e.message : e,
+          );
+        }
+      }
+      if (wrappedOnSentence && !firstPassStreamed && isLlamaServerAvailable()) {
+        // Set before the attempt, not just on success -- sentences may
+        // already have been emitted (and possibly spoken client-side)
+        // before a failure, so a later regeneration must not stream again.
+        firstPassStreamed = true;
+        try {
+          return await activeLlamaServerRuntime.streamLocalAssistantReply(promptText, {
+            maxTokens: LLAMA_MAX_TOKENS,
+            profile: normalizedModelProfile,
+            overrideSystemPrompt: selectedSystemPrompt,
+            extraMessages: memoryExtraMessages,
+            onSentence: wrappedOnSentence,
+          });
+        } catch (e) {
+          console.warn(
+            "Streaming local reply failed, falling back to non-streaming:",
             e && e.message ? e.message : e,
           );
         }
@@ -4254,6 +4299,9 @@ function registerRoutes(app, upload, deps = {}) {
     } catch (memErr) {
       console.warn("Failed to append turn to ACP memory:", memErr.message);
     }
+    if (replyMeta) {
+      replyMeta.streamedMatchesFinal = streamedMatchesFinal(streamedSentences, reply);
+    }
     return reply;
   }
 
@@ -4316,6 +4364,13 @@ function registerRoutes(app, upload, deps = {}) {
     runWhisper: deps.runWhisper || runWhisper,
     synthesizeReply: deps.synthesizeReply || synthesizeReply,
   });
+
+  // Test-only hook (same pattern as app.locals.broadcastTrayNotification
+  // below): exposes the real buildAssistantReply closure -- with its
+  // deps-aware isLlamaServerAvailable/runLocalAssistantReply/etc. already
+  // bound -- so tests can call it directly without going through the /reply
+  // HTTP route, which is the only other way to reach it.
+  app.locals.buildAssistantReply = deps.buildAssistantReply || buildAssistantReply;
 
   registerVTubeRoutes(app, { vtubeRuntime });
 
