@@ -120,13 +120,20 @@ Status definitions:
 | oss-inspiration-survey-2026-07.md | -- | OSS survey: companions, assistants, coding agents, Live2D | Research only, nothing implemented from it yet |
 | oss-inspiration-survey-2026-08.md | -- | OSS survey: companions, coding-agent tooling, voice stack, memory, integrations | Research only, nothing implemented from it yet |
 
-## Open (3)
+## Open (10)
 
 | Doc | Issue | Topic |
 | --- | --- | --- |
 | issue-48-mobile-2fa.md | #48 | Optional TOTP 2FA for mobile pairing |
 | issue-361-test-rigor-audit.md | #361 | Audit: does green CI actually mean correct (PRs run 2 of 94 tests) |
 | issue-363-installer-licensing-audit.md | #363 | Audit: installer bundles AGPL SearXNG under Apache-2.0 |
+| issue-417-vision-tool-call.md | #417 | Model-invoked vision tool call, not just a hotkey |
+| issue-418-browser-automation-live-view.md | #418 | Live view while browser automation acts |
+| issue-419-verification-loop.md | #419 | Wire test runner into the autonomous coding loop |
+| issue-420-lint-precheck-proposals.md | #420 | Reject syntactically broken edits before the approval gate |
+| issue-421-token-cost-meter.md | #421 | Per-session token/cost meter for remote AI |
+| issue-422-scratch-copy-test-sandbox.md | #422 | Run test verification against a scratch copy of the workspace |
+| issue-423-windows-toast-notifications.md | #423 | Native Windows toast notifications for proactive check-ins |
 
 ## Unclear -- check the GitHub issue directly (1)
 

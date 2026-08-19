@@ -15,6 +15,13 @@ from actually reading each doc rather than hand-tracked here.
 | [#48](https://github.com/Yuuzulight/Mana/issues/48) | Mobile 2FA | Open | Opt-in TOTP second factor for mobile device pairing, on top of the existing passcode. Should land alongside/after issue #14's device list/rotation/revocation work (closed) so mobile security stays one coherent story. |
 | [#65](https://github.com/Yuuzulight/Mana/issues/65) | Fish Audio S2 Pro TTS | Open | Follow-up to the (closed) Fish Speech evaluation. S2 Pro's BF16 weights (~10GB) didn't fit the previous dev GPU (RTX 3070 Ti, 8GB); an RTX 5080 upgrade has been ordered (ETA within the week), unblocking this once it arrives. |
 | [#137](https://github.com/Yuuzulight/Mana/issues/137) | Docs / media | Open | Demo reel and real screenshots to replace the generic fallback-avatar SVGs in the root README's Preview section. |
+| [#417](https://github.com/Yuuzulight/Mana/issues/417) | Vision | Open | Let the model call a vision tool mid-reply instead of only reacting to the hotkey/ambient loop. See [issue-417-vision-tool-call.md](issue-417-vision-tool-call.md). |
+| [#418](https://github.com/Yuuzulight/Mana/issues/418) | Browser automation | Open | Live view/action log while browser automation runs, instead of only a final result. See [issue-418-browser-automation-live-view.md](issue-418-browser-automation-live-view.md). |
+| [#419](https://github.com/Yuuzulight/Mana/issues/419) | Coding agent | Open | Wire the test runner into the autonomous coding loop so failures drive bounded retries. See [issue-419-verification-loop.md](issue-419-verification-loop.md). |
+| [#420](https://github.com/Yuuzulight/Mana/issues/420) | Coding agent | Open | Reject syntactically broken editor-handoff proposals before the approval gate. See [issue-420-lint-precheck-proposals.md](issue-420-lint-precheck-proposals.md). |
+| [#421](https://github.com/Yuuzulight/Mana/issues/421) | Remote AI | Open | Per-session token/cost meter, only relevant when remote AI is enabled. See [issue-421-token-cost-meter.md](issue-421-token-cost-meter.md). |
+| [#422](https://github.com/Yuuzulight/Mana/issues/422) | Coding agent | Open | Run test verification against a scratch copy of the workspace, not the live tree. See [issue-422-scratch-copy-test-sandbox.md](issue-422-scratch-copy-test-sandbox.md). |
+| [#423](https://github.com/Yuuzulight/Mana/issues/423) | Notifications | Open | Native Windows toast notifications for proactive check-ins. See [issue-423-windows-toast-notifications.md](issue-423-windows-toast-notifications.md). |
 
 ## Recently completed (since the last sync)
 
