@@ -113,3 +113,6 @@ plugins/obsidian-plugin/main.js.map
 # Forecast service venv and its downloaded model weights (issue #358)
 forecast-service/venv/
 forecast-service/*.log
+
+# Subagent-driven-development scratch workspace (ledgers, briefs, review packages)
+.superpowers/
