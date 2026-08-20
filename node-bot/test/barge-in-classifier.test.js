@@ -35,6 +35,21 @@ test("correction keywords are checked before question/backchannel keywords", () 
   assert.equal(classifyBargeIn("wait is that right").category, "correction");
 });
 
+test("amend-shaped clarifications classify as amend, ahead of correction's overlapping keywords", () => {
+  // "no" alone is a correction keyword, but "the other" wins since amend is
+  // checked first.
+  assert.equal(classifyBargeIn("no, the other file").category, "amend");
+  assert.equal(classifyBargeIn("not that one, the other one").category, "amend");
+  assert.equal(classifyBargeIn("not this file").category, "amend");
+});
+
+test("amend's keyword list does not regress the existing correction case it could have collided with", () => {
+  // "that's not what I meant" contains neither "the other" nor "not that"
+  // nor "not this" -- this must keep classifying as correction, unchanged
+  // from #339/#340's shipped behavior.
+  assert.equal(classifyBargeIn("wait, that's not what I meant").category, "correction");
+});
+
 test("short keywords like 'no'/'ok' match as whole words, not substrings of unrelated words", () => {
   assert.equal(classifyBargeIn("what time is it now").category, "new_question");
   assert.equal(classifyBargeIn("do you know what time it is").category, "new_question");
