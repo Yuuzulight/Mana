@@ -14,6 +14,7 @@ const LLAMA_MODEL_PROFILES = {
   fast: {
     label: "Fast fallback",
     names: [
+      "Qwen3-1.7B-Q8_0.gguf",
       "qwen2.5-1.5b-instruct-q4_k_m.gguf",
       "Qwen3-4B-Q4_K_M.gguf",
       "Qwen3-8B-Q4_K_M.gguf",
@@ -22,6 +23,7 @@ const LLAMA_MODEL_PROFILES = {
   quality: {
     label: "Quality fallback",
     names: [
+      "Qwen3.5-9B-Q4_K_M.gguf",
       "Qwen3-14B-Q4_K_M.gguf",
       "Qwen3-8B-Q4_K_M.gguf",
       "Qwen3-4B-Q4_K_M.gguf",
@@ -31,6 +33,11 @@ const LLAMA_MODEL_PROFILES = {
   coding: {
     label: "Coding",
     names: [
+      // Custom imatrix calibrated on Mana's own codebase + the user's other
+      // real projects (Python/TS-React/SQL/C++) plus real git diffs -- see
+      // tools/quantize-work/comparison for the side-by-side that motivated
+      // swapping this in over the plain community quant.
+      "qwen2.5-coder-7b-instruct-mana-imat-Q4_K_M.gguf",
       "qwen2.5-coder-7b-instruct-q4_k_m.gguf",
       "Qwen2.5-Coder-7B-Instruct-Q4_K_M.gguf",
       "Qwen3-4B-Q4_K_M.gguf",
@@ -48,6 +55,7 @@ const LLAMA_MODEL_PROFILES = {
   background: {
     label: "Background review (small/cheap)",
     names: [
+      "Qwen3-1.7B-Q8_0.gguf",
       "qwen2.5-1.5b-instruct-q4_k_m.gguf",
       "Qwen3-4B-Q4_K_M.gguf",
       "Qwen3-8B-Q4_K_M.gguf",

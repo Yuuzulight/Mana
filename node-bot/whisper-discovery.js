@@ -97,4 +97,61 @@ function findWhisperModel(options = {}) {
   return found[0];
 }
 
-module.exports = { findWhisperBin, findWhisperModel, WHISPER_MODEL_PROFILES };
+// NVIDIA Parakeet (ggml-org/parakeet-GGUF port): same tools/whisper build,
+// same directory, an alternate ASR engine -- faster and slightly more
+// accurate than Whisper on English/European languages, at the cost of
+// Whisper's much broader language coverage. Opt in with STT_PROVIDER=parakeet.
+function findParakeetBin(options = {}) {
+  const env = options.env || process.env;
+  const fs = options.fs || require("node:fs");
+  const toolsDir =
+    options.toolsDir || path.join(__dirname, "..", "tools", "whisper");
+
+  const candidates = [];
+  if (env.PARAKEET_BIN) {
+    candidates.push(env.PARAKEET_BIN);
+  }
+  candidates.push(
+    path.join(toolsDir, "Release", "parakeet-cli.exe"),
+    path.join(toolsDir, "parakeet-cli.exe"),
+  );
+
+  return candidates.find((candidate) => candidate && fs.existsSync(candidate)) || null;
+}
+
+function findParakeetModel(options = {}) {
+  const env = options.env || process.env;
+  const fs = options.fs || require("node:fs");
+  const toolsDir =
+    options.toolsDir || path.join(__dirname, "..", "tools", "whisper");
+
+  if (env.PARAKEET_MODEL && fs.existsSync(env.PARAKEET_MODEL)) {
+    return env.PARAKEET_MODEL;
+  }
+
+  const collect = options.collectFilesRecursively || collectFilesRecursively;
+  const found = collect(toolsDir, (fullPath) =>
+    path.basename(fullPath).toLowerCase().startsWith("ggml-parakeet") &&
+    fullPath.toLowerCase().endsWith(".bin"),
+  );
+  if (!found.length) {
+    return null;
+  }
+  // f16 over q4/q8 by default -- accuracy over footprint, same reasoning as
+  // PREFERRED_NAME_ORDER above preferring base over tiny for Whisper.
+  const preferredOrder = ["f16", "q8_0", "f32", "q4_k", "q4_0"];
+  const rank = (fullPath) => {
+    const name = path.basename(fullPath).toLowerCase();
+    const index = preferredOrder.findIndex((token) => name.includes(token));
+    return index === -1 ? preferredOrder.length : index;
+  };
+  return [...found].sort((a, b) => rank(a) - rank(b))[0];
+}
+
+module.exports = {
+  findWhisperBin,
+  findWhisperModel,
+  WHISPER_MODEL_PROFILES,
+  findParakeetBin,
+  findParakeetModel,
+};

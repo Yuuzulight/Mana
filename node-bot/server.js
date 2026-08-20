@@ -304,16 +304,24 @@ const SCREEN_CONTEXT_MAX_CHARS = Number(
 const SCREEN_OCR_CACHE_PATH =
   process.env.SCREEN_OCR_CACHE_PATH || path.join(__dirname, "tmp", "tesseract");
 const WHISPER_THREADS = Number(process.env.WHISPER_THREADS || 2);
-// Biases whisper.cpp toward Mana's wake words and Singapore English/Singlish
-// vocabulary via an initial prompt, per docs/speech_recognition_improvement_plan.md.
+// Biases whisper.cpp toward Mana's wake words via an initial prompt, per
+// docs/speech_recognition_improvement_plan.md. Keeps the "Singapore English"
+// framing (helps the decoder's accent expectations) but drops the Singlish
+// vocabulary list -- this user speaks accented English, not Singlish, so
+// priming toward lah/leh/lor/etc. words that don't come up wasn't helping.
 const WHISPER_LANGUAGE = process.env.WHISPER_LANGUAGE || "en";
 const WHISPER_PROMPT =
   process.env.WHISPER_PROMPT ||
-  "Singapore English conversation with an AI assistant named Mana. Wake words include Mana, Manah, Manna, Mannah, Myna, My Na, and wake up. Common Singlish words include lah, leh, lor, meh, sia, can, cannot, already, alr, ok, and okay.";
+  "Singapore English conversation with an AI assistant named Mana. Wake words include Mana, Manah, Manna, Mannah, Myna, My Na, and wake up.";
 const WHISPER_BEAM_SIZE = process.env.WHISPER_BEAM_SIZE || "5";
 const WHISPER_NO_SPEECH_THRESHOLD =
   process.env.WHISPER_NO_SPEECH_THRESHOLD || "0.45";
 const WHISPER_TEMPERATURE = process.env.WHISPER_TEMPERATURE || "0";
+// Opt-in alternate ASR engine (NVIDIA Parakeet via the same tools/whisper
+// build) -- faster and slightly more accurate on English/European speech,
+// but has no equivalent to WHISPER_PROMPT's wake-word/Singlish biasing
+// above, so whisper stays the default.
+const STT_PROVIDER = (process.env.STT_PROVIDER || "whisper").toLowerCase();
 const LLAMA_THREADS = Number(process.env.LLAMA_THREADS || 4);
 const LLAMA_MAX_TOKENS = Number(process.env.LLAMA_MAX_TOKENS || 180);
 // Coding replies run long -- a function plus explanation plus a usage
@@ -3038,6 +3046,73 @@ function registerRoutes(app, upload, deps = {}) {
   }
 
   function runWhisper(filePath) {
+    if (STT_PROVIDER === "parakeet") {
+      return runParakeet(filePath);
+    }
+    return runWhisperCli(filePath);
+  }
+
+  function findParakeetBin() {
+    const found = whisperDiscovery.findParakeetBin({ env: process.env });
+    if (found) {
+      return found;
+    }
+    throw new Error(
+      "Parakeet executable not found under tools/whisper. Set PARAKEET_BIN to a valid parakeet-cli.exe path.",
+    );
+  }
+
+  function runParakeet(filePath) {
+    const parakeetModel = whisperDiscovery.findParakeetModel({ env: process.env });
+    if (!parakeetModel) {
+      throw new Error(
+        "Parakeet model not found under tools/whisper. Set PARAKEET_MODEL to a valid ggml-parakeet-*.bin path.",
+      );
+    }
+    const parakeetBin = findParakeetBin();
+    const startedAt = nowMs();
+    const outBase = filePath + ".out";
+    const outTxt = outBase + ".txt";
+    const args = [
+      "-m",
+      parakeetModel,
+      "-f",
+      filePath,
+      "-t",
+      String(WHISPER_THREADS),
+      "-otxt",
+      "-of",
+      outBase,
+      "-np",
+    ];
+    console.log("Running parakeet:", parakeetBin, args.join(" "));
+    const r = spawnSync(parakeetBin, args, {
+      encoding: "utf8",
+      windowsHide: true,
+      maxBuffer: 50 * 1024 * 1024,
+    });
+    if (r.error) throw r.error;
+    if (r.status !== 0) {
+      console.error("parakeet stderr:", r.stderr);
+      throw new Error("parakeet failed: " + r.stderr);
+    }
+    logPerf("parakeet", startedAt);
+    let attempts = 0;
+    while (!fs.existsSync(outTxt) && attempts < 5) {
+      attempts += 1;
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100);
+    }
+    if (!fs.existsSync(outTxt)) {
+      return r.stdout ? r.stdout.trim() : "";
+    }
+    const text = fs.readFileSync(outTxt, "utf8").trim();
+    try {
+      fs.unlinkSync(outTxt);
+    } catch (e) {}
+    return text;
+  }
+
+  function runWhisperCli(filePath) {
     const whisperModel = whisperDiscovery.findWhisperModel({ env: process.env });
     if (!whisperModel) {
       throw new Error(

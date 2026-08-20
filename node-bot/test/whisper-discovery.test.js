@@ -4,7 +4,12 @@ const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
 
-const { findWhisperBin, findWhisperModel } = require("../whisper-discovery");
+const {
+  findWhisperBin,
+  findWhisperModel,
+  findParakeetBin,
+  findParakeetModel,
+} = require("../whisper-discovery");
 
 function tempToolsDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), "mana-whisper-discovery-"));
@@ -128,4 +133,57 @@ test("findWhisperModel ignores an unrecognized WHISPER_MODEL_PROFILE value", () 
   fs.writeFileSync(baseModel, "");
   const found = findWhisperModel({ env: { WHISPER_MODEL_PROFILE: "xlarge" }, toolsDir });
   assert.equal(found, baseModel);
+});
+
+test("findParakeetBin prefers an explicit PARAKEET_BIN when set", () => {
+  const toolsDir = tempToolsDir();
+  const explicit = path.join(toolsDir, "custom-parakeet.exe");
+  fs.writeFileSync(explicit, "");
+  const found = findParakeetBin({ env: { PARAKEET_BIN: explicit }, toolsDir });
+  assert.equal(found, explicit);
+});
+
+test("findParakeetBin auto-detects Release/parakeet-cli.exe when unset", () => {
+  const toolsDir = tempToolsDir();
+  fs.mkdirSync(path.join(toolsDir, "Release"), { recursive: true });
+  const expected = path.join(toolsDir, "Release", "parakeet-cli.exe");
+  fs.writeFileSync(expected, "");
+  const found = findParakeetBin({ env: {}, toolsDir });
+  assert.equal(found, expected);
+});
+
+test("findParakeetBin returns null when nothing is found", () => {
+  const toolsDir = tempToolsDir();
+  assert.equal(findParakeetBin({ env: {}, toolsDir }), null);
+});
+
+test("findParakeetModel prefers an explicit PARAKEET_MODEL when set and it exists", () => {
+  const toolsDir = tempToolsDir();
+  const explicit = path.join(toolsDir, "my-parakeet.bin");
+  fs.writeFileSync(explicit, "");
+  const found = findParakeetModel({ env: { PARAKEET_MODEL: explicit }, toolsDir });
+  assert.equal(found, explicit);
+});
+
+test("findParakeetModel ignores non-parakeet .bin files under tools/whisper (no cross-talk with Whisper models)", () => {
+  const toolsDir = tempToolsDir();
+  fs.mkdirSync(path.join(toolsDir, "models"), { recursive: true });
+  fs.writeFileSync(path.join(toolsDir, "models", "ggml-base.en.bin"), "");
+  assert.equal(findParakeetModel({ env: {}, toolsDir }), null);
+});
+
+test("findParakeetModel prefers f16 over q4_k/q8_0 when multiple quants are present", () => {
+  const toolsDir = tempToolsDir();
+  fs.mkdirSync(path.join(toolsDir, "models"), { recursive: true });
+  fs.writeFileSync(path.join(toolsDir, "models", "ggml-parakeet-tdt-0.6b-v3-q4_k.bin"), "");
+  fs.writeFileSync(path.join(toolsDir, "models", "ggml-parakeet-tdt-0.6b-v3-q8_0.bin"), "");
+  const preferred = path.join(toolsDir, "models", "ggml-parakeet-tdt-0.6b-v3-f16.bin");
+  fs.writeFileSync(preferred, "");
+  const found = findParakeetModel({ env: {}, toolsDir });
+  assert.equal(found, preferred);
+});
+
+test("findParakeetModel returns null when nothing is found", () => {
+  const toolsDir = tempToolsDir();
+  assert.equal(findParakeetModel({ env: {}, toolsDir }), null);
 });
