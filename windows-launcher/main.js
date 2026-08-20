@@ -337,7 +337,7 @@ function startEmbedderService() {
   console.log("Starting local embedder:", python, embedderScript);
   embedderProcess = spawn(
     python,
-    [embedderScript, "--port", "9001", "--model", "all-MiniLM-L6-v2"],
+    [embedderScript, "--port", "9001", "--model", "Qwen/Qwen3-Embedding-0.6B"],
     {
       cwd: ROOT_DIR,
       windowsHide: true,
