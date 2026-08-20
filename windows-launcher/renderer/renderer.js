@@ -53,20 +53,22 @@ const { formatDoctorPanel } = require("./doctor-panel");
 const {
   DEFAULT_VISION_HOTKEY_PROMPT,
   describeVisionHotkeyError,
-  extractReplyErrorDetail,
 } = require("./vision-hotkey");
 const { createLive2dAvatar } = require("../avatar/live2d-avatar");
 const { createVrmAvatar } = require("../avatar/vrm-avatar");
 const { spectralCentroidHz, computeMfcc, classifyViseme } = require("../avatar/lip-sync");
 const {
+  DEFAULT_BARGE_IN_MIN_DBFS,
   DEFAULT_GAMING_MAX_WAIT_FOR_SPEECH_MS,
   DEFAULT_MAX_UTTERANCE_MS,
   DEFAULT_MAX_WAIT_FOR_SPEECH_MS,
   DEFAULT_SILENCE_BUFFER_MS,
+  dbfsFromSamples,
   nextBargeInState,
   shouldStopRecording,
 } = require("./voice-endpointing");
 const { detectReplyEmotion } = require("./reply-emotion");
+const { waitForPlayback } = require("./reply-audio-playback");
 const {
   isLikelyWhisperHallucination,
   fuzzyMatchesWakeWord,
@@ -85,6 +87,7 @@ const {
   FRAME_SAMPLES: VAD_FRAME_SAMPLES,
   SAMPLE_RATE: VAD_SAMPLE_RATE,
 } = require("./silero-vad");
+const { createStreamingChunkQueue } = require("./streaming-chunk-queue");
 
 const chatLogEl = document.getElementById("chatLog");
 const chatInputEl = document.getElementById("chatInput");
@@ -200,6 +203,7 @@ const VAD_MODEL_URL = "../assets/vad/silero_vad.onnx";
 // trying first.
 const BARGE_IN_VOICE_ENABLED = process.env.MANA_BARGE_IN_VOICE !== "0";
 const BARGE_IN_HOLD_MS = Number(process.env.MANA_BARGE_IN_HOLD_MS || 350);
+const BARGE_IN_MIN_DBFS = Number(process.env.MANA_BARGE_IN_MIN_DBFS || DEFAULT_BARGE_IN_MIN_DBFS);
 const BARGE_IN_POLL_MS = 50;
 // Issue #272: ambient screen-sensing is off by default -- opt in with
 // MANA_SCREEN_SENSING_ENABLED=1. The interval is deliberately coarse
@@ -268,6 +272,36 @@ function getSileroVad() {
 let currentReplyAudio = null;
 let currentReplyUrl = null;
 let replyPlaybackToken = 0;
+
+// Sub-project B: the streaming-chunk-queue currently backing playback, so a
+// barge-in trigger can read its not-yet-played sentences. Set at the start
+// of playStreamingReply, cleared once that call's queue has genuinely
+// drained or been superseded -- see the `if (activeStreamingQueue === queue)`
+// guard there, which stops a newer call's reference from being stomped by
+// an older one's cleanup running late.
+let activeStreamingQueue = null;
+
+// { sentences: string[], stackDepth: 0|1 } while a reply is held mid-
+// playback after a barge-in, else null. stackDepth 1 means this hold is
+// "underneath" a currently-playing inserted new-question answer; a second
+// interruption while stackDepth is 1 discards this hold instead of nesting
+// (see handleBargeInTrigger).
+let heldReply = null;
+
+// Count of barge-in-triggered captures currently in flight (recording the
+// interruption through classifying and acting on it) -- listenLoop must not
+// start its own recording while this is > 0, since `processing` alone isn't
+// reliably still true for that whole span (it flips false as soon as
+// playStreamingReply's now-superseded queue finishes unwinding, which can
+// happen well before the interruption has finished being captured). A
+// counter rather than a boolean: a nested interruption (see
+// handleBargeInTrigger's wasNested branch) starts a second capture while the
+// first is still winding down its own `handleTranscript` await, so two
+// captures' windows can overlap -- a boolean would get set back to false by
+// whichever one finishes first, letting listenLoop start a third, racing
+// recording while the other capture is still in flight.
+let bargeInCaptureCount = 0;
+
 let listening = false;
 let processing = false;
 let awake = false;
@@ -1067,6 +1101,172 @@ function stopReplyAudio() {
   setAvatarState("idle");
 }
 
+// Sub-project B: re-speaks a held reply's remaining sentences from the cut
+// point, reusing the same one-ahead synthesize/play queue playStreamingReply
+// uses -- not a new playback primitive, just a second entry point into it,
+// sourced from the held array instead of an NDJSON stream. Held state is
+// text only; this re-synthesizes rather than replaying cached audio.
+async function resumeHeldReply() {
+  const sentences = heldReply ? heldReply.sentences : null;
+  heldReply = null;
+  if (!sentences || sentences.length === 0) {
+    return;
+  }
+
+  stopReplyAudio();
+  const playbackToken = replyPlaybackToken;
+  const queue = createStreamingChunkQueue({
+    synthesize: (text) => synthesizeSpeechChunk(0, [text], playbackToken),
+    play: (audioBlob, text) =>
+      playAudioBlob(audioBlob, playbackToken, detectReplyEmotion(text), undefined),
+    isCurrent: () => replyPlaybackToken === playbackToken,
+    onIdle: () => setAvatarState("idle"),
+  });
+  activeStreamingQueue = queue;
+  const runPromise = queue.run();
+  for (const sentence of sentences) {
+    queue.pushChunk(sentence);
+  }
+  queue.markDone();
+  await runPromise;
+  if (activeStreamingQueue === queue) {
+    activeStreamingQueue = null;
+  }
+}
+
+async function classifyBargeInText(text) {
+  try {
+    const response = await fetch(`${BACKEND_BASE_URL}/barge-in/classify`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text }),
+    });
+    if (!response.ok) {
+      return { category: "unclassified" };
+    }
+    const data = await response.json();
+    return { category: data.category || "unclassified" };
+  } catch (e) {
+    console.warn("Barge-in classify request failed:", e.message);
+    return { category: "unclassified" };
+  }
+}
+
+// Acts on a classified interruption against the currently-held reply.
+// `heldReply` must already be set (non-null) when this is called for the
+// non-nested path -- see handleBargeInTrigger.
+async function handleBargeInInterruption(category, transcript, gamingModeActive) {
+  // Captured once up front: a nested interruption's own capture window can
+  // overlap this one's `await handleTranscript` below (see
+  // bargeInCaptureCount's doc comment) and replace the module-global
+  // `heldReply` with a new hold before this call resumes -- comparing
+  // identity against `hold` rather than re-reading the global lets this
+  // dispatch stay correct regardless of that ordering.
+  const hold = heldReply;
+
+  if (category === "amend") {
+    // Same shape as correction (discard, no resume -- the amended reply
+    // replaces what was being said, it doesn't supplement it), except the
+    // transcript is wrapped so the model steers using the original reply
+    // it already has in session history (see the design doc's Key Finding:
+    // buildAssistantReply appends the full reply to session history before
+    // /reply/stream's final event, well before any barge-in can fire).
+    heldReply = null;
+    if (transcript) {
+      // NOTE: no parentheses here -- cleanTranscriptText() (called inside
+      // handleTranscript) strips ALL parenthesized text via
+      // /\([^)]+\)/g, which would silently delete a "(...)"-wrapped prefix
+      // before the model ever sees it. This bit Task 3 of #399's plan; if
+      // you're changing this wrapper, keep it parenthesis-free.
+      await handleTranscript(`Amending what you just said: ${transcript}`, gamingModeActive);
+    }
+    return;
+  }
+
+  if (category === "correction") {
+    heldReply = null;
+    if (transcript) {
+      await handleTranscript(transcript, gamingModeActive);
+    }
+    return;
+  }
+
+  if (category === "new_question") {
+    hold.stackDepth = 1;
+    if (transcript) {
+      // handleTranscript -> requestScreenAwareReply -> playStreamingReply
+      // already awaits full playback of the inserted answer before
+      // returning, so resuming right after is safe -- no separate "wait for
+      // playback to finish" step needed.
+      await handleTranscript(transcript, gamingModeActive);
+    }
+    // A nested interruption during the line above discards heldReply itself
+    // (see handleBargeInTrigger's wasNested branch) -- only resume if it's
+    // still the same hold.
+    if (heldReply === hold) {
+      await resumeHeldReply();
+    }
+    return;
+  }
+
+  // backchannel or unclassified: resume from the cut point, no new turn.
+  await resumeHeldReply();
+}
+
+// Fired from watchForBargeIn once a trigger holds for BARGE_IN_HOLD_MS.
+// Captures the current reply's not-yet-played sentences, records the
+// interruption immediately (not waiting for listenLoop's next cycle),
+// transcribes and classifies it, then dispatches to resume/discard/insert.
+async function handleBargeInTrigger() {
+  const wasNested = Boolean(heldReply && heldReply.stackDepth >= 1);
+  const heldSentences = activeStreamingQueue ? activeStreamingQueue.peekPending() : [];
+  stopReplyAudio();
+
+  if (wasNested) {
+    // A second interruption arrived while an inserted new-question answer
+    // was playing -- per the depth-1 cap, the outer held reply is discarded
+    // outright (not stacked); this interruption becomes a fresh top-level
+    // turn, no classification needed since there's nothing left to
+    // resume/discard against.
+    heldReply = null;
+    bargeInCaptureCount += 1;
+    try {
+      const chunk = await recordUntilSilence();
+      const result = await transcribeBlob(chunk);
+      if (result.transcript) {
+        const gamingModeActive = await refreshGamingStatus();
+        await handleTranscript(result.transcript, gamingModeActive);
+      }
+    } catch (e) {
+      console.warn("Barge-in interruption capture failed:", e.message);
+    } finally {
+      bargeInCaptureCount -= 1;
+    }
+    return;
+  }
+
+  if (heldSentences.length === 0) {
+    // Nothing left to hold -- equivalent to today's stop-and-discard; the
+    // normal listen loop picks up whatever comes next.
+    return;
+  }
+
+  heldReply = { sentences: heldSentences, stackDepth: 0 };
+  bargeInCaptureCount += 1;
+  try {
+    const chunk = await recordUntilSilence();
+    const result = await transcribeBlob(chunk);
+    const { category } = await classifyBargeInText(cleanTranscriptText(result.transcript || ""));
+    const gamingModeActive = await refreshGamingStatus();
+    await handleBargeInInterruption(category, result.transcript, gamingModeActive);
+  } catch (e) {
+    console.warn("Barge-in interruption capture failed:", e.message);
+    heldReply = null;
+  } finally {
+    bargeInCaptureCount -= 1;
+  }
+}
+
 function splitReplyForSpeech(text) {
   const sentences = text
     .replace(/\s+/g, " ")
@@ -1181,15 +1381,22 @@ async function watchForBargeIn() {
           isSpeech = false;
         }
 
+        // #340: reuses the same `samples` frame just read for VAD -- no
+        // extra mic read.
+        const isLoudEnough = dbfsFromSamples(samples) >= BARGE_IN_MIN_DBFS;
+
         const state = nextBargeInState({
           isSpeech,
+          isLoudEnough,
           speechStartedAt,
           now: performance.now(),
           holdMs: BARGE_IN_HOLD_MS,
         });
         speechStartedAt = state.speechStartedAt;
         if (state.triggered) {
-          stopReplyAudio();
+          handleBargeInTrigger().catch((e) =>
+            console.warn("Barge-in interruption handling failed:", e.message),
+          );
           break;
         }
       }
@@ -1224,33 +1431,19 @@ function playAudioBlob(audioBlob, playbackToken, avatarState, preferredExpressio
     currentReplyUrl = URL.createObjectURL(audioBlob);
     currentReplyAudio = new Audio(currentReplyUrl);
 
-    currentReplyAudio.addEventListener(
-      "ended",
-      () => {
-        stopLipSync();
-        if (currentReplyUrl) {
-          URL.revokeObjectURL(currentReplyUrl);
-          currentReplyUrl = null;
-        }
-        currentReplyAudio = null;
-        resolve();
-      },
-      { once: true },
-    );
-
-    currentReplyAudio.addEventListener(
-      "error",
-      () => {
-        stopLipSync();
-        if (currentReplyUrl) {
-          URL.revokeObjectURL(currentReplyUrl);
-          currentReplyUrl = null;
-        }
-        currentReplyAudio = null;
-        reject(new Error("Reply audio playback failed"));
-      },
-      { once: true },
-    );
+    // See reply-audio-playback.js: this resolves on 'pause' too (not just
+    // 'ended'/'error'), so interrupting playback via stopReplyAudio() --
+    // barge-in, the interrupt hotkey, a fresh reply superseding this one --
+    // can't hang this promise (and whatever awaits it, e.g.
+    // handleTranscript's `processing` gate) forever.
+    waitForPlayback(currentReplyAudio, () => {
+      stopLipSync();
+      if (currentReplyUrl) {
+        URL.revokeObjectURL(currentReplyUrl);
+        currentReplyUrl = null;
+      }
+      currentReplyAudio = null;
+    }).then(resolve, reject);
 
     const playback = currentReplyAudio.play();
     startLipSync(currentReplyAudio);
@@ -1299,6 +1492,134 @@ async function playReplyAudio(text, preferredExpression) {
   if (playbackToken === replyPlaybackToken) {
     setAvatarState("idle");
   }
+}
+
+// Issue #331: POST /reply/stream sends newline-delimited JSON objects over
+// a chunked response -- one "sentence" event per completed sentence, then
+// exactly one "final" event. This mirrors node-bot/utils/sse-sentence-
+// stream.js's readSseDeltas shape (buffer partial lines across network
+// chunks) but for plain NDJSON instead of "data:"-prefixed SSE frames.
+async function* readNdjsonEvents(response) {
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    let newline;
+    while ((newline = buffer.indexOf("\n")) !== -1) {
+      const line = buffer.slice(0, newline);
+      buffer = buffer.slice(newline + 1);
+      if (!line.trim()) continue;
+      try {
+        yield JSON.parse(line);
+      } catch (e) {
+        // A malformed line costs one event, not the whole stream.
+      }
+    }
+  }
+}
+
+// Issue #331: replaces the fetch("/reply") -> res.json() -> playReplyAudio
+// flow at this app's two reply call sites. Sentences arrive incrementally
+// from POST /reply/stream and are queued for TTS/playback as they arrive;
+// on the final event, if what was already streamed doesn't match the true
+// final reply (changed:true -- covers both "nothing streamed" and "a
+// regeneration pass rewrote it"), cancel the queue and fall back to today's
+// synthesize-the-whole-thing-at-once path unchanged.
+//
+// onFinal(finalEvent), if given, fires the instant the final NDJSON event is
+// read -- well before playback finishes, since that event arrives before
+// queue.markDone()/runPromise below even start winding down. Issue #331
+// review (Finding 1): callers use this to append the reply text to the chat
+// log as soon as it's known, instead of waiting for this whole function
+// (and therefore all queued audio) to finish playing first.
+//
+// synthesizeSpeechChunk(index, chunks, ...) reads chunks[index] -- every
+// call below passes a fresh one-element array, so the index into *that*
+// array is always 0, never the running sentence count. Each sentence gets
+// its own avatar-mood read (rather than one mood for the whole reply, like
+// playReplyAudio does) since moods aren't known upfront here -- the full
+// reply text isn't available until the final event.
+async function playStreamingReply(requestBody, preferredExpression, onFinal) {
+  stopReplyAudio();
+  const playbackToken = replyPlaybackToken;
+  const queue = createStreamingChunkQueue({
+    synthesize: (text) => synthesizeSpeechChunk(0, [text], playbackToken),
+    play: (audioBlob, text) =>
+      playAudioBlob(audioBlob, playbackToken, detectReplyEmotion(text), preferredExpression),
+    isCurrent: () => replyPlaybackToken === playbackToken,
+    onIdle: () => setAvatarState("idle"),
+  });
+  activeStreamingQueue = queue;
+  const runPromise = queue.run();
+
+  let finalEvent = null;
+  try {
+    const response = await fetch(`${BACKEND_BASE_URL}/reply/stream`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(requestBody),
+    });
+
+    // Deliberately keeps reading every event -- including after this
+    // playback has been superseded -- so the full reply text is always
+    // available for the chat log even if a barge-in or a newer request cut
+    // the *audio* short. The queue itself already stops synthesizing/
+    // playing once replyPlaybackToken moves past playbackToken.
+    for await (const event of readNdjsonEvents(response)) {
+      if (event.type === "sentence") {
+        queue.pushChunk(event.text);
+      } else if (event.type === "final") {
+        finalEvent = event;
+        if (typeof onFinal === "function") {
+          onFinal(finalEvent);
+        }
+        if (event.changed) {
+          // Known now, as early as the final event itself arrives (which is
+          // always after every sentence event, so this can't miss any
+          // pending chunk) -- drop the rest of the backlog instead of
+          // letting the whole stale draft play out before restarting.
+          queue.cancelPending();
+        }
+      }
+    }
+  } finally {
+    // Always run to completion so the queue's promise settles even if the
+    // stream read fails or playback was superseded partway through. Thanks
+    // to cancelPending() above, a changed:true run only finishes whatever
+    // chunk it was already synthesizing/playing, not the full backlog.
+    queue.markDone();
+    await runPromise;
+    if (activeStreamingQueue === queue) {
+      activeStreamingQueue = null;
+    }
+  }
+
+  const result = finalEvent || { reply: "", ttsConfigured: false };
+
+  // Nothing was streamed (image replies, restart commands) or a
+  // verification/retry pass rewrote the reply -- what (if anything) already
+  // played doesn't match the true final text, so speak the corrected
+  // version from scratch. This intentionally waits for the queue above to
+  // fully drain first: calling stopReplyAudio() while a chunk from the
+  // *same* queue is still mid-playback would pause its <audio> element
+  // without ever firing "ended", leaving playAudioBlob()'s promise (and so
+  // this whole function) hung forever.
+  if (
+    replyPlaybackToken === playbackToken &&
+    result.changed &&
+    result.reply &&
+    result.ttsConfigured
+  ) {
+    stopReplyAudio();
+    await playReplyAudio(result.reply, result.expression);
+  }
+
+  return result;
 }
 
 function wait(ms) {
@@ -2081,29 +2402,32 @@ async function readScreenContext(text, gamingModeActive) {
   }
 }
 
-async function requestScreenAwareReply(text, gamingModeActive) {
+async function requestScreenAwareReply(text, gamingModeActive, onFinal) {
   const screenText = await readScreenContext(text, gamingModeActive);
   const startedAt = performance.now();
-  const response = await fetch(`${BACKEND_BASE_URL}/reply`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
+  // playStreamingReply already speaks the reply as sentences stream in (and
+  // handles the changed:true fallback/restart), so callers just get the
+  // final {reply, ttsConfigured, expression, error?} the same shape /reply
+  // used to return -- no separate playReplyAudio call needed at the call site.
+  const result = await playStreamingReply(
+    {
       text,
       screenText,
       modelProfile: selectedModelProfile,
       sessionId: typeof ensureSessionId === "function" ? ensureSessionId() : undefined,
       presetId: selectedPresetId || undefined,
-    }),
-  });
+    },
+    undefined,
+    onFinal,
+  );
 
-  if (!response.ok) {
-    const message = await response.text();
-    throw new Error(message);
+  // /reply/stream has no HTTP-level error status (always 200); errors
+  // surface as an `error` field on the final event instead. Throwing here
+  // preserves the old !response.ok behavior for handleTranscript's callers.
+  if (result.error) {
+    throw new Error(result.error);
   }
 
-  const result = await response.json();
   console.info(`Mana perf: reply ${Math.round(performance.now() - startedAt)}ms`);
   return result;
 }
@@ -2173,36 +2497,39 @@ async function handleVisionHotkey() {
     appendChatMessage("user", "(asked Mana to look at the screen)");
 
     const image = await ipcRenderer.invoke("screen:capture-primary");
-    const response = await fetch(`${BACKEND_BASE_URL}/reply`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
+    // Issue #331 review (Finding 1): append to the chat log as soon as the
+    // final event names the reply, not after playStreamingReply resolves --
+    // that await also waits for every queued chunk to finish *playing*.
+    const result = await playStreamingReply(
+      {
         text: DEFAULT_VISION_HOTKEY_PROMPT,
         image,
         modelProfile: selectedModelProfile,
         sessionId: typeof ensureSessionId === "function" ? ensureSessionId() : undefined,
         presetId: selectedPresetId || undefined,
-      }),
-    });
+      },
+      undefined,
+      (finalEvent) => {
+        if (finalEvent.error) {
+          return;
+        }
+        const reply = finalEvent.reply || "";
+        replyEl.textContent = `Mana: ${reply}`;
+        appendChatMessage("mana", reply);
+        if (typeof refreshSessionList === "function") {
+          refreshSessionList();
+        }
+      },
+    );
 
-    if (!response.ok) {
-      const detail = await extractReplyErrorDetail(response);
-      statusEl.textContent = describeVisionHotkeyError(response.status, detail);
+    // /reply/stream has no HTTP-level error status (always 200) -- errors
+    // surface as an `error` field on the final event instead. The vision-
+    // model-missing case is the one describeVisionHotkeyError special-cases
+    // by status code, so match its literal backend message here.
+    if (result.error) {
+      const status = result.error === "no local vision model available" ? 503 : 0;
+      statusEl.textContent = describeVisionHotkeyError(status, result.detail || result.error);
       return;
-    }
-
-    const result = await response.json();
-    const reply = result.reply || "";
-    replyEl.textContent = `Mana: ${reply}`;
-    appendChatMessage("mana", reply);
-    if (typeof refreshSessionList === "function") {
-      refreshSessionList();
-    }
-
-    if (result.ttsConfigured) {
-      await playReplyAudio(reply, result.expression);
     }
 
     statusEl.textContent = listening
@@ -2396,6 +2723,7 @@ ipcRenderer.on("vision:hotkey", () => {
 // when a new reply supersedes an old one.
 ipcRenderer.on("interrupt-speech", () => {
   stopReplyAudio();
+  heldReply = null;
 });
 
 async function handleTranscript(transcript, gamingModeActive = false) {
@@ -2429,17 +2757,22 @@ async function handleTranscript(transcript, gamingModeActive = false) {
   appendChatMessage("user", cleanTranscript);
 
   try {
-    const replyResult = await requestScreenAwareReply(command, gamingModeActive);
-    const reply = replyResult.reply || "";
-    replyEl.textContent = `Mana: ${reply}`;
-    appendChatMessage("mana", reply);
-    if (typeof refreshSessionList === "function") {
-      refreshSessionList();
-    }
-
-    if (replyResult.ttsConfigured) {
-      await playReplyAudio(reply, replyResult.expression);
-    }
+    // Issue #331 review (Finding 1): append the reply to the chat log the
+    // instant the final event names it, not after requestScreenAwareReply
+    // resolves -- that await also waits for every queued chunk to finish
+    // *playing*, which used to make the text show up later than before
+    // this feature existed instead of earlier.
+    await requestScreenAwareReply(command, gamingModeActive, (finalEvent) => {
+      if (finalEvent.error) {
+        return;
+      }
+      const reply = finalEvent.reply || "";
+      replyEl.textContent = `Mana: ${reply}`;
+      appendChatMessage("mana", reply);
+      if (typeof refreshSessionList === "function") {
+        refreshSessionList();
+      }
+    });
 
     statusEl.textContent = listening
       ? awake
@@ -2455,7 +2788,7 @@ async function handleTranscript(transcript, gamingModeActive = false) {
 async function listenLoop() {
   // Quick rundown: game mode only slows idle loops when a watched game process is running.
   while (listening) {
-    if (processing || currentReplyAudio) {
+    if (processing || currentReplyAudio || bargeInCaptureCount > 0) {
       await wait(LISTEN_PAUSE_MS);
       continue;
     }
@@ -2526,6 +2859,7 @@ function stopListening() {
   listenBtn.classList.remove("active");
   statusEl.textContent = "Stopped";
   stopReplyAudio();
+  heldReply = null;
 
   if (mediaStream) {
     mediaStream.getTracks().forEach((track) => track.stop());

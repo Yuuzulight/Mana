@@ -47,6 +47,10 @@ Build steps (local)
    - Optional: fetch the Live2D Cubism Core runtime so the (currently
      testing-placeholder) avatar renders instead of falling back to PNG
      sprites: `npm run fetch-live2d-core`. See AVATAR_NOTICE.md.
+   - Optional: fetch the Silero VAD model used for continuous listening's
+     speech/silence detection: `npm run fetch-silero-vad`. Without it,
+     continuous listening silently falls back to a plain RMS-based
+     silence detector.
 
 4. Run the build (this will produce an installer in desktop-client/dist):
 

@@ -172,6 +172,7 @@ const {
   cleanLlamaOutput,
 } = require("./ai/local-llama-runtime");
 const { createLlamaServerRuntime } = require("./ai/llama-server-runtime");
+const { streamedMatchesFinal } = require("./utils/reply-stream-diff");
 const { createRestartController } = require("./admin-restart");
 const ffxivMarketPlugin = require("../plugins/ffxiv-market");
 const {
@@ -315,6 +316,11 @@ const WHISPER_NO_SPEECH_THRESHOLD =
 const WHISPER_TEMPERATURE = process.env.WHISPER_TEMPERATURE || "0";
 const LLAMA_THREADS = Number(process.env.LLAMA_THREADS || 4);
 const LLAMA_MAX_TOKENS = Number(process.env.LLAMA_MAX_TOKENS || 180);
+// Coding replies run long -- a function plus explanation plus a usage
+// example routinely exceeds the 180-token budget sized for spoken
+// conversation, cutting code off mid-example. Casual/everyday replies stay
+// at LLAMA_MAX_TOKENS; only coding/developer mode gets the bigger budget.
+const LLAMA_MAX_TOKENS_CODING = Number(process.env.LLAMA_MAX_TOKENS_CODING || 768);
 const VTUBE_STUDIO_URL = process.env.VTUBE_STUDIO_URL || "ws://127.0.0.1:8001";
 const VTUBE_STUDIO_ENABLED = process.env.VTUBE_STUDIO_ENABLED !== "0";
 const VTUBE_STUDIO_REACTIONS_JSON =
@@ -2512,6 +2518,45 @@ function registerRoutes(app, upload, deps = {}) {
     }
   });
 
+  // Barge-in interruption classifier, required once at startup (matches the
+  // classifyIntent pattern above) so a module-resolution failure surfaces
+  // at startup instead of as a per-request 500.
+  const { classifyBargeIn } = require("./utils/barge-in-classifier");
+
+  app.post("/barge-in/classify", (req, res) => {
+    const { text } = req.body || {};
+    if (text === undefined || typeof text !== "string") {
+      return res.status(400).json({
+        success: false,
+        error: "Bad Request",
+        message:
+          "Missing or invalid 'text' property in the JSON body payload.",
+      });
+    }
+
+    try {
+      const evaluation = classifyBargeIn(text);
+      return res.status(200).json(
+        Object.assign(
+          {
+            success: true,
+            input_length: text.length,
+          },
+          evaluation,
+        ),
+      );
+    } catch (err) {
+      console.error(
+        "🚨 [/barge-in/classify] Router checkpoint failed:",
+        err?.message || err,
+      );
+      return res.status(500).json({
+        success: false,
+        error: "Internal Server Error",
+      });
+    }
+  });
+
   // Admin endpoints for file write approvals
   const PENDING_DIR =
     process.env.MANA_PENDING_WRITES_DIR ||
@@ -3142,10 +3187,14 @@ function registerRoutes(app, upload, deps = {}) {
       return llamaServerRuntime.runToolAwareReply(prompt, toolPolicyArg, options);
     });
   const activeToolPolicy = deps.toolPolicy || toolPolicy;
+  // Issue #331: lets tests swap in a fake llamaServerRuntime (isEnabled,
+  // streamLocalAssistantReply, ...) the same way every other local-model
+  // call in this function is already overridable via deps.
+  const activeLlamaServerRuntime = deps.llamaServerRuntime || llamaServerRuntime;
   // Shared by tool-calling and best-of-N (issue #70): both require
   // llama-server specifically, not the llama-cli fallback.
   const isLlamaServerAvailable =
-    deps.isLlamaServerEnabled || (() => llamaServerRuntime.isEnabled());
+    deps.isLlamaServerEnabled || (() => activeLlamaServerRuntime.isEnabled());
 
   // Best-of-N self-voting (issue #70): same "llama-server only" constraint
   // as tool-calling -- sampling-parameter (temperature) control isn't
@@ -3396,6 +3445,10 @@ function registerRoutes(app, upload, deps = {}) {
     // return type (a plain string, unchanged, everywhere else) needing to
     // grow a second shape for the one caller that wants it.
     replyMeta = null,
+    // Issue #331: optional streaming callback, called with each completed
+    // sentence during the first plain local-completion attempt only. See
+    // the firstPassStreamed comment below for why it's first-attempt-only.
+    onSentence = null,
   ) {
     const prompt = buildScreenAwarePrompt(transcript, screenText, marketText);
     const normalizedModelProfile = selectLlamaModelProfileForPrompt(
@@ -3410,6 +3463,14 @@ function registerRoutes(app, upload, deps = {}) {
       assistantMode ||
       (inferred && inferred.mode) ||
       (normalizedModelProfile === "coding" ? "coding" : "everyday");
+    // Same coding/developer check the system-prompt selection below uses --
+    // every actual reply-generation call site in this function should use
+    // this instead of LLAMA_MAX_TOKENS directly, so coding replies stop
+    // getting cut off mid-example.
+    const effectiveMaxTokens =
+      mode === "coding" || mode === "developer"
+        ? LLAMA_MAX_TOKENS_CODING
+        : LLAMA_MAX_TOKENS;
 
     // Optional lightweight intent telemetry (enable with MANA_INTENT_TELEMETRY=1)
     try {
@@ -3478,18 +3539,39 @@ function registerRoutes(app, upload, deps = {}) {
       // ignore failures here
     }
 
-    // Always-visible skill index (see buildSkillsIndexBlock above).
+    // Foundational tool-calling (issue #51), opt-in and scoped to the one
+    // profile that's actually been verified to emit reliable tool_calls
+    // (Qwen3-4B / "default" -- see docs/roadmap/issue-51-tool-calling.md).
+    // Hoisted above the skills-index block below: that block must not
+    // advertise skill__view unless this same condition lets the model
+    // actually call it (see the block's own comment for why).
+    const toolCallingEnabled =
+      String(process.env.MANA_TOOL_CALLING_ENABLED || "0") === "1";
+
+    // Always-visible skill index (see buildSkillsIndexBlock above) -- but
+    // only when tool-calling can actually act on it. The index advertises
+    // skill__view; outside the exact condition replyMaybeWithTools checks
+    // below, no reply path can invoke it, and a model told about a tool it
+    // can't call tends to narrate the call as plain text instead of either
+    // answering normally or invoking nothing (observed: "Skill needed:
+    // X\nCalling skill__view with name: X" leaking into a plain reply).
     // activeSkillsStore, not the module-level skillsStore singleton --
     // otherwise this would silently bypass a test's (or any future caller's)
     // deps.skillsStore override, the exact trap already called out where
     // activeSkillsStore is defined above.
-    try {
-      const skillsIndexBlock = buildSkillsIndexBlock(activeSkillsStore.listSkills());
-      if (skillsIndexBlock) {
-        selectedSystemPrompt = `${selectedSystemPrompt}\n\n${skillsIndexBlock}`;
+    if (
+      toolCallingEnabled &&
+      normalizedModelProfile === "default" &&
+      isLlamaServerAvailable()
+    ) {
+      try {
+        const skillsIndexBlock = buildSkillsIndexBlock(activeSkillsStore.listSkills());
+        if (skillsIndexBlock) {
+          selectedSystemPrompt = `${selectedSystemPrompt}\n\n${skillsIndexBlock}`;
+        }
+      } catch (e) {
+        // ignore failures here
       }
-    } catch (e) {
-      // ignore failures here
     }
 
     // Issue #282: memory (session summary/recent-turns, cross-session
@@ -3806,7 +3888,7 @@ function registerRoutes(app, upload, deps = {}) {
       try {
         const openAiReply = await runOpenAIReply(
           finalPrompt,
-          LLAMA_MAX_TOKENS,
+          effectiveMaxTokens,
           selectedSystemPrompt + flatMemorySuffix,
         );
         if (openAiReply) {
@@ -3852,19 +3934,32 @@ function registerRoutes(app, upload, deps = {}) {
       }
     }
 
-    // Foundational tool-calling (issue #51), opt-in and scoped to the one
-    // profile that's actually been verified to emit reliable tool_calls
-    // (Qwen3-4B / "default" -- see docs/roadmap/issue-51-tool-calling.md).
-    // Any failure or empty result falls straight back to the plain path
-    // rather than surfacing a broken reply.
-    const toolCallingEnabled =
-      String(process.env.MANA_TOOL_CALLING_ENABLED || "0") === "1";
+    // toolCallingEnabled is declared earlier, alongside the skills-index
+    // gate above -- both need the same condition. Any failure or empty
+    // result from the tool-aware attempt below falls straight back to the
+    // plain path rather than surfacing a broken reply.
     // Captured here rather than threaded through replyMaybeWithBestOfN's and
     // the verify/retry loop's return values (both currently just `string`)
     // -- issue #153 needs whatever tool calls actually produced the reply
     // that gets appended to session memory, and a closure-scoped variable
     // gets that without changing any other reply path's signature.
     let lastToolCalls = [];
+
+    // Issue #331: onSentence streams only the very first plain local-
+    // completion attempt. Regeneration (rut-detection nudge, verify/retry)
+    // reuses replyMaybeWithBestOfN/replyMaybeWithTools too, but must not
+    // stream again -- multiple overlapping sentence streams from separate
+    // generation attempts would be nonsensical to a client. This flag makes
+    // "first call only" explicit rather than relying on call order.
+    let firstPassStreamed = false;
+    const streamedSentences = [];
+    const wrappedOnSentence = onSentence
+      ? async (sentence) => {
+          streamedSentences.push(sentence);
+          await onSentence(sentence);
+        }
+      : null;
+
     async function replyMaybeWithTools(promptText) {
       lastToolCalls = [];
       if (
@@ -3962,7 +4057,7 @@ function registerRoutes(app, upload, deps = {}) {
             promptText,
             mergedToolPolicy,
             {
-              maxTokens: LLAMA_MAX_TOKENS,
+              maxTokens: effectiveMaxTokens,
               profile: normalizedModelProfile,
               overrideSystemPrompt: selectedSystemPrompt,
               extraMessages: memoryExtraMessages,
@@ -4008,9 +4103,29 @@ function registerRoutes(app, upload, deps = {}) {
           );
         }
       }
+      if (wrappedOnSentence && !firstPassStreamed && isLlamaServerAvailable()) {
+        // Set before the attempt, not just on success -- sentences may
+        // already have been emitted (and possibly spoken client-side)
+        // before a failure, so a later regeneration must not stream again.
+        firstPassStreamed = true;
+        try {
+          return await activeLlamaServerRuntime.streamLocalAssistantReply(promptText, {
+            maxTokens: effectiveMaxTokens,
+            profile: normalizedModelProfile,
+            overrideSystemPrompt: selectedSystemPrompt,
+            extraMessages: memoryExtraMessages,
+            onSentence: wrappedOnSentence,
+          });
+        } catch (e) {
+          console.warn(
+            "Streaming local reply failed, falling back to non-streaming:",
+            e && e.message ? e.message : e,
+          );
+        }
+      }
       return runLocalAssistantReply(
         promptText,
-        LLAMA_MAX_TOKENS,
+        effectiveMaxTokens,
         normalizedModelProfile,
         selectedSystemPrompt,
         memoryExtraMessages,
@@ -4035,7 +4150,7 @@ function registerRoutes(app, upload, deps = {}) {
           const n = Number(process.env.MANA_BEST_OF_N_COUNT || 3);
           const result = await runBestOfNReply(promptText, {
             n,
-            maxTokens: LLAMA_MAX_TOKENS,
+            maxTokens: effectiveMaxTokens,
             profile: normalizedModelProfile,
             overrideSystemPrompt: selectedSystemPrompt + flatMemorySuffix,
           });
@@ -4254,6 +4369,9 @@ function registerRoutes(app, upload, deps = {}) {
     } catch (memErr) {
       console.warn("Failed to append turn to ACP memory:", memErr.message);
     }
+    if (replyMeta) {
+      replyMeta.streamedMatchesFinal = streamedMatchesFinal(streamedSentences, reply);
+    }
     return reply;
   }
 
@@ -4316,6 +4434,13 @@ function registerRoutes(app, upload, deps = {}) {
     runWhisper: deps.runWhisper || runWhisper,
     synthesizeReply: deps.synthesizeReply || synthesizeReply,
   });
+
+  // Test-only hook (same pattern as app.locals.broadcastTrayNotification
+  // below): exposes the real buildAssistantReply closure -- with its
+  // deps-aware isLlamaServerAvailable/runLocalAssistantReply/etc. already
+  // bound -- so tests can call it directly without going through the /reply
+  // HTTP route, which is the only other way to reach it.
+  app.locals.buildAssistantReply = deps.buildAssistantReply || buildAssistantReply;
 
   registerVTubeRoutes(app, { vtubeRuntime });
 
