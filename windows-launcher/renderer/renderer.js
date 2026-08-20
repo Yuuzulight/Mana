@@ -1173,7 +1173,12 @@ async function handleBargeInInterruption(category, transcript, gamingModeActive)
     // /reply/stream's final event, well before any barge-in can fire).
     heldReply = null;
     if (transcript) {
-      await handleTranscript(`(amending what you just said) ${transcript}`, gamingModeActive);
+      // NOTE: no parentheses here -- cleanTranscriptText() (called inside
+      // handleTranscript) strips ALL parenthesized text via
+      // /\([^)]+\)/g, which would silently delete a "(...)"-wrapped prefix
+      // before the model ever sees it. This bit Task 3 of #399's plan; if
+      // you're changing this wrapper, keep it parenthesis-free.
+      await handleTranscript(`Amending what you just said: ${transcript}`, gamingModeActive);
     }
     return;
   }

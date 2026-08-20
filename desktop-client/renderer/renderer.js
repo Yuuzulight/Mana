@@ -921,7 +921,11 @@ document.getElementById('themeToggle')?.addEventListener('click', (e) => {
       // /reply/stream's final event, well before any barge-in can fire).
       heldReply = null;
       if (transcript) {
-        await handleTranscriptText(`(amending what you just said) ${transcript}`);
+        // Kept parenthesis-free to match windows-launcher's wrapper exactly
+        // (its cleanTranscriptText() would strip a "(...)"-wrapped prefix
+        // entirely -- this app doesn't have that stripping, but the wording
+        // is kept identical across both apps for parity).
+        await handleTranscriptText(`Amending what you just said: ${transcript}`);
       }
       return;
     }
