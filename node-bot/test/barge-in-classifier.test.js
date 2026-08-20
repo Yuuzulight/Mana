@@ -34,3 +34,23 @@ test("correction keywords are checked before question/backchannel keywords", () 
   // correction must win, since it's the fast-path checked first.
   assert.equal(classifyBargeIn("wait is that right").category, "correction");
 });
+
+test("short keywords like 'no'/'ok' match as whole words, not substrings of unrelated words", () => {
+  assert.equal(classifyBargeIn("what time is it now").category, "new_question");
+  assert.equal(classifyBargeIn("do you know what time it is").category, "new_question");
+  // "tell me a joke" is 4 words, so once the false "ok"-in-"joke" match is
+  // removed it falls through to the length-based default (Fix 3) as
+  // new_question, rather than the old wrong "backchannel".
+  assert.equal(classifyBargeIn("tell me a joke").category, "new_question");
+  assert.equal(classifyBargeIn("i broke it").category, "unclassified");
+});
+
+test("unclassified fallback routes by length: short stays unclassified (resume), longer is treated as a question (answer then resume)", () => {
+  assert.equal(classifyBargeIn("banana pancakes").category, "unclassified");
+  // "okay yeah" matches the "yeah" backchannel keyword directly (a
+  // pre-existing match, not the new fallback path); "sounds good" matches
+  // no keyword list and exercises the new <=3-word fallback branch itself.
+  assert.equal(classifyBargeIn("sounds good").category, "unclassified");
+  assert.equal(classifyBargeIn("tell me a joke").category, "new_question");
+  assert.equal(classifyBargeIn("i broke it just now").category, "new_question");
+});

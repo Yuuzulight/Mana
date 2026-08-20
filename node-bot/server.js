@@ -2518,6 +2518,11 @@ function registerRoutes(app, upload, deps = {}) {
     }
   });
 
+  // Barge-in interruption classifier, required once at startup (matches the
+  // classifyIntent pattern above) so a module-resolution failure surfaces
+  // at startup instead of as a per-request 500.
+  const { classifyBargeIn } = require("./utils/barge-in-classifier");
+
   app.post("/barge-in/classify", (req, res) => {
     const { text } = req.body || {};
     if (text === undefined || typeof text !== "string") {
@@ -2530,7 +2535,6 @@ function registerRoutes(app, upload, deps = {}) {
     }
 
     try {
-      const { classifyBargeIn } = require("./utils/barge-in-classifier");
       const evaluation = classifyBargeIn(text);
       return res.status(200).json(
         Object.assign(

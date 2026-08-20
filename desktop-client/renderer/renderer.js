@@ -868,10 +868,17 @@ document.getElementById('themeToggle')?.addEventListener('click', (e) => {
       queue.pushChunk(sentence);
     }
     queue.markDone();
-    await runPromise;
-    audioCtx.close().catch(() => {});
-    if (activeStreamingQueue === queue) {
-      activeStreamingQueue = null;
+    try {
+      await runPromise;
+    } finally {
+      // Matches speakStreamingReply's cleanup: always close the AudioContext
+      // and clear activeStreamingQueue, even if runPromise rejects, so a
+      // failed resume doesn't leak an AudioContext (Chromium caps concurrent
+      // instances at ~6).
+      audioCtx.close().catch(() => {});
+      if (activeStreamingQueue === queue) {
+        activeStreamingQueue = null;
+      }
     }
   }
 
@@ -1543,6 +1550,7 @@ document.getElementById('themeToggle')?.addEventListener('click', (e) => {
 
   function stopListening() {
     listening = false;
+    heldReply = null;
     const btn = document.getElementById('btnListen');
     if (btn) {
       btn.textContent = 'Start Listening';
