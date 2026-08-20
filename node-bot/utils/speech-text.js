@@ -1,6 +1,16 @@
 // Prepares reply text for TTS: emojis and Japanese kaomojis become short
 // spoken words ("smile", "sniff") instead of long Unicode names or garbage,
-// and anything unmapped is dropped rather than read aloud.
+// fenced code blocks become a short spoken placeholder instead of being
+// read symbol-by-symbol, and anything else unmapped is dropped rather than
+// read aloud.
+
+// Coding-mode replies (see CODING_SYSTEM_PROMPT in server.js) routinely
+// include fenced ```code blocks``` -- reading those aloud character by
+// character ("open paren", "semicolon", ...) produces garbage speech.
+// Replaced with a short spoken placeholder (matching the same "short
+// spoken word" treatment emoji get below) so the listener knows code was
+// shown, without narrating it; the code itself is still shown in chat.
+const CODE_FENCE_PATTERN = /```[\s\S]*?```/g;
 
 // Emoji → short spoken word, grouped by what Mana would actually say.
 const EMOJI_SPOKEN_WORDS = [
@@ -108,7 +118,12 @@ function applyTildeStretch(text) {
 function normalizeSpeechText(text) {
   let result = String(text || "");
 
-  // Kaomojis first (they may contain characters the emoji pass would touch).
+  // Code fences first, before anything else -- code content could
+  // otherwise trip the kaomoji/tilde/emoji passes below on symbols that
+  // just happen to appear in source code, not in Mana's own prose.
+  result = result.replace(CODE_FENCE_PATTERN, " code block ");
+
+  // Kaomojis next (they may contain characters the emoji pass would touch).
   result = result.replace(KAOMOJI_PATTERN, (match) => {
     const word = kaomojiToWord(match);
     if (word === null) {
