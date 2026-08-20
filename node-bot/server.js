@@ -49,7 +49,7 @@ const express = require("express");
 const multer = require("multer");
 const cors = require("cors");
 const rateLimit = require("express-rate-limit");
-const { spawnSync } = require("child_process");
+const { spawnSync, spawn } = require("child_process");
 const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
@@ -3241,6 +3241,105 @@ function registerRoutes(app, upload, deps = {}) {
     return r.stdout ? r.stdout.trim() : "";
   }
 
+  // Runs whisper-cli asynchronously (spawn, not spawnSync) so it doesn't
+  // block the event loop -- unlike runWhisperCli above, this is called
+  // repeatedly (every ~1.2s) while the user is still speaking, to produce
+  // a live partial transcript. A separate function rather than converting
+  // runWhisperCli in place: several existing callers (memory-inbox.js
+  // explicitly documents "whisper.cpp is sync") assume the synchronous
+  // contract, and converting it would risk silently breaking them.
+  function spawnWhisperCliAsync(whisperBin, args) {
+    return new Promise((resolve, reject) => {
+      const child = spawn(whisperBin, args, { windowsHide: true });
+      let stdout = "";
+      let stderr = "";
+      child.stdout.on("data", (chunk) => {
+        stdout += chunk;
+      });
+      child.stderr.on("data", (chunk) => {
+        stderr += chunk;
+      });
+      child.on("error", reject);
+      child.on("close", (code) => {
+        resolve({ status: code, stdout, stderr });
+      });
+    });
+  }
+
+  async function runWhisperCliPartial(filePath) {
+    const whisperModel = whisperDiscovery.findWhisperModel({ env: process.env });
+    if (!whisperModel) {
+      throw new Error(
+        "Whisper model not found under tools/whisper. Set WHISPER_MODEL to a valid ggml *.bin path.",
+      );
+    }
+    const whisperBin = findWhisperBin();
+    const startedAt = nowMs();
+    // A distinct suffix from runWhisperCli's ".out" -- self-documents this
+    // as the partial-transcription artifact, even though a filename
+    // collision isn't actually possible (each upload gets its own tmp path).
+    const outBase = filePath + ".partial-out";
+    const outJson = outBase + ".json";
+    const args = [
+      "-m",
+      whisperModel,
+      "-f",
+      filePath,
+      "-t",
+      String(WHISPER_THREADS),
+      "-l",
+      WHISPER_LANGUAGE,
+      "-bs",
+      WHISPER_BEAM_SIZE,
+      "-nth",
+      WHISPER_NO_SPEECH_THRESHOLD,
+      "-tp",
+      WHISPER_TEMPERATURE,
+      "--output-json",
+      "-of",
+      outBase,
+    ];
+    if (WHISPER_PROMPT) {
+      args.push("--prompt", WHISPER_PROMPT, "--carry-initial-prompt");
+    }
+    const r = await spawnWhisperCliAsync(whisperBin, args);
+    if (r.status !== 0) {
+      console.error("whisper (partial) stderr:", r.stderr);
+      throw new Error("whisper (partial) failed: " + r.stderr);
+    }
+    logPerf("whisper-partial", startedAt);
+    // Wait briefly for the JSON file to appear -- async setTimeout, not
+    // runWhisperCli's blocking Atomics.wait, since blocking here would
+    // defeat the entire point of using spawn over spawnSync.
+    let attempts = 0;
+    while (!fs.existsSync(outJson) && attempts < 5) {
+      attempts += 1;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    if (!fs.existsSync(outJson)) {
+      return r.stdout ? r.stdout.trim() : "";
+    }
+    try {
+      const j = JSON.parse(fs.readFileSync(outJson, "utf8"));
+      if (j && j.transcription && j.transcription.length > 0) {
+        const t = j.transcription
+          .map((s) => s.text)
+          .join(" ")
+          .trim();
+        try {
+          fs.unlinkSync(outJson);
+        } catch (e) {}
+        try {
+          fs.unlinkSync(outBase + ".txt");
+        } catch (e) {}
+        return t;
+      }
+    } catch (e) {
+      console.warn("failed to parse whisper (partial) json", e);
+    }
+    return r.stdout ? r.stdout.trim() : "";
+  }
+
   const runLocalAssistantReply =
     deps.runLocalAssistantReply ||
     (async function runLocalAssistantReply(
@@ -4507,6 +4606,7 @@ function registerRoutes(app, upload, deps = {}) {
     getVisionStatus:
       deps.getVisionStatus || (() => llamaServerRuntime.getVisionStatus()),
     runWhisper: deps.runWhisper || runWhisper,
+    runWhisperPartial: deps.runWhisperPartial || runWhisperCliPartial,
     synthesizeReply: deps.synthesizeReply || synthesizeReply,
   });
 
