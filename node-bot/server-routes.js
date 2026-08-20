@@ -75,6 +75,7 @@ function registerCoreRoutes(app, upload, deps) {
     runVisionReply,
     getVisionStatus,
     runWhisper,
+    runWhisperPartial,
     synthesizeReply,
     clampText,
     SCREEN_CONTEXT_MAX_CHARS,
@@ -99,6 +100,24 @@ function registerCoreRoutes(app, upload, deps) {
 
       const { tmpPath, audioPath } = normalizeUploadedAudio(req.file);
       const transcript = runWhisper(audioPath);
+      cleanupUploadedAudio(tmpPath, audioPath);
+
+      return res.json({ transcript });
+    } catch (e) {
+      if (e instanceof ValidationError) {
+        return sendValidationError(res, e);
+      }
+      console.error(e);
+      return res.status(500).json({ error: String(e) });
+    }
+  });
+
+  app.post("/transcribe-partial", upload.single("file"), async (req, res) => {
+    try {
+      requireFile(req.file, "file");
+
+      const { tmpPath, audioPath } = normalizeUploadedAudio(req.file);
+      const transcript = await runWhisperPartial(audioPath);
       cleanupUploadedAudio(tmpPath, audioPath);
 
       return res.json({ transcript });
