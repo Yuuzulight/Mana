@@ -599,7 +599,13 @@ document.getElementById('themeToggle')?.addEventListener('click', (e) => {
             const playbackTokenAtStart = desktopReplyPlaybackToken;
             watchForBargeIn(
               () => currentChunkSource !== null && desktopReplyPlaybackToken === playbackTokenAtStart,
-              () => { if (currentChunkSource) currentChunkSource.stop(); stopStreamingReply(); },
+              () => {
+                if (currentChunkSource) currentChunkSource.stop();
+                stopStreamingReply();
+                handleDesktopBargeInTrigger().catch((e) =>
+                  console.warn('Barge-in interruption handling failed:', e.message),
+                );
+              },
             ).catch((e) => console.warn('Voice barge-in monitor failed:', e.message));
           }
         });
@@ -658,6 +664,30 @@ document.getElementById('themeToggle')?.addEventListener('click', (e) => {
   }
 
   let bargeInMonitor = null;
+
+  // Sub-project B: the streaming-chunk-queue currently backing playback, so
+  // a barge-in trigger can read its not-yet-played sentences. Set at the
+  // start of speakStreamingReply, cleared once that call's queue has
+  // genuinely drained or been superseded.
+  let activeStreamingQueue = null;
+
+  // { sentences: string[], stackDepth: 0|1 } while a reply is held mid-
+  // playback after a barge-in, else null.
+  let heldReply = null;
+
+  // Count of barge-in-triggered captures currently in flight (recording the
+  // interruption through classifying and acting on it) -- listenLoop must
+  // not start its own recording while this is > 0, since `replyInProgress`
+  // alone isn't reliably still true for that whole span (it flips false as
+  // soon as speakStreamingReply's now-superseded queue finishes unwinding,
+  // which can happen well before the interruption has finished being
+  // captured). A counter rather than a boolean: a nested interruption (see
+  // handleDesktopBargeInTrigger's wasNested branch) starts a second capture
+  // while the first is still winding down its own `handleTranscriptText`
+  // await, so two captures' windows can overlap -- a boolean would get set
+  // back to false by whichever one finishes first, letting listenLoop start
+  // a third, racing recording while the other capture is still in flight.
+  let bargeInCaptureCount = 0;
 
   // Ported from windows-launcher's watchForBargeIn(): while a reply chunk is
   // playing, polls the mic VAD and stops playback once speech has been
@@ -785,7 +815,13 @@ document.getElementById('themeToggle')?.addEventListener('click', (e) => {
           // against here (unlike windows-launcher's <audio> element, which
           // has three distinct terminal events -- ended/error/pause -- and
           // needs waitForPlayback's `settled` guard for that reason).
-          () => { if (currentChunkSource) currentChunkSource.stop(); stopStreamingReply(); },
+          () => {
+            if (currentChunkSource) currentChunkSource.stop();
+            stopStreamingReply();
+            handleDesktopBargeInTrigger().catch((e) =>
+              console.warn('Barge-in interruption handling failed:', e.message),
+            );
+          },
         ).catch((e) => console.warn('Voice barge-in monitor failed:', e.message));
       }
     });
@@ -802,6 +838,159 @@ document.getElementById('themeToggle')?.addEventListener('click', (e) => {
 
   function stopStreamingReply() {
     desktopReplyPlaybackToken += 1;
+  }
+
+  // Sub-project B: re-speaks a held reply's remaining sentences from the cut
+  // point, reusing the same one-ahead synthesize/play queue
+  // speakStreamingReply uses -- not a new playback primitive, just a second
+  // entry point into it, sourced from the held array instead of an NDJSON
+  // stream. Held state is text only; this re-synthesizes rather than
+  // replaying cached audio.
+  async function resumeHeldReply() {
+    const sentences = heldReply ? heldReply.sentences : null;
+    heldReply = null;
+    if (!sentences || sentences.length === 0) {
+      return;
+    }
+
+    stopStreamingReply();
+    const playbackToken = desktopReplyPlaybackToken;
+    const audioCtx = new AudioContext();
+    const queue = createDesktopStreamingChunkQueue({
+      synthesize: (text) => synthesizeAndDecodeChunk(text, audioCtx),
+      play: (audioBuffer, text) => playDecodedChunk(audioCtx, audioBuffer, text),
+      isCurrent: () => desktopReplyPlaybackToken === playbackToken,
+      onIdle: () => setSprite('idle'),
+    });
+    activeStreamingQueue = queue;
+    const runPromise = queue.run();
+    for (const sentence of sentences) {
+      queue.pushChunk(sentence);
+    }
+    queue.markDone();
+    await runPromise;
+    audioCtx.close().catch(() => {});
+    if (activeStreamingQueue === queue) {
+      activeStreamingQueue = null;
+    }
+  }
+
+  async function classifyBargeInText(text) {
+    try {
+      const response = await fetch('http://127.0.0.1:5005/barge-in/classify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text }),
+      });
+      if (!response.ok) {
+        return { category: 'unclassified' };
+      }
+      const data = await response.json();
+      return { category: data.category || 'unclassified' };
+    } catch (e) {
+      console.warn('Barge-in classify request failed:', e.message);
+      return { category: 'unclassified' };
+    }
+  }
+
+  // Acts on a classified interruption against the currently-held reply.
+  // `heldReply` must already be set (non-null) when this is called for the
+  // non-nested path -- see handleDesktopBargeInTrigger.
+  async function handleDesktopBargeInInterruption(category, transcript) {
+    // Captured once up front: a nested interruption's own capture window can
+    // overlap this one's `await handleTranscriptText` below (see
+    // bargeInCaptureCount's doc comment) and replace the module-global
+    // `heldReply` with a new hold before this call resumes -- comparing
+    // identity against `hold` rather than re-reading the global lets this
+    // dispatch stay correct regardless of that ordering.
+    const hold = heldReply;
+
+    if (category === 'correction') {
+      heldReply = null;
+      if (transcript) {
+        await handleTranscriptText(transcript);
+      }
+      return;
+    }
+
+    if (category === 'new_question') {
+      hold.stackDepth = 1;
+      if (transcript) {
+        // handleTranscriptText -> speakStreamingReply already awaits full
+        // playback of the inserted answer before returning, so resuming
+        // right after is safe -- no separate "wait for playback to finish"
+        // step needed.
+        await handleTranscriptText(transcript);
+      }
+      // A nested interruption during the line above discards heldReply
+      // itself (see handleDesktopBargeInTrigger's wasNested branch) -- only
+      // resume if it's still the same hold.
+      if (heldReply === hold) {
+        await resumeHeldReply();
+      }
+      return;
+    }
+
+    // backchannel or unclassified: resume from the cut point, no new turn.
+    await resumeHeldReply();
+  }
+
+  // Fired from watchForBargeIn's onTrigger once a trigger holds for
+  // BARGE_IN_HOLD_MS (the caller has already stopped the audible playback by
+  // this point -- see playDecodedChunk/speakReply's watchForBargeIn call
+  // sites). Captures the current reply's not-yet-played sentences, records
+  // the interruption immediately, transcribes and classifies it, then
+  // dispatches to resume/discard/insert.
+  async function handleDesktopBargeInTrigger() {
+    const wasNested = Boolean(heldReply && heldReply.stackDepth >= 1);
+    const heldSentences = activeStreamingQueue ? activeStreamingQueue.peekPending() : [];
+
+    if (wasNested) {
+      // A second interruption arrived while an inserted new-question answer
+      // was playing -- per the depth-1 cap, the outer held reply is
+      // discarded outright (not stacked); this interruption becomes a fresh
+      // top-level turn, no classification needed since there's nothing left
+      // to resume/discard against.
+      heldReply = null;
+      bargeInCaptureCount += 1;
+      try {
+        const blob = await recordUntilSilence();
+        if (!blob) return;
+        const transcript = await transcribeBlob(blob);
+        if (transcript) {
+          await handleTranscriptText(transcript);
+        }
+      } catch (e) {
+        console.warn('Barge-in interruption capture failed:', e.message);
+      } finally {
+        bargeInCaptureCount -= 1;
+      }
+      return;
+    }
+
+    if (heldSentences.length === 0) {
+      // Nothing left to hold -- equivalent to today's stop-and-discard; the
+      // normal listen loop picks up whatever comes next.
+      return;
+    }
+
+    heldReply = { sentences: heldSentences, stackDepth: 0 };
+    bargeInCaptureCount += 1;
+    try {
+      const blob = await recordUntilSilence();
+      if (!blob) {
+        await resumeHeldReply();
+        return;
+      }
+      const transcript = await transcribeBlob(blob);
+      const { category } = await classifyBargeInText(transcript);
+      await handleDesktopBargeInInterruption(category, transcript);
+    } catch (e) {
+      console.warn('Barge-in interruption capture failed:', e.message);
+      heldReply = null;
+    } finally {
+      bargeInCaptureCount -= 1;
+    }
   }
 
   // Replaces the fetch('/reply') -> res.json() -> speakReply flow at this
@@ -831,6 +1020,7 @@ document.getElementById('themeToggle')?.addEventListener('click', (e) => {
         isCurrent: () => desktopReplyPlaybackToken === playbackToken,
         onIdle: () => setSprite('idle'),
       });
+      activeStreamingQueue = queue;
       const runPromise = queue.run();
 
       let finalEvent = null;
@@ -861,6 +1051,9 @@ document.getElementById('themeToggle')?.addEventListener('click', (e) => {
       } finally {
         queue.markDone();
         await runPromise;
+        if (activeStreamingQueue === queue) {
+          activeStreamingQueue = null;
+        }
       }
 
       // Finding 6: this reply's audio queue has fully drained (every
@@ -1062,51 +1255,69 @@ document.getElementById('themeToggle')?.addEventListener('click', (e) => {
     statusEl.textContent = 'Processing...';
   }
 
+  // Issue #331: transcription and reply generation are now two calls
+  // instead of one -- /transcribe-only has no streaming equivalent (it's a
+  // plain multipart upload), so it just gets the transcript; the reply
+  // itself goes through /reply/stream (via speakStreamingReply) the same
+  // way sendTextMessage's does, so voice replies get the same
+  // early-audio-start pipelining as typed ones.
+  async function transcribeBlob(blob) {
+    const form = new FormData();
+    form.append('file', blob, 'voice.webm');
+    const resp = await fetch('http://127.0.0.1:5005/transcribe-only', { method: 'POST', body: form });
+    if (!resp.ok) {
+      const txt = await resp.text();
+      throw new Error('transcribe failed: ' + resp.status + ' ' + txt);
+    }
+    const j = await resp.json().catch(()=>null);
+    return j?.transcript || '';
+  }
+
+  // Shared by handleVoiceTurn (push-to-talk/continuous-listening) and the
+  // barge-in interruption dispatcher (Sub-project B) -- both end up with a
+  // known transcript string and need the exact same reply-generation
+  // handling.
+  async function handleTranscriptText(transcript) {
+    try{
+      appendMessage('user', transcript);
+      // Issue #331 review (Finding 1): append to the chat log as soon as
+      // the final event names the reply, not after speakStreamingReply
+      // resolves -- that await also waits for every queued chunk to
+      // finish *playing*.
+      const result = await speakStreamingReply(
+        {
+          text: transcript,
+          sessionId: ensureSessionId(),
+          presetId: selectedPresetId || undefined,
+        },
+        (finalEvent) => {
+          if (!finalEvent.error && finalEvent.reply) appendMessage('assistant', finalEvent.reply);
+        },
+      );
+      if (result.error) throw new Error(result.error);
+      statusEl.textContent = 'Idle';
+    } catch (e){
+      statusEl.textContent = 'Error';
+      await window.electronAPI.showError(String(e));
+      setSprite('idle');
+    }
+  }
+
   // Shared by push-to-talk (onRecordingStop) and continuous listening
   // (listenLoop) -- both produce a recorded utterance as a Blob and need
   // the exact same transcribe-then-reply handling.
   async function handleVoiceTurn(blob) {
-    try{
-      // Issue #331: transcription and reply generation are now two calls
-      // instead of one -- /transcribe-only has no streaming equivalent
-      // (it's a plain multipart upload), so it just gets the transcript;
-      // the reply itself goes through /reply/stream (via
-      // speakStreamingReply) the same way sendTextMessage's does, so voice
-      // replies get the same early-audio-start pipelining as typed ones.
-      const form = new FormData();
-      form.append('file', blob, 'voice.webm');
-      const resp = await fetch('http://127.0.0.1:5005/transcribe-only', { method: 'POST', body: form });
-      if (!resp.ok) {
-        const txt = await resp.text();
-        throw new Error('transcribe failed: ' + resp.status + ' ' + txt);
-      }
-      const j = await resp.json().catch(()=>null);
+    try {
+      const transcript = await transcribeBlob(blob);
       // Issue #331 review (Finding 1): only act on a genuinely non-empty
       // transcript. /transcribe-only returning nothing meaningful (empty
-      // string, or no j.transcript at all) must not reach the chat log or
+      // string, or no transcript at all) must not reach the chat log or
       // trigger a reply -- previously the else branch appended a raw
       // JSON.stringify(j) debug bubble for this case, which continuous
       // listening's no-speech recordings would otherwise hit constantly.
-      if (j?.transcript) {
-        appendMessage('user', j.transcript);
-        // Issue #331 review (Finding 1): append to the chat log as soon as
-        // the final event names the reply, not after speakStreamingReply
-        // resolves -- that await also waits for every queued chunk to
-        // finish *playing*.
-        const result = await speakStreamingReply(
-          {
-            text: j.transcript,
-            sessionId: ensureSessionId(),
-            presetId: selectedPresetId || undefined,
-          },
-          (finalEvent) => {
-            if (!finalEvent.error && finalEvent.reply) appendMessage('assistant', finalEvent.reply);
-          },
-        );
-        if (result.error) throw new Error(result.error);
+      if (transcript) {
+        await handleTranscriptText(transcript);
       }
-
-      statusEl.textContent = 'Idle';
     } catch (e){
       statusEl.textContent = 'Error';
       await window.electronAPI.showError(String(e));
@@ -1223,7 +1434,13 @@ document.getElementById('themeToggle')?.addEventListener('click', (e) => {
         // while this recording was already in progress -- stop now rather
         // than let the VAD keep picking up Mana's own TTS audio as "speech"
         // for up to MAX_UTTERANCE_MS, then submit that as the user's turn.
-        if (replyInProgress) {
+        // This must not abort our *own* barge-in capture, though -- only an
+        // *unrelated* reply starting elsewhere mid-recording should trigger
+        // it. replyInProgress can stay true for a few ticks after
+        // stopStreamingReply() while speakStreamingReply's now-superseded
+        // queue is still winding down, so bargeInCaptureCount === 0 gates
+        // this to genuinely unrelated replies.
+        if (replyInProgress && bargeInCaptureCount === 0) {
           noSpeechResult = true;
           if (localRecorder.state !== 'inactive') {
             localRecorder.stop();
@@ -1280,7 +1497,11 @@ document.getElementById('themeToggle')?.addEventListener('click', (e) => {
       // replyInProgress is set for the full duration of speakStreamingReply
       // (see its declaration above) -- covers both push-to-talk's and this
       // loop's own reply, so two recordings can never overlap a reply.
-      if (replyInProgress) {
+      // bargeInCaptureCount catches the gap between a barge-in stopping
+      // playback (replyInProgress can flip false within a few ticks) and
+      // that interruption's own capture/classify/dispatch actually finishing
+      // -- see its declaration above.
+      if (replyInProgress || bargeInCaptureCount > 0) {
         await wait(LISTEN_PAUSE_MS);
         continue;
       }
