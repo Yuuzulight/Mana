@@ -272,6 +272,30 @@ function getSileroVad() {
 let currentReplyAudio = null;
 let currentReplyUrl = null;
 let replyPlaybackToken = 0;
+
+// Sub-project B: the streaming-chunk-queue currently backing playback, so a
+// barge-in trigger can read its not-yet-played sentences. Set at the start
+// of playStreamingReply, cleared once that call's queue has genuinely
+// drained or been superseded -- see the `if (activeStreamingQueue === queue)`
+// guard there, which stops a newer call's reference from being stomped by
+// an older one's cleanup running late.
+let activeStreamingQueue = null;
+
+// { sentences: string[], stackDepth: 0|1 } while a reply is held mid-
+// playback after a barge-in, else null. stackDepth 1 means this hold is
+// "underneath" a currently-playing inserted new-question answer; a second
+// interruption while stackDepth is 1 discards this hold instead of nesting
+// (see handleBargeInTrigger).
+let heldReply = null;
+
+// True for the full span of a barge-in-triggered capture (recording the
+// interruption through classifying and acting on it) -- listenLoop must not
+// start its own recording during this window, since `processing` alone
+// isn't reliably still true for that whole span (it flips false as soon as
+// playStreamingReply's now-superseded queue finishes unwinding, which can
+// happen well before the interruption has finished being captured).
+let bargeInCaptureInProgress = false;
+
 let listening = false;
 let processing = false;
 let awake = false;
@@ -1071,6 +1095,145 @@ function stopReplyAudio() {
   setAvatarState("idle");
 }
 
+// Sub-project B: re-speaks a held reply's remaining sentences from the cut
+// point, reusing the same one-ahead synthesize/play queue playStreamingReply
+// uses -- not a new playback primitive, just a second entry point into it,
+// sourced from the held array instead of an NDJSON stream. Held state is
+// text only; this re-synthesizes rather than replaying cached audio.
+async function resumeHeldReply() {
+  const sentences = heldReply ? heldReply.sentences : null;
+  heldReply = null;
+  if (!sentences || sentences.length === 0) {
+    return;
+  }
+
+  stopReplyAudio();
+  const playbackToken = replyPlaybackToken;
+  const queue = createStreamingChunkQueue({
+    synthesize: (text) => synthesizeSpeechChunk(0, [text], playbackToken),
+    play: (audioBlob, text) =>
+      playAudioBlob(audioBlob, playbackToken, detectReplyEmotion(text), undefined),
+    isCurrent: () => replyPlaybackToken === playbackToken,
+    onIdle: () => setAvatarState("idle"),
+  });
+  activeStreamingQueue = queue;
+  const runPromise = queue.run();
+  for (const sentence of sentences) {
+    queue.pushChunk(sentence);
+  }
+  queue.markDone();
+  await runPromise;
+  if (activeStreamingQueue === queue) {
+    activeStreamingQueue = null;
+  }
+}
+
+async function classifyBargeInText(text) {
+  try {
+    const response = await fetch(`${BACKEND_BASE_URL}/barge-in/classify`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text }),
+    });
+    if (!response.ok) {
+      return { category: "unclassified" };
+    }
+    const data = await response.json();
+    return { category: data.category || "unclassified" };
+  } catch (e) {
+    console.warn("Barge-in classify request failed:", e.message);
+    return { category: "unclassified" };
+  }
+}
+
+// Acts on a classified interruption against the currently-held reply.
+// `heldReply` must already be set (non-null) when this is called for the
+// non-nested path -- see handleBargeInTrigger.
+async function handleBargeInInterruption(category, transcript, gamingModeActive) {
+  if (category === "correction") {
+    heldReply = null;
+    if (transcript) {
+      await handleTranscript(transcript, gamingModeActive);
+    }
+    return;
+  }
+
+  if (category === "new_question") {
+    heldReply.stackDepth = 1;
+    if (transcript) {
+      // handleTranscript -> requestScreenAwareReply -> playStreamingReply
+      // already awaits full playback of the inserted answer before
+      // returning, so resuming right after is safe -- no separate "wait for
+      // playback to finish" step needed.
+      await handleTranscript(transcript, gamingModeActive);
+    }
+    // A nested interruption during the line above discards heldReply itself
+    // (see handleBargeInTrigger's wasNested branch) -- only resume if it's
+    // still the same hold.
+    if (heldReply) {
+      await resumeHeldReply();
+    }
+    return;
+  }
+
+  // backchannel or unclassified: resume from the cut point, no new turn.
+  await resumeHeldReply();
+}
+
+// Fired from watchForBargeIn once a trigger holds for BARGE_IN_HOLD_MS.
+// Captures the current reply's not-yet-played sentences, records the
+// interruption immediately (not waiting for listenLoop's next cycle),
+// transcribes and classifies it, then dispatches to resume/discard/insert.
+async function handleBargeInTrigger() {
+  const wasNested = Boolean(heldReply && heldReply.stackDepth >= 1);
+  const heldSentences = activeStreamingQueue ? activeStreamingQueue.peekPending() : [];
+  stopReplyAudio();
+
+  if (wasNested) {
+    // A second interruption arrived while an inserted new-question answer
+    // was playing -- per the depth-1 cap, the outer held reply is discarded
+    // outright (not stacked); this interruption becomes a fresh top-level
+    // turn, no classification needed since there's nothing left to
+    // resume/discard against.
+    heldReply = null;
+    bargeInCaptureInProgress = true;
+    try {
+      const chunk = await recordUntilSilence();
+      const result = await transcribeBlob(chunk);
+      if (result.transcript) {
+        const gamingModeActive = await refreshGamingStatus();
+        await handleTranscript(result.transcript, gamingModeActive);
+      }
+    } catch (e) {
+      console.warn("Barge-in interruption capture failed:", e.message);
+    } finally {
+      bargeInCaptureInProgress = false;
+    }
+    return;
+  }
+
+  if (heldSentences.length === 0) {
+    // Nothing left to hold -- equivalent to today's stop-and-discard; the
+    // normal listen loop picks up whatever comes next.
+    return;
+  }
+
+  heldReply = { sentences: heldSentences, stackDepth: 0 };
+  bargeInCaptureInProgress = true;
+  try {
+    const chunk = await recordUntilSilence();
+    const result = await transcribeBlob(chunk);
+    const { category } = await classifyBargeInText(result.transcript || "");
+    const gamingModeActive = await refreshGamingStatus();
+    await handleBargeInInterruption(category, result.transcript, gamingModeActive);
+  } catch (e) {
+    console.warn("Barge-in interruption capture failed:", e.message);
+    heldReply = null;
+  } finally {
+    bargeInCaptureInProgress = false;
+  }
+}
+
 function splitReplyForSpeech(text) {
   const sentences = text
     .replace(/\s+/g, " ")
@@ -1198,7 +1361,9 @@ async function watchForBargeIn() {
         });
         speechStartedAt = state.speechStartedAt;
         if (state.triggered) {
-          stopReplyAudio();
+          handleBargeInTrigger().catch((e) =>
+            console.warn("Barge-in interruption handling failed:", e.message),
+          );
           break;
         }
       }
@@ -1354,6 +1519,7 @@ async function playStreamingReply(requestBody, preferredExpression, onFinal) {
     isCurrent: () => replyPlaybackToken === playbackToken,
     onIdle: () => setAvatarState("idle"),
   });
+  activeStreamingQueue = queue;
   const runPromise = queue.run();
 
   let finalEvent = null;
@@ -1395,6 +1561,9 @@ async function playStreamingReply(requestBody, preferredExpression, onFinal) {
     // chunk it was already synthesizing/playing, not the full backlog.
     queue.markDone();
     await runPromise;
+    if (activeStreamingQueue === queue) {
+      activeStreamingQueue = null;
+    }
   }
 
   const result = finalEvent || { reply: "", ttsConfigured: false };
@@ -2585,7 +2754,7 @@ async function handleTranscript(transcript, gamingModeActive = false) {
 async function listenLoop() {
   // Quick rundown: game mode only slows idle loops when a watched game process is running.
   while (listening) {
-    if (processing || currentReplyAudio) {
+    if (processing || currentReplyAudio || bargeInCaptureInProgress) {
       await wait(LISTEN_PAUSE_MS);
       continue;
     }
