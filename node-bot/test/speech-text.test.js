@@ -15,6 +15,27 @@ test("unmapped emojis are dropped instead of being read out", () => {
   assert.equal(normalizeSpeechText("🦑"), "");
 });
 
+test("fenced code blocks become a short spoken placeholder instead of being read symbol-by-symbol", () => {
+  assert.equal(
+    normalizeSpeechText("Here's the fix:\n```js\nfunction add(a, b) { return a + b; }\n```\nThat should work."),
+    "Here's the fix: code block That should work.",
+  );
+});
+
+test("a fenced code block with a language tag is still fully replaced", () => {
+  assert.equal(
+    normalizeSpeechText("```python\nprint('hi')\n```"),
+    "code block",
+  );
+});
+
+test("multiple fenced code blocks in one reply each become their own placeholder", () => {
+  assert.equal(
+    normalizeSpeechText("First:\n```\na()\n```\nThen:\n```\nb()\n```\nDone."),
+    "First: code block Then: code block Done.",
+  );
+});
+
 test("kaomojis become short spoken words", () => {
   assert.equal(normalizeSpeechText("Good morning! (＾▽＾)"), "Good morning! smile");
   assert.equal(normalizeSpeechText("That hurts (T_T)"), "That hurts sniff");

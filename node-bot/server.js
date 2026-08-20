@@ -316,6 +316,11 @@ const WHISPER_NO_SPEECH_THRESHOLD =
 const WHISPER_TEMPERATURE = process.env.WHISPER_TEMPERATURE || "0";
 const LLAMA_THREADS = Number(process.env.LLAMA_THREADS || 4);
 const LLAMA_MAX_TOKENS = Number(process.env.LLAMA_MAX_TOKENS || 180);
+// Coding replies run long -- a function plus explanation plus a usage
+// example routinely exceeds the 180-token budget sized for spoken
+// conversation, cutting code off mid-example. Casual/everyday replies stay
+// at LLAMA_MAX_TOKENS; only coding/developer mode gets the bigger budget.
+const LLAMA_MAX_TOKENS_CODING = Number(process.env.LLAMA_MAX_TOKENS_CODING || 768);
 const VTUBE_STUDIO_URL = process.env.VTUBE_STUDIO_URL || "ws://127.0.0.1:8001";
 const VTUBE_STUDIO_ENABLED = process.env.VTUBE_STUDIO_ENABLED !== "0";
 const VTUBE_STUDIO_REACTIONS_JSON =
@@ -3419,6 +3424,14 @@ function registerRoutes(app, upload, deps = {}) {
       assistantMode ||
       (inferred && inferred.mode) ||
       (normalizedModelProfile === "coding" ? "coding" : "everyday");
+    // Same coding/developer check the system-prompt selection below uses --
+    // every actual reply-generation call site in this function should use
+    // this instead of LLAMA_MAX_TOKENS directly, so coding replies stop
+    // getting cut off mid-example.
+    const effectiveMaxTokens =
+      mode === "coding" || mode === "developer"
+        ? LLAMA_MAX_TOKENS_CODING
+        : LLAMA_MAX_TOKENS;
 
     // Optional lightweight intent telemetry (enable with MANA_INTENT_TELEMETRY=1)
     try {
@@ -3836,7 +3849,7 @@ function registerRoutes(app, upload, deps = {}) {
       try {
         const openAiReply = await runOpenAIReply(
           finalPrompt,
-          LLAMA_MAX_TOKENS,
+          effectiveMaxTokens,
           selectedSystemPrompt + flatMemorySuffix,
         );
         if (openAiReply) {
@@ -4005,7 +4018,7 @@ function registerRoutes(app, upload, deps = {}) {
             promptText,
             mergedToolPolicy,
             {
-              maxTokens: LLAMA_MAX_TOKENS,
+              maxTokens: effectiveMaxTokens,
               profile: normalizedModelProfile,
               overrideSystemPrompt: selectedSystemPrompt,
               extraMessages: memoryExtraMessages,
@@ -4058,7 +4071,7 @@ function registerRoutes(app, upload, deps = {}) {
         firstPassStreamed = true;
         try {
           return await activeLlamaServerRuntime.streamLocalAssistantReply(promptText, {
-            maxTokens: LLAMA_MAX_TOKENS,
+            maxTokens: effectiveMaxTokens,
             profile: normalizedModelProfile,
             overrideSystemPrompt: selectedSystemPrompt,
             extraMessages: memoryExtraMessages,
@@ -4073,7 +4086,7 @@ function registerRoutes(app, upload, deps = {}) {
       }
       return runLocalAssistantReply(
         promptText,
-        LLAMA_MAX_TOKENS,
+        effectiveMaxTokens,
         normalizedModelProfile,
         selectedSystemPrompt,
         memoryExtraMessages,
@@ -4098,7 +4111,7 @@ function registerRoutes(app, upload, deps = {}) {
           const n = Number(process.env.MANA_BEST_OF_N_COUNT || 3);
           const result = await runBestOfNReply(promptText, {
             n,
-            maxTokens: LLAMA_MAX_TOKENS,
+            maxTokens: effectiveMaxTokens,
             profile: normalizedModelProfile,
             overrideSystemPrompt: selectedSystemPrompt + flatMemorySuffix,
           });
