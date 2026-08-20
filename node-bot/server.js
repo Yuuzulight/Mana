@@ -3322,22 +3322,73 @@ function registerRoutes(app, upload, deps = {}) {
     try {
       const j = JSON.parse(fs.readFileSync(outJson, "utf8"));
       if (j && j.transcription && j.transcription.length > 0) {
-        const t = j.transcription
+        return j.transcription
           .map((s) => s.text)
           .join(" ")
           .trim();
-        try {
-          fs.unlinkSync(outJson);
-        } catch (e) {}
-        try {
-          fs.unlinkSync(outBase + ".txt");
-        } catch (e) {}
-        return t;
       }
+      return r.stdout ? r.stdout.trim() : "";
     } catch (e) {
       console.warn("failed to parse whisper (partial) json", e);
+      return r.stdout ? r.stdout.trim() : "";
+    } finally {
+      // Runs on every path once outJson exists -- an empty transcription
+      // (routine on early, mostly-silent polls) or a parse failure must not
+      // leak the temp file; this endpoint is polled ~every 1.2s per
+      // recording, so a leak here compounds much faster than
+      // runWhisperCli's one-shot equivalent.
+      try {
+        fs.unlinkSync(outJson);
+      } catch (e) {}
+      try {
+        fs.unlinkSync(outBase + ".txt");
+      } catch (e) {}
     }
-    return r.stdout ? r.stdout.trim() : "";
+  }
+
+  // Async counterpart to normalizeUploadedAudio -- that function
+  // unconditionally spawnSync's ffmpeg on every call (no format
+  // short-circuit), which would block the event loop just as badly as the
+  // old synchronous whisper call did, defeating the point of
+  // runWhisperCliPartial being async. Used only by /transcribe-partial;
+  // normalizeUploadedAudio itself and its other callers (/transcribe-only,
+  // /transcribe) are untouched, same reasoning as spawnWhisperCliAsync
+  // above.
+  function normalizeUploadedAudioAsync(file) {
+    return new Promise((resolve) => {
+      if (!file) {
+        throw new Error("no file");
+      }
+      const tmpPath = file.path;
+      const ext = path.extname(file.originalname).toLowerCase();
+      const wavPath = tmpPath + ".wav";
+
+      const child = spawn("ffmpeg", ["-y", "-i", tmpPath, wavPath], {
+        windowsHide: true,
+      });
+      child.on("error", () => resolve(fallbackToCopy()));
+      child.on("close", (code) => {
+        if (code === 0) {
+          resolve({ tmpPath, audioPath: wavPath });
+        } else {
+          resolve(fallbackToCopy());
+        }
+      });
+
+      function fallbackToCopy() {
+        let audioPath = tmpPath;
+        if (ext) {
+          const copyPath = tmpPath + ext;
+          try {
+            fs.copyFileSync(tmpPath, copyPath);
+            audioPath = copyPath;
+          } catch (error) {
+            console.warn("could not copy file to preserve extension", error);
+          }
+        }
+        return { tmpPath, audioPath };
+      }
+    });
   }
 
   const runLocalAssistantReply =
@@ -4607,6 +4658,8 @@ function registerRoutes(app, upload, deps = {}) {
       deps.getVisionStatus || (() => llamaServerRuntime.getVisionStatus()),
     runWhisper: deps.runWhisper || runWhisper,
     runWhisperPartial: deps.runWhisperPartial || runWhisperCliPartial,
+    normalizeUploadedAudioAsync:
+      deps.normalizeUploadedAudioAsync || normalizeUploadedAudioAsync,
     synthesizeReply: deps.synthesizeReply || synthesizeReply,
   });
 

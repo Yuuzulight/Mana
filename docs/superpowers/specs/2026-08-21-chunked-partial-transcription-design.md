@@ -36,12 +36,24 @@ produces.
 
 ### 1. Backend — async whisper invocation
 
-Convert `runWhisperCli`'s `spawnSync` (`node-bot/server.js:3150`) to an
-async `spawn` wrapped in a Promise, resolving on process exit the same
-way `spawnSync`'s return value is used today (exit code, stdout, stderr,
-then reading the JSON output file). This is a prerequisite regardless of
-polling frequency — even the existing single call-per-utterance already
-blocks the server for its duration.
+**Updated after implementation review — this is what actually shipped,
+not the original plan.** `runWhisperCli`'s `spawnSync` is NOT converted
+in place. Investigation during implementation found it's shared by more
+callers than expected — `/transcribe-only`, `/transcribe`,
+`mobile-routes.js`, and `memory-inbox.js`, which has a code comment
+explicitly documenting `// options.runWhisper: required, (filePath) =>
+string (whisper.cpp is sync).` — converting the shared function would
+have silently broken that caller. Instead, a wholly separate
+`runWhisperCliPartial`/`spawnWhisperCliAsync` (async `spawn`, resolving
+on process exit) was added alongside the untouched original.
+
+A second, related blocking call was found and fixed the same way: the
+upload path both routes share, `normalizeUploadedAudio`
+(`node-bot/server.js:3382`), unconditionally `spawnSync`s `ffmpeg` on
+every call with no format short-circuit — converting only the whisper
+call left this one still blocking the event loop on every poll. A
+parallel `normalizeUploadedAudioAsync` was added the same way, used only
+by `/transcribe-partial`.
 
 ### 2. Backend — `POST /transcribe-partial`
 
@@ -66,6 +78,16 @@ Inside `recordUntilSilence`'s existing tick loop, add a second timer
   skips that poll silently — never blocks or delays the actual
   recording/stop-detection logic (`shouldStopRecording`'s own timing is
   completely unaffected by this).
+- Uses a single `AbortController` created once per `recordUntilSilence`
+  call, aborted in `cleanup()` — so a poll still in flight when recording
+  stops doesn't keep running (and competing for CPU with the real final
+  transcription about to start) after the caller has stopped waiting on
+  it. Added during implementation review; not in the original plan.
+  Deliberately scoped to the client side only — killing the
+  server-side whisper-cli/ffmpeg child process on abort is a follow-up,
+  not done here (needs more careful engineering to avoid a
+  double-response race, and the harm of not doing it — brief CPU
+  contention, self-resolving in ~1-2s — is bounded).
 
 ### 4. Visible deliverable for this sub-project alone
 
@@ -77,18 +99,34 @@ callback/state plumbing Sub-project B's classifier will consume later.
 
 ## Testing
 
-- Async whisper invocation: unit test that the promise-wrapped `spawn`
-  resolves with the same shape `spawnSync` did (exit code, stdout,
-  parsed JSON transcript), tested against a real short audio fixture,
-  matching how `runWhisperCli`'s existing behavior would already need
-  fixture-based testing.
 - `POST /transcribe-partial`: route test matching
   `barge-in-classify-route.test.js`'s `createApp`/`withServer` pattern —
-  valid upload returns a transcript, missing file returns 400.
-- Renderer polling loop: no automated coverage, matching this codebase's
-  established precedent for `recordUntilSilence`'s own live-recording
-  logic (no test infrastructure exists for MediaRecorder-driven timing
-  in either app) — verified via manual run.
+  valid upload returns a transcript, missing file returns 400, a thrown
+  whisper error returns 500. `runWhisperPartial` is mocked here — this
+  tests the route layer, not the real whisper invocation.
+- The real `runWhisperCliPartial`/`spawnWhisperCliAsync` pipeline: a
+  separate test (`transcribe-partial-real-whisper.test.js`) with no mock,
+  uploading a programmatically-generated short silent WAV (not a
+  committed binary fixture, and not pointed at `node-bot/tmp/`, which is
+  gitignored scratch that could vanish) through the real endpoint —
+  exercises the async spawn, arg construction, JSON-wait loop, and
+  parse/cleanup logic end to end. Skips gracefully (does not fail) in a
+  checkout without the vendored whisper.cpp binary/model, since those are
+  large gitignored files not guaranteed present in every environment
+  (e.g. a fresh git worktree).
+- Temp-file cleanup (`outJson`, `outBase + ".txt"`, and the uploaded
+  audio itself) happens in a `finally` on every code path, not just the
+  success path — this endpoint is polled repeatedly per recording
+  (~16 times for a full-length utterance), so a leak on the routine
+  "empty transcription" case compounds far faster than
+  `runWhisperCli`'s one-shot equivalent would.
+- Renderer polling loop itself: no automated coverage. This is NOT
+  because `recordUntilSilence`'s logic is untested in general —
+  `shouldStopRecording`, the pure decision function it's built on, has
+  16 unit tests in both apps (`voice-endpointing.test.js`), precisely
+  because it was extracted for testability. The untested part is
+  specifically the `MediaRecorder`/timer wiring around it, which has no
+  test infrastructure in either app — verified via manual run instead.
 
 ## Explicitly out of scope
 

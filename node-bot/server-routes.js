@@ -76,6 +76,7 @@ function registerCoreRoutes(app, upload, deps) {
     getVisionStatus,
     runWhisper,
     runWhisperPartial,
+    normalizeUploadedAudioAsync,
     synthesizeReply,
     clampText,
     SCREEN_CONTEXT_MAX_CHARS,
@@ -113,12 +114,12 @@ function registerCoreRoutes(app, upload, deps) {
   });
 
   app.post("/transcribe-partial", upload.single("file"), async (req, res) => {
+    let tmpPath, audioPath;
     try {
       requireFile(req.file, "file");
 
-      const { tmpPath, audioPath } = normalizeUploadedAudio(req.file);
+      ({ tmpPath, audioPath } = await normalizeUploadedAudioAsync(req.file));
       const transcript = await runWhisperPartial(audioPath);
-      cleanupUploadedAudio(tmpPath, audioPath);
 
       return res.json({ transcript });
     } catch (e) {
@@ -127,6 +128,14 @@ function registerCoreRoutes(app, upload, deps) {
       }
       console.error(e);
       return res.status(500).json({ error: String(e) });
+    } finally {
+      // Cleanup must run whether runWhisperPartial succeeded or threw --
+      // this endpoint is polled repeatedly per recording, so a leaked
+      // upload on every failed poll compounds far faster than
+      // /transcribe-only's one-shot equivalent.
+      if (tmpPath || audioPath) {
+        cleanupUploadedAudio(tmpPath, audioPath);
+      }
     }
   });
 
