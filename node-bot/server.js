@@ -2526,6 +2526,45 @@ function registerRoutes(app, upload, deps = {}) {
     }
   });
 
+  // Barge-in interruption classifier, required once at startup (matches the
+  // classifyIntent pattern above) so a module-resolution failure surfaces
+  // at startup instead of as a per-request 500.
+  const { classifyBargeIn } = require("./utils/barge-in-classifier");
+
+  app.post("/barge-in/classify", (req, res) => {
+    const { text } = req.body || {};
+    if (text === undefined || typeof text !== "string") {
+      return res.status(400).json({
+        success: false,
+        error: "Bad Request",
+        message:
+          "Missing or invalid 'text' property in the JSON body payload.",
+      });
+    }
+
+    try {
+      const evaluation = classifyBargeIn(text);
+      return res.status(200).json(
+        Object.assign(
+          {
+            success: true,
+            input_length: text.length,
+          },
+          evaluation,
+        ),
+      );
+    } catch (err) {
+      console.error(
+        "🚨 [/barge-in/classify] Router checkpoint failed:",
+        err?.message || err,
+      );
+      return res.status(500).json({
+        success: false,
+        error: "Internal Server Error",
+      });
+    }
+  });
+
   // Admin endpoints for file write approvals
   const PENDING_DIR =
     process.env.MANA_PENDING_WRITES_DIR ||
