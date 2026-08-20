@@ -912,6 +912,20 @@ document.getElementById('themeToggle')?.addEventListener('click', (e) => {
     // dispatch stay correct regardless of that ordering.
     const hold = heldReply;
 
+    if (category === 'amend') {
+      // Same shape as correction (discard, no resume -- the amended reply
+      // replaces what was being said, it doesn't supplement it), except the
+      // transcript is wrapped so the model steers using the original reply
+      // it already has in session history (see the design doc's Key Finding:
+      // buildAssistantReply appends the full reply to session history before
+      // /reply/stream's final event, well before any barge-in can fire).
+      heldReply = null;
+      if (transcript) {
+        await handleTranscriptText(`(amending what you just said) ${transcript}`);
+      }
+      return;
+    }
+
     if (category === 'correction') {
       heldReply = null;
       if (transcript) {
