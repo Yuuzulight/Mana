@@ -3487,18 +3487,39 @@ function registerRoutes(app, upload, deps = {}) {
       // ignore failures here
     }
 
-    // Always-visible skill index (see buildSkillsIndexBlock above).
+    // Foundational tool-calling (issue #51), opt-in and scoped to the one
+    // profile that's actually been verified to emit reliable tool_calls
+    // (Qwen3-4B / "default" -- see docs/roadmap/issue-51-tool-calling.md).
+    // Hoisted above the skills-index block below: that block must not
+    // advertise skill__view unless this same condition lets the model
+    // actually call it (see the block's own comment for why).
+    const toolCallingEnabled =
+      String(process.env.MANA_TOOL_CALLING_ENABLED || "0") === "1";
+
+    // Always-visible skill index (see buildSkillsIndexBlock above) -- but
+    // only when tool-calling can actually act on it. The index advertises
+    // skill__view; outside the exact condition replyMaybeWithTools checks
+    // below, no reply path can invoke it, and a model told about a tool it
+    // can't call tends to narrate the call as plain text instead of either
+    // answering normally or invoking nothing (observed: "Skill needed:
+    // X\nCalling skill__view with name: X" leaking into a plain reply).
     // activeSkillsStore, not the module-level skillsStore singleton --
     // otherwise this would silently bypass a test's (or any future caller's)
     // deps.skillsStore override, the exact trap already called out where
     // activeSkillsStore is defined above.
-    try {
-      const skillsIndexBlock = buildSkillsIndexBlock(activeSkillsStore.listSkills());
-      if (skillsIndexBlock) {
-        selectedSystemPrompt = `${selectedSystemPrompt}\n\n${skillsIndexBlock}`;
+    if (
+      toolCallingEnabled &&
+      normalizedModelProfile === "default" &&
+      isLlamaServerAvailable()
+    ) {
+      try {
+        const skillsIndexBlock = buildSkillsIndexBlock(activeSkillsStore.listSkills());
+        if (skillsIndexBlock) {
+          selectedSystemPrompt = `${selectedSystemPrompt}\n\n${skillsIndexBlock}`;
+        }
+      } catch (e) {
+        // ignore failures here
       }
-    } catch (e) {
-      // ignore failures here
     }
 
     // Issue #282: memory (session summary/recent-turns, cross-session
@@ -3861,13 +3882,10 @@ function registerRoutes(app, upload, deps = {}) {
       }
     }
 
-    // Foundational tool-calling (issue #51), opt-in and scoped to the one
-    // profile that's actually been verified to emit reliable tool_calls
-    // (Qwen3-4B / "default" -- see docs/roadmap/issue-51-tool-calling.md).
-    // Any failure or empty result falls straight back to the plain path
-    // rather than surfacing a broken reply.
-    const toolCallingEnabled =
-      String(process.env.MANA_TOOL_CALLING_ENABLED || "0") === "1";
+    // toolCallingEnabled is declared earlier, alongside the skills-index
+    // gate above -- both need the same condition. Any failure or empty
+    // result from the tool-aware attempt below falls straight back to the
+    // plain path rather than surfacing a broken reply.
     // Captured here rather than threaded through replyMaybeWithBestOfN's and
     // the verify/retry loop's return values (both currently just `string`)
     // -- issue #153 needs whatever tool calls actually produced the reply
