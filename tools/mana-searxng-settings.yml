@@ -21,6 +21,14 @@ search:
 engines:
   - name: stackoverflow
     categories: ['it', 'q&a', 'general']
+  # Wikidata's own SPARQL endpoint init call (init_wikidata_properties)
+  # returns HTTP 403 for this instance -- SearXNG doesn't degrade
+  # gracefully when one engine's init fails, it 500s every search
+  # request instead of just skipping the broken engine. Disabling it
+  # here rather than patching vendored searx/settings.yml, which
+  # setup-searxng.ps1 would overwrite on a fresh clone.
+  - name: wikidata
+    disabled: true
 
 server:
   port: 8890

@@ -11,6 +11,17 @@ accounting.
 
 ## [Unreleased]
 
+- Added streaming text-to-speech (issue #331): Mana's reply used to be generated in
+  full, then synthesized and played back only once the whole thing was done -- now
+  a new `POST /reply/stream` NDJSON route splits the LLM's reply into sentences as
+  they're generated, and both apps synthesize and queue each sentence for playback
+  the moment it arrives instead of waiting for the full reply first, so audio (and,
+  as of the same review pass, the chat log text) starts noticeably sooner on longer
+  replies. Implemented in both `windows-launcher` and `desktop-client`, each with
+  its own one-ahead pipelining playback queue (`renderer/streaming-chunk-queue.js`
+  in both apps) that synthesizes the next sentence while the current one is still
+  playing, and falls back to the old synthesize-the-whole-reply-at-once path if a
+  verification/retry pass rewrites the reply after streaming already started.
 - Added `node-bot/service/check-mana-service.ps1` (issue #326): one-shot health
   summary for the NSSM-managed `ManaNodeBot` service -- `Get-Service` status,
   `/health`, and a per-check `/doctor` summary -- without opening either
