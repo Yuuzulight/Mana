@@ -149,6 +149,48 @@ test("markDone() with an empty queue (nothing ever pushed) does not hang and ski
   assert.equal(q.idleCalls(), 0);
 });
 
+test("peekPending() returns a snapshot of chunks not yet dequeued, without draining them", async () => {
+  const q = makeQueue();
+  q.queue.pushChunk("first");
+  q.queue.pushChunk("second");
+  q.queue.pushChunk("third");
+
+  const runPromise = q.queue.run();
+  await flushMicrotasks();
+  // "first" was dequeued and handed to synthesize(); "second"/"third" remain.
+  assert.deepEqual(q.queue.peekPending(), ["second", "third"]);
+
+  q.queue.cancelPending();
+  q.resolveSynth("first", "first-audio");
+  await runPromise;
+});
+
+test("peekPending() on an empty, not-yet-started queue returns an empty array", () => {
+  const q = makeQueue();
+  assert.deepEqual(q.queue.peekPending(), []);
+});
+
+test("peekPending() includes the in-flight (dequeued-but-not-yet-played) chunk, not just pending", async () => {
+  const q = makeQueue();
+  q.queue.pushChunk("first");
+  q.queue.pushChunk("second");
+  q.queue.pushChunk("third");
+
+  const runPromise = q.queue.run();
+  await flushMicrotasks();
+  // "first" is synthesizing (inFlight). Resolve it so run() dequeues "second"
+  // into inFlight and starts playing "first".
+  q.resolveSynth("first", "first-audio");
+  await flushMicrotasks();
+  // At this point "first" is playing, "second" has been dequeued into
+  // inFlight (no longer in `pending`), "third" is still in `pending`.
+  assert.deepEqual(q.queue.peekPending(), ["second", "third"]);
+
+  q.queue.cancelPending();
+  q.resolveSynth("second", "second-audio");
+  await runPromise;
+});
+
 test("run() stops silently once isCurrent() flips false, without calling onIdle", async () => {
   let current = true;
   const q = makeQueue({ isCurrent: () => current });
