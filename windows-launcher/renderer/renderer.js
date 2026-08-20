@@ -139,6 +139,12 @@ const GAMING_MAX_WAIT_FOR_SPEECH_MS = DEFAULT_GAMING_MAX_WAIT_FOR_SPEECH_MS;
 const MAX_UTTERANCE_MS = DEFAULT_MAX_UTTERANCE_MS;
 // How often the live silence-detection meter samples audio energy.
 const SILENCE_METER_INTERVAL_MS = 150;
+// #341 Sub-project A: how often to snapshot the audio recorded so far and
+// poll for a partial transcript while the user is still speaking. Slower
+// than SILENCE_METER_INTERVAL_MS (150ms, the VAD tick) on purpose --
+// whisper-cli takes ~1-1.7s per call (benchmarked), so polling faster than
+// that would just pile up in-flight requests.
+const PARTIAL_TRANSCRIPT_POLL_MS = 1200;
 const GAMING_STATUS_POLL_MS = 5000;
 const PERF_STATUS_POLL_MS = 3000;
 const AUTO_LISTEN_RETRY_MS = 1500;
@@ -1776,6 +1782,8 @@ async function recordUntilSilence({
     let hasHeardSpeech = false;
     let lastSpeechAt = 0;
     let meterTimer = null;
+    let partialTimer = null;
+    let partialPollInFlight = false;
     let stopped = false;
     const startedAt = performance.now();
 
@@ -1785,10 +1793,49 @@ async function recordUntilSilence({
         clearTimeout(meterTimer);
         meterTimer = null;
       }
+      if (partialTimer !== null) {
+        clearInterval(partialTimer);
+        partialTimer = null;
+      }
       try {
         source.disconnect();
       } catch (e) {}
       audioCtx.close().catch(() => {});
+    }
+
+    // #341 Sub-project A: snapshots whatever's been recorded so far and
+    // polls for a partial transcript, updating the live status text. A
+    // failed or slow poll is silently skipped -- this never blocks or
+    // delays tick()'s actual stop-detection logic below. Both this and
+    // tick() write statusEl.textContent independently; whichever fires
+    // last wins, self-correcting each cycle -- an accepted simplification,
+    // not a bug, since this is a live status indicator, not a source of
+    // truth for anything.
+    async function pollPartialTranscript() {
+      if (stopped || partialPollInFlight || chunks.length === 0) {
+        return;
+      }
+      partialPollInFlight = true;
+      try {
+        const snapshot = new Blob(chunks, { type: "audio/webm" });
+        const form = new FormData();
+        form.append("file", snapshot, "partial.webm");
+        const response = await fetch(`${BACKEND_BASE_URL}/transcribe-partial`, {
+          method: "POST",
+          body: form,
+        });
+        if (!response.ok || stopped) {
+          return;
+        }
+        const data = await response.json();
+        if (data.transcript && !stopped) {
+          statusEl.textContent = `Hearing: "${data.transcript}"`;
+        }
+      } catch (e) {
+        console.warn("Partial transcript poll failed:", e.message);
+      } finally {
+        partialPollInFlight = false;
+      }
     }
 
     recorder.ondataavailable = (event) => {
@@ -1808,6 +1855,7 @@ async function recordUntilSilence({
     // A short timeslice keeps dataavailable events flowing so audio isn't
     // lost if recording stops earlier than a browser's default flush cadence.
     recorder.start(SILENCE_METER_INTERVAL_MS);
+    partialTimer = setInterval(pollPartialTranscript, PARTIAL_TRANSCRIPT_POLL_MS);
 
     // Self-scheduling instead of setInterval: VAD inference is async, and
     // this guarantees one tick's inference finishes before the next tick
