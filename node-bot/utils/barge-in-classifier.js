@@ -1,11 +1,11 @@
 /**
  * Classifies a transcribed barge-in interruption so the caller can decide
- * whether to resume the reply that was cut off, discard it, or answer the
- * interruption and then resume. Matches intent-classifier.js's style:
- * ordered keyword lists, .includes() checks, explicit fallback.
+ * whether to resume the reply that was cut off, discard it, amend it, or
+ * answer the interruption and then resume. Matches intent-classifier.js's
+ * style: ordered keyword lists, .includes() checks, explicit fallback.
  *
  * @param {string} text
- * @returns {{ category: 'backchannel'|'correction'|'new_question'|'unclassified', reason: string }}
+ * @returns {{ category: 'amend'|'backchannel'|'correction'|'new_question'|'unclassified', reason: string }}
  */
 function classifyBargeIn(text) {
   if (!text || typeof text !== "string") {
@@ -21,7 +21,22 @@ function classifyBargeIn(text) {
   const matchesKeyword = (keyword) =>
     keyword.includes(" ") ? textLower.includes(keyword) : words.includes(keyword);
 
-  // 1. Correction/stop keywords -- checked first (fast-path) so a sentence
+  // 1. Amend keywords -- checked first, ahead of correction, so a same-topic
+  // clarification ("no, the other file") steers the reply instead of being
+  // treated as a full stop. Deliberately narrow (no "i meant") -- a broader
+  // match would swallow the existing correction phrasing "that's not what
+  // I meant" (its "...what i meant" tail contains "i meant" as a substring).
+  const amendKeywords = [
+    "the other",
+    "not that",
+    "not this",
+  ];
+  const matchedAmend = amendKeywords.find(matchesKeyword);
+  if (matchedAmend) {
+    return { category: "amend", reason: `matched_amend_keyword (${matchedAmend})` };
+  }
+
+  // 2. Correction/stop keywords -- checked next (fast-path) so a sentence
   // that also happens to contain a question word ("wait, is that right")
   // still stops the reply instead of being treated as a new question.
   const correctionKeywords = [
@@ -38,7 +53,7 @@ function classifyBargeIn(text) {
     return { category: "correction", reason: `matched_correction_keyword (${matchedCorrection})` };
   }
 
-  // 2. New-question heuristic: starts with a question word, or ends in "?".
+  // 3. New-question heuristic: starts with a question word, or ends in "?".
   const questionWords = [
     "what",
     "why",
@@ -58,7 +73,7 @@ function classifyBargeIn(text) {
     return { category: "new_question", reason: "question_shape" };
   }
 
-  // 3. Backchannel keywords.
+  // 4. Backchannel keywords.
   const backchannelKeywords = [
     "mhm",
     "yeah",
@@ -75,7 +90,7 @@ function classifyBargeIn(text) {
     return { category: "backchannel", reason: `matched_backchannel_keyword (${matchedBackchannel})` };
   }
 
-  // 4. Default: short utterances (<=3 words) are treated the same as a
+  // 5. Default: short utterances (<=3 words) are treated the same as a
   // backchannel (resume-worthy, matches "mhm"/"right"/"sure" that slipped
   // past the keyword list) -- longer text that matched nothing is very
   // likely a real request ("set a timer", "play some music"), and treating
