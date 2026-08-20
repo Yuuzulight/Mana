@@ -237,10 +237,12 @@ document.getElementById('themeToggle')?.addEventListener('click', (e) => {
   const {
     shouldStopRecording,
     nextBargeInState,
+    dbfsFromSamples,
     DEFAULT_MAX_WAIT_FOR_SPEECH_MS: MAX_WAIT_FOR_SPEECH_MS,
     DEFAULT_SILENCE_BUFFER_MS: SILENCE_BUFFER_MS,
     DEFAULT_MAX_UTTERANCE_MS: MAX_UTTERANCE_MS,
     DEFAULT_BARGE_IN_HOLD_MS: BARGE_IN_HOLD_MS,
+    DEFAULT_BARGE_IN_MIN_DBFS: BARGE_IN_MIN_DBFS,
   } = window.ManaVoiceEndpointing;
 
   // process.env isn't available here (nodeIntegration:false, unlike
@@ -712,8 +714,11 @@ document.getElementById('themeToggle')?.addEventListener('click', (e) => {
             isSpeech = false;
           }
 
+          const isLoudEnough = dbfsFromSamples(samples) >= BARGE_IN_MIN_DBFS;
+
           const state = nextBargeInState({
             isSpeech,
+            isLoudEnough,
             speechStartedAt,
             now: performance.now(),
             holdMs: BARGE_IN_HOLD_MS,
