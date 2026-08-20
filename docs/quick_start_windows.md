@@ -40,7 +40,7 @@ Project goal
    - If `WHISPER_BIN` is unset or wrong, Mana will also try common local paths under `tools\whisper\`.
    - `WHISPER_PROMPT` helps Whisper understand accents, wake words, and common local phrasing.
    - For Singaporean-accent recognition, `ggml-base.en.bin` or `ggml-small.en.bin` should be more accurate than `ggml-tiny.en.bin`.
-   - `$env:WHISPER_MODEL_PROFILE = "small"` (`tiny`/`base`/`small`/`medium`) picks a size tier by name instead of a raw file path, if you keep more than one model under `tools\whisper\models`. Smaller is faster but less accurate; falls back to whatever's actually present if the requested tier's file isn't there.
+   - `$env:WHISPER_MODEL_PROFILE = "small"` (`tiny`/`base`/`small`/`medium`/`turbo`) picks a size tier by name instead of a raw file path, if you keep more than one model under `tools\whisper\models`. Smaller is faster but less accurate; `turbo` (`large-v3-turbo`) trades some of that speed back for closer-to-large accuracy. Falls back to whatever's actually present if the requested tier's file isn't there.
    - `LLAMA_BIN` should point to the Llama CLI executable you want to use.
    - `TTS_PROVIDER=kokoro` tells Mana to use the faster Kokoro ONNX service.
    - `TTS_PROVIDER=fish` (the default) tells Mana to call a separately running Fish Speech server; see docs/fish_speech_tts.md.
