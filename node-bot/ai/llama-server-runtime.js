@@ -149,7 +149,7 @@ function createLlamaServerRuntime(options = {}) {
     );
     const candidates = ggufs.filter((fullPath) => {
       if (isMmprojFile(fullPath)) return false;
-      return /(^|[-_.])(vl|vision|llava|minicpm-v|moondream|gemma-3)/i.test(
+      return /(^|[-_.])(vl|vision|llava|minicpm-v|moondream|gemma-3|gemma-4)/i.test(
         path.basename(fullPath),
       );
     });
@@ -162,6 +162,7 @@ function createLlamaServerRuntime(options = {}) {
     // Prefer smaller, well-supported models first.
     const preferenceOrder = [
       "qwen2.5-vl-3b",
+      "gemma-4",
       "qwen2.5-vl",
       "minicpm-v",
       "gemma-3",
