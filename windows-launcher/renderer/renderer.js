@@ -1784,6 +1784,13 @@ async function recordUntilSilence({
     let meterTimer = null;
     let partialTimer = null;
     let partialPollInFlight = false;
+    // Plumbing for #341 Sub-project B's classifier, not yet consumed by
+    // anything -- kept in sync with the status text below.
+    let partialTranscript = "";
+    // Aborted in cleanup() so an in-flight poll doesn't keep running (and
+    // competing for CPU with the real /transcribe-only call about to
+    // start) after the recording it was polling for has already ended.
+    const partialAbortController = new AbortController();
     let stopped = false;
     const startedAt = performance.now();
 
@@ -1797,6 +1804,7 @@ async function recordUntilSilence({
         clearInterval(partialTimer);
         partialTimer = null;
       }
+      partialAbortController.abort();
       try {
         source.disconnect();
       } catch (e) {}
@@ -1823,16 +1831,20 @@ async function recordUntilSilence({
         const response = await fetch(`${BACKEND_BASE_URL}/transcribe-partial`, {
           method: "POST",
           body: form,
+          signal: partialAbortController.signal,
         });
         if (!response.ok || stopped) {
           return;
         }
         const data = await response.json();
         if (data.transcript && !stopped) {
+          partialTranscript = data.transcript;
           statusEl.textContent = `Hearing: "${data.transcript}"`;
         }
       } catch (e) {
-        console.warn("Partial transcript poll failed:", e.message);
+        if (e.name !== "AbortError") {
+          console.warn("Partial transcript poll failed:", e.message);
+        }
       } finally {
         partialPollInFlight = false;
       }

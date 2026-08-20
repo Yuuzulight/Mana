@@ -1431,6 +1431,13 @@ document.getElementById('themeToggle')?.addEventListener('click', (e) => {
       let meterTimer = null;
       let partialTimer = null;
       let partialPollInFlight = false;
+      // Plumbing for #341 Sub-project B's classifier, not yet consumed by
+      // anything -- kept in sync with the status text below.
+      let partialTranscript = "";
+      // Aborted in cleanup() so an in-flight poll doesn't keep running
+      // (and competing for CPU with the real final transcription about to
+      // start) after the recording it was polling for has already ended.
+      const partialAbortController = new AbortController();
       let stopped = false;
       let noSpeechResult = false;
       const startedAt = performance.now();
@@ -1445,6 +1452,7 @@ document.getElementById('themeToggle')?.addEventListener('click', (e) => {
           clearInterval(partialTimer);
           partialTimer = null;
         }
+        partialAbortController.abort();
         try {
           source.disconnect();
         } catch (e) {}
@@ -1467,16 +1475,20 @@ document.getElementById('themeToggle')?.addEventListener('click', (e) => {
           const response = await fetch('http://127.0.0.1:5005/transcribe-partial', {
             method: 'POST',
             body: form,
+            signal: partialAbortController.signal,
           });
           if (!response.ok || stopped) {
             return;
           }
           const data = await response.json();
           if (data.transcript && !stopped) {
+            partialTranscript = data.transcript;
             statusEl.textContent = `Hearing: "${data.transcript}"`;
           }
         } catch (e) {
-          console.warn('Partial transcript poll failed:', e.message);
+          if (e.name !== 'AbortError') {
+            console.warn('Partial transcript poll failed:', e.message);
+          }
         } finally {
           partialPollInFlight = false;
         }
