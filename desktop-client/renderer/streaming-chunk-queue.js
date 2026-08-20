@@ -35,6 +35,12 @@ function createDesktopStreamingChunkQueue({ synthesize, play, isCurrent, onIdle 
   const pending = [];
   let waiter = null;
   let closed = false;
+  // Text of whichever chunk has been dequeued (out of `pending`) and handed
+  // to synthesizeChunk() but not yet passed to play() -- the one-ahead
+  // pipelining in run() below means this is *not* in `pending` by the time
+  // it's playing's turn is up next, so peekPending() has to report it
+  // separately or it silently vanishes from the not-yet-played snapshot.
+  let inFlightText = null;
 
   function pushChunk(text) {
     if (waiter) {
@@ -58,6 +64,10 @@ function createDesktopStreamingChunkQueue({ synthesize, play, isCurrent, onIdle 
   function cancelPending() {
     pending.length = 0;
     markDone();
+  }
+
+  function peekPending() {
+    return inFlightText !== null ? [inFlightText, ...pending] : pending.slice();
   }
 
   function nextChunk() {
@@ -87,6 +97,7 @@ function createDesktopStreamingChunkQueue({ synthesize, play, isCurrent, onIdle 
 
       const next = await nextChunk();
       inFlight = next.done ? null : synthesizeChunk(next.text);
+      inFlightText = next.done ? null : next.text;
 
       if (audioBuffer) {
         await play(audioBuffer, current.text);
@@ -103,7 +114,7 @@ function createDesktopStreamingChunkQueue({ synthesize, play, isCurrent, onIdle 
     }
   }
 
-  return { pushChunk, markDone, cancelPending, run };
+  return { pushChunk, markDone, cancelPending, peekPending, run };
 }
 
 const exportsObj = { createDesktopStreamingChunkQueue };
