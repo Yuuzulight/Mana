@@ -288,13 +288,19 @@ let activeStreamingQueue = null;
 // (see handleBargeInTrigger).
 let heldReply = null;
 
-// True for the full span of a barge-in-triggered capture (recording the
+// Count of barge-in-triggered captures currently in flight (recording the
 // interruption through classifying and acting on it) -- listenLoop must not
-// start its own recording during this window, since `processing` alone
-// isn't reliably still true for that whole span (it flips false as soon as
+// start its own recording while this is > 0, since `processing` alone isn't
+// reliably still true for that whole span (it flips false as soon as
 // playStreamingReply's now-superseded queue finishes unwinding, which can
-// happen well before the interruption has finished being captured).
-let bargeInCaptureInProgress = false;
+// happen well before the interruption has finished being captured). A
+// counter rather than a boolean: a nested interruption (see
+// handleBargeInTrigger's wasNested branch) starts a second capture while the
+// first is still winding down its own `handleTranscript` await, so two
+// captures' windows can overlap -- a boolean would get set back to false by
+// whichever one finishes first, letting listenLoop start a third, racing
+// recording while the other capture is still in flight.
+let bargeInCaptureCount = 0;
 
 let listening = false;
 let processing = false;
@@ -1150,6 +1156,14 @@ async function classifyBargeInText(text) {
 // `heldReply` must already be set (non-null) when this is called for the
 // non-nested path -- see handleBargeInTrigger.
 async function handleBargeInInterruption(category, transcript, gamingModeActive) {
+  // Captured once up front: a nested interruption's own capture window can
+  // overlap this one's `await handleTranscript` below (see
+  // bargeInCaptureCount's doc comment) and replace the module-global
+  // `heldReply` with a new hold before this call resumes -- comparing
+  // identity against `hold` rather than re-reading the global lets this
+  // dispatch stay correct regardless of that ordering.
+  const hold = heldReply;
+
   if (category === "correction") {
     heldReply = null;
     if (transcript) {
@@ -1159,7 +1173,7 @@ async function handleBargeInInterruption(category, transcript, gamingModeActive)
   }
 
   if (category === "new_question") {
-    heldReply.stackDepth = 1;
+    hold.stackDepth = 1;
     if (transcript) {
       // handleTranscript -> requestScreenAwareReply -> playStreamingReply
       // already awaits full playback of the inserted answer before
@@ -1170,7 +1184,7 @@ async function handleBargeInInterruption(category, transcript, gamingModeActive)
     // A nested interruption during the line above discards heldReply itself
     // (see handleBargeInTrigger's wasNested branch) -- only resume if it's
     // still the same hold.
-    if (heldReply) {
+    if (heldReply === hold) {
       await resumeHeldReply();
     }
     return;
@@ -1196,7 +1210,7 @@ async function handleBargeInTrigger() {
     // turn, no classification needed since there's nothing left to
     // resume/discard against.
     heldReply = null;
-    bargeInCaptureInProgress = true;
+    bargeInCaptureCount += 1;
     try {
       const chunk = await recordUntilSilence();
       const result = await transcribeBlob(chunk);
@@ -1207,7 +1221,7 @@ async function handleBargeInTrigger() {
     } catch (e) {
       console.warn("Barge-in interruption capture failed:", e.message);
     } finally {
-      bargeInCaptureInProgress = false;
+      bargeInCaptureCount -= 1;
     }
     return;
   }
@@ -1219,7 +1233,7 @@ async function handleBargeInTrigger() {
   }
 
   heldReply = { sentences: heldSentences, stackDepth: 0 };
-  bargeInCaptureInProgress = true;
+  bargeInCaptureCount += 1;
   try {
     const chunk = await recordUntilSilence();
     const result = await transcribeBlob(chunk);
@@ -1230,7 +1244,7 @@ async function handleBargeInTrigger() {
     console.warn("Barge-in interruption capture failed:", e.message);
     heldReply = null;
   } finally {
-    bargeInCaptureInProgress = false;
+    bargeInCaptureCount -= 1;
   }
 }
 
@@ -2754,7 +2768,7 @@ async function handleTranscript(transcript, gamingModeActive = false) {
 async function listenLoop() {
   // Quick rundown: game mode only slows idle loops when a watched game process is running.
   while (listening) {
-    if (processing || currentReplyAudio || bargeInCaptureInProgress) {
+    if (processing || currentReplyAudio || bargeInCaptureCount > 0) {
       await wait(LISTEN_PAUSE_MS);
       continue;
     }
