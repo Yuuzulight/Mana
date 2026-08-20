@@ -3,9 +3,11 @@ const test = require("node:test");
 
 const {
   DEFAULT_BARGE_IN_HOLD_MS,
+  DEFAULT_BARGE_IN_MIN_DBFS,
   DEFAULT_MAX_UTTERANCE_MS,
   DEFAULT_MAX_WAIT_FOR_SPEECH_MS,
   DEFAULT_SILENCE_BUFFER_MS,
+  dbfsFromSamples,
   nextBargeInState,
   shouldStopRecording,
 } = require("../renderer/voice-endpointing");
@@ -161,4 +163,55 @@ test("nextBargeInState respects a custom holdMs", () => {
     holdMs: 100,
   });
   assert.equal(triggered.triggered, true);
+});
+
+test("nextBargeInState does not start the hold timer on quiet speech-shaped noise", () => {
+  const state = nextBargeInState({
+    isSpeech: true,
+    isLoudEnough: false,
+    speechStartedAt: null,
+    now: 1000,
+  });
+  assert.equal(state.triggered, false);
+  assert.equal(state.speechStartedAt, null);
+});
+
+test("nextBargeInState resets an in-progress hold if a frame drops below the loudness floor", () => {
+  const first = nextBargeInState({ isSpeech: true, isLoudEnough: true, speechStartedAt: null, now: 1000 });
+  const quiet = nextBargeInState({
+    isSpeech: true,
+    isLoudEnough: false,
+    speechStartedAt: first.speechStartedAt,
+    now: 1100,
+  });
+  assert.equal(quiet.speechStartedAt, null);
+  assert.equal(quiet.triggered, false);
+});
+
+test("nextBargeInState's isLoudEnough defaults to true (existing callers unaffected)", () => {
+  const first = nextBargeInState({ isSpeech: true, speechStartedAt: null, now: 1000 });
+  const triggered = nextBargeInState({
+    isSpeech: true,
+    speechStartedAt: first.speechStartedAt,
+    now: 1000 + DEFAULT_BARGE_IN_HOLD_MS,
+  });
+  assert.equal(triggered.triggered, true);
+});
+
+test("dbfsFromSamples reads full-scale as 0 dBFS and silence as -Infinity", () => {
+  const loud = new Float32Array(4).fill(1);
+  assert.equal(dbfsFromSamples(loud), 0);
+
+  const silent = new Float32Array(4).fill(0);
+  assert.equal(dbfsFromSamples(silent), -Infinity);
+});
+
+test("dbfsFromSamples ranks a quieter buffer below a louder one", () => {
+  const quiet = new Float32Array(4).fill(0.01);
+  const loud = new Float32Array(4).fill(0.5);
+  assert.ok(dbfsFromSamples(quiet) < dbfsFromSamples(loud));
+});
+
+test("DEFAULT_BARGE_IN_MIN_DBFS sits between typical room noise and speech level", () => {
+  assert.ok(DEFAULT_BARGE_IN_MIN_DBFS < -20 && DEFAULT_BARGE_IN_MIN_DBFS > -60);
 });
