@@ -57,6 +57,10 @@ function createStreamingChunkQueue({ synthesize, play, isCurrent, onIdle }) {
     markDone();
   }
 
+  function peekPending() {
+    return pending.slice();
+  }
+
   function nextChunk() {
     if (pending.length) {
       return Promise.resolve({ text: pending.shift(), done: false });
@@ -113,7 +117,7 @@ function createStreamingChunkQueue({ synthesize, play, isCurrent, onIdle }) {
     }
   }
 
-  return { pushChunk, markDone, cancelPending, run };
+  return { pushChunk, markDone, cancelPending, peekPending, run };
 }
 
 module.exports = { createStreamingChunkQueue };
