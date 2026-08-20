@@ -954,7 +954,7 @@ document.getElementById('themeToggle')?.addEventListener('click', (e) => {
       heldReply = null;
       bargeInCaptureCount += 1;
       try {
-        const blob = await recordUntilSilence();
+        const blob = await recordUntilSilence({ isBargeInCapture: true });
         if (!blob) return;
         const transcript = await transcribeBlob(blob);
         if (transcript) {
@@ -977,7 +977,7 @@ document.getElementById('themeToggle')?.addEventListener('click', (e) => {
     heldReply = { sentences: heldSentences, stackDepth: 0 };
     bargeInCaptureCount += 1;
     try {
-      const blob = await recordUntilSilence();
+      const blob = await recordUntilSilence({ isBargeInCapture: true });
       if (!blob) {
         await resumeHeldReply();
         return;
@@ -1341,6 +1341,12 @@ document.getElementById('themeToggle')?.addEventListener('click', (e) => {
     maxWaitForSpeechMs = MAX_WAIT_FOR_SPEECH_MS,
     silenceBufferMs = SILENCE_BUFFER_MS,
     maxDurationMs = MAX_UTTERANCE_MS,
+    // True only for the specific recordUntilSilence() call that IS a
+    // barge-in's own capture (see handleDesktopBargeInTrigger) -- must not
+    // be inferred from module-scope bargeInCaptureCount > 0, which is true
+    // while *any* capture is in flight anywhere and would also bypass
+    // Finding 4 for an unrelated, already-running listenLoop recording.
+    isBargeInCapture = false,
   } = {}) {
     await ensureMediaStream();
 
@@ -1438,9 +1444,13 @@ document.getElementById('themeToggle')?.addEventListener('click', (e) => {
         // *unrelated* reply starting elsewhere mid-recording should trigger
         // it. replyInProgress can stay true for a few ticks after
         // stopStreamingReply() while speakStreamingReply's now-superseded
-        // queue is still winding down, so bargeInCaptureCount === 0 gates
-        // this to genuinely unrelated replies.
-        if (replyInProgress && bargeInCaptureCount === 0) {
+        // queue is still winding down, so isBargeInCapture (set only on the
+        // barge-in's own recordUntilSilence() call, not module-scope) gates
+        // this to genuinely unrelated replies -- a module-scope check here
+        // would also bypass Finding 4 for any other, unrelated
+        // recordUntilSilence() call (e.g. listenLoop's own) that happens to
+        // be running while a barge-in capture is in flight elsewhere.
+        if (replyInProgress && !isBargeInCapture) {
           noSpeechResult = true;
           if (localRecorder.state !== 'inactive') {
             localRecorder.stop();
