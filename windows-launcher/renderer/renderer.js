@@ -1237,7 +1237,7 @@ async function handleBargeInTrigger() {
   try {
     const chunk = await recordUntilSilence();
     const result = await transcribeBlob(chunk);
-    const { category } = await classifyBargeInText(result.transcript || "");
+    const { category } = await classifyBargeInText(cleanTranscriptText(result.transcript || ""));
     const gamingModeActive = await refreshGamingStatus();
     await handleBargeInInterruption(category, result.transcript, gamingModeActive);
   } catch (e) {
@@ -2704,6 +2704,7 @@ ipcRenderer.on("vision:hotkey", () => {
 // when a new reply supersedes an old one.
 ipcRenderer.on("interrupt-speech", () => {
   stopReplyAudio();
+  heldReply = null;
 });
 
 async function handleTranscript(transcript, gamingModeActive = false) {
@@ -2839,6 +2840,7 @@ function stopListening() {
   listenBtn.classList.remove("active");
   statusEl.textContent = "Stopped";
   stopReplyAudio();
+  heldReply = null;
 
   if (mediaStream) {
     mediaStream.getTracks().forEach((track) => track.stop());
