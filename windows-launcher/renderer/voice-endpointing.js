@@ -38,20 +38,50 @@ function shouldStopRecording({
 // same way `hasHeardSpeech`/`msSinceLastSpeech` are tracked above.
 const DEFAULT_BARGE_IN_HOLD_MS = 350;
 
-function nextBargeInState({ isSpeech, speechStartedAt, now, holdMs = DEFAULT_BARGE_IN_HOLD_MS }) {
-  if (!isSpeech) {
+// #340: below this loudness, a frame doesn't count toward the barge-in hold
+// timer even if VAD says it's speech -- filters out quiet room noise/breath
+// that Silero VAD sometimes false-positives on. -45 dBFS sits above typical
+// mic room-noise floor (-50 to -60 dBFS) and below normal speech level (-20
+// to -30 dBFS); tunable via this exported constant without redeploying.
+const DEFAULT_BARGE_IN_MIN_DBFS = -45;
+
+function nextBargeInState({
+  isSpeech,
+  speechStartedAt,
+  now,
+  holdMs = DEFAULT_BARGE_IN_HOLD_MS,
+  isLoudEnough = true,
+}) {
+  if (!isSpeech || !isLoudEnough) {
     return { speechStartedAt: null, triggered: false };
   }
   const startedAt = speechStartedAt === null ? now : speechStartedAt;
   return { speechStartedAt: startedAt, triggered: now - startedAt >= holdMs };
 }
 
+// #340: converts a Float32Array time-domain buffer (the same kind
+// analyser.getFloatTimeDomainData already fills for the VAD frame) into a
+// loudness reading in dBFS -- 0 is full scale, more negative is quieter.
+// Same RMS computation recordUntilSilence's currentRms() already does,
+// just expressed logarithmically so it can be compared against
+// DEFAULT_BARGE_IN_MIN_DBFS.
+function dbfsFromSamples(samples) {
+  let sum = 0;
+  for (let i = 0; i < samples.length; i += 1) {
+    sum += samples[i] * samples[i];
+  }
+  const rms = Math.sqrt(sum / samples.length);
+  return 20 * Math.log10(rms);
+}
+
 module.exports = {
   DEFAULT_BARGE_IN_HOLD_MS,
+  DEFAULT_BARGE_IN_MIN_DBFS,
   DEFAULT_GAMING_MAX_WAIT_FOR_SPEECH_MS,
   DEFAULT_MAX_UTTERANCE_MS,
   DEFAULT_MAX_WAIT_FOR_SPEECH_MS,
   DEFAULT_SILENCE_BUFFER_MS,
+  dbfsFromSamples,
   nextBargeInState,
   shouldStopRecording,
 };

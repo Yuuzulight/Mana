@@ -58,10 +58,12 @@ const { createLive2dAvatar } = require("../avatar/live2d-avatar");
 const { createVrmAvatar } = require("../avatar/vrm-avatar");
 const { spectralCentroidHz, computeMfcc, classifyViseme } = require("../avatar/lip-sync");
 const {
+  DEFAULT_BARGE_IN_MIN_DBFS,
   DEFAULT_GAMING_MAX_WAIT_FOR_SPEECH_MS,
   DEFAULT_MAX_UTTERANCE_MS,
   DEFAULT_MAX_WAIT_FOR_SPEECH_MS,
   DEFAULT_SILENCE_BUFFER_MS,
+  dbfsFromSamples,
   nextBargeInState,
   shouldStopRecording,
 } = require("./voice-endpointing");
@@ -201,6 +203,7 @@ const VAD_MODEL_URL = "../assets/vad/silero_vad.onnx";
 // trying first.
 const BARGE_IN_VOICE_ENABLED = process.env.MANA_BARGE_IN_VOICE !== "0";
 const BARGE_IN_HOLD_MS = Number(process.env.MANA_BARGE_IN_HOLD_MS || 350);
+const BARGE_IN_MIN_DBFS = Number(process.env.MANA_BARGE_IN_MIN_DBFS || DEFAULT_BARGE_IN_MIN_DBFS);
 const BARGE_IN_POLL_MS = 50;
 // Issue #272: ambient screen-sensing is off by default -- opt in with
 // MANA_SCREEN_SENSING_ENABLED=1. The interval is deliberately coarse
@@ -1182,8 +1185,13 @@ async function watchForBargeIn() {
           isSpeech = false;
         }
 
+        // #340: reuses the same `samples` frame just read for VAD -- no
+        // extra mic read.
+        const isLoudEnough = dbfsFromSamples(samples) >= BARGE_IN_MIN_DBFS;
+
         const state = nextBargeInState({
           isSpeech,
+          isLoudEnough,
           speechStartedAt,
           now: performance.now(),
           holdMs: BARGE_IN_HOLD_MS,
