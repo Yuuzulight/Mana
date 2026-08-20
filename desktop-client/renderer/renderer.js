@@ -567,30 +567,40 @@ document.getElementById('themeToggle')?.addEventListener('click', (e) => {
         const arr = await sresp.arrayBuffer();
         const audioCtx = new AudioContext();
         const buf = await audioCtx.decodeAudioData(arr);
-        const src = audioCtx.createBufferSource();
-        src.buffer = buf;
-        src.connect(audioCtx.destination);
-        // Reply-scoped barge-in tracking (see playDecodedChunk/Finding 3):
-        // this is the fallback path (queue.run()'s streamed draft turned out
-        // stale), which plays through its own AudioContext/source outside
-        // playDecodedChunk, but shares the same currentChunkSource variable
-        // and watchForBargeIn() so it isn't left unmonitored.
-        currentChunkSource = src;
-        src.onended = () => {
-          if (currentChunkSource === src) currentChunkSource = null;
-          stopLipSync();
-          setSprite('idle');
-          audioCtx.close().catch(() => {}); // Finding 6: don't leak AudioContexts
-        };
-        src.start();
-        startLipSync(audioCtx, src);
-        if (bargeInEnabled()) {
-          const playbackTokenAtStart = desktopReplyPlaybackToken;
-          watchForBargeIn(
-            () => currentChunkSource !== null && desktopReplyPlaybackToken === playbackTokenAtStart,
-            () => { if (currentChunkSource) currentChunkSource.stop(); stopStreamingReply(); },
-          ).catch((e) => console.warn('Voice barge-in monitor failed:', e.message));
-        }
+        // Awaited so this function's promise resolves only once playback has
+        // actually finished (naturally, or cut short by barge-in's stop()),
+        // not merely once it has started. speakStreamingReply's fallback
+        // call relies on that to keep replyInProgress set for this reply's
+        // full audible duration (see replyInProgress's declaration below) --
+        // without it, `await speakReply(...)` there returns as soon as
+        // synthesis/decoding finishes, well before the audio stops playing.
+        await new Promise((resolve) => {
+          const src = audioCtx.createBufferSource();
+          src.buffer = buf;
+          src.connect(audioCtx.destination);
+          // Reply-scoped barge-in tracking (see playDecodedChunk/Finding 3):
+          // this is the fallback path (queue.run()'s streamed draft turned out
+          // stale), which plays through its own AudioContext/source outside
+          // playDecodedChunk, but shares the same currentChunkSource variable
+          // and watchForBargeIn() so it isn't left unmonitored.
+          currentChunkSource = src;
+          src.onended = () => {
+            if (currentChunkSource === src) currentChunkSource = null;
+            stopLipSync();
+            setSprite('idle');
+            audioCtx.close().catch(() => {}); // Finding 6: don't leak AudioContexts
+            resolve();
+          };
+          src.start();
+          startLipSync(audioCtx, src);
+          if (bargeInEnabled()) {
+            const playbackTokenAtStart = desktopReplyPlaybackToken;
+            watchForBargeIn(
+              () => currentChunkSource !== null && desktopReplyPlaybackToken === playbackTokenAtStart,
+              () => { if (currentChunkSource) currentChunkSource.stop(); stopStreamingReply(); },
+            ).catch((e) => console.warn('Voice barge-in monitor failed:', e.message));
+          }
+        });
       } else {
         setSprite('idle');
       }
