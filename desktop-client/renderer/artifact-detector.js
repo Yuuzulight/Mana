@@ -56,6 +56,16 @@ function lineOverlapRatio(contentA, contentB) {
   return shared / Math.max(linesA.size, linesB.size);
 }
 
+// Module-level, not derived from `history.length` -- a caller may thread a
+// batch against a fresh, page-local `history` array (desktop-client's
+// prependTurns does exactly this, see its own comment), and two
+// independent `history` arrays can each legitimately have length 0. A
+// counter tied to any one array's length can produce the same threadId for
+// two genuinely unrelated artifacts once their lists are later merged;
+// this counter is shared across every call in this module instance, so it
+// can't collide regardless of which `history` array a caller passes.
+let nextNewThreadId = 0;
+
 // Returns `artifact` enriched with `threadId` (which version-thread it
 // belongs to) and `versionIndex` (1-based position within that thread).
 // Reuses the most recent same-language entry in `history`'s threadId when
@@ -73,7 +83,7 @@ function assignArtifactVersion(artifact, history) {
   const isNewVersion =
     lastSameLanguage &&
     lineOverlapRatio(artifact.content, lastSameLanguage.content) >= SAME_ARTIFACT_LINE_OVERLAP_THRESHOLD;
-  const threadId = isNewVersion ? lastSameLanguage.threadId : `${artifact.language}-${history.length}`;
+  const threadId = isNewVersion ? lastSameLanguage.threadId : `${artifact.language}-${nextNewThreadId++}`;
   const versionIndex = isNewVersion
     ? history.filter((a) => a.threadId === threadId).length + 1
     : 1;

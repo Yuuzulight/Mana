@@ -106,3 +106,34 @@ test("assignArtifactVersion tracks a third version of the same thread", () => {
   assert.equal(v3.threadId, v1.threadId);
   assert.equal(v3.versionIndex, 3);
 });
+
+test("assignArtifactVersion, given history with two prior threads, groups against the more recent one", () => {
+  const threadA = assignArtifactVersion(
+    { language: "html", content: "<div>\n<p>thread A</p>\n<p>content</p>\n</div>" },
+    [],
+  );
+  const threadB = assignArtifactVersion(
+    { language: "html", content: "<section>\n<h1>thread B</h1>\n<h2>content</h2>\n</section>" },
+    [threadA],
+  );
+  // Overlaps with thread B (the more recent same-language entry, sharing
+  // most lines with this revision), not thread A -- even though thread A
+  // is also present in history and is also html.
+  const v2 = assignArtifactVersion(
+    { language: "html", content: "<section>\n<h1>thread B</h1>\n<h2>content</h2>\n<h3>revised</h3>\n</section>" },
+    [threadA, threadB],
+  );
+  assert.equal(v2.threadId, threadB.threadId);
+  assert.notEqual(v2.threadId, threadA.threadId);
+});
+
+// Regression test: threadId used to be derived from history.length, which
+// collides whenever a caller threads a batch against a fresh, page-local
+// history array (desktop-client's prependTurns does this per scroll-back
+// page) -- two unrelated artifacts at the same index in two separate,
+// independently-empty history arrays got the same threadId once merged.
+test("assignArtifactVersion never collides threadIds across independent, separately-empty history arrays", () => {
+  const fromArrayOne = assignArtifactVersion({ language: "html", content: "<p>unrelated page one</p>" }, []);
+  const fromArrayTwo = assignArtifactVersion({ language: "html", content: "<p>unrelated page two</p>" }, []);
+  assert.notEqual(fromArrayOne.threadId, fromArrayTwo.threadId);
+});
