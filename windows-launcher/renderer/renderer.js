@@ -2800,6 +2800,28 @@ ipcRenderer.on("vision:hotkey", () => {
   handleVisionHotkey();
 });
 
+// Issue #417: node-bot asks (over vision-capture-bridge.js's WebSocket,
+// relayed here by main.js) for a fresh screenshot when the model decides
+// mid-reply that seeing the screen would help. Captures the same way the
+// hotkey/ambient-glance flows already do, then POSTs the result back so
+// the server's pending requestCapture() promise resolves. A capture
+// failure here is deliberately not reported back explicitly -- it's
+// swallowed into a console warning, and the server's own request timeout
+// (vision-capture-bridge.js's DEFAULT_TIMEOUT_MS) is what eventually
+// surfaces the failure to the model, same as "no client connected" at all.
+ipcRenderer.on("vision:capture-request", async (event, requestId) => {
+  try {
+    const image = await ipcRenderer.invoke("screen:capture-primary");
+    await fetch(`${BACKEND_BASE_URL}/vision/capture-result`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ requestId, image }),
+    });
+  } catch (error) {
+    console.warn("Mana vision capture-request failed:", error);
+  }
+});
+
 // Issue #219: lets the user cut Mana off mid-speech (MANA_INTERRUPT_HOTKEY,
 // "Control+Alt+I" by default) -- stopReplyAudio() already does everything
 // needed (bumps replyPlaybackToken, pauses the audio, resets avatar state);
