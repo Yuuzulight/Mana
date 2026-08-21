@@ -84,13 +84,17 @@ function registerDeepResearchRoutes(app, context = {}) {
   // that structured marker is reused here rather than re-detecting staleness,
   // so only the reports that actually earned a caveat trigger a toast.
   function notifyIfStale(question, report) {
-    const noteLine = typeof report === "string" ? report.match(/^Note:.*$/m) : null;
-    if (!noteLine) return;
+    if (typeof report !== "string") return;
+    // Only the report's own trailing line counts -- matching anywhere in the
+    // body would also catch an unrelated "Note:"-prefixed line quoted from a
+    // source, which is neither genuine nor the text we'd want to show.
+    const lastLine = report.trim().split("\n").pop();
+    if (!/^Note:/.test(lastLine)) return;
     require("../tray-notifier")
       .notifyTray({
         type: "research",
         title: `Research: ${question}`,
-        text: noteLine[0],
+        text: lastLine,
         at: new Date().toISOString(),
       })
       .catch(() => {});
