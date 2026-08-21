@@ -2112,6 +2112,21 @@ function formatOperationMetric(label, metric) {
   return `${label}: last ${metric.lastMs}ms, avg ${metric.avgMs}ms, max ${metric.maxMs}ms, count ${metric.count}`;
 }
 
+// Issue #421: only present for a remote-AI session (the backend omits it
+// entirely for a local-only one), so this returns null rather than a
+// placeholder line -- formatPerfStatus filters null entries out, instead of
+// showing a "no data" line for something that fundamentally doesn't apply.
+function formatTokenUsage(tokenUsage) {
+  if (!tokenUsage) {
+    return null;
+  }
+  const flags = [];
+  if (tokenUsage.stopExceeded) flags.push("STOPPED");
+  else if (tokenUsage.warnExceeded) flags.push("WARN");
+  const flagSuffix = flags.length ? ` [${flags.join(", ")}]` : "";
+  return `Remote AI tokens: ${tokenUsage.totalTokens} (${tokenUsage.promptTokens} prompt / ${tokenUsage.completionTokens} completion) across ${tokenUsage.calls} call(s)${flagSuffix}`;
+}
+
 function formatPerfStatus(status) {
   const operations = status.operations || {};
   const config = status.config || {};
@@ -2129,7 +2144,10 @@ function formatPerfStatus(status) {
     formatOperationMetric("OCR", operations["screen ocr"]),
     formatOperationMetric("Llama", operations.llama),
     formatOperationMetric("TTS Kokoro", operations["tts kokoro"]),
-  ].join("\n");
+    formatTokenUsage(status.tokenUsage),
+  ]
+    .filter(Boolean)
+    .join("\n");
 }
 
 async function refreshPerfStatus() {
@@ -2138,9 +2156,15 @@ async function refreshPerfStatus() {
   }
 
   try {
-    const response = await fetch(`${BACKEND_BASE_URL}/perf/status`, {
-      method: "GET",
-    });
+    // Issue #421: sessionId is only needed so the backend can look up this
+    // session's remote-AI token usage -- when remote AI is off, the backend
+    // omits tokenUsage from the response regardless, so passing it here is
+    // harmless even for a local-only session.
+    const sessionId = typeof ensureSessionId === "function" ? ensureSessionId() : undefined;
+    const url = sessionId
+      ? `${BACKEND_BASE_URL}/perf/status?sessionId=${encodeURIComponent(sessionId)}`
+      : `${BACKEND_BASE_URL}/perf/status`;
+    const response = await fetch(url, { method: "GET" });
     if (!response.ok) {
       throw new Error(`Performance status returned ${response.status}`);
     }

@@ -108,6 +108,7 @@ const { readGgufMetadata } = require("./tools/gguf-metadata");
 	const { runDoctorChecksAsync } = require("./doctor");
 	const { createDoctorTrayPoller } = require("./doctor-tray-poll");
 	const { notifyTray } = require("./tray-notifier");
+	const sessionTokenUsage = require("./session-token-usage");
 	const { MobileDeviceStore } = require("./mobile-device-store");
 	// NOTE: mobile-auth and mobile-memory-store may exist; we add device store integration here
 	const stockMarketPlugin = require("../plugins/stock-market");
@@ -2904,6 +2905,25 @@ function registerRoutes(app, upload, deps = {}) {
   app.get("/perf/status", (req, res) => {
     try {
       const gaming = getGamingStatus();
+      // Issue #421: only present when there's a session to report on and
+      // remote AI is actually on -- a local-only session has no cost to
+      // meter, so the field is omitted entirely rather than sent as zeros.
+      let tokenUsage;
+      const sessionIdParam = req.query && req.query.sessionId;
+      if (sessionIdParam && shouldUseRemoteAi()) {
+        const usage = sessionTokenUsage.getUsage(String(sessionIdParam));
+        const warnThreshold = Number(process.env.MANA_SESSION_TOKEN_WARN);
+        const stopThreshold = Number(process.env.MANA_SESSION_TOKEN_STOP);
+        tokenUsage = {
+          ...usage,
+          warnThreshold: Number.isFinite(warnThreshold) && warnThreshold > 0 ? warnThreshold : null,
+          stopThreshold: Number.isFinite(stopThreshold) && stopThreshold > 0 ? stopThreshold : null,
+          warnExceeded:
+            Number.isFinite(warnThreshold) && warnThreshold > 0 && usage.totalTokens >= warnThreshold,
+          stopExceeded:
+            Number.isFinite(stopThreshold) && stopThreshold > 0 && usage.totalTokens >= stopThreshold,
+        };
+      }
       return res.json({
         ok: true,
         uptimeSeconds: Math.round((Date.now() - perfMetrics.startedAt) / 1000),
@@ -2918,6 +2938,7 @@ function registerRoutes(app, upload, deps = {}) {
         gaming,
         process: getManaProcessSnapshot(),
         operations: perfMetrics.operations,
+        ...(tokenUsage ? { tokenUsage } : {}),
       });
     } catch (error) {
       return res.status(500).json({ ok: false, error: error.message });
@@ -3570,9 +3591,28 @@ function registerRoutes(app, upload, deps = {}) {
     prompt,
     maxTokens = LLAMA_MAX_TOKENS,
     systemPromptOverride = null,
+    // Issue #421: only the main per-user chat-turn call site passes this --
+    // background/maintenance calls (compactor, reviewer, connections) aren't
+    // scoped to one user session, so they're left untracked rather than
+    // polluting a "default" bucket with unrelated global usage.
+    sessionId = null,
   ) {
     if (!shouldUseRemoteAi()) {
       return null; // no key configured; fall back to local
+    }
+
+    if (sessionId) {
+      const stopThreshold = Number(process.env.MANA_SESSION_TOKEN_STOP);
+      if (
+        Number.isFinite(stopThreshold) &&
+        stopThreshold > 0 &&
+        sessionTokenUsage.getUsage(sessionId).totalTokens >= stopThreshold
+      ) {
+        console.warn(
+          `Remote AI call blocked for session ${sessionId}: token stop threshold (${stopThreshold}) reached.`,
+        );
+        return null; // falls back to local, same as remote AI being disabled
+      }
     }
 
     const systemPrompt = systemPromptOverride || persona.DEFAULT_SYSTEM_PROMPT;
@@ -3619,6 +3659,9 @@ function registerRoutes(app, upload, deps = {}) {
               j?.choices?.[0]?.message?.content ||
               j?.choices?.[0]?.text ||
               null;
+            if (sessionId && j?.usage) {
+              sessionTokenUsage.recordUsage(sessionId, j.usage);
+            }
             if (text) {
               resolve(text.trim());
             } else {
@@ -4124,6 +4167,7 @@ function registerRoutes(app, upload, deps = {}) {
           finalPrompt,
           effectiveMaxTokens,
           selectedSystemPrompt + flatMemorySuffix,
+          sessionId,
         );
         if (openAiReply) {
           console.log("Using OpenAI proxy reply.");
