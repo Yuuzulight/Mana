@@ -1,0 +1,29 @@
+/* Issue #394: theme tokens, extracted from the inline <style> block index.html
+   used to carry (windows-launcher never had a real stylesheet before this).
+   Same shape/purpose as desktop-client/renderer/theme-tokens.css -- shared
+   token names/roles, not shared values, since the two apps have genuinely
+   different palettes. Where a value is coincidentally already identical
+   across both apps (--error-text), that value is shared too. */
+:root {
+  --bg: #1c1a18;
+  --panel: #242220;
+  --panel-2: #2c2a27;
+  --border: #3a3733;
+  --text: #e8e4de;
+  --muted: #948d84;
+  --accent: #9d8ce0;
+  --user-bubble: #3a3560;
+  --mana-bubble: #2a2725;
+  /* Issue #394: promoted from repeated literals already used identically
+     across nav-dot/doctor-check/doctor-pill/doctor-chip/startup-row status
+     indicators (green/warn/fail), matching desktop-client's --green/--warn/
+     --fail role -- values are launcher's own, already-existing colors. */
+  --green: #3fb96a;
+  --warn: #d99a2b;
+  --fail: #d15b5b;
+  --font-mono: "Cascadia Code", "JetBrains Mono", Consolas, "Courier New", monospace;
+  /* Issue #394: the one color that's coincidentally already identical in
+     both apps (#skillsStatus.error uses this exact value in both
+     windows-launcher and desktop-client). */
+  --error-text: #e07070;
+}
