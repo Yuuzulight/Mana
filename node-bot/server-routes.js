@@ -74,6 +74,7 @@ function registerCoreRoutes(app, upload, deps) {
     restartController,
     runVisionReply,
     getVisionStatus,
+    resolveVisionCapture,
     runWhisper,
     runWhisperPartial,
     normalizeUploadedAudioAsync,
@@ -185,6 +186,21 @@ function registerCoreRoutes(app, upload, deps) {
         reply,
         ttsConfigured: TTS_PROVIDER !== "none",
       });
+    } catch (e) {
+      if (e instanceof ValidationError) {
+        return sendValidationError(res, e);
+      }
+      console.error(e);
+      return res.status(500).json({ error: String(e) });
+    }
+  });
+
+  app.post("/vision/capture-result", (req, res) => {
+    try {
+      const requestId = requireString(req.body?.requestId, "requestId");
+      const image = requireString(req.body?.image, "image");
+      const resolved = resolveVisionCapture(requestId, image);
+      return res.json({ ok: resolved });
     } catch (e) {
       if (e instanceof ValidationError) {
         return sendValidationError(res, e);

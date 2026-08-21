@@ -146,6 +146,8 @@ const { createMemoryToolSource } = require("./ai/memory-tool-source");
 const { createSessionSearchToolSource } = require("./ai/session-search-tool-source");
 const { createSkillToolSource } = require("./ai/skill-tool-source");
 const { createExpressionToolSource, isExpressionToolName } = require("./ai/expression-tool-source");
+const { createVisionToolSource } = require("./ai/vision-tool-source");
+const { visionCaptureBridge } = require("./vision-capture-bridge");
 const { createCodingToolSource } = require("./ai/coding-tool-source");
 const { createMcpClientRegistry } = require("./mcp-client-registry");
 const { mcpClientCapability } = require("./capabilities/mcp-client-capability");
@@ -4335,6 +4337,23 @@ function registerRoutes(app, upload, deps = {}) {
             // detection. No approvalGate/store needed -- see
             // ai/expression-tool-source.js's own header comment for why.
             createExpressionToolSource(),
+            // Issue #417: lets Mana decide mid-reply that seeing the screen
+            // would help, instead of vision only being reachable via the
+            // hotkey or the ambient screen-sensing loop. Same
+            // deps.X || fallback resolution registerCoreRoutes's deps use
+            // for these two below (server.js:4742-4747) -- no single
+            // shared local exists at this point in registerRoutes to reuse.
+            createVisionToolSource({
+              getVisionStatus:
+                deps.getVisionStatus || (() => llamaServerRuntime.getVisionStatus()),
+              runVisionReply:
+                deps.runVisionReply ||
+                ((prompt, images, maxTokens) =>
+                  llamaServerRuntime.runVisionReply(prompt, images, maxTokens)),
+              visionCaptureBridge,
+              screenSensingPlugin,
+              pluginSettingsStore: activePluginSettingsStore,
+            }),
             // Issue #276: draft a proposed code change as a diff file
             // instead of editing live -- reuses the existing editor
             // workspace/proposal machinery (zed-integration.js) that
@@ -4745,6 +4764,8 @@ function registerRoutes(app, upload, deps = {}) {
         llamaServerRuntime.runVisionReply(prompt, images, maxTokens)),
     getVisionStatus:
       deps.getVisionStatus || (() => llamaServerRuntime.getVisionStatus()),
+    resolveVisionCapture:
+      deps.resolveVisionCapture || visionCaptureBridge.resolveCapture,
     runWhisper: deps.runWhisper || runWhisper,
     runWhisperPartial: deps.runWhisperPartial || runWhisperCliPartial,
     normalizeUploadedAudioAsync:
@@ -5198,6 +5219,15 @@ async function startServer() {
     }
   } catch (e) {
     console.warn("Failed to register tray server:", e?.message || e);
+  }
+
+  // attach vision-capture websocket server (issue #417: lets the model
+  // request a fresh screenshot mid-reply)
+  try {
+    const { registerVisionCaptureServer } = require("./vision-capture-server");
+    registerVisionCaptureServer(server, { path: "/ws/vision-capture", bridge: visionCaptureBridge });
+  } catch (e) {
+    console.warn("Failed to register vision-capture server:", e?.message || e);
   }
 
   // serve admin UI static files
