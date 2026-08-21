@@ -521,8 +521,9 @@ const acpMemoryStore = createAcpMemoryStore({
 
       const prompt = `You are a concise summarization assistant. Create a compact summary (no more than ${maxTokens} tokens) of the conversation memory and recent turns for long-term storage. Keep concrete facts and user preferences. Do not include explanations; return only the summary.\n\nCURRENT SUMMARY:\n${summary || ""}\n\nRECENT TURNS:\n${recent}\n\nCONCISE SUMMARY:`;
 
-      if (shouldUseRemoteAi()) {
-        // runOpenAIReply accepts a maxTokens parameter (for the model's output).
+      if (shouldUseRemoteAi() && typeof runOpenAIReplyPublic === "function") {
+        // runOpenAIReplyPublic accepts a maxTokens parameter (for the
+        // model's output).
         // Issue #421: this summarizeFn's own sessionId IS a real per-user
         // session (acp-memory-store.js triggers it automatically once that
         // session's running summary crosses ~90% of maxSummaryTokens) --
@@ -533,16 +534,17 @@ const acpMemoryStore = createAcpMemoryStore({
         // spend, instead of undercounting it and letting compaction bypass
         // a session that's already been stopped.
         //
-        // NOTE (found while testing this): this whole branch currently
-        // throws "runOpenAIReply is not defined" on every real call and is
-        // silently swallowed by the catch below -- acpMemoryStore (and this
-        // summarizeFn) is built at module load time, outside registerRoutes,
-        // but runOpenAIReply only exists inside registerRoutes's scope. See
-        // the near-identical trap already documented and fixed for
-        // skill-proposal.js later in this file ("built here... because
-        // runOpenAIReply only exists in this function's scope"). Pre-existing,
-        // unrelated to this issue -- tracked separately, not fixed here.
-        const res = await runOpenAIReply(prompt, Math.min(maxTokens, 512), null, sessionId);
+        // Calls through runOpenAIReplyPublic rather than a bare
+        // runOpenAIReply reference: acpMemoryStore (and this summarizeFn) is
+        // built at module load time, outside registerRoutes, but
+        // runOpenAIReply only exists inside registerRoutes's scope -- a bare
+        // reference here always threw ReferenceError, silently caught below,
+        // permanently falling back to the stale summary. Same trap already
+        // documented and fixed for skill-proposal.js's runSkillProposalPublic
+        // elsewhere in this file ("built here... because runOpenAIReply only
+        // exists in this function's scope"); runOpenAIReplyPublic applies
+        // that identical fix here.
+        const res = await runOpenAIReplyPublic(prompt, Math.min(maxTokens, 512), null, sessionId);
         return (res || "").trim().slice(0, maxChars);
       } else {
         // prefer the persistent llama-server, fall back to llama-cli; limit output tokens reasonably
@@ -711,6 +713,12 @@ let runBackgroundReviewerPublic = null;
 let runBackgroundCompactorPublic = null;
 let runBackgroundConnectionsPublic = null;
 let runSkillProposalPublic = null;
+// Same trap as runSkillProposalPublic below, for the same reason:
+// acpMemoryStore's summarizeFn (built at module load, well above this line)
+// needs to call runOpenAIReply, which only exists inside registerRoutes's
+// scope. Assigned once registerRoutes actually runs; summarizeFn calls
+// through this indirection instead of referencing runOpenAIReply directly.
+let runOpenAIReplyPublic = null;
 
 // Always-visible index of every active skill's name+description, injected
 // straight into the system prompt -- independent of
@@ -1920,6 +1928,13 @@ function registerRoutes(app, upload, deps = {}) {
   // every future proposal nobody's actually looked at.
   activeApprovalGate.registerExecutor("skill-write-idle", (payload) => activeSkillsStore.createSkill(payload));
   activeApprovalGate.registerExecutor("memory-write", (payload) => acpMemoryStore.rememberFact(payload));
+
+  // Lets acpMemoryStore's summarizeFn (built at module load time, long
+  // before registerRoutes ever runs) reach the real runOpenAIReply --
+  // same trap and same fix shape as runSkillProposalPublic just below.
+  // Rebuilt on every registerRoutes call (once per real server start, once
+  // per test's createApp()), same as everything else in this block.
+  runOpenAIReplyPublic = runOpenAIReply;
 
   // Idle-triggered skill-proposal pass (issue #262) -- extracted to
   // skill-proposal.js so its actual logic is directly unit testable; built
@@ -4743,6 +4758,10 @@ function registerRoutes(app, upload, deps = {}) {
   // bound -- so tests can call it directly without going through the /reply
   // HTTP route, which is the only other way to reach it.
   app.locals.buildAssistantReply = deps.buildAssistantReply || buildAssistantReply;
+  // Same pattern, for tests that need to drive the real acpMemoryStore
+  // directly (e.g. triggering its automatic summarizeFn compaction) rather
+  // than going through an HTTP route.
+  app.locals.acpMemoryStore = deps.acpMemoryStore || acpMemoryStore;
 
   registerVTubeRoutes(app, { vtubeRuntime });
 
