@@ -788,6 +788,16 @@ function createLlamaServerRuntime(options = {}) {
     );
 
     async function complete(toolsEnabled) {
+      // Issue #417: a tool executed mid-loop (vision__look) can swap the
+      // local server to a different model out from under this loop --
+      // ensureServer() at the top of runToolAwareReply only confirms the
+      // model once, before round 1. Re-ensuring here, on every round, is
+      // the root-cause fix: whatever the last tool call left loaded, the
+      // configured profile's model is back in place before the next
+      // request goes out. On the common no-swap path this is just a cheap
+      // isHealthy() check (ensureServerConfig's early-return), not a real
+      // restart.
+      await ensureServer(profile);
       const resp = await fetchImpl(
         `http://127.0.0.1:${state.port}/v1/chat/completions`,
         {
