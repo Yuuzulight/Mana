@@ -6,6 +6,7 @@ const express = require("../../../node-bot/node_modules/express");
 const test = require("node:test");
 
 const cronPlugin = require("../index");
+const trayNotifier = require("../../../node-bot/tray-notifier");
 const { withServer } = require("./helpers");
 
 function createTempDir() {
@@ -89,6 +90,73 @@ test("POST /cron/jobs accepts an agent job (prompt required instead of actionNam
     assert.equal(payload.jobType, "agent");
     assert.equal(payload.prompt, "Summarize today's FFXIV market");
   });
+});
+
+test("a completed cron job notifies the tray in addition to recording a chat turn (issue #423)", async () => {
+  cronPlugin._resetForTests();
+  const trayEvents = [];
+  trayNotifier.setBroadcaster((payload) => trayEvents.push(payload));
+  const turns = [];
+
+  let now = 1000;
+  const scheduler = cronPlugin._getSchedulerForTests({
+    dataDir: createTempDir(),
+    now: () => now,
+    scriptActions: { getGreeting: async () => "hello from the script" },
+    acpMemoryStore: {
+      appendTurn: async (turn) => {
+        turns.push(turn);
+      },
+    },
+  });
+  scheduler.addJob({
+    name: "Greeting job",
+    jobType: "script",
+    actionName: "getGreeting",
+    schedule: { type: "interval", everyMs: 500 },
+  });
+
+  now = 1600; // past the job's nextRunAt
+  await scheduler.runDueJobs();
+
+  assert.equal(trayEvents.length, 1);
+  assert.equal(trayEvents[0].type, "cron");
+  assert.match(trayEvents[0].title, /Greeting job/);
+  assert.equal(trayEvents[0].text, "hello from the script");
+
+  assert.equal(turns.length, 1);
+  assert.equal(turns[0].assistant, "hello from the script");
+});
+
+test("a failed cron job still notifies the tray, even with no acpMemoryStore configured (issue #423)", async () => {
+  cronPlugin._resetForTests();
+  const trayEvents = [];
+  trayNotifier.setBroadcaster((payload) => trayEvents.push(payload));
+
+  let now = 1000;
+  const scheduler = cronPlugin._getSchedulerForTests({
+    dataDir: createTempDir(),
+    now: () => now,
+    scriptActions: {
+      breaks: async () => {
+        throw new Error("boom");
+      },
+    },
+    // No acpMemoryStore -- must not prevent the tray notification.
+  });
+  scheduler.addJob({
+    name: "Flaky job",
+    jobType: "script",
+    actionName: "breaks",
+    schedule: { type: "interval", everyMs: 500 },
+  });
+
+  now = 1600;
+  await scheduler.runDueJobs();
+
+  assert.equal(trayEvents.length, 1);
+  assert.equal(trayEvents[0].type, "cron");
+  assert.match(trayEvents[0].text, /failed/);
 });
 
 test("plugin metadata matches the shape other Mana plugins use", () => {

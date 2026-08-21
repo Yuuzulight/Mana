@@ -139,6 +139,12 @@ const GAMING_MAX_WAIT_FOR_SPEECH_MS = DEFAULT_GAMING_MAX_WAIT_FOR_SPEECH_MS;
 const MAX_UTTERANCE_MS = DEFAULT_MAX_UTTERANCE_MS;
 // How often the live silence-detection meter samples audio energy.
 const SILENCE_METER_INTERVAL_MS = 150;
+// #341 Sub-project A: how often to snapshot the audio recorded so far and
+// poll for a partial transcript while the user is still speaking. Slower
+// than SILENCE_METER_INTERVAL_MS (150ms, the VAD tick) on purpose --
+// whisper-cli takes ~1-1.7s per call (benchmarked), so polling faster than
+// that would just pile up in-flight requests.
+const PARTIAL_TRANSCRIPT_POLL_MS = 1200;
 const GAMING_STATUS_POLL_MS = 5000;
 const PERF_STATUS_POLL_MS = 3000;
 const AUTO_LISTEN_RETRY_MS = 1500;
@@ -1776,6 +1782,15 @@ async function recordUntilSilence({
     let hasHeardSpeech = false;
     let lastSpeechAt = 0;
     let meterTimer = null;
+    let partialTimer = null;
+    let partialPollInFlight = false;
+    // Plumbing for #341 Sub-project B's classifier, not yet consumed by
+    // anything -- kept in sync with the status text below.
+    let partialTranscript = "";
+    // Aborted in cleanup() so an in-flight poll doesn't keep running (and
+    // competing for CPU with the real /transcribe-only call about to
+    // start) after the recording it was polling for has already ended.
+    const partialAbortController = new AbortController();
     let stopped = false;
     const startedAt = performance.now();
 
@@ -1785,10 +1800,54 @@ async function recordUntilSilence({
         clearTimeout(meterTimer);
         meterTimer = null;
       }
+      if (partialTimer !== null) {
+        clearInterval(partialTimer);
+        partialTimer = null;
+      }
+      partialAbortController.abort();
       try {
         source.disconnect();
       } catch (e) {}
       audioCtx.close().catch(() => {});
+    }
+
+    // #341 Sub-project A: snapshots whatever's been recorded so far and
+    // polls for a partial transcript, updating the live status text. A
+    // failed or slow poll is silently skipped -- this never blocks or
+    // delays tick()'s actual stop-detection logic below. Both this and
+    // tick() write statusEl.textContent independently; whichever fires
+    // last wins, self-correcting each cycle -- an accepted simplification,
+    // not a bug, since this is a live status indicator, not a source of
+    // truth for anything.
+    async function pollPartialTranscript() {
+      if (stopped || partialPollInFlight || chunks.length === 0) {
+        return;
+      }
+      partialPollInFlight = true;
+      try {
+        const snapshot = new Blob(chunks, { type: "audio/webm" });
+        const form = new FormData();
+        form.append("file", snapshot, "partial.webm");
+        const response = await fetch(`${BACKEND_BASE_URL}/transcribe-partial`, {
+          method: "POST",
+          body: form,
+          signal: partialAbortController.signal,
+        });
+        if (!response.ok || stopped) {
+          return;
+        }
+        const data = await response.json();
+        if (data.transcript && !stopped) {
+          partialTranscript = data.transcript;
+          statusEl.textContent = `Hearing: "${data.transcript}"`;
+        }
+      } catch (e) {
+        if (e.name !== "AbortError") {
+          console.warn("Partial transcript poll failed:", e.message);
+        }
+      } finally {
+        partialPollInFlight = false;
+      }
     }
 
     recorder.ondataavailable = (event) => {
@@ -1808,6 +1867,7 @@ async function recordUntilSilence({
     // A short timeslice keeps dataavailable events flowing so audio isn't
     // lost if recording stops earlier than a browser's default flush cadence.
     recorder.start(SILENCE_METER_INTERVAL_MS);
+    partialTimer = setInterval(pollPartialTranscript, PARTIAL_TRANSCRIPT_POLL_MS);
 
     // Self-scheduling instead of setInterval: VAD inference is async, and
     // this guarantees one tick's inference finishes before the next tick
@@ -2052,6 +2112,21 @@ function formatOperationMetric(label, metric) {
   return `${label}: last ${metric.lastMs}ms, avg ${metric.avgMs}ms, max ${metric.maxMs}ms, count ${metric.count}`;
 }
 
+// Issue #421: only present for a remote-AI session (the backend omits it
+// entirely for a local-only one), so this returns null rather than a
+// placeholder line -- formatPerfStatus filters null entries out, instead of
+// showing a "no data" line for something that fundamentally doesn't apply.
+function formatTokenUsage(tokenUsage) {
+  if (!tokenUsage) {
+    return null;
+  }
+  const flags = [];
+  if (tokenUsage.stopExceeded) flags.push("STOPPED");
+  else if (tokenUsage.warnExceeded) flags.push("WARN");
+  const flagSuffix = flags.length ? ` [${flags.join(", ")}]` : "";
+  return `Remote AI tokens: ${tokenUsage.totalTokens} (${tokenUsage.promptTokens} prompt / ${tokenUsage.completionTokens} completion) across ${tokenUsage.calls} call(s)${flagSuffix}`;
+}
+
 function formatPerfStatus(status) {
   const operations = status.operations || {};
   const config = status.config || {};
@@ -2069,7 +2144,10 @@ function formatPerfStatus(status) {
     formatOperationMetric("OCR", operations["screen ocr"]),
     formatOperationMetric("Llama", operations.llama),
     formatOperationMetric("TTS Kokoro", operations["tts kokoro"]),
-  ].join("\n");
+    formatTokenUsage(status.tokenUsage),
+  ]
+    .filter(Boolean)
+    .join("\n");
 }
 
 async function refreshPerfStatus() {
@@ -2078,9 +2156,15 @@ async function refreshPerfStatus() {
   }
 
   try {
-    const response = await fetch(`${BACKEND_BASE_URL}/perf/status`, {
-      method: "GET",
-    });
+    // Issue #421: sessionId is only needed so the backend can look up this
+    // session's remote-AI token usage -- when remote AI is off, the backend
+    // omits tokenUsage from the response regardless, so passing it here is
+    // harmless even for a local-only session.
+    const sessionId = typeof ensureSessionId === "function" ? ensureSessionId() : undefined;
+    const url = sessionId
+      ? `${BACKEND_BASE_URL}/perf/status?sessionId=${encodeURIComponent(sessionId)}`
+      : `${BACKEND_BASE_URL}/perf/status`;
+    const response = await fetch(url, { method: "GET" });
     if (!response.ok) {
       throw new Error(`Performance status returned ${response.status}`);
     }
@@ -2714,6 +2798,43 @@ researchCancelBtnEl?.addEventListener("click", async () => {
 
 ipcRenderer.on("vision:hotkey", () => {
   handleVisionHotkey();
+});
+
+// Issue #417: node-bot asks (over vision-capture-bridge.js's WebSocket,
+// relayed here by main.js) for a fresh screenshot when the model decides
+// mid-reply that seeing the screen would help. Captures the same way the
+// hotkey/ambient-glance flows already do, then POSTs the result back so
+// the server's pending requestCapture() promise resolves. A capture
+// failure (e.g. the user denies a screen-capture permission prompt) is
+// POSTed back as {requestId, error} so the server can reject the pending
+// promise immediately instead of blocking the reply for the full
+// DEFAULT_TIMEOUT_MS -- see vision-capture-bridge.js's rejectCapture().
+ipcRenderer.on("vision:capture-request", async (event, requestId) => {
+  let image;
+  try {
+    image = await ipcRenderer.invoke("screen:capture-primary");
+  } catch (error) {
+    console.warn("Mana vision capture-request failed:", error);
+    try {
+      await fetch(`${BACKEND_BASE_URL}/vision/capture-result`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ requestId, error: error.message || String(error) }),
+      });
+    } catch (postError) {
+      console.warn("Mana vision capture-result error POST failed:", postError);
+    }
+    return;
+  }
+  try {
+    await fetch(`${BACKEND_BASE_URL}/vision/capture-result`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ requestId, image }),
+    });
+  } catch (error) {
+    console.warn("Mana vision capture-result POST failed:", error);
+  }
 });
 
 // Issue #219: lets the user cut Mana off mid-speech (MANA_INTERRUPT_HOTKEY,

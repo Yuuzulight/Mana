@@ -7,6 +7,7 @@ const {
   createResearchJobStore,
   deepResearchCapability,
 } = require("../capabilities/deep-research-capability");
+const trayNotifier = require("../tray-notifier");
 
 async function withServer(app, fn) {
   const server = http.createServer(app);
@@ -252,6 +253,119 @@ test("POST /research/start records the finished report to session memory when se
     user: "what is X?",
     assistant: "final report [1]",
   });
+});
+
+test("a report with a trailing Note: line notifies the tray (issue #423)", async () => {
+  const app = express();
+  app.use(express.json());
+  let jobIdCounter = 0;
+  const trayEvents = [];
+  trayNotifier.setBroadcaster((payload) => trayEvents.push(payload));
+  const report =
+    "Source 1 and Source 2 disagree on the release date.\n\n" +
+    "Note: Source 1 (2024) and Source 2 (2026) give different release dates; no newer source was found to resolve this.";
+  deepResearchCapability.registerRoutes(app, {
+    runDeepResearch: async (question) => ({
+      question,
+      subQueries: [],
+      sources: [],
+      report,
+      bounds: {},
+    }),
+    synthesize: async () => report,
+    makeJobId: () => `job-${++jobIdCounter}`,
+  });
+
+  await withServer(app, async (baseUrl) => {
+    await fetch(`${baseUrl}/research/start`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ question: "when did it release?" }),
+    });
+    await waitFor(async () => {
+      const res = await fetch(`${baseUrl}/research/job-1`);
+      return (await res.json()).status === "done";
+    });
+  });
+
+  assert.equal(trayEvents.length, 1);
+  assert.equal(trayEvents[0].type, "research");
+  assert.match(trayEvents[0].title, /when did it release\?/);
+  assert.match(trayEvents[0].text, /^Note:/);
+});
+
+test("a clean report with no Note: line does not notify the tray (issue #423)", async () => {
+  const app = express();
+  app.use(express.json());
+  let jobIdCounter = 0;
+  const trayEvents = [];
+  trayNotifier.setBroadcaster((payload) => trayEvents.push(payload));
+  deepResearchCapability.registerRoutes(app, {
+    runDeepResearch: async (question) => ({
+      question,
+      subQueries: [],
+      sources: [],
+      report: "Everything the sources say lines up. No conflicts, no gaps.",
+      bounds: {},
+    }),
+    synthesize: async () => "Everything the sources say lines up. No conflicts, no gaps.",
+    makeJobId: () => `job-${++jobIdCounter}`,
+  });
+
+  await withServer(app, async (baseUrl) => {
+    await fetch(`${baseUrl}/research/start`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ question: "is it stable?" }),
+    });
+    await waitFor(async () => {
+      const res = await fetch(`${baseUrl}/research/job-1`);
+      return (await res.json()).status === "done";
+    });
+  });
+
+  assert.equal(trayEvents.length, 0);
+});
+
+test("a stray 'Note:' line quoted from a source mid-report does not notify the tray (issue #423)", async () => {
+  const app = express();
+  app.use(express.json());
+  let jobIdCounter = 0;
+  const trayEvents = [];
+  trayNotifier.setBroadcaster((payload) => trayEvents.push(payload));
+  // The old /^Note:.*$/m regex matched the FIRST line starting with "Note:"
+  // anywhere in the body -- including this quoted footnote from a source,
+  // formatted on its own line -- even though the report's actual last line
+  // (its genuine, model-authored conclusion) carries no caveat at all.
+  const report =
+    "Source 1 (a 2019 paper) includes a footnote on its methodology:\n" +
+    "Note: this measurement method was later found to be biased.\n\n" +
+    "All sources otherwise agree on the current release date; the question is fully answered.";
+  deepResearchCapability.registerRoutes(app, {
+    runDeepResearch: async (question) => ({
+      question,
+      subQueries: [],
+      sources: [],
+      report,
+      bounds: {},
+    }),
+    synthesize: async () => report,
+    makeJobId: () => `job-${++jobIdCounter}`,
+  });
+
+  await withServer(app, async (baseUrl) => {
+    await fetch(`${baseUrl}/research/start`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ question: "is the API current?" }),
+    });
+    await waitFor(async () => {
+      const res = await fetch(`${baseUrl}/research/job-1`);
+      return (await res.json()).status === "done";
+    });
+  });
+
+  assert.equal(trayEvents.length, 0);
 });
 
 test("POST /research/start does not touch session memory when sessionId is omitted", async () => {

@@ -515,6 +515,37 @@ test("renameSession overrides the stored name and returns null for unknown sessi
   assert.equal(store.renameSession("does-not-exist", "x"), null);
 });
 
+test("setSessionGoal stores a plain goal string, clears it with an empty string, and returns null for unknown sessions", () => {
+  const store = createAcpMemoryStore({
+    dataDir: createTempDir(),
+    now: () => "2026-06-29T00:00:00.000Z",
+  });
+
+  store.ensureSession({ sessionId: "session-goal" });
+  const withGoal = store.setSessionGoal("session-goal", "  Fix the login bug  ");
+  assert.equal(withGoal.goal, "Fix the login bug");
+  assert.equal(store.getSession("session-goal").goal, "Fix the login bug");
+
+  const cleared = store.setSessionGoal("session-goal", "");
+  assert.equal(cleared.goal, null);
+  assert.equal(store.getSession("session-goal").goal, null);
+
+  assert.equal(store.setSessionGoal("does-not-exist", "x"), null);
+});
+
+test("listSessions includes each session's goal (or null if unset)", () => {
+  const store = createAcpMemoryStore({ dataDir: createTempDir() });
+  store.ensureSession({ sessionId: "session-with-goal" });
+  store.ensureSession({ sessionId: "session-without-goal" });
+  store.setSessionGoal("session-with-goal", "Ship the release");
+
+  const sessions = store.listSessions();
+  const withGoal = sessions.find((s) => s.sessionId === "session-with-goal");
+  const withoutGoal = sessions.find((s) => s.sessionId === "session-without-goal");
+  assert.equal(withGoal.goal, "Ship the release");
+  assert.equal(withoutGoal.goal, null);
+});
+
 test("deleteSession removes a session and reports whether it existed", () => {
   const store = createAcpMemoryStore({ dataDir: createTempDir() });
   store.ensureSession({ sessionId: "session-delete" });

@@ -705,6 +705,23 @@ function createAcpMemoryStore(options = {}) {
     });
   }
 
+  // Issue #401: a plain, user-stated goal for a session -- deliberately
+  // never inferred by the model, so it's set the same way a name is (one
+  // string, replace-in-place). An empty string clears it, same as
+  // renameSession's own empty-name-becomes-null behavior.
+  function setSessionGoal(sessionId, goal) {
+    const existing = getSession(cleanText(sessionId, 240));
+    if (!existing) {
+      return null;
+    }
+
+    return saveSession({
+      ...existing,
+      goal: cleanText(goal, 500) || null,
+      updatedAt: now(),
+    });
+  }
+
   // Issue #350: branch a session into a new one carrying its history, so a
   // different approach can be tried without destroying the thread that got
   // you there. Resuming needed nothing new -- a session is a file keyed by
@@ -768,6 +785,7 @@ function createAcpMemoryStore(options = {}) {
           return {
             sessionId: parsed.sessionId,
             name: parsed.name || null,
+            goal: parsed.goal || null,
             createdAt: parsed.createdAt || null,
             updatedAt: parsed.updatedAt || null,
             turnCount: Array.isArray(parsed.turns) ? parsed.turns.length : 0,
@@ -1271,6 +1289,7 @@ function createAcpMemoryStore(options = {}) {
     getSessionTurnsPage,
     listSessions,
     renameSession,
+    setSessionGoal,
     forkSession,
     deleteSession,
     lookupEntity,

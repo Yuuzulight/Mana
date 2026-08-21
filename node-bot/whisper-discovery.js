@@ -45,6 +45,7 @@ const PREFERRED_NAME_ORDER = [
   "ggml-medium.en.bin",
   "ggml-medium.bin",
   "ggml-large.bin",
+  "ggml-large-v3-turbo.bin",
 ];
 
 // Issue #4: a friendlier knob than hunting down a raw ggml-*.bin path --
@@ -59,6 +60,12 @@ const WHISPER_MODEL_PROFILES = {
   base: ["ggml-base.en.bin", "ggml-base.bin"],
   small: ["ggml-small.en.bin", "ggml-small.bin"],
   medium: ["ggml-medium.en.bin", "ggml-medium.bin"],
+  // #429: large-v3-turbo is a pruned-decoder variant of large-v3 (32->4
+  // decoder layers), ~7x faster with a modest accuracy tradeoff. No
+  // English-only ("*.en.bin") variant exists for any large-tier Whisper
+  // model in the official whisper.cpp/OpenAI releases, unlike the
+  // smaller tiers above.
+  turbo: ["ggml-large-v3-turbo.bin"],
 };
 
 function findWhisperModel(options = {}) {
