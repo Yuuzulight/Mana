@@ -3,6 +3,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
+const { spawnSync } = require("node:child_process");
 
 const { createApp } = require("../server");
 const {
@@ -766,6 +767,32 @@ function withTruncationWorkspace(originalContent, run) {
   }
 }
 
+// Same shape as withTruncationWorkspace, but for issue #420's syntax-check
+// tests, which need the original file at a specific extension-bearing path
+// (e.g. config.json, script.py) rather than always src/app.js -- createEditProposal
+// reads the original file first, so it must actually exist at that path.
+function withProposalWorkspace(relativePath, originalContent, run) {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mana-zed-proposal-"));
+  const fullPath = path.join(tempDir, relativePath);
+  fs.mkdirSync(path.dirname(fullPath), { recursive: true });
+  fs.writeFileSync(fullPath, originalContent);
+  try {
+    const workspaceStore = createEditorWorkspaceStore({
+      now: () => new Date("2026-08-17T00:00:00.000Z"),
+    });
+    workspaceStore.setWorkspace(tempDir, { editor: "zed" });
+    run(
+      createEditorIntegrations({
+        env: {},
+        commandResolver: (command) => command,
+        workspaceStore,
+      }),
+    );
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
 test("a proposal that erases a non-empty file is rejected (issue #372)", () => {
   withTruncationWorkspace("line one\nline two\nline three\n", (editors) => {
     assert.throws(
@@ -812,6 +839,103 @@ test("a proposal against an empty original is not treated as truncation (issue #
     const proposal = editors.createEditProposal({
       path: "src/app.js",
       proposedContent: "const created = true;\n",
+    });
+    assert.equal(proposal.status, "pending");
+  });
+});
+
+test("a syntactically broken JS proposal is rejected before it reaches review (issue #420)", () => {
+  withTruncationWorkspace("const a = 1;\n", (editors) => {
+    assert.throws(
+      () =>
+        editors.createEditProposal({
+          path: "src/app.js",
+          proposedContent: "function broken( {\n  return 1\n",
+        }),
+      /does not parse/,
+    );
+  });
+});
+
+test("a valid JS proposal is unaffected by the syntax check (issue #420)", () => {
+  withTruncationWorkspace("const a = 1;\n", (editors) => {
+    const proposal = editors.createEditProposal({
+      path: "src/app.js",
+      proposedContent: "const a = 1;\nconst b = 2;\n",
+    });
+    assert.equal(proposal.status, "pending");
+  });
+});
+
+test("a syntactically broken JSON proposal is rejected (issue #420)", () => {
+  withProposalWorkspace("config.json", '{"a": 1}\n', (editors) => {
+    assert.throws(
+      () =>
+        editors.createEditProposal({
+          path: "config.json",
+          proposedContent: '{"a": 1,}\n',
+        }),
+      /does not parse/,
+    );
+  });
+});
+
+test("a valid JSON proposal is unaffected by the syntax check (issue #420)", () => {
+  withProposalWorkspace("config.json", '{"a": 1}\n', (editors) => {
+    const proposal = editors.createEditProposal({
+      path: "config.json",
+      proposedContent: '{"a": 2}\n',
+    });
+    assert.equal(proposal.status, "pending");
+  });
+});
+
+// Skips gracefully rather than failing if this checkout has no `python` on
+// PATH -- exercising the real subprocess-based Python check (not a mock)
+// is valuable when possible, but this shouldn't break the suite elsewhere.
+const pythonAvailable = (() => {
+  const result = spawnSync("python", ["--version"], { encoding: "utf8", windowsHide: true });
+  return !result.error && result.status === 0;
+})();
+
+test(
+  "a syntactically broken Python proposal is rejected (issue #420)",
+  { skip: !pythonAvailable && "no python on PATH in this checkout" },
+  () => {
+    withProposalWorkspace("script.py", "a = 1\n", (editors) => {
+      assert.throws(
+        () =>
+          editors.createEditProposal({
+            path: "script.py",
+            proposedContent: "def broken(:\n    return 1\n",
+          }),
+        /does not parse/,
+      );
+    });
+  },
+);
+
+test(
+  "a valid Python proposal is unaffected by the syntax check (issue #420)",
+  { skip: !pythonAvailable && "no python on PATH in this checkout" },
+  () => {
+    withProposalWorkspace("script.py", "a = 1\n", (editors) => {
+      const proposal = editors.createEditProposal({
+        path: "script.py",
+        proposedContent: "a = 1\nb = 2\n",
+      });
+      assert.equal(proposal.status, "pending");
+    });
+  },
+);
+
+test("a file extension with no known parser is not blocked by the syntax check (issue #420)", () => {
+  withProposalWorkspace("notes.txt", "hello\n", (editors) => {
+    const proposal = editors.createEditProposal({
+      path: "notes.txt",
+      // Deliberately not valid anything -- .txt has no parser registered,
+      // so this must pass through unchecked, not be treated as an error.
+      proposedContent: "this isn't valid JS or JSON, and that's fine\n",
     });
     assert.equal(proposal.status, "pending");
   });
