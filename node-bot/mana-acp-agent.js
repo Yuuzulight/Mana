@@ -570,7 +570,13 @@ function createManaAcpAgent(options = {}) {
         // voice-chat tool-calling loop does; the most it can do is make
         // sure the caller has the goal text to include itself. A caller
         // that ignores this field loses nothing it already had.
-        if (memoryStore && params.sessionId && result && !result.goal) {
+        if (
+          memoryStore &&
+          typeof memoryStore.getSession === "function" &&
+          params.sessionId &&
+          result &&
+          !result.goal
+        ) {
           try {
             const session = memoryStore.getSession(String(params.sessionId));
             if (session && session.goal) {
