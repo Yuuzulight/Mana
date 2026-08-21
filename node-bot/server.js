@@ -3977,10 +3977,12 @@ function registerRoutes(app, upload, deps = {}) {
     // Issue #400: makes the composition of the prompt this reply actually
     // used observable (GET /prompt-composition), instead of only
     // discoverable by reading the code the way #364's truncation bug was.
-    // Covers the four blocks gathered unconditionally above, before the
-    // reply-path branches below diverge; tool schemas and the live turns
-    // differ per reply path (tool-aware vs. streaming vs. plain) and aren't
-    // included here.
+    // Covers the three blocks gathered unconditionally above (system-prompt
+    // folds in persona/preset/background-memory/skills-index/session-goal,
+    // since those are all concatenated into one string by this point),
+    // before the reply-path branches below diverge; tool schemas and the
+    // live turns differ per reply path (tool-aware vs. streaming vs. plain)
+    // and aren't included here.
     try {
       recordPromptComposition(sessionId, [
         { name: "system-prompt", chars: selectedSystemPrompt.length, dropped: { skillsOmitted: skillsOmittedCount } },
