@@ -1,4 +1,8 @@
 const container = document.getElementById("artifact-container");
+const navEl = document.getElementById("artifact-nav");
+const prevBtn = document.getElementById("artifact-prev");
+const nextBtn = document.getElementById("artifact-next");
+const versionLabelEl = document.getElementById("artifact-version-label");
 
 // mermaid.min.js (loaded via <script> in index.html, before this file) sets
 // window.mermaid as a plain global -- this runs in the page's own world, so
@@ -11,7 +15,14 @@ const container = document.getElementById("artifact-container");
 // than trusting diagram text as safe.
 mermaid.initialize({ startOnLoad: false, securityLevel: "strict", theme: "dark" });
 
-window.artifactAPI.onShow(async (artifact) => {
+// Issue #391: `thread` is every version of this artifact detected this
+// session (assignArtifactVersion in artifact-detector.js), `index` is which
+// one was clicked. Kept as module state so Prev/Next can move through it
+// without another IPC round trip.
+let currentThread = [];
+let currentIndex = 0;
+
+async function renderArtifact(artifact) {
   if (!container || !artifact) {
     return;
   }
@@ -34,4 +45,39 @@ window.artifactAPI.onShow(async (artifact) => {
     artifact.language === "html"
       ? window.artifactAPI.sanitizeHtml(artifact.content)
       : window.artifactAPI.renderMarkdownToSafeHtml(artifact.content);
+}
+
+function updateNav() {
+  if (!navEl) return;
+  if (currentThread.length <= 1) {
+    navEl.style.display = "none";
+    return;
+  }
+  navEl.style.display = "flex";
+  versionLabelEl.textContent = `Version ${currentIndex + 1} of ${currentThread.length}`;
+  prevBtn.disabled = currentIndex === 0;
+  nextBtn.disabled = currentIndex === currentThread.length - 1;
+}
+
+prevBtn?.addEventListener("click", () => {
+  if (currentIndex > 0) {
+    currentIndex -= 1;
+    renderArtifact(currentThread[currentIndex]);
+    updateNav();
+  }
+});
+nextBtn?.addEventListener("click", () => {
+  if (currentIndex < currentThread.length - 1) {
+    currentIndex += 1;
+    renderArtifact(currentThread[currentIndex]);
+    updateNav();
+  }
+});
+
+window.artifactAPI.onShow(async (payload) => {
+  if (!payload) return;
+  currentThread = Array.isArray(payload.thread) ? payload.thread : [payload];
+  currentIndex = Number.isInteger(payload.index) ? payload.index : currentThread.length - 1;
+  updateNav();
+  await renderArtifact(currentThread[currentIndex]);
 });

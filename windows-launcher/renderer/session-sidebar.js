@@ -68,6 +68,11 @@ function clearChatLog() {
   if (chatLogEl) {
     chatLogEl.innerHTML = "";
   }
+  // Issue #391: version threads (assignArtifactVersion) shouldn't bleed
+  // across sessions -- resetSessionArtifacts lives in renderer.js, which
+  // loads before this file and shares its global scope (see this file's
+  // own header comment).
+  resetSessionArtifacts();
 }
 
 async function loadSessionHistory(sessionId) {
