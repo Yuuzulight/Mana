@@ -539,7 +539,7 @@ const acpMemoryStore = createAcpMemoryStore({
         // summarizeFn) is built at module load time, outside registerRoutes,
         // but runOpenAIReply only exists inside registerRoutes's scope. See
         // the near-identical trap already documented and fixed for
-        // skill-proposal.js a few hundred lines down ("built here... because
+        // skill-proposal.js later in this file ("built here... because
         // runOpenAIReply only exists in this function's scope"). Pre-existing,
         // unrelated to this issue -- tracked separately, not fixed here.
         const res = await runOpenAIReply(prompt, Math.min(maxTokens, 512), null, sessionId);
