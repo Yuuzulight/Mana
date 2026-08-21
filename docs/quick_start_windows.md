@@ -90,6 +90,11 @@ Proactive notifications
 - These land in chat history either way (Dream Mode's summary is written to `MEMORY.md`, cron results and research reports are appended as chat turns) -- the toast is just an additional, immediate nudge, not the only place to see them.
 - Set `$env:MANA_PROACTIVE_TOASTS_ENABLED = "0"` before launching Mana to turn these off and keep proactive results chat-only.
 
+Remote AI token usage
+- When `MANA_ALLOW_REMOTE_AI` is on (or `OPENAI_BASE_URL` points at a non-loopback host), the performance panel also shows a running total of prompt/completion tokens the current chat session has used against the remote provider -- a local-only session shows nothing extra here, since there's no cost to track.
+- Set `$env:MANA_SESSION_TOKEN_WARN` and/or `$env:MANA_SESSION_TOKEN_STOP` (both optional, in tokens) to flag the total with `[WARN]`/`[STOPPED]` once a session crosses them. Reaching the stop threshold blocks further remote-AI calls for that session (falling back to local) until a new session starts -- it doesn't end the session or clear the count.
+- This is purely a cost-visibility view of what the remote provider actually reported using -- it doesn't control how long or short Mana's replies are.
+
 Performance notes
 - `Gaming mode` checks Windows for watched game processes such as FFXIV.
 - When a watched game is running, Mana waits longer after empty/noise chunks to reduce idle work.
