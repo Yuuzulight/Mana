@@ -1586,6 +1586,18 @@ test("buildServerArgs omits --spec-type by default (no speculative decoding env 
   assert.equal(args.includes("--spec-draft-ngl"), false);
 });
 
+test("buildServerArgs leaves n-gram speculative decoding off for any LLAMA_ENABLE_SPEC_NGRAM value other than the literal string \"1\"", () => {
+  for (const value of ["0", "true", "yes", "on"]) {
+    const runtime = createLlamaServerRuntime({
+      env: { ...makeFakeEnv(), LLAMA_ENABLE_SPEC_NGRAM: value },
+      fs: makeFakeFs(),
+      registerExitHandlers: false,
+    });
+    const args = runtime.buildServerArgs("C:\\models\\mana.gguf", 8090);
+    assert.equal(args.includes("--spec-type"), false, `value ${value} should not enable the gate`);
+  }
+});
+
 test("buildServerArgs enables n-gram speculative decoding, defaulting to ngram-simple", () => {
   const runtime = createLlamaServerRuntime({
     env: { ...makeFakeEnv(), LLAMA_ENABLE_SPEC_NGRAM: "1" },
