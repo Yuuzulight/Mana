@@ -116,6 +116,28 @@ test("executeTool returns a graceful error when the capture bridge rejects (e.g.
   assert.match(parsed.error, /could not capture the screen: capture request timed out/);
 });
 
+test("executeTool returns a graceful error when runVisionReply rejects, instead of throwing", async () => {
+  // Finding 2 (issue #417 whole-branch review): runVisionReply sits outside
+  // any try/catch, which broke this module's own documented contract that
+  // every failure comes back as {status:"error"} JSON, never a thrown
+  // exception -- e.g. a llama-server vision reply failure (bad status,
+  // empty reply, retry cooldown) used to propagate straight up uncaught.
+  const source = createVisionToolSource(
+    baseOptions({
+      runVisionReply: async () => {
+        throw new Error("llama-server vision reply failed (400): bad request");
+      },
+    }),
+  );
+  const result = await source.executeTool(`${VISION_TOOL_PREFIX}look`, { prompt: "what's open?" });
+  const parsed = JSON.parse(result);
+  assert.equal(parsed.status, "error");
+  assert.match(
+    parsed.error,
+    /could not describe the screen: llama-server vision reply failed \(400\): bad request/,
+  );
+});
+
 test("the vision model check runs before the plugin-enabled check (order doesn't matter for correctness, but both are independently reachable)", async () => {
   const source = createVisionToolSource(
     baseOptions({

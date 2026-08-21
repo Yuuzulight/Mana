@@ -87,8 +87,15 @@ function createVisionToolSource({
       });
     }
 
-    const description = await runVisionReply(prompt, [image]);
-    return JSON.stringify({ status: "ok", description: description || "" });
+    try {
+      const description = await runVisionReply(prompt, [image]);
+      return JSON.stringify({ status: "ok", description: description || "" });
+    } catch (e) {
+      return JSON.stringify({
+        status: "error",
+        error: `could not describe the screen: ${e.message || e}`,
+      });
+    }
   }
 
   return { listToolSchemas, executeTool, isKnownToolName: isVisionToolName };
