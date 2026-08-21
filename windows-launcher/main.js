@@ -35,6 +35,10 @@ function getTrayWebSocketUrl() {
   return `${getBackendBaseUrl().replace(/^http/, "ws")}/ws/tray`;
 }
 
+function getVisionCaptureWebSocketUrl() {
+  return `${getBackendBaseUrl().replace(/^http/, "ws")}/ws/vision-capture`;
+}
+
 ipcMain.handle("get-backend-url", async () => getBackendBaseUrl());
 ipcMain.on("get-backend-url-sync", (event) => {
   event.returnValue = getBackendBaseUrl();
@@ -1135,6 +1139,7 @@ app.whenReady().then(() => {
   createAvatarWindow();
   createTray();
   connectTrayNotifications();
+  connectVisionCaptureBridge();
   registerVisionHotkey();
   registerWindowHotkey();
   registerInterruptHotkey();
@@ -1245,6 +1250,45 @@ function connectTrayNotifications() {
   // yet (e.g. running without windows-launcher, or a slow-starting node-bot).
   socket.addEventListener("close", () => {
     setTimeout(connectTrayNotifications, TRAY_SOCKET_RECONNECT_DELAY_MS);
+  });
+}
+
+// Issue #417: lets the model request a fresh screenshot mid-reply --
+// node-bot pushes a "capture-request" over this socket, the renderer
+// captures (the same screen:capture-primary IPC the hotkey/ambient-glance
+// flows already use) and POSTs the image back to
+// POST /vision/capture-result. Same reconnect-on-close shape as
+// connectTrayNotifications() just above.
+const VISION_CAPTURE_SOCKET_RECONNECT_DELAY_MS = 15000;
+
+function connectVisionCaptureBridge() {
+  let socket;
+  try {
+    socket = new WebSocket(getVisionCaptureWebSocketUrl());
+  } catch (error) {
+    setTimeout(connectVisionCaptureBridge, VISION_CAPTURE_SOCKET_RECONNECT_DELAY_MS);
+    return;
+  }
+
+  socket.addEventListener("message", (event) => {
+    let payload;
+    try {
+      payload = JSON.parse(event.data);
+    } catch (error) {
+      return;
+    }
+    if (
+      payload &&
+      payload.type === "capture-request" &&
+      payload.requestId &&
+      mainWindow &&
+      !mainWindow.isDestroyed()
+    ) {
+      mainWindow.webContents.send("vision:capture-request", payload.requestId);
+    }
+  });
+  socket.addEventListener("close", () => {
+    setTimeout(connectVisionCaptureBridge, VISION_CAPTURE_SOCKET_RECONNECT_DELAY_MS);
   });
 }
 
