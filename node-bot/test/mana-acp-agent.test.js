@@ -41,7 +41,7 @@ test("assertLocalAiPolicy blocks remote AI unless explicitly allowed", () => {
 
   assert.throws(
     () => assertLocalAiPolicy({ MANA_ALLOW_REMOTE_AI: "1" }),
-    /remote AI is disabled for the Zed External Agent/i,
+    /remote AI is disabled for the ACP agent/i,
   );
 
   assert.deepEqual(
@@ -396,7 +396,7 @@ test("createManaAcpAgent sends prompts through the local coding reply bridge", a
       marketContext: "",
       options: {
         modelProfile: "coding",
-        source: "zed-external-agent",
+        source: "acp-external-agent",
       },
     },
   ]);
