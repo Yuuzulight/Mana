@@ -1572,3 +1572,94 @@ test("runBestOfNReply skips the judge call entirely when n is 1", async () => {
   assert.equal(result.content, "only answer");
   assert.equal(result.judgeIndex, 0);
 });
+
+// Issue #332: speculative decoding wiring in buildServerArgs.
+test("buildServerArgs omits --spec-type by default (no speculative decoding env vars set)", () => {
+  const runtime = createLlamaServerRuntime({
+    env: makeFakeEnv(),
+    fs: makeFakeFs(),
+    registerExitHandlers: false,
+  });
+  const args = runtime.buildServerArgs("C:\\models\\mana.gguf", 8090);
+  assert.equal(args.includes("--spec-type"), false);
+  assert.equal(args.includes("--spec-draft-model"), false);
+  assert.equal(args.includes("--spec-draft-ngl"), false);
+});
+
+test("buildServerArgs leaves n-gram speculative decoding off for any LLAMA_ENABLE_SPEC_NGRAM value other than the literal string \"1\"", () => {
+  for (const value of ["0", "true", "yes", "on"]) {
+    const runtime = createLlamaServerRuntime({
+      env: { ...makeFakeEnv(), LLAMA_ENABLE_SPEC_NGRAM: value },
+      fs: makeFakeFs(),
+      registerExitHandlers: false,
+    });
+    const args = runtime.buildServerArgs("C:\\models\\mana.gguf", 8090);
+    assert.equal(args.includes("--spec-type"), false, `value ${value} should not enable the gate`);
+  }
+});
+
+test("buildServerArgs enables n-gram speculative decoding, defaulting to ngram-simple", () => {
+  const runtime = createLlamaServerRuntime({
+    env: { ...makeFakeEnv(), LLAMA_ENABLE_SPEC_NGRAM: "1" },
+    fs: makeFakeFs(),
+    registerExitHandlers: false,
+  });
+  const args = runtime.buildServerArgs("C:\\models\\mana.gguf", 8090);
+  const idx = args.indexOf("--spec-type");
+  assert.ok(idx !== -1);
+  assert.equal(args[idx + 1], "ngram-simple");
+});
+
+test("buildServerArgs lets LLAMA_SPEC_NGRAM_TYPE override which n-gram variant is used", () => {
+  const runtime = createLlamaServerRuntime({
+    env: {
+      ...makeFakeEnv(),
+      LLAMA_ENABLE_SPEC_NGRAM: "1",
+      LLAMA_SPEC_NGRAM_TYPE: "ngram-mod",
+    },
+    fs: makeFakeFs(),
+    registerExitHandlers: false,
+  });
+  const args = runtime.buildServerArgs("C:\\models\\mana.gguf", 8090);
+  assert.equal(args[args.indexOf("--spec-type") + 1], "ngram-mod");
+});
+
+test("buildServerArgs wires draft-model speculative decoding from LLAMA_SPEC_DRAFT_MODEL", () => {
+  const runtime = createLlamaServerRuntime({
+    env: { ...makeFakeEnv(), LLAMA_SPEC_DRAFT_MODEL: "C:\\models\\draft-1.7b.gguf" },
+    fs: makeFakeFs(),
+    registerExitHandlers: false,
+  });
+  const args = runtime.buildServerArgs("C:\\models\\mana.gguf", 8090);
+  assert.equal(args[args.indexOf("--spec-type") + 1], "draft-simple");
+  assert.equal(args[args.indexOf("--spec-draft-model") + 1], "C:\\models\\draft-1.7b.gguf");
+});
+
+// Issue #332: measured directly that -ngld's own 'auto' default leaves the
+// draft model mostly off-GPU (14.6 tok/s vs. 78.7 tok/s forced to match
+// -ngl, on a real coder-7B + 1.5B-draft pairing) -- buildServerArgs must
+// always pin --spec-draft-ngl to the same value as -ngl.
+test("buildServerArgs sets --spec-draft-ngl to match -ngl, not the draft model's own 'auto' default", () => {
+  const runtime = createLlamaServerRuntime({
+    env: { ...makeFakeEnv(), LLAMA_SPEC_DRAFT_MODEL: "C:\\models\\draft-1.7b.gguf", LLAMA_NGL: "42" },
+    fs: makeFakeFs(),
+    registerExitHandlers: false,
+  });
+  const args = runtime.buildServerArgs("C:\\models\\mana.gguf", 8090);
+  assert.equal(args[args.indexOf("--spec-draft-ngl") + 1], "42");
+  assert.equal(args[args.indexOf("-ngl") + 1], "42");
+});
+
+test("buildServerArgs combines n-gram and draft-model speculative decoding when both are set", () => {
+  const runtime = createLlamaServerRuntime({
+    env: {
+      ...makeFakeEnv(),
+      LLAMA_ENABLE_SPEC_NGRAM: "1",
+      LLAMA_SPEC_DRAFT_MODEL: "C:\\models\\draft-1.7b.gguf",
+    },
+    fs: makeFakeFs(),
+    registerExitHandlers: false,
+  });
+  const args = runtime.buildServerArgs("C:\\models\\mana.gguf", 8090);
+  assert.equal(args[args.indexOf("--spec-type") + 1], "ngram-simple,draft-simple");
+});
