@@ -1114,6 +1114,58 @@ test("runToolAwareReply stops after consecutive tool errors and forces a final a
   assert.equal(result.toolCalls.filter((c) => !c.ok).length, 3);
 });
 
+// Issue #401: session_goal__finish lets the model genuinely stop the loop
+// early, once it believes the session's user-stated goal is done -- not
+// just when it naturally runs out of tools to call, or hits the round/
+// time/error caps.
+test("runToolAwareReply stops immediately when the model calls session_goal__finish, without looping further", async () => {
+  const bodies = [];
+  let serverUp = false;
+  const fakeFetch = async (url, init) => {
+    if (String(url).endsWith("/health")) return { ok: serverUp };
+    if (String(url).endsWith("/v1/chat/completions")) {
+      const body = JSON.parse(init.body);
+      bodies.push(body);
+      if (body.tool_choice === "none") return makeAnswerResponse("Goal achieved, all done.");
+      // If the loop looped again instead of stopping, this would keep
+      // requesting more tool calls forever -- the round cap below is set
+      // high specifically so only the finish signal (not running out of
+      // rounds) could plausibly account for the loop stopping here.
+      return makeToolCallResponse(["session_goal__finish"]);
+    }
+    return { ok: false, status: 404, text: async () => "not found" };
+  };
+
+  const runtime = createLlamaServerRuntime({
+    env: makeFakeEnv(),
+    fs: makeFakeFs(),
+    fetch: fakeFetch,
+    spawn: () => {
+      serverUp = true;
+      return makeFakeChild();
+    },
+    sleep: async () => {},
+    registerExitHandlers: false,
+  });
+
+  const policy = makeFakePolicy({
+    executeTool: (name) => {
+      assert.equal(name, "session_goal__finish");
+      return JSON.stringify({ status: "ok", finished: true, reason: "Login bug is fixed and tests pass." });
+    },
+  });
+
+  const result = await runtime.runToolAwareReply("fix the login bug", policy, {
+    maxRounds: 10,
+  });
+
+  assert.equal(result.content, "Goal achieved, all done.");
+  assert.equal(bodies.length, 2, "1 round requesting the finish tool + 1 forced final call");
+  assert.equal(result.toolCalls.length, 1);
+  assert.equal(result.toolCalls[0].name, "session_goal__finish");
+  assert.equal(result.toolCalls[0].ok, true);
+});
+
 test("runToolAwareReply respects a wall-clock time budget across rounds", async () => {
   let clock = 0;
   let serverUp = false;

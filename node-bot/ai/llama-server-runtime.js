@@ -11,6 +11,7 @@ const {
   DEFAULT_SYSTEM_PROMPT,
   isLocalModelSpec,
 } = require("./local-llama-runtime");
+const { SESSION_GOAL_FINISH_TOOL_NAME } = require("./session-goal-tool-source");
 
 // Persistent llama-server runtime.
 //
@@ -825,6 +826,12 @@ function createLlamaServerRuntime(options = {}) {
     let message = {};
     let rounds = 0;
     let consecutiveToolErrors = 0;
+    // Issue #401: set when the model calls session_goal__finish, believing
+    // the session's user-stated goal is done. Folded into the existing
+    // budgetExhausted check below so a genuine finish reuses the same
+    // "force a real final answer now" path the round/time/error caps
+    // already use, instead of a second code path.
+    let goalFinished = false;
 
     for (let round = 1; round <= roundLimit; round += 1) {
       rounds = round;
@@ -869,6 +876,9 @@ function createLlamaServerRuntime(options = {}) {
           resultText = String(result);
           executedToolCalls.push({ name, args, ok: true });
           consecutiveToolErrors = 0;
+          if (name === SESSION_GOAL_FINISH_TOOL_NAME) {
+            goalFinished = true;
+          }
         } catch (e) {
           resultText = `Error: ${e.message}`;
           executedToolCalls.push({ name, args, ok: false, error: e.message });
@@ -883,6 +893,7 @@ function createLlamaServerRuntime(options = {}) {
       }
 
       const budgetExhausted =
+        goalFinished ||
         round >= roundLimit ||
         nowMs() > deadline ||
         consecutiveToolErrors >= MAX_CONSECUTIVE_TOOL_ERRORS;
