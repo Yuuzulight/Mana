@@ -79,6 +79,23 @@ function registerDeepResearchRoutes(app, context = {}) {
       );
   }
 
+  // Issue #423: issue #77 already makes the model end a report with a line
+  // starting with "Note:" when it found a genuine staleness/gap/conflict --
+  // that structured marker is reused here rather than re-detecting staleness,
+  // so only the reports that actually earned a caveat trigger a toast.
+  function notifyIfStale(question, report) {
+    const noteLine = typeof report === "string" ? report.match(/^Note:.*$/m) : null;
+    if (!noteLine) return;
+    require("../tray-notifier")
+      .notifyTray({
+        type: "research",
+        title: `Research: ${question}`,
+        text: noteLine[0],
+        at: new Date().toISOString(),
+      })
+      .catch(() => {});
+  }
+
   function scheduleJobCleanup(jobId) {
     const timer = setTimeout(() => {
       jobs.delete(jobId);
@@ -175,6 +192,7 @@ function registerDeepResearchRoutes(app, context = {}) {
             job.status = "done";
             job.result = result;
             recordResearchTurn(sessionId, question, result.report);
+            notifyIfStale(question, result.report);
           }
           scheduleJobCleanup(jobId);
         })

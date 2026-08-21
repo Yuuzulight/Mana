@@ -1151,6 +1151,15 @@ if (process.env.NODE_ENV !== "test" && !process.env.NODE_TEST_CONTEXT) {
               compacted.length,
               ")",
             );
+            // Issue #423: surface the Dream Mode insight as a proactive toast,
+            // not just a silent file write -- fire-and-forget, never blocks
+            // the compaction itself on notification delivery.
+            notifyTray({
+              type: "dream",
+              title: "Dream Mode",
+              text: compacted.length > 200 ? `${compacted.slice(0, 200)}...` : compacted,
+              at: new Date().toISOString(),
+            }).catch(() => {});
           }
         } catch (e) {
           console.warn(
