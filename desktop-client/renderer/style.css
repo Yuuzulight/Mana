@@ -199,6 +199,13 @@ select{font-family:inherit;color:var(--text)}
 .model-scan-item-info span{font-size:11px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 .model-scan-item-size{font-size:11px;color:var(--muted);flex-shrink:0;}
 
+/* Applied edits (issue #428): restorable snapshots, same row shape as
+   .model-scan-item. */
+.snapshot-item{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:8px 10px;border:1px solid var(--border-soft);border-radius:6px;background:var(--panel-2);margin-bottom:6px;}
+.snapshot-item-info{display:flex;flex-direction:column;gap:2px;min-width:0;}
+.snapshot-item-path{font-size:12.5px;color:var(--text);font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.snapshot-item-meta{font-size:11px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+
 /* Onboarding modal */
 .modal{ position:fixed; inset:0; display:none; align-items:center; justify-content:center; background:rgba(0,0,0,0.55); z-index:1000 }
 .modal[aria-hidden="false"], .modal.show { display:flex }

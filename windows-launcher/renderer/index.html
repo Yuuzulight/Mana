@@ -346,6 +346,21 @@
             </div>
           </div>
 
+          <!-- Issue #428: restorable snapshots of applied editor-handoff
+               edits (any editor, not just Zed -- see zed-integration.js's
+               listEditSnapshots/restoreEditSnapshot). -->
+          <div class="sidebar-panel" data-panel="snapshots" hidden>
+            <div id="snapshotsPanel">
+              <div id="snapshotsHeader">
+                <strong>Applied edits</strong>
+                <button id="refreshSnapshotsBtn">Refresh</button>
+              </div>
+              <p class="sidebar-note">Edits applied from a connected editor can be undone here, independent of git.</p>
+              <div id="snapshotsEmpty" class="sidebar-note" hidden>No applied edits yet.</div>
+              <div id="snapshotsList"></div>
+            </div>
+          </div>
+
           <div class="sidebar-panel" data-panel="settings" hidden>
             <div id="settingsInfoNav">
               <div class="nav-item" data-panel="avatar">
@@ -371,6 +386,10 @@
                 <span class="nav-icon">✓</span>
                 <span class="nav-label">Doctor</span>
                 <span class="nav-dot" id="doctorNavDot"></span>
+              </div>
+              <div class="nav-item" data-panel="snapshots">
+                <span class="nav-icon">⎌</span>
+                <span class="nav-label">Applied edits</span>
               </div>
             </div>
 

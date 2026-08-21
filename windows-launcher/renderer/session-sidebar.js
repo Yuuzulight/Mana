@@ -303,9 +303,10 @@ function beginInlineGoalEdit(sessionId) {
   input.addEventListener("blur", commit);
 }
 
-function showConfirmModal(message) {
+function showConfirmModal(message, okLabel) {
   return new Promise((resolve) => {
     confirmModalMessageEl.textContent = message;
+    confirmModalOkEl.textContent = okLabel || "Delete";
     confirmModalEl.hidden = false;
 
     function cleanup(result) {

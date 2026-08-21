@@ -16,6 +16,9 @@ const doctorPassChecksEl = document.getElementById("doctorPassChecks");
 const doctorBubbleEl = document.getElementById("doctorBubble");
 const doctorBubbleTitleEl = doctorBubbleEl?.querySelector(".doctor-bubble-title");
 const doctorBubbleMessageEl = doctorBubbleEl?.querySelector(".doctor-bubble-message");
+const refreshSnapshotsBtn = document.getElementById("refreshSnapshotsBtn");
+const snapshotsListEl = document.getElementById("snapshotsList");
+const snapshotsEmptyEl = document.getElementById("snapshotsEmpty");
 const modelModeControlsEl = document.getElementById("modelModeControls");
 const modelStatusEl = document.getElementById("modelStatus");
 const useRemoteAiToggleEl = document.getElementById("useRemoteAiToggle");
@@ -2455,6 +2458,89 @@ async function runDoctorChecksFromLauncher() {
   }
 }
 
+// Issue #428: restorable snapshots of applied editor-handoff edits, from
+// whichever editor was connected -- generic, not Zed-specific.
+function formatSnapshotTimestamp(iso) {
+  const date = new Date(iso);
+  return Number.isNaN(date.getTime()) ? "" : date.toLocaleString();
+}
+
+function renderEditSnapshotsPanel(snapshots) {
+  if (snapshotsEmptyEl) {
+    snapshotsEmptyEl.hidden = snapshots.length > 0;
+  }
+  if (!snapshotsListEl) {
+    return;
+  }
+  snapshotsListEl.innerHTML = "";
+  for (const snapshot of snapshots) {
+    const row = document.createElement("div");
+    row.className = "snapshot-item";
+
+    const info = document.createElement("div");
+    info.className = "snapshot-item-info";
+    const pathEl = document.createElement("div");
+    pathEl.className = "snapshot-item-path";
+    pathEl.textContent = snapshot.relativePath || "(unknown file)";
+    const metaEl = document.createElement("div");
+    metaEl.className = "snapshot-item-meta";
+    metaEl.textContent = `${snapshot.summary || "Edit"} · ${formatSnapshotTimestamp(snapshot.appliedAt)}`;
+    info.appendChild(pathEl);
+    info.appendChild(metaEl);
+
+    const restoreBtn = document.createElement("button");
+    restoreBtn.textContent = "Restore";
+    restoreBtn.addEventListener("click", () =>
+      restoreEditSnapshotWithConfirm(snapshot.id, snapshot.relativePath),
+    );
+
+    row.appendChild(info);
+    row.appendChild(restoreBtn);
+    snapshotsListEl.appendChild(row);
+  }
+}
+
+async function refreshEditSnapshots() {
+  try {
+    const response = await fetch(`${BACKEND_BASE_URL}/editors/workspace/snapshots`);
+    if (!response.ok) {
+      throw new Error(`Snapshot list returned ${response.status}`);
+    }
+    const result = await response.json();
+    renderEditSnapshotsPanel(result.snapshots || []);
+  } catch (error) {
+    console.warn("Mana edit snapshot list failed:", error);
+  }
+}
+
+// Restore has no code-level conflict check against the file's current
+// content -- unlike approving a proposal, a snapshot only knows the file's
+// state before its own edit, not what may have changed since. This
+// confirmation dialog is the safety net, matching how approval gates (not
+// code-level conflict detection) are the safety net elsewhere in this app.
+async function restoreEditSnapshotWithConfirm(id, relativePath) {
+  const confirmed = await showConfirmModal(
+    `Restore "${relativePath}" to its state before this edit? The current content will be overwritten.`,
+    "Restore",
+  );
+  if (!confirmed) {
+    return;
+  }
+  try {
+    const response = await fetch(
+      `${BACKEND_BASE_URL}/editors/workspace/snapshots/${id}/restore`,
+      { method: "POST" },
+    );
+    const result = await response.json();
+    if (!response.ok || !result.restored) {
+      throw new Error(result.error || `Restore returned ${response.status}`);
+    }
+    await refreshEditSnapshots();
+  } catch (error) {
+    console.warn("Mana edit snapshot restore failed:", error);
+  }
+}
+
 function shouldReadScreenForCommand(text, gamingModeActive) {
   if (!gamingModeActive) {
     return true;
@@ -3016,6 +3102,10 @@ runDoctorButton?.addEventListener("click", () => {
   runDoctorChecksFromLauncher();
 });
 
+refreshSnapshotsBtn?.addEventListener("click", () => {
+  refreshEditSnapshots();
+});
+
 listenBtn.addEventListener("click", async () => {
   if (listening) {
     stopListening();
@@ -3055,6 +3145,7 @@ refreshGamingStatus(true);
 // canvas-size measurement has to happen after that resize, not before it.
 refreshPerfStatus();
 runDoctorChecksFromLauncher();
+refreshEditSnapshots();
 
 // helper: convert AudioBuffer to WAV bytes (16-bit PCM)
 function audioBufferToWav(buffer, opt) {
