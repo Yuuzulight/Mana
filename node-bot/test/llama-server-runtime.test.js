@@ -1583,6 +1583,7 @@ test("buildServerArgs omits --spec-type by default (no speculative decoding env 
   const args = runtime.buildServerArgs("C:\\models\\mana.gguf", 8090);
   assert.equal(args.includes("--spec-type"), false);
   assert.equal(args.includes("--spec-draft-model"), false);
+  assert.equal(args.includes("--spec-draft-ngl"), false);
 });
 
 test("buildServerArgs enables n-gram speculative decoding, defaulting to ngram-simple", () => {
@@ -1620,6 +1621,21 @@ test("buildServerArgs wires draft-model speculative decoding from LLAMA_SPEC_DRA
   const args = runtime.buildServerArgs("C:\\models\\mana.gguf", 8090);
   assert.equal(args[args.indexOf("--spec-type") + 1], "draft-simple");
   assert.equal(args[args.indexOf("--spec-draft-model") + 1], "C:\\models\\draft-1.7b.gguf");
+});
+
+// Issue #332: measured directly that -ngld's own 'auto' default leaves the
+// draft model mostly off-GPU (14.6 tok/s vs. 78.7 tok/s forced to match
+// -ngl, on a real coder-7B + 1.5B-draft pairing) -- buildServerArgs must
+// always pin --spec-draft-ngl to the same value as -ngl.
+test("buildServerArgs sets --spec-draft-ngl to match -ngl, not the draft model's own 'auto' default", () => {
+  const runtime = createLlamaServerRuntime({
+    env: { ...makeFakeEnv(), LLAMA_SPEC_DRAFT_MODEL: "C:\\models\\draft-1.7b.gguf", LLAMA_NGL: "42" },
+    fs: makeFakeFs(),
+    registerExitHandlers: false,
+  });
+  const args = runtime.buildServerArgs("C:\\models\\mana.gguf", 8090);
+  assert.equal(args[args.indexOf("--spec-draft-ngl") + 1], "42");
+  assert.equal(args[args.indexOf("-ngl") + 1], "42");
 });
 
 test("buildServerArgs combines n-gram and draft-model speculative decoding when both are set", () => {
