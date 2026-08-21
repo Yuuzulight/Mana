@@ -1,6 +1,7 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const { spawn, spawnSync } = require("node:child_process");
+const vm = require("node:vm");
 
 const DEFAULT_INSPECTOR_EXCLUDES = new Set([
   ".git",
@@ -304,6 +305,63 @@ function createSimpleLineDiff({ relativePath, originalContent, proposedContent }
 // two checks here need nothing but lengths.
 const DEFAULT_MIN_RETAINED_RATIO = 0.5;
 
+// Issue #420: mirrors skills-store.js's verifySkillScript for #378 --
+// blocking, not advisory. A proposal that cannot even parse is not a
+// valid edit, and applying it would hand the workspace a broken file.
+// In-process checks (JS via vm.Script, JSON via JSON.parse) cost nothing.
+// Python shells out to the system interpreter since there's no
+// in-process parser available here -- this is a rare, human/model-
+// triggered action (one proposal at a time), not a hot polling loop, so
+// a blocking spawnSync is fine here, unlike a repeatedly-polled endpoint.
+// Any other extension (C#, TS, etc.) is unchecked -- pass, not blocked --
+// matching verifySkillScript's own "can't classify it, don't hold it
+// against the proposal" behavior rather than trying to build a parser
+// for every language a workspace might contain.
+function verifyProposalSyntax({ relativePath, proposedContent }) {
+  const ext = path.extname(String(relativePath || "")).toLowerCase();
+
+  if (ext === ".js" || ext === ".mjs" || ext === ".cjs") {
+    try {
+      new vm.Script(proposedContent, { filename: "mana-proposed-edit.js" });
+      return { ok: true, checked: true };
+    } catch (e) {
+      return { ok: false, checked: true, error: e.message || String(e) };
+    }
+  }
+
+  if (ext === ".json") {
+    try {
+      JSON.parse(proposedContent);
+      return { ok: true, checked: true };
+    } catch (e) {
+      return { ok: false, checked: true, error: e.message || String(e) };
+    }
+  }
+
+  if (ext === ".py") {
+    const result = spawnSync(
+      "python",
+      ["-c", "import ast,sys; ast.parse(sys.stdin.read())"],
+      { input: proposedContent, encoding: "utf8", windowsHide: true },
+    );
+    if (result.error || result.status === null) {
+      // No python on PATH (or it failed to launch) -- unchecked, not
+      // blocked, same as any other unrecognized extension.
+      return { ok: true, checked: false };
+    }
+    if (result.status !== 0) {
+      return {
+        ok: false,
+        checked: true,
+        error: (result.stderr || "").trim() || "python syntax check failed",
+      };
+    }
+    return { ok: true, checked: true };
+  }
+
+  return { ok: true, checked: false };
+}
+
 function assertNotTruncated({
   originalContent,
   proposedContent,
@@ -414,6 +472,11 @@ function createEditProposalStore(options = {}) {
       throw new Error("proposedContent is required");
     }
     assertNotTruncated({ originalContent, proposedContent, allowShrink, minRetainedRatio });
+
+    const verified = verifyProposalSyntax({ relativePath, proposedContent });
+    if (!verified.ok) {
+      throw new Error(`edit proposal rejected: ${relativePath} does not parse: ${verified.error}`);
+    }
 
     const proposal = {
       id: idFactory(),
