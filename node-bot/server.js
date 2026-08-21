@@ -4766,6 +4766,8 @@ function registerRoutes(app, upload, deps = {}) {
       deps.getVisionStatus || (() => llamaServerRuntime.getVisionStatus()),
     resolveVisionCapture:
       deps.resolveVisionCapture || visionCaptureBridge.resolveCapture,
+    rejectVisionCapture:
+      deps.rejectVisionCapture || visionCaptureBridge.rejectCapture,
     runWhisper: deps.runWhisper || runWhisper,
     runWhisperPartial: deps.runWhisperPartial || runWhisperCliPartial,
     normalizeUploadedAudioAsync:
