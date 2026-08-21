@@ -260,6 +260,38 @@
         color: var(--muted);
       }
 
+      #snapshotsHeader {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin-bottom: 8px;
+      }
+
+      .snapshot-item {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        padding: 8px 10px;
+        border-radius: 8px;
+        border: 1px solid var(--border);
+        margin-bottom: 6px;
+      }
+
+      .snapshot-item-info { min-width: 0; }
+
+      .snapshot-item-path {
+        font-size: 13px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .snapshot-item-meta {
+        font-size: 11px;
+        color: var(--muted);
+      }
+
       .sidebar-field {
         display: flex;
         flex-direction: column;

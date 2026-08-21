@@ -2246,6 +2246,26 @@ function registerRoutes(app, upload, deps = {}) {
     }
   });
 
+  // Issue #428: restorable snapshots of applied edits, independent of git.
+  app.get("/editors/workspace/snapshots", (req, res) => {
+    if (!checkAdminAuth(req, res)) return;
+    const editors = getEditorIntegrations();
+    return res.json({ snapshots: editors.listEditSnapshots() });
+  });
+
+  app.post("/editors/workspace/snapshots/:id/restore", (req, res) => {
+    if (!checkAdminAuth(req, res)) return;
+    try {
+      const editors = getEditorIntegrations();
+      return res.json({ restored: editors.restoreEditSnapshot(req.params.id) });
+    } catch (error) {
+      return res.status(400).json({
+        restored: null,
+        error: error.message,
+      });
+    }
+  });
+
   app.get("/models/status", (req, res) => {
     return res.json(modelManagement.getModelStatus());
   });

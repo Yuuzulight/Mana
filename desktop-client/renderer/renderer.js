@@ -155,6 +155,7 @@ document.getElementById('themeToggle')?.addEventListener('click', (e) => {
   const navVisionBtnEl = document.getElementById('navVisionBtn');
   const navModelBtnEl = document.getElementById('navModelBtn');
   const navDoctorBtnEl = document.getElementById('navDoctorBtn');
+  const navSnapshotsBtnEl = document.getElementById('navSnapshotsBtn');
   const navInfoModalEl = document.getElementById('navInfoModal');
   const navInfoTitleEl = document.getElementById('navInfoTitle');
   const navInfoBodyEl = document.getElementById('navInfoBody');
@@ -1877,6 +1878,8 @@ document.getElementById('themeToggle')?.addEventListener('click', (e) => {
     if (a) { e.preventDefault(); window.electronAPI.openExternal(a.href); return; }
     const issueBtn = e.target.closest('.doctor-issue');
     if (issueBtn) showDoctorBubble(issueBtn);
+    const restoreBtn = e.target.closest('.snapshot-restore-btn');
+    if (restoreBtn) restoreEditSnapshotWithConfirm(restoreBtn.dataset.snapshotId, restoreBtn.dataset.snapshotPath);
   });
 
   async function fetchJson(url, options) {
@@ -2075,6 +2078,69 @@ document.getElementById('themeToggle')?.addEventListener('click', (e) => {
       navInfoBodyEl.innerHTML = `<p class="subtitle">Failed to reach backend: ${escapeHtml(e.message)}</p>`;
     }
   });
+
+  // Issue #428: restorable snapshots of applied editor-handoff edits, from
+  // whichever editor was connected -- generic, not Zed-specific (see
+  // node-bot's zed-integration.js listEditSnapshots/restoreEditSnapshot).
+  function formatSnapshotTimestamp(iso) {
+    const date = new Date(iso);
+    return Number.isNaN(date.getTime()) ? '' : date.toLocaleString();
+  }
+
+  function renderEditSnapshotsPanel(snapshots) {
+    if (!snapshots.length) {
+      navInfoBodyEl.innerHTML = '<p class="subtitle">No applied edits yet.</p>';
+      return;
+    }
+    navInfoBodyEl.innerHTML = `
+      <p class="subtitle">Edits applied from a connected editor can be undone here, independent of git.</p>
+      ${snapshots.map((s) => `
+        <div class="snapshot-item">
+          <div class="snapshot-item-info">
+            <div class="snapshot-item-path">${escapeHtml(s.relativePath || '(unknown file)')}</div>
+            <div class="snapshot-item-meta">${escapeHtml(s.summary || 'Edit')} · ${escapeHtml(formatSnapshotTimestamp(s.appliedAt))}</div>
+          </div>
+          <button type="button" class="snapshot-restore-btn" data-snapshot-id="${escapeHtml(s.id)}" data-snapshot-path="${escapeHtml(s.relativePath || '')}">Restore</button>
+        </div>`).join('')}
+    `;
+  }
+
+  async function refreshEditSnapshotsPanel() {
+    openNavInfo('Applied edits', '<p class="subtitle">Loading...</p>');
+    try {
+      const result = await fetchJson(`${BACKEND_URL}/editors/workspace/snapshots`);
+      renderEditSnapshotsPanel(result.snapshots || []);
+    } catch (e) {
+      navInfoBodyEl.innerHTML = `<p class="subtitle">Failed to reach backend: ${escapeHtml(e.message)}</p>`;
+    }
+  }
+
+  navSnapshotsBtnEl?.addEventListener('click', () => {
+    refreshEditSnapshotsPanel();
+  });
+
+  // Restore has no code-level conflict check against the file's current
+  // content -- unlike approving a proposal, a snapshot only knows the
+  // file's state before its own edit, not what may have changed since.
+  // This confirm() is the safety net, matching the plain-confirm pattern
+  // used for other destructive actions in this app (preset/skill delete).
+  async function restoreEditSnapshotWithConfirm(id, relativePath) {
+    if (!id) return;
+    const confirmed = window.confirm(
+      `Restore "${relativePath}" to its state before this edit? The current content will be overwritten.`,
+    );
+    if (!confirmed) return;
+    try {
+      const result = await fetchJson(
+        `${BACKEND_URL}/editors/workspace/snapshots/${encodeURIComponent(id)}/restore`,
+        { method: 'POST' },
+      );
+      if (!result.restored) throw new Error('Restore failed');
+      await refreshEditSnapshotsPanel();
+    } catch (e) {
+      console.warn('Mana restore edit snapshot failed:', e);
+    }
+  }
 
   // Presets: saved persona/behavior instructions the user can select to be
   // appended to the base system prompt server-side (see buildAssistantReply

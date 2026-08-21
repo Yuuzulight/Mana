@@ -2,6 +2,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { spawn, spawnSync } = require("node:child_process");
 const esprima = require("esprima");
+const { createEditSnapshotStore } = require("./edit-snapshot-store");
 
 const DEFAULT_INSPECTOR_EXCLUDES = new Set([
   ".git",
@@ -683,6 +684,15 @@ function createEditorIntegrations(options = {}) {
       now: options.now,
       minRetainedRatio: options.minRetainedRatio,
     });
+  // Issue #428: restorable snapshots of applied edits, independent of git.
+  const snapshotStore =
+    options.snapshotStore ||
+    createEditSnapshotStore({
+      dataDir: options.snapshotsDir,
+      now: options.now,
+      idFactory: options.snapshotIdFactory,
+      maxRetained: options.maxRetainedSnapshots,
+    });
   const editors = Object.fromEntries(
     Object.entries(EDITOR_CONFIGS).map(([id, config]) => [
       id,
@@ -780,6 +790,17 @@ function createEditorIntegrations(options = {}) {
       throw new Error("edit proposal conflict: current file content changed");
     }
 
+    // Issue #428: snapshot before the write, not after -- proposal.originalContent
+    // is the last point this content exists anywhere once the write below
+    // lands. Only real writes reach here (the alreadyApplied early return
+    // above skips this), so nothing gets snapshotted for a no-op approve.
+    const snapshot = snapshotStore.recordSnapshot({
+      proposalId: id,
+      relativePath: target.relativePath,
+      originalContent: currentContent,
+      summary: proposal.summary,
+    });
+
     fs.writeFileSync(target.fullPath, proposal.proposedContent, "utf8");
 
     // Issue #387: read back before claiming success. writeFileSync throwing
@@ -796,7 +817,7 @@ function createEditorIntegrations(options = {}) {
       );
     }
 
-    const applied = proposalStore.markApplied(id);
+    const applied = { ...proposalStore.markApplied(id), snapshotId: snapshot.id };
 
     // Issue #349: opt-in, and never allowed to fail the edit. The file is
     // already written by this point -- a commit problem is reported, not
@@ -814,8 +835,54 @@ function createEditorIntegrations(options = {}) {
     return { ...applied, git };
   }
 
+  // Issue #428: metadata only (path/summary/timestamp) -- restoreEditSnapshot
+  // is what actually reads a snapshot's saved content back.
+  function listEditSnapshots() {
+    return snapshotStore.listSnapshots();
+  }
+
+  // Deliberately no conflict check against the file's current content --
+  // unlike approveEditProposal, which knows exactly what content it expects
+  // to find (the proposal it's applying), a snapshot only knows what the
+  // file looked like before ITS edit, not what may have changed since. This
+  // is a simple, git-independent undo convenience, not a merge system;
+  // the UI confirming with the user before restoring is the real safety
+  // net here, the same way file_write's approval gate is the safety net
+  // for autonomous-loop writes rather than code-level conflict detection.
+  function restoreEditSnapshot(id) {
+    const record = snapshotStore.getSnapshot(id);
+    if (!record) {
+      throw new Error("edit snapshot not found");
+    }
+
+    const workspace = requireActiveWorkspace(workspaceStore);
+    const target = toWorkspaceRelativePath(workspace.path, record.relativePath);
+    if (!fs.existsSync(target.fullPath) || !fs.statSync(target.fullPath).isFile()) {
+      throw new Error("workspace file does not exist");
+    }
+
+    fs.writeFileSync(target.fullPath, record.originalContent, "utf8");
+
+    // Issue #387's same read-back-before-claiming-success discipline.
+    const writtenContent = fs.readFileSync(target.fullPath, "utf8");
+    if (writtenContent !== record.originalContent) {
+      throw new Error(
+        "edit snapshot restore failed verification: file on disk does not match the restored content",
+      );
+    }
+
+    snapshotStore.deleteSnapshot(id);
+    return {
+      id,
+      relativePath: record.relativePath,
+      restoredAt: new Date().toISOString(),
+    };
+  }
+
   return {
     approveEditProposal,
+    listEditSnapshots,
+    restoreEditSnapshot,
     createEditProposal,
     getEditProposal,
     getWorkspace,
