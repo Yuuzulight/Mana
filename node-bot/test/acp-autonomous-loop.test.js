@@ -3,7 +3,11 @@ const assert = require("node:assert");
 const axios = require("axios");
 const fs = require("fs");
 
-const { executeAutonomousStep } = require("../acp-autonomous-loop");
+const {
+  executeAutonomousStep,
+  resetSessionTestRetryCounts,
+  MAX_TEST_RETRY_ATTEMPTS,
+} = require("../acp-autonomous-loop");
 
 // This test suite monkeypatches axios.post and fs.promises in-process to provide deterministic,
 // dependency-free unit tests for the autonomous loop without any external libs.
@@ -347,4 +351,140 @@ test("a step with 'finish' alongside other actions still reports status:finished
   assert.equal(res.results.length, 2);
   assert.ok(res.results.some((r) => r.tool === "finish" && r.status === "ok"));
   assert.ok(res.results.some((r) => r.tool === "unknown_tool" && r.status === "unsupported"));
+});
+
+// Issue #419: run_tests wires acp-test-runner into this loop. An explicit,
+// model-called tool -- not auto-triggered after file_write -- so every test
+// here drives it directly via a step array, same as every other tool.
+function fakeTestRunner(behavior) {
+  return {
+    run: async (command, opts) => {
+      const result = typeof behavior === "function" ? behavior(command, opts) : behavior;
+      if (result instanceof Error) throw result;
+      return result;
+    },
+  };
+}
+
+test("run_tests requires a command arg", async () => {
+  const step = JSON.stringify([{ tool: "run_tests", args: {} }]);
+  const res = await executeAutonomousStep(step, "run-tests-missing-cmd");
+
+  assert.equal(res.results[0].tool, "run_tests");
+  assert.equal(res.results[0].status, "error");
+  assert.equal(res.results[0].detail, "missing_command_arg");
+});
+
+test("run_tests rejects a cwd that escapes the repo root", async () => {
+  const step = JSON.stringify([
+    { tool: "run_tests", args: { command: "npm test", cwd: "C:\\Windows\\System32" } },
+  ]);
+  const res = await executeAutonomousStep(step, "run-tests-bad-cwd", {
+    testRunner: fakeTestRunner(() => {
+      throw new Error("should never be called");
+    }),
+  });
+
+  assert.equal(res.results[0].status, "error");
+  assert.equal(res.results[0].detail, "path_outside_repo");
+});
+
+test("run_tests reports a pass and injects a short confirmation, not the full output", async () => {
+  resetSessionTestRetryCounts("run-tests-pass");
+  const step = JSON.stringify([{ tool: "run_tests", args: { command: "npm test" } }]);
+  const res = await executeAutonomousStep(step, "run-tests-pass", {
+    testRunner: fakeTestRunner({ command: "npm test", exitCode: 0, ok: true, stdout: "all good", stderr: "" }),
+  });
+
+  assert.equal(res.status, "tools_executed");
+  const result = res.results[0];
+  assert.equal(result.tool, "run_tests");
+  assert.equal(result.status, "ok");
+  assert.equal(result.exitCode, 0);
+  assert.match(result.injectedContext, /Tests passed/);
+});
+
+test("run_tests reports a failure, folds the output tail into injectedContext, and counts a retry attempt", async () => {
+  resetSessionTestRetryCounts("run-tests-fail");
+  const failingOutput = "x".repeat(3000) + "AssertionError: expected true to be false";
+  const step = JSON.stringify([{ tool: "run_tests", args: { command: "node --test" } }]);
+  const res = await executeAutonomousStep(step, "run-tests-fail", {
+    testRunner: fakeTestRunner({ command: "node --test", exitCode: 1, ok: false, stdout: failingOutput, stderr: "" }),
+  });
+
+  const result = res.results[0];
+  assert.equal(result.status, "fail");
+  assert.equal(result.attempt, 1);
+  assert.equal(result.retriesRemaining, MAX_TEST_RETRY_ATTEMPTS - 1);
+  // Tail, not head -- the actual assertion detail (at the end of the
+  // fixture's output) must survive truncation; the leading "x" filler must not.
+  assert.match(result.injectedContext, /AssertionError: expected true to be false/);
+  assert.ok(!result.injectedContext.includes("x".repeat(3000)));
+});
+
+test("run_tests resets the retry counter after a pass following failures", async () => {
+  resetSessionTestRetryCounts("run-tests-reset");
+  const failStep = JSON.stringify([{ tool: "run_tests", args: { command: "npm test" } }]);
+  const runner = fakeTestRunner((command, opts) => runner._nextResult);
+  runner._nextResult = { command: "npm test", exitCode: 1, ok: false, stdout: "fail", stderr: "" };
+
+  await executeAutonomousStep(failStep, "run-tests-reset", { testRunner: runner });
+  runner._nextResult = { command: "npm test", exitCode: 0, ok: true, stdout: "pass", stderr: "" };
+  const passRes = await executeAutonomousStep(failStep, "run-tests-reset", { testRunner: runner });
+  assert.equal(passRes.results[0].status, "ok");
+
+  // A subsequent failure after the reset should be attempt 1 again, not 2.
+  runner._nextResult = { command: "npm test", exitCode: 1, ok: false, stdout: "fail again", stderr: "" };
+  const failAgainRes = await executeAutonomousStep(failStep, "run-tests-reset", { testRunner: runner });
+  assert.equal(failAgainRes.results[0].attempt, 1);
+});
+
+test("run_tests refuses to run once the per-session retry cap is exhausted", async () => {
+  resetSessionTestRetryCounts("run-tests-exhausted");
+  const step = JSON.stringify([{ tool: "run_tests", args: { command: "npm test" } }]);
+  const runner = fakeTestRunner({ command: "npm test", exitCode: 1, ok: false, stdout: "fail", stderr: "" });
+
+  for (let i = 0; i < MAX_TEST_RETRY_ATTEMPTS; i++) {
+    const res = await executeAutonomousStep(step, "run-tests-exhausted", { testRunner: runner });
+    assert.equal(res.results[0].status, "fail");
+  }
+
+  const exhausted = await executeAutonomousStep(step, "run-tests-exhausted", { testRunner: runner });
+  assert.equal(exhausted.results[0].status, "retry_exhausted");
+  assert.equal(exhausted.results[0].cap, MAX_TEST_RETRY_ATTEMPTS);
+  resetSessionTestRetryCounts("run-tests-exhausted");
+});
+
+test("run_tests: a disallowed-command rejection does not consume a retry attempt", async () => {
+  resetSessionTestRetryCounts("run-tests-disallowed");
+  const step = JSON.stringify([{ tool: "run_tests", args: { command: "rm -rf /" } }]);
+  const runner = fakeTestRunner(() => {
+    throw new Error("test command is not allowed: rm -rf /");
+  });
+
+  // Calling it more times than the retry cap should still never exhaust the
+  // budget, since none of these attempts are real test failures.
+  for (let i = 0; i < MAX_TEST_RETRY_ATTEMPTS + 2; i++) {
+    const res = await executeAutonomousStep(step, "run-tests-disallowed", { testRunner: runner });
+    assert.equal(res.results[0].status, "error");
+    assert.notEqual(res.results[0].status, "retry_exhausted");
+  }
+  resetSessionTestRetryCounts("run-tests-disallowed");
+});
+
+test("run_tests: a timeout rejection does consume a retry attempt", async () => {
+  resetSessionTestRetryCounts("run-tests-timeout");
+  const step = JSON.stringify([{ tool: "run_tests", args: { command: "npm test" } }]);
+  const runner = fakeTestRunner(() => {
+    throw new Error("test command timed out after 120000ms");
+  });
+
+  for (let i = 0; i < MAX_TEST_RETRY_ATTEMPTS; i++) {
+    const res = await executeAutonomousStep(step, "run-tests-timeout", { testRunner: runner });
+    assert.equal(res.results[0].status, "error");
+  }
+
+  const exhausted = await executeAutonomousStep(step, "run-tests-timeout", { testRunner: runner });
+  assert.equal(exhausted.results[0].status, "retry_exhausted");
+  resetSessionTestRetryCounts("run-tests-timeout");
 });
