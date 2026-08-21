@@ -35,3 +35,39 @@ test("/prompt-composition/:sessionId 404s for a session nothing has been recorde
     assert.equal(res.status, 404);
   });
 });
+
+// Regression coverage for a review finding: skillsOmittedCount is scraped
+// out of buildSkillsIndexBlock's own embedded "(N more skill(s) omitted for
+// length)" text via a regex (server.js does not change that function's
+// return shape, since it's separately exported/tested as a bare string).
+// Nothing previously exercised that regex end-to-end -- if the wording in
+// buildSkillsIndexBlock ever changes, this is what would catch it reverting
+// to always reporting 0.
+test("skillsOmitted in the system-prompt block's dropped info reflects a real skills-index truncation", async () => {
+  resetPromptCompositionReport();
+  process.env.MANA_TOOL_CALLING_ENABLED = "1";
+  // SKILLS_INDEX_MAX_CHARS is 2000 -- enough long descriptions guarantees
+  // buildSkillsIndexBlock actually has to omit some.
+  const manySkills = Array.from({ length: 40 }, (_, i) => ({
+    name: `skill-${i}`,
+    description: "A".repeat(100),
+  }));
+  const app = createApp({
+    skillsStore: { listSkills: () => manySkills },
+    llamaServerRuntime: { isEnabled: () => true },
+    runToolAwareReply: async () => ({ content: "tool-aware reply", toolCalls: [], rounds: 1 }),
+  });
+
+  const reply = await app.locals.buildAssistantReply(
+    "hi", "", "", "default", "sess-skills-omitted", null, null, {},
+  );
+  delete process.env.MANA_TOOL_CALLING_ENABLED;
+  assert.equal(reply, "tool-aware reply");
+
+  await withServer(app, async (baseUrl) => {
+    const res = await fetch(`${baseUrl}/prompt-composition/sess-skills-omitted`);
+    const composition = await res.json();
+    const systemPromptBlock = composition.blocks.find((b) => b.name === "system-prompt");
+    assert.ok(systemPromptBlock.dropped.skillsOmitted > 0);
+  });
+});
