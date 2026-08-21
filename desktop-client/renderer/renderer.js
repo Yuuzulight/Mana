@@ -334,12 +334,27 @@ document.getElementById('themeToggle')?.addEventListener('click', (e) => {
     return currentSessionId;
   }
 
+  // Issue #391: every artifact detected this session, in chronological
+  // order, each enriched with a threadId/versionIndex (see
+  // window.electronAPI.assignArtifactVersion). Live messages (appendMessage)
+  // always arrive in true chronological order and push onto the end.
+  // Historical messages (prependTurns) arrive in scroll-back order --
+  // oldest-in-page-first within one fetched page, but a later scroll-back
+  // fetches an OLDER page after a newer one already loaded -- so each
+  // page's turns are threaded only against each other (not the
+  // already-loaded newer content) and the whole page is unshifted onto the
+  // front as a unit. Version-thread continuity across a scroll-back page
+  // boundary isn't attempted; within one page (which covers most sessions)
+  // it works the same as the live case.
+  let sessionArtifacts = [];
+
   // Renders `text` as sanitized markdown into `div`, and -- if a big or
   // ```html fenced block is found (issue #148) -- replaces it with a
-  // button that opens the full content in its own window instead of
-  // dominating the bubble.
-  function renderBubbleContent(div, text) {
-    const artifact = window.electronAPI.extractArtifact(text);
+  // button that opens the full content (and every other version in its
+  // thread, issue #391) in its own window instead of dominating the bubble.
+  // `artifact` is already-versioned (threadId/versionIndex assigned by the
+  // caller) or null.
+  function renderBubbleContent(div, text, artifact) {
     const displayText = artifact ? text.replace(artifact.matchedText, '').trim() : text;
     div.innerHTML = window.electronAPI.renderMarkdownToSafeHtml(displayText);
 
@@ -348,7 +363,10 @@ document.getElementById('themeToggle')?.addEventListener('click', (e) => {
       button.type = 'button';
       button.className = 'chat-artifact-open';
       button.textContent = `Open ${artifact.language} content in new window`;
-      button.addEventListener('click', () => window.electronAPI.openArtifact(artifact));
+      button.addEventListener('click', () => {
+        const thread = sessionArtifacts.filter((a) => a.threadId === artifact.threadId);
+        window.electronAPI.openArtifact({ thread, index: thread.indexOf(artifact) });
+      });
       div.appendChild(button);
     }
   }
@@ -360,7 +378,13 @@ document.getElementById('themeToggle')?.addEventListener('click', (e) => {
     if (!messagesEl || !text) return null;
     const div = document.createElement('div');
     div.className = 'message ' + (role === 'user' ? 'system' : 'assistant');
-    renderBubbleContent(div, text);
+    const rawArtifact = window.electronAPI.extractArtifact(text);
+    let artifact = null;
+    if (rawArtifact) {
+      artifact = window.electronAPI.assignArtifactVersion(rawArtifact, sessionArtifacts);
+      sessionArtifacts.push(artifact);
+    }
+    renderBubbleContent(div, text, artifact);
     messagesEl.appendChild(div);
     messagesEl.scrollTop = messagesEl.scrollHeight;
     return div;
@@ -368,18 +392,41 @@ document.getElementById('themeToggle')?.addEventListener('click', (e) => {
 
   function prependTurns(turns) {
     if (!messagesEl || !turns || !turns.length) return;
+
+    // Pass 1: extract raw artifacts for the whole page and thread them
+    // against each other only (see this section's header comment).
+    const rawByTurn = turns.map((turn) => ({
+      user: turn.user ? window.electronAPI.extractArtifact(turn.user) : null,
+      assistant: turn.assistant ? window.electronAPI.extractArtifact(turn.assistant) : null,
+    }));
+    const pageArtifacts = [];
+    for (const raw of rawByTurn) {
+      if (raw.user) {
+        raw.userVersioned = window.electronAPI.assignArtifactVersion(raw.user, pageArtifacts);
+        pageArtifacts.push(raw.userVersioned);
+      }
+      if (raw.assistant) {
+        raw.assistantVersioned = window.electronAPI.assignArtifactVersion(raw.assistant, pageArtifacts);
+        pageArtifacts.push(raw.assistantVersioned);
+      }
+    }
+    sessionArtifacts = [...pageArtifacts, ...sessionArtifacts];
+
+    // Pass 2: build the DOM using each turn's already-versioned artifact.
     const frag = document.createDocumentFragment();
-    for (const turn of turns) {
+    for (let i = 0; i < turns.length; i++) {
+      const turn = turns[i];
+      const raw = rawByTurn[i];
       if (turn.user) {
         const u = document.createElement('div');
         u.className = 'message system';
-        renderBubbleContent(u, turn.user);
+        renderBubbleContent(u, turn.user, raw.userVersioned || null);
         frag.appendChild(u);
       }
       if (turn.assistant) {
         const a = document.createElement('div');
         a.className = 'message assistant';
-        renderBubbleContent(a, turn.assistant);
+        renderBubbleContent(a, turn.assistant, raw.assistantVersioned || null);
         frag.appendChild(a);
       }
     }
@@ -391,6 +438,7 @@ document.getElementById('themeToggle')?.addEventListener('click', (e) => {
     messagesEl?.querySelectorAll('.message').forEach((el) => el.remove());
     nextBeforeCursor = null;
     hasMoreHistory = false;
+    sessionArtifacts = [];
   }
 
   async function fetchHistoryPage(sessionId, before) {

@@ -75,7 +75,7 @@ const {
   computeGainFactor,
   getSpeechRejectReason: getSpeechRejectReasonPure,
 } = require("./speech-filters");
-const { extractArtifact } = require("./artifact-detector");
+const { extractArtifact, assignArtifactVersion } = require("./artifact-detector");
 const { createMarkdownRenderer } = require("./markdown-render");
 const renderMarkdownToSafeHtml = createMarkdownRenderer();
 const {
@@ -381,6 +381,21 @@ if (avatarZoomBtnEl) {
   });
 }
 
+// Issue #391: every artifact detected this session, in chronological order,
+// each enriched with a threadId/versionIndex by assignArtifactVersion.
+// windows-launcher loads a session's whole history in order (no scroll-back
+// pagination the way desktop-client has), and appendChatMessage is the only
+// path either live or replayed history goes through -- so a plain
+// chronological array is correct here without the batch-ordering care
+// desktop-client's paginated prependTurns needs.
+let sessionArtifacts = [];
+
+// Called by session-sidebar.js before replaying a (new or freshly switched)
+// session's history, so version threads don't bleed across sessions.
+function resetSessionArtifacts() {
+  sessionArtifacts = [];
+}
+
 function appendChatMessage(role, text) {
   if (!chatLogEl || !text) {
     return;
@@ -390,17 +405,21 @@ function appendChatMessage(role, text) {
 
   // A big or ```html fenced block gets pulled out of the bubble into its
   // own window (issue #148) instead of dominating the chat log.
-  const artifact = extractArtifact(text);
-  const displayText = artifact ? text.replace(artifact.matchedText, "").trim() : text;
+  const rawArtifact = extractArtifact(text);
+  const displayText = rawArtifact ? text.replace(rawArtifact.matchedText, "").trim() : text;
   bubble.innerHTML = renderMarkdownToSafeHtml(displayText);
 
-  if (artifact) {
+  if (rawArtifact) {
+    const artifact = assignArtifactVersion(rawArtifact, sessionArtifacts);
+    sessionArtifacts.push(artifact);
+
     const button = document.createElement("button");
     button.type = "button";
     button.className = "chat-artifact-open";
     button.textContent = `Open ${artifact.language} content in new window`;
     button.addEventListener("click", () => {
-      ipcRenderer.send("open-artifact", artifact);
+      const thread = sessionArtifacts.filter((a) => a.threadId === artifact.threadId);
+      ipcRenderer.send("open-artifact", { thread, index: thread.indexOf(artifact) });
     });
     bubble.appendChild(button);
   }
