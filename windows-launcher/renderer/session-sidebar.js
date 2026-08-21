@@ -147,6 +147,11 @@ function renderSessionList(sessions) {
       const goalEl = document.createElement("div");
       goalEl.className = "session-goal";
       goalEl.textContent = `Goal: ${session.goal}`;
+      // Raw text, separate from the rendered "Goal: " label -- so
+      // beginInlineGoalEdit doesn't have to parse a literal prefix back out
+      // of the display string (which would corrupt a goal that itself
+      // happens to start with "Goal: ").
+      goalEl.dataset.rawGoal = session.goal;
       item.appendChild(goalEl);
     }
 
@@ -248,7 +253,7 @@ function beginInlineGoalEdit(sessionId) {
     return;
   }
   const existingGoalEl = item.querySelector(".session-goal");
-  const currentGoal = existingGoalEl ? existingGoalEl.textContent.replace(/^Goal: /, "") : "";
+  const currentGoal = existingGoalEl ? existingGoalEl.dataset.rawGoal || "" : "";
 
   const input = document.createElement("input");
   input.className = "session-goal-input";
