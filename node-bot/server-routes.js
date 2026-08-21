@@ -75,6 +75,7 @@ function registerCoreRoutes(app, upload, deps) {
     runVisionReply,
     getVisionStatus,
     resolveVisionCapture,
+    rejectVisionCapture,
     runWhisper,
     runWhisperPartial,
     normalizeUploadedAudioAsync,
@@ -198,7 +199,24 @@ function registerCoreRoutes(app, upload, deps) {
   app.post("/vision/capture-result", (req, res) => {
     try {
       const requestId = requireString(req.body?.requestId, "requestId");
-      const image = requireString(req.body?.image, "image");
+      // Issue #417 finding 3: the client posts either a captured image or,
+      // when capture itself failed client-side (e.g. denied permission
+      // prompt), an error -- never both, never neither. Either/or is
+      // validated explicitly rather than just making both fields optional,
+      // so a malformed body gets a clean 400 instead of silently resolving
+      // the pending requestCapture() promise with an empty image.
+      const error = optionalString(req.body?.error, "error", "");
+      const image = optionalString(req.body?.image, "image", "");
+      if (error && image) {
+        throw new ValidationError("provide either image or error, not both");
+      }
+      if (error) {
+        const rejected = rejectVisionCapture(requestId, error);
+        return res.json({ ok: rejected });
+      }
+      if (!image) {
+        throw new ValidationError("image is required");
+      }
       const resolved = resolveVisionCapture(requestId, image);
       return res.json({ ok: resolved });
     } catch (e) {

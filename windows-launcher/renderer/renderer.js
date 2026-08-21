@@ -2805,20 +2805,35 @@ ipcRenderer.on("vision:hotkey", () => {
 // mid-reply that seeing the screen would help. Captures the same way the
 // hotkey/ambient-glance flows already do, then POSTs the result back so
 // the server's pending requestCapture() promise resolves. A capture
-// failure here is deliberately not reported back explicitly -- it's
-// swallowed into a console warning, and the server's own request timeout
-// (vision-capture-bridge.js's DEFAULT_TIMEOUT_MS) is what eventually
-// surfaces the failure to the model, same as "no client connected" at all.
+// failure (e.g. the user denies a screen-capture permission prompt) is
+// POSTed back as {requestId, error} so the server can reject the pending
+// promise immediately instead of blocking the reply for the full
+// DEFAULT_TIMEOUT_MS -- see vision-capture-bridge.js's rejectCapture().
 ipcRenderer.on("vision:capture-request", async (event, requestId) => {
+  let image;
   try {
-    const image = await ipcRenderer.invoke("screen:capture-primary");
+    image = await ipcRenderer.invoke("screen:capture-primary");
+  } catch (error) {
+    console.warn("Mana vision capture-request failed:", error);
+    try {
+      await fetch(`${BACKEND_BASE_URL}/vision/capture-result`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ requestId, error: error.message || String(error) }),
+      });
+    } catch (postError) {
+      console.warn("Mana vision capture-result error POST failed:", postError);
+    }
+    return;
+  }
+  try {
     await fetch(`${BACKEND_BASE_URL}/vision/capture-result`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ requestId, image }),
     });
   } catch (error) {
-    console.warn("Mana vision capture-request failed:", error);
+    console.warn("Mana vision capture-result POST failed:", error);
   }
 });
 
