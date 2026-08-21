@@ -1058,7 +1058,95 @@ test("buildPromptMemoryEntries honors summaryPosition/recentTurnsPosition overri
 
 test("buildPromptMemoryEntries returns no entries for an unknown/empty session", () => {
   const store = createAcpMemoryStore({ dataDir: createTempDir() });
-  assert.deepEqual(store.buildPromptMemoryEntries("no-such-session"), { entries: [] });
+  assert.deepEqual(store.buildPromptMemoryEntries("no-such-session"), {
+    entries: [],
+    turnsDroppedByAge: 0,
+  });
+});
+
+// Issue #400: entries report whether their own token-budget truncation fired,
+// and the response separately reports how many turns #338's age window
+// dropped before they ever reached that truncation step.
+test("buildPromptMemoryEntries reports truncated:false and turnsDroppedByAge:0 when nothing was dropped", () => {
+  const store = createAcpMemoryStore({
+    dataDir: createTempDir(),
+    now: () => "2026-06-29T00:00:00.000Z",
+  });
+  store.ensureSession({ sessionId: "no-drops", cwd: "C:\\ManaAI\\Mana" });
+  store.appendTurn({ sessionId: "no-drops", user: "Hi", assistant: "Hello." });
+
+  const result = store.buildPromptMemoryEntries("no-drops");
+  assert.equal(result.turnsDroppedByAge, 0);
+  assert.ok(result.entries.every((e) => e.truncated === false));
+});
+
+test("buildPromptMemoryEntries reports turnsDroppedByAge when #338's age window excludes turns", async () => {
+  const dataDir = createTempDir();
+  const writer = createAcpMemoryStore({
+    dataDir,
+    now: () => "2026-06-28T00:00:00.000Z",
+  });
+  await writer.appendTurn({ sessionId: "aged-out", user: "Old turn", assistant: "Old reply" });
+
+  const store = createAcpMemoryStore({
+    dataDir,
+    now: () => "2026-06-29T00:00:00.000Z",
+    maxRecentTurnAgeMs: 1000,
+    minRecentTurns: 0,
+  });
+  await store.appendTurn({ sessionId: "aged-out", user: "New turn", assistant: "New reply" });
+
+  const result = store.buildPromptMemoryEntries("aged-out");
+  assert.equal(result.turnsDroppedByAge, 1);
+});
+
+// Regression coverage for a review finding: the age-drop test above passes
+// minRecentTurns: 0 to sidestep #385's floor (freshTurns reinstating the
+// newest turn(s) even when every turn is otherwise past the age window).
+// The production default is minRecentTurns: 1 (MANA_MIN_RECENT_TURNS),
+// which was otherwise untested here -- turnsDroppedByAge must still equal
+// exactly the turns absent from freshTurns' actual (floor-reinstated)
+// output, not a naive re-derivation of the raw age check.
+test("buildPromptMemoryEntries reports turnsDroppedByAge correctly when the #385 floor reinstates a stale turn", async () => {
+  const dataDir = createTempDir();
+  const writer = createAcpMemoryStore({
+    dataDir,
+    now: () => "2026-06-28T00:00:00.000Z",
+  });
+  await writer.appendTurn({ sessionId: "floor-reinstated", user: "Old turn 1", assistant: "Old reply 1" });
+  await writer.appendTurn({ sessionId: "floor-reinstated", user: "Old turn 2", assistant: "Old reply 2" });
+
+  const store = createAcpMemoryStore({
+    dataDir,
+    now: () => "2026-06-29T00:00:00.000Z",
+    maxRecentTurnAgeMs: 1000,
+    minRecentTurns: 1,
+  });
+
+  const result = store.buildPromptMemoryEntries("floor-reinstated");
+  // Both turns are past the age window; the floor reinstates only the
+  // newest one, so exactly 1 of the 2 total turns is reported dropped.
+  assert.equal(result.turnsDroppedByAge, 1);
+  const recentTurnsEntry = result.entries.find((e) => e.content.includes("Recent turns"));
+  assert.match(recentTurnsEntry.content, /Old turn 2/);
+  assert.doesNotMatch(recentTurnsEntry.content, /Old turn 1/);
+});
+
+test("buildPromptMemoryEntries reports truncated:true when the token budget forces a cut", () => {
+  const store = createAcpMemoryStore({
+    dataDir: createTempDir(),
+    now: () => "2026-06-29T00:00:00.000Z",
+    maxPromptChars: 40,
+  });
+  store.ensureSession({ sessionId: "tight-budget", cwd: "C:\\ManaAI\\Mana" });
+  store.appendTurn({
+    sessionId: "tight-budget",
+    user: "A".repeat(200),
+    assistant: "B".repeat(200),
+  });
+
+  const result = store.buildPromptMemoryEntries("tight-budget");
+  assert.ok(result.entries.some((e) => e.truncated === true));
 });
 
 test("getRelatedFactsEntries returns mentions and facts as separate entries, defaulting to late position", () => {
