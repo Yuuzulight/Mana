@@ -1058,7 +1058,63 @@ test("buildPromptMemoryEntries honors summaryPosition/recentTurnsPosition overri
 
 test("buildPromptMemoryEntries returns no entries for an unknown/empty session", () => {
   const store = createAcpMemoryStore({ dataDir: createTempDir() });
-  assert.deepEqual(store.buildPromptMemoryEntries("no-such-session"), { entries: [] });
+  assert.deepEqual(store.buildPromptMemoryEntries("no-such-session"), {
+    entries: [],
+    turnsDroppedByAge: 0,
+  });
+});
+
+// Issue #400: entries report whether their own token-budget truncation fired,
+// and the response separately reports how many turns #338's age window
+// dropped before they ever reached that truncation step.
+test("buildPromptMemoryEntries reports truncated:false and turnsDroppedByAge:0 when nothing was dropped", () => {
+  const store = createAcpMemoryStore({
+    dataDir: createTempDir(),
+    now: () => "2026-06-29T00:00:00.000Z",
+  });
+  store.ensureSession({ sessionId: "no-drops", cwd: "C:\\ManaAI\\Mana" });
+  store.appendTurn({ sessionId: "no-drops", user: "Hi", assistant: "Hello." });
+
+  const result = store.buildPromptMemoryEntries("no-drops");
+  assert.equal(result.turnsDroppedByAge, 0);
+  assert.ok(result.entries.every((e) => e.truncated === false));
+});
+
+test("buildPromptMemoryEntries reports turnsDroppedByAge when #338's age window excludes turns", async () => {
+  const dataDir = createTempDir();
+  const writer = createAcpMemoryStore({
+    dataDir,
+    now: () => "2026-06-28T00:00:00.000Z",
+  });
+  await writer.appendTurn({ sessionId: "aged-out", user: "Old turn", assistant: "Old reply" });
+
+  const store = createAcpMemoryStore({
+    dataDir,
+    now: () => "2026-06-29T00:00:00.000Z",
+    maxRecentTurnAgeMs: 1000,
+    minRecentTurns: 0,
+  });
+  await store.appendTurn({ sessionId: "aged-out", user: "New turn", assistant: "New reply" });
+
+  const result = store.buildPromptMemoryEntries("aged-out");
+  assert.equal(result.turnsDroppedByAge, 1);
+});
+
+test("buildPromptMemoryEntries reports truncated:true when the token budget forces a cut", () => {
+  const store = createAcpMemoryStore({
+    dataDir: createTempDir(),
+    now: () => "2026-06-29T00:00:00.000Z",
+    maxPromptChars: 40,
+  });
+  store.ensureSession({ sessionId: "tight-budget", cwd: "C:\\ManaAI\\Mana" });
+  store.appendTurn({
+    sessionId: "tight-budget",
+    user: "A".repeat(200),
+    assistant: "B".repeat(200),
+  });
+
+  const result = store.buildPromptMemoryEntries("tight-budget");
+  assert.ok(result.entries.some((e) => e.truncated === true));
 });
 
 test("getRelatedFactsEntries returns mentions and facts as separate entries, defaulting to late position", () => {
