@@ -1,6 +1,6 @@
 # Zed External Agent Setup
 
-Mana can be launched by Zed as a local External Agent through Zed's `agent_servers` settings.
+Mana can be launched by Zed as a local External Agent through Zed's `agent_servers` settings. The agent itself speaks the protocol-generic [Agent Client Protocol](https://agentclientprotocol.com), so any other ACP client can launch it the same way over stdio -- this page covers Zed's specific settings.
 
 This path is local-first. The agent entry point refuses remote AI when `MANA_ALLOW_REMOTE_AI=1` unless a future explicit override path is added for that launch mode. Code edits require reviewable proposals and explicit approval through Mana's local backend; the agent must not silently modify files.
 
