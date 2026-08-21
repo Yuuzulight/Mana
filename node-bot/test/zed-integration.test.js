@@ -1299,6 +1299,50 @@ test("restoreEditSnapshot writes the pre-edit content back, verifies it, and rem
   }
 });
 
+test("a snapshot recorded in one workspace is invisible and unrestorable after switching to another", () => {
+  const workspaceA = fs.mkdtempSync(path.join(os.tmpdir(), "mana-editor-snapshot-ws-a-"));
+  const workspaceB = fs.mkdtempSync(path.join(os.tmpdir(), "mana-editor-snapshot-ws-b-"));
+  const snapshotsDir = fs.mkdtempSync(path.join(os.tmpdir(), "mana-editor-snapshot-ws-store-"));
+  fs.writeFileSync(path.join(workspaceA, "app.js"), "const value = 1;\n");
+  fs.writeFileSync(path.join(workspaceB, "app.js"), "const other = 1;\n");
+
+  try {
+    const workspaceStore = createEditorWorkspaceStore();
+    workspaceStore.setWorkspace(workspaceA, { editor: "zed" });
+    const editors = createEditorIntegrations({
+      env: {},
+      commandResolver: (command) => command,
+      workspaceStore,
+      idFactory: () => "proposal-ws-a",
+      snapshotsDir,
+    });
+
+    editors.createEditProposal({
+      path: "app.js",
+      proposedContent: "const value = 2;\n",
+      summary: "Update value",
+    });
+    const applied = editors.approveEditProposal("proposal-ws-a");
+    assert.equal(editors.listEditSnapshots().length, 1);
+
+    // Switching the active workspace must not expose workspace A's
+    // snapshot -- app.js in workspace B is an unrelated file that happens
+    // to share a name, and restoring against it would silently overwrite
+    // it with workspace A's content.
+    workspaceStore.setWorkspace(workspaceB, { editor: "zed" });
+    assert.deepEqual(editors.listEditSnapshots(), []);
+    assert.throws(
+      () => editors.restoreEditSnapshot(applied.snapshotId),
+      /edit snapshot belongs to a different workspace/,
+    );
+    assert.equal(fs.readFileSync(path.join(workspaceB, "app.js"), "utf8"), "const other = 1;\n");
+  } finally {
+    fs.rmSync(workspaceA, { recursive: true, force: true });
+    fs.rmSync(workspaceB, { recursive: true, force: true });
+    fs.rmSync(snapshotsDir, { recursive: true, force: true });
+  }
+});
+
 test("restoreEditSnapshot rejects an unknown snapshot id", () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mana-editor-restore-unknown-"));
   try {

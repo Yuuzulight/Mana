@@ -94,6 +94,20 @@ test("recordSnapshot prunes the oldest snapshots once maxRetained is exceeded", 
   assert.equal(store.getSnapshot(a.id), null);
 });
 
+test("a non-numeric maxRetained falls back to the default instead of pruning everything", () => {
+  const store = createEditSnapshotStore({
+    dataDir: createTempDir(),
+    idFactory: () => "snap-nan-guard",
+    maxRetained: "unlimited",
+  });
+
+  store.recordSnapshot({ relativePath: "a.js", originalContent: "old" });
+
+  // Number("unlimited") is NaN; NaN must not defeat pruneOldest's own
+  // bounds check and delete every snapshot right after it's written.
+  assert.equal(store.listSnapshots().length, 1);
+});
+
 test("listSnapshots and recordSnapshot create the data directory on demand", () => {
   const dataDir = path.join(createTempDir(), "nested", "edit-snapshots");
   assert.equal(fs.existsSync(dataDir), false);

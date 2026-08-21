@@ -2100,7 +2100,7 @@ document.getElementById('themeToggle')?.addEventListener('click', (e) => {
             <div class="snapshot-item-path">${escapeHtml(s.relativePath || '(unknown file)')}</div>
             <div class="snapshot-item-meta">${escapeHtml(s.summary || 'Edit')} · ${escapeHtml(formatSnapshotTimestamp(s.appliedAt))}</div>
           </div>
-          <button type="button" class="snapshot-restore-btn" data-snapshot-id="${escapeHtml(s.id)}" data-snapshot-path="${escapeHtml(s.relativePath || '')}">Restore</button>
+          <button type="button" class="snapshot-restore-btn primary" data-snapshot-id="${escapeHtml(s.id)}" data-snapshot-path="${escapeHtml(s.relativePath || '')}">Restore</button>
         </div>`).join('')}
     `;
   }

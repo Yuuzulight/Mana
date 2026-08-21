@@ -796,6 +796,7 @@ function createEditorIntegrations(options = {}) {
     // above skips this), so nothing gets snapshotted for a no-op approve.
     const snapshot = snapshotStore.recordSnapshot({
       proposalId: id,
+      workspacePath: path.resolve(workspace.path),
       relativePath: target.relativePath,
       originalContent: currentContent,
       summary: proposal.summary,
@@ -836,9 +837,20 @@ function createEditorIntegrations(options = {}) {
   }
 
   // Issue #428: metadata only (path/summary/timestamp) -- restoreEditSnapshot
-  // is what actually reads a snapshot's saved content back.
+  // is what actually reads a snapshot's saved content back. Scoped to the
+  // active workspace -- a snapshot's relativePath is only meaningful
+  // relative to the workspace it was recorded in, so listing (and
+  // restoring) across a workspace switch would silently target the wrong
+  // file on disk.
   function listEditSnapshots() {
-    return snapshotStore.listSnapshots();
+    const workspace = workspaceStore.getWorkspace();
+    if (!workspace?.path) {
+      return [];
+    }
+    const workspacePath = path.resolve(workspace.path);
+    return snapshotStore
+      .listSnapshots()
+      .filter((record) => record.workspacePath === workspacePath);
   }
 
   // Deliberately no conflict check against the file's current content --
@@ -856,6 +868,9 @@ function createEditorIntegrations(options = {}) {
     }
 
     const workspace = requireActiveWorkspace(workspaceStore);
+    if (record.workspacePath !== path.resolve(workspace.path)) {
+      throw new Error("edit snapshot belongs to a different workspace");
+    }
     const target = toWorkspaceRelativePath(workspace.path, record.relativePath);
     if (!fs.existsSync(target.fullPath) || !fs.statSync(target.fullPath).isFile()) {
       throw new Error("workspace file does not exist");

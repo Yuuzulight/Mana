@@ -34,9 +34,16 @@ function createEditSnapshotStore(options = {}) {
   // lightweight per-edit undo convenience, not an audit trail, so there's
   // no retention window worth preserving, only a cap on how many
   // (potentially large) originalContent copies accumulate on disk.
+  const configuredMaxRetained = Number(
+    options.maxRetained || process.env.MANA_MAX_EDIT_SNAPSHOTS || 100,
+  );
+  // A non-numeric MANA_MAX_EDIT_SNAPSHOTS (e.g. an operator typo) must not
+  // silently become NaN here -- NaN defeats pruneOldest's own bounds check
+  // below (`all.length <= maxRetained` is always false, `all.slice(NaN)` is
+  // `all.slice(0)`) and every snapshot gets deleted right after it's written.
   const maxRetained = Math.max(
     1,
-    Number(options.maxRetained || process.env.MANA_MAX_EDIT_SNAPSHOTS || 100),
+    Number.isFinite(configuredMaxRetained) ? configuredMaxRetained : 100,
   );
 
   function snapshotPath(id) {
@@ -62,6 +69,7 @@ function createEditSnapshotStore(options = {}) {
           return {
             id: record.id,
             proposalId: record.proposalId,
+            workspacePath: record.workspacePath,
             relativePath: record.relativePath,
             summary: record.summary,
             appliedAt: record.appliedAt,
@@ -100,12 +108,19 @@ function createEditSnapshotStore(options = {}) {
     }
   }
 
-  function recordSnapshot({ proposalId, relativePath, originalContent, summary } = {}) {
+  function recordSnapshot({
+    proposalId,
+    workspacePath,
+    relativePath,
+    originalContent,
+    summary,
+  } = {}) {
     ensureDir(dataDir);
     const id = idFactory();
     const record = {
       id,
       proposalId: proposalId || null,
+      workspacePath: workspacePath || null,
       relativePath,
       originalContent,
       summary: summary || "",
@@ -116,6 +131,7 @@ function createEditSnapshotStore(options = {}) {
     return {
       id,
       proposalId: record.proposalId,
+      workspacePath: record.workspacePath,
       relativePath,
       summary: record.summary,
       appliedAt: record.appliedAt,
