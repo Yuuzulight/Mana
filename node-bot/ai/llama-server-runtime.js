@@ -384,6 +384,41 @@ function createLlamaServerRuntime(options = {}) {
       args.push("--no-kv-offload");
     }
 
+    // Issue #332: speculative decoding, both opt-in and independent of each
+    // other -- --spec-type takes a comma-separated list, so both can be
+    // active together if a caller sets both env vars.
+    //
+    // N-gram/lookup: drafts candidate tokens by pattern-matching against the
+    // ongoing generation itself -- no second model, no extra VRAM. Defaults
+    // to ngram-simple, llama.cpp's simplest/most-tested lookup variant, when
+    // the gate is on but no specific variant is named. Deliberately doesn't
+    // wire ngram-cache's -lcs/-lcd persisted-cache-file flags -- that's a
+    // different feature (a cache surviving across process restarts) than
+    // "match against this generation," and the other ngram-* variants
+    // already provide the latter without needing an external cache file.
+    //
+    // Draft-model: loads a genuinely separate, smaller model alongside the
+    // target and drafts tokens by actually running it. LLAMA_SPEC_DRAFT_MODEL
+    // is the draft model's own path, same convention as LLAMA_MODEL/
+    // LLAMA_VISION_MODEL. Only draft-simple is wired -- draft-eagle3/
+    // draft-mtp need the target model itself trained for that, which is
+    // unconfirmed for Mana's current models (see the issue's own scope
+    // note). Sizing/thread/GPU-layer-offload tuning flags for the draft
+    // model are left at their own defaults (e.g. -ngld auto) -- the issue's
+    // own scope says to tune only if a real measurement shows they
+    // underperform, not preemptively.
+    const specTypes = [];
+    if (env.LLAMA_ENABLE_SPEC_NGRAM === "1") {
+      specTypes.push(env.LLAMA_SPEC_NGRAM_TYPE || "ngram-simple");
+    }
+    if (env.LLAMA_SPEC_DRAFT_MODEL) {
+      specTypes.push("draft-simple");
+      args.push("--spec-draft-model", env.LLAMA_SPEC_DRAFT_MODEL);
+    }
+    if (specTypes.length) {
+      args.push("--spec-type", specTypes.join(","));
+    }
+
     const ngl = env.LLAMA_NGL || "99";
     if (ngl) {
       args.push("-ngl", String(ngl));
@@ -1107,6 +1142,7 @@ function createLlamaServerRuntime(options = {}) {
   }
 
   return {
+    buildServerArgs,
     ensureServerConfig,
     findLlamaServerBin,
     findLlamaModel,

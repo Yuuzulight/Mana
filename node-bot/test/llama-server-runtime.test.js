@@ -1572,3 +1572,66 @@ test("runBestOfNReply skips the judge call entirely when n is 1", async () => {
   assert.equal(result.content, "only answer");
   assert.equal(result.judgeIndex, 0);
 });
+
+// Issue #332: speculative decoding wiring in buildServerArgs.
+test("buildServerArgs omits --spec-type by default (no speculative decoding env vars set)", () => {
+  const runtime = createLlamaServerRuntime({
+    env: makeFakeEnv(),
+    fs: makeFakeFs(),
+    registerExitHandlers: false,
+  });
+  const args = runtime.buildServerArgs("C:\\models\\mana.gguf", 8090);
+  assert.equal(args.includes("--spec-type"), false);
+  assert.equal(args.includes("--spec-draft-model"), false);
+});
+
+test("buildServerArgs enables n-gram speculative decoding, defaulting to ngram-simple", () => {
+  const runtime = createLlamaServerRuntime({
+    env: { ...makeFakeEnv(), LLAMA_ENABLE_SPEC_NGRAM: "1" },
+    fs: makeFakeFs(),
+    registerExitHandlers: false,
+  });
+  const args = runtime.buildServerArgs("C:\\models\\mana.gguf", 8090);
+  const idx = args.indexOf("--spec-type");
+  assert.ok(idx !== -1);
+  assert.equal(args[idx + 1], "ngram-simple");
+});
+
+test("buildServerArgs lets LLAMA_SPEC_NGRAM_TYPE override which n-gram variant is used", () => {
+  const runtime = createLlamaServerRuntime({
+    env: {
+      ...makeFakeEnv(),
+      LLAMA_ENABLE_SPEC_NGRAM: "1",
+      LLAMA_SPEC_NGRAM_TYPE: "ngram-mod",
+    },
+    fs: makeFakeFs(),
+    registerExitHandlers: false,
+  });
+  const args = runtime.buildServerArgs("C:\\models\\mana.gguf", 8090);
+  assert.equal(args[args.indexOf("--spec-type") + 1], "ngram-mod");
+});
+
+test("buildServerArgs wires draft-model speculative decoding from LLAMA_SPEC_DRAFT_MODEL", () => {
+  const runtime = createLlamaServerRuntime({
+    env: { ...makeFakeEnv(), LLAMA_SPEC_DRAFT_MODEL: "C:\\models\\draft-1.7b.gguf" },
+    fs: makeFakeFs(),
+    registerExitHandlers: false,
+  });
+  const args = runtime.buildServerArgs("C:\\models\\mana.gguf", 8090);
+  assert.equal(args[args.indexOf("--spec-type") + 1], "draft-simple");
+  assert.equal(args[args.indexOf("--spec-draft-model") + 1], "C:\\models\\draft-1.7b.gguf");
+});
+
+test("buildServerArgs combines n-gram and draft-model speculative decoding when both are set", () => {
+  const runtime = createLlamaServerRuntime({
+    env: {
+      ...makeFakeEnv(),
+      LLAMA_ENABLE_SPEC_NGRAM: "1",
+      LLAMA_SPEC_DRAFT_MODEL: "C:\\models\\draft-1.7b.gguf",
+    },
+    fs: makeFakeFs(),
+    registerExitHandlers: false,
+  });
+  const args = runtime.buildServerArgs("C:\\models\\mana.gguf", 8090);
+  assert.equal(args[args.indexOf("--spec-type") + 1], "ngram-simple,draft-simple");
+});
