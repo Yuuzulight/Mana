@@ -867,6 +867,19 @@ test("a valid JS proposal is unaffected by the syntax check (issue #420)", () =>
   });
 });
 
+test("a .mjs proposal using import/export is not rejected by the JS syntax check (issue #420)", () => {
+  // vm.Script parses "script" goal, not "module" goal, so it throws on
+  // import/export even though this is perfectly valid ESM -- .mjs must be
+  // excluded from the vm.Script check rather than falsely flagged as broken.
+  withProposalWorkspace("lib/util.mjs", "export const a = 1;\n", (editors) => {
+    const proposal = editors.createEditProposal({
+      path: "lib/util.mjs",
+      proposedContent: "import { readFile } from \"node:fs\";\nexport const a = 1;\n",
+    });
+    assert.equal(proposal.status, "pending");
+  });
+});
+
 test("a syntactically broken JSON proposal is rejected (issue #420)", () => {
   withProposalWorkspace("config.json", '{"a": 1}\n', (editors) => {
     assert.throws(
