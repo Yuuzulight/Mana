@@ -74,7 +74,11 @@ function registerCoreRoutes(app, upload, deps) {
     restartController,
     runVisionReply,
     getVisionStatus,
+    resolveVisionCapture,
+    rejectVisionCapture,
     runWhisper,
+    runWhisperPartial,
+    normalizeUploadedAudioAsync,
     synthesizeReply,
     clampText,
     SCREEN_CONTEXT_MAX_CHARS,
@@ -108,6 +112,32 @@ function registerCoreRoutes(app, upload, deps) {
       }
       console.error(e);
       return res.status(500).json({ error: String(e) });
+    }
+  });
+
+  app.post("/transcribe-partial", upload.single("file"), async (req, res) => {
+    let tmpPath, audioPath;
+    try {
+      requireFile(req.file, "file");
+
+      ({ tmpPath, audioPath } = await normalizeUploadedAudioAsync(req.file));
+      const transcript = await runWhisperPartial(audioPath);
+
+      return res.json({ transcript });
+    } catch (e) {
+      if (e instanceof ValidationError) {
+        return sendValidationError(res, e);
+      }
+      console.error(e);
+      return res.status(500).json({ error: String(e) });
+    } finally {
+      // Cleanup must run whether runWhisperPartial succeeded or threw --
+      // this endpoint is polled repeatedly per recording, so a leaked
+      // upload on every failed poll compounds far faster than
+      // /transcribe-only's one-shot equivalent.
+      if (tmpPath || audioPath) {
+        cleanupUploadedAudio(tmpPath, audioPath);
+      }
     }
   });
 
@@ -157,6 +187,38 @@ function registerCoreRoutes(app, upload, deps) {
         reply,
         ttsConfigured: TTS_PROVIDER !== "none",
       });
+    } catch (e) {
+      if (e instanceof ValidationError) {
+        return sendValidationError(res, e);
+      }
+      console.error(e);
+      return res.status(500).json({ error: String(e) });
+    }
+  });
+
+  app.post("/vision/capture-result", (req, res) => {
+    try {
+      const requestId = requireString(req.body?.requestId, "requestId");
+      // Issue #417 finding 3: the client posts either a captured image or,
+      // when capture itself failed client-side (e.g. denied permission
+      // prompt), an error -- never both, never neither. Either/or is
+      // validated explicitly rather than just making both fields optional,
+      // so a malformed body gets a clean 400 instead of silently resolving
+      // the pending requestCapture() promise with an empty image.
+      const error = optionalString(req.body?.error, "error", "");
+      const image = optionalString(req.body?.image, "image", "");
+      if (error && image) {
+        throw new ValidationError("provide either image or error, not both");
+      }
+      if (error) {
+        const rejected = rejectVisionCapture(requestId, error);
+        return res.json({ ok: rejected });
+      }
+      if (!image) {
+        throw new ValidationError("image is required");
+      }
+      const resolved = resolveVisionCapture(requestId, image);
+      return res.json({ ok: resolved });
     } catch (e) {
       if (e instanceof ValidationError) {
         return sendValidationError(res, e);

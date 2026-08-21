@@ -308,3 +308,43 @@ test("resetSessionToolCounts clears a session's budget (issue #396)", async () =
   assert.ok(!after.results.some((r) => r.detail === "session_cap_exceeded"));
   resetSessionToolCounts("reset-session");
 });
+
+// Issue #401: this loop is driven externally (Zed, or any other ACP
+// client), so it can't literally stop itself the way the main voice-chat
+// tool-calling loop's session_goal__finish can -- "finish" is a signal
+// executeAutonomousStep reports back, for the caller to act on.
+test("a 'finish' action reports status:finished with the given reason, instead of tools_executed/idle", async () => {
+  const step = JSON.stringify([{ tool: "finish", args: { reason: "Login bug is fixed." } }]);
+  const res = await executeAutonomousStep(step, "finish-session");
+
+  assert.equal(res.status, "finished");
+  assert.equal(res.reason, "Login bug is fixed.");
+  assert.equal(res.results.length, 1);
+  assert.equal(res.results[0].tool, "finish");
+  assert.equal(res.results[0].status, "ok");
+});
+
+test("a 'finish' action with no reason still finishes, with a default reason", async () => {
+  const step = JSON.stringify([{ tool: "finish", args: {} }]);
+  const res = await executeAutonomousStep(step, "finish-session-2");
+
+  assert.equal(res.status, "finished");
+  assert.equal(res.reason, "goal achieved");
+});
+
+test("a step with 'finish' alongside other actions still reports status:finished overall", async () => {
+  const step = JSON.stringify([
+    { tool: "finish", args: { reason: "Done." } },
+    { tool: "unknown_tool", args: {} },
+  ]);
+  const res = await executeAutonomousStep(step, "finish-session-3");
+
+  // Every action in the array is still reported in results (the loop
+  // doesn't break early mid-array), but the overall status is "finished"
+  // regardless of what else was in this same step -- a client respecting
+  // the signal stops calling mana/agent/run again either way.
+  assert.equal(res.status, "finished");
+  assert.equal(res.results.length, 2);
+  assert.ok(res.results.some((r) => r.tool === "finish" && r.status === "ok"));
+  assert.ok(res.results.some((r) => r.tool === "unknown_tool" && r.status === "unsupported"));
+});

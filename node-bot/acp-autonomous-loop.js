@@ -288,6 +288,13 @@ async function executeAutonomousStep(rawModelReply, sessionId) {
   );
 
   const results = [];
+  // Issue #401: set when the model requests "finish", believing the
+  // session's user-stated goal (echoed back to the caller by
+  // mana-acp-agent.js's mana/agent/run handler) is done. This loop is
+  // driven externally (by Zed, or any other ACP client) -- node-bot
+  // cannot force it to stop calling mana/agent/run again, so this is a
+  // signal for the caller to respect, not an enforced stop.
+  let finishReason = null;
 
   for (const action of actions) {
     const { tool, args } = action;
@@ -785,9 +792,20 @@ async function executeAutonomousStep(rawModelReply, sessionId) {
       continue;
     }
 
+    if (tool === "finish") {
+      finishReason = (args && args.reason ? String(args.reason) : "").trim() || "goal achieved";
+      results.push({ tool: "finish", status: "ok", reason: finishReason });
+      continue;
+    }
+
     // Unknown / unsupported tool
     console.error(`[Mana Tool] ⚠️ Unsupported tool: ${tool}`);
     results.push({ tool: tool || "unknown", status: "unsupported" });
+  }
+
+  if (finishReason) {
+    console.error(`[Mana Agent Loop] 🏁 Model signaled finish: ${finishReason}`);
+    return { status: "finished", reason: finishReason, results };
   }
 
   // Aggregate successful injected contexts

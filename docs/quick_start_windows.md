@@ -40,7 +40,7 @@ Project goal
    - If `WHISPER_BIN` is unset or wrong, Mana will also try common local paths under `tools\whisper\`.
    - `WHISPER_PROMPT` helps Whisper understand accents, wake words, and common local phrasing.
    - For Singaporean-accent recognition, `ggml-base.en.bin` or `ggml-small.en.bin` should be more accurate than `ggml-tiny.en.bin`.
-   - `$env:WHISPER_MODEL_PROFILE = "small"` (`tiny`/`base`/`small`/`medium`) picks a size tier by name instead of a raw file path, if you keep more than one model under `tools\whisper\models`. Smaller is faster but less accurate; falls back to whatever's actually present if the requested tier's file isn't there.
+   - `$env:WHISPER_MODEL_PROFILE = "small"` (`tiny`/`base`/`small`/`medium`/`turbo`) picks a size tier by name instead of a raw file path, if you keep more than one model under `tools\whisper\models`. Smaller is faster but less accurate; `turbo` (`large-v3-turbo`) trades some of that speed back for closer-to-large accuracy. Falls back to whatever's actually present if the requested tier's file isn't there.
    - `LLAMA_BIN` should point to the Llama CLI executable you want to use.
    - `TTS_PROVIDER=kokoro` tells Mana to use the faster Kokoro ONNX service.
    - `TTS_PROVIDER=fish` (the default) tells Mana to call a separately running Fish Speech server; see docs/fish_speech_tts.md.
@@ -83,6 +83,17 @@ Project goal
      too long for how you talk.
    - The UI shows the transcript and model reply.
    - If the configured TTS service is running, the reply is synthesized and played back by the app.
+
+Proactive notifications
+- Mana can reach you with a native Windows toast even when the launcher window is minimized or unfocused, for three things: a Dream Mode memory insight, a completed cron job result, and a Deep Research answer that flagged stale/conflicting sources.
+- Each toast has "Open Chat" and "Dismiss" buttons; "Open Chat" brings the launcher window to the front.
+- These land in chat history either way (Dream Mode's summary is written to `MEMORY.md`, cron results and research reports are appended as chat turns) -- the toast is just an additional, immediate nudge, not the only place to see them.
+- Set `$env:MANA_PROACTIVE_TOASTS_ENABLED = "0"` before launching Mana to turn these off and keep proactive results chat-only.
+
+Remote AI token usage
+- When `MANA_ALLOW_REMOTE_AI` is on (or `OPENAI_BASE_URL` points at a non-loopback host), the performance panel also shows a running total of prompt/completion tokens the current chat session has used against the remote provider -- a local-only session shows nothing extra here, since there's no cost to track.
+- Set `$env:MANA_SESSION_TOKEN_WARN` and/or `$env:MANA_SESSION_TOKEN_STOP` (both optional, in tokens) to flag the total with `[WARN]`/`[STOPPED]` once a session crosses them. Reaching the stop threshold blocks further remote-AI calls for that session (falling back to local) until a new session starts -- it doesn't end the session or clear the count.
+- This is purely a cost-visibility view of what the remote provider actually reported using -- it doesn't control how long or short Mana's replies are.
 
 Performance notes
 - `Gaming mode` checks Windows for watched game processes such as FFXIV.

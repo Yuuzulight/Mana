@@ -11,6 +11,7 @@ function fakeStore(overrides = {}) {
     getSession: () => null,
     getSessionTurnsPage: () => null,
     renameSession: () => null,
+    setSessionGoal: () => null,
     deleteSession: () => false,
     ...overrides,
   };
@@ -149,6 +150,63 @@ test("sessions capability renames a session and validates the body", async () =>
       body: JSON.stringify({ name: "New name" }),
     });
     assert.equal(notFound.status, 404);
+  });
+});
+
+test("sessions capability sets a session's goal, and clears it with an empty string", async () => {
+  const app = express();
+  app.use(express.json());
+  let goalCall = null;
+  sessionsCapability.registerRoutes(app, {
+    acpMemoryStore: fakeStore({
+      setSessionGoal: (id, goal) => {
+        goalCall = [id, goal];
+        return id === "known" ? { sessionId: id, goal: goal || null } : null;
+      },
+    }),
+  });
+
+  await withServer(app, async (baseUrl) => {
+    const ok = await fetch(`${baseUrl}/sessions/known`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ goal: "Fix the login bug" }),
+    });
+    assert.equal(ok.status, 200);
+    assert.deepEqual(goalCall, ["known", "Fix the login bug"]);
+    assert.equal((await ok.json()).goal, "Fix the login bug");
+
+    const cleared = await fetch(`${baseUrl}/sessions/known`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ goal: "" }),
+    });
+    assert.equal(cleared.status, 200);
+    assert.deepEqual(goalCall, ["known", ""]);
+    assert.equal((await cleared.json()).goal, null);
+
+    const notFound = await fetch(`${baseUrl}/sessions/missing`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ goal: "Anything" }),
+    });
+    assert.equal(notFound.status, 404);
+  });
+});
+
+test("sessions capability PATCH requires at least one of name or goal", async () => {
+  const app = express();
+  app.use(express.json());
+  sessionsCapability.registerRoutes(app, { acpMemoryStore: fakeStore() });
+
+  await withServer(app, async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/sessions/known`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    assert.equal(response.status, 400);
+    assert.match((await response.json()).error, /name or goal is required/);
   });
 });
 

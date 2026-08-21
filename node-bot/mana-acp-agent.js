@@ -560,10 +560,33 @@ function createManaAcpAgent(options = {}) {
             "autonomous mode is disabled",
           );
         }
-        return createJsonRpcResult(
-          message.id,
-          await autonomousLoop.run(message.params || {}),
-        );
+        const params = message.params || {};
+        const result = await autonomousLoop.run(params);
+        // Issue #401: echo the session's stored goal (set via
+        // acp-memory-store.js's setSessionGoal, by the user only) back on
+        // every run() response, not just once -- this loop is driven
+        // externally (Zed, or any other ACP client), so node-bot cannot
+        // inject the goal into the model's own context the way the main
+        // voice-chat tool-calling loop does; the most it can do is make
+        // sure the caller has the goal text to include itself. A caller
+        // that ignores this field loses nothing it already had.
+        if (
+          memoryStore &&
+          typeof memoryStore.getSession === "function" &&
+          params.sessionId &&
+          result &&
+          !result.goal
+        ) {
+          try {
+            const session = memoryStore.getSession(String(params.sessionId));
+            if (session && session.goal) {
+              result.goal = session.goal;
+            }
+          } catch (e) {
+            // best-effort -- never let a goal lookup fail the whole call
+          }
+        }
+        return createJsonRpcResult(message.id, result);
       }
 
       if (message.method === "shutdown") {

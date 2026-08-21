@@ -253,6 +253,9 @@ document.getElementById('themeToggle')?.addEventListener('click', (e) => {
   const VAD_MODEL_URL = '../assets/vad/silero_vad.onnx';
   const MIN_SPEECH_RMS = 0.012;
   const SILENCE_METER_INTERVAL_MS = 150;
+  // #341 Sub-project A: how often to snapshot the audio recorded so far
+  // and poll for a partial transcript while the user is still speaking.
+  const PARTIAL_TRANSCRIPT_POLL_MS = 1200;
   const LISTEN_PAUSE_MS = 250;
   const BARGE_IN_POLL_MS = 50;
 
@@ -1426,6 +1429,15 @@ document.getElementById('themeToggle')?.addEventListener('click', (e) => {
       let hasHeardSpeech = false;
       let lastSpeechAt = 0;
       let meterTimer = null;
+      let partialTimer = null;
+      let partialPollInFlight = false;
+      // Plumbing for #341 Sub-project B's classifier, not yet consumed by
+      // anything -- kept in sync with the status text below.
+      let partialTranscript = "";
+      // Aborted in cleanup() so an in-flight poll doesn't keep running
+      // (and competing for CPU with the real final transcription about to
+      // start) after the recording it was polling for has already ended.
+      const partialAbortController = new AbortController();
       let stopped = false;
       let noSpeechResult = false;
       const startedAt = performance.now();
@@ -1436,10 +1448,50 @@ document.getElementById('themeToggle')?.addEventListener('click', (e) => {
           clearTimeout(meterTimer);
           meterTimer = null;
         }
+        if (partialTimer !== null) {
+          clearInterval(partialTimer);
+          partialTimer = null;
+        }
+        partialAbortController.abort();
         try {
           source.disconnect();
         } catch (e) {}
         audioCtx.close().catch(() => {});
+      }
+
+      // #341 Sub-project A: snapshots whatever's been recorded so far and
+      // polls for a partial transcript, updating the live status text. A
+      // failed or slow poll is silently skipped -- never blocks or delays
+      // tick()'s actual stop-detection logic below.
+      async function pollPartialTranscript() {
+        if (stopped || partialPollInFlight || localChunks.length === 0) {
+          return;
+        }
+        partialPollInFlight = true;
+        try {
+          const snapshot = new Blob(localChunks, { type: 'audio/webm' });
+          const form = new FormData();
+          form.append('file', snapshot, 'partial.webm');
+          const response = await fetch('http://127.0.0.1:5005/transcribe-partial', {
+            method: 'POST',
+            body: form,
+            signal: partialAbortController.signal,
+          });
+          if (!response.ok || stopped) {
+            return;
+          }
+          const data = await response.json();
+          if (data.transcript && !stopped) {
+            partialTranscript = data.transcript;
+            statusEl.textContent = `Hearing: "${data.transcript}"`;
+          }
+        } catch (e) {
+          if (e.name !== 'AbortError') {
+            console.warn('Partial transcript poll failed:', e.message);
+          }
+        } finally {
+          partialPollInFlight = false;
+        }
       }
 
       localRecorder.ondataavailable = (event) => {
@@ -1457,6 +1509,7 @@ document.getElementById('themeToggle')?.addEventListener('click', (e) => {
       };
 
       localRecorder.start(SILENCE_METER_INTERVAL_MS);
+      partialTimer = setInterval(pollPartialTranscript, PARTIAL_TRANSCRIPT_POLL_MS);
 
       async function tick() {
         if (stopped) return;

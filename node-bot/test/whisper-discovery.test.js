@@ -135,6 +135,33 @@ test("findWhisperModel ignores an unrecognized WHISPER_MODEL_PROFILE value", () 
   assert.equal(found, baseModel);
 });
 
+test("findWhisperModel selects the turbo profile's large-v3-turbo model", () => {
+  const toolsDir = tempToolsDir();
+  fs.mkdirSync(path.join(toolsDir, "models"), { recursive: true });
+  fs.writeFileSync(path.join(toolsDir, "models", "ggml-base.en.bin"), ""); // the usual default winner
+  const turboModel = path.join(toolsDir, "models", "ggml-large-v3-turbo.bin");
+  fs.writeFileSync(turboModel, "");
+  const found = findWhisperModel({ env: { WHISPER_MODEL_PROFILE: "turbo" }, toolsDir });
+  assert.equal(found, turboModel);
+});
+
+test("findWhisperModel auto-detects large-v3-turbo via PREFERRED_NAME_ORDER even without an explicit profile", () => {
+  const toolsDir = tempToolsDir();
+  fs.mkdirSync(path.join(toolsDir, "models"), { recursive: true });
+  // A file that matches nothing in PREFERRED_NAME_ORDER, staged alongside
+  // the turbo model -- if large-v3-turbo isn't actually registered in
+  // PREFERRED_NAME_ORDER, neither file matches anything and the result
+  // falls back to whatever collectFilesRecursively happens to return
+  // first (non-deterministic/coincidental), which wouldn't reliably catch
+  // a regression. Registering it properly means the preference-order loop
+  // matches the turbo file specifically, regardless of collection order.
+  fs.writeFileSync(path.join(toolsDir, "models", "a-nonstandard-name.bin"), "");
+  const turboModel = path.join(toolsDir, "models", "ggml-large-v3-turbo.bin");
+  fs.writeFileSync(turboModel, "");
+  const found = findWhisperModel({ env: {}, toolsDir });
+  assert.equal(found, turboModel);
+});
+
 test("findParakeetBin prefers an explicit PARAKEET_BIN when set", () => {
   const toolsDir = tempToolsDir();
   const explicit = path.join(toolsDir, "custom-parakeet.exe");

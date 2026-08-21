@@ -249,6 +249,25 @@
         padding: 2px 4px;
       }
 
+      .session-item .session-goal {
+        font-size: 11px;
+        color: var(--accent);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .session-item .session-goal-input {
+        width: 100%;
+        font-size: 11px;
+        font-family: inherit;
+        background: var(--bg);
+        color: var(--text);
+        border: 1px solid var(--accent);
+        border-radius: 4px;
+        padding: 2px 4px;
+      }
+
       #sessionEmpty {
         padding: 10px;
         font-size: 12px;
@@ -1698,6 +1717,7 @@
 
     <div id="sessionContextMenu" class="context-menu" hidden>
       <button data-action="rename">Rename</button>
+      <button data-action="goal">Set Goal</button>
       <button data-action="memory">Open memory</button>
       <button data-action="export">Export (ShareGPT JSONL)</button>
       <button data-action="delete" class="danger">Delete</button>
