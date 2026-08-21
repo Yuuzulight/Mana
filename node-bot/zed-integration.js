@@ -1,7 +1,7 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const { spawn, spawnSync } = require("node:child_process");
-const vm = require("node:vm");
+const esprima = require("esprima");
 
 const DEFAULT_INSPECTOR_EXCLUDES = new Set([
   ".git",
@@ -305,28 +305,37 @@ function createSimpleLineDiff({ relativePath, originalContent, proposedContent }
 // two checks here need nothing but lengths.
 const DEFAULT_MIN_RETAINED_RATIO = 0.5;
 
-// Issue #420: mirrors skills-store.js's verifySkillScript for #378 --
-// blocking, not advisory. A proposal that cannot even parse is not a
-// valid edit, and applying it would hand the workspace a broken file.
-// In-process checks (JS via vm.Script, JSON via JSON.parse) cost nothing.
-// Python shells out to the system interpreter since there's no
-// in-process parser available here -- this is a rare, human/model-
-// triggered action (one proposal at a time), not a hot polling loop, so
-// a blocking spawnSync is fine here, unlike a repeatedly-polled endpoint.
-// Any other extension (C#, TS, etc.) is unchecked -- pass, not blocked --
-// matching verifySkillScript's own "can't classify it, don't hold it
-// against the proposal" behavior rather than trying to build a parser
-// for every language a workspace might contain.
+// Issue #420: blocking, not advisory. A proposal that cannot even parse
+// is not a valid edit, and applying it would hand the workspace a broken
+// file. JS uses esprima (already a dependency, used the same way by
+// utils/reply-verifier.js) -- a pure AST parser with no code-execution
+// capability at all, unlike node:vm's Script constructor (which this
+// originally used): parsing untrusted text with an actual JS engine is a
+// legitimate static-analysis red flag even when nothing ever calls
+// .runInThisContext() on the result, since it's the same API real code
+// execution goes through. esprima can't execute anything, at any call
+// depth, so the concern doesn't apply -- not just quieter about it, an
+// actually different code path. JSON via JSON.parse is the same kind of
+// non-executing, in-process check. Python shells out to the system
+// interpreter since there's no in-process parser available here -- this
+// is a rare, human/model-triggered action (one proposal at a time), not
+// a hot polling loop, so a blocking spawnSync is fine here, unlike a
+// repeatedly-polled endpoint. Any other extension (C#, TS, etc.) is
+// unchecked -- pass, not blocked -- matching skills-store.js's
+// verifySkillScript's own "can't classify it, don't hold it against the
+// proposal" behavior rather than trying to build a parser for every
+// language a workspace might contain.
 function verifyProposalSyntax({ relativePath, proposedContent }) {
   const ext = path.extname(String(relativePath || "")).toLowerCase();
 
   if (ext === ".js" || ext === ".cjs") {
-    // .mjs is deliberately excluded: vm.Script parses "script" goal, not
-    // "module" goal, so it throws on plain import/export -- which is
-    // virtually every real .mjs file. Checking it would reject valid ESM
-    // edits as broken, the exact failure mode this feature must avoid.
+    // .mjs is deliberately excluded: esprima.parseScript parses "script"
+    // goal, not "module" goal, so it throws on plain import/export --
+    // which is virtually every real .mjs file. Checking it would reject
+    // valid ESM edits as broken, the exact failure mode this feature must
+    // avoid.
     try {
-      new vm.Script(proposedContent, { filename: "mana-proposed-edit.js" });
+      esprima.parseScript(proposedContent);
       return { ok: true, checked: true };
     } catch (e) {
       return { ok: false, checked: true, error: e.message || String(e) };
