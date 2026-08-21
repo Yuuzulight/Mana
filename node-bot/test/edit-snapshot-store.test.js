@@ -94,6 +94,24 @@ test("recordSnapshot prunes the oldest snapshots once maxRetained is exceeded", 
   assert.equal(store.getSnapshot(a.id), null);
 });
 
+test("getSnapshot and deleteSnapshot reject a path-traversal id instead of escaping dataDir", () => {
+  const dataDir = createTempDir();
+  const store = createEditSnapshotStore({ dataDir });
+  const outsideFile = path.join(path.dirname(dataDir), "outside.json");
+  fs.writeFileSync(outsideFile, JSON.stringify({ secret: true }));
+
+  try {
+    // id ultimately comes from a REST route param (POST .../snapshots/:id/restore) --
+    // must not be able to read or delete a file outside dataDir via "..".
+    const traversalId = "../outside";
+    assert.equal(store.getSnapshot(traversalId), null);
+    assert.equal(store.deleteSnapshot(traversalId), false);
+    assert.equal(fs.existsSync(outsideFile), true);
+  } finally {
+    fs.rmSync(outsideFile, { force: true });
+  }
+});
+
 test("a non-numeric maxRetained falls back to the default instead of pruning everything", () => {
   const store = createEditSnapshotStore({
     dataDir: createTempDir(),

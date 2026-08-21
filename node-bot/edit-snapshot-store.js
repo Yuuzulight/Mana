@@ -46,8 +46,19 @@ function createEditSnapshotStore(options = {}) {
     Number.isFinite(configuredMaxRetained) ? configuredMaxRetained : 100,
   );
 
+  // id ultimately comes from a REST route param (POST .../snapshots/:id/restore)
+  // -- reject anything that would resolve outside dataDir (e.g. "../../etc/passwd")
+  // or into a subdirectory, the same containment check toWorkspaceRelativePath
+  // uses in zed-integration.js. getSnapshot/deleteSnapshot already treat a thrown
+  // error here as "not found", so this needs no change at either call site.
   function snapshotPath(id) {
-    return path.join(dataDir, `${id}.json`);
+    const resolvedDir = path.resolve(dataDir);
+    const resolved = path.resolve(resolvedDir, `${id}.json`);
+    const relative = path.relative(resolvedDir, resolved);
+    if (!relative || relative.startsWith("..") || path.isAbsolute(relative) || relative.includes(path.sep)) {
+      throw new Error("invalid snapshot id");
+    }
+    return resolved;
   }
 
   function listSnapshotFiles() {
