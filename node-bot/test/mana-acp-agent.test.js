@@ -276,6 +276,76 @@ test("createManaAcpAgent gates test runs and autonomous loop by mode", async () 
   assert.equal(loopRun.result.status, "completed");
 });
 
+// Issue #401: mana/agent/run echoes the session's stored goal back on
+// every response -- this loop is driven externally, so node-bot can't
+// inject the goal into the model's own context the way the main
+// voice-chat tool-calling loop does; the most it can do is make sure the
+// caller (Zed, or any other ACP client) has the goal text available.
+test("mana/agent/run echoes the session's stored goal back in the response", async () => {
+  const agent = createManaAcpAgent({
+    env: { MANA_AGENT_AUTONOMOUS: "1" },
+    memoryStore: {
+      getSession: (sessionId) =>
+        sessionId === "sess-with-goal" ? { sessionId, goal: "Fix the login bug" } : null,
+    },
+    autonomousLoop: {
+      run: async () => ({ status: "idle", results: [] }),
+    },
+  });
+
+  const response = await agent.handleJsonRpc({
+    jsonrpc: "2.0",
+    id: 40,
+    method: "mana/agent/run",
+    params: { sessionId: "sess-with-goal", modelReply: "[]" },
+  });
+
+  assert.equal(response.result.status, "idle");
+  assert.equal(response.result.goal, "Fix the login bug");
+});
+
+test("mana/agent/run does not add a goal field when the session has none, or none was found", async () => {
+  const agent = createManaAcpAgent({
+    env: { MANA_AGENT_AUTONOMOUS: "1" },
+    memoryStore: {
+      getSession: () => null,
+    },
+    autonomousLoop: {
+      run: async () => ({ status: "idle", results: [] }),
+    },
+  });
+
+  const response = await agent.handleJsonRpc({
+    jsonrpc: "2.0",
+    id: 41,
+    method: "mana/agent/run",
+    params: { sessionId: "sess-unknown", modelReply: "[]" },
+  });
+
+  assert.equal("goal" in response.result, false);
+});
+
+test("mana/agent/run does not overwrite a goal field the autonomousLoop already set itself", async () => {
+  const agent = createManaAcpAgent({
+    env: { MANA_AGENT_AUTONOMOUS: "1" },
+    memoryStore: {
+      getSession: () => ({ goal: "Stored goal (should not appear)" }),
+    },
+    autonomousLoop: {
+      run: async () => ({ status: "idle", results: [], goal: "Loop-provided goal" }),
+    },
+  });
+
+  const response = await agent.handleJsonRpc({
+    jsonrpc: "2.0",
+    id: 42,
+    method: "mana/agent/run",
+    params: { sessionId: "sess-with-goal", modelReply: "[]" },
+  });
+
+  assert.equal(response.result.goal, "Loop-provided goal");
+});
+
 test("createManaAcpAgent sends prompts through the local coding reply bridge", async () => {
   const calls = [];
   const notifications = [];

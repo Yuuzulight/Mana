@@ -147,6 +147,7 @@ const { createSessionSearchToolSource } = require("./ai/session-search-tool-sour
 const { createSkillToolSource } = require("./ai/skill-tool-source");
 const { createExpressionToolSource, isExpressionToolName } = require("./ai/expression-tool-source");
 const { createVisionToolSource } = require("./ai/vision-tool-source");
+const { createSessionGoalToolSource } = require("./ai/session-goal-tool-source");
 const { visionCaptureBridge } = require("./vision-capture-bridge");
 const { createCodingToolSource } = require("./ai/coding-tool-source");
 const { createMcpClientRegistry } = require("./mcp-client-registry");
@@ -3874,6 +3875,25 @@ function registerRoutes(app, upload, deps = {}) {
     // otherwise this would silently bypass a test's (or any future caller's)
     // deps.skillsStore override, the exact trap already called out where
     // activeSkillsStore is defined above.
+    // Issue #401: the session's user-stated goal (if any) -- read
+    // unconditionally here since the tool-array construction further
+    // below also needs it, but only actually surfaced to the model (as
+    // system-prompt text, and as the session_goal__finish tool) when
+    // tool-calling is enabled for this reply. Outside that path (a plain
+    // conversational reply, remote AI, etc.) there's no way for the model
+    // to act on a goal at all, so mentioning it would just be misleading.
+    // See ai/session-goal-tool-source.js's own header comment for why the
+    // goal itself is never model-writable, only user-settable.
+    let sessionGoal = null;
+    if (sessionId) {
+      try {
+        const session = acpMemoryStore.getSession(sessionId);
+        sessionGoal = session && session.goal ? session.goal : null;
+      } catch (e) {
+        // ignore -- goal context is best-effort, never blocks a reply
+      }
+    }
+
     if (
       toolCallingEnabled &&
       normalizedModelProfile === "default" &&
@@ -3886,6 +3906,9 @@ function registerRoutes(app, upload, deps = {}) {
         }
       } catch (e) {
         // ignore failures here
+      }
+      if (sessionGoal) {
+        selectedSystemPrompt = `${selectedSystemPrompt}\n\nSession goal: ${sessionGoal}\nIf you believe this goal has been fully achieved, call session_goal__finish instead of continuing to use more tools.`;
       }
     }
 
@@ -4363,6 +4386,10 @@ function registerRoutes(app, upload, deps = {}) {
             ...(isPluginEnabled(browserAutomationPlugin, activePluginSettingsStore)
               ? [activeBrowserAutomationToolSource]
               : []),
+            // Issue #401: only offered when this session actually has a
+            // goal set -- there's nothing to finish otherwise, and no
+            // reason to spend schema tokens advertising it on every reply.
+            ...(sessionGoal ? [createSessionGoalToolSource()] : []),
           ]);
           // Issue #281: on the "fast" (small) profile, protect its limited
           // context from a large tool catalogue and from raw tool-result

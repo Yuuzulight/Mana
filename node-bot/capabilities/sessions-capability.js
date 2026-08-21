@@ -1,5 +1,6 @@
 const {
   ValidationError,
+  optionalString,
   requireString,
   sendValidationError,
 } = require("../request-validation");
@@ -89,10 +90,29 @@ function registerSessionsRoutes(app, context = {}) {
   app.patch("/sessions/:id", (req, res) => {
     try {
       const sessionId = requireString(req.params?.id, "sessionId");
-      const name = requireString(req.body?.name, "name");
-      const session = acpMemoryStore.renameSession(sessionId, name);
-      if (!session) {
-        return res.status(404).json({ error: "session not found" });
+      const hasName = Boolean(req.body) && "name" in req.body;
+      // Issue #401: goal is a separate, optional field on the same PATCH --
+      // an explicit empty string clears it, same as name's own
+      // empty-becomes-null behavior in renameSession.
+      const hasGoal = Boolean(req.body) && "goal" in req.body;
+      if (!hasName && !hasGoal) {
+        throw new ValidationError("name or goal is required");
+      }
+
+      let session = null;
+      if (hasName) {
+        const name = requireString(req.body.name, "name");
+        session = acpMemoryStore.renameSession(sessionId, name);
+        if (!session) {
+          return res.status(404).json({ error: "session not found" });
+        }
+      }
+      if (hasGoal) {
+        const goal = optionalString(req.body.goal, "goal");
+        session = acpMemoryStore.setSessionGoal(sessionId, goal);
+        if (!session) {
+          return res.status(404).json({ error: "session not found" });
+        }
       }
       return res.json(session);
     } catch (e) {
