@@ -1,8 +1,9 @@
-const { app, BrowserWindow, Menu, Tray, desktopCapturer, dialog, globalShortcut, ipcMain, nativeImage, powerMonitor, screen, session } = require("electron");
+const { app, BrowserWindow, Menu, Notification, Tray, desktopCapturer, dialog, globalShortcut, ipcMain, nativeImage, powerMonitor, screen, session } = require("electron");
 const fs = require("fs");
 const path = require("path");
 const { spawn } = require("child_process");
 const { createBackendConfigStore } = require("./backend-config");
+const { OPEN_CHAT_ACTION_INDEX, isProactiveToast, buildToastOptions } = require("./proactive-notifications");
 
 let mainWindow;
 let avatarWindow;
@@ -1221,6 +1222,22 @@ function connectTrayNotifications() {
       if (typeof tray.displayBalloon === "function") {
         tray.displayBalloon({ title: payload.title, content: payload.text });
       }
+    } else if (
+      isProactiveToast(payload) &&
+      process.env.MANA_PROACTIVE_TOASTS_ENABLED !== "0" &&
+      Notification.isSupported()
+    ) {
+      // Issue #423: Dream Mode insights, cron job results, and Deep Research
+      // staleness notes reach the user as a native toast even when the
+      // launcher window isn't focused/visible, not just chat history.
+      const notification = new Notification(buildToastOptions(payload));
+      notification.on("action", (event) => {
+        if (event.actionIndex !== OPEN_CHAT_ACTION_INDEX || !mainWindow) return;
+        if (mainWindow.isMinimized()) mainWindow.restore();
+        mainWindow.show();
+        mainWindow.focus();
+      });
+      notification.show();
     }
   });
   // "close" fires after "error" for a failed/dropped connection, so one

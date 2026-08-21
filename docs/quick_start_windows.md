@@ -84,6 +84,12 @@ Project goal
    - The UI shows the transcript and model reply.
    - If the configured TTS service is running, the reply is synthesized and played back by the app.
 
+Proactive notifications
+- Mana can reach you with a native Windows toast even when the launcher window is minimized or unfocused, for three things: a Dream Mode memory insight, a completed cron job result, and a Deep Research answer that flagged stale/conflicting sources.
+- Each toast has "Open Chat" and "Dismiss" buttons; "Open Chat" brings the launcher window to the front.
+- These land in chat history either way (Dream Mode's summary is written to `MEMORY.md`, cron results and research reports are appended as chat turns) -- the toast is just an additional, immediate nudge, not the only place to see them.
+- Set `$env:MANA_PROACTIVE_TOASTS_ENABLED = "0"` before launching Mana to turn these off and keep proactive results chat-only.
+
 Performance notes
 - `Gaming mode` checks Windows for watched game processes such as FFXIV.
 - When a watched game is running, Mana waits longer after empty/noise chunks to reduce idle work.
