@@ -320,7 +320,11 @@ const DEFAULT_MIN_RETAINED_RATIO = 0.5;
 function verifyProposalSyntax({ relativePath, proposedContent }) {
   const ext = path.extname(String(relativePath || "")).toLowerCase();
 
-  if (ext === ".js" || ext === ".mjs" || ext === ".cjs") {
+  if (ext === ".js" || ext === ".cjs") {
+    // .mjs is deliberately excluded: vm.Script parses "script" goal, not
+    // "module" goal, so it throws on plain import/export -- which is
+    // virtually every real .mjs file. Checking it would reject valid ESM
+    // edits as broken, the exact failure mode this feature must avoid.
     try {
       new vm.Script(proposedContent, { filename: "mana-proposed-edit.js" });
       return { ok: true, checked: true };
@@ -344,9 +348,12 @@ function verifyProposalSyntax({ relativePath, proposedContent }) {
       ["-c", "import ast,sys; ast.parse(sys.stdin.read())"],
       { input: proposedContent, encoding: "utf8", windowsHide: true },
     );
-    if (result.error || result.status === null) {
-      // No python on PATH (or it failed to launch) -- unchecked, not
-      // blocked, same as any other unrecognized extension.
+    if (result.error || result.status === null || result.status === 9009) {
+      // No python on PATH -- unchecked, not blocked, same as any other
+      // unrecognized extension. Status 9009 also covers Windows' "app
+      // execution alias" stub (present by default even with no Python
+      // installed): it launches successfully, so result.error is unset,
+      // but exits 9009 instead of running any code.
       return { ok: true, checked: false };
     }
     if (result.status !== 0) {
