@@ -10,10 +10,15 @@ using a fully local vision model. Nothing leaves your machine.
 - The backend exposes `POST /vision/describe`, and `POST /reply` accepts an
   optional `image` field so image questions flow through the normal chat path
   (same persona, same session memory).
-- Chat and vision share one llama-server process: asking about an image swaps
-  the loaded model to the vision model, and the next text chat swaps back.
-  Each swap costs one model load. The server auto-releases RAM/VRAM after 10
-  minutes idle (`LLAMA_SERVER_IDLE_MS`).
+- Chat and vision share one llama-server process. If they're different
+  model files, asking about an image swaps the loaded model to the vision
+  model, and the next text chat swaps back -- each swap costs one model
+  load. If `LLAMA_MODEL` and `LLAMA_VISION_MODEL` point at the **same**
+  natively-multimodal model (some newer models, e.g. Qwen3.5, understand
+  both text and images from one set of weights, unlike Qwen3 which needed
+  a separate `-VL` variant), there's no swap at all -- chat and vision
+  share the already-loaded model. The server auto-releases RAM/VRAM after
+  10 minutes idle either way (`LLAMA_SERVER_IDLE_MS`).
 
 ## Installing a vision model
 
@@ -48,6 +53,28 @@ $env:LLAMA_VISION_MMPROJ = "C:\ManaAI\Mana\tools\llama\gguf-models\mmproj-Qwen2.
 
 Run `npm run doctor` in `node-bot` to confirm the vision model check.
 
+### Consolidating chat + vision onto one natively-multimodal model
+
+If your default chat model is natively multimodal, point `LLAMA_VISION_MODEL`
+at the **same file** as `LLAMA_MODEL`, plus its mmproj -- this must be
+explicit even if the model would otherwise be auto-detected as a chat
+model, since its filename won't contain a vision-signaling token like
+`vl`/`gemma-4` and so won't be picked up by auto-detection as a vision
+candidate either:
+
+```powershell
+$env:LLAMA_MODEL = "C:\ManaAI\Mana\tools\llama\gguf-models\Qwen3.5-9B-Q4_K_M.gguf"
+$env:LLAMA_VISION_MODEL = "C:\ManaAI\Mana\tools\llama\gguf-models\Qwen3.5-9B-Q4_K_M.gguf"
+$env:LLAMA_VISION_MMPROJ = "C:\ManaAI\Mana\tools\llama\gguf-models\mmproj-Qwen3.5-9B-F16.gguf"
+```
+
+Worth doing only if you've actually verified the model's vision quality
+holds up -- don't assume a chat model's multimodal tag means its vision
+performance matches a dedicated vision model without checking. In Mana's
+own case, Qwen3.5-9B was benchmarked against both Qwen3-VL-4B and Gemma 4
+E4B on real image-description tasks before this became the default; see
+`docs/roadmap/README.md` for that comparison.
+
 ## Launcher hotkey
 
 With the launcher running, press **Ctrl+Alt+M** anywhere — including inside a
@@ -59,8 +86,9 @@ model, replies in the launcher, and speaks the answer through TTS.
 - If the shortcut is already taken by another app, the launcher logs a
   warning at startup and the hotkey stays inactive.
 - The first press after a text chat swaps the loaded model to the vision
-  model, which costs one model load; presses while a reply is still being
-  generated are ignored.
+  model (one model load) unless chat and vision are consolidated onto the
+  same model, in which case there's no swap; presses while a reply is
+  still being generated are ignored.
 
 ## API usage
 
