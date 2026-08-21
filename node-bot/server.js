@@ -76,6 +76,7 @@ const {
   webAccessCapability,
 } = require("./capabilities/web-access-capability");
 const { sessionsCapability } = require("./capabilities/sessions-capability");
+const { promptCompositionCapability } = require("./capabilities/prompt-composition-capability");
 const { presetsCapability } = require("./capabilities/presets-capability");
 const { personalityCapability } = require("./capabilities/personality-capability");
 const {
@@ -109,6 +110,7 @@ const { readGgufMetadata } = require("./tools/gguf-metadata");
 	const { createDoctorTrayPoller } = require("./doctor-tray-poll");
 	const { notifyTray } = require("./tray-notifier");
 	const sessionTokenUsage = require("./session-token-usage");
+	const { recordPromptComposition, getPromptComposition, getMostRecentComposition } = require("./prompt-composition-report");
 	const { MobileDeviceStore } = require("./mobile-device-store");
 	// NOTE: mobile-auth and mobile-memory-store may exist; we add device store integration here
 	const stockMarketPlugin = require("../plugins/stock-market");
@@ -1903,6 +1905,7 @@ function registerRoutes(app, upload, deps = {}) {
     dirScannerCapability,
     webAccessCapability,
     sessionsCapability,
+    promptCompositionCapability,
     deepResearchCapability,
     presetsCapability,
     personalityCapability,
@@ -2057,6 +2060,7 @@ function registerRoutes(app, upload, deps = {}) {
     setBackgroundMemoryBlock: (block) => {
       BACKGROUND_MEMORY_BLOCK = block;
     },
+    getPromptComposition: deps.getPromptComposition || getPromptComposition,
   };
   registerCapabilities(app, capabilities, capabilityContext);
 
@@ -2066,6 +2070,7 @@ function registerRoutes(app, upload, deps = {}) {
       const result = await doctor({
         fishTtsWarmup: ttsRuntime.getFishWarmupStatus(),
         sessionSearchVectorEnabled: sessionSearchIndex.vectorEnabled(),
+        promptComposition: getMostRecentComposition(),
       });
       return res.status(result.ok ? 200 : 503).json(result);
     } catch (error) {
@@ -3894,6 +3899,11 @@ function registerRoutes(app, upload, deps = {}) {
       }
     }
 
+    // Issue #400: buildSkillsIndexBlock already computes how many skills it
+    // left out, but only as a line of text baked into the block -- read
+    // back out here rather than changing that function's return shape,
+    // which other callers/tests still depend on as a bare string.
+    let skillsOmittedCount = 0;
     if (
       toolCallingEnabled &&
       normalizedModelProfile === "default" &&
@@ -3903,6 +3913,8 @@ function registerRoutes(app, upload, deps = {}) {
         const skillsIndexBlock = buildSkillsIndexBlock(activeSkillsStore.listSkills());
         if (skillsIndexBlock) {
           selectedSystemPrompt = `${selectedSystemPrompt}\n\n${skillsIndexBlock}`;
+          const omittedMatch = skillsIndexBlock.match(/\((\d+) more skill\(s\) omitted for length\)/);
+          if (omittedMatch) skillsOmittedCount = Number(omittedMatch[1]) || 0;
         }
       } catch (e) {
         // ignore failures here
@@ -3922,13 +3934,19 @@ function registerRoutes(app, upload, deps = {}) {
     // flatMemorySuffix so they don't lose memory context entirely.
     const memoryExtraMessages = { early: [], late: [] };
     let flatMemorySuffix = "";
+    let promptMemoryChars = 0;
+    let promptMemoryTruncated = false;
+    let turnsDroppedByAge = 0;
     try {
       if (sessionId) {
-        const { entries } = await acpMemoryStore.buildPromptMemoryEntries(sessionId);
-        for (const entry of entries) {
+        const result = await acpMemoryStore.buildPromptMemoryEntries(sessionId);
+        for (const entry of result.entries) {
           memoryExtraMessages[entry.position].push({ role: entry.role, content: entry.content });
           flatMemorySuffix += `\n\n${entry.content}`;
+          promptMemoryChars += entry.content.length;
+          if (entry.truncated) promptMemoryTruncated = true;
         }
+        turnsDroppedByAge = result.turnsDroppedByAge || 0;
       }
     } catch (memErr) {
       console.warn("Failed to build session memory:", memErr.message);
@@ -3938,6 +3956,8 @@ function registerRoutes(app, upload, deps = {}) {
     // current message actually names something previously discussed in a
     // *different* session. Bounded by maxChars in getRelatedFactsEntries,
     // so it never grows with total memory volume.
+    let relatedFactsChars = 0;
+    let relatedFactsTruncated = false;
     try {
       if (typeof acpMemoryStore.getRelatedFactsEntries === "function") {
         const { entries } = acpMemoryStore.getRelatedFactsEntries(transcript, {
@@ -3946,10 +3966,30 @@ function registerRoutes(app, upload, deps = {}) {
         for (const entry of entries) {
           memoryExtraMessages[entry.position].push({ role: entry.role, content: entry.content });
           flatMemorySuffix += `\n\n${entry.content}`;
+          relatedFactsChars += entry.content.length;
+          if (entry.truncated) relatedFactsTruncated = true;
         }
       }
     } catch (relErr) {
       console.warn("Failed to look up related facts:", relErr.message);
+    }
+
+    // Issue #400: makes the composition of the prompt this reply actually
+    // used observable (GET /prompt-composition), instead of only
+    // discoverable by reading the code the way #364's truncation bug was.
+    // Covers the four blocks gathered unconditionally above, before the
+    // reply-path branches below diverge; tool schemas and the live turns
+    // differ per reply path (tool-aware vs. streaming vs. plain) and aren't
+    // included here.
+    try {
+      recordPromptComposition(sessionId, [
+        { name: "system-prompt", chars: selectedSystemPrompt.length, dropped: { skillsOmitted: skillsOmittedCount } },
+        { name: "prompt-memory", chars: promptMemoryChars, dropped: { truncated: promptMemoryTruncated, turnsDroppedByAge } },
+        { name: "related-facts", chars: relatedFactsChars, dropped: { truncated: relatedFactsTruncated } },
+      ]);
+    } catch (compErr) {
+      // Diagnostic-only; never blocks a reply.
+      console.warn("Failed to record prompt composition:", compErr.message);
     }
 
     // Attempt retrieval from local retriever-index (fast) first. If it yields nothing, fall back to the existing HTTP or legacy Python retrievers.
