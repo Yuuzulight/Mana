@@ -522,8 +522,27 @@ const acpMemoryStore = createAcpMemoryStore({
       const prompt = `You are a concise summarization assistant. Create a compact summary (no more than ${maxTokens} tokens) of the conversation memory and recent turns for long-term storage. Keep concrete facts and user preferences. Do not include explanations; return only the summary.\n\nCURRENT SUMMARY:\n${summary || ""}\n\nRECENT TURNS:\n${recent}\n\nCONCISE SUMMARY:`;
 
       if (shouldUseRemoteAi()) {
-        // runOpenAIReply accepts a maxTokens parameter (for the model's output)
-        const res = await runOpenAIReply(prompt, Math.min(maxTokens, 512));
+        // runOpenAIReply accepts a maxTokens parameter (for the model's output).
+        // Issue #421: this summarizeFn's own sessionId IS a real per-user
+        // session (acp-memory-store.js triggers it automatically once that
+        // session's running summary crosses ~90% of maxSummaryTokens) --
+        // unlike the reviewer/connections background jobs elsewhere in this
+        // file, which fold every session's summaries together with no single
+        // session in scope. Forwarding it here is what makes the token meter
+        // and MANA_SESSION_TOKEN_STOP actually cover this session's real
+        // spend, instead of undercounting it and letting compaction bypass
+        // a session that's already been stopped.
+        //
+        // NOTE (found while testing this): this whole branch currently
+        // throws "runOpenAIReply is not defined" on every real call and is
+        // silently swallowed by the catch below -- acpMemoryStore (and this
+        // summarizeFn) is built at module load time, outside registerRoutes,
+        // but runOpenAIReply only exists inside registerRoutes's scope. See
+        // the near-identical trap already documented and fixed for
+        // skill-proposal.js a few hundred lines down ("built here... because
+        // runOpenAIReply only exists in this function's scope"). Pre-existing,
+        // unrelated to this issue -- tracked separately, not fixed here.
+        const res = await runOpenAIReply(prompt, Math.min(maxTokens, 512), null, sessionId);
         return (res || "").trim().slice(0, maxChars);
       } else {
         // prefer the persistent llama-server, fall back to llama-cli; limit output tokens reasonably
@@ -3591,10 +3610,12 @@ function registerRoutes(app, upload, deps = {}) {
     prompt,
     maxTokens = LLAMA_MAX_TOKENS,
     systemPromptOverride = null,
-    // Issue #421: only the main per-user chat-turn call site passes this --
-    // background/maintenance calls (compactor, reviewer, connections) aren't
-    // scoped to one user session, so they're left untracked rather than
-    // polluting a "default" bucket with unrelated global usage.
+    // Issue #421: only passed by call sites that have a REAL per-user
+    // session in scope -- the main chat-turn reply path, and
+    // acp-memory-store.js's automatic per-session summarization. The
+    // background reviewer/connections jobs fold every session's summaries
+    // together with no single session in scope, so they're left untracked
+    // rather than polluting a "default" bucket with unrelated global usage.
     sessionId = null,
   ) {
     if (!shouldUseRemoteAi()) {
