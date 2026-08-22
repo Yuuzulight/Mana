@@ -8,7 +8,7 @@
 
 **Tech Stack:** Node.js/Express (`node-bot`), the `ws` package (already a `node-bot` dependency, used by `tray-server.js`), Electron IPC (`windows-launcher`).
 
-**Spec:** [docs/superpowers/specs/2026-08-21-model-initiated-vision-look-design.md](../specs/2026-08-21-model-initiated-vision-look-design.md)
+**Spec:** [docs/specs/2026-08-21-model-initiated-vision-look-design.md](../specs/2026-08-21-model-initiated-vision-look-design.md)
 
 ## Global Constraints
 

@@ -8,7 +8,7 @@
 
 **Tech Stack:** Node's built-in `node:test` and `node:child_process` (backend), vanilla JS Electron renderers (no new automated coverage for the renderer polling loop, matching this codebase's established precedent for `recordUntilSilence`'s own timing logic).
 
-**Spec:** [docs/superpowers/specs/2026-08-21-chunked-partial-transcription-design.md](../specs/2026-08-21-chunked-partial-transcription-design.md)
+**Spec:** [docs/specs/2026-08-21-chunked-partial-transcription-design.md](../specs/2026-08-21-chunked-partial-transcription-design.md)
 
 ## Global Constraints
 

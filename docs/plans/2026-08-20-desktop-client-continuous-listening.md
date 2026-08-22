@@ -8,7 +8,7 @@
 
 **Tech Stack:** Vanilla JS Electron renderer, `onnxruntime-web` (already used by `windows-launcher`, loaded via `<script>` tag — same pattern needed here), Node's built-in `node:test`.
 
-**Spec:** [docs/superpowers/specs/2026-08-20-desktop-client-continuous-listening-design.md](../specs/2026-08-20-desktop-client-continuous-listening-design.md)
+**Spec:** [docs/specs/2026-08-20-desktop-client-continuous-listening-design.md](../specs/2026-08-20-desktop-client-continuous-listening-design.md)
 
 ## Global Constraints
 
