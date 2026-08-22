@@ -38,6 +38,9 @@ function createFakePage() {
     async url() {
       return currentUrl;
     },
+    async screenshot() {
+      return Buffer.from("fake-jpeg-bytes");
+    },
   };
 }
 
@@ -107,6 +110,75 @@ test("executeTool runs the real session action once the approval gate always-all
 
   // No further approval needed -- already-trusted actionType.
   assert.equal(approvalGate.listPending().length, 0);
+});
+
+// Issue #418: the human-facing activity feed, entirely separate from what
+// executeTool returns to the model.
+test("executeTool records a successful action and its screenshot in the activity log", async () => {
+  const approvalGate = createApprovalGate({ dataDir: createTempDir() });
+  const { source } = createSource({ approvalGate });
+  await source.executeTool("browser_automation__navigate", { url: "https://example.com" }).catch(() => {});
+  const [pending] = approvalGate.listPending();
+  await approvalGate.decide(pending.id, "always-allow");
+
+  await source.executeTool("browser_automation__navigate", { url: "https://example.com" });
+
+  const activity = source.activityLog.getActivity();
+  assert.equal(activity.log.length, 1);
+  assert.equal(activity.log[0].action, "navigate");
+  assert.equal(activity.log[0].status, "ok");
+  assert.match(activity.log[0].summary, /Navigating to https:\/\/example\.com/);
+  assert.equal(activity.screenshot.base64, Buffer.from("fake-jpeg-bytes").toString("base64"));
+});
+
+test("executeTool records a failed action in the activity log and still rejects with the real error", async () => {
+  const approvalGate = createApprovalGate({ dataDir: createTempDir() });
+  const failingSession = {
+    navigate: async () => {
+      throw new Error("net::ERR_NAME_NOT_RESOLVED");
+    },
+    screenshot: async () => Buffer.from("unused"),
+  };
+  const { source } = createSource({ approvalGate, getSession: async () => failingSession });
+  await source.executeTool("browser_automation__navigate", { url: "https://bad.test" }).catch(() => {});
+  const [pending] = approvalGate.listPending();
+  await approvalGate.decide(pending.id, "always-allow");
+
+  await assert.rejects(
+    () => source.executeTool("browser_automation__navigate", { url: "https://bad.test" }),
+    /net::ERR_NAME_NOT_RESOLVED/,
+  );
+
+  const activity = source.activityLog.getActivity();
+  assert.equal(activity.log.length, 1);
+  assert.equal(activity.log[0].status, "error");
+  assert.match(activity.log[0].summary, /failed: net::ERR_NAME_NOT_RESOLVED/);
+  // A failed action's page state is irrelevant -- no screenshot is captured.
+  assert.equal(activity.screenshot, null);
+});
+
+// Regression: session.screenshot().catch(() => null) alone would not have
+// caught this -- calling a missing method throws synchronously, before
+// .catch ever attaches, and would fail the whole executeTool call even
+// though the real action (navigate) already succeeded.
+test("executeTool still succeeds when the session has no screenshot function at all", async () => {
+  const approvalGate = createApprovalGate({ dataDir: createTempDir() });
+  const sessionWithNoScreenshot = {
+    navigate: async (url) => ({ url, title: "ok" }),
+  };
+  const { source } = createSource({ approvalGate, getSession: async () => sessionWithNoScreenshot });
+  await source.executeTool("browser_automation__navigate", { url: "https://example.com" }).catch(() => {});
+  const [pending] = approvalGate.listPending();
+  await approvalGate.decide(pending.id, "always-allow");
+
+  const result = JSON.parse(
+    await source.executeTool("browser_automation__navigate", { url: "https://example.com" }),
+  );
+  assert.equal(result.url, "https://example.com");
+
+  const activity = source.activityLog.getActivity();
+  assert.equal(activity.log[0].status, "ok");
+  assert.equal(activity.screenshot, null);
 });
 
 test("executeTool rejects an unrecognized browser-automation tool name even when approved", async () => {

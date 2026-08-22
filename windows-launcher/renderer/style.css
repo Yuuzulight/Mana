@@ -706,6 +706,37 @@
         font-size: 11px;
       }
 
+      #browserAutomationActivity {
+        margin-top: 6px;
+        padding: 8px 10px;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        background: var(--panel-2);
+        font-size: 12px;
+      }
+
+      #browserAutomationActivity[hidden] {
+        display: none;
+      }
+
+      #browserAutomationActivityLog {
+        color: var(--muted);
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+      }
+
+      #browserAutomationActivityScreenshot {
+        margin-top: 6px;
+        max-width: 100%;
+        border-radius: 6px;
+        border: 1px solid var(--border);
+      }
+
+      #browserAutomationActivityScreenshot[hidden] {
+        display: none;
+      }
+
       /* Panels reused inside the sidebar (Model / Doctor / Settings) */
       #perfPanel, #doctorPanel, #modelPanel, #presetPanel, #themePanel, #pluginsPanel, #logsPanel, #skillsPanel, #memoryPanel {
         margin-bottom: 12px;
