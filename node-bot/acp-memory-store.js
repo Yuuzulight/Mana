@@ -91,6 +91,33 @@ function findConflictingFact(facts, key, text) {
   return null;
 }
 
+// Issue #431: the explicit counterpart to findConflictingFact's lexical
+// guess -- the model names, by key, exactly which existing fact this new
+// one replaces. Marks the old fact invalidatedAt rather than deleting or
+// overwriting it, so its prior validity window stays queryable via
+// getFactsValidAt. Silently a no-op if the named key doesn't match an
+// active, not-already-invalidated fact (typo, stale key) -- same lenient
+// "nothing to do" behavior remove/archive already use, and it must never
+// let a fact invalidate itself (that's just an ordinary patch, handled
+// above already).
+function applySupersedes(facts, cleanKey, supersedes, timestamp) {
+  const cleanSupersedes = cleanText(supersedes, 200);
+  if (!cleanSupersedes || cleanSupersedes.toLowerCase() === cleanKey.toLowerCase()) {
+    return null;
+  }
+  const target = facts.find(
+    (f) =>
+      f.status === "active" &&
+      !f.invalidatedAt &&
+      f.key.toLowerCase() === cleanSupersedes.toLowerCase(),
+  );
+  if (!target) {
+    return { key: cleanSupersedes, found: false };
+  }
+  target.invalidatedAt = timestamp;
+  return { key: cleanSupersedes, found: true };
+}
+
 function sessionFilename(sessionId) {
   return `${Buffer.from(String(sessionId || "default")).toString("base64url")}.json`;
 }
@@ -310,7 +337,7 @@ function createAcpMemoryStore(options = {}) {
   // one for a rephrased version of the same fact.
   function listFactKeys() {
     return loadFacts()
-      .filter((f) => f.status === "active")
+      .filter((f) => f.status === "active" && !f.invalidatedAt)
       .map((f) => ({ key: f.key, preview: cleanText(f.text, 80) }));
   }
 
@@ -353,6 +380,7 @@ function createAcpMemoryStore(options = {}) {
     unverifiedSource,
     epistemic,
     occurredAt,
+    supersedes,
   } = {}) {
     const cleanKey = cleanText(key, 200);
     if (!cleanKey) {
@@ -393,11 +421,21 @@ function createAcpMemoryStore(options = {}) {
       // discarding the prior value -- "what did I used to think was true"
       // stays inspectable, matching the self-healing-memory pattern this
       // issue is built around.
+      // Issue #431: each history entry carries its own validity window
+      // (when that text became the active value, when it stopped being)
+      // instead of a bare updatedAt, so "what did I believe was true on
+      // date X" is answerable from history entries too, not just the
+      // current value.
       const history = Array.isArray(existing.history) ? existing.history : [];
-      history.push({ text: existing.text, updatedAt: existing.updatedAt });
+      history.push({
+        text: existing.text,
+        validFrom: existing.validFrom || existing.createdAt,
+        invalidatedAt: timestamp,
+      });
       existing.history = history.slice(-MAX_FACT_HISTORY);
       existing.text = cleanTextValue;
       existing.updatedAt = timestamp;
+      existing.validFrom = timestamp;
       if (unverifiedSource) {
         existing.unverifiedSource = true;
       } else {
@@ -410,6 +448,7 @@ function createAcpMemoryStore(options = {}) {
       // being true because a later correction did not restate them.
       if (normalizedEpistemic) existing.epistemic = normalizedEpistemic;
       if (cleanOccurredAt) existing.occurredAt = cleanOccurredAt;
+      const supersededPatch = applySupersedes(facts, cleanKey, supersedes, timestamp);
       saveFacts(facts);
       return {
         ok: true,
@@ -417,6 +456,7 @@ function createAcpMemoryStore(options = {}) {
         key: cleanKey,
         text: cleanTextValue,
         ...(unverifiedSource ? { unverifiedSource: true } : {}),
+        ...(supersededPatch ? { superseded: supersededPatch } : {}),
       };
     }
 
@@ -429,6 +469,7 @@ function createAcpMemoryStore(options = {}) {
       text: cleanTextValue,
       sessionId: cleanText(sessionId || "default", 240),
       status: "active",
+      validFrom: timestamp,
       schemaVersion: FACT_SCHEMA_VERSION,
       createdAt: timestamp,
       updatedAt: timestamp,
@@ -436,6 +477,7 @@ function createAcpMemoryStore(options = {}) {
       ...(normalizedEpistemic ? { epistemic: normalizedEpistemic } : {}),
       ...(cleanOccurredAt ? { occurredAt: cleanOccurredAt } : {}),
     });
+    const supersededInsert = applySupersedes(facts, cleanKey, supersedes, timestamp);
     saveFacts(facts.slice(-maxFacts));
     return {
       ok: true,
@@ -446,7 +488,62 @@ function createAcpMemoryStore(options = {}) {
       ...(conflict
         ? { possibleConflict: { key: conflict.key, preview: cleanText(conflict.text, 80) } }
         : {}),
+      ...(supersededInsert ? { superseded: supersededInsert } : {}),
     };
+  }
+
+  // Issue #431: a standalone invalidation, for callers judging a conflict
+  // *after* rememberFact already returned (memory-tool-source.js's
+  // LLM-confirmed auto-invalidation) -- applySupersedes only runs inline
+  // during a single rememberFact call, this is the same lookup/mutation as
+  // its own operation.
+  function invalidateFactByKey(key) {
+    const cleanTargetKey = cleanText(key, 200);
+    if (!cleanTargetKey) return { key: cleanTargetKey, found: false };
+    const facts = loadFacts();
+    const target = facts.find(
+      (f) =>
+        f.status === "active" &&
+        !f.invalidatedAt &&
+        f.key.toLowerCase() === cleanTargetKey.toLowerCase(),
+    );
+    if (!target) return { key: cleanTargetKey, found: false };
+    target.invalidatedAt = now();
+    saveFacts(facts);
+    return { key: cleanTargetKey, found: true };
+  }
+
+  // Issue #431: the point-in-time query the whole feature is for -- "what
+  // did I believe was true on date X". Deliberately ignores status
+  // (stale/archived) -- see acp-memory-store's own header comment on
+  // applySupersedes -- a fact removed/archived later was still genuinely
+  // believed true before that happened; only validFrom/invalidatedAt speak
+  // to whether a given value was the active claim as of asOf.
+  function windowCovers(validFrom, invalidatedAt, cutoff) {
+    return Boolean(validFrom) && validFrom <= cutoff && (!invalidatedAt || invalidatedAt > cutoff);
+  }
+
+  function getFactsValidAt(asOf) {
+    const cutoff = cleanText(asOf, 40);
+    if (!cutoff) return [];
+    const results = [];
+    for (const fact of loadFacts()) {
+      if (windowCovers(fact.validFrom || fact.createdAt, fact.invalidatedAt, cutoff)) {
+        results.push(fact);
+        continue;
+      }
+      // The current value's own window doesn't cover asOf -- e.g. it was
+      // patched again since, or hadn't been patched to its current text
+      // yet -- but an earlier correction's own window (recorded in
+      // history) might. Return the fact as it stood then: its shape, with
+      // the historical text/window overlaid.
+      const history = Array.isArray(fact.history) ? fact.history : [];
+      const pastVersion = history.find((h) => windowCovers(h.validFrom, h.invalidatedAt, cutoff));
+      if (pastVersion) {
+        results.push({ ...fact, text: pastVersion.text, validFrom: pastVersion.validFrom, invalidatedAt: pastVersion.invalidatedAt });
+      }
+    }
+    return results;
   }
 
   // Issue #141: the "searchable, on-demand" half of the two-tier memory
@@ -492,7 +589,7 @@ function createAcpMemoryStore(options = {}) {
       // listFactKeys, so a later correction patches this key instead of
       // duplicating it) but never get surfaced here as trusted context --
       // same "don't auto-inject" treatment status !== "active" already gets.
-      if (fact.status !== "active" || fact.unverifiedSource) continue;
+      if (fact.status !== "active" || fact.unverifiedSource || fact.invalidatedAt) continue;
       if (!lowerText.includes(fact.key.toLowerCase())) continue;
       matchedFacts.push(fact);
     }
@@ -1329,6 +1426,8 @@ function createAcpMemoryStore(options = {}) {
     rememberFact,
     listFactKeys,
     listFacts,
+    getFactsValidAt,
+    invalidateFactByKey,
     searchSessions,
     memoryGraph,
     getUserAffect,
