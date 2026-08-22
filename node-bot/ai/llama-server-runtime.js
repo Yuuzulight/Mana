@@ -6,6 +6,7 @@ const { setTimeout: defaultSleep } = require("node:timers/promises");
 const {
   collectFilesRecursively,
   findPreferredLlamaModel,
+  getKnownLlamaModelProfiles,
 } = require("./local-ai");
 const {
   DEFAULT_SYSTEM_PROMPT,
@@ -1227,6 +1228,37 @@ function createLlamaServerRuntime(options = {}) {
     };
   }
 
+  // Issue #431: lets a caller (memory-tool-source.js's LLM-confirmed
+  // conflict judge) find out whether calling runLocalAssistantReply(...,
+  // profile) would be truly free -- reuses the exact same resolution
+  // ensureServerConfig itself uses, not just a name-membership guess, since
+  // a profile's preferred file can differ from whatever happens to be
+  // running right now even when the running model's name also appears
+  // somewhere in that profile's list (a higher-preference file for that
+  // profile might also exist on disk). A caller that skips this check and
+  // guesses wrong risks a real model swap -- exactly the failure mode that
+  // crashed system RAM earlier in this session's own #360 testing.
+  function isProfileAlreadyLoaded(profile) {
+    return Boolean(state.port && state.model && findLlamaModel(profile) === state.model);
+  }
+
+  // Issue #431: a small utility-classification call (same shape as
+  // guardian-precheck.js's judgeActionRisk) that never triggers a load or a
+  // swap -- returns null instead of running when no already-loaded profile
+  // is safely reusable, rather than guessing and risking a swap. Callers
+  // that don't care which profile actually served the call (a yes/no
+  // classification, not a user-facing reply) can use this instead of
+  // picking a profile themselves.
+  async function runLocalReplyIfSafelyLoaded(prompt, maxTokens) {
+    const safeProfile = getKnownLlamaModelProfiles().find((profile) =>
+      isProfileAlreadyLoaded(profile),
+    );
+    if (!safeProfile) {
+      return null;
+    }
+    return runLocalAssistantReply(prompt, maxTokens, safeProfile);
+  }
+
   return {
     buildServerArgs,
     ensureServerConfig,
@@ -1243,6 +1275,8 @@ function createLlamaServerRuntime(options = {}) {
     runToolAwareReply,
     runVisionReply,
     getStatus,
+    isProfileAlreadyLoaded,
+    runLocalReplyIfSafelyLoaded,
     scheduleIdleShutdown,
     stop,
     systemPrompt,

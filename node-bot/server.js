@@ -4428,6 +4428,10 @@ function registerRoutes(app, upload, deps = {}) {
               // call "attribute" itself to injected content instead of
               // something the user actually said.
               userMessage: transcript,
+              // Issue #431: LLM-confirmed conflict judging -- never loads
+              // or swaps a model, see llamaServerRuntime's own comment on
+              // isProfileAlreadyLoaded/runLocalReplyIfSafelyLoaded.
+              runLocalReply: llamaServerRuntime.runLocalReplyIfSafelyLoaded,
             }),
             createSessionSearchToolSource({ acpMemoryStore, sessionId }),
             createSkillToolSource({ approvalGate: activeApprovalGate, skillsStore: activeSkillsStore }),
