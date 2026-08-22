@@ -55,6 +55,24 @@ const THEME_PRESETS = {
       "--mana-bubble": "#eef0f5",
     },
   },
+  // Issue #458: an accessibility theme, not an aesthetic one -- pure black/
+  // white rather than the subtle grays the other presets use, and the
+  // conventional "high contrast mode" yellow accent, so it reads
+  // immediately as the accessibility option it is.
+  highContrast: {
+    label: "High contrast",
+    vars: {
+      "--bg": "#000000",
+      "--panel": "#000000",
+      "--panel-2": "#111111",
+      "--border": "#ffffff",
+      "--text": "#ffffff",
+      "--muted": "#dcdcdc",
+      "--accent": "#ffff00",
+      "--user-bubble": "#262626",
+      "--mana-bubble": "#000000",
+    },
+  },
 };
 
 const HEX_COLOR_PATTERN = /^#[0-9a-fA-F]{6}$/;
