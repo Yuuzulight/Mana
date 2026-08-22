@@ -366,6 +366,97 @@ function fakeTestRunner(behavior) {
   };
 }
 
+// Issue #422: run_tests now makes a real scratch copy of REPO_ROOT (the
+// actual worktree) before running. Without faking this, every run_tests
+// test below would spend real seconds doing real disk I/O against the real
+// repo instead of testing this loop's own retry/reporting logic -- fast and
+// deterministic here, with workspace-scratch-copy.test.js covering the real
+// copy/junction/cleanup behavior directly.
+function fakeScratchWorkspace() {
+  return {
+    createScratchWorkspaceCopy: () => "C:\\fake-scratch-dir",
+    removeScratchWorkspaceCopy: () => {},
+  };
+}
+
+test("run_tests creates a scratch copy, runs the test command inside it, and always cleans up", async () => {
+  resetSessionTestRetryCounts("run-tests-scratch-wiring");
+  const step = JSON.stringify([{ tool: "run_tests", args: { command: "npm test" } }]);
+  const calls = { create: [], remove: [], runCwd: null };
+
+  await executeAutonomousStep(step, "run-tests-scratch-wiring", {
+    testRunner: {
+      run: async (command, opts) => {
+        calls.runCwd = opts.cwd;
+        return { command, exitCode: 0, ok: true, stdout: "", stderr: "" };
+      },
+    },
+    createScratchWorkspaceCopy: (sourceRoot) => {
+      calls.create.push(sourceRoot);
+      return "C:\\fake-scratch-dir";
+    },
+    removeScratchWorkspaceCopy: (scratchDir) => {
+      calls.remove.push(scratchDir);
+    },
+  });
+
+  assert.strictEqual(calls.create.length, 1);
+  assert.strictEqual(calls.remove.length, 1);
+  assert.strictEqual(calls.remove[0], "C:\\fake-scratch-dir");
+  // The test command must run inside the scratch copy, not the real repo.
+  assert.ok(calls.runCwd.startsWith("C:\\fake-scratch-dir"));
+});
+
+test("run_tests still cleans up the scratch copy when the test command itself fails", async () => {
+  resetSessionTestRetryCounts("run-tests-scratch-cleanup-fail");
+  const step = JSON.stringify([{ tool: "run_tests", args: { command: "npm test" } }]);
+  const calls = { remove: [] };
+
+  await executeAutonomousStep(step, "run-tests-scratch-cleanup-fail", {
+    testRunner: fakeTestRunner({ command: "npm test", exitCode: 1, ok: false, stdout: "fail", stderr: "" }),
+    createScratchWorkspaceCopy: () => "C:\\fake-scratch-dir",
+    removeScratchWorkspaceCopy: (scratchDir) => calls.remove.push(scratchDir),
+  });
+
+  assert.strictEqual(calls.remove.length, 1);
+});
+
+test("run_tests still cleans up the scratch copy when the test runner throws", async () => {
+  resetSessionTestRetryCounts("run-tests-scratch-cleanup-throw");
+  const step = JSON.stringify([{ tool: "run_tests", args: { command: "npm test" } }]);
+  const calls = { remove: [] };
+
+  await executeAutonomousStep(step, "run-tests-scratch-cleanup-throw", {
+    testRunner: fakeTestRunner(() => {
+      throw new Error("test command timed out after 120000ms");
+    }),
+    createScratchWorkspaceCopy: () => "C:\\fake-scratch-dir",
+    removeScratchWorkspaceCopy: (scratchDir) => calls.remove.push(scratchDir),
+  });
+
+  assert.strictEqual(calls.remove.length, 1);
+});
+
+test("run_tests reports scratch_copy_failed and does not call the test runner when the copy itself fails", async () => {
+  resetSessionTestRetryCounts("run-tests-scratch-copy-error");
+  const step = JSON.stringify([{ tool: "run_tests", args: { command: "npm test" } }]);
+  let runnerCalled = false;
+
+  const res = await executeAutonomousStep(step, "run-tests-scratch-copy-error", {
+    testRunner: fakeTestRunner(() => {
+      runnerCalled = true;
+      return { command: "npm test", exitCode: 0, ok: true, stdout: "", stderr: "" };
+    }),
+    createScratchWorkspaceCopy: () => {
+      throw new Error("disk full");
+    },
+  });
+
+  assert.strictEqual(res.results[0].status, "error");
+  assert.strictEqual(res.results[0].detail, "scratch_copy_failed");
+  assert.strictEqual(runnerCalled, false);
+});
+
 test("run_tests requires a command arg", async () => {
   const step = JSON.stringify([{ tool: "run_tests", args: {} }]);
   const res = await executeAutonomousStep(step, "run-tests-missing-cmd");
@@ -394,6 +485,7 @@ test("run_tests reports a pass and injects a short confirmation, not the full ou
   const step = JSON.stringify([{ tool: "run_tests", args: { command: "npm test" } }]);
   const res = await executeAutonomousStep(step, "run-tests-pass", {
     testRunner: fakeTestRunner({ command: "npm test", exitCode: 0, ok: true, stdout: "all good", stderr: "" }),
+    ...fakeScratchWorkspace(),
   });
 
   assert.equal(res.status, "tools_executed");
@@ -410,6 +502,7 @@ test("run_tests reports a failure, folds the output tail into injectedContext, a
   const step = JSON.stringify([{ tool: "run_tests", args: { command: "node --test" } }]);
   const res = await executeAutonomousStep(step, "run-tests-fail", {
     testRunner: fakeTestRunner({ command: "node --test", exitCode: 1, ok: false, stdout: failingOutput, stderr: "" }),
+    ...fakeScratchWorkspace(),
   });
 
   const result = res.results[0];
@@ -428,14 +521,14 @@ test("run_tests resets the retry counter after a pass following failures", async
   const runner = fakeTestRunner((command, opts) => runner._nextResult);
   runner._nextResult = { command: "npm test", exitCode: 1, ok: false, stdout: "fail", stderr: "" };
 
-  await executeAutonomousStep(failStep, "run-tests-reset", { testRunner: runner });
+  await executeAutonomousStep(failStep, "run-tests-reset", { testRunner: runner, ...fakeScratchWorkspace() });
   runner._nextResult = { command: "npm test", exitCode: 0, ok: true, stdout: "pass", stderr: "" };
-  const passRes = await executeAutonomousStep(failStep, "run-tests-reset", { testRunner: runner });
+  const passRes = await executeAutonomousStep(failStep, "run-tests-reset", { testRunner: runner, ...fakeScratchWorkspace() });
   assert.equal(passRes.results[0].status, "ok");
 
   // A subsequent failure after the reset should be attempt 1 again, not 2.
   runner._nextResult = { command: "npm test", exitCode: 1, ok: false, stdout: "fail again", stderr: "" };
-  const failAgainRes = await executeAutonomousStep(failStep, "run-tests-reset", { testRunner: runner });
+  const failAgainRes = await executeAutonomousStep(failStep, "run-tests-reset", { testRunner: runner, ...fakeScratchWorkspace() });
   assert.equal(failAgainRes.results[0].attempt, 1);
 });
 
@@ -445,11 +538,11 @@ test("run_tests refuses to run once the per-session retry cap is exhausted", asy
   const runner = fakeTestRunner({ command: "npm test", exitCode: 1, ok: false, stdout: "fail", stderr: "" });
 
   for (let i = 0; i < MAX_TEST_RETRY_ATTEMPTS; i++) {
-    const res = await executeAutonomousStep(step, "run-tests-exhausted", { testRunner: runner });
+    const res = await executeAutonomousStep(step, "run-tests-exhausted", { testRunner: runner, ...fakeScratchWorkspace() });
     assert.equal(res.results[0].status, "fail");
   }
 
-  const exhausted = await executeAutonomousStep(step, "run-tests-exhausted", { testRunner: runner });
+  const exhausted = await executeAutonomousStep(step, "run-tests-exhausted", { testRunner: runner, ...fakeScratchWorkspace() });
   assert.equal(exhausted.results[0].status, "retry_exhausted");
   assert.equal(exhausted.results[0].cap, MAX_TEST_RETRY_ATTEMPTS);
   resetSessionTestRetryCounts("run-tests-exhausted");
@@ -465,7 +558,7 @@ test("run_tests: a disallowed-command rejection does not consume a retry attempt
   // Calling it more times than the retry cap should still never exhaust the
   // budget, since none of these attempts are real test failures.
   for (let i = 0; i < MAX_TEST_RETRY_ATTEMPTS + 2; i++) {
-    const res = await executeAutonomousStep(step, "run-tests-disallowed", { testRunner: runner });
+    const res = await executeAutonomousStep(step, "run-tests-disallowed", { testRunner: runner, ...fakeScratchWorkspace() });
     assert.equal(res.results[0].status, "error");
     assert.notEqual(res.results[0].status, "retry_exhausted");
   }
@@ -480,11 +573,11 @@ test("run_tests: a timeout rejection does consume a retry attempt", async () => 
   });
 
   for (let i = 0; i < MAX_TEST_RETRY_ATTEMPTS; i++) {
-    const res = await executeAutonomousStep(step, "run-tests-timeout", { testRunner: runner });
+    const res = await executeAutonomousStep(step, "run-tests-timeout", { testRunner: runner, ...fakeScratchWorkspace() });
     assert.equal(res.results[0].status, "error");
   }
 
-  const exhausted = await executeAutonomousStep(step, "run-tests-timeout", { testRunner: runner });
+  const exhausted = await executeAutonomousStep(step, "run-tests-timeout", { testRunner: runner, ...fakeScratchWorkspace() });
   assert.equal(exhausted.results[0].status, "retry_exhausted");
   resetSessionTestRetryCounts("run-tests-timeout");
 });

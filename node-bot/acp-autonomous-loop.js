@@ -4,6 +4,10 @@ const path = require("path");
 const { safeJsonParse } = require("./utils/json-extract");
 const { scanDir } = require("./tools/dir_scanner");
 const { createAcpTestRunner } = require("./acp-test-runner");
+const {
+  createScratchWorkspaceCopy,
+  removeScratchWorkspaceCopy,
+} = require("./workspace-scratch-copy");
 
 const RETRIEVER_URL = process.env.RETRIEVER_URL || "http://127.0.0.1:9000";
 const REPO_ROOT = process.env.REPO_ROOT || path.resolve(__dirname, "..");
@@ -290,6 +294,10 @@ const defaultTestRunner = createAcpTestRunner();
 
 async function executeAutonomousStep(rawModelReply, sessionId, options = {}) {
   const testRunner = options.testRunner || defaultTestRunner;
+  const makeScratchCopy =
+    options.createScratchWorkspaceCopy || createScratchWorkspaceCopy;
+  const removeScratchCopy =
+    options.removeScratchWorkspaceCopy || removeScratchWorkspaceCopy;
   // 1. Leverage your centralized safe extraction utility
   let actions = safeJsonParse(rawModelReply);
 
@@ -877,8 +885,26 @@ async function executeAutonomousStep(rawModelReply, sessionId, options = {}) {
         continue;
       }
 
+      // Issue #422: a fresh scratch copy every call, not reused across
+      // calls within a session -- file_write edits made between run_tests
+      // calls must be reflected, and a stale reused copy would silently
+      // test old code instead of what the model just wrote.
+      let scratchDir = null;
       try {
-        const testResult = await testRunner.run(command, { cwd: resolvedCwd });
+        scratchDir = makeScratchCopy(REPO_ROOT);
+      } catch (err) {
+        console.error(`  ❌ run_tests: failed to create scratch workspace copy: ${err.message}`);
+        results.push({
+          tool: "run_tests",
+          status: "error",
+          detail: "scratch_copy_failed",
+        });
+        continue;
+      }
+      const scratchCwd = path.join(scratchDir, path.relative(REPO_ROOT, resolvedCwd));
+
+      try {
+        const testResult = await testRunner.run(command, { cwd: scratchCwd });
         if (testResult.ok) {
           sessionTestRetryCounts.delete(retryKey);
           console.error(
@@ -929,6 +955,8 @@ async function executeAutonomousStep(rawModelReply, sessionId, options = {}) {
           status: "error",
           detail: err.message,
         });
+      } finally {
+        removeScratchCopy(scratchDir);
       }
 
       continue;
