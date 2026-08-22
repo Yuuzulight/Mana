@@ -75,8 +75,8 @@
          unhides it; three.js/@pixiv/three-vrm are required() directly in
          vrm-avatar.js (no separate <script> tag needed, unlike Live2D's
          UMD globals below). -->
-    <canvas id="vrm" hidden></canvas>
-    <canvas id="live2d"></canvas>
+    <canvas id="vrm" hidden aria-hidden="true"></canvas>
+    <canvas id="live2d" aria-hidden="true"></canvas>
     <!-- Live2D Cubism Core is proprietary and fetched at setup time
          (npm run fetch-live2d-core); Live2D/VRM are the only renderers --
          no sprite/image fallback. -->

@@ -78,12 +78,12 @@
 
       <div class="avatar-panel">
         <div class="avatar-stage" id="avatarStage">
-          <canvas id="live2dCanvas"></canvas>
-          <button id="btnAvatarZoom" class="avatar-zoom-btn" title="Cycle avatar zoom">⤢</button>
+          <canvas id="live2dCanvas" aria-hidden="true"></canvas>
+          <button id="btnAvatarZoom" class="avatar-zoom-btn" title="Cycle avatar zoom" aria-label="Cycle avatar zoom">⤢</button>
         </div>
         <div class="avatar-meta">
           <span class="name">Mana</span>
-          <span id="status">Starting...</span>
+          <span id="status" aria-live="polite">Starting...</span>
         </div>
         <div class="avatar-disclaimer">
           Avatar: Hiyori, © Live2D Inc. / Kani Biimu. Placeholder — please swap in a model of your choosing.
@@ -102,7 +102,7 @@
       </header>
 
       <div class="home-content" id="homeView">
-        <section id="messages" class="messages">
+        <section id="messages" class="messages" role="log" aria-live="polite">
           <div id="greetingView" class="greeting-view">
             <div class="greeting-mark">Hello, what would you like to do today?</div>
             <p class="greeting-hint">Type a message below, or hold "Hold to Talk" to speak.</p>
@@ -612,6 +612,12 @@
   </script>
   <script src="silero-vad.js"></script>
   <script src="voice-endpointing.js"></script>
+  <!-- Issue #362: on-screen equivalent of spoken output. aria-live polite so
+       a screen reader announces a caption without cutting off whatever it
+       is already reading. index.html carried this already but is dead
+       markup -- main.js loads this file, not index.html. -->
+  <div id="mana-captions" class="mana-captions" role="status" aria-live="polite" aria-atomic="true" hidden></div>
+  <script src="caption-client.js"></script>
   <script src="renderer.js"></script>
 </body>
 </html>
