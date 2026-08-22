@@ -49,7 +49,7 @@ const express = require("express");
 const multer = require("multer");
 const cors = require("cors");
 const rateLimit = require("express-rate-limit");
-const { spawnSync } = require("child_process");
+const { spawnSync, spawn } = require("child_process");
 const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
@@ -76,6 +76,7 @@ const {
   webAccessCapability,
 } = require("./capabilities/web-access-capability");
 const { sessionsCapability } = require("./capabilities/sessions-capability");
+const { promptCompositionCapability } = require("./capabilities/prompt-composition-capability");
 const { presetsCapability } = require("./capabilities/presets-capability");
 const { personalityCapability } = require("./capabilities/personality-capability");
 const {
@@ -108,6 +109,8 @@ const { readGgufMetadata } = require("./tools/gguf-metadata");
 	const { runDoctorChecksAsync } = require("./doctor");
 	const { createDoctorTrayPoller } = require("./doctor-tray-poll");
 	const { notifyTray } = require("./tray-notifier");
+	const sessionTokenUsage = require("./session-token-usage");
+	const { recordPromptComposition, getPromptComposition, getMostRecentComposition } = require("./prompt-composition-report");
 	const { MobileDeviceStore } = require("./mobile-device-store");
 	// NOTE: mobile-auth and mobile-memory-store may exist; we add device store integration here
 	const stockMarketPlugin = require("../plugins/stock-market");
@@ -145,6 +148,9 @@ const { createMemoryToolSource } = require("./ai/memory-tool-source");
 const { createSessionSearchToolSource } = require("./ai/session-search-tool-source");
 const { createSkillToolSource } = require("./ai/skill-tool-source");
 const { createExpressionToolSource, isExpressionToolName } = require("./ai/expression-tool-source");
+const { createVisionToolSource } = require("./ai/vision-tool-source");
+const { createSessionGoalToolSource } = require("./ai/session-goal-tool-source");
+const { visionCaptureBridge } = require("./vision-capture-bridge");
 const { createCodingToolSource } = require("./ai/coding-tool-source");
 const { createMcpClientRegistry } = require("./mcp-client-registry");
 const { mcpClientCapability } = require("./capabilities/mcp-client-capability");
@@ -520,9 +526,30 @@ const acpMemoryStore = createAcpMemoryStore({
 
       const prompt = `You are a concise summarization assistant. Create a compact summary (no more than ${maxTokens} tokens) of the conversation memory and recent turns for long-term storage. Keep concrete facts and user preferences. Do not include explanations; return only the summary.\n\nCURRENT SUMMARY:\n${summary || ""}\n\nRECENT TURNS:\n${recent}\n\nCONCISE SUMMARY:`;
 
-      if (shouldUseRemoteAi()) {
-        // runOpenAIReply accepts a maxTokens parameter (for the model's output)
-        const res = await runOpenAIReply(prompt, Math.min(maxTokens, 512));
+      if (shouldUseRemoteAi() && typeof runOpenAIReplyPublic === "function") {
+        // runOpenAIReplyPublic accepts a maxTokens parameter (for the
+        // model's output).
+        // Issue #421: this summarizeFn's own sessionId IS a real per-user
+        // session (acp-memory-store.js triggers it automatically once that
+        // session's running summary crosses ~90% of maxSummaryTokens) --
+        // unlike the reviewer/connections background jobs elsewhere in this
+        // file, which fold every session's summaries together with no single
+        // session in scope. Forwarding it here is what makes the token meter
+        // and MANA_SESSION_TOKEN_STOP actually cover this session's real
+        // spend, instead of undercounting it and letting compaction bypass
+        // a session that's already been stopped.
+        //
+        // Calls through runOpenAIReplyPublic rather than a bare
+        // runOpenAIReply reference: acpMemoryStore (and this summarizeFn) is
+        // built at module load time, outside registerRoutes, but
+        // runOpenAIReply only exists inside registerRoutes's scope -- a bare
+        // reference here always threw ReferenceError, silently caught below,
+        // permanently falling back to the stale summary. Same trap already
+        // documented and fixed for skill-proposal.js's runSkillProposalPublic
+        // elsewhere in this file ("built here... because runOpenAIReply only
+        // exists in this function's scope"); runOpenAIReplyPublic applies
+        // that identical fix here.
+        const res = await runOpenAIReplyPublic(prompt, Math.min(maxTokens, 512), null, sessionId);
         return (res || "").trim().slice(0, maxChars);
       } else {
         // prefer the persistent llama-server, fall back to llama-cli; limit output tokens reasonably
@@ -691,6 +718,12 @@ let runBackgroundReviewerPublic = null;
 let runBackgroundCompactorPublic = null;
 let runBackgroundConnectionsPublic = null;
 let runSkillProposalPublic = null;
+// Same trap as runSkillProposalPublic below, for the same reason:
+// acpMemoryStore's summarizeFn (built at module load, well above this line)
+// needs to call runOpenAIReply, which only exists inside registerRoutes's
+// scope. Assigned once registerRoutes actually runs; summarizeFn calls
+// through this indirection instead of referencing runOpenAIReply directly.
+let runOpenAIReplyPublic = null;
 
 // Always-visible index of every active skill's name+description, injected
 // straight into the system prompt -- independent of
@@ -1151,6 +1184,15 @@ if (process.env.NODE_ENV !== "test" && !process.env.NODE_TEST_CONTEXT) {
               compacted.length,
               ")",
             );
+            // Issue #423: surface the Dream Mode insight as a proactive toast,
+            // not just a silent file write -- fire-and-forget, never blocks
+            // the compaction itself on notification delivery.
+            notifyTray({
+              type: "dream",
+              title: "Dream Mode",
+              text: compacted.length > 200 ? `${compacted.slice(0, 200)}...` : compacted,
+              at: new Date().toISOString(),
+            }).catch(() => {});
           }
         } catch (e) {
           console.warn(
@@ -1863,6 +1905,7 @@ function registerRoutes(app, upload, deps = {}) {
     dirScannerCapability,
     webAccessCapability,
     sessionsCapability,
+    promptCompositionCapability,
     deepResearchCapability,
     presetsCapability,
     personalityCapability,
@@ -1891,6 +1934,13 @@ function registerRoutes(app, upload, deps = {}) {
   // every future proposal nobody's actually looked at.
   activeApprovalGate.registerExecutor("skill-write-idle", (payload) => activeSkillsStore.createSkill(payload));
   activeApprovalGate.registerExecutor("memory-write", (payload) => acpMemoryStore.rememberFact(payload));
+
+  // Lets acpMemoryStore's summarizeFn (built at module load time, long
+  // before registerRoutes ever runs) reach the real runOpenAIReply --
+  // same trap and same fix shape as runSkillProposalPublic just below.
+  // Rebuilt on every registerRoutes call (once per real server start, once
+  // per test's createApp()), same as everything else in this block.
+  runOpenAIReplyPublic = runOpenAIReply;
 
   // Idle-triggered skill-proposal pass (issue #262) -- extracted to
   // skill-proposal.js so its actual logic is directly unit testable; built
@@ -2010,6 +2060,7 @@ function registerRoutes(app, upload, deps = {}) {
     setBackgroundMemoryBlock: (block) => {
       BACKGROUND_MEMORY_BLOCK = block;
     },
+    getPromptComposition: deps.getPromptComposition || getPromptComposition,
   };
   registerCapabilities(app, capabilities, capabilityContext);
 
@@ -2019,6 +2070,7 @@ function registerRoutes(app, upload, deps = {}) {
       const result = await doctor({
         fishTtsWarmup: ttsRuntime.getFishWarmupStatus(),
         sessionSearchVectorEnabled: sessionSearchIndex.vectorEnabled(),
+        promptComposition: getMostRecentComposition(),
       });
       return res.status(result.ok ? 200 : 503).json(result);
     } catch (error) {
@@ -2185,10 +2237,36 @@ function registerRoutes(app, upload, deps = {}) {
     if (!checkAdminAuth(req, res)) return;
     try {
       const editors = getEditorIntegrations();
-      return res.json({ proposal: editors.approveEditProposal(req.params.id) });
+      // Issue #427: omitted acceptedHunkIds approves every hunk, unchanged
+      // from before hunk-level review existed.
+      return res.json({
+        proposal: editors.approveEditProposal(req.params.id, {
+          acceptedHunkIds: req.body?.acceptedHunkIds,
+        }),
+      });
     } catch (error) {
       return res.status(400).json({
         proposal: null,
+        error: error.message,
+      });
+    }
+  });
+
+  // Issue #428: restorable snapshots of applied edits, independent of git.
+  app.get("/editors/workspace/snapshots", (req, res) => {
+    if (!checkAdminAuth(req, res)) return;
+    const editors = getEditorIntegrations();
+    return res.json({ snapshots: editors.listEditSnapshots() });
+  });
+
+  app.post("/editors/workspace/snapshots/:id/restore", (req, res) => {
+    if (!checkAdminAuth(req, res)) return;
+    try {
+      const editors = getEditorIntegrations();
+      return res.json({ restored: editors.restoreEditSnapshot(req.params.id) });
+    } catch (error) {
+      return res.status(400).json({
+        restored: null,
         error: error.message,
       });
     }
@@ -2895,6 +2973,25 @@ function registerRoutes(app, upload, deps = {}) {
   app.get("/perf/status", (req, res) => {
     try {
       const gaming = getGamingStatus();
+      // Issue #421: only present when there's a session to report on and
+      // remote AI is actually on -- a local-only session has no cost to
+      // meter, so the field is omitted entirely rather than sent as zeros.
+      let tokenUsage;
+      const sessionIdParam = req.query && req.query.sessionId;
+      if (sessionIdParam && shouldUseRemoteAi()) {
+        const usage = sessionTokenUsage.getUsage(String(sessionIdParam));
+        const warnThreshold = Number(process.env.MANA_SESSION_TOKEN_WARN);
+        const stopThreshold = Number(process.env.MANA_SESSION_TOKEN_STOP);
+        tokenUsage = {
+          ...usage,
+          warnThreshold: Number.isFinite(warnThreshold) && warnThreshold > 0 ? warnThreshold : null,
+          stopThreshold: Number.isFinite(stopThreshold) && stopThreshold > 0 ? stopThreshold : null,
+          warnExceeded:
+            Number.isFinite(warnThreshold) && warnThreshold > 0 && usage.totalTokens >= warnThreshold,
+          stopExceeded:
+            Number.isFinite(stopThreshold) && stopThreshold > 0 && usage.totalTokens >= stopThreshold,
+        };
+      }
       return res.json({
         ok: true,
         uptimeSeconds: Math.round((Date.now() - perfMetrics.startedAt) / 1000),
@@ -2909,6 +3006,7 @@ function registerRoutes(app, upload, deps = {}) {
         gaming,
         process: getManaProcessSnapshot(),
         operations: perfMetrics.operations,
+        ...(tokenUsage ? { tokenUsage } : {}),
       });
     } catch (error) {
       return res.status(500).json({ ok: false, error: error.message });
@@ -3241,6 +3339,156 @@ function registerRoutes(app, upload, deps = {}) {
     return r.stdout ? r.stdout.trim() : "";
   }
 
+  // Runs whisper-cli asynchronously (spawn, not spawnSync) so it doesn't
+  // block the event loop -- unlike runWhisperCli above, this is called
+  // repeatedly (every ~1.2s) while the user is still speaking, to produce
+  // a live partial transcript. A separate function rather than converting
+  // runWhisperCli in place: several existing callers (memory-inbox.js
+  // explicitly documents "whisper.cpp is sync") assume the synchronous
+  // contract, and converting it would risk silently breaking them.
+  function spawnWhisperCliAsync(whisperBin, args) {
+    return new Promise((resolve, reject) => {
+      const child = spawn(whisperBin, args, { windowsHide: true });
+      let stdout = "";
+      let stderr = "";
+      child.stdout.on("data", (chunk) => {
+        stdout += chunk;
+      });
+      child.stderr.on("data", (chunk) => {
+        stderr += chunk;
+      });
+      child.on("error", reject);
+      child.on("close", (code) => {
+        resolve({ status: code, stdout, stderr });
+      });
+    });
+  }
+
+  async function runWhisperCliPartial(filePath) {
+    const whisperModel = whisperDiscovery.findWhisperModel({ env: process.env });
+    if (!whisperModel) {
+      throw new Error(
+        "Whisper model not found under tools/whisper. Set WHISPER_MODEL to a valid ggml *.bin path.",
+      );
+    }
+    const whisperBin = findWhisperBin();
+    const startedAt = nowMs();
+    // A distinct suffix from runWhisperCli's ".out" -- self-documents this
+    // as the partial-transcription artifact, even though a filename
+    // collision isn't actually possible (each upload gets its own tmp path).
+    const outBase = filePath + ".partial-out";
+    const outJson = outBase + ".json";
+    const args = [
+      "-m",
+      whisperModel,
+      "-f",
+      filePath,
+      "-t",
+      String(WHISPER_THREADS),
+      "-l",
+      WHISPER_LANGUAGE,
+      "-bs",
+      WHISPER_BEAM_SIZE,
+      "-nth",
+      WHISPER_NO_SPEECH_THRESHOLD,
+      "-tp",
+      WHISPER_TEMPERATURE,
+      "--output-json",
+      "-of",
+      outBase,
+    ];
+    if (WHISPER_PROMPT) {
+      args.push("--prompt", WHISPER_PROMPT, "--carry-initial-prompt");
+    }
+    const r = await spawnWhisperCliAsync(whisperBin, args);
+    if (r.status !== 0) {
+      console.error("whisper (partial) stderr:", r.stderr);
+      throw new Error("whisper (partial) failed: " + r.stderr);
+    }
+    logPerf("whisper-partial", startedAt);
+    // Wait briefly for the JSON file to appear -- async setTimeout, not
+    // runWhisperCli's blocking Atomics.wait, since blocking here would
+    // defeat the entire point of using spawn over spawnSync.
+    let attempts = 0;
+    while (!fs.existsSync(outJson) && attempts < 5) {
+      attempts += 1;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    if (!fs.existsSync(outJson)) {
+      return r.stdout ? r.stdout.trim() : "";
+    }
+    try {
+      const j = JSON.parse(fs.readFileSync(outJson, "utf8"));
+      if (j && j.transcription && j.transcription.length > 0) {
+        return j.transcription
+          .map((s) => s.text)
+          .join(" ")
+          .trim();
+      }
+      return r.stdout ? r.stdout.trim() : "";
+    } catch (e) {
+      console.warn("failed to parse whisper (partial) json", e);
+      return r.stdout ? r.stdout.trim() : "";
+    } finally {
+      // Runs on every path once outJson exists -- an empty transcription
+      // (routine on early, mostly-silent polls) or a parse failure must not
+      // leak the temp file; this endpoint is polled ~every 1.2s per
+      // recording, so a leak here compounds much faster than
+      // runWhisperCli's one-shot equivalent.
+      try {
+        fs.unlinkSync(outJson);
+      } catch (e) {}
+      try {
+        fs.unlinkSync(outBase + ".txt");
+      } catch (e) {}
+    }
+  }
+
+  // Async counterpart to normalizeUploadedAudio -- that function
+  // unconditionally spawnSync's ffmpeg on every call (no format
+  // short-circuit), which would block the event loop just as badly as the
+  // old synchronous whisper call did, defeating the point of
+  // runWhisperCliPartial being async. Used only by /transcribe-partial;
+  // normalizeUploadedAudio itself and its other callers (/transcribe-only,
+  // /transcribe) are untouched, same reasoning as spawnWhisperCliAsync
+  // above.
+  function normalizeUploadedAudioAsync(file) {
+    return new Promise((resolve) => {
+      if (!file) {
+        throw new Error("no file");
+      }
+      const tmpPath = file.path;
+      const ext = path.extname(file.originalname).toLowerCase();
+      const wavPath = tmpPath + ".wav";
+
+      const child = spawn("ffmpeg", ["-y", "-i", tmpPath, wavPath], {
+        windowsHide: true,
+      });
+      child.on("error", () => resolve(fallbackToCopy()));
+      child.on("close", (code) => {
+        if (code === 0) {
+          resolve({ tmpPath, audioPath: wavPath });
+        } else {
+          resolve(fallbackToCopy());
+        }
+      });
+
+      function fallbackToCopy() {
+        let audioPath = tmpPath;
+        if (ext) {
+          const copyPath = tmpPath + ext;
+          try {
+            fs.copyFileSync(tmpPath, copyPath);
+            audioPath = copyPath;
+          } catch (error) {
+            console.warn("could not copy file to preserve extension", error);
+          }
+        }
+        return { tmpPath, audioPath };
+      }
+    });
+  }
+
   const runLocalAssistantReply =
     deps.runLocalAssistantReply ||
     (async function runLocalAssistantReply(
@@ -3411,9 +3659,30 @@ function registerRoutes(app, upload, deps = {}) {
     prompt,
     maxTokens = LLAMA_MAX_TOKENS,
     systemPromptOverride = null,
+    // Issue #421: only passed by call sites that have a REAL per-user
+    // session in scope -- the main chat-turn reply path, and
+    // acp-memory-store.js's automatic per-session summarization. The
+    // background reviewer/connections jobs fold every session's summaries
+    // together with no single session in scope, so they're left untracked
+    // rather than polluting a "default" bucket with unrelated global usage.
+    sessionId = null,
   ) {
     if (!shouldUseRemoteAi()) {
       return null; // no key configured; fall back to local
+    }
+
+    if (sessionId) {
+      const stopThreshold = Number(process.env.MANA_SESSION_TOKEN_STOP);
+      if (
+        Number.isFinite(stopThreshold) &&
+        stopThreshold > 0 &&
+        sessionTokenUsage.getUsage(sessionId).totalTokens >= stopThreshold
+      ) {
+        console.warn(
+          `Remote AI call blocked for session ${sessionId}: token stop threshold (${stopThreshold}) reached.`,
+        );
+        return null; // falls back to local, same as remote AI being disabled
+      }
     }
 
     const systemPrompt = systemPromptOverride || persona.DEFAULT_SYSTEM_PROMPT;
@@ -3460,6 +3729,9 @@ function registerRoutes(app, upload, deps = {}) {
               j?.choices?.[0]?.message?.content ||
               j?.choices?.[0]?.text ||
               null;
+            if (sessionId && j?.usage) {
+              sessionTokenUsage.recordUsage(sessionId, j.usage);
+            }
             if (text) {
               resolve(text.trim());
             } else {
@@ -3634,6 +3906,30 @@ function registerRoutes(app, upload, deps = {}) {
     // otherwise this would silently bypass a test's (or any future caller's)
     // deps.skillsStore override, the exact trap already called out where
     // activeSkillsStore is defined above.
+    // Issue #401: the session's user-stated goal (if any) -- read
+    // unconditionally here since the tool-array construction further
+    // below also needs it, but only actually surfaced to the model (as
+    // system-prompt text, and as the session_goal__finish tool) when
+    // tool-calling is enabled for this reply. Outside that path (a plain
+    // conversational reply, remote AI, etc.) there's no way for the model
+    // to act on a goal at all, so mentioning it would just be misleading.
+    // See ai/session-goal-tool-source.js's own header comment for why the
+    // goal itself is never model-writable, only user-settable.
+    let sessionGoal = null;
+    if (sessionId) {
+      try {
+        const session = acpMemoryStore.getSession(sessionId);
+        sessionGoal = session && session.goal ? session.goal : null;
+      } catch (e) {
+        // ignore -- goal context is best-effort, never blocks a reply
+      }
+    }
+
+    // Issue #400: buildSkillsIndexBlock already computes how many skills it
+    // left out, but only as a line of text baked into the block -- read
+    // back out here rather than changing that function's return shape,
+    // which other callers/tests still depend on as a bare string.
+    let skillsOmittedCount = 0;
     if (
       toolCallingEnabled &&
       normalizedModelProfile === "default" &&
@@ -3643,9 +3939,14 @@ function registerRoutes(app, upload, deps = {}) {
         const skillsIndexBlock = buildSkillsIndexBlock(activeSkillsStore.listSkills());
         if (skillsIndexBlock) {
           selectedSystemPrompt = `${selectedSystemPrompt}\n\n${skillsIndexBlock}`;
+          const omittedMatch = skillsIndexBlock.match(/\((\d+) more skill\(s\) omitted for length\)/);
+          if (omittedMatch) skillsOmittedCount = Number(omittedMatch[1]) || 0;
         }
       } catch (e) {
         // ignore failures here
+      }
+      if (sessionGoal) {
+        selectedSystemPrompt = `${selectedSystemPrompt}\n\nSession goal: ${sessionGoal}\nIf you believe this goal has been fully achieved, call session_goal__finish instead of continuing to use more tools.`;
       }
     }
 
@@ -3659,13 +3960,19 @@ function registerRoutes(app, upload, deps = {}) {
     // flatMemorySuffix so they don't lose memory context entirely.
     const memoryExtraMessages = { early: [], late: [] };
     let flatMemorySuffix = "";
+    let promptMemoryChars = 0;
+    let promptMemoryTruncated = false;
+    let turnsDroppedByAge = 0;
     try {
       if (sessionId) {
-        const { entries } = await acpMemoryStore.buildPromptMemoryEntries(sessionId);
-        for (const entry of entries) {
+        const result = await acpMemoryStore.buildPromptMemoryEntries(sessionId);
+        for (const entry of result.entries) {
           memoryExtraMessages[entry.position].push({ role: entry.role, content: entry.content });
           flatMemorySuffix += `\n\n${entry.content}`;
+          promptMemoryChars += entry.content.length;
+          if (entry.truncated) promptMemoryTruncated = true;
         }
+        turnsDroppedByAge = result.turnsDroppedByAge || 0;
       }
     } catch (memErr) {
       console.warn("Failed to build session memory:", memErr.message);
@@ -3675,6 +3982,8 @@ function registerRoutes(app, upload, deps = {}) {
     // current message actually names something previously discussed in a
     // *different* session. Bounded by maxChars in getRelatedFactsEntries,
     // so it never grows with total memory volume.
+    let relatedFactsChars = 0;
+    let relatedFactsTruncated = false;
     try {
       if (typeof acpMemoryStore.getRelatedFactsEntries === "function") {
         const { entries } = acpMemoryStore.getRelatedFactsEntries(transcript, {
@@ -3683,10 +3992,32 @@ function registerRoutes(app, upload, deps = {}) {
         for (const entry of entries) {
           memoryExtraMessages[entry.position].push({ role: entry.role, content: entry.content });
           flatMemorySuffix += `\n\n${entry.content}`;
+          relatedFactsChars += entry.content.length;
+          if (entry.truncated) relatedFactsTruncated = true;
         }
       }
     } catch (relErr) {
       console.warn("Failed to look up related facts:", relErr.message);
+    }
+
+    // Issue #400: makes the composition of the prompt this reply actually
+    // used observable (GET /prompt-composition), instead of only
+    // discoverable by reading the code the way #364's truncation bug was.
+    // Covers the three blocks gathered unconditionally above (system-prompt
+    // folds in persona/preset/background-memory/skills-index/session-goal,
+    // since those are all concatenated into one string by this point),
+    // before the reply-path branches below diverge; tool schemas and the
+    // live turns differ per reply path (tool-aware vs. streaming vs. plain)
+    // and aren't included here.
+    try {
+      recordPromptComposition(sessionId, [
+        { name: "system-prompt", chars: selectedSystemPrompt.length, dropped: { skillsOmitted: skillsOmittedCount } },
+        { name: "prompt-memory", chars: promptMemoryChars, dropped: { truncated: promptMemoryTruncated, turnsDroppedByAge } },
+        { name: "related-facts", chars: relatedFactsChars, dropped: { truncated: relatedFactsTruncated } },
+      ]);
+    } catch (compErr) {
+      // Diagnostic-only; never blocks a reply.
+      console.warn("Failed to record prompt composition:", compErr.message);
     }
 
     // Attempt retrieval from local retriever-index (fast) first. If it yields nothing, fall back to the existing HTTP or legacy Python retrievers.
@@ -3965,6 +4296,7 @@ function registerRoutes(app, upload, deps = {}) {
           finalPrompt,
           effectiveMaxTokens,
           selectedSystemPrompt + flatMemorySuffix,
+          sessionId,
         );
         if (openAiReply) {
           console.log("Using OpenAI proxy reply.");
@@ -4096,6 +4428,23 @@ function registerRoutes(app, upload, deps = {}) {
             // detection. No approvalGate/store needed -- see
             // ai/expression-tool-source.js's own header comment for why.
             createExpressionToolSource(),
+            // Issue #417: lets Mana decide mid-reply that seeing the screen
+            // would help, instead of vision only being reachable via the
+            // hotkey or the ambient screen-sensing loop. Same
+            // deps.X || fallback resolution registerCoreRoutes's deps use
+            // for these two below (server.js:4742-4747) -- no single
+            // shared local exists at this point in registerRoutes to reuse.
+            createVisionToolSource({
+              getVisionStatus:
+                deps.getVisionStatus || (() => llamaServerRuntime.getVisionStatus()),
+              runVisionReply:
+                deps.runVisionReply ||
+                ((prompt, images, maxTokens) =>
+                  llamaServerRuntime.runVisionReply(prompt, images, maxTokens)),
+              visionCaptureBridge,
+              screenSensingPlugin,
+              pluginSettingsStore: activePluginSettingsStore,
+            }),
             // Issue #276: draft a proposed code change as a diff file
             // instead of editing live -- reuses the existing editor
             // workspace/proposal machinery (zed-integration.js) that
@@ -4105,6 +4454,10 @@ function registerRoutes(app, upload, deps = {}) {
             ...(isPluginEnabled(browserAutomationPlugin, activePluginSettingsStore)
               ? [activeBrowserAutomationToolSource]
               : []),
+            // Issue #401: only offered when this session actually has a
+            // goal set -- there's nothing to finish otherwise, and no
+            // reason to spend schema tokens advertising it on every reply.
+            ...(sessionGoal ? [createSessionGoalToolSource()] : []),
           ]);
           // Issue #281: on the "fast" (small) profile, protect its limited
           // context from a large tool catalogue and from raw tool-result
@@ -4506,7 +4859,14 @@ function registerRoutes(app, upload, deps = {}) {
         llamaServerRuntime.runVisionReply(prompt, images, maxTokens)),
     getVisionStatus:
       deps.getVisionStatus || (() => llamaServerRuntime.getVisionStatus()),
+    resolveVisionCapture:
+      deps.resolveVisionCapture || visionCaptureBridge.resolveCapture,
+    rejectVisionCapture:
+      deps.rejectVisionCapture || visionCaptureBridge.rejectCapture,
     runWhisper: deps.runWhisper || runWhisper,
+    runWhisperPartial: deps.runWhisperPartial || runWhisperCliPartial,
+    normalizeUploadedAudioAsync:
+      deps.normalizeUploadedAudioAsync || normalizeUploadedAudioAsync,
     synthesizeReply: deps.synthesizeReply || synthesizeReply,
   });
 
@@ -4516,6 +4876,10 @@ function registerRoutes(app, upload, deps = {}) {
   // bound -- so tests can call it directly without going through the /reply
   // HTTP route, which is the only other way to reach it.
   app.locals.buildAssistantReply = deps.buildAssistantReply || buildAssistantReply;
+  // Same pattern, for tests that need to drive the real acpMemoryStore
+  // directly (e.g. triggering its automatic summarizeFn compaction) rather
+  // than going through an HTTP route.
+  app.locals.acpMemoryStore = deps.acpMemoryStore || acpMemoryStore;
 
   registerVTubeRoutes(app, { vtubeRuntime });
 
@@ -4952,6 +5316,15 @@ async function startServer() {
     }
   } catch (e) {
     console.warn("Failed to register tray server:", e?.message || e);
+  }
+
+  // attach vision-capture websocket server (issue #417: lets the model
+  // request a fresh screenshot mid-reply)
+  try {
+    const { registerVisionCaptureServer } = require("./vision-capture-server");
+    registerVisionCaptureServer(server, { path: "/ws/vision-capture", bridge: visionCaptureBridge });
+  } catch (e) {
+    console.warn("Failed to register vision-capture server:", e?.message || e);
   }
 
   // serve admin UI static files

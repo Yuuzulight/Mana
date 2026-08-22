@@ -1114,6 +1114,58 @@ test("runToolAwareReply stops after consecutive tool errors and forces a final a
   assert.equal(result.toolCalls.filter((c) => !c.ok).length, 3);
 });
 
+// Issue #401: session_goal__finish lets the model genuinely stop the loop
+// early, once it believes the session's user-stated goal is done -- not
+// just when it naturally runs out of tools to call, or hits the round/
+// time/error caps.
+test("runToolAwareReply stops immediately when the model calls session_goal__finish, without looping further", async () => {
+  const bodies = [];
+  let serverUp = false;
+  const fakeFetch = async (url, init) => {
+    if (String(url).endsWith("/health")) return { ok: serverUp };
+    if (String(url).endsWith("/v1/chat/completions")) {
+      const body = JSON.parse(init.body);
+      bodies.push(body);
+      if (body.tool_choice === "none") return makeAnswerResponse("Goal achieved, all done.");
+      // If the loop looped again instead of stopping, this would keep
+      // requesting more tool calls forever -- the round cap below is set
+      // high specifically so only the finish signal (not running out of
+      // rounds) could plausibly account for the loop stopping here.
+      return makeToolCallResponse(["session_goal__finish"]);
+    }
+    return { ok: false, status: 404, text: async () => "not found" };
+  };
+
+  const runtime = createLlamaServerRuntime({
+    env: makeFakeEnv(),
+    fs: makeFakeFs(),
+    fetch: fakeFetch,
+    spawn: () => {
+      serverUp = true;
+      return makeFakeChild();
+    },
+    sleep: async () => {},
+    registerExitHandlers: false,
+  });
+
+  const policy = makeFakePolicy({
+    executeTool: (name) => {
+      assert.equal(name, "session_goal__finish");
+      return JSON.stringify({ status: "ok", finished: true, reason: "Login bug is fixed and tests pass." });
+    },
+  });
+
+  const result = await runtime.runToolAwareReply("fix the login bug", policy, {
+    maxRounds: 10,
+  });
+
+  assert.equal(result.content, "Goal achieved, all done.");
+  assert.equal(bodies.length, 2, "1 round requesting the finish tool + 1 forced final call");
+  assert.equal(result.toolCalls.length, 1);
+  assert.equal(result.toolCalls[0].name, "session_goal__finish");
+  assert.equal(result.toolCalls[0].ok, true);
+});
+
 test("runToolAwareReply respects a wall-clock time budget across rounds", async () => {
   let clock = 0;
   let serverUp = false;
@@ -1293,6 +1345,95 @@ test("MANA_LLAMA_UNIFIED_MEMORY=0 opts out of GGML_CUDA_ENABLE_UNIFIED_MEMORY", 
   );
 });
 
+// Issue #417 whole-branch review, Finding 1: a tool executed mid-loop
+// (vision__look) can swap the server to a different model out from under
+// runToolAwareReply's loop, because ensureServer() used to run only once,
+// before round 1 -- every later round (including the one that composes the
+// final answer) was then silently served by whatever model the tool call
+// last loaded. This proves the fix: complete() re-ensures the configured
+// profile's model before every round, so a mid-loop swap gets reversed
+// before the next request goes out.
+test("runToolAwareReply re-ensures the configured model before every round, reversing a mid-loop swap", async () => {
+  const spawnCalls = [];
+  let liveChild = null;
+  let currentModel = null;
+  let clock = 0;
+  const modelAtCompletion = [];
+
+  const fakeFetch = async (url, init) => {
+    if (String(url).endsWith("/health")) {
+      return { ok: Boolean(liveChild && liveChild.exitCode === null) };
+    }
+    if (String(url).endsWith("/v1/chat/completions")) {
+      const body = JSON.parse(init.body);
+      const lastMessage = body.messages[body.messages.length - 1];
+      // runVisionReply sends image content as an array; runToolAwareReply's
+      // own completions always send a plain string -- use that to tell a
+      // tool's own internal vision request apart from the tool loop's own
+      // round-by-round completions without needing separate fetch stubs.
+      if (Array.isArray(lastMessage?.content)) {
+        return {
+          ok: true,
+          json: async () => ({ choices: [{ message: { content: "a browser window" } }] }),
+        };
+      }
+      modelAtCompletion.push(currentModel);
+      if (modelAtCompletion.length === 1) {
+        return makeToolCallResponse(["vision__look"]);
+      }
+      return {
+        ok: true,
+        json: async () => ({ choices: [{ message: { content: "final answer" } }] }),
+      };
+    }
+    return { ok: false, status: 404, text: async () => "not found" };
+  };
+
+  const runtime = createLlamaServerRuntime({
+    // Debounce disabled: isolates the re-ensure fix itself from the
+    // separate (and, per the review, narrower/lower-priority) question of
+    // whether a mid-loop swap should also bypass the debounce window.
+    env: { ...makeTwoModelEnv(), LLAMA_SERVER_SWAP_DEBOUNCE_MS: "0" },
+    fs: makeTwoModelFs(),
+    fetch: fakeFetch,
+    spawn: (command, args) => {
+      spawnCalls.push({ command, args });
+      liveChild = makeFakeChild();
+      currentModel = args[args.indexOf("-m") + 1];
+      clock += 5;
+      return liveChild;
+    },
+    sleep: async () => {},
+    nowMs: () => clock,
+    registerExitHandlers: false,
+  });
+
+  const policy = {
+    tools: [{ type: "function", function: { name: "vision__look", description: "look", parameters: {} } }],
+    executeTool: async () => {
+      // Mirrors vision-tool-source.js's executeTool: a tool call mid-loop
+      // triggers a real runVisionReply(), which swaps the server.
+      await runtime.runVisionReply("what's on screen?", ["fake-image-data"]);
+      return JSON.stringify({ status: "ok", description: "a browser window" });
+    },
+  };
+
+  const result = await runtime.runToolAwareReply("what's on my screen?", policy, {
+    maxRounds: 4,
+  });
+
+  assert.equal(result.content, "final answer");
+  assert.equal(modelAtCompletion.length, 2);
+  assert.equal(modelAtCompletion[0], "C:\\models\\mana.gguf", "round 1 runs on the text model");
+  assert.equal(
+    modelAtCompletion[1],
+    "C:\\models\\mana.gguf",
+    "round 2 (after the tool swapped to vision mid-loop) must be re-ensured back to the text model, not silently served by vision",
+  );
+  assert.equal(runtime.getStatus().model, "C:\\models\\mana.gguf");
+  assert.equal(spawnCalls.length, 3, "text model, swap to vision for the tool call, swap back for round 2");
+});
+
 // runBestOfNReply (issue #70): N candidates at varied temperature, then a
 // temp-0 judge call picks the best one. Sequential, not parallel -- matches
 // how the actual llama-server instance is spawned here (default single
@@ -1430,4 +1571,95 @@ test("runBestOfNReply skips the judge call entirely when n is 1", async () => {
   assert.equal(callCount, 1, "no judge round when there's only one candidate");
   assert.equal(result.content, "only answer");
   assert.equal(result.judgeIndex, 0);
+});
+
+// Issue #332: speculative decoding wiring in buildServerArgs.
+test("buildServerArgs omits --spec-type by default (no speculative decoding env vars set)", () => {
+  const runtime = createLlamaServerRuntime({
+    env: makeFakeEnv(),
+    fs: makeFakeFs(),
+    registerExitHandlers: false,
+  });
+  const args = runtime.buildServerArgs("C:\\models\\mana.gguf", 8090);
+  assert.equal(args.includes("--spec-type"), false);
+  assert.equal(args.includes("--spec-draft-model"), false);
+  assert.equal(args.includes("--spec-draft-ngl"), false);
+});
+
+test("buildServerArgs leaves n-gram speculative decoding off for any LLAMA_ENABLE_SPEC_NGRAM value other than the literal string \"1\"", () => {
+  for (const value of ["0", "true", "yes", "on"]) {
+    const runtime = createLlamaServerRuntime({
+      env: { ...makeFakeEnv(), LLAMA_ENABLE_SPEC_NGRAM: value },
+      fs: makeFakeFs(),
+      registerExitHandlers: false,
+    });
+    const args = runtime.buildServerArgs("C:\\models\\mana.gguf", 8090);
+    assert.equal(args.includes("--spec-type"), false, `value ${value} should not enable the gate`);
+  }
+});
+
+test("buildServerArgs enables n-gram speculative decoding, defaulting to ngram-simple", () => {
+  const runtime = createLlamaServerRuntime({
+    env: { ...makeFakeEnv(), LLAMA_ENABLE_SPEC_NGRAM: "1" },
+    fs: makeFakeFs(),
+    registerExitHandlers: false,
+  });
+  const args = runtime.buildServerArgs("C:\\models\\mana.gguf", 8090);
+  const idx = args.indexOf("--spec-type");
+  assert.ok(idx !== -1);
+  assert.equal(args[idx + 1], "ngram-simple");
+});
+
+test("buildServerArgs lets LLAMA_SPEC_NGRAM_TYPE override which n-gram variant is used", () => {
+  const runtime = createLlamaServerRuntime({
+    env: {
+      ...makeFakeEnv(),
+      LLAMA_ENABLE_SPEC_NGRAM: "1",
+      LLAMA_SPEC_NGRAM_TYPE: "ngram-mod",
+    },
+    fs: makeFakeFs(),
+    registerExitHandlers: false,
+  });
+  const args = runtime.buildServerArgs("C:\\models\\mana.gguf", 8090);
+  assert.equal(args[args.indexOf("--spec-type") + 1], "ngram-mod");
+});
+
+test("buildServerArgs wires draft-model speculative decoding from LLAMA_SPEC_DRAFT_MODEL", () => {
+  const runtime = createLlamaServerRuntime({
+    env: { ...makeFakeEnv(), LLAMA_SPEC_DRAFT_MODEL: "C:\\models\\draft-1.7b.gguf" },
+    fs: makeFakeFs(),
+    registerExitHandlers: false,
+  });
+  const args = runtime.buildServerArgs("C:\\models\\mana.gguf", 8090);
+  assert.equal(args[args.indexOf("--spec-type") + 1], "draft-simple");
+  assert.equal(args[args.indexOf("--spec-draft-model") + 1], "C:\\models\\draft-1.7b.gguf");
+});
+
+// Issue #332: measured directly that -ngld's own 'auto' default leaves the
+// draft model mostly off-GPU (14.6 tok/s vs. 78.7 tok/s forced to match
+// -ngl, on a real coder-7B + 1.5B-draft pairing) -- buildServerArgs must
+// always pin --spec-draft-ngl to the same value as -ngl.
+test("buildServerArgs sets --spec-draft-ngl to match -ngl, not the draft model's own 'auto' default", () => {
+  const runtime = createLlamaServerRuntime({
+    env: { ...makeFakeEnv(), LLAMA_SPEC_DRAFT_MODEL: "C:\\models\\draft-1.7b.gguf", LLAMA_NGL: "42" },
+    fs: makeFakeFs(),
+    registerExitHandlers: false,
+  });
+  const args = runtime.buildServerArgs("C:\\models\\mana.gguf", 8090);
+  assert.equal(args[args.indexOf("--spec-draft-ngl") + 1], "42");
+  assert.equal(args[args.indexOf("-ngl") + 1], "42");
+});
+
+test("buildServerArgs combines n-gram and draft-model speculative decoding when both are set", () => {
+  const runtime = createLlamaServerRuntime({
+    env: {
+      ...makeFakeEnv(),
+      LLAMA_ENABLE_SPEC_NGRAM: "1",
+      LLAMA_SPEC_DRAFT_MODEL: "C:\\models\\draft-1.7b.gguf",
+    },
+    fs: makeFakeFs(),
+    registerExitHandlers: false,
+  });
+  const args = runtime.buildServerArgs("C:\\models\\mana.gguf", 8090);
+  assert.equal(args[args.indexOf("--spec-type") + 1], "ngram-simple,draft-simple");
 });

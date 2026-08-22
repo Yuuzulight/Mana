@@ -16,7 +16,7 @@ function assertLocalAiPolicy(env = process.env, options = {}) {
   const remoteRequested = String(env.MANA_ALLOW_REMOTE_AI || "").trim() === "1";
   if (remoteRequested && !options.allowRemoteOverride) {
     throw new Error(
-      "Remote AI is disabled for the Zed External Agent. Unset MANA_ALLOW_REMOTE_AI or pass an explicit remote override.",
+      "Remote AI is disabled for the ACP agent. Unset MANA_ALLOW_REMOTE_AI or pass an explicit remote override.",
     );
   }
 
@@ -378,7 +378,7 @@ function createManaAcpAgent(options = {}) {
             editor: workspace?.editor || env.MANA_DEFAULT_EDITOR || "zed",
           });
         } catch {
-          // Memory should improve ACP replies, not prevent Zed from opening a session.
+          // Memory should improve ACP replies, not prevent the client from opening a session.
         }
         return createJsonRpcResult(message.id, {
           sessionId,
@@ -452,11 +452,11 @@ function createManaAcpAgent(options = {}) {
           try {
             reply = await buildAssistantReply(promptWithContext, "", "", {
               modelProfile: "coding",
-              source: "zed-external-agent",
+              source: "acp-external-agent",
             });
           } catch (error) {
             reply =
-              "The local Mana backend is not available, so Mana cannot produce a local AI reply from Zed yet. " +
+              "The local Mana backend is not available, so Mana cannot produce a local AI reply from the ACP agent yet. " +
               `Start the local backend and try again. Details: ${error.message}`;
           }
           await notifyAgentText(notifyClient, sessionId, reply);
@@ -481,7 +481,7 @@ function createManaAcpAgent(options = {}) {
         await notifyAgentText(
           notifyClient,
           sessionId,
-          "Mana's Zed External Agent entry point is running locally. The local coding model bridge is not connected in this first slice, so code changes remain limited to reviewable edit proposals and no files are modified silently." +
+          "Mana's ACP agent entry point is running locally. The local coding model bridge is not connected in this first slice, so code changes remain limited to reviewable edit proposals and no files are modified silently." +
             suffix,
         );
         return createJsonRpcResult(message.id, {
@@ -534,7 +534,10 @@ function createManaAcpAgent(options = {}) {
       if (message.method === "mana/edit/approve") {
         return createJsonRpcResult(
           message.id,
-          await backendBridge.approveEditProposal(message.params?.id),
+          await backendBridge.approveEditProposal(
+            message.params?.id,
+            message.params?.acceptedHunkIds,
+          ),
         );
       }
       if (message.method === "mana/test/run") {
@@ -560,10 +563,33 @@ function createManaAcpAgent(options = {}) {
             "autonomous mode is disabled",
           );
         }
-        return createJsonRpcResult(
-          message.id,
-          await autonomousLoop.run(message.params || {}),
-        );
+        const params = message.params || {};
+        const result = await autonomousLoop.run(params);
+        // Issue #401: echo the session's stored goal (set via
+        // acp-memory-store.js's setSessionGoal, by the user only) back on
+        // every run() response, not just once -- this loop is driven
+        // externally (Zed, or any other ACP client), so node-bot cannot
+        // inject the goal into the model's own context the way the main
+        // voice-chat tool-calling loop does; the most it can do is make
+        // sure the caller has the goal text to include itself. A caller
+        // that ignores this field loses nothing it already had.
+        if (
+          memoryStore &&
+          typeof memoryStore.getSession === "function" &&
+          params.sessionId &&
+          result &&
+          !result.goal
+        ) {
+          try {
+            const session = memoryStore.getSession(String(params.sessionId));
+            if (session && session.goal) {
+              result.goal = session.goal;
+            }
+          } catch (e) {
+            // best-effort -- never let a goal lookup fail the whole call
+          }
+        }
+        return createJsonRpcResult(message.id, result);
       }
 
       if (message.method === "shutdown") {
@@ -803,13 +829,15 @@ function createStdioAcpServer(options = {}) {
 function printHelp(output = process.stdout) {
   output.write(
     [
-      "Mana Zed External Agent",
+      "Mana ACP Agent",
       "",
       "Usage:",
       "  node mana-acp-agent.js --acp",
       "  node mana-acp-agent.js --print-zed-config",
       "",
-      "The --acp mode starts a local stdio JSON-RPC agent for Zed agent_servers.",
+      "The --acp mode starts a local stdio JSON-RPC ACP agent that any ACP client",
+      "(Zed's agent_servers, or a third-party ACP client for another editor) can launch.",
+      "--print-zed-config prints a ready-to-paste snippet for Zed's agent_servers settings.",
       "",
     ].join(os.EOL),
   );

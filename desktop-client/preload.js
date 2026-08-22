@@ -1,6 +1,6 @@
 const { contextBridge, ipcRenderer } = require('electron');
 const { createMarkdownRenderer } = require('./renderer/markdown-render');
-const { extractArtifact } = require('./renderer/artifact-detector');
+const { extractArtifact, assignArtifactVersion } = require('./renderer/artifact-detector');
 
 // marked/DOMPurify need real Node module resolution + a DOM to construct
 // the sanitizer -- both available here in preload (issue #148), not in
@@ -52,5 +52,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // own window instead of dominating a chat bubble.
   renderMarkdownToSafeHtml: (text) => renderMarkdownToSafeHtml(text),
   extractArtifact: (text) => extractArtifact(text),
-  openArtifact: (artifact) => ipcRenderer.send('open-artifact', artifact),
+  // Issue #391: groups a newly detected artifact into its version thread
+  // against the session's history so far -- see artifact-detector.js.
+  assignArtifactVersion: (artifact, history) => assignArtifactVersion(artifact, history),
+  openArtifact: (payload) => ipcRenderer.send('open-artifact', payload),
 });

@@ -188,6 +188,53 @@ test("doctor passes when sqlite-vec's vector index loaded", () => {
   assert.match(check.message, /hybrid keyword \+ semantic/i);
 });
 
+function runDoctorForPromptComposition(promptComposition) {
+  return runDoctorChecks({
+    env: { MANA_ALLOW_REMOTE_AI: "0" },
+    paths: { dataDir: fs.mkdtempSync(path.join(os.tmpdir(), "mana-doctor-test-")) },
+    ports: [],
+    services: [],
+    versions: { node: "v22.19.0" },
+    zedCommandResolver: () => null,
+    promptComposition,
+  });
+}
+
+test("doctor omits the prompt-composition check when nothing has been recorded yet (issue #400)", () => {
+  const result = runDoctorForPromptComposition(null);
+  assert.equal(
+    result.checks.find((c) => c.id === "prompt-composition"),
+    undefined,
+  );
+});
+
+test("doctor passes prompt-composition when the last assembled prompt dropped nothing", () => {
+  const result = runDoctorForPromptComposition({
+    totalChars: 500,
+    totalEstTokens: 125,
+    blocks: [
+      { name: "system-prompt", chars: 500, estTokens: 125, dropped: { skillsOmitted: 0 } },
+    ],
+  });
+  const check = result.checks.find((c) => c.id === "prompt-composition");
+  assert.equal(check.status, "pass");
+  assert.match(check.message, /dropped nothing/i);
+});
+
+test("doctor warns prompt-composition when a block dropped content, naming which block", () => {
+  const result = runDoctorForPromptComposition({
+    totalChars: 500,
+    totalEstTokens: 125,
+    blocks: [
+      { name: "system-prompt", chars: 400, estTokens: 100, dropped: { skillsOmitted: 3 } },
+      { name: "prompt-memory", chars: 100, estTokens: 25, dropped: { truncated: false, turnsDroppedByAge: 0 } },
+    ],
+  });
+  const check = result.checks.find((c) => c.id === "prompt-composition");
+  assert.equal(check.status, "warn");
+  assert.match(check.message, /system-prompt/);
+});
+
 test("doctor passes remote exposure when no tunnel is configured", () => {
   const result = runDoctorChecks({
     env: {},

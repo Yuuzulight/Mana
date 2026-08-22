@@ -11,6 +11,7 @@ const {
   DEFAULT_SYSTEM_PROMPT,
   isLocalModelSpec,
 } = require("./local-llama-runtime");
+const { SESSION_GOAL_FINISH_TOOL_NAME } = require("./session-goal-tool-source");
 
 // Persistent llama-server runtime.
 //
@@ -383,7 +384,52 @@ function createLlamaServerRuntime(options = {}) {
       args.push("--no-kv-offload");
     }
 
+    // Issue #332: speculative decoding, both opt-in and independent of each
+    // other -- --spec-type takes a comma-separated list, so both can be
+    // active together if a caller sets both env vars.
+    //
+    // N-gram/lookup: drafts candidate tokens by pattern-matching against the
+    // ongoing generation itself -- no second model, no extra VRAM. Defaults
+    // to ngram-simple, llama.cpp's simplest/most-tested lookup variant, when
+    // the gate is on but no specific variant is named. Deliberately doesn't
+    // wire ngram-cache's -lcs/-lcd persisted-cache-file flags -- that's a
+    // different feature (a cache surviving across process restarts) than
+    // "match against this generation," and the other ngram-* variants
+    // already provide the latter without needing an external cache file.
+    //
+    // Draft-model: loads a genuinely separate, smaller model alongside the
+    // target and drafts tokens by actually running it. LLAMA_SPEC_DRAFT_MODEL
+    // is the draft model's own path, same convention as LLAMA_MODEL/
+    // LLAMA_VISION_MODEL. Only draft-simple is wired -- draft-eagle3/
+    // draft-mtp need the target model itself trained for that, which is
+    // unconfirmed for Mana's current models (see the issue's own scope
+    // note).
+    //
+    // -ngld (--spec-draft-ngl) is explicitly set to match the target's own
+    // -ngl here, rather than left at its own 'auto' default -- measured
+    // directly (issue #332): with a real coder-7B target + a same-family
+    // 1.5B draft, -ngld auto left the draft model mostly off-GPU and
+    // generation ran at 14.6 tok/s (vs. a 97.4 tok/s no-draft baseline on
+    // identical hardware); forcing -ngld to match -ngl recovered most of
+    // that to 78.7 tok/s. Still slower than no draft at all on this
+    // single-GPU setup even at a 93% token-acceptance rate -- draft-model
+    // speculative decoding stays opt-in rather than a recommended default,
+    // but a caller who does enable it shouldn't hit a measured, avoidable
+    // 5x regression from an unrelated default.
     const ngl = env.LLAMA_NGL || "99";
+    const specTypes = [];
+    if (env.LLAMA_ENABLE_SPEC_NGRAM === "1") {
+      specTypes.push(env.LLAMA_SPEC_NGRAM_TYPE || "ngram-simple");
+    }
+    if (env.LLAMA_SPEC_DRAFT_MODEL) {
+      specTypes.push("draft-simple");
+      args.push("--spec-draft-model", env.LLAMA_SPEC_DRAFT_MODEL);
+      args.push("--spec-draft-ngl", String(ngl));
+    }
+    if (specTypes.length) {
+      args.push("--spec-type", specTypes.join(","));
+    }
+
     if (ngl) {
       args.push("-ngl", String(ngl));
     }
@@ -788,6 +834,16 @@ function createLlamaServerRuntime(options = {}) {
     );
 
     async function complete(toolsEnabled) {
+      // Issue #417: a tool executed mid-loop (vision__look) can swap the
+      // local server to a different model out from under this loop --
+      // ensureServer() at the top of runToolAwareReply only confirms the
+      // model once, before round 1. Re-ensuring here, on every round, is
+      // the root-cause fix: whatever the last tool call left loaded, the
+      // configured profile's model is back in place before the next
+      // request goes out. On the common no-swap path this is just a cheap
+      // isHealthy() check (ensureServerConfig's early-return), not a real
+      // restart.
+      await ensureServer(profile);
       const resp = await fetchImpl(
         `http://127.0.0.1:${state.port}/v1/chat/completions`,
         {
@@ -815,6 +871,12 @@ function createLlamaServerRuntime(options = {}) {
     let message = {};
     let rounds = 0;
     let consecutiveToolErrors = 0;
+    // Issue #401: set when the model calls session_goal__finish, believing
+    // the session's user-stated goal is done. Folded into the existing
+    // budgetExhausted check below so a genuine finish reuses the same
+    // "force a real final answer now" path the round/time/error caps
+    // already use, instead of a second code path.
+    let goalFinished = false;
 
     for (let round = 1; round <= roundLimit; round += 1) {
       rounds = round;
@@ -859,6 +921,9 @@ function createLlamaServerRuntime(options = {}) {
           resultText = String(result);
           executedToolCalls.push({ name, args, ok: true });
           consecutiveToolErrors = 0;
+          if (name === SESSION_GOAL_FINISH_TOOL_NAME) {
+            goalFinished = true;
+          }
         } catch (e) {
           resultText = `Error: ${e.message}`;
           executedToolCalls.push({ name, args, ok: false, error: e.message });
@@ -873,6 +938,7 @@ function createLlamaServerRuntime(options = {}) {
       }
 
       const budgetExhausted =
+        goalFinished ||
         round >= roundLimit ||
         nowMs() > deadline ||
         consecutiveToolErrors >= MAX_CONSECUTIVE_TOOL_ERRORS;
@@ -1086,6 +1152,7 @@ function createLlamaServerRuntime(options = {}) {
   }
 
   return {
+    buildServerArgs,
     ensureServerConfig,
     findLlamaServerBin,
     findLlamaModel,

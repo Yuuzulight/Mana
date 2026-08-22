@@ -34,4 +34,66 @@ function extractArtifact(markdownText) {
   return null;
 }
 
-module.exports = { ARTIFACT_MIN_CHARS, ALWAYS_ARTIFACT_LANGUAGES, extractArtifact };
+// Issue #391: groups a newly detected artifact into the version "thread" of
+// the most recent artifact of the same language in `history` (the ordered
+// list of artifacts already assigned this session), when the two share
+// enough content to plausibly be revisions of one thing rather than two
+// unrelated artifacts that happen to use the same language.
+// ponytail: a fixed line-overlap threshold, not real content-identity --
+// there's no stable id the model provides for "this is the same artifact as
+// before." Upgrade path is a model-supplied artifact id/title if this
+// heuristic ever misfires often enough in practice to matter.
+const SAME_ARTIFACT_LINE_OVERLAP_THRESHOLD = 0.3;
+
+function lineOverlapRatio(contentA, contentB) {
+  const linesA = new Set(contentA.split("\n").map((line) => line.trim()).filter(Boolean));
+  const linesB = new Set(contentB.split("\n").map((line) => line.trim()).filter(Boolean));
+  if (!linesA.size || !linesB.size) return 0;
+  let shared = 0;
+  for (const line of linesA) {
+    if (linesB.has(line)) shared += 1;
+  }
+  return shared / Math.max(linesA.size, linesB.size);
+}
+
+// Module-level, not derived from `history.length` -- a caller may thread a
+// batch against a fresh, page-local `history` array (desktop-client's
+// prependTurns does exactly this, see its own comment), and two
+// independent `history` arrays can each legitimately have length 0. A
+// counter tied to any one array's length can produce the same threadId for
+// two genuinely unrelated artifacts once their lists are later merged;
+// this counter is shared across every call in this module instance, so it
+// can't collide regardless of which `history` array a caller passes.
+let nextNewThreadId = 0;
+
+// Returns `artifact` enriched with `threadId` (which version-thread it
+// belongs to) and `versionIndex` (1-based position within that thread).
+// Reuses the most recent same-language entry in `history`'s threadId when
+// the content overlaps enough to look like a revision; otherwise starts a
+// new thread. `history` is not mutated -- the caller decides whether/where
+// to store the returned, enriched artifact.
+function assignArtifactVersion(artifact, history) {
+  let lastSameLanguage = null;
+  for (let i = history.length - 1; i >= 0; i--) {
+    if (history[i].language === artifact.language) {
+      lastSameLanguage = history[i];
+      break;
+    }
+  }
+  const isNewVersion =
+    lastSameLanguage &&
+    lineOverlapRatio(artifact.content, lastSameLanguage.content) >= SAME_ARTIFACT_LINE_OVERLAP_THRESHOLD;
+  const threadId = isNewVersion ? lastSameLanguage.threadId : `${artifact.language}-${nextNewThreadId++}`;
+  const versionIndex = isNewVersion
+    ? history.filter((a) => a.threadId === threadId).length + 1
+    : 1;
+  return { ...artifact, threadId, versionIndex };
+}
+
+module.exports = {
+  ARTIFACT_MIN_CHARS,
+  ALWAYS_ARTIFACT_LANGUAGES,
+  extractArtifact,
+  assignArtifactVersion,
+  SAME_ARTIFACT_LINE_OVERLAP_THRESHOLD,
+};

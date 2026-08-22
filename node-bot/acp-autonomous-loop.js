@@ -3,6 +3,7 @@ const fs = require("fs");
 const path = require("path");
 const { safeJsonParse } = require("./utils/json-extract");
 const { scanDir } = require("./tools/dir_scanner");
+const { createAcpTestRunner } = require("./acp-test-runner");
 
 const RETRIEVER_URL = process.env.RETRIEVER_URL || "http://127.0.0.1:9000";
 const REPO_ROOT = process.env.REPO_ROOT || path.resolve(__dirname, "..");
@@ -249,7 +250,46 @@ function resetSessionToolCounts(sessionId) {
   return sessionToolCounts.delete(String(sessionId || "default"));
 }
 
-async function executeAutonomousStep(rawModelReply, sessionId) {
+// Issue #419: bounds how many times run_tests may report a genuine failure
+// (or a timeout) before it refuses to run again for the session, same
+// default (3) and reasoning as MAX_CONSECUTIVE_TOOL_ERRORS in
+// llama-server-runtime.js and approval-gate.js's maxConsecutiveDenials -- a
+// wrongly-broken loop costs one manual retry; an unbroken one costs an
+// assistant that nags. A disallowed-command rejection from acp-test-runner
+// doesn't consume an attempt here -- that's the model asking for something
+// it can't run, not a real test-iteration failure, so retrying with a
+// different (valid) command should be free.
+const MAX_TEST_RETRY_ATTEMPTS = Math.max(
+  1,
+  Number(process.env.MANA_MAX_TEST_RETRY_ATTEMPTS) || 3,
+);
+
+// How much of a failing run_tests' combined stdout+stderr gets folded into
+// injectedContext -- the tail, not the head, since a test runner's actual
+// assertion/failure detail is almost always at the end of its output, with
+// setup/passing-test noise at the start. Unbounded output here would be
+// exactly the kind of repeated-injection prompt bloat #400/#334 measured.
+const TEST_OUTPUT_INJECT_CHARS = Math.max(
+  200,
+  Number(process.env.MANA_TEST_OUTPUT_INJECT_CHARS) || 2000,
+);
+
+const sessionTestRetryCounts = new Map();
+
+function resetSessionTestRetryCounts(sessionId) {
+  if (sessionId === undefined) {
+    sessionTestRetryCounts.clear();
+    return true;
+  }
+  return sessionTestRetryCounts.delete(String(sessionId || "default"));
+}
+
+// Real instance, used unless a caller (tests, or a future createAcpAutonomousLoop
+// caller) injects its own via executeAutonomousStep's options.testRunner.
+const defaultTestRunner = createAcpTestRunner();
+
+async function executeAutonomousStep(rawModelReply, sessionId, options = {}) {
+  const testRunner = options.testRunner || defaultTestRunner;
   // 1. Leverage your centralized safe extraction utility
   let actions = safeJsonParse(rawModelReply);
 
@@ -288,6 +328,13 @@ async function executeAutonomousStep(rawModelReply, sessionId) {
   );
 
   const results = [];
+  // Issue #401: set when the model requests "finish", believing the
+  // session's user-stated goal (echoed back to the caller by
+  // mana-acp-agent.js's mana/agent/run handler) is done. This loop is
+  // driven externally (by Zed, or any other ACP client) -- node-bot
+  // cannot force it to stop calling mana/agent/run again, so this is a
+  // signal for the caller to respect, not an enforced stop.
+  let finishReason = null;
 
   for (const action of actions) {
     const { tool, args } = action;
@@ -785,9 +832,122 @@ async function executeAutonomousStep(rawModelReply, sessionId) {
       continue;
     }
 
+    // Issue #419: an explicit, model-called tool -- not auto-triggered after
+    // file_write. This loop is externally driven (see the finish tool's own
+    // comment below); an automatic post-write hook would be the only
+    // automatic-retry behavior in an otherwise fully model-driven system,
+    // and would misfire mid-multi-file-edit (tests run after file 1 of 3,
+    // before the code is even in a testable state).
+    if (tool === "run_tests") {
+      const command = args && args.command ? String(args.command) : null;
+      if (!command) {
+        results.push({
+          tool: "run_tests",
+          status: "error",
+          detail: "missing_command_arg",
+        });
+        continue;
+      }
+
+      const requestedCwd = args && args.cwd ? String(args.cwd) : null;
+      let resolvedCwd = REPO_ROOT;
+      if (requestedCwd) {
+        resolvedCwd = resolveWithinRepo(requestedCwd);
+        if (!resolvedCwd) {
+          results.push({
+            tool: "run_tests",
+            status: "error",
+            detail: "path_outside_repo",
+          });
+          continue;
+        }
+      }
+
+      const retryKey = String(sessionId || "default");
+      const retriesSoFar = sessionTestRetryCounts.get(retryKey) || 0;
+      if (retriesSoFar >= MAX_TEST_RETRY_ATTEMPTS) {
+        console.error(
+          `[Mana Agent Loop] 🛑 run_tests hit the per-session retry cap of ${MAX_TEST_RETRY_ATTEMPTS}; refusing further attempts this session.`,
+        );
+        results.push({
+          tool: "run_tests",
+          status: "retry_exhausted",
+          cap: MAX_TEST_RETRY_ATTEMPTS,
+        });
+        continue;
+      }
+
+      try {
+        const testResult = await testRunner.run(command, { cwd: resolvedCwd });
+        if (testResult.ok) {
+          sessionTestRetryCounts.delete(retryKey);
+          console.error(
+            `  ✅ run_tests: "${command}" passed (exit ${testResult.exitCode})`,
+          );
+          results.push({
+            tool: "run_tests",
+            status: "ok",
+            command: testResult.command,
+            exitCode: testResult.exitCode,
+            injectedContext: `Tests passed: "${testResult.command}" exited 0.`,
+          });
+        } else {
+          const nextCount = retriesSoFar + 1;
+          sessionTestRetryCounts.set(retryKey, nextCount);
+          const combinedOutput = `${testResult.stdout || ""}${testResult.stderr || ""}`;
+          const tail =
+            combinedOutput.length > TEST_OUTPUT_INJECT_CHARS
+              ? combinedOutput.slice(-TEST_OUTPUT_INJECT_CHARS)
+              : combinedOutput;
+          console.error(
+            `  ❌ run_tests: "${command}" failed (exit ${testResult.exitCode}), attempt ${nextCount}/${MAX_TEST_RETRY_ATTEMPTS}`,
+          );
+          results.push({
+            tool: "run_tests",
+            status: "fail",
+            command: testResult.command,
+            exitCode: testResult.exitCode,
+            attempt: nextCount,
+            retriesRemaining: Math.max(0, MAX_TEST_RETRY_ATTEMPTS - nextCount),
+            injectedContext: `Tests failed: "${testResult.command}" exited ${testResult.exitCode}. Output (tail):\n${tail}`,
+          });
+        }
+      } catch (err) {
+        // acp-test-runner rejects (rather than resolving) on a disallowed
+        // command or a timeout, distinguished only by message text -- a
+        // disallowed command is the model's own mistake (pick a different,
+        // allowed command instead), not a real test-iteration failure, so
+        // it doesn't cost a retry attempt; a timeout would very likely time
+        // out again identically, so it does.
+        const isDisallowed = /not allowed/i.test(err.message || "");
+        if (!isDisallowed) {
+          sessionTestRetryCounts.set(retryKey, retriesSoFar + 1);
+        }
+        console.error(`  ❌ run_tests error: ${err.message}`);
+        results.push({
+          tool: "run_tests",
+          status: "error",
+          detail: err.message,
+        });
+      }
+
+      continue;
+    }
+
+    if (tool === "finish") {
+      finishReason = (args && args.reason ? String(args.reason) : "").trim() || "goal achieved";
+      results.push({ tool: "finish", status: "ok", reason: finishReason });
+      continue;
+    }
+
     // Unknown / unsupported tool
     console.error(`[Mana Tool] ⚠️ Unsupported tool: ${tool}`);
     results.push({ tool: tool || "unknown", status: "unsupported" });
+  }
+
+  if (finishReason) {
+    console.error(`[Mana Agent Loop] 🏁 Model signaled finish: ${finishReason}`);
+    return { status: "finished", reason: finishReason, results };
   }
 
   // Aggregate successful injected contexts
@@ -828,6 +988,7 @@ async function createAcpAutonomousLoop(options = {}) {
           return await executeAutonomousStep(
             params.modelReply,
             params.sessionId,
+            { testRunner: options.testRunner },
           );
         } catch (e) {
           return { status: "error", error: String(e?.message || e) };
@@ -842,5 +1003,7 @@ module.exports = {
   executeAutonomousStep,
   createAcpAutonomousLoop,
   resetSessionToolCounts,
+  resetSessionTestRetryCounts,
   MAX_TOOL_CALLS_PER_SESSION,
+  MAX_TEST_RETRY_ATTEMPTS,
 };

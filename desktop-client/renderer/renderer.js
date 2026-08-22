@@ -155,6 +155,8 @@ document.getElementById('themeToggle')?.addEventListener('click', (e) => {
   const navVisionBtnEl = document.getElementById('navVisionBtn');
   const navModelBtnEl = document.getElementById('navModelBtn');
   const navDoctorBtnEl = document.getElementById('navDoctorBtn');
+  const navSnapshotsBtnEl = document.getElementById('navSnapshotsBtn');
+  const navProposalsBtnEl = document.getElementById('navProposalsBtn');
   const navInfoModalEl = document.getElementById('navInfoModal');
   const navInfoTitleEl = document.getElementById('navInfoTitle');
   const navInfoBodyEl = document.getElementById('navInfoBody');
@@ -253,6 +255,9 @@ document.getElementById('themeToggle')?.addEventListener('click', (e) => {
   const VAD_MODEL_URL = '../assets/vad/silero_vad.onnx';
   const MIN_SPEECH_RMS = 0.012;
   const SILENCE_METER_INTERVAL_MS = 150;
+  // #341 Sub-project A: how often to snapshot the audio recorded so far
+  // and poll for a partial transcript while the user is still speaking.
+  const PARTIAL_TRANSCRIPT_POLL_MS = 1200;
   const LISTEN_PAUSE_MS = 250;
   const BARGE_IN_POLL_MS = 50;
 
@@ -331,12 +336,27 @@ document.getElementById('themeToggle')?.addEventListener('click', (e) => {
     return currentSessionId;
   }
 
+  // Issue #391: every artifact detected this session, in chronological
+  // order, each enriched with a threadId/versionIndex (see
+  // window.electronAPI.assignArtifactVersion). Live messages (appendMessage)
+  // always arrive in true chronological order and push onto the end.
+  // Historical messages (prependTurns) arrive in scroll-back order --
+  // oldest-in-page-first within one fetched page, but a later scroll-back
+  // fetches an OLDER page after a newer one already loaded -- so each
+  // page's turns are threaded only against each other (not the
+  // already-loaded newer content) and the whole page is unshifted onto the
+  // front as a unit. Version-thread continuity across a scroll-back page
+  // boundary isn't attempted; within one page (which covers most sessions)
+  // it works the same as the live case.
+  let sessionArtifacts = [];
+
   // Renders `text` as sanitized markdown into `div`, and -- if a big or
   // ```html fenced block is found (issue #148) -- replaces it with a
-  // button that opens the full content in its own window instead of
-  // dominating the bubble.
-  function renderBubbleContent(div, text) {
-    const artifact = window.electronAPI.extractArtifact(text);
+  // button that opens the full content (and every other version in its
+  // thread, issue #391) in its own window instead of dominating the bubble.
+  // `artifact` is already-versioned (threadId/versionIndex assigned by the
+  // caller) or null.
+  function renderBubbleContent(div, text, artifact) {
     const displayText = artifact ? text.replace(artifact.matchedText, '').trim() : text;
     div.innerHTML = window.electronAPI.renderMarkdownToSafeHtml(displayText);
 
@@ -345,7 +365,10 @@ document.getElementById('themeToggle')?.addEventListener('click', (e) => {
       button.type = 'button';
       button.className = 'chat-artifact-open';
       button.textContent = `Open ${artifact.language} content in new window`;
-      button.addEventListener('click', () => window.electronAPI.openArtifact(artifact));
+      button.addEventListener('click', () => {
+        const thread = sessionArtifacts.filter((a) => a.threadId === artifact.threadId);
+        window.electronAPI.openArtifact({ thread, index: thread.indexOf(artifact) });
+      });
       div.appendChild(button);
     }
   }
@@ -357,7 +380,13 @@ document.getElementById('themeToggle')?.addEventListener('click', (e) => {
     if (!messagesEl || !text) return null;
     const div = document.createElement('div');
     div.className = 'message ' + (role === 'user' ? 'system' : 'assistant');
-    renderBubbleContent(div, text);
+    const rawArtifact = window.electronAPI.extractArtifact(text);
+    let artifact = null;
+    if (rawArtifact) {
+      artifact = window.electronAPI.assignArtifactVersion(rawArtifact, sessionArtifacts);
+      sessionArtifacts.push(artifact);
+    }
+    renderBubbleContent(div, text, artifact);
     messagesEl.appendChild(div);
     messagesEl.scrollTop = messagesEl.scrollHeight;
     return div;
@@ -365,18 +394,41 @@ document.getElementById('themeToggle')?.addEventListener('click', (e) => {
 
   function prependTurns(turns) {
     if (!messagesEl || !turns || !turns.length) return;
+
+    // Pass 1: extract raw artifacts for the whole page and thread them
+    // against each other only (see this section's header comment).
+    const rawByTurn = turns.map((turn) => ({
+      user: turn.user ? window.electronAPI.extractArtifact(turn.user) : null,
+      assistant: turn.assistant ? window.electronAPI.extractArtifact(turn.assistant) : null,
+    }));
+    const pageArtifacts = [];
+    for (const raw of rawByTurn) {
+      if (raw.user) {
+        raw.userVersioned = window.electronAPI.assignArtifactVersion(raw.user, pageArtifacts);
+        pageArtifacts.push(raw.userVersioned);
+      }
+      if (raw.assistant) {
+        raw.assistantVersioned = window.electronAPI.assignArtifactVersion(raw.assistant, pageArtifacts);
+        pageArtifacts.push(raw.assistantVersioned);
+      }
+    }
+    sessionArtifacts = [...pageArtifacts, ...sessionArtifacts];
+
+    // Pass 2: build the DOM using each turn's already-versioned artifact.
     const frag = document.createDocumentFragment();
-    for (const turn of turns) {
+    for (let i = 0; i < turns.length; i++) {
+      const turn = turns[i];
+      const raw = rawByTurn[i];
       if (turn.user) {
         const u = document.createElement('div');
         u.className = 'message system';
-        renderBubbleContent(u, turn.user);
+        renderBubbleContent(u, turn.user, raw.userVersioned || null);
         frag.appendChild(u);
       }
       if (turn.assistant) {
         const a = document.createElement('div');
         a.className = 'message assistant';
-        renderBubbleContent(a, turn.assistant);
+        renderBubbleContent(a, turn.assistant, raw.assistantVersioned || null);
         frag.appendChild(a);
       }
     }
@@ -388,6 +440,7 @@ document.getElementById('themeToggle')?.addEventListener('click', (e) => {
     messagesEl?.querySelectorAll('.message').forEach((el) => el.remove());
     nextBeforeCursor = null;
     hasMoreHistory = false;
+    sessionArtifacts = [];
   }
 
   async function fetchHistoryPage(sessionId, before) {
@@ -1426,6 +1479,15 @@ document.getElementById('themeToggle')?.addEventListener('click', (e) => {
       let hasHeardSpeech = false;
       let lastSpeechAt = 0;
       let meterTimer = null;
+      let partialTimer = null;
+      let partialPollInFlight = false;
+      // Plumbing for #341 Sub-project B's classifier, not yet consumed by
+      // anything -- kept in sync with the status text below.
+      let partialTranscript = "";
+      // Aborted in cleanup() so an in-flight poll doesn't keep running
+      // (and competing for CPU with the real final transcription about to
+      // start) after the recording it was polling for has already ended.
+      const partialAbortController = new AbortController();
       let stopped = false;
       let noSpeechResult = false;
       const startedAt = performance.now();
@@ -1436,10 +1498,50 @@ document.getElementById('themeToggle')?.addEventListener('click', (e) => {
           clearTimeout(meterTimer);
           meterTimer = null;
         }
+        if (partialTimer !== null) {
+          clearInterval(partialTimer);
+          partialTimer = null;
+        }
+        partialAbortController.abort();
         try {
           source.disconnect();
         } catch (e) {}
         audioCtx.close().catch(() => {});
+      }
+
+      // #341 Sub-project A: snapshots whatever's been recorded so far and
+      // polls for a partial transcript, updating the live status text. A
+      // failed or slow poll is silently skipped -- never blocks or delays
+      // tick()'s actual stop-detection logic below.
+      async function pollPartialTranscript() {
+        if (stopped || partialPollInFlight || localChunks.length === 0) {
+          return;
+        }
+        partialPollInFlight = true;
+        try {
+          const snapshot = new Blob(localChunks, { type: 'audio/webm' });
+          const form = new FormData();
+          form.append('file', snapshot, 'partial.webm');
+          const response = await fetch('http://127.0.0.1:5005/transcribe-partial', {
+            method: 'POST',
+            body: form,
+            signal: partialAbortController.signal,
+          });
+          if (!response.ok || stopped) {
+            return;
+          }
+          const data = await response.json();
+          if (data.transcript && !stopped) {
+            partialTranscript = data.transcript;
+            statusEl.textContent = `Hearing: "${data.transcript}"`;
+          }
+        } catch (e) {
+          if (e.name !== 'AbortError') {
+            console.warn('Partial transcript poll failed:', e.message);
+          }
+        } finally {
+          partialPollInFlight = false;
+        }
       }
 
       localRecorder.ondataavailable = (event) => {
@@ -1457,6 +1559,7 @@ document.getElementById('themeToggle')?.addEventListener('click', (e) => {
       };
 
       localRecorder.start(SILENCE_METER_INTERVAL_MS);
+      partialTimer = setInterval(pollPartialTranscript, PARTIAL_TRANSCRIPT_POLL_MS);
 
       async function tick() {
         if (stopped) return;
@@ -1776,6 +1879,12 @@ document.getElementById('themeToggle')?.addEventListener('click', (e) => {
     if (a) { e.preventDefault(); window.electronAPI.openExternal(a.href); return; }
     const issueBtn = e.target.closest('.doctor-issue');
     if (issueBtn) showDoctorBubble(issueBtn);
+    const restoreBtn = e.target.closest('.snapshot-restore-btn');
+    if (restoreBtn) restoreEditSnapshotWithConfirm(restoreBtn.dataset.snapshotId, restoreBtn.dataset.snapshotPath);
+    const reviewBtn = e.target.closest('.proposal-review-btn');
+    if (reviewBtn) openProposalReview(reviewBtn.dataset.proposalId);
+    if (e.target.closest('#proposalReviewBackBtn')) refreshProposalsPanel();
+    if (e.target.closest('#proposalReviewApproveBtn')) approveSelectedProposalHunks();
   });
 
   async function fetchJson(url, options) {
@@ -1974,6 +2083,157 @@ document.getElementById('themeToggle')?.addEventListener('click', (e) => {
       navInfoBodyEl.innerHTML = `<p class="subtitle">Failed to reach backend: ${escapeHtml(e.message)}</p>`;
     }
   });
+
+  // Issue #428: restorable snapshots of applied editor-handoff edits, from
+  // whichever editor was connected -- generic, not Zed-specific (see
+  // node-bot's zed-integration.js listEditSnapshots/restoreEditSnapshot).
+  function formatSnapshotTimestamp(iso) {
+    const date = new Date(iso);
+    return Number.isNaN(date.getTime()) ? '' : date.toLocaleString();
+  }
+
+  function renderEditSnapshotsPanel(snapshots) {
+    if (!snapshots.length) {
+      navInfoBodyEl.innerHTML = '<p class="subtitle">No applied edits yet.</p>';
+      return;
+    }
+    navInfoBodyEl.innerHTML = `
+      <p class="subtitle">Edits applied from a connected editor can be undone here, independent of git.</p>
+      ${snapshots.map((s) => `
+        <div class="snapshot-item">
+          <div class="snapshot-item-info">
+            <div class="snapshot-item-path">${escapeHtml(s.relativePath || '(unknown file)')}</div>
+            <div class="snapshot-item-meta">${escapeHtml(s.summary || 'Edit')} · ${escapeHtml(formatSnapshotTimestamp(s.appliedAt))}</div>
+          </div>
+          <button type="button" class="snapshot-restore-btn primary" data-snapshot-id="${escapeHtml(s.id)}" data-snapshot-path="${escapeHtml(s.relativePath || '')}">Restore</button>
+        </div>`).join('')}
+    `;
+  }
+
+  async function refreshEditSnapshotsPanel() {
+    openNavInfo('Applied edits', '<p class="subtitle">Loading...</p>');
+    try {
+      const result = await fetchJson(`${BACKEND_URL}/editors/workspace/snapshots`);
+      renderEditSnapshotsPanel(result.snapshots || []);
+    } catch (e) {
+      navInfoBodyEl.innerHTML = `<p class="subtitle">Failed to reach backend: ${escapeHtml(e.message)}</p>`;
+    }
+  }
+
+  navSnapshotsBtnEl?.addEventListener('click', () => {
+    refreshEditSnapshotsPanel();
+  });
+
+  // Restore has no code-level conflict check against the file's current
+  // content -- unlike approving a proposal, a snapshot only knows the
+  // file's state before its own edit, not what may have changed since.
+  // This confirm() is the safety net, matching the plain-confirm pattern
+  // used for other destructive actions in this app (preset/skill delete).
+  async function restoreEditSnapshotWithConfirm(id, relativePath) {
+    if (!id) return;
+    const confirmed = window.confirm(
+      `Restore "${relativePath}" to its state before this edit? The current content will be overwritten.`,
+    );
+    if (!confirmed) return;
+    try {
+      const result = await fetchJson(
+        `${BACKEND_URL}/editors/workspace/snapshots/${encodeURIComponent(id)}/restore`,
+        { method: 'POST' },
+      );
+      if (!result.restored) throw new Error('Restore failed');
+      await refreshEditSnapshotsPanel();
+    } catch (e) {
+      console.warn('Mana restore edit snapshot failed:', e);
+    }
+  }
+
+  // Issue #427: hunk-level accept/reject for editor-handoff diff proposals,
+  // from whichever editor was connected -- generic, not Zed-specific.
+  let currentProposalReviewId = null;
+
+  function hunkLineClass(line) {
+    const prefix = line.charAt(0);
+    return prefix === '+' ? 'hunk-line-add' : prefix === '-' ? 'hunk-line-del' : 'hunk-line-ctx';
+  }
+
+  function renderProposalsPanel(proposals) {
+    currentProposalReviewId = null;
+    const pending = proposals.filter((p) => p.status === 'pending');
+    if (!pending.length) {
+      navInfoBodyEl.innerHTML = '<p class="subtitle">No pending edits.</p>';
+      return;
+    }
+    navInfoBodyEl.innerHTML = `
+      <p class="subtitle">Diff proposals from a connected editor wait here for review -- accept or reject individual hunks before anything is written.</p>
+      ${pending.map((p) => `
+        <div class="snapshot-item">
+          <div class="snapshot-item-info">
+            <div class="snapshot-item-path">${escapeHtml(p.relativePath || '(unknown file)')}</div>
+            <div class="snapshot-item-meta">${escapeHtml(p.summary || 'Edit')} · ${p.hunkCount || 0} hunk${p.hunkCount === 1 ? '' : 's'}</div>
+          </div>
+          <button type="button" class="proposal-review-btn primary" data-proposal-id="${escapeHtml(p.id)}">Review</button>
+        </div>`).join('')}
+    `;
+  }
+
+  async function refreshProposalsPanel() {
+    openNavInfo('Pending edits', '<p class="subtitle">Loading...</p>');
+    try {
+      const result = await fetchJson(`${BACKEND_URL}/editors/workspace/proposals`);
+      renderProposalsPanel(result.proposals || []);
+    } catch (e) {
+      navInfoBodyEl.innerHTML = `<p class="subtitle">Failed to reach backend: ${escapeHtml(e.message)}</p>`;
+    }
+  }
+
+  navProposalsBtnEl?.addEventListener('click', () => {
+    refreshProposalsPanel();
+  });
+
+  async function openProposalReview(id) {
+    try {
+      const result = await fetchJson(`${BACKEND_URL}/editors/workspace/proposals/${encodeURIComponent(id)}`);
+      const proposal = result.proposal;
+      currentProposalReviewId = proposal.id;
+      navInfoBodyEl.innerHTML = `
+        <button type="button" id="proposalReviewBackBtn" class="primary">&larr; Back</button>
+        <div id="proposalReviewPath">${escapeHtml(proposal.relativePath || '')}</div>
+        <p class="subtitle">${escapeHtml(proposal.summary || '')}</p>
+        ${(proposal.hunks || []).map((h) => `
+          <div class="hunk-card">
+            <label class="hunk-card-header">
+              <input type="checkbox" class="hunk-accept-checkbox" data-hunk-id="${escapeHtml(h.id)}" checked />
+              Accept this hunk (line ${h.newStart})
+            </label>
+            <pre class="hunk-diff">${h.lines.map((line) => `<span class="${hunkLineClass(line)}">${escapeHtml(line)}</span>`).join('\n')}</pre>
+          </div>`).join('')}
+        <button type="button" id="proposalReviewApproveBtn" class="primary">Approve selected hunks</button>
+      `;
+    } catch (e) {
+      navInfoBodyEl.innerHTML = `<p class="subtitle">Failed to reach backend: ${escapeHtml(e.message)}</p>`;
+    }
+  }
+
+  async function approveSelectedProposalHunks() {
+    if (!currentProposalReviewId) return;
+    const acceptedHunkIds = [...navInfoBodyEl.querySelectorAll('.hunk-accept-checkbox')]
+      .filter((checkbox) => checkbox.checked)
+      .map((checkbox) => checkbox.dataset.hunkId);
+    try {
+      const result = await fetchJson(
+        `${BACKEND_URL}/editors/workspace/proposals/${encodeURIComponent(currentProposalReviewId)}/approve`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ acceptedHunkIds }),
+        },
+      );
+      if (!result.proposal) throw new Error('Approve failed');
+      await refreshProposalsPanel();
+    } catch (e) {
+      console.warn('Mana proposal approve failed:', e);
+    }
+  }
 
   // Presets: saved persona/behavior instructions the user can select to be
   // appended to the base system prompt server-side (see buildAssistantReply

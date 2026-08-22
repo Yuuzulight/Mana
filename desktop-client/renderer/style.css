@@ -1,96 +1,6 @@
-:root{
-  --bg: #282c34;
-  --bg-deep: #1c1f26;
-  --panel: #1e2127;
-  --panel-2: #262a32;
-  --border: #3a4048;
-  --border-soft: #2e333b;
-  --text: #e3e6ec;
-  --fg: #b7bdc9;
-  --muted: #6b7280;
-  --muted-soft: #545a66;
-  --accent: #a170e1;
-  --accent-dim: #815ab5;
-  --accent-glow: rgba(161,112,225,0.16);
-  --green: #7fd48a;
-  --warn: #e0a030;
-  --fail: #e05252;
-  --pass-text: #1a1a1a;
-  --user-bubble: #2e333f;
-  --mana-bubble: #262a32;
-  --font-mono: ui-monospace, "Cascadia Code", "Fira Code", "JetBrains Mono", Consolas, "SFMono-Regular", monospace;
-}
-@media (prefers-color-scheme: light) {
-  :root {
-    --bg: #f4f2ee;
-    --bg-deep: #eae7e1;
-    --panel: #ffffff;
-    --panel-2: #f7f5f1;
-    --border: #ded9d0;
-    --border-soft: #e8e4dc;
-    --text: #201e1b;
-    --fg: #3c3a36;
-    --muted: #8a8478;
-    --muted-soft: #a39d90;
-    --accent: #7a45c0;
-    --accent-dim: #6738a5;
-    --accent-glow: rgba(122,69,192,0.12);
-    --green: #2f7d3c;
-    --warn: #a15c00;
-    --fail: #b83232;
-    --pass-text: #ffffff;
-    --user-bubble: #efe9fb;
-    --mana-bubble: #f2f0eb;
-  }
-}
-/* Explicit user choice from Settings > Appearance (see themeToggle in
-   renderer.js) overrides whatever the OS reports. Higher specificity than
-   the bare :root the media query above targets, so it wins regardless of
-   source order in both directions -- forcing dark on a light OS, or light
-   on a dark OS. Absence of the attribute (the "System" choice) leaves the
-   media query as the only source of truth. */
-:root[data-theme="dark"] {
-  --bg: #282c34;
-  --bg-deep: #1c1f26;
-  --panel: #1e2127;
-  --panel-2: #262a32;
-  --border: #3a4048;
-  --border-soft: #2e333b;
-  --text: #e3e6ec;
-  --fg: #b7bdc9;
-  --muted: #6b7280;
-  --muted-soft: #545a66;
-  --accent: #a170e1;
-  --accent-dim: #815ab5;
-  --accent-glow: rgba(161,112,225,0.16);
-  --green: #7fd48a;
-  --warn: #e0a030;
-  --fail: #e05252;
-  --pass-text: #1a1a1a;
-  --user-bubble: #2e333f;
-  --mana-bubble: #262a32;
-}
-:root[data-theme="light"] {
-  --bg: #f4f2ee;
-  --bg-deep: #eae7e1;
-  --panel: #ffffff;
-  --panel-2: #f7f5f1;
-  --border: #ded9d0;
-  --border-soft: #e8e4dc;
-  --text: #201e1b;
-  --fg: #3c3a36;
-  --muted: #8a8478;
-  --muted-soft: #a39d90;
-  --accent: #7a45c0;
-  --accent-dim: #6738a5;
-  --accent-glow: rgba(122,69,192,0.12);
-  --green: #2f7d3c;
-  --warn: #a15c00;
-  --fail: #b83232;
-  --pass-text: #ffffff;
-  --user-bubble: #efe9fb;
-  --mana-bubble: #f2f0eb;
-}
+/* Issue #394: tokens now live in theme-tokens.css, shared in shape (not
+   value) with windows-launcher's own copy. */
+@import url("theme-tokens.css");
 *{box-sizing:border-box}
 html,body{height:100%;overflow-x:hidden;}
 body{
@@ -232,12 +142,12 @@ select{font-family:inherit;color:var(--text)}
 .preset-editor-actions{display:flex;gap:8px}
 .preset-editor-actions button{border:1px solid var(--border-soft);background:var(--panel-2);border-radius:6px;padding:6px 10px;}
 #skillNameInput:disabled{opacity:0.6}
-#skillsStatus.error{color:#e07070}
+#skillsStatus.error{color:var(--error-text)}
 .skills-pending{margin-bottom:10px}
 .skills-pending-label{font-size:10px;text-transform:uppercase;letter-spacing:0.05em;color:var(--muted);margin-bottom:4px}
 .skills-pending-item{display:flex;flex-direction:column;gap:4px;padding:8px;border:1px solid var(--border-soft);border-radius:6px;background:var(--panel-2);margin-bottom:6px;font-size:12px}
 .skills-pending-item-summary{color:var(--text)}
-.skills-pending-item-flags{color:#e0a030;font-size:11px}
+.skills-pending-item-flags{color:var(--warn);font-size:11px}
 .skills-pending-item-actions{display:flex;gap:8px;margin-top:2px}
 .skills-pending-item-actions button{padding:4px 8px;font-size:11px;border:1px solid var(--border-soft);background:var(--panel-2);border-radius:6px;}
 
@@ -262,7 +172,7 @@ select{font-family:inherit;color:var(--text)}
 .plugin-switch.on{background:var(--accent-glow);border-color:var(--accent-dim);}
 .plugin-switch.on::after{transform:translateX(14px);background:var(--accent);}
 .plugin-switch:disabled{opacity:0.6;cursor:default;}
-.memory-fact-flag{color:#e0a030;font-size:11px;}
+.memory-fact-flag{color:var(--warn);font-size:11px;}
 .memory-archive-btn{flex-shrink:0;}
 #memorySearchInput{width:100%;margin-bottom:10px;}
 
@@ -288,6 +198,23 @@ select{font-family:inherit;color:var(--text)}
 .model-scan-item-info strong{font-size:12.5px;color:var(--text);font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 .model-scan-item-info span{font-size:11px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 .model-scan-item-size{font-size:11px;color:var(--muted);flex-shrink:0;}
+
+/* Applied edits (issue #428): restorable snapshots, same row shape as
+   .model-scan-item. */
+.snapshot-item{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:8px 10px;border:1px solid var(--border-soft);border-radius:6px;background:var(--panel-2);margin-bottom:6px;}
+.snapshot-item-info{display:flex;flex-direction:column;gap:2px;min-width:0;}
+.snapshot-item-path{font-size:12.5px;color:var(--text);font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.snapshot-item-meta{font-size:11px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+
+/* Pending edits / hunk review (issue #427) */
+#proposalReviewPath{font-size:13px;font-weight:600;margin-top:8px;}
+.hunk-card{border:1px solid var(--border-soft);border-radius:6px;padding:8px 10px;margin-bottom:10px;}
+.hunk-card-header{display:flex;align-items:center;gap:6px;font-size:12px;margin-bottom:6px;cursor:pointer;}
+.hunk-diff{font-family:monospace;font-size:12px;white-space:pre-wrap;overflow-x:auto;margin:0;display:block;}
+.hunk-diff span{display:block;}
+.hunk-line-add{color:var(--green);}
+.hunk-line-del{color:var(--fail);}
+.hunk-line-ctx{color:var(--muted);}
 
 /* Onboarding modal */
 .modal{ position:fixed; inset:0; display:none; align-items:center; justify-content:center; background:rgba(0,0,0,0.55); z-index:1000 }

@@ -3,6 +3,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
+const { spawnSync } = require("node:child_process");
 
 const { createApp } = require("../server");
 const {
@@ -13,6 +14,22 @@ const {
   createZedIntegration,
 } = require("../zed-integration");
 const { withServer } = require("./helpers");
+
+// Issue #428: every createEditorIntegrations() call in this file that
+// doesn't pass its own snapshotsDir would otherwise fall through to
+// edit-snapshot-store.js's real default (node-bot/data/edit-snapshots) --
+// writing real snapshot files outside the test's own tempDir on every
+// successful approveEditProposal() call, accumulating across test runs.
+// One env override for the whole file keeps every test's snapshots inside
+// an isolated, disposable directory instead.
+const editSnapshotsTestDir = fs.mkdtempSync(
+  path.join(os.tmpdir(), "mana-zed-edit-snapshots-"),
+);
+process.env.MANA_EDIT_SNAPSHOTS_DIR = editSnapshotsTestDir;
+test.after(() => {
+  delete process.env.MANA_EDIT_SNAPSHOTS_DIR;
+  fs.rmSync(editSnapshotsTestDir, { recursive: true, force: true });
+});
 
 test("createZedIntegration reports configured env binary when it exists", () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mana-zed-test-"));
@@ -341,16 +358,20 @@ test("editor integrations approve a pending proposal and write the proposed cont
   try {
     const workspaceStore = createEditorWorkspaceStore();
     workspaceStore.setWorkspace(tempDir, { editor: "zed" });
+    // Issue #428: approveEditProposal now also calls now() once for the
+    // snapshot it records, between the proposal's own creation timestamp
+    // and its appliedAt -- one more entry than before this issue.
     const timestamps = [
       new Date("2026-06-29T00:00:00.000Z"),
       new Date("2026-06-29T00:01:00.000Z"),
+      new Date("2026-06-29T00:02:00.000Z"),
     ];
     const editors = createEditorIntegrations({
       env: {},
       commandResolver: (command) => command,
       workspaceStore,
       idFactory: () => "proposal-approve-1",
-      now: () => timestamps.shift() || new Date("2026-06-29T00:02:00.000Z"),
+      now: () => timestamps.shift() || new Date("2026-06-29T00:03:00.000Z"),
     });
 
     editors.createEditProposal({
@@ -365,7 +386,7 @@ test("editor integrations approve a pending proposal and write the proposed cont
 
     assert.equal(applied.id, "proposal-approve-1");
     assert.equal(applied.status, "applied");
-    assert.equal(applied.appliedAt, "2026-06-29T00:01:00.000Z");
+    assert.equal(applied.appliedAt, "2026-06-29T00:02:00.000Z");
     assert.equal(fs.readFileSync(sourceFile, "utf8"), "const value = 2;\n");
     assert.equal(editors.getEditProposal("proposal-approve-1").status, "applied");
   } finally {
@@ -401,6 +422,154 @@ test("editor integrations reject approval when the file changed after proposal c
     );
     assert.equal(fs.readFileSync(sourceFile, "utf8"), "const value = 3;\n");
     assert.equal(editors.getEditProposal("proposal-conflict-1").status, "pending");
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("a proposal with two well-separated changes gets two independently addressable hunks", () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mana-editor-hunks-"));
+  const original = Array.from({ length: 20 }, (_, i) => `line${i + 1}`).join("\n") + "\n";
+  fs.writeFileSync(path.join(tempDir, "src.js"), original);
+
+  try {
+    const workspaceStore = createEditorWorkspaceStore();
+    workspaceStore.setWorkspace(tempDir, { editor: "zed" });
+    const editors = createEditorIntegrations({
+      env: {},
+      commandResolver: (command) => command,
+      workspaceStore,
+      idFactory: () => "proposal-hunks-1",
+    });
+
+    const lines = original.split("\n");
+    lines[1] = "CHANGED2";
+    lines[17] = "CHANGED18";
+    const proposedContent = lines.join("\n");
+
+    const proposal = editors.createEditProposal({
+      path: "src.js",
+      proposedContent,
+      summary: "Two separate changes",
+    });
+
+    assert.equal(proposal.hunks.length, 2);
+    assert.deepEqual(proposal.hunks.map((h) => h.id), ["hunk-0", "hunk-1"]);
+    assert.equal(
+      editors.listEditProposals().find((p) => p.id === "proposal-hunks-1").hunkCount,
+      2,
+    );
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("approveEditProposal with acceptedHunkIds applies only the selected hunks", () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mana-editor-hunks-partial-"));
+  const original = Array.from({ length: 20 }, (_, i) => `line${i + 1}`).join("\n") + "\n";
+  const sourceFile = path.join(tempDir, "src.js");
+  fs.writeFileSync(sourceFile, original);
+
+  try {
+    const workspaceStore = createEditorWorkspaceStore();
+    workspaceStore.setWorkspace(tempDir, { editor: "zed" });
+    const editors = createEditorIntegrations({
+      env: {},
+      commandResolver: (command) => command,
+      workspaceStore,
+      idFactory: () => "proposal-hunks-partial-1",
+    });
+
+    const lines = original.split("\n");
+    lines[1] = "CHANGED2";
+    lines[17] = "CHANGED18";
+    const proposal = editors.createEditProposal({
+      path: "src.js",
+      proposedContent: lines.join("\n"),
+      summary: "Two separate changes",
+    });
+    assert.equal(proposal.hunks.length, 2);
+
+    const applied = editors.approveEditProposal("proposal-hunks-partial-1", {
+      acceptedHunkIds: ["hunk-1"],
+    });
+
+    assert.deepEqual(applied.acceptedHunkIds, ["hunk-1"]);
+    const resultLines = fs.readFileSync(sourceFile, "utf8").split("\n");
+    // Rejected hunk-0 -- line2 stays as it was in the original file.
+    assert.equal(resultLines[1], "line2");
+    // Accepted hunk-1 -- line18 takes the proposed change.
+    assert.equal(resultLines[17], "CHANGED18");
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("approveEditProposal rejects an unknown hunk id without writing or snapshotting", () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mana-editor-hunks-unknown-"));
+  const sourceFile = path.join(tempDir, "src.js");
+  fs.writeFileSync(sourceFile, "const value = 1;\n");
+
+  try {
+    const workspaceStore = createEditorWorkspaceStore();
+    workspaceStore.setWorkspace(tempDir, { editor: "zed" });
+    const editors = createEditorIntegrations({
+      env: {},
+      commandResolver: (command) => command,
+      workspaceStore,
+      idFactory: () => "proposal-hunks-unknown-1",
+    });
+
+    editors.createEditProposal({
+      path: "src.js",
+      proposedContent: "const value = 2;\n",
+      summary: "Update value",
+    });
+
+    assert.throws(
+      () =>
+        editors.approveEditProposal("proposal-hunks-unknown-1", {
+          acceptedHunkIds: ["hunk-99"],
+        }),
+      /no hunk\(s\): hunk-99/,
+    );
+    assert.equal(fs.readFileSync(sourceFile, "utf8"), "const value = 1;\n");
+    assert.equal(editors.getEditProposal("proposal-hunks-unknown-1").status, "pending");
+    assert.deepEqual(editors.listEditSnapshots(), []);
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("approveEditProposal with acceptedHunkIds: [] rejects every hunk as a no-op", () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mana-editor-hunks-none-"));
+  const sourceFile = path.join(tempDir, "src.js");
+  fs.writeFileSync(sourceFile, "const value = 1;\n");
+
+  try {
+    const workspaceStore = createEditorWorkspaceStore();
+    workspaceStore.setWorkspace(tempDir, { editor: "zed" });
+    const editors = createEditorIntegrations({
+      env: {},
+      commandResolver: (command) => command,
+      workspaceStore,
+      idFactory: () => "proposal-hunks-none-1",
+    });
+
+    editors.createEditProposal({
+      path: "src.js",
+      proposedContent: "const value = 2;\n",
+      summary: "Update value",
+    });
+
+    const applied = editors.approveEditProposal("proposal-hunks-none-1", {
+      acceptedHunkIds: [],
+    });
+
+    assert.equal(applied.alreadyApplied, true);
+    assert.equal(applied.status, "applied");
+    assert.equal(fs.readFileSync(sourceFile, "utf8"), "const value = 1;\n");
+    assert.deepEqual(editors.listEditSnapshots(), []);
   } finally {
     fs.rmSync(tempDir, { recursive: true, force: true });
   }
@@ -669,9 +838,13 @@ test("createApp approves an edit proposal through the shared backend route", asy
   try {
     const workspaceStore = createEditorWorkspaceStore();
     workspaceStore.setWorkspace(tempDir, { editor: "zed" });
+    // Issue #428: one more now() call than before (the snapshot recorded
+    // during approve), between the proposal's creation timestamp and its
+    // appliedAt.
     const timestamps = [
       new Date("2026-06-29T00:00:00.000Z"),
       new Date("2026-06-29T00:01:00.000Z"),
+      new Date("2026-06-29T00:02:00.000Z"),
     ];
     const app = createApp({
       editors: createEditorIntegrations({
@@ -679,7 +852,7 @@ test("createApp approves an edit proposal through the shared backend route", asy
         commandResolver: (command) => command,
         workspaceStore,
         idFactory: () => "proposal-route-approve-1",
-        now: () => timestamps.shift() || new Date("2026-06-29T00:02:00.000Z"),
+        now: () => timestamps.shift() || new Date("2026-06-29T00:03:00.000Z"),
         spawn: () => ({ once: (event, handler) => event === "spawn" && handler() }),
       }),
     });
@@ -704,8 +877,63 @@ test("createApp approves an edit proposal through the shared backend route", asy
       assert.equal(approveResponse.status, 200);
       assert.equal(approveBody.proposal.id, "proposal-route-approve-1");
       assert.equal(approveBody.proposal.status, "applied");
-      assert.equal(approveBody.proposal.appliedAt, "2026-06-29T00:01:00.000Z");
+      assert.equal(approveBody.proposal.appliedAt, "2026-06-29T00:02:00.000Z");
       assert.equal(fs.readFileSync(sourceFile, "utf8"), "console.log('after');\n");
+    });
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("createApp approves only the hunks named in the request body", async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mana-editor-route-hunks-"));
+  const original = Array.from({ length: 20 }, (_, i) => `line${i + 1}`).join("\n") + "\n";
+  const sourceFile = path.join(tempDir, "app.js");
+  fs.writeFileSync(sourceFile, original);
+
+  try {
+    const workspaceStore = createEditorWorkspaceStore();
+    workspaceStore.setWorkspace(tempDir, { editor: "zed" });
+    const app = createApp({
+      editors: createEditorIntegrations({
+        env: {},
+        commandResolver: (command) => command,
+        workspaceStore,
+        idFactory: () => "proposal-route-hunks-1",
+        spawn: () => ({ once: (event, handler) => event === "spawn" && handler() }),
+      }),
+    });
+
+    const lines = original.split("\n");
+    lines[1] = "CHANGED2";
+    lines[17] = "CHANGED18";
+
+    await withServer(app, async (baseUrl) => {
+      await fetch(`${baseUrl}/editors/workspace/proposals`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          path: "app.js",
+          proposedContent: lines.join("\n"),
+          summary: "Two separate changes",
+        }),
+      });
+
+      const approveResponse = await fetch(
+        `${baseUrl}/editors/workspace/proposals/proposal-route-hunks-1/approve`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ acceptedHunkIds: ["hunk-1"] }),
+        },
+      );
+      const approveBody = await approveResponse.json();
+
+      assert.equal(approveResponse.status, 200);
+      assert.deepEqual(approveBody.proposal.acceptedHunkIds, ["hunk-1"]);
+      const resultLines = fs.readFileSync(sourceFile, "utf8").split("\n");
+      assert.equal(resultLines[1], "line2");
+      assert.equal(resultLines[17], "CHANGED18");
     });
   } finally {
     fs.rmSync(tempDir, { recursive: true, force: true });
@@ -749,6 +977,32 @@ function withTruncationWorkspace(originalContent, run) {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mana-zed-trunc-"));
   fs.mkdirSync(path.join(tempDir, "src"), { recursive: true });
   fs.writeFileSync(path.join(tempDir, "src", "app.js"), originalContent);
+  try {
+    const workspaceStore = createEditorWorkspaceStore({
+      now: () => new Date("2026-08-17T00:00:00.000Z"),
+    });
+    workspaceStore.setWorkspace(tempDir, { editor: "zed" });
+    run(
+      createEditorIntegrations({
+        env: {},
+        commandResolver: (command) => command,
+        workspaceStore,
+      }),
+    );
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
+// Same shape as withTruncationWorkspace, but for issue #420's syntax-check
+// tests, which need the original file at a specific extension-bearing path
+// (e.g. config.json, script.py) rather than always src/app.js -- createEditProposal
+// reads the original file first, so it must actually exist at that path.
+function withProposalWorkspace(relativePath, originalContent, run) {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mana-zed-proposal-"));
+  const fullPath = path.join(tempDir, relativePath);
+  fs.mkdirSync(path.dirname(fullPath), { recursive: true });
+  fs.writeFileSync(fullPath, originalContent);
   try {
     const workspaceStore = createEditorWorkspaceStore({
       now: () => new Date("2026-08-17T00:00:00.000Z"),
@@ -812,6 +1066,116 @@ test("a proposal against an empty original is not treated as truncation (issue #
     const proposal = editors.createEditProposal({
       path: "src/app.js",
       proposedContent: "const created = true;\n",
+    });
+    assert.equal(proposal.status, "pending");
+  });
+});
+
+test("a syntactically broken JS proposal is rejected before it reaches review (issue #420)", () => {
+  withTruncationWorkspace("const a = 1;\n", (editors) => {
+    assert.throws(
+      () =>
+        editors.createEditProposal({
+          path: "src/app.js",
+          proposedContent: "function broken( {\n  return 1\n",
+        }),
+      /does not parse/,
+    );
+  });
+});
+
+test("a valid JS proposal is unaffected by the syntax check (issue #420)", () => {
+  withTruncationWorkspace("const a = 1;\n", (editors) => {
+    const proposal = editors.createEditProposal({
+      path: "src/app.js",
+      proposedContent: "const a = 1;\nconst b = 2;\n",
+    });
+    assert.equal(proposal.status, "pending");
+  });
+});
+
+test("a .mjs proposal using import/export is not rejected by the JS syntax check (issue #420)", () => {
+  // vm.Script parses "script" goal, not "module" goal, so it throws on
+  // import/export even though this is perfectly valid ESM -- .mjs must be
+  // excluded from the vm.Script check rather than falsely flagged as broken.
+  withProposalWorkspace("lib/util.mjs", "export const a = 1;\n", (editors) => {
+    const proposal = editors.createEditProposal({
+      path: "lib/util.mjs",
+      proposedContent: "import { readFile } from \"node:fs\";\nexport const a = 1;\n",
+    });
+    assert.equal(proposal.status, "pending");
+  });
+});
+
+test("a syntactically broken JSON proposal is rejected (issue #420)", () => {
+  withProposalWorkspace("config.json", '{"a": 1}\n', (editors) => {
+    assert.throws(
+      () =>
+        editors.createEditProposal({
+          path: "config.json",
+          proposedContent: '{"a": 1,}\n',
+        }),
+      /does not parse/,
+    );
+  });
+});
+
+test("a valid JSON proposal is unaffected by the syntax check (issue #420)", () => {
+  withProposalWorkspace("config.json", '{"a": 1}\n', (editors) => {
+    const proposal = editors.createEditProposal({
+      path: "config.json",
+      proposedContent: '{"a": 2}\n',
+    });
+    assert.equal(proposal.status, "pending");
+  });
+});
+
+// Skips gracefully rather than failing if this checkout has no `python` on
+// PATH -- exercising the real subprocess-based Python check (not a mock)
+// is valuable when possible, but this shouldn't break the suite elsewhere.
+const pythonAvailable = (() => {
+  const result = spawnSync("python", ["--version"], { encoding: "utf8", windowsHide: true });
+  return !result.error && result.status === 0;
+})();
+
+test(
+  "a syntactically broken Python proposal is rejected (issue #420)",
+  { skip: !pythonAvailable && "no python on PATH in this checkout" },
+  () => {
+    withProposalWorkspace("script.py", "a = 1\n", (editors) => {
+      assert.throws(
+        () =>
+          editors.createEditProposal({
+            path: "script.py",
+            proposedContent: "def broken(:\n    return 1\n",
+          }),
+        /does not parse/,
+      );
+    });
+  },
+);
+
+test(
+  "a valid Python proposal is unaffected by the syntax check (issue #420)",
+  { skip: !pythonAvailable && "no python on PATH in this checkout" },
+  () => {
+    withProposalWorkspace("script.py", "a = 1\n", (editors) => {
+      const proposal = editors.createEditProposal({
+        path: "script.py",
+        proposedContent: "a = 1\nb = 2\n",
+      });
+      assert.equal(proposal.status, "pending");
+    });
+  },
+);
+
+test("a file extension with no known parser is not blocked by the syntax check (issue #420)", () => {
+  withProposalWorkspace("notes.txt", "hello\n", (editors) => {
+    const proposal = editors.createEditProposal({
+      path: "notes.txt",
+      // Deliberately not valid anything -- .txt has no parser registered,
+      // so this must pass through unchecked, not be treated as an error.
+      proposedContent: "this isn't valid JS or JSON, and that's fine\n",
     });
     assert.equal(proposal.status, "pending");
   });
@@ -1051,6 +1415,278 @@ test("a write that does not land is reported, not marked applied (issue #387)", 
     assert.equal(editors.getEditProposal(proposal.id).status, "pending");
   } finally {
     fs.writeFileSync = realWriteFileSync;
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+// Issue #428: restorable snapshots of applied edits, independent of git.
+test("approving a proposal records a snapshot of the pre-edit content, listed by listEditSnapshots", () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mana-editor-snapshot-"));
+  const snapshotsDir = fs.mkdtempSync(path.join(os.tmpdir(), "mana-editor-snapshot-store-"));
+  const sourceFile = path.join(tempDir, "src.js");
+  fs.writeFileSync(sourceFile, "const value = 1;\n");
+
+  try {
+    const workspaceStore = createEditorWorkspaceStore();
+    workspaceStore.setWorkspace(tempDir, { editor: "zed" });
+    const editors = createEditorIntegrations({
+      env: {},
+      commandResolver: (command) => command,
+      workspaceStore,
+      idFactory: () => "proposal-snap-1",
+      snapshotsDir,
+    });
+
+    editors.createEditProposal({
+      path: "src.js",
+      proposedContent: "const value = 2;\n",
+      summary: "Update value",
+    });
+
+    assert.deepEqual(editors.listEditSnapshots(), []);
+
+    const applied = editors.approveEditProposal("proposal-snap-1");
+    assert.ok(applied.snapshotId);
+
+    const snapshots = editors.listEditSnapshots();
+    assert.equal(snapshots.length, 1);
+    assert.equal(snapshots[0].id, applied.snapshotId);
+    assert.equal(snapshots[0].proposalId, "proposal-snap-1");
+    assert.equal(snapshots[0].relativePath, "src.js");
+    assert.equal(snapshots[0].summary, "Update value");
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+    fs.rmSync(snapshotsDir, { recursive: true, force: true });
+  }
+});
+
+test("restoreEditSnapshot writes the pre-edit content back, verifies it, and removes the snapshot", () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mana-editor-restore-"));
+  const snapshotsDir = fs.mkdtempSync(path.join(os.tmpdir(), "mana-editor-restore-store-"));
+  const sourceFile = path.join(tempDir, "src.js");
+  fs.writeFileSync(sourceFile, "const value = 1;\n");
+
+  try {
+    const workspaceStore = createEditorWorkspaceStore();
+    workspaceStore.setWorkspace(tempDir, { editor: "zed" });
+    const editors = createEditorIntegrations({
+      env: {},
+      commandResolver: (command) => command,
+      workspaceStore,
+      idFactory: () => "proposal-restore-1",
+      snapshotsDir,
+    });
+
+    editors.createEditProposal({
+      path: "src.js",
+      proposedContent: "const value = 2;\n",
+      summary: "Update value",
+    });
+    const applied = editors.approveEditProposal("proposal-restore-1");
+    assert.equal(fs.readFileSync(sourceFile, "utf8"), "const value = 2;\n");
+
+    const restored = editors.restoreEditSnapshot(applied.snapshotId);
+    assert.equal(restored.id, applied.snapshotId);
+    assert.equal(restored.relativePath, "src.js");
+    assert.equal(fs.readFileSync(sourceFile, "utf8"), "const value = 1;\n");
+
+    // Restored once -- it's consumed, not a repeatable checkpoint.
+    assert.deepEqual(editors.listEditSnapshots(), []);
+    assert.throws(
+      () => editors.restoreEditSnapshot(applied.snapshotId),
+      /edit snapshot not found/,
+    );
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+    fs.rmSync(snapshotsDir, { recursive: true, force: true });
+  }
+});
+
+test("a snapshot recorded in one workspace is invisible and unrestorable after switching to another", () => {
+  const workspaceA = fs.mkdtempSync(path.join(os.tmpdir(), "mana-editor-snapshot-ws-a-"));
+  const workspaceB = fs.mkdtempSync(path.join(os.tmpdir(), "mana-editor-snapshot-ws-b-"));
+  const snapshotsDir = fs.mkdtempSync(path.join(os.tmpdir(), "mana-editor-snapshot-ws-store-"));
+  fs.writeFileSync(path.join(workspaceA, "app.js"), "const value = 1;\n");
+  fs.writeFileSync(path.join(workspaceB, "app.js"), "const other = 1;\n");
+
+  try {
+    const workspaceStore = createEditorWorkspaceStore();
+    workspaceStore.setWorkspace(workspaceA, { editor: "zed" });
+    const editors = createEditorIntegrations({
+      env: {},
+      commandResolver: (command) => command,
+      workspaceStore,
+      idFactory: () => "proposal-ws-a",
+      snapshotsDir,
+    });
+
+    editors.createEditProposal({
+      path: "app.js",
+      proposedContent: "const value = 2;\n",
+      summary: "Update value",
+    });
+    const applied = editors.approveEditProposal("proposal-ws-a");
+    assert.equal(editors.listEditSnapshots().length, 1);
+
+    // Switching the active workspace must not expose workspace A's
+    // snapshot -- app.js in workspace B is an unrelated file that happens
+    // to share a name, and restoring against it would silently overwrite
+    // it with workspace A's content.
+    workspaceStore.setWorkspace(workspaceB, { editor: "zed" });
+    assert.deepEqual(editors.listEditSnapshots(), []);
+    assert.throws(
+      () => editors.restoreEditSnapshot(applied.snapshotId),
+      /edit snapshot belongs to a different workspace/,
+    );
+    assert.equal(fs.readFileSync(path.join(workspaceB, "app.js"), "utf8"), "const other = 1;\n");
+  } finally {
+    fs.rmSync(workspaceA, { recursive: true, force: true });
+    fs.rmSync(workspaceB, { recursive: true, force: true });
+    fs.rmSync(snapshotsDir, { recursive: true, force: true });
+  }
+});
+
+test("restoreEditSnapshot rejects an unknown snapshot id", () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mana-editor-restore-unknown-"));
+  try {
+    const workspaceStore = createEditorWorkspaceStore();
+    workspaceStore.setWorkspace(tempDir, { editor: "zed" });
+    const editors = createEditorIntegrations({
+      env: {},
+      commandResolver: (command) => command,
+      workspaceStore,
+    });
+
+    assert.throws(
+      () => editors.restoreEditSnapshot("no-such-snapshot"),
+      /edit snapshot not found/,
+    );
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("an already-applied (no-op) approve does not record a new snapshot", () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mana-editor-snapshot-noop-"));
+  const snapshotsDir = fs.mkdtempSync(path.join(os.tmpdir(), "mana-editor-snapshot-noop-store-"));
+  const sourceFile = path.join(tempDir, "src.js");
+  fs.writeFileSync(sourceFile, "const value = 2;\n");
+
+  try {
+    const workspaceStore = createEditorWorkspaceStore();
+    workspaceStore.setWorkspace(tempDir, { editor: "zed" });
+    const editors = createEditorIntegrations({
+      env: {},
+      commandResolver: (command) => command,
+      workspaceStore,
+      idFactory: () => "proposal-noop-1",
+      snapshotsDir,
+    });
+
+    // The file already holds the proposed content before approval -- the
+    // alreadyApplied path (issue #387), which never reaches the write this
+    // issue's snapshot sits in front of.
+    editors.createEditProposal({
+      path: "src.js",
+      proposedContent: "const value = 2;\n",
+      summary: "No-op",
+    });
+    const applied = editors.approveEditProposal("proposal-noop-1");
+
+    assert.equal(applied.alreadyApplied, true);
+    assert.equal(applied.snapshotId, undefined);
+    assert.deepEqual(editors.listEditSnapshots(), []);
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+    fs.rmSync(snapshotsDir, { recursive: true, force: true });
+  }
+});
+
+test("createApp lists and restores edit snapshots through the shared backend routes", async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mana-editor-route-snapshot-"));
+  const snapshotsDir = fs.mkdtempSync(path.join(os.tmpdir(), "mana-editor-route-snapshot-store-"));
+  const sourceFile = path.join(tempDir, "app.js");
+  fs.writeFileSync(sourceFile, "console.log('before');\n");
+
+  try {
+    const workspaceStore = createEditorWorkspaceStore();
+    workspaceStore.setWorkspace(tempDir, { editor: "zed" });
+    const app = createApp({
+      editors: createEditorIntegrations({
+        env: {},
+        commandResolver: (command) => command,
+        workspaceStore,
+        idFactory: () => "proposal-route-snapshot-1",
+        snapshotsDir,
+        spawn: () => ({ once: (event, handler) => event === "spawn" && handler() }),
+      }),
+    });
+
+    await withServer(app, async (baseUrl) => {
+      await fetch(`${baseUrl}/editors/workspace/proposals`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          path: "app.js",
+          proposedContent: "console.log('after');\n",
+          summary: "Change log text",
+        }),
+      });
+      const approveResponse = await fetch(
+        `${baseUrl}/editors/workspace/proposals/proposal-route-snapshot-1/approve`,
+        { method: "POST" },
+      );
+      const approveBody = await approveResponse.json();
+      const snapshotId = approveBody.proposal.snapshotId;
+      assert.ok(snapshotId);
+
+      const listResponse = await fetch(`${baseUrl}/editors/workspace/snapshots`);
+      const listBody = await listResponse.json();
+      assert.equal(listResponse.status, 200);
+      assert.equal(listBody.snapshots.length, 1);
+      assert.equal(listBody.snapshots[0].id, snapshotId);
+
+      const restoreResponse = await fetch(
+        `${baseUrl}/editors/workspace/snapshots/${snapshotId}/restore`,
+        { method: "POST" },
+      );
+      const restoreBody = await restoreResponse.json();
+      assert.equal(restoreResponse.status, 200);
+      assert.equal(restoreBody.restored.id, snapshotId);
+      assert.equal(fs.readFileSync(sourceFile, "utf8"), "console.log('before');\n");
+
+      const listAfterRestore = await fetch(`${baseUrl}/editors/workspace/snapshots`);
+      assert.deepEqual((await listAfterRestore.json()).snapshots, []);
+    });
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+    fs.rmSync(snapshotsDir, { recursive: true, force: true });
+  }
+});
+
+test("createApp returns an error when restoring a missing snapshot", async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mana-editor-route-snapshot-missing-"));
+  try {
+    const workspaceStore = createEditorWorkspaceStore();
+    workspaceStore.setWorkspace(tempDir, { editor: "zed" });
+    const app = createApp({
+      editors: createEditorIntegrations({
+        env: {},
+        commandResolver: (command) => command,
+        workspaceStore,
+      }),
+    });
+
+    await withServer(app, async (baseUrl) => {
+      const response = await fetch(
+        `${baseUrl}/editors/workspace/snapshots/no-such-snapshot/restore`,
+        { method: "POST" },
+      );
+      const body = await response.json();
+      assert.equal(response.status, 400);
+      assert.match(body.error, /edit snapshot not found/);
+    });
+  } finally {
     fs.rmSync(tempDir, { recursive: true, force: true });
   }
 });

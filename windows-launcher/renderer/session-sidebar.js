@@ -68,6 +68,11 @@ function clearChatLog() {
   if (chatLogEl) {
     chatLogEl.innerHTML = "";
   }
+  // Issue #391: version threads (assignArtifactVersion) shouldn't bleed
+  // across sessions -- resetSessionArtifacts lives in renderer.js, which
+  // loads before this file and shares its global scope (see this file's
+  // own header comment).
+  resetSessionArtifacts();
 }
 
 async function loadSessionHistory(sessionId) {
@@ -140,6 +145,20 @@ function renderSessionList(sessions) {
 
     item.appendChild(nameEl);
     item.appendChild(metaEl);
+
+    // Issue #401: a plain, user-stated goal for this session -- only
+    // rendered when one is actually set, same as any other optional field.
+    if (session.goal) {
+      const goalEl = document.createElement("div");
+      goalEl.className = "session-goal";
+      goalEl.textContent = `Goal: ${session.goal}`;
+      // Raw text, separate from the rendered "Goal: " label -- so
+      // beginInlineGoalEdit doesn't have to parse a literal prefix back out
+      // of the display string (which would corrupt a goal that itself
+      // happens to start with "Goal: ").
+      goalEl.dataset.rawGoal = session.goal;
+      item.appendChild(goalEl);
+    }
 
     item.addEventListener("click", () => {
       if (session.sessionId !== currentSessionId) {
@@ -229,9 +248,65 @@ function beginInlineRename(sessionId) {
   input.addEventListener("blur", commit);
 }
 
-function showConfirmModal(message) {
+// Issue #401: same inline-edit-and-PATCH shape as beginInlineRename above,
+// for the session's optional goal instead of its required name. An empty
+// submitted value clears the goal (sessions-capability.js's PATCH route
+// treats an empty "goal" string the same way it already treats "name").
+function beginInlineGoalEdit(sessionId) {
+  const item = sessionListEl.querySelector(`[data-session-id="${CSS.escape(sessionId)}"]`);
+  if (!item) {
+    return;
+  }
+  const existingGoalEl = item.querySelector(".session-goal");
+  const currentGoal = existingGoalEl ? existingGoalEl.dataset.rawGoal || "" : "";
+
+  const input = document.createElement("input");
+  input.className = "session-goal-input";
+  input.placeholder = "Set a goal for this session...";
+  input.value = currentGoal;
+  if (existingGoalEl) {
+    existingGoalEl.replaceWith(input);
+  } else {
+    item.querySelector(".session-meta").insertAdjacentElement("afterend", input);
+  }
+  input.focus();
+  input.select();
+
+  let settled = false;
+  async function commit() {
+    if (settled) return;
+    settled = true;
+    const newGoal = input.value.trim();
+    if (newGoal !== currentGoal) {
+      try {
+        await fetch(`${SESSIONS_API_BASE}/sessions/${encodeURIComponent(sessionId)}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ goal: newGoal }),
+        });
+      } catch (e) {
+        console.warn("Mana: failed to set session goal", e);
+      }
+    }
+    refreshSessionList();
+  }
+
+  input.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      commit();
+    } else if (event.key === "Escape") {
+      settled = true;
+      refreshSessionList();
+    }
+  });
+  input.addEventListener("blur", commit);
+}
+
+function showConfirmModal(message, okLabel) {
   return new Promise((resolve) => {
     confirmModalMessageEl.textContent = message;
+    confirmModalOkEl.textContent = okLabel || "Delete";
     confirmModalEl.hidden = false;
 
     function cleanup(result) {
@@ -345,6 +420,8 @@ sessionContextMenuEl.querySelectorAll("button[data-action]").forEach((button) =>
     }
     if (action === "rename") {
       beginInlineRename(sessionId);
+    } else if (action === "goal") {
+      beginInlineGoalEdit(sessionId);
     } else if (action === "delete") {
       deleteSessionWithConfirm(sessionId);
     } else if (action === "memory") {

@@ -211,7 +211,7 @@ Current behavior:
 - Optional `line` and `column` values are passed as `file:line:column`.
 - Mana does not silently inspect or modify code through this integration. File lists and reads require explicit endpoint calls, and edit proposals stay in memory for review instead of being applied to disk.
 - Coding replies still use the local coding model profile unless remote AI is explicitly enabled.
-- Zed can also launch Mana as a local External Agent through `node-bot\mana-acp-agent.js --acp`; see [docs/zed_external_agent.md](docs/zed_external_agent.md).
+- `node-bot\mana-acp-agent.js --acp` is a protocol-generic [Agent Client Protocol](https://agentclientprotocol.com) agent that any ACP client can launch over stdio -- Zed's `agent_servers` today, and other editors' ACP clients as they gain one; see [docs/zed_external_agent.md](docs/zed_external_agent.md) for the Zed setup steps.
 
 ## Model Stack
 

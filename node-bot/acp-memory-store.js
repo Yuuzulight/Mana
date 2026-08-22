@@ -565,13 +565,23 @@ function createAcpMemoryStore(options = {}) {
     if (mentionsBlock) {
       const content = truncateWholeLines(mentionsBlock, maxChars);
       if (content) {
-        entries.push({ role: "system", position: mentionsPosition, content });
+        entries.push({
+          role: "system",
+          position: mentionsPosition,
+          content,
+          truncated: content !== mentionsBlock,
+        });
       }
     }
     if (factsBlock) {
       const content = truncateWholeLines(factsBlock, maxChars);
       if (content) {
-        entries.push({ role: "system", position: factsPosition, content });
+        entries.push({
+          role: "system",
+          position: factsPosition,
+          content,
+          truncated: content !== factsBlock,
+        });
       }
     }
     return { entries };
@@ -705,6 +715,23 @@ function createAcpMemoryStore(options = {}) {
     });
   }
 
+  // Issue #401: a plain, user-stated goal for a session -- deliberately
+  // never inferred by the model, so it's set the same way a name is (one
+  // string, replace-in-place). An empty string clears it, same as
+  // renameSession's own empty-name-becomes-null behavior.
+  function setSessionGoal(sessionId, goal) {
+    const existing = getSession(cleanText(sessionId, 240));
+    if (!existing) {
+      return null;
+    }
+
+    return saveSession({
+      ...existing,
+      goal: cleanText(goal, 500) || null,
+      updatedAt: now(),
+    });
+  }
+
   // Issue #350: branch a session into a new one carrying its history, so a
   // different approach can be tried without destroying the thread that got
   // you there. Resuming needed nothing new -- a session is a file keyed by
@@ -768,6 +795,7 @@ function createAcpMemoryStore(options = {}) {
           return {
             sessionId: parsed.sessionId,
             name: parsed.name || null,
+            goal: parsed.goal || null,
             createdAt: parsed.createdAt || null,
             updatedAt: parsed.updatedAt || null,
             turnCount: Array.isArray(parsed.turns) ? parsed.turns.length : 0,
@@ -980,6 +1008,7 @@ function createAcpMemoryStore(options = {}) {
   function selectPartsWithinTokenBudget(parts) {
     const selected = [];
     let accText = "";
+    let truncated = false;
     for (let i = 0; i < parts.length; i++) {
       const candidate = (parts[i] || "").toString();
       const newText = (accText ? accText + "\n" : "") + candidate;
@@ -1008,13 +1037,14 @@ function createAcpMemoryStore(options = {}) {
           );
           selected.push(candidate.slice(0, Math.max(0, approxChars)));
         }
+        truncated = true;
         break;
       }
       selected.push(candidate);
       accText = newText;
     }
 
-    return selected.join("\n").trim();
+    return { text: selected.join("\n").trim(), truncated };
   }
 
   // Issue #338: the age half of the bound. A turn carrying no timestamp
@@ -1131,7 +1161,7 @@ function createAcpMemoryStore(options = {}) {
       }
     }
 
-    return selectPartsWithinTokenBudget(parts);
+    return selectPartsWithinTokenBudget(parts).text;
   }
 
   // Issue #282: structured form of buildPromptMemory -- the summary and the
@@ -1145,7 +1175,7 @@ function createAcpMemoryStore(options = {}) {
   function buildPromptMemoryEntries(sessionId, options = {}) {
     const session = getSession(sessionId);
     if (!session || (!session.summary && !session.turns.length)) {
-      return { entries: [] };
+      return { entries: [], turnsDroppedByAge: 0 };
     }
 
     const summaryPosition = options.summaryPosition === "late" ? "late" : "early";
@@ -1153,17 +1183,36 @@ function createAcpMemoryStore(options = {}) {
 
     const entries = [];
     if (session.summary) {
-      const content = selectPartsWithinTokenBudget(["Conversation memory:", session.summary]);
-      if (content) entries.push({ role: "system", position: summaryPosition, content });
+      const summary = selectPartsWithinTokenBudget(["Conversation memory:", session.summary]);
+      if (summary.text) {
+        entries.push({
+          role: "system",
+          position: summaryPosition,
+          content: summary.text,
+          truncated: summary.truncated,
+        });
+      }
     }
 
     const recentTurns = recentTurnStrings(session);
     if (recentTurns.length) {
-      const content = selectPartsWithinTokenBudget(["Recent turns:", ...recentTurns]);
-      if (content) entries.push({ role: "system", position: recentTurnsPosition, content });
+      const recent = selectPartsWithinTokenBudget(["Recent turns:", ...recentTurns]);
+      if (recent.text) {
+        entries.push({
+          role: "system",
+          position: recentTurnsPosition,
+          content: recent.text,
+          truncated: recent.truncated,
+        });
+      }
     }
 
-    return { entries };
+    // Issue #400: #338's age window (freshTurns) drops turns before they
+    // ever reach recentTurnStrings/selectPartsWithinTokenBudget above, so
+    // neither entry's own truncated flag can see it -- surfaced separately.
+    const turnsDroppedByAge = session.turns.length - freshTurns(session).length;
+
+    return { entries, turnsDroppedByAge };
   }
 
   // Issue #295 (round-2 scoping of #285): a second pass chained after the
@@ -1271,6 +1320,7 @@ function createAcpMemoryStore(options = {}) {
     getSessionTurnsPage,
     listSessions,
     renameSession,
+    setSessionGoal,
     forkSession,
     deleteSession,
     lookupEntity,

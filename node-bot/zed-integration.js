@@ -1,6 +1,9 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const { spawn, spawnSync } = require("node:child_process");
+const esprima = require("esprima");
+const Diff = require("diff");
+const { createEditSnapshotStore } = require("./edit-snapshot-store");
 
 const DEFAULT_INSPECTOR_EXCLUDES = new Set([
   ".git",
@@ -264,30 +267,69 @@ function createEditorWorkspaceInspector(options = {}) {
   };
 }
 
-function createSimpleLineDiff({ relativePath, originalContent, proposedContent }) {
-  const originalLines = String(originalContent || "").split(/\r?\n/);
-  const proposedLines = String(proposedContent || "").split(/\r?\n/);
-  const lines = [`--- ${relativePath}`, `+++ ${relativePath}`];
-  const maxLines = Math.max(originalLines.length, proposedLines.length);
+// Issue #427: real hunks, not a hand-rolled index-aligned diff -- the
+// previous version compared originalLines[i] to proposedLines[i]
+// position-by-position, which misaligns (and renders nonsense) on any pure
+// insertion or deletion. jsdiff's structuredPatch does real line-diffing and
+// groups nearby changes into hunks (3 lines of context, matching `git diff`'s
+// default), which is also the unit hunk-level accept/reject needs: each
+// hunk gets a stable id so a caller can approve a subset of them.
+function computeProposalHunks({ relativePath, originalContent, proposedContent }) {
+  const patch = Diff.structuredPatch(
+    relativePath,
+    relativePath,
+    String(originalContent || ""),
+    String(proposedContent || ""),
+    "",
+    "",
+    { context: 3 },
+  );
+  const hunks = patch.hunks.map((hunk, index) => ({ id: `hunk-${index}`, ...hunk }));
+  // formatPatch only reads oldStart/oldLines/newStart/newLines/lines --
+  // the extra id field on each hunk is inert here, confirmed directly
+  // against the installed jsdiff version rather than assumed from docs.
+  const diff = Diff.formatPatch({ ...patch, hunks });
+  return { hunks, diff };
+}
 
-  for (let index = 0; index < maxLines; index += 1) {
-    const originalLine = originalLines[index];
-    const proposedLine = proposedLines[index];
-    if (originalLine === proposedLine) {
-      if (originalLine !== undefined && originalLine !== "") {
-        lines.push(` ${originalLine}`);
-      }
-      continue;
-    }
-    if (originalLine !== undefined && originalLine !== "") {
-      lines.push(`-${originalLine}`);
-    }
-    if (proposedLine !== undefined && proposedLine !== "") {
-      lines.push(`+${proposedLine}`);
-    }
+// Reconstructs the file content that results from applying only the
+// accepted subset of a proposal's hunks -- rejected hunks' line ranges are
+// left exactly as they were in originalContent. hunks are independent,
+// non-overlapping ranges over originalContent (jsdiff computed them that
+// way), so filtering the patch's hunks array and running it back through
+// applyPatch is correct and avoids hand-rolling the line-splicing logic.
+function buildAcceptedProposalContent(proposal, acceptedHunks) {
+  if (acceptedHunks.length === proposal.hunks.length) {
+    return proposal.proposedContent;
   }
+  if (!acceptedHunks.length) {
+    return proposal.originalContent;
+  }
+  const result = Diff.applyPatch(String(proposal.originalContent || ""), {
+    oldFileName: proposal.relativePath,
+    newFileName: proposal.relativePath,
+    hunks: acceptedHunks,
+  });
+  if (result === false) {
+    throw new Error("edit proposal conflict: selected hunks could not be applied");
+  }
+  return result;
+}
 
-  return `${lines.join("\n")}\n`;
+function resolveAcceptedHunks(proposal, acceptedHunkIds) {
+  if (acceptedHunkIds === undefined) {
+    return proposal.hunks;
+  }
+  if (!Array.isArray(acceptedHunkIds)) {
+    throw new Error("acceptedHunkIds must be an array of hunk ids");
+  }
+  const known = new Map(proposal.hunks.map((hunk) => [hunk.id, hunk]));
+  const unknown = acceptedHunkIds.filter((id) => !known.has(id));
+  if (unknown.length) {
+    throw new Error(`edit proposal has no hunk(s): ${unknown.join(", ")}`);
+  }
+  const acceptedIds = new Set(acceptedHunkIds);
+  return proposal.hunks.filter((hunk) => acceptedIds.has(hunk.id));
 }
 
 // Issue #372: the type check on proposedContent cannot tell a complete file
@@ -303,6 +345,79 @@ function createSimpleLineDiff({ relativePath, originalContent, proposedContent }
 // brackets would be a stronger tell but only for known languages, and the
 // two checks here need nothing but lengths.
 const DEFAULT_MIN_RETAINED_RATIO = 0.5;
+
+// Issue #420: blocking, not advisory. A proposal that cannot even parse
+// is not a valid edit, and applying it would hand the workspace a broken
+// file. JS uses esprima (already a dependency, used the same way by
+// utils/reply-verifier.js) -- a pure AST parser with no code-execution
+// capability at all, unlike node:vm's Script constructor (which this
+// originally used): parsing untrusted text with an actual JS engine is a
+// legitimate static-analysis red flag even when nothing ever calls
+// .runInThisContext() on the result, since it's the same API real code
+// execution goes through. esprima can't execute anything, at any call
+// depth, so the concern doesn't apply -- not just quieter about it, an
+// actually different code path. JSON via JSON.parse is the same kind of
+// non-executing, in-process check. Python shells out to the system
+// interpreter since there's no in-process parser available here -- this
+// is a rare, human/model-triggered action (one proposal at a time), not
+// a hot polling loop, so a blocking spawnSync is fine here, unlike a
+// repeatedly-polled endpoint. Any other extension (C#, TS, etc.) is
+// unchecked -- pass, not blocked -- matching skills-store.js's
+// verifySkillScript's own "can't classify it, don't hold it against the
+// proposal" behavior rather than trying to build a parser for every
+// language a workspace might contain.
+function verifyProposalSyntax({ relativePath, proposedContent }) {
+  const ext = path.extname(String(relativePath || "")).toLowerCase();
+
+  if (ext === ".js" || ext === ".cjs") {
+    // .mjs is deliberately excluded: esprima.parseScript parses "script"
+    // goal, not "module" goal, so it throws on plain import/export --
+    // which is virtually every real .mjs file. Checking it would reject
+    // valid ESM edits as broken, the exact failure mode this feature must
+    // avoid.
+    try {
+      esprima.parseScript(proposedContent);
+      return { ok: true, checked: true };
+    } catch (e) {
+      return { ok: false, checked: true, error: e.message || String(e) };
+    }
+  }
+
+  if (ext === ".json") {
+    try {
+      JSON.parse(proposedContent);
+      return { ok: true, checked: true };
+    } catch (e) {
+      return { ok: false, checked: true, error: e.message || String(e) };
+    }
+  }
+
+  if (ext === ".py") {
+    const result = spawnSync(
+      "python",
+      ["-c", "import ast,sys; ast.parse(sys.stdin.read())"],
+      { input: proposedContent, encoding: "utf8", windowsHide: true },
+    );
+    if (result.error || result.status === null || result.status === 9009) {
+      // No python on PATH -- unchecked, not blocked, same as any other
+      // unrecognized extension. Status 9009 also covers Windows' "app
+      // execution alias" stub (present by default even with no Python
+      // installed): it launches successfully, so result.error is unset,
+      // but exits 9009 instead of running any code.
+      return { ok: true, checked: false };
+    }
+    if (result.status !== 0) {
+      return {
+        ok: false,
+        checked: true,
+        error: (result.stderr || "").trim() || "python syntax check failed",
+      };
+    }
+    return { ok: true, checked: true };
+  }
+
+  return { ok: true, checked: false };
+}
 
 function assertNotTruncated({
   originalContent,
@@ -415,6 +530,13 @@ function createEditProposalStore(options = {}) {
     }
     assertNotTruncated({ originalContent, proposedContent, allowShrink, minRetainedRatio });
 
+    const verified = verifyProposalSyntax({ relativePath, proposedContent });
+    if (!verified.ok) {
+      throw new Error(`edit proposal rejected: ${relativePath} does not parse: ${verified.error}`);
+    }
+
+    const { hunks, diff } = computeProposalHunks({ relativePath, originalContent, proposedContent });
+
     const proposal = {
       id: idFactory(),
       status: "pending",
@@ -422,11 +544,8 @@ function createEditProposalStore(options = {}) {
       summary: String(summary || "").trim(),
       originalContent,
       proposedContent,
-      diff: createSimpleLineDiff({
-        relativePath,
-        originalContent,
-        proposedContent,
-      }),
+      hunks,
+      diff,
       createdAt: now().toISOString(),
     };
     proposals.set(proposal.id, proposal);
@@ -439,6 +558,7 @@ function createEditProposalStore(options = {}) {
       status: proposal.status,
       relativePath: proposal.relativePath,
       summary: proposal.summary,
+      hunkCount: proposal.hunks.length,
       createdAt: proposal.createdAt,
     }));
   }
@@ -604,6 +724,15 @@ function createEditorIntegrations(options = {}) {
       now: options.now,
       minRetainedRatio: options.minRetainedRatio,
     });
+  // Issue #428: restorable snapshots of applied edits, independent of git.
+  const snapshotStore =
+    options.snapshotStore ||
+    createEditSnapshotStore({
+      dataDir: options.snapshotsDir,
+      now: options.now,
+      idFactory: options.snapshotIdFactory,
+      maxRetained: options.maxRetainedSnapshots,
+    });
   const editors = Object.fromEntries(
     Object.entries(EDITOR_CONFIGS).map(([id, config]) => [
       id,
@@ -677,12 +806,17 @@ function createEditorIntegrations(options = {}) {
     return proposalStore.getProposal(id);
   }
 
-  function approveEditProposal(id, { commit } = {}) {
+  function approveEditProposal(id, { commit, acceptedHunkIds } = {}) {
     const workspace = requireActiveWorkspace(workspaceStore);
     const proposal = proposalStore.getProposal(id);
     if (proposal.status !== "pending") {
       throw new Error("edit proposal is not pending");
     }
+
+    // Issue #427: resolved (and validated) before any file I/O -- an unknown
+    // hunk id fails closed, with no write and no snapshot recorded.
+    const acceptedHunks = resolveAcceptedHunks(proposal, acceptedHunkIds);
+    const contentToWrite = buildAcceptedProposalContent(proposal, acceptedHunks);
 
     const target = toWorkspaceRelativePath(workspace.path, proposal.relativePath);
     if (!fs.existsSync(target.fullPath) || !fs.statSync(target.fullPath).isFile()) {
@@ -690,18 +824,32 @@ function createEditorIntegrations(options = {}) {
     }
 
     const currentContent = fs.readFileSync(target.fullPath, "utf8");
-    // Issue #387: the file already holding exactly what was proposed is not
-    // a conflict -- it is the edit, already applied. Reporting that as a
+    // Issue #387: the file already holding exactly what's being approved is
+    // not a conflict -- it is the edit, already applied. Reporting that as a
     // failure describes a correct outcome as a broken one, and invites the
-    // caller to "fix" a file that is right.
-    if (currentContent === proposal.proposedContent) {
+    // caller to "fix" a file that is right. This also covers issue #427's
+    // "reject every hunk" case: contentToWrite then equals originalContent,
+    // which already matches currentContent by the time we get here.
+    if (currentContent === contentToWrite) {
       return { ...proposalStore.markApplied(id), alreadyApplied: true };
     }
     if (currentContent !== proposal.originalContent) {
       throw new Error("edit proposal conflict: current file content changed");
     }
 
-    fs.writeFileSync(target.fullPath, proposal.proposedContent, "utf8");
+    // Issue #428: snapshot before the write, not after -- proposal.originalContent
+    // is the last point this content exists anywhere once the write below
+    // lands. Only real writes reach here (the alreadyApplied early return
+    // above skips this), so nothing gets snapshotted for a no-op approve.
+    const snapshot = snapshotStore.recordSnapshot({
+      proposalId: id,
+      workspacePath: path.resolve(workspace.path),
+      relativePath: target.relativePath,
+      originalContent: currentContent,
+      summary: proposal.summary,
+    });
+
+    fs.writeFileSync(target.fullPath, contentToWrite, "utf8");
 
     // Issue #387: read back before claiming success. writeFileSync throwing
     // is handled by the caller; the uncovered cases are the quiet ones --
@@ -711,13 +859,17 @@ function createEditorIntegrations(options = {}) {
     // the proposal would be recorded as applied while the file says
     // otherwise, which is worse than a visible failure.
     const writtenContent = fs.readFileSync(target.fullPath, "utf8");
-    if (writtenContent !== proposal.proposedContent) {
+    if (writtenContent !== contentToWrite) {
       throw new Error(
         "edit proposal failed verification: file on disk does not match the approved content",
       );
     }
 
-    const applied = proposalStore.markApplied(id);
+    const applied = {
+      ...proposalStore.markApplied(id),
+      snapshotId: snapshot.id,
+      acceptedHunkIds: acceptedHunks.map((hunk) => hunk.id),
+    };
 
     // Issue #349: opt-in, and never allowed to fail the edit. The file is
     // already written by this point -- a commit problem is reported, not
@@ -735,8 +887,68 @@ function createEditorIntegrations(options = {}) {
     return { ...applied, git };
   }
 
+  // Issue #428: metadata only (path/summary/timestamp) -- restoreEditSnapshot
+  // is what actually reads a snapshot's saved content back. Scoped to the
+  // active workspace -- a snapshot's relativePath is only meaningful
+  // relative to the workspace it was recorded in, so listing (and
+  // restoring) across a workspace switch would silently target the wrong
+  // file on disk.
+  function listEditSnapshots() {
+    const workspace = workspaceStore.getWorkspace();
+    if (!workspace?.path) {
+      return [];
+    }
+    const workspacePath = path.resolve(workspace.path);
+    return snapshotStore
+      .listSnapshots()
+      .filter((record) => record.workspacePath === workspacePath);
+  }
+
+  // Deliberately no conflict check against the file's current content --
+  // unlike approveEditProposal, which knows exactly what content it expects
+  // to find (the proposal it's applying), a snapshot only knows what the
+  // file looked like before ITS edit, not what may have changed since. This
+  // is a simple, git-independent undo convenience, not a merge system;
+  // the UI confirming with the user before restoring is the real safety
+  // net here, the same way file_write's approval gate is the safety net
+  // for autonomous-loop writes rather than code-level conflict detection.
+  function restoreEditSnapshot(id) {
+    const record = snapshotStore.getSnapshot(id);
+    if (!record) {
+      throw new Error("edit snapshot not found");
+    }
+
+    const workspace = requireActiveWorkspace(workspaceStore);
+    if (record.workspacePath !== path.resolve(workspace.path)) {
+      throw new Error("edit snapshot belongs to a different workspace");
+    }
+    const target = toWorkspaceRelativePath(workspace.path, record.relativePath);
+    if (!fs.existsSync(target.fullPath) || !fs.statSync(target.fullPath).isFile()) {
+      throw new Error("workspace file does not exist");
+    }
+
+    fs.writeFileSync(target.fullPath, record.originalContent, "utf8");
+
+    // Issue #387's same read-back-before-claiming-success discipline.
+    const writtenContent = fs.readFileSync(target.fullPath, "utf8");
+    if (writtenContent !== record.originalContent) {
+      throw new Error(
+        "edit snapshot restore failed verification: file on disk does not match the restored content",
+      );
+    }
+
+    snapshotStore.deleteSnapshot(id);
+    return {
+      id,
+      relativePath: record.relativePath,
+      restoredAt: new Date().toISOString(),
+    };
+  }
+
   return {
     approveEditProposal,
+    listEditSnapshots,
+    restoreEditSnapshot,
     createEditProposal,
     getEditProposal,
     getWorkspace,

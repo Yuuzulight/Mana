@@ -41,7 +41,7 @@ test("assertLocalAiPolicy blocks remote AI unless explicitly allowed", () => {
 
   assert.throws(
     () => assertLocalAiPolicy({ MANA_ALLOW_REMOTE_AI: "1" }),
-    /remote AI is disabled for the Zed External Agent/i,
+    /remote AI is disabled for the ACP agent/i,
   );
 
   assert.deepEqual(
@@ -168,7 +168,9 @@ test("createManaAcpAgent exposes backend-backed workspace and edit methods", asy
       createEditProposal: async (payload) => ({ proposal: { id: "proposal-1", ...payload } }),
       listEditProposals: async () => ({ proposals: [{ id: "proposal-1" }] }),
       getEditProposal: async (id) => ({ proposal: { id } }),
-      approveEditProposal: async (id) => ({ proposal: { id, status: "applied" } }),
+      approveEditProposal: async (id, acceptedHunkIds) => ({
+        proposal: { id, status: "applied", acceptedHunkIds },
+      }),
     },
   });
 
@@ -229,6 +231,15 @@ test("createManaAcpAgent exposes backend-backed workspace and edit methods", asy
     })).result.proposal.status,
     "applied",
   );
+  assert.deepEqual(
+    (await agent.handleJsonRpc({
+      jsonrpc: "2.0",
+      id: 28,
+      method: "mana/edit/approve",
+      params: { id: "proposal-1", acceptedHunkIds: ["hunk-0"] },
+    })).result.proposal.acceptedHunkIds,
+    ["hunk-0"],
+  );
   assert.equal(calls[0].method, "setWorkspace");
 });
 
@@ -274,6 +285,76 @@ test("createManaAcpAgent gates test runs and autonomous loop by mode", async () 
   assert.match(loopRejected.error.message, /autonomous mode is disabled/i);
   assert.equal(testRun.result.ok, true);
   assert.equal(loopRun.result.status, "completed");
+});
+
+// Issue #401: mana/agent/run echoes the session's stored goal back on
+// every response -- this loop is driven externally, so node-bot can't
+// inject the goal into the model's own context the way the main
+// voice-chat tool-calling loop does; the most it can do is make sure the
+// caller (Zed, or any other ACP client) has the goal text available.
+test("mana/agent/run echoes the session's stored goal back in the response", async () => {
+  const agent = createManaAcpAgent({
+    env: { MANA_AGENT_AUTONOMOUS: "1" },
+    memoryStore: {
+      getSession: (sessionId) =>
+        sessionId === "sess-with-goal" ? { sessionId, goal: "Fix the login bug" } : null,
+    },
+    autonomousLoop: {
+      run: async () => ({ status: "idle", results: [] }),
+    },
+  });
+
+  const response = await agent.handleJsonRpc({
+    jsonrpc: "2.0",
+    id: 40,
+    method: "mana/agent/run",
+    params: { sessionId: "sess-with-goal", modelReply: "[]" },
+  });
+
+  assert.equal(response.result.status, "idle");
+  assert.equal(response.result.goal, "Fix the login bug");
+});
+
+test("mana/agent/run does not add a goal field when the session has none, or none was found", async () => {
+  const agent = createManaAcpAgent({
+    env: { MANA_AGENT_AUTONOMOUS: "1" },
+    memoryStore: {
+      getSession: () => null,
+    },
+    autonomousLoop: {
+      run: async () => ({ status: "idle", results: [] }),
+    },
+  });
+
+  const response = await agent.handleJsonRpc({
+    jsonrpc: "2.0",
+    id: 41,
+    method: "mana/agent/run",
+    params: { sessionId: "sess-unknown", modelReply: "[]" },
+  });
+
+  assert.equal("goal" in response.result, false);
+});
+
+test("mana/agent/run does not overwrite a goal field the autonomousLoop already set itself", async () => {
+  const agent = createManaAcpAgent({
+    env: { MANA_AGENT_AUTONOMOUS: "1" },
+    memoryStore: {
+      getSession: () => ({ goal: "Stored goal (should not appear)" }),
+    },
+    autonomousLoop: {
+      run: async () => ({ status: "idle", results: [], goal: "Loop-provided goal" }),
+    },
+  });
+
+  const response = await agent.handleJsonRpc({
+    jsonrpc: "2.0",
+    id: 42,
+    method: "mana/agent/run",
+    params: { sessionId: "sess-with-goal", modelReply: "[]" },
+  });
+
+  assert.equal(response.result.goal, "Loop-provided goal");
 });
 
 test("createManaAcpAgent sends prompts through the local coding reply bridge", async () => {
@@ -326,7 +407,7 @@ test("createManaAcpAgent sends prompts through the local coding reply bridge", a
       marketContext: "",
       options: {
         modelProfile: "coding",
-        source: "zed-external-agent",
+        source: "acp-external-agent",
       },
     },
   ]);

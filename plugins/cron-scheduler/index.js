@@ -1,4 +1,5 @@
 const { createCronScheduler } = require("./cron-scheduler");
+const { notifyTray } = require("../../node-bot/tray-notifier");
 
 // Module-level singleton (mirrors other plugins, e.g. document-reader) so
 // GET/POST/DELETE routes and the health check all see the same job list
@@ -21,12 +22,21 @@ function getScheduler(deps = {}) {
           return deps.buildAssistantReply(job.prompt, "", "", "default", job.sessionId);
         }),
       onResult: (job, result, error) => {
-        if (typeof deps.acpMemoryStore?.appendTurn !== "function") return;
         const assistantText = error
           ? `[cron job "${job.name}" failed: ${error}]`
           : typeof result === "string"
             ? result
             : JSON.stringify(result);
+        // Issue #423: a scheduled job's result should reach the user even
+        // if they never reopen that job's chat session -- fire-and-forget,
+        // same as the memory-turn write below.
+        notifyTray({
+          type: "cron",
+          title: `Cron: ${job.name}`,
+          text: assistantText.length > 200 ? `${assistantText.slice(0, 200)}...` : assistantText,
+          at: new Date().toISOString(),
+        }).catch(() => {});
+        if (typeof deps.acpMemoryStore?.appendTurn !== "function") return;
         deps.acpMemoryStore
           .appendTurn({
             sessionId: job.sessionId,
@@ -91,4 +101,9 @@ module.exports = {
     if (scheduler) scheduler.stop();
     scheduler = null;
   },
+  // Test-only escape hatch: registerRoutes doesn't expose runDueJobs (the
+  // route surface is deliberately just CRUD), but the onResult -> notifyTray
+  // wiring above only runs through that method, so tests need direct access
+  // to the singleton to exercise it.
+  _getSchedulerForTests: (deps = {}) => getScheduler(deps),
 };
