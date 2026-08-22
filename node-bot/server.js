@@ -2276,6 +2276,14 @@ function registerRoutes(app, upload, deps = {}) {
     return res.json(modelManagement.getModelStatus());
   });
 
+  // Issue #418: transient, human-facing "what's browser automation doing
+  // right now" feed for the launcher to poll -- no auth, same as
+  // /models/status just above (a read-only status readout, not a
+  // file-system-touching admin action like /editors/workspace/*).
+  app.get("/browser-automation/activity", (req, res) => {
+    return res.json(activeBrowserAutomationToolSource.activityLog.getActivity());
+  });
+
   // Issue #196: separate from /models/status (polled frequently) on
   // purpose -- real GGUF header parsing is real file I/O, not something to
   // add to a hot poll path. Called on-demand when a user actually wants to

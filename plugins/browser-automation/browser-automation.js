@@ -1,7 +1,7 @@
 // Interactive browser automation: navigate/click/type/read a live page,
 // not just search-and-extract (that's web-access.js's job, and stays
 // untouched). Local-only by default, driven through a narrow "page-like"
-// interface (goto/evaluate/click/type/title/url) rather than exposing
+// interface (goto/evaluate/click/type/title/url/screenshot) rather than exposing
 // Playwright's full API directly -- this is what makes the module testable
 // without a real browser: production wraps a real Playwright page,
 // test-suite implementations inject a plain fake object. No real browser
@@ -58,7 +58,7 @@ function extractTextInPage(maxChars) {
 function createBrowserSession(options = {}) {
   const page = options.page;
   if (!page || typeof page.goto !== "function") {
-    throw new Error("a page-like object ({goto, evaluate, click, type, title, url}) is required");
+    throw new Error("a page-like object ({goto, evaluate, click, type, title, url, screenshot}) is required");
   }
   const maxTextChars = Math.max(500, Number(options.maxTextChars) || MAX_PAGE_TEXT_CHARS);
 
@@ -98,7 +98,20 @@ function createBrowserSession(options = {}) {
     return snapshot();
   }
 
-  return { navigate, click, type, snapshot };
+  // Issue #418: a human-facing "what's it doing" activity feed for the
+  // launcher UI -- entirely separate from snapshot()'s token-efficient text
+  // extraction, which stays the only thing the model itself ever reads (see
+  // the file header: no screenshot/raw HTML ever reaches the model). Real
+  // Playwright pages already expose .screenshot() natively (index.js passes
+  // the raw page object straight into createBrowserSession, not a narrowed
+  // wrapper), so this is required on the page-like interface the same way
+  // goto/evaluate/click/type/title/url already are.
+  async function screenshot() {
+    const buffer = await page.screenshot({ type: "jpeg", quality: 50 });
+    return buffer.toString("base64");
+  }
+
+  return { navigate, click, type, snapshot, screenshot };
 }
 
 module.exports = { MAX_PAGE_TEXT_CHARS, createBrowserSession, snapshotInPage, extractTextInPage };

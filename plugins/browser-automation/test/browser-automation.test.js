@@ -43,6 +43,10 @@ function createFakePage(overrides = {}) {
     async url() {
       return state.url;
     },
+    async screenshot() {
+      state.calls.push({ method: "screenshot" });
+      return Buffer.from(overrides.screenshotBytes || "fake-jpeg-bytes");
+    },
   };
 }
 
@@ -107,6 +111,15 @@ test("type coerces a non-string value and requires a ref", async () => {
   assert.equal(page.state.calls[0].text, "42");
 
   await assert.rejects(() => session.type(undefined, "x"), /ref is required/);
+});
+
+test("screenshot returns a base64-encoded JPEG capture, distinct from snapshot's text extraction", async () => {
+  const page = createFakePage({ screenshotBytes: "hello-jpeg" });
+  const session = createBrowserSession({ page });
+
+  const result = await session.screenshot();
+  assert.equal(result, Buffer.from("hello-jpeg").toString("base64"));
+  assert.equal(page.state.calls[0].method, "screenshot");
 });
 
 test("snapshot text is capped at MAX_PAGE_TEXT_CHARS by default", () => {
