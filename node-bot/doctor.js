@@ -322,6 +322,28 @@ function checkMobileAuth(env) {
   );
 }
 
+// Issue #48: purely informational, always "pass" -- 2FA is opt-in, so not
+// having enabled it is a valid, unremarkable state, not a misconfiguration
+// the way a missing passcode hash/session secret is for checkMobileAuth.
+function checkMobile2fa(env) {
+  const totpSecret = env.MOBILE_TOTP_SECRET || "";
+  if (totpSecret) {
+    return makeCheck(
+      "mobile-2fa",
+      "Mobile pairing 2FA",
+      "pass",
+      "TOTP second factor is enabled for device pairing.",
+    );
+  }
+
+  return makeCheck(
+    "mobile-2fa",
+    "Mobile pairing 2FA",
+    "pass",
+    "TOTP second factor is not enabled (optional).",
+  );
+}
+
 function hasEnvValue(env, names) {
   return names.some((name) => typeof env[name] === "string" && env[name].trim());
 }
@@ -697,6 +719,7 @@ function runDoctorChecks(options = {}) {
     checkMcpServer(env),
     checkRecommendedModelProfile(modelManagement),
     checkMobileAuth(env),
+    checkMobile2fa(env),
     checkRemoteExposure(env),
     checkStorage(paths),
     ...checkEditorIntegrations({

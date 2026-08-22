@@ -5,6 +5,7 @@ const crypto = require('crypto');
 
 const { createMobileAuth } = require("./mobile-auth");
 const { createMobileMemoryStore } = require("./mobile-memory-store");
+const { verifyTotpCode: defaultVerifyTotpCode } = require("./totp");
 const {
   ValidationError,
   optionalString,
@@ -159,6 +160,15 @@ function getRequiredDeps(deps) {
     mobileUnlockRateLimiter:
       deps.mobileUnlockRateLimiter ||
       createUnlockRateLimiter(deps.mobileUnlockRateLimit),
+    // Issue #48: opt-in second factor on device pairing (not the daily
+    // passcode unlock -- see mobile-auth.js for that). Empty/unset secret
+    // means 2FA is off, matching every other mobile-auth secret's
+    // env-var-as-config convention (MOBILE_PASSCODE_HASH, MOBILE_SESSION_SECRET).
+    mobileTotpSecret:
+      deps.mobileTotpSecret !== undefined
+        ? deps.mobileTotpSecret
+        : process.env.MOBILE_TOTP_SECRET || "",
+    verifyTotpCode: deps.verifyTotpCode || defaultVerifyTotpCode,
   };
 }
 
@@ -174,6 +184,8 @@ function registerMobileRoutes(app, deps = {}) {
     normalizeUploadedAudio,
     cleanupUploadedAudio,
     mobileUnlockRateLimiter,
+    mobileTotpSecret,
+    verifyTotpCode,
   } = getRequiredDeps(deps);
   const requireAuth = mobileAuth.requireAuth;
 
@@ -185,6 +197,7 @@ function registerMobileRoutes(app, deps = {}) {
     return res.json({
       ok: true,
       authConfigured: Boolean(mobileAuth.isConfigured),
+      pairingTotpEnabled: Boolean(mobileTotpSecret),
     });
   });
 
@@ -205,8 +218,16 @@ function registerMobileRoutes(app, deps = {}) {
     const ip = (req.ip || '').replace('::ffff:', '');
     if (!pairLimiter.allow(ip)) return res.status(429).json({ error: 'rate_limited' });
     if (!deviceStore) return res.status(500).json({ error: 'device_store_not_configured' });
-    const { code, deviceName } = req.body || {};
+    const { code, deviceName, totpCode } = req.body || {};
     if (!code || !deviceName) return res.status(400).json({ error: 'missing' });
+    // Issue #48: checked before consuming the pairing code -- a wrong TOTP
+    // attempt should not burn the single-use pairing code the admin issued.
+    if (mobileTotpSecret) {
+      if (!totpCode) return res.status(400).json({ error: 'totp_code_required' });
+      if (!verifyTotpCode(mobileTotpSecret, totpCode)) {
+        return res.status(401).json({ error: 'invalid_totp_code' });
+      }
+    }
     const ok = deviceStore.consumePairingCode(String(code));
     if (!ok) return res.status(400).json({ error: 'invalid_or_expired_code' });
     const token = randomToken();

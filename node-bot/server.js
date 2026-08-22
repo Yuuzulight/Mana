@@ -4903,6 +4903,8 @@ function registerRoutes(app, upload, deps = {}) {
     cleanupUploadedAudio: deps.cleanupUploadedAudio || cleanupUploadedAudio,
     mobileUnlockRateLimiter: deps.mobileUnlockRateLimiter,
     mobileUnlockRateLimit: deps.mobileUnlockRateLimit,
+    mobileTotpSecret: deps.mobileTotpSecret,
+    verifyTotpCode: deps.verifyTotpCode,
   });
 
   // Auth middleware: check Authorization header for protected routes

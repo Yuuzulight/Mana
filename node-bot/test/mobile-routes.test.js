@@ -2,8 +2,13 @@ const assert = require("node:assert/strict");
 const test = require("node:test");
 
 const { createMobileAuth, hashPasscode } = require("../mobile-auth");
+const { MobileDeviceStore } = require("../mobile-device-store");
+const { generateTotpSecret, generateTotpCode } = require("../totp");
 const { createApp } = require("../server");
 const { withServer } = require("./helpers");
+const os = require("node:os");
+const path = require("node:path");
+const fs = require("node:fs");
 
 test("createApp exposes existing health route", async () => {
   const app = createApp();
@@ -434,4 +439,76 @@ test("mobile audio chat rejects missing file after auth succeeds", async () => {
     assert.deepEqual(body, { error: "file is required" });
     assert.equal(normalizeCalls, 0);
   });
+});
+
+// Issue #48: opt-in TOTP second factor on device pairing completion.
+function makeTmpDeviceStore() {
+  const filePath = path.join(os.tmpdir(), `mana-mobile-devices-test-${Date.now()}-${Math.random().toString(36).slice(2)}.json`);
+  return { deviceStore: new MobileDeviceStore(filePath), filePath };
+}
+
+test("pairing works with no TOTP required when mobileTotpSecret is unset, and health reports it disabled", async () => {
+  const { deviceStore, filePath } = makeTmpDeviceStore();
+  try {
+    const app = createApp(makeMobileDeps({ deviceStore }));
+
+    await withServer(app, async (baseUrl) => {
+      const health = await (await fetch(`${baseUrl}/mobile/health`)).json();
+      assert.equal(health.pairingTotpEnabled, false);
+
+      const { body: requestBody } = await postJson(`${baseUrl}/mobile/pair/request`, {});
+      const { response, body } = await postJson(`${baseUrl}/mobile/pair/complete`, {
+        code: requestBody.code,
+        deviceName: "test-phone",
+      });
+
+      assert.equal(response.status, 200);
+      assert.equal(typeof body.token, "string");
+    });
+  } finally {
+    fs.rmSync(filePath, { force: true });
+  }
+});
+
+test("pairing requires a valid TOTP code when mobileTotpSecret is set, and health reports it enabled", async () => {
+  const { deviceStore, filePath } = makeTmpDeviceStore();
+  const totpSecret = generateTotpSecret();
+  try {
+    const app = createApp(makeMobileDeps({ deviceStore, mobileTotpSecret: totpSecret }));
+
+    await withServer(app, async (baseUrl) => {
+      const health = await (await fetch(`${baseUrl}/mobile/health`)).json();
+      assert.equal(health.pairingTotpEnabled, true);
+
+      // Missing totpCode entirely.
+      const { code: codeForMissing } = (await postJson(`${baseUrl}/mobile/pair/request`, {})).body;
+      const missing = await postJson(`${baseUrl}/mobile/pair/complete`, {
+        code: codeForMissing,
+        deviceName: "test-phone",
+      });
+      assert.equal(missing.response.status, 400);
+      assert.deepEqual(missing.body, { error: "totp_code_required" });
+
+      // Wrong totpCode -- and the pairing code must still be usable afterward,
+      // since a wrong 2FA attempt shouldn't burn the admin's single-use code.
+      const { code: codeForWrong } = (await postJson(`${baseUrl}/mobile/pair/request`, {})).body;
+      const wrong = await postJson(`${baseUrl}/mobile/pair/complete`, {
+        code: codeForWrong,
+        deviceName: "test-phone",
+        totpCode: "000000",
+      });
+      assert.equal(wrong.response.status, 401);
+      assert.deepEqual(wrong.body, { error: "invalid_totp_code" });
+
+      const retryWithGoodCode = await postJson(`${baseUrl}/mobile/pair/complete`, {
+        code: codeForWrong,
+        deviceName: "test-phone",
+        totpCode: generateTotpCode(totpSecret),
+      });
+      assert.equal(retryWithGoodCode.response.status, 200, "the pairing code survived the earlier wrong TOTP attempt");
+      assert.equal(typeof retryWithGoodCode.body.token, "string");
+    });
+  } finally {
+    fs.rmSync(filePath, { force: true });
+  }
 });
