@@ -243,6 +243,13 @@
               <span id="researchProgressLabel">Researching...</span>
               <button id="researchCancelBtn" title="Stop this research run">Cancel</button>
             </div>
+            <!-- Issue #418: transient "what's the browser doing" feed --
+                 auto-shows while browser automation is active (recent
+                 activity), auto-hides once it goes stale. -->
+            <div id="browserAutomationActivity" hidden>
+              <div id="browserAutomationActivityLog"></div>
+              <img id="browserAutomationActivityScreenshot" alt="Live browser screenshot" hidden />
+            </div>
           </div>
         </div>
       </div>

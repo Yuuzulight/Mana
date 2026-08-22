@@ -3,6 +3,8 @@
 // routes use (its exported getSession) -- a tool-calling-initiated browser
 // action and an HTTP-route-initiated one operate on the same tab, not two
 // separate Chromium instances.
+const { createBrowserActivityLog } = require("./browser-automation-activity");
+
 const BROWSER_TOOL_PREFIX = "browser_automation__";
 // Gates the *first* tool-calling use, not every individual call -- once a
 // human "always-allow"s this actionType, subsequent navigate/click/type/
@@ -70,10 +72,15 @@ function isBrowserAutomationToolName(name) {
 // options.getSession: browser-automation/index.js's exported getSession.
 // options.approvalGate: required -- gates first tool-calling use.
 // options.sessionDeps: forwarded to getSession() (env/chromium overrides).
+// options.activityLog: issue #418's human-facing activity feed -- defaults
+// to a fresh one, but server.js passes a shared instance so its own
+// GET /browser-automation/activity route reads from the same log this
+// tool source writes to.
 function createBrowserAutomationToolSource(options = {}) {
   const getSession = options.getSession;
   const approvalGate = options.approvalGate;
   const sessionDeps = options.sessionDeps || {};
+  const activityLog = options.activityLog || createBrowserActivityLog();
 
   if (!approvalGate) {
     throw new Error("an approvalGate is required");
@@ -102,17 +109,50 @@ function createBrowserAutomationToolSource(options = {}) {
     }
 
     const action = qualifiedName.slice(BROWSER_TOOL_PREFIX.length);
+    if (!["navigate", "snapshot", "click", "type"].includes(action)) {
+      throw new Error(`unknown browser-automation tool: ${qualifiedName}`);
+    }
+
     const session = await getSession(sessionDeps);
     let result;
-    if (action === "navigate") result = await session.navigate(args?.url);
-    else if (action === "snapshot") result = await session.snapshot();
-    else if (action === "click") result = await session.click(args?.ref);
-    else if (action === "type") result = await session.type(args?.ref, args?.text);
-    else throw new Error(`unknown browser-automation tool: ${qualifiedName}`);
+    try {
+      if (action === "navigate") result = await session.navigate(args?.url);
+      else if (action === "snapshot") result = await session.snapshot();
+      else if (action === "click") result = await session.click(args?.ref);
+      else result = await session.type(args?.ref, args?.text);
+    } catch (err) {
+      // Issue #418: the launcher's activity feed should show a failed step
+      // too ("clicking element 5 -- failed"), not just successful ones --
+      // the human watching benefits from seeing where it got stuck. The
+      // real error still propagates to the model unchanged.
+      activityLog.recordActivity({ action, args, status: "error", error: err.message });
+      throw err;
+    }
+
+    activityLog.recordActivity({ action, args, status: "ok" });
+    // Best-effort: a capture failure (page mid-navigation, tab closed) must
+    // never break the real tool call it happened alongside, and the model
+    // never sees this value either way -- it's the human-facing side channel.
+    // Wrapped in try/catch, not just a .catch() on the call, so a session
+    // that doesn't even expose screenshot as a function (a synchronous
+    // TypeError, not a rejected promise) is caught the same way.
+    let screenshotBase64 = null;
+    try {
+      screenshotBase64 = await session.screenshot();
+    } catch (e) {
+      screenshotBase64 = null;
+    }
+    activityLog.recordScreenshot(screenshotBase64);
+
     return JSON.stringify(result);
   }
 
-  return { listToolSchemas, executeTool, isKnownToolName: isBrowserAutomationToolName };
+  return {
+    listToolSchemas,
+    executeTool,
+    isKnownToolName: isBrowserAutomationToolName,
+    activityLog,
+  };
 }
 
 // Same merge shape #169's buildToolPolicyWithMcp already established --

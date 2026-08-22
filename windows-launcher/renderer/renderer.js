@@ -108,6 +108,9 @@ const deepResearchBtnEl = document.getElementById("deepResearchBtn");
 const researchProgressEl = document.getElementById("researchProgress");
 const researchProgressLabelEl = document.getElementById("researchProgressLabel");
 const researchCancelBtnEl = document.getElementById("researchCancelBtn");
+const browserAutomationActivityEl = document.getElementById("browserAutomationActivity");
+const browserAutomationActivityLogEl = document.getElementById("browserAutomationActivityLog");
+const browserAutomationActivityScreenshotEl = document.getElementById("browserAutomationActivityScreenshot");
 const compareModeBtnEl = document.getElementById("compareModeBtn");
 const comparePanelEl = document.getElementById("comparePanel");
 const compareProfileAEl = document.getElementById("compareProfileA");
@@ -159,6 +162,14 @@ const SILENCE_METER_INTERVAL_MS = 150;
 const PARTIAL_TRANSCRIPT_POLL_MS = 1200;
 const GAMING_STATUS_POLL_MS = 5000;
 const PERF_STATUS_POLL_MS = 3000;
+// Issue #418: unlike deep research (a job this app itself starts and
+// stops), browser-automation tool calls happen ad-hoc inside the model's
+// own tool-calling loop with no "task started/finished" signal this
+// renderer can hook into -- so visibility is staleness-based instead: shown
+// while the most recent action is still recent, hidden once it's gone
+// quiet for a while.
+const BROWSER_AUTOMATION_ACTIVITY_POLL_MS = 1000;
+const BROWSER_AUTOMATION_ACTIVITY_STALE_MS = 5000;
 const AUTO_LISTEN_RETRY_MS = 1500;
 const AUTO_LISTEN_MAX_ATTEMPTS = 20;
 const MAX_TTS_CHUNK_CHARS = 180;
@@ -1099,6 +1110,7 @@ compareCancelBtnEl?.addEventListener("click", () => {
 setAvatarState("idle");
 setInterval(checkServices, 5000);
 setInterval(refreshPerfStatus, PERF_STATUS_POLL_MS);
+setInterval(refreshBrowserAutomationActivity, BROWSER_AUTOMATION_ACTIVITY_POLL_MS);
 refreshModelStatus();
 setInterval(refreshModelStatus, MODEL_STATUS_POLL_MS);
 if (SCREEN_SENSING_ENABLED) {
@@ -2204,6 +2216,67 @@ async function refreshPerfStatus() {
     perfStatusEl.textContent = formatPerfStatus(status);
   } catch (error) {
     perfStatusEl.textContent = `Performance metrics unavailable: ${error.message}`;
+  }
+}
+
+// Tracked separately from "did this particular poll succeed" -- if the
+// route starts failing (backend restart, a 500) while the panel is
+// showing, staleness still has to keep being re-evaluated against the
+// clock, or a failed poll would just leave a stale screenshot on screen
+// forever instead of hiding it like a genuinely-quiet browser would.
+let lastKnownBrowserActivityAt = 0;
+
+function hideBrowserAutomationActivityIfStale() {
+  if (!browserAutomationActivityEl) {
+    return;
+  }
+  if (Date.now() - lastKnownBrowserActivityAt > BROWSER_AUTOMATION_ACTIVITY_STALE_MS) {
+    browserAutomationActivityEl.hidden = true;
+  }
+}
+
+async function refreshBrowserAutomationActivity() {
+  if (!browserAutomationActivityEl || !browserAutomationActivityLogEl) {
+    return;
+  }
+  try {
+    const response = await fetch(`${BACKEND_BASE_URL}/browser-automation/activity`);
+    if (!response.ok) {
+      hideBrowserAutomationActivityIfStale();
+      return;
+    }
+    const activity = await response.json();
+    const lastEntry = activity.log?.[activity.log.length - 1];
+    if (lastEntry) {
+      lastKnownBrowserActivityAt = new Date(lastEntry.at).getTime();
+    }
+
+    if (!lastEntry || Date.now() - lastKnownBrowserActivityAt > BROWSER_AUTOMATION_ACTIVITY_STALE_MS) {
+      browserAutomationActivityEl.hidden = true;
+      return;
+    }
+
+    browserAutomationActivityEl.hidden = false;
+    browserAutomationActivityLogEl.innerHTML = "";
+    for (const entry of activity.log.slice(-5)) {
+      const line = document.createElement("div");
+      line.textContent = entry.summary;
+      browserAutomationActivityLogEl.appendChild(line);
+    }
+
+    if (browserAutomationActivityScreenshotEl) {
+      if (activity.screenshot?.base64) {
+        browserAutomationActivityScreenshotEl.src = `data:image/jpeg;base64,${activity.screenshot.base64}`;
+        browserAutomationActivityScreenshotEl.hidden = false;
+      } else {
+        browserAutomationActivityScreenshotEl.hidden = true;
+      }
+    }
+  } catch (error) {
+    // Ambient, best-effort indicator -- no error surfaced (same as
+    // researchProgress's own loop), but staleness still has to be
+    // re-checked, same reasoning as the non-ok branch above.
+    hideBrowserAutomationActivityIfStale();
   }
 }
 
