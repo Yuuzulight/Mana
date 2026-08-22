@@ -7,6 +7,7 @@ const test = require("node:test");
 const {
   createModelManagement,
   detectGpuVramMb,
+  detectGpuVramUsageMb,
   detectSystemMemoryMb,
   recommendModelProfile,
 } = require("../model-management");
@@ -352,6 +353,86 @@ test("detectGpuVramMb parses nvidia-smi output and returns null on failure", () 
   );
 });
 
+test("detectGpuVramUsageMb parses used/free nvidia-smi output and returns null on failure", () => {
+  assert.deepEqual(
+    detectGpuVramUsageMb(() => ({ status: 0, stdout: "1024, 5120\n" })),
+    { usedMb: 1024, freeMb: 5120 },
+  );
+
+  assert.equal(detectGpuVramUsageMb(() => ({ status: 1, stdout: "" })), null);
+  assert.equal(detectGpuVramUsageMb(() => ({ status: 0, stdout: "" })), null);
+  assert.equal(
+    detectGpuVramUsageMb(() => ({ status: 0, stdout: "not-a-number, 5120\n" })),
+    null,
+  );
+  assert.equal(
+    detectGpuVramUsageMb(() => {
+      throw new Error("nvidia-smi not found");
+    }),
+    null,
+  );
+  assert.equal(
+    detectGpuVramUsageMb(() => ({ error: new Error("ENOENT"), status: null })),
+    null,
+  );
+});
+
+test("getModelStatus caches live VRAM usage within a short TTL, re-checks after it expires", () => {
+  let usageCalls = 0;
+  let clock = 0;
+  const manager = createModelManagement({
+    env: {},
+    localGgufs: [],
+    spawnSync: (command, args) => {
+      if (args.some((arg) => arg.includes("memory.total"))) {
+        return { status: 0, stdout: "6144\n" };
+      }
+      usageCalls += 1;
+      return { status: 0, stdout: `${usageCalls * 100}, 5000\n` };
+    },
+    totalmem: () => 34_359_738_368,
+    modelSettingsStore: fakeModelSettingsStore(),
+    now: () => clock,
+  });
+
+  assert.equal(manager.getModelStatus().vramUsedMb, 100);
+  assert.equal(manager.getModelStatus().vramUsedMb, 100, "still cached within the TTL window");
+  assert.equal(usageCalls, 1);
+
+  clock += 2001;
+  assert.equal(manager.getModelStatus().vramUsedMb, 200, "re-checked after the TTL expired");
+  assert.equal(usageCalls, 2);
+});
+
+test("getModelStatus caches a failed VRAM usage detection too, not just a successful one", () => {
+  let usageCalls = 0;
+  let clock = 0;
+  const manager = createModelManagement({
+    env: {},
+    localGgufs: [],
+    spawnSync: (command, args) => {
+      if (args.some((arg) => arg.includes("memory.total"))) {
+        return { status: 0, stdout: "6144\n" };
+      }
+      // nvidia-smi failing (e.g. no NVIDIA GPU) -- detectGpuVramUsageMb
+      // returns null for this, not a value to cache.
+      usageCalls += 1;
+      return { status: 1, stdout: "" };
+    },
+    totalmem: () => 34_359_738_368,
+    modelSettingsStore: fakeModelSettingsStore(),
+    now: () => clock,
+  });
+
+  assert.equal(manager.getModelStatus().vramUsedMb, null);
+  assert.equal(manager.getModelStatus().vramFreeMb, null);
+  assert.equal(usageCalls, 1, "a failed detection should be cached too, not re-spawned every call");
+
+  clock += 2001;
+  manager.getModelStatus();
+  assert.equal(usageCalls, 2, "re-checked after the TTL expired, same as a successful detection would be");
+});
+
 test("detectSystemMemoryMb converts bytes to whole megabytes", () => {
   assert.equal(detectSystemMemoryMb(() => 34_359_738_368), 32768);
   assert.equal(detectSystemMemoryMb(() => 0), null);
@@ -397,13 +478,22 @@ test("recommendModelProfile defaults to fast when nothing could be detected", ()
 });
 
 test("model management surfaces and caches a hardware recommendation", () => {
-  let spawnCalls = 0;
+  let capacityCalls = 0;
+  let usageCalls = 0;
   const manager = createModelManagement({
     env: {},
     localGgufs: [],
-    spawnSync: () => {
-      spawnCalls += 1;
-      return { status: 0, stdout: "6144\n" };
+    // Issue #320: detectGpuVramMb (capacity, "memory.total") and
+    // detectGpuVramUsageMb (live usage, "memory.used,memory.free") share
+    // this same spawnSync in production -- distinguish by the query flag,
+    // same as the real nvidia-smi calls this mock stands in for.
+    spawnSync: (command, args) => {
+      if (args.some((arg) => arg.includes("memory.total"))) {
+        capacityCalls += 1;
+        return { status: 0, stdout: "6144\n" };
+      }
+      usageCalls += 1;
+      return { status: 0, stdout: "1024, 5120\n" };
     },
     totalmem: () => 34_359_738_368,
     modelSettingsStore: fakeModelSettingsStore(),
@@ -415,8 +505,11 @@ test("model management surfaces and caches a hardware recommendation", () => {
   assert.deepEqual(first.detected, { vramMb: 6144, ramMb: 32768 });
 
   manager.getRecommendedModelProfile();
-  manager.getModelStatus();
-  assert.equal(spawnCalls, 1, "hardware detection should be cached, not re-run per call");
+  const status = manager.getModelStatus();
+  assert.equal(capacityCalls, 1, "hardware detection should be cached, not re-run per call");
+  assert.equal(usageCalls, 1, "live VRAM usage should spawn once for this getModelStatus call");
+  assert.equal(status.vramUsedMb, 1024);
+  assert.equal(status.vramFreeMb, 5120);
 
   assert.deepEqual(manager.getModelStatus().recommendation, first);
 });

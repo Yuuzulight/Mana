@@ -12,6 +12,7 @@ const {
   isLocalModelSpec,
 } = require("./local-llama-runtime");
 const { SESSION_GOAL_FINISH_TOOL_NAME } = require("./session-goal-tool-source");
+const { detectGpuVramUsageMb } = require("../model-management");
 
 // Persistent llama-server runtime.
 //
@@ -59,6 +60,72 @@ function createLlamaServerRuntime(options = {}) {
       ? 3000
       : env.LLAMA_SERVER_SWAP_DEBOUNCE_MS,
   );
+
+  // Issue #320: refuse a load that's very unlikely to fit, rather than
+  // attempting it and letting llama-server fail messily (or the driver OOM)
+  // partway through. Set LLAMA_SERVER_VRAM_GUARD=0 to disable.
+  const vramGuardEnabled = env.LLAMA_SERVER_VRAM_GUARD !== "0";
+  const detectGpuVramUsage = options.detectGpuVramUsage || detectGpuVramUsageMb;
+
+  // A GGUF file's size on disk is a rough proxy for its VRAM footprint at
+  // full offload (-ngl 99, this runtime's default) -- weights dominate the
+  // footprint, though KV cache/context buffers aren't captured by file size
+  // alone (see the 20% margin below). Only meaningful for a local file path;
+  // a bare -hf hub spec has no size to check without downloading it first,
+  // so this returns null rather than guessing -- same graceful-fallback
+  // policy detectGpuVramMb already follows elsewhere in this codebase.
+  function estimateModelFootprintMb(modelSpec) {
+    if (!isLocalModelSpec(modelSpec, fs)) {
+      return null;
+    }
+    try {
+      const stats = fs.statSync(modelSpec);
+      return Math.round(stats.size / (1024 * 1024));
+    } catch (e) {
+      return null;
+    }
+  }
+
+  // Sums a model file with its optional mmproj (vision loads carry a
+  // separate projector file, also fully GPU-offloaded alongside the main
+  // model) -- null only when the *model* itself can't be sized, since that's
+  // the dominant term; an unsizeable mmproj just contributes 0 rather than
+  // discarding a real model-size estimate over a secondary file.
+  function estimateLoadFootprintMb(modelSpec, mmprojSpec) {
+    const modelMb = estimateModelFootprintMb(modelSpec);
+    if (modelMb === null) return null;
+    const mmprojMb = mmprojSpec ? estimateModelFootprintMb(mmprojSpec) || 0 : 0;
+    return modelMb + mmprojMb;
+  }
+
+  // Checked BEFORE the outgoing model (if any) is stopped, not after --
+  // stopping first and only then discovering the replacement doesn't fit
+  // would leave nothing loaded at all, which is worse than refusing the
+  // swap up front. Since the outgoing model's VRAM isn't freed yet at this
+  // point, its own estimated footprint is added back to current free VRAM
+  // to approximate what stopAndWait() is about to release.
+  function assertVramForSwap(model, mmproj) {
+    if (!vramGuardEnabled) return;
+    const targetFootprintMb = estimateLoadFootprintMb(model, mmproj);
+    if (targetFootprintMb === null) return;
+    const usage = detectGpuVramUsage();
+    if (!usage || !Number.isFinite(usage.freeMb)) return;
+
+    const outgoingFootprintMb =
+      (state.model && estimateLoadFootprintMb(state.model, state.mmproj)) || 0;
+    const projectedFreeMb = usage.freeMb + outgoingFootprintMb;
+    const requiredMb = Math.round(targetFootprintMb * 1.2);
+
+    if (projectedFreeMb < requiredMb) {
+      throw new Error(
+        `llama-server: refusing to load ${model} -- estimated ${targetFootprintMb}MB model` +
+          `${mmproj ? " (incl. mmproj)" : ""} needs ~${requiredMb}MB free VRAM, only ` +
+          `~${projectedFreeMb}MB projected free (${usage.freeMb}MB free now + ` +
+          `~${outgoingFootprintMb}MB from the outgoing model, if any). ` +
+          `Set LLAMA_SERVER_VRAM_GUARD=0 to override.`,
+      );
+    }
+  }
 
   function findLlamaServerBin() {
     const candidates = [];
@@ -580,6 +647,8 @@ function createLlamaServerRuntime(options = {}) {
       return;
     }
 
+    assertVramForSwap(model, mmproj);
+
     const swapStartedAt = nowMs();
     if (isRunning) {
       if (state.model && state.model !== model) {
@@ -598,7 +667,14 @@ function createLlamaServerRuntime(options = {}) {
       if (isRunning) {
         state.lastSwapMs = state.loadedAt - swapStartedAt;
         logPerf("llama-server-swap", swapStartedAt);
-        console.log(`llama-server: swap completed in ${state.lastSwapMs}ms`);
+        // Issue #320: visibility only -- logged, not gated on. Lets a real
+        // swap's actual post-load headroom be compared against
+        // assertVramForSwap's pre-load estimate above.
+        const postSwapUsage = detectGpuVramUsage();
+        const vramNote = postSwapUsage
+          ? `, ${postSwapUsage.freeMb}MB VRAM free`
+          : "";
+        console.log(`llama-server: swap completed in ${state.lastSwapMs}ms${vramNote}`);
       }
     } catch (e) {
       state.lastStartFailureAt = nowMs();
