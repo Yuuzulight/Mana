@@ -81,6 +81,7 @@ const {
 } = require("./voice-endpointing");
 const { detectReplyEmotion } = require("./reply-emotion");
 const { isAccessibilityTreeTextUsable } = require("../accessibility-tree");
+const { shouldReadScreenForCommand: shouldReadScreenForCommandPure } = require("./screen-context-trigger");
 const { waitForPlayback } = require("./reply-audio-playback");
 const {
   isLikelyWhisperHallucination,
@@ -177,24 +178,11 @@ const MAX_TTS_CHUNK_CHARS = 180;
 const SCREEN_CONTEXT_ENABLED = true;
 const SCREEN_CONTEXT_MIN_INTERVAL_MS = 8000;
 const SCREEN_CONTEXT_GAMING_MIN_INTERVAL_MS = 30000;
-const SCREEN_CONTEXT_KEYWORDS = [
-  "screen",
-  "see",
-  "seeing",
-  "look",
-  "looking",
-  "read",
-  "icon",
-  "image",
-  "picture",
-  "menu",
-  "chat",
-  "game",
-  "ffxiv",
-  "map",
-  "quest",
-  "window",
-];
+// Issue #344: default on, applies the same keyword gate outside gaming
+// mode too. Set MANA_SCREEN_CONTEXT_KEYWORD_GATE=0 to restore the old
+// always-read-outside-gaming behavior.
+const SCREEN_CONTEXT_KEYWORD_GATE_ENABLED =
+  process.env.MANA_SCREEN_CONTEXT_KEYWORD_GATE !== "0";
 // Issue #4: quiet real speech (soft-spoken, further from the mic) can sit
 // right at these thresholds -- override via env if the defaults are
 // skipping speech you know was real, or letting through more noise than
@@ -2765,12 +2753,11 @@ async function approveSelectedProposalHunks() {
 }
 
 function shouldReadScreenForCommand(text, gamingModeActive) {
-  if (!gamingModeActive) {
-    return true;
-  }
-
   const normalized = cleanTranscriptText(text).toLowerCase();
-  return SCREEN_CONTEXT_KEYWORDS.some((keyword) => normalized.includes(keyword));
+  return shouldReadScreenForCommandPure(normalized, {
+    gamingModeActive,
+    keywordGateEnabled: SCREEN_CONTEXT_KEYWORD_GATE_ENABLED,
+  });
 }
 
 async function readScreenContext(text, gamingModeActive) {
