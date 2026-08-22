@@ -142,6 +142,33 @@ function detectGpuVramMb(spawnSync = defaultSpawnSync) {
   }
 }
 
+// Issue #320: live usage, unlike detectGpuVramMb's capacity check -- usage
+// genuinely changes over time (what's currently resident), so this is never
+// cached at this layer. Callers that poll frequently (e.g. /models/status)
+// own their own short-TTL cache instead of re-spawning nvidia-smi per call.
+function detectGpuVramUsageMb(spawnSync = defaultSpawnSync) {
+  try {
+    const result = spawnSync(
+      "nvidia-smi",
+      ["--query-gpu=memory.used,memory.free", "--format=csv,noheader,nounits"],
+      { encoding: "utf8", timeout: 5000, windowsHide: true },
+    );
+    if (result.error || result.status !== 0 || !result.stdout) {
+      return null;
+    }
+    const firstLine = result.stdout.trim().split("\n")[0];
+    const [usedRaw, freeRaw] = firstLine.split(",").map((part) => part.trim());
+    const usedMb = parseInt(usedRaw, 10);
+    const freeMb = parseInt(freeRaw, 10);
+    if (!Number.isFinite(usedMb) || !Number.isFinite(freeMb)) {
+      return null;
+    }
+    return { usedMb, freeMb };
+  } catch (e) {
+    return null;
+  }
+}
+
 function detectSystemMemoryMb(totalmem = os.totalmem) {
   const bytes = totalmem();
   return Number.isFinite(bytes) && bytes > 0
@@ -263,6 +290,25 @@ function createModelManagement(options = {}) {
   // re-shelling out to nvidia-smi on every /models/status poll.
   let cachedRecommendation = null;
 
+  // Issue #320: unlike total capacity, live usage genuinely changes --
+  // caching it forever like cachedRecommendation would make it useless.
+  // But /models/status is polled frequently (per its own route comment in
+  // server.js), so a fresh nvidia-smi spawn on every single poll isn't free
+  // either. A short TTL splits the difference: still "live" to a human
+  // watching a status readout, without a spawn per poll tick.
+  const VRAM_USAGE_CACHE_MS = 2000;
+  const now = options.now || (() => Date.now());
+  let cachedVramUsage; // { usage, at } | undefined
+  function getLiveVramUsage() {
+    const nowMs = now();
+    if (cachedVramUsage && nowMs - cachedVramUsage.at < VRAM_USAGE_CACHE_MS) {
+      return cachedVramUsage.usage;
+    }
+    const usage = detectGpuVramUsageMb(spawnSync);
+    cachedVramUsage = { usage, at: nowMs };
+    return usage;
+  }
+
   function getRecommendedModelProfile() {
     if (!cachedRecommendation) {
       const vramMb = detectGpuVramMb(spawnSync);
@@ -308,6 +354,7 @@ function createModelManagement(options = {}) {
       baseUrl,
     });
 
+    const liveVramUsage = getLiveVramUsage();
     return {
       activeProfile,
       remoteAiEnabled,
@@ -316,6 +363,12 @@ function createModelManagement(options = {}) {
         : null,
       profiles,
       recommendation: getRecommendedModelProfile(),
+      // Issue #320: live usage (changes constantly), separate from
+      // recommendation.detected.vramMb (total capacity, detected once).
+      // null when nvidia-smi is unavailable -- same graceful-fallback
+      // convention as every other GPU-detection field here.
+      vramUsedMb: liveVramUsage?.usedMb ?? null,
+      vramFreeMb: liveVramUsage?.freeMb ?? null,
       selectedModelPath: modelSettingsStore.getModelPath(),
       // apiKey is never echoed back -- /models/status has no auth check,
       // same reasoning as auth-store.js never returning a stored keyHash.
@@ -500,6 +553,7 @@ function createModelManagement(options = {}) {
 module.exports = {
   createModelManagement,
   detectGpuVramMb,
+  detectGpuVramUsageMb,
   detectSystemMemoryMb,
   recommendModelProfile,
 };

@@ -1345,6 +1345,163 @@ test("MANA_LLAMA_UNIFIED_MEMORY=0 opts out of GGML_CUDA_ENABLE_UNIFIED_MEMORY", 
   );
 });
 
+// Issue #320: VRAM guard. mana.gguf and vision.gguf get controllable sizes
+// via statSync so estimateModelFootprintMb has something real to compute
+// from -- makeTwoModelFs()'s existsSync-only fake can't drive this, since a
+// missing statSync makes the guard gracefully no-op (already covered by
+// every pre-#320 test above still passing unchanged).
+function makeTwoModelFsWithSizes({ manaSizeMb, visionSizeMb, mmprojSizeMb = 0 }) {
+  const sizes = {
+    "C:\\models\\mana.gguf": manaSizeMb * 1024 * 1024,
+    "C:\\models\\vision.gguf": visionSizeMb * 1024 * 1024,
+    "C:\\models\\vision-mmproj.gguf": mmprojSizeMb * 1024 * 1024,
+  };
+  return {
+    existsSync: (target) =>
+      [
+        "C:\\llama\\llama-server.exe",
+        "C:\\models\\mana.gguf",
+        "C:\\models\\vision.gguf",
+        "C:\\models\\vision-mmproj.gguf",
+      ].includes(target),
+    statSync: (target) => ({ size: sizes[target] }),
+  };
+}
+
+function makeVramGuardHarness({ manaSizeMb, visionSizeMb, mmprojSizeMb, freeMbSequence, extraEnv = {}, detectGpuVramUsage }) {
+  let liveChild = null;
+  let clock = 0;
+  const fakeFetch = async (url) => {
+    if (String(url).endsWith("/health")) {
+      return { ok: Boolean(liveChild && liveChild.exitCode === null) };
+    }
+    if (String(url).endsWith("/v1/chat/completions")) {
+      return {
+        ok: true,
+        json: async () => ({ choices: [{ message: { content: "ok" } }] }),
+      };
+    }
+    return { ok: false, status: 404, text: async () => "not found" };
+  };
+
+  // freeMbSequence: one value per assertVramForSwap call, in order (cold
+  // start first, then each subsequent swap) -- a real GPU's free memory
+  // genuinely differs between "nothing loaded yet" and "mana is already
+  // resident," so a single constant free value can't represent both
+  // moments in the same test.
+  let callIndex = 0;
+  const resolvedDetectUsage =
+    detectGpuVramUsage ||
+    (() => {
+      const freeMb = freeMbSequence[Math.min(callIndex, freeMbSequence.length - 1)];
+      callIndex += 1;
+      return { usedMb: 0, freeMb };
+    });
+
+  const runtime = createLlamaServerRuntime({
+    env: { ...makeTwoModelEnv(), ...extraEnv },
+    fs: makeTwoModelFsWithSizes({ manaSizeMb, visionSizeMb, mmprojSizeMb }),
+    fetch: fakeFetch,
+    spawn: () => {
+      liveChild = makeFakeChild();
+      clock += 5;
+      return liveChild;
+    },
+    sleep: async () => {},
+    nowMs: () => clock,
+    registerExitHandlers: false,
+    detectGpuVramUsage: resolvedDetectUsage,
+  });
+
+  return { runtime, advanceClock: (ms) => { clock += ms; } };
+}
+
+test("assertVramForSwap includes the mmproj file's footprint, not just the base model", async () => {
+  const { runtime, advanceClock } = makeVramGuardHarness({
+    manaSizeMb: 4000, // cold start: needs ~4800MB, 10000MB free easily covers it
+    visionSizeMb: 4000, // vision model alone would need ~4800MB -- looks fine on its own
+    mmprojSizeMb: 4000, // + mmproj: real requirement is ~9600MB (8000 * 1.2)
+    // swap-time free (2000MB) + 4000MB outgoing mana = 6000MB projected --
+    // enough for the vision model alone, NOT enough once mmproj is counted.
+    freeMbSequence: [10000, 2000],
+  });
+
+  await runtime.runLocalAssistantReply("hello", 64, "default");
+  advanceClock(10000);
+
+  await assert.rejects(
+    () => runtime.runVisionReply("what is this?", ["abc"]),
+    /refusing to load/,
+    "mmproj's footprint should push this over the projected free VRAM",
+  );
+  assert.equal(runtime.getStatus().model, "C:\\models\\mana.gguf", "blocked swap left the working model in place");
+});
+
+test("assertVramForSwap blocks a swap that would not fit even accounting for the outgoing model", async () => {
+  const { runtime, advanceClock } = makeVramGuardHarness({
+    manaSizeMb: 4000, // cold start: needs ~4800MB, 10000MB free easily covers it
+    visionSizeMb: 20000, // swap: requires ~24000MB
+    freeMbSequence: [10000, 2000], // swap-time free + 4000MB outgoing = 6000MB, still short
+  });
+
+  await runtime.runLocalAssistantReply("hello", 64, "default");
+  assert.equal(runtime.getStatus().model, "C:\\models\\mana.gguf", "cold start succeeded");
+  advanceClock(10000);
+
+  await assert.rejects(
+    () => runtime.runVisionReply("what is this?", ["abc"]),
+    /refusing to load/,
+  );
+  assert.equal(runtime.getStatus().model, "C:\\models\\mana.gguf", "outgoing model was never torn down");
+});
+
+test("assertVramForSwap accounts for the outgoing model's own footprint, not just current free VRAM", async () => {
+  const { runtime, advanceClock } = makeVramGuardHarness({
+    manaSizeMb: 4000, // cold start: needs ~4800MB, 10000MB free easily covers it
+    visionSizeMb: 4500, // swap: requires ~5400MB
+    // swap-time free (2000MB) alone is short of 5400MB, but + 4000MB
+    // outgoing = 6000MB, enough -- proves the outgoing-footprint addition
+    // is what makes this pass, not just a generously free GPU.
+    freeMbSequence: [10000, 2000],
+  });
+
+  await runtime.runLocalAssistantReply("hello", 64, "default");
+  advanceClock(10000);
+
+  await runtime.runVisionReply("what is this?", ["abc"]);
+  assert.equal(runtime.getStatus().model, "C:\\models\\vision.gguf", "swap succeeded");
+});
+
+test("LLAMA_SERVER_VRAM_GUARD=0 disables the guard even when it would otherwise block", async () => {
+  const { runtime, advanceClock } = makeVramGuardHarness({
+    manaSizeMb: 4000,
+    visionSizeMb: 20000,
+    freeMbSequence: [10000, 2000],
+    extraEnv: { LLAMA_SERVER_VRAM_GUARD: "0" },
+  });
+
+  await runtime.runLocalAssistantReply("hello", 64, "default");
+  advanceClock(10000);
+
+  await runtime.runVisionReply("what is this?", ["abc"]);
+  assert.equal(runtime.getStatus().model, "C:\\models\\vision.gguf", "guard disabled: swap proceeded");
+});
+
+test("assertVramForSwap proceeds gracefully when live VRAM usage is unavailable", async () => {
+  const { runtime, advanceClock } = makeVramGuardHarness({
+    manaSizeMb: 4000,
+    visionSizeMb: 20000,
+    freeMbSequence: [10000, 2000],
+    detectGpuVramUsage: () => null, // e.g. nvidia-smi missing/failed
+  });
+
+  await runtime.runLocalAssistantReply("hello", 64, "default");
+  advanceClock(10000);
+
+  await runtime.runVisionReply("what is this?", ["abc"]);
+  assert.equal(runtime.getStatus().model, "C:\\models\\vision.gguf", "no data: guard does not block");
+});
+
 // Issue #417 whole-branch review, Finding 1: a tool executed mid-loop
 // (vision__look) can swap the server to a different model out from under
 // runToolAwareReply's loop, because ensureServer() used to run only once,
