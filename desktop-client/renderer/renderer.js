@@ -583,8 +583,21 @@ document.getElementById('themeToggle')?.addEventListener('click', (e) => {
       item.appendChild(nameEl);
       item.appendChild(metaEl);
       item.appendChild(renameBtn);
-      item.addEventListener('click', () => {
+
+      // Issue #362: was a plain div with only a click listener -- not in
+      // the tab order and not activatable from the keyboard.
+      item.tabIndex = 0;
+      item.setAttribute('role', 'button');
+      item.setAttribute('aria-label', `Session: ${session.name || session.sessionId}`);
+      const activate = () => {
         if (session.sessionId !== currentSessionId) switchToSession(session.sessionId);
+      };
+      item.addEventListener('click', activate);
+      item.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault();
+          activate();
+        }
       });
       sessionListEl.appendChild(item);
     }

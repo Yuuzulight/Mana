@@ -160,9 +160,23 @@ function renderSessionList(sessions) {
       item.appendChild(goalEl);
     }
 
-    item.addEventListener("click", () => {
+    // Issue #362: was a plain div with only click/contextmenu -- not in the
+    // tab order and not activatable from the keyboard (the rename/delete
+    // context menu stays mouse/right-click-only for now, same as before).
+    item.tabIndex = 0;
+    item.setAttribute("role", "button");
+    item.setAttribute("aria-label", `Session: ${session.name || session.sessionId}`);
+
+    const activate = () => {
       if (session.sessionId !== currentSessionId) {
         switchToSession(session.sessionId);
+      }
+    };
+    item.addEventListener("click", activate);
+    item.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        activate();
       }
     });
 

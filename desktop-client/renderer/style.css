@@ -309,3 +309,14 @@ select{font-family:inherit;color:var(--text)}
 @keyframes startup-pulse{0%,100%{opacity:0.6}50%{opacity:1}}
 .startup-skip{margin-top:26px;background:none;border:none;color:var(--muted-soft);font-size:10.5px;font-family:inherit;cursor:pointer;text-decoration:underline;padding:0;}
 .startup-skip:hover{color:var(--muted);}
+
+/* Issue #362: session-item rows are now real tab stops -- they need a
+   visible focus indicator of their own, unlike a native button. */
+.session-item:focus-visible{outline:2px solid var(--accent);outline-offset:-2px;}
+/* #messageInput suppresses the default outline with no replacement --
+   restore one on focus. */
+#messageInput:focus-visible{box-shadow:0 0 0 2px var(--accent);border-radius:4px;}
+
+/* Issue #362: on-screen equivalent of spoken output -- a bottom-anchored
+   overlay bar, not just an unstyled line of text at the end of the body. */
+.mana-captions{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);max-width:min(80vw,640px);padding:10px 16px;border-radius:8px;background:var(--panel);border:1px solid var(--border);color:var(--text);font-size:15px;line-height:1.4;text-align:center;pointer-events:none;z-index:1000;}

@@ -128,7 +128,7 @@
           </svg>
           <span class="sidebar-label">Mana</span>
         </div>
-        <button id="sidebarCollapseBtn" title="Collapse sidebar">☰</button>
+        <button id="sidebarCollapseBtn" title="Collapse sidebar" aria-label="Collapse sidebar">☰</button>
       </div>
 
       <button id="newChatBtn">+ <span>New chat</span></button>
@@ -166,8 +166,8 @@
       </div>
 
       <div id="sidebarAvatarCard">
-        <canvas id="manaCanvas"></canvas>
-        <button id="avatarZoomBtn" title="Zoom avatar view">⤢</button>
+        <canvas id="manaCanvas" aria-hidden="true"></canvas>
+        <button id="avatarZoomBtn" title="Zoom avatar view" aria-label="Zoom avatar view">⤢</button>
         <div id="sidebarAvatarLabel">Mana</div>
         <div id="sidebarAvatarStatus"><span class="nav-dot ok"></span> Idle</div>
       </div>
@@ -175,12 +175,12 @@
 
     <div id="appColumn">
       <div id="header">
-        <div id="status">Status: <span id="statustxt">Starting...</span></div>
+        <div id="status">Status: <span id="statustxt" aria-live="polite">Starting...</span></div>
         <button id="listenToggle">Start listening</button>
       </div>
 
       <div id="main">
-        <div id="chatLog"></div>
+        <div id="chatLog" role="log" aria-live="polite"></div>
 
         <div id="chatEmptyState">
           <h2>Mana</h2>
@@ -213,7 +213,7 @@
                   <option value="kokoro">Voice: Kokoro</option>
                 </select>
                 <span class="spacer"></span>
-                <button id="chatSend" title="Send">↑</button>
+                <button id="chatSend" title="Send" aria-label="Send">↑</button>
               </div>
             </div>
             <div id="comparePanel" hidden>
@@ -591,7 +591,7 @@
       <div class="modal">
         <div class="modal-header">
           <strong id="memoryModalTitle">Session memory</strong>
-          <button id="memoryModalClose">✕</button>
+          <button id="memoryModalClose" aria-label="Close">✕</button>
         </div>
         <div id="memoryModalBody" class="modal-body">Loading...</div>
       </div>
