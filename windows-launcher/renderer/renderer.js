@@ -80,6 +80,7 @@ const {
   shouldStopRecording,
 } = require("./voice-endpointing");
 const { detectReplyEmotion } = require("./reply-emotion");
+const { isAccessibilityTreeTextUsable } = require("../accessibility-tree");
 const { waitForPlayback } = require("./reply-audio-playback");
 const {
   isLikelyWhisperHallucination,
@@ -2790,6 +2791,18 @@ async function readScreenContext(text, gamingModeActive) {
 
   try {
     statusEl.textContent = "Mana is reading the screen...";
+
+    // Issue #343: try the UI Automation tree first -- fast, precise, no
+    // screenshot/OCR round trip -- and only fall back to the existing
+    // screenshot+OCR path below when it's disabled, times out, errors, or
+    // the tree it got back doesn't clear the empty-tree bar.
+    const treeText = await ipcRenderer.invoke("screen:read-accessibility-tree");
+    if (isAccessibilityTreeTextUsable(treeText)) {
+      lastScreenText = treeText;
+      lastScreenContextAt = now;
+      return lastScreenText;
+    }
+
     const image = await ipcRenderer.invoke("screen:capture-primary");
     const response = await fetch(`${BACKEND_BASE_URL}/screen/read`, {
       method: "POST",
