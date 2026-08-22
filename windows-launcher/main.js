@@ -4,6 +4,7 @@ const path = require("path");
 const { spawn } = require("child_process");
 const { createBackendConfigStore } = require("./backend-config");
 const { OPEN_CHAT_ACTION_INDEX, isProactiveToast, buildToastOptions } = require("./proactive-notifications");
+const { parseAccessibilityTreeOutput } = require("./accessibility-tree");
 
 let mainWindow;
 let avatarWindow;
@@ -92,6 +93,24 @@ const WINDOW_HOTKEY = process.env.MANA_WINDOW_HOTKEY || "Control+Alt+Space";
 // the user cut in without needing real echo cancellation. Set to off to
 // disable.
 const INTERRUPT_HOTKEY = process.env.MANA_INTERRUPT_HOTKEY || "Control+Alt+I";
+// Issue #343: UI-Automation-tree screen context, tried before the
+// screenshot+OCR path. Set to "0" to always use OCR (kept reachable for
+// deliberate comparison, per the issue's own verification ask).
+const ACCESSIBILITY_TREE_ENABLED = process.env.MANA_ACCESSIBILITY_TREE_ENABLED !== "0";
+// Independent of node-bot's SCREEN_CONTEXT_MAX_CHARS -- this walk's output
+// size doesn't track OCR's at all, so it gets its own budget/default.
+const ACCESSIBILITY_TREE_MAX_CHARS = Number(
+  process.env.MANA_ACCESSIBILITY_TREE_MAX_CHARS || 1200,
+);
+// PowerShell's own cold-start alone can eat a chunk of this -- generous
+// enough to not falsely fall back to OCR (seconds-slow either way) on a
+// merely-cold process, while still bounding the worst case.
+const ACCESSIBILITY_TREE_TIMEOUT_MS = 800;
+// After this many consecutive timeouts/errors (not empty-tree results --
+// those are a legitimate per-window outcome), stop attempting the tree
+// read for the rest of this process's lifetime and go straight to OCR.
+const ACCESSIBILITY_TREE_MAX_FAILURES = 3;
+let accessibilityTreeFailureCount = 0;
 
 async function isServiceRunning(url) {
   try {
@@ -1417,6 +1436,70 @@ ipcMain.handle("screen:capture-primary", async () => {
 
   const jpeg = source.thumbnail.toJPEG(75);
   return `data:image/jpeg;base64,${jpeg.toString("base64")}`;
+});
+
+// Issue #343: spawns read-accessibility-tree.ps1 and returns its extracted
+// text, or null if disabled, already given up for this session, timed out,
+// errored, or the focused window turned out to be Mana's own launcher (same
+// "reading our own UI" case OCR-on-screenshot already has today -- fall
+// back rather than "succeed" with useless self-description).
+function readAccessibilityTree() {
+  return new Promise((resolve) => {
+    const scriptPath = path.join(__dirname, "scripts", "read-accessibility-tree.ps1");
+    const child = spawn(
+      "powershell",
+      [
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        scriptPath,
+        "-MaxChars",
+        String(ACCESSIBILITY_TREE_MAX_CHARS),
+      ],
+      { windowsHide: true },
+    );
+
+    let stdout = "";
+    let settled = false;
+
+    const finish = (result, { failed } = {}) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (failed) accessibilityTreeFailureCount++;
+      resolve(result);
+    };
+
+    const timer = setTimeout(() => {
+      child.kill();
+      finish(null, { failed: true });
+    }, ACCESSIBILITY_TREE_TIMEOUT_MS);
+
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk.toString("utf8");
+    });
+    child.on("error", () => finish(null, { failed: true }));
+    child.on("close", (code) => {
+      if (code !== 0) {
+        finish(null, { failed: true });
+        return;
+      }
+      const { ownerPid, text } = parseAccessibilityTreeOutput(stdout);
+      if (ownerPid === process.pid) {
+        finish(null);
+        return;
+      }
+      finish(text);
+    });
+  });
+}
+
+ipcMain.handle("screen:read-accessibility-tree", async () => {
+  if (!ACCESSIBILITY_TREE_ENABLED || accessibilityTreeFailureCount >= ACCESSIBILITY_TREE_MAX_FAILURES) {
+    return null;
+  }
+  return readAccessibilityTree();
 });
 
 app.on("window-all-closed", function () {
