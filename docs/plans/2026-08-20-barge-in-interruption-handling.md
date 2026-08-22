@@ -8,7 +8,7 @@
 
 **Tech Stack:** Node's built-in `node:test`, Express (`node-bot/server.js`), vanilla JS Electron renderers (`windows-launcher`, `desktop-client`), `onnxruntime-web`/Silero VAD (already in place from Sub-project A).
 
-**Spec:** [docs/superpowers/specs/2026-08-20-barge-in-interruption-handling-design.md](../specs/2026-08-20-barge-in-interruption-handling-design.md)
+**Spec:** [docs/specs/2026-08-20-barge-in-interruption-handling-design.md](../specs/2026-08-20-barge-in-interruption-handling-design.md)
 
 ## Global Constraints
 

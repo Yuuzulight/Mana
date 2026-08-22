@@ -8,7 +8,7 @@
 
 **Tech Stack:** Node's built-in `node:test` (backend), vanilla JS Electron renderers (no new automated coverage for the renderer-side dispatch, matching #339/#340's own precedent).
 
-**Spec:** [docs/superpowers/specs/2026-08-20-mid-turn-amend-design.md](../specs/2026-08-20-mid-turn-amend-design.md)
+**Spec:** [docs/specs/2026-08-20-mid-turn-amend-design.md](../specs/2026-08-20-mid-turn-amend-design.md)
 
 ## Global Constraints
 
