@@ -1,8 +1,9 @@
-const { app, BrowserWindow, Menu, Tray, desktopCapturer, dialog, globalShortcut, ipcMain, nativeImage, powerMonitor, screen, session } = require("electron");
+const { app, BrowserWindow, Menu, Notification, Tray, desktopCapturer, dialog, globalShortcut, ipcMain, nativeImage, powerMonitor, screen, session } = require("electron");
 const fs = require("fs");
 const path = require("path");
 const { spawn } = require("child_process");
 const { createBackendConfigStore } = require("./backend-config");
+const { OPEN_CHAT_ACTION_INDEX, isProactiveToast, buildToastOptions } = require("./proactive-notifications");
 
 let mainWindow;
 let avatarWindow;
@@ -32,6 +33,10 @@ function getIdleReportUrl() {
 
 function getTrayWebSocketUrl() {
   return `${getBackendBaseUrl().replace(/^http/, "ws")}/ws/tray`;
+}
+
+function getVisionCaptureWebSocketUrl() {
+  return `${getBackendBaseUrl().replace(/^http/, "ws")}/ws/vision-capture`;
 }
 
 ipcMain.handle("get-backend-url", async () => getBackendBaseUrl());
@@ -1134,6 +1139,7 @@ app.whenReady().then(() => {
   createAvatarWindow();
   createTray();
   connectTrayNotifications();
+  connectVisionCaptureBridge();
   registerVisionHotkey();
   registerWindowHotkey();
   registerInterruptHotkey();
@@ -1221,6 +1227,22 @@ function connectTrayNotifications() {
       if (typeof tray.displayBalloon === "function") {
         tray.displayBalloon({ title: payload.title, content: payload.text });
       }
+    } else if (
+      isProactiveToast(payload) &&
+      process.env.MANA_PROACTIVE_TOASTS_ENABLED !== "0" &&
+      Notification.isSupported()
+    ) {
+      // Issue #423: Dream Mode insights, cron job results, and Deep Research
+      // staleness notes reach the user as a native toast even when the
+      // launcher window isn't focused/visible, not just chat history.
+      const notification = new Notification(buildToastOptions(payload));
+      notification.on("action", (event) => {
+        if (event.actionIndex !== OPEN_CHAT_ACTION_INDEX || !mainWindow) return;
+        if (mainWindow.isMinimized()) mainWindow.restore();
+        mainWindow.show();
+        mainWindow.focus();
+      });
+      notification.show();
     }
   });
   // "close" fires after "error" for a failed/dropped connection, so one
@@ -1228,6 +1250,45 @@ function connectTrayNotifications() {
   // yet (e.g. running without windows-launcher, or a slow-starting node-bot).
   socket.addEventListener("close", () => {
     setTimeout(connectTrayNotifications, TRAY_SOCKET_RECONNECT_DELAY_MS);
+  });
+}
+
+// Issue #417: lets the model request a fresh screenshot mid-reply --
+// node-bot pushes a "capture-request" over this socket, the renderer
+// captures (the same screen:capture-primary IPC the hotkey/ambient-glance
+// flows already use) and POSTs the image back to
+// POST /vision/capture-result. Same reconnect-on-close shape as
+// connectTrayNotifications() just above.
+const VISION_CAPTURE_SOCKET_RECONNECT_DELAY_MS = 15000;
+
+function connectVisionCaptureBridge() {
+  let socket;
+  try {
+    socket = new WebSocket(getVisionCaptureWebSocketUrl());
+  } catch (error) {
+    setTimeout(connectVisionCaptureBridge, VISION_CAPTURE_SOCKET_RECONNECT_DELAY_MS);
+    return;
+  }
+
+  socket.addEventListener("message", (event) => {
+    let payload;
+    try {
+      payload = JSON.parse(event.data);
+    } catch (error) {
+      return;
+    }
+    if (
+      payload &&
+      payload.type === "capture-request" &&
+      payload.requestId &&
+      mainWindow &&
+      !mainWindow.isDestroyed()
+    ) {
+      mainWindow.webContents.send("vision:capture-request", payload.requestId);
+    }
+  });
+  socket.addEventListener("close", () => {
+    setTimeout(connectVisionCaptureBridge, VISION_CAPTURE_SOCKET_RECONNECT_DELAY_MS);
   });
 }
 

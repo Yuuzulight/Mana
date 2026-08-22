@@ -268,6 +268,39 @@ function checkSessionSearchVectorIndex(vectorEnabled) {
   );
 }
 
+// Issue #400: surfaces whether the most recently assembled prompt (across
+// every session -- Doctor has no one session in mind) dropped anything, so
+// silent truncation is visible from the same panel as every other check
+// instead of only discoverable by reading the code.
+function checkPromptComposition(composition) {
+  if (!composition) {
+    return null;
+  }
+  const droppedBlocks = composition.blocks.filter((block) => {
+    const dropped = block.dropped;
+    if (!dropped) return false;
+    return Boolean(
+      dropped.truncated || dropped.skillsOmitted || dropped.turnsDroppedByAge,
+    );
+  });
+  if (!droppedBlocks.length) {
+    return makeCheck(
+      "prompt-composition",
+      "Prompt composition",
+      "pass",
+      `The last assembled prompt (${composition.totalChars} chars, ~${composition.totalEstTokens} tokens) dropped nothing.`,
+      { composition },
+    );
+  }
+  return makeCheck(
+    "prompt-composition",
+    "Prompt composition",
+    "warn",
+    `The last assembled prompt (${composition.totalChars} chars, ~${composition.totalEstTokens} tokens) dropped content in: ${droppedBlocks.map((b) => b.name).join(", ")}.`,
+    { composition },
+  );
+}
+
 function checkMobileAuth(env) {
   const hash = env.MOBILE_PASSCODE_HASH || env.MANA_MOBILE_PASSCODE_HASH || "";
   const secret = env.MOBILE_SESSION_SECRET || "";
@@ -660,6 +693,7 @@ function runDoctorChecks(options = {}) {
     checkTtsServices(options.services || []),
     checkFishTtsWarmup(options.fishTtsWarmup),
     checkSessionSearchVectorIndex(options.sessionSearchVectorEnabled),
+    checkPromptComposition(options.promptComposition),
     checkMcpServer(env),
     checkRecommendedModelProfile(modelManagement),
     checkMobileAuth(env),

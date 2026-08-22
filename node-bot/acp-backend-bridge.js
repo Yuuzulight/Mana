@@ -76,10 +76,11 @@ function createAcpBackendBridge({
     return request("GET", `/editors/workspace/proposals/${encodeURIComponent(id)}`);
   }
 
-  function approveEditProposal(id) {
+  function approveEditProposal(id, acceptedHunkIds) {
     return request(
       "POST",
       `/editors/workspace/proposals/${encodeURIComponent(id)}/approve`,
+      acceptedHunkIds === undefined ? undefined : { acceptedHunkIds },
     );
   }
 

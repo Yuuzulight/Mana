@@ -13,9 +13,44 @@
         font-family: -apple-system, "Segoe UI", sans-serif;
       }
 
+      body {
+        display: flex;
+        flex-direction: column;
+      }
+
+      #artifact-nav {
+        display: none;
+        flex: 0 0 auto;
+        align-items: center;
+        gap: 10px;
+        padding: 10px 28px;
+        border-bottom: 1px solid #33312a;
+        background: #201f1a;
+      }
+
+      #artifact-nav button {
+        background: #33312a;
+        color: #f0ece4;
+        border: none;
+        border-radius: 4px;
+        padding: 4px 10px;
+        cursor: pointer;
+        font-size: 13px;
+      }
+
+      #artifact-nav button:disabled {
+        opacity: 0.4;
+        cursor: default;
+      }
+
+      #artifact-version-label {
+        font-size: 13px;
+        opacity: 0.8;
+      }
+
       #artifact-container {
         box-sizing: border-box;
-        height: 100%;
+        flex: 1 1 auto;
         overflow: auto;
         padding: 20px 28px;
         line-height: 1.5;
@@ -38,6 +73,11 @@
     </style>
   </head>
   <body>
+    <div id="artifact-nav">
+      <button id="artifact-prev" type="button">&larr; Prev</button>
+      <span id="artifact-version-label"></span>
+      <button id="artifact-next" type="button">Next &rarr;</button>
+    </div>
     <div id="artifact-container">Loading...</div>
     <!-- Plain global-bundle build, not the npm package's ESM entry point --
          Electron's renderer resolves import()/require() through Chromium's
