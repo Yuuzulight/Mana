@@ -17,7 +17,7 @@ const THEME_STORAGE_KEY = 'manaTheme';
 const LISTENING_AUTOSTART_STORAGE_KEY = 'mana_listening_autostart';
 const BARGE_IN_STORAGE_KEY = 'mana_barge_in_enabled';
 function applyTheme(choice) {
-  if (choice === 'light' || choice === 'dark') {
+  if (choice === 'light' || choice === 'dark' || choice === 'high-contrast') {
     document.documentElement.setAttribute('data-theme', choice);
   } else {
     document.documentElement.removeAttribute('data-theme');
