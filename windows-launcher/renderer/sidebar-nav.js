@@ -26,6 +26,7 @@ const NAV_INFO_PANELS = {
   model: "Model",
   doctor: "Doctor",
   snapshots: "Applied edits",
+  proposals: "Pending edits",
   settings: "Settings",
 };
 const navInfoModalEl = document.getElementById("navInfoModal");

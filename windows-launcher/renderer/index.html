@@ -361,6 +361,31 @@
             </div>
           </div>
 
+          <!-- Issue #427: hunk-level accept/reject for editor-handoff diff
+               proposals (any editor, not just Zed -- see zed-integration.js's
+               createEditProposal/approveEditProposal). -->
+          <div class="sidebar-panel" data-panel="proposals" hidden>
+            <div id="proposalsPanel">
+              <div id="proposalsHeader">
+                <strong>Pending edits</strong>
+                <button id="refreshProposalsBtn">Refresh</button>
+              </div>
+              <p class="sidebar-note">Diff proposals from a connected editor wait here for review -- accept or reject individual hunks before anything is written.</p>
+              <div id="proposalsEmpty" class="sidebar-note" hidden>No pending edits.</div>
+              <div id="proposalsList"></div>
+
+              <div id="proposalReview" hidden>
+                <div id="proposalReviewHeader">
+                  <button id="proposalReviewBackBtn">&larr; Back</button>
+                  <div id="proposalReviewPath"></div>
+                  <div id="proposalReviewSummary" class="sidebar-note"></div>
+                </div>
+                <div id="proposalReviewHunks"></div>
+                <button id="proposalReviewApproveBtn">Approve selected hunks</button>
+              </div>
+            </div>
+          </div>
+
           <div class="sidebar-panel" data-panel="settings" hidden>
             <div id="settingsInfoNav">
               <div class="nav-item" data-panel="avatar">
@@ -390,6 +415,10 @@
               <div class="nav-item" data-panel="snapshots">
                 <span class="nav-icon">⎌</span>
                 <span class="nav-label">Applied edits</span>
+              </div>
+              <div class="nav-item" data-panel="proposals">
+                <span class="nav-icon">◫</span>
+                <span class="nav-label">Pending edits</span>
               </div>
             </div>
 

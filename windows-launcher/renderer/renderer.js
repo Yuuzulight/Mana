@@ -19,6 +19,15 @@ const doctorBubbleMessageEl = doctorBubbleEl?.querySelector(".doctor-bubble-mess
 const refreshSnapshotsBtn = document.getElementById("refreshSnapshotsBtn");
 const snapshotsListEl = document.getElementById("snapshotsList");
 const snapshotsEmptyEl = document.getElementById("snapshotsEmpty");
+const refreshProposalsBtn = document.getElementById("refreshProposalsBtn");
+const proposalsListEl = document.getElementById("proposalsList");
+const proposalsEmptyEl = document.getElementById("proposalsEmpty");
+const proposalReviewEl = document.getElementById("proposalReview");
+const proposalReviewPathEl = document.getElementById("proposalReviewPath");
+const proposalReviewSummaryEl = document.getElementById("proposalReviewSummary");
+const proposalReviewHunksEl = document.getElementById("proposalReviewHunks");
+const proposalReviewBackBtn = document.getElementById("proposalReviewBackBtn");
+const proposalReviewApproveBtn = document.getElementById("proposalReviewApproveBtn");
 const modelModeControlsEl = document.getElementById("modelModeControls");
 const modelStatusEl = document.getElementById("modelStatus");
 const useRemoteAiToggleEl = document.getElementById("useRemoteAiToggle");
@@ -2541,6 +2550,146 @@ async function restoreEditSnapshotWithConfirm(id, relativePath) {
   }
 }
 
+// Issue #427: hunk-level accept/reject for editor-handoff diff proposals,
+// from whichever editor was connected -- generic, not Zed-specific.
+let currentProposalReviewId = null;
+
+function renderProposalsPanel(proposals) {
+  const pending = proposals.filter((p) => p.status === "pending");
+  if (proposalsEmptyEl) {
+    proposalsEmptyEl.hidden = pending.length > 0;
+  }
+  if (!proposalsListEl) {
+    return;
+  }
+  proposalsListEl.innerHTML = "";
+  for (const proposal of pending) {
+    const row = document.createElement("div");
+    row.className = "snapshot-item";
+
+    const info = document.createElement("div");
+    info.className = "snapshot-item-info";
+    const pathEl = document.createElement("div");
+    pathEl.className = "snapshot-item-path";
+    pathEl.textContent = proposal.relativePath || "(unknown file)";
+    const metaEl = document.createElement("div");
+    metaEl.className = "snapshot-item-meta";
+    const hunkCount = proposal.hunkCount || 0;
+    metaEl.textContent = `${proposal.summary || "Edit"} · ${hunkCount} hunk${hunkCount === 1 ? "" : "s"}`;
+    info.appendChild(pathEl);
+    info.appendChild(metaEl);
+
+    const reviewBtn = document.createElement("button");
+    reviewBtn.textContent = "Review";
+    reviewBtn.addEventListener("click", () => openProposalReview(proposal.id));
+
+    row.appendChild(info);
+    row.appendChild(reviewBtn);
+    proposalsListEl.appendChild(row);
+  }
+}
+
+async function refreshProposalsPanel() {
+  try {
+    const response = await fetch(`${BACKEND_BASE_URL}/editors/workspace/proposals`);
+    if (!response.ok) {
+      throw new Error(`Proposal list returned ${response.status}`);
+    }
+    const result = await response.json();
+    renderProposalsPanel(result.proposals || []);
+  } catch (error) {
+    console.warn("Mana proposal list failed:", error);
+  }
+}
+
+function renderHunkDiff(hunk) {
+  const pre = document.createElement("pre");
+  pre.className = "hunk-diff";
+  for (const line of hunk.lines) {
+    const span = document.createElement("span");
+    const prefix = line.charAt(0);
+    span.className =
+      prefix === "+" ? "hunk-line-add" : prefix === "-" ? "hunk-line-del" : "hunk-line-ctx";
+    span.textContent = `${line}\n`;
+    pre.appendChild(span);
+  }
+  return pre;
+}
+
+function renderProposalReviewHunks(proposal) {
+  if (!proposalReviewHunksEl) return;
+  proposalReviewHunksEl.innerHTML = "";
+  for (const hunk of proposal.hunks || []) {
+    const card = document.createElement("div");
+    card.className = "hunk-card";
+
+    const label = document.createElement("label");
+    label.className = "hunk-card-header";
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.checked = true;
+    checkbox.dataset.hunkId = hunk.id;
+    label.appendChild(checkbox);
+    label.appendChild(document.createTextNode(` Accept this hunk (line ${hunk.newStart})`));
+    card.appendChild(label);
+    card.appendChild(renderHunkDiff(hunk));
+    proposalReviewHunksEl.appendChild(card);
+  }
+}
+
+async function openProposalReview(id) {
+  try {
+    const response = await fetch(
+      `${BACKEND_BASE_URL}/editors/workspace/proposals/${encodeURIComponent(id)}`,
+    );
+    if (!response.ok) {
+      throw new Error(`Proposal fetch returned ${response.status}`);
+    }
+    const result = await response.json();
+    const proposal = result.proposal;
+    currentProposalReviewId = proposal.id;
+    if (proposalReviewPathEl) proposalReviewPathEl.textContent = proposal.relativePath || "";
+    if (proposalReviewSummaryEl) proposalReviewSummaryEl.textContent = proposal.summary || "";
+    renderProposalReviewHunks(proposal);
+    if (proposalReviewEl) proposalReviewEl.hidden = false;
+    if (proposalsListEl) proposalsListEl.hidden = true;
+  } catch (error) {
+    console.warn("Mana proposal review failed:", error);
+  }
+}
+
+function closeProposalReview() {
+  currentProposalReviewId = null;
+  if (proposalReviewEl) proposalReviewEl.hidden = true;
+  if (proposalsListEl) proposalsListEl.hidden = false;
+}
+
+async function approveSelectedProposalHunks() {
+  if (!currentProposalReviewId || !proposalReviewHunksEl) return;
+  const acceptedHunkIds = [...proposalReviewHunksEl.querySelectorAll("input[type=checkbox]")]
+    .filter((checkbox) => checkbox.checked)
+    .map((checkbox) => checkbox.dataset.hunkId);
+
+  try {
+    const response = await fetch(
+      `${BACKEND_BASE_URL}/editors/workspace/proposals/${encodeURIComponent(currentProposalReviewId)}/approve`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ acceptedHunkIds }),
+      },
+    );
+    const result = await response.json();
+    if (!response.ok || !result.proposal) {
+      throw new Error(result.error || `Approve returned ${response.status}`);
+    }
+    closeProposalReview();
+    await refreshProposalsPanel();
+  } catch (error) {
+    console.warn("Mana proposal approve failed:", error);
+  }
+}
+
 function shouldReadScreenForCommand(text, gamingModeActive) {
   if (!gamingModeActive) {
     return true;
@@ -3106,6 +3255,14 @@ refreshSnapshotsBtn?.addEventListener("click", () => {
   refreshEditSnapshots();
 });
 
+refreshProposalsBtn?.addEventListener("click", () => {
+  refreshProposalsPanel();
+});
+proposalReviewBackBtn?.addEventListener("click", closeProposalReview);
+proposalReviewApproveBtn?.addEventListener("click", () => {
+  approveSelectedProposalHunks();
+});
+
 listenBtn.addEventListener("click", async () => {
   if (listening) {
     stopListening();
@@ -3146,6 +3303,7 @@ refreshGamingStatus(true);
 refreshPerfStatus();
 runDoctorChecksFromLauncher();
 refreshEditSnapshots();
+refreshProposalsPanel();
 
 // helper: convert AudioBuffer to WAV bytes (16-bit PCM)
 function audioBufferToWav(buffer, opt) {

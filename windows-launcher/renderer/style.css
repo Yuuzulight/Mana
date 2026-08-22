@@ -292,6 +292,43 @@
         color: var(--muted);
       }
 
+      #proposalReviewHeader {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        margin-bottom: 10px;
+      }
+
+      #proposalReviewPath { font-size: 13px; font-weight: bold; }
+
+      .hunk-card {
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 8px 10px;
+        margin-bottom: 10px;
+      }
+
+      .hunk-card-header {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        font-size: 12px;
+        margin-bottom: 6px;
+        cursor: pointer;
+      }
+
+      .hunk-diff {
+        font-family: monospace;
+        font-size: 12px;
+        white-space: pre-wrap;
+        overflow-x: auto;
+        margin: 0;
+      }
+
+      .hunk-line-add { color: var(--green); }
+      .hunk-line-del { color: var(--fail); }
+      .hunk-line-ctx { color: var(--muted); }
+
       .sidebar-field {
         display: flex;
         flex-direction: column;

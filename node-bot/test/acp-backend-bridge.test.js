@@ -62,6 +62,23 @@ test("backend bridge exposes workspace editor operations", async () => {
   assert.equal(calls.some((call) => call.url.includes("path=app.js")), true);
 });
 
+test("backend bridge sends acceptedHunkIds only when the caller passes them (issue #427)", async () => {
+  const calls = [];
+  const bridge = createAcpBackendBridge({
+    backendUrl: "http://127.0.0.1:5005",
+    fetchImpl: async (url, options = {}) => {
+      calls.push({ url, options });
+      return createJsonResponse({ proposal: { id: "proposal-1", status: "applied" } });
+    },
+  });
+
+  await bridge.approveEditProposal("proposal-1");
+  assert.equal(calls[0].options.body, undefined);
+
+  await bridge.approveEditProposal("proposal-1", ["hunk-0"]);
+  assert.deepEqual(JSON.parse(calls[1].options.body), { acceptedHunkIds: ["hunk-0"] });
+});
+
 test("backend bridge converts HTTP failures into clear errors", async () => {
   const bridge = createAcpBackendBridge({
     backendUrl: "http://127.0.0.1:5005",

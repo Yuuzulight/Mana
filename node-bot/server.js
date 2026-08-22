@@ -2237,7 +2237,13 @@ function registerRoutes(app, upload, deps = {}) {
     if (!checkAdminAuth(req, res)) return;
     try {
       const editors = getEditorIntegrations();
-      return res.json({ proposal: editors.approveEditProposal(req.params.id) });
+      // Issue #427: omitted acceptedHunkIds approves every hunk, unchanged
+      // from before hunk-level review existed.
+      return res.json({
+        proposal: editors.approveEditProposal(req.params.id, {
+          acceptedHunkIds: req.body?.acceptedHunkIds,
+        }),
+      });
     } catch (error) {
       return res.status(400).json({
         proposal: null,

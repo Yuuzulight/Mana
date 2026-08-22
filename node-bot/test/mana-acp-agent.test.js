@@ -168,7 +168,9 @@ test("createManaAcpAgent exposes backend-backed workspace and edit methods", asy
       createEditProposal: async (payload) => ({ proposal: { id: "proposal-1", ...payload } }),
       listEditProposals: async () => ({ proposals: [{ id: "proposal-1" }] }),
       getEditProposal: async (id) => ({ proposal: { id } }),
-      approveEditProposal: async (id) => ({ proposal: { id, status: "applied" } }),
+      approveEditProposal: async (id, acceptedHunkIds) => ({
+        proposal: { id, status: "applied", acceptedHunkIds },
+      }),
     },
   });
 
@@ -228,6 +230,15 @@ test("createManaAcpAgent exposes backend-backed workspace and edit methods", asy
       params: { id: "proposal-1" },
     })).result.proposal.status,
     "applied",
+  );
+  assert.deepEqual(
+    (await agent.handleJsonRpc({
+      jsonrpc: "2.0",
+      id: 28,
+      method: "mana/edit/approve",
+      params: { id: "proposal-1", acceptedHunkIds: ["hunk-0"] },
+    })).result.proposal.acceptedHunkIds,
+    ["hunk-0"],
   );
   assert.equal(calls[0].method, "setWorkspace");
 });
