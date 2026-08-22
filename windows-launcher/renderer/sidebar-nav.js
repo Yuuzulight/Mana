@@ -67,8 +67,18 @@ function closeNavInfoPopup() {
   switchSidebarPanel("sessions");
 }
 
+// Issue #362: these were plain divs with only a click listener -- not in
+// the tab order and not activatable from the keyboard at all.
 document.querySelectorAll(".nav-item[data-panel]").forEach((el) => {
+  el.tabIndex = 0;
+  el.setAttribute("role", "button");
   el.addEventListener("click", () => switchSidebarPanel(el.dataset.panel));
+  el.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      switchSidebarPanel(el.dataset.panel);
+    }
+  });
 });
 
 navInfoCloseBtnEl?.addEventListener("click", closeNavInfoPopup);
