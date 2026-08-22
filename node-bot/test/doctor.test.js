@@ -36,7 +36,10 @@ test("doctor checks return structured pass warn and fail results", () => {
     });
 
     assert.equal(result.ok, false);
-    assert.equal(result.summary.pass, 6);
+    // Issue #48: mobile-2fa always reports "pass" (it's opt-in, so not
+    // having enabled it is a valid state, not a warning) -- one more pass
+    // than before that check existed.
+    assert.equal(result.summary.pass, 7);
     assert.equal(result.summary.warn, 9);
     assert.equal(result.summary.fail, 1);
 
@@ -54,6 +57,7 @@ test("doctor checks return structured pass warn and fail results", () => {
         "mcp-server",
         "recommended-model-profile",
         "mobile-auth",
+        "mobile-2fa",
         "remote-exposure",
         "storage",
         "zed-editor",
