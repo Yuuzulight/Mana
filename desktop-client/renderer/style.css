@@ -206,6 +206,16 @@ select{font-family:inherit;color:var(--text)}
 .snapshot-item-path{font-size:12.5px;color:var(--text);font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 .snapshot-item-meta{font-size:11px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 
+/* Pending edits / hunk review (issue #427) */
+#proposalReviewPath{font-size:13px;font-weight:600;margin-top:8px;}
+.hunk-card{border:1px solid var(--border-soft);border-radius:6px;padding:8px 10px;margin-bottom:10px;}
+.hunk-card-header{display:flex;align-items:center;gap:6px;font-size:12px;margin-bottom:6px;cursor:pointer;}
+.hunk-diff{font-family:monospace;font-size:12px;white-space:pre-wrap;overflow-x:auto;margin:0;display:block;}
+.hunk-diff span{display:block;}
+.hunk-line-add{color:var(--green);}
+.hunk-line-del{color:var(--fail);}
+.hunk-line-ctx{color:var(--muted);}
+
 /* Onboarding modal */
 .modal{ position:fixed; inset:0; display:none; align-items:center; justify-content:center; background:rgba(0,0,0,0.55); z-index:1000 }
 .modal[aria-hidden="false"], .modal.show { display:flex }

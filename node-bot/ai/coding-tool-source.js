@@ -1,7 +1,7 @@
 // Issue #276: a model-callable middle rung between "never touch files"
 // (the existing editor hand-off, zed-integration.js's /editors/open) and
 // auto-editing live. Reuses zed-integration.js's existing
-// createEditProposal/createSimpleLineDiff wholesale for reading the
+// createEditProposal wholesale for reading the
 // original file and computing the diff -- the only new behavior here is
 // writing that diff out to a scratch file and handing its path back,
 // instead of ever calling approveEditProposal (which writes the real

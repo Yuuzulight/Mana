@@ -427,6 +427,154 @@ test("editor integrations reject approval when the file changed after proposal c
   }
 });
 
+test("a proposal with two well-separated changes gets two independently addressable hunks", () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mana-editor-hunks-"));
+  const original = Array.from({ length: 20 }, (_, i) => `line${i + 1}`).join("\n") + "\n";
+  fs.writeFileSync(path.join(tempDir, "src.js"), original);
+
+  try {
+    const workspaceStore = createEditorWorkspaceStore();
+    workspaceStore.setWorkspace(tempDir, { editor: "zed" });
+    const editors = createEditorIntegrations({
+      env: {},
+      commandResolver: (command) => command,
+      workspaceStore,
+      idFactory: () => "proposal-hunks-1",
+    });
+
+    const lines = original.split("\n");
+    lines[1] = "CHANGED2";
+    lines[17] = "CHANGED18";
+    const proposedContent = lines.join("\n");
+
+    const proposal = editors.createEditProposal({
+      path: "src.js",
+      proposedContent,
+      summary: "Two separate changes",
+    });
+
+    assert.equal(proposal.hunks.length, 2);
+    assert.deepEqual(proposal.hunks.map((h) => h.id), ["hunk-0", "hunk-1"]);
+    assert.equal(
+      editors.listEditProposals().find((p) => p.id === "proposal-hunks-1").hunkCount,
+      2,
+    );
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("approveEditProposal with acceptedHunkIds applies only the selected hunks", () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mana-editor-hunks-partial-"));
+  const original = Array.from({ length: 20 }, (_, i) => `line${i + 1}`).join("\n") + "\n";
+  const sourceFile = path.join(tempDir, "src.js");
+  fs.writeFileSync(sourceFile, original);
+
+  try {
+    const workspaceStore = createEditorWorkspaceStore();
+    workspaceStore.setWorkspace(tempDir, { editor: "zed" });
+    const editors = createEditorIntegrations({
+      env: {},
+      commandResolver: (command) => command,
+      workspaceStore,
+      idFactory: () => "proposal-hunks-partial-1",
+    });
+
+    const lines = original.split("\n");
+    lines[1] = "CHANGED2";
+    lines[17] = "CHANGED18";
+    const proposal = editors.createEditProposal({
+      path: "src.js",
+      proposedContent: lines.join("\n"),
+      summary: "Two separate changes",
+    });
+    assert.equal(proposal.hunks.length, 2);
+
+    const applied = editors.approveEditProposal("proposal-hunks-partial-1", {
+      acceptedHunkIds: ["hunk-1"],
+    });
+
+    assert.deepEqual(applied.acceptedHunkIds, ["hunk-1"]);
+    const resultLines = fs.readFileSync(sourceFile, "utf8").split("\n");
+    // Rejected hunk-0 -- line2 stays as it was in the original file.
+    assert.equal(resultLines[1], "line2");
+    // Accepted hunk-1 -- line18 takes the proposed change.
+    assert.equal(resultLines[17], "CHANGED18");
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("approveEditProposal rejects an unknown hunk id without writing or snapshotting", () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mana-editor-hunks-unknown-"));
+  const sourceFile = path.join(tempDir, "src.js");
+  fs.writeFileSync(sourceFile, "const value = 1;\n");
+
+  try {
+    const workspaceStore = createEditorWorkspaceStore();
+    workspaceStore.setWorkspace(tempDir, { editor: "zed" });
+    const editors = createEditorIntegrations({
+      env: {},
+      commandResolver: (command) => command,
+      workspaceStore,
+      idFactory: () => "proposal-hunks-unknown-1",
+    });
+
+    editors.createEditProposal({
+      path: "src.js",
+      proposedContent: "const value = 2;\n",
+      summary: "Update value",
+    });
+
+    assert.throws(
+      () =>
+        editors.approveEditProposal("proposal-hunks-unknown-1", {
+          acceptedHunkIds: ["hunk-99"],
+        }),
+      /no hunk\(s\): hunk-99/,
+    );
+    assert.equal(fs.readFileSync(sourceFile, "utf8"), "const value = 1;\n");
+    assert.equal(editors.getEditProposal("proposal-hunks-unknown-1").status, "pending");
+    assert.deepEqual(editors.listEditSnapshots(), []);
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("approveEditProposal with acceptedHunkIds: [] rejects every hunk as a no-op", () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mana-editor-hunks-none-"));
+  const sourceFile = path.join(tempDir, "src.js");
+  fs.writeFileSync(sourceFile, "const value = 1;\n");
+
+  try {
+    const workspaceStore = createEditorWorkspaceStore();
+    workspaceStore.setWorkspace(tempDir, { editor: "zed" });
+    const editors = createEditorIntegrations({
+      env: {},
+      commandResolver: (command) => command,
+      workspaceStore,
+      idFactory: () => "proposal-hunks-none-1",
+    });
+
+    editors.createEditProposal({
+      path: "src.js",
+      proposedContent: "const value = 2;\n",
+      summary: "Update value",
+    });
+
+    const applied = editors.approveEditProposal("proposal-hunks-none-1", {
+      acceptedHunkIds: [],
+    });
+
+    assert.equal(applied.alreadyApplied, true);
+    assert.equal(applied.status, "applied");
+    assert.equal(fs.readFileSync(sourceFile, "utf8"), "const value = 1;\n");
+    assert.deepEqual(editors.listEditSnapshots(), []);
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
 test("editor integrations reject approving the same proposal twice", () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mana-editor-approve-once-"));
   const sourceFile = path.join(tempDir, "src.js");
@@ -731,6 +879,61 @@ test("createApp approves an edit proposal through the shared backend route", asy
       assert.equal(approveBody.proposal.status, "applied");
       assert.equal(approveBody.proposal.appliedAt, "2026-06-29T00:02:00.000Z");
       assert.equal(fs.readFileSync(sourceFile, "utf8"), "console.log('after');\n");
+    });
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("createApp approves only the hunks named in the request body", async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mana-editor-route-hunks-"));
+  const original = Array.from({ length: 20 }, (_, i) => `line${i + 1}`).join("\n") + "\n";
+  const sourceFile = path.join(tempDir, "app.js");
+  fs.writeFileSync(sourceFile, original);
+
+  try {
+    const workspaceStore = createEditorWorkspaceStore();
+    workspaceStore.setWorkspace(tempDir, { editor: "zed" });
+    const app = createApp({
+      editors: createEditorIntegrations({
+        env: {},
+        commandResolver: (command) => command,
+        workspaceStore,
+        idFactory: () => "proposal-route-hunks-1",
+        spawn: () => ({ once: (event, handler) => event === "spawn" && handler() }),
+      }),
+    });
+
+    const lines = original.split("\n");
+    lines[1] = "CHANGED2";
+    lines[17] = "CHANGED18";
+
+    await withServer(app, async (baseUrl) => {
+      await fetch(`${baseUrl}/editors/workspace/proposals`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          path: "app.js",
+          proposedContent: lines.join("\n"),
+          summary: "Two separate changes",
+        }),
+      });
+
+      const approveResponse = await fetch(
+        `${baseUrl}/editors/workspace/proposals/proposal-route-hunks-1/approve`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ acceptedHunkIds: ["hunk-1"] }),
+        },
+      );
+      const approveBody = await approveResponse.json();
+
+      assert.equal(approveResponse.status, 200);
+      assert.deepEqual(approveBody.proposal.acceptedHunkIds, ["hunk-1"]);
+      const resultLines = fs.readFileSync(sourceFile, "utf8").split("\n");
+      assert.equal(resultLines[1], "line2");
+      assert.equal(resultLines[17], "CHANGED18");
     });
   } finally {
     fs.rmSync(tempDir, { recursive: true, force: true });

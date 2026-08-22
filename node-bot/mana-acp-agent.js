@@ -534,7 +534,10 @@ function createManaAcpAgent(options = {}) {
       if (message.method === "mana/edit/approve") {
         return createJsonRpcResult(
           message.id,
-          await backendBridge.approveEditProposal(message.params?.id),
+          await backendBridge.approveEditProposal(
+            message.params?.id,
+            message.params?.acceptedHunkIds,
+          ),
         );
       }
       if (message.method === "mana/test/run") {
