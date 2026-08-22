@@ -104,3 +104,27 @@
   --user-bubble: #efe9fb;
   --mana-bubble: #f2f0eb;
 }
+/* Issue #458: an accessibility theme, not an aesthetic one -- pure black/
+   white rather than the subtle grays the light/dark palettes above use,
+   and the conventional "high contrast mode" yellow accent. */
+:root[data-theme="high-contrast"] {
+  --bg: #000000;
+  --bg-deep: #000000;
+  --panel: #000000;
+  --panel-2: #111111;
+  --border: #ffffff;
+  --border-soft: #ffffff;
+  --text: #ffffff;
+  --fg: #ffffff;
+  --muted: #dcdcdc;
+  --muted-soft: #cccccc;
+  --accent: #ffff00;
+  --accent-dim: #cccc00;
+  --accent-glow: rgba(255,255,0,0.25);
+  --green: #00ff00;
+  --warn: #ffff00;
+  --fail: #ff5555;
+  --pass-text: #000000;
+  --user-bubble: #262626;
+  --mana-bubble: #000000;
+}
