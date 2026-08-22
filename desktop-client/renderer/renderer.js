@@ -156,6 +156,7 @@ document.getElementById('themeToggle')?.addEventListener('click', (e) => {
   const navModelBtnEl = document.getElementById('navModelBtn');
   const navDoctorBtnEl = document.getElementById('navDoctorBtn');
   const navSnapshotsBtnEl = document.getElementById('navSnapshotsBtn');
+  const navProposalsBtnEl = document.getElementById('navProposalsBtn');
   const navInfoModalEl = document.getElementById('navInfoModal');
   const navInfoTitleEl = document.getElementById('navInfoTitle');
   const navInfoBodyEl = document.getElementById('navInfoBody');
@@ -1880,6 +1881,10 @@ document.getElementById('themeToggle')?.addEventListener('click', (e) => {
     if (issueBtn) showDoctorBubble(issueBtn);
     const restoreBtn = e.target.closest('.snapshot-restore-btn');
     if (restoreBtn) restoreEditSnapshotWithConfirm(restoreBtn.dataset.snapshotId, restoreBtn.dataset.snapshotPath);
+    const reviewBtn = e.target.closest('.proposal-review-btn');
+    if (reviewBtn) openProposalReview(reviewBtn.dataset.proposalId);
+    if (e.target.closest('#proposalReviewBackBtn')) refreshProposalsPanel();
+    if (e.target.closest('#proposalReviewApproveBtn')) approveSelectedProposalHunks();
   });
 
   async function fetchJson(url, options) {
@@ -2139,6 +2144,94 @@ document.getElementById('themeToggle')?.addEventListener('click', (e) => {
       await refreshEditSnapshotsPanel();
     } catch (e) {
       console.warn('Mana restore edit snapshot failed:', e);
+    }
+  }
+
+  // Issue #427: hunk-level accept/reject for editor-handoff diff proposals,
+  // from whichever editor was connected -- generic, not Zed-specific.
+  let currentProposalReviewId = null;
+
+  function hunkLineClass(line) {
+    const prefix = line.charAt(0);
+    return prefix === '+' ? 'hunk-line-add' : prefix === '-' ? 'hunk-line-del' : 'hunk-line-ctx';
+  }
+
+  function renderProposalsPanel(proposals) {
+    currentProposalReviewId = null;
+    const pending = proposals.filter((p) => p.status === 'pending');
+    if (!pending.length) {
+      navInfoBodyEl.innerHTML = '<p class="subtitle">No pending edits.</p>';
+      return;
+    }
+    navInfoBodyEl.innerHTML = `
+      <p class="subtitle">Diff proposals from a connected editor wait here for review -- accept or reject individual hunks before anything is written.</p>
+      ${pending.map((p) => `
+        <div class="snapshot-item">
+          <div class="snapshot-item-info">
+            <div class="snapshot-item-path">${escapeHtml(p.relativePath || '(unknown file)')}</div>
+            <div class="snapshot-item-meta">${escapeHtml(p.summary || 'Edit')} · ${p.hunkCount || 0} hunk${p.hunkCount === 1 ? '' : 's'}</div>
+          </div>
+          <button type="button" class="proposal-review-btn primary" data-proposal-id="${escapeHtml(p.id)}">Review</button>
+        </div>`).join('')}
+    `;
+  }
+
+  async function refreshProposalsPanel() {
+    openNavInfo('Pending edits', '<p class="subtitle">Loading...</p>');
+    try {
+      const result = await fetchJson(`${BACKEND_URL}/editors/workspace/proposals`);
+      renderProposalsPanel(result.proposals || []);
+    } catch (e) {
+      navInfoBodyEl.innerHTML = `<p class="subtitle">Failed to reach backend: ${escapeHtml(e.message)}</p>`;
+    }
+  }
+
+  navProposalsBtnEl?.addEventListener('click', () => {
+    refreshProposalsPanel();
+  });
+
+  async function openProposalReview(id) {
+    try {
+      const result = await fetchJson(`${BACKEND_URL}/editors/workspace/proposals/${encodeURIComponent(id)}`);
+      const proposal = result.proposal;
+      currentProposalReviewId = proposal.id;
+      navInfoBodyEl.innerHTML = `
+        <button type="button" id="proposalReviewBackBtn" class="primary">&larr; Back</button>
+        <div id="proposalReviewPath">${escapeHtml(proposal.relativePath || '')}</div>
+        <p class="subtitle">${escapeHtml(proposal.summary || '')}</p>
+        ${(proposal.hunks || []).map((h) => `
+          <div class="hunk-card">
+            <label class="hunk-card-header">
+              <input type="checkbox" class="hunk-accept-checkbox" data-hunk-id="${escapeHtml(h.id)}" checked />
+              Accept this hunk (line ${h.newStart})
+            </label>
+            <pre class="hunk-diff">${h.lines.map((line) => `<span class="${hunkLineClass(line)}">${escapeHtml(line)}</span>`).join('\n')}</pre>
+          </div>`).join('')}
+        <button type="button" id="proposalReviewApproveBtn" class="primary">Approve selected hunks</button>
+      `;
+    } catch (e) {
+      navInfoBodyEl.innerHTML = `<p class="subtitle">Failed to reach backend: ${escapeHtml(e.message)}</p>`;
+    }
+  }
+
+  async function approveSelectedProposalHunks() {
+    if (!currentProposalReviewId) return;
+    const acceptedHunkIds = [...navInfoBodyEl.querySelectorAll('.hunk-accept-checkbox')]
+      .filter((checkbox) => checkbox.checked)
+      .map((checkbox) => checkbox.dataset.hunkId);
+    try {
+      const result = await fetchJson(
+        `${BACKEND_URL}/editors/workspace/proposals/${encodeURIComponent(currentProposalReviewId)}/approve`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ acceptedHunkIds }),
+        },
+      );
+      if (!result.proposal) throw new Error('Approve failed');
+      await refreshProposalsPanel();
+    } catch (e) {
+      console.warn('Mana proposal approve failed:', e);
     }
   }
 

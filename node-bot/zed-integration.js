@@ -2,6 +2,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { spawn, spawnSync } = require("node:child_process");
 const esprima = require("esprima");
+const Diff = require("diff");
 const { createEditSnapshotStore } = require("./edit-snapshot-store");
 
 const DEFAULT_INSPECTOR_EXCLUDES = new Set([
@@ -266,30 +267,69 @@ function createEditorWorkspaceInspector(options = {}) {
   };
 }
 
-function createSimpleLineDiff({ relativePath, originalContent, proposedContent }) {
-  const originalLines = String(originalContent || "").split(/\r?\n/);
-  const proposedLines = String(proposedContent || "").split(/\r?\n/);
-  const lines = [`--- ${relativePath}`, `+++ ${relativePath}`];
-  const maxLines = Math.max(originalLines.length, proposedLines.length);
+// Issue #427: real hunks, not a hand-rolled index-aligned diff -- the
+// previous version compared originalLines[i] to proposedLines[i]
+// position-by-position, which misaligns (and renders nonsense) on any pure
+// insertion or deletion. jsdiff's structuredPatch does real line-diffing and
+// groups nearby changes into hunks (3 lines of context, matching `git diff`'s
+// default), which is also the unit hunk-level accept/reject needs: each
+// hunk gets a stable id so a caller can approve a subset of them.
+function computeProposalHunks({ relativePath, originalContent, proposedContent }) {
+  const patch = Diff.structuredPatch(
+    relativePath,
+    relativePath,
+    String(originalContent || ""),
+    String(proposedContent || ""),
+    "",
+    "",
+    { context: 3 },
+  );
+  const hunks = patch.hunks.map((hunk, index) => ({ id: `hunk-${index}`, ...hunk }));
+  // formatPatch only reads oldStart/oldLines/newStart/newLines/lines --
+  // the extra id field on each hunk is inert here, confirmed directly
+  // against the installed jsdiff version rather than assumed from docs.
+  const diff = Diff.formatPatch({ ...patch, hunks });
+  return { hunks, diff };
+}
 
-  for (let index = 0; index < maxLines; index += 1) {
-    const originalLine = originalLines[index];
-    const proposedLine = proposedLines[index];
-    if (originalLine === proposedLine) {
-      if (originalLine !== undefined && originalLine !== "") {
-        lines.push(` ${originalLine}`);
-      }
-      continue;
-    }
-    if (originalLine !== undefined && originalLine !== "") {
-      lines.push(`-${originalLine}`);
-    }
-    if (proposedLine !== undefined && proposedLine !== "") {
-      lines.push(`+${proposedLine}`);
-    }
+// Reconstructs the file content that results from applying only the
+// accepted subset of a proposal's hunks -- rejected hunks' line ranges are
+// left exactly as they were in originalContent. hunks are independent,
+// non-overlapping ranges over originalContent (jsdiff computed them that
+// way), so filtering the patch's hunks array and running it back through
+// applyPatch is correct and avoids hand-rolling the line-splicing logic.
+function buildAcceptedProposalContent(proposal, acceptedHunks) {
+  if (acceptedHunks.length === proposal.hunks.length) {
+    return proposal.proposedContent;
   }
+  if (!acceptedHunks.length) {
+    return proposal.originalContent;
+  }
+  const result = Diff.applyPatch(String(proposal.originalContent || ""), {
+    oldFileName: proposal.relativePath,
+    newFileName: proposal.relativePath,
+    hunks: acceptedHunks,
+  });
+  if (result === false) {
+    throw new Error("edit proposal conflict: selected hunks could not be applied");
+  }
+  return result;
+}
 
-  return `${lines.join("\n")}\n`;
+function resolveAcceptedHunks(proposal, acceptedHunkIds) {
+  if (acceptedHunkIds === undefined) {
+    return proposal.hunks;
+  }
+  if (!Array.isArray(acceptedHunkIds)) {
+    throw new Error("acceptedHunkIds must be an array of hunk ids");
+  }
+  const known = new Map(proposal.hunks.map((hunk) => [hunk.id, hunk]));
+  const unknown = acceptedHunkIds.filter((id) => !known.has(id));
+  if (unknown.length) {
+    throw new Error(`edit proposal has no hunk(s): ${unknown.join(", ")}`);
+  }
+  const acceptedIds = new Set(acceptedHunkIds);
+  return proposal.hunks.filter((hunk) => acceptedIds.has(hunk.id));
 }
 
 // Issue #372: the type check on proposedContent cannot tell a complete file
@@ -495,6 +535,8 @@ function createEditProposalStore(options = {}) {
       throw new Error(`edit proposal rejected: ${relativePath} does not parse: ${verified.error}`);
     }
 
+    const { hunks, diff } = computeProposalHunks({ relativePath, originalContent, proposedContent });
+
     const proposal = {
       id: idFactory(),
       status: "pending",
@@ -502,11 +544,8 @@ function createEditProposalStore(options = {}) {
       summary: String(summary || "").trim(),
       originalContent,
       proposedContent,
-      diff: createSimpleLineDiff({
-        relativePath,
-        originalContent,
-        proposedContent,
-      }),
+      hunks,
+      diff,
       createdAt: now().toISOString(),
     };
     proposals.set(proposal.id, proposal);
@@ -519,6 +558,7 @@ function createEditProposalStore(options = {}) {
       status: proposal.status,
       relativePath: proposal.relativePath,
       summary: proposal.summary,
+      hunkCount: proposal.hunks.length,
       createdAt: proposal.createdAt,
     }));
   }
@@ -766,12 +806,17 @@ function createEditorIntegrations(options = {}) {
     return proposalStore.getProposal(id);
   }
 
-  function approveEditProposal(id, { commit } = {}) {
+  function approveEditProposal(id, { commit, acceptedHunkIds } = {}) {
     const workspace = requireActiveWorkspace(workspaceStore);
     const proposal = proposalStore.getProposal(id);
     if (proposal.status !== "pending") {
       throw new Error("edit proposal is not pending");
     }
+
+    // Issue #427: resolved (and validated) before any file I/O -- an unknown
+    // hunk id fails closed, with no write and no snapshot recorded.
+    const acceptedHunks = resolveAcceptedHunks(proposal, acceptedHunkIds);
+    const contentToWrite = buildAcceptedProposalContent(proposal, acceptedHunks);
 
     const target = toWorkspaceRelativePath(workspace.path, proposal.relativePath);
     if (!fs.existsSync(target.fullPath) || !fs.statSync(target.fullPath).isFile()) {
@@ -779,11 +824,13 @@ function createEditorIntegrations(options = {}) {
     }
 
     const currentContent = fs.readFileSync(target.fullPath, "utf8");
-    // Issue #387: the file already holding exactly what was proposed is not
-    // a conflict -- it is the edit, already applied. Reporting that as a
+    // Issue #387: the file already holding exactly what's being approved is
+    // not a conflict -- it is the edit, already applied. Reporting that as a
     // failure describes a correct outcome as a broken one, and invites the
-    // caller to "fix" a file that is right.
-    if (currentContent === proposal.proposedContent) {
+    // caller to "fix" a file that is right. This also covers issue #427's
+    // "reject every hunk" case: contentToWrite then equals originalContent,
+    // which already matches currentContent by the time we get here.
+    if (currentContent === contentToWrite) {
       return { ...proposalStore.markApplied(id), alreadyApplied: true };
     }
     if (currentContent !== proposal.originalContent) {
@@ -802,7 +849,7 @@ function createEditorIntegrations(options = {}) {
       summary: proposal.summary,
     });
 
-    fs.writeFileSync(target.fullPath, proposal.proposedContent, "utf8");
+    fs.writeFileSync(target.fullPath, contentToWrite, "utf8");
 
     // Issue #387: read back before claiming success. writeFileSync throwing
     // is handled by the caller; the uncovered cases are the quiet ones --
@@ -812,13 +859,17 @@ function createEditorIntegrations(options = {}) {
     // the proposal would be recorded as applied while the file says
     // otherwise, which is worse than a visible failure.
     const writtenContent = fs.readFileSync(target.fullPath, "utf8");
-    if (writtenContent !== proposal.proposedContent) {
+    if (writtenContent !== contentToWrite) {
       throw new Error(
         "edit proposal failed verification: file on disk does not match the approved content",
       );
     }
 
-    const applied = { ...proposalStore.markApplied(id), snapshotId: snapshot.id };
+    const applied = {
+      ...proposalStore.markApplied(id),
+      snapshotId: snapshot.id,
+      acceptedHunkIds: acceptedHunks.map((hunk) => hunk.id),
+    };
 
     // Issue #349: opt-in, and never allowed to fail the edit. The file is
     // already written by this point -- a commit problem is reported, not
