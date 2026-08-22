@@ -87,6 +87,27 @@ test("executeTool forwards key/text/action to acpMemoryStore.rememberFact, with 
   assert.equal(result, JSON.stringify({ ok: true, action: "patch" }));
 });
 
+test("executeTool forwards supersedes when supplied, and omits it entirely when not (issue #431)", async () => {
+  const acpMemoryStore = fakeAcpMemoryStore();
+  const source = createMemoryToolSource({ acpMemoryStore, sessionId: "session-a" });
+
+  await source.executeTool(`${MEMORY_TOOL_PREFIX}remember`, {
+    key: "dating status",
+    text: "in a relationship",
+    supersedes: "relationship status",
+  });
+  assert.deepEqual(acpMemoryStore.calls[0], {
+    sessionId: "session-a",
+    key: "dating status",
+    text: "in a relationship",
+    action: undefined,
+    supersedes: "relationship status",
+  });
+
+  await source.executeTool(`${MEMORY_TOOL_PREFIX}remember`, { key: "favorite color", text: "blue" });
+  assert.equal("supersedes" in acpMemoryStore.calls[1], false);
+});
+
 test("executeTool flags unverifiedSource when the fact text doesn't overlap the current turn's userMessage (issue #317)", async () => {
   const acpMemoryStore = fakeAcpMemoryStore();
   const source = createMemoryToolSource({
@@ -163,6 +184,95 @@ test("executeTool leaves a result without possibleConflict untouched", async () 
 
   const result = JSON.parse(await source.executeTool(`${MEMORY_TOOL_PREFIX}remember`, { key: "k", text: "t" }));
   assert.equal("possibleConflict" in result, false);
+});
+
+// Issue #431: the LLM-confirmed auto-invalidation on top of the existing
+// possibleConflict hint.
+function fakeAcpMemoryStoreWithConflict(invalidateFactByKeyImpl) {
+  const invalidateCalls = [];
+  const acpMemoryStore = fakeAcpMemoryStore(() => ({
+    ok: true,
+    action: "insert",
+    possibleConflict: { key: "old key", preview: "the old fact text" },
+  }));
+  acpMemoryStore.invalidateFactByKey = (key) => {
+    invalidateCalls.push(key);
+    return invalidateFactByKeyImpl ? invalidateFactByKeyImpl(key) : { key, found: true };
+  };
+  acpMemoryStore.invalidateCalls = invalidateCalls;
+  return acpMemoryStore;
+}
+
+test("executeTool auto-invalidates the conflicting fact when runLocalReply confidently says CONTRADICTS", async () => {
+  const acpMemoryStore = fakeAcpMemoryStoreWithConflict();
+  const source = createMemoryToolSource({
+    acpMemoryStore,
+    runLocalReply: async () => "CONTRADICTS",
+  });
+
+  const result = JSON.parse(
+    await source.executeTool(`${MEMORY_TOOL_PREFIX}remember`, { key: "new key", text: "the new fact text" }),
+  );
+  assert.deepEqual(acpMemoryStore.invalidateCalls, ["old key"]);
+  assert.equal(result.possibleConflict.autoInvalidated, true);
+});
+
+test("executeTool leaves the conflict as a non-blocking hint when runLocalReply says COMPATIBLE", async () => {
+  const acpMemoryStore = fakeAcpMemoryStoreWithConflict();
+  const source = createMemoryToolSource({
+    acpMemoryStore,
+    runLocalReply: async () => "COMPATIBLE",
+  });
+
+  const result = JSON.parse(
+    await source.executeTool(`${MEMORY_TOOL_PREFIX}remember`, { key: "new key", text: "the new fact text" }),
+  );
+  assert.equal(acpMemoryStore.invalidateCalls.length, 0);
+  assert.equal("autoInvalidated" in result.possibleConflict, false);
+});
+
+test("executeTool fails closed (no invalidation) when runLocalReply throws, returns null, or gives an ambiguous verdict", async () => {
+  for (const runLocalReply of [
+    async () => {
+      throw new Error("no model loaded");
+    },
+    async () => null,
+    async () => "uh, maybe?",
+  ]) {
+    const acpMemoryStore = fakeAcpMemoryStoreWithConflict();
+    const source = createMemoryToolSource({ acpMemoryStore, runLocalReply });
+    const result = JSON.parse(
+      await source.executeTool(`${MEMORY_TOOL_PREFIX}remember`, { key: "new key", text: "the new fact text" }),
+    );
+    assert.equal(acpMemoryStore.invalidateCalls.length, 0);
+    assert.equal("autoInvalidated" in result.possibleConflict, false);
+  }
+});
+
+test("executeTool never calls runLocalReply when there's no possibleConflict to judge", async () => {
+  const acpMemoryStore = fakeAcpMemoryStore(() => ({ ok: true, action: "insert" }));
+  let called = false;
+  const source = createMemoryToolSource({
+    acpMemoryStore,
+    runLocalReply: async () => {
+      called = true;
+      return "CONTRADICTS";
+    },
+  });
+
+  await source.executeTool(`${MEMORY_TOOL_PREFIX}remember`, { key: "k", text: "t" });
+  assert.equal(called, false);
+});
+
+test("executeTool without a runLocalReply dependency leaves possibleConflict exactly as today (back-compat)", async () => {
+  const acpMemoryStore = fakeAcpMemoryStoreWithConflict();
+  const source = createMemoryToolSource({ acpMemoryStore });
+
+  const result = JSON.parse(
+    await source.executeTool(`${MEMORY_TOOL_PREFIX}remember`, { key: "new key", text: "the new fact text" }),
+  );
+  assert.equal(acpMemoryStore.invalidateCalls.length, 0);
+  assert.equal("autoInvalidated" in result.possibleConflict, false);
 });
 
 test("executeTool frames possibleConflict.preview on the approvalGate always-allowed path too, not just the no-approvalGate path", async () => {

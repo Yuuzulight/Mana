@@ -854,6 +854,129 @@ test("rememberFact insert reports no possibleConflict for genuinely unrelated fa
   assert.equal("possibleConflict" in result, false);
 });
 
+function readFacts(store) {
+  return JSON.parse(
+    require("node:fs").readFileSync(require("node:path").join(store.dataDir, "facts.json"), "utf8"),
+  ).facts;
+}
+
+// Issue #431: bi-temporal validity -- validFrom/invalidatedAt.
+test("rememberFact insert stamps validFrom equal to createdAt", () => {
+  const store = createAcpMemoryStore({ dataDir: createTempDir(), now: () => "2026-03-01T00:00:00.000Z" });
+  store.rememberFact({ key: "favorite color", text: "blue" });
+  const fact = readFacts(store).find((f) => f.key === "favorite color");
+  assert.equal(fact.validFrom, "2026-03-01T00:00:00.000Z");
+  assert.equal(fact.createdAt, "2026-03-01T00:00:00.000Z");
+  assert.equal(fact.invalidatedAt, undefined);
+});
+
+test("rememberFact patch bumps validFrom and records the prior value's own validity window in history, not a bare updatedAt", () => {
+  let currentTime = "2026-01-01T00:00:00.000Z";
+  const store = createAcpMemoryStore({ dataDir: createTempDir(), now: () => currentTime });
+  store.rememberFact({ key: "favorite color", text: "blue" });
+  currentTime = "2026-02-01T00:00:00.000Z";
+  store.rememberFact({ key: "favorite color", text: "green", action: "patch" });
+
+  const fact = readFacts(store).find((f) => f.key === "favorite color");
+  assert.equal(fact.text, "green");
+  assert.equal(fact.validFrom, "2026-02-01T00:00:00.000Z");
+  assert.deepEqual(fact.history, [
+    { text: "blue", validFrom: "2026-01-01T00:00:00.000Z", invalidatedAt: "2026-02-01T00:00:00.000Z" },
+  ]);
+});
+
+test("rememberFact supersedes marks a different-keyed active fact invalidated, without deleting it", () => {
+  const store = createAcpMemoryStore({ dataDir: createTempDir(), now: () => "2026-05-01T00:00:00.000Z" });
+  store.rememberFact({ key: "relationship status", text: "single" });
+  const result = store.rememberFact({
+    key: "dating status",
+    text: "in a relationship",
+    supersedes: "relationship status",
+  });
+
+  assert.deepEqual(result.superseded, { key: "relationship status", found: true });
+  const facts = readFacts(store);
+  const old = facts.find((f) => f.key === "relationship status");
+  const fresh = facts.find((f) => f.key === "dating status");
+  assert.equal(old.invalidatedAt, "2026-05-01T00:00:00.000Z");
+  assert.equal(old.status, "active", "supersedes stays orthogonal to status, not a 4th lifecycle state");
+  assert.equal(fresh.invalidatedAt, undefined);
+
+  // Invalidated facts drop out of normal surfacing/listing...
+  assert.equal(store.getRelatedFacts("what's the user's relationship status?"), "");
+  assert.deepEqual(store.listFactKeys(), [{ key: "dating status", preview: "in a relationship" }]);
+  // ...but the record itself is preserved, not deleted.
+  assert.equal(old.text, "single");
+});
+
+test("rememberFact supersedes is a no-op for an unknown key or the fact's own key", () => {
+  const store = createAcpMemoryStore({ dataDir: createTempDir() });
+  store.rememberFact({ key: "favorite color", text: "blue" });
+
+  const unknownKey = store.rememberFact({ key: "new fact", text: "x", supersedes: "does not exist" });
+  assert.deepEqual(unknownKey.superseded, { key: "does not exist", found: false });
+
+  const selfSupersede = store.rememberFact({ key: "favorite color", text: "green", action: "patch", supersedes: "favorite color" });
+  assert.equal("superseded" in selfSupersede, false);
+  assert.equal(readFacts(store).find((f) => f.key === "favorite color").invalidatedAt, undefined);
+});
+
+test("invalidateFactByKey marks an active fact invalidated directly, and no-ops on an unknown key", () => {
+  const store = createAcpMemoryStore({ dataDir: createTempDir(), now: () => "2026-04-01T00:00:00.000Z" });
+  store.rememberFact({ key: "favorite color", text: "blue" });
+
+  const found = store.invalidateFactByKey("favorite color");
+  assert.deepEqual(found, { key: "favorite color", found: true });
+  assert.equal(readFacts(store).find((f) => f.key === "favorite color").invalidatedAt, "2026-04-01T00:00:00.000Z");
+
+  const notFound = store.invalidateFactByKey("nope");
+  assert.deepEqual(notFound, { key: "nope", found: false });
+});
+
+test("getFactsValidAt answers what was believed true as of a past date, ignoring status and later corrections", () => {
+  let currentTime = "2026-01-01T00:00:00.000Z";
+  const store = createAcpMemoryStore({ dataDir: createTempDir(), now: () => currentTime });
+  store.rememberFact({ key: "favorite color", text: "blue" });
+
+  currentTime = "2026-03-01T00:00:00.000Z";
+  store.rememberFact({ key: "favorite color", text: "green", action: "patch" });
+
+  currentTime = "2026-06-01T00:00:00.000Z";
+  store.rememberFact({ key: "favorite color", action: "archive" });
+
+  // Before any patch: the original value was the active claim.
+  assert.deepEqual(
+    store.getFactsValidAt("2026-02-01T00:00:00.000Z").map((f) => f.key),
+    ["favorite color"],
+  );
+  // The CURRENT record (patched to "green") is what's valid at this date,
+  // even though it's since been archived -- status is ignored on purpose.
+  assert.deepEqual(
+    store.getFactsValidAt("2026-04-01T00:00:00.000Z").map((f) => f.key),
+    ["favorite color"],
+  );
+  // Before the fact existed at all.
+  assert.deepEqual(store.getFactsValidAt("2025-12-01T00:00:00.000Z"), []);
+});
+
+test("getFactsValidAt excludes a fact after it was superseded", () => {
+  let currentTime = "2026-01-01T00:00:00.000Z";
+  const store = createAcpMemoryStore({ dataDir: createTempDir(), now: () => currentTime });
+  store.rememberFact({ key: "relationship status", text: "single" });
+
+  currentTime = "2026-03-01T00:00:00.000Z";
+  store.rememberFact({ key: "dating status", text: "in a relationship", supersedes: "relationship status" });
+
+  assert.deepEqual(
+    store.getFactsValidAt("2026-02-01T00:00:00.000Z").map((f) => f.key).sort(),
+    ["relationship status"],
+  );
+  assert.deepEqual(
+    store.getFactsValidAt("2026-04-01T00:00:00.000Z").map((f) => f.key).sort(),
+    ["dating status"],
+  );
+});
+
 test("rememberFact insert stores unverifiedSource and it stops auto-surfacing but isn't deleted (issue #317)", () => {
   const store = createAcpMemoryStore({ dataDir: createTempDir() });
   const result = store.rememberFact({

@@ -207,6 +207,67 @@ test("spawns llama-server once and reuses it for subsequent replies", async () =
   assert.equal(runtime.getStatus().running, true);
 });
 
+// Issue #431: runLocalReplyIfSafelyLoaded must never trigger a load or a
+// swap -- it's used for a background classification call (memory conflict
+// judging), not a user-facing reply, and a swap there would repeat the
+// exact RAM-crash failure mode this session's own #360 testing hit.
+test("runLocalReplyIfSafelyLoaded returns null and makes no HTTP call when nothing is loaded yet", async () => {
+  let fetchCalled = false;
+  const runtime = createLlamaServerRuntime({
+    env: makeFakeEnv(),
+    fs: makeFakeFs(),
+    fetch: async () => {
+      fetchCalled = true;
+      return { ok: false, status: 404, text: async () => "not found" };
+    },
+    spawn: () => makeFakeChild(),
+    sleep: async () => {},
+    registerExitHandlers: false,
+  });
+
+  const result = await runtime.runLocalReplyIfSafelyLoaded("judge this", 16);
+  assert.equal(result, null);
+  assert.equal(fetchCalled, false);
+  assert.equal(runtime.getStatus().running, false);
+});
+
+test("runLocalReplyIfSafelyLoaded reuses an already-loaded model without spawning again", async () => {
+  const spawnCalls = [];
+  let serverUp = false;
+  const fakeFetch = async (url, init) => {
+    if (String(url).endsWith("/health")) {
+      return { ok: serverUp };
+    }
+    if (String(url).endsWith("/v1/chat/completions")) {
+      const body = JSON.parse(init.body);
+      return { ok: true, json: async () => ({ choices: [{ message: { content: `verdict for: ${body.messages[1].content}` } }] }) };
+    }
+    return { ok: false, status: 404, text: async () => "not found" };
+  };
+  const runtime = createLlamaServerRuntime({
+    env: makeFakeEnv(),
+    fs: makeFakeFs(),
+    fetch: fakeFetch,
+    spawn: (command, args, options) => {
+      spawnCalls.push({ command, args, options });
+      serverUp = true;
+      return makeFakeChild();
+    },
+    sleep: async () => {},
+    registerExitHandlers: false,
+  });
+
+  // Ordinary conversational reply starts the server on the "default" profile.
+  await runtime.runLocalAssistantReply("hello", 64, "default");
+  assert.equal(spawnCalls.length, 1);
+  assert.equal(runtime.isProfileAlreadyLoaded("default"), true);
+
+  // The judge call reuses it -- no second spawn, i.e. no swap.
+  const verdict = await runtime.runLocalReplyIfSafelyLoaded("judge this", 16);
+  assert.equal(verdict, "verdict for: judge this");
+  assert.equal(spawnCalls.length, 1, "must not spawn/swap for a background judge call");
+});
+
 // Issue #282: extraMessages splices memory entries into the messages array
 // at either end -- "early" right after the persona system message, "late"
 // right before the live user message.
