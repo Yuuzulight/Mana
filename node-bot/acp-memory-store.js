@@ -212,6 +212,13 @@ function createAcpMemoryStore(options = {}) {
     path.join(__dirname, "data", "acp-memory");
   const sessionsDir = path.join(dataDir, "sessions");
   const entityIndexPath = path.join(dataDir, "entity-index.json");
+  // Issue #432: kept as its own file rather than a new field on
+  // entity-index.json's existing records -- those are bare mention arrays
+  // ({sessionId, at, display}[]), read/written as arrays by
+  // recordEntityMentions/lookupEntity/gatherRelatedFactsBlocks already;
+  // changing that shape would touch every one of those call sites for no
+  // reason when a second lookup-by-key file does the job additively.
+  const entityTypesPath = path.join(dataDir, "entity-types.json");
   const factsPath = path.join(dataDir, "facts.json");
   const emotionalStatePath = path.join(dataDir, "emotional-state.json");
   // ponytail: fixed cap, not age-based pruning -- revisit if explicit
@@ -317,6 +324,95 @@ function createAcpMemoryStore(options = {}) {
     const key = String(name || "").trim().toLowerCase();
     if (!key) return [];
     return loadEntityIndex()[key] || [];
+  }
+
+  function loadEntityTypes() {
+    return readJsonObject(entityTypesPath) || {};
+  }
+
+  function saveEntityTypes(types) {
+    writeJsonObject(entityTypesPath, types);
+  }
+
+  function displayForEntityKey(index, key) {
+    const mentions = index[key];
+    return mentions && mentions.length ? mentions[mentions.length - 1].display : key;
+  }
+
+  // Issue #432: entities with real mentions but no type entry yet -- the
+  // background typing pass's own input. Capped by the caller (the batch-
+  // size vote settled on 25 -- see the background job, not this store);
+  // this just returns candidates in whatever order Object.keys gives, up
+  // to `limit`.
+  function listUntypedEntities(limit) {
+    const index = loadEntityIndex();
+    const types = loadEntityTypes();
+    const untyped = [];
+    for (const key of Object.keys(index)) {
+      if (types[key]) continue;
+      untyped.push({ key, display: displayForEntityKey(index, key) });
+      if (untyped.length >= limit) break;
+    }
+    return untyped;
+  }
+
+  // Sets an entity's ontology type/subcategory. subcategory is open/free-
+  // form and display-only -- it's never consulted for merge-matching (see
+  // entity-ontology.js's own header comment on why keeping it unvalidated
+  // is the deliberate choice, not an oversight). Returns false if the key
+  // has no recorded mentions at all (nothing to type).
+  function setEntityType(key, type, subcategory) {
+    const normalizedKey = String(key || "").trim().toLowerCase();
+    if (!normalizedKey) return false;
+    const index = loadEntityIndex();
+    if (!index[normalizedKey]) return false;
+    const types = loadEntityTypes();
+    types[normalizedKey] = {
+      type,
+      ...(subcategory ? { subcategory: cleanText(subcategory, 60) } : {}),
+      typedAt: now(),
+    };
+    saveEntityTypes(types);
+    return true;
+  }
+
+  // The merge-candidate pool for a given type -- existing canonical
+  // (non-alias) entities already typed as `type`. "not_an_entity" is never
+  // queried this way; it has nothing to merge into.
+  function listCanonicalEntitiesOfType(type) {
+    const types = loadEntityTypes();
+    const index = loadEntityIndex();
+    const result = [];
+    for (const [key, meta] of Object.entries(types)) {
+      if (meta.type !== type || meta.canonicalKey) continue;
+      result.push({ key, display: displayForEntityKey(index, key), subcategory: meta.subcategory || null });
+    }
+    return result;
+  }
+
+  // Issue #432: non-destructive merge -- `key`'s own mentions/type/history
+  // are untouched, this only adds a pointer reads can resolve through.
+  // Never points a key at itself. Returns false if `key` has no type entry
+  // yet (setEntityType must run first) or the canonical key is invalid.
+  function setCanonicalAlias(key, canonicalKey) {
+    const normalizedKey = String(key || "").trim().toLowerCase();
+    const normalizedCanonical = String(canonicalKey || "").trim().toLowerCase();
+    if (!normalizedKey || !normalizedCanonical || normalizedKey === normalizedCanonical) {
+      return false;
+    }
+    const types = loadEntityTypes();
+    if (!types[normalizedKey]) return false;
+    types[normalizedKey].canonicalKey = normalizedCanonical;
+    saveEntityTypes(types);
+    return true;
+  }
+
+  // Resolves a key through its alias pointer (if any) -- everything about
+  // this entity should be considered under whatever this returns.
+  function resolveCanonicalKey(key) {
+    const normalizedKey = String(key || "").trim().toLowerCase();
+    const types = loadEntityTypes();
+    return types[normalizedKey]?.canonicalKey || normalizedKey;
   }
 
   // Issue #198: explicit facts the model itself chose to persist via the
@@ -1428,6 +1524,11 @@ function createAcpMemoryStore(options = {}) {
     listFacts,
     getFactsValidAt,
     invalidateFactByKey,
+    listUntypedEntities,
+    setEntityType,
+    listCanonicalEntitiesOfType,
+    setCanonicalAlias,
+    resolveCanonicalKey,
     searchSessions,
     memoryGraph,
     getUserAffect,
