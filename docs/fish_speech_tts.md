@@ -29,20 +29,30 @@ Reference
 
 Important notes
 - Fish Speech is heavier than Kokoro.
-- The official setup path is separate from Mana and needs WSL2 (native Windows is
-  not supported upstream) plus a CUDA GPU.
+- **Native Windows is now the recommended setup** (see below) -- WSL2 is no
+  longer required. Upstream fish-speech's own `torch.compile` path was
+  believed Windows-incompatible, but that turned out to be two fixable
+  problems, not a hard limitation (see "Native Windows setup" below).
+  Measured on an RTX 5080 running the identical `--compile` code path,
+  native Windows is consistently 1.3-1.8x *faster* than WSL2 for actual
+  synthesis (WSL's virtualization layer taxes exactly the CPU-side
+  kernel-launch overhead `--compile`'s `reduce-overhead` mode targets), and
+  it releases RAM immediately on exit instead of holding it pinned to a VM.
+  The WSL2 path further down is kept as a fallback for setups where the
+  native fix doesn't apply.
 - **Latency is not real-time, but `--compile` (issue #213) helps a lot.**
-  Without it, text-to-semantic generation on an 8GB RTX 3070 Ti runs
-  ~2.5-2.7 tokens/sec, making a short reply (~150 tokens) take roughly
-  1-3 minutes end to end. With `--compile` enabled (now the default in
-  `start_fish_speech_wsl.sh`), steady-state generation measured ~31
-  tokens/sec on the same hardware -- ~12x faster, at negligible extra
-  VRAM. The trade-off: `torch.compile` is lazy, so the *first* generation
-  request after each (re)start of the service pays a one-time ~4 minute
-  compile trace before that speedup kicks in. This is still batch-style,
-  not a live conversational voice, and keep Kokoro as the default fast
-  provider for actual voice interaction -- but a short reply after warmup
-  is now closer to seconds than minutes.
+  Without it, native Windows text-to-semantic generation on an RTX 5080
+  measured RTF ~2.7 (2.7s compute per 1s of audio, ~8.2 tokens/sec) -- too
+  slow for real-time. With `--compile` enabled (the default in both
+  `start_fish_speech_native.ps1` and `start_fish_speech_wsl.sh`),
+  steady-state RTF dropped to ~0.22-0.42 depending on sentence length
+  (faster than real-time), a 6-12x speedup. The trade-off: `torch.compile`
+  is lazy, so the *first* generation request after each (re)start of the
+  service pays a one-time compile trace -- measured 150-255s cold, ~12s
+  once the on-disk inductor cache is warm from a prior run. This is still
+  batch-style, not a live conversational voice, and keep Kokoro as the
+  default fast provider for actual voice interaction -- but a short reply
+  after warmup is now closer to a second than minutes.
 - **VRAM headroom is thin.** With the model loaded and idle, an 8GB card
   has only a few hundred MB free. This has been reliable for the verified
   Mitsuki reference clip below, but see the known issue further down.
@@ -52,7 +62,50 @@ Important notes
   wait. See "Automatic Kokoro switch during gaming" below for how Mana
   handles this.
 
-Setting up S1-mini's server (verified working, WSL2 + Ubuntu)
+Setting up S1-mini's server (native Windows, recommended)
+
+1. Create a Python 3.12 venv at `tools/fish-speech/.venv-native` (the
+   `uv venv --python 3.12` shortcut has a known Windows symlink bug on some
+   systems -- if it fails with "Missing expected target directory for
+   Python minor version link", fall back to `py -V:Astral/CPython3.12.13 -m
+   venv tools/fish-speech/.venv-native` once `uv python install 3.12` has at
+   least downloaded the interpreter).
+2. Install PyTorch matching your GPU's compute capability -- e.g. a Blackwell
+   card (RTX 50-series, `sm_120`) needs PyTorch >=2.7.0 with `cu128` wheels:
+   `pip install "torch<2.9.0" torchaudio --index-url https://download.pytorch.org/whl/cu128`,
+   then re-pin `torchaudio` to the *exact* version matching the installed
+   `torch` build if pip resolved a mismatched pair (mixed ABI versions throw
+   `OSError: [WinError 127]` on import).
+3. Install fish-speech's dependencies from `tools/fish-speech/pyproject.toml`
+   -- installing the full list up front is less effort than discovering each
+   missing import one at a time (`hydra-core`, `descript-audio-codec` /
+   `descript-audiotools`, and `natsort` are all genuinely required at import
+   time despite reading as training-only).
+4. Install `triton-windows`, a community Windows build of Triton, **pinned to
+   the exact release matching your PyTorch build** (e.g. `triton-windows==
+   3.4.0.post21` for `torch==2.8.0+cu128`) -- a newer triton-windows release
+   has a different internal API and breaks `torch.compile` silently with an
+   `ImportError` about `triton_key`.
+5. Before loading the model, disable inductor's static CUDA launcher:
+   `torch._inductor.config.use_static_cuda_launcher = False`. Its newer
+   "static" kernel-launch path passes a 64-bit GPU pointer into a Windows
+   32-bit `long` and throws `OverflowError: Python int too large to convert
+   to C long` under `--compile`'s `reduce-overhead` mode (CUDA graphs).
+   Disabling it falls back to the normal, still-fully-compiled launcher --
+   `tools/fish_speech_native_server.py` applies this automatically, so
+   normal use never needs to touch this directly.
+6. Download the checkpoint (same as the WSL instructions below) to
+   `tools/fish-speech/checkpoints/openaudio-s1-mini`.
+7. Start the server: `.\start_fish_speech_native.ps1` (from `tools/`) --
+   idempotent (skips if already running), backgrounds the process, and
+   polls `/v1/health` for up to 6 minutes to cover a cold compile trace.
+   Under the hood this runs `tools/fish_speech_native_server.py` (tracked in
+   Mana's own repo, not the submodule, so it survives a fresh clone), a thin
+   wrapper that applies the two fixes above and then hands off to the
+   unmodified `tools/fish-speech/tools/api_server.py --compile` (kept
+   unmodified since it's vendored third-party code in a git submodule).
+
+Setting up S1-mini's server (WSL2 + Ubuntu, fallback)
 
 1. Install `uv` inside WSL: `curl -LsSf https://astral.sh/uv/install.sh | sh`
 2. Clone fish-speech **inside WSL's own filesystem** (e.g. `~/fish-speech`),
