@@ -1,0 +1,73 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Quick entry</title>
+  <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      background: transparent;
+      overflow: hidden;
+    }
+    #box {
+      display: flex;
+      align-items: center;
+      height: 100%;
+      box-sizing: border-box;
+      padding: 0 14px;
+      background: #1c1a18;
+      border: 1px solid #3a3733;
+      border-radius: 10px;
+    }
+    #input {
+      flex: 1;
+      background: none;
+      border: none;
+      outline: none;
+      color: #e8e4de;
+      font-family: system-ui, sans-serif;
+      font-size: 15px;
+    }
+    #input::placeholder {
+      color: #948d84;
+    }
+  </style>
+</head>
+<body>
+  <div id="box">
+    <input id="input" type="text" placeholder="Type a thought for Mana... (Esc to cancel)" autofocus />
+  </div>
+  <script>
+    const { ipcRenderer } = require("electron");
+    const inputEl = document.getElementById("input");
+
+    function submit() {
+      const text = inputEl.value.trim();
+      if (!text) return;
+      ipcRenderer.send("quick-entry:text", text);
+      inputEl.value = "";
+    }
+
+    inputEl.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        submit();
+      } else if (event.key === "Escape") {
+        event.preventDefault();
+        ipcRenderer.send("quick-entry:cancel");
+      }
+    });
+
+    // Re-shown windows aren't reloaded -- this fires every time main.js
+    // shows the window again, so the input is always empty and focused,
+    // not left holding whatever was typed (and abandoned) last time.
+    ipcRenderer.on("quick-entry:reset", () => {
+      inputEl.value = "";
+      inputEl.focus();
+    });
+
+    inputEl.focus();
+  </script>
+</body>
+</html>
