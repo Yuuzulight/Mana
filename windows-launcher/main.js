@@ -679,6 +679,27 @@ function createWindow() {
   mainWindow.on("minimize", syncOverlayVisibility);
   mainWindow.on("restore", syncOverlayVisibility);
 
+  // Issue #398: backgroundThrottling:false above is deliberately about
+  // staying smooth while *visible but unfocused* -- it says nothing about
+  // a window that's genuinely not on screen at all (HIDE_MAIN_WINDOW_
+  // AFTER_STARTUP defaults this to true), where nothing is rendering for
+  // anyone to see and the renderer's polling intervals/rAF loops just burn
+  // CPU/GPU for nothing. Toggle Chromium's own throttling back on
+  // specifically for that case, off again once actually shown -- restores
+  // the original guarantee exactly when it still applies.
+  mainWindow.on("hide", () => {
+    mainWindow.webContents.setBackgroundThrottling(true);
+  });
+  mainWindow.on("minimize", () => {
+    mainWindow.webContents.setBackgroundThrottling(true);
+  });
+  mainWindow.on("show", () => {
+    mainWindow.webContents.setBackgroundThrottling(false);
+  });
+  mainWindow.on("restore", () => {
+    mainWindow.webContents.setBackgroundThrottling(false);
+  });
+
   // Intercepts the native close (the X button) -- the only quit path that
   // doesn't go through app.quit() first, so before-quit alone would fire
   // too late here (the window would already be destroyed by the time it

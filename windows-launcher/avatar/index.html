@@ -67,6 +67,30 @@
           transform: translateY(-7px) translateX(1px) rotate(1deg) scale(1.035);
         }
       }
+
+      /* Issue #398: the main window's own .mana-captions (issue #362) is
+         invisible whenever it's hidden -- the default state, since
+         HIDE_MAIN_WINDOW_AFTER_STARTUP defaults to true and this overlay is
+         what's actually on screen instead. syncOverlayVisibility keeps this
+         window and the main window mutually exclusive, so showing captions
+         here too is never a duplicate -- exactly one of the two is ever
+         visible at a time. */
+      .mana-captions {
+        position: fixed;
+        left: 50%;
+        bottom: 12px;
+        transform: translateX(-50%);
+        max-width: 90%;
+        padding: 6px 12px;
+        border-radius: 8px;
+        background: rgba(28, 26, 24, 0.85);
+        color: #e8e4de;
+        font-family: system-ui, sans-serif;
+        font-size: 13px;
+        line-height: 1.4;
+        text-align: center;
+        pointer-events: none;
+      }
     </style>
   </head>
   <body data-state="idle">
@@ -77,12 +101,17 @@
          UMD globals below). -->
     <canvas id="vrm" hidden aria-hidden="true"></canvas>
     <canvas id="live2d" aria-hidden="true"></canvas>
+    <!-- Issue #398/#362: same on-screen-equivalent-of-spoken-output caption
+         feed as the main window, just visible while the overlay (not the
+         main window) is what's actually shown. -->
+    <div id="mana-captions" class="mana-captions" role="status" aria-live="polite" aria-atomic="true" hidden></div>
     <!-- Live2D Cubism Core is proprietary and fetched at setup time
          (npm run fetch-live2d-core); Live2D/VRM are the only renderers --
          no sprite/image fallback. -->
     <script src="../assets/live2d/live2dcubismcore.min.js"></script>
     <script src="../node_modules/pixi.js/dist/browser/pixi.min.js"></script>
     <script src="../node_modules/pixi-live2d-display/dist/cubism4.min.js"></script>
+    <script src="../renderer/caption-client.js"></script>
     <script src="renderer.js"></script>
   </body>
 </html>
