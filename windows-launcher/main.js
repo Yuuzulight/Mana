@@ -9,6 +9,7 @@ const { parseAccessibilityTreeOutput } = require("./accessibility-tree");
 let mainWindow;
 let avatarWindow;
 let artifactWindow = null;
+let quickEntryWindow = null;
 let backendProcess = null;
 let ttsProcess = null;
 let retrieverProcess = null;
@@ -93,6 +94,10 @@ const WINDOW_HOTKEY = process.env.MANA_WINDOW_HOTKEY || "Control+Alt+Space";
 // the user cut in without needing real echo cancellation. Set to off to
 // disable.
 const INTERRUPT_HOTKEY = process.env.MANA_INTERRUPT_HOTKEY || "Control+Alt+I";
+// Issue #398: "type a thought at Mana without switching windows" -- the
+// typed equivalent of barge-in, for when speaking aloud isn't appropriate.
+// Set to off to disable.
+const QUICK_ENTRY_HOTKEY = process.env.MANA_QUICK_ENTRY_HOTKEY || "Control+Alt+Q";
 // Issue #343: UI-Automation-tree screen context, tried before the
 // screenshot+OCR path. Set to "0" to always use OCR (kept reachable for
 // deliberate comparison, per the issue's own verification ask).
@@ -816,6 +821,80 @@ function createAvatarWindow() {
   });
 }
 
+const QUICK_ENTRY_WIDTH = 480;
+const QUICK_ENTRY_HEIGHT = 56;
+
+// Issue #398: created lazily on first use, then kept around hidden (not
+// destroyed) so later hotkey presses just show+reset it instead of paying
+// window-creation cost every time -- this is meant to feel instant.
+function ensureQuickEntryWindow() {
+  if (quickEntryWindow && !quickEntryWindow.isDestroyed()) {
+    return quickEntryWindow;
+  }
+
+  const display = screen.getPrimaryDisplay();
+  quickEntryWindow = new BrowserWindow({
+    width: QUICK_ENTRY_WIDTH,
+    height: QUICK_ENTRY_HEIGHT,
+    x: Math.round(display.workArea.x + (display.workArea.width - QUICK_ENTRY_WIDTH) / 2),
+    y: Math.round(display.workArea.y + display.workArea.height * 0.28),
+    frame: false,
+    transparent: true,
+    resizable: false,
+    movable: false,
+    fullscreenable: false,
+    show: false,
+    skipTaskbar: true,
+    alwaysOnTop: true,
+    hasShadow: true,
+    backgroundColor: "#00000000",
+    webPreferences: {
+      nodeIntegration: true,
+      contextIsolation: false,
+    },
+  });
+  quickEntryWindow.setAlwaysOnTop(true, "screen-saver");
+  quickEntryWindow.loadFile(path.join(__dirname, "quick-entry", "index.html"));
+  quickEntryWindow.on("blur", () => {
+    // Losing focus (clicked elsewhere, alt-tabbed away) means the user
+    // moved on -- dismiss rather than leave a stray popup on screen.
+    if (quickEntryWindow && !quickEntryWindow.isDestroyed()) {
+      quickEntryWindow.hide();
+    }
+  });
+  quickEntryWindow.on("closed", () => {
+    quickEntryWindow = null;
+  });
+  return quickEntryWindow;
+}
+
+function showQuickEntryWindow() {
+  const win = ensureQuickEntryWindow();
+  win.show();
+  win.focus();
+  win.webContents.send("quick-entry:reset");
+}
+
+// Relayed into the main window's own existing typed-message pipeline
+// (sendTypedMessage/handleTranscript) rather than a second reply pipeline
+// -- the popup is just an alternate way to fill #chatInput and hit send,
+// so it gets the exact same gaming-mode check, wake-bypass, and TTS
+// playback any other typed message already gets, for free.
+ipcMain.on("quick-entry:text", (event, text) => {
+  if (quickEntryWindow && !quickEntryWindow.isDestroyed()) {
+    quickEntryWindow.hide();
+  }
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send("quick-entry:submit", text);
+  }
+});
+
+ipcMain.on("quick-entry:cancel", () => {
+  if (quickEntryWindow && !quickEntryWindow.isDestroyed()) {
+    quickEntryWindow.hide();
+  }
+});
+
 // Startup loading screen (issue #138): shows the window immediately with a
 // per-service progress list instead of an unexplained pause, then either
 // reveals the chat UI or hides into avatar-only mode per
@@ -1162,6 +1241,7 @@ app.whenReady().then(() => {
   registerVisionHotkey();
   registerWindowHotkey();
   registerInterruptHotkey();
+  registerQuickEntryHotkey();
   runStartupSequence();
 
   screen.on("display-metrics-changed", positionAvatarWindow);
@@ -1361,6 +1441,31 @@ function registerVisionHotkey() {
     }
   } catch (error) {
     console.warn(`Vision hotkey registration failed: ${error.message}`);
+  }
+}
+
+function registerQuickEntryHotkey() {
+  const disabled =
+    !QUICK_ENTRY_HOTKEY ||
+    QUICK_ENTRY_HOTKEY === "0" ||
+    QUICK_ENTRY_HOTKEY.toLowerCase() === "off";
+  if (disabled) {
+    return;
+  }
+
+  try {
+    const registered = globalShortcut.register(QUICK_ENTRY_HOTKEY, () => {
+      showQuickEntryWindow();
+    });
+    if (registered) {
+      console.log(`Quick entry hotkey registered: ${QUICK_ENTRY_HOTKEY}`);
+    } else {
+      console.warn(
+        `Quick entry hotkey ${QUICK_ENTRY_HOTKEY} could not be registered (already in use by another app?). Set MANA_QUICK_ENTRY_HOTKEY to change it.`,
+      );
+    }
+  } catch (error) {
+    console.warn(`Quick entry hotkey registration failed: ${error.message}`);
   }
 }
 
