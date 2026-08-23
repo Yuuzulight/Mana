@@ -686,6 +686,86 @@ test("entity lookup is case-insensitive and returns nothing for an unmentioned e
   assert.deepEqual(store.lookupEntity("Nonexistent Place"), []);
 });
 
+// Issue #432: ontology-typed entity extraction storage layer.
+test("listUntypedEntities returns entities with mentions but no type yet, and excludes already-typed ones", () => {
+  const store = createAcpMemoryStore({ dataDir: createTempDir() });
+  store.appendTurn({ sessionId: "s1", user: "I want to discuss Singapore.", assistant: "Okay." });
+  store.appendTurn({ sessionId: "s1", user: "GPU matters too.", assistant: "Okay." });
+
+  const untyped = store.listUntypedEntities(10);
+  assert.deepEqual(
+    untyped.map((e) => e.key).sort(),
+    ["gpu", "singapore"],
+  );
+
+  store.setEntityType("singapore", "place", "city");
+  const stillUntyped = store.listUntypedEntities(10);
+  assert.deepEqual(stillUntyped.map((e) => e.key), ["gpu"]);
+});
+
+test("listUntypedEntities respects the batch limit", () => {
+  const store = createAcpMemoryStore({ dataDir: createTempDir() });
+  store.appendTurn({ sessionId: "s1", user: "Alpha and Beta and Gamma.", assistant: "Noted." });
+  assert.equal(store.listUntypedEntities(1).length, 1);
+  assert.equal(store.listUntypedEntities(2).length, 2);
+});
+
+test("setEntityType fails for an entity with no recorded mentions", () => {
+  const store = createAcpMemoryStore({ dataDir: createTempDir() });
+  assert.equal(store.setEntityType("never mentioned", "object"), false);
+});
+
+test("setEntityType omits subcategory when not given, and stores it when given", () => {
+  const store = createAcpMemoryStore({ dataDir: createTempDir(), now: () => "2026-05-01T00:00:00.000Z" });
+  store.appendTurn({ sessionId: "s1", user: "GPU is fast.", assistant: "Okay." });
+  store.setEntityType("gpu", "object", "hardware");
+
+  const facts = JSON.parse(
+    require("node:fs").readFileSync(require("node:path").join(store.dataDir, "entity-types.json"), "utf8"),
+  );
+  assert.deepEqual(facts.gpu, { type: "object", subcategory: "hardware", typedAt: "2026-05-01T00:00:00.000Z" });
+});
+
+test("listCanonicalEntitiesOfType returns only entities of that type that aren't themselves an alias", () => {
+  const store = createAcpMemoryStore({ dataDir: createTempDir() });
+  store.appendTurn({ sessionId: "s1", user: "GPU and Singapore and Tokyo.", assistant: "Okay." });
+  store.setEntityType("gpu", "object");
+  store.setEntityType("singapore", "place");
+  store.setEntityType("tokyo", "place");
+  store.setCanonicalAlias("tokyo", "singapore");
+
+  const places = store.listCanonicalEntitiesOfType("place");
+  assert.deepEqual(places.map((p) => p.key), ["singapore"]);
+});
+
+test("setCanonicalAlias is non-destructive: the aliased entity's own mentions/type are untouched", () => {
+  const store = createAcpMemoryStore({ dataDir: createTempDir() });
+  store.appendTurn({ sessionId: "s1", user: "GPU and Graphics Card.", assistant: "Okay." });
+  store.setEntityType("gpu", "object", "hardware");
+  store.setEntityType("graphics card", "object", "hardware");
+
+  const merged = store.setCanonicalAlias("graphics card", "gpu");
+  assert.equal(merged, true);
+  assert.equal(store.resolveCanonicalKey("graphics card"), "gpu");
+  // The alias's own mentions are still there, untouched -- non-destructive.
+  assert.equal(store.lookupEntity("graphics card").length, 1);
+});
+
+test("setCanonicalAlias refuses to point an entity at itself or an untyped/unknown key", () => {
+  const store = createAcpMemoryStore({ dataDir: createTempDir() });
+  store.appendTurn({ sessionId: "s1", user: "GPU is here.", assistant: "Okay." });
+  store.setEntityType("gpu", "object");
+
+  assert.equal(store.setCanonicalAlias("gpu", "gpu"), false);
+  assert.equal(store.setCanonicalAlias("never typed", "gpu"), false);
+});
+
+test("resolveCanonicalKey returns the key itself when there's no alias", () => {
+  const store = createAcpMemoryStore({ dataDir: createTempDir() });
+  assert.equal(store.resolveCanonicalKey("gpu"), "gpu");
+  assert.equal(store.resolveCanonicalKey("GPU"), "gpu");
+});
+
 test("getRelatedFacts surfaces an entity mentioned in a different session", () => {
   const store = createAcpMemoryStore({
     dataDir: createTempDir(),
