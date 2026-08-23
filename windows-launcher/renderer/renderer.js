@@ -3174,6 +3174,16 @@ ipcRenderer.on("interrupt-speech", () => {
   heldReply = null;
 });
 
+// Issue #398: the quick-entry popup is just an alternate way to fill
+// #chatInput and hit send -- reuses sendTypedMessage() as-is instead of a
+// second reply pipeline, so this gets the same gaming-mode check,
+// wake-bypass, and TTS playback any other typed message already gets.
+ipcRenderer.on("quick-entry:submit", (event, text) => {
+  if (!chatInputEl) return;
+  chatInputEl.value = text;
+  sendTypedMessage();
+});
+
 async function handleTranscript(transcript, gamingModeActive = false) {
   if (isNoiseOnlyTranscript(transcript)) {
     return false;
