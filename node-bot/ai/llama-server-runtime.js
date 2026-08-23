@@ -440,6 +440,19 @@ function createLlamaServerRuntime(options = {}) {
       : "off";
     args.push("--reasoning", reasoning);
 
+    // Issue #360: every profile switch kills and respawns this whole
+    // process (see startServer below), so a return to a previously-active
+    // model relies entirely on the OS page cache (mmap is llama.cpp's
+    // default) to avoid a genuine cold disk read -- fine most of the time,
+    // but those cached pages can be evicted under memory pressure from
+    // anything else running, showing up as an occasional slow p95 switch.
+    // --mlock pins the model in physical RAM so a switch back is always
+    // fast, at the real cost of denying that RAM back to the OS even when
+    // something else (a game) needs it -- opt-in only, never a default.
+    if (env.LLAMA_MLOCK === "1") {
+      args.push("--mlock");
+    }
+
     // Same opt-in hardware flags as the llama-cli path.
     if (env.LLAMA_ENABLE_FLASHATTN === "1") {
       args.push("--flash-attn", env.LLAMA_ARG_FLASH_ATTN || "auto");
@@ -501,8 +514,21 @@ function createLlamaServerRuntime(options = {}) {
     if (ngl) {
       args.push("-ngl", String(ngl));
     }
-    const contextCap = env.LLAMA_CONTEXT || env.LLAMA_CONTEXT_CAP || "4096";
-    if (contextCap) {
+    const contextCap = Number(env.LLAMA_CONTEXT || env.LLAMA_CONTEXT_CAP || "4096");
+
+    // Issue #462: opt-in real concurrency, now that the 16GB card leaves
+    // room for it (was rejected on the prior 8GB card -- see
+    // docs/roadmap/issue-70-best-of-n.md). llama.cpp divides a single -c
+    // budget evenly across slots, so a bare --parallel N would silently
+    // shrink every request's context to 1/N of today's value; multiplying
+    // -c by N here keeps each slot's effective context unchanged from the
+    // single-slot default, matching this file's existing convention of a
+    // flag never changing behavior unless explicitly opted into.
+    const parallel = Number(env.LLAMA_PARALLEL || "1");
+    if (parallel > 1) {
+      args.push("--parallel", String(parallel));
+      args.push("-c", String(contextCap * parallel));
+    } else if (contextCap) {
       args.push("-c", String(contextCap));
     }
 
