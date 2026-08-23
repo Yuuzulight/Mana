@@ -95,6 +95,13 @@ const { skillsCapability } = require("./capabilities/skills-capability");
 const { createSkillsStore } = require("./skills-store");
 const { createApprovalGate } = require("./approval-gate");
 const { judgeActionRisk } = require("./ai/guardian-precheck");
+const {
+  buildTypingPrompt: buildEntityTypingPrompt,
+  parseTypingResponse: parseEntityTypingResponse,
+  findMergeCandidates: findEntityMergeCandidates,
+  buildMergeJudgePrompt: buildEntityMergeJudgePrompt,
+  parseMergeVerdict: parseEntityMergeVerdict,
+} = require("./entity-ontology");
 const { createRutDetector } = require("./rut-detection");
 const { createPhrasingVariator, rewritePhrase } = require("./phrasing-variation");
 const { approvalGateCapability } = require("./capabilities/approval-gate-capability");
@@ -716,6 +723,7 @@ try {
 
 let runBackgroundReviewerPublic = null;
 let runBackgroundCompactorPublic = null;
+let runBackgroundEntityTypingPublic = null;
 let runBackgroundConnectionsPublic = null;
 let runSkillProposalPublic = null;
 // Same trap as runSkillProposalPublic below, for the same reason:
@@ -1204,6 +1212,68 @@ if (process.env.NODE_ENV !== "test" && !process.env.NODE_TEST_CONTEXT) {
         }
       }
 
+      // Issue #432: ontology-typed entity extraction, as its own function
+      // (not folded into runBackgroundCompactor above) -- a structurally
+      // different job (batched classification, not prose summarization),
+      // called at the same trigger sites so it shares Dream Mode's exact
+      // cadence (hourly timer + idle-triggered + startup) and gaming-mode
+      // pause without being coupled to session-summary compaction.
+      let entityTypingRunning = false;
+      const ENTITY_TYPING_BATCH_CAP = Number(
+        process.env.MANA_ENTITY_TYPING_BATCH_CAP || 25,
+      );
+      async function runBackgroundEntityTyping() {
+        if (entityTypingRunning) return;
+        entityTypingRunning = true;
+        try {
+          const untyped = acpMemoryStore.listUntypedEntities(ENTITY_TYPING_BATCH_CAP);
+          if (!untyped.length) return;
+
+          // Fails closed exactly like #431's conflict judge -- this call
+          // never loads or swaps a model; it only runs when one is already
+          // resident, so a busy/idle-loaded system just skips this cycle
+          // and picks the same untyped entities back up next time.
+          const typingRaw = await llamaServerRuntime.runLocalReplyIfSafelyLoaded(
+            buildEntityTypingPrompt(untyped),
+            Math.max(64, untyped.length * 24),
+          );
+          if (!typingRaw) return;
+
+          const typed = parseEntityTypingResponse(typingRaw, untyped);
+          for (const entity of typed) {
+            acpMemoryStore.setEntityType(entity.key, entity.type, entity.subcategory);
+          }
+
+          // Merge-candidate pass: only for entities that ARE real things
+          // (not_an_entity has nothing to merge into), one same-type cheap
+          // pre-filter + LLM confirmation per entity.
+          for (const entity of typed) {
+            if (entity.type === "not_an_entity") continue;
+            const canonicalPool = acpMemoryStore.listCanonicalEntitiesOfType(entity.type);
+            const newEntityWithDisplay = untyped.find((u) => u.key === entity.key);
+            if (!newEntityWithDisplay) continue;
+            const candidates = findEntityMergeCandidates(newEntityWithDisplay, canonicalPool);
+            for (const candidate of candidates) {
+              const verdictRaw = await llamaServerRuntime.runLocalReplyIfSafelyLoaded(
+                buildEntityMergeJudgePrompt(newEntityWithDisplay, candidate),
+                16,
+              );
+              if (verdictRaw && parseEntityMergeVerdict(verdictRaw)) {
+                acpMemoryStore.setCanonicalAlias(newEntityWithDisplay.key, candidate.key);
+                break;
+              }
+            }
+          }
+        } catch (e) {
+          console.warn(
+            "Background entity typing failed:",
+            e && e.message ? e.message : e,
+          );
+        } finally {
+          entityTypingRunning = false;
+        }
+      }
+
       // Background reviewer: prune unnecessary summaries using the summarizer (non-blocking)
       async function runBackgroundReviewer(apply = true, options = {}) {
         try {
@@ -1505,6 +1575,7 @@ if (process.env.NODE_ENV !== "test" && !process.env.NODE_TEST_CONTEXT) {
       try {
         runBackgroundReviewerPublic = runBackgroundReviewer;
         runBackgroundCompactorPublic = runBackgroundCompactor;
+        runBackgroundEntityTypingPublic = runBackgroundEntityTyping;
         runBackgroundConnectionsPublic = runBackgroundConnections;
         // runSkillProposalPublic is constructed in registerRoutes below,
         // not here -- runOpenAIReply only exists in that scope (unlike
@@ -1523,6 +1594,12 @@ if (process.env.NODE_ENV !== "test" && !process.env.NODE_TEST_CONTEXT) {
             err && err.message ? err.message : err,
           ),
         );
+        runBackgroundEntityTyping().catch((err) =>
+          console.warn(
+            "Entity typing initial run failed:",
+            err && err.message ? err.message : err,
+          ),
+        );
       }
 
       if (refreshMs > 0) {
@@ -1533,6 +1610,12 @@ if (process.env.NODE_ENV !== "test" && !process.env.NODE_TEST_CONTEXT) {
           runBackgroundCompactor().catch((err) =>
             console.warn(
               "Background memory refresh failed:",
+              err && err.message ? err.message : err,
+            ),
+          );
+          runBackgroundEntityTyping().catch((err) =>
+            console.warn(
+              "Background entity typing refresh failed:",
               err && err.message ? err.message : err,
             ),
           );
@@ -1718,6 +1801,14 @@ function registerRoutes(app, upload, deps = {}) {
         await runBackgroundCompactorPublic().catch((err) =>
           console.warn(
             "Idle-triggered compactor failed:",
+            err && err.message ? err.message : err,
+          ),
+        );
+      }
+      if (typeof runBackgroundEntityTypingPublic === "function") {
+        await runBackgroundEntityTypingPublic().catch((err) =>
+          console.warn(
+            "Idle-triggered entity typing failed:",
             err && err.message ? err.message : err,
           ),
         );
