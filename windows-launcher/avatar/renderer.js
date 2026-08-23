@@ -75,3 +75,24 @@ loadAvatar().then((instance) => {
     activeAvatar.setState(currentState);
   }
 });
+
+// Issue #398/#362: same caption feed the main window's renderer.js already
+// wires up, just for whenever this overlay -- not the main window -- is
+// what's actually visible (the default state, since the main window hides
+// after startup). Purely additive -- if the socket never connects,
+// everything else here behaves exactly as before.
+(function initCaptions() {
+  try {
+    if (typeof createCaptionClient !== "function") return;
+    const el = document.getElementById("mana-captions");
+    if (!el) return;
+    createCaptionClient({
+      onCaption: ({ text }) => {
+        el.textContent = text;
+        el.hidden = false;
+      },
+    }).connect();
+  } catch (e) {
+    // Captions must never take the avatar overlay down with them.
+  }
+})();
