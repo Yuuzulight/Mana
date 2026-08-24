@@ -1538,6 +1538,45 @@ test("restoreEditSnapshot writes the pre-edit content back, verifies it, and rem
   }
 });
 
+test("restoreEditSnapshot returns stale: true without restoring when the file changed again since the snapshot, and confirmStale forces it through", async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mana-editor-restore-stale-"));
+  const snapshotsDir = fs.mkdtempSync(path.join(os.tmpdir(), "mana-editor-restore-stale-store-"));
+  const targetFile = path.join(tempDir, "src.js");
+  fs.writeFileSync(targetFile, "const value = 1;\n");
+
+  try {
+    const workspaceStore = createEditorWorkspaceStore();
+    workspaceStore.setWorkspace(tempDir, { editor: "zed" });
+    let idCounter = 0;
+    const editors = createEditorIntegrations({
+      env: {},
+      commandResolver: (command) => command,
+      workspaceStore,
+      idFactory: () => `proposal-stale-${++idCounter}`,
+      snapshotsDir,
+    });
+
+    editors.createEditProposal({ path: "src.js", proposedContent: "const value = 2;\n", summary: "First edit" });
+    const firstApplied = editors.approveEditProposal("proposal-stale-1");
+
+    editors.createEditProposal({ path: "src.js", proposedContent: "const value = 3;\n", summary: "Second edit" });
+    editors.approveEditProposal("proposal-stale-2");
+
+    // Restoring the FIRST snapshot now would clobber the second edit.
+    const result = await editors.restoreEditSnapshot(firstApplied.snapshotId);
+    assert.equal(result.stale, true);
+    assert.equal(fs.readFileSync(targetFile, "utf8"), "const value = 3;\n", "the second edit must survive an unconfirmed stale restore");
+
+    const forced = await editors.restoreEditSnapshot(firstApplied.snapshotId, { confirmStale: true });
+    assert.equal(forced.stale, undefined);
+    assert.ok(forced.restoredAt);
+    assert.equal(fs.readFileSync(targetFile, "utf8"), "const value = 1;\n");
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+    fs.rmSync(snapshotsDir, { recursive: true, force: true });
+  }
+});
+
 test("a snapshot recorded in one workspace is invisible and unrestorable after switching to another", async () => {
   const workspaceA = fs.mkdtempSync(path.join(os.tmpdir(), "mana-editor-snapshot-ws-a-"));
   const workspaceB = fs.mkdtempSync(path.join(os.tmpdir(), "mana-editor-snapshot-ws-b-"));

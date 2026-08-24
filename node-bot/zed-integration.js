@@ -925,7 +925,7 @@ function createEditorIntegrations(options = {}) {
   // built-in "file" restorer (snapshot-store.js) -- the checks kept here
   // (workspace mismatch, file-must-already-exist) are pipeline-A-specific
   // safety rules the generic store has no business knowing about.
-  async function restoreEditSnapshot(id) {
+  async function restoreEditSnapshot(id, { confirmStale = false } = {}) {
     const record = snapshotStore.getSnapshot(id);
     if (!record) {
       throw new Error("edit snapshot not found");
@@ -940,7 +940,16 @@ function createEditorIntegrations(options = {}) {
       throw new Error("workspace file does not exist");
     }
 
-    await snapshotStore.restoreSnapshot(id);
+    const result = await snapshotStore.restoreSnapshot(id, { confirmStale });
+    if (result && result.stale) {
+      return {
+        id,
+        relativePath: record.key,
+        stale: true,
+        newerSnapshotId: result.newerSnapshotId,
+        newerAppliedAt: result.newerAppliedAt,
+      };
+    }
     return {
       id,
       relativePath: record.key,

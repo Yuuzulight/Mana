@@ -2363,7 +2363,8 @@ function registerRoutes(app, upload, deps = {}) {
     if (!checkAdminAuth(req, res)) return;
     try {
       const editors = getEditorIntegrations();
-      const restored = await editors.restoreEditSnapshot(req.params.id);
+      const confirmStale = Boolean(req.body && req.body.confirmStale);
+      const restored = await editors.restoreEditSnapshot(req.params.id, { confirmStale });
       return res.json({ restored });
     } catch (error) {
       return res.status(400).json({
