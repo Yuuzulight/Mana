@@ -2350,11 +2350,12 @@ function registerRoutes(app, upload, deps = {}) {
     return res.json({ snapshots: editors.listEditSnapshots() });
   });
 
-  app.post("/editors/workspace/snapshots/:id/restore", (req, res) => {
+  app.post("/editors/workspace/snapshots/:id/restore", async (req, res) => {
     if (!checkAdminAuth(req, res)) return;
     try {
       const editors = getEditorIntegrations();
-      return res.json({ restored: editors.restoreEditSnapshot(req.params.id) });
+      const restored = await editors.restoreEditSnapshot(req.params.id);
+      return res.json({ restored });
     } catch (error) {
       return res.status(400).json({
         restored: null,
