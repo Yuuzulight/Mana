@@ -8,8 +8,25 @@
     <ApplicationManifest>app.manifest</ApplicationManifest>
   </PropertyGroup>
 
+  <Target Name="FetchSileroVadModel" BeforeTargets="Build">
+    <PropertyGroup>
+      <SileroVadModelDir>$(MSBuildProjectDirectory)\assets\vad</SileroVadModelDir>
+      <SileroVadModelPath>$(SileroVadModelDir)\silero_vad.onnx</SileroVadModelPath>
+      <SileroVadModelUrl>https://raw.githubusercontent.com/snakers4/silero-vad/master/src/silero_vad/data/silero_vad.onnx</SileroVadModelUrl>
+    </PropertyGroup>
+    <MakeDir Directories="$(SileroVadModelDir)" Condition="!Exists('$(SileroVadModelDir)')" />
+    <Exec
+      Command="powershell -NoProfile -ExecutionPolicy Bypass -Command &quot;Invoke-WebRequest -Uri '$(SileroVadModelUrl)' -OutFile '$(SileroVadModelPath)' -UserAgent 'mana-fetch-silero-vad'&quot;"
+      Condition="!Exists('$(SileroVadModelPath)')" />
+  </Target>
+
   <ItemGroup>
     <InternalsVisibleTo Include="ManaNativeLauncher.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="NAudio" Version="2.2.1" />
+    <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.19.2" />
   </ItemGroup>
 
   <ItemGroup>
