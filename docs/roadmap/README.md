@@ -37,7 +37,7 @@ Non-exhaustive highlights — see individual issue/PR history for full detail:
 
 ## Untracked Roadmap Items
 
-- Native Windows launcher: `docs/native_launcher_plan.md` documents a scaffold and next steps; still no matching GitHub issue. Create one before continuing feature work there.
+(none currently — Native Windows launcher is now tracked as issue #479.)
 
 ## Recommended Next Order
 
