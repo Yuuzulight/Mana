@@ -102,7 +102,9 @@ New API surface beyond #428's store:
 registerRestorer(kind, async (key, payload, scope) => { ... })
 restoreSnapshot(id)   // looks up the snapshot, calls the registered
                        // restorer for its kind, deletes the snapshot
-                       // on success, then returns the restorer's result
+                       // only after the restorer resolves successfully,
+                       // then returns the restorer's result
+listSnapshots(kind?)  // optional kind filter -- omit for all kinds
 ```
 
 This mirrors `approval-gate.js`'s existing `registerExecutor(actionType, fn)`
@@ -121,11 +123,41 @@ whichever store instance they're constructed with, the same way
 rather than lazily -- a snapshot store instance missing an expected
 restorer is a wiring bug, not a valid runtime state.
 
+If a registered restorer throws, `restoreSnapshot` does **not** delete
+the snapshot -- deletion only happens after the restorer's promise
+resolves. A transient failure (a briefly-locked file, a momentary
+permission error) leaves the snapshot exactly as it was, so calling
+`restoreSnapshot(id)` again is a valid retry, not a lost undo.
+
+`listSnapshots` takes an optional `kind` argument. Every real caller
+only ever wants its own kind (`zed-integration.js` wants `"file"`,
+`acp-memory-store.js` wants `"memory-session"`/`"memory-fact"`,
+`skills-store.js` wants `"skill"`) -- filtering in the store means no
+caller needs to know or care that the other three kinds exist.
+
+`recordSnapshot` is best-effort: if it fails (disk full, a permission
+error), the caller logs a warning and proceeds with the primary write
+anyway. The snapshot is safety infrastructure for the write the user
+actually asked for, not a precondition for it -- refusing to save a
+file, session record, fact, or skill because an unrelated bookkeeping
+write failed would be a worse outcome than just proceeding without an
+undo option for that one write.
+
 Retention (`maxRetained`, env `MANA_MAX_EDIT_SNAPSHOTS` — **kept as
 the same env var name**, since it's not part of any public API and
-renaming it buys nothing) prunes oldest-first across *all* kinds
-together, not per-kind — a global cap on total snapshot volume, same
-semantics as #428.
+renaming it buys nothing) prunes oldest-first **per kind**, not across
+one shared pool -- each of the four kinds gets its own independent
+budget, using the same `maxRetained` value applied four times rather
+than one combined cap. This is a deliberate change from #428's literal
+semantics, not a carryover: #428 only ever had one kind, so "prune
+oldest across everything" and "prune oldest per kind" were the same
+policy there. With four kinds of wildly different write frequency
+(`memory-session` snapshots on every mutator call vs. rare `file`
+writes), a single shared pool lets high-frequency, low-stakes churn
+evict the rare, high-stakes snapshot a user actually wanted -- a
+correctness risk for an undo store, not just a tuning nicety. Per-kind
+pools cost nothing extra to configure (still one number, just keyed by
+kind internally) and fully remove the starvation risk.
 
 ### 2. Four restorer registrations
 
@@ -238,6 +270,13 @@ store, not something this work fixes.
   construct `createEditorIntegrations` with a `snapshotStore` (the new
   module) instead of a `snapshotsDir` pointing at the old one; test
   intent and assertions stay the same.
+- **No migration of existing on-disk #428 snapshots.** The new store
+  never reads the old store's file/format; anything sitting in it at
+  deploy time becomes immediately inaccessible, not gradually aged out.
+  Deliberate, not an oversight: these are short-lived working snapshots
+  for "undo my last edit," already bounded to a small rolling window by
+  `maxRetained` -- writing and testing a one-time migration script for
+  state this transient and low-value to preserve isn't worth it.
 
 ### 4. Wiring pipeline B's `file_write`
 
@@ -256,6 +295,11 @@ unreadable backup files forever.
 - `snapshot-store.test.js` (new): record/get/list/delete/prune (mirrors
   #428's existing coverage), plus `registerRestorer`/`restoreSnapshot`
   round-trips per kind, plus "no restorer registered" failing loud.
+  Also: pruning stays scoped to one kind (filling one kind's pool past
+  `maxRetained` never evicts another kind's snapshots), a throwing
+  restorer leaves its snapshot in place for a retry rather than
+  deleting it, and `listSnapshots(kind)` only returns that kind's
+  entries while `listSnapshots()` returns all of them.
 - `acp-memory-store.test.js`: new cases for session-record and fact
   snapshot+restore, including the fact-didn't-exist-before → restore
   deletes it case specifically (the one genuinely tricky branch).
@@ -273,3 +317,16 @@ Sub-projects 2-4 (hook config/matching, "ask" mode, PostToolUse
 wiring) — this store is a dependency for (4)'s rollback action, not
 part of this document. Nothing in this sub-project reads a hook config
 or executes a user-provided command.
+
+**Agent-triggered restore.** `restoreSnapshot` is reachable in this
+design only through the existing human-driven paths -- the REST routes
+and both apps' "Applied edits" UI panels. This spec deliberately does
+not restrict it to human-only callers, but also deliberately does not
+design for an agent calling it autonomously mid-conversation (e.g. an
+"undo that" voice command, or an agent deciding on its own that a prior
+action was wrong) -- that's a different risk profile with its own
+unanswered questions (does it need its own approval gate? can an agent
+undo something a human did? what if it fires mid-task against
+assumptions another part of the same task already made?) that the four
+"what's undoable" targets above never considered from that angle.
+Tracked separately as #475, blocked on this sub-project shipping first.
