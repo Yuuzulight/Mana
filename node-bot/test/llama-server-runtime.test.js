@@ -1873,6 +1873,40 @@ test("buildServerArgs: LLAMA_ENABLE_SPEC_NGRAM=1 turns n-gram spec-decode on for
   assert.ok(args.includes("--spec-type"));
 });
 
+// Issue #360: --mlock pins the model in RAM so a mode-switch back doesn't
+// pay a cold disk read if the OS evicted the page cache under pressure.
+test("buildServerArgs omits --mlock by default", () => {
+  const runtime = createLlamaServerRuntime({
+    env: makeFakeEnv(),
+    fs: makeFakeFs(),
+    registerExitHandlers: false,
+  });
+  const args = runtime.buildServerArgs("C:\\models\\mana.gguf", 8090);
+  assert.equal(args.includes("--mlock"), false);
+});
+
+test("buildServerArgs adds --mlock only when LLAMA_MLOCK=1", () => {
+  const runtime = createLlamaServerRuntime({
+    env: { ...makeFakeEnv(), LLAMA_MLOCK: "1" },
+    fs: makeFakeFs(),
+    registerExitHandlers: false,
+  });
+  const args = runtime.buildServerArgs("C:\\models\\mana.gguf", 8090);
+  assert.ok(args.includes("--mlock"));
+});
+
+test("buildServerArgs leaves --mlock off for any LLAMA_MLOCK value other than the literal string \"1\"", () => {
+  for (const value of ["0", "true", "yes", "on"]) {
+    const runtime = createLlamaServerRuntime({
+      env: { ...makeFakeEnv(), LLAMA_MLOCK: value },
+      fs: makeFakeFs(),
+      registerExitHandlers: false,
+    });
+    const args = runtime.buildServerArgs("C:\\models\\mana.gguf", 8090);
+    assert.equal(args.includes("--mlock"), false, `value ${value} should not enable mlock`);
+  }
+});
+
 test("buildServerArgs lets LLAMA_SPEC_NGRAM_TYPE override which n-gram variant is used", () => {
   const runtime = createLlamaServerRuntime({
     env: {
