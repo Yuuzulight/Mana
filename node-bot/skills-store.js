@@ -443,6 +443,7 @@ function createSkillsStore(options = {}) {
           key: fileName,
           payload: serializeSkillFile(skill),
           summary: `skill update: ${skill.name}`,
+          source: "human",
         });
       } catch (e) {
         console.warn("Skill snapshot failed:", e?.message || e);

@@ -486,6 +486,7 @@ test("updateSkill snapshots the pre-update file content, restorable via the gene
   const [snapshot] = snapshotStore.listSnapshots("skill");
   assert.ok(snapshot);
   assert.equal(snapshot.key, skill.fileName);
+  assert.equal(snapshot.source, "human");
 
   await snapshotStore.restoreSnapshot(snapshot.id);
   const restored = store.viewSkill("Restart SearXNG", { touch: false });
