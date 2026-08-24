@@ -1459,6 +1459,43 @@ test("approving a proposal records a snapshot of the pre-edit content, listed by
   }
 });
 
+test("approving a proposal records the snapshot with source: human -- a human clicked approve", () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mana-editor-source-"));
+  const snapshotsDir = fs.mkdtempSync(path.join(os.tmpdir(), "mana-editor-source-store-"));
+  const sourceFile = path.join(tempDir, "src.js");
+  fs.writeFileSync(sourceFile, "const value = 1;\n");
+
+  try {
+    const workspaceStore = createEditorWorkspaceStore();
+    workspaceStore.setWorkspace(tempDir, { editor: "zed" });
+    const editors = createEditorIntegrations({
+      env: {},
+      commandResolver: (command) => command,
+      workspaceStore,
+      idFactory: () => "proposal-source-1",
+      snapshotsDir,
+    });
+
+    editors.createEditProposal({
+      path: "src.js",
+      proposedContent: "const value = 2;\n",
+      summary: "Update value",
+    });
+
+    const applied = editors.approveEditProposal("proposal-source-1");
+    const [snapshot] = editors.listEditSnapshots().filter((s) => s.id === applied.snapshotId);
+    // listEditSnapshots doesn't project source today -- read the raw
+    // snapshot store record instead to confirm it was actually recorded.
+    const snapshotsDirFiles = fs.readdirSync(snapshotsDir).filter((f) => f.endsWith(".json"));
+    const raw = JSON.parse(fs.readFileSync(path.join(snapshotsDir, snapshotsDirFiles[0]), "utf8"));
+    assert.equal(raw.source, "human");
+    assert.ok(snapshot);
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+    fs.rmSync(snapshotsDir, { recursive: true, force: true });
+  }
+});
+
 test("restoreEditSnapshot writes the pre-edit content back, verifies it, and removes the snapshot", async () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mana-editor-restore-"));
   const snapshotsDir = fs.mkdtempSync(path.join(os.tmpdir(), "mana-editor-restore-store-"));

@@ -848,6 +848,7 @@ function createEditorIntegrations(options = {}) {
       scope: path.resolve(workspace.path),
       payload: currentContent,
       summary: proposal.summary,
+      source: "human",
     });
 
     fs.writeFileSync(target.fullPath, contentToWrite, "utf8");
