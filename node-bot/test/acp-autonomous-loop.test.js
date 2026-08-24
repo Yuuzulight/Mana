@@ -279,6 +279,51 @@ test("acp-autonomous-loop: file_write overwrite records a restorable snapshot in
   }
 });
 
+test("acp-autonomous-loop: file_write overwrite tags its snapshot source: agent", async (t) => {
+  const origEnv = process.env.ALLOW_FILE_WRITE;
+  const origApproval = process.env.FILE_WRITE_REQUIRE_APPROVAL;
+  const origStat = fs.promises.stat;
+  const origRead = fs.promises.readFile;
+  const origWrite = fs.promises.writeFile;
+  try {
+    process.env.ALLOW_FILE_WRITE = "1";
+    process.env.FILE_WRITE_REQUIRE_APPROVAL = "0";
+    let lastWriteSize = null;
+
+    fs.promises.stat = async (p) => {
+      if (lastWriteSize === null) return { isFile: () => true, size: 10 };
+      return { isFile: () => true, size: lastWriteSize };
+    };
+    fs.promises.readFile = async (p, enc) => "previous content";
+    fs.promises.writeFile = async (p, content, opts) => {
+      lastWriteSize = Buffer.byteLength(content, "utf8");
+    };
+
+    const recorded = [];
+    const fakeSnapshotStore = {
+      recordSnapshot: (record) => {
+        recorded.push(record);
+        return { id: "snap-source-agent-1", ...record };
+      },
+    };
+
+    const mockModelReply =
+      'Write file:\n[{"tool":"file_write","args":{"path":"src/out2.txt","content":"hello again","mode":"overwrite"}}]';
+    await executeAutonomousStep(mockModelReply, "test-session", {
+      snapshotStore: fakeSnapshotStore,
+    });
+
+    assert.equal(recorded.length, 1);
+    assert.equal(recorded[0].source, "agent");
+  } finally {
+    process.env.ALLOW_FILE_WRITE = origEnv;
+    process.env.FILE_WRITE_REQUIRE_APPROVAL = origApproval;
+    fs.promises.stat = origStat;
+    fs.promises.readFile = origRead;
+    fs.promises.writeFile = origWrite;
+  }
+});
+
 // REPO_ROOT is resolved once at module load (acp-autonomous-loop.js top
 // level), so it can't be redirected per-test via process.env -- this test
 // exercises the exact record shape file_write now produces (kind: "file",

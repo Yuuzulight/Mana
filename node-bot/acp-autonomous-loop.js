@@ -682,6 +682,7 @@ async function executeAutonomousStep(rawModelReply, sessionId, options = {}) {
                   scope: REPO_ROOT,
                   payload: priorContent,
                   summary: "file_write overwrite",
+                  source: "agent",
                 });
               } catch (snapshotErr) {
                 console.warn(
