@@ -14,6 +14,9 @@ internal sealed class ManaApplicationContext : ApplicationContext
     private readonly ManaProcessManager processManager;
     private readonly ManaBackendClient backendClient;
     private readonly System.Windows.Forms.Timer statusTimer;
+    private readonly SileroVadRunner sileroVad;
+    private readonly AudioPlayer audioPlayer;
+    private readonly VoiceLoop voiceLoop;
 
     public ManaApplicationContext()
     {
@@ -21,6 +24,11 @@ internal sealed class ManaApplicationContext : ApplicationContext
         processManager = new ManaProcessManager(rootDir);
         backendClient = new ManaBackendClient();
         avatarOverlay = new AvatarOverlayForm(rootDir);
+
+        var vadModelPath = Path.Combine(rootDir, "windows-native-launcher", "assets", "vad", "silero_vad.onnx");
+        sileroVad = new SileroVadRunner(vadModelPath);
+        audioPlayer = new AudioPlayer();
+        voiceLoop = new VoiceLoop(sileroVad, backendClient, audioPlayer, avatarOverlay);
 
         trayIcon = new NotifyIcon
         {
@@ -60,6 +68,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
     {
         await processManager.StartAsync();
         await RefreshTrayStatusAsync();
+        voiceLoop.Start();
     }
 
     private async Task RefreshTrayStatusAsync()
@@ -108,6 +117,9 @@ internal sealed class ManaApplicationContext : ApplicationContext
     protected override void ExitThreadCore()
     {
         statusTimer.Stop();
+        voiceLoop.Dispose();
+        audioPlayer.Dispose();
+        sileroVad.Dispose();
         trayIcon.Visible = false;
         trayIcon.Dispose();
         avatarOverlay.Close();
