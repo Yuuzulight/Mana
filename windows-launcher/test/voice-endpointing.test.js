@@ -7,9 +7,12 @@ const {
   DEFAULT_MAX_UTTERANCE_MS,
   DEFAULT_MAX_WAIT_FOR_SPEECH_MS,
   DEFAULT_SILENCE_BUFFER_MS,
+  TURN_EXTEND_SILENCE_BUFFER_MS,
+  TURN_SHORTEN_SILENCE_BUFFER_MS,
   dbfsFromSamples,
   nextBargeInState,
   shouldStopRecording,
+  silenceBufferMsForTranscript,
 } = require("../renderer/voice-endpointing");
 
 test("keeps recording while the user is still talking", () => {
@@ -214,4 +217,69 @@ test("dbfsFromSamples ranks a quieter buffer below a louder one", () => {
 
 test("DEFAULT_BARGE_IN_MIN_DBFS sits between typical room noise and speech level", () => {
   assert.ok(DEFAULT_BARGE_IN_MIN_DBFS < -20 && DEFAULT_BARGE_IN_MIN_DBFS > -60);
+});
+
+// Issue #341 Sub-project B, phase 1: zero-model end-of-turn heuristic.
+test("silenceBufferMsForTranscript falls back to the default for an empty transcript", () => {
+  assert.equal(silenceBufferMsForTranscript("", DEFAULT_SILENCE_BUFFER_MS), DEFAULT_SILENCE_BUFFER_MS);
+  assert.equal(silenceBufferMsForTranscript("   ", DEFAULT_SILENCE_BUFFER_MS), DEFAULT_SILENCE_BUFFER_MS);
+  assert.equal(silenceBufferMsForTranscript(undefined, DEFAULT_SILENCE_BUFFER_MS), DEFAULT_SILENCE_BUFFER_MS);
+});
+
+test("silenceBufferMsForTranscript extends the wait on a trailing conjunction/filler", () => {
+  assert.equal(
+    silenceBufferMsForTranscript("I think it's because", DEFAULT_SILENCE_BUFFER_MS),
+    TURN_EXTEND_SILENCE_BUFFER_MS,
+  );
+  assert.equal(
+    silenceBufferMsForTranscript("so I was thinking and", DEFAULT_SILENCE_BUFFER_MS),
+    TURN_EXTEND_SILENCE_BUFFER_MS,
+  );
+  assert.equal(
+    silenceBufferMsForTranscript("well, um", DEFAULT_SILENCE_BUFFER_MS),
+    TURN_EXTEND_SILENCE_BUFFER_MS,
+  );
+});
+
+test("silenceBufferMsForTranscript extends the wait on a trailing comma", () => {
+  assert.equal(
+    silenceBufferMsForTranscript("first check the weather,", DEFAULT_SILENCE_BUFFER_MS),
+    TURN_EXTEND_SILENCE_BUFFER_MS,
+  );
+});
+
+test("silenceBufferMsForTranscript shortens the wait on terminal punctuation", () => {
+  assert.equal(
+    silenceBufferMsForTranscript("What's the weather today?", DEFAULT_SILENCE_BUFFER_MS),
+    TURN_SHORTEN_SILENCE_BUFFER_MS,
+  );
+  assert.equal(
+    silenceBufferMsForTranscript("Close the window.", DEFAULT_SILENCE_BUFFER_MS),
+    TURN_SHORTEN_SILENCE_BUFFER_MS,
+  );
+  assert.equal(
+    silenceBufferMsForTranscript("That's amazing!", DEFAULT_SILENCE_BUFFER_MS),
+    TURN_SHORTEN_SILENCE_BUFFER_MS,
+  );
+});
+
+test("silenceBufferMsForTranscript falls back to the default with no clear signal either way", () => {
+  assert.equal(
+    silenceBufferMsForTranscript("check the weather", DEFAULT_SILENCE_BUFFER_MS),
+    DEFAULT_SILENCE_BUFFER_MS,
+  );
+});
+
+test("silenceBufferMsForTranscript is not fooled by a conjunction earlier in the sentence", () => {
+  // "and" appears mid-sentence, not trailing -- should read as a complete
+  // clause (no terminal punctuation, no trailing incompleteness signal) and
+  // fall back to the default, not the extend value.
+  assert.equal(
+    silenceBufferMsForTranscript("check the weather and traffic", DEFAULT_SILENCE_BUFFER_MS),
+    DEFAULT_SILENCE_BUFFER_MS,
+  );
+});
+
+test("silenceBufferMsForTranscript respects a custom base default", () => {
+  assert.equal(silenceBufferMsForTranscript("no clear signal here", 1800), 1800);
 });

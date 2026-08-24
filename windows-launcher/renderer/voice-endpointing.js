@@ -74,6 +74,51 @@ function dbfsFromSamples(samples) {
   return 20 * Math.log10(rms);
 }
 
+// Issue #341 Sub-project B, phase 1: a zero-model heuristic on the partial
+// transcript #341 Sub-project A already produces (renderer.js's
+// pollPartialTranscript) -- ships something better than a fixed silence
+// timeout without a new model/dependency. A trained classifier (e.g.
+// Pipecat's smart-turn) can layer on top of this later; this is the
+// graceful-degradation baseline it would fall back to if unavailable.
+const TURN_EXTEND_SILENCE_BUFFER_MS = 3500;
+const TURN_SHORTEN_SILENCE_BUFFER_MS = 1200;
+// Trailing words that suggest the sentence isn't finished yet -- deliberately
+// a short, high-confidence list rather than an exhaustive stopword set;
+// false "still composing" guesses just cost an extra second or two of wait,
+// not a wrong cutoff (the issue calls a false cutoff the worse failure mode).
+const TRAILING_INCOMPLETE_WORDS = new Set([
+  "and", "but", "so", "because", "or", "if", "that", "which", "um", "uh", "like", "well",
+]);
+const TERMINAL_PUNCTUATION = /[.!?]\s*$/;
+
+// Returns the silenceBufferMs shouldStopRecording should use for this tick,
+// given the live partial transcript. Trailing incompleteness (a conjunction/
+// filler, or a trailing comma) extends the wait; a complete-looking sentence
+// (ends in terminal punctuation) shortens it. No signal either way -- empty
+// transcript, or text that neither clearly trails off nor clearly ends --
+// falls back to the caller's own default unchanged.
+function silenceBufferMsForTranscript(transcript, baseSilenceBufferMs) {
+  const trimmed = String(transcript || "").trim();
+  if (!trimmed) {
+    return baseSilenceBufferMs;
+  }
+  if (trimmed.endsWith(",")) {
+    return TURN_EXTEND_SILENCE_BUFFER_MS;
+  }
+  const lastWord = trimmed
+    .toLowerCase()
+    .replace(/[.,!?]+$/, "")
+    .split(/\s+/)
+    .pop();
+  if (TRAILING_INCOMPLETE_WORDS.has(lastWord)) {
+    return TURN_EXTEND_SILENCE_BUFFER_MS;
+  }
+  if (TERMINAL_PUNCTUATION.test(trimmed)) {
+    return TURN_SHORTEN_SILENCE_BUFFER_MS;
+  }
+  return baseSilenceBufferMs;
+}
+
 module.exports = {
   DEFAULT_BARGE_IN_HOLD_MS,
   DEFAULT_BARGE_IN_MIN_DBFS,
@@ -81,7 +126,10 @@ module.exports = {
   DEFAULT_MAX_UTTERANCE_MS,
   DEFAULT_MAX_WAIT_FOR_SPEECH_MS,
   DEFAULT_SILENCE_BUFFER_MS,
+  TURN_EXTEND_SILENCE_BUFFER_MS,
+  TURN_SHORTEN_SILENCE_BUFFER_MS,
   dbfsFromSamples,
   nextBargeInState,
   shouldStopRecording,
+  silenceBufferMsForTranscript,
 };
