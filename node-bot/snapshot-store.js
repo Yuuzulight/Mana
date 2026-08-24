@@ -139,6 +139,30 @@ function createSnapshotStore(options = {}) {
     }
   }
 
+  // #475: is `id`'s target stale -- has something else legitimately written
+  // to the same kind+key+scope since this snapshot was recorded? Purely
+  // metadata-based (listSnapshots, not a kind-specific "read current live
+  // state" call) so it stays exactly as kind-agnostic as the rest of this
+  // store: a later recordSnapshot for the same target IS that later write,
+  // by construction -- every existing call site records a snapshot
+  // immediately before its own write lands (see zed-integration.js's
+  // approveEditProposal, acp-autonomous-loop.js's file_write, etc.), so "a
+  // newer snapshot exists" and "the target changed since this snapshot" are
+  // the same fact. Returns null if id doesn't exist.
+  function checkStale(id) {
+    const record = getSnapshot(id);
+    if (!record) return null;
+    const newer = listSnapshots(record.kind).filter(
+      (other) =>
+        other.id !== id &&
+        other.key === record.key &&
+        other.scope === record.scope &&
+        String(other.appliedAt).localeCompare(String(record.appliedAt)) > 0,
+    );
+    if (!newer.length) return { stale: false };
+    return { stale: true, newerSnapshotId: newer[0].id, newerAppliedAt: newer[0].appliedAt };
+  }
+
   function recordSnapshot({ kind, key, scope, payload, summary, source } = {}) {
     if (!kind) {
       throw new Error("kind is required");
@@ -177,10 +201,33 @@ function createSnapshotStore(options = {}) {
   // transient failure (a briefly-locked file, a momentary permission error)
   // leaves the snapshot exactly as it was, so calling restoreSnapshot(id)
   // again is a valid retry, not a lost undo.
-  async function restoreSnapshot(id) {
+  //
+  // #475: unless confirmStale is true, a stale target (see checkStale above)
+  // short-circuits before the restorer ever runs -- returns a warning
+  // object instead of silently overwriting whatever legitimately landed
+  // there since. Every existing caller (the REST route, both apps' "Applied
+  // edits" panels) gets this protection automatically, since it lives here
+  // rather than only in the new agent-tool code path.
+  async function restoreSnapshot(id, { confirmStale = false } = {}) {
     const record = getSnapshot(id);
     if (!record) {
       throw new Error("snapshot not found");
+    }
+    if (!confirmStale) {
+      const staleness = checkStale(id);
+      if (staleness && staleness.stale) {
+        return {
+          stale: true,
+          id,
+          kind: record.kind,
+          key: record.key,
+          scope: record.scope,
+          summary: record.summary,
+          appliedAt: record.appliedAt,
+          newerSnapshotId: staleness.newerSnapshotId,
+          newerAppliedAt: staleness.newerAppliedAt,
+        };
+      }
     }
     const restorer = restorers.get(record.kind);
     if (typeof restorer !== "function") {
@@ -213,6 +260,7 @@ function createSnapshotStore(options = {}) {
     deleteSnapshot,
     registerRestorer,
     restoreSnapshot,
+    checkStale,
   };
 }
 
