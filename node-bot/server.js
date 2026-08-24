@@ -132,6 +132,7 @@ const { readGgufMetadata } = require("./tools/gguf-metadata");
 	const browserAutomationPlugin = require("../plugins/browser-automation");
 	const telegramBridgePlugin = require("../plugins/telegram-bridge");
 	const discordBotPlugin = require("../plugins/discord-bot");
+	const matrixBridgePlugin = require("../plugins/matrix-bridge");
 	const videoWatchPlugin = require("../plugins/video-watch");
 	const contextPushPlugin = require("../plugins/context-push");
 	const screenSensingPlugin = require("../plugins/screen-sensing");
@@ -1999,6 +2000,7 @@ function registerRoutes(app, upload, deps = {}) {
     browserAutomationPlugin,
     telegramBridgePlugin,
     discordBotPlugin,
+    matrixBridgePlugin,
     videoWatchPlugin,
     contextPushPlugin,
     screenSensingPlugin,
