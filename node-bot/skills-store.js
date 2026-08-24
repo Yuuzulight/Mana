@@ -218,6 +218,16 @@ function createSkillsStore(options = {}) {
     path.join(__dirname, "skills");
   const archiveDir = path.join(skillsDir, ".archive");
   const now = options.now || (() => new Date().toISOString());
+  // #426 sub-project 1: optional, same as acp-memory-store.js -- absence is
+  // a silent no-op so existing construction sites keep working unchanged.
+  const snapshotStore = options.snapshotStore || null;
+
+  if (snapshotStore) {
+    snapshotStore.registerRestorer("skill", async (fileName, fileContent) => {
+      fs.writeFileSync(path.join(skillsDir, fileName), fileContent, "utf8");
+      return { fileName };
+    });
+  }
 
   function ensureDir() {
     fs.mkdirSync(skillsDir, { recursive: true });
@@ -425,6 +435,20 @@ function createSkillsStore(options = {}) {
     const fileName = findFileForName(name);
     if (!fileName) return null;
     const skill = readSkill(fileName);
+
+    if (snapshotStore) {
+      try {
+        snapshotStore.recordSnapshot({
+          kind: "skill",
+          key: fileName,
+          payload: serializeSkillFile(skill),
+          summary: `skill update: ${skill.name}`,
+        });
+      } catch (e) {
+        console.warn("Skill snapshot failed:", e?.message || e);
+      }
+    }
+
     if (description !== undefined) {
       const cleanDescription = String(description).trim();
       assertSingleLine(cleanDescription, "description");

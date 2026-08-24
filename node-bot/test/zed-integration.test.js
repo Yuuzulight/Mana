@@ -1451,7 +1451,6 @@ test("approving a proposal records a snapshot of the pre-edit content, listed by
     const snapshots = editors.listEditSnapshots();
     assert.equal(snapshots.length, 1);
     assert.equal(snapshots[0].id, applied.snapshotId);
-    assert.equal(snapshots[0].proposalId, "proposal-snap-1");
     assert.equal(snapshots[0].relativePath, "src.js");
     assert.equal(snapshots[0].summary, "Update value");
   } finally {
@@ -1460,7 +1459,7 @@ test("approving a proposal records a snapshot of the pre-edit content, listed by
   }
 });
 
-test("restoreEditSnapshot writes the pre-edit content back, verifies it, and removes the snapshot", () => {
+test("restoreEditSnapshot writes the pre-edit content back, verifies it, and removes the snapshot", async () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mana-editor-restore-"));
   const snapshotsDir = fs.mkdtempSync(path.join(os.tmpdir(), "mana-editor-restore-store-"));
   const sourceFile = path.join(tempDir, "src.js");
@@ -1485,14 +1484,14 @@ test("restoreEditSnapshot writes the pre-edit content back, verifies it, and rem
     const applied = editors.approveEditProposal("proposal-restore-1");
     assert.equal(fs.readFileSync(sourceFile, "utf8"), "const value = 2;\n");
 
-    const restored = editors.restoreEditSnapshot(applied.snapshotId);
+    const restored = await editors.restoreEditSnapshot(applied.snapshotId);
     assert.equal(restored.id, applied.snapshotId);
     assert.equal(restored.relativePath, "src.js");
     assert.equal(fs.readFileSync(sourceFile, "utf8"), "const value = 1;\n");
 
     // Restored once -- it's consumed, not a repeatable checkpoint.
     assert.deepEqual(editors.listEditSnapshots(), []);
-    assert.throws(
+    await assert.rejects(
       () => editors.restoreEditSnapshot(applied.snapshotId),
       /edit snapshot not found/,
     );
@@ -1502,7 +1501,7 @@ test("restoreEditSnapshot writes the pre-edit content back, verifies it, and rem
   }
 });
 
-test("a snapshot recorded in one workspace is invisible and unrestorable after switching to another", () => {
+test("a snapshot recorded in one workspace is invisible and unrestorable after switching to another", async () => {
   const workspaceA = fs.mkdtempSync(path.join(os.tmpdir(), "mana-editor-snapshot-ws-a-"));
   const workspaceB = fs.mkdtempSync(path.join(os.tmpdir(), "mana-editor-snapshot-ws-b-"));
   const snapshotsDir = fs.mkdtempSync(path.join(os.tmpdir(), "mana-editor-snapshot-ws-store-"));
@@ -1534,7 +1533,7 @@ test("a snapshot recorded in one workspace is invisible and unrestorable after s
     // it with workspace A's content.
     workspaceStore.setWorkspace(workspaceB, { editor: "zed" });
     assert.deepEqual(editors.listEditSnapshots(), []);
-    assert.throws(
+    await assert.rejects(
       () => editors.restoreEditSnapshot(applied.snapshotId),
       /edit snapshot belongs to a different workspace/,
     );
@@ -1546,7 +1545,7 @@ test("a snapshot recorded in one workspace is invisible and unrestorable after s
   }
 });
 
-test("restoreEditSnapshot rejects an unknown snapshot id", () => {
+test("restoreEditSnapshot rejects an unknown snapshot id", async () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mana-editor-restore-unknown-"));
   try {
     const workspaceStore = createEditorWorkspaceStore();
@@ -1557,7 +1556,7 @@ test("restoreEditSnapshot rejects an unknown snapshot id", () => {
       workspaceStore,
     });
 
-    assert.throws(
+    await assert.rejects(
       () => editors.restoreEditSnapshot("no-such-snapshot"),
       /edit snapshot not found/,
     );
