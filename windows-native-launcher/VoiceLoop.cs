@@ -176,21 +176,37 @@ internal sealed class VoiceLoop : IDisposable
         var wavBytes = BuildWavBytes(segmentSamples);
         ResetSegment();
 
+        var playbackStarted = false;
         try
         {
-            await RunTurnAsync(wavBytes);
+            playbackStarted = await RunTurnAsync(wavBytes);
         }
         finally
         {
-            segmentInFlight = false;
-            // Frames captured while the turn was in flight are still
-            // sitting in frameBuffer -- process them now instead of
-            // waiting for the next DataAvailable callback.
-            ProcessBufferedFrames();
+            // Playback of the reply is asynchronous (WasapiOut.Play returns
+            // immediately) -- if it started, keep segmentInFlight true until
+            // OnPlaybackCompletedOnce fires, so relistening only resumes
+            // once the reply has actually finished playing (spec order:
+            // ... -> playback -> loop back to step 1). Otherwise (empty
+            // transcript, no wake word, or any failure) there's nothing to
+            // wait for -- resume listening immediately.
+            if (!playbackStarted)
+            {
+                segmentInFlight = false;
+                // Frames captured while the turn was in flight are still
+                // sitting in frameBuffer -- process them now instead of
+                // waiting for the next DataAvailable callback.
+                ProcessBufferedFrames();
+            }
         }
     }
 
-    private async Task RunTurnAsync(byte[] wavBytes)
+    // Returns true only if playback of a reply was successfully started
+    // (i.e. relistening must wait for OnPlaybackCompletedOnce). Returns
+    // false for every early-return path -- empty transcript, no wake-word
+    // match, an HTTP call failure, or a playback-start failure -- all of
+    // which are safe to resume listening from immediately.
+    private async Task<bool> RunTurnAsync(byte[] wavBytes)
     {
         string transcript;
         try
@@ -200,12 +216,12 @@ internal sealed class VoiceLoop : IDisposable
         catch (Exception ex)
         {
             Console.WriteLine($"VoiceLoop: transcription failed, resuming listening. {ex.Message}");
-            return;
+            return false;
         }
 
         if (string.IsNullOrWhiteSpace(transcript))
         {
-            return;
+            return false;
         }
 
         string commandText;
@@ -214,7 +230,7 @@ internal sealed class VoiceLoop : IDisposable
             var command = WakeWordMatcher.ExtractWakeCommand(transcript);
             if (command is null)
             {
-                return;
+                return false;
             }
 
             awake = true;
@@ -227,7 +243,7 @@ internal sealed class VoiceLoop : IDisposable
 
         if (string.IsNullOrWhiteSpace(commandText))
         {
-            return;
+            return false;
         }
 
         string reply;
@@ -238,7 +254,7 @@ internal sealed class VoiceLoop : IDisposable
         catch (Exception ex)
         {
             Console.WriteLine($"VoiceLoop: reply failed, resuming listening. {ex.Message}");
-            return;
+            return false;
         }
 
         byte[] replyWav;
@@ -249,18 +265,34 @@ internal sealed class VoiceLoop : IDisposable
         catch (Exception ex)
         {
             Console.WriteLine($"VoiceLoop: synthesis failed, resuming listening. {ex.Message}");
-            return;
+            return false;
         }
 
-        avatarOverlay.SetState(AvatarState.Talking);
-        audioPlayer.PlaybackCompleted += OnPlaybackCompletedOnce;
-        audioPlayer.Play(replyWav);
+        try
+        {
+            avatarOverlay.SetState(AvatarState.Talking);
+            audioPlayer.PlaybackCompleted += OnPlaybackCompletedOnce;
+            audioPlayer.Play(replyWav);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"VoiceLoop: playback failed to start, resuming listening. {ex.Message}");
+            audioPlayer.PlaybackCompleted -= OnPlaybackCompletedOnce;
+            avatarOverlay.SetState(AvatarState.Idle);
+            return false;
+        }
     }
 
     private void OnPlaybackCompletedOnce()
     {
         audioPlayer.PlaybackCompleted -= OnPlaybackCompletedOnce;
         avatarOverlay.SetState(AvatarState.Idle);
+        segmentInFlight = false;
+        // Frames captured while the reply was playing are still sitting in
+        // frameBuffer -- process them now instead of waiting for the next
+        // DataAvailable callback.
+        ProcessBufferedFrames();
     }
 
     private static byte[] BuildWavBytes(List<short> samples)
