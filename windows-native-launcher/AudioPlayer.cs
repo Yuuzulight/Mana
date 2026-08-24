@@ -13,6 +13,21 @@ internal sealed class AudioPlayer : IDisposable
     public event Action? PlaybackStarted;
     public event Action? PlaybackCompleted;
 
+    // Guards output/reader/stream against concurrent Play()/Stop() calls
+    // (e.g. VoiceLoop and a future barge-in detector touching this class
+    // from different threads).
+    private readonly object syncRoot = new();
+
+    // Bumped on every Stop() (including the one Play() does internally)
+    // so a PlaybackStopped callback that belongs to a clip we've already
+    // moved on from can tell it's stale and skip firing PlaybackCompleted.
+    // NAudio's WasapiOut.Stop() calls playThread.Join(), and can raise
+    // PlaybackStopped synchronously from that thread before returning --
+    // so field mutation happens under the lock, but Stop()/Dispose() calls
+    // on NAudio objects always happen AFTER releasing it, to avoid the
+    // handler deadlocking against a lock its own triggering call is holding.
+    private int generation;
+
     private WasapiOut? output;
     private WaveFileReader? reader;
     private MemoryStream? stream;
@@ -21,25 +36,50 @@ internal sealed class AudioPlayer : IDisposable
     {
         Stop();
 
-        stream = new MemoryStream(wavBytes);
-        reader = new WaveFileReader(stream);
-        output = new WasapiOut(AudioClientShareMode.Shared, latency: 100);
-        output.Init(reader);
-        output.PlaybackStopped += (_, _) => PlaybackCompleted?.Invoke();
+        lock (syncRoot)
+        {
+            stream = new MemoryStream(wavBytes);
+            reader = new WaveFileReader(stream);
+            var newOutput = new WasapiOut(AudioClientShareMode.Shared, latency: 100);
+            newOutput.Init(reader);
 
-        PlaybackStarted?.Invoke();
-        output.Play();
+            var myGeneration = ++generation;
+            newOutput.PlaybackStopped += (_, _) =>
+            {
+                lock (syncRoot)
+                {
+                    if (generation != myGeneration) return; // stale clip -- Stop()/Play() already moved on
+                }
+                PlaybackCompleted?.Invoke();
+            };
+
+            output = newOutput;
+            PlaybackStarted?.Invoke();
+            newOutput.Play();
+        }
     }
 
     public void Stop()
     {
-        output?.Stop();
-        output?.Dispose();
-        output = null;
-        reader?.Dispose();
-        reader = null;
-        stream?.Dispose();
-        stream = null;
+        WasapiOut? toStop;
+        WaveFileReader? toDisposeReader;
+        MemoryStream? toDisposeStream;
+
+        lock (syncRoot)
+        {
+            generation++; // invalidate any in-flight PlaybackStopped callback for the current clip
+            toStop = output;
+            toDisposeReader = reader;
+            toDisposeStream = stream;
+            output = null;
+            reader = null;
+            stream = null;
+        }
+
+        toStop?.Stop();
+        toStop?.Dispose();
+        toDisposeReader?.Dispose();
+        toDisposeStream?.Dispose();
     }
 
     public void Dispose() => Stop();
