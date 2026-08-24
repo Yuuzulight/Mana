@@ -155,6 +155,7 @@ const { buildToolPolicy } = require("./ai/tool-source");
 const { createMemoryToolSource } = require("./ai/memory-tool-source");
 const { createSessionSearchToolSource } = require("./ai/session-search-tool-source");
 const { createSkillToolSource } = require("./ai/skill-tool-source");
+const { createSnapshotToolSource } = require("./ai/snapshot-tool-source");
 const { createExpressionToolSource, isExpressionToolName } = require("./ai/expression-tool-source");
 const { createVisionToolSource } = require("./ai/vision-tool-source");
 const { createSessionGoalToolSource } = require("./ai/session-goal-tool-source");
@@ -4537,6 +4538,7 @@ function registerRoutes(app, upload, deps = {}) {
             }),
             createSessionSearchToolSource({ acpMemoryStore, sessionId }),
             createSkillToolSource({ approvalGate: activeApprovalGate, skillsStore: activeSkillsStore }),
+            createSnapshotToolSource({ approvalGate: activeApprovalGate, snapshotStore }),
             // Issue #253: lets Mana pick her own Live2D expression for this
             // reply, alongside (not instead of) reply-emotion.js's automatic
             // detection. No approvalGate/store needed -- see
