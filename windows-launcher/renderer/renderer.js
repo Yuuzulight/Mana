@@ -64,8 +64,15 @@ const presetCancelBtnEl = document.getElementById("presetCancelBtn");
 const { formatDoctorPanel } = require("./doctor-panel");
 const {
   DEFAULT_VISION_HOTKEY_PROMPT,
+  buildClipHotkeyPrompt,
   describeVisionHotkeyError,
 } = require("./vision-hotkey");
+const {
+  createClipBuffer,
+  pushFrame: pushClipFrame,
+  getSpanSeconds: getClipSpanSeconds,
+  getImages: getClipImages,
+} = require("./clip-buffer");
 const { createLive2dAvatar } = require("../avatar/live2d-avatar");
 const { createVrmAvatar } = require("../avatar/vrm-avatar");
 const { spectralCentroidHz, computeMfcc, classifyViseme } = require("../avatar/lip-sync");
@@ -231,6 +238,14 @@ const BARGE_IN_POLL_MS = 50;
 // that summarizes-and-discards each captured frame.
 const SCREEN_SENSING_ENABLED = process.env.MANA_SCREEN_SENSING_ENABLED === "1";
 const SCREEN_SENSING_INTERVAL_MS = Number(process.env.MANA_SCREEN_SENSING_INTERVAL_MS || 120000);
+// Issue #450: the clip-review hotkey's rolling frame buffer. Gated behind
+// the same SCREEN_SENSING_ENABLED toggle as the glance above -- both are
+// continuous background screen capture, the same privacy category, even
+// though this runs far more often (a raw capture kept in memory, never sent
+// anywhere until the hotkey fires, vs. the glance's periodic vision-model
+// call). 5 frames @ 3s apart, settled via a 100-agent vote (47% plurality)
+// over 30/50-agent runs that all converged on the same answer.
+const CLIP_BUFFER_INTERVAL_MS = Number(process.env.MANA_CLIP_BUFFER_INTERVAL_MS || 3000);
 // Issue #283: skip a glance entirely when nobody's been at the keyboard/
 // mouse recently, so an empty room doesn't spend a vision-model call for
 // nothing. Reuses powerMonitor's OS-level idle time (same signal Dream
@@ -1105,6 +1120,7 @@ refreshModelStatus();
 setInterval(refreshModelStatus, MODEL_STATUS_POLL_MS);
 if (SCREEN_SENSING_ENABLED) {
   setInterval(runScreenSensingGlance, SCREEN_SENSING_INTERVAL_MS);
+  setInterval(captureClipFrame, CLIP_BUFFER_INTERVAL_MS);
 }
 refreshPresetList();
 setSelectedPresetId(selectedPresetId);
@@ -2963,6 +2979,90 @@ async function handleVisionHotkey() {
   }
 }
 
+let clipBuffer = createClipBuffer();
+
+// Issue #450: silent background capture into the rolling clip buffer -- no
+// reply pipeline, no status text, just accumulate a frame. Unlike
+// runScreenSensingGlance, this doesn't skip during processing/reply/idle --
+// it's a cheap local screenshot with no model call, and skipping would
+// create gaps in the buffer at exactly the moments (mid-conversation about
+// something on screen) it would be most useful to have covered.
+async function captureClipFrame() {
+  try {
+    const image = await ipcRenderer.invoke("screen:capture-primary");
+    clipBuffer = pushClipFrame(clipBuffer, image, Date.now());
+  } catch (error) {
+    console.warn("Clip buffer capture failed:", error);
+  }
+}
+
+let clipHotkeyBusy = false;
+
+async function handleClipHotkey() {
+  if (clipHotkeyBusy) {
+    return;
+  }
+  clipHotkeyBusy = true;
+  processing = true;
+  // Pressing the hotkey is an explicit request, so it also wakes Mana.
+  awake = true;
+
+  try {
+    const images = getClipImages(clipBuffer);
+    if (!images.length) {
+      statusEl.textContent = "Mana hasn't captured anything yet -- try again in a few seconds.";
+      return;
+    }
+    const prompt = buildClipHotkeyPrompt(getClipSpanSeconds(clipBuffer));
+
+    statusEl.textContent = "Mana is reviewing what just happened...";
+    transcriptEl.textContent = "You: (clip hotkey)";
+    appendChatMessage("user", "(asked Mana what just happened)");
+
+    const result = await playStreamingReply(
+      {
+        text: prompt,
+        images,
+        modelProfile: selectedModelProfile,
+        sessionId: typeof ensureSessionId === "function" ? ensureSessionId() : undefined,
+        presetId: selectedPresetId || undefined,
+      },
+      undefined,
+      (finalEvent) => {
+        if (finalEvent.error) {
+          return;
+        }
+        const reply = finalEvent.reply || "";
+        replyEl.textContent = `Mana: ${reply}`;
+        appendChatMessage("mana", reply);
+        if (typeof refreshSessionList === "function") {
+          refreshSessionList();
+        }
+      },
+    );
+
+    // Same no-HTTP-level-error shape as the vision hotkey -- see its own
+    // comment above for why status codes are inferred from the message.
+    if (result.error) {
+      const status = result.error === "no local vision model available" ? 503 : 0;
+      statusEl.textContent = describeVisionHotkeyError(status, result.detail || result.error);
+      return;
+    }
+
+    statusEl.textContent = listening
+      ? awake
+        ? "Mana is awake..."
+        : "Waiting for Mana..."
+      : "Stopped";
+  } catch (error) {
+    console.warn("Clip hotkey failed:", error);
+    statusEl.textContent = describeVisionHotkeyError(0, error.message);
+  } finally {
+    processing = false;
+    clipHotkeyBusy = false;
+  }
+}
+
 // Typed chat: the composer bypasses the wake word (typing at Mana is an
 // explicit request) and otherwise uses the exact same reply pipeline.
 async function sendTypedMessage() {
@@ -3131,6 +3231,10 @@ researchCancelBtnEl?.addEventListener("click", async () => {
 
 ipcRenderer.on("vision:hotkey", () => {
   handleVisionHotkey();
+});
+
+ipcRenderer.on("clip:hotkey", () => {
+  handleClipHotkey();
 });
 
 // Issue #417: node-bot asks (over vision-capture-bridge.js's WebSocket,

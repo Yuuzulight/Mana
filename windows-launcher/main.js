@@ -85,6 +85,10 @@ const AVATAR_BOTTOM = Number(process.env.MANA_AVATAR_BOTTOM || 0);
 const AVATAR_TOP_LEVEL = process.env.MANA_AVATAR_TOP_LEVEL || "screen-saver";
 // Global "look at my screen" hotkey; set MANA_VISION_HOTKEY=off to disable.
 const VISION_HOTKEY = process.env.MANA_VISION_HOTKEY || "Control+Alt+M";
+// Issue #450: "what just happened?" hotkey -- sends the last few seconds of
+// screenshots from the renderer's rolling clip buffer instead of a single
+// frame. Set MANA_CLIP_HOTKEY=off to disable.
+const CLIP_HOTKEY = process.env.MANA_CLIP_HOTKEY || "Control+Alt+Shift+M";
 // Global hotkey that toggles the Mana chat window; set to off to disable.
 const WINDOW_HOTKEY = process.env.MANA_WINDOW_HOTKEY || "Control+Alt+Space";
 // Issue #219: interrupts Mana mid-speech (calls the renderer's existing
@@ -1260,6 +1264,7 @@ app.whenReady().then(() => {
   connectTrayNotifications();
   connectVisionCaptureBridge();
   registerVisionHotkey();
+  registerClipHotkey();
   registerWindowHotkey();
   registerInterruptHotkey();
   registerQuickEntryHotkey();
@@ -1462,6 +1467,32 @@ function registerVisionHotkey() {
     }
   } catch (error) {
     console.warn(`Vision hotkey registration failed: ${error.message}`);
+  }
+}
+
+function registerClipHotkey() {
+  const disabled =
+    !CLIP_HOTKEY || CLIP_HOTKEY === "0" || CLIP_HOTKEY.toLowerCase() === "off";
+  if (disabled) {
+    return;
+  }
+
+  try {
+    const registered = globalShortcut.register(CLIP_HOTKEY, () => {
+      // The renderer owns the buffer/reply/TTS flow; just poke it.
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send("clip:hotkey");
+      }
+    });
+    if (registered) {
+      console.log(`Clip hotkey registered: ${CLIP_HOTKEY}`);
+    } else {
+      console.warn(
+        `Clip hotkey ${CLIP_HOTKEY} could not be registered (already in use by another app?). Set MANA_CLIP_HOTKEY to change it.`,
+      );
+    }
+  } catch (error) {
+    console.warn(`Clip hotkey registration failed: ${error.message}`);
   }
 }
 

@@ -153,6 +153,33 @@ test("POST /reply/stream: an attached image routes through vision and emits chan
   });
 });
 
+test("POST /reply/stream: an attached images array (issue #450 clip hotkey) routes through vision with all frames", async () => {
+  const app = createApp({
+    getVisionStatus: () => ({ available: true }),
+    runVisionReply: async (prompt, images) => {
+      assert.equal(prompt, "Look back over the last 6 seconds and tell me what just happened. Answer briefly.");
+      assert.deepEqual(images, ["data:image/jpeg;base64,frame1", "data:image/jpeg;base64,frame2"]);
+      return "You just fell off a ledge.";
+    },
+    buildAssistantReply: async () => {
+      throw new Error("text reply path should not run for image replies");
+    },
+  });
+
+  await withServer(app, async (baseUrl) => {
+    const { response, events } = await postNdjson(baseUrl, "/reply/stream", {
+      text: "Look back over the last 6 seconds and tell me what just happened. Answer briefly.",
+      images: ["data:image/jpeg;base64,frame1", "data:image/jpeg;base64,frame2"],
+    });
+
+    assert.equal(response.status, 200);
+    assert.equal(events.length, 1);
+    assert.equal(events[0].type, "final");
+    assert.equal(events[0].reply, "You just fell off a ledge.");
+    assert.equal(events[0].changed, true);
+  });
+});
+
 test("POST /reply/stream: missing text emits a single final error event as ndjson", async () => {
   let replyCalls = 0;
   const app = createApp({

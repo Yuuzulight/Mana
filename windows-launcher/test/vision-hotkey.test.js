@@ -3,6 +3,7 @@ const test = require("node:test");
 
 const {
   DEFAULT_VISION_HOTKEY_PROMPT,
+  buildClipHotkeyPrompt,
   describeVisionHotkeyError,
   extractReplyErrorDetail,
 } = require("../renderer/vision-hotkey");
@@ -10,6 +11,42 @@ const {
 test("vision hotkey prompt asks for a brief screen description", () => {
   assert.match(DEFAULT_VISION_HOTKEY_PROMPT, /screen/i);
   assert.match(DEFAULT_VISION_HOTKEY_PROMPT, /briefly/i);
+});
+
+test("buildClipHotkeyPrompt states the real span, not a hardcoded target", () => {
+  assert.equal(
+    buildClipHotkeyPrompt(15),
+    "Look back over the last 15 seconds and tell me what just happened. Answer briefly.",
+  );
+  assert.equal(
+    buildClipHotkeyPrompt(6),
+    "Look back over the last 6 seconds and tell me what just happened. Answer briefly.",
+  );
+});
+
+test("buildClipHotkeyPrompt uses singular 'second' for a 1-second span", () => {
+  assert.equal(
+    buildClipHotkeyPrompt(1),
+    "Look back over the last 1 second and tell me what just happened. Answer briefly.",
+  );
+});
+
+test("buildClipHotkeyPrompt falls back to no numeric span for an empty/single-frame buffer", () => {
+  assert.equal(
+    buildClipHotkeyPrompt(0),
+    "Look back at what just happened and tell me. Answer briefly.",
+  );
+  assert.equal(
+    buildClipHotkeyPrompt(undefined),
+    "Look back at what just happened and tell me. Answer briefly.",
+  );
+});
+
+test("buildClipHotkeyPrompt rounds a fractional span to the nearest second", () => {
+  assert.equal(
+    buildClipHotkeyPrompt(6.4),
+    "Look back over the last 6 seconds and tell me what just happened. Answer briefly.",
+  );
 });
 
 test("503 maps to a missing-vision-model message with docs pointer", () => {

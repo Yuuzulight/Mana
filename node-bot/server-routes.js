@@ -355,7 +355,18 @@ function registerCoreRoutes(app, upload, deps) {
         typeof req.body?.image === "string" && req.body.image.trim()
           ? req.body.image.trim()
           : null;
-      const transcript = image
+      // Issue #450: the clip-review hotkey sends several frames at once
+      // instead of one -- runVisionReply already accepts an array, so this
+      // is just accepting the plural shape too. Falls back to the single
+      // `image` as a 1-item array when `images` isn't sent.
+      const images = Array.isArray(req.body?.images)
+        ? req.body.images
+            .filter((img) => typeof img === "string" && img.trim())
+            .map((img) => img.trim())
+        : image
+          ? [image]
+          : [];
+      const transcript = images.length
         ? optionalString(req.body?.text, "text", "")
         : requireString(req.body?.text, "text");
 
@@ -376,7 +387,7 @@ function registerCoreRoutes(app, upload, deps) {
         return res.end();
       }
 
-      if (image) {
+      if (images.length) {
         const sessionId = optionalString(req.body?.sessionId, "sessionId", null);
         if (typeof getVisionStatus === "function") {
           const vision = getVisionStatus();
@@ -389,7 +400,7 @@ function registerCoreRoutes(app, upload, deps) {
             return res.end();
           }
         }
-        const reply = await runVisionReply(transcript, [image]);
+        const reply = await runVisionReply(transcript, images);
         if (sessionId && typeof recordChatTurn === "function") {
           recordChatTurn(sessionId, transcript || "(shared an image)", reply);
         }
