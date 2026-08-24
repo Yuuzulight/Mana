@@ -1828,6 +1828,51 @@ test("buildServerArgs enables n-gram speculative decoding, defaulting to ngram-s
   assert.equal(args[idx + 1], "ngram-simple");
 });
 
+// Issue #370: per-profile tuning defaults (n-gram spec-decode for "coding").
+test("buildServerArgs enables n-gram speculative decoding by default for the coding profile, no env var needed", () => {
+  const runtime = createLlamaServerRuntime({
+    env: makeFakeEnv(),
+    fs: makeFakeFs(),
+    registerExitHandlers: false,
+  });
+  const args = runtime.buildServerArgs("C:\\models\\mana.gguf", 8090, null, "coding");
+  const idx = args.indexOf("--spec-type");
+  assert.ok(idx !== -1);
+  assert.equal(args[idx + 1], "ngram-simple");
+});
+
+test("buildServerArgs leaves n-gram speculative decoding off by default for non-coding profiles", () => {
+  for (const profile of ["default", "fast", "quality", null, undefined]) {
+    const runtime = createLlamaServerRuntime({
+      env: makeFakeEnv(),
+      fs: makeFakeFs(),
+      registerExitHandlers: false,
+    });
+    const args = runtime.buildServerArgs("C:\\models\\mana.gguf", 8090, null, profile);
+    assert.equal(args.includes("--spec-type"), false, `profile ${profile} should not enable the gate`);
+  }
+});
+
+test("buildServerArgs: LLAMA_ENABLE_SPEC_NGRAM=0 overrides the coding profile's default-on", () => {
+  const runtime = createLlamaServerRuntime({
+    env: { ...makeFakeEnv(), LLAMA_ENABLE_SPEC_NGRAM: "0" },
+    fs: makeFakeFs(),
+    registerExitHandlers: false,
+  });
+  const args = runtime.buildServerArgs("C:\\models\\mana.gguf", 8090, null, "coding");
+  assert.equal(args.includes("--spec-type"), false);
+});
+
+test("buildServerArgs: LLAMA_ENABLE_SPEC_NGRAM=1 turns n-gram spec-decode on for non-coding profiles too", () => {
+  const runtime = createLlamaServerRuntime({
+    env: { ...makeFakeEnv(), LLAMA_ENABLE_SPEC_NGRAM: "1" },
+    fs: makeFakeFs(),
+    registerExitHandlers: false,
+  });
+  const args = runtime.buildServerArgs("C:\\models\\mana.gguf", 8090, null, "default");
+  assert.ok(args.includes("--spec-type"));
+});
+
 test("buildServerArgs lets LLAMA_SPEC_NGRAM_TYPE override which n-gram variant is used", () => {
   const runtime = createLlamaServerRuntime({
     env: {
