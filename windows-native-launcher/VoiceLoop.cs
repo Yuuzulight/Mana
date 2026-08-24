@@ -21,12 +21,20 @@ internal sealed class VoiceLoop : IDisposable
     private readonly AvatarOverlayForm avatarOverlay;
 
     private WasapiCapture? capture;
+    private BufferedWaveProvider? captureBuffer;
     private ISampleProvider? resampled;
     private readonly List<float> frameBuffer = new();
     private readonly List<short> segmentSamples = new();
 
+    // A 512-sample frame at 16kHz is always exactly this many ms of audio
+    // -- a fixed property of the frame size, not something to measure via
+    // wall-clock deltas between frame-processing calls (which would be
+    // wrong: those calls aren't evenly spaced, especially around a turn
+    // in flight).
+    private const long FrameMs = SileroVadRunner.FrameSamples * 1000 / SileroVadRunner.SampleRate;
+
     // Guards frameBuffer, segmentSamples, hasHeardSpeechInSegment,
-    // segmentElapsedMs, msSinceLastSpeech, lastFrameAt, segmentInFlight, and
+    // segmentElapsedMs, msSinceLastSpeech, segmentInFlight, and
     // the vad instance itself (SileroVadRunner mutates its own internal
     // state per ProcessFrame/Reset call, so it isn't thread-safe either).
     // OnDataAvailable fires on NAudio's WASAPI capture thread;
@@ -37,15 +45,20 @@ internal sealed class VoiceLoop : IDisposable
     // this lock itself before touching guarded state; ProcessBufferedFrames
     // and ResetSegment assume the caller already holds it and never lock
     // internally, so they're safe to call from any entry point without
-    // double-locking or deadlocking. Never hold this lock across an await
-    // or across the fire-and-forget HandleSegmentClosedAsync() dispatch.
+    // double-locking or deadlocking. The real invariant: this lock is
+    // never held across an await suspension. It IS correctly held across
+    // the synchronous prefix of the fire-and-forget HandleSegmentClosedAsync()
+    // dispatch -- that prefix runs on the same thread as the caller, and
+    // C#'s lock is reentrant on the owning thread, so calling into it
+    // while already holding the lock is fine. It's only the actual await
+    // suspension inside that method that must (and does) happen outside
+    // the lock.
     private readonly object stateLock = new();
 
     private bool awake;
     private bool hasHeardSpeechInSegment;
     private long segmentElapsedMs;
     private long msSinceLastSpeech;
-    private DateTime lastFrameAt;
     private bool segmentInFlight;
 
     public VoiceLoop(
@@ -63,21 +76,31 @@ internal sealed class VoiceLoop : IDisposable
     public void Start()
     {
         capture = new WasapiCapture();
-        var waveInProvider = new WaveInProvider(capture);
+        // WaveInProvider's underlying BufferedWaveProvider defaults to
+        // ReadFully = true ("always read the amount of data requested,
+        // padding with zeroes if necessary"), which would make the read
+        // loop in OnDataAvailable below spin forever instead of draining
+        // only what's actually been captured. Build our own
+        // BufferedWaveProvider with ReadFully = false instead, fed
+        // manually from OnDataAvailable.
+        captureBuffer = new BufferedWaveProvider(capture.WaveFormat)
+        {
+            ReadFully = false,
+            DiscardOnBufferOverflow = true,
+        };
         // WASAPI shared-mode capture returns the device's own mix format
         // (typically 44.1kHz or 48kHz), not an arbitrarily requested rate
         // -- resample to 16kHz mono here so both the VAD frames below and
         // the WAV eventually sent to /transcribe-only match Silero VAD's
         // fixed contract and Whisper's tested input format.
         var resampler = new MediaFoundationResampler(
-            waveInProvider,
+            captureBuffer,
             new WaveFormat(SileroVadRunner.SampleRate, 16, 1))
         {
             ResamplerQuality = 60,
         };
         resampled = resampler.ToSampleProvider();
 
-        lastFrameAt = DateTime.UtcNow;
         capture.DataAvailable += OnDataAvailable;
         capture.StartRecording();
     }
@@ -94,19 +117,22 @@ internal sealed class VoiceLoop : IDisposable
         capture.Dispose();
         capture = null;
         resampled = null;
+        captureBuffer = null;
     }
 
     public void Dispose() => Stop();
 
     private void OnDataAvailable(object? sender, WaveInEventArgs e)
     {
-        if (resampled is null)
+        if (resampled is null || captureBuffer is null)
         {
             return;
         }
 
         lock (stateLock)
         {
+            captureBuffer.AddSamples(e.Buffer, 0, e.BytesRecorded);
+
             var scratch = new float[4096];
             int samplesRead;
             while ((samplesRead = resampled.Read(scratch, 0, scratch.Length)) > 0)
@@ -142,10 +168,7 @@ internal sealed class VoiceLoop : IDisposable
             var probability = vad.ProcessFrame(frame);
             var isSpeech = vad.IsSpeech(probability);
 
-            var now = DateTime.UtcNow;
-            var frameMs = (long)(now - lastFrameAt).TotalMilliseconds;
-            lastFrameAt = now;
-            segmentElapsedMs += frameMs;
+            segmentElapsedMs += FrameMs;
 
             foreach (var sample in frame)
             {
@@ -160,7 +183,7 @@ internal sealed class VoiceLoop : IDisposable
             }
             else
             {
-                msSinceLastSpeech += frameMs;
+                msSinceLastSpeech += FrameMs;
             }
 
             var stopReason = RecordingSegmenter.ShouldStopRecording(
@@ -228,9 +251,18 @@ internal sealed class VoiceLoop : IDisposable
                 lock (stateLock)
                 {
                     segmentInFlight = false;
-                    // Frames captured while the turn was in flight are still
-                    // sitting in frameBuffer -- process them now instead of
-                    // waiting for the next DataAvailable callback.
+                    // Deliberately discard audio buffered during the turn
+                    // rather than replaying it as a fresh segment -- a
+                    // transcribe+reply+synthesize round trip can take
+                    // 10-20s, and playing that backlog back through VAD
+                    // would risk the mic picking up Mana's own TTS output
+                    // as if it were new speech (self-triggered reply
+                    // loop). This matches the Electron app, which isn't
+                    // recording at all during playback. Sub-project 3
+                    // (barge-in, not part of this plan) will need to
+                    // replace this with real handling of turn-time audio
+                    // -- don't assume this clear is accidental.
+                    frameBuffer.Clear();
                     ProcessBufferedFrames();
                 }
             }
@@ -327,9 +359,12 @@ internal sealed class VoiceLoop : IDisposable
         lock (stateLock)
         {
             segmentInFlight = false;
-            // Frames captured while the reply was playing are still sitting
-            // in frameBuffer -- process them now instead of waiting for the
-            // next DataAvailable callback.
+            // Deliberately discard audio buffered while the reply was
+            // playing rather than replaying it as a fresh segment -- see
+            // the matching comment in HandleSegmentClosedAsync's finally
+            // block for why (mic picking up Mana's own TTS output).
+            // Sub-project 3 (barge-in) will need different handling here.
+            frameBuffer.Clear();
             ProcessBufferedFrames();
         }
     }

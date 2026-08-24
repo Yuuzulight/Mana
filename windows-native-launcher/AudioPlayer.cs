@@ -10,7 +10,6 @@ namespace Mana.NativeLauncher;
 // job) -- deliberately the thinnest possible wrapper.
 internal sealed class AudioPlayer : IDisposable
 {
-    public event Action? PlaybackStarted;
     public event Action? PlaybackCompleted;
 
     // Guards output/reader/stream against concurrent Play()/Stop() calls
@@ -54,7 +53,6 @@ internal sealed class AudioPlayer : IDisposable
             };
 
             output = newOutput;
-            PlaybackStarted?.Invoke();
             newOutput.Play();
         }
     }

@@ -17,7 +17,8 @@
     <MakeDir Directories="$(SileroVadModelDir)" Condition="!Exists('$(SileroVadModelDir)')" />
     <Exec
       Command="powershell -NoProfile -ExecutionPolicy Bypass -Command &quot;Invoke-WebRequest -Uri '$(SileroVadModelUrl)' -OutFile '$(SileroVadModelPath)' -UserAgent 'mana-fetch-silero-vad'&quot;"
-      Condition="!Exists('$(SileroVadModelPath)')" />
+      Condition="!Exists('$(SileroVadModelPath)')"
+      ContinueOnError="WarnAndContinue" />
   </Target>
 
   <ItemGroup>

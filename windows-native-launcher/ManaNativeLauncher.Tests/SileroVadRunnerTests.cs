@@ -12,33 +12,23 @@ public class SileroVadRunnerTests
     // Skips gracefully rather than failing CI elsewhere, matching
     // node-bot/test/transcribe-partial-real-whisper.test.js's own
     // pattern for a similarly-optional large binary dependency.
-    private static readonly string ModelPath = Path.Combine(
+    internal static readonly string ModelPath = Path.Combine(
         AppContext.BaseDirectory, "..", "..", "..", "..", "assets", "vad", "silero_vad.onnx");
 
-    private static bool ModelAvailable => File.Exists(ModelPath) && new FileInfo(ModelPath).Length > 0;
+    internal static bool ModelAvailable => File.Exists(ModelPath) && new FileInfo(ModelPath).Length > 0;
 
-    [Fact]
+    [SkippableFact]
     public void ProcessFrame_ThrowsOnWrongFrameLength()
     {
-        if (!ModelAvailable)
-        {
-            return;
-        }
-
         using var vad = new SileroVadRunner(ModelPath);
         var wrongSizeFrame = new float[SileroVadRunner.FrameSamples - 1];
 
         Assert.Throws<ArgumentException>(() => vad.ProcessFrame(wrongSizeFrame));
     }
 
-    [Fact]
+    [SkippableFact]
     public void ProcessFrame_SilenceProducesLowProbability()
     {
-        if (!ModelAvailable)
-        {
-            return;
-        }
-
         using var vad = new SileroVadRunner(ModelPath);
         var silence = new float[SileroVadRunner.FrameSamples];
 
@@ -53,14 +43,9 @@ public class SileroVadRunnerTests
         Assert.False(vad.IsSpeech(probability));
     }
 
-    [Fact]
+    [SkippableFact]
     public void Reset_ClearsRecurrentStateAndContext()
     {
-        if (!ModelAvailable)
-        {
-            return;
-        }
-
         using var vad = new SileroVadRunner(ModelPath);
         var loudFrame = new float[SileroVadRunner.FrameSamples];
         Array.Fill(loudFrame, 0.5f);
