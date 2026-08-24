@@ -669,3 +669,100 @@ test("run_tests: a timeout rejection does consume a retry attempt", async () => 
   assert.equal(exhausted.results[0].status, "retry_exhausted");
   resetSessionTestRetryCounts("run-tests-timeout");
 });
+
+test("acp-autonomous-loop: snapshot_restore is rejected end to end when the approval is denied", async () => {
+  const origRequire = process.env.SNAPSHOT_RESTORE_REQUIRE_APPROVAL;
+  const origApprovalDir = process.env.MANA_PENDING_WRITES_DIR;
+  const os = require("os");
+  const tmpApprovalDir = fs.mkdtempSync(path.join(os.tmpdir(), "mana-snapshot-restore-approval-"));
+  try {
+    process.env.SNAPSHOT_RESTORE_REQUIRE_APPROVAL = "1";
+    process.env.MANA_PENDING_WRITES_DIR = tmpApprovalDir;
+
+    const record = { id: "snap-1", kind: "file", key: "a.txt", scope: "/repo", summary: "first write", appliedAt: "t1", source: "agent" };
+    const fakeSnapshotStore = {
+      getSnapshot: (id) => (id === "snap-1" ? record : null),
+      checkStale: () => ({ stale: false }),
+      restoreSnapshot: async () => {
+        throw new Error("must not restore before approval resolves");
+      },
+    };
+
+    const mockModelReply = 'Restore it:\n[{"tool":"snapshot_restore","args":{"id":"snap-1"}}]';
+    const stepPromise = executeAutonomousStep(mockModelReply, "test-session", { snapshotStore: fakeSnapshotStore });
+
+    // Simulate a human rejecting it, the same way the file_write approval
+    // tests would if they exercised this path (they don't -- see the
+    // makeApprovalId bug noted separately). Poll briefly for the pending
+    // file to appear, then write the rejection marker next to it.
+    let pendingFile = null;
+    for (let i = 0; i < 50 && !pendingFile; i++) {
+      const files = fs.readdirSync(tmpApprovalDir).filter((f) => f.endsWith(".json") && !f.includes(".rejected.") && !f.includes(".approved."));
+      if (files.length) pendingFile = files[0];
+      else await new Promise((r) => setTimeout(r, 20));
+    }
+    assert.ok(pendingFile, "expected a pending snapshot-restore request file");
+    const id = pendingFile.replace(/\.json$/, "");
+    fs.writeFileSync(
+      path.join(tmpApprovalDir, `${id}.rejected.json`),
+      JSON.stringify({ approver: "test", reason: "not now" }),
+      "utf8",
+    );
+
+    const res = await stepPromise;
+    assert.equal(res.results[0].tool, "snapshot_restore");
+    assert.equal(res.results[0].status, "rejected");
+  } finally {
+    process.env.SNAPSHOT_RESTORE_REQUIRE_APPROVAL = origRequire;
+    process.env.MANA_PENDING_WRITES_DIR = origApprovalDir;
+    fs.rmSync(tmpApprovalDir, { recursive: true, force: true });
+  }
+});
+
+test("acp-autonomous-loop: snapshot_restore proceeds immediately when args.approved is true, skipping the approval wait", async () => {
+  const origRequire = process.env.SNAPSHOT_RESTORE_REQUIRE_APPROVAL;
+  try {
+    process.env.SNAPSHOT_RESTORE_REQUIRE_APPROVAL = "1";
+
+    const record = { id: "snap-2", kind: "skill", key: "x.md", scope: null, summary: "skill update: X", appliedAt: "t1", source: "human" };
+    const restoreCalls = [];
+    const fakeSnapshotStore = {
+      getSnapshot: (id) => (id === "snap-2" ? record : null),
+      checkStale: () => ({ stale: false }),
+      restoreSnapshot: async (id, opts) => {
+        restoreCalls.push({ id, opts });
+        return { restored: true };
+      },
+    };
+
+    const mockModelReply = 'Restore it:\n[{"tool":"snapshot_restore","args":{"id":"snap-2","approved":true}}]';
+    const res = await executeAutonomousStep(mockModelReply, "test-session", { snapshotStore: fakeSnapshotStore });
+
+    assert.equal(res.results[0].status, "ok");
+    assert.deepEqual(restoreCalls, [{ id: "snap-2", opts: { confirmStale: true } }]);
+  } finally {
+    process.env.SNAPSHOT_RESTORE_REQUIRE_APPROVAL = origRequire;
+  }
+});
+
+test("acp-autonomous-loop: snapshot_restore reports an error for an unknown snapshot id, without creating a pending request", async () => {
+  const origRequire = process.env.SNAPSHOT_RESTORE_REQUIRE_APPROVAL;
+  try {
+    process.env.SNAPSHOT_RESTORE_REQUIRE_APPROVAL = "1";
+    const fakeSnapshotStore = {
+      getSnapshot: () => null,
+      checkStale: () => null,
+      restoreSnapshot: async () => {
+        throw new Error("must not be called");
+      },
+    };
+
+    const mockModelReply = 'Restore it:\n[{"tool":"snapshot_restore","args":{"id":"nope"}}]';
+    const res = await executeAutonomousStep(mockModelReply, "test-session", { snapshotStore: fakeSnapshotStore });
+
+    assert.equal(res.results[0].status, "error");
+    assert.equal(res.results[0].detail, "snapshot_not_found");
+  } finally {
+    process.env.SNAPSHOT_RESTORE_REQUIRE_APPROVAL = origRequire;
+  }
+});

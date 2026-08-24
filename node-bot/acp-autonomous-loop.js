@@ -1,10 +1,12 @@
 const axios = require("axios");
+const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
 const { safeJsonParse } = require("./utils/json-extract");
 const { scanDir } = require("./tools/dir_scanner");
 const { createAcpTestRunner } = require("./acp-test-runner");
 const { createSnapshotStore } = require("./snapshot-store");
+const { previewRestore } = require("./ai/snapshot-tool-source");
 const {
   createScratchWorkspaceCopy,
   removeScratchWorkspaceCopy,
@@ -84,6 +86,14 @@ async function createPendingRequest(id, payload) {
     encoding: "utf8",
   });
   return filePath;
+}
+
+// This file's own file_write case calls a makeApprovalId() that doesn't
+// exist anywhere in the codebase -- a separate, pre-existing bug, tracked
+// on its own, not fixed by this plan. snapshot_restore gets its own
+// self-contained generator rather than depending on that broken one.
+function makeSnapshotRestoreApprovalId() {
+  return `snapshot-restore-${crypto.randomBytes(4).toString("hex")}`;
 }
 
 function approvalPaths(id) {
@@ -754,6 +764,88 @@ async function executeAutonomousStep(rawModelReply, sessionId, options = {}) {
         }
       }
 
+      continue;
+    }
+
+    // Mirrors file_write's approval shape exactly:
+    // createPendingRequest/waitForApprovalResult/archivePendingRequest, gated
+    // by an env-var-controlled require-approval flag --
+    // SNAPSHOT_RESTORE_REQUIRE_APPROVAL instead of FILE_WRITE_REQUIRE_APPROVAL,
+    // so the two are independently tunable. Never auto-decided beyond the
+    // same args.approved === true escape hatch file_write already offers
+    // its own caller.
+    if (tool === "snapshot_restore") {
+      const id = args && args.id ? String(args.id) : null;
+      if (!id) {
+        results.push({ tool: "snapshot_restore", status: "error", detail: "missing_id" });
+        continue;
+      }
+
+      const preview = previewRestore(snapshotStore, id);
+      if (!preview) {
+        results.push({ tool: "snapshot_restore", status: "error", detail: "snapshot_not_found" });
+        continue;
+      }
+
+      const requireApproval = (process.env.SNAPSHOT_RESTORE_REQUIRE_APPROVAL || "1") !== "0";
+      let approvalId = null;
+      let approvalPayload = null;
+      if (requireApproval && !(args && args.approved === true)) {
+        approvalId = makeSnapshotRestoreApprovalId();
+        approvalPayload = {
+          id: approvalId,
+          snapshotId: id,
+          kind: preview.record.kind,
+          key: preview.record.key,
+          summary: preview.summary,
+          stale: Boolean(preview.staleness && preview.staleness.stale),
+          sessionId: sessionId || null,
+          createdAt: new Date().toISOString(),
+        };
+        try {
+          await createPendingRequest(approvalId, approvalPayload);
+          console.error(`  ⏳ snapshot_restore pending approval id=${approvalId} snapshotId=${id}`);
+          const appr = await waitForApprovalResult(approvalId);
+          if (!appr.approved) {
+            try {
+              await archivePendingRequest(approvalId, "rejected", appr.meta, approvalPayload);
+            } catch (e) {}
+            results.push({
+              tool: "snapshot_restore",
+              status: "rejected",
+              detail: appr.timeout ? "approval_timeout" : (appr.meta && appr.meta.reason) || "rejected",
+            });
+            continue;
+          }
+          console.error(`  ✅ snapshot_restore approved id=${approvalId} by ${appr.meta?.approver || "unknown"}`);
+        } catch (e) {
+          results.push({ tool: "snapshot_restore", status: "error", detail: "approval_error:" + String(e.message || e) });
+          continue;
+        }
+      }
+
+      try {
+        // confirmStale: true -- staleness (if any) was already carried in the
+        // pending-request payload above and shown to whoever approved it,
+        // exactly like Pipeline A's tool source; approval here IS the
+        // confirm-anyway decision.
+        const result = await snapshotStore.restoreSnapshot(id, { confirmStale: true });
+        results.push({ tool: "snapshot_restore", status: "ok", result });
+        if (approvalId) {
+          try {
+            await archivePendingRequest(approvalId, "approved", null, approvalPayload);
+          } catch (e) {
+            console.warn("archiving pending request failed", e?.message || e);
+          }
+        }
+      } catch (err) {
+        results.push({ tool: "snapshot_restore", status: "error", detail: err.message });
+        if (approvalId) {
+          try {
+            await archivePendingRequest(approvalId, "error", { error: String(err.message) }, approvalPayload);
+          } catch (e) {}
+        }
+      }
       continue;
     }
 
