@@ -137,6 +137,7 @@ const { readGgufMetadata } = require("./tools/gguf-metadata");
 	const screenSensingPlugin = require("../plugins/screen-sensing");
 const { createTtsRuntime } = require("./tts-runtime");
 const { createAcpMemoryStore } = require("./acp-memory-store");
+const { createSnapshotStore } = require("./snapshot-store");
 const { createSessionSearchIndex } = require("./session-search-index");
 const { createMemoryGraph } = require("./memory-graph");
 const { createSkillProposalRunner } = require("./skill-proposal");
@@ -490,8 +491,16 @@ const sessionSearchIndex = createSessionSearchIndex();
 // gracefully to today's behavior on any failure.
 const memoryGraph = createMemoryGraph();
 
+// #426 sub-project 1: one shared snapshot/rollback store, threaded into
+// every subsystem below that owns undoable state (memory sessions/facts
+// here, skills a bit further down, editor file-edits via
+// getEditorIntegrations) -- one store means one place to eventually list
+// "everything that's undoable right now", not three disconnected pools.
+const snapshotStore = createSnapshotStore({});
+
 // ACP memory store (conversation/session memory)
 const acpMemoryStore = createAcpMemoryStore({
+  snapshotStore,
   sessionSearchIndex,
   memoryGraph,
   // Issue #263 part 1: same computeEmbeddings the coding-mode/Deep Research
@@ -611,7 +620,7 @@ const presetsStore = createPresetsStore({});
 const personalityStore = createPersonalityStore({});
 
 // Procedural-memory skills store (see skills-store.js, issue #140)
-const skillsStore = createSkillsStore({});
+const skillsStore = createSkillsStore({ snapshotStore });
 
 // Approval gate for agent-authored content -- skill writes today, whatever
 // #142's script-runner gets wired into next (see approval-gate.js, #152).
@@ -1905,7 +1914,7 @@ function registerRoutes(app, upload, deps = {}) {
   const mobileMemoryStore = deps.mobileMemoryStore || createMobileMemoryStore();
   function getEditorIntegrations() {
     if (!editorIntegrations) {
-      editorIntegrations = createEditorIntegrations();
+      editorIntegrations = createEditorIntegrations({ snapshotStore });
     }
     return editorIntegrations;
   }
