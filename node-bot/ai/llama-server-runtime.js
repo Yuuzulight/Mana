@@ -414,7 +414,36 @@ function createLlamaServerRuntime(options = {}) {
     return { ...env, GGML_CUDA_ENABLE_UNIFIED_MEMORY: "1" };
   }
 
-  function buildServerArgs(model, port, mmproj = null) {
+  // Issue #370: the flags that actually govern throughput/memory (flash-attn,
+  // KV-quant, speculative decoding) were process-global, so a conclusion for
+  // one profile silently applied to all of them regardless of fit. This
+  // table gives per-profile overrides a home, the same way profile selection
+  // itself is already hardware-aware. Only entries #332 actually measured a
+  // real difference for are populated -- the rest stay `{}` deliberately
+  // (documented "nothing special, and why") rather than guessed at.
+  //
+  // A profile entry only overrides the *default* an unset env var falls
+  // back to -- LLAMA_ENABLE_SPEC_NGRAM=0/1 always wins regardless of
+  // profile, preserving the "env vars are an explicit override" guarantee
+  // this file's other flags already have.
+  const PROFILE_TUNING = {
+    // #332 measured n-gram speculative decoding as a free +81% win
+    // (193->350 tok/s) on repetitive/structured output -- code blocks and
+    // tool-call JSON, exactly what the coding profile mostly produces --
+    // with no measurable difference (or downside) on conversational prose.
+    coding: { enableSpecNgram: true },
+    // No profile-specific win measured yet for these: flash-attn already
+    // resolves to enabled via `auto` on this hardware regardless of profile,
+    // and KV-cache quantization was a wash at Mana's current 4096-token
+    // context cap for every profile tested (see #332's findings) -- revisit
+    // if the context cap is ever raised significantly, since KV savings
+    // scale with context length.
+    default: {},
+    fast: {},
+    quality: {},
+  };
+
+  function buildServerArgs(model, port, mmproj = null, profile = null) {
     const args = [
       isLocalModelSpec(model, fs) ? "-m" : "-hf",
       model,
@@ -439,6 +468,19 @@ function createLlamaServerRuntime(options = {}) {
       ? String(env.MANA_LLAMA_REASONING).toLowerCase()
       : "off";
     args.push("--reasoning", reasoning);
+
+    // Issue #360: every profile switch kills and respawns this whole
+    // process (see startServer below), so a return to a previously-active
+    // model relies entirely on the OS page cache (mmap is llama.cpp's
+    // default) to avoid a genuine cold disk read -- fine most of the time,
+    // but those cached pages can be evicted under memory pressure from
+    // anything else running, showing up as an occasional slow p95 switch.
+    // --mlock pins the model in physical RAM so a switch back is always
+    // fast, at the real cost of denying that RAM back to the OS even when
+    // something else (a game) needs it -- opt-in only, never a default.
+    if (env.LLAMA_MLOCK === "1") {
+      args.push("--mlock");
+    }
 
     // Same opt-in hardware flags as the llama-cli path.
     if (env.LLAMA_ENABLE_FLASHATTN === "1") {
@@ -486,7 +528,14 @@ function createLlamaServerRuntime(options = {}) {
     // 5x regression from an unrelated default.
     const ngl = env.LLAMA_NGL || "99";
     const specTypes = [];
-    if (env.LLAMA_ENABLE_SPEC_NGRAM === "1") {
+    const profileDefaults = PROFILE_TUNING[profile] || {};
+    const specNgramEnabled =
+      env.LLAMA_ENABLE_SPEC_NGRAM === "1"
+        ? true
+        : env.LLAMA_ENABLE_SPEC_NGRAM === "0"
+          ? false
+          : Boolean(profileDefaults.enableSpecNgram);
+    if (specNgramEnabled) {
       specTypes.push(env.LLAMA_SPEC_NGRAM_TYPE || "ngram-simple");
     }
     if (env.LLAMA_SPEC_DRAFT_MODEL) {
@@ -501,15 +550,28 @@ function createLlamaServerRuntime(options = {}) {
     if (ngl) {
       args.push("-ngl", String(ngl));
     }
-    const contextCap = env.LLAMA_CONTEXT || env.LLAMA_CONTEXT_CAP || "4096";
-    if (contextCap) {
+    const contextCap = Number(env.LLAMA_CONTEXT || env.LLAMA_CONTEXT_CAP || "4096");
+
+    // Issue #462: opt-in real concurrency, now that the 16GB card leaves
+    // room for it (was rejected on the prior 8GB card -- see
+    // docs/roadmap/issue-70-best-of-n.md). llama.cpp divides a single -c
+    // budget evenly across slots, so a bare --parallel N would silently
+    // shrink every request's context to 1/N of today's value; multiplying
+    // -c by N here keeps each slot's effective context unchanged from the
+    // single-slot default, matching this file's existing convention of a
+    // flag never changing behavior unless explicitly opted into.
+    const parallel = Number(env.LLAMA_PARALLEL || "1");
+    if (parallel > 1) {
+      args.push("--parallel", String(parallel));
+      args.push("-c", String(contextCap * parallel));
+    } else if (contextCap) {
       args.push("-c", String(contextCap));
     }
 
     return args;
   }
 
-  async function startServer(model, mmproj = null) {
+  async function startServer(model, mmproj = null, profile = null) {
     const bin = findLlamaServerBin();
     const port = serverPort();
 
@@ -534,7 +596,7 @@ function createLlamaServerRuntime(options = {}) {
       );
     }
 
-    const args = buildServerArgs(model, port, mmproj);
+    const args = buildServerArgs(model, port, mmproj, profile);
     console.log("Starting llama-server:", bin, args.join(" "));
     const child = spawn(bin, args, {
       // bin always names a Windows llama-server.exe -- path.win32 so this
@@ -599,7 +661,15 @@ function createLlamaServerRuntime(options = {}) {
     );
   }
 
-  async function ensureServerConfig(model, mmproj = null) {
+  // profile only affects which flags a *new* start gets (see PROFILE_TUNING
+  // above) -- if the same model+mmproj is already running and healthy, that
+  // process keeps whatever flags it started with, even if called again
+  // under a different profile label. This only matters when two profiles'
+  // fallback lists resolve to the same actual file (rare; today's coding
+  // profile's own primary model is distinct from the others'), and forcing
+  // a restart on a profile-label-only change would undo the "don't restart
+  // for no reason" debounce/adoption logic below for a cosmetic difference.
+  async function ensureServerConfig(model, mmproj = null, profile = null) {
     // After a failed start (missing binary, port conflict, out of memory),
     // don't re-pay the startup wait on every reply; let the llama-cli
     // fallback serve until the cooldown expires.
@@ -660,7 +730,7 @@ function createLlamaServerRuntime(options = {}) {
       await stopAndWait();
     }
 
-    state.starting = startServer(model, mmproj);
+    state.starting = startServer(model, mmproj, profile);
     try {
       await state.starting;
       state.lastStartFailureAt = 0;
@@ -686,7 +756,7 @@ function createLlamaServerRuntime(options = {}) {
   }
 
   async function ensureServer(profile) {
-    return ensureServerConfig(findLlamaModel(profile), null);
+    return ensureServerConfig(findLlamaModel(profile), null, profile);
   }
 
   // Issue #282: splices caller-supplied memory entries into the message
