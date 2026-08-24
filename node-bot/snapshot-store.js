@@ -97,6 +97,7 @@ function createSnapshotStore(options = {}) {
             scope: record.scope,
             summary: record.summary,
             appliedAt: record.appliedAt,
+            source: record.source ?? null,
           };
         } catch (e) {
           return null;
@@ -138,7 +139,7 @@ function createSnapshotStore(options = {}) {
     }
   }
 
-  function recordSnapshot({ kind, key, scope, payload, summary } = {}) {
+  function recordSnapshot({ kind, key, scope, payload, summary, source } = {}) {
     if (!kind) {
       throw new Error("kind is required");
     }
@@ -152,6 +153,7 @@ function createSnapshotStore(options = {}) {
       payload,
       summary: summary || "",
       appliedAt: now(),
+      source: source ?? null,
     };
     writeJsonAtomic(snapshotPath(id), record);
     pruneOldest(kind);
@@ -162,6 +164,7 @@ function createSnapshotStore(options = {}) {
       scope: record.scope,
       summary: record.summary,
       appliedAt: record.appliedAt,
+      source: record.source,
     };
   }
 

@@ -227,3 +227,46 @@ test("a throwing restorer leaves the snapshot in place for a retry rather than d
   assert.deepEqual(result, { ok: true });
   assert.equal(store.getSnapshot("snap-retry-1"), null);
 });
+
+test("recordSnapshot stores and returns the source field; listSnapshots includes it", () => {
+  const store = createSnapshotStore({
+    dataDir: createTempDir(),
+    now: () => "2026-08-25T00:00:00.000Z",
+    idFactory: () => "snap-src-1",
+  });
+
+  const recorded = store.recordSnapshot({
+    kind: "file",
+    key: "a.txt",
+    scope: "/repo",
+    payload: "content",
+    summary: "test write",
+    source: "human",
+  });
+  assert.equal(recorded.source, "human");
+
+  const [listed] = store.listSnapshots("file");
+  assert.equal(listed.source, "human");
+
+  const full = store.getSnapshot("snap-src-1");
+  assert.equal(full.source, "human");
+});
+
+test("recordSnapshot without a source stays null -- backward compatible with pre-#475 snapshots", () => {
+  const store = createSnapshotStore({
+    dataDir: createTempDir(),
+    now: () => "2026-08-25T00:00:00.000Z",
+    idFactory: () => "snap-src-2",
+  });
+
+  const recorded = store.recordSnapshot({
+    kind: "skill",
+    key: "x.md",
+    payload: "body",
+    summary: "no source given",
+  });
+  assert.equal(recorded.source, null);
+
+  const [listed] = store.listSnapshots("skill");
+  assert.equal(listed.source, null);
+});
