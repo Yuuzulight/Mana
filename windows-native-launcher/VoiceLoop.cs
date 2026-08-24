@@ -25,6 +25,22 @@ internal sealed class VoiceLoop : IDisposable
     private readonly List<float> frameBuffer = new();
     private readonly List<short> segmentSamples = new();
 
+    // Guards frameBuffer, segmentSamples, hasHeardSpeechInSegment,
+    // segmentElapsedMs, msSinceLastSpeech, lastFrameAt, segmentInFlight, and
+    // the vad instance itself (SileroVadRunner mutates its own internal
+    // state per ProcessFrame/Reset call, so it isn't thread-safe either).
+    // OnDataAvailable fires on NAudio's WASAPI capture thread;
+    // OnPlaybackCompletedOnce fires on NAudio's WasapiOut playback thread;
+    // HandleSegmentClosedAsync's post-await continuation resumes on a
+    // thread-pool thread -- three different threads that can all reach
+    // this state. Ownership model: each of those entry points acquires
+    // this lock itself before touching guarded state; ProcessBufferedFrames
+    // and ResetSegment assume the caller already holds it and never lock
+    // internally, so they're safe to call from any entry point without
+    // double-locking or deadlocking. Never hold this lock across an await
+    // or across the fire-and-forget HandleSegmentClosedAsync() dispatch.
+    private readonly object stateLock = new();
+
     private bool awake;
     private bool hasHeardSpeechInSegment;
     private long segmentElapsedMs;
@@ -89,19 +105,23 @@ internal sealed class VoiceLoop : IDisposable
             return;
         }
 
-        var scratch = new float[4096];
-        int samplesRead;
-        while ((samplesRead = resampled.Read(scratch, 0, scratch.Length)) > 0)
+        lock (stateLock)
         {
-            for (var i = 0; i < samplesRead; i++)
+            var scratch = new float[4096];
+            int samplesRead;
+            while ((samplesRead = resampled.Read(scratch, 0, scratch.Length)) > 0)
             {
-                frameBuffer.Add(scratch[i]);
+                for (var i = 0; i < samplesRead; i++)
+                {
+                    frameBuffer.Add(scratch[i]);
+                }
             }
-        }
 
-        ProcessBufferedFrames();
+            ProcessBufferedFrames();
+        }
     }
 
+    // Caller must already hold stateLock.
     private void ProcessBufferedFrames()
     {
         // One segment (one conversation turn) in flight at a time -- keep
@@ -162,6 +182,7 @@ internal sealed class VoiceLoop : IDisposable
         }
     }
 
+    // Caller must already hold stateLock.
     private void ResetSegment()
     {
         segmentSamples.Clear();
@@ -173,8 +194,15 @@ internal sealed class VoiceLoop : IDisposable
 
     private async Task HandleSegmentClosedAsync()
     {
-        var wavBytes = BuildWavBytes(segmentSamples);
-        ResetSegment();
+        // Only ever invoked synchronously from ProcessBufferedFrames, which
+        // is only ever invoked under stateLock -- so this runs under the
+        // caller's lock too (C#'s lock is reentrant on the owning thread).
+        byte[] wavBytes;
+        lock (stateLock)
+        {
+            wavBytes = BuildWavBytes(segmentSamples);
+            ResetSegment();
+        }
 
         var playbackStarted = false;
         try
@@ -190,13 +218,21 @@ internal sealed class VoiceLoop : IDisposable
             // ... -> playback -> loop back to step 1). Otherwise (empty
             // transcript, no wake word, or any failure) there's nothing to
             // wait for -- resume listening immediately.
+            //
+            // This continuation resumes on a thread-pool thread after the
+            // await above -- the lock taken earlier in this method was
+            // released long before this point, so it must be reacquired
+            // here rather than relied upon.
             if (!playbackStarted)
             {
-                segmentInFlight = false;
-                // Frames captured while the turn was in flight are still
-                // sitting in frameBuffer -- process them now instead of
-                // waiting for the next DataAvailable callback.
-                ProcessBufferedFrames();
+                lock (stateLock)
+                {
+                    segmentInFlight = false;
+                    // Frames captured while the turn was in flight are still
+                    // sitting in frameBuffer -- process them now instead of
+                    // waiting for the next DataAvailable callback.
+                    ProcessBufferedFrames();
+                }
             }
         }
     }
@@ -288,11 +324,14 @@ internal sealed class VoiceLoop : IDisposable
     {
         audioPlayer.PlaybackCompleted -= OnPlaybackCompletedOnce;
         avatarOverlay.SetState(AvatarState.Idle);
-        segmentInFlight = false;
-        // Frames captured while the reply was playing are still sitting in
-        // frameBuffer -- process them now instead of waiting for the next
-        // DataAvailable callback.
-        ProcessBufferedFrames();
+        lock (stateLock)
+        {
+            segmentInFlight = false;
+            // Frames captured while the reply was playing are still sitting
+            // in frameBuffer -- process them now instead of waiting for the
+            // next DataAvailable callback.
+            ProcessBufferedFrames();
+        }
     }
 
     private static byte[] BuildWavBytes(List<short> samples)
