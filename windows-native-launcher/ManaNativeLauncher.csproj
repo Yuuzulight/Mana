@@ -7,4 +7,18 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <ApplicationManifest>app.manifest</ApplicationManifest>
   </PropertyGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="ManaNativeLauncher.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- The SDK's default recursive glob does not exclude nested project
+         directories on its own; without this, this project would also try
+         to compile ManaNativeLauncher.Tests's sources (and its obj/bin
+         output). -->
+    <Compile Remove="ManaNativeLauncher.Tests\**" />
+    <EmbeddedResource Remove="ManaNativeLauncher.Tests\**" />
+    <None Remove="ManaNativeLauncher.Tests\**" />
+  </ItemGroup>
 </Project>
