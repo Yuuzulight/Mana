@@ -7,4 +7,36 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <ApplicationManifest>app.manifest</ApplicationManifest>
   </PropertyGroup>
+
+  <Target Name="FetchSileroVadModel" BeforeTargets="Build">
+    <PropertyGroup>
+      <SileroVadModelDir>$(MSBuildProjectDirectory)\assets\vad</SileroVadModelDir>
+      <SileroVadModelPath>$(SileroVadModelDir)\silero_vad.onnx</SileroVadModelPath>
+      <SileroVadModelUrl>https://raw.githubusercontent.com/snakers4/silero-vad/master/src/silero_vad/data/silero_vad.onnx</SileroVadModelUrl>
+    </PropertyGroup>
+    <MakeDir Directories="$(SileroVadModelDir)" Condition="!Exists('$(SileroVadModelDir)')" />
+    <Exec
+      Command="powershell -NoProfile -ExecutionPolicy Bypass -Command &quot;Invoke-WebRequest -Uri '$(SileroVadModelUrl)' -OutFile '$(SileroVadModelPath)' -UserAgent 'mana-fetch-silero-vad'&quot;"
+      Condition="!Exists('$(SileroVadModelPath)')"
+      ContinueOnError="WarnAndContinue" />
+  </Target>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="ManaNativeLauncher.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="NAudio" Version="2.2.1" />
+    <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.19.2" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- The SDK's default recursive glob does not exclude nested project
+         directories on its own; without this, this project would also try
+         to compile ManaNativeLauncher.Tests's sources (and its obj/bin
+         output). -->
+    <Compile Remove="ManaNativeLauncher.Tests\**" />
+    <EmbeddedResource Remove="ManaNativeLauncher.Tests\**" />
+    <None Remove="ManaNativeLauncher.Tests\**" />
+  </ItemGroup>
 </Project>

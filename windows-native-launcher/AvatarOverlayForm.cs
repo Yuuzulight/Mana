@@ -42,6 +42,17 @@ internal sealed class AvatarOverlayForm : Form
 
     public void SetState(AvatarState state)
     {
+        // Callers include background threads (VoiceLoop's thread-pool
+        // continuations and NAudio's playback thread) -- marshal onto the
+        // UI thread before touching any WinForms control. Skip the check
+        // before the handle exists (the constructor calls this on the UI
+        // thread, and InvokeRequired is unreliable pre-handle-creation).
+        if (IsHandleCreated && InvokeRequired)
+        {
+            BeginInvoke(() => SetState(state));
+            return;
+        }
+
         var nextPath = state == AvatarState.Talking ? talkingPath : idlePath;
         if (!File.Exists(nextPath))
         {
