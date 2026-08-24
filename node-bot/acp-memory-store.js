@@ -503,6 +503,7 @@ function createAcpMemoryStore(options = {}) {
     epistemic,
     occurredAt,
     supersedes,
+    source,
   } = {}) {
     const cleanKey = cleanText(key, 200);
     if (!cleanKey) {
@@ -529,6 +530,7 @@ function createAcpMemoryStore(options = {}) {
           key: cleanKey,
           payload: existing ? JSON.parse(JSON.stringify(existing)) : null,
           summary: `fact ${normalizedAction}: ${cleanKey}`,
+          source: source || "agent",
         });
       } catch (e) {
         console.warn("Fact snapshot failed:", e?.message || e);
@@ -952,6 +954,7 @@ function createAcpMemoryStore(options = {}) {
           key: existing.sessionId,
           payload: existing,
           summary: `session rename: ${existing.sessionId}`,
+          source: "human",
         });
       } catch (e) {
         console.warn("Session snapshot failed:", e?.message || e);
@@ -982,6 +985,7 @@ function createAcpMemoryStore(options = {}) {
           key: existing.sessionId,
           payload: existing,
           summary: `session goal change: ${existing.sessionId}`,
+          source: "human",
         });
       } catch (e) {
         console.warn("Session snapshot failed:", e?.message || e);
@@ -1207,6 +1211,7 @@ function createAcpMemoryStore(options = {}) {
           key: session.sessionId,
           payload: session,
           summary: `turn appended: ${session.sessionId}`,
+          source: "agent",
         });
       } catch (e) {
         console.warn("Session snapshot failed:", e?.message || e);

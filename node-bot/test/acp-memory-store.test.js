@@ -2004,3 +2004,56 @@ test("rememberFact patch snapshots the pre-patch fact, restorable back to its pr
   await snapshotStore.restoreSnapshot(patchSnapshot.id);
   assert.equal(store.listFacts()[0].text, "Likes tea");
 });
+
+test("renameSession/setSessionGoal snapshots are tagged source: human -- only reachable via the PATCH /sessions/:id route", () => {
+  const dataDir = createTempDir();
+  const snapshotStore = createSnapshotStore({ dataDir: createTempDir() });
+  const store = createAcpMemoryStore({ dataDir, snapshotStore });
+
+  store.ensureSession({ sessionId: "source-session-1" });
+  store.renameSession("source-session-1", "Renamed");
+  store.setSessionGoal("source-session-1", "Ship it");
+
+  const snapshots = snapshotStore.listSnapshots("memory-session");
+  assert.ok(snapshots.length >= 2);
+  assert.ok(snapshots.every((s) => s.source === "human"));
+});
+
+test("appendTurn snapshots are tagged source: agent -- it's automatic conversation bookkeeping, not a human action", async () => {
+  const dataDir = createTempDir();
+  const snapshotStore = createSnapshotStore({ dataDir: createTempDir() });
+  const store = createAcpMemoryStore({ dataDir, snapshotStore });
+
+  await store.appendTurn({ sessionId: "source-session-2", user: "hi", assistant: "hello" });
+  await store.appendTurn({ sessionId: "source-session-2", user: "again", assistant: "hey" });
+
+  const snapshots = snapshotStore.listSnapshots("memory-session");
+  const turnSnapshot = snapshots.find((s) => s.summary.startsWith("turn appended"));
+  assert.ok(turnSnapshot);
+  assert.equal(turnSnapshot.source, "agent");
+});
+
+test("rememberFact defaults source to agent -- the primary caller is the model's memory__remember tool", () => {
+  const dataDir = createTempDir();
+  const snapshotStore = createSnapshotStore({ dataDir: createTempDir() });
+  const store = createAcpMemoryStore({ dataDir, snapshotStore });
+
+  store.rememberFact({ key: "gpu", text: "RTX 5080" });
+  store.rememberFact({ key: "gpu", text: "RTX 5080, confirmed", action: "patch" });
+
+  const [patchSnapshot] = snapshotStore.listSnapshots("memory-fact");
+  assert.equal(patchSnapshot.source, "agent");
+});
+
+test("rememberFact accepts an explicit source override -- used by the human-only admin archive route", () => {
+  const dataDir = createTempDir();
+  const snapshotStore = createSnapshotStore({ dataDir: createTempDir() });
+  const store = createAcpMemoryStore({ dataDir, snapshotStore });
+
+  store.rememberFact({ key: "gpu", text: "RTX 5080" });
+  store.rememberFact({ key: "gpu", action: "archive", source: "human" });
+
+  const snapshots = snapshotStore.listSnapshots("memory-fact");
+  const archiveSnapshot = snapshots.find((s) => s.summary.startsWith("fact archive"));
+  assert.equal(archiveSnapshot.source, "human");
+});
