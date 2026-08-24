@@ -3,7 +3,7 @@ const path = require("node:path");
 const { spawn, spawnSync } = require("node:child_process");
 const esprima = require("esprima");
 const Diff = require("diff");
-const { createEditSnapshotStore } = require("./edit-snapshot-store");
+const { createSnapshotStore } = require("./snapshot-store");
 
 const DEFAULT_INSPECTOR_EXCLUDES = new Set([
   ".git",
@@ -724,10 +724,11 @@ function createEditorIntegrations(options = {}) {
       now: options.now,
       minRetainedRatio: options.minRetainedRatio,
     });
-  // Issue #428: restorable snapshots of applied edits, independent of git.
+  // Issue #428/#426: restorable snapshots of applied edits, independent of
+  // git -- now backed by the generic kind-agnostic store (snapshot-store.js).
   const snapshotStore =
     options.snapshotStore ||
-    createEditSnapshotStore({
+    createSnapshotStore({
       dataDir: options.snapshotsDir,
       now: options.now,
       idFactory: options.snapshotIdFactory,
@@ -842,10 +843,10 @@ function createEditorIntegrations(options = {}) {
     // lands. Only real writes reach here (the alreadyApplied early return
     // above skips this), so nothing gets snapshotted for a no-op approve.
     const snapshot = snapshotStore.recordSnapshot({
-      proposalId: id,
-      workspacePath: path.resolve(workspace.path),
-      relativePath: target.relativePath,
-      originalContent: currentContent,
+      kind: "file",
+      key: target.relativePath,
+      scope: path.resolve(workspace.path),
+      payload: currentContent,
       summary: proposal.summary,
     });
 
@@ -900,8 +901,14 @@ function createEditorIntegrations(options = {}) {
     }
     const workspacePath = path.resolve(workspace.path);
     return snapshotStore
-      .listSnapshots()
-      .filter((record) => record.workspacePath === workspacePath);
+      .listSnapshots("file")
+      .filter((record) => record.scope === workspacePath)
+      .map((record) => ({
+        id: record.id,
+        relativePath: record.key,
+        summary: record.summary,
+        appliedAt: record.appliedAt,
+      }));
   }
 
   // Deliberately no conflict check against the file's current content --
@@ -912,35 +919,30 @@ function createEditorIntegrations(options = {}) {
   // the UI confirming with the user before restoring is the real safety
   // net here, the same way file_write's approval gate is the safety net
   // for autonomous-loop writes rather than code-level conflict detection.
-  function restoreEditSnapshot(id) {
+  //
+  // Delegates the actual write+verify+delete to the generic store's
+  // built-in "file" restorer (snapshot-store.js) -- the checks kept here
+  // (workspace mismatch, file-must-already-exist) are pipeline-A-specific
+  // safety rules the generic store has no business knowing about.
+  async function restoreEditSnapshot(id) {
     const record = snapshotStore.getSnapshot(id);
     if (!record) {
       throw new Error("edit snapshot not found");
     }
 
     const workspace = requireActiveWorkspace(workspaceStore);
-    if (record.workspacePath !== path.resolve(workspace.path)) {
+    if (record.scope !== path.resolve(workspace.path)) {
       throw new Error("edit snapshot belongs to a different workspace");
     }
-    const target = toWorkspaceRelativePath(workspace.path, record.relativePath);
+    const target = toWorkspaceRelativePath(workspace.path, record.key);
     if (!fs.existsSync(target.fullPath) || !fs.statSync(target.fullPath).isFile()) {
       throw new Error("workspace file does not exist");
     }
 
-    fs.writeFileSync(target.fullPath, record.originalContent, "utf8");
-
-    // Issue #387's same read-back-before-claiming-success discipline.
-    const writtenContent = fs.readFileSync(target.fullPath, "utf8");
-    if (writtenContent !== record.originalContent) {
-      throw new Error(
-        "edit snapshot restore failed verification: file on disk does not match the restored content",
-      );
-    }
-
-    snapshotStore.deleteSnapshot(id);
+    await snapshotStore.restoreSnapshot(id);
     return {
       id,
-      relativePath: record.relativePath,
+      relativePath: record.key,
       restoredAt: new Date().toISOString(),
     };
   }

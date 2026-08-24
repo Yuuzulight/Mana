@@ -4,6 +4,7 @@ const path = require("path");
 const { safeJsonParse } = require("./utils/json-extract");
 const { scanDir } = require("./tools/dir_scanner");
 const { createAcpTestRunner } = require("./acp-test-runner");
+const { createSnapshotStore } = require("./snapshot-store");
 const {
   createScratchWorkspaceCopy,
   removeScratchWorkspaceCopy,
@@ -291,9 +292,14 @@ function resetSessionTestRetryCounts(sessionId) {
 // Real instance, used unless a caller (tests, or a future createAcpAutonomousLoop
 // caller) injects its own via executeAutonomousStep's options.testRunner.
 const defaultTestRunner = createAcpTestRunner();
+// #426 sub-project 1: shared across calls that don't inject their own, same
+// as defaultTestRunner above -- a fresh store per call would defeat
+// maxRetained pruning (every call would see an empty pool).
+const defaultSnapshotStore = createSnapshotStore({});
 
 async function executeAutonomousStep(rawModelReply, sessionId, options = {}) {
   const testRunner = options.testRunner || defaultTestRunner;
+  const snapshotStore = options.snapshotStore || defaultSnapshotStore;
   const makeScratchCopy =
     options.createScratchWorkspaceCopy || createScratchWorkspaceCopy;
   const removeScratchCopy =
@@ -661,12 +667,28 @@ async function executeAutonomousStep(rawModelReply, sessionId, options = {}) {
             }
           }
         } else {
-          // Overwrite mode: backup if exists
+          // Overwrite mode: snapshot the prior content instead of writing
+          // an unreadable .bak.<timestamp> copy that nothing ever read back
+          // -- this makes the write actually undoable via the shared
+          // snapshot store's built-in "file" restorer.
           try {
             const st = await fs.promises.stat(resolvedPath);
             if (st && st.isFile()) {
-              const bak = `${resolvedPath}.bak.${Date.now()}`;
-              await fs.promises.copyFile(resolvedPath, bak);
+              const priorContent = await fs.promises.readFile(resolvedPath, "utf8");
+              try {
+                snapshotStore.recordSnapshot({
+                  kind: "file",
+                  key: path.relative(REPO_ROOT, resolvedPath),
+                  scope: REPO_ROOT,
+                  payload: priorContent,
+                  summary: "file_write overwrite",
+                });
+              } catch (snapshotErr) {
+                console.warn(
+                  "file_write snapshot failed:",
+                  snapshotErr?.message || snapshotErr,
+                );
+              }
             }
           } catch (e) {
             // ignore if not exists

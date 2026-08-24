@@ -228,6 +228,32 @@ function createAcpMemoryStore(options = {}) {
   // heavily-recurring entity's mention list needs trimming by more than
   // "keep the most recent N".
   const maxMentionsPerEntity = 100;
+  // #426 sub-project 1: optional -- most callers (tests, older wiring) don't
+  // need snapshotting, so its absence is a silent no-op rather than a
+  // required dependency threaded through every existing construction site.
+  const snapshotStore = options.snapshotStore || null;
+
+  if (snapshotStore) {
+    snapshotStore.registerRestorer("memory-session", async (sessionId, session) => {
+      saveSession(session);
+      return { sessionId };
+    });
+
+    snapshotStore.registerRestorer("memory-fact", async (key, snapshotPayload) => {
+      const facts = loadFacts();
+      const idx = facts.findIndex((f) => f.key === key);
+      if (snapshotPayload === null) {
+        // The fact didn't exist before this write -- restoring means removing it.
+        if (idx !== -1) facts.splice(idx, 1);
+      } else if (idx === -1) {
+        facts.push(snapshotPayload);
+      } else {
+        facts[idx] = snapshotPayload;
+      }
+      saveFacts(facts);
+      return { key };
+    });
+  }
   const now = options.now || (() => new Date().toISOString());
   const maxRecentTurns = Math.max(1, Number(options.maxRecentTurns || 20));
   // Issue #338: the existing caps are size-based. They stop one unusually
@@ -490,6 +516,24 @@ function createAcpMemoryStore(options = {}) {
       (f) => f.status === "active" && f.key.toLowerCase() === cleanKey.toLowerCase(),
     );
     const timestamp = now();
+
+    if (snapshotStore) {
+      try {
+        // Deep-cloned: `existing` is a live reference into `facts`, and the
+        // patch branch below mutates it in place (existing.history.push(...)
+        // mutates the same array existing.history already pointed at) before
+        // ever reassigning it -- a shallow copy taken here would still be
+        // corrupted by that mutation by the time it's serialized.
+        snapshotStore.recordSnapshot({
+          kind: "memory-fact",
+          key: cleanKey,
+          payload: existing ? JSON.parse(JSON.stringify(existing)) : null,
+          summary: `fact ${normalizedAction}: ${cleanKey}`,
+        });
+      } catch (e) {
+        console.warn("Fact snapshot failed:", e?.message || e);
+      }
+    }
 
     if (normalizedAction === "remove" || normalizedAction === "archive") {
       if (!existing) {
@@ -901,6 +945,19 @@ function createAcpMemoryStore(options = {}) {
       return null;
     }
 
+    if (snapshotStore) {
+      try {
+        snapshotStore.recordSnapshot({
+          kind: "memory-session",
+          key: existing.sessionId,
+          payload: existing,
+          summary: `session rename: ${existing.sessionId}`,
+        });
+      } catch (e) {
+        console.warn("Session snapshot failed:", e?.message || e);
+      }
+    }
+
     return saveSession({
       ...existing,
       name: cleanText(name, 80) || null,
@@ -916,6 +973,19 @@ function createAcpMemoryStore(options = {}) {
     const existing = getSession(cleanText(sessionId, 240));
     if (!existing) {
       return null;
+    }
+
+    if (snapshotStore) {
+      try {
+        snapshotStore.recordSnapshot({
+          kind: "memory-session",
+          key: existing.sessionId,
+          payload: existing,
+          summary: `session goal change: ${existing.sessionId}`,
+        });
+      } catch (e) {
+        console.warn("Session snapshot failed:", e?.message || e);
+      }
     }
 
     return saveSession({
@@ -1129,6 +1199,20 @@ function createAcpMemoryStore(options = {}) {
     const turns = [...session.turns, turn];
     const name =
       session.name || (!session.turns.length && autoNameFromText(turn.user)) || null;
+
+    if (snapshotStore) {
+      try {
+        snapshotStore.recordSnapshot({
+          kind: "memory-session",
+          key: session.sessionId,
+          payload: session,
+          summary: `turn appended: ${session.sessionId}`,
+        });
+      } catch (e) {
+        console.warn("Session snapshot failed:", e?.message || e);
+      }
+    }
+
     const saved = saveSession({
       ...session,
       name,

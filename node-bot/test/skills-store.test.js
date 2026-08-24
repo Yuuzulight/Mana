@@ -5,6 +5,7 @@ const path = require("node:path");
 const test = require("node:test");
 
 const { createSkillsStore, parseSkillFile, serializeSkillFile, extractSkillScript, extractSkillInputs, verifySkillScript } = require("../skills-store");
+const { createSnapshotStore } = require("../snapshot-store");
 
 function tempDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), "mana-skills-test-"));
@@ -462,4 +463,31 @@ test("adopting fills in bookkeeping without touching the body (issue #393)", () 
 test("adopting an unknown skill returns null (issue #393)", () => {
   const store = createSkillsStore({ skillsDir: tempDir() });
   assert.equal(store.adoptSkill("nope"), null);
+});
+
+test("updateSkill snapshots the pre-update file content, restorable via the generic store", async () => {
+  const skillsDir = tempDir();
+  const snapshotStore = createSnapshotStore({ dataDir: tempDir() });
+  const store = createSkillsStore({
+    skillsDir,
+    snapshotStore,
+    now: () => "2026-01-01T00:00:00.000Z",
+  });
+
+  const skill = store.createSkill({
+    name: "Restart SearXNG",
+    description: "Original description.",
+    body: "Original body.",
+  });
+
+  store.updateSkill("Restart SearXNG", { description: "Updated description." });
+  assert.equal(store.viewSkill("Restart SearXNG", { touch: false }).description, "Updated description.");
+
+  const [snapshot] = snapshotStore.listSnapshots("skill");
+  assert.ok(snapshot);
+  assert.equal(snapshot.key, skill.fileName);
+
+  await snapshotStore.restoreSnapshot(snapshot.id);
+  const restored = store.viewSkill("Restart SearXNG", { touch: false });
+  assert.equal(restored.description, "Original description.");
 });

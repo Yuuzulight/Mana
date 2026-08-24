@@ -2,12 +2,15 @@ const test = require("node:test");
 const assert = require("node:assert");
 const axios = require("axios");
 const fs = require("fs");
+const os = require("node:os");
+const path = require("node:path");
 
 const {
   executeAutonomousStep,
   resetSessionTestRetryCounts,
   MAX_TEST_RETRY_ATTEMPTS,
 } = require("../acp-autonomous-loop");
+const { createSnapshotStore } = require("../snapshot-store");
 
 // This test suite monkeypatches axios.post and fs.promises in-process to provide deterministic,
 // dependency-free unit tests for the autonomous loop without any external libs.
@@ -222,47 +225,87 @@ test("acp-autonomous-loop: file_write append succeeds when enabled", async (t) =
   }
 });
 
-test("acp-autonomous-loop: file_write overwrite backups and writes when enabled", async (t) => {
+test("acp-autonomous-loop: file_write overwrite records a restorable snapshot instead of a .bak file", async (t) => {
   const origEnv = process.env.ALLOW_FILE_WRITE;
   const origApproval = process.env.FILE_WRITE_REQUIRE_APPROVAL;
   const origStat = fs.promises.stat;
-  const origCopy = fs.promises.copyFile;
+  const origRead = fs.promises.readFile;
   const origWrite = fs.promises.writeFile;
   try {
     process.env.ALLOW_FILE_WRITE = "1";
     process.env.FILE_WRITE_REQUIRE_APPROVAL = "0";
     let lastWriteSize = null;
-    let copyCalled = false;
 
     // stat behaves: before write -> exists with size 10; after write -> returns {size: lastWriteSize}
     fs.promises.stat = async (p) => {
       if (lastWriteSize === null) return { isFile: () => true, size: 10 };
       return { isFile: () => true, size: lastWriteSize };
     };
-
-    fs.promises.copyFile = async (src, dest) => {
-      copyCalled = true;
-    };
+    fs.promises.readFile = async (p, enc) => "previous content";
     fs.promises.writeFile = async (p, content, opts) => {
       lastWriteSize = Buffer.byteLength(content, "utf8");
     };
 
+    const recorded = [];
+    const fakeSnapshotStore = {
+      recordSnapshot: (record) => {
+        recorded.push(record);
+        return { id: "snap-fake-1", ...record };
+      },
+    };
+
     const mockModelReply =
       'Write file:\n[{"tool":"file_write","args":{"path":"src/out.txt","content":"hello world","mode":"overwrite"}}]';
-    const res = await executeAutonomousStep(mockModelReply, "test-session");
+    const res = await executeAutonomousStep(mockModelReply, "test-session", {
+      snapshotStore: fakeSnapshotStore,
+    });
 
     assert.ok(Array.isArray(res.results));
     assert.equal(res.results[0].tool, "file_write");
     assert.equal(res.results[0].status, "ok");
     assert.equal(res.results[0].action, "overwritten");
     assert.equal(res.results[0].size, Buffer.byteLength("hello world", "utf8"));
-    assert.ok(copyCalled);
+
+    assert.equal(recorded.length, 1);
+    assert.equal(recorded[0].kind, "file");
+    assert.equal(recorded[0].key, path.join("src", "out.txt"));
+    assert.equal(recorded[0].payload, "previous content");
   } finally {
     process.env.ALLOW_FILE_WRITE = origEnv;
     process.env.FILE_WRITE_REQUIRE_APPROVAL = origApproval;
     fs.promises.stat = origStat;
-    fs.promises.copyFile = origCopy;
+    fs.promises.readFile = origRead;
     fs.promises.writeFile = origWrite;
+  }
+});
+
+// REPO_ROOT is resolved once at module load (acp-autonomous-loop.js top
+// level), so it can't be redirected per-test via process.env -- this test
+// exercises the exact record shape file_write now produces (kind: "file",
+// a repo-relative key, REPO_ROOT as scope, prior content as payload)
+// directly against a real snapshot store and a real temp target directory,
+// rather than fighting that fixed REPO_ROOT to drive the restore through
+// executeAutonomousStep itself.
+test("a file_write snapshot's record shape round-trips through the real snapshot store", async () => {
+  const targetDir = fs.mkdtempSync(path.join(os.tmpdir(), "mana-autonomous-loop-restore-"));
+  const snapshotStoreDir = fs.mkdtempSync(path.join(os.tmpdir(), "mana-autonomous-loop-snapshots-"));
+  fs.writeFileSync(path.join(targetDir, "out.txt"), "new content", "utf8");
+  try {
+    const snapshotStore = createSnapshotStore({ dataDir: snapshotStoreDir });
+    const recorded = snapshotStore.recordSnapshot({
+      kind: "file",
+      key: "out.txt",
+      scope: targetDir,
+      payload: "previous content",
+      summary: "file_write overwrite",
+    });
+
+    await snapshotStore.restoreSnapshot(recorded.id);
+    assert.equal(fs.readFileSync(path.join(targetDir, "out.txt"), "utf8"), "previous content");
+    assert.equal(snapshotStore.getSnapshot(recorded.id), null);
+  } finally {
+    fs.rmSync(targetDir, { recursive: true, force: true });
+    fs.rmSync(snapshotStoreDir, { recursive: true, force: true });
   }
 });
 
