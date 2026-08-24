@@ -1369,7 +1369,7 @@ test("acp-autonomous-loop: snapshot_restore is rejected end to end when the appr
     // file to appear, then write the rejection marker next to it.
     let pendingFile = null;
     for (let i = 0; i < 50 && !pendingFile; i++) {
-      const files = fs.readdirSync(tmpApprovalDir).filter((f) => f.endsWith(".json") && !f.includes("."));
+      const files = fs.readdirSync(tmpApprovalDir).filter((f) => f.endsWith(".json") && !f.includes(".rejected.") && !f.includes(".approved."));
       if (files.length) pendingFile = files[0];
       else await new Promise((r) => setTimeout(r, 20));
     }
