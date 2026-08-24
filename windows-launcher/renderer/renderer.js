@@ -78,6 +78,7 @@ const {
   dbfsFromSamples,
   nextBargeInState,
   shouldStopRecording,
+  silenceBufferMsForTranscript,
 } = require("./voice-endpointing");
 const { detectReplyEmotion } = require("./reply-emotion");
 const { isAccessibilityTreeTextUsable } = require("../accessibility-tree");
@@ -1920,7 +1921,12 @@ async function recordUntilSilence({
         elapsedMs: performance.now() - startedAt,
         msSinceLastSpeech: hasHeardSpeech ? performance.now() - lastSpeechAt : 0,
         maxWaitForSpeechMs,
-        silenceBufferMs,
+        // Issue #341: the live partial transcript already nudges this wider
+        // or narrower than the plain default -- "and I think..." keeps
+        // listening longer, "...that's all." wraps up sooner. Falls back to
+        // the caller's own silenceBufferMs unchanged when the transcript is
+        // empty or has no clear signal either way.
+        silenceBufferMs: silenceBufferMsForTranscript(partialTranscript, silenceBufferMs),
         maxDurationMs,
       });
       if (stopReason) {
