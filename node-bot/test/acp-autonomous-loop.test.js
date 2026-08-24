@@ -719,6 +719,56 @@ test("acp-autonomous-loop: snapshot_restore is rejected end to end when the appr
   }
 });
 
+test("acp-autonomous-loop: snapshot_restore archives the approver metadata when approval is granted via a marker file", async () => {
+  const origRequire = process.env.SNAPSHOT_RESTORE_REQUIRE_APPROVAL;
+  const origApprovalDir = process.env.MANA_PENDING_WRITES_DIR;
+  const os = require("os");
+  const tmpApprovalDir = fs.mkdtempSync(path.join(os.tmpdir(), "mana-snapshot-restore-approval-"));
+  try {
+    process.env.SNAPSHOT_RESTORE_REQUIRE_APPROVAL = "1";
+    process.env.MANA_PENDING_WRITES_DIR = tmpApprovalDir;
+
+    const record = { id: "snap-3", kind: "file", key: "b.txt", scope: "/repo", summary: "second write", appliedAt: "t1", source: "agent" };
+    const fakeSnapshotStore = {
+      getSnapshot: (id) => (id === "snap-3" ? record : null),
+      checkStale: () => ({ stale: false }),
+      restoreSnapshot: async () => ({ restored: true }),
+    };
+
+    const mockModelReply = 'Restore it:\n[{"tool":"snapshot_restore","args":{"id":"snap-3"}}]';
+    const stepPromise = executeAutonomousStep(mockModelReply, "test-session", { snapshotStore: fakeSnapshotStore });
+
+    // Poll briefly for the pending file to appear, then write the approval
+    // marker next to it, carrying distinctive approver metadata.
+    let pendingFile = null;
+    for (let i = 0; i < 50 && !pendingFile; i++) {
+      const files = fs.readdirSync(tmpApprovalDir).filter((f) => f.endsWith(".json") && !f.includes(".rejected.") && !f.includes(".approved."));
+      if (files.length) pendingFile = files[0];
+      else await new Promise((r) => setTimeout(r, 20));
+    }
+    assert.ok(pendingFile, "expected a pending snapshot-restore request file");
+    const id = pendingFile.replace(/\.json$/, "");
+    fs.writeFileSync(
+      path.join(tmpApprovalDir, `${id}.approved.json`),
+      JSON.stringify({ approver: "approver-mcgee", reason: "confirmed with the user" }),
+      "utf8",
+    );
+
+    const res = await stepPromise;
+    assert.equal(res.results[0].tool, "snapshot_restore");
+    assert.equal(res.results[0].status, "ok");
+
+    const archivePath = path.join(tmpApprovalDir, "archive", `${id}.approved.json`);
+    assert.ok(fs.existsSync(archivePath), "expected an archived record for the approved restore");
+    const archived = JSON.parse(fs.readFileSync(archivePath, "utf8"));
+    assert.deepEqual(archived.action, { approver: "approver-mcgee", reason: "confirmed with the user" });
+  } finally {
+    process.env.SNAPSHOT_RESTORE_REQUIRE_APPROVAL = origRequire;
+    process.env.MANA_PENDING_WRITES_DIR = origApprovalDir;
+    fs.rmSync(tmpApprovalDir, { recursive: true, force: true });
+  }
+});
+
 test("acp-autonomous-loop: snapshot_restore proceeds immediately when args.approved is true, skipping the approval wait", async () => {
   const origRequire = process.env.SNAPSHOT_RESTORE_REQUIRE_APPROVAL;
   try {

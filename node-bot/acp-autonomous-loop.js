@@ -790,6 +790,7 @@ async function executeAutonomousStep(rawModelReply, sessionId, options = {}) {
       const requireApproval = (process.env.SNAPSHOT_RESTORE_REQUIRE_APPROVAL || "1") !== "0";
       let approvalId = null;
       let approvalPayload = null;
+      let approvalMeta = null;
       if (requireApproval && !(args && args.approved === true)) {
         approvalId = makeSnapshotRestoreApprovalId();
         approvalPayload = {
@@ -817,6 +818,7 @@ async function executeAutonomousStep(rawModelReply, sessionId, options = {}) {
             });
             continue;
           }
+          approvalMeta = appr.meta;
           console.error(`  ✅ snapshot_restore approved id=${approvalId} by ${appr.meta?.approver || "unknown"}`);
         } catch (e) {
           results.push({ tool: "snapshot_restore", status: "error", detail: "approval_error:" + String(e.message || e) });
@@ -833,7 +835,7 @@ async function executeAutonomousStep(rawModelReply, sessionId, options = {}) {
         results.push({ tool: "snapshot_restore", status: "ok", result });
         if (approvalId) {
           try {
-            await archivePendingRequest(approvalId, "approved", null, approvalPayload);
+            await archivePendingRequest(approvalId, "approved", approvalMeta, approvalPayload);
           } catch (e) {
             console.warn("archiving pending request failed", e?.message || e);
           }
