@@ -7,6 +7,7 @@ const test = require("node:test");
 const { createAcpMemoryStore, extractEntities } = require("../acp-memory-store");
 const { createSessionSearchIndex } = require("../session-search-index");
 const { createMemoryGraph } = require("../memory-graph");
+const { createSnapshotStore } = require("../snapshot-store");
 
 function createTempDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), "mana-acp-memory-"));
@@ -1918,4 +1919,88 @@ test("a session that never viewed a skill gets no marker block (issue #383)", as
   const store = createAcpMemoryStore({ dataDir, now: () => recent });
   await store.appendTurn({ sessionId: "s1", user: "hello", assistant: "hi" });
   assert.doesNotMatch(createAcpMemoryStore({ dataDir }).buildPromptMemory("s1"), /no longer loaded/);
+});
+
+test("appendTurn/setSessionGoal/renameSession snapshot the pre-write session record, restorable via the generic store", async () => {
+  const dataDir = createTempDir();
+  const snapshotStore = createSnapshotStore({ dataDir: createTempDir() });
+  const store = createAcpMemoryStore({ dataDir, snapshotStore });
+
+  store.ensureSession({ sessionId: "snap-session-1" });
+  await store.appendTurn({
+    sessionId: "snap-session-1",
+    user: "Remember I like tea.",
+    assistant: "Noted.",
+  });
+
+  const afterFirstTurn = store.getSession("snap-session-1");
+  assert.equal(afterFirstTurn.turns.length, 1);
+
+  store.setSessionGoal("snap-session-1", "Plan a trip");
+  const beforeRename = store.getSession("snap-session-1");
+  assert.equal(beforeRename.goal, "Plan a trip");
+
+  const snapshots = snapshotStore.listSnapshots("memory-session");
+  // One from appendTurn (of the pre-turn empty session), one from
+  // setSessionGoal (of the pre-goal session).
+  assert.equal(snapshots.length, 2);
+
+  // Restoring the setSessionGoal snapshot undoes the goal change but keeps
+  // the turn that was appended before it (that's what the snapshot payload
+  // captured -- the session as it stood right before the goal write).
+  const goalSnapshot = snapshots.find((s) => s.summary.startsWith("session goal change"));
+  await snapshotStore.restoreSnapshot(goalSnapshot.id);
+  const restored = store.getSession("snap-session-1");
+  // The session never had a goal set before this write (createEmptySession
+  // doesn't initialize one), so the pre-write snapshot has no `goal` key at
+  // all -- restoring it leaves goal unset (undefined), not explicitly null.
+  assert.equal(restored.goal, undefined);
+  assert.equal(restored.turns.length, 1);
+});
+
+test("rememberFact snapshots the prior fact state; restoring a freshly-inserted fact deletes it", async () => {
+  const dataDir = createTempDir();
+  const snapshotStore = createSnapshotStore({ dataDir: createTempDir() });
+  const store = createAcpMemoryStore({ dataDir, snapshotStore });
+
+  const inserted = store.rememberFact({
+    sessionId: "fact-session",
+    key: "favorite-drink",
+    text: "Likes tea",
+  });
+  assert.equal(inserted.action, "insert");
+  assert.equal(store.listFacts().length, 1);
+
+  const [insertSnapshot] = snapshotStore.listSnapshots("memory-fact");
+  assert.ok(insertSnapshot);
+
+  // The fact didn't exist before the insert -- restoring must remove it,
+  // not error or leave a stale entry.
+  await snapshotStore.restoreSnapshot(insertSnapshot.id);
+  assert.equal(store.listFacts().length, 0);
+});
+
+test("rememberFact patch snapshots the pre-patch fact, restorable back to its prior text", async () => {
+  const dataDir = createTempDir();
+  const snapshotStore = createSnapshotStore({ dataDir: createTempDir() });
+  const store = createAcpMemoryStore({ dataDir, snapshotStore });
+
+  store.rememberFact({ sessionId: "s", key: "favorite-drink", text: "Likes tea" });
+
+  const patched = store.rememberFact({
+    sessionId: "s",
+    key: "favorite-drink",
+    text: "Likes coffee",
+    action: "patch",
+  });
+  assert.equal(patched.action, "patch");
+  assert.equal(store.listFacts()[0].text, "Likes coffee");
+
+  const patchSnapshot = snapshotStore
+    .listSnapshots("memory-fact")
+    .find((s) => s.summary === "fact patch: favorite-drink");
+  assert.ok(patchSnapshot);
+
+  await snapshotStore.restoreSnapshot(patchSnapshot.id);
+  assert.equal(store.listFacts()[0].text, "Likes tea");
 });
