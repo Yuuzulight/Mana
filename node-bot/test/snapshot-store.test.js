@@ -360,6 +360,15 @@ test("restoreSnapshot with confirmStale: true proceeds anyway and deletes the sn
   assert.equal(store.getSnapshot("snap-stale-4a"), null, "confirmed restore must still delete the snapshot");
 });
 
+test("hasRestorer reports true for a registered kind and false for an unregistered one", () => {
+  const store = createSnapshotStore({ dataDir: createTempDir() });
+  assert.equal(store.hasRestorer("file"), true, "the built-in file restorer is always registered");
+  assert.equal(store.hasRestorer("memory-session"), false);
+
+  store.registerRestorer("widget", async () => ({ ok: true }));
+  assert.equal(store.hasRestorer("widget"), true);
+});
+
 test("restoreSnapshot's non-stale return shape is unchanged -- backward compatible with every existing caller", async () => {
   const store = createSnapshotStore({
     dataDir: createTempDir(),

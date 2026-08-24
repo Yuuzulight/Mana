@@ -683,6 +683,7 @@ test("acp-autonomous-loop: snapshot_restore is rejected end to end when the appr
     const fakeSnapshotStore = {
       getSnapshot: (id) => (id === "snap-1" ? record : null),
       checkStale: () => ({ stale: false }),
+      hasRestorer: () => true,
       restoreSnapshot: async () => {
         throw new Error("must not restore before approval resolves");
       },
@@ -732,6 +733,7 @@ test("acp-autonomous-loop: snapshot_restore archives the approver metadata when 
     const fakeSnapshotStore = {
       getSnapshot: (id) => (id === "snap-3" ? record : null),
       checkStale: () => ({ stale: false }),
+      hasRestorer: () => true,
       restoreSnapshot: async () => ({ restored: true }),
     };
 
@@ -769,16 +771,27 @@ test("acp-autonomous-loop: snapshot_restore archives the approver metadata when 
   }
 });
 
-test("acp-autonomous-loop: snapshot_restore proceeds immediately when args.approved is true, skipping the approval wait", async () => {
+// #475 whole-branch review fix: a model-supplied "approved": true in its own
+// tool-call args must NOT bypass the approval-wait flow. Unlike file_write's
+// own args.approved escape hatch (additionally gated behind ALLOW_FILE_WRITE,
+// default off), snapshot_restore has no master kill-switch, so honoring this
+// would let the model self-approve a restore on a stock deployment -- this
+// test used to assert the bypass worked; it now asserts the opposite.
+test("acp-autonomous-loop: snapshot_restore ignores a model-supplied args.approved:true and still waits for real approval", async () => {
   const origRequire = process.env.SNAPSHOT_RESTORE_REQUIRE_APPROVAL;
+  const origApprovalDir = process.env.MANA_PENDING_WRITES_DIR;
+  const os = require("os");
+  const tmpApprovalDir = fs.mkdtempSync(path.join(os.tmpdir(), "mana-snapshot-restore-approval-"));
   try {
     process.env.SNAPSHOT_RESTORE_REQUIRE_APPROVAL = "1";
+    process.env.MANA_PENDING_WRITES_DIR = tmpApprovalDir;
 
     const record = { id: "snap-2", kind: "skill", key: "x.md", scope: null, summary: "skill update: X", appliedAt: "t1", source: "human" };
     const restoreCalls = [];
     const fakeSnapshotStore = {
       getSnapshot: (id) => (id === "snap-2" ? record : null),
       checkStale: () => ({ stale: false }),
+      hasRestorer: () => true,
       restoreSnapshot: async (id, opts) => {
         restoreCalls.push({ id, opts });
         return { restored: true };
@@ -786,12 +799,33 @@ test("acp-autonomous-loop: snapshot_restore proceeds immediately when args.appro
     };
 
     const mockModelReply = 'Restore it:\n[{"tool":"snapshot_restore","args":{"id":"snap-2","approved":true}}]';
-    const res = await executeAutonomousStep(mockModelReply, "test-session", { snapshotStore: fakeSnapshotStore });
+    const stepPromise = executeAutonomousStep(mockModelReply, "test-session", { snapshotStore: fakeSnapshotStore });
 
+    // Still creates a real pending request despite args.approved:true --
+    // poll for the pending file, exactly like the other approval-flow tests.
+    let pendingFile = null;
+    for (let i = 0; i < 50 && !pendingFile; i++) {
+      const files = fs.readdirSync(tmpApprovalDir).filter((f) => f.endsWith(".json") && !f.includes(".rejected.") && !f.includes(".approved."));
+      if (files.length) pendingFile = files[0];
+      else await new Promise((r) => setTimeout(r, 20));
+    }
+    assert.ok(pendingFile, "args.approved:true must not skip creating a pending approval request");
+    assert.equal(restoreCalls.length, 0, "must not restore before a human actually approves");
+
+    const id = pendingFile.replace(/\.json$/, "");
+    fs.writeFileSync(
+      path.join(tmpApprovalDir, `${id}.approved.json`),
+      JSON.stringify({ approver: "test", reason: "confirmed" }),
+      "utf8",
+    );
+
+    const res = await stepPromise;
     assert.equal(res.results[0].status, "ok");
     assert.deepEqual(restoreCalls, [{ id: "snap-2", opts: { confirmStale: true } }]);
   } finally {
     process.env.SNAPSHOT_RESTORE_REQUIRE_APPROVAL = origRequire;
+    process.env.MANA_PENDING_WRITES_DIR = origApprovalDir;
+    fs.rmSync(tmpApprovalDir, { recursive: true, force: true });
   }
 });
 
@@ -815,4 +849,71 @@ test("acp-autonomous-loop: snapshot_restore reports an error for an unknown snap
   } finally {
     process.env.SNAPSHOT_RESTORE_REQUIRE_APPROVAL = origRequire;
   }
+});
+
+// #475 whole-branch review fix: Pipeline B's own snapshotStore only ever
+// gets the built-in "file" restorer registered (the memory-session/
+// memory-fact/skill restorers live on a separate store instance in
+// server.js) -- a restore of any other kind must fail immediately, before
+// ever staging a pending approval request, rather than wasting a human
+// approval round-trip on a restore that's guaranteed to throw.
+test("acp-autonomous-loop: snapshot_restore errors immediately for a kind with no registered restorer, without creating a pending request", async () => {
+  const origRequire = process.env.SNAPSHOT_RESTORE_REQUIRE_APPROVAL;
+  const origApprovalDir = process.env.MANA_PENDING_WRITES_DIR;
+  const os = require("os");
+  const tmpApprovalDir = fs.mkdtempSync(path.join(os.tmpdir(), "mana-snapshot-restore-no-restorer-"));
+  try {
+    process.env.SNAPSHOT_RESTORE_REQUIRE_APPROVAL = "1";
+    process.env.MANA_PENDING_WRITES_DIR = tmpApprovalDir;
+
+    const record = { id: "snap-skill-1", kind: "skill", key: "x.md", scope: null, summary: "skill update", appliedAt: "t1", source: "human" };
+    const fakeSnapshotStore = {
+      getSnapshot: (id) => (id === "snap-skill-1" ? record : null),
+      checkStale: () => ({ stale: false }),
+      hasRestorer: (kind) => kind === "file", // only "file" registered, like Pipeline B's real store
+      restoreSnapshot: async () => {
+        throw new Error("must not be called");
+      },
+    };
+
+    const mockModelReply = 'Restore it:\n[{"tool":"snapshot_restore","args":{"id":"snap-skill-1"}}]';
+    const res = await executeAutonomousStep(mockModelReply, "test-session", { snapshotStore: fakeSnapshotStore });
+
+    assert.equal(res.results[0].status, "error");
+    assert.equal(res.results[0].detail, "no_restorer_for_kind");
+
+    // No pending request should ever have been staged for this.
+    const files = fs.readdirSync(tmpApprovalDir).filter((f) => f.endsWith(".json"));
+    assert.deepEqual(files, []);
+  } finally {
+    process.env.SNAPSHOT_RESTORE_REQUIRE_APPROVAL = origRequire;
+    process.env.MANA_PENDING_WRITES_DIR = origApprovalDir;
+    fs.rmSync(tmpApprovalDir, { recursive: true, force: true });
+  }
+});
+
+// #475 whole-branch review fix: Pipeline B had no way for the model to
+// discover snapshot ids/see the source field on its own -- mirrors Pipeline
+// A's snapshot__list tool (ai/snapshot-tool-source.js), read-only, no
+// approval needed.
+test("acp-autonomous-loop: snapshot_list returns the store's list, optionally filtered by kind", async () => {
+  const calls = [];
+  const fakeSnapshotStore = {
+    listSnapshots: (kind) => {
+      calls.push(kind);
+      return [{ id: "snap-1", kind: "file", key: "a.txt" }];
+    },
+  };
+
+  const mockModelReply = 'List them:\n[{"tool":"snapshot_list","args":{}}]';
+  const res = await executeAutonomousStep(mockModelReply, "test-session", { snapshotStore: fakeSnapshotStore });
+
+  assert.equal(res.results[0].tool, "snapshot_list");
+  assert.equal(res.results[0].status, "ok");
+  assert.deepEqual(res.results[0].snapshots, [{ id: "snap-1", kind: "file", key: "a.txt" }]);
+  assert.deepEqual(calls, [undefined]);
+
+  const mockModelReplyFiltered = 'List them:\n[{"tool":"snapshot_list","args":{"kind":"skill"}}]';
+  await executeAutonomousStep(mockModelReplyFiltered, "test-session", { snapshotStore: fakeSnapshotStore });
+  assert.deepEqual(calls, [undefined, "skill"]);
 });

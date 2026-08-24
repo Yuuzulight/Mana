@@ -1,5 +1,8 @@
 // Create node-bot/test/snapshot-tool-source.test.js
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
 const test = require("node:test");
 
 const {
@@ -9,6 +12,8 @@ const {
   previewRestore,
   buildRestoreSummary,
 } = require("../ai/snapshot-tool-source");
+const { createApprovalGate } = require("../approval-gate");
+const { createSnapshotStore } = require("../snapshot-store");
 
 function fakeSnapshotStore(overrides = {}) {
   return {
@@ -141,6 +146,45 @@ test("previewRestore returns null for an unknown id, otherwise record+staleness+
   assert.deepEqual(preview.record, record);
   assert.deepEqual(preview.staleness, { stale: false });
   assert.equal(preview.summary, "Restore file snapshot: s");
+});
+
+// #475 whole-branch review fix: every other test in this file drives
+// executeTool against a fakeApprovalGate -- nothing exercises
+// snapshot__restore through buildToolPolicy/createSnapshotToolSource with a
+// REAL approval-gate.js gate end to end. This proves the gate genuinely
+// holds: calling snapshot__restore returns "pending" (not a restored
+// result), and the snapshot is still on disk afterward -- nothing was
+// auto-executed.
+test("snapshot__restore against a real createApprovalGate genuinely holds -- nothing auto-executes, the snapshot survives", async () => {
+  const approvalGate = createApprovalGate({
+    dataDir: fs.mkdtempSync(path.join(os.tmpdir(), "mana-approval-gate-e2e-")),
+  });
+  const snapshotStore = createSnapshotStore({
+    dataDir: fs.mkdtempSync(path.join(os.tmpdir(), "mana-snapshot-store-e2e-")),
+  });
+  const targetDir = fs.mkdtempSync(path.join(os.tmpdir(), "mana-snapshot-target-e2e-"));
+  fs.writeFileSync(path.join(targetDir, "out.txt"), "current content", "utf8");
+
+  const recorded = snapshotStore.recordSnapshot({
+    kind: "file",
+    key: "out.txt",
+    scope: targetDir,
+    payload: "previous content",
+    summary: "test write",
+    source: "agent",
+  });
+
+  const source = createSnapshotToolSource({ approvalGate, snapshotStore });
+  const result = JSON.parse(await source.executeTool(`${SNAPSHOT_TOOL_PREFIX}restore`, { id: recorded.id }));
+
+  assert.equal(result.status, "pending");
+  assert.equal(typeof result.requestId, "string");
+  assert.ok(result.requestId.length > 0);
+
+  // Nothing was actually restored: the target file is untouched and the
+  // snapshot itself is still there to be approved (or denied) later.
+  assert.equal(fs.readFileSync(path.join(targetDir, "out.txt"), "utf8"), "current content");
+  assert.ok(snapshotStore.getSnapshot(recorded.id), "the snapshot must still exist -- nothing auto-executed");
 });
 
 test("buildRestoreSummary falls back to key, then id, when summary is empty", () => {

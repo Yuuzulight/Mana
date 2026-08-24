@@ -2366,6 +2366,19 @@ function registerRoutes(app, upload, deps = {}) {
       const editors = getEditorIntegrations();
       const confirmStale = Boolean(req.body && req.body.confirmStale);
       const restored = await editors.restoreEditSnapshot(req.params.id, { confirmStale });
+      // #475 whole-branch review fix: {stale: true, ...} is truthy, so a
+      // plain 200 here made both renderer UIs' `if (!result.restored) throw`
+      // check read a stale, unconfirmed restore as a success -- nothing was
+      // actually restored, but the UI reported it worked. 409 (plus a null
+      // `restored`) routes into that same existing error branch instead of
+      // requiring any renderer change.
+      if (restored && restored.stale) {
+        return res.status(409).json({
+          restored: null,
+          stale: restored,
+          error: "snapshot is stale: target has been written to again since it was recorded",
+        });
+      }
       return res.json({ restored });
     } catch (error) {
       return res.status(400).json({

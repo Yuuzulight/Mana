@@ -771,9 +771,15 @@ async function executeAutonomousStep(rawModelReply, sessionId, options = {}) {
     // createPendingRequest/waitForApprovalResult/archivePendingRequest, gated
     // by an env-var-controlled require-approval flag --
     // SNAPSHOT_RESTORE_REQUIRE_APPROVAL instead of FILE_WRITE_REQUIRE_APPROVAL,
-    // so the two are independently tunable. Never auto-decided beyond the
-    // same args.approved === true escape hatch file_write already offers
-    // its own caller.
+    // so the two are independently tunable. Unlike file_write, there is no
+    // model-controlled args.approved escape hatch here -- file_write's own
+    // use of that pattern is additionally gated behind ALLOW_FILE_WRITE
+    // (default off), but snapshot_restore has no equivalent master
+    // kill-switch, so honoring untrusted model-supplied "approved": true
+    // would let the model self-approve a restore on a stock deployment. A
+    // restore always goes through the pending-request/human-approval flow
+    // when requireApproval is true -- never auto-decided by the model's own
+    // tool-call args.
     if (tool === "snapshot_restore") {
       const id = args && args.id ? String(args.id) : null;
       if (!id) {
@@ -787,11 +793,23 @@ async function executeAutonomousStep(rawModelReply, sessionId, options = {}) {
         continue;
       }
 
+      // Pipeline B's own snapshotStore (defaultSnapshotStore, module-scope
+      // in this file) only ever gets the built-in "file" restorer -- the
+      // memory-session/memory-fact/skill restorers are registered onto a
+      // separate store instance in server.js. Checked here, before staging
+      // the pending-request/approval, so an unrestorable kind fails fast
+      // instead of wasting a human approval round-trip on a restore that's
+      // guaranteed to throw once approved.
+      if (!snapshotStore.hasRestorer(preview.record.kind)) {
+        results.push({ tool: "snapshot_restore", status: "error", detail: "no_restorer_for_kind" });
+        continue;
+      }
+
       const requireApproval = (process.env.SNAPSHOT_RESTORE_REQUIRE_APPROVAL || "1") !== "0";
       let approvalId = null;
       let approvalPayload = null;
       let approvalMeta = null;
-      if (requireApproval && !(args && args.approved === true)) {
+      if (requireApproval) {
         approvalId = makeSnapshotRestoreApprovalId();
         approvalPayload = {
           id: approvalId,
@@ -848,6 +866,15 @@ async function executeAutonomousStep(rawModelReply, sessionId, options = {}) {
           } catch (e) {}
         }
       }
+      continue;
+    }
+
+    // Read-only, no approval needed -- mirrors Pipeline A's snapshot__list
+    // tool (ai/snapshot-tool-source.js), giving Pipeline B's model the same
+    // ability to discover snapshot ids and see each one's source field.
+    if (tool === "snapshot_list") {
+      const snapshots = snapshotStore.listSnapshots(args && args.kind);
+      results.push({ tool: "snapshot_list", status: "ok", snapshots });
       continue;
     }
 

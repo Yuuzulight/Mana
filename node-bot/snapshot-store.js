@@ -196,6 +196,15 @@ function createSnapshotStore(options = {}) {
     restorers.set(kind, fn);
   }
 
+  // #475: lets a caller check whether a kind is actually restorable on
+  // *this* store instance before staging anything (e.g. a pending
+  // approval) that would only fail once acted on -- Pipeline B keeps its
+  // own store instance with only the built-in "file" restorer registered,
+  // so this matters there in particular.
+  function hasRestorer(kind) {
+    return restorers.has(kind);
+  }
+
   // Looks up the snapshot, calls the registered restorer for its kind, and
   // deletes the snapshot only after the restorer's promise resolves -- a
   // transient failure (a briefly-locked file, a momentary permission error)
@@ -259,6 +268,7 @@ function createSnapshotStore(options = {}) {
     getSnapshot,
     deleteSnapshot,
     registerRestorer,
+    hasRestorer,
     restoreSnapshot,
     checkStale,
   };
