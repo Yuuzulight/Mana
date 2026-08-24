@@ -82,7 +82,11 @@ function createMatrixClient({ homeserverUrl, accessToken, fetchImpl = fetch } = 
   if (!accessToken) {
     throw new Error("an access token is required");
   }
-  const base = homeserverUrl.replace(/\/+$/, "");
+  // Not a regex trim (CodeQL flagged /\/+$/ as a polynomial-time regex on
+  // uncontrolled input) -- a plain loop is linear-time regardless of how
+  // many trailing slashes a misconfigured homeserver URL has.
+  let base = homeserverUrl;
+  while (base.endsWith("/")) base = base.slice(0, -1);
 
   async function authedFetch(urlPath, options = {}) {
     return fetchImpl(`${base}${urlPath}`, {
