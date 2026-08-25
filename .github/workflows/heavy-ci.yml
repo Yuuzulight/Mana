@@ -33,6 +33,18 @@ jobs:
         working-directory: ./node-bot
         run: npm test
 
+      # #435 review: every plugins/*/test/ suite (matrix-bridge, telegram-bridge,
+      # discord-bot, etc.) has its own `npm test` but nothing ever invoked it --
+      # node-bot/run_tests.js only globs node-bot/test/*.test.js. These plugin
+      # test files require no dependency install (no package.json in this repo
+      # declares any for its tests), so a single node --test glob covers all of
+      # them, including plugins/shared and plugins/screen-sensing which have no
+      # package.json of their own to loop over.
+      - name: Run plugin tests
+        env:
+          NODE_ENV: test
+        run: node --test plugins/*/test/*.test.js
+
   build-windows:
     name: Build Windows installer (main only)
     runs-on: windows-latest

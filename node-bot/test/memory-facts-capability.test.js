@@ -72,5 +72,6 @@ test("POST /admin/memory/facts/:key/archive calls rememberFact with action=archi
     assert.equal(payload.found, true);
     assert.equal(capturedArgs.key, "gpu");
     assert.equal(capturedArgs.action, "archive");
+    assert.equal(capturedArgs.source, "human");
   });
 });

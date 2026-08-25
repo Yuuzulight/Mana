@@ -60,6 +60,8 @@ internal sealed class ManaApplicationContext : ApplicationContext
         menu.Items.Add("Set avatar idle", null, (_, _) => avatarOverlay.SetState(AvatarState.Idle));
         menu.Items.Add("Set avatar talking", null, (_, _) => avatarOverlay.SetState(AvatarState.Talking));
         menu.Items.Add(new ToolStripSeparator());
+        menu.Items.Add("Restart Fish Speech", null, (_, _) => RestartFishSpeech());
+        menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add("Exit Mana", null, (_, _) => ExitThread());
         return menu;
     }
@@ -90,7 +92,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
         {
             var status = await backendClient.GetPerformanceStatusAsync();
             MessageBox.Show(
-                $"Backend: running\nGame detected: {status.GamingAppRunning}\nMemory: {status.TotalMemoryMb} MB\nTTS: {status.TtsProvider}",
+                $"Backend: running\nGame detected: {status.GamingAppRunning}\nMemory: {status.TotalMemoryMb} MB\nTTS: {status.TtsProvider}{FallbackNoteFor(status.TtsProvider)}",
                 "Mana Status",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Information);
@@ -103,6 +105,34 @@ internal sealed class ManaApplicationContext : ApplicationContext
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Warning);
         }
+    }
+
+    // #479 review: `status.TtsProvider` is node-bot's *configured* value
+    // (the TTS_PROVIDER env var this launcher itself sets to "fish") --
+    // not whether Fish Speech's native process is actually up. Without
+    // this, a missing native setup or a launch failure (both silently
+    // degrade to Kokoro, by design) would still show "TTS: fish" here,
+    // giving no indication the voice is actually coming from the fallback.
+    private string FallbackNoteFor(string? configuredProvider)
+    {
+        var isFishConfigured = string.Equals(configuredProvider, "fish", StringComparison.OrdinalIgnoreCase);
+        return isFishConfigured && !processManager.IsFishSpeechAvailable ? " (Kokoro fallback active)" : "";
+    }
+
+    // #479 review: a manual escape hatch for the fallback case FallbackNoteFor
+    // above surfaces -- Fish Speech's cold-compile startup (docs/fish_speech_tts.md)
+    // is slow/failure-prone enough that "fix the underlying issue, then
+    // retry" without restarting the whole tray app is worth having.
+    private void RestartFishSpeech()
+    {
+        processManager.RestartFishSpeech();
+        MessageBox.Show(
+            processManager.IsFishSpeechAvailable
+                ? "Fish Speech restarted."
+                : "Fish Speech failed to start again -- Mana will keep using Kokoro. See tools/fish-speech/launcher.log for details.",
+            "Mana Status",
+            MessageBoxButtons.OK,
+            processManager.IsFishSpeechAvailable ? MessageBoxIcon.Information : MessageBoxIcon.Warning);
     }
 
     private void OpenProjectFolder()

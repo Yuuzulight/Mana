@@ -132,6 +132,7 @@ const { readGgufMetadata } = require("./tools/gguf-metadata");
 	const browserAutomationPlugin = require("../plugins/browser-automation");
 	const telegramBridgePlugin = require("../plugins/telegram-bridge");
 	const discordBotPlugin = require("../plugins/discord-bot");
+	const matrixBridgePlugin = require("../plugins/matrix-bridge");
 	const videoWatchPlugin = require("../plugins/video-watch");
 	const contextPushPlugin = require("../plugins/context-push");
 	const screenSensingPlugin = require("../plugins/screen-sensing");
@@ -155,6 +156,7 @@ const { buildToolPolicy } = require("./ai/tool-source");
 const { createMemoryToolSource } = require("./ai/memory-tool-source");
 const { createSessionSearchToolSource } = require("./ai/session-search-tool-source");
 const { createSkillToolSource } = require("./ai/skill-tool-source");
+const { createSnapshotToolSource } = require("./ai/snapshot-tool-source");
 const { createExpressionToolSource, isExpressionToolName } = require("./ai/expression-tool-source");
 const { createVisionToolSource } = require("./ai/vision-tool-source");
 const { createSessionGoalToolSource } = require("./ai/session-goal-tool-source");
@@ -165,6 +167,8 @@ const { mcpClientCapability } = require("./capabilities/mcp-client-capability");
 const { createToolCallLog, wrapWithToolCallLog } = require("./tool-call-log");
 const { filterRelevantTools, wrapWithResultDigest } = require("./ai/tool-context-guard");
 const { toolCallLogCapability } = require("./capabilities/tool-call-log-capability");
+const { createHooksStore, wrapWithHooks } = require("./hooks-store");
+const { hooksCapability } = require("./capabilities/hooks-capability");
 const {
   createBrowserAutomationToolSource,
 } = require("../plugins/browser-automation/browser-automation-tool-source");
@@ -682,6 +686,11 @@ const mcpClientRegistry = createMcpClientRegistry({ approvalGate });
 // Issue #188: the shared audit/trace log every tool call gets routed
 // through in replyMaybeWithTools below, regardless of source.
 const toolCallLog = createToolCallLog({});
+
+// Issue #426: user-configurable PreToolUse/PostToolUse-style hook rules
+// (deny/ask/run-command), additive to the approval gate and tool-call-log
+// above rather than replacing either -- see hooks-store.js's wrapWithHooks.
+const hooksStore = createHooksStore({});
 
 // Issue #188: browser-automation's navigate/click/type/snapshot as
 // tool-calling schemas, sharing the plugin's own singleton browser session
@@ -1999,6 +2008,7 @@ function registerRoutes(app, upload, deps = {}) {
     browserAutomationPlugin,
     telegramBridgePlugin,
     discordBotPlugin,
+    matrixBridgePlugin,
     videoWatchPlugin,
     contextPushPlugin,
     screenSensingPlugin,
@@ -2016,6 +2026,7 @@ function registerRoutes(app, upload, deps = {}) {
     approvalGateCapability,
     mcpClientCapability,
     toolCallLogCapability,
+    hooksCapability,
   ];
   const activePresetsStore = deps.presetsStore || presetsStore;
   const activePersonalityStore = deps.personalityStore || personalityStore;
@@ -2061,6 +2072,7 @@ function registerRoutes(app, upload, deps = {}) {
   }).run;
   const activeMcpClientRegistry = deps.mcpClientRegistry || mcpClientRegistry;
   const activeToolCallLog = deps.toolCallLog || toolCallLog;
+  const activeHooksStore = deps.hooksStore || hooksStore;
   const activeBrowserAutomationToolSource = deps.browserAutomationToolSource || browserAutomationToolSource;
   const capabilityContext = {
     acpMemoryStore: deps.acpMemoryStore || acpMemoryStore,
@@ -2074,6 +2086,7 @@ function registerRoutes(app, upload, deps = {}) {
     approvalGate: activeApprovalGate,
     mcpClientRegistry: activeMcpClientRegistry,
     toolCallLog: deps.toolCallLog || toolCallLog,
+    hooksStore: activeHooksStore,
     // Issue #187: discord-bot's voice session needs the same full
     // "speak this reply" pipeline (gaming-aware TTS provider switching,
     // VTube reactions, captions) every other surface already uses, not a
@@ -2363,7 +2376,21 @@ function registerRoutes(app, upload, deps = {}) {
     if (!checkAdminAuth(req, res)) return;
     try {
       const editors = getEditorIntegrations();
-      const restored = await editors.restoreEditSnapshot(req.params.id);
+      const confirmStale = Boolean(req.body && req.body.confirmStale);
+      const restored = await editors.restoreEditSnapshot(req.params.id, { confirmStale });
+      // #475 whole-branch review fix: {stale: true, ...} is truthy, so a
+      // plain 200 here made both renderer UIs' `if (!result.restored) throw`
+      // check read a stale, unconfirmed restore as a success -- nothing was
+      // actually restored, but the UI reported it worked. 409 (plus a null
+      // `restored`) routes into that same existing error branch instead of
+      // requiring any renderer change.
+      if (restored && restored.stale) {
+        return res.status(409).json({
+          restored: null,
+          stale: restored,
+          error: "snapshot is stale: target has been written to again since it was recorded",
+        });
+      }
       return res.json({ restored });
     } catch (error) {
       return res.status(400).json({
@@ -4536,6 +4563,15 @@ function registerRoutes(app, upload, deps = {}) {
             }),
             createSessionSearchToolSource({ acpMemoryStore, sessionId }),
             createSkillToolSource({ approvalGate: activeApprovalGate, skillsStore: activeSkillsStore }),
+            createSnapshotToolSource({
+              approvalGate: activeApprovalGate,
+              snapshotStore,
+              // Issue #475 whole-branch review: without this, a file-kind
+              // restore skips the workspace-containment check that
+              // getEditorIntegrations().restoreEditSnapshot already
+              // enforces for the REST/UI restore path.
+              restoreFileSnapshot: (id, opts) => getEditorIntegrations().restoreEditSnapshot(id, opts),
+            }),
             // Issue #253: lets Mana pick her own Live2D expression for this
             // reply, alongside (not instead of) reply-emotion.js's automatic
             // detection. No approvalGate/store needed -- see
@@ -4590,6 +4626,14 @@ function registerRoutes(app, upload, deps = {}) {
               runLocalReply: runLocalLlamaReply,
             });
           }
+          // Issue #426: the user's own PreToolUse/PostToolUse-style hook
+          // rules (deny/ask/run-command), applied *before* (wrapped inside)
+          // wrapWithToolCallLog below -- so a denied or ask-gated call still
+          // lands in the audit trail as its own logged event, additive to
+          // both existing gates rather than replacing either.
+          mergedToolPolicy = wrapWithHooks(mergedToolPolicy, activeHooksStore, activeApprovalGate, {
+            snapshotStore,
+          });
           // Issue #188: applied last so it catches every tool call from
           // every source (local read_file, browser-automation, MCP) in one
           // shared audit/trace log.
