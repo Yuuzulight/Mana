@@ -1635,3 +1635,49 @@ test("POST /persona/override/clear removes a session's override", async () => {
 
   assert.equal(persona.getPersonaOverride("route-test-session-b"), null);
 });
+
+// #475 whole-branch review fix: POST /editors/workspace/snapshots/:id/restore
+// used to return 200 with {restored: {stale: true, ...}} on a stale,
+// unconfirmed restore -- truthy, so both renderer UIs' own
+// `if (!result.restored) throw` check read that as success and silently did
+// nothing while claiming it worked. It must now return 409 with a
+// non-truthy `restored`, so the renderers' existing error branch fires.
+test("POST snapshots/:id/restore returns 409 with a non-truthy restored field when the underlying restore is stale", async () => {
+  const staleResult = {
+    stale: true,
+    id: "snap-1",
+    kind: "file",
+    key: "a.txt",
+    newerSnapshotId: "snap-2",
+  };
+  const app = createApp({
+    editors: {
+      restoreEditSnapshot: async (id, opts) => {
+        assert.equal(id, "snap-1");
+        assert.deepEqual(opts, { confirmStale: false });
+        return staleResult;
+      },
+    },
+  });
+
+  await withServer(app, async (baseUrl) => {
+    const { response, payload } = await postJson(`${baseUrl}/editors/workspace/snapshots/snap-1/restore`, {});
+    assert.equal(response.status, 409);
+    assert.equal(payload.restored, null);
+    assert.deepEqual(payload.stale, staleResult);
+  });
+});
+
+test("POST snapshots/:id/restore still returns 200 with the normal shape when the restore isn't stale", async () => {
+  const app = createApp({
+    editors: {
+      restoreEditSnapshot: async () => ({ restoredPath: "/repo/a.txt" }),
+    },
+  });
+
+  await withServer(app, async (baseUrl) => {
+    const { response, payload } = await postJson(`${baseUrl}/editors/workspace/snapshots/snap-1/restore`, {});
+    assert.equal(response.status, 200);
+    assert.deepEqual(payload, { restored: { restoredPath: "/repo/a.txt" } });
+  });
+});
