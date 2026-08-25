@@ -9,16 +9,22 @@ namespace Mana.NativeLauncher;
 
 internal sealed class ManaProcessManager : IDisposable
 {
-    private readonly HttpClient http = new();
+    private readonly HttpClient http;
     private Process? backendProcess;
     private Process? kokoroProcess;
     private Process? fishSpeechProcess;
 
     public string RootDirectory { get; }
 
-    public ManaProcessManager(string rootDirectory)
+    // handler: null (the default, and every existing call site's behavior)
+    // constructs a real HttpClient for live health checks. Tests pass a
+    // fake HttpMessageHandler to exercise the health-check-then-start
+    // selection logic without live servers -- same pattern as
+    // ManaBackendClient.
+    public ManaProcessManager(string rootDirectory, HttpMessageHandler? handler = null)
     {
         RootDirectory = rootDirectory;
+        http = handler is null ? new HttpClient() : new HttpClient(handler);
     }
 
     public async Task StartAsync()
@@ -215,7 +221,7 @@ internal sealed class ManaProcessManager : IDisposable
     // tools/fish-speech/.venv-native/...). What to do when it's missing
     // (throw vs. log-and-return-null) genuinely differs per caller and is
     // deliberately NOT folded into this helper.
-    private static string ResolveVenvPython(string venvRootDir, string venvSubdir)
+    internal static string ResolveVenvPython(string venvRootDir, string venvSubdir)
     {
         return Path.Combine(venvRootDir, venvSubdir, "Scripts", "python.exe");
     }
