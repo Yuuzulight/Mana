@@ -2,6 +2,7 @@ using System;
 using System.Diagnostics;
 using System.IO;
 using System.Net.Http;
+using System.Runtime.InteropServices;
 using System.Threading.Tasks;
 
 namespace Mana.NativeLauncher;
@@ -27,20 +28,43 @@ internal sealed class ManaProcessManager : IDisposable
         // voice, not the primary, so both services need to actually be
         // running: Fish Speech to answer synthesis requests by default,
         // Kokoro so the fallback has something live to fall back to.
-        if (!await IsServiceRunningAsync("http://127.0.0.1:5011/health"))
-        {
-            kokoroProcess = StartKokoro();
-        }
+        //
+        // These three checks are independent (none needs another already
+        // running before it can start), so they run concurrently instead
+        // of one-after-another -- a stale/wedged listener on one port no
+        // longer serializes an ~100s HttpClient timeout in front of the
+        // other two.
+        var kokoroTask = StartIfNotRunningAsync("http://127.0.0.1:5011/health", () => Task.FromResult<Process?>(StartKokoro()));
+        var fishSpeechTask = StartIfNotRunningAsync("http://127.0.0.1:8080/v1/health", () => Task.FromResult(StartFishSpeech()));
+        var backendTask = StartIfNotRunningAsync("http://127.0.0.1:5005/health", () => Task.FromResult<Process?>(StartBackend()));
 
-        if (!await IsServiceRunningAsync("http://127.0.0.1:8080/v1/health"))
+        try
         {
-            fishSpeechProcess = StartFishSpeech();
+            await Task.WhenAll(kokoroTask, fishSpeechTask, backendTask);
         }
+        finally
+        {
+            // Task.WhenAll waits for every task to reach a terminal state
+            // (success or failure) before it throws -- so by here all
+            // three are guaranteed completed, and it's safe to store
+            // whichever processes actually started even if a sibling
+            // failed (e.g. Kokoro's missing-venv throw, unchanged, still
+            // fatal by design). Without this, a successfully-started Fish
+            // Speech or backend process would be orphaned: started, but
+            // never given a Process handle for Dispose() to kill.
+            if (kokoroTask.IsCompletedSuccessfully) kokoroProcess = kokoroTask.Result;
+            if (fishSpeechTask.IsCompletedSuccessfully) fishSpeechProcess = fishSpeechTask.Result;
+            if (backendTask.IsCompletedSuccessfully) backendProcess = backendTask.Result;
+        }
+    }
 
-        if (!await IsServiceRunningAsync("http://127.0.0.1:5005/health"))
+    private async Task<Process?> StartIfNotRunningAsync(string healthUrl, Func<Task<Process?>> start)
+    {
+        if (await IsServiceRunningAsync(healthUrl))
         {
-            backendProcess = StartBackend();
+            return null;
         }
+        return await start();
     }
 
     private async Task<bool> IsServiceRunningAsync(string url)
@@ -59,7 +83,7 @@ internal sealed class ManaProcessManager : IDisposable
     private Process StartKokoro()
     {
         var ttsDir = Path.Combine(RootDirectory, "tts-service");
-        var python = Path.Combine(ttsDir, "venv", "Scripts", "python.exe");
+        var python = ResolveVenvPython(ttsDir, "venv");
         if (!File.Exists(python))
         {
             throw new FileNotFoundException("Kokoro Python environment was not found. Run the Electron launcher once for setup.", python);
@@ -80,6 +104,14 @@ internal sealed class ManaProcessManager : IDisposable
     // directly. Launching it here the same way StartKokoro() does gives
     // Dispose() a real, trackable, killable Process handle.
     //
+    // This same tradeoff (a Start-Process-based launcher script vs. a
+    // trackable handle) isn't unique to Fish Speech -- tools/start-local-
+    // services.ps1 uses the identical shape for SearXNG and llama-server.
+    // If this launcher adopts either of those the same way, expect to
+    // re-solve this same fork, including re-porting whatever safety logic
+    // that script carries (this file already had to re-port Fish Speech's
+    // own RAM-headroom check below once).
+    //
     // fish_speech_native_server.py's own docstring requires its working
     // directory be tools/fish-speech (it resolves checkpoint paths
     // relative to cwd) and takes no arguments of its own -- it hardcodes
@@ -88,23 +120,57 @@ internal sealed class ManaProcessManager : IDisposable
     private Process? StartFishSpeech()
     {
         var fishDir = Path.Combine(RootDirectory, "tools", "fish-speech");
-        var python = Path.Combine(fishDir, ".venv-native", "Scripts", "python.exe");
+        var python = ResolveVenvPython(fishDir, ".venv-native");
         var serverScript = Path.Combine(RootDirectory, "tools", "fish_speech_native_server.py");
-        if (!File.Exists(python))
+        if (!File.Exists(python) || !File.Exists(serverScript))
         {
-            // Unlike Kokoro (thrown as fatal below) -- Fish Speech missing
-            // its native venv is not fatal to app startup. TTS_PROVIDER=fish
+            // Unlike Kokoro (thrown as fatal above) -- Fish Speech missing
+            // its native setup is not fatal to app startup. TTS_PROVIDER=fish
             // combined with node-bot's own FISH_TTS_FALLBACK_PROVIDER
             // default ("kokoro") already degrades gracefully to
             // Kokoro-only operation when Fish Speech is unreachable, and
             // its native setup (docs/fish_speech_tts.md) is a substantial
             // manual install most users won't have done yet.
             Console.WriteLine(
-                $"Fish Speech native venv not found at {python}; skipping -- Mana will use Kokoro until it's set up (see docs/fish_speech_tts.md).");
+                $"Fish Speech native setup incomplete (python.exe found: {File.Exists(python)}, fish_speech_native_server.py found: {File.Exists(serverScript)}); skipping -- Mana will use Kokoro until it's set up (see docs/fish_speech_tts.md).");
             return null;
         }
 
-        return StartHiddenProcess(python, Quote(serverScript), fishDir);
+        // Ported from start_fish_speech_native.ps1's own free-RAM check --
+        // the checkpoint loads via mmap, which stages through host RAM
+        // regardless of its eventual GPU destination, so a low-RAM machine
+        // can crash here, not just run slowly. Warning only, not a hard
+        // block, matching the .ps1 script's own behavior.
+        var freeRamGB = GetFreeRamGB();
+        if (freeRamGB < 6)
+        {
+            Console.WriteLine(
+                $"Warning: only {freeRamGB:F1}GB RAM free -- loading Fish Speech's checkpoint (~3.6GB, mmap'd through host RAM) may be tight. Consider closing other apps first.");
+        }
+
+        try
+        {
+            // Redirected to the same log file names start_fish_speech_native.ps1
+            // itself uses, so a failure here leaves the same diagnostic
+            // trail a manual run of that script would -- unlike Kokoro/the
+            // backend, Fish Speech's cold-compile startup is slow and
+            // failure-prone enough (docs/fish_speech_tts.md) that silent
+            // failure with nothing to inspect is a real cost.
+            return StartHiddenProcess(
+                python,
+                Quote(serverScript),
+                fishDir,
+                stdoutLogPath: Path.Combine(fishDir, "native_server.out.log"),
+                stderrLogPath: Path.Combine(fishDir, "native_server.err.log"));
+        }
+        catch (Exception ex)
+        {
+            // Same non-fatal reasoning as the missing-setup case above --
+            // a launch failure here must not take down backend startup or
+            // the voice loop.
+            Console.WriteLine($"Fish Speech failed to start: {ex.Message} -- Mana will use Kokoro until this is resolved.");
+            return null;
+        }
     }
 
     private Process StartBackend()
@@ -143,7 +209,23 @@ internal sealed class ManaProcessManager : IDisposable
                throw new InvalidOperationException("Failed to start Mana backend.");
     }
 
-    private static Process StartHiddenProcess(string fileName, string arguments, string workingDirectory)
+    // Shared by StartKokoro/StartFishSpeech -- both are "python from a
+    // dedicated venv" services differing only in the venv's directory
+    // layout (Kokoro: tts-service/venv/..., Fish Speech:
+    // tools/fish-speech/.venv-native/...). What to do when it's missing
+    // (throw vs. log-and-return-null) genuinely differs per caller and is
+    // deliberately NOT folded into this helper.
+    private static string ResolveVenvPython(string venvRootDir, string venvSubdir)
+    {
+        return Path.Combine(venvRootDir, venvSubdir, "Scripts", "python.exe");
+    }
+
+    private static Process StartHiddenProcess(
+        string fileName,
+        string arguments,
+        string workingDirectory,
+        string? stdoutLogPath = null,
+        string? stderrLogPath = null)
     {
         var startInfo = new ProcessStartInfo
         {
@@ -152,15 +234,101 @@ internal sealed class ManaProcessManager : IDisposable
             WorkingDirectory = workingDirectory,
             UseShellExecute = false,
             CreateNoWindow = true,
+            RedirectStandardOutput = stdoutLogPath is not null,
+            RedirectStandardError = stderrLogPath is not null,
         };
 
-        return Process.Start(startInfo) ??
+        var process = Process.Start(startInfo) ??
                throw new InvalidOperationException($"Failed to start {fileName}.");
+
+        if (stdoutLogPath is not null)
+        {
+            AttachLineLogger(process, isError: false, stdoutLogPath);
+        }
+        if (stderrLogPath is not null)
+        {
+            AttachLineLogger(process, isError: true, stderrLogPath);
+        }
+
+        return process;
+    }
+
+    // Fresh log file per launch (truncated, not appended) -- matches
+    // start_fish_speech_native.ps1's own -RedirectStandardOutput/-Error
+    // behavior, which overwrites on each run rather than accumulating
+    // forever. Best-effort only: a log directory that can't be written to
+    // must never prevent the service itself from starting.
+    private static void AttachLineLogger(Process process, bool isError, string logPath)
+    {
+        try
+        {
+            File.WriteAllText(logPath, string.Empty);
+        }
+        catch
+        {
+            // Best effort.
+        }
+
+        DataReceivedEventHandler handler = (_, e) =>
+        {
+            if (e.Data is null) return;
+            try
+            {
+                File.AppendAllText(logPath, e.Data + Environment.NewLine);
+            }
+            catch
+            {
+                // Best effort.
+            }
+        };
+
+        if (isError)
+        {
+            process.ErrorDataReceived += handler;
+            process.BeginErrorReadLine();
+        }
+        else
+        {
+            process.OutputDataReceived += handler;
+            process.BeginOutputReadLine();
+        }
     }
 
     private static string Quote(string value)
     {
         return $"\"{value.Replace("\"", "\\\"")}\"";
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct MEMORYSTATUSEX
+    {
+        public uint dwLength;
+        public uint dwMemoryLoad;
+        public ulong ullTotalPhys;
+        public ulong ullAvailPhys;
+        public ulong ullTotalPageFile;
+        public ulong ullAvailPageFile;
+        public ulong ullTotalVirtual;
+        public ulong ullAvailVirtual;
+        public ulong ullAvailExtendedVirtual;
+    }
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GlobalMemoryStatusEx(ref MEMORYSTATUSEX lpBuffer);
+
+    // Ported from start_fish_speech_native.ps1's own free-RAM check (there,
+    // via Get-CimInstance Win32_OperatingSystem). GlobalMemoryStatusEx is
+    // the native Win32 equivalent -- avoids adding a new NuGet dependency
+    // (e.g. System.Management) for a single read.
+    private static double GetFreeRamGB()
+    {
+        var status = new MEMORYSTATUSEX { dwLength = (uint)Marshal.SizeOf<MEMORYSTATUSEX>() };
+        if (!GlobalMemoryStatusEx(ref status))
+        {
+            return double.MaxValue; // can't determine -- don't warn spuriously
+        }
+        return status.ullAvailPhys / 1024.0 / 1024.0 / 1024.0;
     }
 
     public void Dispose()
