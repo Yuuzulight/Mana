@@ -205,6 +205,13 @@ function createApprovalGate(options = {}) {
   }
 
   // decision: "allow-once" | "always-allow" | "deny"
+  //
+  // #475 review: this is the only place a human's actual decision on a
+  // pending request is known -- wrapWithToolCallLog (server.js) only ever
+  // sees requestApproval's immediate {status:"pending"} return, never what
+  // happens later here. Logged to the same guardianAuditLog the
+  // guardian-cleared auto-approve path already uses, so "who decided what"
+  // is durable for every action type this gate covers, not only guardian's.
   async function decide(requestId, decision) {
     const entry = pending.get(requestId);
     if (!entry) return null;
@@ -213,6 +220,13 @@ function createApprovalGate(options = {}) {
       pending.delete(requestId);
       const deniedCount = denialCount(entry.actionType) + 1;
       denialCounts.set(entry.actionType, deniedCount);
+      guardianAuditLog.append({
+        name: entry.actionType,
+        args: entry.payload,
+        ok: false,
+        decision: "deny",
+        summary: entry.summary,
+      });
       return { status: "denied", requestId, actionType: entry.actionType, deniedCount };
     }
     if (decision === "always-allow") {
@@ -225,11 +239,31 @@ function createApprovalGate(options = {}) {
     // if it throws, the entry stays retrievable instead of being silently
     // lost (a thrown skill-write executor would otherwise strand the
     // approved request nowhere: not pending, not written).
-    const result = await runExecutor(entry.actionType, entry.payload);
+    let result;
+    try {
+      result = await runExecutor(entry.actionType, entry.payload);
+    } catch (e) {
+      guardianAuditLog.append({
+        name: entry.actionType,
+        args: entry.payload,
+        ok: false,
+        decision,
+        summary: entry.summary,
+        error: e?.message || String(e),
+      });
+      throw e;
+    }
     pending.delete(requestId);
     // Approving breaks the streak: the run is what the counter was watching
     // for, so it is no longer consecutive.
     denialCounts.delete(entry.actionType);
+    guardianAuditLog.append({
+      name: entry.actionType,
+      args: entry.payload,
+      ok: true,
+      decision,
+      summary: entry.summary,
+    });
     return { status: "approved", requestId, actionType: entry.actionType, result };
   }
 

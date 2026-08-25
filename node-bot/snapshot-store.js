@@ -97,6 +97,7 @@ function createSnapshotStore(options = {}) {
             scope: record.scope,
             summary: record.summary,
             appliedAt: record.appliedAt,
+            source: record.source ?? null,
           };
         } catch (e) {
           return null;
@@ -138,7 +139,31 @@ function createSnapshotStore(options = {}) {
     }
   }
 
-  function recordSnapshot({ kind, key, scope, payload, summary } = {}) {
+  // #475: is `id`'s target stale -- has something else legitimately written
+  // to the same kind+key+scope since this snapshot was recorded? Purely
+  // metadata-based (listSnapshots, not a kind-specific "read current live
+  // state" call) so it stays exactly as kind-agnostic as the rest of this
+  // store: a later recordSnapshot for the same target IS that later write,
+  // by construction -- every existing call site records a snapshot
+  // immediately before its own write lands (see zed-integration.js's
+  // approveEditProposal, acp-autonomous-loop.js's file_write, etc.), so "a
+  // newer snapshot exists" and "the target changed since this snapshot" are
+  // the same fact. Returns null if id doesn't exist.
+  function checkStale(id) {
+    const record = getSnapshot(id);
+    if (!record) return null;
+    const newer = listSnapshots(record.kind).filter(
+      (other) =>
+        other.id !== id &&
+        other.key === record.key &&
+        other.scope === record.scope &&
+        String(other.appliedAt).localeCompare(String(record.appliedAt)) > 0,
+    );
+    if (!newer.length) return { stale: false };
+    return { stale: true, newerSnapshotId: newer[0].id, newerAppliedAt: newer[0].appliedAt };
+  }
+
+  function recordSnapshot({ kind, key, scope, payload, summary, source } = {}) {
     if (!kind) {
       throw new Error("kind is required");
     }
@@ -152,6 +177,7 @@ function createSnapshotStore(options = {}) {
       payload,
       summary: summary || "",
       appliedAt: now(),
+      source: source ?? null,
     };
     writeJsonAtomic(snapshotPath(id), record);
     pruneOldest(kind);
@@ -162,6 +188,7 @@ function createSnapshotStore(options = {}) {
       scope: record.scope,
       summary: record.summary,
       appliedAt: record.appliedAt,
+      source: record.source,
     };
   }
 
@@ -169,15 +196,47 @@ function createSnapshotStore(options = {}) {
     restorers.set(kind, fn);
   }
 
+  // #475: lets a caller check whether a kind is actually restorable on
+  // *this* store instance before staging anything (e.g. a pending
+  // approval) that would only fail once acted on -- Pipeline B keeps its
+  // own store instance with only the built-in "file" restorer registered,
+  // so this matters there in particular.
+  function hasRestorer(kind) {
+    return restorers.has(kind);
+  }
+
   // Looks up the snapshot, calls the registered restorer for its kind, and
   // deletes the snapshot only after the restorer's promise resolves -- a
   // transient failure (a briefly-locked file, a momentary permission error)
   // leaves the snapshot exactly as it was, so calling restoreSnapshot(id)
   // again is a valid retry, not a lost undo.
-  async function restoreSnapshot(id) {
+  //
+  // #475: unless confirmStale is true, a stale target (see checkStale above)
+  // short-circuits before the restorer ever runs -- returns a warning
+  // object instead of silently overwriting whatever legitimately landed
+  // there since. Every existing caller (the REST route, both apps' "Applied
+  // edits" panels) gets this protection automatically, since it lives here
+  // rather than only in the new agent-tool code path.
+  async function restoreSnapshot(id, { confirmStale = false } = {}) {
     const record = getSnapshot(id);
     if (!record) {
       throw new Error("snapshot not found");
+    }
+    if (!confirmStale) {
+      const staleness = checkStale(id);
+      if (staleness && staleness.stale) {
+        return {
+          stale: true,
+          id,
+          kind: record.kind,
+          key: record.key,
+          scope: record.scope,
+          summary: record.summary,
+          appliedAt: record.appliedAt,
+          newerSnapshotId: staleness.newerSnapshotId,
+          newerAppliedAt: staleness.newerAppliedAt,
+        };
+      }
     }
     const restorer = restorers.get(record.kind);
     if (typeof restorer !== "function") {
@@ -195,6 +254,23 @@ function createSnapshotStore(options = {}) {
   // their own, which would be a double-registration bug.
   registerRestorer("file", async (key, payload, scope) => {
     const fullPath = path.resolve(scope, key);
+    // #475 review: a restore itself must be undoable -- without this, a
+    // confirmStale:true restore a human approves anyway (despite the "this
+    // overwrites newer state" warning) destroys that newer state for good.
+    if (fs.existsSync(fullPath)) {
+      try {
+        recordSnapshot({
+          kind: "file",
+          key,
+          scope,
+          payload: fs.readFileSync(fullPath, "utf8"),
+          summary: "pre-restore backup",
+          source: "system",
+        });
+      } catch (e) {
+        console.warn("pre-restore file backup failed:", e?.message || e);
+      }
+    }
     fs.writeFileSync(fullPath, payload, "utf8");
     const written = fs.readFileSync(fullPath, "utf8");
     if (written !== payload) {
@@ -209,7 +285,9 @@ function createSnapshotStore(options = {}) {
     getSnapshot,
     deleteSnapshot,
     registerRestorer,
+    hasRestorer,
     restoreSnapshot,
+    checkStale,
   };
 }
 

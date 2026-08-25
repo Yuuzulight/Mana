@@ -42,6 +42,7 @@ function registerMemoryFactsRoutes(app, context = {}) {
       const result = acpMemoryStore.rememberFact({
         key: req.params.key,
         action: "archive",
+        source: "human",
       });
       return res.json({ ok: true, ...result });
     } catch (e) {

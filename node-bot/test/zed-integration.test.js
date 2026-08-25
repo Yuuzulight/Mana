@@ -1459,6 +1459,43 @@ test("approving a proposal records a snapshot of the pre-edit content, listed by
   }
 });
 
+test("approving a proposal records the snapshot with source: human -- a human clicked approve", () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mana-editor-source-"));
+  const snapshotsDir = fs.mkdtempSync(path.join(os.tmpdir(), "mana-editor-source-store-"));
+  const sourceFile = path.join(tempDir, "src.js");
+  fs.writeFileSync(sourceFile, "const value = 1;\n");
+
+  try {
+    const workspaceStore = createEditorWorkspaceStore();
+    workspaceStore.setWorkspace(tempDir, { editor: "zed" });
+    const editors = createEditorIntegrations({
+      env: {},
+      commandResolver: (command) => command,
+      workspaceStore,
+      idFactory: () => "proposal-source-1",
+      snapshotsDir,
+    });
+
+    editors.createEditProposal({
+      path: "src.js",
+      proposedContent: "const value = 2;\n",
+      summary: "Update value",
+    });
+
+    const applied = editors.approveEditProposal("proposal-source-1");
+    const [snapshot] = editors.listEditSnapshots().filter((s) => s.id === applied.snapshotId);
+    // listEditSnapshots doesn't project source today -- read the raw
+    // snapshot store record instead to confirm it was actually recorded.
+    const snapshotsDirFiles = fs.readdirSync(snapshotsDir).filter((f) => f.endsWith(".json"));
+    const raw = JSON.parse(fs.readFileSync(path.join(snapshotsDir, snapshotsDirFiles[0]), "utf8"));
+    assert.equal(raw.source, "human");
+    assert.ok(snapshot);
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+    fs.rmSync(snapshotsDir, { recursive: true, force: true });
+  }
+});
+
 test("restoreEditSnapshot writes the pre-edit content back, verifies it, and removes the snapshot", async () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mana-editor-restore-"));
   const snapshotsDir = fs.mkdtempSync(path.join(os.tmpdir(), "mana-editor-restore-store-"));
@@ -1489,12 +1526,56 @@ test("restoreEditSnapshot writes the pre-edit content back, verifies it, and rem
     assert.equal(restored.relativePath, "src.js");
     assert.equal(fs.readFileSync(sourceFile, "utf8"), "const value = 1;\n");
 
-    // Restored once -- it's consumed, not a repeatable checkpoint.
-    assert.deepEqual(editors.listEditSnapshots(), []);
+    // The restored snapshot itself is consumed, not a repeatable checkpoint
+    // -- but #475 review: the content it overwrote ("const value = 2;\n")
+    // is now backed up in its place, so the restore is itself undoable.
+    const remaining = editors.listEditSnapshots();
+    assert.equal(remaining.length, 1);
+    assert.equal(remaining[0].relativePath, "src.js");
+    assert.equal(remaining[0].summary, "pre-restore backup");
     await assert.rejects(
       () => editors.restoreEditSnapshot(applied.snapshotId),
       /edit snapshot not found/,
     );
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+    fs.rmSync(snapshotsDir, { recursive: true, force: true });
+  }
+});
+
+test("restoreEditSnapshot returns stale: true without restoring when the file changed again since the snapshot, and confirmStale forces it through", async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mana-editor-restore-stale-"));
+  const snapshotsDir = fs.mkdtempSync(path.join(os.tmpdir(), "mana-editor-restore-stale-store-"));
+  const targetFile = path.join(tempDir, "src.js");
+  fs.writeFileSync(targetFile, "const value = 1;\n");
+
+  try {
+    const workspaceStore = createEditorWorkspaceStore();
+    workspaceStore.setWorkspace(tempDir, { editor: "zed" });
+    let idCounter = 0;
+    const editors = createEditorIntegrations({
+      env: {},
+      commandResolver: (command) => command,
+      workspaceStore,
+      idFactory: () => `proposal-stale-${++idCounter}`,
+      snapshotsDir,
+    });
+
+    editors.createEditProposal({ path: "src.js", proposedContent: "const value = 2;\n", summary: "First edit" });
+    const firstApplied = editors.approveEditProposal("proposal-stale-1");
+
+    editors.createEditProposal({ path: "src.js", proposedContent: "const value = 3;\n", summary: "Second edit" });
+    editors.approveEditProposal("proposal-stale-2");
+
+    // Restoring the FIRST snapshot now would clobber the second edit.
+    const result = await editors.restoreEditSnapshot(firstApplied.snapshotId);
+    assert.equal(result.stale, true);
+    assert.equal(fs.readFileSync(targetFile, "utf8"), "const value = 3;\n", "the second edit must survive an unconfirmed stale restore");
+
+    const forced = await editors.restoreEditSnapshot(firstApplied.snapshotId, { confirmStale: true });
+    assert.equal(forced.stale, undefined);
+    assert.ok(forced.restoredAt);
+    assert.equal(fs.readFileSync(targetFile, "utf8"), "const value = 1;\n");
   } finally {
     fs.rmSync(tempDir, { recursive: true, force: true });
     fs.rmSync(snapshotsDir, { recursive: true, force: true });
@@ -1654,8 +1735,12 @@ test("createApp lists and restores edit snapshots through the shared backend rou
       assert.equal(restoreBody.restored.id, snapshotId);
       assert.equal(fs.readFileSync(sourceFile, "utf8"), "console.log('before');\n");
 
+      // #475 review: the content the restore overwrote is now backed up in
+      // the original snapshot's place, so the restore is itself undoable.
       const listAfterRestore = await fetch(`${baseUrl}/editors/workspace/snapshots`);
-      assert.deepEqual((await listAfterRestore.json()).snapshots, []);
+      const afterRestore = (await listAfterRestore.json()).snapshots;
+      assert.equal(afterRestore.length, 1);
+      assert.equal(afterRestore[0].summary, "pre-restore backup");
     });
   } finally {
     fs.rmSync(tempDir, { recursive: true, force: true });

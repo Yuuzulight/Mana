@@ -45,6 +45,11 @@ read, tested, and reasoned about without the rest of the backend.
   same pairing-code approval), plus joining a Discord voice channel for
   per-speaker transcription, spoken replies, and barge-in. **Off by
   default.**
+- [`matrix-bridge`](matrix-bridge/): a third remote-messaging option
+  alongside `telegram-bridge`/`discord-bot` -- a self-hosted Matrix
+  homeserver instead of a cloud vendor API (long-polling `/sync`, same
+  pairing-code approval), auto-joining on invite. Unencrypted rooms only --
+  no E2EE (Olm/Megolm) support. **Off by default.**
 - [`video-watch`](video-watch/): download (`yt-dlp`) or accept a local
   video, pull captions or fall back to local Whisper transcription,
   extract a duration-scaled set of frames, and answer questions grounded
@@ -57,10 +62,10 @@ read, tested, and reasoned about without the rest of the backend.
   references "this page"/"this video". **Off by default**, and needs the
   separate browser extension installed to do anything.
 
-All twelve are always loaded (no separate install step); `cron-scheduler`,
+All thirteen are always loaded (no separate install step); `cron-scheduler`,
 `image-generation`, `browser-automation`, `telegram-bridge`,
-`discord-bot`, `video-watch`, and `context-push` are disabled by default,
-the rest are enabled by default.
+`discord-bot`, `matrix-bridge`, `video-watch`, and `context-push` are
+disabled by default, the rest are enabled by default.
 
 ### A different kind of plugin: `obsidian-plugin` and `context-push-extension`
 
