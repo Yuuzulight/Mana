@@ -1391,16 +1391,31 @@ test("acp-autonomous-loop: snapshot_restore is rejected end to end when the appr
   }
 });
 
-test("acp-autonomous-loop: snapshot_restore proceeds immediately when args.approved is true, skipping the approval wait", async () => {
+// NOTE: an earlier draft of this plan had a test here named "...proceeds
+// immediately when args.approved is true, skipping the approval wait" --
+// it asserted the self-approval bypass worked, which is exactly the
+// Critical security bug the whole-branch review found and removed (see
+// Step 3/4's updated code above). Replaced with the inverse assertion:
+// model-supplied `approved` is ignored, and a real approval is still
+// required. Uses waitForPendingFile from node-bot/test/helpers.js (a
+// shared poll-for-the-pending-file helper -- see the other approval-flow
+// tests in this same file for why it's factored out rather than inlined
+// a fourth time).
+test("acp-autonomous-loop: snapshot_restore ignores a model-supplied args.approved:true and still waits for real approval", async () => {
   const origRequire = process.env.SNAPSHOT_RESTORE_REQUIRE_APPROVAL;
+  const origApprovalDir = process.env.MANA_PENDING_WRITES_DIR;
+  const os = require("os");
+  const tmpApprovalDir = fs.mkdtempSync(path.join(os.tmpdir(), "mana-snapshot-restore-approval-"));
   try {
     process.env.SNAPSHOT_RESTORE_REQUIRE_APPROVAL = "1";
+    process.env.MANA_PENDING_WRITES_DIR = tmpApprovalDir;
 
     const record = { id: "snap-2", kind: "skill", key: "x.md", scope: null, summary: "skill update: X", appliedAt: "t1", source: "human" };
     const restoreCalls = [];
     const fakeSnapshotStore = {
       getSnapshot: (id) => (id === "snap-2" ? record : null),
       checkStale: () => ({ stale: false }),
+      hasRestorer: () => true,
       restoreSnapshot: async (id, opts) => {
         restoreCalls.push({ id, opts });
         return { restored: true };
@@ -1408,12 +1423,26 @@ test("acp-autonomous-loop: snapshot_restore proceeds immediately when args.appro
     };
 
     const mockModelReply = 'Restore it:\n[{"tool":"snapshot_restore","args":{"id":"snap-2","approved":true}}]';
-    const res = await executeAutonomousStep(mockModelReply, "test-session", { snapshotStore: fakeSnapshotStore });
+    const stepPromise = executeAutonomousStep(mockModelReply, "test-session", { snapshotStore: fakeSnapshotStore });
 
+    // Still creates a real pending request despite args.approved:true.
+    const pendingFile = await waitForPendingFile(tmpApprovalDir);
+    assert.equal(restoreCalls.length, 0, "must not restore before a human actually approves");
+
+    const id = pendingFile.replace(/\.json$/, "");
+    fs.writeFileSync(
+      path.join(tmpApprovalDir, `${id}.approved.json`),
+      JSON.stringify({ approver: "test", reason: "confirmed" }),
+      "utf8",
+    );
+
+    const res = await stepPromise;
     assert.equal(res.results[0].status, "ok");
     assert.deepEqual(restoreCalls, [{ id: "snap-2", opts: { confirmStale: true } }]);
   } finally {
     process.env.SNAPSHOT_RESTORE_REQUIRE_APPROVAL = origRequire;
+    process.env.MANA_PENDING_WRITES_DIR = origApprovalDir;
+    fs.rmSync(tmpApprovalDir, { recursive: true, force: true });
   }
 });
 
@@ -1445,7 +1474,7 @@ test("acp-autonomous-loop: snapshot_restore reports an error for an unknown snap
 Run: `node --test node-bot/test/acp-autonomous-loop.test.js`
 Expected: FAIL — `snapshot_restore` isn't a recognized tool yet, so `res.results` is empty or the action falls through unhandled.
 
-- [ ] **Step 3: Add the `crypto` require and a local id generator**
+- [ ] **Step 3: Add the `crypto` require and a shared id generator**
 
 ```js
 // node-bot/acp-autonomous-loop.js -- add near the top, alongside the
@@ -1454,14 +1483,20 @@ const crypto = require("crypto");
 ```
 
 ```js
-// node-bot/acp-autonomous-loop.js -- add near makeApprovalId's call site
-// (this file's own file_write case calls a makeApprovalId() that doesn't
-// exist anywhere in the codebase -- a separate, pre-existing bug, tracked
-// on its own, not fixed by this plan). snapshot_restore gets its own
-// self-contained generator rather than depending on that broken one.
-function makeSnapshotRestoreApprovalId() {
-  return `snapshot-restore-${crypto.randomBytes(4).toString("hex")}`;
+// node-bot/acp-autonomous-loop.js -- this file's own file_write case
+// calls a makeApprovalId() that doesn't exist anywhere in the codebase
+// (a ReferenceError that only fires the first time
+// FILE_WRITE_REQUIRE_APPROVAL is actually enabled, since every existing
+// test disables it). Fix it here, in the same file this plan is already
+// touching, rather than adding a second, parallel generator for
+// snapshot_restore alone -- the fix is smaller than a workaround would be.
+function makeApprovalId(prefix) {
+  const hex = crypto.randomBytes(4).toString("hex");
+  return prefix ? `${prefix}-${hex}` : hex;
 }
+```
+
+(File_write's existing `const id = makeApprovalId();` call site keeps working unchanged -- an omitted `prefix` argument returns the same bare hex string it always expected.)
 ```
 
 - [ ] **Step 4: Add the `snapshot_restore` tool case, importing `previewRestore`**
@@ -1480,8 +1515,15 @@ const { previewRestore } = require("./ai/snapshot-tool-source");
 // createPendingRequest/waitForApprovalResult/archivePendingRequest, gated
 // by an env-var-controlled require-approval flag -- SNAPSHOT_RESTORE_REQUIRE_APPROVAL
 // instead of FILE_WRITE_REQUIRE_APPROVAL, so the two are independently
-// tunable. Never auto-decided beyond the same args.approved === true
-// escape hatch file_write already offers its own caller.
+// tunable. NOTE: an earlier draft of this plan had a
+// `!(args && args.approved === true)` escape hatch here, mirroring
+// file_write's own. That was removed as a Critical security fix during
+// this feature's whole-branch review: unlike file_write, snapshot_restore
+// has no ALLOW_FILE_WRITE-style master kill-switch, so honoring a
+// model-supplied `approved: true` would let the model self-approve a
+// restore with no human ever involved. Model-supplied `approved` is
+// ignored entirely below -- always create a real pending request when
+// requireApproval is true.
 if (tool === "snapshot_restore") {
   const id = args && args.id ? String(args.id) : null;
   if (!id) {
@@ -1498,15 +1540,18 @@ if (tool === "snapshot_restore") {
   const requireApproval = (process.env.SNAPSHOT_RESTORE_REQUIRE_APPROVAL || "1") !== "0";
   let approvalId = null;
   let approvalPayload = null;
-  if (requireApproval && !(args && args.approved === true)) {
-    approvalId = makeSnapshotRestoreApprovalId();
+  if (requireApproval) {
+    approvalId = makeApprovalId("snapshot-restore");
     approvalPayload = {
       id: approvalId,
       snapshotId: id,
       kind: preview.record.kind,
       key: preview.record.key,
+      // Staleness (if any) is already embedded in preview.summary --
+      // that's the text a human approver actually reads. No separate
+      // `stale` boolean: nothing reads it, and a second encoding of the
+      // same fact only risks drifting from the summary wording.
       summary: preview.summary,
-      stale: Boolean(preview.staleness && preview.staleness.stale),
       sessionId: sessionId || null,
       createdAt: new Date().toISOString(),
     };

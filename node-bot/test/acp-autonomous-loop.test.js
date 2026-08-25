@@ -11,6 +11,7 @@ const {
   MAX_TEST_RETRY_ATTEMPTS,
 } = require("../acp-autonomous-loop");
 const { createSnapshotStore } = require("../snapshot-store");
+const { waitForPendingFile } = require("./helpers");
 
 // This test suite monkeypatches axios.post and fs.promises in-process to provide deterministic,
 // dependency-free unit tests for the autonomous loop without any external libs.
@@ -276,6 +277,80 @@ test("acp-autonomous-loop: file_write overwrite records a restorable snapshot in
     fs.promises.stat = origStat;
     fs.promises.readFile = origRead;
     fs.promises.writeFile = origWrite;
+  }
+});
+
+// Regression test for a real bug: file_write's approval-required path
+// called makeApprovalId(), which was referenced but never defined
+// anywhere in the codebase -- every other file_write test above disables
+// approval (FILE_WRITE_REQUIRE_APPROVAL="0"), so this ReferenceError had
+// zero coverage and would only fire the first time approval was actually
+// enabled, exactly when the gate is supposed to be doing its job. Drives
+// the real pending-request/approval flow end to end, the same way the
+// snapshot_restore approval tests below already do.
+test("acp-autonomous-loop: file_write's approval path completes without crashing when approval is actually required", async () => {
+  const origEnv = process.env.ALLOW_FILE_WRITE;
+  const origApproval = process.env.FILE_WRITE_REQUIRE_APPROVAL;
+  const origApprovalDir = process.env.MANA_PENDING_WRITES_DIR;
+  const origStat = fs.promises.stat;
+  const origRead = fs.promises.readFile;
+  const origWrite = fs.promises.writeFile;
+  const tmpApprovalDir = fs.mkdtempSync(path.join(os.tmpdir(), "mana-file-write-approval-"));
+  try {
+    process.env.ALLOW_FILE_WRITE = "1";
+    process.env.FILE_WRITE_REQUIRE_APPROVAL = "1";
+    process.env.MANA_PENDING_WRITES_DIR = tmpApprovalDir;
+    let lastWriteSize = null;
+
+    // Path-conditional: only fake the write target under test
+    // ("approved-out.txt"). The approval machinery (createPendingRequest/
+    // waitForApprovalResult/archivePendingRequest) uses these same
+    // fs.promises methods to write/read the real pending-request JSON
+    // file this test polls for -- a blanket mock (as the non-approval
+    // file_write tests above use, since they never touch the approval
+    // directory at all) would silently swallow those real writes too,
+    // and the pending file this test waits on would never actually
+    // appear on disk.
+    fs.promises.stat = async (p) => {
+      if (!String(p).includes("approved-out.txt")) return origStat(p);
+      if (lastWriteSize === null) return { isFile: () => true, size: 10 };
+      return { isFile: () => true, size: lastWriteSize };
+    };
+    fs.promises.readFile = async (p, enc) => {
+      if (!String(p).includes("approved-out.txt")) return origRead(p, enc);
+      return "previous content";
+    };
+    fs.promises.writeFile = async (p, content, opts) => {
+      if (!String(p).includes("approved-out.txt")) return origWrite(p, content, opts);
+      lastWriteSize = Buffer.byteLength(content, "utf8");
+    };
+
+    const mockModelReply =
+      'Write file:\n[{"tool":"file_write","args":{"path":"src/approved-out.txt","content":"hello approved","mode":"overwrite"}}]';
+    const stepPromise = executeAutonomousStep(mockModelReply, "test-session", {
+      snapshotStore: { recordSnapshot: () => ({ id: "snap-fake" }) },
+    });
+
+    const pendingFile = await waitForPendingFile(tmpApprovalDir);
+    const id = pendingFile.replace(/\.json$/, "");
+    fs.writeFileSync(
+      path.join(tmpApprovalDir, `${id}.approved.json`),
+      JSON.stringify({ approver: "test", reason: "looks fine" }),
+      "utf8",
+    );
+
+    const res = await stepPromise;
+    assert.equal(res.results[0].tool, "file_write");
+    assert.equal(res.results[0].status, "ok");
+    assert.equal(res.results[0].action, "overwritten");
+  } finally {
+    process.env.ALLOW_FILE_WRITE = origEnv;
+    process.env.FILE_WRITE_REQUIRE_APPROVAL = origApproval;
+    process.env.MANA_PENDING_WRITES_DIR = origApprovalDir;
+    fs.promises.stat = origStat;
+    fs.promises.readFile = origRead;
+    fs.promises.writeFile = origWrite;
+    fs.rmSync(tmpApprovalDir, { recursive: true, force: true });
   }
 });
 
@@ -692,17 +767,11 @@ test("acp-autonomous-loop: snapshot_restore is rejected end to end when the appr
     const mockModelReply = 'Restore it:\n[{"tool":"snapshot_restore","args":{"id":"snap-1"}}]';
     const stepPromise = executeAutonomousStep(mockModelReply, "test-session", { snapshotStore: fakeSnapshotStore });
 
-    // Simulate a human rejecting it, the same way the file_write approval
-    // tests would if they exercised this path (they don't -- see the
-    // makeApprovalId bug noted separately). Poll briefly for the pending
-    // file to appear, then write the rejection marker next to it.
-    let pendingFile = null;
-    for (let i = 0; i < 50 && !pendingFile; i++) {
-      const files = fs.readdirSync(tmpApprovalDir).filter((f) => f.endsWith(".json") && !f.includes(".rejected.") && !f.includes(".approved."));
-      if (files.length) pendingFile = files[0];
-      else await new Promise((r) => setTimeout(r, 20));
-    }
-    assert.ok(pendingFile, "expected a pending snapshot-restore request file");
+    // Simulate a human rejecting it -- wait for the real pending-request
+    // file to appear, then write the rejection marker next to it. See
+    // "file_write's approval path doesn't crash..." below for the same
+    // flow driven against file_write, once fatal (makeApprovalId bug).
+    const pendingFile = await waitForPendingFile(tmpApprovalDir);
     const id = pendingFile.replace(/\.json$/, "");
     fs.writeFileSync(
       path.join(tmpApprovalDir, `${id}.rejected.json`),
@@ -742,13 +811,7 @@ test("acp-autonomous-loop: snapshot_restore archives the approver metadata when 
 
     // Poll briefly for the pending file to appear, then write the approval
     // marker next to it, carrying distinctive approver metadata.
-    let pendingFile = null;
-    for (let i = 0; i < 50 && !pendingFile; i++) {
-      const files = fs.readdirSync(tmpApprovalDir).filter((f) => f.endsWith(".json") && !f.includes(".rejected.") && !f.includes(".approved."));
-      if (files.length) pendingFile = files[0];
-      else await new Promise((r) => setTimeout(r, 20));
-    }
-    assert.ok(pendingFile, "expected a pending snapshot-restore request file");
+    const pendingFile = await waitForPendingFile(tmpApprovalDir);
     const id = pendingFile.replace(/\.json$/, "");
     fs.writeFileSync(
       path.join(tmpApprovalDir, `${id}.approved.json`),
@@ -803,13 +866,7 @@ test("acp-autonomous-loop: snapshot_restore ignores a model-supplied args.approv
 
     // Still creates a real pending request despite args.approved:true --
     // poll for the pending file, exactly like the other approval-flow tests.
-    let pendingFile = null;
-    for (let i = 0; i < 50 && !pendingFile; i++) {
-      const files = fs.readdirSync(tmpApprovalDir).filter((f) => f.endsWith(".json") && !f.includes(".rejected.") && !f.includes(".approved."));
-      if (files.length) pendingFile = files[0];
-      else await new Promise((r) => setTimeout(r, 20));
-    }
-    assert.ok(pendingFile, "args.approved:true must not skip creating a pending approval request");
+    const pendingFile = await waitForPendingFile(tmpApprovalDir);
     assert.equal(restoreCalls.length, 0, "must not restore before a human actually approves");
 
     const id = pendingFile.replace(/\.json$/, "");

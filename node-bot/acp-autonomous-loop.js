@@ -88,12 +88,16 @@ async function createPendingRequest(id, payload) {
   return filePath;
 }
 
-// This file's own file_write case calls a makeApprovalId() that doesn't
-// exist anywhere in the codebase -- a separate, pre-existing bug, tracked
-// on its own, not fixed by this plan. snapshot_restore gets its own
-// self-contained generator rather than depending on that broken one.
-function makeSnapshotRestoreApprovalId() {
-  return `snapshot-restore-${crypto.randomBytes(4).toString("hex")}`;
+// Shared by every approval-gated tool case in this file (file_write,
+// snapshot_restore) -- previously file_write called a makeApprovalId()
+// that was referenced but never defined anywhere in the codebase (a
+// ReferenceError that only fired the first time FILE_WRITE_REQUIRE_APPROVAL
+// was actually enabled, since every existing test disabled it). Fixed here
+// rather than left as a separate follow-up, since the fix is smaller than
+// the workaround (a second, parallel id generator) would have been.
+function makeApprovalId(prefix) {
+  const hex = crypto.randomBytes(4).toString("hex");
+  return prefix ? `${prefix}-${hex}` : hex;
 }
 
 function approvalPaths(id) {
@@ -810,14 +814,17 @@ async function executeAutonomousStep(rawModelReply, sessionId, options = {}) {
       let approvalPayload = null;
       let approvalMeta = null;
       if (requireApproval) {
-        approvalId = makeSnapshotRestoreApprovalId();
+        approvalId = makeApprovalId("snapshot-restore");
         approvalPayload = {
           id: approvalId,
           snapshotId: id,
           kind: preview.record.kind,
           key: preview.record.key,
+          // Staleness (if any) is already embedded in preview.summary above
+          // -- that's the text a human approver actually reads. A separate
+          // boolean here would be a second, unread encoding of the same
+          // fact that could silently drift from the summary wording.
           summary: preview.summary,
-          stale: Boolean(preview.staleness && preview.staleness.stale),
           sessionId: sessionId || null,
           createdAt: new Date().toISOString(),
         };
