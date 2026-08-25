@@ -36,6 +36,7 @@ test("health includes component readiness while preserving top-level fields", as
       "jobSearchAdzuna",
       "localLlama",
       "localMemory",
+      "matrixBridge",
       "mcpClients",
       "memoryFacts",
       "mobileAuth",

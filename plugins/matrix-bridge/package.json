@@ -1,0 +1,10 @@
+{
+  "name": "mana-plugin-matrix-bridge",
+  "version": "1.0.0",
+  "description": "Message Mana remotely over a self-hosted Matrix homeserver, gated by pairing-code approval.",
+  "main": "index.js",
+  "scripts": {
+    "test": "node --test test/*.test.js"
+  },
+  "private": true
+}
