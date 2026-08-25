@@ -83,3 +83,63 @@ test("getHealth reports the current rule count", () => {
   assert.equal(empty.count, 0);
   assert.match(empty.message, /No hook rules configured/);
 });
+
+test("PATCH /hooks/:id toggles enabled and 404s for an unknown id", async () => {
+  const hooksStore = createHooksStore({ dataDir: createTempDir() });
+  const rule = hooksStore.addRule({ phase: "pre", action: "deny", toolName: "file_write" });
+  const app = buildApp(hooksStore);
+  await withServer(app, async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/hooks/${rule.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled: false }),
+    });
+    const payload = await response.json();
+    assert.equal(response.status, 200);
+    assert.equal(payload.enabled, false);
+    assert.equal(hooksStore.listRules()[0].enabled, false);
+
+    const missing = await fetch(`${baseUrl}/hooks/nope`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled: false }),
+    });
+    assert.equal(missing.status, 404);
+  });
+});
+
+test("PATCH /hooks/:id rejects a non-boolean enabled value", async () => {
+  const hooksStore = createHooksStore({ dataDir: createTempDir() });
+  const rule = hooksStore.addRule({ phase: "pre", action: "deny", toolName: "file_write" });
+  const app = buildApp(hooksStore);
+  await withServer(app, async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/hooks/${rule.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled: "yes" }),
+    });
+    assert.equal(response.status, 400);
+  });
+});
+
+test("getHealth surfaces a rule whose last run failed, by tool name, without changing count", () => {
+  const hooksStore = createHooksStore({ dataDir: createTempDir() });
+  const rule = hooksStore.addRule({ phase: "post", action: "run-command", toolName: "file_write", command: "eslint" });
+  hooksStore.recordRunOutcome(rule.id, { ok: false, error: "exit 1" });
+
+  const health = hooksCapability.getHealth({ hooksStore });
+  assert.equal(health.count, 1);
+  assert.equal(health.failing, 1);
+  assert.match(health.message, /1 last ran with an error/);
+  assert.match(health.message, /file_write/);
+});
+
+test("getHealth does not flag a rule that has never run or last ran successfully", () => {
+  const hooksStore = createHooksStore({ dataDir: createTempDir() });
+  const rule = hooksStore.addRule({ phase: "post", action: "run-command", toolName: "file_write", command: "eslint" });
+  hooksStore.recordRunOutcome(rule.id, { ok: true });
+
+  const health = hooksCapability.getHealth({ hooksStore });
+  assert.equal(health.failing, 0);
+  assert.doesNotMatch(health.message, /last ran with an error/);
+});

@@ -6,6 +6,7 @@ const test = require("node:test");
 
 const { createHooksStore, wrapWithHooks, runPostCommandHook, HOOK_COMMAND_TIMEOUT_MS } = require("../hooks-store");
 const { createApprovalGate } = require("../approval-gate");
+const { createSnapshotStore } = require("../snapshot-store");
 
 function createTempDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), "mana-hooks-store-"));
@@ -114,6 +115,72 @@ test("a toolName ending in * matches as a prefix glob", () => {
   store.addRule({ phase: "pre", action: "deny", toolName: "skill__*" });
   assert.equal(store.matchRules("skill__create", "pre", {}).length, 1);
   assert.equal(store.matchRules("memory__remember", "pre", {}).length, 0);
+});
+
+// ---- #426 review: enabled/disabled + lastRun visibility ----
+
+test("addRule defaults enabled to true; a new rule matches immediately", () => {
+  const store = createHooksStore({ dataDir: createTempDir() });
+  const rule = store.addRule({ phase: "pre", action: "deny", toolName: "file_write" });
+  assert.equal(rule.enabled, true);
+  assert.equal(store.matchRules("file_write", "pre", {}).length, 1);
+});
+
+test("setRuleEnabled(false) makes a rule stop matching without deleting it; setRuleEnabled(true) resumes it", () => {
+  const store = createHooksStore({ dataDir: createTempDir() });
+  const rule = store.addRule({ phase: "pre", action: "deny", toolName: "file_write" });
+
+  const disabled = store.setRuleEnabled(rule.id, false);
+  assert.equal(disabled.enabled, false);
+  assert.equal(store.matchRules("file_write", "pre", {}).length, 0);
+  assert.equal(store.listRules().length, 1, "disabling must not delete the rule");
+
+  const reenabled = store.setRuleEnabled(rule.id, true);
+  assert.equal(reenabled.enabled, true);
+  assert.equal(store.matchRules("file_write", "pre", {}).length, 1);
+});
+
+test("setRuleEnabled returns null for an unknown id and does not throw", () => {
+  const store = createHooksStore({ dataDir: createTempDir() });
+  assert.equal(store.setRuleEnabled("nope", false), null);
+});
+
+test("setRuleEnabled persists across a fresh store instance pointed at the same dataDir", () => {
+  const dataDir = createTempDir();
+  const storeA = createHooksStore({ dataDir });
+  const rule = storeA.addRule({ phase: "pre", action: "deny", toolName: "file_write" });
+  storeA.setRuleEnabled(rule.id, false);
+
+  const storeB = createHooksStore({ dataDir });
+  assert.equal(storeB.listRules()[0].enabled, false);
+});
+
+test("recordRunOutcome persists lastRun and is silent for an unknown id", () => {
+  const store = createHooksStore({ dataDir: createTempDir() });
+  const rule = store.addRule({ phase: "post", action: "run-command", toolName: "file_write", command: "prettier" });
+
+  store.recordRunOutcome(rule.id, { ok: true });
+  assert.equal(store.listRules()[0].lastRun.ok, true);
+
+  store.recordRunOutcome(rule.id, { ok: false, error: "not found" });
+  assert.equal(store.listRules()[0].lastRun.ok, false);
+  assert.equal(store.listRules()[0].lastRun.error, "not found");
+
+  assert.doesNotThrow(() => store.recordRunOutcome("nope", { ok: true }));
+});
+
+test("a run-command hook's outcome is recorded on the rule when hooksStore is wired into runPostCommandHook", async () => {
+  const hooksStore = createHooksStore({ dataDir: createTempDir() });
+  hooksStore.addRule({ phase: "post", action: "run-command", toolName: "file_write", command: "prettier", args: ["{path}"] });
+  const policy = basePolicy();
+  const fakeExecFile = (cmd, args, opts, cb) => cb(new Error("prettier not found"));
+  const wrapped = wrapWithHooks(policy, hooksStore, fakeApprovalGate(), { execFile: fakeExecFile });
+
+  await wrapped.executeTool("file_write", { path: "src/app.js" });
+
+  const [rule] = hooksStore.listRules();
+  assert.equal(rule.lastRun.ok, false);
+  assert.match(rule.lastRun.error, /prettier not found/);
 });
 
 // ---- wrapWithHooks ----
@@ -345,4 +412,88 @@ test("every matching post rule runs, not just the first", async () => {
 
   await wrapped.executeTool("file_write", { path: "src/app.js" });
   assert.deepEqual(execCalls.sort(), ["eslint", "prettier"]);
+});
+
+// ---- #426 sub-project 4: rollback-on-failure ----
+
+test("addRule requires a command for a rollback-on-failure rule, same as run-command", () => {
+  const store = createHooksStore({ dataDir: createTempDir() });
+  assert.throws(
+    () => store.addRule({ phase: "post", action: "rollback-on-failure", toolName: "file_write" }),
+    /command is required/,
+  );
+});
+
+test("a rollback-on-failure rule restores the file's newest snapshot when its command fails", async () => {
+  const hooksStore = createHooksStore({ dataDir: createTempDir() });
+  hooksStore.addRule({
+    phase: "post",
+    action: "rollback-on-failure",
+    toolName: "file_write",
+    command: "eslint",
+    args: ["{path}"],
+  });
+  const snapshotStore = createSnapshotStore({ dataDir: createTempDir() });
+  const targetDir = fs.mkdtempSync(path.join(os.tmpdir(), "mana-hooks-rollback-"));
+  const filePath = path.join(targetDir, "app.js");
+  fs.writeFileSync(filePath, "const x = 2; // broken", "utf8");
+  snapshotStore.recordSnapshot({
+    kind: "file",
+    key: "app.js",
+    scope: targetDir,
+    payload: "const x = 1; // working",
+    summary: "file_write overwrite",
+    source: "agent",
+  });
+
+  const policy = basePolicy();
+  const fakeExecFile = (cmd, args, opts, cb) => cb(new Error("lint failed"));
+  const wrapped = wrapWithHooks(policy, hooksStore, fakeApprovalGate(), {
+    execFile: fakeExecFile,
+    snapshotStore,
+  });
+
+  await wrapped.executeTool("file_write", { path: filePath });
+  // The rollback runs in the execFile callback, asynchronously from
+  // executeTool's own return -- wait a tick for it to land.
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(fs.readFileSync(filePath, "utf8"), "const x = 1; // working");
+});
+
+test("a rollback-on-failure rule does not roll back when its command succeeds", async () => {
+  const hooksStore = createHooksStore({ dataDir: createTempDir() });
+  hooksStore.addRule({ phase: "post", action: "rollback-on-failure", toolName: "file_write", command: "eslint", args: ["{path}"] });
+  const snapshotStore = createSnapshotStore({ dataDir: createTempDir() });
+  const targetDir = fs.mkdtempSync(path.join(os.tmpdir(), "mana-hooks-rollback-ok-"));
+  const filePath = path.join(targetDir, "app.js");
+  fs.writeFileSync(filePath, "const x = 2; // fine", "utf8");
+  snapshotStore.recordSnapshot({ kind: "file", key: "app.js", scope: targetDir, payload: "const x = 1;" });
+
+  const policy = basePolicy();
+  const fakeExecFile = (cmd, args, opts, cb) => cb(null);
+  const wrapped = wrapWithHooks(policy, hooksStore, fakeApprovalGate(), { execFile: fakeExecFile, snapshotStore });
+
+  await wrapped.executeTool("file_write", { path: filePath });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(fs.readFileSync(filePath, "utf8"), "const x = 2; // fine", "a successful command must not trigger a rollback");
+});
+
+test("a rollback-on-failure rule with no matching snapshot and no snapshotStore wired in is a silent no-op, same as run-command", async () => {
+  const hooksStore = createHooksStore({ dataDir: createTempDir() });
+  hooksStore.addRule({ phase: "post", action: "rollback-on-failure", toolName: "file_write", command: "eslint", args: ["{path}"] });
+  const policy = basePolicy();
+  const originalWarn = console.warn;
+  console.warn = () => {};
+  try {
+    const fakeExecFile = (cmd, args, opts, cb) => cb(new Error("lint failed"));
+    // No snapshotStore in options -- behaves exactly like a plain run-command.
+    const wrapped = wrapWithHooks(policy, hooksStore, fakeApprovalGate(), { execFile: fakeExecFile });
+
+    const result = await wrapped.executeTool("file_write", { path: "src/app.js" });
+    assert.equal(result, "wrote src/app.js");
+  } finally {
+    console.warn = originalWarn;
+  }
 });

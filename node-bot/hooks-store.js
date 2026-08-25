@@ -21,7 +21,11 @@ const { execFile } = require("node:child_process");
 
 const DEFAULT_DATA_DIR = path.join(__dirname, "data", "hooks");
 const PHASES = ["pre", "post"];
-const ACTIONS_BY_PHASE = { pre: ["deny", "ask"], post: ["run-command"] };
+// #426 sub-project 4: "rollback-on-failure" is run-command's sibling -- same
+// shape (a command that runs after a matching call succeeds), but on
+// failure it also restores the file's pre-write snapshot instead of only
+// logging. Requires the same `command`/`args` fields as run-command.
+const ACTIONS_BY_PHASE = { pre: ["deny", "ask"], post: ["run-command", "rollback-on-failure"] };
 // Fire-and-forget post-hook commands still need a ceiling -- an unbounded
 // prettier/lint command hanging forever would leak a child process per
 // write forever.
@@ -97,8 +101,8 @@ function createHooksStore(options = {}) {
     if (!toolName) {
       throw new Error("toolName is required");
     }
-    if (rule.action === "run-command" && !String(rule.command || "").trim()) {
-      throw new Error("command is required for a run-command rule");
+    if ((rule.action === "run-command" || rule.action === "rollback-on-failure") && !String(rule.command || "").trim()) {
+      throw new Error(`command is required for a ${rule.action} rule`);
     }
 
     const entry = {
@@ -107,6 +111,10 @@ function createHooksStore(options = {}) {
       action: rule.action,
       toolName,
       createdAt: now(),
+      // Lets a rule be paused for iteration (tuning a pathContains pattern,
+      // testing a command) without losing its id or lastRun history the way
+      // delete-and-re-add would.
+      enabled: rule.enabled === false ? false : true,
     };
     if (rule.pathContains) entry.pathContains = String(rule.pathContains);
     if (rule.command) entry.command = String(rule.command);
@@ -131,17 +139,80 @@ function createHooksStore(options = {}) {
     return true;
   }
 
-  // Every persisted rule whose phase/toolName/pathContains all match. Two
-  // rules matching the same call is expected, not an error -- wrapWithHooks
-  // below decides precedence (deny wins on the pre phase; every matching
-  // post rule runs).
+  function findRuleIndex(rules, id) {
+    return rules.findIndex((r) => r.id === id);
+  }
+
+  // Pause/resume without losing the rule's id, command, or lastRun history
+  // -- the destructive-only removeRule forced a delete-and-re-add for what
+  // is usually just "stop this one while I fix the pattern."
+  function setRuleEnabled(id, enabled) {
+    const rules = listRules();
+    const idx = findRuleIndex(rules, id);
+    if (idx === -1) return null;
+    rules[idx] = { ...rules[idx], enabled: Boolean(enabled) };
+    writeRules(filePath, rules);
+    return rules[idx];
+  }
+
+  // Best-effort: a run-command/rollback-on-failure outcome is fire-and-forget
+  // by design (see runPostCommandHook), so this is purely for visibility --
+  // a write failure here must never surface as a hook failure itself.
+  function recordRunOutcome(id, { ok, error } = {}) {
+    try {
+      const rules = listRules();
+      const idx = findRuleIndex(rules, id);
+      if (idx === -1) return;
+      rules[idx] = {
+        ...rules[idx],
+        lastRun: { at: now(), ok: Boolean(ok), error: ok ? undefined : String(error || "") },
+      };
+      writeRules(filePath, rules);
+    } catch (e) {
+      console.warn("hooks-store: recording run outcome failed:", e?.message || e);
+    }
+  }
+
+  // Every persisted, enabled rule whose phase/toolName/pathContains all
+  // match. Two rules matching the same call is expected, not an error --
+  // wrapWithHooks below decides precedence (deny wins on the pre phase;
+  // every matching post rule runs).
   function matchRules(toolName, phase, args) {
     return listRules().filter(
-      (rule) => rule.phase === phase && ruleMatchesTool(rule, toolName) && ruleMatchesPath(rule, args),
+      (rule) =>
+        rule.enabled !== false &&
+        rule.phase === phase &&
+        ruleMatchesTool(rule, toolName) &&
+        ruleMatchesPath(rule, args),
     );
   }
 
-  return { dataDir, listRules, addRule, removeRule, matchRules };
+  return { dataDir, listRules, addRule, removeRule, setRuleEnabled, recordRunOutcome, matchRules };
+}
+
+// #426 sub-project 4: best-effort -- finds the newest "file" snapshot whose
+// key matches this write's basename and restores it. Matched by basename
+// rather than the exact key because the different pipelines record keys in
+// different forms (workspace-relative vs repo-relative) and this function
+// only has the raw args.path a hook rule fired with, not which pipeline it
+// came from. Narrow ceiling: a concurrent unrelated write to a same-named
+// file in a different scope, landing between the write and the rollback,
+// could match the wrong snapshot -- acceptable for a best-effort corrective
+// action, since the rollback is itself a normal restoreSnapshot call and so
+// (per the #475 review fix) backs up whatever it overwrites too.
+function rollbackFile(snapshotStore, resolvedPath) {
+  try {
+    const base = path.basename(resolvedPath);
+    const candidate = snapshotStore
+      .listSnapshots("file")
+      .find((s) => path.basename(String(s.key || "")) === base);
+    if (!candidate) return;
+    Promise.resolve(snapshotStore.restoreSnapshot(candidate.id, { confirmStale: true })).catch((e) => {
+      console.warn(`hook rollback for "${resolvedPath}" failed:`, e?.message || e);
+    });
+  } catch (e) {
+    console.warn(`hook rollback for "${resolvedPath}" failed:`, e?.message || e);
+  }
 }
 
 // Runs a post-hook's command with execFile (shell: false) -- args are
@@ -151,13 +222,21 @@ function createHooksStore(options = {}) {
 // contains shell metacharacters. Fire-and-forget: never blocks or fails the
 // tool call it ran after; a failing hook command is logged and swallowed,
 // same convention as snapshot-store.js/acp-memory-store.js's
-// catch-and-console.warn on best-effort side work.
-function runPostCommandHook(rule, args, execFileFn) {
+// catch-and-console.warn on best-effort side work. hooks.hooksStore (if
+// given) records the outcome for later visibility; hooks.snapshotStore (if
+// given) is what a "rollback-on-failure" rule restores from on failure.
+function runPostCommandHook(rule, args, execFileFn, hooks = {}) {
   const resolvedPath = String((args && args.path) || "");
   const cmdArgs = (rule.args || []).map((a) => (a === "{path}" ? resolvedPath : a));
   execFileFn(rule.command, cmdArgs, { timeout: HOOK_COMMAND_TIMEOUT_MS, shell: false }, (err) => {
     if (err) {
-      console.warn(`hook run-command "${rule.command}" failed:`, err.message || err);
+      console.warn(`hook ${rule.action} "${rule.command}" failed:`, err.message || err);
+    }
+    if (hooks.hooksStore) {
+      hooks.hooksStore.recordRunOutcome(rule.id, { ok: !err, error: err && (err.message || String(err)) });
+    }
+    if (err && rule.action === "rollback-on-failure" && hooks.snapshotStore && resolvedPath) {
+      rollbackFile(hooks.snapshotStore, resolvedPath);
     }
   });
 }
@@ -179,6 +258,9 @@ function runPostCommandHook(rule, args, execFileFn) {
 // has for a genuinely concurrent request.
 function wrapWithHooks(policy, hooksStore, approvalGate, options = {}) {
   const execFileFn = options.execFile || execFile;
+  // #426 sub-project 4: optional -- a "rollback-on-failure" rule is a no-op
+  // (behaves exactly like run-command) when no snapshotStore is wired in.
+  const snapshotStore = options.snapshotStore || null;
   approvalGate.registerExecutor("hook-ask", ({ name, args }) => policy.executeTool(name, args));
 
   return {
@@ -216,8 +298,8 @@ function wrapWithHooks(policy, hooksStore, approvalGate, options = {}) {
 
       const postRules = hooksStore.matchRules(name, "post", args);
       for (const rule of postRules) {
-        if (rule.action === "run-command") {
-          runPostCommandHook(rule, args, execFileFn);
+        if (rule.action === "run-command" || rule.action === "rollback-on-failure") {
+          runPostCommandHook(rule, args, execFileFn, { hooksStore, snapshotStore });
         }
       }
 

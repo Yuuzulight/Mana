@@ -4605,7 +4605,9 @@ function registerRoutes(app, upload, deps = {}) {
           // wrapWithToolCallLog below -- so a denied or ask-gated call still
           // lands in the audit trail as its own logged event, additive to
           // both existing gates rather than replacing either.
-          mergedToolPolicy = wrapWithHooks(mergedToolPolicy, activeHooksStore, activeApprovalGate);
+          mergedToolPolicy = wrapWithHooks(mergedToolPolicy, activeHooksStore, activeApprovalGate, {
+            snapshotStore,
+          });
           // Issue #188: applied last so it catches every tool call from
           // every source (local read_file, browser-automation, MCP) in one
           // shared audit/trace log.

@@ -60,6 +60,28 @@ function registerHooksRoutes(app, context = {}) {
       return res.status(500).json({ error: String(e) });
     }
   });
+
+  // #426 review: pause/resume a rule without deleting it -- only `enabled`
+  // is settable here, same narrow surface as the rest of this route file.
+  app.patch("/hooks/:id", (req, res) => {
+    try {
+      const id = requireString(req.params?.id, "id");
+      if (typeof req.body?.enabled !== "boolean") {
+        throw new ValidationError("enabled must be a boolean");
+      }
+      const rule = hooksStore.setRuleEnabled(id, req.body.enabled);
+      if (!rule) {
+        return res.status(404).json({ error: "hook rule not found" });
+      }
+      return res.json(rule);
+    } catch (e) {
+      if (e instanceof ValidationError) {
+        return sendValidationError(res, e);
+      }
+      console.error(e);
+      return res.status(500).json({ error: String(e) });
+    }
+  });
 }
 
 const hooksCapability = {
@@ -67,12 +89,23 @@ const hooksCapability = {
   registerRoutes: registerHooksRoutes,
   getHealth: (context = {}) => {
     const hooksStore = context.hooksStore;
-    const count = hooksStore ? hooksStore.listRules().length : 0;
+    const rules = hooksStore ? hooksStore.listRules() : [];
+    const count = rules.length;
+    // #426 review: a post-hook command's outcome was previously visible
+    // only via a server-side console.warn -- surfaced here instead, so a
+    // silently-broken hook shows up wherever this capability's health is
+    // already checked, without changing the fire-and-forget execution.
+    const failing = rules.filter((r) => r.lastRun && r.lastRun.ok === false);
+    let message = count > 0 ? `${count} hook rule(s) configured.` : "No hook rules configured.";
+    if (failing.length > 0) {
+      message += ` ${failing.length} last ran with an error (${failing.map((r) => r.toolName).join(", ")}).`;
+    }
     return {
       status: "configured",
       configured: true,
-      message: count > 0 ? `${count} hook rule(s) configured.` : "No hook rules configured.",
+      message,
       count,
+      failing: failing.length,
     };
   },
 };
