@@ -190,6 +190,62 @@ async function archivePendingRequest(id, status, approverMeta, pendingPayload) {
   }
 }
 
+// Shared by every approval-gated tool case in this file's dispatch loop
+// (file_write, snapshot_restore): create a pending request, wait for a
+// human decision, and report the outcome in a shape the caller can act on
+// without duplicating the create/wait/reject-archive control flow. This
+// exact duplication already caused a real bug once (the approve-path's
+// archived approverMeta silently diverging between the two hand-written
+// copies) -- extracted after, not before, that happened, per rule-of-three.
+//
+// Deliberately has NO opinion on whether/how requireApproval is computed
+// -- that decision (e.g. file_write's model-controlled args.approved
+// escape hatch, itself gated behind its own ALLOW_FILE_WRITE master
+// switch, versus snapshot_restore's deliberate lack of any such escape
+// hatch since it has no equivalent kill-switch) stays entirely with each
+// caller, computed before this is ever called. Keeping that decision out
+// of this function is what lets both callers share it safely: the
+// security-relevant asymmetry between them can't leak into or be blurred
+// by shared code it never touches.
+async function runApprovalGate(toolName, id, payload, requireApproval) {
+  if (!requireApproval) {
+    return { approvalId: null, approvalMeta: null, approvalPayload: null };
+  }
+  try {
+    await createPendingRequest(id, payload);
+    console.error(`  ⏳ ${toolName} pending approval id=${id}`);
+    const appr = await waitForApprovalResult(id);
+    if (!appr.approved) {
+      await archiveOutcome(id, "rejected", appr.meta, payload);
+      return {
+        rejected: {
+          status: "rejected",
+          detail: appr.timeout ? "approval_timeout" : (appr.meta && appr.meta.reason) || "rejected",
+        },
+      };
+    }
+    console.error(`  ✅ ${toolName} approved id=${id} by ${appr.meta?.approver || "unknown"}`);
+    return { approvalId: id, approvalMeta: appr.meta, approvalPayload: payload };
+  } catch (e) {
+    return { rejected: { status: "error", detail: "approval_error:" + String(e.message || e) } };
+  }
+}
+
+// Shared archive-with-warn-on-failure pattern, used once a gated tool
+// actually runs (success or error) and needs to record the outcome next
+// to the approval that authorized it. Always warns on archive failure --
+// one of the two pre-extraction copies silently swallowed it on the
+// reject path instead (an inconsistency with the other three call sites,
+// not a deliberate choice); unified here since there's now one place to
+// keep this behavior consistent instead of four to remember.
+async function archiveOutcome(approvalId, status, meta, payload) {
+  try {
+    await archivePendingRequest(approvalId, status, meta, payload);
+  } catch (e) {
+    console.warn("archiving pending request failed", e?.message || e);
+  }
+}
+
 // Retention / rotation: move archived files older than RETENTION_DAYS into archive/old/YYYY-MM
 const RETENTION_DAYS = Number(
   process.env.FILE_WRITE_ARCHIVE_RETENTION_DAYS || 30,
@@ -545,6 +601,15 @@ async function executeAutonomousStep(rawModelReply, sessionId, options = {}) {
         continue;
       }
 
+      // Declared here, not inside the try below, so the catch at the
+      // bottom of this case can actually see them -- a prior version had
+      // these declared inside the try (invisible to its own catch, a
+      // ReferenceError waiting to happen the first time a write failed
+      // after approval was already granted). Assigned, not declared,
+      // inside the try once the approval gate resolves.
+      let approvalId = null;
+      let approvalMeta = null;
+      let approvalPayload = null;
       try {
         const resolvedPath = resolveWithinRepo(requestedPath);
         if (!resolvedPath) {
@@ -577,58 +642,27 @@ async function executeAutonomousStep(rawModelReply, sessionId, options = {}) {
         });
 
         // If approval is required, and action not pre-approved via args.approved, create pending request and wait
-        let approvalId = null;
-        let approvalPayload = null;
-        let approvalMeta = null;
-        const { requireApproval } = getApprovalConfig();
-        if (requireApproval && !(args && args.approved === true)) {
-          const id = makeApprovalId();
-          approvalId = id;
-          const preview = String(content).slice(0, 2048);
-          const payload = {
-            id,
-            path: path.relative(REPO_ROOT, resolvedPath),
-            requestedPath: resolvedPath,
-            mode,
-            sessionId: sessionId || null,
-            preview,
-            createdAt: new Date().toISOString(),
-          };
-          approvalPayload = payload;
-          try {
-            await createPendingRequest(id, payload);
-            console.error(
-              `  ⏳ file_write pending approval id=${id} path=${payload.path}`,
-            );
-            const appr = await waitForApprovalResult(id);
-            if (!appr.approved) {
-              // archive rejected request
-              try {
-                await archivePendingRequest(id, "rejected", appr.meta, payload);
-              } catch (e) {}
-              results.push({
-                tool: "file_write",
-                status: "rejected",
-                detail: appr.timeout
-                  ? "approval_timeout"
-                  : (appr.meta && appr.meta.reason) || "rejected",
-              });
-              continue;
-            }
-            // else approved -> proceed
-            approvalMeta = appr.meta;
-            console.error(
-              `  ✅ file_write approved id=${id} by ${appr.meta?.approver || "unknown"}`,
-            );
-          } catch (e) {
-            results.push({
-              tool: "file_write",
-              status: "error",
-              detail: "approval_error:" + String(e.message || e),
-            });
-            continue;
-          }
+        const { requireApproval: approvalConfigured } = getApprovalConfig();
+        const requireApproval = approvalConfigured && !(args && args.approved === true);
+        const approvalReqId = makeApprovalId();
+        const preview = String(content).slice(0, 2048);
+        const approvalReqPayload = {
+          id: approvalReqId,
+          path: path.relative(REPO_ROOT, resolvedPath),
+          requestedPath: resolvedPath,
+          mode,
+          sessionId: sessionId || null,
+          preview,
+          createdAt: new Date().toISOString(),
+        };
+        const gate = await runApprovalGate("file_write", approvalReqId, approvalReqPayload, requireApproval);
+        if (gate.rejected) {
+          results.push({ tool: "file_write", ...gate.rejected });
+          continue;
         }
+        approvalId = gate.approvalId;
+        approvalMeta = gate.approvalMeta;
+        approvalPayload = gate.approvalPayload;
 
         // Read current size if exists to enforce caps
         let existingSize = 0;
@@ -669,16 +703,7 @@ async function executeAutonomousStep(rawModelReply, sessionId, options = {}) {
           );
           // archive approval if present
           if (approvalId) {
-            try {
-              await archivePendingRequest(
-                approvalId,
-                "approved",
-                approvalMeta,
-                approvalPayload,
-              );
-            } catch (e) {
-              console.warn("archiving pending request failed", e?.message || e);
-            }
+            await archiveOutcome(approvalId, "approved", approvalMeta, approvalPayload);
           }
         } else {
           // Overwrite mode: snapshot the prior content instead of writing
@@ -734,16 +759,7 @@ async function executeAutonomousStep(rawModelReply, sessionId, options = {}) {
           );
           // archive approval if present
           if (approvalId) {
-            try {
-              await archivePendingRequest(
-                approvalId,
-                "approved",
-                approvalMeta,
-                approvalPayload,
-              );
-            } catch (e) {
-              console.warn("archiving pending request failed", e?.message || e);
-            }
+            await archiveOutcome(approvalId, "approved", approvalMeta, approvalPayload);
           }
         }
       } catch (err) {
@@ -755,35 +771,26 @@ async function executeAutonomousStep(rawModelReply, sessionId, options = {}) {
         });
         // archive as error if approval was used
         if (approvalId) {
-          try {
-            await archivePendingRequest(
-              approvalId,
-              "error",
-              { error: String(err.message) },
-              approvalPayload,
-            );
-          } catch (e) {
-            console.warn("archiving pending request failed", e?.message || e);
-          }
+          await archiveOutcome(approvalId, "error", { error: String(err.message) }, approvalPayload);
         }
       }
 
       continue;
     }
 
-    // Mirrors file_write's approval shape exactly:
-    // createPendingRequest/waitForApprovalResult/archivePendingRequest, gated
-    // by an env-var-controlled require-approval flag --
-    // SNAPSHOT_RESTORE_REQUIRE_APPROVAL instead of FILE_WRITE_REQUIRE_APPROVAL,
-    // so the two are independently tunable. Unlike file_write, there is no
+    // Shares file_write's approval mechanics via the runApprovalGate/
+    // archiveOutcome helpers above, gated by an independently-tunable
+    // env var -- SNAPSHOT_RESTORE_REQUIRE_APPROVAL instead of
+    // FILE_WRITE_REQUIRE_APPROVAL. Unlike file_write, there is no
     // model-controlled args.approved escape hatch here -- file_write's own
     // use of that pattern is additionally gated behind ALLOW_FILE_WRITE
     // (default off), but snapshot_restore has no equivalent master
     // kill-switch, so honoring untrusted model-supplied "approved": true
-    // would let the model self-approve a restore on a stock deployment. A
-    // restore always goes through the pending-request/human-approval flow
-    // when requireApproval is true -- never auto-decided by the model's own
-    // tool-call args.
+    // would let the model self-approve a restore on a stock deployment.
+    // This asymmetry lives entirely here, in what requireApproval gets
+    // computed to below (there's simply no args.approved check at all,
+    // unlike file_write's) -- runApprovalGate itself has no opinion on it,
+    // so sharing that helper can't blur or leak the difference.
     if (tool === "snapshot_restore") {
       const id = args && args.id ? String(args.id) : null;
       if (!id) {
@@ -810,46 +817,26 @@ async function executeAutonomousStep(rawModelReply, sessionId, options = {}) {
       }
 
       const requireApproval = (process.env.SNAPSHOT_RESTORE_REQUIRE_APPROVAL || "1") !== "0";
-      let approvalId = null;
-      let approvalPayload = null;
-      let approvalMeta = null;
-      if (requireApproval) {
-        approvalId = makeApprovalId("snapshot-restore");
-        approvalPayload = {
-          id: approvalId,
-          snapshotId: id,
-          kind: preview.record.kind,
-          key: preview.record.key,
-          // Staleness (if any) is already embedded in preview.summary above
-          // -- that's the text a human approver actually reads. A separate
-          // boolean here would be a second, unread encoding of the same
-          // fact that could silently drift from the summary wording.
-          summary: preview.summary,
-          sessionId: sessionId || null,
-          createdAt: new Date().toISOString(),
-        };
-        try {
-          await createPendingRequest(approvalId, approvalPayload);
-          console.error(`  ⏳ snapshot_restore pending approval id=${approvalId} snapshotId=${id}`);
-          const appr = await waitForApprovalResult(approvalId);
-          if (!appr.approved) {
-            try {
-              await archivePendingRequest(approvalId, "rejected", appr.meta, approvalPayload);
-            } catch (e) {}
-            results.push({
-              tool: "snapshot_restore",
-              status: "rejected",
-              detail: appr.timeout ? "approval_timeout" : (appr.meta && appr.meta.reason) || "rejected",
-            });
-            continue;
-          }
-          approvalMeta = appr.meta;
-          console.error(`  ✅ snapshot_restore approved id=${approvalId} by ${appr.meta?.approver || "unknown"}`);
-        } catch (e) {
-          results.push({ tool: "snapshot_restore", status: "error", detail: "approval_error:" + String(e.message || e) });
-          continue;
-        }
+      const restoreApprovalId = makeApprovalId("snapshot-restore");
+      const restoreApprovalPayload = {
+        id: restoreApprovalId,
+        snapshotId: id,
+        kind: preview.record.kind,
+        key: preview.record.key,
+        // Staleness (if any) is already embedded in preview.summary above
+        // -- that's the text a human approver actually reads. A separate
+        // boolean here would be a second, unread encoding of the same
+        // fact that could silently drift from the summary wording.
+        summary: preview.summary,
+        sessionId: sessionId || null,
+        createdAt: new Date().toISOString(),
+      };
+      const gate = await runApprovalGate("snapshot_restore", restoreApprovalId, restoreApprovalPayload, requireApproval);
+      if (gate.rejected) {
+        results.push({ tool: "snapshot_restore", ...gate.rejected });
+        continue;
       }
+      const { approvalId, approvalMeta, approvalPayload } = gate;
 
       try {
         // confirmStale: true -- staleness (if any) was already carried in the
@@ -859,18 +846,12 @@ async function executeAutonomousStep(rawModelReply, sessionId, options = {}) {
         const result = await snapshotStore.restoreSnapshot(id, { confirmStale: true });
         results.push({ tool: "snapshot_restore", status: "ok", result });
         if (approvalId) {
-          try {
-            await archivePendingRequest(approvalId, "approved", approvalMeta, approvalPayload);
-          } catch (e) {
-            console.warn("archiving pending request failed", e?.message || e);
-          }
+          await archiveOutcome(approvalId, "approved", approvalMeta, approvalPayload);
         }
       } catch (err) {
         results.push({ tool: "snapshot_restore", status: "error", detail: err.message });
         if (approvalId) {
-          try {
-            await archivePendingRequest(approvalId, "error", { error: String(err.message) }, approvalPayload);
-          } catch (e) {}
+          await archiveOutcome(approvalId, "error", { error: String(err.message) }, approvalPayload);
         }
       }
       continue;

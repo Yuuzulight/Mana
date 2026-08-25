@@ -354,6 +354,71 @@ test("acp-autonomous-loop: file_write's approval path completes without crashing
   }
 });
 
+// Regression test for a real scoping bug found while extracting the
+// shared runApprovalGate/archiveOutcome helpers: approvalId/approvalMeta/
+// approvalPayload were previously declared with `let` *inside* the outer
+// try block, invisible to that same try's own catch (`let x` inside try
+// is not visible in catch -- a plain JS scoping fact, not Node-specific).
+// A write failure occurring *after* approval succeeded would have hit
+// `if (approvalId)` inside the catch and thrown ReferenceError instead of
+// reporting a clean error result. Forces exactly that path: approve the
+// write, then make the actual disk write throw.
+test("acp-autonomous-loop: file_write reports a clean error (not a crash) when the write itself fails after approval succeeds", async () => {
+  const origEnv = process.env.ALLOW_FILE_WRITE;
+  const origApproval = process.env.FILE_WRITE_REQUIRE_APPROVAL;
+  const origApprovalDir = process.env.MANA_PENDING_WRITES_DIR;
+  const origStat = fs.promises.stat;
+  const origRead = fs.promises.readFile;
+  const origWrite = fs.promises.writeFile;
+  const tmpApprovalDir = fs.mkdtempSync(path.join(os.tmpdir(), "mana-file-write-approval-fail-"));
+  try {
+    process.env.ALLOW_FILE_WRITE = "1";
+    process.env.FILE_WRITE_REQUIRE_APPROVAL = "1";
+    process.env.MANA_PENDING_WRITES_DIR = tmpApprovalDir;
+
+    fs.promises.stat = async (p) => {
+      if (!String(p).includes("will-fail.txt")) return origStat(p);
+      return { isFile: () => true, size: 10 };
+    };
+    fs.promises.readFile = async (p, enc) => {
+      if (!String(p).includes("will-fail.txt")) return origRead(p, enc);
+      return "previous content";
+    };
+    fs.promises.writeFile = async (p, content, opts) => {
+      if (!String(p).includes("will-fail.txt")) return origWrite(p, content, opts);
+      throw new Error("simulated disk write failure");
+    };
+
+    const mockModelReply =
+      'Write file:\n[{"tool":"file_write","args":{"path":"src/will-fail.txt","content":"hello","mode":"overwrite"}}]';
+    const stepPromise = executeAutonomousStep(mockModelReply, "test-session", {
+      snapshotStore: { recordSnapshot: () => ({ id: "snap-fake" }) },
+    });
+
+    const pendingFile = await waitForPendingFile(tmpApprovalDir);
+    const id = pendingFile.replace(/\.json$/, "");
+    fs.writeFileSync(
+      path.join(tmpApprovalDir, `${id}.approved.json`),
+      JSON.stringify({ approver: "test", reason: "looks fine" }),
+      "utf8",
+    );
+
+    // Must resolve cleanly, not reject with a ReferenceError.
+    const res = await stepPromise;
+    assert.equal(res.results[0].tool, "file_write");
+    assert.equal(res.results[0].status, "error");
+    assert.equal(res.results[0].detail, "simulated disk write failure");
+  } finally {
+    process.env.ALLOW_FILE_WRITE = origEnv;
+    process.env.FILE_WRITE_REQUIRE_APPROVAL = origApproval;
+    process.env.MANA_PENDING_WRITES_DIR = origApprovalDir;
+    fs.promises.stat = origStat;
+    fs.promises.readFile = origRead;
+    fs.promises.writeFile = origWrite;
+    fs.rmSync(tmpApprovalDir, { recursive: true, force: true });
+  }
+});
+
 test("acp-autonomous-loop: file_write overwrite tags its snapshot source: agent", async (t) => {
   const origEnv = process.env.ALLOW_FILE_WRITE;
   const origApproval = process.env.FILE_WRITE_REQUIRE_APPROVAL;
