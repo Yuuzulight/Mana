@@ -75,6 +75,39 @@ test("deny removes the pending request without running the executor", async () =
   assert.equal(gate.listPending().length, 0);
 });
 
+test("#475 review: decide() durably logs a human's deny/approve decision on a pending request, not just the guardian-cleared auto-approve path", async () => {
+  const gate = createApprovalGate({ dataDir: createTempDir() });
+  gate.registerExecutor("snapshot-restore", () => "restored");
+
+  const denied = await gate.requestApproval("snapshot-restore", { summary: "Restore A", payload: { id: "a" } });
+  await gate.decide(denied.requestId, "deny");
+
+  const approved = await gate.requestApproval("snapshot-restore", { summary: "Restore B", payload: { id: "b" } });
+  await gate.decide(approved.requestId, "allow-once");
+
+  const logged = gate.guardianAuditLog.readRecent();
+  assert.equal(logged.length, 2);
+  assert.equal(logged[0].name, "snapshot-restore");
+  assert.equal(logged[0].ok, false);
+  assert.equal(logged[0].decision, "deny");
+  assert.equal(logged[1].ok, true);
+  assert.equal(logged[1].decision, "allow-once");
+});
+
+test("#475 review: decide() logs a failed executor's error before rethrowing", async () => {
+  const gate = createApprovalGate({ dataDir: createTempDir() });
+  gate.registerExecutor("snapshot-restore", () => {
+    throw new Error("restore failed verification");
+  });
+
+  const outcome = await gate.requestApproval("snapshot-restore", { summary: "Restore A", payload: { id: "a" } });
+  await assert.rejects(() => gate.decide(outcome.requestId, "allow-once"), /restore failed verification/);
+
+  const [logged] = gate.guardianAuditLog.readRecent();
+  assert.equal(logged.ok, false);
+  assert.match(logged.error, /restore failed verification/);
+});
+
 test("a thrown executor leaves the pending entry retrievable instead of losing it", async () => {
   const gate = createApprovalGate({ dataDir: createTempDir() });
   let attempts = 0;

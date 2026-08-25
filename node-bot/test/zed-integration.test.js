@@ -1526,8 +1526,13 @@ test("restoreEditSnapshot writes the pre-edit content back, verifies it, and rem
     assert.equal(restored.relativePath, "src.js");
     assert.equal(fs.readFileSync(sourceFile, "utf8"), "const value = 1;\n");
 
-    // Restored once -- it's consumed, not a repeatable checkpoint.
-    assert.deepEqual(editors.listEditSnapshots(), []);
+    // The restored snapshot itself is consumed, not a repeatable checkpoint
+    // -- but #475 review: the content it overwrote ("const value = 2;\n")
+    // is now backed up in its place, so the restore is itself undoable.
+    const remaining = editors.listEditSnapshots();
+    assert.equal(remaining.length, 1);
+    assert.equal(remaining[0].relativePath, "src.js");
+    assert.equal(remaining[0].summary, "pre-restore backup");
     await assert.rejects(
       () => editors.restoreEditSnapshot(applied.snapshotId),
       /edit snapshot not found/,
@@ -1730,8 +1735,12 @@ test("createApp lists and restores edit snapshots through the shared backend rou
       assert.equal(restoreBody.restored.id, snapshotId);
       assert.equal(fs.readFileSync(sourceFile, "utf8"), "console.log('before');\n");
 
+      // #475 review: the content the restore overwrote is now backed up in
+      // the original snapshot's place, so the restore is itself undoable.
       const listAfterRestore = await fetch(`${baseUrl}/editors/workspace/snapshots`);
-      assert.deepEqual((await listAfterRestore.json()).snapshots, []);
+      const afterRestore = (await listAfterRestore.json()).snapshots;
+      assert.equal(afterRestore.length, 1);
+      assert.equal(afterRestore[0].summary, "pre-restore backup");
     });
   } finally {
     fs.rmSync(tempDir, { recursive: true, force: true });

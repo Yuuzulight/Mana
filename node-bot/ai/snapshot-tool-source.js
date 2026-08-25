@@ -57,7 +57,12 @@ function buildRestoreSummary(record, staleness) {
   // it actually touches. Skipped when key === label (the fallback above
   // already used it) to avoid "Restore file snapshot: a.txt (a.txt)".
   const target = record.kind === "file" && record.key && record.key !== label ? ` (${record.key})` : "";
-  const base = `Restore ${record.kind} snapshot: ${label}${target}`;
+  // Issue #475 whole-branch review: the tool description tells the model
+  // to only propose restoring a human-sourced snapshot when explicitly
+  // asked -- a soft rule the model alone enforces. Surfacing source here
+  // gives the human approving it the same information independently.
+  const sourceNote = record.source ? ` (source: ${record.source})` : "";
+  const base = `Restore ${record.kind} snapshot: ${label}${target}${sourceNote}`;
   return staleness && staleness.stale
     ? `${base} (WARNING: this target has been written to again since this snapshot was recorded -- restoring will overwrite that newer state)`
     : base;
@@ -137,6 +142,16 @@ function createSnapshotToolSource(options = {}) {
     const preview = previewRestore(snapshotStore, id);
     if (!preview) {
       return JSON.stringify({ status: "error", error: `no snapshot with id "${id}"` });
+    }
+    // Issue #475 whole-branch review: fail fast, before staging a pending
+    // approval, the same way Pipeline B's hasRestorer check already does --
+    // an unrestorable kind is guaranteed to throw once approved, and that
+    // shouldn't cost a human an approval round-trip to discover.
+    if (!snapshotStore.hasRestorer(preview.record.kind)) {
+      return JSON.stringify({
+        status: "error",
+        error: `no restorer registered for kind: ${preview.record.kind}`,
+      });
     }
 
     try {

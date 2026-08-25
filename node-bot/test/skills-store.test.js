@@ -492,3 +492,26 @@ test("updateSkill snapshots the pre-update file content, restorable via the gene
   const restored = store.viewSkill("Restart SearXNG", { touch: false });
   assert.equal(restored.description, "Original description.");
 });
+
+test("restoring a skill snapshot backs up the file content it overwrote first, so the restore is itself undoable", async () => {
+  const skillsDir = tempDir();
+  const snapshotStore = createSnapshotStore({ dataDir: tempDir() });
+  const store = createSkillsStore({ skillsDir, snapshotStore });
+
+  const skill = store.createSkill({
+    name: "Restart SearXNG",
+    description: "Original description.",
+    body: "Original body.",
+  });
+  store.updateSkill("Restart SearXNG", { description: "Updated description." });
+  const beforeRestore = fs.readFileSync(path.join(skillsDir, skill.fileName), "utf8");
+
+  const [snapshot] = snapshotStore.listSnapshots("skill");
+  await snapshotStore.restoreSnapshot(snapshot.id);
+
+  const backups = snapshotStore.listSnapshots("skill").filter((s) => s.summary.startsWith("pre-restore backup"));
+  assert.equal(backups.length, 1);
+  const backup = snapshotStore.getSnapshot(backups[0].id);
+  assert.equal(backup.source, "system");
+  assert.equal(backup.payload, beforeRestore, "the backup holds the file content as it stood right before the restore");
+});

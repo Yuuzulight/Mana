@@ -1958,6 +1958,27 @@ test("appendTurn/setSessionGoal/renameSession snapshot the pre-write session rec
   assert.equal(restored.turns.length, 1);
 });
 
+test("restoring a memory-session snapshot backs up what it overwrote first, so the restore is itself undoable", async () => {
+  const dataDir = createTempDir();
+  const snapshotStore = createSnapshotStore({ dataDir: createTempDir() });
+  const store = createAcpMemoryStore({ dataDir, snapshotStore });
+
+  store.ensureSession({ sessionId: "snap-session-2" });
+  store.setSessionGoal("snap-session-2", "Plan a trip");
+  const beforeRestore = store.getSession("snap-session-2");
+
+  const [goalSnapshot] = snapshotStore.listSnapshots("memory-session");
+  await snapshotStore.restoreSnapshot(goalSnapshot.id);
+
+  const backups = snapshotStore
+    .listSnapshots("memory-session")
+    .filter((s) => s.summary.startsWith("pre-restore backup"));
+  assert.equal(backups.length, 1);
+  const backup = snapshotStore.getSnapshot(backups[0].id);
+  assert.equal(backup.source, "system");
+  assert.deepEqual(backup.payload, beforeRestore, "the backup holds the session as it stood right before the restore");
+});
+
 test("rememberFact snapshots the prior fact state; restoring a freshly-inserted fact deletes it", async () => {
   const dataDir = createTempDir();
   const snapshotStore = createSnapshotStore({ dataDir: createTempDir() });
@@ -2003,6 +2024,29 @@ test("rememberFact patch snapshots the pre-patch fact, restorable back to its pr
 
   await snapshotStore.restoreSnapshot(patchSnapshot.id);
   assert.equal(store.listFacts()[0].text, "Likes tea");
+});
+
+test("restoring a memory-fact snapshot backs up the fact it overwrote first, so the restore is itself undoable", async () => {
+  const dataDir = createTempDir();
+  const snapshotStore = createSnapshotStore({ dataDir: createTempDir() });
+  const store = createAcpMemoryStore({ dataDir, snapshotStore });
+
+  store.rememberFact({ sessionId: "s", key: "favorite-drink", text: "Likes tea" });
+  store.rememberFact({ sessionId: "s", key: "favorite-drink", text: "Likes coffee", action: "patch" });
+  const beforeRestore = store.listFacts()[0];
+
+  const patchSnapshot = snapshotStore
+    .listSnapshots("memory-fact")
+    .find((s) => s.summary === "fact patch: favorite-drink");
+  await snapshotStore.restoreSnapshot(patchSnapshot.id);
+
+  const backups = snapshotStore
+    .listSnapshots("memory-fact")
+    .filter((s) => s.summary.startsWith("pre-restore backup"));
+  assert.equal(backups.length, 1);
+  const backup = snapshotStore.getSnapshot(backups[0].id);
+  assert.equal(backup.source, "system");
+  assert.deepEqual(backup.payload, beforeRestore, "the backup holds the fact as it stood right before the restore");
 });
 
 test("renameSession/setSessionGoal snapshots are tagged source: human -- only reachable via the PATCH /sessions/:id route", () => {

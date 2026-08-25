@@ -172,6 +172,43 @@ test("restoreSnapshot uses the built-in file restorer to write, verify, and dele
   assert.equal(store.getSnapshot("snap-file-restore"), null);
 });
 
+test("restoreSnapshot's built-in file restorer backs up the current content before overwriting it, so the restore is itself undoable", async () => {
+  const dataDir = createTempDir();
+  const targetDir = createTempDir();
+  fs.writeFileSync(path.join(targetDir, "out.txt"), "current content", "utf8");
+  const store = createSnapshotStore({ dataDir, idFactory: () => `snap-${Math.random().toString(36).slice(2, 10)}` });
+
+  const original = store.recordSnapshot({
+    kind: "file",
+    key: "out.txt",
+    scope: targetDir,
+    payload: "old content",
+    source: "agent",
+  });
+
+  await store.restoreSnapshot(original.id);
+  assert.equal(fs.readFileSync(path.join(targetDir, "out.txt"), "utf8"), "old content");
+
+  const remaining = store.listSnapshots("file");
+  assert.equal(remaining.length, 1, "the restored snapshot is gone, replaced by a backup of what it overwrote");
+  const backup = store.getSnapshot(remaining[0].id);
+  assert.equal(backup.payload, "current content", "the backup holds what was live right before the restore, not the restored content");
+  assert.equal(backup.source, "system");
+  assert.equal(backup.key, "out.txt");
+  assert.equal(backup.scope, targetDir);
+});
+
+test("restoreSnapshot's built-in file restorer does not back up a target that doesn't exist yet", async () => {
+  const dataDir = createTempDir();
+  const targetDir = createTempDir();
+  const store = createSnapshotStore({ dataDir });
+
+  const original = store.recordSnapshot({ kind: "file", key: "new.txt", scope: targetDir, payload: "content" });
+  await store.restoreSnapshot(original.id);
+
+  assert.deepEqual(store.listSnapshots("file"), [], "nothing existed to back up, so no backup snapshot was created");
+});
+
 test("restoreSnapshot round-trips through a custom registered restorer", async () => {
   const store = createSnapshotStore({ dataDir: createTempDir(), idFactory: () => "snap-custom-1" });
   const restored = [];

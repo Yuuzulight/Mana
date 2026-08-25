@@ -21,6 +21,7 @@ function fakeSnapshotStore(overrides = {}) {
     getSnapshot: () => null,
     checkStale: () => ({ stale: false }),
     restoreSnapshot: async () => ({ restored: true }),
+    hasRestorer: () => true,
     ...overrides,
   };
 }
@@ -95,6 +96,21 @@ test("snapshot__restore errors cleanly on an unknown id, without ever contacting
   assert.equal(approvalGate.requestCalls.length, 0);
 });
 
+test("snapshot__restore errors cleanly on a kind with no registered restorer, without ever contacting the approval gate", async () => {
+  const approvalGate = fakeApprovalGate();
+  const record = { id: "snap-1", kind: "memory-session", key: "s1", scope: null, summary: "x", appliedAt: "t" };
+  const snapshotStore = fakeSnapshotStore({
+    getSnapshot: (id) => (id === "snap-1" ? record : null),
+    hasRestorer: (kind) => kind !== "memory-session",
+  });
+  const source = createSnapshotToolSource({ approvalGate, snapshotStore });
+
+  const result = JSON.parse(await source.executeTool(`${SNAPSHOT_TOOL_PREFIX}restore`, { id: "snap-1" }));
+  assert.equal(result.status, "error");
+  assert.match(result.error, /no restorer registered/);
+  assert.equal(approvalGate.requestCalls.length, 0, "must fail fast instead of burning a human approval round-trip");
+});
+
 test("snapshot__restore stages through approvalGate and leaves it pending -- never auto-decides", async () => {
   const approvalGate = fakeApprovalGate();
   const record = { id: "snap-1", kind: "skill", key: "x.md", scope: null, summary: "skill update: X", appliedAt: "t", source: "human" };
@@ -109,12 +125,12 @@ test("snapshot__restore stages through approvalGate and leaves it pending -- nev
   assert.equal(approvalGate.requestCalls.length, 1);
   assert.equal(approvalGate.requestCalls[0].actionType, "snapshot-restore");
   assert.deepEqual(approvalGate.requestCalls[0].details.payload, { id: "snap-1" });
-  assert.equal(approvalGate.requestCalls[0].details.summary, "Restore skill snapshot: skill update: X");
+  assert.equal(approvalGate.requestCalls[0].details.summary, "Restore skill snapshot: skill update: X (source: human)");
   assert.equal(typeof approvalGate.decide, "undefined");
   assert.deepEqual(JSON.parse(result), {
     status: "pending",
     requestId: "req-1",
-    summary: "Restore skill snapshot: skill update: X",
+    summary: "Restore skill snapshot: skill update: X (source: human)",
     flags: [],
   });
 });
@@ -206,6 +222,22 @@ test("buildRestoreSummary names the file for a file-kind snapshot whose summary 
   // Non-file kinds have no workspace-relative path to add.
   assert.equal(
     buildRestoreSummary({ kind: "skill", key: "src/app.js", summary: "skill update: X", id: "snap-1" }, { stale: false }),
+    "Restore skill snapshot: skill update: X",
+  );
+});
+
+test("buildRestoreSummary names the source when the snapshot has one, so the human approver can tell what they're restoring", () => {
+  assert.equal(
+    buildRestoreSummary({ kind: "skill", key: "x.md", summary: "skill update: X", id: "snap-1", source: "human" }, { stale: false }),
+    "Restore skill snapshot: skill update: X (source: human)",
+  );
+  assert.equal(
+    buildRestoreSummary({ kind: "file", key: "a.txt", summary: "pre-restore backup", id: "snap-1", source: "system" }, { stale: false }),
+    "Restore file snapshot: pre-restore backup (a.txt) (source: system)",
+  );
+  // No source field at all -- omitted rather than "(source: undefined)" or similar.
+  assert.equal(
+    buildRestoreSummary({ kind: "skill", key: "x.md", summary: "skill update: X", id: "snap-1" }, { stale: false }),
     "Restore skill snapshot: skill update: X",
   );
 });

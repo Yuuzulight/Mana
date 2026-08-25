@@ -254,6 +254,23 @@ function createSnapshotStore(options = {}) {
   // their own, which would be a double-registration bug.
   registerRestorer("file", async (key, payload, scope) => {
     const fullPath = path.resolve(scope, key);
+    // #475 review: a restore itself must be undoable -- without this, a
+    // confirmStale:true restore a human approves anyway (despite the "this
+    // overwrites newer state" warning) destroys that newer state for good.
+    if (fs.existsSync(fullPath)) {
+      try {
+        recordSnapshot({
+          kind: "file",
+          key,
+          scope,
+          payload: fs.readFileSync(fullPath, "utf8"),
+          summary: "pre-restore backup",
+          source: "system",
+        });
+      } catch (e) {
+        console.warn("pre-restore file backup failed:", e?.message || e);
+      }
+    }
     fs.writeFileSync(fullPath, payload, "utf8");
     const written = fs.readFileSync(fullPath, "utf8");
     if (written !== payload) {

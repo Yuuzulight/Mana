@@ -235,6 +235,23 @@ function createAcpMemoryStore(options = {}) {
 
   if (snapshotStore) {
     snapshotStore.registerRestorer("memory-session", async (sessionId, session) => {
+      // #475 review: back up the session as it stands right before a
+      // restore overwrites it, so the restore itself is undoable -- same
+      // reasoning as every other recordSnapshot call site in this file.
+      const current = getSession(sessionId);
+      if (current) {
+        try {
+          snapshotStore.recordSnapshot({
+            kind: "memory-session",
+            key: sessionId,
+            payload: current,
+            summary: `pre-restore backup: ${sessionId}`,
+            source: "system",
+          });
+        } catch (e) {
+          console.warn("pre-restore session backup failed:", e?.message || e);
+        }
+      }
       saveSession(session);
       return { sessionId };
     });
@@ -242,6 +259,21 @@ function createAcpMemoryStore(options = {}) {
     snapshotStore.registerRestorer("memory-fact", async (key, snapshotPayload) => {
       const facts = loadFacts();
       const idx = facts.findIndex((f) => f.key === key);
+      // #475 review: same pre-restore backup as memory-session above --
+      // `existing` is exactly what's about to be lost (removed, or
+      // overwritten) once this restore lands.
+      const existing = idx === -1 ? null : facts[idx];
+      try {
+        snapshotStore.recordSnapshot({
+          kind: "memory-fact",
+          key,
+          payload: existing ? JSON.parse(JSON.stringify(existing)) : null,
+          summary: `pre-restore backup: ${key}`,
+          source: "system",
+        });
+      } catch (e) {
+        console.warn("pre-restore fact backup failed:", e?.message || e);
+      }
       if (snapshotPayload === null) {
         // The fact didn't exist before this write -- restoring means removing it.
         if (idx !== -1) facts.splice(idx, 1);

@@ -224,7 +224,23 @@ function createSkillsStore(options = {}) {
 
   if (snapshotStore) {
     snapshotStore.registerRestorer("skill", async (fileName, fileContent) => {
-      fs.writeFileSync(path.join(skillsDir, fileName), fileContent, "utf8");
+      // #475 review: back up the file as it stands right before a restore
+      // overwrites it, so the restore itself is undoable.
+      const fullPath = path.join(skillsDir, fileName);
+      if (fs.existsSync(fullPath)) {
+        try {
+          snapshotStore.recordSnapshot({
+            kind: "skill",
+            key: fileName,
+            payload: fs.readFileSync(fullPath, "utf8"),
+            summary: `pre-restore backup: ${fileName}`,
+            source: "system",
+          });
+        } catch (e) {
+          console.warn("pre-restore skill backup failed:", e?.message || e);
+        }
+      }
+      fs.writeFileSync(fullPath, fileContent, "utf8");
       return { fileName };
     });
   }
