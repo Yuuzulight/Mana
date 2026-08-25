@@ -4,7 +4,7 @@ const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
 
-const { createHooksStore, wrapWithHooks, runPostCommandHook } = require("../hooks-store");
+const { createHooksStore, wrapWithHooks, runPostCommandHook, HOOK_COMMAND_TIMEOUT_MS } = require("../hooks-store");
 const { createApprovalGate } = require("../approval-gate");
 
 function createTempDir() {
@@ -263,6 +263,42 @@ test("runPostCommandHook substitutes {path} with the call's args.path, as its ow
   // a shell command line.
   assert.deepEqual(calls[0].args, ["--write", "a; rm -rf /"]);
   assert.equal(calls[0].opts.shell, false);
+});
+
+test("runPostCommandHook passes the hang-prevention timeout ceiling to execFile", () => {
+  const calls = [];
+  runPostCommandHook({ command: "prettier", args: [] }, {}, (cmd, args, opts, cb) => {
+    calls.push(opts);
+    cb(null);
+  });
+  assert.equal(calls[0].timeout, HOOK_COMMAND_TIMEOUT_MS);
+});
+
+test("a post run-command hook that times out is swallowed like any other failure", async () => {
+  const hooksStore = createHooksStore({ dataDir: createTempDir() });
+  hooksStore.addRule({ phase: "post", action: "run-command", toolName: "file_write", command: "slow-formatter", args: ["{path}"] });
+  const policy = basePolicy();
+  const originalWarn = console.warn;
+  const warnings = [];
+  console.warn = (...args) => warnings.push(args);
+  try {
+    // Simulates what child_process.execFile does when a command exceeds
+    // its `timeout` option: it kills the child and calls back with an
+    // ETIMEDOUT-flavored error instead of ever completing.
+    const timeoutExecFile = (cmd, args, opts, cb) => {
+      const err = new Error("command timed out");
+      err.killed = true;
+      err.signal = "SIGTERM";
+      cb(err);
+    };
+    const wrapped = wrapWithHooks(policy, hooksStore, fakeApprovalGate(), { execFile: timeoutExecFile });
+
+    const result = await wrapped.executeTool("file_write", { path: "src/app.js" });
+    assert.equal(result, "wrote src/app.js", "a hung/timed-out hook must not affect the tool's own result");
+    assert.ok(warnings.length >= 1);
+  } finally {
+    console.warn = originalWarn;
+  }
 });
 
 test("two rules matching the same pre-phase call: deny wins over ask", async () => {

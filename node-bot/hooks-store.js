@@ -226,4 +226,4 @@ function wrapWithHooks(policy, hooksStore, approvalGate, options = {}) {
   };
 }
 
-module.exports = { createHooksStore, wrapWithHooks, runPostCommandHook };
+module.exports = { createHooksStore, wrapWithHooks, runPostCommandHook, HOOK_COMMAND_TIMEOUT_MS };
