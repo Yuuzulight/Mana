@@ -66,6 +66,31 @@ function createMatrixBridge(options = {}) {
   };
 }
 
+// #435 review: a Matrix homeserver's rate-limit response is a 429 whose
+// JSON body carries the spec-defined `retry_after_ms` field; the plain
+// RFC 7231 `Retry-After` header (seconds) is a fallback for a proxy/gateway
+// that only sets that. Guards against a response with no .clone()/.headers
+// (this file's own test fetch mocks are plain {ok, status} objects) --
+// falls back to null so the caller just uses its normal fixed interval,
+// same as if this didn't exist.
+async function readRetryAfterMs(response) {
+  if (typeof response.clone === "function") {
+    try {
+      const body = await response.clone().json();
+      if (Number.isFinite(body?.retry_after_ms)) return body.retry_after_ms;
+    } catch (e) {
+      // not JSON, or no body -- fall through to the header
+    }
+  }
+  const header =
+    response.headers && typeof response.headers.get === "function" ? response.headers.get("retry-after") : null;
+  // Number(null) is 0, not NaN -- an explicit presence check first, so "no
+  // header at all" reads as null (unknown) rather than a real 0ms delay.
+  if (header === null || header === undefined) return null;
+  const seconds = Number(header);
+  return Number.isFinite(seconds) ? seconds * 1000 : null;
+}
+
 // Real Matrix client: plain fetch against a self-hosted homeserver's
 // Client-Server API. Not exercised against a live homeserver in this
 // codebase -- verified via mocked HTTP calls in tests instead (no
@@ -105,7 +130,14 @@ function createMatrixClient({ homeserverUrl, accessToken, fetchImpl = fetch } = 
     if (!response.ok) {
       // Never include the access token in an error message -- it's not in
       // the URL or these fields, but keep the message minimal on purpose.
-      throw new Error(`sync failed: ${response.status}`);
+      const err = new Error(`sync failed: ${response.status}`);
+      // #435 review: a 429 tells the caller (index.js's scheduleSync) how
+      // long to actually wait, instead of retrying at the fixed poll
+      // interval and likely tripping the rate limit again.
+      if (response.status === 429) {
+        err.retryAfterMs = await readRetryAfterMs(response);
+      }
+      throw err;
     }
     return response.json();
   }
@@ -171,13 +203,27 @@ async function syncOnce({ client, bridge, botUserId, since }) {
       if (event.type !== "m.room.message") continue;
       if (event.content?.msgtype !== "m.text") continue;
 
-      const reply = await bridge.handleIncomingMessage({
-        roomId,
-        text: event.content.body,
-        senderName: event.sender || null,
-      });
-      if (reply) {
-        await client.sendMessage(roomId, reply);
+      // #435 review: next_batch only advances after this whole loop
+      // finishes, so one event throwing (a failed handleIncomingMessage or
+      // sendMessage) must not abort the batch -- the next sync would
+      // otherwise re-fetch and re-process every event in it, including
+      // ones already replied to above, sending duplicate replies for those.
+      // Log-and-continue keeps a genuine per-event failure from becoming a
+      // whole-batch one.
+      try {
+        const reply = await bridge.handleIncomingMessage({
+          roomId,
+          text: event.content.body,
+          senderName: event.sender || null,
+        });
+        if (reply) {
+          await client.sendMessage(roomId, reply);
+        }
+      } catch (e) {
+        console.warn(
+          `matrix-bridge: failed to handle event in ${roomId}:`,
+          e && e.message ? e.message : e,
+        );
       }
     }
   }

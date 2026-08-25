@@ -116,6 +116,69 @@ test("sync surfaces a non-ok response as an error without leaking the access tok
   });
 });
 
+test("sync on a 429 carries retryAfterMs read from the Matrix-spec retry_after_ms body field", async () => {
+  const client = createMatrixClient({
+    homeserverUrl: "https://example.org",
+    accessToken: "secret-tok",
+    fetchImpl: async () => ({
+      ok: false,
+      status: 429,
+      clone() {
+        return this;
+      },
+      json: async () => ({ errcode: "M_LIMIT_EXCEEDED", error: "Too Many Requests", retry_after_ms: 2500 }),
+    }),
+  });
+  await assert.rejects(() => client.sync(), (err) => {
+    assert.match(err.message, /sync failed: 429/);
+    assert.equal(err.retryAfterMs, 2500);
+    return true;
+  });
+});
+
+test("sync on a 429 falls back to the Retry-After header (seconds) when there's no retry_after_ms body", async () => {
+  const client = createMatrixClient({
+    homeserverUrl: "https://example.org",
+    accessToken: "secret-tok",
+    fetchImpl: async () => ({
+      ok: false,
+      status: 429,
+      headers: { get: (name) => (name === "retry-after" ? "3" : null) },
+      json: async () => {
+        throw new Error("no body");
+      },
+    }),
+  });
+  await assert.rejects(() => client.sync(), (err) => {
+    assert.equal(err.retryAfterMs, 3000);
+    return true;
+  });
+});
+
+test("sync on a 429 with neither a usable body nor a Retry-After header leaves retryAfterMs unset", async () => {
+  const client = createMatrixClient({
+    homeserverUrl: "https://example.org",
+    accessToken: "secret-tok",
+    fetchImpl: async () => ({ ok: false, status: 429 }),
+  });
+  await assert.rejects(() => client.sync(), (err) => {
+    assert.equal(err.retryAfterMs, null);
+    return true;
+  });
+});
+
+test("a non-429 error never sets retryAfterMs, even without .clone()/.headers", async () => {
+  const client = createMatrixClient({
+    homeserverUrl: "https://example.org",
+    accessToken: "secret-tok",
+    fetchImpl: async () => ({ ok: false, status: 500 }),
+  });
+  await assert.rejects(() => client.sync(), (err) => {
+    assert.equal(err.retryAfterMs, undefined);
+    return true;
+  });
+});
+
 test("joinRoom POSTs to the encoded room path", async () => {
   const requests = [];
   const fetchImpl = async (url, options) => {
@@ -309,6 +372,48 @@ test("syncOnce does not crash on a malformed message event missing content.body"
   const bridge = createMatrixBridge({ dataDir: createTempDir() });
   const nextSince = await syncOnce({ client, bridge, botUserId: "@mana:example.org" });
   assert.equal(nextSince, "s1");
+});
+
+// #435 review: without a per-event try/catch, one event throwing would abort
+// the whole batch before next_batch is returned -- the next sync would
+// re-fetch and re-process the entire batch, including events already
+// replied to, sending duplicate replies for those.
+test("syncOnce continues to the next event in the batch when one event's send fails, and still advances since", async () => {
+  const sent = [];
+  const client = fakeClient({
+    syncResponses: [
+      {
+        next_batch: "s1",
+        rooms: {
+          join: {
+            "!room:example.org": {
+              timeline: {
+                events: [
+                  { type: "m.room.message", sender: "@alice:example.org", content: { msgtype: "m.text", body: "first" } },
+                  { type: "m.room.message", sender: "@alice:example.org", content: { msgtype: "m.text", body: "second" } },
+                ],
+              },
+            },
+          },
+        },
+      },
+    ],
+    sendMessage: async (roomId, text) => {
+      if (text === "reply-to-first") throw new Error("homeserver 500");
+      sent.push({ roomId, text });
+    },
+  });
+  const bridge = createMatrixBridge({
+    dataDir: createTempDir(),
+    replyFn: async (text) => `reply-to-${text}`,
+  });
+  const code = (await bridge.handleIncomingMessage({ roomId: "!room:example.org", text: "hi" })).match(/: (\w{6})$/)[1];
+  bridge.approvePairing(code);
+
+  const nextSince = await syncOnce({ client, bridge, botUserId: "@mana:example.org" });
+
+  assert.equal(nextSince, "s1", "the batch must be considered fully processed despite the first event's failure");
+  assert.deepEqual(sent, [{ roomId: "!room:example.org", text: "reply-to-second" }]);
 });
 
 test("syncOnce's since token advances across calls and is passed to the next sync", async () => {

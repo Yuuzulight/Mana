@@ -83,6 +83,17 @@ test("plugin metadata matches the shape other Mana plugins use", () => {
   assert.equal(matrixBridgePlugin.defaultEnabled, false);
 });
 
+test("#435 review: _nextDelayAfterErrorForTests backs off to a 429's retryAfterMs, never below the normal interval", () => {
+  const nextDelay = matrixBridgePlugin._nextDelayAfterErrorForTests;
+
+  assert.equal(nextDelay(Object.assign(new Error("sync failed: 429"), { retryAfterMs: 5000 }), 1000), 5000);
+  // A retryAfterMs shorter than the normal interval never shortens the wait.
+  assert.equal(nextDelay(Object.assign(new Error("sync failed: 429"), { retryAfterMs: 200 }), 1000), 1000);
+  // A non-429 failure (no retryAfterMs at all) keeps the normal interval.
+  assert.equal(nextDelay(new Error("sync failed: 500"), 1000), 1000);
+  assert.equal(nextDelay(null, 1000), 1000);
+});
+
 test("getHealth reports unavailable when unconfigured and configured once all three env vars are set", () => {
   const unset = matrixBridgePlugin.getHealth({ env: {} });
   assert.equal(unset.status, "unavailable");

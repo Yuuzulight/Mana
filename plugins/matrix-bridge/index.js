@@ -33,14 +33,27 @@ function getBridge(deps = {}) {
 // which one's `since` token wins, silently dropping messages the loser's
 // response saw. Rescheduling after completion keeps exactly one `/sync`
 // in flight at a time.
+// #435 review: a 429's retryAfterMs (see matrix-bridge.js's sync()) overrides
+// the normal poll interval for just the next reschedule -- retrying at the
+// usual pace right after a rate limit just trips it again. A plain function
+// (rather than inlined in scheduleSync's .catch()) so this is unit-testable
+// without mocking setTimeout/global timers.
+function nextDelayAfterError(err, intervalMs) {
+  return err && Number.isFinite(err.retryAfterMs) ? Math.max(intervalMs, err.retryAfterMs) : intervalMs;
+}
+
 function scheduleSync(deps, activeClient, activeBridge, intervalMs, botUserId) {
   syncOnce({ client: activeClient, bridge: activeBridge, botUserId, since: syncSince })
     .then((nextSince) => {
       syncSince = nextSince;
+      return intervalMs;
     })
-    .catch((e) => console.warn("matrix-bridge: sync failed:", e && e.message ? e.message : e))
-    .finally(() => {
-      syncTimer = setTimeout(() => scheduleSync(deps, activeClient, activeBridge, intervalMs, botUserId), intervalMs);
+    .catch((e) => {
+      console.warn("matrix-bridge: sync failed:", e && e.message ? e.message : e);
+      return nextDelayAfterError(e, intervalMs);
+    })
+    .then((nextDelayMs) => {
+      syncTimer = setTimeout(() => scheduleSync(deps, activeClient, activeBridge, intervalMs, botUserId), nextDelayMs);
       if (typeof syncTimer.unref === "function") syncTimer.unref();
     });
 }
@@ -108,6 +121,9 @@ module.exports = {
         : "Not configured -- set MANA_MATRIX_HOMESERVER_URL, MANA_MATRIX_ACCESS_TOKEN, and MANA_MATRIX_USER_ID",
     };
   },
+  // Test-only: the pure backoff-delay calculation, exported so it's directly
+  // unit-testable without mocking timers.
+  _nextDelayAfterErrorForTests: nextDelayAfterError,
   // Test-only escape hatch to reset the module-level singletons between
   // test files/runs -- production code never calls this.
   _resetForTests: () => {

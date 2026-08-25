@@ -50,6 +50,24 @@ own Matrix user account -- the common pattern for a self-hosted bot user,
 and it matches `telegram-bridge`'s own bot-token-only config. There's no
 interactive `/login` flow here.
 
+Unlike Telegram's BotFather, there's no single well-known place to get one --
+create a dedicated Matrix account for the bot on your homeserver first, then
+get a token for it one of two ways:
+
+- **Client-Server API login call** (works against any homeserver):
+  ```bash
+  curl -XPOST -H 'Content-Type: application/json' \
+    -d '{"type":"m.login.password","identifier":{"type":"m.id.user","user":"mana-bot"},"password":"<bot account password>"}' \
+    https://your-homeserver.example.org/_matrix/client/v3/login
+  ```
+  The response's `access_token` field is `MANA_MATRIX_ACCESS_TOKEN`, and its
+  `user_id` field is `MANA_MATRIX_USER_ID`.
+- **Element** (or another client): log in as the bot account, then Settings ->
+  Help & About -> Advanced -> Access Token.
+
+Either way, this token doesn't expire on its own -- logging the bot account
+out elsewhere will invalidate it.
+
 ## Routes
 
 - `GET /matrix/pending` -- rooms that have messaged but aren't approved yet.
