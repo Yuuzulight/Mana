@@ -16,6 +16,16 @@ internal sealed class ManaProcessManager : IDisposable
 
     public string RootDirectory { get; }
 
+    // #479 review: distinct from "did THIS launch start a process handle" --
+    // true whether Fish Speech was already running externally (health check
+    // passed, fishSpeechProcess stays null, nothing to start) or this
+    // launch started it. False only for the actual graceful-degradation
+    // case: missing native setup, or a launch failure. Lets callers (the
+    // tray status) tell "fish is really answering requests" apart from
+    // "TTS_PROVIDER=fish is configured but Kokoro is silently covering for
+    // it" -- the two look identical from the configured-provider name alone.
+    public bool IsFishSpeechAvailable { get; private set; }
+
     // handler: null (the default, and every existing call site's behavior)
     // constructs a real HttpClient for live health checks. Tests pass a
     // fake HttpMessageHandler to exercise the health-check-then-start
@@ -58,19 +68,45 @@ internal sealed class ManaProcessManager : IDisposable
             // fatal by design). Without this, a successfully-started Fish
             // Speech or backend process would be orphaned: started, but
             // never given a Process handle for Dispose() to kill.
-            if (kokoroTask.IsCompletedSuccessfully) kokoroProcess = kokoroTask.Result;
-            if (fishSpeechTask.IsCompletedSuccessfully) fishSpeechProcess = fishSpeechTask.Result;
-            if (backendTask.IsCompletedSuccessfully) backendProcess = backendTask.Result;
+            if (kokoroTask.IsCompletedSuccessfully) kokoroProcess = kokoroTask.Result.Process;
+            if (fishSpeechTask.IsCompletedSuccessfully)
+            {
+                fishSpeechProcess = fishSpeechTask.Result.Process;
+                IsFishSpeechAvailable = fishSpeechTask.Result.Available;
+            }
+            if (backendTask.IsCompletedSuccessfully) backendProcess = backendTask.Result.Process;
         }
     }
 
-    private async Task<Process?> StartIfNotRunningAsync(string healthUrl, Func<Task<Process?>> start)
+    // #479 review: named as worth tracking rather than a full crash-recovery
+    // system (no Process.Exited watcher, no auto-restart) -- this is
+    // explicitly a manual action a user can reach for (the tray's "Restart
+    // Fish Speech" item) once they've noticed the fallback note above, not
+    // an unattended self-healing loop. Stops whatever's there first (a
+    // hung/half-working process, if any) before starting fresh, the same
+    // as StartFishSpeech()'s own non-fatal degrade path.
+    public void RestartFishSpeech()
+    {
+        StopProcess(fishSpeechProcess);
+        fishSpeechProcess = StartFishSpeech();
+        IsFishSpeechAvailable = fishSpeechProcess is not null;
+    }
+
+    private async Task<(Process? Process, bool Available)> StartIfNotRunningAsync(string healthUrl, Func<Task<Process?>> start)
     {
         if (await IsServiceRunningAsync(healthUrl))
         {
-            return null;
+            // Already running externally -- nothing to start, but very
+            // much available.
+            return (null, true);
         }
-        return await start();
+        var process = await start();
+        // For Kokoro/the backend, start() either returns a real process or
+        // throws (fatal) -- so `process is not null` here is always true
+        // whenever this line is reached at all. Fish Speech is the one
+        // caller where start() can return null non-fatally (missing native
+        // setup, or a launch failure) -- that's the actual degraded case.
+        return (process, process is not null);
     }
 
     private async Task<bool> IsServiceRunningAsync(string url)
@@ -137,7 +173,8 @@ internal sealed class ManaProcessManager : IDisposable
             // Kokoro-only operation when Fish Speech is unreachable, and
             // its native setup (docs/fish_speech_tts.md) is a substantial
             // manual install most users won't have done yet.
-            Console.WriteLine(
+            LogFishSpeechDiagnostic(
+                fishDir,
                 $"Fish Speech native setup incomplete (python.exe found: {File.Exists(python)}, fish_speech_native_server.py found: {File.Exists(serverScript)}); skipping -- Mana will use Kokoro until it's set up (see docs/fish_speech_tts.md).");
             return null;
         }
@@ -150,7 +187,8 @@ internal sealed class ManaProcessManager : IDisposable
         var freeRamGB = GetFreeRamGB();
         if (freeRamGB < 6)
         {
-            Console.WriteLine(
+            LogFishSpeechDiagnostic(
+                fishDir,
                 $"Warning: only {freeRamGB:F1}GB RAM free -- loading Fish Speech's checkpoint (~3.6GB, mmap'd through host RAM) may be tight. Consider closing other apps first.");
         }
 
@@ -174,7 +212,7 @@ internal sealed class ManaProcessManager : IDisposable
             // Same non-fatal reasoning as the missing-setup case above --
             // a launch failure here must not take down backend startup or
             // the voice loop.
-            Console.WriteLine($"Fish Speech failed to start: {ex.Message} -- Mana will use Kokoro until this is resolved.");
+            LogFishSpeechDiagnostic(fishDir, $"Fish Speech failed to start: {ex.Message} -- Mana will use Kokoro until this is resolved.");
             return null;
         }
     }
@@ -257,6 +295,34 @@ internal sealed class ManaProcessManager : IDisposable
         }
 
         return process;
+    }
+
+    // #479 review: this app is a WinExe (no console window), so
+    // Console.WriteLine here previously wrote to a stream nobody was
+    // attached to -- a user whose Fish Speech setup is incomplete or whose
+    // launch failed had no way to find out short of the voice sounding
+    // different. Appended (not truncated) so a launch failure survives
+    // across restarts to actually be found, unlike the child process's own
+    // fresh-per-launch stdout/stderr logs below. Best-effort: a log
+    // directory that can't be written to must never fail the caller.
+    private static void LogFishSpeechDiagnostic(string fishDir, string message)
+    {
+        Console.WriteLine(message);
+        try
+        {
+            // No Directory.CreateDirectory here on purpose -- tools/fish-speech
+            // already exists in any real checkout (it's the missing venv/
+            // checkpoint inside it that triggers this), and this must stay a
+            // pure best-effort write, never a reason to create directories
+            // the caller (e.g. a test pointed at a nonexistent root) didn't
+            // ask for.
+            var logPath = Path.Combine(fishDir, "launcher.log");
+            File.AppendAllText(logPath, $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] {message}{Environment.NewLine}");
+        }
+        catch
+        {
+            // Best effort.
+        }
     }
 
     // Fresh log file per launch (truncated, not appended) -- matches

@@ -33,6 +33,11 @@ public class ManaProcessManagerTests
         using var manager = new ManaProcessManager(@"C:\does-not-exist", handler);
 
         await manager.StartAsync();
+
+        // #479 review: already-running-externally must read as available,
+        // not as a degraded/fallback state -- there's no process handle
+        // (nothing needed starting) but Fish Speech genuinely is up.
+        Assert.True(manager.IsFishSpeechAvailable);
     }
 
     [Fact]
@@ -52,5 +57,23 @@ public class ManaProcessManagerTests
         using var manager = new ManaProcessManager(@"C:\does-not-exist", handler);
 
         await manager.StartAsync();
+
+        // #479 review: this is the actual degraded case -- must read as
+        // unavailable so a caller (the tray status) can tell the user
+        // Kokoro is silently covering for it.
+        Assert.False(manager.IsFishSpeechAvailable);
+    }
+
+    [Fact]
+    public void RestartFishSpeech_WithMissingNativeSetup_LeavesItUnavailableWithoutThrowing()
+    {
+        // #479 review: the manual "Restart Fish Speech" tray action, tested
+        // directly (not via StartAsync) -- same missing-setup degrade path,
+        // must not throw and must update IsFishSpeechAvailable.
+        using var manager = new ManaProcessManager(@"C:\does-not-exist");
+
+        manager.RestartFishSpeech();
+
+        Assert.False(manager.IsFishSpeechAvailable);
     }
 }
