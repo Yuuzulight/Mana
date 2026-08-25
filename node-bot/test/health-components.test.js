@@ -30,6 +30,7 @@ test("health includes component readiness while preserving top-level fields", as
       "discordBot",
       "documentReader",
       "ffxivMarket",
+      "hooks",
       "imageGeneration",
       "jobApplications",
       "jobSearchAdzuna",

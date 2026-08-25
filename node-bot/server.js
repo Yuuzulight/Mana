@@ -166,6 +166,8 @@ const { mcpClientCapability } = require("./capabilities/mcp-client-capability");
 const { createToolCallLog, wrapWithToolCallLog } = require("./tool-call-log");
 const { filterRelevantTools, wrapWithResultDigest } = require("./ai/tool-context-guard");
 const { toolCallLogCapability } = require("./capabilities/tool-call-log-capability");
+const { createHooksStore, wrapWithHooks } = require("./hooks-store");
+const { hooksCapability } = require("./capabilities/hooks-capability");
 const {
   createBrowserAutomationToolSource,
 } = require("../plugins/browser-automation/browser-automation-tool-source");
@@ -683,6 +685,11 @@ const mcpClientRegistry = createMcpClientRegistry({ approvalGate });
 // Issue #188: the shared audit/trace log every tool call gets routed
 // through in replyMaybeWithTools below, regardless of source.
 const toolCallLog = createToolCallLog({});
+
+// Issue #426: user-configurable PreToolUse/PostToolUse-style hook rules
+// (deny/ask/run-command), additive to the approval gate and tool-call-log
+// above rather than replacing either -- see hooks-store.js's wrapWithHooks.
+const hooksStore = createHooksStore({});
 
 // Issue #188: browser-automation's navigate/click/type/snapshot as
 // tool-calling schemas, sharing the plugin's own singleton browser session
@@ -2017,6 +2024,7 @@ function registerRoutes(app, upload, deps = {}) {
     approvalGateCapability,
     mcpClientCapability,
     toolCallLogCapability,
+    hooksCapability,
   ];
   const activePresetsStore = deps.presetsStore || presetsStore;
   const activePersonalityStore = deps.personalityStore || personalityStore;
@@ -2062,6 +2070,7 @@ function registerRoutes(app, upload, deps = {}) {
   }).run;
   const activeMcpClientRegistry = deps.mcpClientRegistry || mcpClientRegistry;
   const activeToolCallLog = deps.toolCallLog || toolCallLog;
+  const activeHooksStore = deps.hooksStore || hooksStore;
   const activeBrowserAutomationToolSource = deps.browserAutomationToolSource || browserAutomationToolSource;
   const capabilityContext = {
     acpMemoryStore: deps.acpMemoryStore || acpMemoryStore,
@@ -2075,6 +2084,7 @@ function registerRoutes(app, upload, deps = {}) {
     approvalGate: activeApprovalGate,
     mcpClientRegistry: activeMcpClientRegistry,
     toolCallLog: deps.toolCallLog || toolCallLog,
+    hooksStore: activeHooksStore,
     // Issue #187: discord-bot's voice session needs the same full
     // "speak this reply" pipeline (gaming-aware TTS provider switching,
     // VTube reactions, captions) every other surface already uses, not a
@@ -4614,6 +4624,14 @@ function registerRoutes(app, upload, deps = {}) {
               runLocalReply: runLocalLlamaReply,
             });
           }
+          // Issue #426: the user's own PreToolUse/PostToolUse-style hook
+          // rules (deny/ask/run-command), applied *before* (wrapped inside)
+          // wrapWithToolCallLog below -- so a denied or ask-gated call still
+          // lands in the audit trail as its own logged event, additive to
+          // both existing gates rather than replacing either.
+          mergedToolPolicy = wrapWithHooks(mergedToolPolicy, activeHooksStore, activeApprovalGate, {
+            snapshotStore,
+          });
           // Issue #188: applied last so it catches every tool call from
           // every source (local read_file, browser-automation, MCP) in one
           // shared audit/trace log.
