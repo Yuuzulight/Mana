@@ -155,6 +155,7 @@ const { buildToolPolicy } = require("./ai/tool-source");
 const { createMemoryToolSource } = require("./ai/memory-tool-source");
 const { createSessionSearchToolSource } = require("./ai/session-search-tool-source");
 const { createSkillToolSource } = require("./ai/skill-tool-source");
+const { createSnapshotToolSource } = require("./ai/snapshot-tool-source");
 const { createExpressionToolSource, isExpressionToolName } = require("./ai/expression-tool-source");
 const { createVisionToolSource } = require("./ai/vision-tool-source");
 const { createSessionGoalToolSource } = require("./ai/session-goal-tool-source");
@@ -2363,7 +2364,21 @@ function registerRoutes(app, upload, deps = {}) {
     if (!checkAdminAuth(req, res)) return;
     try {
       const editors = getEditorIntegrations();
-      const restored = await editors.restoreEditSnapshot(req.params.id);
+      const confirmStale = Boolean(req.body && req.body.confirmStale);
+      const restored = await editors.restoreEditSnapshot(req.params.id, { confirmStale });
+      // #475 whole-branch review fix: {stale: true, ...} is truthy, so a
+      // plain 200 here made both renderer UIs' `if (!result.restored) throw`
+      // check read a stale, unconfirmed restore as a success -- nothing was
+      // actually restored, but the UI reported it worked. 409 (plus a null
+      // `restored`) routes into that same existing error branch instead of
+      // requiring any renderer change.
+      if (restored && restored.stale) {
+        return res.status(409).json({
+          restored: null,
+          stale: restored,
+          error: "snapshot is stale: target has been written to again since it was recorded",
+        });
+      }
       return res.json({ restored });
     } catch (error) {
       return res.status(400).json({
@@ -4536,6 +4551,15 @@ function registerRoutes(app, upload, deps = {}) {
             }),
             createSessionSearchToolSource({ acpMemoryStore, sessionId }),
             createSkillToolSource({ approvalGate: activeApprovalGate, skillsStore: activeSkillsStore }),
+            createSnapshotToolSource({
+              approvalGate: activeApprovalGate,
+              snapshotStore,
+              // Issue #475 whole-branch review: without this, a file-kind
+              // restore skips the workspace-containment check that
+              // getEditorIntegrations().restoreEditSnapshot already
+              // enforces for the REST/UI restore path.
+              restoreFileSnapshot: (id, opts) => getEditorIntegrations().restoreEditSnapshot(id, opts),
+            }),
             // Issue #253: lets Mana pick her own Live2D expression for this
             // reply, alongside (not instead of) reply-emotion.js's automatic
             // detection. No approvalGate/store needed -- see

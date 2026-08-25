@@ -8,6 +8,7 @@ const { buildToolPolicy } = require("../ai/tool-source");
 const { createMemoryToolSource } = require("../ai/memory-tool-source");
 const { createSessionSearchToolSource } = require("../ai/session-search-tool-source");
 const { createSkillToolSource } = require("../ai/skill-tool-source");
+const { createSnapshotToolSource } = require("../ai/snapshot-tool-source");
 const { createMcpClientRegistry } = require("../mcp-client-registry");
 
 function fakeBasePolicy() {
@@ -118,10 +119,17 @@ test("buildToolPolicy works end to end with the real memory/session-search/skill
     },
     skillsStore: { viewSkill: () => null },
   });
+  const snapshotSource = createSnapshotToolSource({
+    approvalGate: {
+      requestApproval: async () => ({ status: "pending" }),
+      registerExecutor: () => {},
+    },
+    snapshotStore: { listSnapshots: () => [], getSnapshot: () => null, checkStale: () => ({ stale: false }), restoreSnapshot: async () => ({}) },
+  });
   const mcpDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "mana-tool-source-mcp-"));
   const mcpRegistry = createMcpClientRegistry({ dataDir: mcpDataDir });
 
-  const sources = [memorySource, sessionSearchSource, skillSource, mcpRegistry];
+  const sources = [memorySource, sessionSearchSource, skillSource, snapshotSource, mcpRegistry];
   for (const source of sources) {
     assert.equal(typeof source.isKnownToolName, "function", "every real source must expose isKnownToolName");
     assert.equal(typeof source.listToolSchemas, "function", "every real source must expose listToolSchemas");
@@ -143,6 +151,7 @@ test("buildToolPolicy works end to end with the real memory/session-search/skill
   assert.equal(merged.isKnownTool("memory__remember"), true);
   assert.equal(merged.isKnownTool("session_search__query"), true);
   assert.equal(merged.isKnownTool("skill__view"), true);
+  assert.equal(merged.isKnownTool("snapshot__list"), true);
   assert.equal(merged.isKnownTool("mcp__anything"), true);
   assert.equal(merged.isKnownTool("read_file"), true);
   assert.equal(merged.isKnownTool("totally_unrelated"), false);
