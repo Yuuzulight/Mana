@@ -145,7 +145,7 @@ test("previewRestore returns null for an unknown id, otherwise record+staleness+
   const preview = previewRestore(snapshotStore, "snap-1");
   assert.deepEqual(preview.record, record);
   assert.deepEqual(preview.staleness, { stale: false });
-  assert.equal(preview.summary, "Restore file snapshot: s");
+  assert.equal(preview.summary, "Restore file snapshot: s (a.txt)");
 });
 
 // #475 whole-branch review fix: every other test in this file drives
@@ -196,4 +196,71 @@ test("buildRestoreSummary falls back to key, then id, when summary is empty", ()
     buildRestoreSummary({ kind: "file", key: null, summary: "", id: "snap-1" }, { stale: false }),
     "Restore file snapshot: snap-1",
   );
+});
+
+test("buildRestoreSummary names the file for a file-kind snapshot whose summary is free text, not the path", () => {
+  assert.equal(
+    buildRestoreSummary({ kind: "file", key: "src/app.js", summary: "file_write overwrite", id: "snap-1" }, { stale: false }),
+    "Restore file snapshot: file_write overwrite (src/app.js)",
+  );
+  // Non-file kinds have no workspace-relative path to add.
+  assert.equal(
+    buildRestoreSummary({ kind: "skill", key: "src/app.js", summary: "skill update: X", id: "snap-1" }, { stale: false }),
+    "Restore skill snapshot: skill update: X",
+  );
+});
+
+test("the registered snapshot-restore executor routes a file-kind restore through restoreFileSnapshot when provided, for workspace containment", async () => {
+  const approvalGate = fakeApprovalGate();
+  const restoreFileCalls = [];
+  const directRestoreCalls = [];
+  const record = { id: "snap-1", kind: "file", key: "a.txt", scope: "/repo" };
+  const snapshotStore = fakeSnapshotStore({
+    getSnapshot: (id) => (id === "snap-1" ? record : null),
+    restoreSnapshot: async (id, opts) => {
+      directRestoreCalls.push({ id, opts });
+      return { restoredPath: "/repo/a.txt" };
+    },
+  });
+  createSnapshotToolSource({
+    approvalGate,
+    snapshotStore,
+    restoreFileSnapshot: async (id, opts) => {
+      restoreFileCalls.push({ id, opts });
+      return { id, relativePath: "a.txt", restoredAt: "t" };
+    },
+  });
+
+  const executor = approvalGate.executors.get("snapshot-restore");
+  const result = await executor({ id: "snap-1" });
+
+  assert.deepEqual(restoreFileCalls, [{ id: "snap-1", opts: { confirmStale: true } }]);
+  assert.deepEqual(directRestoreCalls, [], "the workspace-unaware store restore must not run for a file kind when the checked path is available");
+  assert.deepEqual(result, { id: "snap-1", relativePath: "a.txt", restoredAt: "t" });
+});
+
+test("the registered snapshot-restore executor falls back to the store directly for a non-file kind, even when restoreFileSnapshot is provided", async () => {
+  const approvalGate = fakeApprovalGate();
+  const directRestoreCalls = [];
+  const record = { id: "snap-1", kind: "skill", key: "x.md", scope: null };
+  const snapshotStore = fakeSnapshotStore({
+    getSnapshot: (id) => (id === "snap-1" ? record : null),
+    restoreSnapshot: async (id, opts) => {
+      directRestoreCalls.push({ id, opts });
+      return { restored: true };
+    },
+  });
+  createSnapshotToolSource({
+    approvalGate,
+    snapshotStore,
+    restoreFileSnapshot: async () => {
+      throw new Error("must not be called for a non-file kind");
+    },
+  });
+
+  const executor = approvalGate.executors.get("snapshot-restore");
+  const result = await executor({ id: "snap-1" });
+
+  assert.deepEqual(directRestoreCalls, [{ id: "snap-1", opts: { confirmStale: true } }]);
+  assert.deepEqual(result, { restored: true });
 });

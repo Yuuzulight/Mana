@@ -4551,7 +4551,15 @@ function registerRoutes(app, upload, deps = {}) {
             }),
             createSessionSearchToolSource({ acpMemoryStore, sessionId }),
             createSkillToolSource({ approvalGate: activeApprovalGate, skillsStore: activeSkillsStore }),
-            createSnapshotToolSource({ approvalGate: activeApprovalGate, snapshotStore }),
+            createSnapshotToolSource({
+              approvalGate: activeApprovalGate,
+              snapshotStore,
+              // Issue #475 whole-branch review: without this, a file-kind
+              // restore skips the workspace-containment check that
+              // getEditorIntegrations().restoreEditSnapshot already
+              // enforces for the REST/UI restore path.
+              restoreFileSnapshot: (id, opts) => getEditorIntegrations().restoreEditSnapshot(id, opts),
+            }),
             // Issue #253: lets Mana pick her own Live2D expression for this
             // reply, alongside (not instead of) reply-emotion.js's automatic
             // detection. No approvalGate/store needed -- see

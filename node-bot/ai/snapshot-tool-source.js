@@ -51,7 +51,13 @@ function isSnapshotToolName(name) {
 
 function buildRestoreSummary(record, staleness) {
   const label = record.summary || record.key || record.id;
-  const base = `Restore ${record.kind} snapshot: ${label}`;
+  // Issue #475 whole-branch review: a file-kind summary is otherwise free
+  // text ("file_write overwrite", an edit's own proposal summary) that
+  // never names the file -- a human approving a restore couldn't tell what
+  // it actually touches. Skipped when key === label (the fallback above
+  // already used it) to avoid "Restore file snapshot: a.txt (a.txt)".
+  const target = record.kind === "file" && record.key && record.key !== label ? ` (${record.key})` : "";
+  const base = `Restore ${record.kind} snapshot: ${label}${target}`;
   return staleness && staleness.stale
     ? `${base} (WARNING: this target has been written to again since this snapshot was recorded -- restoring will overwrite that newer state)`
     : base;
@@ -91,9 +97,25 @@ function createSnapshotToolSource(options = {}) {
   // summary before a human ever saw this request (see executeTool below),
   // so an approval here IS the confirm-anyway decision. There's no second
   // round-trip for the agent-tool path the way the REST route/UI keep.
-  approvalGate.registerExecutor("snapshot-restore", async (payload) =>
-    snapshotStore.restoreSnapshot(payload.id, { confirmStale: true }),
-  );
+  //
+  // Issue #475 whole-branch review: a "file" kind snapshot's `scope` is
+  // whatever workspace was active when it was recorded, and the shared
+  // store keeps accumulating across workspace switches (setWorkspace is
+  // mutable at runtime). zed-integration.js's restoreEditSnapshot already
+  // rejects a scope mismatch against the CURRENT workspace before
+  // restoring; going straight to snapshotStore.restoreSnapshot here skipped
+  // that check entirely, letting an agent restore a stale snapshot left
+  // over from a different project into today's workspace. options.
+  // restoreFileSnapshot routes file-kind restores through that same check
+  // when the caller (server.js) provides it; other kinds have no workspace
+  // concept and go straight to the store as before.
+  approvalGate.registerExecutor("snapshot-restore", async (payload) => {
+    const record = snapshotStore.getSnapshot(payload.id);
+    if (record && record.kind === "file" && options.restoreFileSnapshot) {
+      return options.restoreFileSnapshot(payload.id, { confirmStale: true });
+    }
+    return snapshotStore.restoreSnapshot(payload.id, { confirmStale: true });
+  });
 
   function listToolSchemas() {
     return TOOL_SCHEMAS;
