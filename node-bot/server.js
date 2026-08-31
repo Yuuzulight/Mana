@@ -72,6 +72,9 @@ const { createVTubeRuntime } = require("./vtube-runtime");
 	  isPluginEnabled,
 	} = require("./capabilities/registry");
 	const dirScannerCapability = require("./capabilities/dir-scanner-capability");
+const cloudSyncCapability = require("./capabilities/cloud-sync-capability");
+const scheduledExportCapability = require("./capabilities/scheduled-export-capability");
+const structuredConnectorsCapability = require("./capabilities/structured-connectors-capability");
 const {
   webAccessCapability,
 } = require("./capabilities/web-access-capability");
@@ -136,6 +139,7 @@ const { readGgufMetadata } = require("./tools/gguf-metadata");
 	const videoWatchPlugin = require("../plugins/video-watch");
 	const contextPushPlugin = require("../plugins/context-push");
 	const screenSensingPlugin = require("../plugins/screen-sensing");
+const { PluginStore, pluginStore } = require("./plugin-store");
 const { createTtsRuntime } = require("./tts-runtime");
 const { createAcpMemoryStore } = require("./acp-memory-store");
 const { createSnapshotStore } = require("./snapshot-store");
@@ -2027,6 +2031,10 @@ function registerRoutes(app, upload, deps = {}) {
     mcpClientCapability,
     toolCallLogCapability,
     hooksCapability,
+    // Yellowlight enhancements (#496-#489) — optional plugins wired into capability system
+    cloudSyncCapability,
+    scheduledExportCapability,
+    structuredConnectorsCapability,
   ];
   const activePresetsStore = deps.presetsStore || presetsStore;
   const activePersonalityStore = deps.personalityStore || personalityStore;
@@ -2175,7 +2183,12 @@ function registerRoutes(app, upload, deps = {}) {
     },
     getPromptComposition: deps.getPromptComposition || getPromptComposition,
   };
-  registerCapabilities(app, capabilities, capabilityContext);
+  registerCapabilities(app, [
+    dirScannerCapability,
+    cloudSyncCapability,
+    scheduledExportCapability,
+    structuredConnectorsCapability,
+  ], { pluginSettingsStore });
 
   app.get("/doctor", async (req, res) => {
     try {
@@ -5517,6 +5530,166 @@ async function startServer() {
     } catch (e) {
       console.error("Failed to serve admin UI file:", e);
       return res.status(500).send("internal error");
+    }
+  });
+
+  // Plugin Store UI routes — Settings > Plugins panel
+  app.get("/admin/plugins-ui", (req, res) => {
+    try {
+      const f = path.join(__dirname, "admin", "plugins_ui.html");
+      if (!fs.existsSync(f)) return res.status(404).send("not found");
+      return res.sendFile(f);
+    } catch (e) {
+      console.error("Failed to serve plugin UI file:", e);
+      return res.status(500).send("internal error");
+    }
+  });
+
+  app.get("/admin/plugins/install", (req, res) => {
+    try {
+      const f = path.join(__dirname, "admin", "plugins_install.html");
+      if (!fs.existsSync(f)) return res.status(404).send("not found");
+      return res.sendFile(f);
+    } catch (e) {
+      console.error("Failed to serve plugin install UI file:", e);
+      return res.status(500).send("internal error");
+    }
+  });
+
+  // Plugin store API endpoints
+  app.get("/plugins/store", async (req, res) => {
+    try {
+      const pluginManager = require("./plugin-manager").pluginManager;
+      
+      // Get installed plugins
+      const installed = pluginManager.getInstalledPlugins();
+      
+      // Fetch available plugins from GitHub (Yuuzulight/Mana)
+      const available = await new Promise((resolve, reject) => {
+        https.get("https://api.github.com/repos/Yuuzulight/Mana/contents/tools/plugins", (res) => {
+          let data = "";
+          
+          res.on("data", chunk => data += chunk);
+          res.on("end", () => resolve(JSON.parse(data)));
+          res.on("error", reject);
+        }).on("error", reject);
+      });
+
+      // Extract plugin names from GitHub's tools/plugins directory
+      const githubPlugins = available.filter(item => item.name.endsWith("/")).map(item => {
+        return {
+          name: item.name.replace("/", ""),
+          url: `https://github.com/Yuuzulight/Mana/tree/main/tools/plugins/${item.name}`,
+          description: "Official Mana plugin from GitHub",
+          category: "Core"
+        };
+      });
+
+      // Combine installed and available plugins
+      const allPlugins = [...installed.map(name => ({
+        name,
+        url: `https://github.com/Yuuzulight/Mana/tree/main/tools/plugins/${name}`,
+        description: "Installed plugin",
+        category: "User Installed"
+      })), ...githubPlugins];
+
+      // Segment by tier (plugin vs addon) — default to "plugin" if not specified
+      const plugins = allPlugins.filter(p => p.tier === "plugin" || !p.tier);
+      const addons = allPlugins.filter(p => p.tier === "addon");
+
+      res.json({ 
+        installed, 
+        available: githubPlugins, 
+        all: allPlugins,
+        plugins,
+        addons
+      });
+    } catch (error) {
+      console.error("[PluginStore] Failed to fetch plugins:", error.message);
+      res.status(500).json({ error: `Failed to fetch plugins: ${error.message}` });
+    }
+  });
+
+app.get("/addons/consent/:name", async (req, res) => {
+    try {
+      const pluginSettingsStore = require("./plugin-settings-store").pluginSettingsStore;
+      const name = req.params.name;
+      
+      // Check if consent is recorded for this addon
+      const consentKey = `addon_consent_${name}`;
+      const consented = pluginSettingsStore.getConsent(consentKey);
+      
+      res.json({ 
+        consented: consented === true, 
+        required: name.startsWith("@mana/") || false // Add-Ons require explicit consent
+      });
+    } catch (error) {
+      console.error("[PluginStore] Failed to check addon consent:", error.message);
+      res.status(500).json({ error: `Failed to check consent: ${error.message}` });
+    }
+  });
+
+app.post("/addons/consent/:name", async (req, res) => {
+    try {
+      const pluginSettingsStore = require("./plugin-settings-store").pluginSettingsStore;
+      const name = req.params.name;
+      
+      if (!req.body || typeof req.body.consented !== "boolean") {
+        return res.status(400).json({ error: "consented field is required" });
+      }
+      
+      // Record consent for this addon (session-scoped or persistent)
+      const consentKey = `addon_consent_${name}`;
+      pluginSettingsStore.setConsent(consentKey, req.body.consented);
+      
+      res.json({ ok: true, name });
+    } catch (error) {
+      console.error("[PluginStore] Failed to record addon consent:", error.message);
+      res.status(500).json({ error: `Failed to record consent: ${error.message}` });
+    }
+  });
+
+  app.post("/plugins/store/install", async (req, res) => {
+    try {
+      const pluginManager = require("./plugin-manager").pluginManager;
+      
+      const { sourceType, urlOrPath } = req.body;
+      
+      if (!sourceType || !urlOrPath) {
+        return res.status(400).json({ error: "sourceType and urlOrPath are required" });
+      }
+
+      let result;
+      if (sourceType === "github") {
+        result = await pluginManager.installFromGitHub(urlOrPath);
+      } else if (sourceType === "local") {
+        result = await pluginManager.installFromLocal(urlOrPath);
+      } else {
+        return res.status(400).json({ error: `Unknown source type: ${sourceType}` });
+      }
+
+      res.json(result);
+    } catch (error) {
+      console.error("[PluginStore] Install failed:", error.message);
+      res.status(500).json({ error: `Install failed: ${error.message}` });
+    }
+  });
+
+  app.post("/plugins/store/toggle", async (req, res) => {
+    try {
+      const pluginManager = require("./plugin-manager").pluginManager;
+      
+      const { name, enabled } = req.body;
+      
+      if (!name || typeof enabled !== "boolean") {
+        return res.status(400).json({ error: "name and enabled are required" });
+      }
+
+      const result = await pluginManager.togglePlugin(name, enabled);
+      res.json(result);
+    } catch (error) {
+      console.error("[PluginStore] Toggle failed:", error.message);
+      res.status(500).json({ error: `Toggle failed: ${error.message}` });
     }
   });
 

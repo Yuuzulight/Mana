@@ -54,7 +54,22 @@ function createPluginSettingsStore(options = {}) {
     return settings[key];
   }
 
-  return { dataDir, isEnabled, setEnabled };
+  // Consent tracking for Add-Ons (tier: "addon")
+  function getConsent(key) {
+    const settings = readAll();
+    return Object.prototype.hasOwnProperty.call(settings, `consent_${key}`)
+      ? Boolean(settings[`consent_${key}`])
+      : false;
+  }
+
+  function setConsent(key, consented) {
+    const settings = readAll();
+    settings[`consent_${key}`] = Boolean(consented);
+    writeAll(settings);
+    return settings[`consent_${key}`];
+  }
+
+  return { dataDir, isEnabled, setEnabled, getConsent, setConsent };
 }
 
 module.exports = { createPluginSettingsStore };

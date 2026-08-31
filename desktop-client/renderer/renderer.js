@@ -2617,54 +2617,249 @@ document.getElementById('themeToggle')?.addEventListener('click', (e) => {
     }
   });
 
-  // Plugins (Settings > Plugins): optional integrations -- FFXIV Market
+  // Plugins (Settings > Plugins): optional integrations -- FFXIV Market, etc.
   // Watch, stock market, job search -- toggled per plugin, backed by
-  // node-bot's plugin-settings-store.js via GET/POST /plugins.
+  // node-bot's new dual-tier plugin store API via GET/POST /plugins/store.
   async function loadPlugins() {
     if (!pluginsListEl) return;
     try {
-      const j = await fetchJson(`${BACKEND_URL}/plugins`);
-      const rows = [];
-      for (const category of Object.keys(j.plugins || {})) {
-        for (const plugin of j.plugins[category]) {
-          rows.push(`
-            <div class="plugin-row">
-              <div class="plugin-row-info">
-                <strong>${escapeHtml(plugin.name)}</strong>
-                <span>${escapeHtml(plugin.description || category)}</span>
-              </div>
-              <button class="plugin-switch ${plugin.enabled ? 'on' : ''}" data-plugin-key="${escapeHtml(plugin.key)}" aria-pressed="${plugin.enabled}" title="${plugin.enabled ? 'Enabled' : 'Disabled'}"></button>
-            </div>`);
-        }
+      const j = await fetchJson(`${BACKEND_URL}/plugins/store`);
+
+      // Render two sections: Plugins (tier: "plugin") and Add-Ons (tier: "addon")
+      const pluginRows = [];
+      for (const p of j.plugins || []) {
+        const isInstalled = j.installed?.includes(p.name);
+        if (!isInstalled) continue;
+
+        pluginRows.push(
+          `<div class="plugin-row" data-plugin="${escapeHtml(p.name)}">
+            <div class="plugin-row-info">
+              <strong>${escapeHtml(p.name)}</strong>
+              <span>${escapeHtml(p.description || 'Optional Mana capability')}</span>
+            </div>
+            ${p.enabled ? '<button class="plugin-switch on" data-plugin-key="' + escapeHtml(p.name) + '" aria-pressed="true" title="Enabled"></button>' :
+                          '<button class="plugin-switch" data-plugin-key="' + escapeHtml(p.name) + '" aria-pressed="false" title="Disabled"></button>'}
+          </div>`
+        );
       }
-      pluginsListEl.innerHTML = rows.join('') || '<p class="subtitle">No plugins installed.</p>';
+
+      const addonRows = [];
+      for (const a of j.addons || []) {
+        // Add-Ons require explicit consent on first load — check via API or assume not consented
+        const isConsented = await fetchJson(`${BACKEND_URL}/addons/consent/${escapeHtml(a.name)}`);
+
+        addonRows.push(
+          `<div class="plugin-row" data-plugin="${escapeHtml(a.name)}">
+            <div class="plugin-row-info">
+              <strong>${escapeHtml(a.name)}</strong>
+              <span>${escapeHtml(a.description || 'Full-scale Mana feature')}</span>
+            </div>
+            ${isConsented.consented ?
+              '<button class="plugin-switch on" data-plugin-key="' + escapeHtml(a.name) + '" aria-pressed="true" title="Enabled"></button>' :
+              '<button class="plugin-switch disabled" data-plugin-key="' + escapeHtml(a.name) + '" aria-pressed="false" title="Requires consent">⚙️</button>'}
+          </div>`
+        );
+      }
+
+      // Build the popup menu with two distinct sections
+      const html = [
+        '<h4 class="section-title">🔌 Plugins</h4>',
+        pluginRows.length ? pluginRows.join('') : '<p class="subtitle muted">No plugins installed.</p>',
+        '',
+        '<h4 class="section-title">⚡ Add-Ons</h4>',
+        addonRows.length ? addonRows.join('') : '<p class="subtitle muted">No add-ons available.</p>'
+      ].join('\n');
+
+      pluginsListEl.innerHTML = html;
     } catch (e) {
       pluginsListEl.innerHTML = `<p class="subtitle">Failed to load plugins: ${escapeHtml(e.message)}</p>`;
     }
   }
-  pluginsListEl?.addEventListener('click', async (e) => {
-    const btn = e.target.closest('.plugin-switch');
-    if (!btn || btn.disabled) return;
-    const key = btn.dataset.pluginKey;
-    const nextEnabled = !btn.classList.contains('on');
-    btn.disabled = true;
+
+  // Plugin details modal — uses real API data instead of mock data
+  let currentPluginDetails = null;
+
+  async function showPluginDetails(pluginName) {
+    if (!currentPluginDetails) {
+      try {
+        const j = await fetchJson(`${BACKEND_URL}/plugins/store`);
+        // Find the plugin in either "all" or by name match
+        currentPluginDetails = (j.all || []).find(p => p.name === pluginName) || null;
+      } catch (e) {
+        console.error('[Plugins] Failed to fetch plugin details:', e.message);
+        return;
+      }
+    }
+
+    if (!currentPluginDetails) return;
+
+    const data = currentPluginDetails;
+
+    // Create modal HTML with real API data + Install button
+    const modalHTML = `
+      <div id="pluginDetailsModal" class="modal-overlay">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h2>${escapeHtml(data.name)}</h2>
+            <button class="close-btn" onclick="hidePluginDetails()">×</button>
+          </div>
+          <div class="modal-body">
+            <p><strong>Version:</strong> ${escapeHtml(data.version || 'N/A')}</p>
+            <p><strong>Author:</strong> ${escapeHtml(data.author || 'Unknown')}</p>
+            <p><strong>Description:</strong> ${escapeHtml(data.description || 'No description available.')}</p>
+            <hr style="border-color: var(--border-soft); margin: 1rem 0;">
+            <h3>GitHub Repository</h3>
+            ${data.url ? `<a href="${escapeHtml(data.url)}" target="_blank" rel="noopener noreferrer">View on GitHub →</a>` : ''}
+            <hr style="border-color: var(--border-soft); margin: 1rem 0;">
+            <h3>Permissions</h3>
+            ${data.permissions ? `<ul>${(data.permissions || []).map(p => `<li>${escapeHtml(p)}</li>`).join('')}</ul>` : ''}
+            <hr style="border-color: var(--border-soft); margin: 1rem 0;">
+            <h3>Action</h3>
+            ${!isInstalled ?
+              `<button class="btn-primary" onclick="installFromModal('${escapeHtml(data.name)}')">Install Plugin</button>` :
+              '<span style="color: var(--muted-soft);">Already installed.</span>'}
+          </div>
+        </div>
+      </div>
+    `;
+
+    // Inject modal into body (only once)
+    if (!document.getElementById('pluginDetailsModal')) {
+      document.body.insertAdjacentHTML('beforeend', modalHTML);
+    } else {
+      const existing = document.getElementById('pluginDetailsModal');
+      existing.remove();
+      document.body.insertAdjacentHTML('beforeend', modalHTML);
+    }
+
+    // Show modal with animation
+    setTimeout(() => {
+      const modal = document.getElementById('pluginDetailsModal');
+      if (modal) {
+        modal.style.opacity = '1';
+        modal.style.transform = 'translateY(0)';
+        modal.classList.add('active');
+
+        // Focus close button for accessibility
+        const closeBtn = modal.querySelector('.close-btn');
+        if (closeBtn) closeBtn.focus();
+      }
+    }, 50);
+  }
+
+  function hidePluginDetails() {
+    const modal = document.getElementById('pluginDetailsModal');
+    if (!modal) return;
+
+    modal.classList.remove('active');
+
+    // Fade out after transition
+    setTimeout(() => {
+      modal.style.opacity = '0';
+      modal.style.transform = 'translateY(-20px)';
+
+      // Remove from DOM after animation completes
+      setTimeout(() => {
+        if (modal.parentNode) {
+          modal.parentNode.removeChild(modal);
+        }
+      }, 300);
+    }, 150);
+  }
+
+  // Install button handler wired to installPlugin()
+  window.installFromModal = async function(pluginName) {
+    const modal = document.getElementById('pluginDetailsModal');
+    if (!modal || !modal.classList.contains('active')) return;
+
     try {
-      await fetchJson(`${BACKEND_URL}/plugins/${encodeURIComponent(key)}/enabled`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ enabled: nextEnabled }),
-      });
-      btn.classList.toggle('on', nextEnabled);
-      btn.setAttribute('aria-pressed', String(nextEnabled));
-      btn.title = nextEnabled ? 'Enabled' : 'Disabled';
+      const j = await fetchJson(`${BACKEND_URL}/plugins/store`);
+      const isInstalled = (j.installed || []).includes(pluginName);
+
+      if (isInstalled) {
+        alert(`Plugin ${escapeHtml(pluginName)} is already installed.`);
+        return;
+      }
+
+      // Call installPlugin() from renderer.js
+      await window.installPlugin('github', j.all.find(p => p.name === pluginName)?.url || '');
+
+      // Refresh modal to show "Already installed" state
+      hidePluginDetails();
+      setTimeout(() => {
+        showPluginDetails(pluginName);
+      }, 600);
     } catch (e) {
-      console.warn('Mana plugin toggle failed:', e);
-      loadPlugins();
-    } finally {
-      btn.disabled = false;
+      alert(`Failed to install plugin: ${escapeHtml(e.message)}`);
+    }
+  };
+
+  // Close modal when clicking outside content
+  document.addEventListener('click', (e) => {
+    const modal = document.getElementById('pluginDetailsModal');
+    if (!modal || !modal.classList.contains('active')) return;
+
+    if (e.target === modal || e.target.closest('.modal-overlay')) {
+      hidePluginDetails();
     }
   });
-  loadPlugins();
+
+  // Close with Escape key
+  document.addEventListener('keydown', (e) => {
+    const modal = document.getElementById('pluginDetailsModal');
+    if (!modal || !modal.classList.contains('active') || e.key !== 'Escape') return;
+
+    hidePluginDetails();
+  });
+
+  // Install new plugin from GitHub or local file
+  async function installPlugin(sourceType, urlOrPath) {
+    if (!pluginsListEl) return;
+    
+    try {
+      const result = await fetchJson(`${BACKEND_URL}/plugins/store/install`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sourceType, urlOrPath }),
+      });
+
+      if (result.success) {
+        setPluginsStatus(`Successfully installed plugin: ${escapeHtml(result.name)}!`);
+        
+        // Refresh the list after install
+        setTimeout(loadPlugins, 500);
+      } else if (result.skipped) {
+        setPluginsStatus(`Plugin ${escapeHtml(result.name)} was already installed.`, false);
+      } else {
+        throw new Error(result.error || 'Install failed');
+      }
+    } catch (e) {
+      setPluginsStatus(`Failed to install plugin: ${escapeHtml(e.message)}`, true);
+    }
+  }
+
+  // Show status message in the plugins section
+  function setPluginsStatus(message, isError = false) {
+    if (!pluginsListEl.parentElement) return;
+    
+    const container = document.createElement('div');
+    container.className = `status-message ${isError ? 'error' : 'success'}`;
+    container.textContent = message;
+    
+    // Insert before the plugins list
+    const firstChild = pluginsListEl.parentElement.firstChild;
+    if (firstChild && firstChild !== pluginsListEl) {
+      pluginsListEl.parentElement.insertBefore(container, firstChild);
+    } else {
+      pluginsListEl.parentElement.appendChild(container);
+    }
+
+    // Auto-remove after 5 seconds
+    setTimeout(() => container.remove(), 5000);
+  }
+
+  // Install button handler (can be wired from the UI)
+  window.installPlugin = installPlugin;
 
   // Memory (Settings > Memory, issue #324): browse/manage acp-memory-store's
   // remembered facts (memory__remember), including the unverifiedSource flag
