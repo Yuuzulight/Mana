@@ -94,7 +94,7 @@ router.get('/consent/:id', (req, res) => {
   });
 });
 
-// Route: POST /addons/consent/:id — approve addon installation
+// Route: POST /consent/:id — approve addon installation
 router.post('/consent/:id', async (req, res) => {
   const { id } = req.params;
   
@@ -127,44 +127,45 @@ router.post('/consent/:id', async (req, res) => {
       res.status(500).json({ error: 'Failed to activate Inference Gateway', details: err.message });
     }
   } else {
-  try {
-    grantConsent(id);
-    
-    // Load and register the addon module
-    const addonPath = path.join(__dirname, '../../addons', id, 'index.js');
-    if (!fs.existsSync(addonPath)) {
-      return res.status(404).json({ error: 'Add-on implementation not found' });
-    }
-
-    // Dynamically import the addon (lazy load)
-    const addonModule = require(addonPath);
-    
-    // Register via addons-loader using global registry to avoid circular deps
-    if (typeof addonModule.registerAddon === 'function') {
-      addonModule.registerAddon(id, addonModule);
-    } else {
-      // Fallback: use global loader with global registry
-      const { registerAddon } = require('../../addons-loader');
+    try {
+      grantConsent(id);
       
-      // Store in global registry for later retrieval
-      global.__MANA_ADDONS__ = global.__MANA_ADDONS__ || {};
-      global.__MANA_ADDONS__[id] = {
-        module: addonModule,
-        id,
-        registeredAt: Date.now()
-      };
+      // Load and register the addon module
+      const addonPath = path.join(__dirname, '../../addons', id, 'index.js');
+      if (!fs.existsSync(addonPath)) {
+        return res.status(404).json({ error: 'Add-on implementation not found' });
+      }
       
-      registerAddon(id, addonModule);
+      // Dynamically import the addon (lazy load)
+      const addonModule = require(addonPath);
+      
+      // Register via addons-loader using global registry to avoid circular deps
+      if (typeof addonModule.registerAddon === 'function') {
+        addonModule.registerAddon(id, addonModule);
+      } else {
+        // Fallback: use global loader with global registry
+        const { registerAddon } = require('../../addons-loader');
+        
+        // Store in global registry for later retrieval
+        global.__MANA_ADDONS__ = global.__MANA_ADDONS__ || {};
+        global.__MANA_ADDONS__[id] = {
+          module: addonModule,
+          id,
+          registeredAt: Date.now()
+        };
+        
+        registerAddon(id, addonModule);
+      }
+      
+      res.json({ 
+        success: true, 
+        message: `Add-on ${id} installed and activated`,
+        id
+      });
+    } catch (err) {
+      console.error(`[Addons] Failed to install ${id}:`, err.message);
+      res.status(500).json({ error: 'Failed to install add-on' });
     }
-
-    res.json({ 
-      success: true, 
-      message: `Add-on ${id} installed and activated`,
-      id
-    });
-  } catch (err) {
-    console.error(`[Addons] Failed to install ${id}:`, err.message);
-    res.status(500).json({ error: 'Failed to install add-on' });
   }
 });
 
