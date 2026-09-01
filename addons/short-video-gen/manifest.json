@@ -1,0 +1,36 @@
+{
+  "id": "short-video-gen",
+  "name": "Short Video Generator + Auto-Publish",
+  "version": "1.0.0",
+  "description": "Generates short-form video content from text prompts and auto-publishes to social platforms via Mana's LLM/TTS pipeline.",
+  "tier": "addon",
+  "requiresConsent": true,
+  "author": "Yuuzulight",
+  "capabilities": [
+    "text-to-video-generation",
+    "social-media-auto-posting"
+  ],
+  "stages": [
+    {
+      "name": "prompt-analysis",
+      "description": "Analyzes user prompt for video style, duration, and platform targeting"
+    },
+    {
+      "name": "script-generation",
+      "description": "Generates a structured script with visual cues using Mana's LLM"
+    },
+    {
+      "name": "voice-over-synthesis",
+      "description": "Synthesizes narration audio via TTS provider"
+    },
+    {
+      "name": "visual-generation",
+      "description": "Creates or sources visual assets (placeholder for image/video generation)"
+    },
+    {
+      "name": "assembly-and-export",
+      "description": "Assembles final video file with audio sync and exports"
+    }
+  ],
+  "consentRequiredReason": "Full-scale feature requiring explicit user approval per dual-tier architecture."
+}
