@@ -38,5 +38,7 @@
     <Compile Remove="ManaNativeLauncher.Tests\**" />
     <EmbeddedResource Remove="ManaNativeLauncher.Tests\**" />
     <None Remove="ManaNativeLauncher.Tests\**" />
+
+    <!-- Backend server dependency: runs as a separate process with minimal memory footprint -->
   </ItemGroup>
 </Project>
