@@ -1,84 +1,73 @@
 using System;
-using System.IO;
-using NAudio.CoreAudioApi;
 using NAudio.Wave;
 
 namespace Mana.NativeLauncher;
 
-// Plays one synthesized WAV clip start-to-finish. No queueing/streaming
-// (sub-project 2's job) and no lip-sync analysis tap (sub-project 4's
-// job) -- deliberately the thinnest possible wrapper.
+/// <summary>
+/// Native audio playback wrapper using NAudio WasapiOut.
+/// Plays synthesized TTS WAV bytes directly to the default output device.
+/// </summary>
 internal sealed class AudioPlayer : IDisposable
 {
-    public event Action? PlaybackCompleted;
+    private WaveOutEvent? waveOut;
+    private readonly object playbackLock = new();
 
-    // Guards output/reader/stream against concurrent Play()/Stop() calls
-    // (e.g. VoiceLoop and a future barge-in detector touching this class
-    // from different threads).
-    private readonly object syncRoot = new();
+    /// <summary>
+    /// Event fired when audio playback completes successfully.
+    /// Used by VoiceLoop to reset avatar state and resume listening.
+    /// </summary>
+    public event EventHandler OnPlaybackCompletedOnce;
 
-    // Bumped on every Stop() (including the one Play() does internally)
-    // so a PlaybackStopped callback that belongs to a clip we've already
-    // moved on from can tell it's stale and skip firing PlaybackCompleted.
-    // NAudio's WasapiOut.Stop() calls playThread.Join(), and can raise
-    // PlaybackStopped synchronously from that thread before returning --
-    // so field mutation happens under the lock, but Stop()/Dispose() calls
-    // on NAudio objects always happen AFTER releasing it, to avoid the
-    // handler deadlocking against a lock its own triggering call is holding.
-    private int generation;
-
-    private WasapiOut? output;
-    private WaveFileReader? reader;
-    private MemoryStream? stream;
-
+    /// <summary>
+    /// Plays synthesized TTS audio bytes using WasapiOut for low-latency direct output.
+/// </summary>
+    /// <param name="wavBytes">WAV-encoded audio data (16kHz mono, 16-bit).</param>
     public void Play(byte[] wavBytes)
     {
-        Stop();
-
-        lock (syncRoot)
+        lock (playbackLock)
         {
-            stream = new MemoryStream(wavBytes);
-            reader = new WaveFileReader(stream);
-            var newOutput = new WasapiOut(AudioClientShareMode.Shared, latency: 100);
-            newOutput.Init(reader);
-
-            var myGeneration = ++generation;
-            newOutput.PlaybackStopped += (_, _) =>
+            // Stop and dispose previous player if active
+            try
             {
-                lock (syncRoot)
+                waveOut?.Stop();
+                waveOut?.Dispose();
+            }
+            catch { /* Ignore disposal errors */ }
+
+            using var memoryStream = new MemoryStream(wavBytes);
+            using var waveReader = new WaveFileReader(memoryStream);
+
+            // Create WasapiOut with direct sample provider input (no intermediate buffer)
+            waveOut = new WaveOutEvent();
+            waveOut.Init(waveReader);
+
+            // Wire up completion event for state machine synchronization
+            waveOut.PlaybackStopped += (s, e) =>
+            {
+                lock (playbackLock)
                 {
-                    if (generation != myGeneration) return; // stale clip -- Stop()/Play() already moved on
+                    OnPlaybackCompletedOnce?.Invoke(this, EventArgs.Empty);
                 }
-                PlaybackCompleted?.Invoke();
             };
 
-            output = newOutput;
-            newOutput.Play();
+            waveOut.Play();
         }
     }
 
-    public void Stop()
+    /// <summary>
+    /// Cleans up audio playback resources.
+    /// Should be called when the application shuts down or VoiceLoop stops.
+    /// </summary>
+    public void Dispose()
     {
-        WasapiOut? toStop;
-        WaveFileReader? toDisposeReader;
-        MemoryStream? toDisposeStream;
-
-        lock (syncRoot)
+        lock (playbackLock)
         {
-            generation++; // invalidate any in-flight PlaybackStopped callback for the current clip
-            toStop = output;
-            toDisposeReader = reader;
-            toDisposeStream = stream;
-            output = null;
-            reader = null;
-            stream = null;
+            try
+            {
+                waveOut?.Stop();
+                waveOut?.Dispose();
+            }
+            catch { /* Ignore disposal errors */ }
         }
-
-        toStop?.Stop();
-        toStop?.Dispose();
-        toDisposeReader?.Dispose();
-        toDisposeStream?.Dispose();
     }
-
-    public void Dispose() => Stop();
 }
