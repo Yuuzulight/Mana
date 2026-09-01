@@ -82,7 +82,7 @@ internal static class Program
             audioPlayer = new AudioPlayer();
             
             // Avatar overlay (Windows Forms UI)
-            avatarOverlay = new AvatarOverlayForm();
+            avatarOverlay = new AvatarOverlayForm(AppDomain.CurrentDomain.BaseDirectory);
             avatarOverlay.Show();
 
             // Step 3: Start voice loop
@@ -122,6 +122,7 @@ internal static class Program
                 voiceLoop?.Dispose();
                 audioPlayer?.Dispose();
                 avatarOverlay?.Close();
+                avatarOverlay?.Dispose();
             }
             catch { /* Ignore cleanup errors */ }
         }
