@@ -339,14 +339,14 @@ internal sealed class VoiceLoop : IDisposable
         try
         {
             avatarOverlay.SetState(AvatarState.Talking);
-            audioPlayer.OnPlaybackCompletedOnce += OnPlaybackCompletedOnce;
+            audioPlayer.OnPlaybackCompletedOnce += (s, e) => OnPlaybackCompletedOnce();
             audioPlayer.Play(replyWav);
             return true;
         }
         catch (Exception ex)
         {
             Console.WriteLine($"VoiceLoop: playback failed to start, resuming listening. {ex.Message}");
-            audioPlayer.OnPlaybackCompletedOnce -= OnPlaybackCompletedOnce;
+            audioPlayer.OnPlaybackCompletedOnce -= (s, e) => OnPlaybackCompletedOnce();
             avatarOverlay.SetState(AvatarState.Idle);
             return false;
         }
@@ -354,7 +354,7 @@ internal sealed class VoiceLoop : IDisposable
 
     private void OnPlaybackCompletedOnce()
     {
-        audioPlayer.OnPlaybackCompletedOnce -= OnPlaybackCompletedOnce;
+        audioPlayer.OnPlaybackCompletedOnce -= (s, e) => OnPlaybackCompletedOnce();
         avatarOverlay.SetState(AvatarState.Idle);
         lock (stateLock)
         {

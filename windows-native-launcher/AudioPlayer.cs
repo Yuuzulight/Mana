@@ -16,7 +16,7 @@ internal sealed class AudioPlayer : IDisposable
     /// Event fired when audio playback completes successfully.
     /// Used by VoiceLoop to reset avatar state and resume listening.
     /// </summary>
-    public event EventHandler OnPlaybackCompletedOnce;
+    public event EventHandler<EventArgs> OnPlaybackCompletedOnce;
 
     /// <summary>
     /// Plays synthesized TTS audio bytes using WasapiOut for low-latency direct output.
