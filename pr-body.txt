@@ -1,0 +1,23 @@
+## Summary
+
+Split monolithic `renderer.js` (~157KB) and `server.js` (~219KB) into focused modules for maintainability, testability, and dual-tier plugin store support.
+
+## Changes
+
+### Desktop Client (Renderer)
+- **core.js**: Voice pipeline, VAD, streaming queue wiring  
+- **ui.js**: Theme toggles, startup overlay, main DOM wiring  
+- **plugins.js**: Dual-tier plugin/add-on store UI + modal logic  
+
+### Backend Routes
+- **routes/chat.js**: POST /api/v1/chat (transcribe → generate)  
+- **routes/speech.js**: Transcribe, synthesize, OCR endpoints  
+- **routes/plugins.js**: GET /plugins/store, POST /install, consent checks  
+
+## Dual-Tier Plugin Store
+
+- **Standard tier**: Auto-approved installation  
+- **Advanced tier**: Requires explicit user consent (`.consent` file)  
+
+## Verification
+All new files pass Node.js syntax check; endpoints functional. Related to #489, #495, #492.
