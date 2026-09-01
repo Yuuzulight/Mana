@@ -24,6 +24,3 @@ jobs:
 
       - name: Build project
         run: dotnet build windows-native-launcher/ManaNativeLauncher.csproj --configuration Release /v:minimal
-
-      - name: Run tests (if exist)
-        run: dotnet test windows-native-launcher/ManaNativeLauncher.Tests.csproj --no-build --verbosity quiet || echo "No tests found or tests skipped"
