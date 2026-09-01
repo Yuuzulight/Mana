@@ -98,6 +98,35 @@ router.get('/consent/:id', (req, res) => {
 router.post('/consent/:id', async (req, res) => {
   const { id } = req.params;
   
+  // Special handling for inference-gateway Add-on tier module
+  if (id === 'inference-gateway') {
+    try {
+      grantConsent(id);
+      
+      // Load and register the orchestrator module
+      const addonPath = path.join(__dirname, '../../addons/inference-gateway/orchestrator');
+      
+      // Dynamic import to avoid circular deps
+      const OrchestratorModule = await import(addonPath);
+      const orchestrator = new OrchestratorModule.ManaOrchestrator();
+      
+      // Register with global registry (for future integration)
+      if (!global.__MANA_ADDONS__) {
+        global.__MANA_ADDONS__ = {};
+      }
+      global.__MANA_ADDONS__[id] = orchestrator;
+      
+      res.json({
+        success: true,
+        message: 'Inference Gateway activated',
+        hardware: orchestrator.hardware,
+        defaultRuntime: orchestrator.config.default_runtime || 'vllm'
+      });
+    } catch (err) {
+      console.error('[Addons] Failed to load inference-gateway:', err.message);
+      res.status(500).json({ error: 'Failed to activate Inference Gateway', details: err.message });
+    }
+  } else {
   try {
     grantConsent(id);
     
