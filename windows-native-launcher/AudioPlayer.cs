@@ -5,9 +5,10 @@ using NAudio.Wave;
 
 namespace Mana.NativeLauncher;
 
-// Plays one synthesized WAV clip start-to-finish. No queueing/streaming
-// (sub-project 2's job) and no lip-sync analysis tap (sub-project 4's
-// job) -- deliberately the thinnest possible wrapper.
+// Plays one synthesized WAV clip start-to-finish. PlayAsync (below) lets a
+// caller sequence several clips back-to-back (sub-project 2); still no
+// lip-sync analysis tap (sub-project 4's job) -- deliberately the thinnest
+// wrapper that covers both.
 internal sealed class AudioPlayer : IDisposable
 {
     public event Action? PlaybackCompleted;
@@ -55,6 +56,38 @@ internal sealed class AudioPlayer : IDisposable
             output = newOutput;
             newOutput.Play();
         }
+    }
+
+    // Issue #331 (#479 sub-project 2): the streaming reply pipeline plays a
+    // sequence of TTS chunks back-to-back, awaiting each one's completion
+    // before starting the next (so one-ahead synthesis pipelining never
+    // overlaps two Play() calls). Wraps the existing event-based
+    // Play()/PlaybackCompleted pair in a Task instead of making every
+    // caller hand-roll its own one-shot subscribe/unsubscribe -- the same
+    // pattern VoiceLoop's OnPlaybackCompletedOnce already does once per
+    // turn, made reusable per chunk.
+    public Task PlayAsync(byte[] wavBytes)
+    {
+        var tcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        void OnCompleted()
+        {
+            PlaybackCompleted -= OnCompleted;
+            tcs.TrySetResult();
+        }
+
+        PlaybackCompleted += OnCompleted;
+        try
+        {
+            Play(wavBytes);
+        }
+        catch
+        {
+            PlaybackCompleted -= OnCompleted;
+            throw;
+        }
+
+        return tcs.Task;
     }
 
     public void Stop()
