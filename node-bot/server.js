@@ -5481,6 +5481,14 @@ function registerRoutes(app, upload, deps = {}) {
   });
 
   app.post("/plugins/store/install", async (req, res) => {
+    // CodeQL review: installFromLocal can read an arbitrary local file path
+    // -- a legitimate admin capability (same trust level as e.g. the
+    // /admin/plugins_install.html UI this backs), not something any
+    // unauthenticated caller should be able to trigger. Same
+    // checkAdminAuth gate every other sensitive route in this file already
+    // uses (auto-allows when MANA_ADMIN_SECRET is unset, matching local-dev
+    // behavior everywhere else).
+    if (!checkAdminAuth(req, res)) return;
     try {
       const { sourceType, urlOrPath } = req.body || {};
 
@@ -5505,6 +5513,7 @@ function registerRoutes(app, upload, deps = {}) {
   });
 
   app.post("/plugins/store/toggle", (req, res) => {
+    if (!checkAdminAuth(req, res)) return;
     try {
       const { name, enabled } = req.body || {};
 

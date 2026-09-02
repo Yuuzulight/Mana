@@ -195,10 +195,14 @@ class PluginStore {
    */
   async fetchManifest(baseUrl) {
     const url = `${baseUrl}/manifest.json`;
-    assertAllowedGithubUrl(url);
+    // .href (the validated URL object's own serialization), not the
+    // original `url` string, is what actually reaches https.get() -- so
+    // the sink's argument provably derives from a passed validation,
+    // rather than merely having a validation call sit next to it.
+    const safeUrl = assertAllowedGithubUrl(url).href;
 
     return new Promise((resolve, reject) => {
-      https.get(url, (res) => {
+      https.get(safeUrl, (res) => {
         if (!res.statusCode || res.statusCode < 200 || res.statusCode >= 300) {
           reject(new Error(`Failed to fetch manifest: HTTP ${res.statusCode}`));
           return;
@@ -267,10 +271,10 @@ class PluginStore {
     console.warn(`[PluginStore] Using fallback file download for ${baseUrl}`);
 
     const url = `${baseUrl}/`;
-    assertAllowedGithubUrl(url);
+    const safeUrl = assertAllowedGithubUrl(url).href;
 
     return new Promise((resolve, reject) => {
-      https.get(url, (res) => {
+      https.get(safeUrl, (res) => {
         if (!res.statusCode || res.statusCode < 200 || res.statusCode >= 300) {
           reject(new Error(`Failed to list repository: HTTP ${res.statusCode}`));
           return;
@@ -307,10 +311,10 @@ class PluginStore {
    * Downloads a single file from GitHub.
    */
   async downloadFile(url, destDir) {
-    assertAllowedGithubUrl(url);
+    const safeUrl = assertAllowedGithubUrl(url).href;
 
     return new Promise((resolve, reject) => {
-      https.get(url, (res) => {
+      https.get(safeUrl, (res) => {
         if (!res.statusCode || res.statusCode < 200 || res.statusCode >= 300) {
           reject(new Error(`Failed to download file: HTTP ${res.statusCode}`));
           return;
