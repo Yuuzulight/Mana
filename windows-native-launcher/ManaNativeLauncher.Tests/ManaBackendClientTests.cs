@@ -207,4 +207,82 @@ public class ManaBackendClientTests
 
         Assert.Equal(2, events.Count);
     }
+
+    [Fact]
+    public async Task ClassifyBargeInAsync_PostsToClassifyAndReturnsCategory()
+    {
+        string? path = null;
+        string? body = null;
+        var handler = new FakeHttpMessageHandler(request =>
+        {
+            path = request.RequestUri!.AbsolutePath;
+            body = request.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(
+                    "{\"success\":true,\"input_length\":5,\"category\":\"amend\",\"reason\":\"matched_amend_keyword\"}",
+                    Encoding.UTF8,
+                    "application/json"),
+            };
+        });
+        var client = new ManaBackendClient(handler);
+
+        var category = await client.ClassifyBargeInAsync("the other");
+
+        Assert.Equal("/barge-in/classify", path);
+        Assert.Contains("\"text\":\"the other\"", body);
+        Assert.Equal("amend", category);
+    }
+
+    [Fact]
+    public async Task ClassifyBargeInAsync_FallsBackToUnclassifiedOnNonSuccessStatus()
+    {
+        var handler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.InternalServerError));
+        var client = new ManaBackendClient(handler);
+
+        var category = await client.ClassifyBargeInAsync("whatever");
+
+        Assert.Equal("unclassified", category);
+    }
+
+    [Fact]
+    public async Task ClassifyBargeInAsync_FallsBackToUnclassifiedWhenTheRequestThrows()
+    {
+        var handler = new FakeHttpMessageHandler(_ => throw new HttpRequestException("connection refused"));
+        var client = new ManaBackendClient(handler);
+
+        var category = await client.ClassifyBargeInAsync("whatever");
+
+        Assert.Equal("unclassified", category);
+    }
+
+    [Fact]
+    public async Task ClassifyBargeInAsync_FallsBackToUnclassifiedWhenTheCategoryFieldIsMissing()
+    {
+        var handler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent("{\"success\":true}", Encoding.UTF8, "application/json"),
+        });
+        var client = new ManaBackendClient(handler);
+
+        var category = await client.ClassifyBargeInAsync("whatever");
+
+        Assert.Equal("unclassified", category);
+    }
+
+    [Fact]
+    public async Task ClassifyBargeInAsync_FallsBackToUnclassifiedOnATimeout()
+    {
+        // A slow/hung backend surfaces as TaskCanceledException (what
+        // HttpClient's own timeout throws) -- this method's own doc
+        // comment promises it never throws, and its only caller
+        // (VoiceLoop.ProcessTurnAsync) has no try/catch of its own around
+        // this specific call, unlike every other backend call there.
+        var handler = new FakeHttpMessageHandler(_ => throw new TaskCanceledException("the request timed out"));
+        var client = new ManaBackendClient(handler);
+
+        var category = await client.ClassifyBargeInAsync("whatever");
+
+        Assert.Equal("unclassified", category);
+    }
 }
