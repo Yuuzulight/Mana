@@ -209,3 +209,82 @@ just a Docker dependency Mana doesn't otherwise have.
 WhatsApp has no compliant local bridge (only reverse-engineered, ToS-risk
 libraries). Slack has no meaningful local/self-hosted server option. Both
 excluded on Mana's local-first constraint, not on merit.
+
+## Ad-hoc link evaluations (2026-08-25)
+
+User-supplied links evaluated individually, not part of the four-track
+sweep above.
+
+### locally-uncensored -- github.com/PurpleDoubleD/locally-uncensored -- `borrow-narrow` (#488)
+A local-first desktop app combining chat, image/video gen, and a coding
+agent -- similar shape to Mana itself. Most of it overlaps with features
+Mana already has in comparable or more advanced form. The one genuinely
+new idea: it auto-detects 12 different local AI backends and
+auto-installs ComfyUI on first run, versus Mana's manual
+npm-install-plus-hand-configured-paths setup.
+
+### OpenBot -- github.com/CopilotKit/OpenBot -- `skip` (#490, scoped out)
+Multi-agent enterprise governance platform (per-agent Docker/gVisor
+containers, policy gateway, multi-user SSO). Solves a multi-tenant
+problem Mana doesn't have -- see `issue-490-openbot-governance-scoping.md`
+for the full investigation and verdict. One piece salvaged as its own
+idea: mid-task manual control handoff (#491).
+
+### MoneyPrinterTurbo -- github.com/harry0703/MoneyPrinterTurbo -- `borrow` (#492)
+Automated short-form video generation (script -> footage -> subtitles ->
+narration -> cross-platform publish). Originally scoped down to
+generation-only over a trust-boundary concern with social publishing;
+revisited 2026-08-25 -- publishing is wanted as a real capability. See
+`issue-492-social-automation-video-plugin.md`.
+
+### tailcat -- github.com/tailscale/tailcat -- `borrow` (#489)
+Point-to-point WireGuard tunnel needing no account and no control plane,
+with NAT hole-punching and DERP relay fallback. A real alternative to the
+Cloudflare-account-and-domain requirement in Mana's current mobile
+remote-access setup (`docs/mobile_pwa_cloudflare.md`).
+
+### SurfSense -- github.com/MODSetter/SurfSense -- mixed
+NotebookLM-style research platform: structured live-data connectors
+(Reddit, YouTube, Instagram, TikTok, Amazon, Walmart, Google Maps,
+Indeed), an MCP server, hybrid search with cited answers, and scheduled
+write-back to Notion/Slack/Linear/Jira. Most of it overlaps with Deep
+Research (#47) and Mana's existing MCP server (#42/#169). Four distinct
+ideas extracted:
+- Audio podcast digest of research reports -- `borrow` (#493)
+- Structured platform connectors (Reddit, YouTube, etc.) -- `borrow-narrow` (#494)
+- Scheduled/event write-back to Notion/Linear/Jira -- `borrow-narrow` (#495)
+- Cloud storage sync as a memory-inbox source -- `stretch` (#496)
+
+### OpenViking -- github.com/volcengine/OpenViking -- `borrow-narrow` (#497)
+A context database for AI agents that unifies memory, resources, and
+skills under a navigable filesystem paradigm (`ls`/`find`-style hierarchy)
+instead of a flat vector-embedding pool. Mana's skills store (#140) is
+already file-based, making it the natural first comparison point against
+the current index-then-load and hybrid-retrieval (#263) approaches.
+10k+ stars in 1.5 months since open-sourcing.
+
+### Colibri -- github.com/JustVugg/colibri -- `stretch` (#498)
+A pure-C, zero-dependency inference engine that runs 744B-2.8T parameter
+MoE models on consumer hardware by streaming experts from disk, treating
+disk/RAM/VRAM as one inference hierarchy. Not a swap within Mana's
+existing llama.cpp headroom (that's #335) -- a second runtime to unlock
+models an order of magnitude larger than the hardware would otherwise
+support.
+
+### Obscura -- github.com/h4ckf0r0day/obscura -- `borrow-narrow` (#508)
+A Rust headless browser engine, drop-in for headless Chrome via the same
+CDP protocol Puppeteer/Playwright use. Confirmed `plugins/browser-
+automation/` (#150) actually uses Playwright+Chromium today. Claimed
+~30MB vs 200MB+ memory and ~85ms vs ~500ms page load, plus built-in
+stealth/anti-detection and native MCP support. A real efficiency
+candidate for a background companion app if the claims hold up on
+hands-on testing.
+
+### Solari -- docs.getsolari.com -- `skip`
+Paid cloud infrastructure ("real Chrome in the cloud," cloud VMs/
+sandboxes, single API key, hardware-isolated microVMs). Directly
+contradicts Mana's local-first design -- nothing here runs without a
+cloud dependency. The individual techniques it sells (stealth mode,
+captcha solving, session persistence) are real, but Obscura already
+covers the local stealth/anti-detection angle without the cloud
+requirement.
