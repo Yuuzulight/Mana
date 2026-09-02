@@ -49,21 +49,24 @@ function defaultAllowedPluginSourceRoots() {
   return [require("node:os").homedir()];
 }
 
-function isPathContainedIn(baseDir, candidatePath) {
-  const resolvedBase = path.resolve(baseDir);
-  const relative = path.relative(resolvedBase, candidatePath);
-  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
-}
-
+// Same call shape as resolveContainedPath above (resolve the tainted value
+// *through* a trusted base with path.resolve(base, path), then gate on
+// path.relative(base, resolved)) -- tried per root, rather than resolving
+// the candidate independently and comparing after the fact. CodeQL's
+// js/path-injection sanitizer recognition tracks that specific shape, not
+// an equivalent check performed a different way.
 function assertPathUnderAllowedRoot(candidatePath, roots) {
-  const resolvedCandidate = path.resolve(candidatePath);
-  const allowed = roots.some((root) => isPathContainedIn(root, resolvedCandidate));
-  if (!allowed) {
-    throw new Error(
-      `local plugin source is outside every allowed root (${roots.join(", ")}): ${candidatePath}`,
-    );
+  for (const root of roots) {
+    const resolvedBase = path.resolve(root);
+    const resolved = path.resolve(resolvedBase, String(candidatePath ?? ""));
+    const relative = path.relative(resolvedBase, resolved);
+    if (relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative))) {
+      return resolved;
+    }
   }
-  return resolvedCandidate;
+  throw new Error(
+    `local plugin source is outside every allowed root (${roots.join(", ")}): ${candidatePath}`,
+  );
 }
 
 // CodeQL review (SSRF): the previous checks were plain string-prefix tests
