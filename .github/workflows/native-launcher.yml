@@ -1,0 +1,48 @@
+name: Native Launcher (Windows)
+
+# Nothing else in this repo's CI builds or tests windows-native-launcher's
+# C# project -- previously the only way a regression there got caught was
+# a contributor remembering to run `dotnet test` locally. windows-latest
+# is required (not ubuntu-latest, unlike every other job in this repo):
+# the project targets net8.0-windows and references WinForms + NAudio's
+# WASAPI-backed APIs, which only build on Windows, even though the test
+# suite itself doesn't touch real audio hardware.
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'windows-native-launcher/**'
+  pull_request:
+    paths:
+      - 'windows-native-launcher/**'
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    name: Build and test windows-native-launcher
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Build
+        working-directory: ./windows-native-launcher
+        shell: pwsh
+        run: dotnet build --configuration Release
+
+      # Also builds ManaNativeLauncher.csproj again via the Tests project's
+      # own ProjectReference -- kept as a separate step from the build
+      # above anyway, so a plain build failure and a test failure show up
+      # as distinct, easy-to-spot steps in the Actions log.
+      - name: Test
+        working-directory: ./windows-native-launcher/ManaNativeLauncher.Tests
+        shell: pwsh
+        run: dotnet test --configuration Release
