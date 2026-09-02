@@ -99,4 +99,112 @@ public class ManaBackendClientTests
 
         await Assert.ThrowsAsync<HttpRequestException>(() => client.TranscribeAsync(new byte[] { 1 }));
     }
+
+    [Fact]
+    public async Task ReplyStreamAsync_PostsToReplyStreamAndYieldsEventsInOrder()
+    {
+        string? path = null;
+        string? body = null;
+        var handler = new FakeHttpMessageHandler(request =>
+        {
+            path = request.RequestUri!.AbsolutePath;
+            body = request.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
+            var ndjson =
+                "{\"type\":\"sentence\",\"text\":\"Hello there.\"}\n" +
+                "{\"type\":\"sentence\",\"text\":\"How can I help?\"}\n" +
+                "{\"type\":\"final\",\"reply\":\"Hello there. How can I help?\",\"changed\":false}\n";
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(ndjson, Encoding.UTF8, "application/x-ndjson"),
+            };
+        });
+        var client = new ManaBackendClient(handler);
+
+        var events = new System.Collections.Generic.List<ReplyStreamEvent>();
+        await foreach (var evt in client.ReplyStreamAsync("hi"))
+        {
+            events.Add(evt);
+        }
+
+        Assert.Equal("/reply/stream", path);
+        Assert.Contains("\"text\":\"hi\"", body);
+        Assert.Equal(3, events.Count);
+        Assert.Equal("sentence", events[0].Type);
+        Assert.Equal("Hello there.", events[0].Text);
+        Assert.Equal("sentence", events[1].Type);
+        Assert.Equal("How can I help?", events[1].Text);
+        Assert.Equal("final", events[2].Type);
+        Assert.Equal("Hello there. How can I help?", events[2].Reply);
+        Assert.False(events[2].Changed);
+    }
+
+    [Fact]
+    public async Task ReplyStreamAsync_ParsesErrorOnFinalEvent()
+    {
+        var handler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(
+                "{\"type\":\"final\",\"error\":\"no local vision model available\"}\n",
+                Encoding.UTF8,
+                "application/x-ndjson"),
+        });
+        var client = new ManaBackendClient(handler);
+
+        var events = new System.Collections.Generic.List<ReplyStreamEvent>();
+        await foreach (var evt in client.ReplyStreamAsync("hi"))
+        {
+            events.Add(evt);
+        }
+
+        Assert.Single(events);
+        Assert.Equal("no local vision model available", events[0].Error);
+    }
+
+    [Fact]
+    public async Task ReplyStreamAsync_ThrowsOnAMalformedLineInsteadOfHangingOrSwallowingIt()
+    {
+        var handler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(
+                "{\"type\":\"sentence\",\"text\":\"One.\"}\nnot json\n",
+                Encoding.UTF8,
+                "application/x-ndjson"),
+        });
+        var client = new ManaBackendClient(handler);
+
+        async Task ConsumeAsync()
+        {
+            await foreach (var _ in client.ReplyStreamAsync("hi"))
+            {
+                // draining the enumerable is what triggers the parse of the malformed line
+            }
+        }
+
+        // Utf8JsonReader throws JsonReaderException specifically for a
+        // syntax error like this -- it derives from JsonException, so
+        // ThrowsAnyAsync (not the exact-type ThrowsAsync) is the correct
+        // assertion for "some JSON parse failure surfaces to the caller".
+        await Assert.ThrowsAnyAsync<System.Text.Json.JsonException>(ConsumeAsync);
+    }
+
+    [Fact]
+    public async Task ReplyStreamAsync_SkipsBlankLines()
+    {
+        var handler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(
+                "{\"type\":\"sentence\",\"text\":\"One.\"}\n\n{\"type\":\"final\",\"reply\":\"One.\",\"changed\":false}\n",
+                Encoding.UTF8,
+                "application/x-ndjson"),
+        });
+        var client = new ManaBackendClient(handler);
+
+        var events = new System.Collections.Generic.List<ReplyStreamEvent>();
+        await foreach (var evt in client.ReplyStreamAsync("hi"))
+        {
+            events.Add(evt);
+        }
+
+        Assert.Equal(2, events.Count);
+    }
 }

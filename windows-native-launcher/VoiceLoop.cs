@@ -19,6 +19,7 @@ internal sealed class VoiceLoop : IDisposable
     private readonly ManaBackendClient backendClient;
     private readonly AudioPlayer audioPlayer;
     private readonly AvatarOverlayForm avatarOverlay;
+    private readonly StreamingReplyPlayer streamingReplyPlayer;
 
     private WasapiCapture? capture;
     private BufferedWaveProvider? captureBuffer;
@@ -71,6 +72,10 @@ internal sealed class VoiceLoop : IDisposable
         this.backendClient = backendClient;
         this.audioPlayer = audioPlayer;
         this.avatarOverlay = avatarOverlay;
+        streamingReplyPlayer = new StreamingReplyPlayer(
+            backendClient,
+            audioPlayer.PlayAsync,
+            talking => avatarOverlay.SetState(talking ? AvatarState.Talking : AvatarState.Idle));
     }
 
     public void Start()
@@ -269,10 +274,13 @@ internal sealed class VoiceLoop : IDisposable
         }
     }
 
-    // Returns true only if playback of a reply was successfully started
-    // (i.e. relistening must wait for OnPlaybackCompletedOnce). Returns
-    // false for every early-return path -- empty transcript, no wake-word
-    // match, an HTTP call failure, or a playback-start failure -- all of
+    // Returns true only if playback of a reply was started via the
+    // non-streaming Play() fallback (i.e. relistening must wait for
+    // OnPlaybackCompletedOnce). Returns false for every other path -- empty
+    // transcript, no wake-word match, an HTTP call failure, a playback-start
+    // failure, or a successfully streamed-and-already-fully-played reply
+    // (StreamReplyAndPlayAsync awaits every chunk's playback internally, so
+    // by the time it returns there's nothing left to wait for) -- all of
     // which are safe to resume listening from immediately.
     private async Task<bool> RunTurnAsync(byte[] wavBytes)
     {
@@ -315,16 +323,47 @@ internal sealed class VoiceLoop : IDisposable
         }
 
         string reply;
+        bool changed;
         try
         {
-            reply = await backendClient.ReplyAsync(commandText);
+            (reply, changed, _) = await streamingReplyPlayer.StreamReplyAndPlayAsync(commandText);
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"VoiceLoop: reply failed, resuming listening. {ex.Message}");
+            Console.WriteLine($"VoiceLoop: reply/stream failed, resuming listening. {ex.Message}");
             return false;
         }
 
+        if (!changed)
+        {
+            // Every streamed sentence has already finished playing by the
+            // time StreamReplyAndPlayAsync returns -- unlike the
+            // non-streaming Play() call below, there's no
+            // PlaybackCompleted continuation left to wait for, so resume
+            // listening immediately.
+            return false;
+        }
+
+        // Nothing streamed (tool-calling/best-of-N/vision path) or a
+        // regeneration pass rewrote the reply after streaming already
+        // started -- fall back to synthesizing and playing the true final
+        // reply once, same as before streaming existed.
+        //
+        // Known gap, not fixed here: if a regeneration pass rewrote the
+        // reply AFTER one or more sentences had already streamed and
+        // played (as opposed to "nothing streamed at all"), the user will
+        // hear those already-spoken sentences followed by the full
+        // corrected reply played again from the start -- audibly
+        // duplicated content. StreamReplyAndPlayAsync always plays every
+        // already-queued sentence to completion before this branch runs
+        // (it has no way to interrupt playback mid-clip), so there's no
+        // "cut off and switch over" available yet. Fixing this properly
+        // needs AudioPlayer to support a clean external interrupt signal
+        // (right now Stop() deliberately suppresses PlaybackCompleted for
+        // exactly this reason -- see its own comment) -- that's sub-project
+        // 3's job (barge-in), which needs the same capability anyway. In
+        // practice this only bites when regeneration (rut-detection /
+        // verify-retry) is enabled, both opt-in and off by default.
         byte[] replyWav;
         try
         {
