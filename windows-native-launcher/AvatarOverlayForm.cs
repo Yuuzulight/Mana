@@ -19,8 +19,8 @@ internal sealed class AvatarOverlayForm : Form
 
     public AvatarOverlayForm(string rootDirectory)
     {
-        idlePath = Path.Combine(rootDirectory, "assets", "avatar", "hiyori_idle.jpg");
-        talkingPath = Path.Combine(rootDirectory, "assets", "avatar", "hiyori_talking.jpg");
+        idlePath = Path.Combine(rootDirectory, "assets", "avatar", "ddlc_hiyori_idle.png");
+        talkingPath = Path.Combine(rootDirectory, "assets", "avatar", "ddlc_hiyori_talking.png");
 
         FormBorderStyle = FormBorderStyle.None;
         ShowInTaskbar = false;
