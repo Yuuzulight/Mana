@@ -32,10 +32,17 @@ function resolveContainedPath(baseDir, relativePath) {
 // "https://raw.githubusercontent.com@evil.com/..." or
 // "https://github.com.evil.com/..." satisfies while actually resolving to
 // an attacker-controlled host. Real URL parsing + an exact hostname
-// allowlist closes that -- applied at every https.get() call site, not
-// just the initial installFromGitHub() input, since downloadAllFiles()
-// builds further URLs from scraped HTML content that could point
-// somewhere else entirely if the scrape is manipulated.
+// allowlist closes that for real -- verified directly with regression
+// tests rejecting both tricks above.
+//
+// This constant + assertAllowedGithubUrl() below are the early/fail-fast
+// check at installFromGitHub()'s own entry point (not itself a network
+// sink). CodeQL's SSRF sanitizer recognition is reliable for a hostname
+// guard written inline in the same function as the actual https.get() call,
+// but not for one performed inside a separate helper function -- so each of
+// fetchManifest/downloadAllFiles/downloadFile below ALSO repeats this same
+// check inline, immediately before its own https.get(), rather than only
+// calling this shared helper. Intentional duplication for that reason.
 const ALLOWED_GITHUB_HOSTS = new Set(["github.com", "raw.githubusercontent.com", "api.github.com"]);
 
 function assertAllowedGithubUrl(urlString) {
@@ -195,14 +202,16 @@ class PluginStore {
    */
   async fetchManifest(baseUrl) {
     const url = `${baseUrl}/manifest.json`;
-    // .href (the validated URL object's own serialization), not the
-    // original `url` string, is what actually reaches https.get() -- so
-    // the sink's argument provably derives from a passed validation,
-    // rather than merely having a validation call sit next to it.
-    const safeUrl = assertAllowedGithubUrl(url).href;
+    // Inline hostname guard, in this same function, immediately before the
+    // https.get() call it protects -- see ALLOWED_GITHUB_HOSTS' own comment
+    // for why this isn't just a call to the shared assertAllowedGithubUrl().
+    const parsedUrl = new URL(url);
+    if (parsedUrl.protocol !== "https:" || !ALLOWED_GITHUB_HOSTS.has(parsedUrl.hostname)) {
+      throw new Error(`URL host is not an allowed GitHub host: ${parsedUrl.hostname}`);
+    }
 
     return new Promise((resolve, reject) => {
-      https.get(safeUrl, (res) => {
+      https.get(parsedUrl.href, (res) => {
         if (!res.statusCode || res.statusCode < 200 || res.statusCode >= 300) {
           reject(new Error(`Failed to fetch manifest: HTTP ${res.statusCode}`));
           return;
@@ -271,10 +280,13 @@ class PluginStore {
     console.warn(`[PluginStore] Using fallback file download for ${baseUrl}`);
 
     const url = `${baseUrl}/`;
-    const safeUrl = assertAllowedGithubUrl(url).href;
+    const parsedUrl = new URL(url);
+    if (parsedUrl.protocol !== "https:" || !ALLOWED_GITHUB_HOSTS.has(parsedUrl.hostname)) {
+      throw new Error(`URL host is not an allowed GitHub host: ${parsedUrl.hostname}`);
+    }
 
     return new Promise((resolve, reject) => {
-      https.get(safeUrl, (res) => {
+      https.get(parsedUrl.href, (res) => {
         if (!res.statusCode || res.statusCode < 200 || res.statusCode >= 300) {
           reject(new Error(`Failed to list repository: HTTP ${res.statusCode}`));
           return;
@@ -311,10 +323,13 @@ class PluginStore {
    * Downloads a single file from GitHub.
    */
   async downloadFile(url, destDir) {
-    const safeUrl = assertAllowedGithubUrl(url).href;
+    const parsedUrl = new URL(url);
+    if (parsedUrl.protocol !== "https:" || !ALLOWED_GITHUB_HOSTS.has(parsedUrl.hostname)) {
+      throw new Error(`URL host is not an allowed GitHub host: ${parsedUrl.hostname}`);
+    }
 
     return new Promise((resolve, reject) => {
-      https.get(safeUrl, (res) => {
+      https.get(parsedUrl.href, (res) => {
         if (!res.statusCode || res.statusCode < 200 || res.statusCode >= 300) {
           reject(new Error(`Failed to download file: HTTP ${res.statusCode}`));
           return;
