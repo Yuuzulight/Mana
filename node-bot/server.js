@@ -2183,12 +2183,17 @@ function registerRoutes(app, upload, deps = {}) {
     },
     getPromptComposition: deps.getPromptComposition || getPromptComposition,
   };
-  registerCapabilities(app, [
-    dirScannerCapability,
-    cloudSyncCapability,
-    scheduledExportCapability,
-    structuredConnectorsCapability,
-  ], { pluginSettingsStore });
+  // Bug found while restoring node-bot/plugin-store.js: this call passed a
+  // stray, incomplete 4-item literal and a bare { pluginSettingsStore }
+  // instead of the real `capabilities` array (line 2004) and the full
+  // `capabilityContext` (line 2085) -- silently unregistering the routes
+  // for every capability except dirScanner and the three newest ones, and
+  // starving whichever of those did register of the rest of their deps
+  // (e.g. prompt-composition's context.getPromptComposition). Both
+  // `capabilities` and `capabilityContext` are the exact objects
+  // buildCapabilityHealth()/the /plugins listing already use, so this is
+  // the one place route registration had drifted from them.
+  registerCapabilities(app, capabilities, capabilityContext);
 
   app.get("/doctor", async (req, res) => {
     try {

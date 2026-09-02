@@ -18,6 +18,9 @@ test("health includes component readiness while preserving top-level fields", as
     assert.equal(typeof body.remoteAiEnabled, "boolean");
 
     assert.deepEqual(Object.keys(body.components).sort(), [
+      "@mana/cloud-sync",
+      "@mana/scheduled-export",
+      "@mana/structured-connectors",
       "approvalGate",
       "backend",
       "backgroundMemory",
