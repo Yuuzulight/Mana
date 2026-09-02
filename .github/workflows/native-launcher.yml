@@ -13,9 +13,11 @@ on:
     branches: [ main ]
     paths:
       - 'windows-native-launcher/**'
+      - '.github/workflows/native-launcher.yml'
   pull_request:
     paths:
       - 'windows-native-launcher/**'
+      - '.github/workflows/native-launcher.yml'
 
 permissions:
   contents: read
