@@ -59,15 +59,16 @@ public class StreamingReplyPlayerTests
             audio =>
             {
                 playLog.Add($"play:{audio.Length}bytes");
-                return Task.CompletedTask;
+                return Task.FromResult(true);
             },
             talking => talkingStates.Add(talking));
 
-        var (reply, changed, expression) = await player.StreamReplyAndPlayAsync("hi");
+        var (reply, changed, expression, interrupted) = await player.StreamReplyAndPlayAsync("hi");
 
         Assert.Equal("Hello there. How can I help?", reply);
         Assert.False(changed);
         Assert.Null(expression);
+        Assert.False(interrupted);
         Assert.Equal(new[] { "synth:Hello there.", "synth:How can I help?" }, synthLog);
         Assert.Equal(2, playLog.Count);
         Assert.Equal(new[] { true, false }, talkingStates);
@@ -83,7 +84,7 @@ public class StreamingReplyPlayerTests
         var synthLog = new List<string>();
         var client = BuildFakeClient(ndjson, synthLog);
 
-        var firstPlayback = new TaskCompletionSource();
+        var firstPlayback = new TaskCompletionSource<bool>();
         var playCallCount = 0;
 
         var player = new StreamingReplyPlayer(
@@ -95,7 +96,7 @@ public class StreamingReplyPlayerTests
                 // releases it below) -- everything after that is where we
                 // check that synthesis of the second sentence was already
                 // dispatched while the first sentence is still "playing".
-                return playCallCount == 1 ? firstPlayback.Task : Task.CompletedTask;
+                return playCallCount == 1 ? firstPlayback.Task : Task.FromResult(true);
             },
             _ => { });
 
@@ -109,11 +110,12 @@ public class StreamingReplyPlayerTests
         Assert.False(runTask.IsCompleted);
         Assert.Contains("synth:Two.", synthLog);
 
-        firstPlayback.SetResult();
-        var (reply, changed, _) = await runTask;
+        firstPlayback.SetResult(true);
+        var (reply, changed, _, interrupted) = await runTask;
 
         Assert.Equal("One. Two.", reply);
         Assert.False(changed);
+        Assert.False(interrupted);
     }
 
     [Fact]
@@ -124,12 +126,13 @@ public class StreamingReplyPlayerTests
         var talkingStates = new List<bool>();
         var client = BuildFakeClient(ndjson, synthLog);
 
-        var player = new StreamingReplyPlayer(client, _ => Task.CompletedTask, talking => talkingStates.Add(talking));
+        var player = new StreamingReplyPlayer(client, _ => Task.FromResult(true), talking => talkingStates.Add(talking));
 
-        var (reply, changed, _) = await player.StreamReplyAndPlayAsync("hi");
+        var (reply, changed, _, interrupted) = await player.StreamReplyAndPlayAsync("hi");
 
         Assert.Equal("Tool result.", reply);
         Assert.True(changed);
+        Assert.False(interrupted);
         Assert.Empty(synthLog);
         Assert.Empty(talkingStates);
     }
@@ -139,7 +142,7 @@ public class StreamingReplyPlayerTests
     {
         const string ndjson = "{\"type\":\"final\",\"error\":\"no local vision model available\"}\n";
         var client = BuildFakeClient(ndjson, new List<string>());
-        var player = new StreamingReplyPlayer(client, _ => Task.CompletedTask, _ => { });
+        var player = new StreamingReplyPlayer(client, _ => Task.FromResult(true), _ => { });
 
         var ex = await Assert.ThrowsAsync<InvalidOperationException>(() => player.StreamReplyAndPlayAsync("hi"));
         Assert.Equal("no local vision model available", ex.Message);
@@ -151,7 +154,7 @@ public class StreamingReplyPlayerTests
         const string ndjson = "{\"type\":\"sentence\",\"text\":\"Hello.\"}\n";
         var synthLog = new List<string>();
         var client = BuildFakeClient(ndjson, synthLog);
-        var player = new StreamingReplyPlayer(client, _ => Task.CompletedTask, _ => { });
+        var player = new StreamingReplyPlayer(client, _ => Task.FromResult(true), _ => { });
 
         await Assert.ThrowsAsync<InvalidOperationException>(() => player.StreamReplyAndPlayAsync("hi"));
     }
@@ -165,12 +168,67 @@ public class StreamingReplyPlayerTests
             "{\"type\":\"final\",\"reply\":\"Real sentence.\",\"changed\":false}\n";
         var synthLog = new List<string>();
         var client = BuildFakeClient(ndjson, synthLog);
-        var player = new StreamingReplyPlayer(client, _ => Task.CompletedTask, _ => { });
+        var player = new StreamingReplyPlayer(client, _ => Task.FromResult(true), _ => { });
 
-        var (reply, changed, _) = await player.StreamReplyAndPlayAsync("hi");
+        var (reply, changed, _, interrupted) = await player.StreamReplyAndPlayAsync("hi");
 
         Assert.Equal("Real sentence.", reply);
         Assert.False(changed);
+        Assert.False(interrupted);
         Assert.Equal(new[] { "synth:Real sentence." }, synthLog);
+    }
+
+    // #479 sub-project 3: playAsync reporting completedNaturally: false
+    // (a barge-in interruption) must stop the pipeline immediately --
+    // no further sentences synthesized/played, Reply is null (nothing
+    // meaningful to report), and Interrupted is true.
+    [Fact]
+    public async Task StreamReplyAndPlayAsync_StopsImmediatelyWhenPlaybackReportsInterrupted()
+    {
+        const string ndjson =
+            "{\"type\":\"sentence\",\"text\":\"One.\"}\n" +
+            "{\"type\":\"sentence\",\"text\":\"Two.\"}\n" +
+            "{\"type\":\"final\",\"reply\":\"One. Two.\",\"changed\":false}\n";
+        var synthLog = new List<string>();
+        var playLog = new List<string>();
+        var talkingStates = new List<bool>();
+        var client = BuildFakeClient(ndjson, synthLog);
+
+        var player = new StreamingReplyPlayer(
+            client,
+            audio =>
+            {
+                playLog.Add($"play:{audio.Length}bytes");
+                return Task.FromResult(false); // interrupted on the very first chunk
+            },
+            talking => talkingStates.Add(talking));
+
+        var (reply, changed, expression, interrupted) = await player.StreamReplyAndPlayAsync("hi");
+
+        Assert.Null(reply);
+        Assert.False(changed);
+        Assert.Null(expression);
+        Assert.True(interrupted);
+        Assert.Single(playLog); // never attempted to play a second chunk
+        Assert.Equal(new[] { true, false }, talkingStates); // still reports talking stopped
+    }
+
+    [Fact]
+    public async Task StreamReplyAndPlayAsync_DoesNotThrowWhenInterruptedEvenIfTheServerReplyIsMalformed()
+    {
+        // No final event at all in this NDJSON (would normally throw "ended
+        // without a final event") -- but since playback was interrupted
+        // before the read side was ever awaited, that malformed-stream
+        // detail must never surface to the caller.
+        const string ndjson = "{\"type\":\"sentence\",\"text\":\"One.\"}\n";
+        var synthLog = new List<string>();
+        var client = BuildFakeClient(ndjson, synthLog);
+
+        var player = new StreamingReplyPlayer(client, _ => Task.FromResult(false), _ => { });
+
+        var (reply, _, _, interrupted) = await player.StreamReplyAndPlayAsync("hi");
+
+        Assert.True(interrupted);
+        Assert.Null(reply);
     }
 }

@@ -104,6 +104,51 @@ internal sealed class ManaBackendClient
         }
     }
 
+    // #479 sub-project 3 (barge-in): classifies a transcribed interruption
+    // so the caller can decide how to react -- currently just whether to
+    // wrap the transcript as an amendment before treating it as the next
+    // turn. On any failure (network, non-2xx, malformed body), falls back
+    // to "unclassified" rather than throwing -- matches
+    // windows-launcher/renderer/renderer.js's classifyBargeInText, which
+    // treats a failed classify call as a soft signal, not a fatal error:
+    // the interruption still gets handled, just without the category hint.
+    public async Task<string> ClassifyBargeInAsync(string text)
+    {
+        try
+        {
+            var payload = JsonSerializer.Serialize(new { text });
+            using var content = new StringContent(payload, Encoding.UTF8, "application/json");
+            using var response = await http.PostAsync("/barge-in/classify", content);
+            if (!response.IsSuccessStatusCode)
+            {
+                return "unclassified";
+            }
+            await using var stream = await response.Content.ReadAsStreamAsync();
+            using var document = await JsonDocument.ParseAsync(stream);
+            return document.RootElement.TryGetProperty("category", out var categoryProp)
+                ? categoryProp.GetString() ?? "unclassified"
+                : "unclassified";
+        }
+        catch (HttpRequestException)
+        {
+            return "unclassified";
+        }
+        catch (JsonException)
+        {
+            return "unclassified";
+        }
+        catch (OperationCanceledException)
+        {
+            // Covers TaskCanceledException (HttpClient's own timeout throws
+            // this specifically) -- without it, a slow backend would break
+            // this method's own "falls back to unclassified rather than
+            // throwing" contract, and the caller (VoiceLoop.ProcessTurnAsync)
+            // has no try/catch of its own around this call, unlike every
+            // other backend call in that method.
+            return "unclassified";
+        }
+    }
+
     private static ReplyStreamEvent ParseReplyStreamEvent(JsonElement root)
     {
         return new ReplyStreamEvent

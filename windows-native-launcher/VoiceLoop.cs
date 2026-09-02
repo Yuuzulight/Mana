@@ -7,12 +7,39 @@ using NAudio.Wave;
 
 namespace Mana.NativeLauncher;
 
+// #479 sub-project 3: VoiceLoop's listening behavior at any moment.
+internal enum ListenMode
+{
+    // Normal segment recording: buffer speech, close the segment on
+    // silence-after-speech, hand it off for transcription.
+    Idle,
+
+    // A turn is in flight (transcribe/reply network calls, before playback
+    // starts) -- nothing barge-in-relevant to watch yet. Buffered audio is
+    // discarded once this ends, same reasoning sub-project 1 already
+    // documented for the whole turn: these are network round trips with
+    // nothing meaningful to listen to.
+    Processing,
+
+    // Mana is actually speaking (audio genuinely playing, not just "a
+    // reply was requested"). VAD keeps running every frame; instead of
+    // segment-recording it watches for sustained speech via BargeInGate to
+    // detect the user talking over her.
+    Speaking,
+
+    // The user just triggered a barge-in -- recording their interruption
+    // the same way a normal segment is recorded (silence-after-speech ends
+    // it), just started fresh from the trigger point instead of from
+    // silence.
+    CapturingInterruption,
+}
+
 // Owns the always-on capture -> VAD -> segment -> transcribe -> wake-word
-// -> reply -> synthesize -> play loop. Runs continuously from Start() to
-// Stop()/Dispose() -- never restarted around individual conversation
-// turns, so sub-project 3 (barge-in) can reuse this same running VAD
-// instance to detect speech during playback without restructuring this
-// class.
+// -> reply -> synthesize -> play loop, plus (#479 sub-project 3) watching
+// for the user talking over Mana while she's speaking and reacting to it.
+// Runs continuously from Start() to Stop()/Dispose() -- never restarted
+// around individual conversation turns, so the same running VAD instance
+// serves both normal segment recording and barge-in detection.
 internal sealed class VoiceLoop : IDisposable
 {
     private readonly SileroVadRunner vad;
@@ -31,36 +58,43 @@ internal sealed class VoiceLoop : IDisposable
     // -- a fixed property of the frame size, not something to measure via
     // wall-clock deltas between frame-processing calls (which would be
     // wrong: those calls aren't evenly spaced, especially around a turn
-    // in flight).
+    // in flight). BargeInGate's hold-time tracking uses this same virtual
+    // clock, for the same reason.
     private const long FrameMs = SileroVadRunner.FrameSamples * 1000 / SileroVadRunner.SampleRate;
 
     // Guards frameBuffer, segmentSamples, hasHeardSpeechInSegment,
-    // segmentElapsedMs, msSinceLastSpeech, segmentInFlight, and
-    // the vad instance itself (SileroVadRunner mutates its own internal
-    // state per ProcessFrame/Reset call, so it isn't thread-safe either).
-    // OnDataAvailable fires on NAudio's WASAPI capture thread;
-    // OnPlaybackCompletedOnce fires on NAudio's WasapiOut playback thread;
-    // HandleSegmentClosedAsync's post-await continuation resumes on a
-    // thread-pool thread -- three different threads that can all reach
-    // this state. Ownership model: each of those entry points acquires
-    // this lock itself before touching guarded state; ProcessBufferedFrames
-    // and ResetSegment assume the caller already holds it and never lock
-    // internally, so they're safe to call from any entry point without
-    // double-locking or deadlocking. The real invariant: this lock is
-    // never held across an await suspension. It IS correctly held across
-    // the synchronous prefix of the fire-and-forget HandleSegmentClosedAsync()
-    // dispatch -- that prefix runs on the same thread as the caller, and
-    // C#'s lock is reentrant on the owning thread, so calling into it
-    // while already holding the lock is fine. It's only the actual await
-    // suspension inside that method that must (and does) happen outside
-    // the lock.
+    // segmentElapsedMs, msSinceLastSpeech, mode, bargeInHeldMs, and the
+    // vad instance itself (SileroVadRunner mutates its own internal state
+    // per ProcessFrame/Reset call, so it isn't thread-safe either).
+    // OnDataAvailable fires on NAudio's WASAPI capture thread; every other
+    // entry point that touches this state (ReturnToIdle, OnTalkingStateChanged,
+    // and ProcessTurnAsync's/SpeakReplyAsync's post-await continuations)
+    // runs on a thread-pool thread, since audioPlayer.PlayAsync's Task
+    // completes via TaskCreationOptions.RunContinuationsAsynchronously --
+    // deliberately, so a PlaybackInterrupted callback firing synchronously
+    // from inside ProcessSpeakingFrame's own audioPlayer.Stop() call (still
+    // on the capture thread at that point) never runs a long continuation
+    // chain (an HTTP classify call, potentially) on the capture thread
+    // itself. Ownership model: each of those entry points acquires this
+    // lock itself before touching guarded state; ProcessBufferedFrames and
+    // its per-mode helpers assume the caller already holds it and never
+    // lock internally, so they're safe to call from any entry point
+    // without double-locking or deadlocking. The real invariant: this lock
+    // is never held across an await suspension. It IS correctly held
+    // across the synchronous prefix of the fire-and-forget
+    // HandleSegmentClosedAsync() dispatch -- that prefix runs on the same
+    // thread as the caller, and C#'s lock is reentrant on the owning
+    // thread, so calling into it while already holding the lock is fine.
+    // It's only the actual await suspension inside that method that must
+    // (and does) happen outside the lock.
     private readonly object stateLock = new();
 
+    private ListenMode mode = ListenMode.Idle;
     private bool awake;
     private bool hasHeardSpeechInSegment;
     private long segmentElapsedMs;
     private long msSinceLastSpeech;
-    private bool segmentInFlight;
+    private long bargeInHeldMs; // only meaningful while mode == Speaking
 
     public VoiceLoop(
         SileroVadRunner vad,
@@ -75,7 +109,7 @@ internal sealed class VoiceLoop : IDisposable
         streamingReplyPlayer = new StreamingReplyPlayer(
             backendClient,
             audioPlayer.PlayAsync,
-            talking => avatarOverlay.SetState(talking ? AvatarState.Talking : AvatarState.Idle));
+            OnTalkingStateChanged);
     }
 
     public void Start()
@@ -155,13 +189,10 @@ internal sealed class VoiceLoop : IDisposable
     // Caller must already hold stateLock.
     private void ProcessBufferedFrames()
     {
-        // One segment (one conversation turn) in flight at a time -- keep
-        // buffering raw samples while a turn is being handled, but don't
-        // run VAD/segment logic against them until it's done, so a reply
-        // arriving mid-buffer can't interleave with the next segment's
-        // state.
-        if (segmentInFlight)
+        if (mode == ListenMode.Processing)
         {
+            // Turn in flight (network calls before playback starts) --
+            // nothing to do with buffered audio yet.
             return;
         }
 
@@ -173,116 +204,148 @@ internal sealed class VoiceLoop : IDisposable
             var probability = vad.ProcessFrame(frame);
             var isSpeech = vad.IsSpeech(probability);
 
-            segmentElapsedMs += FrameMs;
-
-            foreach (var sample in frame)
+            if (mode == ListenMode.Speaking)
             {
-                var clamped = Math.Clamp(sample, -1f, 1f);
-                segmentSamples.Add((short)(clamped * short.MaxValue));
+                if (ProcessSpeakingFrame(frame, isSpeech))
+                {
+                    return; // barge-in triggered; mode is now CapturingInterruption
+                }
+                continue;
             }
 
-            if (isSpeech)
+            // Idle (a normal fresh segment) and CapturingInterruption (a
+            // barge-in's interruption segment) both accumulate samples and
+            // close on silence-after-speech identically -- they differ
+            // only in how hasHeardSpeechInSegment starts out (seeded true
+            // for CapturingInterruption by StartCapturingInterruption, so
+            // a brief pause right after the trigger can't look like
+            // "never heard speech" and trip the no-speech timeout).
+            if (ProcessSegmentFrame(frame, isSpeech))
             {
-                hasHeardSpeechInSegment = true;
-                msSinceLastSpeech = 0;
-            }
-            else
-            {
-                msSinceLastSpeech += FrameMs;
-            }
-
-            var stopReason = RecordingSegmenter.ShouldStopRecording(
-                hasHeardSpeechInSegment,
-                segmentElapsedMs,
-                msSinceLastSpeech);
-
-            if (stopReason == RecordingStopReason.SilenceAfterSpeech)
-            {
-                segmentInFlight = true;
-                _ = HandleSegmentClosedAsync();
-                return;
-            }
-
-            if (stopReason is RecordingStopReason.MaxDuration or RecordingStopReason.NoSpeechTimeout)
-            {
-                ResetSegment();
+                return; // segment closed; HandleSegmentClosedAsync dispatched
             }
         }
     }
 
-    // Caller must already hold stateLock.
-    private void ResetSegment()
+    // Caller must already hold stateLock. Returns true once the barge-in
+    // has triggered this frame (mode has already switched to
+    // CapturingInterruption by the time this returns).
+    private bool ProcessSpeakingFrame(float[] frame, bool isSpeech)
     {
+        var isLoudEnough = BargeInGate.DbfsFromSamples(frame) >= BargeInGate.DefaultMinDbfs;
+        var (heldMs, triggered) = BargeInGate.Next(isSpeech, isLoudEnough, bargeInHeldMs, FrameMs);
+        bargeInHeldMs = heldMs;
+
+        if (!triggered)
+        {
+            return false;
+        }
+
+        // Cut Mana off immediately. Whichever audioPlayer.PlayAsync call is
+        // currently being awaited (streaming or the non-streaming
+        // fallback) sees this as a completedNaturally: false result and
+        // unwinds on its own via OnTalkingStateChanged(false) -- this
+        // method's only remaining job is to start recording what the user
+        // is saying, from right here.
+        audioPlayer.Stop();
+        StartCapturingInterruption();
+        return true;
+    }
+
+    // Caller must already hold stateLock.
+    private void StartCapturingInterruption()
+    {
+        mode = ListenMode.CapturingInterruption;
         segmentSamples.Clear();
-        hasHeardSpeechInSegment = false;
         segmentElapsedMs = 0;
         msSinceLastSpeech = 0;
+        hasHeardSpeechInSegment = true; // see ProcessBufferedFrames' comment on why
+        bargeInHeldMs = 0;
         vad.Reset();
     }
 
-    private async Task HandleSegmentClosedAsync()
+    // Caller must already hold stateLock. Shared by Idle and
+    // CapturingInterruption (see ProcessBufferedFrames). Returns true if
+    // the segment closed and HandleSegmentClosedAsync was dispatched.
+    private bool ProcessSegmentFrame(float[] frame, bool isSpeech)
     {
-        // Only ever invoked synchronously from ProcessBufferedFrames, which
+        var wasCapturingInterruption = mode == ListenMode.CapturingInterruption;
+
+        segmentElapsedMs += FrameMs;
+
+        foreach (var sample in frame)
+        {
+            var clamped = Math.Clamp(sample, -1f, 1f);
+            segmentSamples.Add((short)(clamped * short.MaxValue));
+        }
+
+        if (isSpeech)
+        {
+            hasHeardSpeechInSegment = true;
+            msSinceLastSpeech = 0;
+        }
+        else
+        {
+            msSinceLastSpeech += FrameMs;
+        }
+
+        var stopReason = RecordingSegmenter.ShouldStopRecording(
+            hasHeardSpeechInSegment,
+            segmentElapsedMs,
+            msSinceLastSpeech);
+
+        if (stopReason == RecordingStopReason.SilenceAfterSpeech)
+        {
+            mode = ListenMode.Processing;
+            _ = HandleSegmentClosedAsync(wasCapturingInterruption);
+            return true;
+        }
+
+        if (stopReason is RecordingStopReason.MaxDuration or RecordingStopReason.NoSpeechTimeout)
+        {
+            // Matches Idle's own pre-existing behavior: reset and keep
+            // listening in the same mode rather than giving up. For
+            // CapturingInterruption specifically, Mana has already
+            // stopped talking by this point -- there's nothing to resume
+            // even if this times out, so just keep waiting for the user.
+            segmentSamples.Clear();
+            hasHeardSpeechInSegment = wasCapturingInterruption;
+            segmentElapsedMs = 0;
+            msSinceLastSpeech = 0;
+            vad.Reset();
+        }
+
+        return false;
+    }
+
+    private async Task HandleSegmentClosedAsync(bool wasInterruption)
+    {
+        // Only ever invoked synchronously from ProcessSegmentFrame, which
         // is only ever invoked under stateLock -- so this runs under the
         // caller's lock too (C#'s lock is reentrant on the owning thread).
         byte[] wavBytes;
         lock (stateLock)
         {
             wavBytes = BuildWavBytes(segmentSamples);
-            ResetSegment();
+            segmentSamples.Clear();
+            hasHeardSpeechInSegment = false;
+            segmentElapsedMs = 0;
+            msSinceLastSpeech = 0;
+            vad.Reset();
         }
 
-        var playbackStarted = false;
-        try
-        {
-            playbackStarted = await RunTurnAsync(wavBytes);
-        }
-        finally
-        {
-            // Playback of the reply is asynchronous (WasapiOut.Play returns
-            // immediately) -- if it started, keep segmentInFlight true until
-            // OnPlaybackCompletedOnce fires, so relistening only resumes
-            // once the reply has actually finished playing (spec order:
-            // ... -> playback -> loop back to step 1). Otherwise (empty
-            // transcript, no wake word, or any failure) there's nothing to
-            // wait for -- resume listening immediately.
-            //
-            // This continuation resumes on a thread-pool thread after the
-            // await above -- the lock taken earlier in this method was
-            // released long before this point, so it must be reacquired
-            // here rather than relied upon.
-            if (!playbackStarted)
-            {
-                lock (stateLock)
-                {
-                    segmentInFlight = false;
-                    // Deliberately discard audio buffered during the turn
-                    // rather than replaying it as a fresh segment -- a
-                    // transcribe+reply+synthesize round trip can take
-                    // 10-20s, and playing that backlog back through VAD
-                    // would risk the mic picking up Mana's own TTS output
-                    // as if it were new speech (self-triggered reply
-                    // loop). This matches the Electron app, which isn't
-                    // recording at all during playback. Sub-project 3
-                    // (barge-in, not part of this plan) will need to
-                    // replace this with real handling of turn-time audio
-                    // -- don't assume this clear is accidental.
-                    frameBuffer.Clear();
-                    ProcessBufferedFrames();
-                }
-            }
-        }
+        await ProcessTurnAsync(wavBytes, wasInterruption);
     }
 
-    // Returns true only if playback of a reply was started via the
-    // non-streaming Play() fallback (i.e. relistening must wait for
-    // OnPlaybackCompletedOnce). Returns false for every other path -- empty
-    // transcript, no wake-word match, an HTTP call failure, a playback-start
-    // failure, or a successfully streamed-and-already-fully-played reply
-    // (StreamReplyAndPlayAsync awaits every chunk's playback internally, so
-    // by the time it returns there's nothing left to wait for) -- all of
-    // which are safe to resume listening from immediately.
-    private async Task<bool> RunTurnAsync(byte[] wavBytes)
+    // Transcribes wavBytes and speaks a reply -- the single entry point for
+    // both a normal fresh segment (Idle) and a barge-in's interruption
+    // segment (CapturingInterruption); by the time an interruption can
+    // happen, `awake` is already guaranteed true (Mana can only be
+    // speaking, and therefore only be interrupted, after at least one
+    // earlier turn already passed the wake-word gate below), so no
+    // special-casing is needed between the two callers except classifying
+    // the interruption itself.
+    private async Task ProcessTurnAsync(byte[] wavBytes, bool wasInterruption)
     {
         string transcript;
         try
@@ -292,12 +355,14 @@ internal sealed class VoiceLoop : IDisposable
         catch (Exception ex)
         {
             Console.WriteLine($"VoiceLoop: transcription failed, resuming listening. {ex.Message}");
-            return false;
+            ReturnToIdle();
+            return;
         }
 
         if (string.IsNullOrWhiteSpace(transcript))
         {
-            return false;
+            ReturnToIdle();
+            return;
         }
 
         string commandText;
@@ -306,7 +371,8 @@ internal sealed class VoiceLoop : IDisposable
             var command = WakeWordMatcher.ExtractWakeCommand(transcript);
             if (command is null)
             {
-                return false;
+                ReturnToIdle();
+                return;
             }
 
             awake = true;
@@ -319,90 +385,171 @@ internal sealed class VoiceLoop : IDisposable
 
         if (string.IsNullOrWhiteSpace(commandText))
         {
-            return false;
+            ReturnToIdle();
+            return;
         }
 
-        string reply;
+        if (wasInterruption)
+        {
+            // #479 sub-project 3: classifies what the user just interrupted
+            // Mana with. Only "amend" changes anything here -- the transcript
+            // is wrapped so the model steers using the reply it was already
+            // in the middle of (still in session history from before this
+            // barge-in), rather than treating it as a standalone new
+            // question. NOTE: no parentheses in the wrapper -- matches
+            // windows-launcher/renderer/renderer.js's own note that
+            // server-side transcript cleanup strips parenthesized text,
+            // which would silently delete a "(...)"-wrapped prefix before
+            // the model ever sees it.
+            var category = await backendClient.ClassifyBargeInAsync(commandText);
+            if (category == "amend")
+            {
+                commandText = $"Amending what you just said: {commandText}";
+            }
+        }
+
+        await SpeakReplyAsync(commandText);
+    }
+
+    // Starts speaking commandText's reply and owns every mode transition
+    // around it: OnTalkingStateChanged moves mode to Speaking exactly when
+    // audio genuinely starts playing (not merely requested -- avoids a
+    // false "interruption of nothing" during the network calls before the
+    // first chunk is ready), and this method leaves mode either back at
+    // Idle (playback finished naturally) or as CapturingInterruption (a
+    // barge-in cut it off -- ProcessSpeakingFrame made that transition on
+    // the capture thread; this method just has to recognize it happened
+    // and not stomp on it).
+    private async Task SpeakReplyAsync(string commandText)
+    {
+        string? reply;
         bool changed;
+        bool interrupted;
         try
         {
-            (reply, changed, _) = await streamingReplyPlayer.StreamReplyAndPlayAsync(commandText);
+            (reply, changed, _, interrupted) = await streamingReplyPlayer.StreamReplyAndPlayAsync(commandText);
         }
         catch (Exception ex)
         {
             Console.WriteLine($"VoiceLoop: reply/stream failed, resuming listening. {ex.Message}");
-            return false;
+            ReturnToIdle();
+            return;
+        }
+
+        if (interrupted)
+        {
+            return; // mode already CapturingInterruption; nothing further to do here
         }
 
         if (!changed)
         {
-            // Every streamed sentence has already finished playing by the
-            // time StreamReplyAndPlayAsync returns -- unlike the
-            // non-streaming Play() call below, there's no
-            // PlaybackCompleted continuation left to wait for, so resume
+            // Every streamed sentence finished playing naturally -- resume
             // listening immediately.
-            return false;
+            ReturnToIdle();
+            return;
         }
 
         // Nothing streamed (tool-calling/best-of-N/vision path) or a
         // regeneration pass rewrote the reply after streaming already
         // started -- fall back to synthesizing and playing the true final
-        // reply once, same as before streaming existed.
-        //
-        // Known gap, not fixed here: if a regeneration pass rewrote the
-        // reply AFTER one or more sentences had already streamed and
-        // played (as opposed to "nothing streamed at all"), the user will
-        // hear those already-spoken sentences followed by the full
-        // corrected reply played again from the start -- audibly
-        // duplicated content. StreamReplyAndPlayAsync always plays every
-        // already-queued sentence to completion before this branch runs
-        // (it has no way to interrupt playback mid-clip), so there's no
-        // "cut off and switch over" available yet. Fixing this properly
-        // needs AudioPlayer to support a clean external interrupt signal
-        // (right now Stop() deliberately suppresses PlaybackCompleted for
-        // exactly this reason -- see its own comment) -- that's sub-project
-        // 3's job (barge-in), which needs the same capability anyway. In
-        // practice this only bites when regeneration (rut-detection /
-        // verify-retry) is enabled, both opt-in and off by default.
+        // reply once. This fallback playback can itself be interrupted by
+        // a barge-in too (closes the "duplicated audio on regen" gap
+        // sub-project 2 documented: a barge-in mid-fallback-playback cuts
+        // it off instead of guaranteeing the whole thing plays out).
         byte[] replyWav;
         try
         {
-            replyWav = await backendClient.SynthesizeAsync(reply);
+            replyWav = await backendClient.SynthesizeAsync(reply ?? string.Empty);
         }
         catch (Exception ex)
         {
             Console.WriteLine($"VoiceLoop: synthesis failed, resuming listening. {ex.Message}");
-            return false;
+            ReturnToIdle();
+            return;
         }
 
+        bool completedNaturally;
         try
         {
-            avatarOverlay.SetState(AvatarState.Talking);
-            audioPlayer.PlaybackCompleted += OnPlaybackCompletedOnce;
-            audioPlayer.Play(replyWav);
-            return true;
+            OnTalkingStateChanged(true);
+            completedNaturally = await audioPlayer.PlayAsync(replyWav);
         }
         catch (Exception ex)
         {
             Console.WriteLine($"VoiceLoop: playback failed to start, resuming listening. {ex.Message}");
-            audioPlayer.PlaybackCompleted -= OnPlaybackCompletedOnce;
-            avatarOverlay.SetState(AvatarState.Idle);
-            return false;
+            OnTalkingStateChanged(false);
+            ReturnToIdle();
+            return;
+        }
+
+        OnTalkingStateChanged(false);
+        if (completedNaturally)
+        {
+            ReturnToIdle();
+        }
+        // else: interrupted -- mode already CapturingInterruption (set by
+        // ProcessSpeakingFrame on the capture thread before PlayAsync's
+        // Task resolved), nothing further to do here.
+    }
+
+    // Called by StreamingReplyPlayer exactly when the first chunk of a
+    // streamed reply starts playing (talking: true) and again once the
+    // last chunk stops, whether naturally or via interruption
+    // (talking: false); also called directly by SpeakReplyAsync around the
+    // non-streaming fallback Play(), for the same "only Speaking while
+    // audio is genuinely playing" reasoning. This -- not any call site
+    // that merely decided to start a reply -- is where mode actually
+    // enters Speaking, so barge-in detection never runs during the network
+    // calls before audio is actually flowing (which would otherwise let
+    // BargeInGate "interrupt" nothing).
+    private void OnTalkingStateChanged(bool talking)
+    {
+        avatarOverlay.SetState(talking ? AvatarState.Talking : AvatarState.Idle);
+        lock (stateLock)
+        {
+            if (talking)
+            {
+                mode = ListenMode.Speaking;
+                bargeInHeldMs = 0;
+                vad.Reset();
+            }
+            else if (mode == ListenMode.Speaking)
+            {
+                // Only step back if nothing has already moved mode on --
+                // a barge-in mid-playback already switched to
+                // CapturingInterruption itself; don't stomp on that.
+                mode = ListenMode.Processing;
+            }
         }
     }
 
-    private void OnPlaybackCompletedOnce()
+    private void ReturnToIdle()
     {
-        audioPlayer.PlaybackCompleted -= OnPlaybackCompletedOnce;
-        avatarOverlay.SetState(AvatarState.Idle);
         lock (stateLock)
         {
-            segmentInFlight = false;
-            // Deliberately discard audio buffered while the reply was
-            // playing rather than replaying it as a fresh segment -- see
-            // the matching comment in HandleSegmentClosedAsync's finally
-            // block for why (mic picking up Mana's own TTS output).
-            // Sub-project 3 (barge-in) will need different handling here.
+            // Guard against a barge-in having already raced ahead and
+            // moved mode to CapturingInterruption -- same reasoning
+            // OnTalkingStateChanged already applies for the identical
+            // situation (e.g. a mid-reply exception here, from an
+            // unhandled failure elsewhere in the turn, landing after
+            // ProcessSpeakingFrame already switched modes on the capture
+            // thread). Stomping it back to Idle here would clear
+            // frameBuffer and silently drop whatever interruption audio
+            // is already being captured.
+            if (mode == ListenMode.CapturingInterruption)
+            {
+                return;
+            }
+
+            mode = ListenMode.Idle;
+            // Deliberately discard audio buffered during the turn/playback
+            // rather than replaying it as a fresh segment -- a
+            // transcribe+reply+synthesize round trip risks the mic picking
+            // up stale buffered noise, and by the time playback naturally
+            // finishes there's nothing left worth replaying either. A
+            // genuine mid-playback interruption is handled entirely
+            // differently, via CapturingInterruption -- this path is only
+            // ever reached when there was nothing to interrupt into.
             frameBuffer.Clear();
             ProcessBufferedFrames();
         }
