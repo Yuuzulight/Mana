@@ -206,7 +206,17 @@ class PluginStore {
     // https.get() call it protects -- see ALLOWED_GITHUB_HOSTS' own comment
     // for why this isn't just a call to the shared assertAllowedGithubUrl().
     const parsedUrl = new URL(url);
-    if (parsedUrl.protocol !== "https:" || !ALLOWED_GITHUB_HOSTS.has(parsedUrl.hostname)) {
+    // Direct equality checks, not a Set/array .has()/.includes() lookup --
+    // tried the Set-based version both as a shared helper and inlined here;
+    // neither cleared CodeQL's js/request-forgery sanitizer recognition.
+    // Plain === comparisons are the most standard shape a static analyzer's
+    // sanitizer-guard heuristics are documented to recognize.
+    if (
+      parsedUrl.protocol !== "https:" ||
+      (parsedUrl.hostname !== "github.com" &&
+        parsedUrl.hostname !== "raw.githubusercontent.com" &&
+        parsedUrl.hostname !== "api.github.com")
+    ) {
       throw new Error(`URL host is not an allowed GitHub host: ${parsedUrl.hostname}`);
     }
 
@@ -281,7 +291,17 @@ class PluginStore {
 
     const url = `${baseUrl}/`;
     const parsedUrl = new URL(url);
-    if (parsedUrl.protocol !== "https:" || !ALLOWED_GITHUB_HOSTS.has(parsedUrl.hostname)) {
+    // Direct equality checks, not a Set/array .has()/.includes() lookup --
+    // tried the Set-based version both as a shared helper and inlined here;
+    // neither cleared CodeQL's js/request-forgery sanitizer recognition.
+    // Plain === comparisons are the most standard shape a static analyzer's
+    // sanitizer-guard heuristics are documented to recognize.
+    if (
+      parsedUrl.protocol !== "https:" ||
+      (parsedUrl.hostname !== "github.com" &&
+        parsedUrl.hostname !== "raw.githubusercontent.com" &&
+        parsedUrl.hostname !== "api.github.com")
+    ) {
       throw new Error(`URL host is not an allowed GitHub host: ${parsedUrl.hostname}`);
     }
 
@@ -324,7 +344,17 @@ class PluginStore {
    */
   async downloadFile(url, destDir) {
     const parsedUrl = new URL(url);
-    if (parsedUrl.protocol !== "https:" || !ALLOWED_GITHUB_HOSTS.has(parsedUrl.hostname)) {
+    // Direct equality checks, not a Set/array .has()/.includes() lookup --
+    // tried the Set-based version both as a shared helper and inlined here;
+    // neither cleared CodeQL's js/request-forgery sanitizer recognition.
+    // Plain === comparisons are the most standard shape a static analyzer's
+    // sanitizer-guard heuristics are documented to recognize.
+    if (
+      parsedUrl.protocol !== "https:" ||
+      (parsedUrl.hostname !== "github.com" &&
+        parsedUrl.hostname !== "raw.githubusercontent.com" &&
+        parsedUrl.hostname !== "api.github.com")
+    ) {
       throw new Error(`URL host is not an allowed GitHub host: ${parsedUrl.hostname}`);
     }
 
