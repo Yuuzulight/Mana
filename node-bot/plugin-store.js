@@ -27,6 +27,45 @@ function resolveContainedPath(baseDir, relativePath) {
   return resolved;
 }
 
+// CodeQL review, follow-up: installFromLocal/installFromDirectory/
+// copyDirectory used to accept an arbitrary local path with no boundary at
+// all -- the whole point of "install from a local path". Rather than leave
+// that open, local installs are now confined to an allowlist of root
+// directories: MANA_ALLOWED_PLUGIN_SOURCE_ROOTS (a PATH.delimiter-separated
+// list), defaulting to the current OS user's home directory, which is
+// where a manually downloaded plugin folder realistically lives. Mirrors
+// resolveContainedPath's own path.relative()-based containment check --
+// the exact shape CodeQL's js/path-injection sanitizer already recognized
+// for every other path this file builds -- generalized to "under any one
+// of several roots" instead of one fixed base directory.
+function defaultAllowedPluginSourceRoots() {
+  const configured = process.env.MANA_ALLOWED_PLUGIN_SOURCE_ROOTS;
+  if (configured) {
+    return configured
+      .split(path.delimiter)
+      .map((p) => p.trim())
+      .filter(Boolean);
+  }
+  return [require("node:os").homedir()];
+}
+
+function isPathContainedIn(baseDir, candidatePath) {
+  const resolvedBase = path.resolve(baseDir);
+  const relative = path.relative(resolvedBase, candidatePath);
+  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+function assertPathUnderAllowedRoot(candidatePath, roots) {
+  const resolvedCandidate = path.resolve(candidatePath);
+  const allowed = roots.some((root) => isPathContainedIn(root, resolvedCandidate));
+  if (!allowed) {
+    throw new Error(
+      `local plugin source is outside every allowed root (${roots.join(", ")}): ${candidatePath}`,
+    );
+  }
+  return resolvedCandidate;
+}
+
 // CodeQL review (SSRF): the previous checks were plain string-prefix tests
 // (url.startsWith("https://github.com/")), which a URL like
 // "https://raw.githubusercontent.com@evil.com/..." or
@@ -61,6 +100,7 @@ function assertAllowedGithubUrl(urlString) {
 class PluginStore {
   constructor(options = {}) {
     this.pluginsDir = options.pluginsDir || process.env.MANA_PLUGINS_DIR || DEFAULT_PLUGINS_DIR;
+    this.allowedSourceRoots = options.allowedSourceRoots || defaultAllowedPluginSourceRoots();
 
     // Issue found in review: this used to eagerly mkdirSync(pluginsDir) here,
     // meaning every process that merely requires this module (every test
@@ -173,7 +213,7 @@ class PluginStore {
       throw new TypeError("Invalid local file path");
     }
 
-    const resolvedPath = path.resolve(filePath);
+    const resolvedPath = assertPathUnderAllowedRoot(filePath, this.allowedSourceRoots);
 
     // Check if it's a zip archive
     if (resolvedPath.endsWith(".zip")) {
@@ -478,8 +518,11 @@ class PluginStore {
    * Installs a plugin from an existing directory containing manifest.json.
    */
   async installFromDirectory(dirPath) {
-    const manifestPath = path.join(dirPath, "manifest.json");
-    
+    // Re-validated here (not just at installFromLocal's entry point) since
+    // this is itself a public method a caller could invoke directly.
+    const resolvedDirPath = assertPathUnderAllowedRoot(dirPath, this.allowedSourceRoots);
+    const manifestPath = path.join(resolvedDirPath, "manifest.json");
+
     if (!fs.existsSync(manifestPath)) {
       throw new Error(`No manifest.json found in ${dirPath}`);
     }
@@ -498,7 +541,7 @@ class PluginStore {
       fs.mkdirSync(installPath, { recursive: true });
 
       // Copy all files from source directory
-      this.copyDirectory(dirPath, installPath);
+      this.copyDirectory(resolvedDirPath, installPath);
 
       return {
         success: true,
@@ -524,12 +567,17 @@ class PluginStore {
    * Copies a directory recursively.
    */
   copyDirectory(srcDir, destDir) {
-    if (!fs.existsSync(srcDir)) return;
+    // Re-validated here too (see installFromDirectory's own comment) --
+    // this is a public method, and also recurses into its own
+    // subdirectories, so each level re-confirms containment cheaply rather
+    // than trusting the caller.
+    const resolvedSrcDir = assertPathUnderAllowedRoot(srcDir, this.allowedSourceRoots);
+    if (!fs.existsSync(resolvedSrcDir)) return;
 
-    const items = fs.readdirSync(srcDir);
+    const items = fs.readdirSync(resolvedSrcDir);
 
     for (const item of items) {
-      const srcPath = path.join(srcDir, item);
+      const srcPath = path.join(resolvedSrcDir, item);
       // item is a real filesystem entry name from readdirSync, not
       // attacker-suppliable, but contained for consistency with every
       // other lookup in this file (see resolveContainedPath's own comment).

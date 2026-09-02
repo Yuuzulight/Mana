@@ -86,3 +86,67 @@ test("installFromGitHub rejects a URL whose host isn't actually an allowed GitHu
     /host/i,
   );
 });
+
+// CodeQL review (path-injection): installFromLocal/installFromDirectory/
+// copyDirectory used to accept an arbitrary local path with no boundary at
+// all. They're now confined to an allowlist of root directories
+// (options.allowedSourceRoots, or MANA_ALLOWED_PLUGIN_SOURCE_ROOTS, or
+// os.homedir() by default).
+test("PluginStore defaults allowedSourceRoots to the OS home directory when nothing is configured", () => {
+  const store = new PluginStore({ pluginsDir: tempPluginsDir() });
+  assert.deepEqual(store.allowedSourceRoots, [os.homedir()]);
+});
+
+test("installFromDirectory succeeds for a source directory under an allowed root", async () => {
+  const allowedRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mana-plugin-allowed-"));
+  const sourceDir = path.join(allowedRoot, "my-plugin");
+  fs.mkdirSync(sourceDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(sourceDir, "manifest.json"),
+    JSON.stringify({ name: "my-plugin", version: "1.0.0" }),
+  );
+
+  const store = new PluginStore({ pluginsDir: tempPluginsDir(), allowedSourceRoots: [allowedRoot] });
+  const result = await store.installFromDirectory(sourceDir);
+
+  assert.equal(result.success, true);
+  assert.equal(fs.existsSync(path.join(result.path, "manifest.json")), true);
+});
+
+test("installFromDirectory refuses a source directory outside every allowed root", async () => {
+  const allowedRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mana-plugin-allowed-"));
+  const outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), "mana-plugin-outside-"));
+  fs.writeFileSync(
+    path.join(outsideDir, "manifest.json"),
+    JSON.stringify({ name: "sneaky-plugin", version: "1.0.0" }),
+  );
+  const pluginsDir = tempPluginsDir();
+
+  const store = new PluginStore({ pluginsDir, allowedSourceRoots: [allowedRoot] });
+
+  await assert.rejects(() => store.installFromDirectory(outsideDir), /allowed root/i);
+  assert.equal(fs.existsSync(pluginsDir), false, "nothing should have been installed");
+});
+
+test("installFromLocal refuses a manifest.json path outside every allowed root", async () => {
+  const allowedRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mana-plugin-allowed-"));
+  const outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), "mana-plugin-outside-"));
+  const outsideManifest = path.join(outsideDir, "manifest.json");
+  fs.writeFileSync(outsideManifest, JSON.stringify({ name: "sneaky-plugin", version: "1.0.0" }));
+
+  const store = new PluginStore({ pluginsDir: tempPluginsDir(), allowedSourceRoots: [allowedRoot] });
+
+  await assert.rejects(() => store.installFromLocal(outsideManifest), /allowed root/i);
+});
+
+test("copyDirectory refuses a source directory outside every allowed root, leaving the destination untouched", () => {
+  const allowedRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mana-plugin-allowed-"));
+  const outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), "mana-plugin-outside-"));
+  fs.writeFileSync(path.join(outsideDir, "secret.txt"), "must not be copied");
+  const destDir = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "mana-plugin-dest-")), "dest");
+
+  const store = new PluginStore({ pluginsDir: tempPluginsDir(), allowedSourceRoots: [allowedRoot] });
+
+  assert.throws(() => store.copyDirectory(outsideDir, destDir), /allowed root/i);
+  assert.equal(fs.existsSync(destDir), false);
+});
