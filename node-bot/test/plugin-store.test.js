@@ -29,3 +29,60 @@ test("list() on a store whose pluginsDir doesn't exist yet returns an empty arra
   const store = new PluginStore({ pluginsDir: tempPluginsDir() });
   assert.deepEqual(store.list(), []);
 });
+
+// CodeQL review: uninstall(name)/get(name) built their target path with a
+// plain path.join(pluginsDir, name) -- name is a direct, unvalidated
+// caller-supplied string (reachable via POST /plugins/store/toggle and any
+// future route using get()/uninstall()), so a crafted name could resolve
+// outside pluginsDir entirely. uninstall() is the more serious case: it's
+// a recursive delete.
+test("uninstall() refuses a plugin name that would resolve outside pluginsDir, instead of deleting there", () => {
+  const pluginsDir = tempPluginsDir();
+  fs.mkdirSync(pluginsDir, { recursive: true });
+  const canaryDir = path.dirname(pluginsDir);
+  const canaryFile = path.join(canaryDir, "canary.txt");
+  fs.writeFileSync(canaryFile, "must survive");
+
+  const store = new PluginStore({ pluginsDir });
+  const result = store.uninstall("../" + path.basename(canaryFile));
+
+  assert.equal(result, false, "must report not-found/refused, not succeed");
+  assert.equal(fs.existsSync(canaryFile), true, "the file outside pluginsDir must be untouched");
+});
+
+test("get() refuses a plugin name that would resolve outside pluginsDir, instead of reading it", () => {
+  const pluginsDir = tempPluginsDir();
+  fs.mkdirSync(pluginsDir, { recursive: true });
+  const canaryDir = path.dirname(pluginsDir);
+  fs.mkdirSync(path.join(canaryDir, "secret"), { recursive: true });
+  fs.writeFileSync(
+    path.join(canaryDir, "secret", "manifest.json"),
+    JSON.stringify({ name: "secret", version: "1.0.0" }),
+  );
+
+  const store = new PluginStore({ pluginsDir });
+  assert.equal(store.get("../secret"), null);
+});
+
+// CodeQL review (SSRF): installFromGitHub used to validate its input URL
+// with plain string-prefix checks (url.startsWith("https://github.com/")),
+// which a URL like "https://raw.githubusercontent.com@evil.com/x" or
+// "https://github.com.evil.com/x" satisfies as a *string* while actually
+// resolving to an attacker-controlled host. Real URL parsing + an exact
+// hostname allowlist should reject both before any network call happens.
+test("installFromGitHub rejects a URL whose host isn't actually an allowed GitHub host, even if the string starts with one", async () => {
+  const store = new PluginStore({ pluginsDir: tempPluginsDir() });
+
+  // Same convention as the pre-existing "invalid URL" checks in this
+  // function (e.g. a non-string url) -- input-validation failures reject
+  // directly; only errors during the install itself (inside the function's
+  // own try/catch) become a {success:false} result.
+  await assert.rejects(
+    () => store.installFromGitHub("https://raw.githubusercontent.com@evil.com/a/b/main"),
+    /host/i,
+  );
+  await assert.rejects(
+    () => store.installFromGitHub("https://github.com.evil.com/a/b"),
+    /host/i,
+  );
+});

@@ -8,6 +8,49 @@ const https = require("https");
  */
 const DEFAULT_PLUGINS_DIR = "tools/plugins";
 
+// CodeQL review: every path built by combining a base directory with an
+// externally-influenced name (a GitHub manifest's own `name` field, a
+// caller-supplied plugin name for get()/uninstall(), a filename scraped
+// from HTML) must stay contained within that base directory -- same
+// containment check snapshot-store.js's snapshotPath() already uses for
+// the identical class of risk. Without it, e.g. a manifest.json with
+// `"name": "../../../../important-file"`, or a direct call to
+// uninstall("../../../important-file"), could read or delete files
+// entirely outside pluginsDir.
+function resolveContainedPath(baseDir, relativePath) {
+  const resolvedBase = path.resolve(baseDir);
+  const resolved = path.resolve(resolvedBase, String(relativePath ?? ""));
+  const relative = path.relative(resolvedBase, resolved);
+  if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) {
+    throw new Error(`refusing to use a path outside ${resolvedBase}: ${relativePath}`);
+  }
+  return resolved;
+}
+
+// CodeQL review (SSRF): the previous checks were plain string-prefix tests
+// (url.startsWith("https://github.com/")), which a URL like
+// "https://raw.githubusercontent.com@evil.com/..." or
+// "https://github.com.evil.com/..." satisfies while actually resolving to
+// an attacker-controlled host. Real URL parsing + an exact hostname
+// allowlist closes that -- applied at every https.get() call site, not
+// just the initial installFromGitHub() input, since downloadAllFiles()
+// builds further URLs from scraped HTML content that could point
+// somewhere else entirely if the scrape is manipulated.
+const ALLOWED_GITHUB_HOSTS = new Set(["github.com", "raw.githubusercontent.com", "api.github.com"]);
+
+function assertAllowedGithubUrl(urlString) {
+  let parsed;
+  try {
+    parsed = new URL(urlString);
+  } catch (e) {
+    throw new Error(`invalid URL: ${urlString}`);
+  }
+  if (parsed.protocol !== "https:" || !ALLOWED_GITHUB_HOSTS.has(parsed.hostname)) {
+    throw new Error(`URL host is not an allowed GitHub host: ${parsed.hostname}`);
+  }
+  return parsed;
+}
+
 class PluginStore {
   constructor(options = {}) {
     this.pluginsDir = options.pluginsDir || process.env.MANA_PLUGINS_DIR || DEFAULT_PLUGINS_DIR;
@@ -39,33 +82,37 @@ class PluginStore {
       throw new TypeError("Invalid GitHub URL");
     }
 
-    // Normalize URL to use raw.githubusercontent.com for direct file access
+    // Normalize URL to use raw.githubusercontent.com for direct file access.
+    // Real URL parsing (assertAllowedGithubUrl), not a string-prefix check --
+    // see that function's own comment for why the prefix check it replaces
+    // was bypassable.
     let normalizedUrl = url;
-    
-    if (normalizedUrl.startsWith("https://github.com/")) {
+    const parsedInput = assertAllowedGithubUrl(url);
+
+    if (parsedInput.hostname === "github.com") {
       // Extract repo path: https://github.com/Yuuzulight/plugin-name -> Yuuzulight/plugin-name
       const match = normalizedUrl.match(/github\.com\/([^\/]+)\/([^\/]+)/);
       if (!match) throw new Error("Invalid GitHub URL format");
 
       const owner = match[1];
       const repo = match[2];
-      
+
       // Use raw.githubusercontent.com for direct file access
       normalizedUrl = `https://raw.githubusercontent.com/${owner}/${repo}/main`;
-    } else if (!normalizedUrl.startsWith("https://raw.githubusercontent.com/")) {
+    } else if (parsedInput.hostname !== "raw.githubusercontent.com") {
       throw new Error("GitHub URL must be a full repository path or use raw.githubusercontent.com");
     }
 
     try {
       // Fetch manifest.json from the root of the repo
       const manifest = await this.fetchManifest(normalizedUrl);
-      
+
       if (!manifest || !manifest.name) {
         throw new Error("Invalid plugin: missing 'name' in manifest.json");
       }
 
       // Create local installation directory
-      const installPath = path.join(this.pluginsDir, manifest.name.replace(/\//g, "-"));
+      const installPath = resolveContainedPath(this.pluginsDir, manifest.name.replace(/\//g, "-"));
       
       if (fs.existsSync(installPath)) {
         // Ask user to confirm overwrite
@@ -92,7 +139,14 @@ class PluginStore {
         url: normalizedUrl,
       };
     } catch (error) {
-      console.error(`[PluginStore] Failed to install from GitHub (${url}):`, error.message);
+      // CodeQL review: a user-controlled string as console.error's first
+      // argument, with a second argument alongside it, lets Node's
+      // printf-style substitution treat any %s/%d/etc the attacker put in
+      // `url` as a real format specifier -- merged into one string (no
+      // further arguments left to substitute) closes that off. Same fix
+      // applied to every other console.error/warn call in this file that
+      // had the same shape.
+      console.error(`[PluginStore] Failed to install from GitHub (${url}): ${error.message}`);
       return {
         success: false,
         error: `Installation failed: ${error.message}`,
@@ -141,7 +195,8 @@ class PluginStore {
    */
   async fetchManifest(baseUrl) {
     const url = `${baseUrl}/manifest.json`;
-    
+    assertAllowedGithubUrl(url);
+
     return new Promise((resolve, reject) => {
       https.get(url, (res) => {
         if (!res.statusCode || res.statusCode < 200 || res.statusCode >= 300) {
@@ -212,7 +267,8 @@ class PluginStore {
     console.warn(`[PluginStore] Using fallback file download for ${baseUrl}`);
 
     const url = `${baseUrl}/`;
-    
+    assertAllowedGithubUrl(url);
+
     return new Promise((resolve, reject) => {
       https.get(url, (res) => {
         if (!res.statusCode || res.statusCode < 200 || res.statusCode >= 300) {
@@ -236,7 +292,7 @@ class PluginStore {
               
               // Download individual file
               this.downloadFile(`${baseUrl}/${filePath}`, destDir).catch(err => {
-                console.warn(`[PluginStore] Failed to download ${filePath}:`, err.message);
+                console.warn(`[PluginStore] Failed to download ${filePath}: ${err.message}`);
               });
             }
           }
@@ -251,6 +307,8 @@ class PluginStore {
    * Downloads a single file from GitHub.
    */
   async downloadFile(url, destDir) {
+    assertAllowedGithubUrl(url);
+
     return new Promise((resolve, reject) => {
       https.get(url, (res) => {
         if (!res.statusCode || res.statusCode < 200 || res.statusCode >= 300) {
@@ -258,8 +316,15 @@ class PluginStore {
           return;
         }
 
-        const destPath = path.join(destDir, url.replace(/^https:\/\/[^/]+\/([^?#]+)/, "$1"));
-        
+        // CodeQL review: the path portion of `url` came from HTML this
+        // module itself scraped (downloadAllFiles' href extraction) -- a
+        // crafted "../../../../somewhere-important" path segment there
+        // must not be able to write outside destDir.
+        const destPath = resolveContainedPath(
+          destDir,
+          url.replace(/^https:\/\/[^/]+\/([^?#]+)/, "$1"),
+        );
+
         fs.mkdirSync(path.dirname(destPath), { recursive: true });
 
         const writer = fs.createWriteStream(destPath);
@@ -316,19 +381,23 @@ class PluginStore {
             return;
           }
 
-          // Find the installed plugin directory (should have manifest.json)
+          // Find the installed plugin directory (should have manifest.json).
+          // Entries here come straight from readdirSync -- real filesystem
+          // entry names, not attacker-suppliable strings -- but routed
+          // through the same resolveContainedPath as every other lookup
+          // for consistency and to satisfy CodeQL's (here conservative)
+          // taint tracking.
           const plugins = fs.readdirSync(this.pluginsDir);
-          
+
           let foundPlugin;
           for (const name of plugins) {
-            if (!fs.existsSync(path.join(this.pluginsDir, name, "manifest.json"))) continue;
-            
+            const pluginDir = resolveContainedPath(this.pluginsDir, name);
+            const manifestPath = path.join(pluginDir, "manifest.json");
+            if (!fs.existsSync(manifestPath)) continue;
+
             try {
-              const manifest = JSON.parse(fs.readFileSync(
-                path.join(this.pluginsDir, name, "manifest.json"),
-                "utf8"
-              ));
-              
+              const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+
               foundPlugin = {
                 success: true,
                 name: manifest.name || name,
@@ -336,7 +405,7 @@ class PluginStore {
                 description: manifest.description || "",
                 author: manifest.author || "Unknown",
                 installedAt: Date.now(),
-                path: path.join(this.pluginsDir, name),
+                path: pluginDir,
                 url: `zip:${zipPath}`,
               };
               
@@ -375,7 +444,7 @@ class PluginStore {
       }
 
       // Create installation directory (copy files to avoid conflicts)
-      const installPath = path.join(this.pluginsDir, manifest.name.replace(/\//g, "-"));
+      const installPath = resolveContainedPath(this.pluginsDir, manifest.name.replace(/\//g, "-"));
       
       fs.mkdirSync(installPath, { recursive: true });
 
@@ -393,7 +462,7 @@ class PluginStore {
         url: `file:${dirPath}`,
       };
     } catch (error) {
-      console.error(`[PluginStore] Failed to install from directory (${dirPath}):`, error.message);
+      console.error(`[PluginStore] Failed to install from directory (${dirPath}): ${error.message}`);
       return {
         success: false,
         error: `Installation failed: ${error.message}`,
@@ -409,11 +478,14 @@ class PluginStore {
     if (!fs.existsSync(srcDir)) return;
 
     const items = fs.readdirSync(srcDir);
-    
+
     for (const item of items) {
       const srcPath = path.join(srcDir, item);
-      const destPath = path.join(destDir, item);
-      
+      // item is a real filesystem entry name from readdirSync, not
+      // attacker-suppliable, but contained for consistency with every
+      // other lookup in this file (see resolveContainedPath's own comment).
+      const destPath = resolveContainedPath(destDir, item);
+
       if (fs.statSync(srcPath).isDirectory()) {
         fs.mkdirSync(destPath, { recursive: true });
         this.copyDirectory(srcPath, destPath);
@@ -432,20 +504,21 @@ class PluginStore {
     if (!fs.existsSync(this.pluginsDir)) return plugins;
 
     for (const name of fs.readdirSync(this.pluginsDir)) {
-      const manifestPath = path.join(this.pluginsDir, name, "manifest.json");
-      
+      const pluginDir = resolveContainedPath(this.pluginsDir, name);
+      const manifestPath = path.join(pluginDir, "manifest.json");
+
       if (!fs.existsSync(manifestPath)) continue;
 
       try {
         const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
-        
+
         plugins.push({
           name: manifest.name || name,
           version: manifest.version || "0.0.1",
           description: manifest.description || "",
           author: manifest.author || "Unknown",
           installedAt: Date.now(),
-          path: path.join(this.pluginsDir, name),
+          path: pluginDir,
         });
       } catch (e) {
         // Skip invalid manifests
@@ -459,8 +532,18 @@ class PluginStore {
    * Uninstalls a plugin by name.
    */
   uninstall(name) {
-    const installPath = path.join(this.pluginsDir, name);
-    
+    // The most consequential of the path-containment fixes in this file:
+    // this is a destructive, recursive delete, and `name` is a direct,
+    // unvalidated caller-supplied string (reachable via the plugin-store
+    // API) -- without containment, uninstall("../../../something-real")
+    // would rm -rf something entirely outside pluginsDir.
+    let installPath;
+    try {
+      installPath = resolveContainedPath(this.pluginsDir, name);
+    } catch (e) {
+      return false;
+    }
+
     if (!fs.existsSync(installPath)) {
       return false; // Not found
     }
@@ -470,7 +553,7 @@ class PluginStore {
       this.cache.delete(name);
       return true;
     } catch (e) {
-      console.error(`[PluginStore] Failed to uninstall ${name}:`, e.message);
+      console.error(`[PluginStore] Failed to uninstall ${name}: ${e.message}`);
       return false;
     }
   }
@@ -483,8 +566,13 @@ class PluginStore {
       return this.cache.get(name);
     }
 
-    const installPath = path.join(this.pluginsDir, name);
-    
+    let installPath;
+    try {
+      installPath = resolveContainedPath(this.pluginsDir, name);
+    } catch (e) {
+      return null;
+    }
+
     if (!fs.existsSync(installPath)) {
       return null;
     }
@@ -510,7 +598,7 @@ class PluginStore {
 
       return this.cache.get(name);
     } catch (e) {
-      console.error(`[PluginStore] Failed to load manifest for ${name}:`, e.message);
+      console.error(`[PluginStore] Failed to load manifest for ${name}: ${e.message}`);
       return null;
     }
   }
