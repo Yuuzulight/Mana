@@ -6,6 +6,12 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <ApplicationManifest>app.manifest</ApplicationManifest>
+    <!-- #479 sub-project 4: CubismModel.cs manages Cubism Core's aligned
+         native buffers directly (NativeMemory.AlignedAlloc/AlignedFree,
+         raw pointer arithmetic over the C API's array-of-pointers return
+         values), unavoidable for a P/Invoke layer over a C API shaped
+         like this one. -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
 
   <Target Name="FetchSileroVadModel" BeforeTargets="Build">
@@ -15,10 +21,7 @@
       <SileroVadModelUrl>https://raw.githubusercontent.com/snakers4/silero-vad/master/src/silero_vad/data/silero_vad.onnx</SileroVadModelUrl>
     </PropertyGroup>
     <MakeDir Directories="$(SileroVadModelDir)" Condition="!Exists('$(SileroVadModelDir)')" />
-    <Exec
-      Command="powershell -NoProfile -ExecutionPolicy Bypass -Command &quot;Invoke-WebRequest -Uri '$(SileroVadModelUrl)' -OutFile '$(SileroVadModelPath)' -UserAgent 'mana-fetch-silero-vad'&quot;"
-      Condition="!Exists('$(SileroVadModelPath)')"
-      ContinueOnError="WarnAndContinue" />
+    <Exec Command="powershell -NoProfile -ExecutionPolicy Bypass -Command &quot;Invoke-WebRequest -Uri '$(SileroVadModelUrl)' -OutFile '$(SileroVadModelPath)' -UserAgent 'mana-fetch-silero-vad'&quot;" Condition="!Exists('$(SileroVadModelPath)')" ContinueOnError="WarnAndContinue" />
   </Target>
 
   <ItemGroup>
@@ -28,6 +31,7 @@
   <ItemGroup>
     <PackageReference Include="NAudio" Version="2.2.1" />
     <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.19.2" />
+    <PackageReference Include="SkiaSharp" Version="4.151.1" />
   </ItemGroup>
 
   <ItemGroup>

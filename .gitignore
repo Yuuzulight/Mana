@@ -66,6 +66,15 @@ windows-launcher/avatar/model-disabled/
 desktop-client/assets/live2d/
 desktop-client/avatar/model/
 
+# Live2D Cubism Core native SDK (#479 sub-project 4) -- same "proprietary,
+# must not be committed" reasoning as the web runtime above, but the native
+# SDK has no unauthenticated public download URL to auto-fetch from (it's
+# gated behind Live2D's own EULA click-through), so setup is manual --
+# see windows-native-launcher/native/cubism-core/README.md.
+windows-native-launcher/native/cubism-core/*.dll
+windows-native-launcher/native/cubism-core/*.lib
+windows-native-launcher/native/cubism-core/*.h
+
 # Silero VAD ONNX model (fetched by npm run fetch-silero-vad, see issue #135)
 windows-launcher/assets/vad/
 desktop-client/assets/vad/

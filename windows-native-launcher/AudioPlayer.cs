@@ -12,6 +12,18 @@ namespace Mana.NativeLauncher;
 // wrapper that covers all three.
 internal sealed class AudioPlayer : IDisposable
 {
+    // #479 sub-project 4: when set, every Play() taps the actual PCM
+    // samples as they're read for playback (not the source WAV bytes
+    // up front -- this fires in real time, roughly in sync with what's
+    // audibly playing) for lip-sync analysis. Null by default (every
+    // pre-existing caller/test) -- no tap, no behavior change.
+    private readonly SamplesReadHandler? onSamplesPlayed;
+
+    public AudioPlayer(SamplesReadHandler? onSamplesPlayed = null)
+    {
+        this.onSamplesPlayed = onSamplesPlayed;
+    }
+
     public event Action? PlaybackCompleted;
 
     // #479 sub-project 3: fired by Stop() specifically when it cuts off a
@@ -64,8 +76,13 @@ internal sealed class AudioPlayer : IDisposable
         {
             stream = new MemoryStream(wavBytes);
             reader = new WaveFileReader(stream);
+            IWaveProvider playbackSource = reader;
+            if (onSamplesPlayed is not null)
+            {
+                playbackSource = new TappingSampleProvider(reader.ToSampleProvider(), onSamplesPlayed).ToWaveProvider();
+            }
             var newOutput = new WasapiOut(AudioClientShareMode.Shared, latency: 100);
-            newOutput.Init(reader);
+            newOutput.Init(playbackSource);
 
             var myGeneration = ++generation;
             currentClipCompletedNaturally = false;

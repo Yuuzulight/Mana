@@ -27,7 +27,11 @@ internal sealed class ManaApplicationContext : ApplicationContext
 
         var vadModelPath = Path.Combine(rootDir, "windows-native-launcher", "assets", "vad", "silero_vad.onnx");
         sileroVad = new SileroVadRunner(vadModelPath);
-        audioPlayer = new AudioPlayer();
+        // #479 sub-project 4: taps live playback samples for
+        // avatarOverlay's lip-sync render loop -- a no-op when no Cubism
+        // model is loaded (LipSyncDriver still runs, just nothing reads
+        // its output).
+        audioPlayer = new AudioPlayer(avatarOverlay.LipSyncDriver.OnSamplesPlayed);
         voiceLoop = new VoiceLoop(sileroVad, backendClient, audioPlayer, avatarOverlay);
 
         trayIcon = new NotifyIcon
