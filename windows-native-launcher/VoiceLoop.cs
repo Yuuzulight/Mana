@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Threading.Tasks;
+using Mana.NativeLauncher.Live2D;
 using NAudio.CoreAudioApi;
 using NAudio.Wave;
 
@@ -109,7 +110,7 @@ internal sealed class VoiceLoop : IDisposable
         streamingReplyPlayer = new StreamingReplyPlayer(
             backendClient,
             audioPlayer.PlayAsync,
-            OnTalkingStateChanged);
+            talking => OnTalkingStateChanged(talking));
     }
 
     public void Start()
@@ -468,10 +469,16 @@ internal sealed class VoiceLoop : IDisposable
             return;
         }
 
+        // Only reachable here with the FULL final reply text already known
+        // (unlike the streaming path above, which only ever sees individual
+        // sentences as they arrive -- per-sentence expression detection
+        // isn't attempted there, a deliberate scope cut).
+        var expression = ReplyEmotionDetector.DetectReplyEmotion(reply);
+
         bool completedNaturally;
         try
         {
-            OnTalkingStateChanged(true);
+            OnTalkingStateChanged(true, MapReplyEmotionToAvatarState(expression));
             completedNaturally = await audioPlayer.PlayAsync(replyWav);
         }
         catch (Exception ex)
@@ -502,9 +509,16 @@ internal sealed class VoiceLoop : IDisposable
     // enters Speaking, so barge-in detection never runs during the network
     // calls before audio is actually flowing (which would otherwise let
     // BargeInGate "interrupt" nothing).
-    private void OnTalkingStateChanged(bool talking)
+    //
+    // talkingState: which AvatarState to show while talking=true -- the
+    // streaming call site (StreamingReplyPlayer's setTalking delegate)
+    // only ever passes a bool, so it uses the default Talking; the
+    // non-streaming fallback call site (which has the full reply text
+    // already, unlike streaming) passes ReplyEmotionDetector's result
+    // instead. Ignored when talking=false (always goes to Idle).
+    private void OnTalkingStateChanged(bool talking, AvatarState talkingState = AvatarState.Talking)
     {
-        avatarOverlay.SetState(talking ? AvatarState.Talking : AvatarState.Idle);
+        avatarOverlay.SetState(talking ? talkingState : AvatarState.Idle);
         lock (stateLock)
         {
             if (talking)
@@ -522,6 +536,20 @@ internal sealed class VoiceLoop : IDisposable
             }
         }
     }
+
+    // ReplyEmotionDetector's mood-state strings ("talking", "excited",
+    // "sad", "angry", "disgusted") map directly onto AvatarState's names;
+    // "talking" (its neutral/no-signal default) maps to Talking rather
+    // than a separate neutral value -- there isn't one, Idle already means
+    // something else (not speaking at all).
+    private static AvatarState MapReplyEmotionToAvatarState(string emotion) => emotion switch
+    {
+        "excited" => AvatarState.Excited,
+        "sad" => AvatarState.Sad,
+        "angry" => AvatarState.Angry,
+        "disgusted" => AvatarState.Disgusted,
+        _ => AvatarState.Talking,
+    };
 
     private void ReturnToIdle()
     {
