@@ -11,11 +11,18 @@ const DEFAULT_PLUGINS_DIR = "tools/plugins";
 class PluginStore {
   constructor(options = {}) {
     this.pluginsDir = options.pluginsDir || process.env.MANA_PLUGINS_DIR || DEFAULT_PLUGINS_DIR;
-    
-    // Ensure plugins directory exists
-    if (!fs.existsSync(this.pluginsDir)) {
-      fs.mkdirSync(this.pluginsDir, { recursive: true });
-    }
+
+    // Issue found in review: this used to eagerly mkdirSync(pluginsDir) here,
+    // meaning every process that merely requires this module (every test
+    // file that requires server.js, since server.js requires this at
+    // module scope) creates a real directory on disk as a side effect of
+    // importing it -- confirmed by checking node-bot/tools/plugins/
+    // existing after a plain `require`. list()/get()/uninstall() already
+    // handle a missing pluginsDir gracefully (existsSync checks), and
+    // installFromGitHub/installFromDirectory's own mkdirSync(installPath,
+    // {recursive:true}) already creates pluginsDir as a parent directory
+    // when actually installing something -- installFromZip creates it
+    // explicitly itself. No install path needs it pre-created here.
 
     // Cache for installed plugins (avoids re-scanning on every load)
     this.cache = new Map();
@@ -266,12 +273,49 @@ class PluginStore {
    * Installs a plugin from a zip archive.
    */
   async installFromZip(zipPath) {
-    const { Unzipper } = require("unzipper"); // npm install unzipper
-    
+    // Issue found in review: the previous version required("unzipper"), a
+    // package that's neither declared in package.json nor installed, and
+    // whose actual API (Open.file(...).extract(...)) doesn't even match
+    // what this code called (Unzipper.OpenZip(...)) -- guaranteed to throw
+    // regardless. No zip-handling dependency exists anywhere else in this
+    // codebase either, so this uses PowerShell's built-in Expand-Archive
+    // (same spawnSync("powershell", [...]) pattern server.js's own
+    // gaming-process-snapshot code already uses) instead of adding one.
+    // Paths are passed as PowerShell parameters, not interpolated into the
+    // -Command script text, matching cloneRepository's execFile fix above.
+    fs.mkdirSync(this.pluginsDir, { recursive: true });
+    const { execFile } = require("child_process");
+
     return new Promise((resolve, reject) => {
-      Unzipper.OpenZip(zipPath)
-        .extract({ dir: this.pluginsDir })
-        .then(() => {
+      execFile(
+        "powershell",
+        [
+          "-NoProfile",
+          "-ExecutionPolicy",
+          "Bypass",
+          "-Command",
+          // Values travel via the environment, not command-line parameter
+          // binding -- `-Command <script> -Name value` does NOT bind
+          // trailing args to a param() block the way `-File script.ps1
+          // -Name value` does (verified directly: it threw "argument is
+          // null or empty"). Env vars sidestep that entirely, with the
+          // same no-string-interpolation safety property.
+          "Expand-Archive -LiteralPath $env:MANA_PLUGIN_ZIP_PATH -DestinationPath $env:MANA_PLUGIN_DEST_DIR -Force",
+        ],
+        {
+          windowsHide: true,
+          env: {
+            ...process.env,
+            MANA_PLUGIN_ZIP_PATH: zipPath,
+            MANA_PLUGIN_DEST_DIR: this.pluginsDir,
+          },
+        },
+        (error) => {
+          if (error) {
+            reject(new Error(`Failed to extract zip archive: ${error.message}`));
+            return;
+          }
+
           // Find the installed plugin directory (should have manifest.json)
           const plugins = fs.readdirSync(this.pluginsDir);
           
@@ -307,8 +351,8 @@ class PluginStore {
           } else {
             resolve(foundPlugin);
           }
-        })
-        .catch(reject);
+        },
+      );
     });
   }
 

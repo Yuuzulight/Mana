@@ -20,7 +20,14 @@ function createCloudSyncCapability(options = {}) {
     name,
     description,
     category: "Cloud Storage", // Groups it in GET /plugins under this label
-    defaultEnabled: true, // Enable by default (user can toggle off)
+    // Issue found in review: the plugin this wraps
+    // (plugins/cloud-sync-plugin/src/index.js) doesn't exist yet -- every
+    // route 500s "not found" until it's built. Defaulting to enabled would
+    // show this as active in Settings > Plugins while doing nothing;
+    // matches every other capability wrapping a not-yet-built/optional
+    // plugin elsewhere in this codebase (matrixBridge, telegramBridge,
+    // etc.), all opt-in by default.
+    defaultEnabled: false,
     
     /**
      * Registers API routes for cloud sync operations.

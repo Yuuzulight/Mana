@@ -20,7 +20,10 @@ function createStructuredConnectorsCapability(options = {}) {
     name,
     description,
     category: "Data Sources", // Groups it in GET /plugins under this label
-    defaultEnabled: true, // Enable by default (user can toggle off)
+    // Issue found in review: the plugin this wraps doesn't exist yet --
+    // every route 500s "not found" until it's built. Matches
+    // cloud-sync-capability.js's same fix, for the same reason.
+    defaultEnabled: false,
     
     /**
      * Registers API routes for structured data extraction.
