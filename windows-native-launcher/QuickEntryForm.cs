@@ -35,7 +35,10 @@ internal sealed class QuickEntryForm : Form
         ShowInTaskbar = false;
         TopMost = true;
         StartPosition = FormStartPosition.Manual;
-        BackColor = Color.FromArgb(32, 32, 36);
+        // Shared DarkTheme palette (see that file) instead of this form's
+        // own one-off dark color -- was already dark, just a different
+        // dark than every other window in the app.
+        BackColor = DarkTheme.Panel;
         Width = 480;
         Height = 40;
         Deactivate += (_, _) => HideAndClear();
@@ -43,7 +46,7 @@ internal sealed class QuickEntryForm : Form
         input.Dock = DockStyle.Fill;
         input.BorderStyle = BorderStyle.None;
         input.BackColor = BackColor;
-        input.ForeColor = Color.White;
+        input.ForeColor = DarkTheme.Text;
         input.Font = new Font("Segoe UI", 12F);
         input.KeyDown += OnInputKeyDown;
         Controls.Add(input);
