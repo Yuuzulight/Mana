@@ -17,6 +17,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
     private readonly SileroVadRunner sileroVad;
     private readonly AudioPlayer audioPlayer;
     private readonly VoiceLoop voiceLoop;
+    private readonly TrayNotificationClient trayNotifications;
 
     public ManaApplicationContext()
     {
@@ -33,6 +34,12 @@ internal sealed class ManaApplicationContext : ApplicationContext
         // its output).
         audioPlayer = new AudioPlayer(avatarOverlay.LipSyncDriver.OnSamplesPlayed);
         voiceLoop = new VoiceLoop(sileroVad, backendClient, audioPlayer, avatarOverlay);
+        // #524: no visible chat/session window exists yet (tracked in
+        // #521) -- once it does, this should restore/focus it instead of
+        // doing nothing. Toast activation can fire on a background
+        // thread, so that future implementation will need to marshal
+        // back to the window's own UI thread before touching it.
+        trayNotifications = new TrayNotificationClient(openChat: () => { });
 
         trayIcon = new NotifyIcon
         {
@@ -44,6 +51,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
 
         trayIcon.DoubleClick += (_, _) => ShowStatus();
         avatarOverlay.Show();
+        trayNotifications.Start();
 
         // Quick rundown: start the existing local services, but keep this host native and small.
         _ = StartServicesAsync();
@@ -151,6 +159,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
     protected override void ExitThreadCore()
     {
         statusTimer.Stop();
+        trayNotifications.Dispose();
         voiceLoop.Dispose();
         audioPlayer.Dispose();
         sileroVad.Dispose();
