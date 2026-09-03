@@ -1,3 +1,4 @@
+using System;
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Text;
@@ -82,9 +83,15 @@ internal sealed class ManaBackendClient
     // is required here (unlike every other call in this file) -- without
     // it, HttpClient buffers the entire response body before this method
     // could read a single line, defeating the whole point of streaming.
-    public async IAsyncEnumerable<ReplyStreamEvent> ReplyStreamAsync(string text)
+    // #520: sessionId, when present, routes this turn's history into that
+    // ACP memory-store session instead of node-bot's implicit "default"
+    // one -- omitted (not sent as null) exactly matches every call this
+    // launcher made before session support existed.
+    public async IAsyncEnumerable<ReplyStreamEvent> ReplyStreamAsync(string text, string? sessionId = null)
     {
-        var payload = JsonSerializer.Serialize(new { text });
+        var payload = sessionId is null
+            ? JsonSerializer.Serialize(new { text })
+            : JsonSerializer.Serialize(new { text, sessionId });
         using var content = new StringContent(payload, Encoding.UTF8, "application/json");
         using var request = new HttpRequestMessage(HttpMethod.Post, "/reply/stream") { Content = content };
         using var response = await http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead);
@@ -102,6 +109,68 @@ internal sealed class ManaBackendClient
             using var document = JsonDocument.Parse(line);
             yield return ParseReplyStreamEvent(document.RootElement);
         }
+    }
+
+    // #520: node-bot's ACP memory-store sessions -- see
+    // capabilities/sessions-capability.js for the exact route shapes.
+    public async Task<IReadOnlyList<ManaSession>> GetSessionsAsync()
+    {
+        using var response = await http.GetAsync("/sessions");
+        response.EnsureSuccessStatusCode();
+        await using var stream = await response.Content.ReadAsStreamAsync();
+        using var document = await JsonDocument.ParseAsync(stream);
+        var sessions = new List<ManaSession>();
+        if (document.RootElement.TryGetProperty("sessions", out var sessionsElement))
+        {
+            foreach (var element in sessionsElement.EnumerateArray())
+            {
+                sessions.Add(new ManaSession
+                {
+                    SessionId = element.TryGetProperty("sessionId", out var idElement) ? idElement.GetString() ?? "" : "",
+                    Name = element.TryGetProperty("name", out var nameElement) ? nameElement.GetString() : null,
+                    UpdatedAt = element.TryGetProperty("updatedAt", out var updatedElement) ? updatedElement.GetString() : null,
+                });
+            }
+        }
+        return sessions;
+    }
+
+    // Returns false (rather than throwing) on a 404 -- "the session doesn't
+    // exist to rename" is an expected outcome here (e.g. deleted from
+    // elsewhere between listing and acting), not a transport failure.
+    public async Task<bool> RenameSessionAsync(string sessionId, string name)
+    {
+        var payload = JsonSerializer.Serialize(new { name });
+        using var content = new StringContent(payload, Encoding.UTF8, "application/json");
+        using var response = await http.PatchAsync($"/sessions/{Uri.EscapeDataString(sessionId)}", content);
+        if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
+        {
+            return false;
+        }
+        response.EnsureSuccessStatusCode();
+        return true;
+    }
+
+    public async Task<bool> DeleteSessionAsync(string sessionId)
+    {
+        using var response = await http.DeleteAsync($"/sessions/{Uri.EscapeDataString(sessionId)}");
+        if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
+        {
+            return false;
+        }
+        response.EnsureSuccessStatusCode();
+        return true;
+    }
+
+    // Raw ShareGPT-style JSONL text -- the caller (SessionListForm) is
+    // what actually writes it to disk via a native save dialog, matching
+    // windows-launcher's own split (node-bot just returns the text; the
+    // client owns the save UI).
+    public async Task<string> ExportSessionAsync(string sessionId)
+    {
+        using var response = await http.GetAsync($"/sessions/{Uri.EscapeDataString(sessionId)}/export");
+        response.EnsureSuccessStatusCode();
+        return await response.Content.ReadAsStringAsync();
     }
 
     // #479 sub-project 3 (barge-in): classifies a transcribed interruption
@@ -168,6 +237,16 @@ internal sealed class ManaPerformanceStatus
     public int TotalMemoryMb { get; init; }
     public string TtsProvider { get; init; } = "unknown";
     public bool GamingAppRunning { get; init; }
+}
+
+// #520: a row from GET /sessions -- see acp-memory-store.js's
+// listSessions for the full stored shape; this only carries what the
+// session list UI needs.
+internal sealed class ManaSession
+{
+    public string SessionId { get; init; } = "";
+    public string? Name { get; init; }
+    public string? UpdatedAt { get; init; }
 }
 
 internal sealed class ReplyStreamEvent

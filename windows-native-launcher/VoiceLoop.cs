@@ -107,6 +107,16 @@ internal sealed class VoiceLoop : IDisposable
     private List<string>? heldSentences;
     private int heldStackDepth;
 
+    // #520: which ACP memory-store session outgoing turns are appended
+    // to; null (the default, and every pre-#520 turn's behavior) means
+    // node-bot's implicit "default" session, not sent as an explicit
+    // field. Unlike awake/heldSentences (touched only from the single-
+    // threaded turn-processing chain), this is written from the session
+    // list UI's own thread while a turn may be reading it on a thread-
+    // pool continuation -- volatile is enough (a plain reference swap,
+    // not a compound read-modify-write), no need for stateLock here.
+    private volatile string? currentSessionId;
+
     public VoiceLoop(
         SileroVadRunner vad,
         ManaBackendClient backendClient,
@@ -181,6 +191,13 @@ internal sealed class VoiceLoop : IDisposable
         resampled = null;
         captureBuffer = null;
     }
+
+    // #520: called by the session list UI on switch/new-chat. Deliberately
+    // doesn't touch heldSentences/mode -- switching sessions mid-reply is
+    // a user action on a separate window, not an interruption of Mana
+    // herself; whatever she's currently saying keeps playing against
+    // whichever session was active when that turn started.
+    public void SetSessionId(string? sessionId) => currentSessionId = sessionId;
 
     public void Dispose() => Stop();
 
@@ -563,7 +580,7 @@ internal sealed class VoiceLoop : IDisposable
         IReadOnlyList<string> pending;
         try
         {
-            (reply, changed, _, interrupted, pending) = await streamingReplyPlayer.StreamReplyAndPlayAsync(commandText);
+            (reply, changed, _, interrupted, pending) = await streamingReplyPlayer.StreamReplyAndPlayAsync(commandText, currentSessionId);
         }
         catch (Exception ex)
         {
