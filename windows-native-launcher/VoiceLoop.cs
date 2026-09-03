@@ -111,17 +111,33 @@ internal sealed class VoiceLoop : IDisposable
     // it's used -- see IArtifactSink's own header comment.
     private readonly IArtifactSink? artifactSink;
 
+    // #520: which ACP memory-store session outgoing turns are appended
+    // to; null (the default, and every pre-#520 turn's behavior) means
+    // node-bot's implicit "default" session, not sent as an explicit
+    // field. Unlike awake/heldSentences (touched only from the single-
+    // threaded turn-processing chain), this is written from the session
+    // list UI's own thread while a turn may be reading it on a thread-
+    // pool continuation -- volatile is enough (a plain reference swap,
+    // not a compound read-modify-write), no need for stateLock here.
+    private volatile string? currentSessionId;
+
+    // #521: null (no chat window constructed) is the common case and a
+    // no-op everywhere it's used -- see IChatLog's own header comment.
+    private readonly IChatLog? chatLog;
+
     public VoiceLoop(
         SileroVadRunner vad,
         ManaBackendClient backendClient,
         AudioPlayer audioPlayer,
         AvatarOverlayForm avatarOverlay,
+        IChatLog? chatLog = null,
         IArtifactSink? artifactSink = null)
     {
         this.vad = vad;
         this.backendClient = backendClient;
         this.audioPlayer = audioPlayer;
         this.avatarOverlay = avatarOverlay;
+        this.chatLog = chatLog;
         this.artifactSink = artifactSink;
         streamingReplyPlayer = new StreamingReplyPlayer(
             backendClient,
@@ -187,6 +203,13 @@ internal sealed class VoiceLoop : IDisposable
         resampled = null;
         captureBuffer = null;
     }
+
+    // #520: called by the session list UI on switch/new-chat. Deliberately
+    // doesn't touch heldSentences/mode -- switching sessions mid-reply is
+    // a user action on a separate window, not an interruption of Mana
+    // herself; whatever she's currently saying keeps playing against
+    // whichever session was active when that turn started.
+    public void SetSessionId(string? sessionId) => currentSessionId = sessionId;
 
     public void Dispose() => Stop();
 
@@ -438,6 +461,11 @@ internal sealed class VoiceLoop : IDisposable
             return;
         }
 
+        // #521: logged once per turn here (not per SpeakReplyAsync call
+        // site below) -- the amend/new_question/fresh-turn branches all
+        // still describe the same single user turn.
+        chatLog?.AppendUserMessage(commandText);
+
         if (wasInterruption)
         {
             if (nested)
@@ -569,7 +597,7 @@ internal sealed class VoiceLoop : IDisposable
         IReadOnlyList<string> pending;
         try
         {
-            (reply, changed, _, interrupted, pending) = await streamingReplyPlayer.StreamReplyAndPlayAsync(commandText);
+            (reply, changed, _, interrupted, pending) = await streamingReplyPlayer.StreamReplyAndPlayAsync(commandText, currentSessionId, text => chatLog?.AppendReplySentence(text));
         }
         catch (Exception ex)
         {
@@ -613,6 +641,16 @@ internal sealed class VoiceLoop : IDisposable
         // a barge-in too (closes the "duplicated audio on regen" gap
         // sub-project 2 documented: a barge-in mid-fallback-playback cuts
         // it off instead of guaranteeing the whole thing plays out).
+        //
+        // #521: logged here too, since the "nothing streamed" case would
+        // otherwise never show Mana's reply in the chat log at all. In
+        // the rarer regeneration case, any already-streamed (and already
+        // logged via onSentence) partial sentences from the abandoned
+        // original stream stay in the log alongside this corrected full
+        // text -- a real but narrow edge case not worth the complexity of
+        // retracting already-appended chat lines to fix.
+        chatLog?.AppendReplySentence(reply ?? string.Empty);
+
         byte[] replyWav;
         try
         {

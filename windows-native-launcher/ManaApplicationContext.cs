@@ -18,6 +18,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
     private readonly AudioPlayer audioPlayer;
     private readonly VoiceLoop voiceLoop;
     private readonly ArtifactViewerForm artifactViewer;
+    private readonly SessionListForm sessionListForm;
 
     public ManaApplicationContext()
     {
@@ -34,7 +35,12 @@ internal sealed class ManaApplicationContext : ApplicationContext
         // its output).
         audioPlayer = new AudioPlayer(avatarOverlay.LipSyncDriver.OnSamplesPlayed);
         artifactViewer = new ArtifactViewerForm();
-        voiceLoop = new VoiceLoop(sileroVad, backendClient, audioPlayer, avatarOverlay, artifactViewer);
+        // #521: constructed before voiceLoop so it can be passed in as
+        // VoiceLoop's IChatLog -- SessionListForm only needs the control
+        // itself (to embed it), not the other way around.
+        var chatLog = new ChatLogPanel();
+        voiceLoop = new VoiceLoop(sileroVad, backendClient, audioPlayer, avatarOverlay, chatLog, artifactViewer);
+        sessionListForm = new SessionListForm(backendClient, voiceLoop, chatLog, avatarOverlay);
 
         trayIcon = new NotifyIcon
         {
@@ -63,6 +69,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
         var menu = new ContextMenuStrip();
         menu.Items.Add("Show status", null, (_, _) => ShowStatus());
         menu.Items.Add("Artifact Viewer", null, (_, _) => { artifactViewer.Show(); artifactViewer.Activate(); });
+        menu.Items.Add("Sessions", null, (_, _) => ShowSessionList());
         menu.Items.Add("Open project folder", null, (_, _) => OpenProjectFolder());
         menu.Items.Add("Set avatar idle", null, (_, _) => avatarOverlay.SetState(AvatarState.Idle));
         menu.Items.Add("Set avatar talking", null, (_, _) => avatarOverlay.SetState(AvatarState.Talking));
@@ -112,6 +119,15 @@ internal sealed class ManaApplicationContext : ApplicationContext
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Warning);
         }
+    }
+
+    // #520: reused (Hide, not Close), so Load's own one-time-only refresh
+    // isn't enough -- explicitly refresh on every open instead.
+    private void ShowSessionList()
+    {
+        sessionListForm.Show();
+        sessionListForm.Activate();
+        _ = sessionListForm.RefreshAsync();
     }
 
     // #479 review: `status.TtsProvider` is node-bot's *configured* value
@@ -164,6 +180,8 @@ internal sealed class ManaApplicationContext : ApplicationContext
         // Hide-and-cancel for the reuse pattern, so a plain Close() here
         // would risk not actually tearing the window down.
         artifactViewer.Dispose();
+        // #520: same reasoning as artifactViewer above.
+        sessionListForm.Dispose();
         processManager.Dispose();
         base.ExitThreadCore();
     }
