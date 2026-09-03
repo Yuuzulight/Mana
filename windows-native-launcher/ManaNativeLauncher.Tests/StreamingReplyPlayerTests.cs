@@ -63,12 +63,13 @@ public class StreamingReplyPlayerTests
             },
             talking => talkingStates.Add(talking));
 
-        var (reply, changed, expression, interrupted) = await player.StreamReplyAndPlayAsync("hi");
+        var (reply, changed, expression, interrupted, pending) = await player.StreamReplyAndPlayAsync("hi");
 
         Assert.Equal("Hello there. How can I help?", reply);
         Assert.False(changed);
         Assert.Null(expression);
         Assert.False(interrupted);
+        Assert.Empty(pending);
         Assert.Equal(new[] { "synth:Hello there.", "synth:How can I help?" }, synthLog);
         Assert.Equal(2, playLog.Count);
         Assert.Equal(new[] { true, false }, talkingStates);
@@ -111,7 +112,7 @@ public class StreamingReplyPlayerTests
         Assert.Contains("synth:Two.", synthLog);
 
         firstPlayback.SetResult(true);
-        var (reply, changed, _, interrupted) = await runTask;
+        var (reply, changed, _, interrupted, _) = await runTask;
 
         Assert.Equal("One. Two.", reply);
         Assert.False(changed);
@@ -128,7 +129,7 @@ public class StreamingReplyPlayerTests
 
         var player = new StreamingReplyPlayer(client, _ => Task.FromResult(true), talking => talkingStates.Add(talking));
 
-        var (reply, changed, _, interrupted) = await player.StreamReplyAndPlayAsync("hi");
+        var (reply, changed, _, interrupted, _) = await player.StreamReplyAndPlayAsync("hi");
 
         Assert.Equal("Tool result.", reply);
         Assert.True(changed);
@@ -170,7 +171,7 @@ public class StreamingReplyPlayerTests
         var client = BuildFakeClient(ndjson, synthLog);
         var player = new StreamingReplyPlayer(client, _ => Task.FromResult(true), _ => { });
 
-        var (reply, changed, _, interrupted) = await player.StreamReplyAndPlayAsync("hi");
+        var (reply, changed, _, interrupted, _) = await player.StreamReplyAndPlayAsync("hi");
 
         Assert.Equal("Real sentence.", reply);
         Assert.False(changed);
@@ -203,7 +204,7 @@ public class StreamingReplyPlayerTests
             },
             talking => talkingStates.Add(talking));
 
-        var (reply, changed, expression, interrupted) = await player.StreamReplyAndPlayAsync("hi");
+        var (reply, changed, expression, interrupted, _) = await player.StreamReplyAndPlayAsync("hi");
 
         Assert.Null(reply);
         Assert.False(changed);
@@ -226,9 +227,132 @@ public class StreamingReplyPlayerTests
 
         var player = new StreamingReplyPlayer(client, _ => Task.FromResult(false), _ => { });
 
-        var (reply, _, _, interrupted) = await player.StreamReplyAndPlayAsync("hi");
+        var (reply, _, _, interrupted, _) = await player.StreamReplyAndPlayAsync("hi");
 
         Assert.True(interrupted);
         Assert.Null(reply);
+    }
+
+    // #513: on interruption, Pending must be exactly the sentences that had
+    // streamed but hadn't started playing -- the one-ahead lookahead's
+    // sentence (already pulled out of the channel for synthesis) plus
+    // everything still queued behind it -- and must NOT include the
+    // sentence that was actually playing when the cut happened.
+    [Fact]
+    public async Task StreamReplyAndPlayAsync_ReportsUnplayedSentencesAsPendingWhenInterrupted()
+    {
+        const string ndjson =
+            "{\"type\":\"sentence\",\"text\":\"One.\"}\n" +
+            "{\"type\":\"sentence\",\"text\":\"Two.\"}\n" +
+            "{\"type\":\"sentence\",\"text\":\"Three.\"}\n" +
+            "{\"type\":\"sentence\",\"text\":\"Four.\"}\n" +
+            "{\"type\":\"final\",\"reply\":\"One. Two. Three. Four.\",\"changed\":false}\n";
+        var synthLog = new List<string>();
+        var client = BuildFakeClient(ndjson, synthLog);
+
+        var firstPlayback = new TaskCompletionSource<bool>();
+        var player = new StreamingReplyPlayer(client, _ => firstPlayback.Task, _ => { });
+
+        var runTask = player.StreamReplyAndPlayAsync("hi");
+
+        // Let the reader stream every sentence into the queue and the
+        // lookahead pull "Two." out for synthesis, while "One." is still
+        // "playing" -- then cut it off.
+        await Task.Delay(100);
+        Assert.Contains("synth:Two.", synthLog);
+        firstPlayback.SetResult(false);
+
+        var (_, _, _, interrupted, pending) = await runTask;
+
+        Assert.True(interrupted);
+        Assert.Equal(new[] { "Two.", "Three.", "Four." }, pending);
+    }
+
+    [Fact]
+    public async Task ReplaySentencesAsync_PlaysTheGivenSentencesInOrderThroughTheSamePipeline()
+    {
+        var synthLog = new List<string>();
+        var playLog = new List<string>();
+        var talkingStates = new List<bool>();
+        var client = BuildFakeClient("", synthLog);
+
+        var player = new StreamingReplyPlayer(
+            client,
+            audio =>
+            {
+                playLog.Add($"play:{audio.Length}bytes");
+                return Task.FromResult(true);
+            },
+            talking => talkingStates.Add(talking));
+
+        var (interrupted, pending) = await player.ReplaySentencesAsync(new[] { "Two.", "Three." });
+
+        Assert.False(interrupted);
+        Assert.Empty(pending);
+        Assert.Equal(new[] { "synth:Two.", "synth:Three." }, synthLog);
+        Assert.Equal(2, playLog.Count);
+        Assert.Equal(new[] { true, false }, talkingStates);
+    }
+
+    // A resume can itself be interrupted -- the leftovers come back as
+    // Pending again so the caller can hold them a second time.
+    [Fact]
+    public async Task ReplaySentencesAsync_ReportsRemainingSentencesAsPendingWhenInterrupted()
+    {
+        var synthLog = new List<string>();
+        var client = BuildFakeClient("", synthLog);
+        var player = new StreamingReplyPlayer(client, _ => Task.FromResult(false), _ => { });
+
+        var (interrupted, pending) = await player.ReplaySentencesAsync(new[] { "One.", "Two.", "Three." });
+
+        Assert.True(interrupted);
+        Assert.Equal(new[] { "Two.", "Three." }, pending);
+    }
+
+    [Fact]
+    public async Task ReplaySentencesAsync_WithNoSentencesDoesNothing()
+    {
+        var talkingStates = new List<bool>();
+        var client = BuildFakeClient("", new List<string>());
+        var player = new StreamingReplyPlayer(client, _ => Task.FromResult(true), talking => talkingStates.Add(talking));
+
+        var (interrupted, pending) = await player.ReplaySentencesAsync(Array.Empty<string>());
+
+        Assert.False(interrupted);
+        Assert.Empty(pending);
+        Assert.Empty(talkingStates);
+    }
+
+    // The sentence that was actually playing when the cut happened must
+    // never come back as Pending -- with nothing queued behind it, Pending
+    // is empty, which is what tells the caller there's nothing to hold.
+    // This is the one case where the "lookahead is no longer pending once
+    // it becomes the current sentence" reset is load-bearing.
+    [Fact]
+    public async Task ReplaySentencesAsync_InterruptedOnTheLastSentenceReportsNothingPending()
+    {
+        var client = BuildFakeClient("", new List<string>());
+        var player = new StreamingReplyPlayer(client, _ => Task.FromResult(false), _ => { });
+
+        var (interrupted, pending) = await player.ReplaySentencesAsync(new[] { "One." });
+
+        Assert.True(interrupted);
+        Assert.Empty(pending);
+    }
+
+    [Fact]
+    public async Task ReplaySentencesAsync_InterruptedOnALaterSentenceReportsOnlyWhatFollowsIt()
+    {
+        var client = BuildFakeClient("", new List<string>());
+        var playCallCount = 0;
+        var player = new StreamingReplyPlayer(
+            client,
+            _ => Task.FromResult(++playCallCount < 2), // "One." plays through, "Two." gets cut off
+            _ => { });
+
+        var (interrupted, pending) = await player.ReplaySentencesAsync(new[] { "One.", "Two.", "Three." });
+
+        Assert.True(interrupted);
+        Assert.Equal(new[] { "Three." }, pending);
     }
 }
