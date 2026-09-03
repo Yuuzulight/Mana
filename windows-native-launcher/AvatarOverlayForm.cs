@@ -47,6 +47,17 @@ internal sealed class AvatarOverlayForm : Form
     private float smoothedMouthOpen;
     private float smoothedMouthForm;
 
+    // #514: the model's own declared expressions (Name -> parsed file),
+    // empty when it doesn't ship any. activeExpression is whichever one
+    // AvatarExpressionSelector picked for the current mood state, applied
+    // fresh every render tick -- null means "no expression selected",
+    // which is also true whenever the model has none. Both fields are
+    // only ever touched on the UI thread (SetState already marshals
+    // there before writing; RenderFrame runs on the WinForms Timer's own
+    // UI-thread tick), so no lock is needed for either.
+    private readonly IReadOnlyDictionary<string, CubismExpressionFile> expressions;
+    private CubismExpressionFile? activeExpression;
+
     public AvatarOverlayForm(string rootDirectory)
     {
         idlePath = Path.Combine(rootDirectory, "windows-launcher", "assets", "avatar", "idle.png");
@@ -66,7 +77,7 @@ internal sealed class AvatarOverlayForm : Form
         avatarImage.BackColor = Color.Transparent;
         Controls.Add(avatarImage);
 
-        (cubismModel, cubismRenderer) = TryLoadCubismModel(rootDirectory);
+        (cubismModel, cubismRenderer, expressions) = TryLoadCubismModel(rootDirectory);
         if (cubismModel is not null && cubismRenderer is not null)
         {
             renderTimer = new System.Windows.Forms.Timer { Interval = 33 }; // ~30fps
@@ -78,21 +89,26 @@ internal sealed class AvatarOverlayForm : Form
         PositionOverlay();
     }
 
-    // Returns (null, null) -- not a throw -- when the SDK/model aren't
-    // available, or if a real model file exists but fails to parse: any
-    // of those mean "fall back to the PNG swap", not "crash the launcher".
-    private static (CubismModel?, CubismRenderer?) TryLoadCubismModel(string rootDirectory)
+    // Returns (null, null, empty) -- not a throw -- when the SDK/model
+    // aren't available, or if a real model file exists but fails to
+    // parse: any of those mean "fall back to the PNG swap", not "crash
+    // the launcher". Expression files (#514) are loaded best-effort too --
+    // one malformed .exp3.json is skipped (logged), not fatal to the
+    // model load it's a minor accessory to.
+    private static (CubismModel?, CubismRenderer?, IReadOnlyDictionary<string, CubismExpressionFile>) TryLoadCubismModel(string rootDirectory)
     {
+        var noExpressions = new Dictionary<string, CubismExpressionFile>();
+
         if (!CubismCoreLibrary.IsAvailable(rootDirectory))
         {
-            return (null, null);
+            return (null, null, noExpressions);
         }
 
         var model3JsonPath = Path.Combine(
             rootDirectory, "windows-launcher", "avatar", "model", "hiyori_free", "runtime", "hiyori_free_t08.model3.json");
         if (!File.Exists(model3JsonPath))
         {
-            return (null, null);
+            return (null, null, noExpressions);
         }
 
         CubismModel? model = null;
@@ -101,7 +117,21 @@ internal sealed class AvatarOverlayForm : Form
             var settings = CubismModelSettings.Load(model3JsonPath);
             model = CubismModel.Load(settings);
             var renderer = new CubismRenderer(settings.TexturePaths);
-            return (model, renderer);
+
+            var expressions = new Dictionary<string, CubismExpressionFile>();
+            foreach (var (name, path) in settings.ExpressionPaths)
+            {
+                try
+                {
+                    expressions[name] = CubismExpressionFile.Load(path);
+                }
+                catch (Exception ex) when (ex is not (OutOfMemoryException or StackOverflowException))
+                {
+                    Console.WriteLine($"AvatarOverlayForm: failed to load expression '{name}' ({path}), skipping it. {ex.Message}");
+                }
+            }
+
+            return (model, renderer, expressions);
         }
         // Broad by design, not just the handful of exception types this
         // path happens to throw today: "the model file exists but fails
@@ -123,7 +153,7 @@ internal sealed class AvatarOverlayForm : Form
             // separate step, e.g. a corrupt texture) threw -- without
             // this, its aligned native buffers would leak permanently.
             model?.Dispose();
-            return (null, null);
+            return (null, null, noExpressions);
         }
     }
 
@@ -132,6 +162,14 @@ internal sealed class AvatarOverlayForm : Form
         var nowMs = renderClock.ElapsedMilliseconds;
         var dtMs = lastRenderTickMs == 0 ? 33f : Math.Max(1, nowMs - lastRenderTickMs);
         lastRenderTickMs = nowMs;
+
+        // #514: applied first, so lip-sync's explicit mouth writes below
+        // always win for ParamMouthOpenY/ParamMouthForm specifically --
+        // most expressions target eyebrows/eyes/mouth-corner-form rather
+        // than mouth-open, but if one did touch either, Mana's mouth
+        // should still track what she's actually saying while she's
+        // speaking.
+        activeExpression?.ApplyTo(model);
 
         var (targetMouthOpen, targetMouthForm) = LipSyncDriver.Current;
         smoothedMouthOpen = LipSyncAnalyzer.SmoothMouthValue(smoothedMouthOpen, targetMouthOpen, dtMs);
@@ -205,14 +243,20 @@ internal sealed class AvatarOverlayForm : Form
         // #479 sub-project 4: when a real Cubism model is loaded, the
         // render timer (RenderFrame) is what actually draws every frame
         // going forward -- this method's PNG-swap below is the fallback
-        // for when it isn't. Mood states beyond Idle/Talking don't yet
-        // change the Cubism render (no exp3.json expression-blending
-        // support -- a further scope cut beyond motion/physics/masking,
-        // consistent with the ones CubismModel's own header comment
-        // already documents); they're tracked by being passed through
-        // ReplyEmotionDetector's callers, ready for that to slot in later.
+        // for when it isn't.
         if (cubismModel is not null)
         {
+            // #514: picks which of the model's own expressions (if any)
+            // matches this mood state and stores it for RenderFrame to
+            // apply every tick from here on -- null (no match, or the
+            // model ships none) means "no expression change", which
+            // reads as simply not overriding whatever the render loop's
+            // other signals (lip-sync, and later motion/physics --
+            // #515) already produce.
+            var expressionName = AvatarExpressionSelector.SelectExpressionName(state, expressions.Keys);
+            activeExpression = expressionName is not null && expressions.TryGetValue(expressionName, out var expression)
+                ? expression
+                : null;
             return;
         }
 
