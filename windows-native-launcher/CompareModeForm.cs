@@ -18,7 +18,11 @@ namespace Mana.NativeLauncher;
 // pattern needed for a window this simple).
 internal sealed class CompareModeForm : Form
 {
-    private static readonly Color PreferredColor = Color.FromArgb(220, 245, 220);
+    // Dark-theme-appropriate selection tint (matches the accent-tinted
+    // highlight SessionListForm/SettingsPanel already use for "this one's
+    // selected/active") -- the original light pastel green was sized for
+    // a white TextBox background.
+    private static readonly Color PreferredColor = Color.FromArgb(0x33, 0x2d, 0x52);
 
     private readonly ManaBackendClient backendClient;
     private readonly TextBox promptBox = new();
@@ -42,16 +46,22 @@ internal sealed class CompareModeForm : Form
         Width = 900;
         Height = 560;
         StartPosition = FormStartPosition.CenterScreen;
+        DarkTheme.ApplyForm(this);
 
-        var topRow = new TableLayoutPanel { Dock = DockStyle.Top, Height = 32, ColumnCount = 3 };
+        var topRow = new TableLayoutPanel { Dock = DockStyle.Top, Height = 32, ColumnCount = 3, BackColor = DarkTheme.Background };
         promptBox.Dock = DockStyle.Fill;
+        promptBox.BackColor = DarkTheme.Panel;
+        promptBox.ForeColor = DarkTheme.Text;
+        promptBox.BorderStyle = BorderStyle.FixedSingle;
         runButton.Text = "Run";
         runButton.Dock = DockStyle.Fill;
         runButton.Click += async (_, _) => await RunAsync();
+        DarkTheme.ApplyButton(runButton);
         cancelButton.Text = "Cancel";
         cancelButton.Dock = DockStyle.Fill;
         cancelButton.Enabled = false;
         cancelButton.Click += (_, _) => runCts?.Cancel();
+        DarkTheme.ApplyButton(cancelButton);
         topRow.Controls.Add(promptBox, 0, 0);
         topRow.Controls.Add(runButton, 1, 0);
         topRow.Controls.Add(cancelButton, 2, 0);
@@ -59,31 +69,43 @@ internal sealed class CompareModeForm : Form
         topRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 15));
         topRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 15));
 
-        var pickerRow = new TableLayoutPanel { Dock = DockStyle.Top, Height = 28, ColumnCount = 2 };
+        var pickerRow = new TableLayoutPanel { Dock = DockStyle.Top, Height = 28, ColumnCount = 2, BackColor = DarkTheme.Background };
         profileABox.Dock = DockStyle.Fill;
         profileABox.DropDownStyle = ComboBoxStyle.DropDownList;
+        profileABox.BackColor = DarkTheme.Panel;
+        profileABox.ForeColor = DarkTheme.Text;
         profileBBox.Dock = DockStyle.Fill;
         profileBBox.DropDownStyle = ComboBoxStyle.DropDownList;
+        profileBBox.BackColor = DarkTheme.Panel;
+        profileBBox.ForeColor = DarkTheme.Text;
         pickerRow.Controls.Add(profileABox, 0, 0);
         pickerRow.Controls.Add(profileBBox, 1, 0);
         pickerRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
         pickerRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
 
-        var resultsRow = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 2 };
+        var resultsRow = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 2, BackColor = DarkTheme.Background };
         resultABox.Multiline = true;
         resultABox.ReadOnly = true;
         resultABox.ScrollBars = ScrollBars.Vertical;
         resultABox.Dock = DockStyle.Fill;
+        resultABox.BackColor = DarkTheme.Panel;
+        resultABox.ForeColor = DarkTheme.Text;
+        resultABox.BorderStyle = BorderStyle.FixedSingle;
         resultBBox.Multiline = true;
         resultBBox.ReadOnly = true;
         resultBBox.ScrollBars = ScrollBars.Vertical;
         resultBBox.Dock = DockStyle.Fill;
+        resultBBox.BackColor = DarkTheme.Panel;
+        resultBBox.ForeColor = DarkTheme.Text;
+        resultBBox.BorderStyle = BorderStyle.FixedSingle;
         preferAButton.Text = "Prefer A";
         preferAButton.Dock = DockStyle.Fill;
         preferAButton.Click += (_, _) => SetPreferred(preferredA: true);
+        DarkTheme.ApplyButton(preferAButton);
         preferBButton.Text = "Prefer B";
         preferBButton.Dock = DockStyle.Fill;
         preferBButton.Click += (_, _) => SetPreferred(preferredA: false);
+        DarkTheme.ApplyButton(preferBButton);
         resultsRow.Controls.Add(resultABox, 0, 0);
         resultsRow.Controls.Add(resultBBox, 1, 0);
         resultsRow.Controls.Add(preferAButton, 0, 1);
@@ -104,8 +126,8 @@ internal sealed class CompareModeForm : Form
     {
         // Purely a visual highlight -- matches the reference's own
         // setComparePreferred, no backend call, nothing persisted.
-        resultABox.BackColor = preferredA ? PreferredColor : SystemColors.Window;
-        resultBBox.BackColor = preferredA ? SystemColors.Window : PreferredColor;
+        resultABox.BackColor = preferredA ? PreferredColor : DarkTheme.Panel;
+        resultBBox.BackColor = preferredA ? DarkTheme.Panel : PreferredColor;
     }
 
     private async Task LoadModelStatusAsync()
@@ -176,8 +198,8 @@ internal sealed class CompareModeForm : Form
         }
 
         SetPreferred(preferredA: false);
-        resultABox.BackColor = SystemColors.Window;
-        resultBBox.BackColor = SystemColors.Window;
+        resultABox.BackColor = DarkTheme.Panel;
+        resultBBox.BackColor = DarkTheme.Panel;
         UpdateLabels();
         resultABox.Text = "Thinking...";
         resultBBox.Text = "Thinking...";
