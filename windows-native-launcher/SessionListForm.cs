@@ -224,13 +224,13 @@ internal sealed class SessionListForm : Form
         // in this app yet -- kept as honest placeholders (clicking one
         // opens the same slide-out panel #538's own ToggleTool did,
         // saying so directly) rather than silently dead buttons.
-        foreach (var (glyph, label) in new[] { ("B", "Browser"), ("T", "Terminal"), ("A", "Artifacts"), ("…", "Background tasks") })
+        foreach (var (icon, label) in new[] { ("browser", "Browser"), ("terminal", "Terminal"), ("artifacts", "Artifacts"), ("tasks", "Background tasks") })
         {
-            var button = MakeRailButton(glyph, label);
+            var button = MakeRailButton(icon, label);
             button.Click += (_, _) => ToggleToolPlaceholder(label, toolPanel, toolPanelLabel);
             toolRail.Controls.Add(button);
         }
-        var railSettingsButton = MakeRailButton("⚙", "Settings"); // gear -- the rail's one real, wired icon
+        var railSettingsButton = MakeRailButton("settings", "Settings"); // the rail's one real, wired icon
         railSettingsButton.Click += (_, _) => OpenSettings();
         toolRail.Controls.Add(railSettingsButton);
         // Each Dock.Top control claims the topmost strip of whatever's
@@ -254,11 +254,10 @@ internal sealed class SessionListForm : Form
         Controls.Add(chatArea);
     }
 
-    private Button MakeRailButton(string glyph, string tooltip)
+    private Button MakeRailButton(string icon, string tooltip)
     {
         var button = new Button
         {
-            Text = glyph,
             Dock = DockStyle.Top,
             Height = 44,
             FlatStyle = FlatStyle.Flat,
@@ -267,8 +266,85 @@ internal sealed class SessionListForm : Form
         };
         button.FlatAppearance.BorderSize = 0;
         button.FlatAppearance.MouseOverBackColor = DarkTheme.Panel2;
+        // No Text -- these are line-icon glyphs (same set as the design
+        // reference's rail: circle-globe/terminal/artifacts/list/gear),
+        // drawn to match its stroke-width:2-on-24px-viewBox look rather
+        // than approximated with Unicode symbol characters.
+        button.Paint += (_, e) => DrawRailIcon(e.Graphics, button.ClientRectangle, button.ForeColor, icon);
         railToolTip.SetToolTip(button, tooltip);
         return button;
+    }
+
+    // Ported from the design reference's own rail SVGs (24x24 viewBox,
+    // stroke-width 2, round caps/joins) -- redrawn in GDI+ rather than
+    // embedded as image resources, matching this file's own avatar-card
+    // precedent of procedural drawing over baked-in art assets. Every Pen
+    // is `using`-scoped per call, same discipline as the avatar card's
+    // Paint handlers.
+    private static void DrawRailIcon(Graphics g, Rectangle bounds, Color color, string icon)
+    {
+        g.SmoothingMode = SmoothingMode.AntiAlias;
+        const int size = 17;
+        var x = bounds.Left + (bounds.Width - size) / 2f;
+        var y = bounds.Top + (bounds.Height - size) / 2f;
+        using var pen = new Pen(color, 1.5f) { StartCap = LineCap.Round, EndCap = LineCap.Round, LineJoin = LineJoin.Round };
+
+        switch (icon)
+        {
+            case "browser":
+                g.DrawEllipse(pen, x, y, size, size);
+                g.DrawLine(pen, x, y + size / 2f, x + size, y + size / 2f);
+                g.DrawArc(pen, x + size * 0.28f, y, size * 0.44f, size, 90, 180);
+                break;
+
+            case "terminal":
+                using (var terminalPath = RoundedRect(new RectangleF(x, y, size, size * 0.82f), 2.5f))
+                {
+                    g.DrawPath(pen, terminalPath);
+                }
+                g.DrawLines(pen, new[]
+                {
+                    new PointF(x + size * 0.2f, y + size * 0.28f),
+                    new PointF(x + size * 0.45f, y + size * 0.41f),
+                    new PointF(x + size * 0.2f, y + size * 0.54f),
+                });
+                g.DrawLine(pen, x + size * 0.5f, y + size * 0.54f, x + size * 0.78f, y + size * 0.54f);
+                break;
+
+            case "artifacts":
+                using (var artifactsPath = RoundedRect(new RectangleF(x, y, size, size), 2.5f))
+                {
+                    g.DrawPath(pen, artifactsPath);
+                }
+                g.DrawLine(pen, x + size * 0.62f, y, x + size * 0.62f, y + size);
+                break;
+
+            case "tasks":
+                using (var dotBrush = new SolidBrush(color))
+                {
+                    for (var i = 0; i < 3; i++)
+                    {
+                        var lineY = y + size * (0.2f + i * 0.3f);
+                        g.DrawLine(pen, x + size * 0.28f, lineY, x + size, lineY);
+                        g.FillEllipse(dotBrush, x, lineY - 1f, 2f, 2f);
+                    }
+                }
+                break;
+
+            case "settings":
+                var center = new PointF(x + size / 2f, y + size / 2f);
+                var outerR = size * 0.34f;
+                var innerR = size * 0.14f;
+                g.DrawEllipse(pen, center.X - innerR, center.Y - innerR, innerR * 2, innerR * 2);
+                for (var i = 0; i < 8; i++)
+                {
+                    var angle = i * Math.PI / 4;
+                    var toothInner = new PointF(center.X + (float)(outerR * 0.75 * Math.Cos(angle)), center.Y + (float)(outerR * 0.75 * Math.Sin(angle)));
+                    var toothOuter = new PointF(center.X + (float)(outerR * Math.Cos(angle)), center.Y + (float)(outerR * Math.Sin(angle)));
+                    g.DrawLine(pen, toothInner, toothOuter);
+                }
+                break;
+        }
     }
 
     // #538's own ToggleTool: click the open tool's own icon again to
