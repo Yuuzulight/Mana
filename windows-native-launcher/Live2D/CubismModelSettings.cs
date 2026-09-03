@@ -5,10 +5,10 @@ namespace Mana.NativeLauncher.Live2D;
 // #479 sub-project 4: parses the subset of a .model3.json this project
 // actually uses -- which .moc3 file to load, which texture PNGs it
 // references (in texture-index order; drawables reference textures by
-// index into this same array), and (#514) which named expression files it
-// declares. Motions/Physics/DisplayInfo/Groups (eye-blink groups,
-// lip-sync parameter groups, motion file lists) are still out of scope --
-// see CubismModel's own header comment for the full boundary.
+// index into this same array), (#514) which named expression files it
+// declares, and (#515) its first Idle motion file. Physics
+// (.physics3.json) is still out of scope -- see CubismModel's own header
+// comment for the full boundary.
 internal sealed class CubismModelSettings
 {
     public required string MocPath { get; init; }
@@ -19,6 +19,14 @@ internal sealed class CubismModelSettings
     // declare any -- not every model ships expressions, and that's a
     // property of the asset, not an error.
     public required IReadOnlyDictionary<string, string> ExpressionPaths { get; init; }
+
+    // #515: full path to the FIRST file in FileReferences.Motions.Idle, or
+    // null if the model has no Idle motion group. A real model's own Idle
+    // group commonly lists several variations (hiyori_free's has 3); this
+    // project deliberately plays just one on a continuous loop rather than
+    // randomizing/cycling between them -- "so she looks alive at rest" per
+    // the issue's own scope, not a full motion-selection system.
+    public required string? IdleMotionPath { get; init; }
 
     public static CubismModelSettings Load(string model3JsonPath)
     {
@@ -58,11 +66,27 @@ internal sealed class CubismModelSettings
             }
         }
 
+        string? idleMotionPath = null;
+        if (fileReferences.TryGetProperty("Motions", out var motionsElement)
+            && motionsElement.TryGetProperty("Idle", out var idleGroupElement))
+        {
+            foreach (var motionElement in idleGroupElement.EnumerateArray())
+            {
+                var file = motionElement.TryGetProperty("File", out var fileElement) ? fileElement.GetString() : null;
+                if (file is not null)
+                {
+                    idleMotionPath = Path.Combine(baseDir, file);
+                    break; // first entry only -- see IdleMotionPath's own comment
+                }
+            }
+        }
+
         return new CubismModelSettings
         {
             MocPath = Path.Combine(baseDir, moc),
             TexturePaths = textures,
             ExpressionPaths = expressionPaths,
+            IdleMotionPath = idleMotionPath,
         };
     }
 }

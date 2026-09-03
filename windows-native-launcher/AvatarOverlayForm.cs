@@ -58,6 +58,13 @@ internal sealed class AvatarOverlayForm : Form
     private readonly IReadOnlyDictionary<string, CubismExpressionFile> expressions;
     private CubismExpressionFile? activeExpression;
 
+    // #515: the model's own first Idle motion (null if it declares none),
+    // applied continuously every render tick as the base animation layer
+    // -- see RenderFrame's own layering comment for why it runs before
+    // expression/lip-sync. Read-only after construction, so (unlike
+    // activeExpression) it needs no thread-ownership comment.
+    private readonly CubismMotionFile? idleMotion;
+
     public AvatarOverlayForm(string rootDirectory)
     {
         idlePath = Path.Combine(rootDirectory, "windows-launcher", "assets", "avatar", "idle.png");
@@ -77,7 +84,11 @@ internal sealed class AvatarOverlayForm : Form
         avatarImage.BackColor = Color.Transparent;
         Controls.Add(avatarImage);
 
-        (cubismModel, cubismRenderer, expressions) = TryLoadCubismModel(rootDirectory);
+        var loaded = TryLoadCubismModel(rootDirectory);
+        cubismModel = loaded.Model;
+        cubismRenderer = loaded.Renderer;
+        expressions = loaded.Expressions;
+        idleMotion = loaded.IdleMotion;
         if (cubismModel is not null && cubismRenderer is not null)
         {
             renderTimer = new System.Windows.Forms.Timer { Interval = 33 }; // ~30fps
@@ -89,26 +100,32 @@ internal sealed class AvatarOverlayForm : Form
         PositionOverlay();
     }
 
-    // Returns (null, null, empty) -- not a throw -- when the SDK/model
-    // aren't available, or if a real model file exists but fails to
-    // parse: any of those mean "fall back to the PNG swap", not "crash
-    // the launcher". Expression files (#514) are loaded best-effort too --
-    // one malformed .exp3.json is skipped (logged), not fatal to the
-    // model load it's a minor accessory to.
-    private static (CubismModel?, CubismRenderer?, IReadOnlyDictionary<string, CubismExpressionFile>) TryLoadCubismModel(string rootDirectory)
-    {
-        var noExpressions = new Dictionary<string, CubismExpressionFile>();
+    private sealed record CubismLoadResult(
+        CubismModel? Model,
+        CubismRenderer? Renderer,
+        IReadOnlyDictionary<string, CubismExpressionFile> Expressions,
+        CubismMotionFile? IdleMotion);
 
+    private static readonly CubismLoadResult NotAvailable = new(null, null, new Dictionary<string, CubismExpressionFile>(), null);
+
+    // Returns NotAvailable -- not a throw -- when the SDK/model aren't
+    // available, or if a real model file exists but fails to parse: any
+    // of those mean "fall back to the PNG swap", not "crash the
+    // launcher". Expression files (#514) and the Idle motion (#515) are
+    // both loaded best-effort too -- one malformed accessory file is
+    // skipped (logged), not fatal to the model load it belongs to.
+    private static CubismLoadResult TryLoadCubismModel(string rootDirectory)
+    {
         if (!CubismCoreLibrary.IsAvailable(rootDirectory))
         {
-            return (null, null, noExpressions);
+            return NotAvailable;
         }
 
         var model3JsonPath = Path.Combine(
             rootDirectory, "windows-launcher", "avatar", "model", "hiyori_free", "runtime", "hiyori_free_t08.model3.json");
         if (!File.Exists(model3JsonPath))
         {
-            return (null, null, noExpressions);
+            return NotAvailable;
         }
 
         CubismModel? model = null;
@@ -131,7 +148,20 @@ internal sealed class AvatarOverlayForm : Form
                 }
             }
 
-            return (model, renderer, expressions);
+            CubismMotionFile? idleMotion = null;
+            if (settings.IdleMotionPath is not null)
+            {
+                try
+                {
+                    idleMotion = CubismMotionFile.Load(settings.IdleMotionPath);
+                }
+                catch (Exception ex) when (ex is not (OutOfMemoryException or StackOverflowException))
+                {
+                    Console.WriteLine($"AvatarOverlayForm: failed to load idle motion ({settings.IdleMotionPath}), skipping it. {ex.Message}");
+                }
+            }
+
+            return new CubismLoadResult(model, renderer, expressions, idleMotion);
         }
         // Broad by design, not just the handful of exception types this
         // path happens to throw today: "the model file exists but fails
@@ -153,7 +183,7 @@ internal sealed class AvatarOverlayForm : Form
             // separate step, e.g. a corrupt texture) threw -- without
             // this, its aligned native buffers would leak permanently.
             model?.Dispose();
-            return (null, null, noExpressions);
+            return NotAvailable;
         }
     }
 
@@ -163,12 +193,17 @@ internal sealed class AvatarOverlayForm : Form
         var dtMs = lastRenderTickMs == 0 ? 33f : Math.Max(1, nowMs - lastRenderTickMs);
         lastRenderTickMs = nowMs;
 
-        // #514: applied first, so lip-sync's explicit mouth writes below
-        // always win for ParamMouthOpenY/ParamMouthForm specifically --
-        // most expressions target eyebrows/eyes/mouth-corner-form rather
-        // than mouth-open, but if one did touch either, Mana's mouth
-        // should still track what she's actually saying while she's
-        // speaking.
+        // Layering, base to override: #515's idle motion sets the
+        // resting-pose sway first (so she isn't frozen between
+        // sentences); #514's expression applies on top of that, since a
+        // deliberate mood read should win over generic idle animation
+        // where they'd otherwise conflict on the same parameter; lip-sync's
+        // explicit mouth writes below always win last, for
+        // ParamMouthOpenY/ParamMouthForm specifically -- most
+        // motions/expressions target eyebrows/eyes/head-angle rather than
+        // mouth-open, but if either touched it, Mana's mouth should still
+        // track what she's actually saying while she's speaking.
+        idleMotion?.ApplyTo(model, (float)renderClock.Elapsed.TotalSeconds);
         activeExpression?.ApplyTo(model);
 
         var (targetMouthOpen, targetMouthForm) = LipSyncDriver.Current;

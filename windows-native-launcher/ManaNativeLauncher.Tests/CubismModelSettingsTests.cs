@@ -40,6 +40,7 @@ public class CubismModelSettingsTests
                 [Path.Combine(dir, "texture_00.png"), Path.Combine(dir, "texture_01.png")],
                 settings.TexturePaths);
             Assert.Empty(settings.ExpressionPaths);
+            Assert.Null(settings.IdleMotionPath);
         }
         finally
         {
@@ -102,6 +103,70 @@ public class CubismModelSettingsTests
 
             Assert.Single(settings.ExpressionPaths);
             Assert.True(settings.ExpressionPaths.ContainsKey("angry"));
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void Load_ParsesTheFirstIdleMotion()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "mana-cubism-settings-test-" + Guid.NewGuid());
+        try
+        {
+            var path = WriteFixture(dir, """
+                {
+                  "FileReferences": {
+                    "Moc": "model.moc3",
+                    "Textures": [],
+                    "Motions": {
+                      "Idle": [
+                        { "File": "idle_01.motion3.json" },
+                        { "File": "idle_02.motion3.json" }
+                      ],
+                      "Flick": [
+                        { "File": "flick_01.motion3.json" }
+                      ]
+                    }
+                  }
+                }
+                """);
+
+            var settings = CubismModelSettings.Load(path);
+
+            // First entry only -- see IdleMotionPath's own comment on why
+            // this project doesn't randomize/cycle among several.
+            Assert.Equal(Path.Combine(dir, "idle_01.motion3.json"), settings.IdleMotionPath);
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void Load_IdleMotionPathIsNullWhenTheModelHasOtherMotionsButNoIdleGroup()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "mana-cubism-settings-test-" + Guid.NewGuid());
+        try
+        {
+            var path = WriteFixture(dir, """
+                {
+                  "FileReferences": {
+                    "Moc": "model.moc3",
+                    "Textures": [],
+                    "Motions": {
+                      "Flick": [ { "File": "motion/flick_01.motion3.json" } ]
+                    }
+                  }
+                }
+                """);
+
+            var settings = CubismModelSettings.Load(path);
+
+            Assert.Null(settings.IdleMotionPath);
         }
         finally
         {
