@@ -285,4 +285,100 @@ public class ManaBackendClientTests
 
         Assert.Equal("unclassified", category);
     }
+
+    [Fact]
+    public async Task ReplyAsync_OmitsModelProfileWhenNoneIsGiven()
+    {
+        string? body = null;
+        var handler = new FakeHttpMessageHandler(request =>
+        {
+            body = request.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("{\"reply\":\"ok\"}", Encoding.UTF8, "application/json"),
+            };
+        });
+        var client = new ManaBackendClient(handler);
+
+        await client.ReplyAsync("hi");
+
+        Assert.DoesNotContain("modelProfile", body);
+    }
+
+    [Fact]
+    public async Task ReplyAsync_IncludesModelProfileWhenGiven()
+    {
+        string? body = null;
+        var handler = new FakeHttpMessageHandler(request =>
+        {
+            body = request.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("{\"reply\":\"ok\"}", Encoding.UTF8, "application/json"),
+            };
+        });
+        var client = new ManaBackendClient(handler);
+
+        await client.ReplyAsync("hi", "quality");
+
+        Assert.Contains("\"modelProfile\":\"quality\"", body);
+    }
+
+    [Fact]
+    public async Task ReplyAsync_TaskEndsUpCanceledNotFaultedWhenTheTokenIsCancelled()
+    {
+        // The riskiest runtime behavior CompareModeForm's Cancel button
+        // depends on: an already-cancelled token must produce a Task in
+        // the Canceled state (so DescribeOutcome's IsCanceled check
+        // fires), not Faulted (which would show "Failed: ..." instead of
+        // "Cancelled." to the user).
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+        var handler = new FakeHttpMessageHandler(_ => throw new TaskCanceledException());
+        var client = new ManaBackendClient(handler);
+
+        var task = client.ReplyAsync("hi", cancellationToken: cts.Token);
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => task);
+
+        Assert.True(task.IsCanceled);
+        Assert.False(task.IsFaulted);
+    }
+
+    [Fact]
+    public async Task GetModelStatusAsync_ParsesActiveProfileAndProfiles()
+    {
+        var handler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(
+                """{"activeProfile":"default","profiles":{"default":{"label":"Default","available":true,"selectedModel":"C:\\models\\a.gguf"},"quality":{"label":"Quality","available":false}}}""",
+                Encoding.UTF8,
+                "application/json"),
+        });
+        var client = new ManaBackendClient(handler);
+
+        var status = await client.GetModelStatusAsync();
+
+        Assert.Equal("default", status.ActiveProfile);
+        Assert.Equal(2, status.Profiles.Count);
+        Assert.Equal("Default", status.Profiles["default"].Label);
+        Assert.True(status.Profiles["default"].Available);
+        Assert.Equal(@"C:\models\a.gguf", status.Profiles["default"].SelectedModel);
+        Assert.False(status.Profiles["quality"].Available);
+        Assert.Null(status.Profiles["quality"].SelectedModel);
+    }
+
+    [Fact]
+    public async Task GetModelStatusAsync_ReturnsEmptyProfilesWhenTheKeyIsMissing()
+    {
+        var handler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent("{}", Encoding.UTF8, "application/json"),
+        });
+        var client = new ManaBackendClient(handler);
+
+        var status = await client.GetModelStatusAsync();
+
+        Assert.Null(status.ActiveProfile);
+        Assert.Empty(status.Profiles);
+    }
 }

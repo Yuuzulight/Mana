@@ -60,6 +60,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
     {
         var menu = new ContextMenuStrip();
         menu.Items.Add("Show status", null, (_, _) => ShowStatus());
+        menu.Items.Add("Compare Models", null, (_, _) => new CompareModeForm(backendClient).Show());
         menu.Items.Add("Open project folder", null, (_, _) => OpenProjectFolder());
         menu.Items.Add("Set avatar idle", null, (_, _) => avatarOverlay.SetState(AvatarState.Idle));
         menu.Items.Add("Set avatar talking", null, (_, _) => avatarOverlay.SetState(AvatarState.Talking));

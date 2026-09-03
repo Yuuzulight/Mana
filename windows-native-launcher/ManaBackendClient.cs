@@ -2,6 +2,7 @@ using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace Mana.NativeLauncher;
@@ -55,14 +56,21 @@ internal sealed class ManaBackendClient
         return document.RootElement.GetProperty("transcript").GetString() ?? string.Empty;
     }
 
-    public async Task<string> ReplyAsync(string text)
+    // #527: modelProfile, when given, routes this one request to that
+    // llama-server profile instead of whatever's currently active --
+    // compare-mode's only real requirement. cancellationToken lets
+    // compare-mode's own Cancel button actually abort an in-flight
+    // request rather than just ignoring its eventual result.
+    public async Task<string> ReplyAsync(string text, string? modelProfile = null, CancellationToken cancellationToken = default)
     {
-        var payload = JsonSerializer.Serialize(new { text });
+        var payload = modelProfile is null
+            ? JsonSerializer.Serialize(new { text })
+            : JsonSerializer.Serialize(new { text, modelProfile });
         using var content = new StringContent(payload, Encoding.UTF8, "application/json");
-        using var response = await http.PostAsync("/reply", content);
+        using var response = await http.PostAsync("/reply", content, cancellationToken);
         response.EnsureSuccessStatusCode();
-        await using var stream = await response.Content.ReadAsStreamAsync();
-        using var document = await JsonDocument.ParseAsync(stream);
+        await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+        using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
         return document.RootElement.GetProperty("reply").GetString() ?? string.Empty;
     }
 
@@ -102,6 +110,38 @@ internal sealed class ManaBackendClient
             using var document = JsonDocument.Parse(line);
             yield return ParseReplyStreamEvent(document.RootElement);
         }
+    }
+
+    // #527: node-bot's configured llama-server profiles -- see
+    // model-management.js's getModelStatus/buildProfileStatus for the
+    // full shape; this only carries what compare-mode needs.
+    public async Task<ManaModelStatus> GetModelStatusAsync()
+    {
+        using var response = await http.GetAsync("/models/status");
+        response.EnsureSuccessStatusCode();
+        await using var stream = await response.Content.ReadAsStreamAsync();
+        using var document = await JsonDocument.ParseAsync(stream);
+        var root = document.RootElement;
+
+        var activeProfile = root.TryGetProperty("activeProfile", out var activeElement) ? activeElement.GetString() : null;
+
+        var profiles = new Dictionary<string, ManaModelProfile>();
+        if (root.TryGetProperty("profiles", out var profilesElement))
+        {
+            foreach (var property in profilesElement.EnumerateObject())
+            {
+                var value = property.Value;
+                profiles[property.Name] = new ManaModelProfile
+                {
+                    Key = property.Name,
+                    Label = value.TryGetProperty("label", out var labelElement) ? labelElement.GetString() : null,
+                    SelectedModel = value.TryGetProperty("selectedModel", out var modelElement) ? modelElement.GetString() : null,
+                    Available = value.TryGetProperty("available", out var availableElement) && availableElement.GetBoolean(),
+                };
+            }
+        }
+
+        return new ManaModelStatus { ActiveProfile = activeProfile, Profiles = profiles };
     }
 
     // #479 sub-project 3 (barge-in): classifies a transcribed interruption
@@ -168,6 +208,26 @@ internal sealed class ManaPerformanceStatus
     public int TotalMemoryMb { get; init; }
     public string TtsProvider { get; init; } = "unknown";
     public bool GamingAppRunning { get; init; }
+}
+
+// #527: GET /models/status.
+internal sealed class ManaModelStatus
+{
+    public string? ActiveProfile { get; init; }
+    public IReadOnlyDictionary<string, ManaModelProfile> Profiles { get; init; } = new Dictionary<string, ManaModelProfile>();
+}
+
+internal sealed class ManaModelProfile
+{
+    public string Key { get; init; } = "";
+    public string? Label { get; init; }
+
+    // Full local file path, or null if no matching GGUF was found --
+    // profiles silently fall back to a smaller model when the preferred
+    // file isn't downloaded, which is exactly what CompareModeFormatter
+    // surfaces to the user.
+    public string? SelectedModel { get; init; }
+    public bool Available { get; init; }
 }
 
 internal sealed class ReplyStreamEvent
