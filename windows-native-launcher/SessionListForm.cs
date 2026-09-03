@@ -15,15 +15,15 @@ namespace Mana.NativeLauncher;
 // a tool rail reaching Settings) rather than the tabbed Chat/Settings
 // layout this window used before -- see the comparison review linked
 // from this PR's description for why #538's own logic wasn't kept
-// alongside its layout. Two real, deliberate departures from #538's own
+// alongside its layout. One real, deliberate departure from #538's own
 // version: no FormBorderStyle.None/custom-drawn titlebar (this keeps the
 // OS's native drag/resize/snap and keyboard/screen-reader behavior,
 // which #538's version gave up and then needed a stateful AllowExit
-// escape hatch to work around -- see DarkTheme.ApplyForm), and the rail
-// only has a Settings icon, not #538's Browser/Terminal/Artifacts/Tasks
-// icons -- none of those tools exist yet in this app; shipping dead
-// buttons for them would be worse than #538's own "explicitly a
-// scaffold" excuse, since this is the real, merged window.
+// escape hatch to work around -- see DarkTheme.ApplyForm). The rail's
+// Browser/Terminal/Artifacts/Tasks icons are kept as #538 had them --
+// none of those tools exist in this app yet, so each opens the same
+// slide-out panel saying so directly, rather than pretending to be a
+// finished feature or being silently dead.
 //
 // A standalone window for now (windows-launcher's own version lives
 // inside its main app window) -- created once and reused (Hide, not
@@ -36,6 +36,12 @@ internal sealed class SessionListForm : Form
     private readonly ListView list = new();
     private readonly Button newChatButton = new();
 
+    // One shared ToolTip serving every rail button -- SetToolTip(control,
+    // caption) is the normal WinForms pattern for exactly this (a per-
+    // control caption map on one native tooltip window), not one instance
+    // per control.
+    private readonly ToolTip railToolTip = new();
+
     // Bolds the active session's row in RefreshAsync -- built once and
     // reused rather than a fresh Font per refresh, which leaked a GDI
     // handle every time the list reloaded (session switch/rename/delete/
@@ -46,6 +52,11 @@ internal sealed class SessionListForm : Form
     // to yet) means node-bot's implicit "default" session, same starting
     // state VoiceLoop itself has.
     private string? activeSessionId;
+
+    // Which rail placeholder (if any) the slide-out tool panel is
+    // currently showing -- null means the panel is closed. See
+    // ToggleToolPlaceholder.
+    private string? openTool;
 
     public SessionListForm(ManaBackendClient backendClient, VoiceLoop voiceLoop, ChatLogPanel chatLog)
     {
@@ -105,31 +116,89 @@ internal sealed class SessionListForm : Form
         sidebar.Controls.Add(newChatButton);
         sidebar.Controls.Add(list);
 
-        var railSettingsButton = new Button
+        var toolPanelLabel = new Label
         {
-            Text = "⚙", // gear glyph -- the rail's one real, wired icon
+            Dock = DockStyle.Fill,
+            ForeColor = DarkTheme.Muted,
+            Padding = new Padding(12),
+            TextAlign = ContentAlignment.TopLeft,
+        };
+        var toolPanel = new Panel
+        {
+            Dock = DockStyle.Right,
+            Width = 220,
+            Visible = false,
+            BackColor = DarkTheme.Panel2,
+        };
+        toolPanel.Controls.Add(toolPanelLabel);
+
+        var toolRail = new Panel { Dock = DockStyle.Right, Width = 44, BackColor = DarkTheme.Panel };
+        // #538's own rail order (top to bottom): Browser, Terminal,
+        // Artifacts, Tasks, then Settings. None of the first four exist
+        // in this app yet -- kept as honest placeholders (clicking one
+        // opens the same slide-out panel #538's own ToggleTool did,
+        // saying so directly) rather than silently dead buttons.
+        foreach (var (glyph, label) in new[] { ("B", "Browser"), ("T", "Terminal"), ("A", "Artifacts"), ("…", "Background tasks") })
+        {
+            var button = MakeRailButton(glyph, label);
+            button.Click += (_, _) => ToggleToolPlaceholder(label, toolPanel, toolPanelLabel);
+            toolRail.Controls.Add(button);
+        }
+        var railSettingsButton = MakeRailButton("⚙", "Settings"); // gear -- the rail's one real, wired icon
+        railSettingsButton.Click += (_, _) => OpenSettings();
+        toolRail.Controls.Add(railSettingsButton);
+        // Each Dock.Top control claims the topmost strip of whatever's
+        // still unclaimed, in the order added -- so the four placeholders
+        // (added by the loop above) land Browser/Terminal/Artifacts/Tasks
+        // top-to-bottom, and Settings, added last, ends up at the bottom
+        // of the rail. Matches #538's own top-to-bottom rail order.
+
+        var chatArea = new Panel { Dock = DockStyle.Fill, BackColor = DarkTheme.Background };
+        chatArea.Controls.Add(chatLog);
+
+        // Dock order matters: a control added earlier claims its edge
+        // first, so Fill has to go in last, once sidebar/toolRail/
+        // toolPanel have already staked their strips (same rule #538's
+        // own MainForm comment on this notes). toolRail before toolPanel
+        // so the icon strip stays outermost (nearest the window edge)
+        // and the slide-out panel opens on its inner side.
+        Controls.Add(sidebar);
+        Controls.Add(toolRail);
+        Controls.Add(toolPanel);
+        Controls.Add(chatArea);
+    }
+
+    private Button MakeRailButton(string glyph, string tooltip)
+    {
+        var button = new Button
+        {
+            Text = glyph,
             Dock = DockStyle.Top,
             Height = 44,
             FlatStyle = FlatStyle.Flat,
             BackColor = DarkTheme.Panel,
             ForeColor = DarkTheme.Muted,
         };
-        railSettingsButton.FlatAppearance.BorderSize = 0;
-        railSettingsButton.FlatAppearance.MouseOverBackColor = DarkTheme.Panel2;
-        railSettingsButton.Click += (_, _) => OpenSettings();
-        var toolRail = new Panel { Dock = DockStyle.Right, Width = 44, BackColor = DarkTheme.Panel };
-        toolRail.Controls.Add(railSettingsButton);
+        button.FlatAppearance.BorderSize = 0;
+        button.FlatAppearance.MouseOverBackColor = DarkTheme.Panel2;
+        railToolTip.SetToolTip(button, tooltip);
+        return button;
+    }
 
-        var chatArea = new Panel { Dock = DockStyle.Fill, BackColor = DarkTheme.Background };
-        chatArea.Controls.Add(chatLog);
-
-        // Dock order matters: a control added earlier claims its edge
-        // first, so Fill has to go in last, once sidebar/toolRail have
-        // already staked their strips (same rule #538's own MainForm
-        // comment on this notes).
-        Controls.Add(sidebar);
-        Controls.Add(toolRail);
-        Controls.Add(chatArea);
+    // #538's own ToggleTool: click the open tool's own icon again to
+    // close the panel; click a different one to swap its content instead
+    // of stacking a second panel.
+    private void ToggleToolPlaceholder(string tool, Panel toolPanel, Label toolPanelLabel)
+    {
+        if (openTool == tool)
+        {
+            toolPanel.Visible = false;
+            openTool = null;
+            return;
+        }
+        openTool = tool;
+        toolPanelLabel.Text = $"{tool}\n\nNot built yet.";
+        toolPanel.Visible = true;
     }
 
     private void OpenSettings()
@@ -334,6 +403,7 @@ internal sealed class SessionListForm : Form
         if (disposing)
         {
             activeSessionFont.Dispose();
+            railToolTip.Dispose();
         }
         base.Dispose(disposing);
     }
