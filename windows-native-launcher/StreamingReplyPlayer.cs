@@ -42,13 +42,17 @@ internal sealed class StreamingReplyPlayer
     // N/vision path never calls onSentence server-side) and "a regeneration
     // pass rewrote the reply after streaming already started" -- either way
     // the caller must fall back to synthesizing and playing Reply fresh.
+    // #521: onSentence, when given, fires as soon as each sentence's text
+    // is known from the stream -- decoupled from playback timing (it does
+    // NOT wait for that sentence to actually finish being spoken), since a
+    // chat log should show text as it arrives, not lag behind audio.
     public async Task<(string? Reply, bool Changed, string? Expression, bool Interrupted, IReadOnlyList<string> Pending)> StreamReplyAndPlayAsync(
-        string commandText)
+        string commandText, string? sessionId = null, Action<string>? onSentence = null)
     {
         var sentences = Channel.CreateUnbounded<string>();
         ReplyStreamEvent? finalEvent = null;
 
-        var readTask = ReadEventsAsync(commandText, sentences.Writer, e => finalEvent = e);
+        var readTask = ReadEventsAsync(commandText, sessionId, onSentence, sentences.Writer, e => finalEvent = e);
         var (interrupted, pending) = await PlayStreamedSentencesAsync(sentences.Reader).ConfigureAwait(false);
 
         if (interrupted)
@@ -98,14 +102,15 @@ internal sealed class StreamingReplyPlayer
         return PlayStreamedSentencesAsync(channel.Reader);
     }
 
-    private async Task ReadEventsAsync(string commandText, ChannelWriter<string> writer, Action<ReplyStreamEvent> onFinal)
+    private async Task ReadEventsAsync(string commandText, string? sessionId, Action<string>? onSentence, ChannelWriter<string> writer, Action<ReplyStreamEvent> onFinal)
     {
         try
         {
-            await foreach (var evt in backendClient.ReplyStreamAsync(commandText))
+            await foreach (var evt in backendClient.ReplyStreamAsync(commandText, sessionId))
             {
                 if (evt.Type == "sentence" && !string.IsNullOrWhiteSpace(evt.Text))
                 {
+                    onSentence?.Invoke(evt.Text);
                     await writer.WriteAsync(evt.Text).ConfigureAwait(false);
                 }
                 else if (evt.Type == "final")
