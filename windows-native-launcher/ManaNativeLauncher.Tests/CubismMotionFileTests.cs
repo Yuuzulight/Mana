@@ -64,7 +64,7 @@ public class CubismMotionFileTests
         Assert.Equal(-8f, model.GetParameterCurrentValue("ParamAngleX"), 2);
     }
 
-    [Fact]
+    [CubismAvailableFact]
     public void ApplyTo_LinearSegmentInterpolatesBetweenItsTwoPoints()
     {
         var dir = Path.Combine(Path.GetTempPath(), "mana-cubism-motion-test-" + Guid.NewGuid());
@@ -107,7 +107,7 @@ public class CubismMotionFileTests
     // c2Value at the wrong array offsets) ever regressed to ignoring the
     // control points, this test would catch it where the boundary-only
     // real-file test (ratio=0, collapses to p0) cannot.
-    [Fact]
+    [CubismAvailableFact]
     public void ApplyTo_BezierSegmentUsesBothControlPointsNotJustLinearInterpolation()
     {
         var dir = Path.Combine(Path.GetTempPath(), "mana-cubism-motion-test-" + Guid.NewGuid());
@@ -136,7 +136,7 @@ public class CubismMotionFileTests
         }
     }
 
-    [Fact]
+    [CubismAvailableFact]
     public void ApplyTo_SteppedSegmentHoldsThePreviousValueThenJumpsAtItsTime()
     {
         var dir = Path.Combine(Path.GetTempPath(), "mana-cubism-motion-test-" + Guid.NewGuid());
@@ -167,7 +167,7 @@ public class CubismMotionFileTests
         }
     }
 
-    [Fact]
+    [CubismAvailableFact]
     public void ApplyTo_InverseSteppedSegmentJumpsImmediatelyThenHoldsUntilItsTime()
     {
         var dir = Path.Combine(Path.GetTempPath(), "mana-cubism-motion-test-" + Guid.NewGuid());
@@ -201,7 +201,7 @@ public class CubismMotionFileTests
         }
     }
 
-    [Fact]
+    [CubismAvailableFact]
     public void ApplyTo_LoopsBackToTheStartPastDuration()
     {
         var dir = Path.Combine(Path.GetTempPath(), "mana-cubism-motion-test-" + Guid.NewGuid());
@@ -231,7 +231,7 @@ public class CubismMotionFileTests
         }
     }
 
-    [Fact]
+    [CubismAvailableFact]
     public void ApplyTo_SkipsAParameterTheModelDoesNotHaveInsteadOfThrowing()
     {
         var dir = Path.Combine(Path.GetTempPath(), "mana-cubism-motion-test-" + Guid.NewGuid());
@@ -260,7 +260,7 @@ public class CubismMotionFileTests
         }
     }
 
-    [Fact]
+    [CubismAvailableFact]
     public void ApplyTo_IgnoresNonParameterTargetCurves()
     {
         var dir = Path.Combine(Path.GetTempPath(), "mana-cubism-motion-test-" + Guid.NewGuid());
