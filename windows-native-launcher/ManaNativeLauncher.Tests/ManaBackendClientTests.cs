@@ -1,4 +1,5 @@
 using System;
+using System.Linq;
 using System.Net;
 using System.Net.Http;
 using System.Text;
@@ -476,5 +477,229 @@ public class ManaBackendClientTests
 
         Assert.Equal("/sessions/s1/export", path);
         Assert.Equal("{\"from\":\"human\",\"value\":\"hi\"}\n", jsonl);
+    }
+
+    [Fact]
+    public async Task GetPluginsAsync_FlattensTheCategoryGroupingIntoOneList()
+    {
+        var handler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(
+                """{"ok":true,"plugins":{"integrations":[{"key":"ffxiv","name":"FFXIV Market","description":"Market data","enabled":true}],"tools":[{"key":"stocks","name":"Stocks","enabled":false}]}}""",
+                Encoding.UTF8,
+                "application/json"),
+        });
+        var client = new ManaBackendClient(handler);
+
+        var plugins = await client.GetPluginsAsync();
+
+        Assert.Equal(2, plugins.Count);
+        var ffxiv = plugins.Single(p => p.Key == "ffxiv");
+        Assert.Equal("FFXIV Market", ffxiv.Name);
+        Assert.True(ffxiv.Enabled);
+        Assert.False(plugins.Single(p => p.Key == "stocks").Enabled);
+    }
+
+    [Fact]
+    public async Task GetPluginsAsync_ReturnsEmptyWhenThePluginsKeyIsMissing()
+    {
+        var handler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent("{\"ok\":true}", Encoding.UTF8, "application/json"),
+        });
+        var client = new ManaBackendClient(handler);
+
+        var plugins = await client.GetPluginsAsync();
+
+        Assert.Empty(plugins);
+    }
+
+    [Fact]
+    public async Task SetPluginEnabledAsync_PostsToTheKeySpecificEndpoint()
+    {
+        string? path = null;
+        string? method = null;
+        string? body = null;
+        var handler = new FakeHttpMessageHandler(request =>
+        {
+            path = request.RequestUri!.AbsolutePath;
+            method = request.Method.Method;
+            body = request.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("{\"ok\":true}", Encoding.UTF8, "application/json"),
+            };
+        });
+        var client = new ManaBackendClient(handler);
+
+        await client.SetPluginEnabledAsync("ffxiv", false);
+
+        Assert.Equal("/plugins/ffxiv/enabled", path);
+        Assert.Equal("POST", method);
+        Assert.Contains("\"enabled\":false", body);
+    }
+
+    [Fact]
+    public async Task GetMemoryFactsAsync_ParsesTheFactList()
+    {
+        var handler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(
+                """{"ok":true,"facts":[{"key":"favorite-color","text":"User likes blue","status":"active"}]}""",
+                Encoding.UTF8,
+                "application/json"),
+        });
+        var client = new ManaBackendClient(handler);
+
+        var facts = await client.GetMemoryFactsAsync();
+
+        var fact = Assert.Single(facts);
+        Assert.Equal("favorite-color", fact.Key);
+        Assert.Equal("User likes blue", fact.Text);
+        Assert.Equal("active", fact.Status);
+    }
+
+    [Fact]
+    public async Task GetMemoryFactsAsync_ReturnsEmptyWhenTheFactsKeyIsMissing()
+    {
+        var handler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent("{\"ok\":true}", Encoding.UTF8, "application/json"),
+        });
+        var client = new ManaBackendClient(handler);
+
+        var facts = await client.GetMemoryFactsAsync();
+
+        Assert.Empty(facts);
+    }
+
+    [Fact]
+    public async Task ArchiveMemoryFactAsync_PostsToTheArchiveEndpoint()
+    {
+        string? path = null;
+        var handler = new FakeHttpMessageHandler(request =>
+        {
+            path = request.RequestUri!.AbsolutePath;
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("{\"ok\":true}", Encoding.UTF8, "application/json"),
+            };
+        });
+        var client = new ManaBackendClient(handler);
+
+        await client.ArchiveMemoryFactAsync("favorite-color");
+
+        Assert.Equal("/admin/memory/facts/favorite-color/archive", path);
+    }
+
+    [Fact]
+    public async Task GetSkillsAsync_ParsesTheSkillIndex()
+    {
+        var handler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(
+                """{"skills":[{"name":"weather-check","description":"Checks the weather","status":"active"}]}""",
+                Encoding.UTF8,
+                "application/json"),
+        });
+        var client = new ManaBackendClient(handler);
+
+        var skills = await client.GetSkillsAsync();
+
+        var skill = Assert.Single(skills);
+        Assert.Equal("weather-check", skill.Name);
+        Assert.Equal("Checks the weather", skill.Description);
+        Assert.Equal("active", skill.Status);
+    }
+
+    [Fact]
+    public async Task GetSkillsAsync_ReturnsEmptyWhenTheSkillsKeyIsMissing()
+    {
+        var handler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent("{}", Encoding.UTF8, "application/json"),
+        });
+        var client = new ManaBackendClient(handler);
+
+        var skills = await client.GetSkillsAsync();
+
+        Assert.Empty(skills);
+    }
+
+    [Fact]
+    public async Task DeleteSkillAsync_SendsDeleteToTheNamedSkill()
+    {
+        string? path = null;
+        string? method = null;
+        var handler = new FakeHttpMessageHandler(request =>
+        {
+            path = request.RequestUri!.AbsolutePath;
+            method = request.Method.Method;
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("{\"deleted\":true}", Encoding.UTF8, "application/json"),
+            };
+        });
+        var client = new ManaBackendClient(handler);
+
+        await client.DeleteSkillAsync("weather-check");
+
+        Assert.Equal("/skills/weather-check", path);
+        Assert.Equal("DELETE", method);
+    }
+
+    [Fact]
+    public async Task GetPendingApprovalsAsync_ParsesThePendingList()
+    {
+        var handler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(
+                """{"pending":[{"id":"req-1","actionType":"skill-write","summary":"Create skill \"weather-check\""}]}""",
+                Encoding.UTF8,
+                "application/json"),
+        });
+        var client = new ManaBackendClient(handler);
+
+        var pending = await client.GetPendingApprovalsAsync();
+
+        var approval = Assert.Single(pending);
+        Assert.Equal("req-1", approval.Id);
+        Assert.Equal("skill-write", approval.ActionType);
+    }
+
+    [Fact]
+    public async Task GetPendingApprovalsAsync_ReturnsEmptyWhenThePendingKeyIsMissing()
+    {
+        var handler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent("{}", Encoding.UTF8, "application/json"),
+        });
+        var client = new ManaBackendClient(handler);
+
+        var pending = await client.GetPendingApprovalsAsync();
+
+        Assert.Empty(pending);
+    }
+
+    [Fact]
+    public async Task DecideApprovalAsync_PostsTheDecision()
+    {
+        string? path = null;
+        string? body = null;
+        var handler = new FakeHttpMessageHandler(request =>
+        {
+            path = request.RequestUri!.AbsolutePath;
+            body = request.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("{\"status\":\"approved\"}", Encoding.UTF8, "application/json"),
+            };
+        });
+        var client = new ManaBackendClient(handler);
+
+        await client.DecideApprovalAsync("req-1", "allow-once");
+
+        Assert.Equal("/approvals/req-1/decide", path);
+        Assert.Contains("\"decision\":\"allow-once\"", body);
     }
 }

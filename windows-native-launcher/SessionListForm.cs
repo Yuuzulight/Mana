@@ -23,6 +23,7 @@ internal sealed class SessionListForm : Form
     private readonly VoiceLoop voiceLoop;
     private readonly ListView list = new();
     private readonly Button newChatButton = new();
+    private readonly SettingsPanel settingsPanel;
 
     // Mirrors VoiceLoop's own currentSessionId -- null (nothing switched
     // to yet) means node-bot's implicit "default" session, same starting
@@ -33,9 +34,10 @@ internal sealed class SessionListForm : Form
     {
         this.backendClient = backendClient;
         this.voiceLoop = voiceLoop;
+        settingsPanel = new SettingsPanel(backendClient);
 
         Text = "Mana Sessions";
-        Width = 460;
+        Width = 620;
         Height = 520;
         StartPosition = FormStartPosition.CenterScreen;
 
@@ -72,8 +74,31 @@ internal sealed class SessionListForm : Form
         contextMenu.Items.Add("Export...", null, async (_, _) => await ExportSelectedAsync());
         list.ContextMenuStrip = contextMenu;
 
-        Controls.Add(list);
-        Controls.Add(newChatButton);
+        var sessionsPage = new TabPage("Sessions");
+        sessionsPage.Controls.Add(list);
+        sessionsPage.Controls.Add(newChatButton);
+
+        // #529: shares this window's nav rather than being its own
+        // separate window, per that issue's own scope note. Refreshed
+        // whenever the tab is actually selected (not eagerly on every
+        // session-list refresh) -- settings data changes far less often
+        // than the session list does, and there's no reason to poll it
+        // on a timer nobody's looking at.
+        var settingsPage = new TabPage("Settings");
+        settingsPage.Controls.Add(settingsPanel);
+
+        var tabs = new TabControl { Dock = DockStyle.Fill };
+        tabs.TabPages.Add(sessionsPage);
+        tabs.TabPages.Add(settingsPage);
+        tabs.Selected += async (_, e) =>
+        {
+            if (e.TabPage == settingsPage)
+            {
+                await settingsPanel.RefreshAllAsync();
+            }
+        };
+
+        Controls.Add(tabs);
     }
 
     protected override void OnFormClosing(FormClosingEventArgs e)
