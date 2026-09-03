@@ -242,12 +242,31 @@ internal sealed class SessionListForm : Form
         var chatArea = new Panel { Dock = DockStyle.Fill, BackColor = DarkTheme.Background };
         chatArea.Controls.Add(chatLog);
 
+        // Same collapse toggle as Claude's own UI, and the design
+        // reference's own #sidebarToggleBtn -- a persistent top strip
+        // (not a child of `sidebar` itself, which is what gets hidden;
+        // a button that disappears along with the panel it opens would
+        // have no way to bring it back).
+        var sidebarToggleButton = MakeRailButton("sidebar", "Toggle sidebar");
+        sidebarToggleButton.Dock = DockStyle.Left;
+        sidebarToggleButton.Width = 34;
+        sidebarToggleButton.Height = 28;
+        sidebarToggleButton.Click += (_, _) => sidebar.Visible = !sidebar.Visible;
+
+        var topBar = new Panel { Dock = DockStyle.Top, Height = 28, BackColor = DarkTheme.Background };
+        topBar.Controls.Add(sidebarToggleButton);
+
         // Dock order matters: a control added earlier claims its edge
-        // first, so Fill has to go in last, once sidebar/toolRail/
+        // first, so Fill has to go in last, once topBar/sidebar/toolRail/
         // toolPanel have already staked their strips (same rule #538's
-        // own MainForm comment on this notes). toolRail before toolPanel
+        // own MainForm comment on this notes). topBar goes in before the
+        // Left/Right ones specifically so it spans the FULL window width
+        // at the top rather than just the strip between them -- claiming
+        // its horizontal slice off the whole client area before sidebar/
+        // toolRail have narrowed what's left. toolRail before toolPanel
         // so the icon strip stays outermost (nearest the window edge)
         // and the slide-out panel opens on its inner side.
+        Controls.Add(topBar);
         Controls.Add(sidebar);
         Controls.Add(toolRail);
         Controls.Add(toolPanel);
@@ -317,6 +336,17 @@ internal sealed class SessionListForm : Form
                     g.DrawPath(pen, artifactsPath);
                 }
                 g.DrawLine(pen, x + size * 0.62f, y, x + size * 0.62f, y + size);
+                break;
+
+            // Same shape as "artifacts", mirrored -- a panel divided near
+            // its LEFT edge instead of its right, standing for the left
+            // sidebar instead of the right tool panel.
+            case "sidebar":
+                using (var sidebarPath = RoundedRect(new RectangleF(x, y, size, size), 2.5f))
+                {
+                    g.DrawPath(pen, sidebarPath);
+                }
+                g.DrawLine(pen, x + size * 0.38f, y, x + size * 0.38f, y + size);
                 break;
 
             case "tasks":
