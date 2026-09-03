@@ -17,6 +17,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
     private readonly SileroVadRunner sileroVad;
     private readonly AudioPlayer audioPlayer;
     private readonly VoiceLoop voiceLoop;
+    private readonly QuickEntryForm quickEntry;
 
     public ManaApplicationContext()
     {
@@ -33,6 +34,9 @@ internal sealed class ManaApplicationContext : ApplicationContext
         // its output).
         audioPlayer = new AudioPlayer(avatarOverlay.LipSyncDriver.OnSamplesPlayed);
         voiceLoop = new VoiceLoop(sileroVad, backendClient, audioPlayer, avatarOverlay);
+        // #525: Ctrl+Alt+Space types a command instead of speaking one,
+        // through the exact same turn-processing path.
+        quickEntry = new QuickEntryForm(voiceLoop.SubmitTypedCommandAsync);
 
         trayIcon = new NotifyIcon
         {
@@ -157,6 +161,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
         trayIcon.Visible = false;
         trayIcon.Dispose();
         avatarOverlay.Close();
+        quickEntry.Close();
         processManager.Dispose();
         base.ExitThreadCore();
     }

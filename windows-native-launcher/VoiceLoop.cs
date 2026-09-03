@@ -360,6 +360,72 @@ internal sealed class VoiceLoop : IDisposable
         await ProcessTurnAsync(wavBytes, wasInterruption);
     }
 
+    // #525: entry point for typed input from the quick-entry popup.
+    // Typing is itself the deliberate trigger -- unlike voice, no wake
+    // word is required, and awake is set unconditionally. If Mana is
+    // actively speaking, this cuts her off and dispatches through the
+    // exact same interruption path (classification, hold/resume) a
+    // spoken barge-in uses, just triggered directly instead of detected
+    // via VAD: mirrors ProcessSpeakingFrame's own audioPlayer.Stop() call,
+    // but steps mode to Processing rather than CapturingInterruption since
+    // there's no audio segment to capture -- the text already arrived
+    // complete. Returns false without dispatching if a turn is already in
+    // flight (Processing) or an audio interruption is already being
+    // captured (CapturingInterruption); submitting again there would race
+    // two turns against the same state, so the caller (the popup) gets a
+    // clear "not accepted right now" instead of this silently corrupting
+    // shared state.
+    public async Task<bool> SubmitTypedCommandAsync(string text)
+    {
+        var trimmed = text.Trim();
+        if (trimmed.Length == 0)
+        {
+            return false;
+        }
+
+        bool wasInterruption;
+        lock (stateLock)
+        {
+            if (mode is ListenMode.Processing or ListenMode.CapturingInterruption)
+            {
+                return false;
+            }
+
+            wasInterruption = mode == ListenMode.Speaking;
+            if (wasInterruption)
+            {
+                audioPlayer.Stop();
+                // ponytail: a typed interruption has no equivalent to a
+                // voice barge-in's multi-second recording window, which is
+                // what actually lets the just-stopped reply's own
+                // HoldIfNothingHeld call (from its await chain's
+                // continuation, deferred to the thread pool by
+                // AudioPlayer's RunContinuationsAsynchronously) finish
+                // before anything reads heldSentences -- ProcessTurnAsync
+                // only reads it once the interruption's own segment
+                // finishes recording, seconds later. Reading it here
+                // instead, right after Stop() with nothing in between to
+                // yield on, would race that continuation and always lose.
+                // So this always discards whatever's in heldSentences (a
+                // stale hold, if any) rather than risk resuming the wrong
+                // thing; held is passed as null below, so
+                // DispatchCommandAsync still classifies the interruption
+                // (amend/correction/etc.), it just never has anything to
+                // resume afterward. Upgrade path if that fidelity gap
+                // matters: track the in-flight SpeakReplyAsync/
+                // ResumeHeldAsync Task on VoiceLoop so a typed
+                // interruption can await its real completion first.
+                heldSentences = null;
+                heldStackDepth = 0;
+            }
+            mode = ListenMode.Processing;
+        }
+
+        awake = true;
+        await DispatchCommandAsync(trimmed, wasInterruption, held: null, nested: false);
+        return true;
+    }
+
     // Transcribes wavBytes and speaks a reply -- the single entry point for
     // both a normal fresh segment (Idle) and a barge-in's interruption
     // segment (CapturingInterruption); by the time an interruption can
@@ -426,6 +492,17 @@ internal sealed class VoiceLoop : IDisposable
             commandText = transcript;
         }
 
+        await DispatchCommandAsync(commandText, wasInterruption, held, nested);
+    }
+
+    // #525: the shared tail of turn processing, once a resolved command
+    // has already cleared the wake-word gate -- shared by ProcessTurnAsync
+    // (a transcribed voice turn) and SubmitTypedCommandAsync (typed input
+    // from the quick-entry popup), since neither the barge-in
+    // classification/hold-resume dispatch below nor the final reply cares
+    // whether commandText came from STT or was typed directly.
+    private async Task DispatchCommandAsync(string commandText, bool wasInterruption, List<string>? held, bool nested)
+    {
         if (string.IsNullOrWhiteSpace(commandText))
         {
             await ReturnToIdleOrResumeHeldAsync(held, nested);
