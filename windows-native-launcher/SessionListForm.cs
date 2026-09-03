@@ -24,6 +24,12 @@ internal sealed class SessionListForm : Form
     private readonly Button newChatButton = new();
     private readonly SettingsPanel settingsPanel;
 
+    // Bolds the active session's row in RefreshAsync -- built once and
+    // reused rather than a fresh Font per refresh, which leaked a GDI
+    // handle every time the list reloaded (session switch/rename/delete/
+    // new-chat) with no matching Dispose.
+    private readonly Font activeSessionFont;
+
     // Mirrors VoiceLoop's own currentSessionId -- null (nothing switched
     // to yet) means node-bot's implicit "default" session, same starting
     // state VoiceLoop itself has.
@@ -34,6 +40,7 @@ internal sealed class SessionListForm : Form
         this.backendClient = backendClient;
         this.voiceLoop = voiceLoop;
         settingsPanel = new SettingsPanel(backendClient);
+        activeSessionFont = new Font(list.Font, FontStyle.Bold);
 
         Text = "Mana";
         Width = 820;
@@ -295,10 +302,19 @@ internal sealed class SessionListForm : Form
             item.SubItems.Add(SessionListFormatter.FormatUpdatedAt(session.UpdatedAt));
             if (session.SessionId == activeSessionId)
             {
-                item.Font = new Font(list.Font, FontStyle.Bold);
+                item.Font = activeSessionFont;
             }
             list.Items.Add(item);
         }
         list.EndUpdate();
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing)
+        {
+            activeSessionFont.Dispose();
+        }
+        base.Dispose(disposing);
     }
 }
