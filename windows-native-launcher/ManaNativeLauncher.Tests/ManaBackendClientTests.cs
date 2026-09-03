@@ -285,4 +285,196 @@ public class ManaBackendClientTests
 
         Assert.Equal("unclassified", category);
     }
+
+    [Fact]
+    public async Task ReplyStreamAsync_OmitsSessionIdWhenNoneIsGiven()
+    {
+        string? body = null;
+        var handler = new FakeHttpMessageHandler(request =>
+        {
+            body = request.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(
+                    "{\"type\":\"final\",\"reply\":\"ok\",\"changed\":false}\n",
+                    Encoding.UTF8,
+                    "application/x-ndjson"),
+            };
+        });
+        var client = new ManaBackendClient(handler);
+
+        await foreach (var _ in client.ReplyStreamAsync("hi"))
+        {
+        }
+
+        Assert.DoesNotContain("sessionId", body);
+    }
+
+    [Fact]
+    public async Task ReplyStreamAsync_IncludesSessionIdWhenGiven()
+    {
+        string? body = null;
+        var handler = new FakeHttpMessageHandler(request =>
+        {
+            body = request.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(
+                    "{\"type\":\"final\",\"reply\":\"ok\",\"changed\":false}\n",
+                    Encoding.UTF8,
+                    "application/x-ndjson"),
+            };
+        });
+        var client = new ManaBackendClient(handler);
+
+        await foreach (var _ in client.ReplyStreamAsync("hi", "abc-123"))
+        {
+        }
+
+        Assert.Contains("\"sessionId\":\"abc-123\"", body);
+    }
+
+    [Fact]
+    public async Task GetSessionsAsync_ParsesTheSessionArray()
+    {
+        var handler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(
+                """{"sessions":[{"sessionId":"s1","name":"Chat about FFXIV","updatedAt":"2026-03-15T12:00:00.000Z"},{"sessionId":"s2","updatedAt":"2026-03-14T12:00:00.000Z"}]}""",
+                Encoding.UTF8,
+                "application/json"),
+        });
+        var client = new ManaBackendClient(handler);
+
+        var sessions = await client.GetSessionsAsync();
+
+        Assert.Equal(2, sessions.Count);
+        Assert.Equal("s1", sessions[0].SessionId);
+        Assert.Equal("Chat about FFXIV", sessions[0].Name);
+        Assert.Equal("s2", sessions[1].SessionId);
+        Assert.Null(sessions[1].Name);
+    }
+
+    [Fact]
+    public async Task GetSessionsAsync_ReturnsEmptyWhenTheSessionsKeyIsMissing()
+    {
+        var handler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent("{}", Encoding.UTF8, "application/json"),
+        });
+        var client = new ManaBackendClient(handler);
+
+        var sessions = await client.GetSessionsAsync();
+
+        Assert.Empty(sessions);
+    }
+
+    [Fact]
+    public async Task RenameSessionAsync_PatchesTheNameAndReturnsTrue()
+    {
+        string? path = null;
+        string? method = null;
+        string? body = null;
+        var handler = new FakeHttpMessageHandler(request =>
+        {
+            path = request.RequestUri!.AbsolutePath;
+            method = request.Method.Method;
+            body = request.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("{\"sessionId\":\"s1\",\"name\":\"New Name\"}", Encoding.UTF8, "application/json"),
+            };
+        });
+        var client = new ManaBackendClient(handler);
+
+        var renamed = await client.RenameSessionAsync("s1", "New Name");
+
+        Assert.True(renamed);
+        Assert.Equal("/sessions/s1", path);
+        Assert.Equal("PATCH", method);
+        Assert.Contains("\"name\":\"New Name\"", body);
+    }
+
+    [Fact]
+    public async Task RenameSessionAsync_ReturnsFalseOn404InsteadOfThrowing()
+    {
+        var handler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.NotFound));
+        var client = new ManaBackendClient(handler);
+
+        var renamed = await client.RenameSessionAsync("missing", "New Name");
+
+        Assert.False(renamed);
+    }
+
+    [Fact]
+    public async Task DeleteSessionAsync_ReturnsTrueOnSuccess()
+    {
+        string? path = null;
+        string? method = null;
+        var handler = new FakeHttpMessageHandler(request =>
+        {
+            path = request.RequestUri!.AbsolutePath;
+            method = request.Method.Method;
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("{\"deleted\":true}", Encoding.UTF8, "application/json"),
+            };
+        });
+        var client = new ManaBackendClient(handler);
+
+        var deleted = await client.DeleteSessionAsync("s1");
+
+        Assert.True(deleted);
+        Assert.Equal("/sessions/s1", path);
+        Assert.Equal("DELETE", method);
+    }
+
+    [Fact]
+    public async Task DeleteSessionAsync_ReturnsFalseOn404InsteadOfThrowing()
+    {
+        var handler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.NotFound));
+        var client = new ManaBackendClient(handler);
+
+        var deleted = await client.DeleteSessionAsync("missing");
+
+        Assert.False(deleted);
+    }
+
+    [Fact]
+    public async Task RenameSessionAsync_ThrowsOnNonSuccessStatusOtherThan404()
+    {
+        var handler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.InternalServerError));
+        var client = new ManaBackendClient(handler);
+
+        await Assert.ThrowsAsync<HttpRequestException>(() => client.RenameSessionAsync("s1", "New Name"));
+    }
+
+    [Fact]
+    public async Task DeleteSessionAsync_ThrowsOnNonSuccessStatusOtherThan404()
+    {
+        var handler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.InternalServerError));
+        var client = new ManaBackendClient(handler);
+
+        await Assert.ThrowsAsync<HttpRequestException>(() => client.DeleteSessionAsync("s1"));
+    }
+
+    [Fact]
+    public async Task ExportSessionAsync_ReturnsTheRawJsonlText()
+    {
+        string? path = null;
+        var handler = new FakeHttpMessageHandler(request =>
+        {
+            path = request.RequestUri!.AbsolutePath;
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("{\"from\":\"human\",\"value\":\"hi\"}\n", Encoding.UTF8, "application/x-ndjson"),
+            };
+        });
+        var client = new ManaBackendClient(handler);
+
+        var jsonl = await client.ExportSessionAsync("s1");
+
+        Assert.Equal("/sessions/s1/export", path);
+        Assert.Equal("{\"from\":\"human\",\"value\":\"hi\"}\n", jsonl);
+    }
 }
