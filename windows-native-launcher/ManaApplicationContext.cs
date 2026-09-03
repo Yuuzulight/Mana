@@ -33,8 +33,12 @@ internal sealed class ManaApplicationContext : ApplicationContext
         // model is loaded (LipSyncDriver still runs, just nothing reads
         // its output).
         audioPlayer = new AudioPlayer(avatarOverlay.LipSyncDriver.OnSamplesPlayed);
-        voiceLoop = new VoiceLoop(sileroVad, backendClient, audioPlayer, avatarOverlay);
-        sessionListForm = new SessionListForm(backendClient, voiceLoop);
+        // #521: constructed before voiceLoop so it can be passed in as
+        // VoiceLoop's IChatLog -- SessionListForm only needs the control
+        // itself (to embed it), not the other way around.
+        var chatLog = new ChatLogPanel();
+        voiceLoop = new VoiceLoop(sileroVad, backendClient, audioPlayer, avatarOverlay, chatLog);
+        sessionListForm = new SessionListForm(backendClient, voiceLoop, chatLog);
 
         trayIcon = new NotifyIcon
         {
