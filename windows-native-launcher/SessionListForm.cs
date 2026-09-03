@@ -46,11 +46,13 @@ internal sealed class SessionListForm : Form
         Width = 820;
         Height = 560;
         StartPosition = FormStartPosition.CenterScreen;
+        DarkTheme.ApplyForm(this);
 
         newChatButton.Text = "New Chat";
         newChatButton.Dock = DockStyle.Top;
         newChatButton.Height = 32;
         newChatButton.Click += (_, _) => StartNewChat();
+        DarkTheme.ApplyButton(newChatButton);
 
         list.Dock = DockStyle.Fill;
         list.View = View.Details;
@@ -79,8 +81,9 @@ internal sealed class SessionListForm : Form
         contextMenu.Items.Add("Delete...", null, async (_, _) => await DeleteSelectedAsync());
         contextMenu.Items.Add("Export...", null, async (_, _) => await ExportSelectedAsync());
         list.ContextMenuStrip = contextMenu;
+        DarkTheme.ApplyListView(list);
 
-        var sessionPanel = new Panel { Dock = DockStyle.Fill };
+        var sessionPanel = new Panel { Dock = DockStyle.Fill, BackColor = DarkTheme.Background };
         sessionPanel.Controls.Add(list);
         sessionPanel.Controls.Add(newChatButton);
 
@@ -89,11 +92,19 @@ internal sealed class SessionListForm : Form
             Dock = DockStyle.Fill,
             Orientation = Orientation.Vertical,
             SplitterDistance = 260,
+            // Splitter itself painted in the border color -- SplitContainer
+            // has no dedicated "splitter color" property, only BackColor,
+            // which paints both the splitter strip and (before the panels
+            // cover it) their background, so setting Panel1/Panel2 below
+            // is what keeps the actual content areas from picking it up.
+            BackColor = DarkTheme.Border,
         };
+        split.Panel1.BackColor = DarkTheme.Background;
+        split.Panel2.BackColor = DarkTheme.Background;
         split.Panel1.Controls.Add(sessionPanel);
         split.Panel2.Controls.Add(chatLog);
 
-        var chatPage = new TabPage("Chat");
+        var chatPage = new TabPage("Chat") { BackColor = DarkTheme.Background };
         chatPage.Controls.Add(split);
 
         // #529: shares this window's nav rather than being its own
@@ -102,10 +113,11 @@ internal sealed class SessionListForm : Form
         // session-list refresh) -- settings data changes far less often
         // than the session list does, and there's no reason to poll it
         // on a timer nobody's looking at.
-        var settingsPage = new TabPage("Settings");
+        var settingsPage = new TabPage("Settings") { BackColor = DarkTheme.Background };
         settingsPage.Controls.Add(settingsPanel);
 
         var tabs = new TabControl { Dock = DockStyle.Fill };
+        DarkTheme.ApplyTabControl(tabs);
         tabs.TabPages.Add(chatPage);
         tabs.TabPages.Add(settingsPage);
         tabs.Selected += async (_, e) =>
@@ -303,6 +315,7 @@ internal sealed class SessionListForm : Form
             if (session.SessionId == activeSessionId)
             {
                 item.Font = activeSessionFont;
+                item.ForeColor = DarkTheme.Accent;
             }
             list.Items.Add(item);
         }

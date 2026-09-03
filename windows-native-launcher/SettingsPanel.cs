@@ -28,12 +28,19 @@ internal sealed class SettingsPanel : UserControl
     {
         this.backendClient = backendClient;
         Dock = DockStyle.Fill;
+        BackColor = DarkTheme.Background;
+        ForeColor = DarkTheme.Text;
 
         var tabs = new TabControl { Dock = DockStyle.Fill };
+        DarkTheme.ApplyTabControl(tabs);
         tabs.TabPages.Add(BuildPluginsTab());
         tabs.TabPages.Add(BuildMemoryFactsTab());
         tabs.TabPages.Add(BuildSkillsTab());
         tabs.TabPages.Add(BuildApprovalsTab());
+        foreach (TabPage page in tabs.TabPages)
+        {
+            page.BackColor = DarkTheme.Background;
+        }
         Controls.Add(tabs);
     }
 
@@ -66,6 +73,7 @@ internal sealed class SettingsPanel : UserControl
         pluginsList.Columns.Add("Plugin", 220);
         pluginsList.Columns.Add("Description", 300);
         pluginsList.ItemChecked += OnPluginChecked;
+        DarkTheme.ApplyListView(pluginsList);
         return new TabPage("Plugins") { Controls = { pluginsList } };
     }
 
@@ -137,8 +145,10 @@ internal sealed class SettingsPanel : UserControl
         factsList.Columns.Add("Key", 150);
         factsList.Columns.Add("Fact", 300);
         factsList.Columns.Add("Status", 80);
+        DarkTheme.ApplyListView(factsList);
 
         var archiveButton = new Button { Text = "Archive", Dock = DockStyle.Bottom, Height = 28 };
+        DarkTheme.ApplyButton(archiveButton);
         archiveButton.Click += async (_, _) =>
         {
             // Guards against a rapid double-click firing two overlapping
@@ -225,8 +235,10 @@ internal sealed class SettingsPanel : UserControl
         skillsList.Columns.Add("Skill", 150);
         skillsList.Columns.Add("Description", 260);
         skillsList.Columns.Add("Status", 80);
+        DarkTheme.ApplyListView(skillsList);
 
         var deleteButton = new Button { Text = "Delete", Dock = DockStyle.Bottom, Height = 28 };
+        DarkTheme.ApplyButton(deleteButton);
         deleteButton.Click += async (_, _) => await DeleteSelectedSkillAsync();
 
         var page = new TabPage("Skills");
@@ -306,11 +318,15 @@ internal sealed class SettingsPanel : UserControl
         approvalsList.FullRowSelect = true;
         approvalsList.Columns.Add("Type", 120);
         approvalsList.Columns.Add("Summary", 300);
+        DarkTheme.ApplyListView(approvalsList);
 
-        var buttonRow = new FlowLayoutPanel { Dock = DockStyle.Bottom, Height = 32, FlowDirection = FlowDirection.LeftToRight };
+        var buttonRow = new FlowLayoutPanel { Dock = DockStyle.Bottom, Height = 32, FlowDirection = FlowDirection.LeftToRight, BackColor = DarkTheme.Background };
         var allowButton = new Button { Text = "Allow once" };
         var alwaysAllowButton = new Button { Text = "Always allow" };
         var denyButton = new Button { Text = "Deny" };
+        DarkTheme.ApplyButton(allowButton);
+        DarkTheme.ApplyButton(alwaysAllowButton);
+        DarkTheme.ApplyButton(denyButton);
 
         // All three share one guard -- a decision resolves the request
         // server-side, so a second click (this button or a different
