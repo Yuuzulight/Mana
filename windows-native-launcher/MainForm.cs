@@ -83,7 +83,10 @@ internal sealed class MainForm : Form
         Controls.Add(sidebar);
         Controls.Add(chatArea);
 
-        ShowTool("artifacts");
+        // The tool panel starts closed -- ToggleTool calls ShowTool(tool)
+        // fresh the first time a rail button opens it, so there's nothing
+        // to prime here.
+        toolPanel.Visible = false;
 
         // messageScroll has no real ClientSize until it's actually
         // parented and laid out, so the two seed bubbles are appended
