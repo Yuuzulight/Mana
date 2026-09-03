@@ -23,19 +23,23 @@ internal static class MermaidRenderer
         g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
         g.TranslateTransform(Margin, Margin);
 
-        using var edgePen = new Pen(Color.DimGray, 1.5f);
+        // Dark-theme colors (see DarkTheme.cs) -- the original DimGray/
+        // SteelBlue/pale-blue-fill/black-text set was tuned for the white
+        // canvas ArtifactViewerForm used to paint this onto.
+        using var edgePen = new Pen(DarkTheme.Muted, 1.5f);
         using var edgeLabelFont = new Font("Segoe UI", 8F);
-        using var edgeLabelBrush = new SolidBrush(Color.DimGray);
+        using var edgeLabelBrush = new SolidBrush(DarkTheme.Muted);
+        using var edgeLabelBackBrush = new SolidBrush(DarkTheme.Background);
         using var arrowheadBrush = new SolidBrush(edgePen.Color);
         foreach (var edge in layout.Edges)
         {
-            DrawEdge(g, edge, edgePen, arrowheadBrush, edgeLabelFont, edgeLabelBrush);
+            DrawEdge(g, edge, edgePen, arrowheadBrush, edgeLabelFont, edgeLabelBrush, edgeLabelBackBrush);
         }
 
         using var nodeFont = new Font("Segoe UI", 9F);
-        using var nodeBorderPen = new Pen(Color.SteelBlue, 1.5f);
-        using var nodeFillBrush = new SolidBrush(Color.FromArgb(235, 244, 255));
-        using var nodeTextBrush = new SolidBrush(Color.Black);
+        using var nodeBorderPen = new Pen(DarkTheme.Accent, 1.5f);
+        using var nodeFillBrush = new SolidBrush(Color.FromArgb(0x33, 0x2d, 0x52));
+        using var nodeTextBrush = new SolidBrush(DarkTheme.Text);
         using var nodeTextFormat = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
         foreach (var node in layout.Nodes)
         {
@@ -43,7 +47,7 @@ internal static class MermaidRenderer
         }
     }
 
-    private static void DrawEdge(Graphics g, PositionedEdge edge, Pen pen, Brush arrowheadBrush, Font labelFont, Brush labelBrush)
+    private static void DrawEdge(Graphics g, PositionedEdge edge, Pen pen, Brush arrowheadBrush, Font labelFont, Brush labelBrush, Brush labelBackBrush)
     {
         var from = new PointF(edge.FromX, edge.FromY);
         var to = new PointF(edge.ToX, edge.ToY);
@@ -54,7 +58,7 @@ internal static class MermaidRenderer
         {
             var midpoint = new PointF((from.X + to.X) / 2f, (from.Y + to.Y) / 2f);
             var size = g.MeasureString(edge.Label, labelFont);
-            g.FillRectangle(Brushes.White, midpoint.X - size.Width / 2f, midpoint.Y - size.Height / 2f, size.Width, size.Height);
+            g.FillRectangle(labelBackBrush, midpoint.X - size.Width / 2f, midpoint.Y - size.Height / 2f, size.Width, size.Height);
             g.DrawString(edge.Label, labelFont, labelBrush, midpoint.X - size.Width / 2f, midpoint.Y - size.Height / 2f);
         }
     }

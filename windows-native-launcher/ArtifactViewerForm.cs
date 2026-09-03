@@ -41,16 +41,20 @@ internal sealed class ArtifactViewerForm : Form, IArtifactSink
         Width = 720;
         Height = 560;
         StartPosition = FormStartPosition.CenterScreen;
+        DarkTheme.ApplyForm(this);
 
-        var navRow = new TableLayoutPanel { Dock = DockStyle.Top, Height = 32, ColumnCount = 3 };
+        var navRow = new TableLayoutPanel { Dock = DockStyle.Top, Height = 32, ColumnCount = 3, BackColor = DarkTheme.Background };
         prevButton.Text = "< Prev";
         prevButton.Dock = DockStyle.Fill;
         prevButton.Click += (_, _) => Navigate(-1);
+        DarkTheme.ApplyButton(prevButton);
         nextButton.Text = "Next >";
         nextButton.Dock = DockStyle.Fill;
         nextButton.Click += (_, _) => Navigate(1);
+        DarkTheme.ApplyButton(nextButton);
         titleLabel.Dock = DockStyle.Fill;
         titleLabel.TextAlign = ContentAlignment.MiddleCenter;
+        titleLabel.ForeColor = DarkTheme.Text;
         navRow.Controls.Add(prevButton, 0, 0);
         navRow.Controls.Add(titleLabel, 1, 0);
         navRow.Controls.Add(nextButton, 2, 0);
@@ -64,10 +68,13 @@ internal sealed class ArtifactViewerForm : Form, IArtifactSink
         textBox.WordWrap = false;
         textBox.Font = new Font("Consolas", 10F);
         textBox.Dock = DockStyle.Fill;
+        textBox.BackColor = DarkTheme.Background;
+        textBox.ForeColor = DarkTheme.Text;
+        textBox.BorderStyle = BorderStyle.None;
 
         diagramPanel.Dock = DockStyle.Fill;
         diagramPanel.AutoScroll = true;
-        diagramPanel.BackColor = Color.White;
+        diagramPanel.BackColor = DarkTheme.Background;
         diagramPanel.Paint += OnDiagramPaint;
 
         Controls.Add(diagramPanel);
@@ -223,6 +230,9 @@ internal sealed class ArtifactViewerForm : Form, IArtifactSink
         {
             diagramPanel.AutoScrollMinSize = scrollSize;
         }
-        g.DrawString(text, textBox.Font, Brushes.Black, 10, 10);
+        // DarkTheme.Text, not Brushes.Black -- diagramPanel's own
+        // background is DarkTheme.Background now, not white.
+        using var textBrush = new SolidBrush(DarkTheme.Text);
+        g.DrawString(text, textBox.Font, textBrush, 10, 10);
     }
 }
