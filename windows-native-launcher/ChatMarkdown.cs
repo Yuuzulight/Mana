@@ -98,7 +98,7 @@ internal static class ChatMarkdown
         // otherwise inherits whatever the immediately-preceding run left
         // it as, so a code span's color would bleed into the next plain
         // run if this were only set in the `code` branch.
-        box.SelectionColor = code ? Color.DarkSlateGray : box.ForeColor;
+        box.SelectionColor = code ? DarkTheme.CodeText : box.ForeColor;
 
         box.SelectionLength = 0;
     }
