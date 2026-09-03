@@ -39,6 +39,14 @@ internal sealed class AvatarOverlayForm : Form
     // anything about avatar rendering.
     public LipSyncDriver LipSyncDriver { get; } = new();
 
+    // #538's own sidebar had a static "Avatar: idle" card; SessionListForm
+    // ports that as a real, live-updating one instead, reading this rather
+    // than guessing at state from the outside. Only ever written inside
+    // SetState after its own marshal-to-UI-thread guard, so (like
+    // activeExpression above) no lock is needed.
+    public AvatarState CurrentState { get; private set; } = AvatarState.Idle;
+    public event Action<AvatarState>? StateChanged;
+
     private readonly CubismModel? cubismModel;
     private readonly CubismRenderer? cubismRenderer;
     private readonly System.Windows.Forms.Timer? renderTimer;
@@ -273,6 +281,12 @@ internal sealed class AvatarOverlayForm : Form
             // catch up, and drop any samples left over from the clip that
             // just ended so they can't bleed into the next one.
             LipSyncDriver.Reset();
+        }
+
+        if (state != CurrentState)
+        {
+            CurrentState = state;
+            StateChanged?.Invoke(state);
         }
 
         // #479 sub-project 4: when a real Cubism model is loaded, the
