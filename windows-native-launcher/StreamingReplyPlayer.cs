@@ -30,23 +30,26 @@ internal sealed class StreamingReplyPlayer
     // Reply is null when Interrupted is true -- a barge-in cut off
     // playback before the reply finished streaming/speaking, so there's no
     // meaningful "true final reply" to report (the caller's already moved
-    // on to handling the interruption instead). Otherwise, by the time
-    // this returns, every already-streamed sentence has finished playing
-    // -- there's no PlaybackCompleted continuation left to wait on
-    // afterward, unlike a plain AudioPlayer.Play() call.
+    // on to handling the interruption instead). Pending (#513) is then the
+    // sentences that had already streamed but hadn't started playing yet
+    // -- the caller can hold and later replay them via
+    // ReplaySentencesAsync; it's empty whenever Interrupted is false.
+    // Otherwise, by the time this returns, every already-streamed sentence
+    // has finished playing -- there's no PlaybackCompleted continuation
+    // left to wait on afterward, unlike a plain AudioPlayer.Play() call.
     //
     // Changed == true covers both "nothing streamed" (tool-calling/best-of-
     // N/vision path never calls onSentence server-side) and "a regeneration
     // pass rewrote the reply after streaming already started" -- either way
     // the caller must fall back to synthesizing and playing Reply fresh.
-    public async Task<(string? Reply, bool Changed, string? Expression, bool Interrupted)> StreamReplyAndPlayAsync(
+    public async Task<(string? Reply, bool Changed, string? Expression, bool Interrupted, IReadOnlyList<string> Pending)> StreamReplyAndPlayAsync(
         string commandText)
     {
         var sentences = Channel.CreateUnbounded<string>();
         ReplyStreamEvent? finalEvent = null;
 
         var readTask = ReadEventsAsync(commandText, sentences.Writer, e => finalEvent = e);
-        var interrupted = await PlayStreamedSentencesAsync(sentences.Reader).ConfigureAwait(false);
+        var (interrupted, pending) = await PlayStreamedSentencesAsync(sentences.Reader).ConfigureAwait(false);
 
         if (interrupted)
         {
@@ -60,7 +63,7 @@ internal sealed class StreamingReplyPlayer
             _ = readTask.ContinueWith(
                 t => _ = t.Exception,
                 TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously);
-            return (null, false, null, true);
+            return (null, false, null, true, pending);
         }
 
         await readTask.ConfigureAwait(false);
@@ -74,7 +77,25 @@ internal sealed class StreamingReplyPlayer
             throw new InvalidOperationException(finalEvent.Error);
         }
 
-        return (finalEvent.Reply ?? string.Empty, finalEvent.Changed, finalEvent.Expression, false);
+        return (finalEvent.Reply ?? string.Empty, finalEvent.Changed, finalEvent.Expression, false, pending);
+    }
+
+    // #513: re-speaks sentences a barge-in cut off before they played
+    // (StreamReplyAndPlayAsync's Pending), through the exact same one-ahead
+    // synth/play pipeline -- not a second playback primitive, just a second
+    // entry point into it, fed from a fixed list instead of the NDJSON
+    // stream. Held state is text only; this re-synthesizes rather than
+    // replaying cached audio. Returns the same Interrupted/Pending pair, so
+    // a second interruption mid-resume can be held again by the caller.
+    public Task<(bool Interrupted, IReadOnlyList<string> Pending)> ReplaySentencesAsync(IReadOnlyList<string> sentences)
+    {
+        var channel = Channel.CreateUnbounded<string>();
+        foreach (var sentence in sentences)
+        {
+            channel.Writer.TryWrite(sentence);
+        }
+        channel.Writer.Complete();
+        return PlayStreamedSentencesAsync(channel.Reader);
     }
 
     private async Task ReadEventsAsync(string commandText, ChannelWriter<string> writer, Action<ReplyStreamEvent> onFinal)
@@ -102,13 +123,39 @@ internal sealed class StreamingReplyPlayer
         }
     }
 
-    // Returns true if playback was cut off by an interruption (#479
-    // sub-project 3) before every streamed sentence had a chance to play.
-    private async Task<bool> PlayStreamedSentencesAsync(ChannelReader<string> sentences)
+    // Interrupted is true if playback was cut off by an interruption (#479
+    // sub-project 3) before every streamed sentence had a chance to play;
+    // Pending is then what hadn't started playing yet, in order (#513).
+    private async Task<(bool Interrupted, IReadOnlyList<string> Pending)> PlayStreamedSentencesAsync(ChannelReader<string> sentences)
     {
-        var currentTask = TakeAndSynthesizeNextAsync(sentences);
+        // The one-ahead lookahead pulls its sentence out of the channel on
+        // its own (thread-pool) continuation. At interrupt time, Pending
+        // has to be "the lookahead's sentence (if it took one) + whatever
+        // is still in the channel" with no gap between the two: a
+        // sentence must never be already out of the channel but not yet
+        // recorded as the lookahead. So the take itself (TryRead + record)
+        // happens under this lock, and so does the snapshot. Never held
+        // across an await.
+        var lookaheadLock = new object();
+        string? lookaheadText = null;
+
+        string? TakeNext()
+        {
+            lock (lookaheadLock)
+            {
+                if (!sentences.TryRead(out var text))
+                {
+                    return null;
+                }
+                lookaheadText = text;
+                return text;
+            }
+        }
+
+        var currentTask = TakeAndSynthesizeNextAsync(sentences, TakeNext);
         var talking = false;
         var interrupted = false;
+        var pending = new List<string>();
         try
         {
             while (true)
@@ -117,6 +164,12 @@ internal sealed class StreamingReplyPlayer
                 if (audio is null)
                 {
                     break;
+                }
+                // The sentence that was the lookahead is now the one about
+                // to play -- it's no longer pending.
+                lock (lookaheadLock)
+                {
+                    lookaheadText = null;
                 }
                 if (!talking)
                 {
@@ -129,11 +182,26 @@ internal sealed class StreamingReplyPlayer
                 // Abandoned unawaited if this chunk gets interrupted below --
                 // matches the acceptable-risk call already made for this same
                 // kind of dangling in-flight synth call elsewhere in this file.
-                var nextTask = TakeAndSynthesizeNextAsync(sentences);
+                var nextTask = TakeAndSynthesizeNextAsync(sentences, TakeNext);
                 var completedNaturally = await playAsync(audio).ConfigureAwait(false);
                 if (!completedNaturally)
                 {
                     interrupted = true;
+                    lock (lookaheadLock)
+                    {
+                        if (lookaheadText is not null)
+                        {
+                            pending.Add(lookaheadText);
+                        }
+                        // Anything the server had streamed by now but the
+                        // lookahead hadn't reached yet. Sentences it streams
+                        // after this instant aren't held -- same snapshot-at-
+                        // the-cut semantics as windows-launcher's peekPending().
+                        while (sentences.TryRead(out var text))
+                        {
+                            pending.Add(text);
+                        }
+                    }
                     break;
                 }
                 currentTask = nextTask;
@@ -151,17 +219,18 @@ internal sealed class StreamingReplyPlayer
                 setTalking(false);
             }
         }
-        return interrupted;
+        return (interrupted, pending);
     }
 
-    private async Task<byte[]?> TakeAndSynthesizeNextAsync(ChannelReader<string> sentences)
+    private async Task<byte[]?> TakeAndSynthesizeNextAsync(ChannelReader<string> sentences, Func<string?> takeNext)
     {
         if (!await sentences.WaitToReadAsync().ConfigureAwait(false))
         {
             return null;
         }
-        return sentences.TryRead(out var text)
-            ? await backendClient.SynthesizeAsync(text).ConfigureAwait(false)
-            : null;
+        var text = takeNext();
+        return text is null
+            ? null
+            : await backendClient.SynthesizeAsync(text).ConfigureAwait(false);
     }
 }

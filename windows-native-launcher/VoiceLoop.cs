@@ -64,8 +64,8 @@ internal sealed class VoiceLoop : IDisposable
     private const long FrameMs = SileroVadRunner.FrameSamples * 1000 / SileroVadRunner.SampleRate;
 
     // Guards frameBuffer, segmentSamples, hasHeardSpeechInSegment,
-    // segmentElapsedMs, msSinceLastSpeech, mode, bargeInHeldMs, and the
-    // vad instance itself (SileroVadRunner mutates its own internal state
+    // segmentElapsedMs, msSinceLastSpeech, mode, bargeInHeldMs,
+    // heldSentences, heldStackDepth, and the vad instance itself (SileroVadRunner mutates its own internal state
     // per ProcessFrame/Reset call, so it isn't thread-safe either).
     // OnDataAvailable fires on NAudio's WASAPI capture thread; every other
     // entry point that touches this state (ReturnToIdle, OnTalkingStateChanged,
@@ -96,6 +96,16 @@ internal sealed class VoiceLoop : IDisposable
     private long segmentElapsedMs;
     private long msSinceLastSpeech;
     private long bargeInHeldMs; // only meaningful while mode == Speaking
+
+    // #513: the not-yet-played sentences of a reply a barge-in cut off,
+    // kept so a backchannel/unclassified interruption (or the end of an
+    // inserted new_question answer) can resume them from the cut point.
+    // Null when nothing is held. heldStackDepth is 1 only while an
+    // inserted new_question answer is playing on top of a hold -- a
+    // second interruption then discards the outer hold outright instead
+    // of stacking (windows-launcher's own depth-1 cap).
+    private List<string>? heldSentences;
+    private int heldStackDepth;
 
     public VoiceLoop(
         SileroVadRunner vad,
@@ -147,6 +157,18 @@ internal sealed class VoiceLoop : IDisposable
 
     public void Stop()
     {
+        // #513: a held reply is only ever meaningful while this instance
+        // keeps running and can resume it later -- clear it on Stop() so
+        // a subsequent Start() never resumes a reply from a previous
+        // listening session. Matches windows-launcher's own
+        // stopListening()/interrupt-speech handlers, both of which null
+        // heldReply.
+        lock (stateLock)
+        {
+            heldSentences = null;
+            heldStackDepth = 0;
+        }
+
         if (capture is null)
         {
             return;
@@ -348,6 +370,26 @@ internal sealed class VoiceLoop : IDisposable
     // the interruption itself.
     private async Task ProcessTurnAsync(byte[] wavBytes, bool wasInterruption)
     {
+        // #513: consumed here, before transcription can fail/come back
+        // empty -- a false barge-in trigger (cough, TV noise, a word that
+        // didn't actually mean anything) must still resume whatever
+        // reply it cut off rather than silently dropping it. Whatever
+        // happens from here on, this interruption consumes the hold: it's
+        // either resumed on an early exit below, resumed after dispatch,
+        // re-held for a new_question, or discarded (nested).
+        List<string>? held = null;
+        var nested = false;
+        if (wasInterruption)
+        {
+            lock (stateLock)
+            {
+                held = heldSentences;
+                nested = held is not null && heldStackDepth >= 1;
+                heldSentences = null;
+                heldStackDepth = 0;
+            }
+        }
+
         string transcript;
         try
         {
@@ -356,13 +398,13 @@ internal sealed class VoiceLoop : IDisposable
         catch (Exception ex)
         {
             Console.WriteLine($"VoiceLoop: transcription failed, resuming listening. {ex.Message}");
-            ReturnToIdle();
+            await ReturnToIdleOrResumeHeldAsync(held, nested);
             return;
         }
 
         if (string.IsNullOrWhiteSpace(transcript))
         {
-            ReturnToIdle();
+            await ReturnToIdleOrResumeHeldAsync(held, nested);
             return;
         }
 
@@ -372,7 +414,7 @@ internal sealed class VoiceLoop : IDisposable
             var command = WakeWordMatcher.ExtractWakeCommand(transcript);
             if (command is null)
             {
-                ReturnToIdle();
+                await ReturnToIdleOrResumeHeldAsync(held, nested);
                 return;
             }
 
@@ -386,30 +428,114 @@ internal sealed class VoiceLoop : IDisposable
 
         if (string.IsNullOrWhiteSpace(commandText))
         {
-            ReturnToIdle();
+            await ReturnToIdleOrResumeHeldAsync(held, nested);
             return;
         }
 
         if (wasInterruption)
         {
-            // #479 sub-project 3: classifies what the user just interrupted
-            // Mana with. Only "amend" changes anything here -- the transcript
-            // is wrapped so the model steers using the reply it was already
-            // in the middle of (still in session history from before this
-            // barge-in), rather than treating it as a standalone new
-            // question. NOTE: no parentheses in the wrapper -- matches
-            // windows-launcher/renderer/renderer.js's own note that
-            // server-side transcript cleanup strips parenthesized text,
-            // which would silently delete a "(...)"-wrapped prefix before
-            // the model ever sees it.
-            var category = await backendClient.ClassifyBargeInAsync(commandText);
-            if (category == "amend")
+            if (nested)
             {
-                commandText = $"Amending what you just said: {commandText}";
+                // #513: a second interruption arrived while an inserted
+                // new_question answer was playing on top of a hold -- per
+                // the depth-1 cap, the outer hold is discarded outright
+                // (not stacked) and this becomes a fresh top-level turn, no
+                // classification needed since there's nothing left to
+                // resume/discard against. Mirrors windows-launcher's
+                // handleBargeInTrigger wasNested branch.
+                await SpeakReplyAsync(commandText);
+                return;
+            }
+
+            // #479 sub-project 3: classifies what the user just interrupted
+            // Mana with. "amend" wraps the transcript so the model steers
+            // using the reply it was already in the middle of (still in
+            // session history from before this barge-in), rather than
+            // treating it as a standalone new question. NOTE: no
+            // parentheses in the wrapper -- matches windows-launcher/
+            // renderer/renderer.js's own note that server-side transcript
+            // cleanup strips parenthesized text, which would silently
+            // delete a "(...)"-wrapped prefix before the model ever sees it.
+            //
+            // #513: with sentences held from the cut-off reply, the
+            // category also decides their fate, same dispatch as
+            // windows-launcher's handleBargeInInterruption -- amend/
+            // correction discard them (the new reply replaces what was
+            // being said, it doesn't supplement it); new_question answers
+            // the question first, then resumes them; backchannel/
+            // unclassified ("mhm", "okay") just resumes them, the
+            // transcript itself isn't sent to the model at all. With
+            // nothing held (she was on her last sentence), every category
+            // simply becomes a fresh turn, as before #513.
+            var category = await backendClient.ClassifyBargeInAsync(commandText);
+            switch (category)
+            {
+                case "amend":
+                    commandText = $"Amending what you just said: {commandText}";
+                    break;
+
+                case "correction":
+                    break;
+
+                case "new_question":
+                    if (held is not null)
+                    {
+                        lock (stateLock)
+                        {
+                            heldSentences = held;
+                            heldStackDepth = 1;
+                        }
+                        // SpeakReplyAsync's own return value -- not probing
+                        // mode afterward -- says whether the inserted
+                        // answer genuinely finished playing on its own. A
+                        // nested interruption during it (or the answer
+                        // simply failing) leaves the hold for that
+                        // interruption's own ProcessTurnAsync to
+                        // discard/consume (the `nested` branch above);
+                        // only clear it and resume when it truly completed.
+                        var answerCompleted = await SpeakReplyAsync(commandText);
+                        if (answerCompleted)
+                        {
+                            lock (stateLock)
+                            {
+                                heldSentences = null;
+                                heldStackDepth = 0;
+                            }
+                            await ResumeHeldAsync(held);
+                        }
+                        return;
+                    }
+                    break;
+
+                default:
+                    if (held is not null)
+                    {
+                        await ResumeHeldAsync(held);
+                        return;
+                    }
+                    break;
             }
         }
 
         await SpeakReplyAsync(commandText);
+    }
+
+    // #513: the early-exit counterpart to the dispatch at the bottom of
+    // ProcessTurnAsync -- a failed/empty transcript from what turned out
+    // to be a false barge-in trigger must still resume whatever reply it
+    // cut off, not silently drop it. `nested` (an interruption of an
+    // inserted new_question answer) still discards the outer hold, same
+    // as the real dispatch's own nested branch.
+    private async Task ReturnToIdleOrResumeHeldAsync(List<string>? held, bool nested)
+    {
+        if (held is not null && !nested)
+        {
+            await ResumeHeldAsync(held);
+        }
+        else
+        {
+            ReturnToIdle();
+        }
     }
 
     // Starts speaking commandText's reply and owns every mode transition
@@ -421,25 +547,43 @@ internal sealed class VoiceLoop : IDisposable
     // barge-in cut it off -- ProcessSpeakingFrame made that transition on
     // the capture thread; this method just has to recognize it happened
     // and not stomp on it).
-    private async Task SpeakReplyAsync(string commandText)
+    // Returns true if the reply finished playing naturally (safe for a
+    // caller to resume a held reply afterward -- #513's new_question path),
+    // false if it was interrupted or failed for any reason. A failed
+    // answer deliberately discards whatever was held rather than resuming
+    // it (matches windows-launcher's handleBargeInTrigger, whose own catch
+    // block nulls heldReply on any capture/transcribe/classify failure) --
+    // failure and interruption are NOT distinguished by this return value;
+    // both mean "don't resume".
+    private async Task<bool> SpeakReplyAsync(string commandText)
     {
         string? reply;
         bool changed;
         bool interrupted;
+        IReadOnlyList<string> pending;
         try
         {
-            (reply, changed, _, interrupted) = await streamingReplyPlayer.StreamReplyAndPlayAsync(commandText);
+            (reply, changed, _, interrupted, pending) = await streamingReplyPlayer.StreamReplyAndPlayAsync(commandText);
         }
         catch (Exception ex)
         {
             Console.WriteLine($"VoiceLoop: reply/stream failed, resuming listening. {ex.Message}");
             ReturnToIdle();
-            return;
+            return false;
         }
 
         if (interrupted)
         {
-            return; // mode already CapturingInterruption; nothing further to do here
+            // Mode is already CapturingInterruption (set by
+            // ProcessSpeakingFrame on the capture thread). #513: hold what
+            // hadn't played yet so ProcessTurnAsync can resume it once the
+            // interruption is classified -- unless a hold already exists,
+            // which means THIS was an inserted new_question answer being
+            // interrupted on top of it (heldStackDepth 1); that nested case
+            // leaves the outer hold for ProcessTurnAsync to discard, rather
+            // than replacing it with the inserted answer's leftovers.
+            HoldIfNothingHeld(pending);
+            return false;
         }
 
         if (!changed)
@@ -447,7 +591,7 @@ internal sealed class VoiceLoop : IDisposable
             // Every streamed sentence finished playing naturally -- resume
             // listening immediately.
             ReturnToIdle();
-            return;
+            return true;
         }
 
         // Nothing streamed (tool-calling/best-of-N/vision path) or a
@@ -466,7 +610,7 @@ internal sealed class VoiceLoop : IDisposable
         {
             Console.WriteLine($"VoiceLoop: synthesis failed, resuming listening. {ex.Message}");
             ReturnToIdle();
-            return;
+            return false;
         }
 
         // Only reachable here with the FULL final reply text already known
@@ -486,17 +630,19 @@ internal sealed class VoiceLoop : IDisposable
             Console.WriteLine($"VoiceLoop: playback failed to start, resuming listening. {ex.Message}");
             OnTalkingStateChanged(false);
             ReturnToIdle();
-            return;
+            return false;
         }
 
         OnTalkingStateChanged(false);
         if (completedNaturally)
         {
             ReturnToIdle();
+            return true;
         }
         // else: interrupted -- mode already CapturingInterruption (set by
         // ProcessSpeakingFrame on the capture thread before PlayAsync's
         // Task resolved), nothing further to do here.
+        return false;
     }
 
     // Called by StreamingReplyPlayer exactly when the first chunk of a
@@ -550,6 +696,76 @@ internal sealed class VoiceLoop : IDisposable
         "disgusted" => AvatarState.Disgusted,
         _ => AvatarState.Talking,
     };
+
+    // #513: records a cut-off reply's unplayed sentences as the hold --
+    // only if nothing is already held. A hold already existing here means
+    // an inserted new_question answer (heldStackDepth 1) is what just got
+    // interrupted; that nested case must leave the outer hold untouched
+    // for ProcessTurnAsync's depth-cap branch to discard. An empty
+    // `pending` (she was already on her last sentence) holds nothing --
+    // there's nothing to resume, so the interruption is just a fresh turn.
+    private void HoldIfNothingHeld(IReadOnlyList<string> pending)
+    {
+        if (pending.Count == 0)
+        {
+            return;
+        }
+        lock (stateLock)
+        {
+            if (heldSentences is null)
+            {
+                heldSentences = new List<string>(pending);
+                heldStackDepth = 0;
+            }
+        }
+    }
+
+    // #513: re-speaks a held reply's remaining sentences from the cut
+    // point. Owns its mode transitions the same way SpeakReplyAsync does:
+    // Speaking is entered by OnTalkingStateChanged when the first chunk
+    // actually plays, and this ends either back at Idle (finished
+    // naturally) or leaves CapturingInterruption alone (a second barge-in
+    // cut the resume off -- its own leftovers get held again, so a resume
+    // can itself be resumed).
+    private async Task ResumeHeldAsync(IReadOnlyList<string> held)
+    {
+        lock (stateLock)
+        {
+            // The new_question path reaches here right after the inserted
+            // answer's SpeakReplyAsync returned to Idle -- listening was
+            // live for the one synth round-trip until the first resumed
+            // chunk plays. Step back to Processing now and drop whatever
+            // partial segment that window may have started, so it can't
+            // linger as a stale prefix on the next real utterance.
+            mode = ListenMode.Processing;
+            segmentSamples.Clear();
+            hasHeardSpeechInSegment = false;
+            segmentElapsedMs = 0;
+            msSinceLastSpeech = 0;
+            vad.Reset();
+        }
+
+        bool interrupted;
+        IReadOnlyList<string> pending;
+        try
+        {
+            (interrupted, pending) = await streamingReplyPlayer.ReplaySentencesAsync(held);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"VoiceLoop: resuming the held reply failed, resuming listening. {ex.Message}");
+            ReturnToIdle();
+            return;
+        }
+
+        if (interrupted)
+        {
+            HoldIfNothingHeld(pending);
+            return;
+        }
+
+        ReturnToIdle();
+    }
 
     private void ReturnToIdle()
     {
