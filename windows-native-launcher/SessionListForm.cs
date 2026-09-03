@@ -22,6 +22,7 @@ internal sealed class SessionListForm : Form
     private readonly VoiceLoop voiceLoop;
     private readonly ListView list = new();
     private readonly Button newChatButton = new();
+    private readonly SettingsPanel settingsPanel;
 
     // Mirrors VoiceLoop's own currentSessionId -- null (nothing switched
     // to yet) means node-bot's implicit "default" session, same starting
@@ -32,6 +33,7 @@ internal sealed class SessionListForm : Form
     {
         this.backendClient = backendClient;
         this.voiceLoop = voiceLoop;
+        settingsPanel = new SettingsPanel(backendClient);
 
         Text = "Mana";
         Width = 820;
@@ -84,7 +86,30 @@ internal sealed class SessionListForm : Form
         split.Panel1.Controls.Add(sessionPanel);
         split.Panel2.Controls.Add(chatLog);
 
-        Controls.Add(split);
+        var chatPage = new TabPage("Chat");
+        chatPage.Controls.Add(split);
+
+        // #529: shares this window's nav rather than being its own
+        // separate window, per that issue's own scope note. Refreshed
+        // whenever the tab is actually selected (not eagerly on every
+        // session-list refresh) -- settings data changes far less often
+        // than the session list does, and there's no reason to poll it
+        // on a timer nobody's looking at.
+        var settingsPage = new TabPage("Settings");
+        settingsPage.Controls.Add(settingsPanel);
+
+        var tabs = new TabControl { Dock = DockStyle.Fill };
+        tabs.TabPages.Add(chatPage);
+        tabs.TabPages.Add(settingsPage);
+        tabs.Selected += async (_, e) =>
+        {
+            if (e.TabPage == settingsPage)
+            {
+                await settingsPanel.RefreshAllAsync();
+            }
+        };
+
+        Controls.Add(tabs);
     }
 
     protected override void OnFormClosing(FormClosingEventArgs e)
