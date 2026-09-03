@@ -1,5 +1,6 @@
 using System;
 using System.Drawing;
+using System.Drawing.Drawing2D;
 using System.IO;
 using System.Threading.Tasks;
 using System.Windows.Forms;
@@ -36,8 +37,11 @@ internal sealed class SessionListForm : Form
     private readonly ListView list = new();
     private readonly Button newChatButton = new();
     private readonly AvatarOverlayForm avatarOverlay;
+    private readonly Panel avatarVisual = new();
+    private readonly Button avatarZoomButton = new();
+    private readonly Label avatarNameLabel = new();
     private readonly Label avatarStatusLabel = new();
-    private readonly PictureBox avatarThumbnail = new();
+    private readonly Font avatarNameFont;
     private readonly Font avatarStatusFont;
 
     // One shared ToolTip serving every rail button -- SetToolTip(control,
@@ -80,7 +84,14 @@ internal sealed class SessionListForm : Form
         newChatButton.Height = 32;
         newChatButton.Margin = new Padding(8);
         newChatButton.Click += (_, _) => StartNewChat();
-        DarkTheme.ApplyButton(newChatButton);
+        // #538's own new-chat button is a solid accent CTA, not the
+        // muted flat style DarkTheme.ApplyButton gives every other button
+        // in this window -- matched here instead of through that shared
+        // helper, which stays as-is for Settings' own buttons.
+        newChatButton.FlatStyle = FlatStyle.Flat;
+        newChatButton.BackColor = DarkTheme.Accent;
+        newChatButton.ForeColor = ColorTranslator.FromHtml("#171513");
+        newChatButton.FlatAppearance.BorderSize = 0;
 
         list.Dock = DockStyle.Fill;
         list.View = View.Details;
@@ -112,28 +123,68 @@ internal sealed class SessionListForm : Form
         list.ContextMenuStrip = contextMenu;
         DarkTheme.ApplyListView(list);
 
-        avatarThumbnail.Dock = DockStyle.Left;
-        avatarThumbnail.Width = 40;
-        avatarThumbnail.SizeMode = PictureBoxSizeMode.Zoom;
+        // Sidebar avatar card design ported from the app's own reference
+        // mock-up (the "Settings floats above the main window" artifact,
+        // .sidebar-avatar-card) -- a bordered card holding a gradient
+        // "visual" area standing in for the live Live2D render (drawn
+        // abstractly on purpose, not real model art -- same reasoning as
+        // the reference mock-up's own CSS gradient+silhouette, since the
+        // real art is all-rights-reserved and not something to bake into
+        // committed source), a zoom button that brings the real
+        // always-on-top AvatarOverlayForm to the foreground, a name
+        // label, and a live status row.
+        avatarVisual.Height = 90;
+        avatarVisual.Dock = DockStyle.Top;
+        avatarVisual.Margin = new Padding(0, 0, 0, 8);
+        avatarVisual.Paint += OnPaintAvatarVisual;
 
-        avatarStatusLabel.Dock = DockStyle.Fill;
-        avatarStatusLabel.TextAlign = ContentAlignment.MiddleLeft;
-        avatarStatusLabel.Padding = new Padding(8, 0, 0, 0);
+        avatarZoomButton.Text = "⤢";
+        avatarZoomButton.Size = new Size(20, 20);
+        // Sidebar is a fixed 240px wide (see sidebar's own Width below),
+        // so avatarCard's client width is fixed too -- computed directly
+        // rather than referencing avatarCard here, which isn't declared
+        // yet at this point in the constructor.
+        avatarZoomButton.Location = new Point(240 - 20 - 8, 8);
+        avatarZoomButton.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+        avatarZoomButton.FlatStyle = FlatStyle.Flat;
+        avatarZoomButton.BackColor = DarkTheme.Panel2;
+        avatarZoomButton.ForeColor = DarkTheme.Muted;
+        avatarZoomButton.FlatAppearance.BorderColor = DarkTheme.Border;
+        avatarZoomButton.FlatAppearance.BorderSize = 1;
+        railToolTip.SetToolTip(avatarZoomButton, "Bring the avatar overlay to the front");
+        avatarZoomButton.Click += (_, _) =>
+        {
+            avatarOverlay.Show();
+            avatarOverlay.Activate();
+        };
+
+        avatarNameLabel.Text = "Mana";
+        avatarNameLabel.Dock = DockStyle.Top;
+        avatarNameLabel.Height = 18;
+        avatarNameLabel.ForeColor = DarkTheme.Text;
+        avatarNameFont = new Font(avatarStatusLabel.Font.FontFamily, 9.5f, FontStyle.Bold);
+        avatarNameLabel.Font = avatarNameFont;
+
+        avatarStatusLabel.Dock = DockStyle.Top;
+        avatarStatusLabel.Height = 16;
+        avatarStatusLabel.Padding = new Padding(14, 0, 0, 0); // room for the status dot painted by OnPaintAvatarVisual's sibling below
         avatarStatusLabel.ForeColor = DarkTheme.Muted;
         avatarStatusFont = new Font(avatarStatusLabel.Font.FontFamily, 8.5f);
         avatarStatusLabel.Font = avatarStatusFont;
+        avatarStatusLabel.Paint += OnPaintAvatarStatusDot;
 
-        // Padding on the Panel itself, not Margin on the docked
-        // thumbnail -- a plain Panel's layout only honors the parent's
-        // own Padding for Dock-ed children, not a child's Margin.
-        var avatarCard = new Panel { Dock = DockStyle.Bottom, Height = 52, BackColor = DarkTheme.Panel, Padding = new Padding(10, 8, 8, 8) };
-        // #538's own sidebar card was a static "Avatar: idle" box; this
-        // shows the same real idle/talking art AvatarOverlayForm's own
-        // PNG-swap fallback path already loads (GetStaticImagePath),
-        // plus the live status text, both kept in sync by
-        // RefreshAvatarCard whenever the real overlay's state changes.
-        avatarCard.Controls.Add(avatarThumbnail);
+        var avatarCard = new Panel { Dock = DockStyle.Bottom, Height = 150, BackColor = DarkTheme.Panel, Padding = new Padding(10) };
+        avatarCard.Paint += OnPaintAvatarCardBorder;
+        // Dock order within avatarCard: the FIRST Top-docked child added
+        // ends up at the very top (each subsequent one claims the
+        // topmost strip of whatever's left, per this file's other
+        // dock-order comments) -- so visual is added first to land on
+        // top, then name, then status last so it lands at the bottom,
+        // matching the reference's own visual/name/status markup order.
+        avatarCard.Controls.Add(avatarVisual);
+        avatarCard.Controls.Add(avatarNameLabel);
         avatarCard.Controls.Add(avatarStatusLabel);
+        avatarCard.Controls.Add(avatarZoomButton);
         RefreshAvatarCard(avatarOverlay.CurrentState);
         // Unsubscribed in Dispose -- avatarOverlay outlives this form
         // (owned separately by ManaApplicationContext), so a live
@@ -141,7 +192,7 @@ internal sealed class SessionListForm : Form
         // fire into disposed controls on every future avatar state change.
         avatarOverlay.StateChanged += OnAvatarStateChanged;
 
-        var sidebar = new Panel { Dock = DockStyle.Left, Width = 240, BackColor = DarkTheme.Panel };
+        var sidebar = new Panel { Dock = DockStyle.Left, Width = 240, BackColor = DarkTheme.Background };
         // Dock order matters here too (see MainForm's own comment on this
         // in #538): controls are added bottom-strip, top-strip, then the
         // list last so it gets whatever's left, rather than the list
@@ -252,21 +303,88 @@ internal sealed class SessionListForm : Form
         RefreshAvatarCard(state);
     }
 
+    // #538's own card text was literally "Mana — idle" (em dash, no
+    // colon) -- kept verbatim, just with the hardcoded "idle" replaced by
+    // the real state.
     private void RefreshAvatarCard(AvatarState state)
     {
-        avatarStatusLabel.Text = $"Avatar: {state.ToString().ToLowerInvariant()}";
+        // Sentence case ("Idle", not "idle" or "IDLE") to match the
+        // reference mock-up's own status text exactly.
+        var text = state.ToString();
+        avatarStatusLabel.Text = text.Length > 0 ? char.ToUpperInvariant(text[0]) + text[1..].ToLowerInvariant() : text;
+        avatarStatusLabel.Invalidate(); // repaints the status dot too -- see OnPaintAvatarStatusDot
+        avatarVisual.Invalidate();
+    }
 
-        var imagePath = avatarOverlay.GetStaticImagePath(state);
-        if (!File.Exists(imagePath))
+    // Same abstract gradient + rounded "silhouette" the reference mock-up
+    // uses in place of real Live2D art (see this card's own constructor
+    // comment for why) -- a soft accent glow near the top, a bottom-
+    // anchored rounded blob standing in for the avatar's silhouette.
+    // Every GDI+ object here is created and disposed within this single
+    // call (`using`), never cached across paints -- Paint fires often
+    // enough (resize, restore-from-tray, overlapping-window redraw) that
+    // caching would need its own invalidation logic for a control this
+    // simple, not worth it for a once-per-frame allocation this small.
+    private void OnPaintAvatarVisual(object? sender, PaintEventArgs e)
+    {
+        var g = e.Graphics;
+        g.SmoothingMode = SmoothingMode.AntiAlias;
+        var rect = avatarVisual.ClientRectangle;
+        if (rect.Width <= 0 || rect.Height <= 0)
         {
             return;
         }
-        // Same leak-avoidance as AvatarOverlayForm's own PNG-swap path --
-        // the previous Image isn't released just because a new one gets
-        // assigned to PictureBox.Image.
-        var previous = avatarThumbnail.Image;
-        avatarThumbnail.Image = Image.FromFile(imagePath);
-        previous?.Dispose();
+
+        using (var bgBrush = new LinearGradientBrush(rect, DarkTheme.Panel2, DarkTheme.Panel, LinearGradientMode.Vertical))
+        {
+            g.FillRectangle(bgBrush, rect);
+        }
+
+        var glowRect = new RectangleF(rect.Width * 0.05f, -rect.Height * 0.5f, rect.Width * 0.9f, rect.Height * 1.1f);
+        using (var glowPath = new GraphicsPath())
+        {
+            glowPath.AddEllipse(glowRect);
+            using var glowBrush = new PathGradientBrush(glowPath)
+            {
+                CenterColor = Color.FromArgb(110, DarkTheme.Accent),
+                SurroundColors = new[] { Color.FromArgb(0, DarkTheme.Accent) },
+            };
+            g.FillEllipse(glowBrush, glowRect);
+        }
+
+        var blobWidth = rect.Width * 0.5f;
+        var blobHeight = rect.Height * 0.82f;
+        var blobRect = new RectangleF((rect.Width - blobWidth) / 2f, rect.Height - blobHeight, blobWidth, blobHeight);
+        var radius = Math.Min(blobWidth, blobHeight) * 0.32f;
+        using var blobPath = RoundedRect(blobRect, radius);
+        using var blobBrush = new LinearGradientBrush(blobRect, ControlPaint.Light(DarkTheme.Accent, 0.25f), DarkTheme.Accent, LinearGradientMode.Vertical);
+        g.FillPath(blobBrush, blobPath);
+    }
+
+    private static GraphicsPath RoundedRect(RectangleF rect, float radius)
+    {
+        var d = radius * 2;
+        var path = new GraphicsPath();
+        path.AddArc(rect.X, rect.Y, d, d, 180, 90);
+        path.AddArc(rect.Right - d, rect.Y, d, d, 270, 90);
+        path.AddArc(rect.Right - d, rect.Bottom - d, d, d, 0, 90);
+        path.AddArc(rect.X, rect.Bottom - d, d, d, 90, 90);
+        path.CloseFigure();
+        return path;
+    }
+
+    private void OnPaintAvatarStatusDot(object? sender, PaintEventArgs e)
+    {
+        var idle = avatarOverlay.CurrentState == AvatarState.Idle;
+        using var dotBrush = new SolidBrush(idle ? Color.FromArgb(0x8f, 0xd1, 0x9e) : DarkTheme.Accent);
+        e.Graphics.FillEllipse(dotBrush, 0, (avatarStatusLabel.Height - 5) / 2, 5, 5);
+    }
+
+    private void OnPaintAvatarCardBorder(object? sender, PaintEventArgs e)
+    {
+        var card = (Panel)sender!;
+        using var pen = new Pen(DarkTheme.Border);
+        e.Graphics.DrawRectangle(pen, 0, 0, card.Width - 1, card.Height - 1);
     }
 
     private void OpenSettings()
@@ -472,6 +590,7 @@ internal sealed class SessionListForm : Form
         {
             avatarOverlay.StateChanged -= OnAvatarStateChanged;
             activeSessionFont.Dispose();
+            avatarNameFont.Dispose();
             avatarStatusFont.Dispose();
             railToolTip.Dispose();
         }

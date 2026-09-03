@@ -47,12 +47,6 @@ internal sealed class AvatarOverlayForm : Form
     public AvatarState CurrentState { get; private set; } = AvatarState.Idle;
     public event Action<AvatarState>? StateChanged;
 
-    // Same idle/talking picture this form's own PNG-swap fallback path
-    // already loads (see SetState below) -- exposed so SessionListForm's
-    // sidebar thumbnail can show the same real art instead of duplicating
-    // this idlePath/talkingPath selection logic.
-    public string GetStaticImagePath(AvatarState state) => state == AvatarState.Idle ? idlePath : talkingPath;
-
     private readonly CubismModel? cubismModel;
     private readonly CubismRenderer? cubismRenderer;
     private readonly System.Windows.Forms.Timer? renderTimer;
