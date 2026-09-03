@@ -43,12 +43,12 @@ internal sealed class StreamingReplyPlayer
     // pass rewrote the reply after streaming already started" -- either way
     // the caller must fall back to synthesizing and playing Reply fresh.
     public async Task<(string? Reply, bool Changed, string? Expression, bool Interrupted, IReadOnlyList<string> Pending)> StreamReplyAndPlayAsync(
-        string commandText)
+        string commandText, string? image = null)
     {
         var sentences = Channel.CreateUnbounded<string>();
         ReplyStreamEvent? finalEvent = null;
 
-        var readTask = ReadEventsAsync(commandText, sentences.Writer, e => finalEvent = e);
+        var readTask = ReadEventsAsync(commandText, image, sentences.Writer, e => finalEvent = e);
         var (interrupted, pending) = await PlayStreamedSentencesAsync(sentences.Reader).ConfigureAwait(false);
 
         if (interrupted)
@@ -98,11 +98,11 @@ internal sealed class StreamingReplyPlayer
         return PlayStreamedSentencesAsync(channel.Reader);
     }
 
-    private async Task ReadEventsAsync(string commandText, ChannelWriter<string> writer, Action<ReplyStreamEvent> onFinal)
+    private async Task ReadEventsAsync(string commandText, string? image, ChannelWriter<string> writer, Action<ReplyStreamEvent> onFinal)
     {
         try
         {
-            await foreach (var evt in backendClient.ReplyStreamAsync(commandText))
+            await foreach (var evt in backendClient.ReplyStreamAsync(commandText, image))
             {
                 if (evt.Type == "sentence" && !string.IsNullOrWhiteSpace(evt.Text))
                 {

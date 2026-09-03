@@ -17,6 +17,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
     private readonly SileroVadRunner sileroVad;
     private readonly AudioPlayer audioPlayer;
     private readonly VoiceLoop voiceLoop;
+    private readonly VisionHotkeyListener visionHotkeyListener;
 
     public ManaApplicationContext()
     {
@@ -33,6 +34,9 @@ internal sealed class ManaApplicationContext : ApplicationContext
         // its output).
         audioPlayer = new AudioPlayer(avatarOverlay.LipSyncDriver.OnSamplesPlayed);
         voiceLoop = new VoiceLoop(sileroVad, backendClient, audioPlayer, avatarOverlay);
+        // #523: Ctrl+Alt+M asks Mana to look at the screen, through the
+        // same reply/TTS pipeline a normal turn uses.
+        visionHotkeyListener = new VisionHotkeyListener(() => _ = voiceLoop.SubmitVisionHotkeyAsync());
 
         trayIcon = new NotifyIcon
         {
@@ -151,6 +155,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
     protected override void ExitThreadCore()
     {
         statusTimer.Stop();
+        visionHotkeyListener.Dispose();
         voiceLoop.Dispose();
         audioPlayer.Dispose();
         sileroVad.Dispose();

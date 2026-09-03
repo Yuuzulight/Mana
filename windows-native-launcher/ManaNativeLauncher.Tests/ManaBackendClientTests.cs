@@ -101,6 +101,54 @@ public class ManaBackendClientTests
     }
 
     [Fact]
+    public async Task ReplyStreamAsync_OmitsTheImageFieldWhenNoneIsGiven()
+    {
+        string? body = null;
+        var handler = new FakeHttpMessageHandler(request =>
+        {
+            body = request.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(
+                    "{\"type\":\"final\",\"reply\":\"ok\",\"changed\":false}\n",
+                    Encoding.UTF8,
+                    "application/x-ndjson"),
+            };
+        });
+        var client = new ManaBackendClient(handler);
+
+        await foreach (var _ in client.ReplyStreamAsync("hi"))
+        {
+        }
+
+        Assert.DoesNotContain("image", body);
+    }
+
+    [Fact]
+    public async Task ReplyStreamAsync_IncludesTheImageFieldWhenGiven()
+    {
+        string? body = null;
+        var handler = new FakeHttpMessageHandler(request =>
+        {
+            body = request.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(
+                    "{\"type\":\"final\",\"reply\":\"ok\",\"changed\":false}\n",
+                    Encoding.UTF8,
+                    "application/x-ndjson"),
+            };
+        });
+        var client = new ManaBackendClient(handler);
+
+        await foreach (var _ in client.ReplyStreamAsync("hi", "data:image/jpeg;base64,AAAA"))
+        {
+        }
+
+        Assert.Contains("\"image\":\"data:image/jpeg;base64,AAAA\"", body);
+    }
+
+    [Fact]
     public async Task ReplyStreamAsync_PostsToReplyStreamAndYieldsEventsInOrder()
     {
         string? path = null;

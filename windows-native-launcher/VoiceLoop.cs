@@ -360,6 +360,73 @@ internal sealed class VoiceLoop : IDisposable
         await ProcessTurnAsync(wavBytes, wasInterruption);
     }
 
+    // #523: entry point for the global "look at my screen" hotkey.
+    // Pressing it is an explicit request, so (like #525's typed-input
+    // entry point once that lands) it skips the wake-word gate entirely
+    // and sets awake unconditionally. If Mana is actively speaking, this
+    // cuts her off the same way a typed interruption would: stops
+    // playback, discards rather than races to read whatever was held
+    // (see the comment at the discard site for why racing the
+    // interrupted reply's own async continuation isn't safe here), and
+    // dispatches this as a fresh turn -- no barge-in classification, since
+    // a vision request isn't a continuation of whatever she was saying.
+    // Returns false only when rejected outright (a turn is already in
+    // flight); true once accepted, regardless of what happens after --
+    // capture/backend failures are handled internally (ReturnToIdle),
+    // same contract shape as the typed-input entry point.
+    public async Task<bool> SubmitVisionHotkeyAsync()
+    {
+        lock (stateLock)
+        {
+            if (mode is ListenMode.Processing or ListenMode.CapturingInterruption)
+            {
+                return false;
+            }
+
+            if (mode == ListenMode.Speaking)
+            {
+                audioPlayer.Stop();
+                // ponytail: nulling here only prevents THIS method from
+                // reading a torn value -- it doesn't stop the just-
+                // stopped reply's own interrupted continuation from
+                // later calling HoldIfNothingHeld and repopulating
+                // heldSentences with what it cut off (that write races
+                // this one, same class of gap as SubmitTypedCommandAsync's
+                // own discard, and for the same reason: no safe way from
+                // here to wait for that continuation before touching this
+                // field). A future, unrelated interruption could then
+                // wrongly resume that stale hold. Upgrade path if this
+                // fidelity gap matters: track the in-flight SpeakReplyAsync
+                // Task on VoiceLoop so an interruption from any entry
+                // point can await its real completion first.
+                heldSentences = null;
+                heldStackDepth = 0;
+            }
+            mode = ListenMode.Processing;
+        }
+
+        awake = true;
+
+        string image;
+        try
+        {
+            // Off the UI thread -- this runs on WM_HOTKEY's own thread
+            // (VisionHotkeyListener's message pump), and CopyFromScreen +
+            // JPEG-encoding a full screen is enough work to visibly hitch
+            // the tray/avatar UI if done inline here.
+            image = await Task.Run(ScreenCapture.CaptureAsJpegDataUrl);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"VoiceLoop: vision hotkey screen capture failed, resuming listening. {ex.Message}");
+            ReturnToIdle();
+            return true;
+        }
+
+        await SpeakReplyAsync(VisionHotkeyMessages.DefaultPrompt, image);
+        return true;
+    }
+
     // Transcribes wavBytes and speaks a reply -- the single entry point for
     // both a normal fresh segment (Idle) and a barge-in's interruption
     // segment (CapturingInterruption); by the time an interruption can
@@ -555,7 +622,7 @@ internal sealed class VoiceLoop : IDisposable
     // block nulls heldReply on any capture/transcribe/classify failure) --
     // failure and interruption are NOT distinguished by this return value;
     // both mean "don't resume".
-    private async Task<bool> SpeakReplyAsync(string commandText)
+    private async Task<bool> SpeakReplyAsync(string commandText, string? image = null)
     {
         string? reply;
         bool changed;
@@ -563,11 +630,18 @@ internal sealed class VoiceLoop : IDisposable
         IReadOnlyList<string> pending;
         try
         {
-            (reply, changed, _, interrupted, pending) = await streamingReplyPlayer.StreamReplyAndPlayAsync(commandText);
+            (reply, changed, _, interrupted, pending) = await streamingReplyPlayer.StreamReplyAndPlayAsync(commandText, image);
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"VoiceLoop: reply/stream failed, resuming listening. {ex.Message}");
+            // #523: DescribeError's fallback phrasing ("Mana couldn't
+            // look at the screen...") is vision-specific -- only apply it
+            // when this call actually included an image (vision-hotkey
+            // triggered), not to every SpeakReplyAsync failure, which
+            // would misleadingly blame vision for an unrelated reply
+            // error on a normal text turn.
+            var message = image is not null ? VisionHotkeyMessages.DescribeError(ex.Message) : ex.Message;
+            Console.WriteLine($"VoiceLoop: reply/stream failed, resuming listening. {message}");
             ReturnToIdle();
             return false;
         }

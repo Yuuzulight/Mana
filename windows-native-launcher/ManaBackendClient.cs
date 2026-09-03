@@ -82,9 +82,16 @@ internal sealed class ManaBackendClient
     // is required here (unlike every other call in this file) -- without
     // it, HttpClient buffers the entire response body before this method
     // could read a single line, defeating the whole point of streaming.
-    public async IAsyncEnumerable<ReplyStreamEvent> ReplyStreamAsync(string text)
+    // #523: image (a "data:image/jpeg;base64,..." string), when present,
+    // is only included in the JSON payload -- not sent as an empty/null
+    // field -- matching windows-launcher's own object-literal payload,
+    // where an absent image key (not an empty one) is what tells
+    // node-bot's handler this is a text-only turn.
+    public async IAsyncEnumerable<ReplyStreamEvent> ReplyStreamAsync(string text, string? image = null)
     {
-        var payload = JsonSerializer.Serialize(new { text });
+        var payload = image is null
+            ? JsonSerializer.Serialize(new { text })
+            : JsonSerializer.Serialize(new { text, image });
         using var content = new StringContent(payload, Encoding.UTF8, "application/json");
         using var request = new HttpRequestMessage(HttpMethod.Post, "/reply/stream") { Content = content };
         using var response = await http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead);
