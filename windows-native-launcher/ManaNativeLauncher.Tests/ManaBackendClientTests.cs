@@ -285,4 +285,91 @@ public class ManaBackendClientTests
 
         Assert.Equal("unclassified", category);
     }
+
+    [Fact]
+    public async Task GetDoctorResultAsync_ParsesSummaryAndChecksOn200()
+    {
+        var handler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(
+                """{"ok":true,"summary":{"pass":2,"warn":0,"fail":0},"checks":[{"id":"node-runtime","label":"Node runtime","status":"pass","message":"Node v20 is available."}]}""",
+                Encoding.UTF8,
+                "application/json"),
+        });
+        var client = new ManaBackendClient(handler);
+
+        var result = await client.GetDoctorResultAsync();
+
+        Assert.True(result.Ok);
+        Assert.Equal(2, result.Pass);
+        Assert.Equal(0, result.Warn);
+        Assert.Equal(0, result.Fail);
+        var check = Assert.Single(result.Checks);
+        Assert.Equal("node-runtime", check.Id);
+        Assert.Equal("Node runtime", check.Label);
+        Assert.Equal("pass", check.Status);
+        Assert.Equal("Node v20 is available.", check.Message);
+    }
+
+    [Fact]
+    public async Task GetDoctorResultAsync_ParsesTheResultBodyOn503InsteadOfThrowing()
+    {
+        // node-bot's /doctor returns 503 (not 200) specifically when it
+        // found real problems -- still a fully-shaped, parseable result,
+        // not a transport failure this method should throw on.
+        var handler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.ServiceUnavailable)
+        {
+            Content = new StringContent(
+                """{"ok":false,"summary":{"pass":1,"warn":0,"fail":1},"checks":[{"id":"x","label":"X","status":"fail","message":"broken"}]}""",
+                Encoding.UTF8,
+                "application/json"),
+        });
+        var client = new ManaBackendClient(handler);
+
+        var result = await client.GetDoctorResultAsync();
+
+        Assert.False(result.Ok);
+        Assert.Equal(1, result.Fail);
+    }
+
+    [Fact]
+    public async Task GetDoctorResultAsync_DefaultsCountsToZeroWhenSummaryIsMissing()
+    {
+        var handler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent("""{"ok":true,"checks":[]}""", Encoding.UTF8, "application/json"),
+        });
+        var client = new ManaBackendClient(handler);
+
+        var result = await client.GetDoctorResultAsync();
+
+        Assert.Equal(0, result.Pass);
+        Assert.Equal(0, result.Warn);
+        Assert.Equal(0, result.Fail);
+    }
+
+    [Fact]
+    public async Task GetDoctorResultAsync_DefaultsToEmptyChecksWhenChecksIsMissing()
+    {
+        var handler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent("""{"ok":true,"summary":{"pass":0,"warn":0,"fail":0}}""", Encoding.UTF8, "application/json"),
+        });
+        var client = new ManaBackendClient(handler);
+
+        var result = await client.GetDoctorResultAsync();
+
+        Assert.Empty(result.Checks);
+    }
+
+    [Fact]
+    public async Task GetDoctorResultAsync_ThrowsOn500()
+    {
+        // Distinct from 503: a 500 means the doctor run itself errored,
+        // not "problems found" -- there's no fully-shaped result to parse.
+        var handler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.InternalServerError));
+        var client = new ManaBackendClient(handler);
+
+        await Assert.ThrowsAsync<HttpRequestException>(() => client.GetDoctorResultAsync());
+    }
 }
