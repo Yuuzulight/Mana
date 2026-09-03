@@ -6,17 +6,16 @@ using System.Windows.Forms;
 
 namespace Mana.NativeLauncher;
 
-// #520: ports windows-launcher/renderer/session-sidebar.js's list/switch/
-// rename/delete/export surface -- not its "open memory" modal or goal
-// editing (both explicitly out of this issue's scope), and not message
-// rendering (#521's chat window doesn't exist yet, so switching sessions
-// here only changes which session VoiceLoop appends new turns to; it
-// can't replay history into a chat log that doesn't exist yet either).
+// #520/#521: ports windows-launcher/renderer/session-sidebar.js's list/
+// switch/rename/delete/export surface, plus (#521) a chat pane sharing
+// this same window -- not the reference's "open memory" modal, goal
+// editing, or settings sub-panels (all explicitly out of scope for
+// either issue).
 //
 // A standalone window for now (windows-launcher's own version lives
-// inside its main chat window's sidebar) -- created once and reused
-// (Hide, not Close) by ManaApplicationContext, same lazy-create-and-
-// reuse shape as QuickEntryForm.
+// inside its main app window) -- created once and reused (Hide, not
+// Close) by ManaApplicationContext, same lazy-create-and-reuse shape as
+// QuickEntryForm.
 internal sealed class SessionListForm : Form
 {
     private readonly ManaBackendClient backendClient;
@@ -29,14 +28,14 @@ internal sealed class SessionListForm : Form
     // state VoiceLoop itself has.
     private string? activeSessionId;
 
-    public SessionListForm(ManaBackendClient backendClient, VoiceLoop voiceLoop)
+    public SessionListForm(ManaBackendClient backendClient, VoiceLoop voiceLoop, ChatLogPanel chatLog)
     {
         this.backendClient = backendClient;
         this.voiceLoop = voiceLoop;
 
-        Text = "Mana Sessions";
-        Width = 460;
-        Height = 520;
+        Text = "Mana";
+        Width = 820;
+        Height = 560;
         StartPosition = FormStartPosition.CenterScreen;
 
         newChatButton.Text = "New Chat";
@@ -72,8 +71,20 @@ internal sealed class SessionListForm : Form
         contextMenu.Items.Add("Export...", null, async (_, _) => await ExportSelectedAsync());
         list.ContextMenuStrip = contextMenu;
 
-        Controls.Add(list);
-        Controls.Add(newChatButton);
+        var sessionPanel = new Panel { Dock = DockStyle.Fill };
+        sessionPanel.Controls.Add(list);
+        sessionPanel.Controls.Add(newChatButton);
+
+        var split = new SplitContainer
+        {
+            Dock = DockStyle.Fill,
+            Orientation = Orientation.Vertical,
+            SplitterDistance = 260,
+        };
+        split.Panel1.Controls.Add(sessionPanel);
+        split.Panel2.Controls.Add(chatLog);
+
+        Controls.Add(split);
     }
 
     protected override void OnFormClosing(FormClosingEventArgs e)
