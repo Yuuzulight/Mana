@@ -8,9 +8,22 @@ namespace Mana.NativeLauncher;
 
 // #520/#521: ports windows-launcher/renderer/session-sidebar.js's list/
 // switch/rename/delete/export surface, plus (#521) a chat pane sharing
-// this same window -- not the reference's "open memory" modal, goal
-// editing, or settings sub-panels (all explicitly out of scope for
-// either issue).
+// this same window -- not the reference's "open memory" modal or goal
+// editing (out of scope for either issue).
+//
+// Layout ported from PR #538's own MainForm scaffold (sidebar | chat |
+// a tool rail reaching Settings) rather than the tabbed Chat/Settings
+// layout this window used before -- see the comparison review linked
+// from this PR's description for why #538's own logic wasn't kept
+// alongside its layout. Two real, deliberate departures from #538's own
+// version: no FormBorderStyle.None/custom-drawn titlebar (this keeps the
+// OS's native drag/resize/snap and keyboard/screen-reader behavior,
+// which #538's version gave up and then needed a stateful AllowExit
+// escape hatch to work around -- see DarkTheme.ApplyForm), and the rail
+// only has a Settings icon, not #538's Browser/Terminal/Artifacts/Tasks
+// icons -- none of those tools exist yet in this app; shipping dead
+// buttons for them would be worse than #538's own "explicitly a
+// scaffold" excuse, since this is the real, merged window.
 //
 // A standalone window for now (windows-launcher's own version lives
 // inside its main app window) -- created once and reused (Hide, not
@@ -22,7 +35,6 @@ internal sealed class SessionListForm : Form
     private readonly VoiceLoop voiceLoop;
     private readonly ListView list = new();
     private readonly Button newChatButton = new();
-    private readonly SettingsPanel settingsPanel;
 
     // Bolds the active session's row in RefreshAsync -- built once and
     // reused rather than a fresh Font per refresh, which leaked a GDI
@@ -39,28 +51,29 @@ internal sealed class SessionListForm : Form
     {
         this.backendClient = backendClient;
         this.voiceLoop = voiceLoop;
-        settingsPanel = new SettingsPanel(backendClient);
         activeSessionFont = new Font(list.Font, FontStyle.Bold);
 
         Text = "Mana";
-        Width = 820;
-        Height = 560;
+        Width = 900;
+        Height = 600;
         StartPosition = FormStartPosition.CenterScreen;
         DarkTheme.ApplyForm(this);
 
-        newChatButton.Text = "New Chat";
+        newChatButton.Text = "+ New chat";
         newChatButton.Dock = DockStyle.Top;
         newChatButton.Height = 32;
+        newChatButton.Margin = new Padding(8);
         newChatButton.Click += (_, _) => StartNewChat();
         DarkTheme.ApplyButton(newChatButton);
 
         list.Dock = DockStyle.Fill;
         list.View = View.Details;
+        list.HeaderStyle = ColumnHeaderStyle.None; // sidebar look, not a data grid
         list.FullRowSelect = true;
         list.HideSelection = false;
         list.LabelEdit = true;
-        list.Columns.Add("Name", 260);
-        list.Columns.Add("Updated", 150);
+        list.Columns.Add("Name", 170);
+        list.Columns.Add("Updated", 90);
         // WinForms convention (select on single click, activate on
         // double) rather than the reference's own single-click-switches
         // -- switching sessions from a stray selection click would be a
@@ -83,52 +96,46 @@ internal sealed class SessionListForm : Form
         list.ContextMenuStrip = contextMenu;
         DarkTheme.ApplyListView(list);
 
-        var sessionPanel = new Panel { Dock = DockStyle.Fill, BackColor = DarkTheme.Background };
-        sessionPanel.Controls.Add(list);
-        sessionPanel.Controls.Add(newChatButton);
+        var sidebar = new Panel { Dock = DockStyle.Left, Width = 240, BackColor = DarkTheme.Panel };
+        // Dock order matters here too (see MainForm's own comment on this
+        // in #538): the button has to be added first to claim the top
+        // strip, so the list -- added second, Dock.Fill -- gets whatever
+        // sidebar has left rather than the button trying to claim Top
+        // out of space the list already filled.
+        sidebar.Controls.Add(newChatButton);
+        sidebar.Controls.Add(list);
 
-        var split = new SplitContainer
+        var railSettingsButton = new Button
         {
-            Dock = DockStyle.Fill,
-            Orientation = Orientation.Vertical,
-            SplitterDistance = 260,
-            // Splitter itself painted in the border color -- SplitContainer
-            // has no dedicated "splitter color" property, only BackColor,
-            // which paints both the splitter strip and (before the panels
-            // cover it) their background, so setting Panel1/Panel2 below
-            // is what keeps the actual content areas from picking it up.
-            BackColor = DarkTheme.Border,
+            Text = "⚙", // gear glyph -- the rail's one real, wired icon
+            Dock = DockStyle.Top,
+            Height = 44,
+            FlatStyle = FlatStyle.Flat,
+            BackColor = DarkTheme.Panel,
+            ForeColor = DarkTheme.Muted,
         };
-        split.Panel1.BackColor = DarkTheme.Background;
-        split.Panel2.BackColor = DarkTheme.Background;
-        split.Panel1.Controls.Add(sessionPanel);
-        split.Panel2.Controls.Add(chatLog);
+        railSettingsButton.FlatAppearance.BorderSize = 0;
+        railSettingsButton.FlatAppearance.MouseOverBackColor = DarkTheme.Panel2;
+        railSettingsButton.Click += (_, _) => OpenSettings();
+        var toolRail = new Panel { Dock = DockStyle.Right, Width = 44, BackColor = DarkTheme.Panel };
+        toolRail.Controls.Add(railSettingsButton);
 
-        var chatPage = new TabPage("Chat") { BackColor = DarkTheme.Background };
-        chatPage.Controls.Add(split);
+        var chatArea = new Panel { Dock = DockStyle.Fill, BackColor = DarkTheme.Background };
+        chatArea.Controls.Add(chatLog);
 
-        // #529: shares this window's nav rather than being its own
-        // separate window, per that issue's own scope note. Refreshed
-        // whenever the tab is actually selected (not eagerly on every
-        // session-list refresh) -- settings data changes far less often
-        // than the session list does, and there's no reason to poll it
-        // on a timer nobody's looking at.
-        var settingsPage = new TabPage("Settings") { BackColor = DarkTheme.Background };
-        settingsPage.Controls.Add(settingsPanel);
+        // Dock order matters: a control added earlier claims its edge
+        // first, so Fill has to go in last, once sidebar/toolRail have
+        // already staked their strips (same rule #538's own MainForm
+        // comment on this notes).
+        Controls.Add(sidebar);
+        Controls.Add(toolRail);
+        Controls.Add(chatArea);
+    }
 
-        var tabs = new TabControl { Dock = DockStyle.Fill };
-        DarkTheme.ApplyTabControl(tabs);
-        tabs.TabPages.Add(chatPage);
-        tabs.TabPages.Add(settingsPage);
-        tabs.Selected += async (_, e) =>
-        {
-            if (e.TabPage == settingsPage)
-            {
-                await settingsPanel.RefreshAllAsync();
-            }
-        };
-
-        Controls.Add(tabs);
+    private void OpenSettings()
+    {
+        using var dialog = new SettingsDialog(backendClient);
+        dialog.ShowDialog(this);
     }
 
     protected override void OnFormClosing(FormClosingEventArgs e)
