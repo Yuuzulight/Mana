@@ -37,6 +37,7 @@ internal sealed class SessionListForm : Form
     private readonly Button newChatButton = new();
     private readonly AvatarOverlayForm avatarOverlay;
     private readonly Label avatarStatusLabel = new();
+    private readonly PictureBox avatarThumbnail = new();
     private readonly Font avatarStatusFont;
 
     // One shared ToolTip serving every rail button -- SetToolTip(control,
@@ -111,18 +112,33 @@ internal sealed class SessionListForm : Form
         list.ContextMenuStrip = contextMenu;
         DarkTheme.ApplyListView(list);
 
-        avatarStatusLabel.Dock = DockStyle.Bottom;
-        avatarStatusLabel.Height = 32;
+        avatarThumbnail.Dock = DockStyle.Left;
+        avatarThumbnail.Width = 40;
+        avatarThumbnail.SizeMode = PictureBoxSizeMode.Zoom;
+
+        avatarStatusLabel.Dock = DockStyle.Fill;
         avatarStatusLabel.TextAlign = ContentAlignment.MiddleLeft;
-        avatarStatusLabel.Padding = new Padding(10, 0, 0, 0);
+        avatarStatusLabel.Padding = new Padding(8, 0, 0, 0);
         avatarStatusLabel.ForeColor = DarkTheme.Muted;
         avatarStatusFont = new Font(avatarStatusLabel.Font.FontFamily, 8.5f);
         avatarStatusLabel.Font = avatarStatusFont;
-        SetAvatarStatusText(avatarOverlay.CurrentState);
+
+        // Padding on the Panel itself, not Margin on the docked
+        // thumbnail -- a plain Panel's layout only honors the parent's
+        // own Padding for Dock-ed children, not a child's Margin.
+        var avatarCard = new Panel { Dock = DockStyle.Bottom, Height = 52, BackColor = DarkTheme.Panel, Padding = new Padding(10, 8, 8, 8) };
+        // #538's own sidebar card was a static "Avatar: idle" box; this
+        // shows the same real idle/talking art AvatarOverlayForm's own
+        // PNG-swap fallback path already loads (GetStaticImagePath),
+        // plus the live status text, both kept in sync by
+        // RefreshAvatarCard whenever the real overlay's state changes.
+        avatarCard.Controls.Add(avatarThumbnail);
+        avatarCard.Controls.Add(avatarStatusLabel);
+        RefreshAvatarCard(avatarOverlay.CurrentState);
         // Unsubscribed in Dispose -- avatarOverlay outlives this form
         // (owned separately by ManaApplicationContext), so a live
         // subscription left dangling past this form's own disposal would
-        // fire into a disposed Label on every future avatar state change.
+        // fire into disposed controls on every future avatar state change.
         avatarOverlay.StateChanged += OnAvatarStateChanged;
 
         var sidebar = new Panel { Dock = DockStyle.Left, Width = 240, BackColor = DarkTheme.Panel };
@@ -131,7 +147,7 @@ internal sealed class SessionListForm : Form
         // list last so it gets whatever's left, rather than the list
         // (Dock.Fill) claiming all the space before the others get a
         // chance to stake theirs.
-        sidebar.Controls.Add(avatarStatusLabel);
+        sidebar.Controls.Add(avatarCard);
         sidebar.Controls.Add(newChatButton);
         sidebar.Controls.Add(list);
 
@@ -233,10 +249,25 @@ internal sealed class SessionListForm : Form
         {
             return;
         }
-        SetAvatarStatusText(state);
+        RefreshAvatarCard(state);
     }
 
-    private void SetAvatarStatusText(AvatarState state) => avatarStatusLabel.Text = $"Avatar: {state.ToString().ToLowerInvariant()}";
+    private void RefreshAvatarCard(AvatarState state)
+    {
+        avatarStatusLabel.Text = $"Avatar: {state.ToString().ToLowerInvariant()}";
+
+        var imagePath = avatarOverlay.GetStaticImagePath(state);
+        if (!File.Exists(imagePath))
+        {
+            return;
+        }
+        // Same leak-avoidance as AvatarOverlayForm's own PNG-swap path --
+        // the previous Image isn't released just because a new one gets
+        // assigned to PictureBox.Image.
+        var previous = avatarThumbnail.Image;
+        avatarThumbnail.Image = Image.FromFile(imagePath);
+        previous?.Dispose();
+    }
 
     private void OpenSettings()
     {
