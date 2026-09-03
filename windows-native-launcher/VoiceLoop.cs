@@ -107,16 +107,22 @@ internal sealed class VoiceLoop : IDisposable
     private List<string>? heldSentences;
     private int heldStackDepth;
 
+    // #528: null (no artifact viewer constructed) is a no-op everywhere
+    // it's used -- see IArtifactSink's own header comment.
+    private readonly IArtifactSink? artifactSink;
+
     public VoiceLoop(
         SileroVadRunner vad,
         ManaBackendClient backendClient,
         AudioPlayer audioPlayer,
-        AvatarOverlayForm avatarOverlay)
+        AvatarOverlayForm avatarOverlay,
+        IArtifactSink? artifactSink = null)
     {
         this.vad = vad;
         this.backendClient = backendClient;
         this.audioPlayer = audioPlayer;
         this.avatarOverlay = avatarOverlay;
+        this.artifactSink = artifactSink;
         streamingReplyPlayer = new StreamingReplyPlayer(
             backendClient,
             audioPlayer.PlayAsync,
@@ -585,6 +591,12 @@ internal sealed class VoiceLoop : IDisposable
             HoldIfNothingHeld(pending);
             return false;
         }
+
+        // #528: reported once per successful (non-interrupted) reply,
+        // regardless of whether it streamed or fell back to the
+        // non-streamed path below -- reply is the true final text
+        // either way by this point.
+        artifactSink?.ReportReply(reply ?? "");
 
         if (!changed)
         {

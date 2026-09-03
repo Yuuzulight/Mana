@@ -17,6 +17,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
     private readonly SileroVadRunner sileroVad;
     private readonly AudioPlayer audioPlayer;
     private readonly VoiceLoop voiceLoop;
+    private readonly ArtifactViewerForm artifactViewer;
 
     public ManaApplicationContext()
     {
@@ -32,7 +33,8 @@ internal sealed class ManaApplicationContext : ApplicationContext
         // model is loaded (LipSyncDriver still runs, just nothing reads
         // its output).
         audioPlayer = new AudioPlayer(avatarOverlay.LipSyncDriver.OnSamplesPlayed);
-        voiceLoop = new VoiceLoop(sileroVad, backendClient, audioPlayer, avatarOverlay);
+        artifactViewer = new ArtifactViewerForm();
+        voiceLoop = new VoiceLoop(sileroVad, backendClient, audioPlayer, avatarOverlay, artifactViewer);
 
         trayIcon = new NotifyIcon
         {
@@ -60,6 +62,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
     {
         var menu = new ContextMenuStrip();
         menu.Items.Add("Show status", null, (_, _) => ShowStatus());
+        menu.Items.Add("Artifact Viewer", null, (_, _) => { artifactViewer.Show(); artifactViewer.Activate(); });
         menu.Items.Add("Open project folder", null, (_, _) => OpenProjectFolder());
         menu.Items.Add("Set avatar idle", null, (_, _) => avatarOverlay.SetState(AvatarState.Idle));
         menu.Items.Add("Set avatar talking", null, (_, _) => avatarOverlay.SetState(AvatarState.Talking));
@@ -157,6 +160,10 @@ internal sealed class ManaApplicationContext : ApplicationContext
         trayIcon.Visible = false;
         trayIcon.Dispose();
         avatarOverlay.Close();
+        // Dispose, not Close -- OnFormClosing overrides UserClosing to
+        // Hide-and-cancel for the reuse pattern, so a plain Close() here
+        // would risk not actually tearing the window down.
+        artifactViewer.Dispose();
         processManager.Dispose();
         base.ExitThreadCore();
     }
