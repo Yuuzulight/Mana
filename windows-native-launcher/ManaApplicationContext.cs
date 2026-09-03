@@ -18,12 +18,18 @@ internal sealed class ManaApplicationContext : ApplicationContext
     private readonly AudioPlayer audioPlayer;
     private readonly VoiceLoop voiceLoop;
 
+    // #520/#521: the full opened window -- one persistent instance,
+    // shown/hidden rather than created/disposed per open so the
+    // transcript and composer state survive minimizing to tray.
+    private readonly MainForm mainForm;
+
     public ManaApplicationContext()
     {
         var rootDir = FindRootDirectory();
         processManager = new ManaProcessManager(rootDir);
         backendClient = new ManaBackendClient();
         avatarOverlay = new AvatarOverlayForm(rootDir);
+        mainForm = new MainForm(backendClient, OpenSettings);
 
         var vadModelPath = Path.Combine(rootDir, "windows-native-launcher", "assets", "vad", "silero_vad.onnx");
         sileroVad = new SileroVadRunner(vadModelPath);
@@ -42,7 +48,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
             ContextMenuStrip = BuildTrayMenu(),
         };
 
-        trayIcon.DoubleClick += (_, _) => ShowStatus();
+        trayIcon.DoubleClick += (_, _) => ShowMainForm();
         avatarOverlay.Show();
 
         // Quick rundown: start the existing local services, but keep this host native and small.
@@ -59,6 +65,11 @@ internal sealed class ManaApplicationContext : ApplicationContext
     private ContextMenuStrip BuildTrayMenu()
     {
         var menu = new ContextMenuStrip();
+        // #520/#521: the tray menu's entry point into the full opened
+        // window, matching the mock-up's "Open Mana" item.
+        menu.Items.Add("Open Mana", null, (_, _) => ShowMainForm());
+        menu.Items.Add("Settings", null, (_, _) => OpenSettings());
+        menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add("Show status", null, (_, _) => ShowStatus());
         menu.Items.Add("Open project folder", null, (_, _) => OpenProjectFolder());
         menu.Items.Add("Set avatar idle", null, (_, _) => avatarOverlay.SetState(AvatarState.Idle));
@@ -88,6 +99,27 @@ internal sealed class ManaApplicationContext : ApplicationContext
         {
             trayIcon.Text = "Mana - backend starting";
         }
+    }
+
+    private void ShowMainForm()
+    {
+        mainForm.Show();
+        if (mainForm.WindowState == FormWindowState.Minimized)
+        {
+            mainForm.WindowState = FormWindowState.Normal;
+        }
+
+        mainForm.Activate();
+    }
+
+    // #529: a fresh SettingsForm per open, modal to mainForm -- matches
+    // the mock-up's "Settings floats above the main window" popup rather
+    // than a second persistent form to keep track of.
+    private void OpenSettings()
+    {
+        ShowMainForm();
+        using var settingsForm = new SettingsForm();
+        settingsForm.ShowDialog(mainForm);
     }
 
     private async void ShowStatus()
@@ -157,6 +189,11 @@ internal sealed class ManaApplicationContext : ApplicationContext
         trayIcon.Visible = false;
         trayIcon.Dispose();
         avatarOverlay.Close();
+        // mainForm normally cancels its own close and hides instead (see
+        // MainForm.OnFormClosing) -- AllowExit lifts that for the one
+        // real shutdown path.
+        mainForm.AllowExit();
+        mainForm.Close();
         processManager.Dispose();
         base.ExitThreadCore();
     }
