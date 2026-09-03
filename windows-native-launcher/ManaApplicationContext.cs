@@ -18,6 +18,12 @@ internal sealed class ManaApplicationContext : ApplicationContext
     private readonly AudioPlayer audioPlayer;
     private readonly VoiceLoop voiceLoop;
 
+    // #522: updated by RefreshTrayStatusAsync's existing 5s poll --
+    // VoiceLoop reads it (via a delegate, not a captured snapshot) to
+    // pick the screen-context read interval, same signal the tray icon
+    // text already reflects.
+    private bool gamingModeActive;
+
     public ManaApplicationContext()
     {
         var rootDir = FindRootDirectory();
@@ -32,7 +38,8 @@ internal sealed class ManaApplicationContext : ApplicationContext
         // model is loaded (LipSyncDriver still runs, just nothing reads
         // its output).
         audioPlayer = new AudioPlayer(avatarOverlay.LipSyncDriver.OnSamplesPlayed);
-        voiceLoop = new VoiceLoop(sileroVad, backendClient, audioPlayer, avatarOverlay);
+        var screenContextReader = new ScreenContextReader(rootDir, backendClient);
+        voiceLoop = new VoiceLoop(sileroVad, backendClient, audioPlayer, avatarOverlay, screenContextReader, () => gamingModeActive);
 
         trayIcon = new NotifyIcon
         {
@@ -82,6 +89,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
         try
         {
             var status = await backendClient.GetPerformanceStatusAsync();
+            gamingModeActive = status.GamingAppRunning;
             trayIcon.Text = status.GamingAppRunning ? "Mana - game mode" : "Mana";
         }
         catch
