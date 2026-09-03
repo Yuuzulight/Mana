@@ -38,7 +38,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
         // itself (to embed it), not the other way around.
         var chatLog = new ChatLogPanel();
         voiceLoop = new VoiceLoop(sileroVad, backendClient, audioPlayer, avatarOverlay, chatLog);
-        sessionListForm = new SessionListForm(backendClient, voiceLoop, chatLog);
+        sessionListForm = new SessionListForm(backendClient, voiceLoop, chatLog, avatarOverlay);
 
         trayIcon = new NotifyIcon
         {

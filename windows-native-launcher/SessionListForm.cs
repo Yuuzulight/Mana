@@ -35,6 +35,9 @@ internal sealed class SessionListForm : Form
     private readonly VoiceLoop voiceLoop;
     private readonly ListView list = new();
     private readonly Button newChatButton = new();
+    private readonly AvatarOverlayForm avatarOverlay;
+    private readonly Label avatarStatusLabel = new();
+    private readonly Font avatarStatusFont;
 
     // One shared ToolTip serving every rail button -- SetToolTip(control,
     // caption) is the normal WinForms pattern for exactly this (a per-
@@ -58,10 +61,11 @@ internal sealed class SessionListForm : Form
     // ToggleToolPlaceholder.
     private string? openTool;
 
-    public SessionListForm(ManaBackendClient backendClient, VoiceLoop voiceLoop, ChatLogPanel chatLog)
+    public SessionListForm(ManaBackendClient backendClient, VoiceLoop voiceLoop, ChatLogPanel chatLog, AvatarOverlayForm avatarOverlay)
     {
         this.backendClient = backendClient;
         this.voiceLoop = voiceLoop;
+        this.avatarOverlay = avatarOverlay;
         activeSessionFont = new Font(list.Font, FontStyle.Bold);
 
         Text = "Mana";
@@ -107,12 +111,27 @@ internal sealed class SessionListForm : Form
         list.ContextMenuStrip = contextMenu;
         DarkTheme.ApplyListView(list);
 
+        avatarStatusLabel.Dock = DockStyle.Bottom;
+        avatarStatusLabel.Height = 32;
+        avatarStatusLabel.TextAlign = ContentAlignment.MiddleLeft;
+        avatarStatusLabel.Padding = new Padding(10, 0, 0, 0);
+        avatarStatusLabel.ForeColor = DarkTheme.Muted;
+        avatarStatusFont = new Font(avatarStatusLabel.Font.FontFamily, 8.5f);
+        avatarStatusLabel.Font = avatarStatusFont;
+        SetAvatarStatusText(avatarOverlay.CurrentState);
+        // Unsubscribed in Dispose -- avatarOverlay outlives this form
+        // (owned separately by ManaApplicationContext), so a live
+        // subscription left dangling past this form's own disposal would
+        // fire into a disposed Label on every future avatar state change.
+        avatarOverlay.StateChanged += OnAvatarStateChanged;
+
         var sidebar = new Panel { Dock = DockStyle.Left, Width = 240, BackColor = DarkTheme.Panel };
         // Dock order matters here too (see MainForm's own comment on this
-        // in #538): the button has to be added first to claim the top
-        // strip, so the list -- added second, Dock.Fill -- gets whatever
-        // sidebar has left rather than the button trying to claim Top
-        // out of space the list already filled.
+        // in #538): controls are added bottom-strip, top-strip, then the
+        // list last so it gets whatever's left, rather than the list
+        // (Dock.Fill) claiming all the space before the others get a
+        // chance to stake theirs.
+        sidebar.Controls.Add(avatarStatusLabel);
         sidebar.Controls.Add(newChatButton);
         sidebar.Controls.Add(list);
 
@@ -200,6 +219,24 @@ internal sealed class SessionListForm : Form
         toolPanelLabel.Text = $"{tool}\n\nNot built yet.";
         toolPanel.Visible = true;
     }
+
+    private void OnAvatarStateChanged(AvatarState state)
+    {
+        // AvatarOverlayForm.SetState already marshals onto the UI thread
+        // before raising StateChanged, but that's its own UI thread, not
+        // necessarily this one -- both forms run on the same single
+        // WinForms message loop in this app, so it's the same thread in
+        // practice, but IsDisposed is still checked since the two forms'
+        // lifetimes aren't tied together (this one can be disposed while
+        // avatarOverlay keeps running).
+        if (IsDisposed)
+        {
+            return;
+        }
+        SetAvatarStatusText(state);
+    }
+
+    private void SetAvatarStatusText(AvatarState state) => avatarStatusLabel.Text = $"Avatar: {state.ToString().ToLowerInvariant()}";
 
     private void OpenSettings()
     {
@@ -402,7 +439,9 @@ internal sealed class SessionListForm : Form
     {
         if (disposing)
         {
+            avatarOverlay.StateChanged -= OnAvatarStateChanged;
             activeSessionFont.Dispose();
+            avatarStatusFont.Dispose();
             railToolTip.Dispose();
         }
         base.Dispose(disposing);
