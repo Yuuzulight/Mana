@@ -1,7 +1,14 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
-    <TargetFramework>net8.0-windows</TargetFramework>
+    <!-- #524: versioned (not plain net8.0-windows) so NuGet resolves
+         Microsoft.Toolkit.Uwp.Notifications' windows10.0-specific asset,
+         which is the only one carrying ToastNotificationManagerCompat,
+         since the plain net5.0 asset (what an unversioned target resolves
+         to) doesn't have it: toast activation needs WinRT interop that
+         requires a versioned Windows SDK target. 10.0.19041.0 is a
+         common, safely-below-current-Windows floor for that. -->
+    <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
     <UseWindowsForms>true</UseWindowsForms>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
@@ -32,6 +39,12 @@
     <PackageReference Include="NAudio" Version="2.2.1" />
     <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.19.2" />
     <PackageReference Include="SkiaSharp" Version="4.151.1" />
+    <!-- #524: native Windows toast notifications with action buttons for
+         an unpackaged (no MSIX/Start Menu shortcut) WinForms app, the
+         standard non-WinUI3 way to do this; the newer Windows App SDK
+         AppNotificationManager needs packaging identity this project
+         doesn't have. -->
+    <PackageReference Include="Microsoft.Toolkit.Uwp.Notifications" Version="7.1.3" />
   </ItemGroup>
 
   <ItemGroup>

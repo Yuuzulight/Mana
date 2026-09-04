@@ -271,6 +271,18 @@ internal sealed class SessionListForm : Form
         Controls.Add(toolRail);
         Controls.Add(toolPanel);
         Controls.Add(chatArea);
+
+        // Forces the native window handle to exist now, on this (the UI)
+        // thread -- #524's toast "Open Chat" callback can fire on a
+        // threadpool thread (ToastNotificationManagerCompat.OnActivated,
+        // raised via Windows Shell/COM activation) before this window has
+        // ever been shown, and InvokeRequired/BeginInvoke need a handle
+        // that was genuinely created on the UI thread to marshal
+        // correctly (InvokeRequired returns false, not throws, when no
+        // handle exists yet, which would otherwise let that background
+        // thread call ShowSessionList() -- and touch this form's controls
+        // -- directly). Same pattern as ArtifactViewerForm/QuickEntryForm.
+        _ = Handle;
     }
 
     private Button MakeRailButton(string icon, string tooltip)

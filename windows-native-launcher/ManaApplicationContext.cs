@@ -17,6 +17,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
     private readonly SileroVadRunner sileroVad;
     private readonly AudioPlayer audioPlayer;
     private readonly VoiceLoop voiceLoop;
+    private readonly TrayNotificationClient trayNotifications;
     private readonly ArtifactViewerForm artifactViewer;
     private readonly QuickEntryForm quickEntry;
     private readonly SessionListForm sessionListForm;
@@ -45,6 +46,31 @@ internal sealed class ManaApplicationContext : ApplicationContext
         // #525: Ctrl+Alt+Space types a command instead of speaking one,
         // through the exact same turn-processing path.
         quickEntry = new QuickEntryForm(voiceLoop.SubmitTypedCommandAsync);
+        // #524: originally a no-op (no chat/session window existed on
+        // this branch yet) -- #521/#520 shipped one since, so this now
+        // does what the original comment here flagged as the real
+        // upgrade path. ToastNotificationManagerCompat.OnActivated fires
+        // on a threadpool thread, not this app's UI thread (it's raised
+        // via Windows Shell/COM activation, which can even relaunch the
+        // app), so ShowSessionList can't be wired directly -- it calls
+        // sessionListForm.Show()/Activate() with no marshaling of its
+        // own. Routed through sessionListForm's own Invoke instead, same
+        // IsDisposed-then-marshal shape as this codebase's other
+        // background-thread-to-UI call sites (e.g. ChatLogPanel's
+        // RunOnUiThread).
+        trayNotifications = new TrayNotificationClient(openChat: () =>
+        {
+            if (sessionListForm.IsDisposed)
+            {
+                return;
+            }
+            if (sessionListForm.InvokeRequired)
+            {
+                sessionListForm.BeginInvoke(ShowSessionList);
+                return;
+            }
+            ShowSessionList();
+        });
 
         trayIcon = new NotifyIcon
         {
@@ -56,6 +82,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
 
         trayIcon.DoubleClick += (_, _) => ShowStatus();
         avatarOverlay.Show();
+        trayNotifications.Start();
 
         // Quick rundown: start the existing local services, but keep this host native and small.
         _ = StartServicesAsync();
@@ -185,6 +212,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
     protected override void ExitThreadCore()
     {
         statusTimer.Stop();
+        trayNotifications.Dispose();
         voiceLoop.Dispose();
         audioPlayer.Dispose();
         sileroVad.Dispose();
