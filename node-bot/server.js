@@ -64,7 +64,10 @@ const { createVTubeRuntime } = require("./vtube-runtime");
 	const { registerMobileRoutes } = require("./mobile-routes");
 	const { createMobileAuth } = require("./mobile-auth");
 	const { createMobileMemoryStore } = require("./mobile-memory-store");
-	const { registerCoreRoutes, isLocalRestartRequest } = require("./server-routes");
+	const {
+  registerCoreRoutes,
+  isLocalRestartRequest,
+} = require("./server-routes");
 	const {
 	  buildCapabilityHealth,
 	  contributePluginPromptContext,
@@ -5016,15 +5019,15 @@ function registerRoutes(app, upload, deps = {}) {
               })
               .catch((memErr) =>
                 console.warn(
-                  "Failed to append vision turn to ACP memory:",
+                  "Failed to append turn to ACP memory:",
                   memErr?.message || memErr,
                 ),
               );
           }
         } catch (memErr) {
           console.warn(
-            "Failed to append vision turn to ACP memory:",
-            memErr?.message || memErr,
+            "Failed to append turn to ACP memory:",
+            memErr.message,
           );
         }
       }),

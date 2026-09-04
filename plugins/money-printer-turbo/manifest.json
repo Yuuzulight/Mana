@@ -1,0 +1,21 @@
+{
+  "id": "money-printer-turbo",
+  "name": "MoneyPrinterTurbo Add-on",
+  "description": "End-to-end short-form video generation: AI script → matching footage → synchronized subtitles → narration/music → cross-platform publish to TikTok/Instagram/YouTube Shorts.",
+  "type": "addon",
+  "tier": "advanced",
+  "version": "1.0.0",
+  "author": "Yuuzulight",
+  "requirements": [
+    "ffmpeg >= 6.0",
+    "nodejs >= 20.x",
+    "npm packages: axios, openai, pexels-api-client"
+  ],
+  "permissions": [
+    "read:llm-endpoints",
+    "write:local-files",
+    "oauth:tiktok",
+    "oauth:instagram",
+    "oauth:youtube"
+  ]
+}

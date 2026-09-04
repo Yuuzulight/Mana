@@ -1,40 +1,26 @@
-name: CI
+name: .NET Build & Test
 
 on:
   push:
-    branches: [ main ]
+    branches: [ issue-500-refactor, main ]
   pull_request:
     branches: [ main ]
 
-permissions:
-  contents: read
-
 jobs:
-  fast-node-tests:
-    name: Fast Node tests (unit + pairing smoke)
-    runs-on: ubuntu-latest
+  build:
+    runs-on: windows-latest
+
     steps:
-      - name: Checkout
+      - name: Checkout code
         uses: actions/checkout@v4
+
+      - name: Setup .NET SDK
+        uses: actions/setup-dotnet@v4
         with:
-          fetch-depth: 0
+          dotnet-version: '8.0.x'
 
-      - name: Setup Node
-        uses: actions/setup-node@v3
-        with:
-          node-version: 18.18.0
+      - name: Restore dependencies
+        run: dotnet restore windows-native-launcher/ManaNativeLauncher.csproj
 
-      - name: Install dependencies for node-bot
-        working-directory: ./node-bot
-        run: |
-          npm ci --prefer-offline --no-audit --progress=false
-
-      - name: Run fast tests
-        working-directory: ./node-bot
-        env:
-          SKIP_HEAVY_MODEL_TESTS: 1
-        run: |
-          echo "Running fast node tests (skipping heavy model tests)"
-          npm test
-
-  # Packaging is handled in Heavy CI (opt-in). Keep this CI minimal to provide fast feedback.
+      - name: Build project
+        run: dotnet build windows-native-launcher/ManaNativeLauncher.csproj --configuration Release /v:minimal

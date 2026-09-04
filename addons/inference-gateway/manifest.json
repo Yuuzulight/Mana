@@ -1,0 +1,21 @@
+{
+  "id": "inference-gateway",
+  "name": "Mana Inference Gateway (Multi-Backend Orchestrator)",
+  "version": "0.1.0",
+  "tier": "addon",
+  "requiresConsent": true,
+  "description": "Hardware-aware inference routing combining vLLM (GPU prod), llama.cpp (CPU/edge), and Colibri (MoE optimization) behind a unified OpenAI-compatible API.",
+  "dependencies": ["fastapi", "uvicorn", "httpx", "ossy"],
+  "config": {
+    "default-runtime": "vllm",
+    "fallback-chain": ["vllm", "llama.cpp", "colibri"],
+    "health-check-interval": 30,
+    "max-concurrent-requests": 10,
+    "timeout-per-request": 60,
+    "model-registry-path": "./models/registry.json"
+  },
+  "endpoints": {
+    "api": "/v1/chat/completions",
+    "consent": "/addons/consent/inference-gateway"
+  }
+}
