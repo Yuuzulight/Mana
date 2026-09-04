@@ -153,11 +153,19 @@ internal sealed class ManaBackendClient
     // #522: screenText is always sent (defaulting to "", matching
     // windows-launcher's own requestScreenAwareReply, which always
     // includes the field even when readScreenContext came back empty).
-    public async IAsyncEnumerable<ReplyStreamEvent> ReplyStreamAsync(string text, string? sessionId = null, string screenText = "")
+    // #523: image (a "data:image/jpeg;base64,..." string) is, like
+    // sessionId, only included in the JSON payload when present -- an
+    // absent image key (not an empty one) is what tells node-bot's
+    // handler this is a text-only turn.
+    public async IAsyncEnumerable<ReplyStreamEvent> ReplyStreamAsync(string text, string? sessionId = null, string screenText = "", string? image = null)
     {
-        var payload = sessionId is null
-            ? JsonSerializer.Serialize(new { text, screenText })
-            : JsonSerializer.Serialize(new { text, sessionId, screenText });
+        var payload = (sessionId, image) switch
+        {
+            (null, null) => JsonSerializer.Serialize(new { text, screenText }),
+            (not null, null) => JsonSerializer.Serialize(new { text, sessionId, screenText }),
+            (null, not null) => JsonSerializer.Serialize(new { text, screenText, image }),
+            (not null, not null) => JsonSerializer.Serialize(new { text, sessionId, screenText, image }),
+        };
         using var content = new StringContent(payload, Encoding.UTF8, "application/json");
         using var request = new HttpRequestMessage(HttpMethod.Post, "/reply/stream") { Content = content };
         using var response = await http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead);

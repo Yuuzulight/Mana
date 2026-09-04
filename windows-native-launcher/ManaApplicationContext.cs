@@ -17,6 +17,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
     private readonly SileroVadRunner sileroVad;
     private readonly AudioPlayer audioPlayer;
     private readonly VoiceLoop voiceLoop;
+    private readonly VisionHotkeyListener visionHotkeyListener;
     private readonly TrayNotificationClient trayNotifications;
     private readonly ArtifactViewerForm artifactViewer;
     private readonly QuickEntryForm quickEntry;
@@ -53,6 +54,9 @@ internal sealed class ManaApplicationContext : ApplicationContext
         // constructed above it.
         var screenContextReader = new ScreenContextReader(rootDir, backendClient);
         voiceLoop = new VoiceLoop(sileroVad, backendClient, audioPlayer, avatarOverlay, chatLog, artifactViewer, screenContextReader, () => gamingModeActive);
+        // #523: Ctrl+Alt+M asks Mana to look at the screen, through the
+        // same reply/TTS pipeline a normal turn uses.
+        visionHotkeyListener = new VisionHotkeyListener(() => _ = voiceLoop.SubmitVisionHotkeyAsync());
         sessionListForm = new SessionListForm(backendClient, voiceLoop, chatLog, avatarOverlay);
         // #525: Ctrl+Alt+Space types a command instead of speaking one,
         // through the exact same turn-processing path.
@@ -224,6 +228,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
     protected override void ExitThreadCore()
     {
         statusTimer.Stop();
+        visionHotkeyListener.Dispose();
         trayNotifications.Dispose();
         voiceLoop.Dispose();
         audioPlayer.Dispose();
