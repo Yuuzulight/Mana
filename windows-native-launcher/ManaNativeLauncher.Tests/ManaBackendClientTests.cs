@@ -102,6 +102,53 @@ public class ManaBackendClientTests
     }
 
     [Fact]
+    public async Task ReadScreenAsync_PostsTheImageAndReturnsText()
+    {
+        string? path = null;
+        string? body = null;
+        var handler = new FakeHttpMessageHandler(request =>
+        {
+            path = request.RequestUri!.AbsolutePath;
+            body = request.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("{\"text\":\"a browser window\"}", Encoding.UTF8, "application/json"),
+            };
+        });
+        var client = new ManaBackendClient(handler);
+
+        var text = await client.ReadScreenAsync("data:image/jpeg;base64,AAAA");
+
+        Assert.Equal("/screen/read", path);
+        Assert.Contains("\"image\":\"data:image/jpeg;base64,AAAA\"", body);
+        Assert.Equal("a browser window", text);
+    }
+
+    [Fact]
+    public async Task ReplyStreamAsync_IncludesScreenTextInTheRequestBody()
+    {
+        string? body = null;
+        var handler = new FakeHttpMessageHandler(request =>
+        {
+            body = request.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(
+                    "{\"type\":\"final\",\"reply\":\"ok\",\"changed\":false}\n",
+                    Encoding.UTF8,
+                    "application/x-ndjson"),
+            };
+        });
+        var client = new ManaBackendClient(handler);
+
+        await foreach (var _ in client.ReplyStreamAsync("hi", screenText: "a chat window is open"))
+        {
+        }
+
+        Assert.Contains("\"screenText\":\"a chat window is open\"", body);
+    }
+
+    [Fact]
     public async Task ReplyStreamAsync_PostsToReplyStreamAndYieldsEventsInOrder()
     {
         string? path = null;

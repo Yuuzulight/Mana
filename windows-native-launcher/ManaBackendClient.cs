@@ -150,11 +150,14 @@ internal sealed class ManaBackendClient
     // ACP memory-store session instead of node-bot's implicit "default"
     // one -- omitted (not sent as null) exactly matches every call this
     // launcher made before session support existed.
-    public async IAsyncEnumerable<ReplyStreamEvent> ReplyStreamAsync(string text, string? sessionId = null)
+    // #522: screenText is always sent (defaulting to "", matching
+    // windows-launcher's own requestScreenAwareReply, which always
+    // includes the field even when readScreenContext came back empty).
+    public async IAsyncEnumerable<ReplyStreamEvent> ReplyStreamAsync(string text, string? sessionId = null, string screenText = "")
     {
         var payload = sessionId is null
-            ? JsonSerializer.Serialize(new { text })
-            : JsonSerializer.Serialize(new { text, sessionId });
+            ? JsonSerializer.Serialize(new { text, screenText })
+            : JsonSerializer.Serialize(new { text, sessionId, screenText });
         using var content = new StringContent(payload, Encoding.UTF8, "application/json");
         using var request = new HttpRequestMessage(HttpMethod.Post, "/reply/stream") { Content = content };
         using var response = await http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead);
@@ -172,6 +175,21 @@ internal sealed class ManaBackendClient
             using var document = JsonDocument.Parse(line);
             yield return ParseReplyStreamEvent(document.RootElement);
         }
+    }
+
+    // #522: OCR fallback for screen context when the UI Automation tree
+    // (ScreenContextReader) isn't usable. imageDataUrl is a full
+    // "data:image/jpeg;base64,..." string, matching what node-bot's
+    // /screen/read already expects from windows-launcher.
+    public async Task<string> ReadScreenAsync(string imageDataUrl)
+    {
+        var payload = JsonSerializer.Serialize(new { image = imageDataUrl });
+        using var content = new StringContent(payload, Encoding.UTF8, "application/json");
+        using var response = await http.PostAsync("/screen/read", content);
+        response.EnsureSuccessStatusCode();
+        await using var stream = await response.Content.ReadAsStreamAsync();
+        using var document = await JsonDocument.ParseAsync(stream);
+        return document.RootElement.TryGetProperty("text", out var textElement) ? textElement.GetString() ?? "" : "";
     }
 
     // #527: node-bot's configured llama-server profiles -- see

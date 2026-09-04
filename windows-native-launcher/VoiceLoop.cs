@@ -107,6 +107,14 @@ internal sealed class VoiceLoop : IDisposable
     private List<string>? heldSentences;
     private int heldStackDepth;
 
+    // #522: ScreenContextReader owns its own min-interval/keyword-gate
+    // caching internally, so this is just held and called, same as
+    // backendClient. isGamingModeActive is a delegate (not a captured
+    // bool) so VoiceLoop always sees ManaApplicationContext's current
+    // tray-status poll result, not a stale snapshot from construction time.
+    private readonly ScreenContextReader? screenContextReader;
+    private readonly Func<bool> isGamingModeActive;
+
     // #528: null (no artifact viewer constructed) is a no-op everywhere
     // it's used -- see IArtifactSink's own header comment.
     private readonly IArtifactSink? artifactSink;
@@ -131,7 +139,9 @@ internal sealed class VoiceLoop : IDisposable
         AudioPlayer audioPlayer,
         AvatarOverlayForm avatarOverlay,
         IChatLog? chatLog = null,
-        IArtifactSink? artifactSink = null)
+        IArtifactSink? artifactSink = null,
+        ScreenContextReader? screenContextReader = null,
+        Func<bool>? isGamingModeActive = null)
     {
         this.vad = vad;
         this.backendClient = backendClient;
@@ -139,6 +149,12 @@ internal sealed class VoiceLoop : IDisposable
         this.avatarOverlay = avatarOverlay;
         this.chatLog = chatLog;
         this.artifactSink = artifactSink;
+        this.screenContextReader = screenContextReader;
+        // Never actually invoked unless screenContextReader is also
+        // non-null (see the read-site below) -- defaulted to a fixed
+        // false rather than left nullable so that call site doesn't need
+        // its own separate null-check for this one.
+        this.isGamingModeActive = isGamingModeActive ?? (() => false);
         streamingReplyPlayer = new StreamingReplyPlayer(
             backendClient,
             audioPlayer.PlayAsync,
@@ -538,6 +554,18 @@ internal sealed class VoiceLoop : IDisposable
             return;
         }
 
+        // #522: computed once per turn (not per SpeakReplyAsync call --
+        // the amend/new_question/fresh-turn branches below all still
+        // describe the same single user turn) and reused across every
+        // SpeakReplyAsync call site this dispatch might reach. "" (no
+        // screen-context reader configured) is a no-op -- screenText is
+        // always a string throughout this class/ReplyStreamAsync, never
+        // null, same convention chatLog/artifactSink use nullability for
+        // instead.
+        var screenText = screenContextReader is null
+            ? ""
+            : await screenContextReader.ReadAsync(commandText, isGamingModeActive());
+
         // #521: logged once per turn here (not per SpeakReplyAsync call
         // site below) -- the amend/new_question/fresh-turn branches all
         // still describe the same single user turn.
@@ -554,7 +582,7 @@ internal sealed class VoiceLoop : IDisposable
                 // classification needed since there's nothing left to
                 // resume/discard against. Mirrors windows-launcher's
                 // handleBargeInTrigger wasNested branch.
-                await SpeakReplyAsync(commandText);
+                await SpeakReplyAsync(commandText, screenText);
                 return;
             }
 
@@ -604,7 +632,7 @@ internal sealed class VoiceLoop : IDisposable
                         // interruption's own ProcessTurnAsync to
                         // discard/consume (the `nested` branch above);
                         // only clear it and resume when it truly completed.
-                        var answerCompleted = await SpeakReplyAsync(commandText);
+                        var answerCompleted = await SpeakReplyAsync(commandText, screenText);
                         if (answerCompleted)
                         {
                             lock (stateLock)
@@ -628,7 +656,7 @@ internal sealed class VoiceLoop : IDisposable
             }
         }
 
-        await SpeakReplyAsync(commandText);
+        await SpeakReplyAsync(commandText, screenText);
     }
 
     // #513: the early-exit counterpart to the dispatch at the bottom of
@@ -666,7 +694,7 @@ internal sealed class VoiceLoop : IDisposable
     // block nulls heldReply on any capture/transcribe/classify failure) --
     // failure and interruption are NOT distinguished by this return value;
     // both mean "don't resume".
-    private async Task<bool> SpeakReplyAsync(string commandText)
+    private async Task<bool> SpeakReplyAsync(string commandText, string screenText = "")
     {
         string? reply;
         bool changed;
@@ -674,7 +702,7 @@ internal sealed class VoiceLoop : IDisposable
         IReadOnlyList<string> pending;
         try
         {
-            (reply, changed, _, interrupted, pending) = await streamingReplyPlayer.StreamReplyAndPlayAsync(commandText, currentSessionId, text => chatLog?.AppendReplySentence(text));
+            (reply, changed, _, interrupted, pending) = await streamingReplyPlayer.StreamReplyAndPlayAsync(commandText, currentSessionId, text => chatLog?.AppendReplySentence(text), screenText);
         }
         catch (Exception ex)
         {

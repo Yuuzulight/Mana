@@ -22,6 +22,12 @@ internal sealed class ManaApplicationContext : ApplicationContext
     private readonly QuickEntryForm quickEntry;
     private readonly SessionListForm sessionListForm;
 
+    // #522: updated by RefreshTrayStatusAsync's existing 5s poll --
+    // VoiceLoop reads it (via a delegate, not a captured snapshot) to
+    // pick the screen-context read interval, same signal the tray icon
+    // text already reflects.
+    private bool gamingModeActive;
+
     public ManaApplicationContext()
     {
         var rootDir = FindRootDirectory();
@@ -41,7 +47,12 @@ internal sealed class ManaApplicationContext : ApplicationContext
         // VoiceLoop's IChatLog -- SessionListForm only needs the control
         // itself (to embed it), not the other way around.
         var chatLog = new ChatLogPanel();
-        voiceLoop = new VoiceLoop(sileroVad, backendClient, audioPlayer, avatarOverlay, chatLog, artifactViewer);
+        // #522: ScreenContextReader owns its own min-interval/keyword-gate
+        // caching internally, so this is just held and passed straight
+        // through to VoiceLoop, same as the other optional collaborators
+        // constructed above it.
+        var screenContextReader = new ScreenContextReader(rootDir, backendClient);
+        voiceLoop = new VoiceLoop(sileroVad, backendClient, audioPlayer, avatarOverlay, chatLog, artifactViewer, screenContextReader, () => gamingModeActive);
         sessionListForm = new SessionListForm(backendClient, voiceLoop, chatLog, avatarOverlay);
         // #525: Ctrl+Alt+Space types a command instead of speaking one,
         // through the exact same turn-processing path.
@@ -125,6 +136,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
         try
         {
             var status = await backendClient.GetPerformanceStatusAsync();
+            gamingModeActive = status.GamingAppRunning;
             trayIcon.Text = status.GamingAppRunning ? "Mana - game mode" : "Mana";
         }
         catch
