@@ -18,6 +18,9 @@ internal sealed class ManaApplicationContext : ApplicationContext
     private readonly AudioPlayer audioPlayer;
     private readonly VoiceLoop voiceLoop;
     private readonly TrayNotificationClient trayNotifications;
+    private readonly ArtifactViewerForm artifactViewer;
+    private readonly QuickEntryForm quickEntry;
+    private readonly SessionListForm sessionListForm;
 
     public ManaApplicationContext()
     {
@@ -33,13 +36,41 @@ internal sealed class ManaApplicationContext : ApplicationContext
         // model is loaded (LipSyncDriver still runs, just nothing reads
         // its output).
         audioPlayer = new AudioPlayer(avatarOverlay.LipSyncDriver.OnSamplesPlayed);
-        voiceLoop = new VoiceLoop(sileroVad, backendClient, audioPlayer, avatarOverlay);
-        // #524: no visible chat/session window exists yet (tracked in
-        // #521) -- once it does, this should restore/focus it instead of
-        // doing nothing. Toast activation can fire on a background
-        // thread, so that future implementation will need to marshal
-        // back to the window's own UI thread before touching it.
-        trayNotifications = new TrayNotificationClient(openChat: () => { });
+        artifactViewer = new ArtifactViewerForm();
+        // #521: constructed before voiceLoop so it can be passed in as
+        // VoiceLoop's IChatLog -- SessionListForm only needs the control
+        // itself (to embed it), not the other way around.
+        var chatLog = new ChatLogPanel();
+        voiceLoop = new VoiceLoop(sileroVad, backendClient, audioPlayer, avatarOverlay, chatLog, artifactViewer);
+        sessionListForm = new SessionListForm(backendClient, voiceLoop, chatLog, avatarOverlay);
+        // #525: Ctrl+Alt+Space types a command instead of speaking one,
+        // through the exact same turn-processing path.
+        quickEntry = new QuickEntryForm(voiceLoop.SubmitTypedCommandAsync);
+        // #524: originally a no-op (no chat/session window existed on
+        // this branch yet) -- #521/#520 shipped one since, so this now
+        // does what the original comment here flagged as the real
+        // upgrade path. ToastNotificationManagerCompat.OnActivated fires
+        // on a threadpool thread, not this app's UI thread (it's raised
+        // via Windows Shell/COM activation, which can even relaunch the
+        // app), so ShowSessionList can't be wired directly -- it calls
+        // sessionListForm.Show()/Activate() with no marshaling of its
+        // own. Routed through sessionListForm's own Invoke instead, same
+        // IsDisposed-then-marshal shape as this codebase's other
+        // background-thread-to-UI call sites (e.g. ChatLogPanel's
+        // RunOnUiThread).
+        trayNotifications = new TrayNotificationClient(openChat: () =>
+        {
+            if (sessionListForm.IsDisposed)
+            {
+                return;
+            }
+            if (sessionListForm.InvokeRequired)
+            {
+                sessionListForm.BeginInvoke(ShowSessionList);
+                return;
+            }
+            ShowSessionList();
+        });
 
         trayIcon = new NotifyIcon
         {
@@ -68,6 +99,10 @@ internal sealed class ManaApplicationContext : ApplicationContext
     {
         var menu = new ContextMenuStrip();
         menu.Items.Add("Show status", null, (_, _) => ShowStatus());
+        menu.Items.Add("Artifact Viewer", null, (_, _) => { artifactViewer.Show(); artifactViewer.Activate(); });
+        menu.Items.Add("Compare Models", null, (_, _) => new CompareModeForm(backendClient).Show());
+        menu.Items.Add("Doctor", null, (_, _) => ShowDoctorPanel());
+        menu.Items.Add("Sessions", null, (_, _) => ShowSessionList());
         menu.Items.Add("Open project folder", null, (_, _) => OpenProjectFolder());
         menu.Items.Add("Set avatar idle", null, (_, _) => avatarOverlay.SetState(AvatarState.Idle));
         menu.Items.Add("Set avatar talking", null, (_, _) => avatarOverlay.SetState(AvatarState.Talking));
@@ -119,6 +154,24 @@ internal sealed class ManaApplicationContext : ApplicationContext
         }
     }
 
+    // #526: a fresh dialog per open -- simpler than keeping one instance
+    // alive/reused (QuickEntryForm's own pattern), and this isn't opened
+    // often enough for that cost to matter.
+    private void ShowDoctorPanel()
+    {
+        using var panel = new DoctorPanelForm(backendClient);
+        panel.ShowDialog();
+    }
+
+    // #520: reused (Hide, not Close), so Load's own one-time-only refresh
+    // isn't enough -- explicitly refresh on every open instead.
+    private void ShowSessionList()
+    {
+        sessionListForm.Show();
+        sessionListForm.Activate();
+        _ = sessionListForm.RefreshAsync();
+    }
+
     // #479 review: `status.TtsProvider` is node-bot's *configured* value
     // (the TTS_PROVIDER env var this launcher itself sets to "fish") --
     // not whether Fish Speech's native process is actually up. Without
@@ -166,6 +219,13 @@ internal sealed class ManaApplicationContext : ApplicationContext
         trayIcon.Visible = false;
         trayIcon.Dispose();
         avatarOverlay.Close();
+        // Dispose, not Close -- OnFormClosing overrides UserClosing to
+        // Hide-and-cancel for the reuse pattern, so a plain Close() here
+        // would risk not actually tearing the window down.
+        artifactViewer.Dispose();
+        quickEntry.Close();
+        // #520: same Dispose-not-Close reasoning as artifactViewer above.
+        sessionListForm.Dispose();
         processManager.Dispose();
         base.ExitThreadCore();
     }
