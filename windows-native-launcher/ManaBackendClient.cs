@@ -42,6 +42,61 @@ internal sealed class ManaBackendClient
         };
     }
 
+    // #526: unlike GetPerformanceStatusAsync, this does NOT call
+    // EnsureSuccessStatusCode unconditionally -- node-bot's own /doctor
+    // handler returns 503 (not 200) precisely when it found real
+    // problems, still with a fully-shaped, parseable result body. Only a
+    // genuinely unexpected status (500: the doctor run itself errored)
+    // should throw.
+    public async Task<ManaDoctorResult> GetDoctorResultAsync()
+    {
+        using var response = await http.GetAsync("/doctor");
+        if (!response.IsSuccessStatusCode && response.StatusCode != System.Net.HttpStatusCode.ServiceUnavailable)
+        {
+            response.EnsureSuccessStatusCode();
+        }
+
+        await using var stream = await response.Content.ReadAsStreamAsync();
+        using var document = await JsonDocument.ParseAsync(stream);
+        var root = document.RootElement;
+
+        var ok = root.TryGetProperty("ok", out var okElement) && okElement.GetBoolean();
+
+        var pass = 0;
+        var warn = 0;
+        var fail = 0;
+        if (root.TryGetProperty("summary", out var summaryElement))
+        {
+            pass = summaryElement.TryGetProperty("pass", out var passElement) ? passElement.GetInt32() : 0;
+            warn = summaryElement.TryGetProperty("warn", out var warnElement) ? warnElement.GetInt32() : 0;
+            fail = summaryElement.TryGetProperty("fail", out var failElement) ? failElement.GetInt32() : 0;
+        }
+
+        var checks = new List<ManaDoctorCheck>();
+        if (root.TryGetProperty("checks", out var checksElement))
+        {
+            foreach (var checkElement in checksElement.EnumerateArray())
+            {
+                checks.Add(new ManaDoctorCheck
+                {
+                    Id = checkElement.TryGetProperty("id", out var idElement) ? idElement.GetString() ?? "" : "",
+                    Label = checkElement.TryGetProperty("label", out var labelElement) ? labelElement.GetString() ?? "" : "",
+                    Status = checkElement.TryGetProperty("status", out var statusElement) ? statusElement.GetString() ?? "" : "",
+                    Message = checkElement.TryGetProperty("message", out var messageElement) ? messageElement.GetString() ?? "" : "",
+                });
+            }
+        }
+
+        return new ManaDoctorResult
+        {
+            Ok = ok,
+            Pass = pass,
+            Warn = warn,
+            Fail = fail,
+            Checks = checks,
+        };
+    }
+
     public async Task<string> TranscribeAsync(byte[] wavBytes)
     {
         using var content = new MultipartFormDataContent();
@@ -375,6 +430,24 @@ internal sealed class ManaPerformanceStatus
     public int TotalMemoryMb { get; init; }
     public string TtsProvider { get; init; } = "unknown";
     public bool GamingAppRunning { get; init; }
+}
+
+// #526: node-bot's GET /doctor result -- see doctor.js's buildDoctorResult.
+internal sealed class ManaDoctorResult
+{
+    public bool Ok { get; init; }
+    public int Pass { get; init; }
+    public int Warn { get; init; }
+    public int Fail { get; init; }
+    public IReadOnlyList<ManaDoctorCheck> Checks { get; init; } = System.Array.Empty<ManaDoctorCheck>();
+}
+
+internal sealed class ManaDoctorCheck
+{
+    public string Id { get; init; } = "";
+    public string Label { get; init; } = "";
+    public string Status { get; init; } = "";
+    public string Message { get; init; } = "";
 }
 
 // #520: a row from GET /sessions -- see acp-memory-store.js's
