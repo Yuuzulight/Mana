@@ -18,11 +18,12 @@ const axios = require('axios');
 class ShortVideoGenerator {
   constructor(config = {}) {
     this.config = config;
-    this.tempDir = path.join(process.env.HOME || process.env.USERPROFILE, '.mana', 'short-video-gen');
+    this.tempDir = config.tempBase || path.join(process.env.HOME || process.env.USERPROFILE, '.mana', 'short-video-gen');
     this.ensureTempDir();
     
     // Stage outputs (for pipeline tracking)
     this.stageOutputs = {
+      topic: null,
       script: null,
       footage: [],
       subtitles: null,
@@ -53,6 +54,7 @@ Narration: ${this.generateNarration(topic)}
 "Follow for more [topic niche] insights!"`;
 
     this.stageOutputs.script = script;
+    this.stageOutputs.topic = topic;
     return script;
   }
 
@@ -78,7 +80,7 @@ Did you know... [key fact about topic]?
 
 2
 00:00:05,000 --> 00:00:45,000
-${this.generateNarration(topic)}
+${this.generateNarration(this.stageOutputs.topic)}
 
 3
 00:00:45,000 --> 00:01:00,000
