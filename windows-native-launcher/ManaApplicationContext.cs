@@ -17,6 +17,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
     private readonly SileroVadRunner sileroVad;
     private readonly AudioPlayer audioPlayer;
     private readonly VoiceLoop voiceLoop;
+    private readonly ArtifactViewerForm artifactViewer;
     private readonly QuickEntryForm quickEntry;
     private readonly SessionListForm sessionListForm;
 
@@ -34,11 +35,12 @@ internal sealed class ManaApplicationContext : ApplicationContext
         // model is loaded (LipSyncDriver still runs, just nothing reads
         // its output).
         audioPlayer = new AudioPlayer(avatarOverlay.LipSyncDriver.OnSamplesPlayed);
+        artifactViewer = new ArtifactViewerForm();
         // #521: constructed before voiceLoop so it can be passed in as
         // VoiceLoop's IChatLog -- SessionListForm only needs the control
         // itself (to embed it), not the other way around.
         var chatLog = new ChatLogPanel();
-        voiceLoop = new VoiceLoop(sileroVad, backendClient, audioPlayer, avatarOverlay, chatLog);
+        voiceLoop = new VoiceLoop(sileroVad, backendClient, audioPlayer, avatarOverlay, chatLog, artifactViewer);
         sessionListForm = new SessionListForm(backendClient, voiceLoop, chatLog, avatarOverlay);
         // #525: Ctrl+Alt+Space types a command instead of speaking one,
         // through the exact same turn-processing path.
@@ -70,6 +72,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
     {
         var menu = new ContextMenuStrip();
         menu.Items.Add("Show status", null, (_, _) => ShowStatus());
+        menu.Items.Add("Artifact Viewer", null, (_, _) => { artifactViewer.Show(); artifactViewer.Activate(); });
         menu.Items.Add("Compare Models", null, (_, _) => new CompareModeForm(backendClient).Show());
         menu.Items.Add("Doctor", null, (_, _) => ShowDoctorPanel());
         menu.Items.Add("Sessions", null, (_, _) => ShowSessionList());
@@ -188,10 +191,12 @@ internal sealed class ManaApplicationContext : ApplicationContext
         trayIcon.Visible = false;
         trayIcon.Dispose();
         avatarOverlay.Close();
+        // Dispose, not Close -- OnFormClosing overrides UserClosing to
+        // Hide-and-cancel for the reuse pattern, so a plain Close() here
+        // would risk not actually tearing the window down.
+        artifactViewer.Dispose();
         quickEntry.Close();
-        // #520: Dispose, not Close -- OnFormClosing overrides UserClosing
-        // to Hide-and-cancel for the reuse pattern, so a plain Close()
-        // here would risk not actually tearing the window down.
+        // #520: same Dispose-not-Close reasoning as artifactViewer above.
         sessionListForm.Dispose();
         processManager.Dispose();
         base.ExitThreadCore();

@@ -107,6 +107,10 @@ internal sealed class VoiceLoop : IDisposable
     private List<string>? heldSentences;
     private int heldStackDepth;
 
+    // #528: null (no artifact viewer constructed) is a no-op everywhere
+    // it's used -- see IArtifactSink's own header comment.
+    private readonly IArtifactSink? artifactSink;
+
     // #520: which ACP memory-store session outgoing turns are appended
     // to; null (the default, and every pre-#520 turn's behavior) means
     // node-bot's implicit "default" session, not sent as an explicit
@@ -126,13 +130,15 @@ internal sealed class VoiceLoop : IDisposable
         ManaBackendClient backendClient,
         AudioPlayer audioPlayer,
         AvatarOverlayForm avatarOverlay,
-        IChatLog? chatLog = null)
+        IChatLog? chatLog = null,
+        IArtifactSink? artifactSink = null)
     {
         this.vad = vad;
         this.backendClient = backendClient;
         this.audioPlayer = audioPlayer;
         this.avatarOverlay = avatarOverlay;
         this.chatLog = chatLog;
+        this.artifactSink = artifactSink;
         streamingReplyPlayer = new StreamingReplyPlayer(
             backendClient,
             audioPlayer.PlayAsync,
@@ -690,6 +696,12 @@ internal sealed class VoiceLoop : IDisposable
             HoldIfNothingHeld(pending);
             return false;
         }
+
+        // #528: reported once per successful (non-interrupted) reply,
+        // regardless of whether it streamed or fell back to the
+        // non-streamed path below -- reply is the true final text
+        // either way by this point.
+        artifactSink?.ReportReply(reply ?? "");
 
         if (!changed)
         {
