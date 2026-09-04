@@ -27,6 +27,13 @@ internal static class DarkTheme
     public static readonly Color UserBubble = ColorTranslator.FromHtml("#3a3560");
     public static readonly Color ManaBubble = ColorTranslator.FromHtml("#2a2725");
 
+    // windows-launcher/renderer/theme-tokens.css's --green/--warn -- not
+    // previously needed here since DoctorPanelForm's pass/warn/fail colors
+    // are dark-tinted row backgrounds, not this bright a status-text/fill
+    // color.
+    public static readonly Color Green = ColorTranslator.FromHtml("#3fb96a");
+    public static readonly Color Warn = ColorTranslator.FromHtml("#d99a2b");
+
     // #538's own code-span color (DarkSlateGray) assumed a light background
     // -- unreadable on this one, so this is a new pick, not a port.
     public static readonly Color CodeText = ColorTranslator.FromHtml("#e0b975");

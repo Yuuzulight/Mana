@@ -1,3 +1,5 @@
+using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.Net;
 using System.Net.Http;
 using System.Threading.Tasks;
@@ -62,6 +64,43 @@ public class ManaProcessManagerTests
         // unavailable so a caller (the tray status) can tell the user
         // Kokoro is silently covering for it.
         Assert.False(manager.IsFishSpeechAvailable);
+    }
+
+    [Fact]
+    public async Task StartAsync_ReportsProgressForEachServiceByKey()
+    {
+        // #479 follow-up (startup overlay): onServiceReady must fire once
+        // per service with the same keys the overlay's row definitions
+        // use ("backend"/"kokoro"/"fish-speech"), not e.g. a display label
+        // -- a mismatch here would silently leave that row stuck on
+        // "Waiting..." forever.
+        var handler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.OK));
+        using var manager = new ManaProcessManager(@"C:\does-not-exist", handler);
+        var reported = new ConcurrentDictionary<string, bool>();
+
+        await manager.StartAsync((key, available) => reported[key] = available);
+
+        Assert.Equal(
+            new Dictionary<string, bool> { ["backend"] = true, ["kokoro"] = true, ["fish-speech"] = true },
+            new Dictionary<string, bool>(reported));
+    }
+
+    [Fact]
+    public async Task StopAllAsync_ReportsStoppedForEveryServiceWithNoProcessHandleToKill()
+    {
+        // No StartAsync call means backendProcess/kokoroProcess/
+        // fishSpeechProcess are all still null (nothing this manager
+        // itself launched) -- StopAllAsync must report each as stopped
+        // rather than hang or throw trying to kill a process it never
+        // actually holds a handle for.
+        using var manager = new ManaProcessManager(@"C:\does-not-exist");
+        var reported = new ConcurrentDictionary<string, bool>();
+
+        await manager.StopAllAsync((key, stopped) => reported[key] = stopped);
+
+        Assert.Equal(
+            new Dictionary<string, bool> { ["backend"] = true, ["kokoro"] = true, ["fish-speech"] = true },
+            new Dictionary<string, bool>(reported));
     }
 
     [Fact]

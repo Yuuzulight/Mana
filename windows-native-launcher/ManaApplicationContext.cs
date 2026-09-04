@@ -29,6 +29,24 @@ internal sealed class ManaApplicationContext : ApplicationContext
     // text already reflects.
     private bool gamingModeActive;
 
+    // The 3 services ManaProcessManager actually starts/stops -- shared
+    // between the startup and shutdown overlays, same as windows-launcher's
+    // single #startupOverlay markup being reused for both (there it also
+    // tracks Voice/Web search/Local AI, which don't apply here: this
+    // launcher waits on one backend health check for all of node-bot's own
+    // internal readiness, not separate per-feature ones).
+    private static readonly (string Key, string Label)[] ServiceRows =
+    {
+        ("backend", "Backend"),
+        ("kokoro", "Kokoro TTS"),
+        ("fish-speech", "Fish Speech TTS"),
+    };
+
+    // Guards against "Exit Mana" clicked twice while ShutdownAsync's own
+    // overlay/graceful-stop is still running -- without it, a second click
+    // would show a second overlay and re-kill already-exiting processes.
+    private bool isShuttingDown;
+
     public ManaApplicationContext()
     {
         var rootDir = FindRootDirectory();
@@ -124,15 +142,62 @@ internal sealed class ManaApplicationContext : ApplicationContext
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add("Restart Fish Speech", null, (_, _) => RestartFishSpeech());
         menu.Items.Add(new ToolStripSeparator());
-        menu.Items.Add("Exit Mana", null, (_, _) => ExitThread());
+        menu.Items.Add("Exit Mana", null, (_, _) => _ = ShutdownAsync());
         return menu;
     }
 
     private async Task StartServicesAsync()
     {
-        await processManager.StartAsync();
-        await RefreshTrayStatusAsync();
-        voiceLoop.Start();
+        var overlay = new StartupOverlayForm("Starting Mana", "Starting...", ServiceRows);
+        overlay.Show();
+        try
+        {
+            await processManager.StartAsync((key, available) =>
+                overlay.SetRowStatus(key, available ? "Ready" : "Unavailable", available ? RowState.Ready : RowState.Warn));
+            await RefreshTrayStatusAsync();
+            voiceLoop.Start();
+        }
+        finally
+        {
+            overlay.Close();
+        }
+    }
+
+    // #479 follow-up: mirrors windows-launcher's own close-intercept ->
+    // runGracefulShutdown() -> app.exit(0) flow. ExitThread() alone would
+    // tear the process down invisibly (no window to watch it happen in,
+    // just the tray icon vanishing) while backend/Kokoro/Fish Speech are
+    // still being killed -- this shows the same overlay startup used,
+    // relabeled, stops the 3 managed services with live per-row feedback,
+    // then actually exits. ExitThreadCore's own processManager.Dispose()
+    // still runs afterward as a synchronous safety net; StopAllAsync
+    // already leaves it nothing to do for services it stopped cleanly.
+    private async Task ShutdownAsync()
+    {
+        if (isShuttingDown)
+        {
+            return;
+        }
+        isShuttingDown = true;
+
+        var overlay = new StartupOverlayForm("Closing Mana", "Shutting down...", ServiceRows);
+        overlay.Show();
+        try
+        {
+            await processManager.StopAllAsync((key, stopped) =>
+                overlay.SetRowStatus(key, stopped ? "Stopped" : "Force-stopping", stopped ? RowState.Ready : RowState.Warn));
+            // Brief pause so the final "all stopped" frame is actually
+            // visible before the overlay (and everything else) vanishes --
+            // same reasoning as windows-launcher's own post-shutdown grace
+            // pause before app.exit(0).
+            await Task.Delay(400);
+        }
+        finally
+        {
+            overlay.Close();
+        }
+
+        ExitThread();
     }
 
     private async Task RefreshTrayStatusAsync()
