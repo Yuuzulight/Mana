@@ -112,23 +112,49 @@ internal sealed class VoiceLoop : IDisposable
     // backendClient. isGamingModeActive is a delegate (not a captured
     // bool) so VoiceLoop always sees ManaApplicationContext's current
     // tray-status poll result, not a stale snapshot from construction time.
-    private readonly ScreenContextReader screenContextReader;
+    private readonly ScreenContextReader? screenContextReader;
     private readonly Func<bool> isGamingModeActive;
+
+    // #528: null (no artifact viewer constructed) is a no-op everywhere
+    // it's used -- see IArtifactSink's own header comment.
+    private readonly IArtifactSink? artifactSink;
+
+    // #520: which ACP memory-store session outgoing turns are appended
+    // to; null (the default, and every pre-#520 turn's behavior) means
+    // node-bot's implicit "default" session, not sent as an explicit
+    // field. Unlike awake/heldSentences (touched only from the single-
+    // threaded turn-processing chain), this is written from the session
+    // list UI's own thread while a turn may be reading it on a thread-
+    // pool continuation -- volatile is enough (a plain reference swap,
+    // not a compound read-modify-write), no need for stateLock here.
+    private volatile string? currentSessionId;
+
+    // #521: null (no chat window constructed) is the common case and a
+    // no-op everywhere it's used -- see IChatLog's own header comment.
+    private readonly IChatLog? chatLog;
 
     public VoiceLoop(
         SileroVadRunner vad,
         ManaBackendClient backendClient,
         AudioPlayer audioPlayer,
         AvatarOverlayForm avatarOverlay,
-        ScreenContextReader screenContextReader,
-        Func<bool> isGamingModeActive)
+        IChatLog? chatLog = null,
+        IArtifactSink? artifactSink = null,
+        ScreenContextReader? screenContextReader = null,
+        Func<bool>? isGamingModeActive = null)
     {
         this.vad = vad;
         this.backendClient = backendClient;
         this.audioPlayer = audioPlayer;
         this.avatarOverlay = avatarOverlay;
+        this.chatLog = chatLog;
+        this.artifactSink = artifactSink;
         this.screenContextReader = screenContextReader;
-        this.isGamingModeActive = isGamingModeActive;
+        // Never actually invoked unless screenContextReader is also
+        // non-null (see the read-site below) -- defaulted to a fixed
+        // false rather than left nullable so that call site doesn't need
+        // its own separate null-check for this one.
+        this.isGamingModeActive = isGamingModeActive ?? (() => false);
         streamingReplyPlayer = new StreamingReplyPlayer(
             backendClient,
             audioPlayer.PlayAsync,
@@ -193,6 +219,13 @@ internal sealed class VoiceLoop : IDisposable
         resampled = null;
         captureBuffer = null;
     }
+
+    // #520: called by the session list UI on switch/new-chat. Deliberately
+    // doesn't touch heldSentences/mode -- switching sessions mid-reply is
+    // a user action on a separate window, not an interruption of Mana
+    // herself; whatever she's currently saying keeps playing against
+    // whichever session was active when that turn started.
+    public void SetSessionId(string? sessionId) => currentSessionId = sessionId;
 
     public void Dispose() => Stop();
 
@@ -372,6 +405,72 @@ internal sealed class VoiceLoop : IDisposable
         await ProcessTurnAsync(wavBytes, wasInterruption);
     }
 
+    // #525: entry point for typed input from the quick-entry popup.
+    // Typing is itself the deliberate trigger -- unlike voice, no wake
+    // word is required, and awake is set unconditionally. If Mana is
+    // actively speaking, this cuts her off and dispatches through the
+    // exact same interruption path (classification, hold/resume) a
+    // spoken barge-in uses, just triggered directly instead of detected
+    // via VAD: mirrors ProcessSpeakingFrame's own audioPlayer.Stop() call,
+    // but steps mode to Processing rather than CapturingInterruption since
+    // there's no audio segment to capture -- the text already arrived
+    // complete. Returns false without dispatching if a turn is already in
+    // flight (Processing) or an audio interruption is already being
+    // captured (CapturingInterruption); submitting again there would race
+    // two turns against the same state, so the caller (the popup) gets a
+    // clear "not accepted right now" instead of this silently corrupting
+    // shared state.
+    public async Task<bool> SubmitTypedCommandAsync(string text)
+    {
+        var trimmed = text.Trim();
+        if (trimmed.Length == 0)
+        {
+            return false;
+        }
+
+        bool wasInterruption;
+        lock (stateLock)
+        {
+            if (mode is ListenMode.Processing or ListenMode.CapturingInterruption)
+            {
+                return false;
+            }
+
+            wasInterruption = mode == ListenMode.Speaking;
+            if (wasInterruption)
+            {
+                audioPlayer.Stop();
+                // ponytail: a typed interruption has no equivalent to a
+                // voice barge-in's multi-second recording window, which is
+                // what actually lets the just-stopped reply's own
+                // HoldIfNothingHeld call (from its await chain's
+                // continuation, deferred to the thread pool by
+                // AudioPlayer's RunContinuationsAsynchronously) finish
+                // before anything reads heldSentences -- ProcessTurnAsync
+                // only reads it once the interruption's own segment
+                // finishes recording, seconds later. Reading it here
+                // instead, right after Stop() with nothing in between to
+                // yield on, would race that continuation and always lose.
+                // So this always discards whatever's in heldSentences (a
+                // stale hold, if any) rather than risk resuming the wrong
+                // thing; held is passed as null below, so
+                // DispatchCommandAsync still classifies the interruption
+                // (amend/correction/etc.), it just never has anything to
+                // resume afterward. Upgrade path if that fidelity gap
+                // matters: track the in-flight SpeakReplyAsync/
+                // ResumeHeldAsync Task on VoiceLoop so a typed
+                // interruption can await its real completion first.
+                heldSentences = null;
+                heldStackDepth = 0;
+            }
+            mode = ListenMode.Processing;
+        }
+
+        awake = true;
+        await DispatchCommandAsync(trimmed, wasInterruption, held: null, nested: false);
+        return true;
+    }
+
     // Transcribes wavBytes and speaks a reply -- the single entry point for
     // both a normal fresh segment (Idle) and a barge-in's interruption
     // segment (CapturingInterruption); by the time an interruption can
@@ -438,6 +537,17 @@ internal sealed class VoiceLoop : IDisposable
             commandText = transcript;
         }
 
+        await DispatchCommandAsync(commandText, wasInterruption, held, nested);
+    }
+
+    // #525: the shared tail of turn processing, once a resolved command
+    // has already cleared the wake-word gate -- shared by ProcessTurnAsync
+    // (a transcribed voice turn) and SubmitTypedCommandAsync (typed input
+    // from the quick-entry popup), since neither the barge-in
+    // classification/hold-resume dispatch below nor the final reply cares
+    // whether commandText came from STT or was typed directly.
+    private async Task DispatchCommandAsync(string commandText, bool wasInterruption, List<string>? held, bool nested)
+    {
         if (string.IsNullOrWhiteSpace(commandText))
         {
             await ReturnToIdleOrResumeHeldAsync(held, nested);
@@ -447,8 +557,19 @@ internal sealed class VoiceLoop : IDisposable
         // #522: computed once per turn (not per SpeakReplyAsync call --
         // the amend/new_question/fresh-turn branches below all still
         // describe the same single user turn) and reused across every
-        // SpeakReplyAsync call site this dispatch might reach.
-        var screenText = await screenContextReader.ReadAsync(commandText, isGamingModeActive());
+        // SpeakReplyAsync call site this dispatch might reach. "" (no
+        // screen-context reader configured) is a no-op -- screenText is
+        // always a string throughout this class/ReplyStreamAsync, never
+        // null, same convention chatLog/artifactSink use nullability for
+        // instead.
+        var screenText = screenContextReader is null
+            ? ""
+            : await screenContextReader.ReadAsync(commandText, isGamingModeActive());
+
+        // #521: logged once per turn here (not per SpeakReplyAsync call
+        // site below) -- the amend/new_question/fresh-turn branches all
+        // still describe the same single user turn.
+        chatLog?.AppendUserMessage(commandText);
 
         if (wasInterruption)
         {
@@ -581,7 +702,7 @@ internal sealed class VoiceLoop : IDisposable
         IReadOnlyList<string> pending;
         try
         {
-            (reply, changed, _, interrupted, pending) = await streamingReplyPlayer.StreamReplyAndPlayAsync(commandText, screenText);
+            (reply, changed, _, interrupted, pending) = await streamingReplyPlayer.StreamReplyAndPlayAsync(commandText, currentSessionId, text => chatLog?.AppendReplySentence(text), screenText);
         }
         catch (Exception ex)
         {
@@ -604,6 +725,12 @@ internal sealed class VoiceLoop : IDisposable
             return false;
         }
 
+        // #528: reported once per successful (non-interrupted) reply,
+        // regardless of whether it streamed or fell back to the
+        // non-streamed path below -- reply is the true final text
+        // either way by this point.
+        artifactSink?.ReportReply(reply ?? "");
+
         if (!changed)
         {
             // Every streamed sentence finished playing naturally -- resume
@@ -619,6 +746,16 @@ internal sealed class VoiceLoop : IDisposable
         // a barge-in too (closes the "duplicated audio on regen" gap
         // sub-project 2 documented: a barge-in mid-fallback-playback cuts
         // it off instead of guaranteeing the whole thing plays out).
+        //
+        // #521: logged here too, since the "nothing streamed" case would
+        // otherwise never show Mana's reply in the chat log at all. In
+        // the rarer regeneration case, any already-streamed (and already
+        // logged via onSentence) partial sentences from the abandoned
+        // original stream stay in the log alongside this corrected full
+        // text -- a real but narrow edge case not worth the complexity of
+        // retracting already-appended chat lines to fix.
+        chatLog?.AppendReplySentence(reply ?? string.Empty);
+
         byte[] replyWav;
         try
         {
