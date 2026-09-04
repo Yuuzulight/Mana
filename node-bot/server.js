@@ -67,7 +67,6 @@ const { createVTubeRuntime } = require("./vtube-runtime");
 	const {
   registerCoreRoutes,
   isLocalRestartRequest,
-  registerAddonRoutes, // Lazy-load when needed (after consent approval)
 } = require("./server-routes");
 	const {
 	  buildCapabilityHealth,
@@ -5483,16 +5482,6 @@ function registerRoutes(app, upload, deps = {}) {
       res.status(500).json({ error: `Failed to record consent: ${error.message}` });
     }
   });
-
-  // Register Add-on tier routes (Issue #492) -- mounted after the
-  // pluginSettingsStore-backed /addons/consent/:name handlers above so
-  // they take priority (Express matches route registration order): this
-  // router's own /consent/:id (routes/addons.js) predates the #492/#500
-  // review fixes made to those handlers and would otherwise shadow them
-  // for every request under /addons/consent/*, same class of bug that
-  // review already fixed once for a different shadowing path. Everything
-  // else this router serves (GET/DELETE /addons/:id) is unaffected.
-  registerAddonRoutes(app);
 
   app.post("/plugins/store/install", async (req, res) => {
     // CodeQL review: installFromLocal can read an arbitrary local file path

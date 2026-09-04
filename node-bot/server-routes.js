@@ -564,18 +564,7 @@ function registerCoreRoutes(app, upload, deps) {
   });
 }
 
-/**
- * Register Add-on tier routes (Issue #492)
- * 
- * Lazy-loaded to avoid circular deps and keep core server lean.
- */
-function registerAddonRoutes(app) {
-  const addonsRouter = require('./routes/addons');
-  app.use('/addons', addonsRouter);
-}
-
 module.exports = {
   registerCoreRoutes,
   isLocalRestartRequest,
-  registerAddonRoutes, // Lazy-load when needed (after consent approval)
 };
