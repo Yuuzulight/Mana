@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Net.Http;
 using System.Runtime.InteropServices;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace Mana.NativeLauncher;
@@ -37,8 +38,23 @@ internal sealed class ManaProcessManager : IDisposable
         http = handler is null ? new HttpClient() : new HttpClient(handler);
     }
 
-    public async Task StartAsync()
+    // onServiceReady, when given, fires once per service (key "backend"/
+    // "kokoro"/"fish-speech") the moment its own health-check-then-start
+    // resolves -- lets a caller (the startup overlay) flip that row from
+    // "Starting..." to "Ready"/"Unavailable" live instead of only knowing
+    // "all three are done" after StartAsync itself returns. Fires on
+    // whatever context awaited into this method (the UI thread, for the
+    // launcher's own real call site) -- no ConfigureAwait(false) anywhere
+    // in this file to break that.
+    public async Task StartAsync(Action<string, bool>? onServiceReady = null)
     {
+        async Task<(Process? Process, bool Available)> StartAndReport(string key, string healthUrl, Func<Task<Process?>> start)
+        {
+            var result = await StartIfNotRunningAsync(healthUrl, start);
+            onServiceReady?.Invoke(key, result.Available);
+            return result;
+        }
+
         // Fish Speech (S1-mini) is Mana's default TTS provider
         // (docs/fish_speech_tts.md) -- Kokoro is its automatic fallback
         // voice, not the primary, so both services need to actually be
@@ -50,9 +66,9 @@ internal sealed class ManaProcessManager : IDisposable
         // of one-after-another -- a stale/wedged listener on one port no
         // longer serializes an ~100s HttpClient timeout in front of the
         // other two.
-        var kokoroTask = StartIfNotRunningAsync("http://127.0.0.1:5011/health", () => Task.FromResult<Process?>(StartKokoro()));
-        var fishSpeechTask = StartIfNotRunningAsync("http://127.0.0.1:8080/v1/health", () => Task.FromResult(StartFishSpeech()));
-        var backendTask = StartIfNotRunningAsync("http://127.0.0.1:5005/health", () => Task.FromResult<Process?>(StartBackend()));
+        var kokoroTask = StartAndReport("kokoro", "http://127.0.0.1:5011/health", () => Task.FromResult<Process?>(StartKokoro()));
+        var fishSpeechTask = StartAndReport("fish-speech", "http://127.0.0.1:8080/v1/health", () => Task.FromResult(StartFishSpeech()));
+        var backendTask = StartAndReport("backend", "http://127.0.0.1:5005/health", () => Task.FromResult<Process?>(StartBackend()));
 
         try
         {
@@ -401,6 +417,41 @@ internal sealed class ManaProcessManager : IDisposable
             return double.MaxValue; // can't determine -- don't warn spuriously
         }
         return status.ullAvailPhys / 1024.0 / 1024.0 / 1024.0;
+    }
+
+    // Graceful, progress-reporting counterpart to Dispose()'s own
+    // synchronous kill-and-forget -- used by the shutdown overlay so "Exit
+    // Mana" isn't silently invisible while these processes actually stop.
+    // Safe to run before Dispose() (called later from ExitThreadCore
+    // regardless, as a safety net): StopProcess/Kill on an already-exited
+    // process is already a no-op, so nothing here duplicates work Dispose()
+    // would otherwise do.
+    public async Task StopAllAsync(Action<string, bool>? onServiceStopped = null)
+    {
+        async Task StopAndReport(string key, Process? process)
+        {
+            if (process is not null && !process.HasExited)
+            {
+                try
+                {
+                    process.Kill(entireProcessTree: true);
+                    using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+                    await process.WaitForExitAsync(timeout.Token);
+                }
+                catch
+                {
+                    // Best effort, same reasoning as StopProcess below --
+                    // a stubborn process still gets its row's own
+                    // stopped/still-running report either way.
+                }
+            }
+            onServiceStopped?.Invoke(key, process is null || process.HasExited);
+        }
+
+        await Task.WhenAll(
+            StopAndReport("backend", backendProcess),
+            StopAndReport("kokoro", kokoroProcess),
+            StopAndReport("fish-speech", fishSpeechProcess));
     }
 
     public void Dispose()
