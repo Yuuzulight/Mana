@@ -3,6 +3,7 @@ using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace Mana.NativeLauncher;
@@ -42,6 +43,61 @@ internal sealed class ManaBackendClient
         };
     }
 
+    // #526: unlike GetPerformanceStatusAsync, this does NOT call
+    // EnsureSuccessStatusCode unconditionally -- node-bot's own /doctor
+    // handler returns 503 (not 200) precisely when it found real
+    // problems, still with a fully-shaped, parseable result body. Only a
+    // genuinely unexpected status (500: the doctor run itself errored)
+    // should throw.
+    public async Task<ManaDoctorResult> GetDoctorResultAsync()
+    {
+        using var response = await http.GetAsync("/doctor");
+        if (!response.IsSuccessStatusCode && response.StatusCode != System.Net.HttpStatusCode.ServiceUnavailable)
+        {
+            response.EnsureSuccessStatusCode();
+        }
+
+        await using var stream = await response.Content.ReadAsStreamAsync();
+        using var document = await JsonDocument.ParseAsync(stream);
+        var root = document.RootElement;
+
+        var ok = root.TryGetProperty("ok", out var okElement) && okElement.GetBoolean();
+
+        var pass = 0;
+        var warn = 0;
+        var fail = 0;
+        if (root.TryGetProperty("summary", out var summaryElement))
+        {
+            pass = summaryElement.TryGetProperty("pass", out var passElement) ? passElement.GetInt32() : 0;
+            warn = summaryElement.TryGetProperty("warn", out var warnElement) ? warnElement.GetInt32() : 0;
+            fail = summaryElement.TryGetProperty("fail", out var failElement) ? failElement.GetInt32() : 0;
+        }
+
+        var checks = new List<ManaDoctorCheck>();
+        if (root.TryGetProperty("checks", out var checksElement))
+        {
+            foreach (var checkElement in checksElement.EnumerateArray())
+            {
+                checks.Add(new ManaDoctorCheck
+                {
+                    Id = checkElement.TryGetProperty("id", out var idElement) ? idElement.GetString() ?? "" : "",
+                    Label = checkElement.TryGetProperty("label", out var labelElement) ? labelElement.GetString() ?? "" : "",
+                    Status = checkElement.TryGetProperty("status", out var statusElement) ? statusElement.GetString() ?? "" : "",
+                    Message = checkElement.TryGetProperty("message", out var messageElement) ? messageElement.GetString() ?? "" : "",
+                });
+            }
+        }
+
+        return new ManaDoctorResult
+        {
+            Ok = ok,
+            Pass = pass,
+            Warn = warn,
+            Fail = fail,
+            Checks = checks,
+        };
+    }
+
     public async Task<string> TranscribeAsync(byte[] wavBytes)
     {
         using var content = new MultipartFormDataContent();
@@ -56,14 +112,21 @@ internal sealed class ManaBackendClient
         return document.RootElement.GetProperty("transcript").GetString() ?? string.Empty;
     }
 
-    public async Task<string> ReplyAsync(string text)
+    // #527: modelProfile, when given, routes this one request to that
+    // llama-server profile instead of whatever's currently active --
+    // compare-mode's only real requirement. cancellationToken lets
+    // compare-mode's own Cancel button actually abort an in-flight
+    // request rather than just ignoring its eventual result.
+    public async Task<string> ReplyAsync(string text, string? modelProfile = null, CancellationToken cancellationToken = default)
     {
-        var payload = JsonSerializer.Serialize(new { text });
+        var payload = modelProfile is null
+            ? JsonSerializer.Serialize(new { text })
+            : JsonSerializer.Serialize(new { text, modelProfile });
         using var content = new StringContent(payload, Encoding.UTF8, "application/json");
-        using var response = await http.PostAsync("/reply", content);
+        using var response = await http.PostAsync("/reply", content, cancellationToken);
         response.EnsureSuccessStatusCode();
-        await using var stream = await response.Content.ReadAsStreamAsync();
-        using var document = await JsonDocument.ParseAsync(stream);
+        await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+        using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
         return document.RootElement.GetProperty("reply").GetString() ?? string.Empty;
     }
 
@@ -109,6 +172,38 @@ internal sealed class ManaBackendClient
             using var document = JsonDocument.Parse(line);
             yield return ParseReplyStreamEvent(document.RootElement);
         }
+    }
+
+    // #527: node-bot's configured llama-server profiles -- see
+    // model-management.js's getModelStatus/buildProfileStatus for the
+    // full shape; this only carries what compare-mode needs.
+    public async Task<ManaModelStatus> GetModelStatusAsync()
+    {
+        using var response = await http.GetAsync("/models/status");
+        response.EnsureSuccessStatusCode();
+        await using var stream = await response.Content.ReadAsStreamAsync();
+        using var document = await JsonDocument.ParseAsync(stream);
+        var root = document.RootElement;
+
+        var activeProfile = root.TryGetProperty("activeProfile", out var activeElement) ? activeElement.GetString() : null;
+
+        var profiles = new Dictionary<string, ManaModelProfile>();
+        if (root.TryGetProperty("profiles", out var profilesElement))
+        {
+            foreach (var property in profilesElement.EnumerateObject())
+            {
+                var value = property.Value;
+                profiles[property.Name] = new ManaModelProfile
+                {
+                    Key = property.Name,
+                    Label = value.TryGetProperty("label", out var labelElement) ? labelElement.GetString() : null,
+                    SelectedModel = value.TryGetProperty("selectedModel", out var modelElement) ? modelElement.GetString() : null,
+                    Available = value.TryGetProperty("available", out var availableElement) && availableElement.GetBoolean(),
+                };
+            }
+        }
+
+        return new ManaModelStatus { ActiveProfile = activeProfile, Profiles = profiles };
     }
 
     // #520: node-bot's ACP memory-store sessions -- see
@@ -375,6 +470,44 @@ internal sealed class ManaPerformanceStatus
     public int TotalMemoryMb { get; init; }
     public string TtsProvider { get; init; } = "unknown";
     public bool GamingAppRunning { get; init; }
+}
+
+// #527: GET /models/status.
+internal sealed class ManaModelStatus
+{
+    public string? ActiveProfile { get; init; }
+    public IReadOnlyDictionary<string, ManaModelProfile> Profiles { get; init; } = new Dictionary<string, ManaModelProfile>();
+}
+
+internal sealed class ManaModelProfile
+{
+    public string Key { get; init; } = "";
+    public string? Label { get; init; }
+
+    // Full local file path, or null if no matching GGUF was found --
+    // profiles silently fall back to a smaller model when the preferred
+    // file isn't downloaded, which is exactly what CompareModeFormatter
+    // surfaces to the user.
+    public string? SelectedModel { get; init; }
+    public bool Available { get; init; }
+}
+
+// #526: node-bot's GET /doctor result -- see doctor.js's buildDoctorResult.
+internal sealed class ManaDoctorResult
+{
+    public bool Ok { get; init; }
+    public int Pass { get; init; }
+    public int Warn { get; init; }
+    public int Fail { get; init; }
+    public IReadOnlyList<ManaDoctorCheck> Checks { get; init; } = System.Array.Empty<ManaDoctorCheck>();
+}
+
+internal sealed class ManaDoctorCheck
+{
+    public string Id { get; init; } = "";
+    public string Label { get; init; } = "";
+    public string Status { get; init; } = "";
+    public string Message { get; init; } = "";
 }
 
 // #520: a row from GET /sessions -- see acp-memory-store.js's

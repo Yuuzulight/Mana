@@ -702,4 +702,185 @@ public class ManaBackendClientTests
         Assert.Equal("/approvals/req-1/decide", path);
         Assert.Contains("\"decision\":\"allow-once\"", body);
     }
+    [Fact]
+    public async Task GetDoctorResultAsync_ParsesSummaryAndChecksOn200()
+    {
+        var handler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(
+                """{"ok":true,"summary":{"pass":2,"warn":0,"fail":0},"checks":[{"id":"node-runtime","label":"Node runtime","status":"pass","message":"Node v20 is available."}]}""",
+                Encoding.UTF8,
+                "application/json"),
+        });
+        var client = new ManaBackendClient(handler);
+
+        var result = await client.GetDoctorResultAsync();
+
+        Assert.True(result.Ok);
+        Assert.Equal(2, result.Pass);
+        Assert.Equal(0, result.Warn);
+        Assert.Equal(0, result.Fail);
+        var check = Assert.Single(result.Checks);
+        Assert.Equal("node-runtime", check.Id);
+        Assert.Equal("Node runtime", check.Label);
+        Assert.Equal("pass", check.Status);
+        Assert.Equal("Node v20 is available.", check.Message);
+    }
+
+    [Fact]
+    public async Task GetDoctorResultAsync_ParsesTheResultBodyOn503InsteadOfThrowing()
+    {
+        // node-bot's /doctor returns 503 (not 200) specifically when it
+        // found real problems -- still a fully-shaped, parseable result,
+        // not a transport failure this method should throw on.
+        var handler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.ServiceUnavailable)
+        {
+            Content = new StringContent(
+                """{"ok":false,"summary":{"pass":1,"warn":0,"fail":1},"checks":[{"id":"x","label":"X","status":"fail","message":"broken"}]}""",
+                Encoding.UTF8,
+                "application/json"),
+        });
+        var client = new ManaBackendClient(handler);
+
+        var result = await client.GetDoctorResultAsync();
+
+        Assert.False(result.Ok);
+        Assert.Equal(1, result.Fail);
+    }
+
+    [Fact]
+    public async Task GetDoctorResultAsync_DefaultsCountsToZeroWhenSummaryIsMissing()
+    {
+        var handler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent("""{"ok":true,"checks":[]}""", Encoding.UTF8, "application/json"),
+        });
+        var client = new ManaBackendClient(handler);
+
+        var result = await client.GetDoctorResultAsync();
+
+        Assert.Equal(0, result.Pass);
+        Assert.Equal(0, result.Warn);
+        Assert.Equal(0, result.Fail);
+    }
+
+    [Fact]
+    public async Task GetDoctorResultAsync_DefaultsToEmptyChecksWhenChecksIsMissing()
+    {
+        var handler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent("""{"ok":true,"summary":{"pass":0,"warn":0,"fail":0}}""", Encoding.UTF8, "application/json"),
+        });
+        var client = new ManaBackendClient(handler);
+
+        var result = await client.GetDoctorResultAsync();
+
+        Assert.Empty(result.Checks);
+    }
+
+    [Fact]
+    public async Task GetDoctorResultAsync_ThrowsOn500()
+    {
+        // Distinct from 503: a 500 means the doctor run itself errored,
+        // not "problems found" -- there's no fully-shaped result to parse.
+        var handler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.InternalServerError));
+        var client = new ManaBackendClient(handler);
+
+        await Assert.ThrowsAsync<HttpRequestException>(() => client.GetDoctorResultAsync());
+    }
+    [Fact]
+    public async Task ReplyAsync_OmitsModelProfileWhenNoneIsGiven()
+    {
+        string? body = null;
+        var handler = new FakeHttpMessageHandler(request =>
+        {
+            body = request.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("{\"reply\":\"ok\"}", Encoding.UTF8, "application/json"),
+            };
+        });
+        var client = new ManaBackendClient(handler);
+
+        await client.ReplyAsync("hi");
+
+        Assert.DoesNotContain("modelProfile", body);
+    }
+
+    [Fact]
+    public async Task ReplyAsync_IncludesModelProfileWhenGiven()
+    {
+        string? body = null;
+        var handler = new FakeHttpMessageHandler(request =>
+        {
+            body = request.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("{\"reply\":\"ok\"}", Encoding.UTF8, "application/json"),
+            };
+        });
+        var client = new ManaBackendClient(handler);
+
+        await client.ReplyAsync("hi", "quality");
+
+        Assert.Contains("\"modelProfile\":\"quality\"", body);
+    }
+
+    [Fact]
+    public async Task ReplyAsync_TaskEndsUpCanceledNotFaultedWhenTheTokenIsCancelled()
+    {
+        // The riskiest runtime behavior CompareModeForm's Cancel button
+        // depends on: an already-cancelled token must produce a Task in
+        // the Canceled state (so DescribeOutcome's IsCanceled check
+        // fires), not Faulted (which would show "Failed: ..." instead of
+        // "Cancelled." to the user).
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+        var handler = new FakeHttpMessageHandler(_ => throw new TaskCanceledException());
+        var client = new ManaBackendClient(handler);
+
+        var task = client.ReplyAsync("hi", cancellationToken: cts.Token);
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => task);
+
+        Assert.True(task.IsCanceled);
+        Assert.False(task.IsFaulted);
+    }
+
+    [Fact]
+    public async Task GetModelStatusAsync_ParsesActiveProfileAndProfiles()
+    {
+        var handler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(
+                """{"activeProfile":"default","profiles":{"default":{"label":"Default","available":true,"selectedModel":"C:\\models\\a.gguf"},"quality":{"label":"Quality","available":false}}}""",
+                Encoding.UTF8,
+                "application/json"),
+        });
+        var client = new ManaBackendClient(handler);
+
+        var status = await client.GetModelStatusAsync();
+
+        Assert.Equal("default", status.ActiveProfile);
+        Assert.Equal(2, status.Profiles.Count);
+        Assert.Equal("Default", status.Profiles["default"].Label);
+        Assert.True(status.Profiles["default"].Available);
+        Assert.Equal(@"C:\models\a.gguf", status.Profiles["default"].SelectedModel);
+        Assert.False(status.Profiles["quality"].Available);
+        Assert.Null(status.Profiles["quality"].SelectedModel);
+    }
+
+    [Fact]
+    public async Task GetModelStatusAsync_ReturnsEmptyProfilesWhenTheKeyIsMissing()
+    {
+        var handler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent("{}", Encoding.UTF8, "application/json"),
+        });
+        var client = new ManaBackendClient(handler);
+
+        var status = await client.GetModelStatusAsync();
+
+        Assert.Null(status.ActiveProfile);
+        Assert.Empty(status.Profiles);
+    }
 }

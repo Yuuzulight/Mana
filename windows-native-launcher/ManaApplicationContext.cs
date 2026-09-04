@@ -18,6 +18,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
     private readonly AudioPlayer audioPlayer;
     private readonly VoiceLoop voiceLoop;
     private readonly ArtifactViewerForm artifactViewer;
+    private readonly QuickEntryForm quickEntry;
     private readonly SessionListForm sessionListForm;
 
     public ManaApplicationContext()
@@ -41,6 +42,9 @@ internal sealed class ManaApplicationContext : ApplicationContext
         var chatLog = new ChatLogPanel();
         voiceLoop = new VoiceLoop(sileroVad, backendClient, audioPlayer, avatarOverlay, chatLog, artifactViewer);
         sessionListForm = new SessionListForm(backendClient, voiceLoop, chatLog, avatarOverlay);
+        // #525: Ctrl+Alt+Space types a command instead of speaking one,
+        // through the exact same turn-processing path.
+        quickEntry = new QuickEntryForm(voiceLoop.SubmitTypedCommandAsync);
 
         trayIcon = new NotifyIcon
         {
@@ -69,6 +73,8 @@ internal sealed class ManaApplicationContext : ApplicationContext
         var menu = new ContextMenuStrip();
         menu.Items.Add("Show status", null, (_, _) => ShowStatus());
         menu.Items.Add("Artifact Viewer", null, (_, _) => { artifactViewer.Show(); artifactViewer.Activate(); });
+        menu.Items.Add("Compare Models", null, (_, _) => new CompareModeForm(backendClient).Show());
+        menu.Items.Add("Doctor", null, (_, _) => ShowDoctorPanel());
         menu.Items.Add("Sessions", null, (_, _) => ShowSessionList());
         menu.Items.Add("Open project folder", null, (_, _) => OpenProjectFolder());
         menu.Items.Add("Set avatar idle", null, (_, _) => avatarOverlay.SetState(AvatarState.Idle));
@@ -119,6 +125,15 @@ internal sealed class ManaApplicationContext : ApplicationContext
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Warning);
         }
+    }
+
+    // #526: a fresh dialog per open -- simpler than keeping one instance
+    // alive/reused (QuickEntryForm's own pattern), and this isn't opened
+    // often enough for that cost to matter.
+    private void ShowDoctorPanel()
+    {
+        using var panel = new DoctorPanelForm(backendClient);
+        panel.ShowDialog();
     }
 
     // #520: reused (Hide, not Close), so Load's own one-time-only refresh
@@ -180,7 +195,8 @@ internal sealed class ManaApplicationContext : ApplicationContext
         // Hide-and-cancel for the reuse pattern, so a plain Close() here
         // would risk not actually tearing the window down.
         artifactViewer.Dispose();
-        // #520: same reasoning as artifactViewer above.
+        quickEntry.Close();
+        // #520: same Dispose-not-Close reasoning as artifactViewer above.
         sessionListForm.Dispose();
         processManager.Dispose();
         base.ExitThreadCore();
