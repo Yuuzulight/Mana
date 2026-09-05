@@ -68,6 +68,7 @@ const { createVTubeRuntime } = require("./vtube-runtime");
   registerCoreRoutes,
   isLocalRestartRequest,
   registerModelRoutes,
+  registerAdminStaticRoutes,
   registerPendingWritesRoutes,
 } = require("./server-routes");
 	const {
@@ -5409,62 +5410,10 @@ async function startServer() {
     console.warn("Failed to register vision-capture server:", e?.message || e);
   }
 
-  // serve admin UI static files
-  app.get("/admin/token-cache-ui", (req, res) => {
-    try {
-      const f = path.join(__dirname, "admin", "token_cache_ui.html");
-      if (!fs.existsSync(f)) return res.status(404).send("not found");
-      return res.sendFile(f);
-    } catch (e) {
-      console.error("Failed to serve admin UI file:", e);
-      return res.status(500).send("internal error");
-    }
-  });
-
-  app.get("/admin/background-memory-ui", (req, res) => {
-    try {
-      const f = path.join(__dirname, "admin", "background_memory_ui.html");
-      if (!fs.existsSync(f)) return res.status(404).send("not found");
-      return res.sendFile(f);
-    } catch (e) {
-      console.error("Failed to serve admin UI file:", e);
-      return res.status(500).send("internal error");
-    }
-  });
-
-  app.get("/admin/accounts-ui", (req, res) => {
-    try {
-      const f = path.join(__dirname, "admin", "accounts_ui.html");
-      if (!fs.existsSync(f)) return res.status(404).send("not found");
-      return res.sendFile(f);
-    } catch (e) {
-      console.error("Failed to serve admin UI file:", e);
-      return res.status(500).send("internal error");
-    }
-  });
-
-  // Plugin Store UI routes — Settings > Plugins panel
-  app.get("/admin/plugins-ui", (req, res) => {
-    try {
-      const f = path.join(__dirname, "admin", "plugins_ui.html");
-      if (!fs.existsSync(f)) return res.status(404).send("not found");
-      return res.sendFile(f);
-    } catch (e) {
-      console.error("Failed to serve plugin UI file:", e);
-      return res.status(500).send("internal error");
-    }
-  });
-
-  app.get("/admin/plugins/install", (req, res) => {
-    try {
-      const f = path.join(__dirname, "admin", "plugins_install.html");
-      if (!fs.existsSync(f)) return res.status(404).send("not found");
-      return res.sendFile(f);
-    } catch (e) {
-      console.error("Failed to serve plugin install UI file:", e);
-      return res.status(500).send("internal error");
-    }
-  });
+  // Issue #500: 5 near-identical static-file routes (admin UI pages, the
+  // plugin store UI, and the plugin install UI), collapsed into
+  // server-routes.js's registerAdminStaticRoutes.
+  registerAdminStaticRoutes(app);
 
   return server.listen(port, () =>
     console.log("Node local bot listening on", port),

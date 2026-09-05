@@ -693,6 +693,33 @@ function registerModelRoutes(app, deps) {
   });
 }
 
+// Issue #500: each of these just serves a static admin HTML file from
+// ./admin/ -- collapsed from 5 copy-pasted try/fs.existsSync/sendFile
+// blocks in server.js into one shared handler plus a route/file/label
+// table, rather than moved over unchanged.
+const ADMIN_STATIC_FILES = [
+  { route: "/admin/token-cache-ui", file: "token_cache_ui.html", label: "admin UI" },
+  { route: "/admin/background-memory-ui", file: "background_memory_ui.html", label: "admin UI" },
+  { route: "/admin/accounts-ui", file: "accounts_ui.html", label: "admin UI" },
+  { route: "/admin/plugins-ui", file: "plugins_ui.html", label: "plugin UI" },
+  { route: "/admin/plugins/install", file: "plugins_install.html", label: "plugin install UI" },
+];
+
+function registerAdminStaticRoutes(app) {
+  for (const { route, file, label } of ADMIN_STATIC_FILES) {
+    app.get(route, (req, res) => {
+      try {
+        const f = path.join(__dirname, "admin", file);
+        if (!fs.existsSync(f)) return res.status(404).send("not found");
+        return res.sendFile(f);
+      } catch (e) {
+        console.error(`Failed to serve ${label} file:`, e);
+        return res.status(500).send("internal error");
+      }
+    });
+  }
+}
+
 // Issue #500: moved verbatim out of server.js's registerRoutes(). Takes
 // checkAdminAuth as a dependency (deps.checkAdminAuth) rather than
 // redefining it here -- it closes over ADMIN_SECRET back in server.js and
@@ -879,5 +906,6 @@ module.exports = {
   registerCoreRoutes,
   isLocalRestartRequest,
   registerModelRoutes,
+  registerAdminStaticRoutes,
   registerPendingWritesRoutes,
 };
