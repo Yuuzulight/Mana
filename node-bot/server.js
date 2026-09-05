@@ -5536,6 +5536,30 @@ function registerRoutes(app, upload, deps = {}) {
       res.status(500).json({ error: `Toggle failed: ${error.message}` });
     }
   });
+
+  // Issue #492: short-video-gen add-on tier routes (routes/addons.js),
+  // previously written but never registered on `app`. Registered here
+  // (registerRoutes), not inside startServer() where they were first
+  // wired -- checkAdminAuth is a closure private to this function, out of
+  // scope in startServer(), so gating them there would throw
+  // ReferenceError on the first request. checkAdminAuth-gated like this
+  // file's other sensitive routes (/admin/*, /zed/open, /editors/*):
+  // node-bot listens on all interfaces with CORS wide open, and /generate
+  // spawns real ffmpeg processes (will eventually trigger OAuth-gated
+  // publish calls too), so leaving these open would let anyone who can
+  // reach this machine's port trigger them.
+  app.get("/api/v1/addons/short-video-gen/status/:id", (req, res) => {
+    if (!checkAdminAuth(req, res)) return;
+    return handleGetAddonStatus(req, res);
+  });
+  app.post("/api/v1/addons/short-video-gen/generate", (req, res) => {
+    if (!checkAdminAuth(req, res)) return;
+    return handleGenerateVideo(req, res);
+  });
+  app.post("/api/v1/addons/short-video-gen/consent/:id", (req, res) => {
+    if (!checkAdminAuth(req, res)) return;
+    return handleAddonConsent(req, res);
+  });
 }
 
 async function waitForPythonService(
@@ -5739,12 +5763,6 @@ async function startServer() {
       return res.status(500).send("internal error");
     }
   });
-
-  // Issue #492: short-video-gen add-on tier routes (routes/addons.js),
-  // previously written but never registered on `app`.
-  app.get("/api/v1/addons/short-video-gen/status/:id", handleGetAddonStatus);
-  app.post("/api/v1/addons/short-video-gen/generate", handleGenerateVideo);
-  app.post("/api/v1/addons/short-video-gen/consent/:id", handleAddonConsent);
 
   return server.listen(port, () =>
     console.log("Node local bot listening on", port),
