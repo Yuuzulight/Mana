@@ -1,3 +1,5 @@
+const fs = require("fs");
+const path = require("path");
 const {
   ValidationError,
   optionalString,
@@ -564,7 +566,190 @@ function registerCoreRoutes(app, upload, deps) {
   });
 }
 
+// Issue #500: moved verbatim out of server.js's registerRoutes(). Takes
+// checkAdminAuth as a dependency (deps.checkAdminAuth) rather than
+// redefining it here -- it closes over ADMIN_SECRET back in server.js and
+// duplicating that closure would risk the two copies drifting apart.
+function registerPendingWritesRoutes(app, deps) {
+  const { checkAdminAuth } = deps;
+  const PENDING_DIR =
+    process.env.MANA_PENDING_WRITES_DIR ||
+    path.join(__dirname, "data", "pending_writes");
+
+  // Pending-write ids come straight from the URL (:id) into path.join()
+  // below; without this check "../../whatever" would let an admin-auth'd
+  // request read/write/delete files outside PENDING_DIR.
+  function isSafePendingWriteId(id) {
+    return typeof id === "string" && /^[A-Za-z0-9_-]+$/.test(id);
+  }
+
+  app.get("/admin/pending-writes", async (req, res) => {
+    if (!checkAdminAuth(req, res)) return;
+    try {
+      await fs.promises.mkdir(PENDING_DIR, { recursive: true });
+      const files = await fs.promises.readdir(PENDING_DIR);
+      const pending = [];
+      for (const f of files) {
+        if (
+          f.endsWith(".json") &&
+          !f.endsWith(".approved.json") &&
+          !f.endsWith(".rejected.json")
+        ) {
+          const id = f.replace(/\.json$/i, "");
+          const base = path.join(PENDING_DIR, id);
+          const pendingPath = `${base}.json`;
+          let payload = null;
+          try {
+            payload = JSON.parse(
+              await fs.promises.readFile(pendingPath, "utf8"),
+            );
+          } catch (e) {
+            payload = null;
+          }
+          const approved = fs.existsSync(`${base}.approved.json`);
+          const rejected = fs.existsSync(`${base}.rejected.json`);
+          pending.push({ id, payload, approved, rejected });
+        }
+      }
+      return res.json({ ok: true, pending });
+    } catch (err) {
+      return res.status(500).json({ ok: false, error: err.message });
+    }
+  });
+
+  app.post("/admin/pending-writes/:id/approve", async (req, res) => {
+    if (!checkAdminAuth(req, res)) return;
+    try {
+      const id = req.params.id;
+      if (!isSafePendingWriteId(id)) {
+        return res.status(400).json({ ok: false, error: "invalid id" });
+      }
+      const base = path.join(PENDING_DIR, id);
+      const approvedPath = `${base}.approved.json`;
+      const data = {
+        approver: req.body?.approver || "local-user",
+        at: new Date().toISOString(),
+        note: req.body?.note || null,
+      };
+      await fs.promises.mkdir(PENDING_DIR, { recursive: true });
+      await fs.promises.writeFile(
+        approvedPath,
+        JSON.stringify(data, null, 2),
+        "utf8",
+      );
+      // Optionally archive immediately
+      try {
+        const archiveDir = path.join(PENDING_DIR, "archive");
+        await fs.promises.mkdir(archiveDir, { recursive: true });
+        const pendingPath = `${base}.json`;
+        let pendingPayload = null;
+        try {
+          pendingPayload = JSON.parse(
+            await fs.promises.readFile(pendingPath, "utf8"),
+          );
+        } catch (e) {
+          pendingPayload = null;
+        }
+        const outPath = path.join(archiveDir, `${id}.approved.json`);
+        const archiveObj = {
+          id,
+          status: "approved",
+          pending: pendingPayload,
+          action: data,
+          archivedAt: new Date().toISOString(),
+        };
+        await fs.promises.writeFile(
+          outPath,
+          JSON.stringify(archiveObj, null, 2),
+          "utf8",
+        );
+        // remove originals
+        try {
+          if (fs.existsSync(pendingPath))
+            await fs.promises.unlink(pendingPath);
+        } catch (e) {}
+        try {
+          if (fs.existsSync(approvedPath))
+            await fs.promises.unlink(approvedPath);
+        } catch (e) {}
+      } catch (e) {
+        // ignore archive errors
+      }
+
+      return res.json({ ok: true, id });
+    } catch (err) {
+      return res.status(500).json({ ok: false, error: err.message });
+    }
+  });
+
+  app.post("/admin/pending-writes/:id/reject", async (req, res) => {
+    if (!checkAdminAuth(req, res)) return;
+    try {
+      const id = req.params.id;
+      if (!isSafePendingWriteId(id)) {
+        return res.status(400).json({ ok: false, error: "invalid id" });
+      }
+      const base = path.join(PENDING_DIR, id);
+      const rejectedPath = `${base}.rejected.json`;
+      const data = {
+        approver: req.body?.approver || "local-user",
+        at: new Date().toISOString(),
+        reason: req.body?.reason || null,
+      };
+      await fs.promises.mkdir(PENDING_DIR, { recursive: true });
+      await fs.promises.writeFile(
+        rejectedPath,
+        JSON.stringify(data, null, 2),
+        "utf8",
+      );
+      // Optionally archive immediately
+      try {
+        const archiveDir = path.join(PENDING_DIR, "archive");
+        await fs.promises.mkdir(archiveDir, { recursive: true });
+        const pendingPath = `${base}.json`;
+        let pendingPayload = null;
+        try {
+          pendingPayload = JSON.parse(
+            await fs.promises.readFile(pendingPath, "utf8"),
+          );
+        } catch (e) {
+          pendingPayload = null;
+        }
+        const outPath = path.join(archiveDir, `${id}.rejected.json`);
+        const archiveObj = {
+          id,
+          status: "rejected",
+          pending: pendingPayload,
+          action: data,
+          archivedAt: new Date().toISOString(),
+        };
+        await fs.promises.writeFile(
+          outPath,
+          JSON.stringify(archiveObj, null, 2),
+          "utf8",
+        );
+        // remove originals
+        try {
+          if (fs.existsSync(pendingPath))
+            await fs.promises.unlink(pendingPath);
+        } catch (e) {}
+        try {
+          if (fs.existsSync(rejectedPath))
+            await fs.promises.unlink(rejectedPath);
+        } catch (e) {}
+      } catch (e) {
+        // ignore archive errors
+      }
+
+      return res.json({ ok: true, id });
+    } catch (err) {
+      return res.status(500).json({ ok: false, error: err.message });
+    }
+  });
+}
+
 module.exports = {
   registerCoreRoutes,
   isLocalRestartRequest,
+  registerPendingWritesRoutes,
 };
