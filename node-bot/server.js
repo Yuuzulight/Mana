@@ -66,6 +66,11 @@ const { createVTubeRuntime } = require("./vtube-runtime");
 	const { createMobileMemoryStore } = require("./mobile-memory-store");
 	const { registerCoreRoutes, isLocalRestartRequest } = require("./server-routes");
 	const {
+	  handleGetAddonStatus,
+	  handleGenerateVideo,
+	  handleAddonConsent,
+	} = require("./routes/addons");
+	const {
 	  buildCapabilityHealth,
 	  contributePluginPromptContext,
 	  registerCapabilities,
@@ -5734,6 +5739,12 @@ async function startServer() {
       return res.status(500).send("internal error");
     }
   });
+
+  // Issue #492: short-video-gen add-on tier routes (routes/addons.js),
+  // previously written but never registered on `app`.
+  app.get("/api/v1/addons/short-video-gen/status/:id", handleGetAddonStatus);
+  app.post("/api/v1/addons/short-video-gen/generate", handleGenerateVideo);
+  app.post("/api/v1/addons/short-video-gen/consent/:id", handleAddonConsent);
 
   return server.listen(port, () =>
     console.log("Node local bot listening on", port),

@@ -13,7 +13,6 @@
 const { spawn } = require('child_process');
 const fs = require('fs').promises;
 const path = require('path');
-const axios = require('axios');
 
 class ShortVideoGenerator {
   constructor(config = {}) {
