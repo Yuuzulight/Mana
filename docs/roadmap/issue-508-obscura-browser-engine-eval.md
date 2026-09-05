@@ -105,13 +105,34 @@ flagged as a correctness issue.
 
 ## Recommendation
 
-**Don't swap yet.** The resource case is real and worth continuing to
-track -- a 15x memory difference for a background companion app is
+**Don't swap yet as-is.** The resource case is real and worth continuing
+to track -- a 15x memory difference for a background companion app is
 significant -- but both correctness gaps found sit directly in the two
 functions `browser-automation.js` relies on most (element targeting,
-text extraction), not in some edge case. Either file both upstream with
-Obscura and re-evaluate once fixed, or re-test against a newer Obscura
-release before reconsidering.
+text extraction), not in some edge case.
+
+Building a custom lightweight engine instead of adopting Obscura isn't
+worth considering here: a real HTML/CSS/JS engine (parsing, layout, JS
+execution, networking) is one of the largest categories of software that
+exists, and matching even Obscura's current ~90%-there state from
+scratch would cost vastly more than the resource win is worth -- almost
+certainly landing with more rough edges than these two known gaps, not
+fewer.
+
+The two gaps themselves are narrow and specific enough to patch at
+Mana's own integration layer instead of waiting on either option above:
+
+1. After reading Obscura's `interactiveElements`, also scan the page for
+   plain `<a href>` tags and merge in any missing from that list.
+2. Before feeding page text to the model, strip `<script>...</script>`
+   blocks from Obscura's extracted text.
+
+Both are small, targeted fixes in `browser-automation.js` (or a thin
+Obscura-specific wrapper around it), not touching Obscura's engine
+internals -- this gets the 15x memory / 6-10x startup win now, without
+depending on Obscura's own release timeline. Filing both gaps upstream
+with Obscura is still worth doing in parallel, so the patch can
+eventually be dropped once fixed there.
 
 ## Related
 
