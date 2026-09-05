@@ -67,6 +67,7 @@ const { createVTubeRuntime } = require("./vtube-runtime");
 	const {
   registerCoreRoutes,
   isLocalRestartRequest,
+  registerModelRoutes,
 } = require("./server-routes");
 	const {
 	  buildCapabilityHealth,
@@ -2421,109 +2422,21 @@ function registerRoutes(app, upload, deps = {}) {
     }
   });
 
-  app.get("/models/status", (req, res) => {
-    return res.json(modelManagement.getModelStatus());
+  // Issue #500: the 9 /models/* routes (previously inline here, minus the
+  // two unrelated routes -- /browser-automation/activity and
+  // /persona/override* below -- that just happened to sit physically
+  // between them) moved to server-routes.js's registerModelRoutes.
+  registerModelRoutes(app, {
+    modelManagement,
+    readGgufMetadata: deps.readGgufMetadata || readGgufMetadata,
   });
 
   // Issue #418: transient, human-facing "what's browser automation doing
   // right now" feed for the launcher to poll -- no auth, same as
-  // /models/status just above (a read-only status readout, not a
-  // file-system-touching admin action like /editors/workspace/*).
+  // /models/status (a read-only status readout, not a file-system-touching
+  // admin action like /editors/workspace/*).
   app.get("/browser-automation/activity", (req, res) => {
     return res.json(activeBrowserAutomationToolSource.activityLog.getActivity());
-  });
-
-  // Issue #196: separate from /models/status (polled frequently) on
-  // purpose -- real GGUF header parsing is real file I/O, not something to
-  // add to a hot poll path. Called on-demand when a user actually wants to
-  // see a model's real metadata instead of just its filename. Reuses the
-  // same magic-byte gate setModelPath()/setVisionSettings() already use
-  // before ever trusting a path is a real GGUF file.
-  const activeReadGgufMetadata = deps.readGgufMetadata || readGgufMetadata;
-  app.get("/models/gguf-metadata", async (req, res) => {
-    const filePath = String(req.query?.path || "");
-    if (!filePath || !modelManagement.isValidGgufFile(filePath)) {
-      return res.status(400).json({ error: "path must point to a valid GGUF file" });
-    }
-    const metadata = await activeReadGgufMetadata(filePath);
-    if (!metadata) {
-      return res.status(422).json({ error: "could not parse GGUF metadata for this file" });
-    }
-    return res.json(metadata);
-  });
-
-  app.post("/models/active-profile", (req, res) => {
-    try {
-      return res.json(modelManagement.setActiveProfile(req.body?.profile));
-    } catch (error) {
-      return res.status(400).json({ error: error.message });
-    }
-  });
-
-  // Full-storage scan for .gguf files (issue #123 install flow): best-effort,
-  // time/dir-capped -- see scanForGgufFiles in model-management.js. Optional
-  // body.roots lets the desktop client scope it (e.g. just a chosen drive)
-  // instead of the default home-dir + every drive letter.
-  app.post("/models/scan", (req, res) => {
-    try {
-      const roots = Array.isArray(req.body?.roots) ? req.body.roots : undefined;
-      return res.json(modelManagement.scanForModels(roots));
-    } catch (error) {
-      return res.status(400).json({ error: error.message });
-    }
-  });
-
-  // Explicitly select (or clear, with modelPath: null/"") which local .gguf
-  // file to use, from either a scan result or a manual file browse.
-  app.post("/models/path", (req, res) => {
-    try {
-      return res.json(modelManagement.setModelPath(req.body?.modelPath));
-    } catch (error) {
-      return res.status(400).json({ error: error.message });
-    }
-  });
-
-  // Switch Mana's brain between local (llama-server + a GGUF) and any
-  // OpenAI-compatible endpoint. apiKey is write-only from here on out --
-  // /models/status never echoes it back (see model-management.js).
-  app.post("/models/brain-provider", (req, res) => {
-    try {
-      return res.json(
-        modelManagement.setBrainSettings({
-          type: req.body?.type,
-          baseUrl: req.body?.baseUrl,
-          apiKey: req.body?.apiKey,
-          model: req.body?.model,
-        }),
-      );
-    } catch (error) {
-      return res.status(400).json({ error: error.message });
-    }
-  });
-
-  // Presets for the brain-provider dropdown (Settings' "Use Remote AI" UI).
-  app.get("/models/brain-providers", (req, res) => {
-    return res.json(modelManagement.getKnownBrainProviders());
-  });
-
-  // "Connect" button: tests reachability/auth against baseUrl before saving.
-  // Local-only (same isLocalRestartRequest check as /admin/restart): this is
-  // the one /models/* route that makes node-bot issue an outbound request to
-  // a user-supplied URL, and node-bot listens on all interfaces with CORS
-  // wide open, so an unrestricted version of this route would let anyone who
-  // can reach this machine's port make it probe arbitrary hosts (SSRF). The
-  // fix is restricting *who can call it*, not the destination -- the whole
-  // point of this button is testing local/LAN endpoints (Ollama, LM
-  // Studio), so blocking private addresses would defeat the feature.
-  app.post("/models/brain-provider/test", async (req, res) => {
-    if (!isLocalRestartRequest(req)) {
-      return res.status(403).json({ error: "this endpoint is only available from this PC" });
-    }
-    const result = await modelManagement.testBrainConnection({
-      baseUrl: req.body?.baseUrl,
-      apiKey: req.body?.apiKey,
-    });
-    return res.json(result);
   });
 
   // A one-off, session-scoped mode switch layered on top of Mana's base
@@ -2543,20 +2456,6 @@ function registerRoutes(app, upload, deps = {}) {
     const sessionId = req.body?.sessionId;
     const cleared = persona.clearPersonaOverride(sessionId);
     return res.json({ ok: true, cleared });
-  });
-
-  // Vision GGUF + mmproj override ("" clears back to auto-detection).
-  app.post("/models/vision-path", (req, res) => {
-    try {
-      return res.json(
-        modelManagement.setVisionSettings({
-          modelPath: req.body?.modelPath,
-          mmprojPath: req.body?.mmprojPath,
-        }),
-      );
-    } catch (error) {
-      return res.status(400).json({ error: error.message });
-    }
   });
 
   function makeHealthComponent(status, configured, message, details = {}) {
