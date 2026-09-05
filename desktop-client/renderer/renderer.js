@@ -6,34 +6,13 @@ const { detectReplyEmotion } = window.ManaReplyEmotion;
 const { formatCompareProfileLabel, pickDefaultCompareProfiles } = window.ManaCompareMode;
 const { createDesktopStreamingChunkQueue } = window.ManaStreamingChunkQueue;
 
-// Theme (Settings > Appearance): applied at the top level, before the async
-// IIFE below does anything else, so there's no flash of the wrong theme
-// while backend calls are still in flight. "System" (the default) just
-// means no data-theme attribute -- style.css's prefers-color-scheme media
-// query is then the only source of truth; Light/Dark set the attribute,
-// which wins over that media query regardless of the OS setting (see the
-// :root[data-theme] rules in style.css).
-const THEME_STORAGE_KEY = 'manaTheme';
+// Issue #500: theme toggle (applyTheme/THEME_STORAGE_KEY) moved to theme.js,
+// loaded immediately before this file so it still runs at the same point in
+// page load it always did. LISTENING_AUTOSTART_STORAGE_KEY/BARGE_IN_STORAGE_KEY
+// stay here -- used throughout this file's own IIFE below, not part of the
+// theme toggle.
 const LISTENING_AUTOSTART_STORAGE_KEY = 'mana_listening_autostart';
 const BARGE_IN_STORAGE_KEY = 'mana_barge_in_enabled';
-function applyTheme(choice) {
-  if (choice === 'light' || choice === 'dark' || choice === 'high-contrast') {
-    document.documentElement.setAttribute('data-theme', choice);
-  } else {
-    document.documentElement.removeAttribute('data-theme');
-  }
-  document.querySelectorAll('#themeToggle button[data-theme-choice]').forEach((btn) => {
-    btn.classList.toggle('active', btn.dataset.themeChoice === choice);
-  });
-}
-applyTheme(localStorage.getItem(THEME_STORAGE_KEY) || 'system');
-document.getElementById('themeToggle')?.addEventListener('click', (e) => {
-  const btn = e.target.closest('button[data-theme-choice]');
-  if (!btn) return;
-  const choice = btn.dataset.themeChoice;
-  localStorage.setItem(THEME_STORAGE_KEY, choice);
-  applyTheme(choice);
-});
 
 // Issue #500: startup/shutdown overlay logic moved to startup-overlay.js,
 // loaded immediately before this file so it still runs at the same point
