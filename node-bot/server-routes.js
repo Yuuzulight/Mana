@@ -12,6 +12,7 @@ const {
   isLoopbackAddress,
   isRestartCommand,
 } = require("./admin-restart");
+const { createZedIntegration } = require("./zed-integration");
 
 const RESTART_LOCAL_ONLY_ERROR = "restart is only available from this PC";
 
@@ -594,6 +595,210 @@ function registerAdminStaticRoutes(app) {
 }
 
 // Issue #500: moved verbatim out of server.js's registerRoutes(). Takes
+// checkAdminAuth and getEditorIntegrations as dependencies rather than
+// redefining them here -- getEditorIntegrations in particular is a
+// memoizing closure back in server.js (over its own `editorIntegrations`
+// let and deps.editors override); passing the same function reference
+// through preserves that memoization exactly instead of creating a second,
+// independent instance. deps.zed (an optional override, same as the
+// original inline `deps.zed || createZedIntegration()`) is passed as a
+// plain value since the original never memoized it either.
+function registerEditorRoutes(app, deps) {
+  const { checkAdminAuth, getEditorIntegrations, zed: zedOverride } = deps;
+
+  app.get("/zed/status", (req, res) => {
+    const zed = zedOverride || createZedIntegration();
+    return res.json(zed.getStatus());
+  });
+
+  app.post("/zed/open", async (req, res) => {
+    // Opens an arbitrary local path in an editor -- CORS is wide open
+    // app-wide, so without this any site the user has loaded in a browser
+    // tab could otherwise trigger it via a background fetch().
+    if (!checkAdminAuth(req, res)) return;
+    try {
+      const zed = zedOverride || createZedIntegration();
+      const result = await zed.open({
+        targetPath: req.body?.path,
+        line: req.body?.line,
+        column: req.body?.column,
+      });
+      return res.json(result);
+    } catch (error) {
+      return res.status(400).json({
+        opened: false,
+        error: error.message,
+      });
+    }
+  });
+
+  app.get("/editors/status", (req, res) => {
+    const editors = getEditorIntegrations();
+    return res.json(editors.getStatus());
+  });
+
+  app.post("/editors/open", async (req, res) => {
+    if (!checkAdminAuth(req, res)) return;
+    try {
+      const editors = getEditorIntegrations();
+      const result = await editors.open({
+        editor: req.body?.editor,
+        targetPath: req.body?.path,
+        line: req.body?.line,
+        column: req.body?.column,
+      });
+      return res.json(result);
+    } catch (error) {
+      return res.status(400).json({
+        opened: false,
+        error: error.message,
+      });
+    }
+  });
+
+  app.get("/editors/workspace", (req, res) => {
+    if (!checkAdminAuth(req, res)) return;
+    const editors = getEditorIntegrations();
+    return res.json({ workspace: editors.getWorkspace() });
+  });
+
+  app.post("/editors/workspace", (req, res) => {
+    if (!checkAdminAuth(req, res)) return;
+    try {
+      const editors = getEditorIntegrations();
+      const workspace = editors.setWorkspace(req.body?.path, {
+        editor: req.body?.editor,
+        reason: "manual",
+      });
+      return res.json({ workspace });
+    } catch (error) {
+      return res.status(400).json({
+        workspace: null,
+        error: error.message,
+      });
+    }
+  });
+
+  app.get("/editors/workspace/files", (req, res) => {
+    if (!checkAdminAuth(req, res)) return;
+    try {
+      const editors = getEditorIntegrations();
+      return res.json(editors.listWorkspaceFiles());
+    } catch (error) {
+      return res.status(400).json({
+        files: [],
+        error: error.message,
+      });
+    }
+  });
+
+  app.get("/editors/workspace/file", (req, res) => {
+    if (!checkAdminAuth(req, res)) return;
+    try {
+      const editors = getEditorIntegrations();
+      const filePath = typeof req.query.path === "string" ? req.query.path : "";
+      return res.json(editors.readWorkspaceFile(filePath));
+    } catch (error) {
+      return res.status(400).json({
+        content: "",
+        error: error.message,
+      });
+    }
+  });
+
+  app.get("/editors/workspace/proposals", (req, res) => {
+    if (!checkAdminAuth(req, res)) return;
+    const editors = getEditorIntegrations();
+    return res.json({ proposals: editors.listEditProposals() });
+  });
+
+  app.post("/editors/workspace/proposals", (req, res) => {
+    if (!checkAdminAuth(req, res)) return;
+    try {
+      const editors = getEditorIntegrations();
+      const proposal = editors.createEditProposal({
+        path: req.body?.path,
+        proposedContent: req.body?.proposedContent,
+        summary: req.body?.summary,
+      });
+      return res.json({ proposal });
+    } catch (error) {
+      return res.status(400).json({
+        proposal: null,
+        error: error.message,
+      });
+    }
+  });
+
+  app.get("/editors/workspace/proposals/:id", (req, res) => {
+    if (!checkAdminAuth(req, res)) return;
+    try {
+      const editors = getEditorIntegrations();
+      return res.json({ proposal: editors.getEditProposal(req.params.id) });
+    } catch (error) {
+      return res.status(404).json({
+        proposal: null,
+        error: error.message,
+      });
+    }
+  });
+
+  app.post("/editors/workspace/proposals/:id/approve", (req, res) => {
+    if (!checkAdminAuth(req, res)) return;
+    try {
+      const editors = getEditorIntegrations();
+      // Issue #427: omitted acceptedHunkIds approves every hunk, unchanged
+      // from before hunk-level review existed.
+      return res.json({
+        proposal: editors.approveEditProposal(req.params.id, {
+          acceptedHunkIds: req.body?.acceptedHunkIds,
+        }),
+      });
+    } catch (error) {
+      return res.status(400).json({
+        proposal: null,
+        error: error.message,
+      });
+    }
+  });
+
+  // Issue #428: restorable snapshots of applied edits, independent of git.
+  app.get("/editors/workspace/snapshots", (req, res) => {
+    if (!checkAdminAuth(req, res)) return;
+    const editors = getEditorIntegrations();
+    return res.json({ snapshots: editors.listEditSnapshots() });
+  });
+
+  app.post("/editors/workspace/snapshots/:id/restore", async (req, res) => {
+    if (!checkAdminAuth(req, res)) return;
+    try {
+      const editors = getEditorIntegrations();
+      const confirmStale = Boolean(req.body && req.body.confirmStale);
+      const restored = await editors.restoreEditSnapshot(req.params.id, { confirmStale });
+      // #475 whole-branch review fix: {stale: true, ...} is truthy, so a
+      // plain 200 here made both renderer UIs' `if (!result.restored) throw`
+      // check read a stale, unconfirmed restore as a success -- nothing was
+      // actually restored, but the UI reported it worked. 409 (plus a null
+      // `restored`) routes into that same existing error branch instead of
+      // requiring any renderer change.
+      if (restored && restored.stale) {
+        return res.status(409).json({
+          restored: null,
+          stale: restored,
+          error: "snapshot is stale: target has been written to again since it was recorded",
+        });
+      }
+      return res.json({ restored });
+    } catch (error) {
+      return res.status(400).json({
+        restored: null,
+        error: error.message,
+      });
+    }
+  });
+}
+
+// Issue #500: moved verbatim out of server.js's registerRoutes(). Takes
 // checkAdminAuth as a dependency (deps.checkAdminAuth) rather than
 // redefining it here -- it closes over ADMIN_SECRET back in server.js and
 // duplicating that closure would risk the two copies drifting apart.
@@ -778,6 +983,7 @@ function registerPendingWritesRoutes(app, deps) {
 module.exports = {
   registerCoreRoutes,
   isLocalRestartRequest,
+  registerEditorRoutes,
   registerAdminStaticRoutes,
   registerPendingWritesRoutes,
 };
