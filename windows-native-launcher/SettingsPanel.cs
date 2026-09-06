@@ -23,7 +23,9 @@ internal sealed class SettingsPanel : UserControl
     private readonly ListView factsList = new();
     private readonly ListView skillsList = new();
     private readonly ListView approvalsList = new();
+    private readonly ListView hooksList = new();
     private bool populatingPlugins;
+    private bool populatingHooks;
 
     public SettingsPanel(ManaBackendClient backendClient)
     {
@@ -39,6 +41,7 @@ internal sealed class SettingsPanel : UserControl
         tabs.TabPages.Add(BuildMemoryFactsTab());
         tabs.TabPages.Add(BuildSkillsTab());
         tabs.TabPages.Add(BuildApprovalsTab());
+        tabs.TabPages.Add(BuildHooksTab());
         foreach (TabPage page in tabs.TabPages)
         {
             page.BackColor = DarkTheme.Background;
@@ -52,6 +55,7 @@ internal sealed class SettingsPanel : UserControl
         await RefreshMemoryFactsAsync();
         await RefreshSkillsAsync();
         await RefreshApprovalsAsync();
+        await RefreshHooksAsync();
     }
 
     // #529 review: a failed load left its list untouched -- on first
@@ -474,6 +478,147 @@ internal sealed class SettingsPanel : UserControl
             var item = new ListViewItem(approval.ActionType) { Tag = approval.Id };
             item.SubItems.Add(approval.Summary);
             approvalsList.Items.Add(item);
+        }
+    }
+
+    // #566: PATCH /hooks/:id only settles `enabled` (pause/resume) --
+    // matches node-bot's own narrow scope for that route (hooks-store.js's
+    // setRuleEnabled), so this tab's checkbox is the one edit action, same
+    // shape as the Plugins tab's own enable/disable toggle above.
+    private TabPage BuildHooksTab()
+    {
+        hooksList.Dock = DockStyle.Fill;
+        hooksList.View = View.Details;
+        hooksList.CheckBoxes = true;
+        hooksList.FullRowSelect = true;
+        hooksList.Columns.Add("Tool", 150);
+        hooksList.Columns.Add("Phase", 60);
+        hooksList.Columns.Add("Action", 100);
+        hooksList.Columns.Add("Path filter", 140);
+        hooksList.Columns.Add("Last run", 70);
+        hooksList.ItemChecked += OnHookChecked;
+        DarkTheme.ApplyListView(hooksList);
+
+        var addButton = new Button { Text = "Add..." };
+        var deleteButton = new Button { Text = "Delete" };
+        DarkTheme.ApplyButton(addButton);
+        DarkTheme.ApplyButton(deleteButton);
+        addButton.Click += async (_, _) => await AddHookAsync();
+        deleteButton.Click += async (_, _) => await DeleteSelectedHookAsync();
+
+        var buttonRow = new FlowLayoutPanel { Dock = DockStyle.Bottom, Height = 32, FlowDirection = FlowDirection.LeftToRight, BackColor = DarkTheme.Background };
+        buttonRow.Controls.Add(addButton);
+        buttonRow.Controls.Add(deleteButton);
+
+        var page = new TabPage("Hooks");
+        page.Controls.Add(hooksList);
+        page.Controls.Add(buttonRow);
+        return page;
+    }
+
+    private async void OnHookChecked(object? sender, ItemCheckedEventArgs e)
+    {
+        // Same reentrancy guard as OnPluginChecked above -- suppressed
+        // while RefreshHooksAsync is setting each item's initial Checked
+        // state from the server's own value.
+        if (populatingHooks)
+        {
+            return;
+        }
+        var id = (string)e.Item.Tag!;
+        try
+        {
+            await backendClient.SetHookEnabledAsync(id, e.Item.Checked);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"SettingsPanel: failed to toggle hook '{id}'. {ex.Message}");
+        }
+    }
+
+    private async Task AddHookAsync()
+    {
+        using var dialog = new HookRuleDialog();
+        if (dialog.ShowDialog(this) != DialogResult.OK)
+        {
+            return;
+        }
+
+        try
+        {
+            await backendClient.CreateHookAsync(dialog.Phase, dialog.Action, dialog.ToolName, dialog.PathContains, dialog.Command, dialog.Args, dialog.Reason);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, $"Failed to add hook rule: {ex.Message}", "Add Hook Rule", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            return;
+        }
+        if (!IsDisposed)
+        {
+            await RefreshHooksAsync();
+        }
+    }
+
+    private async Task DeleteSelectedHookAsync()
+    {
+        if (hooksList.SelectedItems.Count == 0)
+        {
+            return;
+        }
+        var id = (string)hooksList.SelectedItems[0].Tag!;
+        try
+        {
+            await backendClient.DeleteHookAsync(id);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"SettingsPanel: failed to delete hook '{id}'. {ex.Message}");
+            return;
+        }
+        if (!IsDisposed)
+        {
+            await RefreshHooksAsync();
+        }
+    }
+
+    private async Task RefreshHooksAsync()
+    {
+        System.Collections.Generic.IReadOnlyList<ManaHookRule> hooks;
+        try
+        {
+            hooks = await backendClient.GetHooksAsync();
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"SettingsPanel: failed to load hooks. {ex.Message}");
+            if (!IsDisposed)
+            {
+                ShowLoadFailure(hooksList, ex.Message);
+            }
+            return;
+        }
+        if (IsDisposed)
+        {
+            return;
+        }
+
+        populatingHooks = true;
+        try
+        {
+            hooksList.Items.Clear();
+            foreach (var hook in hooks)
+            {
+                var item = new ListViewItem(hook.ToolName) { Tag = hook.Id, Checked = hook.Enabled };
+                item.SubItems.Add(hook.Phase);
+                item.SubItems.Add(hook.Action);
+                item.SubItems.Add(hook.PathContains ?? "");
+                item.SubItems.Add(hook.LastRunOk switch { true => "ok", false => "failed", null => "" });
+                hooksList.Items.Add(item);
+            }
+        }
+        finally
+        {
+            populatingHooks = false;
         }
     }
 }

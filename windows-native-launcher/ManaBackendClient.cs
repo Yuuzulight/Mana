@@ -412,6 +412,64 @@ internal sealed class ManaBackendClient
         response.EnsureSuccessStatusCode();
     }
 
+    // #566: GET /hooks -- see hooks-store.js's createHooksStore for the
+    // full stored shape; this only carries what the settings tab shows.
+    public async Task<IReadOnlyList<ManaHookRule>> GetHooksAsync()
+    {
+        using var response = await http.GetAsync("/hooks");
+        response.EnsureSuccessStatusCode();
+        await using var stream = await response.Content.ReadAsStreamAsync();
+        using var document = await JsonDocument.ParseAsync(stream);
+        var rules = new List<ManaHookRule>();
+        if (document.RootElement.TryGetProperty("rules", out var rulesElement))
+        {
+            foreach (var entry in rulesElement.EnumerateArray())
+            {
+                var lastRunOk = entry.TryGetProperty("lastRun", out var lastRunEl) && lastRunEl.TryGetProperty("ok", out var okEl)
+                    ? okEl.GetBoolean()
+                    : (bool?)null;
+                rules.Add(new ManaHookRule
+                {
+                    Id = entry.TryGetProperty("id", out var idEl) ? idEl.GetString() ?? "" : "",
+                    Phase = entry.TryGetProperty("phase", out var phaseEl) ? phaseEl.GetString() ?? "" : "",
+                    Action = entry.TryGetProperty("action", out var actionEl) ? actionEl.GetString() ?? "" : "",
+                    ToolName = entry.TryGetProperty("toolName", out var toolEl) ? toolEl.GetString() ?? "" : "",
+                    PathContains = entry.TryGetProperty("pathContains", out var pathEl) ? pathEl.GetString() : null,
+                    Reason = entry.TryGetProperty("reason", out var reasonEl) ? reasonEl.GetString() : null,
+                    Enabled = !entry.TryGetProperty("enabled", out var enabledEl) || enabledEl.GetBoolean(),
+                    LastRunOk = lastRunOk,
+                });
+            }
+        }
+        return rules;
+    }
+
+    // #566: node-bot validates phase/action/toolName itself (400 on a bad
+    // combination) -- this client doesn't duplicate that. args, when given,
+    // is one argv entry per element (never a shell-joined string); command
+    // and args are only required by node-bot for run-command/rollback-on-failure.
+    public async Task CreateHookAsync(string phase, string action, string toolName, string? pathContains = null, string? command = null, IReadOnlyList<string>? args = null, string? reason = null)
+    {
+        var payload = JsonSerializer.Serialize(new { phase, action, toolName, pathContains, command, args, reason });
+        using var content = new StringContent(payload, Encoding.UTF8, "application/json");
+        using var response = await http.PostAsync("/hooks", content);
+        response.EnsureSuccessStatusCode();
+    }
+
+    public async Task SetHookEnabledAsync(string id, bool enabled)
+    {
+        var payload = JsonSerializer.Serialize(new { enabled });
+        using var content = new StringContent(payload, Encoding.UTF8, "application/json");
+        using var response = await http.PatchAsync($"/hooks/{Uri.EscapeDataString(id)}", content);
+        response.EnsureSuccessStatusCode();
+    }
+
+    public async Task DeleteHookAsync(string id)
+    {
+        using var response = await http.DeleteAsync($"/hooks/{Uri.EscapeDataString(id)}");
+        response.EnsureSuccessStatusCode();
+    }
+
     public async Task<IReadOnlyList<ManaPendingApproval>> GetPendingApprovalsAsync()
     {
         using var response = await http.GetAsync("/approvals/pending");
@@ -591,6 +649,19 @@ internal sealed class ManaPendingApproval
     public string Id { get; init; } = "";
     public string ActionType { get; init; } = "";
     public string Summary { get; init; } = "";
+}
+
+// #566: GET /hooks (index only -- see GetHooksAsync's own comment).
+internal sealed class ManaHookRule
+{
+    public string Id { get; init; } = "";
+    public string Phase { get; init; } = "";
+    public string Action { get; init; } = "";
+    public string ToolName { get; init; } = "";
+    public string? PathContains { get; init; }
+    public string? Reason { get; init; }
+    public bool Enabled { get; init; }
+    public bool? LastRunOk { get; init; }
 }
 
 internal sealed class ReplyStreamEvent
