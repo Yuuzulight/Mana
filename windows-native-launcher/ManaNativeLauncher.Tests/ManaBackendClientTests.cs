@@ -30,6 +30,223 @@ internal sealed class FakeHttpMessageHandler : HttpMessageHandler
 public class ManaBackendClientTests
 {
     [Fact]
+    public async Task GetMcpServersAsync_ParsesServersAndSummarizesEachTransport()
+    {
+        var handler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(
+                """{"servers":[{"id":"s1","name":"weather","transport":{"kind":"stdio","command":"python","args":["server.py"]},"allowedTools":["get_forecast","get_alerts"],"registeredAt":"2026-01-01T00:00:00.000Z"},{"id":"s2","name":"remote","transport":{"kind":"http","url":"https://example.com/mcp"},"allowedTools":["search"]}]}""",
+                Encoding.UTF8,
+                "application/json"),
+        });
+        var client = new ManaBackendClient(handler);
+
+        var servers = await client.GetMcpServersAsync();
+
+        Assert.Equal(2, servers.Count);
+        Assert.Equal("weather", servers[0].Name);
+        Assert.Equal("stdio: python", servers[0].TransportSummary);
+        Assert.Equal("get_forecast, get_alerts", servers[0].AllowedTools);
+        Assert.Equal("http: https://example.com/mcp", servers[1].TransportSummary);
+    }
+
+    [Fact]
+    public async Task GetMcpServersAsync_ReturnsEmptyWhenTheServersKeyIsMissing()
+    {
+        var handler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent("{}", Encoding.UTF8, "application/json"),
+        });
+        var client = new ManaBackendClient(handler);
+
+        var servers = await client.GetMcpServersAsync();
+
+        Assert.Empty(servers);
+    }
+
+    [Fact]
+    public async Task RegisterMcpServerAsync_PostsAStdioTransportAndReturnsTheStatus()
+    {
+        string? path = null;
+        string? body = null;
+        var handler = new FakeHttpMessageHandler(request =>
+        {
+            path = request.RequestUri!.AbsolutePath;
+            body = request.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("{\"status\":\"pending\",\"requestId\":\"req-1\"}", Encoding.UTF8, "application/json"),
+            };
+        });
+        var client = new ManaBackendClient(handler);
+
+        var status = await client.RegisterMcpServerAsync("weather", "stdio", "python", new[] { "server.py" }, null, null, new[] { "get_forecast" });
+
+        Assert.Equal("/mcp-clients/servers", path);
+        Assert.Equal("pending", status);
+        Assert.Contains("\"name\":\"weather\"", body);
+        Assert.Contains("\"kind\":\"stdio\"", body);
+        Assert.Contains("\"command\":\"python\"", body);
+        Assert.Contains("\"allowedTools\":[\"get_forecast\"]", body);
+    }
+
+    [Fact]
+    public async Task RegisterMcpServerAsync_PostsAnHttpTransport()
+    {
+        string? body = null;
+        var handler = new FakeHttpMessageHandler(request =>
+        {
+            body = request.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("{\"status\":\"pending\"}", Encoding.UTF8, "application/json"),
+            };
+        });
+        var client = new ManaBackendClient(handler);
+
+        await client.RegisterMcpServerAsync("remote", "http", null, null, null, "https://example.com/mcp", new[] { "search" });
+
+        Assert.Contains("\"kind\":\"http\"", body);
+        Assert.Contains("\"url\":\"https://example.com/mcp\"", body);
+    }
+
+    [Fact]
+    public async Task DeleteMcpServerAsync_SendsDeleteToTheNamedServer()
+    {
+        string? path = null;
+        string? method = null;
+        var handler = new FakeHttpMessageHandler(request =>
+        {
+            path = request.RequestUri!.AbsolutePath;
+            method = request.Method.Method;
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("{\"ok\":true}", Encoding.UTF8, "application/json"),
+            };
+        });
+        var client = new ManaBackendClient(handler);
+
+        await client.DeleteMcpServerAsync("s1");
+
+        Assert.Equal("/mcp-clients/servers/s1", path);
+        Assert.Equal("DELETE", method);
+    }
+
+    [Fact]
+    public async Task GetHooksAsync_ParsesTheRuleArrayIncludingLastRun()
+    {
+        var handler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(
+                """{"rules":[{"id":"abc1","phase":"pre","action":"deny","toolName":"file_write","pathContains":".env","enabled":true},{"id":"def2","phase":"post","action":"run-command","toolName":"file_write","enabled":false,"lastRun":{"at":"2026-01-01T00:00:00.000Z","ok":false,"error":"boom"}}]}""",
+                Encoding.UTF8,
+                "application/json"),
+        });
+        var client = new ManaBackendClient(handler);
+
+        var hooks = await client.GetHooksAsync();
+
+        Assert.Equal(2, hooks.Count);
+        Assert.Equal("abc1", hooks[0].Id);
+        Assert.Equal("pre", hooks[0].Phase);
+        Assert.Equal("deny", hooks[0].Action);
+        Assert.Equal(".env", hooks[0].PathContains);
+        Assert.True(hooks[0].Enabled);
+        Assert.Null(hooks[0].LastRunOk);
+        Assert.False(hooks[1].Enabled);
+        Assert.False(hooks[1].LastRunOk);
+    }
+
+    [Fact]
+    public async Task GetHooksAsync_ReturnsEmptyWhenTheRulesKeyIsMissing()
+    {
+        var handler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent("{}", Encoding.UTF8, "application/json"),
+        });
+        var client = new ManaBackendClient(handler);
+
+        var hooks = await client.GetHooksAsync();
+
+        Assert.Empty(hooks);
+    }
+
+    [Fact]
+    public async Task CreateHookAsync_PostsAllFieldsAsJson()
+    {
+        string? path = null;
+        string? body = null;
+        var handler = new FakeHttpMessageHandler(request =>
+        {
+            path = request.RequestUri!.AbsolutePath;
+            body = request.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
+            return new HttpResponseMessage(HttpStatusCode.Created)
+            {
+                Content = new StringContent("{\"id\":\"abc1\"}", Encoding.UTF8, "application/json"),
+            };
+        });
+        var client = new ManaBackendClient(handler);
+
+        await client.CreateHookAsync("post", "run-command", "file_write", pathContains: "*.cs", command: "dotnet", args: new[] { "format" }, reason: "keep it tidy");
+
+        Assert.Equal("/hooks", path);
+        Assert.Contains("\"phase\":\"post\"", body);
+        Assert.Contains("\"action\":\"run-command\"", body);
+        Assert.Contains("\"toolName\":\"file_write\"", body);
+        Assert.Contains("\"pathContains\":\"*.cs\"", body);
+        Assert.Contains("\"command\":\"dotnet\"", body);
+        Assert.Contains("\"args\":[\"format\"]", body);
+        Assert.Contains("\"reason\":\"keep it tidy\"", body);
+    }
+
+    [Fact]
+    public async Task SetHookEnabledAsync_PatchesTheEnabledField()
+    {
+        string? path = null;
+        string? method = null;
+        string? body = null;
+        var handler = new FakeHttpMessageHandler(request =>
+        {
+            path = request.RequestUri!.AbsolutePath;
+            method = request.Method.Method;
+            body = request.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("{\"enabled\":false}", Encoding.UTF8, "application/json"),
+            };
+        });
+        var client = new ManaBackendClient(handler);
+
+        await client.SetHookEnabledAsync("abc1", false);
+
+        Assert.Equal("/hooks/abc1", path);
+        Assert.Equal("PATCH", method);
+        Assert.Contains("\"enabled\":false", body);
+    }
+
+    [Fact]
+    public async Task DeleteHookAsync_SendsDeleteToTheNamedRule()
+    {
+        string? path = null;
+        string? method = null;
+        var handler = new FakeHttpMessageHandler(request =>
+        {
+            path = request.RequestUri!.AbsolutePath;
+            method = request.Method.Method;
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("{\"deleted\":true}", Encoding.UTF8, "application/json"),
+            };
+        });
+        var client = new ManaBackendClient(handler);
+
+        await client.DeleteHookAsync("abc1");
+
+        Assert.Equal("/hooks/abc1", path);
+        Assert.Equal("DELETE", method);
+    }
+
+    [Fact]
     public async Task Constructor_SendsNoAuthorizationHeaderWhenNoAdminTokenIsGiven()
     {
         AuthenticationHeaderValue? authHeader = null;
@@ -86,6 +303,89 @@ public class ManaBackendClientTests
         await client.ReplyAsync("hi");
 
         Assert.Equal("192.168.1.50", requestUri!.Host);
+    }
+
+    [Fact]
+    public async Task GetAccountsAsync_ParsesTheBareJsonArray()
+    {
+        var handler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(
+                """[{"userId":"u1","email":"admin@example.com","role":"admin"},{"userId":"u2","email":"friend@example.com","role":"user"}]""",
+                Encoding.UTF8,
+                "application/json"),
+        });
+        var client = new ManaBackendClient(handler);
+
+        var accounts = await client.GetAccountsAsync();
+
+        Assert.Equal(2, accounts.Count);
+        Assert.Equal("admin@example.com", accounts[0].Email);
+        Assert.Equal("admin", accounts[0].Role);
+        Assert.Equal("u2", accounts[1].UserId);
+    }
+
+    [Fact]
+    public async Task GetAccountsAsync_ReturnsEmptyForAnEmptyArray()
+    {
+        var handler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent("[]", Encoding.UTF8, "application/json"),
+        });
+        var client = new ManaBackendClient(handler);
+
+        var accounts = await client.GetAccountsAsync();
+
+        Assert.Empty(accounts);
+    }
+
+    [Fact]
+    public async Task CreateAccountAsync_PostsEmailAndRoleAndReturnsTheApiKey()
+    {
+        string? path = null;
+        string? body = null;
+        var handler = new FakeHttpMessageHandler(request =>
+        {
+            path = request.RequestUri!.AbsolutePath;
+            body = request.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
+            return new HttpResponseMessage(HttpStatusCode.Created)
+            {
+                Content = new StringContent(
+                    """{"userId":"u3","email":"new@example.com","role":"user","apiKey":"mana_abc123","message":"Save your API key somewhere safe; it will not be shown again"}""",
+                    Encoding.UTF8,
+                    "application/json"),
+            };
+        });
+        var client = new ManaBackendClient(handler);
+
+        var apiKey = await client.CreateAccountAsync("new@example.com", "user");
+
+        Assert.Equal("/admin/accounts", path);
+        Assert.Contains("\"email\":\"new@example.com\"", body);
+        Assert.Contains("\"role\":\"user\"", body);
+        Assert.Equal("mana_abc123", apiKey);
+    }
+
+    [Fact]
+    public async Task DeleteAccountAsync_SendsDeleteToTheNamedUser()
+    {
+        string? path = null;
+        string? method = null;
+        var handler = new FakeHttpMessageHandler(request =>
+        {
+            path = request.RequestUri!.AbsolutePath;
+            method = request.Method.Method;
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("{\"ok\":true}", Encoding.UTF8, "application/json"),
+            };
+        });
+        var client = new ManaBackendClient(handler);
+
+        await client.DeleteAccountAsync("u1");
+
+        Assert.Equal("/admin/accounts/u1", path);
+        Assert.Equal("DELETE", method);
     }
 
     [Fact]
