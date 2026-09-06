@@ -10,6 +10,7 @@ namespace Mana.NativeLauncher;
 internal sealed class ManaApplicationContext : ApplicationContext
 {
     private readonly AvatarOverlayForm avatarOverlay;
+    private readonly BrowserAutomationPanel browserAutomationPanel;
     private readonly NotifyIcon trayIcon;
     private readonly ManaProcessManager processManager;
     private readonly ManaBackendClient backendClient;
@@ -18,7 +19,13 @@ internal sealed class ManaApplicationContext : ApplicationContext
     private readonly AudioPlayer audioPlayer;
     private readonly VoiceLoop voiceLoop;
     private readonly VisionHotkeyListener visionHotkeyListener;
+    private readonly ClipHotkeyListener clipHotkeyListener;
+    private readonly ClipBuffer clipBuffer = new();
+    private readonly System.Windows.Forms.Timer? clipCaptureTimer;
+    private readonly GlobalHotkeyListener globalHotkeys;
     private readonly TrayNotificationClient trayNotifications;
+    private readonly CaptionOverlayForm captionOverlay;
+    private readonly CaptionWebSocketClient captionClient;
     private readonly ArtifactViewerForm artifactViewer;
     private readonly QuickEntryForm quickEntry;
     private readonly SessionListForm sessionListForm;
@@ -28,6 +35,13 @@ internal sealed class ManaApplicationContext : ApplicationContext
     // pick the screen-context read interval, same signal the tray icon
     // text already reflects.
     private bool gamingModeActive;
+
+    // #574: client-side-only override, matching windows-launcher's own
+    // #gamingMode checkbox -- it isn't a 3-way auto/on/off switch, just an
+    // enable/disable for the auto-detection RefreshTrayStatusAsync already
+    // does. Off forces gamingModeActive false regardless of what the
+    // backend's process scan reports; no new backend route needed.
+    private bool gamingModeEnabled = true;
 
     // The 3 services ManaProcessManager actually starts/stops -- shared
     // between the startup and shutdown overlays, same as windows-launcher's
@@ -50,9 +64,14 @@ internal sealed class ManaApplicationContext : ApplicationContext
     public ManaApplicationContext()
     {
         var rootDir = FindRootDirectory();
+        var settings = ManaSettingsStore.Load();
         processManager = new ManaProcessManager(rootDir);
-        backendClient = new ManaBackendClient();
+        backendClient = new ManaBackendClient(baseUrl: settings.BackendBaseUrl, adminToken: settings.AdminToken);
         avatarOverlay = new AvatarOverlayForm(rootDir);
+        // #578: ambient indicator, no tray entry -- starts polling
+        // immediately and shows itself only while browser automation is
+        // genuinely active.
+        browserAutomationPanel = new BrowserAutomationPanel(backendClient);
 
         var vadModelPath = Path.Combine(rootDir, "windows-native-launcher", "assets", "vad", "silero_vad.onnx");
         sileroVad = new SileroVadRunner(vadModelPath);
@@ -71,14 +90,44 @@ internal sealed class ManaApplicationContext : ApplicationContext
         // through to VoiceLoop, same as the other optional collaborators
         // constructed above it.
         var screenContextReader = new ScreenContextReader(rootDir, backendClient);
-        voiceLoop = new VoiceLoop(sileroVad, backendClient, audioPlayer, avatarOverlay, chatLog, artifactViewer, screenContextReader, () => gamingModeActive);
+        voiceLoop = new VoiceLoop(sileroVad, backendClient, audioPlayer, avatarOverlay, chatLog, artifactViewer, screenContextReader, () => gamingModeActive, clipBuffer);
         // #523: Ctrl+Alt+M asks Mana to look at the screen, through the
         // same reply/TTS pipeline a normal turn uses.
         visionHotkeyListener = new VisionHotkeyListener(() => _ = voiceLoop.SubmitVisionHotkeyAsync());
-        sessionListForm = new SessionListForm(backendClient, voiceLoop, chatLog, avatarOverlay);
+        // #585: Ctrl+Alt+Shift+M asks Mana what just happened, using
+        // whatever clipCaptureTimer below has already buffered.
+        clipHotkeyListener = new ClipHotkeyListener(() => _ = voiceLoop.SubmitClipHotkeyAsync());
+        // windows-launcher only runs its own clip-buffer capture timer
+        // when screen sensing is opted into (MANA_SCREEN_SENSING_ENABLED=1)
+        // -- same gate here, so this launcher doesn't start silently
+        // holding rolling screenshots in memory a user never opted into;
+        // the hotkey itself stays registered either way (matching the
+        // reference), it just always reports an empty buffer if this
+        // never ran.
+        if (Environment.GetEnvironmentVariable("MANA_SCREEN_SENSING_ENABLED") == "1")
+        {
+            var intervalEnv = Environment.GetEnvironmentVariable("MANA_CLIP_BUFFER_INTERVAL_MS");
+            var intervalMs = int.TryParse(intervalEnv, out var parsedInterval) && parsedInterval > 0 ? parsedInterval : 3000;
+            clipCaptureTimer = new System.Windows.Forms.Timer { Interval = intervalMs };
+            clipCaptureTimer.Tick += async (_, _) => await CaptureClipFrameAsync();
+            clipCaptureTimer.Start();
+        }
+        sessionListForm = new SessionListForm(backendClient, voiceLoop, chatLog, avatarOverlay, processManager.BackendLog);
         // #525: Ctrl+Alt+Space types a command instead of speaking one,
         // through the exact same turn-processing path.
         quickEntry = new QuickEntryForm(voiceLoop.SubmitTypedCommandAsync);
+        // #584: windows-launcher's own defaults are Ctrl+Alt+Space for the
+        // window toggle and Ctrl+Alt+I for manual interrupt -- the first
+        // collides with quickEntry's own hotkey right above (already
+        // shipped, #525), so this uses Ctrl+Alt+W instead; Ctrl+Alt+I has
+        // no native collision and is kept as-is. Manual interrupt is just
+        // audioPlayer.Stop() -- matches windows-launcher's own
+        // "interrupt-speech" handler (stopReplyAudio(), nothing else),
+        // not the fuller barge-in/re-capture path VoiceLoop's internal
+        // interruption handling uses for a detected spoken interruption.
+        globalHotkeys = new GlobalHotkeyListener(
+            (0xA584, GlobalHotkeyListener.ModControl | GlobalHotkeyListener.ModAlt, (uint)'W', "MANA_WINDOW_HOTKEY", ToggleSessionListVisible),
+            (0xA585, GlobalHotkeyListener.ModControl | GlobalHotkeyListener.ModAlt, (uint)'I', "MANA_INTERRUPT_HOTKEY", () => audioPlayer.Stop()));
         // #524: originally a no-op (no chat/session window existed on
         // this branch yet) -- #521/#520 shipped one since, so this now
         // does what the original comment here flagged as the real
@@ -91,7 +140,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
         // IsDisposed-then-marshal shape as this codebase's other
         // background-thread-to-UI call sites (e.g. ChatLogPanel's
         // RunOnUiThread).
-        trayNotifications = new TrayNotificationClient(openChat: () =>
+        trayNotifications = new TrayNotificationClient(backendBaseUrl: settings.BackendBaseUrl, openChat: () =>
         {
             if (sessionListForm.IsDisposed)
             {
@@ -104,6 +153,10 @@ internal sealed class ManaApplicationContext : ApplicationContext
             }
             ShowSessionList();
         });
+        // #571: on-screen equivalent of spoken output -- purely additive,
+        // wired up alongside trayNotifications above.
+        captionOverlay = new CaptionOverlayForm();
+        captionClient = new CaptionWebSocketClient(captionOverlay.SetCaption);
 
         trayIcon = new NotifyIcon
         {
@@ -116,6 +169,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
         trayIcon.DoubleClick += (_, _) => ShowStatus();
         avatarOverlay.Show();
         trayNotifications.Start();
+        captionClient.Start();
 
         // Quick rundown: start the existing local services, but keep this host native and small.
         _ = StartServicesAsync();
@@ -134,11 +188,27 @@ internal sealed class ManaApplicationContext : ApplicationContext
         menu.Items.Add("Show status", null, (_, _) => ShowStatus());
         menu.Items.Add("Artifact Viewer", null, (_, _) => { artifactViewer.Show(); artifactViewer.Activate(); });
         menu.Items.Add("Compare Models", null, (_, _) => new CompareModeForm(backendClient).Show());
+        menu.Items.Add("Pending Edits", null, (_, _) => new ProposalsForm(backendClient).Show());
+        menu.Items.Add("Edit Snapshots", null, (_, _) => new SnapshotsForm(backendClient).Show());
+        menu.Items.Add("Deep Research", null, (_, _) => new ResearchForm(backendClient, () => voiceLoop.CurrentSessionId).Show());
         menu.Items.Add("Doctor", null, (_, _) => ShowDoctorPanel());
+        menu.Items.Add("VTube Studio", null, (_, _) => new VTubeStudioForm(backendClient).Show());
         menu.Items.Add("Sessions", null, (_, _) => ShowSessionList());
         menu.Items.Add("Open project folder", null, (_, _) => OpenProjectFolder());
         menu.Items.Add("Set avatar idle", null, (_, _) => avatarOverlay.SetState(AvatarState.Idle));
         menu.Items.Add("Set avatar talking", null, (_, _) => avatarOverlay.SetState(AvatarState.Talking));
+        menu.Items.Add(new ToolStripSeparator());
+        var gamingModeItem = new ToolStripMenuItem("Gaming mode detection") { CheckOnClick = true, Checked = gamingModeEnabled };
+        gamingModeItem.Click += (_, _) =>
+        {
+            gamingModeEnabled = gamingModeItem.Checked;
+            if (!gamingModeEnabled)
+            {
+                gamingModeActive = false;
+                trayIcon.Text = "Mana";
+            }
+        };
+        menu.Items.Add(gamingModeItem);
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add("Restart Fish Speech", null, (_, _) => RestartFishSpeech());
         menu.Items.Add(new ToolStripSeparator());
@@ -200,13 +270,34 @@ internal sealed class ManaApplicationContext : ApplicationContext
         ExitThread();
     }
 
+    // #585: mirrors windows-launcher's own captureClipFrame -- a cheap
+    // local screenshot with no model call, run on the thread pool (same
+    // reasoning as SubmitVisionHotkeyAsync's own screen capture: CopyFromScreen
+    // is enough work to visibly hitch the UI if done inline on a Timer.Tick).
+    // Never skips during processing/reply/idle, unlike a "smarter" gate
+    // would -- skipping would create gaps in the buffer at exactly the
+    // moments (mid-conversation about something on screen) it would be
+    // most useful to have covered.
+    private async Task CaptureClipFrameAsync()
+    {
+        try
+        {
+            var image = await Task.Run(ScreenCapture.CaptureAsJpegDataUrl);
+            clipBuffer.PushFrame(image, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"ManaApplicationContext: clip buffer capture failed. {ex.Message}");
+        }
+    }
+
     private async Task RefreshTrayStatusAsync()
     {
         try
         {
             var status = await backendClient.GetPerformanceStatusAsync();
-            gamingModeActive = status.GamingAppRunning;
-            trayIcon.Text = status.GamingAppRunning ? "Mana - game mode" : "Mana";
+            gamingModeActive = gamingModeEnabled && status.GamingAppRunning;
+            trayIcon.Text = gamingModeActive ? "Mana - game mode" : "Mana";
         }
         catch
         {
@@ -253,6 +344,24 @@ internal sealed class ManaApplicationContext : ApplicationContext
         _ = sessionListForm.RefreshAsync();
     }
 
+    // #584: SessionListForm is this app's closest equivalent to
+    // windows-launcher's single main BrowserWindow -- its own
+    // OnFormClosing already turns UserClosing into Hide (not a real
+    // Close), so "visible" is a reliable proxy for "shown" here. The show
+    // path reuses ShowSessionList (Activate + RefreshAsync), same as
+    // every other menu/tray entry point into this window.
+    private void ToggleSessionListVisible()
+    {
+        if (sessionListForm.Visible)
+        {
+            sessionListForm.Hide();
+        }
+        else
+        {
+            ShowSessionList();
+        }
+    }
+
     // #479 review: `status.TtsProvider` is node-bot's *configured* value
     // (the TTS_PROVIDER env var this launcher itself sets to "fish") --
     // not whether Fish Speech's native process is actually up. Without
@@ -293,14 +402,20 @@ internal sealed class ManaApplicationContext : ApplicationContext
     protected override void ExitThreadCore()
     {
         statusTimer.Stop();
+        clipCaptureTimer?.Stop();
         visionHotkeyListener.Dispose();
+        clipHotkeyListener.Dispose();
+        globalHotkeys.Dispose();
         trayNotifications.Dispose();
+        captionClient.Dispose();
+        captionOverlay.Close();
         voiceLoop.Dispose();
         audioPlayer.Dispose();
         sileroVad.Dispose();
         trayIcon.Visible = false;
         trayIcon.Dispose();
         avatarOverlay.Close();
+        browserAutomationPanel.Close();
         // Dispose, not Close -- OnFormClosing overrides UserClosing to
         // Hide-and-cancel for the reuse pattern, so a plain Close() here
         // would risk not actually tearing the window down.

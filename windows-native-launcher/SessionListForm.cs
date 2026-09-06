@@ -34,6 +34,7 @@ internal sealed class SessionListForm : Form
 {
     private readonly ManaBackendClient backendClient;
     private readonly VoiceLoop voiceLoop;
+    private readonly BackendLogBuffer backendLog;
     private readonly ListView list = new();
     private readonly Button newChatButton = new();
     private readonly AvatarOverlayForm avatarOverlay;
@@ -66,11 +67,12 @@ internal sealed class SessionListForm : Form
     // ToggleToolPlaceholder.
     private string? openTool;
 
-    public SessionListForm(ManaBackendClient backendClient, VoiceLoop voiceLoop, ChatLogPanel chatLog, AvatarOverlayForm avatarOverlay)
+    public SessionListForm(ManaBackendClient backendClient, VoiceLoop voiceLoop, ChatLogPanel chatLog, AvatarOverlayForm avatarOverlay, BackendLogBuffer backendLog)
     {
         this.backendClient = backendClient;
         this.voiceLoop = voiceLoop;
         this.avatarOverlay = avatarOverlay;
+        this.backendLog = backendLog;
         activeSessionFont = new Font(list.Font, FontStyle.Bold);
 
         Text = "Mana";
@@ -509,7 +511,7 @@ internal sealed class SessionListForm : Form
 
     private void OpenSettings()
     {
-        using var dialog = new SettingsDialog(backendClient);
+        using var dialog = new SettingsDialog(backendClient, backendLog);
         dialog.ShowDialog(this);
     }
 
