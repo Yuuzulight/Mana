@@ -23,6 +23,7 @@ internal sealed class SettingsPanel : UserControl
     private readonly ListView factsList = new();
     private readonly ListView skillsList = new();
     private readonly ListView approvalsList = new();
+    private readonly ListView mobileDevicesList = new();
     private readonly ListView accountsList = new();
     private readonly ListView mcpServersList = new();
     private readonly ListView hooksList = new();
@@ -43,6 +44,7 @@ internal sealed class SettingsPanel : UserControl
         tabs.TabPages.Add(BuildMemoryFactsTab());
         tabs.TabPages.Add(BuildSkillsTab());
         tabs.TabPages.Add(BuildApprovalsTab());
+        tabs.TabPages.Add(BuildMobileDevicesTab());
         tabs.TabPages.Add(BuildAccountsTab());
         tabs.TabPages.Add(BuildMcpServersTab());
         tabs.TabPages.Add(BuildHooksTab());
@@ -59,6 +61,7 @@ internal sealed class SettingsPanel : UserControl
         await RefreshMemoryFactsAsync();
         await RefreshSkillsAsync();
         await RefreshApprovalsAsync();
+        await RefreshMobileDevicesAsync();
         await RefreshAccountsAsync();
         await RefreshMcpServersAsync();
         await RefreshHooksAsync();
@@ -484,6 +487,176 @@ internal sealed class SettingsPanel : UserControl
             var item = new ListViewItem(approval.ActionType) { Tag = approval.Id };
             item.SubItems.Add(approval.Summary);
             approvalsList.Items.Add(item);
+        }
+    }
+
+    // #569: TOTP secret enrollment has no API endpoint at all
+    // (mobile-routes.js reads MOBILE_TOTP_SECRET straight from the
+    // environment) -- this tab covers pairing-code generation and device
+    // management only, matching what the backend actually exposes.
+    private TabPage BuildMobileDevicesTab()
+    {
+        mobileDevicesList.Dock = DockStyle.Fill;
+        mobileDevicesList.View = View.Details;
+        mobileDevicesList.FullRowSelect = true;
+        mobileDevicesList.Columns.Add("Name", 140);
+        mobileDevicesList.Columns.Add("Created", 140);
+        mobileDevicesList.Columns.Add("Last seen", 140);
+        mobileDevicesList.Columns.Add("Status", 70);
+        DarkTheme.ApplyListView(mobileDevicesList);
+
+        var pairButton = new Button { Text = "Generate Pairing Code" };
+        var rotateButton = new Button { Text = "Rotate Token" };
+        var revokeButton = new Button { Text = "Revoke" };
+        DarkTheme.ApplyButton(pairButton);
+        DarkTheme.ApplyButton(rotateButton);
+        DarkTheme.ApplyButton(revokeButton);
+        pairButton.Click += async (_, _) => await GeneratePairingCodeAsync();
+        rotateButton.Click += async (_, _) => await RotateSelectedDeviceTokenAsync();
+        revokeButton.Click += async (_, _) => await RevokeSelectedDeviceAsync();
+
+        var buttonRow = new FlowLayoutPanel { Dock = DockStyle.Bottom, Height = 32, FlowDirection = FlowDirection.LeftToRight, BackColor = DarkTheme.Background };
+        buttonRow.Controls.Add(pairButton);
+        buttonRow.Controls.Add(rotateButton);
+        buttonRow.Controls.Add(revokeButton);
+
+        var page = new TabPage("Mobile Devices");
+        page.Controls.Add(mobileDevicesList);
+        page.Controls.Add(buttonRow);
+        return page;
+    }
+
+    private async Task GeneratePairingCodeAsync()
+    {
+        (string Code, long ExpiresAtMs) result;
+        try
+        {
+            result = await backendClient.RequestPairingCodeAsync();
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, $"Failed to generate a pairing code: {ex.Message}", "Generate Pairing Code", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            return;
+        }
+        if (IsDisposed)
+        {
+            return;
+        }
+        var expiresAt = DateTimeOffset.FromUnixTimeMilliseconds(result.ExpiresAtMs).ToLocalTime();
+        MessageBox.Show(
+            this,
+            $"Pairing code: {result.Code}\n\nEnter this in the Mana mobile app. Expires at {expiresAt:T}.",
+            "Generate Pairing Code",
+            MessageBoxButtons.OK,
+            MessageBoxIcon.Information);
+    }
+
+    private async Task RotateSelectedDeviceTokenAsync()
+    {
+        if (mobileDevicesList.SelectedItems.Count == 0)
+        {
+            return;
+        }
+        var id = (string)mobileDevicesList.SelectedItems[0].Tag!;
+        var name = mobileDevicesList.SelectedItems[0].Text;
+        var confirmed = MessageBox.Show(
+            this,
+            $"Rotate the token for \"{name}\"? The device will need to be re-paired with the new token.",
+            "Rotate Token",
+            MessageBoxButtons.YesNo,
+            MessageBoxIcon.Warning) == DialogResult.Yes;
+        if (!confirmed)
+        {
+            return;
+        }
+
+        string? token;
+        try
+        {
+            token = await backendClient.RotateMobileDeviceTokenAsync(id);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, $"Failed to rotate token: {ex.Message}", "Rotate Token", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            return;
+        }
+        if (IsDisposed || token is null)
+        {
+            return;
+        }
+        using (var reveal = new MobileTokenRevealDialog(name, token))
+        {
+            reveal.ShowDialog(this);
+        }
+        if (!IsDisposed)
+        {
+            await RefreshMobileDevicesAsync();
+        }
+    }
+
+    private async Task RevokeSelectedDeviceAsync()
+    {
+        if (mobileDevicesList.SelectedItems.Count == 0)
+        {
+            return;
+        }
+        var id = (string)mobileDevicesList.SelectedItems[0].Tag!;
+        var name = mobileDevicesList.SelectedItems[0].Text;
+        var confirmed = MessageBox.Show(
+            this,
+            $"Revoke \"{name}\"? It will no longer be able to reach Mana.",
+            "Revoke Device",
+            MessageBoxButtons.YesNo,
+            MessageBoxIcon.Warning) == DialogResult.Yes;
+        if (!confirmed)
+        {
+            return;
+        }
+
+        try
+        {
+            await backendClient.RevokeMobileDeviceAsync(id);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"SettingsPanel: failed to revoke mobile device '{id}'. {ex.Message}");
+            return;
+        }
+        if (!IsDisposed)
+        {
+            await RefreshMobileDevicesAsync();
+        }
+    }
+
+    private async Task RefreshMobileDevicesAsync()
+    {
+        System.Collections.Generic.IReadOnlyList<ManaMobileDevice> devices;
+        try
+        {
+            devices = await backendClient.GetMobileDevicesAsync();
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"SettingsPanel: failed to load mobile devices. {ex.Message}");
+            if (!IsDisposed)
+            {
+                ShowLoadFailure(mobileDevicesList, ex.Message);
+            }
+            return;
+        }
+        if (IsDisposed)
+        {
+            return;
+        }
+
+        mobileDevicesList.Items.Clear();
+        foreach (var device in devices)
+        {
+            var item = new ListViewItem(device.Name) { Tag = device.Id };
+            item.SubItems.Add(device.CreatedAt ?? "");
+            item.SubItems.Add(device.LastSeenAt ?? "never");
+            item.SubItems.Add(device.Revoked ? "revoked" : "active");
+            mobileDevicesList.Items.Add(item);
         }
     }
 

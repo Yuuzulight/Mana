@@ -413,6 +413,82 @@ internal sealed class ManaBackendClient
         response.EnsureSuccessStatusCode();
     }
 
+    // #569: POST /mobile/pair/request -- admin-gated by mobile-routes.js's
+    // own adminAuthMiddleware (a THIRD distinct mechanism from both
+    // MANA_ADMIN_SECRET's checkAdminAuth and /admin/accounts's
+    // authMiddleware+requireAdmin: it checks the same "Authorization:
+    // Bearer <token>"/"x-admin-token" header shape, but validates it
+    // against a separate ADMIN_TOKEN env var; if that's unset, it falls
+    // back to localhost-only, which the common local-backend setup
+    // satisfies with no token configured at all). expiresAt is a raw
+    // Unix-epoch-milliseconds number (deviceStore's own Date.now()-based
+    // TTL), not an ISO string like every other timestamp this client
+    // parses elsewhere.
+    public async Task<(string Code, long ExpiresAtMs)> RequestPairingCodeAsync()
+    {
+        using var response = await http.PostAsync("/mobile/pair/request", null);
+        response.EnsureSuccessStatusCode();
+        await using var stream = await response.Content.ReadAsStreamAsync();
+        using var document = await JsonDocument.ParseAsync(stream);
+        var root = document.RootElement;
+        return (root.GetProperty("code").GetString() ?? "", root.GetProperty("expiresAt").GetInt64());
+    }
+
+    // #569: GET /mobile/devices -- mobile-device-store.js's own
+    // listDevices() also returns each device's tokenHash (a SHA-256 hash,
+    // not the raw token) in the same response; this deliberately doesn't
+    // carry it into ManaMobileDevice since nothing in this tab needs it.
+    public async Task<IReadOnlyList<ManaMobileDevice>> GetMobileDevicesAsync()
+    {
+        using var response = await http.GetAsync("/mobile/devices");
+        response.EnsureSuccessStatusCode();
+        await using var stream = await response.Content.ReadAsStreamAsync();
+        using var document = await JsonDocument.ParseAsync(stream);
+        var devices = new List<ManaMobileDevice>();
+        if (document.RootElement.TryGetProperty("devices", out var devicesElement))
+        {
+            foreach (var entry in devicesElement.EnumerateArray())
+            {
+                devices.Add(new ManaMobileDevice
+                {
+                    Id = entry.TryGetProperty("id", out var idEl) ? idEl.GetString() ?? "" : "",
+                    Name = entry.TryGetProperty("name", out var nameEl) ? nameEl.GetString() ?? "" : "",
+                    CreatedAt = entry.TryGetProperty("createdAt", out var createdEl) ? createdEl.GetString() : null,
+                    LastSeenAt = entry.TryGetProperty("lastSeenAt", out var lastSeenEl) ? lastSeenEl.GetString() : null,
+                    Revoked = entry.TryGetProperty("revoked", out var revokedEl) && revokedEl.GetBoolean(),
+                });
+            }
+        }
+        return devices;
+    }
+
+    public async Task<bool> RevokeMobileDeviceAsync(string id)
+    {
+        using var response = await http.PostAsync($"/mobile/devices/{Uri.EscapeDataString(id)}/revoke", null);
+        if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
+        {
+            return false;
+        }
+        response.EnsureSuccessStatusCode();
+        return true;
+    }
+
+    // #569: like CreateAccountAsync's apiKey, the returned token is shown
+    // exactly once -- mobile-device-store.js only ever persists a hash of
+    // it, never the raw value.
+    public async Task<string?> RotateMobileDeviceTokenAsync(string id)
+    {
+        using var response = await http.PostAsync($"/mobile/devices/{Uri.EscapeDataString(id)}/rotate", null);
+        if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
+        {
+            return null;
+        }
+        response.EnsureSuccessStatusCode();
+        await using var stream = await response.Content.ReadAsStreamAsync();
+        using var document = await JsonDocument.ParseAsync(stream);
+        return document.RootElement.GetProperty("token").GetString();
+    }
+
     // #568: GET /admin/accounts responds with a bare JSON array (unlike
     // every other list route in this file, which wraps its array under a
     // named key) -- see auth-store.js's listAccounts, which returns
@@ -775,6 +851,17 @@ internal sealed class ManaPendingApproval
     public string Id { get; init; } = "";
     public string ActionType { get; init; } = "";
     public string Summary { get; init; } = "";
+}
+
+// #569: one entry from GET /mobile/devices (tokenHash deliberately not
+// carried -- see GetMobileDevicesAsync's own comment).
+internal sealed class ManaMobileDevice
+{
+    public string Id { get; init; } = "";
+    public string Name { get; init; } = "";
+    public string? CreatedAt { get; init; }
+    public string? LastSeenAt { get; init; }
+    public bool Revoked { get; init; }
 }
 
 // #568: one entry from GET /admin/accounts (keyHash never included --
