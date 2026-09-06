@@ -31,6 +31,13 @@ internal sealed class ManaApplicationContext : ApplicationContext
     // text already reflects.
     private bool gamingModeActive;
 
+    // #574: client-side-only override, matching windows-launcher's own
+    // #gamingMode checkbox -- it isn't a 3-way auto/on/off switch, just an
+    // enable/disable for the auto-detection RefreshTrayStatusAsync already
+    // does. Off forces gamingModeActive false regardless of what the
+    // backend's process scan reports; no new backend route needed.
+    private bool gamingModeEnabled = true;
+
     // The 3 services ManaProcessManager actually starts/stops -- shared
     // between the startup and shutdown overlays, same as windows-launcher's
     // single #startupOverlay markup being reused for both (there it also
@@ -149,6 +156,18 @@ internal sealed class ManaApplicationContext : ApplicationContext
         menu.Items.Add("Set avatar idle", null, (_, _) => avatarOverlay.SetState(AvatarState.Idle));
         menu.Items.Add("Set avatar talking", null, (_, _) => avatarOverlay.SetState(AvatarState.Talking));
         menu.Items.Add(new ToolStripSeparator());
+        var gamingModeItem = new ToolStripMenuItem("Gaming mode detection") { CheckOnClick = true, Checked = gamingModeEnabled };
+        gamingModeItem.Click += (_, _) =>
+        {
+            gamingModeEnabled = gamingModeItem.Checked;
+            if (!gamingModeEnabled)
+            {
+                gamingModeActive = false;
+                trayIcon.Text = "Mana";
+            }
+        };
+        menu.Items.Add(gamingModeItem);
+        menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add("Restart Fish Speech", null, (_, _) => RestartFishSpeech());
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add("Exit Mana", null, (_, _) => _ = ShutdownAsync());
@@ -214,8 +233,8 @@ internal sealed class ManaApplicationContext : ApplicationContext
         try
         {
             var status = await backendClient.GetPerformanceStatusAsync();
-            gamingModeActive = status.GamingAppRunning;
-            trayIcon.Text = status.GamingAppRunning ? "Mana - game mode" : "Mana";
+            gamingModeActive = gamingModeEnabled && status.GamingAppRunning;
+            trayIcon.Text = gamingModeActive ? "Mana - game mode" : "Mana";
         }
         catch
         {
