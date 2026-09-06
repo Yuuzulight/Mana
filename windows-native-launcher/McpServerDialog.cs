@@ -68,7 +68,7 @@ internal sealed class McpServerDialog : Form
             }
         };
 
-        var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, Padding = new Padding(12), AutoSize = true };
+        var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, Padding = new Padding(12), AutoSize = true, BackColor = DarkTheme.Background };
         void AddRow(Label label, Control control)
         {
             label.AutoSize = true;
