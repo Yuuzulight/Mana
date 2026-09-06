@@ -5,9 +5,10 @@ using System.Windows.Forms;
 
 namespace Mana.NativeLauncher;
 
-// #529: a lean settings surface -- plugins (enable/disable), memory
-// facts (view/archive), skills (view/delete), and the approval-gate
-// queue (approve/deny). Explicitly the lowest-priority piece of the
+// #529/#565: a lean settings surface -- connection (backend URL + admin
+// token), plugins (enable/disable), memory facts (view/archive), skills
+// (view/delete), and the approval-gate queue (approve/deny). Explicitly
+// the lowest-priority piece of the
 // native-launcher-parity batch, per this issue's own scope note, so
 // each tab is a plain ListView with the one or two actions that matter
 // most, not a full editor. Skill creation/editing (a large form for a
@@ -22,7 +23,12 @@ internal sealed class SettingsPanel : UserControl
     private readonly ListView factsList = new();
     private readonly ListView skillsList = new();
     private readonly ListView approvalsList = new();
+    private readonly ListView mobileDevicesList = new();
+    private readonly ListView accountsList = new();
+    private readonly ListView mcpServersList = new();
+    private readonly ListView hooksList = new();
     private bool populatingPlugins;
+    private bool populatingHooks;
 
     // #572: Model tab controls -- kept as fields (unlike most other tabs'
     // plain local variables in their Build*Tab methods) because Refresh
@@ -50,11 +56,16 @@ internal sealed class SettingsPanel : UserControl
 
         var tabs = new TabControl { Dock = DockStyle.Fill };
         DarkTheme.ApplyTabControl(tabs);
+        tabs.TabPages.Add(BuildConnectionTab());
         tabs.TabPages.Add(BuildPluginsTab());
         tabs.TabPages.Add(BuildMemoryFactsTab());
         tabs.TabPages.Add(BuildSkillsTab());
         tabs.TabPages.Add(BuildApprovalsTab());
         tabs.TabPages.Add(BuildModelTab());
+        tabs.TabPages.Add(BuildMobileDevicesTab());
+        tabs.TabPages.Add(BuildAccountsTab());
+        tabs.TabPages.Add(BuildMcpServersTab());
+        tabs.TabPages.Add(BuildHooksTab());
         foreach (TabPage page in tabs.TabPages)
         {
             page.BackColor = DarkTheme.Background;
@@ -69,6 +80,10 @@ internal sealed class SettingsPanel : UserControl
         await RefreshSkillsAsync();
         await RefreshApprovalsAsync();
         await RefreshModelTabAsync();
+        await RefreshMobileDevicesAsync();
+        await RefreshAccountsAsync();
+        await RefreshMcpServersAsync();
+        await RefreshHooksAsync();
     }
 
     // #529 review: a failed load left its list untouched -- on first
@@ -81,6 +96,65 @@ internal sealed class SettingsPanel : UserControl
     {
         list.Items.Clear();
         list.Items.Add(new ListViewItem($"Failed to load: {message}") { ForeColor = Color.Firebrick });
+    }
+
+    // #565: the backend URL and admin token are read straight from
+    // ManaSettingsStore rather than threaded in through SessionListForm/
+    // SettingsDialog's constructors -- both ManaBackendClient and
+    // TrayNotificationClient only read this file once, at app startup,
+    // so a change here can't take effect live regardless; reading/writing
+    // the same small file directly here is simpler than plumbing a store
+    // reference through two more constructors for a value nothing else
+    // needs mid-session.
+    private TabPage BuildConnectionTab()
+    {
+        var settings = ManaSettingsStore.Load();
+
+        var urlLabel = new Label { Text = "Backend URL", AutoSize = true, ForeColor = DarkTheme.Text };
+        var urlBox = new TextBox { Text = settings.BackendBaseUrl, Width = 320, BackColor = DarkTheme.Panel2, ForeColor = DarkTheme.Text, BorderStyle = BorderStyle.FixedSingle };
+        var tokenLabel = new Label { Text = "Admin token (optional)", AutoSize = true, ForeColor = DarkTheme.Text };
+        var tokenBox = new TextBox { Text = settings.AdminToken ?? "", Width = 320, UseSystemPasswordChar = true, BackColor = DarkTheme.Panel2, ForeColor = DarkTheme.Text, BorderStyle = BorderStyle.FixedSingle };
+        var statusLabel = new Label { AutoSize = true, ForeColor = DarkTheme.Muted };
+
+        var saveButton = new Button { Text = "Save" };
+        DarkTheme.ApplyButton(saveButton);
+        saveButton.Click += (_, _) =>
+        {
+            var url = urlBox.Text.Trim();
+            // A malformed value saved here would throw on the *next*
+            // launch (ManaBackendClient's constructor does `new Uri(...)`
+            // with no try/catch of its own) -- rejecting it here, before
+            // it's ever persisted, is cheaper than a crash-on-startup bug
+            // report from a single typo.
+            if (!Uri.TryCreate(url, UriKind.Absolute, out var parsed) || (parsed.Scheme != "http" && parsed.Scheme != "https"))
+            {
+                statusLabel.ForeColor = Color.Firebrick;
+                statusLabel.Text = "Backend URL must be a valid http:// or https:// address.";
+                return;
+            }
+
+            settings.BackendBaseUrl = url;
+            settings.AdminToken = string.IsNullOrWhiteSpace(tokenBox.Text) ? null : tokenBox.Text.Trim();
+            settings.Save();
+            statusLabel.ForeColor = DarkTheme.Muted;
+            statusLabel.Text = "Saved -- restart Mana for this to take effect.";
+        };
+
+        var layout = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 1,
+            AutoSize = true,
+            Padding = new Padding(12),
+        };
+        layout.Controls.Add(urlLabel);
+        layout.Controls.Add(urlBox);
+        layout.Controls.Add(tokenLabel);
+        layout.Controls.Add(tokenBox);
+        layout.Controls.Add(saveButton);
+        layout.Controls.Add(statusLabel);
+
+        return new TabPage("Connection") { Controls = { layout } };
     }
 
     private TabPage BuildPluginsTab()
@@ -829,5 +903,559 @@ internal sealed class SettingsPanel : UserControl
 
         visionModelPathBox.Text = status.VisionModelPath;
         visionMmprojPathBox.Text = status.VisionMmprojPath;
+    }
+
+    // #569: TOTP secret enrollment has no API endpoint at all
+    // (mobile-routes.js reads MOBILE_TOTP_SECRET straight from the
+    // environment) -- this tab covers pairing-code generation and device
+    // management only, matching what the backend actually exposes.
+    private TabPage BuildMobileDevicesTab()
+    {
+        mobileDevicesList.Dock = DockStyle.Fill;
+        mobileDevicesList.View = View.Details;
+        mobileDevicesList.FullRowSelect = true;
+        mobileDevicesList.Columns.Add("Name", 140);
+        mobileDevicesList.Columns.Add("Created", 140);
+        mobileDevicesList.Columns.Add("Last seen", 140);
+        mobileDevicesList.Columns.Add("Status", 70);
+        DarkTheme.ApplyListView(mobileDevicesList);
+
+        var pairButton = new Button { Text = "Generate Pairing Code" };
+        var rotateButton = new Button { Text = "Rotate Token" };
+        var revokeButton = new Button { Text = "Revoke" };
+        DarkTheme.ApplyButton(pairButton);
+        DarkTheme.ApplyButton(rotateButton);
+        DarkTheme.ApplyButton(revokeButton);
+        pairButton.Click += async (_, _) => await GeneratePairingCodeAsync();
+        rotateButton.Click += async (_, _) => await RotateSelectedDeviceTokenAsync();
+        revokeButton.Click += async (_, _) => await RevokeSelectedDeviceAsync();
+
+        var buttonRow = new FlowLayoutPanel { Dock = DockStyle.Bottom, Height = 32, FlowDirection = FlowDirection.LeftToRight, BackColor = DarkTheme.Background };
+        buttonRow.Controls.Add(pairButton);
+        buttonRow.Controls.Add(rotateButton);
+        buttonRow.Controls.Add(revokeButton);
+
+        var page = new TabPage("Mobile Devices");
+        page.Controls.Add(mobileDevicesList);
+        page.Controls.Add(buttonRow);
+        return page;
+    }
+
+    private async Task GeneratePairingCodeAsync()
+    {
+        (string Code, long ExpiresAtMs) result;
+        try
+        {
+            result = await backendClient.RequestPairingCodeAsync();
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, $"Failed to generate a pairing code: {ex.Message}", "Generate Pairing Code", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            return;
+        }
+        if (IsDisposed)
+        {
+            return;
+        }
+        var expiresAt = DateTimeOffset.FromUnixTimeMilliseconds(result.ExpiresAtMs).ToLocalTime();
+        MessageBox.Show(
+            this,
+            $"Pairing code: {result.Code}\n\nEnter this in the Mana mobile app. Expires at {expiresAt:T}.",
+            "Generate Pairing Code",
+            MessageBoxButtons.OK,
+            MessageBoxIcon.Information);
+    }
+
+    private async Task RotateSelectedDeviceTokenAsync()
+    {
+        if (mobileDevicesList.SelectedItems.Count == 0)
+        {
+            return;
+        }
+        var id = (string)mobileDevicesList.SelectedItems[0].Tag!;
+        var name = mobileDevicesList.SelectedItems[0].Text;
+        var confirmed = MessageBox.Show(
+            this,
+            $"Rotate the token for \"{name}\"? The device will need to be re-paired with the new token.",
+            "Rotate Token",
+            MessageBoxButtons.YesNo,
+            MessageBoxIcon.Warning) == DialogResult.Yes;
+        if (!confirmed)
+        {
+            return;
+        }
+
+        string? token;
+        try
+        {
+            token = await backendClient.RotateMobileDeviceTokenAsync(id);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, $"Failed to rotate token: {ex.Message}", "Rotate Token", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            return;
+        }
+        if (IsDisposed || token is null)
+        {
+            return;
+        }
+        using (var reveal = new MobileTokenRevealDialog(name, token))
+        {
+            reveal.ShowDialog(this);
+        }
+        if (!IsDisposed)
+        {
+            await RefreshMobileDevicesAsync();
+        }
+    }
+
+    private async Task RevokeSelectedDeviceAsync()
+    {
+        if (mobileDevicesList.SelectedItems.Count == 0)
+        {
+            return;
+        }
+        var id = (string)mobileDevicesList.SelectedItems[0].Tag!;
+        var name = mobileDevicesList.SelectedItems[0].Text;
+        var confirmed = MessageBox.Show(
+            this,
+            $"Revoke \"{name}\"? It will no longer be able to reach Mana.",
+            "Revoke Device",
+            MessageBoxButtons.YesNo,
+            MessageBoxIcon.Warning) == DialogResult.Yes;
+        if (!confirmed)
+        {
+            return;
+        }
+
+        try
+        {
+            await backendClient.RevokeMobileDeviceAsync(id);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"SettingsPanel: failed to revoke mobile device '{id}'. {ex.Message}");
+            return;
+        }
+        if (!IsDisposed)
+        {
+            await RefreshMobileDevicesAsync();
+        }
+    }
+
+    private async Task RefreshMobileDevicesAsync()
+    {
+        System.Collections.Generic.IReadOnlyList<ManaMobileDevice> devices;
+        try
+        {
+            devices = await backendClient.GetMobileDevicesAsync();
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"SettingsPanel: failed to load mobile devices. {ex.Message}");
+            if (!IsDisposed)
+            {
+                ShowLoadFailure(mobileDevicesList, ex.Message);
+            }
+            return;
+        }
+        if (IsDisposed)
+        {
+            return;
+        }
+
+        mobileDevicesList.Items.Clear();
+        foreach (var device in devices)
+        {
+            var item = new ListViewItem(device.Name) { Tag = device.Id };
+            item.SubItems.Add(device.CreatedAt ?? "");
+            item.SubItems.Add(device.LastSeenAt ?? "never");
+            item.SubItems.Add(device.Revoked ? "revoked" : "active");
+            mobileDevicesList.Items.Add(item);
+        }
+    }
+
+    // #568: requires an admin-role API key entered as the Connection
+    // tab's admin token (server.js's authMiddleware + requireAdmin) --
+    // distinct from the MANA_ADMIN_SECRET value the memory-facts/skills/
+    // approvals tabs above check for, since /admin/accounts uses a
+    // different gate. A missing/wrong token surfaces the same
+    // ShowLoadFailure placeholder those tabs already use.
+    private TabPage BuildAccountsTab()
+    {
+        accountsList.Dock = DockStyle.Fill;
+        accountsList.View = View.Details;
+        accountsList.FullRowSelect = true;
+        accountsList.Columns.Add("Email", 220);
+        accountsList.Columns.Add("Role", 80);
+        DarkTheme.ApplyListView(accountsList);
+
+        var createButton = new Button { Text = "Create..." };
+        var deleteButton = new Button { Text = "Revoke" };
+        DarkTheme.ApplyButton(createButton);
+        DarkTheme.ApplyButton(deleteButton);
+        createButton.Click += async (_, _) => await CreateAccountAsync();
+        deleteButton.Click += async (_, _) => await DeleteSelectedAccountAsync();
+
+        var buttonRow = new FlowLayoutPanel { Dock = DockStyle.Bottom, Height = 32, FlowDirection = FlowDirection.LeftToRight, BackColor = DarkTheme.Background };
+        buttonRow.Controls.Add(createButton);
+        buttonRow.Controls.Add(deleteButton);
+
+        var page = new TabPage("Accounts");
+        page.Controls.Add(accountsList);
+        page.Controls.Add(buttonRow);
+        return page;
+    }
+
+    private async Task CreateAccountAsync()
+    {
+        using var dialog = new CreateAccountDialog();
+        if (dialog.ShowDialog(this) != DialogResult.OK)
+        {
+            return;
+        }
+
+        string apiKey;
+        try
+        {
+            apiKey = await backendClient.CreateAccountAsync(dialog.Email, dialog.Role);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, $"Failed to create account: {ex.Message}", "Create Account", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            return;
+        }
+        if (IsDisposed)
+        {
+            return;
+        }
+        using (var reveal = new ApiKeyRevealDialog(dialog.Email, apiKey))
+        {
+            reveal.ShowDialog(this);
+        }
+        if (!IsDisposed)
+        {
+            await RefreshAccountsAsync();
+        }
+    }
+
+    private async Task DeleteSelectedAccountAsync()
+    {
+        if (accountsList.SelectedItems.Count == 0)
+        {
+            return;
+        }
+        var userId = (string)accountsList.SelectedItems[0].Tag!;
+        var email = accountsList.SelectedItems[0].Text;
+        var confirmed = MessageBox.Show(
+            this,
+            $"Revoke account \"{email}\"? This cannot be undone.",
+            "Revoke Account",
+            MessageBoxButtons.YesNo,
+            MessageBoxIcon.Warning) == DialogResult.Yes;
+        if (!confirmed)
+        {
+            return;
+        }
+
+        try
+        {
+            await backendClient.DeleteAccountAsync(userId);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"SettingsPanel: failed to revoke account '{userId}'. {ex.Message}");
+            return;
+        }
+        if (!IsDisposed)
+        {
+            await RefreshAccountsAsync();
+        }
+    }
+
+    private async Task RefreshAccountsAsync()
+    {
+        System.Collections.Generic.IReadOnlyList<ManaAccount> accounts;
+        try
+        {
+            accounts = await backendClient.GetAccountsAsync();
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"SettingsPanel: failed to load accounts. {ex.Message}");
+            if (!IsDisposed)
+            {
+                ShowLoadFailure(accountsList, ex.Message);
+            }
+            return;
+        }
+        if (IsDisposed)
+        {
+            return;
+        }
+
+        accountsList.Items.Clear();
+        foreach (var account in accounts)
+        {
+            var item = new ListViewItem(account.Email) { Tag = account.UserId };
+            item.SubItems.Add(account.Role);
+            accountsList.Items.Add(item);
+        }
+    }
+
+    // #567: registration goes through the approval gate server-side, not
+    // an immediate write (see RegisterMcpServerAsync's own comment) --
+    // this tab has no toggle/edit action, only Add and Delete, matching
+    // that: there's nothing here to PATCH, and a pending registration is
+    // decided from the existing Approvals tab, not this one.
+    private TabPage BuildMcpServersTab()
+    {
+        mcpServersList.Dock = DockStyle.Fill;
+        mcpServersList.View = View.Details;
+        mcpServersList.FullRowSelect = true;
+        mcpServersList.Columns.Add("Name", 120);
+        mcpServersList.Columns.Add("Transport", 200);
+        mcpServersList.Columns.Add("Allowed tools", 200);
+        DarkTheme.ApplyListView(mcpServersList);
+
+        var addButton = new Button { Text = "Register..." };
+        var deleteButton = new Button { Text = "Remove" };
+        DarkTheme.ApplyButton(addButton);
+        DarkTheme.ApplyButton(deleteButton);
+        addButton.Click += async (_, _) => await RegisterMcpServerAsync();
+        deleteButton.Click += async (_, _) => await DeleteSelectedMcpServerAsync();
+
+        var buttonRow = new FlowLayoutPanel { Dock = DockStyle.Bottom, Height = 32, FlowDirection = FlowDirection.LeftToRight, BackColor = DarkTheme.Background };
+        buttonRow.Controls.Add(addButton);
+        buttonRow.Controls.Add(deleteButton);
+
+        var page = new TabPage("MCP Clients");
+        page.Controls.Add(mcpServersList);
+        page.Controls.Add(buttonRow);
+        return page;
+    }
+
+    private async Task RegisterMcpServerAsync()
+    {
+        using var dialog = new McpServerDialog();
+        if (dialog.ShowDialog(this) != DialogResult.OK)
+        {
+            return;
+        }
+
+        string status;
+        try
+        {
+            status = await backendClient.RegisterMcpServerAsync(dialog.ServerName, dialog.TransportKind, dialog.Command, dialog.Args, dialog.EnvAllowlist, dialog.Url, dialog.AllowedTools);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, $"Failed to register MCP server: {ex.Message}", "Register MCP Server", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            return;
+        }
+        if (!IsDisposed)
+        {
+            MessageBox.Show(
+                this,
+                status == "pending" ? "Registration submitted -- approve it from the Approvals tab." : $"Registration status: {status}",
+                "Register MCP Server",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Information);
+            await RefreshMcpServersAsync();
+        }
+    }
+
+    private async Task DeleteSelectedMcpServerAsync()
+    {
+        if (mcpServersList.SelectedItems.Count == 0)
+        {
+            return;
+        }
+        var id = (string)mcpServersList.SelectedItems[0].Tag!;
+        try
+        {
+            await backendClient.DeleteMcpServerAsync(id);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"SettingsPanel: failed to remove MCP server '{id}'. {ex.Message}");
+            return;
+        }
+        if (!IsDisposed)
+        {
+            await RefreshMcpServersAsync();
+        }
+    }
+
+    private async Task RefreshMcpServersAsync()
+    {
+        System.Collections.Generic.IReadOnlyList<ManaMcpServer> servers;
+        try
+        {
+            servers = await backendClient.GetMcpServersAsync();
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"SettingsPanel: failed to load MCP servers. {ex.Message}");
+            if (!IsDisposed)
+            {
+                ShowLoadFailure(mcpServersList, ex.Message);
+            }
+            return;
+        }
+        if (IsDisposed)
+        {
+            return;
+        }
+
+        mcpServersList.Items.Clear();
+        foreach (var server in servers)
+        {
+            var item = new ListViewItem(server.Name) { Tag = server.Id };
+            item.SubItems.Add(server.TransportSummary);
+            item.SubItems.Add(server.AllowedTools);
+            mcpServersList.Items.Add(item);
+        }
+    }
+
+    // #566: PATCH /hooks/:id only settles `enabled` (pause/resume) --
+    // matches node-bot's own narrow scope for that route (hooks-store.js's
+    // setRuleEnabled), so this tab's checkbox is the one edit action, same
+    // shape as the Plugins tab's own enable/disable toggle above.
+    private TabPage BuildHooksTab()
+    {
+        hooksList.Dock = DockStyle.Fill;
+        hooksList.View = View.Details;
+        hooksList.CheckBoxes = true;
+        hooksList.FullRowSelect = true;
+        hooksList.Columns.Add("Tool", 150);
+        hooksList.Columns.Add("Phase", 60);
+        hooksList.Columns.Add("Action", 100);
+        hooksList.Columns.Add("Path filter", 140);
+        hooksList.Columns.Add("Last run", 70);
+        hooksList.ItemChecked += OnHookChecked;
+        DarkTheme.ApplyListView(hooksList);
+
+        var addButton = new Button { Text = "Add..." };
+        var deleteButton = new Button { Text = "Delete" };
+        DarkTheme.ApplyButton(addButton);
+        DarkTheme.ApplyButton(deleteButton);
+        addButton.Click += async (_, _) => await AddHookAsync();
+        deleteButton.Click += async (_, _) => await DeleteSelectedHookAsync();
+
+        var buttonRow = new FlowLayoutPanel { Dock = DockStyle.Bottom, Height = 32, FlowDirection = FlowDirection.LeftToRight, BackColor = DarkTheme.Background };
+        buttonRow.Controls.Add(addButton);
+        buttonRow.Controls.Add(deleteButton);
+
+        var page = new TabPage("Hooks");
+        page.Controls.Add(hooksList);
+        page.Controls.Add(buttonRow);
+        return page;
+    }
+
+    private async void OnHookChecked(object? sender, ItemCheckedEventArgs e)
+    {
+        // Same reentrancy guard as OnPluginChecked above -- suppressed
+        // while RefreshHooksAsync is setting each item's initial Checked
+        // state from the server's own value.
+        if (populatingHooks)
+        {
+            return;
+        }
+        var id = (string)e.Item.Tag!;
+        try
+        {
+            await backendClient.SetHookEnabledAsync(id, e.Item.Checked);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"SettingsPanel: failed to toggle hook '{id}'. {ex.Message}");
+        }
+    }
+
+    private async Task AddHookAsync()
+    {
+        using var dialog = new HookRuleDialog();
+        if (dialog.ShowDialog(this) != DialogResult.OK)
+        {
+            return;
+        }
+
+        try
+        {
+            await backendClient.CreateHookAsync(dialog.Phase, dialog.Action, dialog.ToolName, dialog.PathContains, dialog.Command, dialog.Args, dialog.Reason);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, $"Failed to add hook rule: {ex.Message}", "Add Hook Rule", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            return;
+        }
+        if (!IsDisposed)
+        {
+            await RefreshHooksAsync();
+        }
+    }
+
+    private async Task DeleteSelectedHookAsync()
+    {
+        if (hooksList.SelectedItems.Count == 0)
+        {
+            return;
+        }
+        var id = (string)hooksList.SelectedItems[0].Tag!;
+        try
+        {
+            await backendClient.DeleteHookAsync(id);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"SettingsPanel: failed to delete hook '{id}'. {ex.Message}");
+            return;
+        }
+        if (!IsDisposed)
+        {
+            await RefreshHooksAsync();
+        }
+    }
+
+    private async Task RefreshHooksAsync()
+    {
+        System.Collections.Generic.IReadOnlyList<ManaHookRule> hooks;
+        try
+        {
+            hooks = await backendClient.GetHooksAsync();
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"SettingsPanel: failed to load hooks. {ex.Message}");
+            if (!IsDisposed)
+            {
+                ShowLoadFailure(hooksList, ex.Message);
+            }
+            return;
+        }
+        if (IsDisposed)
+        {
+            return;
+        }
+
+        populatingHooks = true;
+        try
+        {
+            hooksList.Items.Clear();
+            foreach (var hook in hooks)
+            {
+                var item = new ListViewItem(hook.ToolName) { Tag = hook.Id, Checked = hook.Enabled };
+                item.SubItems.Add(hook.Phase);
+                item.SubItems.Add(hook.Action);
+                item.SubItems.Add(hook.PathContains ?? "");
+                item.SubItems.Add(hook.LastRunOk switch { true => "ok", false => "failed", null => "" });
+                hooksList.Items.Add(item);
+            }
+        }
+        finally
+        {
+            populatingHooks = false;
+        }
     }
 }
