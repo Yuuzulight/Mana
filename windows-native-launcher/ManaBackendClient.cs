@@ -561,6 +561,27 @@ internal sealed class ManaBackendClient
         response.EnsureSuccessStatusCode();
     }
 
+    // #583: null override means "no manual override -- automatic gaming-
+    // based provider switching applies" (server.js's TTS_OVERRIDE_PROVIDERS
+    // gate: provider must be one of "fish"/"kokoro"/"gpt_sovits"/"cli", or
+    // null to clear).
+    public async Task<string?> GetTtsOverrideAsync()
+    {
+        using var response = await http.GetAsync("/tts/override");
+        response.EnsureSuccessStatusCode();
+        await using var stream = await response.Content.ReadAsStreamAsync();
+        using var document = await JsonDocument.ParseAsync(stream);
+        return document.RootElement.TryGetProperty("override", out var overrideEl) ? overrideEl.GetString() : null;
+    }
+
+    public async Task SetTtsOverrideAsync(string? provider)
+    {
+        var payload = JsonSerializer.Serialize(new { provider });
+        using var content = new StringContent(payload, Encoding.UTF8, "application/json");
+        using var response = await http.PostAsync("/tts/override", content);
+        response.EnsureSuccessStatusCode();
+    }
+
     // #581: touch=false matches the editor's own "opening to browse/edit
     // isn't the same as Mana actually reaching for it" contract
     // (skills-capability.js's own comment) -- without it, opening a skill
