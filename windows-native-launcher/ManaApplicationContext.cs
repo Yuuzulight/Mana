@@ -19,6 +19,8 @@ internal sealed class ManaApplicationContext : ApplicationContext
     private readonly VoiceLoop voiceLoop;
     private readonly VisionHotkeyListener visionHotkeyListener;
     private readonly TrayNotificationClient trayNotifications;
+    private readonly CaptionOverlayForm captionOverlay;
+    private readonly CaptionWebSocketClient captionClient;
     private readonly ArtifactViewerForm artifactViewer;
     private readonly QuickEntryForm quickEntry;
     private readonly SessionListForm sessionListForm;
@@ -57,8 +59,9 @@ internal sealed class ManaApplicationContext : ApplicationContext
     public ManaApplicationContext()
     {
         var rootDir = FindRootDirectory();
+        var settings = ManaSettingsStore.Load();
         processManager = new ManaProcessManager(rootDir);
-        backendClient = new ManaBackendClient();
+        backendClient = new ManaBackendClient(baseUrl: settings.BackendBaseUrl, adminToken: settings.AdminToken);
         avatarOverlay = new AvatarOverlayForm(rootDir);
 
         var vadModelPath = Path.Combine(rootDir, "windows-native-launcher", "assets", "vad", "silero_vad.onnx");
@@ -98,7 +101,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
         // IsDisposed-then-marshal shape as this codebase's other
         // background-thread-to-UI call sites (e.g. ChatLogPanel's
         // RunOnUiThread).
-        trayNotifications = new TrayNotificationClient(openChat: () =>
+        trayNotifications = new TrayNotificationClient(backendBaseUrl: settings.BackendBaseUrl, openChat: () =>
         {
             if (sessionListForm.IsDisposed)
             {
@@ -111,6 +114,10 @@ internal sealed class ManaApplicationContext : ApplicationContext
             }
             ShowSessionList();
         });
+        // #571: on-screen equivalent of spoken output -- purely additive,
+        // wired up alongside trayNotifications above.
+        captionOverlay = new CaptionOverlayForm();
+        captionClient = new CaptionWebSocketClient(captionOverlay.SetCaption);
 
         trayIcon = new NotifyIcon
         {
@@ -123,6 +130,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
         trayIcon.DoubleClick += (_, _) => ShowStatus();
         avatarOverlay.Show();
         trayNotifications.Start();
+        captionClient.Start();
 
         // Quick rundown: start the existing local services, but keep this host native and small.
         _ = StartServicesAsync();
@@ -142,6 +150,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
         menu.Items.Add("Artifact Viewer", null, (_, _) => { artifactViewer.Show(); artifactViewer.Activate(); });
         menu.Items.Add("Compare Models", null, (_, _) => new CompareModeForm(backendClient).Show());
         menu.Items.Add("Doctor", null, (_, _) => ShowDoctorPanel());
+        menu.Items.Add("VTube Studio", null, (_, _) => new VTubeStudioForm(backendClient).Show());
         menu.Items.Add("Sessions", null, (_, _) => ShowSessionList());
         menu.Items.Add("Open project folder", null, (_, _) => OpenProjectFolder());
         menu.Items.Add("Set avatar idle", null, (_, _) => avatarOverlay.SetState(AvatarState.Idle));
@@ -314,6 +323,8 @@ internal sealed class ManaApplicationContext : ApplicationContext
         statusTimer.Stop();
         visionHotkeyListener.Dispose();
         trayNotifications.Dispose();
+        captionClient.Dispose();
+        captionOverlay.Close();
         voiceLoop.Dispose();
         audioPlayer.Dispose();
         sileroVad.Dispose();

@@ -17,15 +17,35 @@ namespace Mana.NativeLauncher;
 internal sealed class TrayNotificationClient : IDisposable
 {
     private const int ReconnectDelayMs = 15000;
-    private static readonly Uri TrayWebSocketUri = new("ws://127.0.0.1:5005/ws/tray");
 
+    private readonly Uri trayWebSocketUri;
     private readonly Action openChat;
     private readonly CancellationTokenSource cts = new();
 
-    public TrayNotificationClient(Action openChat)
+    // #565: backendBaseUrl derives this client's ws(s):// endpoint from
+    // the same configured backend address ManaBackendClient uses for
+    // http(s) -- null (every existing call site) keeps the original
+    // hardcoded local address.
+    public TrayNotificationClient(Action openChat, string? backendBaseUrl = null)
     {
         this.openChat = openChat;
+        trayWebSocketUri = BuildTrayWebSocketUri(backendBaseUrl);
         ToastNotificationManagerCompat.OnActivated += OnToastActivated;
+    }
+
+    private static Uri BuildTrayWebSocketUri(string? backendBaseUrl)
+    {
+        if (string.IsNullOrWhiteSpace(backendBaseUrl))
+        {
+            return new Uri("ws://127.0.0.1:5005/ws/tray");
+        }
+        var httpUri = new Uri(backendBaseUrl);
+        var builder = new UriBuilder(httpUri)
+        {
+            Scheme = httpUri.Scheme == "https" ? "wss" : "ws",
+            Path = "/ws/tray",
+        };
+        return builder.Uri;
     }
 
     public void Start()
@@ -46,7 +66,7 @@ internal sealed class TrayNotificationClient : IDisposable
             try
             {
                 using var socket = new ClientWebSocket();
-                await socket.ConnectAsync(TrayWebSocketUri, token);
+                await socket.ConnectAsync(trayWebSocketUri, token);
                 await ReceiveLoopAsync(socket, token);
             }
             catch
