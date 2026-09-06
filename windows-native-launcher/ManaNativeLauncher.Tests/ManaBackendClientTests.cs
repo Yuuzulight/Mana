@@ -30,6 +30,100 @@ internal sealed class FakeHttpMessageHandler : HttpMessageHandler
 public class ManaBackendClientTests
 {
     [Fact]
+    public async Task GetSkillDetailAsync_RequestsWithTouchFalseAndParsesTheFullBody()
+    {
+        string? path = null;
+        var handler = new FakeHttpMessageHandler(request =>
+        {
+            path = request.RequestUri!.PathAndQuery;
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(
+                    """{"name":"weather-check","description":"Checks the weather","body":"function run() {}","category":"utility"}""",
+                    Encoding.UTF8,
+                    "application/json"),
+            };
+        });
+        var client = new ManaBackendClient(handler);
+
+        var detail = await client.GetSkillDetailAsync("weather-check");
+
+        Assert.Equal("/skills/weather-check?touch=false", path);
+        Assert.Equal("weather-check", detail.Name);
+        Assert.Equal("Checks the weather", detail.Description);
+        Assert.Equal("function run() {}", detail.Body);
+        Assert.Equal("utility", detail.Category);
+    }
+
+    [Fact]
+    public async Task CreateSkillAsync_ReturnsTrueOn201AndFalseOn202()
+    {
+        var createdHandler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.Created)
+        {
+            Content = new StringContent("{\"name\":\"weather-check\"}", Encoding.UTF8, "application/json"),
+        });
+        var createdClient = new ManaBackendClient(createdHandler);
+        Assert.True(await createdClient.CreateSkillAsync("weather-check", "Checks the weather", "function run() {}", null));
+
+        var pendingHandler = new FakeHttpMessageHandler(_ => new HttpResponseMessage((HttpStatusCode)202)
+        {
+            Content = new StringContent("{\"status\":\"pending\",\"requestId\":\"req-1\"}", Encoding.UTF8, "application/json"),
+        });
+        var pendingClient = new ManaBackendClient(pendingHandler);
+        Assert.False(await pendingClient.CreateSkillAsync("weather-check", "Checks the weather", "function run() {}", null));
+    }
+
+    [Fact]
+    public async Task CreateSkillAsync_PostsAllFields()
+    {
+        string? path = null;
+        string? body = null;
+        var handler = new FakeHttpMessageHandler(request =>
+        {
+            path = request.RequestUri!.AbsolutePath;
+            body = request.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
+            return new HttpResponseMessage(HttpStatusCode.Created)
+            {
+                Content = new StringContent("{}", Encoding.UTF8, "application/json"),
+            };
+        });
+        var client = new ManaBackendClient(handler);
+
+        await client.CreateSkillAsync("weather-check", "Checks the weather", "function run() {}", "utility");
+
+        Assert.Equal("/skills", path);
+        Assert.Contains("\"name\":\"weather-check\"", body);
+        Assert.Contains("\"category\":\"utility\"", body);
+    }
+
+    [Fact]
+    public async Task UpdateSkillAsync_PatchesDescriptionBodyAndCategoryButNotName()
+    {
+        string? path = null;
+        string? method = null;
+        string? body = null;
+        var handler = new FakeHttpMessageHandler(request =>
+        {
+            path = request.RequestUri!.AbsolutePath;
+            method = request.Method.Method;
+            body = request.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("{}", Encoding.UTF8, "application/json"),
+            };
+        });
+        var client = new ManaBackendClient(handler);
+
+        await client.UpdateSkillAsync("weather-check", "Updated description", "function run() { return 1; }", "utility");
+
+        Assert.Equal("/skills/weather-check", path);
+        Assert.Equal("PATCH", method);
+        Assert.DoesNotContain("\"name\"", body);
+        Assert.Contains("\"description\":\"Updated description\"", body);
+        Assert.Contains("\"category\":\"utility\"", body);
+    }
+
+    [Fact]
     public async Task GetPerformanceStatusAsync_ParsesEveryField()
     {
         var handler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)

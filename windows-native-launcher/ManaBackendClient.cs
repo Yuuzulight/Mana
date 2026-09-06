@@ -561,6 +561,56 @@ internal sealed class ManaBackendClient
         response.EnsureSuccessStatusCode();
     }
 
+    // #581: touch=false matches the editor's own "opening to browse/edit
+    // isn't the same as Mana actually reaching for it" contract
+    // (skills-capability.js's own comment) -- without it, opening a skill
+    // just to look at it would bump its lastUsed/un-stale it.
+    public async Task<ManaSkillDetail> GetSkillDetailAsync(string name)
+    {
+        using var response = await http.GetAsync($"/skills/{Uri.EscapeDataString(name)}?touch=false");
+        response.EnsureSuccessStatusCode();
+        await using var stream = await response.Content.ReadAsStreamAsync();
+        using var document = await JsonDocument.ParseAsync(stream);
+        var root = document.RootElement;
+        return new ManaSkillDetail
+        {
+            Name = root.TryGetProperty("name", out var nameEl) ? nameEl.GetString() ?? "" : "",
+            Description = root.TryGetProperty("description", out var descEl) ? descEl.GetString() ?? "" : "",
+            Body = root.TryGetProperty("body", out var bodyEl) ? bodyEl.GetString() ?? "" : "",
+            Category = root.TryGetProperty("category", out var categoryEl) ? categoryEl.GetString() : null,
+        };
+    }
+
+    // #581: POST /skills is approval-gated (skills-capability.js: "a skill
+    // write is agent-authored content... pauses for approval"), unlike
+    // PATCH below -- a 201 means it was auto-approved and created
+    // immediately, a 202 means it's queued and needs a decision from the
+    // existing Approvals tab. The two response bodies differ in shape
+    // (201's is the created skill itself; 202's is the full approval-gate
+    // outcome), so this returns which case happened by status code rather
+    // than trying to parse a "status" field that only one of them has.
+    public async Task<bool> CreateSkillAsync(string name, string description, string body, string? category)
+    {
+        var payload = JsonSerializer.Serialize(new { name, description, body, category });
+        using var content = new StringContent(payload, Encoding.UTF8, "application/json");
+        using var response = await http.PostAsync("/skills", content);
+        response.EnsureSuccessStatusCode();
+        return response.StatusCode == System.Net.HttpStatusCode.Created;
+    }
+
+    // #581: unlike POST /skills above, this is a direct human edit, not
+    // approval-gated (skills-capability.js's own comment: "a Settings form
+    // submission already is the human decision the gate exists to
+    // require") -- takes effect immediately. Renaming isn't supported --
+    // node-bot's PATCH only accepts description/body/category.
+    public async Task UpdateSkillAsync(string name, string description, string body, string? category)
+    {
+        var payload = JsonSerializer.Serialize(new { description, body, category });
+        using var content = new StringContent(payload, Encoding.UTF8, "application/json");
+        using var response = await http.PatchAsync($"/skills/{Uri.EscapeDataString(name)}", content);
+        response.EnsureSuccessStatusCode();
+    }
+
     // #573: GET /presets -- see presets-store.js for the full stored
     // shape; this only carries what the settings tab shows/edits.
     public async Task<IReadOnlyList<ManaPreset>> GetPresetsAsync()
@@ -1475,6 +1525,16 @@ internal sealed class ManaSkill
     public string Name { get; init; } = "";
     public string? Description { get; init; }
     public string? Status { get; init; }
+}
+
+// #581: GET /skills/:name -- the full skill, unlike ManaSkill's index-only
+// listing shape above.
+internal sealed class ManaSkillDetail
+{
+    public string Name { get; init; } = "";
+    public string Description { get; init; } = "";
+    public string Body { get; init; } = "";
+    public string? Category { get; init; }
 }
 
 // #529: GET /approvals/pending.
