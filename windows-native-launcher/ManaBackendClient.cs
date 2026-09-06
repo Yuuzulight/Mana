@@ -191,15 +191,29 @@ internal sealed class ManaBackendClient
     // sessionId, only included in the JSON payload when present -- an
     // absent image key (not an empty one) is what tells node-bot's
     // handler this is a text-only turn.
-    public async IAsyncEnumerable<ReplyStreamEvent> ReplyStreamAsync(string text, string? sessionId = null, string screenText = "", string? image = null)
+    // #585: images (plural), when non-empty, takes precedence over the
+    // single image field -- matches node-bot's own /reply/stream handler,
+    // which accepts either shape and only falls back to wrapping a single
+    // image into a 1-item array when images isn't sent. Built as a
+    // Dictionary rather than the old fixed (sessionId, image) switch this
+    // replaced -- adding a third optional field would have doubled that
+    // switch's case count for no benefit.
+    public async IAsyncEnumerable<ReplyStreamEvent> ReplyStreamAsync(string text, string? sessionId = null, string screenText = "", string? image = null, IReadOnlyList<string>? images = null)
     {
-        var payload = (sessionId, image) switch
+        var fields = new Dictionary<string, object?> { ["text"] = text, ["screenText"] = screenText };
+        if (sessionId is not null)
         {
-            (null, null) => JsonSerializer.Serialize(new { text, screenText }),
-            (not null, null) => JsonSerializer.Serialize(new { text, sessionId, screenText }),
-            (null, not null) => JsonSerializer.Serialize(new { text, screenText, image }),
-            (not null, not null) => JsonSerializer.Serialize(new { text, sessionId, screenText, image }),
-        };
+            fields["sessionId"] = sessionId;
+        }
+        if (images is { Count: > 0 })
+        {
+            fields["images"] = images;
+        }
+        else if (image is not null)
+        {
+            fields["image"] = image;
+        }
+        var payload = JsonSerializer.Serialize(fields);
         using var content = new StringContent(payload, Encoding.UTF8, "application/json");
         using var request = new HttpRequestMessage(HttpMethod.Post, "/reply/stream") { Content = content };
         using var response = await http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead);

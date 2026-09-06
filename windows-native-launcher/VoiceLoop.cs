@@ -115,6 +115,13 @@ internal sealed class VoiceLoop : IDisposable
     private readonly ScreenContextReader? screenContextReader;
     private readonly Func<bool> isGamingModeActive;
 
+    // #585: populated by ManaApplicationContext's own periodic capture
+    // timer (gated behind MANA_SCREEN_SENSING_ENABLED, matching
+    // windows-launcher's own opt-in), read here only when the clip
+    // hotkey fires. Null (the default) is a no-op, same pattern as
+    // screenContextReader/artifactSink/chatLog above.
+    private readonly ClipBuffer? clipBuffer;
+
     // #528: null (no artifact viewer constructed) is a no-op everywhere
     // it's used -- see IArtifactSink's own header comment.
     private readonly IArtifactSink? artifactSink;
@@ -141,7 +148,8 @@ internal sealed class VoiceLoop : IDisposable
         IChatLog? chatLog = null,
         IArtifactSink? artifactSink = null,
         ScreenContextReader? screenContextReader = null,
-        Func<bool>? isGamingModeActive = null)
+        Func<bool>? isGamingModeActive = null,
+        ClipBuffer? clipBuffer = null)
     {
         this.vad = vad;
         this.backendClient = backendClient;
@@ -150,6 +158,7 @@ internal sealed class VoiceLoop : IDisposable
         this.chatLog = chatLog;
         this.artifactSink = artifactSink;
         this.screenContextReader = screenContextReader;
+        this.clipBuffer = clipBuffer;
         // Never actually invoked unless screenContextReader is also
         // non-null (see the read-site below) -- defaulted to a fixed
         // false rather than left nullable so that call site doesn't need
@@ -476,6 +485,51 @@ internal sealed class VoiceLoop : IDisposable
         return true;
     }
 
+    // #585: entry point for the global "what just happened?" clip hotkey
+    // -- same shape as SubmitVisionHotkeyAsync (explicit request, skips
+    // the wake-word gate, cuts off active speech the same way), but reads
+    // whatever ManaApplicationContext's periodic capture timer already
+    // put in clipBuffer instead of capturing fresh, and sends every
+    // buffered frame (not just one) so the model can actually see what
+    // happened over the lookback window, not just the current screen.
+    public async Task<bool> SubmitClipHotkeyAsync()
+    {
+        lock (stateLock)
+        {
+            if (mode is ListenMode.Processing or ListenMode.CapturingInterruption)
+            {
+                return false;
+            }
+
+            if (mode == ListenMode.Speaking)
+            {
+                audioPlayer.Stop();
+                heldSentences = null;
+                heldStackDepth = 0;
+            }
+            mode = ListenMode.Processing;
+        }
+
+        awake = true;
+
+        // Empty buffer (screen sensing disabled, or pressed before the
+        // first capture tick) -- matches windows-launcher's own "Mana
+        // hasn't captured anything yet" case, at the same fidelity
+        // SubmitVisionHotkeyAsync's own capture-failure branch uses (a
+        // console log and a silent return to idle, no separate status UI).
+        var images = clipBuffer?.GetImages() ?? Array.Empty<string>();
+        if (images.Count == 0)
+        {
+            Console.WriteLine("VoiceLoop: clip hotkey pressed but the clip buffer is empty, resuming listening.");
+            ReturnToIdle();
+            return true;
+        }
+
+        var prompt = VisionHotkeyMessages.BuildClipHotkeyPrompt(clipBuffer!.GetSpanSeconds());
+        await SpeakReplyAsync(prompt, images: images);
+        return true;
+    }
+
     // #525: entry point for typed input from the quick-entry popup.
     // Typing is itself the deliberate trigger -- unlike voice, no wake
     // word is required, and awake is set unconditionally. If Mana is
@@ -765,7 +819,7 @@ internal sealed class VoiceLoop : IDisposable
     // block nulls heldReply on any capture/transcribe/classify failure) --
     // failure and interruption are NOT distinguished by this return value;
     // both mean "don't resume".
-    private async Task<bool> SpeakReplyAsync(string commandText, string screenText = "", string? image = null)
+    private async Task<bool> SpeakReplyAsync(string commandText, string screenText = "", string? image = null, IReadOnlyList<string>? images = null)
     {
         string? reply;
         bool changed;
@@ -773,17 +827,17 @@ internal sealed class VoiceLoop : IDisposable
         IReadOnlyList<string> pending;
         try
         {
-            (reply, changed, _, interrupted, pending) = await streamingReplyPlayer.StreamReplyAndPlayAsync(commandText, currentSessionId, text => chatLog?.AppendReplySentence(text), screenText, image);
+            (reply, changed, _, interrupted, pending) = await streamingReplyPlayer.StreamReplyAndPlayAsync(commandText, currentSessionId, text => chatLog?.AppendReplySentence(text), screenText, image, images);
         }
         catch (Exception ex)
         {
-            // #523: DescribeError's fallback phrasing ("Mana couldn't
-            // look at the screen...") is vision-specific -- only apply it
-            // when this call actually included an image (vision-hotkey
-            // triggered), not to every SpeakReplyAsync failure, which
-            // would misleadingly blame vision for an unrelated reply
-            // error on a normal text turn.
-            var message = image is not null ? VisionHotkeyMessages.DescribeError(ex.Message) : ex.Message;
+            // #523/#585: DescribeError's fallback phrasing ("Mana
+            // couldn't look at the screen...") is vision-specific -- only
+            // apply it when this call actually included an image
+            // (vision-hotkey or clip-hotkey triggered), not to every
+            // SpeakReplyAsync failure, which would misleadingly blame
+            // vision for an unrelated reply error on a normal text turn.
+            var message = image is not null || images is { Count: > 0 } ? VisionHotkeyMessages.DescribeError(ex.Message) : ex.Message;
             Console.WriteLine($"VoiceLoop: reply/stream failed, resuming listening. {message}");
             ReturnToIdle();
             return false;
