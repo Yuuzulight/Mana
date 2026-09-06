@@ -89,6 +89,89 @@ public class ManaBackendClientTests
     }
 
     [Fact]
+    public async Task GetAccountsAsync_ParsesTheBareJsonArray()
+    {
+        var handler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(
+                """[{"userId":"u1","email":"admin@example.com","role":"admin"},{"userId":"u2","email":"friend@example.com","role":"user"}]""",
+                Encoding.UTF8,
+                "application/json"),
+        });
+        var client = new ManaBackendClient(handler);
+
+        var accounts = await client.GetAccountsAsync();
+
+        Assert.Equal(2, accounts.Count);
+        Assert.Equal("admin@example.com", accounts[0].Email);
+        Assert.Equal("admin", accounts[0].Role);
+        Assert.Equal("u2", accounts[1].UserId);
+    }
+
+    [Fact]
+    public async Task GetAccountsAsync_ReturnsEmptyForAnEmptyArray()
+    {
+        var handler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent("[]", Encoding.UTF8, "application/json"),
+        });
+        var client = new ManaBackendClient(handler);
+
+        var accounts = await client.GetAccountsAsync();
+
+        Assert.Empty(accounts);
+    }
+
+    [Fact]
+    public async Task CreateAccountAsync_PostsEmailAndRoleAndReturnsTheApiKey()
+    {
+        string? path = null;
+        string? body = null;
+        var handler = new FakeHttpMessageHandler(request =>
+        {
+            path = request.RequestUri!.AbsolutePath;
+            body = request.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
+            return new HttpResponseMessage(HttpStatusCode.Created)
+            {
+                Content = new StringContent(
+                    """{"userId":"u3","email":"new@example.com","role":"user","apiKey":"mana_abc123","message":"Save your API key somewhere safe; it will not be shown again"}""",
+                    Encoding.UTF8,
+                    "application/json"),
+            };
+        });
+        var client = new ManaBackendClient(handler);
+
+        var apiKey = await client.CreateAccountAsync("new@example.com", "user");
+
+        Assert.Equal("/admin/accounts", path);
+        Assert.Contains("\"email\":\"new@example.com\"", body);
+        Assert.Contains("\"role\":\"user\"", body);
+        Assert.Equal("mana_abc123", apiKey);
+    }
+
+    [Fact]
+    public async Task DeleteAccountAsync_SendsDeleteToTheNamedUser()
+    {
+        string? path = null;
+        string? method = null;
+        var handler = new FakeHttpMessageHandler(request =>
+        {
+            path = request.RequestUri!.AbsolutePath;
+            method = request.Method.Method;
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("{\"ok\":true}", Encoding.UTF8, "application/json"),
+            };
+        });
+        var client = new ManaBackendClient(handler);
+
+        await client.DeleteAccountAsync("u1");
+
+        Assert.Equal("/admin/accounts/u1", path);
+        Assert.Equal("DELETE", method);
+    }
+
+    [Fact]
     public async Task TranscribeAsync_PostsToTranscribeOnlyAndReturnsTranscript()
     {
         string? path = null;

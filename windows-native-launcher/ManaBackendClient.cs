@@ -412,6 +412,55 @@ internal sealed class ManaBackendClient
         response.EnsureSuccessStatusCode();
     }
 
+    // #568: GET /admin/accounts responds with a bare JSON array (unlike
+    // every other list route in this file, which wraps its array under a
+    // named key) -- see auth-store.js's listAccounts, which returns
+    // res.json(accounts) directly. Requires an admin-role API key sent as
+    // the Connection tab's admin token (server.js's authMiddleware +
+    // requireAdmin) -- for the common local-backend case, requireAdmin's
+    // own loopback check passes automatically, so no separate ADMIN_TOKEN
+    // is needed on top of that key.
+    public async Task<IReadOnlyList<ManaAccount>> GetAccountsAsync()
+    {
+        using var response = await http.GetAsync("/admin/accounts");
+        response.EnsureSuccessStatusCode();
+        await using var stream = await response.Content.ReadAsStreamAsync();
+        using var document = await JsonDocument.ParseAsync(stream);
+        var accounts = new List<ManaAccount>();
+        foreach (var entry in document.RootElement.EnumerateArray())
+        {
+            accounts.Add(new ManaAccount
+            {
+                UserId = entry.TryGetProperty("userId", out var idEl) ? idEl.GetString() ?? "" : "",
+                Email = entry.TryGetProperty("email", out var emailEl) ? emailEl.GetString() ?? "" : "",
+                Role = entry.TryGetProperty("role", out var roleEl) ? roleEl.GetString() ?? "" : "",
+            });
+        }
+        return accounts;
+    }
+
+    // #568: the returned apiKey is shown exactly once -- node-bot never
+    // stores or re-serves it (auth-store.js only persists a hash), matching
+    // the same one-time-reveal behavior windows-launcher's admin_accounts_ui
+    // page has. Losing this return value loses the key permanently; the
+    // caller is responsible for actually showing it to the user.
+    public async Task<string> CreateAccountAsync(string email, string role)
+    {
+        var payload = JsonSerializer.Serialize(new { email, role });
+        using var content = new StringContent(payload, Encoding.UTF8, "application/json");
+        using var response = await http.PostAsync("/admin/accounts", content);
+        response.EnsureSuccessStatusCode();
+        await using var stream = await response.Content.ReadAsStreamAsync();
+        using var document = await JsonDocument.ParseAsync(stream);
+        return document.RootElement.GetProperty("apiKey").GetString() ?? "";
+    }
+
+    public async Task DeleteAccountAsync(string userId)
+    {
+        using var response = await http.DeleteAsync($"/admin/accounts/{Uri.EscapeDataString(userId)}");
+        response.EnsureSuccessStatusCode();
+    }
+
     public async Task<IReadOnlyList<ManaPendingApproval>> GetPendingApprovalsAsync()
     {
         using var response = await http.GetAsync("/approvals/pending");
@@ -591,6 +640,15 @@ internal sealed class ManaPendingApproval
     public string Id { get; init; } = "";
     public string ActionType { get; init; } = "";
     public string Summary { get; init; } = "";
+}
+
+// #568: one entry from GET /admin/accounts (keyHash never included --
+// see auth-store.js's listAccounts).
+internal sealed class ManaAccount
+{
+    public string UserId { get; init; } = "";
+    public string Email { get; init; } = "";
+    public string Role { get; init; } = "";
 }
 
 internal sealed class ReplyStreamEvent

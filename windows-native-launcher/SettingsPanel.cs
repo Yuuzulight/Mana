@@ -23,6 +23,7 @@ internal sealed class SettingsPanel : UserControl
     private readonly ListView factsList = new();
     private readonly ListView skillsList = new();
     private readonly ListView approvalsList = new();
+    private readonly ListView accountsList = new();
     private bool populatingPlugins;
 
     public SettingsPanel(ManaBackendClient backendClient)
@@ -39,6 +40,7 @@ internal sealed class SettingsPanel : UserControl
         tabs.TabPages.Add(BuildMemoryFactsTab());
         tabs.TabPages.Add(BuildSkillsTab());
         tabs.TabPages.Add(BuildApprovalsTab());
+        tabs.TabPages.Add(BuildAccountsTab());
         foreach (TabPage page in tabs.TabPages)
         {
             page.BackColor = DarkTheme.Background;
@@ -52,6 +54,7 @@ internal sealed class SettingsPanel : UserControl
         await RefreshMemoryFactsAsync();
         await RefreshSkillsAsync();
         await RefreshApprovalsAsync();
+        await RefreshAccountsAsync();
     }
 
     // #529 review: a failed load left its list untouched -- on first
@@ -474,6 +477,134 @@ internal sealed class SettingsPanel : UserControl
             var item = new ListViewItem(approval.ActionType) { Tag = approval.Id };
             item.SubItems.Add(approval.Summary);
             approvalsList.Items.Add(item);
+        }
+    }
+
+    // #568: requires an admin-role API key entered as the Connection
+    // tab's admin token (server.js's authMiddleware + requireAdmin) --
+    // distinct from the MANA_ADMIN_SECRET value the memory-facts/skills/
+    // approvals tabs above check for, since /admin/accounts uses a
+    // different gate. A missing/wrong token surfaces the same
+    // ShowLoadFailure placeholder those tabs already use.
+    private TabPage BuildAccountsTab()
+    {
+        accountsList.Dock = DockStyle.Fill;
+        accountsList.View = View.Details;
+        accountsList.FullRowSelect = true;
+        accountsList.Columns.Add("Email", 220);
+        accountsList.Columns.Add("Role", 80);
+        DarkTheme.ApplyListView(accountsList);
+
+        var createButton = new Button { Text = "Create..." };
+        var deleteButton = new Button { Text = "Revoke" };
+        DarkTheme.ApplyButton(createButton);
+        DarkTheme.ApplyButton(deleteButton);
+        createButton.Click += async (_, _) => await CreateAccountAsync();
+        deleteButton.Click += async (_, _) => await DeleteSelectedAccountAsync();
+
+        var buttonRow = new FlowLayoutPanel { Dock = DockStyle.Bottom, Height = 32, FlowDirection = FlowDirection.LeftToRight, BackColor = DarkTheme.Background };
+        buttonRow.Controls.Add(createButton);
+        buttonRow.Controls.Add(deleteButton);
+
+        var page = new TabPage("Accounts");
+        page.Controls.Add(accountsList);
+        page.Controls.Add(buttonRow);
+        return page;
+    }
+
+    private async Task CreateAccountAsync()
+    {
+        using var dialog = new CreateAccountDialog();
+        if (dialog.ShowDialog(this) != DialogResult.OK)
+        {
+            return;
+        }
+
+        string apiKey;
+        try
+        {
+            apiKey = await backendClient.CreateAccountAsync(dialog.Email, dialog.Role);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, $"Failed to create account: {ex.Message}", "Create Account", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            return;
+        }
+        if (IsDisposed)
+        {
+            return;
+        }
+        using (var reveal = new ApiKeyRevealDialog(dialog.Email, apiKey))
+        {
+            reveal.ShowDialog(this);
+        }
+        if (!IsDisposed)
+        {
+            await RefreshAccountsAsync();
+        }
+    }
+
+    private async Task DeleteSelectedAccountAsync()
+    {
+        if (accountsList.SelectedItems.Count == 0)
+        {
+            return;
+        }
+        var userId = (string)accountsList.SelectedItems[0].Tag!;
+        var email = accountsList.SelectedItems[0].Text;
+        var confirmed = MessageBox.Show(
+            this,
+            $"Revoke account \"{email}\"? This cannot be undone.",
+            "Revoke Account",
+            MessageBoxButtons.YesNo,
+            MessageBoxIcon.Warning) == DialogResult.Yes;
+        if (!confirmed)
+        {
+            return;
+        }
+
+        try
+        {
+            await backendClient.DeleteAccountAsync(userId);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"SettingsPanel: failed to revoke account '{userId}'. {ex.Message}");
+            return;
+        }
+        if (!IsDisposed)
+        {
+            await RefreshAccountsAsync();
+        }
+    }
+
+    private async Task RefreshAccountsAsync()
+    {
+        System.Collections.Generic.IReadOnlyList<ManaAccount> accounts;
+        try
+        {
+            accounts = await backendClient.GetAccountsAsync();
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"SettingsPanel: failed to load accounts. {ex.Message}");
+            if (!IsDisposed)
+            {
+                ShowLoadFailure(accountsList, ex.Message);
+            }
+            return;
+        }
+        if (IsDisposed)
+        {
+            return;
+        }
+
+        accountsList.Items.Clear();
+        foreach (var account in accounts)
+        {
+            var item = new ListViewItem(account.Email) { Tag = account.UserId };
+            item.SubItems.Add(account.Role);
+            accountsList.Items.Add(item);
         }
     }
 }
