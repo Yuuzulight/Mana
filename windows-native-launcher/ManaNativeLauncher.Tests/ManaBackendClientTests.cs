@@ -29,6 +29,115 @@ internal sealed class FakeHttpMessageHandler : HttpMessageHandler
 public class ManaBackendClientTests
 {
     [Fact]
+    public async Task GetVTubeStatusAsync_ParsesA200WhenConnected()
+    {
+        var handler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(
+                """{"enabled":true,"connected":true,"authenticated":true,"url":"ws://127.0.0.1:8001","state":{}}""",
+                Encoding.UTF8,
+                "application/json"),
+        });
+        var client = new ManaBackendClient(handler);
+
+        var status = await client.GetVTubeStatusAsync();
+
+        Assert.True(status.Enabled);
+        Assert.True(status.Connected);
+        Assert.True(status.Authenticated);
+        Assert.Equal("ws://127.0.0.1:8001", status.Url);
+    }
+
+    [Fact]
+    public async Task GetVTubeStatusAsync_ParsesA503WhenEnabledButUnreachableInsteadOfThrowing()
+    {
+        var handler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.ServiceUnavailable)
+        {
+            Content = new StringContent(
+                """{"enabled":true,"connected":false,"authenticated":false,"url":"ws://127.0.0.1:8001","error":"connection refused"}""",
+                Encoding.UTF8,
+                "application/json"),
+        });
+        var client = new ManaBackendClient(handler);
+
+        var status = await client.GetVTubeStatusAsync();
+
+        Assert.True(status.Enabled);
+        Assert.False(status.Connected);
+        Assert.Equal("connection refused", status.Error);
+    }
+
+    [Fact]
+    public async Task GetVTubeStatusAsync_ThrowsOn500()
+    {
+        var handler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.InternalServerError));
+        var client = new ManaBackendClient(handler);
+
+        await Assert.ThrowsAsync<HttpRequestException>(() => client.GetVTubeStatusAsync());
+    }
+
+    [Fact]
+    public async Task AuthenticateVTubeStudioAsync_PostsAndReturnsAuthenticated()
+    {
+        string? path = null;
+        var handler = new FakeHttpMessageHandler(request =>
+        {
+            path = request.RequestUri!.AbsolutePath;
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("{\"authenticated\":true,\"tokenCreated\":false}", Encoding.UTF8, "application/json"),
+            };
+        });
+        var client = new ManaBackendClient(handler);
+
+        var authenticated = await client.AuthenticateVTubeStudioAsync();
+
+        Assert.Equal("/vtube/auth", path);
+        Assert.True(authenticated);
+    }
+
+    [Fact]
+    public async Task GetVTubeHotkeysAsync_ParsesTheHotkeyArray()
+    {
+        var handler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(
+                """{"hotkeys":[{"hotkeyID":"abc-1","name":"Wave","type":"TriggerAnimation"}]}""",
+                Encoding.UTF8,
+                "application/json"),
+        });
+        var client = new ManaBackendClient(handler);
+
+        var hotkeys = await client.GetVTubeHotkeysAsync();
+
+        var hotkey = Assert.Single(hotkeys);
+        Assert.Equal("abc-1", hotkey.Id);
+        Assert.Equal("Wave", hotkey.Name);
+    }
+
+    [Fact]
+    public async Task TriggerVTubeHotkeyAsync_PostsTheHotkeyId()
+    {
+        string? path = null;
+        string? body = null;
+        var handler = new FakeHttpMessageHandler(request =>
+        {
+            path = request.RequestUri!.AbsolutePath;
+            body = request.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("{\"ok\":true}", Encoding.UTF8, "application/json"),
+            };
+        });
+        var client = new ManaBackendClient(handler);
+
+        await client.TriggerVTubeHotkeyAsync("abc-1");
+
+        Assert.Equal("/vtube/hotkey", path);
+        Assert.Contains("\"hotkeyID\":\"abc-1\"", body);
+    }
+
+    [Fact]
     public async Task TranscribeAsync_PostsToTranscribeOnlyAndReturnsTranscript()
     {
         string? path = null;

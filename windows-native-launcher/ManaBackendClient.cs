@@ -399,6 +399,73 @@ internal sealed class ManaBackendClient
         response.EnsureSuccessStatusCode();
     }
 
+    // #570: like GetDoctorResultAsync, this does NOT call
+    // EnsureSuccessStatusCode unconditionally -- vtube-routes.js returns
+    // 503 (not 200) specifically when VTube Studio is enabled but
+    // unreachable, still with a fully-shaped, parseable body (connected:
+    // false, error). Only a genuinely unexpected status should throw.
+    public async Task<ManaVTubeStatus> GetVTubeStatusAsync()
+    {
+        using var response = await http.GetAsync("/vtube/status");
+        if (!response.IsSuccessStatusCode && response.StatusCode != System.Net.HttpStatusCode.ServiceUnavailable)
+        {
+            response.EnsureSuccessStatusCode();
+        }
+        await using var stream = await response.Content.ReadAsStreamAsync();
+        using var document = await JsonDocument.ParseAsync(stream);
+        var root = document.RootElement;
+        return new ManaVTubeStatus
+        {
+            Enabled = root.TryGetProperty("enabled", out var enabledEl) && enabledEl.GetBoolean(),
+            Connected = root.TryGetProperty("connected", out var connectedEl) && connectedEl.GetBoolean(),
+            Authenticated = root.TryGetProperty("authenticated", out var authEl) && authEl.GetBoolean(),
+            Url = root.TryGetProperty("url", out var urlEl) ? urlEl.GetString() : null,
+            Error = root.TryGetProperty("error", out var errorEl) ? errorEl.GetString() : null,
+        };
+    }
+
+    public async Task<bool> AuthenticateVTubeStudioAsync()
+    {
+        using var response = await http.PostAsync("/vtube/auth", null);
+        response.EnsureSuccessStatusCode();
+        await using var stream = await response.Content.ReadAsStreamAsync();
+        using var document = await JsonDocument.ParseAsync(stream);
+        return document.RootElement.TryGetProperty("authenticated", out var authEl) && authEl.GetBoolean();
+    }
+
+    // #570: hotkeys is VTube Studio's own API response shape
+    // (availableHotkeys, per vtube-studio-client.js's listHotkeys), not
+    // something node-bot defines -- hotkeyID/name are its two well-known
+    // fields, and unrelated ones are ignored.
+    public async Task<IReadOnlyList<ManaVTubeHotkey>> GetVTubeHotkeysAsync()
+    {
+        using var response = await http.GetAsync("/vtube/hotkeys");
+        response.EnsureSuccessStatusCode();
+        await using var stream = await response.Content.ReadAsStreamAsync();
+        using var document = await JsonDocument.ParseAsync(stream);
+        var hotkeys = new List<ManaVTubeHotkey>();
+        if (document.RootElement.TryGetProperty("hotkeys", out var hotkeysElement))
+        {
+            foreach (var entry in hotkeysElement.EnumerateArray())
+            {
+                hotkeys.Add(new ManaVTubeHotkey
+                {
+                    Id = entry.TryGetProperty("hotkeyID", out var idEl) ? idEl.GetString() ?? "" : "",
+                    Name = entry.TryGetProperty("name", out var nameEl) ? nameEl.GetString() ?? "" : "",
+                });
+            }
+        }
+        return hotkeys;
+    }
+
+    public async Task TriggerVTubeHotkeyAsync(string hotkeyId)
+    {
+        var payload = JsonSerializer.Serialize(new { hotkeyID = hotkeyId });
+        using var content = new StringContent(payload, Encoding.UTF8, "application/json");
+        using var response = await http.PostAsync("/vtube/hotkey", content);
+        response.EnsureSuccessStatusCode();
+    }
+
     public async Task<IReadOnlyList<ManaPendingApproval>> GetPendingApprovalsAsync()
     {
         using var response = await http.GetAsync("/approvals/pending");
@@ -578,6 +645,24 @@ internal sealed class ManaPendingApproval
     public string Id { get; init; } = "";
     public string ActionType { get; init; } = "";
     public string Summary { get; init; } = "";
+}
+
+// #570: GET /vtube/status.
+internal sealed class ManaVTubeStatus
+{
+    public bool Enabled { get; init; }
+    public bool Connected { get; init; }
+    public bool Authenticated { get; init; }
+    public string? Url { get; init; }
+    public string? Error { get; init; }
+}
+
+// #570: one entry from GET /vtube/hotkeys (VTube Studio's own
+// availableHotkeys shape -- see GetVTubeHotkeysAsync's own comment).
+internal sealed class ManaVTubeHotkey
+{
+    public string Id { get; init; } = "";
+    public string Name { get; init; } = "";
 }
 
 internal sealed class ReplyStreamEvent
