@@ -30,6 +30,52 @@ internal sealed class FakeHttpMessageHandler : HttpMessageHandler
 public class ManaBackendClientTests
 {
     [Fact]
+    public async Task GetPerformanceStatusAsync_ParsesEveryField()
+    {
+        var handler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(
+                """{"ok":true,"uptimeSeconds":3725,"config":{"whisperThreads":4,"llamaThreads":8,"llamaMaxTokens":2048,"screenContextEnabled":true,"ttsProvider":"fish"},"gaming":{"gamingAppRunning":false},"process":{"totalMemoryMb":512},"operations":{"reply_token_usage":{"lastTokens":123,"session":"default"}}}""",
+                Encoding.UTF8,
+                "application/json"),
+        });
+        var client = new ManaBackendClient(handler);
+
+        var status = await client.GetPerformanceStatusAsync();
+
+        Assert.Equal(512, status.TotalMemoryMb);
+        Assert.Equal("fish", status.TtsProvider);
+        Assert.False(status.GamingAppRunning);
+        Assert.Equal(3725, status.UptimeSeconds);
+        Assert.Equal(4, status.WhisperThreads);
+        Assert.Equal(8, status.LlamaThreads);
+        Assert.Equal(2048, status.LlamaMaxTokens);
+        Assert.True(status.ScreenContextEnabled);
+        var operation = Assert.Single(status.Operations);
+        Assert.Equal("reply_token_usage", operation.Key);
+        Assert.Contains("\"lastTokens\":123", operation.Value);
+    }
+
+    [Fact]
+    public async Task GetPerformanceStatusAsync_DefaultsOperationsToEmptyWhenMissing()
+    {
+        var handler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(
+                """{"config":{"ttsProvider":"kokoro"},"gaming":{"gamingAppRunning":true},"process":{"totalMemoryMb":256}}""",
+                Encoding.UTF8,
+                "application/json"),
+        });
+        var client = new ManaBackendClient(handler);
+
+        var status = await client.GetPerformanceStatusAsync();
+
+        Assert.Empty(status.Operations);
+        Assert.Equal(0, status.UptimeSeconds);
+        Assert.True(status.GamingAppRunning);
+    }
+
+    [Fact]
     public async Task GetPresetsAsync_ParsesThePresetArray()
     {
         var handler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)

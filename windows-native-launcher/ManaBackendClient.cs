@@ -37,6 +37,12 @@ internal sealed class ManaBackendClient
         }
     }
 
+    // #575: extended with uptime/config/operations -- operations is a
+    // free-form dictionary (server.js's perfMetrics.operations: whatever
+    // shape each operation last logged, e.g. reply_token_usage's
+    // {lastTokens,session,updatedAt}), so each entry's value is kept as
+    // its own compact JSON string rather than modeled per-operation; the
+    // Perf tab just displays it, it doesn't need to parse it further.
     public async Task<ManaPerformanceStatus> GetPerformanceStatusAsync()
     {
         using var response = await http.GetAsync("/perf/status");
@@ -48,11 +54,26 @@ internal sealed class ManaBackendClient
         var config = root.GetProperty("config");
         var gaming = root.GetProperty("gaming");
 
+        var operations = new Dictionary<string, string>();
+        if (root.TryGetProperty("operations", out var operationsElement) && operationsElement.ValueKind == JsonValueKind.Object)
+        {
+            foreach (var property in operationsElement.EnumerateObject())
+            {
+                operations[property.Name] = property.Value.GetRawText();
+            }
+        }
+
         return new ManaPerformanceStatus
         {
             TotalMemoryMb = process.GetProperty("totalMemoryMb").GetInt32(),
             TtsProvider = config.GetProperty("ttsProvider").GetString() ?? "unknown",
             GamingAppRunning = gaming.GetProperty("gamingAppRunning").GetBoolean(),
+            UptimeSeconds = root.TryGetProperty("uptimeSeconds", out var uptimeEl) ? uptimeEl.GetInt64() : 0,
+            WhisperThreads = config.TryGetProperty("whisperThreads", out var whisperEl) ? whisperEl.GetInt32() : 0,
+            LlamaThreads = config.TryGetProperty("llamaThreads", out var llamaThreadsEl) ? llamaThreadsEl.GetInt32() : 0,
+            LlamaMaxTokens = config.TryGetProperty("llamaMaxTokens", out var llamaMaxEl) ? llamaMaxEl.GetInt32() : 0,
+            ScreenContextEnabled = config.TryGetProperty("screenContextEnabled", out var screenEl) && screenEl.GetBoolean(),
+            Operations = operations,
         };
     }
 
@@ -1009,6 +1030,12 @@ internal sealed class ManaPerformanceStatus
     public int TotalMemoryMb { get; init; }
     public string TtsProvider { get; init; } = "unknown";
     public bool GamingAppRunning { get; init; }
+    public long UptimeSeconds { get; init; }
+    public int WhisperThreads { get; init; }
+    public int LlamaThreads { get; init; }
+    public int LlamaMaxTokens { get; init; }
+    public bool ScreenContextEnabled { get; init; }
+    public IReadOnlyDictionary<string, string> Operations { get; init; } = new Dictionary<string, string>();
 }
 
 // #527/#572: GET /models/status.
