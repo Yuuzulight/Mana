@@ -10,6 +10,7 @@ namespace Mana.NativeLauncher;
 internal sealed class ManaApplicationContext : ApplicationContext
 {
     private readonly AvatarOverlayForm avatarOverlay;
+    private readonly BrowserAutomationPanel browserAutomationPanel;
     private readonly NotifyIcon trayIcon;
     private readonly ManaProcessManager processManager;
     private readonly ManaBackendClient backendClient;
@@ -19,6 +20,8 @@ internal sealed class ManaApplicationContext : ApplicationContext
     private readonly VoiceLoop voiceLoop;
     private readonly VisionHotkeyListener visionHotkeyListener;
     private readonly TrayNotificationClient trayNotifications;
+    private readonly CaptionOverlayForm captionOverlay;
+    private readonly CaptionWebSocketClient captionClient;
     private readonly ArtifactViewerForm artifactViewer;
     private readonly QuickEntryForm quickEntry;
     private readonly SessionListForm sessionListForm;
@@ -28,6 +31,13 @@ internal sealed class ManaApplicationContext : ApplicationContext
     // pick the screen-context read interval, same signal the tray icon
     // text already reflects.
     private bool gamingModeActive;
+
+    // #574: client-side-only override, matching windows-launcher's own
+    // #gamingMode checkbox -- it isn't a 3-way auto/on/off switch, just an
+    // enable/disable for the auto-detection RefreshTrayStatusAsync already
+    // does. Off forces gamingModeActive false regardless of what the
+    // backend's process scan reports; no new backend route needed.
+    private bool gamingModeEnabled = true;
 
     // The 3 services ManaProcessManager actually starts/stops -- shared
     // between the startup and shutdown overlays, same as windows-launcher's
@@ -50,9 +60,14 @@ internal sealed class ManaApplicationContext : ApplicationContext
     public ManaApplicationContext()
     {
         var rootDir = FindRootDirectory();
+        var settings = ManaSettingsStore.Load();
         processManager = new ManaProcessManager(rootDir);
-        backendClient = new ManaBackendClient();
+        backendClient = new ManaBackendClient(baseUrl: settings.BackendBaseUrl, adminToken: settings.AdminToken);
         avatarOverlay = new AvatarOverlayForm(rootDir);
+        // #578: ambient indicator, no tray entry -- starts polling
+        // immediately and shows itself only while browser automation is
+        // genuinely active.
+        browserAutomationPanel = new BrowserAutomationPanel(backendClient);
 
         var vadModelPath = Path.Combine(rootDir, "windows-native-launcher", "assets", "vad", "silero_vad.onnx");
         sileroVad = new SileroVadRunner(vadModelPath);
@@ -91,7 +106,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
         // IsDisposed-then-marshal shape as this codebase's other
         // background-thread-to-UI call sites (e.g. ChatLogPanel's
         // RunOnUiThread).
-        trayNotifications = new TrayNotificationClient(openChat: () =>
+        trayNotifications = new TrayNotificationClient(backendBaseUrl: settings.BackendBaseUrl, openChat: () =>
         {
             if (sessionListForm.IsDisposed)
             {
@@ -104,6 +119,10 @@ internal sealed class ManaApplicationContext : ApplicationContext
             }
             ShowSessionList();
         });
+        // #571: on-screen equivalent of spoken output -- purely additive,
+        // wired up alongside trayNotifications above.
+        captionOverlay = new CaptionOverlayForm();
+        captionClient = new CaptionWebSocketClient(captionOverlay.SetCaption);
 
         trayIcon = new NotifyIcon
         {
@@ -116,6 +135,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
         trayIcon.DoubleClick += (_, _) => ShowStatus();
         avatarOverlay.Show();
         trayNotifications.Start();
+        captionClient.Start();
 
         // Quick rundown: start the existing local services, but keep this host native and small.
         _ = StartServicesAsync();
@@ -135,11 +155,26 @@ internal sealed class ManaApplicationContext : ApplicationContext
         menu.Items.Add("Artifact Viewer", null, (_, _) => { artifactViewer.Show(); artifactViewer.Activate(); });
         menu.Items.Add("Compare Models", null, (_, _) => new CompareModeForm(backendClient).Show());
         menu.Items.Add("Pending Edits", null, (_, _) => new ProposalsForm(backendClient).Show());
+        menu.Items.Add("Edit Snapshots", null, (_, _) => new SnapshotsForm(backendClient).Show());
+        menu.Items.Add("Deep Research", null, (_, _) => new ResearchForm(backendClient, () => voiceLoop.CurrentSessionId).Show());
         menu.Items.Add("Doctor", null, (_, _) => ShowDoctorPanel());
+        menu.Items.Add("VTube Studio", null, (_, _) => new VTubeStudioForm(backendClient).Show());
         menu.Items.Add("Sessions", null, (_, _) => ShowSessionList());
         menu.Items.Add("Open project folder", null, (_, _) => OpenProjectFolder());
         menu.Items.Add("Set avatar idle", null, (_, _) => avatarOverlay.SetState(AvatarState.Idle));
         menu.Items.Add("Set avatar talking", null, (_, _) => avatarOverlay.SetState(AvatarState.Talking));
+        menu.Items.Add(new ToolStripSeparator());
+        var gamingModeItem = new ToolStripMenuItem("Gaming mode detection") { CheckOnClick = true, Checked = gamingModeEnabled };
+        gamingModeItem.Click += (_, _) =>
+        {
+            gamingModeEnabled = gamingModeItem.Checked;
+            if (!gamingModeEnabled)
+            {
+                gamingModeActive = false;
+                trayIcon.Text = "Mana";
+            }
+        };
+        menu.Items.Add(gamingModeItem);
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add("Restart Fish Speech", null, (_, _) => RestartFishSpeech());
         menu.Items.Add(new ToolStripSeparator());
@@ -206,8 +241,8 @@ internal sealed class ManaApplicationContext : ApplicationContext
         try
         {
             var status = await backendClient.GetPerformanceStatusAsync();
-            gamingModeActive = status.GamingAppRunning;
-            trayIcon.Text = status.GamingAppRunning ? "Mana - game mode" : "Mana";
+            gamingModeActive = gamingModeEnabled && status.GamingAppRunning;
+            trayIcon.Text = gamingModeActive ? "Mana - game mode" : "Mana";
         }
         catch
         {
@@ -296,12 +331,15 @@ internal sealed class ManaApplicationContext : ApplicationContext
         statusTimer.Stop();
         visionHotkeyListener.Dispose();
         trayNotifications.Dispose();
+        captionClient.Dispose();
+        captionOverlay.Close();
         voiceLoop.Dispose();
         audioPlayer.Dispose();
         sileroVad.Dispose();
         trayIcon.Visible = false;
         trayIcon.Dispose();
         avatarOverlay.Close();
+        browserAutomationPanel.Close();
         // Dispose, not Close -- OnFormClosing overrides UserClosing to
         // Hide-and-cancel for the reuse pattern, so a plain Close() here
         // would risk not actually tearing the window down.
