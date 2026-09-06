@@ -9,8 +9,8 @@ namespace Mana.NativeLauncher;
 
 // #520/#521: ports windows-launcher/renderer/session-sidebar.js's list/
 // switch/rename/delete/export surface, plus (#521) a chat pane sharing
-// this same window -- not the reference's "open memory" modal or goal
-// editing (out of scope for either issue).
+// this same window. #586 later added the reference's "open memory" modal
+// and goal editing, which #520/#521 had explicitly left out of scope.
 //
 // Layout ported from PR #538's own MainForm scaffold (sidebar | chat |
 // a tool rail reaching Settings) rather than the tabbed Chat/Settings
@@ -118,8 +118,10 @@ internal sealed class SessionListForm : Form
                 list.SelectedItems[0].BeginEdit();
             }
         });
+        contextMenu.Items.Add("Set goal...", null, async (_, _) => await SetGoalForSelectedAsync());
         contextMenu.Items.Add("Delete...", null, async (_, _) => await DeleteSelectedAsync());
         contextMenu.Items.Add("Export...", null, async (_, _) => await ExportSelectedAsync());
+        contextMenu.Items.Add("Open memory...", null, async (_, _) => await OpenMemoryForSelectedAsync());
         list.ContextMenuStrip = contextMenu;
         DarkTheme.ApplyListView(list);
 
@@ -628,6 +630,78 @@ internal sealed class SessionListForm : Form
         {
             await RefreshAsync();
         }
+    }
+
+    // #586: pre-fills the prompt with whatever goal is already stored
+    // (empty for a session that's never had one) rather than always
+    // starting blank -- GetSessionDetailAsync's own 404-tolerance means a
+    // brand new session (impossible to select here anyway, since only
+    // rows RefreshAsync already listed can be selected) just shows blank.
+    private async Task SetGoalForSelectedAsync()
+    {
+        if (list.SelectedItems.Count == 0)
+        {
+            return;
+        }
+        var sessionId = (string)list.SelectedItems[0].Tag!;
+
+        var currentGoal = "";
+        try
+        {
+            var detail = await backendClient.GetSessionDetailAsync(sessionId);
+            currentGoal = detail?.Goal ?? "";
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"SessionListForm: failed to load current goal. {ex.Message}");
+        }
+
+        if (IsDisposed)
+        {
+            return;
+        }
+
+        using var dialog = new TextPromptDialog("Set Session Goal", "Goal (leave blank to clear):", currentGoal);
+        if (dialog.ShowDialog(this) != DialogResult.OK)
+        {
+            return;
+        }
+
+        try
+        {
+            await backendClient.SetSessionGoalAsync(sessionId, dialog.Value.Trim());
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"SessionListForm: failed to set goal. {ex.Message}");
+        }
+    }
+
+    private async Task OpenMemoryForSelectedAsync()
+    {
+        if (list.SelectedItems.Count == 0)
+        {
+            return;
+        }
+        var sessionId = (string)list.SelectedItems[0].Tag!;
+
+        ManaSessionDetail? detail = null;
+        try
+        {
+            detail = await backendClient.GetSessionDetailAsync(sessionId);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"SessionListForm: failed to load session memory. {ex.Message}");
+        }
+
+        if (IsDisposed)
+        {
+            return;
+        }
+
+        using var memoryForm = new SessionMemoryForm(sessionId, detail);
+        memoryForm.ShowDialog(this);
     }
 
     private async Task ExportSelectedAsync()
