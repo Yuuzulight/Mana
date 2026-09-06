@@ -1886,6 +1886,123 @@ public class ManaBackendClientTests
     }
 
     [Fact]
+    public async Task GetEditSnapshotsAsync_ParsesTheSnapshotArray()
+    {
+        var handler = new FakeHttpMessageHandler(request =>
+        {
+            Assert.Equal("/editors/workspace/snapshots", request.RequestUri!.AbsolutePath);
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(
+                    """{"snapshots":[{"id":"s1","relativePath":"src/main.js","summary":"edited main.js","appliedAt":"2026-03-15T12:00:00.000Z"}]}""",
+                    Encoding.UTF8,
+                    "application/json"),
+            };
+        });
+        var client = new ManaBackendClient(handler);
+
+        var snapshots = await client.GetEditSnapshotsAsync();
+
+        Assert.Single(snapshots);
+        Assert.Equal("s1", snapshots[0].Id);
+        Assert.Equal("src/main.js", snapshots[0].RelativePath);
+        Assert.Equal("edited main.js", snapshots[0].Summary);
+    }
+
+    [Fact]
+    public async Task GetEditSnapshotsAsync_ReturnsEmptyWhenTheSnapshotsKeyIsMissing()
+    {
+        var handler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent("{}", Encoding.UTF8, "application/json"),
+        });
+        var client = new ManaBackendClient(handler);
+
+        var snapshots = await client.GetEditSnapshotsAsync();
+
+        Assert.Empty(snapshots);
+    }
+
+    [Fact]
+    public async Task RestoreEditSnapshotAsync_PostsConfirmStaleAndReturnsRestoredOnSuccess()
+    {
+        string? path = null;
+        string? body = null;
+        var handler = new FakeHttpMessageHandler(request =>
+        {
+            path = request.RequestUri!.AbsolutePath;
+            body = request.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("""{"restored":{"id":"s1","relativePath":"src/main.js","restoredAt":"now"}}""", Encoding.UTF8, "application/json"),
+            };
+        });
+        var client = new ManaBackendClient(handler);
+
+        var result = await client.RestoreEditSnapshotAsync("s1");
+
+        Assert.Equal("/editors/workspace/snapshots/s1/restore", path);
+        Assert.Contains("\"confirmStale\":false", body);
+        Assert.True(result.Restored);
+        Assert.False(result.Stale);
+    }
+
+    [Fact]
+    public async Task RestoreEditSnapshotAsync_ReturnsStaleOn409WithoutThrowing()
+    {
+        var handler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.Conflict)
+        {
+            Content = new StringContent(
+                """{"restored":null,"stale":{"id":"s1","newerSnapshotId":"s2","newerAppliedAt":"2026-03-15T13:00:00.000Z"},"error":"snapshot is stale"}""",
+                Encoding.UTF8,
+                "application/json"),
+        });
+        var client = new ManaBackendClient(handler);
+
+        var result = await client.RestoreEditSnapshotAsync("s1");
+
+        Assert.False(result.Restored);
+        Assert.True(result.Stale);
+        Assert.Equal("2026-03-15T13:00:00.000Z", result.NewerAppliedAt);
+        Assert.Equal("snapshot is stale", result.Error);
+    }
+
+    [Fact]
+    public async Task RestoreEditSnapshotAsync_ReturnsTheErrorOn400WithoutThrowing()
+    {
+        var handler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.BadRequest)
+        {
+            Content = new StringContent("""{"restored":null,"error":"workspace file does not exist"}""", Encoding.UTF8, "application/json"),
+        });
+        var client = new ManaBackendClient(handler);
+
+        var result = await client.RestoreEditSnapshotAsync("s1");
+
+        Assert.False(result.Restored);
+        Assert.False(result.Stale);
+        Assert.Equal("workspace file does not exist", result.Error);
+    }
+
+    [Fact]
+    public async Task RestoreEditSnapshotAsync_SendsConfirmStaleTrueWhenRequested()
+    {
+        string? body = null;
+        var handler = new FakeHttpMessageHandler(request =>
+        {
+            body = request.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("""{"restored":{"id":"s1"}}""", Encoding.UTF8, "application/json"),
+            };
+        });
+        var client = new ManaBackendClient(handler);
+
+        await client.RestoreEditSnapshotAsync("s1", confirmStale: true);
+
+        Assert.Contains("\"confirmStale\":true", body);
+    }
+
+    [Fact]
     public async Task GetBrowserAutomationActivityAsync_ParsesTheLogAndScreenshot()
     {
         var handler = new FakeHttpMessageHandler(request =>

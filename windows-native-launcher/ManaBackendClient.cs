@@ -1011,6 +1011,75 @@ internal sealed class ManaBackendClient
         }
     }
 
+    // #579: node-bot's recorded per-file edit snapshots -- see
+    // zed-integration.js's own listEditSnapshots. Admin-gated
+    // (checkAdminAuth) the same as the already-shipped Memory Facts/
+    // Skills/Approvals tabs -- allowed unconditionally unless
+    // MANA_ADMIN_SECRET is actually configured, same as those.
+    public async Task<IReadOnlyList<ManaEditSnapshot>> GetEditSnapshotsAsync()
+    {
+        using var response = await http.GetAsync("/editors/workspace/snapshots");
+        response.EnsureSuccessStatusCode();
+        await using var stream = await response.Content.ReadAsStreamAsync();
+        using var document = await JsonDocument.ParseAsync(stream);
+        var snapshots = new List<ManaEditSnapshot>();
+        if (document.RootElement.TryGetProperty("snapshots", out var snapshotsElement))
+        {
+            foreach (var element in snapshotsElement.EnumerateArray())
+            {
+                snapshots.Add(new ManaEditSnapshot
+                {
+                    Id = element.TryGetProperty("id", out var idElement) ? idElement.GetString() ?? "" : "",
+                    RelativePath = element.TryGetProperty("relativePath", out var pathElement) ? pathElement.GetString() ?? "" : "",
+                    Summary = element.TryGetProperty("summary", out var summaryElement) ? summaryElement.GetString() : null,
+                    AppliedAt = element.TryGetProperty("appliedAt", out var appliedAtElement) ? appliedAtElement.GetString() : null,
+                });
+            }
+        }
+        return snapshots;
+    }
+
+    // #579: does NOT call EnsureSuccessStatusCode -- 409 (a stale
+    // snapshot, restore rejected without confirmStale) and 400 (any other
+    // restore failure) both come back with a fully-parseable JSON error
+    // body the caller needs to read, same reasoning as GetDoctorResultAsync's
+    // own non-200-but-still-parseable handling.
+    public async Task<ManaSnapshotRestoreResult> RestoreEditSnapshotAsync(string id, bool confirmStale = false)
+    {
+        var payload = JsonSerializer.Serialize(new { confirmStale });
+        using var content = new StringContent(payload, Encoding.UTF8, "application/json");
+        using var response = await http.PostAsync($"/editors/workspace/snapshots/{Uri.EscapeDataString(id)}/restore", content);
+        await using var stream = await response.Content.ReadAsStreamAsync();
+        using var document = await JsonDocument.ParseAsync(stream);
+        var root = document.RootElement;
+
+        if (response.StatusCode == System.Net.HttpStatusCode.Conflict)
+        {
+            string? newerAppliedAt = null;
+            if (root.TryGetProperty("stale", out var staleElement) && staleElement.ValueKind == JsonValueKind.Object
+                && staleElement.TryGetProperty("newerAppliedAt", out var newerAppliedAtElement))
+            {
+                newerAppliedAt = newerAppliedAtElement.GetString();
+            }
+            return new ManaSnapshotRestoreResult
+            {
+                Stale = true,
+                NewerAppliedAt = newerAppliedAt,
+                Error = root.TryGetProperty("error", out var conflictErrorElement) ? conflictErrorElement.GetString() : null,
+            };
+        }
+
+        if (!response.IsSuccessStatusCode)
+        {
+            return new ManaSnapshotRestoreResult
+            {
+                Error = root.TryGetProperty("error", out var errorElement) ? errorElement.GetString() ?? "restore failed" : "restore failed",
+            };
+        }
+
+        return new ManaSnapshotRestoreResult { Restored = true };
+    }
+
     // #578: node-bot's transient, human-facing browser-automation activity
     // feed (plugins/browser-automation/browser-automation-activity.js) --
     // no auth needed, same as /models/status (a read-only status readout).
@@ -1385,6 +1454,29 @@ internal sealed class ReplyStreamEvent
     public string? Error { get; init; }
 }
 
+// #579: a row from GET /editors/workspace/snapshots -- see
+// zed-integration.js's own listEditSnapshots.
+internal sealed class ManaEditSnapshot
+{
+    public string Id { get; init; } = "";
+    public string RelativePath { get; init; } = "";
+    public string? Summary { get; init; }
+    public string? AppliedAt { get; init; }
+}
+
+// #579: the outcome of POST /editors/workspace/snapshots/:id/restore.
+// Restored is the only true-on-success case; Stale means the target file
+// was written to again since the snapshot was recorded (a second restore
+// with confirmStale:true overrides this), and a non-null Error with
+// Stale false is any other restore failure (e.g. the workspace file no
+// longer exists).
+internal sealed class ManaSnapshotRestoreResult
+{
+    public bool Restored { get; init; }
+    public bool Stale { get; init; }
+    public string? NewerAppliedAt { get; init; }
+    public string? Error { get; init; }
+}
 // #578: GET /browser-automation/activity's shape -- see
 // browser-automation-activity.js's own getActivity.
 internal sealed class ManaBrowserAutomationActivity
