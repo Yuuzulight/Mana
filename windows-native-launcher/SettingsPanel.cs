@@ -22,6 +22,8 @@ internal sealed class SettingsPanel : UserControl
     private readonly ListView factsList = new();
     private readonly ListView skillsList = new();
     private readonly ListView approvalsList = new();
+    private readonly Label perfSummaryLabel = new() { AutoSize = true };
+    private readonly ListView perfOperationsList = new();
     private bool populatingPlugins;
 
     public SettingsPanel(ManaBackendClient backendClient)
@@ -37,6 +39,7 @@ internal sealed class SettingsPanel : UserControl
         tabs.TabPages.Add(BuildMemoryFactsTab());
         tabs.TabPages.Add(BuildSkillsTab());
         tabs.TabPages.Add(BuildApprovalsTab());
+        tabs.TabPages.Add(BuildPerfTab());
         foreach (TabPage page in tabs.TabPages)
         {
             page.BackColor = DarkTheme.Background;
@@ -50,6 +53,7 @@ internal sealed class SettingsPanel : UserControl
         await RefreshMemoryFactsAsync();
         await RefreshSkillsAsync();
         await RefreshApprovalsAsync();
+        await RefreshPerfTabAsync();
     }
 
     // #529 review: a failed load left its list untouched -- on first
@@ -413,6 +417,66 @@ internal sealed class SettingsPanel : UserControl
             var item = new ListViewItem(approval.ActionType) { Tag = approval.Id };
             item.SubItems.Add(approval.Summary);
             approvalsList.Items.Add(item);
+        }
+    }
+
+    // #575: Operations is free-form per node-bot's own perfMetrics.operations
+    // (see GetPerformanceStatusAsync's own comment) -- shown as raw JSON per
+    // row rather than parsed into specific fields, since this tab only
+    // needs to display it, not act on it.
+    private TabPage BuildPerfTab()
+    {
+        perfSummaryLabel.Dock = DockStyle.Top;
+        perfSummaryLabel.Padding = new Padding(8);
+        perfSummaryLabel.ForeColor = DarkTheme.Text;
+
+        perfOperationsList.Dock = DockStyle.Fill;
+        perfOperationsList.View = View.Details;
+        perfOperationsList.FullRowSelect = true;
+        perfOperationsList.Columns.Add("Operation", 180);
+        perfOperationsList.Columns.Add("Details", 340);
+        DarkTheme.ApplyListView(perfOperationsList);
+
+        var page = new TabPage("Performance");
+        page.Controls.Add(perfOperationsList);
+        page.Controls.Add(perfSummaryLabel);
+        return page;
+    }
+
+    private async Task RefreshPerfTabAsync()
+    {
+        ManaPerformanceStatus status;
+        try
+        {
+            status = await backendClient.GetPerformanceStatusAsync();
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"SettingsPanel: failed to load performance status. {ex.Message}");
+            if (!IsDisposed)
+            {
+                perfSummaryLabel.Text = $"Failed to load: {ex.Message}";
+            }
+            return;
+        }
+        if (IsDisposed)
+        {
+            return;
+        }
+
+        var uptime = TimeSpan.FromSeconds(status.UptimeSeconds);
+        perfSummaryLabel.Text =
+            $"Uptime: {uptime:d\\.hh\\:mm\\:ss}\n" +
+            $"Memory: {status.TotalMemoryMb} MB    TTS: {status.TtsProvider}    Game detected: {status.GamingAppRunning}\n" +
+            $"Whisper threads: {status.WhisperThreads}    Llama threads: {status.LlamaThreads}    Llama max tokens: {status.LlamaMaxTokens}\n" +
+            $"Screen context: {(status.ScreenContextEnabled ? "enabled" : "disabled")}";
+
+        perfOperationsList.Items.Clear();
+        foreach (var (name, details) in status.Operations)
+        {
+            var item = new ListViewItem(name);
+            item.SubItems.Add(details);
+            perfOperationsList.Items.Add(item);
         }
     }
 }
