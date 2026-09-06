@@ -1380,6 +1380,24 @@ public class ManaBackendClientTests
     }
 
     [Fact]
+    public async Task GetSessionsAsync_ParsesGoal()
+    {
+        var handler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(
+                """{"sessions":[{"sessionId":"s1","goal":"finish the raid"},{"sessionId":"s2"}]}""",
+                Encoding.UTF8,
+                "application/json"),
+        });
+        var client = new ManaBackendClient(handler);
+
+        var sessions = await client.GetSessionsAsync();
+
+        Assert.Equal("finish the raid", sessions[0].Goal);
+        Assert.Null(sessions[1].Goal);
+    }
+
+    [Fact]
     public async Task GetSessionsAsync_ReturnsEmptyWhenTheSessionsKeyIsMissing()
     {
         var handler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
@@ -1462,6 +1480,100 @@ public class ManaBackendClientTests
         var deleted = await client.DeleteSessionAsync("missing");
 
         Assert.False(deleted);
+    }
+
+    [Fact]
+    public async Task SetSessionGoalAsync_PatchesTheGoalAndReturnsTrue()
+    {
+        string? path = null;
+        string? method = null;
+        string? body = null;
+        var handler = new FakeHttpMessageHandler(request =>
+        {
+            path = request.RequestUri!.AbsolutePath;
+            method = request.Method.Method;
+            body = request.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("{\"sessionId\":\"s1\",\"goal\":\"ship the feature\"}", Encoding.UTF8, "application/json"),
+            };
+        });
+        var client = new ManaBackendClient(handler);
+
+        var updated = await client.SetSessionGoalAsync("s1", "ship the feature");
+
+        Assert.True(updated);
+        Assert.Equal("/sessions/s1", path);
+        Assert.Equal("PATCH", method);
+        Assert.Contains("\"goal\":\"ship the feature\"", body);
+    }
+
+    [Fact]
+    public async Task SetSessionGoalAsync_ReturnsFalseOn404InsteadOfThrowing()
+    {
+        var handler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.NotFound));
+        var client = new ManaBackendClient(handler);
+
+        var updated = await client.SetSessionGoalAsync("missing", "goal");
+
+        Assert.False(updated);
+    }
+
+    [Fact]
+    public async Task GetSessionDetailAsync_ParsesSummaryGoalAndTurns()
+    {
+        var handler = new FakeHttpMessageHandler(request =>
+        {
+            Assert.Equal("/sessions/s1", request.RequestUri!.AbsolutePath);
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(
+                    """{"sessionId":"s1","goal":"finish the raid","summary":"Talked about FFXIV.","turns":[{"at":"t1","user":"hi","assistant":"hello"},{"at":"t2","user":"bye","assistant":"goodbye"}]}""",
+                    Encoding.UTF8,
+                    "application/json"),
+            };
+        });
+        var client = new ManaBackendClient(handler);
+
+        var detail = await client.GetSessionDetailAsync("s1");
+
+        Assert.NotNull(detail);
+        Assert.Equal("finish the raid", detail!.Goal);
+        Assert.Equal("Talked about FFXIV.", detail.Summary);
+        Assert.Equal(2, detail.TotalTurnCount);
+        Assert.Equal(2, detail.RecentTurns.Count);
+        Assert.Equal("hi", detail.RecentTurns[0].User);
+        Assert.Equal("goodbye", detail.RecentTurns[1].Assistant);
+    }
+
+    [Fact]
+    public async Task GetSessionDetailAsync_TrimsToTheMostRecentTurns()
+    {
+        var turns = string.Join(",", Enumerable.Range(0, 25).Select(i => $$"""{"at":"t{{i}}","user":"u{{i}}","assistant":"a{{i}}"}"""));
+        var handler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent($$"""{"sessionId":"s1","turns":[{{turns}}]}""", Encoding.UTF8, "application/json"),
+        });
+        var client = new ManaBackendClient(handler);
+
+        var detail = await client.GetSessionDetailAsync("s1", recentTurnLimit: 20);
+
+        Assert.NotNull(detail);
+        Assert.Equal(25, detail!.TotalTurnCount);
+        Assert.Equal(20, detail.RecentTurns.Count);
+        Assert.Equal("u5", detail.RecentTurns[0].User);
+        Assert.Equal("u24", detail.RecentTurns[^1].User);
+    }
+
+    [Fact]
+    public async Task GetSessionDetailAsync_ReturnsNullOn404()
+    {
+        var handler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.NotFound));
+        var client = new ManaBackendClient(handler);
+
+        var detail = await client.GetSessionDetailAsync("missing");
+
+        Assert.Null(detail);
     }
 
     [Fact]

@@ -424,6 +424,7 @@ internal sealed class ManaBackendClient
                 {
                     SessionId = element.TryGetProperty("sessionId", out var idElement) ? idElement.GetString() ?? "" : "",
                     Name = element.TryGetProperty("name", out var nameElement) ? nameElement.GetString() : null,
+                    Goal = element.TryGetProperty("goal", out var goalElement) ? goalElement.GetString() : null,
                     UpdatedAt = element.TryGetProperty("updatedAt", out var updatedElement) ? updatedElement.GetString() : null,
                 });
             }
@@ -445,6 +446,68 @@ internal sealed class ManaBackendClient
         }
         response.EnsureSuccessStatusCode();
         return true;
+    }
+
+    // #586: goal is a separate optional field on the same PATCH endpoint
+    // RenameSessionAsync already uses -- see sessions-capability.js's own
+    // PATCH handler. An empty string clears the goal, same as name's own
+    // empty-becomes-null behavior server-side.
+    public async Task<bool> SetSessionGoalAsync(string sessionId, string goal)
+    {
+        var payload = JsonSerializer.Serialize(new { goal });
+        using var content = new StringContent(payload, Encoding.UTF8, "application/json");
+        using var response = await http.PatchAsync($"/sessions/{Uri.EscapeDataString(sessionId)}", content);
+        if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
+        {
+            return false;
+        }
+        response.EnsureSuccessStatusCode();
+        return true;
+    }
+
+    // #586: powers the "Open memory" modal -- node-bot's GET /sessions/:id
+    // returns the full stored session (summary + every turn), so recent
+    // turns are just the tail of that array taken client-side rather than
+    // a second call to the separate paginated /turns endpoint, which
+    // exists for ChatLogPanel-style scrollback this modal doesn't need.
+    // Null return means the session has never had a real turn yet --
+    // ensureSession only creates the row lazily on the first one (see
+    // SessionListForm's own StartNewChat comment) -- not a transport
+    // failure.
+    public async Task<ManaSessionDetail?> GetSessionDetailAsync(string sessionId, int recentTurnLimit = 20)
+    {
+        using var response = await http.GetAsync($"/sessions/{Uri.EscapeDataString(sessionId)}");
+        if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
+        {
+            return null;
+        }
+        response.EnsureSuccessStatusCode();
+        await using var stream = await response.Content.ReadAsStreamAsync();
+        using var document = await JsonDocument.ParseAsync(stream);
+        var root = document.RootElement;
+
+        var turns = new List<ManaSessionTurn>();
+        if (root.TryGetProperty("turns", out var turnsElement) && turnsElement.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var turnElement in turnsElement.EnumerateArray())
+            {
+                turns.Add(new ManaSessionTurn
+                {
+                    At = turnElement.TryGetProperty("at", out var atElement) ? atElement.GetString() : null,
+                    User = turnElement.TryGetProperty("user", out var userElement) ? userElement.GetString() : null,
+                    Assistant = turnElement.TryGetProperty("assistant", out var assistantElement) ? assistantElement.GetString() : null,
+                });
+            }
+        }
+        var recentTurns = turns.Count > recentTurnLimit ? turns.GetRange(turns.Count - recentTurnLimit, recentTurnLimit) : turns;
+
+        return new ManaSessionDetail
+        {
+            Summary = root.TryGetProperty("summary", out var summaryElement) ? summaryElement.GetString() : null,
+            Goal = root.TryGetProperty("goal", out var detailGoalElement) ? detailGoalElement.GetString() : null,
+            RecentTurns = recentTurns,
+            TotalTurnCount = turns.Count,
+        };
     }
 
     public async Task<bool> DeleteSessionAsync(string sessionId)
@@ -1533,7 +1596,25 @@ internal sealed class ManaSession
 {
     public string SessionId { get; init; } = "";
     public string? Name { get; init; }
+    public string? Goal { get; init; }
     public string? UpdatedAt { get; init; }
+}
+
+// #586: GET /sessions/:id's full stored shape, trimmed to what the
+// "Open memory" modal needs -- see acp-memory-store.js's own getSession.
+internal sealed class ManaSessionDetail
+{
+    public string? Summary { get; init; }
+    public string? Goal { get; init; }
+    public IReadOnlyList<ManaSessionTurn> RecentTurns { get; init; } = Array.Empty<ManaSessionTurn>();
+    public int TotalTurnCount { get; init; }
+}
+
+internal sealed class ManaSessionTurn
+{
+    public string? At { get; init; }
+    public string? User { get; init; }
+    public string? Assistant { get; init; }
 }
 
 // #529: GET /plugins (one entry per capability, flattened out of its
