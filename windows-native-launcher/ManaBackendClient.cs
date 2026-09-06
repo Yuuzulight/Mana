@@ -540,6 +540,52 @@ internal sealed class ManaBackendClient
         response.EnsureSuccessStatusCode();
     }
 
+    // #573: GET /presets -- see presets-store.js for the full stored
+    // shape; this only carries what the settings tab shows/edits.
+    public async Task<IReadOnlyList<ManaPreset>> GetPresetsAsync()
+    {
+        using var response = await http.GetAsync("/presets");
+        response.EnsureSuccessStatusCode();
+        await using var stream = await response.Content.ReadAsStreamAsync();
+        using var document = await JsonDocument.ParseAsync(stream);
+        var presets = new List<ManaPreset>();
+        if (document.RootElement.TryGetProperty("presets", out var presetsElement))
+        {
+            foreach (var entry in presetsElement.EnumerateArray())
+            {
+                presets.Add(new ManaPreset
+                {
+                    Id = entry.TryGetProperty("id", out var idEl) ? idEl.GetString() ?? "" : "",
+                    Name = entry.TryGetProperty("name", out var nameEl) ? nameEl.GetString() ?? "" : "",
+                    Instructions = entry.TryGetProperty("instructions", out var instrEl) ? instrEl.GetString() ?? "" : "",
+                });
+            }
+        }
+        return presets;
+    }
+
+    public async Task CreatePresetAsync(string name, string instructions)
+    {
+        var payload = JsonSerializer.Serialize(new { name, instructions });
+        using var content = new StringContent(payload, Encoding.UTF8, "application/json");
+        using var response = await http.PostAsync("/presets", content);
+        response.EnsureSuccessStatusCode();
+    }
+
+    public async Task UpdatePresetAsync(string id, string name, string instructions)
+    {
+        var payload = JsonSerializer.Serialize(new { name, instructions });
+        using var content = new StringContent(payload, Encoding.UTF8, "application/json");
+        using var response = await http.PatchAsync($"/presets/{Uri.EscapeDataString(id)}", content);
+        response.EnsureSuccessStatusCode();
+    }
+
+    public async Task DeletePresetAsync(string id)
+    {
+        using var response = await http.DeleteAsync($"/presets/{Uri.EscapeDataString(id)}");
+        response.EnsureSuccessStatusCode();
+    }
+
     // #570: like GetDoctorResultAsync, this does NOT call
     // EnsureSuccessStatusCode unconditionally -- vtube-routes.js returns
     // 503 (not 200) specifically when VTube Studio is enabled but
@@ -1075,6 +1121,14 @@ internal sealed class ManaPendingApproval
     public string Id { get; init; } = "";
     public string ActionType { get; init; } = "";
     public string Summary { get; init; } = "";
+}
+
+// #573: GET /presets.
+internal sealed class ManaPreset
+{
+    public string Id { get; init; } = "";
+    public string Name { get; init; } = "";
+    public string Instructions { get; init; } = "";
 }
 
 // #570: GET /vtube/status.

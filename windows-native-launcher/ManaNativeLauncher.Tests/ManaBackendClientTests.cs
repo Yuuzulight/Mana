@@ -30,6 +30,111 @@ internal sealed class FakeHttpMessageHandler : HttpMessageHandler
 public class ManaBackendClientTests
 {
     [Fact]
+    public async Task GetPresetsAsync_ParsesThePresetArray()
+    {
+        var handler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(
+                """{"presets":[{"id":"p1","name":"Cheerful","instructions":"Be upbeat and encouraging."}]}""",
+                Encoding.UTF8,
+                "application/json"),
+        });
+        var client = new ManaBackendClient(handler);
+
+        var presets = await client.GetPresetsAsync();
+
+        var preset = Assert.Single(presets);
+        Assert.Equal("p1", preset.Id);
+        Assert.Equal("Cheerful", preset.Name);
+        Assert.Equal("Be upbeat and encouraging.", preset.Instructions);
+    }
+
+    [Fact]
+    public async Task GetPresetsAsync_ReturnsEmptyWhenThePresetsKeyIsMissing()
+    {
+        var handler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent("{}", Encoding.UTF8, "application/json"),
+        });
+        var client = new ManaBackendClient(handler);
+
+        var presets = await client.GetPresetsAsync();
+
+        Assert.Empty(presets);
+    }
+
+    [Fact]
+    public async Task CreatePresetAsync_PostsNameAndInstructions()
+    {
+        string? path = null;
+        string? body = null;
+        var handler = new FakeHttpMessageHandler(request =>
+        {
+            path = request.RequestUri!.AbsolutePath;
+            body = request.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
+            return new HttpResponseMessage(HttpStatusCode.Created)
+            {
+                Content = new StringContent("{\"id\":\"p1\"}", Encoding.UTF8, "application/json"),
+            };
+        });
+        var client = new ManaBackendClient(handler);
+
+        await client.CreatePresetAsync("Cheerful", "Be upbeat and encouraging.");
+
+        Assert.Equal("/presets", path);
+        Assert.Contains("\"name\":\"Cheerful\"", body);
+        Assert.Contains("\"instructions\":\"Be upbeat and encouraging.\"", body);
+    }
+
+    [Fact]
+    public async Task UpdatePresetAsync_PatchesNameAndInstructions()
+    {
+        string? path = null;
+        string? method = null;
+        string? body = null;
+        var handler = new FakeHttpMessageHandler(request =>
+        {
+            path = request.RequestUri!.AbsolutePath;
+            method = request.Method.Method;
+            body = request.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("{\"id\":\"p1\"}", Encoding.UTF8, "application/json"),
+            };
+        });
+        var client = new ManaBackendClient(handler);
+
+        await client.UpdatePresetAsync("p1", "Cheerful v2", "Be even more upbeat.");
+
+        Assert.Equal("/presets/p1", path);
+        Assert.Equal("PATCH", method);
+        Assert.Contains("\"name\":\"Cheerful v2\"", body);
+        Assert.Contains("\"instructions\":\"Be even more upbeat.\"", body);
+    }
+
+    [Fact]
+    public async Task DeletePresetAsync_SendsDeleteToTheNamedPreset()
+    {
+        string? path = null;
+        string? method = null;
+        var handler = new FakeHttpMessageHandler(request =>
+        {
+            path = request.RequestUri!.AbsolutePath;
+            method = request.Method.Method;
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("{\"deleted\":true}", Encoding.UTF8, "application/json"),
+            };
+        });
+        var client = new ManaBackendClient(handler);
+
+        await client.DeletePresetAsync("p1");
+
+        Assert.Equal("/presets/p1", path);
+        Assert.Equal("DELETE", method);
+    }
+
+    [Fact]
     public async Task GetVTubeStatusAsync_ParsesA200WhenConnected()
     {
         var handler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
