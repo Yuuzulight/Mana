@@ -47,7 +47,7 @@ internal sealed class ApiKeyRevealDialog : Form
         buttonRow.Controls.Add(closeButton);
         buttonRow.Controls.Add(copyButton);
 
-        var layout = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown, AutoSize = true, WrapContents = false };
+        var layout = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown, AutoSize = true, WrapContents = false, BackColor = DarkTheme.Background };
         layout.Controls.Add(messageLabel);
         layout.Controls.Add(keyBox);
 
