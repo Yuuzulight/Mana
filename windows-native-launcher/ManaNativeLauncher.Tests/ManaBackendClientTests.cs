@@ -978,4 +978,132 @@ public class ManaBackendClientTests
         Assert.Null(status.ActiveProfile);
         Assert.Empty(status.Profiles);
     }
+
+    [Fact]
+    public async Task GetProposalsAsync_ParsesTheProposalArray()
+    {
+        var handler = new FakeHttpMessageHandler(request =>
+        {
+            Assert.Equal("/editors/workspace/proposals", request.RequestUri!.AbsolutePath);
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(
+                    """{"proposals":[{"id":"p1","status":"pending","relativePath":"src/main.js","summary":"refactor","hunkCount":2,"createdAt":"2026-03-15T12:00:00.000Z"}]}""",
+                    Encoding.UTF8,
+                    "application/json"),
+            };
+        });
+        var client = new ManaBackendClient(handler);
+
+        var proposals = await client.GetProposalsAsync();
+
+        Assert.Single(proposals);
+        Assert.Equal("p1", proposals[0].Id);
+        Assert.Equal("pending", proposals[0].Status);
+        Assert.Equal(2, proposals[0].HunkCount);
+    }
+
+    [Fact]
+    public async Task GetProposalsAsync_ReturnsEmptyWhenTheProposalsKeyIsMissing()
+    {
+        var handler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent("{}", Encoding.UTF8, "application/json"),
+        });
+        var client = new ManaBackendClient(handler);
+
+        var proposals = await client.GetProposalsAsync();
+
+        Assert.Empty(proposals);
+    }
+
+    [Fact]
+    public async Task GetProposalDetailAsync_ParsesHunksWithTheirLines()
+    {
+        var handler = new FakeHttpMessageHandler(request =>
+        {
+            Assert.Equal("/editors/workspace/proposals/p1", request.RequestUri!.AbsolutePath);
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(
+                    """
+                    {
+                      "proposal": {
+                        "id": "p1",
+                        "status": "pending",
+                        "relativePath": "src/main.js",
+                        "summary": "refactor",
+                        "hunks": [
+                          {"id": "hunk-0", "oldStart": 1, "oldLines": 2, "newStart": 1, "newLines": 3, "lines": [" a", "-b", "+b2", "+c"]}
+                        ]
+                      }
+                    }
+                    """,
+                    Encoding.UTF8,
+                    "application/json"),
+            };
+        });
+        var client = new ManaBackendClient(handler);
+
+        var detail = await client.GetProposalDetailAsync("p1");
+
+        Assert.NotNull(detail);
+        Assert.Equal("p1", detail!.Id);
+        Assert.Single(detail.Hunks);
+        Assert.Equal("hunk-0", detail.Hunks[0].Id);
+        Assert.Equal(1, detail.Hunks[0].OldStart);
+        Assert.Equal(new[] { " a", "-b", "+b2", "+c" }, detail.Hunks[0].Lines);
+    }
+
+    [Fact]
+    public async Task GetProposalDetailAsync_ReturnsNullOn404()
+    {
+        var handler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.NotFound)
+        {
+            Content = new StringContent("""{"proposal":null,"error":"edit proposal not found"}""", Encoding.UTF8, "application/json"),
+        });
+        var client = new ManaBackendClient(handler);
+
+        var detail = await client.GetProposalDetailAsync("missing");
+
+        Assert.Null(detail);
+    }
+
+    [Fact]
+    public async Task ApproveProposalAsync_PostsAcceptedHunkIdsAndReturnsApprovedOnSuccess()
+    {
+        string? path = null;
+        string? body = null;
+        var handler = new FakeHttpMessageHandler(request =>
+        {
+            path = request.RequestUri!.AbsolutePath;
+            body = request.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("""{"proposal":{"id":"p1","status":"applied"}}""", Encoding.UTF8, "application/json"),
+            };
+        });
+        var client = new ManaBackendClient(handler);
+
+        var result = await client.ApproveProposalAsync("p1", new[] { "hunk-0", "hunk-1" });
+
+        Assert.Equal("/editors/workspace/proposals/p1/approve", path);
+        Assert.Contains("\"acceptedHunkIds\":[\"hunk-0\",\"hunk-1\"]", body);
+        Assert.True(result.Approved);
+    }
+
+    [Fact]
+    public async Task ApproveProposalAsync_ReturnsTheErrorOn400WithoutThrowing()
+    {
+        var handler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.BadRequest)
+        {
+            Content = new StringContent("""{"proposal":null,"error":"edit proposal is not pending"}""", Encoding.UTF8, "application/json"),
+        });
+        var client = new ManaBackendClient(handler);
+
+        var result = await client.ApproveProposalAsync("p1", new[] { "hunk-0" });
+
+        Assert.False(result.Approved);
+        Assert.Equal("edit proposal is not pending", result.Error);
+    }
 }

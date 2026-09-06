@@ -477,6 +477,117 @@ internal sealed class ManaBackendClient
         }
     }
 
+    // #580: node-bot's in-memory edit-proposal store -- see
+    // zed-integration.js's own listEditProposals. Admin-gated the same
+    // lenient way as the already-shipped Memory Facts/Skills/Approvals
+    // tabs (checkAdminAuth allows everything unless MANA_ADMIN_SECRET is
+    // actually configured).
+    public async Task<IReadOnlyList<ManaProposalSummary>> GetProposalsAsync()
+    {
+        using var response = await http.GetAsync("/editors/workspace/proposals");
+        response.EnsureSuccessStatusCode();
+        await using var stream = await response.Content.ReadAsStreamAsync();
+        using var document = await JsonDocument.ParseAsync(stream);
+        var proposals = new List<ManaProposalSummary>();
+        if (document.RootElement.TryGetProperty("proposals", out var proposalsElement))
+        {
+            foreach (var element in proposalsElement.EnumerateArray())
+            {
+                proposals.Add(new ManaProposalSummary
+                {
+                    Id = element.TryGetProperty("id", out var idElement) ? idElement.GetString() ?? "" : "",
+                    Status = element.TryGetProperty("status", out var statusElement) ? statusElement.GetString() ?? "" : "",
+                    RelativePath = element.TryGetProperty("relativePath", out var pathElement) ? pathElement.GetString() ?? "" : "",
+                    Summary = element.TryGetProperty("summary", out var summaryElement) ? summaryElement.GetString() : null,
+                    HunkCount = element.TryGetProperty("hunkCount", out var hunkCountElement) ? hunkCountElement.GetInt32() : 0,
+                    CreatedAt = element.TryGetProperty("createdAt", out var createdAtElement) ? createdAtElement.GetString() : null,
+                });
+            }
+        }
+        return proposals;
+    }
+
+    // Returns null on 404 ("edit proposal not found" -- e.g. deleted/
+    // applied elsewhere between listing and opening it), same
+    // NotFound-tolerant shape as GetSessionDetailAsync.
+    public async Task<ManaProposalDetail?> GetProposalDetailAsync(string id)
+    {
+        using var response = await http.GetAsync($"/editors/workspace/proposals/{Uri.EscapeDataString(id)}");
+        if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
+        {
+            return null;
+        }
+        response.EnsureSuccessStatusCode();
+        await using var stream = await response.Content.ReadAsStreamAsync();
+        using var document = await JsonDocument.ParseAsync(stream);
+        if (!document.RootElement.TryGetProperty("proposal", out var proposalElement) || proposalElement.ValueKind != JsonValueKind.Object)
+        {
+            return null;
+        }
+
+        var hunks = new List<ManaProposalHunk>();
+        if (proposalElement.TryGetProperty("hunks", out var hunksElement) && hunksElement.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var hunkElement in hunksElement.EnumerateArray())
+            {
+                var lines = new List<string>();
+                if (hunkElement.TryGetProperty("lines", out var linesElement) && linesElement.ValueKind == JsonValueKind.Array)
+                {
+                    foreach (var lineElement in linesElement.EnumerateArray())
+                    {
+                        var line = lineElement.GetString();
+                        if (line is not null)
+                        {
+                            lines.Add(line);
+                        }
+                    }
+                }
+                hunks.Add(new ManaProposalHunk
+                {
+                    Id = hunkElement.TryGetProperty("id", out var hunkIdElement) ? hunkIdElement.GetString() ?? "" : "",
+                    OldStart = hunkElement.TryGetProperty("oldStart", out var oldStartElement) ? oldStartElement.GetInt32() : 0,
+                    OldLines = hunkElement.TryGetProperty("oldLines", out var oldLinesElement) ? oldLinesElement.GetInt32() : 0,
+                    NewStart = hunkElement.TryGetProperty("newStart", out var newStartElement) ? newStartElement.GetInt32() : 0,
+                    NewLines = hunkElement.TryGetProperty("newLines", out var newLinesElement) ? newLinesElement.GetInt32() : 0,
+                    Lines = lines,
+                });
+            }
+        }
+
+        return new ManaProposalDetail
+        {
+            Id = proposalElement.TryGetProperty("id", out var idElement) ? idElement.GetString() ?? "" : "",
+            Status = proposalElement.TryGetProperty("status", out var statusElement) ? statusElement.GetString() ?? "" : "",
+            RelativePath = proposalElement.TryGetProperty("relativePath", out var pathElement) ? pathElement.GetString() ?? "" : "",
+            Summary = proposalElement.TryGetProperty("summary", out var summaryElement) ? summaryElement.GetString() : null,
+            Hunks = hunks,
+        };
+    }
+
+    // Does NOT call EnsureSuccessStatusCode -- a 400 (unknown hunk id,
+    // proposal not pending, workspace file missing, etc.) comes back with
+    // a fully-parseable {proposal:null, error} body the caller needs to
+    // read, same reasoning as RestoreEditSnapshotAsync's own handling.
+    public async Task<ManaProposalApproveResult> ApproveProposalAsync(string id, IReadOnlyList<string> acceptedHunkIds)
+    {
+        var payload = JsonSerializer.Serialize(new { acceptedHunkIds });
+        using var content = new StringContent(payload, Encoding.UTF8, "application/json");
+        using var response = await http.PostAsync($"/editors/workspace/proposals/{Uri.EscapeDataString(id)}/approve", content);
+        await using var stream = await response.Content.ReadAsStreamAsync();
+        using var document = await JsonDocument.ParseAsync(stream);
+        var root = document.RootElement;
+
+        if (!response.IsSuccessStatusCode)
+        {
+            return new ManaProposalApproveResult
+            {
+                Error = root.TryGetProperty("error", out var errorElement) ? errorElement.GetString() ?? "approve failed" : "approve failed",
+            };
+        }
+
+        return new ManaProposalApproveResult { Approved = true };
+    }
+
     private static ReplyStreamEvent ParseReplyStreamEvent(JsonElement root)
     {
         return new ReplyStreamEvent
@@ -587,5 +698,46 @@ internal sealed class ReplyStreamEvent
     public string? Reply { get; init; }
     public bool Changed { get; init; }
     public string? Expression { get; init; }
+    public string? Error { get; init; }
+}
+
+// #580: a row from GET /editors/workspace/proposals -- see
+// zed-integration.js's own listProposals.
+internal sealed class ManaProposalSummary
+{
+    public string Id { get; init; } = "";
+    public string Status { get; init; } = "";
+    public string RelativePath { get; init; } = "";
+    public string? Summary { get; init; }
+    public int HunkCount { get; init; }
+    public string? CreatedAt { get; init; }
+}
+
+// #580: GET /editors/workspace/proposals/:id's full shape, including
+// every hunk for the review UI's checkboxes.
+internal sealed class ManaProposalDetail
+{
+    public string Id { get; init; } = "";
+    public string Status { get; init; } = "";
+    public string RelativePath { get; init; } = "";
+    public string? Summary { get; init; }
+    public IReadOnlyList<ManaProposalHunk> Hunks { get; init; } = Array.Empty<ManaProposalHunk>();
+}
+
+// #580: one jsdiff structuredPatch hunk (computeProposalHunks) -- Lines
+// is unified-diff text, each entry already prefixed with ' '/'+'/'-'.
+internal sealed class ManaProposalHunk
+{
+    public string Id { get; init; } = "";
+    public int OldStart { get; init; }
+    public int OldLines { get; init; }
+    public int NewStart { get; init; }
+    public int NewLines { get; init; }
+    public IReadOnlyList<string> Lines { get; init; } = Array.Empty<string>();
+}
+
+internal sealed class ManaProposalApproveResult
+{
+    public bool Approved { get; init; }
     public string? Error { get; init; }
 }
