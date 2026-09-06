@@ -29,6 +29,120 @@ internal sealed class FakeHttpMessageHandler : HttpMessageHandler
 public class ManaBackendClientTests
 {
     [Fact]
+    public async Task GetHooksAsync_ParsesTheRuleArrayIncludingLastRun()
+    {
+        var handler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(
+                """{"rules":[{"id":"abc1","phase":"pre","action":"deny","toolName":"file_write","pathContains":".env","enabled":true},{"id":"def2","phase":"post","action":"run-command","toolName":"file_write","enabled":false,"lastRun":{"at":"2026-01-01T00:00:00.000Z","ok":false,"error":"boom"}}]}""",
+                Encoding.UTF8,
+                "application/json"),
+        });
+        var client = new ManaBackendClient(handler);
+
+        var hooks = await client.GetHooksAsync();
+
+        Assert.Equal(2, hooks.Count);
+        Assert.Equal("abc1", hooks[0].Id);
+        Assert.Equal("pre", hooks[0].Phase);
+        Assert.Equal("deny", hooks[0].Action);
+        Assert.Equal(".env", hooks[0].PathContains);
+        Assert.True(hooks[0].Enabled);
+        Assert.Null(hooks[0].LastRunOk);
+        Assert.False(hooks[1].Enabled);
+        Assert.False(hooks[1].LastRunOk);
+    }
+
+    [Fact]
+    public async Task GetHooksAsync_ReturnsEmptyWhenTheRulesKeyIsMissing()
+    {
+        var handler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent("{}", Encoding.UTF8, "application/json"),
+        });
+        var client = new ManaBackendClient(handler);
+
+        var hooks = await client.GetHooksAsync();
+
+        Assert.Empty(hooks);
+    }
+
+    [Fact]
+    public async Task CreateHookAsync_PostsAllFieldsAsJson()
+    {
+        string? path = null;
+        string? body = null;
+        var handler = new FakeHttpMessageHandler(request =>
+        {
+            path = request.RequestUri!.AbsolutePath;
+            body = request.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
+            return new HttpResponseMessage(HttpStatusCode.Created)
+            {
+                Content = new StringContent("{\"id\":\"abc1\"}", Encoding.UTF8, "application/json"),
+            };
+        });
+        var client = new ManaBackendClient(handler);
+
+        await client.CreateHookAsync("post", "run-command", "file_write", pathContains: "*.cs", command: "dotnet", args: new[] { "format" }, reason: "keep it tidy");
+
+        Assert.Equal("/hooks", path);
+        Assert.Contains("\"phase\":\"post\"", body);
+        Assert.Contains("\"action\":\"run-command\"", body);
+        Assert.Contains("\"toolName\":\"file_write\"", body);
+        Assert.Contains("\"pathContains\":\"*.cs\"", body);
+        Assert.Contains("\"command\":\"dotnet\"", body);
+        Assert.Contains("\"args\":[\"format\"]", body);
+        Assert.Contains("\"reason\":\"keep it tidy\"", body);
+    }
+
+    [Fact]
+    public async Task SetHookEnabledAsync_PatchesTheEnabledField()
+    {
+        string? path = null;
+        string? method = null;
+        string? body = null;
+        var handler = new FakeHttpMessageHandler(request =>
+        {
+            path = request.RequestUri!.AbsolutePath;
+            method = request.Method.Method;
+            body = request.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("{\"enabled\":false}", Encoding.UTF8, "application/json"),
+            };
+        });
+        var client = new ManaBackendClient(handler);
+
+        await client.SetHookEnabledAsync("abc1", false);
+
+        Assert.Equal("/hooks/abc1", path);
+        Assert.Equal("PATCH", method);
+        Assert.Contains("\"enabled\":false", body);
+    }
+
+    [Fact]
+    public async Task DeleteHookAsync_SendsDeleteToTheNamedRule()
+    {
+        string? path = null;
+        string? method = null;
+        var handler = new FakeHttpMessageHandler(request =>
+        {
+            path = request.RequestUri!.AbsolutePath;
+            method = request.Method.Method;
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("{\"deleted\":true}", Encoding.UTF8, "application/json"),
+            };
+        });
+        var client = new ManaBackendClient(handler);
+
+        await client.DeleteHookAsync("abc1");
+
+        Assert.Equal("/hooks/abc1", path);
+        Assert.Equal("DELETE", method);
+    }
+
+    [Fact]
     public async Task TranscribeAsync_PostsToTranscribeOnlyAndReturnsTranscript()
     {
         string? path = null;
