@@ -2,6 +2,7 @@ using System;
 using System.Linq;
 using System.Net;
 using System.Net.Http;
+using System.Net.Http.Headers;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -140,6 +141,65 @@ public class ManaBackendClientTests
 
         Assert.Equal("/hooks/abc1", path);
         Assert.Equal("DELETE", method);
+    }
+
+    [Fact]
+    public async Task Constructor_SendsNoAuthorizationHeaderWhenNoAdminTokenIsGiven()
+    {
+        AuthenticationHeaderValue? authHeader = null;
+        var handler = new FakeHttpMessageHandler(request =>
+        {
+            authHeader = request.Headers.Authorization;
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("{\"reply\":\"ok\"}", Encoding.UTF8, "application/json"),
+            };
+        });
+        var client = new ManaBackendClient(handler);
+
+        await client.ReplyAsync("hi");
+
+        Assert.Null(authHeader);
+    }
+
+    [Fact]
+    public async Task Constructor_SendsABearerAuthorizationHeaderWhenAnAdminTokenIsGiven()
+    {
+        AuthenticationHeaderValue? authHeader = null;
+        var handler = new FakeHttpMessageHandler(request =>
+        {
+            authHeader = request.Headers.Authorization;
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("{\"reply\":\"ok\"}", Encoding.UTF8, "application/json"),
+            };
+        });
+        var client = new ManaBackendClient(handler, adminToken: "topsecret");
+
+        await client.ReplyAsync("hi");
+
+        Assert.NotNull(authHeader);
+        Assert.Equal("Bearer", authHeader!.Scheme);
+        Assert.Equal("topsecret", authHeader.Parameter);
+    }
+
+    [Fact]
+    public async Task Constructor_UsesTheGivenBaseUrlInsteadOfTheDefault()
+    {
+        Uri? requestUri = null;
+        var handler = new FakeHttpMessageHandler(request =>
+        {
+            requestUri = request.RequestUri;
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("{\"reply\":\"ok\"}", Encoding.UTF8, "application/json"),
+            };
+        });
+        var client = new ManaBackendClient(handler, baseUrl: "http://192.168.1.50:5005");
+
+        await client.ReplyAsync("hi");
+
+        Assert.Equal("192.168.1.50", requestUri!.Host);
     }
 
     [Fact]
