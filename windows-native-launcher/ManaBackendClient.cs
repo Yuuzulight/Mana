@@ -1,4 +1,5 @@
 using System;
+using System.Linq;
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Text;
@@ -399,6 +400,82 @@ internal sealed class ManaBackendClient
         response.EnsureSuccessStatusCode();
     }
 
+    // #567: GET /mcp-clients/servers -- see mcp-client-registry.js's
+    // createMcpClientRegistry for the full stored shape; TransportSummary
+    // collapses the transport union (stdio command/args/envAllowlist, or
+    // an http url) into one display string since this tab never needs to
+    // re-edit an existing registration, only show/remove it.
+    public async Task<IReadOnlyList<ManaMcpServer>> GetMcpServersAsync()
+    {
+        using var response = await http.GetAsync("/mcp-clients/servers");
+        response.EnsureSuccessStatusCode();
+        await using var stream = await response.Content.ReadAsStreamAsync();
+        using var document = await JsonDocument.ParseAsync(stream);
+        var servers = new List<ManaMcpServer>();
+        if (document.RootElement.TryGetProperty("servers", out var serversElement))
+        {
+            foreach (var entry in serversElement.EnumerateArray())
+            {
+                var allowedTools = entry.TryGetProperty("allowedTools", out var toolsEl)
+                    ? string.Join(", ", toolsEl.EnumerateArray().Select(t => t.GetString() ?? ""))
+                    : "";
+                servers.Add(new ManaMcpServer
+                {
+                    Id = entry.TryGetProperty("id", out var idEl) ? idEl.GetString() ?? "" : "",
+                    Name = entry.TryGetProperty("name", out var nameEl) ? nameEl.GetString() ?? "" : "",
+                    TransportSummary = SummarizeTransport(entry.TryGetProperty("transport", out var transportEl) ? transportEl : default),
+                    AllowedTools = allowedTools,
+                });
+            }
+        }
+        return servers;
+    }
+
+    private static string SummarizeTransport(JsonElement transport)
+    {
+        if (transport.ValueKind != JsonValueKind.Object)
+        {
+            return "";
+        }
+        var kind = transport.TryGetProperty("kind", out var kindEl) ? kindEl.GetString() : null;
+        if (kind == "http")
+        {
+            return transport.TryGetProperty("url", out var urlEl) ? $"http: {urlEl.GetString()}" : "http";
+        }
+        if (kind == "stdio")
+        {
+            var command = transport.TryGetProperty("command", out var commandEl) ? commandEl.GetString() : "";
+            return $"stdio: {command}";
+        }
+        return kind ?? "";
+    }
+
+    // #567: registration doesn't take effect immediately -- it's routed
+    // through the approval gate server-side (mcp-client-registry.js's own
+    // comment: "the actual result is usually {status: 'pending',
+    // requestId}"), decided later via the existing Approvals tab. This
+    // just returns whatever status string node-bot sends back so the
+    // caller can tell the user what actually happened.
+    public async Task<string> RegisterMcpServerAsync(string name, string transportKind, string? command, IReadOnlyList<string>? args, IReadOnlyList<string>? envAllowlist, string? url, IReadOnlyList<string> allowedTools)
+    {
+        object transport = transportKind == "http"
+            ? new { kind = "http", url }
+            : new { kind = "stdio", command, args, envAllowlist };
+        var payload = JsonSerializer.Serialize(new { name, transport, allowedTools });
+        using var content = new StringContent(payload, Encoding.UTF8, "application/json");
+        using var response = await http.PostAsync("/mcp-clients/servers", content);
+        response.EnsureSuccessStatusCode();
+        await using var stream = await response.Content.ReadAsStreamAsync();
+        using var document = await JsonDocument.ParseAsync(stream);
+        return document.RootElement.TryGetProperty("status", out var statusEl) ? statusEl.GetString() ?? "unknown" : "registered";
+    }
+
+    public async Task DeleteMcpServerAsync(string id)
+    {
+        using var response = await http.DeleteAsync($"/mcp-clients/servers/{Uri.EscapeDataString(id)}");
+        response.EnsureSuccessStatusCode();
+    }
+
     public async Task<IReadOnlyList<ManaPendingApproval>> GetPendingApprovalsAsync()
     {
         using var response = await http.GetAsync("/approvals/pending");
@@ -578,6 +655,17 @@ internal sealed class ManaPendingApproval
     public string Id { get; init; } = "";
     public string ActionType { get; init; } = "";
     public string Summary { get; init; } = "";
+}
+
+// #567: GET /mcp-clients/servers (display-only summary -- see
+// GetMcpServersAsync's own comment for why the transport union is
+// collapsed to one string here).
+internal sealed class ManaMcpServer
+{
+    public string Id { get; init; } = "";
+    public string Name { get; init; } = "";
+    public string TransportSummary { get; init; } = "";
+    public string AllowedTools { get; init; } = "";
 }
 
 internal sealed class ReplyStreamEvent

@@ -29,6 +29,109 @@ internal sealed class FakeHttpMessageHandler : HttpMessageHandler
 public class ManaBackendClientTests
 {
     [Fact]
+    public async Task GetMcpServersAsync_ParsesServersAndSummarizesEachTransport()
+    {
+        var handler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(
+                """{"servers":[{"id":"s1","name":"weather","transport":{"kind":"stdio","command":"python","args":["server.py"]},"allowedTools":["get_forecast","get_alerts"],"registeredAt":"2026-01-01T00:00:00.000Z"},{"id":"s2","name":"remote","transport":{"kind":"http","url":"https://example.com/mcp"},"allowedTools":["search"]}]}""",
+                Encoding.UTF8,
+                "application/json"),
+        });
+        var client = new ManaBackendClient(handler);
+
+        var servers = await client.GetMcpServersAsync();
+
+        Assert.Equal(2, servers.Count);
+        Assert.Equal("weather", servers[0].Name);
+        Assert.Equal("stdio: python", servers[0].TransportSummary);
+        Assert.Equal("get_forecast, get_alerts", servers[0].AllowedTools);
+        Assert.Equal("http: https://example.com/mcp", servers[1].TransportSummary);
+    }
+
+    [Fact]
+    public async Task GetMcpServersAsync_ReturnsEmptyWhenTheServersKeyIsMissing()
+    {
+        var handler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent("{}", Encoding.UTF8, "application/json"),
+        });
+        var client = new ManaBackendClient(handler);
+
+        var servers = await client.GetMcpServersAsync();
+
+        Assert.Empty(servers);
+    }
+
+    [Fact]
+    public async Task RegisterMcpServerAsync_PostsAStdioTransportAndReturnsTheStatus()
+    {
+        string? path = null;
+        string? body = null;
+        var handler = new FakeHttpMessageHandler(request =>
+        {
+            path = request.RequestUri!.AbsolutePath;
+            body = request.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("{\"status\":\"pending\",\"requestId\":\"req-1\"}", Encoding.UTF8, "application/json"),
+            };
+        });
+        var client = new ManaBackendClient(handler);
+
+        var status = await client.RegisterMcpServerAsync("weather", "stdio", "python", new[] { "server.py" }, null, null, new[] { "get_forecast" });
+
+        Assert.Equal("/mcp-clients/servers", path);
+        Assert.Equal("pending", status);
+        Assert.Contains("\"name\":\"weather\"", body);
+        Assert.Contains("\"kind\":\"stdio\"", body);
+        Assert.Contains("\"command\":\"python\"", body);
+        Assert.Contains("\"allowedTools\":[\"get_forecast\"]", body);
+    }
+
+    [Fact]
+    public async Task RegisterMcpServerAsync_PostsAnHttpTransport()
+    {
+        string? body = null;
+        var handler = new FakeHttpMessageHandler(request =>
+        {
+            body = request.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("{\"status\":\"pending\"}", Encoding.UTF8, "application/json"),
+            };
+        });
+        var client = new ManaBackendClient(handler);
+
+        await client.RegisterMcpServerAsync("remote", "http", null, null, null, "https://example.com/mcp", new[] { "search" });
+
+        Assert.Contains("\"kind\":\"http\"", body);
+        Assert.Contains("\"url\":\"https://example.com/mcp\"", body);
+    }
+
+    [Fact]
+    public async Task DeleteMcpServerAsync_SendsDeleteToTheNamedServer()
+    {
+        string? path = null;
+        string? method = null;
+        var handler = new FakeHttpMessageHandler(request =>
+        {
+            path = request.RequestUri!.AbsolutePath;
+            method = request.Method.Method;
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("{\"ok\":true}", Encoding.UTF8, "application/json"),
+            };
+        });
+        var client = new ManaBackendClient(handler);
+
+        await client.DeleteMcpServerAsync("s1");
+
+        Assert.Equal("/mcp-clients/servers/s1", path);
+        Assert.Equal("DELETE", method);
+    }
+
+    [Fact]
     public async Task TranscribeAsync_PostsToTranscribeOnlyAndReturnsTranscript()
     {
         string? path = null;

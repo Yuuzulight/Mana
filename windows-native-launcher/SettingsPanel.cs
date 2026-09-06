@@ -22,6 +22,7 @@ internal sealed class SettingsPanel : UserControl
     private readonly ListView factsList = new();
     private readonly ListView skillsList = new();
     private readonly ListView approvalsList = new();
+    private readonly ListView mcpServersList = new();
     private bool populatingPlugins;
 
     public SettingsPanel(ManaBackendClient backendClient)
@@ -37,6 +38,7 @@ internal sealed class SettingsPanel : UserControl
         tabs.TabPages.Add(BuildMemoryFactsTab());
         tabs.TabPages.Add(BuildSkillsTab());
         tabs.TabPages.Add(BuildApprovalsTab());
+        tabs.TabPages.Add(BuildMcpServersTab());
         foreach (TabPage page in tabs.TabPages)
         {
             page.BackColor = DarkTheme.Background;
@@ -50,6 +52,7 @@ internal sealed class SettingsPanel : UserControl
         await RefreshMemoryFactsAsync();
         await RefreshSkillsAsync();
         await RefreshApprovalsAsync();
+        await RefreshMcpServersAsync();
     }
 
     // #529 review: a failed load left its list untouched -- on first
@@ -413,6 +416,121 @@ internal sealed class SettingsPanel : UserControl
             var item = new ListViewItem(approval.ActionType) { Tag = approval.Id };
             item.SubItems.Add(approval.Summary);
             approvalsList.Items.Add(item);
+        }
+    }
+
+    // #567: registration goes through the approval gate server-side, not
+    // an immediate write (see RegisterMcpServerAsync's own comment) --
+    // this tab has no toggle/edit action, only Add and Delete, matching
+    // that: there's nothing here to PATCH, and a pending registration is
+    // decided from the existing Approvals tab, not this one.
+    private TabPage BuildMcpServersTab()
+    {
+        mcpServersList.Dock = DockStyle.Fill;
+        mcpServersList.View = View.Details;
+        mcpServersList.FullRowSelect = true;
+        mcpServersList.Columns.Add("Name", 120);
+        mcpServersList.Columns.Add("Transport", 200);
+        mcpServersList.Columns.Add("Allowed tools", 200);
+        DarkTheme.ApplyListView(mcpServersList);
+
+        var addButton = new Button { Text = "Register..." };
+        var deleteButton = new Button { Text = "Remove" };
+        DarkTheme.ApplyButton(addButton);
+        DarkTheme.ApplyButton(deleteButton);
+        addButton.Click += async (_, _) => await RegisterMcpServerAsync();
+        deleteButton.Click += async (_, _) => await DeleteSelectedMcpServerAsync();
+
+        var buttonRow = new FlowLayoutPanel { Dock = DockStyle.Bottom, Height = 32, FlowDirection = FlowDirection.LeftToRight, BackColor = DarkTheme.Background };
+        buttonRow.Controls.Add(addButton);
+        buttonRow.Controls.Add(deleteButton);
+
+        var page = new TabPage("MCP Clients");
+        page.Controls.Add(mcpServersList);
+        page.Controls.Add(buttonRow);
+        return page;
+    }
+
+    private async Task RegisterMcpServerAsync()
+    {
+        using var dialog = new McpServerDialog();
+        if (dialog.ShowDialog(this) != DialogResult.OK)
+        {
+            return;
+        }
+
+        string status;
+        try
+        {
+            status = await backendClient.RegisterMcpServerAsync(dialog.ServerName, dialog.TransportKind, dialog.Command, dialog.Args, dialog.EnvAllowlist, dialog.Url, dialog.AllowedTools);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, $"Failed to register MCP server: {ex.Message}", "Register MCP Server", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            return;
+        }
+        if (!IsDisposed)
+        {
+            MessageBox.Show(
+                this,
+                status == "pending" ? "Registration submitted -- approve it from the Approvals tab." : $"Registration status: {status}",
+                "Register MCP Server",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Information);
+            await RefreshMcpServersAsync();
+        }
+    }
+
+    private async Task DeleteSelectedMcpServerAsync()
+    {
+        if (mcpServersList.SelectedItems.Count == 0)
+        {
+            return;
+        }
+        var id = (string)mcpServersList.SelectedItems[0].Tag!;
+        try
+        {
+            await backendClient.DeleteMcpServerAsync(id);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"SettingsPanel: failed to remove MCP server '{id}'. {ex.Message}");
+            return;
+        }
+        if (!IsDisposed)
+        {
+            await RefreshMcpServersAsync();
+        }
+    }
+
+    private async Task RefreshMcpServersAsync()
+    {
+        System.Collections.Generic.IReadOnlyList<ManaMcpServer> servers;
+        try
+        {
+            servers = await backendClient.GetMcpServersAsync();
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"SettingsPanel: failed to load MCP servers. {ex.Message}");
+            if (!IsDisposed)
+            {
+                ShowLoadFailure(mcpServersList, ex.Message);
+            }
+            return;
+        }
+        if (IsDisposed)
+        {
+            return;
+        }
+
+        mcpServersList.Items.Clear();
+        foreach (var server in servers)
+        {
+            var item = new ListViewItem(server.Name) { Tag = server.Id };
+            item.SubItems.Add(server.TransportSummary);
+            item.SubItems.Add(server.AllowedTools);
+            mcpServersList.Items.Add(item);
         }
     }
 }
