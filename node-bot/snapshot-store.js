@@ -26,7 +26,19 @@ function createSnapshotStore(options = {}) {
     options.dataDir ||
     process.env.MANA_SNAPSHOTS_DIR ||
     path.join(__dirname, "data", "snapshots");
-  const now = options.now || (() => new Date().toISOString());
+  // Plain `Date.now()` isn't unique enough on its own: checkStale/listSnapshots
+  // order records by comparing this string, and two snapshots recorded within
+  // the same millisecond (routine for back-to-back in-memory writes) would
+  // compare equal, silently hiding a genuinely newer write. Clamping to
+  // strictly-increasing milliseconds removes the tie by construction, with no
+  // change to the stored format or the public API shape.
+  let lastAppliedAtMs = 0;
+  const now =
+    options.now ||
+    (() => {
+      lastAppliedAtMs = Math.max(Date.now(), lastAppliedAtMs + 1);
+      return new Date(lastAppliedAtMs).toISOString();
+    });
   const idFactory =
     options.idFactory ||
     (() => `snap-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
