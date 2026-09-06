@@ -18,6 +18,9 @@ internal sealed class ManaApplicationContext : ApplicationContext
     private readonly AudioPlayer audioPlayer;
     private readonly VoiceLoop voiceLoop;
     private readonly VisionHotkeyListener visionHotkeyListener;
+    private readonly ClipHotkeyListener clipHotkeyListener;
+    private readonly ClipBuffer clipBuffer = new();
+    private readonly System.Windows.Forms.Timer? clipCaptureTimer;
     private readonly TrayNotificationClient trayNotifications;
     private readonly ArtifactViewerForm artifactViewer;
     private readonly QuickEntryForm quickEntry;
@@ -71,10 +74,28 @@ internal sealed class ManaApplicationContext : ApplicationContext
         // through to VoiceLoop, same as the other optional collaborators
         // constructed above it.
         var screenContextReader = new ScreenContextReader(rootDir, backendClient);
-        voiceLoop = new VoiceLoop(sileroVad, backendClient, audioPlayer, avatarOverlay, chatLog, artifactViewer, screenContextReader, () => gamingModeActive);
+        voiceLoop = new VoiceLoop(sileroVad, backendClient, audioPlayer, avatarOverlay, chatLog, artifactViewer, screenContextReader, () => gamingModeActive, clipBuffer);
         // #523: Ctrl+Alt+M asks Mana to look at the screen, through the
         // same reply/TTS pipeline a normal turn uses.
         visionHotkeyListener = new VisionHotkeyListener(() => _ = voiceLoop.SubmitVisionHotkeyAsync());
+        // #585: Ctrl+Alt+Shift+M asks Mana what just happened, using
+        // whatever clipCaptureTimer below has already buffered.
+        clipHotkeyListener = new ClipHotkeyListener(() => _ = voiceLoop.SubmitClipHotkeyAsync());
+        // windows-launcher only runs its own clip-buffer capture timer
+        // when screen sensing is opted into (MANA_SCREEN_SENSING_ENABLED=1)
+        // -- same gate here, so this launcher doesn't start silently
+        // holding rolling screenshots in memory a user never opted into;
+        // the hotkey itself stays registered either way (matching the
+        // reference), it just always reports an empty buffer if this
+        // never ran.
+        if (Environment.GetEnvironmentVariable("MANA_SCREEN_SENSING_ENABLED") == "1")
+        {
+            var intervalEnv = Environment.GetEnvironmentVariable("MANA_CLIP_BUFFER_INTERVAL_MS");
+            var intervalMs = int.TryParse(intervalEnv, out var parsedInterval) && parsedInterval > 0 ? parsedInterval : 3000;
+            clipCaptureTimer = new System.Windows.Forms.Timer { Interval = intervalMs };
+            clipCaptureTimer.Tick += async (_, _) => await CaptureClipFrameAsync();
+            clipCaptureTimer.Start();
+        }
         sessionListForm = new SessionListForm(backendClient, voiceLoop, chatLog, avatarOverlay);
         // #525: Ctrl+Alt+Space types a command instead of speaking one,
         // through the exact same turn-processing path.
@@ -200,6 +221,27 @@ internal sealed class ManaApplicationContext : ApplicationContext
         ExitThread();
     }
 
+    // #585: mirrors windows-launcher's own captureClipFrame -- a cheap
+    // local screenshot with no model call, run on the thread pool (same
+    // reasoning as SubmitVisionHotkeyAsync's own screen capture: CopyFromScreen
+    // is enough work to visibly hitch the UI if done inline on a Timer.Tick).
+    // Never skips during processing/reply/idle, unlike a "smarter" gate
+    // would -- skipping would create gaps in the buffer at exactly the
+    // moments (mid-conversation about something on screen) it would be
+    // most useful to have covered.
+    private async Task CaptureClipFrameAsync()
+    {
+        try
+        {
+            var image = await Task.Run(ScreenCapture.CaptureAsJpegDataUrl);
+            clipBuffer.PushFrame(image, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"ManaApplicationContext: clip buffer capture failed. {ex.Message}");
+        }
+    }
+
     private async Task RefreshTrayStatusAsync()
     {
         try
@@ -293,7 +335,9 @@ internal sealed class ManaApplicationContext : ApplicationContext
     protected override void ExitThreadCore()
     {
         statusTimer.Stop();
+        clipCaptureTimer?.Stop();
         visionHotkeyListener.Dispose();
+        clipHotkeyListener.Dispose();
         trayNotifications.Dispose();
         voiceLoop.Dispose();
         audioPlayer.Dispose();

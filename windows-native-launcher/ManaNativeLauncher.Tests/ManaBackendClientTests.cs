@@ -150,6 +150,81 @@ public class ManaBackendClientTests
     }
 
     [Fact]
+    public async Task ReplyStreamAsync_IncludesTheImagesArrayWhenGiven()
+    {
+        string? body = null;
+        var handler = new FakeHttpMessageHandler(request =>
+        {
+            body = request.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(
+                    "{\"type\":\"final\",\"reply\":\"ok\",\"changed\":false}\n",
+                    Encoding.UTF8,
+                    "application/x-ndjson"),
+            };
+        });
+        var client = new ManaBackendClient(handler);
+
+        await foreach (var _ in client.ReplyStreamAsync("hi", images: new[] { "frame-1", "frame-2" }))
+        {
+        }
+
+        Assert.Contains("\"images\":[\"frame-1\",\"frame-2\"]", body);
+        Assert.DoesNotContain("\"image\":", body);
+    }
+
+    [Fact]
+    public async Task ReplyStreamAsync_PrefersImagesOverImageWhenBothAreGiven()
+    {
+        string? body = null;
+        var handler = new FakeHttpMessageHandler(request =>
+        {
+            body = request.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(
+                    "{\"type\":\"final\",\"reply\":\"ok\",\"changed\":false}\n",
+                    Encoding.UTF8,
+                    "application/x-ndjson"),
+            };
+        });
+        var client = new ManaBackendClient(handler);
+
+        await foreach (var _ in client.ReplyStreamAsync("hi", image: "single-frame", images: new[] { "frame-1" }))
+        {
+        }
+
+        Assert.Contains("\"images\":[\"frame-1\"]", body);
+        Assert.DoesNotContain("single-frame", body);
+    }
+
+    [Fact]
+    public async Task ReplyStreamAsync_FallsBackToImageWhenImagesIsEmpty()
+    {
+        string? body = null;
+        var handler = new FakeHttpMessageHandler(request =>
+        {
+            body = request.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(
+                    "{\"type\":\"final\",\"reply\":\"ok\",\"changed\":false}\n",
+                    Encoding.UTF8,
+                    "application/x-ndjson"),
+            };
+        });
+        var client = new ManaBackendClient(handler);
+
+        await foreach (var _ in client.ReplyStreamAsync("hi", image: "single-frame", images: System.Array.Empty<string>()))
+        {
+        }
+
+        Assert.Contains("\"image\":\"single-frame\"", body);
+        Assert.DoesNotContain("\"images\":", body);
+    }
+
+    [Fact]
     public async Task ReadScreenAsync_PostsTheImageAndReturnsText()
     {
         string? path = null;
