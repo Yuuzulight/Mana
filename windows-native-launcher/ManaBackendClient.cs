@@ -16,12 +16,24 @@ internal sealed class ManaBackendClient
     // behavior) constructs a real HttpClient against the live backend.
     // Tests pass a fake HttpMessageHandler to exercise the request/parse
     // logic without a live server.
-    public ManaBackendClient(HttpMessageHandler? handler = null)
+    // #565: baseUrl/adminToken default to null so every existing call
+    // site (real and test) keeps working unchanged -- null baseUrl means
+    // the same hardcoded local address this always used, and a null/empty
+    // adminToken means no Authorization header, matching every admin-gated
+    // route's own "no secret configured -> allow" behavior. Setting the
+    // header once here via DefaultRequestHeaders (rather than adding it to
+    // every individual request below) covers every current and future
+    // method in this file for free.
+    public ManaBackendClient(HttpMessageHandler? handler = null, string? baseUrl = null, string? adminToken = null)
     {
         http = handler is null
             ? new HttpClient()
             : new HttpClient(handler);
-        http.BaseAddress = new System.Uri("http://127.0.0.1:5005");
+        http.BaseAddress = new System.Uri(baseUrl ?? "http://127.0.0.1:5005");
+        if (!string.IsNullOrEmpty(adminToken))
+        {
+            http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", adminToken);
+        }
     }
 
     public async Task<ManaPerformanceStatus> GetPerformanceStatusAsync()
@@ -331,14 +343,15 @@ internal sealed class ManaBackendClient
         response.EnsureSuccessStatusCode();
     }
 
-    // #529: requires an admin bearer token only when node-bot has
+    // #529/#565: requires an admin bearer token only when node-bot has
     // MANA_ADMIN_SECRET configured -- unset (the common local-only case
     // this launcher otherwise assumes throughout) allows every call here
     // through with no auth header, matching checkAdminAuth's own "no
-    // secret configured -> allow" rule. No settings UI exists yet to
-    // enter a token if one IS configured; that case surfaces as a 401
-    // EnsureSuccessStatusCode throws, same as any other unexpected
-    // status this client doesn't special-case.
+    // secret configured -> allow" rule. The Connection settings tab
+    // (#565) is where a token gets entered when one IS configured; a
+    // wrong/missing token still surfaces as a 401 EnsureSuccessStatusCode
+    // throws, same as any other unexpected status this client doesn't
+    // special-case.
     public async Task<IReadOnlyList<ManaMemoryFact>> GetMemoryFactsAsync()
     {
         using var response = await http.GetAsync("/admin/memory/facts");

@@ -5,9 +5,10 @@ using System.Windows.Forms;
 
 namespace Mana.NativeLauncher;
 
-// #529: a lean settings surface -- plugins (enable/disable), memory
-// facts (view/archive), skills (view/delete), and the approval-gate
-// queue (approve/deny). Explicitly the lowest-priority piece of the
+// #529/#565: a lean settings surface -- connection (backend URL + admin
+// token), plugins (enable/disable), memory facts (view/archive), skills
+// (view/delete), and the approval-gate queue (approve/deny). Explicitly
+// the lowest-priority piece of the
 // native-launcher-parity batch, per this issue's own scope note, so
 // each tab is a plain ListView with the one or two actions that matter
 // most, not a full editor. Skill creation/editing (a large form for a
@@ -33,6 +34,7 @@ internal sealed class SettingsPanel : UserControl
 
         var tabs = new TabControl { Dock = DockStyle.Fill };
         DarkTheme.ApplyTabControl(tabs);
+        tabs.TabPages.Add(BuildConnectionTab());
         tabs.TabPages.Add(BuildPluginsTab());
         tabs.TabPages.Add(BuildMemoryFactsTab());
         tabs.TabPages.Add(BuildSkillsTab());
@@ -62,6 +64,65 @@ internal sealed class SettingsPanel : UserControl
     {
         list.Items.Clear();
         list.Items.Add(new ListViewItem($"Failed to load: {message}") { ForeColor = Color.Firebrick });
+    }
+
+    // #565: the backend URL and admin token are read straight from
+    // ManaSettingsStore rather than threaded in through SessionListForm/
+    // SettingsDialog's constructors -- both ManaBackendClient and
+    // TrayNotificationClient only read this file once, at app startup,
+    // so a change here can't take effect live regardless; reading/writing
+    // the same small file directly here is simpler than plumbing a store
+    // reference through two more constructors for a value nothing else
+    // needs mid-session.
+    private TabPage BuildConnectionTab()
+    {
+        var settings = ManaSettingsStore.Load();
+
+        var urlLabel = new Label { Text = "Backend URL", AutoSize = true, ForeColor = DarkTheme.Text };
+        var urlBox = new TextBox { Text = settings.BackendBaseUrl, Width = 320, BackColor = DarkTheme.Panel2, ForeColor = DarkTheme.Text, BorderStyle = BorderStyle.FixedSingle };
+        var tokenLabel = new Label { Text = "Admin token (optional)", AutoSize = true, ForeColor = DarkTheme.Text };
+        var tokenBox = new TextBox { Text = settings.AdminToken ?? "", Width = 320, UseSystemPasswordChar = true, BackColor = DarkTheme.Panel2, ForeColor = DarkTheme.Text, BorderStyle = BorderStyle.FixedSingle };
+        var statusLabel = new Label { AutoSize = true, ForeColor = DarkTheme.Muted };
+
+        var saveButton = new Button { Text = "Save" };
+        DarkTheme.ApplyButton(saveButton);
+        saveButton.Click += (_, _) =>
+        {
+            var url = urlBox.Text.Trim();
+            // A malformed value saved here would throw on the *next*
+            // launch (ManaBackendClient's constructor does `new Uri(...)`
+            // with no try/catch of its own) -- rejecting it here, before
+            // it's ever persisted, is cheaper than a crash-on-startup bug
+            // report from a single typo.
+            if (!Uri.TryCreate(url, UriKind.Absolute, out var parsed) || (parsed.Scheme != "http" && parsed.Scheme != "https"))
+            {
+                statusLabel.ForeColor = Color.Firebrick;
+                statusLabel.Text = "Backend URL must be a valid http:// or https:// address.";
+                return;
+            }
+
+            settings.BackendBaseUrl = url;
+            settings.AdminToken = string.IsNullOrWhiteSpace(tokenBox.Text) ? null : tokenBox.Text.Trim();
+            settings.Save();
+            statusLabel.ForeColor = DarkTheme.Muted;
+            statusLabel.Text = "Saved -- restart Mana for this to take effect.";
+        };
+
+        var layout = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 1,
+            AutoSize = true,
+            Padding = new Padding(12),
+        };
+        layout.Controls.Add(urlLabel);
+        layout.Controls.Add(urlBox);
+        layout.Controls.Add(tokenLabel);
+        layout.Controls.Add(tokenBox);
+        layout.Controls.Add(saveButton);
+        layout.Controls.Add(statusLabel);
+
+        return new TabPage("Connection") { Controls = { layout } };
     }
 
     private TabPage BuildPluginsTab()
