@@ -18,6 +18,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
     private readonly AudioPlayer audioPlayer;
     private readonly VoiceLoop voiceLoop;
     private readonly VisionHotkeyListener visionHotkeyListener;
+    private readonly GlobalHotkeyListener globalHotkeys;
     private readonly TrayNotificationClient trayNotifications;
     private readonly ArtifactViewerForm artifactViewer;
     private readonly QuickEntryForm quickEntry;
@@ -79,6 +80,18 @@ internal sealed class ManaApplicationContext : ApplicationContext
         // #525: Ctrl+Alt+Space types a command instead of speaking one,
         // through the exact same turn-processing path.
         quickEntry = new QuickEntryForm(voiceLoop.SubmitTypedCommandAsync);
+        // #584: windows-launcher's own defaults are Ctrl+Alt+Space for the
+        // window toggle and Ctrl+Alt+I for manual interrupt -- the first
+        // collides with quickEntry's own hotkey right above (already
+        // shipped, #525), so this uses Ctrl+Alt+W instead; Ctrl+Alt+I has
+        // no native collision and is kept as-is. Manual interrupt is just
+        // audioPlayer.Stop() -- matches windows-launcher's own
+        // "interrupt-speech" handler (stopReplyAudio(), nothing else),
+        // not the fuller barge-in/re-capture path VoiceLoop's internal
+        // interruption handling uses for a detected spoken interruption.
+        globalHotkeys = new GlobalHotkeyListener(
+            (0xA584, GlobalHotkeyListener.ModControl | GlobalHotkeyListener.ModAlt, (uint)'W', "MANA_WINDOW_HOTKEY", ToggleSessionListVisible),
+            (0xA585, GlobalHotkeyListener.ModControl | GlobalHotkeyListener.ModAlt, (uint)'I', "MANA_INTERRUPT_HOTKEY", () => audioPlayer.Stop()));
         // #524: originally a no-op (no chat/session window existed on
         // this branch yet) -- #521/#520 shipped one since, so this now
         // does what the original comment here flagged as the real
@@ -253,6 +266,24 @@ internal sealed class ManaApplicationContext : ApplicationContext
         _ = sessionListForm.RefreshAsync();
     }
 
+    // #584: SessionListForm is this app's closest equivalent to
+    // windows-launcher's single main BrowserWindow -- its own
+    // OnFormClosing already turns UserClosing into Hide (not a real
+    // Close), so "visible" is a reliable proxy for "shown" here. The show
+    // path reuses ShowSessionList (Activate + RefreshAsync), same as
+    // every other menu/tray entry point into this window.
+    private void ToggleSessionListVisible()
+    {
+        if (sessionListForm.Visible)
+        {
+            sessionListForm.Hide();
+        }
+        else
+        {
+            ShowSessionList();
+        }
+    }
+
     // #479 review: `status.TtsProvider` is node-bot's *configured* value
     // (the TTS_PROVIDER env var this launcher itself sets to "fish") --
     // not whether Fish Speech's native process is actually up. Without
@@ -294,6 +325,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
     {
         statusTimer.Stop();
         visionHotkeyListener.Dispose();
+        globalHotkeys.Dispose();
         trayNotifications.Dispose();
         voiceLoop.Dispose();
         audioPlayer.Dispose();
