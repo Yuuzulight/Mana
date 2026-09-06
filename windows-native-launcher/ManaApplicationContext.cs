@@ -52,8 +52,9 @@ internal sealed class ManaApplicationContext : ApplicationContext
     public ManaApplicationContext()
     {
         var rootDir = FindRootDirectory();
+        var settings = ManaSettingsStore.Load();
         processManager = new ManaProcessManager(rootDir);
-        backendClient = new ManaBackendClient();
+        backendClient = new ManaBackendClient(baseUrl: settings.BackendBaseUrl, adminToken: settings.AdminToken);
         avatarOverlay = new AvatarOverlayForm(rootDir);
 
         var vadModelPath = Path.Combine(rootDir, "windows-native-launcher", "assets", "vad", "silero_vad.onnx");
@@ -93,7 +94,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
         // IsDisposed-then-marshal shape as this codebase's other
         // background-thread-to-UI call sites (e.g. ChatLogPanel's
         // RunOnUiThread).
-        trayNotifications = new TrayNotificationClient(openChat: () =>
+        trayNotifications = new TrayNotificationClient(backendBaseUrl: settings.BackendBaseUrl, openChat: () =>
         {
             if (sessionListForm.IsDisposed)
             {
@@ -142,6 +143,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
         menu.Items.Add("Artifact Viewer", null, (_, _) => { artifactViewer.Show(); artifactViewer.Activate(); });
         menu.Items.Add("Compare Models", null, (_, _) => new CompareModeForm(backendClient).Show());
         menu.Items.Add("Doctor", null, (_, _) => ShowDoctorPanel());
+        menu.Items.Add("VTube Studio", null, (_, _) => new VTubeStudioForm(backendClient).Show());
         menu.Items.Add("Sessions", null, (_, _) => ShowSessionList());
         menu.Items.Add("Open project folder", null, (_, _) => OpenProjectFolder());
         menu.Items.Add("Set avatar idle", null, (_, _) => avatarOverlay.SetState(AvatarState.Idle));
