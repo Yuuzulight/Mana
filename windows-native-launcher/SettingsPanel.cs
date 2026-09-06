@@ -22,6 +22,8 @@ internal sealed class SettingsPanel : UserControl
     private readonly ListView factsList = new();
     private readonly ListView skillsList = new();
     private readonly ListView approvalsList = new();
+    private readonly ComboBox themePresetCombo = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 200 };
+    private readonly TextBox themeAccentBox = new() { Width = 100 };
     private bool populatingPlugins;
 
     public SettingsPanel(ManaBackendClient backendClient)
@@ -37,6 +39,7 @@ internal sealed class SettingsPanel : UserControl
         tabs.TabPages.Add(BuildMemoryFactsTab());
         tabs.TabPages.Add(BuildSkillsTab());
         tabs.TabPages.Add(BuildApprovalsTab());
+        tabs.TabPages.Add(BuildThemeTab());
         foreach (TabPage page in tabs.TabPages)
         {
             page.BackColor = DarkTheme.Background;
@@ -414,5 +417,61 @@ internal sealed class SettingsPanel : UserControl
             item.SubItems.Add(approval.Summary);
             approvalsList.Items.Add(item);
         }
+    }
+
+    // #576: reads/writes ManaThemeSettings' own file directly, same
+    // reasoning as #565's Connection tab -- DarkTheme.ApplyPreset only
+    // ever runs once, at startup (Program.cs), so nothing here can take
+    // effect live regardless of how it's wired.
+    private TabPage BuildThemeTab()
+    {
+        var settings = ManaThemeSettings.Load();
+
+        ThemePresetInfo? current = null;
+        foreach (var preset in DarkTheme.Presets)
+        {
+            themePresetCombo.Items.Add(preset);
+            if (preset.Id == settings.Preset)
+            {
+                current = preset;
+            }
+        }
+        themePresetCombo.SelectedItem = current ?? DarkTheme.Presets[0];
+        themePresetCombo.BackColor = DarkTheme.Panel2;
+        themePresetCombo.ForeColor = DarkTheme.Text;
+
+        themeAccentBox.Text = settings.AccentHex ?? "";
+        themeAccentBox.BackColor = DarkTheme.Panel2;
+        themeAccentBox.ForeColor = DarkTheme.Text;
+
+        var statusLabel = new Label { AutoSize = true, ForeColor = DarkTheme.Muted };
+        var saveButton = new Button { Text = "Save" };
+        DarkTheme.ApplyButton(saveButton);
+        saveButton.Click += (_, _) =>
+        {
+            var accentText = themeAccentBox.Text.Trim();
+            if (accentText.Length > 0 && !System.Text.RegularExpressions.Regex.IsMatch(accentText, "^#[0-9a-fA-F]{6}$"))
+            {
+                statusLabel.ForeColor = Color.Firebrick;
+                statusLabel.Text = "Accent must be a #rrggbb hex color, or blank to use the preset's own accent.";
+                return;
+            }
+
+            settings.Preset = themePresetCombo.SelectedItem is ThemePresetInfo preset ? preset.Id : "violet";
+            settings.AccentHex = accentText.Length == 0 ? null : accentText;
+            settings.Save();
+            statusLabel.ForeColor = DarkTheme.Muted;
+            statusLabel.Text = "Saved -- restart Mana for this to take effect.";
+        };
+
+        var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, AutoSize = true, Padding = new Padding(12), BackColor = DarkTheme.Background };
+        layout.Controls.Add(new Label { Text = "Theme", AutoSize = true, ForeColor = DarkTheme.Text });
+        layout.Controls.Add(themePresetCombo);
+        layout.Controls.Add(new Label { Text = "Accent color override (optional, #rrggbb)", AutoSize = true, ForeColor = DarkTheme.Text });
+        layout.Controls.Add(themeAccentBox);
+        layout.Controls.Add(saveButton);
+        layout.Controls.Add(statusLabel);
+
+        return new TabPage("Theme") { Controls = { layout } };
     }
 }
