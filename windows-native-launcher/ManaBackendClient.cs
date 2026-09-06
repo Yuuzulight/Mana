@@ -477,6 +477,122 @@ internal sealed class ManaBackendClient
         }
     }
 
+    // #577: node-bot's deep-research job store (capabilities/deep-research-
+    // capability.js) -- 202-Accepted with a jobId, polled via
+    // GetResearchJobAsync. sessionId, when given, is what lets the
+    // finished report get recorded into that session's memory server-side
+    // (recordResearchTurn); omitted (not sent as null) matches every other
+    // optional-sessionId call in this file.
+    public async Task<string> StartResearchAsync(string question, string? sessionId = null)
+    {
+        var payload = sessionId is null
+            ? JsonSerializer.Serialize(new { question })
+            : JsonSerializer.Serialize(new { question, sessionId });
+        using var content = new StringContent(payload, Encoding.UTF8, "application/json");
+        using var response = await http.PostAsync("/research/start", content);
+        if (!response.IsSuccessStatusCode)
+        {
+            var detail = await response.Content.ReadAsStringAsync();
+            throw new InvalidOperationException(string.IsNullOrWhiteSpace(detail) ? $"Failed to start research ({(int)response.StatusCode})" : detail);
+        }
+        await using var stream = await response.Content.ReadAsStreamAsync();
+        using var document = await JsonDocument.ParseAsync(stream);
+        return document.RootElement.GetProperty("jobId").GetString() ?? "";
+    }
+
+    public async Task<ManaResearchJob> GetResearchJobAsync(string jobId)
+    {
+        using var response = await http.GetAsync($"/research/{Uri.EscapeDataString(jobId)}");
+        response.EnsureSuccessStatusCode();
+        await using var stream = await response.Content.ReadAsStreamAsync();
+        using var document = await JsonDocument.ParseAsync(stream);
+        var root = document.RootElement;
+
+        string? progressLabel = null;
+        if (root.TryGetProperty("progress", out var progressElement) && progressElement.ValueKind == JsonValueKind.Object
+            && progressElement.TryGetProperty("label", out var labelElement))
+        {
+            progressLabel = labelElement.GetString();
+        }
+
+        ManaResearchResult? result = null;
+        if (root.TryGetProperty("result", out var resultElement) && resultElement.ValueKind == JsonValueKind.Object)
+        {
+            result = ParseResearchResult(resultElement);
+        }
+
+        return new ManaResearchJob
+        {
+            Status = root.TryGetProperty("status", out var statusElement) ? statusElement.GetString() ?? "" : "",
+            ProgressLabel = progressLabel,
+            Result = result,
+            Error = root.TryGetProperty("error", out var errorElement) ? errorElement.GetString() : null,
+        };
+    }
+
+    private static ManaResearchResult ParseResearchResult(JsonElement element)
+    {
+        var sources = new List<ManaResearchSource>();
+        if (element.TryGetProperty("sources", out var sourcesElement) && sourcesElement.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var sourceElement in sourcesElement.EnumerateArray())
+            {
+                sources.Add(new ManaResearchSource
+                {
+                    Index = sourceElement.TryGetProperty("index", out var indexElement) ? indexElement.GetInt32() : 0,
+                    Title = sourceElement.TryGetProperty("title", out var titleElement) ? titleElement.GetString() : null,
+                    Url = sourceElement.TryGetProperty("url", out var urlElement) ? urlElement.GetString() ?? "" : "",
+                    ReadFailed = sourceElement.TryGetProperty("readFailed", out var readFailedElement) && readFailedElement.GetBoolean(),
+                });
+            }
+        }
+
+        var subQueries = new List<string>();
+        if (element.TryGetProperty("subQueries", out var subQueriesElement) && subQueriesElement.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var subQueryElement in subQueriesElement.EnumerateArray())
+            {
+                var text = subQueryElement.GetString();
+                if (text is not null)
+                {
+                    subQueries.Add(text);
+                }
+            }
+        }
+
+        ManaResearchBounds? bounds = null;
+        if (element.TryGetProperty("bounds", out var boundsElement) && boundsElement.ValueKind == JsonValueKind.Object)
+        {
+            bounds = new ManaResearchBounds
+            {
+                HitTimeLimit = boundsElement.TryGetProperty("hitTimeLimit", out var hitTimeLimitElement) && hitTimeLimitElement.GetBoolean(),
+                HitSourceLimit = boundsElement.TryGetProperty("hitSourceLimit", out var hitSourceLimitElement) && hitSourceLimitElement.GetBoolean(),
+                SourcesUsed = boundsElement.TryGetProperty("sourcesUsed", out var sourcesUsedElement) ? sourcesUsedElement.GetInt32() : 0,
+                MaxSources = boundsElement.TryGetProperty("maxSources", out var maxSourcesElement) ? maxSourcesElement.GetInt32() : 0,
+                ElapsedMs = boundsElement.TryGetProperty("elapsedMs", out var elapsedMsElement) ? elapsedMsElement.GetInt64() : 0,
+            };
+        }
+
+        return new ManaResearchResult
+        {
+            Report = element.TryGetProperty("report", out var reportElement) ? reportElement.GetString() ?? "" : "",
+            Sources = sources,
+            SubQueries = subQueries,
+            Bounds = bounds,
+        };
+    }
+
+    // Cancellation is checked between research steps server-side and is
+    // idempotent (cancelling a finished job just reports its current
+    // state) -- matches windows-launcher's own researchCancelBtn handler,
+    // which doesn't even check response.ok, just fires the request.
+    public async Task CancelResearchJobAsync(string jobId)
+    {
+        using var content = new StringContent("", Encoding.UTF8, "application/json");
+        using var response = await http.PostAsync($"/research/{Uri.EscapeDataString(jobId)}/cancel", content);
+        response.EnsureSuccessStatusCode();
+    }
+
     private static ReplyStreamEvent ParseReplyStreamEvent(JsonElement root)
     {
         return new ReplyStreamEvent
@@ -588,4 +704,42 @@ internal sealed class ReplyStreamEvent
     public bool Changed { get; init; }
     public string? Expression { get; init; }
     public string? Error { get; init; }
+}
+
+// #577: GET /research/:jobId's shape -- see deep-research-capability.js's
+// own job object. Status is one of "running"/"done"/"cancelled"/"error".
+internal sealed class ManaResearchJob
+{
+    public string Status { get; init; } = "";
+    public string? ProgressLabel { get; init; }
+    public ManaResearchResult? Result { get; init; }
+    public string? Error { get; init; }
+}
+
+// #577: the shape tools/deep-research.js's runDeepResearch resolves with
+// -- see windows-launcher/renderer.js's own formatResearchReply for the
+// exact fields this port's ResearchFormatter reads.
+internal sealed class ManaResearchResult
+{
+    public string Report { get; init; } = "";
+    public IReadOnlyList<ManaResearchSource> Sources { get; init; } = Array.Empty<ManaResearchSource>();
+    public IReadOnlyList<string> SubQueries { get; init; } = Array.Empty<string>();
+    public ManaResearchBounds? Bounds { get; init; }
+}
+
+internal sealed class ManaResearchSource
+{
+    public int Index { get; init; }
+    public string? Title { get; init; }
+    public string Url { get; init; } = "";
+    public bool ReadFailed { get; init; }
+}
+
+internal sealed class ManaResearchBounds
+{
+    public bool HitTimeLimit { get; init; }
+    public bool HitSourceLimit { get; init; }
+    public int SourcesUsed { get; init; }
+    public int MaxSources { get; init; }
+    public long ElapsedMs { get; init; }
 }

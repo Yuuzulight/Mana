@@ -227,6 +227,11 @@ internal sealed class VoiceLoop : IDisposable
     // whichever session was active when that turn started.
     public void SetSessionId(string? sessionId) => currentSessionId = sessionId;
 
+    // #577: lets ResearchForm record a finished report into whatever
+    // session is currently active, matching windows-launcher's own
+    // ensureSessionId() call at its deep-research entry point.
+    public string? CurrentSessionId => currentSessionId;
+
     public void Dispose() => Stop();
 
     private void OnDataAvailable(object? sender, WaveInEventArgs e)

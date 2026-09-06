@@ -978,4 +978,156 @@ public class ManaBackendClientTests
         Assert.Null(status.ActiveProfile);
         Assert.Empty(status.Profiles);
     }
+
+    [Fact]
+    public async Task StartResearchAsync_PostsTheQuestionAndReturnsTheJobId()
+    {
+        string? path = null;
+        string? body = null;
+        var handler = new FakeHttpMessageHandler(request =>
+        {
+            path = request.RequestUri!.AbsolutePath;
+            body = request.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
+            return new HttpResponseMessage(HttpStatusCode.Accepted)
+            {
+                Content = new StringContent("{\"jobId\":\"job-1\",\"status\":\"running\"}", Encoding.UTF8, "application/json"),
+            };
+        });
+        var client = new ManaBackendClient(handler);
+
+        var jobId = await client.StartResearchAsync("what is FFXIV?");
+
+        Assert.Equal("/research/start", path);
+        Assert.Contains("\"question\":\"what is FFXIV?\"", body);
+        Assert.DoesNotContain("sessionId", body);
+        Assert.Equal("job-1", jobId);
+    }
+
+    [Fact]
+    public async Task StartResearchAsync_IncludesSessionIdWhenGiven()
+    {
+        string? body = null;
+        var handler = new FakeHttpMessageHandler(request =>
+        {
+            body = request.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
+            return new HttpResponseMessage(HttpStatusCode.Accepted)
+            {
+                Content = new StringContent("{\"jobId\":\"job-1\"}", Encoding.UTF8, "application/json"),
+            };
+        });
+        var client = new ManaBackendClient(handler);
+
+        await client.StartResearchAsync("question", sessionId: "s1");
+
+        Assert.Contains("\"sessionId\":\"s1\"", body);
+    }
+
+    [Fact]
+    public async Task StartResearchAsync_ThrowsWithTheServerDetailOnFailure()
+    {
+        var handler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.ServiceUnavailable)
+        {
+            Content = new StringContent("Deep research is not configured", Encoding.UTF8, "text/plain"),
+        });
+        var client = new ManaBackendClient(handler);
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() => client.StartResearchAsync("question"));
+        Assert.Equal("Deep research is not configured", ex.Message);
+    }
+
+    [Fact]
+    public async Task GetResearchJobAsync_ParsesARunningJobsProgressLabel()
+    {
+        var handler = new FakeHttpMessageHandler(request =>
+        {
+            Assert.Equal("/research/job-1", request.RequestUri!.AbsolutePath);
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(
+                    """{"status":"running","progress":{"step":"searching","label":"Searching the web..."}}""",
+                    Encoding.UTF8,
+                    "application/json"),
+            };
+        });
+        var client = new ManaBackendClient(handler);
+
+        var job = await client.GetResearchJobAsync("job-1");
+
+        Assert.Equal("running", job.Status);
+        Assert.Equal("Searching the web...", job.ProgressLabel);
+        Assert.Null(job.Result);
+        Assert.Null(job.Error);
+    }
+
+    [Fact]
+    public async Task GetResearchJobAsync_ParsesAFinishedJobsFullResult()
+    {
+        var handler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(
+                """
+                {
+                  "status": "done",
+                  "result": {
+                    "report": "The findings.",
+                    "sources": [{"index": 1, "title": "A Source", "url": "https://example.com", "readFailed": false}],
+                    "subQueries": ["q1", "q2"],
+                    "bounds": {"hitTimeLimit": true, "hitSourceLimit": false, "sourcesUsed": 4, "maxSources": 10, "elapsedMs": 30000}
+                  }
+                }
+                """,
+                Encoding.UTF8,
+                "application/json"),
+        });
+        var client = new ManaBackendClient(handler);
+
+        var job = await client.GetResearchJobAsync("job-1");
+
+        Assert.Equal("done", job.Status);
+        Assert.NotNull(job.Result);
+        Assert.Equal("The findings.", job.Result!.Report);
+        Assert.Single(job.Result.Sources);
+        Assert.Equal("A Source", job.Result.Sources[0].Title);
+        Assert.Equal(new[] { "q1", "q2" }, job.Result.SubQueries);
+        Assert.True(job.Result.Bounds!.HitTimeLimit);
+        Assert.Equal(30000, job.Result.Bounds.ElapsedMs);
+    }
+
+    [Fact]
+    public async Task GetResearchJobAsync_ParsesAnErroredJob()
+    {
+        var handler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent("""{"status":"error","error":"llama-server exploded"}""", Encoding.UTF8, "application/json"),
+        });
+        var client = new ManaBackendClient(handler);
+
+        var job = await client.GetResearchJobAsync("job-1");
+
+        Assert.Equal("error", job.Status);
+        Assert.Equal("llama-server exploded", job.Error);
+        Assert.Null(job.Result);
+    }
+
+    [Fact]
+    public async Task CancelResearchJobAsync_PostsToTheCancelEndpoint()
+    {
+        string? path = null;
+        string? method = null;
+        var handler = new FakeHttpMessageHandler(request =>
+        {
+            path = request.RequestUri!.AbsolutePath;
+            method = request.Method.Method;
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("{\"status\":\"running\",\"cancelRequested\":true}", Encoding.UTF8, "application/json"),
+            };
+        });
+        var client = new ManaBackendClient(handler);
+
+        await client.CancelResearchJobAsync("job-1");
+
+        Assert.Equal("/research/job-1/cancel", path);
+        Assert.Equal("POST", method);
+    }
 }
