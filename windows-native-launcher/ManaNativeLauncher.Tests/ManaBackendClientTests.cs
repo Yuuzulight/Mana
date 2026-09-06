@@ -29,6 +29,65 @@ internal sealed class FakeHttpMessageHandler : HttpMessageHandler
 public class ManaBackendClientTests
 {
     [Fact]
+    public async Task GetTtsOverrideAsync_ReturnsTheOverrideOrNull()
+    {
+        var setHandler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent("{\"ok\":true,\"override\":\"kokoro\"}", Encoding.UTF8, "application/json"),
+        });
+        var setClient = new ManaBackendClient(setHandler);
+        Assert.Equal("kokoro", await setClient.GetTtsOverrideAsync());
+
+        var nullHandler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent("{\"ok\":true,\"override\":null}", Encoding.UTF8, "application/json"),
+        });
+        var nullClient = new ManaBackendClient(nullHandler);
+        Assert.Null(await nullClient.GetTtsOverrideAsync());
+    }
+
+    [Fact]
+    public async Task SetTtsOverrideAsync_PostsTheProviderOrNull()
+    {
+        string? path = null;
+        string? body = null;
+        var handler = new FakeHttpMessageHandler(request =>
+        {
+            path = request.RequestUri!.AbsolutePath;
+            body = request.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("{\"ok\":true,\"override\":\"fish\"}", Encoding.UTF8, "application/json"),
+            };
+        });
+        var client = new ManaBackendClient(handler);
+
+        await client.SetTtsOverrideAsync("fish");
+
+        Assert.Equal("/tts/override", path);
+        Assert.Contains("\"provider\":\"fish\"", body);
+    }
+
+    [Fact]
+    public async Task SetTtsOverrideAsync_PostsNullToClear()
+    {
+        string? body = null;
+        var handler = new FakeHttpMessageHandler(request =>
+        {
+            body = request.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("{\"ok\":true,\"override\":null}", Encoding.UTF8, "application/json"),
+            };
+        });
+        var client = new ManaBackendClient(handler);
+
+        await client.SetTtsOverrideAsync(null);
+
+        Assert.Contains("\"provider\":null", body);
+    }
+
+    [Fact]
     public async Task TranscribeAsync_PostsToTranscribeOnlyAndReturnsTranscript()
     {
         string? path = null;

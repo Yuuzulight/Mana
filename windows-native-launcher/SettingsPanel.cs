@@ -22,6 +22,7 @@ internal sealed class SettingsPanel : UserControl
     private readonly ListView factsList = new();
     private readonly ListView skillsList = new();
     private readonly ListView approvalsList = new();
+    private readonly ComboBox voiceProviderCombo = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 200 };
     private bool populatingPlugins;
 
     public SettingsPanel(ManaBackendClient backendClient)
@@ -37,6 +38,7 @@ internal sealed class SettingsPanel : UserControl
         tabs.TabPages.Add(BuildMemoryFactsTab());
         tabs.TabPages.Add(BuildSkillsTab());
         tabs.TabPages.Add(BuildApprovalsTab());
+        tabs.TabPages.Add(BuildVoiceTab());
         foreach (TabPage page in tabs.TabPages)
         {
             page.BackColor = DarkTheme.Background;
@@ -50,6 +52,7 @@ internal sealed class SettingsPanel : UserControl
         await RefreshMemoryFactsAsync();
         await RefreshSkillsAsync();
         await RefreshApprovalsAsync();
+        await RefreshVoiceTabAsync();
     }
 
     // #529 review: a failed load left its list untouched -- on first
@@ -414,5 +417,68 @@ internal sealed class SettingsPanel : UserControl
             item.SubItems.Add(approval.Summary);
             approvalsList.Items.Add(item);
         }
+    }
+
+    // #583: "Auto" (null override) plus the 4 providers server.js's
+    // TTS_OVERRIDE_PROVIDERS allow-lists -- selecting it clears the
+    // override rather than sending an invalid 5th value.
+    private const string AutoProviderLabel = "Auto (gaming-based)";
+    private static readonly string[] TtsProviders = { AutoProviderLabel, "fish", "kokoro", "gpt_sovits", "cli" };
+
+    private TabPage BuildVoiceTab()
+    {
+        voiceProviderCombo.BackColor = DarkTheme.Panel2;
+        voiceProviderCombo.ForeColor = DarkTheme.Text;
+        voiceProviderCombo.Items.AddRange(TtsProviders);
+
+        var saveButton = new Button { Text = "Save" };
+        DarkTheme.ApplyButton(saveButton);
+        saveButton.Click += async (_, _) => await SaveVoiceProviderAsync();
+
+        var row = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.LeftToRight, BackColor = DarkTheme.Background };
+        row.Controls.Add(voiceProviderCombo);
+        row.Controls.Add(saveButton);
+
+        return new TabPage("Voice") { Controls = { row } };
+    }
+
+    private async Task SaveVoiceProviderAsync()
+    {
+        // A null SelectedItem means nothing is selected (e.g. the initial
+        // GetTtsOverrideAsync load failed) -- not the same as the user
+        // actually choosing "Auto", so this must not fall through to
+        // treating it as "clear the override" below.
+        if (voiceProviderCombo.SelectedItem is not string selected)
+        {
+            return;
+        }
+        var provider = selected == AutoProviderLabel ? null : selected;
+        try
+        {
+            await backendClient.SetTtsOverrideAsync(provider);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, $"Failed to save voice provider: {ex.Message}", "Voice", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+    }
+
+    private async Task RefreshVoiceTabAsync()
+    {
+        string? overrideProvider;
+        try
+        {
+            overrideProvider = await backendClient.GetTtsOverrideAsync();
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"SettingsPanel: failed to load voice provider override. {ex.Message}");
+            return;
+        }
+        if (IsDisposed)
+        {
+            return;
+        }
+        voiceProviderCombo.SelectedItem = overrideProvider ?? AutoProviderLabel;
     }
 }
