@@ -17,6 +17,13 @@ internal sealed class ManaProcessManager : IDisposable
 
     public string RootDirectory { get; }
 
+    // #582: only captures output for a backend process THIS launcher
+    // spawned -- if StartAsync's health check found node-bot already
+    // running externally, backendProcess stays null and there is nothing
+    // to redirect, so the buffer just stays empty (no log to show, not
+    // an error).
+    public BackendLogBuffer BackendLog { get; } = new();
+
     // #479 review: distinct from "did THIS launch start a process handle" --
     // true whether Fish Speech was already running externally (health check
     // passed, fishSpeechProcess stays null, nothing to start) or this
@@ -245,6 +252,8 @@ internal sealed class ManaProcessManager : IDisposable
             WorkingDirectory = nodeBotDir,
             UseShellExecute = false,
             CreateNoWindow = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
         };
 
         startInfo.Environment["WHISPER_BIN"] =
@@ -265,8 +274,22 @@ internal sealed class ManaProcessManager : IDisposable
             Environment.GetEnvironmentVariable("KOKORO_TTS_FALLBACK_PROVIDER") ?? "none";
         startInfo.Environment["START_FALLBACK_CHATTERBOX"] = "0";
 
-        return Process.Start(startInfo) ??
+        var process = Process.Start(startInfo) ??
                throw new InvalidOperationException("Failed to start Mana backend.");
+
+        void OnLine(object? sender, DataReceivedEventArgs e)
+        {
+            if (e.Data is not null)
+            {
+                BackendLog.Add(e.Data);
+            }
+        }
+        process.OutputDataReceived += OnLine;
+        process.ErrorDataReceived += OnLine;
+        process.BeginOutputReadLine();
+        process.BeginErrorReadLine();
+
+        return process;
     }
 
     // Shared by StartKokoro/StartFishSpeech -- both are "python from a
