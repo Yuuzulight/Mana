@@ -89,6 +89,86 @@ public class ManaBackendClientTests
     }
 
     [Fact]
+    public async Task RequestPairingCodeAsync_PostsToPairRequestAndReturnsTheCode()
+    {
+        string? path = null;
+        var handler = new FakeHttpMessageHandler(request =>
+        {
+            path = request.RequestUri!.AbsolutePath;
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("{\"code\":\"123456\",\"expiresAt\":1700000000000}", Encoding.UTF8, "application/json"),
+            };
+        });
+        var client = new ManaBackendClient(handler);
+
+        var (code, expiresAt) = await client.RequestPairingCodeAsync();
+
+        Assert.Equal("/mobile/pair/request", path);
+        Assert.Equal("123456", code);
+        Assert.Equal(1700000000000L, expiresAt);
+    }
+
+    [Fact]
+    public async Task GetMobileDevicesAsync_ParsesTheDeviceArray()
+    {
+        var handler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(
+                """{"devices":[{"id":"d1","name":"My Phone","tokenHash":"abc","createdAt":"2026-01-01T00:00:00.000Z","lastSeenAt":null,"revoked":false},{"id":"d2","name":"Old Phone","createdAt":"2025-01-01T00:00:00.000Z","lastSeenAt":"2025-06-01T00:00:00.000Z","revoked":true}]}""",
+                Encoding.UTF8,
+                "application/json"),
+        });
+        var client = new ManaBackendClient(handler);
+
+        var devices = await client.GetMobileDevicesAsync();
+
+        Assert.Equal(2, devices.Count);
+        Assert.Equal("My Phone", devices[0].Name);
+        Assert.Null(devices[0].LastSeenAt);
+        Assert.False(devices[0].Revoked);
+        Assert.Equal("2025-06-01T00:00:00.000Z", devices[1].LastSeenAt);
+        Assert.True(devices[1].Revoked);
+    }
+
+    [Fact]
+    public async Task RevokeMobileDeviceAsync_ReturnsTrueOnSuccessAndFalseOn404()
+    {
+        var okHandler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent("{\"ok\":true}", Encoding.UTF8, "application/json"),
+        });
+        var okClient = new ManaBackendClient(okHandler);
+        Assert.True(await okClient.RevokeMobileDeviceAsync("d1"));
+
+        var notFoundHandler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.NotFound));
+        var notFoundClient = new ManaBackendClient(notFoundHandler);
+        Assert.False(await notFoundClient.RevokeMobileDeviceAsync("missing"));
+    }
+
+    [Fact]
+    public async Task RotateMobileDeviceTokenAsync_ReturnsTheNewTokenOrNullOn404()
+    {
+        string? path = null;
+        var okHandler = new FakeHttpMessageHandler(request =>
+        {
+            path = request.RequestUri!.AbsolutePath;
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("{\"token\":\"new-token-value\"}", Encoding.UTF8, "application/json"),
+            };
+        });
+        var okClient = new ManaBackendClient(okHandler);
+        var token = await okClient.RotateMobileDeviceTokenAsync("d1");
+        Assert.Equal("/mobile/devices/d1/rotate", path);
+        Assert.Equal("new-token-value", token);
+
+        var notFoundHandler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.NotFound));
+        var notFoundClient = new ManaBackendClient(notFoundHandler);
+        Assert.Null(await notFoundClient.RotateMobileDeviceTokenAsync("missing"));
+    }
+
+    [Fact]
     public async Task TranscribeAsync_PostsToTranscribeOnlyAndReturnsTranscript()
     {
         string? path = null;
