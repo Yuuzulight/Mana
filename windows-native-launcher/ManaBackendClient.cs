@@ -1011,6 +1011,45 @@ internal sealed class ManaBackendClient
         }
     }
 
+    // #578: node-bot's transient, human-facing browser-automation activity
+    // feed (plugins/browser-automation/browser-automation-activity.js) --
+    // no auth needed, same as /models/status (a read-only status readout).
+    public async Task<ManaBrowserAutomationActivity> GetBrowserAutomationActivityAsync()
+    {
+        using var response = await http.GetAsync("/browser-automation/activity");
+        response.EnsureSuccessStatusCode();
+        await using var stream = await response.Content.ReadAsStreamAsync();
+        using var document = await JsonDocument.ParseAsync(stream);
+        var root = document.RootElement;
+
+        var log = new List<ManaBrowserAutomationLogEntry>();
+        if (root.TryGetProperty("log", out var logElement) && logElement.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var entryElement in logElement.EnumerateArray())
+            {
+                log.Add(new ManaBrowserAutomationLogEntry
+                {
+                    Action = entryElement.TryGetProperty("action", out var actionElement) ? actionElement.GetString() ?? "" : "",
+                    Status = entryElement.TryGetProperty("status", out var statusElement) ? statusElement.GetString() ?? "" : "",
+                    Summary = entryElement.TryGetProperty("summary", out var summaryElement) ? summaryElement.GetString() ?? "" : "",
+                    At = entryElement.TryGetProperty("at", out var atElement) ? atElement.GetString() ?? "" : "",
+                });
+            }
+        }
+
+        // The screenshot's own "at" isn't read here -- staleness is judged
+        // from the log's last entry timestamp, matching windows-launcher's
+        // own refreshBrowserAutomationActivity exactly.
+        string? screenshotBase64 = null;
+        if (root.TryGetProperty("screenshot", out var screenshotElement) && screenshotElement.ValueKind == JsonValueKind.Object
+            && screenshotElement.TryGetProperty("base64", out var base64Element))
+        {
+            screenshotBase64 = base64Element.GetString();
+        }
+
+        return new ManaBrowserAutomationActivity { Log = log, ScreenshotBase64 = screenshotBase64 };
+    }
+
     // #577: node-bot's deep-research job store (capabilities/deep-research-
     // capability.js) -- 202-Accepted with a jobId, polled via
     // GetResearchJobAsync. sessionId, when given, is what lets the
@@ -1344,6 +1383,22 @@ internal sealed class ReplyStreamEvent
     public bool Changed { get; init; }
     public string? Expression { get; init; }
     public string? Error { get; init; }
+}
+
+// #578: GET /browser-automation/activity's shape -- see
+// browser-automation-activity.js's own getActivity.
+internal sealed class ManaBrowserAutomationActivity
+{
+    public IReadOnlyList<ManaBrowserAutomationLogEntry> Log { get; init; } = Array.Empty<ManaBrowserAutomationLogEntry>();
+    public string? ScreenshotBase64 { get; init; }
+}
+
+internal sealed class ManaBrowserAutomationLogEntry
+{
+    public string Action { get; init; } = "";
+    public string Status { get; init; } = "";
+    public string Summary { get; init; } = "";
+    public string At { get; init; } = "";
 }
 
 // #577: GET /research/:jobId's shape -- see deep-research-capability.js's
