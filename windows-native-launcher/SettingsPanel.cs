@@ -22,6 +22,7 @@ internal sealed class SettingsPanel : UserControl
     private readonly ListView factsList = new();
     private readonly ListView skillsList = new();
     private readonly ListView approvalsList = new();
+    private readonly ListView presetsList = new();
     private bool populatingPlugins;
 
     public SettingsPanel(ManaBackendClient backendClient)
@@ -37,6 +38,7 @@ internal sealed class SettingsPanel : UserControl
         tabs.TabPages.Add(BuildMemoryFactsTab());
         tabs.TabPages.Add(BuildSkillsTab());
         tabs.TabPages.Add(BuildApprovalsTab());
+        tabs.TabPages.Add(BuildPresetsTab());
         foreach (TabPage page in tabs.TabPages)
         {
             page.BackColor = DarkTheme.Background;
@@ -50,6 +52,7 @@ internal sealed class SettingsPanel : UserControl
         await RefreshMemoryFactsAsync();
         await RefreshSkillsAsync();
         await RefreshApprovalsAsync();
+        await RefreshPresetsAsync();
     }
 
     // #529 review: a failed load left its list untouched -- on first
@@ -413,6 +416,153 @@ internal sealed class SettingsPanel : UserControl
             var item = new ListViewItem(approval.ActionType) { Tag = approval.Id };
             item.SubItems.Add(approval.Summary);
             approvalsList.Items.Add(item);
+        }
+    }
+
+    // #573: full CRUD, unlike the Skills tab above (view/delete only,
+    // per its own documented scope cut) -- presets-capability.js exposes
+    // a real PATCH route, so Edit reuses the same PresetDialog New does,
+    // pre-filled from the selected item's full ManaPreset (kept as the
+    // item's Tag so Edit doesn't need a round-trip just to get the
+    // current instructions text back).
+    private TabPage BuildPresetsTab()
+    {
+        presetsList.Dock = DockStyle.Fill;
+        presetsList.View = View.Details;
+        presetsList.FullRowSelect = true;
+        presetsList.Columns.Add("Name", 200);
+        DarkTheme.ApplyListView(presetsList);
+
+        var newButton = new Button { Text = "New..." };
+        var editButton = new Button { Text = "Edit..." };
+        var deleteButton = new Button { Text = "Delete" };
+        DarkTheme.ApplyButton(newButton);
+        DarkTheme.ApplyButton(editButton);
+        DarkTheme.ApplyButton(deleteButton);
+        newButton.Click += async (_, _) => await CreatePresetAsync();
+        editButton.Click += async (_, _) => await EditSelectedPresetAsync();
+        deleteButton.Click += async (_, _) => await DeleteSelectedPresetAsync();
+
+        var buttonRow = new FlowLayoutPanel { Dock = DockStyle.Bottom, Height = 32, FlowDirection = FlowDirection.LeftToRight, BackColor = DarkTheme.Background };
+        buttonRow.Controls.Add(newButton);
+        buttonRow.Controls.Add(editButton);
+        buttonRow.Controls.Add(deleteButton);
+
+        var page = new TabPage("Presets");
+        page.Controls.Add(presetsList);
+        page.Controls.Add(buttonRow);
+        return page;
+    }
+
+    private async Task CreatePresetAsync()
+    {
+        using var dialog = new PresetDialog("New Preset");
+        if (dialog.ShowDialog(this) != DialogResult.OK)
+        {
+            return;
+        }
+
+        try
+        {
+            await backendClient.CreatePresetAsync(dialog.PresetName, dialog.Instructions);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, $"Failed to create preset: {ex.Message}", "New Preset", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            return;
+        }
+        if (!IsDisposed)
+        {
+            await RefreshPresetsAsync();
+        }
+    }
+
+    private async Task EditSelectedPresetAsync()
+    {
+        if (presetsList.SelectedItems.Count == 0)
+        {
+            return;
+        }
+        var preset = (ManaPreset)presetsList.SelectedItems[0].Tag!;
+        using var dialog = new PresetDialog("Edit Preset", preset.Name, preset.Instructions);
+        if (dialog.ShowDialog(this) != DialogResult.OK)
+        {
+            return;
+        }
+
+        try
+        {
+            await backendClient.UpdatePresetAsync(preset.Id, dialog.PresetName, dialog.Instructions);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, $"Failed to update preset: {ex.Message}", "Edit Preset", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            return;
+        }
+        if (!IsDisposed)
+        {
+            await RefreshPresetsAsync();
+        }
+    }
+
+    private async Task DeleteSelectedPresetAsync()
+    {
+        if (presetsList.SelectedItems.Count == 0)
+        {
+            return;
+        }
+        var preset = (ManaPreset)presetsList.SelectedItems[0].Tag!;
+        var confirmed = MessageBox.Show(
+            this,
+            $"Delete preset \"{preset.Name}\"? This cannot be undone.",
+            "Delete Preset",
+            MessageBoxButtons.YesNo,
+            MessageBoxIcon.Warning) == DialogResult.Yes;
+        if (!confirmed)
+        {
+            return;
+        }
+
+        try
+        {
+            await backendClient.DeletePresetAsync(preset.Id);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"SettingsPanel: failed to delete preset '{preset.Id}'. {ex.Message}");
+            return;
+        }
+        if (!IsDisposed)
+        {
+            await RefreshPresetsAsync();
+        }
+    }
+
+    private async Task RefreshPresetsAsync()
+    {
+        System.Collections.Generic.IReadOnlyList<ManaPreset> presets;
+        try
+        {
+            presets = await backendClient.GetPresetsAsync();
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"SettingsPanel: failed to load presets. {ex.Message}");
+            if (!IsDisposed)
+            {
+                ShowLoadFailure(presetsList, ex.Message);
+            }
+            return;
+        }
+        if (IsDisposed)
+        {
+            return;
+        }
+
+        presetsList.Items.Clear();
+        foreach (var preset in presets)
+        {
+            presetsList.Items.Add(new ListViewItem(preset.Name) { Tag = preset });
         }
     }
 }
