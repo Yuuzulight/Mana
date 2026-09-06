@@ -203,6 +203,10 @@ internal sealed class ManaBackendClient
     // #527: node-bot's configured llama-server profiles -- see
     // model-management.js's getModelStatus/buildProfileStatus for the
     // full shape; this only carries what compare-mode needs.
+    // #572: brain/vision were added to the parsed shape here -- apiKey is
+    // never echoed by node-bot (model-management.js's own comment: "same
+    // reasoning as auth-store.js never returning a stored keyHash"), only
+    // whether one is configured.
     public async Task<ManaModelStatus> GetModelStatusAsync()
     {
         using var response = await http.GetAsync("/models/status");
@@ -229,7 +233,130 @@ internal sealed class ManaBackendClient
             }
         }
 
-        return new ManaModelStatus { ActiveProfile = activeProfile, Profiles = profiles };
+        var brain = root.TryGetProperty("brain", out var brainEl) ? brainEl : default;
+        var vision = root.TryGetProperty("vision", out var visionEl) ? visionEl : default;
+
+        return new ManaModelStatus
+        {
+            ActiveProfile = activeProfile,
+            Profiles = profiles,
+            SelectedModelPath = root.TryGetProperty("selectedModelPath", out var selectedEl) ? selectedEl.GetString() : null,
+            BrainType = brain.ValueKind == JsonValueKind.Object && brain.TryGetProperty("type", out var typeEl) ? typeEl.GetString() ?? "local" : "local",
+            BrainBaseUrl = brain.ValueKind == JsonValueKind.Object && brain.TryGetProperty("baseUrl", out var baseUrlEl) ? baseUrlEl.GetString() ?? "" : "",
+            BrainModel = brain.ValueKind == JsonValueKind.Object && brain.TryGetProperty("model", out var brainModelEl) ? brainModelEl.GetString() ?? "" : "",
+            BrainHasApiKey = brain.ValueKind == JsonValueKind.Object && brain.TryGetProperty("hasApiKey", out var hasKeyEl) && hasKeyEl.GetBoolean(),
+            VisionModelPath = vision.ValueKind == JsonValueKind.Object && vision.TryGetProperty("modelPath", out var visionModelEl) ? visionModelEl.GetString() ?? "" : "",
+            VisionMmprojPath = vision.ValueKind == JsonValueKind.Object && vision.TryGetProperty("mmprojPath", out var mmprojEl) ? mmprojEl.GetString() ?? "" : "",
+        };
+    }
+
+    public async Task SetActiveProfileAsync(string profile)
+    {
+        var payload = JsonSerializer.Serialize(new { profile });
+        using var content = new StringContent(payload, Encoding.UTF8, "application/json");
+        using var response = await http.PostAsync("/models/active-profile", content);
+        response.EnsureSuccessStatusCode();
+    }
+
+    // #572: roots lets a caller scope the scan (e.g. one chosen drive)
+    // instead of model-management.js's own default (home dir + every
+    // drive letter) -- null/omitted uses that default.
+    public async Task<ManaGgufScanResult> ScanForModelsAsync(IReadOnlyList<string>? roots = null)
+    {
+        var payload = roots is null ? "{}" : JsonSerializer.Serialize(new { roots });
+        using var content = new StringContent(payload, Encoding.UTF8, "application/json");
+        using var response = await http.PostAsync("/models/scan", content);
+        response.EnsureSuccessStatusCode();
+        await using var stream = await response.Content.ReadAsStreamAsync();
+        using var document = await JsonDocument.ParseAsync(stream);
+        var root = document.RootElement;
+        var files = new List<ManaGgufFile>();
+        if (root.TryGetProperty("found", out var foundElement))
+        {
+            foreach (var entry in foundElement.EnumerateArray())
+            {
+                files.Add(new ManaGgufFile
+                {
+                    Path = entry.TryGetProperty("path", out var pathEl) ? pathEl.GetString() ?? "" : "",
+                    Name = entry.TryGetProperty("name", out var nameEl) ? nameEl.GetString() ?? "" : "",
+                    SizeBytes = entry.TryGetProperty("sizeBytes", out var sizeEl) ? sizeEl.GetInt64() : 0,
+                });
+            }
+        }
+        return new ManaGgufScanResult
+        {
+            Files = files,
+            Truncated = root.TryGetProperty("truncated", out var truncatedEl) && truncatedEl.GetBoolean(),
+        };
+    }
+
+    // #572: modelPath: null/"" clears the override back to auto-detection
+    // (model-management.js's own setModelPath), matching every other
+    // clear-by-empty-string convention this route family already uses.
+    public async Task SetModelPathAsync(string? modelPath)
+    {
+        var payload = JsonSerializer.Serialize(new { modelPath });
+        using var content = new StringContent(payload, Encoding.UTF8, "application/json");
+        using var response = await http.PostAsync("/models/path", content);
+        response.EnsureSuccessStatusCode();
+    }
+
+    // #572: apiKey is write-only -- passing null leaves the currently
+    // configured key untouched (setBrainSettings only overwrites a field
+    // when the corresponding partial key is actually present), so a
+    // caller updating just the baseUrl/model doesn't need to re-enter it.
+    public async Task SetBrainSettingsAsync(string type, string? baseUrl, string? apiKey, string? model)
+    {
+        var payload = JsonSerializer.Serialize(new { type, baseUrl, apiKey, model });
+        using var content = new StringContent(payload, Encoding.UTF8, "application/json");
+        using var response = await http.PostAsync("/models/brain-provider", content);
+        response.EnsureSuccessStatusCode();
+    }
+
+    public async Task<IReadOnlyList<ManaBrainProviderPreset>> GetBrainProvidersAsync()
+    {
+        using var response = await http.GetAsync("/models/brain-providers");
+        response.EnsureSuccessStatusCode();
+        await using var stream = await response.Content.ReadAsStreamAsync();
+        using var document = await JsonDocument.ParseAsync(stream);
+        var presets = new List<ManaBrainProviderPreset>();
+        foreach (var entry in document.RootElement.EnumerateArray())
+        {
+            presets.Add(new ManaBrainProviderPreset
+            {
+                Id = entry.TryGetProperty("id", out var idEl) ? idEl.GetString() ?? "" : "",
+                Label = entry.TryGetProperty("label", out var labelEl) ? labelEl.GetString() ?? "" : "",
+                BaseUrl = entry.TryGetProperty("baseUrl", out var baseUrlEl) ? baseUrlEl.GetString() ?? "" : "",
+                NeedsKey = entry.TryGetProperty("needsKey", out var needsKeyEl) && needsKeyEl.GetBoolean(),
+            });
+        }
+        return presets;
+    }
+
+    // #572: this is the one /models/* route node-bot restricts to local
+    // requests only (SSRF guard -- see server-routes.js's own comment on
+    // this route), so a non-local backend URL configured in the Connection
+    // tab will make this 403. That's expected, not a bug in this client.
+    public async Task<(bool Ok, string? Error)> TestBrainConnectionAsync(string baseUrl, string? apiKey)
+    {
+        var payload = JsonSerializer.Serialize(new { baseUrl, apiKey });
+        using var content = new StringContent(payload, Encoding.UTF8, "application/json");
+        using var response = await http.PostAsync("/models/brain-provider/test", content);
+        response.EnsureSuccessStatusCode();
+        await using var stream = await response.Content.ReadAsStreamAsync();
+        using var document = await JsonDocument.ParseAsync(stream);
+        var root = document.RootElement;
+        return (root.TryGetProperty("ok", out var okEl) && okEl.GetBoolean(), root.TryGetProperty("error", out var errorEl) ? errorEl.GetString() : null);
+    }
+
+    // #572: "" clears either field back to auto-detection, matching
+    // setVisionSettings's own convention.
+    public async Task SetVisionSettingsAsync(string? modelPath, string? mmprojPath)
+    {
+        var payload = JsonSerializer.Serialize(new { modelPath, mmprojPath });
+        using var content = new StringContent(payload, Encoding.UTF8, "application/json");
+        using var response = await http.PostAsync("/models/vision-path", content);
+        response.EnsureSuccessStatusCode();
     }
 
     // #520: node-bot's ACP memory-store sessions -- see
@@ -498,11 +625,41 @@ internal sealed class ManaPerformanceStatus
     public bool GamingAppRunning { get; init; }
 }
 
-// #527: GET /models/status.
+// #527/#572: GET /models/status.
 internal sealed class ManaModelStatus
 {
     public string? ActiveProfile { get; init; }
     public IReadOnlyDictionary<string, ManaModelProfile> Profiles { get; init; } = new Dictionary<string, ManaModelProfile>();
+    public string? SelectedModelPath { get; init; }
+    public string BrainType { get; init; } = "local";
+    public string BrainBaseUrl { get; init; } = "";
+    public string BrainModel { get; init; } = "";
+    public bool BrainHasApiKey { get; init; }
+    public string VisionModelPath { get; init; } = "";
+    public string VisionMmprojPath { get; init; } = "";
+}
+
+// #572: one entry from GET /models/brain-providers.
+internal sealed class ManaBrainProviderPreset
+{
+    public string Id { get; init; } = "";
+    public string Label { get; init; } = "";
+    public string BaseUrl { get; init; } = "";
+    public bool NeedsKey { get; init; }
+}
+
+// #572: POST /models/scan's response.
+internal sealed class ManaGgufScanResult
+{
+    public IReadOnlyList<ManaGgufFile> Files { get; init; } = System.Array.Empty<ManaGgufFile>();
+    public bool Truncated { get; init; }
+}
+
+internal sealed class ManaGgufFile
+{
+    public string Path { get; init; } = "";
+    public string Name { get; init; } = "";
+    public long SizeBytes { get; init; }
 }
 
 internal sealed class ManaModelProfile

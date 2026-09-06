@@ -942,6 +942,212 @@ public class ManaBackendClientTests
     }
 
     [Fact]
+    public async Task GetModelStatusAsync_ParsesBrainAndVisionFields()
+    {
+        var handler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(
+                """{"activeProfile":"default","profiles":{},"selectedModelPath":"C:\\models\\a.gguf","brain":{"type":"openai_compatible","baseUrl":"https://api.openai.com/v1","model":"gpt-4o","hasApiKey":true},"vision":{"modelPath":"C:\\models\\v.gguf","mmprojPath":"C:\\models\\mmproj.gguf"}}""",
+                Encoding.UTF8,
+                "application/json"),
+        });
+        var client = new ManaBackendClient(handler);
+
+        var status = await client.GetModelStatusAsync();
+
+        Assert.Equal(@"C:\models\a.gguf", status.SelectedModelPath);
+        Assert.Equal("openai_compatible", status.BrainType);
+        Assert.Equal("https://api.openai.com/v1", status.BrainBaseUrl);
+        Assert.Equal("gpt-4o", status.BrainModel);
+        Assert.True(status.BrainHasApiKey);
+        Assert.Equal(@"C:\models\v.gguf", status.VisionModelPath);
+        Assert.Equal(@"C:\models\mmproj.gguf", status.VisionMmprojPath);
+    }
+
+    [Fact]
+    public async Task GetModelStatusAsync_DefaultsBrainTypeToLocalWhenBrainIsMissing()
+    {
+        var handler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent("{}", Encoding.UTF8, "application/json"),
+        });
+        var client = new ManaBackendClient(handler);
+
+        var status = await client.GetModelStatusAsync();
+
+        Assert.Equal("local", status.BrainType);
+        Assert.False(status.BrainHasApiKey);
+        Assert.Null(status.SelectedModelPath);
+    }
+
+    [Fact]
+    public async Task SetActiveProfileAsync_PostsTheProfileName()
+    {
+        string? path = null;
+        string? body = null;
+        var handler = new FakeHttpMessageHandler(request =>
+        {
+            path = request.RequestUri!.AbsolutePath;
+            body = request.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("{}", Encoding.UTF8, "application/json"),
+            };
+        });
+        var client = new ManaBackendClient(handler);
+
+        await client.SetActiveProfileAsync("quality");
+
+        Assert.Equal("/models/active-profile", path);
+        Assert.Contains("\"profile\":\"quality\"", body);
+    }
+
+    [Fact]
+    public async Task ScanForModelsAsync_ParsesFoundFilesAndTruncated()
+    {
+        var handler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(
+                """{"found":[{"path":"C:\\models\\a.gguf","name":"a.gguf","sizeBytes":123456}],"truncated":true,"dirsVisited":100}""",
+                Encoding.UTF8,
+                "application/json"),
+        });
+        var client = new ManaBackendClient(handler);
+
+        var result = await client.ScanForModelsAsync();
+
+        var file = Assert.Single(result.Files);
+        Assert.Equal(@"C:\models\a.gguf", file.Path);
+        Assert.Equal(123456, file.SizeBytes);
+        Assert.True(result.Truncated);
+    }
+
+    [Fact]
+    public async Task SetModelPathAsync_PostsTheGivenPathOrNull()
+    {
+        string? body = null;
+        var handler = new FakeHttpMessageHandler(request =>
+        {
+            body = request.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("{}", Encoding.UTF8, "application/json"),
+            };
+        });
+        var client = new ManaBackendClient(handler);
+
+        await client.SetModelPathAsync(null);
+
+        Assert.Contains("\"modelPath\":null", body);
+    }
+
+    [Fact]
+    public async Task SetBrainSettingsAsync_PostsAllFields()
+    {
+        string? path = null;
+        string? body = null;
+        var handler = new FakeHttpMessageHandler(request =>
+        {
+            path = request.RequestUri!.AbsolutePath;
+            body = request.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("{}", Encoding.UTF8, "application/json"),
+            };
+        });
+        var client = new ManaBackendClient(handler);
+
+        await client.SetBrainSettingsAsync("openai_compatible", "https://api.openai.com/v1", "sk-abc", "gpt-4o");
+
+        Assert.Equal("/models/brain-provider", path);
+        Assert.Contains("\"type\":\"openai_compatible\"", body);
+        Assert.Contains("\"apiKey\":\"sk-abc\"", body);
+    }
+
+    [Fact]
+    public async Task SetBrainSettingsAsync_OmitsApiKeyAsNullWhenNotGiven()
+    {
+        string? body = null;
+        var handler = new FakeHttpMessageHandler(request =>
+        {
+            body = request.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("{}", Encoding.UTF8, "application/json"),
+            };
+        });
+        var client = new ManaBackendClient(handler);
+
+        await client.SetBrainSettingsAsync("local", "http://127.0.0.1:11434/v1", null, "");
+
+        Assert.Contains("\"apiKey\":null", body);
+    }
+
+    [Fact]
+    public async Task GetBrainProvidersAsync_ParsesTheBareArray()
+    {
+        var handler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(
+                """[{"id":"openai","label":"OpenAI","baseUrl":"https://api.openai.com/v1","needsKey":true},{"id":"ollama","label":"Ollama (local)","baseUrl":"http://127.0.0.1:11434/v1","needsKey":false}]""",
+                Encoding.UTF8,
+                "application/json"),
+        });
+        var client = new ManaBackendClient(handler);
+
+        var presets = await client.GetBrainProvidersAsync();
+
+        Assert.Equal(2, presets.Count);
+        Assert.Equal("OpenAI", presets[0].Label);
+        Assert.True(presets[0].NeedsKey);
+        Assert.False(presets[1].NeedsKey);
+    }
+
+    [Fact]
+    public async Task TestBrainConnectionAsync_ParsesOkAndError()
+    {
+        var okHandler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent("{\"ok\":true}", Encoding.UTF8, "application/json"),
+        });
+        var okClient = new ManaBackendClient(okHandler);
+        var (ok, _) = await okClient.TestBrainConnectionAsync("http://127.0.0.1:11434/v1", null);
+        Assert.True(ok);
+
+        var failHandler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent("{\"ok\":false,\"error\":\"connection refused\"}", Encoding.UTF8, "application/json"),
+        });
+        var failClient = new ManaBackendClient(failHandler);
+        var (failOk, error) = await failClient.TestBrainConnectionAsync("http://127.0.0.1:9/v1", null);
+        Assert.False(failOk);
+        Assert.Equal("connection refused", error);
+    }
+
+    [Fact]
+    public async Task SetVisionSettingsAsync_PostsBothPaths()
+    {
+        string? path = null;
+        string? body = null;
+        var handler = new FakeHttpMessageHandler(request =>
+        {
+            path = request.RequestUri!.AbsolutePath;
+            body = request.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("{}", Encoding.UTF8, "application/json"),
+            };
+        });
+        var client = new ManaBackendClient(handler);
+
+        await client.SetVisionSettingsAsync("C:\\models\\v.gguf", "");
+
+        Assert.Equal("/models/vision-path", path);
+        Assert.Contains(@"""modelPath"":""C:\\models\\v.gguf""", body);
+        Assert.Contains("\"mmprojPath\":\"\"", body);
+    }
+
+    [Fact]
     public async Task GetModelStatusAsync_ParsesActiveProfileAndProfiles()
     {
         var handler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
