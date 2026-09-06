@@ -5,16 +5,13 @@ using System.Windows.Forms;
 
 namespace Mana.NativeLauncher;
 
-// #529: a lean settings surface -- plugins (enable/disable), memory
-// facts (view/archive), skills (view/delete), and the approval-gate
-// queue (approve/deny). Explicitly the lowest-priority piece of the
-// native-launcher-parity batch, per this issue's own scope note, so
-// each tab is a plain ListView with the one or two actions that matter
-// most, not a full editor. Skill creation/editing (a large form for a
-// skill's full body) and a live backend log tail (would need
-// ManaProcessManager to start redirecting/buffering node-bot's stdout,
-// a distinct feature of its own) are both left out -- see this issue's
-// PR description for the full reasoning.
+// #529/#581: a lean settings surface -- plugins (enable/disable), memory
+// facts (view/archive), skills (view/edit/create/delete via
+// SkillEditorDialog, #581), and the approval-gate queue (approve/deny).
+// A live backend log tail (would need ManaProcessManager to start
+// redirecting/buffering node-bot's stdout, a distinct feature of its
+// own) is still left out -- see this issue's PR description for the
+// full reasoning.
 internal sealed class SettingsPanel : UserControl
 {
     private readonly ManaBackendClient backendClient;
@@ -237,14 +234,98 @@ internal sealed class SettingsPanel : UserControl
         skillsList.Columns.Add("Status", 80);
         DarkTheme.ApplyListView(skillsList);
 
-        var deleteButton = new Button { Text = "Delete", Dock = DockStyle.Bottom, Height = 28 };
+        var newButton = new Button { Text = "New..." };
+        var editButton = new Button { Text = "Edit..." };
+        var deleteButton = new Button { Text = "Delete" };
+        DarkTheme.ApplyButton(newButton);
+        DarkTheme.ApplyButton(editButton);
         DarkTheme.ApplyButton(deleteButton);
+        newButton.Click += async (_, _) => await CreateSkillAsync();
+        editButton.Click += async (_, _) => await EditSelectedSkillAsync();
         deleteButton.Click += async (_, _) => await DeleteSelectedSkillAsync();
+
+        var buttonRow = new FlowLayoutPanel { Dock = DockStyle.Bottom, Height = 32, FlowDirection = FlowDirection.LeftToRight, BackColor = DarkTheme.Background };
+        buttonRow.Controls.Add(newButton);
+        buttonRow.Controls.Add(editButton);
+        buttonRow.Controls.Add(deleteButton);
 
         var page = new TabPage("Skills");
         page.Controls.Add(skillsList);
-        page.Controls.Add(deleteButton);
+        page.Controls.Add(buttonRow);
         return page;
+    }
+
+    private async Task CreateSkillAsync()
+    {
+        using var dialog = new SkillEditorDialog("New Skill", isNew: true);
+        if (dialog.ShowDialog(this) != DialogResult.OK)
+        {
+            return;
+        }
+
+        bool createdImmediately;
+        try
+        {
+            createdImmediately = await backendClient.CreateSkillAsync(dialog.SkillName, dialog.Description, dialog.Body, dialog.Category);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, $"Failed to create skill: {ex.Message}", "New Skill", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            return;
+        }
+        if (IsDisposed)
+        {
+            return;
+        }
+        if (!createdImmediately)
+        {
+            MessageBox.Show(this, "Skill submitted -- approve it from the Approvals tab.", "New Skill", MessageBoxButtons.OK, MessageBoxIcon.Information);
+        }
+        await RefreshSkillsAsync();
+    }
+
+    private async Task EditSelectedSkillAsync()
+    {
+        if (skillsList.SelectedItems.Count == 0)
+        {
+            return;
+        }
+        var name = (string)skillsList.SelectedItems[0].Tag!;
+
+        ManaSkillDetail detail;
+        try
+        {
+            detail = await backendClient.GetSkillDetailAsync(name);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, $"Failed to load skill: {ex.Message}", "Edit Skill", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            return;
+        }
+        if (IsDisposed)
+        {
+            return;
+        }
+
+        using var dialog = new SkillEditorDialog("Edit Skill", isNew: false, detail.Name, detail.Description, detail.Body, detail.Category);
+        if (dialog.ShowDialog(this) != DialogResult.OK)
+        {
+            return;
+        }
+
+        try
+        {
+            await backendClient.UpdateSkillAsync(name, dialog.Description, dialog.Body, dialog.Category);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, $"Failed to update skill: {ex.Message}", "Edit Skill", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            return;
+        }
+        if (!IsDisposed)
+        {
+            await RefreshSkillsAsync();
+        }
     }
 
     private async Task DeleteSelectedSkillAsync()
