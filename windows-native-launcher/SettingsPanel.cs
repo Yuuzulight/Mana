@@ -5,28 +5,30 @@ using System.Windows.Forms;
 
 namespace Mana.NativeLauncher;
 
-// #529: a lean settings surface -- plugins (enable/disable), memory
-// facts (view/archive), skills (view/delete), and the approval-gate
-// queue (approve/deny). Explicitly the lowest-priority piece of the
-// native-launcher-parity batch, per this issue's own scope note, so
-// each tab is a plain ListView with the one or two actions that matter
-// most, not a full editor. Skill creation/editing (a large form for a
-// skill's full body) and a live backend log tail (would need
-// ManaProcessManager to start redirecting/buffering node-bot's stdout,
-// a distinct feature of its own) are both left out -- see this issue's
-// PR description for the full reasoning.
+// #529/#582: a lean settings surface -- plugins (enable/disable), memory
+// facts (view/archive), skills (view/delete), the approval-gate queue
+// (approve/deny), and (#582) a live backend log tail. Explicitly the
+// lowest-priority piece of the native-launcher-parity batch, per issue
+// #529's own scope note, so most tabs are a plain ListView with the one
+// or two actions that matter most, not a full editor. Skill creation/
+// editing (a large form for a skill's full body) is still left out --
+// see this issue's PR description for the full reasoning.
 internal sealed class SettingsPanel : UserControl
 {
     private readonly ManaBackendClient backendClient;
+    private readonly BackendLogBuffer backendLog;
     private readonly ListView pluginsList = new();
     private readonly ListView factsList = new();
     private readonly ListView skillsList = new();
     private readonly ListView approvalsList = new();
+    private readonly TextBox logsTextBox = new() { Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Vertical, Dock = DockStyle.Fill };
+    private readonly System.Windows.Forms.Timer logRefreshTimer = new() { Interval = 1000 };
     private bool populatingPlugins;
 
-    public SettingsPanel(ManaBackendClient backendClient)
+    public SettingsPanel(ManaBackendClient backendClient, BackendLogBuffer backendLog)
     {
         this.backendClient = backendClient;
+        this.backendLog = backendLog;
         Dock = DockStyle.Fill;
         BackColor = DarkTheme.Background;
         ForeColor = DarkTheme.Text;
@@ -37,6 +39,7 @@ internal sealed class SettingsPanel : UserControl
         tabs.TabPages.Add(BuildMemoryFactsTab());
         tabs.TabPages.Add(BuildSkillsTab());
         tabs.TabPages.Add(BuildApprovalsTab());
+        tabs.TabPages.Add(BuildLogsTab());
         foreach (TabPage page in tabs.TabPages)
         {
             page.BackColor = DarkTheme.Background;
@@ -414,5 +417,48 @@ internal sealed class SettingsPanel : UserControl
             item.SubItems.Add(approval.Summary);
             approvalsList.Items.Add(item);
         }
+    }
+
+    // #582: "live" -- a self-driving 1s timer, not just a refresh-on-open
+    // snapshot like every other tab here, since the whole point of a log
+    // tail is watching it update while the dialog stays open. The buffer
+    // itself (BackendLogBuffer, fed by ManaProcessManager) only has
+    // content when this launcher actually spawned the backend process --
+    // an externally-already-running backend has nothing to redirect from.
+    private TabPage BuildLogsTab()
+    {
+        logsTextBox.BackColor = DarkTheme.Panel2;
+        logsTextBox.ForeColor = DarkTheme.Text;
+        logsTextBox.Font = new Font(FontFamily.GenericMonospace, 9);
+
+        RefreshLogsTab();
+        logRefreshTimer.Tick += (_, _) => RefreshLogsTab();
+        logRefreshTimer.Start();
+
+        return new TabPage("Logs") { Controls = { logsTextBox } };
+    }
+
+    private void RefreshLogsTab()
+    {
+        if (IsDisposed)
+        {
+            return;
+        }
+        var lines = backendLog.Snapshot();
+        logsTextBox.Text = lines.Count == 0
+            ? "(no backend log output captured -- the backend may already have been running before Mana started it)"
+            : string.Join(Environment.NewLine, lines);
+        logsTextBox.SelectionStart = logsTextBox.Text.Length;
+        logsTextBox.ScrollToCaret();
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing)
+        {
+            logRefreshTimer.Stop();
+            logRefreshTimer.Dispose();
+        }
+        base.Dispose(disposing);
     }
 }

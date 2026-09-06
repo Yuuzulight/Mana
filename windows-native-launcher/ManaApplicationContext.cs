@@ -75,7 +75,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
         // #523: Ctrl+Alt+M asks Mana to look at the screen, through the
         // same reply/TTS pipeline a normal turn uses.
         visionHotkeyListener = new VisionHotkeyListener(() => _ = voiceLoop.SubmitVisionHotkeyAsync());
-        sessionListForm = new SessionListForm(backendClient, voiceLoop, chatLog, avatarOverlay);
+        sessionListForm = new SessionListForm(backendClient, voiceLoop, chatLog, avatarOverlay, processManager.BackendLog);
         // #525: Ctrl+Alt+Space types a command instead of speaking one,
         // through the exact same turn-processing path.
         quickEntry = new QuickEntryForm(voiceLoop.SubmitTypedCommandAsync);
