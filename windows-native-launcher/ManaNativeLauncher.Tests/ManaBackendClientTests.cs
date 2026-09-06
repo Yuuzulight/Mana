@@ -30,6 +30,115 @@ internal sealed class FakeHttpMessageHandler : HttpMessageHandler
 public class ManaBackendClientTests
 {
     [Fact]
+    public async Task GetVTubeStatusAsync_ParsesA200WhenConnected()
+    {
+        var handler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(
+                """{"enabled":true,"connected":true,"authenticated":true,"url":"ws://127.0.0.1:8001","state":{}}""",
+                Encoding.UTF8,
+                "application/json"),
+        });
+        var client = new ManaBackendClient(handler);
+
+        var status = await client.GetVTubeStatusAsync();
+
+        Assert.True(status.Enabled);
+        Assert.True(status.Connected);
+        Assert.True(status.Authenticated);
+        Assert.Equal("ws://127.0.0.1:8001", status.Url);
+    }
+
+    [Fact]
+    public async Task GetVTubeStatusAsync_ParsesA503WhenEnabledButUnreachableInsteadOfThrowing()
+    {
+        var handler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.ServiceUnavailable)
+        {
+            Content = new StringContent(
+                """{"enabled":true,"connected":false,"authenticated":false,"url":"ws://127.0.0.1:8001","error":"connection refused"}""",
+                Encoding.UTF8,
+                "application/json"),
+        });
+        var client = new ManaBackendClient(handler);
+
+        var status = await client.GetVTubeStatusAsync();
+
+        Assert.True(status.Enabled);
+        Assert.False(status.Connected);
+        Assert.Equal("connection refused", status.Error);
+    }
+
+    [Fact]
+    public async Task GetVTubeStatusAsync_ThrowsOn500()
+    {
+        var handler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.InternalServerError));
+        var client = new ManaBackendClient(handler);
+
+        await Assert.ThrowsAsync<HttpRequestException>(() => client.GetVTubeStatusAsync());
+    }
+
+    [Fact]
+    public async Task AuthenticateVTubeStudioAsync_PostsAndReturnsAuthenticated()
+    {
+        string? path = null;
+        var handler = new FakeHttpMessageHandler(request =>
+        {
+            path = request.RequestUri!.AbsolutePath;
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("{\"authenticated\":true,\"tokenCreated\":false}", Encoding.UTF8, "application/json"),
+            };
+        });
+        var client = new ManaBackendClient(handler);
+
+        var authenticated = await client.AuthenticateVTubeStudioAsync();
+
+        Assert.Equal("/vtube/auth", path);
+        Assert.True(authenticated);
+    }
+
+    [Fact]
+    public async Task GetVTubeHotkeysAsync_ParsesTheHotkeyArray()
+    {
+        var handler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(
+                """{"hotkeys":[{"hotkeyID":"abc-1","name":"Wave","type":"TriggerAnimation"}]}""",
+                Encoding.UTF8,
+                "application/json"),
+        });
+        var client = new ManaBackendClient(handler);
+
+        var hotkeys = await client.GetVTubeHotkeysAsync();
+
+        var hotkey = Assert.Single(hotkeys);
+        Assert.Equal("abc-1", hotkey.Id);
+        Assert.Equal("Wave", hotkey.Name);
+    }
+
+    [Fact]
+    public async Task TriggerVTubeHotkeyAsync_PostsTheHotkeyId()
+    {
+        string? path = null;
+        string? body = null;
+        var handler = new FakeHttpMessageHandler(request =>
+        {
+            path = request.RequestUri!.AbsolutePath;
+            body = request.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("{\"ok\":true}", Encoding.UTF8, "application/json"),
+            };
+        });
+        var client = new ManaBackendClient(handler);
+
+        await client.TriggerVTubeHotkeyAsync("abc-1");
+
+        Assert.Equal("/vtube/hotkey", path);
+        Assert.Contains("\"hotkeyID\":\"abc-1\"", body);
+    }
+
+    [Fact]
     public async Task GetMcpServersAsync_ParsesServersAndSummarizesEachTransport()
     {
         var handler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
@@ -303,6 +412,169 @@ public class ManaBackendClientTests
         await client.ReplyAsync("hi");
 
         Assert.Equal("192.168.1.50", requestUri!.Host);
+    }
+
+    [Fact]
+    public async Task RequestPairingCodeAsync_PostsToPairRequestAndReturnsTheCode()
+    {
+        string? path = null;
+        var handler = new FakeHttpMessageHandler(request =>
+        {
+            path = request.RequestUri!.AbsolutePath;
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("{\"code\":\"123456\",\"expiresAt\":1700000000000}", Encoding.UTF8, "application/json"),
+            };
+        });
+        var client = new ManaBackendClient(handler);
+
+        var (code, expiresAt) = await client.RequestPairingCodeAsync();
+
+        Assert.Equal("/mobile/pair/request", path);
+        Assert.Equal("123456", code);
+        Assert.Equal(1700000000000L, expiresAt);
+    }
+
+    [Fact]
+    public async Task GetMobileDevicesAsync_ParsesTheDeviceArray()
+    {
+        var handler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(
+                """{"devices":[{"id":"d1","name":"My Phone","tokenHash":"abc","createdAt":"2026-01-01T00:00:00.000Z","lastSeenAt":null,"revoked":false},{"id":"d2","name":"Old Phone","createdAt":"2025-01-01T00:00:00.000Z","lastSeenAt":"2025-06-01T00:00:00.000Z","revoked":true}]}""",
+                Encoding.UTF8,
+                "application/json"),
+        });
+        var client = new ManaBackendClient(handler);
+
+        var devices = await client.GetMobileDevicesAsync();
+
+        Assert.Equal(2, devices.Count);
+        Assert.Equal("My Phone", devices[0].Name);
+        Assert.Null(devices[0].LastSeenAt);
+        Assert.False(devices[0].Revoked);
+        Assert.Equal("2025-06-01T00:00:00.000Z", devices[1].LastSeenAt);
+        Assert.True(devices[1].Revoked);
+    }
+
+    [Fact]
+    public async Task RevokeMobileDeviceAsync_ReturnsTrueOnSuccessAndFalseOn404()
+    {
+        var okHandler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent("{\"ok\":true}", Encoding.UTF8, "application/json"),
+        });
+        var okClient = new ManaBackendClient(okHandler);
+        Assert.True(await okClient.RevokeMobileDeviceAsync("d1"));
+
+        var notFoundHandler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.NotFound));
+        var notFoundClient = new ManaBackendClient(notFoundHandler);
+        Assert.False(await notFoundClient.RevokeMobileDeviceAsync("missing"));
+    }
+
+    [Fact]
+    public async Task RotateMobileDeviceTokenAsync_ReturnsTheNewTokenOrNullOn404()
+    {
+        string? path = null;
+        var okHandler = new FakeHttpMessageHandler(request =>
+        {
+            path = request.RequestUri!.AbsolutePath;
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("{\"token\":\"new-token-value\"}", Encoding.UTF8, "application/json"),
+            };
+        });
+        var okClient = new ManaBackendClient(okHandler);
+        var token = await okClient.RotateMobileDeviceTokenAsync("d1");
+        Assert.Equal("/mobile/devices/d1/rotate", path);
+        Assert.Equal("new-token-value", token);
+
+        var notFoundHandler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.NotFound));
+        var notFoundClient = new ManaBackendClient(notFoundHandler);
+        Assert.Null(await notFoundClient.RotateMobileDeviceTokenAsync("missing"));
+    }
+
+    [Fact]
+    public async Task GetAccountsAsync_ParsesTheBareJsonArray()
+    {
+        var handler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(
+                """[{"userId":"u1","email":"admin@example.com","role":"admin"},{"userId":"u2","email":"friend@example.com","role":"user"}]""",
+                Encoding.UTF8,
+                "application/json"),
+        });
+        var client = new ManaBackendClient(handler);
+
+        var accounts = await client.GetAccountsAsync();
+
+        Assert.Equal(2, accounts.Count);
+        Assert.Equal("admin@example.com", accounts[0].Email);
+        Assert.Equal("admin", accounts[0].Role);
+        Assert.Equal("u2", accounts[1].UserId);
+    }
+
+    [Fact]
+    public async Task GetAccountsAsync_ReturnsEmptyForAnEmptyArray()
+    {
+        var handler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent("[]", Encoding.UTF8, "application/json"),
+        });
+        var client = new ManaBackendClient(handler);
+
+        var accounts = await client.GetAccountsAsync();
+
+        Assert.Empty(accounts);
+    }
+
+    [Fact]
+    public async Task CreateAccountAsync_PostsEmailAndRoleAndReturnsTheApiKey()
+    {
+        string? path = null;
+        string? body = null;
+        var handler = new FakeHttpMessageHandler(request =>
+        {
+            path = request.RequestUri!.AbsolutePath;
+            body = request.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
+            return new HttpResponseMessage(HttpStatusCode.Created)
+            {
+                Content = new StringContent(
+                    """{"userId":"u3","email":"new@example.com","role":"user","apiKey":"mana_abc123","message":"Save your API key somewhere safe; it will not be shown again"}""",
+                    Encoding.UTF8,
+                    "application/json"),
+            };
+        });
+        var client = new ManaBackendClient(handler);
+
+        var apiKey = await client.CreateAccountAsync("new@example.com", "user");
+
+        Assert.Equal("/admin/accounts", path);
+        Assert.Contains("\"email\":\"new@example.com\"", body);
+        Assert.Contains("\"role\":\"user\"", body);
+        Assert.Equal("mana_abc123", apiKey);
+    }
+
+    [Fact]
+    public async Task DeleteAccountAsync_SendsDeleteToTheNamedUser()
+    {
+        string? path = null;
+        string? method = null;
+        var handler = new FakeHttpMessageHandler(request =>
+        {
+            path = request.RequestUri!.AbsolutePath;
+            method = request.Method.Method;
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("{\"ok\":true}", Encoding.UTF8, "application/json"),
+            };
+        });
+        var client = new ManaBackendClient(handler);
+
+        await client.DeleteAccountAsync("u1");
+
+        Assert.Equal("/admin/accounts/u1", path);
+        Assert.Equal("DELETE", method);
     }
 
     [Fact]

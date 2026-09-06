@@ -413,6 +413,198 @@ internal sealed class ManaBackendClient
         response.EnsureSuccessStatusCode();
     }
 
+    // #570: like GetDoctorResultAsync, this does NOT call
+    // EnsureSuccessStatusCode unconditionally -- vtube-routes.js returns
+    // 503 (not 200) specifically when VTube Studio is enabled but
+    // unreachable, still with a fully-shaped, parseable body (connected:
+    // false, error). Only a genuinely unexpected status should throw.
+    public async Task<ManaVTubeStatus> GetVTubeStatusAsync()
+    {
+        using var response = await http.GetAsync("/vtube/status");
+        if (!response.IsSuccessStatusCode && response.StatusCode != System.Net.HttpStatusCode.ServiceUnavailable)
+        {
+            response.EnsureSuccessStatusCode();
+        }
+        await using var stream = await response.Content.ReadAsStreamAsync();
+        using var document = await JsonDocument.ParseAsync(stream);
+        var root = document.RootElement;
+        return new ManaVTubeStatus
+        {
+            Enabled = root.TryGetProperty("enabled", out var enabledEl) && enabledEl.GetBoolean(),
+            Connected = root.TryGetProperty("connected", out var connectedEl) && connectedEl.GetBoolean(),
+            Authenticated = root.TryGetProperty("authenticated", out var authEl) && authEl.GetBoolean(),
+            Url = root.TryGetProperty("url", out var urlEl) ? urlEl.GetString() : null,
+            Error = root.TryGetProperty("error", out var errorEl) ? errorEl.GetString() : null,
+        };
+    }
+
+    public async Task<bool> AuthenticateVTubeStudioAsync()
+    {
+        using var response = await http.PostAsync("/vtube/auth", null);
+        response.EnsureSuccessStatusCode();
+        await using var stream = await response.Content.ReadAsStreamAsync();
+        using var document = await JsonDocument.ParseAsync(stream);
+        return document.RootElement.TryGetProperty("authenticated", out var authEl) && authEl.GetBoolean();
+    }
+
+    // #570: hotkeys is VTube Studio's own API response shape
+    // (availableHotkeys, per vtube-studio-client.js's listHotkeys), not
+    // something node-bot defines -- hotkeyID/name are its two well-known
+    // fields, and unrelated ones are ignored.
+    public async Task<IReadOnlyList<ManaVTubeHotkey>> GetVTubeHotkeysAsync()
+    {
+        using var response = await http.GetAsync("/vtube/hotkeys");
+        response.EnsureSuccessStatusCode();
+        await using var stream = await response.Content.ReadAsStreamAsync();
+        using var document = await JsonDocument.ParseAsync(stream);
+        var hotkeys = new List<ManaVTubeHotkey>();
+        if (document.RootElement.TryGetProperty("hotkeys", out var hotkeysElement))
+        {
+            foreach (var entry in hotkeysElement.EnumerateArray())
+            {
+                hotkeys.Add(new ManaVTubeHotkey
+                {
+                    Id = entry.TryGetProperty("hotkeyID", out var idEl) ? idEl.GetString() ?? "" : "",
+                    Name = entry.TryGetProperty("name", out var nameEl) ? nameEl.GetString() ?? "" : "",
+                });
+            }
+        }
+        return hotkeys;
+    }
+
+    public async Task TriggerVTubeHotkeyAsync(string hotkeyId)
+    {
+        var payload = JsonSerializer.Serialize(new { hotkeyID = hotkeyId });
+        using var content = new StringContent(payload, Encoding.UTF8, "application/json");
+        using var response = await http.PostAsync("/vtube/hotkey", content);
+        response.EnsureSuccessStatusCode();
+    }
+
+    // #569: POST /mobile/pair/request -- admin-gated by mobile-routes.js's
+    // own adminAuthMiddleware (a THIRD distinct mechanism from both
+    // MANA_ADMIN_SECRET's checkAdminAuth and /admin/accounts's
+    // authMiddleware+requireAdmin: it checks the same "Authorization:
+    // Bearer <token>"/"x-admin-token" header shape, but validates it
+    // against a separate ADMIN_TOKEN env var; if that's unset, it falls
+    // back to localhost-only, which the common local-backend setup
+    // satisfies with no token configured at all). expiresAt is a raw
+    // Unix-epoch-milliseconds number (deviceStore's own Date.now()-based
+    // TTL), not an ISO string like every other timestamp this client
+    // parses elsewhere.
+    public async Task<(string Code, long ExpiresAtMs)> RequestPairingCodeAsync()
+    {
+        using var response = await http.PostAsync("/mobile/pair/request", null);
+        response.EnsureSuccessStatusCode();
+        await using var stream = await response.Content.ReadAsStreamAsync();
+        using var document = await JsonDocument.ParseAsync(stream);
+        var root = document.RootElement;
+        return (root.GetProperty("code").GetString() ?? "", root.GetProperty("expiresAt").GetInt64());
+    }
+
+    // #569: GET /mobile/devices -- mobile-device-store.js's own
+    // listDevices() also returns each device's tokenHash (a SHA-256 hash,
+    // not the raw token) in the same response; this deliberately doesn't
+    // carry it into ManaMobileDevice since nothing in this tab needs it.
+    public async Task<IReadOnlyList<ManaMobileDevice>> GetMobileDevicesAsync()
+    {
+        using var response = await http.GetAsync("/mobile/devices");
+        response.EnsureSuccessStatusCode();
+        await using var stream = await response.Content.ReadAsStreamAsync();
+        using var document = await JsonDocument.ParseAsync(stream);
+        var devices = new List<ManaMobileDevice>();
+        if (document.RootElement.TryGetProperty("devices", out var devicesElement))
+        {
+            foreach (var entry in devicesElement.EnumerateArray())
+            {
+                devices.Add(new ManaMobileDevice
+                {
+                    Id = entry.TryGetProperty("id", out var idEl) ? idEl.GetString() ?? "" : "",
+                    Name = entry.TryGetProperty("name", out var nameEl) ? nameEl.GetString() ?? "" : "",
+                    CreatedAt = entry.TryGetProperty("createdAt", out var createdEl) ? createdEl.GetString() : null,
+                    LastSeenAt = entry.TryGetProperty("lastSeenAt", out var lastSeenEl) ? lastSeenEl.GetString() : null,
+                    Revoked = entry.TryGetProperty("revoked", out var revokedEl) && revokedEl.GetBoolean(),
+                });
+            }
+        }
+        return devices;
+    }
+
+    public async Task<bool> RevokeMobileDeviceAsync(string id)
+    {
+        using var response = await http.PostAsync($"/mobile/devices/{Uri.EscapeDataString(id)}/revoke", null);
+        if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
+        {
+            return false;
+        }
+        response.EnsureSuccessStatusCode();
+        return true;
+    }
+
+    // #569: like CreateAccountAsync's apiKey, the returned token is shown
+    // exactly once -- mobile-device-store.js only ever persists a hash of
+    // it, never the raw value.
+    public async Task<string?> RotateMobileDeviceTokenAsync(string id)
+    {
+        using var response = await http.PostAsync($"/mobile/devices/{Uri.EscapeDataString(id)}/rotate", null);
+        if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
+        {
+            return null;
+        }
+        response.EnsureSuccessStatusCode();
+        await using var stream = await response.Content.ReadAsStreamAsync();
+        using var document = await JsonDocument.ParseAsync(stream);
+        return document.RootElement.GetProperty("token").GetString();
+    }
+
+    // #568: GET /admin/accounts responds with a bare JSON array (unlike
+    // every other list route in this file, which wraps its array under a
+    // named key) -- see auth-store.js's listAccounts, which returns
+    // res.json(accounts) directly. Requires an admin-role API key sent as
+    // the Connection tab's admin token (server.js's authMiddleware +
+    // requireAdmin) -- for the common local-backend case, requireAdmin's
+    // own loopback check passes automatically, so no separate ADMIN_TOKEN
+    // is needed on top of that key.
+    public async Task<IReadOnlyList<ManaAccount>> GetAccountsAsync()
+    {
+        using var response = await http.GetAsync("/admin/accounts");
+        response.EnsureSuccessStatusCode();
+        await using var stream = await response.Content.ReadAsStreamAsync();
+        using var document = await JsonDocument.ParseAsync(stream);
+        var accounts = new List<ManaAccount>();
+        foreach (var entry in document.RootElement.EnumerateArray())
+        {
+            accounts.Add(new ManaAccount
+            {
+                UserId = entry.TryGetProperty("userId", out var idEl) ? idEl.GetString() ?? "" : "",
+                Email = entry.TryGetProperty("email", out var emailEl) ? emailEl.GetString() ?? "" : "",
+                Role = entry.TryGetProperty("role", out var roleEl) ? roleEl.GetString() ?? "" : "",
+            });
+        }
+        return accounts;
+    }
+
+    // #568: the returned apiKey is shown exactly once -- node-bot never
+    // stores or re-serves it (auth-store.js only persists a hash), matching
+    // the same one-time-reveal behavior windows-launcher's admin_accounts_ui
+    // page has. Losing this return value loses the key permanently; the
+    // caller is responsible for actually showing it to the user.
+    public async Task<string> CreateAccountAsync(string email, string role)
+    {
+        var payload = JsonSerializer.Serialize(new { email, role });
+        using var content = new StringContent(payload, Encoding.UTF8, "application/json");
+        using var response = await http.PostAsync("/admin/accounts", content);
+        response.EnsureSuccessStatusCode();
+        await using var stream = await response.Content.ReadAsStreamAsync();
+        using var document = await JsonDocument.ParseAsync(stream);
+        return document.RootElement.GetProperty("apiKey").GetString() ?? "";
+    }
+
+    public async Task DeleteAccountAsync(string userId)
+    {
+        using var response = await http.DeleteAsync($"/admin/accounts/{Uri.EscapeDataString(userId)}");
+        response.EnsureSuccessStatusCode();
+    }
+
     // #567: GET /mcp-clients/servers -- see mcp-client-registry.js's
     // createMcpClientRegistry for the full stored shape; TransportSummary
     // collapses the transport union (stdio command/args/envAllowlist, or
@@ -726,6 +918,44 @@ internal sealed class ManaPendingApproval
     public string Id { get; init; } = "";
     public string ActionType { get; init; } = "";
     public string Summary { get; init; } = "";
+}
+
+// #570: GET /vtube/status.
+internal sealed class ManaVTubeStatus
+{
+    public bool Enabled { get; init; }
+    public bool Connected { get; init; }
+    public bool Authenticated { get; init; }
+    public string? Url { get; init; }
+    public string? Error { get; init; }
+}
+
+// #570: one entry from GET /vtube/hotkeys (VTube Studio's own
+// availableHotkeys shape -- see GetVTubeHotkeysAsync's own comment).
+internal sealed class ManaVTubeHotkey
+{
+    public string Id { get; init; } = "";
+    public string Name { get; init; } = "";
+}
+
+// #569: one entry from GET /mobile/devices (tokenHash deliberately not
+// carried -- see GetMobileDevicesAsync's own comment).
+internal sealed class ManaMobileDevice
+{
+    public string Id { get; init; } = "";
+    public string Name { get; init; } = "";
+    public string? CreatedAt { get; init; }
+    public string? LastSeenAt { get; init; }
+    public bool Revoked { get; init; }
+}
+
+// #568: one entry from GET /admin/accounts (keyHash never included --
+// see auth-store.js's listAccounts).
+internal sealed class ManaAccount
+{
+    public string UserId { get; init; } = "";
+    public string Email { get; init; } = "";
+    public string Role { get; init; } = "";
 }
 
 // #567: GET /mcp-clients/servers (display-only summary -- see
