@@ -978,4 +978,48 @@ public class ManaBackendClientTests
         Assert.Null(status.ActiveProfile);
         Assert.Empty(status.Profiles);
     }
+
+    [Fact]
+    public async Task GetBrowserAutomationActivityAsync_ParsesTheLogAndScreenshot()
+    {
+        var handler = new FakeHttpMessageHandler(request =>
+        {
+            Assert.Equal("/browser-automation/activity", request.RequestUri!.AbsolutePath);
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(
+                    """
+                    {
+                      "log": [{"action":"navigate","status":"ok","summary":"Navigating to https://example.com","at":"2026-01-01T00:00:00.000Z"}],
+                      "screenshot": {"base64":"base64-jpeg-data","at":"2026-01-01T00:00:00.000Z"}
+                    }
+                    """,
+                    Encoding.UTF8,
+                    "application/json"),
+            };
+        });
+        var client = new ManaBackendClient(handler);
+
+        var activity = await client.GetBrowserAutomationActivityAsync();
+
+        Assert.Single(activity.Log);
+        Assert.Equal("navigate", activity.Log[0].Action);
+        Assert.Equal("Navigating to https://example.com", activity.Log[0].Summary);
+        Assert.Equal("base64-jpeg-data", activity.ScreenshotBase64);
+    }
+
+    [Fact]
+    public async Task GetBrowserAutomationActivityAsync_ReturnsEmptyLogAndNullScreenshotBeforeAnythingHasHappened()
+    {
+        var handler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent("""{"log":[],"screenshot":null}""", Encoding.UTF8, "application/json"),
+        });
+        var client = new ManaBackendClient(handler);
+
+        var activity = await client.GetBrowserAutomationActivityAsync();
+
+        Assert.Empty(activity.Log);
+        Assert.Null(activity.ScreenshotBase64);
+    }
 }

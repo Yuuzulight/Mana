@@ -10,6 +10,7 @@ namespace Mana.NativeLauncher;
 internal sealed class ManaApplicationContext : ApplicationContext
 {
     private readonly AvatarOverlayForm avatarOverlay;
+    private readonly BrowserAutomationPanel browserAutomationPanel;
     private readonly NotifyIcon trayIcon;
     private readonly ManaProcessManager processManager;
     private readonly ManaBackendClient backendClient;
@@ -53,6 +54,10 @@ internal sealed class ManaApplicationContext : ApplicationContext
         processManager = new ManaProcessManager(rootDir);
         backendClient = new ManaBackendClient();
         avatarOverlay = new AvatarOverlayForm(rootDir);
+        // #578: ambient indicator, no tray entry -- starts polling
+        // immediately and shows itself only while browser automation is
+        // genuinely active.
+        browserAutomationPanel = new BrowserAutomationPanel(backendClient);
 
         var vadModelPath = Path.Combine(rootDir, "windows-native-launcher", "assets", "vad", "silero_vad.onnx");
         sileroVad = new SileroVadRunner(vadModelPath);
@@ -301,6 +306,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
         trayIcon.Visible = false;
         trayIcon.Dispose();
         avatarOverlay.Close();
+        browserAutomationPanel.Close();
         // Dispose, not Close -- OnFormClosing overrides UserClosing to
         // Hide-and-cancel for the reuse pattern, so a plain Close() here
         // would risk not actually tearing the window down.
