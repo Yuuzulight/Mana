@@ -5,9 +5,10 @@ using System.Windows.Forms;
 
 namespace Mana.NativeLauncher;
 
-// #529: a lean settings surface -- plugins (enable/disable), memory
-// facts (view/archive), skills (view/delete), and the approval-gate
-// queue (approve/deny). Explicitly the lowest-priority piece of the
+// #529/#565: a lean settings surface -- connection (backend URL + admin
+// token), plugins (enable/disable), memory facts (view/archive), skills
+// (view/delete), and the approval-gate queue (approve/deny). Explicitly
+// the lowest-priority piece of the
 // native-launcher-parity batch, per this issue's own scope note, so
 // each tab is a plain ListView with the one or two actions that matter
 // most, not a full editor. Skill creation/editing (a large form for a
@@ -23,7 +24,9 @@ internal sealed class SettingsPanel : UserControl
     private readonly ListView skillsList = new();
     private readonly ListView approvalsList = new();
     private readonly ListView mcpServersList = new();
+    private readonly ListView hooksList = new();
     private bool populatingPlugins;
+    private bool populatingHooks;
 
     public SettingsPanel(ManaBackendClient backendClient)
     {
@@ -34,11 +37,13 @@ internal sealed class SettingsPanel : UserControl
 
         var tabs = new TabControl { Dock = DockStyle.Fill };
         DarkTheme.ApplyTabControl(tabs);
+        tabs.TabPages.Add(BuildConnectionTab());
         tabs.TabPages.Add(BuildPluginsTab());
         tabs.TabPages.Add(BuildMemoryFactsTab());
         tabs.TabPages.Add(BuildSkillsTab());
         tabs.TabPages.Add(BuildApprovalsTab());
         tabs.TabPages.Add(BuildMcpServersTab());
+        tabs.TabPages.Add(BuildHooksTab());
         foreach (TabPage page in tabs.TabPages)
         {
             page.BackColor = DarkTheme.Background;
@@ -53,6 +58,7 @@ internal sealed class SettingsPanel : UserControl
         await RefreshSkillsAsync();
         await RefreshApprovalsAsync();
         await RefreshMcpServersAsync();
+        await RefreshHooksAsync();
     }
 
     // #529 review: a failed load left its list untouched -- on first
@@ -65,6 +71,65 @@ internal sealed class SettingsPanel : UserControl
     {
         list.Items.Clear();
         list.Items.Add(new ListViewItem($"Failed to load: {message}") { ForeColor = Color.Firebrick });
+    }
+
+    // #565: the backend URL and admin token are read straight from
+    // ManaSettingsStore rather than threaded in through SessionListForm/
+    // SettingsDialog's constructors -- both ManaBackendClient and
+    // TrayNotificationClient only read this file once, at app startup,
+    // so a change here can't take effect live regardless; reading/writing
+    // the same small file directly here is simpler than plumbing a store
+    // reference through two more constructors for a value nothing else
+    // needs mid-session.
+    private TabPage BuildConnectionTab()
+    {
+        var settings = ManaSettingsStore.Load();
+
+        var urlLabel = new Label { Text = "Backend URL", AutoSize = true, ForeColor = DarkTheme.Text };
+        var urlBox = new TextBox { Text = settings.BackendBaseUrl, Width = 320, BackColor = DarkTheme.Panel2, ForeColor = DarkTheme.Text, BorderStyle = BorderStyle.FixedSingle };
+        var tokenLabel = new Label { Text = "Admin token (optional)", AutoSize = true, ForeColor = DarkTheme.Text };
+        var tokenBox = new TextBox { Text = settings.AdminToken ?? "", Width = 320, UseSystemPasswordChar = true, BackColor = DarkTheme.Panel2, ForeColor = DarkTheme.Text, BorderStyle = BorderStyle.FixedSingle };
+        var statusLabel = new Label { AutoSize = true, ForeColor = DarkTheme.Muted };
+
+        var saveButton = new Button { Text = "Save" };
+        DarkTheme.ApplyButton(saveButton);
+        saveButton.Click += (_, _) =>
+        {
+            var url = urlBox.Text.Trim();
+            // A malformed value saved here would throw on the *next*
+            // launch (ManaBackendClient's constructor does `new Uri(...)`
+            // with no try/catch of its own) -- rejecting it here, before
+            // it's ever persisted, is cheaper than a crash-on-startup bug
+            // report from a single typo.
+            if (!Uri.TryCreate(url, UriKind.Absolute, out var parsed) || (parsed.Scheme != "http" && parsed.Scheme != "https"))
+            {
+                statusLabel.ForeColor = Color.Firebrick;
+                statusLabel.Text = "Backend URL must be a valid http:// or https:// address.";
+                return;
+            }
+
+            settings.BackendBaseUrl = url;
+            settings.AdminToken = string.IsNullOrWhiteSpace(tokenBox.Text) ? null : tokenBox.Text.Trim();
+            settings.Save();
+            statusLabel.ForeColor = DarkTheme.Muted;
+            statusLabel.Text = "Saved -- restart Mana for this to take effect.";
+        };
+
+        var layout = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 1,
+            AutoSize = true,
+            Padding = new Padding(12),
+        };
+        layout.Controls.Add(urlLabel);
+        layout.Controls.Add(urlBox);
+        layout.Controls.Add(tokenLabel);
+        layout.Controls.Add(tokenBox);
+        layout.Controls.Add(saveButton);
+        layout.Controls.Add(statusLabel);
+
+        return new TabPage("Connection") { Controls = { layout } };
     }
 
     private TabPage BuildPluginsTab()
@@ -531,6 +596,147 @@ internal sealed class SettingsPanel : UserControl
             item.SubItems.Add(server.TransportSummary);
             item.SubItems.Add(server.AllowedTools);
             mcpServersList.Items.Add(item);
+        }
+    }
+
+    // #566: PATCH /hooks/:id only settles `enabled` (pause/resume) --
+    // matches node-bot's own narrow scope for that route (hooks-store.js's
+    // setRuleEnabled), so this tab's checkbox is the one edit action, same
+    // shape as the Plugins tab's own enable/disable toggle above.
+    private TabPage BuildHooksTab()
+    {
+        hooksList.Dock = DockStyle.Fill;
+        hooksList.View = View.Details;
+        hooksList.CheckBoxes = true;
+        hooksList.FullRowSelect = true;
+        hooksList.Columns.Add("Tool", 150);
+        hooksList.Columns.Add("Phase", 60);
+        hooksList.Columns.Add("Action", 100);
+        hooksList.Columns.Add("Path filter", 140);
+        hooksList.Columns.Add("Last run", 70);
+        hooksList.ItemChecked += OnHookChecked;
+        DarkTheme.ApplyListView(hooksList);
+
+        var addButton = new Button { Text = "Add..." };
+        var deleteButton = new Button { Text = "Delete" };
+        DarkTheme.ApplyButton(addButton);
+        DarkTheme.ApplyButton(deleteButton);
+        addButton.Click += async (_, _) => await AddHookAsync();
+        deleteButton.Click += async (_, _) => await DeleteSelectedHookAsync();
+
+        var buttonRow = new FlowLayoutPanel { Dock = DockStyle.Bottom, Height = 32, FlowDirection = FlowDirection.LeftToRight, BackColor = DarkTheme.Background };
+        buttonRow.Controls.Add(addButton);
+        buttonRow.Controls.Add(deleteButton);
+
+        var page = new TabPage("Hooks");
+        page.Controls.Add(hooksList);
+        page.Controls.Add(buttonRow);
+        return page;
+    }
+
+    private async void OnHookChecked(object? sender, ItemCheckedEventArgs e)
+    {
+        // Same reentrancy guard as OnPluginChecked above -- suppressed
+        // while RefreshHooksAsync is setting each item's initial Checked
+        // state from the server's own value.
+        if (populatingHooks)
+        {
+            return;
+        }
+        var id = (string)e.Item.Tag!;
+        try
+        {
+            await backendClient.SetHookEnabledAsync(id, e.Item.Checked);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"SettingsPanel: failed to toggle hook '{id}'. {ex.Message}");
+        }
+    }
+
+    private async Task AddHookAsync()
+    {
+        using var dialog = new HookRuleDialog();
+        if (dialog.ShowDialog(this) != DialogResult.OK)
+        {
+            return;
+        }
+
+        try
+        {
+            await backendClient.CreateHookAsync(dialog.Phase, dialog.Action, dialog.ToolName, dialog.PathContains, dialog.Command, dialog.Args, dialog.Reason);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, $"Failed to add hook rule: {ex.Message}", "Add Hook Rule", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            return;
+        }
+        if (!IsDisposed)
+        {
+            await RefreshHooksAsync();
+        }
+    }
+
+    private async Task DeleteSelectedHookAsync()
+    {
+        if (hooksList.SelectedItems.Count == 0)
+        {
+            return;
+        }
+        var id = (string)hooksList.SelectedItems[0].Tag!;
+        try
+        {
+            await backendClient.DeleteHookAsync(id);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"SettingsPanel: failed to delete hook '{id}'. {ex.Message}");
+            return;
+        }
+        if (!IsDisposed)
+        {
+            await RefreshHooksAsync();
+        }
+    }
+
+    private async Task RefreshHooksAsync()
+    {
+        System.Collections.Generic.IReadOnlyList<ManaHookRule> hooks;
+        try
+        {
+            hooks = await backendClient.GetHooksAsync();
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"SettingsPanel: failed to load hooks. {ex.Message}");
+            if (!IsDisposed)
+            {
+                ShowLoadFailure(hooksList, ex.Message);
+            }
+            return;
+        }
+        if (IsDisposed)
+        {
+            return;
+        }
+
+        populatingHooks = true;
+        try
+        {
+            hooksList.Items.Clear();
+            foreach (var hook in hooks)
+            {
+                var item = new ListViewItem(hook.ToolName) { Tag = hook.Id, Checked = hook.Enabled };
+                item.SubItems.Add(hook.Phase);
+                item.SubItems.Add(hook.Action);
+                item.SubItems.Add(hook.PathContains ?? "");
+                item.SubItems.Add(hook.LastRunOk switch { true => "ok", false => "failed", null => "" });
+                hooksList.Items.Add(item);
+            }
+        }
+        finally
+        {
+            populatingHooks = false;
         }
     }
 }

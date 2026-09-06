@@ -17,12 +17,24 @@ internal sealed class ManaBackendClient
     // behavior) constructs a real HttpClient against the live backend.
     // Tests pass a fake HttpMessageHandler to exercise the request/parse
     // logic without a live server.
-    public ManaBackendClient(HttpMessageHandler? handler = null)
+    // #565: baseUrl/adminToken default to null so every existing call
+    // site (real and test) keeps working unchanged -- null baseUrl means
+    // the same hardcoded local address this always used, and a null/empty
+    // adminToken means no Authorization header, matching every admin-gated
+    // route's own "no secret configured -> allow" behavior. Setting the
+    // header once here via DefaultRequestHeaders (rather than adding it to
+    // every individual request below) covers every current and future
+    // method in this file for free.
+    public ManaBackendClient(HttpMessageHandler? handler = null, string? baseUrl = null, string? adminToken = null)
     {
         http = handler is null
             ? new HttpClient()
             : new HttpClient(handler);
-        http.BaseAddress = new System.Uri("http://127.0.0.1:5005");
+        http.BaseAddress = new System.Uri(baseUrl ?? "http://127.0.0.1:5005");
+        if (!string.IsNullOrEmpty(adminToken))
+        {
+            http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", adminToken);
+        }
     }
 
     public async Task<ManaPerformanceStatus> GetPerformanceStatusAsync()
@@ -332,14 +344,15 @@ internal sealed class ManaBackendClient
         response.EnsureSuccessStatusCode();
     }
 
-    // #529: requires an admin bearer token only when node-bot has
+    // #529/#565: requires an admin bearer token only when node-bot has
     // MANA_ADMIN_SECRET configured -- unset (the common local-only case
     // this launcher otherwise assumes throughout) allows every call here
     // through with no auth header, matching checkAdminAuth's own "no
-    // secret configured -> allow" rule. No settings UI exists yet to
-    // enter a token if one IS configured; that case surfaces as a 401
-    // EnsureSuccessStatusCode throws, same as any other unexpected
-    // status this client doesn't special-case.
+    // secret configured -> allow" rule. The Connection settings tab
+    // (#565) is where a token gets entered when one IS configured; a
+    // wrong/missing token still surfaces as a 401 EnsureSuccessStatusCode
+    // throws, same as any other unexpected status this client doesn't
+    // special-case.
     public async Task<IReadOnlyList<ManaMemoryFact>> GetMemoryFactsAsync()
     {
         using var response = await http.GetAsync("/admin/memory/facts");
@@ -473,6 +486,64 @@ internal sealed class ManaBackendClient
     public async Task DeleteMcpServerAsync(string id)
     {
         using var response = await http.DeleteAsync($"/mcp-clients/servers/{Uri.EscapeDataString(id)}");
+        response.EnsureSuccessStatusCode();
+    }
+
+    // #566: GET /hooks -- see hooks-store.js's createHooksStore for the
+    // full stored shape; this only carries what the settings tab shows.
+    public async Task<IReadOnlyList<ManaHookRule>> GetHooksAsync()
+    {
+        using var response = await http.GetAsync("/hooks");
+        response.EnsureSuccessStatusCode();
+        await using var stream = await response.Content.ReadAsStreamAsync();
+        using var document = await JsonDocument.ParseAsync(stream);
+        var rules = new List<ManaHookRule>();
+        if (document.RootElement.TryGetProperty("rules", out var rulesElement))
+        {
+            foreach (var entry in rulesElement.EnumerateArray())
+            {
+                var lastRunOk = entry.TryGetProperty("lastRun", out var lastRunEl) && lastRunEl.TryGetProperty("ok", out var okEl)
+                    ? okEl.GetBoolean()
+                    : (bool?)null;
+                rules.Add(new ManaHookRule
+                {
+                    Id = entry.TryGetProperty("id", out var idEl) ? idEl.GetString() ?? "" : "",
+                    Phase = entry.TryGetProperty("phase", out var phaseEl) ? phaseEl.GetString() ?? "" : "",
+                    Action = entry.TryGetProperty("action", out var actionEl) ? actionEl.GetString() ?? "" : "",
+                    ToolName = entry.TryGetProperty("toolName", out var toolEl) ? toolEl.GetString() ?? "" : "",
+                    PathContains = entry.TryGetProperty("pathContains", out var pathEl) ? pathEl.GetString() : null,
+                    Reason = entry.TryGetProperty("reason", out var reasonEl) ? reasonEl.GetString() : null,
+                    Enabled = !entry.TryGetProperty("enabled", out var enabledEl) || enabledEl.GetBoolean(),
+                    LastRunOk = lastRunOk,
+                });
+            }
+        }
+        return rules;
+    }
+
+    // #566: node-bot validates phase/action/toolName itself (400 on a bad
+    // combination) -- this client doesn't duplicate that. args, when given,
+    // is one argv entry per element (never a shell-joined string); command
+    // and args are only required by node-bot for run-command/rollback-on-failure.
+    public async Task CreateHookAsync(string phase, string action, string toolName, string? pathContains = null, string? command = null, IReadOnlyList<string>? args = null, string? reason = null)
+    {
+        var payload = JsonSerializer.Serialize(new { phase, action, toolName, pathContains, command, args, reason });
+        using var content = new StringContent(payload, Encoding.UTF8, "application/json");
+        using var response = await http.PostAsync("/hooks", content);
+        response.EnsureSuccessStatusCode();
+    }
+
+    public async Task SetHookEnabledAsync(string id, bool enabled)
+    {
+        var payload = JsonSerializer.Serialize(new { enabled });
+        using var content = new StringContent(payload, Encoding.UTF8, "application/json");
+        using var response = await http.PatchAsync($"/hooks/{Uri.EscapeDataString(id)}", content);
+        response.EnsureSuccessStatusCode();
+    }
+
+    public async Task DeleteHookAsync(string id)
+    {
+        using var response = await http.DeleteAsync($"/hooks/{Uri.EscapeDataString(id)}");
         response.EnsureSuccessStatusCode();
     }
 
@@ -666,6 +737,19 @@ internal sealed class ManaMcpServer
     public string Name { get; init; } = "";
     public string TransportSummary { get; init; } = "";
     public string AllowedTools { get; init; } = "";
+}
+
+// #566: GET /hooks (index only -- see GetHooksAsync's own comment).
+internal sealed class ManaHookRule
+{
+    public string Id { get; init; } = "";
+    public string Phase { get; init; } = "";
+    public string Action { get; init; } = "";
+    public string ToolName { get; init; } = "";
+    public string? PathContains { get; init; }
+    public string? Reason { get; init; }
+    public bool Enabled { get; init; }
+    public bool? LastRunOk { get; init; }
 }
 
 internal sealed class ReplyStreamEvent
