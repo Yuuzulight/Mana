@@ -24,7 +24,10 @@ internal sealed class SettingsPanel : UserControl
     private readonly ListView skillsList = new();
     private readonly ListView approvalsList = new();
     private readonly ListView accountsList = new();
+    private readonly ListView mcpServersList = new();
+    private readonly ListView hooksList = new();
     private bool populatingPlugins;
+    private bool populatingHooks;
 
     public SettingsPanel(ManaBackendClient backendClient)
     {
@@ -41,6 +44,8 @@ internal sealed class SettingsPanel : UserControl
         tabs.TabPages.Add(BuildSkillsTab());
         tabs.TabPages.Add(BuildApprovalsTab());
         tabs.TabPages.Add(BuildAccountsTab());
+        tabs.TabPages.Add(BuildMcpServersTab());
+        tabs.TabPages.Add(BuildHooksTab());
         foreach (TabPage page in tabs.TabPages)
         {
             page.BackColor = DarkTheme.Background;
@@ -55,6 +60,8 @@ internal sealed class SettingsPanel : UserControl
         await RefreshSkillsAsync();
         await RefreshApprovalsAsync();
         await RefreshAccountsAsync();
+        await RefreshMcpServersAsync();
+        await RefreshHooksAsync();
     }
 
     // #529 review: a failed load left its list untouched -- on first
@@ -605,6 +612,262 @@ internal sealed class SettingsPanel : UserControl
             var item = new ListViewItem(account.Email) { Tag = account.UserId };
             item.SubItems.Add(account.Role);
             accountsList.Items.Add(item);
+        }
+    }
+
+    // #567: registration goes through the approval gate server-side, not
+    // an immediate write (see RegisterMcpServerAsync's own comment) --
+    // this tab has no toggle/edit action, only Add and Delete, matching
+    // that: there's nothing here to PATCH, and a pending registration is
+    // decided from the existing Approvals tab, not this one.
+    private TabPage BuildMcpServersTab()
+    {
+        mcpServersList.Dock = DockStyle.Fill;
+        mcpServersList.View = View.Details;
+        mcpServersList.FullRowSelect = true;
+        mcpServersList.Columns.Add("Name", 120);
+        mcpServersList.Columns.Add("Transport", 200);
+        mcpServersList.Columns.Add("Allowed tools", 200);
+        DarkTheme.ApplyListView(mcpServersList);
+
+        var addButton = new Button { Text = "Register..." };
+        var deleteButton = new Button { Text = "Remove" };
+        DarkTheme.ApplyButton(addButton);
+        DarkTheme.ApplyButton(deleteButton);
+        addButton.Click += async (_, _) => await RegisterMcpServerAsync();
+        deleteButton.Click += async (_, _) => await DeleteSelectedMcpServerAsync();
+
+        var buttonRow = new FlowLayoutPanel { Dock = DockStyle.Bottom, Height = 32, FlowDirection = FlowDirection.LeftToRight, BackColor = DarkTheme.Background };
+        buttonRow.Controls.Add(addButton);
+        buttonRow.Controls.Add(deleteButton);
+
+        var page = new TabPage("MCP Clients");
+        page.Controls.Add(mcpServersList);
+        page.Controls.Add(buttonRow);
+        return page;
+    }
+
+    private async Task RegisterMcpServerAsync()
+    {
+        using var dialog = new McpServerDialog();
+        if (dialog.ShowDialog(this) != DialogResult.OK)
+        {
+            return;
+        }
+
+        string status;
+        try
+        {
+            status = await backendClient.RegisterMcpServerAsync(dialog.ServerName, dialog.TransportKind, dialog.Command, dialog.Args, dialog.EnvAllowlist, dialog.Url, dialog.AllowedTools);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, $"Failed to register MCP server: {ex.Message}", "Register MCP Server", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            return;
+        }
+        if (!IsDisposed)
+        {
+            MessageBox.Show(
+                this,
+                status == "pending" ? "Registration submitted -- approve it from the Approvals tab." : $"Registration status: {status}",
+                "Register MCP Server",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Information);
+            await RefreshMcpServersAsync();
+        }
+    }
+
+    private async Task DeleteSelectedMcpServerAsync()
+    {
+        if (mcpServersList.SelectedItems.Count == 0)
+        {
+            return;
+        }
+        var id = (string)mcpServersList.SelectedItems[0].Tag!;
+        try
+        {
+            await backendClient.DeleteMcpServerAsync(id);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"SettingsPanel: failed to remove MCP server '{id}'. {ex.Message}");
+            return;
+        }
+        if (!IsDisposed)
+        {
+            await RefreshMcpServersAsync();
+        }
+    }
+
+    private async Task RefreshMcpServersAsync()
+    {
+        System.Collections.Generic.IReadOnlyList<ManaMcpServer> servers;
+        try
+        {
+            servers = await backendClient.GetMcpServersAsync();
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"SettingsPanel: failed to load MCP servers. {ex.Message}");
+            if (!IsDisposed)
+            {
+                ShowLoadFailure(mcpServersList, ex.Message);
+            }
+            return;
+        }
+        if (IsDisposed)
+        {
+            return;
+        }
+
+        mcpServersList.Items.Clear();
+        foreach (var server in servers)
+        {
+            var item = new ListViewItem(server.Name) { Tag = server.Id };
+            item.SubItems.Add(server.TransportSummary);
+            item.SubItems.Add(server.AllowedTools);
+            mcpServersList.Items.Add(item);
+        }
+    }
+
+    // #566: PATCH /hooks/:id only settles `enabled` (pause/resume) --
+    // matches node-bot's own narrow scope for that route (hooks-store.js's
+    // setRuleEnabled), so this tab's checkbox is the one edit action, same
+    // shape as the Plugins tab's own enable/disable toggle above.
+    private TabPage BuildHooksTab()
+    {
+        hooksList.Dock = DockStyle.Fill;
+        hooksList.View = View.Details;
+        hooksList.CheckBoxes = true;
+        hooksList.FullRowSelect = true;
+        hooksList.Columns.Add("Tool", 150);
+        hooksList.Columns.Add("Phase", 60);
+        hooksList.Columns.Add("Action", 100);
+        hooksList.Columns.Add("Path filter", 140);
+        hooksList.Columns.Add("Last run", 70);
+        hooksList.ItemChecked += OnHookChecked;
+        DarkTheme.ApplyListView(hooksList);
+
+        var addButton = new Button { Text = "Add..." };
+        var deleteButton = new Button { Text = "Delete" };
+        DarkTheme.ApplyButton(addButton);
+        DarkTheme.ApplyButton(deleteButton);
+        addButton.Click += async (_, _) => await AddHookAsync();
+        deleteButton.Click += async (_, _) => await DeleteSelectedHookAsync();
+
+        var buttonRow = new FlowLayoutPanel { Dock = DockStyle.Bottom, Height = 32, FlowDirection = FlowDirection.LeftToRight, BackColor = DarkTheme.Background };
+        buttonRow.Controls.Add(addButton);
+        buttonRow.Controls.Add(deleteButton);
+
+        var page = new TabPage("Hooks");
+        page.Controls.Add(hooksList);
+        page.Controls.Add(buttonRow);
+        return page;
+    }
+
+    private async void OnHookChecked(object? sender, ItemCheckedEventArgs e)
+    {
+        // Same reentrancy guard as OnPluginChecked above -- suppressed
+        // while RefreshHooksAsync is setting each item's initial Checked
+        // state from the server's own value.
+        if (populatingHooks)
+        {
+            return;
+        }
+        var id = (string)e.Item.Tag!;
+        try
+        {
+            await backendClient.SetHookEnabledAsync(id, e.Item.Checked);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"SettingsPanel: failed to toggle hook '{id}'. {ex.Message}");
+        }
+    }
+
+    private async Task AddHookAsync()
+    {
+        using var dialog = new HookRuleDialog();
+        if (dialog.ShowDialog(this) != DialogResult.OK)
+        {
+            return;
+        }
+
+        try
+        {
+            await backendClient.CreateHookAsync(dialog.Phase, dialog.Action, dialog.ToolName, dialog.PathContains, dialog.Command, dialog.Args, dialog.Reason);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, $"Failed to add hook rule: {ex.Message}", "Add Hook Rule", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            return;
+        }
+        if (!IsDisposed)
+        {
+            await RefreshHooksAsync();
+        }
+    }
+
+    private async Task DeleteSelectedHookAsync()
+    {
+        if (hooksList.SelectedItems.Count == 0)
+        {
+            return;
+        }
+        var id = (string)hooksList.SelectedItems[0].Tag!;
+        try
+        {
+            await backendClient.DeleteHookAsync(id);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"SettingsPanel: failed to delete hook '{id}'. {ex.Message}");
+            return;
+        }
+        if (!IsDisposed)
+        {
+            await RefreshHooksAsync();
+        }
+    }
+
+    private async Task RefreshHooksAsync()
+    {
+        System.Collections.Generic.IReadOnlyList<ManaHookRule> hooks;
+        try
+        {
+            hooks = await backendClient.GetHooksAsync();
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"SettingsPanel: failed to load hooks. {ex.Message}");
+            if (!IsDisposed)
+            {
+                ShowLoadFailure(hooksList, ex.Message);
+            }
+            return;
+        }
+        if (IsDisposed)
+        {
+            return;
+        }
+
+        populatingHooks = true;
+        try
+        {
+            hooksList.Items.Clear();
+            foreach (var hook in hooks)
+            {
+                var item = new ListViewItem(hook.ToolName) { Tag = hook.Id, Checked = hook.Enabled };
+                item.SubItems.Add(hook.Phase);
+                item.SubItems.Add(hook.Action);
+                item.SubItems.Add(hook.PathContains ?? "");
+                item.SubItems.Add(hook.LastRunOk switch { true => "ok", false => "failed", null => "" });
+                hooksList.Items.Add(item);
+            }
+        }
+        finally
+        {
+            populatingHooks = false;
         }
     }
 }
