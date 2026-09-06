@@ -19,6 +19,8 @@ internal sealed class ManaApplicationContext : ApplicationContext
     private readonly VoiceLoop voiceLoop;
     private readonly VisionHotkeyListener visionHotkeyListener;
     private readonly TrayNotificationClient trayNotifications;
+    private readonly CaptionOverlayForm captionOverlay;
+    private readonly CaptionWebSocketClient captionClient;
     private readonly ArtifactViewerForm artifactViewer;
     private readonly QuickEntryForm quickEntry;
     private readonly SessionListForm sessionListForm;
@@ -105,6 +107,10 @@ internal sealed class ManaApplicationContext : ApplicationContext
             }
             ShowSessionList();
         });
+        // #571: on-screen equivalent of spoken output -- purely additive,
+        // wired up alongside trayNotifications above.
+        captionOverlay = new CaptionOverlayForm();
+        captionClient = new CaptionWebSocketClient(captionOverlay.SetCaption);
 
         trayIcon = new NotifyIcon
         {
@@ -117,6 +123,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
         trayIcon.DoubleClick += (_, _) => ShowStatus();
         avatarOverlay.Show();
         trayNotifications.Start();
+        captionClient.Start();
 
         // Quick rundown: start the existing local services, but keep this host native and small.
         _ = StartServicesAsync();
@@ -297,6 +304,8 @@ internal sealed class ManaApplicationContext : ApplicationContext
         statusTimer.Stop();
         visionHotkeyListener.Dispose();
         trayNotifications.Dispose();
+        captionClient.Dispose();
+        captionOverlay.Close();
         voiceLoop.Dispose();
         audioPlayer.Dispose();
         sileroVad.Dispose();
