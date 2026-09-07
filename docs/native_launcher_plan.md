@@ -13,7 +13,7 @@ Expected memory shape:
 
 This is the realistic path toward a roughly 500 MB runtime while keeping local TTS. **Not yet actually measured** -- no benchmark doc exists for this yet.
 
-## Current state (verified against the real code, 2026-09-04)
+## Current state (verified against the real code, 2026-09-06)
 
 `windows-native-launcher` is no longer a scaffold -- it covers the full voice+avatar loop plus most of the Electron launcher's secondary UI surfaces:
 
@@ -35,16 +35,19 @@ This is the realistic path toward a roughly 500 MB runtime while keeping local T
 
 **Doctor panel and compare-mode** -- diagnostics and side-by-side model comparison (`DoctorPanelForm.cs`, `CompareModeForm.cs`).
 
-**Settings** -- a dark-themed settings panel/dialog covering gaming mode, avatar, web access, vision, model/remote-AI, and theme (`SettingsPanel.cs`, `SettingsDialog.cs`, `DarkTheme.cs`).
+**Settings** -- a dark-themed settings surface covering connection & admin-auth (#565), plugins, memory facts, a skills full editor (#581), the approval-gate queue, hooks (#566), MCP client registry (#567), admin accounts (#568), mobile companion pairing (#569), VTube Studio (#570), voice-provider override (#583), persona presets (#573), model/brain-provider (#572), mobile devices, accounts, a live backend log tail (#582), theme picker (#576), and a perf/token-usage panel (#575) (`SettingsPanel.cs`, `SettingsDialog.cs`, `DarkTheme.cs`).
+
+**Live captions overlay** -- shows spoken output on screen, consuming node-bot's `/ws/captions` broadcast the same way `windows-launcher`'s `caption-client.js` does (issue #362, shipped as #571; `CaptionOverlayForm.cs`, `CaptionWebSocketClient.cs`).
+
+**Capture-a-clip pipeline** -- the "what just happened?" hotkey and rolling clip buffer, matching `windows-launcher`'s `clip-buffer.js` (issue #450, shipped as #585; `ClipBuffer.cs`, `ClipHotkeyListener.cs`).
+
+**Standalone panels/windows** -- gaming-mode toggle (#574), deep research (#577), browser-automation activity (#578), edit snapshots (#579), pending-edits proposals (#580), and global hotkeys for window-toggle/manual-interrupt (#584) (`ResearchForm.cs`, `BrowserAutomationPanel.cs`, `SnapshotsForm.cs`, `ProposalsForm.cs`, `GlobalHotkeyListener.cs`).
+
+**Session management** -- inline goal editing and an open-memory modal from the session list's context menu (#586, `SessionListForm.cs`).
 
 ## What's still missing for real feature parity
 
-- **Live captions overlay** -- `windows-launcher`'s `caption-client.js` listens to node-bot's `/ws/captions` broadcast and shows spoken output on screen (issue #362). No native equivalent.
-- **Capture-a-clip pipeline** -- the "what just happened?" hotkey and clip buffer (issue #450, `windows-launcher`'s `clip-buffer.js`). No native equivalent.
-
-Everything else the original version of this doc listed as missing (visible chat/session UI, screen-context, vision hotkey, proactive notifications, quick-entry, artifact viewer, doctor panel, compare-mode) has since shipped, listed above.
-
-Whether the two remaining items are worth building natively depends on actual usage patterns, not something this doc can decide.
+Nothing outstanding. All items the original version of this doc listed as missing (visible chat/session UI, screen-context, vision hotkey, proactive notifications, quick-entry, artifact viewer, doctor panel, compare-mode, live captions, capture-a-clip) have shipped, along with the full #565-#586 settings/panel parity batch above. Deliberately dropped items (cloud sync, scheduled export, plugin marketplace install-by-URL, auto-updater, VRM/3D avatar support, first-run Python/venv setup) are tracked as their own follow-up issues rather than parity gaps -- see each one's own issue for why.
 
 ## Build requirement
 
@@ -58,4 +61,4 @@ dotnet run
 
 ## Fallback
 
-Keep using `windows-launcher` until the native launcher reaches feature parity on the two items listed above that still matter for real usage.
+The native launcher has reached feature parity with `windows-launcher`; `windows-launcher` is kept only as a fallback, not because of any known gap.
