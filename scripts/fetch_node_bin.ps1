@@ -88,7 +88,7 @@ try{
         $sha256 = Get-FileHash -Path $tmpZip -Algorithm SHA256 | Select-Object -ExpandProperty Hash
         Write-Log "Computed SHA256: $sha256"
         if ($shasumsFile){
-            $matchLine = Select-String -Path $shasumsFile -Pattern [regex]::Escape($fileName) -SimpleMatch -Quiet
+            $matchLine = Select-String -Path $shasumsFile -Pattern $fileName -SimpleMatch -Quiet
             if ($matchLine){
                 $all = Get-Content $shasumsFile | Where-Object { $_ -match [regex]::Escape($fileName) } | Select-Object -First 1
                 if ($all){
