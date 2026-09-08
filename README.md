@@ -145,7 +145,7 @@ Mana/
 │   └── llama/                 # Expected location for local llama.cpp binaries and GGUF models
 ├── tts-service/               # Local Python service for Kokoro TTS
 ├── docs/                      # Setup guides and roadmap notes
-└── windows-native-launcher/   # Planned lower-memory native launcher (docs/native_launcher_plan.md)
+└── windows-native-launcher/   # Lower-memory native launcher, at feature parity with windows-launcher (docs/native_launcher_plan.md)
 ```
 
 ## Local AI And Privacy
@@ -265,7 +265,7 @@ Common troubleshooting:
 - [PNG avatar setup](docs/png_avatar_setup.md): desktop avatar overlay.
 - [Live2D avatar setup](docs/live2d_avatar_setup.md): built-in VTuber avatar with lip sync.
 - [VTube Studio setup](docs/vtube_studio_setup.md): avatar hotkeys and reactions.
-- [Native launcher plan](docs/native_launcher_plan.md): lower-memory launcher direction.
+- [Native launcher plan](docs/native_launcher_plan.md): lower-memory C#/WinForms launcher, now at feature parity with `windows-launcher`.
 - [GPT-SoVITS setup](docs/gpt_sovits_setup.md): trial anime-style voice-cloning provider.
 - [Fish Speech TTS](docs/fish_speech_tts.md): optional Fish Speech provider.
 - [Market analysis helper](docs/market_analysis_helper.md): stock-market helper setup.
@@ -391,4 +391,4 @@ Mana is under active development. The current stable path is:
 windows-launcher -> node-bot -> local Whisper / local Llama / local TTS
 ```
 
-The next major engineering priorities are backend modularization, richer component health status, explicit local model management, and stronger mobile device controls.
+`windows-native-launcher`, a lower-memory native C#/WinForms replacement, has reached full feature parity with `windows-launcher` (see [docs/native_launcher_plan.md](docs/native_launcher_plan.md)) but isn't the default path yet — its memory-savings claim hasn't been benchmarked, so `windows-launcher` stays the supported path above until that's measured. The next major engineering priority is backend modularization (splitting monolithic `node-bot` files into modular components, tracked in [issue #500](https://github.com/Yuuzulight/Mana/issues/500)); component health status, local model management, and mobile device controls have since shipped.
