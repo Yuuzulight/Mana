@@ -11,7 +11,18 @@ Expected memory shape:
 - `node-bot`: existing local backend
 - Kokoro/Fish Speech (S1-mini) TTS: existing local TTS services
 
-This is the realistic path toward a roughly 500 MB runtime while keeping local TTS. **Not yet actually measured** -- no benchmark doc exists for this yet.
+This is the realistic path toward a roughly 500 MB runtime while keeping local TTS.
+
+**Measured 8 Sep 2026** (32GB RAM / RTX 5080, one launcher running at a time, Fish Speech started once and left running as identical shared infrastructure for both -- see "Benchmark methodology" below): native launcher's own incremental cost on top of that shared baseline is **~540MB RAM / +21MB VRAM**, settling within 12 seconds (shell 183MB + `node-bot` 80MB + Kokoro fallback 255MB). `windows-launcher` was not able to be measured to a steady state on this machine -- its own incremental cost pushed the same 32GB system to 98.8% RAM (0.4GB free) within 3 seconds and had to be killed before it settled, so its true total is unknown, only that it is large and arrives fast. This isn't a controlled A/B of "Electron overhead" alone: `windows-launcher` additionally starts a Python retriever, local SearXNG, and a local embedder on every launch, none of which the native launcher spawns (`ManaProcessManager.cs` only ever starts Kokoro, Fish Speech, and `node-bot`) -- so the numbers reflect each launcher's real total behavior, not an apples-to-apples "same services" comparison.
+
+### Benchmark methodology
+
+- Fish Speech (S1-mini) is external, shared infrastructure for both launchers -- neither spawns it itself for the default `fish` provider; `windows-launcher` only health-checks `127.0.0.1:8080` (see `main.js`), and `ManaProcessManager.cs` also only checks/starts it if not already running. Started once via `tools/start_fish_speech_native.ps1`, confirmed healthy, and left running for both test runs so its ~5GB weight is identical on both sides and cancels out of the comparison.
+- Each launcher tested alone, sequentially, never both running at once.
+- RAM (`Win32_OperatingSystem` free/total) and VRAM (`nvidia-smi`) polled every 1.5-2 seconds throughout each run, not a single post-launch snapshot -- both launchers show a fast initial burst that can look very different from their eventual steady state.
+- Full process-tree memory (`Get-CimInstance Win32_Process` walked from each launcher's root PID) captured once settled, to attribute the total to specific processes.
+- A hard 98% RAM kill-switch enforced throughout, given how close the first, uncontrolled test came to a real out-of-memory condition on this machine.
+- Not controlled for: a 14B-parameter quality-tier GGUF was missing on this machine during testing, so neither run includes a working primary LLM server (`llama-server` failed to load for both, identically) -- the numbers above are the launcher + TTS-fallback + secondary-services cost, not a complete "everything running" total for either app.
 
 ## Current state (verified against the real code, 2026-09-06)
 
