@@ -19,6 +19,10 @@
          values), unavoidable for a P/Invoke layer over a C API shaped
          like this one. -->
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <!-- #615: the real crystal-mark icon (converted from windows-launcher's
+         own build/icon.png), replacing the SystemIcons.Application fallback
+         both this exe and the tray icon used before. -->
+    <ApplicationIcon>assets\mana.ico</ApplicationIcon>
   </PropertyGroup>
 
   <Target Name="FetchSileroVadModel" BeforeTargets="Build">
