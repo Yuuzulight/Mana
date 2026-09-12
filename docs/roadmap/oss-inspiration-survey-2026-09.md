@@ -31,20 +31,42 @@ materially new angle on the same subject.
 - Where a finding led to a filed issue, the issue number is given inline; the issue body is the authoritative scope, this document is the research backing.
 - Full technical detail for every `borrow`-tagged finding (name, source, summary, and why it matters for Mana specifically) is preserved verbatim in this document's sections below — nothing was compressed away for the highest-confidence tier.
 
+## Correction notice (2026-09-12)
+
+This document's "Relevance to Mana" reasoning was written against the
+CLAUDE.md architecture summary and prior conversation notes, not a fresh
+read of the actual codebase. A follow-up fact-checking pass (5 agents
+reading real code) found that **7 of the 8 filed issues overstated what
+was missing**, and the same overclaims are baked into this document's own
+prose in several places — most visibly the claim that Mana has no MCP
+support at all (it already ships both a server and a client), that echo
+cancellation is "conspicuously absent" (Electron already has it via
+`getUserMedia`'s default `echoCancellation: true` — only the native
+launcher lacks it), that Dream Mode is a single process needing to become
+an extract/enrich pipeline (it already is one, six stages), and that
+Mana's memory has no raw-conversation recall tier (a `session_search__query`
+tool, FTS5 + semantic search over past sessions, already exists in
+`node-bot/ai/session-search-tool-source.js`). Every paragraph below
+affected by one of these corrections now carries an inline note citing
+the real file/line evidence — this document was **not** rewritten from
+scratch, only the specific false-negative claims were fixed. See the
+corrected `docs/roadmap/issue-NNN-*.md` docs for the full per-issue
+detail; this section only summarizes.
+
 ## Top recommendations
 
 Ranked by expected impact relative to effort, given Mana's own
 constraints (local-first, swappable per-role models, gaming-mode
 resource backoff as a first-class constraint):
 
-1. **Dedicated wake-word classifier ahead of continuous Whisper** — issue #618. Highest-leverage single change: replaces always-on full ASR inference with a near-zero-cost gate.
-2. **Echo suppression + turn-detection for TTS playback** — issue #619. Closes a real self-triggering risk and is a prerequisite for natural barge-in.
-3. **MCP + GBNF grammars for the plugin/tool-calling layer** — issue #621. Removes a whole class of malformed-tool-call failures for free (grammar engine already in llama.cpp) and stops the plugin surface from growing more bespoke over time.
-4. **Adversarial verification + shadow-git checkpoints for the coding agent** — issue #622. A second, differently-shaped safety net on top of the existing approval gate, not a replacement for it.
-5. **Dream Mode as a composable extract/enrich pipeline + bi-temporal edge validity** — issue #620. Extends the already-tracked #432 work with two more independently-validated patterns (cognee's `memify`, Graphiti's bi-temporal edges).
-6. **Inline per-sentence emotion tags for avatar expression** — issue #623. Cheap, zero-new-model, works with any swappable local chat model via prompting alone.
-7. **Event-driven, accessibility-tree-first ambient vision loop + pre-storage PII filtering** — issue #624. Cuts vision-model calls and closes a real privacy gap (secrets on screen ending up in long-term memory).
-8. **Hardware-aware model recommendations + backend auto-selection at first run** — issue #625. Directly relevant to the in-progress native launcher (PR #538); prevents a real class of "picked a model my GPU can't run" failures for non-technical users.
+1. **Dedicated wake-word classifier ahead of continuous Whisper** — issue #618. Highest-leverage single change: replaces always-on full ASR inference with a near-zero-cost gate. (Confirmed accurate as filed — the only one of the eight that was.)
+2. **Port echo suppression + turn-detection to the native launcher** — issue #619. Electron already has AEC (`getUserMedia`'s default `echoCancellation: true`), barge-in (#219, `BargeInGate.cs`/`voice-endpointing.js`), and a turn-detection heuristic (`silenceBufferMsForTranscript()`). Only `windows-native-launcher`'s `WasapiCapture()` lacks all three — this is a port, not new-from-scratch work.
+3. **GBNF grammars for the plugin/tool-calling layer** — issue #621. MCP is already fully shipped (`node-bot/mcp-server.js`, `node-bot/mcp-client-registry.js`) — the genuinely missing piece is GBNF grammar-constrained decoding, which removes a whole class of malformed-tool-call failures for free (the grammar engine is already in llama.cpp).
+4. **Adversarial LLM verification for the coding agent** — issue #622. A static verifier (`reply-verifier.js`) and a JSON-based checkpoint store (`snapshot-store.js`) already exist. The genuinely missing piece is an adversarially-prompted LLM sub-agent as a second, differently-shaped check.
+5. **Extend memory-graph.js edges with fact-validity, building on #431/#432** — issue #620. Dream Mode is already a 6-stage pipeline (`triggerIdleConsolidation`), and bi-temporal fact validity (#431) plus typed-entity merging (#432) already ship. Only the raw Hebbian edges in `memory-graph.js` genuinely lack a validity window.
+6. **LLM-emitted emotion tags for avatar expression** — issue #623. Electron already does per-sentence heuristic mood detection (`reply-emotion.js`'s `detectReplyEmotion()`); native has none. The genuinely missing piece is the LLM-tag mechanism itself plus a config-file mapping (current mapping is hardcoded) and porting detection to native.
+7. **Wire existing accessibility-tree extraction into the ambient vision loop + pre-storage PII filtering** — issue #624. Accessibility-tree-first extraction already ships (#343, `readScreenContext()`) on the conversational path; it just isn't wired into the periodic glance loop, which still runs on a fixed timer. The PII filter is genuinely missing.
+8. **Surface the existing hardware-fit recommendation + add backend auto-selection** — issue #625. `model-management.js` already detects GPU/RAM and computes a recommendation, exposed via `GET /models/status` — it's just never displayed in either launcher's UI. Backend (CUDA/Vulkan/ROCm) auto-selection is genuinely missing.
 
 ## Findings by theme
 
@@ -105,7 +127,10 @@ Code+Obsidian JARVIS clone. Fix: when the assistant's own TTS plays back,
 whisper picks it up in the continuous transcript; instead of speaker
 diarization, they string-match incoming segments against the
 just-spoken TTS text and discard matches. Cheap, concrete, and a direct
-hit on Mana's design. → **Issue #619.**
+hit on Mana's design — **though note Electron already mitigates this a
+different way** (real AEC, not string-matching; see correction below) --
+still directly relevant for `windows-native-launcher`, which has neither.
+→ **Issue #619.**
 
 **Mic muting / AEC during TTS playback**
 (https://github.com/rhasspy/wyoming-satellite/issues/250) —
@@ -113,16 +138,23 @@ hit on Mana's design. → **Issue #619.**
 chime/TTS playback (`--mic-no-mute-during-awake-wav`,
 `--mic-seconds-to-mute-after-awake-wav`); Home Assistant's own reference
 hardware instead uses a dedicated XMOS XU316 DSP chip for real AEC so the
-mic can stay open and be interrupted mid-speech. → **Issue #619.**
+mic can stay open and be interrupted mid-speech. Electron already takes
+the "real AEC" path (`getUserMedia`'s `echoCancellation: true`); this
+mute-window fallback is relevant specifically for
+`windows-native-launcher`, which currently has no AEC and no mute-window
+mitigation either. → **Issue #619.**
 
 **WebRTC AEC3 standalone acoustic echo cancellation for open-mic barge-in**
 — AEC3 has been extracted from the full browser stack specifically so
 non-browser voice-assistant projects can link just the echo canceller,
 feeding it the outgoing TTS PCM as the far-end reference alongside the
-live mic input. This is close to a hard prerequisite for reliable
-speaker-based (non-headset) barge-in — the piece most conspicuously
-absent from Mana's described architecture if the avatar plays TTS through
-real speakers. → **Issue #619.**
+live mic input. **Correction**: this is not absent from Mana's
+architecture — `windows-launcher`/`desktop-client` already get real
+WebRTC AEC for free via `getUserMedia({audio: true})`'s default
+`echoCancellation: true`. It's absent specifically from
+`windows-native-launcher`, whose `WasapiCapture()` capture path has no
+AEC equivalent at all. → **Issue #619** (rescoped to the native launcher
+only).
 
 **Home Assistant Assist pipeline: staged, event-driven orchestration**
 (https://developers.home-assistant.io/docs/voice/pipelines/) — A voice
@@ -155,9 +187,13 @@ byproduct of the same model, no extra inference pass.
 (https://github.com/pipecat-ai/smart-turn) — A small, BSD-2, fully open
 (weights + training data + training script) model that takes raw
 waveform and outputs turn-completion from prosody, ~12ms per inference on
-CPU, decoupled from any specific STT/LLM/TTS. The most concretely
-adoptable turn-detection finding: cheap enough to keep running even under
-gaming-mode GPU reservation. → **Issue #619.**
+CPU, decoupled from any specific STT/LLM/TTS. **Correction**: Electron
+already has a turn-detection heuristic (`voice-endpointing.js`'s
+`silenceBufferMsForTranscript()`), so this isn't filling total absence —
+it would be a semantic upgrade over the existing silence-based heuristic,
+and (separately) something `windows-native-launcher` needs ported or
+built from scratch since it has neither. Cheap enough to keep running
+even under gaming-mode GPU reservation either way. → **Issue #619.**
 
 **Vocalis local speech-to-speech assistant**
 — Faster-Whisper + local LLM + Orpheus/Kokoro TTS streamed in 10-50ms
@@ -214,11 +250,17 @@ blocks (small labeled chunks like persona/human, always injected
 verbatim, each with a character limit); recall memory (the complete raw
 conversation log, searchable via a `conversation_search` tool); archival
 memory (arbitrary long-term facts in an external store, queried on
-demand, never pinned to context). Mana's memory graph functions closer to
-archival memory alone — keeping a second, un-summarized raw-transcript
-tier searchable by the LLM is valuable precisely because Dream Mode's
-consolidation is lossy; when the graph's summary is insufficient, the
-agent can fall back to verbatim recall.
+demand, never pinned to context). **Correction**: Mana already has a
+recall-memory-equivalent tier, not just archival — `node-bot/ai/session-search-tool-source.js`
+exposes a `session_search__query` tool (FTS5 keyword syntax plus
+semantic matching, scoped to the current session or across all past
+sessions) explicitly built to search raw past conversations when "the
+curated MEMORY.md-style summary" (the file's own comment) isn't enough.
+What's still a fair comparison: Letta's core-memory tier (a small,
+always-injected, character-budgeted block the model edits directly via
+tool calls) doesn't have an obvious Mana equivalent yet — the
+`BACKGROUND_MEMORY_BLOCK` compaction output is closer to a summary than
+a model-editable pinned block.
 
 **mem0 v3: single-pass ADD-only extraction + immutable facts**
 (https://docs.mem0.ai/migration/platform-v2-to-v3) — In an April 2026
@@ -248,10 +290,15 @@ fits Mana's local-first, user-owned-data posture directly.
 #432. This round confirmed it via direct comparison against Mana's actual
 `node-bot/memory-graph.js` code: the real memory graph is a Hebbian
 associative graph over entity-co-occurrence pairs with a single scalar
-weight and no fact semantics — bi-temporal validity is a genuinely
-distinct axis (association strength vs. fact truth) that layers cleanly
-onto a typed-edge upgrade without displacing the Hebbian graph. →
-**Issue #620.**
+weight and no fact semantics. **Correction**: bi-temporal validity
+itself is *not* new to Mana — issue #431 already gave facts exactly this
+pattern in `node-bot/acp-memory-store.js` (`validFrom`/`invalidatedAt`,
+`applySupersedes()`, `getFactsValidAt(asOf)`). What's still true and
+still the real scope of #620: `memory-graph.js`'s own edges don't have
+it — bi-temporal validity is a genuinely distinct axis (association
+strength vs. fact truth) that layers the *already-established* #431
+pattern onto the Hebbian graph specifically, not a new mechanism to
+invent. → **Issue #620.**
 
 **Cognee `memify`: two-stage Extraction + Enrichment pipeline**
 (https://docs.cognee.ai/core-concepts/main-operations/memify) — A
@@ -259,17 +306,30 @@ post-processing stage (never ingests raw data itself) built as a
 composable chain of an Extraction task (pull a working set from the
 existing graph) and an Enrichment task (process it, often via LLM, write
 back). Built-ins include `consolidate_entity_descriptions`,
-`cross_connect_entities`, `add_rule_associations`. Maps almost
-one-to-one onto what Dream Mode should be doing, with a concrete
-checklist: prune unused edges, reweight frequently-traversed ones, merge
-duplicate entities, synthesize derived edges. → **Issue #620.**
+`cross_connect_entities`, `add_rule_associations`. **Correction**: this
+doesn't map onto what Dream Mode *should be* doing — it maps onto what
+Dream Mode *already does*. `triggerIdleConsolidation`
+(`node-bot/server.js:1828-1897`) already runs 6 independent,
+independently-failing stages, and one of them
+(`runBackgroundEntityTyping`, line 1256) is already a real
+extract-candidates → LLM-judge → merge pipeline structurally identical to
+this pattern. The checklist item still genuinely open: derived-edge
+synthesis and edge reweighting/pruning specifically on `memory-graph.js`'s
+Hebbian edges (distinct from the entity-merge pipeline, which operates on
+`acp-memory-store.js`'s typed entities). → **Issue #620.**
 
 **`consolidate_entity_descriptions`: neighborhood-conditioned merging**
 (https://github.com/topoteretes/cognee/blob/main/cognee/memify_pipelines/consolidate_entity_descriptions.py)
-— The concrete first implementable task: pull an entity's local
-neighborhood (connected edges + neighbor descriptions), have an LLM
-produce one merged description via structured output, replace the
-fragments. Narrow, well-scoped, liftable close to as-is. → **Issue #620.**
+— **Correction**: this is not a "first implementable task" to build from
+scratch — `runBackgroundEntityTyping` (`node-bot/server.js:1256`, logic in
+`node-bot/entity-ontology.js`, issue #432) already does the extract
+(untyped/candidate entities) + enrich (LLM classify and merge via
+`findEntityMergeCandidates`/`buildEntityMergeJudgePrompt`/`setCanonicalAlias`)
+shape this describes. The one thing not confirmed identical: whether the
+existing pipeline rewrites a merged *description text* the way this
+cognee pipeline does, or only collapses duplicate entities to a canonical
+alias without touching description prose — worth checking before treating
+this as fully redundant. → **Issue #620.**
 
 **MemGPT / Letta — self-editing memory via OS-style paging**
 — Explicit function-call tools let the model manage its own context like
@@ -324,11 +384,17 @@ for free, no new dependency. → **Issue #621.**
 (https://www.anthropic.com/news/model-context-protocol) — An open
 protocol standardizing how an LLM client discovers/invokes tools exposed
 by a server process, decoupling implementation from any specific
-framework. Exposing Mana's plugins as local MCP servers (stdio, no
-network dependency) would let Mana consume the growing MCP-server
-ecosystem without hand-writing new plugins for capabilities that already
-exist, and let the coding agent and companion chat loop share one
-tool-calling interface. → **Issue #621.**
+framework. **Correction**: this isn't a proposal for new work — Mana
+already has it, in both directions. `node-bot/mcp-server.js` already
+exposes Mana capabilities (FFXIV market, web search/read, wiki lookup)
+as an MCP server over stdio (opt-in via `MANA_MCP_SERVER_ENABLED=1`,
+documented as "Phase 1: implemented" in
+`docs/roadmap/issue-42-mcp-support.md`), and
+`node-bot/mcp-client-registry.js` (339 lines) already consumes
+third-party MCP servers over stdio and streamableHttp, wired into
+`server.js`'s tool loop. What's still genuinely missing at this call
+site: GBNF grammar-constrained decoding (below). → **Issue #621**
+(rescoped to GBNF only).
 
 **Home Assistant Assist: intent-matching first, LLM tool-calling as fallback**
 — The majority of spoken commands resolve through fast, deterministic
@@ -361,10 +427,15 @@ the intent-router idea above as a first filter for which schemas to load.
 **Home Assistant MCP Server integration** (official) — HA itself ships an
 MCP server exposing its own tools/prompts/a read-only entity-state
 resource, scoped per-entity via HA's existing "expose to voice
-assistants" flags. The inverse of Mana's plugin model: give Mana's
-plugin system a generic MCP-client capability (attach any MCP server by
-URL+token) instead of hand-rolling integrations, one instance of which
-could be attaching to a user's own Home Assistant instance for free.
+assistants" flags. **Correction**: Mana doesn't need a "generic
+MCP-client capability" built — `node-bot/mcp-client-registry.js` already
+is one (stdio + streamableHttp transports, `mcp__`-prefixed tool
+registration). The genuinely actionable idea here is narrower: configure
+that existing client to attach to a user's own Home Assistant MCP server
+as one more entry, and consider borrowing HA's per-entity
+exposure-scoping convention as a model for how Mana's own MCP server
+(`mcp-server.js`) could scope what it exposes, rather than building new
+client infrastructure.
 
 ### Coding agent safety
 
@@ -393,17 +464,28 @@ changes had bugs the test suite missed. → **Issue #622.**
 the agent's turn from ending until the test suite is green, injecting
 failures back into context instead of letting the agent declare done;
 paired with a separate reviewer persona distinct from the generator.
-Close in shape to what Mana's approval-gate/diff-preview handoff needs: a
-concrete pattern for not relying on the coding agent to self-assess
-honestly.
+**Note**: Mana's approval-gate/diff-preview handoff isn't relying purely
+on the coding agent's own self-assessment today — `reply-verifier.js`'s
+`verifyReply()` already runs an external (if static/heuristic) check
+before replies are accepted. The genuine gap this pattern points at is
+narrower: that check isn't an adversarially-prompted LLM sub-agent, and
+there's no test-suite-gated Stop-hook equivalent confirmed to exist.
 
 **Cline shadow-git checkpoints for autonomous coding agents** — A hidden
 git repository, separate from the real project history, commits a full
 workspace snapshot after every tool action; users get a diff view against
-any checkpoint and three restore modes. Distinct from — and composes
-with, rather than duplicates — Mana's existing prospective approval gate:
+any checkpoint and three restore modes. **Correction**: Mana already has
 a retrospective safety net that does something even when the human
-rubber-stamps a bad diff. → **Issue #622.**
+rubber-stamps a bad diff — `node-bot/snapshot-store.js` (explicitly
+"independent of git" per `server-routes.js:892`) records a snapshot
+before every file write in `acp-autonomous-loop.js:718`, with
+`snapshot_restore`/`snapshot_list` tools and workspace-snapshot routes
+already wired up. It's JSON-based and per-file-write, not a git
+repository with whole-workspace commits — the genuinely open question is
+whether that difference (diffing against an arbitrary prior checkpoint,
+whole-workspace vs. single-file scope) is worth the added complexity of a
+second git repo, not whether a checkpoint system exists at all. →
+**Issue #622** (rescoped accordingly).
 
 ### Avatar and expression
 
@@ -412,9 +494,15 @@ prompted to prefix each sentence with a bracketed emotion tag from a
 fixed vocabulary; the client splits the streamed text into tagged
 segments, switching the VRM blendshape expression per segment in sync
 with playback. No separate emotion-classifier model — the LLM self-labels
-as part of normal output. Directly applicable to Mana's Live2D/VRM
-avatar, zero new model dependency, works with any local chat model via
-prompting alone. → **Issue #623.**
+as part of normal output. **Correction**: this isn't filling a total gap
+— `windows-launcher/renderer/reply-emotion.js`'s `detectReplyEmotion()`
+already does per-sentence, playback-synced mood detection in Electron
+(kaomoji/emoji/word heuristics, not LLM tags). The genuine gap is the
+*mechanism*: replacing that heuristic with LLM self-labeling, which the
+original research rationale (more reliable, language-agnostic) still
+holds for. `windows-native-launcher` has neither the heuristic nor
+anything else — `VoiceLoop.cs` comments this is "a deliberate scope cut."
+→ **Issue #623.**
 
 **Open-LLM-VTuber — per-model `emotionMap` config**
 — The same tag idea for Live2D Cubism models, with the emotion-to-
@@ -438,11 +526,17 @@ falling back to OCR (Tesseract/Apple Vision/Windows OCR) only when
 accessibility data isn't available (games, remote desktops). Everything
 indexes into a local SQLite+FTS5 database; typical CPU overhead is 5-10%.
 It also has a plugin permission system ("pipes") with per-pipe
-cryptographic tokens gating what an extension can read. Close to a direct
-blueprint for Mana's ambient glance loop: gate the whole loop on OS
-events rather than a timer, and try Windows UI Automation before invoking
-the vision model — a local VLM call is far more expensive than an
-accessibility API read. → **Issue #624.**
+cryptographic tokens gating what an extension can read. **Correction**:
+the "try Windows UI Automation before invoking the vision model" half of
+this already exists in Mana — `windows-launcher/accessibility-tree.js` +
+`readScreenContext()` (`renderer.js:2785-2836`, issue #343) already tries
+the accessibility tree first and falls back to vision only when it's
+empty or unavailable. It's just not wired into the periodic glance loop:
+`runScreenSensingGlance()` (`renderer.js:2877`) still calls
+`screen:capture-primary` directly, bypassing that existing logic
+entirely. The fixed-timer-vs-event-driven gap is real and unaffected by
+this correction. → **Issue #624** (rescoped to wiring the two paths
+together).
 
 **Purview-style content filtering applied pre-storage, not post-storage**
 — The technique underlying Windows Recall's PII protection: filtering
@@ -482,10 +576,17 @@ idle/listening/thinking/speaking states. Mana spans several UI surfaces
 avatar rendering) that all need to reflect one live conversational state
 — a dead-simple shared-state file (or named pipe) is a low-effort way to
 keep them in sync during the Electron-to-native transition, and is easy
-to debug by hand. Small enough to lift directly; not filed as its own
-issue since it's more of an interim scaffolding choice than a durable
-feature — worth doing inline whenever the native launcher's live-state
-sync is next touched, rather than as separately tracked work.
+to debug by hand. **Caveat**: a grep for an existing file/pipe-based
+state bus found nothing, but both launchers already talk to one shared
+Node backend over HTTP (`ManaBackendClient.cs` on the native side,
+`renderer.js`'s fetch calls on the Electron side) — some "live
+conversational state" may already be consistent between them through
+that channel rather than genuinely desynced. This wasn't independently
+verified in the fact-check pass; worth confirming what's actually still
+inconsistent between the two UIs before building a new sync mechanism.
+Small enough to lift directly if a real gap is confirmed; not filed as
+its own issue since it's more of an interim scaffolding choice than a
+durable feature.
 
 **CyberVerse (Lynpoint/CyberVerse)**
 (https://github.com/Lynpoint/CyberVerse) — Splits the agent into a
@@ -519,14 +620,24 @@ touched.
 **LM Studio — per-model hardware-fit indicators** — A compatibility
 signal per model/quant in the model browser (green/yellow/red against
 detected VRAM/RAM), so a user doesn't need to know their own headroom
-before downloading a multi-GB file. → **Issue #625.**
+before downloading a multi-GB file. **Note**: Mana's backend already
+computes the underlying data for this (`model-management.js`'s
+`detectGpuVramMb`/`detectSystemMemoryMb`/`recommendModelProfile`, tested,
+exposed via `GET /models/status`) — the gap is purely that no UI displays
+it yet. → **Issue #625.**
 
 **AnythingLLM — single-executable bundle with hardware-based auto-recommendation**
 — Ships its whole stack (LLM runtime, vector DB, embedding model,
 document parsers) as one binary per OS; first run auto-recommends a model
 based on detected hardware, only later exposing advanced/scaling options.
-Mana already bundles many local services behind one launcher — what's
-missing is the auto-recommendation step itself. → **Issue #625.**
+**Correction**: the auto-recommendation step isn't missing from Mana's
+backend — `model-management.js`'s `recommendModelProfile({vramMb, ramMb})`
+already computes exactly this and is test-covered. What's missing is
+surfacing it: a grep across `ManaBackendClient.cs`, `SettingsPanel.cs`,
+and `renderer.js` confirms zero references to the `recommendation` field
+anywhere in either launcher's UI — it's dead data on the wire. →
+**Issue #625** (rescoped to surfacing existing data, not computing new
+data).
 
 **NVIDIA RTX AI / Windows AI Toolkit — hardware-aware backend auto-selection**
 — Tags each model/engine build with the specific GPU/NPU it's compiled
@@ -562,6 +673,14 @@ Eight issues filed from this research, in the order listed under
 Scope/Acceptance Criteria; the `docs/roadmap/issue-NNN-*.md` companion
 doc for each mirrors that scope and links back here for the full research
 backing.
+
+**Update (2026-09-12)**: a follow-up codebase fact-check found 7 of the 8
+issues overstated what was missing (see the correction notice near the
+top of this document). All 7 were rewritten in place — same issue
+numbers, corrected scope, citing the real prior-art file paths/line
+numbers and issue numbers (#431, #432, #343, #219, #42) the original
+research missed. Only #618 (wake-word classifier) was accurate as
+originally filed.
 
 ## Related
 
