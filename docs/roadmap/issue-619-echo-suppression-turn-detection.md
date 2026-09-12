@@ -1,66 +1,76 @@
-# Issue 619: Add Echo Suppression And Semantic Turn-Detection For TTS Playback And Barge-In
+# Issue 619: Port Echo Suppression And Turn-Detection From Electron's Voice Pipeline To The Native Launcher
+
+## Correction notice
+
+A follow-up codebase audit (2026-09-12) found this issue's original
+premise was wrong: Electron's `windows-launcher` already ships real echo
+cancellation, barge-in, and turn-detection. Only `windows-native-launcher`
+is missing them. Scope narrowed accordingly -- see below.
 
 ## Goal
 
-Prevent Mana's own TTS output from re-triggering its wake-word/STT
-pipeline, and add a real mechanism for detecting when the user has
-actually finished speaking (or wants to interrupt Mana mid-sentence).
+Bring `windows-native-launcher`'s voice pipeline up to parity with
+`windows-launcher`'s existing echo suppression, barge-in, and
+turn-detection, instead of building these from scratch.
 
 ## Why
 
-Mana plays local Fish Speech TTS out of the same machine that
-continuously listens via whisper.cpp for the wake word. If that audio is
-audible to the same mic loop (speakers rather than a headset), Mana risks
-hearing and mis-transcribing its own voice, causing false wake-word
-triggers or the assistant "hearing itself talk." This exact failure mode
--- and its fixes -- recur across nearly every architecturally-similar
-open project surveyed: `wyoming-satellite` mutes the mic for a
-configurable window around playback; Open-LLM-VTuber and Vocalis run real
-acoustic echo cancellation (WebRTC's AEC3, extracted as a standalone
-library, is the standard building block) so the mic can stay open;
-porokka's JARVIS-OS devlog does a cheap string-match against the
-just-spoken TTS text to discard self-heard transcript segments as a
-stopgap.
+Original research (`docs/roadmap/oss-inspiration-survey-2026-09.md`)
+assumed Mana had no echo suppression or turn-detection anywhere. That's
+false for Electron:
 
-Separately, Mana's fuzzy-transcript wake-word approach has no described
-mechanism for distinguishing "user paused to think" from "user is done
-talking," which is exactly the problem semantic turn-detection models
-solve. Pipecat's Smart Turn v3 (BSD-2, public weights) is a small model
-that takes raw waveform and predicts turn-completion from prosody in
-~12ms on CPU, decoupled from any specific STT engine -- it drops in
-without replacing whisper.cpp.
+- **AEC already exists**: `windows-launcher`/`desktop-client` get real
+  WebRTC acoustic echo cancellation for free via
+  `getUserMedia({audio: true})`'s default `echoCancellation: true`.
+- **Barge-in already shipped** (issue #219): `BargeInGate.cs` (native
+  side, used elsewhere) and `voice-endpointing.js`'s
+  `nextBargeInState()`/`dbfsFromSamples()` implement a
+  350ms-hold-above--45dBFS barge-in gate, unit-tested in both C# and JS.
+- **Turn-detection heuristic already exists**: `voice-endpointing.js`'s
+  `silenceBufferMsForTranscript()`.
+
+The real, narrower gap: `windows-native-launcher`'s `RecordingSegmenter.cs`
+captures audio via raw `WasapiCapture()` with **no AEC at all**, and never
+calls/ports `silenceBufferMsForTranscript()` -- so the native launcher is
+exposed to exactly the self-triggering and abrupt-cutoff problems the
+original research described, while Electron already isn't.
+
+Note: issue #219's own doc admits Chromium's built-in AEC was never
+verified against real speaker/mic hardware -- worth a real-hardware check
+regardless of this issue's native-specific scope.
 
 ## Proposed Scope
 
-- Add a cheap first pass: mute/suppress the STT input stream for a short
-  configurable window around known TTS playback (the `wyoming-satellite`
-  approach), or string-match incoming transcript segments against the
-  text just sent to TTS and discard matches (the porokka approach).
-  Either is small and should ship first regardless of the AEC work below.
-- Evaluate WebRTC AEC3 (standalone extraction) or a lighter alternative
-  (e.g. SpeexDSP's echo canceller) feeding the outgoing TTS waveform as
-  the far-end reference signal, to allow real open-mic barge-in without a
-  hard mute window.
-- Evaluate Pipecat's Smart Turn v3 as a drop-in turn-completion classifier
-  layered on top of the existing whisper.cpp stream, to reduce false
-  "user is done" / false "user is still talking" calls.
-- Measure CPU cost of both additions under gaming-mode backoff (Smart
-  Turn's ~12ms CPU inference should be cheap enough to keep even then).
+- Add an AEC-equivalent to `windows-native-launcher`'s `WasapiCapture()`
+  capture path (e.g. via `WasapiLoopbackCapture` mixed against the mic
+  stream, or a lightweight library equivalent to WebRTC's AEC3) so native
+  doesn't hear its own TTS output.
+- Port `silenceBufferMsForTranscript()`'s turn-detection logic (or an
+  equivalent) into `RecordingSegmenter.cs`.
+- Port or reimplement the barge-in gate (`nextBargeInState()`/
+  `dbfsFromSamples()`) for native's voice loop if it isn't already wired
+  in there.
+- Real-hardware verification pass on both Electron's existing AEC and
+  native's new AEC -- confirm neither self-triggers with real speakers
+  (not headset) in practice, since this was never verified per #219's own
+  notes.
 
 ## Acceptance Criteria
 
-- Mana's own TTS output no longer produces false wake-word triggers or
-  self-transcription in a real speaker (non-headset) setup.
-- A documented before/after false-trigger-rate comparison using a simple
-  manual test script (play known TTS lines, check whether they appear in
-  the wake-word-facing transcript).
-- A turn-detection signal is available to the wake-word/dialogue loop,
-  with a recommendation on whether it's worth wiring in now or tracked as
-  a follow-up.
-- Resource cost of both additions measured and acceptable under
-  gaming-mode backoff.
+- `windows-native-launcher` no longer produces false wake-word triggers
+  or self-transcription from its own TTS output in a real speaker
+  (non-headset) setup, matching Electron's existing behavior.
+- `RecordingSegmenter.cs` uses the same (or equivalent) turn-detection
+  heuristic as `voice-endpointing.js`.
+- A documented before/after false-trigger-rate comparison on native,
+  using a simple manual test (play known TTS lines, check whether they
+  appear in the wake-word-facing transcript).
+- Confirmation (or a documented gap) that Electron's existing AEC has
+  been verified against real speaker hardware, not just assumed from
+  `getUserMedia`'s default.
 
 ## Related
 
-`docs/roadmap/oss-inspiration-survey-2026-09.md` (full research backing).
-Complements #618 (dedicated wake-word classifier).
+`docs/roadmap/oss-inspiration-survey-2026-09.md`. Complements #618
+(dedicated wake-word classifier). Issue #219 (barge-in, Electron-side
+prior art).

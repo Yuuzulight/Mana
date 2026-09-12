@@ -1,54 +1,69 @@
-# Issue 623: Add Inline Per-Sentence Emotion Tags To Drive Avatar Expression
+# Issue 623: Add LLM-Emitted Emotion Tags And Per-Avatar Config Mapping (Electron Has Heuristic Detection; Native Has None)
+
+## Correction notice
+
+A follow-up codebase audit (2026-09-12) found this issue's premise was
+wrong for Electron: `windows-launcher` already does per-sentence,
+playback-synced mood detection, just via heuristics rather than
+LLM-emitted tags. Native genuinely has nothing. Scope narrowed and
+corrected accordingly.
 
 ## Goal
 
-Make Mana's Live2D/VRM avatar change facial expression per-sentence in
-response to what it's actually saying, without a separate
-emotion-classifier model.
+Replace Electron's heuristic per-sentence emotion detection with
+LLM-emitted bracket tags and an external per-avatar config mapping, and
+bring native up to at least Electron's current level.
 
 ## Why
 
-Two closely-related open VTuber/companion projects (pixiv's ChatVRM, and
-the Live2D-focused Open-LLM-VTuber) use the same cheap technique: prompt
-the LLM (via system prompt/few-shot) to prefix each sentence of its reply
-with a bracketed emotion tag from a fixed vocabulary (`[happy]`,
-`[angry]`, `[sad]`, `[relaxed]`, `[neutral]`, etc.). The client splits the
-streamed text into these tagged segments as they arrive and switches the
-avatar's blendshape/expression per segment, synced to when that chunk of
-audio actually plays. No separate emotion-classifier model is needed --
-the LLM self-labels as part of its normal output. Open-LLM-VTuber
-additionally moves the emotion-keyword-to-expression-file mapping out of
-code and into a per-avatar config file, so new avatars can be dropped in
-by authoring a mapping file rather than touching parsing code.
+The original research assumed "Mana has no per-sentence
+emotion-tag-driven expression system today." That's false for Electron,
+though the *specific mechanism* proposed (LLM-emitted tags) is still a
+genuine gap:
 
-This is directly applicable to Mana's existing avatar rendering with zero
-new model dependencies, and works with any of Mana's swappable local chat
-models via prompting alone.
+- **Electron already does per-sentence detection**:
+  `windows-launcher/renderer/reply-emotion.js`'s `detectReplyEmotion()`
+  runs per streamed sentence chunk inside `playStreamingReply()`
+  (`renderer.js` ~1600-1609), switching avatar mood in sync with
+  playback. It's heuristic (kaomoji/emoji/word matching), not
+  LLM-tag-driven -- this is the real gap worth closing, per the original
+  research's rationale (an LLM self-labeling via prompting is more
+  reliable and language-agnostic than keyword matching).
+- **The mapping is hardcoded, not config-driven**: the emotion-to-expression
+  binding lives in a hardcoded table (`STATE_EXPRESSION_PREFERENCES` in
+  `live2d-logic.js`, ported to `AvatarExpressionSelector.cs` for native)
+  rather than an external per-avatar config file -- the original
+  research's proposal to move this to a config file is still valid and
+  unimplemented.
+- **Native has nothing**: `windows-native-launcher`'s streaming path has
+  no per-sentence emotion detection at all -- `VoiceLoop.cs` explicitly
+  comments this is "a deliberate scope cut." Native is currently behind
+  Electron here, not at parity.
 
 ## Proposed Scope
 
-- Add the bracketed-emotion-tag convention to the chat LLM's system
-  prompt/few-shot examples, with a small fixed vocabulary.
-- Parse the tags out of the streamed reply in the Electron renderer and
-  map each to a Cubism/VRM expression per sentence.
-- Keep the emotion-to-expression mapping in a per-avatar config file (not
-  hardcoded), so new avatars are just a mapping file.
-- Decide how (or whether) to couple the emotion tag to Fish Speech TTS:
-  since Fish Speech is reference-audio voice cloning rather than a
-  discrete emotion-parameterized API (unlike ChatVRM's Koeiromap), the
-  simplest first cut is to use the tag only for the face and leave TTS
-  prosody alone; picking from multiple reference clips per emotion is a
-  possible follow-up, not required for the first version.
+- Add the bracketed-emotion-tag convention (`[happy]`, `[angry]`, etc.)
+  to the chat LLM's system prompt/few-shot examples, replacing or
+  supplementing `detectReplyEmotion()`'s heuristic.
+- Parse the tags out of the streamed reply and drive the same
+  per-sentence expression switching `playStreamingReply()` already does,
+  in both Electron and native.
+- Move the emotion-to-expression mapping out of the hardcoded
+  `STATE_EXPRESSION_PREFERENCES`/`AvatarExpressionSelector.cs` tables
+  into a per-avatar config file.
+- Port whichever mechanism is chosen (heuristic or LLM-tag) to
+  `windows-native-launcher`'s `VoiceLoop.cs`, which currently has none.
 
 ## Acceptance Criteria
 
 - The chat LLM reliably emits per-sentence emotion tags in its normal
-  streamed output.
-- The avatar's expression visibly changes per sentence in sync with
-  playback, driven by the tags.
+  streamed output, and the avatar's expression changes per sentence in
+  sync with playback using those tags (not just the existing heuristic).
 - Adding a new avatar only requires authoring a new emotion-to-expression
   mapping file, not code changes.
+- `windows-native-launcher` has per-sentence emotion-driven expression
+  switching, matching or exceeding Electron's current behavior.
 
 ## Related
 
-`docs/roadmap/oss-inspiration-survey-2026-09.md` (full research backing).
+`docs/roadmap/oss-inspiration-survey-2026-09.md`.

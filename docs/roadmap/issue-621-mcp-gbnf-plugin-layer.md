@@ -1,71 +1,62 @@
-# Issue 621: Adopt MCP And GBNF Grammar Constraints For The Plugin/Tool-Calling Layer
+# Issue 621: Add GBNF Grammar-Constrained Tool Calling (MCP Already Shipped)
+
+## Correction notice
+
+A follow-up codebase audit (2026-09-12) found this issue's MCP-related
+premise was wrong: Mana already ships both an MCP server and an MCP
+client. Scope narrowed to the one part that's genuinely still missing:
+GBNF grammar-constrained decoding.
 
 ## Goal
 
-Reduce malformed tool-call failures from Mana's local models, and stop
-hand-rolling a bespoke integration surface for every new plugin.
+Reduce malformed tool-call failures from Mana's local models by wiring
+GBNF grammar constraints into the existing tool-calling call site.
 
 ## Why
 
-Mana's plugin system (browser automation, FFXIV/stock market, job search,
-Discord/Telegram bridges, cron scheduler, image gen, document reader,
-video watch) presumably exposes ad hoc tool-calling functions to the LLM
-today, with each plugin likely wired in separately. Two converging
-findings from the research address this directly:
+The original research assumed Mana's plugins "presumably expose ad hoc
+tool-calling" with no MCP use, and proposed prototyping a plugin as a
+local MCP server "to validate the integration shape." Both are already
+done:
 
-- **GBNF grammar-constrained decoding**: llama.cpp natively supports GBNF
-  grammars that constrain decoding token-by-token so the model is
-  physically unable to emit a token that would produce invalid JSON
-  against a tool's schema. `llama-cpp-agent` auto-generates such grammars
-  from function signatures/Pydantic models. Since Mana already runs
-  llama.cpp/GGUF directly with swappable per-role models -- including a
-  small/fast role where malformed tool-call JSON is most likely -- wiring
-  per-plugin GBNF grammars at the call site eliminates a whole class of
-  "model almost got the tool call right" failures for free, with no new
-  dependency (the grammar engine is already in llama.cpp).
-- **Model Context Protocol (MCP)**: an open protocol that standardizes
-  how an LLM client discovers and invokes tools exposed by a server
-  process, decoupling tool implementation from any specific framework.
-  Exposing Mana's own plugins as local MCP servers (stdio transport, no
-  network dependency, staying local-first) would let Mana consume the
-  growing ecosystem of existing MCP servers without hand-writing new
-  plugins for capabilities that already exist, and would let the
-  ACP-based coding agent and the companion chat loop share one
-  tool-calling interface instead of two.
-- Also worth folding in at the same call site: Neuro-sama's published
-  game-integration protocol (context push vs. forced-action-request as
-  separate message types, deliberately restricted JSON Schemas with no
-  `$ref`/`anyOf`/`oneOf` so small models can't hallucinate malformed
-  nested calls, a priority/interruptibility level on each forced
-  decision, and a bounded-time result callback so a stalled plugin can't
-  hang the loop) and Home Assistant's cheap intent-matching-first tier
-  (route obviously-simple commands through a fast deterministic matcher,
-  only falling through to full LLM tool-calling for anything ambiguous).
+- **MCP server**: `node-bot/mcp-server.js` already exposes Mana
+  capabilities (FFXIV market, web search/read, wiki lookup) as an MCP
+  server over stdio via `@modelcontextprotocol/sdk`, opt-in via
+  `MANA_MCP_SERVER_ENABLED=1`, documented as "Phase 1: implemented" in
+  `docs/roadmap/issue-42-mcp-support.md`.
+- **MCP client**: `node-bot/mcp-client-registry.js` (339 lines) already
+  consumes third-party MCP servers over stdio and streamableHttp
+  transports, registering `mcp__`-prefixed tools wired directly into
+  `server.js`'s tool loop (lines 697 and 2090-2104).
+
+What's genuinely still missing, confirmed absent from
+`node-bot/tool-policy.js` and `node-bot/llama-server-runtime.js`: **GBNF
+grammar-constrained decoding**. llama.cpp natively supports GBNF grammars
+that constrain decoding token-by-token so the model can't emit invalid
+JSON against a tool's schema -- this is not currently used anywhere in
+Mana's tool-calling path, including for the fast/small model role where
+malformed tool-call JSON is most likely.
 
 ## Proposed Scope
 
-- Add GBNF grammar generation for existing plugin tool schemas at the
-  llama.cpp call site; measure malformed-tool-call rate before/after on
-  the fast/small model role specifically.
-- Prototype exposing one existing plugin (a simple one, e.g. document
-  reader) as a local MCP server over stdio, and have the existing
-  tool-calling loop consume it the same way it would consume a
-  hand-written plugin, to validate the integration shape before
-  converting the rest.
+- Add GBNF grammar generation for existing plugin/MCP tool schemas at the
+  llama.cpp call site in `llama-server-runtime.js` (or wherever inference
+  requests are constructed).
+- Measure malformed-tool-call rate before/after on the fast/small model
+  role specifically.
 - Evaluate whether a cheap deterministic/embedding-based router (before
   any LLM call) for high-frequency simple commands is worth adding ahead
-  of the tool-calling loop, given the gaming-mode resource constraint.
+  of the tool-calling loop, given the gaming-mode resource constraint --
+  this part of the original research is still open and unaffected by the
+  MCP correction above.
 
 ## Acceptance Criteria
 
 - Measured reduction in malformed/invalid tool-call JSON from at least
   the fast/small model role after adding GBNF grammars.
-- One plugin successfully converted to a local MCP server and consumed
-  through the existing tool-calling loop with no regression in
-  functionality.
-- A clear recommendation on whether to convert the remaining plugins to
-  MCP servers, and whether a pre-LLM intent router is worth adding.
+- No regression to the existing MCP server/client functionality.
 
 ## Related
 
-`docs/roadmap/oss-inspiration-survey-2026-09.md` (full research backing).
+`docs/roadmap/issue-42-mcp-support.md` (MCP, already shipped).
+`docs/roadmap/oss-inspiration-survey-2026-09.md`.
