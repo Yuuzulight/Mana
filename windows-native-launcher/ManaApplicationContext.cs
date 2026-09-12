@@ -160,7 +160,12 @@ internal sealed class ManaApplicationContext : ApplicationContext
 
         trayIcon = new NotifyIcon
         {
-            Icon = SystemIcons.Application,
+            // #615: the exe's own embedded icon (assets/mana.ico, set via
+            // <ApplicationIcon> in the .csproj) is the real Mana crystal
+            // mark -- falls back to the generic Windows icon only if
+            // extraction genuinely fails, which ExtractAssociatedIcon's own
+            // signature allows for but shouldn't happen for the running exe.
+            Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath) ?? SystemIcons.Application,
             Text = "Mana",
             Visible = true,
             ContextMenuStrip = BuildTrayMenu(),
