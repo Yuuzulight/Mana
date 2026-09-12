@@ -227,6 +227,19 @@ internal sealed class ManaApplicationContext : ApplicationContext
             await RefreshTrayStatusAsync();
             voiceLoop.Start();
         }
+        catch (Exception ex)
+        {
+            // #614: Kokoro/backend startup failures are fatal by design
+            // (ManaProcessManager's own comment) but nothing ever caught
+            // them -- StartServicesAsync runs as a discarded task from the
+            // constructor, so this exception used to just crash or vanish
+            // silently instead of telling the user what actually failed.
+            // The thrown messages are already specific and user-facing
+            // ("Kokoro Python environment was not found...", "Failed to
+            // start Mana backend."), so surfacing ex.Message as-is is
+            // enough -- no need to re-derive which service failed here.
+            MessageBox.Show(ex.Message, "Mana failed to start", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
         finally
         {
             overlay.Close();
