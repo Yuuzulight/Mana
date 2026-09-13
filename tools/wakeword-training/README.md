@@ -14,11 +14,13 @@ This is a multi-phase pipeline. Each phase ships as its own PR.
    + British, female + male) and 3 speed variants using the Kokoro model
    already bundled for `tts-service/`. Fully local, no network access, no
    new model download.
-2. **Negative examples** -- not started. openWakeWord's own training
-   recipe distributes pre-computed negative feature sets (general speech +
-   noise, already featurized) specifically so custom wake-word models don't
-   need their own raw negative audio corpus -- use those rather than
-   assembling one from scratch.
+2. **Negative examples** (`download_negative_features.py`) -- done.
+   Downloads openWakeWord's own pre-computed negative feature files from
+   HuggingFace (`davidscripka/openwakeword_features`) instead of
+   assembling and featurizing a raw negative audio corpus from scratch --
+   the same files their own training notebook uses: a 2,000-hour slice of
+   the ACAV100M dataset (17.3GB) for training, plus an 11-hour validation
+   set (185MB) for false-positive-rate estimation during training.
 3. **Augmentation** -- not started. openWakeWord's trainer has built-in
    room-impulse-response and background-noise augmentation
    (via `audiomentations`) using its own hosted impulse-response/noise
@@ -50,3 +52,18 @@ Writes 16kHz mono PCM WAV clips to `data/positive/` (gitignored -- this is
 generated training data, not source). Run with `--phrase "Mana" --phrase
 "Hey Mana"` (the default) or override with your own `--phrase` list,
 `--speeds`, or `--out-dir`.
+
+## Running phase 2
+
+```powershell
+cd tts-service
+./venv/Scripts/python.exe ../tools/wakeword-training/download_negative_features.py
+```
+
+Streams both files to `data/negative/` (gitignored) with byte-size
+verification against the expected download size, and resumes a partial
+download if interrupted (falls back to a clean restart if the server
+doesn't honor the resume request). Pass `--skip-training-set` to fetch
+just the 185MB validation set, if you want to verify the pipeline without
+the full 17.3GB training set. No new dependencies -- reuses `requests`,
+already in `tts-service/requirements.txt`.
