@@ -44,6 +44,7 @@ internal enum ListenMode
 internal sealed class VoiceLoop : IDisposable
 {
     private readonly SileroVadRunner vad;
+    private readonly WakeWordClassifier? wakeWordClassifier;
     private readonly ManaBackendClient backendClient;
     private readonly AudioPlayer audioPlayer;
     private readonly AvatarOverlayForm avatarOverlay;
@@ -149,9 +150,11 @@ internal sealed class VoiceLoop : IDisposable
         IArtifactSink? artifactSink = null,
         ScreenContextReader? screenContextReader = null,
         Func<bool>? isGamingModeActive = null,
-        ClipBuffer? clipBuffer = null)
+        ClipBuffer? clipBuffer = null,
+        WakeWordClassifier? wakeWordClassifier = null)
     {
         this.vad = vad;
+        this.wakeWordClassifier = wakeWordClassifier;
         this.backendClient = backendClient;
         this.audioPlayer = audioPlayer;
         this.avatarOverlay = avatarOverlay;
@@ -406,9 +409,11 @@ internal sealed class VoiceLoop : IDisposable
         // is only ever invoked under stateLock -- so this runs under the
         // caller's lock too (C#'s lock is reentrant on the owning thread).
         byte[] wavBytes;
+        short[] samples;
         lock (stateLock)
         {
             wavBytes = BuildWavBytes(segmentSamples);
+            samples = segmentSamples.ToArray();
             segmentSamples.Clear();
             hasHeardSpeechInSegment = false;
             segmentElapsedMs = 0;
@@ -416,7 +421,7 @@ internal sealed class VoiceLoop : IDisposable
             vad.Reset();
         }
 
-        await ProcessTurnAsync(wavBytes, wasInterruption);
+        await ProcessTurnAsync(wavBytes, samples, wasInterruption);
     }
 
     // #523: entry point for the global "look at my screen" hotkey.
@@ -604,7 +609,7 @@ internal sealed class VoiceLoop : IDisposable
     // earlier turn already passed the wake-word gate below), so no
     // special-casing is needed between the two callers except classifying
     // the interruption itself.
-    private async Task ProcessTurnAsync(byte[] wavBytes, bool wasInterruption)
+    private async Task ProcessTurnAsync(byte[] wavBytes, short[] samples, bool wasInterruption)
     {
         // #513: consumed here, before transcription can fail/come back
         // empty -- a false barge-in trigger (cough, TV noise, a word that
@@ -624,6 +629,24 @@ internal sealed class VoiceLoop : IDisposable
                 heldSentences = null;
                 heldStackDepth = 0;
             }
+        }
+
+        // #342: acoustic pre-filter, before the Whisper call this whole
+        // project exists to reduce. Only gates the not-yet-awake path --
+        // wasInterruption segments only ever happen once `awake` is
+        // already true (see this method's own header comment), and once
+        // awake, every segment is a real command that must still reach
+        // Whisper untouched, exactly like the existing text-match gate
+        // right below already only runs `if (!awake)`. A false acoustic
+        // negative here just means an extra Whisper round trip is
+        // skipped for a segment that wasn't the wake word anyway in the
+        // overwhelming majority case; a false acoustic positive costs one
+        // wasted Whisper call, never a false wake-up, since the text
+        // matcher below still has final say.
+        if (!awake && wakeWordClassifier is not null && !wakeWordClassifier.MayContainWakeWord(samples))
+        {
+            await ReturnToIdleOrResumeHeldAsync(held, nested);
+            return;
         }
 
         string transcript;
