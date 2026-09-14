@@ -36,9 +36,49 @@ This is a multi-phase pipeline. Each phase ships as its own PR.
    plain-WAV alternative. Only MUSAN's `noise/`+`music/` subsets are used
    -- its `speech/` subset isn't needed since phase 2 already covers bulk
    negative speech at far greater scale.
-4. **Training run** -- not started. openWakeWord's trainer (PyTorch) on
-   the positive clips + negative features from phases 1-3, producing an
-   ONNX model. This machine's RTX 5080 covers the compute.
+4. **Training run** (`train_model.py`) -- done. Follows openWakeWord's own
+   *manual* training recipe (`training_models.ipynb`) rather than the
+   automated one, since the automated pipeline depends on Piper TTS for
+   clip generation, which only supports Linux (we built our own generator
+   in phase 1 instead). Mixes the positive clips with phase 3's background
+   noise/music at random SNR, embeds them through openWakeWord's frozen
+   feature backbone, and trains a small classifier head (the same 3-layer,
+   32-unit architecture as openWakeWord's own notebook) against phase 2's
+   precomputed negative features -- loaded memory-mapped, never fully into
+   RAM, given the 17.3GB size. Evaluates false-positive rate against phase
+   2's validation set, then exports to ONNX. Runs entirely on CPU: the
+   RTX 5080 isn't actually usable here (torch's installed CUDA build
+   predates Blackwell/sm_120 support, confirmed via `torch.cuda`'s own
+   warning), but that's fine since the embedding backbone is frozen/
+   pretrained (only ONNX inference, not training) and the classifier head
+   itself is tiny.
+
+   Two real bugs in `openwakeword` 0.6.0 itself, found and worked around
+   (not assumed, confirmed against the installed package's own source):
+   `openwakeword.data`'s module-level `import acoustics` fails on modern
+   scipy (`scipy.special.sph_harm` was renamed to `sph_harm_y`), fixed
+   with a same-signature alias since nothing here actually calls
+   `acoustics`; and `mix_clips_batch` itself calls `.max(dim=1)` (torch
+   syntax) on a variable that's already been converted to a numpy array
+   two lines earlier, fixed with a vendored copy of just that function
+   with `.max(axis=1)` substituted in.
+
+   **Measured results, 14 Sep 2026** (5,000 augmented positive examples
+   from the 168 base clips, 3,000 training steps, default 0.5 decision
+   threshold): loss converges to ~0.0005-0.002, recall 0.95-1.0 on
+   training batches. False-positive rate against phase 2's ~11-hour
+   validation set is **7.2/hour at the default 0.5 threshold** -- well
+   above openWakeWord's own pretrained-model target of 0.2/hour, as
+   expected for a v1 model trained on 168 base recordings rather than
+   their recommended 20,000-100,000. Raising the decision threshold
+   trades recall for a lower false-positive rate without retraining:
+   2.7/hour at 0.9, 1.0/hour at 0.99. Not yet good enough for a silently
+   always-on deployment at the default threshold; phase 5's integration
+   should expose the threshold as configurable rather than hardcoding
+   0.5, and this is a reasonable place to revisit before/after real
+   on-device testing -- more positive-clip diversity (more phrases,
+   real human recordings alongside the synthetic ones) would likely help
+   more than just raising the threshold further.
 5. **Integration** -- not started. Wire the trained ONNX model into the
    audio pipeline between VAD segment detection and the `/transcribe-only`
    call, in both launchers:
@@ -95,3 +135,30 @@ archive itself is left on disk afterward in case you want to re-extract
 `speech/` too later, but can be deleted once extraction is confirmed
 good. No new dependencies -- both scripts reuse `download()` from
 `download_negative_features.py` plus stdlib `tarfile`.
+
+## Running phase 4
+
+```powershell
+cd tts-service
+./venv/Scripts/python.exe -m pip install openwakeword pronouncing audiomentations torch_audiomentations speechbrain mutagen acoustics
+./venv/Scripts/python.exe -c "import openwakeword.utils; openwakeword.utils.download_models()"
+./venv/Scripts/python.exe ../tools/wakeword-training/train_model.py
+```
+
+New dependencies (all pip-only, no system packages): `openwakeword`
+itself pulls in nothing new (`onnxruntime`/`scipy`/`scikit-learn`/
+`requests`/`tqdm` are already in this venv); the rest are needed to
+import `openwakeword.data` at all (module-level imports, even though
+this script only calls two functions from it) -- `pronouncing` (pulls in
+`cmudict`), `audiomentations` (pulls in `librosa`/`numba`), `torch_
+audiomentations`, `speechbrain`, `mutagen`, `acoustics`. None pull in
+TensorFlow or anything GPU-specific.
+
+Writes `data/positive_features.npy` (cached -- deleted/regenerated
+automatically if you change `--n-positive-examples`) and the final model
+to `data/mana.onnx` (gitignored, same convention as `silero_vad.onnx`
+elsewhere in this repo -- model files are fetched/built, not committed;
+phase 5 will need its own hosting/fetch mechanism for this one). Takes a
+few minutes on CPU at the default scale (5,000 positive examples, 3,000
+training steps). Key flags: `--n-positive-examples`, `--steps`,
+`--negatives-per-batch`, `--positives-per-batch`, `--output`.
