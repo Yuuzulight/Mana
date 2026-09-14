@@ -12,6 +12,7 @@
     "fetch-live2d-core": "node scripts/fetch-live2d-core.js",
     "fetch-sample-avatar": "node scripts/fetch-sample-avatar.js",
     "fetch-silero-vad": "node scripts/fetch-silero-vad.js",
+    "fetch-wakeword-models": "node scripts/fetch-wakeword-models.js",
     "check-live2d-model": "node scripts/check-live2d-model.js"
   },
   "author": "",
