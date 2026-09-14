@@ -79,12 +79,30 @@ This is a multi-phase pipeline. Each phase ships as its own PR.
    on-device testing -- more positive-clip diversity (more phrases,
    real human recordings alongside the synthetic ones) would likely help
    more than just raising the threshold further.
-5. **Integration** -- not started. Wire the trained ONNX model into the
-   audio pipeline between VAD segment detection and the `/transcribe-only`
-   call, in both launchers:
-   - Native launcher: same `Microsoft.ML.OnnxRuntime` pattern as
-     `SileroVadRunner.cs` (persistent `InferenceSession`, 16kHz frames).
-   - Electron launcher: same `onnxruntime-web` pattern as `silero-vad.js`.
+5. **Integration** -- done. Wired the trained ONNX model into the audio
+   pipeline between VAD segment detection and the `/transcribe-only` call,
+   in both launchers. Only gates the not-yet-awake path -- the existing
+   text-based wake-word match (`WakeWordMatcher.cs` / `extractWakeCommand`)
+   still has final say on whether the assistant actually wakes up, so a
+   false acoustic trigger only ever wastes one Whisper call, it can never
+   cause a false wake-up by itself. Both ports chain three ONNX models
+   (melspectrogram -> embedding -> classifier) exactly as openWakeWord's
+   own Python `AudioFeatures` class does, verified against the real
+   models' actual shapes before writing either port, and both degrade
+   gracefully (acoustic gate skipped, not a crash) if a model file is
+   missing.
+   - Native launcher: [PR #631](https://github.com/Yuuzulight/Mana/pull/631)
+     -- `WakeWordClassifier.cs`, same `Microsoft.ML.OnnxRuntime` pattern
+     as `SileroVadRunner.cs`. Threshold configurable via
+     `ManaSettingsStore.WakeWordConfidenceThreshold` (default 0.9).
+   - Electron launcher: [PR #632](https://github.com/Yuuzulight/Mana/pull/632)
+     -- `wakeword-classifier.js`, same `onnxruntime-web`/injected-`ort`
+     pattern as `silero-vad.js`. Threshold configurable via
+     `MANA_WAKEWORD_THRESHOLD` (default 0.9).
+   - Both PRs are based on `main` directly (not stacked on phases 1-4
+     above) since they only need `mana.onnx`'s trained bytes, committed
+     directly into each launcher's own `assets/wakeword/` directory, not
+     any of this pipeline's code.
 
 ## Running phase 1
 
