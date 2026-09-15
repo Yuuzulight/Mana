@@ -109,6 +109,10 @@ const {
   FRAME_SAMPLES: VAD_FRAME_SAMPLES,
   SAMPLE_RATE: VAD_SAMPLE_RATE,
 } = require("./silero-vad");
+const {
+  createWakeWordClassifier,
+  DEFAULT_THRESHOLD: WAKE_WORD_CLASSIFIER_DEFAULT_THRESHOLD,
+} = require("./wakeword-classifier");
 const { createStreamingChunkQueue } = require("./streaming-chunk-queue");
 
 const chatLogEl = document.getElementById("chatLog");
@@ -217,6 +221,19 @@ const SPEECH_GAIN_MAX_BOOST = Number(process.env.MANA_SPEECH_GAIN_MAX_BOOST || 6
 const VAD_THRESHOLD = Number(process.env.MANA_VAD_THRESHOLD || 0.5);
 const VAD_DISABLED = process.env.MANA_DISABLE_VAD === "1";
 const VAD_MODEL_URL = "../assets/vad/silero_vad.onnx";
+// Issue #342: acoustic pre-filter, runs on every not-yet-awake segment
+// before it's sent to Whisper. MANA_WAKEWORD_THRESHOLD overrides the
+// model's own default (see tools/wakeword-training/README.md's measured
+// false-positive-rate-by-threshold table); MANA_DISABLE_WAKEWORD_CLASSIFIER=1
+// disables it outright, leaving the existing text-based match as the only
+// gate (today's pre-#342 behavior).
+const WAKE_WORD_CLASSIFIER_THRESHOLD = Number(
+  process.env.MANA_WAKEWORD_THRESHOLD || WAKE_WORD_CLASSIFIER_DEFAULT_THRESHOLD,
+);
+const WAKE_WORD_CLASSIFIER_DISABLED = process.env.MANA_DISABLE_WAKEWORD_CLASSIFIER === "1";
+const WAKE_WORD_MELSPEC_MODEL_URL = "../assets/wakeword/melspectrogram.onnx";
+const WAKE_WORD_EMBEDDING_MODEL_URL = "../assets/wakeword/embedding_model.onnx";
+const WAKE_WORD_CLASSIFIER_MODEL_URL = "../assets/wakeword/mana.onnx";
 // Issue #219 phase 2, on by default: interrupt Mana by just talking over
 // her, instead of only via the hotkey. getUserMedia's default
 // echoCancellation constraint (on since ensureMediaStream() only ever
@@ -302,6 +319,54 @@ function getSileroVad() {
     });
   }
   return sileroVad;
+}
+
+let wakeWordClassifier = null;
+let wakeWordClassifierLoadFailed = false;
+
+function getWakeWordClassifier() {
+  if (WAKE_WORD_CLASSIFIER_DISABLED || wakeWordClassifierLoadFailed || typeof window.ort === "undefined") {
+    return null;
+  }
+  if (!wakeWordClassifier) {
+    wakeWordClassifier = createWakeWordClassifier({
+      ort: window.ort,
+      melspecModelUrl: WAKE_WORD_MELSPEC_MODEL_URL,
+      embeddingModelUrl: WAKE_WORD_EMBEDDING_MODEL_URL,
+      classifierModelUrl: WAKE_WORD_CLASSIFIER_MODEL_URL,
+      threshold: WAKE_WORD_CLASSIFIER_THRESHOLD,
+    });
+  }
+  return wakeWordClassifier;
+}
+
+// Decodes a recorded segment at 16kHz specifically for the acoustic
+// classifier -- separate from prepareSpeechWavBlob's own decode (which
+// intentionally keeps the browser's default device sample rate for the
+// WAV sent to Whisper, see audioBufferToWav). Decoding the same short
+// blob twice is a negligible cost next to the Whisper call it's meant to
+// save, and keeps this isolated from prepareSpeechWavBlob's existing
+// speech-quality-rejection logic rather than threading a second sample
+// rate through it.
+async function getClassifierSamples16k(blob) {
+  const arrayBuffer = await blob.arrayBuffer();
+  const audioCtx = new (window.AudioContext || window.webkitAudioContext)({
+    sampleRate: VAD_SAMPLE_RATE,
+  });
+  try {
+    const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
+    const floatSamples = audioBuffer.getChannelData(0);
+    // The classifier expects raw int16-range values (see
+    // wakeword-classifier.js's header comment), not the Web Audio API's
+    // [-1, 1] float range.
+    const int16 = new Int16Array(floatSamples.length);
+    for (let i = 0; i < floatSamples.length; i += 1) {
+      int16[i] = Math.max(-32768, Math.min(32767, Math.round(floatSamples[i] * 32767)));
+    }
+    return int16;
+  } finally {
+    await audioCtx.close().catch(() => {});
+  }
 }
 let currentReplyAudio = null;
 let currentReplyUrl = null;
@@ -3372,6 +3437,39 @@ async function listenLoop() {
       });
       if (!listening) {
         break;
+      }
+
+      // #342: acoustic pre-filter, before the Whisper call this whole
+      // project exists to reduce. Only gates the not-yet-awake path --
+      // once awake, every segment is a real command and must still reach
+      // Whisper untouched, exactly like extractWakeCommand inside
+      // handleTranscript below already only runs while !awake. A false
+      // acoustic negative here just skips one Whisper round trip for a
+      // segment that (in the overwhelming majority case) wasn't the wake
+      // word anyway; a false acoustic positive costs one wasted Whisper
+      // call, never a false wake-up, since the existing text match still
+      // has final say.
+      if (!awake) {
+        const classifier = getWakeWordClassifier();
+        if (classifier) {
+          try {
+            const samples = await getClassifierSamples16k(chunk);
+            const mayContainWakeWord = await classifier.mayContainWakeWord(samples);
+            if (!mayContainWakeWord) {
+              logSpeechDebug("wakeword-acoustic-skip", {});
+              if (gamingModeActive) {
+                await wait(GAMING_DEEP_IDLE_PAUSE_MS);
+              }
+              continue;
+            }
+          } catch (e) {
+            console.warn(
+              "Wake-word acoustic classifier failed, falling back to text-only gating for this session:",
+              e,
+            );
+            wakeWordClassifierLoadFailed = true;
+          }
+        }
       }
 
       const result = await transcribeBlob(chunk);
