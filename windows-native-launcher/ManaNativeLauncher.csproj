@@ -35,6 +35,25 @@
     <Exec Command="powershell -NoProfile -ExecutionPolicy Bypass -Command &quot;Invoke-WebRequest -Uri '$(SileroVadModelUrl)' -OutFile '$(SileroVadModelPath)' -UserAgent 'mana-fetch-silero-vad'&quot;" Condition="!Exists('$(SileroVadModelPath)')" ContinueOnError="WarnAndContinue" />
   </Target>
 
+  <!-- #342: the two openWakeWord backbone models (melspectrogram + speech
+       embedding) are third-party pretrained models with a stable public
+       release URL, so they follow the same fetch-at-build-time convention
+       as silero_vad.onnx above rather than being committed. mana.onnx
+       itself (our own trained classifier, in the same assets\wakeword\
+       directory) IS committed directly, since nothing else hosts it yet. -->
+  <Target Name="FetchWakeWordBackboneModels" BeforeTargets="Build">
+    <PropertyGroup>
+      <WakeWordModelDir>$(MSBuildProjectDirectory)\assets\wakeword</WakeWordModelDir>
+      <MelspectrogramModelPath>$(WakeWordModelDir)\melspectrogram.onnx</MelspectrogramModelPath>
+      <MelspectrogramModelUrl>https://github.com/dscripka/openWakeWord/releases/download/v0.5.1/melspectrogram.onnx</MelspectrogramModelUrl>
+      <EmbeddingModelPath>$(WakeWordModelDir)\embedding_model.onnx</EmbeddingModelPath>
+      <EmbeddingModelUrl>https://github.com/dscripka/openWakeWord/releases/download/v0.5.1/embedding_model.onnx</EmbeddingModelUrl>
+    </PropertyGroup>
+    <MakeDir Directories="$(WakeWordModelDir)" Condition="!Exists('$(WakeWordModelDir)')" />
+    <Exec Command="powershell -NoProfile -ExecutionPolicy Bypass -Command &quot;Invoke-WebRequest -Uri '$(MelspectrogramModelUrl)' -OutFile '$(MelspectrogramModelPath)' -UserAgent 'mana-fetch-wakeword-backbone'&quot;" Condition="!Exists('$(MelspectrogramModelPath)')" ContinueOnError="WarnAndContinue" />
+    <Exec Command="powershell -NoProfile -ExecutionPolicy Bypass -Command &quot;Invoke-WebRequest -Uri '$(EmbeddingModelUrl)' -OutFile '$(EmbeddingModelPath)' -UserAgent 'mana-fetch-wakeword-backbone'&quot;" Condition="!Exists('$(EmbeddingModelPath)')" ContinueOnError="WarnAndContinue" />
+  </Target>
+
   <ItemGroup>
     <InternalsVisibleTo Include="ManaNativeLauncher.Tests" />
   </ItemGroup>
