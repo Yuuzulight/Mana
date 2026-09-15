@@ -22,6 +22,12 @@ internal sealed class ManaSettingsStore
     public string BackendBaseUrl { get; set; } = "http://127.0.0.1:5005";
     public string? AdminToken { get; set; }
 
+    // #342: acoustic wake-word pre-filter confidence threshold (0-1).
+    // See tools/wakeword-training/README.md's measured false-positive-
+    // rate-by-threshold table for why this isn't left at the model's own
+    // default 0.5 -- 7.2 false positives/hour there vs. 1.0/hour at 0.99.
+    public float WakeWordConfidenceThreshold { get; set; } = WakeWordClassifier.DefaultThreshold;
+
     // filePath: null (every real call site) uses the real per-user
     // settings file. Tests pass a temp file path to exercise
     // load/save/corruption handling without touching LocalApplicationData.

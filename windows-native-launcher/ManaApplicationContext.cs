@@ -16,6 +16,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
     private readonly ManaBackendClient backendClient;
     private readonly System.Windows.Forms.Timer statusTimer;
     private readonly SileroVadRunner sileroVad;
+    private readonly WakeWordClassifier? wakeWordClassifier;
     private readonly AudioPlayer audioPlayer;
     private readonly VoiceLoop voiceLoop;
     private readonly VisionHotkeyListener visionHotkeyListener;
@@ -75,6 +76,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
 
         var vadModelPath = Path.Combine(rootDir, "windows-native-launcher", "assets", "vad", "silero_vad.onnx");
         sileroVad = new SileroVadRunner(vadModelPath);
+        wakeWordClassifier = TryLoadWakeWordClassifier(rootDir, settings.WakeWordConfidenceThreshold);
         // #479 sub-project 4: taps live playback samples for
         // avatarOverlay's lip-sync render loop -- a no-op when no Cubism
         // model is loaded (LipSyncDriver still runs, just nothing reads
@@ -90,7 +92,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
         // through to VoiceLoop, same as the other optional collaborators
         // constructed above it.
         var screenContextReader = new ScreenContextReader(rootDir, backendClient);
-        voiceLoop = new VoiceLoop(sileroVad, backendClient, audioPlayer, avatarOverlay, chatLog, artifactViewer, screenContextReader, () => gamingModeActive, clipBuffer);
+        voiceLoop = new VoiceLoop(sileroVad, backendClient, audioPlayer, avatarOverlay, chatLog, artifactViewer, screenContextReader, () => gamingModeActive, clipBuffer, wakeWordClassifier);
         // #523: Ctrl+Alt+M asks Mana to look at the screen, through the
         // same reply/TTS pipeline a normal turn uses.
         visionHotkeyListener = new VisionHotkeyListener(() => _ = voiceLoop.SubmitVisionHotkeyAsync());
@@ -430,6 +432,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
         voiceLoop.Dispose();
         audioPlayer.Dispose();
         sileroVad.Dispose();
+        wakeWordClassifier?.Dispose();
         trayIcon.Visible = false;
         trayIcon.Dispose();
         avatarOverlay.Close();
@@ -443,6 +446,38 @@ internal sealed class ManaApplicationContext : ApplicationContext
         sessionListForm.Dispose();
         processManager.Dispose();
         base.ExitThreadCore();
+    }
+
+    // #342: the acoustic wake-word pre-filter is a soft optimization, not
+    // a required service -- if any of its three model files are missing
+    // (e.g. the build-time fetch of melspectrogram.onnx/embedding_model.onnx
+    // failed, or hasn't run yet on a fresh checkout) or fail to load,
+    // VoiceLoop just skips the acoustic gate entirely and falls back to
+    // today's existing behavior (every segment reaches Whisper, text-match
+    // decides). Unlike sileroVad above, this must never take the whole app
+    // down over a missing model file.
+    private static WakeWordClassifier? TryLoadWakeWordClassifier(string rootDir, float threshold)
+    {
+        var wakeWordDir = Path.Combine(rootDir, "windows-native-launcher", "assets", "wakeword");
+        var melspecPath = Path.Combine(wakeWordDir, "melspectrogram.onnx");
+        var embeddingPath = Path.Combine(wakeWordDir, "embedding_model.onnx");
+        var classifierPath = Path.Combine(wakeWordDir, "mana.onnx");
+
+        if (!File.Exists(melspecPath) || !File.Exists(embeddingPath) || !File.Exists(classifierPath))
+        {
+            Console.WriteLine("WakeWordClassifier: one or more model files missing, acoustic pre-filter disabled.");
+            return null;
+        }
+
+        try
+        {
+            return new WakeWordClassifier(melspecPath, embeddingPath, classifierPath, threshold);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"WakeWordClassifier: failed to load, acoustic pre-filter disabled. {ex.Message}");
+            return null;
+        }
     }
 
     private static string FindRootDirectory()
