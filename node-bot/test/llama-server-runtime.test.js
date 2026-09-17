@@ -890,6 +890,160 @@ test("runToolAwareReply skips the tool round entirely when the model doesn't req
   assert.deepEqual(result.toolCalls, []);
 });
 
+// Confirmed directly against a real llama-server build (qwen2.5-coder-7b):
+// some model/template combos never populate `tool_calls` at all -- they
+// leak the call they meant to make into `content` instead, sometimes
+// malformed (a real observed example: content was the literal string
+// '{{"name": "get_weather", "arguments": {"location": "Tokyo"}}', a
+// double-opening-brace, non-JSON-parseable string). These tests exercise
+// the repair path that re-asks with response_format's json_schema
+// constraint -- confirmed separately (manual testing against that same
+// model) to reliably produce clean, schema-conforming JSON.
+test("runToolAwareReply repairs a model that leaks a (possibly malformed) tool call into content instead of populating tool_calls", async () => {
+  const calls = [];
+  let serverUp = false;
+  const fakeFetch = async (url, init) => {
+    if (String(url).endsWith("/health")) return { ok: serverUp };
+    if (String(url).endsWith("/v1/chat/completions")) {
+      const body = JSON.parse(init.body);
+      calls.push(body);
+      if (calls.length === 1) {
+        // Native tool-calling path: model leaks a malformed attempt into
+        // content instead of populating tool_calls.
+        return {
+          ok: true,
+          json: async () => ({
+            choices: [
+              { message: { content: '{{"name": "read_file", "arguments": {"path": "notes.txt"}}' } },
+            ],
+          }),
+        };
+      }
+      if (calls.length === 2) {
+        // Repair round: must be schema-constrained, not the native tools param.
+        assert.equal(body.response_format.type, "json_schema");
+        assert.equal(body.response_format.json_schema.schema.required[0], "tool_calls");
+        assert.equal(body.tools, undefined, "repair request replaces tools/tool_choice, doesn't add to them");
+        return {
+          ok: true,
+          json: async () => ({
+            choices: [
+              {
+                message: {
+                  content: JSON.stringify({
+                    tool_calls: [{ name: "read_file", arguments: { path: "notes.txt" } }],
+                  }),
+                },
+              },
+            ],
+          }),
+        };
+      }
+      // Third call: the tool result should now be in the conversation.
+      const toolMessage = body.messages.find((m) => m.role === "tool");
+      assert.equal(toolMessage.content, "file contents here");
+      return {
+        ok: true,
+        json: async () => ({
+          choices: [{ message: { content: "The file says: file contents here" } }],
+        }),
+      };
+    }
+    return { ok: false, status: 404, text: async () => "not found" };
+  };
+
+  const runtime = createLlamaServerRuntime({
+    env: makeFakeEnv(),
+    fs: makeFakeFs(),
+    fetch: fakeFetch,
+    spawn: () => {
+      serverUp = true;
+      return makeFakeChild();
+    },
+    sleep: async () => {},
+    registerExitHandlers: false,
+  });
+
+  const policy = makeFakePolicy({
+    executeTool: () => "file contents here",
+  });
+
+  const result = await runtime.runToolAwareReply("what does notes.txt say?", policy);
+
+  assert.equal(calls.length, 3, "native attempt + repair + follow-up after executing the repaired call");
+  assert.equal(result.content, "The file says: file contents here");
+  assert.deepEqual(result.toolCalls, [
+    { name: "read_file", args: { path: "notes.txt" }, ok: true },
+  ]);
+});
+
+test("runToolAwareReply does NOT attempt repair when content is a normal reply, not leaked JSON", async () => {
+  let callCount = 0;
+  let serverUp = false;
+  const fakeFetch = async (url) => {
+    if (String(url).endsWith("/health")) return { ok: serverUp };
+    if (String(url).endsWith("/v1/chat/completions")) {
+      callCount += 1;
+      return {
+        ok: true,
+        json: async () => ({ choices: [{ message: { content: "Sure, notes.txt says hello." } }] }),
+      };
+    }
+    return { ok: false, status: 404, text: async () => "not found" };
+  };
+
+  const runtime = createLlamaServerRuntime({
+    env: makeFakeEnv(),
+    fs: makeFakeFs(),
+    fetch: fakeFetch,
+    spawn: () => {
+      serverUp = true;
+      return makeFakeChild();
+    },
+    sleep: async () => {},
+    registerExitHandlers: false,
+  });
+
+  const result = await runtime.runToolAwareReply("what does notes.txt say?", makeFakePolicy());
+
+  assert.equal(callCount, 1, "a normal prose reply must never trigger the repair round-trip");
+  assert.equal(result.content, "Sure, notes.txt says hello.");
+});
+
+test("runToolAwareReply's repair path gives up cleanly (no throw) when the repair response itself doesn't parse", async () => {
+  let callCount = 0;
+  let serverUp = false;
+  const fakeFetch = async (url) => {
+    if (String(url).endsWith("/health")) return { ok: serverUp };
+    if (String(url).endsWith("/v1/chat/completions")) {
+      callCount += 1;
+      if (callCount === 1) {
+        return { ok: true, json: async () => ({ choices: [{ message: { content: "{not valid json" } }] }) };
+      }
+      // Repair attempt also comes back unparseable -- must not throw.
+      return { ok: true, json: async () => ({ choices: [{ message: { content: "still not json" } }] }) };
+    }
+    return { ok: false, status: 404, text: async () => "not found" };
+  };
+
+  const runtime = createLlamaServerRuntime({
+    env: makeFakeEnv(),
+    fs: makeFakeFs(),
+    fetch: fakeFetch,
+    spawn: () => {
+      serverUp = true;
+      return makeFakeChild();
+    },
+    sleep: async () => {},
+    registerExitHandlers: false,
+  });
+
+  const result = await runtime.runToolAwareReply("what does notes.txt say?", makeFakePolicy());
+
+  assert.equal(callCount, 2, "native attempt + one repair attempt, then gives up");
+  assert.deepEqual(result.toolCalls, []);
+});
+
 // Issue #282: same early/late splicing as runLocalAssistantReply, applies
 // to the initial messages array before any tool-calling rounds run.
 test("runToolAwareReply splices options.extraMessages.early/late into the initial messages array", async () => {
