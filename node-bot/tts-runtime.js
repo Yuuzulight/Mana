@@ -179,6 +179,7 @@ function createTtsRuntime(options = {}) {
   const kokoroManaPitch = Number(env.KOKORO_MANA_PITCH || 1.05);
   const kokoroLanguageProfiles =
     options.kokoroLanguageProfiles || DEFAULT_KOKORO_LANGUAGE_PROFILES;
+  const pronunciationLexiconStore = options.pronunciationLexiconStore || null;
 
   function makeTmpPath(prefix, ext) {
     const unique = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -551,7 +552,8 @@ function createTtsRuntime(options = {}) {
     // Unicode names ("smiling face with smiling eyes").
     try {
       const { normalizeSpeechText } = require("./utils/speech-text");
-      const normalized = normalizeSpeechText(text);
+      const lexiconEntries = pronunciationLexiconStore ? pronunciationLexiconStore.listWords() : undefined;
+      const normalized = normalizeSpeechText(text, lexiconEntries);
       if (normalized) {
         text = normalized;
       }

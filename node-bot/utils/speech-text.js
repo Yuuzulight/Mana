@@ -88,6 +88,38 @@ function applyPronunciationFixes(text) {
   return result;
 }
 
+function escapeRegExp(word) {
+  return word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+// User-registered word overrides (pronunciation-lexicon-store.js), additive
+// to PRONUNCIATION_FIXES above -- that list is fixed and developer-curated;
+// this one is user-authored (model/tool names Mana mispronounces, e.g.
+// "Qwen"). Built as ONE combined regex + Map lookup, matched with a
+// function replacer, not a per-entry loop like applyPronunciationFixes:
+// that loop is only safe there because its 7 entries are fixed and
+// reviewed. Applied naively to arbitrary user entries it can chain (e.g.
+// "Qwen"->"kwen" then "kwen"->"kevin" would turn "Qwen" into "kevin" on the
+// accumulating string), and a string-replacement second argument would let
+// a user's own replacement text trigger $&/$$/$`/$' substitution. A single
+// pass with a function replacer avoids both.
+function applyPronunciationLexicon(text, entries) {
+  if (!entries || !entries.length) {
+    return text;
+  }
+  const map = new Map();
+  for (const entry of entries) {
+    if (entry && entry.word) {
+      map.set(String(entry.word).toLowerCase(), entry.replacement);
+    }
+  }
+  if (!map.size) {
+    return text;
+  }
+  const pattern = new RegExp(`\\b(${[...map.keys()].map(escapeRegExp).join("|")})\\b`, "gi");
+  return text.replace(pattern, (match) => map.get(match.toLowerCase()));
+}
+
 // "so~" is anime-speak for dragging the word out — stretch the last vowel
 // ("sooooo") instead of letting TTS narrate the tilde. More tildes stretch
 // further; a trailing consonant is kept ("think~" -> "thiiiiink").
@@ -115,7 +147,7 @@ function applyTildeStretch(text) {
     .replace(/~+/g, " ");
 }
 
-function normalizeSpeechText(text) {
+function normalizeSpeechText(text, lexiconEntries) {
   let result = String(text || "");
 
   // Code fences first, before anything else -- code content could
@@ -151,6 +183,11 @@ function normalizeSpeechText(text) {
   // above and ones Mana writes herself, like "Hmph!").
   result = applyPronunciationFixes(result);
 
+  // User-registered word overrides run last, after the fixed interjection
+  // fixes, so a user's explicit override is the final spoken form and can't
+  // get re-matched/mangled by PRONUNCIATION_FIXES's own regexes.
+  result = applyPronunciationLexicon(result, lexiconEntries);
+
   // Tidy up the leftovers.
   return result
     .replace(/\s+([,.!?;:])/g, "$1")
@@ -160,6 +197,7 @@ function normalizeSpeechText(text) {
 
 module.exports = {
   applyPronunciationFixes,
+  applyPronunciationLexicon,
   applyTildeStretch,
   normalizeSpeechText,
 };

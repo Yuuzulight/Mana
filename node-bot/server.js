@@ -185,6 +185,10 @@ const { filterRelevantTools, wrapWithResultDigest } = require("./ai/tool-context
 const { toolCallLogCapability } = require("./capabilities/tool-call-log-capability");
 const { createHooksStore, wrapWithHooks } = require("./hooks-store");
 const { hooksCapability } = require("./capabilities/hooks-capability");
+const { createPronunciationLexiconStore } = require("./pronunciation-lexicon-store");
+const {
+  pronunciationLexiconCapability,
+} = require("./capabilities/pronunciation-lexicon-capability");
 const {
   createBrowserAutomationToolSource,
 } = require("../plugins/browser-automation/browser-automation-tool-source");
@@ -488,11 +492,16 @@ function compressExcerpts(prompt) {
   return runLocalLlamaReply(prompt, 1200, "quality", COMPRESS_SYSTEM_PROMPT);
 }
 
+// Item 2: created before ttsRuntime so it can be wired straight into it --
+// synthesizeReply needs the current lexicon entries on every call.
+const pronunciationLexiconStore = createPronunciationLexiconStore({});
+
 const ttsRuntime = createTtsRuntime({
   env: process.env,
   baseDir: __dirname,
   nowMs,
   logPerf,
+  pronunciationLexiconStore,
 });
 
 // Full-text search over past conversation turns -- an independent SQLite
@@ -2040,6 +2049,7 @@ function registerRoutes(app, upload, deps = {}) {
     mcpClientCapability,
     toolCallLogCapability,
     hooksCapability,
+    pronunciationLexiconCapability,
     // Yellowlight enhancements (#496-#489) — optional plugins wired into capability system
     cloudSyncCapability,
     scheduledExportCapability,
@@ -2090,6 +2100,7 @@ function registerRoutes(app, upload, deps = {}) {
   const activeMcpClientRegistry = deps.mcpClientRegistry || mcpClientRegistry;
   const activeToolCallLog = deps.toolCallLog || toolCallLog;
   const activeHooksStore = deps.hooksStore || hooksStore;
+  const activePronunciationLexiconStore = deps.pronunciationLexiconStore || pronunciationLexiconStore;
   const activeBrowserAutomationToolSource = deps.browserAutomationToolSource || browserAutomationToolSource;
   const capabilityContext = {
     acpMemoryStore: deps.acpMemoryStore || acpMemoryStore,
@@ -2104,6 +2115,7 @@ function registerRoutes(app, upload, deps = {}) {
     mcpClientRegistry: activeMcpClientRegistry,
     toolCallLog: deps.toolCallLog || toolCallLog,
     hooksStore: activeHooksStore,
+    pronunciationLexiconStore: activePronunciationLexiconStore,
     // Issue #187: discord-bot's voice session needs the same full
     // "speak this reply" pipeline (gaming-aware TTS provider switching,
     // VTube reactions, captions) every other surface already uses, not a
