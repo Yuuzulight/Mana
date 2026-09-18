@@ -73,6 +73,14 @@ internal sealed class AvatarOverlayForm : Form
     // activeExpression) it needs no thread-ownership comment.
     private readonly CubismMotionFile? idleMotion;
 
+    // #342 follow-up: fallback base layer for when idleMotion above is
+    // null (no authored .motion3.json idle clip configured, or it failed
+    // to load) -- without this, the avatar previously had zero idle
+    // movement in that case. Only ever constructed when idleMotion is
+    // null (see the constructor), so RenderFrame only ever runs one of
+    // the two, never both.
+    private readonly ProceduralIdleMotion? proceduralIdleMotion;
+
     public AvatarOverlayForm(string rootDirectory)
     {
         idlePath = Path.Combine(rootDirectory, "windows-launcher", "assets", "avatar", "idle.png");
@@ -97,6 +105,10 @@ internal sealed class AvatarOverlayForm : Form
         cubismRenderer = loaded.Renderer;
         expressions = loaded.Expressions;
         idleMotion = loaded.IdleMotion;
+        if (idleMotion is null && cubismModel is not null)
+        {
+            proceduralIdleMotion = new ProceduralIdleMotion();
+        }
         if (cubismModel is not null && cubismRenderer is not null)
         {
             renderTimer = new System.Windows.Forms.Timer { Interval = 33 }; // ~30fps
@@ -201,17 +213,26 @@ internal sealed class AvatarOverlayForm : Form
         var dtMs = lastRenderTickMs == 0 ? 33f : Math.Max(1, nowMs - lastRenderTickMs);
         lastRenderTickMs = nowMs;
 
-        // Layering, base to override: #515's idle motion sets the
-        // resting-pose sway first (so she isn't frozen between
-        // sentences); #514's expression applies on top of that, since a
-        // deliberate mood read should win over generic idle animation
-        // where they'd otherwise conflict on the same parameter; lip-sync's
-        // explicit mouth writes below always win last, for
-        // ParamMouthOpenY/ParamMouthForm specifically -- most
+        // Layering, base to override: #515's idle motion (or, when no
+        // authored idle clip is configured, proceduralIdleMotion's
+        // randomized-parameter fallback -- see that class's own header
+        // comment) sets the resting-pose sway first, so she isn't frozen
+        // between sentences either way; #514's expression applies on top
+        // of that, since a deliberate mood read should win over generic
+        // idle animation where they'd otherwise conflict on the same
+        // parameter; lip-sync's explicit mouth writes below always win
+        // last, for ParamMouthOpenY/ParamMouthForm specifically -- most
         // motions/expressions target eyebrows/eyes/head-angle rather than
         // mouth-open, but if either touched it, Mana's mouth should still
         // track what she's actually saying while she's speaking.
-        idleMotion?.ApplyTo(model, (float)renderClock.Elapsed.TotalSeconds);
+        if (idleMotion is not null)
+        {
+            idleMotion.ApplyTo(model, (float)renderClock.Elapsed.TotalSeconds);
+        }
+        else
+        {
+            proceduralIdleMotion?.ApplyTo(model, (float)renderClock.Elapsed.TotalSeconds);
+        }
         activeExpression?.ApplyTo(model);
 
         var (targetMouthOpen, targetMouthForm) = LipSyncDriver.Current;
