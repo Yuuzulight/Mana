@@ -1,7 +1,7 @@
 const assert = require("node:assert/strict");
 const test = require("node:test");
 
-const { normalizeSpeechText } = require("../utils/speech-text");
+const { normalizeSpeechText, applyPronunciationLexicon } = require("../utils/speech-text");
 
 test("known emojis become short spoken words", () => {
   assert.equal(normalizeSpeechText("Hello! 😊"), "Hello! smile");
@@ -94,4 +94,44 @@ test("a plain thinking hmm is not turned into humph", () => {
 test("empty and plain text pass through unchanged", () => {
   assert.equal(normalizeSpeechText(""), "");
   assert.equal(normalizeSpeechText("Just a normal sentence."), "Just a normal sentence.");
+});
+
+test("normalizeSpeechText applies user-registered pronunciation-lexicon overrides", () => {
+  const entries = [{ word: "Qwen", replacement: "kwen" }];
+  assert.equal(normalizeSpeechText("I'm running Qwen locally.", entries), "I'm running kwen locally.");
+});
+
+test("normalizeSpeechText with no lexicon entries behaves exactly as before", () => {
+  assert.equal(normalizeSpeechText("Hmph! Qwen said hi."), "humph! Qwen said hi.");
+  assert.equal(normalizeSpeechText("Hmph! Qwen said hi.", []), "humph! Qwen said hi.");
+  assert.equal(normalizeSpeechText("Hmph! Qwen said hi.", undefined), "humph! Qwen said hi.");
+});
+
+test("applyPronunciationLexicon matches whole words only, case-insensitively", () => {
+  const entries = [{ word: "Qwen", replacement: "kwen" }];
+  assert.equal(applyPronunciationLexicon("QWEN and qwen and Qwen", entries), "kwen and kwen and kwen");
+  assert.equal(applyPronunciationLexicon("Qwentin said hi", entries), "Qwentin said hi");
+});
+
+test("applyPronunciationLexicon replaces every original occurrence exactly once, even when one entry's replacement is another entry's word (no chaining)", () => {
+  const entries = [
+    { word: "Qwen", replacement: "kwen" },
+    { word: "kwen", replacement: "kevin" },
+  ];
+  assert.equal(applyPronunciationLexicon("Qwen said hi, kwen too", entries), "kwen said hi, kevin too");
+});
+
+test("applyPronunciationLexicon treats a user's replacement text as literal, not a $-replacement pattern", () => {
+  const entries = [{ word: "cost", replacement: "price is $&" }];
+  assert.equal(applyPronunciationLexicon("the cost is high", entries), "the price is $& is high");
+});
+
+test("applyPronunciationLexicon with no matching entries returns the text unchanged", () => {
+  const entries = [{ word: "Qwen", replacement: "kwen" }];
+  assert.equal(applyPronunciationLexicon("nothing to see here", entries), "nothing to see here");
+});
+
+test("applyPronunciationLexicon with no entries returns the text unchanged", () => {
+  assert.equal(applyPronunciationLexicon("Qwen said hi", []), "Qwen said hi");
+  assert.equal(applyPronunciationLexicon("Qwen said hi", undefined), "Qwen said hi");
 });
