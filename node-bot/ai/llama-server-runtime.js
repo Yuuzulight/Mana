@@ -909,6 +909,107 @@ function createLlamaServerRuntime(options = {}) {
     });
   }
 
+  // A real reply essentially never starts with a raw `{` -- this is the
+  // exact leaked-JSON signature confirmed on qwen2.5-coder-7b (see
+  // runToolAwareReply's repair call below). Cheap and precise enough: no
+  // false-positive risk worth guarding against, and a false negative here
+  // just means an unhandled turn falls through to the pre-existing
+  // "no tool calls, that's the final answer" behavior.
+  //
+  // Second, distinct leak shape confirmed live against the same model
+  // (coding-mode `coding__propose_edit` prompts, 9/9 real samples): instead
+  // of leaking *only* JSON, it writes ordinary explanatory prose and then
+  // embeds the intended call mid-response, e.g. "...let's propose this
+  // edit:\n\n```json\n{\"name\": \"coding__propose_edit\", \"arguments\":
+  // {...}}\n```". The prefix check above never sees this. The
+  // "name"+"arguments" pair appearing together (in that order, as JSON
+  // keys) is specific to the tool-call shape -- a plain code block's own
+  // dict/object literals essentially never use exactly those two key names
+  // back to back, so this is unlikely to false-positive on this model's
+  // otherwise code-heavy replies.
+  function looksLikeFailedToolCallJson(content) {
+    const trimmed = String(content || "").trim();
+    if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+      return true;
+    }
+    return /"name"\s*:\s*"[^"]+"\s*,\s*"arguments"\s*:/.test(trimmed);
+  }
+
+  // Builds a JSON Schema that forces a valid `{tool_calls: [{name, arguments}]}`
+  // shape, one oneOf branch per available tool so `arguments` is validated
+  // against that specific tool's own parameter schema. Confirmed directly
+  // against this repo's own llama-server build before use: oneOf+const
+  // discriminators across multiple tools compile to a working grammar and
+  // the model reliably picks the right branch.
+  function buildToolCallRepairSchema(tools) {
+    return {
+      type: "object",
+      properties: {
+        tool_calls: {
+          type: "array",
+          items: {
+            oneOf: tools.map((t) => ({
+              type: "object",
+              properties: {
+                name: { const: t.function.name },
+                arguments: t.function.parameters || { type: "object" },
+              },
+              required: ["name", "arguments"],
+            })),
+          },
+        },
+      },
+      required: ["tool_calls"],
+    };
+  }
+
+  // One extra request, schema-constrained instead of relying on the
+  // model's own template to populate `tool_calls` -- see the call site's
+  // comment for why this exists and how it was confirmed to work. Returns
+  // the same shape runToolAwareReply's main loop already expects
+  // (OpenAI-style tool_calls entries with a JSON-*string* `arguments`
+  // field, matching the `JSON.parse(call.function.arguments)` call
+  // further down this loop).
+  async function repairToolCalls(messages, tools, maxTokens) {
+    if (!Array.isArray(tools) || !tools.length) {
+      return [];
+    }
+    const schema = buildToolCallRepairSchema(tools);
+    let resp;
+    try {
+      resp = await fetchImpl(`http://127.0.0.1:${state.port}/v1/chat/completions`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          messages,
+          response_format: { type: "json_schema", json_schema: { name: "tool_calls_repair", schema } },
+          max_tokens: maxTokens,
+        }),
+      });
+    } catch (e) {
+      return []; // network/process hiccup -- fall through to the caller's existing no-tool-calls path
+    }
+    if (!resp.ok) {
+      return [];
+    }
+    let parsed;
+    try {
+      const json = await resp.json();
+      parsed = JSON.parse(json?.choices?.[0]?.message?.content || "");
+    } catch (e) {
+      return []; // schema-constrained generation still failed to parse -- give up, don't throw
+    }
+    const calls = Array.isArray(parsed.tool_calls) ? parsed.tool_calls : [];
+    return calls.map((call, index) => ({
+      id: `repair_${Date.now()}_${index}`,
+      type: "function",
+      function: {
+        name: call.name,
+        arguments: JSON.stringify(call.arguments || {}),
+      },
+    }));
+  }
+
   // Foundational tool-calling loop (issue #51). Single round only: the
   // model gets one chance to call tools, sees the results, and produces a
   // final reply -- deliberately not a multi-step agent loop yet. Every tool
@@ -1029,9 +1130,25 @@ function createLlamaServerRuntime(options = {}) {
       rounds = round;
       const json = await complete(true);
       message = (json && json.choices && json.choices[0] && json.choices[0].message) || {};
-      const requestedToolCalls = Array.isArray(message.tool_calls)
+      let requestedToolCalls = Array.isArray(message.tool_calls)
         ? message.tool_calls
         : [];
+
+      if (!requestedToolCalls.length && looksLikeFailedToolCallJson(message.content)) {
+        // Issue: this method's own header comment documents that some
+        // model/template combos (qwen2.5-coder-7b confirmed) never
+        // populate `tool_calls` at all -- they leak the call they meant to
+        // make into `content` instead, sometimes malformed (verified
+        // directly: a raw request against that exact model returned
+        // `content: '{{"name": "get_weather", ...'` -- a literal double
+        // brace, not valid JSON). Confirmed the fix empirically before
+        // writing this: re-asking with response_format's json_schema
+        // constraint reliably produces clean, schema-conforming JSON even
+        // from this same broken model/template pair. Only fires when the
+        // native path already failed -- the common/working case (e.g. the
+        // default profile) never pays for the extra request.
+        requestedToolCalls = await repairToolCalls(messages, toolPolicy.tools, maxTokens);
+      }
 
       if (!requestedToolCalls.length) {
         break; // model produced a real answer -- no more tools requested

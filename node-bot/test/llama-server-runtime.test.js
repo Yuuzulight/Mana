@@ -890,6 +890,293 @@ test("runToolAwareReply skips the tool round entirely when the model doesn't req
   assert.deepEqual(result.toolCalls, []);
 });
 
+// Confirmed directly against a real llama-server build (qwen2.5-coder-7b):
+// some model/template combos never populate `tool_calls` at all -- they
+// leak the call they meant to make into `content` instead, sometimes
+// malformed (a real observed example: content was the literal string
+// '{{"name": "get_weather", "arguments": {"location": "Tokyo"}}', a
+// double-opening-brace, non-JSON-parseable string). These tests exercise
+// the repair path that re-asks with response_format's json_schema
+// constraint -- confirmed separately (manual testing against that same
+// model) to reliably produce clean, schema-conforming JSON.
+test("runToolAwareReply repairs a model that leaks a (possibly malformed) tool call into content instead of populating tool_calls", async () => {
+  const calls = [];
+  let serverUp = false;
+  const fakeFetch = async (url, init) => {
+    if (String(url).endsWith("/health")) return { ok: serverUp };
+    if (String(url).endsWith("/v1/chat/completions")) {
+      const body = JSON.parse(init.body);
+      calls.push(body);
+      if (calls.length === 1) {
+        // Native tool-calling path: model leaks a malformed attempt into
+        // content instead of populating tool_calls.
+        return {
+          ok: true,
+          json: async () => ({
+            choices: [
+              { message: { content: '{{"name": "read_file", "arguments": {"path": "notes.txt"}}' } },
+            ],
+          }),
+        };
+      }
+      if (calls.length === 2) {
+        // Repair round: must be schema-constrained, not the native tools param.
+        assert.equal(body.response_format.type, "json_schema");
+        assert.equal(body.response_format.json_schema.schema.required[0], "tool_calls");
+        assert.equal(body.tools, undefined, "repair request replaces tools/tool_choice, doesn't add to them");
+        return {
+          ok: true,
+          json: async () => ({
+            choices: [
+              {
+                message: {
+                  content: JSON.stringify({
+                    tool_calls: [{ name: "read_file", arguments: { path: "notes.txt" } }],
+                  }),
+                },
+              },
+            ],
+          }),
+        };
+      }
+      // Third call: the tool result should now be in the conversation.
+      const toolMessage = body.messages.find((m) => m.role === "tool");
+      assert.equal(toolMessage.content, "file contents here");
+      return {
+        ok: true,
+        json: async () => ({
+          choices: [{ message: { content: "The file says: file contents here" } }],
+        }),
+      };
+    }
+    return { ok: false, status: 404, text: async () => "not found" };
+  };
+
+  const runtime = createLlamaServerRuntime({
+    env: makeFakeEnv(),
+    fs: makeFakeFs(),
+    fetch: fakeFetch,
+    spawn: () => {
+      serverUp = true;
+      return makeFakeChild();
+    },
+    sleep: async () => {},
+    registerExitHandlers: false,
+  });
+
+  const policy = makeFakePolicy({
+    executeTool: () => "file contents here",
+  });
+
+  const result = await runtime.runToolAwareReply("what does notes.txt say?", policy);
+
+  assert.equal(calls.length, 3, "native attempt + repair + follow-up after executing the repaired call");
+  assert.equal(result.content, "The file says: file contents here");
+  assert.deepEqual(result.toolCalls, [
+    { name: "read_file", args: { path: "notes.txt" }, ok: true },
+  ]);
+});
+
+test("runToolAwareReply does NOT attempt repair when content is a normal reply, not leaked JSON", async () => {
+  let callCount = 0;
+  let serverUp = false;
+  const fakeFetch = async (url) => {
+    if (String(url).endsWith("/health")) return { ok: serverUp };
+    if (String(url).endsWith("/v1/chat/completions")) {
+      callCount += 1;
+      return {
+        ok: true,
+        json: async () => ({ choices: [{ message: { content: "Sure, notes.txt says hello." } }] }),
+      };
+    }
+    return { ok: false, status: 404, text: async () => "not found" };
+  };
+
+  const runtime = createLlamaServerRuntime({
+    env: makeFakeEnv(),
+    fs: makeFakeFs(),
+    fetch: fakeFetch,
+    spawn: () => {
+      serverUp = true;
+      return makeFakeChild();
+    },
+    sleep: async () => {},
+    registerExitHandlers: false,
+  });
+
+  const result = await runtime.runToolAwareReply("what does notes.txt say?", makeFakePolicy());
+
+  assert.equal(callCount, 1, "a normal prose reply must never trigger the repair round-trip");
+  assert.equal(result.content, "Sure, notes.txt says hello.");
+});
+
+test("runToolAwareReply's repair path gives up cleanly (no throw) when the repair response itself doesn't parse", async () => {
+  let callCount = 0;
+  let serverUp = false;
+  const fakeFetch = async (url) => {
+    if (String(url).endsWith("/health")) return { ok: serverUp };
+    if (String(url).endsWith("/v1/chat/completions")) {
+      callCount += 1;
+      if (callCount === 1) {
+        return { ok: true, json: async () => ({ choices: [{ message: { content: "{not valid json" } }] }) };
+      }
+      // Repair attempt also comes back unparseable -- must not throw.
+      return { ok: true, json: async () => ({ choices: [{ message: { content: "still not json" } }] }) };
+    }
+    return { ok: false, status: 404, text: async () => "not found" };
+  };
+
+  const runtime = createLlamaServerRuntime({
+    env: makeFakeEnv(),
+    fs: makeFakeFs(),
+    fetch: fakeFetch,
+    spawn: () => {
+      serverUp = true;
+      return makeFakeChild();
+    },
+    sleep: async () => {},
+    registerExitHandlers: false,
+  });
+
+  const result = await runtime.runToolAwareReply("what does notes.txt say?", makeFakePolicy());
+
+  assert.equal(callCount, 2, "native attempt + one repair attempt, then gives up");
+  assert.deepEqual(result.toolCalls, []);
+});
+
+// Second, distinct leak shape confirmed live against qwen2.5-coder-7b's
+// real deployed build with Mana's actual coding__propose_edit schema (9
+// live samples against the real model): instead of leaking *only* JSON,
+// it writes ordinary explanatory prose and embeds the intended call mid-
+// response inside a ```json fence, e.g. "...let's propose this edit:\n\n
+// ```json\n{\"name\": \"coding__propose_edit\", \"arguments\": {...}}\n
+// ```". The original prefix-only check (`content` must start with `{`/`[`)
+// never saw this -- confirmed 0/9 real samples triggered repair, including
+// this one. This test locks in the fix: detection must also fire on a
+// "name"+"arguments" pair embedded anywhere in the content, not just at
+// the very start.
+test("runToolAwareReply repairs a tool call embedded mid-response inside explanatory prose, not just a leaked-JSON prefix", async () => {
+  const calls = [];
+  let serverUp = false;
+  const fakeFetch = async (url, init) => {
+    if (String(url).endsWith("/health")) return { ok: serverUp };
+    if (String(url).endsWith("/v1/chat/completions")) {
+      const body = JSON.parse(init.body);
+      calls.push(body);
+      if (calls.length === 1) {
+        // Real captured shape: prose first, JSON tool call embedded later.
+        return {
+          ok: true,
+          json: async () => ({
+            choices: [
+              {
+                message: {
+                  content:
+                    "Sure, let's fix that. Here's the corrected code:\n\n" +
+                    "```python\ndef clamp(x, lo, hi):\n    return max(lo, min(x, hi))\n```\n\n" +
+                    "Now, let's propose this edit using the `coding__propose_edit` function:\n\n" +
+                    '```json\n{"name": "coding__propose_edit", "arguments": {"path": "utils/math.py"}}\n```',
+                },
+              },
+            ],
+          }),
+        };
+      }
+      if (calls.length === 2) {
+        assert.equal(body.response_format.type, "json_schema");
+        return {
+          ok: true,
+          json: async () => ({
+            choices: [
+              {
+                message: {
+                  content: JSON.stringify({
+                    tool_calls: [{ name: "coding__propose_edit", arguments: { path: "utils/math.py" } }],
+                  }),
+                },
+              },
+            ],
+          }),
+        };
+      }
+      return { ok: true, json: async () => ({ choices: [{ message: { content: "Done." } }] }) };
+    }
+    return { ok: false, status: 404, text: async () => "not found" };
+  };
+
+  const runtime = createLlamaServerRuntime({
+    env: makeFakeEnv(),
+    fs: makeFakeFs(),
+    fetch: fakeFetch,
+    spawn: () => {
+      serverUp = true;
+      return makeFakeChild();
+    },
+    sleep: async () => {},
+    registerExitHandlers: false,
+  });
+
+  const policy = makeFakePolicy({ executeTool: () => "ok" });
+  const result = await runtime.runToolAwareReply("fix the clamp() bug", policy);
+
+  assert.equal(calls.length, 3, "native attempt + repair + follow-up after executing the repaired call");
+  assert.deepEqual(result.toolCalls, [
+    { name: "coding__propose_edit", args: { path: "utils/math.py" }, ok: true },
+  ]);
+});
+
+// The far more common real shape (8 of 9 live samples): the model never
+// attempts a tool call at all -- pure prose describing or half-performing
+// the action (often with a plain, non-JSON diff block), no "name"+
+// "arguments" pair anywhere. Detection must stay silent here; this is a
+// different, unaddressed problem (the model choosing not to call the tool),
+// not something a smarter JSON scan can fix.
+test("runToolAwareReply does NOT attempt repair on a real captured no-tool-call sample (prose + plain diff, no embedded JSON)", async () => {
+  let callCount = 0;
+  let serverUp = false;
+  const fakeFetch = async (url) => {
+    if (String(url).endsWith("/health")) return { ok: serverUp };
+    if (String(url).endsWith("/v1/chat/completions")) {
+      callCount += 1;
+      return {
+        ok: true,
+        json: async () => ({
+          choices: [
+            {
+              message: {
+                content:
+                  "Got it! Let's fix that off-by-one bug in the `clamp()` function. I'll propose the edit for you.\n\n" +
+                  "```diff\ndiff --git a/utils/math.py b/utils/math.py\n--- a/utils/math.py\n+++ b/utils/math.py\n" +
+                  "@@ -10,7 +10,7 @@ def clamp(x, lo, hi):\n     if x < lo:\n         return lo\n     elif x > hi:\n" +
+                  "-        return hi\n+        return hi - 1\n     else:\n         return x\n```\n\n" +
+                  "This should fix the off-by-one issue. Let me know if you need anything else!",
+              },
+            },
+          ],
+        }),
+      };
+    }
+    return { ok: false, status: 404, text: async () => "not found" };
+  };
+
+  const runtime = createLlamaServerRuntime({
+    env: makeFakeEnv(),
+    fs: makeFakeFs(),
+    fetch: fakeFetch,
+    spawn: () => {
+      serverUp = true;
+      return makeFakeChild();
+    },
+    sleep: async () => {},
+    registerExitHandlers: false,
+  });
+
+  const result = await runtime.runToolAwareReply("fix the clamp() bug", makeFakePolicy());
+
+  assert.equal(callCount, 1, "a plain-diff reply with no embedded tool-call JSON must never trigger repair");
+  assert.deepEqual(result.toolCalls, []);
+});
+
 // Issue #282: same early/late splicing as runLocalAssistantReply, applies
 // to the initial messages array before any tool-calling rounds run.
 test("runToolAwareReply splices options.extraMessages.early/late into the initial messages array", async () => {
