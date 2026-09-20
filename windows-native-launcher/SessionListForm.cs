@@ -511,7 +511,7 @@ internal sealed class SessionListForm : Form
 
     private void OpenSettings()
     {
-        using var dialog = new SettingsDialog(backendClient, backendLog);
+        using var dialog = new SettingsDialog(backendClient, backendLog, () => voiceLoop.CurrentSessionId);
         dialog.ShowDialog(this);
     }
 
