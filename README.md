@@ -236,7 +236,7 @@ cd node-bot
 npm run doctor
 ```
 
-From the Windows launcher, use the **Doctor** panel and **Run checks** button.
+From `windows-native-launcher`, use the **Doctor** panel and **Run checks** button (the legacy `windows-launcher` has the same panel).
 
 Doctor checks currently cover:
 
@@ -407,4 +407,4 @@ Mana is under active development. The current stable path is:
 windows-native-launcher -> node-bot -> local Whisper / local Llama / local TTS
 ```
 
-`windows-native-launcher`, the native C#/WinForms launcher, reached full feature parity with the legacy Electron launcher on 2026-09-08 (see [docs/native_launcher_plan.md](docs/native_launcher_plan.md)) and is now the primary, supported launcher. A measured benchmark backs the memory claim: on the test machine, the native launcher's own incremental cost settled at ~540MB RAM / +21MB VRAM, while `windows-launcher` pushed the same system to 98.8% RAM within 3 seconds and had to be killed before reaching a steady state (see the plan doc for full methodology and caveats). `windows-launcher` (Electron) is kept only as a fallback going forward, not because of any known feature gap, and isn't planned to receive further feature development. The next major engineering priority is backend modularization (splitting monolithic `node-bot` files into modular components, tracked in [issue #500](https://github.com/Yuuzulight/Mana/issues/500)); component health status, local model management, and mobile device controls have since shipped.
+`windows-native-launcher`, the native C#/WinForms launcher, reached full feature parity with the legacy Electron launcher (the last residual gaps closed 2026-09-21, after a 5-round independent verification pass caught them; see [docs/native_launcher_plan.md](docs/native_launcher_plan.md)) and is now the primary, supported launcher. A measured benchmark backs the memory claim: on the test machine, the native launcher's own incremental cost settled at ~540MB RAM / +21MB VRAM, while `windows-launcher` pushed the same system to 98.8% RAM within 3 seconds and had to be killed before reaching a steady state (see the plan doc for full methodology and caveats). `windows-launcher` (Electron) is kept only as a fallback going forward, not because of any known feature gap, and isn't planned to receive further feature development. The next major engineering priority is backend modularization (splitting monolithic `node-bot` files into modular components, tracked in [issue #500](https://github.com/Yuuzulight/Mana/issues/500)); component health status, local model management, and mobile device controls have since shipped.

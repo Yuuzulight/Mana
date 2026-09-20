@@ -60,6 +60,8 @@ This is the realistic path toward a roughly 500 MB runtime while keeping local T
 
 Nothing outstanding. All items the original version of this doc listed as missing (visible chat/session UI, screen-context, vision hotkey, proactive notifications, quick-entry, artifact viewer, doctor panel, compare-mode, live captions, capture-a-clip) have shipped, along with the full #565-#586 settings/panel parity batch above. Deliberately dropped items (cloud sync, scheduled export, plugin marketplace install-by-URL, auto-updater, VRM/3D avatar support, first-run Python/venv setup) are tracked as their own follow-up issues rather than parity gaps -- see each one's own issue for why.
 
+A 5-round independent re-verification pass (2026-09-21) of the #565-#586 batch caught three items the 2026-09-06 state above had only partially wired: item 1's `ManaProcessManager` health-check URL was still hardcoded to `127.0.0.1:5005` (PR #636), item 11's Perf tab never requested the session-scoped `tokenUsage` block (PR #637), and `CaptionWebSocketClient`'s WebSocket URL was hardcoded rather than using the configured backend URL like `ManaBackendClient`/`TrayNotificationClient` (issue #638, PR #639). All three are merged as of 2026-09-21; the "nothing outstanding" claim above is accurate as of that date, not the 2026-09-06 verification.
+
 ## Build requirement
 
 Requires the .NET 8 SDK (not just the runtime).
