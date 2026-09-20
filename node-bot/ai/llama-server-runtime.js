@@ -915,9 +915,24 @@ function createLlamaServerRuntime(options = {}) {
   // false-positive risk worth guarding against, and a false negative here
   // just means an unhandled turn falls through to the pre-existing
   // "no tool calls, that's the final answer" behavior.
+  //
+  // Second, distinct leak shape confirmed live against the same model
+  // (coding-mode `coding__propose_edit` prompts, 9/9 real samples): instead
+  // of leaking *only* JSON, it writes ordinary explanatory prose and then
+  // embeds the intended call mid-response, e.g. "...let's propose this
+  // edit:\n\n```json\n{\"name\": \"coding__propose_edit\", \"arguments\":
+  // {...}}\n```". The prefix check above never sees this. The
+  // "name"+"arguments" pair appearing together (in that order, as JSON
+  // keys) is specific to the tool-call shape -- a plain code block's own
+  // dict/object literals essentially never use exactly those two key names
+  // back to back, so this is unlikely to false-positive on this model's
+  // otherwise code-heavy replies.
   function looksLikeFailedToolCallJson(content) {
     const trimmed = String(content || "").trim();
-    return trimmed.startsWith("{") || trimmed.startsWith("[");
+    if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+      return true;
+    }
+    return /"name"\s*:\s*"[^"]+"\s*,\s*"arguments"\s*:/.test(trimmed);
   }
 
   // Builds a JSON Schema that forces a valid `{tool_calls: [{name, arguments}]}`
