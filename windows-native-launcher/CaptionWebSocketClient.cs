@@ -16,14 +16,34 @@ namespace Mana.NativeLauncher;
 internal sealed class CaptionWebSocketClient : IDisposable
 {
     private const int ReconnectDelayMs = 3000;
-    private static readonly Uri CaptionsWebSocketUri = new("ws://127.0.0.1:5005/ws/captions");
 
+    private readonly Uri captionsWebSocketUri;
     private readonly Action<string> onCaption;
     private readonly CancellationTokenSource cts = new();
 
-    public CaptionWebSocketClient(Action<string> onCaption)
+    // #638: backendBaseUrl derives this client's ws(s):// endpoint from the
+    // same configured backend address ManaBackendClient/TrayNotificationClient
+    // use for their own requests -- null (every existing call site) keeps
+    // the original hardcoded local address.
+    public CaptionWebSocketClient(Action<string> onCaption, string? backendBaseUrl = null)
     {
         this.onCaption = onCaption;
+        captionsWebSocketUri = BuildCaptionsWebSocketUri(backendBaseUrl);
+    }
+
+    private static Uri BuildCaptionsWebSocketUri(string? backendBaseUrl)
+    {
+        if (string.IsNullOrWhiteSpace(backendBaseUrl))
+        {
+            return new Uri("ws://127.0.0.1:5005/ws/captions");
+        }
+        var httpUri = new Uri(backendBaseUrl);
+        var builder = new UriBuilder(httpUri)
+        {
+            Scheme = httpUri.Scheme == "https" ? "wss" : "ws",
+            Path = "/ws/captions",
+        };
+        return builder.Uri;
     }
 
     public void Start()
@@ -38,7 +58,7 @@ internal sealed class CaptionWebSocketClient : IDisposable
             try
             {
                 using var socket = new ClientWebSocket();
-                await socket.ConnectAsync(CaptionsWebSocketUri, token);
+                await socket.ConnectAsync(captionsWebSocketUri, token);
                 await ReceiveLoopAsync(socket, token);
             }
             catch
