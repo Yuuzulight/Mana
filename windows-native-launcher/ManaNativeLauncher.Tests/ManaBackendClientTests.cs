@@ -229,6 +229,78 @@ public class ManaBackendClientTests
     }
 
     [Fact]
+    public async Task GetPerformanceStatusAsync_TokenUsageIsNullWhenTheBackendOmitsIt()
+    {
+        // Issue #421 (backend): the backend omits "tokenUsage" entirely for
+        // a local-only session (nothing to meter) -- must read as null, not
+        // as a zeroed-out object, so a caller can tell "not applicable"
+        // apart from "genuinely zero tokens so far".
+        var handler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(
+                """{"config":{"ttsProvider":"fish"},"gaming":{"gamingAppRunning":false},"process":{"totalMemoryMb":256}}""",
+                Encoding.UTF8,
+                "application/json"),
+        });
+        var client = new ManaBackendClient(handler);
+
+        var status = await client.GetPerformanceStatusAsync("session-1");
+
+        Assert.Null(status.TokenUsage);
+    }
+
+    [Fact]
+    public async Task GetPerformanceStatusAsync_ParsesTokenUsageWhenThePresentBackendIncludesIt()
+    {
+        var handler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(
+                """{"config":{"ttsProvider":"fish"},"gaming":{"gamingAppRunning":false},"process":{"totalMemoryMb":256},"tokenUsage":{"promptTokens":100,"completionTokens":50,"totalTokens":150,"calls":3,"warnThreshold":1000,"stopThreshold":5000,"warnExceeded":false,"stopExceeded":false}}""",
+                Encoding.UTF8,
+                "application/json"),
+        });
+        var client = new ManaBackendClient(handler);
+
+        var status = await client.GetPerformanceStatusAsync("session-1");
+
+        Assert.NotNull(status.TokenUsage);
+        Assert.Equal(100, status.TokenUsage!.PromptTokens);
+        Assert.Equal(50, status.TokenUsage.CompletionTokens);
+        Assert.Equal(150, status.TokenUsage.TotalTokens);
+        Assert.Equal(3, status.TokenUsage.Calls);
+        Assert.Equal(1000, status.TokenUsage.WarnThreshold);
+        Assert.Equal(5000, status.TokenUsage.StopThreshold);
+        Assert.False(status.TokenUsage.WarnExceeded);
+        Assert.False(status.TokenUsage.StopExceeded);
+    }
+
+    [Fact]
+    public async Task GetPerformanceStatusAsync_SendsSessionIdAsAQueryParamOnlyWhenGiven()
+    {
+        Uri? capturedUri = null;
+        var handler = new FakeHttpMessageHandler(request =>
+        {
+            capturedUri = request.RequestUri;
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(
+                    """{"config":{"ttsProvider":"fish"},"gaming":{"gamingAppRunning":false},"process":{"totalMemoryMb":256}}""",
+                    Encoding.UTF8,
+                    "application/json"),
+            };
+        });
+        var client = new ManaBackendClient(handler);
+
+        await client.GetPerformanceStatusAsync("abc 123");
+        Assert.Equal("/perf/status", capturedUri!.AbsolutePath);
+        Assert.Equal("?sessionId=abc%20123", capturedUri.Query);
+
+        await client.GetPerformanceStatusAsync();
+        Assert.Equal("/perf/status", capturedUri!.AbsolutePath);
+        Assert.Equal("", capturedUri.Query);
+    }
+
+    [Fact]
     public async Task GetPresetsAsync_ParsesThePresetArray()
     {
         var handler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)

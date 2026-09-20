@@ -43,9 +43,20 @@ internal sealed class ManaBackendClient
     // {lastTokens,session,updatedAt}), so each entry's value is kept as
     // its own compact JSON string rather than modeled per-operation; the
     // Perf tab just displays it, it doesn't need to parse it further.
-    public async Task<ManaPerformanceStatus> GetPerformanceStatusAsync()
+    // sessionId: optional -- when given, node-bot's /perf/status also
+    // returns a "tokenUsage" object (this session's remote-AI prompt/
+    // completion/total token counts + warn/stop thresholds), but only when
+    // remote AI is actually on (issue #421: a local-only session has no
+    // cost to meter, so the backend omits the field entirely rather than
+    // sending zeros). ManaPerformanceStatus.TokenUsage is null whenever the
+    // backend didn't include it -- callers should treat null as "not
+    // applicable right now", not as zero usage.
+    public async Task<ManaPerformanceStatus> GetPerformanceStatusAsync(string? sessionId = null)
     {
-        using var response = await http.GetAsync("/perf/status");
+        var url = string.IsNullOrEmpty(sessionId)
+            ? "/perf/status"
+            : $"/perf/status?sessionId={Uri.EscapeDataString(sessionId)}";
+        using var response = await http.GetAsync(url);
         response.EnsureSuccessStatusCode();
         await using var stream = await response.Content.ReadAsStreamAsync();
         using var document = await JsonDocument.ParseAsync(stream);
@@ -63,6 +74,22 @@ internal sealed class ManaBackendClient
             }
         }
 
+        ManaSessionTokenUsage? tokenUsage = null;
+        if (root.TryGetProperty("tokenUsage", out var tokenUsageElement) && tokenUsageElement.ValueKind == JsonValueKind.Object)
+        {
+            tokenUsage = new ManaSessionTokenUsage
+            {
+                PromptTokens = tokenUsageElement.TryGetProperty("promptTokens", out var pt) ? pt.GetInt64() : 0,
+                CompletionTokens = tokenUsageElement.TryGetProperty("completionTokens", out var ct) ? ct.GetInt64() : 0,
+                TotalTokens = tokenUsageElement.TryGetProperty("totalTokens", out var tt) ? tt.GetInt64() : 0,
+                Calls = tokenUsageElement.TryGetProperty("calls", out var callsEl) ? callsEl.GetInt32() : 0,
+                WarnThreshold = tokenUsageElement.TryGetProperty("warnThreshold", out var wt) && wt.ValueKind == JsonValueKind.Number ? wt.GetInt64() : null,
+                StopThreshold = tokenUsageElement.TryGetProperty("stopThreshold", out var st) && st.ValueKind == JsonValueKind.Number ? st.GetInt64() : null,
+                WarnExceeded = tokenUsageElement.TryGetProperty("warnExceeded", out var we) && we.GetBoolean(),
+                StopExceeded = tokenUsageElement.TryGetProperty("stopExceeded", out var se) && se.GetBoolean(),
+            };
+        }
+
         return new ManaPerformanceStatus
         {
             TotalMemoryMb = process.GetProperty("totalMemoryMb").GetInt32(),
@@ -74,6 +101,7 @@ internal sealed class ManaBackendClient
             LlamaMaxTokens = config.TryGetProperty("llamaMaxTokens", out var llamaMaxEl) ? llamaMaxEl.GetInt32() : 0,
             ScreenContextEnabled = config.TryGetProperty("screenContextEnabled", out var screenEl) && screenEl.GetBoolean(),
             Operations = operations,
+            TokenUsage = tokenUsage,
         };
     }
 
@@ -1519,6 +1547,21 @@ internal sealed class ManaPerformanceStatus
     public int LlamaMaxTokens { get; init; }
     public bool ScreenContextEnabled { get; init; }
     public IReadOnlyDictionary<string, string> Operations { get; init; } = new Dictionary<string, string>();
+    // Issue #421 (backend), null whenever the backend omitted "tokenUsage"
+    // -- see GetPerformanceStatusAsync's own comment for when that happens.
+    public ManaSessionTokenUsage? TokenUsage { get; init; }
+}
+
+internal sealed class ManaSessionTokenUsage
+{
+    public long PromptTokens { get; init; }
+    public long CompletionTokens { get; init; }
+    public long TotalTokens { get; init; }
+    public int Calls { get; init; }
+    public long? WarnThreshold { get; init; }
+    public long? StopThreshold { get; init; }
+    public bool WarnExceeded { get; init; }
+    public bool StopExceeded { get; init; }
 }
 
 // #527/#572: GET /models/status.

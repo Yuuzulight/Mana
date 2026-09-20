@@ -1,3 +1,4 @@
+using System;
 using System.Windows.Forms;
 
 namespace Mana.NativeLauncher;
@@ -13,9 +14,9 @@ namespace Mana.NativeLauncher;
 // the staleness risk.
 internal sealed class SettingsDialog : Form
 {
-    public SettingsDialog(ManaBackendClient backendClient, BackendLogBuffer backendLog)
+    public SettingsDialog(ManaBackendClient backendClient, BackendLogBuffer backendLog, Func<string?>? getCurrentSessionId = null)
     {
-        var panel = new SettingsPanel(backendClient, backendLog);
+        var panel = new SettingsPanel(backendClient, backendLog, getCurrentSessionId);
 
         Text = "Settings";
         Width = 640;

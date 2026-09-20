@@ -15,6 +15,11 @@ internal sealed class SettingsPanel : UserControl
 {
     private readonly ManaBackendClient backendClient;
     private readonly BackendLogBuffer backendLog;
+    // Optional: lets the Perf tab request session-scoped token-budget data
+    // (see RefreshPerfTabAsync) -- null in the one caller that doesn't have
+    // a session concept (there isn't one today; kept optional so a future
+    // caller isn't forced to plumb a session id it may not have).
+    private readonly Func<string?>? getCurrentSessionId;
     private readonly ListView pluginsList = new();
     private readonly ListView factsList = new();
     private readonly ListView skillsList = new();
@@ -51,10 +56,11 @@ internal sealed class SettingsPanel : UserControl
     private readonly TextBox visionMmprojPathBox = new() { Width = 300 };
     private System.Collections.Generic.IReadOnlyList<ManaBrainProviderPreset> brainPresets = System.Array.Empty<ManaBrainProviderPreset>();
 
-    public SettingsPanel(ManaBackendClient backendClient, BackendLogBuffer backendLog)
+    public SettingsPanel(ManaBackendClient backendClient, BackendLogBuffer backendLog, Func<string?>? getCurrentSessionId = null)
     {
         this.backendClient = backendClient;
         this.backendLog = backendLog;
+        this.getCurrentSessionId = getCurrentSessionId;
         Dock = DockStyle.Fill;
         BackColor = DarkTheme.Background;
         ForeColor = DarkTheme.Text;
@@ -796,7 +802,7 @@ internal sealed class SettingsPanel : UserControl
         ManaPerformanceStatus status;
         try
         {
-            status = await backendClient.GetPerformanceStatusAsync();
+            status = await backendClient.GetPerformanceStatusAsync(getCurrentSessionId?.Invoke());
         }
         catch (Exception ex)
         {
@@ -813,11 +819,30 @@ internal sealed class SettingsPanel : UserControl
         }
 
         var uptime = TimeSpan.FromSeconds(status.UptimeSeconds);
-        perfSummaryLabel.Text =
+        var summary =
             $"Uptime: {uptime:d\\.hh\\:mm\\:ss}\n" +
             $"Memory: {status.TotalMemoryMb} MB    TTS: {status.TtsProvider}    Game detected: {status.GamingAppRunning}\n" +
             $"Whisper threads: {status.WhisperThreads}    Llama threads: {status.LlamaThreads}    Llama max tokens: {status.LlamaMaxTokens}\n" +
             $"Screen context: {(status.ScreenContextEnabled ? "enabled" : "disabled")}";
+
+        // Issue #421 (backend): only present when remote AI is on for a
+        // real session -- a local-only session has no cost to meter, so
+        // the backend omits "tokenUsage" entirely rather than sending
+        // zeros, and this line stays omitted here too rather than showing
+        // a misleading "0 tokens".
+        if (status.TokenUsage is { } usage)
+        {
+            var thresholdText = usage.WarnThreshold is { } warn || usage.StopThreshold is { } stop
+                ? $" (warn at {usage.WarnThreshold?.ToString() ?? "-"}, stop at {usage.StopThreshold?.ToString() ?? "-"})"
+                : "";
+            var exceededText = usage.StopExceeded ? " -- STOP THRESHOLD EXCEEDED"
+                : usage.WarnExceeded ? " -- warn threshold exceeded"
+                : "";
+            summary +=
+                $"\nSession tokens: {usage.TotalTokens} total ({usage.PromptTokens} prompt + {usage.CompletionTokens} completion, {usage.Calls} calls){thresholdText}{exceededText}";
+        }
+
+        perfSummaryLabel.Text = summary;
 
         perfOperationsList.Items.Clear();
         foreach (var (name, details) in status.Operations)
