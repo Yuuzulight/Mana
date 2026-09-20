@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/Electron-Windows-47848F?logo=electron&logoColor=white" alt="Electron">
+  <img src="https://img.shields.io/badge/.NET_8-WinForms-512BD4?logo=dotnet&logoColor=white" alt=".NET 8 WinForms">
   <img src="https://img.shields.io/badge/Node.js-Backend-339933?logo=nodedotjs&logoColor=white" alt="Node.js">
   <img src="https://img.shields.io/badge/llama.cpp-Local_LLM-e0b04c" alt="llama.cpp">
   <img src="https://img.shields.io/badge/whisper.cpp-Local_STT-6cd48a" alt="whisper.cpp">
@@ -49,7 +49,7 @@ Mana is for people who want an always-listening voice assistant on their desktop
 
 ### Related projects
 
-Mana isn't the only project chasing a local, always-on AI companion. [Project AIRI](https://github.com/moeru-ai/airi) (web/desktop, Vue + WebGPU, aiming for a Neuro-sama-style streamer) and [Open-LLM-VTuber](https://github.com/t41372/Open-LLM-VTuber) (Python, cross-platform) both explore the same space from different angles, and Mana's voice barge-in feature specifically was inspired by seeing how both projects treat mid-speech interruption as a UX baseline rather than an afterthought. Where Mana differs: it's built for one specific Windows setup rather than a general audience, ships an Electron launcher plus a packaged installer client instead of a browser-first stage, and leans hard into practical daily-driver features (editor handoff, plugin ecosystem, Deep Research) alongside the avatar.
+Mana isn't the only project chasing a local, always-on AI companion. [Project AIRI](https://github.com/moeru-ai/airi) (web/desktop, Vue + WebGPU, aiming for a Neuro-sama-style streamer) and [Open-LLM-VTuber](https://github.com/t41372/Open-LLM-VTuber) (Python, cross-platform) both explore the same space from different angles, and Mana's voice barge-in feature specifically was inspired by seeing how both projects treat mid-speech interruption as a UX baseline rather than an afterthought. Where Mana differs: it's built for one specific Windows setup rather than a general audience, ships a native C#/.NET launcher (with an Electron predecessor kept only as a fallback) plus a packaged installer client instead of a browser-first stage, and leans hard into practical daily-driver features (editor handoff, plugin ecosystem, Deep Research) alongside the avatar.
 
 ## Preview
 
@@ -57,22 +57,22 @@ Mana isn't the only project chasing a local, always-on AI companion. [Project AI
   <img src="docs/images/windows-launcher-main.png" alt="Mana windows-launcher main screen" width="490">
   <img src="docs/images/desktop-client-main.png" alt="Mana desktop-client main screen" width="490">
 </p>
-<p align="center"><sub>windows-launcher (left) and desktop-client (right) — see <a href="#architecture">Architecture</a> for how the two differ.</sub></p>
+<p align="center"><sub>windows-launcher (left, the legacy Electron launcher, kept only as a fallback) and desktop-client (right) — see <a href="#architecture">Architecture</a> for how the pieces differ. <code>windows-native-launcher</code> is now the primary launcher; a screenshot hasn't been added here yet.</sub></p>
 
 ## Quick Start
 
-The current supported path is the Windows launcher plus the local Node backend.
+The current supported path is the native Windows launcher plus the local Node backend.
 
 ```powershell
 cd C:\ManaAI\Mana\node-bot
 npm install
 
-cd C:\ManaAI\Mana\windows-launcher
-npm install
-npm run start
+cd C:\ManaAI\Mana\windows-native-launcher
+dotnet build
+dotnet run
 ```
 
-For the full setup flow, including model paths, Whisper, TTS services, gaming mode, and optional market helpers, see [docs/quick_start_windows.md](docs/quick_start_windows.md).
+Requires the .NET 8 SDK (not just the runtime). For the full setup flow, including model paths, Whisper, TTS services, gaming mode, and optional market helpers, see [docs/quick_start_windows.md](docs/quick_start_windows.md) and [docs/native_launcher_plan.md](docs/native_launcher_plan.md) for native-launcher-specific build notes. `windows-launcher` (Electron) still works and is kept as a fallback — see [Status](#status).
 
 ## Highlights
 
@@ -87,7 +87,7 @@ For the full setup flow, including model paths, Whisper, TTS services, gaming mo
 - **Local image understanding**: with a vision GGUF installed, Mana can look at screenshots and images and talk about them; see [docs/vision_setup.md](docs/vision_setup.md).
 - **Look-at-my-screen hotkey**: press `Ctrl+Alt+M` (configurable via `MANA_VISION_HOTKEY`) to have Mana capture the screen, describe it, and speak the answer.
 - **Gaming mode**: Mana reduces idle work while watched games are running.
-- **Desktop avatar support**: Mana emotes through a built-in Live2D VTuber avatar with lip sync and emotion reactions ([docs/live2d_avatar_setup.md](docs/live2d_avatar_setup.md)), PNG overlay fallback, and optional VTube Studio hotkey control. A VRM (3D) model option is also available in `windows-launcher` ([docs/vrm_avatar_setup.md](docs/vrm_avatar_setup.md)), driven by the same lip-sync/emotion signals, with automatic fallback to Live2D when no VRM model is configured.
+- **Desktop avatar support**: Mana emotes through a built-in Live2D VTuber avatar with lip sync and emotion reactions ([docs/live2d_avatar_setup.md](docs/live2d_avatar_setup.md)), PNG overlay fallback, and optional VTube Studio hotkey control. A VRM (3D) model option is also available in the legacy `windows-launcher` (Electron) build ([docs/vrm_avatar_setup.md](docs/vrm_avatar_setup.md)), driven by the same lip-sync/emotion signals, with automatic fallback to Live2D when no VRM model is configured; `windows-native-launcher` is Live2D-only by design — see [issue #563](https://github.com/Yuuzulight/Mana/issues/563).
 - **Mobile and remote companion paths**: phone chat and summary sync over the local backend and an optional tunnel, plus opt-in Telegram and Discord bridges (DM pairing-code approval, Discord voice-channel join with per-speaker transcription and barge-in) for messaging Mana from somewhere other than your desktop.
 - **Editor coding handoff**: Mana can detect local Zed or VS Code CLIs and open projects or files for coding help without applying edits silently.
 - **FFXIV, market, and job-search helpers**: Mana can query Universalis crafting/market data, Alpha Vantage stock summaries, and live Adzuna job postings when configured, plus a local job-application tracker with resume/cover-letter tailoring, as self-contained optional plugins that also inject context into chat replies; see [Plugins](plugins/README.md).
@@ -116,7 +116,8 @@ Mana is intentionally split into small runtime pieces, all talking to one local 
 
 ```text
 Mana/
-├── windows-launcher/         # Electron desktop launcher — mic capture, avatar overlay, Doctor panel
+├── windows-native-launcher/  # Native C#/.NET WinForms launcher — the primary, supported launcher (docs/native_launcher_plan.md)
+├── windows-launcher/         # Electron desktop launcher — legacy, kept only as a fallback
 ├── desktop-client/           # Electron chat client — packaged NSIS installer, context-isolated renderer
 ├── node-bot/                 # Local backend API (http://localhost:5005)
 │   ├── server.js             # Request routing, tool-calling loop, approval-gate
@@ -144,8 +145,7 @@ Mana/
 │   ├── whisper/               # Expected location for local whisper.cpp binaries and models
 │   └── llama/                 # Expected location for local llama.cpp binaries and GGUF models
 ├── tts-service/               # Local Python service for Kokoro TTS
-├── docs/                      # Setup guides and roadmap notes
-└── windows-native-launcher/   # Lower-memory native launcher, at feature parity with windows-launcher (docs/native_launcher_plan.md)
+└── docs/                      # Setup guides and roadmap notes
 ```
 
 ## Local AI And Privacy
@@ -265,7 +265,7 @@ Common troubleshooting:
 - [PNG avatar setup](docs/png_avatar_setup.md): desktop avatar overlay.
 - [Live2D avatar setup](docs/live2d_avatar_setup.md): built-in VTuber avatar with lip sync.
 - [VTube Studio setup](docs/vtube_studio_setup.md): avatar hotkeys and reactions.
-- [Native launcher plan](docs/native_launcher_plan.md): lower-memory C#/WinForms launcher, now at feature parity with `windows-launcher`.
+- [Native launcher plan](docs/native_launcher_plan.md): the primary C#/WinForms launcher — full feature parity with the legacy Electron launcher, plus a measured lower memory footprint.
 - [GPT-SoVITS setup](docs/gpt_sovits_setup.md): trial anime-style voice-cloning provider.
 - [Fish Speech TTS](docs/fish_speech_tts.md): optional Fish Speech provider.
 - [Market analysis helper](docs/market_analysis_helper.md): stock-market helper setup.
@@ -273,7 +273,7 @@ Common troubleshooting:
 - [Web access setup](docs/web_access_setup.md): local search (SearXNG), wiki lookups, and page reading.
 - [Zed External Agent setup](docs/zed_external_agent.md): local Zed `agent_servers` configuration.
 - [MCP support roadmap](docs/roadmap/issue-42-mcp-support.md): running Mana as an MCP server (`npm run mcp`) and the plan for MCP client support.
-- [Deep Research roadmap](docs/roadmap/issue-47-deep-research.md): multi-step, multi-source research with a cited report, bounded steps/time, and a "Research" button in windows-launcher.
+- [Deep Research roadmap](docs/roadmap/issue-47-deep-research.md): multi-step, multi-source research with a cited report, bounded steps/time, and a "Research" entry point (a composer button in `windows-launcher`, a "Deep Research" tray item in `windows-native-launcher`).
 - [Voice barge-in roadmap](docs/roadmap/issue-219-voice-barge-in.md): interrupting Mana mid-speech by hotkey or by voice.
 - [Discord bot roadmap](docs/roadmap/issue-185-discord-bot.md) and [Discord voice channels roadmap](docs/roadmap/issue-187-discord-voice-channels.md): remote messaging and voice-channel companion support.
 - [Code signing setup](docs/code_signing_setup.md): what's needed to get a signed, SmartScreen-clean desktop-client installer.
@@ -335,9 +335,11 @@ Install dependencies in the packages you are changing:
 cd node-bot
 npm install
 
-cd ..\windows-launcher
-npm install
+cd ..\windows-native-launcher
+dotnet restore
 ```
+
+`windows-launcher` (Electron, legacy fallback) still needs `npm install` in its own directory if you're touching it.
 
 Run the backend tests:
 
@@ -346,14 +348,21 @@ cd node-bot
 npm test
 ```
 
-Run the launcher tests:
+Run the native launcher tests:
+
+```powershell
+cd windows-native-launcher\ManaNativeLauncher.Tests
+dotnet test
+```
+
+Run the legacy Electron launcher's tests:
 
 ```powershell
 cd windows-launcher
 npm test
 ```
 
-Use `npm run dev` in `windows-launcher` when editing the launcher/backend loop and you want auto-restart behavior.
+Use `npm run dev` in `windows-launcher` when editing the legacy Electron launcher/backend loop and you want auto-restart behavior.
 
 ## Required Before Pushing
 
@@ -372,7 +381,14 @@ cd node-bot
 npm test
 ```
 
-If `windows-launcher` changed:
+If `windows-native-launcher` changed:
+
+```powershell
+cd windows-native-launcher\ManaNativeLauncher.Tests
+dotnet test
+```
+
+If `windows-launcher` (legacy Electron launcher) changed:
 
 ```powershell
 cd windows-launcher
@@ -388,7 +404,7 @@ Do not push if required checks fail. Fix the failure first, or clearly document 
 Mana is under active development. The current stable path is:
 
 ```text
-windows-launcher -> node-bot -> local Whisper / local Llama / local TTS
+windows-native-launcher -> node-bot -> local Whisper / local Llama / local TTS
 ```
 
-`windows-native-launcher`, a lower-memory native C#/WinForms replacement, has reached full feature parity with `windows-launcher` (see [docs/native_launcher_plan.md](docs/native_launcher_plan.md)) but isn't the default path yet — its memory-savings claim hasn't been benchmarked, so `windows-launcher` stays the supported path above until that's measured. The next major engineering priority is backend modularization (splitting monolithic `node-bot` files into modular components, tracked in [issue #500](https://github.com/Yuuzulight/Mana/issues/500)); component health status, local model management, and mobile device controls have since shipped.
+`windows-native-launcher`, the native C#/WinForms launcher, reached full feature parity with the legacy Electron launcher on 2026-09-08 (see [docs/native_launcher_plan.md](docs/native_launcher_plan.md)) and is now the primary, supported launcher. A measured benchmark backs the memory claim: on the test machine, the native launcher's own incremental cost settled at ~540MB RAM / +21MB VRAM, while `windows-launcher` pushed the same system to 98.8% RAM within 3 seconds and had to be killed before reaching a steady state (see the plan doc for full methodology and caveats). `windows-launcher` (Electron) is kept only as a fallback going forward, not because of any known feature gap, and isn't planned to receive further feature development. The next major engineering priority is backend modularization (splitting monolithic `node-bot` files into modular components, tracked in [issue #500](https://github.com/Yuuzulight/Mana/issues/500)); component health status, local model management, and mobile device controls have since shipped.

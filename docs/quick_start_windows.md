@@ -1,6 +1,6 @@
-Quick start (Windows, current path)
+Quick start (Windows, legacy Electron path)
 
-This document describes the supported setup as of June 18, 2026.
+This document describes the `windows-launcher` (Electron) setup as of June 18, 2026. `windows-launcher` is now kept only as a fallback -- `windows-native-launcher` is the primary, supported launcher; see [docs/native_launcher_plan.md](native_launcher_plan.md) for its build/run steps (`node-bot` setup below still applies either way).
 
 Architecture
 - `windows-launcher` runs the Electron UI.
