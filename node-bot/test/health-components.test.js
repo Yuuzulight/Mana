@@ -49,6 +49,7 @@ test("health includes component readiness while preserving top-level fields", as
       "personality",
       "presets",
       "prompt-composition",
+      "pronunciationLexicon",
       "retrieverAdmin",
       "screenSensing",
       "sessions",
