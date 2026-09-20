@@ -158,7 +158,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
         // #571: on-screen equivalent of spoken output -- purely additive,
         // wired up alongside trayNotifications above.
         captionOverlay = new CaptionOverlayForm();
-        captionClient = new CaptionWebSocketClient(captionOverlay.SetCaption);
+        captionClient = new CaptionWebSocketClient(captionOverlay.SetCaption, backendBaseUrl: settings.BackendBaseUrl);
 
         trayIcon = new NotifyIcon
         {
