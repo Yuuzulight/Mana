@@ -67,6 +67,46 @@ public class ManaProcessManagerTests
     }
 
     [Fact]
+    public async Task StartAsync_UsesTheConfiguredBackendBaseUrlForTheHealthCheck_NotTheHardcodedDefault()
+    {
+        // Previously hardcoded to 127.0.0.1:5005 regardless of a
+        // user-configured BackendBaseUrl (ManaSettingsStore) -- a custom
+        // URL would silently health-check (and, if unhealthy, try to spawn
+        // a local node-bot process for) the wrong address entirely.
+        Uri? backendRequestUri = null;
+        var handler = new FakeHttpMessageHandler(request =>
+        {
+            if (request.RequestUri!.Port == 6006) backendRequestUri = request.RequestUri;
+            return new HttpResponseMessage(HttpStatusCode.OK);
+        });
+        using var manager = new ManaProcessManager(@"C:\does-not-exist", handler, backendBaseUrl: "http://127.0.0.1:6006");
+
+        await manager.StartAsync();
+
+        Assert.NotNull(backendRequestUri);
+        Assert.Equal("/health", backendRequestUri!.AbsolutePath);
+    }
+
+    [Fact]
+    public async Task StartAsync_FallsBackToThe127005DefaultHealthCheckUrl_WhenNoBackendBaseUrlIsGiven()
+    {
+        // Existing call sites (and every other test in this file) don't
+        // pass backendBaseUrl -- must keep working exactly as before.
+        Uri? backendRequestUri = null;
+        var handler = new FakeHttpMessageHandler(request =>
+        {
+            if (request.RequestUri!.Port == 5005) backendRequestUri = request.RequestUri;
+            return new HttpResponseMessage(HttpStatusCode.OK);
+        });
+        using var manager = new ManaProcessManager(@"C:\does-not-exist", handler);
+
+        await manager.StartAsync();
+
+        Assert.NotNull(backendRequestUri);
+        Assert.Equal("/health", backendRequestUri!.AbsolutePath);
+    }
+
+    [Fact]
     public async Task StartAsync_ReportsProgressForEachServiceByKey()
     {
         // #479 follow-up (startup overlay): onServiceReady must fire once
