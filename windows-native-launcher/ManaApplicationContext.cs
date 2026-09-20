@@ -66,7 +66,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
     {
         var rootDir = FindRootDirectory();
         var settings = ManaSettingsStore.Load();
-        processManager = new ManaProcessManager(rootDir);
+        processManager = new ManaProcessManager(rootDir, backendBaseUrl: settings.BackendBaseUrl);
         backendClient = new ManaBackendClient(baseUrl: settings.BackendBaseUrl, adminToken: settings.AdminToken);
         avatarOverlay = new AvatarOverlayForm(rootDir);
         // #578: ambient indicator, no tray entry -- starts polling

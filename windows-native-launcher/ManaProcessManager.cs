@@ -34,15 +34,30 @@ internal sealed class ManaProcessManager : IDisposable
     // it" -- the two look identical from the configured-provider name alone.
     public bool IsFishSpeechAvailable { get; private set; }
 
+    // The backend's own health-check URL, derived from the same configured
+    // base URL ManaBackendClient/TrayNotificationClient use -- previously
+    // hardcoded to 127.0.0.1:5005 here regardless of a user-configured
+    // BackendBaseUrl (ManaSettingsStore), so a custom URL would health-check
+    // (and, if unhealthy, try to spawn a local node-bot for) the wrong
+    // address entirely. Kokoro/Fish Speech stay hardcoded -- they're always
+    // local child processes this launcher itself manages, unrelated to
+    // where the node-bot backend happens to live.
+    private readonly string backendHealthUrl;
+
     // handler: null (the default, and every existing call site's behavior)
     // constructs a real HttpClient for live health checks. Tests pass a
     // fake HttpMessageHandler to exercise the health-check-then-start
     // selection logic without live servers -- same pattern as
     // ManaBackendClient.
-    public ManaProcessManager(string rootDirectory, HttpMessageHandler? handler = null)
+    // backendBaseUrl: null (the default) keeps the original 127.0.0.1:5005
+    // behavior; pass the configured settings.BackendBaseUrl to keep the
+    // backend health check consistent with where ManaBackendClient actually
+    // points.
+    public ManaProcessManager(string rootDirectory, HttpMessageHandler? handler = null, string? backendBaseUrl = null)
     {
         RootDirectory = rootDirectory;
         http = handler is null ? new HttpClient() : new HttpClient(handler);
+        backendHealthUrl = $"{(backendBaseUrl ?? "http://127.0.0.1:5005").TrimEnd('/')}/health";
     }
 
     // onServiceReady, when given, fires once per service (key "backend"/
@@ -75,7 +90,7 @@ internal sealed class ManaProcessManager : IDisposable
         // other two.
         var kokoroTask = StartAndReport("kokoro", "http://127.0.0.1:5011/health", () => Task.FromResult<Process?>(StartKokoro()));
         var fishSpeechTask = StartAndReport("fish-speech", "http://127.0.0.1:8080/v1/health", () => Task.FromResult(StartFishSpeech()));
-        var backendTask = StartAndReport("backend", "http://127.0.0.1:5005/health", () => Task.FromResult<Process?>(StartBackend()));
+        var backendTask = StartAndReport("backend", backendHealthUrl, () => Task.FromResult<Process?>(StartBackend()));
 
         try
         {
