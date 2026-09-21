@@ -44,6 +44,7 @@ internal sealed class SessionListForm : Form
     private readonly Label avatarStatusLabel = new();
     private readonly Font avatarNameFont;
     private readonly Font avatarStatusFont;
+    private readonly Font toolPanelTitleFont;
 
     // One shared ToolTip serving every rail button -- SetToolTip(control,
     // caption) is the normal WinForms pattern for exactly this (a per-
@@ -236,11 +237,12 @@ internal sealed class SessionListForm : Form
             Padding = new Padding(12),
             TextAlign = ContentAlignment.TopLeft,
         };
+        toolPanelTitleFont = new Font(toolPanelLabel.Font, FontStyle.Bold);
         var toolPanelTitleLabel = new Label
         {
             Dock = DockStyle.Fill,
             ForeColor = DarkTheme.Text,
-            Font = new Font(toolPanelLabel.Font, FontStyle.Bold),
+            Font = toolPanelTitleFont,
             TextAlign = ContentAlignment.MiddleLeft,
             Padding = new Padding(10, 0, 0, 0),
         };
@@ -266,8 +268,12 @@ internal sealed class SessionListForm : Form
             Visible = false,
             BackColor = DarkTheme.Panel2,
         };
-        toolPanel.Controls.Add(toolPanelLabel);
+        // Header (Top) before label (Fill) -- same rule as this file's
+        // outer Controls.Add order below: Fill only gets what's left
+        // after every other docked sibling has staked its edge, so it
+        // has to go in last.
         toolPanel.Controls.Add(toolPanelHeader);
+        toolPanel.Controls.Add(toolPanelLabel);
 
         // Drag-resizable the same way as sidebarSplitter above (min 160,
         // max 420 clamped on SplitterMoved), and kept in step with
@@ -883,6 +889,7 @@ internal sealed class SessionListForm : Form
             activeSessionFont.Dispose();
             avatarNameFont.Dispose();
             avatarStatusFont.Dispose();
+            toolPanelTitleFont.Dispose();
             railToolTip.Dispose();
         }
         base.Dispose(disposing);
