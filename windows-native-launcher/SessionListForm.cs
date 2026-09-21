@@ -44,6 +44,7 @@ internal sealed class SessionListForm : Form
     private readonly Label avatarStatusLabel = new();
     private readonly Font avatarNameFont;
     private readonly Font avatarStatusFont;
+    private readonly Font toolPanelTitleFont;
 
     // One shared ToolTip serving every rail button -- SetToolTip(control,
     // caption) is the normal WinForms pattern for exactly this (a per-
@@ -66,6 +67,11 @@ internal sealed class SessionListForm : Form
     // currently showing -- null means the panel is closed. See
     // ToggleToolPlaceholder.
     private string? openTool;
+
+    // When pinned, re-clicking the rail icon that's already open no
+    // longer closes the panel -- only the panel's own × does. See
+    // SetToolPanelPinned/CloseToolPanel.
+    private bool toolPanelPinned;
 
     public SessionListForm(ManaBackendClient backendClient, VoiceLoop voiceLoop, ChatLogPanel chatLog, AvatarOverlayForm avatarOverlay, BackendLogBuffer backendLog)
     {
@@ -144,10 +150,12 @@ internal sealed class SessionListForm : Form
 
         avatarZoomButton.Text = "⤢";
         avatarZoomButton.Size = new Size(20, 20);
-        // Sidebar is a fixed 240px wide (see sidebar's own Width below),
-        // so avatarCard's client width is fixed too -- computed directly
-        // rather than referencing avatarCard here, which isn't declared
-        // yet at this point in the constructor.
+        // Sidebar starts at 240px (see sidebar's own Width below) and is
+        // now user-resizable via sidebarSplitter -- this is only the
+        // initial position, computed directly rather than referencing
+        // avatarCard here, which isn't declared yet at this point in the
+        // constructor. Anchor (Top|Right) below keeps it glued to
+        // avatarCard's right edge on every later resize.
         avatarZoomButton.Location = new Point(240 - 20 - 8, 8);
         avatarZoomButton.Anchor = AnchorStyles.Top | AnchorStyles.Right;
         avatarZoomButton.FlatStyle = FlatStyle.Flat;
@@ -206,6 +214,22 @@ internal sealed class SessionListForm : Form
         sidebar.Controls.Add(newChatButton);
         sidebar.Controls.Add(list);
 
+        // Drag-resizable. MinSize (200) is the floor: below that the
+        // avatar card's circle + name + status row start feeling
+        // cramped, so this stops the drag there rather than letting it
+        // keep shrinking. MinExtra (300) leaves enough width for the
+        // rest of the window (tool rail/panel + chat) to stay usable.
+        // Splitter has no built-in max, so SplitterMoved clamps the
+        // other end (380) after each drag.
+        var sidebarSplitter = new Splitter { Dock = DockStyle.Left, Width = 4, BackColor = DarkTheme.Border, MinSize = 200, MinExtra = 300 };
+        sidebarSplitter.SplitterMoved += (_, _) =>
+        {
+            if (sidebar.Width > 380)
+            {
+                sidebar.Width = 380;
+            }
+        };
+
         var toolPanelLabel = new Label
         {
             Dock = DockStyle.Fill,
@@ -213,6 +237,30 @@ internal sealed class SessionListForm : Form
             Padding = new Padding(12),
             TextAlign = ContentAlignment.TopLeft,
         };
+        toolPanelTitleFont = new Font(toolPanelLabel.Font, FontStyle.Bold);
+        var toolPanelTitleLabel = new Label
+        {
+            Dock = DockStyle.Fill,
+            ForeColor = DarkTheme.Text,
+            Font = toolPanelTitleFont,
+            TextAlign = ContentAlignment.MiddleLeft,
+            Padding = new Padding(10, 0, 0, 0),
+        };
+        var toolCloseButton = new Button { Text = "×", Dock = DockStyle.Right, Width = 26, FlatStyle = FlatStyle.Flat, BackColor = DarkTheme.Panel2, ForeColor = DarkTheme.Muted };
+        toolCloseButton.FlatAppearance.BorderSize = 0;
+        var toolPinButton = new Button { Text = "Pin", Dock = DockStyle.Right, Width = 40, FlatStyle = FlatStyle.Flat, BackColor = DarkTheme.Panel2, ForeColor = DarkTheme.Muted };
+        toolPinButton.FlatAppearance.BorderSize = 0;
+        railToolTip.SetToolTip(toolPinButton, "Pin panel open");
+        railToolTip.SetToolTip(toolCloseButton, "Close");
+        var toolPanelHeader = new Panel { Dock = DockStyle.Top, Height = 28, BackColor = DarkTheme.Panel };
+        // Same right-to-left add order as toolRail below: whichever's
+        // added first claims the outermost-right strip, so close ends up
+        // at the far edge with pin just inside it, and the title label
+        // (Fill, added last) takes whatever's left.
+        toolPanelHeader.Controls.Add(toolCloseButton);
+        toolPanelHeader.Controls.Add(toolPinButton);
+        toolPanelHeader.Controls.Add(toolPanelTitleLabel);
+
         var toolPanel = new Panel
         {
             Dock = DockStyle.Right,
@@ -220,7 +268,25 @@ internal sealed class SessionListForm : Form
             Visible = false,
             BackColor = DarkTheme.Panel2,
         };
+        // Header (Top) before label (Fill) -- same rule as this file's
+        // outer Controls.Add order below: Fill only gets what's left
+        // after every other docked sibling has staked its edge, so it
+        // has to go in last.
+        toolPanel.Controls.Add(toolPanelHeader);
         toolPanel.Controls.Add(toolPanelLabel);
+
+        // Drag-resizable the same way as sidebarSplitter above (min 160,
+        // max 420 clamped on SplitterMoved), and kept in step with
+        // toolPanel's own Visible -- otherwise closing the panel would
+        // leave this 4px bar stranded between the rail and the chat log.
+        var toolPanelSplitter = new Splitter { Dock = DockStyle.Right, Width = 4, BackColor = DarkTheme.Border, MinSize = 160, MinExtra = 240, Visible = false };
+        toolPanelSplitter.SplitterMoved += (_, _) =>
+        {
+            if (toolPanel.Width > 420)
+            {
+                toolPanel.Width = 420;
+            }
+        };
 
         var toolRail = new Panel { Dock = DockStyle.Right, Width = 44, BackColor = DarkTheme.Panel };
         // #538's own rail order (top to bottom): Browser, Terminal,
@@ -231,12 +297,15 @@ internal sealed class SessionListForm : Form
         foreach (var (icon, label) in new[] { ("browser", "Browser"), ("terminal", "Terminal"), ("artifacts", "Artifacts"), ("tasks", "Background tasks") })
         {
             var button = MakeRailButton(icon, label);
-            button.Click += (_, _) => ToggleToolPlaceholder(label, toolPanel, toolPanelLabel);
+            button.Click += (_, _) => ToggleToolPlaceholder(label, toolPanel, toolPanelSplitter, toolPanelTitleLabel, toolPanelLabel);
             toolRail.Controls.Add(button);
         }
         var railSettingsButton = MakeRailButton("settings", "Settings"); // the rail's one real, wired icon
         railSettingsButton.Click += (_, _) => OpenSettings();
         toolRail.Controls.Add(railSettingsButton);
+
+        toolCloseButton.Click += (_, _) => CloseToolPanel(toolPanel, toolPanelSplitter, toolPinButton);
+        toolPinButton.Click += (_, _) => SetToolPanelPinned(toolPinButton, !toolPanelPinned);
         // Each Dock.Top control claims the topmost strip of whatever's
         // still unclaimed, in the order added -- so the four placeholders
         // (added by the loop above) land Browser/Terminal/Artifacts/Tasks
@@ -255,7 +324,11 @@ internal sealed class SessionListForm : Form
         sidebarToggleButton.Dock = DockStyle.Left;
         sidebarToggleButton.Width = 34;
         sidebarToggleButton.Height = 28;
-        sidebarToggleButton.Click += (_, _) => sidebar.Visible = !sidebar.Visible;
+        sidebarToggleButton.Click += (_, _) =>
+        {
+            sidebar.Visible = !sidebar.Visible;
+            sidebarSplitter.Visible = sidebar.Visible; // otherwise the splitter bar is left stranded when the sidebar is hidden
+        };
 
         var topBar = new Panel { Dock = DockStyle.Top, Height = 28, BackColor = DarkTheme.Background };
         topBar.Controls.Add(sidebarToggleButton);
@@ -269,11 +342,17 @@ internal sealed class SessionListForm : Form
         // its horizontal slice off the whole client area before sidebar/
         // toolRail have narrowed what's left. toolRail before toolPanel
         // so the icon strip stays outermost (nearest the window edge)
-        // and the slide-out panel opens on its inner side.
+        // and the slide-out panel opens on its inner side. Each Splitter
+        // goes in immediately after the control it resizes (sidebar,
+        // then toolPanel) -- a WinForms Splitter attaches to the nearest
+        // preceding same-Dock-side control, so it has to sit right next
+        // to it in this list to resize the right one.
         Controls.Add(topBar);
         Controls.Add(sidebar);
+        Controls.Add(sidebarSplitter);
         Controls.Add(toolRail);
         Controls.Add(toolPanel);
+        Controls.Add(toolPanelSplitter);
         Controls.Add(chatArea);
 
         // Forces the native window handle to exist now, on this (the UI)
@@ -395,18 +474,42 @@ internal sealed class SessionListForm : Form
 
     // #538's own ToggleTool: click the open tool's own icon again to
     // close the panel; click a different one to swap its content instead
-    // of stacking a second panel.
-    private void ToggleToolPlaceholder(string tool, Panel toolPanel, Label toolPanelLabel)
+    // of stacking a second panel. Pinning (toolPanelPinned) overrides the
+    // first part -- see the early return below.
+    private void ToggleToolPlaceholder(string tool, Panel toolPanel, Splitter toolPanelSplitter, Label toolPanelTitleLabel, Label toolPanelBodyLabel)
     {
         if (openTool == tool)
         {
+            if (toolPanelPinned)
+            {
+                return; // pinned -- only the panel's own × (CloseToolPanel) closes it now
+            }
             toolPanel.Visible = false;
+            toolPanelSplitter.Visible = false;
             openTool = null;
             return;
         }
         openTool = tool;
-        toolPanelLabel.Text = $"{tool}\n\nNot built yet.";
+        toolPanelTitleLabel.Text = tool;
+        toolPanelBodyLabel.Text = "Not built yet.";
         toolPanel.Visible = true;
+        toolPanelSplitter.Visible = true;
+    }
+
+    private void CloseToolPanel(Panel toolPanel, Splitter toolPanelSplitter, Button toolPinButton)
+    {
+        toolPanel.Visible = false;
+        toolPanelSplitter.Visible = false;
+        openTool = null;
+        SetToolPanelPinned(toolPinButton, false);
+    }
+
+    private void SetToolPanelPinned(Button toolPinButton, bool pinned)
+    {
+        toolPanelPinned = pinned;
+        toolPinButton.BackColor = pinned ? DarkTheme.Accent : DarkTheme.Panel2;
+        toolPinButton.ForeColor = pinned ? ColorTranslator.FromHtml("#171513") : DarkTheme.Muted;
+        railToolTip.SetToolTip(toolPinButton, pinned ? "Unpin panel" : "Pin panel open");
     }
 
     private void OnAvatarStateChanged(AvatarState state)
@@ -786,6 +889,7 @@ internal sealed class SessionListForm : Form
             activeSessionFont.Dispose();
             avatarNameFont.Dispose();
             avatarStatusFont.Dispose();
+            toolPanelTitleFont.Dispose();
             railToolTip.Dispose();
         }
         base.Dispose(disposing);
