@@ -27,8 +27,9 @@
     <!-- the one morphing shape -->
     <rect id="shape" x="0" y="0" width="0" height="0" rx="0" fill="#fffaf0" stroke="#ecdfc4" stroke-width="1" filter="url(#softShadow)" />
 
-    <!-- tray dot, sits beside the idle waveform -->
-    <circle id="trayDot" cx="0" cy="0" r="5" fill="#f5a623" opacity="0" />
+    <!-- tray mark -- Mana's own identity mark (a faceted mana crystal,
+    not a plain dot), sits beside the idle waveform -->
+    <g id="trayDot" opacity="0"></g>
 
     <!-- content layers, one per bar, clipped to the shape -->
     <g id="content" clip-path="url(#shapeClip)">
@@ -37,8 +38,23 @@
       <g id="layerTranscribe" opacity="0"></g>
       <g id="layerRespond" opacity="0"></g>
       <g id="layerSpeak" opacity="0"></g>
-      <g id="layerPlugins" opacity="0"></g>
-      <g id="layerConsent" opacity="0"></g>
+      <g id="layerVision" opacity="0"></g>
+      <g id="layerBargein" opacity="0"></g>
+      <g id="layerGaming" opacity="0"></g>
+      <g id="layerAvatarpanel" opacity="0"></g>
+      <g id="layerPluginsA" opacity="0"></g>
+      <g id="layerPluginsB" opacity="0"></g>
+      <g id="layerAddons" opacity="0"></g>
+      <g id="layerEditor" opacity="0"></g>
+      <g id="layerResearch" opacity="0"></g>
+      <g id="layerMobile" opacity="0"></g>
+      <g id="layerMemory" opacity="0"></g>
+      <g id="layerArtifacts" opacity="0"></g>
+      <g id="layerExport" opacity="0"></g>
+      <g id="layerSettingsA" opacity="0"></g>
+      <g id="layerSettingsB" opacity="0"></g>
+      <g id="layerHotkeys" opacity="0"></g>
+      <g id="layerPrivacy" opacity="0"></g>
       <g id="layerResolve" opacity="0"></g>
     </g>
   </g>
@@ -53,11 +69,11 @@
   // against marketing/showreel/audio/im-fine-trimmed.wav (see
   // analyze_beats.py's output). One bar = one meaningful state
   // change here ("beat" in the brief's prose = story beat, landing
-  // on each bar's downbeat), 8 bars, ~16s total, 120.19 BPM.
+  // on each bar's downbeat), 23 bars, ~46s total, 120.19 BPM.
   // ---------------------------------------------------------------
   var BAR_DUR = 1.9969; // seconds per bar, from sec_per_bar in the detected grid
-  var BARS = 8;
-  var LOOP_T = BAR_DUR * BARS; // 15.9752s -- seek(LOOP_T) must equal seek(0)
+  var BARS = 23;
+  var LOOP_T = BAR_DUR * BARS; // seek(LOOP_T) must equal seek(0)
   function barStart(i) { return i * BAR_DUR; }
 
   // ---------------------------------------------------------------
@@ -98,32 +114,31 @@
   }
 
   // ---------------------------------------------------------------
-  // Palette -- reworked lighter/softer/warmer (warm parchment canvas,
-  // the same amber accent now doing double duty as a "golden hour"
-  // adventure-y warmth, soft cocoa ink instead of near-black). Still one
-  // accent color, still no gradients on UI chrome -- depth now comes from
-  // softShadow (see <defs>) instead of a dark-canvas + hard-stroke look.
+  // Palette -- warm parchment canvas, one amber accent doing "golden
+  // hour" adventure-y duty, soft cocoa ink, softShadow for depth
+  // instead of hard strokes. FACET is the crystal glyph's own darker
+  // shade of the same accent hue -- not a new color, just amber's own
+  // shadow side, the way a cut gem's facets read darker than its face.
   // ---------------------------------------------------------------
   var AMBER = "#f5a623";
+  var FACET = "#c67f12";
   var INK = "#4a3a26";
+  var MUTED = "#8a7a64";
   var PANEL = "#fffaf0";
   var PANEL_BORDER = "#ecdfc4";
-  // Chat bubbles distinguish speaker by alignment + a subtle amber tint on
-  // the user's own bubble (vs. Mana's plain panel fill) rather than by
-  // introducing new hues -- keeps to the brief's one-accent-color rule
-  // while still reading as two distinct speakers, same as the real app's
-  // right/left-aligned bubbles.
   var USER_BUBBLE_FILL = "rgba(245,166,35,0.14)";
   var USER_BUBBLE_BORDER = "rgba(245,166,35,0.45)";
 
   // ---------------------------------------------------------------
   // Shape geometry per bar (x, y, w, h, rx), center-anchored so
-  // resizes read as "morphing in place" rather than drifting.
-  // Bar 1's resting geometry doubles as the pre-video-start base AND
-  // Bar 8's final target, so the loop closes exactly.
+  // resizes read as "morphing in place" rather than drifting. idle's
+  // resting geometry doubles as the pre-video-start base AND resolve's
+  // final target, so the loop closes exactly.
   // ---------------------------------------------------------------
   var CX = 720, CY = 720;
   function rectFor(w, h, rx) { return { w: w, h: h, rx: rx, x: CX - w / 2, y: CY - h / 2 }; }
+  var PILL = rectFor(320, 170, 30);   // shared "icon + label" beat size
+  var GRID = rectFor(760, 260, 26);   // shared 4-item chip-grid beat size
 
   var GEOM = {
     idle: rectFor(460, 108, 54),
@@ -131,12 +146,36 @@
     transcribe: rectFor(460, 140, 24),
     respond: rectFor(620, 340, 24),
     speak: rectFor(260, 260, 130),
-    plugins: rectFor(760, 260, 26),
-    consent: rectFor(760, 260, 26), // same container as plugins -- only the inner chip animates
+    vision: PILL,
+    bargein: rectFor(460, 140, 30),
+    gaming: PILL,
+    avatarpanel: rectFor(300, 220, 32),
+    pluginsA: GRID,
+    pluginsB: GRID,
+    addons: GRID,
+    editor: rectFor(620, 320, 24),
+    research: rectFor(560, 300, 24),
+    mobile: rectFor(300, 400, 36),
+    memory: rectFor(460, 300, 30),
+    artifacts: rectFor(580, 320, 24),
+    export: PILL,
+    settingsA: GRID,
+    settingsB: GRID,
+    hotkeys: GRID,
+    privacy: PILL,
     resolve: rectFor(460, 108, 54), // == idle, so the loop is pixel-identical
   };
 
-  var order = ["idle", "listen", "transcribe", "respond", "speak", "plugins", "consent", "resolve"];
+  var order = [
+    "idle", "listen", "transcribe", "respond", "speak",
+    "vision", "bargein", "gaming", "avatarpanel",
+    "pluginsA", "pluginsB", "addons",
+    "editor", "research", "mobile", "memory", "artifacts", "export",
+    "settingsA", "settingsB", "hotkeys",
+    "privacy", "resolve",
+  ];
+  function layerIdFor(name) { return "layer" + name.charAt(0).toUpperCase() + name.slice(1); }
+
   var shapeEvents = { x: [], y: [], w: [], h: [], rx: [] };
   order.forEach(function (name, i) {
     var g = GEOM[name];
@@ -150,23 +189,21 @@
 
   // ---------------------------------------------------------------
   // Camera: a subtle drift/zoom per bar so each beat fills the frame
-  // with intent, expressed as a scale + translate on #camera around
-  // the shape's own center (so zooming never looks like panning off
-  // a fixed point).
+  // with intent. Grid beats pull back slightly (need room for 4
+  // tiles); pill/single-focus beats lean in a touch more.
   // ---------------------------------------------------------------
-  var CAM = [
-    { scale: 1.00, dx: 0, dy: 0 },     // idle -- resting
-    { scale: 1.05, dx: 0, dy: -10 },   // listen -- lean in
-    { scale: 1.03, dx: 0, dy: 0 },     // transcribe
-    { scale: 1.07, dx: 0, dy: 10 },    // respond -- settle lower, panel reads bigger
-    { scale: 1.10, dx: 0, dy: -6 },    // speak -- closest, most intimate beat
-    { scale: 1.02, dx: 0, dy: 0 },     // plugins -- pull back, wide grid needs room
-    { scale: 1.04, dx: 0, dy: 4 },     // consent -- nudge toward the growing chip
-    { scale: 1.00, dx: 0, dy: 0 },     // resolve -- back to resting, matches idle exactly
-  ];
+  var CAM_BY_KIND = { grid: { scale: 1.02, dx: 0, dy: 0 }, pill: { scale: 1.06, dx: 0, dy: -6 }, wide: { scale: 1.05, dx: 0, dy: 4 } };
+  var CAM_OVERRIDE = {
+    idle: { scale: 1.00, dx: 0, dy: 0 },
+    speak: { scale: 1.10, dx: 0, dy: -6 },
+    respond: { scale: 1.07, dx: 0, dy: 10 },
+    resolve: { scale: 1.00, dx: 0, dy: 0 },
+  };
+  var GRID_NAMES = { pluginsA: 1, pluginsB: 1, addons: 1, settingsA: 1, settingsB: 1, hotkeys: 1 };
+  var WIDE_NAMES = { editor: 1, research: 1, mobile: 1, memory: 1, artifacts: 1 };
   var camEvents = { scale: [], dx: [], dy: [] };
   order.forEach(function (name, i) {
-    var c = CAM[i];
+    var c = CAM_OVERRIDE[name] || (GRID_NAMES[name] ? CAM_BY_KIND.grid : WIDE_NAMES[name] ? CAM_BY_KIND.wide : CAM_BY_KIND.pill);
     var t = i === 0 ? -10 : barStart(i);
     camEvents.scale.push({ t: t, value: c.scale });
     camEvents.dx.push({ t: t, value: c.dx });
@@ -174,31 +211,26 @@
   });
 
   // ---------------------------------------------------------------
-  // Layer visibility windows. Cross-fade overlap (~0.18s) so one
-  // beat's content is finishing its blur-out while the next is
-  // starting its blur-in, per the "content swaps with a short blur"
-  // direction. Idle is the one layer that's on at both t=0 (base
-  // state, no fade-in) and again at the very end (fading in ahead of
-  // the loop point so t=0 and t=LOOP_T read identically).
+  // Layer visibility windows, auto-derived from `order` -- each layer
+  // owns exactly its own bar span (+-XFADE crossfade into neighbors),
+  // except idle (on at both t=0 -- no transient -- and again right
+  // before the loop point) and resolve (settles onto idle's own resting
+  // state well before LOOP_T so seek(LOOP_T) matches seek(0) exactly;
+  // see LOOP_XFADE below).
+  // ---------------------------------------------------------------
   var XFADE = 0.20;
-  // The loop-closing crossfade (resolve -> idle) needs far more settle
-  // time than an ordinary mid-video crossfade: seek(LOOP_T) must be
-  // pixel-identical to seek(0), where layerIdle is already at a clean
-  // 1.0 (no transient) and layerResolve at a clean 0.0. A 0.2s window
-  // only gets the spring to ~0.94 -- visibly short of matching frame 0,
-  // producing a pop on loop. 0.6s (~11 time constants at this spring's
-  // damping) settles to >0.999, well inside floating-point-invisible.
   var LOOP_XFADE = 0.6;
-  var LAYER_WINDOWS = {
-    layerIdle: [[-10, barStart(1) + XFADE], [LOOP_T - LOOP_XFADE, LOOP_T + 10]],
-    layerListen: [[barStart(1) - XFADE, barStart(2) + XFADE]],
-    layerTranscribe: [[barStart(2) - XFADE, barStart(3) + XFADE]],
-    layerRespond: [[barStart(3) - XFADE, barStart(4) + XFADE]],
-    layerSpeak: [[barStart(4) - XFADE, barStart(5) + XFADE]],
-    layerPlugins: [[barStart(5) - XFADE, barStart(7) + XFADE]], // plugins stays visible through the consent beat too (same container)
-    layerConsent: [[barStart(6) - XFADE, barStart(7) + XFADE]],
-    layerResolve: [[barStart(7) - XFADE, LOOP_T - LOOP_XFADE]],
-  };
+  var LAYER_WINDOWS = {};
+  order.forEach(function (name, i) {
+    var id = layerIdFor(name);
+    if (name === "idle") {
+      LAYER_WINDOWS[id] = [[-10, barStart(1) + XFADE], [LOOP_T - LOOP_XFADE, LOOP_T + 10]];
+    } else if (name === "resolve") {
+      LAYER_WINDOWS[id] = [[barStart(i) - XFADE, LOOP_T - LOOP_XFADE]];
+    } else {
+      LAYER_WINDOWS[id] = [[barStart(i) - XFADE, barStart(i + 1) + XFADE]];
+    }
+  });
 
   function layerOpacity(t, name) {
     var windows = LAYER_WINDOWS[name];
@@ -222,141 +254,29 @@
   }
   function $(id) { return document.getElementById(id); }
 
-  // --- Bar 1: idle waveform ---
-  (function buildIdle() {
-    var g = $("layerIdle");
-    var bars = 28, w = 3.5, gap = 4.2;
-    var totalW = bars * w + (bars - 1) * gap;
-    var startX = CX - totalW / 2;
-    for (var i = 0; i < bars; i++) {
-      var r = el("rect", {
-        x: startX + i * (w + gap), y: CY - 2, width: w, height: 4, rx: w / 2,
-        fill: INK, opacity: 0.55, "data-idx": i,
-      });
-      r.setAttribute("class", "idlebar");
-      g.appendChild(r);
-    }
-  })();
-
-  // --- Bar 2: listening pill + mic glyph ---
-  (function buildListen() {
-    var g = $("layerListen");
-    var mic = el("g", { transform: "translate(" + CX + "," + (CY - 18) + ")" });
-    mic.appendChild(el("rect", { x: -10, y: -22, width: 20, height: 32, rx: 10, fill: "none", stroke: AMBER, "stroke-width": 3 }));
-    mic.appendChild(el("path", { d: "M -20 -2 A 20 20 0 0 0 20 -2", fill: "none", stroke: AMBER, "stroke-width": 3, "stroke-linecap": "round" }));
-    mic.appendChild(el("line", { x1: 0, y1: 18, x2: 0, y2: 28, stroke: AMBER, "stroke-width": 3, "stroke-linecap": "round" }));
-    g.appendChild(mic);
-    g.appendChild(el("text", {
-      x: CX, y: CY + 46, "text-anchor": "middle", fill: INK, "font-size": 22, "font-weight": 500,
-    })).textContent = "Listening";
-  })();
-
-  // --- Bar 3: transcribing -- a real user chat bubble, not a bare text field ---
-  var TRANSCRIBE_TEXT = "“wake up, what's on my screen?”";
-  var TX_BUBBLE = { x: CX - 190, y: CY - 32, w: 380, h: 64 };
-  (function buildTranscribe() {
-    var g = $("layerTranscribe");
-    g.appendChild(el("rect", {
-      x: TX_BUBBLE.x, y: TX_BUBBLE.y, width: TX_BUBBLE.w, height: TX_BUBBLE.h, rx: 18,
-      fill: USER_BUBBLE_FILL, stroke: USER_BUBBLE_BORDER, "stroke-width": 1.5,
+  // Mana's identity mark: a faceted crystal, not a plain dot. Drawn at
+  // local origin so callers compose position/scale with a single
+  // translate(cx,cy) scale(s) -- see the chip3-transform postmortem
+  // below for why that composition order matters.
+  function crystalShape() {
+    var g = el("g", {});
+    g.appendChild(el("path", {
+      d: "M 0 -14 L 6 -5 L 6 5 L 0 14 L -6 5 L -6 -5 Z",
+      fill: AMBER, stroke: FACET, "stroke-width": 1, "stroke-linejoin": "round",
     }));
-    var t = el("text", { id: "transcribeText", x: TX_BUBBLE.x + 20, y: CY + 8, fill: INK, "font-size": 24, "font-weight": 400 });
-    g.appendChild(t);
-    var cursor = el("rect", { id: "transcribeCursor", x: TX_BUBBLE.x + 20, y: CY - 16, width: 2, height: 28, fill: AMBER });
-    g.appendChild(cursor);
-  })();
-
-  // --- Bar 4: a real two-bubble chat log -- the finished user message
-  // (right-aligned, matching bar 3's own bubble style) stays visible while
-  // Mana's reply (left-aligned, plain panel fill) streams in below it, the
-  // same layout language windows-native-launcher's own ChatLogPanel uses.
-  var REPLY_LINES = ["Looks like a build log.", "Line 42 threw on a null ref —", "want me to open the file?"];
-  var RESP_USER_BUBBLE = { x: CX - 40, y: CY - 145, w: 340, h: 60 };
-  var RESP_MANA_BUBBLE = { x: CX - 290, y: CY - 55, w: 460, h: 190 };
-  (function buildRespond() {
-    var g = $("layerRespond");
-    // the same completed user message, restated here since this is a
-    // separate content layer from layerTranscribe
-    g.appendChild(el("rect", {
-      x: RESP_USER_BUBBLE.x, y: RESP_USER_BUBBLE.y, width: RESP_USER_BUBBLE.w, height: RESP_USER_BUBBLE.h, rx: 16,
-      fill: USER_BUBBLE_FILL, stroke: USER_BUBBLE_BORDER, "stroke-width": 1.5,
+    g.appendChild(el("path", {
+      d: "M 0 -14 L 0 14 M -6 -5 L 6 -5 M -6 5 L 6 5",
+      fill: "none", stroke: FACET, "stroke-width": 0.75, opacity: 0.6,
     }));
-    g.appendChild(el("text", {
-      x: RESP_USER_BUBBLE.x + 18, y: RESP_USER_BUBBLE.y + 38, fill: INK, "font-size": 20,
-    })).textContent = TRANSCRIBE_TEXT;
+    g.appendChild(el("line", { x1: -3, y1: -9, x2: -1, y2: -6, stroke: "#fff6e0", "stroke-width": 1.5, "stroke-linecap": "round", opacity: 0.85 }));
+    return g;
+  }
 
-    // a small amber dot stands in for Mana's own avatar next to her reply,
-    // same brand-accent-as-identity idea as the tray dot in bar 1
-    g.appendChild(el("circle", { cx: RESP_MANA_BUBBLE.x - 18, cy: RESP_MANA_BUBBLE.y + 22, r: 6, fill: AMBER }));
-    g.appendChild(el("rect", {
-      id: "manaBubbleRect", x: RESP_MANA_BUBBLE.x, y: RESP_MANA_BUBBLE.y, width: RESP_MANA_BUBBLE.w, height: RESP_MANA_BUBBLE.h,
-      rx: 18, fill: PANEL, stroke: PANEL_BORDER, "stroke-width": 1.5,
-    }));
-    REPLY_LINES.forEach(function (line, i) {
-      var t = el("text", {
-        id: "replyLine" + i, x: RESP_MANA_BUBBLE.x + 22, y: RESP_MANA_BUBBLE.y + 42 + i * 42,
-        fill: INK, "font-size": 21, opacity: 0,
-      });
-      t.textContent = line;
-      g.appendChild(t);
-    });
-  })();
-
-  // --- Bar 5: avatar bust -- head + shoulders silhouette with eyes and a
-  // lip-synced mouth, not a plain undifferentiated circle. Still an
-  // abstract shape (no specific character design -- the real Live2D model
-  // art is all-rights-reserved, same reasoning windows-native-launcher's
-  // own SessionListForm.cs avatar card uses for its own abstract gradient
-  // instead of baking real model art into committed/public source), but
-  // one that actually reads as "a face," matching the intended Live2D
-  // end-state's continuous parametric motion (idle sway, blink, mouth flap)
-  // rather than a static sprite swap.
-  (function buildSpeak() {
-    var g = $("layerSpeak");
-    g.appendChild(el("ellipse", { cx: CX, cy: CY + 74, rx: 92, ry: 54, fill: "#e4d3ab" })); // shoulders -- warm sand, not near-black
-    g.appendChild(el("circle", { id: "avatarHead", cx: CX, cy: CY - 22, r: 50, fill: "#e4d3ab" })); // head
-    g.appendChild(el("circle", { id: "eyeL", cx: CX - 17, cy: CY - 28, r: 3.5, fill: INK, opacity: 0.7 }));
-    g.appendChild(el("circle", { id: "eyeR", cx: CX + 17, cy: CY - 28, r: 3.5, fill: INK, opacity: 0.7 }));
-    g.appendChild(el("rect", { id: "mouth", x: CX - 12, y: CY - 8, width: 24, height: 4, rx: 2, fill: AMBER }));
-    for (var i = 0; i < 3; i++) {
-      g.appendChild(el("circle", {
-        id: "speakRing" + i, cx: CX, cy: CY, r: 76, fill: "none", stroke: AMBER, "stroke-width": 2, opacity: 0,
-      }));
-    }
-  })();
-
-  // --- Bar 6/7: plugin chip grid + consent chip -- real Mana feature
-  // names (see plugins/README.md), not placeholder labels, since a
-  // generic glyph grid doesn't actually showcase what Mana's plugin
-  // system does. The 4th chip (Discord Bridge) is the one that grows
-  // a consent gate in bar 7 -- it posts to an external account on your
-  // behalf, unlike the first three, which are self-contained/local.
-  var CHIP_GLYPHS = ["tag", "puzzle", "chart", "bridge"];
-  var CHIP_LABELS = ["FFXIV Market", "Job Search", "Stock Market", "Discord Bridge"];
-  var chipCenters = [];
-  (function buildPlugins() {
-    var g = $("layerPlugins");
-    var cols = 4, chipW = 160, chipH = 160, gap = 20;
-    var totalW = cols * chipW + (cols - 1) * gap;
-    var startX = CX - totalW / 2 + chipW / 2;
-    for (var i = 0; i < cols; i++) {
-      var cx = startX + i * (chipW + gap), cy = CY;
-      chipCenters.push({ x: cx, y: cy });
-      var chip = el("g", { id: "chip" + i, transform: "translate(" + cx + "," + cy + ")" });
-      chip.appendChild(el("rect", {
-        x: -chipW / 2, y: -chipH / 2, width: chipW, height: chipH, rx: 22,
-        fill: PANEL, stroke: PANEL_BORDER, "stroke-width": 1, filter: "url(#softShadow)",
-      }));
-      chip.appendChild(glyph(CHIP_GLYPHS[i], 0, -18, INK));
-      var label = el("text", {
-        x: 0, y: 44, "text-anchor": "middle", fill: INK, "font-size": 15, "font-weight": 500,
-      });
-      label.textContent = CHIP_LABELS[i];
-      chip.appendChild(label);
-      g.appendChild(chip);
-    }
-  })();
-
+  // Reusable line-icon set. Every icon is drawn at local origin (0,0)
+  // so it composes correctly under translate(cx,cy) alone -- no
+  // scale-around-a-point idiom needed since none of these ever grow
+  // in place (unlike the addons consent-seal, which does its own
+  // translate(c) scale(s) composition directly in seek()).
   function glyph(name, cx, cy, color) {
     var g = el("g", { transform: "translate(" + cx + "," + cy + ")" });
     var s = { fill: "none", stroke: color, "stroke-width": 2.5, "stroke-linecap": "round", "stroke-linejoin": "round" };
@@ -373,6 +293,59 @@
       g.appendChild(el("line", Object.assign({ x1: -22, y1: 18, x2: 22, y2: 18 }, s)));
     } else if (name === "bridge") {
       g.appendChild(el("path", Object.assign({ d: "M -18 -14 h36 a6 6 0 0 1 6 6 v10 a6 6 0 0 1 -6 6 h-24 l-8 8 v-8 h-4 a6 6 0 0 1 -6 -6 v-10 a6 6 0 0 1 6 -6 z" }, s)));
+    } else if (name === "doc") {
+      g.appendChild(el("path", Object.assign({ d: "M -14 -20 h18 l10 10 v30 h-28 z" }, s)));
+      g.appendChild(el("path", Object.assign({ d: "M 4 -20 v10 h10" }, s)));
+    } else if (name === "image") {
+      g.appendChild(el("rect", Object.assign({ x: -18, y: -14, width: 36, height: 28, rx: 4 }, s)));
+      g.appendChild(el("circle", { cx: -8, cy: -4, r: 3, fill: color }));
+      g.appendChild(el("path", Object.assign({ d: "M -18 10 l10 -10 l8 8 l6 -6 l12 12" }, s)));
+    } else if (name === "video") {
+      g.appendChild(el("rect", Object.assign({ x: -18, y: -14, width: 26, height: 28, rx: 4 }, s)));
+      g.appendChild(el("path", Object.assign({ d: "M 10 -6 L 20 -12 V 12 L 10 6 Z" }, s)));
+    } else if (name === "clock") {
+      g.appendChild(el("circle", Object.assign({ cx: 0, cy: 0, r: 18 }, s)));
+      g.appendChild(el("path", Object.assign({ d: "M 0 -10 V 0 L 8 6" }, s)));
+    } else if (name === "book") {
+      g.appendChild(el("path", Object.assign({ d: "M -18 -14 h16 a4 4 0 0 1 4 4 v24 h-20 z M 2 -10 h16 v24 h-16" }, s)));
+    } else if (name === "server") {
+      g.appendChild(el("rect", Object.assign({ x: -18, y: -18, width: 36, height: 14, rx: 3 }, s)));
+      g.appendChild(el("rect", Object.assign({ x: -18, y: 4, width: 36, height: 14, rx: 3 }, s)));
+      g.appendChild(el("circle", { cx: 10, cy: -11, r: 1.6, fill: color }));
+      g.appendChild(el("circle", { cx: 10, cy: 11, r: 1.6, fill: color }));
+    } else if (name === "palette") {
+      g.appendChild(el("path", Object.assign({ d: "M 0 -18 a18 18 0 1 0 0.1 0 z M -6 -8 a3 3 0 1 1 0.1 0 M 8 -10 a3 3 0 1 1 0.1 0 M 10 4 a3 3 0 1 1 0.1 0" }, s)));
+    } else if (name === "lock") {
+      g.appendChild(el("rect", Object.assign({ x: -14, y: -2, width: 28, height: 20, rx: 4 }, s)));
+      g.appendChild(el("path", Object.assign({ d: "M -8 -2 v-8 a8 8 0 0 1 16 0 v8" }, s)));
+    } else if (name === "camera") {
+      g.appendChild(el("rect", Object.assign({ x: -18, y: -10, width: 36, height: 24, rx: 5 }, s)));
+      g.appendChild(el("path", Object.assign({ d: "M -8 -10 l4 -6 h8 l4 6" }, s)));
+      g.appendChild(el("circle", Object.assign({ cx: 0, cy: 2, r: 8 }, s)));
+    } else if (name === "layers") {
+      g.appendChild(el("path", Object.assign({ d: "M 0 -14 L 18 -4 L 0 6 L -18 -4 Z" }, s)));
+      g.appendChild(el("path", Object.assign({ d: "M -18 4 L 0 14 L 18 4" }, s)));
+    } else if (name === "eye") {
+      g.appendChild(el("path", Object.assign({ d: "M -20 0 Q 0 -16 20 0 Q 0 16 -20 0 Z" }, s)));
+      g.appendChild(el("circle", { cx: 0, cy: 0, r: 5.5, fill: color }));
+    } else if (name === "gamepad") {
+      g.appendChild(el("rect", Object.assign({ x: -22, y: -10, width: 44, height: 20, rx: 10 }, s)));
+      g.appendChild(el("line", Object.assign({ x1: -13, y1: 0, x2: -5, y2: 0 }, s)));
+      g.appendChild(el("line", Object.assign({ x1: -9, y1: -4, x2: -9, y2: 4 }, s)));
+      g.appendChild(el("circle", { cx: 10, cy: -2, r: 2, fill: color }));
+      g.appendChild(el("circle", { cx: 16, cy: 3, r: 2, fill: color }));
+    } else if (name === "wave") {
+      g.appendChild(el("path", Object.assign({ d: "M -10 14 V -4 a5 5 0 0 1 10 0 V 6 M 0 -4 V -8 a4 4 0 0 1 8 0 V 8 M 8 -4 a4 4 0 0 1 8 0 V 10" }, s)));
+      g.appendChild(el("path", Object.assign({ d: "M -22 -10 Q -18 -14 -14 -10", "stroke-width": 2 }, s)));
+    } else if (name === "download") {
+      g.appendChild(el("line", Object.assign({ x1: 0, y1: -16, x2: 0, y2: 8 }, s)));
+      g.appendChild(el("path", Object.assign({ d: "M -9 0 L 0 9 L 9 0" }, s)));
+      g.appendChild(el("line", Object.assign({ x1: -15, y1: 16, x2: 15, y2: 16 }, s)));
+    } else if (name === "shield") {
+      g.appendChild(el("path", Object.assign({ d: "M 0 -19 L 16 -11 V 4 Q 16 16 0 21 Q -16 16 -16 4 V -11 Z" }, s)));
+      g.appendChild(el("path", Object.assign({ d: "M -7 0 L -2 6 L 8 -6" }, s)));
+    } else if (name === "keycap") {
+      g.appendChild(el("rect", Object.assign({ x: -16, y: -14, width: 32, height: 28, rx: 6 }, s)));
     } else {
       g.appendChild(el("circle", Object.assign({ cx: 0, cy: 0, r: 18 }, s)));
       g.appendChild(el("line", Object.assign({ x1: -8, y1: 0, x2: 8, y2: 0 }, s)));
@@ -381,40 +354,302 @@
     return g;
   }
 
-  (function buildConsent() {
-    var g = $("layerConsent");
-    // the consent beat grows chip index 3 (Discord Bridge, the one
-    // Add-On among these Plugins) and fills in a checkmark toggle
-    var ring = el("circle", { id: "consentRing", cx: chipCenters[3].x, cy: chipCenters[3].y - 46, r: 0, fill: "none", stroke: AMBER, "stroke-width": 3 });
-    g.appendChild(ring);
-    var check = el("path", {
-      id: "consentCheck", d: "M " + (chipCenters[3].x - 8) + " " + (chipCenters[3].y - 46) + " l 6 6 l 12 -12",
-      fill: "none", stroke: AMBER, "stroke-width": 3, "stroke-linecap": "round", "stroke-linejoin": "round",
-      "stroke-dasharray": "26", "stroke-dashoffset": "26",
+  // ---- generic "icon + label (+ sublabel)" beat builder ----
+  function buildIconPill(name, glyphName, label, sublabel) {
+    var g = $(layerIdFor(name));
+    g.appendChild(glyph(glyphName, CX, CY - 20, AMBER));
+    g.appendChild(el("text", { x: CX, y: CY + 44, "text-anchor": "middle", fill: INK, "font-size": 21, "font-weight": 500 })).textContent = label;
+    if (sublabel) {
+      g.appendChild(el("text", { x: CX, y: CY + 68, "text-anchor": "middle", fill: MUTED, "font-size": 14 })).textContent = sublabel;
+    }
+  }
+
+  // ---- generic 4-item chip-grid beat builder (plugins, add-ons,
+  // settings panels, hotkeys all reuse this -- one visual language
+  // for "here's a list of things", matching the request to show these
+  // as a set instead of one bespoke beat per item) ----
+  var gridCenters = {}; // layerId -> [{x,y}, ...], read back by seek()'s slide-in animation
+  function buildChipGrid(name, items) {
+    var layerId = layerIdFor(name);
+    var g = $(layerId);
+    var cols = items.length, chipW = 160, chipH = 160, gap = 20;
+    var totalW = cols * chipW + (cols - 1) * gap;
+    var startX = CX - totalW / 2 + chipW / 2;
+    var centers = [];
+    items.forEach(function (item, i) {
+      var cx = startX + i * (chipW + gap), cy = CY;
+      centers.push({ x: cx, y: cy });
+      var chip = el("g", { id: layerId + "_chip" + i, transform: "translate(" + cx + "," + cy + ")" });
+      chip.appendChild(el("rect", {
+        x: -chipW / 2, y: -chipH / 2, width: chipW, height: chipH, rx: 22,
+        fill: PANEL, stroke: PANEL_BORDER, "stroke-width": 1, filter: "url(#softShadow)",
+      }));
+      chip.appendChild(glyph(item.glyph, 0, -18, INK));
+      var label = el("text", { x: 0, y: 44, "text-anchor": "middle", fill: INK, "font-size": 15, "font-weight": 500 });
+      label.textContent = item.label;
+      chip.appendChild(label);
+      if (item.sealed) {
+        chip.appendChild(el("circle", { id: layerId + "_sealRing" + i, cx: -55, cy: -55, r: 0, fill: "none", stroke: AMBER, "stroke-width": 3 }));
+        chip.appendChild(el("path", {
+          id: layerId + "_sealCheck" + i, d: "M -63 -55 l 6 6 l 12 -12",
+          fill: "none", stroke: AMBER, "stroke-width": 3, "stroke-linecap": "round", "stroke-linejoin": "round",
+          "stroke-dasharray": "26", "stroke-dashoffset": "26",
+        }));
+      }
+      g.appendChild(chip);
     });
-    g.appendChild(check);
+    gridCenters[layerId] = centers;
+  }
+
+  // Mana's tray mark is built once here -- seek() only ever sets its
+  // transform/opacity, same discipline as every other layer.
+  $("trayDot").appendChild(crystalShape());
+
+  // === Bar 1: idle waveform ===
+  (function buildIdle() {
+    var g = $("layerIdle");
+    var bars = 28, w = 3.5, gap = 4.2;
+    var totalW = bars * w + (bars - 1) * gap;
+    var startX = CX - totalW / 2;
+    for (var i = 0; i < bars; i++) {
+      var r = el("rect", {
+        x: startX + i * (w + gap), y: CY - 2, width: w, height: 4, rx: w / 2,
+        fill: INK, opacity: 0.55, "data-idx": i,
+      });
+      r.setAttribute("class", "idlebar");
+      g.appendChild(r);
+    }
   })();
 
-  // --- Bar 8: resolve pill ---
+  // === Bar 2: listening pill + mic glyph ===
+  (function buildListen() {
+    var g = $("layerListen");
+    var mic = el("g", { transform: "translate(" + CX + "," + (CY - 18) + ")" });
+    mic.appendChild(el("rect", { x: -10, y: -22, width: 20, height: 32, rx: 10, fill: "none", stroke: AMBER, "stroke-width": 3 }));
+    mic.appendChild(el("path", { d: "M -20 -2 A 20 20 0 0 0 20 -2", fill: "none", stroke: AMBER, "stroke-width": 3, "stroke-linecap": "round" }));
+    mic.appendChild(el("line", { x1: 0, y1: 18, x2: 0, y2: 28, stroke: AMBER, "stroke-width": 3, "stroke-linecap": "round" }));
+    g.appendChild(mic);
+    g.appendChild(el("text", { x: CX, y: CY + 46, "text-anchor": "middle", fill: INK, "font-size": 22, "font-weight": 500 })).textContent = "Listening";
+  })();
+
+  // === Bar 3: transcribing -- a real user chat bubble ===
+  var TRANSCRIBE_TEXT = "“wake up, what's on my screen?”";
+  var TX_BUBBLE = { x: CX - 190, y: CY - 32, w: 380, h: 64 };
+  (function buildTranscribe() {
+    var g = $("layerTranscribe");
+    g.appendChild(el("rect", {
+      x: TX_BUBBLE.x, y: TX_BUBBLE.y, width: TX_BUBBLE.w, height: TX_BUBBLE.h, rx: 18,
+      fill: USER_BUBBLE_FILL, stroke: USER_BUBBLE_BORDER, "stroke-width": 1.5,
+    }));
+    var t = el("text", { id: "transcribeText", x: TX_BUBBLE.x + 20, y: CY + 8, fill: INK, "font-size": 24, "font-weight": 400 });
+    g.appendChild(t);
+    var cursor = el("rect", { id: "transcribeCursor", x: TX_BUBBLE.x + 20, y: CY - 16, width: 2, height: 28, fill: AMBER });
+    g.appendChild(cursor);
+  })();
+
+  // === Bar 4: a real two-bubble chat log ===
+  var REPLY_LINES = ["Looks like a build log.", "Line 42 threw on a null ref —", "want me to open the file?"];
+  var RESP_USER_BUBBLE = { x: CX - 40, y: CY - 145, w: 340, h: 60 };
+  var RESP_MANA_BUBBLE = { x: CX - 290, y: CY - 55, w: 460, h: 190 };
+  (function buildRespond() {
+    var g = $("layerRespond");
+    g.appendChild(el("rect", {
+      x: RESP_USER_BUBBLE.x, y: RESP_USER_BUBBLE.y, width: RESP_USER_BUBBLE.w, height: RESP_USER_BUBBLE.h, rx: 16,
+      fill: USER_BUBBLE_FILL, stroke: USER_BUBBLE_BORDER, "stroke-width": 1.5,
+    }));
+    g.appendChild(el("text", { x: RESP_USER_BUBBLE.x + 18, y: RESP_USER_BUBBLE.y + 38, fill: INK, "font-size": 20 })).textContent = TRANSCRIBE_TEXT;
+    var dot = crystalShape();
+    dot.setAttribute("transform", "translate(" + (RESP_MANA_BUBBLE.x - 18) + "," + (RESP_MANA_BUBBLE.y + 22) + ") scale(0.6)");
+    g.appendChild(dot);
+    g.appendChild(el("rect", {
+      id: "manaBubbleRect", x: RESP_MANA_BUBBLE.x, y: RESP_MANA_BUBBLE.y, width: RESP_MANA_BUBBLE.w, height: RESP_MANA_BUBBLE.h,
+      rx: 18, fill: PANEL, stroke: PANEL_BORDER, "stroke-width": 1.5,
+    }));
+    REPLY_LINES.forEach(function (line, i) {
+      var t = el("text", { id: "replyLine" + i, x: RESP_MANA_BUBBLE.x + 22, y: RESP_MANA_BUBBLE.y + 42 + i * 42, fill: INK, "font-size": 21, opacity: 0 });
+      t.textContent = line;
+      g.appendChild(t);
+    });
+  })();
+
+  // === Bar 5: avatar bust -- head + shoulders silhouette with eyes and
+  // a lip-synced mouth. Still abstract (no real Live2D model art baked
+  // in -- all-rights-reserved, same reasoning SessionListForm.cs's own
+  // avatar card uses), but reads as "a face" with continuous motion. ===
+  (function buildSpeak() {
+    var g = $("layerSpeak");
+    g.appendChild(el("ellipse", { cx: CX, cy: CY + 74, rx: 92, ry: 54, fill: "#e4d3ab" }));
+    g.appendChild(el("circle", { id: "avatarHead", cx: CX, cy: CY - 22, r: 50, fill: "#e4d3ab" }));
+    g.appendChild(el("circle", { id: "eyeL", cx: CX - 17, cy: CY - 28, r: 3.5, fill: INK, opacity: 0.7 }));
+    g.appendChild(el("circle", { id: "eyeR", cx: CX + 17, cy: CY - 28, r: 3.5, fill: INK, opacity: 0.7 }));
+    g.appendChild(el("rect", { id: "mouth", x: CX - 12, y: CY - 8, width: 24, height: 4, rx: 2, fill: AMBER }));
+    for (var i = 0; i < 3; i++) {
+      g.appendChild(el("circle", { id: "speakRing" + i, cx: CX, cy: CY, r: 76, fill: "none", stroke: AMBER, "stroke-width": 2, opacity: 0 }));
+    }
+  })();
+
+  // === Bar 6: Vision -- "look at my screen" hotkey + local OCR ===
+  (function buildVision() {
+    buildIconPill("vision", "eye", "Reading your screen", "Ctrl+Alt+M");
+    var g = $("layerVision");
+    g.appendChild(el("rect", { id: "visionCapture", x: CX - 60, y: CY - 78, width: 120, height: 74, rx: 8, fill: "none", stroke: AMBER, "stroke-width": 1.5, "stroke-dasharray": "5 4", opacity: 0 }));
+  })();
+
+  // === Bar 7: Barge-in -- interrupt Mana mid-reply ===
+  (function buildBargein() {
+    var g = $("layerBargein");
+    var bars = 22, w = 4, gap = 5.4;
+    var totalW = bars * w + (bars - 1) * gap;
+    var startX = CX - totalW / 2;
+    for (var i = 0; i < bars; i++) {
+      g.appendChild(el("rect", { class: "bargeinbar", x: startX + i * (w + gap), y: CY - 24, width: w, height: 48, rx: w / 2, fill: AMBER, opacity: 0.85 }));
+    }
+    g.appendChild(el("text", { id: "bargeinLabel", x: CX, y: CY + 58, "text-anchor": "middle", fill: INK, "font-size": 19, "font-weight": 500, opacity: 0 })).textContent = "Interrupted — listening";
+  })();
+
+  // === Bar 8: Gaming mode -- backs off while a watched game runs ===
+  (function buildGaming() {
+    buildIconPill("gaming", "gamepad", "Gaming detected", "easing off in the background");
+  })();
+
+  // === Bar 9: avatar ecosystem -- VTube Studio hotkey trigger ===
+  (function buildAvatarpanel() {
+    var g = $("layerAvatarpanel");
+    g.appendChild(el("ellipse", { cx: CX, cy: CY + 20, rx: 62, ry: 38, fill: "#e4d3ab" }));
+    g.appendChild(el("circle", { cx: CX, cy: CY - 24, r: 34, fill: "#e4d3ab" }));
+    g.appendChild(glyph("wave", CX + 46, CY - 46, AMBER));
+    g.appendChild(el("text", { x: CX, y: CY + 92, "text-anchor": "middle", fill: INK, "font-size": 18, "font-weight": 500 })).textContent = "VTube Studio: Wave";
+  })();
+
+  // === Bars 10-12: plugins & add-ons, as lists, not one-by-one ===
+  buildChipGrid("pluginsA", [
+    { glyph: "tag", label: "FFXIV Market" },
+    { glyph: "chart", label: "Stock Market" },
+    { glyph: "puzzle", label: "Job Search" },
+    { glyph: "doc", label: "Document Reader" },
+  ]);
+  buildChipGrid("pluginsB", [
+    { glyph: "image", label: "Image Generation" },
+    { glyph: "video", label: "Video Watch" },
+    { glyph: "clock", label: "Cron Scheduler" },
+    { glyph: "book", label: "Obsidian Sync" },
+  ]);
+  buildChipGrid("addons", [
+    { glyph: "bridge", label: "Discord Bridge", sealed: true },
+    { glyph: "bridge", label: "Telegram Bridge" },
+    { glyph: "camera", label: "Browser Automation" },
+    { glyph: "server", label: "MCP Server" },
+  ]);
+
+  // === Bar 13: Editor handoff -- diff review, nothing applied silently ===
+  (function buildEditor() {
+    var g = $("layerEditor");
+    var bx = CX - 260, by = CY - 130;
+    g.appendChild(el("text", { x: bx, y: by, fill: MUTED, "font-size": 15, "font-weight": 500 })).textContent = "tts-runtime.js";
+    g.appendChild(el("text", { x: bx, y: by + 46, fill: MUTED, "font-size": 19, opacity: 0.75 })).textContent = "−  if (device === current) return;";
+    g.appendChild(el("text", { x: bx, y: by + 84, fill: INK, "font-size": 19 })).textContent = "+  if (!allowHotswap) return;";
+    var approve = el("g", { transform: "translate(" + (CX - 90) + "," + (CY + 100) + ")" });
+    approve.appendChild(el("rect", { x: -80, y: -22, width: 160, height: 44, rx: 22, fill: AMBER }));
+    approve.appendChild(el("text", { x: 0, y: 6, "text-anchor": "middle", fill: PANEL, "font-size": 17, "font-weight": 600 })).textContent = "Approve";
+    g.appendChild(approve);
+    var reject = el("g", { transform: "translate(" + (CX + 100) + "," + (CY + 100) + ")" });
+    reject.appendChild(el("rect", { x: -70, y: -22, width: 140, height: 44, rx: 22, fill: "none", stroke: PANEL_BORDER, "stroke-width": 1.5 }));
+    reject.appendChild(el("text", { x: 0, y: 6, "text-anchor": "middle", fill: MUTED, "font-size": 17 })).textContent = "Reject";
+    g.appendChild(reject);
+  })();
+
+  // === Bar 14: Deep Research -- cited report, not a single search ===
+  var RESEARCH_LINES = ["Silero VAD: RNN-based, ~1.8MB", "RMS fallback when the model is unavailable", "Both compared in docs/roadmap/issue-219"];
+  (function buildResearch() {
+    var g = $("layerResearch");
+    g.appendChild(glyph("eye", CX - 210, CY - 96, AMBER)); // reused as a simple "looking into it" mark
+    g.appendChild(el("text", { x: CX - 175, y: CY - 90, fill: INK, "font-size": 20, "font-weight": 500 })).textContent = "Researching…";
+    RESEARCH_LINES.forEach(function (line, i) {
+      var t = el("text", { id: "researchLine" + i, x: CX - 210, y: CY - 40 + i * 40, fill: MUTED, "font-size": 17, opacity: 0 });
+      t.textContent = "· " + line;
+      g.appendChild(t);
+    });
+  })();
+
+  // === Bar 15: Mobile companion -- phone chat sync ===
+  (function buildMobile() {
+    var g = $("layerMobile");
+    g.appendChild(el("rect", { x: CX - 70, y: CY - 160, width: 140, height: 320, rx: 28, fill: "none", stroke: PANEL_BORDER, "stroke-width": 2 }));
+    g.appendChild(el("rect", { x: CX - 20, y: CY - 150, width: 40, height: 5, rx: 2.5, fill: PANEL_BORDER }));
+    var bubble = el("g", { id: "mobileBubble", opacity: 0 });
+    bubble.appendChild(el("rect", { x: CX - 52, y: CY - 30, width: 104, height: 56, rx: 14, fill: USER_BUBBLE_FILL, stroke: USER_BUBBLE_BORDER, "stroke-width": 1.5 }));
+    bubble.appendChild(el("text", { x: CX, y: CY - 8, "text-anchor": "middle", fill: INK, "font-size": 13, "font-weight": 500 })).textContent = "Reminder sent";
+    bubble.appendChild(el("text", { x: CX, y: CY + 10, "text-anchor": "middle", fill: INK, "font-size": 13, "font-weight": 500 })).textContent = "from your phone";
+    g.appendChild(bubble);
+  })();
+
+  // === Bar 16: Memory -- Dream Mode consolidation + a recalled skill ===
+  (function buildMemory() {
+    var g = $("layerMemory");
+    var core = crystalShape();
+    core.setAttribute("transform", "translate(" + CX + "," + (CY - 50) + ") scale(2.1)");
+    g.appendChild(core);
+    var nodePositions = [[-120, -60], [120, -60], [-140, 20], [140, 20]];
+    nodePositions.forEach(function (p, i) {
+      g.appendChild(el("line", { id: "memLine" + i, x1: CX, y1: CY - 50, x2: CX + p[0], y2: CY - 50 + p[1], stroke: AMBER, "stroke-width": 1, opacity: 0 }));
+      g.appendChild(el("circle", { id: "memNode" + i, cx: CX + p[0], cy: CY - 50 + p[1], r: 5, fill: AMBER, opacity: 0 }));
+    });
+    g.appendChild(el("text", { x: CX, y: CY + 108, "text-anchor": "middle", fill: INK, "font-size": 18, "font-weight": 500 })).textContent = "Dream Mode — consolidating memory";
+    g.appendChild(el("text", { x: CX, y: CY + 134, "text-anchor": "middle", fill: MUTED, "font-size": 14 })).textContent = "skill recalled: deploy checklist";
+  })();
+
+  // === Bar 17: Renderable artifacts -- rendered inline, not raw source ===
+  (function buildArtifacts() {
+    var g = $("layerArtifacts");
+    var bx = CX - 250;
+    var tag = el("g", { transform: "translate(" + (CX + 170) + "," + (CY - 130) + ")" });
+    tag.appendChild(el("rect", { x: -46, y: -16, width: 92, height: 30, rx: 15, fill: USER_BUBBLE_FILL, stroke: USER_BUBBLE_BORDER, "stroke-width": 1.2 }));
+    tag.appendChild(el("text", { x: 0, y: 5, "text-anchor": "middle", fill: INK, "font-size": 13, "font-weight": 600 })).textContent = "Artifact";
+    g.appendChild(tag);
+    g.appendChild(el("rect", { x: bx, y: CY - 120, width: 260, height: 16, rx: 4, fill: INK, opacity: 0.8 }));
+    var widths = [420, 380, 300, 400, 220];
+    widths.forEach(function (w, i) {
+      g.appendChild(el("rect", { x: bx, y: CY - 84 + i * 30, width: w, height: 11, rx: 3, fill: MUTED, opacity: 0.45 }));
+    });
+  })();
+
+  // === Bar 18: Session export -- ShareGPT-style JSONL ===
+  (function buildExport() { buildIconPill("export", "download", "Export session", "session.jsonl"); })();
+
+  // === Bars 19-21: native launcher settings & hotkeys, as lists ===
+  buildChipGrid("settingsA", [
+    { glyph: "palette", label: "Theme" },
+    { glyph: "puzzle", label: "Hooks" },
+    { glyph: "lock", label: "Admin Accounts" },
+    { glyph: "chart", label: "Perf & Tokens" },
+  ]);
+  buildChipGrid("settingsB", [
+    { glyph: "server", label: "MCP Registry" },
+    { glyph: "layers", label: "Snapshots" },
+    { glyph: "doc", label: "Proposals" },
+    { glyph: "shield", label: "Doctor" },
+  ]);
+  buildChipGrid("hotkeys", [
+    { glyph: "keycap", label: "Quick Entry" },
+    { glyph: "keycap", label: "Window Toggle" },
+    { glyph: "keycap", label: "Clip Review" },
+    { glyph: "keycap", label: "Interrupt" },
+  ]);
+
+  // === Bar 22: Local-first / privacy, reinforced mid-video ===
+  (function buildPrivacy() { buildIconPill("privacy", "shield", "Nothing leaves your PC", "unless you turn it on"); })();
+
+  // === Bar 23: resolve pill -- Mana's own crystal mark, not a house ===
   (function buildResolve() {
     var g = $("layerResolve");
-    var house = el("path", {
-      d: "M " + (CX - 60) + " " + CY + " l 14 -14 l 14 14 M " + (CX - 46) + " " + (CY - 14) + " v -6",
-      fill: "none", stroke: AMBER, "stroke-width": 3, "stroke-linecap": "round", "stroke-linejoin": "round",
-    });
-    // simpler, cleaner house glyph: base + roof
-    g.innerHTML = "";
-    var hx = CX - 60, hy = CY;
-    g.appendChild(el("path", {
-      d: "M " + (hx - 12) + " " + hy + " L " + hx + " " + (hy - 12) + " L " + (hx + 12) + " " + hy + " L " + (hx + 12) + " " + (hy + 10) + " L " + (hx - 12) + " " + (hy + 10) + " Z",
-      fill: "none", stroke: AMBER, "stroke-width": 2.5, "stroke-linejoin": "round",
-    }));
-    g.appendChild(el("text", {
-      x: CX + 8, y: CY + 8, "text-anchor": "middle", fill: INK, "font-size": 26, "font-weight": 500,
-    })).textContent = "Local-First";
+    var crystal = crystalShape();
+    crystal.setAttribute("transform", "translate(" + (CX - 60) + "," + CY + ") scale(0.85)");
+    g.appendChild(crystal);
+    g.appendChild(el("text", { x: CX + 8, y: CY + 8, "text-anchor": "middle", fill: INK, "font-size": 26, "font-weight": 500 })).textContent = "Local-First";
   })();
 
   var idleBars = Array.prototype.slice.call(document.querySelectorAll(".idlebar"));
+  var bargeinBars = Array.prototype.slice.call(document.querySelectorAll(".bargeinbar"));
 
   // ---------------------------------------------------------------
   // seek(t): the ONE function every frame is computed from. Pure --
@@ -440,24 +675,20 @@
     var s = spring(t, camEvents.scale);
     var dx = spring(t, camEvents.dx);
     var dy = spring(t, camEvents.dy);
-    $("camera").setAttribute(
-      "transform",
-      "translate(" + CX + "," + CY + ") scale(" + s + ") translate(" + (-CX + dx) + "," + (-CY + dy) + ")"
-    );
+    $("camera").setAttribute("transform", "translate(" + CX + "," + CY + ") scale(" + s + ") translate(" + (-CX + dx) + "," + (-CY + dy) + ")");
 
-    // tray dot -- sits just left of the idle pill, on for the same windows as layerIdle
+    // tray mark -- the crystal, composed as translate(pos) scale(s), not
+    // the translate/scale/translate-back idiom (see buildChipGrid/addons
+    // postmortem comment further down for why that idiom breaks when its
+    // own scale term is exactly 1)
     var trayOp = layerOpacity(t, "layerIdle");
-    var td = $("trayDot");
-    td.setAttribute("cx", GEOM.idle.x - 30);
-    td.setAttribute("cy", CY);
-    td.setAttribute("opacity", trayOp * 0.9);
+    $("trayDot").setAttribute("transform", "translate(" + (GEOM.idle.x - 30) + "," + CY + ") scale(0.7)");
+    $("trayDot").setAttribute("opacity", trayOp * 0.9);
 
     // layer opacities
     Object.keys(LAYER_WINDOWS).forEach(function (name) {
       $(name).setAttribute("opacity", layerOpacity(t, name));
     });
-
-    // --- per-layer internal motion ---
 
     // idle waveform: gentle per-bar sine wiggle, amplitude tiny (barely moving)
     idleBars.forEach(function (bar, i) {
@@ -468,15 +699,15 @@
       bar.setAttribute("y", CY - h / 2);
     });
 
-    // transcribe: character-by-character reveal across the bar's window, cursor blink
+    // transcribe: character-by-character reveal, cursor blink
     var tt0 = barStart(2), tt1 = barStart(3);
     var typeProgress = Math.max(0, Math.min(1, (t - tt0) / (tt1 - tt0 - 0.3)));
     var chars = Math.floor(typeProgress * TRANSCRIBE_TEXT.length);
     var shown = TRANSCRIBE_TEXT.slice(0, chars);
     var textEl = $("transcribeText");
     if (textEl.textContent !== shown) textEl.textContent = shown;
-    var w = textEl.getComputedTextLength ? textEl.getComputedTextLength() : shown.length * 13;
-    $("transcribeCursor").setAttribute("x", TX_BUBBLE.x + 20 + w + 4);
+    var tw = textEl.getComputedTextLength ? textEl.getComputedTextLength() : shown.length * 13;
+    $("transcribeCursor").setAttribute("x", TX_BUBBLE.x + 20 + tw + 4);
     $("transcribeCursor").setAttribute("opacity", Math.sin(t * 10) > 0 ? 1 : 0);
 
     // respond: reply lines stream in, staggered
@@ -487,10 +718,7 @@
       $("replyLine" + i).setAttribute("transform", "translate(0," + Math.max(0, rise) + ")");
     });
 
-    // speak: mouth flaps open/closed in time with a synthetic syllable
-    // rate (real lip-sync would drive this off playback samples, per
-    // VoiceLoop's own lip-sync -- this is the showreel's stand-in), one
-    // blink partway through the beat, waveform rings pulse outward
+    // speak: mouth flaps open/closed, one blink, waveform rings pulse outward
     var speakActive = t > barStart(4) - 0.1 && t < barStart(5) + XFADE;
     var mouthOpen = speakActive ? Math.max(0, Math.sin(t * 11)) : 0;
     var mouthH = 4 + mouthOpen * 14;
@@ -507,60 +735,77 @@
       var ringActive = t > barStart(4) && t < barStart(5) + XFADE;
       var rr = 76 + ringT * 90;
       var rOpacity = ringActive ? Math.max(0, 0.5 - ringT / ringPeriod * 0.5) : 0;
-      var re = $("speakRing" + ring);
-      re.setAttribute("r", rr);
-      re.setAttribute("opacity", rOpacity);
+      $("speakRing" + ring).setAttribute("r", rr);
+      $("speakRing" + ring).setAttribute("opacity", rOpacity);
     }
 
-    // plugins: chips slide in one by one
-    var chip3CenterY = chipCenters[3].y; // consent's grow-scale below composes with this, not a bare reset
-    for (var ci = 0; ci < 4; ci++) {
-      var chipOnT = barStart(5) + 0.15 + ci * 0.22;
-      var chipOp = stepResponse(t - chipOnT, 3.0, 0.82);
-      var chipRise = 26 * (1 - chipOp);
-      var chipEl = document.getElementById("chip" + ci);
-      chipEl.setAttribute("opacity", Math.max(0, Math.min(1, chipOp)));
-      var chipCy = chipCenters[ci].y + chipRise;
-      if (ci === 3) chip3CenterY = chipCy;
-      chipEl.setAttribute("transform", "translate(" + chipCenters[ci].x + "," + chipCy + ")");
+    // vision: capture-region rectangle flashes in, holds, fades
+    $("visionCapture").setAttribute("opacity", pulse(t, barStart(5) + 0.15, barStart(5) + BAR_DUR - 0.35, 3.0, 0.85) * 0.9);
+
+    // barge-in: tall waveform snaps in, then cuts off abruptly mid-bar
+    // (the interruption itself), settling to a flat, quiet line -- the
+    // opposite motion of every other beat's gentle ease, on purpose.
+    var bgT0 = barStart(6), cutT = bgT0 + 0.55;
+    bargeinBars.forEach(function (bar, i) {
+      var riseAmt = stepResponse(t - (bgT0 + i * 0.012), 6, 0.7);
+      var cutAmt = stepResponse(t - cutT, 9, 0.95);
+      var h = 48 * riseAmt * (1 - cutAmt) + 4 * cutAmt * riseAmt;
+      bar.setAttribute("height", Math.max(4, h));
+      bar.setAttribute("y", CY - Math.max(4, h) / 2);
+    });
+    $("bargeinLabel").setAttribute("opacity", pulse(t, cutT + 0.1, barStart(7) + XFADE, 3.2, 0.9));
+
+    // chip grids: shared slide-in stagger for every list-style beat,
+    // plus the one sealed chip (Discord Bridge in Add-Ons) growing a
+    // consent ring + checkmark within its own beat -- composed as
+    // translate(c) scale(s), never translate(c) scale(s) translate(-c):
+    // that idiom silently collapses to a no-op identity whenever s===1,
+    // which is exactly what clipped a chip out of view earlier in this
+    // file's history the first time this pattern was tried.
+    order.forEach(function (name, bi) {
+      var layerId = layerIdFor(name);
+      var centers = gridCenters[layerId];
+      if (!centers) return;
+      var barT0 = barStart(bi);
+      centers.forEach(function (c, ci) {
+        var onT = barT0 + 0.15 + ci * 0.22;
+        var op = stepResponse(t - onT, 3.0, 0.82);
+        var rise = 26 * (1 - op);
+        var chip = document.getElementById(layerId + "_chip" + ci);
+        chip.setAttribute("opacity", Math.max(0, Math.min(1, op)));
+        chip.setAttribute("transform", "translate(" + c.x + "," + (c.y + rise) + ")");
+        var ring = document.getElementById(layerId + "_sealRing" + ci);
+        if (ring) {
+          var sealOnT = barT0 + 0.8;
+          var ringR = 16 * stepResponse(t - sealOnT, 2.8, 0.85);
+          ring.setAttribute("r", ringR);
+          var checkFill = stepResponse(t - sealOnT - 0.2, 3.5, 0.9);
+          document.getElementById(layerId + "_sealCheck" + ci).setAttribute("stroke-dashoffset", 26 * (1 - checkFill));
+        }
+      });
+    });
+
+    // research: citation lines stream in below "Researching…"
+    RESEARCH_LINES.forEach(function (_, i) {
+      var onT = barStart(13) + 0.35 + i * 0.3;
+      $("researchLine" + i).setAttribute("opacity", pulse(t, onT, barStart(14) - XFADE, 3.2, 0.9));
+    });
+
+    // mobile: the synced chat bubble pops in partway through the beat
+    $("mobileBubble").setAttribute("opacity", pulse(t, barStart(14) + 0.5, barStart(15) - XFADE, 3.0, 0.82));
+
+    // memory: nodes and connecting lines radiate out from the crystal
+    for (var n = 0; n < 4; n++) {
+      var nOnT = barStart(15) + 0.25 + n * 0.15;
+      var op2 = pulse(t, nOnT, barStart(16) - XFADE, 3.0, 0.85);
+      $("memLine" + n).setAttribute("opacity", op2 * 0.7);
+      $("memNode" + n).setAttribute("opacity", op2);
     }
-
-    // consent: chip 3 grows a ring + checkmark fills in
-    var consentOnT = barStart(6) + 0.1;
-    var ringR = 16 * stepResponse(t - consentOnT, 2.8, 0.85);
-    $("consentRing").setAttribute("r", ringR);
-    var checkFill = stepResponse(t - consentOnT - 0.2, 3.5, 0.9);
-    $("consentCheck").setAttribute("stroke-dashoffset", 26 * (1 - checkFill));
-    // slight scale-up of the whole chip 3 while the consent gate is active --
-    // composed around its OWN current center (chip3CenterY, which already
-    // carries the plugins loop's slide-in rise), never a bare translate(cx,cy)
-    // reset, which previously clipped chip 3 out of view for the rest of the
-    // plugins bar (its rect uses local coordinates around its own center, so
-    // resetting the transform to identity-at-origin moved it off-canvas).
-    var chip3Grow = 1 + 0.06 * pulse(t, barStart(6) - XFADE, barStart(7) + XFADE, 2.5, 0.88);
-    var c3x = chipCenters[3].x, c3y = chip3CenterY;
-    // chip3's own <rect> is drawn at its LOCAL origin (x=-75,y=-75 --
-    // centered on local (0,0), same as every other chip), so scaling
-    // "around its own center" is just scale() in local space, THEN
-    // translate out to (c3x,c3y) -- not the translate/scale/translate-
-    // back idiom (that idiom is for geometry already drawn at the
-    // pivot point; here it silently canceled to a no-op translate
-    // whenever chip3Grow was exactly 1, which is what clipped chip 3
-    // out of view for the entire plugins bar above).
-    document.getElementById("chip3").setAttribute(
-      "transform",
-      "translate(" + c3x + "," + c3y + ") scale(" + chip3Grow + ")"
-    );
-
-    // the consent ring/check glyphs are drawn at absolute page coordinates
-    // (not chip-local), anchored 46px above chip 3's own slide-in position
-    $("consentRing").setAttribute("cy", c3y - 46);
-    var checkY = c3y - 46;
-    $("consentCheck").setAttribute("d", "M " + (c3x - 8) + " " + checkY + " l 6 6 l 12 -12");
   };
 
   window.LOOP_T = LOOP_T;
   window.BAR_DUR = BAR_DUR;
+  window.BARS = BARS;
 
   // default render for viewing this file directly in a browser
   seek(0);

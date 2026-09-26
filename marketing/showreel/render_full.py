@@ -14,7 +14,7 @@ OUT_DIR.mkdir(exist_ok=True)
 
 FPS = 60
 SUBFRAMES = 4
-LOOP_T = 1.9969 * 8  # keep in sync with showreel.html's BAR_DUR * BARS
+LOOP_T = 1.9969 * 23  # keep in sync with showreel.html's BAR_DUR * BARS
 
 
 def main():

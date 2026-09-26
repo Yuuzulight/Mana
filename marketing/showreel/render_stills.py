@@ -1,4 +1,4 @@
-"""Preflight check: one still per story-beat (8 total), reviewed for
+"""Preflight check: one still per story-beat (23 total), reviewed for
 off-grid timing / cramped layout / illegible text before the full render.
 Run: python render_stills.py
 """
@@ -12,7 +12,7 @@ OUT_DIR = HERE / "stills"
 OUT_DIR.mkdir(exist_ok=True)
 
 BAR_DUR = 1.9969
-BARS = 8
+BARS = 23
 
 
 def main():

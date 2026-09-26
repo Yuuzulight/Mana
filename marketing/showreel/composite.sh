@@ -7,7 +7,7 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-LOOP_T=15.9752   # BAR_DUR(1.9969) * 8 bars, must match showreel.html
+LOOP_T=45.9287   # BAR_DUR(1.9969) * 23 bars, must match showreel.html
 
 ffmpeg -y -framerate 240 -i "raw/sub_%06d.png" \
   -vf "tmix=frames=4,select='not(mod(n\,4))',setpts=N/60/TB" \

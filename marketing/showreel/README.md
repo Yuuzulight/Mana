@@ -1,7 +1,9 @@
 # Mana product showreel
 
-A ~16s looping showreel: one morphing rounded shape, 8 story-beats synced to
-the real detected beat grid of the audio track, no cuts, no cursor.
+A ~46s looping showreel: one morphing rounded shape, 23 story-beats synced to
+the real detected beat grid of the audio track, no cuts, no cursor. Covers
+Mana's full feature set -- plugins, add-ons, settings and hotkeys are shown
+as clustered chip grids rather than one beat each.
 
 ## Pipeline
 
@@ -11,8 +13,8 @@ python -m playwright install chromium
 
 python analyze_beats.py audio/im-fine.mp3   # confirms the real tempo/beat grid
 python trim_audio.py                        # trims the ~8s ambient lead-in to the real downbeat
-python render_stills.py                     # 8 preflight stills, one per beat -- check before the full render
-python render_full.py                       # ~3.5min: 3,836 subframes (4 per output frame @ 60fps)
+python render_stills.py                     # 23 preflight stills, one per beat -- check before the full render
+python render_full.py                       # ~13min: ~11,000 subframes (4 per output frame @ 60fps)
 ./composite.sh                               # ffmpeg: tmix motion blur, mux audio, -> showreel_final.mp4
 ```
 
@@ -27,8 +29,10 @@ include the dead air.
 
 ## Timing
 
-`BAR_DUR = 1.9969` (seconds per bar, from the real detected grid), 8 bars,
-loop point `LOOP_T = BAR_DUR * 8 = 15.9752s`. One bar = one story-beat, not
+`BAR_DUR = 1.9969` (seconds per bar, from the real detected grid), 23 bars,
+loop point `LOOP_T = BAR_DUR * 23 = 45.9287s` (hardcoded in `trim_audio.py`,
+`render_stills.py`, `render_full.py` and `composite.sh` too -- keep all five
+in sync). One bar = one story-beat, not
 one musical beat (a bar's 4 real beats all land inside a single scene).
 
 `showreel.html`'s `seek(t)` is a pure function -- a damped-spring engine
@@ -42,8 +46,11 @@ since they don't need to hit an exact target, just read as a natural swap.
 ## Known-good vs. rough edges
 
 Confirmed via `render_stills.py` + direct DOM/CTM inspection (not just
-eyeballing): shape geometry, all 8 layer opacities, and the loop-closing
-frame match frame 0 to floating-point precision. One real bug was caught
+eyeballing): shape geometry, all layer opacities, and the loop-closing
+frame match frame 0 to floating-point precision. Beat order lives in the
+`order` array; layer windows derive from it automatically, but the bespoke
+beats' custom `seek()` timing uses `barStart(i)` with the 0-based `order`
+index -- an off-by-one there (1-based bar numbers) once blanked five beats. One real bug was caught
 and fixed this way -- a chip-scale transform composed as
 `translate(c)·scale(s)·translate(-c)` collapsed to a no-op identity
 whenever `s === 1`, clipping the 4th plugin chip out of view for the whole

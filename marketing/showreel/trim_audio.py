@@ -12,7 +12,7 @@ SRC = HERE / "audio" / "im-fine.mp3"
 OUT = HERE / "audio" / "im-fine-trimmed.wav"
 
 DOWNBEAT_SEC = 8.022  # from analyze_beats.py's downbeat_anchor_sec
-LOOP_T = 1.9969 * 8   # BAR_DUR * BARS, kept in sync with showreel.html
+LOOP_T = 1.9969 * 23  # BAR_DUR * BARS, kept in sync with showreel.html
 TAIL_BUFFER_SEC = 0.5  # room for ffmpeg's tmix/select edge effects
 
 
