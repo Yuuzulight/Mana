@@ -4,25 +4,28 @@
 <meta charset="utf-8" />
 <title>Mana showreel</title>
 <style>
-  html, body { margin: 0; padding: 0; background: #0a0a0a; }
-  #stage { width: 1440px; height: 1440px; display: block; background: #0a0a0a; }
+  html, body { margin: 0; padding: 0; background: #f6efe0; }
+  #stage { width: 1440px; height: 1440px; display: block; background: #f6efe0; }
   text { font-family: "Geist", "Inter", -apple-system, "Segoe UI", sans-serif; }
 </style>
 </head>
 <body>
 <svg id="stage" viewBox="0 0 1440 1440" xmlns="http://www.w3.org/2000/svg">
   <defs>
-    <filter id="softblur" x="-50%" y="-50%" width="200%" height="200%">
-      <feGaussianBlur in="SourceGraphic" stdDeviation="0" result="blur" />
+    <!-- soft, warm elevation instead of a hard stroke -- the "soft" half
+    of the light/soft/adventure-y direction. Applied to the main shape and
+    every card-like surface (chips) for one consistent, gentle depth cue. -->
+    <filter id="softShadow" x="-40%" y="-40%" width="180%" height="180%">
+      <feDropShadow dx="0" dy="10" stdDeviation="16" flood-color="#4a3a26" flood-opacity="0.16" />
     </filter>
     <clipPath id="shapeClip"><rect id="shapeClipRect" x="0" y="0" width="0" height="0" rx="0" /></clipPath>
   </defs>
 
-  <rect x="0" y="0" width="1440" height="1440" fill="#0a0a0a" />
+  <rect x="0" y="0" width="1440" height="1440" fill="#f6efe0" />
 
   <g id="camera">
     <!-- the one morphing shape -->
-    <rect id="shape" x="0" y="0" width="0" height="0" rx="0" fill="#141414" stroke="#2a2a2a" stroke-width="1.5" />
+    <rect id="shape" x="0" y="0" width="0" height="0" rx="0" fill="#fffaf0" stroke="#ecdfc4" stroke-width="1" filter="url(#softShadow)" />
 
     <!-- tray dot, sits beside the idle waveform -->
     <circle id="trayDot" cx="0" cy="0" r="5" fill="#f5a623" opacity="0" />
@@ -95,20 +98,23 @@
   }
 
   // ---------------------------------------------------------------
-  // Palette (from the brief: near-black canvas, one amber accent,
-  // white/off-white text -- nothing else)
+  // Palette -- reworked lighter/softer/warmer (warm parchment canvas,
+  // the same amber accent now doing double duty as a "golden hour"
+  // adventure-y warmth, soft cocoa ink instead of near-black). Still one
+  // accent color, still no gradients on UI chrome -- depth now comes from
+  // softShadow (see <defs>) instead of a dark-canvas + hard-stroke look.
   // ---------------------------------------------------------------
   var AMBER = "#f5a623";
-  var OFFWHITE = "#f2f0ec";
-  var PANEL = "#141414";
-  var PANEL_BORDER = "#2a2a2a";
+  var INK = "#4a3a26";
+  var PANEL = "#fffaf0";
+  var PANEL_BORDER = "#ecdfc4";
   // Chat bubbles distinguish speaker by alignment + a subtle amber tint on
   // the user's own bubble (vs. Mana's plain panel fill) rather than by
   // introducing new hues -- keeps to the brief's one-accent-color rule
   // while still reading as two distinct speakers, same as the real app's
   // right/left-aligned bubbles.
-  var USER_BUBBLE_FILL = "rgba(245,166,35,0.09)";
-  var USER_BUBBLE_BORDER = "rgba(245,166,35,0.38)";
+  var USER_BUBBLE_FILL = "rgba(245,166,35,0.14)";
+  var USER_BUBBLE_BORDER = "rgba(245,166,35,0.45)";
 
   // ---------------------------------------------------------------
   // Shape geometry per bar (x, y, w, h, rx), center-anchored so
@@ -225,7 +231,7 @@
     for (var i = 0; i < bars; i++) {
       var r = el("rect", {
         x: startX + i * (w + gap), y: CY - 2, width: w, height: 4, rx: w / 2,
-        fill: OFFWHITE, opacity: 0.55, "data-idx": i,
+        fill: INK, opacity: 0.55, "data-idx": i,
       });
       r.setAttribute("class", "idlebar");
       g.appendChild(r);
@@ -241,7 +247,7 @@
     mic.appendChild(el("line", { x1: 0, y1: 18, x2: 0, y2: 28, stroke: AMBER, "stroke-width": 3, "stroke-linecap": "round" }));
     g.appendChild(mic);
     g.appendChild(el("text", {
-      x: CX, y: CY + 46, "text-anchor": "middle", fill: OFFWHITE, "font-size": 22, "font-weight": 500,
+      x: CX, y: CY + 46, "text-anchor": "middle", fill: INK, "font-size": 22, "font-weight": 500,
     })).textContent = "Listening";
   })();
 
@@ -254,7 +260,7 @@
       x: TX_BUBBLE.x, y: TX_BUBBLE.y, width: TX_BUBBLE.w, height: TX_BUBBLE.h, rx: 18,
       fill: USER_BUBBLE_FILL, stroke: USER_BUBBLE_BORDER, "stroke-width": 1.5,
     }));
-    var t = el("text", { id: "transcribeText", x: TX_BUBBLE.x + 20, y: CY + 8, fill: OFFWHITE, "font-size": 24, "font-weight": 400 });
+    var t = el("text", { id: "transcribeText", x: TX_BUBBLE.x + 20, y: CY + 8, fill: INK, "font-size": 24, "font-weight": 400 });
     g.appendChild(t);
     var cursor = el("rect", { id: "transcribeCursor", x: TX_BUBBLE.x + 20, y: CY - 16, width: 2, height: 28, fill: AMBER });
     g.appendChild(cursor);
@@ -276,7 +282,7 @@
       fill: USER_BUBBLE_FILL, stroke: USER_BUBBLE_BORDER, "stroke-width": 1.5,
     }));
     g.appendChild(el("text", {
-      x: RESP_USER_BUBBLE.x + 18, y: RESP_USER_BUBBLE.y + 38, fill: OFFWHITE, "font-size": 20,
+      x: RESP_USER_BUBBLE.x + 18, y: RESP_USER_BUBBLE.y + 38, fill: INK, "font-size": 20,
     })).textContent = TRANSCRIBE_TEXT;
 
     // a small amber dot stands in for Mana's own avatar next to her reply,
@@ -289,7 +295,7 @@
     REPLY_LINES.forEach(function (line, i) {
       var t = el("text", {
         id: "replyLine" + i, x: RESP_MANA_BUBBLE.x + 22, y: RESP_MANA_BUBBLE.y + 42 + i * 42,
-        fill: OFFWHITE, "font-size": 21, opacity: 0,
+        fill: INK, "font-size": 21, opacity: 0,
       });
       t.textContent = line;
       g.appendChild(t);
@@ -307,10 +313,10 @@
   // rather than a static sprite swap.
   (function buildSpeak() {
     var g = $("layerSpeak");
-    g.appendChild(el("ellipse", { cx: CX, cy: CY + 74, rx: 92, ry: 54, fill: "#1c1c1c" })); // shoulders
-    g.appendChild(el("circle", { id: "avatarHead", cx: CX, cy: CY - 22, r: 50, fill: "#1c1c1c" })); // head
-    g.appendChild(el("circle", { id: "eyeL", cx: CX - 17, cy: CY - 28, r: 3.5, fill: OFFWHITE, opacity: 0.7 }));
-    g.appendChild(el("circle", { id: "eyeR", cx: CX + 17, cy: CY - 28, r: 3.5, fill: OFFWHITE, opacity: 0.7 }));
+    g.appendChild(el("ellipse", { cx: CX, cy: CY + 74, rx: 92, ry: 54, fill: "#e4d3ab" })); // shoulders -- warm sand, not near-black
+    g.appendChild(el("circle", { id: "avatarHead", cx: CX, cy: CY - 22, r: 50, fill: "#e4d3ab" })); // head
+    g.appendChild(el("circle", { id: "eyeL", cx: CX - 17, cy: CY - 28, r: 3.5, fill: INK, opacity: 0.7 }));
+    g.appendChild(el("circle", { id: "eyeR", cx: CX + 17, cy: CY - 28, r: 3.5, fill: INK, opacity: 0.7 }));
     g.appendChild(el("rect", { id: "mouth", x: CX - 12, y: CY - 8, width: 24, height: 4, rx: 2, fill: AMBER }));
     for (var i = 0; i < 3; i++) {
       g.appendChild(el("circle", {
@@ -339,11 +345,11 @@
       var chip = el("g", { id: "chip" + i, transform: "translate(" + cx + "," + cy + ")" });
       chip.appendChild(el("rect", {
         x: -chipW / 2, y: -chipH / 2, width: chipW, height: chipH, rx: 22,
-        fill: PANEL, stroke: PANEL_BORDER, "stroke-width": 1.5,
+        fill: PANEL, stroke: PANEL_BORDER, "stroke-width": 1, filter: "url(#softShadow)",
       }));
-      chip.appendChild(glyph(CHIP_GLYPHS[i], 0, -18, OFFWHITE));
+      chip.appendChild(glyph(CHIP_GLYPHS[i], 0, -18, INK));
       var label = el("text", {
-        x: 0, y: 44, "text-anchor": "middle", fill: OFFWHITE, "font-size": 15, "font-weight": 500,
+        x: 0, y: 44, "text-anchor": "middle", fill: INK, "font-size": 15, "font-weight": 500,
       });
       label.textContent = CHIP_LABELS[i];
       chip.appendChild(label);
@@ -404,7 +410,7 @@
       fill: "none", stroke: AMBER, "stroke-width": 2.5, "stroke-linejoin": "round",
     }));
     g.appendChild(el("text", {
-      x: CX + 8, y: CY + 8, "text-anchor": "middle", fill: OFFWHITE, "font-size": 26, "font-weight": 500,
+      x: CX + 8, y: CY + 8, "text-anchor": "middle", fill: INK, "font-size": 26, "font-weight": 500,
     })).textContent = "Local-First";
   })();
 
