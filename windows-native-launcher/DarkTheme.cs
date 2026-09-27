@@ -42,6 +42,9 @@ internal static class DarkTheme
     // Light presets get the light title bar and list styling; text on an
     // accent fill is whichever of white/near-black reads on that accent.
     public static bool IsLight => Luminance(Background) > 0.5;
+
+    // #652: the Mana preset's frosted-glass look (see GlassSurface).
+    public static bool IsGlass { get; private set; }
     public static Color OnAccent
     {
         get
@@ -107,6 +110,7 @@ internal static class DarkTheme
     public static void ApplyPreset(string presetId, string? accentHex)
     {
         var colors = PresetColors.TryGetValue(presetId, out var found) ? found : PresetColors["violet"];
+        IsGlass = presetId == "mana";
         Background = colors.Background;
         Panel = colors.Panel;
         Panel2 = colors.Panel2;
@@ -147,6 +151,10 @@ internal static class DarkTheme
         form.BackColor = Background;
         form.ForeColor = Text;
         ApplyTitleBarMode(form);
+        if (IsGlass)
+        {
+            GlassSurface.Attach(form);
+        }
     }
 
     // Best-effort: the DWM immersive-dark-mode attribute only exists on
