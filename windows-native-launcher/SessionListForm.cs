@@ -57,6 +57,7 @@ internal sealed class SessionListForm : Form
     // handle every time the list reloaded (session switch/rename/delete/
     // new-chat) with no matching Dispose.
     private readonly Font activeSessionFont;
+    private readonly Font messageBoxFont;
 
     // Mirrors VoiceLoop's own currentSessionId -- null (nothing switched
     // to yet) means node-bot's implicit "default" session, same starting
@@ -80,6 +81,7 @@ internal sealed class SessionListForm : Form
         this.avatarOverlay = avatarOverlay;
         this.backendLog = backendLog;
         activeSessionFont = new Font(list.Font, FontStyle.Bold);
+        messageBoxFont = new Font("Segoe UI", 10.5F);
 
         Text = "Mana";
         Width = 900;
@@ -307,7 +309,10 @@ internal sealed class SessionListForm : Form
         // to bottom, Settings docked at the bottom.
 
         var chatArea = new Panel { Dock = DockStyle.Fill, BackColor = DarkTheme.Background };
+        // Last added docks first: the message box claims the bottom strip,
+        // then the chat fills the rest.
         chatArea.Controls.Add(chatLog);
+        chatArea.Controls.Add(BuildMessageBox());
 
         // Same collapse toggle as Claude's own UI, and the design
         // reference's own #sidebarToggleBtn -- a persistent top strip
@@ -356,6 +361,80 @@ internal sealed class SessionListForm : Form
         // -- directly). Same pattern as ArtifactViewerForm/QuickEntryForm.
         _ = Handle;
     }
+
+    // #652 part 5: a typed-message box under the chat, sending through the
+    // same VoiceLoop entry point as Quick Entry (which also logs the message
+    // in the chat). Enter sends, Shift+Enter adds a line. Like Quick Entry it
+    // clears straight away while the turn runs; if Mana is still busy with
+    // the previous turn the submit returns false at once, and the text comes
+    // back with a note instead of being lost.
+    private Panel BuildMessageBox()
+    {
+        var box = new TextBox
+        {
+            Multiline = true,
+            AcceptsReturn = false,
+            Dock = DockStyle.Fill,
+            BorderStyle = BorderStyle.FixedSingle,
+            BackColor = DarkTheme.IsLight ? Color.White : DarkTheme.Panel2,
+            ForeColor = DarkTheme.Text,
+            Font = messageBoxFont,
+            PlaceholderText = MessageBoxPlaceholder,
+            AccessibleName = "Message Mana",
+            ScrollBars = ScrollBars.None,
+        };
+        var send = new Button
+        {
+            Text = "Send",
+            Dock = DockStyle.Right,
+            Width = 72,
+            FlatStyle = FlatStyle.Flat,
+            BackColor = DarkTheme.Accent,
+            ForeColor = DarkTheme.OnAccent,
+        };
+        send.FlatAppearance.BorderSize = 0;
+
+        async Task SendAsync()
+        {
+            var text = box.Text;
+            if (text.Trim().Length == 0)
+            {
+                return;
+            }
+            box.Clear();
+            var accepted = await voiceLoop.SubmitTypedCommandAsync(text);
+            if (!accepted && !box.IsDisposed && box.TextLength == 0)
+            {
+                box.Text = text;
+                box.SelectionStart = box.TextLength;
+                box.PlaceholderText = "Mana's still replying -- press Enter again in a moment";
+            }
+        }
+        box.KeyDown += async (_, e) =>
+        {
+            if (e.KeyCode == Keys.Enter && !e.Shift)
+            {
+                e.SuppressKeyPress = true;
+                await SendAsync();
+            }
+            else if (e.KeyCode == Keys.Enter)
+            {
+                e.SuppressKeyPress = true;
+                box.SelectedText = Environment.NewLine;
+            }
+        };
+        box.TextChanged += (_, _) => box.PlaceholderText = MessageBoxPlaceholder;
+        send.Click += async (_, _) => await SendAsync();
+
+        var gap = new Panel { Dock = DockStyle.Right, Width = 8, BackColor = Color.Transparent };
+        var panel = new Panel { Dock = DockStyle.Bottom, Height = 58, Padding = new Padding(12, 10, 12, 10), BackColor = DarkTheme.Panel };
+        panel.Controls.Add(box);
+        panel.Controls.Add(gap);
+        panel.Controls.Add(send);
+        return panel;
+    }
+
+    private const string MessageBoxPlaceholder = "Message Mana...  (Enter to send, Shift+Enter for a new line)";
 
     private Button MakeRailButton(string icon, string tooltip)
     {
@@ -876,6 +955,7 @@ internal sealed class SessionListForm : Form
         {
             avatarOverlay.StateChanged -= OnAvatarStateChanged;
             activeSessionFont.Dispose();
+            messageBoxFont.Dispose();
             avatarNameFont.Dispose();
             avatarStatusFont.Dispose();
             toolPanelTitleFont.Dispose();
