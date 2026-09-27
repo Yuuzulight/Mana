@@ -8,7 +8,7 @@ namespace Mana.NativeLauncher;
 // coupled half of the renderer, kept separate from MermaidParser/
 // MermaidLayout (pure, tested) since a Graphics surface needs a real
 // device context and isn't itself unit-testable in this codebase (same
-// split as ChatMarkdown/DoctorPanelForm's own untested rendering code).
+// split as ChatView/DoctorPanelForm's own untested rendering code).
 internal static class MermaidRenderer
 {
     private const float Margin = 20f;

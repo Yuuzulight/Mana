@@ -86,7 +86,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
         // #521: constructed before voiceLoop so it can be passed in as
         // VoiceLoop's IChatLog -- SessionListForm only needs the control
         // itself (to embed it), not the other way around.
-        var chatLog = new ChatLogPanel();
+        var chatLog = new ChatView();
         // #522: ScreenContextReader owns its own min-interval/keyword-gate
         // caching internally, so this is just held and passed straight
         // through to VoiceLoop, same as the other optional collaborators
@@ -140,7 +140,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
         // sessionListForm.Show()/Activate() with no marshaling of its
         // own. Routed through sessionListForm's own Invoke instead, same
         // IsDisposed-then-marshal shape as this codebase's other
-        // background-thread-to-UI call sites (e.g. ChatLogPanel's
+        // background-thread-to-UI call sites (e.g. ChatView's
         // RunOnUiThread).
         trayNotifications = new TrayNotificationClient(backendBaseUrl: settings.BackendBaseUrl, openChat: () =>
         {

@@ -6,7 +6,7 @@ using System.Windows.Forms;
 
 namespace Mana.NativeLauncher;
 
-// Shared dark chrome for the "opened" window (SessionListForm, ChatLogPanel,
+// Shared dark chrome for the "opened" window (SessionListForm, ChatView,
 // SettingsPanel) -- ports the color palette and look PR #538's MainForm/
 // SettingsForm scaffold used (itself matching windows-launcher's own
 // theme-tokens.css), applied here to the real, backend-wired controls that
@@ -59,7 +59,7 @@ internal static class DarkTheme
 
     // Cached once and reused across every TabControl this app themes --
     // GDI+ leak discipline this project enforces everywhere else (see
-    // ChatMarkdown's own FontCache). ApplyPreset below keeps these in
+    // ChatView's own cached fonts). ApplyPreset below keeps these in
     // sync with Panel/Panel2/Text/Muted -- a SolidBrush built from a
     // Color doesn't track later reassignment of the variable it was
     // built from, so switching presets after these are constructed would

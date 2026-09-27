@@ -28,8 +28,7 @@ internal readonly record struct MarkdownBlock(MarkdownBlockType Type, IReadOnlyL
 // literal characters "bold *and* still bold" rather than nesting italic
 // inside bold. Not a crash, just a cosmetic limitation accepted for this
 // scope. Pure: no WinForms dependency, so it's directly testable;
-// ChatMarkdown.Append is what actually applies these blocks to a
-// RichTextBox.
+// ChatView lays these blocks out and draws them.
 internal static class ChatMarkdownParser
 {
     private static readonly Regex HeaderPattern = new(@"^(#{1,6})\s+(.*)$", RegexOptions.Compiled);
