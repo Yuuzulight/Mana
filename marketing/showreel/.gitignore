@@ -1,3 +1,9 @@
 raw/
 video_noaudio.mp4
 audio/im-fine-trimmed.wav
+# debut video: regenerable intermediates (see README "Debut video")
+audio/narration/takes/
+audio/narration-mix.*
+audio/polish-ab.*
+audio/signoff-preview.*
+debut_stills/

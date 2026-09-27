@@ -1,5 +1,35 @@
 # Mana product showreel
 
+## Debut video (current)
+
+A ~48s VTuber-debut-style self-introduction, 1920x1080/60fps, narrated by Mana
+in her own voice (`debut_final.mp4`). Mana is the live Live2D model rendered by
+the same runtime the Electron launcher uses (pixi-live2d-display), with lip-sync
+driven by the narration audio. Screen order and timing live in `timeline.json`.
+
+```powershell
+# narration (needs ~4GB free RAM while the voice model loads)
+tools\fish-speech\.venv-native\Scripts\python.exe marketing\showreel\narrate.py [line keys]
+python pick_takes.py [line keys]   # whisper-checks each take, keeps the best per line
+python mix_narration.py            # polish + music bed -> audio/narration-mix.wav
+
+python key_poses.py                # Live2D pose renders -> avatar/*.png (expression tiles)
+python build_debut.py              # debut/index.html + debut/data.json
+python render_debut.py --stills    # one still per screen -> debut_stills/
+python render_debut.py             # ~2.5 min -> debut_final.mp4
+```
+
+- Voice: Fish Speech S1-mini cloned from two expressive Mitsuki clips
+  (`audio/refs/`); the app's own reference clip is the flattest one available.
+  `mix_narration.py`'s `polish()` softens S1-mini's metallic codec edge.
+- "Otsumana" is written in kana (おつ〜まな〜〜!!) so it's pronounced the
+  Japanese way; its delivery was modelled on Gigi Murin's "Gii muriiin!".
+- The Live2D model is the free Hiyori sample (`hiyori_free`), usable
+  commercially by individuals and small businesses under Live2D's Free
+  Material License.
+
+## Original 23-beat abstract reel
+
 A ~46s looping showreel: one morphing rounded shape, 23 story-beats synced to
 the real detected beat grid of the audio track, no cuts, no cursor. Covers
 Mana's full feature set -- plugins, add-ons, settings and hotkeys are shown

@@ -1,0 +1,86 @@
+{
+  "bar_dur": 1.9969,
+  "note": "One entry per storyboard screen. Screen length is whole bars of the music; `line` is the narration clip in audio/narration/, starting `offset` seconds after the screen cuts in.",
+  "screens": [
+    {
+      "key": "reveal",
+      "bars": 2,
+      "line": "01-reveal",
+      "offset": 0.9
+    },
+    {
+      "key": "name",
+      "bars": 3,
+      "line": "02-name",
+      "offset": 0.35
+    },
+    {
+      "key": "nice",
+      "bars": 1,
+      "line": "03-nice",
+      "offset": 0.3
+    },
+    {
+      "key": "talk",
+      "bars": 2,
+      "line": "04-talk",
+      "offset": 0.1
+    },
+    {
+      "key": "screen",
+      "bars": 1,
+      "line": "05-screen",
+      "offset": 0.1
+    },
+    {
+      "key": "code",
+      "bars": 2,
+      "line": "06-code",
+      "offset": 0.1
+    },
+    {
+      "key": "game",
+      "bars": 2,
+      "line": "07-game",
+      "offset": 0.1
+    },
+    {
+      "key": "everything",
+      "bars": 2,
+      "line": "08-everything",
+      "offset": 0.1
+    },
+    {
+      "key": "memory",
+      "bars": 2,
+      "line": "09-memory",
+      "offset": 0.1
+    },
+    {
+      "key": "tease",
+      "bars": 2,
+      "line": "10-tease",
+      "offset": 0.35
+    },
+    {
+      "key": "promise",
+      "bars": 2,
+      "line": "11-promise",
+      "offset": 0.1
+    },
+    {
+      "key": "signoff",
+      "bars": 3,
+      "lines": [
+        {
+          "line": "12-signoff",
+          "offset": 0.1
+        },
+        {
+          "line": "13-otsumana",
+          "offset": 1.65
+        }
+      ]
+    }
+  ]
+}
