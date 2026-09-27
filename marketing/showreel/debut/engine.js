@@ -64,11 +64,11 @@
 
     // code: the Approve button gets pressed as she finishes her line
     const press = spring(t - (lineOf["06-code"].end + 0.1), 2.5, 0.7);
-    $("approve").style.boxShadow = `0 0 0 ${6 * press}px rgba(157,140,224,${0.35 * press})`;
+    $("approve").style.boxShadow = `0 0 0 ${6 * press}px rgba(198,170,224,${0.35 * press})`;
 
     // tease: the "Teasing" tile lights up on the word
     const tease = spring(t - (lineOf["10-tease"].start + 0.9), 2.5, 0.6);
-    $("teaseTile").style.outline = `2px solid rgba(157,140,224,${clamp(tease)})`;
+    $("teaseTile").style.outline = `2px solid rgba(198,170,224,${clamp(tease)})`;
     $("teaseTile").style.outlineOffset = "3px";
 
     // subtitles

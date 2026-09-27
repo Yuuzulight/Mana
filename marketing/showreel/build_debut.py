@@ -20,10 +20,15 @@ HERE = pathlib.Path(__file__).parent
 OUT = HERE / "debut"
 FPS = 60
 
-ACCENT, INK, MUTED, PANEL, BORDER, GROUND = "#9d8ce0", "#ece8f4", "#a39cb5", "#221e2c", "#3a3450", "#17141f"
-MANA_BUBBLE, USER_BUBBLE, ERR = "#2a2536", "#3a3560", "#e0707a"
+# Mana's own palette (marketing/concept/DESIGN_NOTES.md): headphone navy for the ground, her
+# lavender hair as the accent, its glowing sky-blue ends for glows and light, a lavender-white
+# like her hoodie for text.
+ACCENT, SKY, INK, MUTED = "#c6aae0", "#a3d2fa", "#f3ecfa", "#a9a6cf"
+PANEL, BORDER, GROUND = "#161b40", "#2d3570", "#0d1131"
+MANA_BUBBLE, USER_BUBBLE, ERR = "#1c2250", "#3d3a82", "#e0707a"
+ACCENT_RGB, SKY_RGB = "198,170,224", "163,210,250"
 SHAPE = (f"background: {PANEL}; border: 1px solid {BORDER}; box-sizing: border-box; "
-         f"box-shadow: 0 10px 32px rgba(0,0,0,0.45), 0 0 48px rgba(157,140,224,0.12)")
+         f"box-shadow: 0 10px 32px rgba(0,0,0,0.45), 0 0 48px rgba({SKY_RGB},0.10)")
 MONO = "font-family: 'Geist Mono', ui-monospace, monospace"
 DISPLAY = "font-family: Fraunces, Georgia, serif"
 CARD = "left: 300px; right: 30px; top: 50%; transform: translateY(-54%)"  # right-hand card stage; Mana presents on the left
@@ -67,7 +72,7 @@ def sparkles(seed=0, n=14):
         x, y, s = (i * 137 + seed * 53) % 780 + 10, (i * 89 + seed * 31) % 430 + 10, 3 + (i * 7 + seed) % 5
         k = s * .28
         out.append(f'<path data-tw="{(i * 1.7 + seed) % 6.28:.2f}" d="M{x} {y - s} L{x + k} {y - k} L{x + s} {y} L{x + k} {y + k} L{x} {y + s} '
-                   f'L{x - k} {y + k} L{x - s} {y} L{x - k} {y - k} Z" fill="{INK if i % 3 else ACCENT}" opacity="0.3"/>')
+                   f'L{x - k} {y + k} L{x - s} {y} L{x - k} {y - k} Z" fill="{(ACCENT, SKY, INK)[i % 3]}" opacity="0.3"/>')
     return at("inset: 0", f'<svg width="800" height="450" viewBox="0 0 800 450" aria-hidden="true">{"".join(out)}</svg>')
 
 
@@ -79,7 +84,7 @@ def bubble(text, user=False, pop=None):
     p = f' data-pop="{pop}"' if pop is not None else ""
     if user:
         return (f'<div{p} style="align-self: flex-end; padding: 9px 13px; border-radius: 14px 14px 4px 14px; background: {USER_BUBBLE}; '
-                f'border: 1px solid rgba(157,140,224,0.45); font-size: 13.5px; color: {INK}">{text}</div>')
+                f'border: 1px solid rgba({ACCENT_RGB},0.45); font-size: 13.5px; color: {INK}">{text}</div>')
     return (f'<div{p} style="display: flex; gap: 8px; align-items: flex-start">{crystal(20)}<div style="padding: 9px 13px; '
             f'border-radius: 14px 14px 14px 4px; background: {MANA_BUBBLE}; border: 1px solid {BORDER}; font-size: 13.5px; '
             f'line-height: 1.45; color: {INK}">{text}</div></div>')
@@ -94,16 +99,16 @@ def screens(t_rel):
     """Layer markup per screen key. t_rel: {line key: seconds after its screen starts}."""
     L = {}
     rays = "".join(f'<line x1="400" y1="215" x2="{400 + 460 * math.cos(a):.0f}" y2="{215 + 460 * math.sin(a):.0f}" '
-                   f'stroke="{ACCENT}" stroke-width="{2 if i % 2 else 1}" opacity="{0.35 if i % 2 else 0.18}"/>'
+                   f'stroke="{SKY if i % 2 else ACCENT}" stroke-width="{2 if i % 2 else 1}" opacity="{0.35 if i % 2 else 0.18}"/>'
                    for i, a in enumerate(k * math.pi / 12 for k in range(24)))
     L["reveal"] = (
         at("inset: 0", f'<svg width="800" height="450" viewBox="0 0 800 450" aria-hidden="true">{rays}</svg>', id="rays")
         + at("inset: 0", f'<svg width="800" height="450" viewBox="0 0 800 450" aria-hidden="true">'
-                         f'<circle cx="400" cy="215" r="150" fill="{ACCENT}" opacity="0.10"/><circle cx="400" cy="215" r="80" fill="{ACCENT}" opacity="0.16"/></svg>',
+                         f'<circle cx="400" cy="215" r="150" fill="{SKY}" opacity="0.10"/><circle cx="400" cy="215" r="80" fill="{ACCENT}" opacity="0.16"/></svg>',
              id="glow")
         + sparkles(1, 22)
         + at("left: 379px; top: 170px", crystal(90), id="revealCrystal")
-        + at("inset: 0; background: radial-gradient(circle at 50% 48%, #f1edff 0%, rgba(157,140,224,0.85) 22%, rgba(23,20,31,0) 60%)", id="flash"))
+        + at(f"inset: 0; background: radial-gradient(circle at 50% 48%, #f7f2ff 0%, rgba({ACCENT_RGB},0.85) 22%, rgba({SKY_RGB},0.35) 40%, rgba(13,17,49,0) 60%)", id="flash"))
     title = "".join(f'<span data-pop="{0.2 + i * 0.09:.2f}" style="display: inline-block">{c}</span>' for i, c in enumerate("Mana"))
     L["name"] = (
         sparkles(2)
@@ -119,19 +124,19 @@ def screens(t_rel):
                          for w, r in [(200, 0), (260, 0), (150, 0), (300, 1), (180, 0)])
     L["screen"] = sparkles(5) + card(
         label("SCREEN · Ctrl+Alt+M")
-        + f'<div style="position: relative; background: #1e1a27; border: 1px solid {BORDER}; border-radius: 10px; padding: 14px 16px; display: flex; flex-direction: column; gap: 9px">{code_lines}'
-        + f'<div data-pop="0.45" style="position: absolute; left: 8px; top: 64px; width: 318px; height: 18px; border: 1.5px dashed {ACCENT}; border-radius: 5px; box-shadow: 0 0 18px rgba(157,140,224,0.4)"></div></div>'
+        + f'<div style="position: relative; background: #121635; border: 1px solid {BORDER}; border-radius: 10px; padding: 14px 16px; display: flex; flex-direction: column; gap: 9px">{code_lines}'
+        + f'<div data-pop="0.45" style="position: absolute; left: 8px; top: 64px; width: 318px; height: 18px; border: 1.5px dashed {ACCENT}; border-radius: 5px; box-shadow: 0 0 18px rgba({SKY_RGB},0.4)"></div></div>'
         + bubble("Line 42 is getting an empty date.", pop=0.8))
     L["code"] = sparkles(6) + card(
         label("PROPOSED FIX")
         + f'<div style="font-size: 15px; font-weight: 600; color: {INK}">Handle a missing date</div>'
         + f'<div style="{MONO}; font-size: 12px; color: {MUTED}; background: rgba(236,232,244,0.05); padding: 6px 8px; border-radius: 6px">−  const due = parse(input.date);</div>'
-        + f'<div data-pop="0.5" style="{MONO}; font-size: 12px; color: {INK}; background: rgba(157,140,224,0.16); padding: 6px 8px; border-radius: 6px">+  const due = input.date ? parse(input.date) : null;</div>'
+        + f'<div data-pop="0.5" style="{MONO}; font-size: 12px; color: {INK}; background: rgba({ACCENT_RGB},0.16); padding: 6px 8px; border-radius: 6px">+  const due = input.date ? parse(input.date) : null;</div>'
         + f'<div style="display: flex; gap: 10px"><div id="approve" style="border-radius: 18px; padding: 8px 20px; background: {ACCENT}; color: {GROUND}; font: 600 13px Geist, system-ui, sans-serif">Approve</div>'
         + f'<div style="border: 1.5px solid {BORDER}; border-radius: 18px; padding: 8px 20px; color: {MUTED}; font: 13px Geist, system-ui, sans-serif">Reject</div></div>')
     game = ('<svg width="100%" height="100" viewBox="0 0 200 100" preserveAspectRatio="xMidYMid slice" aria-hidden="true">'
-            '<rect width="200" height="100" fill="#2a2140"/><circle cx="150" cy="30" r="14" fill="#9d8ce0" opacity="0.5"/>'
-            '<path d="M0 70 L40 40 L70 62 L110 32 L150 64 L200 50 L200 100 L0 100 Z" fill="#4a3a78"/></svg>')
+            '<rect width="200" height="100" fill="#1b2150"/><circle cx="150" cy="30" r="14" fill="#a3d2fa" opacity="0.5"/>'
+            '<path d="M0 70 L40 40 L70 62 L110 32 L150 64 L200 50 L200 100 L0 100 Z" fill="#766dbe"/></svg>')
     L["game"] = sparkles(7) + at(
         f"{CARD}; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px",
         f'<div data-pop="0.12" style="{SHAPE}; border-radius: 16px; overflow: hidden; display: flex; flex-direction: column">{game}'
@@ -175,7 +180,7 @@ def screens(t_rel):
         "left: 300px; right: 30px; top: 50%; transform: translateY(-56%); display: flex; flex-direction: column; gap: 10px",
         f'<div data-pop="0.1" style="display: flex; align-items: center; gap: 12px">{crystal(44)}<div style="{DISPLAY}; font-size: 64px; font-weight: 500; line-height: 1; color: {INK}">Mana</div></div>'
         f'<div data-pop="{t_rel["13-otsumana"]:.2f}" style="{DISPLAY}; font-style: italic; font-size: 30px; color: {ACCENT}">Otsumana~!</div>'
-        f'<div data-pop="{t_rel["13-otsumana"] + 0.9:.2f}" style="align-self: flex-start; {MONO}; font-size: 15px; color: {ACCENT}; padding: 7px 14px; border-radius: 18px; border: 1px solid rgba(157,140,224,0.5); background: rgba(157,140,224,0.10); margin-top: 6px">github.com/Yuuzulight/Mana</div>'
+        f'<div data-pop="{t_rel["13-otsumana"] + 0.9:.2f}" style="align-self: flex-start; {MONO}; font-size: 15px; color: {ACCENT}; padding: 7px 14px; border-radius: 18px; border: 1px solid rgba({ACCENT_RGB},0.5); background: rgba({ACCENT_RGB},0.10); margin-top: 6px">github.com/Yuuzulight/Mana</div>'
         f'<div data-pop="{t_rel["13-otsumana"] + 1.1:.2f}" style="font-size: 13px; color: {MUTED}">#ManaAI · Open source · Apache 2.0</div>')
     return L
 
@@ -232,7 +237,7 @@ html, body {{ margin: 0; background: {GROUND}; overflow: hidden; }}
 [data-pop] {{ transform-box: fill-box; transform-origin: center; }}
 #avatar {{ position: absolute; left: 0; top: 0; width: 1920px; height: 1080px; }}
 #sub {{ position: absolute; left: 50%; bottom: 14px; translate: -50% 0; max-width: 520px; text-align: center; font-size: 17px; font-weight: 500;
-       line-height: 1.35; color: {INK}; background: rgba(23,20,31,0.8); padding: 6px 14px; border-radius: 8px; opacity: 0; white-space: nowrap; }}
+       line-height: 1.35; color: {INK}; background: rgba(13,17,49,0.8); padding: 6px 14px; border-radius: 8px; opacity: 0; white-space: nowrap; }}
 </style>
 </head>
 <body>
