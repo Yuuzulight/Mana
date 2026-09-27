@@ -7,6 +7,7 @@ namespace ManaNativeLauncher.Tests;
 // Mutates DarkTheme's shared static fields -- every test here sets a
 // known preset/accent before asserting, rather than depending on
 // whatever a previous test (in this class or another) last left behind.
+[Collection("DarkTheme palette")] // shared static palette: never run these in parallel
 public class DarkThemeTests
 {
     [Fact]
