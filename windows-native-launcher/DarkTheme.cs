@@ -31,17 +31,28 @@ internal static class DarkTheme
     public static Color UserBubble = ColorTranslator.FromHtml("#3a3560");
     public static Color ManaBubble = ColorTranslator.FromHtml("#2a2725");
 
-    // windows-launcher/renderer/theme-tokens.css's --green/--warn -- not
-    // previously needed here since DoctorPanelForm's pass/warn/fail colors
-    // are dark-tinted row backgrounds, not this bright a status-text/fill
-    // color. Not part of any preset (windows-launcher/renderer/theme.js
-    // doesn't touch these either) -- fixed regardless of the chosen theme.
-    public static readonly Color Green = ColorTranslator.FromHtml("#3fb96a");
-    public static readonly Color Warn = ColorTranslator.FromHtml("#d99a2b");
+    // windows-launcher/renderer/theme-tokens.css's --green/--warn, and a
+    // code-span color picked for the dark presets. Per preset (see
+    // ThemeColors) because these bright versions are unreadable on the
+    // light ones.
+    public static Color Green = ColorTranslator.FromHtml("#3fb96a");
+    public static Color Warn = ColorTranslator.FromHtml("#d99a2b");
+    public static Color CodeText = ColorTranslator.FromHtml("#e0b975");
 
-    // #538's own code-span color (DarkSlateGray) assumed a light background
-    // -- unreadable on this one, so this is a new pick, not a port.
-    public static readonly Color CodeText = ColorTranslator.FromHtml("#e0b975");
+    // Light presets get the light title bar and list styling; text on an
+    // accent fill is whichever of white/near-black reads on that accent.
+    public static bool IsLight => Luminance(Background) > 0.5;
+    public static Color OnAccent
+    {
+        get
+        {
+            var dark = ColorTranslator.FromHtml("#171513");
+            var accent = Luminance(Accent);
+            var onWhite = 1.05 / (accent + 0.05);
+            var onDark = (accent + 0.05) / (Luminance(dark) + 0.05);
+            return onDark >= onWhite ? dark : Color.White;
+        }
+    }
 
     // Cached once and reused across every TabControl this app themes --
     // GDI+ leak discipline this project enforces everywhere else (see
@@ -66,18 +77,26 @@ internal static class DarkTheme
         new ThemePresetInfo("neutral", "Neutral dark"),
         new ThemePresetInfo("light", "Light"),
         new ThemePresetInfo("highContrast", "High contrast"),
+        new ThemePresetInfo("mana", "Mana"),
     };
 
     private static readonly Dictionary<string, ThemeColors> PresetColors = new()
     {
         ["violet"] = new ThemeColors("#1c1a18", "#242220", "#2c2a27", "#3a3733", "#e8e4de", "#948d84", "#9d8ce0", "#3a3560", "#2a2725"),
         ["neutral"] = new ThemeColors("#18191b", "#202225", "#2a2d31", "#383c41", "#e8e9eb", "#9a9ea5", "#4fb3a8", "#283838", "#212427"),
-        ["light"] = new ThemeColors("#f5f5f7", "#ffffff", "#eceef3", "#d9dce3", "#1c1c24", "#6a6e78", "#7a5fe0", "#e4e1fb", "#eef0f5"),
+        ["light"] = new ThemeColors("#f5f5f7", "#ffffff", "#eceef3", "#d9dce3", "#1c1c24", "#6a6e78", "#7a5fe0", "#e4e1fb", "#eef0f5",
+            codeText: "#5b48c2", green: "#23874a", warn: "#a86b0c"),
         // Issue #458 upstream: an accessibility theme, not an aesthetic
         // one -- pure black/white plus the conventional "high contrast
         // mode" yellow accent, so it reads immediately as the
         // accessibility option it is.
         ["highContrast"] = new ThemeColors("#000000", "#000000", "#111111", "#ffffff", "#ffffff", "#dcdcdc", "#ffff00", "#262626", "#000000"),
+        // Mana's own casual reference sheet (marketing/concept/DESIGN_NOTES.md):
+        // its lavender-white page, hoodie lavender panels, headphone-navy text,
+        // periwinkle accent (deepened for contrast), hoodie-lavender user
+        // bubble and sky-blue (her glowing hair ends) Mana bubble.
+        ["mana"] = new ThemeColors("#f5f3fa", "#ffffff", "#eee7f8", "#d9d0ec", "#1b1e3f", "#67628a", "#6a5fb8", "#e7defa", "#e3f1fd",
+            codeText: "#4f4596", green: "#23874a", warn: "#a86b0c"),
     };
 
     // #576: applied once, at startup (Program.cs, before any Form is
@@ -97,6 +116,9 @@ internal static class DarkTheme
         Accent = TryParseHexColor(accentHex) ?? colors.Accent;
         UserBubble = colors.UserBubble;
         ManaBubble = colors.ManaBubble;
+        CodeText = colors.CodeText;
+        Green = colors.Green;
+        Warn = colors.Warn;
 
         TabPanelBrush.Color = Panel;
         TabPanel2Brush.Color = Panel2;
@@ -124,17 +146,17 @@ internal static class DarkTheme
     {
         form.BackColor = Background;
         form.ForeColor = Text;
-        ApplyDarkTitleBar(form);
+        ApplyTitleBarMode(form);
     }
 
     // Best-effort: the DWM immersive-dark-mode attribute only exists on
     // Windows 10 1809+ (and the attribute id changed once, 1903+). A
     // failed call just leaves the native titlebar light -- not worth a
     // version check for a purely cosmetic degrade.
-    private static void ApplyDarkTitleBar(Form form)
+    private static void ApplyTitleBarMode(Form form)
     {
         var handle = form.Handle; // forces creation now, not on first Show
-        int useDark = 1;
+        int useDark = IsLight ? 0 : 1;
         if (DwmSetWindowAttribute(handle, DwmwaUseImmersiveDarkMode, ref useDark, sizeof(int)) != 0)
         {
             DwmSetWindowAttribute(handle, DwmwaUseImmersiveDarkModeLegacy, ref useDark, sizeof(int));
@@ -146,7 +168,7 @@ internal static class DarkTheme
         list.BackColor = Panel;
         list.ForeColor = Text;
         list.BorderStyle = BorderStyle.FixedSingle;
-        void ThemeHeader() { if (list.IsHandleCreated) { SetWindowTheme(list.Handle, "DarkMode_Explorer", null); } }
+        void ThemeHeader() { if (list.IsHandleCreated) { SetWindowTheme(list.Handle, IsLight ? "Explorer" : "DarkMode_Explorer", null); } }
         if (list.IsHandleCreated)
         {
             ThemeHeader();
@@ -177,6 +199,17 @@ internal static class DarkTheme
             e.Graphics.FillRectangle(selected ? TabPanel2Brush : TabPanelBrush, e.Bounds);
             e.Graphics.DrawString(page.Text, tabs.Font, selected ? TabTextBrush : TabMutedBrush, e.Bounds, TabTextFormat);
         };
+    }
+
+    // Relative luminance (WCAG), 0 = black, 1 = white.
+    private static double Luminance(Color c)
+    {
+        static double Channel(int v)
+        {
+            var s = v / 255.0;
+            return s <= 0.03928 ? s / 12.92 : Math.Pow((s + 0.055) / 1.055, 2.4);
+        }
+        return 0.2126 * Channel(c.R) + 0.7152 * Channel(c.G) + 0.0722 * Channel(c.B);
     }
 
     private const int DwmwaUseImmersiveDarkMode = 20;
@@ -218,9 +251,18 @@ internal sealed class ThemeColors
     public Color Accent { get; }
     public Color UserBubble { get; }
     public Color ManaBubble { get; }
+    public Color CodeText { get; }
+    public Color Green { get; }
+    public Color Warn { get; }
 
-    public ThemeColors(string background, string panel, string panel2, string border, string text, string muted, string accent, string userBubble, string manaBubble)
+    // codeText/green/warn default to the dark presets' values; light
+    // presets pass darker ones.
+    public ThemeColors(string background, string panel, string panel2, string border, string text, string muted, string accent, string userBubble, string manaBubble,
+        string codeText = "#e0b975", string green = "#3fb96a", string warn = "#d99a2b")
     {
+        CodeText = ColorTranslator.FromHtml(codeText);
+        Green = ColorTranslator.FromHtml(green);
+        Warn = ColorTranslator.FromHtml(warn);
         Background = ColorTranslator.FromHtml(background);
         Panel = ColorTranslator.FromHtml(panel);
         Panel2 = ColorTranslator.FromHtml(panel2);
