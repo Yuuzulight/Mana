@@ -94,7 +94,7 @@ def screens(t_rel):
              f'<div style="display: flex; align-items: center; gap: 16px"><div data-pop="0.1">{crystal(56)}</div>'
              f'<div style="{DISPLAY}; font-size: 104px; font-weight: 500; line-height: 1; letter-spacing: 0.02em; color: {INK}">{title}</div></div>'
              f'<div data-pop="0.75" style="font-family: \'Noto Sans JP\', sans-serif; font-size: 30px; color: {ACCENT}; margin-left: 4px">マナ</div>'
-             f'<div data-pop="1.0" style="font-size: 17px; color: {MUTED}; margin-top: 10px; margin-left: 4px">your desktop AI companion</div>'))
+             f'<div data-pop="1.0" style="font-size: 17px; color: {MUTED}; margin-top: 10px; margin-left: 4px">your desktop companion</div>'))
     L["nice"] = sparkles(3, 18)
     L["talk"] = sparkles(4) + card(label("VOICE CHAT") + bubble("“Hey Mana!”", user=True, pop=0.35)
                                    + bubble("Hi hi! What are we doing today?", pop=0.95))

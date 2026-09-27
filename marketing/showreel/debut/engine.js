@@ -89,7 +89,7 @@
   });
   app.ticker.stop();
   const model = await PIXI.live2d.Live2DModel.from(
-    "/windows-launcher/avatar/model/hiyori_free/runtime/hiyori_free_t08.model3.json",
+    "/windows-launcher/avatar/model/hiyori_pro/runtime/hiyori_pro_t11.model3.json",
     { autoInteract: false, autoUpdate: false });
   app.stage.addChild(model);
   const im = model.internalModel;
