@@ -888,6 +888,7 @@ internal sealed class VoiceLoop : IDisposable
 
         if (!changed)
         {
+            chatLog?.ReplyFinished();
             // Every streamed sentence finished playing naturally -- resume
             // listening immediately.
             ReturnToIdle();
@@ -910,6 +911,7 @@ internal sealed class VoiceLoop : IDisposable
         // text -- a real but narrow edge case not worth the complexity of
         // retracting already-appended chat lines to fix.
         chatLog?.AppendReplySentence(reply ?? string.Empty);
+        chatLog?.ReplyFinished();
 
         byte[] replyWav;
         try

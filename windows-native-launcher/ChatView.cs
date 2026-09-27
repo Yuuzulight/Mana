@@ -4,6 +4,7 @@ using System.Drawing;
 using System.Linq;
 using System.Text;
 using System.Text.RegularExpressions;
+using System.Threading.Tasks;
 using System.Windows.Forms;
 
 namespace Mana.NativeLauncher;
@@ -29,6 +30,7 @@ internal sealed class ChatView : Control, IChatLog
     private const int LabelGap = 3;
     private const int MessageGap = 14;
     private const int BlockGap = 5;
+    private const int ActionHeight = 28;
     private const TextFormatFlags TextFlags = TextFormatFlags.NoPadding | TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine;
     private static readonly Regex WordPattern = new(@"\S+\s*|\s+", RegexOptions.Compiled);
 
@@ -77,8 +79,13 @@ internal sealed class ChatView : Control, IChatLog
 
     // ---- IChatLog -------------------------------------------------------
 
+    // When the latest user message was logged (UTC) -- the start of the
+    // current turn, for telling which edits it produced.
+    public DateTime? LastUserMessageAt { get; private set; }
+
     public void AppendUserMessage(string text) => RunOnUiThread(() =>
     {
+        LastUserMessageAt = DateTime.UtcNow;
         var message = new Message(fromUser: true);
         message.Blocks.Add(new MarkdownBlock(MarkdownBlockType.Paragraph, new[] { new MarkdownRun(text, false, false, false) }));
         Add(message, forceScroll: true);
@@ -103,6 +110,27 @@ internal sealed class ChatView : Control, IChatLog
         message.Blocks.AddRange(blocks);
         Add(message, forceScroll: false);
     });
+
+    // #652 part 6: raised when Mana's reply is complete; SessionListForm
+    // checks then for edits to approve and attaches buttons for them.
+    public event Action? ReplyEnded;
+
+    public void ReplyFinished() => RunOnUiThread(() => ReplyEnded?.Invoke());
+
+    // Puts buttons under Mana's latest message (replacing any it had).
+    public void AttachActions(IReadOnlyList<ChatAction> actions)
+    {
+        var message = messages.LastOrDefault(m => !m.FromUser);
+        if (message is null)
+        {
+            return;
+        }
+        message.Actions.Clear();
+        message.Actions.AddRange(actions);
+        message.Note = null;
+        message.Invalidate();
+        Relayout(forceScroll: false);
+    }
 
     // A plain sentence continues the bubble's last paragraph (space-joined);
     // anything structural (list item, code block, heading) starts its own block.
@@ -327,6 +355,31 @@ internal sealed class ChatView : Control, IChatLog
                 EndLine();
             }
         }
+        message.ActionBounds.Clear();
+        message.NoteBounds = Rectangle.Empty;
+        if (message.Actions.Count > 0 || message.Note is not null)
+        {
+            y += 8;
+            var x = 0;
+            foreach (var action in message.Actions)
+            {
+                var w = Measure(action.Label, bodyFont) + 28;
+                message.ActionBounds.Add(new Rectangle(x, y, w, ActionHeight));
+                x += w + 8;
+            }
+            if (message.Actions.Count > 0)
+            {
+                widest = Math.Max(widest, x - 8);
+                y += ActionHeight + 2;
+            }
+            if (message.Note is not null)
+            {
+                var w = Math.Min(maxWidth, Measure(message.Note, bodyFont));
+                message.NoteBounds = new Rectangle(0, y, w, bodyFont.Height);
+                widest = Math.Max(widest, w);
+                y += bodyFont.Height + 2;
+            }
+        }
         message.Lines = lines;
         message.Text = flat.ToString();
         message.ContentWidth = Math.Min(maxWidth, Math.Max(widest, 1));
@@ -438,6 +491,8 @@ internal sealed class ChatView : Control, IChatLog
                 }
             }
 
+            PaintActions(g, message, origin);
+
             if (i == selected)
             {
                 using var ring = new Pen(DarkTheme.Accent, 2);
@@ -452,6 +507,11 @@ internal sealed class ChatView : Control, IChatLog
     {
         base.OnMouseDown(e);
         Focus();
+        if (e.Button == MouseButtons.Left && ActionAt(e.Location) is var (actionMsg, actionIndex))
+        {
+            _ = RunActionAsync(actionMsg, actionIndex);
+            return;
+        }
         if (e.Button == MouseButtons.Left)
         {
             pressPoint = e.Location;
@@ -473,7 +533,7 @@ internal sealed class ChatView : Control, IChatLog
     protected override void OnMouseMove(MouseEventArgs e)
     {
         base.OnMouseMove(e);
-        Cursor = HitTest(e.Location) >= 0 ? Cursors.IBeam : Cursors.Default;
+        Cursor = ActionAt(e.Location) is not null ? Cursors.Hand : HitTest(e.Location) >= 0 ? Cursors.IBeam : Cursors.Default;
         if (!pressed || (e.Button & MouseButtons.Left) == 0 || messages.Count == 0)
         {
             return;
@@ -627,6 +687,93 @@ internal sealed class ChatView : Control, IChatLog
         return fragment.Text.Length;
     }
 
+    private void PaintActions(Graphics g, Message message, Point origin)
+    {
+        for (var a = 0; a < message.Actions.Count; a++)
+        {
+            var action = message.Actions[a];
+            var rect = message.ActionBounds[a];
+            rect.Offset(origin);
+            var faded = message.ActionRunning;
+            if (action.Primary)
+            {
+                using var fill = new SolidBrush(faded ? Color.FromArgb(140, DarkTheme.Accent) : DarkTheme.Accent);
+                g.FillRectangle(fill, rect);
+                TextRenderer.DrawText(g, action.Label, bodyFont, rect, DarkTheme.OnAccent,
+                    TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
+            }
+            else
+            {
+                using var fill = new SolidBrush(DarkTheme.IsGlass ? Color.FromArgb(190, 255, 255, 255) : DarkTheme.Panel2);
+                g.FillRectangle(fill, rect);
+                using var border = new Pen(DarkTheme.Border);
+                g.DrawRectangle(border, rect.X, rect.Y, rect.Width - 1, rect.Height - 1);
+                TextRenderer.DrawText(g, action.Label, bodyFont, rect, faded ? DarkTheme.Muted : DarkTheme.Text,
+                    TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
+            }
+        }
+        if (message.Note is not null)
+        {
+            var rect = message.NoteBounds;
+            rect.Offset(origin);
+            TextRenderer.DrawText(g, message.Note, bodyFont, rect, DarkTheme.Muted, TextFlags | TextFormatFlags.EndEllipsis);
+        }
+    }
+
+    // The action button under `point`, as (message, button index), or null.
+    private (int Msg, int Action)? ActionAt(Point point)
+    {
+        var scroll = scrollBar.Visible ? scrollBar.Value : 0;
+        for (var i = 0; i < messages.Count; i++)
+        {
+            var m = messages[i];
+            for (var a = 0; a < m.ActionBounds.Count; a++)
+            {
+                var rect = m.ActionBounds[a];
+                rect.Offset(m.Bounds.X + PadX, m.Bounds.Y + PadY - scroll);
+                if (rect.Contains(point))
+                {
+                    return (i, a);
+                }
+            }
+        }
+        return null;
+    }
+
+    // Runs a button's action; a returned note replaces the buttons (e.g. "Approved").
+    internal async Task RunActionAsync(int index, int actionIndex)
+    {
+        var message = messages[index];
+        if (message.ActionRunning || actionIndex >= message.Actions.Count)
+        {
+            return;
+        }
+        message.ActionRunning = true;
+        Invalidate();
+        string? note;
+        try
+        {
+            note = await message.Actions[actionIndex].Run();
+        }
+        catch (Exception ex)
+        {
+            note = $"Couldn't do that: {ex.Message}";
+        }
+        if (IsDisposed)
+        {
+            return;
+        }
+        message.ActionRunning = false;
+        if (note is not null)
+        {
+            message.Actions.Clear();
+            message.Note = note;
+            message.Invalidate();
+            Relayout(forceScroll: false);
+        }
+        Invalidate();
+    }
+
     private void PaintSelection(Graphics g, int index, Fragment fragment, int originX, int lineTop, int lineHeight)
     {
         if (SelectionIn(index) is not var (from, to))
@@ -687,7 +834,7 @@ internal sealed class ChatView : Control, IChatLog
     }
 
     protected override bool IsInputKey(Keys keyData) =>
-        keyData is Keys.Up or Keys.Down or Keys.Home or Keys.End or Keys.Escape || base.IsInputKey(keyData);
+        keyData is Keys.Up or Keys.Down or Keys.Home or Keys.End or Keys.Escape or Keys.Enter || base.IsInputKey(keyData);
 
     protected override void OnKeyDown(KeyEventArgs e)
     {
@@ -708,6 +855,10 @@ internal sealed class ChatView : Control, IChatLog
                 break;
             case Keys.Escape:
                 ClearTextSelection();
+                e.Handled = true;
+                break;
+            case Keys.Enter when selected >= 0 && messages[selected].Actions.Count > 0:
+                _ = RunActionAsync(selected, 0);
                 e.Handled = true;
                 break;
             case Keys.Up:
@@ -791,6 +942,31 @@ internal sealed class ChatView : Control, IChatLog
         }
         public override void Select(AccessibleSelection flags) => view.Select(index);
         public override void DoDefaultAction() => view.Select(index);
+        public override int GetChildCount() => view.messages[index].Actions.Count;
+        public override AccessibleObject? GetChild(int child) =>
+            child >= 0 && child < view.messages[index].Actions.Count ? new ActionAccessibleObject(view, this, index, child) : null;
+    }
+
+    private sealed class ActionAccessibleObject : AccessibleObject
+    {
+        private readonly ChatView view;
+        private readonly AccessibleObject parent;
+        private readonly int index;
+        private readonly int action;
+
+        public ActionAccessibleObject(ChatView view, AccessibleObject parent, int index, int action)
+        {
+            this.view = view;
+            this.parent = parent;
+            this.index = index;
+            this.action = action;
+        }
+
+        public override string Name => view.messages[index].Actions[action].Label;
+        public override AccessibleRole Role => AccessibleRole.PushButton;
+        public override AccessibleObject Parent => parent;
+        public override string DefaultAction => "Press";
+        public override void DoDefaultAction() => _ = view.RunActionAsync(index, action);
     }
 
     protected override void Dispose(bool disposing)
@@ -826,6 +1002,11 @@ internal sealed class ChatView : Control, IChatLog
         public int ContentHeight { get; set; }
         public Rectangle Bounds { get; set; }
         public Rectangle LabelBounds { get; set; }
+        public List<ChatAction> Actions { get; } = new();
+        public List<Rectangle> ActionBounds { get; } = new();
+        public string? Note { get; set; }
+        public Rectangle NoteBounds { get; set; }
+        public bool ActionRunning { get; set; }
 
         public void Invalidate() => LaidOutWidth = -1;
 
@@ -855,6 +1036,10 @@ internal sealed class ChatView : Control, IChatLog
     }
 
     internal sealed record Line(int Y, int Height, bool Code, List<Fragment> Fragments);
+
+    // A button under one of Mana's messages. Run returns a note to show in
+    // place of the buttons once it's done, or null to keep them.
+    internal sealed record ChatAction(string Label, bool Primary, Func<Task<string?>> Run);
 
     // Start: offset of Text within the message's Text.
     internal sealed record Fragment(string Text, Font Font, int X, int Width, bool IsCode, int Start);
