@@ -6,6 +6,7 @@ using Xunit;
 namespace ManaNativeLauncher.Tests;
 
 // Mutates DarkTheme's shared static palette, like DarkThemeTests.
+[Collection("DarkTheme palette")] // shared static palette: never run these in parallel
 public class GlassSurfaceTests
 {
     [Fact]
