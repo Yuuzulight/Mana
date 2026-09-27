@@ -8,7 +8,6 @@ This roadmap reflects the current GitHub Project board, merged PRs, open issues,
 
 | Issue | Area | Status | Notes |
 | --- | --- | --- | --- |
-| [#137](https://github.com/Yuuzulight/Mana/issues/137) | Docs / media | Open | Demo reel and real screenshots to replace the generic fallback-avatar SVGs in the root README's Preview section. |
 | [#331](https://github.com/Yuuzulight/Mana/issues/331) | Streaming voice pipeline | Open | Stream text and voice together instead of waiting for the full reply. `tools/fish-speech`'s server already supports real chunked streaming (`ServeTTSRequest.streaming: true`) and the sentence-chunking half of the pipeline is merged (#410, #411) -- what's left is wiring the client (`node-bot/tts-runtime.js`) to consume it. |
 | [#470](https://github.com/Yuuzulight/Mana/issues/470) | Cloudflare Access lockdown | Open | When the Cloudflare Tunnel remote-access setup (`docs/mobile_pwa_cloudflare.md`) actually gets configured, restrict the Access policy to the owner's identity only, not open signup. Not urgent -- the tunnel itself isn't configured yet (no `CLOUDFLARE_*` env vars set), so this is a checklist item for whenever that happens, not a current gap. |
 | [#424](https://github.com/Yuuzulight/Mana/issues/424) | Plugins | Open | Sandboxed plugin widget UI, manifest-declared. See [issue-424-plugin-widget-ui.md](issue-424-plugin-widget-ui.md). |
@@ -34,6 +33,7 @@ This roadmap reflects the current GitHub Project board, merged PRs, open issues,
 
 Non-exhaustive highlights — see individual issue/PR history for full detail:
 
+- Demo reel for the README (issue #137): real screenshots of both launchers (#300, #301), then Mana's 48-second debut video -- a self-introduction in her own voice, rendered with the launchers' Live2D runtime -- at the top of the Preview section (#651). Source and build pipeline: `marketing/showreel/` on the `marketing-showreel` branch.
 - Extracted FFXIV market/crafting and real-world stock market data into standalone, self-contained plugins under `plugins/` (issues #106, #109), plus a generic `contributePromptContext` hook (issue #108) so plugins inject chat-reply context without `server-routes.js` hardcoding each one by name. See [plugins/README.md](../../plugins/README.md).
 - OpenAI-compatible API (`/v1/chat/completions`, `/v1/embeddings`, `/v1/models`) so external tools like Obsidian Copilot can talk to Mana directly (issue #95).
 - Obsidian plugin (Mana Memory Sync) that pulls Mana's memory into a vault as linked notes (issue #89), plus setup-time Obsidian detection.
