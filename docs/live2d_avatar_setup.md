@@ -35,6 +35,12 @@ scripts and `avatar\model\` folder work the same way there. Everything below
      npm run fetch-sample-avatar
      ```
 
+     Live2D's download contains two rigs of Hiyori. The script keeps
+     **Hiyori Pro** (the full rig: 70 parameters, more physics and motions,
+     arm poses) in `avatar\model\`, and moves the simplified **Hiyori Free**
+     to `avatar\test-models\`, where no launcher looks. The native launcher's
+     tests use it as a fixture.
+
    - **Have your own model?** Copy the whole model folder (the one
      containing `*.model3.json`, `*.moc3`, textures, and motions) into:
 

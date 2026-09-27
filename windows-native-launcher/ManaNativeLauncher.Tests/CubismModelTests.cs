@@ -19,7 +19,7 @@ public class CubismModelTests
 
     private static readonly string Model3JsonPath = Path.Combine(
         AppContext.BaseDirectory, "..", "..", "..", "..", "..",
-        "windows-launcher", "avatar", "model", "hiyori_free", "runtime", "hiyori_free_t08.model3.json");
+        "windows-launcher", "avatar", "test-models", "hiyori_free", "runtime", "hiyori_free_t08.model3.json");
 
     internal static bool CubismCoreAvailable => File.Exists(DllPath) && File.Exists(Model3JsonPath);
 

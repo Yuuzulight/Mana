@@ -180,6 +180,21 @@ internal sealed class AvatarOverlayForm : Form
                 return NotAvailable(model3JsonPath, missingFiles);
             }
             model = CubismModel.Load(settings);
+            if (settings.PosePath is not null)
+            {
+                // Part opacities persist in the model like parameter values,
+                // so the initial pose is set once here, not every frame.
+                try
+                {
+                    CubismPoseFile.Load(settings.PosePath).ApplyInitialPose(model);
+                }
+                catch (Exception ex) when (ex is not (OutOfMemoryException or StackOverflowException))
+                {
+                    Console.WriteLine($"AvatarOverlayForm: failed to load pose ({settings.PosePath}), skipping it. {ex.Message}");
+                    warnings.Add(CubismModelDiagnostics.SkippedPart("pose", Path.GetFileName(settings.PosePath), ex) +
+                                 " (alternative parts like extra arm sets may all show at once)");
+                }
+            }
             var renderer = new CubismRenderer(settings.TexturePaths);
 
             var expressions = new Dictionary<string, CubismExpressionFile>();

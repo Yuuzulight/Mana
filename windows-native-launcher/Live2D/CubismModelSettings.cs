@@ -28,6 +28,11 @@ internal sealed class CubismModelSettings
     // the issue's own scope, not a full motion-selection system.
     public required string? IdleMotionPath { get; init; }
 
+    // FileReferences.Pose (.pose3.json), or null. A pose file says which
+    // parts are mutually exclusive alternatives (e.g. hiyori_pro's two arm
+    // sets) -- without applying it, every alternative renders at once.
+    public string? PosePath { get; init; }
+
     public static CubismModelSettings Load(string model3JsonPath)
     {
         var baseDir = Path.GetDirectoryName(model3JsonPath) ?? "";
@@ -81,12 +86,15 @@ internal sealed class CubismModelSettings
             }
         }
 
+        var pose = fileReferences.TryGetProperty("Pose", out var poseElement) ? poseElement.GetString() : null;
+
         return new CubismModelSettings
         {
             MocPath = Path.Combine(baseDir, moc),
             TexturePaths = textures,
             ExpressionPaths = expressionPaths,
             IdleMotionPath = idleMotionPath,
+            PosePath = pose is null ? null : Path.Combine(baseDir, pose),
         };
     }
 }

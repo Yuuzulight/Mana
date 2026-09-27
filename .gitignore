@@ -63,8 +63,10 @@ tools/whisper/models/*.bin
 windows-launcher/assets/live2d/
 windows-launcher/avatar/model/
 windows-launcher/avatar/model-disabled/
+windows-launcher/avatar/test-models/
 desktop-client/assets/live2d/
 desktop-client/avatar/model/
+desktop-client/avatar/test-models/
 
 # Live2D Cubism Core native SDK (#479 sub-project 4) -- same "proprietary,
 # must not be committed" reasoning as the web runtime above, but the native
