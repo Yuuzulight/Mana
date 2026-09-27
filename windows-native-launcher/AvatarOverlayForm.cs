@@ -1,8 +1,8 @@
 using System;
 using System.Diagnostics;
 using System.Drawing;
-using System.Drawing.Imaging;
 using System.IO;
+using System.Runtime.InteropServices;
 using System.Windows.Forms;
 using Mana.NativeLauncher.Live2D;
 using SkiaSharp;
@@ -27,9 +27,14 @@ internal enum AvatarState
 // unchanged when either isn't available, exactly matching this class's
 // pre-sub-project-4 behavior -- this is a real fallback path, not just a
 // stub, since the SDK is intentionally not something every checkout has.
+//
+// The window is a per-pixel-alpha layered window: every frame (Live2D or
+// PNG) is pushed as premultiplied BGRA through UpdateLayeredWindow, so her
+// anti-aliased edges blend with whatever is behind her. (A TransparencyKey
+// color can only make pixels fully clear or fully opaque, which left a
+// magenta fringe wherever an edge was half-transparent.)
 internal sealed class AvatarOverlayForm : Form
 {
-    private readonly PictureBox avatarImage = new();
     private readonly string idlePath;
     private readonly string talkingPath;
 
@@ -96,14 +101,7 @@ internal sealed class AvatarOverlayForm : Form
         TopMost = true;
         Width = ReadIntEnv("MANA_AVATAR_WIDTH", 234);
         Height = ReadIntEnv("MANA_AVATAR_HEIGHT", 288);
-        BackColor = Color.Magenta;
-        TransparencyKey = Color.Magenta;
         StartPosition = FormStartPosition.Manual;
-
-        avatarImage.Dock = DockStyle.Fill;
-        avatarImage.SizeMode = PictureBoxSizeMode.Zoom;
-        avatarImage.BackColor = Color.Transparent;
-        Controls.Add(avatarImage);
 
         var loaded = TryLoadCubismModel(rootDirectory);
         cubismModel = loaded.Model;
@@ -325,33 +323,8 @@ internal sealed class AvatarOverlayForm : Form
 
         model.Update();
 
-        var width = Math.Max(1, avatarImage.Width);
-        var height = Math.Max(1, avatarImage.Height);
-        using var skBitmap = renderer.Render(model, width, height, new SKColor(255, 0, 255));
-        var bitmap = ToGdiBitmap(skBitmap);
-
-        avatarImage.Image?.Dispose();
-        avatarImage.Image = bitmap;
-    }
-
-    // SkiaSharp and WinForms don't share a bitmap type -- copies the pixels
-    // straight into a GDI+ bitmap's locked buffer, converting to its BGRA
-    // premultiplied layout on the way (PArgb is also GDI+'s fastest format
-    // to draw).
-    private static Bitmap ToGdiBitmap(SKBitmap skBitmap)
-    {
-        var bitmap = new Bitmap(skBitmap.Width, skBitmap.Height, PixelFormat.Format32bppPArgb);
-        var data = bitmap.LockBits(new Rectangle(0, 0, bitmap.Width, bitmap.Height), ImageLockMode.WriteOnly, PixelFormat.Format32bppPArgb);
-        try
-        {
-            using var pixmap = skBitmap.PeekPixels();
-            pixmap.ReadPixels(new SKImageInfo(bitmap.Width, bitmap.Height, SKColorType.Bgra8888, SKAlphaType.Premul), data.Scan0, data.Stride);
-        }
-        finally
-        {
-            bitmap.UnlockBits(data);
-        }
-        return bitmap;
+        using var frame = renderer.Render(model, Math.Max(1, ClientSize.Width), Math.Max(1, ClientSize.Height), SKColors.Transparent);
+        Present(frame);
     }
 
     public void SetState(AvatarState state)
@@ -408,9 +381,135 @@ internal sealed class AvatarOverlayForm : Form
             return;
         }
 
-        avatarImage.Image?.Dispose();
-        avatarImage.Image = Image.FromFile(nextPath);
+        using var image = SKImage.FromEncodedData(nextPath);
+        if (image is null)
+        {
+            return;
+        }
+        // Fit (like the old PictureBox's Zoom), centered.
+        var width = Math.Max(1, ClientSize.Width);
+        var height = Math.Max(1, ClientSize.Height);
+        var scale = Math.Min((float)width / image.Width, (float)height / image.Height);
+        var drawWidth = image.Width * scale;
+        var drawHeight = image.Height * scale;
+        using var frame = new SKBitmap(new SKImageInfo(width, height, SKColorType.Bgra8888, SKAlphaType.Premul));
+        using (var canvas = new SKCanvas(frame))
+        {
+            canvas.Clear(SKColors.Transparent);
+            canvas.DrawImage(image, SKRect.Create((width - drawWidth) / 2, (height - drawHeight) / 2, drawWidth, drawHeight),
+                new SKSamplingOptions(SKFilterMode.Linear, SKMipmapMode.Linear));
+        }
+        Present(frame);
     }
+
+    // The layered window's backing store: a top-down 32bpp DIB selected into
+    // a memory DC, reused across frames and rebuilt only when the size
+    // changes.
+    private nint memoryDc;
+    private nint dibBitmap;
+    private nint previousBitmap;
+    private nint dibBits;
+    private Size dibSize;
+
+    private void Present(SKBitmap frame)
+    {
+        var size = new Size(frame.Width, frame.Height);
+        if (size != dibSize)
+        {
+            ReleaseDib();
+            var header = new BitmapInfoHeader
+            {
+                Size = Marshal.SizeOf<BitmapInfoHeader>(),
+                Width = size.Width,
+                Height = -size.Height, // negative = top-down rows, matching Skia's
+                Planes = 1,
+                BitCount = 32,
+            };
+            memoryDc = CreateCompatibleDC(0);
+            dibBitmap = CreateDIBSection(memoryDc, ref header, 0, out dibBits, 0, 0);
+            if (dibBitmap == 0)
+            {
+                ReleaseDib();
+                return;
+            }
+            previousBitmap = SelectObject(memoryDc, dibBitmap);
+            dibSize = size;
+        }
+
+        using (var pixmap = frame.PeekPixels())
+        {
+            pixmap.ReadPixels(new SKImageInfo(size.Width, size.Height, SKColorType.Bgra8888, SKAlphaType.Premul), dibBits, size.Width * 4);
+        }
+
+        const byte acSrcOver = 0;
+        const byte acSrcAlpha = 1;
+        const int ulwAlpha = 2;
+        var source = Point.Empty;
+        var blend = new BlendFunction { BlendOp = acSrcOver, SourceConstantAlpha = 255, AlphaFormat = acSrcAlpha };
+        // Null destination point: keep the window where PositionOverlay put it.
+        UpdateLayeredWindow(Handle, 0, 0, ref size, memoryDc, ref source, 0, ref blend, ulwAlpha);
+    }
+
+    private void ReleaseDib()
+    {
+        if (memoryDc != 0)
+        {
+            if (previousBitmap != 0)
+            {
+                SelectObject(memoryDc, previousBitmap);
+            }
+            DeleteDC(memoryDc);
+        }
+        if (dibBitmap != 0)
+        {
+            DeleteObject(dibBitmap);
+        }
+        memoryDc = dibBitmap = previousBitmap = dibBits = 0;
+        dibSize = Size.Empty;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct BitmapInfoHeader
+    {
+        public int Size;
+        public int Width;
+        public int Height;
+        public short Planes;
+        public short BitCount;
+        public int Compression;
+        public int SizeImage;
+        public int XPelsPerMeter;
+        public int YPelsPerMeter;
+        public int ClrUsed;
+        public int ClrImportant;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct BlendFunction
+    {
+        public byte BlendOp;
+        public byte BlendFlags;
+        public byte SourceConstantAlpha;
+        public byte AlphaFormat;
+    }
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool UpdateLayeredWindow(nint hwnd, nint hdcDst, nint pptDst, ref Size psize, nint hdcSrc, ref Point pptSrc, int crKey, ref BlendFunction pblend, int dwFlags);
+
+    [DllImport("gdi32.dll")]
+    private static extern nint CreateCompatibleDC(nint hdc);
+
+    [DllImport("gdi32.dll")]
+    private static extern nint CreateDIBSection(nint hdc, ref BitmapInfoHeader pbmi, uint usage, out nint ppvBits, nint hSection, uint offset);
+
+    [DllImport("gdi32.dll")]
+    private static extern nint SelectObject(nint hdc, nint h);
+
+    [DllImport("gdi32.dll")]
+    private static extern bool DeleteObject(nint ho);
+
+    [DllImport("gdi32.dll")]
+    private static extern bool DeleteDC(nint hdc);
 
     protected override CreateParams CreateParams
     {
@@ -418,9 +517,10 @@ internal sealed class AvatarOverlayForm : Form
         {
             const int wsExTransparent = 0x20;
             const int wsExToolWindow = 0x80;
+            const int wsExLayered = 0x80000;
             const int wsExNoActivate = 0x08000000;
             var cp = base.CreateParams;
-            cp.ExStyle |= wsExTransparent | wsExToolWindow | wsExNoActivate;
+            cp.ExStyle |= wsExTransparent | wsExToolWindow | wsExLayered | wsExNoActivate;
             return cp;
         }
     }
@@ -433,6 +533,7 @@ internal sealed class AvatarOverlayForm : Form
         renderTimer?.Dispose();
         cubismRenderer?.Dispose();
         cubismModel?.Dispose();
+        ReleaseDib();
         base.OnFormClosed(e);
     }
 
