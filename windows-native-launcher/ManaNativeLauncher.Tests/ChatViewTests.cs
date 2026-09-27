@@ -68,4 +68,39 @@ public class ChatViewTests
         var inside = new Point(mana.Bounds.X + 5, mana.Bounds.Y + 5);
         Assert.Equal(0, view.HitTest(inside));
     }
+
+    [Fact]
+    public void SelectedText_WithinOneBubble()
+    {
+        using var view = NewView();
+        view.AppendReplySentence("Looks like a build log.");
+
+        view.SelectText((0, 6), (0, 10));
+
+        Assert.True(view.HasTextSelection);
+        Assert.Equal("like", view.SelectedText());
+    }
+
+    [Fact]
+    public void SelectedText_AcrossBubblesJoinsWithABlankLine_AndWorksBackwards()
+    {
+        using var view = NewView();
+        view.AppendUserMessage("fix it");
+        view.AppendReplySentence("Done.");
+
+        view.SelectText((1, 4), (0, 4)); // dragged upwards
+
+        Assert.Equal("it\n\nDone", view.SelectedText().Replace("\r", ""));
+    }
+
+    [Fact]
+    public void TextPositionAt_MapsBubbleEdgesToTheStartAndEndOfItsText()
+    {
+        using var view = NewView();
+        view.AppendReplySentence("Looks like a build log.");
+        var bubble = view.Messages[0].Bounds;
+
+        Assert.Equal((0, 0), view.TextPositionAt(new Point(bubble.X + 2, bubble.Y + bubble.Height / 2)));
+        Assert.Equal((0, view.Messages[0].Text.Length), view.TextPositionAt(new Point(bubble.Right - 2, bubble.Y + bubble.Height / 2)));
+    }
 }
