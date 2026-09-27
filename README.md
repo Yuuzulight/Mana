@@ -53,6 +53,10 @@ Mana isn't the only project chasing a local, always-on AI companion. [Project AI
 
 ## Preview
 
+https://github.com/user-attachments/assets/639fd9b4-3f1e-4a58-aa02-79b56572306c
+
+<p align="center"><sub>Mana's debut: a 48-second self-introduction in her own voice (Fish Speech), rendered with the same Live2D runtime the launchers use. The avatar is Live2D's Hiyori sample model, standing in until Mana's own model is finished.</sub></p>
+
 <p align="center">
   <img src="docs/images/windows-launcher-main.png" alt="Mana windows-launcher main screen" width="490">
   <img src="docs/images/desktop-client-main.png" alt="Mana desktop-client main screen" width="490">
