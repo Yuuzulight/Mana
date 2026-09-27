@@ -98,7 +98,7 @@ internal sealed class SessionListForm : Form
         // helper, which stays as-is for Settings' own buttons.
         newChatButton.FlatStyle = FlatStyle.Flat;
         newChatButton.BackColor = DarkTheme.Accent;
-        newChatButton.ForeColor = ColorTranslator.FromHtml("#171513");
+        newChatButton.ForeColor = DarkTheme.OnAccent;
         newChatButton.FlatAppearance.BorderSize = 0;
 
         list.Dock = DockStyle.Fill;
@@ -185,18 +185,20 @@ internal sealed class SessionListForm : Form
         avatarStatusLabel.Font = avatarStatusFont;
         avatarStatusLabel.Paint += OnPaintAvatarStatusDot;
 
-        var avatarCard = new Panel { Dock = DockStyle.Bottom, Height = 150, BackColor = DarkTheme.Panel, Padding = new Padding(10) };
+        // Width matches the sidebar's starting width so avatarZoomButton's
+        // right-edge anchor is measured against the width it's placed for
+        // (a Panel starts 200 wide, which anchored the button off the card).
+        var avatarCard = new Panel { Dock = DockStyle.Bottom, Width = 240, Height = 150, BackColor = DarkTheme.Panel, Padding = new Padding(10) };
         avatarCard.Paint += OnPaintAvatarCardBorder;
-        // Dock order within avatarCard: the FIRST Top-docked child added
-        // ends up at the very top (each subsequent one claims the
-        // topmost strip of whatever's left, per this file's other
-        // dock-order comments) -- so visual is added first to land on
-        // top, then name, then status last so it lands at the bottom,
-        // matching the reference's own visual/name/status markup order.
-        avatarCard.Controls.Add(avatarVisual);
-        avatarCard.Controls.Add(avatarNameLabel);
-        avatarCard.Controls.Add(avatarStatusLabel);
+        // WinForms docks the LAST-added child first (see the main
+        // Controls.Add block below), so visual/name/status -- top to
+        // bottom, the reference's own markup order -- go in reversed. The
+        // zoom button isn't docked; it goes in first so it's frontmost in
+        // z-order, over the visual it sits on.
         avatarCard.Controls.Add(avatarZoomButton);
+        avatarCard.Controls.Add(avatarStatusLabel);
+        avatarCard.Controls.Add(avatarNameLabel);
+        avatarCard.Controls.Add(avatarVisual);
         RefreshAvatarCard(avatarOverlay.CurrentState);
         // Unsubscribed in Dispose -- avatarOverlay outlives this form
         // (owned separately by ManaApplicationContext), so a live
@@ -205,14 +207,12 @@ internal sealed class SessionListForm : Form
         avatarOverlay.StateChanged += OnAvatarStateChanged;
 
         var sidebar = new Panel { Dock = DockStyle.Left, Width = 240, BackColor = DarkTheme.Background };
-        // Dock order matters here too (see MainForm's own comment on this
-        // in #538): controls are added bottom-strip, top-strip, then the
-        // list last so it gets whatever's left, rather than the list
-        // (Dock.Fill) claiming all the space before the others get a
-        // chance to stake theirs.
-        sidebar.Controls.Add(avatarCard);
-        sidebar.Controls.Add(newChatButton);
+        // Reverse dock order again (last added docks first): the avatar
+        // card (bottom) and new-chat button (top) stake their strips before
+        // the list fills what's left.
         sidebar.Controls.Add(list);
+        sidebar.Controls.Add(newChatButton);
+        sidebar.Controls.Add(avatarCard);
 
         // Drag-resizable. MinSize (200) is the floor: below that the
         // avatar card's circle + name + status row start feeling
@@ -253,13 +253,11 @@ internal sealed class SessionListForm : Form
         railToolTip.SetToolTip(toolPinButton, "Pin panel open");
         railToolTip.SetToolTip(toolCloseButton, "Close");
         var toolPanelHeader = new Panel { Dock = DockStyle.Top, Height = 28, BackColor = DarkTheme.Panel };
-        // Same right-to-left add order as toolRail below: whichever's
-        // added first claims the outermost-right strip, so close ends up
-        // at the far edge with pin just inside it, and the title label
-        // (Fill, added last) takes whatever's left.
-        toolPanelHeader.Controls.Add(toolCloseButton);
-        toolPanelHeader.Controls.Add(toolPinButton);
+        // Last added docks first: close claims the outermost-right strip,
+        // pin sits just inside it, and the title label fills what's left.
         toolPanelHeader.Controls.Add(toolPanelTitleLabel);
+        toolPanelHeader.Controls.Add(toolPinButton);
+        toolPanelHeader.Controls.Add(toolCloseButton);
 
         var toolPanel = new Panel
         {
@@ -268,12 +266,9 @@ internal sealed class SessionListForm : Form
             Visible = false,
             BackColor = DarkTheme.Panel2,
         };
-        // Header (Top) before label (Fill) -- same rule as this file's
-        // outer Controls.Add order below: Fill only gets what's left
-        // after every other docked sibling has staked its edge, so it
-        // has to go in last.
-        toolPanel.Controls.Add(toolPanelHeader);
+        // Header (Top) docks before the label (Fill), so it's added last.
         toolPanel.Controls.Add(toolPanelLabel);
+        toolPanel.Controls.Add(toolPanelHeader);
 
         // Drag-resizable the same way as sidebarSplitter above (min 160,
         // max 420 clamped on SplitterMoved), and kept in step with
@@ -294,23 +289,22 @@ internal sealed class SessionListForm : Form
         // in this app yet -- kept as honest placeholders (clicking one
         // opens the same slide-out panel #538's own ToggleTool did,
         // saying so directly) rather than silently dead buttons.
-        foreach (var (icon, label) in new[] { ("browser", "Browser"), ("terminal", "Terminal"), ("artifacts", "Artifacts"), ("tasks", "Background tasks") })
+        var railSettingsButton = MakeRailButton("settings", "Settings"); // the rail's one real, wired icon
+        railSettingsButton.Dock = DockStyle.Bottom;
+        railSettingsButton.Click += (_, _) => OpenSettings();
+        toolRail.Controls.Add(railSettingsButton);
+        // Reversed so Browser (docked last-added-first) ends up on top.
+        foreach (var (icon, label) in new[] { ("tasks", "Background tasks"), ("artifacts", "Artifacts"), ("terminal", "Terminal"), ("browser", "Browser") })
         {
             var button = MakeRailButton(icon, label);
             button.Click += (_, _) => ToggleToolPlaceholder(label, toolPanel, toolPanelSplitter, toolPanelTitleLabel, toolPanelLabel);
             toolRail.Controls.Add(button);
         }
-        var railSettingsButton = MakeRailButton("settings", "Settings"); // the rail's one real, wired icon
-        railSettingsButton.Click += (_, _) => OpenSettings();
-        toolRail.Controls.Add(railSettingsButton);
 
         toolCloseButton.Click += (_, _) => CloseToolPanel(toolPanel, toolPanelSplitter, toolPinButton);
         toolPinButton.Click += (_, _) => SetToolPanelPinned(toolPinButton, !toolPanelPinned);
-        // Each Dock.Top control claims the topmost strip of whatever's
-        // still unclaimed, in the order added -- so the four placeholders
-        // (added by the loop above) land Browser/Terminal/Artifacts/Tasks
-        // top-to-bottom, and Settings, added last, ends up at the bottom
-        // of the rail. Matches #538's own top-to-bottom rail order.
+        // Rail order matches #538's: Browser/Terminal/Artifacts/Tasks top
+        // to bottom, Settings docked at the bottom.
 
         var chatArea = new Panel { Dock = DockStyle.Fill, BackColor = DarkTheme.Background };
         chatArea.Controls.Add(chatLog);
@@ -333,27 +327,22 @@ internal sealed class SessionListForm : Form
         var topBar = new Panel { Dock = DockStyle.Top, Height = 28, BackColor = DarkTheme.Background };
         topBar.Controls.Add(sidebarToggleButton);
 
-        // Dock order matters: a control added earlier claims its edge
-        // first, so Fill has to go in last, once topBar/sidebar/toolRail/
-        // toolPanel have already staked their strips (same rule #538's
-        // own MainForm comment on this notes). topBar goes in before the
-        // Left/Right ones specifically so it spans the FULL window width
-        // at the top rather than just the strip between them -- claiming
-        // its horizontal slice off the whole client area before sidebar/
-        // toolRail have narrowed what's left. toolRail before toolPanel
-        // so the icon strip stays outermost (nearest the window edge)
-        // and the slide-out panel opens on its inner side. Each Splitter
-        // goes in immediately after the control it resizes (sidebar,
-        // then toolPanel) -- a WinForms Splitter attaches to the nearest
-        // preceding same-Dock-side control, so it has to sit right next
-        // to it in this list to resize the right one.
-        Controls.Add(topBar);
-        Controls.Add(sidebar);
-        Controls.Add(sidebarSplitter);
-        Controls.Add(toolRail);
-        Controls.Add(toolPanel);
-        Controls.Add(toolPanelSplitter);
+        // Dock order matters, and WinForms docks in REVERSE of the Controls
+        // collection: the last control added claims its edge first. So the
+        // intended docking sequence -- topBar (full width), sidebar, its
+        // splitter, toolRail (outermost right), toolPanel, its splitter,
+        // then chatArea filling what's left -- is added back to front.
+        // (Adding them front to back docked chatArea first: it took the
+        // whole window and the rest were laid over it, hiding the first
+        // lines of chat and clipping both sides.) Each Splitter still sits
+        // next to the control it resizes.
         Controls.Add(chatArea);
+        Controls.Add(toolPanelSplitter);
+        Controls.Add(toolPanel);
+        Controls.Add(toolRail);
+        Controls.Add(sidebarSplitter);
+        Controls.Add(sidebar);
+        Controls.Add(topBar);
 
         // Forces the native window handle to exist now, on this (the UI)
         // thread -- #524's toast "Open Chat" callback can fire on a
@@ -508,7 +497,7 @@ internal sealed class SessionListForm : Form
     {
         toolPanelPinned = pinned;
         toolPinButton.BackColor = pinned ? DarkTheme.Accent : DarkTheme.Panel2;
-        toolPinButton.ForeColor = pinned ? ColorTranslator.FromHtml("#171513") : DarkTheme.Muted;
+        toolPinButton.ForeColor = pinned ? DarkTheme.OnAccent : DarkTheme.Muted;
         railToolTip.SetToolTip(toolPinButton, pinned ? "Unpin panel" : "Pin panel open");
     }
 
