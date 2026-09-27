@@ -18,6 +18,11 @@ const { findModelJson } = require("../avatar/live2d-logic");
 const ZIP_URL = "https://cubism.live2d.com/sample-data/bin/hiyori/hiyori_en.zip";
 const MODEL_DIR = path.join(__dirname, "..", "avatar", "model");
 const TMP_ZIP = path.join(MODEL_DIR, "_hiyori_download.zip");
+// Live2D's zip ships both hiyori_free and hiyori_pro. Pro is the full rig
+// (70 parameters vs 29, more physics and motions), so it's the one the
+// launchers should find; hiyori_free moves beside it to test-models/ (the
+// native launcher's tests use it as a fixture) where no launcher looks.
+const TEST_MODELS_DIR = path.join(__dirname, "..", "avatar", "test-models");
 
 if (findModelJson(MODEL_DIR, fs)) {
   console.log(`A Live2D model is already present under ${MODEL_DIR}; skipping sample download.`);
@@ -45,6 +50,12 @@ https
           ]);
         } finally {
           fs.rmSync(TMP_ZIP, { force: true });
+        }
+        const free = path.join(MODEL_DIR, "hiyori_free");
+        if (fs.existsSync(path.join(MODEL_DIR, "hiyori_pro")) && fs.existsSync(free)) {
+          fs.mkdirSync(TEST_MODELS_DIR, { recursive: true });
+          fs.rmSync(path.join(TEST_MODELS_DIR, "hiyori_free"), { recursive: true, force: true });
+          fs.renameSync(free, path.join(TEST_MODELS_DIR, "hiyori_free"));
         }
         if (findModelJson(MODEL_DIR, fs)) {
           console.log(`Sample avatar ready under ${MODEL_DIR}`);

@@ -5,9 +5,8 @@ namespace Mana.NativeLauncher.Live2D;
 // #479 sub-project 4: renders a CubismModel's current drawable state to an
 // off-screen SKBitmap using SkiaSharp's software rasterizer -- no GPU/
 // OpenGL dependency, a small avatar at a modest frame rate doesn't need
-// one. AvatarOverlayForm blits the result into its existing PictureBox
-// each frame, reusing that control's already-working transparency/
-// click-through setup rather than adding a new hosting control.
+// one. AvatarOverlayForm pushes the result to its layered window each
+// frame.
 //
 // Clipping masks (e.g. an iris clipped to its eye-white's outline) render
 // correctly despite Core only exposing the raw mask-source drawable
@@ -26,23 +25,41 @@ namespace Mana.NativeLauncher.Live2D;
 // faith (see native/cubism-core/README.md's own note on this).
 internal sealed class CubismRenderer : IDisposable
 {
-    private readonly SKBitmap[] textures;
+    // Per texture, a mip chain: [0] is the decoded atlas, each next level
+    // half the size, down to ~64px. The overlay shows these 2048px atlases
+    // shrunk ~10x, and sampling the full-size one at that scale picks
+    // single stray texels (dark line-art pixels) as specks. Skia's
+    // DrawVertices ignores SKMipmapMode -- it picks the mip level from the
+    // canvas matrix, which is 1:1 here, not from the UV mapping -- so the
+    // level is chosen per drawable in RenderDrawable instead.
+    private readonly SKBitmap[][] textureLevels;
     // Built once here, not per-drawable-per-frame -- textures never
     // change after construction, so re-wrapping one in a fresh SKShader
-    // on every RenderDrawable call (this runs at ~30fps indefinitely)
+    // on every RenderDrawable call (this runs at ~60fps indefinitely)
     // would leak a native shader object every time; SKPaint.Shader below
     // only ever borrows these, it doesn't own/dispose them.
-    private readonly SKShader[] textureShaders;
+    private readonly SKShader[][] levelShaders;
 
     public CubismRenderer(IReadOnlyList<string> texturePaths)
     {
-        textures = new SKBitmap[texturePaths.Count];
-        textureShaders = new SKShader[texturePaths.Count];
+        textureLevels = new SKBitmap[texturePaths.Count][];
+        levelShaders = new SKShader[texturePaths.Count][];
+        var sampling = new SKSamplingOptions(SKFilterMode.Linear);
         for (var i = 0; i < texturePaths.Count; i++)
         {
-            textures[i] = SKBitmap.Decode(texturePaths[i])
-                ?? throw new InvalidDataException($"failed to decode texture: {texturePaths[i]}");
-            textureShaders[i] = textures[i].ToShader(SKShaderTileMode.Clamp, SKShaderTileMode.Clamp);
+            var levels = new List<SKBitmap>
+            {
+                SKBitmap.Decode(texturePaths[i]) ?? throw new InvalidDataException($"failed to decode texture: {texturePaths[i]}"),
+            };
+            while (Math.Min(levels[^1].Width, levels[^1].Height) >= 128)
+            {
+                var previous = levels[^1];
+                // Linear sampling at exactly half size averages each 2x2 block.
+                levels.Add(previous.Resize(new SKImageInfo(previous.Width / 2, previous.Height / 2, previous.ColorType, previous.AlphaType), sampling)
+                    ?? throw new InvalidDataException($"failed to downscale texture: {texturePaths[i]}"));
+            }
+            textureLevels[i] = levels.ToArray();
+            levelShaders[i] = levels.Select(l => l.ToShader(SKShaderTileMode.Clamp, SKShaderTileMode.Clamp, sampling)).ToArray();
         }
     }
 
@@ -103,7 +120,7 @@ internal sealed class CubismRenderer : IDisposable
                 {
                     // Disposed explicitly right after use, not left to
                     // BuildMaskPath -- it's a fresh SKPath built once per
-                    // masked drawable per frame; at ~30fps this runs
+                    // masked drawable per frame; at ~60fps this runs
                     // indefinitely, so leaving it to the GC/finalizer
                     // (SKPath wraps a native object) would leak steadily.
                     using var maskPath = BuildMaskPath(drawable.MaskDrawableIndices, drawables, screenPoints);
@@ -263,12 +280,14 @@ internal sealed class CubismRenderer : IDisposable
 
     private void RenderDrawable(SKCanvas canvas, CubismModel.Drawable drawable, SKPoint[] points)
     {
-        if (drawable.TextureIndex < 0 || drawable.TextureIndex >= textures.Length)
+        if (drawable.TextureIndex < 0 || drawable.TextureIndex >= textureLevels.Length)
         {
             return;
         }
 
-        var texture = textures[drawable.TextureIndex];
+        var levels = textureLevels[drawable.TextureIndex];
+        var level = MipLevel(points, drawable.VertexUvs, levels[0].Width, levels[0].Height, levels.Length);
+        var texture = levels[level];
         var uvs = new SKPoint[drawable.VertexUvs.Length];
         for (var i = 0; i < drawable.VertexUvs.Length; i++)
         {
@@ -282,7 +301,7 @@ internal sealed class CubismRenderer : IDisposable
         using var vertices = SKVertices.CreateCopy(SKVertexMode.Triangles, points, uvs, colors: null, drawable.Indices);
         using var paint = new SKPaint
         {
-            Shader = textureShaders[drawable.TextureIndex], // borrowed, not owned -- see the field's own comment
+            Shader = levelShaders[drawable.TextureIndex][level], // borrowed, not owned -- see the field's own comment
             Color = new SKColor(255, 255, 255, (byte)Math.Clamp(drawable.Opacity * 255f, 0f, 255f)),
             BlendMode = drawable.IsAdditiveBlend
                 ? SKBlendMode.Plus
@@ -297,13 +316,40 @@ internal sealed class CubismRenderer : IDisposable
         canvas.DrawVertices(vertices, SKBlendMode.Dst, paint);
     }
 
+    // How many halvings the drawable's texture region is shrunk by on
+    // screen: log2 of texels per screen pixel along its more-shrunk axis
+    // (what a GPU's mip selection uses), floored to keep detail.
+    private static int MipLevel(SKPoint[] points, CubismCoreNative.Vector2[] uvs, int textureWidth, int textureHeight, int levelCount)
+    {
+        if (points.Length == 0 || uvs.Length == 0)
+        {
+            return 0;
+        }
+        float minX = float.MaxValue, minY = float.MaxValue, maxX = float.MinValue, maxY = float.MinValue;
+        foreach (var p in points)
+        {
+            minX = Math.Min(minX, p.X); maxX = Math.Max(maxX, p.X);
+            minY = Math.Min(minY, p.Y); maxY = Math.Max(maxY, p.Y);
+        }
+        float minU = float.MaxValue, minV = float.MaxValue, maxU = float.MinValue, maxV = float.MinValue;
+        foreach (var uv in uvs)
+        {
+            minU = Math.Min(minU, uv.X); maxU = Math.Max(maxU, uv.X);
+            minV = Math.Min(minV, uv.Y); maxV = Math.Max(maxV, uv.Y);
+        }
+        var ratio = Math.Max(
+            (maxU - minU) * textureWidth / Math.Max(maxX - minX, 1e-3f),
+            (maxV - minV) * textureHeight / Math.Max(maxY - minY, 1e-3f));
+        return ratio <= 1 ? 0 : Math.Clamp((int)Math.Log2(ratio), 0, levelCount - 1);
+    }
+
     public void Dispose()
     {
-        foreach (var shader in textureShaders)
+        foreach (var shader in levelShaders.SelectMany(s => s))
         {
             shader?.Dispose();
         }
-        foreach (var texture in textures)
+        foreach (var texture in textureLevels.SelectMany(t => t))
         {
             texture?.Dispose();
         }

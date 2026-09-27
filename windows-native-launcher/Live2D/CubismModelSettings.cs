@@ -6,9 +6,8 @@ namespace Mana.NativeLauncher.Live2D;
 // actually uses -- which .moc3 file to load, which texture PNGs it
 // references (in texture-index order; drawables reference textures by
 // index into this same array), (#514) which named expression files it
-// declares, and (#515) its first Idle motion file. Physics
-// (.physics3.json) is still out of scope -- see CubismModel's own header
-// comment for the full boundary.
+// declares, (#515) its first Idle motion file, and its pose and physics
+// files.
 internal sealed class CubismModelSettings
 {
     public required string MocPath { get; init; }
@@ -27,6 +26,14 @@ internal sealed class CubismModelSettings
     // randomizing/cycling between them -- "so she looks alive at rest" per
     // the issue's own scope, not a full motion-selection system.
     public required string? IdleMotionPath { get; init; }
+
+    // FileReferences.Pose (.pose3.json), or null. A pose file says which
+    // parts are mutually exclusive alternatives (e.g. hiyori_pro's two arm
+    // sets) -- without applying it, every alternative renders at once.
+    public string? PosePath { get; init; }
+
+    // FileReferences.Physics (.physics3.json), or null -- hair/clothing sway.
+    public string? PhysicsPath { get; init; }
 
     public static CubismModelSettings Load(string model3JsonPath)
     {
@@ -81,12 +88,17 @@ internal sealed class CubismModelSettings
             }
         }
 
+        var pose = fileReferences.TryGetProperty("Pose", out var poseElement) ? poseElement.GetString() : null;
+        var physics = fileReferences.TryGetProperty("Physics", out var physicsElement) ? physicsElement.GetString() : null;
+
         return new CubismModelSettings
         {
             MocPath = Path.Combine(baseDir, moc),
             TexturePaths = textures,
             ExpressionPaths = expressionPaths,
             IdleMotionPath = idleMotionPath,
+            PosePath = pose is null ? null : Path.Combine(baseDir, pose),
+            PhysicsPath = physics is null ? null : Path.Combine(baseDir, physics),
         };
     }
 }

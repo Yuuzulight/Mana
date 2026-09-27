@@ -13,7 +13,7 @@ public class CubismRendererTests
         CubismCoreLibrary.IsAvailable(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
         var model3JsonPath = Path.Combine(
             AppContext.BaseDirectory, "..", "..", "..", "..", "..",
-            "windows-launcher", "avatar", "model", "hiyori_free", "runtime", "hiyori_free_t08.model3.json");
+            "windows-launcher", "avatar", "test-models", "hiyori_free", "runtime", "hiyori_free_t08.model3.json");
         var settings = CubismModelSettings.Load(model3JsonPath);
         var model = CubismModel.Load(settings);
         var renderer = new CubismRenderer(settings.TexturePaths);

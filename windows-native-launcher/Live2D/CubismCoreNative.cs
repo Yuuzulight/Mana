@@ -7,10 +7,9 @@ namespace Mana.NativeLauncher.Live2D;
 // native/cubism-core/Live2DCubismCore.h -- not from memory/documentation,
 // to avoid a subtly wrong signature silently corrupting memory. Only the
 // subset this project actually uses is bound (parameters, drawables,
-// canvas info, moc/model lifecycle) -- offscreens/masks/physics and the
-// higher-level Framework layer (motion playback, expression blending,
-// physics simulation) are Live2D's own C++ source, not part of Core, and
-// are out of scope here (see CubismModel's own comment).
+// canvas info, moc/model lifecycle). The higher-level Framework layer
+// (motion playback, expressions, poses, physics) isn't part of Core; this
+// project's own ports of it sit on top of CubismModel (see its comment).
 //
 // Calling convention: the header's csmCallingConvention macro expands to
 // __stdcall only when CSM_CORE_WIN32_DLL is defined, and the prebuilt

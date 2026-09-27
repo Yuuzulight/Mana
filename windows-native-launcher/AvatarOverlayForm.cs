@@ -2,6 +2,7 @@ using System;
 using System.Diagnostics;
 using System.Drawing;
 using System.IO;
+using System.Runtime.InteropServices;
 using System.Windows.Forms;
 using Mana.NativeLauncher.Live2D;
 using SkiaSharp;
@@ -26,9 +27,14 @@ internal enum AvatarState
 // unchanged when either isn't available, exactly matching this class's
 // pre-sub-project-4 behavior -- this is a real fallback path, not just a
 // stub, since the SDK is intentionally not something every checkout has.
+//
+// The window is a per-pixel-alpha layered window: every frame (Live2D or
+// PNG) is pushed as premultiplied BGRA through UpdateLayeredWindow, so her
+// anti-aliased edges blend with whatever is behind her. (A TransparencyKey
+// color can only make pixels fully clear or fully opaque, which left a
+// magenta fringe wherever an edge was half-transparent.)
 internal sealed class AvatarOverlayForm : Form
 {
-    private readonly PictureBox avatarImage = new();
     private readonly string idlePath;
     private readonly string talkingPath;
 
@@ -81,6 +87,10 @@ internal sealed class AvatarOverlayForm : Form
     // the two, never both.
     private readonly ProceduralIdleMotion? proceduralIdleMotion;
 
+    // The model's .physics3.json simulation (hair/skirt sway), or null if it
+    // ships none or it failed to load. Stateful, stepped once per frame.
+    private readonly CubismPhysics? physics;
+
     public AvatarOverlayForm(string rootDirectory)
     {
         idlePath = Path.Combine(rootDirectory, "windows-launcher", "assets", "avatar", "idle.png");
@@ -91,27 +101,26 @@ internal sealed class AvatarOverlayForm : Form
         TopMost = true;
         Width = ReadIntEnv("MANA_AVATAR_WIDTH", 234);
         Height = ReadIntEnv("MANA_AVATAR_HEIGHT", 288);
-        BackColor = Color.Magenta;
-        TransparencyKey = Color.Magenta;
         StartPosition = FormStartPosition.Manual;
-
-        avatarImage.Dock = DockStyle.Fill;
-        avatarImage.SizeMode = PictureBoxSizeMode.Zoom;
-        avatarImage.BackColor = Color.Transparent;
-        Controls.Add(avatarImage);
 
         var loaded = TryLoadCubismModel(rootDirectory);
         cubismModel = loaded.Model;
         cubismRenderer = loaded.Renderer;
         expressions = loaded.Expressions;
         idleMotion = loaded.IdleMotion;
+        physics = loaded.Physics;
+        ModelPath = loaded.ModelPath;
+        ModelLoadProblem = loaded.Problem;
+        ModelLoadWarnings = loaded.Warnings ?? Array.Empty<string>();
         if (idleMotion is null && cubismModel is not null)
         {
             proceduralIdleMotion = new ProceduralIdleMotion();
         }
         if (cubismModel is not null && cubismRenderer is not null)
         {
-            renderTimer = new System.Windows.Forms.Timer { Interval = 33 }; // ~30fps
+            // ~60fps: WM_TIMER fires on the ~15.6ms system tick, so 15
+            // lands on every tick (16 would round up to every other one).
+            renderTimer = new System.Windows.Forms.Timer { Interval = 15 };
             renderTimer.Tick += (_, _) => RenderFrame(cubismModel, cubismRenderer);
             renderTimer.Start();
         }
@@ -124,35 +133,75 @@ internal sealed class AvatarOverlayForm : Form
         CubismModel? Model,
         CubismRenderer? Renderer,
         IReadOnlyDictionary<string, CubismExpressionFile> Expressions,
-        CubismMotionFile? IdleMotion);
+        CubismMotionFile? IdleMotion,
+        CubismPhysics? Physics = null,
+        string? ModelPath = null,
+        string? Problem = null,
+        IReadOnlyList<string>? Warnings = null);
 
-    private static readonly CubismLoadResult NotAvailable = new(null, null, new Dictionary<string, CubismExpressionFile>(), null);
+    private static CubismLoadResult NotAvailable(string? modelPath = null, string? problem = null)
+    {
+        if (problem is not null)
+        {
+            Console.WriteLine($"AvatarOverlayForm: Live2D model not loaded, using static PNGs. {problem}");
+        }
+        return new(null, null, new Dictionary<string, CubismExpressionFile>(), null, null, modelPath, problem);
+    }
 
-    // Returns NotAvailable -- not a throw -- when the SDK/model aren't
-    // available, or if a real model file exists but fails to parse: any
-    // of those mean "fall back to the PNG swap", not "crash the
-    // launcher". Expression files (#514) and the Idle motion (#515) are
-    // both loaded best-effort too -- one malformed accessory file is
-    // skipped (logged), not fatal to the model load it belongs to.
+    // Set when a Live2D model was found but couldn't be used (a plain-English
+    // explanation for the user -- see CubismModelDiagnostics), and for parts
+    // of a loaded model that were skipped. Both null/empty on success or when
+    // there's simply no model installed (the static avatar is the default).
+    public string? ModelLoadProblem { get; }
+    public IReadOnlyList<string> ModelLoadWarnings { get; }
+    public string? ModelPath { get; }
+
+    // Never throws: no SDK, no model, or a model that fails to parse all
+    // mean "fall back to the PNG swap", not "crash the launcher" -- but
+    // each failure now carries a user-facing Problem instead of only a
+    // Console line. Expression files (#514) and the Idle motion (#515) are
+    // loaded best-effort -- one malformed accessory file is skipped (and
+    // reported as a warning), not fatal to the model load it belongs to.
     private static CubismLoadResult TryLoadCubismModel(string rootDirectory)
     {
-        if (!CubismCoreLibrary.IsAvailable(rootDirectory))
+        var explicitPath = Environment.GetEnvironmentVariable(CubismModelLocator.EnvVar);
+        var model3JsonPath = CubismModelLocator.Find(rootDirectory, explicitPath);
+        if (model3JsonPath is null)
         {
-            return NotAvailable;
+            return NotAvailable(problem: CubismModelDiagnostics.DescribeNoModel(rootDirectory, explicitPath));
         }
 
-        var model3JsonPath = Path.Combine(
-            rootDirectory, "windows-launcher", "avatar", "model", "hiyori_free", "runtime", "hiyori_free_t08.model3.json");
-        if (!File.Exists(model3JsonPath))
+        if (!CubismCoreLibrary.IsAvailable(rootDirectory))
         {
-            return NotAvailable;
+            return NotAvailable(model3JsonPath, CubismModelDiagnostics.EngineMissing(model3JsonPath));
         }
 
         CubismModel? model = null;
+        var warnings = new List<string>();
         try
         {
             var settings = CubismModelSettings.Load(model3JsonPath);
+            var missingFiles = CubismModelDiagnostics.DescribeMissingFiles(settings, model3JsonPath);
+            if (missingFiles is not null)
+            {
+                return NotAvailable(model3JsonPath, missingFiles);
+            }
             model = CubismModel.Load(settings);
+            if (settings.PosePath is not null)
+            {
+                // Part opacities persist in the model like parameter values,
+                // so the initial pose is set once here, not every frame.
+                try
+                {
+                    CubismPoseFile.Load(settings.PosePath).ApplyInitialPose(model);
+                }
+                catch (Exception ex) when (ex is not (OutOfMemoryException or StackOverflowException))
+                {
+                    Console.WriteLine($"AvatarOverlayForm: failed to load pose ({settings.PosePath}), skipping it. {ex.Message}");
+                    warnings.Add(CubismModelDiagnostics.SkippedPart("pose", Path.GetFileName(settings.PosePath), ex) +
+                                 " (alternative parts like extra arm sets may all show at once)");
+                }
+            }
             var renderer = new CubismRenderer(settings.TexturePaths);
 
             var expressions = new Dictionary<string, CubismExpressionFile>();
@@ -165,6 +214,7 @@ internal sealed class AvatarOverlayForm : Form
                 catch (Exception ex) when (ex is not (OutOfMemoryException or StackOverflowException))
                 {
                     Console.WriteLine($"AvatarOverlayForm: failed to load expression '{name}' ({path}), skipping it. {ex.Message}");
+                    warnings.Add(CubismModelDiagnostics.SkippedPart("expression", name, ex));
                 }
             }
 
@@ -178,10 +228,26 @@ internal sealed class AvatarOverlayForm : Form
                 catch (Exception ex) when (ex is not (OutOfMemoryException or StackOverflowException))
                 {
                     Console.WriteLine($"AvatarOverlayForm: failed to load idle motion ({settings.IdleMotionPath}), skipping it. {ex.Message}");
+                    warnings.Add(CubismModelDiagnostics.SkippedPart("idle motion", Path.GetFileName(settings.IdleMotionPath), ex));
                 }
             }
 
-            return new CubismLoadResult(model, renderer, expressions, idleMotion);
+            CubismPhysics? physics = null;
+            if (settings.PhysicsPath is not null)
+            {
+                try
+                {
+                    physics = CubismPhysics.Load(settings.PhysicsPath);
+                }
+                catch (Exception ex) when (ex is not (OutOfMemoryException or StackOverflowException))
+                {
+                    Console.WriteLine($"AvatarOverlayForm: failed to load physics ({settings.PhysicsPath}), skipping it. {ex.Message}");
+                    warnings.Add(CubismModelDiagnostics.SkippedPart("physics", Path.GetFileName(settings.PhysicsPath), ex) +
+                                 " (hair and clothing won't sway)");
+                }
+            }
+
+            return new CubismLoadResult(model, renderer, expressions, idleMotion, physics, model3JsonPath, null, warnings);
         }
         // Broad by design, not just the handful of exception types this
         // path happens to throw today: "the model file exists but fails
@@ -198,12 +264,11 @@ internal sealed class AvatarOverlayForm : Form
         // still propagate.
         catch (Exception ex) when (ex is not (OutOfMemoryException or StackOverflowException))
         {
-            Console.WriteLine($"AvatarOverlayForm: failed to load Cubism model, falling back to static PNGs. {ex.Message}");
             // model may have loaded successfully before the renderer (a
             // separate step, e.g. a corrupt texture) threw -- without
             // this, its aligned native buffers would leak permanently.
             model?.Dispose();
-            return NotAvailable;
+            return NotAvailable(model3JsonPath, CubismModelDiagnostics.DescribeLoadFailure(ex, model3JsonPath));
         }
     }
 
@@ -251,35 +316,15 @@ internal sealed class AvatarOverlayForm : Form
             model.SetParameterValue("ParamMouthForm", smoothedMouthForm);
         }
 
+        // Physics reads the head/body angles everything above just set, so
+        // it runs last -- its outputs (hair, skirt) aren't driven by anything
+        // else.
+        physics?.Evaluate(model, dtMs / 1000f);
+
         model.Update();
 
-        var width = Math.Max(1, avatarImage.Width);
-        var height = Math.Max(1, avatarImage.Height);
-        using var skBitmap = renderer.Render(model, width, height, new SKColor(255, 0, 255));
-        var bitmap = ToGdiBitmap(skBitmap);
-
-        avatarImage.Image?.Dispose();
-        avatarImage.Image = bitmap;
-    }
-
-    // SkiaSharp and WinForms don't share a bitmap type -- round-trips
-    // through PNG encoding, which at this size (a small avatar, ~30fps)
-    // is not a measurable cost, and avoids hand-rolling a pixel-format-
-    // matching raw copy between SKBitmap's and System.Drawing.Bitmap's
-    // independently-defined memory layouts.
-    private static Bitmap ToGdiBitmap(SKBitmap skBitmap)
-    {
-        using var image = SKImage.FromBitmap(skBitmap);
-        using var data = image.Encode(SKEncodedImageFormat.Png, 100);
-        using var stream = new MemoryStream(data.ToArray());
-        using var lazyBitmap = new Bitmap(stream);
-        // new Bitmap(Stream)/Image.FromStream can defer decoding and
-        // requires its backing stream to stay open for the image's whole
-        // lifetime (a documented GDI+ gotcha) -- cloning into a real,
-        // independent Bitmap via the copy constructor here lets `stream`
-        // be safely disposed on return instead of needing to outlive
-        // every rendered frame indefinitely.
-        return new Bitmap(lazyBitmap);
+        using var frame = renderer.Render(model, Math.Max(1, ClientSize.Width), Math.Max(1, ClientSize.Height), SKColors.Transparent);
+        Present(frame);
     }
 
     public void SetState(AvatarState state)
@@ -321,8 +366,8 @@ internal sealed class AvatarOverlayForm : Form
             // apply every tick from here on -- null (no match, or the
             // model ships none) means "no expression change", which
             // reads as simply not overriding whatever the render loop's
-            // other signals (lip-sync, and later motion/physics --
-            // #515) already produce.
+            // other signals (idle motion, lip-sync, physics) already
+            // produce.
             var expressionName = AvatarExpressionSelector.SelectExpressionName(state, expressions.Keys);
             activeExpression = expressionName is not null && expressions.TryGetValue(expressionName, out var expression)
                 ? expression
@@ -336,9 +381,135 @@ internal sealed class AvatarOverlayForm : Form
             return;
         }
 
-        avatarImage.Image?.Dispose();
-        avatarImage.Image = Image.FromFile(nextPath);
+        using var image = SKImage.FromEncodedData(nextPath);
+        if (image is null)
+        {
+            return;
+        }
+        // Fit (like the old PictureBox's Zoom), centered.
+        var width = Math.Max(1, ClientSize.Width);
+        var height = Math.Max(1, ClientSize.Height);
+        var scale = Math.Min((float)width / image.Width, (float)height / image.Height);
+        var drawWidth = image.Width * scale;
+        var drawHeight = image.Height * scale;
+        using var frame = new SKBitmap(new SKImageInfo(width, height, SKColorType.Bgra8888, SKAlphaType.Premul));
+        using (var canvas = new SKCanvas(frame))
+        {
+            canvas.Clear(SKColors.Transparent);
+            canvas.DrawImage(image, SKRect.Create((width - drawWidth) / 2, (height - drawHeight) / 2, drawWidth, drawHeight),
+                new SKSamplingOptions(SKFilterMode.Linear, SKMipmapMode.Linear));
+        }
+        Present(frame);
     }
+
+    // The layered window's backing store: a top-down 32bpp DIB selected into
+    // a memory DC, reused across frames and rebuilt only when the size
+    // changes.
+    private nint memoryDc;
+    private nint dibBitmap;
+    private nint previousBitmap;
+    private nint dibBits;
+    private Size dibSize;
+
+    private void Present(SKBitmap frame)
+    {
+        var size = new Size(frame.Width, frame.Height);
+        if (size != dibSize)
+        {
+            ReleaseDib();
+            var header = new BitmapInfoHeader
+            {
+                Size = Marshal.SizeOf<BitmapInfoHeader>(),
+                Width = size.Width,
+                Height = -size.Height, // negative = top-down rows, matching Skia's
+                Planes = 1,
+                BitCount = 32,
+            };
+            memoryDc = CreateCompatibleDC(0);
+            dibBitmap = CreateDIBSection(memoryDc, ref header, 0, out dibBits, 0, 0);
+            if (dibBitmap == 0)
+            {
+                ReleaseDib();
+                return;
+            }
+            previousBitmap = SelectObject(memoryDc, dibBitmap);
+            dibSize = size;
+        }
+
+        using (var pixmap = frame.PeekPixels())
+        {
+            pixmap.ReadPixels(new SKImageInfo(size.Width, size.Height, SKColorType.Bgra8888, SKAlphaType.Premul), dibBits, size.Width * 4);
+        }
+
+        const byte acSrcOver = 0;
+        const byte acSrcAlpha = 1;
+        const int ulwAlpha = 2;
+        var source = Point.Empty;
+        var blend = new BlendFunction { BlendOp = acSrcOver, SourceConstantAlpha = 255, AlphaFormat = acSrcAlpha };
+        // Null destination point: keep the window where PositionOverlay put it.
+        UpdateLayeredWindow(Handle, 0, 0, ref size, memoryDc, ref source, 0, ref blend, ulwAlpha);
+    }
+
+    private void ReleaseDib()
+    {
+        if (memoryDc != 0)
+        {
+            if (previousBitmap != 0)
+            {
+                SelectObject(memoryDc, previousBitmap);
+            }
+            DeleteDC(memoryDc);
+        }
+        if (dibBitmap != 0)
+        {
+            DeleteObject(dibBitmap);
+        }
+        memoryDc = dibBitmap = previousBitmap = dibBits = 0;
+        dibSize = Size.Empty;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct BitmapInfoHeader
+    {
+        public int Size;
+        public int Width;
+        public int Height;
+        public short Planes;
+        public short BitCount;
+        public int Compression;
+        public int SizeImage;
+        public int XPelsPerMeter;
+        public int YPelsPerMeter;
+        public int ClrUsed;
+        public int ClrImportant;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct BlendFunction
+    {
+        public byte BlendOp;
+        public byte BlendFlags;
+        public byte SourceConstantAlpha;
+        public byte AlphaFormat;
+    }
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool UpdateLayeredWindow(nint hwnd, nint hdcDst, nint pptDst, ref Size psize, nint hdcSrc, ref Point pptSrc, int crKey, ref BlendFunction pblend, int dwFlags);
+
+    [DllImport("gdi32.dll")]
+    private static extern nint CreateCompatibleDC(nint hdc);
+
+    [DllImport("gdi32.dll")]
+    private static extern nint CreateDIBSection(nint hdc, ref BitmapInfoHeader pbmi, uint usage, out nint ppvBits, nint hSection, uint offset);
+
+    [DllImport("gdi32.dll")]
+    private static extern nint SelectObject(nint hdc, nint h);
+
+    [DllImport("gdi32.dll")]
+    private static extern bool DeleteObject(nint ho);
+
+    [DllImport("gdi32.dll")]
+    private static extern bool DeleteDC(nint hdc);
 
     protected override CreateParams CreateParams
     {
@@ -346,9 +517,10 @@ internal sealed class AvatarOverlayForm : Form
         {
             const int wsExTransparent = 0x20;
             const int wsExToolWindow = 0x80;
+            const int wsExLayered = 0x80000;
             const int wsExNoActivate = 0x08000000;
             var cp = base.CreateParams;
-            cp.ExStyle |= wsExTransparent | wsExToolWindow | wsExNoActivate;
+            cp.ExStyle |= wsExTransparent | wsExToolWindow | wsExLayered | wsExNoActivate;
             return cp;
         }
     }
@@ -361,6 +533,7 @@ internal sealed class AvatarOverlayForm : Form
         renderTimer?.Dispose();
         cubismRenderer?.Dispose();
         cubismModel?.Dispose();
+        ReleaseDib();
         base.OnFormClosed(e);
     }
 

@@ -35,6 +35,12 @@ scripts and `avatar\model\` folder work the same way there. Everything below
      npm run fetch-sample-avatar
      ```
 
+     Live2D's download contains two rigs of Hiyori. The script keeps
+     **Hiyori Pro** (the full rig: 70 parameters, more physics and motions,
+     arm poses) in `avatar\model\`, and moves the simplified **Hiyori Free**
+     to `avatar\test-models\`, where no launcher looks. The native launcher's
+     tests use it as a fixture.
+
    - **Have your own model?** Copy the whole model folder (the one
      containing `*.model3.json`, `*.moc3`, textures, and motions) into:
 
@@ -42,8 +48,9 @@ scripts and `avatar\model\` folder work the same way there. Everything below
      C:\ManaAI\Mana\windows-launcher\avatar\model\
      ```
 
-   Either way, the launcher auto-detects the first `.model3.json` it finds
-   there (`fetch-sample-avatar` skips itself entirely if one is already
+   Either way, both launchers (Electron and native) auto-detect the first
+   `.model3.json` they find there, alphabetically by path, in any subfolder
+   (`fetch-sample-avatar` skips itself entirely if one is already
    present, so it never clobbers a model you dropped in), or you can point
    somewhere else explicitly:
 
@@ -52,8 +59,16 @@ scripts and `avatar\model\` folder work the same way there. Everything below
    ```
 
 3. Start the launcher. The log prints `Live2D avatar loaded: ...` on success.
-   If the runtime or model is missing, the avatar quietly falls back to the
-   PNG sprites.
+   With no model installed, the avatar quietly falls back to the PNG sprites.
+   The native launcher also tells you when a model *was* found but couldn't be
+   used: a tray notification ("Avatar model couldn't load", click it for
+   details) explains the cause in plain words, such as missing texture files, an
+   unsupported Cubism 2 model, a broken `.model3.json`, a missing
+   `Live2DCubismCore.dll`, or a `MANA_LIVE2D_MODEL` path that doesn't exist.
+   **Show status** in the tray menu repeats it, and also lists any expressions,
+   idle motion, pose or physics file that was skipped. Only Cubism 3+ models
+   (`.model3.json`) are supported. Like the Electron launcher, the native one
+   runs the model's `.physics3.json`, so hair and clothing sway as she moves.
 
 ## How Mana drives the model
 

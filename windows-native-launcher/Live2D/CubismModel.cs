@@ -12,14 +12,12 @@ namespace Mana.NativeLauncher.Live2D;
 // from ReplyEmotionDetector) and drawables (for CubismRenderer's textured
 // mesh rendering).
 //
-// Deliberately out of scope: motion playback (.motion3.json, #515) and
-// physics simulation (.physics3.json) -- Cubism Framework concerns (the
-// open-source C++ layer built on top of Core), not part of Core itself,
-// and a separate, much larger undertaking; this class only drives whatever
-// parameters are set on it directly and renders the resulting mesh.
-// Expression blending (.exp3.json, #514) IS implemented, just outside
-// this class -- see CubismExpressionFile, which applies its own parameter
-// deltas via this class's SetParameterValue/GetParameterDefaultValue.
+// Motions, expressions, poses and physics are Cubism Framework concerns
+// (the layer built on top of Core), not part of Core itself, so they live
+// outside this class -- CubismMotionFile, CubismExpressionFile,
+// CubismPoseFile and CubismPhysics each drive the model through this
+// class's parameter/part accessors; this class only holds that state and
+// exposes the resulting mesh.
 internal sealed unsafe class CubismModel : IDisposable
 {
     public readonly struct Drawable
@@ -50,6 +48,7 @@ internal sealed unsafe class CubismModel : IDisposable
     private nint modelBuffer;
     private nint model;
     private readonly Dictionary<string, int> parameterIndexById;
+    private readonly Dictionary<string, int> partIndexById;
     private readonly string[] drawableIds;
     private readonly int[] drawableTextureIndices;
 
@@ -64,6 +63,13 @@ internal sealed unsafe class CubismModel : IDisposable
         for (var i = 0; i < parameterIds.Length; i++)
         {
             parameterIndexById[parameterIds[i]] = i;
+        }
+
+        var partIds = ReadStringArray(CubismCoreNative.csmGetPartIds(model), CubismCoreNative.csmGetPartCount(model));
+        partIndexById = new Dictionary<string, int>(partIds.Length);
+        for (var i = 0; i < partIds.Length; i++)
+        {
+            partIndexById[partIds[i]] = i;
         }
 
         var drawableCount = CubismCoreNative.csmGetDrawableCount(model);
@@ -149,6 +155,20 @@ internal sealed unsafe class CubismModel : IDisposable
     }
 
     public bool HasParameter(string id) => parameterIndexById.ContainsKey(id);
+
+    // Part opacities are Core inputs like parameters: csmUpdateModel folds
+    // them into each drawable's Opacity, which CubismRenderer draws with.
+    public void SetPartOpacity(string id, float opacity)
+    {
+        if (!partIndexById.TryGetValue(id, out var index))
+        {
+            return; // unknown part -- no-op, same as SetParameterValue
+        }
+        var opacities = (float*)CubismCoreNative.csmGetPartOpacities(model);
+        opacities[index] = opacity;
+    }
+
+    public bool HasPart(string id) => partIndexById.ContainsKey(id);
 
     public IReadOnlyCollection<string> ParameterIds => parameterIndexById.Keys;
 

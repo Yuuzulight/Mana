@@ -20,7 +20,7 @@ public class CubismMotionFileTests
         CubismCoreLibrary.IsAvailable(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
         var model3JsonPath = Path.Combine(
             AppContext.BaseDirectory, "..", "..", "..", "..", "..",
-            "windows-launcher", "avatar", "model", "hiyori_free", "runtime", "hiyori_free_t08.model3.json");
+            "windows-launcher", "avatar", "test-models", "hiyori_free", "runtime", "hiyori_free_t08.model3.json");
         var settings = CubismModelSettings.Load(model3JsonPath);
         return CubismModel.Load(settings);
     }
@@ -33,7 +33,7 @@ public class CubismMotionFileTests
     {
         var model3JsonPath = Path.Combine(
             AppContext.BaseDirectory, "..", "..", "..", "..", "..",
-            "windows-launcher", "avatar", "model", "hiyori_free", "runtime", "hiyori_free_t08.model3.json");
+            "windows-launcher", "avatar", "test-models", "hiyori_free", "runtime", "hiyori_free_t08.model3.json");
         var settings = CubismModelSettings.Load(model3JsonPath);
 
         Assert.NotNull(settings.IdleMotionPath);
@@ -50,7 +50,7 @@ public class CubismMotionFileTests
     {
         var model3JsonPath = Path.Combine(
             AppContext.BaseDirectory, "..", "..", "..", "..", "..",
-            "windows-launcher", "avatar", "model", "hiyori_free", "runtime", "hiyori_free_t08.model3.json");
+            "windows-launcher", "avatar", "test-models", "hiyori_free", "runtime", "hiyori_free_t08.model3.json");
         var settings = CubismModelSettings.Load(model3JsonPath);
         var motion = CubismMotionFile.Load(settings.IdleMotionPath!);
         using var model = LoadTestModel();
