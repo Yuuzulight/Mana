@@ -12,14 +12,12 @@ namespace Mana.NativeLauncher.Live2D;
 // from ReplyEmotionDetector) and drawables (for CubismRenderer's textured
 // mesh rendering).
 //
-// Deliberately out of scope: motion playback (.motion3.json, #515) and
-// physics simulation (.physics3.json) -- Cubism Framework concerns (the
-// open-source C++ layer built on top of Core), not part of Core itself,
-// and a separate, much larger undertaking; this class only drives whatever
-// parameters are set on it directly and renders the resulting mesh.
-// Expression blending (.exp3.json, #514) IS implemented, just outside
-// this class -- see CubismExpressionFile, which applies its own parameter
-// deltas via this class's SetParameterValue/GetParameterDefaultValue.
+// Motions, expressions, poses and physics are Cubism Framework concerns
+// (the layer built on top of Core), not part of Core itself, so they live
+// outside this class -- CubismMotionFile, CubismExpressionFile,
+// CubismPoseFile and CubismPhysics each drive the model through this
+// class's parameter/part accessors; this class only holds that state and
+// exposes the resulting mesh.
 internal sealed unsafe class CubismModel : IDisposable
 {
     public readonly struct Drawable

@@ -81,6 +81,10 @@ internal sealed class AvatarOverlayForm : Form
     // the two, never both.
     private readonly ProceduralIdleMotion? proceduralIdleMotion;
 
+    // The model's .physics3.json simulation (hair/skirt sway), or null if it
+    // ships none or it failed to load. Stateful, stepped once per frame.
+    private readonly CubismPhysics? physics;
+
     public AvatarOverlayForm(string rootDirectory)
     {
         idlePath = Path.Combine(rootDirectory, "windows-launcher", "assets", "avatar", "idle.png");
@@ -105,6 +109,7 @@ internal sealed class AvatarOverlayForm : Form
         cubismRenderer = loaded.Renderer;
         expressions = loaded.Expressions;
         idleMotion = loaded.IdleMotion;
+        physics = loaded.Physics;
         ModelPath = loaded.ModelPath;
         ModelLoadProblem = loaded.Problem;
         ModelLoadWarnings = loaded.Warnings ?? Array.Empty<string>();
@@ -128,6 +133,7 @@ internal sealed class AvatarOverlayForm : Form
         CubismRenderer? Renderer,
         IReadOnlyDictionary<string, CubismExpressionFile> Expressions,
         CubismMotionFile? IdleMotion,
+        CubismPhysics? Physics = null,
         string? ModelPath = null,
         string? Problem = null,
         IReadOnlyList<string>? Warnings = null);
@@ -138,7 +144,7 @@ internal sealed class AvatarOverlayForm : Form
         {
             Console.WriteLine($"AvatarOverlayForm: Live2D model not loaded, using static PNGs. {problem}");
         }
-        return new(null, null, new Dictionary<string, CubismExpressionFile>(), null, modelPath, problem);
+        return new(null, null, new Dictionary<string, CubismExpressionFile>(), null, null, modelPath, problem);
     }
 
     // Set when a Live2D model was found but couldn't be used (a plain-English
@@ -225,7 +231,22 @@ internal sealed class AvatarOverlayForm : Form
                 }
             }
 
-            return new CubismLoadResult(model, renderer, expressions, idleMotion, model3JsonPath, null, warnings);
+            CubismPhysics? physics = null;
+            if (settings.PhysicsPath is not null)
+            {
+                try
+                {
+                    physics = CubismPhysics.Load(settings.PhysicsPath);
+                }
+                catch (Exception ex) when (ex is not (OutOfMemoryException or StackOverflowException))
+                {
+                    Console.WriteLine($"AvatarOverlayForm: failed to load physics ({settings.PhysicsPath}), skipping it. {ex.Message}");
+                    warnings.Add(CubismModelDiagnostics.SkippedPart("physics", Path.GetFileName(settings.PhysicsPath), ex) +
+                                 " (hair and clothing won't sway)");
+                }
+            }
+
+            return new CubismLoadResult(model, renderer, expressions, idleMotion, physics, model3JsonPath, null, warnings);
         }
         // Broad by design, not just the handful of exception types this
         // path happens to throw today: "the model file exists but fails
@@ -293,6 +314,11 @@ internal sealed class AvatarOverlayForm : Form
         {
             model.SetParameterValue("ParamMouthForm", smoothedMouthForm);
         }
+
+        // Physics reads the head/body angles everything above just set, so
+        // it runs last -- its outputs (hair, skirt) aren't driven by anything
+        // else.
+        physics?.Evaluate(model, dtMs / 1000f);
 
         model.Update();
 
@@ -364,8 +390,8 @@ internal sealed class AvatarOverlayForm : Form
             // apply every tick from here on -- null (no match, or the
             // model ships none) means "no expression change", which
             // reads as simply not overriding whatever the render loop's
-            // other signals (lip-sync, and later motion/physics --
-            // #515) already produce.
+            // other signals (idle motion, lip-sync, physics) already
+            // produce.
             var expressionName = AvatarExpressionSelector.SelectExpressionName(state, expressions.Keys);
             activeExpression = expressionName is not null && expressions.TryGetValue(expressionName, out var expression)
                 ? expression

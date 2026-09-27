@@ -6,8 +6,7 @@ namespace Mana.NativeLauncher.Live2D;
 // expression format ({"Type":"Live2D Expression","Parameters":
 // [{"Id","Value","Blend"}]}), not a Core concept. Core itself has no
 // notion of expressions; this is hand-rolled parsing + application, not a
-// Framework port (motion/physics stay out of scope -- see CubismModel's
-// own header comment and issue #515).
+// Framework port.
 internal sealed class CubismExpressionFile
 {
     public readonly record struct ParameterDelta(string Id, float Value, string Blend);

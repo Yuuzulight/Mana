@@ -65,9 +65,10 @@ scripts and `avatar\model\` folder work the same way there. Everything below
    details) explains the cause in plain words, such as missing texture files, an
    unsupported Cubism 2 model, a broken `.model3.json`, a missing
    `Live2DCubismCore.dll`, or a `MANA_LIVE2D_MODEL` path that doesn't exist.
-   **Show status** in the tray menu repeats it, and also lists any expressions
-   or idle motion that were skipped. Only Cubism 3+ models (`.model3.json`) are
-   supported.
+   **Show status** in the tray menu repeats it, and also lists any expressions,
+   idle motion, pose or physics file that was skipped. Only Cubism 3+ models
+   (`.model3.json`) are supported. Like the Electron launcher, the native one
+   runs the model's `.physics3.json`, so hair and clothing sway as she moves.
 
 ## How Mana drives the model
 
