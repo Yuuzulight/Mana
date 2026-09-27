@@ -1,6 +1,7 @@
 using System;
 using System.Diagnostics;
 using System.Drawing;
+using System.Drawing.Imaging;
 using System.IO;
 using System.Windows.Forms;
 using Mana.NativeLauncher.Live2D;
@@ -119,7 +120,9 @@ internal sealed class AvatarOverlayForm : Form
         }
         if (cubismModel is not null && cubismRenderer is not null)
         {
-            renderTimer = new System.Windows.Forms.Timer { Interval = 33 }; // ~30fps
+            // ~60fps: WM_TIMER fires on the ~15.6ms system tick, so 15
+            // lands on every tick (16 would round up to every other one).
+            renderTimer = new System.Windows.Forms.Timer { Interval = 15 };
             renderTimer.Tick += (_, _) => RenderFrame(cubismModel, cubismRenderer);
             renderTimer.Start();
         }
@@ -331,24 +334,24 @@ internal sealed class AvatarOverlayForm : Form
         avatarImage.Image = bitmap;
     }
 
-    // SkiaSharp and WinForms don't share a bitmap type -- round-trips
-    // through PNG encoding, which at this size (a small avatar, ~30fps)
-    // is not a measurable cost, and avoids hand-rolling a pixel-format-
-    // matching raw copy between SKBitmap's and System.Drawing.Bitmap's
-    // independently-defined memory layouts.
+    // SkiaSharp and WinForms don't share a bitmap type -- copies the pixels
+    // straight into a GDI+ bitmap's locked buffer, converting to its BGRA
+    // premultiplied layout on the way (PArgb is also GDI+'s fastest format
+    // to draw).
     private static Bitmap ToGdiBitmap(SKBitmap skBitmap)
     {
-        using var image = SKImage.FromBitmap(skBitmap);
-        using var data = image.Encode(SKEncodedImageFormat.Png, 100);
-        using var stream = new MemoryStream(data.ToArray());
-        using var lazyBitmap = new Bitmap(stream);
-        // new Bitmap(Stream)/Image.FromStream can defer decoding and
-        // requires its backing stream to stay open for the image's whole
-        // lifetime (a documented GDI+ gotcha) -- cloning into a real,
-        // independent Bitmap via the copy constructor here lets `stream`
-        // be safely disposed on return instead of needing to outlive
-        // every rendered frame indefinitely.
-        return new Bitmap(lazyBitmap);
+        var bitmap = new Bitmap(skBitmap.Width, skBitmap.Height, PixelFormat.Format32bppPArgb);
+        var data = bitmap.LockBits(new Rectangle(0, 0, bitmap.Width, bitmap.Height), ImageLockMode.WriteOnly, PixelFormat.Format32bppPArgb);
+        try
+        {
+            using var pixmap = skBitmap.PeekPixels();
+            pixmap.ReadPixels(new SKImageInfo(bitmap.Width, bitmap.Height, SKColorType.Bgra8888, SKAlphaType.Premul), data.Scan0, data.Stride);
+        }
+        finally
+        {
+            bitmap.UnlockBits(data);
+        }
+        return bitmap;
     }
 
     public void SetState(AvatarState state)

@@ -12,6 +12,11 @@ namespace Mana.NativeLauncher.Live2D;
 // same order of operations (including its in-place rotation quirk, where the
 // y term reads the already-rotated x), so hair moves the same in both apps.
 //
+// Unlike that port, the solver advances in fixed steps (the file's Meta.Fps,
+// else 60/s -- what Electron's pixi steps at on a 60Hz display) and the
+// written outputs blend between the last two steps, so uneven render-timer
+// ticks don't make the hair stutter. That costs up to one step of lag.
+//
 // Only Angle outputs are applied: the Framework leaves X/Y outputs'
 // translation scale at zero, so they'd only ever write 0 -- no shipped model
 // relies on that.
@@ -22,12 +27,18 @@ internal sealed class CubismPhysics
     private const float MovementThreshold = 0.001f;
     // A stalled render timer (window hidden, machine asleep) would otherwise
     // hand the solver one huge step and fling every strand.
-    private const float MaxStepSeconds = 0.1f;
+    private const float MaxFrameSeconds = 0.1f;
+    private const float DefaultStepSeconds = 1 / 60f;
 
     private enum SourceType { X, Y, Angle }
 
     private sealed record Input(string ParameterId, SourceType Type, float Weight, bool Reflect);
-    private sealed record Output(string ParameterId, int VertexIndex, float AngleScale, float Weight, bool Reflect);
+    private sealed record Output(string ParameterId, int VertexIndex, float AngleScale, float Weight, bool Reflect)
+    {
+        // The value written at the previous and latest fixed step -- what
+        // Evaluate blends between. NaN until the first step.
+        public float Previous = float.NaN, Latest = float.NaN;
+    }
 
     private sealed class Particle
     {
@@ -43,8 +54,14 @@ internal sealed class CubismPhysics
         float AngleMin, float AngleMax, float AngleDefault);
 
     private readonly Setting[] settings;
+    private readonly float stepSeconds;
+    private float pendingSeconds;
 
-    private CubismPhysics(Setting[] settings) => this.settings = settings;
+    private CubismPhysics(Setting[] settings, float stepSeconds)
+    {
+        this.settings = settings;
+        this.stepSeconds = stepSeconds;
+    }
 
     public int SettingCount => settings.Length;
 
@@ -104,15 +121,43 @@ internal sealed class CubismPhysics
                 pos.GetProperty("Minimum").GetSingle(), pos.GetProperty("Maximum").GetSingle(), pos.GetProperty("Default").GetSingle(),
                 ang.GetProperty("Minimum").GetSingle(), ang.GetProperty("Maximum").GetSingle(), ang.GetProperty("Default").GetSingle()));
         }
-        return new CubismPhysics(settings.ToArray());
+        var fps = root.TryGetProperty("Meta", out var meta) && meta.TryGetProperty("Fps", out var fpsElement)
+            ? fpsElement.GetSingle()
+            : 0f;
+        return new CubismPhysics(settings.ToArray(), fps > 0 ? 1 / fps : DefaultStepSeconds);
     }
 
-    // Reads the current (motion/expression-driven) input parameters, steps
-    // the simulation, and writes the outputs. Call after everything else has
+    // Reads the current (motion/expression-driven) input parameters, runs as
+    // many fixed steps as deltaSeconds covers (possibly none), and writes the
+    // blended outputs. Call every frame, after everything else has
     // set parameters for the frame and before CubismModel.Update().
     public void Evaluate(CubismModel model, float deltaSeconds)
     {
-        deltaSeconds = Math.Clamp(deltaSeconds, 0f, MaxStepSeconds);
+        pendingSeconds += Math.Clamp(deltaSeconds, 0f, MaxFrameSeconds);
+        // The small tolerance keeps float drift (sixty 1/60s frames summing
+        // to a hair under 1s) from skipping a step one frame and doubling up
+        // the next.
+        while (pendingSeconds >= stepSeconds * 0.999f)
+        {
+            Step(model);
+            pendingSeconds = Math.Max(0, pendingSeconds - stepSeconds);
+        }
+
+        var alpha = pendingSeconds / stepSeconds;
+        foreach (var setting in settings)
+        {
+            foreach (var output in setting.Outputs)
+            {
+                if (!float.IsNaN(output.Latest))
+                {
+                    model.SetParameterValue(output.ParameterId, output.Previous + (output.Latest - output.Previous) * alpha);
+                }
+            }
+        }
+    }
+
+    private void Step(CubismModel model)
+    {
         foreach (var setting in settings)
         {
             var translation = Vector2.Zero;
@@ -144,7 +189,7 @@ internal sealed class CubismPhysics
             translation.X = translation.X * MathF.Cos(radAngle) - translation.Y * MathF.Sin(radAngle);
             translation.Y = translation.X * MathF.Sin(radAngle) + translation.Y * MathF.Cos(radAngle);
 
-            UpdateParticles(setting.Particles, translation, totalAngle, MovementThreshold * setting.PositionMax, deltaSeconds);
+            UpdateParticles(setting.Particles, translation, totalAngle, MovementThreshold * setting.PositionMax, stepSeconds);
 
             foreach (var output in setting.Outputs)
             {
@@ -176,6 +221,8 @@ internal sealed class CubismPhysics
                     value = model.GetParameterCurrentValue(output.ParameterId) * (1 - weight) + value * weight;
                 }
                 model.SetParameterValue(output.ParameterId, value);
+                output.Previous = float.IsNaN(output.Latest) ? value : output.Latest;
+                output.Latest = value;
             }
         }
     }

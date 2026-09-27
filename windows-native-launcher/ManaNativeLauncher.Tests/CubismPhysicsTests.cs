@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Linq;
 using Mana.NativeLauncher.Live2D;
 using Xunit;
 
@@ -66,5 +67,32 @@ public class CubismPhysicsTests
             physics.Evaluate(model, 1 / 30f);
         }
         Assert.InRange(model.GetParameterCurrentValue("ParamHairFront"), -0.05f, 0.05f);
+    }
+
+    // Fixed stepping: jittery frame timing (the render timer's 15/16/31ms ticks) must land on the
+    // same simulation as perfectly even frames once the same time has passed.
+    [HiyoriProAvailableFact]
+    public void Evaluate_UnevenFrameTimesGiveTheSameMotionAsEvenOnes()
+    {
+        var root = Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..");
+        CubismCoreLibrary.IsAvailable(root);
+        var settings = CubismModelSettings.Load(HiyoriProAvailableFactAttribute.Model3JsonPath);
+
+        float Run(float[] frameTimes)
+        {
+            using var model = CubismModel.Load(settings);
+            var physics = CubismPhysics.Load(settings.PhysicsPath!);
+            model.SetParameterValue("ParamAngleX", 30f);
+            foreach (var dt in frameTimes)
+            {
+                physics.Evaluate(model, dt);
+            }
+            return model.GetParameterCurrentValue("ParamHairFront");
+        }
+
+        var even = Run(Enumerable.Repeat(1 / 60f, 30).ToArray()); // 0.5s
+        var uneven = Run([.. Enumerable.Repeat(new[] { 0.015f, 0.031f, 0.004f }, 10).SelectMany(x => x)]); // also 0.5s
+        Assert.NotEqual(0f, even);
+        Assert.Equal(even, uneven, 3);
     }
 }

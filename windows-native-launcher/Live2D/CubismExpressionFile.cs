@@ -42,7 +42,7 @@ internal sealed class CubismExpressionFile
     // Applies this expression's parameter deltas to model, resetting each
     // touched parameter to its DEFAULT value first -- so Add/Multiply
     // blends compute against a fixed baseline instead of accumulating
-    // indefinitely when this runs every render frame (~30fps) rather than
+    // indefinitely when this runs every render frame (~60fps) rather than
     // once. No fade-in/out timing; deltas snap instantly. Both are
     // deliberate scope cuts (see #514) matching the real Cubism
     // "Overwrite"/"Add"/"Multiply" blend semantics minus the Framework's

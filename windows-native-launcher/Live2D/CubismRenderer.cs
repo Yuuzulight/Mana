@@ -29,7 +29,7 @@ internal sealed class CubismRenderer : IDisposable
     private readonly SKBitmap[] textures;
     // Built once here, not per-drawable-per-frame -- textures never
     // change after construction, so re-wrapping one in a fresh SKShader
-    // on every RenderDrawable call (this runs at ~30fps indefinitely)
+    // on every RenderDrawable call (this runs at ~60fps indefinitely)
     // would leak a native shader object every time; SKPaint.Shader below
     // only ever borrows these, it doesn't own/dispose them.
     private readonly SKShader[] textureShaders;
@@ -103,7 +103,7 @@ internal sealed class CubismRenderer : IDisposable
                 {
                     // Disposed explicitly right after use, not left to
                     // BuildMaskPath -- it's a fresh SKPath built once per
-                    // masked drawable per frame; at ~30fps this runs
+                    // masked drawable per frame; at ~60fps this runs
                     // indefinitely, so leaving it to the GC/finalizer
                     // (SKPath wraps a native object) would leak steadily.
                     using var maskPath = BuildMaskPath(drawable.MaskDrawableIndices, drawables, screenPoints);
