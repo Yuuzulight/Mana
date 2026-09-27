@@ -175,6 +175,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
 
         trayIcon.DoubleClick += (_, _) => ShowStatus();
         avatarOverlay.Show();
+        ReportAvatarModelProblem();
         trayNotifications.Start();
         captionClient.Start();
 
@@ -325,13 +326,56 @@ internal sealed class ManaApplicationContext : ApplicationContext
         }
     }
 
+    // A found-but-unusable Live2D model used to fall back to the static
+    // avatar silently. Tray balloons truncate around 255 characters, so the
+    // balloon carries the first line and clicking it shows the whole
+    // explanation (also available from "Show status").
+    private void ReportAvatarModelProblem()
+    {
+        var problem = avatarOverlay.ModelLoadProblem;
+        if (problem is null)
+        {
+            return;
+        }
+        var firstLine = problem.Split('\n')[0];
+        trayIcon.BalloonTipClicked += (_, _) => ShowAvatarModelProblem();
+        trayIcon.ShowBalloonTip(
+            10000,
+            "Avatar model couldn't load",
+            (firstLine.Length > 200 ? firstLine[..200] + "…" : firstLine) + "\nClick for details.",
+            ToolTipIcon.Warning);
+    }
+
+    private void ShowAvatarModelProblem() =>
+        MessageBox.Show(
+            avatarOverlay.ModelLoadProblem + "\n\nMana is using the built-in static avatar for now.",
+            "Avatar model couldn't load",
+            MessageBoxButtons.OK,
+            MessageBoxIcon.Warning);
+
+    private string AvatarStatusLine()
+    {
+        if (avatarOverlay.ModelLoadProblem is not null)
+        {
+            return "\n\nAvatar: static fallback -- model couldn't load:\n" + avatarOverlay.ModelLoadProblem;
+        }
+        if (avatarOverlay.ModelPath is null)
+        {
+            return "\nAvatar: static (no Live2D model installed)";
+        }
+        var line = $"\nAvatar: Live2D ({Path.GetFileName(avatarOverlay.ModelPath)})";
+        return avatarOverlay.ModelLoadWarnings.Count == 0
+            ? line
+            : line + "\n" + string.Join("\n", avatarOverlay.ModelLoadWarnings.Select(warning => "  • " + warning));
+    }
+
     private async void ShowStatus()
     {
         try
         {
             var status = await backendClient.GetPerformanceStatusAsync();
             MessageBox.Show(
-                $"Backend: running\nGame detected: {status.GamingAppRunning}\nMemory: {status.TotalMemoryMb} MB\nTTS: {status.TtsProvider}{FallbackNoteFor(status.TtsProvider)}",
+                $"Backend: running\nGame detected: {status.GamingAppRunning}\nMemory: {status.TotalMemoryMb} MB\nTTS: {status.TtsProvider}{FallbackNoteFor(status.TtsProvider)}{AvatarStatusLine()}",
                 "Mana Status",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Information);
@@ -339,7 +383,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
         catch (Exception error)
         {
             MessageBox.Show(
-                $"Mana backend is not ready yet.\n\n{error.Message}",
+                $"Mana backend is not ready yet.\n\n{error.Message}{AvatarStatusLine()}",
                 "Mana Status",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Warning);

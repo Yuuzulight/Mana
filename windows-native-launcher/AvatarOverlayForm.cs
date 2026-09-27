@@ -105,6 +105,9 @@ internal sealed class AvatarOverlayForm : Form
         cubismRenderer = loaded.Renderer;
         expressions = loaded.Expressions;
         idleMotion = loaded.IdleMotion;
+        ModelPath = loaded.ModelPath;
+        ModelLoadProblem = loaded.Problem;
+        ModelLoadWarnings = loaded.Warnings ?? Array.Empty<string>();
         if (idleMotion is null && cubismModel is not null)
         {
             proceduralIdleMotion = new ProceduralIdleMotion();
@@ -124,34 +127,58 @@ internal sealed class AvatarOverlayForm : Form
         CubismModel? Model,
         CubismRenderer? Renderer,
         IReadOnlyDictionary<string, CubismExpressionFile> Expressions,
-        CubismMotionFile? IdleMotion);
+        CubismMotionFile? IdleMotion,
+        string? ModelPath = null,
+        string? Problem = null,
+        IReadOnlyList<string>? Warnings = null);
 
-    private static readonly CubismLoadResult NotAvailable = new(null, null, new Dictionary<string, CubismExpressionFile>(), null);
+    private static CubismLoadResult NotAvailable(string? modelPath = null, string? problem = null)
+    {
+        if (problem is not null)
+        {
+            Console.WriteLine($"AvatarOverlayForm: Live2D model not loaded, using static PNGs. {problem}");
+        }
+        return new(null, null, new Dictionary<string, CubismExpressionFile>(), null, modelPath, problem);
+    }
 
-    // Returns NotAvailable -- not a throw -- when the SDK/model aren't
-    // available, or if a real model file exists but fails to parse: any
-    // of those mean "fall back to the PNG swap", not "crash the
-    // launcher". Expression files (#514) and the Idle motion (#515) are
-    // both loaded best-effort too -- one malformed accessory file is
-    // skipped (logged), not fatal to the model load it belongs to.
+    // Set when a Live2D model was found but couldn't be used (a plain-English
+    // explanation for the user -- see CubismModelDiagnostics), and for parts
+    // of a loaded model that were skipped. Both null/empty on success or when
+    // there's simply no model installed (the static avatar is the default).
+    public string? ModelLoadProblem { get; }
+    public IReadOnlyList<string> ModelLoadWarnings { get; }
+    public string? ModelPath { get; }
+
+    // Never throws: no SDK, no model, or a model that fails to parse all
+    // mean "fall back to the PNG swap", not "crash the launcher" -- but
+    // each failure now carries a user-facing Problem instead of only a
+    // Console line. Expression files (#514) and the Idle motion (#515) are
+    // loaded best-effort -- one malformed accessory file is skipped (and
+    // reported as a warning), not fatal to the model load it belongs to.
     private static CubismLoadResult TryLoadCubismModel(string rootDirectory)
     {
-        if (!CubismCoreLibrary.IsAvailable(rootDirectory))
+        var explicitPath = Environment.GetEnvironmentVariable(CubismModelLocator.EnvVar);
+        var model3JsonPath = CubismModelLocator.Find(rootDirectory, explicitPath);
+        if (model3JsonPath is null)
         {
-            return NotAvailable;
+            return NotAvailable(problem: CubismModelDiagnostics.DescribeNoModel(rootDirectory, explicitPath));
         }
 
-        var model3JsonPath = Path.Combine(
-            rootDirectory, "windows-launcher", "avatar", "model", "hiyori_free", "runtime", "hiyori_free_t08.model3.json");
-        if (!File.Exists(model3JsonPath))
+        if (!CubismCoreLibrary.IsAvailable(rootDirectory))
         {
-            return NotAvailable;
+            return NotAvailable(model3JsonPath, CubismModelDiagnostics.EngineMissing(model3JsonPath));
         }
 
         CubismModel? model = null;
+        var warnings = new List<string>();
         try
         {
             var settings = CubismModelSettings.Load(model3JsonPath);
+            var missingFiles = CubismModelDiagnostics.DescribeMissingFiles(settings, model3JsonPath);
+            if (missingFiles is not null)
+            {
+                return NotAvailable(model3JsonPath, missingFiles);
+            }
             model = CubismModel.Load(settings);
             var renderer = new CubismRenderer(settings.TexturePaths);
 
@@ -165,6 +192,7 @@ internal sealed class AvatarOverlayForm : Form
                 catch (Exception ex) when (ex is not (OutOfMemoryException or StackOverflowException))
                 {
                     Console.WriteLine($"AvatarOverlayForm: failed to load expression '{name}' ({path}), skipping it. {ex.Message}");
+                    warnings.Add(CubismModelDiagnostics.SkippedPart("expression", name, ex));
                 }
             }
 
@@ -178,10 +206,11 @@ internal sealed class AvatarOverlayForm : Form
                 catch (Exception ex) when (ex is not (OutOfMemoryException or StackOverflowException))
                 {
                     Console.WriteLine($"AvatarOverlayForm: failed to load idle motion ({settings.IdleMotionPath}), skipping it. {ex.Message}");
+                    warnings.Add(CubismModelDiagnostics.SkippedPart("idle motion", Path.GetFileName(settings.IdleMotionPath), ex));
                 }
             }
 
-            return new CubismLoadResult(model, renderer, expressions, idleMotion);
+            return new CubismLoadResult(model, renderer, expressions, idleMotion, model3JsonPath, null, warnings);
         }
         // Broad by design, not just the handful of exception types this
         // path happens to throw today: "the model file exists but fails
@@ -198,12 +227,11 @@ internal sealed class AvatarOverlayForm : Form
         // still propagate.
         catch (Exception ex) when (ex is not (OutOfMemoryException or StackOverflowException))
         {
-            Console.WriteLine($"AvatarOverlayForm: failed to load Cubism model, falling back to static PNGs. {ex.Message}");
             // model may have loaded successfully before the renderer (a
             // separate step, e.g. a corrupt texture) threw -- without
             // this, its aligned native buffers would leak permanently.
             model?.Dispose();
-            return NotAvailable;
+            return NotAvailable(model3JsonPath, CubismModelDiagnostics.DescribeLoadFailure(ex, model3JsonPath));
         }
     }
 
