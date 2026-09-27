@@ -6,6 +6,7 @@ single seek(t); render_debut.py drives that frame by frame.
 Run: python build_debut.py
 """
 
+import itertools
 import json
 import math
 import pathlib
@@ -19,7 +20,7 @@ HERE = pathlib.Path(__file__).parent
 OUT = HERE / "debut"
 FPS = 60
 
-ACCENT, FACET, INK, MUTED, PANEL, BORDER, GROUND = "#9d8ce0", "#6f5cc4", "#ece8f4", "#a39cb5", "#221e2c", "#3a3450", "#17141f"
+ACCENT, INK, MUTED, PANEL, BORDER, GROUND = "#9d8ce0", "#ece8f4", "#a39cb5", "#221e2c", "#3a3450", "#17141f"
 MANA_BUBBLE, USER_BUBBLE, ERR = "#2a2536", "#3a3560", "#e0707a"
 SHAPE = (f"background: {PANEL}; border: 1px solid {BORDER}; box-sizing: border-box; "
          f"box-shadow: 0 10px 32px rgba(0,0,0,0.45), 0 0 48px rgba(157,140,224,0.12)")
@@ -36,11 +37,27 @@ def at(css, inner="", pop=None, fade=None, id=None):
     return f'<div{attrs} style="position: absolute; {css}">{inner}</div>'
 
 
+_crystal_ids = itertools.count()
+
+
 def crystal(h=30):
-    return (f'<svg width="{h * 14 // 30}" height="{h}" viewBox="-7 -15 14 30" aria-hidden="true">'
-            f'<path d="M0 -14 L6 -5 L6 5 L0 14 L-6 5 L-6 -5 Z" fill="{ACCENT}" stroke="{FACET}" stroke-width="1" stroke-linejoin="round"/>'
-            f'<path d="M0 -14 L0 14 M-6 -5 L6 -5 M-6 5 L6 5" fill="none" stroke="{FACET}" stroke-width="0.75" opacity="0.6"/>'
-            f'<path d="M-3 -9 L-1 -6" stroke="#f1edff" stroke-width="1.5" stroke-linecap="round" opacity="0.85"/></svg>')
+    """Mana's crystal, from her hair-tie design (marketing/concept/DESIGN_NOTES.md): a slender
+    needle-pointed shard, a pale lit face and a periwinkle face deepening to indigo, a glassy
+    streak, a white rim and a soft blue glow. Same box and centre as before; the glow overflows it.
+    Each copy gets its own gradient/filter ids so none depends on another screen's SVG."""
+    n = next(_crystal_ids)
+    return (f'<svg width="{h * 14 // 30}" height="{h}" viewBox="-7.47 -18 14.93 32" overflow="visible" aria-hidden="true"><defs>'
+            f'<linearGradient id="crLit{n}" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#f3f5ff"/><stop offset="1" stop-color="#b3c8f6"/></linearGradient>'
+            f'<linearGradient id="crShade{n}" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#a3b3f6"/>'
+            f'<stop offset="0.6" stop-color="#7684f5"/><stop offset="1" stop-color="#3d4fbf"/></linearGradient>'
+            f'<filter id="crGlow{n}" x="-80%" y="-60%" width="260%" height="220%">'
+            f'<feDropShadow dx="0" dy="0" stdDeviation="2.5" flood-color="#8fb4ff" flood-opacity="0.7"/></filter></defs>'
+            f'<g filter="url(#crGlow{n})">'
+            f'<path d="M0 -18 L-4.6 1 L0 14 Z" fill="url(#crLit{n})"/>'
+            f'<path d="M0 -18 L4.6 1 L0 14 Z" fill="url(#crShade{n})"/>'
+            f'<path d="M1.1 -10 L2.9 0 L1.4 5 Z" fill="#ffffff" opacity="0.45"/>'
+            f'<path d="M0 -18 L-4.6 1 L0 14 L4.6 1 Z" fill="none" stroke="#ffffff" stroke-width="0.9" stroke-linejoin="round" opacity="0.95"/>'
+            f'</g></svg>')
 
 
 def sparkles(seed=0, n=14):
