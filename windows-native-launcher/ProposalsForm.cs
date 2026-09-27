@@ -37,9 +37,14 @@ internal sealed class ProposalsForm : Form
     // proposal's hunks.
     private int loadGeneration;
 
-    public ProposalsForm(ManaBackendClient backendClient)
+    private readonly string? focusProposalId;
+
+    // focusProposalId: select that proposal once the list loads (the chat's
+    // Review button opens the window on the edit it's attached to).
+    public ProposalsForm(ManaBackendClient backendClient, string? focusProposalId = null)
     {
         this.backendClient = backendClient;
+        this.focusProposalId = focusProposalId;
 
         Text = "Mana Pending Edits";
         Width = 900;
@@ -115,6 +120,11 @@ internal sealed class ProposalsForm : Form
             item.SubItems.Add(proposal.Summary ?? "");
             item.SubItems.Add(proposal.HunkCount.ToString());
             list.Items.Add(item);
+            if (proposal.Id == focusProposalId)
+            {
+                item.Selected = true;
+                item.EnsureVisible();
+            }
         }
         statusLabel.Text = proposals.Count == 0 ? "No pending edits." : "";
     }

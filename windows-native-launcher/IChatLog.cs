@@ -8,4 +8,8 @@ internal interface IChatLog
 {
     void AppendUserMessage(string text);
     void AppendReplySentence(string text);
+
+    // #652 part 6: Mana's reply is complete (not interrupted, not failed) --
+    // the chat checks then whether the turn left any edits for approval.
+    void ReplyFinished() { }
 }

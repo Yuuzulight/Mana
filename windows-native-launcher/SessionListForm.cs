@@ -58,6 +58,7 @@ internal sealed class SessionListForm : Form
     // new-chat) with no matching Dispose.
     private readonly Font activeSessionFont;
     private readonly Font messageBoxFont;
+    private readonly System.Collections.Generic.HashSet<string> offeredProposalIds = new();
 
     // Mirrors VoiceLoop's own currentSessionId -- null (nothing switched
     // to yet) means node-bot's implicit "default" session, same starting
@@ -313,6 +314,7 @@ internal sealed class SessionListForm : Form
         // then the chat fills the rest.
         chatArea.Controls.Add(chatLog);
         chatArea.Controls.Add(BuildMessageBox());
+        chatLog.ReplyEnded += () => _ = OfferPendingEditsAsync(chatLog);
 
         // Same collapse toggle as Claude's own UI, and the design
         // reference's own #sidebarToggleBtn -- a persistent top strip
@@ -432,6 +434,83 @@ internal sealed class SessionListForm : Form
         panel.Controls.Add(gap);
         panel.Controls.Add(send);
         return panel;
+    }
+
+    // #652 part 6: when a reply finishes, any edits Mana proposed during
+    // that turn get Approve / Review buttons on her message. "During that
+    // turn" = still pending and created since the turn's user message (a
+    // few seconds' slack for clock skew); each edit is offered only once.
+    private async Task OfferPendingEditsAsync(ChatView chat)
+    {
+        var turnStart = chat.LastUserMessageAt;
+        System.Collections.Generic.IReadOnlyList<ManaProposalSummary> proposals;
+        try
+        {
+            proposals = await backendClient.GetProposalsAsync();
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"SessionListForm: couldn't check for pending edits. {ex.Message}");
+            return;
+        }
+        if (IsDisposed)
+        {
+            return;
+        }
+
+        var fresh = proposals.Where(p => p.Status == "pending" && !offeredProposalIds.Contains(p.Id) && CreatedSince(p, turnStart)).ToList();
+        if (fresh.Count == 0)
+        {
+            return;
+        }
+        foreach (var proposal in fresh)
+        {
+            offeredProposalIds.Add(proposal.Id);
+        }
+        chat.AttachActions(new[]
+        {
+            new ChatView.ChatAction(fresh.Count == 1 ? "Approve" : $"Approve all ({fresh.Count})", true, () => ApproveAllAsync(fresh)),
+            new ChatView.ChatAction(fresh.Count == 1 ? "Review" : "Review edits", false, () =>
+            {
+                new ProposalsForm(backendClient, fresh[0].Id).Show(this);
+                return Task.FromResult<string?>(null);
+            }),
+        });
+    }
+
+    internal static bool CreatedSince(ManaProposalSummary proposal, DateTime? turnStartUtc) =>
+        turnStartUtc is null
+        || !DateTimeOffset.TryParse(proposal.CreatedAt, out var created)
+        || created.UtcDateTime >= turnStartUtc.Value.AddSeconds(-5);
+
+    // Approves every hunk of each edit; the returned note replaces the buttons.
+    private async Task<string?> ApproveAllAsync(System.Collections.Generic.IReadOnlyList<ManaProposalSummary> proposals)
+    {
+        var approved = 0;
+        string? problem = null;
+        foreach (var proposal in proposals)
+        {
+            var detail = await backendClient.GetProposalDetailAsync(proposal.Id);
+            if (detail is null || detail.Status != "pending")
+            {
+                problem ??= $"{proposal.RelativePath} was already handled.";
+                continue;
+            }
+            var result = await backendClient.ApproveProposalAsync(proposal.Id, detail.Hunks.Select(h => h.Id).ToList());
+            if (result.Approved)
+            {
+                approved++;
+            }
+            else
+            {
+                problem ??= result.Error ?? "The backend refused the edit.";
+            }
+        }
+        if (problem is null)
+        {
+            return approved == 1 ? $"Approved -- {proposals[0].RelativePath} updated." : $"Approved all {approved} edits.";
+        }
+        return approved == 0 ? $"Not approved: {problem}" : $"Approved {approved} of {proposals.Count}. {problem}";
     }
 
     private const string MessageBoxPlaceholder = "Message Mana...  (Enter to send, Shift+Enter for a new line)";
