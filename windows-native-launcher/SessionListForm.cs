@@ -73,7 +73,7 @@ internal sealed class SessionListForm : Form
     // SetToolPanelPinned/CloseToolPanel.
     private bool toolPanelPinned;
 
-    public SessionListForm(ManaBackendClient backendClient, VoiceLoop voiceLoop, ChatLogPanel chatLog, AvatarOverlayForm avatarOverlay, BackendLogBuffer backendLog)
+    public SessionListForm(ManaBackendClient backendClient, VoiceLoop voiceLoop, ChatView chatLog, AvatarOverlayForm avatarOverlay, BackendLogBuffer backendLog)
     {
         this.backendClient = backendClient;
         this.voiceLoop = voiceLoop;

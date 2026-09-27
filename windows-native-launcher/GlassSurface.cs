@@ -180,9 +180,9 @@ internal static class GlassSurface
             PaintSheen(g, bounds, progress);
         }
         using var outline = new Pen(Outline);
-        g.DrawRectangle(outline, 0, 0, bounds.Width - 1, bounds.Height - 1);
+        g.DrawRectangle(outline, bounds.X, bounds.Y, bounds.Width - 1, bounds.Height - 1);
         using var top = new Pen(TopEdge);
-        g.DrawLine(top, 1, 1, bounds.Width - 2, 1);
+        g.DrawLine(top, bounds.X + 1, bounds.Y + 1, bounds.Right - 2, bounds.Y + 1);
     }
 
     // A slanted band of light that sweeps left to right as progress goes 0 -> 1.
@@ -191,8 +191,8 @@ internal static class GlassSurface
         const float slant = 0.45f;
         var bandWidth = Math.Max(60f, bounds.Width * 0.35f);
         var travel = bounds.Width + bandWidth * 2 + bounds.Height * slant;
-        var x = -bandWidth - bounds.Height * slant + progress * travel;
-        var band = new RectangleF(x, 0, bandWidth, bounds.Height);
+        var x = bounds.X - bandWidth - bounds.Height * slant + progress * travel;
+        var band = new RectangleF(x, bounds.Y, bandWidth, bounds.Height);
         using var brush = new LinearGradientBrush(band, Color.Transparent, Color.Transparent, LinearGradientMode.Horizontal)
         {
             InterpolationColors = new ColorBlend
@@ -202,10 +202,14 @@ internal static class GlassSurface
             },
         };
         var saved = g.Transform;
-        using var shear = new Matrix(1, 0, slant, 1, 0, 0);
+        var clip = g.Clip;
+        g.SetClip(bounds, CombineMode.Intersect);
+        // Shear about the rect's top edge so the band stays inside it.
+        using var shear = new Matrix(1, 0, slant, 1, -slant * bounds.Y, 0);
         g.MultiplyTransform(shear);
         g.FillRectangle(brush, band);
         g.Transform = saved;
+        g.Clip = clip;
     }
 
     private static void Swap(Control control, Image image)

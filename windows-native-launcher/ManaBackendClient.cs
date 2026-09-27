@@ -497,7 +497,7 @@ internal sealed class ManaBackendClient
     // returns the full stored session (summary + every turn), so recent
     // turns are just the tail of that array taken client-side rather than
     // a second call to the separate paginated /turns endpoint, which
-    // exists for ChatLogPanel-style scrollback this modal doesn't need.
+    // exists for ChatView-style scrollback this modal doesn't need.
     // Null return means the session has never had a real turn yet --
     // ensureSession only creates the row lazily on the first one (see
     // SessionListForm's own StartNewChat comment) -- not a transport
