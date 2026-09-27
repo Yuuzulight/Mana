@@ -20,12 +20,12 @@ public class DarkThemeTests
     }
 
     [Fact]
-    public void ApplyPreset_FallsBackToVioletForAnUnknownPresetId()
+    public void ApplyPreset_FallsBackToTheManaDefaultForAnUnknownPresetId()
     {
         DarkTheme.ApplyPreset("not-a-real-preset", null);
 
-        Assert.Equal(ColorTranslator.FromHtml("#1c1a18"), DarkTheme.Background);
-        Assert.Equal(ColorTranslator.FromHtml("#9d8ce0"), DarkTheme.Accent);
+        Assert.Equal(ColorTranslator.FromHtml("#f5f3fa"), DarkTheme.Background);
+        Assert.Equal(ColorTranslator.FromHtml("#6a5fb8"), DarkTheme.Accent);
     }
 
     [Fact]

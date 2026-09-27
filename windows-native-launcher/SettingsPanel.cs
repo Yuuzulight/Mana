@@ -756,7 +756,7 @@ internal sealed class SettingsPanel : UserControl
                 return;
             }
 
-            settings.Preset = themePresetCombo.SelectedItem is ThemePresetInfo preset ? preset.Id : "violet";
+            settings.Preset = themePresetCombo.SelectedItem is ThemePresetInfo preset ? preset.Id : "mana";
             settings.AccentHex = accentText.Length == 0 ? null : accentText;
             settings.Save();
             statusLabel.ForeColor = DarkTheme.Muted;
