@@ -14,7 +14,7 @@ public class ManaThemeSettingsTests
     {
         var settings = ManaThemeSettings.Load(TempPath());
 
-        Assert.Equal("violet", settings.Preset);
+        Assert.Equal("mana", settings.Preset);
         Assert.Null(settings.AccentHex);
     }
 
@@ -27,7 +27,7 @@ public class ManaThemeSettingsTests
         {
             var settings = ManaThemeSettings.Load(path);
 
-            Assert.Equal("violet", settings.Preset);
+            Assert.Equal("mana", settings.Preset);
         }
         finally
         {

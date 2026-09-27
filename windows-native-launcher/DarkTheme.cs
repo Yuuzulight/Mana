@@ -68,9 +68,9 @@ internal static class DarkTheme
     private static readonly StringFormat TabTextFormat = new() { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
 
     // #576: ports windows-launcher/renderer/theme.js's THEME_PRESETS
-    // verbatim (same hex values) -- "violet" matches this class's own
-    // original hardcoded default exactly, so leaving the theme
-    // unconfigured is a no-op.
+    // verbatim (same hex values); "violet" matches this class's original
+    // hardcoded palette. #652 added "mana", now the default (see
+    // ManaThemeSettings).
     public static readonly IReadOnlyList<ThemePresetInfo> Presets = new[]
     {
         new ThemePresetInfo("violet", "Violet"),
@@ -101,12 +101,12 @@ internal static class DarkTheme
 
     // #576: applied once, at startup (Program.cs, before any Form is
     // constructed) from the persisted ManaThemeSettings -- an unknown
-    // presetId falls back to "violet" (this class's own original
-    // default) rather than throwing, same defensive-default reasoning
+    // presetId falls back to "mana" (the default preset) rather than
+    // throwing, same defensive-default reasoning
     // ManaSettingsStore/ManaThemeSettings use for a missing/corrupt file.
     public static void ApplyPreset(string presetId, string? accentHex)
     {
-        var colors = PresetColors.TryGetValue(presetId, out var found) ? found : PresetColors["violet"];
+        var colors = PresetColors.TryGetValue(presetId, out var found) ? found : PresetColors["mana"];
         Background = colors.Background;
         Panel = colors.Panel;
         Panel2 = colors.Panel2;
