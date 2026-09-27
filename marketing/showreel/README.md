@@ -24,7 +24,7 @@ python render_debut.py             # ~2.5 min -> debut_final.mp4
   `mix_narration.py`'s `polish()` softens S1-mini's metallic codec edge.
 - "Otsumana" is written in kana (おつ〜まな〜〜!!) so it's pronounced the
   Japanese way; its delivery was modelled on Gigi Murin's "Gii muriiin!".
-- The Live2D model is the free Hiyori sample (`hiyori_free`), usable
+- The Live2D model is Live2D's Hiyori sample (`hiyori_pro`), usable
   commercially by individuals and small businesses under Live2D's Free
   Material License.
 
