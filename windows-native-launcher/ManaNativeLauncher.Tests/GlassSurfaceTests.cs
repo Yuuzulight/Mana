@@ -16,6 +16,8 @@ public class GlassSurfaceTests
         Assert.False(DarkTheme.IsGlass);
         DarkTheme.ApplyPreset("mana", null);
         Assert.True(DarkTheme.IsGlass);
+        DarkTheme.ApplyPreset("not-a-real-preset", null); // falls back to the Mana default, glass included
+        Assert.True(DarkTheme.IsGlass);
     }
 
     [Fact]

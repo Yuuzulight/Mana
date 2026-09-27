@@ -17,7 +17,8 @@ internal sealed class ManaThemeSettings
         "Mana",
         "native-launcher-theme.json");
 
-    public string Preset { get; set; } = "violet";
+    // Mana's own preset is the default (#652); a saved choice still wins.
+    public string Preset { get; set; } = "mana";
     public string? AccentHex { get; set; }
 
     public static ManaThemeSettings Load(string? filePath = null)
