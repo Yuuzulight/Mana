@@ -488,6 +488,9 @@ async function runLocalLlamaReply(
   profile = "default",
   overrideSystemPrompt = null,
   extraMessages = null,
+  // #666: chat turns pass this to try their backup model on an empty reply
+  // before llama-cli; it resolves to a reply, or null to fall through.
+  onEmptyReply = null,
 ) {
   if (llamaServerRuntime.isEnabled()) {
     try {
@@ -499,6 +502,10 @@ async function runLocalLlamaReply(
         extraMessages,
       );
     } catch (e) {
+      if (onEmptyReply && /returned an empty reply/.test(e && e.message)) {
+        const backupReply = await onEmptyReply();
+        if (backupReply) return backupReply;
+      }
       const cause =
         e && e.cause ? ` (cause: ${e.cause.code || e.cause.message || e.cause})` : "";
       console.warn(
@@ -3262,8 +3269,9 @@ function registerRoutes(app, upload, deps = {}) {
       profile = "default",
       overrideSystemPrompt = null,
       extraMessages = null,
+      onEmptyReply = null,
     ) {
-      return runLocalLlamaReply(prompt, maxTokens, profile, overrideSystemPrompt, extraMessages);
+      return runLocalLlamaReply(prompt, maxTokens, profile, overrideSystemPrompt, extraMessages, onEmptyReply);
     });
 
   // Foundational tool-calling (issue #51): only llama-server (not the
@@ -4359,6 +4367,7 @@ function registerRoutes(app, upload, deps = {}) {
         normalizedModelProfile,
         selectedSystemPrompt,
         memoryExtraMessages,
+        () => replyWithBackup(promptText),
       );
     }
 
@@ -4424,6 +4433,8 @@ function registerRoutes(app, upload, deps = {}) {
       return replyMaybeWithTools(promptText);
     }
 
+    const BACKUP_NOTICE = "My main model isn't answering, so I'm using my backup.";
+    let usedBackup = false;
     // #666: wait out a llama-server (re)start instead of failing the turn,
     // telling a streaming client once, as a spoken sentence. Not in
     // streamedSentences, so it never counts against streamedMatchesFinal.
@@ -4442,11 +4453,38 @@ function registerRoutes(app, upload, deps = {}) {
         );
         if (readyProfile !== normalizedModelProfile) {
           console.warn(`Mana: ${normalizedModelProfile} model unavailable, answering with ${readyProfile}`);
-          if (onSentence) onSentence("My main model isn't answering, so I'm using my backup.");
+          if (onSentence) onSentence(BACKUP_NOTICE);
           normalizedModelProfile = readyProfile;
+          usedBackup = true;
         }
       } catch (e) {
         console.warn("llama-server still unavailable after waiting:", e && e.message ? e.message : e);
+      }
+    }
+
+    // #666: an empty reply (after the runtime's own retry) gets one try on
+    // the backup model before llama-cli -- once per turn, including a switch
+    // the wait above already made, so the notice is said at most once.
+    async function replyWithBackup(promptText) {
+      if (usedBackup) return null;
+      usedBackup = true;
+      try {
+        const backup = activeLlamaServerRuntime.backupProfileFor?.(normalizedModelProfile);
+        if (!backup) return null;
+        const backupReply = await activeLlamaServerRuntime.runLocalAssistantReply(
+          promptText,
+          effectiveMaxTokens,
+          backup,
+          selectedSystemPrompt,
+          memoryExtraMessages,
+        );
+        console.warn(`Mana: ${normalizedModelProfile} model gave an empty reply, answered with ${backup}`);
+        if (onSentence) onSentence(BACKUP_NOTICE);
+        normalizedModelProfile = backup;
+        return backupReply;
+      } catch (e) {
+        console.warn("Backup model reply failed, falling back to llama-cli:", e && e.message ? e.message : e);
+        return null;
       }
     }
 

@@ -173,3 +173,87 @@ test("#666: when waitForServer gives up, the turn still falls through to the exi
   );
   assert.equal(reply, "llama-cli reply");
 });
+
+// #666: an empty reply -- streamed, then non-streamed -- gets one try on the
+// backup model before llama-cli. The fake runLocalAssistantReply stands in
+// for runLocalLlamaReply seeing llama-server's empty-reply error: it calls
+// onEmptyReply, then answers as llama-cli if that returned nothing.
+const emptyServerThenCli = async (prompt, maxTokens, profile, sys, extra, onEmptyReply) =>
+  (await onEmptyReply()) || "llama-cli reply";
+const noToolReply = async () => ({ content: "", toolCalls: [], rounds: 0 });
+
+test("#666: an empty reply falls back to the backup model and says so once", async () => {
+  const seen = [];
+  const backupCalls = [];
+  const fakeLlamaServerRuntime = {
+    isEnabled: () => true,
+    streamLocalAssistantReply: async () => {
+      throw new Error("llama-server returned an empty reply");
+    },
+    backupProfileFor: (profile) => (profile === "default" ? "fast" : null),
+    runLocalAssistantReply: async (prompt, maxTokens, profile) => {
+      backupCalls.push(profile);
+      return "Backup reply.";
+    },
+  };
+  const app = createApp({
+    llamaServerRuntime: fakeLlamaServerRuntime,
+    runLocalAssistantReply: emptyServerThenCli,
+    runToolAwareReply: noToolReply,
+  });
+  const reply = await app.locals.buildAssistantReply(
+    "hi", "", "", "default", null, null, null, {}, (sentence) => seen.push(sentence),
+  );
+  assert.equal(reply, "Backup reply.");
+  assert.deepEqual(backupCalls, ["fast"]);
+  assert.deepEqual(seen, ["My main model isn't answering, so I'm using my backup."]);
+});
+
+test("#666: when the backup model is empty too, the turn goes to llama-cli as before", async () => {
+  const seen = [];
+  const fakeLlamaServerRuntime = {
+    isEnabled: () => true,
+    backupProfileFor: () => "fast",
+    runLocalAssistantReply: async () => {
+      throw new Error("llama-server returned an empty reply");
+    },
+  };
+  const app = createApp({
+    llamaServerRuntime: fakeLlamaServerRuntime,
+    runLocalAssistantReply: emptyServerThenCli,
+    runToolAwareReply: noToolReply,
+  });
+  const reply = await app.locals.buildAssistantReply(
+    "hi", "", "", "default", null, null, null, {}, (sentence) => seen.push(sentence),
+  );
+  assert.equal(reply, "llama-cli reply");
+  assert.deepEqual(seen, []);
+});
+
+test("#666: a turn the wait already moved to the backup doesn't switch again on an empty reply", async () => {
+  const seen = [];
+  let backupCalls = 0;
+  const fakeLlamaServerRuntime = {
+    isEnabled: () => true,
+    waitForServer: async () => "fast",
+    streamLocalAssistantReply: async () => {
+      throw new Error("llama-server returned an empty reply");
+    },
+    backupProfileFor: () => "other",
+    runLocalAssistantReply: async () => {
+      backupCalls += 1;
+      return "should not be used";
+    },
+  };
+  const app = createApp({
+    llamaServerRuntime: fakeLlamaServerRuntime,
+    runLocalAssistantReply: emptyServerThenCli,
+    runToolAwareReply: noToolReply,
+  });
+  const reply = await app.locals.buildAssistantReply(
+    "hi", "", "", "default", null, null, null, {}, (sentence) => seen.push(sentence),
+  );
+  assert.equal(reply, "llama-cli reply");
+  assert.equal(backupCalls, 0);
+  assert.deepEqual(seen, ["My main model isn't answering, so I'm using my backup."]);
+});
