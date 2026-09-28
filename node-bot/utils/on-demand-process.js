@@ -1,4 +1,5 @@
-const { spawn: defaultSpawn } = require("node:child_process");
+const { spawn: defaultSpawn, execFile: defaultExecFile } = require("node:child_process");
+const { killProcessTree, waitForExit } = require("./kill-process-tree");
 
 // A local HTTP service started on first use and stopped after an idle
 // period -- factored out of ai/reranker-runtime.js (#674/#721) so the
@@ -19,12 +20,17 @@ function createOnDemandProcess({
   // broken setup isn't retried on every turn.
   retryCooldownMs = 5 * 60 * 1000,
   spawn = defaultSpawn,
+  execFile = defaultExecFile,
+  platform = process.platform,
   fetch = globalThis.fetch,
   sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
 }) {
   // ready: our own child is up. An adopted server is health-checked on
   // every ensure() instead, so one that went away gets replaced.
   const state = { child: null, ready: false, starting: null, idleTimer: null, failedAt: 0 };
+  // Settles once the last stopped child has exited (true) or is still
+  // running after the stop bound (false); start() waits on it.
+  let stopping = Promise.resolve(true);
   let exitHandlerRegistered = false;
 
   function stop() {
@@ -34,10 +40,10 @@ function createOnDemandProcess({
     const child = state.child;
     state.child = null;
     if (child) {
-      try {
-        child.kill();
-      } catch (e) {}
+      killProcessTree(child, { platform, execFile });
+      stopping = waitForExit(child, name);
     }
+    return child;
   }
 
   // Restarts the idle countdown; call on every use.
@@ -46,8 +52,15 @@ function createOnDemandProcess({
     if (!ms || ms <= 0 || Number.isNaN(ms)) return;
     clearTimeout(state.idleTimer);
     state.idleTimer = setTimeout(() => {
-      if (state.child) console.log(`${name} idle for ${ms}ms, shutting it down`);
-      stop();
+      // A timer left from before an unexpected exit must not kill the
+      // restart in progress; that start's touch() schedules a fresh one.
+      if (state.starting) return;
+      const child = stop();
+      if (!child) return; // adopted (not ours to stop) or already gone
+      console.log(`${name} idle for ${ms}ms, shutting it down (pid ${child.pid})`);
+      stopping.then((exited) => {
+        if (exited) console.log(`${name} (pid ${child.pid}) stopped`);
+      });
     }, ms);
     state.idleTimer.unref?.();
   }
@@ -106,6 +119,9 @@ function createOnDemandProcess({
   }
 
   async function start() {
+    // A just-stopped child holds the port (and may still answer health)
+    // until it has really exited; spawning before that fails to bind.
+    await stopping;
     if (await isHealthy()) return;
     if (Date.now() - state.failedAt < retryCooldownMs) {
       throw new Error(`${name} failed to start recently, retrying later`);
