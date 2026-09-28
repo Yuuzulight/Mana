@@ -18,7 +18,7 @@ Returns a markdown file with your memory summary, key facts, and cross-session c
 
 ### Local Network
 
-If your phone is on the same WiFi as Mana, just use the local IP:
+By default the backend only accepts connections from its own PC (#670). To reach it from your phone on the same WiFi, first set `MANA_BIND_HOST=0.0.0.0` (or the PC's LAN IP) in `node-bot/.env` and restart Mana -- this lets every device on the network reach the backend, and anything that can reach it can make Mana reply and run tools. Then use the local IP:
 
 ```bash
 curl -H "Authorization: Bearer YOUR_API_KEY" http://192.168.1.x:5005/api/memory

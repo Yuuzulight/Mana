@@ -128,7 +128,12 @@ const {
 } = require("./tools/deep-research");
 const { fetchPage, searchWeb, wikiLookup } = require("./tools/web-access");
 const { readGgufMetadata } = require("./tools/gguf-metadata");
-	const { runDoctorChecksAsync } = require("./doctor");
+const {
+  DEFAULT_BIND_HOST,
+  getBindHost,
+  isLoopbackBindHost,
+  runDoctorChecksAsync,
+} = require("./doctor");
 	const { createDoctorTrayPoller } = require("./doctor-tray-poll");
 	const { notifyTray } = require("./tray-notifier");
 	const sessionTokenUsage = require("./session-token-usage");
@@ -5306,9 +5311,38 @@ async function startServer() {
   // server-routes.js's registerAdminStaticRoutes.
   registerAdminStaticRoutes(app);
 
-  return server.listen(port, () =>
-    console.log("Node local bot listening on", port),
-  );
+  return listenOnBindHost(server, port);
+}
+
+// Issue #670: loopback only by default, so other devices on the network
+// can't drive /reply (and its tools). MANA_BIND_HOST=0.0.0.0 (or a LAN IP)
+// restores LAN access for setups that need it -- loudly.
+function listenOnBindHost(server, port, env = process.env) {
+  const bindHost = getBindHost(env);
+  if (!isLoopbackBindHost(bindHost)) {
+    console.warn(
+      `[Mana Boot] WARNING: MANA_BIND_HOST=${bindHost} -- the backend is reachable from other devices on your network, and anything that can reach it can make Mana reply and run tools. Unset MANA_BIND_HOST to keep it on this PC only.`,
+    );
+  }
+  return server.listen(port, bindHost, () => {
+    const boundPort = server.address().port;
+    console.log("Node local bot listening on", `${bindHost}:${boundPort}`);
+    if (bindHost !== DEFAULT_BIND_HOST) return;
+    // "localhost" resolves to ::1 first on Windows, and before #670 the
+    // backend answered on ::1 too (the old all-interfaces bind). Mirror the
+    // default 127.0.0.1 listener on ::1 so localhost clients (the Electron
+    // launcher's default URL, the Obsidian plugin) never fall back through a
+    // refused IPv6 connect. Its sockets feed the same HTTP server, so the
+    // WebSocket upgrade handlers see them too. Best-effort: a host without
+    // IPv6 just skips it.
+    const ipv6Loopback = require("net")
+      .createServer((socket) => server.emit("connection", socket))
+      .on("error", (e) =>
+        console.warn("[Mana Boot] ::1 listener unavailable:", e?.message || e),
+      )
+      .listen(boundPort, "::1");
+    server.once("close", () => ipv6Loopback.close());
+  });
 }
 
 if (require.main === module) {
@@ -5329,6 +5363,7 @@ module.exports = {
   DEEP_RESEARCH_SUBTASK_PROFILE,
   ensureDirectory,
   formatMemoryMarkdown,
+  listenOnBindHost,
   normalizeLlamaModelProfile,
   pickPreferredLlamaModel,
   selectLlamaModelProfileForPrompt,
