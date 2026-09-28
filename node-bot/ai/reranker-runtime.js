@@ -1,6 +1,7 @@
 const defaultFs = require("node:fs");
 const path = require("node:path");
 const { spawn: defaultSpawn } = require("node:child_process");
+const { createOnDemandProcess } = require("../utils/on-demand-process");
 
 // Issue #674: an optional CPU-only reranker for memory recall -- a second,
 // small llama-server started on demand with --reranking on its own port,
@@ -14,9 +15,6 @@ const { spawn: defaultSpawn } = require("node:child_process");
 // The first call after a cold start usually times out while the model
 // loads; the server keeps starting in the background and later calls use it.
 const STARTUP_TIMEOUT_MS = 60 * 1000;
-// Same cooldown the main runtime uses after a failed start, so a broken
-// setup doesn't respawn a process on every turn.
-const RETRY_COOLDOWN_MS = 5 * 60 * 1000;
 // Pairs have to fit one physical batch (llama-server's -ub, 512 tokens by
 // default) -- a query plus a document cut to these stays well under it.
 const MAX_QUERY_CHARS = 500;
@@ -37,8 +35,38 @@ function createReranker(options = {}) {
   const threads = Number(options.threads || env.LLAMA_THREADS || 4);
   const sleep = options.sleep || ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
 
-  const state = { child: null, ready: false, starting: null, idleTimer: null, failedAt: 0 };
-  let exitHandlerRegistered = false;
+  // Spawn/reuse/idle-stop/cooldown live in utils/on-demand-process.js.
+  const server = createOnDemandProcess({
+    name: "Reranker llama-server",
+    healthUrl: () => `http://127.0.0.1:${port()}/health`,
+    command: () => {
+      const bin = findServerBin();
+      return {
+        bin,
+        args: [
+          "-m", modelPath(),
+          "--host", "127.0.0.1",
+          "--port", String(port()),
+          "--reranking",
+          "-ngl", "0",
+          "-t", String(threads),
+          "--no-webui",
+        ],
+        options: {
+          cwd: path.win32.dirname(bin),
+          // -ngl 0 keeps the weights on the CPU; hiding the GPU as well stops
+          // the CUDA build from offloading large matmuls or allocating a CUDA
+          // context, so the reranker never touches VRAM.
+          env: { ...env, CUDA_VISIBLE_DEVICES: "-1" },
+        },
+      };
+    },
+    idleMs: () => Number(env.MANA_RERANKER_IDLE_MS === undefined ? 600000 : env.MANA_RERANKER_IDLE_MS),
+    startupTimeoutMs: STARTUP_TIMEOUT_MS,
+    spawn,
+    fetch: fetchImpl,
+    sleep,
+  });
 
   function port() {
     return Number(env.MANA_RERANKER_PORT || 8091);
@@ -59,119 +87,6 @@ function createReranker(options = {}) {
     // Never spawn from test runs -- same guard as llama-server-runtime.
     if (env.NODE_ENV === "test" || env.NODE_TEST_CONTEXT) return false;
     return Boolean(findServerBin && modelPath());
-  }
-
-  function stop() {
-    clearTimeout(state.idleTimer);
-    state.idleTimer = null;
-    state.ready = false;
-    const child = state.child;
-    state.child = null;
-    if (child) {
-      try {
-        child.kill();
-      } catch (e) {}
-    }
-  }
-
-  function scheduleIdleShutdown() {
-    const idleMs = Number(env.MANA_RERANKER_IDLE_MS === undefined ? 600000 : env.MANA_RERANKER_IDLE_MS);
-    if (!idleMs || idleMs <= 0 || Number.isNaN(idleMs)) return;
-    clearTimeout(state.idleTimer);
-    state.idleTimer = setTimeout(() => {
-      console.log(`Reranker idle for ${idleMs}ms, shutting it down`);
-      stop();
-    }, idleMs);
-    state.idleTimer.unref?.();
-  }
-
-  async function isHealthy() {
-    try {
-      const resp = await fetchImpl(`http://127.0.0.1:${port()}/health`);
-      return Boolean(resp && resp.ok);
-    } catch (e) {
-      return false;
-    }
-  }
-
-  async function startServer() {
-    // A reranker left over from a hard-killed backend still holds the
-    // port -- use it rather than failing to bind.
-    if (await isHealthy()) {
-      state.ready = true;
-      return;
-    }
-    const bin = findServerBin();
-    const args = [
-      "-m", modelPath(),
-      "--host", "127.0.0.1",
-      "--port", String(port()),
-      "--reranking",
-      "-ngl", "0",
-      "-t", String(threads),
-      "--no-webui",
-    ];
-    console.log("Starting reranker llama-server:", bin, args.join(" "));
-    const child = spawn(bin, args, {
-      cwd: path.win32.dirname(bin),
-      stdio: ["ignore", "ignore", "pipe"],
-      windowsHide: true,
-      // -ngl 0 keeps the weights on the CPU; hiding the GPU as well stops
-      // the CUDA build from offloading large matmuls or allocating a CUDA
-      // context, so the reranker never touches VRAM.
-      env: { ...env, CUDA_VISIBLE_DEVICES: "-1" },
-    });
-    let stderrTail = "";
-    let exited = false;
-    child.stderr?.on?.("data", (chunk) => {
-      stderrTail = (stderrTail + String(chunk)).slice(-2000);
-    });
-    child.on("error", () => {
-      exited = true;
-    });
-    child.on("exit", (code) => {
-      exited = true;
-      if (state.child === child) {
-        state.child = null;
-        state.ready = false;
-        console.warn(`Reranker llama-server exited (code ${code})`);
-      }
-    });
-    state.child = child;
-    if (!exitHandlerRegistered) {
-      exitHandlerRegistered = true;
-      process.once("exit", stop);
-    }
-
-    const startedAt = Date.now();
-    while (!(await isHealthy())) {
-      if (exited || Date.now() - startedAt > STARTUP_TIMEOUT_MS) {
-        stop();
-        throw new Error(`reranker did not start: ${stderrTail.slice(-500) || "timed out"}`);
-      }
-      await sleep(500);
-    }
-    state.ready = true;
-    scheduleIdleShutdown();
-    console.log(`Reranker ready on port ${port()}`);
-  }
-
-  function ensureServer() {
-    if (state.ready) return Promise.resolve();
-    if (Date.now() - state.failedAt < RETRY_COOLDOWN_MS) {
-      return Promise.reject(new Error("reranker failed to start recently, retrying later"));
-    }
-    if (!state.starting) {
-      state.starting = startServer()
-        .catch((e) => {
-          state.failedAt = Date.now();
-          throw e;
-        })
-        .finally(() => {
-          state.starting = null;
-        });
-    }
-    return state.starting;
   }
 
   function deadline(ms) {
@@ -195,8 +110,8 @@ function createReranker(options = {}) {
     const limit = deadline(budgetMs);
     const controller = new AbortController();
     try {
-      await Promise.race([ensureServer(), limit.promise]);
-      scheduleIdleShutdown();
+      await Promise.race([server.ensure(), limit.promise]);
+      server.touch();
       const resp = await Promise.race([
         fetchImpl(`http://127.0.0.1:${port()}/v1/rerank`, {
           method: "POST",
@@ -226,9 +141,6 @@ function createReranker(options = {}) {
       };
     } catch (e) {
       controller.abort();
-      // An adopted server has no child to watch for exit -- re-check it
-      // next time instead of assuming it is still there.
-      if (!state.child) state.ready = false;
       const fallback = e?.message || String(e);
       console.warn("Reranker unavailable, keeping input order:", fallback);
       return { order: inputOrder, reranked: false, ms: Date.now() - startedAt, fallback };
@@ -237,7 +149,7 @@ function createReranker(options = {}) {
     }
   }
 
-  return { rerank, isEnabled, stop };
+  return { rerank, isEnabled, stop: server.stop };
 }
 
 module.exports = { createReranker };

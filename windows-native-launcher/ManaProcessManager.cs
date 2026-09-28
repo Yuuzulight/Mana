@@ -12,7 +12,6 @@ internal sealed class ManaProcessManager : IDisposable
 {
     private readonly HttpClient http;
     private Process? backendProcess;
-    private Process? kokoroProcess;
     private Process? fishSpeechProcess;
     private Process? embedderProcess;
 
@@ -31,8 +30,8 @@ internal sealed class ManaProcessManager : IDisposable
     // launch started it. False only for the actual graceful-degradation
     // case: missing native setup, or a launch failure. Lets callers (the
     // tray status) tell "fish is really answering requests" apart from
-    // "TTS_PROVIDER=fish is configured but Kokoro is silently covering for
-    // it" -- the two look identical from the configured-provider name alone.
+    // "TTS_PROVIDER=fish is configured but Fish Speech isn't answering" --
+    // the two look identical from the configured-provider name alone.
     public bool IsFishSpeechAvailable { get; private set; }
 
     // False when the configured backend URL points at another machine --
@@ -44,8 +43,8 @@ internal sealed class ManaProcessManager : IDisposable
     // hardcoded to 127.0.0.1:5005 here regardless of a user-configured
     // BackendBaseUrl (ManaSettingsStore), so a custom URL would health-check
     // (and, if unhealthy, try to spawn a local node-bot for) the wrong
-    // address entirely. Kokoro/Fish Speech stay hardcoded -- they're always
-    // local child processes this launcher itself manages, unrelated to
+    // address entirely. Fish Speech stays hardcoded -- it's always a
+    // local child process this launcher itself manages, unrelated to
     // where the node-bot backend happens to live.
     private readonly string backendHealthUrl;
     private readonly bool isBackendLocal;
@@ -72,7 +71,7 @@ internal sealed class ManaProcessManager : IDisposable
     }
 
     // onServiceReady, when given, fires once per service (key "backend"/
-    // "kokoro"/"fish-speech") the moment its own health-check-then-start
+    // "fish-speech"/"embedder") the moment its own health-check-then-start
     // resolves -- lets a caller (the startup overlay) flip that row from
     // "Starting..." to "Ready"/"Unavailable" live instead of only knowing
     // "all three are done" after StartAsync itself returns. Fires on
@@ -88,23 +87,20 @@ internal sealed class ManaProcessManager : IDisposable
             return result;
         }
 
-        // Fish Speech (S1-mini) is Mana's default TTS provider
-        // (docs/fish_speech_tts.md) -- Kokoro is its automatic fallback
-        // voice, not the primary, so both services need to actually be
-        // running: Fish Speech to answer synthesis requests by default,
-        // Kokoro so the fallback has something live to fall back to.
+        // Fish Speech (S1-mini) is Mana's TTS voice (docs/fish_speech_tts.md).
+        // #694 / user decision: Kokoro is no longer started here at all --
+        // node-bot starts it on demand while gaming (or when configured to
+        // use it) and stops it after MANA_KOKORO_IDLE_MS (kokoro-runtime.js).
         //
-        // Kokoro and Fish Speech are only ever called by node-bot (native
-        // synthesizes through the backend), so with a remote backend they'd
-        // be dead weight -- and Kokoro's missing-venv throw would fail
-        // startup for nothing. Skipped then, like the backend and embedder.
+        // Fish Speech is only ever called by node-bot (native synthesizes
+        // through the backend), so with a remote backend it'd be dead
+        // weight. Skipped then, like the backend and embedder.
         //
         // These checks are independent (none needs another already
         // running before it can start), so they run concurrently instead
         // of one-after-another -- a stale/wedged listener on one port no
         // longer serializes an ~100s HttpClient timeout in front of the
-        // other two.
-        var kokoroTask = StartAndReport("kokoro", "http://127.0.0.1:5011/health", () => Task.FromResult<Process?>(isBackendLocal ? StartKokoro() : null));
+        // others.
         var fishSpeechTask = StartAndReport("fish-speech", "http://127.0.0.1:8080/v1/health", () => Task.FromResult(isBackendLocal ? StartFishSpeech() : null));
         var backendTask = StartAndReport("backend", backendHealthUrl, () => Task.FromResult<Process?>(isBackendLocal ? StartBackend() : null));
         // #691: the embedder only serves a backend on this machine -- a remote
@@ -113,7 +109,7 @@ internal sealed class ManaProcessManager : IDisposable
 
         try
         {
-            await Task.WhenAll(kokoroTask, fishSpeechTask, backendTask, embedderTask);
+            await Task.WhenAll(fishSpeechTask, backendTask, embedderTask);
         }
         finally
         {
@@ -121,11 +117,10 @@ internal sealed class ManaProcessManager : IDisposable
             // (success or failure) before it throws -- so by here all
             // three are guaranteed completed, and it's safe to store
             // whichever processes actually started even if a sibling
-            // failed (e.g. Kokoro's missing-venv throw, unchanged, still
-            // fatal by design). Without this, a successfully-started Fish
-            // Speech or backend process would be orphaned: started, but
-            // never given a Process handle for Dispose() to kill.
-            if (kokoroTask.IsCompletedSuccessfully) kokoroProcess = kokoroTask.Result.Process;
+            // failed (e.g. the backend's start throwing). Without this, a
+            // successfully-started Fish Speech or embedder process would be
+            // orphaned: started, but never given a Process handle for
+            // Dispose() to kill.
             if (fishSpeechTask.IsCompletedSuccessfully)
             {
                 fishSpeechProcess = fishSpeechTask.Result.Process;
@@ -159,7 +154,7 @@ internal sealed class ManaProcessManager : IDisposable
             return (null, true);
         }
         var process = await start();
-        // For Kokoro/the backend, start() either returns a real process or
+        // For the backend, start() either returns a real process or
         // throws (fatal) -- so `process is not null` here is always true
         // whenever this line is reached at all. Fish Speech (and the #691
         // embedder) are the callers where start() can return null non-fatally (missing native
@@ -181,28 +176,13 @@ internal sealed class ManaProcessManager : IDisposable
         }
     }
 
-    private Process StartKokoro()
-    {
-        var ttsDir = Path.Combine(RootDirectory, "tts-service");
-        var python = ResolveVenvPython(ttsDir, "venv");
-        if (!File.Exists(python))
-        {
-            throw new FileNotFoundException("Kokoro Python environment was not found. Set it up once: python -m venv tts-service/venv, then run tts-service/start_kokoro.ps1 (see tts-service/README.md).", python);
-        }
-
-        return StartHiddenProcess(
-            python,
-            "-m uvicorn kokoro_service:app --host 127.0.0.1 --port 5011",
-            ttsDir);
-    }
-
     // Launches tools/fish_speech_native_server.py directly, not
     // tools/start_fish_speech_native.ps1 -- the .ps1 script's own
     // Start-Process call detaches the actual server process from the
     // launching shell (by design, so the script itself can exit after
     // polling health), which would leak that process past this app's
     // lifetime if we shelled out to the script instead of the server
-    // directly. Launching it here the same way StartKokoro() does gives
+    // directly. Launching it here via StartHiddenProcess gives
     // Dispose() a real, trackable, killable Process handle.
     //
     // This same tradeoff (a Start-Process-based launcher script vs. a
@@ -225,16 +205,14 @@ internal sealed class ManaProcessManager : IDisposable
         var serverScript = Path.Combine(RootDirectory, "tools", "fish_speech_native_server.py");
         if (!File.Exists(python) || !File.Exists(serverScript))
         {
-            // Unlike Kokoro (thrown as fatal above) -- Fish Speech missing
-            // its native setup is not fatal to app startup. TTS_PROVIDER=fish
-            // combined with node-bot's own FISH_TTS_FALLBACK_PROVIDER
-            // default ("kokoro") already degrades gracefully to
-            // Kokoro-only operation when Fish Speech is unreachable, and
-            // its native setup (docs/fish_speech_tts.md) is a substantial
-            // manual install most users won't have done yet.
+            // Fish Speech missing its native setup is not fatal to app
+            // startup -- its native setup (docs/fish_speech_tts.md) is a
+            // substantial manual install most users won't have done yet.
+            // Replies stay text-only until it's set up (no Kokoro fallback
+            // by default; FISH_TTS_FALLBACK_PROVIDER=kokoro opts in).
             LogFishSpeechDiagnostic(
                 fishDir,
-                $"Fish Speech native setup incomplete (python.exe found: {File.Exists(python)}, fish_speech_native_server.py found: {File.Exists(serverScript)}); skipping -- Mana will use Kokoro until it's set up (see docs/fish_speech_tts.md).");
+                $"Fish Speech native setup incomplete (python.exe found: {File.Exists(python)}, fish_speech_native_server.py found: {File.Exists(serverScript)}); skipping -- no Fish Speech voice until it's set up (see docs/fish_speech_tts.md).");
             return null;
         }
 
@@ -255,7 +233,7 @@ internal sealed class ManaProcessManager : IDisposable
         {
             // Redirected to the same log file names start_fish_speech_native.ps1
             // itself uses, so a failure here leaves the same diagnostic
-            // trail a manual run of that script would -- unlike Kokoro/the
+            // trail a manual run of that script would -- unlike the
             // backend, Fish Speech's cold-compile startup is slow and
             // failure-prone enough (docs/fish_speech_tts.md) that silent
             // failure with nothing to inspect is a real cost.
@@ -271,7 +249,7 @@ internal sealed class ManaProcessManager : IDisposable
             // Same non-fatal reasoning as the missing-setup case above --
             // a launch failure here must not take down backend startup or
             // the voice loop.
-            LogFishSpeechDiagnostic(fishDir, $"Fish Speech failed to start: {ex.Message} -- Mana will use Kokoro until this is resolved.");
+            LogFishSpeechDiagnostic(fishDir, $"Fish Speech failed to start: {ex.Message} -- no Fish Speech voice until this is resolved.");
             return null;
         }
     }
@@ -333,8 +311,8 @@ internal sealed class ManaProcessManager : IDisposable
             Path.Combine(whisperDir, "models", "ggml-tiny.en.bin");
         // "fish" (Fish Speech / S1-mini) matches node-bot's own default
         // (tts-runtime.js: env.TTS_PROVIDER || (ttsBin ? "cli" : "fish")) and
-        // docs/fish_speech_tts.md's stated default -- Kokoro is the
-        // fallback, not the primary. KOKORO_TTS_FALLBACK_PROVIDER below is
+        // docs/fish_speech_tts.md's stated default -- Kokoro only runs on
+        // demand (gaming). KOKORO_TTS_FALLBACK_PROVIDER below is
         // a different, correctly-named variable (Kokoro's own fallback,
         // not Fish Speech's) and is left as-is.
         startInfo.Environment["TTS_PROVIDER"] =
@@ -365,11 +343,10 @@ internal sealed class ManaProcessManager : IDisposable
         return process;
     }
 
-    // Shared by StartKokoro/StartFishSpeech -- both are "python from a
-    // dedicated venv" services differing only in the venv's directory
-    // layout (Kokoro: tts-service/venv/..., Fish Speech:
-    // tools/fish-speech/.venv-native/...). What to do when it's missing
-    // (throw vs. log-and-return-null) genuinely differs per caller and is
+    // Shared by StartFishSpeech/StartEmbedder -- both are "python from a
+    // venv" services differing only in the venv's directory layout (Fish
+    // Speech: tools/fish-speech/.venv-native/..., embedder: venv/...). What
+    // to do when it's missing genuinely differs per caller and is
     // deliberately NOT folded into this helper.
     internal static string ResolveVenvPython(string venvRootDir, string venvSubdir)
     {
@@ -546,7 +523,6 @@ internal sealed class ManaProcessManager : IDisposable
 
         await Task.WhenAll(
             StopAndReport("backend", backendProcess),
-            StopAndReport("kokoro", kokoroProcess),
             StopAndReport("fish-speech", fishSpeechProcess),
             StopAndReport("embedder", embedderProcess));
     }
@@ -555,7 +531,6 @@ internal sealed class ManaProcessManager : IDisposable
     {
         http.Dispose();
         StopProcess(backendProcess);
-        StopProcess(kokoroProcess);
         StopProcess(fishSpeechProcess);
         StopProcess(embedderProcess);
     }

@@ -46,16 +46,16 @@ internal sealed class ManaApplicationContext : ApplicationContext
     // backend's process scan reports; no new backend route needed.
     private bool gamingModeEnabled = true;
 
-    // The 4 services ManaProcessManager actually starts/stops -- shared
-    // between the startup and shutdown overlays, same as windows-launcher's
-    // single #startupOverlay markup being reused for both (there it also
+    // The 3 services ManaProcessManager actually starts/stops (no Kokoro
+    // row since #694 / the user decision: node-bot starts Kokoro on
+    // demand) -- shared between the startup and shutdown overlays, same
+    // as windows-launcher's single #startupOverlay markup being reused for both (there it also
     // tracks Voice/Web search/Local AI, which don't apply here: this
     // launcher waits on one backend health check for all of node-bot's own
     // internal readiness, not separate per-feature ones).
-    private static readonly (string Key, string Label)[] ServiceRows =
+    internal static readonly (string Key, string Label)[] ServiceRows =
     {
         ("backend", "Backend"),
-        ("kokoro", "Kokoro TTS"),
         ("fish-speech", "Fish Speech TTS"),
         ("embedder", "Memory search"),
     };
@@ -274,14 +274,13 @@ internal sealed class ManaApplicationContext : ApplicationContext
         }
         catch (Exception ex)
         {
-            // #614: Kokoro/backend startup failures are fatal by design
+            // #614: backend startup failures are fatal by design
             // (ManaProcessManager's own comment) but nothing ever caught
             // them -- StartServicesAsync runs as a discarded task from the
             // constructor, so this exception used to just crash or vanish
             // silently instead of telling the user what actually failed.
             // The thrown messages are already specific and user-facing
-            // ("Kokoro Python environment was not found...", "Failed to
-            // start Mana backend."), so surfacing ex.Message as-is is
+            // ("Failed to start Mana backend."), so surfacing ex.Message as-is is
             // enough -- no need to re-derive which service failed here.
             MessageBox.Show(ex.Message, "Mana failed to start", MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
@@ -294,7 +293,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
     // #479 follow-up: mirrors windows-launcher's own close-intercept ->
     // runGracefulShutdown() -> app.exit(0) flow. ExitThread() alone would
     // tear the process down invisibly (no window to watch it happen in,
-    // just the tray icon vanishing) while backend/Kokoro/Fish Speech are
+    // just the tray icon vanishing) while backend/Fish Speech/the embedder are
     // still being killed -- this shows the same overlay startup used,
     // relabeled, stops the 3 managed services with live per-row feedback,
     // then actually exits. ExitThreadCore's own processManager.Dispose()
@@ -466,15 +465,16 @@ internal sealed class ManaApplicationContext : ApplicationContext
     // #479 review: `status.TtsProvider` is node-bot's *configured* value
     // (the TTS_PROVIDER env var this launcher itself sets to "fish") --
     // not whether Fish Speech's native process is actually up. Without
-    // this, a missing native setup or a launch failure (both silently
-    // degrade to Kokoro, by design) would still show "TTS: fish" here,
-    // giving no indication the voice is actually coming from the fallback.
+    // this, a missing native setup or a launch failure would still show
+    // "TTS: fish" here, giving no indication Fish Speech isn't answering.
+    // #694 / user decision: there's no Kokoro fallback to report any more
+    // (node-bot only starts Kokoro on demand, e.g. while gaming).
     private string FallbackNoteFor(string? configuredProvider)
     {
         var isFishConfigured = string.Equals(configuredProvider, "fish", StringComparison.OrdinalIgnoreCase);
         // A remote backend uses its own machine's TTS, which this launcher
         // neither starts nor can see -- no local fallback to report.
-        return isFishConfigured && processManager.IsBackendLocal && !processManager.IsFishSpeechAvailable ? " (Kokoro fallback active)" : "";
+        return isFishConfigured && processManager.IsBackendLocal && !processManager.IsFishSpeechAvailable ? " (Fish Speech unavailable)" : "";
     }
 
     // #479 review: a manual escape hatch for the fallback case FallbackNoteFor
@@ -487,7 +487,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
         MessageBox.Show(
             processManager.IsFishSpeechAvailable
                 ? "Fish Speech restarted."
-                : "Fish Speech failed to start again -- Mana will keep using Kokoro. See tools/fish-speech/launcher.log for details.",
+                : "Fish Speech failed to start again -- no Fish Speech voice until it's fixed. See tools/fish-speech/launcher.log for details.",
             "Mana Status",
             MessageBoxButtons.OK,
             processManager.IsFishSpeechAvailable ? MessageBoxIcon.Information : MessageBoxIcon.Warning);

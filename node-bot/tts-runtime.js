@@ -117,6 +117,9 @@ function createTtsRuntime(options = {}) {
     options.nowMs || (() => Number(process.hrtime.bigint() / 1000000n));
   const logPerf = options.logPerf || (() => {});
   const postJson = options.postJsonBuffer || postJsonBuffer;
+  // Starts Kokoro on demand before it's used (kokoro-runtime.js); a no-op
+  // unless server.js wires it in.
+  const ensureKokoro = options.ensureKokoro || (async () => {});
   const postFish =
     options.postFishTtsBuffer ||
     ((text, timeoutMs) => postFishTtsBuffer(text, timeoutMs));
@@ -149,9 +152,11 @@ function createTtsRuntime(options = {}) {
     env.FISH_TTS_REPETITION_PENALTY || 1.1,
   );
   const fishTtsTemperature = Number(env.FISH_TTS_TEMPERATURE || 0.8);
-  // Fish/S1-mini is the default voice; Kokoro is its safety net so Mana
-  // never goes silent if S1-mini is unreachable or errors.
-  const fishTtsFallbackProvider = env.FISH_TTS_FALLBACK_PROVIDER || "kokoro";
+  // Fish/S1-mini is the default voice. No fallback by default (user
+  // decision): Kokoro only runs while it's needed -- gaming, or setups that
+  // opt in with FISH_TTS_FALLBACK_PROVIDER=kokoro / TTS_PROVIDER=kokoro --
+  // so a Fish failure surfaces instead of switching to a different voice.
+  const fishTtsFallbackProvider = env.FISH_TTS_FALLBACK_PROVIDER || "none";
   const kokoroTtsFallbackProvider = env.KOKORO_TTS_FALLBACK_PROVIDER || "none";
   // Trial voice provider: GPT-SoVITS (see docs/gpt_sovits_setup.md). Not the
   // default; opt in with TTS_PROVIDER=gpt_sovits.
@@ -499,6 +504,7 @@ function createTtsRuntime(options = {}) {
       audio = await postFish(text);
       logPerf("tts fish", startedAt);
     } else if (provider === "kokoro") {
+      await ensureKokoro();
       const startedAt = nowMs();
       const kokoroProfile = pickKokoroLanguageProfile(text);
       audio = await postJson(`${kokoroTtsUrl}/synthesize`, {
@@ -645,6 +651,10 @@ function createTtsRuntime(options = {}) {
     getProviderOverride: () => providerOverride,
     setProviderOverride: (provider) => {
       providerOverride = provider || null;
+      // Start Kokoro as soon as it's switched to (e.g. a game was detected)
+      // so its first reply doesn't wait for the model load on its own. Any
+      // failure resurfaces from the synthesis that follows.
+      if (providerOverride === "kokoro") ensureKokoro().catch(() => {});
     },
     swapFishDevice,
     warmupFishTts,

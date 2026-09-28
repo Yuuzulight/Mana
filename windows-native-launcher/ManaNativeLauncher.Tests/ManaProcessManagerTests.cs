@@ -45,12 +45,10 @@ public class ManaProcessManagerTests
     [Fact]
     public async Task StartAsync_DegradesGracefullyWhenFishSpeechNativeSetupIsMissing()
     {
-        // Kokoro and the backend report healthy already; Fish Speech
-        // doesn't, so StartFishSpeech() runs for real against a
-        // rootDirectory with no fish-speech venv -- exercising the
-        // graceful-degradation path this PR adds (log a warning, return
-        // null) rather than the fatal throw Kokoro's missing-venv case
-        // uses. Must not throw.
+        // The backend reports healthy already; Fish Speech doesn't, so
+        // StartFishSpeech() runs for real against a rootDirectory with no
+        // fish-speech venv -- exercising the graceful-degradation path (log
+        // a warning, return null). Must not throw.
         var handler = new FakeHttpMessageHandler(request =>
         {
             var isFishSpeech = request.RequestUri!.Port == 8080;
@@ -62,7 +60,7 @@ public class ManaProcessManagerTests
 
         // #479 review: this is the actual degraded case -- must read as
         // unavailable so a caller (the tray status) can tell the user
-        // Kokoro is silently covering for it.
+        // Fish Speech isn't answering.
         Assert.False(manager.IsFishSpeechAvailable);
     }
 
@@ -111,9 +109,10 @@ public class ManaProcessManagerTests
     {
         // #479 follow-up (startup overlay): onServiceReady must fire once
         // per service with the same keys the overlay's row definitions
-        // use ("backend"/"kokoro"/"fish-speech"), not e.g. a display label
-        // -- a mismatch here would silently leave that row stuck on
-        // "Waiting..." forever.
+        // use ("backend"/"fish-speech"/"embedder"), not e.g. a display
+        // label -- a mismatch here would silently leave that row stuck on
+        // "Waiting..." forever. #694: no "kokoro" key -- node-bot starts
+        // Kokoro on demand now.
         var handler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.OK));
         using var manager = new ManaProcessManager(@"C:\does-not-exist", handler);
         var reported = new ConcurrentDictionary<string, bool>();
@@ -121,7 +120,7 @@ public class ManaProcessManagerTests
         await manager.StartAsync((key, available) => reported[key] = available);
 
         Assert.Equal(
-            new Dictionary<string, bool> { ["backend"] = true, ["kokoro"] = true, ["fish-speech"] = true, ["embedder"] = true },
+            new Dictionary<string, bool> { ["backend"] = true, ["fish-speech"] = true, ["embedder"] = true },
             new Dictionary<string, bool>(reported));
     }
 
@@ -145,9 +144,8 @@ public class ManaProcessManagerTests
     [Fact]
     public async Task StartAsync_SkipsLocalTtsWithoutThrowing_ForARemoteBackendUrl()
     {
-        // A remote backend synthesizes on its own machine. Locally, Kokoro's
-        // missing venv (C:\does-not-exist has none) must not fail startup,
-        // and neither TTS service is started.
+        // A remote backend synthesizes on its own machine, so Fish Speech
+        // isn't started locally.
         var handler = new FakeHttpMessageHandler(request =>
             new HttpResponseMessage(request.RequestUri!.Host == "192.168.1.50" ? HttpStatusCode.OK : HttpStatusCode.ServiceUnavailable));
         using var manager = new ManaProcessManager(@"C:\does-not-exist", handler, backendBaseUrl: "http://192.168.1.50:5005");
@@ -156,7 +154,6 @@ public class ManaProcessManagerTests
         await manager.StartAsync((key, available) => reported[key] = available);
 
         Assert.True(reported["backend"]);
-        Assert.False(reported["kokoro"]);
         Assert.False(reported["fish-speech"]);
         Assert.False(manager.IsBackendLocal);
     }
@@ -191,10 +188,47 @@ public class ManaProcessManagerTests
     }
 
     [Fact]
+    public async Task StartAsync_NeverChecksOrStartsKokoro()
+    {
+        // #694 / user decision: Kokoro is started on demand by node-bot
+        // (kokoro-runtime.js), never by this launcher -- not even a health
+        // check on its port.
+        var requestedPorts = new ConcurrentBag<int>();
+        var handler = new FakeHttpMessageHandler(request =>
+        {
+            requestedPorts.Add(request.RequestUri!.Port);
+            return new HttpResponseMessage(HttpStatusCode.OK);
+        });
+        using var manager = new ManaProcessManager(@"C:\does-not-exist", handler);
+        var reported = new ConcurrentDictionary<string, bool>();
+
+        await manager.StartAsync((key, available) => reported[key] = available);
+
+        Assert.DoesNotContain(5011, requestedPorts);
+        Assert.False(reported.ContainsKey("kokoro"));
+    }
+
+    [Fact]
+    public async Task OverlayRows_MatchTheKeysStartAsyncReports()
+    {
+        // Every overlay row gets a status and no report goes to a missing
+        // row (StartupOverlayForm.SetRowStatus ignores unknown keys).
+        var handler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.OK));
+        using var manager = new ManaProcessManager(@"C:\does-not-exist", handler);
+        var reported = new ConcurrentDictionary<string, bool>();
+
+        await manager.StartAsync((key, available) => reported[key] = available);
+
+        Assert.Equal(
+            ManaApplicationContext.ServiceRows.Select(row => row.Key).OrderBy(key => key),
+            reported.Keys.OrderBy(key => key));
+    }
+
+    [Fact]
     public async Task StopAllAsync_ReportsStoppedForEveryServiceWithNoProcessHandleToKill()
     {
-        // No StartAsync call means backendProcess/kokoroProcess/
-        // fishSpeechProcess are all still null (nothing this manager
+        // No StartAsync call means backendProcess/fishSpeechProcess/
+        // embedderProcess are all still null (nothing this manager
         // itself launched) -- StopAllAsync must report each as stopped
         // rather than hang or throw trying to kill a process it never
         // actually holds a handle for.
@@ -204,7 +238,7 @@ public class ManaProcessManagerTests
         await manager.StopAllAsync((key, stopped) => reported[key] = stopped);
 
         Assert.Equal(
-            new Dictionary<string, bool> { ["backend"] = true, ["kokoro"] = true, ["fish-speech"] = true, ["embedder"] = true },
+            new Dictionary<string, bool> { ["backend"] = true, ["fish-speech"] = true, ["embedder"] = true },
             new Dictionary<string, bool>(reported));
     }
 
