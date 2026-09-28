@@ -79,7 +79,9 @@ internal sealed class ManaApplicationContext : ApplicationContext
 
         var vadModelPath = Path.Combine(rootDir, "windows-native-launcher", "assets", "vad", "silero_vad.onnx");
         sileroVad = new SileroVadRunner(vadModelPath);
-        wakeWordClassifier = TryLoadWakeWordClassifier(rootDir, settings.WakeWordConfidenceThreshold);
+        wakeWordClassifier = TryLoadWakeWordClassifier(
+            rootDir,
+            WakeWordClassifier.ResolveThreshold(Environment.GetEnvironmentVariable("MANA_WAKE_PREFILTER"), settings.WakePrefilter));
         // #479 sub-project 4: taps live playback samples for
         // avatarOverlay's lip-sync render loop -- a no-op when no Cubism
         // model is loaded (LipSyncDriver still runs, just nothing reads
@@ -541,7 +543,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
     // today's existing behavior (every segment reaches Whisper, text-match
     // decides). Unlike sileroVad above, this must never take the whole app
     // down over a missing model file.
-    private static WakeWordClassifier? TryLoadWakeWordClassifier(string rootDir, float threshold)
+    private static WakeWordClassifier? TryLoadWakeWordClassifier(string rootDir, float? threshold)
     {
         var wakeWordDir = Path.Combine(rootDir, "windows-native-launcher", "assets", "wakeword");
         var melspecPath = Path.Combine(wakeWordDir, "melspectrogram.onnx");

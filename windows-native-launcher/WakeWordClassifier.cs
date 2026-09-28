@@ -1,4 +1,5 @@
 using System;
+using System.Globalization;
 using System.Linq;
 using Microsoft.ML.OnnxRuntime;
 using Microsoft.ML.OnnxRuntime.Tensors;
@@ -29,8 +30,8 @@ namespace Mana.NativeLauncher;
 //        axis -- each full window becomes one (76, 32, 1) input
 //     -> embedding_model.onnx, batched over all windows -> (windows, 1, 1, 96),
 //        squeezed to (windows, 96)
-//     -> mana.onnx (ours, trained in tools/wakeword-training/) -> (1, 1)
-//        sigmoid score, when windows == EmbeddingFrames (16)
+//     -> mana.onnx (ours, trained in tools/wakeword-training/), batched over
+//        every EmbeddingFrames (16)-long run -> one sigmoid score each
 //
 // melspectrogram.onnx and embedding_model.onnx are openWakeWord's own
 // third-party pretrained models, fetched at build time (same convention
@@ -51,12 +52,13 @@ internal sealed class WakeWordClassifier : IDisposable
     // 76 stepped by 8), confirmed against the real ONNX models.
     internal const int WindowSamples = SampleRate * 2;
 
-    // See tools/wakeword-training/README.md's measured false-positive-
-    // rate-by-threshold table: 7.2/hour at 0.5, 1.0/hour at 0.99. 0.9 is a
-    // reasonable middle ground for a v1 model trained on a modest amount
-    // of positive data -- configurable via ManaSettingsStore, not a fixed
-    // constant callers are stuck with.
-    internal const float DefaultThreshold = 0.9f;
+    // #682: named thresholds for MANA_WAKE_PREFILTER / Settings > Voice.
+    // tools/wakeword-training/README.md measured 7.2 false positives/hour
+    // at 0.5 and 2.7/hour at 0.9 -- a false positive only costs one
+    // Whisper call (the text matcher still decides), a false negative
+    // makes Mana deaf.
+    internal const float LooseThreshold = 0.5f;
+    internal const float NormalThreshold = 0.9f;
 
     private const int MelWindowSize = 76;
     private const int MelStepSize = 8;
@@ -66,72 +68,70 @@ internal sealed class WakeWordClassifier : IDisposable
     private readonly InferenceSession melspecSession;
     private readonly InferenceSession embeddingSession;
     private readonly InferenceSession classifierSession;
-    private readonly float threshold;
-
     public WakeWordClassifier(
         string melspecModelPath,
         string embeddingModelPath,
         string classifierModelPath,
-        float threshold = DefaultThreshold)
+        float? threshold = null)
     {
         melspecSession = new InferenceSession(melspecModelPath);
         embeddingSession = new InferenceSession(embeddingModelPath);
         classifierSession = new InferenceSession(classifierModelPath);
-        this.threshold = threshold;
+        Threshold = threshold;
     }
 
-    // samples: 16-bit PCM at 16kHz, any length. Right-aligned/padded to
-    // exactly WindowSamples to match how the training clips were aligned
-    // (the wake phrase ends near the window's end, with a small start
-    // jitter -- see train_model.py's `starts` calculation) -- mana.onnx
-    // only ever saw fixed 2.0s windows during training, so a real VAD
-    // segment of a different length needs to land in the same place a
-    // training example would have.
+    // null = never gates: segments are still scored (for speech-debug.log)
+    // but all reach Whisper, i.e. the pre-#342 text-only behavior.
+    public float? Threshold { get; }
+
+    // #682: MANA_WAKE_PREFILTER (env / node-bot/.env) wins over the
+    // Settings > Voice choice. off (default) | loose | normal | a number in
+    // 0-1. Off by default because on the user's own recordings (QuadCast S,
+    // accented English) even the fixed Score below mostly stays under 0.5
+    // -- the model only ever saw 168 synthetic Kokoro US/UK clips. Anything
+    // unrecognised falls back to off: failing open costs Whisper calls,
+    // failing closed makes Mana deaf.
+    internal static float? ResolveThreshold(string? env, string? setting)
+    {
+        var value = (string.IsNullOrWhiteSpace(env) ? setting : env)?.Trim().ToLowerInvariant();
+        return value switch
+        {
+            "loose" => LooseThreshold,
+            "normal" => NormalThreshold,
+            _ when float.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out var t) && t >= 0f && t <= 1f => t,
+            _ => null,
+        };
+    }
+
+    // samples: 16-bit PCM at 16kHz, any length. Returns the max score over
+    // every EmbeddingFrames-long run of embeddings in the segment --
+    // openWakeWord's own streaming inference, and how train_model.py
+    // measured the README's false-positive rates. Left-padded with
+    // WindowSamples of silence so a wake word at the very start of the
+    // segment can still end at a window's end, where training put it.
+    //
+    // #682: this used to score only the segment's last 2.0s. VoiceLoop
+    // closes a segment after RecordingSegmenter's 2.2s of trailing
+    // silence, so that window was always pure silence: all 168 training
+    // clips scored ~0.000 through the real segmenting (0.999 end-aligned),
+    // and every segment of the user's live run was dropped before Whisper.
     public float Score(short[] samples)
     {
-        var windowed = AlignToWindow(samples);
-        var melspec = Melspectrogram(windowed);
-        var embeddings = Embed(melspec);
+        var padded = new short[WindowSamples + samples.Length];
+        Array.Copy(samples, 0, padded, WindowSamples, samples.Length);
+        var embeddings = Embed(Melspectrogram(padded));
 
-        if (embeddings.GetLength(0) != EmbeddingFrames)
+        // At least WindowSamples in always yields >= EmbeddingFrames
+        // embeddings against these models -- fail loudly if a model
+        // swap ever changes that, rather than score a wrong shape.
+        int windows = embeddings.GetLength(0) - EmbeddingFrames + 1;
+        if (windows < 1)
         {
-            // A 2.0s input should always produce exactly 16 windows against
-            // these specific models -- if it doesn't, something upstream
-            // changed shape in a way this port didn't anticipate. Fail
-            // loudly rather than feed a wrong-shaped tensor into the
-            // classifier and get a meaningless score back.
             throw new InvalidOperationException(
-                $"Expected {EmbeddingFrames} embedding windows from a {WindowSamples}-sample input, got {embeddings.GetLength(0)}.");
+                $"Expected at least {EmbeddingFrames} embedding windows from a {padded.Length}-sample input, got {embeddings.GetLength(0)}.");
         }
 
-        return Classify(embeddings);
-    }
-
-    public bool MayContainWakeWord(short[] samples) => Score(samples) >= threshold;
-
-    private static short[] AlignToWindow(short[] samples)
-    {
-        if (samples.Length == WindowSamples)
-        {
-            return samples;
-        }
-
-        var aligned = new short[WindowSamples];
-        if (samples.Length > WindowSamples)
-        {
-            // Longest final WindowSamples -- matches training's
-            // end-aligned convention when the real segment ran longer
-            // than the model's training window.
-            Array.Copy(samples, samples.Length - WindowSamples, aligned, 0, WindowSamples);
-        }
-        else
-        {
-            // Left-pad with silence so the (shorter) real segment still
-            // ends at the window's end, same alignment as training.
-            Array.Copy(samples, 0, aligned, WindowSamples - samples.Length, samples.Length);
-        }
-
-        return aligned;
+        return Classify(embeddings, windows).Max();
     }
 
     // Raw int16 samples cast to float32, NOT normalized to [-1,1] -- this
@@ -221,23 +221,27 @@ internal sealed class WakeWordClassifier : IDisposable
         return embeddings;
     }
 
-    private float Classify(float[,] embeddings)
+    // One batched run over every EmbeddingFrames-long slice starting at
+    // 0..windows-1 (mana.onnx's batch axis is dynamic) -> one score each.
+    private float[] Classify(float[,] embeddings, int windows)
     {
-        int frames = embeddings.GetLength(0);
-        var data = new float[frames * EmbeddingDim];
-        for (int t = 0; t < frames; t++)
+        var data = new float[windows * EmbeddingFrames * EmbeddingDim];
+        for (int w = 0; w < windows; w++)
         {
-            for (int d = 0; d < EmbeddingDim; d++)
+            for (int t = 0; t < EmbeddingFrames; t++)
             {
-                data[(t * EmbeddingDim) + d] = embeddings[t, d];
+                for (int d = 0; d < EmbeddingDim; d++)
+                {
+                    data[(((w * EmbeddingFrames) + t) * EmbeddingDim) + d] = embeddings[w + t, d];
+                }
             }
         }
 
-        var inputTensor = new DenseTensor<float>(data, new[] { 1, frames, EmbeddingDim });
+        var inputTensor = new DenseTensor<float>(data, new[] { windows, EmbeddingFrames, EmbeddingDim });
         var inputs = new[] { NamedOnnxValue.CreateFromTensor("input", inputTensor) };
 
         using var results = classifierSession.Run(inputs);
-        return results.First().AsTensor<float>().ToArray()[0];
+        return results.First().AsTensor<float>().ToArray();
     }
 
     public void Dispose()
