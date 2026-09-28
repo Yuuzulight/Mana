@@ -24,6 +24,9 @@ internal sealed class SettingsPanel : UserControl
     private readonly ListView factsList = new();
     private readonly ListView skillsList = new();
     private readonly ListView approvalsList = new();
+    // #669: index-aligned with ToolApprovalModes below.
+    private readonly ComboBox toolApprovalModeCombo = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 320 };
+    private static readonly string[] ToolApprovalModes = { "smart", "ask", "off" };
     private readonly ComboBox voiceProviderCombo = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 200 };
     private readonly TextBox logsTextBox = new() { Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Vertical, Dock = DockStyle.Fill };
     private readonly System.Windows.Forms.Timer logRefreshTimer = new() { Interval = 1000 };
@@ -106,6 +109,7 @@ internal sealed class SettingsPanel : UserControl
         await RefreshMemoryFactsAsync();
         await RefreshSkillsAsync();
         await RefreshApprovalsAsync();
+        await RefreshToolApprovalModeAsync();
         await RefreshVoiceTabAsync();
         await RefreshPerfTabAsync();
         await RefreshPresetsAsync();
@@ -663,10 +667,66 @@ internal sealed class SettingsPanel : UserControl
         buttonRow.Controls.Add(alwaysAllowButton);
         buttonRow.Controls.Add(denyButton);
 
+        toolApprovalModeCombo.Items.AddRange(new object[]
+        {
+            "Smart -- ask for anything that isn't read-only",
+            "Ask for every tool call",
+            "Only destructive commands",
+        });
+        toolApprovalModeCombo.BackColor = DarkTheme.Panel2;
+        toolApprovalModeCombo.ForeColor = DarkTheme.Text;
+        // SelectionChangeCommitted: user picks only, not Refresh's.
+        toolApprovalModeCombo.SelectionChangeCommitted += async (_, _) => await SaveToolApprovalModeAsync();
+        var modeRow = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.LeftToRight, BackColor = DarkTheme.Background };
+        modeRow.Controls.Add(new Label { Text = "Ask before tool calls:", AutoSize = true, ForeColor = DarkTheme.Text, Margin = new Padding(3, 6, 3, 3) });
+        modeRow.Controls.Add(toolApprovalModeCombo);
+        var modePanel = new FlowLayoutPanel { Dock = DockStyle.Top, AutoSize = true, FlowDirection = FlowDirection.TopDown, WrapContents = false, BackColor = DarkTheme.Background };
+        modePanel.Controls.Add(modeRow);
+        modePanel.Controls.Add(new Label { Text = "Destructive commands (rm -rf, registry edits, download-and-run...) always ask, in every mode.", AutoSize = true, ForeColor = DarkTheme.Muted });
+
         var page = new TabPage("Approvals");
         page.Controls.Add(approvalsList);
         page.Controls.Add(buttonRow);
+        page.Controls.Add(modePanel);
         return page;
+    }
+
+    private async Task RefreshToolApprovalModeAsync()
+    {
+        string? mode;
+        try
+        {
+            mode = await backendClient.GetToolApprovalModeAsync();
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"SettingsPanel: failed to load the tool approval mode. {ex.Message}");
+            return;
+        }
+        if (!IsDisposed)
+        {
+            toolApprovalModeCombo.SelectedIndex = Array.IndexOf(ToolApprovalModes, mode);
+        }
+    }
+
+    private async Task SaveToolApprovalModeAsync()
+    {
+        if (toolApprovalModeCombo.SelectedIndex < 0)
+        {
+            return;
+        }
+        try
+        {
+            await backendClient.SetToolApprovalModeAsync(ToolApprovalModes[toolApprovalModeCombo.SelectedIndex]);
+        }
+        catch (Exception ex)
+        {
+            if (!IsDisposed)
+            {
+                MessageBox.Show(this, $"Failed to save the approval mode: {ex.Message}", "Approvals", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                await RefreshToolApprovalModeAsync();
+            }
+        }
     }
 
     private async Task DecideSelectedApprovalAsync(string decision)

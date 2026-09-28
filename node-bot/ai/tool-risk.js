@@ -8,9 +8,9 @@
 //
 // Pipes and chained commands take their highest segment's tier; anything
 // unrecognized is "write". Destructive calls always go to a human, whatever
-// was granted before. Everything else runs as it did before #669 unless
-// MANA_TOOL_APPROVAL opts into per-call approval ("ask", or "smart" to let
-// read-tier calls through without a prompt).
+// was granted before. The approval mode (Settings > Approvals, else
+// MANA_TOOL_APPROVAL) decides the rest: "smart" (default) asks for anything
+// above read tier, "ask" for every call, "off" only for destructive ones.
 //
 // ponytail: pattern rules are a tripwire, not a parser -- a command built
 // at run time ($x = 'rm'; & $x -rf) reads as an unknown "write" call, not a
@@ -33,7 +33,9 @@ function maxTier(a, b) {
 // only tools *not* listed here -- an MCP server's, anything added later --
 // get their arguments inspected. "read" means nothing on the user's machine
 // changes or leaves it: expression__set and session_goal__finish only touch
-// Mana's own reply state.
+// Mana's own reply state, and coding__propose_edit only writes a .diff under
+// Mana's own data dir -- the user applies it themselves (#276), so asking
+// first would only lose the diff path from the reply.
 const BUILTIN_TIERS = {
   read_file: "read",
   session_search__query: "read",
@@ -43,7 +45,7 @@ const BUILTIN_TIERS = {
   expression__set: "read",
   session_goal__finish: "read",
   browser_automation__snapshot: "read",
-  coding__propose_edit: "write",
+  coding__propose_edit: "read",
   memory__remember: "write",
   skill__create: "write",
   skill__run: "write",
@@ -421,10 +423,20 @@ function describeCall(name, risk) {
   return parts.join(" -- ");
 }
 
+// The first valid mode among the candidates (saved setting, then env), else
+// "smart".
+function resolveToolApprovalMode(...candidates) {
+  for (const candidate of candidates) {
+    const mode = String(candidate ?? "").trim().toLowerCase();
+    if (MODES.includes(mode)) return mode;
+  }
+  return "smart";
+}
+
 // Wraps a {tools, isKnownTool, executeTool} policy (server.js applies it
-// around wrapWithHooks). mode: "off" (default -- only destructive calls
-// ask), "ask" (every call asks unless its capability/command is granted),
-// "smart" (ask, but read-tier calls run without a prompt). The Guardian
+// around wrapWithHooks). mode: "smart" (default -- ask, but read-tier calls
+// run without a prompt), "ask" (every call asks unless its capability/
+// command is granted), "off" (only destructive calls ask). The Guardian
 // pre-check (#284), when enabled, is the optional model confirmation for
 // what still asks; it never sees destructive calls (forceReview).
 //
@@ -434,8 +446,7 @@ function describeCall(name, risk) {
 // Executors are re-registered per reply with the latest policy -- the same
 // tradeoff hooks-store.js's "hook-ask" already documents.
 function wrapWithRiskGate(policy, approvalGate, options = {}) {
-  const requested = String(options.mode || "").trim().toLowerCase();
-  const mode = MODES.includes(requested) ? requested : "off";
+  const mode = resolveToolApprovalMode(options.mode);
   const bindingDeps = options.bindingDeps || {};
 
   async function ask(name, args, risk) {
@@ -481,7 +492,9 @@ function wrapWithRiskGate(policy, approvalGate, options = {}) {
 }
 
 module.exports = {
+  MODES,
   classifyToolCall,
+  resolveToolApprovalMode,
   extractHosts,
   bindCall,
   wrapWithRiskGate,

@@ -139,6 +139,17 @@ function createApprovalGate(options = {}) {
     }
   }
 
+  // #669: the saved tool approval mode (Settings > Approvals), null until
+  // one is saved. ai/tool-risk.js validates it and resolves the default.
+  const settingsPath = path.join(dataDir, "settings.json");
+  function getToolApprovalMode() {
+    const mode = (readJson(settingsPath, {}) || {}).toolApprovalMode;
+    return typeof mode === "string" ? mode : null;
+  }
+  function setToolApprovalMode(mode) {
+    writeJson(settingsPath, { ...(readJson(settingsPath, {}) || {}), toolApprovalMode: mode });
+  }
+
   async function runExecutor(actionType, payload) {
     const fn = executors.get(actionType);
     if (typeof fn !== "function") {
@@ -317,6 +328,8 @@ function createApprovalGate(options = {}) {
     resetDenials,
     isAlwaysAllowed,
     isGranted,
+    getToolApprovalMode,
+    setToolApprovalMode,
     guardianAuditLog,
   };
 }

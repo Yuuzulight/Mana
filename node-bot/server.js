@@ -191,7 +191,7 @@ const { createToolPolicy } = require("./ai/tool-policy");
 // below already returns the {listToolSchemas, executeTool, isKnownToolName}
 // shape buildToolPolicy expects.
 const { buildToolPolicy } = require("./ai/tool-source");
-const { wrapWithRiskGate } = require("./ai/tool-risk");
+const { resolveToolApprovalMode, wrapWithRiskGate } = require("./ai/tool-risk");
 const { createMemoryToolSource, createMemoryWriteExecutor } = require("./ai/memory-tool-source");
 const {
   loadSessionSummaries,
@@ -4248,12 +4248,15 @@ function registerRoutes(app, upload, deps = {}) {
           });
           // Issue #669: per-call risk tiers. Destructive calls (rm -rf,
           // registry edits, iwr | iex, credential files...) always go to a
-          // human; MANA_TOOL_APPROVAL=ask|smart opts every other call into
-          // approval too ("smart" lets read-only calls through). Outside
+          // human; the mode (Settings > Approvals, else MANA_TOOL_APPROVAL,
+          // else "smart") decides the rest. Outside
           // wrapWithHooks so a destructive call is reviewed before any hook
           // runs; inside wrapWithToolCallLog so the outcome is logged.
           mergedToolPolicy = wrapWithRiskGate(mergedToolPolicy, activeApprovalGate, {
-            mode: process.env.MANA_TOOL_APPROVAL,
+            mode: resolveToolApprovalMode(
+              activeApprovalGate.getToolApprovalMode(),
+              (deps.env || process.env).MANA_TOOL_APPROVAL,
+            ),
           });
           // Issue #188: applied last so it catches every tool call from
           // every source (local read_file, browser-automation, MCP) in one
