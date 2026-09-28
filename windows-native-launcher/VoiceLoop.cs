@@ -47,6 +47,7 @@ internal sealed class VoiceLoop : IDisposable
 {
     private readonly SileroVadRunner vad;
     private readonly WakeWordClassifier? wakeWordClassifier;
+    private readonly CaptionOverlayForm? captions;
     private readonly ManaBackendClient backendClient;
     private readonly AudioPlayer audioPlayer;
     private readonly AvatarOverlayForm avatarOverlay;
@@ -194,9 +195,11 @@ internal sealed class VoiceLoop : IDisposable
         ScreenContextReader? screenContextReader = null,
         Func<bool>? isGamingModeActive = null,
         ClipBuffer? clipBuffer = null,
-        WakeWordClassifier? wakeWordClassifier = null)
+        WakeWordClassifier? wakeWordClassifier = null,
+        CaptionOverlayForm? captions = null)
     {
         this.vad = vad;
+        this.captions = captions;
         this.wakeWordClassifier = wakeWordClassifier;
         this.backendClient = backendClient;
         this.audioPlayer = audioPlayer;
@@ -218,7 +221,8 @@ internal sealed class VoiceLoop : IDisposable
             backendClient,
             audioPlayer.PlayAsync,
             talking => OnTalkingStateChanged(talking),
-            running => avatarOverlay.SetActivity(AvatarState.Working, running));
+            running => avatarOverlay.SetActivity(AvatarState.Working, running),
+            sentence => captions?.ShowSentence(sentence));
     }
 
     // #681: true between Start() and Stop() -- what the tray's and chat
@@ -1378,6 +1382,7 @@ internal sealed class VoiceLoop : IDisposable
             // which never streams sentences -- so it always lands here, never
             // on the changed:false path above.
             OnTalkingStateChanged(true, MapReplyEmotionToAvatarState(expression), preferredExpression);
+            captions?.ShowSpokenText(reply ?? string.Empty, AudioPlayer.Duration(replyWav));
             completedNaturally = await audioPlayer.PlayAsync(replyWav);
         }
         catch (Exception ex)
@@ -1414,6 +1419,7 @@ internal sealed class VoiceLoop : IDisposable
         {
             var wav = await backendClient.SynthesizeAsync(ReplyFailedMessage);
             OnTalkingStateChanged(true);
+            captions?.ShowSentence(ReplyFailedMessage);
             var completedNaturally = await audioPlayer.PlayAsync(wav);
             OnTalkingStateChanged(false);
             if (!completedNaturally)
@@ -1451,6 +1457,10 @@ internal sealed class VoiceLoop : IDisposable
     private void OnTalkingStateChanged(bool talking, AvatarState talkingState = AvatarState.Talking, string? preferredExpression = null)
     {
         avatarOverlay.SetState(talking ? talkingState : AvatarState.Idle, talking ? preferredExpression : null);
+        if (!talking)
+        {
+            captions?.SpeechEnded();
+        }
         lock (stateLock)
         {
             if (talking)

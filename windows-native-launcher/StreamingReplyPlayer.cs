@@ -20,13 +20,15 @@ internal sealed class StreamingReplyPlayer
     private readonly Func<byte[], Task<bool>> playAsync; // true = clip finished naturally, false = interrupted (#479 sub-project 3)
     private readonly Action<bool> setTalking; // true once the first chunk starts, false once talking stops (naturally or interrupted)
     private readonly Action<bool>? setToolRunning; // #661: true on a "tool" start event, false on its end
+    private readonly Action<string>? onSentencePlaying; // each sentence's text, as its audio starts
 
-    public StreamingReplyPlayer(ManaBackendClient backendClient, Func<byte[], Task<bool>> playAsync, Action<bool> setTalking, Action<bool>? setToolRunning = null)
+    public StreamingReplyPlayer(ManaBackendClient backendClient, Func<byte[], Task<bool>> playAsync, Action<bool> setTalking, Action<bool>? setToolRunning = null, Action<string>? onSentencePlaying = null)
     {
         this.backendClient = backendClient;
         this.playAsync = playAsync;
         this.setTalking = setTalking;
         this.setToolRunning = setToolRunning;
+        this.onSentencePlaying = onSentencePlaying;
     }
 
     // Reply is null when Interrupted is true -- a barge-in cut off
@@ -171,8 +173,8 @@ internal sealed class StreamingReplyPlayer
         {
             while (true)
             {
-                var audio = await currentTask.ConfigureAwait(false);
-                if (audio is null)
+                var next = await currentTask.ConfigureAwait(false);
+                if (next is not { } sentence)
                 {
                     break;
                 }
@@ -194,7 +196,8 @@ internal sealed class StreamingReplyPlayer
                 // matches the acceptable-risk call already made for this same
                 // kind of dangling in-flight synth call elsewhere in this file.
                 var nextTask = TakeAndSynthesizeNextAsync(sentences, TakeNext);
-                var completedNaturally = await playAsync(audio).ConfigureAwait(false);
+                onSentencePlaying?.Invoke(sentence.Text);
+                var completedNaturally = await playAsync(sentence.Audio).ConfigureAwait(false);
                 if (!completedNaturally)
                 {
                     interrupted = true;
@@ -233,7 +236,7 @@ internal sealed class StreamingReplyPlayer
         return (interrupted, pending);
     }
 
-    private async Task<byte[]?> TakeAndSynthesizeNextAsync(ChannelReader<string> sentences, Func<string?> takeNext)
+    private async Task<(string Text, byte[] Audio)?> TakeAndSynthesizeNextAsync(ChannelReader<string> sentences, Func<string?> takeNext)
     {
         if (!await sentences.WaitToReadAsync().ConfigureAwait(false))
         {
@@ -242,6 +245,6 @@ internal sealed class StreamingReplyPlayer
         var text = takeNext();
         return text is null
             ? null
-            : await backendClient.SynthesizeAsync(text).ConfigureAwait(false);
+            : (text, await backendClient.SynthesizeAsync(text).ConfigureAwait(false));
     }
 }

@@ -113,6 +113,20 @@ internal sealed class AudioPlayer : IDisposable
     // that need to react differently to "finished" vs "cut off mid-clip"
     // (e.g. stop queuing further chunks) check this instead of just
     // awaiting completion.
+    // A WAV's length, or zero if it can't be read.
+    public static TimeSpan Duration(byte[] wavBytes)
+    {
+        try
+        {
+            using var reader = new WaveFileReader(new MemoryStream(wavBytes));
+            return reader.TotalTime;
+        }
+        catch (Exception)
+        {
+            return TimeSpan.Zero;
+        }
+    }
+
     public Task<bool> PlayAsync(byte[] wavBytes)
     {
         var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
