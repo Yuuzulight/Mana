@@ -24,60 +24,34 @@ public class WakeWordClassifierTests
         File.Exists(EmbeddingPath) && new FileInfo(EmbeddingPath).Length > 0 &&
         File.Exists(ClassifierPath) && new FileInfo(ClassifierPath).Length > 0;
 
-    private static WakeWordClassifier CreateClassifier(float threshold = WakeWordClassifier.DefaultThreshold) =>
-        new(MelspecPath, EmbeddingPath, ClassifierPath, threshold);
+    private static WakeWordClassifier CreateClassifier() =>
+        new(MelspecPath, EmbeddingPath, ClassifierPath);
 
     [SkippableFact]
-    public void Score_SilenceProducesValidProbability()
+    public void Score_AnySegmentLengthProducesValidProbability()
     {
         using var classifier = CreateClassifier();
-        var silence = new short[WakeWordClassifier.WindowSamples];
 
-        var score = classifier.Score(silence);
-
-        Assert.InRange(score, 0f, 1f);
+        // Empty, shorter than the 2.0s window, and (#682) a max-length 20s
+        // segment -- every length is left-padded and slid over, none throws.
+        foreach (var length in new[] { 0, WakeWordClassifier.SampleRate / 2, (int)RecordingSegmenter.DefaultMaxUtteranceMs * 16 })
+        {
+            Assert.InRange(classifier.Score(new short[length]), 0f, 1f);
+        }
     }
 
-    [SkippableFact]
-    public void Score_ShorterThanWindowIsPaddedNotThrown()
+    // #682: env beats the Settings > Voice choice; anything unrecognised
+    // (or nothing at all) fails open to off rather than making Mana deaf.
+    [Theory]
+    [InlineData(null, null, null)]
+    [InlineData("", "loose", WakeWordClassifier.LooseThreshold)]
+    [InlineData(" Normal ", "loose", WakeWordClassifier.NormalThreshold)]
+    [InlineData("off", "normal", null)]
+    [InlineData("0.7", null, 0.7f)]
+    [InlineData("1.5", "normal", null)]
+    [InlineData("garbage", null, null)]
+    public void ResolveThreshold_MapsModes(string? env, string? setting, float? expected)
     {
-        using var classifier = CreateClassifier();
-        // Half a second -- well under the model's 2.0s training window --
-        // exercises AlignToWindow's left-pad path.
-        var shortClip = new short[WakeWordClassifier.SampleRate / 2];
-
-        var score = classifier.Score(shortClip);
-
-        Assert.InRange(score, 0f, 1f);
-    }
-
-    [SkippableFact]
-    public void Score_LongerThanWindowIsTruncatedNotThrown()
-    {
-        using var classifier = CreateClassifier();
-        // Five seconds -- well over the model's 2.0s training window --
-        // exercises AlignToWindow's right-align/truncate path.
-        var longClip = new short[WakeWordClassifier.SampleRate * 5];
-
-        var score = classifier.Score(longClip);
-
-        Assert.InRange(score, 0f, 1f);
-    }
-
-    [SkippableFact]
-    public void MayContainWakeWord_RespectsConfiguredThreshold()
-    {
-        // A threshold of exactly 0 must always pass (any real sigmoid
-        // score is >= 0); a threshold of 1 immediately above the maximum
-        // possible score must never pass for silence. This only pins
-        // down the threshold comparison itself, not the real model's
-        // actual weights/accuracy.
-        var silence = new short[WakeWordClassifier.WindowSamples];
-
-        using var alwaysPasses = CreateClassifier(threshold: 0f);
-        Assert.True(alwaysPasses.MayContainWakeWord(silence));
-
-        using var neverPasses = CreateClassifier(threshold: 1.0001f);
-        Assert.False(neverPasses.MayContainWakeWord(silence));
+        Assert.Equal(expected, WakeWordClassifier.ResolveThreshold(env, setting));
     }
 }

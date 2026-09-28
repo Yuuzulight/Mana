@@ -65,7 +65,7 @@ internal sealed class VoiceLoop : IDisposable
     private const long FrameMs = SileroVadRunner.FrameSamples * 1000 / SileroVadRunner.SampleRate;
 
     // Guards frameBuffer, segmentSamples, hasHeardSpeechInSegment,
-    // segmentElapsedMs, msSinceLastSpeech, mode, bargeInHeldMs,
+    // segmentElapsedMs, segmentSpeechMs, msSinceLastSpeech, mode, bargeInHeldMs,
     // heldSentences, heldStackDepth, manualStopPending, and the vad instance itself (SileroVadRunner mutates its own internal state
     // per ProcessFrame/Reset call, so it isn't thread-safe either).
     // OnDataAvailable fires on NAudio's WASAPI capture thread; every other
@@ -95,6 +95,7 @@ internal sealed class VoiceLoop : IDisposable
     private bool awake;
     private bool hasHeardSpeechInSegment;
     private long segmentElapsedMs;
+    private long segmentSpeechMs; // #682: VAD-speech frames in the segment, for speech-debug.log
     private long msSinceLastSpeech;
     private long bargeInHeldMs; // only meaningful while mode == Speaking
 
@@ -283,6 +284,7 @@ internal sealed class VoiceLoop : IDisposable
                 segmentSamples.Clear();
                 hasHeardSpeechInSegment = false;
                 segmentElapsedMs = 0;
+                segmentSpeechMs = 0;
                 msSinceLastSpeech = 0;
                 vad.Reset();
             }
@@ -402,6 +404,7 @@ internal sealed class VoiceLoop : IDisposable
         mode = ListenMode.CapturingInterruption;
         segmentSamples.Clear();
         segmentElapsedMs = 0;
+        segmentSpeechMs = 0;
         msSinceLastSpeech = 0;
         hasHeardSpeechInSegment = true; // see ProcessBufferedFrames' comment on why
         bargeInHeldMs = 0;
@@ -427,6 +430,7 @@ internal sealed class VoiceLoop : IDisposable
         {
             hasHeardSpeechInSegment = true;
             msSinceLastSpeech = 0;
+            segmentSpeechMs += FrameMs;
         }
         else
         {
@@ -438,23 +442,32 @@ internal sealed class VoiceLoop : IDisposable
             segmentElapsedMs,
             msSinceLastSpeech);
 
-        if (stopReason == RecordingStopReason.SilenceAfterSpeech)
+        // #682: a segment that hit the 20s cap while the user was still
+        // talking is transcribed like any other (windows-launcher's
+        // recorder.stop() on "max-duration" does the same) -- it used to
+        // be silently discarded, so "Mana, <long request>" never reached
+        // Whisper at all.
+        if (stopReason == RecordingStopReason.SilenceAfterSpeech
+            || (stopReason == RecordingStopReason.MaxDuration && hasHeardSpeechInSegment))
         {
             mode = ListenMode.Processing;
-            _ = HandleSegmentClosedAsync(wasCapturingInterruption);
+            _ = HandleSegmentClosedAsync(
+                wasCapturingInterruption,
+                stopReason == RecordingStopReason.MaxDuration ? "max" : "silence");
             return true;
         }
 
         if (stopReason is RecordingStopReason.MaxDuration or RecordingStopReason.NoSpeechTimeout)
         {
-            // Matches Idle's own pre-existing behavior: reset and keep
-            // listening in the same mode rather than giving up. For
-            // CapturingInterruption specifically, Mana has already
-            // stopped talking by this point -- there's nothing to resume
-            // even if this times out, so just keep waiting for the user.
+            // Nothing heard yet: reset and keep listening in the same
+            // mode rather than giving up. For CapturingInterruption
+            // specifically, Mana has already stopped talking by this
+            // point -- there's nothing to resume even if this times out,
+            // so just keep waiting for the user.
             segmentSamples.Clear();
             hasHeardSpeechInSegment = wasCapturingInterruption;
             segmentElapsedMs = 0;
+            segmentSpeechMs = 0;
             msSinceLastSpeech = 0;
             vad.Reset();
         }
@@ -462,25 +475,28 @@ internal sealed class VoiceLoop : IDisposable
         return false;
     }
 
-    private async Task HandleSegmentClosedAsync(bool wasInterruption)
+    private async Task HandleSegmentClosedAsync(bool wasInterruption, string closeReason)
     {
         // Only ever invoked synchronously from ProcessSegmentFrame, which
         // is only ever invoked under stateLock -- so this runs under the
         // caller's lock too (C#'s lock is reentrant on the owning thread).
         byte[] wavBytes;
         short[] samples;
+        VoiceSegmentLogEntry logEntry;
         lock (stateLock)
         {
             wavBytes = BuildWavBytes(segmentSamples);
             samples = segmentSamples.ToArray();
+            logEntry = new VoiceSegmentLogEntry { Samples = samples, SpeechMs = segmentSpeechMs, Close = closeReason };
             segmentSamples.Clear();
             hasHeardSpeechInSegment = false;
             segmentElapsedMs = 0;
+            segmentSpeechMs = 0;
             msSinceLastSpeech = 0;
             vad.Reset();
         }
 
-        await ProcessTurnAsync(wavBytes, samples, wasInterruption);
+        await ProcessTurnAsync(wavBytes, samples, wasInterruption, logEntry);
     }
 
     // #523: entry point for the global "look at my screen" hotkey.
@@ -671,7 +687,7 @@ internal sealed class VoiceLoop : IDisposable
     // earlier turn already passed the wake-word gate below), so no
     // special-casing is needed between the two callers except classifying
     // the interruption itself.
-    private async Task ProcessTurnAsync(byte[] wavBytes, short[] samples, bool wasInterruption)
+    private async Task ProcessTurnAsync(byte[] wavBytes, short[] samples, bool wasInterruption, VoiceSegmentLogEntry logEntry)
     {
         // #513: consumed here, before transcription can fail/come back
         // empty -- a false barge-in trigger (cough, TV noise, a word that
@@ -705,10 +721,38 @@ internal sealed class VoiceLoop : IDisposable
         // overwhelming majority case; a false acoustic positive costs one
         // wasted Whisper call, never a false wake-up, since the text
         // matcher below still has final say.
-        if (!awake && wakeWordClassifier is not null && !wakeWordClassifier.MayContainWakeWord(samples))
+        //
+        // #682: scored off the capture thread (a 20s segment is ~250
+        // classifier windows); a classifier failure fails open -- it used
+        // to escape this fire-and-forget task and leave mode stuck in
+        // Processing. Every early exit below logs one speech-debug.log
+        // line first (Skip), and the success path logs before dispatch.
+        logEntry.Awake = awake;
+        async Task Skip()
         {
+            VoiceDebugLog.Append(logEntry);
             await ReturnToIdleOrResumeHeldAsync(held, nested);
-            return;
+        }
+
+        if (!awake && wakeWordClassifier is not null)
+        {
+            logEntry.Threshold = wakeWordClassifier.Threshold;
+            try
+            {
+                logEntry.Score = await Task.Run(() => wakeWordClassifier.Score(samples));
+            }
+            catch (Exception ex)
+            {
+                logEntry.ClassifierFailed = true;
+                Console.WriteLine($"VoiceLoop: wake-word classifier failed, sending to Whisper anyway. {ex.Message}");
+            }
+
+            // False whenever either side is null (off, or the classifier threw).
+            if (logEntry.Score < logEntry.Threshold)
+            {
+                await Skip();
+                return;
+            }
         }
 
         string transcript;
@@ -719,23 +763,28 @@ internal sealed class VoiceLoop : IDisposable
         catch (Exception ex)
         {
             Console.WriteLine($"VoiceLoop: transcription failed, resuming listening. {ex.Message}");
-            await ReturnToIdleOrResumeHeldAsync(held, nested);
+            logEntry.Whisper = "failed";
+            await Skip();
             return;
         }
 
         if (string.IsNullOrWhiteSpace(transcript))
         {
-            await ReturnToIdleOrResumeHeldAsync(held, nested);
+            logEntry.Whisper = "empty";
+            await Skip();
             return;
         }
 
+        logEntry.Whisper = "ok";
+        logEntry.Transcript = transcript;
         string commandText;
         if (!awake)
         {
             var command = WakeWordMatcher.ExtractWakeCommand(transcript);
+            logEntry.WakeMatch = command is not null;
             if (command is null)
             {
-                await ReturnToIdleOrResumeHeldAsync(held, nested);
+                await Skip();
                 return;
             }
 
@@ -747,6 +796,7 @@ internal sealed class VoiceLoop : IDisposable
             commandText = transcript;
         }
 
+        VoiceDebugLog.Append(logEntry);
         await DispatchCommandAsync(commandText, wasInterruption, held, nested);
     }
 
@@ -1158,6 +1208,7 @@ internal sealed class VoiceLoop : IDisposable
             segmentSamples.Clear();
             hasHeardSpeechInSegment = false;
             segmentElapsedMs = 0;
+            segmentSpeechMs = 0;
             msSinceLastSpeech = 0;
             vad.Reset();
         }

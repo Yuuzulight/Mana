@@ -93,8 +93,11 @@ This is a multi-phase pipeline. Each phase ships as its own PR.
    missing.
    - Native launcher: [PR #631](https://github.com/Yuuzulight/Mana/pull/631)
      -- `WakeWordClassifier.cs`, same `Microsoft.ML.OnnxRuntime` pattern
-     as `SileroVadRunner.cs`. Threshold configurable via
-     `ManaSettingsStore.WakeWordConfidenceThreshold` (default 0.9).
+     as `SileroVadRunner.cs`. Since #682 it slides over the whole segment
+     (it used to score only the last 2.0s -- always trailing silence) and
+     is **off by default**: set `MANA_WAKE_PREFILTER=loose|normal|<0-1>`
+     or Settings > Voice to gate on it. Scores for every segment are in
+     `%LOCALAPPDATA%\Mana\logs\speech-debug.log` either way.
    - Electron launcher: [PR #632](https://github.com/Yuuzulight/Mana/pull/632)
      -- `wakeword-classifier.js`, same `onnxruntime-web`/injected-`ort`
      pattern as `silero-vad.js`. Threshold configurable via

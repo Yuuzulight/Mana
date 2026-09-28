@@ -22,11 +22,12 @@ internal sealed class ManaSettingsStore
     public string BackendBaseUrl { get; set; } = "http://127.0.0.1:5005";
     public string? AdminToken { get; set; }
 
-    // #342: acoustic wake-word pre-filter confidence threshold (0-1).
-    // See tools/wakeword-training/README.md's measured false-positive-
-    // rate-by-threshold table for why this isn't left at the model's own
-    // default 0.5 -- 7.2 false positives/hour there vs. 1.0/hour at 0.99.
-    public float WakeWordConfidenceThreshold { get; set; } = WakeWordClassifier.DefaultThreshold;
+    // #342/#682: acoustic wake-word pre-filter -- "off" (null, default),
+    // "loose" or "normal", chosen in Settings > Voice; see
+    // WakeWordClassifier.ResolveThreshold. Replaces the old
+    // WakeWordConfidenceThreshold (0.9), which a saved file may still
+    // hold and is now ignored, so existing installs get the new default.
+    public string? WakePrefilter { get; set; }
 
     // #681: the prompt preset sent as presetId with every reply; null =
     // none. Chosen in Settings > Presets (windows-launcher kept the same

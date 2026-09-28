@@ -1,5 +1,7 @@
 using System;
+using System.Diagnostics;
 using System.Drawing;
+using System.IO;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 
@@ -802,7 +804,57 @@ internal sealed class SettingsPanel : UserControl
         row.Controls.Add(voiceProviderCombo);
         row.Controls.Add(saveButton);
 
-        return new TabPage("Voice") { Controls = { row } };
+        var layout = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown, BackColor = DarkTheme.Background };
+        layout.Controls.Add(row);
+        layout.Controls.Add(BuildWakePrefilterRow());
+        return new TabPage("Voice") { Controls = { layout } };
+    }
+
+    // #682: the #342 acoustic wake-word pre-filter (read once at startup,
+    // so it applies on next launch; MANA_WAKE_PREFILTER overrides it) and
+    // a shortcut to speech-debug.log, which shows what it decided.
+    private static readonly string[] WakePrefilterModes = { "off", "loose", "normal" };
+
+    private static FlowLayoutPanel BuildWakePrefilterRow()
+    {
+        var label = new Label { Text = "Wake-word pre-filter", AutoSize = true, ForeColor = DarkTheme.Text, Anchor = AnchorStyles.Left };
+        var combo = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 200, BackColor = DarkTheme.Panel2, ForeColor = DarkTheme.Text };
+        combo.Items.AddRange(new object[] { "Off (default)", "Loose", "Normal" });
+        combo.SelectedIndex = Math.Max(0, Array.IndexOf(WakePrefilterModes, ManaSettingsStore.Load().WakePrefilter));
+        var status = new Label { AutoSize = true, ForeColor = DarkTheme.Muted, Anchor = AnchorStyles.Left };
+        combo.SelectionChangeCommitted += (_, _) =>
+        {
+            var latest = ManaSettingsStore.Load();
+            latest.WakePrefilter = combo.SelectedIndex == 0 ? null : WakePrefilterModes[combo.SelectedIndex];
+            latest.Save();
+            status.Text = "Saved -- applies next launch.";
+        };
+
+        var openLog = new Button { Text = "Open speech log", AutoSize = true };
+        DarkTheme.ApplyButton(openLog);
+        openLog.Click += (_, _) =>
+        {
+            if (!File.Exists(VoiceDebugLog.DefaultPath))
+            {
+                status.Text = $"No speech log yet ({VoiceDebugLog.DefaultPath}).";
+                return;
+            }
+            try
+            {
+                Process.Start(new ProcessStartInfo(VoiceDebugLog.DefaultPath) { UseShellExecute = true });
+            }
+            catch (Exception ex)
+            {
+                status.Text = $"Couldn't open {VoiceDebugLog.DefaultPath}: {ex.Message}";
+            }
+        };
+
+        var row = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.LeftToRight, BackColor = DarkTheme.Background };
+        row.Controls.Add(label);
+        row.Controls.Add(combo);
+        row.Controls.Add(openLog);
+        row.Controls.Add(status);
+        return row;
     }
 
     private async Task SaveVoiceProviderAsync()
