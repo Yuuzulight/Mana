@@ -142,6 +142,25 @@ public class ManaProcessManagerTests
         Assert.False(reported["backend"]);
     }
 
+    [Fact]
+    public async Task StartAsync_SkipsLocalTtsWithoutThrowing_ForARemoteBackendUrl()
+    {
+        // A remote backend synthesizes on its own machine. Locally, Kokoro's
+        // missing venv (C:\does-not-exist has none) must not fail startup,
+        // and neither TTS service is started.
+        var handler = new FakeHttpMessageHandler(request =>
+            new HttpResponseMessage(request.RequestUri!.Host == "192.168.1.50" ? HttpStatusCode.OK : HttpStatusCode.ServiceUnavailable));
+        using var manager = new ManaProcessManager(@"C:\does-not-exist", handler, backendBaseUrl: "http://192.168.1.50:5005");
+        var reported = new ConcurrentDictionary<string, bool>();
+
+        await manager.StartAsync((key, available) => reported[key] = available);
+
+        Assert.True(reported["backend"]);
+        Assert.False(reported["kokoro"]);
+        Assert.False(reported["fish-speech"]);
+        Assert.False(manager.IsBackendLocal);
+    }
+
     [Theory]
     [InlineData("http://127.0.0.1:5005")]
     [InlineData("http://localhost:5005")]
