@@ -4,7 +4,13 @@ const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
 
-const { classifyToolCall, extractHosts, bindCall, wrapWithRiskGate } = require("../ai/tool-risk");
+const {
+  classifyToolCall,
+  extractHosts,
+  bindCall,
+  resolveToolApprovalMode,
+  wrapWithRiskGate,
+} = require("../ai/tool-risk");
 const { createApprovalGate } = require("../approval-gate");
 
 // An MCP shell tool -- not a built-in, so its arguments get inspected.
@@ -67,6 +73,8 @@ test("#669 tiers: built-ins keep their fixed tier and are not content-inspected"
   // read_file already refuses .env itself (#268) -- no pointless prompt
   assert.equal(classifyToolCall("read_file", { path: ".env" }).tier, "read");
   assert.equal(classifyToolCall("expression__set", { name: "happy" }).tier, "read");
+  // only writes a .diff under Mana's data dir; the user applies it (#276)
+  assert.equal(classifyToolCall("coding__propose_edit", { path: "a.js", proposedContent: "x" }).tier, "read");
   assert.equal(classifyToolCall("memory__remember", { fact: "rm -rf /" }).tier, "write");
   const nav = classifyToolCall("browser_automation__navigate", { url: "https://example.com/a" });
   assert.equal(nav.tier, "network");
@@ -210,8 +218,28 @@ function setup({ mode, dataDir = tempDir(), files } = {}) {
   return { gate, wrapped, ran, dataDir, fsFiles, bindingDeps, policy };
 }
 
-test("#669 gate off (default): non-destructive calls run as before, destructive ones ask", async () => {
+test("#669 mode resolution: first valid of saved/env wins, else smart", () => {
+  assert.equal(resolveToolApprovalMode(), "smart");
+  assert.equal(resolveToolApprovalMode(null, undefined), "smart");
+  assert.equal(resolveToolApprovalMode(null, " ASK "), "ask");
+  assert.equal(resolveToolApprovalMode("off", "ask"), "off");
+  assert.equal(resolveToolApprovalMode("bogus", "nope"), "smart");
+});
+
+test("#669 no mode given defaults to smart: built-ins that ran unprompted still do, an MCP write asks", async () => {
   const { wrapped, ran, gate } = setup({});
+  for (const name of ["read_file", "expression__set", "session_goal__finish", "skill__view", "snapshot__list", "coding__propose_edit"]) {
+    assert.equal(await wrapped.executeTool(name, {}), `ran ${name}`);
+  }
+  // self-gated: asks through its own approval, not a second time here
+  assert.equal(await wrapped.executeTool("memory__remember", { fact: "x" }), "ran memory__remember");
+  assert.equal(JSON.parse(await wrapped.executeTool("mcp__notes__save", { title: "a" })).status, "pending");
+  assert.equal(ran.length, 7);
+  assert.equal(gate.listPending()[0].actionType, "tool-write");
+});
+
+test("#669 gate off: non-destructive calls run as before, destructive ones ask", async () => {
+  const { wrapped, ran, gate } = setup({ mode: "off" });
   assert.equal(await wrapped.executeTool(SHELL, { command: "mytool --build" }), `ran ${SHELL}`);
   assert.equal(await wrapped.executeTool("read_file", { path: "a" }), "ran read_file");
   const outcome = JSON.parse(await wrapped.executeTool(SHELL, { command: "rm -rf /" }));

@@ -1264,6 +1264,24 @@ internal sealed class ManaBackendClient
         return pending;
     }
 
+    // #669: "smart" | "ask" | "off" -- which tool calls ask first.
+    public async Task<string?> GetToolApprovalModeAsync()
+    {
+        using var response = await http.GetAsync("/approvals/tool-mode");
+        response.EnsureSuccessStatusCode();
+        await using var stream = await response.Content.ReadAsStreamAsync();
+        using var document = await JsonDocument.ParseAsync(stream);
+        return document.RootElement.TryGetProperty("mode", out var modeEl) ? modeEl.GetString() : null;
+    }
+
+    public async Task SetToolApprovalModeAsync(string mode)
+    {
+        var payload = JsonSerializer.Serialize(new { mode });
+        using var content = new StringContent(payload, Encoding.UTF8, "application/json");
+        using var response = await http.PostAsync("/approvals/tool-mode", content);
+        response.EnsureSuccessStatusCode();
+    }
+
     // decision: "allow-once" | "allow-session" | "always-allow" | "deny" -- node-bot
     // validates this itself and 400s on anything else, so this client
     // doesn't duplicate that validation.
