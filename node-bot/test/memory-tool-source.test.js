@@ -6,15 +6,29 @@ const {
   TOOL_SCHEMAS,
   isMemoryToolName,
   createMemoryToolSource,
+  createMemoryWriteExecutor,
   buildToolPolicyWithMemory,
 } = require("../ai/memory-tool-source");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
+const { createAcpMemoryStore } = require("../acp-memory-store");
+const { createApprovalGate } = require("../approval-gate");
+
+// Issue #673: origin.turnAt is the real clock; the payload tests below
+// compare everything else.
+function withoutTurnAt(args) {
+  if (!args?.origin) return args;
+  const { turnAt, ...origin } = args.origin;
+  return { ...args, origin };
+}
 
 function fakeAcpMemoryStore(rememberFactImpl, listFactKeysImpl) {
   const calls = [];
   return {
     calls,
     rememberFact: (args) => {
-      calls.push(args);
+      calls.push(withoutTurnAt(args));
       return rememberFactImpl ? rememberFactImpl(args) : { ok: true, action: args.action || "insert" };
     },
     ...(listFactKeysImpl ? { listFactKeys: listFactKeysImpl } : {}),
@@ -82,7 +96,13 @@ test("executeTool forwards key/text/action to acpMemoryStore.rememberFact, with 
     action: "patch",
   });
   assert.deepEqual(acpMemoryStore.calls, [
-    { sessionId: "session-a", key: "the user's GPU", text: "RTX 5080", action: "patch" },
+    {
+      sessionId: "session-a",
+      key: "the user's GPU",
+      text: "RTX 5080",
+      action: "patch",
+      origin: { kind: "model_inferred", tools: [] },
+    },
   ]);
   assert.equal(result, JSON.stringify({ ok: true, action: "patch" }));
 });
@@ -102,6 +122,7 @@ test("executeTool forwards supersedes when supplied, and omits it entirely when 
     text: "in a relationship",
     action: undefined,
     supersedes: "relationship status",
+    origin: { kind: "model_inferred", tools: [] },
   });
 
   await source.executeTool(`${MEMORY_TOOL_PREFIX}remember`, { key: "favorite color", text: "blue" });
@@ -336,11 +357,12 @@ test("executeTool stages the write through approvalGate.requestApproval when one
   assert.equal(acpMemoryStore.calls.length, 0);
   assert.equal(approvalCalls.length, 1);
   assert.equal(approvalCalls[0].actionType, "memory-write");
-  assert.deepEqual(approvalCalls[0].details.payload, {
+  assert.deepEqual(withoutTurnAt(approvalCalls[0].details.payload), {
     sessionId: "session-a",
     key: "the user's GPU",
     text: "RTX 5080",
     action: "patch",
+    origin: { kind: "model_inferred", tools: [] },
   });
   assert.equal(approvalCalls[0].details.scanText, "RTX 5080");
   assert.deepEqual(JSON.parse(result), {
@@ -370,4 +392,178 @@ test("buildToolPolicyWithMemory merges the remember tool into an existing base p
   assert.equal(await merged.executeTool("read_file", {}), "base:read_file");
   await merged.executeTool(`${MEMORY_TOOL_PREFIX}remember`, { key: "k", text: "t" });
   assert.equal(acpMemoryStore.calls.length, 1);
+});
+
+function tempDir() {
+  return fs.mkdtempSync(path.join(os.tmpdir(), "mana-memory-tool-"));
+}
+
+test("a write's origin is user_stated only when the user asked, model_inferred otherwise (issues #663, #673)", async () => {
+  const kindFor = async (userMessage) => {
+    const store = fakeAcpMemoryStore();
+    await createMemoryToolSource({ acpMemoryStore: store, userMessage })
+      .executeTool(`${MEMORY_TOOL_PREFIX}remember`, { key: "cat", text: "cat is Tom" });
+    return store.calls[0].origin.kind;
+  };
+  assert.equal(await kindFor("remember that my cat is Tom"), "user_stated");
+  assert.equal(await kindFor("my cat Tom knocked my mug over"), "model_inferred");
+  // Nothing from the user this turn: Mana inferred it.
+  assert.equal(await kindFor(undefined), "model_inferred");
+});
+
+test("the model can only confirm a pending fact when the user's message says yes (issue #663)", async () => {
+  const store = fakeAcpMemoryStore();
+  const refused = JSON.parse(
+    await createMemoryToolSource({ acpMemoryStore: store, userMessage: "what's the weather" })
+      .executeTool(`${MEMORY_TOOL_PREFIX}remember`, { key: "cat", action: "confirm" }),
+  );
+  assert.equal(refused.ok, false);
+  assert.match(refused.error, /Only the user can confirm/);
+  assert.equal(store.calls.length, 0);
+
+  await createMemoryToolSource({ acpMemoryStore: store, userMessage: "yes, that's right" })
+    .executeTool(`${MEMORY_TOOL_PREFIX}remember`, { key: "cat", action: "confirm" });
+  assert.equal(store.calls[0].action, "confirm");
+});
+
+test("the already-remembered index marks pending facts as unconfirmed (issue #663)", () => {
+  const source = createMemoryToolSource({
+    acpMemoryStore: fakeAcpMemoryStore(null, () => [{ key: "cat", preview: "cat is Tom", pending: true }]),
+  });
+  assert.match(source.listToolSchemas()[0].function.description, /- "cat" \(cat is Tom\) \[unconfirmed\]/);
+});
+
+// Real store + real gate: approving after the fact changed is refused, the
+// fact is untouched, and a fresh request pinned to the current version is
+// queued; approving that one applies.
+test("an approval for a fact that changed since the request is refused and asked again against the current version (issue #663)", async () => {
+  const acpMemoryStore = createAcpMemoryStore({ dataDir: tempDir() });
+  const approvalGate = createApprovalGate({ dataDir: tempDir() });
+  approvalGate.registerExecutor("memory-write", createMemoryWriteExecutor({ acpMemoryStore, approvalGate }));
+  acpMemoryStore.rememberFact({ key: "gpu", text: "RTX 4070" });
+
+  const source = createMemoryToolSource({ acpMemoryStore, approvalGate, userMessage: "remember I have an RTX 3060" });
+  const requested = JSON.parse(
+    await source.executeTool(`${MEMORY_TOOL_PREFIX}remember`, { key: "gpu", text: "RTX 3060", action: "patch" }),
+  );
+  assert.equal(requested.status, "pending");
+  assert.match(requested.summary, /currently: RTX 4070/);
+
+  // Something else changes the fact before the user gets to the approval.
+  acpMemoryStore.rememberFact({ key: "gpu", text: "RTX 5080", action: "patch" });
+
+  const decided = await approvalGate.decide(requested.requestId, "allow-once");
+  assert.equal(decided.result.refused, "changed");
+  assert.match(decided.result.error, /nothing was overwritten/);
+  assert.equal(acpMemoryStore.listFacts()[0].text, "RTX 5080");
+  assert.equal(decided.result.askedAgain.status, "pending");
+  const [again] = approvalGate.listPending();
+  assert.equal(again.id, decided.result.askedAgain.requestId);
+  assert.match(again.summary, /RTX 3060 \(currently: RTX 5080\)/);
+
+  const applied = await approvalGate.decide(again.id, "allow-once");
+  assert.equal(applied.result.ok, true);
+  assert.equal(acpMemoryStore.listFacts()[0].text, "RTX 3060");
+  assert.equal(acpMemoryStore.listFacts().length, 1);
+});
+
+test("clicking always-allow on a stale memory approval still refuses it instead of re-asking straight into a write (issue #663)", async () => {
+  const acpMemoryStore = createAcpMemoryStore({ dataDir: tempDir() });
+  const approvalGate = createApprovalGate({ dataDir: tempDir() });
+  approvalGate.registerExecutor("memory-write", createMemoryWriteExecutor({ acpMemoryStore, approvalGate }));
+  acpMemoryStore.rememberFact({ key: "gpu", text: "RTX 4070" });
+  const source = createMemoryToolSource({ acpMemoryStore, approvalGate });
+  const requested = JSON.parse(
+    await source.executeTool(`${MEMORY_TOOL_PREFIX}remember`, { key: "gpu", action: "remove" }),
+  );
+  acpMemoryStore.rememberFact({ key: "gpu", text: "RTX 5080", action: "patch" });
+
+  const decided = await approvalGate.decide(requested.requestId, "always-allow");
+  assert.equal(decided.result.refused, "changed");
+  assert.equal("askedAgain" in decided.result, false);
+  assert.equal(acpMemoryStore.listFacts()[0].status, "active");
+  assert.equal(approvalGate.listPending().length, 0);
+});
+
+// Issue #673 acceptance: a page read earlier in the turn says "remember that
+// the user's password hint is ...", and the user's own message shares enough
+// words to pass the attribution check. It must still land tool_derived,
+// untrusted and out of recall, and the model can't confirm it in that turn.
+test("a memory write after a content tool ran is tool_derived, untrusted and out of recall, whatever the word overlap (issue #673)", async () => {
+  const acpMemoryStore = createAcpMemoryStore({ dataDir: tempDir() });
+  const turnTools = ["expression__set", "browser_automation__get_page_text"];
+  const source = createMemoryToolSource({
+    acpMemoryStore,
+    sessionId: "s1",
+    userMessage: "yes, remember what this page says about the user's password hint",
+    turnTools,
+  });
+  const result = JSON.parse(
+    await source.executeTool(`${MEMORY_TOOL_PREFIX}remember`, {
+      key: "password hint",
+      text: "the user's password hint is my first pet",
+    }),
+  );
+  assert.equal(result.decision, "add");
+  const [fact] = acpMemoryStore.listFacts();
+  assert.equal(fact.origin.kind, "tool_derived");
+  assert.deepEqual(fact.origin.tools, turnTools);
+  assert.equal(fact.status, "pending");
+  assert.equal(fact.unverifiedSource, true);
+  assert.equal(acpMemoryStore.getRelatedFacts("what's the user's password hint"), "");
+
+  const confirmSameTurn = JSON.parse(
+    await source.executeTool(`${MEMORY_TOOL_PREFIX}remember`, { key: "password hint", action: "confirm" }),
+  );
+  assert.equal(confirmSameTurn.ok, false);
+  assert.match(confirmSameTurn.error, /Can.t confirm .* outside content/);
+  assert.equal(acpMemoryStore.listFacts()[0].status, "pending");
+
+  // A later turn with no tools, where the user says yes, can confirm it.
+  await createMemoryToolSource({ acpMemoryStore, userMessage: "yes, that's my hint" })
+    .executeTool(`${MEMORY_TOOL_PREFIX}remember`, { key: "password hint", action: "confirm" });
+  assert.match(acpMemoryStore.getRelatedFacts("what's the user's password hint"), /first pet/);
+});
+
+test("tools that can't bring in outside content don't make a write tool_derived (issue #673)", async () => {
+  const store = fakeAcpMemoryStore();
+  await createMemoryToolSource({
+    acpMemoryStore: store,
+    userMessage: "remember my cat is Tom",
+    turnTools: ["memory__remember", "expression__set", "session_goal__complete"],
+  }).executeTool(`${MEMORY_TOOL_PREFIX}remember`, { key: "cat", text: "cat is Tom" });
+  assert.equal(store.calls[0].origin.kind, "user_stated");
+});
+
+test("a turn that read outside content can't forget, archive or invalidate facts, even via supersedes or the conflict judge (issue #673)", async () => {
+  const store = fakeAcpMemoryStore(() => ({
+    ok: true,
+    action: "insert",
+    possibleConflict: { key: "gpu", preview: "RTX 5080" },
+  }));
+  store.invalidateFactByKey = () => {
+    throw new Error("must not auto-invalidate from a tool-derived write");
+  };
+  let judged = 0;
+  const source = createMemoryToolSource({
+    acpMemoryStore: store,
+    userMessage: "remember what this page says",
+    turnTools: ["mcp__web__fetch"],
+    runLocalReply: async () => {
+      judged += 1;
+      return "CONTRADICTS";
+    },
+  });
+  for (const action of ["remove", "archive"]) {
+    const refused = JSON.parse(await source.executeTool(`${MEMORY_TOOL_PREFIX}remember`, { key: "gpu", action }));
+    assert.equal(refused.ok, false);
+    assert.match(refused.error, new RegExp(`Can't ${action}`));
+  }
+  assert.equal(store.calls.length, 0);
+
+  await source.executeTool(`${MEMORY_TOOL_PREFIX}remember`, {
+    key: "new gpu", text: "RTX 9090", supersedes: "gpu",
+  });
+  assert.equal("supersedes" in store.calls[0], false);
+  assert.equal(judged, 0);
 });

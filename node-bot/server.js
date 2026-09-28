@@ -186,7 +186,7 @@ const { createToolPolicy } = require("./ai/tool-policy");
 // below already returns the {listToolSchemas, executeTool, isKnownToolName}
 // shape buildToolPolicy expects.
 const { buildToolPolicy } = require("./ai/tool-source");
-const { createMemoryToolSource } = require("./ai/memory-tool-source");
+const { createMemoryToolSource, createMemoryWriteExecutor } = require("./ai/memory-tool-source");
 const {
   loadSessionSummaries,
   runCompactorStage,
@@ -696,6 +696,7 @@ async function checkEmotionalReflexes(store = acpMemoryStore) {
     key: "journal-loneliness",
     text: `It's been about ${Math.round(hoursSince)} hours since we last talked.`,
     action: "patch",
+    origin: { kind: "system" },
   });
 }
 
@@ -1831,6 +1832,17 @@ function registerRoutes(app, upload, deps = {}) {
           ),
         );
       }
+      // Issue #663: unconfirmed facts age into archived. No model call.
+      try {
+        (deps.acpMemoryStore || acpMemoryStore).archiveExpiredPendingFacts({
+          maxAgeDays: Number(process.env.MANA_PENDING_FACT_MAX_AGE_DAYS) || undefined,
+        });
+      } catch (err) {
+        console.warn(
+          "Idle-triggered pending-fact expiry failed:",
+          err && err.message ? err.message : err,
+        );
+      }
       // Deterministic, no-LLM skill pruning (issue #140) -- same idle
       // signal as the memory consolidation above, but this pass never
       // calls the model: it just flags/archives skills nobody's used in
@@ -2016,7 +2028,12 @@ function registerRoutes(app, upload, deps = {}) {
   // conversational skill write doesn't silently also disable review for
   // every future proposal nobody's actually looked at.
   activeApprovalGate.registerExecutor("skill-write-idle", (payload) => activeSkillsStore.createSkill(payload));
-  activeApprovalGate.registerExecutor("memory-write", (payload) => acpMemoryStore.rememberFact(payload));
+  // Issue #663: refuses (and asks again) when the fact changed since the
+  // request, instead of writing over what the approver reviewed.
+  activeApprovalGate.registerExecutor(
+    "memory-write",
+    createMemoryWriteExecutor({ acpMemoryStore, approvalGate: activeApprovalGate }),
+  );
 
   // Lets acpMemoryStore's summarizeFn (built at module load time, long
   // before registerRoutes ever runs) reach the real runOpenAIReply --
@@ -4032,6 +4049,10 @@ function registerRoutes(app, upload, deps = {}) {
     // that gets appended to session memory, and a closure-scoped variable
     // gets that without changing any other reply path's signature.
     let lastToolCalls = [];
+    // Issue #673: every tool that has returned so far this turn (across
+    // regeneration attempts too), so a memory write can tell whether it may
+    // be repeating content a tool brought in (memory-tool-source.js).
+    const turnTools = [];
 
     // Issue #331: onSentence streams only the very first plain local-
     // completion attempt. Regeneration (rut-detection nudge, verify/retry)
@@ -4105,6 +4126,7 @@ function registerRoutes(app, upload, deps = {}) {
               // or swaps a model, see llamaServerRuntime's own comment on
               // isProfileAlreadyLoaded/runLocalReplyIfSafelyLoaded.
               runLocalReply: llamaServerRuntime.runLocalReplyIfSafelyLoaded,
+              turnTools,
             }),
             createSessionSearchToolSource({ acpMemoryStore, sessionId }),
             createSkillToolSource({ approvalGate: activeApprovalGate, skillsStore: activeSkillsStore }),
@@ -4183,6 +4205,12 @@ function registerRoutes(app, upload, deps = {}) {
           // every source (local read_file, browser-automation, MCP) in one
           // shared audit/trace log.
           mergedToolPolicy = wrapWithToolCallLog(mergedToolPolicy, activeToolCallLog);
+          const executeLoggedTool = mergedToolPolicy.executeTool;
+          mergedToolPolicy.executeTool = async (name, args) => {
+            const result = await executeLoggedTool(name, args);
+            turnTools.push(name);
+            return result;
+          };
           const toolResult = await runToolAwareReply(
             promptText,
             mergedToolPolicy,

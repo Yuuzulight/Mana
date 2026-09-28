@@ -60,10 +60,18 @@ const SESSION_SEARCH_RERANKED_TOP = 8;
 // scores yet -- make it an env var if recall is visibly too loose/tight.
 const MIN_FACT_SIMILARITY = 0.5;
 
+// Issue #663: "pending" is a fact Mana picked up on her own and the user has
+// not confirmed yet. It is live (patchable, recallable, one per key) like an
+// active fact; old records have no pending status, so they behave as before.
+function isLiveFact(fact) {
+  return fact.status === "active" || fact.status === "pending";
+}
+
 // Issue #317/#277/#431: unverified, archived/stale and invalidated facts
-// never auto-surface -- unchanged from the key-match-only version.
+// never auto-surface -- unchanged from the key-match-only version. #663:
+// pending facts do, marked tentative (factsBlockFor).
 function isRecallable(fact) {
-  return fact.status === "active" && !fact.unverifiedSource && !fact.invalidatedAt;
+  return isLiveFact(fact) && !fact.unverifiedSource && !fact.invalidatedAt;
 }
 
 // Facts from before ids existed fall back to their (active-unique) key;
@@ -136,7 +144,10 @@ function maxMatchedFacts(options) {
 // Pinned lines first: they are the same every turn, so the block's start
 // stays stable (#660), and they survive the whole-line char cap first.
 function factsBlockFor(pinned, matched) {
-  const lines = [...pinned, ...matched].map((fact) => `- ${fact.key}: ${fact.text}`);
+  const lines = [...pinned, ...matched].map(
+    (fact) =>
+      `- ${fact.key}: ${fact.text}${fact.status === "pending" ? " (unconfirmed -- check with the user before relying on it)" : ""}`,
+  );
   return lines.length ? `Remembered:\n${lines.join("\n")}` : "";
 }
 
@@ -157,6 +168,49 @@ function normalizeEpistemic(value) {
   // An unrecognized value falls back to absent rather than throwing, the
   // same way an unrecognized `action` falls back to "insert" below.
   return EPISTEMIC_KINDS.includes(value) ? value : undefined;
+}
+
+// Issue #673: where a fact's current value came from. Set by the caller
+// (server-side, never from model arguments):
+//   user_stated    -- the user asked Mana to remember it this turn
+//   model_inferred -- Mana saved it without being asked
+//   tool_derived   -- a content-returning tool (browser, MCP, file read...)
+//                     ran earlier in the turn, so the text may be the tool's
+//   system         -- reflexes, admin/Settings actions
+// Only user_stated/system writes land active and verified; the rest start
+// pending (#663) and tool_derived is also unverified until confirmed.
+const ORIGIN_KINDS = ["user_stated", "model_inferred", "tool_derived", "system"];
+const EPISTEMIC_FOR_ORIGIN = {
+  user_stated: "self_report",
+  model_inferred: "inferred",
+  tool_derived: "inferred",
+};
+
+function normalizeOrigin(origin, sessionId, at) {
+  if (!origin || !ORIGIN_KINDS.includes(origin.kind)) return null;
+  const tools = [
+    ...new Set((Array.isArray(origin.tools) ? origin.tools : []).map((t) => cleanText(t, 80))),
+  ]
+    .filter(Boolean)
+    .slice(0, 10);
+  // turnAt: when the turn happened (the caller's), which for an approved
+  // write can be well before it's applied (`at`).
+  return {
+    kind: origin.kind,
+    sessionId: cleanText(sessionId || "default", 240),
+    turnAt: cleanText(origin.turnAt, 40) || at,
+    tools,
+  };
+}
+
+// Issue #673: trust is derived, not stored -- a fact nobody confirmed is
+// "tentative" (pending), one whose text isn't traceable to the user
+// (attribution check, or tool-derived) is "untrusted". Facts written before
+// #673 have neither, so they stay "trusted", as they are treated today.
+function factTrust(fact) {
+  if (fact.unverifiedSource) return "untrusted";
+  if (fact.status === "pending") return "tentative";
+  return "trusted";
 }
 
 // Issue #273 (Soul-of-Waifu-inspired self-healing memory): a deterministic,
@@ -197,9 +251,10 @@ function applySupersedes(facts, cleanKey, supersedes, timestamp) {
   if (!cleanSupersedes || cleanSupersedes.toLowerCase() === cleanKey.toLowerCase()) {
     return null;
   }
+  // #663: a pending fact can be superseded too.
   const target = facts.find(
     (f) =>
-      f.status === "active" &&
+      isLiveFact(f) &&
       !f.invalidatedAt &&
       f.key.toLowerCase() === cleanSupersedes.toLowerCase(),
   );
@@ -208,6 +263,23 @@ function applySupersedes(facts, cleanKey, supersedes, timestamp) {
   }
   target.invalidatedAt = timestamp;
   return { key: cleanSupersedes, found: true };
+}
+
+function liveFactByKey(facts, key) {
+  const lowerKey = String(key || "").toLowerCase();
+  return facts.find((f) => isLiveFact(f) && f.key.toLowerCase() === lowerKey);
+}
+
+// Issue #663: what a memory-write approval pins -- the target fact as the
+// model saw it when it asked (null: no live fact with that key yet).
+// Pinning/unpinning isn't a change to what was reviewed, so it's left out.
+function factVersion(fact) {
+  if (!fact) return null;
+  return crypto
+    .createHash("sha1")
+    .update(JSON.stringify([fact.id, fact.text, fact.status, fact.invalidatedAt || null, fact.updatedAt]))
+    .digest("hex")
+    .slice(0, 12);
 }
 
 function sessionFilename(sessionId) {
@@ -327,8 +399,9 @@ function createAcpMemoryStore(options = {}) {
     if (excess <= 0) return facts;
     return facts.filter((fact) => {
       // Superseded facts keep status "active" but carry invalidatedAt
-      // (applySupersedes), so they count as inactive here too.
-      if (excess > 0 && (fact.status !== "active" || fact.invalidatedAt)) {
+      // (applySupersedes), so they count as inactive here too. #663:
+      // pending facts are live, kept like active ones.
+      if (excess > 0 && (!isLiveFact(fact) || fact.invalidatedAt)) {
         excess -= 1;
         return false;
       }
@@ -393,7 +466,7 @@ function createAcpMemoryStore(options = {}) {
       } else {
         facts[idx] = snapshotPayload;
       }
-      saveFacts(facts);
+      saveFacts(facts, { op: "restore", key });
       return { key };
     });
   }
@@ -606,8 +679,17 @@ function createAcpMemoryStore(options = {}) {
   // one for a rephrased version of the same fact.
   function listFactKeys() {
     return loadFacts()
-      .filter((f) => f.status === "active" && !f.invalidatedAt)
-      .map((f) => ({ key: f.key, preview: cleanText(f.text, 80) }));
+      .filter((f) => isLiveFact(f) && !f.invalidatedAt)
+      .map((f) => ({
+        key: f.key,
+        preview: cleanText(f.text, 80),
+        ...(f.status === "pending" ? { pending: true } : {}),
+      }));
+  }
+
+  // Issue #663: the version an approval request pins (see factVersion).
+  function getFactVersion(key) {
+    return factVersion(liveFactByKey(loadFacts(), cleanText(key, 200)));
   }
 
   // Issue #324: full-detail listing (every status, every field including
@@ -618,13 +700,100 @@ function createAcpMemoryStore(options = {}) {
     return loadFacts();
   }
 
-  function saveFacts(facts) {
-    writeJsonObject(factsPath, { facts });
+  // Issue #673: append-only history of every fact change, beside
+  // facts.json. saveFacts diffs what it's about to write against what's on
+  // disk and logs one {at, op, key, before, after, origin} line per changed
+  // record, so side effects -- the other fact applySupersedes invalidates,
+  // records the 500 cap drops -- are logged without each caller having to.
+  // ponytail: grows without bound (a few KB per change); rotate it if it
+  // ever gets big enough to matter.
+  const factsLogPath = path.join(dataDir, "facts-log.jsonl");
+
+  // Facts from before ids existed fall back to key + creation time.
+  function factIdentity(fact) {
+    return fact.id || `key:${fact.key}:${fact.createdAt || ""}`;
   }
 
-  // action: "insert" (default) always creates a new fact. "patch" updates
-  // the existing active fact with this key if one exists, otherwise falls
-  // back to insert (nothing to patch yet). "remove" marks an existing
+  // change: {op, key, origin} -- op/origin describe the write to `key`;
+  // another record that changed in the same save is logged as "invalidate"
+  // (superseded) or with the same op, and one that disappeared as "drop".
+  function saveFacts(facts, change = {}) {
+    const op = change.op || "update";
+    const lowerKey = change.key ? String(change.key).toLowerCase() : null;
+    const before = new Map(loadFacts().map((f) => [factIdentity(f), f]));
+    writeJsonObject(factsPath, { facts });
+    const at = now();
+    const isTarget = (fact) => !lowerKey || String(fact.key).toLowerCase() === lowerKey;
+    const entries = [];
+    for (const fact of facts) {
+      const id = factIdentity(fact);
+      const prev = before.get(id) || null;
+      before.delete(id);
+      if (prev && JSON.stringify(prev) === JSON.stringify(fact)) continue;
+      const target = isTarget(fact);
+      entries.push({
+        at,
+        op: target || !fact.invalidatedAt || prev?.invalidatedAt ? op : "invalidate",
+        key: fact.key,
+        before: prev,
+        after: fact,
+        ...(target && change.origin ? { origin: change.origin } : {}),
+      });
+    }
+    for (const gone of before.values()) {
+      entries.push({ at, op: isTarget(gone) ? op : "drop", key: gone.key, before: gone, after: null });
+    }
+    if (!entries.length) return;
+    try {
+      fs.appendFileSync(factsLogPath, `${entries.map((e) => JSON.stringify(e)).join("\n")}\n`, "utf8");
+    } catch (e) {
+      console.warn("Fact history log append failed:", e?.message || e);
+    }
+  }
+
+  // Issue #673: every logged change to one key, oldest first -- the diff
+  // (before/after) and blame (origin) behind GET
+  // /admin/memory/facts/:key/history. Rolling back reuses the memory-fact
+  // snapshot restorer and its approval.
+  function getFactHistory(key) {
+    const lowerKey = cleanText(key, 200).toLowerCase();
+    if (!lowerKey || !fs.existsSync(factsLogPath)) return [];
+    const entries = [];
+    for (const line of fs.readFileSync(factsLogPath, "utf8").split("\n")) {
+      if (!line.trim()) continue;
+      try {
+        const entry = JSON.parse(line);
+        if (String(entry.key).toLowerCase() === lowerKey) entries.push(entry);
+      } catch (e) {
+        // A torn last line from a crash mid-append; skip it.
+      }
+    }
+    return entries;
+  }
+
+  function snapshotFact(key, fact, summary, source) {
+    if (!snapshotStore) return;
+    try {
+      // Deep-cloned: `fact` is a live reference into the loaded array, and
+      // callers mutate it in place (existing.history.push(...) mutates the
+      // same array existing.history already pointed at) right after this --
+      // a shallow copy would be corrupted by then.
+      snapshotStore.recordSnapshot({
+        kind: "memory-fact",
+        key,
+        payload: fact ? JSON.parse(JSON.stringify(fact)) : null,
+        summary,
+        source,
+      });
+    } catch (e) {
+      console.warn("Fact snapshot failed:", e?.message || e);
+    }
+  }
+
+  // action: "insert" (default) and "patch" both update the live fact with
+  // this key if one exists, otherwise create it (#673: insert used to add a
+  // duplicate); the result's `decision` says which ("add" / "update" /
+  // "none" for an identical restatement). "remove" marks an existing
   // active fact as stale (soft delete -- preserves history, matches this
   // store's general append-safe philosophy elsewhere) and is a no-op if
   // nothing with that key exists. "archive" (issue #277) marks a fact
@@ -651,47 +820,80 @@ function createAcpMemoryStore(options = {}) {
     occurredAt,
     supersedes,
     source,
+    origin,
+    expectedVersions,
   } = {}) {
     const cleanKey = cleanText(key, 200);
     if (!cleanKey) {
       throw new Error("key is required");
     }
-    const normalizedAction = ["insert", "patch", "remove", "archive"].includes(action)
+    const normalizedAction = ["insert", "patch", "remove", "archive", "confirm"].includes(action)
       ? action
       : "insert";
     const facts = loadFacts();
-    const existing = facts.find(
-      (f) => f.status === "active" && f.key.toLowerCase() === cleanKey.toLowerCase(),
-    );
+    const existing = liveFactByKey(facts, cleanKey);
     const timestamp = now();
 
-    if (snapshotStore) {
-      try {
-        // Deep-cloned: `existing` is a live reference into `facts`, and the
-        // patch branch below mutates it in place (existing.history.push(...)
-        // mutates the same array existing.history already pointed at) before
-        // ever reassigning it -- a shallow copy taken here would still be
-        // corrupted by that mutation by the time it's serialized.
-        snapshotStore.recordSnapshot({
-          kind: "memory-fact",
+    // Issue #663: an approved write applies only to the facts the approver
+    // reviewed. expectedVersions ([{key, version}], from getFactVersion at
+    // request time) is checked in the same synchronous call that writes, so
+    // nothing can change in between. Refused before the snapshot: nothing
+    // is written at all.
+    if (Array.isArray(expectedVersions)) {
+      const changed = expectedVersions
+        .filter(
+          (e) => factVersion(liveFactByKey(facts, cleanText(e?.key, 200))) !== (e?.version ?? null),
+        )
+        .map((e) => e?.key);
+      if (changed.length) {
+        return {
+          ok: false,
+          action: normalizedAction,
           key: cleanKey,
-          payload: existing ? JSON.parse(JSON.stringify(existing)) : null,
-          summary: `fact ${normalizedAction}: ${cleanKey}`,
-          source: source || "agent",
-        });
-      } catch (e) {
-        console.warn("Fact snapshot failed:", e?.message || e);
+          refused: "changed",
+          changed,
+          error: `Not applied: ${changed.map((k) => `"${k}"`).join(", ")} changed after this was requested, so nothing was overwritten.`,
+        };
       }
+    }
+
+    // Issue #673: absent origin (older callers) behaves exactly as before:
+    // active, and no origin recorded.
+    const cleanOrigin = normalizeOrigin(origin, sessionId, timestamp);
+    const kind = cleanOrigin?.kind;
+    const snapshot = () =>
+      snapshotFact(cleanKey, existing, `fact ${normalizedAction}: ${cleanKey}`, source || "agent");
+
+    // Issue #663: pending -> active. #673: confirming is the user vouching
+    // for the fact, so it also clears unverifiedSource.
+    if (normalizedAction === "confirm") {
+      if (!existing || factTrust(existing) === "trusted") {
+        return { ok: true, action: "confirm", decision: "none", key: cleanKey, found: Boolean(existing) };
+      }
+      snapshot();
+      existing.status = "active";
+      delete existing.unverifiedSource;
+      existing.confirmedAt = timestamp;
+      existing.updatedAt = timestamp;
+      saveFacts(facts, { op: "confirm", key: cleanKey, origin: cleanOrigin });
+      return { ok: true, action: "confirm", decision: "confirm", key: cleanKey, found: true };
     }
 
     if (normalizedAction === "remove" || normalizedAction === "archive") {
       if (!existing) {
-        return { ok: true, action: normalizedAction, key: cleanKey, found: false };
+        return { ok: true, action: normalizedAction, decision: "none", key: cleanKey, found: false };
       }
+      snapshot();
       existing.status = normalizedAction === "remove" ? "stale" : "archived";
       existing.updatedAt = timestamp;
-      saveFacts(facts);
-      return { ok: true, action: normalizedAction, key: cleanKey, found: true };
+      saveFacts(facts, { op: normalizedAction === "remove" ? "delete" : "archive", key: cleanKey, origin: cleanOrigin });
+      return {
+        ok: true,
+        action: normalizedAction,
+        decision: normalizedAction === "remove" ? "delete" : "archive",
+        key: cleanKey,
+        found: true,
+      };
     }
 
     const cleanTextValue = cleanText(text, 500);
@@ -699,37 +901,66 @@ function createAcpMemoryStore(options = {}) {
       throw new Error("text is required for insert/patch");
     }
 
-    const normalizedEpistemic = normalizeEpistemic(epistemic);
+    // Issue #336: epistemic is what kind of claim this is. #673 fills it
+    // from origin when the caller doesn't say.
+    const normalizedEpistemic = normalizeEpistemic(epistemic) || EPISTEMIC_FOR_ORIGIN[kind];
     // Issue #336: when the event happened, as opposed to createdAt/updatedAt
     // which record when Mana was told. "I moved house in March" is a fact
     // recorded today about something months old.
     const cleanOccurredAt = cleanText(occurredAt, 40);
+    // Issue #673: tool-derived text is never trusted on its own, whatever
+    // the attribution check said; model-inferred and tool-derived values
+    // start pending (#663) until the user confirms them.
+    const unverified = Boolean(unverifiedSource) || kind === "tool_derived";
+    const nextStatus = kind === "model_inferred" || kind === "tool_derived" ? "pending" : "active";
 
-    if (existing && normalizedAction === "patch") {
-      // Issue #273: keep a bounded correction history instead of silently
-      // discarding the prior value -- "what did I used to think was true"
-      // stays inspectable, matching the self-healing-memory pattern this
-      // issue is built around.
-      // Issue #431: each history entry carries its own validity window
-      // (when that text became the active value, when it stopped being)
-      // instead of a bare updatedAt, so "what did I believe was true on
-      // date X" is answerable from history entries too, not just the
-      // current value.
-      const history = Array.isArray(existing.history) ? existing.history : [];
-      history.push({
-        text: existing.text,
-        validFrom: existing.validFrom || existing.createdAt,
-        invalidatedAt: timestamp,
-      });
-      existing.history = history.slice(-MAX_FACT_HISTORY);
-      existing.text = cleanTextValue;
+    // Issue #673: the write decision. "insert" on a key that already has a
+    // live fact updates that fact instead of adding a second one with the
+    // same key (#264's key reuse, enforced instead of only asked for).
+    if (existing) {
+      // Restating the same text is "none" -- no write, no snapshot -- unless
+      // it upgrades the fact (the user confirming a pending or unverified
+      // one). A lower-trust restatement never downgrades it.
+      const sameText = existing.text === cleanTextValue;
+      const upgrades =
+        (existing.status === "pending" && nextStatus === "active") ||
+        (existing.unverifiedSource && !unverified);
+      if (sameText && !supersedes && !upgrades) {
+        return { ok: true, action: "patch", decision: "none", key: cleanKey, text: cleanTextValue };
+      }
+      snapshot();
+      if (!sameText) {
+        // Issue #273: keep a bounded correction history instead of silently
+        // discarding the prior value -- "what did I used to think was true"
+        // stays inspectable, matching the self-healing-memory pattern this
+        // issue is built around.
+        // Issue #431: each history entry carries its own validity window
+        // (when that text became the active value, when it stopped being)
+        // instead of a bare updatedAt, so "what did I believe was true on
+        // date X" is answerable from history entries too, not just the
+        // current value. #673: and where that value came from.
+        const history = Array.isArray(existing.history) ? existing.history : [];
+        history.push({
+          text: existing.text,
+          validFrom: existing.validFrom || existing.createdAt,
+          invalidatedAt: timestamp,
+          ...(existing.origin ? { origin: existing.origin } : {}),
+        });
+        existing.history = history.slice(-MAX_FACT_HISTORY);
+        existing.text = cleanTextValue;
+        existing.validFrom = timestamp;
+        // A new value hasn't been confirmed by anyone yet.
+        delete existing.confirmedAt;
+      }
       existing.updatedAt = timestamp;
-      existing.validFrom = timestamp;
-      if (unverifiedSource) {
+      // An identical restatement only ever upgrades (see above).
+      if (!sameText || nextStatus === "active") existing.status = nextStatus;
+      if (unverified && !sameText) {
         existing.unverifiedSource = true;
-      } else {
+      } else if (!unverified) {
         delete existing.unverifiedSource;
       }
+      if (cleanOrigin) existing.origin = cleanOrigin;
       // Issue #336: unlike unverifiedSource above, these are only written
       // when supplied and are never cleared by omission. unverifiedSource
       // describes *this* write, so a clean re-statement should drop it;
@@ -738,42 +969,46 @@ function createAcpMemoryStore(options = {}) {
       if (normalizedEpistemic) existing.epistemic = normalizedEpistemic;
       if (cleanOccurredAt) existing.occurredAt = cleanOccurredAt;
       const supersededPatch = applySupersedes(facts, cleanKey, supersedes, timestamp);
-      saveFacts(facts);
+      saveFacts(facts, { op: "update", key: cleanKey, origin: cleanOrigin });
       return {
         ok: true,
         action: "patch",
+        decision: "update",
         key: cleanKey,
         text: cleanTextValue,
-        ...(unverifiedSource ? { unverifiedSource: true } : {}),
+        ...(existing.status === "pending" ? { pending: true } : {}),
+        ...(existing.unverifiedSource ? { unverifiedSource: true } : {}),
         ...(supersededPatch ? { superseded: supersededPatch } : {}),
       };
     }
 
-    // insert -- either explicitly requested, or "patch" with nothing yet
-    // to patch.
+    snapshot();
     const conflict = findConflictingFact(facts, cleanKey, cleanTextValue);
     facts.push({
       id: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
       key: cleanKey,
       text: cleanTextValue,
       sessionId: cleanText(sessionId || "default", 240),
-      status: "active",
+      status: nextStatus,
       validFrom: timestamp,
       schemaVersion: FACT_SCHEMA_VERSION,
       createdAt: timestamp,
       updatedAt: timestamp,
-      ...(unverifiedSource ? { unverifiedSource: true } : {}),
+      ...(unverified ? { unverifiedSource: true } : {}),
       ...(normalizedEpistemic ? { epistemic: normalizedEpistemic } : {}),
       ...(cleanOccurredAt ? { occurredAt: cleanOccurredAt } : {}),
+      ...(cleanOrigin ? { origin: cleanOrigin } : {}),
     });
     const supersededInsert = applySupersedes(facts, cleanKey, supersedes, timestamp);
-    saveFacts(trimFacts(facts));
+    saveFacts(trimFacts(facts), { op: "add", key: cleanKey, origin: cleanOrigin });
     return {
       ok: true,
       action: "insert",
+      decision: "add",
       key: cleanKey,
       text: cleanTextValue,
-      ...(unverifiedSource ? { unverifiedSource: true } : {}),
+      ...(nextStatus === "pending" ? { pending: true } : {}),
+      ...(unverified ? { unverifiedSource: true } : {}),
       ...(conflict
         ? { possibleConflict: { key: conflict.key, preview: cleanText(conflict.text, 80) } }
         : {}),
@@ -798,8 +1033,27 @@ function createAcpMemoryStore(options = {}) {
     );
     if (!target) return { key: cleanTargetKey, found: false };
     target.invalidatedAt = now();
-    saveFacts(facts);
+    saveFacts(facts, { op: "invalidate", key: cleanTargetKey });
     return { key: cleanTargetKey, found: true };
+  }
+
+  // Issue #663: pending facts nobody confirmed within maxAgeDays of being
+  // picked up are archived, not deleted. Run from Dream Mode (server.js).
+  function archiveExpiredPendingFacts({ maxAgeDays = 14 } = {}) {
+    const cutoff = new Date(Date.parse(now()) - maxAgeDays * 24 * 60 * 60 * 1000).toISOString();
+    const facts = loadFacts();
+    const expired = facts.filter(
+      (f) => f.status === "pending" && String(f.createdAt || f.updatedAt || "") < cutoff,
+    );
+    if (!expired.length) return { archived: [] };
+    const timestamp = now();
+    for (const fact of expired) {
+      snapshotFact(fact.key, fact, `pending fact expired: ${fact.key}`, "system");
+      fact.status = "archived";
+      fact.updatedAt = timestamp;
+    }
+    saveFacts(facts, { op: "expire" });
+    return { archived: expired.map((f) => f.key) };
   }
 
   // Issue #674: user-set "always relevant" flag (name, pronouns, current
@@ -818,7 +1072,7 @@ function createAcpMemoryStore(options = {}) {
     } else {
       delete target.pinned;
     }
-    saveFacts(facts);
+    saveFacts(facts, { op: pinned ? "pin" : "unpin", key: cleanTargetKey });
     return { key: cleanTargetKey, found: true, pinned: Boolean(pinned) };
   }
 
@@ -1960,6 +2214,9 @@ function createAcpMemoryStore(options = {}) {
     listFacts,
     getFactsValidAt,
     invalidateFactByKey,
+    getFactHistory,
+    getFactVersion,
+    archiveExpiredPendingFacts,
     setFactPinned,
     listUntypedEntities,
     setEntityType,
@@ -1976,4 +2233,5 @@ module.exports = {
   createAcpMemoryStore,
   extractEntities,
   factRecallCandidates,
+  factTrust,
 };

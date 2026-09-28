@@ -1,4 +1,5 @@
 const rateLimit = require("express-rate-limit");
+const { factTrust } = require("../acp-memory-store");
 
 const KEY = "memoryFacts";
 
@@ -27,7 +28,9 @@ function registerMemoryFactsRoutes(app, context = {}) {
   app.get("/admin/memory/facts", adminMemoryRateLimiter, (req, res) => {
     if (!checkAdminAuth(req, res)) return;
     try {
-      return res.json({ ok: true, facts: acpMemoryStore.listFacts() });
+      // Issue #673: trust is derived (factTrust), shown alongside each fact.
+      const facts = acpMemoryStore.listFacts().map((fact) => ({ ...fact, trust: factTrust(fact) }));
+      return res.json({ ok: true, facts });
     } catch (e) {
       return res.status(500).json({ ok: false, error: String(e) });
     }
@@ -45,6 +48,34 @@ function registerMemoryFactsRoutes(app, context = {}) {
         source: "human",
       });
       return res.json({ ok: true, ...result });
+    } catch (e) {
+      return res.status(500).json({ ok: false, error: String(e) });
+    }
+  });
+
+  // Issue #673: every logged change to one fact key (facts-log.jsonl),
+  // oldest first -- before/after for the diff, origin for the blame.
+  // Rolling back is snapshot__restore on a memory-fact snapshot (approval-
+  // gated), not a route here.
+  app.get("/admin/memory/facts/:key/history", adminMemoryRateLimiter, (req, res) => {
+    if (!checkAdminAuth(req, res)) return;
+    try {
+      return res.json({ ok: true, key: req.params.key, entries: acpMemoryStore.getFactHistory(req.params.key) });
+    } catch (e) {
+      return res.status(500).json({ ok: false, error: String(e) });
+    }
+  });
+
+  // Issue #663: confirm a pending (auto-picked-up) fact, making it active.
+  app.post("/admin/memory/facts/:key/confirm", adminMemoryRateLimiter, (req, res) => {
+    if (!checkAdminAuth(req, res)) return;
+    try {
+      const result = acpMemoryStore.rememberFact({
+        key: req.params.key,
+        action: "confirm",
+        source: "human",
+      });
+      return res.status(result.found ? 200 : 404).json({ ...result, ok: result.found });
     } catch (e) {
       return res.status(500).json({ ok: false, error: String(e) });
     }
@@ -69,7 +100,7 @@ const memoryFactsCapability = {
   getHealth: () => ({
     status: "configured",
     configured: true,
-    message: "Memory facts admin routes are available (list, archive, pin).",
+    message: "Memory facts admin routes are available (list, history, archive, confirm, pin).",
   }),
 };
 
