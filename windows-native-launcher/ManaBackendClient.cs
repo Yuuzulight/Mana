@@ -174,6 +174,19 @@ internal sealed class ManaBackendClient
         return document.RootElement.GetProperty("transcript").GetString() ?? string.Empty;
     }
 
+    // #681: answers a /ws/vision-capture request (VisionCaptureClient).
+    // node-bot wants exactly one of image ("data:image/jpeg;base64,...")
+    // or error, so only the non-null one is sent.
+    public async Task PostVisionCaptureResultAsync(string requestId, string? image, string? error)
+    {
+        var payload = error is not null
+            ? JsonSerializer.Serialize(new { requestId, error })
+            : JsonSerializer.Serialize(new { requestId, image });
+        using var content = new StringContent(payload, Encoding.UTF8, "application/json");
+        using var response = await http.PostAsync("/vision/capture-result", content);
+        response.EnsureSuccessStatusCode();
+    }
+
     // #527: modelProfile, when given, routes this one request to that
     // llama-server profile instead of whatever's currently active --
     // compare-mode's only real requirement. cancellationToken lets

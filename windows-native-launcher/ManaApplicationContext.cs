@@ -27,6 +27,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
     private readonly TrayNotificationClient trayNotifications;
     private readonly CaptionOverlayForm captionOverlay;
     private readonly CaptionWebSocketClient captionClient;
+    private readonly VisionCaptureClient visionCaptureClient;
     private readonly ArtifactViewerForm artifactViewer;
     private readonly QuickEntryForm quickEntry;
     private readonly SessionListForm sessionListForm;
@@ -159,6 +160,8 @@ internal sealed class ManaApplicationContext : ApplicationContext
         // wired up alongside trayNotifications above.
         captionOverlay = new CaptionOverlayForm();
         captionClient = new CaptionWebSocketClient(captionOverlay.SetCaption, backendBaseUrl: settings.BackendBaseUrl);
+        // #681: answers the model's mid-reply screenshot requests.
+        visionCaptureClient = new VisionCaptureClient(backendClient, backendBaseUrl: settings.BackendBaseUrl);
 
         trayIcon = new NotifyIcon
         {
@@ -178,6 +181,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
         ReportAvatarModelProblem();
         trayNotifications.Start();
         captionClient.Start();
+        visionCaptureClient.Start();
 
         // Quick rundown: start the existing local services, but keep this host native and small.
         _ = StartServicesAsync();
@@ -472,6 +476,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
         globalHotkeys.Dispose();
         trayNotifications.Dispose();
         captionClient.Dispose();
+        visionCaptureClient.Dispose();
         captionOverlay.Close();
         voiceLoop.Dispose();
         audioPlayer.Dispose();
