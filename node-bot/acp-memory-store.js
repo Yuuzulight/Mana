@@ -1,6 +1,8 @@
+const crypto = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
 const { significantWords, sharedWordCount } = require("./utils/word-overlap");
+const { cosine } = require("./tools/vector-store");
 const { detectTextValence } = require("./utils/text-mood");
 const { parseTemporalWindow } = require("./utils/temporal-query");
 
@@ -46,6 +48,94 @@ function truncateWholeLines(block, maxChars) {
   }
   while (kept.length && !kept[kept.length - 1].startsWith("- ")) kept.pop();
   return kept.join("\n");
+}
+
+// Issue #674: recall finds facts by meaning, not only by their key
+// appearing word for word, and the number injected per turn is capped.
+const MAX_RECALL_CANDIDATES = 20;
+const MAX_PINNED_FACTS = 5;
+// ponytail: fixed cosine cutoff, not tuned against real Qwen3-Embedding
+// scores yet -- make it an env var if recall is visibly too loose/tight.
+const MIN_FACT_SIMILARITY = 0.5;
+
+// Issue #317/#277/#431: unverified, archived/stale and invalidated facts
+// never auto-surface -- unchanged from the key-match-only version.
+function isRecallable(fact) {
+  return fact.status === "active" && !fact.unverifiedSource && !fact.invalidatedAt;
+}
+
+// Facts from before ids existed fall back to their (active-unique) key;
+// prefixed so a key like "__proto__" can't collide with an object builtin
+// in the embedding cache.
+function factRecallId(fact) {
+  return fact.id || `key:${fact.key}`;
+}
+
+function newestFirst(a, b) {
+  return String(b.updatedAt || "").localeCompare(String(a.updatedAt || ""));
+}
+
+// Issue #674: pure candidate gathering. Pinned facts always go in (up to
+// MAX_PINNED_FACTS, newest first) and never also count as matches. The
+// matched candidates come in three tiers, first to last:
+//   1. the key appears in the message (as before #674), ordered by key
+//      length then recency (#364) -- so a store with only key hits orders
+//      exactly as it did before;
+//   2. vector similarity over "key: text" (when similarityById is given),
+//   3. keyword overlap on key + text (significantWords), needing two shared
+//      words, or one for a one-word message -- same min() shape as
+//      findConflictingFact -- so a single common word like "have" alone
+//      doesn't pull in unrelated facts.
+// Tiers 2 and 3 share one sort: similarity, then shared words, then recency.
+function factRecallCandidates(facts, text, similarityById = null) {
+  const lowerText = String(text || "").toLowerCase();
+  const messageWords = significantWords(text);
+  const minWordHits = Math.min(2, messageWords.length);
+  const pinned = [];
+  const keyHits = [];
+  const scored = [];
+  for (const fact of facts) {
+    if (!isRecallable(fact)) continue;
+    if (fact.pinned) {
+      pinned.push(fact);
+      continue;
+    }
+    if (lowerText.includes(fact.key.toLowerCase())) {
+      keyHits.push(fact);
+      continue;
+    }
+    const similarity = similarityById?.get(factRecallId(fact)) || 0;
+    const wordHits = minWordHits
+      ? sharedWordCount(significantWords(`${fact.key} ${fact.text}`), messageWords)
+      : 0;
+    if (similarity >= MIN_FACT_SIMILARITY || (minWordHits && wordHits >= minWordHits)) {
+      scored.push({ fact, similarity, wordHits });
+    }
+  }
+  keyHits.sort((a, b) => b.key.length - a.key.length || newestFirst(a, b));
+  scored.sort(
+    (a, b) =>
+      b.similarity - a.similarity || b.wordHits - a.wordHits || newestFirst(a.fact, b.fact),
+  );
+  pinned.sort(newestFirst);
+  return {
+    pinned: pinned.slice(0, MAX_PINNED_FACTS),
+    candidates: [...keyHits, ...scored.map((s) => s.fact)].slice(0, MAX_RECALL_CANDIDATES),
+  };
+}
+
+function maxMatchedFacts(options) {
+  return Math.max(
+    1,
+    Number(options.maxMatchedFacts || process.env.MANA_MEMORY_MAX_MATCHED_FACTS) || 5,
+  );
+}
+
+// Pinned lines first: they are the same every turn, so the block's start
+// stays stable (#660), and they survive the whole-line char cap first.
+function factsBlockFor(pinned, matched) {
+  const lines = [...pinned, ...matched].map((fact) => `- ${fact.key}: ${fact.text}`);
+  return lines.length ? `Remembered:\n${lines.join("\n")}` : "";
 }
 
 // Issue #336: the record shape's own version, stamped on every new fact so
@@ -706,6 +796,26 @@ function createAcpMemoryStore(options = {}) {
     return { key: cleanTargetKey, found: true };
   }
 
+  // Issue #674: user-set "always relevant" flag (name, pronouns, current
+  // project) -- a pinned fact is injected every turn, up to
+  // MAX_PINNED_FACTS, whether or not the message mentions it. Only the
+  // Settings UI sets it; the model's memory tool has no pin action.
+  function setFactPinned(key, pinned) {
+    const cleanTargetKey = cleanText(key, 200);
+    const facts = loadFacts();
+    const target = facts.find(
+      (f) => f.status === "active" && f.key.toLowerCase() === cleanTargetKey.toLowerCase(),
+    );
+    if (!cleanTargetKey || !target) return { key: cleanTargetKey, found: false };
+    if (pinned) {
+      target.pinned = true;
+    } else {
+      delete target.pinned;
+    }
+    saveFacts(facts);
+    return { key: cleanTargetKey, found: true, pinned: Boolean(pinned) };
+  }
+
   // Issue #431: the point-in-time query the whole feature is for -- "what
   // did I believe was true on date X". Deliberately ignores status
   // (stale/archived) -- see acp-memory-store's own header comment on
@@ -750,8 +860,9 @@ function createAcpMemoryStore(options = {}) {
   // direct key substring rather than the Title-Case entity heuristic,
   // since a fact's key ("the user's GPU") isn't necessarily Title Case.
   // Shared by getRelatedFacts (string, unchanged) and getRelatedFactsEntries
-  // (issue #282, structured) -- gathers the same two raw blocks either
-  // caller then formats/caps its own way.
+  // (issue #282, structured) -- gathers the mentions block and the fact
+  // candidates (#674: pinned + up to MAX_RECALL_CANDIDATES matches) that
+  // either caller then budgets/formats/caps its own way.
   function gatherRelatedFactsBlocks(text, options = {}) {
     const excludeSessionId = options.excludeSessionId;
     const maxEntities = Math.max(
@@ -775,35 +886,142 @@ function createAcpMemoryStore(options = {}) {
       );
     }
 
-    const lowerText = String(text || "").toLowerCase();
-    const matchedFacts = [];
-    for (const fact of loadFacts()) {
-      // Issue #317: unverifiedSource facts stay in the store (and in
-      // listFactKeys, so a later correction patches this key instead of
-      // duplicating it) but never get surfaced here as trusted context --
-      // same "don't auto-inject" treatment status !== "active" already gets.
-      if (fact.status !== "active" || fact.unverifiedSource || fact.invalidatedAt) continue;
-      if (!lowerText.includes(fact.key.toLowerCase())) continue;
-      matchedFacts.push(fact);
-    }
-    // Issue #364: order before the caller truncates. Unsorted, the facts
-    // that survive a tight budget are just whichever happened to be stored
-    // first. A longer matched key is a more specific hit than a short one;
-    // freshest updatedAt wins ties. Deliberately not a stored score -- see
-    // #336, where a `confidence` field was cut for having no writer.
-    matchedFacts.sort(
-      (a, b) =>
-        b.key.length - a.key.length ||
-        String(b.updatedAt || "").localeCompare(String(a.updatedAt || "")),
+    // Issue #364: candidates are ordered before the caller truncates (see
+    // factRecallCandidates) -- unsorted, the facts that survive a tight
+    // budget are just whichever happened to be stored first.
+    const { pinned, candidates } = factRecallCandidates(
+      options.facts || loadFacts(),
+      text,
+      options.similarityById,
     );
-    const factLines = matchedFacts.map((fact) => `- ${fact.key}: ${fact.text}`);
 
     return {
       mentionsBlock: mentionLines.length
         ? `Related from other sessions:\n${mentionLines.join("\n")}`
         : "",
-      factsBlock: factLines.length ? `Remembered:\n${factLines.join("\n")}` : "",
+      pinned,
+      candidates,
     };
+  }
+
+  // Issue #674: fact-text embeddings for recall by meaning. Held in memory
+  // after the first read and persisted beside facts.json so a restart does
+  // not re-embed every fact. Keyed by fact id; the stored hash of the
+  // embedded text makes a patched fact's old vector a cache miss.
+  const factEmbeddingsPath = path.join(dataDir, "fact-embeddings.json");
+  let factEmbeddings = null;
+  let factEmbeddingBackfill = null;
+  // ponytail: fixed batch per backfill; the rest fill in on later turns.
+  const FACT_EMBEDDING_BATCH = 32;
+  // After a timeout/error, skip the embedder for a minute: on Windows a
+  // connect to a closed localhost port retries for ~2s, which would
+  // otherwise cost every turn the full timeout.
+  const EMBEDDING_RETRY_AFTER_MS = 60 * 1000;
+  let embeddingsDownUntil = 0;
+
+  function factEmbeddingText(fact) {
+    return `${fact.key}: ${fact.text}`;
+  }
+
+  function factEmbeddingHash(fact) {
+    return crypto.createHash("sha1").update(factEmbeddingText(fact)).digest("hex");
+  }
+
+  function loadFactEmbeddings() {
+    if (!factEmbeddings) {
+      try {
+        factEmbeddings = readJsonObject(factEmbeddingsPath)?.embeddings || {};
+      } catch (e) {
+        // A corrupt cache is only a cache -- start over and re-embed.
+        factEmbeddings = {};
+      }
+    }
+    return factEmbeddings;
+  }
+
+  // A cached vector counts only if its text is unchanged and its length
+  // matches the query's -- a different length means the embedding model
+  // changed. ponytail: a same-size model swap isn't detected; key the
+  // cache by model name if that ever happens.
+  function cachedFactVector(fact, dims) {
+    const cached = loadFactEmbeddings()[factRecallId(fact)];
+    return cached && cached.hash === factEmbeddingHash(fact) && cached.vector?.length === dims
+      ? cached.vector
+      : null;
+  }
+
+  // Runs in the background, never awaited by a reply: embedding a whole
+  // fact store on CPU would blow the per-turn budget, so this turn uses
+  // whatever vectors are already cached and later turns pick up the rest.
+  function backfillFactEmbeddings(facts, dims) {
+    if (factEmbeddingBackfill) return;
+    const cache = loadFactEmbeddings();
+    const missing = facts
+      .filter((fact) => !cachedFactVector(fact, dims))
+      .slice(0, FACT_EMBEDDING_BATCH);
+    if (!missing.length) return;
+    factEmbeddingBackfill = (async () => {
+      try {
+        const vectors = await computeEmbeddingsFn(missing.map(factEmbeddingText));
+        missing.forEach((fact, i) => {
+          if (Array.isArray(vectors?.[i]) && vectors[i].length) {
+            cache[factRecallId(fact)] = { hash: factEmbeddingHash(fact), vector: vectors[i] };
+          }
+        });
+        // Drop vectors for facts trimmed out of facts.json since.
+        const live = new Set(loadFacts().map(factRecallId));
+        for (const id of Object.keys(cache)) if (!live.has(id)) delete cache[id];
+        writeJsonObject(factEmbeddingsPath, { embeddings: cache });
+      } catch (e) {
+        console.warn("Fact embedding backfill failed:", e?.message || e);
+      } finally {
+        factEmbeddingBackfill = null;
+      }
+    })();
+  }
+
+  // Issue #674: the message is embedded once per turn, bounded by
+  // MANA_MEMORY_RECALL_TIMEOUT_MS. Any failure returns null and recall
+  // carries on with key + keyword candidates; `recall.fallback` says why.
+  async function factSimilarities(text, facts, recall) {
+    if (!computeEmbeddingsFn) {
+      recall.fallback = "embeddings not wired";
+      return null;
+    }
+    if (Date.now() < embeddingsDownUntil) {
+      recall.fallback = "embeddings skipped after a recent failure";
+      return null;
+    }
+    const timeoutMs = Number(process.env.MANA_MEMORY_RECALL_TIMEOUT_MS) || 1000;
+    let timer = null;
+    try {
+      const [queryVector] = await Promise.race([
+        computeEmbeddingsFn([String(text || "")]),
+        new Promise((_, reject) => {
+          timer = setTimeout(() => reject(new Error(`timed out after ${timeoutMs}ms`)), timeoutMs);
+        }),
+      ]);
+      // computeEmbeddings returns nulls when USE_EMBEDDINGS is off or the
+      // embedder is unreachable -- the normal "no vectors" case, not logged.
+      if (!Array.isArray(queryVector) || !queryVector.length) {
+        recall.fallback = "embeddings unavailable";
+        return null;
+      }
+      backfillFactEmbeddings(facts, queryVector.length);
+      const scores = new Map();
+      for (const fact of facts) {
+        const vector = cachedFactVector(fact, queryVector.length);
+        if (vector) scores.set(factRecallId(fact), cosine(queryVector, vector));
+      }
+      return scores;
+    } catch (e) {
+      embeddingsDownUntil = Date.now() + EMBEDDING_RETRY_AFTER_MS;
+      recall.fallback = `embeddings failed: ${e?.message || e}`;
+      console.warn("Fact recall falling back to keyword match:", recall.fallback);
+      return null;
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   function getRelatedFacts(text, options = {}) {
@@ -813,7 +1031,8 @@ function createAcpMemoryStore(options = {}) {
         options.maxChars || process.env.MANA_RELATED_FACTS_MAX_CHARS || 300,
       ),
     );
-    const { mentionsBlock, factsBlock } = gatherRelatedFactsBlocks(text, options);
+    const { mentionsBlock, pinned, candidates } = gatherRelatedFactsBlocks(text, options);
+    const factsBlock = factsBlockFor(pinned, candidates.slice(0, maxMatchedFacts(options)));
     const blocks = [mentionsBlock, factsBlock].filter(Boolean);
     if (!blocks.length) return "";
 
@@ -836,7 +1055,12 @@ function createAcpMemoryStore(options = {}) {
   // cross-session mentions and remembered facts are specifically relevant
   // to what's being asked *right now*, so they read better close to the
   // live message than buried near the persona definition.
-  function getRelatedFactsEntries(text, options = {}) {
+  //
+  // Issue #674: async so recall can also match by meaning (embeddings) --
+  // at most MAX_PINNED_FACTS pinned + maxMatchedFacts matched facts go in,
+  // the maxChars cap stays as a second limit. `recall` reports the counts
+  // and any fallback for the prompt-composition report (#400).
+  async function getRelatedFactsEntries(text, options = {}) {
     const maxChars = Math.max(
       50,
       Number(
@@ -845,7 +1069,23 @@ function createAcpMemoryStore(options = {}) {
     );
     const mentionsPosition = options.mentionsPosition === "early" ? "early" : "late";
     const factsPosition = options.factsPosition === "early" ? "early" : "late";
-    const { mentionsBlock, factsBlock } = gatherRelatedFactsBlocks(text, options);
+    const recall = { candidates: 0, pinned: 0, matched: 0, fallback: null };
+    const facts = loadFacts();
+    const similarityById = await factSimilarities(
+      text,
+      facts.filter((fact) => isRecallable(fact) && !fact.pinned),
+      recall,
+    );
+    const { mentionsBlock, pinned, candidates } = gatherRelatedFactsBlocks(text, {
+      ...options,
+      facts,
+      similarityById,
+    });
+    const matched = candidates.slice(0, maxMatchedFacts(options));
+    const factsBlock = factsBlockFor(pinned, matched);
+    recall.candidates = candidates.length;
+    recall.pinned = pinned.length;
+    recall.matched = matched.length;
 
     const entries = [];
     // Issue #364: an over-budget block can truncate down to nothing (its
@@ -874,7 +1114,7 @@ function createAcpMemoryStore(options = {}) {
         });
       }
     }
-    return { entries };
+    return { entries, recall };
   }
 
   // Issue #295 (piece 2 of #285): userAffectState tracks a decaying read on
@@ -1664,6 +1904,7 @@ function createAcpMemoryStore(options = {}) {
     listFacts,
     getFactsValidAt,
     invalidateFactByKey,
+    setFactPinned,
     listUntypedEntities,
     setEntityType,
     listCanonicalEntitiesOfType,
@@ -1678,4 +1919,5 @@ function createAcpMemoryStore(options = {}) {
 module.exports = {
   createAcpMemoryStore,
   extractEntities,
+  factRecallCandidates,
 };

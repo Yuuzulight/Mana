@@ -3716,11 +3716,14 @@ function registerRoutes(app, upload, deps = {}) {
     // so it never grows with total memory volume.
     let relatedFactsChars = 0;
     let relatedFactsTruncated = false;
+    // Issue #674: candidate/kept counts and any recall fallback, for #400.
+    let relatedFactsRecall = null;
     try {
       if (typeof acpMemoryStore.getRelatedFactsEntries === "function") {
-        const { entries } = acpMemoryStore.getRelatedFactsEntries(transcript, {
+        const { entries, recall } = await acpMemoryStore.getRelatedFactsEntries(transcript, {
           excludeSessionId: sessionId,
         });
+        relatedFactsRecall = recall || null;
         for (const entry of entries) {
           memoryExtraMessages[entry.position].push({ role: entry.role, content: entry.content });
           flatMemorySuffix += `\n\n${entry.content}`;
@@ -3745,7 +3748,11 @@ function registerRoutes(app, upload, deps = {}) {
       recordPromptComposition(sessionId, [
         { name: "system-prompt", chars: selectedSystemPrompt.length, dropped: { skillsOmitted: skillsOmittedCount } },
         { name: "prompt-memory", chars: promptMemoryChars, dropped: { truncated: promptMemoryTruncated, turnsDroppedByAge } },
-        { name: "related-facts", chars: relatedFactsChars, dropped: { truncated: relatedFactsTruncated } },
+        {
+          name: "related-facts",
+          chars: relatedFactsChars,
+          dropped: { truncated: relatedFactsTruncated, ...(relatedFactsRecall ? { recall: relatedFactsRecall } : {}) },
+        },
       ]);
     } catch (compErr) {
       // Diagnostic-only; never blocks a reply.

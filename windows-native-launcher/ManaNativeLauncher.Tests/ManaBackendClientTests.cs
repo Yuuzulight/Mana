@@ -1752,7 +1752,7 @@ public class ManaBackendClientTests
         var handler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
         {
             Content = new StringContent(
-                """{"ok":true,"facts":[{"key":"favorite-color","text":"User likes blue","status":"active"}]}""",
+                """{"ok":true,"facts":[{"key":"favorite-color","text":"User likes blue","status":"active"},{"key":"name","text":"Yuuzu","status":"active","pinned":true}]}""",
                 Encoding.UTF8,
                 "application/json"),
         });
@@ -1760,10 +1760,35 @@ public class ManaBackendClientTests
 
         var facts = await client.GetMemoryFactsAsync();
 
-        var fact = Assert.Single(facts);
+        Assert.Equal(2, facts.Count);
+        var fact = facts[0];
         Assert.Equal("favorite-color", fact.Key);
         Assert.Equal("User likes blue", fact.Text);
         Assert.Equal("active", fact.Status);
+        Assert.False(fact.Pinned);
+        Assert.True(facts[1].Pinned);
+    }
+
+    [Fact]
+    public async Task SetMemoryFactPinnedAsync_PostsThePinnedFlag()
+    {
+        string? path = null;
+        string? body = null;
+        var handler = new FakeHttpMessageHandler(request =>
+        {
+            path = request.RequestUri!.AbsolutePath;
+            body = request.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("{\"ok\":true}", Encoding.UTF8, "application/json"),
+            };
+        });
+        var client = new ManaBackendClient(handler);
+
+        await client.SetMemoryFactPinnedAsync("name", true);
+
+        Assert.Equal("/admin/memory/facts/name/pin", path);
+        Assert.Equal("{\"pinned\":true}", body);
     }
 
     [Fact]

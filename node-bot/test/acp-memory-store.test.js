@@ -984,7 +984,9 @@ test("rememberFact supersedes marks a different-keyed active fact invalidated, w
   assert.equal(fresh.invalidatedAt, undefined);
 
   // Invalidated facts drop out of normal surfacing/listing...
-  assert.equal(store.getRelatedFacts("what's the user's relationship status?"), "");
+  // (#674: the replacement fact now surfaces by keyword overlap -- only the
+  // invalidated one must stay out.)
+  assert.doesNotMatch(store.getRelatedFacts("what's the user's relationship status?"), /single/);
   assert.deepEqual(store.listFactKeys(), [{ key: "dating status", preview: "in a relationship" }]);
   // ...but the record itself is preserved, not deleted.
   assert.equal(old.text, "single");
@@ -1353,7 +1355,7 @@ test("buildPromptMemoryEntries reports truncated:true when the token budget forc
   assert.ok(result.entries.some((e) => e.truncated === true));
 });
 
-test("getRelatedFactsEntries returns mentions and facts as separate entries, defaulting to late position", () => {
+test("getRelatedFactsEntries returns mentions and facts as separate entries, defaulting to late position", async () => {
   const store = createAcpMemoryStore({
     dataDir: createTempDir(),
     now: () => "2026-06-29T00:00:00.000Z",
@@ -1365,7 +1367,7 @@ test("getRelatedFactsEntries returns mentions and facts as separate entries, def
   });
   store.rememberFact({ key: "Acme Corp", text: "Deal signed in June 2026." });
 
-  const { entries } = store.getRelatedFactsEntries("What's up with Acme Corp lately?", {
+  const { entries } = await store.getRelatedFactsEntries("What's up with Acme Corp lately?", {
     excludeSessionId: "session-b",
   });
   assert.equal(entries.length, 2);
@@ -1374,9 +1376,10 @@ test("getRelatedFactsEntries returns mentions and facts as separate entries, def
   assert.ok(entries.some((e) => /Remembered:.*Deal signed in June 2026\./s.test(e.content)));
 });
 
-test("getRelatedFactsEntries returns no entries for text with no known entities or mentions", () => {
+test("getRelatedFactsEntries returns no entries for text with no known entities or mentions", async () => {
   const store = createAcpMemoryStore({ dataDir: createTempDir() });
-  assert.deepEqual(store.getRelatedFactsEntries("what time is it?"), { entries: [] });
+  const { entries } = await store.getRelatedFactsEntries("what time is it?");
+  assert.deepEqual(entries, []);
 });
 
 // Issue #263 part 2: cursor-based re-summarization. summarizeFn fires as a
@@ -1530,14 +1533,14 @@ test("getRelatedFacts orders the more specific key first (issue #364)", () => {
   assert.equal(lines[0], "- car insurance: renews in March");
 });
 
-test("getRelatedFactsEntries omits an entry that truncates to nothing (issue #364)", () => {
+test("getRelatedFactsEntries omits an entry that truncates to nothing (issue #364)", async () => {
   const store = createAcpMemoryStore({ dataDir: createTempDir() });
   store.rememberFact({
     key: "deployment",
     text: "a very long remembered detail that cannot possibly fit inside a tiny budget",
   });
 
-  const { entries } = store.getRelatedFactsEntries("tell me about deployment", {
+  const { entries } = await store.getRelatedFactsEntries("tell me about deployment", {
     maxChars: 50,
   });
   // The header alone carries no information, so no message should be emitted.

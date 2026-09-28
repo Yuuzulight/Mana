@@ -49,6 +49,18 @@ function registerMemoryFactsRoutes(app, context = {}) {
       return res.status(500).json({ ok: false, error: String(e) });
     }
   });
+
+  // Issue #674: pin/unpin a fact so it is injected every turn. Body
+  // {pinned: boolean}; anything but a literal true unpins.
+  app.post("/admin/memory/facts/:key/pin", adminMemoryRateLimiter, (req, res) => {
+    if (!checkAdminAuth(req, res)) return;
+    try {
+      const result = acpMemoryStore.setFactPinned(req.params.key, req.body?.pinned === true);
+      return res.status(result.found ? 200 : 404).json({ ok: result.found, ...result });
+    } catch (e) {
+      return res.status(500).json({ ok: false, error: String(e) });
+    }
+  });
 }
 
 const memoryFactsCapability = {
@@ -57,7 +69,7 @@ const memoryFactsCapability = {
   getHealth: () => ({
     status: "configured",
     configured: true,
-    message: "Memory facts admin routes are available (list, archive).",
+    message: "Memory facts admin routes are available (list, archive, pin).",
   }),
 };
 

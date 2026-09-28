@@ -75,3 +75,32 @@ test("POST /admin/memory/facts/:key/archive calls rememberFact with action=archi
     assert.equal(capturedArgs.source, "human");
   });
 });
+
+test("POST /admin/memory/facts/:key/pin sets the pinned flag and 404s an unknown key (issue #674)", async () => {
+  const app = express();
+  app.use(express.json());
+  const calls = [];
+  memoryFactsCapability.registerRoutes(app, {
+    checkAdminAuth: () => true,
+    acpMemoryStore: fakeStore({
+      setFactPinned: (key, pinned) => {
+        calls.push([key, pinned]);
+        return { key, found: key === "name", pinned };
+      },
+    }),
+  });
+
+  await withServer(app, async (baseUrl) => {
+    const post = (key, body) =>
+      fetch(`${baseUrl}/admin/memory/facts/${key}/pin`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+    assert.equal((await post("name", { pinned: true })).status, 200);
+    // Only a literal true pins -- a truthy string does not.
+    assert.equal((await post("name", { pinned: "yes" })).status, 200);
+    assert.equal((await post("missing", { pinned: true })).status, 404);
+  });
+  assert.deepEqual(calls, [["name", true], ["name", false], ["missing", true]]);
+});
