@@ -4102,10 +4102,10 @@ function registerRoutes(app, upload, deps = {}) {
     // the last one wins, same as lastToolCalls. Compared by identity: the
     // runtime keeps a fresh object per completion, so an unchanged one
     // means this pass never reached llama-server (llama-cli fallback).
-    let turnTools = [];
+    let turnToolSchemas = [];
     let turnPromptUsage = null;
     async function replyMaybeWithTools(promptText) {
-      turnTools = [];
+      turnToolSchemas = [];
       const usageBefore = activeLlamaServerRuntime.getLastPromptUsage?.();
       const reply = await replyMaybeWithToolsUnmetered(promptText);
       const usageAfter = activeLlamaServerRuntime.getLastPromptUsage?.();
@@ -4303,7 +4303,7 @@ function registerRoutes(app, upload, deps = {}) {
                 }
               }
             }
-            turnTools = mergedToolPolicy.tools;
+            turnToolSchemas = mergedToolPolicy.tools;
             return toolResult.content;
           }
           console.warn(
@@ -4646,8 +4646,8 @@ function registerRoutes(app, upload, deps = {}) {
     // the reply for; until they land the record shows char/4 estimates.
     if (compositionRecord) {
       const isMcp = (tool) => String(tool?.function?.name || "").startsWith("mcp__");
-      const localTools = turnTools.filter((tool) => !isMcp(tool));
-      const mcpTools = turnTools.filter(isMcp);
+      const localTools = turnToolSchemas.filter((tool) => !isMcp(tool));
+      const mcpTools = turnToolSchemas.filter(isMcp);
       (async () =>
         finalizePromptComposition(compositionRecord, {
           texts: {
