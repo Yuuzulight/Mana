@@ -1172,6 +1172,27 @@ public class ManaBackendClientTests
         Assert.Equal("a browser window", text);
     }
 
+    // #681: fake idle source (a fixed 1500s) -> the exact route/body
+    // node-bot's /internal/idle-report reads.
+    [Fact]
+    public async Task ReportIdleAsync_PostsIdleSecondsToTheIdleReportRoute()
+    {
+        string? path = null;
+        string? body = null;
+        var handler = new FakeHttpMessageHandler(request =>
+        {
+            path = request.RequestUri!.AbsolutePath;
+            body = request.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
+            return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("{\"ok\":true}") };
+        });
+        var client = new ManaBackendClient(handler);
+
+        await client.ReportIdleAsync(1500);
+
+        Assert.Equal("/internal/idle-report", path);
+        Assert.Equal("{\"idleSeconds\":1500}", body);
+    }
+
     [Fact]
     public async Task ReplyStreamAsync_IncludesScreenTextInTheRequestBody()
     {
