@@ -146,8 +146,8 @@ Mana environment variables
   server.js's header comment — so this line is only needed to be explicit
   or to override a different default).
 - `$env:FISH_TTS_URL = "http://127.0.0.1:8080"`
-- `$env:FISH_TTS_FALLBACK_PROVIDER = "kokoro"` (this is the default; set to
-  `none` to change it)
+- `$env:FISH_TTS_FALLBACK_PROVIDER = "none"` (the default; set to `kokoro`
+  to fall back to Kokoro, which the backend then starts on demand)
 - `$env:FISH_TTS_TIMEOUT_MS = "20000"` (default) — a request past this
   timeout counts as a failure and triggers `FISH_TTS_FALLBACK_PROVIDER`,
   since under GPU contention S1-mini tends to slow to a crawl rather than
@@ -216,7 +216,7 @@ Mana's replies do automatically yet.
 Expected Fish Speech server
 - Mana calls `POST /v1/tts` on `FISH_TTS_URL`.
 - Mana expects the server to return audio bytes.
-- By default, Mana falls back to Kokoro if Fish Speech fails. Set `FISH_TTS_FALLBACK_PROVIDER=none` to surface Fish failures immediately with no fallback.
+- By default there is no fallback: a Fish Speech failure surfaces immediately. Set `FISH_TTS_FALLBACK_PROVIDER=kokoro` to fall back to Kokoro (the backend starts Kokoro on demand; see below).
 
 Quick test
 - Start Fish Speech separately using its official instructions.
@@ -242,6 +242,15 @@ Automatic Kokoro switch during gaming
   and `TTS_PROVIDER=fish`, it calls `ttsRuntime.setProviderOverride("kokoro")`
   automatically; once the game closes, it clears the override and Mana goes
   back to S1-mini on the next reply.
+- Kokoro is not kept running. The backend (`node-bot/kokoro-runtime.js`)
+  starts it from `tts-service/venv` the first time it's needed — this
+  gaming switch (it starts as soon as the switch happens),
+  `TTS_PROVIDER=kokoro`, or `FISH_TTS_FALLBACK_PROVIDER=kokoro` — and stops
+  it after `MANA_KOKORO_IDLE_MS` (default `600000`, 10 minutes) without use.
+  The first start takes a few seconds while the model loads. A Kokoro
+  already answering `KOKORO_TTS_URL` (e.g. started by hand) is used as-is
+  and left running. If `tts-service/venv` is missing, the backend logs the
+  setup step once and that reply has no Kokoro audio.
 - This is fully automatic — no manual toggle needed. The windows-launcher's
   "Gaming mode" status text shows "(using Kokoro voice)" while the override
   is active, so it's visible rather than a silent switch.

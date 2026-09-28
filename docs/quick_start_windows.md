@@ -43,7 +43,7 @@ Project goal
    - `LLAMA_BIN` should point to the Llama CLI executable you want to use.
    - `TTS_PROVIDER=kokoro` tells Mana to use the faster Kokoro ONNX service.
    - `TTS_PROVIDER=fish` (the default) tells Mana to call a separately running Fish Speech server; see docs/fish_speech_tts.md.
-   - `FISH_TTS_FALLBACK_PROVIDER=kokoro` keeps Mana speaking through Kokoro if Fish Speech is unavailable.
+   - `FISH_TTS_FALLBACK_PROVIDER=kokoro` keeps Mana speaking through Kokoro if Fish Speech is unavailable (off by default; Kokoro is started on demand and stops after 10 idle minutes).
    - If `LLAMA_BIN` or `LLAMA_MODEL` is not set, the backend returns a placeholder reply so you can still test audio capture and transcription.
    - If the configured TTS service is not running, the UI still shows the text reply but will not play synthesized audio.
 

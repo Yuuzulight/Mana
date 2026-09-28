@@ -24,13 +24,15 @@ over inherited ones -- or set before running):
 - TTS_VOICE : optional voice value used by your TTS args
 - TTS_SPEAKER : optional speaker value used by your TTS args
 - KOKORO_TTS_URL : local Kokoro TTS microservice URL
+- MANA_KOKORO_IDLE_MS : Kokoro is started on demand and stopped after this
+  long without use (default 600000; 0 keeps it running)
 - FISH_TTS_URL : local Fish Speech server URL
 - FISH_TTS_API_KEY : optional Fish Speech bearer token
 - FISH_TTS_REFERENCE_ID : optional saved (server-side) Fish Speech reference voice id
 - FISH_TTS_REF_AUDIO, FISH_TTS_REF_TEXT : optional local reference clip path
   + its exact transcript, for zero-shot in-context voice cloning on every
   request (takes priority over FISH_TTS_REFERENCE_ID when both are set)
-- FISH_TTS_FALLBACK_PROVIDER : "kokoro" or "none"
+- FISH_TTS_FALLBACK_PROVIDER : "none" (default) or "kokoro"
 - MANA_ALLOW_REMOTE_AI : set to "1" to allow OpenAI/proxy chat replies
 - GAMING_PROCESS_NAMES : optional comma-separated game process names for Gaming mode
 - MANA_MCP_SERVER_ENABLED : set to "1" to allow `npm run mcp` (mcp-server.js) to
@@ -175,6 +177,7 @@ const {
 	const screenSensingPlugin = require("../plugins/screen-sensing");
 const { PluginStore, pluginStore } = require("./plugin-store");
 const { createTtsRuntime } = require("./tts-runtime");
+const { createKokoroRuntime } = require("./kokoro-runtime");
 const { createAcpMemoryStore } = require("./acp-memory-store");
 const { createSnapshotStore } = require("./snapshot-store");
 const { createSessionSearchIndex } = require("./session-search-index");
@@ -554,12 +557,17 @@ function compressExcerpts(prompt) {
 // synthesizeReply needs the current lexicon entries on every call.
 const pronunciationLexiconStore = createPronunciationLexiconStore({});
 
+// Kokoro isn't kept running (user decision): started on first use, e.g.
+// the gaming override below, and stopped after MANA_KOKORO_IDLE_MS idle.
+const kokoroRuntime = createKokoroRuntime({ env: process.env });
+
 const ttsRuntime = createTtsRuntime({
   env: process.env,
   baseDir: __dirname,
   nowMs,
   logPerf,
   pronunciationLexiconStore,
+  ensureKokoro: kokoroRuntime.ensure,
 });
 
 // Full-text search over past conversation turns -- an independent SQLite
@@ -2740,7 +2748,9 @@ function registerRoutes(app, upload, deps = {}) {
     // S1-mini needs the GPU largely to itself -- under real VRAM contention
     // from a running game it doesn't fail, it just gets slow enough (10-50x)
     // to be unusable for real-time chat. Switch to Kokoro automatically
-    // whenever a watched game is running, and back once it closes.
+    // whenever a watched game is running, and back once it closes. Kokoro
+    // is started on demand by that switch (kokoro-runtime.js) and stops
+    // again after MANA_KOKORO_IDLE_MS without use.
     if (ttsRuntime.ttsProvider === "fish") {
       try {
         const gaming = getGamingStatus();

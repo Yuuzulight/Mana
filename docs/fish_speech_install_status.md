@@ -28,8 +28,8 @@ Hardware note
 - Local GPU: NVIDIA GeForce RTX 3070 Ti, 8GB VRAM.
 - Fish Speech's docs cite 24GB VRAM for inference generally, but S1-mini
   specifically runs comfortably here -- warm-up synthesis used ~4.9GB.
-- Mana can fall back to Kokoro automatically (`FISH_TTS_FALLBACK_PROVIDER`
-  defaults to `kokoro`) if S1-mini is ever unreachable.
+- Mana can fall back to Kokoro if S1-mini is ever unreachable
+  (`FISH_TTS_FALLBACK_PROVIDER=kokoro`; off by default).
 
 Performance note (issue #213)
 - `start_fish_speech_wsl.sh` now passes `--compile`. Measured on this

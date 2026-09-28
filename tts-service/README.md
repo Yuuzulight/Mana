@@ -5,8 +5,11 @@ This folder contains Mana's local Kokoro ONNX TTS service. Fish Speech
 (S1-mini) is Mana's actual **default** `TTS_PROVIDER` and runs separately
 via `tools/api_server.py`, not from this folder — see
 [docs/fish_speech_tts.md](../docs/fish_speech_tts.md). Kokoro here is
-Mana's fast fallback voice path, on `http://127.0.0.1:5011`, used
-automatically if S1-mini is unreachable.
+Mana's fast voice while gaming (S1-mini is too slow under a game's VRAM
+load), on `http://127.0.0.1:5011`. It isn't kept running: the backend
+(`node-bot/kokoro-runtime.js`) starts it from `venv` when a reply needs it
+and stops it after `MANA_KOKORO_IDLE_MS` (default 10 minutes) unused.
+Run the setup below once so that start works.
 
 Endpoints
 ---------

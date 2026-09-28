@@ -473,3 +473,73 @@ test("warmupFishTts goes idle -> warming -> failed (never throws) when the warmu
   assert.equal(status, "failed");
   assert.equal(runtime.getFishWarmupStatus(), "failed");
 });
+
+// User decision (no dedicated issue): Kokoro only runs on demand
+// (kokoro-runtime.js). The runtime calls ensureKokoro before every Kokoro
+// request, and as soon as the gaming override switches to Kokoro.
+function kokoroOnDemandRuntime({ env = {}, ensureKokoro }) {
+  const events = [];
+  const runtime = createTtsRuntime({
+    env: { TTS_PROVIDER: "fish", KOKORO_TTS_URL: "http://kokoro.local", ...env },
+    ensureKokoro: async () => {
+      events.push("ensure");
+      if (ensureKokoro) await ensureKokoro();
+    },
+    postFishTtsBuffer: async () => {
+      events.push("fish");
+      throw new Error("fish unavailable");
+    },
+    postJsonBuffer: async () => {
+      events.push("kokoro");
+      return Buffer.from("kokoro-audio");
+    },
+    nowMs: () => 1,
+    logPerf: () => {},
+  });
+  return { runtime, events };
+}
+
+test("Kokoro is ensured before each Kokoro request: provider, gaming override and Fish fallback", async () => {
+  const warn = console.warn;
+  console.warn = () => {};
+  try {
+    const direct = kokoroOnDemandRuntime({ env: { TTS_PROVIDER: "kokoro" } });
+    await direct.runtime.synthesizeReply("hello");
+    assert.deepEqual(direct.events, ["ensure", "kokoro"]);
+
+    const fallback = kokoroOnDemandRuntime({ env: { FISH_TTS_FALLBACK_PROVIDER: "kokoro" } });
+    await fallback.runtime.synthesizeReply("hello");
+    assert.deepEqual(fallback.events, ["fish", "ensure", "kokoro"]);
+  } finally {
+    console.warn = warn;
+  }
+});
+
+test("switching the override to Kokoro (gaming) starts it right away; other overrides don't", async () => {
+  const { runtime, events } = kokoroOnDemandRuntime({});
+  runtime.setProviderOverride("fish");
+  runtime.setProviderOverride(null);
+  assert.deepEqual(events, []);
+
+  runtime.setProviderOverride("kokoro");
+  assert.deepEqual(events, ["ensure"]);
+  await runtime.synthesizeReply("hello");
+  assert.deepEqual(events, ["ensure", "ensure", "kokoro"]);
+});
+
+test("a failed Kokoro start fails that synthesis without calling the service, and never by default falls back from Fish", async () => {
+  const { runtime, events } = kokoroOnDemandRuntime({
+    ensureKokoro: async () => {
+      throw new Error("Kokoro TTS is not set up");
+    },
+  });
+  // The warm-up's rejection is swallowed (no unhandled rejection).
+  runtime.setProviderOverride("kokoro");
+  await assert.rejects(runtime.synthesizeReply("hello"), /not set up/);
+  assert.ok(!events.includes("kokoro"));
+
+  runtime.setProviderOverride(null);
+  const before = events.length;
+  await assert.rejects(runtime.synthesizeReply("hello"), /fish unavailable/);
+  assert.deepEqual(events.slice(before), ["fish"]);
+});
