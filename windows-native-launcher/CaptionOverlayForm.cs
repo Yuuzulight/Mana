@@ -52,7 +52,10 @@ internal sealed class CaptionOverlayForm : Form
         }
 
         textLabel.Text = text;
-        var textSize = TextRenderer.MeasureText(text, textLabel.Font, new Size(MaxWidth - 32, int.MaxValue));
+        // The label's own wrapped size -- a plain MeasureText has no WordBreak,
+        // so it measured one long line and the bar clipped every line after
+        // the first.
+        var textSize = textLabel.GetPreferredSize(new Size(MaxWidth - 32, 0));
         Width = Math.Min(MaxWidth, textSize.Width + 32);
         Height = textSize.Height + 20;
         textLabel.Size = new Size(Width - 32, textSize.Height);
