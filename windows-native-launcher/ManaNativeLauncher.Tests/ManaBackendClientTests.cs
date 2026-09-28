@@ -1875,6 +1875,25 @@ public class ManaBackendClientTests
     }
 
     [Fact]
+    public async Task ConfirmMemoryFactAsync_PostsToTheConfirmEndpoint()
+    {
+        string? path = null;
+        var handler = new FakeHttpMessageHandler(request =>
+        {
+            path = request.RequestUri!.AbsolutePath;
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("{\"ok\":true}", Encoding.UTF8, "application/json"),
+            };
+        });
+        var client = new ManaBackendClient(handler);
+
+        await client.ConfirmMemoryFactAsync("favorite-color");
+
+        Assert.Equal("/admin/memory/facts/favorite-color/confirm", path);
+    }
+
+    [Fact]
     public async Task GetSkillsAsync_ParsesTheSkillIndex()
     {
         var handler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)

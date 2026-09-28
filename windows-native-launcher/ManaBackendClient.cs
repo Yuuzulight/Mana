@@ -750,6 +750,13 @@ internal sealed class ManaBackendClient
         response.EnsureSuccessStatusCode();
     }
 
+    // #663: makes a pending (auto-picked-up) fact active.
+    public async Task ConfirmMemoryFactAsync(string key)
+    {
+        using var response = await http.PostAsync($"/admin/memory/facts/{Uri.EscapeDataString(key)}/confirm", null);
+        response.EnsureSuccessStatusCode();
+    }
+
     // #674: a pinned fact is injected into every reply's prompt.
     public async Task SetMemoryFactPinnedAsync(string key, bool pinned)
     {

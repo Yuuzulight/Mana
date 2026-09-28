@@ -6,8 +6,14 @@ const {
   TOOL_SCHEMAS,
   isMemoryToolName,
   createMemoryToolSource,
+  createMemoryWriteExecutor,
   buildToolPolicyWithMemory,
 } = require("../ai/memory-tool-source");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
+const { createAcpMemoryStore } = require("../acp-memory-store");
+const { createApprovalGate } = require("../approval-gate");
 
 function fakeAcpMemoryStore(rememberFactImpl, listFactKeysImpl) {
   const calls = [];
@@ -370,4 +376,99 @@ test("buildToolPolicyWithMemory merges the remember tool into an existing base p
   assert.equal(await merged.executeTool("read_file", {}), "base:read_file");
   await merged.executeTool(`${MEMORY_TOOL_PREFIX}remember`, { key: "k", text: "t" });
   assert.equal(acpMemoryStore.calls.length, 1);
+});
+
+function tempDir() {
+  return fs.mkdtempSync(path.join(os.tmpdir(), "mana-memory-tool-"));
+}
+
+test("a fact Mana saves without being asked starts pending; one the user asked for, or with no user message, doesn't (issue #663)", async () => {
+  const asked = fakeAcpMemoryStore();
+  await createMemoryToolSource({ acpMemoryStore: asked, userMessage: "remember that my cat is Tom" })
+    .executeTool(`${MEMORY_TOOL_PREFIX}remember`, { key: "cat", text: "cat is Tom" });
+  assert.equal("pending" in asked.calls[0], false);
+
+  const notAsked = fakeAcpMemoryStore();
+  await createMemoryToolSource({ acpMemoryStore: notAsked, userMessage: "my cat Tom knocked my mug over" })
+    .executeTool(`${MEMORY_TOOL_PREFIX}remember`, { key: "cat", text: "cat is Tom" });
+  assert.equal(notAsked.calls[0].pending, true);
+
+  const noMessage = fakeAcpMemoryStore();
+  await createMemoryToolSource({ acpMemoryStore: noMessage })
+    .executeTool(`${MEMORY_TOOL_PREFIX}remember`, { key: "cat", text: "cat is Tom" });
+  assert.equal("pending" in noMessage.calls[0], false);
+});
+
+test("the model can only confirm a pending fact when the user's message says yes (issue #663)", async () => {
+  const store = fakeAcpMemoryStore();
+  const refused = JSON.parse(
+    await createMemoryToolSource({ acpMemoryStore: store, userMessage: "what's the weather" })
+      .executeTool(`${MEMORY_TOOL_PREFIX}remember`, { key: "cat", action: "confirm" }),
+  );
+  assert.equal(refused.ok, false);
+  assert.match(refused.error, /Only the user can confirm/);
+  assert.equal(store.calls.length, 0);
+
+  await createMemoryToolSource({ acpMemoryStore: store, userMessage: "yes, that's right" })
+    .executeTool(`${MEMORY_TOOL_PREFIX}remember`, { key: "cat", action: "confirm" });
+  assert.equal(store.calls[0].action, "confirm");
+});
+
+test("the already-remembered index marks pending facts as unconfirmed (issue #663)", () => {
+  const source = createMemoryToolSource({
+    acpMemoryStore: fakeAcpMemoryStore(null, () => [{ key: "cat", preview: "cat is Tom", pending: true }]),
+  });
+  assert.match(source.listToolSchemas()[0].function.description, /- "cat" \(cat is Tom\) \[unconfirmed\]/);
+});
+
+// Real store + real gate: approving after the fact changed is refused, the
+// fact is untouched, and a fresh request pinned to the current version is
+// queued; approving that one applies.
+test("an approval for a fact that changed since the request is refused and asked again against the current version (issue #663)", async () => {
+  const acpMemoryStore = createAcpMemoryStore({ dataDir: tempDir() });
+  const approvalGate = createApprovalGate({ dataDir: tempDir() });
+  approvalGate.registerExecutor("memory-write", createMemoryWriteExecutor({ acpMemoryStore, approvalGate }));
+  acpMemoryStore.rememberFact({ key: "gpu", text: "RTX 4070" });
+
+  const source = createMemoryToolSource({ acpMemoryStore, approvalGate, userMessage: "remember I have an RTX 3060" });
+  const requested = JSON.parse(
+    await source.executeTool(`${MEMORY_TOOL_PREFIX}remember`, { key: "gpu", text: "RTX 3060", action: "patch" }),
+  );
+  assert.equal(requested.status, "pending");
+  assert.match(requested.summary, /currently: RTX 4070/);
+
+  // Something else changes the fact before the user gets to the approval.
+  acpMemoryStore.rememberFact({ key: "gpu", text: "RTX 5080", action: "patch" });
+
+  const decided = await approvalGate.decide(requested.requestId, "allow-once");
+  assert.equal(decided.result.refused, "changed");
+  assert.match(decided.result.error, /nothing was overwritten/);
+  assert.equal(acpMemoryStore.listFacts()[0].text, "RTX 5080");
+  assert.equal(decided.result.askedAgain.status, "pending");
+  const [again] = approvalGate.listPending();
+  assert.equal(again.id, decided.result.askedAgain.requestId);
+  assert.match(again.summary, /RTX 3060 \(currently: RTX 5080\)/);
+
+  const applied = await approvalGate.decide(again.id, "allow-once");
+  assert.equal(applied.result.ok, true);
+  assert.equal(acpMemoryStore.listFacts()[0].text, "RTX 3060");
+  assert.equal(acpMemoryStore.listFacts().length, 1);
+});
+
+test("clicking always-allow on a stale memory approval still refuses it instead of re-asking straight into a write (issue #663)", async () => {
+  const acpMemoryStore = createAcpMemoryStore({ dataDir: tempDir() });
+  const approvalGate = createApprovalGate({ dataDir: tempDir() });
+  approvalGate.registerExecutor("memory-write", createMemoryWriteExecutor({ acpMemoryStore, approvalGate }));
+  acpMemoryStore.rememberFact({ key: "gpu", text: "RTX 4070" });
+  const source = createMemoryToolSource({ acpMemoryStore, approvalGate });
+  const requested = JSON.parse(
+    await source.executeTool(`${MEMORY_TOOL_PREFIX}remember`, { key: "gpu", action: "remove" }),
+  );
+  acpMemoryStore.rememberFact({ key: "gpu", text: "RTX 5080", action: "patch" });
+
+  const decided = await approvalGate.decide(requested.requestId, "always-allow");
+  assert.equal(decided.result.refused, "changed");
+  assert.equal("askedAgain" in decided.result, false);
+  assert.equal(acpMemoryStore.listFacts()[0].status, "active");
+  assert.equal(approvalGate.listPending().length, 0);
 });

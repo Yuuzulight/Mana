@@ -186,7 +186,7 @@ const { createToolPolicy } = require("./ai/tool-policy");
 // below already returns the {listToolSchemas, executeTool, isKnownToolName}
 // shape buildToolPolicy expects.
 const { buildToolPolicy } = require("./ai/tool-source");
-const { createMemoryToolSource } = require("./ai/memory-tool-source");
+const { createMemoryToolSource, createMemoryWriteExecutor } = require("./ai/memory-tool-source");
 const { createSessionSearchToolSource } = require("./ai/session-search-tool-source");
 const { createSkillToolSource } = require("./ai/skill-tool-source");
 const { createSnapshotToolSource } = require("./ai/snapshot-tool-source");
@@ -1946,6 +1946,17 @@ function registerRoutes(app, upload, deps = {}) {
           ),
         );
       }
+      // Issue #663: unconfirmed facts age into archived. No model call.
+      try {
+        (deps.acpMemoryStore || acpMemoryStore).archiveExpiredPendingFacts({
+          maxAgeDays: Number(process.env.MANA_PENDING_FACT_MAX_AGE_DAYS) || undefined,
+        });
+      } catch (err) {
+        console.warn(
+          "Idle-triggered pending-fact expiry failed:",
+          err && err.message ? err.message : err,
+        );
+      }
       // Deterministic, no-LLM skill pruning (issue #140) -- same idle
       // signal as the memory consolidation above, but this pass never
       // calls the model: it just flags/archives skills nobody's used in
@@ -2131,7 +2142,12 @@ function registerRoutes(app, upload, deps = {}) {
   // conversational skill write doesn't silently also disable review for
   // every future proposal nobody's actually looked at.
   activeApprovalGate.registerExecutor("skill-write-idle", (payload) => activeSkillsStore.createSkill(payload));
-  activeApprovalGate.registerExecutor("memory-write", (payload) => acpMemoryStore.rememberFact(payload));
+  // Issue #663: refuses (and asks again) when the fact changed since the
+  // request, instead of writing over what the approver reviewed.
+  activeApprovalGate.registerExecutor(
+    "memory-write",
+    createMemoryWriteExecutor({ acpMemoryStore, approvalGate: activeApprovalGate }),
+  );
 
   // Lets acpMemoryStore's summarizeFn (built at module load time, long
   // before registerRoutes ever runs) reach the real runOpenAIReply --

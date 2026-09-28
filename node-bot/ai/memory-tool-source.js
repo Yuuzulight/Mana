@@ -30,6 +30,15 @@ function looksAttributableToUser(factText, userMessage) {
   return sharedWordCount(factWords, userWords) / factWords.length >= MIN_ATTRIBUTION_RATIO;
 }
 
+// Issue #663: a fact counts as user-requested (stored active) only when the
+// user's own message asks for it; anything else Mana picked up on her own
+// starts pending. A "confirm" needs the user's message to say yes.
+// ponytail: keyword cues, not intent classification -- "do you remember..."
+// also counts as a request; tighten if pending facts go active too easily.
+const USER_ASKED_TO_REMEMBER =
+  /\b(remember|don'?t forget|do not forget|keep in mind|make a note|note (?:that|this)|save (?:that|this))\b/i;
+const USER_SAID_YES = /\b(yes|yeah|yep|yup|sure|correct|please do|go ahead)\b/i;
+
 const REMEMBER_BASE_DESCRIPTION =
   "Explicitly save, update, or forget a specific fact worth remembering across future conversations -- for something clearly worth persisting right now (a stated preference, a correction, a decision), not for routine chat, which is already remembered automatically.";
 
@@ -51,7 +60,9 @@ const MEMORY_INDEX_MAX_CHARS = 2000;
 
 function buildAlreadyRememberedBlock(existingKeys) {
   if (!existingKeys || !existingKeys.length) return "";
-  const allLines = existingKeys.map((f) => `- "${f.key}"${f.preview ? ` (${f.preview})` : ""}`);
+  const allLines = existingKeys.map(
+    (f) => `- "${f.key}"${f.preview ? ` (${f.preview})` : ""}${f.pending ? " [unconfirmed]" : ""}`,
+  );
   const kept = [];
   let charCount = 0;
   for (const line of allLines) {
@@ -96,13 +107,13 @@ function buildToolSchemas(existingKeys) {
             },
             text: {
               type: "string",
-              description: "The fact itself, as a short sentence. Required unless action is \"remove\" or \"archive\".",
+              description: "The fact itself, as a short sentence. Required unless action is \"remove\", \"archive\" or \"confirm\".",
             },
             action: {
               type: "string",
-              enum: ["insert", "patch", "remove", "archive"],
+              enum: ["insert", "patch", "remove", "archive", "confirm"],
               description:
-                "\"insert\" (default): save as a new fact. \"patch\": update the existing fact with this key (or insert if none exists yet). \"remove\": mark the existing fact with this key as no longer true. \"archive\": the fact is still true but no longer worth automatically surfacing (e.g. it's context for a project that's now finished) -- unlike \"remove\", the fact isn't treated as false, just deprioritized.",
+                "\"insert\" (default): save as a new fact. \"patch\": update the existing fact with this key (or insert if none exists yet). \"remove\": mark the existing fact with this key as no longer true. \"archive\": the fact is still true but no longer worth automatically surfacing (e.g. it's context for a project that's now finished) -- unlike \"remove\", the fact isn't treated as false, just deprioritized. \"confirm\": the user just said yes when you asked whether to remember an [unconfirmed] fact -- makes it a confirmed fact. Facts you save without the user asking you to remember them start unconfirmed.",
             },
             supersedes: {
               type: "string",
@@ -185,6 +196,49 @@ Does fact 2 mean fact 1 is now wrong (a genuine contradiction), or could both st
   }
 }
 
+// Issue #663: pin the approval to the facts it touches as they are right
+// now (the key, and a superseded key), so approving later applies only if
+// neither changed in between. Stores without getFactVersion (test fakes)
+// skip the pin.
+function requestMemoryWriteApproval(approvalGate, acpMemoryStore, payload) {
+  const keys = [payload.key, payload.supersedes].filter(Boolean);
+  const expectedVersions =
+    typeof acpMemoryStore.getFactVersion === "function"
+      ? keys.map((key) => ({ key, version: acpMemoryStore.getFactVersion(key) }))
+      : undefined;
+  const current =
+    typeof acpMemoryStore.listFactKeys === "function"
+      ? acpMemoryStore
+          .listFactKeys()
+          .find((f) => f.key.toLowerCase() === String(payload.key || "").trim().toLowerCase())
+      : null;
+  return approvalGate.requestApproval("memory-write", {
+    summary:
+      `${payload.action === "confirm" ? "Confirm" : "Remember"} "${payload.key}"` +
+      `${payload.text ? `: ${payload.text}` : ""}` +
+      `${current?.preview && current.preview !== payload.text ? ` (currently: ${current.preview})` : ""}`,
+    payload: expectedVersions ? { ...payload, expectedVersions } : payload,
+    scanText: payload.text,
+  });
+}
+
+// Issue #663: the approval gate's "memory-write" executor (server.js). A
+// write refused because what it was pinned to changed is asked again,
+// pinned to (and showing) the fact as it is now -- unless memory writes are
+// always-allowed (which includes clicking "always allow" on this very
+// request), where asking again would just apply it over the change.
+function createMemoryWriteExecutor({ acpMemoryStore, approvalGate }) {
+  return async (payload) => {
+    const result = acpMemoryStore.rememberFact(payload);
+    if (result?.refused !== "changed" || approvalGate.isAlwaysAllowed("memory-write")) {
+      return result;
+    }
+    const { expectedVersions, ...unpinned } = payload;
+    const askedAgain = await requestMemoryWriteApproval(approvalGate, acpMemoryStore, unpinned);
+    return { ...result, askedAgain };
+  };
+}
+
 // options.acpMemoryStore: required.
 // options.sessionId: bound at creation time, not trusted from model-supplied
 // args -- same "server-managed context, not model-supplied identifiers"
@@ -225,6 +279,15 @@ function createMemoryToolSource(options = {}) {
     if (action !== "remember") {
       throw new Error(`unknown memory tool: ${qualifiedName}`);
     }
+    // Issue #663: only the user can confirm a pending fact.
+    if (args?.action === "confirm" && !(userMessage && USER_SAID_YES.test(userMessage))) {
+      return JSON.stringify({
+        ok: false,
+        action: "confirm",
+        key: args?.key,
+        error: "Only the user can confirm an unconfirmed fact: ask them first, and confirm once they say yes.",
+      });
+    }
     const payload = {
       sessionId,
       key: args?.key,
@@ -236,6 +299,11 @@ function createMemoryToolSource(options = {}) {
       ...(args?.text && !looksAttributableToUser(args.text, userMessage)
         ? { unverifiedSource: true }
         : {}),
+      // Issue #663: not asked to remember -> a new fact starts pending. No
+      // user message (callers that don't pass one) keeps today's behavior.
+      ...(args?.text && userMessage && !USER_ASKED_TO_REMEMBER.test(userMessage)
+        ? { pending: true }
+        : {}),
     };
 
     if (!approvalGate) {
@@ -246,11 +314,7 @@ function createMemoryToolSource(options = {}) {
       return JSON.stringify(framePossibleConflict(result));
     }
 
-    const outcome = await approvalGate.requestApproval("memory-write", {
-      summary: `Remember "${payload.key}"${payload.text ? `: ${payload.text}` : ""}`,
-      payload,
-      scanText: payload.text,
-    });
+    const outcome = await requestMemoryWriteApproval(approvalGate, acpMemoryStore, payload);
     // Issue #273: the always-allowed path runs rememberFact synchronously
     // and returns its result verbatim (approval-gate.js's requestApproval),
     // so a possibleConflict here needs the same framing as the direct path
@@ -283,5 +347,6 @@ module.exports = {
   TOOL_SCHEMAS,
   isMemoryToolName,
   createMemoryToolSource,
+  createMemoryWriteExecutor,
   buildToolPolicyWithMemory,
 };
