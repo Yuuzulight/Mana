@@ -11,16 +11,49 @@ const { createOnDemandProcess } = require("../utils/on-demand-process");
 // local .gguf file (Qwen3-Embedding-0.6B-Q8_0, see node-bot/.env.sample);
 // nothing is ever downloaded.
 //
-// Texts go in as-is, same as local_embedder.py (which encodes queries and
-// documents alike, with no instruction prompt). The Qwen3-Embedding GGUF's
-// metadata already asks for last-token pooling and an appended EOS token,
-// the same as the sentence-transformers model; --pooling last just pins it.
+// The Qwen3-Embedding GGUF's metadata already asks for last-token pooling
+// and an appended EOS token, the same as the sentence-transformers model;
+// --pooling last just pins it.
 const STARTUP_TIMEOUT_MS = 60 * 1000;
 // Each input has to fit one physical batch (-ub), or the whole request
 // fails; cutting inputs to this many characters keeps them under this many
 // tokens. Measured on the RTX 5080: ~2.3 GB VRAM at 2048 (1.4 GB at 512,
-// 6.6 GB at 8192); memory texts (facts, messages, turns) are far shorter.
+// 6.6 GB at 8192).
 const MAX_TOKENS = 2048;
+// A longer document is embedded as overlapping MAX_TOKENS-character chunks
+// in the same request, averaged into one vector, instead of raising -ub.
+const CHUNK_OVERLAP = 256;
+// Qwen3-Embedding is instruction-aware: a query embeds with a one-line task
+// in the model card's format ("Instruct: {task}\nQuery:{query}"), documents
+// go in bare -- so cached document vectors stay valid. Measured with the
+// Q8_0 GGUF: "what graphics card do I have?" vs "the user's GPU is an RTX
+// 5080" / "likes green tea" is 0.691 / 0.501 bare (the unrelated fact
+// clears recall's 0.5 cutoff), 0.650 / 0.369 with this instruction.
+const QUERY_PROMPT =
+  "Instruct: Given a user's message, retrieve stored facts, notes and past conversation passages relevant to it\nQuery:";
+
+// Code points, so a cut never splits a surrogate pair into invalid JSON.
+function chunks(text) {
+  const chars = Array.from(text);
+  const out = [];
+  for (let at = 0; ; at += MAX_TOKENS - CHUNK_OVERLAP) {
+    out.push(chars.slice(at, at + MAX_TOKENS).join(""));
+    if (at + MAX_TOKENS >= chars.length) return out;
+  }
+}
+
+// Mean of the L2-normalized vectors, re-normalized.
+function unitMean(vectors) {
+  const sum = new Array(vectors[0].length).fill(0);
+  for (const v of vectors) {
+    const n = Math.hypot(...v) || 1;
+    v.forEach((x, k) => {
+      sum[k] += x / n;
+    });
+  }
+  const n = Math.hypot(...sum) || 1;
+  return sum.map((x) => x / n);
+}
 
 function createEmbedder(options = {}) {
   const env = options.env || process.env;
@@ -58,7 +91,7 @@ function createEmbedder(options = {}) {
         options: { cwd: path.win32.dirname(bin) },
       };
     },
-    idleMs: () => Number(env.MANA_EMBEDDER_IDLE_MS === undefined ? 600000 : env.MANA_EMBEDDER_IDLE_MS),
+    idleMs: () => Number(env.MANA_EMBEDDER_IDLE_MS === undefined ? 3600000 : env.MANA_EMBEDDER_IDLE_MS),
     startupTimeoutMs: STARTUP_TIMEOUT_MS,
     spawn,
     fetch: fetchImpl,
@@ -93,31 +126,51 @@ function createEmbedder(options = {}) {
   }
 
   // Vectors in input order; null for any input without one. Never throws.
-  async function embed(inputs) {
+  // query: the texts are search queries (the user's message), not stored
+  // documents -- they get QUERY_PROMPT and are cut, never chunked.
+  async function embed(inputs, { query = false } = {}) {
     const out = inputs.map(() => null);
     if (!out.length) return out;
+    const prompt = query && /qwen3-embedding/i.test(path.basename(modelPath() || "")) ? QUERY_PROMPT : "";
+    const pieces = inputs.map((t) =>
+      query ? [Array.from(prompt + String(t || "")).slice(0, MAX_TOKENS).join("")] : chunks(String(t || "")),
+    );
+    const input = pieces.flat();
     try {
       await server.ensure();
       server.touch();
       const resp = await fetchImpl(`http://127.0.0.1:${port()}/v1/embeddings`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ input: inputs.map((t) => String(t || "").slice(0, MAX_TOKENS)) }),
+        body: JSON.stringify({ input }),
       });
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
       const body = await resp.json();
+      const vectors = input.map(() => null);
       for (const d of Array.isArray(body?.data) ? body.data : []) {
-        if (Number.isInteger(d?.index) && d.index >= 0 && d.index < out.length && Array.isArray(d.embedding)) {
-          out[d.index] = d.embedding;
+        if (Number.isInteger(d?.index) && d.index >= 0 && d.index < input.length && Array.isArray(d.embedding)) {
+          vectors[d.index] = d.embedding;
         }
       }
+      let next = 0;
+      pieces.forEach((p, i) => {
+        const vs = vectors.slice(next, (next += p.length));
+        if (vs.every(Array.isArray)) out[i] = vs.length === 1 ? vs[0] : unitMean(vs);
+      });
     } catch (e) {
       console.warn("Embedding llama-server unavailable:", e?.message || e);
     }
     return out;
   }
 
-  return { embed, isEnabled, modelId, stop: server.stop };
+  // Starts the server ahead of use (backend startup, the start of a user
+  // turn), so the recall that follows doesn't wait out the cold start.
+  // Never throws; concurrent calls share one start.
+  function warm() {
+    if (isEnabled()) server.ensure().then(server.touch, () => {});
+  }
+
+  return { embed, warm, isEnabled, modelId, stop: server.stop };
 }
 
-module.exports = { createEmbedder };
+module.exports = { createEmbedder, QUERY_PROMPT };

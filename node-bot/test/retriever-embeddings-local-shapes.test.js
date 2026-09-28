@@ -116,3 +116,33 @@ test("a configured GPU embedder serves computeEmbeddings instead of RETRIEVER_EM
     );
   });
 });
+
+test("the query flag reaches the GPU embedder, and local_embedder.py gets Qwen3's query prompt for queries only", async () => {
+  const { QUERY_PROMPT } = require("../ai/embedder-runtime");
+  await withFakeLocalEmbedder({ embeddings: [[9, 9]] }, async (baseUrl, requests) => {
+    await withRetrieverIndex(
+      { USE_EMBEDDINGS: "1", RETRIEVER_EMBEDDER_URL: baseUrl },
+      async (retrieverIndex) => {
+        await retrieverIndex.computeEmbeddings(["what gpu?"], { query: true });
+        await retrieverIndex.computeEmbeddings(["rig: RTX 5080"]);
+        assert.deepEqual(requests, [
+          { inputs: ["what gpu?"], query_prompt: QUERY_PROMPT },
+          { inputs: ["rig: RTX 5080"] },
+        ]);
+
+        const options = [];
+        retrieverIndex.useEmbedder({
+          isEnabled: () => true,
+          modelId: () => "llama:embed.gguf",
+          embed: async (texts, opts) => {
+            options.push(opts);
+            return texts.map(() => [1, 2]);
+          },
+        });
+        await retrieverIndex.computeEmbedding("what gpu?", { query: true });
+        await retrieverIndex.computeEmbeddings(["rig: RTX 5080"]);
+        assert.deepEqual(options, [{ query: true }, { query: false }]);
+      },
+    );
+  });
+});

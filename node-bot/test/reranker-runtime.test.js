@@ -222,3 +222,17 @@ test("a reranker already answering on the port (left from a killed backend) is r
   assert.deepEqual(result.order, [1, 0]);
   assert.equal(server.calls.spawn.length, 0);
 }));
+
+test("warm() starts the server ahead of the first rerank, once, and does nothing when off", quietly(async () => {
+  const server = fakeServer({ score: (doc) => doc.length });
+  const reranker = makeReranker(server, { MANA_RERANKER_MODEL: tempModel(), MANA_RERANKER_IDLE_MS: "0" });
+  reranker.warm();
+  reranker.warm();
+  assert.deepEqual((await reranker.rerank("q", ["a", "bbb"])).order, [1, 0]);
+  assert.equal(server.calls.spawn.length, 1);
+
+  const off = fakeServer();
+  makeReranker(off, {}).warm();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(off.calls.spawn.length, 0);
+}));

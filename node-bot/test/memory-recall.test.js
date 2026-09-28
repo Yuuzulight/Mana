@@ -330,3 +330,24 @@ test("session search keeps all results when the reranker fails or there are 8 or
   assert.equal((await small.searchSessions({ query: "deploy" })).length, 8);
   assert.equal(calls.length, 0);
 });
+
+test("the user's message and session search queries embed as queries; facts as documents", async () => {
+  const calls = [];
+  const store = createAcpMemoryStore({
+    dataDir: createTempDir(),
+    sessionSearchIndex: fakeSessionSearchIndex(0),
+    computeEmbeddingsFn: async (texts, options) => {
+      calls.push([texts[0], Boolean(options?.query)]);
+      return texts.map(() => [1, 0]);
+    },
+  });
+  store.rememberFact({ key: "rig", text: "RTX 5080" });
+  await store.getRelatedFactsEntries("what graphics card do I have?");
+  await tick();
+  await store.searchSessions({ query: "greeting" });
+
+  const query = new Map(calls);
+  assert.equal(query.get("what graphics card do I have?"), true);
+  assert.equal(query.get("greeting"), true);
+  assert.equal(query.get("rig: RTX 5080"), false);
+});

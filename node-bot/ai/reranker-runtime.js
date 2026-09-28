@@ -61,7 +61,7 @@ function createReranker(options = {}) {
         },
       };
     },
-    idleMs: () => Number(env.MANA_RERANKER_IDLE_MS === undefined ? 600000 : env.MANA_RERANKER_IDLE_MS),
+    idleMs: () => Number(env.MANA_RERANKER_IDLE_MS === undefined ? 3600000 : env.MANA_RERANKER_IDLE_MS),
     startupTimeoutMs: STARTUP_TIMEOUT_MS,
     spawn,
     fetch: fetchImpl,
@@ -149,7 +149,14 @@ function createReranker(options = {}) {
     }
   }
 
-  return { rerank, isEnabled, stop: server.stop };
+  // Starts the server ahead of use (backend startup, the start of a user
+  // turn): its ~3.5 s cold start is longer than rerank()'s budget. Never
+  // throws; concurrent calls share one start.
+  function warm() {
+    if (isEnabled()) server.ensure().then(server.touch, () => {});
+  }
+
+  return { rerank, warm, isEnabled, stop: server.stop };
 }
 
 module.exports = { createReranker };

@@ -303,6 +303,14 @@ function createApp(deps = {}) {
       legacyHeaders: false,
     }),
   );
+  // A user turn is starting (voice upload, live partial transcript, typed
+  // reply): start the memory embedder/reranker now if they're cold, so
+  // they load while whisper and prompt building run instead of the turn's
+  // fact recall falling back past its budget. Never waits.
+  app.use(["/transcribe", "/transcribe-only", "/transcribe-partial", "/reply"], (req, res, next) => {
+    if (req.method === "POST") warmMemoryModels();
+    next();
+  });
   	const upload = multer({ dest: path.join(__dirname, "tmp") });
 
   	  // wire mobile device store (allow override via deps for tests)
@@ -494,6 +502,14 @@ const embedder = createEmbedder({
   supportsLoadMode: llamaServerRuntime.supportsLoadMode,
 });
 require("./tools/retriever-index").useEmbedder(embedder);
+
+// Start both in the background (never awaited). The cold starts (~1-1.5 s
+// embedder, ~3.5 s reranker) are longer than recall's budgets, so a cold
+// first use would fall back to keyword matching.
+function warmMemoryModels() {
+  reranker.warm();
+  require("./tools/retriever-index").warmEmbedder();
+}
 
 // #693: llama.cpp build updates/rollback (Settings > Model). Resolves the
 // active build through the runtime so both agree on what "current" means.
@@ -1600,8 +1616,11 @@ if (process.env.NODE_ENV !== "test" && !process.env.NODE_TEST_CONTEXT) {
         // invoked -- caught by this same eager-construction refactor.
       } catch (e) {}
 
-      // Run compactor once now, and schedule periodic compaction
+      // Run compactor once now, and schedule periodic compaction. The
+      // memory models are warmed here too -- not while a game runs, since
+      // the GPU embedder takes ~2.3 GB of VRAM.
       if (!backgroundJobsPausedForGaming()) {
+        warmMemoryModels();
         runBackgroundCompactor().catch((err) =>
           console.warn(
             "Compactor initial run failed:",
@@ -3810,7 +3829,7 @@ function registerRoutes(app, upload, deps = {}) {
                 ) {
                   try {
                     const qembed =
-                      await retrieverIndex.computeEmbedding(transcript);
+                      await retrieverIndex.computeEmbedding(transcript, { query: true });
                     if (qembed) {
                       const s = await store.search(qembed, 5);
                       if (Array.isArray(s) && s.length) {
