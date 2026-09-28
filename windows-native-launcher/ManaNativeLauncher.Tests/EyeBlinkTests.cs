@@ -6,61 +6,142 @@ namespace ManaNativeLauncher.Tests;
 // #683: pure timing -- no Cubism Core needed.
 public class EyeBlinkTests
 {
-    private static List<float> Sample(EyeBlink blink, float seconds, float step = 1f / 60f)
+    private const double Frame = 1.0 / 240.0;
+
+    private sealed record Blink(double Start, double End, float MinOpenness);
+
+    // Runs the blink for `seconds` at 240fps and returns each blink seen.
+    private static List<Blink> Simulate(EyeBlink blink, double seconds, bool talking = false, double from = 0)
     {
-        var values = new List<float>();
-        for (var t = 0f; t < seconds; t += step)
+        var blinks = new List<Blink>();
+        double? start = null;
+        var min = 1f;
+        for (var t = from; t < from + seconds; t += Frame)
         {
-            values.Add(blink.Openness(t));
+            var v = blink.Openness(t, talking);
+            if (v < 1f)
+            {
+                start ??= t;
+                min = Math.Min(min, v);
+            }
+            else if (start is { } s)
+            {
+                blinks.Add(new Blink(s, t, min));
+                start = null;
+                min = 1f;
+            }
         }
-        return values;
+        return blinks;
     }
 
     [Fact]
-    public void Openness_StaysWithinZeroToOne_AndBlinksRepeatedly()
+    public void NextInterval_IsLogNormalIsh_WithinBounds_MeanAroundThreeAndAHalfSeconds()
     {
-        var values = Sample(new EyeBlink(seed: 1), 60f);
+        var random = new Random(1);
+        var samples = Enumerable.Range(0, 20000).Select(_ => EyeBlink.NextIntervalSeconds(random, talking: false)).ToList();
 
-        Assert.All(values, v => Assert.InRange(v, 0f, 1f));
-        // A blink = a run of fully-closed frames. Mean interval ~3.5s, so a
-        // minute has well over a handful.
-        var blinks = values.Zip(values.Skip(1)).Count(pair => pair.First > 0f && pair.Second == 0f);
-        Assert.InRange(blinks, 6, 40);
-        Assert.True(values.Count(v => v == 1f) > values.Count * 0.8, "eyes should be open most of the time");
+        Assert.All(samples, s => Assert.InRange(s, 1.2f, 8f));
+        Assert.InRange(samples.Average(), 3.2, 3.9);
+        // Skewed: the median sits below the mean, and long stares are rare.
+        var sorted = samples.Order().ToList();
+        Assert.True(sorted[sorted.Count / 2] < samples.Average());
+        Assert.True(samples.Count(s => s > 6.5f) < samples.Count * 0.08);
     }
 
     [Fact]
-    public void Openness_ClosesThenReopensWithinABlinkDuration()
+    public void Talking_BlinksAboutFortyPercentMoreOften()
+    {
+        var random = new Random(2);
+        var rest = Enumerable.Range(0, 20000).Average(_ => EyeBlink.NextIntervalSeconds(random, talking: false));
+        var talk = Enumerable.Range(0, 20000).Average(_ => EyeBlink.NextIntervalSeconds(random, talking: true));
+
+        Assert.InRange(rest / talk, 1.3, 1.5);
+    }
+
+    [Fact]
+    public void Blinks_CloseFastAndOpenSlower_Monotonically()
     {
         var blink = new EyeBlink(seed: 3);
-        var t = 0f;
+        var t = 0.0;
         while (blink.Openness(t) == 1f)
         {
-            t += 0.001f;
+            t += Frame;
         }
-        var closeStart = t;
-        while (blink.Openness(t) < 1f)
+        var values = new List<(double T, float V)>();
+        for (; values.Count == 0 || values[^1].V < 1f; t += 0.001)
         {
-            t += 0.001f;
+            values.Add((t, blink.Openness(t)));
         }
 
-        Assert.InRange(t - closeStart, 0.25f, 0.35f); // 0.1 closing + 0.05 closed + 0.15 opening
+        var minValue = values.Min(x => x.V);
+        var minIndex = values.FindIndex(v => v.V == minValue);
+        var closing = values.Take(minIndex + 1).ToList();
+        var opening = values.Skip(minIndex).ToList();
+        Assert.True(closing.Zip(closing.Skip(1)).All(p => p.Second.V <= p.First.V), "closing must be monotone");
+        Assert.True(opening.Zip(opening.Skip(1)).All(p => p.Second.V >= p.First.V), "opening must be monotone");
+
+        var closeDuration = closing[^1].T - closing[0].T;
+        var total = values[^1].T - values[0].T;
+        Assert.InRange(total, 0.2, 0.45); // ~85ms close + 45ms shut + 185ms open, +-15%
+        Assert.True(total - closeDuration > closeDuration * 1.5, "opening (incl. hold) should take clearly longer than closing");
+
+        // Ease-in close: the first half of the closing time covers less than
+        // half of the travel.
+        var halfway = closing.First(v => v.T - closing[0].T >= closeDuration / 2);
+        Assert.True(halfway.V > 0.6f, $"closing should accelerate, was {halfway.V} at halfway");
     }
 
     [Fact]
-    public void Openness_AfterALongStall_DoesNotBunchUpBlinks()
+    public void OverManySeeds_DoubleAndPartialBlinkRatesAreNearTheirTargets()
     {
-        var blink = new EyeBlink(seed: 5);
-        blink.Openness(0f);
-
-        // Window hidden for ten minutes, then rendering resumes.
-        var values = new List<float>();
-        for (var t = 600f; t < 601f; t += 1f / 60f)
+        var gaps = new List<double>();
+        var partial = 0;
+        var total = 0;
+        for (var seed = 0; seed < 40; seed++)
         {
-            values.Add(blink.Openness(t));
+            var blinks = Simulate(new EyeBlink(seed), 120);
+            total += blinks.Count;
+            partial += blinks.Count(b => b.MinOpenness > 0.2f);
+            gaps.AddRange(blinks.Zip(blinks.Skip(1)).Select(p => p.Second.Start - p.First.End));
         }
 
-        var blinks = values.Zip(values.Skip(1)).Count(pair => pair.First > 0f && pair.Second == 0f);
-        Assert.InRange(blinks, 0, 1);
+        // ~15-20 blinks/min at rest.
+        Assert.InRange(total / 80.0, 13, 22);
+        var doubles = gaps.Count(g => g < 0.5);
+        Assert.InRange((double)doubles / gaps.Count, 0.07, 0.18);
+        Assert.InRange((double)partial / total, 0.05, 0.16);
+        // Outside double blinks, never closer than the 1.2s floor.
+        Assert.All(gaps.Where(g => g >= 0.5), g => Assert.True(g >= 1.19, $"gap {g}"));
+    }
+
+    [Fact]
+    public void Trigger_StartsABlinkNow_ButNotRightAfterAnother()
+    {
+        var blink = new EyeBlink(seed: 4);
+        blink.Openness(0);
+        blink.Trigger(0.5);
+        blink.Openness(0.5);
+        Assert.True(blink.Openness(0.5 + 0.05) < 1f, "a triggered blink starts immediately");
+
+        // Let it finish, then trigger again inside the refractory window.
+        var t = 0.55;
+        while (blink.Openness(t) < 1f)
+        {
+            t += Frame;
+        }
+        blink.Trigger(t + 0.1);
+        Assert.Equal(1f, blink.Openness(t + 0.15));
+    }
+
+    [Fact]
+    public void AfterALongStall_DoesNotBunchUpBlinks()
+    {
+        var blink = new EyeBlink(seed: 5);
+        blink.Openness(0);
+
+        // Window hidden for ten minutes, then rendering resumes.
+        var blinks = Simulate(blink, 1.0, from: 600);
+
+        Assert.InRange(blinks.Count, 0, 2); // at most one, plus its double
     }
 }

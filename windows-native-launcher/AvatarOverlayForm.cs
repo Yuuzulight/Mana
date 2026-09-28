@@ -91,7 +91,7 @@ internal sealed class AvatarOverlayForm : Form
     // ships none or it failed to load. Stateful, stepped once per frame.
     private readonly CubismPhysics? physics;
 
-    // #683: auto-blink and idle gaze/head tilt, layered on top of the idle
+    // #683: auto-blink and gaze/idle head tilt, layered on top of the idle
     // motion and expression every frame (see RenderFrame). lifeParameters
     // holds every parameter they touch that this model actually has, with
     // its default and range: they're reset to default at the start of each
@@ -100,7 +100,7 @@ internal sealed class AvatarOverlayForm : Form
     private static readonly string[] DefaultEyeBlinkIds = ["ParamEyeLOpen", "ParamEyeROpen"];
     private static readonly string[] GazeIds = ["ParamAngleX", "ParamAngleY", "ParamAngleZ", "ParamEyeBallX", "ParamEyeBallY"];
     private readonly EyeBlink eyeBlink = new();
-    private readonly IdleGaze idleGaze = new();
+    private readonly AvatarGaze gaze = new();
     private readonly string[] eyeBlinkIds = [];
     private readonly Dictionary<string, (float Default, float Min, float Max)> lifeParameters = [];
 
@@ -327,7 +327,7 @@ internal sealed class AvatarOverlayForm : Form
         // motions/expressions target eyebrows/eyes/head-angle rather than
         // mouth-open, but if either touched it, Mana's mouth should still
         // track what she's actually saying while she's speaking.
-        // #683's idle gaze/tilt and blink sit between expression and
+        // #683's gaze/idle tilt and blink sit between expression and
         // lip-sync: the gaze adds on top of (and the tilt eases) the head
         // angles the motion/expression set, and the blink multiplies the
         // eye-open value they set, so a motion's baked blink or an
@@ -346,22 +346,24 @@ internal sealed class AvatarOverlayForm : Form
         }
         activeExpression?.ApplyTo(model);
 
-        idleGaze.Update(dtMs, CurrentState == AvatarState.Idle);
-        if (idleGaze.Blend > 0.001f)
+        var nowSeconds = renderClock.Elapsed.TotalSeconds;
+        var talking = CurrentState != AvatarState.Idle;
+        if (gaze.Update(dtMs, talking ? GazeMode.Talking : GazeMode.Idle))
         {
-            if (idleGaze.TiltActive)
-            {
-                SetLifeParameter(model, "ParamAngleY", idleGaze.ApplyPitch(model.GetParameterCurrentValue("ParamAngleY")));
-                SetLifeParameter(model, "ParamAngleZ", idleGaze.ApplyRoll(model.GetParameterCurrentValue("ParamAngleZ")));
-            }
-            if (idleGaze.GazeActive)
-            {
-                SetLifeParameter(model, "ParamAngleX", model.GetParameterCurrentValue("ParamAngleX") + idleGaze.AngleXOffset);
-                SetLifeParameter(model, "ParamEyeBallX", model.GetParameterCurrentValue("ParamEyeBallX") + idleGaze.EyeBallXOffset);
-                SetLifeParameter(model, "ParamEyeBallY", model.GetParameterCurrentValue("ParamEyeBallY") + idleGaze.EyeBallYOffset);
-            }
+            eyeBlink.Trigger(nowSeconds); // big glance -> blink with it
         }
-        var openness = eyeBlink.Openness(renderClock.Elapsed.TotalSeconds);
+        if (gaze.TiltActive && gaze.TiltBlend > 0.001f)
+        {
+            SetLifeParameter(model, "ParamAngleY", gaze.ApplyPitch(model.GetParameterCurrentValue("ParamAngleY")));
+            SetLifeParameter(model, "ParamAngleZ", gaze.ApplyRoll(model.GetParameterCurrentValue("ParamAngleZ")));
+        }
+        if (gaze.GazeActive)
+        {
+            SetLifeParameter(model, "ParamAngleX", model.GetParameterCurrentValue("ParamAngleX") + gaze.HeadAngleX);
+            SetLifeParameter(model, "ParamEyeBallX", model.GetParameterCurrentValue("ParamEyeBallX") + gaze.EyeBallX);
+            SetLifeParameter(model, "ParamEyeBallY", model.GetParameterCurrentValue("ParamEyeBallY") + gaze.EyeBallY);
+        }
+        var openness = eyeBlink.Openness(nowSeconds, talking);
         foreach (var id in eyeBlinkIds)
         {
             SetLifeParameter(model, id, model.GetParameterCurrentValue(id) * openness);
@@ -430,6 +432,10 @@ internal sealed class AvatarOverlayForm : Form
 
         if (state != CurrentState)
         {
+            if (CurrentState == AvatarState.Idle)
+            {
+                eyeBlink.Trigger(renderClock.Elapsed.TotalSeconds); // #683: people blink as they start to speak
+            }
             CurrentState = state;
             StateChanged?.Invoke(state);
         }
