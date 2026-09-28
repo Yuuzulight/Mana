@@ -1109,6 +1109,7 @@ function createLlamaServerRuntime(options = {}) {
       extraMessages = null,
       onSentence = null,
       maxSentenceChars,
+      thinking,
     } = {},
   ) {
     if (typeof fetchImpl !== "function") {
@@ -1128,7 +1129,7 @@ function createLlamaServerRuntime(options = {}) {
             prompt,
             extraMessages,
           ),
-          ...buildSamplingParams({ profile, task: "stream", maxTokens, env }).params,
+          ...buildSamplingParams({ profile, task: "stream", maxTokens, thinking, env }).params,
           stream: true,
         }),
       },

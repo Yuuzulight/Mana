@@ -3,6 +3,8 @@
 // switching needs no restart, and two profiles that resolve to the same
 // model file (one shared llama-server process) still get their own settings.
 // "Sampler presets" to keep them apart from presets-store.js's prompt presets.
+const fs = require("node:fs");
+const path = require("node:path");
 
 // Qwen3 non-thinking / Qwen3.5 instruct-mode "general" settings from the
 // model cards: https://huggingface.co/Qwen/Qwen3-4B and
@@ -31,6 +33,37 @@ const SAMPLER_PRESETS = {
   precise: { ...STABLE, temperature: 0.2 },
 };
 
+// data/sampler-presets.json tunes these without a code change, e.g.
+// {"creative": {"temperature": 0.9}, "mine": {"min_p": 0.05}}: each entry is
+// merged over the built-in preset of that name (a new name starts empty and
+// can then be picked with MANA_SAMPLER_PRESET). Only the sampler fields below
+// are taken, as numbers; "none" always sends nothing. Read per request, so an
+// edit applies on the next reply. MANA_SAMPLER_PRESETS_DIR moves the file.
+const PRESET_FIELDS = new Set([
+  "temperature", "top_p", "top_k", "min_p", "repeat_penalty",
+  "dry_multiplier", "dry_base", "dry_allowed_length", "xtc_probability", "xtc_threshold",
+]);
+
+function loadSamplerPresets(env) {
+  const file = path.join(env.MANA_SAMPLER_PRESETS_DIR || path.join(__dirname, "..", "data"), "sampler-presets.json");
+  let table;
+  try {
+    table = JSON.parse(fs.readFileSync(file, "utf8"));
+  } catch (e) {
+    if (e.code !== "ENOENT") console.warn(`sampler presets: ignoring ${file}: ${e.message}`);
+    return SAMPLER_PRESETS;
+  }
+  // Null prototype: a "__proto__" key in the file is then just a name.
+  const presets = Object.assign(Object.create(null), SAMPLER_PRESETS);
+  for (const [rawName, values] of Object.entries(table && typeof table === "object" ? table : {})) {
+    const name = rawName.trim().toLowerCase();
+    if (name === "none" || !values || typeof values !== "object") continue;
+    const fields = Object.entries(values).filter(([key, value]) => PRESET_FIELDS.has(key) && Number.isFinite(value));
+    presets[name] = { ...(Object.hasOwn(SAMPLER_PRESETS, name) ? SAMPLER_PRESETS[name] : {}), ...Object.fromEntries(fields) };
+  }
+  return presets;
+}
+
 // Profiles not listed use "stable". Creative is opt-in only.
 const PROFILE_PRESETS = { coding: "precise" };
 const THINKING_PROFILES = new Set(["quality", "coding"]);
@@ -45,17 +78,19 @@ function envValue(env, prefix, name) {
   return String(env[`${prefix}_${String(name).toUpperCase()}`] || "").trim().toLowerCase();
 }
 
-function resolvePresetName(profile, env) {
+function resolvePresetName(profile, env, presets) {
   const configured = [envValue(env, "MANA_SAMPLER_PRESET", profile), String(env.MANA_SAMPLER_PRESET || "").trim().toLowerCase()]
-    .find((name) => Object.hasOwn(SAMPLER_PRESETS, name));
+    .find((name) => Object.hasOwn(presets, name));
   return configured || PROFILE_PRESETS[profile] || "stable";
 }
 
 // true/false, or null for "send no thinking fields" (MANA_LLAMA_REASONING
-// =on|off stays the global switch it was: the launch flag alone decides).
-function resolveThinking(profile, task, env) {
+// =on|off stays the global switch it was: the launch flag alone decides, even
+// over an explicit `override`).
+function resolveThinking(profile, task, env, override) {
   const global = String(env.MANA_LLAMA_REASONING || "").toLowerCase();
   if (global === "on" || global === "off") return null;
+  if (typeof override === "boolean") return override;
   const flag = (name) => {
     const value = envValue(env, "MANA_THINKING", name);
     return value === "on" ? true : value === "off" ? false : null;
@@ -74,16 +109,18 @@ function resolveReasoningBudget(profile, env) {
 }
 
 // Fields to spread into a local /v1/chat/completions body (max_tokens
-// included). `thinking` forces thinking on/off (the empty-reply retry).
+// included). `thinking` forces thinking on/off (the empty-reply retry, a
+// "think harder" turn).
 function buildSamplingParams({ profile = "default", task = null, maxTokens, thinking, env = process.env } = {}) {
-  const params = { ...SAMPLER_PRESETS[resolvePresetName(profile, env)] };
+  const presets = loadSamplerPresets(env);
+  const params = { ...presets[resolvePresetName(profile, env, presets)] };
   if (String(task || "").toLowerCase() === "tools") {
     for (const key of Object.keys(params)) {
       if (key.startsWith("dry_") || key.startsWith("xtc_")) delete params[key];
     }
   }
   params.max_tokens = maxTokens;
-  const think = typeof thinking === "boolean" ? thinking : resolveThinking(profile, task, env);
+  const think = resolveThinking(profile, task, env, thinking);
   if (think === null) return { params, thinking: false };
   params.chat_template_kwargs = { enable_thinking: think };
   if (think) {

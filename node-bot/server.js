@@ -239,6 +239,7 @@ const {
   pickPreferredLlamaModel,
   selectLlamaModelProfileForPrompt,
   shouldUseRemoteAi: shouldUseRemoteAiCore,
+  wantsThinkHarder,
 } = require("./ai/local-ai");
 const {
   createLocalLlamaRuntime,
@@ -569,6 +570,8 @@ async function runLocalLlamaReply(
   // #666: chat turns pass this to try their backup model on an empty reply
   // before llama-cli; it resolves to a reply, or null to fall through.
   onEmptyReply = null,
+  // #675: true forces thinking on for this reply (a "think harder" turn).
+  thinking = undefined,
 ) {
   if (llamaServerRuntime.isEnabled()) {
     try {
@@ -578,6 +581,8 @@ async function runLocalLlamaReply(
         profile,
         overrideSystemPrompt,
         extraMessages,
+        null,
+        thinking,
       );
     } catch (e) {
       if (onEmptyReply && /returned an empty reply/.test(e && e.message)) {
@@ -3284,8 +3289,9 @@ function registerRoutes(app, upload, deps = {}) {
       overrideSystemPrompt = null,
       extraMessages = null,
       onEmptyReply = null,
+      thinking = undefined,
     ) {
-      return runLocalLlamaReply(prompt, maxTokens, profile, overrideSystemPrompt, extraMessages, onEmptyReply);
+      return runLocalLlamaReply(prompt, maxTokens, profile, overrideSystemPrompt, extraMessages, onEmptyReply, thinking);
     });
 
   // Foundational tool-calling (issue #51): only llama-server (not the
@@ -3590,6 +3596,11 @@ function registerRoutes(app, upload, deps = {}) {
       transcript,
       modelProfile,
     );
+    // #675: "think harder" turns thinking on for this turn's reply (and its
+    // regenerations), within the profile's reasoning budget. Tool calls and
+    // Best-of-N never think, so such a turn skips both and gets a plain reply.
+    // undefined (not false) otherwise: the profile's own default then decides.
+    const thinkHarder = wantsThinkHarder(transcript) || undefined;
 
     // Determine assistant mode and system prompt
     const inferred = pickAssistantMode(transcript, normalizedModelProfile); // { mode, reason }
@@ -3727,6 +3738,7 @@ function registerRoutes(app, upload, deps = {}) {
     if (
       toolCallingEnabled &&
       normalizedModelProfile === "default" &&
+      !thinkHarder &&
       isLlamaServerAvailable()
     ) {
       try {
@@ -4225,6 +4237,7 @@ function registerRoutes(app, upload, deps = {}) {
       if (
         toolCallingEnabled &&
         normalizedModelProfile === "default" &&
+        !thinkHarder &&
         isLlamaServerAvailable()
       ) {
         try {
@@ -4452,6 +4465,7 @@ function registerRoutes(app, upload, deps = {}) {
             overrideSystemPrompt: selectedSystemPrompt,
             extraMessages: memoryExtraMessages,
             onSentence: wrappedOnSentence,
+            thinking: thinkHarder,
           });
         } catch (e) {
           console.warn(
@@ -4467,6 +4481,7 @@ function registerRoutes(app, upload, deps = {}) {
         selectedSystemPrompt,
         memoryExtraMessages,
         () => replyWithBackup(promptText),
+        thinkHarder,
       );
     }
 
@@ -4482,6 +4497,7 @@ function registerRoutes(app, upload, deps = {}) {
       if (
         bestOfNEnabled &&
         mode === "coding" &&
+        !thinkHarder &&
         isLlamaServerAvailable()
       ) {
         try {

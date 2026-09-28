@@ -1,8 +1,12 @@
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
 const test = require("node:test");
 
 const { buildSamplingParams } = require("../ai/sampler-presets");
 const { createLlamaServerRuntime } = require("../ai/llama-server-runtime");
+const { wantsThinkHarder } = require("../ai/local-ai");
 
 // Issue #675: per-request sampler presets and per-profile/per-task thinking.
 
@@ -125,6 +129,10 @@ function makeRuntime(env, reply) {
       if (String(url).endsWith("/props")) return { ok: false, status: 404, json: async () => ({}) };
       const body = JSON.parse(init.body);
       bodies.push(body);
+      if (body.stream) {
+        const frame = JSON.stringify({ choices: [{ delta: reply(body) }] });
+        return { ok: true, body: (async function* () { yield `data: ${frame}\n\ndata: [DONE]\n\n`; })() };
+      }
       return { ok: true, json: async () => ({ choices: [{ message: reply(body) }] }) };
     },
     spawn: () => {
@@ -196,4 +204,79 @@ test("Best-of-N keeps its temperature ladder and judge temperature on top of the
     assert.equal(body.top_k, 20);
     assert.deepEqual(body.chat_template_kwargs, { enable_thinking: false });
   }
+});
+
+test("data/sampler-presets.json tunes and adds presets; a missing or broken file keeps the defaults", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "mana-sampler-presets-"));
+  const file = path.join(dir, "sampler-presets.json");
+  const pick = (preset) =>
+    buildSamplingParams({ profile: "default", maxTokens: 1, env: { MANA_SAMPLER_PRESETS_DIR: dir, MANA_SAMPLER_PRESET: preset } }).params;
+  try {
+    assert.equal(pick("").temperature, 0.7);
+    fs.writeFileSync(
+      file,
+      '{"Creative": {"temperature": 0.9}, "mine": {"min_p": 0.05, "repeat_penalty": 1.1, "stream": true, "top_k": "40"}, "none": {"temperature": 1}}',
+    );
+    const creative = pick("creative");
+    assert.equal(creative.temperature, 0.9);
+    assert.equal(creative.dry_multiplier, 0.8, "unlisted fields keep the built-in value");
+    const offThinking = { max_tokens: 1, chat_template_kwargs: { enable_thinking: false } };
+    assert.deepEqual(pick("mine"), { min_p: 0.05, repeat_penalty: 1.1, ...offThinking }, "only numeric sampler fields");
+    assert.deepEqual(pick("none"), offThinking);
+    assert.equal(pick("").temperature, 0.7);
+    fs.writeFileSync(file, "{not json");
+    assert.equal(pick("creative").temperature, 0.8);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("think harder: forced thinking reaches streamed and plain requests; MANA_LLAMA_REASONING=on|off still wins", async () => {
+  const { runtime, bodies } = makeRuntime({}, () => ({ content: "Sure." }));
+  assert.equal(await runtime.streamLocalAssistantReply("q", { maxTokens: 64, thinking: true }), "Sure.");
+  await runtime.runLocalAssistantReply("q", 64, "default", null, null, null, true);
+  for (const body of bodies) {
+    assert.deepEqual(body.chat_template_kwargs, { enable_thinking: true });
+    assert.equal(body.thinking_budget_tokens, 512);
+    assert.equal(body.max_tokens, 64 + 512);
+  }
+  assert.equal(bodies[0].stream, true);
+  const forced = buildSamplingParams({ maxTokens: 1, thinking: true, env: { MANA_LLAMA_REASONING: "off" } });
+  assert.equal(forced.params.chat_template_kwargs, undefined);
+});
+
+test("a 'think harder' turn skips tool calling and asks its reply to think; other turns don't", async () => {
+  assert.equal(wantsThinkHarder("Can you think it through?"), true);
+  assert.equal(wantsThinkHarder("I think hard work pays off"), false);
+
+  const { createApp } = require("../server");
+  let toolCalls = 0;
+  const streamThinking = [];
+  const plainThinking = [];
+  const app = createApp({
+    llamaServerRuntime: {
+      isEnabled: () => true,
+      streamLocalAssistantReply: async (prompt, opts) => {
+        streamThinking.push(opts.thinking);
+        return "streamed reply";
+      },
+    },
+    runToolAwareReply: async () => {
+      toolCalls += 1;
+      return { content: "", toolCalls: [], rounds: 0 };
+    },
+    runLocalAssistantReply: async (...args) => {
+      plainThinking.push(args[6]);
+      return "plain reply";
+    },
+  });
+  const reply = (text, onSentence) =>
+    app.locals.buildAssistantReply(text, "", "", "default", null, null, null, {}, onSentence);
+
+  await reply("why is the sky blue", () => {});
+  assert.deepEqual([toolCalls, streamThinking], [1, [undefined]]);
+  await reply("Think harder: why is the sky blue", () => {});
+  assert.deepEqual([toolCalls, streamThinking], [1, [undefined, true]]);
+  await reply("think harder about it");
+  assert.deepEqual([toolCalls, plainThinking], [1, [true]]);
 });
