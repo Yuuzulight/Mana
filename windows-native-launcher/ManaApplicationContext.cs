@@ -559,7 +559,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
         }
     }
 
-    private static string FindRootDirectory()
+    internal static string FindRootDirectory()
     {
         var current = AppContext.BaseDirectory;
         while (!string.IsNullOrWhiteSpace(current))
