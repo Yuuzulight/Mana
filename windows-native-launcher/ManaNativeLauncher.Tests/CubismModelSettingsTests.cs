@@ -198,4 +198,32 @@ public class CubismModelSettingsTests
             Directory.Delete(dir, recursive: true);
         }
     }
+
+    // #683: auto-blink drives the model's own EyeBlink group; absent means
+    // an empty list (the avatar backfills the standard ids).
+    [Fact]
+    public void Load_ReadsTheEyeBlinkGroup_EmptyWhenAbsent()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "mana-cubism-settings-test-" + Guid.NewGuid());
+        try
+        {
+            var withGroup = WriteFixture(dir, """
+                {
+                  "FileReferences": { "Moc": "model.moc3", "Textures": [] },
+                  "Groups": [
+                    { "Target": "Parameter", "Name": "LipSync", "Ids": ["ParamMouthOpenY"] },
+                    { "Target": "Parameter", "Name": "EyeBlink", "Ids": ["EyeL", "", 3, "EyeR"] }
+                  ]
+                }
+                """);
+            Assert.Equal(["EyeL", "EyeR"], CubismModelSettings.Load(withGroup).EyeBlinkParameterIds);
+
+            var without = WriteFixture(dir, """{ "FileReferences": { "Moc": "model.moc3", "Textures": [] } }""");
+            Assert.Empty(CubismModelSettings.Load(without).EyeBlinkParameterIds);
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
 }

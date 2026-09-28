@@ -6,8 +6,8 @@ namespace Mana.NativeLauncher.Live2D;
 // actually uses -- which .moc3 file to load, which texture PNGs it
 // references (in texture-index order; drawables reference textures by
 // index into this same array), (#514) which named expression files it
-// declares, (#515) its first Idle motion file, and its pose and physics
-// files.
+// declares, (#515) its first Idle motion file, its pose and physics
+// files, and (#683) its EyeBlink parameter group.
 internal sealed class CubismModelSettings
 {
     public required string MocPath { get; init; }
@@ -34,6 +34,12 @@ internal sealed class CubismModelSettings
 
     // FileReferences.Physics (.physics3.json), or null -- hair/clothing sway.
     public string? PhysicsPath { get; init; }
+
+    // #683: the Ids of the top-level Groups entry named "EyeBlink" -- which
+    // parameters auto-blink drives. Empty when the model doesn't declare
+    // one (the caller backfills the standard ids, like Electron's
+    // augmentModelSettings).
+    public IReadOnlyList<string> EyeBlinkParameterIds { get; init; } = [];
 
     public static CubismModelSettings Load(string model3JsonPath)
     {
@@ -91,6 +97,24 @@ internal sealed class CubismModelSettings
         var pose = fileReferences.TryGetProperty("Pose", out var poseElement) ? poseElement.GetString() : null;
         var physics = fileReferences.TryGetProperty("Physics", out var physicsElement) ? physicsElement.GetString() : null;
 
+        var eyeBlinkIds = new List<string>();
+        if (document.RootElement.TryGetProperty("Groups", out var groupsElement) && groupsElement.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var group in groupsElement.EnumerateArray())
+            {
+                if (group.ValueKind == JsonValueKind.Object
+                    && group.TryGetProperty("Name", out var groupName) && groupName.ValueKind == JsonValueKind.String
+                    && groupName.GetString() == "EyeBlink"
+                    && group.TryGetProperty("Ids", out var ids) && ids.ValueKind == JsonValueKind.Array)
+                {
+                    eyeBlinkIds.AddRange(ids.EnumerateArray()
+                        .Where(id => id.ValueKind == JsonValueKind.String)
+                        .Select(id => id.GetString()!)
+                        .Where(id => id.Length > 0));
+                }
+            }
+        }
+
         return new CubismModelSettings
         {
             MocPath = Path.Combine(baseDir, moc),
@@ -99,6 +123,7 @@ internal sealed class CubismModelSettings
             IdleMotionPath = idleMotionPath,
             PosePath = pose is null ? null : Path.Combine(baseDir, pose),
             PhysicsPath = physics is null ? null : Path.Combine(baseDir, physics),
+            EyeBlinkParameterIds = eyeBlinkIds,
         };
     }
 }
