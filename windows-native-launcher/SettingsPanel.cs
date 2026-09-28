@@ -45,6 +45,7 @@ internal sealed class SettingsPanel : UserControl
     // same reason pluginsList/factsList/etc. above are fields too.
     private readonly ComboBox modelProfileCombo = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 200 };
     private readonly Label selectedModelLabel = new() { AutoSize = true };
+    private readonly Label recommendationLabel = new() { AutoSize = true };
     private readonly ListBox scanResultsList = new() { Height = 100, Width = 400 };
     private readonly CheckBox useRemoteAiCheckBox = new() { Text = "Use Remote AI (OpenAI-compatible endpoint)" };
     private readonly ComboBox brainPresetCombo = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 200 };
@@ -1049,7 +1050,11 @@ internal sealed class SettingsPanel : UserControl
         var row = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.LeftToRight, BackColor = DarkTheme.Background };
         row.Controls.Add(modelProfileCombo);
         row.Controls.Add(switchButton);
-        group.Controls.Add(row);
+        recommendationLabel.ForeColor = DarkTheme.Muted;
+        var stack = new FlowLayoutPanel { FlowDirection = FlowDirection.TopDown, AutoSize = true, WrapContents = false, BackColor = DarkTheme.Background };
+        stack.Controls.Add(row);
+        stack.Controls.Add(recommendationLabel);
+        group.Controls.Add(stack);
         return group;
     }
 
@@ -1098,6 +1103,10 @@ internal sealed class SettingsPanel : UserControl
         // list would show "Mana.NativeLauncher.ManaGgufFile" for every
         // row instead of a usable path.
         scanResultsList.DisplayMember = nameof(ManaGgufFile.Path);
+        // #625: owner-drawn so each row can lead with its hardware-fit pill.
+        scanResultsList.DrawMode = DrawMode.OwnerDrawFixed;
+        scanResultsList.ItemHeight = scanResultsList.Font.Height + 6;
+        scanResultsList.DrawItem += DrawScanResult;
 
         var buttonRow = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.LeftToRight, BackColor = DarkTheme.Background };
         buttonRow.Controls.Add(browseButton);
@@ -1151,6 +1160,42 @@ internal sealed class SettingsPanel : UserControl
         {
             MessageBox.Show(this, "The scan hit its time/directory budget and may not have covered everything.", "Model", MessageBoxButtons.OK, MessageBoxIcon.Information);
         }
+    }
+
+    // #625: node-bot's estimateModelFit value -> pill text/color; null
+    // (unknown size or hardware) draws no pill rather than guessing.
+    internal static (string Text, Color Color)? ModelFitPill(string? fit) => fit switch
+    {
+        "fits" => ("Fits", DarkTheme.Green),
+        "slow" => ("May be slow", DarkTheme.Warn),
+        "wont_fit" => ("Won't fit", Color.Firebrick),
+        _ => null,
+    };
+
+    private void DrawScanResult(object? sender, DrawItemEventArgs e)
+    {
+        e.DrawBackground();
+        if (e.Index < 0 || e.Index >= scanResultsList.Items.Count || scanResultsList.Items[e.Index] is not ManaGgufFile file)
+        {
+            return;
+        }
+        var font = e.Font ?? scanResultsList.Font;
+        var x = e.Bounds.X + 4;
+        if (ModelFitPill(file.Fit) is { } pill)
+        {
+            var textSize = TextRenderer.MeasureText(pill.Text, font);
+            var rect = new Rectangle(x, e.Bounds.Y + 2, textSize.Width + 8, e.Bounds.Height - 4);
+            e.Graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+            using (var path = MermaidRenderer.RoundedRect(rect, rect.Height / 2f))
+            using (var pen = new Pen(pill.Color))
+            {
+                e.Graphics.DrawPath(pen, path);
+            }
+            TextRenderer.DrawText(e.Graphics, pill.Text, font, rect, pill.Color, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
+            x = rect.Right + 6;
+        }
+        var pathRect = new Rectangle(x, e.Bounds.Y, e.Bounds.Right - x, e.Bounds.Height);
+        TextRenderer.DrawText(e.Graphics, file.Path, font, pathRect, e.ForeColor, TextFormatFlags.VerticalCenter | TextFormatFlags.PathEllipsis);
     }
 
     private async Task UseScanResultAsync()
@@ -1369,6 +1414,8 @@ internal sealed class SettingsPanel : UserControl
         {
             modelProfileCombo.SelectedItem = status.ActiveProfile;
         }
+        // #625: surfaces /models/status's `recommendation` (hardware-based).
+        recommendationLabel.Text = status.RecommendedProfile is null ? "" : $"Recommended for this PC: {status.RecommendedProfile}";
 
         selectedModelLabel.Text = string.IsNullOrEmpty(status.SelectedModelPath)
             ? "No local model file selected (auto-detecting)."
