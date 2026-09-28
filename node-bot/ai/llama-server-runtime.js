@@ -7,6 +7,7 @@ const {
   execFile: defaultExecFile,
 } = require("node:child_process");
 const { setTimeout: defaultSleep } = require("node:timers/promises");
+const { killProcessTree, waitForExit } = require("../utils/kill-process-tree");
 const {
   collectFilesRecursively,
   findPreferredLlamaModel,
@@ -82,7 +83,7 @@ function createLlamaServerRuntime(options = {}) {
     port: null,
     starting: null,
     // Settles once the last stopped child has exited (true) or was still
-    // running after STOP_WAIT_MS (false); startServer() waits on it.
+    // running after the stop bound (false); startServer() waits on it.
     stopping: Promise.resolve(true),
     idleTimer: null,
     exitHandlerRegistered: false,
@@ -389,52 +390,10 @@ function createLlamaServerRuntime(options = {}) {
     state.mmproj = null;
     state.port = null;
     if (child) {
-      killChild(child);
-      state.stopping = waitForExit(child);
+      killProcessTree(child, { platform, execFile, env });
+      state.stopping = waitForExit(child, "llama-server");
     }
     return child;
-  }
-
-  // Live run (2026-09-29): taskkill /T also takes anything llama-server
-  // started itself; child.kill() is TerminateProcess on the direct child
-  // only. execFile with an args array and an integer pid -- no shell --
-  // and a full path, since a bare name is looked up in the cwd first.
-  function killChild(child) {
-    const fallback = () => {
-      try {
-        child.kill();
-      } catch (e) {}
-    };
-    if (platform !== "win32" || !Number.isInteger(child.pid)) return fallback();
-    execFile(
-      path.win32.join(env.SystemRoot || "C:\\Windows", "System32", "taskkill.exe"),
-      ["/PID", String(child.pid), "/T", "/F"],
-      { windowsHide: true },
-      (error) => error && fallback(),
-    );
-  }
-
-  // CUDA teardown alone takes several seconds after the kill, and the port
-  // stays bound until the process is really gone.
-  const STOP_WAIT_MS = 15000;
-  function waitForExit(child) {
-    // No pid: spawn itself failed, so there is no process and no 'exit'.
-    if (child.exitCode !== null || child.signalCode != null || child.pid === undefined) {
-      return Promise.resolve(true);
-    }
-    return new Promise((resolve) => {
-      const timer = setTimeout(() => {
-        console.warn(
-          `llama-server (pid ${child.pid}) is still running ${STOP_WAIT_MS}ms after being stopped`,
-        );
-        resolve(false);
-      }, STOP_WAIT_MS);
-      if (typeof timer.unref === "function") timer.unref();
-      child.once("exit", () => {
-        clearTimeout(timer);
-        resolve(true);
-      });
-    });
   }
 
   function scheduleIdleShutdown() {
