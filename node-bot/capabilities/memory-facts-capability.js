@@ -1,4 +1,5 @@
 const rateLimit = require("express-rate-limit");
+const { factTrust } = require("../acp-memory-store");
 
 const KEY = "memoryFacts";
 
@@ -27,7 +28,9 @@ function registerMemoryFactsRoutes(app, context = {}) {
   app.get("/admin/memory/facts", adminMemoryRateLimiter, (req, res) => {
     if (!checkAdminAuth(req, res)) return;
     try {
-      return res.json({ ok: true, facts: acpMemoryStore.listFacts() });
+      // Issue #673: trust is derived (factTrust), shown alongside each fact.
+      const facts = acpMemoryStore.listFacts().map((fact) => ({ ...fact, trust: factTrust(fact) }));
+      return res.json({ ok: true, facts });
     } catch (e) {
       return res.status(500).json({ ok: false, error: String(e) });
     }

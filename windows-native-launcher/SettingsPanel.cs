@@ -273,6 +273,7 @@ internal sealed class SettingsPanel : UserControl
         factsList.Columns.Add("Fact", 300);
         factsList.Columns.Add("Status", 80);
         factsList.Columns.Add("Pinned", 60);
+        factsList.Columns.Add("Trust", 80);
         DarkTheme.ApplyListView(factsList);
 
         // #674: pinned facts go into every reply's prompt (up to 5).
@@ -435,6 +436,7 @@ internal sealed class SettingsPanel : UserControl
             item.SubItems.Add(fact.Text);
             item.SubItems.Add(fact.Status);
             item.SubItems.Add(fact.Pinned ? "yes" : "");
+            item.SubItems.Add(fact.Trust);
             factsList.Items.Add(item);
         }
     }
