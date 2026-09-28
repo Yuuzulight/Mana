@@ -1268,7 +1268,7 @@ function createAcpMemoryStore(options = {}) {
     let timer = null;
     try {
       const [queryVector] = await Promise.race([
-        computeEmbeddingsFn([String(text || "")]),
+        computeEmbeddingsFn([String(text || "")], { query: true }),
         new Promise((_, reject) => {
           timer = setTimeout(() => reject(new Error(`timed out after ${timeoutMs}ms`)), timeoutMs);
         }),
@@ -2151,7 +2151,7 @@ function createAcpMemoryStore(options = {}) {
     let queryEmbedding = null;
     if (computeEmbeddingsFn && effective?.query) {
       try {
-        const [embedding] = await computeEmbeddingsFn([String(effective.query)]);
+        const [embedding] = await computeEmbeddingsFn([String(effective.query)], { query: true });
         if (Array.isArray(embedding) && embedding.length) queryEmbedding = embedding;
       } catch (e) {
         // Semantic search is additive -- keyword search below still runs

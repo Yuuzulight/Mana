@@ -107,7 +107,7 @@ function registerRetrieverAdminRoutes(app, context = {}) {
             let qembed = null;
             try {
               if (typeof retrieverIndex.computeEmbedding === "function") {
-                qembed = await retrieverIndex.computeEmbedding(q);
+                qembed = await retrieverIndex.computeEmbedding(q, { query: true });
               }
             } catch (e) {
               qembed = null;

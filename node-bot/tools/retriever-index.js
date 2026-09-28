@@ -34,6 +34,7 @@ const ALLOW_OPENAI_EMBEDDING_FALLBACK =
 
 // Vector store adapter (FAISS or JS fallback)
 const { createStore } = require("./vector-store");
+const { QUERY_PROMPT } = require("../ai/embedder-runtime");
 const VECTOR_STORE_DIR =
   process.env.VECTOR_STORE_DIR ||
   path.join(__dirname, "..", "tools", "vector_store");
@@ -353,19 +354,26 @@ function useEmbedder(embedder) {
   gpuEmbedder = embedder || null;
 }
 
+// Starts the GPU embedder ahead of use, when embeddings are on at all.
+function warmEmbedder() {
+  if (USE_EMBEDDINGS) gpuEmbedder?.warm();
+}
+
 // Names the model behind computeEmbeddings() for callers that cache vectors:
 // "" for the RETRIEVER_EMBEDDER_URL service (what older caches hold).
 function embeddingModelId() {
   return gpuEmbedder ? gpuEmbedder.modelId() : "";
 }
 
-async function computeEmbedding(text) {
-  const res = await computeEmbeddings([String(text || "").slice(0, 8192)]);
+async function computeEmbedding(text, options) {
+  const res = await computeEmbeddings([String(text || "").slice(0, 8192)], options);
   return Array.isArray(res) && res.length ? res[0] : null;
 }
 
-async function computeEmbeddings(inputs) {
-  // inputs: array of strings
+// inputs: array of strings. options.query: they are search queries (a user
+// message, a search string), not stored documents -- Qwen3-Embedding embeds
+// queries with an instruction, documents without (ai/embedder-runtime.js).
+async function computeEmbeddings(inputs, { query = false } = {}) {
   // NOTE: intentionally NODE_ENV-only, not NODE_TEST_CONTEXT -- see
   // test/retriever-embeddings-local-shapes.test.js and
   // -openai-fallback.test.js's withRetrieverIndex() helper, which
@@ -376,7 +384,7 @@ async function computeEmbeddings(inputs) {
   if (!USE_EMBEDDINGS) return inputs.map(() => null);
   if (process.env.NODE_ENV === "test") return inputs.map(() => null);
   if (gpuEmbedder?.isEnabled()) {
-    return gpuEmbedder.embed(inputs.map((t) => String(t || "").slice(0, 8192)));
+    return gpuEmbedder.embed(inputs.map((t) => String(t || "").slice(0, 8192)), { query });
   }
 
   const localUrl = (
@@ -394,6 +402,8 @@ async function computeEmbeddings(inputs) {
       ),
       body: JSON.stringify({
         inputs: inputs.map((t) => String(t || "").slice(0, 8192)),
+        // local_embedder.py applies it only when it runs Qwen3-Embedding.
+        ...(query ? { query_prompt: QUERY_PROMPT } : {}),
       }),
     });
     if (resp.ok) {
@@ -555,7 +565,7 @@ async function search(query, k = 5, options = {}) {
     Array.isArray(idx.entries[0].embedding);
   if (USE_EMBEDDINGS && hasEmbedding) {
     // compute query embedding
-    const qembed = await computeEmbedding(query);
+    const qembed = await computeEmbedding(query, { query: true });
     if (!qembed) {
       // fall back to tf search
       return buildSnippets(searchSync(query, k), query, compress);
@@ -637,6 +647,7 @@ module.exports = {
   computeEmbeddings,
   embeddingModelId,
   useEmbedder,
+  warmEmbedder,
   cosineSim,
   saveIndex,
 };

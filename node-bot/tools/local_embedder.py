@@ -7,7 +7,7 @@ Usage:
 
 Endpoints:
   GET /health -> { ok: true, model: ..., device: ... }
-  POST /embed -> JSON { inputs: [str, ...] } -> { ok: true, embeddings: [[float]] }
+  POST /embed -> JSON { inputs: [str, ...], query_prompt?: str } -> { ok: true, embeddings: [[float]] }
 
 This uses sentence-transformers under the hood (all-MiniLM-L6-v2 by default).
 """
@@ -18,7 +18,7 @@ import argparse
 import json
 import os
 import sys
-from typing import List
+from typing import List, Optional
 
 try:
     import uvicorn
@@ -41,6 +41,10 @@ HTTP_SECRET = None
 
 class EmbedRequest(BaseModel):
     inputs: List[str]
+    # Sent with search queries (retriever-index.js), never documents.
+    # Qwen3-Embedding expects it before a query; other models get the texts
+    # as-is.
+    query_prompt: Optional[str] = None
 
 
 @app.middleware("http")
@@ -69,6 +73,8 @@ async def embed(req: EmbedRequest):
     texts = req.inputs or []
     if not isinstance(texts, list) or not texts:
         raise HTTPException(status_code=400, detail="inputs required")
+    if req.query_prompt and "qwen3-embedding" in (MODEL_NAME or "").lower():
+        texts = [req.query_prompt + t for t in texts]
     try:
         vecs = model.encode(texts, show_progress_bar=False)
         # Ensure JSON serializable floats
