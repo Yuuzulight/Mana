@@ -303,11 +303,13 @@ test("runLocalAssistantReply splices extraMessages.early/late around the system/
     late: [{ role: "system", content: "late note" }],
   });
 
-  assert.equal(capturedMessages.length, 4);
+  // Only the first message may be system-role (Qwen3.5's template rejects
+  // later ones): early notes join it, late notes lead the user message.
+  assert.equal(capturedMessages.length, 2);
   assert.equal(capturedMessages[0].role, "system");
-  assert.deepEqual(capturedMessages[1], { role: "system", content: "early note" });
-  assert.deepEqual(capturedMessages[2], { role: "system", content: "late note" });
-  assert.deepEqual(capturedMessages[3], { role: "user", content: "hello" });
+  assert.ok(capturedMessages[0].content.endsWith("\n\nearly note"));
+  assert.deepEqual(capturedMessages[1], { role: "user", content: "late note\n\nhello" });
+  assert.equal(capturedMessages.filter((m) => m.role === "system").length, 1);
 });
 
 test("runLocalAssistantReply keeps the plain 2-message shape when extraMessages is omitted", async () => {
@@ -1213,10 +1215,11 @@ test("runToolAwareReply splices options.extraMessages.early/late into the initia
     },
   });
 
-  assert.equal(capturedMessages.length, 4);
-  assert.deepEqual(capturedMessages[1], { role: "system", content: "early note" });
-  assert.deepEqual(capturedMessages[2], { role: "system", content: "late note" });
-  assert.equal(capturedMessages[3].role, "user");
+  assert.equal(capturedMessages[0].role, "system");
+  assert.ok(capturedMessages[0].content.endsWith("\n\nearly note"));
+  assert.equal(capturedMessages[1].role, "user");
+  assert.ok(capturedMessages[1].content.startsWith("late note\n\n"));
+  assert.equal(capturedMessages.filter((m) => m.role === "system").length, 1);
 });
 
 test("runToolAwareReply rejects an unknown tool call name via the policy rather than guessing", async () => {

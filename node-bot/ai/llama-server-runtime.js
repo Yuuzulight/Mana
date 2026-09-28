@@ -808,14 +808,25 @@ function createLlamaServerRuntime(options = {}) {
   // "late" right before the live user message (the higher-salience
   // position, closest to what's actually being asked). Omitting
   // extraMessages entirely preserves today's exact 2-message shape.
+  //
+  // Only the first message may be system-role: Qwen3.5's chat template (the
+  // default model) raises "System message must be at the beginning" for any
+  // later one, and llama-server answers 500 -- so every turn with memory
+  // fell back to llama-cli. System-role entries are folded instead: early
+  // ones into the leading system message (where they already sat), late
+  // ones onto the front of the live user message (still last in the prompt,
+  // so the stable prefix stays cacheable, #660). Other roles pass through.
   function buildMessages(systemContent, prompt, extraMessages) {
     const early = extraMessages?.early || [];
     const late = extraMessages?.late || [];
+    const systemText = (entries) => entries.filter((m) => m.role === "system").map((m) => m.content);
+    const nonSystem = (entries) => entries.filter((m) => m.role !== "system");
+    const lateText = systemText(late);
     return [
-      { role: "system", content: systemContent },
-      ...early,
-      ...late,
-      { role: "user", content: prompt },
+      { role: "system", content: [systemContent, ...systemText(early)].join("\n\n") },
+      ...nonSystem(early),
+      ...nonSystem(late),
+      { role: "user", content: [...lateText, prompt].join("\n\n") },
     ];
   }
 
