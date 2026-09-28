@@ -15,6 +15,27 @@ public class AvatarExpressionSelectorTests
         Assert.Equal("smile_01", AvatarExpressionSelector.SelectExpressionName(AvatarState.Excited, names));
     }
 
+    // #681: the reply's model-chosen expression wins, even for Talking
+    // (which has no keyword table of its own); exact name only, like
+    // live2d-logic.js's pickByPreference.
+    [Fact]
+    public void SelectExpressionName_PrefersTheModelChosenExpressionByExactName()
+    {
+        var names = new[] { "F03_ANGRY", "Wink", "smile_01" };
+
+        Assert.Equal("Wink", AvatarExpressionSelector.SelectExpressionName(AvatarState.Angry, names, "wink"));
+        Assert.Equal("Wink", AvatarExpressionSelector.SelectExpressionName(AvatarState.Talking, names, " WINK "));
+    }
+
+    [Fact]
+    public void SelectExpressionName_FallsBackToTheStateWhenThePreferredNameIsUnknown()
+    {
+        var names = new[] { "F03_ANGRY", "Wink_left" };
+
+        Assert.Equal("F03_ANGRY", AvatarExpressionSelector.SelectExpressionName(AvatarState.Angry, names, "wink"));
+        Assert.Null(AvatarExpressionSelector.SelectExpressionName(AvatarState.Talking, names, "wink"));
+    }
+
     [Fact]
     public void SelectExpressionName_ReturnsNullWhenNothingMatches()
     {

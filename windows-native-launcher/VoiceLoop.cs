@@ -852,11 +852,12 @@ internal sealed class VoiceLoop : IDisposable
     {
         string? reply;
         bool changed;
+        string? preferredExpression;
         bool interrupted;
         IReadOnlyList<string> pending;
         try
         {
-            (reply, changed, _, interrupted, pending) = await streamingReplyPlayer.StreamReplyAndPlayAsync(commandText, currentSessionId, text => chatLog?.AppendReplySentence(text), screenText, image, images, currentPresetId);
+            (reply, changed, preferredExpression, interrupted, pending) = await streamingReplyPlayer.StreamReplyAndPlayAsync(commandText, currentSessionId, text => chatLog?.AppendReplySentence(text), screenText, image, images, currentPresetId);
         }
         catch (Exception ex)
         {
@@ -940,7 +941,11 @@ internal sealed class VoiceLoop : IDisposable
         bool completedNaturally;
         try
         {
-            OnTalkingStateChanged(true, MapReplyEmotionToAvatarState(expression));
+            // #681: the model's own expression__set choice rides on the
+            // final event. node-bot only sets it on the tool-calling path,
+            // which never streams sentences -- so it always lands here, never
+            // on the changed:false path above.
+            OnTalkingStateChanged(true, MapReplyEmotionToAvatarState(expression), preferredExpression);
             completedNaturally = await audioPlayer.PlayAsync(replyWav);
         }
         catch (Exception ex)
@@ -980,9 +985,9 @@ internal sealed class VoiceLoop : IDisposable
     // non-streaming fallback call site (which has the full reply text
     // already, unlike streaming) passes ReplyEmotionDetector's result
     // instead. Ignored when talking=false (always goes to Idle).
-    private void OnTalkingStateChanged(bool talking, AvatarState talkingState = AvatarState.Talking)
+    private void OnTalkingStateChanged(bool talking, AvatarState talkingState = AvatarState.Talking, string? preferredExpression = null)
     {
-        avatarOverlay.SetState(talking ? talkingState : AvatarState.Idle);
+        avatarOverlay.SetState(talking ? talkingState : AvatarState.Idle, talking ? preferredExpression : null);
         lock (stateLock)
         {
             if (talking)

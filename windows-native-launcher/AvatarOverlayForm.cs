@@ -327,7 +327,9 @@ internal sealed class AvatarOverlayForm : Form
         Present(frame);
     }
 
-    public void SetState(AvatarState state)
+    // #681: preferredExpression is the reply's model-chosen expression name
+    // (see AvatarExpressionSelector), tried before the state's own match.
+    public void SetState(AvatarState state, string? preferredExpression = null)
     {
         // Callers include background threads (VoiceLoop's thread-pool
         // continuations and NAudio's playback thread) -- marshal onto the
@@ -336,7 +338,7 @@ internal sealed class AvatarOverlayForm : Form
         // thread, and InvokeRequired is unreliable pre-handle-creation).
         if (IsHandleCreated && InvokeRequired)
         {
-            BeginInvoke(() => SetState(state));
+            BeginInvoke(() => SetState(state, preferredExpression));
             return;
         }
 
@@ -368,7 +370,7 @@ internal sealed class AvatarOverlayForm : Form
             // reads as simply not overriding whatever the render loop's
             // other signals (idle motion, lip-sync, physics) already
             // produce.
-            var expressionName = AvatarExpressionSelector.SelectExpressionName(state, expressions.Keys);
+            var expressionName = AvatarExpressionSelector.SelectExpressionName(state, expressions.Keys, preferredExpression);
             activeExpression = expressionName is not null && expressions.TryGetValue(expressionName, out var expression)
                 ? expression
                 : null;
