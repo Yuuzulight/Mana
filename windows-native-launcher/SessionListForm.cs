@@ -331,7 +331,22 @@ internal sealed class SessionListForm : Form
             sidebarSplitter.Visible = sidebar.Visible; // otherwise the splitter bar is left stranded when the sidebar is hidden
         };
 
+        // #681: same toggle as the tray's Start/Stop listening item. Its
+        // label is refreshed on Activated since the tray can flip it while
+        // this window is in the background.
+        var listenButton = new Button { Dock = DockStyle.Right, Width = 120 };
+        DarkTheme.ApplyButton(listenButton);
+        void RefreshListenButton() => listenButton.Text = voiceLoop.IsListening ? "Stop listening" : "Start listening";
+        listenButton.Click += (_, _) =>
+        {
+            voiceLoop.ToggleListening();
+            RefreshListenButton();
+        };
+        Activated += (_, _) => RefreshListenButton();
+        RefreshListenButton();
+
         var topBar = new Panel { Dock = DockStyle.Top, Height = 28, BackColor = DarkTheme.Background };
+        topBar.Controls.Add(listenButton);
         topBar.Controls.Add(sidebarToggleButton);
 
         // Dock order matters, and WinForms docks in REVERSE of the Controls

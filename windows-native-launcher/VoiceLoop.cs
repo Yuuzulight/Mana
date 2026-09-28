@@ -173,8 +173,40 @@ internal sealed class VoiceLoop : IDisposable
             talking => OnTalkingStateChanged(talking));
     }
 
+    // #681: true between Start() and Stop() -- what the tray's and chat
+    // window's Start/Stop listening toggle shows.
+    public bool IsListening => capture is not null;
+
+    // #681: backs that toggle. A failed start (e.g. no microphone) is
+    // logged and leaves listening off rather than throwing into the UI.
+    public void ToggleListening()
+    {
+        if (IsListening)
+        {
+            Stop();
+            return;
+        }
+        try
+        {
+            Start();
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"VoiceLoop: couldn't start listening. {ex.Message}");
+            Stop();
+        }
+    }
+
     public void Start()
     {
+        if (capture is not null)
+        {
+            return;
+        }
+        // #681: (re)starting always needs the wake word again. Also reset
+        // here, not just in Stop(), in case a turn that was already past
+        // the wake-word gate when Stop() ran set it back to true since.
+        awake = false;
         capture = new WasapiCapture();
         // WaveInProvider's underlying BufferedWaveProvider defaults to
         // ReadFully = true ("always read the amount of data requested,
@@ -207,6 +239,18 @@ internal sealed class VoiceLoop : IDisposable
 
     public void Stop()
     {
+        // #681: capture comes down first, so no late DataAvailable can
+        // refill the buffers reset below.
+        if (capture is not null)
+        {
+            capture.DataAvailable -= OnDataAvailable;
+            capture.StopRecording();
+            capture.Dispose();
+            capture = null;
+            resampled = null;
+            captureBuffer = null;
+        }
+
         // #513: a held reply is only ever meaningful while this instance
         // keeps running and can resume it later -- clear it on Stop() so
         // a subsequent Start() never resumes a reply from a previous
@@ -217,19 +261,24 @@ internal sealed class VoiceLoop : IDisposable
         {
             heldSentences = null;
             heldStackDepth = 0;
-        }
 
-        if (capture is null)
-        {
-            return;
+            // #681: Stop listening goes back to sleep (windows-launcher's
+            // stopListening() resets awake) and drops any half-recorded
+            // segment, so the next Start() doesn't prepend stale audio. A
+            // turn in flight (Processing/Speaking) is left to finish and
+            // return to Idle on its own.
+            awake = false;
+            if (mode is ListenMode.Idle or ListenMode.CapturingInterruption)
+            {
+                mode = ListenMode.Idle;
+                frameBuffer.Clear();
+                segmentSamples.Clear();
+                hasHeardSpeechInSegment = false;
+                segmentElapsedMs = 0;
+                msSinceLastSpeech = 0;
+                vad.Reset();
+            }
         }
-
-        capture.DataAvailable -= OnDataAvailable;
-        capture.StopRecording();
-        capture.Dispose();
-        capture = null;
-        resampled = null;
-        captureBuffer = null;
     }
 
     // #520: called by the session list UI on switch/new-chat. Deliberately
