@@ -1,3 +1,4 @@
+const rateLimit = require("express-rate-limit");
 const {
   ValidationError,
   requireString,
@@ -6,6 +7,15 @@ const {
 const { MODES, resolveToolApprovalMode } = require("../ai/tool-risk");
 
 const KEY = "approvalGate";
+
+// Same route-local limiter as memory-facts-capability.js: server.js's
+// app-wide one already covers this, but CodeQL can't trace it here.
+const toolModeRateLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  limit: Number(process.env.MANA_RATE_LIMIT_MAX || 300),
+  standardHeaders: true,
+  legacyHeaders: false,
+});
 
 function registerApprovalGateRoutes(app, context = {}) {
   const approvalGate = context.approvalGate;
@@ -42,7 +52,7 @@ function registerApprovalGateRoutes(app, context = {}) {
     });
   });
 
-  app.post("/approvals/tool-mode", (req, res) => {
+  app.post("/approvals/tool-mode", toolModeRateLimiter, (req, res) => {
     if (!context.checkAdminAuth(req, res)) return;
     const mode = req.body?.mode;
     if (!MODES.includes(mode)) {
