@@ -129,7 +129,10 @@ internal sealed class AvatarOverlayForm : Form
             // lands on every tick (16 would round up to every other one).
             renderTimer = new System.Windows.Forms.Timer { Interval = 15 };
             renderTimer.Tick += (_, _) => RenderFrame(cubismModel, cubismRenderer);
-            renderTimer.Start();
+            // Only animate while she's actually on screen -- the launcher
+            // shows the overlay after the startup screen closes, so there's
+            // no rendering in the background during startup (or while hidden).
+            VisibleChanged += (_, _) => renderTimer.Enabled = Visible;
         }
 
         SetState(AvatarState.Idle);
