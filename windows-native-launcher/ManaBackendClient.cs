@@ -226,12 +226,19 @@ internal sealed class ManaBackendClient
     // Dictionary rather than the old fixed (sessionId, image) switch this
     // replaced -- adding a third optional field would have doubled that
     // switch's case count for no benefit.
-    public async IAsyncEnumerable<ReplyStreamEvent> ReplyStreamAsync(string text, string? sessionId = null, string screenText = "", string? image = null, IReadOnlyList<string>? images = null)
+    // #681: presetId (the active prompt preset, Settings > Presets) is
+    // omitted when empty, matching windows-launcher's
+    // `presetId: selectedPresetId || undefined`.
+    public async IAsyncEnumerable<ReplyStreamEvent> ReplyStreamAsync(string text, string? sessionId = null, string screenText = "", string? image = null, IReadOnlyList<string>? images = null, string? presetId = null)
     {
         var fields = new Dictionary<string, object?> { ["text"] = text, ["screenText"] = screenText };
         if (sessionId is not null)
         {
             fields["sessionId"] = sessionId;
+        }
+        if (!string.IsNullOrEmpty(presetId))
+        {
+            fields["presetId"] = presetId;
         }
         if (images is { Count: > 0 })
         {
@@ -1810,6 +1817,8 @@ internal sealed class ManaPreset
     public string Id { get; init; } = "";
     public string Name { get; init; } = "";
     public string Instructions { get; init; } = "";
+
+    public override string ToString() => Name; // #681: Settings > Presets' active-preset combo
 }
 
 // #570: GET /vtube/status.

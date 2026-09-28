@@ -32,6 +32,9 @@ internal sealed class SettingsPanel : UserControl
     private readonly Label perfSummaryLabel = new() { AutoSize = true };
     private readonly ListView perfOperationsList = new();
     private readonly ListView presetsList = new();
+    // #681: which preset replies actually use ("None" = index 0).
+    private readonly ComboBox activePresetCombo = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 200 };
+    private bool populatingPresets;
     private readonly ListView mobileDevicesList = new();
     private readonly ListView accountsList = new();
     private readonly ListView mcpServersList = new();
@@ -161,9 +164,12 @@ internal sealed class SettingsPanel : UserControl
                 return;
             }
 
-            settings.BackendBaseUrl = url;
-            settings.AdminToken = string.IsNullOrWhiteSpace(tokenBox.Text) ? null : tokenBox.Text.Trim();
-            settings.Save();
+            // #681: reload rather than save the copy read when this tab was
+            // built -- the Presets tab may have changed ActivePresetId since.
+            var latest = ManaSettingsStore.Load();
+            latest.BackendBaseUrl = url;
+            latest.AdminToken = string.IsNullOrWhiteSpace(tokenBox.Text) ? null : tokenBox.Text.Trim();
+            latest.Save();
             statusLabel.ForeColor = DarkTheme.Muted;
             statusLabel.Text = "Saved -- restart Mana for this to take effect.";
         };
@@ -935,10 +941,36 @@ internal sealed class SettingsPanel : UserControl
         buttonRow.Controls.Add(editButton);
         buttonRow.Controls.Add(deleteButton);
 
+        // #681: without an active choice no preset ever reached a reply.
+        activePresetCombo.BackColor = DarkTheme.Panel2;
+        activePresetCombo.ForeColor = DarkTheme.Text;
+        activePresetCombo.SelectedIndexChanged += (_, _) =>
+        {
+            if (!populatingPresets)
+            {
+                SaveActivePresetId((activePresetCombo.SelectedItem as ManaPreset)?.Id);
+            }
+        };
+        var activeRow = new FlowLayoutPanel { Dock = DockStyle.Top, Height = 32, FlowDirection = FlowDirection.LeftToRight, BackColor = DarkTheme.Background };
+        activeRow.Controls.Add(new Label { Text = "Active preset", AutoSize = true, ForeColor = DarkTheme.Text, Padding = new Padding(0, 6, 0, 0) });
+        activeRow.Controls.Add(activePresetCombo);
+
         var page = new TabPage("Presets");
         page.Controls.Add(presetsList);
+        page.Controls.Add(activeRow);
         page.Controls.Add(buttonRow);
         return page;
+    }
+
+    private static void SaveActivePresetId(string? presetId)
+    {
+        var settings = ManaSettingsStore.Load();
+        if (settings.ActivePresetId == presetId)
+        {
+            return;
+        }
+        settings.ActivePresetId = presetId;
+        settings.Save();
     }
 
     private async Task CreatePresetAsync()
@@ -1051,6 +1083,31 @@ internal sealed class SettingsPanel : UserControl
         {
             presetsList.Items.Add(new ListViewItem(preset.Name) { Tag = preset });
         }
+
+        // #681: a stored id that no longer exists (deleted) falls back to
+        // None and is cleared, same as windows-launcher's renderPresetSelect.
+        var activeId = ManaSettingsStore.Load().ActivePresetId;
+        populatingPresets = true;
+        try
+        {
+            activePresetCombo.Items.Clear();
+            activePresetCombo.Items.Add("None");
+            object selected = "None";
+            foreach (var preset in presets)
+            {
+                activePresetCombo.Items.Add(preset);
+                if (preset.Id == activeId)
+                {
+                    selected = preset;
+                }
+            }
+            activePresetCombo.SelectedItem = selected;
+        }
+        finally
+        {
+            populatingPresets = false;
+        }
+        SaveActivePresetId((activePresetCombo.SelectedItem as ManaPreset)?.Id);
     }
 
     // #572: the largest tab in this batch -- 4 grouped sections

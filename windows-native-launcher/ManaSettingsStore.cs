@@ -28,6 +28,11 @@ internal sealed class ManaSettingsStore
     // default 0.5 -- 7.2 false positives/hour there vs. 1.0/hour at 0.99.
     public float WakeWordConfidenceThreshold { get; set; } = WakeWordClassifier.DefaultThreshold;
 
+    // #681: the prompt preset sent as presetId with every reply; null =
+    // none. Chosen in Settings > Presets (windows-launcher kept the same
+    // choice in localStorage's manaSelectedPresetId).
+    public string? ActivePresetId { get; set; }
+
     // filePath: null (every real call site) uses the real per-user
     // settings file. Tests pass a temp file path to exercise
     // load/save/corruption handling without touching LocalApplicationData.

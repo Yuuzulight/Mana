@@ -94,6 +94,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
         // constructed above it.
         var screenContextReader = new ScreenContextReader(rootDir, backendClient);
         voiceLoop = new VoiceLoop(sileroVad, backendClient, audioPlayer, avatarOverlay, chatLog, artifactViewer, screenContextReader, () => gamingModeActive, clipBuffer, wakeWordClassifier);
+        voiceLoop.SetPresetId(settings.ActivePresetId); // #681
         // #523: Ctrl+Alt+M asks Mana to look at the screen, through the
         // same reply/TTS pipeline a normal turn uses.
         visionHotkeyListener = new VisionHotkeyListener(() => _ = voiceLoop.SubmitVisionHotkeyAsync());

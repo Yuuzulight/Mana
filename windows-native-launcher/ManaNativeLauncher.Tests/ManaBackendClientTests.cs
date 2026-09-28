@@ -1430,6 +1430,35 @@ public class ManaBackendClientTests
         Assert.Contains("\"sessionId\":\"abc-123\"", body);
     }
 
+    // #681: the active preset only reaches the backend via this field.
+    [Theory]
+    [InlineData("preset-1", true)]
+    [InlineData("", false)]
+    [InlineData(null, false)]
+    public async Task ReplyStreamAsync_SendsPresetIdOnlyWhenSet(string? presetId, bool expected)
+    {
+        string? body = null;
+        var handler = new FakeHttpMessageHandler(request =>
+        {
+            body = request.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(
+                    "{\"type\":\"final\",\"reply\":\"ok\",\"changed\":false}\n",
+                    Encoding.UTF8,
+                    "application/x-ndjson"),
+            };
+        });
+        var client = new ManaBackendClient(handler);
+
+        await foreach (var _ in client.ReplyStreamAsync("hi", presetId: presetId))
+        {
+        }
+
+        Assert.Equal(expected, body!.Contains("\"presetId\":\"preset-1\""));
+        Assert.Equal(expected, body.Contains("presetId"));
+    }
+
     [Fact]
     public async Task GetSessionsAsync_ParsesTheSessionArray()
     {
