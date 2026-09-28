@@ -149,7 +149,12 @@ const {
 	const { createDoctorTrayPoller } = require("./doctor-tray-poll");
 	const { notifyTray } = require("./tray-notifier");
 	const sessionTokenUsage = require("./session-token-usage");
-	const { recordPromptComposition, getPromptComposition, getMostRecentComposition } = require("./prompt-composition-report");
+	const {
+	  recordPromptComposition,
+	  finalizePromptComposition,
+	  getPromptComposition,
+	  getMostRecentComposition,
+	} = require("./prompt-composition-report");
 	const { MobileDeviceStore } = require("./mobile-device-store");
 	// NOTE: mobile-auth and mobile-memory-store may exist; we add device store integration here
 	const stockMarketPlugin = require("../plugins/stock-market");
@@ -3709,6 +3714,7 @@ function registerRoutes(app, upload, deps = {}) {
     // back out here rather than changing that function's return shape,
     // which other callers/tests still depend on as a bare string.
     let skillsOmittedCount = 0;
+    let skillsIndexText = "";
     if (
       toolCallingEnabled &&
       normalizedModelProfile === "default" &&
@@ -3717,6 +3723,7 @@ function registerRoutes(app, upload, deps = {}) {
       try {
         const skillsIndexBlock = buildSkillsIndexBlock(activeSkillsStore.listSkills());
         if (skillsIndexBlock) {
+          skillsIndexText = skillsIndexBlock;
           selectedSystemPrompt = `${selectedSystemPrompt}\n\n${skillsIndexBlock}`;
           const omittedMatch = skillsIndexBlock.match(/\((\d+) more skill\(s\) omitted for length\)/);
           if (omittedMatch) skillsOmittedCount = Number(omittedMatch[1]) || 0;
@@ -3750,6 +3757,7 @@ function registerRoutes(app, upload, deps = {}) {
     const memoryExtraMessages = { early: [], late: [] };
     let flatMemorySuffix = "";
     let promptMemoryChars = 0;
+    let promptMemoryText = "";
     let promptMemoryTruncated = false;
     let turnsDroppedByAge = 0;
     try {
@@ -3759,6 +3767,7 @@ function registerRoutes(app, upload, deps = {}) {
           memoryExtraMessages[entry.position].push({ role: entry.role, content: entry.content });
           flatMemorySuffix += `\n\n${entry.content}`;
           promptMemoryChars += entry.content.length;
+          promptMemoryText += `\n\n${entry.content}`;
           if (entry.truncated) promptMemoryTruncated = true;
         }
         turnsDroppedByAge = result.turnsDroppedByAge || 0;
@@ -3772,6 +3781,7 @@ function registerRoutes(app, upload, deps = {}) {
     // *different* session. Bounded by maxChars in getRelatedFactsEntries,
     // so it never grows with total memory volume.
     let relatedFactsChars = 0;
+    let relatedFactsText = "";
     let relatedFactsTruncated = false;
     // Issue #674: candidate/kept counts and any recall fallback, for #400.
     let relatedFactsRecall = null;
@@ -3785,6 +3795,7 @@ function registerRoutes(app, upload, deps = {}) {
           memoryExtraMessages[entry.position].push({ role: entry.role, content: entry.content });
           flatMemorySuffix += `\n\n${entry.content}`;
           relatedFactsChars += entry.content.length;
+          relatedFactsText += `\n\n${entry.content}`;
           if (entry.truncated) relatedFactsTruncated = true;
         }
       }
@@ -3800,10 +3811,25 @@ function registerRoutes(app, upload, deps = {}) {
     // since those are all concatenated into one string by this point),
     // before the reply-path branches below diverge; tool schemas and the
     // live turns differ per reply path (tool-aware vs. streaming vs. plain)
-    // and aren't included here.
+    // and aren't included here (#642 adds them once the reply is done).
+    //
+    // Issue #642: the skills index is its own block now, and each block's
+    // text is kept (compositionTexts) so the end of the turn can count its
+    // real tokens -- see finalizePromptComposition below.
+    const systemPromptText = skillsIndexText
+      ? selectedSystemPrompt.replace(`\n\n${skillsIndexText}`, "")
+      : selectedSystemPrompt;
+    const compositionTexts = {
+      "system-prompt": systemPromptText,
+      "skills-index": skillsIndexText,
+      "prompt-memory": promptMemoryText,
+      "related-facts": relatedFactsText,
+    };
+    let compositionRecord = null;
     try {
-      recordPromptComposition(sessionId, [
-        { name: "system-prompt", chars: selectedSystemPrompt.length, dropped: { skillsOmitted: skillsOmittedCount } },
+      compositionRecord = recordPromptComposition(sessionId, [
+        { name: "system-prompt", chars: systemPromptText.length, dropped: null },
+        { name: "skills-index", chars: skillsIndexText.length, dropped: { skillsOmitted: skillsOmittedCount } },
         { name: "prompt-memory", chars: promptMemoryChars, dropped: { truncated: promptMemoryTruncated, turnsDroppedByAge } },
         {
           name: "related-facts",
@@ -4163,7 +4189,25 @@ function registerRoutes(app, upload, deps = {}) {
         }
       : null;
 
+    // Issue #642: what the reply's own completion was sent -- the user turn
+    // and, on the tool-aware path, the tool schemas -- and llama-server's
+    // real size of that prompt. A regeneration pass calls this again and
+    // the last one wins, same as lastToolCalls. Compared by identity: the
+    // runtime keeps a fresh object per completion, so an unchanged one
+    // means this pass never reached llama-server (llama-cli fallback).
+    let turnTools = [];
+    let turnPromptUsage = null;
     async function replyMaybeWithTools(promptText) {
+      turnTools = [];
+      const usageBefore = activeLlamaServerRuntime.getLastPromptUsage?.();
+      const reply = await replyMaybeWithToolsUnmetered(promptText);
+      const usageAfter = activeLlamaServerRuntime.getLastPromptUsage?.();
+      turnPromptUsage = usageAfter && usageAfter !== usageBefore ? usageAfter : null;
+      compositionTexts["user-turn"] = promptText;
+      return reply;
+    }
+
+    async function replyMaybeWithToolsUnmetered(promptText) {
       lastToolCalls = [];
       if (
         toolCallingEnabled &&
@@ -4336,6 +4380,7 @@ function registerRoutes(app, upload, deps = {}) {
                 }
               }
             }
+            turnTools = mergedToolPolicy.tools;
             return toolResult.content;
           }
           console.warn(
@@ -4672,6 +4717,25 @@ function registerRoutes(app, upload, deps = {}) {
     }
     if (replyMeta) {
       replyMeta.streamedMatchesFinal = streamedMatchesFinal(streamedSentences, reply);
+    }
+    // Issue #642: the context meter (GET /prompt-composition/:sessionId).
+    // Not awaited -- a few local /tokenize calls are never worth delaying
+    // the reply for; until they land the record shows char/4 estimates.
+    if (compositionRecord) {
+      const isMcp = (tool) => String(tool?.function?.name || "").startsWith("mcp__");
+      const localTools = turnTools.filter((tool) => !isMcp(tool));
+      const mcpTools = turnTools.filter(isMcp);
+      (async () =>
+        finalizePromptComposition(compositionRecord, {
+          texts: {
+            ...compositionTexts,
+            "tool-schemas": localTools.length ? JSON.stringify(localTools) : "",
+            "mcp-tool-schemas": mcpTools.length ? JSON.stringify(mcpTools) : "",
+          },
+          promptUsage: turnPromptUsage,
+          contextSize: await activeLlamaServerRuntime.getContextSize?.(),
+          countTokens: activeLlamaServerRuntime.countTokens,
+        }))().catch((e) => console.warn("Failed to finalize prompt composition:", e?.message || e));
     }
     return reply;
   }

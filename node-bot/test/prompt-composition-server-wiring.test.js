@@ -47,7 +47,7 @@ test("/prompt-composition/:sessionId 404s for a session nothing has been recorde
 // Nothing previously exercised that regex end-to-end -- if the wording in
 // buildSkillsIndexBlock ever changes, this is what would catch it reverting
 // to always reporting 0.
-test("skillsOmitted in the system-prompt block's dropped info reflects a real skills-index truncation", async () => {
+test("skillsOmitted in the skills-index block's dropped info reflects a real skills-index truncation", async () => {
   resetPromptCompositionReport();
   process.env.MANA_TOOL_CALLING_ENABLED = "1";
   // SKILLS_INDEX_MAX_CHARS is 2000 -- enough long descriptions guarantees
@@ -71,7 +71,8 @@ test("skillsOmitted in the system-prompt block's dropped info reflects a real sk
   await withServer(app, async (baseUrl) => {
     const res = await fetch(`${baseUrl}/prompt-composition/sess-skills-omitted`);
     const composition = await res.json();
-    const systemPromptBlock = composition.blocks.find((b) => b.name === "system-prompt");
-    assert.ok(systemPromptBlock.dropped.skillsOmitted > 0);
+    // #642: the skills index is its own block now, not part of system-prompt.
+    const skillsBlock = composition.blocks.find((b) => b.name === "skills-index");
+    assert.ok(skillsBlock.dropped.skillsOmitted > 0);
   });
 });

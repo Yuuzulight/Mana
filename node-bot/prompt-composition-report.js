@@ -36,6 +36,65 @@ function recordPromptComposition(sessionId, blocks) {
   return record;
 }
 
+// Issue #642: turns a #400 record into a context-window meter -- how full
+// the model's context was and what filled it.
+//   texts:       block name -> the exact text that went into the prompt.
+//                Blocks only known later in the turn (tool schemas, the
+//                user turn) are added; every block gets `tokens`, a real
+//                count from the loaded model's tokenizer (countTokens),
+//                when it can answer. estTokens (char/4) stays alongside.
+//   promptUsage: llama-server's own size of the prompt that produced the
+//                reply ({promptTokens, promptN, cacheN}), when it ran.
+//   contextSize: the context window that prompt had to fit in.
+// unattributedTokens is what the blocks don't cover: chat-template markup
+// and tool-call rounds' results. It can go negative when the template
+// renders tool schemas more compactly than their raw JSON.
+//
+// Mutates and returns `record` -- the object recordPromptComposition
+// returned -- rather than looking the session up again, so a slow finalize
+// can never overwrite a newer turn's record.
+async function finalizePromptComposition(
+  record,
+  { texts = {}, promptUsage = null, contextSize = null, countTokens = null } = {},
+) {
+  for (const [name, text] of Object.entries(texts)) {
+    if (!record.blocks.some((b) => b.name === name)) {
+      record.blocks.push({ name, chars: text.length, estTokens: estimateTokens(text.length), dropped: null });
+    }
+  }
+  const counts = await Promise.all(
+    record.blocks.map(async (block) => {
+      const text = texts[block.name];
+      if (text === undefined || typeof countTokens !== "function") return null;
+      if (!text) return 0;
+      try {
+        return await countTokens(text);
+      } catch (e) {
+        return null;
+      }
+    }),
+  );
+  record.blocks.forEach((block, i) => {
+    if (Number.isFinite(counts[i])) block.tokens = counts[i];
+  });
+
+  const counted = record.blocks.every((b) => Number.isFinite(b.tokens));
+  record.totalChars = record.blocks.reduce((sum, b) => sum + b.chars, 0);
+  record.totalEstTokens = record.blocks.reduce((sum, b) => sum + b.estTokens, 0);
+  record.countedWith = counted ? "tokenizer" : "estimate";
+  record.totalTokens = record.blocks.reduce((sum, b) => sum + (Number.isFinite(b.tokens) ? b.tokens : b.estTokens), 0);
+  if (promptUsage) {
+    record.promptTokens = promptUsage.promptTokens;
+    record.promptN = promptUsage.promptN;
+    record.cacheN = promptUsage.cacheN;
+    if (counted) record.unattributedTokens = promptUsage.promptTokens - record.totalTokens;
+  }
+  record.contextSize = Number(contextSize) > 0 ? Number(contextSize) : null;
+  const used = promptUsage ? promptUsage.promptTokens : record.totalTokens;
+  record.percentUsed = record.contextSize ? Math.round((used / record.contextSize) * 1000) / 10 : null;
+  return record;
+}
+
 function getPromptComposition(sessionId) {
   const key = String(sessionId || "default");
   return compositionBySession.get(key) || null;
@@ -66,6 +125,7 @@ function resetPromptCompositionReport(sessionId) {
 
 module.exports = {
   recordPromptComposition,
+  finalizePromptComposition,
   getPromptComposition,
   getMostRecentComposition,
   resetPromptCompositionReport,
