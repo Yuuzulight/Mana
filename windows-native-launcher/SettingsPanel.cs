@@ -807,7 +807,34 @@ internal sealed class SettingsPanel : UserControl
         var layout = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown, BackColor = DarkTheme.Background };
         layout.Controls.Add(row);
         layout.Controls.Add(BuildWakePrefilterRow());
+        layout.Controls.Add(BuildEchoCancellationRow());
         return new TabPage("Voice") { Controls = { layout } };
+    }
+
+    // #619: EchoCancellation on the mic, read each time listening starts;
+    // MANA_VOICE_AEC overrides it. speech-debug.log says what Windows applied.
+    private static FlowLayoutPanel BuildEchoCancellationRow()
+    {
+        var check = new CheckBox
+        {
+            Text = "Echo cancellation (stops Mana hearing herself through speakers)",
+            AutoSize = true,
+            ForeColor = DarkTheme.Text,
+            Checked = ManaSettingsStore.Load().EchoCancellation ?? true,
+        };
+        var status = new Label { AutoSize = true, ForeColor = DarkTheme.Muted, Anchor = AnchorStyles.Left };
+        check.CheckedChanged += (_, _) =>
+        {
+            var latest = ManaSettingsStore.Load();
+            latest.EchoCancellation = check.Checked;
+            latest.Save();
+            status.Text = "Saved -- applies next time listening starts.";
+        };
+
+        var row = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.LeftToRight, BackColor = DarkTheme.Background };
+        row.Controls.Add(check);
+        row.Controls.Add(status);
+        return row;
     }
 
     // #682: the #342 acoustic wake-word pre-filter (read once at startup,

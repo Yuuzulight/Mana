@@ -254,7 +254,66 @@ internal sealed class VoiceLoop : IDisposable
         // here, not just in Stop(), in case a turn that was already past
         // the wake-word gate when Stop() ran set it back to true since.
         awake = false;
-        capture = new WasapiCapture();
+
+        // #619: echo-cancelled capture first (EchoCancellation), falling back
+        // to the plain capture this always used if Windows doesn't apply an
+        // AEC or any step fails. speech-debug.log records which one runs.
+        if (!EchoCancellation.IsEnabled(Environment.GetEnvironmentVariable("MANA_VOICE_AEC"), ManaSettingsStore.Load().EchoCancellation))
+        {
+            VoiceDebugLog.AppendNote("capture: aec=off (Settings > Voice or MANA_VOICE_AEC)" + DescribeDevices());
+            StartCapture(new WasapiCapture());
+            return;
+        }
+
+        string fallbackReason;
+        try
+        {
+            capture = new WasapiCapture();
+            EchoCancellation.RequestCommunicationsProcessing(capture);
+            StartCapture(capture);
+            var effects = EchoCancellation.GetEffects(capture);
+            if (EchoCancellation.KeepCommunicationsCapture(effects))
+            {
+                var ducking = EchoCancellation.TryOptOutOfDucking(capture) ? "opted-out" : "unavailable";
+                VoiceDebugLog.AppendNote(
+                    $"capture: aec={(effects is null ? "requested" : "on")} mode=communications effects={EchoCancellation.Describe(effects)} ducking={ducking}"
+                    + DescribeDevices());
+                return;
+            }
+            fallbackReason = $"no active echo canceller (effects={EchoCancellation.Describe(effects)})";
+        }
+        catch (Exception ex)
+        {
+            fallbackReason = $"{ex.GetType().Name}: {ex.Message}";
+        }
+
+        StopCapture();
+        Console.WriteLine($"VoiceLoop: echo-cancelled capture unavailable, using raw capture. {fallbackReason}");
+        VoiceDebugLog.AppendNote($"capture: aec=fallback reason=\"{fallbackReason}\"" + DescribeDevices());
+        StartCapture(new WasapiCapture());
+    }
+
+    // For speech-debug.log: Windows' AEC cancels what the render endpoint
+    // plays, so which speakers Mana uses vs. the communications default
+    // matters when judging the live result.
+    private static string DescribeDevices()
+    {
+        try
+        {
+            using var devices = new MMDeviceEnumerator();
+            return $" mic=\"{devices.GetDefaultAudioEndpoint(DataFlow.Capture, Role.Console).FriendlyName}\""
+                + $" speakers=\"{devices.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia).FriendlyName}\""
+                + $" commsSpeakers=\"{devices.GetDefaultAudioEndpoint(DataFlow.Render, Role.Communications).FriendlyName}\"";
+        }
+        catch (Exception ex)
+        {
+            return $" devices=unknown ({ex.Message})";
+        }
+    }
+
+    private void StartCapture(WasapiCapture newCapture)
+    {
+        capture = newCapture;
         // WaveInProvider's underlying BufferedWaveProvider defaults to
         // ReadFully = true ("always read the amount of data requested,
         // padding with zeroes if necessary"), which would make the read
@@ -284,10 +343,8 @@ internal sealed class VoiceLoop : IDisposable
         capture.StartRecording();
     }
 
-    public void Stop()
+    private void StopCapture()
     {
-        // #681: capture comes down first, so no late DataAvailable can
-        // refill the buffers reset below.
         if (capture is not null)
         {
             capture.DataAvailable -= OnDataAvailable;
@@ -297,6 +354,13 @@ internal sealed class VoiceLoop : IDisposable
             resampled = null;
             captureBuffer = null;
         }
+    }
+
+    public void Stop()
+    {
+        // #681: capture comes down first, so no late DataAvailable can
+        // refill the buffers reset below.
+        StopCapture();
 
         // #513: a held reply is only ever meaningful while this instance
         // keeps running and can resume it later -- clear it on Stop() so

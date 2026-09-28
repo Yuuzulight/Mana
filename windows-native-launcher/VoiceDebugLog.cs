@@ -117,7 +117,15 @@ internal static class VoiceDebugLog
     private static readonly object gate = new();
 
     // Never throws: a locked file or full disk must not break the voice loop.
-    public static void Append(VoiceSegmentLogEntry entry, string? path = null, long maxBytes = MaxBytes)
+    public static void Append(VoiceSegmentLogEntry entry, string? path = null, long maxBytes = MaxBytes) =>
+        Write(entry.ToString, path, maxBytes);
+
+    // #619: a one-off event between segment lines (e.g. which capture path
+    // listening started with), timestamped the same way.
+    public static void AppendNote(string text, string? path = null, long maxBytes = MaxBytes) =>
+        Write(() => DateTime.Now.ToString("yyyy-MM-ddTHH:mm:ss.fff", CultureInfo.InvariantCulture) + " " + text, path, maxBytes);
+
+    private static void Write(Func<string> format, string? path, long maxBytes)
     {
         if (Environment.GetEnvironmentVariable("MANA_SPEECH_DEBUG") == "0")
         {
@@ -126,7 +134,7 @@ internal static class VoiceDebugLog
         path ??= DefaultPath;
         try
         {
-            var line = entry.ToString();
+            var line = format();
             lock (gate)
             {
                 Directory.CreateDirectory(Path.GetDirectoryName(path)!);
