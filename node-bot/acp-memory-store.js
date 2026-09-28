@@ -224,6 +224,25 @@ function createAcpMemoryStore(options = {}) {
   // ponytail: fixed cap, not age-based pruning -- revisit if explicit
   // facts genuinely need trimming by more than "keep the most recent N".
   const maxFacts = 500;
+  // #673: over the cap, drop the oldest *inactive* (stale/archived/
+  // superseded) facts first and never an active one -- a plain
+  // slice(-maxFacts) silently deleted the oldest active facts once the file
+  // held 500 records of any status. ponytail: active facts alone can exceed
+  // maxFacts (the cap becomes soft); add an archiving policy if that
+  // ever happens in practice.
+  function trimFacts(facts) {
+    let excess = facts.length - maxFacts;
+    if (excess <= 0) return facts;
+    return facts.filter((fact) => {
+      // Superseded facts keep status "active" but carry invalidatedAt
+      // (applySupersedes), so they count as inactive here too.
+      if (excess > 0 && (fact.status !== "active" || fact.invalidatedAt)) {
+        excess -= 1;
+        return false;
+      }
+      return true;
+    });
+  }
   // ponytail: fixed cap per entity, not age-based pruning -- revisit if a
   // heavily-recurring entity's mention list needs trimming by more than
   // "keep the most recent N".
@@ -652,7 +671,7 @@ function createAcpMemoryStore(options = {}) {
       ...(cleanOccurredAt ? { occurredAt: cleanOccurredAt } : {}),
     });
     const supersededInsert = applySupersedes(facts, cleanKey, supersedes, timestamp);
-    saveFacts(facts.slice(-maxFacts));
+    saveFacts(trimFacts(facts));
     return {
       ok: true,
       action: "insert",

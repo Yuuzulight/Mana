@@ -1030,6 +1030,13 @@ async function asyncLoadBackgroundMemory() {
     for (const s of statsAll.slice(0, maxFiles)) {
       const prev =
         BACKGROUND_MEMORY_META.files && BACKGROUND_MEMORY_META.files[s.file];
+      // #673: a file the reviewer pruned stays pruned until it changes --
+      // pruning clears its summary, so without this check the cached-summary
+      // branch below missed it, the file was re-read, and the prune was lost.
+      if (prev && prev.mtime === s.mtime && prev.pruned) {
+        processed++;
+        continue;
+      }
       if (prev && prev.mtime === s.mtime && prev.summary) {
         summaries.push(prev.summary);
         processedFiles.push({
