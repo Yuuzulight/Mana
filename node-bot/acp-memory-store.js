@@ -1725,24 +1725,13 @@ function createAcpMemoryStore(options = {}) {
         console.warn("Session search indexing failed:", e?.message || e);
       }
 
-      // Issue #263 part 1: fire-and-forget, matching the compaction IIFE
-      // below -- appendTurn never awaits this, so a slow or unavailable
-      // embedder can't add latency to the actual reply path, and any
-      // failure here only means this one turn stays keyword-searchable
-      // instead of also semantically searchable.
-      if (computeEmbeddingsFn && typeof sessionSearchIndex.indexEmbedding === "function") {
-        (async () => {
-          try {
-            const text = `User: ${turn.user}\nAssistant: ${turn.assistant}`.trim();
-            if (!text) return;
-            const [embedding] = await computeEmbeddingsFn([text]);
-            if (Array.isArray(embedding) && embedding.length) {
-              sessionSearchIndex.indexEmbedding({ sessionId: session.sessionId, turn, embedding });
-            }
-          } catch (e) {
-            console.warn("Session embedding indexing failed:", e?.message || e);
-          }
-        })();
+      // Issue #263: fire-and-forget, matching the compaction IIFE below --
+      // appendTurn never awaits this, so a slow or unavailable embedder
+      // can't add latency to the actual reply path. Embeds this turn plus
+      // any earlier ones not yet embedded (a missed turn, or all history
+      // after an embedding-model change); never rejects.
+      if (computeEmbeddingsFn && typeof sessionSearchIndex.syncEmbeddings === "function") {
+        sessionSearchIndex.syncEmbeddings(computeEmbeddingsFn, embeddingModelIdFn);
       }
     }
 
@@ -2169,7 +2158,11 @@ function createAcpMemoryStore(options = {}) {
         // fine without it.
       }
     }
-    let results = sessionSearchIndex.search({ ...effective, queryEmbedding });
+    let results = sessionSearchIndex.search({
+      ...effective,
+      queryEmbedding,
+      queryModel: embeddingModelIdFn(),
+    });
     // Issue #674: keyword and vector hits are interleaved with no shared
     // score (mergeResults), so a reranker orders them and only the best few
     // go back to the model. Relevance sort only -- newest/oldest keep their

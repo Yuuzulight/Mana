@@ -364,12 +364,12 @@ test("appendTurn never breaks the turn append when the emotional state file is c
 // embedding indexing is fire-and-forget (mirrors part 2's compaction IIFE
 // above), so these tests use the same deferred-promise pattern to await it
 // actually completing rather than just the appendTurn call that triggered
-// it. embedDim: 3 keeps this fast/deterministic -- see
-// session-search-index.test.js for the real 384-dim default and this
-// module's own merge/diversity logic, already covered there; these tests
+// it. 3-dim fake vectors keep this fast/deterministic -- see
+// session-search-index.test.js for the table's model/dimension handling and
+// this module's own merge/diversity logic, already covered there; these tests
 // only cover the wiring between acp-memory-store.js and that module.
 test("appendTurn computes and indexes an embedding for the turn via the wired computeEmbeddingsFn", async (t) => {
-  const sessionSearchIndex = createSessionSearchIndex({ dbPath: ":memory:", embedDim: 3 });
+  const sessionSearchIndex = createSessionSearchIndex({ dbPath: ":memory:" });
   if (!sessionSearchIndex.vectorEnabled()) {
     t.skip("sqlite-vec extension unavailable in this environment");
     sessionSearchIndex.close();
@@ -386,13 +386,12 @@ test("appendTurn computes and indexes an embedding for the turn via the wired co
     },
   });
 
-  // Wrap indexEmbedding so the test can await the fire-and-forget call
+  // Wrap syncEmbeddings so the test can await the fire-and-forget call
   // actually landing, without changing what it does.
-  const realIndexEmbedding = sessionSearchIndex.indexEmbedding;
-  sessionSearchIndex.indexEmbedding = (args) => {
-    const result = realIndexEmbedding(args);
+  const realSyncEmbeddings = sessionSearchIndex.syncEmbeddings;
+  sessionSearchIndex.syncEmbeddings = async (...args) => {
+    await realSyncEmbeddings(...args);
     embeddingIndexed.resolve();
-    return result;
   };
 
   await store.appendTurn({ sessionId: "s1", user: "How do I deploy with Docker", assistant: "Use docker compose up" });
@@ -410,8 +409,14 @@ test("appendTurn computes and indexes an embedding for the turn via the wired co
   sessionSearchIndex.close();
 });
 
-test("appendTurn never breaks the turn append when computeEmbeddingsFn rejects", async () => {
-  const sessionSearchIndex = createSessionSearchIndex({ dbPath: ":memory:", embedDim: 3 });
+test("appendTurn never breaks the turn append when computeEmbeddingsFn rejects", async (t) => {
+  const sessionSearchIndex = createSessionSearchIndex({ dbPath: ":memory:" });
+  if (!sessionSearchIndex.vectorEnabled()) {
+    // Without a vector index the embedder is never called at all.
+    t.skip("sqlite-vec extension unavailable in this environment");
+    sessionSearchIndex.close();
+    return;
+  }
   const attempted = deferred();
   const store = createAcpMemoryStore({
     dataDir: createTempDir(),
@@ -433,7 +438,7 @@ test("appendTurn never breaks the turn append when computeEmbeddingsFn rejects",
 });
 
 test("searchSessions computes a query embedding via computeEmbeddingsFn and blends it into the results", async (t) => {
-  const sessionSearchIndex = createSessionSearchIndex({ dbPath: ":memory:", embedDim: 3 });
+  const sessionSearchIndex = createSessionSearchIndex({ dbPath: ":memory:" });
   if (!sessionSearchIndex.vectorEnabled()) {
     t.skip("sqlite-vec extension unavailable in this environment");
     sessionSearchIndex.close();
@@ -462,7 +467,7 @@ test("searchSessions computes a query embedding via computeEmbeddingsFn and blen
 });
 
 test("searchSessions falls back to keyword-only results when computeEmbeddingsFn isn't wired", async () => {
-  const sessionSearchIndex = createSessionSearchIndex({ dbPath: ":memory:", embedDim: 3 });
+  const sessionSearchIndex = createSessionSearchIndex({ dbPath: ":memory:" });
   const store = createAcpMemoryStore({ dataDir: createTempDir(), sessionSearchIndex });
 
   await store.appendTurn({ sessionId: "s1", user: "How do I deploy with Docker", assistant: "Use docker compose up" });
