@@ -620,19 +620,23 @@ internal sealed class SettingsPanel : UserControl
 
         var buttonRow = new FlowLayoutPanel { Dock = DockStyle.Bottom, Height = 32, FlowDirection = FlowDirection.LeftToRight, BackColor = DarkTheme.Background };
         var allowButton = new Button { Text = "Allow once" };
+        // #669: an in-memory grant that ends when Mana restarts.
+        var sessionButton = new Button { Text = "Allow for session", AutoSize = true };
         var alwaysAllowButton = new Button { Text = "Always allow" };
         var denyButton = new Button { Text = "Deny" };
         DarkTheme.ApplyButton(allowButton);
+        DarkTheme.ApplyButton(sessionButton);
         DarkTheme.ApplyButton(alwaysAllowButton);
         DarkTheme.ApplyButton(denyButton);
 
-        // All three share one guard -- a decision resolves the request
+        // All four share one guard -- a decision resolves the request
         // server-side, so a second click (this button or a different
         // one) while the first is still in flight would just 404 there
         // instead of doing anything useful.
         async Task DecideAsync(string decision)
         {
             allowButton.Enabled = false;
+            sessionButton.Enabled = false;
             alwaysAllowButton.Enabled = false;
             denyButton.Enabled = false;
             try
@@ -644,15 +648,18 @@ internal sealed class SettingsPanel : UserControl
                 if (!IsDisposed)
                 {
                     allowButton.Enabled = true;
+                    sessionButton.Enabled = true;
                     alwaysAllowButton.Enabled = true;
                     denyButton.Enabled = true;
                 }
             }
         }
         allowButton.Click += async (_, _) => await DecideAsync("allow-once");
+        sessionButton.Click += async (_, _) => await DecideAsync("allow-session");
         alwaysAllowButton.Click += async (_, _) => await DecideAsync("always-allow");
         denyButton.Click += async (_, _) => await DecideAsync("deny");
         buttonRow.Controls.Add(allowButton);
+        buttonRow.Controls.Add(sessionButton);
         buttonRow.Controls.Add(alwaysAllowButton);
         buttonRow.Controls.Add(denyButton);
 

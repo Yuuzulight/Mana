@@ -356,3 +356,52 @@ test("resetDenials unblocks without a restart (issue #384)", async () => {
   gate.resetDenials("skill-run");
   assert.equal((await gate.requestApproval("skill-run", { payload: {} })).status, "pending");
 });
+
+// Issue #669: session grants, grantKey and forceReview.
+test("#669 allow-session grants the action type in memory only, and a restart forgets it", async () => {
+  const dataDir = createTempDir();
+  let runs = 0;
+  const gate = createApprovalGate({ dataDir });
+  gate.registerExecutor("skill-write", () => (runs += 1));
+  const first = await gate.requestApproval("skill-write", { payload: {} });
+  await gate.decide(first.requestId, "allow-session");
+  assert.equal(gate.isGranted("skill-write"), true);
+  assert.equal(gate.isAlwaysAllowed("skill-write"), false);
+  assert.equal((await gate.requestApproval("skill-write", { payload: {} })).status, "approved");
+  assert.equal(runs, 2);
+  assert.equal(fs.existsSync(path.join(dataDir, "always-allow.json")), false);
+
+  const restarted = createApprovalGate({ dataDir });
+  restarted.registerExecutor("skill-write", () => (runs += 1));
+  assert.equal((await restarted.requestApproval("skill-write", { payload: {} })).status, "pending");
+});
+
+test("#669 grantKey narrows what a grant covers", async () => {
+  const gate = createApprovalGate({ dataDir: createTempDir() });
+  gate.registerExecutor("tool-write", () => "ran");
+  const first = await gate.requestApproval("tool-write", { payload: {}, grantKey: "tool-exec:a" });
+  await gate.decide(first.requestId, "always-allow");
+  assert.equal(gate.isAlwaysAllowed("tool-exec:a"), true);
+  assert.equal(gate.isAlwaysAllowed("tool-write"), false);
+  assert.equal((await gate.requestApproval("tool-write", { payload: {}, grantKey: "tool-exec:a" })).status, "approved");
+  assert.equal((await gate.requestApproval("tool-write", { payload: {}, grantKey: "tool-exec:b" })).status, "pending");
+});
+
+test("#669 forceReview skips the Guardian and never creates a grant", async () => {
+  let judged = 0;
+  const gate = createApprovalGate({
+    dataDir: createTempDir(),
+    guardianEnabled: true,
+    guardianPreCheck: async () => {
+      judged += 1;
+      return { safe: true };
+    },
+  });
+  gate.registerExecutor("tool-destructive", () => "ran");
+  const first = await gate.requestApproval("tool-destructive", { payload: {}, forceReview: true });
+  assert.equal(first.status, "pending");
+  assert.equal(judged, 0);
+  assert.equal((await gate.decide(first.requestId, "always-allow")).status, "approved");
+  assert.equal(gate.isGranted("tool-destructive"), false);
+  assert.equal((await gate.requestApproval("tool-destructive", { payload: {}, forceReview: true })).status, "pending");
+});

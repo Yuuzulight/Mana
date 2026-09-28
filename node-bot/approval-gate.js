@@ -4,7 +4,9 @@
 // Deliberately not a general command-level approval for every tool call
 // Mana already makes (web search, memory reads, etc.) -- see the issue's
 // "out of scope" section -- just the write path for content she authored
-// herself.
+// herself. (#669 later routed risky tool calls through it as well -- see
+// ai/tool-risk.js -- which is where grantKey/forceReview/session grants
+// below come from.)
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
@@ -112,12 +114,21 @@ function createApprovalGate(options = {}) {
     return denialCounts.delete(actionType);
   }
 
+  // Issue #669: "Approve for this session" grants. In-memory only, never
+  // written to always-allow.json -- they end when Mana restarts, which is
+  // the whole difference from an always-allow.
+  const sessionGrants = new Set();
+
   function loadAlwaysAllowed() {
     return readJson(alwaysAllowPath, []);
   }
 
   function isAlwaysAllowed(actionType) {
     return loadAlwaysAllowed().includes(actionType);
+  }
+
+  function isGranted(key) {
+    return sessionGrants.has(key) || isAlwaysAllowed(key);
   }
 
   function persistAlwaysAllow(actionType) {
@@ -139,10 +150,25 @@ function createApprovalGate(options = {}) {
   // The entry point every gated write goes through. Already-trusted action
   // types execute immediately; everything else pauses as a pending request
   // until a human decides.
-  async function requestApproval(actionType, { summary, payload, scanText } = {}) {
+  //
+  // Issue #669 options, all optional:
+  //   grantKey    -- what an always-allow/session grant is stored under and
+  //                  checked against, when that should be narrower than the
+  //                  actionType (a shell call is granted per exact command
+  //                  binding, not for every command of its tier).
+  //   forceReview -- a human must look at this one: no grant, always-allow
+  //                  or Guardian verdict can skip the prompt, and deciding
+  //                  it never creates a grant (destructive calls).
+  //   details     -- plain JSON shown with the pending request (risk tier,
+  //                  destructive reasons, hosts it will contact).
+  async function requestApproval(
+    actionType,
+    { summary, payload, scanText, grantKey, forceReview = false, details } = {},
+  ) {
     if (!actionType) throw new Error("actionType is required");
+    const key = grantKey || actionType;
 
-    if (isAlwaysAllowed(actionType)) {
+    if (!forceReview && isGranted(key)) {
       const result = await runExecutor(actionType, payload);
       return { status: "approved", actionType, result };
     }
@@ -168,7 +194,7 @@ function createApprovalGate(options = {}) {
     // patterns, and a model's own risk judgment shouldn't be able to
     // override a hit on those. Any Guardian failure (exception, unclear
     // verdict) falls straight through to the normal pending path below.
-    if (guardianEnabled && guardianPreCheck && !flags.length) {
+    if (guardianEnabled && guardianPreCheck && !flags.length && !forceReview) {
       let verdict = null;
       try {
         verdict = await guardianPreCheck(actionType, { summary, payload, scanText });
@@ -196,7 +222,17 @@ function createApprovalGate(options = {}) {
     }
 
     const id = makeId();
-    pending.set(id, { id, actionType, summary: summary || "", payload, flags, createdAt: now() });
+    pending.set(id, {
+      id,
+      actionType,
+      summary: summary || "",
+      payload,
+      flags,
+      createdAt: now(),
+      ...(grantKey ? { grantKey } : {}),
+      ...(forceReview ? { forceReview: true } : {}),
+      ...(details ? { details } : {}),
+    });
     return { status: "pending", requestId: id, summary: summary || "", flags };
   }
 
@@ -204,7 +240,7 @@ function createApprovalGate(options = {}) {
     return [...pending.values()];
   }
 
-  // decision: "allow-once" | "always-allow" | "deny"
+  // decision: "allow-once" | "allow-session" | "always-allow" | "deny"
   //
   // #475 review: this is the only place a human's actual decision on a
   // pending request is known -- wrapWithToolCallLog (server.js) only ever
@@ -229,10 +265,15 @@ function createApprovalGate(options = {}) {
       });
       return { status: "denied", requestId, actionType: entry.actionType, deniedCount };
     }
-    if (decision === "always-allow") {
-      persistAlwaysAllow(entry.actionType);
-    } else if (decision !== "allow-once") {
+    if (!["allow-once", "allow-session", "always-allow"].includes(decision)) {
       throw new Error(`unknown decision: ${decision}`);
+    }
+    // Issue #669: a forceReview request runs once whatever was clicked --
+    // granting it would let the next destructive call skip the review.
+    const key = entry.grantKey || entry.actionType;
+    if (!entry.forceReview) {
+      if (decision === "always-allow") persistAlwaysAllow(key);
+      else if (decision === "allow-session") sessionGrants.add(key);
     }
 
     // Only removed from `pending` once the executor actually succeeds --
@@ -275,6 +316,7 @@ function createApprovalGate(options = {}) {
     denialCount,
     resetDenials,
     isAlwaysAllowed,
+    isGranted,
     guardianAuditLog,
   };
 }

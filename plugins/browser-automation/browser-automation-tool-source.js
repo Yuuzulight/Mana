@@ -92,7 +92,9 @@ function createBrowserAutomationToolSource(options = {}) {
   }
 
   async function executeTool(qualifiedName, args) {
-    if (!approvalGate.isAlwaysAllowed(APPROVAL_ACTION_TYPE)) {
+    // isGranted, not isAlwaysAllowed: an "allow for this session" (#669)
+    // counts too.
+    if (!approvalGate.isGranted(APPROVAL_ACTION_TYPE)) {
       // Not yet trusted -- ask, and report back through the same
       // error-to-the-model path runToolAwareReply already uses for a
       // failed tool call (see tool-policy.js's ToolPolicyError handling),
