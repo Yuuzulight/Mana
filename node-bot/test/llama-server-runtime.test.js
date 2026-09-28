@@ -2479,3 +2479,157 @@ test("#666: backupProfileFor names the profile's fallbackProfile, or null when i
   assert.equal(runtime.backupProfileFor("quality"), "default");
   assert.equal(runtime.backupProfileFor("fast"), null);
 });
+
+// Live run (2026-09-29): idle shutdown logged "shutting it down" but the
+// llama-server it had spawned kept its port and ~6GB VRAM. Fakes only: one
+// port a single child can bind, children that exit a tick after being
+// killed (a real CUDA teardown takes seconds), taskkill as a fake execFile.
+function makeStopHarness({ exitOnKill = true, releasePortOnKill = false, taskkillFails = false } = {}) {
+  const models = ["C:\\models\\mana.gguf", "C:\\models\\other.gguf"];
+  const children = [];
+  const taskkills = [];
+  let holder = null;
+  const tick = () => new Promise((resolve) => setImmediate(resolve));
+
+  function terminate(child) {
+    child.killed = true;
+    if (releasePortOnKill && holder === child) holder = null;
+    if (exitOnKill) setImmediate(() => child.exit(1));
+  }
+
+  const runtime = createLlamaServerRuntime({
+    env: {
+      ...makeFakeEnv(),
+      LLAMA_SERVER_VRAM_GUARD: "0",
+      LLAMA_SERVER_SWAP_DEBOUNCE_MS: "0",
+      LLAMA_SERVER_IDLE_MS: "1000",
+    },
+    fs: { existsSync: (target) => target === "C:\\llama\\llama-server.exe" || models.includes(target) },
+    platform: "win32",
+    execFile: (cmd, args, options, callback) => {
+      taskkills.push([cmd, ...args]);
+      const child = !taskkillFails && children.find((c) => c.pid === Number(args[1]));
+      if (child) terminate(child);
+      setImmediate(() => callback(child ? null : new Error("not found")));
+    },
+    fetch: async (url) => {
+      // Answers once its model is "loaded": from the third request on.
+      const ready = Boolean(holder && !holder.killed && holder.polls++ >= 2);
+      if (String(url).endsWith("/health")) return { ok: ready };
+      if (String(url).endsWith("/props")) {
+        return { ok: ready, json: async () => ({ model_path: holder.model }) };
+      }
+      return { ok: false, status: 404, text: async () => "" };
+    },
+    spawn: (bin, args) => {
+      const listeners = {};
+      const child = {
+        pid: 4000 + children.length,
+        model: args[args.indexOf("-m") + 1],
+        exitCode: null,
+        signalCode: null,
+        polls: 0,
+        stderr: { on: () => {} },
+        on: (event, cb) => (listeners[event] = listeners[event] || []).push(cb),
+        once: (event, cb) => (listeners[event] = listeners[event] || []).push(cb),
+        exit(code) {
+          if (child.exitCode !== null) return;
+          child.exitCode = code;
+          if (holder === child) holder = null;
+          (listeners.exit || []).forEach((cb) => cb(code));
+        },
+        kill: () => {
+          child.killedDirectly = true;
+          terminate(child);
+        },
+      };
+      children.push(child);
+      if (holder) setImmediate(() => child.exit(1)); // port already bound
+      else holder = child;
+      return child;
+    },
+    sleep: tick,
+    registerExitHandlers: false,
+  });
+  return { runtime, models, children, taskkills, tick, live: () => children.filter((c) => c.exitCode === null) };
+}
+
+test("live run: idle shutdown tree-kills llama-server on win32 and logs only once it has exited", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const logs = [];
+  t.mock.method(console, "log", (...args) => logs.push(args.join(" ")));
+  const { runtime, models, children, taskkills, tick, live } = makeStopHarness();
+
+  await runtime.ensureServerConfig(models[0]);
+  runtime.scheduleIdleShutdown();
+  t.mock.timers.tick(1000);
+
+  assert.deepEqual(taskkills, [["C:\\Windows\\System32\\taskkill.exe", "/PID", "4000", "/T", "/F"]]);
+  assert.equal(children[0].killedDirectly, undefined, "taskkill, not child.kill()");
+  assert.equal(runtime.getStatus().running, false);
+  assert.ok(logs.some((l) => /idle for 1000ms, shutting it down \(pid 4000\)/.test(l)));
+  assert.ok(!logs.some((l) => /stopped/.test(l)), "not claimed stopped before it exited");
+
+  await tick();
+  await tick();
+  assert.deepEqual(live(), []);
+  assert.ok(logs.some((l) => /pid 4000\) stopped/.test(l)));
+});
+
+test("live run: when taskkill fails, stop() falls back to child.kill()", async () => {
+  const { runtime, models, children, tick, live } = makeStopHarness({ taskkillFails: true });
+
+  await runtime.ensureServerConfig(models[0]);
+  runtime.stop();
+  await tick();
+  await tick();
+
+  assert.equal(children[0].killedDirectly, true);
+  assert.deepEqual(live(), []);
+});
+
+test("live run: a llama-server that doesn't exit after being stopped is reported", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const warnings = [];
+  t.mock.method(console, "warn", (...args) => warnings.push(args.join(" ")));
+  const { runtime, models } = makeStopHarness({ exitOnKill: false });
+
+  await runtime.ensureServerConfig(models[0]);
+  runtime.stop();
+  t.mock.timers.tick(15000);
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.ok(warnings.some((w) => /pid 4000\) is still running 15000ms after being stopped/.test(w)));
+});
+
+test("live run: a start right after idle shutdown waits for the old server to exit instead of failing to bind", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const { runtime, models, children, live } = makeStopHarness();
+
+  await runtime.ensureServerConfig(models[0]);
+  runtime.scheduleIdleShutdown();
+  t.mock.timers.tick(1000);
+  // Old process still tearing down (and holding the port) at this point.
+  await runtime.ensureServerConfig(models[0]);
+
+  assert.equal(children.length, 2);
+  assert.equal(children[0].exitCode, 1);
+  assert.deepEqual(live(), [children[1]]);
+  assert.equal(runtime.getStatus().running, true);
+  assert.equal(runtime.getStatus().external, false);
+});
+
+test("live run: overlapping restarts never leave a spawned llama-server that stop() can't reach", async () => {
+  const { runtime, models, tick, live } = makeStopHarness({ releasePortOnKill: true });
+
+  await runtime.ensureServerConfig(models[0]);
+  // A swap and a turn for the first model arrive together.
+  await Promise.allSettled([
+    runtime.ensureServerConfig(models[1]),
+    runtime.ensureServerConfig(models[0]),
+  ]);
+  runtime.stop();
+  for (let i = 0; i < 5; i += 1) await tick();
+
+  assert.deepEqual(live().map((c) => c.pid), []);
+});
