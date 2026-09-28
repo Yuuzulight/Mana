@@ -54,6 +54,8 @@ function truncateWholeLines(block, maxChars) {
 // appearing word for word, and the number injected per turn is capped.
 const MAX_RECALL_CANDIDATES = 20;
 const MAX_PINNED_FACTS = 5;
+// session_search returns up to 20; after a rerank only the best go back.
+const SESSION_SEARCH_RERANKED_TOP = 8;
 // ponytail: fixed cosine cutoff, not tuned against real Qwen3-Embedding
 // scores yet -- make it an env var if recall is visibly too loose/tight.
 const MIN_FACT_SIMILARITY = 0.5;
@@ -461,6 +463,10 @@ function createAcpMemoryStore(options = {}) {
   // sessionSearchIndex/computeEmbeddingsFn -- server.js wires the real one
   // in, tests omit it (or inject a fake).
   const memoryGraph = options.memoryGraph || null;
+  // Optional (issue #674): ai/reranker-runtime.js's rerank(query, docs) ->
+  // {order, reranked, ms, fallback}; never throws, returns input order on
+  // failure. Same injection convention as computeEmbeddingsFn.
+  const rerankFn = typeof options.rerankFn === "function" ? options.rerankFn : null;
 
   ensureDir(sessionsDir);
 
@@ -1056,7 +1062,8 @@ function createAcpMemoryStore(options = {}) {
   // to what's being asked *right now*, so they read better close to the
   // live message than buried near the persona definition.
   //
-  // Issue #674: async so recall can also match by meaning (embeddings) --
+  // Issue #674: async so recall can also match by meaning (embeddings) and
+  // rerank when there are more candidates than fit --
   // at most MAX_PINNED_FACTS pinned + maxMatchedFacts matched facts go in,
   // the maxChars cap stays as a second limit. `recall` reports the counts
   // and any fallback for the prompt-composition report (#400).
@@ -1069,7 +1076,14 @@ function createAcpMemoryStore(options = {}) {
     );
     const mentionsPosition = options.mentionsPosition === "early" ? "early" : "late";
     const factsPosition = options.factsPosition === "early" ? "early" : "late";
-    const recall = { candidates: 0, pinned: 0, matched: 0, fallback: null };
+    const recall = {
+      candidates: 0,
+      pinned: 0,
+      matched: 0,
+      reranked: false,
+      rerankMs: 0,
+      fallback: null,
+    };
     const facts = loadFacts();
     const similarityById = await factSimilarities(
       text,
@@ -1081,7 +1095,22 @@ function createAcpMemoryStore(options = {}) {
       facts,
       similarityById,
     });
-    const matched = candidates.slice(0, maxMatchedFacts(options));
+    // Rerank only when there are more candidates than the cap lets in;
+    // otherwise, or when the reranker is off or fails, keep the candidate
+    // order from factRecallCandidates.
+    const cap = maxMatchedFacts(options);
+    let ordered = candidates;
+    if (rerankFn && candidates.length > cap) {
+      const result = await rerankFn(text, candidates.map(factEmbeddingText));
+      recall.reranked = result.reranked;
+      recall.rerankMs = result.ms;
+      if (result.reranked) {
+        ordered = result.order.map((i) => candidates[i]).filter(Boolean);
+      } else if (result.fallback) {
+        recall.fallback = [recall.fallback, `rerank: ${result.fallback}`].filter(Boolean).join("; ");
+      }
+    }
+    const matched = ordered.slice(0, cap);
     const factsBlock = factsBlockFor(pinned, matched);
     recall.candidates = candidates.length;
     recall.pinned = pinned.length;
@@ -1869,7 +1898,30 @@ function createAcpMemoryStore(options = {}) {
         // fine without it.
       }
     }
-    const results = sessionSearchIndex.search({ ...effective, queryEmbedding });
+    let results = sessionSearchIndex.search({ ...effective, queryEmbedding });
+    // Issue #674: keyword and vector hits are interleaved with no shared
+    // score (mergeResults), so a reranker orders them and only the best few
+    // go back to the model. Relevance sort only -- newest/oldest keep their
+    // chronological order -- and on any reranker failure all results go
+    // back unchanged, as before.
+    if (
+      rerankFn &&
+      effective?.query &&
+      effective.sort !== "newest" &&
+      effective.sort !== "oldest" &&
+      results.length > SESSION_SEARCH_RERANKED_TOP
+    ) {
+      const result = await rerankFn(
+        String(effective.query),
+        results.map((r) => r.text),
+      );
+      if (result.reranked) {
+        results = result.order
+          .slice(0, SESSION_SEARCH_RERANKED_TOP)
+          .map((i) => results[i])
+          .filter(Boolean);
+      }
+    }
     if (!memoryGraph) return results;
     try {
       const associative = associativeResultsFor(results, params.sessionId);

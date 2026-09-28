@@ -206,3 +206,108 @@ test("embeddings off (null vectors) is a quiet fallback, not an error", async ()
   assert.deepEqual(factLines(entries), ["- gpu: RTX 5080"]);
   assert.equal(recall.fallback, "embeddings unavailable");
 });
+
+// Reranker integration (ai/reranker-runtime.js is faked here -- same
+// {order, reranked, ms, fallback} contract, never throws).
+function fakeRerank(calls, score) {
+  return async (query, docs) => {
+    calls.push({ query, docs });
+    const order = docs.map((_, i) => i).sort((a, b) => score(docs[b]) - score(docs[a]));
+    return { order, reranked: true, ms: 7, fallback: null };
+  };
+}
+
+test("the GPU fact is recalled for 'what graphics card do I have?' via keyword candidate + rerank", async () => {
+  const calls = [];
+  let clock = 0;
+  const store = createAcpMemoryStore({
+    dataDir: createTempDir(),
+    now: () => new Date(Date.UTC(2026, 0, 1) + clock++ * 1000).toISOString(),
+    rerankFn: fakeRerank(calls, (doc) => (doc.startsWith("the user's GPU") ? 1 : 0)),
+  });
+  // Newer, equally-overlapping facts would win on recency without a rerank.
+  store.rememberFact({ key: "the user's GPU", text: "NVIDIA RTX 5080 graphics card" });
+  for (let i = 0; i < 8; i++) store.rememberFact({ key: `card ${i}`, text: "graphics card for a friend" });
+
+  const { entries, recall } = await store.getRelatedFactsEntries("what graphics card do I have?", {
+    maxChars: 100000,
+  });
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].docs.length, 9);
+  assert.equal(factLines(entries)[0], "- the user's GPU: NVIDIA RTX 5080 graphics card");
+  assert.equal(recall.reranked, true);
+  assert.equal(recall.rerankMs, 7);
+  assert.equal(recall.matched, 5);
+});
+
+test("with 5 or fewer candidates no rerank call is made", async () => {
+  const calls = [];
+  const store = createAcpMemoryStore({ dataDir: createTempDir(), rerankFn: fakeRerank(calls, () => 0) });
+  for (let i = 0; i < 5; i++) store.rememberFact({ key: `gpu note ${i}`, text: "graphics card" });
+  const { recall } = await store.getRelatedFactsEntries("my graphics card", { maxChars: 100000 });
+  assert.equal(calls.length, 0);
+  assert.equal(recall.reranked, false);
+  assert.equal(recall.matched, 5);
+});
+
+test("a failed rerank keeps the unreranked order and reports the fallback", async () => {
+  const store = createAcpMemoryStore({
+    dataDir: createTempDir(),
+    rerankFn: async (query, docs) => ({
+      order: docs.map((_, i) => i),
+      reranked: false,
+      ms: 1500,
+      fallback: "timed out after 1500ms",
+    }),
+  });
+  store.rememberFact({ key: "graphics card", text: "RTX 5080" });
+  for (let i = 0; i < 7; i++) store.rememberFact({ key: `gpu note ${i}`, text: "graphics card detail" });
+  const { entries, recall } = await store.getRelatedFactsEntries("which graphics card is best", {
+    maxChars: 100000,
+  });
+  // The key hit still leads, exactly as without a reranker.
+  assert.equal(factLines(entries)[0], "- graphics card: RTX 5080");
+  assert.equal(recall.reranked, false);
+  assert.match(recall.fallback, /rerank: timed out after 1500ms/);
+});
+
+function fakeSessionSearchIndex(count) {
+  return {
+    search: () =>
+      Array.from({ length: count }, (_, i) => ({ text: `turn ${i}`, matchType: "keyword" })),
+  };
+}
+
+test("session search results are reranked and cut to the best 8 on relevance sort only", async () => {
+  const calls = [];
+  const store = createAcpMemoryStore({
+    dataDir: createTempDir(),
+    sessionSearchIndex: fakeSessionSearchIndex(20),
+    rerankFn: fakeRerank(calls, (doc) => Number(doc.split(" ")[1])),
+  });
+  const results = await store.searchSessions({ query: "deploy", limit: 20 });
+  assert.equal(results.length, 8);
+  assert.equal(results[0].text, "turn 19");
+
+  const newest = await store.searchSessions({ query: "deploy", sort: "newest", limit: 20 });
+  assert.equal(newest.length, 20);
+  assert.equal(calls.length, 1);
+});
+
+test("session search keeps all results when the reranker fails or there are 8 or fewer", async () => {
+  const calls = [];
+  const failing = createAcpMemoryStore({
+    dataDir: createTempDir(),
+    sessionSearchIndex: fakeSessionSearchIndex(20),
+    rerankFn: async (query, docs) => ({ order: docs.map((_, i) => i), reranked: false, ms: 0, fallback: "down" }),
+  });
+  assert.equal((await failing.searchSessions({ query: "deploy" })).length, 20);
+
+  const small = createAcpMemoryStore({
+    dataDir: createTempDir(),
+    sessionSearchIndex: fakeSessionSearchIndex(8),
+    rerankFn: fakeRerank(calls, () => 0),
+  });
+  assert.equal((await small.searchSessions({ query: "deploy" })).length, 8);
+  assert.equal(calls.length, 0);
+});
