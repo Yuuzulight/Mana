@@ -27,7 +27,6 @@ internal sealed class ManaApplicationContext : ApplicationContext
     private readonly GlobalHotkeyListener globalHotkeys;
     private readonly TrayNotificationClient trayNotifications;
     private readonly CaptionOverlayForm captionOverlay;
-    private readonly CaptionWebSocketClient captionClient;
     private readonly VisionCaptureClient visionCaptureClient;
     private readonly ArtifactViewerForm artifactViewer;
     private readonly QuickEntryForm quickEntry;
@@ -105,7 +104,10 @@ internal sealed class ManaApplicationContext : ApplicationContext
         // through to VoiceLoop, same as the other optional collaborators
         // constructed above it.
         var screenContextReader = new ScreenContextReader(rootDir, backendClient);
-        voiceLoop = new VoiceLoop(sileroVad, backendClient, audioPlayer, avatarOverlay, chatLog, artifactViewer, screenContextReader, () => gamingModeActive, clipBuffer, wakeWordClassifier);
+        // #571: on-screen equivalent of spoken output, fed sentence by
+        // sentence by VoiceLoop's own playback.
+        captionOverlay = new CaptionOverlayForm();
+        voiceLoop = new VoiceLoop(sileroVad, backendClient, audioPlayer, avatarOverlay, chatLog, artifactViewer, screenContextReader, () => gamingModeActive, clipBuffer, wakeWordClassifier, captionOverlay);
         voiceLoop.SetPresetId(settings.ActivePresetId); // #681
         // #523: Ctrl+Alt+M asks Mana to look at the screen, through the
         // same reply/TTS pipeline a normal turn uses.
@@ -170,10 +172,6 @@ internal sealed class ManaApplicationContext : ApplicationContext
             }
             ShowSessionList();
         });
-        // #571: on-screen equivalent of spoken output -- purely additive,
-        // wired up alongside trayNotifications above.
-        captionOverlay = new CaptionOverlayForm();
-        captionClient = new CaptionWebSocketClient(captionOverlay.SetCaption, backendBaseUrl: settings.BackendBaseUrl);
         // #681: answers the model's mid-reply screenshot requests.
         visionCaptureClient = new VisionCaptureClient(backendClient, backendBaseUrl: settings.BackendBaseUrl);
 
@@ -192,7 +190,6 @@ internal sealed class ManaApplicationContext : ApplicationContext
 
         trayIcon.DoubleClick += (_, _) => ShowStatus();
         trayNotifications.Start();
-        captionClient.Start();
         visionCaptureClient.Start();
 
         // Quick rundown: start the existing local services, but keep this host native and small.
@@ -582,7 +579,6 @@ internal sealed class ManaApplicationContext : ApplicationContext
         clipHotkeyListener.Dispose();
         globalHotkeys.Dispose();
         trayNotifications.Dispose();
-        captionClient.Dispose();
         visionCaptureClient.Dispose();
         captionOverlay.Close();
         voiceLoop.Dispose();
