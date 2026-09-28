@@ -30,6 +30,24 @@ function looksAttributableToUser(factText, userMessage) {
   return sharedWordCount(factWords, userWords) / factWords.length >= MIN_ATTRIBUTION_RATIO;
 }
 
+// Issue #663: a fact counts as user-requested (stored active) only when the
+// user's own message asks for it; anything else Mana picked up on her own
+// starts pending. A "confirm" needs the user's message to say yes.
+// ponytail: keyword cues, not intent classification -- "do you remember..."
+// also counts as a request; tighten if pending facts go active too easily.
+const USER_ASKED_TO_REMEMBER =
+  /\b(remember|don'?t forget|do not forget|keep in mind|make a note|note (?:that|this)|save (?:that|this))\b/i;
+const USER_SAID_YES = /\b(yes|yeah|yep|yup|sure|correct|please do|go ahead)\b/i;
+
+// Issue #673: tools that can't bring outside content into the turn. Any
+// other tool that ran earlier in the turn (browser automation, MCP, file
+// reads, vision, session search...) makes a memory write tool_derived --
+// deny by default, so a new tool source is treated as content-bearing.
+const CONTENT_FREE_TOOL_PREFIXES = [MEMORY_TOOL_PREFIX, "expression__", "session_goal__"];
+function contentToolsIn(toolNames) {
+  return toolNames.filter((name) => !CONTENT_FREE_TOOL_PREFIXES.some((p) => String(name).startsWith(p)));
+}
+
 const REMEMBER_BASE_DESCRIPTION =
   "Explicitly save, update, or forget a specific fact worth remembering across future conversations -- for something clearly worth persisting right now (a stated preference, a correction, a decision), not for routine chat, which is already remembered automatically.";
 
@@ -51,7 +69,9 @@ const MEMORY_INDEX_MAX_CHARS = 2000;
 
 function buildAlreadyRememberedBlock(existingKeys) {
   if (!existingKeys || !existingKeys.length) return "";
-  const allLines = existingKeys.map((f) => `- "${f.key}"${f.preview ? ` (${f.preview})` : ""}`);
+  const allLines = existingKeys.map(
+    (f) => `- "${f.key}"${f.preview ? ` (${f.preview})` : ""}${f.pending ? " [unconfirmed]" : ""}`,
+  );
   const kept = [];
   let charCount = 0;
   for (const line of allLines) {
@@ -96,13 +116,13 @@ function buildToolSchemas(existingKeys) {
             },
             text: {
               type: "string",
-              description: "The fact itself, as a short sentence. Required unless action is \"remove\" or \"archive\".",
+              description: "The fact itself, as a short sentence. Required unless action is \"remove\", \"archive\" or \"confirm\".",
             },
             action: {
               type: "string",
-              enum: ["insert", "patch", "remove", "archive"],
+              enum: ["insert", "patch", "remove", "archive", "confirm"],
               description:
-                "\"insert\" (default): save as a new fact. \"patch\": update the existing fact with this key (or insert if none exists yet). \"remove\": mark the existing fact with this key as no longer true. \"archive\": the fact is still true but no longer worth automatically surfacing (e.g. it's context for a project that's now finished) -- unlike \"remove\", the fact isn't treated as false, just deprioritized.",
+                "\"insert\" (default): save as a new fact. \"patch\": update the existing fact with this key (or insert if none exists yet). \"remove\": mark the existing fact with this key as no longer true. \"archive\": the fact is still true but no longer worth automatically surfacing (e.g. it's context for a project that's now finished) -- unlike \"remove\", the fact isn't treated as false, just deprioritized. \"confirm\": the user just said yes when you asked whether to remember an [unconfirmed] fact -- makes it a confirmed fact. Facts you save without the user asking you to remember them start unconfirmed.",
             },
             supersedes: {
               type: "string",
@@ -185,6 +205,49 @@ Does fact 2 mean fact 1 is now wrong (a genuine contradiction), or could both st
   }
 }
 
+// Issue #663: pin the approval to the facts it touches as they are right
+// now (the key, and a superseded key), so approving later applies only if
+// neither changed in between. Stores without getFactVersion (test fakes)
+// skip the pin.
+function requestMemoryWriteApproval(approvalGate, acpMemoryStore, payload) {
+  const keys = [payload.key, payload.supersedes].filter(Boolean);
+  const expectedVersions =
+    typeof acpMemoryStore.getFactVersion === "function"
+      ? keys.map((key) => ({ key, version: acpMemoryStore.getFactVersion(key) }))
+      : undefined;
+  const current =
+    typeof acpMemoryStore.listFactKeys === "function"
+      ? acpMemoryStore
+          .listFactKeys()
+          .find((f) => f.key.toLowerCase() === String(payload.key || "").trim().toLowerCase())
+      : null;
+  return approvalGate.requestApproval("memory-write", {
+    summary:
+      `${payload.action === "confirm" ? "Confirm" : "Remember"} "${payload.key}"` +
+      `${payload.text ? `: ${payload.text}` : ""}` +
+      `${current?.preview && current.preview !== payload.text ? ` (currently: ${current.preview})` : ""}`,
+    payload: expectedVersions ? { ...payload, expectedVersions } : payload,
+    scanText: payload.text,
+  });
+}
+
+// Issue #663: the approval gate's "memory-write" executor (server.js). A
+// write refused because what it was pinned to changed is asked again,
+// pinned to (and showing) the fact as it is now -- unless memory writes are
+// always-allowed (which includes clicking "always allow" on this very
+// request), where asking again would just apply it over the change.
+function createMemoryWriteExecutor({ acpMemoryStore, approvalGate }) {
+  return async (payload) => {
+    const result = acpMemoryStore.rememberFact(payload);
+    if (result?.refused !== "changed" || approvalGate.isAlwaysAllowed("memory-write")) {
+      return result;
+    }
+    const { expectedVersions, ...unpinned } = payload;
+    const askedAgain = await requestMemoryWriteApproval(approvalGate, acpMemoryStore, unpinned);
+    return { ...result, askedAgain };
+  };
+}
+
 // options.acpMemoryStore: required.
 // options.sessionId: bound at creation time, not trusted from model-supplied
 // args -- same "server-managed context, not model-supplied identifiers"
@@ -200,6 +263,9 @@ Does fact 2 mean fact 1 is now wrong (a genuine contradiction), or could both st
 // data, and retrieved web content by the time they reach this call site,
 // which would defeat the point of an attribution check). Omitted callers
 // fail open (see looksAttributableToUser) rather than flag everything.
+// options.turnTools: optional (issue #673), a live array of the tool names
+// that have already run this turn -- server.js appends to it as each tool
+// call returns. Omitted = no tools ran.
 // options.runLocalReply: optional, issue #431's LLM-confirmed conflict
 // judge -- expected to be llamaServerRuntime.runLocalReplyIfSafelyLoaded
 // (returns null rather than loading/swapping a model). Omitted callers
@@ -210,6 +276,7 @@ function createMemoryToolSource(options = {}) {
   const approvalGate = options.approvalGate || null;
   const userMessage = options.userMessage || null;
   const runLocalReply = options.runLocalReply || null;
+  const turnTools = Array.isArray(options.turnTools) ? options.turnTools : [];
   if (!acpMemoryStore) {
     throw new Error("acpMemoryStore is required");
   }
@@ -225,32 +292,57 @@ function createMemoryToolSource(options = {}) {
     if (action !== "remember") {
       throw new Error(`unknown memory tool: ${qualifiedName}`);
     }
+    // Issue #673: where this write came from (see acp-memory-store.js's
+    // ORIGIN_KINDS). Decided here from server-side state only, never from
+    // model arguments.
+    const toolDerived = contentToolsIn(turnTools).length > 0;
+    const originKind = toolDerived
+      ? "tool_derived"
+      : userMessage && USER_ASKED_TO_REMEMBER.test(userMessage)
+        ? "user_stated"
+        : "model_inferred";
+    // Issue #673: a turn that read outside content can add or propose
+    // changes (stored pending and untrusted), never confirm, forget, archive
+    // or invalidate -- a "yes" in the same message that asked Mana to read a
+    // page can't vouch for what the page says. #663: and only the user can
+    // confirm a pending fact.
+    const factAction = args?.action;
+    const refusal =
+      toolDerived && ["confirm", "remove", "archive"].includes(factAction)
+        ? `Can't ${factAction} a remembered fact in a turn where a tool returned outside content: ask the user again in a later turn.`
+        : factAction === "confirm" && !(userMessage && USER_SAID_YES.test(userMessage))
+          ? "Only the user can confirm an unconfirmed fact: ask them first, and confirm once they say yes."
+          : null;
+    if (refusal) {
+      return JSON.stringify({ ok: false, action: factAction, decision: "none", key: args?.key, error: refusal });
+    }
     const payload = {
       sessionId,
       key: args?.key,
       text: args?.text,
-      action: args?.action,
-      ...(args?.supersedes ? { supersedes: args.supersedes } : {}),
+      action: factAction,
+      ...(args?.supersedes && !toolDerived ? { supersedes: args.supersedes } : {}),
       // Only insert/patch actually carry text to check -- remove/archive
       // don't assert a new fact, nothing to attribute.
       ...(args?.text && !looksAttributableToUser(args.text, userMessage)
         ? { unverifiedSource: true }
         : {}),
+      // Issue #663: not asked to remember (model_inferred) or tool_derived
+      // -> the store keeps the value pending until the user confirms it.
+      origin: { kind: originKind, tools: [...turnTools], turnAt: new Date().toISOString() },
     };
+    // Issue #673: nor may it auto-invalidate a conflicting fact (#431).
+    const judge = toolDerived ? null : runLocalReply;
 
     if (!approvalGate) {
       const result = await maybeAutoInvalidateConflict(acpMemoryStore.rememberFact(payload), payload.text, {
         acpMemoryStore,
-        runLocalReply,
+        runLocalReply: judge,
       });
       return JSON.stringify(framePossibleConflict(result));
     }
 
-    const outcome = await approvalGate.requestApproval("memory-write", {
-      summary: `Remember "${payload.key}"${payload.text ? `: ${payload.text}` : ""}`,
-      payload,
-      scanText: payload.text,
-    });
+    const outcome = await requestMemoryWriteApproval(approvalGate, acpMemoryStore, payload);
     // Issue #273: the always-allowed path runs rememberFact synchronously
     // and returns its result verbatim (approval-gate.js's requestApproval),
     // so a possibleConflict here needs the same framing as the direct path
@@ -258,7 +350,7 @@ function createMemoryToolSource(options = {}) {
     // result at all, so there's nothing to frame there.
     if (outcome?.result) {
       outcome.result = framePossibleConflict(
-        await maybeAutoInvalidateConflict(outcome.result, payload.text, { acpMemoryStore, runLocalReply }),
+        await maybeAutoInvalidateConflict(outcome.result, payload.text, { acpMemoryStore, runLocalReply: judge }),
       );
     }
     return JSON.stringify(outcome);
@@ -283,5 +375,6 @@ module.exports = {
   TOOL_SCHEMAS,
   isMemoryToolName,
   createMemoryToolSource,
+  createMemoryWriteExecutor,
   buildToolPolicyWithMemory,
 };

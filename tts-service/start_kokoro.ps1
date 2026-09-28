@@ -10,7 +10,7 @@ $modelUrl = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model
 $voicesUrl = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/voices-v1.0.bin"
 
 if (-not (Test-Path $venvPython)) {
-    Write-Error "TTS venv Python not found. Run .\start.ps1 once first."
+    Write-Error "TTS venv Python not found. Create it first: python -m venv `"$venv`""
     exit 1
 }
 

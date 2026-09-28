@@ -187,7 +187,14 @@ const { createToolPolicy } = require("./ai/tool-policy");
 // shape buildToolPolicy expects.
 const { buildToolPolicy } = require("./ai/tool-source");
 const { wrapWithRiskGate } = require("./ai/tool-risk");
-const { createMemoryToolSource } = require("./ai/memory-tool-source");
+const { createMemoryToolSource, createMemoryWriteExecutor } = require("./ai/memory-tool-source");
+const {
+  loadSessionSummaries,
+  runCompactorStage,
+  runConnectionsStage,
+  mergeUnique,
+  reviewPlan,
+} = require("./dream-mode");
 const { createSessionSearchToolSource } = require("./ai/session-search-tool-source");
 const { createSkillToolSource } = require("./ai/skill-tool-source");
 const { createSnapshotToolSource } = require("./ai/snapshot-tool-source");
@@ -489,6 +496,9 @@ async function runLocalLlamaReply(
   profile = "default",
   overrideSystemPrompt = null,
   extraMessages = null,
+  // #666: chat turns pass this to try their backup model on an empty reply
+  // before llama-cli; it resolves to a reply, or null to fall through.
+  onEmptyReply = null,
 ) {
   if (llamaServerRuntime.isEnabled()) {
     try {
@@ -500,6 +510,10 @@ async function runLocalLlamaReply(
         extraMessages,
       );
     } catch (e) {
+      if (onEmptyReply && /returned an empty reply/.test(e && e.message)) {
+        const backupReply = await onEmptyReply();
+        if (backupReply) return backupReply;
+      }
       const cause =
         e && e.cause ? ` (cause: ${e.cause.code || e.cause.message || e.cause})` : "";
       console.warn(
@@ -683,6 +697,7 @@ async function checkEmotionalReflexes(store = acpMemoryStore) {
     key: "journal-loneliness",
     text: `It's been about ${Math.round(hoursSince)} hours since we last talked.`,
     action: "patch",
+    origin: { kind: "system" },
   });
 }
 
@@ -1042,75 +1057,13 @@ async function asyncLoadBackgroundMemory() {
       return { summaries: [], text: "", processed: 0, totalFiles: 0 };
     }
 
-    const names = await fs.promises.readdir(sessionsDir);
-    const jsonFiles = names.filter((f) => f.endsWith(".json"));
-
-    // Gather stats (mtime) for files and sort by most recent
-    const statPromises = jsonFiles.map(async (f) => {
-      const p = path.join(sessionsDir, f);
-      try {
-        const st = await fs.promises.stat(p);
-        return { file: f, mtime: st.mtimeMs, path: p };
-      } catch (e) {
-        return null;
-      }
+    // #673: the loader itself lives in dream-mode.js (unit tested there,
+    // including that a pruned summary stays pruned).
+    const { summaries, processedFiles, processed, totalFiles } = await loadSessionSummaries({
+      sessionsDir,
+      meta: BACKGROUND_MEMORY_META,
+      maxFiles: Number(process.env.MANA_BACKGROUND_MEMORY_MAX_FILES || 200),
     });
-    const statsAll = (await Promise.all(statPromises)).filter(Boolean);
-    statsAll.sort((a, b) => b.mtime - a.mtime);
-
-    const maxFiles = Number(
-      process.env.MANA_BACKGROUND_MEMORY_MAX_FILES || 200,
-    );
-
-    const summaries = [];
-    const processedFiles = [];
-    let processed = 0;
-
-    for (const s of statsAll.slice(0, maxFiles)) {
-      const prev =
-        BACKGROUND_MEMORY_META.files && BACKGROUND_MEMORY_META.files[s.file];
-      // #673: a file the reviewer pruned stays pruned until it changes --
-      // pruning clears its summary, so without this check the cached-summary
-      // branch below missed it, the file was re-read, and the prune was lost.
-      if (prev && prev.mtime === s.mtime && prev.pruned) {
-        processed++;
-        continue;
-      }
-      if (prev && prev.mtime === s.mtime && prev.summary) {
-        summaries.push(prev.summary);
-        processedFiles.push({
-          file: s.file,
-          summary: prev.summary,
-          mtime: prev.mtime,
-        });
-      } else {
-        try {
-          const raw = await fs.promises.readFile(s.path, "utf8");
-          const obj = JSON.parse(raw || "null") || {};
-          const summ =
-            obj && obj.summary && typeof obj.summary === "string"
-              ? String(obj.summary || "")
-                  .replace(/\s+/g, " ")
-                  .trim()
-              : "";
-          if (summ) summaries.push(summ);
-          BACKGROUND_MEMORY_META.files[s.file] = {
-            mtime: s.mtime,
-            summary: summ,
-          };
-          processedFiles.push({ file: s.file, summary: summ, mtime: s.mtime });
-        } catch (e) {
-          // ignore malformed files and remove from meta
-          if (
-            BACKGROUND_MEMORY_META.files &&
-            BACKGROUND_MEMORY_META.files[s.file]
-          ) {
-            delete BACKGROUND_MEMORY_META.files[s.file];
-          }
-        }
-      }
-      processed++;
-    }
 
     // If no summaries collected, clear block
     if (!summaries.length) {
@@ -1123,7 +1076,7 @@ async function asyncLoadBackgroundMemory() {
         text: "",
         processed,
         processedFiles: [],
-        totalFiles: jsonFiles.length,
+        totalFiles,
       };
     }
 
@@ -1140,7 +1093,7 @@ async function asyncLoadBackgroundMemory() {
 
     BACKGROUND_MEMORY_BLOCK = `[BACKGROUND MEMORY]\n${text}\n[END BACKGROUND MEMORY]`;
     console.log(
-      `Loaded BACKGROUND_MEMORY_BLOCK (${text.length} chars) from ${processed} processed files (${jsonFiles.length} total)`,
+      `Loaded BACKGROUND_MEMORY_BLOCK (${text.length} chars) from ${processed} processed files (${totalFiles} total)`,
     );
     try {
       await persistBackgroundMeta();
@@ -1150,7 +1103,7 @@ async function asyncLoadBackgroundMemory() {
       text,
       processed,
       processedFiles,
-      totalFiles: jsonFiles.length,
+      totalFiles,
     };
   } catch (e) {
     console.warn(
@@ -1212,79 +1165,53 @@ if (process.env.NODE_ENV !== "test" && !process.env.NODE_TEST_CONTEXT) {
               Math.max(64, Math.floor(maxChars / 4)),
           );
 
-          // Build a compact summarization prompt
-          const joined = summaries.slice(0, 200).join("\n\n");
-
-          // Skip the model call entirely when the summaries have not changed
-          // since the last successful compaction; reuse the stored result.
-          const summariesHash = crypto
-            .createHash("sha1")
-            .update(joined)
-            .digest("hex");
-          const lastCompacted = BACKGROUND_MEMORY_META.lastCompacted || null;
-          if (lastCompacted && lastCompacted.hash === summariesHash) {
-            if (lastCompacted.text) {
-              BACKGROUND_MEMORY_BLOCK = `[BACKGROUND MEMORY]\n${lastCompacted.text}\n[END BACKGROUND MEMORY]`;
-            }
-            return;
-          }
-
-          const prompt = `You are a concise summarization assistant. Combine the following session summaries into a single compact background memory block suitable for inclusion beneath system instructions. Keep concrete facts, user preferences, and avoid redundancy. Return only the compacted summary text; do not add commentary.\n\nBEGIN SUMMARIES:\n${joined}\n\nCOMPACT SUMMARY:`;
-
-          let compacted = null;
-          try {
-            if (shouldUseRemoteAi()) {
-              compacted = await runOpenAIReply(
-                prompt,
-                Math.min(maxTokens, 512),
-              );
-            }
-          } catch (e) {
-            console.warn(
-              "Background summarizer (remote) failed:",
-              e && e.message ? e.message : e,
-            );
-          }
-
-          if (!compacted) {
-            try {
-              // Only attempt local summarizer when a local runtime is available
-              if (localLlamaReplyAvailable()) {
-                compacted = await runLocalLlamaReply(
-                  prompt,
-                  Math.min(maxTokens, 256),
-                  "default",
+          // #673: dream-mode.js decides what to (re)summarize from the
+          // compactor's cursor -- only new/changed summaries after the
+          // first run, and no model call when there are none.
+          const result = await runCompactorStage({
+            processedFiles,
+            meta: BACKGROUND_MEMORY_META,
+            maxChars,
+            now: () => new Date().toISOString(),
+            summarize: async (prompt) => {
+              let reply = null;
+              try {
+                if (shouldUseRemoteAi()) {
+                  reply = await runOpenAIReply(prompt, Math.min(maxTokens, 512));
+                }
+              } catch (e) {
+                console.warn(
+                  "Background summarizer (remote) failed:",
+                  e && e.message ? e.message : e,
                 );
-              } else {
-                compacted = null;
               }
-            } catch (e) {
-              console.warn(
-                "Background summarizer (local) failed:",
-                e && e.message ? e.message : e,
-              );
-              compacted = null;
-            }
+              if (!reply && localLlamaReplyAvailable()) {
+                try {
+                  reply = await runLocalLlamaReply(prompt, Math.min(maxTokens, 256), "default");
+                } catch (e) {
+                  console.warn(
+                    "Background summarizer (local) failed:",
+                    e && e.message ? e.message : e,
+                  );
+                }
+              }
+              return reply;
+            },
+          });
+          if (result.text) {
+            BACKGROUND_MEMORY_BLOCK = `[BACKGROUND MEMORY]\n${result.text}\n[END BACKGROUND MEMORY]`;
           }
-
-          if (compacted && typeof compacted === "string") {
-            compacted = compacted.trim().replace(/\s+/g, " ");
-            if (compacted.length > maxChars)
-              compacted = compacted.slice(0, maxChars).trim() + "...";
-            BACKGROUND_MEMORY_BLOCK = `[BACKGROUND MEMORY]\n${compacted}\n[END BACKGROUND MEMORY]`;
-            BACKGROUND_MEMORY_META.lastCompacted = {
-              hash: summariesHash,
-              text: compacted,
-              at: new Date().toISOString(),
-            };
+          if (result.changedMeta) {
+            await persistBackgroundMeta();
+          }
+          if (result.called && result.text) {
+            const compacted = result.text;
             try {
               await persistBackgroundMeta();
               await writeMemoryMarkdown();
             } catch (e) {}
             console.log(
-              "Background memory compacted by summarizer (len=",
-              compacted.length,
-              ")",
+              `Background memory compacted by summarizer (len=${compacted.length}, ${result.incremental ? `${result.summarized} new summaries merged` : "full"})`,
             );
             // Issue #423: surface the Dream Mode insight as a proactive toast,
             // not just a silent file write -- fire-and-forget, never blocks
@@ -1386,24 +1313,14 @@ if (process.env.NODE_ENV !== "test" && !process.env.NODE_TEST_CONTEXT) {
             };
           }
 
-          // Build numbered summaries list
-          const numbered = processedFiles
-            .map(
-              (p, idx) =>
-                `${idx + 1}. ${String(p.summary || "").slice(0, 400)}`,
-            )
-            .join("\n\n");
-
           // Scheduled runs skip the model call when nothing changed since the
           // last applied review; explicit route-triggered runs always proceed.
-          const reviewHash = crypto
-            .createHash("sha1")
-            .update(numbered)
-            .digest("hex");
-          if (
-            options.skipIfUnchanged &&
-            BACKGROUND_MEMORY_META.lastReviewedHash === reviewHash
-          ) {
+          const { numbered, hash: reviewHash, skip } = reviewPlan({
+            processedFiles,
+            meta: BACKGROUND_MEMORY_META,
+            skipIfUnchanged: options.skipIfUnchanged,
+          });
+          if (skip) {
             return {
               ok: false,
               reason: "unchanged_since_last_review",
@@ -1527,8 +1444,10 @@ if (process.env.NODE_ENV !== "test" && !process.env.NODE_TEST_CONTEXT) {
 
           // Save important facts to meta for admin inspection
           if (importantFacts && importantFacts.length) {
-            BACKGROUND_MEMORY_META.important_facts = importantFacts.slice(
-              0,
+            // #673: merged into the list so far, not replacing it.
+            BACKGROUND_MEMORY_META.important_facts = mergeUnique(
+              importantFacts,
+              BACKGROUND_MEMORY_META.important_facts || [],
               200,
             );
           }
@@ -1587,75 +1506,49 @@ if (process.env.NODE_ENV !== "test" && !process.env.NODE_TEST_CONTEXT) {
           const res = await asyncLoadBackgroundMemory();
           const processedFiles =
             res && res.processedFiles ? res.processedFiles : [];
-          const minSummaries = Number(
-            process.env.MANA_BACKGROUND_CONNECTIONS_MIN_SUMMARIES || 2,
-          );
-          if (!processedFiles || processedFiles.length < minSummaries) {
-            // Not enough session history to find a real connection --
-            // matches the acceptance criteria's "skip on noise" requirement.
-            return { ok: false, reason: "not_enough_summaries" };
-          }
-
-          const maxSummaries = Number(
-            process.env.MANA_BACKGROUND_CONNECTIONS_MAX_SUMMARIES || 30,
-          );
-          const numbered = processedFiles
-            .slice(0, maxSummaries)
-            .map(
-              (p, idx) =>
-                `${idx + 1}. [session: ${p.file}] ${String(p.summary || "").slice(0, 300)}`,
-            )
-            .join("\n\n");
-
-          const prompt = `You are finding real connections between separate chat session summaries -- e.g. two sessions touching the same topic days apart, or one session following up on an earlier one. Given the numbered summaries below (each tagged with its session file), list at most 5 short connection lines, each naming which numbered summaries relate and why, formatted like "Summary #1 <-> Summary #3: both discuss the FFXIV crafting rework". Only report connections that are actually there -- if the summaries are all unrelated one-off topics, reply with exactly the single word NONE and nothing else.\n\nBEGIN SUMMARIES:\n${numbered}\n\nEND SUMMARIES\n\nCONNECTIONS:`;
-
-          let reply = null;
-          try {
-            if (shouldUseRemoteAi()) {
-              reply = await runOpenAIReply(prompt, 300);
-            }
-          } catch (e) {
-            console.warn(
-              "Background connections (remote) failed:",
-              e && e.message ? e.message : e,
-            );
-          }
-          if (!reply) {
-            try {
-              if (localLlamaReplyAvailable()) {
-                reply = await runLocalLlamaReply(prompt, 300, "default");
+          // #673: only runs when there are summaries new since its last
+          // run, and only looks for connections involving them.
+          const result = await runConnectionsStage({
+            processedFiles,
+            meta: BACKGROUND_MEMORY_META,
+            minSummaries: Number(process.env.MANA_BACKGROUND_CONNECTIONS_MIN_SUMMARIES || 2),
+            maxSummaries: Number(process.env.MANA_BACKGROUND_CONNECTIONS_MAX_SUMMARIES || 30),
+            now: () => new Date().toISOString(),
+            ask: async (prompt) => {
+              let reply = null;
+              try {
+                if (shouldUseRemoteAi()) {
+                  reply = await runOpenAIReply(prompt, 300);
+                }
+              } catch (e) {
+                console.warn(
+                  "Background connections (remote) failed:",
+                  e && e.message ? e.message : e,
+                );
               }
-            } catch (e) {
-              console.warn(
-                "Background connections (local) failed:",
-                e && e.message ? e.message : e,
-              );
-            }
-          }
-          if (!reply || typeof reply !== "string") {
-            return { ok: false, reason: "no_reply" };
-          }
-
-          const trimmed = reply.trim();
-          const connections =
-            !trimmed || /^NONE$/i.test(trimmed)
-              ? []
-              : trimmed
-                  .split(/\r?\n/)
-                  .map((line) => line.trim())
-                  .filter(Boolean)
-                  .slice(0, 5);
-
-          BACKGROUND_MEMORY_META.connections = connections;
+              if (!reply && localLlamaReplyAvailable()) {
+                try {
+                  reply = await runLocalLlamaReply(prompt, 300, "default");
+                } catch (e) {
+                  console.warn(
+                    "Background connections (local) failed:",
+                    e && e.message ? e.message : e,
+                  );
+                }
+              }
+              return reply;
+            },
+          });
+          if (!result.ok) return result;
           try {
             await persistBackgroundMeta();
             await writeMemoryMarkdown();
           } catch (e) {}
 
           console.log(
-            `Background connections pass found ${connections.length} connection(s)`,
+            `Background connections pass found ${result.found.length} new connection(s)`,
           );
-          return { ok: true, connections };
+          return { ok: true, connections: result.connections };
         } catch (e) {
           console.warn(
             "Background connections failed:",
@@ -1940,6 +1833,17 @@ function registerRoutes(app, upload, deps = {}) {
           ),
         );
       }
+      // Issue #663: unconfirmed facts age into archived. No model call.
+      try {
+        (deps.acpMemoryStore || acpMemoryStore).archiveExpiredPendingFacts({
+          maxAgeDays: Number(process.env.MANA_PENDING_FACT_MAX_AGE_DAYS) || undefined,
+        });
+      } catch (err) {
+        console.warn(
+          "Idle-triggered pending-fact expiry failed:",
+          err && err.message ? err.message : err,
+        );
+      }
       // Deterministic, no-LLM skill pruning (issue #140) -- same idle
       // signal as the memory consolidation above, but this pass never
       // calls the model: it just flags/archives skills nobody's used in
@@ -2125,7 +2029,12 @@ function registerRoutes(app, upload, deps = {}) {
   // conversational skill write doesn't silently also disable review for
   // every future proposal nobody's actually looked at.
   activeApprovalGate.registerExecutor("skill-write-idle", (payload) => activeSkillsStore.createSkill(payload));
-  activeApprovalGate.registerExecutor("memory-write", (payload) => acpMemoryStore.rememberFact(payload));
+  // Issue #663: refuses (and asks again) when the fact changed since the
+  // request, instead of writing over what the approver reviewed.
+  activeApprovalGate.registerExecutor(
+    "memory-write",
+    createMemoryWriteExecutor({ acpMemoryStore, approvalGate: activeApprovalGate }),
+  );
 
   // Lets acpMemoryStore's summarizeFn (built at module load time, long
   // before registerRoutes ever runs) reach the real runOpenAIReply --
@@ -3263,8 +3172,9 @@ function registerRoutes(app, upload, deps = {}) {
       profile = "default",
       overrideSystemPrompt = null,
       extraMessages = null,
+      onEmptyReply = null,
     ) {
-      return runLocalLlamaReply(prompt, maxTokens, profile, overrideSystemPrompt, extraMessages);
+      return runLocalLlamaReply(prompt, maxTokens, profile, overrideSystemPrompt, extraMessages, onEmptyReply);
     });
 
   // Foundational tool-calling (issue #51): only llama-server (not the
@@ -3600,25 +3510,29 @@ function registerRoutes(app, upload, deps = {}) {
       // don't block on telemetry
     }
 
-    let selectedSystemPrompt = null;
     // Identity ("who Mana is") comes from persona.js, layered with each
     // mode's own task-specific operational instructions -- these three
     // used to each redefine Mana's personality from scratch, drifting
     // slightly from one another and from persona.js's other consumers.
-    const personaBlock = persona.buildPersonaPrompt(
+    let selectedSystemPrompt = persona.buildPersonaPrompt(
       sessionId,
       personalityStore.get().traits,
     );
-    const CASUAL_SYSTEM_PROMPT = `${personaBlock} Use short paragraphs and natural conversational phrasing; include occasional friendly flourishes (e.g. "You got this!"). Ask one clarifying question only when necessary. If the user requests professional or safety-sensitive information, politely indicate you cannot provide it and offer to look up resources or recommend professionals.`;
-    const EVERYDAY_SYSTEM_PROMPT = `${personaBlock} Provide clear, concise, and practical guidance. When giving instructions, present them as short numbered steps and include expected outcomes or simple checks when helpful. Use plain language accessible to non-technical users. Offer follow-up actions and ask clarifying questions only when required. For health, legal, or hazardous topics, recommend professional resources.`;
-    const CODING_SYSTEM_PROMPT = `${personaBlock} In this mode, be focused, precise, and technical: start with a one-line summary of intent, then provide minimal, runnable code examples in fenced blocks, followed by a short explanation and a suggested test or verification step. Avoid small talk entirely. Ask only necessary clarifying questions. When the user requests structured output (JSON, patch, or commands), return exactly the machine-readable block unless commentary is explicitly requested. Include assumptions and environment notes when relevant.`;
+    // Issue #660: the mode is picked per message, so its text is appended
+    // last (after the session goal below) -- spliced in right after the
+    // persona, a mode switch changed the prompt prefix and cost
+    // llama-server its prompt cache for everything after it.
+    const CASUAL_MODE_TEXT = `Use short paragraphs and natural conversational phrasing; include occasional friendly flourishes (e.g. "You got this!"). Ask one clarifying question only when necessary. If the user requests professional or safety-sensitive information, politely indicate you cannot provide it and offer to look up resources or recommend professionals.`;
+    const EVERYDAY_MODE_TEXT = `Provide clear, concise, and practical guidance. When giving instructions, present them as short numbered steps and include expected outcomes or simple checks when helpful. Use plain language accessible to non-technical users. Offer follow-up actions and ask clarifying questions only when required. For health, legal, or hazardous topics, recommend professional resources.`;
+    const CODING_MODE_TEXT = `In this mode, be focused, precise, and technical: start with a one-line summary of intent, then provide minimal, runnable code examples in fenced blocks, followed by a short explanation and a suggested test or verification step. Avoid small talk entirely. Ask only necessary clarifying questions. When the user requests structured output (JSON, patch, or commands), return exactly the machine-readable block unless commentary is explicitly requested. Include assumptions and environment notes when relevant.`;
 
+    let modeText;
     if (mode === "casual" || mode === "chat") {
-      selectedSystemPrompt = CASUAL_SYSTEM_PROMPT;
+      modeText = CASUAL_MODE_TEXT;
     } else if (mode === "coding" || mode === "developer") {
-      selectedSystemPrompt = CODING_SYSTEM_PROMPT;
+      modeText = CODING_MODE_TEXT;
     } else {
-      selectedSystemPrompt = EVERYDAY_SYSTEM_PROMPT;
+      modeText = EVERYDAY_MODE_TEXT;
     }
 
     // A saved preset layers its instructions on top of the base persona
@@ -3717,6 +3631,7 @@ function registerRoutes(app, upload, deps = {}) {
         selectedSystemPrompt = `${selectedSystemPrompt}\n\nSession goal: ${sessionGoal}\nIf you believe this goal has been fully achieved, call session_goal__finish instead of continuing to use more tools.`;
       }
     }
+    selectedSystemPrompt = `${selectedSystemPrompt}\n\n${modeText}`;
 
     // Issue #282: memory (session summary/recent-turns, cross-session
     // facts) becomes its own positionable system-role messages -- "early"
@@ -3731,8 +3646,10 @@ function registerRoutes(app, upload, deps = {}) {
     // all of them default to "late" -- anything per-turn placed early would
     // change the prompt prefix and defeat llama-server's prompt cache. The
     // system prompt above stays per-turn-free for the same reason (persona,
-    // background memory, name-sorted skills index, session goal); screen
-    // and market text already ride on the user message itself.
+    // background memory, name-sorted skills index, session goal), except for
+    // the per-message mode text, which goes last so a mode switch only
+    // changes its tail; screen and market text already ride on the user
+    // message itself.
     const memoryExtraMessages = { early: [], late: [] };
     let flatMemorySuffix = "";
     let promptMemoryChars = 0;
@@ -3782,7 +3699,7 @@ function registerRoutes(app, upload, deps = {}) {
     // used observable (GET /prompt-composition), instead of only
     // discoverable by reading the code the way #364's truncation bug was.
     // Covers the three blocks gathered unconditionally above (system-prompt
-    // folds in persona/preset/background-memory/skills-index/session-goal,
+    // folds in persona/preset/background-memory/skills-index/session-goal/mode,
     // since those are all concatenated into one string by this point),
     // before the reply-path branches below diverge; tool schemas and the
     // live turns differ per reply path (tool-aware vs. streaming vs. plain)
@@ -4133,6 +4050,10 @@ function registerRoutes(app, upload, deps = {}) {
     // that gets appended to session memory, and a closure-scoped variable
     // gets that without changing any other reply path's signature.
     let lastToolCalls = [];
+    // Issue #673: every tool that has returned so far this turn (across
+    // regeneration attempts too), so a memory write can tell whether it may
+    // be repeating content a tool brought in (memory-tool-source.js).
+    const turnTools = [];
 
     // Issue #331: onSentence streams only the very first plain local-
     // completion attempt. Regeneration (rut-detection nudge, verify/retry)
@@ -4206,6 +4127,7 @@ function registerRoutes(app, upload, deps = {}) {
               // or swaps a model, see llamaServerRuntime's own comment on
               // isProfileAlreadyLoaded/runLocalReplyIfSafelyLoaded.
               runLocalReply: llamaServerRuntime.runLocalReplyIfSafelyLoaded,
+              turnTools,
             }),
             createSessionSearchToolSource({ acpMemoryStore, sessionId }),
             createSkillToolSource({ approvalGate: activeApprovalGate, skillsStore: activeSkillsStore }),
@@ -4293,6 +4215,12 @@ function registerRoutes(app, upload, deps = {}) {
           // every source (local read_file, browser-automation, MCP) in one
           // shared audit/trace log.
           mergedToolPolicy = wrapWithToolCallLog(mergedToolPolicy, activeToolCallLog);
+          const executeLoggedTool = mergedToolPolicy.executeTool;
+          mergedToolPolicy.executeTool = async (name, args) => {
+            const result = await executeLoggedTool(name, args);
+            turnTools.push(name);
+            return result;
+          };
           const toolResult = await runToolAwareReply(
             promptText,
             mergedToolPolicy,
@@ -4369,6 +4297,7 @@ function registerRoutes(app, upload, deps = {}) {
         normalizedModelProfile,
         selectedSystemPrompt,
         memoryExtraMessages,
+        () => replyWithBackup(promptText),
       );
     }
 
@@ -4434,6 +4363,8 @@ function registerRoutes(app, upload, deps = {}) {
       return replyMaybeWithTools(promptText);
     }
 
+    const BACKUP_NOTICE = "My main model isn't answering, so I'm using my backup.";
+    let usedBackup = false;
     // #666: wait out a llama-server (re)start instead of failing the turn,
     // telling a streaming client once, as a spoken sentence. Not in
     // streamedSentences, so it never counts against streamedMatchesFinal.
@@ -4452,11 +4383,38 @@ function registerRoutes(app, upload, deps = {}) {
         );
         if (readyProfile !== normalizedModelProfile) {
           console.warn(`Mana: ${normalizedModelProfile} model unavailable, answering with ${readyProfile}`);
-          if (onSentence) onSentence("My main model isn't answering, so I'm using my backup.");
+          if (onSentence) onSentence(BACKUP_NOTICE);
           normalizedModelProfile = readyProfile;
+          usedBackup = true;
         }
       } catch (e) {
         console.warn("llama-server still unavailable after waiting:", e && e.message ? e.message : e);
+      }
+    }
+
+    // #666: an empty reply (after the runtime's own retry) gets one try on
+    // the backup model before llama-cli -- once per turn, including a switch
+    // the wait above already made, so the notice is said at most once.
+    async function replyWithBackup(promptText) {
+      if (usedBackup) return null;
+      usedBackup = true;
+      try {
+        const backup = activeLlamaServerRuntime.backupProfileFor?.(normalizedModelProfile);
+        if (!backup) return null;
+        const backupReply = await activeLlamaServerRuntime.runLocalAssistantReply(
+          promptText,
+          effectiveMaxTokens,
+          backup,
+          selectedSystemPrompt,
+          memoryExtraMessages,
+        );
+        console.warn(`Mana: ${normalizedModelProfile} model gave an empty reply, answered with ${backup}`);
+        if (onSentence) onSentence(BACKUP_NOTICE);
+        normalizedModelProfile = backup;
+        return backupReply;
+      } catch (e) {
+        console.warn("Backup model reply failed, falling back to llama-cli:", e && e.message ? e.message : e);
+        return null;
       }
     }
 

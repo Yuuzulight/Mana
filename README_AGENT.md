@@ -79,10 +79,10 @@ this checkout's paths (or delete those lines and rely on the defaults in
 section 3). The `MOBILE_*` lines are only for the phone companion; delete
 them if unused.
 
-`node-bot/.env` is loaded automatically at startup by `node server.js` and
-by the native launcher (#731); its values override the same variables
-inherited from the Windows environment. `npm run mcp` and the Electron
-launcher's own process don't load it.
+`node-bot/.env` is loaded automatically at startup by `node server.js`,
+`npm run mcp` and the native launcher (#731); its values override the same
+variables inherited from the Windows environment. The Electron launcher's
+own process doesn't load it.
 
 Recently changed variables (all optional):
 

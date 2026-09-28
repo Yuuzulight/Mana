@@ -850,17 +850,24 @@ function createLlamaServerRuntime(options = {}) {
           await sleep(waitMs);
           continue;
         }
-        const fallback = LLAMA_MODEL_PROFILES[profile]?.fallbackProfile;
-        const fallbackModel = fallback ? findLlamaModel(fallback) : null;
-        if (!fallbackModel || fallbackModel === model) throw e;
+        const fallback = backupProfileFor(profile);
+        if (!fallback) throw e;
         try {
-          await ensureServerConfig(fallbackModel, null, fallback, notify);
+          await ensureServerConfig(findLlamaModel(fallback), null, fallback, notify);
         } catch {
           throw e;
         }
         return fallback;
       }
     }
+  }
+
+  // #666: the profile's fallbackProfile, or null when it has none or it
+  // resolves to the same model file (retrying that model wouldn't help).
+  function backupProfileFor(profile) {
+    const fallback = LLAMA_MODEL_PROFILES[profile]?.fallbackProfile;
+    const fallbackModel = fallback ? findLlamaModel(fallback) : null;
+    return fallbackModel && fallbackModel !== findLlamaModel(profile) ? fallback : null;
   }
 
   // Issue #282: splices caller-supplied memory entries into the message
@@ -1598,6 +1605,7 @@ function createLlamaServerRuntime(options = {}) {
   }
 
   return {
+    backupProfileFor,
     buildServerArgs,
     ensureServerConfig,
     findLlamaServerBin,

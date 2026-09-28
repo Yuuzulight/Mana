@@ -2473,3 +2473,9 @@ test("#666: a rolled-back build is retried by waitForServer straight away, not a
   assert.deepEqual(spawnCalls, ["C:\\llama-new\\llama-server.exe", "C:\\llama\\llama-server.exe"]);
   assert.equal(JSON.parse(files[POINTER_FILE]).active, "C:\\llama");
 });
+
+test("#666: backupProfileFor names the profile's fallbackProfile, or null when it has none", () => {
+  const { runtime } = makeRetryRuntime();
+  assert.equal(runtime.backupProfileFor("quality"), "default");
+  assert.equal(runtime.backupProfileFor("fast"), null);
+});

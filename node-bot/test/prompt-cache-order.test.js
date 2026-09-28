@@ -57,3 +57,35 @@ test("the prompt prefix is byte-identical across turns and per-turn context come
     assert.doesNotMatch(call.opts.overrideSystemPrompt, /screen [AB] text|RTX 5080|Conversation memory:/);
   }
 });
+
+// Issue #660: the assistant mode is picked per message, so its text must be
+// the tail of the system prompt -- a mode switch should leave everything
+// before it (persona, background memory, skills index, session goal)
+// byte-identical so llama-server can keep that part of its cache.
+test("a mode switch only changes the tail of the system prompt", async () => {
+  const calls = [];
+  const app = createApp({
+    llamaServerRuntime: { isEnabled: () => true },
+    runToolAwareReply: async (prompt, policy, opts) => {
+      calls.push(opts.overrideSystemPrompt);
+      return { content: "tool-aware reply", toolCalls: [], rounds: 1 };
+    },
+  });
+
+  await app.locals.buildAssistantReply("hey!", "", "", "default", "sess-660-mode", "casual", null, {});
+  const casual = calls[0];
+  calls.length = 0;
+  await app.locals.buildAssistantReply("how do I reset my router?", "", "", "default", "sess-660-mode", "everyday", null, {});
+  const everyday = calls[0];
+
+  // Mode texts are single paragraphs, so the last blank line splits the
+  // stable prefix from the mode tail.
+  const split = (sys) => [sys.slice(0, sys.lastIndexOf("\n\n")), sys.slice(sys.lastIndexOf("\n\n") + 2)];
+  const [casualPrefix, casualTail] = split(casual);
+  const [everydayPrefix, everydayTail] = split(everyday);
+  assert.ok(casualPrefix.length > 0);
+  assert.equal(casualPrefix, everydayPrefix);
+  assert.match(casualTail, /^Use short paragraphs and natural conversational phrasing/);
+  assert.match(everydayTail, /^Provide clear, concise, and practical guidance/);
+  assert.doesNotMatch(casualPrefix, /conversational phrasing|practical guidance/);
+});

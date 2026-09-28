@@ -187,7 +187,7 @@ internal sealed class ManaProcessManager : IDisposable
         var python = ResolveVenvPython(ttsDir, "venv");
         if (!File.Exists(python))
         {
-            throw new FileNotFoundException("Kokoro Python environment was not found. Run the Electron launcher once for setup.", python);
+            throw new FileNotFoundException("Kokoro Python environment was not found. Set it up once: python -m venv tts-service/venv, then run tts-service/start_kokoro.ps1 (see tts-service/README.md).", python);
         }
 
         return StartHiddenProcess(

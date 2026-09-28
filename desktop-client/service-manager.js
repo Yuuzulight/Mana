@@ -89,7 +89,7 @@ function createServiceManager({ manaRoot, onProgress = () => {}, log = console, 
     const dir = path.join(manaRoot, 'tts-service');
     const env = resolvePythonEnv(manaRoot, 'tts-service', 'tts-service');
     if (!env) {
-      emit('kokoro', 'skipped', 'Not set up -- see tts-service/start.ps1.');
+      emit('kokoro', 'skipped', 'Not set up -- see tts-service/README.md.');
       return;
     }
     spawnAndTrack(

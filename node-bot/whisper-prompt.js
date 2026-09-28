@@ -29,8 +29,15 @@ const MAX_TURN_CHARS = 500;
 // Fact keys the memory tool / Settings use for the user's name ("name" is
 // the convention in test/memory-recall.test.js).
 const NAME_KEY = /^(?:(?:the )?user(?:'?s)? |my |preferred )?name$/i;
-// Capitalized mid-sentence, but not a name.
-const NOT_TERMS = new Set(["i'm", "i'll", "i've", "i'd", "ok"]);
+// Capitalized mid-sentence, but not a name. #667: also exclamations ("oh my
+// God"; "Jesus Christ" put "Christ" in a real prompt) and days/months --
+// capitalized, but whisper already knows them, so they'd only spend the
+// term budget.
+const NOT_TERMS = new Set([
+  ..."i'm i'll i've i'd ok god gosh jesus christ lord omg".split(" "),
+  ..."monday tuesday wednesday thursday friday saturday sunday".split(" "),
+  ..."january february march april may june july august september october november december".split(" "),
+]);
 
 function cleanTerm(raw) {
   const term = String(raw || "")
@@ -59,10 +66,20 @@ function userNameFromFacts(facts) {
   return name && name.split(" ").length <= 3 ? name : "";
 }
 
+// Jargon-shaped: a capital or digit inside ("FFXIV", "PyTorch", "S1"), or a
+// capitalized word with a dot inside ("Node.js", #667).
+function isJargon(term) {
+  return (
+    /\p{Lu}/u.test(term.slice(1)) ||
+    (/\p{N}/u.test(term) && /\p{L}/u.test(term)) ||
+    /^\p{Lu}.*\.\p{L}/u.test(term)
+  );
+}
+
 // Single words that look like names or jargon: capitalized mid-sentence
-// ("I switched to Kokoro"), or with a capital/digit inside anywhere
-// ("FFXIV", "PyTorch", "S1"). A capitalized sentence-initial word ("Want",
-// "Hey") says nothing, which is why the entity index isn't used here.
+// ("I switched to Kokoro"), or jargon-shaped anywhere. A capitalized
+// sentence-initial word ("Want", "Hey") says nothing, which is why the
+// entity index isn't used here.
 // ponytail: capitalization heuristic, not NER.
 function extractTerms(text) {
   const terms = [];
@@ -73,17 +90,19 @@ function extractTerms(text) {
     words.forEach((word, i) => {
       const term = cleanTerm(word.replace(/['’]s$/i, ""));
       if (term.length < 2 || term.includes(" ") || NOT_TERMS.has(term.toLowerCase())) return;
-      const jargon = /\p{Lu}/u.test(term.slice(1)) || (/\p{N}/u.test(term) && /\p{L}/u.test(term));
-      const properNoun = i > 0 && /^\p{Lu}/u.test(term);
-      if (jargon || properNoun) terms.push(term);
+      if (isJargon(term) || (i > 0 && /^\p{Lu}/u.test(term))) terms.push(term);
     });
   }
   return terms;
 }
 
 // Pure builder: same inputs, same prompt. Terms are deduped
-// case-insensitively (first spelling seen wins), ordered by how often they
-// occur and then alphabetically, and cut to fit MAX_TERMS / MAX_PROMPT_CHARS.
+// case-insensitively (first spelling seen wins), ordered by how many sources
+// (facts/turns) they occur in and then alphabetically, and cut to fit
+// MAX_TERMS / MAX_PROMPT_CHARS. #667: a plain capitalized word needs a
+// verified memory fact or at least 2 chat turns -- on real data every one-off
+// capital ("Ali", "Baba") came from a single garbled voice transcript, never
+// from a fact -- while jargon-shaped terms need only one source.
 function buildWhisperPrompt({ facts = [], userTexts = [] } = {}) {
   const usableFacts = facts.filter(isUsableFact);
   const name = userNameFromFacts(usableFacts);
@@ -94,17 +113,24 @@ function buildWhisperPrompt({ facts = [], userTexts = [] } = {}) {
 
   const counts = new Map();
   const termFacts = usableFacts.filter((f) => !NAME_KEY.test(String(f.key || "").trim()));
-  const sources = [...termFacts.map((f) => `${f.key}. ${f.text}`), ...userTexts];
-  for (const text of sources) {
+  const sources = [
+    ...termFacts.map((f) => ({ text: `${f.key}. ${f.text}`, isFact: true })),
+    ...userTexts.map((text) => ({ text, isFact: false })),
+  ];
+  for (const { text, isFact } of sources) {
+    const seen = new Set();
     for (const term of extractTerms(text)) {
       const key = term.toLowerCase();
-      if (known.has(key)) continue;
-      const entry = counts.get(key) || { term, count: 0 };
+      if (known.has(key) || seen.has(key)) continue;
+      seen.add(key);
+      const entry = counts.get(key) || { term, count: 0, inFact: false };
       entry.count += 1;
+      entry.inFact = entry.inFact || isFact;
       counts.set(key, entry);
     }
   }
   const ranked = [...counts.values()]
+    .filter((entry) => entry.inFact || entry.count >= 2 || isJargon(entry.term))
     .sort((a, b) => b.count - a.count || a.term.localeCompare(b.term))
     .slice(0, MAX_TERMS)
     .map((entry) => entry.term);

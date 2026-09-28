@@ -1802,7 +1802,7 @@ public class ManaBackendClientTests
         var handler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
         {
             Content = new StringContent(
-                """{"ok":true,"facts":[{"key":"favorite-color","text":"User likes blue","status":"active"},{"key":"name","text":"Yuuzu","status":"active","pinned":true}]}""",
+                """{"ok":true,"facts":[{"key":"favorite-color","text":"User likes blue","status":"active"},{"key":"name","text":"Yuuzu","status":"active","pinned":true,"trust":"tentative"}]}""",
                 Encoding.UTF8,
                 "application/json"),
         });
@@ -1817,6 +1817,8 @@ public class ManaBackendClientTests
         Assert.Equal("active", fact.Status);
         Assert.False(fact.Pinned);
         Assert.True(facts[1].Pinned);
+        Assert.Equal("", fact.Trust);
+        Assert.Equal("tentative", facts[1].Trust);
     }
 
     [Fact]
@@ -1872,6 +1874,25 @@ public class ManaBackendClientTests
         await client.ArchiveMemoryFactAsync("favorite-color");
 
         Assert.Equal("/admin/memory/facts/favorite-color/archive", path);
+    }
+
+    [Fact]
+    public async Task ConfirmMemoryFactAsync_PostsToTheConfirmEndpoint()
+    {
+        string? path = null;
+        var handler = new FakeHttpMessageHandler(request =>
+        {
+            path = request.RequestUri!.AbsolutePath;
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("{\"ok\":true}", Encoding.UTF8, "application/json"),
+            };
+        });
+        var client = new ManaBackendClient(handler);
+
+        await client.ConfirmMemoryFactAsync("favorite-color");
+
+        Assert.Equal("/admin/memory/facts/favorite-color/confirm", path);
     }
 
     [Fact]

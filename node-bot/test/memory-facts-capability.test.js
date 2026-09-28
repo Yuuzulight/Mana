@@ -31,6 +31,8 @@ test("GET /admin/memory/facts returns the store's full fact list", async () => {
     assert.equal(response.status, 200);
     assert.equal(payload.facts.length, 1);
     assert.equal(payload.facts[0].unverifiedSource, true);
+    // Issue #673: derived trust rides along with each fact.
+    assert.equal(payload.facts[0].trust, "untrusted");
   });
 });
 
@@ -103,4 +105,45 @@ test("POST /admin/memory/facts/:key/pin sets the pinned flag and 404s an unknown
     assert.equal((await post("missing", { pinned: true })).status, 404);
   });
   assert.deepEqual(calls, [["name", true], ["name", false], ["missing", true]]);
+});
+
+test("POST /admin/memory/facts/:key/confirm confirms as the human and 404s an unknown key (issue #663)", async () => {
+  const app = express();
+  app.use(express.json());
+  const calls = [];
+  memoryFactsCapability.registerRoutes(app, {
+    checkAdminAuth: () => true,
+    acpMemoryStore: fakeStore({
+      rememberFact: (args) => {
+        calls.push(args);
+        return { ok: true, action: "confirm", key: args.key, found: args.key === "cat" };
+      },
+    }),
+  });
+
+  await withServer(app, async (baseUrl) => {
+    const confirmed = await fetch(`${baseUrl}/admin/memory/facts/cat/confirm`, { method: "POST" });
+    assert.equal(confirmed.status, 200);
+    assert.equal((await confirmed.json()).ok, true);
+    const missing = await fetch(`${baseUrl}/admin/memory/facts/dog/confirm`, { method: "POST" });
+    assert.equal(missing.status, 404);
+    assert.equal((await missing.json()).ok, false);
+    assert.deepEqual(calls[0], { key: "cat", action: "confirm", source: "human" });
+  });
+});
+
+test("GET /admin/memory/facts/:key/history returns the store's logged changes for that key (issue #673)", async () => {
+  const app = express();
+  app.use(express.json());
+  const entries = [{ at: "2026-09-01T00:00:00.000Z", op: "add", key: "gpu", before: null, after: { text: "RTX 5080" } }];
+  memoryFactsCapability.registerRoutes(app, {
+    checkAdminAuth: () => true,
+    acpMemoryStore: fakeStore({ getFactHistory: (key) => (key === "gpu" ? entries : []) }),
+  });
+
+  await withServer(app, async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/admin/memory/facts/gpu/history`);
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { ok: true, key: "gpu", entries });
+  });
 });

@@ -738,6 +738,7 @@ internal sealed class ManaBackendClient
                     Text = entry.TryGetProperty("text", out var textEl) ? textEl.GetString() ?? "" : "",
                     Status = entry.TryGetProperty("status", out var statusEl) ? statusEl.GetString() ?? "" : "",
                     Pinned = entry.TryGetProperty("pinned", out var pinnedEl) && pinnedEl.ValueKind == JsonValueKind.True,
+                    Trust = entry.TryGetProperty("trust", out var trustEl) ? trustEl.GetString() ?? "" : "",
                 });
             }
         }
@@ -747,6 +748,13 @@ internal sealed class ManaBackendClient
     public async Task ArchiveMemoryFactAsync(string key)
     {
         using var response = await http.PostAsync($"/admin/memory/facts/{Uri.EscapeDataString(key)}/archive", null);
+        response.EnsureSuccessStatusCode();
+    }
+
+    // #663: makes a pending (auto-picked-up) fact active.
+    public async Task ConfirmMemoryFactAsync(string key)
+    {
+        using var response = await http.PostAsync($"/admin/memory/facts/{Uri.EscapeDataString(key)}/confirm", null);
         response.EnsureSuccessStatusCode();
     }
 
@@ -1806,6 +1814,8 @@ internal sealed class ManaMemoryFact
     public string Text { get; init; } = "";
     public string Status { get; init; } = "";
     public bool Pinned { get; init; }
+    // #673: "trusted" / "tentative" / "untrusted", derived server-side.
+    public string Trust { get; init; } = "";
 }
 
 // #529: GET /skills (index only -- see GetSkillsAsync's own comment).
