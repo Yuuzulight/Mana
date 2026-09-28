@@ -3599,25 +3599,29 @@ function registerRoutes(app, upload, deps = {}) {
       // don't block on telemetry
     }
 
-    let selectedSystemPrompt = null;
     // Identity ("who Mana is") comes from persona.js, layered with each
     // mode's own task-specific operational instructions -- these three
     // used to each redefine Mana's personality from scratch, drifting
     // slightly from one another and from persona.js's other consumers.
-    const personaBlock = persona.buildPersonaPrompt(
+    let selectedSystemPrompt = persona.buildPersonaPrompt(
       sessionId,
       personalityStore.get().traits,
     );
-    const CASUAL_SYSTEM_PROMPT = `${personaBlock} Use short paragraphs and natural conversational phrasing; include occasional friendly flourishes (e.g. "You got this!"). Ask one clarifying question only when necessary. If the user requests professional or safety-sensitive information, politely indicate you cannot provide it and offer to look up resources or recommend professionals.`;
-    const EVERYDAY_SYSTEM_PROMPT = `${personaBlock} Provide clear, concise, and practical guidance. When giving instructions, present them as short numbered steps and include expected outcomes or simple checks when helpful. Use plain language accessible to non-technical users. Offer follow-up actions and ask clarifying questions only when required. For health, legal, or hazardous topics, recommend professional resources.`;
-    const CODING_SYSTEM_PROMPT = `${personaBlock} In this mode, be focused, precise, and technical: start with a one-line summary of intent, then provide minimal, runnable code examples in fenced blocks, followed by a short explanation and a suggested test or verification step. Avoid small talk entirely. Ask only necessary clarifying questions. When the user requests structured output (JSON, patch, or commands), return exactly the machine-readable block unless commentary is explicitly requested. Include assumptions and environment notes when relevant.`;
+    // Issue #660: the mode is picked per message, so its text is appended
+    // last (after the session goal below) -- spliced in right after the
+    // persona, a mode switch changed the prompt prefix and cost
+    // llama-server its prompt cache for everything after it.
+    const CASUAL_MODE_TEXT = `Use short paragraphs and natural conversational phrasing; include occasional friendly flourishes (e.g. "You got this!"). Ask one clarifying question only when necessary. If the user requests professional or safety-sensitive information, politely indicate you cannot provide it and offer to look up resources or recommend professionals.`;
+    const EVERYDAY_MODE_TEXT = `Provide clear, concise, and practical guidance. When giving instructions, present them as short numbered steps and include expected outcomes or simple checks when helpful. Use plain language accessible to non-technical users. Offer follow-up actions and ask clarifying questions only when required. For health, legal, or hazardous topics, recommend professional resources.`;
+    const CODING_MODE_TEXT = `In this mode, be focused, precise, and technical: start with a one-line summary of intent, then provide minimal, runnable code examples in fenced blocks, followed by a short explanation and a suggested test or verification step. Avoid small talk entirely. Ask only necessary clarifying questions. When the user requests structured output (JSON, patch, or commands), return exactly the machine-readable block unless commentary is explicitly requested. Include assumptions and environment notes when relevant.`;
 
+    let modeText;
     if (mode === "casual" || mode === "chat") {
-      selectedSystemPrompt = CASUAL_SYSTEM_PROMPT;
+      modeText = CASUAL_MODE_TEXT;
     } else if (mode === "coding" || mode === "developer") {
-      selectedSystemPrompt = CODING_SYSTEM_PROMPT;
+      modeText = CODING_MODE_TEXT;
     } else {
-      selectedSystemPrompt = EVERYDAY_SYSTEM_PROMPT;
+      modeText = EVERYDAY_MODE_TEXT;
     }
 
     // A saved preset layers its instructions on top of the base persona
@@ -3716,6 +3720,7 @@ function registerRoutes(app, upload, deps = {}) {
         selectedSystemPrompt = `${selectedSystemPrompt}\n\nSession goal: ${sessionGoal}\nIf you believe this goal has been fully achieved, call session_goal__finish instead of continuing to use more tools.`;
       }
     }
+    selectedSystemPrompt = `${selectedSystemPrompt}\n\n${modeText}`;
 
     // Issue #282: memory (session summary/recent-turns, cross-session
     // facts) becomes its own positionable system-role messages -- "early"
@@ -3730,8 +3735,10 @@ function registerRoutes(app, upload, deps = {}) {
     // all of them default to "late" -- anything per-turn placed early would
     // change the prompt prefix and defeat llama-server's prompt cache. The
     // system prompt above stays per-turn-free for the same reason (persona,
-    // background memory, name-sorted skills index, session goal); screen
-    // and market text already ride on the user message itself.
+    // background memory, name-sorted skills index, session goal), except for
+    // the per-message mode text, which goes last so a mode switch only
+    // changes its tail; screen and market text already ride on the user
+    // message itself.
     const memoryExtraMessages = { early: [], late: [] };
     let flatMemorySuffix = "";
     let promptMemoryChars = 0;
@@ -3781,7 +3788,7 @@ function registerRoutes(app, upload, deps = {}) {
     // used observable (GET /prompt-composition), instead of only
     // discoverable by reading the code the way #364's truncation bug was.
     // Covers the three blocks gathered unconditionally above (system-prompt
-    // folds in persona/preset/background-memory/skills-index/session-goal,
+    // folds in persona/preset/background-memory/skills-index/session-goal/mode,
     // since those are all concatenated into one string by this point),
     // before the reply-path branches below diverge; tool schemas and the
     // live turns differ per reply path (tool-aware vs. streaming vs. plain)
