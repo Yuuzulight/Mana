@@ -1,5 +1,6 @@
 const defaultFs = require("node:fs");
 const { streamSentences } = require("../utils/sse-sentence-stream");
+const { buildSamplingParams } = require("./sampler-presets");
 const path = require("node:path");
 const { spawn: defaultSpawn } = require("node:child_process");
 const { setTimeout: defaultSleep } = require("node:timers/promises");
@@ -825,6 +826,8 @@ function createLlamaServerRuntime(options = {}) {
     profile = "default",
     overrideSystemPrompt = null,
     extraMessages = null,
+    task = null,
+    thinkingOverride = undefined,
   ) {
     if (typeof fetchImpl !== "function") {
       throw new Error("fetch is not available; cannot use llama-server");
@@ -832,6 +835,8 @@ function createLlamaServerRuntime(options = {}) {
     const startedAt = nowMs();
     await ensureServer(profile);
 
+    // #675: per-profile/per-task sampler preset and thinking.
+    const sampling = buildSamplingParams({ profile, task, maxTokens, thinking: thinkingOverride, env });
     const resp = await fetchImpl(
       `http://127.0.0.1:${state.port}/v1/chat/completions`,
       {
@@ -843,7 +848,7 @@ function createLlamaServerRuntime(options = {}) {
             prompt,
             extraMessages,
           ),
-          max_tokens: maxTokens,
+          ...sampling.params,
         }),
       },
     );
@@ -859,6 +864,12 @@ function createLlamaServerRuntime(options = {}) {
         ? String(json.choices[0].message.content || "")
         : "";
     if (!content.trim()) {
+      // #675: thinking can use up the reply (reasoning, no content) -- one
+      // retry with thinking off so the user still gets an answer.
+      if (sampling.thinking) {
+        console.warn("llama-server: empty reply with thinking on; retrying once with thinking off");
+        return runLocalAssistantReply(prompt, maxTokens, profile, overrideSystemPrompt, extraMessages, task, false);
+      }
       throw new Error("llama-server returned an empty reply");
     }
 
@@ -910,7 +921,7 @@ function createLlamaServerRuntime(options = {}) {
             prompt,
             extraMessages,
           ),
-          max_tokens: maxTokens,
+          ...buildSamplingParams({ profile, task: "stream", maxTokens, env }).params,
           stream: true,
         }),
       },
@@ -1014,7 +1025,7 @@ function createLlamaServerRuntime(options = {}) {
   // (OpenAI-style tool_calls entries with a JSON-*string* `arguments`
   // field, matching the `JSON.parse(call.function.arguments)` call
   // further down this loop).
-  async function repairToolCalls(messages, tools, maxTokens) {
+  async function repairToolCalls(messages, tools, maxTokens, profile = "default") {
     if (!Array.isArray(tools) || !tools.length) {
       return [];
     }
@@ -1027,7 +1038,7 @@ function createLlamaServerRuntime(options = {}) {
         body: JSON.stringify({
           messages,
           response_format: { type: "json_schema", json_schema: { name: "tool_calls_repair", schema } },
-          max_tokens: maxTokens,
+          ...buildSamplingParams({ profile, task: "tools", maxTokens, env }).params,
         }),
       });
     } catch (e) {
@@ -1146,7 +1157,8 @@ function createLlamaServerRuntime(options = {}) {
             ...(toolsEnabled
               ? { tools: toolPolicy.tools, tool_choice: "auto" }
               : { tool_choice: "none" }),
-            max_tokens: maxTokens,
+            // #675: never DRY/XTC or thinking here -- both can break tool-call JSON.
+            ...buildSamplingParams({ profile, task: "tools", maxTokens, env }).params,
           }),
         },
       );
@@ -1191,7 +1203,7 @@ function createLlamaServerRuntime(options = {}) {
         // from this same broken model/template pair. Only fires when the
         // native path already failed -- the common/working case (e.g. the
         // default profile) never pays for the extra request.
-        requestedToolCalls = await repairToolCalls(messages, toolPolicy.tools, maxTokens);
+        requestedToolCalls = await repairToolCalls(messages, toolPolicy.tools, maxTokens, profile);
       }
 
       if (!requestedToolCalls.length) {
@@ -1298,7 +1310,8 @@ function createLlamaServerRuntime(options = {}) {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             messages,
-            max_tokens: tokenLimit,
+            // #675: the profile's preset, with the ladder/judge temperature on top.
+            ...buildSamplingParams({ profile, task: "bestofn", maxTokens: tokenLimit, env }).params,
             temperature,
           }),
         },
@@ -1423,7 +1436,7 @@ function createLlamaServerRuntime(options = {}) {
             { role: "system", content: overrideSystemPrompt || systemPrompt },
             { role: "user", content },
           ],
-          max_tokens: maxTokens,
+          ...buildSamplingParams({ task: "vision", maxTokens, env }).params,
         }),
       },
     );
@@ -1487,7 +1500,7 @@ function createLlamaServerRuntime(options = {}) {
     if (!safeProfile) {
       return null;
     }
-    return runLocalAssistantReply(prompt, maxTokens, safeProfile);
+    return runLocalAssistantReply(prompt, maxTokens, safeProfile, null, null, "utility");
   }
 
   return {
