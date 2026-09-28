@@ -247,7 +247,7 @@ const {
 const { createLlamaServerRuntime } = require("./ai/llama-server-runtime");
 const { createReranker } = require("./ai/reranker-runtime");
 const { createEmbedder } = require("./ai/embedder-runtime");
-const { createWhisperServer } = require("./ai/whisper-server-runtime");
+const { createWhisperServer, belowNormal } = require("./ai/whisper-server-runtime");
 const { createGamingWatch } = require("./utils/gaming-watch");
 const { streamedMatchesFinal } = require("./utils/reply-stream-diff");
 const { createRestartController } = require("./admin-restart");
@@ -747,11 +747,17 @@ const getWhisperPrompt = createWhisperPromptProvider({
 
 // #619: a loaded whisper-server for final and partial transcripts, with
 // whisper-cli (runWhisperCli/runWhisperCliPartial) as the fallback.
+// While a watched game runs, whisper keeps to 2 threads so it doesn't take
+// CPU from the game; WHISPER_THREADS applies the rest of the time.
+function whisperThreads() {
+  return gamingWatch.isGaming() ? Math.min(WHISPER_THREADS, 2) : WHISPER_THREADS;
+}
+
 const whisperServer = createWhisperServer({
   env: process.env,
   findCliBin: () => whisperDiscovery.findWhisperBin({ env: process.env }),
   findModel: () => whisperDiscovery.findWhisperModel({ env: process.env }),
-  threads: WHISPER_THREADS,
+  threads: whisperThreads,
   language: WHISPER_LANGUAGE,
   beamSize: WHISPER_BEAM_SIZE,
   noSpeechThreshold: WHISPER_NO_SPEECH_THRESHOLD,
@@ -3006,7 +3012,7 @@ function registerRoutes(app, upload, deps = {}) {
       "-f",
       filePath,
       "-t",
-      String(WHISPER_THREADS),
+      String(whisperThreads()),
       "-otxt",
       "-of",
       outBase,
@@ -3057,7 +3063,7 @@ function registerRoutes(app, upload, deps = {}) {
       "-f",
       filePath,
       "-t",
-      String(WHISPER_THREADS),
+      String(whisperThreads()),
       "-l",
       WHISPER_LANGUAGE,
       "-bs",
@@ -3136,7 +3142,7 @@ function registerRoutes(app, upload, deps = {}) {
   // contract, and converting it would risk silently breaking them.
   function spawnWhisperCliAsync(whisperBin, args) {
     return new Promise((resolve, reject) => {
-      const child = spawn(whisperBin, args, { windowsHide: true });
+      const child = belowNormal(spawn(whisperBin, args, { windowsHide: true }));
       let stdout = "";
       let stderr = "";
       child.stdout.on("data", (chunk) => {
@@ -3172,7 +3178,7 @@ function registerRoutes(app, upload, deps = {}) {
       "-f",
       filePath,
       "-t",
-      String(WHISPER_THREADS),
+      String(whisperThreads()),
       "-l",
       WHISPER_LANGUAGE,
       "-bs",
