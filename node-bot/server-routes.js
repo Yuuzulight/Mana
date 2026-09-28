@@ -106,7 +106,7 @@ function registerCoreRoutes(app, upload, deps) {
       requireFile(req.file, "file");
 
       const { tmpPath, audioPath } = normalizeUploadedAudio(req.file);
-      const transcript = runWhisper(audioPath);
+      const transcript = await runWhisper(audioPath);
       cleanupUploadedAudio(tmpPath, audioPath);
 
       return res.json({ transcript });
@@ -501,7 +501,7 @@ function registerCoreRoutes(app, upload, deps) {
         "size=",
         fs.existsSync(audioPath) ? fs.statSync(audioPath).size : 0,
       );
-      const transcript = runWhisper(audioPath);
+      const transcript = await runWhisper(audioPath);
 
       // Same generic plugin prompt-context chain /reply uses (issue #108).
       // No screenText/ffxivWorld here since /transcribe has no OCR or

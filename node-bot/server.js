@@ -14,6 +14,8 @@ over inherited ones -- or set before running):
   toward Mana's wake words, your name and your frequent terms (issue #667)
 - WHISPER_BEAM_SIZE, WHISPER_NO_SPEECH_THRESHOLD, WHISPER_TEMPERATURE :
   whisper.cpp decoding tuning knobs, see docs/speech_recognition_improvement_plan.md
+- WHISPER_SERVER_BIN, WHISPER_SERVER_PORT : the whisper-server kept loaded for
+  transcription (default: next to WHISPER_BIN, port 8093); whisper-cli is the fallback
 - LLAMA_BIN : full path to llama.cpp/main executable (e.g. C:\llama.cpp\main.exe)
 - LLAMA_MODEL : full path to a GGUF model file, or an HF repo shorthand like user/model:Q4_K_M
 - TTS_PROVIDER : "cli", "kokoro", or "fish" (default: "fish",
@@ -245,6 +247,7 @@ const {
 const { createLlamaServerRuntime } = require("./ai/llama-server-runtime");
 const { createReranker } = require("./ai/reranker-runtime");
 const { createEmbedder } = require("./ai/embedder-runtime");
+const { createWhisperServer } = require("./ai/whisper-server-runtime");
 const { createGamingWatch } = require("./utils/gaming-watch");
 const { streamedMatchesFinal } = require("./utils/reply-stream-diff");
 const { createRestartController } = require("./admin-restart");
@@ -741,6 +744,28 @@ const getWhisperPrompt = createWhisperPromptProvider({
   memoryStore: acpMemoryStore,
   override: process.env.WHISPER_PROMPT || "",
 });
+
+// #619: a loaded whisper-server for final and partial transcripts, with
+// whisper-cli (runWhisperCli/runWhisperCliPartial) as the fallback.
+const whisperServer = createWhisperServer({
+  env: process.env,
+  findCliBin: () => whisperDiscovery.findWhisperBin({ env: process.env }),
+  findModel: () => whisperDiscovery.findWhisperModel({ env: process.env }),
+  threads: WHISPER_THREADS,
+  language: WHISPER_LANGUAGE,
+  beamSize: WHISPER_BEAM_SIZE,
+  noSpeechThreshold: WHISPER_NO_SPEECH_THRESHOLD,
+});
+
+async function transcribeWithWhisperServer(filePath) {
+  const startedAt = nowMs();
+  const text = await whisperServer.transcribe(filePath, {
+    prompt: getWhisperPrompt(),
+    temperature: WHISPER_TEMPERATURE,
+  });
+  if (text !== null) logPerf("whisper-server", startedAt);
+  return text;
+}
 
 // Issue #295 (piece 2 of #285): folds a decay+threshold check into the
 // existing periodic reviewer tick below (not just the idle-report handler)
@@ -2943,11 +2968,15 @@ function registerRoutes(app, upload, deps = {}) {
     return localLlamaRuntime.getLlamaStatus();
   }
 
-  function runWhisper(filePath) {
+  async function runWhisper(filePath) {
     if (STT_PROVIDER === "parakeet") {
       return runParakeet(filePath);
     }
-    return runWhisperCli(filePath);
+    return (await transcribeWithWhisperServer(filePath)) ?? runWhisperCli(filePath);
+  }
+
+  async function runWhisperPartial(filePath) {
+    return (await transcribeWithWhisperServer(filePath)) ?? runWhisperCliPartial(filePath);
   }
 
   function findParakeetBin() {
@@ -4819,7 +4848,7 @@ function registerRoutes(app, upload, deps = {}) {
     rejectVisionCapture:
       deps.rejectVisionCapture || visionCaptureBridge.rejectCapture,
     runWhisper: deps.runWhisper || runWhisper,
-    runWhisperPartial: deps.runWhisperPartial || runWhisperCliPartial,
+    runWhisperPartial: deps.runWhisperPartial || runWhisperPartial,
     normalizeUploadedAudioAsync:
       deps.normalizeUploadedAudioAsync || normalizeUploadedAudioAsync,
     synthesizeReply: deps.synthesizeReply || synthesizeReply,

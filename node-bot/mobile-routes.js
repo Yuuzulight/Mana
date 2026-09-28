@@ -356,7 +356,7 @@ function registerMobileRoutes(app, deps = {}) {
 
         uploadPaths = { tmpPath: req.file.path, audioPath: req.file.path };
         uploadPaths = normalizeUploadedAudio(req.file);
-        const transcript = runWhisper(uploadPaths.audioPath);
+        const transcript = await runWhisper(uploadPaths.audioPath);
         const sessionId = optionalString(
           req.body?.sessionId,
           "sessionId",
