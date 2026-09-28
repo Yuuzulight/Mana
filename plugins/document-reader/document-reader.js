@@ -123,13 +123,18 @@ function listDocuments() {
     .filter((name) => name.endsWith(".txt"))
     .map((name) => {
       const filePath = path.join(DOCS_DIR, name);
-      const stat = fs.statSync(filePath);
+      // A document removed between readdirSync and here (a concurrent
+      // DELETE) is simply gone -- skip it rather than throwing, which
+      // turned GET /documents into an HTML 500 (flaky Heavy CI on 5fc618f).
+      const stat = fs.statSync(filePath, { throwIfNoEntry: false });
+      if (!stat) return null;
       return {
         id: name.replace(/\.txt$/, ""),
         sizeBytes: stat.size,
         ingestedAt: stat.mtime.toISOString(),
       };
     })
+    .filter(Boolean)
     .sort((a, b) => b.ingestedAt.localeCompare(a.ingestedAt));
 }
 

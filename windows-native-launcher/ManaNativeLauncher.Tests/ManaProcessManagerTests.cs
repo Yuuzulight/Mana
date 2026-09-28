@@ -121,8 +121,54 @@ public class ManaProcessManagerTests
         await manager.StartAsync((key, available) => reported[key] = available);
 
         Assert.Equal(
-            new Dictionary<string, bool> { ["backend"] = true, ["kokoro"] = true, ["fish-speech"] = true },
+            new Dictionary<string, bool> { ["backend"] = true, ["kokoro"] = true, ["fish-speech"] = true, ["embedder"] = true },
             new Dictionary<string, bool>(reported));
+    }
+
+    // #681: an unhealthy remote backend must be reported unavailable, not
+    // "fixed" by spawning a local node-bot. The loopback case below is the
+    // control: same unhealthy backend, and it does try to spawn (which
+    // throws here, since C:\does-not-exist has no node-bot folder).
+    [Fact]
+    public async Task StartAsync_DoesNotSpawnALocalBackendForARemoteBackendUrl()
+    {
+        var handler = new FakeHttpMessageHandler(request =>
+            new HttpResponseMessage(request.RequestUri!.Host == "192.168.1.50" ? HttpStatusCode.ServiceUnavailable : HttpStatusCode.OK));
+        using var manager = new ManaProcessManager(@"C:\does-not-exist", handler, backendBaseUrl: "http://192.168.1.50:5005");
+        var reported = new ConcurrentDictionary<string, bool>();
+
+        await manager.StartAsync((key, available) => reported[key] = available);
+
+        Assert.False(reported["backend"]);
+    }
+
+    [Theory]
+    [InlineData("http://127.0.0.1:5005")]
+    [InlineData("http://localhost:5005")]
+    public async Task StartAsync_StillSpawnsALocalBackendForALoopbackUrl(string baseUrl)
+    {
+        var handler = new FakeHttpMessageHandler(request =>
+            new HttpResponseMessage(request.RequestUri!.Port == 5005 ? HttpStatusCode.ServiceUnavailable : HttpStatusCode.OK));
+        using var manager = new ManaProcessManager(@"C:\does-not-exist", handler, backendBaseUrl: baseUrl);
+
+        await Assert.ThrowsAnyAsync<System.Exception>(() => manager.StartAsync());
+    }
+
+    [Fact]
+    public async Task StartAsync_ReportsTheEmbedderUnavailableWithoutThrowing_WhenItsScriptIsMissing()
+    {
+        // #691: the embedder is optional -- unhealthy on 9001 plus no
+        // local_embedder.py under rootDirectory must degrade (row reads
+        // Unavailable, search stays keyword-only), never fail startup.
+        var handler = new FakeHttpMessageHandler(request =>
+            new HttpResponseMessage(request.RequestUri!.Port == 9001 ? HttpStatusCode.NotFound : HttpStatusCode.OK));
+        using var manager = new ManaProcessManager(@"C:\does-not-exist", handler);
+        var reported = new ConcurrentDictionary<string, bool>();
+
+        await manager.StartAsync((key, available) => reported[key] = available);
+
+        Assert.False(reported["embedder"]);
+        Assert.True(reported["backend"]);
     }
 
     [Fact]
@@ -139,7 +185,7 @@ public class ManaProcessManagerTests
         await manager.StopAllAsync((key, stopped) => reported[key] = stopped);
 
         Assert.Equal(
-            new Dictionary<string, bool> { ["backend"] = true, ["kokoro"] = true, ["fish-speech"] = true },
+            new Dictionary<string, bool> { ["backend"] = true, ["kokoro"] = true, ["fish-speech"] = true, ["embedder"] = true },
             new Dictionary<string, bool>(reported));
     }
 

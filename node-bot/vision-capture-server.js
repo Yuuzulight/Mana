@@ -8,7 +8,7 @@
 // same trap, same fix, for a third WS server on this same httpServer).
 const WebSocket = require("ws");
 
-function registerVisionCaptureServer(httpServer, { path = "/ws/vision-capture", bridge } = {}) {
+function registerVisionCaptureServer(httpServer, { path = "/ws/vision-capture", bridge, requestGuard } = {}) {
   const wss = new WebSocket.Server({ noServer: true });
   const clients = new Set();
 
@@ -20,6 +20,8 @@ function registerVisionCaptureServer(httpServer, { path = "/ws/vision-capture", 
 
   httpServer.on("upgrade", (req, socket, head) => {
     if ((req.url || "").split("?")[0] !== path) return;
+    // Issue #670: a cross-site page must not answer capture requests.
+    if (requestGuard?.rejectUpgrade(req, socket)) return;
     wss.handleUpgrade(req, socket, head, (ws) => {
       wss.emit("connection", ws, req);
     });

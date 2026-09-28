@@ -226,12 +226,19 @@ internal sealed class ManaBackendClient
     // Dictionary rather than the old fixed (sessionId, image) switch this
     // replaced -- adding a third optional field would have doubled that
     // switch's case count for no benefit.
-    public async IAsyncEnumerable<ReplyStreamEvent> ReplyStreamAsync(string text, string? sessionId = null, string screenText = "", string? image = null, IReadOnlyList<string>? images = null)
+    // #681: presetId (the active prompt preset, Settings > Presets) is
+    // omitted when empty, matching windows-launcher's
+    // `presetId: selectedPresetId || undefined`.
+    public async IAsyncEnumerable<ReplyStreamEvent> ReplyStreamAsync(string text, string? sessionId = null, string screenText = "", string? image = null, IReadOnlyList<string>? images = null, string? presetId = null)
     {
         var fields = new Dictionary<string, object?> { ["text"] = text, ["screenText"] = screenText };
         if (sessionId is not null)
         {
             fields["sessionId"] = sessionId;
+        }
+        if (!string.IsNullOrEmpty(presetId))
+        {
+            fields["presetId"] = presetId;
         }
         if (images is { Count: > 0 })
         {
@@ -274,6 +281,16 @@ internal sealed class ManaBackendClient
         await using var stream = await response.Content.ReadAsStreamAsync();
         using var document = await JsonDocument.ParseAsync(stream);
         return document.RootElement.TryGetProperty("text", out var textElement) ? textElement.GetString() ?? "" : "";
+    }
+
+    // #681: POST /internal/idle-report -- same {idleSeconds} body
+    // windows-launcher sends; node-bot decides whether that's idle enough.
+    public async Task ReportIdleAsync(int idleSeconds)
+    {
+        var payload = JsonSerializer.Serialize(new { idleSeconds });
+        using var content = new StringContent(payload, Encoding.UTF8, "application/json");
+        using var response = await http.PostAsync("/internal/idle-report", content);
+        response.EnsureSuccessStatusCode();
     }
 
     // #527: node-bot's configured llama-server profiles -- see
@@ -707,6 +724,7 @@ internal sealed class ManaBackendClient
                     Key = entry.TryGetProperty("key", out var keyEl) ? keyEl.GetString() ?? "" : "",
                     Text = entry.TryGetProperty("text", out var textEl) ? textEl.GetString() ?? "" : "",
                     Status = entry.TryGetProperty("status", out var statusEl) ? statusEl.GetString() ?? "" : "",
+                    Pinned = entry.TryGetProperty("pinned", out var pinnedEl) && pinnedEl.ValueKind == JsonValueKind.True,
                 });
             }
         }
@@ -716,6 +734,15 @@ internal sealed class ManaBackendClient
     public async Task ArchiveMemoryFactAsync(string key)
     {
         using var response = await http.PostAsync($"/admin/memory/facts/{Uri.EscapeDataString(key)}/archive", null);
+        response.EnsureSuccessStatusCode();
+    }
+
+    // #674: a pinned fact is injected into every reply's prompt.
+    public async Task SetMemoryFactPinnedAsync(string key, bool pinned)
+    {
+        var payload = JsonSerializer.Serialize(new { pinned });
+        using var content = new StringContent(payload, Encoding.UTF8, "application/json");
+        using var response = await http.PostAsync($"/admin/memory/facts/{Uri.EscapeDataString(key)}/pin", content);
         response.EnsureSuccessStatusCode();
     }
 
@@ -1765,6 +1792,7 @@ internal sealed class ManaMemoryFact
     public string Key { get; init; } = "";
     public string Text { get; init; } = "";
     public string Status { get; init; } = "";
+    public bool Pinned { get; init; }
 }
 
 // #529: GET /skills (index only -- see GetSkillsAsync's own comment).
@@ -1799,6 +1827,8 @@ internal sealed class ManaPreset
     public string Id { get; init; } = "";
     public string Name { get; init; } = "";
     public string Instructions { get; init; } = "";
+
+    public override string ToString() => Name; // #681: Settings > Presets' active-preset combo
 }
 
 // #570: GET /vtube/status.

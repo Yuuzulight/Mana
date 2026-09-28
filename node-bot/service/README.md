@@ -41,6 +41,14 @@ the service. Use this machine's actual **LAN IP** instead, e.g.
 `desktop-client` needs no change -- it never spawns node-bot itself; it
 already assumes an externally-running backend.
 
+Because the launcher reaches the service by LAN IP, the install script sets
+`MANA_BIND_HOST=0.0.0.0` for it (node-bot otherwise listens on loopback
+only, #670). That means every device on your network can reach the
+backend, and anything that can reach it can make Mana reply and run tools.
+Keep Windows Firewall's rule for `node.exe` limited to Private networks, or
+remove the variable with `nssm edit ManaNodeBot` if you don't use the LAN
+IP trick.
+
 ## Why `USE_EMBEDDINGS=1` is set explicitly
 
 `windows-launcher`'s own spawn call defaults `USE_EMBEDDINGS` to `"1"`, but

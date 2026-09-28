@@ -287,7 +287,7 @@ Common troubleshooting:
 
 ## Backend API
 
-The main backend listens on `http://localhost:5005` by default.
+The main backend listens on `http://localhost:5005` by default. It only accepts connections from this PC (loopback) unless `MANA_BIND_HOST` says otherwise -- see `node-bot/.env.sample` before setting it, since anything that can reach the backend can make Mana reply and run tools (#670).
 
 Useful endpoints:
 

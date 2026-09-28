@@ -45,6 +45,7 @@ public class ManaSettingsStoreTests
             {
                 BackendBaseUrl = "http://192.168.1.50:5005",
                 AdminToken = "topsecret",
+                ActivePresetId = "preset-1",
             };
             settings.Save(path);
 
@@ -52,6 +53,7 @@ public class ManaSettingsStoreTests
 
             Assert.Equal("http://192.168.1.50:5005", reloaded.BackendBaseUrl);
             Assert.Equal("topsecret", reloaded.AdminToken);
+            Assert.Equal("preset-1", reloaded.ActivePresetId); // #681
         }
         finally
         {

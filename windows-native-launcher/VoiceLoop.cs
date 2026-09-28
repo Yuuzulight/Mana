@@ -137,6 +137,10 @@ internal sealed class VoiceLoop : IDisposable
     // not a compound read-modify-write), no need for stateLock here.
     private volatile string? currentSessionId;
 
+    // #681: the active prompt preset (Settings > Presets), sent with every
+    // reply. Same threading story as currentSessionId above.
+    private volatile string? currentPresetId;
+
     // #521: null (no chat window constructed) is the common case and a
     // no-op everywhere it's used -- see IChatLog's own header comment.
     private readonly IChatLog? chatLog;
@@ -238,6 +242,8 @@ internal sealed class VoiceLoop : IDisposable
     // herself; whatever she's currently saying keeps playing against
     // whichever session was active when that turn started.
     public void SetSessionId(string? sessionId) => currentSessionId = sessionId;
+
+    public void SetPresetId(string? presetId) => currentPresetId = presetId;
 
     // #577: lets ResearchForm record a finished report into whatever
     // session is currently active, matching windows-launcher's own
@@ -851,7 +857,7 @@ internal sealed class VoiceLoop : IDisposable
         IReadOnlyList<string> pending;
         try
         {
-            (reply, changed, preferredExpression, interrupted, pending) = await streamingReplyPlayer.StreamReplyAndPlayAsync(commandText, currentSessionId, text => chatLog?.AppendReplySentence(text), screenText, image, images);
+            (reply, changed, preferredExpression, interrupted, pending) = await streamingReplyPlayer.StreamReplyAndPlayAsync(commandText, currentSessionId, text => chatLog?.AppendReplySentence(text), screenText, image, images, currentPresetId);
         }
         catch (Exception ex)
         {

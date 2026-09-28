@@ -1172,6 +1172,27 @@ public class ManaBackendClientTests
         Assert.Equal("a browser window", text);
     }
 
+    // #681: fake idle source (a fixed 1500s) -> the exact route/body
+    // node-bot's /internal/idle-report reads.
+    [Fact]
+    public async Task ReportIdleAsync_PostsIdleSecondsToTheIdleReportRoute()
+    {
+        string? path = null;
+        string? body = null;
+        var handler = new FakeHttpMessageHandler(request =>
+        {
+            path = request.RequestUri!.AbsolutePath;
+            body = request.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
+            return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("{\"ok\":true}") };
+        });
+        var client = new ManaBackendClient(handler);
+
+        await client.ReportIdleAsync(1500);
+
+        Assert.Equal("/internal/idle-report", path);
+        Assert.Equal("{\"idleSeconds\":1500}", body);
+    }
+
     [Fact]
     public async Task ReplyStreamAsync_IncludesScreenTextInTheRequestBody()
     {
@@ -1428,6 +1449,35 @@ public class ManaBackendClientTests
         }
 
         Assert.Contains("\"sessionId\":\"abc-123\"", body);
+    }
+
+    // #681: the active preset only reaches the backend via this field.
+    [Theory]
+    [InlineData("preset-1", true)]
+    [InlineData("", false)]
+    [InlineData(null, false)]
+    public async Task ReplyStreamAsync_SendsPresetIdOnlyWhenSet(string? presetId, bool expected)
+    {
+        string? body = null;
+        var handler = new FakeHttpMessageHandler(request =>
+        {
+            body = request.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(
+                    "{\"type\":\"final\",\"reply\":\"ok\",\"changed\":false}\n",
+                    Encoding.UTF8,
+                    "application/x-ndjson"),
+            };
+        });
+        var client = new ManaBackendClient(handler);
+
+        await foreach (var _ in client.ReplyStreamAsync("hi", presetId: presetId))
+        {
+        }
+
+        Assert.Equal(expected, body!.Contains("\"presetId\":\"preset-1\""));
+        Assert.Equal(expected, body.Contains("presetId"));
     }
 
     [Fact]
@@ -1752,7 +1802,7 @@ public class ManaBackendClientTests
         var handler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
         {
             Content = new StringContent(
-                """{"ok":true,"facts":[{"key":"favorite-color","text":"User likes blue","status":"active"}]}""",
+                """{"ok":true,"facts":[{"key":"favorite-color","text":"User likes blue","status":"active"},{"key":"name","text":"Yuuzu","status":"active","pinned":true}]}""",
                 Encoding.UTF8,
                 "application/json"),
         });
@@ -1760,10 +1810,35 @@ public class ManaBackendClientTests
 
         var facts = await client.GetMemoryFactsAsync();
 
-        var fact = Assert.Single(facts);
+        Assert.Equal(2, facts.Count);
+        var fact = facts[0];
         Assert.Equal("favorite-color", fact.Key);
         Assert.Equal("User likes blue", fact.Text);
         Assert.Equal("active", fact.Status);
+        Assert.False(fact.Pinned);
+        Assert.True(facts[1].Pinned);
+    }
+
+    [Fact]
+    public async Task SetMemoryFactPinnedAsync_PostsThePinnedFlag()
+    {
+        string? path = null;
+        string? body = null;
+        var handler = new FakeHttpMessageHandler(request =>
+        {
+            path = request.RequestUri!.AbsolutePath;
+            body = request.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("{\"ok\":true}", Encoding.UTF8, "application/json"),
+            };
+        });
+        var client = new ManaBackendClient(handler);
+
+        await client.SetMemoryFactPinnedAsync("name", true);
+
+        Assert.Equal("/admin/memory/facts/name/pin", path);
+        Assert.Equal("{\"pinned\":true}", body);
     }
 
     [Fact]

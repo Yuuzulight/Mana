@@ -348,10 +348,35 @@ function hasEnvValue(env, names) {
   return names.some((name) => typeof env[name] === "string" && env[name].trim());
 }
 
+// Issue #670: the backend listens on loopback only unless MANA_BIND_HOST
+// says otherwise (server.js's startServer), so other devices on the network
+// can't drive /reply or its tools. Brackets are stripped so "[::1]" works
+// the same as "::1" (server.listen wants the bare form).
+const DEFAULT_BIND_HOST = "127.0.0.1";
+
+function getBindHost(env = process.env) {
+  const host = String(env.MANA_BIND_HOST || "").trim().replace(/^\[(.*)\]$/, "$1");
+  return host || DEFAULT_BIND_HOST;
+}
+
+function isLoopbackBindHost(host) {
+  const normalized = String(host || "").trim().toLowerCase().replace(/^\[(.*)\]$/, "$1");
+  return (
+    normalized === "localhost" ||
+    normalized === "::1" ||
+    /^127(\.\d{1,3}){3}$/.test(normalized)
+  );
+}
+
 // Cloudflare Tunnel (or an equivalent MANA_TUNNEL_URL) makes the backend
 // reachable from the internet, not just localhost -- this is a genuine
-// security-relevant heads-up, not just a "is it configured" status.
+// security-relevant heads-up, not just a "is it configured" status. A
+// non-loopback MANA_BIND_HOST (#670) is the LAN equivalent.
 function checkRemoteExposure(env) {
+  const bindHost = getBindHost(env);
+  const lanWarning = isLoopbackBindHost(bindHost)
+    ? ""
+    : `MANA_BIND_HOST=${bindHost} makes the backend reachable from other devices on your network. Unset it to keep Mana on this PC only.`;
   const tunnelConfigured = hasEnvValue(env, [
     "CLOUDFLARE_TUNNEL_TOKEN",
     "CLOUDFLARE_TUNNEL_ID",
@@ -360,12 +385,14 @@ function checkRemoteExposure(env) {
   ]);
 
   if (!tunnelConfigured) {
-    return makeCheck(
-      "remote-exposure",
-      "Remote exposure",
-      "pass",
-      "No remote tunnel is configured. Mana is only reachable on localhost.",
-    );
+    return lanWarning
+      ? makeCheck("remote-exposure", "Remote exposure", "warn", lanWarning)
+      : makeCheck(
+          "remote-exposure",
+          "Remote exposure",
+          "pass",
+          "No remote tunnel is configured. Mana is only reachable on localhost.",
+        );
   }
 
   const mobileAuthConfigured =
@@ -377,7 +404,7 @@ function checkRemoteExposure(env) {
       "remote-exposure",
       "Remote exposure",
       "fail",
-      "A remote tunnel is configured but mobile passcode auth is NOT. Anyone who reaches the tunnel hostname can hit unauthenticated routes. Set MOBILE_PASSCODE_HASH and MOBILE_SESSION_SECRET, or remove the tunnel config.",
+      `A remote tunnel is configured but mobile passcode auth is NOT. Anyone who reaches the tunnel hostname can hit unauthenticated routes. Set MOBILE_PASSCODE_HASH and MOBILE_SESSION_SECRET, or remove the tunnel config. ${lanWarning}`.trim(),
     );
   }
 
@@ -385,7 +412,7 @@ function checkRemoteExposure(env) {
     "remote-exposure",
     "Remote exposure",
     "warn",
-    "A remote tunnel is configured -- Mana's backend may be reachable from the internet through it. Mobile passcode auth is configured, but double-check docs/mobile_pwa_cloudflare.md's hardening steps.",
+    `A remote tunnel is configured -- Mana's backend may be reachable from the internet through it. Mobile passcode auth is configured, but double-check docs/mobile_pwa_cloudflare.md's hardening steps. ${lanWarning}`.trim(),
   );
 }
 
@@ -793,7 +820,10 @@ if (require.main === module) {
 }
 
 module.exports = {
+  DEFAULT_BIND_HOST,
   buildDoctorResult,
+  getBindHost,
+  isLoopbackBindHost,
   runDoctorChecks,
   runDoctorChecksAsync,
 };

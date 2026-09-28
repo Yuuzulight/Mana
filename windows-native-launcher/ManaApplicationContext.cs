@@ -15,6 +15,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
     private readonly ManaProcessManager processManager;
     private readonly ManaBackendClient backendClient;
     private readonly System.Windows.Forms.Timer statusTimer;
+    private readonly System.Windows.Forms.Timer idleReportTimer;
     private readonly SileroVadRunner sileroVad;
     private readonly WakeWordClassifier? wakeWordClassifier;
     private readonly AudioPlayer audioPlayer;
@@ -44,7 +45,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
     // backend's process scan reports; no new backend route needed.
     private bool gamingModeEnabled = true;
 
-    // The 3 services ManaProcessManager actually starts/stops -- shared
+    // The 4 services ManaProcessManager actually starts/stops -- shared
     // between the startup and shutdown overlays, same as windows-launcher's
     // single #startupOverlay markup being reused for both (there it also
     // tracks Voice/Web search/Local AI, which don't apply here: this
@@ -55,6 +56,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
         ("backend", "Backend"),
         ("kokoro", "Kokoro TTS"),
         ("fish-speech", "Fish Speech TTS"),
+        ("embedder", "Memory search"),
     };
 
     // Guards against "Exit Mana" clicked twice while ShutdownAsync's own
@@ -93,6 +95,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
         // constructed above it.
         var screenContextReader = new ScreenContextReader(rootDir, backendClient);
         voiceLoop = new VoiceLoop(sileroVad, backendClient, audioPlayer, avatarOverlay, chatLog, artifactViewer, screenContextReader, () => gamingModeActive, clipBuffer, wakeWordClassifier);
+        voiceLoop.SetPresetId(settings.ActivePresetId); // #681
         // #523: Ctrl+Alt+M asks Mana to look at the screen, through the
         // same reply/TTS pipeline a normal turn uses.
         visionHotkeyListener = new VisionHotkeyListener(() => _ = voiceLoop.SubmitVisionHotkeyAsync());
@@ -188,6 +191,25 @@ internal sealed class ManaApplicationContext : ApplicationContext
         };
         statusTimer.Tick += async (_, _) => await RefreshTrayStatusAsync();
         statusTimer.Start();
+
+        // #681: tells node-bot how long the user has been idle, so Dream
+        // Mode's idle-triggered consolidation runs with native as the only
+        // client (windows-launcher main.js: every 60s, best-effort).
+        idleReportTimer = new System.Windows.Forms.Timer { Interval = 60000 };
+        idleReportTimer.Tick += async (_, _) =>
+        {
+            try
+            {
+                await backendClient.ReportIdleAsync(SystemIdle.GetIdleSeconds());
+            }
+            catch (Exception ex)
+            {
+                // Backend not up yet or unreachable -- its hourly timer
+                // still covers consolidation, so just try again next tick.
+                Console.WriteLine($"ManaApplicationContext: idle report failed. {ex.Message}");
+            }
+        };
+        idleReportTimer.Start();
     }
 
     private ContextMenuStrip BuildTrayMenu()
@@ -466,6 +488,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
     protected override void ExitThreadCore()
     {
         statusTimer.Stop();
+        idleReportTimer.Stop();
         clipCaptureTimer?.Stop();
         visionHotkeyListener.Dispose();
         clipHotkeyListener.Dispose();

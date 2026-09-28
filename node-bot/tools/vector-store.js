@@ -106,4 +106,4 @@ function createStore(opts = {}) {
   return makeFallbackStore(opts);
 }
 
-module.exports = { createStore };
+module.exports = { createStore, cosine };

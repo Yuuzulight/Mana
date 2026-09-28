@@ -763,6 +763,9 @@ internal sealed class SessionListForm : Form
     {
         using var dialog = new SettingsDialog(backendClient, backendLog, () => voiceLoop.CurrentSessionId);
         dialog.ShowDialog(this);
+        // #681: Settings > Presets persists the active preset straight to
+        // ManaSettingsStore; pick up whatever it left there.
+        voiceLoop.SetPresetId(ManaSettingsStore.Load().ActivePresetId);
     }
 
     protected override void OnFormClosing(FormClosingEventArgs e)

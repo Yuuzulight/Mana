@@ -32,6 +32,9 @@ internal sealed class SettingsPanel : UserControl
     private readonly Label perfSummaryLabel = new() { AutoSize = true };
     private readonly ListView perfOperationsList = new();
     private readonly ListView presetsList = new();
+    // #681: which preset replies actually use ("None" = index 0).
+    private readonly ComboBox activePresetCombo = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 200 };
+    private bool populatingPresets;
     private readonly ListView mobileDevicesList = new();
     private readonly ListView accountsList = new();
     private readonly ListView mcpServersList = new();
@@ -161,9 +164,12 @@ internal sealed class SettingsPanel : UserControl
                 return;
             }
 
-            settings.BackendBaseUrl = url;
-            settings.AdminToken = string.IsNullOrWhiteSpace(tokenBox.Text) ? null : tokenBox.Text.Trim();
-            settings.Save();
+            // #681: reload rather than save the copy read when this tab was
+            // built -- the Presets tab may have changed ActivePresetId since.
+            var latest = ManaSettingsStore.Load();
+            latest.BackendBaseUrl = url;
+            latest.AdminToken = string.IsNullOrWhiteSpace(tokenBox.Text) ? null : tokenBox.Text.Trim();
+            latest.Save();
             statusLabel.ForeColor = DarkTheme.Muted;
             statusLabel.Text = "Saved -- restart Mana for this to take effect.";
         };
@@ -266,7 +272,27 @@ internal sealed class SettingsPanel : UserControl
         factsList.Columns.Add("Key", 150);
         factsList.Columns.Add("Fact", 300);
         factsList.Columns.Add("Status", 80);
+        factsList.Columns.Add("Pinned", 60);
         DarkTheme.ApplyListView(factsList);
+
+        // #674: pinned facts go into every reply's prompt (up to 5).
+        var pinButton = new Button { Text = "Pin / Unpin", Dock = DockStyle.Bottom, Height = 28 };
+        DarkTheme.ApplyButton(pinButton);
+        pinButton.Click += async (_, _) =>
+        {
+            pinButton.Enabled = false;
+            try
+            {
+                await TogglePinSelectedFactAsync();
+            }
+            finally
+            {
+                if (!IsDisposed)
+                {
+                    pinButton.Enabled = true;
+                }
+            }
+        };
 
         var archiveButton = new Button { Text = "Archive", Dock = DockStyle.Bottom, Height = 28 };
         DarkTheme.ApplyButton(archiveButton);
@@ -291,17 +317,40 @@ internal sealed class SettingsPanel : UserControl
 
         var page = new TabPage("Memory Facts");
         page.Controls.Add(factsList);
+        page.Controls.Add(pinButton);
         page.Controls.Add(archiveButton);
         return page;
     }
 
-    private async Task ArchiveSelectedFactAsync()
+    private async Task TogglePinSelectedFactAsync()
     {
-        if (factsList.SelectedItems.Count == 0)
+        // The "Failed to load" row has no fact behind it.
+        if (factsList.SelectedItems.Count == 0 || factsList.SelectedItems[0].Tag is not ManaMemoryFact fact)
         {
             return;
         }
-        var key = (string)factsList.SelectedItems[0].Tag!;
+        try
+        {
+            await backendClient.SetMemoryFactPinnedAsync(fact.Key, !fact.Pinned);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"SettingsPanel: failed to pin fact '{fact.Key}'. {ex.Message}");
+            return;
+        }
+        if (!IsDisposed)
+        {
+            await RefreshMemoryFactsAsync();
+        }
+    }
+
+    private async Task ArchiveSelectedFactAsync()
+    {
+        if (factsList.SelectedItems.Count == 0 || factsList.SelectedItems[0].Tag is not ManaMemoryFact fact)
+        {
+            return;
+        }
+        var key = fact.Key;
         try
         {
             await backendClient.ArchiveMemoryFactAsync(key);
@@ -341,9 +390,10 @@ internal sealed class SettingsPanel : UserControl
         factsList.Items.Clear();
         foreach (var fact in facts)
         {
-            var item = new ListViewItem(fact.Key) { Tag = fact.Key };
+            var item = new ListViewItem(fact.Key) { Tag = fact };
             item.SubItems.Add(fact.Text);
             item.SubItems.Add(fact.Status);
+            item.SubItems.Add(fact.Pinned ? "yes" : "");
             factsList.Items.Add(item);
         }
     }
@@ -891,10 +941,36 @@ internal sealed class SettingsPanel : UserControl
         buttonRow.Controls.Add(editButton);
         buttonRow.Controls.Add(deleteButton);
 
+        // #681: without an active choice no preset ever reached a reply.
+        activePresetCombo.BackColor = DarkTheme.Panel2;
+        activePresetCombo.ForeColor = DarkTheme.Text;
+        activePresetCombo.SelectedIndexChanged += (_, _) =>
+        {
+            if (!populatingPresets)
+            {
+                SaveActivePresetId((activePresetCombo.SelectedItem as ManaPreset)?.Id);
+            }
+        };
+        var activeRow = new FlowLayoutPanel { Dock = DockStyle.Top, Height = 32, FlowDirection = FlowDirection.LeftToRight, BackColor = DarkTheme.Background };
+        activeRow.Controls.Add(new Label { Text = "Active preset", AutoSize = true, ForeColor = DarkTheme.Text, Padding = new Padding(0, 6, 0, 0) });
+        activeRow.Controls.Add(activePresetCombo);
+
         var page = new TabPage("Presets");
         page.Controls.Add(presetsList);
+        page.Controls.Add(activeRow);
         page.Controls.Add(buttonRow);
         return page;
+    }
+
+    private static void SaveActivePresetId(string? presetId)
+    {
+        var settings = ManaSettingsStore.Load();
+        if (settings.ActivePresetId == presetId)
+        {
+            return;
+        }
+        settings.ActivePresetId = presetId;
+        settings.Save();
     }
 
     private async Task CreatePresetAsync()
@@ -1007,6 +1083,31 @@ internal sealed class SettingsPanel : UserControl
         {
             presetsList.Items.Add(new ListViewItem(preset.Name) { Tag = preset });
         }
+
+        // #681: a stored id that no longer exists (deleted) falls back to
+        // None and is cleared, same as windows-launcher's renderPresetSelect.
+        var activeId = ManaSettingsStore.Load().ActivePresetId;
+        populatingPresets = true;
+        try
+        {
+            activePresetCombo.Items.Clear();
+            activePresetCombo.Items.Add("None");
+            object selected = "None";
+            foreach (var preset in presets)
+            {
+                activePresetCombo.Items.Add(preset);
+                if (preset.Id == activeId)
+                {
+                    selected = preset;
+                }
+            }
+            activePresetCombo.SelectedItem = selected;
+        }
+        finally
+        {
+            populatingPresets = false;
+        }
+        SaveActivePresetId((activePresetCombo.SelectedItem as ManaPreset)?.Id);
     }
 
     // #572: the largest tab in this batch -- 4 grouped sections
