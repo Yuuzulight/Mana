@@ -14,6 +14,7 @@ internal sealed class ManaProcessManager : IDisposable
     private Process? backendProcess;
     private Process? kokoroProcess;
     private Process? fishSpeechProcess;
+    private Process? embedderProcess;
 
     public string RootDirectory { get; }
 
@@ -91,10 +92,11 @@ internal sealed class ManaProcessManager : IDisposable
         var kokoroTask = StartAndReport("kokoro", "http://127.0.0.1:5011/health", () => Task.FromResult<Process?>(StartKokoro()));
         var fishSpeechTask = StartAndReport("fish-speech", "http://127.0.0.1:8080/v1/health", () => Task.FromResult(StartFishSpeech()));
         var backendTask = StartAndReport("backend", backendHealthUrl, () => Task.FromResult<Process?>(StartBackend()));
+        var embedderTask = StartAndReport("embedder", "http://127.0.0.1:9001/health", () => Task.FromResult(StartEmbedder()));
 
         try
         {
-            await Task.WhenAll(kokoroTask, fishSpeechTask, backendTask);
+            await Task.WhenAll(kokoroTask, fishSpeechTask, backendTask, embedderTask);
         }
         finally
         {
@@ -113,6 +115,7 @@ internal sealed class ManaProcessManager : IDisposable
                 IsFishSpeechAvailable = fishSpeechTask.Result.Available;
             }
             if (backendTask.IsCompletedSuccessfully) backendProcess = backendTask.Result.Process;
+            if (embedderTask.IsCompletedSuccessfully) embedderProcess = embedderTask.Result.Process;
         }
     }
 
@@ -141,8 +144,8 @@ internal sealed class ManaProcessManager : IDisposable
         var process = await start();
         // For Kokoro/the backend, start() either returns a real process or
         // throws (fatal) -- so `process is not null` here is always true
-        // whenever this line is reached at all. Fish Speech is the one
-        // caller where start() can return null non-fatally (missing native
+        // whenever this line is reached at all. Fish Speech (and the #691
+        // embedder) are the callers where start() can return null non-fatally (missing native
         // setup, or a launch failure) -- that's the actual degraded case.
         return (process, process is not null);
     }
@@ -255,6 +258,39 @@ internal sealed class ManaProcessManager : IDisposable
         }
     }
 
+    // #691: the local embedder (node-bot/tools/local_embedder.py) behind
+    // semantic memory/session search, started the same way windows-launcher
+    // does (main.js startEmbedderService): root venv python if present, else
+    // "python" on PATH, Qwen3-Embedding-0.6B on port 9001. Optional like Fish
+    // Speech -- missing script, MANA_START_EMBEDDER=0 or a launch failure just
+    // leaves search keyword-only (retriever-index.js falls back when the
+    // embedder doesn't answer), never a startup failure.
+    private Process? StartEmbedder()
+    {
+        if (Environment.GetEnvironmentVariable("MANA_START_EMBEDDER") == "0")
+        {
+            return null;
+        }
+        var embedderScript = Path.Combine(RootDirectory, "node-bot", "tools", "local_embedder.py");
+        if (!File.Exists(embedderScript))
+        {
+            return null;
+        }
+        var venvPython = ResolveVenvPython(RootDirectory, "venv");
+        try
+        {
+            return StartHiddenProcess(
+                File.Exists(venvPython) ? venvPython : "python",
+                $"{Quote(embedderScript)} --port 9001 --model Qwen/Qwen3-Embedding-0.6B",
+                RootDirectory);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Local embedder failed to start: {ex.Message} -- memory search stays keyword-only.");
+            return null;
+        }
+    }
+
     private Process StartBackend()
     {
         var nodeBotDir = Path.Combine(RootDirectory, "node-bot");
@@ -288,6 +324,10 @@ internal sealed class ManaProcessManager : IDisposable
         startInfo.Environment["KOKORO_TTS_FALLBACK_PROVIDER"] =
             Environment.GetEnvironmentVariable("KOKORO_TTS_FALLBACK_PROVIDER") ?? "none";
         startInfo.Environment["START_FALLBACK_CHATTERBOX"] = "0";
+        // #691: matches windows-launcher (main.js), which turns embeddings on
+        // by default alongside the embedder it starts; USE_EMBEDDINGS=0 opts out.
+        startInfo.Environment["USE_EMBEDDINGS"] =
+            Environment.GetEnvironmentVariable("USE_EMBEDDINGS") ?? "1";
 
         var process = Process.Start(startInfo) ??
                throw new InvalidOperationException("Failed to start Mana backend.");
@@ -489,7 +529,8 @@ internal sealed class ManaProcessManager : IDisposable
         await Task.WhenAll(
             StopAndReport("backend", backendProcess),
             StopAndReport("kokoro", kokoroProcess),
-            StopAndReport("fish-speech", fishSpeechProcess));
+            StopAndReport("fish-speech", fishSpeechProcess),
+            StopAndReport("embedder", embedderProcess));
     }
 
     public void Dispose()
@@ -498,6 +539,7 @@ internal sealed class ManaProcessManager : IDisposable
         StopProcess(backendProcess);
         StopProcess(kokoroProcess);
         StopProcess(fishSpeechProcess);
+        StopProcess(embedderProcess);
     }
 
     private static void StopProcess(Process? process)
