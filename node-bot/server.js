@@ -208,6 +208,7 @@ const {
   cleanLlamaOutput,
 } = require("./ai/local-llama-runtime");
 const { createLlamaServerRuntime } = require("./ai/llama-server-runtime");
+const { createReranker } = require("./ai/reranker-runtime");
 const { streamedMatchesFinal } = require("./utils/reply-stream-diff");
 const { createRestartController } = require("./admin-restart");
 const ffxivMarketPlugin = require("../plugins/ffxiv-market");
@@ -442,11 +443,23 @@ const llamaServerRuntime = createLlamaServerRuntime({
   modelSettingsStore,
 });
 
+// Issue #674: optional CPU-only reranker for memory recall -- off unless
+// MANA_RERANKER_MODEL names a local .gguf file. Same llama-server binary.
+const reranker = createReranker({
+  env: process.env,
+  threads: LLAMA_THREADS,
+  findServerBin: llamaServerRuntime.findLlamaServerBin,
+});
+
 // #693: llama.cpp build updates/rollback (Settings > Model). Resolves the
 // active build through the runtime so both agree on what "current" means.
 const llamaBuilds = createLlamaBuildManager({
   findLlamaServerBin: llamaServerRuntime.findLlamaServerBin,
-  stopServer: llamaServerRuntime.stop,
+  // The reranker runs the same build, so a switch restarts it too.
+  stopServer: () => {
+    llamaServerRuntime.stop();
+    reranker.stop();
+  },
 });
 
 // Unified local reply helper: prefer the persistent llama-server (model loads
@@ -542,6 +555,7 @@ const acpMemoryStore = createAcpMemoryStore({
   // default (USE_EMBEDDINGS env var), so hybrid session search is a pure
   // opt-in enhancement over the FTS5 keyword search above.
   computeEmbeddingsFn: require("./tools/retriever-index").computeEmbeddings,
+  rerankFn: reranker.rerank,
   // tokenEstimator will call the local Python retriever service /tokenize endpoint when available
   tokenEstimator: async (text) => {
     try {
