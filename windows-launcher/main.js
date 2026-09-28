@@ -1602,7 +1602,8 @@ ipcMain.handle("screen:capture-primary", async () => {
 // back rather than "succeed" with useless self-description).
 function readAccessibilityTree() {
   return new Promise((resolve) => {
-    const scriptPath = path.join(__dirname, "scripts", "read-accessibility-tree.ps1");
+    // #681: shared with the native launcher, so it lives in tools/.
+    const scriptPath = path.join(ROOT_DIR, "tools", "read-accessibility-tree.ps1");
     const child = spawn(
       "powershell",
       [

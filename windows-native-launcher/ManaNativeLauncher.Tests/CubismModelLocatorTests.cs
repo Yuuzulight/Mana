@@ -72,4 +72,44 @@ public class CubismModelLocatorTests : IDisposable
         AddModel("folder", "folder.model3.json");
         Assert.Null(CubismModelLocator.Find(root, Path.Combine(root, "nope.model3.json")));
     }
+
+    // #681: native's own model folder, so native doesn't need windows-launcher/.
+    private string NativeModelDir => Path.Combine(root, "windows-native-launcher", "assets", "avatar", "model");
+    private string LegacyModelDir => Path.Combine(root, "windows-launcher", "avatar", "model");
+
+    [Fact]
+    public void ModelDirectory_DefaultsToTheNativeFolderWhenNeitherExists()
+    {
+        Assert.Equal(NativeModelDir, CubismModelLocator.ModelDirectory(root));
+    }
+
+    [Fact]
+    public void ModelDirectory_FallsBackToTheWindowsLauncherFolderWhenOnlyItExists()
+    {
+        Directory.CreateDirectory(LegacyModelDir);
+        Assert.Equal(LegacyModelDir, CubismModelLocator.ModelDirectory(root));
+    }
+
+    [Fact]
+    public void ModelDirectory_PrefersTheNativeFolderWhenBothExist()
+    {
+        Directory.CreateDirectory(LegacyModelDir);
+        Directory.CreateDirectory(NativeModelDir);
+        Assert.Equal(NativeModelDir, CubismModelLocator.ModelDirectory(root));
+    }
+
+    [Fact]
+    public void PreferNativeAsset_WorksForFilesToo()
+    {
+        var native = Path.Combine(root, "native", "idle.png");
+        var legacy = Path.Combine(root, "legacy", "idle.png");
+        Directory.CreateDirectory(Path.GetDirectoryName(legacy)!);
+        File.WriteAllText(legacy, "");
+
+        Assert.Equal(legacy, CubismModelLocator.PreferNativeAsset(native, legacy));
+
+        Directory.CreateDirectory(Path.GetDirectoryName(native)!);
+        File.WriteAllText(native, "");
+        Assert.Equal(native, CubismModelLocator.PreferNativeAsset(native, legacy));
+    }
 }

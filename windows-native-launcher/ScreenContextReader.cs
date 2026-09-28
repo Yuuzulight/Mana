@@ -15,8 +15,8 @@ namespace Mana.NativeLauncher;
 // screenshot+OCR (existing POST /screen/read) when the tree is disabled,
 // times out, errors, or comes back too sparse to be worth using.
 //
-// Deliberately shells out to windows-launcher/scripts/read-accessibility-
-// tree.ps1 -- reused unmodified, not reimplemented in C# via
+// Deliberately shells out to tools/read-accessibility-tree.ps1 (moved
+// there from windows-launcher/scripts/ in #681) -- reused unmodified, not reimplemented in C# via
 // System.Windows.Automation directly. That script's breadth-first tree
 // walk (depth/element caps, char budget, PID detection) is already
 // working, tested-in-production logic; re-deriving the same walk natively
@@ -38,7 +38,9 @@ internal sealed class ScreenContextReader
 
     public ScreenContextReader(string rootDirectory, ManaBackendClient backendClient)
     {
-        scriptPath = Path.Combine(rootDirectory, "windows-launcher", "scripts", "read-accessibility-tree.ps1");
+        // #681: shared with windows-launcher from tools/ (was under
+        // windows-launcher/scripts/).
+        scriptPath = Path.Combine(rootDirectory, "tools", "read-accessibility-tree.ps1");
         this.backendClient = backendClient;
     }
 

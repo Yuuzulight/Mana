@@ -91,10 +91,17 @@ internal sealed class AvatarOverlayForm : Form
     // ships none or it failed to load. Stateful, stepped once per frame.
     private readonly CubismPhysics? physics;
 
+    private static string AvatarPngPath(string rootDirectory, string fileName) =>
+        CubismModelLocator.PreferNativeAsset(
+            Path.Combine(rootDirectory, "windows-native-launcher", "assets", "avatar", fileName),
+            Path.Combine(rootDirectory, "windows-launcher", "assets", "avatar", fileName));
+
     public AvatarOverlayForm(string rootDirectory)
     {
-        idlePath = Path.Combine(rootDirectory, "windows-launcher", "assets", "avatar", "idle.png");
-        talkingPath = Path.Combine(rootDirectory, "windows-launcher", "assets", "avatar", "talking.png");
+        // #681: native's own copy first, Electron's as the fallback (see
+        // CubismModelLocator.ModelDirectory).
+        idlePath = AvatarPngPath(rootDirectory, "idle.png");
+        talkingPath = AvatarPngPath(rootDirectory, "talking.png");
 
         FormBorderStyle = FormBorderStyle.None;
         ShowInTaskbar = false;
