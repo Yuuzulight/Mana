@@ -79,14 +79,10 @@ this checkout's paths (or delete those lines and rely on the defaults in
 section 3). The `MOBILE_*` lines are only for the phone companion; delete
 them if unused.
 
-**Nothing loads `.env` automatically**: `node-bot/server.js` and both
-launchers read only the process environment. Load it into the shell you
-start Mana from (children inherit it):
-
-```powershell
-Get-Content node-bot\.env | Where-Object { $_ -match '^\s*[A-Za-z_][A-Za-z0-9_]*=' } |
-  ForEach-Object { $k, $v = $_ -split '=', 2; Set-Item "env:$($k.Trim())" $v.Trim() }
-```
+`node-bot/.env` is loaded automatically at startup by `node server.js` and
+by the native launcher (#731); its values override the same variables
+inherited from the Windows environment. `npm run mcp` and the Electron
+launcher's own process don't load it.
 
 Recently changed variables (all optional):
 
@@ -146,7 +142,7 @@ In the native launcher, the tray menu's **Doctor** item shows the same checks.
 | "llama-server: refusing to load ... needs ~N MB free VRAM" | Free VRAM or pick a smaller model; `LLAMA_SERVER_VRAM_GUARD=0` overrides. |
 | `Host "..." is not allowed` / `Origin "..." is not allowed` | Add it to `MANA_ALLOWED_HOSTS` / `MANA_ALLOWED_ORIGINS`. |
 | Another device can't reach port 5005 | Loopback-only by default; set `MANA_BIND_HOST` (read the warning in `.env.sample` first). |
-| Env vars seem ignored | `.env` isn't auto-loaded; load it into the shell (section 5) and restart. |
+| Env vars seem ignored | Check the backend log for `Loaded N settings from node-bot/.env`; the file must be at `node-bot/.env`. Restart after editing it. |
 | Text replies but no audio | Check Kokoro (`http://127.0.0.1:5011/health`) and Fish Speech (`http://127.0.0.1:8080/v1/health`), `TTS_PROVIDER`. |
 | Transcription fails immediately | Check `WHISPER_BIN` / `WHISPER_MODEL`. |
 | Empty replies from a reasoning model | Leave `MANA_LLAMA_REASONING` unset (`off`). |
