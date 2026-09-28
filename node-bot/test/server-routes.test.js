@@ -707,13 +707,15 @@ test("no preset selected leaves the local model's system prompt unchanged", asyn
   });
 });
 
-// Tool-calling wiring (issue #51): opt-in via MANA_TOOL_CALLING_ENABLED,
+// Tool-calling wiring (issue #51): on by default (MANA_TOOL_CALLING_ENABLED=0
+// opts out),
 // scoped to the "default" profile only (the one profile verified to emit
 // reliable tool_calls -- see docs/roadmap/issue-51-tool-calling.md), and
 // falls back to the plain reply path on any failure or empty result.
 async function withToolCallingEnv(value, fn) {
   const prior = process.env.MANA_TOOL_CALLING_ENABLED;
-  process.env.MANA_TOOL_CALLING_ENABLED = value;
+  if (value === undefined) delete process.env.MANA_TOOL_CALLING_ENABLED;
+  else process.env.MANA_TOOL_CALLING_ENABLED = value;
   try {
     await fn();
   } finally {
@@ -722,8 +724,8 @@ async function withToolCallingEnv(value, fn) {
   }
 }
 
-test("tool-calling stays off by default even when a runToolAwareReply is provided", async () => {
-  await withToolCallingEnv(undefined, async () => {
+test("MANA_TOOL_CALLING_ENABLED=0 turns tool-calling off even when a runToolAwareReply is provided", async () => {
+  await withToolCallingEnv("0", async () => {
     let toolAwareCalls = 0;
     let plainCalls = 0;
     const app = createApp({
@@ -747,8 +749,8 @@ test("tool-calling stays off by default even when a runToolAwareReply is provide
   });
 });
 
-test("tool-calling activates for the default profile when enabled and llama-server is available", async () => {
-  await withToolCallingEnv("1", async () => {
+test("tool-calling activates for the default profile by default when llama-server is available", async () => {
+  await withToolCallingEnv(undefined, async () => {
     let capturedPrompt = null;
     let plainCalls = 0;
     const app = createApp({
