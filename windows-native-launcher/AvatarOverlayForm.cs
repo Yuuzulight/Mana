@@ -91,6 +91,19 @@ internal sealed class AvatarOverlayForm : Form
     // ships none or it failed to load. Stateful, stepped once per frame.
     private readonly CubismPhysics? physics;
 
+    // #683: auto-blink and gaze/idle head tilt, layered on top of the idle
+    // motion and expression every frame (see RenderFrame). lifeParameters
+    // holds every parameter they touch that this model actually has, with
+    // its default and range: they're reset to default at the start of each
+    // frame so an offset/multiplier never compounds on last frame's value
+    // when no motion rewrites that parameter.
+    private static readonly string[] DefaultEyeBlinkIds = ["ParamEyeLOpen", "ParamEyeROpen"];
+    private static readonly string[] GazeIds = ["ParamAngleX", "ParamAngleY", "ParamAngleZ", "ParamEyeBallX", "ParamEyeBallY"];
+    private readonly EyeBlink eyeBlink = new();
+    private readonly AvatarGaze gaze = new();
+    private readonly string[] eyeBlinkIds = [];
+    private readonly Dictionary<string, (float Default, float Min, float Max)> lifeParameters = [];
+
     private static string AvatarPngPath(string rootDirectory, string fileName) =>
         CubismModelLocator.PreferNativeAsset(
             Path.Combine(rootDirectory, "windows-native-launcher", "assets", "avatar", fileName),
@@ -123,6 +136,19 @@ internal sealed class AvatarOverlayForm : Form
         {
             proceduralIdleMotion = new ProceduralIdleMotion();
         }
+        if (cubismModel is not null)
+        {
+            // #683: the model's own EyeBlink group, else the standard ids
+            // (Electron's augmentModelSettings backfill); ids the model
+            // doesn't have are dropped, so a model with no eye parameters
+            // just doesn't blink.
+            var blinkIds = loaded.EyeBlinkIds is { Count: > 0 } declared ? declared : DefaultEyeBlinkIds;
+            eyeBlinkIds = blinkIds.Where(cubismModel.HasParameter).Distinct().ToArray();
+            foreach (var id in eyeBlinkIds.Concat(GazeIds).Where(cubismModel.HasParameter))
+            {
+                lifeParameters[id] = (cubismModel.GetParameterDefaultValue(id), cubismModel.GetParameterMinValue(id), cubismModel.GetParameterMaxValue(id));
+            }
+        }
         if (cubismModel is not null && cubismRenderer is not null)
         {
             // ~60fps: WM_TIMER fires on the ~15.6ms system tick, so 15
@@ -145,6 +171,7 @@ internal sealed class AvatarOverlayForm : Form
         IReadOnlyDictionary<string, CubismExpressionFile> Expressions,
         CubismMotionFile? IdleMotion,
         CubismPhysics? Physics = null,
+        IReadOnlyList<string>? EyeBlinkIds = null,
         string? ModelPath = null,
         string? Problem = null,
         IReadOnlyList<string>? Warnings = null);
@@ -155,7 +182,7 @@ internal sealed class AvatarOverlayForm : Form
         {
             Console.WriteLine($"AvatarOverlayForm: Live2D model not loaded, using static PNGs. {problem}");
         }
-        return new(null, null, new Dictionary<string, CubismExpressionFile>(), null, null, modelPath, problem);
+        return new(null, null, new Dictionary<string, CubismExpressionFile>(), null, null, null, modelPath, problem);
     }
 
     // Set when a Live2D model was found but couldn't be used (a plain-English
@@ -257,7 +284,7 @@ internal sealed class AvatarOverlayForm : Form
                 }
             }
 
-            return new CubismLoadResult(model, renderer, expressions, idleMotion, physics, model3JsonPath, null, warnings);
+            return new CubismLoadResult(model, renderer, expressions, idleMotion, physics, settings.EyeBlinkParameterIds, model3JsonPath, null, warnings);
         }
         // Broad by design, not just the handful of exception types this
         // path happens to throw today: "the model file exists but fails
@@ -300,6 +327,15 @@ internal sealed class AvatarOverlayForm : Form
         // motions/expressions target eyebrows/eyes/head-angle rather than
         // mouth-open, but if either touched it, Mana's mouth should still
         // track what she's actually saying while she's speaking.
+        // #683's gaze/idle tilt and blink sit between expression and
+        // lip-sync: the gaze adds on top of (and the tilt eases) the head
+        // angles the motion/expression set, and the blink multiplies the
+        // eye-open value they set, so a motion's baked blink or an
+        // expression's narrowed eyes survive instead of being overwritten.
+        foreach (var (id, (defaultValue, _, _)) in lifeParameters)
+        {
+            model.SetParameterValue(id, defaultValue);
+        }
         if (idleMotion is not null)
         {
             idleMotion.ApplyTo(model, (float)renderClock.Elapsed.TotalSeconds);
@@ -309,6 +345,29 @@ internal sealed class AvatarOverlayForm : Form
             proceduralIdleMotion?.ApplyTo(model, (float)renderClock.Elapsed.TotalSeconds);
         }
         activeExpression?.ApplyTo(model);
+
+        var nowSeconds = renderClock.Elapsed.TotalSeconds;
+        var talking = CurrentState != AvatarState.Idle;
+        if (gaze.Update(dtMs, talking ? GazeMode.Talking : GazeMode.Idle))
+        {
+            eyeBlink.Trigger(nowSeconds); // big glance -> blink with it
+        }
+        if (gaze.TiltActive && gaze.TiltBlend > 0.001f)
+        {
+            SetLifeParameter(model, "ParamAngleY", gaze.ApplyPitch(model.GetParameterCurrentValue("ParamAngleY")));
+            SetLifeParameter(model, "ParamAngleZ", gaze.ApplyRoll(model.GetParameterCurrentValue("ParamAngleZ")));
+        }
+        if (gaze.GazeActive)
+        {
+            SetLifeParameter(model, "ParamAngleX", model.GetParameterCurrentValue("ParamAngleX") + gaze.HeadAngleX);
+            SetLifeParameter(model, "ParamEyeBallX", model.GetParameterCurrentValue("ParamEyeBallX") + gaze.EyeBallX);
+            SetLifeParameter(model, "ParamEyeBallY", model.GetParameterCurrentValue("ParamEyeBallY") + gaze.EyeBallY);
+        }
+        var openness = eyeBlink.Openness(nowSeconds, talking);
+        foreach (var id in eyeBlinkIds)
+        {
+            SetLifeParameter(model, id, model.GetParameterCurrentValue(id) * openness);
+        }
 
         var (targetMouthOpen, targetMouthForm) = LipSyncDriver.Current;
         smoothedMouthOpen = LipSyncAnalyzer.SmoothMouthValue(smoothedMouthOpen, targetMouthOpen, dtMs);
@@ -337,6 +396,16 @@ internal sealed class AvatarOverlayForm : Form
         Present(frame);
     }
 
+    // #683: writes value clamped to the parameter's own range; a no-op for a
+    // parameter this model doesn't have.
+    private void SetLifeParameter(CubismModel model, string id, float value)
+    {
+        if (lifeParameters.TryGetValue(id, out var range))
+        {
+            model.SetParameterValue(id, Math.Clamp(value, range.Min, Math.Max(range.Min, range.Max)));
+        }
+    }
+
     // #681: preferredExpression is the reply's model-chosen expression name
     // (see AvatarExpressionSelector), tried before the state's own match.
     public void SetState(AvatarState state, string? preferredExpression = null)
@@ -363,6 +432,10 @@ internal sealed class AvatarOverlayForm : Form
 
         if (state != CurrentState)
         {
+            if (CurrentState == AvatarState.Idle)
+            {
+                eyeBlink.Trigger(renderClock.Elapsed.TotalSeconds); // #683: people blink as they start to speak
+            }
             CurrentState = state;
             StateChanged?.Invoke(state);
         }
