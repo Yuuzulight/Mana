@@ -2175,6 +2175,44 @@ test("buildServerArgs omits --mlock by default", () => {
   assert.equal(args.includes("--mlock"), false);
 });
 
+test("buildServerArgs falls back to --no-mmap for llama.cpp builds without --load-mode, probing each binary once", () => {
+  const probes = [];
+  const helpFor = {
+    "C:\\llama\\new\\llama-server.exe": "  --load-mode MODE   how to load the model\n  --mmap, --no-mmap  DEPRECATED",
+    "C:\\llama\\old\\llama-server.exe": "  --mmap, --no-mmap  whether to memory-map model",
+  };
+  const runtime = createLlamaServerRuntime({
+    env: makeFakeEnv(),
+    fs: makeFakeFs(),
+    registerExitHandlers: false,
+    probeHelp: (bin) => {
+      probes.push(bin);
+      if (!(bin in helpFor)) throw new Error("spawn failed");
+      return helpFor[bin];
+    },
+  });
+  const args = (bin) => runtime.buildServerArgs("C:\\models\\mana.gguf", 8090, null, null, bin);
+
+  const fresh = args("C:\\llama\\new\\llama-server.exe");
+  assert.equal(fresh[fresh.indexOf("--load-mode") + 1], "none");
+  assert.equal(fresh.includes("--no-mmap"), false);
+
+  const old = args("C:\\llama\\old\\llama-server.exe");
+  assert.ok(old.includes("--no-mmap"));
+  assert.equal(old.includes("--load-mode"), false);
+
+  // A probe that fails counts as "not supported": --no-mmap still works on
+  // new builds (deprecated), while --load-mode would stop an old one.
+  assert.ok(args("C:\\llama\\broken\\llama-server.exe").includes("--no-mmap"));
+
+  args("C:\\llama\\new\\llama-server.exe");
+  assert.deepEqual(probes, [
+    "C:\\llama\\new\\llama-server.exe",
+    "C:\\llama\\old\\llama-server.exe",
+    "C:\\llama\\broken\\llama-server.exe",
+  ]);
+});
+
 test("buildServerArgs loads straight into VRAM (--load-mode none) by default; MANA_LLAMA_MMAP=1, a saved false or LLAMA_MLOCK=1 turn it off", () => {
   const argsFor = (env, modelSettingsStore) =>
     createLlamaServerRuntime({

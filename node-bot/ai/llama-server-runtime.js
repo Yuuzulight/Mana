@@ -38,6 +38,35 @@ function createLlamaServerRuntime(options = {}) {
   const nowMs = options.nowMs || (() => Date.now());
   const logPerf = options.logPerf || (() => {});
   const modelSettingsStore = options.modelSettingsStore || null;
+  // `llama-server --help` text for a binary, cached per path (a probe is
+  // ~1 s and only happens when a server starts). Injectable for tests.
+  const probeHelp =
+    options.probeHelp ||
+    ((bin) =>
+      require("child_process").execFileSync(bin, ["--help"], {
+        encoding: "utf8",
+        timeout: 15000,
+        windowsHide: true,
+        stdio: ["ignore", "pipe", "pipe"],
+      }));
+  const loadModeSupport = new Map();
+  // Builds older than --load-mode (reachable via #693 update/rollback)
+  // refuse to start with it; --no-mmap does the same there. A failed probe
+  // counts as "not supported": --no-mmap is still accepted (deprecated) by
+  // builds that do have --load-mode.
+  function supportsLoadMode(bin) {
+    if (!bin) return true;
+    if (!loadModeSupport.has(bin)) {
+      let supported = false;
+      try {
+        supported = String(probeHelp(bin)).includes("--load-mode");
+      } catch (e) {
+        supported = false;
+      }
+      loadModeSupport.set(bin, supported);
+    }
+    return loadModeSupport.get(bin);
+  }
   const registerExitHandlers = options.registerExitHandlers !== false;
   const sleep = options.sleep || defaultSleep;
 
@@ -460,7 +489,7 @@ function createLlamaServerRuntime(options = {}) {
     quality: {},
   };
 
-  function buildServerArgs(model, port, mmproj = null, profile = null) {
+  function buildServerArgs(model, port, mmproj = null, profile = null, bin = null) {
     const args = [
       isLocalModelSpec(model, fs) ? "-m" : "-hf",
       model,
@@ -512,7 +541,11 @@ function createLlamaServerRuntime(options = {}) {
     if (env.LLAMA_MLOCK === "1") {
       args.push("--mlock");
     } else if (loadIntoVram) {
-      args.push("--load-mode", "none");
+      if (supportsLoadMode(bin)) {
+        args.push("--load-mode", "none");
+      } else {
+        args.push("--no-mmap");
+      }
     }
 
     // Same opt-in hardware flags as the llama-cli path.
@@ -631,7 +664,7 @@ function createLlamaServerRuntime(options = {}) {
       );
     }
 
-    const args = buildServerArgs(model, port, mmproj, profile);
+    const args = buildServerArgs(model, port, mmproj, profile, bin);
     console.log("Starting llama-server:", bin, args.join(" "));
     const child = spawn(bin, args, {
       // bin always names a Windows llama-server.exe -- path.win32 so this
