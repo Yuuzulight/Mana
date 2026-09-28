@@ -63,7 +63,6 @@ public class CubismModelDiagnosticsTests : IDisposable
             MocPath = Path.Combine(dir, "mana.moc3"),
             TexturePaths = new[] { Path.Combine(dir, "mana.2048", "texture_00.png") },
             ExpressionPaths = new Dictionary<string, string>(),
-            IdleMotionPath = null,
         };
         var message = CubismModelDiagnostics.DescribeMissingFiles(settings, modelPath);
         Assert.NotNull(message);
@@ -84,7 +83,6 @@ public class CubismModelDiagnosticsTests : IDisposable
             MocPath = Path.Combine(dir, "m.moc3"),
             TexturePaths = new[] { Path.Combine(dir, "t.png") },
             ExpressionPaths = new Dictionary<string, string>(),
-            IdleMotionPath = null,
         };
         Assert.Null(CubismModelDiagnostics.DescribeMissingFiles(settings, modelPath));
     }

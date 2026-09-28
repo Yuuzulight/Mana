@@ -83,4 +83,17 @@ public class AvatarExpressionSelectorTests
     {
         Assert.Null(AvatarExpressionSelector.SelectExpressionName(AvatarState.Angry, Array.Empty<string>()));
     }
+
+    // #683: mana-avatar.json stateExpressions -- exact names, after the
+    // reply's own choice and before the keywords.
+    [Fact]
+    public void SelectExpressionName_TriesConfiguredOverridesBeforeKeywords()
+    {
+        var names = new[] { "F03_ANGRY", "hug-pillow", "Wink" };
+        var overrides = new Dictionary<string, IReadOnlyList<string>> { ["idle"] = ["missing", "HUG-PILLOW"], ["angry"] = ["wink"] };
+
+        Assert.Equal("hug-pillow", AvatarExpressionSelector.SelectExpressionName(AvatarState.Idle, names, null, overrides));
+        Assert.Equal("Wink", AvatarExpressionSelector.SelectExpressionName(AvatarState.Angry, names, null, overrides));
+        Assert.Equal("F03_ANGRY", AvatarExpressionSelector.SelectExpressionName(AvatarState.Angry, names, "F03_ANGRY", overrides));
+    }
 }

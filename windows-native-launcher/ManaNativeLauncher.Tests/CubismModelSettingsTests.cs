@@ -40,7 +40,7 @@ public class CubismModelSettingsTests
                 [Path.Combine(dir, "texture_00.png"), Path.Combine(dir, "texture_01.png")],
                 settings.TexturePaths);
             Assert.Empty(settings.ExpressionPaths);
-            Assert.Null(settings.IdleMotionPath);
+            Assert.Empty(settings.MotionGroups);
         }
         finally
         {
@@ -111,7 +111,7 @@ public class CubismModelSettingsTests
     }
 
     [Fact]
-    public void Load_ParsesTheFirstIdleMotion()
+    public void Load_ParsesEveryMotionGroup()
     {
         var dir = Path.Combine(Path.GetTempPath(), "mana-cubism-settings-test-" + Guid.NewGuid());
         try
@@ -136,9 +136,11 @@ public class CubismModelSettingsTests
 
             var settings = CubismModelSettings.Load(path);
 
-            // First entry only -- see IdleMotionPath's own comment on why
-            // this project doesn't randomize/cycle among several.
-            Assert.Equal(Path.Combine(dir, "idle_01.motion3.json"), settings.IdleMotionPath);
+            // #683: every group, every file, in declaration order.
+            Assert.Equal(
+                [Path.Combine(dir, "idle_01.motion3.json"), Path.Combine(dir, "idle_02.motion3.json")],
+                settings.MotionGroups["Idle"]);
+            Assert.Equal([Path.Combine(dir, "flick_01.motion3.json")], settings.MotionGroups["Flick"]);
         }
         finally
         {
@@ -147,7 +149,7 @@ public class CubismModelSettingsTests
     }
 
     [Fact]
-    public void Load_IdleMotionPathIsNullWhenTheModelHasOtherMotionsButNoIdleGroup()
+    public void Load_HasNoIdleGroupWhenTheModelHasOtherMotionsButNoIdleGroup()
     {
         var dir = Path.Combine(Path.GetTempPath(), "mana-cubism-settings-test-" + Guid.NewGuid());
         try
@@ -166,7 +168,7 @@ public class CubismModelSettingsTests
 
             var settings = CubismModelSettings.Load(path);
 
-            Assert.Null(settings.IdleMotionPath);
+            Assert.False(settings.MotionGroups.ContainsKey("Idle"));
         }
         finally
         {

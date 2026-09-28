@@ -270,6 +270,29 @@ unset/omitted falls back to the default, an explicit empty array/string
 disables that override entirely — a model that doesn't have (or doesn't
 want driven) one of these parameter groups just turns it off.
 
+### Native launcher (#683)
+
+The native launcher reads the same `mana-avatar.json` (next to the
+`.model3.json`, then in the model folder) and env vars, for the knobs it
+has a use for: `stateMotions`, `stateExpressions`, `randomMotions`,
+`mouthParam`, `mouthGain`, `eyeBlinkParams`, `idleTiltDeg`,
+`idleMaxPitchDeg`, `idleGazeDeg` (`MANA_LIVE2D_IDLE_GAZE_DEG`, head turn for
+a full glance, `0` disables the gaze) and `idleGazePeriodMs`
+(`MANA_LIVE2D_IDLE_GAZE_PERIOD_MS`, scales how long she holds each glance).
+Differences from Electron:
+
+- `idleTiltDeg` defaults to `8` (Electron's `16` was tuned for a sleepy
+  idle clip on another model).
+- `MANA_AVATAR_FPS` defaults to `60`.
+- The blink never overrides the eyes. It multiplies whatever the motion or
+  expression set, so `eyeOpenScale`, `smileParams` and `browParams` (the
+  fixed-iris override) aren't used.
+- `mouthFormParam`/`mouthFormGain` and `zoomFractions` aren't used either,
+  because native drives mouth shape from visemes and has no zoom.
+- Every clip in a state's motion group is used. Each clip plays once, then a
+  random one from the same group crossfades in, over the clip's
+  `FadeInTime` (0.5s by default).
+
 ## Performance
 
 - Rendering is capped at 30 FPS (`MANA_AVATAR_FPS` to change) in the small

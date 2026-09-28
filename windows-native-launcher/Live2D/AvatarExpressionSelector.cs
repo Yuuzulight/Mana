@@ -27,14 +27,26 @@ internal static class AvatarExpressionSelector
     // this reply (the reply's `expression` field). Tried first, as an exact
     // case-insensitive name match like live2d-logic.js's expressionForState/
     // pickByPreference; no match falls through to the state keywords.
-    public static string? SelectExpressionName(AvatarState state, IEnumerable<string> availableExpressionNames, string? preferredName = null)
+    // #683: overrides is mana-avatar.json stateExpressions /
+    // MANA_LIVE2D_STATE_EXPRESSIONS (lower-case state name -> exact names),
+    // tried after the preferred name and before the keywords.
+    public static string? SelectExpressionName(
+        AvatarState state,
+        IEnumerable<string> availableExpressionNames,
+        string? preferredName = null,
+        IReadOnlyDictionary<string, IReadOnlyList<string>>? overrides = null)
     {
         var names = availableExpressionNames as IReadOnlyList<string> ?? [.. availableExpressionNames];
+        IEnumerable<string> exact = overrides is not null && overrides.TryGetValue(state.ToString().ToLowerInvariant(), out var custom) ? custom : [];
         if (!string.IsNullOrWhiteSpace(preferredName))
+        {
+            exact = exact.Prepend(preferredName.Trim());
+        }
+        foreach (var wanted in exact)
         {
             foreach (var name in names)
             {
-                if (string.Equals(name, preferredName.Trim(), StringComparison.OrdinalIgnoreCase))
+                if (string.Equals(name, wanted, StringComparison.OrdinalIgnoreCase))
                 {
                     return name;
                 }

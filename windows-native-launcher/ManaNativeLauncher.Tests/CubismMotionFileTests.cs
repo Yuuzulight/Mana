@@ -36,10 +36,10 @@ public class CubismMotionFileTests
             "windows-launcher", "avatar", "test-models", "hiyori_free", "runtime", "hiyori_free_t08.model3.json");
         var settings = CubismModelSettings.Load(model3JsonPath);
 
-        Assert.NotNull(settings.IdleMotionPath);
-        Assert.EndsWith("hiyori_m01.motion3.json", settings.IdleMotionPath);
+        var idlePath = settings.MotionGroups["Idle"][0];
+        Assert.EndsWith("hiyori_m01.motion3.json", idlePath);
 
-        var motion = CubismMotionFile.Load(settings.IdleMotionPath!);
+        var motion = CubismMotionFile.Load(idlePath);
 
         Assert.Equal(4.7f, motion.Duration, 2);
         Assert.True(motion.Loop);
@@ -52,7 +52,7 @@ public class CubismMotionFileTests
             AppContext.BaseDirectory, "..", "..", "..", "..", "..",
             "windows-launcher", "avatar", "test-models", "hiyori_free", "runtime", "hiyori_free_t08.model3.json");
         var settings = CubismModelSettings.Load(model3JsonPath);
-        var motion = CubismMotionFile.Load(settings.IdleMotionPath!);
+        var motion = CubismMotionFile.Load(settings.MotionGroups["Idle"][0]);
         using var model = LoadTestModel();
         model.Update();
 
@@ -261,7 +261,7 @@ public class CubismMotionFileTests
     }
 
     [CubismAvailableFact]
-    public void ApplyTo_IgnoresNonParameterTargetCurves()
+    public void ApplyTo_PartOpacityCurveForAPartTheModelLacks_IsANoOp()
     {
         var dir = Path.Combine(Path.GetTempPath(), "mana-cubism-motion-test-" + Guid.NewGuid());
         try
@@ -279,13 +279,34 @@ public class CubismMotionFileTests
             using var model = LoadTestModel();
             model.Update();
 
-            // Just confirms this doesn't throw trying to treat a
-            // PartOpacity curve as a Parameter one -- there's no
-            // parameter-side observable for a skipped Part curve to assert
-            // against.
+            // #683: PartOpacity curves are driven now; one naming a part
+            // this model doesn't have must be skipped, not throw.
             var exception = Record.Exception(() => motion.ApplyTo(model, 0.5f));
 
             Assert.Null(exception);
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    // #683: FadeInTime is read when present (the crossfade length), null
+    // otherwise; PartOpacity curves load alongside parameter ones.
+    [Fact]
+    public void Load_ReadsFadeInTime_NullWhenAbsent()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "mana-cubism-motion-test-" + Guid.NewGuid());
+        try
+        {
+            var withFade = WriteFixture(dir, """
+                { "Meta": { "Duration": 1.0, "Loop": true, "FadeInTime": 0.25 },
+                  "Curves": [ { "Target": "PartOpacity", "Id": "PartArmB", "Segments": [0, 1, 0, 1.0, 0] } ] }
+                """);
+            Assert.Equal(0.25f, CubismMotionFile.Load(withFade).FadeInTime);
+
+            var without = WriteFixture(dir, """{ "Meta": { "Duration": 1.0, "Loop": true }, "Curves": [] }""");
+            Assert.Null(CubismMotionFile.Load(without).FadeInTime);
         }
         finally
         {

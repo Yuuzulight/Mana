@@ -6,8 +6,8 @@ namespace Mana.NativeLauncher.Live2D;
 // actually uses -- which .moc3 file to load, which texture PNGs it
 // references (in texture-index order; drawables reference textures by
 // index into this same array), (#514) which named expression files it
-// declares, (#515) its first Idle motion file, its pose and physics
-// files, and (#683) its EyeBlink parameter group.
+// declares, (#515/#683) its motion groups, its pose and physics files,
+// and (#683) its EyeBlink parameter group.
 internal sealed class CubismModelSettings
 {
     public required string MocPath { get; init; }
@@ -19,13 +19,11 @@ internal sealed class CubismModelSettings
     // property of the asset, not an error.
     public required IReadOnlyDictionary<string, string> ExpressionPaths { get; init; }
 
-    // #515: full path to the FIRST file in FileReferences.Motions.Idle, or
-    // null if the model has no Idle motion group. A real model's own Idle
-    // group commonly lists several variations (hiyori_free's has 3); this
-    // project deliberately plays just one on a continuous loop rather than
-    // randomizing/cycling between them -- "so she looks alive at rest" per
-    // the issue's own scope, not a full motion-selection system.
-    public required string? IdleMotionPath { get; init; }
+    // #515/#683: every FileReferences.Motions group, name -> full paths in file
+    // order (groups with no usable File are left out). Empty when the model
+    // declares no motions.
+    public IReadOnlyDictionary<string, IReadOnlyList<string>> MotionGroups { get; init; } =
+        new Dictionary<string, IReadOnlyList<string>>();
 
     // FileReferences.Pose (.pose3.json), or null. A pose file says which
     // parts are mutually exclusive alternatives (e.g. hiyori_pro's two arm
@@ -79,17 +77,25 @@ internal sealed class CubismModelSettings
             }
         }
 
-        string? idleMotionPath = null;
-        if (fileReferences.TryGetProperty("Motions", out var motionsElement)
-            && motionsElement.TryGetProperty("Idle", out var idleGroupElement))
+        var motionGroups = new Dictionary<string, IReadOnlyList<string>>();
+        if (fileReferences.TryGetProperty("Motions", out var motionsElement) && motionsElement.ValueKind == JsonValueKind.Object)
         {
-            foreach (var motionElement in idleGroupElement.EnumerateArray())
+            foreach (var group in motionsElement.EnumerateObject())
             {
-                var file = motionElement.TryGetProperty("File", out var fileElement) ? fileElement.GetString() : null;
-                if (file is not null)
+                if (group.Value.ValueKind != JsonValueKind.Array)
                 {
-                    idleMotionPath = Path.Combine(baseDir, file);
-                    break; // first entry only -- see IdleMotionPath's own comment
+                    continue;
+                }
+                var files = group.Value.EnumerateArray()
+                    .Select(motion => motion.ValueKind == JsonValueKind.Object && motion.TryGetProperty("File", out var fileElement) && fileElement.ValueKind == JsonValueKind.String
+                        ? fileElement.GetString()
+                        : null)
+                    .Where(file => !string.IsNullOrEmpty(file))
+                    .Select(file => Path.Combine(baseDir, file!))
+                    .ToList();
+                if (files.Count > 0)
+                {
+                    motionGroups[group.Name] = files;
                 }
             }
         }
@@ -120,7 +126,7 @@ internal sealed class CubismModelSettings
             MocPath = Path.Combine(baseDir, moc),
             TexturePaths = textures,
             ExpressionPaths = expressionPaths,
-            IdleMotionPath = idleMotionPath,
+            MotionGroups = motionGroups,
             PosePath = pose is null ? null : Path.Combine(baseDir, pose),
             PhysicsPath = physics is null ? null : Path.Combine(baseDir, physics),
             EyeBlinkParameterIds = eyeBlinkIds,
