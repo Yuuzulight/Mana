@@ -531,6 +531,11 @@ function createAcpMemoryStore(options = {}) {
   // (or inject a fake), same pattern as summarizeFn/sessionSearchIndex.
   const computeEmbeddingsFn =
     typeof options.computeEmbeddingsFn === "function" ? options.computeEmbeddingsFn : null;
+  // Names the model behind computeEmbeddingsFn (retriever-index.js's
+  // embeddingModelId), so cached fact vectors from another model are
+  // re-embedded rather than compared with this one's.
+  const embeddingModelIdFn =
+    typeof options.embeddingModelIdFn === "function" ? options.embeddingModelIdFn : () => "";
   // Optional (issue #295, round-2 scoping of #285): the Hebbian associative
   // graph over entity keys. Same injection convention as
   // sessionSearchIndex/computeEmbeddingsFn -- server.js wires the real one
@@ -1199,13 +1204,16 @@ function createAcpMemoryStore(options = {}) {
     return factEmbeddings;
   }
 
-  // A cached vector counts only if its text is unchanged and its length
-  // matches the query's -- a different length means the embedding model
-  // changed. ponytail: a same-size model swap isn't detected; key the
-  // cache by model name if that ever happens.
-  function cachedFactVector(fact, dims) {
+  // A cached vector counts only if its text is unchanged and it came from
+  // the current embedding model (entries without `model` were written by
+  // the RETRIEVER_EMBEDDER_URL service, id ""). The length check still
+  // catches a model swapped behind that URL.
+  function cachedFactVector(fact, dims, model) {
     const cached = loadFactEmbeddings()[factRecallId(fact)];
-    return cached && cached.hash === factEmbeddingHash(fact) && cached.vector?.length === dims
+    return cached &&
+      cached.hash === factEmbeddingHash(fact) &&
+      (cached.model || "") === model &&
+      cached.vector?.length === dims
       ? cached.vector
       : null;
   }
@@ -1213,11 +1221,11 @@ function createAcpMemoryStore(options = {}) {
   // Runs in the background, never awaited by a reply: embedding a whole
   // fact store on CPU would blow the per-turn budget, so this turn uses
   // whatever vectors are already cached and later turns pick up the rest.
-  function backfillFactEmbeddings(facts, dims) {
+  function backfillFactEmbeddings(facts, dims, model) {
     if (factEmbeddingBackfill) return;
     const cache = loadFactEmbeddings();
     const missing = facts
-      .filter((fact) => !cachedFactVector(fact, dims))
+      .filter((fact) => !cachedFactVector(fact, dims, model))
       .slice(0, FACT_EMBEDDING_BATCH);
     if (!missing.length) return;
     factEmbeddingBackfill = (async () => {
@@ -1225,7 +1233,11 @@ function createAcpMemoryStore(options = {}) {
         const vectors = await computeEmbeddingsFn(missing.map(factEmbeddingText));
         missing.forEach((fact, i) => {
           if (Array.isArray(vectors?.[i]) && vectors[i].length) {
-            cache[factRecallId(fact)] = { hash: factEmbeddingHash(fact), vector: vectors[i] };
+            cache[factRecallId(fact)] = {
+              hash: factEmbeddingHash(fact),
+              vector: vectors[i],
+              ...(model ? { model } : {}),
+            };
           }
         });
         // Drop vectors for facts trimmed out of facts.json since.
@@ -1267,10 +1279,11 @@ function createAcpMemoryStore(options = {}) {
         recall.fallback = "embeddings unavailable";
         return null;
       }
-      backfillFactEmbeddings(facts, queryVector.length);
+      const model = embeddingModelIdFn();
+      backfillFactEmbeddings(facts, queryVector.length, model);
       const scores = new Map();
       for (const fact of facts) {
-        const vector = cachedFactVector(fact, queryVector.length);
+        const vector = cachedFactVector(fact, queryVector.length, model);
         if (vector) scores.set(factRecallId(fact), cosine(queryVector, vector));
       }
       return scores;

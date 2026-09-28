@@ -114,6 +114,25 @@ test("fact vectors persist across store instances and are recomputed after a pat
   await resized.getRelatedFactsEntries("hello there");
   await tick();
   assert.ok(resizedCalls.some((texts) => texts.includes("rig: RTX 4090 graphics")));
+
+  // Same length from another model (the GPU embedder): re-embed once, then
+  // that model's vectors are reused.
+  const gpuCalls = [];
+  const gpu = createAcpMemoryStore({
+    dataDir,
+    computeEmbeddingsFn: async (texts) => {
+      gpuCalls.push(texts);
+      return texts.map(() => [0, 1, 0]);
+    },
+    embeddingModelIdFn: () => "llama:embed.gguf",
+  });
+  await gpu.getRelatedFactsEntries("hello there");
+  await tick();
+  assert.ok(gpuCalls.some((texts) => texts.includes("rig: RTX 4090 graphics")));
+  gpuCalls.length = 0;
+  await gpu.getRelatedFactsEntries("hello there");
+  await tick();
+  assert.deepEqual(gpuCalls, [["hello there"]]);
 });
 
 test("never more than 5 pinned + 5 matched facts, whatever the store size", async () => {

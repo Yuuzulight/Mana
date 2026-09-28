@@ -104,8 +104,21 @@ internal sealed class ManaProcessManager : IDisposable
         var fishSpeechTask = StartAndReport("fish-speech", "http://127.0.0.1:8080/v1/health", () => Task.FromResult(isBackendLocal ? StartFishSpeech() : null));
         var backendTask = StartAndReport("backend", backendHealthUrl, () => Task.FromResult<Process?>(isBackendLocal ? StartBackend() : null));
         // #691: the embedder only serves a backend on this machine -- a remote
-        // backend calls its own 127.0.0.1:9001, never ours.
-        var embedderTask = StartAndReport("embedder", "http://127.0.0.1:9001/health", () => Task.FromResult(isBackendLocal ? StartEmbedder() : null));
+        // backend calls its own 127.0.0.1:9001, never ours. When
+        // MANA_EMBEDDER_MODEL names a model file, node-bot runs a GPU
+        // embedder itself on demand (ai/embedder-runtime.js) instead: nothing
+        // to check or start here, and the row reads Ready -- memory search
+        // is the backend's.
+        Task<(Process? Process, bool Available)> embedderTask;
+        if (!File.Exists(Environment.GetEnvironmentVariable("MANA_EMBEDDER_MODEL")))
+        {
+            embedderTask = StartAndReport("embedder", "http://127.0.0.1:9001/health", () => Task.FromResult(isBackendLocal ? StartEmbedder() : null));
+        }
+        else
+        {
+            onServiceReady?.Invoke("embedder", true);
+            embedderTask = Task.FromResult<(Process? Process, bool Available)>((null, true));
+        }
 
         try
         {

@@ -87,3 +87,32 @@ test("computeEmbeddings returns nulls for a response matching neither known shap
     );
   });
 });
+
+test("a configured GPU embedder serves computeEmbeddings instead of RETRIEVER_EMBEDDER_URL, and names its model", async () => {
+  await withFakeLocalEmbedder({ embeddings: [[9, 9]] }, async (baseUrl, requests) => {
+    await withRetrieverIndex(
+      { USE_EMBEDDINGS: "1", RETRIEVER_EMBEDDER_URL: baseUrl },
+      async (retrieverIndex) => {
+        let enabled = true;
+        const embedded = [];
+        retrieverIndex.useEmbedder({
+          isEnabled: () => enabled,
+          modelId: () => (enabled ? "llama:embed.gguf" : ""),
+          embed: async (texts) => {
+            embedded.push(texts);
+            return texts.map(() => [1, 2]);
+          },
+        });
+        assert.deepEqual(await retrieverIndex.computeEmbeddings(["hello"]), [[1, 2]]);
+        assert.equal(retrieverIndex.embeddingModelId(), "llama:embed.gguf");
+        assert.deepEqual(embedded, [["hello"]]);
+        assert.equal(requests.length, 0);
+
+        // Not configured (no model file): the URL service, as before.
+        enabled = false;
+        assert.deepEqual(await retrieverIndex.computeEmbeddings(["hello"]), [[9, 9]]);
+        assert.equal(retrieverIndex.embeddingModelId(), "");
+      },
+    );
+  });
+});

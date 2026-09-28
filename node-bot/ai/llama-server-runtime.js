@@ -1747,6 +1747,7 @@ function createLlamaServerRuntime(options = {}) {
     runLocalReplyIfSafelyLoaded,
     scheduleIdleShutdown,
     stop,
+    supportsLoadMode,
     systemPrompt,
   };
 }

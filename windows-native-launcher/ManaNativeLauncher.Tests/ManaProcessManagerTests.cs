@@ -188,6 +188,36 @@ public class ManaProcessManagerTests
     }
 
     [Fact]
+    public async Task StartAsync_LeavesTheEmbedderToTheBackend_WhenMANA_EMBEDDER_MODELIsSet()
+    {
+        // node-bot runs the GPU embedder on demand: the Python one on 9001
+        // is neither checked nor started, and the row still reads Ready.
+        var model = System.IO.Path.GetTempFileName();
+        Environment.SetEnvironmentVariable("MANA_EMBEDDER_MODEL", model);
+        try
+        {
+            var requestedPorts = new ConcurrentBag<int>();
+            var handler = new FakeHttpMessageHandler(request =>
+            {
+                requestedPorts.Add(request.RequestUri!.Port);
+                return new HttpResponseMessage(HttpStatusCode.OK);
+            });
+            using var manager = new ManaProcessManager(@"C:\does-not-exist", handler);
+            var reported = new ConcurrentDictionary<string, bool>();
+
+            await manager.StartAsync((key, available) => reported[key] = available);
+
+            Assert.DoesNotContain(9001, requestedPorts);
+            Assert.True(reported["embedder"]);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("MANA_EMBEDDER_MODEL", null);
+            System.IO.File.Delete(model);
+        }
+    }
+
+    [Fact]
     public async Task StartAsync_NeverChecksOrStartsKokoro()
     {
         // #694 / user decision: Kokoro is started on demand by node-bot
