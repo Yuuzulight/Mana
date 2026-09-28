@@ -16,6 +16,8 @@ curl -H "Authorization: Bearer YOUR_API_KEY" http://mana-machine:5005/api/memory
 
 Returns a markdown file with your memory summary, key facts, and cross-session connections. Perfect for feeding into Obsidian or any markdown reader.
 
+Mana only answers to `localhost`, IP addresses, and hostnames listed in `MANA_ALLOWED_HOSTS` (#670, blocks DNS rebinding), so to use a name like `mana-machine` set `MANA_ALLOWED_HOSTS=mana-machine` in `node-bot/.env`.
+
 ### Local Network
 
 If your phone is on the same WiFi as Mana, just use the local IP:

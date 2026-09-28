@@ -24,6 +24,8 @@ function registerTrayServer(httpServer, options = {}) {
   });
   httpServer.on('upgrade', (req, socket, head) => {
     if ((req.url || '').split('?')[0] !== path) return;
+    // Issue #670: no cross-site page or rebinding host may listen in.
+    if (options.requestGuard?.rejectUpgrade(req, socket)) return;
     wss_tray.handleUpgrade(req, socket, head, (ws) => {
       wss_tray.emit('connection', ws, req);
     });

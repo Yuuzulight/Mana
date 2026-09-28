@@ -48,6 +48,7 @@ This server aims to avoid Python. You must download and place the whisper.cpp an
 const express = require("express");
 const multer = require("multer");
 const cors = require("cors");
+const { createRequestGuard } = require("./request-guard");
 const rateLimit = require("express-rate-limit");
 const { spawnSync, spawn } = require("child_process");
 const crypto = require("crypto");
@@ -243,7 +244,11 @@ const {
 function createApp(deps = {}) {
   const app = express();
   const appEnv = deps.env || process.env;
-  app.use(cors());
+  // Issue #670: Host (DNS rebinding) + Origin (CSRF) guard, and CORS only
+  // for the origins it allows -- see request-guard.js.
+  const requestGuard = createRequestGuard(appEnv);
+  app.use(requestGuard.middleware);
+  app.use(cors(requestGuard.corsOptions));
   app.use(express.json({ limit: "15mb" }));
 
   // App-wide rate limit so every route (server.js, mobile-routes.js,
@@ -5239,11 +5244,14 @@ async function startServer() {
 
   const http = require("http");
   const server = http.createServer(app);
+  // Issue #670: WebSocket upgrades skip express, so each ws server checks
+  // Host/Origin itself.
+  const requestGuard = createRequestGuard();
 
   // attach caption websocket server
   try {
     const captionServer = require("./caption-server");
-    captionServer.registerCaptionServer(server, { path: "/ws/captions" });
+    captionServer.registerCaptionServer(server, { path: "/ws/captions", requestGuard });
   } catch (e) {
     console.warn("Failed to register caption server:", e?.message || e);
   }
@@ -5251,7 +5259,7 @@ async function startServer() {
   // attach tray websocket server for live tray notifications
   try {
     const trayServer = require("./tray-server");
-    trayServer.registerTrayServer(server, { path: "/ws/tray" });
+    trayServer.registerTrayServer(server, { path: "/ws/tray", requestGuard });
     // make broadcast available via app locals for other modules
     app.locals.broadcastTrayNotification = trayServer.broadcastTrayNotification;
     try {
@@ -5268,7 +5276,11 @@ async function startServer() {
   // request a fresh screenshot mid-reply)
   try {
     const { registerVisionCaptureServer } = require("./vision-capture-server");
-    registerVisionCaptureServer(server, { path: "/ws/vision-capture", bridge: visionCaptureBridge });
+    registerVisionCaptureServer(server, {
+      path: "/ws/vision-capture",
+      bridge: visionCaptureBridge,
+      requestGuard,
+    });
   } catch (e) {
     console.warn("Failed to register vision-capture server:", e?.message || e);
   }
