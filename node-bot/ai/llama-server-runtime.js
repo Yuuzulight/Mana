@@ -2,7 +2,10 @@ const defaultFs = require("node:fs");
 const { streamSentences } = require("../utils/sse-sentence-stream");
 const { buildSamplingParams } = require("./sampler-presets");
 const path = require("node:path");
-const { spawn: defaultSpawn } = require("node:child_process");
+const {
+  spawn: defaultSpawn,
+  execFile: defaultExecFile,
+} = require("node:child_process");
 const { setTimeout: defaultSleep } = require("node:timers/promises");
 const {
   collectFilesRecursively,
@@ -29,6 +32,8 @@ function createLlamaServerRuntime(options = {}) {
   const env = options.env || process.env;
   const fs = options.fs || defaultFs;
   const spawn = options.spawn || defaultSpawn;
+  const execFile = options.execFile || defaultExecFile;
+  const platform = options.platform || process.platform;
   const fetchImpl = options.fetch || globalThis.fetch;
   const baseDir = options.baseDir || path.resolve(__dirname, "..");
   const toolsDir =
@@ -76,6 +81,9 @@ function createLlamaServerRuntime(options = {}) {
     mmproj: null,
     port: null,
     starting: null,
+    // Settles once the last stopped child has exited (true) or was still
+    // running after STOP_WAIT_MS (false); startServer() waits on it.
+    stopping: Promise.resolve(true),
     idleTimer: null,
     exitHandlerRegistered: false,
     // #666: model -> { at, count } of its consecutive failed starts.
@@ -142,7 +150,7 @@ function createLlamaServerRuntime(options = {}) {
   // would leave nothing loaded at all, which is worse than refusing the
   // swap up front. Since the outgoing model's VRAM isn't freed yet at this
   // point, its own estimated footprint is added back to current free VRAM
-  // to approximate what stopAndWait() is about to release.
+  // to approximate what stopping it is about to release.
   function assertVramForSwap(model, mmproj) {
     if (!vramGuardEnabled) return;
     const targetFootprintMb = estimateLoadFootprintMb(model, mmproj);
@@ -381,25 +389,50 @@ function createLlamaServerRuntime(options = {}) {
     state.mmproj = null;
     state.port = null;
     if (child) {
-      try {
-        child.kill();
-      } catch (e) {}
+      killChild(child);
+      state.stopping = waitForExit(child);
     }
     return child;
   }
 
-  async function stopAndWait() {
-    const child = stop();
-    if (!child || child.exitCode !== null) {
-      return;
+  // Live run (2026-09-29): taskkill /T also takes anything llama-server
+  // started itself; child.kill() is TerminateProcess on the direct child
+  // only. execFile with an args array and an integer pid -- no shell --
+  // and a full path, since a bare name is looked up in the cwd first.
+  function killChild(child) {
+    const fallback = () => {
+      try {
+        child.kill();
+      } catch (e) {}
+    };
+    if (platform !== "win32" || !Number.isInteger(child.pid)) return fallback();
+    execFile(
+      path.win32.join(env.SystemRoot || "C:\\Windows", "System32", "taskkill.exe"),
+      ["/PID", String(child.pid), "/T", "/F"],
+      { windowsHide: true },
+      (error) => error && fallback(),
+    );
+  }
+
+  // CUDA teardown alone takes several seconds after the kill, and the port
+  // stays bound until the process is really gone.
+  const STOP_WAIT_MS = 15000;
+  function waitForExit(child) {
+    // No pid: spawn itself failed, so there is no process and no 'exit'.
+    if (child.exitCode !== null || child.signalCode != null || child.pid === undefined) {
+      return Promise.resolve(true);
     }
-    // Wait for the old process to release the port before restarting.
-    await new Promise((resolve) => {
-      const timer = setTimeout(resolve, 5000);
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        console.warn(
+          `llama-server (pid ${child.pid}) is still running ${STOP_WAIT_MS}ms after being stopped`,
+        );
+        resolve(false);
+      }, STOP_WAIT_MS);
       if (typeof timer.unref === "function") timer.unref();
       child.once("exit", () => {
         clearTimeout(timer);
-        resolve();
+        resolve(true);
       });
     });
   }
@@ -417,8 +450,25 @@ function createLlamaServerRuntime(options = {}) {
       clearTimeout(state.idleTimer);
     }
     state.idleTimer = setTimeout(() => {
-      console.log(`llama-server idle for ${idleMs}ms, shutting it down`);
-      stop();
+      // A timer left over from before an unexpected exit must not kill the
+      // restart in progress (a failed start counts against a #693 build);
+      // the reply it's for schedules a fresh one.
+      if (state.starting) return;
+      const port = state.port;
+      const child = stop();
+      if (!child) {
+        // Adopted (see startServer): no handle to it, so nothing to kill.
+        if (port) {
+          console.log(
+            `llama-server idle for ${idleMs}ms, but the one on port ${port} wasn't started by this backend -- leaving it running`,
+          );
+        }
+        return;
+      }
+      console.log(`llama-server idle for ${idleMs}ms, shutting it down (pid ${child.pid})`);
+      state.stopping.then((exited) => {
+        if (exited) console.log(`llama-server (pid ${child.pid}) stopped`);
+      });
     }, idleMs);
     if (typeof state.idleTimer.unref === "function") {
       state.idleTimer.unref();
@@ -642,6 +692,10 @@ function createLlamaServerRuntime(options = {}) {
     const bin = findLlamaServerBin();
     state.lastStartBin = bin;
     const port = serverPort();
+    // A just-stopped server holds the port until it has really exited; a
+    // new one spawned before that fails to bind, which #693 would count
+    // against the build.
+    await state.stopping;
 
     // If something already answers on the target port (e.g. a server left
     // over from a previous backend run), adopt it when it serves the same
@@ -784,6 +838,15 @@ function createLlamaServerRuntime(options = {}) {
       return;
     }
 
+    // Live run (2026-09-29): a call that got past the checks above while
+    // another one was already restarting started a second server; the one
+    // that lost the state.child slot kept running untracked, so idle
+    // shutdown had nothing to kill. From here to `state.starting =` is
+    // synchronous, so re-checking once is enough.
+    if (state.starting) {
+      return ensureServerConfig(model, mmproj, profile, onWait);
+    }
+
     const isRunning = Boolean(state.child || state.port);
     if (
       isRunning &&
@@ -810,7 +873,7 @@ function createLlamaServerRuntime(options = {}) {
           `llama-server: switching model ${state.model} -> ${model}`,
         );
       }
-      await stopAndWait();
+      stop(); // startServer() waits for the exit
     }
 
     state.starting = startServer(model, mmproj, profile);
