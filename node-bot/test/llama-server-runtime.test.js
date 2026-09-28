@@ -2175,7 +2175,7 @@ test("buildServerArgs omits --mlock by default", () => {
   assert.equal(args.includes("--mlock"), false);
 });
 
-test("buildServerArgs adds --no-mmap by default; MANA_LLAMA_MMAP=1 or a saved false turns it off", () => {
+test("buildServerArgs loads straight into VRAM (--load-mode none) by default; MANA_LLAMA_MMAP=1, a saved false or LLAMA_MLOCK=1 turn it off", () => {
   const argsFor = (env, modelSettingsStore) =>
     createLlamaServerRuntime({
       env: { ...makeFakeEnv(), ...env },
@@ -2184,14 +2184,20 @@ test("buildServerArgs adds --no-mmap by default; MANA_LLAMA_MMAP=1 or a saved fa
       modelSettingsStore,
     }).buildServerArgs("C:\\models\\mana.gguf", 8090);
   const store = (saved) => ({
-    isLlamaNoMmap: (env) => (saved === null ? env.MANA_LLAMA_MMAP !== "1" : saved),
+    isLoadIntoVram: (env) => (saved === null ? env.MANA_LLAMA_MMAP !== "1" : saved),
   });
 
-  assert.ok(argsFor({}).includes("--no-mmap"));
-  assert.equal(argsFor({ MANA_LLAMA_MMAP: "1" }).includes("--no-mmap"), false);
-  assert.ok(argsFor({}, store(null)).includes("--no-mmap"));
-  assert.equal(argsFor({}, store(false)).includes("--no-mmap"), false);
-  assert.ok(argsFor({ MANA_LLAMA_MMAP: "1" }, store(true)).includes("--no-mmap"));
+  const loadMode = (args) => (args.includes("--load-mode") ? args[args.indexOf("--load-mode") + 1] : null);
+  assert.equal(loadMode(argsFor({})), "none");
+  assert.equal(argsFor({}).includes("--no-mmap"), false, "deprecated flag");
+  assert.equal(loadMode(argsFor({ MANA_LLAMA_MMAP: "1" })), null);
+  assert.equal(loadMode(argsFor({}, store(null))), "none");
+  assert.equal(loadMode(argsFor({}, store(false))), null);
+  assert.equal(loadMode(argsFor({ MANA_LLAMA_MMAP: "1" }, store(true))), "none");
+  // #360's opt-in mlock keeps mmap + mlock rather than mixing load modes
+  const mlocked = argsFor({ LLAMA_MLOCK: "1" });
+  assert.ok(mlocked.includes("--mlock"));
+  assert.equal(loadMode(mlocked), null);
 });
 
 test("buildServerArgs adds --mlock only when LLAMA_MLOCK=1", () => {

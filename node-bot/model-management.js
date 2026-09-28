@@ -400,16 +400,16 @@ function createModelManagement(options = {}) {
         return { ...rest, hasApiKey: Boolean(apiKey) };
       })(),
       vision: modelSettingsStore.getVisionSettings(),
-      llamaNoMmap: modelSettingsStore.isLlamaNoMmap(env),
+      loadIntoVram: modelSettingsStore.isLoadIntoVram(env),
     };
   }
 
   // Takes effect on llama-server's next start (see buildServerArgs).
-  function setLlamaNoMmap(noMmap) {
-    if (typeof noMmap !== "boolean") {
-      throw new Error("noMmap must be true or false");
+  function setLoadIntoVram(loadIntoVram) {
+    if (typeof loadIntoVram !== "boolean") {
+      throw new Error("loadIntoVram must be true or false");
     }
-    modelSettingsStore.setLlamaNoMmap(noMmap);
+    modelSettingsStore.setLoadIntoVram(loadIntoVram);
     return getModelStatus();
   }
 
@@ -583,7 +583,7 @@ function createModelManagement(options = {}) {
     scanForModels,
     setActiveProfile,
     setBrainSettings,
-    setLlamaNoMmap,
+    setLoadIntoVram,
     setModelPath,
     setVisionSettings,
     testBrainConnection,

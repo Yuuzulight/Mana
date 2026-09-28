@@ -495,23 +495,24 @@ function createLlamaServerRuntime(options = {}) {
     // --mlock pins the model in physical RAM so a switch back is always
     // fast, at the real cost of denying that RAM back to the OS even when
     // something else (a game) needs it -- opt-in only, never a default.
+    //
+    // Otherwise the model loads straight into VRAM by default: with full
+    // GPU offload, mmap still maps the whole GGUF into this process --
+    // measured on an RTX 5080 / 32 GB box (9B Q4_K_M, -ngl 99, -c 16384)
+    // that drove llama-server to ~5 GB working set and system RAM 79% ->
+    // 95%+; without mmap it loaded in 6.7s at ~1.1 GB (+3.7 points RAM).
+    // `--load-mode none` is b10507's replacement for the deprecated
+    // --no-mmap. A switch back then re-reads the file instead of relying on
+    // the page cache above, and with a low LLAMA_NGL the CPU layers become
+    // private memory, so Settings > Model or MANA_LLAMA_MMAP=1 turns mmap
+    // back on (see model-settings-store.js).
+    const loadIntoVram = modelSettingsStore
+      ? modelSettingsStore.isLoadIntoVram(env)
+      : env.MANA_LLAMA_MMAP !== "1";
     if (env.LLAMA_MLOCK === "1") {
       args.push("--mlock");
-    }
-
-    // With full GPU offload, mmap still maps the whole GGUF into this
-    // process: measured on an RTX 5080 / 32 GB box (9B Q4_K_M, -ngl 99,
-    // -c 16384) that drove llama-server to ~5 GB working set and system RAM
-    // 79% -> 95%+; --no-mmap loaded in 6.7s at ~1.1 GB (+3.7 points RAM).
-    // The #360 page-cache note above assumed mmap. With a low LLAMA_NGL the
-    // CPU layers become private (unevictable) memory, so mmap is the better
-    // fit there: Settings > Model or MANA_LLAMA_MMAP=1 turns it back on
-    // (see model-settings-store.js).
-    const noMmap = modelSettingsStore
-      ? modelSettingsStore.isLlamaNoMmap(env)
-      : env.MANA_LLAMA_MMAP !== "1";
-    if (noMmap) {
-      args.push("--no-mmap");
+    } else if (loadIntoVram) {
+      args.push("--load-mode", "none");
     }
 
     // Same opt-in hardware flags as the llama-cli path.

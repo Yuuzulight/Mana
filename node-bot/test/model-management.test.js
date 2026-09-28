@@ -17,10 +17,10 @@ function fakeModelSettingsStore(initialPath = null) {
   let modelPath = initialPath;
   let brain = { type: "local", baseUrl: "", apiKey: "", model: "" };
   let vision = { modelPath: "", mmprojPath: "" };
-  let llamaNoMmap = null;
+  let loadIntoVram = null;
   return {
-    isLlamaNoMmap: (env) => (llamaNoMmap === null ? env.MANA_LLAMA_MMAP !== "1" : llamaNoMmap),
-    setLlamaNoMmap: (value) => (llamaNoMmap = value),
+    isLoadIntoVram: (env) => (loadIntoVram === null ? env.MANA_LLAMA_MMAP !== "1" : loadIntoVram),
+    setLoadIntoVram: (value) => (loadIntoVram = value),
     getModelPath: () => modelPath,
     setModelPath: (p) => {
       modelPath = p || null;
@@ -642,15 +642,15 @@ test("scanForModels attaches a fit label per file from the detected hardware", (
   }
 });
 
-test("llamaNoMmap: on by default in /models/status, saved via setLlamaNoMmap, non-booleans rejected", () => {
+test("loadIntoVram: on by default in /models/status, saved via setLoadIntoVram, non-booleans rejected", () => {
   const manager = createModelManagement({
     env: {},
     localGgufs: [],
     spawnSync: () => ({ status: 1, stdout: "" }),
     modelSettingsStore: fakeModelSettingsStore(),
   });
-  assert.equal(manager.getModelStatus().llamaNoMmap, true);
-  assert.equal(manager.setLlamaNoMmap(false).llamaNoMmap, false);
-  assert.throws(() => manager.setLlamaNoMmap("false"), /noMmap must be true or false/);
-  assert.equal(manager.getModelStatus().llamaNoMmap, false);
+  assert.equal(manager.getModelStatus().loadIntoVram, true);
+  assert.equal(manager.setLoadIntoVram(false).loadIntoVram, false);
+  assert.throws(() => manager.setLoadIntoVram("false"), /loadIntoVram must be true or false/);
+  assert.equal(manager.getModelStatus().loadIntoVram, false);
 });

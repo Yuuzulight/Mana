@@ -2469,23 +2469,23 @@ public class ManaBackendClientTests
     }
 
     [Fact]
-    public async Task GetModelStatusAsync_ParsesLlamaNoMmap()
+    public async Task GetModelStatusAsync_ParsesLoadIntoVram()
     {
         var handler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
         {
-            Content = new StringContent("""{"llamaNoMmap":true}""", Encoding.UTF8, "application/json"),
+            Content = new StringContent("""{"loadIntoVram":true}""", Encoding.UTF8, "application/json"),
         });
-        Assert.True((await new ManaBackendClient(handler).GetModelStatusAsync()).LlamaNoMmap);
+        Assert.True((await new ManaBackendClient(handler).GetModelStatusAsync()).LoadIntoVram);
 
         var missing = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
         {
             Content = new StringContent("{}", Encoding.UTF8, "application/json"),
         });
-        Assert.False((await new ManaBackendClient(missing).GetModelStatusAsync()).LlamaNoMmap);
+        Assert.False((await new ManaBackendClient(missing).GetModelStatusAsync()).LoadIntoVram);
     }
 
     [Fact]
-    public async Task SetLlamaNoMmapAsync_PostsTheFlag()
+    public async Task SetLoadIntoVramAsync_PostsTheFlag()
     {
         string? path = null;
         string? body = null;
@@ -2500,10 +2500,10 @@ public class ManaBackendClientTests
         });
         var client = new ManaBackendClient(handler);
 
-        await client.SetLlamaNoMmapAsync(false);
+        await client.SetLoadIntoVramAsync(false);
 
-        Assert.Equal("/models/llama-no-mmap", path);
-        Assert.Equal("""{"noMmap":false}""", body);
+        Assert.Equal("/models/load-into-vram", path);
+        Assert.Equal("""{"loadIntoVram":false}""", body);
     }
 
     [Fact]

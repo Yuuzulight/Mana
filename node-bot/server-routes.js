@@ -749,12 +749,12 @@ function registerModelRoutes(app, deps) {
     }
   });
 
-  // Saves whether llama-server loads with --no-mmap (read back as
-  // /models/status's llamaNoMmap). Admin-gated: it changes launch args.
-  app.post("/models/llama-no-mmap", (req, res) => {
+  // Saves whether llama-server loads the model straight into VRAM (read back as
+  // /models/status's loadIntoVram). Admin-gated: it changes launch args.
+  app.post("/models/load-into-vram", (req, res) => {
     if (!checkAdminAuth(req, res)) return;
     try {
-      return res.json(modelManagement.setLlamaNoMmap(req.body?.noMmap));
+      return res.json(modelManagement.setLoadIntoVram(req.body?.loadIntoVram));
     } catch (error) {
       return res.status(400).json({ error: error.message });
     }

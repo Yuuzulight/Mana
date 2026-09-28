@@ -109,25 +109,25 @@ function createModelSettingsStore(options = {}) {
     return getVisionSettings();
   }
 
-  // --no-mmap for the chat llama-server (see buildServerArgs in
-  // ai/llama-server-runtime.js). Precedence: a saved choice here, else
-  // MANA_LLAMA_MMAP=1 turns mmap back on, else no-mmap (the default).
-  function isLlamaNoMmap(env = process.env) {
-    const saved = readAll().llamaNoMmap;
+  // Load the chat model straight into VRAM instead of mmap'ing it (see
+  // buildServerArgs in ai/llama-server-runtime.js). Precedence: a saved
+  // choice here, else MANA_LLAMA_MMAP=1 turns mmap back on, else on.
+  function isLoadIntoVram(env = process.env) {
+    const saved = readAll().loadIntoVram;
     return typeof saved === "boolean" ? saved : env.MANA_LLAMA_MMAP !== "1";
   }
 
-  function setLlamaNoMmap(noMmap) {
+  function setLoadIntoVram(loadIntoVram) {
     const settings = readAll();
-    settings.llamaNoMmap = noMmap === true;
+    settings.loadIntoVram = loadIntoVram === true;
     writeAll(settings);
-    return settings.llamaNoMmap;
+    return settings.loadIntoVram;
   }
 
   return {
     dataDir,
-    isLlamaNoMmap,
-    setLlamaNoMmap,
+    isLoadIntoVram,
+    setLoadIntoVram,
     getModelPath,
     setModelPath,
     getBrainSettings,
