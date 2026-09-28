@@ -21,6 +21,20 @@ test("extractTerms keeps mid-sentence capitals and jargon, not sentence starters
   assert.deepEqual(extractTerms("it runs on Node.js. Then Zed"), ["Node.js", "Zed"]);
 });
 
+test("exclamations, days and months are not terms; a dotted name is jargon anywhere (#667)", () => {
+  assert.deepEqual(extractTerms("oh my God, Jesus Christ. OMG it's Monday in May, see you in October"), []);
+  assert.deepEqual(extractTerms("Node.js is fast"), ["Node.js"]);
+});
+
+test("a plain capitalized word needs 2 sources, jargon needs 1 (#667)", () => {
+  const prompt = buildWhisperPrompt({
+    facts: [fact("editor", "the user codes in Zed with PyTorch")],
+    userTexts: ["only Ali can go there", "Baba Baba Baba", "is Zed open", "ask Kokoro"],
+  });
+  // Ali/Kokoro: one source each. Baba: one source, however often repeated.
+  assert.match(prompt, /Names and terms: Zed, PyTorch\.$/);
+});
+
 test("the prompt keeps the base, adds the user's name and frequent terms", () => {
   const prompt = buildWhisperPrompt({
     facts: [fact("name", "Yuuzu"), fact("the user's GPU", "NVIDIA RTX 5080 graphics card")],
@@ -74,7 +88,7 @@ test("the provider rebuilds at most every refreshMs, and WHISPER_PROMPT override
   const memoryStore = {
     listFacts: () => facts,
     listSessions: () => [{ sessionId: "s1" }],
-    getSession: () => ({ turns: [{ user: "open Zed please" }] }),
+    getSession: () => ({ turns: [{ user: "open Zed please" }, { user: "close Zed now" }] }),
   };
   const getPrompt = createWhisperPromptProvider({ memoryStore, refreshMs: 1000, now: () => clock });
   assert.match(getPrompt(), /Yuuzu\. Names and terms: Zed\.$/);
