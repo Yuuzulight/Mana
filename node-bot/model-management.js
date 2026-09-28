@@ -400,7 +400,17 @@ function createModelManagement(options = {}) {
         return { ...rest, hasApiKey: Boolean(apiKey) };
       })(),
       vision: modelSettingsStore.getVisionSettings(),
+      loadIntoVram: modelSettingsStore.isLoadIntoVram(env),
     };
+  }
+
+  // Takes effect on llama-server's next start (see buildServerArgs).
+  function setLoadIntoVram(loadIntoVram) {
+    if (typeof loadIntoVram !== "boolean") {
+      throw new Error("loadIntoVram must be true or false");
+    }
+    modelSettingsStore.setLoadIntoVram(loadIntoVram);
+    return getModelStatus();
   }
 
   function setActiveProfile(profile) {
@@ -573,6 +583,7 @@ function createModelManagement(options = {}) {
     scanForModels,
     setActiveProfile,
     setBrainSettings,
+    setLoadIntoVram,
     setModelPath,
     setVisionSettings,
     testBrainConnection,

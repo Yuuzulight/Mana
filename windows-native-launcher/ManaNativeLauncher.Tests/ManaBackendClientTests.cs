@@ -2501,6 +2501,44 @@ public class ManaBackendClientTests
     }
 
     [Fact]
+    public async Task GetModelStatusAsync_ParsesLoadIntoVram()
+    {
+        var handler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent("""{"loadIntoVram":true}""", Encoding.UTF8, "application/json"),
+        });
+        Assert.True((await new ManaBackendClient(handler).GetModelStatusAsync()).LoadIntoVram);
+
+        var missing = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent("{}", Encoding.UTF8, "application/json"),
+        });
+        Assert.False((await new ManaBackendClient(missing).GetModelStatusAsync()).LoadIntoVram);
+    }
+
+    [Fact]
+    public async Task SetLoadIntoVramAsync_PostsTheFlag()
+    {
+        string? path = null;
+        string? body = null;
+        var handler = new FakeHttpMessageHandler(request =>
+        {
+            path = request.RequestUri!.AbsolutePath;
+            body = request.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("{}", Encoding.UTF8, "application/json"),
+            };
+        });
+        var client = new ManaBackendClient(handler);
+
+        await client.SetLoadIntoVramAsync(false);
+
+        Assert.Equal("/models/load-into-vram", path);
+        Assert.Equal("""{"loadIntoVram":false}""", body);
+    }
+
+    [Fact]
     public async Task SetVisionSettingsAsync_PostsBothPaths()
     {
         string? path = null;

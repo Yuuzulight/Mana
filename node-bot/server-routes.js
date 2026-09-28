@@ -748,6 +748,17 @@ function registerModelRoutes(app, deps) {
       return res.status(400).json({ error: error.message });
     }
   });
+
+  // Saves whether llama-server loads the model straight into VRAM (read back as
+  // /models/status's loadIntoVram). Admin-gated: it changes launch args.
+  app.post("/models/load-into-vram", (req, res) => {
+    if (!checkAdminAuth(req, res)) return;
+    try {
+      return res.json(modelManagement.setLoadIntoVram(req.body?.loadIntoVram));
+    } catch (error) {
+      return res.status(400).json({ error: error.message });
+    }
+  });
 }
 
 // Issue #500: each of these just serves a static admin HTML file from

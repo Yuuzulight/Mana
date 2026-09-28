@@ -109,8 +109,25 @@ function createModelSettingsStore(options = {}) {
     return getVisionSettings();
   }
 
+  // Load the chat model straight into VRAM instead of mmap'ing it (see
+  // buildServerArgs in ai/llama-server-runtime.js). Precedence: a saved
+  // choice here, else MANA_LLAMA_MMAP=1 turns mmap back on, else on.
+  function isLoadIntoVram(env = process.env) {
+    const saved = readAll().loadIntoVram;
+    return typeof saved === "boolean" ? saved : env.MANA_LLAMA_MMAP !== "1";
+  }
+
+  function setLoadIntoVram(loadIntoVram) {
+    const settings = readAll();
+    settings.loadIntoVram = loadIntoVram === true;
+    writeAll(settings);
+    return settings.loadIntoVram;
+  }
+
   return {
     dataDir,
+    isLoadIntoVram,
+    setLoadIntoVram,
     getModelPath,
     setModelPath,
     getBrainSettings,

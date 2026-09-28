@@ -99,3 +99,21 @@ test("model-settings-store: brain and vision settings persist independently of m
     fs.rmSync(tempDir, { recursive: true });
   }
 });
+
+test("model-settings-store: load-into-VRAM defaults on, MANA_LLAMA_MMAP=1 turns it off, a saved choice beats both", () => {
+  const tempDir = createTempDir();
+  try {
+    const store = createModelSettingsStore({ dataDir: tempDir });
+    assert.equal(store.isLoadIntoVram({}), true);
+    assert.equal(store.isLoadIntoVram({ MANA_LLAMA_MMAP: "1" }), false);
+    assert.equal(store.isLoadIntoVram({ MANA_LLAMA_MMAP: "0" }), true);
+
+    store.setLoadIntoVram(true);
+    assert.equal(store.isLoadIntoVram({ MANA_LLAMA_MMAP: "1" }), true);
+    store.setLoadIntoVram(false);
+    // Persisted: a fresh store over the same dir reads it back.
+    assert.equal(createModelSettingsStore({ dataDir: tempDir }).isLoadIntoVram({}), false);
+  } finally {
+    fs.rmSync(tempDir, { recursive: true });
+  }
+});

@@ -17,7 +17,10 @@ function fakeModelSettingsStore(initialPath = null) {
   let modelPath = initialPath;
   let brain = { type: "local", baseUrl: "", apiKey: "", model: "" };
   let vision = { modelPath: "", mmprojPath: "" };
+  let loadIntoVram = null;
   return {
+    isLoadIntoVram: (env) => (loadIntoVram === null ? env.MANA_LLAMA_MMAP !== "1" : loadIntoVram),
+    setLoadIntoVram: (value) => (loadIntoVram = value),
     getModelPath: () => modelPath,
     setModelPath: (p) => {
       modelPath = p || null;
@@ -637,4 +640,17 @@ test("scanForModels attaches a fit label per file from the detected hardware", (
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("loadIntoVram: on by default in /models/status, saved via setLoadIntoVram, non-booleans rejected", () => {
+  const manager = createModelManagement({
+    env: {},
+    localGgufs: [],
+    spawnSync: () => ({ status: 1, stdout: "" }),
+    modelSettingsStore: fakeModelSettingsStore(),
+  });
+  assert.equal(manager.getModelStatus().loadIntoVram, true);
+  assert.equal(manager.setLoadIntoVram(false).loadIntoVram, false);
+  assert.throws(() => manager.setLoadIntoVram("false"), /loadIntoVram must be true or false/);
+  assert.equal(manager.getModelStatus().loadIntoVram, false);
 });

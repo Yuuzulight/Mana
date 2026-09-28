@@ -426,6 +426,35 @@ test("vision path route persists the model/mmproj override and surfaces validati
   });
 });
 
+test("load-into-vram route is admin-gated and passes the boolean through", async () => {
+  const calls = [];
+  const app = createApp({
+    env: { MANA_ADMIN_SECRET: "topsecret" },
+    modelManagement: {
+      setLoadIntoVram: (value) => {
+        calls.push(value);
+        if (typeof value !== "boolean") throw new Error("loadIntoVram must be true or false");
+        return { loadIntoVram: value };
+      },
+    },
+  });
+  const auth = { Authorization: "Bearer topsecret" };
+
+  await withServer(app, async (baseUrl) => {
+    const unauthorized = await postJson(`${baseUrl}/models/load-into-vram`, { loadIntoVram: false });
+    assert.equal(unauthorized.response.status, 401);
+    assert.equal(calls.length, 0);
+
+    const ok = await postJson(`${baseUrl}/models/load-into-vram`, { loadIntoVram: false }, auth);
+    assert.equal(ok.response.status, 200);
+    assert.equal(ok.payload.loadIntoVram, false);
+
+    const rejected = await postJson(`${baseUrl}/models/load-into-vram`, { loadIntoVram: "no" }, auth);
+    assert.equal(rejected.response.status, 400);
+    assert.deepEqual(calls, [false, "no"]);
+  });
+});
+
 test("brain-providers route lists presets from model-management", async () => {
   const app = createApp({
     modelManagement: {
