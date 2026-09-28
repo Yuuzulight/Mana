@@ -2167,6 +2167,8 @@ test("today's facts.json records load and behave as before: nothing is pending, 
   assert.equal(store.archiveExpiredPendingFacts().archived.length, 0);
   // Loading, recalling and the expiry pass wrote nothing back.
   assert.deepEqual(JSON.parse(fs.readFileSync(path.join(dataDir, "facts.json"), "utf8")).facts, original);
+  // #673: nor started a history log.
+  assert.equal(fs.existsSync(path.join(dataDir, "facts-log.jsonl")), false);
 });
 
 test("a pending fact is recalled marked unconfirmed, and confirm makes it active (issue #663)", () => {
@@ -2364,4 +2366,66 @@ test("tool-derived text is stored pending and untrusted, stays out of recall, an
   store.rememberFact({ key: "name", text: "Yuuzu" });
   assert.equal(store.rememberFact({ key: "name", text: "Yuuzu", origin: tool }).decision, "none");
   assert.equal(factTrust(store.listFacts().find((f) => f.key === "name")), "trusted");
+});
+
+test("every fact change lands in facts-log.jsonl with before/after and origin, including side effects and cap drops (issue #673)", async () => {
+  let tick = 0;
+  const dataDir = createTempDir();
+  const snapshotStore = createSnapshotStore({ dataDir: createTempDir() });
+  const store = createAcpMemoryStore({
+    dataDir,
+    snapshotStore,
+    now: () => new Date(Date.UTC(2026, 8, 1, 0, 0, tick++)).toISOString(),
+  });
+  const user = { kind: "user_stated", tools: [] };
+  store.rememberFact({ key: "status", text: "single", origin: user });
+  store.rememberFact({ key: "gpu", text: "RTX 4070", origin: user });
+  store.rememberFact({ key: "GPU", text: "RTX 5080", origin: user });
+  store.rememberFact({ key: "gpu", text: "RTX 5080", origin: user }); // "none": nothing logged
+  store.rememberFact({ key: "dating", text: "in a relationship", supersedes: "status", origin: user });
+  store.setFactPinned("gpu", true);
+  store.invalidateFactByKey("gpu");
+  store.rememberFact({ key: "gpu", action: "remove" });
+
+  const gpu = store.getFactHistory("Gpu");
+  assert.deepEqual(gpu.map((e) => e.op), ["add", "update", "pin", "invalidate", "delete"]);
+  assert.equal(gpu[0].before, null);
+  assert.equal(gpu[1].before.text, "RTX 4070");
+  assert.equal(gpu[1].after.text, "RTX 5080");
+  assert.equal(gpu[1].origin.kind, "user_stated");
+  assert.equal(gpu[4].after.status, "stale");
+  // applySupersedes changed "status" as a side effect of the "dating" write.
+  assert.deepEqual(store.getFactHistory("status").map((e) => e.op), ["add", "invalidate"]);
+  assert.equal("origin" in store.getFactHistory("status")[1], false);
+
+  // Rolling back through the snapshot restorer is logged too.
+  const [latest] = snapshotStore.listSnapshots("memory-fact").filter((s) => s.key === "gpu");
+  await snapshotStore.restoreSnapshot(latest.id, { confirmStale: true });
+  assert.equal(store.getFactHistory("gpu").at(-1).op, "restore");
+
+  // A torn last line (crash mid-append) is skipped, not fatal.
+  fs.appendFileSync(path.join(dataDir, "facts-log.jsonl"), '{"key":"gpu","op":');
+  assert.equal(store.getFactHistory("gpu").length, 6);
+  assert.deepEqual(store.getFactHistory("never written"), []);
+});
+
+test("facts dropped by the 500 cap and pending facts that expire are logged, not lost silently (issue #673)", () => {
+  const dataDir = createTempDir();
+  const facts = [];
+  for (let i = 0; i < 2; i += 1) facts.push({ key: `archived ${i}`, text: "x", status: "archived", createdAt: `2026-01-0${i + 1}T00:00:00.000Z` });
+  for (let i = 0; i < 498; i += 1) facts.push({ id: `a${i}`, key: `active ${i}`, text: "y", status: "active" });
+  fs.writeFileSync(path.join(dataDir, "facts.json"), JSON.stringify({ facts }), "utf8");
+  let clock = "2026-09-01T00:00:00.000Z";
+  const store = createAcpMemoryStore({ dataDir, now: () => clock });
+  store.rememberFact({ key: "one more", text: "z" });
+  const dropped = store.getFactHistory("archived 0");
+  assert.deepEqual(dropped.map((e) => e.op), ["drop"]);
+  assert.equal(dropped[0].before.text, "x");
+  assert.equal(dropped[0].after, null);
+  assert.deepEqual(store.getFactHistory("archived 1"), []);
+
+  store.rememberFact({ key: "guess", text: "likes jazz", origin: { kind: "model_inferred" } });
+  clock = "2026-10-01T00:00:00.000Z";
+  store.archiveExpiredPendingFacts();
+  assert.deepEqual(store.getFactHistory("guess").map((e) => e.op), ["add", "expire"]);
 });
