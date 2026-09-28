@@ -113,3 +113,63 @@ test("a failed streaming attempt falls back to the non-streaming reply and repor
   assert.equal(reply, "Full non-streamed fallback reply.");
   assert.equal(replyMeta.streamedMatchesFinal, false);
 });
+
+// #666: the turn waits for llama-server before replying, says so once as a
+// streamed sentence, and switches to the fallback profile when that's what
+// came up. Neither notice counts against streamedMatchesFinal.
+test("#666: a turn that waited says so, and answers on the fallback profile waitForServer returned", async () => {
+  const seen = [];
+  let streamedProfile = null;
+  const fakeLlamaServerRuntime = {
+    isEnabled: () => true,
+    waitForServer: async (profile, onWait) => {
+      assert.equal(profile, "default");
+      onWait();
+      return "fast";
+    },
+    streamLocalAssistantReply: async (prompt, opts) => {
+      streamedProfile = opts.profile;
+      await opts.onSentence("Hello there.");
+      return "Hello there.";
+    },
+    runToolAwareReply: async () => ({ content: "", toolCalls: [], rounds: 0 }),
+    runBestOfNReply: async () => ({ content: "" }),
+  };
+
+  const app = createApp({ llamaServerRuntime: fakeLlamaServerRuntime });
+  const replyMeta = {};
+  const reply = await app.locals.buildAssistantReply(
+    "hi", "", "", "default", null, null, null, replyMeta,
+    (sentence) => seen.push(sentence),
+  );
+
+  assert.equal(reply, "Hello there.");
+  assert.equal(streamedProfile, "fast");
+  assert.deepEqual(seen, [
+    "Give me a second, I'm waking up.",
+    "My main model isn't answering, so I'm using my backup.",
+    "Hello there.",
+  ]);
+  assert.equal(replyMeta.streamedMatchesFinal, true);
+});
+
+test("#666: when waitForServer gives up, the turn still falls through to the existing reply paths", async () => {
+  const fakeLlamaServerRuntime = {
+    isEnabled: () => true,
+    waitForServer: async () => {
+      throw new Error("llama-server recently failed to start; retry cooldown active");
+    },
+    streamLocalAssistantReply: async () => {
+      throw new Error("still down");
+    },
+  };
+
+  const app = createApp({
+    llamaServerRuntime: fakeLlamaServerRuntime,
+    runLocalAssistantReply: async () => "llama-cli reply",
+  });
+  const reply = await app.locals.buildAssistantReply(
+    "hi", "", "", "default", null, null, null, {}, () => {},
+  );
+  assert.equal(reply, "llama-cli reply");
+});

@@ -2356,3 +2356,120 @@ test("a clean start on an update-installed build confirms it; a failure on a con
   await assert.rejects(() => failing.runtime.runLocalAssistantReply("hello", 64, "default"), /new build crashed/);
   assert.equal(confirmed[POINTER_FILE], before);
 });
+
+// #666: fake clock (sleep advances it) + a spawn that fails the first
+// failing.get(model) starts of that model, so retry/cooldown timing is
+// checked without real waits.
+function makeRetryRuntime(failing = new Map(), env = {}) {
+  let clock = 0;
+  let serverUp = false;
+  const sleeps = [];
+  const spawned = [];
+  const runtime = createLlamaServerRuntime({
+    env: { ...makeFakeEnv(), ...env },
+    fs: makeFakeFs(),
+    nowMs: () => clock,
+    sleep: async (ms) => {
+      sleeps.push(ms);
+      clock += ms;
+    },
+    fetch: async () => ({ ok: serverUp }),
+    spawn: (bin, args) => {
+      const model = args[args.indexOf(args.includes("-m") ? "-m" : "-hf") + 1];
+      spawned.push(model);
+      if (failing.get(model) > 0) {
+        failing.set(model, failing.get(model) - 1);
+        throw new Error(`out of memory loading ${model}`);
+      }
+      serverUp = true;
+      return makeFakeChild();
+    },
+    registerExitHandlers: false,
+  });
+  return { runtime, sleeps, spawned, setClock: (ms) => (clock = ms) };
+}
+
+const MANA_MODEL = makeFakeEnv().LLAMA_MODEL;
+const modelFor = (profile) => makeRetryRuntime().runtime.findLlamaModel(profile);
+
+test("#666: the start cooldown is per model and backs off from 5s, capped by LLAMA_SERVER_RETRY_COOLDOWN_MS", async () => {
+  const { runtime, spawned, setClock } = makeRetryRuntime(new Map([[MANA_MODEL, Infinity]]), {
+    LLAMA_SERVER_RETRY_COOLDOWN_MS: "20000",
+  });
+  const start = () => runtime.ensureServerConfig(MANA_MODEL);
+
+  await assert.rejects(start, /out of memory/);
+  setClock(4999);
+  await assert.rejects(start, (e) => /cooldown active/.test(e.message) && e.retryAfterMs === 1);
+  setClock(5000);
+  await assert.rejects(start, /out of memory/);
+  setClock(5000 + 14999);
+  await assert.rejects(start, /cooldown active/);
+  setClock(20000);
+  await assert.rejects(start, /out of memory/);
+  // Third failure: 45s by the backoff, capped at 20s.
+  setClock(39999);
+  await assert.rejects(start, /cooldown active/);
+  setClock(40000);
+  await assert.rejects(start, /out of memory/);
+  assert.equal(spawned.length, 4);
+
+  // Another model is not held back by this one's cooldown.
+  await runtime.ensureServerConfig("C:\\models\\other.gguf");
+  assert.equal(spawned.at(-1), "C:\\models\\other.gguf");
+});
+
+test("#666: waitForServer tells the turn once, retries after the cooldown, and returns when the server is back", async () => {
+  const { runtime, sleeps, spawned } = makeRetryRuntime(new Map([[MANA_MODEL, 1]]));
+  let notices = 0;
+  const onWait = () => (notices += 1);
+
+  assert.equal(await runtime.waitForServer("default", onWait), "default");
+  assert.equal(notices, 1);
+  assert.deepEqual(sleeps, [5000]);
+  assert.equal(spawned.length, 2);
+
+  // Already up: no notice, no wait.
+  assert.equal(await runtime.waitForServer("default", onWait), "default");
+  assert.equal(notices, 1);
+  assert.equal(spawned.length, 2);
+});
+
+test("#666: waitForServer gives up within its budget, then answers with the profile's fallbackProfile", async () => {
+  const qualityModel = modelFor("quality");
+  const { runtime, sleeps, spawned } = makeRetryRuntime(new Map([[qualityModel, Infinity]]));
+  let notices = 0;
+
+  assert.equal(await runtime.waitForServer("quality", () => (notices += 1)), "default");
+  assert.equal(notices, 1);
+  // Starts at 0s, 5s, 20s; the next cooldown (45s) doesn't fit in 20s.
+  assert.deepEqual(sleeps, [5000, 15000]);
+  assert.deepEqual(spawned, [qualityModel, qualityModel, qualityModel, MANA_MODEL]);
+});
+
+test("#666: waitForServer rejects when nothing comes up, and a long cooldown fails the next turn fast and silently", async () => {
+  // "fast" has no fallbackProfile.
+  const { runtime, sleeps } = makeRetryRuntime(new Map([[modelFor("fast"), Infinity]]));
+
+  await assert.rejects(() => runtime.waitForServer("fast"), /out of memory/);
+  const sleepsAfterFirstTurn = sleeps.length;
+
+  let notices = 0;
+  await assert.rejects(() => runtime.waitForServer("fast", () => (notices += 1)), /cooldown active/);
+  assert.equal(notices, 0);
+  assert.equal(sleeps.length, sleepsAfterFirstTurn);
+});
+
+test("#666: a rolled-back build is retried by waitForServer straight away, not after a cooldown", async () => {
+  const files = pointerFiles({
+    active: "C:\\llama-new",
+    previous: "C:\\llama",
+    pendingVerification: true,
+    installed: ["C:\\llama-new"],
+  });
+  const { runtime, spawnCalls } = makePointerRuntime(files, "C:\\llama-new\\llama-server.exe");
+
+  assert.equal(await runtime.waitForServer("default"), "default");
+  assert.deepEqual(spawnCalls, ["C:\\llama-new\\llama-server.exe", "C:\\llama\\llama-server.exe"]);
+  assert.equal(JSON.parse(files[POINTER_FILE]).active, "C:\\llama");
+});
