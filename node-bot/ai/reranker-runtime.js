@@ -21,6 +21,10 @@ const RETRY_COOLDOWN_MS = 5 * 60 * 1000;
 // default) -- a query plus a document cut to these stays well under it.
 const MAX_QUERY_CHARS = 500;
 const MAX_DOC_CHARS = 500;
+// Only the first N docs (callers pass them best-first) are scored; the rest
+// keep their place after them. Measured on the RTX 5080 box's CPU: ~0.53 s
+// warm for 10 docs vs ~1.1 s for 20, and this sits in front of a voice reply.
+const DEFAULT_MAX_DOCS = 10;
 
 function createReranker(options = {}) {
   const env = options.env || process.env;
@@ -186,6 +190,7 @@ function createReranker(options = {}) {
       return { order: inputOrder, reranked: false, ms: 0, fallback: null };
     }
     const budgetMs = Number(timeoutMs || env.MANA_RERANKER_TIMEOUT_MS) || 1500;
+    const sent = docs.slice(0, Number(env.MANA_RERANKER_MAX_CANDIDATES) || DEFAULT_MAX_DOCS);
     const startedAt = Date.now();
     const limit = deadline(budgetMs);
     const controller = new AbortController();
@@ -198,7 +203,7 @@ function createReranker(options = {}) {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             query: String(query || "").slice(0, MAX_QUERY_CHARS),
-            documents: docs.map((doc) => String(doc || "").slice(0, MAX_DOC_CHARS)),
+            documents: sent.map((doc) => String(doc || "").slice(0, MAX_DOC_CHARS)),
           }),
           signal: controller.signal,
         }),
@@ -207,11 +212,12 @@ function createReranker(options = {}) {
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
       const body = await Promise.race([resp.json(), limit.promise]);
       const ranked = (Array.isArray(body?.results) ? body.results : [])
-        .filter((r) => Number.isInteger(r?.index) && r.index >= 0 && r.index < docs.length)
+        .filter((r) => Number.isInteger(r?.index) && r.index >= 0 && r.index < sent.length)
         .sort((a, b) => Number(b.relevance_score) - Number(a.relevance_score))
         .map((r) => r.index);
       if (!ranked.length) throw new Error("no results in rerank response");
-      // Any index the server left out keeps its place after the ranked ones.
+      // Any index not scored (past the cap, or left out by the server) keeps
+      // its place after the ranked ones.
       return {
         order: [...new Set([...ranked, ...inputOrder])],
         reranked: true,
