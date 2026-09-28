@@ -466,7 +466,7 @@ function createAcpMemoryStore(options = {}) {
       } else {
         facts[idx] = snapshotPayload;
       }
-      saveFacts(facts);
+      saveFacts(facts, { op: "restore", key });
       return { key };
     });
   }
@@ -700,8 +700,75 @@ function createAcpMemoryStore(options = {}) {
     return loadFacts();
   }
 
-  function saveFacts(facts) {
+  // Issue #673: append-only history of every fact change, beside
+  // facts.json. saveFacts diffs what it's about to write against what's on
+  // disk and logs one {at, op, key, before, after, origin} line per changed
+  // record, so side effects -- the other fact applySupersedes invalidates,
+  // records the 500 cap drops -- are logged without each caller having to.
+  // ponytail: grows without bound (a few KB per change); rotate it if it
+  // ever gets big enough to matter.
+  const factsLogPath = path.join(dataDir, "facts-log.jsonl");
+
+  // Facts from before ids existed fall back to key + creation time.
+  function factIdentity(fact) {
+    return fact.id || `key:${fact.key}:${fact.createdAt || ""}`;
+  }
+
+  // change: {op, key, origin} -- op/origin describe the write to `key`;
+  // another record that changed in the same save is logged as "invalidate"
+  // (superseded) or with the same op, and one that disappeared as "drop".
+  function saveFacts(facts, change = {}) {
+    const op = change.op || "update";
+    const lowerKey = change.key ? String(change.key).toLowerCase() : null;
+    const before = new Map(loadFacts().map((f) => [factIdentity(f), f]));
     writeJsonObject(factsPath, { facts });
+    const at = now();
+    const isTarget = (fact) => !lowerKey || String(fact.key).toLowerCase() === lowerKey;
+    const entries = [];
+    for (const fact of facts) {
+      const id = factIdentity(fact);
+      const prev = before.get(id) || null;
+      before.delete(id);
+      if (prev && JSON.stringify(prev) === JSON.stringify(fact)) continue;
+      const target = isTarget(fact);
+      entries.push({
+        at,
+        op: target || !fact.invalidatedAt || prev?.invalidatedAt ? op : "invalidate",
+        key: fact.key,
+        before: prev,
+        after: fact,
+        ...(target && change.origin ? { origin: change.origin } : {}),
+      });
+    }
+    for (const gone of before.values()) {
+      entries.push({ at, op: isTarget(gone) ? op : "drop", key: gone.key, before: gone, after: null });
+    }
+    if (!entries.length) return;
+    try {
+      fs.appendFileSync(factsLogPath, `${entries.map((e) => JSON.stringify(e)).join("\n")}\n`, "utf8");
+    } catch (e) {
+      console.warn("Fact history log append failed:", e?.message || e);
+    }
+  }
+
+  // Issue #673: every logged change to one key, oldest first -- the diff
+  // (before/after) and blame (origin) behind GET
+  // /admin/memory/facts/:key/history. Rolling back reuses the memory-fact
+  // snapshot restorer and its approval.
+  function getFactHistory(key) {
+    const lowerKey = cleanText(key, 200).toLowerCase();
+    if (!lowerKey || !fs.existsSync(factsLogPath)) return [];
+    const entries = [];
+    for (const line of fs.readFileSync(factsLogPath, "utf8").split("\n")) {
+      if (!line.trim()) continue;
+      try {
+        const entry = JSON.parse(line);
+        if (String(entry.key).toLowerCase() === lowerKey) entries.push(entry);
+      } catch (e) {
+        // A torn last line from a crash mid-append; skip it.
+      }
+    }
+    return entries;
   }
 
   function snapshotFact(key, fact, summary, source) {
@@ -808,7 +875,7 @@ function createAcpMemoryStore(options = {}) {
       delete existing.unverifiedSource;
       existing.confirmedAt = timestamp;
       existing.updatedAt = timestamp;
-      saveFacts(facts);
+      saveFacts(facts, { op: "confirm", key: cleanKey, origin: cleanOrigin });
       return { ok: true, action: "confirm", decision: "confirm", key: cleanKey, found: true };
     }
 
@@ -819,7 +886,7 @@ function createAcpMemoryStore(options = {}) {
       snapshot();
       existing.status = normalizedAction === "remove" ? "stale" : "archived";
       existing.updatedAt = timestamp;
-      saveFacts(facts);
+      saveFacts(facts, { op: normalizedAction === "remove" ? "delete" : "archive", key: cleanKey, origin: cleanOrigin });
       return {
         ok: true,
         action: normalizedAction,
@@ -902,7 +969,7 @@ function createAcpMemoryStore(options = {}) {
       if (normalizedEpistemic) existing.epistemic = normalizedEpistemic;
       if (cleanOccurredAt) existing.occurredAt = cleanOccurredAt;
       const supersededPatch = applySupersedes(facts, cleanKey, supersedes, timestamp);
-      saveFacts(facts);
+      saveFacts(facts, { op: "update", key: cleanKey, origin: cleanOrigin });
       return {
         ok: true,
         action: "patch",
@@ -933,7 +1000,7 @@ function createAcpMemoryStore(options = {}) {
       ...(cleanOrigin ? { origin: cleanOrigin } : {}),
     });
     const supersededInsert = applySupersedes(facts, cleanKey, supersedes, timestamp);
-    saveFacts(trimFacts(facts));
+    saveFacts(trimFacts(facts), { op: "add", key: cleanKey, origin: cleanOrigin });
     return {
       ok: true,
       action: "insert",
@@ -966,7 +1033,7 @@ function createAcpMemoryStore(options = {}) {
     );
     if (!target) return { key: cleanTargetKey, found: false };
     target.invalidatedAt = now();
-    saveFacts(facts);
+    saveFacts(facts, { op: "invalidate", key: cleanTargetKey });
     return { key: cleanTargetKey, found: true };
   }
 
@@ -985,7 +1052,7 @@ function createAcpMemoryStore(options = {}) {
       fact.status = "archived";
       fact.updatedAt = timestamp;
     }
-    saveFacts(facts);
+    saveFacts(facts, { op: "expire" });
     return { archived: expired.map((f) => f.key) };
   }
 
@@ -1005,7 +1072,7 @@ function createAcpMemoryStore(options = {}) {
     } else {
       delete target.pinned;
     }
-    saveFacts(facts);
+    saveFacts(facts, { op: pinned ? "pin" : "unpin", key: cleanTargetKey });
     return { key: cleanTargetKey, found: true, pinned: Boolean(pinned) };
   }
 
@@ -2147,6 +2214,7 @@ function createAcpMemoryStore(options = {}) {
     listFacts,
     getFactsValidAt,
     invalidateFactByKey,
+    getFactHistory,
     getFactVersion,
     archiveExpiredPendingFacts,
     setFactPinned,
