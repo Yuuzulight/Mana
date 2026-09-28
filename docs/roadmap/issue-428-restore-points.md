@@ -8,7 +8,7 @@ Give applied editor-handoff edits an undo path beyond a raw `.bak` file.
 
 Inspired by Cursor's checkpoints -- auto-snapshot before each agent
 action, restorable from a timeline, deliberately independent of git
-state. See `docs/roadmap/oss-inspiration-survey-2026-08.md`.
+state. See the 2026-08 OSS survey (moved out of the repo; see git history).
 
 Not the same as #387, which verifies an edit landed on disk before
 marking it applied (a write-verification check) -- this issue is about

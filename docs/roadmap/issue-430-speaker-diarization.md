@@ -10,7 +10,7 @@ multi-person audio on one mic).
 
 Inspired by pyannote.audio's `speaker-diarization-community-1` pipeline,
 local and offline-loadable. See
-`docs/roadmap/oss-inspiration-survey-2026-08.md`.
+the 2026-08 OSS survey (moved out of the repo; see git history).
 
 ## Costs to weigh
 

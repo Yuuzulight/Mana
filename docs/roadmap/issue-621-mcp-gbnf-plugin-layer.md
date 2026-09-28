@@ -59,4 +59,4 @@ malformed tool-call JSON is most likely.
 ## Related
 
 `docs/roadmap/issue-42-mcp-support.md` (MCP, already shipped).
-`docs/roadmap/oss-inspiration-survey-2026-09.md`.
+the 2026-09 OSS survey (moved out of the repo; see git history).

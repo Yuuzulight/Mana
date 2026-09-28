@@ -26,7 +26,7 @@ loop.
 
 - If/when Mana's coding agent gains any form of task delegation (parallel
   or sequential sub-tasks with isolated scope — see the isolated-context
-  subagents finding in `docs/roadmap/oss-inspiration-survey-2026-09.md`),
+  subagents finding in the 2026-09 OSS survey (moved out of the repo; see git history)),
   add a live status panel: task name, elapsed time, latest tool call,
   with Stop (and ideally Steer — inject a follow-up instruction)
   controls.
@@ -44,6 +44,6 @@ loop.
 
 ## Related
 
-`docs/roadmap/hermes-desktop-eval-2026-09.md`. Related to the
+the 2026-09 Hermes Desktop evaluation (moved out of the repo; see git history). Related to the
 isolated-context subagents finding in
-`docs/roadmap/oss-inspiration-survey-2026-09.md`.
+the 2026-09 OSS survey (moved out of the repo; see git history).

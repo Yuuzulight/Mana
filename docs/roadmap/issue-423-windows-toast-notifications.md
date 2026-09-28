@@ -12,7 +12,7 @@ Mana's proactive surface today is chat + avatar only. Native Windows
 toast notifications with action buttons let an app push low-friction,
 actionable-or-dismissible messages without stealing focus. Electron
 already exposes the needed notification APIs. See
-`docs/roadmap/oss-inspiration-survey-2026-08.md`.
+the 2026-08 OSS survey (moved out of the repo; see git history).
 
 ## Proposed Scope
 

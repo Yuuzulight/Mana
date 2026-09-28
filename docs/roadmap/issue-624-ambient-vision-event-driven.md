@@ -70,4 +70,4 @@ connected to the loop this issue was actually trying to improve:
 ## Related
 
 Issue #343 (accessibility-tree-first extraction, already shipped on the
-conversational path). `docs/roadmap/oss-inspiration-survey-2026-09.md`.
+conversational path). the 2026-09 OSS survey (moved out of the repo; see git history).

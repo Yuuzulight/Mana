@@ -66,4 +66,4 @@ genuine gap:
 
 ## Related
 
-`docs/roadmap/oss-inspiration-survey-2026-09.md`.
+the 2026-09 OSS survey (moved out of the repo; see git history).

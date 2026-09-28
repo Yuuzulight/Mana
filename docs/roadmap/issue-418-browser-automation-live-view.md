@@ -12,7 +12,7 @@ streams a live view to the frontend as the browser acts. Mana's
 `plugins/browser-automation/browser-automation.js` (#150) currently acts
 like a black box until it finishes -- out of step with Mana's "propose,
 don't silently act" philosophy elsewhere (editor handoff, approval gate).
-See `docs/roadmap/oss-inspiration-survey-2026-08.md`.
+See the 2026-08 OSS survey (moved out of the repo; see git history).
 
 ## Proposed Scope
 

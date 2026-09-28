@@ -8,7 +8,7 @@ Live2D and VRM.
 ## Why
 
 Inspired by AIRI v0.11.0's Spine2D support. See
-`docs/roadmap/oss-inspiration-survey-2026-08.md`. Flagged low-priority:
+the 2026-08 OSS survey (moved out of the repo; see git history). Flagged low-priority:
 Spine2D's anime-avatar model ecosystem is much smaller than Live2D's, so
 this is a real cost (a third rendering pipeline) for a narrow payoff.
 

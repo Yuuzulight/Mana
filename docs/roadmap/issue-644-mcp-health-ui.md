@@ -40,6 +40,6 @@ data the backend already produces and simply never surfaces.
 
 ## Related
 
-`docs/roadmap/hermes-desktop-eval-2026-09.md`. Builds on the MCP
+the 2026-09 Hermes Desktop evaluation (moved out of the repo; see git history). Builds on the MCP
 client/server work already shipped (`mcp-server.js`,
 `mcp-client-registry.js`, issue #42).

@@ -9,7 +9,7 @@ Add a faster Whisper option to the existing model-profile list.
 Pruned-decoder Whisper variant (32->4 decoder layers), ~7x faster than
 large-v3 with a modest accuracy tradeoff, GGML weights already exist for
 whisper.cpp -- same runtime Mana already uses. See
-`docs/roadmap/oss-inspiration-survey-2026-08.md`.
+the 2026-08 OSS survey (moved out of the repo; see git history).
 
 ## Proposed Scope
 

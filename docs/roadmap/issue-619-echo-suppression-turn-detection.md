@@ -15,7 +15,7 @@ turn-detection, instead of building these from scratch.
 
 ## Why
 
-Original research (`docs/roadmap/oss-inspiration-survey-2026-09.md`)
+Original research (the 2026-09 OSS survey (moved out of the repo; see git history))
 assumed Mana had no echo suppression or turn-detection anywhere. That's
 false for Electron:
 
@@ -71,6 +71,6 @@ regardless of this issue's native-specific scope.
 
 ## Related
 
-`docs/roadmap/oss-inspiration-survey-2026-09.md`. Complements #618
+the 2026-09 OSS survey (moved out of the repo; see git history). Complements #618
 (dedicated wake-word classifier). Issue #219 (barge-in, Electron-side
 prior art).

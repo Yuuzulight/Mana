@@ -13,7 +13,7 @@ exactly this for one path (skills generated via `skill-proposal.js`,
 "refuse a generated skill whose script does not parse") -- this issue
 extends the same idea to the editor-handoff proposal path
 (`editors/workspace/proposals`), which #378 didn't touch. See
-`docs/roadmap/oss-inspiration-survey-2026-08.md`.
+the 2026-08 OSS survey (moved out of the repo; see git history).
 
 ## Proposed Scope
 

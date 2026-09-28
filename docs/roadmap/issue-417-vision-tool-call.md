@@ -12,7 +12,7 @@ Inspired by my-neuro's "language-intent-based activation." Mana's
 multi-round tool-calling loop (#183) and existing tool sources
 (`node-bot/ai/expression-tool-source.js`, `node-bot/ai/skill-tool-source.js`)
 already give this an idiomatic home -- no `vision_look`-style tool exists
-today (confirmed by grep). See `docs/roadmap/oss-inspiration-survey-2026-08.md`.
+today (confirmed by grep). See the 2026-08 OSS survey (moved out of the repo; see git history).
 
 ## Proposed Scope
 

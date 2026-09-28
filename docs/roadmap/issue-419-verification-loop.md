@@ -14,7 +14,7 @@ caps) don't talk to each other today -- confirmed by grep, no reference
 from one to the other. The "verification loop" (run tests, parse
 failures, retry) is called out repeatedly as the highest-leverage
 capability across current coding agents. See
-`docs/roadmap/oss-inspiration-survey-2026-08.md`.
+the 2026-08 OSS survey (moved out of the repo; see git history).
 
 Not a duplicate of #356/#378, which added a parse-check specifically for
 `skill-proposal.js`-generated skill scripts -- a separate subsystem from

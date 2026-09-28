@@ -46,4 +46,4 @@ stock/job-search API keys, etc.) — the kind of software Mana already is.
 
 ## Related
 
-`docs/roadmap/hermes-desktop-eval-2026-09.md`.
+the 2026-09 Hermes Desktop evaluation (moved out of the repo; see git history).

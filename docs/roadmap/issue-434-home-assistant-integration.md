@@ -11,7 +11,7 @@ Home Assistant's Assist framework and the Wyoming protocol let a local
 app register as a conversation agent or voice satellite, and Home
 Assistant's local REST/WebSocket API lets Mana query device state for
 situational replies. Fully local, reuses infrastructure Mana already has.
-See `docs/roadmap/oss-inspiration-survey-2026-08.md`.
+See the 2026-08 OSS survey (moved out of the repo; see git history).
 
 ## Proposed Scope
 

@@ -11,7 +11,7 @@ Inspired by opencode's per-session token/cost tracking with configurable
 budget thresholds. Mana already caps tool-call *count* per session but has
 no token/cost visibility. Local inference has no metered cost, so this
 only matters when `MANA_ALLOW_REMOTE_AI` is on. See
-`docs/roadmap/oss-inspiration-survey-2026-08.md`.
+the 2026-08 OSS survey (moved out of the repo; see git history).
 
 ## Proposed Scope
 

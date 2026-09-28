@@ -52,6 +52,6 @@ is a better anchor for this than a second floating HUD bar:
 
 ## Related
 
-`docs/roadmap/hermes-desktop-eval-2026-09.md`. Sibling to issue #624
+the 2026-09 Hermes Desktop evaluation (moved out of the repo; see git history). Sibling to issue #624
 (wiring accessibility-tree extraction into the ambient glance loop) —
 same subsystem, one more signal for *what* to read.
