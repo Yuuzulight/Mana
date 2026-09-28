@@ -5,7 +5,8 @@ Node backend server (server.js)
 - POST /screen/read : accepts a screenshot data URL and returns local OCR text.
 - GET /health : basic health check
 
-Environment variables (set before running):
+Environment variables (node-bot/.env, loaded at startup -- its values win
+over inherited ones -- or set before running):
 - WHISPER_BIN : full path to whisper.cpp main executable (e.g. C:\whisper.cpp\main.exe)
 - WHISPER_MODEL : full path to whisper model file (e.g. models/ggml-base.en.bin)
 - WHISPER_LANGUAGE : spoken language passed to whisper.cpp (default "en")
@@ -44,6 +45,16 @@ Environment variables (set before running):
 
 This server aims to avoid Python. You must download and place the whisper.cpp and llama.cpp binaries and model files yourself.
 */
+
+// First, before any module below reads process.env at require time (e.g.
+// tools/retriever-index.js's USE_EMBEDDINGS). Only when run as the server:
+// tests that require() this file keep their own environment.
+if (require.main === module) {
+  const loadedEnvKeys = require("./load-env").loadEnvFile();
+  if (loadedEnvKeys.length) {
+    console.log(`Loaded ${loadedEnvKeys.length} settings from node-bot/.env`);
+  }
+}
 
 const express = require("express");
 const multer = require("multer");
