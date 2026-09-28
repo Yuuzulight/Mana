@@ -925,7 +925,10 @@ internal sealed class VoiceLoop : IDisposable
             // vision for an unrelated reply error on a normal text turn.
             var message = image is not null || images is { Count: > 0 } ? VisionHotkeyMessages.DescribeError(ex.Message) : ex.Message;
             Console.WriteLine($"VoiceLoop: reply/stream failed, resuming listening. {message}");
-            ReturnToIdle();
+            // #666: say so instead of dropping the turn silently. The raw
+            // error stays in the console; vision turns keep DescribeError's
+            // user-facing text in the chat.
+            await SayReplyFailedAsync(image is not null || images is { Count: > 0 } ? message : ReplyFailedMessage);
             return false;
         }
 
@@ -1028,6 +1031,35 @@ internal sealed class VoiceLoop : IDisposable
         // here; by the interrupt hotkey, go back to Idle.
         ConsumeManualStop();
         return false;
+    }
+
+    private const string ReplyFailedMessage = "Sorry, I couldn't answer that just now. Try again in a moment.";
+
+    // #666: a failed reply is shown in the chat and spoken once, with the
+    // same mode handling as the non-streamed fallback above. If TTS is what
+    // failed, the chat line is all the user gets -- still not silence.
+    private async Task SayReplyFailedAsync(string chatText)
+    {
+        chatLog?.AppendReplySentence(chatText);
+        try
+        {
+            var wav = await backendClient.SynthesizeAsync(ReplyFailedMessage);
+            OnTalkingStateChanged(true);
+            var completedNaturally = await audioPlayer.PlayAsync(wav);
+            OnTalkingStateChanged(false);
+            if (!completedNaturally)
+            {
+                // Barge-in owns mode already; the hotkey returns to Idle.
+                ConsumeManualStop();
+                return;
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"VoiceLoop: couldn't speak the failure notice. {ex.Message}");
+            OnTalkingStateChanged(false);
+        }
+        ReturnToIdle();
     }
 
     // Called by StreamingReplyPlayer exactly when the first chunk of a
