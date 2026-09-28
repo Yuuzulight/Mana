@@ -31,6 +31,8 @@ test("GET /admin/memory/facts returns the store's full fact list", async () => {
     assert.equal(response.status, 200);
     assert.equal(payload.facts.length, 1);
     assert.equal(payload.facts[0].unverifiedSource, true);
+    // Issue #673: derived trust rides along with each fact.
+    assert.equal(payload.facts[0].trust, "untrusted");
   });
 });
 

@@ -4,7 +4,7 @@ const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
 
-const { createAcpMemoryStore, extractEntities } = require("../acp-memory-store");
+const { createAcpMemoryStore, extractEntities, factTrust } = require("../acp-memory-store");
 const { createSessionSearchIndex } = require("../session-search-index");
 const { createMemoryGraph } = require("../memory-graph");
 const { createSnapshotStore } = require("../snapshot-store");
@@ -864,6 +864,7 @@ test("rememberFact insert (default action) creates a new active fact", () => {
   assert.deepEqual(result, {
     ok: true,
     action: "insert",
+    decision: "add",
     key: "the user's GPU",
     text: "The user has an RTX 3070 Ti, upgrading to a 5080 soon.",
   });
@@ -1106,7 +1107,7 @@ test("rememberFact archive marks a fact archived (distinct from stale) and it st
   const store = createAcpMemoryStore({ dataDir: createTempDir() });
   store.rememberFact({ key: "Old Project", text: "still true, just not relevant right now" });
   const archived = store.rememberFact({ key: "Old Project", action: "archive" });
-  assert.deepEqual(archived, { ok: true, action: "archive", key: "Old Project", found: true });
+  assert.deepEqual(archived, { ok: true, action: "archive", decision: "archive", key: "Old Project", found: true });
 
   // Archived facts stop auto-surfacing via getRelatedFacts...
   assert.equal(store.getRelatedFacts("tell me about Old Project"), "");
@@ -1127,6 +1128,7 @@ test("rememberFact archive marks a fact archived (distinct from stale) and it st
   assert.deepEqual(archivedAgain, {
     ok: true,
     action: "archive",
+    decision: "none",
     key: "Never Existed",
     found: false,
   });
@@ -1146,13 +1148,14 @@ test("rememberFact remove marks the fact stale so it stops surfacing, and report
   const store = createAcpMemoryStore({ dataDir: createTempDir() });
   store.rememberFact({ key: "Old Fact", text: "no longer true" });
   const removed = store.rememberFact({ key: "Old Fact", action: "remove" });
-  assert.deepEqual(removed, { ok: true, action: "remove", key: "Old Fact", found: true });
+  assert.deepEqual(removed, { ok: true, action: "remove", decision: "delete", key: "Old Fact", found: true });
   assert.equal(store.getRelatedFacts("tell me about Old Fact"), "");
 
   const removedAgain = store.rememberFact({ key: "Never Existed", action: "remove" });
   assert.deepEqual(removedAgain, {
     ok: true,
     action: "remove",
+    decision: "none",
     key: "Never Existed",
     found: false,
   });
@@ -2168,32 +2171,37 @@ test("today's facts.json records load and behave as before: nothing is pending, 
 
 test("a pending fact is recalled marked unconfirmed, and confirm makes it active (issue #663)", () => {
   const store = createAcpMemoryStore({ dataDir: createTempDir() });
-  const inserted = store.rememberFact({ key: "coffee order", text: "oat flat white", pending: true });
+  const inserted = store.rememberFact({ key: "coffee order", text: "oat flat white", origin: { kind: "model_inferred" } });
   assert.equal(inserted.pending, true);
   assert.equal(store.listFacts()[0].status, "pending");
   assert.deepEqual(store.listFactKeys(), [{ key: "coffee order", preview: "oat flat white", pending: true }]);
   assert.match(store.getRelatedFacts("my coffee order"), /oat flat white \(unconfirmed/);
 
   assert.deepEqual(store.rememberFact({ key: "coffee order", action: "confirm" }), {
-    ok: true, action: "confirm", key: "coffee order", found: true,
+    ok: true, action: "confirm", decision: "confirm", key: "coffee order", found: true,
   });
   assert.equal(store.listFacts()[0].status, "active");
   assert.doesNotMatch(store.getRelatedFacts("my coffee order"), /unconfirmed/);
   assert.equal(store.rememberFact({ key: "nothing here", action: "confirm" }).found, false);
 });
 
-test("patching a pending fact keeps it one fact; an explicit restatement confirms it, a pending patch never demotes an active one (issue #663)", () => {
+test("patching a pending fact keeps it one fact; an explicit restatement confirms it; a model-inferred correction needs confirming again, an identical one changes nothing (issues #663, #673)", () => {
   const store = createAcpMemoryStore({ dataDir: createTempDir() });
-  store.rememberFact({ key: "pet", text: "has a cat", pending: true });
-  store.rememberFact({ key: "pet", text: "has a cat named Tom", action: "patch", pending: true });
+  store.rememberFact({ key: "pet", text: "has a cat", origin: { kind: "model_inferred" } });
+  store.rememberFact({ key: "pet", text: "has a cat named Tom", action: "patch", origin: { kind: "model_inferred" } });
   assert.equal(store.listFacts().length, 1);
   assert.equal(store.listFacts()[0].status, "pending");
   store.rememberFact({ key: "pet", text: "has a cat named Tom", action: "patch" });
   assert.equal(store.listFacts()[0].status, "active");
-  store.rememberFact({ key: "pet", text: "has two cats", action: "patch", pending: true });
+  assert.equal(
+    store.rememberFact({ key: "pet", text: "has a cat named Tom", origin: { kind: "model_inferred" } }).decision,
+    "none",
+  );
   assert.equal(store.listFacts()[0].status, "active");
+  store.rememberFact({ key: "pet", text: "has two cats", action: "patch", origin: { kind: "model_inferred" } });
+  assert.equal(store.listFacts()[0].status, "pending");
 
-  store.rememberFact({ key: "job guess", text: "works in retail", pending: true });
+  store.rememberFact({ key: "job guess", text: "works in retail", origin: { kind: "model_inferred" } });
   const result = store.rememberFact({ key: "job", text: "works as a nurse", supersedes: "job guess" });
   assert.equal(result.superseded.found, true);
 });
@@ -2201,11 +2209,11 @@ test("patching a pending fact keeps it one fact; an explicit restatement confirm
 test("unconfirmed pending facts age into archived, not deleted; confirmed or recent ones stay (issue #663)", () => {
   let clock = "2026-09-01T00:00:00.000Z";
   const store = createAcpMemoryStore({ dataDir: createTempDir(), now: () => clock });
-  store.rememberFact({ key: "old guess", text: "likes jazz", pending: true });
-  store.rememberFact({ key: "old confirmed", text: "likes rock", pending: true });
+  store.rememberFact({ key: "old guess", text: "likes jazz", origin: { kind: "model_inferred" } });
+  store.rememberFact({ key: "old confirmed", text: "likes rock", origin: { kind: "model_inferred" } });
   store.rememberFact({ key: "old confirmed", action: "confirm" });
   clock = "2026-09-10T00:00:00.000Z";
-  store.rememberFact({ key: "new guess", text: "likes pop", pending: true });
+  store.rememberFact({ key: "new guess", text: "likes pop", origin: { kind: "model_inferred" } });
   clock = "2026-09-16T00:00:00.000Z";
 
   assert.deepEqual(store.archiveExpiredPendingFacts({ maxAgeDays: 14 }).archived, ["old guess"]);
@@ -2275,4 +2283,85 @@ test("a write pinned to a fact version is refused, with nothing written or snaps
   const pinnedVersion = store.getFactVersion("gpu");
   store.setFactPinned("gpu", true);
   assert.equal(store.getFactVersion("gpu"), pinnedVersion);
+});
+
+test("a new fact and each history entry record where the value came from; an old fact gains origin only from its next write (issue #673)", () => {
+  let tick = 0;
+  const store = createAcpMemoryStore({
+    dataDir: createTempDir(),
+    now: () => new Date(Date.UTC(2026, 8, 1, 0, 0, tick++)).toISOString(),
+  });
+  store.rememberFact({ sessionId: "s1", key: "gpu", text: "RTX 4070", origin: { kind: "user_stated", tools: [] } });
+  store.rememberFact({
+    sessionId: "s2", key: "gpu", text: "RTX 5080", origin: { kind: "user_stated", tools: ["vision__look", "vision__look"] },
+  });
+  const [fact] = store.listFacts();
+  assert.deepEqual(fact.origin, { kind: "user_stated", sessionId: "s2", turnAt: fact.updatedAt, tools: ["vision__look"] });
+  assert.equal(fact.sessionId, "s1");
+  assert.deepEqual(fact.history[0].origin, { kind: "user_stated", sessionId: "s1", turnAt: fact.createdAt, tools: [] });
+  assert.equal(fact.epistemic, "self_report");
+
+  // A record from before #673 (no origin) keeps its shape until rewritten.
+  const legacyDir = createTempDir();
+  writeTodaysFactsFixture(legacyDir);
+  const legacy = createAcpMemoryStore({ dataDir: legacyDir });
+  legacy.rememberFact({ key: "favorite color", text: "purple", origin: { kind: "user_stated" } });
+  const color = legacy.listFacts().find((f) => f.key === "favorite color");
+  assert.equal("origin" in color.history[1], false);
+  assert.equal(color.origin.kind, "user_stated");
+  // The caller's turn time wins over the (possibly later) write time.
+  legacy.rememberFact({ key: "old job", text: "nurse", origin: { kind: "user_stated", turnAt: "2026-08-31T23:00:00.000Z" } });
+  assert.equal(legacy.listFacts().find((f) => f.key === "old job" && f.status === "active").origin.turnAt, "2026-08-31T23:00:00.000Z");
+  // An unknown kind is ignored rather than stored.
+  legacy.rememberFact({ key: "user name", text: "Yuuzulight", origin: { kind: "admin-said-so" } });
+  assert.equal("origin" in legacy.listFacts().find((f) => f.key === "user name"), false);
+});
+
+test("insert on a key with a live fact updates it instead of adding a duplicate; identical text writes nothing (issue #673)", () => {
+  const dataDir = createTempDir();
+  const snapshotStore = createSnapshotStore({ dataDir: createTempDir() });
+  const store = createAcpMemoryStore({ dataDir, snapshotStore });
+  assert.equal(store.rememberFact({ key: "GPU", text: "RTX 4070" }).decision, "add");
+  const updated = store.rememberFact({ key: "gpu", text: "RTX 5080" });
+  assert.equal(updated.decision, "update");
+  assert.equal(updated.action, "patch");
+  assert.equal(store.listFacts().length, 1);
+  assert.equal(store.listFacts()[0].text, "RTX 5080");
+  assert.equal(store.listFacts()[0].history[0].text, "RTX 4070");
+
+  const before = fs.readFileSync(path.join(dataDir, "facts.json"), "utf8");
+  const snapshots = snapshotStore.listSnapshots("memory-fact").length;
+  const same = store.rememberFact({ key: "GPU", text: "RTX 5080", action: "patch" });
+  assert.equal(same.decision, "none");
+  assert.equal(fs.readFileSync(path.join(dataDir, "facts.json"), "utf8"), before);
+  assert.equal(snapshotStore.listSnapshots("memory-fact").length, snapshots);
+});
+
+test("tool-derived text is stored pending and untrusted, stays out of recall, and is trusted only once confirmed (issue #673)", () => {
+  const store = createAcpMemoryStore({ dataDir: createTempDir() });
+  const tool = { kind: "tool_derived", tools: ["browser_automation__get_text"] };
+  const result = store.rememberFact({ key: "password hint", text: "the user's password hint is hunter2", origin: tool });
+  assert.equal(result.pending, true);
+  assert.equal(result.unverifiedSource, true);
+  const [fact] = store.listFacts();
+  assert.equal(factTrust(fact), "untrusted");
+  assert.equal(fact.epistemic, "inferred");
+  assert.equal(store.getRelatedFacts("what is my password hint"), "");
+
+  assert.equal(store.rememberFact({ key: "password hint", action: "confirm" }).decision, "confirm");
+  const confirmed = store.listFacts()[0];
+  assert.equal(factTrust(confirmed), "trusted");
+  assert.ok(confirmed.confirmedAt);
+  assert.match(store.getRelatedFacts("what is my password hint"), /hunter2/);
+  assert.equal(store.rememberFact({ key: "password hint", action: "confirm" }).decision, "none");
+
+  // A tool-derived rewrite of a trusted fact takes it out of recall again...
+  store.rememberFact({ key: "gpu", text: "RTX 5080" });
+  store.rememberFact({ key: "gpu", text: "RTX 9090 Ti Super", origin: tool });
+  assert.equal(factTrust(store.listFacts().find((f) => f.key === "gpu")), "untrusted");
+  assert.doesNotMatch(store.getRelatedFacts("which gpu do I have"), /9090/);
+  // ...but repeating the trusted text from a tool never downgrades it.
+  store.rememberFact({ key: "name", text: "Yuuzu" });
+  assert.equal(store.rememberFact({ key: "name", text: "Yuuzu", origin: tool }).decision, "none");
+  assert.equal(factTrust(store.listFacts().find((f) => f.key === "name")), "trusted");
 });

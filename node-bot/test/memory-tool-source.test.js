@@ -15,12 +15,20 @@ const path = require("node:path");
 const { createAcpMemoryStore } = require("../acp-memory-store");
 const { createApprovalGate } = require("../approval-gate");
 
+// Issue #673: origin.turnAt is the real clock; the payload tests below
+// compare everything else.
+function withoutTurnAt(args) {
+  if (!args?.origin) return args;
+  const { turnAt, ...origin } = args.origin;
+  return { ...args, origin };
+}
+
 function fakeAcpMemoryStore(rememberFactImpl, listFactKeysImpl) {
   const calls = [];
   return {
     calls,
     rememberFact: (args) => {
-      calls.push(args);
+      calls.push(withoutTurnAt(args));
       return rememberFactImpl ? rememberFactImpl(args) : { ok: true, action: args.action || "insert" };
     },
     ...(listFactKeysImpl ? { listFactKeys: listFactKeysImpl } : {}),
@@ -88,7 +96,13 @@ test("executeTool forwards key/text/action to acpMemoryStore.rememberFact, with 
     action: "patch",
   });
   assert.deepEqual(acpMemoryStore.calls, [
-    { sessionId: "session-a", key: "the user's GPU", text: "RTX 5080", action: "patch" },
+    {
+      sessionId: "session-a",
+      key: "the user's GPU",
+      text: "RTX 5080",
+      action: "patch",
+      origin: { kind: "model_inferred", tools: [] },
+    },
   ]);
   assert.equal(result, JSON.stringify({ ok: true, action: "patch" }));
 });
@@ -108,6 +122,7 @@ test("executeTool forwards supersedes when supplied, and omits it entirely when 
     text: "in a relationship",
     action: undefined,
     supersedes: "relationship status",
+    origin: { kind: "model_inferred", tools: [] },
   });
 
   await source.executeTool(`${MEMORY_TOOL_PREFIX}remember`, { key: "favorite color", text: "blue" });
@@ -342,11 +357,12 @@ test("executeTool stages the write through approvalGate.requestApproval when one
   assert.equal(acpMemoryStore.calls.length, 0);
   assert.equal(approvalCalls.length, 1);
   assert.equal(approvalCalls[0].actionType, "memory-write");
-  assert.deepEqual(approvalCalls[0].details.payload, {
+  assert.deepEqual(withoutTurnAt(approvalCalls[0].details.payload), {
     sessionId: "session-a",
     key: "the user's GPU",
     text: "RTX 5080",
     action: "patch",
+    origin: { kind: "model_inferred", tools: [] },
   });
   assert.equal(approvalCalls[0].details.scanText, "RTX 5080");
   assert.deepEqual(JSON.parse(result), {
@@ -382,21 +398,17 @@ function tempDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), "mana-memory-tool-"));
 }
 
-test("a fact Mana saves without being asked starts pending; one the user asked for, or with no user message, doesn't (issue #663)", async () => {
-  const asked = fakeAcpMemoryStore();
-  await createMemoryToolSource({ acpMemoryStore: asked, userMessage: "remember that my cat is Tom" })
-    .executeTool(`${MEMORY_TOOL_PREFIX}remember`, { key: "cat", text: "cat is Tom" });
-  assert.equal("pending" in asked.calls[0], false);
-
-  const notAsked = fakeAcpMemoryStore();
-  await createMemoryToolSource({ acpMemoryStore: notAsked, userMessage: "my cat Tom knocked my mug over" })
-    .executeTool(`${MEMORY_TOOL_PREFIX}remember`, { key: "cat", text: "cat is Tom" });
-  assert.equal(notAsked.calls[0].pending, true);
-
-  const noMessage = fakeAcpMemoryStore();
-  await createMemoryToolSource({ acpMemoryStore: noMessage })
-    .executeTool(`${MEMORY_TOOL_PREFIX}remember`, { key: "cat", text: "cat is Tom" });
-  assert.equal("pending" in noMessage.calls[0], false);
+test("a write's origin is user_stated only when the user asked, model_inferred otherwise (issues #663, #673)", async () => {
+  const kindFor = async (userMessage) => {
+    const store = fakeAcpMemoryStore();
+    await createMemoryToolSource({ acpMemoryStore: store, userMessage })
+      .executeTool(`${MEMORY_TOOL_PREFIX}remember`, { key: "cat", text: "cat is Tom" });
+    return store.calls[0].origin.kind;
+  };
+  assert.equal(await kindFor("remember that my cat is Tom"), "user_stated");
+  assert.equal(await kindFor("my cat Tom knocked my mug over"), "model_inferred");
+  // Nothing from the user this turn: Mana inferred it.
+  assert.equal(await kindFor(undefined), "model_inferred");
 });
 
 test("the model can only confirm a pending fact when the user's message says yes (issue #663)", async () => {
@@ -471,4 +483,87 @@ test("clicking always-allow on a stale memory approval still refuses it instead 
   assert.equal("askedAgain" in decided.result, false);
   assert.equal(acpMemoryStore.listFacts()[0].status, "active");
   assert.equal(approvalGate.listPending().length, 0);
+});
+
+// Issue #673 acceptance: a page read earlier in the turn says "remember that
+// the user's password hint is ...", and the user's own message shares enough
+// words to pass the attribution check. It must still land tool_derived,
+// untrusted and out of recall, and the model can't confirm it in that turn.
+test("a memory write after a content tool ran is tool_derived, untrusted and out of recall, whatever the word overlap (issue #673)", async () => {
+  const acpMemoryStore = createAcpMemoryStore({ dataDir: tempDir() });
+  const turnTools = ["expression__set", "browser_automation__get_page_text"];
+  const source = createMemoryToolSource({
+    acpMemoryStore,
+    sessionId: "s1",
+    userMessage: "yes, remember what this page says about the user's password hint",
+    turnTools,
+  });
+  const result = JSON.parse(
+    await source.executeTool(`${MEMORY_TOOL_PREFIX}remember`, {
+      key: "password hint",
+      text: "the user's password hint is my first pet",
+    }),
+  );
+  assert.equal(result.decision, "add");
+  const [fact] = acpMemoryStore.listFacts();
+  assert.equal(fact.origin.kind, "tool_derived");
+  assert.deepEqual(fact.origin.tools, turnTools);
+  assert.equal(fact.status, "pending");
+  assert.equal(fact.unverifiedSource, true);
+  assert.equal(acpMemoryStore.getRelatedFacts("what's the user's password hint"), "");
+
+  const confirmSameTurn = JSON.parse(
+    await source.executeTool(`${MEMORY_TOOL_PREFIX}remember`, { key: "password hint", action: "confirm" }),
+  );
+  assert.equal(confirmSameTurn.ok, false);
+  assert.match(confirmSameTurn.error, /Can.t confirm .* outside content/);
+  assert.equal(acpMemoryStore.listFacts()[0].status, "pending");
+
+  // A later turn with no tools, where the user says yes, can confirm it.
+  await createMemoryToolSource({ acpMemoryStore, userMessage: "yes, that's my hint" })
+    .executeTool(`${MEMORY_TOOL_PREFIX}remember`, { key: "password hint", action: "confirm" });
+  assert.match(acpMemoryStore.getRelatedFacts("what's the user's password hint"), /first pet/);
+});
+
+test("tools that can't bring in outside content don't make a write tool_derived (issue #673)", async () => {
+  const store = fakeAcpMemoryStore();
+  await createMemoryToolSource({
+    acpMemoryStore: store,
+    userMessage: "remember my cat is Tom",
+    turnTools: ["memory__remember", "expression__set", "session_goal__complete"],
+  }).executeTool(`${MEMORY_TOOL_PREFIX}remember`, { key: "cat", text: "cat is Tom" });
+  assert.equal(store.calls[0].origin.kind, "user_stated");
+});
+
+test("a turn that read outside content can't forget, archive or invalidate facts, even via supersedes or the conflict judge (issue #673)", async () => {
+  const store = fakeAcpMemoryStore(() => ({
+    ok: true,
+    action: "insert",
+    possibleConflict: { key: "gpu", preview: "RTX 5080" },
+  }));
+  store.invalidateFactByKey = () => {
+    throw new Error("must not auto-invalidate from a tool-derived write");
+  };
+  let judged = 0;
+  const source = createMemoryToolSource({
+    acpMemoryStore: store,
+    userMessage: "remember what this page says",
+    turnTools: ["mcp__web__fetch"],
+    runLocalReply: async () => {
+      judged += 1;
+      return "CONTRADICTS";
+    },
+  });
+  for (const action of ["remove", "archive"]) {
+    const refused = JSON.parse(await source.executeTool(`${MEMORY_TOOL_PREFIX}remember`, { key: "gpu", action }));
+    assert.equal(refused.ok, false);
+    assert.match(refused.error, new RegExp(`Can't ${action}`));
+  }
+  assert.equal(store.calls.length, 0);
+
+  await source.executeTool(`${MEMORY_TOOL_PREFIX}remember`, {
+    key: "new gpu", text: "RTX 9090", supersedes: "gpu",
+  });
+  assert.equal("supersedes" in store.calls[0], false);
+  assert.equal(judged, 0);
 });

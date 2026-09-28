@@ -39,6 +39,15 @@ const USER_ASKED_TO_REMEMBER =
   /\b(remember|don'?t forget|do not forget|keep in mind|make a note|note (?:that|this)|save (?:that|this))\b/i;
 const USER_SAID_YES = /\b(yes|yeah|yep|yup|sure|correct|please do|go ahead)\b/i;
 
+// Issue #673: tools that can't bring outside content into the turn. Any
+// other tool that ran earlier in the turn (browser automation, MCP, file
+// reads, vision, session search...) makes a memory write tool_derived --
+// deny by default, so a new tool source is treated as content-bearing.
+const CONTENT_FREE_TOOL_PREFIXES = [MEMORY_TOOL_PREFIX, "expression__", "session_goal__"];
+function contentToolsIn(toolNames) {
+  return toolNames.filter((name) => !CONTENT_FREE_TOOL_PREFIXES.some((p) => String(name).startsWith(p)));
+}
+
 const REMEMBER_BASE_DESCRIPTION =
   "Explicitly save, update, or forget a specific fact worth remembering across future conversations -- for something clearly worth persisting right now (a stated preference, a correction, a decision), not for routine chat, which is already remembered automatically.";
 
@@ -254,6 +263,9 @@ function createMemoryWriteExecutor({ acpMemoryStore, approvalGate }) {
 // data, and retrieved web content by the time they reach this call site,
 // which would defeat the point of an attribution check). Omitted callers
 // fail open (see looksAttributableToUser) rather than flag everything.
+// options.turnTools: optional (issue #673), a live array of the tool names
+// that have already run this turn -- server.js appends to it as each tool
+// call returns. Omitted = no tools ran.
 // options.runLocalReply: optional, issue #431's LLM-confirmed conflict
 // judge -- expected to be llamaServerRuntime.runLocalReplyIfSafelyLoaded
 // (returns null rather than loading/swapping a model). Omitted callers
@@ -264,6 +276,7 @@ function createMemoryToolSource(options = {}) {
   const approvalGate = options.approvalGate || null;
   const userMessage = options.userMessage || null;
   const runLocalReply = options.runLocalReply || null;
+  const turnTools = Array.isArray(options.turnTools) ? options.turnTools : [];
   if (!acpMemoryStore) {
     throw new Error("acpMemoryStore is required");
   }
@@ -279,37 +292,52 @@ function createMemoryToolSource(options = {}) {
     if (action !== "remember") {
       throw new Error(`unknown memory tool: ${qualifiedName}`);
     }
-    // Issue #663: only the user can confirm a pending fact.
-    if (args?.action === "confirm" && !(userMessage && USER_SAID_YES.test(userMessage))) {
-      return JSON.stringify({
-        ok: false,
-        action: "confirm",
-        key: args?.key,
-        error: "Only the user can confirm an unconfirmed fact: ask them first, and confirm once they say yes.",
-      });
+    // Issue #673: where this write came from (see acp-memory-store.js's
+    // ORIGIN_KINDS). Decided here from server-side state only, never from
+    // model arguments.
+    const toolDerived = contentToolsIn(turnTools).length > 0;
+    const originKind = toolDerived
+      ? "tool_derived"
+      : userMessage && USER_ASKED_TO_REMEMBER.test(userMessage)
+        ? "user_stated"
+        : "model_inferred";
+    // Issue #673: a turn that read outside content can add or propose
+    // changes (stored pending and untrusted), never confirm, forget, archive
+    // or invalidate -- a "yes" in the same message that asked Mana to read a
+    // page can't vouch for what the page says. #663: and only the user can
+    // confirm a pending fact.
+    const factAction = args?.action;
+    const refusal =
+      toolDerived && ["confirm", "remove", "archive"].includes(factAction)
+        ? `Can't ${factAction} a remembered fact in a turn where a tool returned outside content: ask the user again in a later turn.`
+        : factAction === "confirm" && !(userMessage && USER_SAID_YES.test(userMessage))
+          ? "Only the user can confirm an unconfirmed fact: ask them first, and confirm once they say yes."
+          : null;
+    if (refusal) {
+      return JSON.stringify({ ok: false, action: factAction, decision: "none", key: args?.key, error: refusal });
     }
     const payload = {
       sessionId,
       key: args?.key,
       text: args?.text,
-      action: args?.action,
-      ...(args?.supersedes ? { supersedes: args.supersedes } : {}),
+      action: factAction,
+      ...(args?.supersedes && !toolDerived ? { supersedes: args.supersedes } : {}),
       // Only insert/patch actually carry text to check -- remove/archive
       // don't assert a new fact, nothing to attribute.
       ...(args?.text && !looksAttributableToUser(args.text, userMessage)
         ? { unverifiedSource: true }
         : {}),
-      // Issue #663: not asked to remember -> a new fact starts pending. No
-      // user message (callers that don't pass one) keeps today's behavior.
-      ...(args?.text && userMessage && !USER_ASKED_TO_REMEMBER.test(userMessage)
-        ? { pending: true }
-        : {}),
+      // Issue #663: not asked to remember (model_inferred) or tool_derived
+      // -> the store keeps the value pending until the user confirms it.
+      origin: { kind: originKind, tools: [...turnTools], turnAt: new Date().toISOString() },
     };
+    // Issue #673: nor may it auto-invalidate a conflicting fact (#431).
+    const judge = toolDerived ? null : runLocalReply;
 
     if (!approvalGate) {
       const result = await maybeAutoInvalidateConflict(acpMemoryStore.rememberFact(payload), payload.text, {
         acpMemoryStore,
-        runLocalReply,
+        runLocalReply: judge,
       });
       return JSON.stringify(framePossibleConflict(result));
     }
@@ -322,7 +350,7 @@ function createMemoryToolSource(options = {}) {
     // result at all, so there's nothing to frame there.
     if (outcome?.result) {
       outcome.result = framePossibleConflict(
-        await maybeAutoInvalidateConflict(outcome.result, payload.text, { acpMemoryStore, runLocalReply }),
+        await maybeAutoInvalidateConflict(outcome.result, payload.text, { acpMemoryStore, runLocalReply: judge }),
       );
     }
     return JSON.stringify(outcome);

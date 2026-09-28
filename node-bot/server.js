@@ -682,6 +682,7 @@ async function checkEmotionalReflexes(store = acpMemoryStore) {
     key: "journal-loneliness",
     text: `It's been about ${Math.round(hoursSince)} hours since we last talked.`,
     action: "patch",
+    origin: { kind: "system" },
   });
 }
 
@@ -4148,6 +4149,10 @@ function registerRoutes(app, upload, deps = {}) {
     // that gets appended to session memory, and a closure-scoped variable
     // gets that without changing any other reply path's signature.
     let lastToolCalls = [];
+    // Issue #673: every tool that has returned so far this turn (across
+    // regeneration attempts too), so a memory write can tell whether it may
+    // be repeating content a tool brought in (memory-tool-source.js).
+    const turnTools = [];
 
     // Issue #331: onSentence streams only the very first plain local-
     // completion attempt. Regeneration (rut-detection nudge, verify/retry)
@@ -4221,6 +4226,7 @@ function registerRoutes(app, upload, deps = {}) {
               // or swaps a model, see llamaServerRuntime's own comment on
               // isProfileAlreadyLoaded/runLocalReplyIfSafelyLoaded.
               runLocalReply: llamaServerRuntime.runLocalReplyIfSafelyLoaded,
+              turnTools,
             }),
             createSessionSearchToolSource({ acpMemoryStore, sessionId }),
             createSkillToolSource({ approvalGate: activeApprovalGate, skillsStore: activeSkillsStore }),
@@ -4299,6 +4305,12 @@ function registerRoutes(app, upload, deps = {}) {
           // every source (local read_file, browser-automation, MCP) in one
           // shared audit/trace log.
           mergedToolPolicy = wrapWithToolCallLog(mergedToolPolicy, activeToolCallLog);
+          const executeLoggedTool = mergedToolPolicy.executeTool;
+          mergedToolPolicy.executeTool = async (name, args) => {
+            const result = await executeLoggedTool(name, args);
+            turnTools.push(name);
+            return result;
+          };
           const toolResult = await runToolAwareReply(
             promptText,
             mergedToolPolicy,
