@@ -181,8 +181,6 @@ internal sealed class ManaApplicationContext : ApplicationContext
         };
 
         trayIcon.DoubleClick += (_, _) => ShowStatus();
-        avatarOverlay.Show();
-        ReportAvatarModelProblem();
         trayNotifications.Start();
         captionClient.Start();
         visionCaptureClient.Start();
@@ -269,6 +267,15 @@ internal sealed class ManaApplicationContext : ApplicationContext
         {
             await processManager.StartAsync((key, available) =>
                 overlay.SetRowStatus(key, available ? "Ready" : "Unavailable", available ? RowState.Ready : RowState.Warn));
+            // Launched isn't ready: Fish Speech can compile for minutes. Hold
+            // the screen (and listening) until her voice actually answers,
+            // so the avatar never appears before she can talk.
+            if (processManager.IsBackendLocal && processManager.IsFishSpeechAvailable)
+            {
+                overlay.SetRowStatus("fish-speech", "Warming up...", RowState.Starting);
+                var fishReady = await processManager.WaitForFishSpeechReadyAsync(TimeSpan.FromMinutes(6));
+                overlay.SetRowStatus("fish-speech", fishReady ? "Ready" : "Not ready yet", fishReady ? RowState.Ready : RowState.Warn);
+            }
             await RefreshTrayStatusAsync();
             voiceLoop.Start();
         }
@@ -287,6 +294,10 @@ internal sealed class ManaApplicationContext : ApplicationContext
         finally
         {
             overlay.Close();
+            // The avatar appears only once the startup screen is done, so
+            // she never pops up over it half-started.
+            avatarOverlay.Show();
+            ReportAvatarModelProblem();
         }
     }
 

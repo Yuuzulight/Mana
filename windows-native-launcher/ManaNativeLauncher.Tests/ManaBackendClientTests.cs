@@ -1952,6 +1952,38 @@ public class ManaBackendClientTests
     }
 
     [Fact]
+    public async Task GetToolApprovalModeAsync_ParsesTheMode()
+    {
+        var handler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent("""{"mode":"smart"}""", Encoding.UTF8, "application/json"),
+        });
+
+        Assert.Equal("smart", await new ManaBackendClient(handler).GetToolApprovalModeAsync());
+    }
+
+    [Fact]
+    public async Task SetToolApprovalModeAsync_PostsTheMode()
+    {
+        string? path = null;
+        string? body = null;
+        var handler = new FakeHttpMessageHandler(request =>
+        {
+            path = request.RequestUri!.AbsolutePath;
+            body = request.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("""{"mode":"ask"}""", Encoding.UTF8, "application/json"),
+            };
+        });
+
+        await new ManaBackendClient(handler).SetToolApprovalModeAsync("ask");
+
+        Assert.Equal("/approvals/tool-mode", path);
+        Assert.Equal("""{"mode":"ask"}""", body);
+    }
+
+    [Fact]
     public async Task GetPendingApprovalsAsync_ParsesThePendingList()
     {
         var handler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)

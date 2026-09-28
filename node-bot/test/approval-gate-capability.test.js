@@ -13,10 +13,10 @@ function createTempDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), "mana-approval-gate-cap-"));
 }
 
-function buildApp(approvalGate) {
+function buildApp(approvalGate, extra = {}) {
   const app = express();
   app.use(express.json());
-  approvalGateCapability.registerRoutes(app, { approvalGate });
+  approvalGateCapability.registerRoutes(app, { approvalGate, ...extra });
   return app;
 }
 
@@ -125,4 +125,37 @@ test("#669 POST /approvals/:id/decide accepts allow-session", async () => {
     assert.equal(response.status, 200);
     assert.equal(gate.isGranted("skill-write"), true);
   });
+});
+
+test("#669 tool approval mode: smart by default, env next, a saved choice wins; POST is admin-gated and validated", async () => {
+  const dataDir = createTempDir();
+  const gate = createApprovalGate({ dataDir });
+  let admin = false;
+  const checkAdminAuth = (req, res) => {
+    if (!admin) res.status(401).json({ ok: false, error: "unauthorized" });
+    return admin;
+  };
+  const get = async (baseUrl) => (await (await fetch(`${baseUrl}/approvals/tool-mode`)).json()).mode;
+  const post = (baseUrl, body) =>
+    fetch(`${baseUrl}/approvals/tool-mode`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+
+  await withServer(buildApp(gate, { checkAdminAuth, env: {} }), async (baseUrl) => {
+    assert.equal(await get(baseUrl), "smart");
+  });
+  await withServer(buildApp(gate, { checkAdminAuth, env: { MANA_TOOL_APPROVAL: "ask" } }), async (baseUrl) => {
+    assert.equal(await get(baseUrl), "ask");
+
+    assert.equal((await post(baseUrl, { mode: "off" })).status, 401);
+    admin = true;
+    assert.equal((await post(baseUrl, { mode: "everything" })).status, 400);
+    const saved = await post(baseUrl, { mode: "off" });
+    assert.equal(saved.status, 200);
+    assert.deepEqual(await saved.json(), { mode: "off" });
+    assert.equal(await get(baseUrl), "off", "saved choice beats MANA_TOOL_APPROVAL");
+  });
+  assert.equal(createApprovalGate({ dataDir }).getToolApprovalMode(), "off", "persisted");
 });

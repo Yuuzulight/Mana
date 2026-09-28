@@ -1,10 +1,21 @@
+const rateLimit = require("express-rate-limit");
 const {
   ValidationError,
   requireString,
   sendValidationError,
 } = require("../request-validation");
+const { MODES, resolveToolApprovalMode } = require("../ai/tool-risk");
 
 const KEY = "approvalGate";
+
+// Same route-local limiter as memory-facts-capability.js: server.js's
+// app-wide one already covers this, but CodeQL can't trace it here.
+const toolModeRateLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  limit: Number(process.env.MANA_RATE_LIMIT_MAX || 300),
+  standardHeaders: true,
+  legacyHeaders: false,
+});
 
 function registerApprovalGateRoutes(app, context = {}) {
   const approvalGate = context.approvalGate;
@@ -30,6 +41,25 @@ function registerApprovalGateRoutes(app, context = {}) {
       console.error(e);
       return res.status(500).json({ error: String(e) });
     }
+  });
+
+  // #669: which tool calls ask first. The saved choice wins over
+  // MANA_TOOL_APPROVAL; neither set means "smart".
+  const env = context.env || process.env;
+  app.get("/approvals/tool-mode", (req, res) => {
+    return res.json({
+      mode: resolveToolApprovalMode(approvalGate.getToolApprovalMode(), env.MANA_TOOL_APPROVAL),
+    });
+  });
+
+  app.post("/approvals/tool-mode", toolModeRateLimiter, (req, res) => {
+    if (!context.checkAdminAuth(req, res)) return;
+    const mode = req.body?.mode;
+    if (!MODES.includes(mode)) {
+      return res.status(400).json({ error: `mode must be one of: ${MODES.join(", ")}` });
+    }
+    approvalGate.setToolApprovalMode(mode);
+    return res.json({ mode });
   });
 
   app.post("/approvals/:id/decide", async (req, res) => {
