@@ -29,6 +29,39 @@ import torch._inductor.config as inductor_config
 
 inductor_config.use_static_cuda_launcher = False
 
+# Host-RAM fix: upstream builds both models on the CPU in fp32 with random
+# init (S1-mini LLaMA ~3.5GB, codec ~1.9GB) and only then swaps in the real
+# weights and moves them to the GPU, so loading briefly needs ~5.4GB of
+# system RAM for tensors that are thrown away. Constructing under
+# torch.device(device) puts that throwaway copy on the GPU instead (same
+# final weights, dtype and device -- no voice/speed change); empty_cache()
+# then hands the freed VRAM back. Must run before tools.server.model_manager
+# imports load_model by name.
+import torch
+from fish_speech.models.dac import inference as dac_inference
+from fish_speech.models.text2semantic import inference as t2s_inference
+
+_init_llama = t2s_inference.init_model
+_load_codec = dac_inference.load_model
+
+
+def _init_llama_on_device(checkpoint_path, device, precision, compile=False):
+    with torch.device(device):
+        result = _init_llama(checkpoint_path, device, precision, compile=compile)
+    torch.cuda.empty_cache()
+    return result
+
+
+def _load_codec_on_device(config_name, checkpoint_path, device="cuda"):
+    with torch.device(device):
+        model = _load_codec(config_name, checkpoint_path, device)
+    torch.cuda.empty_cache()
+    return model
+
+
+t2s_inference.init_model = _init_llama_on_device
+dac_inference.load_model = _load_codec_on_device
+
 sys.argv = ["api_server.py", "--compile"]
 
 import runpy

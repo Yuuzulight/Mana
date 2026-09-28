@@ -56,6 +56,13 @@ Important notes
 - **VRAM headroom is thin.** With the model loaded and idle, an 8GB card
   has only a few hundred MB free. This has been reliable for the verified
   Mitsuki reference clip below, but see the known issue further down.
+- **Host RAM.** Upstream builds both models on the CPU in fp32 before
+  loading the real weights, which briefly needs ~5.4GB of system RAM for
+  tensors that are thrown away. `tools/fish_speech_native_server.py`
+  constructs them on the GPU instead. Measured on an RTX 5080 / 32GB
+  machine (baseline -> patched): peak working set ~7.0GB -> ~3.0GB,
+  settled ~5.1GB -> ~2.3GB, startup 77s -> 22s, VRAM +~270MB; audio
+  bit-identical at the same seed.
 - **Under real GPU contention (e.g. a game running) this gets much worse**,
   not just slower in the same proportion: generation speed measured as low
   as ~0.4 tokens/sec (vs. ~2.7 idle), turning a short reply into a 3+ minute

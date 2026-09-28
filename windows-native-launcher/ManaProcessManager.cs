@@ -265,7 +265,7 @@ internal sealed class ManaProcessManager : IDisposable
         {
             LogFishSpeechDiagnostic(
                 fishDir,
-                $"Warning: only {freeRamGB:F1}GB RAM free -- loading Fish Speech's checkpoint (~3.6GB, mmap'd through host RAM) may be tight. Consider closing other apps first.");
+                $"Warning: only {freeRamGB:F1}GB RAM free -- loading Fish Speech's checkpoint (peaks at ~3GB of host RAM) may be tight. Consider closing other apps first.");
         }
 
         try
