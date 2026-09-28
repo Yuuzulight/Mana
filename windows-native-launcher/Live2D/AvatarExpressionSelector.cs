@@ -23,14 +23,29 @@ internal static class AvatarExpressionSelector
     // one of state's keywords (case-insensitive, first-keyword-then-
     // first-match order), or null if state has no keyword table entry or
     // none of the available names match any keyword.
-    public static string? SelectExpressionName(AvatarState state, IEnumerable<string> availableExpressionNames)
+    // #681: preferredName is the model's own expression__set choice for
+    // this reply (the reply's `expression` field). Tried first, as an exact
+    // case-insensitive name match like live2d-logic.js's expressionForState/
+    // pickByPreference; no match falls through to the state keywords.
+    public static string? SelectExpressionName(AvatarState state, IEnumerable<string> availableExpressionNames, string? preferredName = null)
     {
+        var names = availableExpressionNames as IReadOnlyList<string> ?? [.. availableExpressionNames];
+        if (!string.IsNullOrWhiteSpace(preferredName))
+        {
+            foreach (var name in names)
+            {
+                if (string.Equals(name, preferredName.Trim(), StringComparison.OrdinalIgnoreCase))
+                {
+                    return name;
+                }
+            }
+        }
+
         if (!StateKeywords.TryGetValue(state, out var keywords))
         {
             return null;
         }
 
-        var names = availableExpressionNames as IReadOnlyList<string> ?? [.. availableExpressionNames];
         foreach (var keyword in keywords)
         {
             foreach (var name in names)
