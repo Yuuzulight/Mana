@@ -581,7 +581,63 @@ function registerCoreRoutes(app, upload, deps) {
 // isLocalRestartRequest doesn't need to be a dependency -- it's already
 // defined earlier in this same file.
 function registerModelRoutes(app, deps) {
-  const { modelManagement, readGgufMetadata: activeReadGgufMetadata } = deps;
+  const { modelManagement, readGgufMetadata: activeReadGgufMetadata, llamaBuilds, checkAdminAuth } = deps;
+
+  // #693: llama.cpp build status/check/update/rollback. Admin-gated
+  // (checkAdminAuth) and local-only like /models/brain-provider/test:
+  // check and update make outbound requests, and update runs the
+  // executable it downloaded.
+  function allowLlamaBuildRequest(req, res) {
+    if (!checkAdminAuth(req, res)) return false;
+    if (!isLocalRestartRequest(req)) {
+      res.status(403).json({ error: "this endpoint is only available from this PC" });
+      return false;
+    }
+    return true;
+  }
+
+  function sendLlamaBuildError(res, error) {
+    const status = ["busy", "digest_missing", "exists", "up_to_date"].includes(error.code) ? 409 : 400;
+    return res.status(status).json({ error: error.message, code: error.code || null });
+  }
+
+  app.get("/models/llama-build", (req, res) => {
+    if (!allowLlamaBuildRequest(req, res)) return;
+    return res.json(llamaBuilds.getStatus());
+  });
+
+  app.post("/models/llama-build/check", async (req, res) => {
+    if (!allowLlamaBuildRequest(req, res)) return;
+    try {
+      return res.json(await llamaBuilds.check());
+    } catch (error) {
+      return sendLlamaBuildError(res, error);
+    }
+  });
+
+  // 202: the download/extract/smoke test runs in the background (hundreds
+  // of MB); GET /models/llama-build's `job` reports progress. A release
+  // without a published SHA-256 is refused (409 digest_missing) unless the
+  // user explicitly confirmed with allowMissingDigest: true.
+  app.post("/models/llama-build/update", async (req, res) => {
+    if (!allowLlamaBuildRequest(req, res)) return;
+    try {
+      return res.status(202).json(
+        await llamaBuilds.startUpdate({ allowMissingDigest: req.body?.allowMissingDigest === true }),
+      );
+    } catch (error) {
+      return sendLlamaBuildError(res, error);
+    }
+  });
+
+  app.post("/models/llama-build/rollback", (req, res) => {
+    if (!allowLlamaBuildRequest(req, res)) return;
+    try {
+      return res.json(llamaBuilds.rollback());
+    } catch (error) {
+      return sendLlamaBuildError(res, error);
+    }
+  });
 
   app.get("/models/status", (req, res) => {
     return res.json(modelManagement.getModelStatus());

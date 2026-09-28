@@ -441,6 +441,85 @@ internal sealed class ManaBackendClient
         response.EnsureSuccessStatusCode();
     }
 
+    // #693: llama.cpp build updates (node-bot's llama-builds.js).
+    public async Task<ManaLlamaBuildStatus> GetLlamaBuildStatusAsync()
+    {
+        using var response = await http.GetAsync("/models/llama-build");
+        response.EnsureSuccessStatusCode();
+        await using var stream = await response.Content.ReadAsStreamAsync();
+        using var document = await JsonDocument.ParseAsync(stream);
+        var root = document.RootElement;
+        static string? Str(JsonElement parent, string name) =>
+            parent.ValueKind == JsonValueKind.Object && parent.TryGetProperty(name, out var el) && el.ValueKind == JsonValueKind.String ? el.GetString() : null;
+        var current = root.TryGetProperty("current", out var currentEl) ? currentEl : default;
+        var job = root.TryGetProperty("job", out var jobEl) ? jobEl : default;
+        var lastRollback = root.TryGetProperty("lastRollback", out var rollbackEl) ? rollbackEl : default;
+        return new ManaLlamaBuildStatus
+        {
+            CurrentBuild = current.ValueKind == JsonValueKind.Object && current.TryGetProperty("build", out var buildEl) && buildEl.ValueKind == JsonValueKind.Number ? buildEl.GetInt32() : null,
+            CurrentVariant = Str(current, "variant"),
+            CurrentError = Str(root, "currentError"),
+            Previous = Str(root, "previous"),
+            LastRollbackFrom = Str(lastRollback, "from"),
+            LastRollbackReason = Str(lastRollback, "reason"),
+            JobState = Str(job, "state"),
+            JobTag = Str(job, "tag"),
+            JobStep = Str(job, "step"),
+            JobError = Str(job, "error"),
+        };
+    }
+
+    // The three actions below don't call EnsureSuccessStatusCode: a 4xx
+    // comes back as a parseable {error, code} body the Model tab shows,
+    // and code "digest_missing" is what triggers its confirm prompt.
+    public async Task<ManaLlamaBuildCheck> CheckLlamaBuildUpdateAsync()
+    {
+        var (ok, root) = await PostLlamaBuildAsync("/models/llama-build/check", new { });
+        if (!ok)
+        {
+            return new ManaLlamaBuildCheck { Error = LlamaBuildError(root) };
+        }
+        var latest = root.TryGetProperty("latest", out var latestEl) ? latestEl : default;
+        return new ManaLlamaBuildCheck
+        {
+            LatestTag = latest.ValueKind == JsonValueKind.Object && latest.TryGetProperty("tag", out var tagEl) ? tagEl.GetString() : null,
+            DigestAvailable = latest.ValueKind == JsonValueKind.Object && latest.TryGetProperty("digestAvailable", out var digestEl) && digestEl.ValueKind == JsonValueKind.True,
+            UpdateAvailable = root.TryGetProperty("updateAvailable", out var updateEl) && updateEl.ValueKind == JsonValueKind.True,
+        };
+    }
+
+    public async Task<ManaLlamaBuildActionResult> StartLlamaBuildUpdateAsync(bool allowMissingDigest)
+    {
+        var (ok, root) = await PostLlamaBuildAsync("/models/llama-build/update", new { allowMissingDigest });
+        return LlamaBuildActionResult(ok, root);
+    }
+
+    public async Task<ManaLlamaBuildActionResult> RollBackLlamaBuildAsync()
+    {
+        var (ok, root) = await PostLlamaBuildAsync("/models/llama-build/rollback", new { });
+        return LlamaBuildActionResult(ok, root);
+    }
+
+    private async Task<(bool Ok, JsonElement Root)> PostLlamaBuildAsync(string path, object body)
+    {
+        using var content = new StringContent(JsonSerializer.Serialize(body), Encoding.UTF8, "application/json");
+        using var response = await http.PostAsync(path, content);
+        await using var stream = await response.Content.ReadAsStreamAsync();
+        using var document = await JsonDocument.ParseAsync(stream);
+        return (response.IsSuccessStatusCode, document.RootElement.Clone());
+    }
+
+    private static string LlamaBuildError(JsonElement root) =>
+        root.TryGetProperty("error", out var errorEl) ? errorEl.GetString() ?? "request failed" : "request failed";
+
+    private static ManaLlamaBuildActionResult LlamaBuildActionResult(bool ok, JsonElement root) => ok
+        ? new ManaLlamaBuildActionResult { Ok = true }
+        : new ManaLlamaBuildActionResult
+        {
+            Error = LlamaBuildError(root),
+            Code = root.TryGetProperty("code", out var codeEl) && codeEl.ValueKind == JsonValueKind.String ? codeEl.GetString() : null,
+        };
+
     // #520: node-bot's ACP memory-store sessions -- see
     // capabilities/sessions-capability.js for the exact route shapes.
     public async Task<IReadOnlyList<ManaSession>> GetSessionsAsync()
@@ -1909,4 +1988,37 @@ internal sealed class ManaResearchBounds
     public int SourcesUsed { get; init; }
     public int MaxSources { get; init; }
     public long ElapsedMs { get; init; }
+}
+
+// #693: GET /models/llama-build.
+internal sealed class ManaLlamaBuildStatus
+{
+    public int? CurrentBuild { get; init; }
+    public string? CurrentVariant { get; init; }
+    public string? CurrentError { get; init; }
+    public string? Previous { get; init; }
+    public string? LastRollbackFrom { get; init; }
+    public string? LastRollbackReason { get; init; }
+    // "running" / "done" / "failed", or null when no update ran this session.
+    public string? JobState { get; init; }
+    public string? JobTag { get; init; }
+    public string? JobStep { get; init; }
+    public string? JobError { get; init; }
+}
+
+// #693: POST /models/llama-build/check.
+internal sealed class ManaLlamaBuildCheck
+{
+    public string? LatestTag { get; init; }
+    public bool UpdateAvailable { get; init; }
+    public bool DigestAvailable { get; init; }
+    public string? Error { get; init; }
+}
+
+// #693: POST /models/llama-build/update and /rollback.
+internal sealed class ManaLlamaBuildActionResult
+{
+    public bool Ok { get; init; }
+    public string? Code { get; init; }
+    public string? Error { get; init; }
 }

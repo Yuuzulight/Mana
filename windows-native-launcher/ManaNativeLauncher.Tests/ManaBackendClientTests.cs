@@ -2190,6 +2190,87 @@ public class ManaBackendClientTests
     }
 
     [Fact]
+    public async Task GetLlamaBuildStatusAsync_ParsesCurrentBuildJobAndRollback()
+    {
+        var handler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(
+                """{"current":{"dir":"D:\\tools\\llama\\llama-b100-bin-win-cuda-12.4-x64","build":100,"variant":"bin-win-cuda-12.4-x64"},"currentError":null,"previous":"D:\\tools\\llama\\llama-b200-bin-win-cuda-12.4-x64","pendingVerification":false,"lastRollback":{"from":"D:\\tools\\llama\\llama-b200-bin-win-cuda-12.4-x64","to":"x","reason":"exited during startup","at":"t"},"job":{"state":"done","tag":"b200","step":"Switched to b200","error":null}}""",
+                Encoding.UTF8,
+                "application/json"),
+        });
+        var client = new ManaBackendClient(handler);
+
+        var status = await client.GetLlamaBuildStatusAsync();
+
+        Assert.Equal(100, status.CurrentBuild);
+        Assert.Equal("bin-win-cuda-12.4-x64", status.CurrentVariant);
+        Assert.NotNull(status.Previous);
+        Assert.Equal("exited during startup", status.LastRollbackReason);
+        Assert.Equal("done", status.JobState);
+        Assert.Null(status.JobError);
+    }
+
+    [Fact]
+    public async Task StartLlamaBuildUpdateAsync_SurfacesTheDigestMissingCodeAndSendsTheConfirmFlag()
+    {
+        string? body = null;
+        var handler = new FakeHttpMessageHandler(request =>
+        {
+            body = request.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
+            return new HttpResponseMessage(HttpStatusCode.Conflict)
+            {
+                Content = new StringContent("""{"error":"b200 has no published SHA-256 digest","code":"digest_missing"}""", Encoding.UTF8, "application/json"),
+            };
+        });
+        var client = new ManaBackendClient(handler);
+
+        var result = await client.StartLlamaBuildUpdateAsync(allowMissingDigest: false);
+
+        Assert.False(result.Ok);
+        Assert.Equal("digest_missing", result.Code);
+        Assert.Contains("no published SHA-256", result.Error);
+        Assert.Contains("\"allowMissingDigest\":false", body);
+    }
+
+    [Fact]
+    public async Task CheckLlamaBuildUpdateAsync_ParsesLatestAndAvailability()
+    {
+        var handler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(
+                """{"current":{"build":100},"latest":{"tag":"b200","digestAvailable":true},"updateAvailable":true}""",
+                Encoding.UTF8,
+                "application/json"),
+        });
+        var client = new ManaBackendClient(handler);
+
+        var check = await client.CheckLlamaBuildUpdateAsync();
+
+        Assert.Null(check.Error);
+        Assert.Equal("b200", check.LatestTag);
+        Assert.True(check.UpdateAvailable);
+        Assert.True(check.DigestAvailable);
+    }
+
+    [Fact]
+    public void DescribeLlamaBuild_ShowsTheMostRelevantEvent()
+    {
+        var baseStatus = new ManaLlamaBuildStatus { CurrentBuild = 100, CurrentVariant = "bin-win-cuda-12.4-x64" };
+        Assert.Equal("Current build: b100 (bin-win-cuda-12.4-x64)", SettingsPanel.DescribeLlamaBuild(baseStatus));
+
+        var running = new ManaLlamaBuildStatus { CurrentBuild = 100, CurrentVariant = "v", JobState = "running", JobTag = "b200", JobStep = "Downloading x.zip", LastRollbackFrom = @"D:\old" };
+        Assert.EndsWith("Updating to b200: Downloading x.zip...", SettingsPanel.DescribeLlamaBuild(running));
+
+        // An automatic rollback outranks the (earlier) finished update it undid.
+        var rolledBack = new ManaLlamaBuildStatus { CurrentBuild = 100, CurrentVariant = "v", JobState = "done", JobTag = "b200", LastRollbackFrom = @"D:\tools\llama\llama-b200-x", LastRollbackReason = "crashed" };
+        Assert.EndsWith("Rolled back automatically: llama-b200-x failed to start (crashed).", SettingsPanel.DescribeLlamaBuild(rolledBack));
+
+        var unknown = new ManaLlamaBuildStatus { CurrentError = "Can't tell which build is active." };
+        Assert.Equal("Current build: unknown. Can't tell which build is active.", SettingsPanel.DescribeLlamaBuild(unknown));
+    }
+
+    [Fact]
     public async Task SetModelPathAsync_PostsTheGivenPathOrNull()
     {
         string? body = null;
