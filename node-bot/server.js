@@ -3600,14 +3600,15 @@ function registerRoutes(app, upload, deps = {}) {
       // ignore failures here
     }
 
-    // Foundational tool-calling (issue #51), opt-in and scoped to the one
-    // profile that's actually been verified to emit reliable tool_calls
-    // (Qwen3-4B / "default" -- see docs/roadmap/issue-51-tool-calling.md).
+    // Foundational tool-calling (issue #51), on by default (opt out with
+    // MANA_TOOL_CALLING_ENABLED=0) and scoped to the "default" profile, the
+    // one verified to emit reliable tool_calls (see
+    // docs/roadmap/issue-51-tool-calling.md).
     // Hoisted above the skills-index block below: that block must not
     // advertise skill__view unless this same condition lets the model
     // actually call it (see the block's own comment for why).
     const toolCallingEnabled =
-      String(process.env.MANA_TOOL_CALLING_ENABLED || "0") === "1";
+      String(process.env.MANA_TOOL_CALLING_ENABLED || "1") !== "0";
 
     // Always-visible skill index (see buildSkillsIndexBlock above) -- but
     // only when tool-calling can actually act on it. The index advertises

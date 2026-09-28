@@ -1,8 +1,8 @@
 // The [AVAILABLE SKILLS] index tells the model it can call skill__view --
 // but only replyMaybeWithTools's tool-calling attempt can actually execute
 // that call, and only when toolCallingEnabled && normalizedModelProfile ===
-// "default" && isLlamaServerAvailable(). Outside that condition (the
-// default state: MANA_TOOL_CALLING_ENABLED unset, or any non-"default"
+// "default" && isLlamaServerAvailable(). Outside that condition
+// (MANA_TOOL_CALLING_ENABLED=0, or any non-"default"
 // profile such as "quality"), the model has no real tool-calling channel
 // and narrates the call as plain text instead ("Skill needed: X\nCalling
 // skill__view with name: X" leaking into the reply). The skills index must
@@ -21,8 +21,8 @@ function fakeSkillsStore(skills) {
   return { listSkills: () => skills };
 }
 
-test("skills index is NOT added to the system prompt when tool-calling is disabled (default state)", async () => {
-  delete process.env.MANA_TOOL_CALLING_ENABLED;
+test("skills index is NOT added to the system prompt when tool-calling is disabled (MANA_TOOL_CALLING_ENABLED=0)", async () => {
+  process.env.MANA_TOOL_CALLING_ENABLED = "0";
   let capturedSystemPrompt = null;
   const app = createApp({
     skillsStore: fakeSkillsStore(ONE_SKILL),

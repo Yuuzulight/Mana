@@ -100,8 +100,8 @@ them get this automatically — nothing route-specific was added.
 Guardrails, all of which must hold before a tool-aware call is even
 attempted:
 
-- **Opt-in**: off unless `MANA_TOOL_CALLING_ENABLED=1` is set. Nothing
-  changes for anyone who hasn't turned it on.
+- **On by default** (since 2026-09-28; originally opt-in): set
+  `MANA_TOOL_CALLING_ENABLED=0` to turn it off.
 - **Profile-scoped**: only fires when the resolved profile is `"default"`
   (Qwen3-4B) — the one profile the real-hardware testing above actually
   verified. A `coding`/`fast`/`quality` request always uses the plain path,

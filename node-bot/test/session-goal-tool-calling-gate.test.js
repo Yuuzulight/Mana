@@ -24,9 +24,9 @@ function withTempAcpMemoryDir(fn) {
   }
 }
 
-test("a session's goal is NOT surfaced when tool-calling is disabled (default state)", async () => {
+test("a session's goal is NOT surfaced when tool-calling is disabled (MANA_TOOL_CALLING_ENABLED=0)", async () => {
   await withTempAcpMemoryDir(async () => {
-    delete process.env.MANA_TOOL_CALLING_ENABLED;
+    process.env.MANA_TOOL_CALLING_ENABLED = "0";
     let capturedSystemPrompt = null;
     const app = createApp({
       llamaServerRuntime: { isEnabled: () => true },
