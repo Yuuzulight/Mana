@@ -134,6 +134,18 @@ test("rerank truncates the query and documents it sends", quietly(async () => {
   assert.equal(server.calls.rerank[0].documents[0].length, 500);
 }));
 
+test("rerank scores only the 10 best-first candidates; the rest keep their order after them", quietly(async () => {
+  const server = fakeServer({ score: (doc) => Number(doc.slice(1)) });
+  const reranker = makeReranker(server, { MANA_RERANKER_MODEL: tempModel(), MANA_RERANKER_IDLE_MS: "0" });
+  const docs = Array.from({ length: 20 }, (_, i) => `d${i}`);
+
+  const result = await reranker.rerank("q", docs);
+
+  assert.equal(server.calls.rerank[0].documents.length, 10);
+  // Top 10 reordered by score (d9 highest), then 10..19 in input order.
+  assert.deepEqual(result.order, [9, 8, 7, 6, 5, 4, 3, 2, 1, 0, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]);
+}));
+
 test("a timed-out, failed or malformed rerank returns the input order and logs why", async () => {
   const cases = [
     () => new Promise(() => {}),
