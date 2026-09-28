@@ -45,7 +45,7 @@ if (-not (Test-Path $venvPython)) {
 # still work with less headroom than this, just with more risk.
 $freeRamGB = [math]::Round((Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory / 1MB, 1)
 if ($freeRamGB -lt 6) {
-    Write-Warning "Only ${freeRamGB}GB RAM free -- loading the checkpoint (~3.6GB, mmap'd through host RAM) may be tight. Consider closing other apps first."
+    Write-Warning "Only ${freeRamGB}GB RAM free -- loading the checkpoint (peaks at ~3GB of host RAM) may be tight. Consider closing other apps first."
 }
 
 Write-Host "Starting Fish Speech (S1-mini) natively -- first start compiles (~1-4 min one-time trace, faster once the inductor cache is warm)..."
