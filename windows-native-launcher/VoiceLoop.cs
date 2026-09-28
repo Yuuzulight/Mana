@@ -66,7 +66,7 @@ internal sealed class VoiceLoop : IDisposable
 
     // Guards frameBuffer, segmentSamples, hasHeardSpeechInSegment,
     // segmentElapsedMs, msSinceLastSpeech, mode, bargeInHeldMs,
-    // heldSentences, heldStackDepth, and the vad instance itself (SileroVadRunner mutates its own internal state
+    // heldSentences, heldStackDepth, manualStopPending, and the vad instance itself (SileroVadRunner mutates its own internal state
     // per ProcessFrame/Reset call, so it isn't thread-safe either).
     // OnDataAvailable fires on NAudio's WASAPI capture thread; every other
     // entry point that touches this state (ReturnToIdle, OnTalkingStateChanged,
@@ -106,6 +106,10 @@ internal sealed class VoiceLoop : IDisposable
     // second interruption then discards the outer hold outright instead
     // of stacking (windows-launcher's own depth-1 cap).
     private List<string>? heldSentences;
+    // Set by InterruptSpeech (the manual interrupt hotkey), consumed by
+    // whichever reply continuation that stop cut off (ConsumeManualStop),
+    // cleared by ReturnToIdle and by a typed/vision/clip takeover.
+    private bool manualStopPending;
     private int heldStackDepth;
 
     // #522: ScreenContextReader owns its own min-interval/keyword-gate
@@ -519,6 +523,7 @@ internal sealed class VoiceLoop : IDisposable
                 // point can await its real completion first.
                 heldSentences = null;
                 heldStackDepth = 0;
+                manualStopPending = false; // this turn owns mode, not a pending hotkey stop
             }
             mode = ListenMode.Processing;
         }
@@ -566,6 +571,7 @@ internal sealed class VoiceLoop : IDisposable
                 audioPlayer.Stop();
                 heldSentences = null;
                 heldStackDepth = 0;
+                manualStopPending = false; // this turn owns mode, not a pending hotkey stop
             }
             mode = ListenMode.Processing;
         }
@@ -647,6 +653,7 @@ internal sealed class VoiceLoop : IDisposable
                 // interruption can await its real completion first.
                 heldSentences = null;
                 heldStackDepth = 0;
+                manualStopPending = false; // this turn owns mode, not a pending hotkey stop
             }
             mode = ListenMode.Processing;
         }
@@ -924,6 +931,10 @@ internal sealed class VoiceLoop : IDisposable
 
         if (interrupted)
         {
+            if (ConsumeManualStop())
+            {
+                return false;
+            }
             // Mode is already CapturingInterruption (set by
             // ProcessSpeakingFrame on the capture thread). #513: hold what
             // hadn't played yet so ProcessTurnAsync can resume it once the
@@ -1011,9 +1022,11 @@ internal sealed class VoiceLoop : IDisposable
             ReturnToIdle();
             return true;
         }
-        // else: interrupted -- mode already CapturingInterruption (set by
-        // ProcessSpeakingFrame on the capture thread before PlayAsync's
-        // Task resolved), nothing further to do here.
+        // else: interrupted -- by a barge-in, mode is already
+        // CapturingInterruption (set by ProcessSpeakingFrame on the capture
+        // thread before PlayAsync's Task resolved), nothing further to do
+        // here; by the interrupt hotkey, go back to Idle.
+        ConsumeManualStop();
         return false;
     }
 
@@ -1132,11 +1145,61 @@ internal sealed class VoiceLoop : IDisposable
 
         if (interrupted)
         {
-            HoldIfNothingHeld(pending);
+            if (!ConsumeManualStop())
+            {
+                HoldIfNothingHeld(pending);
+            }
             return;
         }
 
         ReturnToIdle();
+    }
+
+    // The manual interrupt hotkey (Ctrl+Alt+I). A bare audioPlayer.Stop()
+    // cut the reply off without ProcessSpeakingFrame's switch to
+    // CapturingInterruption, so the reply's continuation (which expects
+    // exactly that) left mode at Processing -- OnTalkingStateChanged(false)
+    // had stepped Speaking -> Processing -- and every later voice, typed or
+    // hotkey turn was ignored until restart. Matches windows-launcher's
+    // interrupt-speech handler (stopReplyAudio + heldReply = null): stop,
+    // drop the hold, and let the cut-off continuation return to Idle.
+    // Stopping between two streamed sentences (nothing playing) is a no-op,
+    // same as Electron; the flag is then cleared by ReturnToIdle when the
+    // reply finishes on its own.
+    public void InterruptSpeech()
+    {
+        lock (stateLock)
+        {
+            if (mode != ListenMode.Speaking)
+            {
+                return;
+            }
+            manualStopPending = true;
+            heldSentences = null;
+            heldStackDepth = 0;
+            audioPlayer.Stop();
+        }
+    }
+
+    // Called by a reply continuation that found itself interrupted. True
+    // (and mode back to Idle) if the interrupt hotkey did it; false for a
+    // barge-in (mode already CapturingInterruption) or a typed/vision/clip
+    // takeover (which cleared the flag and owns mode for its own turn) --
+    // those keep today's hold/leave-mode-alone behavior.
+    private bool ConsumeManualStop()
+    {
+        lock (stateLock)
+        {
+            if (!manualStopPending || mode == ListenMode.CapturingInterruption)
+            {
+                return false;
+            }
+            manualStopPending = false;
+            heldSentences = null;
+            heldStackDepth = 0;
+        }
+        ReturnToIdle();
+        return true;
     }
 
     private void ReturnToIdle()
@@ -1158,6 +1221,7 @@ internal sealed class VoiceLoop : IDisposable
             }
 
             mode = ListenMode.Idle;
+            manualStopPending = false;
             // Deliberately discard audio buffered during the turn/playback
             // rather than replaying it as a fresh segment -- a
             // transcribe+reply+synthesize round trip risks the mic picking

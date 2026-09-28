@@ -126,14 +126,15 @@ internal sealed class ManaApplicationContext : ApplicationContext
         // window toggle and Ctrl+Alt+I for manual interrupt -- the first
         // collides with quickEntry's own hotkey right above (already
         // shipped, #525), so this uses Ctrl+Alt+W instead; Ctrl+Alt+I has
-        // no native collision and is kept as-is. Manual interrupt is just
-        // audioPlayer.Stop() -- matches windows-launcher's own
-        // "interrupt-speech" handler (stopReplyAudio(), nothing else),
-        // not the fuller barge-in/re-capture path VoiceLoop's internal
-        // interruption handling uses for a detected spoken interruption.
+        // no native collision and is kept as-is. Manual interrupt stops
+        // playback and drops any held reply via VoiceLoop.InterruptSpeech
+        // -- matches windows-launcher's own "interrupt-speech" handler
+        // (stopReplyAudio() + heldReply = null), not the fuller
+        // barge-in/re-capture path VoiceLoop's internal interruption
+        // handling uses for a detected spoken interruption.
         globalHotkeys = new GlobalHotkeyListener(
             (0xA584, GlobalHotkeyListener.ModControl | GlobalHotkeyListener.ModAlt, (uint)'W', "MANA_WINDOW_HOTKEY", ToggleSessionListVisible),
-            (0xA585, GlobalHotkeyListener.ModControl | GlobalHotkeyListener.ModAlt, (uint)'I', "MANA_INTERRUPT_HOTKEY", () => audioPlayer.Stop()));
+            (0xA585, GlobalHotkeyListener.ModControl | GlobalHotkeyListener.ModAlt, (uint)'I', "MANA_INTERRUPT_HOTKEY", voiceLoop.InterruptSpeech));
         // #524: originally a no-op (no chat/session window existed on
         // this branch yet) -- #521/#520 shipped one since, so this now
         // does what the original comment here flagged as the real
