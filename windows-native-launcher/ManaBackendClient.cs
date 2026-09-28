@@ -707,6 +707,7 @@ internal sealed class ManaBackendClient
                     Key = entry.TryGetProperty("key", out var keyEl) ? keyEl.GetString() ?? "" : "",
                     Text = entry.TryGetProperty("text", out var textEl) ? textEl.GetString() ?? "" : "",
                     Status = entry.TryGetProperty("status", out var statusEl) ? statusEl.GetString() ?? "" : "",
+                    Pinned = entry.TryGetProperty("pinned", out var pinnedEl) && pinnedEl.ValueKind == JsonValueKind.True,
                 });
             }
         }
@@ -716,6 +717,15 @@ internal sealed class ManaBackendClient
     public async Task ArchiveMemoryFactAsync(string key)
     {
         using var response = await http.PostAsync($"/admin/memory/facts/{Uri.EscapeDataString(key)}/archive", null);
+        response.EnsureSuccessStatusCode();
+    }
+
+    // #674: a pinned fact is injected into every reply's prompt.
+    public async Task SetMemoryFactPinnedAsync(string key, bool pinned)
+    {
+        var payload = JsonSerializer.Serialize(new { pinned });
+        using var content = new StringContent(payload, Encoding.UTF8, "application/json");
+        using var response = await http.PostAsync($"/admin/memory/facts/{Uri.EscapeDataString(key)}/pin", content);
         response.EnsureSuccessStatusCode();
     }
 
@@ -1765,6 +1775,7 @@ internal sealed class ManaMemoryFact
     public string Key { get; init; } = "";
     public string Text { get; init; } = "";
     public string Status { get; init; } = "";
+    public bool Pinned { get; init; }
 }
 
 // #529: GET /skills (index only -- see GetSkillsAsync's own comment).

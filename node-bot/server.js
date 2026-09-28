@@ -48,6 +48,7 @@ This server aims to avoid Python. You must download and place the whisper.cpp an
 const express = require("express");
 const multer = require("multer");
 const cors = require("cors");
+const { createRequestGuard } = require("./request-guard");
 const rateLimit = require("express-rate-limit");
 const { spawnSync, spawn } = require("child_process");
 const crypto = require("crypto");
@@ -128,7 +129,12 @@ const {
 } = require("./tools/deep-research");
 const { fetchPage, searchWeb, wikiLookup } = require("./tools/web-access");
 const { readGgufMetadata } = require("./tools/gguf-metadata");
-	const { runDoctorChecksAsync } = require("./doctor");
+const {
+  DEFAULT_BIND_HOST,
+  getBindHost,
+  isLoopbackBindHost,
+  runDoctorChecksAsync,
+} = require("./doctor");
 	const { createDoctorTrayPoller } = require("./doctor-tray-poll");
 	const { notifyTray } = require("./tray-notifier");
 	const sessionTokenUsage = require("./session-token-usage");
@@ -208,6 +214,7 @@ const {
   cleanLlamaOutput,
 } = require("./ai/local-llama-runtime");
 const { createLlamaServerRuntime } = require("./ai/llama-server-runtime");
+const { createReranker } = require("./ai/reranker-runtime");
 const { streamedMatchesFinal } = require("./utils/reply-stream-diff");
 const { createRestartController } = require("./admin-restart");
 const ffxivMarketPlugin = require("../plugins/ffxiv-market");
@@ -243,7 +250,11 @@ const {
 function createApp(deps = {}) {
   const app = express();
   const appEnv = deps.env || process.env;
-  app.use(cors());
+  // Issue #670: Host (DNS rebinding) + Origin (CSRF) guard, and CORS only
+  // for the origins it allows -- see request-guard.js.
+  const requestGuard = createRequestGuard(appEnv);
+  app.use(requestGuard.middleware);
+  app.use(cors(requestGuard.corsOptions));
   app.use(express.json({ limit: "15mb" }));
 
   // App-wide rate limit so every route (server.js, mobile-routes.js,
@@ -442,11 +453,23 @@ const llamaServerRuntime = createLlamaServerRuntime({
   modelSettingsStore,
 });
 
+// Issue #674: optional CPU-only reranker for memory recall -- off unless
+// MANA_RERANKER_MODEL names a local .gguf file. Same llama-server binary.
+const reranker = createReranker({
+  env: process.env,
+  threads: LLAMA_THREADS,
+  findServerBin: llamaServerRuntime.findLlamaServerBin,
+});
+
 // #693: llama.cpp build updates/rollback (Settings > Model). Resolves the
 // active build through the runtime so both agree on what "current" means.
 const llamaBuilds = createLlamaBuildManager({
   findLlamaServerBin: llamaServerRuntime.findLlamaServerBin,
-  stopServer: llamaServerRuntime.stop,
+  // The reranker runs the same build, so a switch restarts it too.
+  stopServer: () => {
+    llamaServerRuntime.stop();
+    reranker.stop();
+  },
 });
 
 // Unified local reply helper: prefer the persistent llama-server (model loads
@@ -542,6 +565,7 @@ const acpMemoryStore = createAcpMemoryStore({
   // default (USE_EMBEDDINGS env var), so hybrid session search is a pure
   // opt-in enhancement over the FTS5 keyword search above.
   computeEmbeddingsFn: require("./tools/retriever-index").computeEmbeddings,
+  rerankFn: reranker.rerank,
   // tokenEstimator will call the local Python retriever service /tokenize endpoint when available
   tokenEstimator: async (text) => {
     try {
@@ -1030,6 +1054,13 @@ async function asyncLoadBackgroundMemory() {
     for (const s of statsAll.slice(0, maxFiles)) {
       const prev =
         BACKGROUND_MEMORY_META.files && BACKGROUND_MEMORY_META.files[s.file];
+      // #673: a file the reviewer pruned stays pruned until it changes --
+      // pruning clears its summary, so without this check the cached-summary
+      // branch below missed it, the file was re-read, and the prune was lost.
+      if (prev && prev.mtime === s.mtime && prev.pruned) {
+        processed++;
+        continue;
+      }
       if (prev && prev.mtime === s.mtime && prev.summary) {
         summaries.push(prev.summary);
         processedFiles.push({
@@ -3709,11 +3740,14 @@ function registerRoutes(app, upload, deps = {}) {
     // so it never grows with total memory volume.
     let relatedFactsChars = 0;
     let relatedFactsTruncated = false;
+    // Issue #674: candidate/kept counts and any recall fallback, for #400.
+    let relatedFactsRecall = null;
     try {
       if (typeof acpMemoryStore.getRelatedFactsEntries === "function") {
-        const { entries } = acpMemoryStore.getRelatedFactsEntries(transcript, {
+        const { entries, recall } = await acpMemoryStore.getRelatedFactsEntries(transcript, {
           excludeSessionId: sessionId,
         });
+        relatedFactsRecall = recall || null;
         for (const entry of entries) {
           memoryExtraMessages[entry.position].push({ role: entry.role, content: entry.content });
           flatMemorySuffix += `\n\n${entry.content}`;
@@ -3738,7 +3772,11 @@ function registerRoutes(app, upload, deps = {}) {
       recordPromptComposition(sessionId, [
         { name: "system-prompt", chars: selectedSystemPrompt.length, dropped: { skillsOmitted: skillsOmittedCount } },
         { name: "prompt-memory", chars: promptMemoryChars, dropped: { truncated: promptMemoryTruncated, turnsDroppedByAge } },
-        { name: "related-facts", chars: relatedFactsChars, dropped: { truncated: relatedFactsTruncated } },
+        {
+          name: "related-facts",
+          chars: relatedFactsChars,
+          dropped: { truncated: relatedFactsTruncated, ...(relatedFactsRecall ? { recall: relatedFactsRecall } : {}) },
+        },
       ]);
     } catch (compErr) {
       // Diagnostic-only; never blocks a reply.
@@ -5239,11 +5277,14 @@ async function startServer() {
 
   const http = require("http");
   const server = http.createServer(app);
+  // Issue #670: WebSocket upgrades skip express, so each ws server checks
+  // Host/Origin itself.
+  const requestGuard = createRequestGuard();
 
   // attach caption websocket server
   try {
     const captionServer = require("./caption-server");
-    captionServer.registerCaptionServer(server, { path: "/ws/captions" });
+    captionServer.registerCaptionServer(server, { path: "/ws/captions", requestGuard });
   } catch (e) {
     console.warn("Failed to register caption server:", e?.message || e);
   }
@@ -5251,7 +5292,7 @@ async function startServer() {
   // attach tray websocket server for live tray notifications
   try {
     const trayServer = require("./tray-server");
-    trayServer.registerTrayServer(server, { path: "/ws/tray" });
+    trayServer.registerTrayServer(server, { path: "/ws/tray", requestGuard });
     // make broadcast available via app locals for other modules
     app.locals.broadcastTrayNotification = trayServer.broadcastTrayNotification;
     try {
@@ -5268,7 +5309,11 @@ async function startServer() {
   // request a fresh screenshot mid-reply)
   try {
     const { registerVisionCaptureServer } = require("./vision-capture-server");
-    registerVisionCaptureServer(server, { path: "/ws/vision-capture", bridge: visionCaptureBridge });
+    registerVisionCaptureServer(server, {
+      path: "/ws/vision-capture",
+      bridge: visionCaptureBridge,
+      requestGuard,
+    });
   } catch (e) {
     console.warn("Failed to register vision-capture server:", e?.message || e);
   }
@@ -5278,9 +5323,38 @@ async function startServer() {
   // server-routes.js's registerAdminStaticRoutes.
   registerAdminStaticRoutes(app);
 
-  return server.listen(port, () =>
-    console.log("Node local bot listening on", port),
-  );
+  return listenOnBindHost(server, port);
+}
+
+// Issue #670: loopback only by default, so other devices on the network
+// can't drive /reply (and its tools). MANA_BIND_HOST=0.0.0.0 (or a LAN IP)
+// restores LAN access for setups that need it -- loudly.
+function listenOnBindHost(server, port, env = process.env) {
+  const bindHost = getBindHost(env);
+  if (!isLoopbackBindHost(bindHost)) {
+    console.warn(
+      `[Mana Boot] WARNING: MANA_BIND_HOST=${bindHost} -- the backend is reachable from other devices on your network, and anything that can reach it can make Mana reply and run tools. Unset MANA_BIND_HOST to keep it on this PC only.`,
+    );
+  }
+  return server.listen(port, bindHost, () => {
+    const boundPort = server.address().port;
+    console.log("Node local bot listening on", `${bindHost}:${boundPort}`);
+    if (bindHost !== DEFAULT_BIND_HOST) return;
+    // "localhost" resolves to ::1 first on Windows, and before #670 the
+    // backend answered on ::1 too (the old all-interfaces bind). Mirror the
+    // default 127.0.0.1 listener on ::1 so localhost clients (the Electron
+    // launcher's default URL, the Obsidian plugin) never fall back through a
+    // refused IPv6 connect. Its sockets feed the same HTTP server, so the
+    // WebSocket upgrade handlers see them too. Best-effort: a host without
+    // IPv6 just skips it.
+    const ipv6Loopback = require("net")
+      .createServer((socket) => server.emit("connection", socket))
+      .on("error", (e) =>
+        console.warn("[Mana Boot] ::1 listener unavailable:", e?.message || e),
+      )
+      .listen(boundPort, "::1");
+    server.once("close", () => ipv6Loopback.close());
+  });
 }
 
 if (require.main === module) {
@@ -5301,6 +5375,7 @@ module.exports = {
   DEEP_RESEARCH_SUBTASK_PROFILE,
   ensureDirectory,
   formatMemoryMarkdown,
+  listenOnBindHost,
   normalizeLlamaModelProfile,
   pickPreferredLlamaModel,
   selectLlamaModelProfileForPrompt,

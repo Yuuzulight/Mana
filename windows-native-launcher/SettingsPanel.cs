@@ -266,7 +266,27 @@ internal sealed class SettingsPanel : UserControl
         factsList.Columns.Add("Key", 150);
         factsList.Columns.Add("Fact", 300);
         factsList.Columns.Add("Status", 80);
+        factsList.Columns.Add("Pinned", 60);
         DarkTheme.ApplyListView(factsList);
+
+        // #674: pinned facts go into every reply's prompt (up to 5).
+        var pinButton = new Button { Text = "Pin / Unpin", Dock = DockStyle.Bottom, Height = 28 };
+        DarkTheme.ApplyButton(pinButton);
+        pinButton.Click += async (_, _) =>
+        {
+            pinButton.Enabled = false;
+            try
+            {
+                await TogglePinSelectedFactAsync();
+            }
+            finally
+            {
+                if (!IsDisposed)
+                {
+                    pinButton.Enabled = true;
+                }
+            }
+        };
 
         var archiveButton = new Button { Text = "Archive", Dock = DockStyle.Bottom, Height = 28 };
         DarkTheme.ApplyButton(archiveButton);
@@ -291,17 +311,40 @@ internal sealed class SettingsPanel : UserControl
 
         var page = new TabPage("Memory Facts");
         page.Controls.Add(factsList);
+        page.Controls.Add(pinButton);
         page.Controls.Add(archiveButton);
         return page;
     }
 
-    private async Task ArchiveSelectedFactAsync()
+    private async Task TogglePinSelectedFactAsync()
     {
-        if (factsList.SelectedItems.Count == 0)
+        // The "Failed to load" row has no fact behind it.
+        if (factsList.SelectedItems.Count == 0 || factsList.SelectedItems[0].Tag is not ManaMemoryFact fact)
         {
             return;
         }
-        var key = (string)factsList.SelectedItems[0].Tag!;
+        try
+        {
+            await backendClient.SetMemoryFactPinnedAsync(fact.Key, !fact.Pinned);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"SettingsPanel: failed to pin fact '{fact.Key}'. {ex.Message}");
+            return;
+        }
+        if (!IsDisposed)
+        {
+            await RefreshMemoryFactsAsync();
+        }
+    }
+
+    private async Task ArchiveSelectedFactAsync()
+    {
+        if (factsList.SelectedItems.Count == 0 || factsList.SelectedItems[0].Tag is not ManaMemoryFact fact)
+        {
+            return;
+        }
+        var key = fact.Key;
         try
         {
             await backendClient.ArchiveMemoryFactAsync(key);
@@ -341,9 +384,10 @@ internal sealed class SettingsPanel : UserControl
         factsList.Items.Clear();
         foreach (var fact in facts)
         {
-            var item = new ListViewItem(fact.Key) { Tag = fact.Key };
+            var item = new ListViewItem(fact.Key) { Tag = fact };
             item.SubItems.Add(fact.Text);
             item.SubItems.Add(fact.Status);
+            item.SubItems.Add(fact.Pinned ? "yes" : "");
             factsList.Items.Add(item);
         }
     }

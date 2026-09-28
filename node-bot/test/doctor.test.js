@@ -271,6 +271,29 @@ test("doctor warns on remote exposure when a tunnel and mobile auth are both con
   assert.match(check.message, /reachable from the internet/i);
 });
 
+// Issue #670: a non-loopback MANA_BIND_HOST is the LAN version of a tunnel.
+test("doctor warns on remote exposure when MANA_BIND_HOST is not loopback", () => {
+  const run = (env) =>
+    runDoctorChecks({
+      env,
+      paths: { dataDir: fs.mkdtempSync(path.join(os.tmpdir(), "mana-doctor-test-")) },
+      ports: [],
+      services: [],
+      versions: { node: "v22.19.0" },
+      zedCommandResolver: () => null,
+    }).checks.find((c) => c.id === "remote-exposure");
+
+  const lan = run({ MANA_BIND_HOST: "0.0.0.0" });
+  assert.equal(lan.status, "warn");
+  assert.match(lan.message, /MANA_BIND_HOST=0\.0\.0\.0/);
+
+  assert.equal(run({ MANA_BIND_HOST: "127.0.0.1" }).status, "pass");
+
+  const lanAndTunnel = run({ MANA_BIND_HOST: "0.0.0.0", CLOUDFLARE_TUNNEL_TOKEN: "token" });
+  assert.equal(lanAndTunnel.status, "fail");
+  assert.match(lanAndTunnel.message, /MANA_BIND_HOST=0\.0\.0\.0/);
+});
+
 test("doctor fails remote exposure when a tunnel is configured without mobile auth", () => {
   const result = runDoctorChecks({
     env: { CLOUDFLARE_TUNNEL_TOKEN: "token" },

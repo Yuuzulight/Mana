@@ -48,6 +48,11 @@ nssm set $ServiceName AppStderr (Join-Path $LogDir "service-stderr.log")
 # the one that actually matters: node-bot's own default is OFF
 # (tools/retriever-index.js), so without this, session search and Deep
 # Research would silently lose semantic retrieval under the service.
+#
+# MANA_BIND_HOST=0.0.0.0 (#670): node-bot binds loopback only by default, but
+# windows-launcher reaches this service through the LAN IP (see README.md),
+# so the service keeps listening on every interface as it did before #670.
+# That also exposes it to the rest of your network -- see README.md.
 $whisperBin = Join-Path $RootDir "tools\whisper\Release\whisper-cli.exe"
 $whisperModel = Join-Path $RootDir "tools\whisper\models\ggml-tiny.en.bin"
 nssm set $ServiceName AppEnvironmentExtra `
@@ -58,7 +63,8 @@ nssm set $ServiceName AppEnvironmentExtra `
     "VTUBE_STUDIO_URL=ws://127.0.0.1:8001" `
     "VTUBE_STUDIO_ENABLED=1" `
     "USE_EMBEDDINGS=1" `
-    "RETRIEVER_EMBEDDER_URL=http://127.0.0.1:9001"
+    "RETRIEVER_EMBEDDER_URL=http://127.0.0.1:9001" `
+    "MANA_BIND_HOST=0.0.0.0"
 
 Write-Host "Starting service..."
 nssm start $ServiceName

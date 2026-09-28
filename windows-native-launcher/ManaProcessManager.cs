@@ -44,6 +44,7 @@ internal sealed class ManaProcessManager : IDisposable
     // local child processes this launcher itself manages, unrelated to
     // where the node-bot backend happens to live.
     private readonly string backendHealthUrl;
+    private readonly bool isBackendLocal;
 
     // handler: null (the default, and every existing call site's behavior)
     // constructs a real HttpClient for live health checks. Tests pass a
@@ -59,6 +60,11 @@ internal sealed class ManaProcessManager : IDisposable
         RootDirectory = rootDirectory;
         http = handler is null ? new HttpClient() : new HttpClient(handler);
         backendHealthUrl = $"{(backendBaseUrl ?? "http://127.0.0.1:5005").TrimEnd('/')}/health";
+        // #681: a remote backend URL means that machine starts its own
+        // node-bot -- never spawn a redundant local one (windows-launcher's
+        // startWindowsServices / isBackendUrlLoopback). Unparseable counts
+        // as local, same as there.
+        isBackendLocal = !Uri.TryCreate(backendHealthUrl, UriKind.Absolute, out var parsed) || parsed.IsLoopback;
     }
 
     // onServiceReady, when given, fires once per service (key "backend"/
@@ -91,8 +97,10 @@ internal sealed class ManaProcessManager : IDisposable
         // other two.
         var kokoroTask = StartAndReport("kokoro", "http://127.0.0.1:5011/health", () => Task.FromResult<Process?>(StartKokoro()));
         var fishSpeechTask = StartAndReport("fish-speech", "http://127.0.0.1:8080/v1/health", () => Task.FromResult(StartFishSpeech()));
-        var backendTask = StartAndReport("backend", backendHealthUrl, () => Task.FromResult<Process?>(StartBackend()));
-        var embedderTask = StartAndReport("embedder", "http://127.0.0.1:9001/health", () => Task.FromResult(StartEmbedder()));
+        var backendTask = StartAndReport("backend", backendHealthUrl, () => Task.FromResult<Process?>(isBackendLocal ? StartBackend() : null));
+        // #691: the embedder only serves a backend on this machine -- a remote
+        // backend calls its own 127.0.0.1:9001, never ours.
+        var embedderTask = StartAndReport("embedder", "http://127.0.0.1:9001/health", () => Task.FromResult(isBackendLocal ? StartEmbedder() : null));
 
         try
         {
@@ -147,6 +155,7 @@ internal sealed class ManaProcessManager : IDisposable
         // whenever this line is reached at all. Fish Speech (and the #691
         // embedder) are the callers where start() can return null non-fatally (missing native
         // setup, or a launch failure) -- that's the actual degraded case.
+        // #681: so is an unreachable remote backend, which is never spawned.
         return (process, process is not null);
     }
 

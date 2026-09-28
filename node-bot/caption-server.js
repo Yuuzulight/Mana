@@ -22,6 +22,8 @@ function registerCaptionServer(httpServer, options = {}) {
   });
   httpServer.on('upgrade', (req, socket, head) => {
     if ((req.url || '').split('?')[0] !== path) return;
+    // Issue #670: no cross-site page or rebinding host may listen in.
+    if (options.requestGuard?.rejectUpgrade(req, socket)) return;
     wss.handleUpgrade(req, socket, head, (ws) => {
       wss.emit('connection', ws, req);
     });

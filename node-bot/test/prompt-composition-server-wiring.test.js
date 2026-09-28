@@ -24,6 +24,10 @@ test("a local reply's prompt composition is recorded and surfaced via /prompt-co
     assert.ok(blockNames.includes("prompt-memory"));
     assert.ok(blockNames.includes("related-facts"));
     assert.ok(composition.totalChars > 0);
+    // Issue #674: recall counts ride along on the related-facts block.
+    const recall = composition.blocks.find((b) => b.name === "related-facts").dropped.recall;
+    assert.equal(typeof recall.candidates, "number");
+    assert.equal(typeof recall.matched, "number");
   });
 });
 
