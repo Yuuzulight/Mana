@@ -181,8 +181,6 @@ internal sealed class ManaApplicationContext : ApplicationContext
         };
 
         trayIcon.DoubleClick += (_, _) => ShowStatus();
-        avatarOverlay.Show();
-        ReportAvatarModelProblem();
         trayNotifications.Start();
         captionClient.Start();
         visionCaptureClient.Start();
@@ -287,6 +285,10 @@ internal sealed class ManaApplicationContext : ApplicationContext
         finally
         {
             overlay.Close();
+            // The avatar appears only once the startup screen is done, so
+            // she never pops up over it half-started.
+            avatarOverlay.Show();
+            ReportAvatarModelProblem();
         }
     }
 
