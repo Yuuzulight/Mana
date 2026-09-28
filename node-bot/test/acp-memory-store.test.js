@@ -1233,12 +1233,13 @@ test("buildPromptMemoryEntries returns positionable entries with the same conten
   const { entries } = store.buildPromptMemoryEntries("zed-session-entries");
   // A fresh single-turn session already has a session.summary (see the
   // "auto-names a session from its first user turn" behavior), so this
-  // produces two entries: the summary (early) and the recent-turns block
-  // (late) -- same content buildPromptMemory would combine into one string.
+  // produces two entries: the summary and the recent-turns block, both
+  // late (issue #660) -- same content buildPromptMemory would combine into
+  // one string.
   assert.equal(entries.length, 2);
   assert.ok(entries.every((e) => e.role === "system"));
   const [summaryEntry, recentTurnsEntry] = entries;
-  assert.equal(summaryEntry.position, "early");
+  assert.equal(summaryEntry.position, "late");
   assert.equal(recentTurnsEntry.position, "late");
   assert.match(recentTurnsEntry.content, /Recent turns/i);
   assert.match(recentTurnsEntry.content, /preferred editor on this PC is Zed/i);
@@ -1257,6 +1258,7 @@ test("buildPromptMemoryEntries honors summaryPosition/recentTurnsPosition overri
   });
 
   const { entries } = store.buildPromptMemoryEntries("zed-session-positions", {
+    summaryPosition: "early",
     recentTurnsPosition: "early",
   });
   assert.ok(entries.every((e) => e.position === "early"));

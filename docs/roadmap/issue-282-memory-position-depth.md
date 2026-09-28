@@ -28,7 +28,10 @@ Only the application code that built exactly two messages (`system`,
   persona), recent turns and related facts -> `"late"` (right before the
   live user message -- the higher-salience slot, since what was *just*
   discussed or previously said about the current topic is most relevant to
-  what's being asked right now).
+  what's being asked right now). Issue #660 later moved the summary default
+  to `"late"` as well: `appendTurn` adds a line to it every turn, so an early
+  summary changed the prompt prefix each turn and defeated llama-server's
+  prompt cache.
 - `ai/llama-server-runtime.js`'s `runLocalAssistantReply` and
   `runToolAwareReply` take a new optional `extraMessages: {early, late}`
   param, spliced into the messages array as
