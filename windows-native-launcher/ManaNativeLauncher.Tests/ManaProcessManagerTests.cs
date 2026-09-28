@@ -225,6 +225,55 @@ public class ManaProcessManagerTests
     }
 
     [Fact]
+    public async Task WaitForFishSpeechReady_ReturnsTrueOnceFishAnswers()
+    {
+        // Healthy at launch (so it counts as available), then warming up
+        // for two polls, then ready.
+        var fishCalls = 0;
+        var handler = new FakeHttpMessageHandler(request =>
+        {
+            if (request.RequestUri!.Port != 8080) return new HttpResponseMessage(HttpStatusCode.OK);
+            fishCalls++;
+            return new HttpResponseMessage(fishCalls is 2 or 3 ? HttpStatusCode.ServiceUnavailable : HttpStatusCode.OK);
+        });
+        using var manager = new ManaProcessManager(@"C:\does-not-exist", handler);
+        await manager.StartAsync();
+
+        Assert.True(await manager.WaitForFishSpeechReadyAsync(TimeSpan.FromSeconds(5), TimeSpan.FromMilliseconds(1)));
+        Assert.Equal(4, fishCalls);
+    }
+
+    [Fact]
+    public async Task WaitForFishSpeechReady_ReturnsFalseAfterTheTimeout()
+    {
+        var fishCalls = 0;
+        var handler = new FakeHttpMessageHandler(request =>
+        {
+            if (request.RequestUri!.Port != 8080) return new HttpResponseMessage(HttpStatusCode.OK);
+            fishCalls++;
+            return new HttpResponseMessage(fishCalls == 1 ? HttpStatusCode.OK : HttpStatusCode.ServiceUnavailable);
+        });
+        using var manager = new ManaProcessManager(@"C:\does-not-exist", handler);
+        await manager.StartAsync();
+
+        Assert.False(await manager.WaitForFishSpeechReadyAsync(TimeSpan.FromMilliseconds(50), TimeSpan.FromMilliseconds(5)));
+    }
+
+    [Fact]
+    public async Task WaitForFishSpeechReady_ReturnsFalseImmediatelyWhenFishIsNotInUse()
+    {
+        // Not healthy and no native setup under the root: never started.
+        var handler = new FakeHttpMessageHandler(request =>
+            new HttpResponseMessage(request.RequestUri!.Port == 8080 ? HttpStatusCode.ServiceUnavailable : HttpStatusCode.OK));
+        using var manager = new ManaProcessManager(@"C:\does-not-exist", handler);
+        await manager.StartAsync();
+
+        var watch = System.Diagnostics.Stopwatch.StartNew();
+        Assert.False(await manager.WaitForFishSpeechReadyAsync(TimeSpan.FromMinutes(6)));
+        Assert.True(watch.Elapsed < TimeSpan.FromSeconds(5));
+    }
+
+    [Fact]
     public async Task StopAllAsync_ReportsStoppedForEveryServiceWithNoProcessHandleToKill()
     {
         // No StartAsync call means backendProcess/fishSpeechProcess/

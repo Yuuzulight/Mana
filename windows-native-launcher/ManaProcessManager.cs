@@ -145,6 +145,32 @@ internal sealed class ManaProcessManager : IDisposable
         IsFishSpeechAvailable = fishSpeechProcess is not null;
     }
 
+    // Fish Speech answers its health check only once its model is loaded
+    // and torch.compile has finished (up to a few minutes cold) -- StartAsync
+    // only waits for the launch. The startup screen waits on this so Mana
+    // appears (and listens) only once she can actually speak. False straight
+    // away if Fish isn't in use (remote backend, not set up, failed start).
+    public async Task<bool> WaitForFishSpeechReadyAsync(TimeSpan timeout, TimeSpan? pollInterval = null)
+    {
+        if (!isBackendLocal || !IsFishSpeechAvailable)
+        {
+            return false;
+        }
+        var deadline = DateTime.UtcNow + timeout;
+        while (true)
+        {
+            if (await IsServiceRunningAsync("http://127.0.0.1:8080/v1/health"))
+            {
+                return true;
+            }
+            if (DateTime.UtcNow >= deadline)
+            {
+                return false;
+            }
+            await Task.Delay(pollInterval ?? TimeSpan.FromSeconds(2));
+        }
+    }
+
     private async Task<(Process? Process, bool Available)> StartIfNotRunningAsync(string healthUrl, Func<Task<Process?>> start)
     {
         if (await IsServiceRunningAsync(healthUrl))
