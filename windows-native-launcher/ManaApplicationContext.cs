@@ -239,6 +239,12 @@ internal sealed class ManaApplicationContext : ApplicationContext
             }
         };
         menu.Items.Add(gamingModeItem);
+        // #681: Stop listening turns the mic off and puts Mana back to
+        // sleep; Start listening needs the wake word again.
+        var listeningItem = new ToolStripMenuItem();
+        listeningItem.Click += (_, _) => voiceLoop.ToggleListening();
+        menu.Opening += (_, _) => listeningItem.Text = voiceLoop.IsListening ? "Stop listening" : "Start listening";
+        menu.Items.Add(listeningItem);
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add("Restart Fish Speech", null, (_, _) => RestartFishSpeech());
         menu.Items.Add(new ToolStripSeparator());
