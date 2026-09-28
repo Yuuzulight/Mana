@@ -56,6 +56,8 @@ function createLlamaServerRuntime(options = {}) {
     // #693: the binary the latest start attempt used, so a pointer switch
     // is only confirmed/rolled back by a start that actually ran it.
     lastStartBin: null,
+    // #642: prompt size of the latest completion, from its timings.
+    lastPromptUsage: null,
   };
 
   // Debounce: back-to-back requests for different profiles (e.g. one coding
@@ -903,9 +905,54 @@ function createLlamaServerRuntime(options = {}) {
   // Issue #660: llama-server reports per request how many prompt tokens it
   // reused from its prompt cache (cache_n) vs. processed fresh (prompt_n),
   // so the cache hit rate between turns is visible in the log.
+  //
+  // #642: also kept as the latest prompt's real size for the context meter
+  // -- cache_n + prompt_n is the whole prompt. A fresh object every time,
+  // so a caller can tell "a completion ran since I last looked" by identity.
   function logPromptCache(label, timings) {
     if (!timings || typeof timings.prompt_n !== "number") return;
-    console.log(`${label}: prompt cache_n=${timings.cache_n ?? 0} prompt_n=${timings.prompt_n}`);
+    const cacheN = Number(timings.cache_n) || 0;
+    console.log(`${label}: prompt cache_n=${cacheN} prompt_n=${timings.prompt_n}`);
+    state.lastPromptUsage = { promptTokens: cacheN + timings.prompt_n, promptN: timings.prompt_n, cacheN };
+  }
+
+  function getLastPromptUsage() {
+    return state.lastPromptUsage;
+  }
+
+  // #642: exact token count of text with the loaded model's tokenizer.
+  // Only asks a server this runtime already started or adopted -- never
+  // starts one -- and returns null when there is none or it fails, so the
+  // caller can fall back to an estimate.
+  async function countTokens(text) {
+    if (!state.port || typeof fetchImpl !== "function") return null;
+    try {
+      const resp = await fetchImpl(`http://127.0.0.1:${state.port}/tokenize`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ content: String(text || "") }),
+      });
+      if (!resp || !resp.ok) return null;
+      const json = await resp.json();
+      return Array.isArray(json?.tokens) ? json.tokens.length : null;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  // #642: the running server's real per-slot context (/props n_ctx),
+  // else the -c value buildServerArgs would pass. Never starts a server.
+  async function getContextSize() {
+    const configured = Number(env.LLAMA_CONTEXT || env.LLAMA_CONTEXT_CAP || "4096");
+    if (!state.port || typeof fetchImpl !== "function") return configured;
+    try {
+      const resp = await fetchImpl(`http://127.0.0.1:${state.port}/props`);
+      if (!resp || !resp.ok) return configured;
+      const props = await resp.json();
+      return Number(props?.default_generation_settings?.n_ctx) || configured;
+    } catch (e) {
+      return configured;
+    }
   }
 
   async function runLocalAssistantReply(
@@ -1622,6 +1669,9 @@ function createLlamaServerRuntime(options = {}) {
     runToolAwareReply,
     runVisionReply,
     getStatus,
+    getLastPromptUsage,
+    countTokens,
+    getContextSize,
     isProfileAlreadyLoaded,
     runLocalReplyIfSafelyLoaded,
     scheduleIdleShutdown,
