@@ -34,6 +34,14 @@ public class CaptionTimingTests
     public void LingerMs_CapsAtTwentySeconds() =>
         Assert.Equal(20000, CaptionOverlayForm.LingerMs(string.Join(" ", Enumerable.Repeat("word", 200))));
 
+    [Theory]
+    [InlineData(0, 26)]     // flat background: nearly clear
+    [InlineData(35, 83)]    // halfway
+    [InlineData(70, 140)]   // busy game: strongest wash
+    [InlineData(200, 140)]  // clamped
+    public void WashAlphaFor_ScalesWithHowBusyTheBackdropIs(double stdDev, int expected) =>
+        Assert.Equal(expected, CaptionOverlayForm.WashAlphaFor(stdDev));
+
     [Fact]
     public void Steps_SplitsSentencesAndSharesTheClipByLength()
     {
