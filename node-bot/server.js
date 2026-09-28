@@ -9,8 +9,8 @@ Environment variables (set before running):
 - WHISPER_BIN : full path to whisper.cpp main executable (e.g. C:\whisper.cpp\main.exe)
 - WHISPER_MODEL : full path to whisper model file (e.g. models/ggml-base.en.bin)
 - WHISPER_LANGUAGE : spoken language passed to whisper.cpp (default "en")
-- WHISPER_PROMPT : initial prompt biasing transcription toward Mana's wake
-  words and Singapore English/Singlish vocabulary by default
+- WHISPER_PROMPT : replaces the initial prompt that biases transcription
+  toward Mana's wake words, your name and your frequent terms (issue #667)
 - WHISPER_BEAM_SIZE, WHISPER_NO_SPEECH_THRESHOLD, WHISPER_TEMPERATURE :
   whisper.cpp decoding tuning knobs, see docs/speech_recognition_improvement_plan.md
 - LLAMA_BIN : full path to llama.cpp/main executable (e.g. C:\llama.cpp\main.exe)
@@ -203,6 +203,7 @@ const { createModelManagement } = require("./model-management");
 const { createLlamaBuildManager } = require("./llama-builds");
 const { createModelSettingsStore } = require("./model-settings-store");
 const whisperDiscovery = require("./whisper-discovery");
+const { createWhisperPromptProvider } = require("./whisper-prompt");
 const {
   normalizeLlamaModelProfile,
   pickPreferredLlamaModel,
@@ -351,23 +352,18 @@ const SCREEN_CONTEXT_MAX_CHARS = Number(
 const SCREEN_OCR_CACHE_PATH =
   process.env.SCREEN_OCR_CACHE_PATH || path.join(__dirname, "tmp", "tesseract");
 const WHISPER_THREADS = Number(process.env.WHISPER_THREADS || 2);
-// Biases whisper.cpp toward Mana's wake words via an initial prompt, per
-// docs/speech_recognition_improvement_plan.md. Keeps the "Singapore English"
-// framing (helps the decoder's accent expectations) but drops the Singlish
-// vocabulary list -- this user speaks accented English, not Singlish, so
-// priming toward lah/leh/lor/etc. words that don't come up wasn't helping.
 const WHISPER_LANGUAGE = process.env.WHISPER_LANGUAGE || "en";
-const WHISPER_PROMPT =
-  process.env.WHISPER_PROMPT ||
-  "Singapore English conversation with an AI assistant named Mana. Wake words include Mana, Manah, Manna, Mannah, Myna, My Na, and wake up.";
+// whisper.cpp's initial prompt comes from getWhisperPrompt (below
+// acpMemoryStore, which it reads): Mana's wake words plus the user's name
+// and frequent terms (issue #667, see whisper-prompt.js).
 const WHISPER_BEAM_SIZE = process.env.WHISPER_BEAM_SIZE || "5";
 const WHISPER_NO_SPEECH_THRESHOLD =
   process.env.WHISPER_NO_SPEECH_THRESHOLD || "0.45";
 const WHISPER_TEMPERATURE = process.env.WHISPER_TEMPERATURE || "0";
 // Opt-in alternate ASR engine (NVIDIA Parakeet via the same tools/whisper
 // build) -- faster and slightly more accurate on English/European speech,
-// but has no equivalent to WHISPER_PROMPT's wake-word/Singlish biasing
-// above, so whisper stays the default.
+// but has no equivalent to whisper's initial-prompt biasing (wake words,
+// names, terms), so whisper stays the default.
 const STT_PROVIDER = (process.env.STT_PROVIDER || "whisper").toLowerCase();
 const LLAMA_THREADS = Number(process.env.LLAMA_THREADS || 4);
 const LLAMA_MAX_TOKENS = Number(process.env.LLAMA_MAX_TOKENS || 180);
@@ -638,6 +634,13 @@ const acpMemoryStore = createAcpMemoryStore({
       return summary || "";
     }
   },
+});
+
+// Issue #667: whisper's initial prompt, rebuilt from memory every few
+// minutes. WHISPER_PROMPT, when set, still replaces it entirely.
+const getWhisperPrompt = createWhisperPromptProvider({
+  memoryStore: acpMemoryStore,
+  override: process.env.WHISPER_PROMPT || "",
 });
 
 // Issue #295 (piece 2 of #285): folds a decay+threshold check into the
@@ -3035,9 +3038,7 @@ function registerRoutes(app, upload, deps = {}) {
       "-of",
       outBase,
     ];
-    if (WHISPER_PROMPT) {
-      args.push("--prompt", WHISPER_PROMPT, "--carry-initial-prompt");
-    }
+    args.push("--prompt", getWhisperPrompt(), "--carry-initial-prompt");
     console.log("Running whisper:", whisperBin, args.join(" "));
     const r = spawnSync(whisperBin, args, {
       encoding: "utf8",
@@ -3152,9 +3153,7 @@ function registerRoutes(app, upload, deps = {}) {
       "-of",
       outBase,
     ];
-    if (WHISPER_PROMPT) {
-      args.push("--prompt", WHISPER_PROMPT, "--carry-initial-prompt");
-    }
+    args.push("--prompt", getWhisperPrompt(), "--carry-initial-prompt");
     const r = await spawnWhisperCliAsync(whisperBin, args);
     if (r.status !== 0) {
       console.error("whisper (partial) stderr:", r.stderr);
