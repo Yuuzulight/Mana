@@ -121,7 +121,7 @@ public class ManaProcessManagerTests
         await manager.StartAsync((key, available) => reported[key] = available);
 
         Assert.Equal(
-            new Dictionary<string, bool> { ["backend"] = true, ["kokoro"] = true, ["fish-speech"] = true },
+            new Dictionary<string, bool> { ["backend"] = true, ["kokoro"] = true, ["fish-speech"] = true, ["embedder"] = true },
             new Dictionary<string, bool>(reported));
     }
 
@@ -155,6 +155,23 @@ public class ManaProcessManagerTests
     }
 
     [Fact]
+    public async Task StartAsync_ReportsTheEmbedderUnavailableWithoutThrowing_WhenItsScriptIsMissing()
+    {
+        // #691: the embedder is optional -- unhealthy on 9001 plus no
+        // local_embedder.py under rootDirectory must degrade (row reads
+        // Unavailable, search stays keyword-only), never fail startup.
+        var handler = new FakeHttpMessageHandler(request =>
+            new HttpResponseMessage(request.RequestUri!.Port == 9001 ? HttpStatusCode.NotFound : HttpStatusCode.OK));
+        using var manager = new ManaProcessManager(@"C:\does-not-exist", handler);
+        var reported = new ConcurrentDictionary<string, bool>();
+
+        await manager.StartAsync((key, available) => reported[key] = available);
+
+        Assert.False(reported["embedder"]);
+        Assert.True(reported["backend"]);
+    }
+
+    [Fact]
     public async Task StopAllAsync_ReportsStoppedForEveryServiceWithNoProcessHandleToKill()
     {
         // No StartAsync call means backendProcess/kokoroProcess/
@@ -168,7 +185,7 @@ public class ManaProcessManagerTests
         await manager.StopAllAsync((key, stopped) => reported[key] = stopped);
 
         Assert.Equal(
-            new Dictionary<string, bool> { ["backend"] = true, ["kokoro"] = true, ["fish-speech"] = true },
+            new Dictionary<string, bool> { ["backend"] = true, ["kokoro"] = true, ["fish-speech"] = true, ["embedder"] = true },
             new Dictionary<string, bool>(reported));
     }
 

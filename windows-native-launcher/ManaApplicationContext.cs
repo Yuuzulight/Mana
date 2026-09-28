@@ -44,7 +44,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
     // backend's process scan reports; no new backend route needed.
     private bool gamingModeEnabled = true;
 
-    // The 3 services ManaProcessManager actually starts/stops -- shared
+    // The 4 services ManaProcessManager actually starts/stops -- shared
     // between the startup and shutdown overlays, same as windows-launcher's
     // single #startupOverlay markup being reused for both (there it also
     // tracks Voice/Web search/Local AI, which don't apply here: this
@@ -55,6 +55,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
         ("backend", "Backend"),
         ("kokoro", "Kokoro TTS"),
         ("fish-speech", "Fish Speech TTS"),
+        ("embedder", "Memory search"),
     };
 
     // Guards against "Exit Mana" clicked twice while ShutdownAsync's own
