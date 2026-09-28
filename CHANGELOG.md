@@ -11,6 +11,15 @@ accounting.
 
 ## [Unreleased]
 
+- Fixed semantic session search never working (issue #263): `node-bot/.npmrc`'s
+  `omit=optional` (issue #187) dropped every optionalDependency platform binary,
+  including `sqlite-vec-<os>-<arch>`, so the vec0 index could never load and the
+  vector tests silently skipped, CI included. The flag was never what kept
+  `@discordjs/opus` out -- npm >= 7 doesn't auto-install optional peers, and it
+  isn't in `package-lock.json` with or without the flag -- so `.npmrc` is
+  removed. A new test fails if sqlite-vec doesn't load on a platform it ships a
+  binary for. Re-run `npm ci` in `node-bot` to pick up the binaries.
+
 - Added streaming text-to-speech (issue #331): Mana's reply used to be generated in
   full, then synthesized and played back only once the whole thing was done -- now
   a new `POST /reply/stream` NDJSON route splits the LLM's reply into sentences as
