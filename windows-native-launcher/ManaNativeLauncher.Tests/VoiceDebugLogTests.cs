@@ -74,24 +74,6 @@ public class VoiceDebugLogTests
     }
 
     [Fact]
-    public void AppendNote_WritesOneTimestampedLine()
-    {
-        var dir = Path.Combine(Path.GetTempPath(), "mana-voice-log-" + Guid.NewGuid());
-        var path = Path.Combine(dir, "speech-debug.log");
-        try
-        {
-            VoiceDebugLog.AppendNote("capture: aec=on", path);
-
-            var line = Assert.Single(File.ReadAllLines(path));
-            Assert.Matches(@"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3} capture: aec=on$", line);
-        }
-        finally
-        {
-            Directory.Delete(dir, recursive: true);
-        }
-    }
-
-    [Fact]
     public void Append_RotatesOnceOverCap()
     {
         var dir = Path.Combine(Path.GetTempPath(), "mana-voice-log-" + Guid.NewGuid());
@@ -121,6 +103,24 @@ public class VoiceDebugLogTests
         try
         {
             VoiceDebugLog.Append(new VoiceSegmentLogEntry(), dir);
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void AppendNote_WritesOneTimestampedLine()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "mana-voice-log-" + Guid.NewGuid());
+        var path = Path.Combine(dir, "speech-debug.log");
+        try
+        {
+            VoiceDebugLog.AppendNote("capture: aec=on", path);
+
+            var line = Assert.Single(File.ReadAllLines(path));
+            Assert.Matches(@"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3} capture: aec=on$", line);
         }
         finally
         {
