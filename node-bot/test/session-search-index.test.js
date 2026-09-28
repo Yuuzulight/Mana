@@ -95,13 +95,26 @@ function fixedEmbedder(vector) {
   return async (texts) => texts.map(() => vector);
 }
 
+// The hybrid tests below skip when sqlite-vec can't load, so an install that
+// drops its platform binary (node-bot/.npmrc's old omit=optional did exactly
+// that) would turn them into silent skips. Fail loudly instead wherever
+// sqlite-vec publishes a binary for this platform.
+test("sqlite-vec loads wherever it publishes a platform binary", () => {
+  const index = makeHybridIndex();
+  try {
+    const published = ["darwin-arm64", "darwin-x64", "linux-arm64", "linux-x64", "win32-x64"];
+    if (published.includes(`${process.platform}-${process.arch}`)) {
+      assert.ok(index.vectorEnabled(), "sqlite-vec's platform package is missing -- was it installed with optional deps omitted?");
+    }
+  } finally {
+    index.close();
+  }
+});
+
 test("search finds a semantic match with zero keyword overlap when queryEmbedding is provided", async (t) => {
   const index = makeHybridIndex();
-  // sqlite-vec's platform binary is a genuinely optional dependency (see
-  // package.json/CHANGELOG) -- unavailable in this environment means
-  // vectorEnabled() is false and every hybrid test below degrades to
-  // keyword-only, which is exactly the behavior this skip is confirming
-  // rather than working around.
+  // Unsupported platforms (no sqlite-vec binary) degrade to keyword-only;
+  // the guard test above keeps this skip from hiding a broken install.
   if (!index.vectorEnabled()) {
     t.skip("sqlite-vec extension unavailable in this environment -- keyword-only fallback covered by other tests");
     index.close();
