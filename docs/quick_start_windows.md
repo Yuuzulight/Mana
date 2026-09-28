@@ -57,7 +57,7 @@ Project goal
 4) Install the local TTS services
    - In PowerShell:
      - `cd C:\ManaAI\Mana\tts-service`
-     - `.\start.ps1`
+     - `python -m venv venv`
      - `.\start_kokoro.ps1`
 
    On first run this installs the Python dependencies and downloads the models.

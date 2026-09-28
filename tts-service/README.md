@@ -29,6 +29,7 @@ Start
 -----
 ```powershell
 cd C:\ManaAI\Mana\tts-service
+python -m venv venv
 .\start_kokoro.ps1
 ```
 The first start downloads the ONNX model and voices into `tts-service\kokoro`.
