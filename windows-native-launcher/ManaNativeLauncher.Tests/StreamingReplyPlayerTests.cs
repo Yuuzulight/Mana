@@ -138,6 +138,26 @@ public class StreamingReplyPlayerTests
         Assert.Empty(talkingStates);
     }
 
+    // #681: VoiceLoop's active preset reaches /reply/stream through here.
+    [Fact]
+    public async Task StreamReplyAndPlayAsync_ForwardsPresetIdToTheRequest()
+    {
+        string? body = null;
+        var handler = new FakeHttpMessageHandler(request =>
+        {
+            body = request.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
+            return new HttpResponseMessage(System.Net.HttpStatusCode.OK)
+            {
+                Content = new StringContent("{\"type\":\"final\",\"reply\":\"ok\",\"changed\":false}\n"),
+            };
+        });
+        var player = new StreamingReplyPlayer(new ManaBackendClient(handler), _ => Task.FromResult(true), _ => { });
+
+        await player.StreamReplyAndPlayAsync("hi", presetId: "preset-1");
+
+        Assert.Contains("\"presetId\":\"preset-1\"", body);
+    }
+
     [Fact]
     public async Task StreamReplyAndPlayAsync_ThrowsOnErrorFinalEvent()
     {
