@@ -99,10 +99,10 @@ function extractTerms(text) {
 // Pure builder: same inputs, same prompt. Terms are deduped
 // case-insensitively (first spelling seen wins), ordered by how many sources
 // (facts/turns) they occur in and then alphabetically, and cut to fit
-// MAX_TERMS / MAX_PROMPT_CHARS. #667: a plain capitalized word must occur in
-// at least 2 sources -- on real data every one-off capital ("Ali", "Baba")
-// came from a single garbled voice transcript -- while jargon-shaped terms
-// need only one.
+// MAX_TERMS / MAX_PROMPT_CHARS. #667: a plain capitalized word needs a
+// verified memory fact or at least 2 chat turns -- on real data every one-off
+// capital ("Ali", "Baba") came from a single garbled voice transcript, never
+// from a fact -- while jargon-shaped terms need only one source.
 function buildWhisperPrompt({ facts = [], userTexts = [] } = {}) {
   const usableFacts = facts.filter(isUsableFact);
   const name = userNameFromFacts(usableFacts);
@@ -113,20 +113,24 @@ function buildWhisperPrompt({ facts = [], userTexts = [] } = {}) {
 
   const counts = new Map();
   const termFacts = usableFacts.filter((f) => !NAME_KEY.test(String(f.key || "").trim()));
-  const sources = [...termFacts.map((f) => `${f.key}. ${f.text}`), ...userTexts];
-  for (const text of sources) {
+  const sources = [
+    ...termFacts.map((f) => ({ text: `${f.key}. ${f.text}`, isFact: true })),
+    ...userTexts.map((text) => ({ text, isFact: false })),
+  ];
+  for (const { text, isFact } of sources) {
     const seen = new Set();
     for (const term of extractTerms(text)) {
       const key = term.toLowerCase();
       if (known.has(key) || seen.has(key)) continue;
       seen.add(key);
-      const entry = counts.get(key) || { term, count: 0 };
+      const entry = counts.get(key) || { term, count: 0, inFact: false };
       entry.count += 1;
+      entry.inFact = entry.inFact || isFact;
       counts.set(key, entry);
     }
   }
   const ranked = [...counts.values()]
-    .filter((entry) => entry.count >= 2 || isJargon(entry.term))
+    .filter((entry) => entry.inFact || entry.count >= 2 || isJargon(entry.term))
     .sort((a, b) => b.count - a.count || a.term.localeCompare(b.term))
     .slice(0, MAX_TERMS)
     .map((entry) => entry.term);

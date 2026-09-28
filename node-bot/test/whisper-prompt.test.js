@@ -26,13 +26,14 @@ test("exclamations, days and months are not terms; a dotted name is jargon anywh
   assert.deepEqual(extractTerms("Node.js is fast"), ["Node.js"]);
 });
 
-test("a plain capitalized word needs 2 sources, jargon needs 1 (#667)", () => {
+test("a plain capitalized word needs a verified fact or 2 chat turns, jargon needs 1 (#667)", () => {
   const prompt = buildWhisperPrompt({
-    facts: [fact("editor", "the user codes in Zed with PyTorch")],
-    userTexts: ["only Ali can go there", "Baba Baba Baba", "is Zed open", "ask Kokoro"],
+    facts: [fact("editor", "the user codes in Zed with PyTorch"), fact("sister", "the user's sister is Hana")],
+    userTexts: ["only Ali can go there", "Baba Baba Baba", "is Zed open", "ask Kokoro", "call Ali later"],
   });
-  // Ali/Kokoro: one source each. Baba: one source, however often repeated.
-  assert.match(prompt, /Names and terms: Zed, PyTorch\.$/);
+  // Hana: one fact is enough. Ali: 2 turns. Kokoro: one turn only. Baba: one
+  // turn, however often repeated.
+  assert.match(prompt, /Names and terms: Ali, Zed, Hana, PyTorch\.$/);
 });
 
 test("the prompt keeps the base, adds the user's name and frequent terms", () => {
