@@ -28,7 +28,6 @@ Project goal
      - `$env:WHISPER_BIN = "C:\path\to\whisper-cli.exe"`
      - `$env:WHISPER_MODEL = "C:\path\to\ggml-model.bin"`
      - `$env:WHISPER_LANGUAGE = "en"`
-     - `$env:WHISPER_PROMPT = "Singapore English conversation with an AI assistant named Mana. Wake words include Mana, Manah, Manna, Mannah, Myna, My Na, and wake up."`
      - `$env:LLAMA_BIN = "C:\path\to\llama-cli.exe"`
      - `$env:LLAMA_MODEL = "C:\path\to\model.gguf"`
      - `$env:TTS_PROVIDER = "fish"`
@@ -38,7 +37,7 @@ Project goal
    Notes:
    - `WHISPER_BIN` should point to the Whisper CLI executable you want to use.
    - If `WHISPER_BIN` is unset or wrong, Mana will also try common local paths under `tools\whisper\`.
-   - `WHISPER_PROMPT` helps Whisper understand accents, wake words, and common local phrasing.
+   - `WHISPER_PROMPT` is optional. By default Mana builds Whisper's prompt from its wake words plus your name and frequent names/terms from memory, refreshed every few minutes; setting `WHISPER_PROMPT` replaces that entirely.
    - For Singaporean-accent recognition, `ggml-base.en.bin` or `ggml-small.en.bin` should be more accurate than `ggml-tiny.en.bin`.
    - `$env:WHISPER_MODEL_PROFILE = "small"` (`tiny`/`base`/`small`/`medium`/`turbo`) picks a size tier by name instead of a raw file path, if you keep more than one model under `tools\whisper\models`. Smaller is faster but less accurate; `turbo` (`large-v3-turbo`) trades some of that speed back for closer-to-large accuracy. Falls back to whatever's actually present if the requested tier's file isn't there.
    - `LLAMA_BIN` should point to the Llama CLI executable you want to use.
