@@ -23,6 +23,15 @@ internal sealed class VoiceSegmentLogEntry
     public string Whisper { get; set; } = "skipped";
     public string? Transcript { get; set; }
     public bool? WakeMatch { get; set; }
+    // #619: the end-of-turn silence that closed this segment and why
+    // ("800ms/complete", "2200ms/stale", ...), the live partials behind it
+    // (count, last round trip, last text), and whether a merge superseded
+    // this segment (its audio was re-sent as the start of the next line's).
+    public string? Eot { get; init; }
+    public int Partials { get; init; }
+    public long? PartialMs { get; init; }
+    public string? Partial { get; init; }
+    public bool Merged { get; set; }
 
     internal const int MaxTranscriptChars = 300;
 
@@ -53,16 +62,33 @@ internal sealed class VoiceSegmentLogEntry
         {
             line += matched ? " wake=yes" : " wake=no";
         }
+        if (Eot is not null)
+        {
+            line += $" eot={Eot} partials={Partials}";
+            if (PartialMs is long partialMs)
+            {
+                line += string.Format(inv, "/{0}ms", partialMs);
+            }
+        }
+        if (Merged)
+        {
+            line += " merged=yes";
+        }
+        if (Partial is not null)
+        {
+            line += $" partial=\"{Clean(Partial)}\"";
+        }
         if (Transcript is not null)
         {
-            var text = Transcript.Replace('\r', ' ').Replace('\n', ' ').Replace('"', '\'');
-            if (text.Length > MaxTranscriptChars)
-            {
-                text = text[..MaxTranscriptChars] + "...";
-            }
-            line += $" transcript=\"{text}\"";
+            line += $" transcript=\"{Clean(Transcript)}\"";
         }
         return line;
+    }
+
+    private static string Clean(string text)
+    {
+        text = text.Replace('\r', ' ').Replace('\n', ' ').Replace('"', '\'');
+        return text.Length > MaxTranscriptChars ? text[..MaxTranscriptChars] + "..." : text;
     }
 
     // Floored at -120 so digital silence reads as a number, not -Infinity.

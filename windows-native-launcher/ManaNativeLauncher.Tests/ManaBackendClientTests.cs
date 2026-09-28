@@ -1018,6 +1018,37 @@ public class ManaBackendClientTests
     }
 
     [Fact]
+    public async Task TranscribePartialAsync_PostsToTranscribePartial()
+    {
+        string? path = null;
+        var handler = new FakeHttpMessageHandler(request =>
+        {
+            path = request.RequestUri!.AbsolutePath;
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("{\"transcript\":\"hello ma\"}", Encoding.UTF8, "application/json"),
+            };
+        });
+        var client = new ManaBackendClient(handler);
+
+        var transcript = await client.TranscribePartialAsync(new byte[] { 1, 2, 3 }, CancellationToken.None);
+
+        Assert.Equal("/transcribe-partial", path);
+        Assert.Equal("hello ma", transcript);
+    }
+
+    [Theory]
+    [InlineData(null, true)]
+    [InlineData("http://127.0.0.1:5005", true)]
+    [InlineData("http://localhost:5005", true)]
+    [InlineData("http://192.168.1.20:5005", false)]
+    [InlineData("https://mana.example.com", false)]
+    public void IsLocalBackend_OnlyForLoopback(string? baseUrl, bool expected)
+    {
+        Assert.Equal(expected, new ManaBackendClient(new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)), baseUrl).IsLocalBackend);
+    }
+
+    [Fact]
     public async Task TranscribeAsync_ThrowsOnNonSuccessStatus()
     {
         var handler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.InternalServerError));

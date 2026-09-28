@@ -117,6 +117,11 @@ internal sealed class ChatView : Control, IChatLog
 
     public void ReplyFinished() => RunOnUiThread(() => ReplyEnded?.Invoke());
 
+    // #619: SessionListForm shows it in the avatar card's status line.
+    public event Action<string?>? HearingChanged;
+
+    public void ShowHearing(string? text) => RunOnUiThread(() => HearingChanged?.Invoke(text));
+
     // Puts buttons under Mana's latest message (replacing any it had).
     public void AttachActions(IReadOnlyList<ChatAction> actions)
     {

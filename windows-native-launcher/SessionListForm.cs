@@ -42,6 +42,7 @@ internal sealed class SessionListForm : Form
     private readonly Button avatarZoomButton = new();
     private readonly Label avatarNameLabel = new();
     private readonly Label avatarStatusLabel = new();
+    private string? hearingText; // #619: live partial transcript, null when none
     private readonly Font avatarNameFont;
     private readonly Font avatarStatusFont;
     private readonly Font toolPanelTitleFont;
@@ -182,6 +183,7 @@ internal sealed class SessionListForm : Form
 
         avatarStatusLabel.Dock = DockStyle.Top;
         avatarStatusLabel.Height = 16;
+        avatarStatusLabel.AutoEllipsis = true; // #619: "Hearing: ..." can be long
         avatarStatusLabel.Padding = new Padding(14, 0, 0, 0); // room for the status dot painted by OnPaintAvatarVisual's sibling below
         avatarStatusLabel.ForeColor = DarkTheme.Muted;
         avatarStatusFont = new Font(avatarStatusLabel.Font.FontFamily, 8.5f);
@@ -315,6 +317,14 @@ internal sealed class SessionListForm : Form
         chatArea.Controls.Add(chatLog);
         chatArea.Controls.Add(BuildMessageBox());
         chatLog.ReplyEnded += () => _ = OfferPendingEditsAsync(chatLog);
+        // #619: the live partial transcript takes over the status line while
+        // the user is talking. chatLog is a child control, so it can't
+        // outlive this subscription.
+        chatLog.HearingChanged += text =>
+        {
+            hearingText = text;
+            RefreshAvatarCard(avatarOverlay.CurrentState);
+        };
 
         // Same collapse toggle as Claude's own UI, and the design
         // reference's own #sidebarToggleBtn -- a persistent top strip
@@ -698,7 +708,9 @@ internal sealed class SessionListForm : Form
         // Sentence case ("Idle", not "idle" or "IDLE") to match the
         // reference mock-up's own status text exactly.
         var text = state.ToString();
-        avatarStatusLabel.Text = text.Length > 0 ? char.ToUpperInvariant(text[0]) + text[1..].ToLowerInvariant() : text;
+        avatarStatusLabel.Text = hearingText is not null
+            ? $"Hearing: \"{hearingText}\""
+            : text.Length > 0 ? char.ToUpperInvariant(text[0]) + text[1..].ToLowerInvariant() : text;
         avatarStatusLabel.Invalidate(); // repaints the status dot too -- see OnPaintAvatarStatusDot
         avatarVisual.Invalidate();
     }

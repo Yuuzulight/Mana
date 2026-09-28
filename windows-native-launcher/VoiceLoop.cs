@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
+using System.Threading;
 using System.Threading.Tasks;
 using Mana.NativeLauncher.Live2D;
 using NAudio.CoreAudioApi;
@@ -66,7 +68,8 @@ internal sealed class VoiceLoop : IDisposable
 
     // Guards frameBuffer, segmentSamples, hasHeardSpeechInSegment,
     // segmentElapsedMs, segmentSpeechMs, msSinceLastSpeech, mode, bargeInHeldMs,
-    // heldSentences, heldStackDepth, manualStopPending, and the vad instance itself (SileroVadRunner mutates its own internal state
+    // heldSentences, heldStackDepth, manualStopPending, the #619 partial-
+    // transcript and merge-window fields below, and the vad instance itself (SileroVadRunner mutates its own internal state
     // per ProcessFrame/Reset call, so it isn't thread-safe either).
     // OnDataAvailable fires on NAudio's WASAPI capture thread; every other
     // entry point that touches this state (ReturnToIdle, OnTalkingStateChanged,
@@ -112,6 +115,37 @@ internal sealed class VoiceLoop : IDisposable
     // cleared by ReturnToIdle and by a typed/vision/clip takeover.
     private bool manualStopPending;
     private int heldStackDepth;
+
+    // #619: adaptive end-of-turn. While a segment records, /transcribe-partial
+    // is polled (RecordingSegmenter.ShouldRequestPartial decides when) and
+    // the latest result picks the silence that closes the turn -- but only
+    // while it's fresh, i.e. no speech arrived after its snapshot
+    // (lastPartialSpeechMs == segmentSpeechMs); a stale "complete-sounding"
+    // partial must never cut off words it didn't hear. segmentId tags each
+    // request so a result landing after its segment closed is dropped.
+    // partialInFlight is deliberately NOT per-segment: requests never
+    // overlap, even across a segment boundary.
+    private readonly bool partialsEnabled;
+    private long segmentId;
+    private bool partialInFlight;
+    private bool partialsOffThisSegment;
+    private long msSinceLastPartialRequest;
+    private long partialRequestedAtSpeechMs;
+    private string? lastPartial;
+    private long lastPartialSpeechMs;
+    private long partialSilenceBufferMs = RecordingSegmenter.DefaultSilenceBufferMs;
+    private string partialEotReason = "default";
+    private int partialCount;
+    private long? lastPartialMs;
+
+    // A partial slower than this can't help end a turn early, so polling
+    // stops for the rest of that segment (Whisper is busy enough already).
+    private const long SlowPartialMs = 2500;
+    private static readonly TimeSpan PartialTimeout = TimeSpan.FromSeconds(5);
+
+    // #619 addendum: the ~1s after a turn closes, when resumed speech is
+    // merged into it instead of becoming a second turn -- see TurnMergeWindow.
+    private readonly TurnMergeWindow mergeWindow = new();
 
     // #522: ScreenContextReader owns its own min-interval/keyword-gate
     // caching internally, so this is just held and called, same as
@@ -176,6 +210,10 @@ internal sealed class VoiceLoop : IDisposable
         // false rather than left nullable so that call site doesn't need
         // its own separate null-check for this one.
         this.isGamingModeActive = isGamingModeActive ?? (() => false);
+        // #619: MANA_PARTIAL_TRANSCRIPTS=0 is the kill switch (fixed 2.2s
+        // end-of-turn, no extra Whisper calls); a remote backend never polls.
+        partialsEnabled = backendClient.IsLocalBackend
+            && Environment.GetEnvironmentVariable("MANA_PARTIAL_TRANSCRIPTS") != "0";
         streamingReplyPlayer = new StreamingReplyPlayer(
             backendClient,
             audioPlayer.PlayAsync,
@@ -277,16 +315,14 @@ internal sealed class VoiceLoop : IDisposable
             // turn in flight (Processing/Speaking) is left to finish and
             // return to Idle on its own.
             awake = false;
+            // #619: no merging a closed turn with the next listening
+            // session's audio; its turn task still claims and finishes.
+            mergeWindow.Close();
             if (mode is ListenMode.Idle or ListenMode.CapturingInterruption)
             {
                 mode = ListenMode.Idle;
                 frameBuffer.Clear();
-                segmentSamples.Clear();
-                hasHeardSpeechInSegment = false;
-                segmentElapsedMs = 0;
-                segmentSpeechMs = 0;
-                msSinceLastSpeech = 0;
-                vad.Reset();
+                ResetSegment();
             }
         }
     }
@@ -335,7 +371,7 @@ internal sealed class VoiceLoop : IDisposable
     // Caller must already hold stateLock.
     private void ProcessBufferedFrames()
     {
-        if (mode == ListenMode.Processing)
+        if (mode == ListenMode.Processing && !mergeWindow.IsOpen)
         {
             // Turn in flight (network calls before playback starts) --
             // nothing to do with buffered audio yet.
@@ -355,6 +391,23 @@ internal sealed class VoiceLoop : IDisposable
                 if (ProcessSpeakingFrame(frame, isSpeech))
                 {
                     return; // barge-in triggered; mode is now CapturingInterruption
+                }
+                continue;
+            }
+
+            if (mode == ListenMode.Processing)
+            {
+                // #619: a turn just closed and its merge window is open --
+                // keep the gap audio, and if the user resumes talking, make
+                // the closed turn's audio the start of a new segment.
+                if (!mergeWindow.IsOpen)
+                {
+                    return; // window over; back to discarding (see above)
+                }
+                AppendSegmentFrame(frame, isSpeech);
+                if (mergeWindow.OnFrame(isSpeech, FrameMs))
+                {
+                    MergeIntoClosedTurn();
                 }
                 continue;
             }
@@ -402,22 +455,40 @@ internal sealed class VoiceLoop : IDisposable
     private void StartCapturingInterruption()
     {
         mode = ListenMode.CapturingInterruption;
+        ResetSegment(heardSpeech: true); // see ProcessBufferedFrames' comment on why
+        bargeInHeldMs = 0;
+    }
+
+    // Caller must already hold stateLock. Starts a fresh segment: every
+    // path that drops or hands off the current one comes through here.
+    private void ResetSegment(bool heardSpeech = false)
+    {
         segmentSamples.Clear();
+        hasHeardSpeechInSegment = heardSpeech;
         segmentElapsedMs = 0;
         segmentSpeechMs = 0;
         msSinceLastSpeech = 0;
-        hasHeardSpeechInSegment = true; // see ProcessBufferedFrames' comment on why
-        bargeInHeldMs = 0;
         vad.Reset();
+
+        // #619: a new segment gets new partials (segmentId drops any still
+        // in flight for this one) and clears the "Hearing:" line.
+        segmentId++;
+        if (lastPartial is not null)
+        {
+            chatLog?.ShowHearing(null);
+        }
+        lastPartial = null;
+        lastPartialSpeechMs = 0;
+        partialRequestedAtSpeechMs = 0;
+        msSinceLastPartialRequest = 0;
+        partialsOffThisSegment = false;
+        partialCount = 0;
+        lastPartialMs = null;
     }
 
-    // Caller must already hold stateLock. Shared by Idle and
-    // CapturingInterruption (see ProcessBufferedFrames). Returns true if
-    // the segment closed and HandleSegmentClosedAsync was dispatched.
-    private bool ProcessSegmentFrame(float[] frame, bool isSpeech)
+    // Caller must already hold stateLock.
+    private void AppendSegmentFrame(float[] frame, bool isSpeech)
     {
-        var wasCapturingInterruption = mode == ListenMode.CapturingInterruption;
-
         segmentElapsedMs += FrameMs;
 
         foreach (var sample in frame)
@@ -436,11 +507,115 @@ internal sealed class VoiceLoop : IDisposable
         {
             msSinceLastSpeech += FrameMs;
         }
+    }
+
+    // Caller must already hold stateLock. #619: the user resumed talking
+    // inside the merge window -- the closed turn's task will now fail its
+    // Claim and drop its result, and its audio (plus the gap since) becomes
+    // the start of the segment now recording, in whichever mode it was
+    // recorded in (an interruption stays an interruption, so the hold it
+    // would have consumed is consumed by the merged turn instead).
+    private void MergeIntoClosedTurn()
+    {
+        segmentSamples.InsertRange(0, mergeWindow.ClosedSamples);
+        segmentSpeechMs += mergeWindow.ClosedSpeechMs;
+        segmentElapsedMs = segmentSamples.Count * 1000L / SileroVadRunner.SampleRate;
+        hasHeardSpeechInSegment = true;
+        mode = mergeWindow.ClosedWasInterruption ? ListenMode.CapturingInterruption : ListenMode.Idle;
+        mergeWindow.Close();
+    }
+
+    // Caller must already hold stateLock. #619: whether live partials run
+    // for this segment. Asleep with the #342 acoustic pre-filter gating,
+    // they'd send every overheard sentence to Whisper -- exactly what the
+    // pre-filter is there to avoid -- so they wait until Mana is awake.
+    private bool PartialsActive =>
+        partialsEnabled && !partialsOffThisSegment && (awake || wakeWordClassifier?.Threshold is null);
+
+    // Caller must already hold stateLock.
+    private void MaybeRequestPartial()
+    {
+        if (!PartialsActive || !RecordingSegmenter.ShouldRequestPartial(
+                partialInFlight,
+                segmentSpeechMs,
+                segmentSpeechMs - partialRequestedAtSpeechMs,
+                msSinceLastSpeech,
+                msSinceLastPartialRequest))
+        {
+            return;
+        }
+        partialInFlight = true;
+        partialRequestedAtSpeechMs = segmentSpeechMs;
+        msSinceLastPartialRequest = 0;
+        var snapshot = segmentSamples.ToArray();
+        var id = segmentId;
+        var speechMs = segmentSpeechMs;
+        // Off the capture thread: WAV encoding and the HTTP call both.
+        _ = Task.Run(() => RequestPartialAsync(snapshot, id, speechMs));
+    }
+
+    private async Task RequestPartialAsync(short[] samples, long id, long speechMs)
+    {
+        var stopwatch = Stopwatch.StartNew();
+        string? text = null;
+        try
+        {
+            using var timeout = new CancellationTokenSource(PartialTimeout);
+            text = (await backendClient.TranscribePartialAsync(BuildWavBytes(samples), timeout.Token)).Trim();
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"VoiceLoop: partial transcript failed. {ex.Message}");
+        }
+
+        lock (stateLock)
+        {
+            partialInFlight = false;
+            if (id != segmentId)
+            {
+                return; // its segment already closed or was dropped
+            }
+            partialCount++;
+            lastPartialMs = stopwatch.ElapsedMilliseconds;
+            if (lastPartialMs > SlowPartialMs)
+            {
+                partialsOffThisSegment = true;
+            }
+            if (string.IsNullOrEmpty(text))
+            {
+                return;
+            }
+            lastPartial = text;
+            lastPartialSpeechMs = speechMs;
+            (partialSilenceBufferMs, partialEotReason) = RecordingSegmenter.SilenceBufferMsForTranscript(text);
+            chatLog?.ShowHearing(text);
+        }
+    }
+
+    // Caller must already hold stateLock. Shared by Idle and
+    // CapturingInterruption (see ProcessBufferedFrames). Returns true if
+    // the segment closed and HandleSegmentClosedAsync was dispatched.
+    private bool ProcessSegmentFrame(float[] frame, bool isSpeech)
+    {
+        var wasCapturingInterruption = mode == ListenMode.CapturingInterruption;
+
+        AppendSegmentFrame(frame, isSpeech);
+        if (hasHeardSpeechInSegment)
+        {
+            msSinceLastPartialRequest += FrameMs;
+        }
+
+        // #619: a fresh partial picks the end-of-turn silence (shorter when
+        // it sounds complete, longer when it trails off); none, or a stale
+        // one, keeps the old fixed 2.2s.
+        var partialFresh = lastPartial is not null && lastPartialSpeechMs == segmentSpeechMs;
+        var silenceBufferMs = partialFresh ? partialSilenceBufferMs : RecordingSegmenter.DefaultSilenceBufferMs;
 
         var stopReason = RecordingSegmenter.ShouldStopRecording(
             hasHeardSpeechInSegment,
             segmentElapsedMs,
-            msSinceLastSpeech);
+            msSinceLastSpeech,
+            silenceBufferMs: silenceBufferMs);
 
         // #682: a segment that hit the 20s cap while the user was still
         // talking is transcribed like any other (windows-launcher's
@@ -450,10 +625,15 @@ internal sealed class VoiceLoop : IDisposable
         if (stopReason == RecordingStopReason.SilenceAfterSpeech
             || (stopReason == RecordingStopReason.MaxDuration && hasHeardSpeechInSegment))
         {
+            var eotReason = partialFresh ? partialEotReason
+                : !PartialsActive ? "off"
+                : lastPartial is null ? "nopartial"
+                : "stale";
             mode = ListenMode.Processing;
             _ = HandleSegmentClosedAsync(
                 wasCapturingInterruption,
-                stopReason == RecordingStopReason.MaxDuration ? "max" : "silence");
+                stopReason == RecordingStopReason.MaxDuration ? "max" : "silence",
+                $"{silenceBufferMs}ms/{eotReason}");
             return true;
         }
 
@@ -464,39 +644,76 @@ internal sealed class VoiceLoop : IDisposable
             // specifically, Mana has already stopped talking by this
             // point -- there's nothing to resume even if this times out,
             // so just keep waiting for the user.
-            segmentSamples.Clear();
-            hasHeardSpeechInSegment = wasCapturingInterruption;
-            segmentElapsedMs = 0;
-            segmentSpeechMs = 0;
-            msSinceLastSpeech = 0;
-            vad.Reset();
+            ResetSegment(heardSpeech: wasCapturingInterruption);
+            return false;
         }
 
+        MaybeRequestPartial();
         return false;
     }
 
-    private async Task HandleSegmentClosedAsync(bool wasInterruption, string closeReason)
+    private async Task HandleSegmentClosedAsync(bool wasInterruption, string closeReason, string eot)
     {
         // Only ever invoked synchronously from ProcessSegmentFrame, which
         // is only ever invoked under stateLock -- so this runs under the
         // caller's lock too (C#'s lock is reentrant on the owning thread).
-        byte[] wavBytes;
         short[] samples;
         VoiceSegmentLogEntry logEntry;
+        long? turnId;
         lock (stateLock)
         {
-            wavBytes = BuildWavBytes(segmentSamples);
             samples = segmentSamples.ToArray();
-            logEntry = new VoiceSegmentLogEntry { Samples = samples, SpeechMs = segmentSpeechMs, Close = closeReason };
-            segmentSamples.Clear();
-            hasHeardSpeechInSegment = false;
-            segmentElapsedMs = 0;
-            segmentSpeechMs = 0;
-            msSinceLastSpeech = 0;
-            vad.Reset();
+            logEntry = new VoiceSegmentLogEntry
+            {
+                Samples = samples,
+                SpeechMs = segmentSpeechMs,
+                Close = closeReason,
+                Eot = eot,
+                Partials = partialCount,
+                PartialMs = lastPartialMs,
+                Partial = lastPartial,
+            };
+            // #619: a segment cut off by the 20s cap gets no merge window --
+            // merged onto, it would only hit the cap again on the next frame.
+            turnId = closeReason == "max"
+                ? null
+                : mergeWindow.Open(samples, segmentSpeechMs, wasInterruption, Environment.TickCount64);
+            ResetSegment();
         }
 
-        await ProcessTurnAsync(wavBytes, samples, wasInterruption, logEntry);
+        await ProcessTurnAsync(samples, wasInterruption, logEntry, turnId);
+    }
+
+    // #619: the turn task's commit point -- waits out the rest of the merge
+    // window, then claims the turn. False means the user resumed talking and
+    // a merge superseded this turn. Nothing before this point may touch
+    // shared state (mode, awake, the hold, the chat), so a superseded turn
+    // can just return.
+    private async Task<bool> ClaimTurnAsync(long? turnId)
+    {
+        if (turnId is not long id)
+        {
+            return true;
+        }
+        long remainingMs;
+        lock (stateLock)
+        {
+            remainingMs = mergeWindow.RemainingMs(Environment.TickCount64);
+        }
+        if (remainingMs > 0)
+        {
+            await Task.Delay(TimeSpan.FromMilliseconds(remainingMs));
+        }
+        lock (stateLock)
+        {
+            if (!mergeWindow.Claim(id))
+            {
+                return false;
+            }
+            // Drop the gap audio the window kept in case of a merge.
+            ResetSegment();
+            return true;
+        }
     }
 
     // #523: entry point for the global "look at my screen" hotkey.
@@ -687,28 +904,8 @@ internal sealed class VoiceLoop : IDisposable
     // earlier turn already passed the wake-word gate below), so no
     // special-casing is needed between the two callers except classifying
     // the interruption itself.
-    private async Task ProcessTurnAsync(byte[] wavBytes, short[] samples, bool wasInterruption, VoiceSegmentLogEntry logEntry)
+    private async Task ProcessTurnAsync(short[] samples, bool wasInterruption, VoiceSegmentLogEntry logEntry, long? turnId)
     {
-        // #513: consumed here, before transcription can fail/come back
-        // empty -- a false barge-in trigger (cough, TV noise, a word that
-        // didn't actually mean anything) must still resume whatever
-        // reply it cut off rather than silently dropping it. Whatever
-        // happens from here on, this interruption consumes the hold: it's
-        // either resumed on an early exit below, resumed after dispatch,
-        // re-held for a new_question, or discarded (nested).
-        List<string>? held = null;
-        var nested = false;
-        if (wasInterruption)
-        {
-            lock (stateLock)
-            {
-                held = heldSentences;
-                nested = held is not null && heldStackDepth >= 1;
-                heldSentences = null;
-                heldStackDepth = 0;
-            }
-        }
-
         // #342: acoustic pre-filter, before the Whisper call this whole
         // project exists to reduce. Only gates the not-yet-awake path --
         // wasInterruption segments only ever happen once `awake` is
@@ -727,13 +924,13 @@ internal sealed class VoiceLoop : IDisposable
         // to escape this fire-and-forget task and leave mode stuck in
         // Processing. Every early exit below logs one speech-debug.log
         // line first (Skip), and the success path logs before dispatch.
+        //
+        // #619: the pre-filter and Whisper run while the merge window is
+        // still open -- they only fill in logEntry/transcript, nothing
+        // shared -- and ClaimTurnAsync below decides whether this turn
+        // still exists before anything acts on the result.
         logEntry.Awake = awake;
-        async Task Skip()
-        {
-            VoiceDebugLog.Append(logEntry);
-            await ReturnToIdleOrResumeHeldAsync(held, nested);
-        }
-
+        var prefilterRejected = false;
         if (!awake && wakeWordClassifier is not null)
         {
             logEntry.Threshold = wakeWordClassifier.Threshold;
@@ -748,35 +945,70 @@ internal sealed class VoiceLoop : IDisposable
             }
 
             // False whenever either side is null (off, or the classifier threw).
-            if (logEntry.Score < logEntry.Threshold)
+            prefilterRejected = logEntry.Score < logEntry.Threshold;
+        }
+
+        var transcript = "";
+        if (!prefilterRejected)
+        {
+            try
             {
-                await Skip();
-                return;
+                transcript = await backendClient.TranscribeAsync(BuildWavBytes(samples));
+                logEntry.Whisper = string.IsNullOrWhiteSpace(transcript) ? "empty" : "ok";
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"VoiceLoop: transcription failed, resuming listening. {ex.Message}");
+                logEntry.Whisper = "failed";
+            }
+        }
+        if (logEntry.Whisper == "ok")
+        {
+            logEntry.Transcript = transcript;
+        }
+
+        if (!await ClaimTurnAsync(turnId))
+        {
+            // Superseded: the merged segment re-sends this audio.
+            logEntry.Merged = true;
+            VoiceDebugLog.Append(logEntry);
+            return;
+        }
+
+        // #513: consumed here, before any early exit -- a false barge-in
+        // trigger (cough, TV noise, a word that didn't actually mean
+        // anything) must still resume whatever reply it cut off rather
+        // than silently dropping it. Whatever happens from here on, this
+        // interruption consumes the hold: it's either resumed on an early
+        // exit below, resumed after dispatch, re-held for a new_question,
+        // or discarded (nested). (#619: taken only after the claim, so a
+        // merged interruption leaves it for the merged turn.)
+        List<string>? held = null;
+        var nested = false;
+        if (wasInterruption)
+        {
+            lock (stateLock)
+            {
+                held = heldSentences;
+                nested = held is not null && heldStackDepth >= 1;
+                heldSentences = null;
+                heldStackDepth = 0;
             }
         }
 
-        string transcript;
-        try
+        async Task Skip()
         {
-            transcript = await backendClient.TranscribeAsync(wavBytes);
+            VoiceDebugLog.Append(logEntry);
+            await ReturnToIdleOrResumeHeldAsync(held, nested);
         }
-        catch (Exception ex)
+
+        // skipped (pre-filter), failed, or empty.
+        if (logEntry.Whisper != "ok")
         {
-            Console.WriteLine($"VoiceLoop: transcription failed, resuming listening. {ex.Message}");
-            logEntry.Whisper = "failed";
             await Skip();
             return;
         }
 
-        if (string.IsNullOrWhiteSpace(transcript))
-        {
-            logEntry.Whisper = "empty";
-            await Skip();
-            return;
-        }
-
-        logEntry.Whisper = "ok";
-        logEntry.Transcript = transcript;
         string commandText;
         if (!awake)
         {
@@ -1205,12 +1437,7 @@ internal sealed class VoiceLoop : IDisposable
             // partial segment that window may have started, so it can't
             // linger as a stale prefix on the next real utterance.
             mode = ListenMode.Processing;
-            segmentSamples.Clear();
-            hasHeardSpeechInSegment = false;
-            segmentElapsedMs = 0;
-            segmentSpeechMs = 0;
-            msSinceLastSpeech = 0;
-            vad.Reset();
+            ResetSegment();
         }
 
         bool interrupted;
@@ -1318,12 +1545,12 @@ internal sealed class VoiceLoop : IDisposable
         }
     }
 
-    private static byte[] BuildWavBytes(List<short> samples)
+    private static byte[] BuildWavBytes(short[] samples)
     {
         using var stream = new MemoryStream();
         var writer = new WaveFileWriter(stream, new WaveFormat(SileroVadRunner.SampleRate, 16, 1));
-        var bytes = new byte[samples.Count * 2];
-        Buffer.BlockCopy(samples.ToArray(), 0, bytes, 0, bytes.Length);
+        var bytes = new byte[samples.Length * 2];
+        Buffer.BlockCopy(samples, 0, bytes, 0, bytes.Length);
         writer.Write(bytes, 0, bytes.Length);
         writer.Flush();
         var result = stream.ToArray();
