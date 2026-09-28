@@ -14,6 +14,7 @@ const {
 } = require("./local-llama-runtime");
 const { SESSION_GOAL_FINISH_TOOL_NAME } = require("./session-goal-tool-source");
 const { detectGpuVramUsageMb } = require("../model-management");
+const { readActivePointer, settleActiveBuild } = require("../llama-builds");
 
 // Persistent llama-server runtime.
 //
@@ -49,6 +50,9 @@ function createLlamaServerRuntime(options = {}) {
     lastStartFailureAt: 0,
     loadedAt: null,
     lastSwapMs: null,
+    // #693: the binary the latest start attempt used, so a pointer switch
+    // is only confirmed/rolled back by a start that actually ran it.
+    lastStartBin: null,
   };
 
   // Debounce: back-to-back requests for different profiles (e.g. one coding
@@ -130,6 +134,14 @@ function createLlamaServerRuntime(options = {}) {
 
   function findLlamaServerBin() {
     const candidates = [];
+    // #693: a build switched in by an update (tools/llama/active.json)
+    // comes first; with no pointer, or an unreadable one, the order below
+    // is exactly what it was before. path.win32 for the same reason as
+    // LLAMA_BIN below: the pointer always names a Windows folder.
+    const pointer = readActivePointer(toolsDir, fs);
+    if (pointer) {
+      candidates.push(path.win32.join(pointer.active, "llama-server.exe"));
+    }
     if (env.LLAMA_SERVER_BIN) {
       candidates.push(env.LLAMA_SERVER_BIN);
     }
@@ -572,7 +584,9 @@ function createLlamaServerRuntime(options = {}) {
   }
 
   async function startServer(model, mmproj = null, profile = null) {
+    state.lastStartBin = null;
     const bin = findLlamaServerBin();
+    state.lastStartBin = bin;
     const port = serverPort();
 
     // If something already answers on the target port (e.g. a server left
@@ -735,6 +749,11 @@ function createLlamaServerRuntime(options = {}) {
       await state.starting;
       state.lastStartFailureAt = 0;
       state.loadedAt = nowMs();
+      // #693: only a process this runtime spawned proves the new build
+      // works -- an adopted server may still be the old one.
+      if (state.child) {
+        settleBuild(null);
+      }
       if (isRunning) {
         state.lastSwapMs = state.loadedAt - swapStartedAt;
         logPerf("llama-server-swap", swapStartedAt);
@@ -749,10 +768,35 @@ function createLlamaServerRuntime(options = {}) {
       }
     } catch (e) {
       state.lastStartFailureAt = nowMs();
+      // #693: an update-installed build that won't start is swapped back
+      // to the previous one; skip the retry cooldown so the next reply
+      // starts on it straight away instead of falling back to llama-cli.
+      if (settleBuild(e)) {
+        state.lastStartFailureAt = 0;
+      }
       throw e;
     } finally {
       state.starting = null;
     }
+  }
+
+  // Returns true when the pointer was rolled back. Pointer I/O problems are
+  // logged, never allowed to change how a start succeeded or failed.
+  function settleBuild(startError) {
+    if (!state.lastStartBin) return false;
+    try {
+      const next = settleActiveBuild(toolsDir, fs, path.win32.dirname(state.lastStartBin), startError);
+      if (next && startError) {
+        console.warn(
+          `llama-server failed to start on updated build ${next.lastRollback.from}; ` +
+            `rolled back to ${next.lastRollback.to}. Reason: ${next.lastRollback.reason}`,
+        );
+        return true;
+      }
+    } catch (pointerError) {
+      console.warn(`llama-server: could not update tools/llama/active.json: ${pointerError.message}`);
+    }
+    return false;
   }
 
   async function ensureServer(profile) {

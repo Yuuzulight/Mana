@@ -194,6 +194,7 @@ const {
 } = require("../plugins/browser-automation/browser-automation-tool-source");
 const { createEditorIntegrations } = require("./zed-integration");
 const { createModelManagement } = require("./model-management");
+const { createLlamaBuildManager } = require("./llama-builds");
 const { createModelSettingsStore } = require("./model-settings-store");
 const whisperDiscovery = require("./whisper-discovery");
 const {
@@ -439,6 +440,13 @@ const llamaServerRuntime = createLlamaServerRuntime({
   nowMs,
   logPerf,
   modelSettingsStore,
+});
+
+// #693: llama.cpp build updates/rollback (Settings > Model). Resolves the
+// active build through the runtime so both agree on what "current" means.
+const llamaBuilds = createLlamaBuildManager({
+  findLlamaServerBin: llamaServerRuntime.findLlamaServerBin,
+  stopServer: llamaServerRuntime.stop,
 });
 
 // Unified local reply helper: prefer the persistent llama-server (model loads
@@ -2259,6 +2267,8 @@ function registerRoutes(app, upload, deps = {}) {
   registerModelRoutes(app, {
     modelManagement,
     readGgufMetadata: deps.readGgufMetadata || readGgufMetadata,
+    llamaBuilds: deps.llamaBuilds || llamaBuilds,
+    checkAdminAuth,
   });
 
   // Issue #418: transient, human-facing "what's browser automation doing

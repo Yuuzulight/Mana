@@ -2247,3 +2247,109 @@ test("buildServerArgs combines n-gram and draft-model speculative decoding when 
   const args = runtime.buildServerArgs("C:\\models\\mana.gguf", 8090);
   assert.equal(args[args.indexOf("--spec-type") + 1], "ngram-simple,draft-simple");
 });
+
+// #693: in-memory fs covering what the tools/llama/active.json pointer
+// code touches, on top of the existsSync the runtime already uses.
+const path = require("node:path");
+const POINTER_TOOLS_DIR = "C:\\tools\\llama";
+const POINTER_FILE = path.join(POINTER_TOOLS_DIR, "active.json");
+
+function makePointerFs(files) {
+  return {
+    existsSync: (target) => target in files,
+    readFileSync: (target) => {
+      if (!(target in files)) throw new Error(`ENOENT: ${target}`);
+      return files[target];
+    },
+    writeFileSync: (target, data) => {
+      files[target] = String(data);
+    },
+    renameSync: (from, to) => {
+      files[to] = files[from];
+      delete files[from];
+    },
+  };
+}
+
+function pointerFiles(pointer) {
+  return {
+    "C:\\llama\\llama-server.exe": "",
+    "C:\\llama-new\\llama-server.exe": "",
+    "C:\\models\\mana.gguf": "",
+    ...(pointer === undefined ? {} : { [POINTER_FILE]: typeof pointer === "string" ? pointer : JSON.stringify(pointer) }),
+  };
+}
+
+test("findLlamaServerBin prefers the update pointer, and is unchanged with a missing or corrupt one", () => {
+  const make = (files) =>
+    createLlamaServerRuntime({
+      env: makeFakeEnv(),
+      fs: makePointerFs(files),
+      toolsDir: POINTER_TOOLS_DIR,
+      registerExitHandlers: false,
+    });
+
+  assert.equal(make(pointerFiles({ active: "C:\\llama-new" })).findLlamaServerBin(), "C:\\llama-new\\llama-server.exe");
+  assert.equal(make(pointerFiles()).findLlamaServerBin(), "C:\\llama\\llama-server.exe");
+  assert.equal(make(pointerFiles("{not json")).findLlamaServerBin(), "C:\\llama\\llama-server.exe");
+  // A pointer at a folder that no longer has llama-server.exe falls through too.
+  assert.equal(make(pointerFiles({ active: "C:\\gone" })).findLlamaServerBin(), "C:\\llama\\llama-server.exe");
+});
+
+function makePointerRuntime(files, failingBin) {
+  const spawnCalls = [];
+  let serverUp = false;
+  const runtime = createLlamaServerRuntime({
+    env: makeFakeEnv(),
+    fs: makePointerFs(files),
+    toolsDir: POINTER_TOOLS_DIR,
+    fetch: async (url) => {
+      if (String(url).endsWith("/health")) return { ok: serverUp };
+      return { ok: true, json: async () => ({ choices: [{ message: { content: "ok" } }] }) };
+    },
+    spawn: (command) => {
+      spawnCalls.push(command);
+      if (command === failingBin) throw new Error("new build crashed");
+      serverUp = true;
+      return makeFakeChild();
+    },
+    sleep: async () => {},
+    registerExitHandlers: false,
+  });
+  return { runtime, spawnCalls };
+}
+
+test("an update-installed build that fails to start is rolled back and the previous build starts on the next reply", async () => {
+  const files = pointerFiles({
+    active: "C:\\llama-new",
+    previous: "C:\\llama",
+    pendingVerification: true,
+    installed: ["C:\\llama-new"],
+  });
+  const { runtime, spawnCalls } = makePointerRuntime(files, "C:\\llama-new\\llama-server.exe");
+
+  await assert.rejects(() => runtime.runLocalAssistantReply("hello", 64, "default"), /new build crashed/);
+  const pointer = JSON.parse(files[POINTER_FILE]);
+  assert.equal(pointer.active, "C:\\llama");
+  assert.equal(pointer.previous, "C:\\llama-new");
+  assert.equal(pointer.pendingVerification, false);
+  assert.equal(pointer.lastRollback.from, "C:\\llama-new");
+  assert.match(pointer.lastRollback.reason, /new build crashed/);
+
+  // No retry cooldown after a rollback: the next reply starts the old build.
+  assert.equal(await runtime.runLocalAssistantReply("again", 64, "default"), "ok");
+  assert.deepEqual(spawnCalls, ["C:\\llama-new\\llama-server.exe", "C:\\llama\\llama-server.exe"]);
+});
+
+test("a clean start on an update-installed build confirms it; a failure on a confirmed build rolls nothing back", async () => {
+  const files = pointerFiles({ active: "C:\\llama-new", previous: "C:\\llama", pendingVerification: true, installed: [] });
+  const { runtime } = makePointerRuntime(files, null);
+  await runtime.runLocalAssistantReply("hello", 64, "default");
+  assert.equal(JSON.parse(files[POINTER_FILE]).pendingVerification, false);
+
+  const confirmed = pointerFiles({ active: "C:\\llama-new", previous: "C:\\llama", installed: [] });
+  const before = confirmed[POINTER_FILE];
+  const failing = makePointerRuntime(confirmed, "C:\\llama-new\\llama-server.exe");
+  await assert.rejects(() => failing.runtime.runLocalAssistantReply("hello", 64, "default"), /new build crashed/);
+  assert.equal(confirmed[POINTER_FILE], before);
+});

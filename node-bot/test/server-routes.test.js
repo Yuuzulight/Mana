@@ -495,6 +495,44 @@ test("brain-provider test route rejects non-loopback forwarded clients without c
   });
 });
 
+test("llama-build routes are admin-gated and local-only, and map a missing digest to 409", async () => {
+  // #693: check/update make outbound requests and update runs what it
+  // downloaded, so these get both checkAdminAuth and the this-PC check.
+  const updateCalls = [];
+  const llamaBuilds = {
+    getStatus: () => ({ current: { build: 100 } }),
+    startUpdate: async (options) => {
+      updateCalls.push(options);
+      if (!options.allowMissingDigest) {
+        throw Object.assign(new Error("no digest"), { code: "digest_missing" });
+      }
+      return { started: true, tag: "b200" };
+    },
+  };
+  const app = createApp({ llamaBuilds, env: { MANA_ADMIN_SECRET: "topsecret" } });
+  const auth = { Authorization: "Bearer topsecret" };
+
+  await withServer(app, async (baseUrl) => {
+    const unauthorized = await postJson(`${baseUrl}/models/llama-build/update`, {});
+    assert.equal(unauthorized.response.status, 401);
+
+    const remote = await postJson(`${baseUrl}/models/llama-build/update`, {}, { ...auth, "X-Forwarded-For": "192.168.1.50" });
+    assert.equal(remote.response.status, 403);
+    assert.equal(updateCalls.length, 0);
+
+    const refused = await postJson(`${baseUrl}/models/llama-build/update`, {}, auth);
+    assert.equal(refused.response.status, 409);
+    assert.deepEqual(refused.payload, { error: "no digest", code: "digest_missing" });
+
+    const confirmed = await postJson(`${baseUrl}/models/llama-build/update`, { allowMissingDigest: true }, auth);
+    assert.equal(confirmed.response.status, 202);
+    assert.deepEqual(updateCalls, [{ allowMissingDigest: false }, { allowMissingDigest: true }]);
+
+    const status = await fetch(`${baseUrl}/models/llama-build`, { headers: auth });
+    assert.deepEqual(await status.json(), { current: { build: 100 } });
+  });
+});
+
 test("reply uses active model profile when request omits modelProfile", async () => {
   let receivedProfile = null;
   const app = createApp({

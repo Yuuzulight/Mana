@@ -56,6 +56,13 @@ internal sealed class SettingsPanel : UserControl
     private readonly TextBox visionModelPathBox = new() { Width = 300 };
     private readonly TextBox visionMmprojPathBox = new() { Width = 300 };
     private System.Collections.Generic.IReadOnlyList<ManaBrainProviderPreset> brainPresets = System.Array.Empty<ManaBrainProviderPreset>();
+    // #693: llama.cpp build group. Update stays disabled until a check
+    // finds a newer build -- nothing downloads without that click.
+    private readonly Label llamaBuildLabel = new() { AutoSize = true, MaximumSize = new Size(560, 0) };
+    private readonly Button llamaUpdateButton = new() { Text = "Update", Enabled = false };
+    private readonly Button llamaRollbackButton = new() { Text = "Roll back", Enabled = false };
+    private bool llamaUpdateAvailable;
+    private string? llamaCheckNote;
 
     public SettingsPanel(ManaBackendClient backendClient, BackendLogBuffer backendLog, Func<string?>? getCurrentSessionId = null)
     {
@@ -100,6 +107,7 @@ internal sealed class SettingsPanel : UserControl
         await RefreshPerfTabAsync();
         await RefreshPresetsAsync();
         await RefreshModelTabAsync();
+        await RefreshLlamaBuildAsync();
         await RefreshMobileDevicesAsync();
         await RefreshAccountsAsync();
         await RefreshMcpServersAsync();
@@ -1021,6 +1029,7 @@ internal sealed class SettingsPanel : UserControl
         stack.Controls.Add(BuildLocalModelGroup());
         stack.Controls.Add(BuildBrainProviderGroup());
         stack.Controls.Add(BuildVisionModelGroup());
+        stack.Controls.Add(BuildLlamaBuildGroup());
         scroll.Controls.Add(stack);
         return new TabPage("Model") { Controls = { scroll } };
     }
@@ -1380,6 +1389,179 @@ internal sealed class SettingsPanel : UserControl
         {
             await RefreshModelTabAsync();
         }
+    }
+
+    private GroupBox BuildLlamaBuildGroup()
+    {
+        var group = NewGroup("llama.cpp Build");
+        llamaBuildLabel.ForeColor = DarkTheme.Muted;
+        var checkButton = new Button { Text = "Check for update", AutoSize = true };
+        llamaUpdateButton.AutoSize = true;
+        llamaRollbackButton.AutoSize = true;
+        DarkTheme.ApplyButton(checkButton);
+        DarkTheme.ApplyButton(llamaUpdateButton);
+        DarkTheme.ApplyButton(llamaRollbackButton);
+        checkButton.Click += async (_, _) => await CheckLlamaBuildAsync();
+        llamaUpdateButton.Click += async (_, _) => await UpdateLlamaBuildAsync(allowMissingDigest: false);
+        llamaRollbackButton.Click += async (_, _) => await RollBackLlamaBuildAsync();
+
+        var buttonRow = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.LeftToRight, BackColor = DarkTheme.Background };
+        buttonRow.Controls.Add(checkButton);
+        buttonRow.Controls.Add(llamaUpdateButton);
+        buttonRow.Controls.Add(llamaRollbackButton);
+        var stack = new FlowLayoutPanel { FlowDirection = FlowDirection.TopDown, AutoSize = true, WrapContents = false, BackColor = DarkTheme.Background };
+        stack.Controls.Add(llamaBuildLabel);
+        stack.Controls.Add(buttonRow);
+        group.Controls.Add(stack);
+        return group;
+    }
+
+    // #693: the group's text -- current build, then the one most relevant
+    // thing that happened: an update in progress, a failed update, an
+    // automatic rollback, or a finished update.
+    internal static string DescribeLlamaBuild(ManaLlamaBuildStatus status)
+    {
+        var current = status.CurrentBuild is int build
+            ? $"Current build: b{build} ({status.CurrentVariant})"
+            : $"Current build: unknown. {status.CurrentError}";
+        var detail = status.JobState switch
+        {
+            "running" => $"Updating to {status.JobTag}: {status.JobStep}...",
+            "failed" => $"Update to {status.JobTag} failed: {status.JobError}",
+            _ when status.LastRollbackFrom is not null =>
+                $"Rolled back automatically: {System.IO.Path.GetFileName(status.LastRollbackFrom)} failed to start ({status.LastRollbackReason}).",
+            "done" => $"Updated to {status.JobTag}. llama-server restarts on it with the next reply.",
+            _ => null,
+        };
+        return detail is null ? current : current + Environment.NewLine + detail;
+    }
+
+    // Returns null when the status couldn't be loaded (or the panel closed).
+    private async Task<ManaLlamaBuildStatus?> RefreshLlamaBuildAsync()
+    {
+        ManaLlamaBuildStatus status;
+        try
+        {
+            status = await backendClient.GetLlamaBuildStatusAsync();
+        }
+        catch (Exception ex)
+        {
+            if (!IsDisposed)
+            {
+                llamaBuildLabel.Text = $"Failed to load: {ex.Message}";
+            }
+            return null;
+        }
+        if (IsDisposed)
+        {
+            return null;
+        }
+        var running = status.JobState == "running";
+        llamaBuildLabel.Text = DescribeLlamaBuild(status) + (llamaCheckNote is null ? "" : Environment.NewLine + llamaCheckNote);
+        llamaUpdateButton.Enabled = llamaUpdateAvailable && !running;
+        llamaRollbackButton.Enabled = status.Previous is not null && !running;
+        return status;
+    }
+
+    private async Task CheckLlamaBuildAsync()
+    {
+        llamaBuildLabel.Text = "Checking GitHub for a newer llama.cpp build...";
+        ManaLlamaBuildCheck check;
+        try
+        {
+            check = await backendClient.CheckLlamaBuildUpdateAsync();
+        }
+        catch (Exception ex)
+        {
+            check = new ManaLlamaBuildCheck { Error = ex.Message };
+        }
+        if (IsDisposed)
+        {
+            return;
+        }
+        llamaUpdateAvailable = check.UpdateAvailable;
+        llamaCheckNote = check.Error is not null
+            ? $"Check failed: {check.Error}"
+            : check.UpdateAvailable
+                ? $"{check.LatestTag} is available." + (check.DigestAvailable ? "" : " It has no published checksum.")
+                : $"Up to date (newest is {check.LatestTag}).";
+        await RefreshLlamaBuildAsync();
+    }
+
+    private async Task UpdateLlamaBuildAsync(bool allowMissingDigest)
+    {
+        // Against a double click while the request is in flight; restored
+        // below whenever this doesn't end up starting an update.
+        llamaUpdateButton.Enabled = false;
+        ManaLlamaBuildActionResult result;
+        try
+        {
+            result = await backendClient.StartLlamaBuildUpdateAsync(allowMissingDigest);
+        }
+        catch (Exception ex)
+        {
+            result = new ManaLlamaBuildActionResult { Error = ex.Message };
+        }
+        if (IsDisposed)
+        {
+            return;
+        }
+        if (!result.Ok)
+        {
+            llamaUpdateButton.Enabled = llamaUpdateAvailable;
+            if (result.Code == "digest_missing" && !allowMissingDigest)
+            {
+                var answer = MessageBox.Show(this, $"{result.Error}\n\nInstall it anyway, without checksum verification?", "llama.cpp update", MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2);
+                if (answer == DialogResult.Yes && !IsDisposed)
+                {
+                    await UpdateLlamaBuildAsync(allowMissingDigest: true);
+                }
+                return;
+            }
+            MessageBox.Show(this, $"Update failed: {result.Error}", "llama.cpp update", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            return;
+        }
+        llamaUpdateAvailable = false;
+        llamaCheckNote = null;
+        // The download/install runs in node-bot's background; poll its job
+        // until it settles.
+        ManaLlamaBuildStatus? status;
+        do
+        {
+            status = await RefreshLlamaBuildAsync();
+            if (status?.JobState != "running")
+            {
+                break;
+            }
+            await Task.Delay(1500);
+        } while (!IsDisposed);
+    }
+
+    private async Task RollBackLlamaBuildAsync()
+    {
+        var answer = MessageBox.Show(this, "Switch back to the previous llama.cpp build? llama-server restarts on it with the next reply.", "llama.cpp", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
+        if (answer != DialogResult.Yes)
+        {
+            return;
+        }
+        ManaLlamaBuildActionResult result;
+        try
+        {
+            result = await backendClient.RollBackLlamaBuildAsync();
+        }
+        catch (Exception ex)
+        {
+            result = new ManaLlamaBuildActionResult { Error = ex.Message };
+        }
+        if (IsDisposed)
+        {
+            return;
+        }
+        if (!result.Ok)
+        {
+            MessageBox.Show(this, $"Roll back failed: {result.Error}", "llama.cpp", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+        await RefreshLlamaBuildAsync();
     }
 
     private async Task RefreshModelTabAsync()
