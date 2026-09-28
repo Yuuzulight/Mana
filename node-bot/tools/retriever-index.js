@@ -344,6 +344,21 @@ async function incrementalScan(options = {}) {
   };
 }
 
+// The GPU embedder (ai/embedder-runtime.js), wired in by server.js. When it
+// is configured (MANA_EMBEDDER_MODEL) it serves every embedding here and the
+// RETRIEVER_EMBEDDER_URL service / OpenAI fallback are not used, so vectors
+// from two different models never end up side by side.
+let gpuEmbedder = null;
+function useEmbedder(embedder) {
+  gpuEmbedder = embedder || null;
+}
+
+// Names the model behind computeEmbeddings() for callers that cache vectors:
+// "" for the RETRIEVER_EMBEDDER_URL service (what older caches hold).
+function embeddingModelId() {
+  return gpuEmbedder ? gpuEmbedder.modelId() : "";
+}
+
 async function computeEmbedding(text) {
   const res = await computeEmbeddings([String(text || "").slice(0, 8192)]);
   return Array.isArray(res) && res.length ? res[0] : null;
@@ -360,6 +375,9 @@ async function computeEmbeddings(inputs) {
   // NODE_TEST_CONTEXT fallback here breaks that deliberate test technique.
   if (!USE_EMBEDDINGS) return inputs.map(() => null);
   if (process.env.NODE_ENV === "test") return inputs.map(() => null);
+  if (gpuEmbedder?.isEnabled()) {
+    return gpuEmbedder.embed(inputs.map((t) => String(t || "").slice(0, 8192)));
+  }
 
   const localUrl = (
     process.env.RETRIEVER_EMBEDDER_URL || "http://127.0.0.1:9001"
@@ -617,6 +635,8 @@ module.exports = {
   INDEX_PATH,
   computeEmbedding,
   computeEmbeddings,
+  embeddingModelId,
+  useEmbedder,
   cosineSim,
   saveIndex,
 };

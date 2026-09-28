@@ -243,6 +243,7 @@ const {
 } = require("./ai/local-llama-runtime");
 const { createLlamaServerRuntime } = require("./ai/llama-server-runtime");
 const { createReranker } = require("./ai/reranker-runtime");
+const { createEmbedder } = require("./ai/embedder-runtime");
 const { streamedMatchesFinal } = require("./utils/reply-stream-diff");
 const { createRestartController } = require("./admin-restart");
 const ffxivMarketPlugin = require("../plugins/ffxiv-market");
@@ -484,14 +485,26 @@ const reranker = createReranker({
   findServerBin: llamaServerRuntime.findLlamaServerBin,
 });
 
+// Optional GPU text embedder (llama.cpp) for semantic memory search -- off
+// unless MANA_EMBEDDER_MODEL names a local .gguf file, in which case it
+// replaces the RETRIEVER_EMBEDDER_URL (local_embedder.py) service.
+const embedder = createEmbedder({
+  env: process.env,
+  findServerBin: llamaServerRuntime.findLlamaServerBin,
+  supportsLoadMode: llamaServerRuntime.supportsLoadMode,
+});
+require("./tools/retriever-index").useEmbedder(embedder);
+
 // #693: llama.cpp build updates/rollback (Settings > Model). Resolves the
 // active build through the runtime so both agree on what "current" means.
 const llamaBuilds = createLlamaBuildManager({
   findLlamaServerBin: llamaServerRuntime.findLlamaServerBin,
-  // The reranker runs the same build, so a switch restarts it too.
+  // The reranker and embedder run the same build, so a switch restarts
+  // them too.
   stopServer: () => {
     llamaServerRuntime.stop();
     reranker.stop();
+    embedder.stop();
   },
 });
 
@@ -600,6 +613,7 @@ const acpMemoryStore = createAcpMemoryStore({
   // default (USE_EMBEDDINGS env var), so hybrid session search is a pure
   // opt-in enhancement over the FTS5 keyword search above.
   computeEmbeddingsFn: require("./tools/retriever-index").computeEmbeddings,
+  embeddingModelIdFn: require("./tools/retriever-index").embeddingModelId,
   rerankFn: reranker.rerank,
   // tokenEstimator will call the local Python retriever service /tokenize endpoint when available
   tokenEstimator: async (text) => {
