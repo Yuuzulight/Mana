@@ -7,6 +7,7 @@ const {
   collectFilesRecursively,
   findPreferredLlamaModel,
   getKnownLlamaModelProfiles,
+  LLAMA_MODEL_PROFILES,
 } = require("./local-ai");
 const {
   DEFAULT_SYSTEM_PROMPT,
@@ -47,7 +48,8 @@ function createLlamaServerRuntime(options = {}) {
     starting: null,
     idleTimer: null,
     exitHandlerRegistered: false,
-    lastStartFailureAt: 0,
+    // #666: model -> { at, count } of its consecutive failed starts.
+    startFailures: new Map(),
     loadedAt: null,
     lastSwapMs: null,
     // #693: the binary the latest start attempt used, so a pointer switch
@@ -675,6 +677,14 @@ function createLlamaServerRuntime(options = {}) {
     );
   }
 
+  // #666: cooldown after the Nth consecutive failed start of one model.
+  function startCooldownMs(failureCount) {
+    return Math.min(
+      Number(env.LLAMA_SERVER_RETRY_COOLDOWN_MS || 300000),
+      5000 * 3 ** (failureCount - 1),
+    );
+  }
+
   // profile only affects which flags a *new* start gets (see PROFILE_TUNING
   // above) -- if the same model+mmproj is already running and healthy, that
   // process keeps whatever flags it started with, even if called again
@@ -683,23 +693,29 @@ function createLlamaServerRuntime(options = {}) {
   // profile's own primary model is distinct from the others'), and forcing
   // a restart on a profile-label-only change would undo the "don't restart
   // for no reason" debounce/adoption logic below for a cosmetic difference.
-  async function ensureServerConfig(model, mmproj = null, profile = null) {
+  // onWait (#666) is called whenever this call is about to wait on a
+  // (re)start, so a chat turn can tell the user it's waking up.
+  async function ensureServerConfig(model, mmproj = null, profile = null, onWait = null) {
     // After a failed start (missing binary, port conflict, out of memory),
     // don't re-pay the startup wait on every reply; let the llama-cli
-    // fallback serve until the cooldown expires.
-    const retryCooldownMs = Number(
-      env.LLAMA_SERVER_RETRY_COOLDOWN_MS || 300000,
-    );
-    if (
-      state.lastStartFailureAt &&
-      nowMs() - state.lastStartFailureAt < retryCooldownMs
-    ) {
-      throw new Error(
-        "llama-server recently failed to start; retry cooldown active",
-      );
+    // fallback serve until the cooldown expires. #666: per model, and it
+    // backs off -- 5s after the first failure, x3 per repeat, capped at
+    // LLAMA_SERVER_RETRY_COOLDOWN_MS -- so a transient failure no longer
+    // locks the model out for five minutes.
+    const failure = state.startFailures.get(model);
+    if (failure) {
+      const retryAfterMs = failure.at + startCooldownMs(failure.count) - nowMs();
+      if (retryAfterMs > 0) {
+        const error = new Error(
+          "llama-server recently failed to start; retry cooldown active",
+        );
+        error.retryAfterMs = retryAfterMs;
+        throw error;
+      }
     }
 
     if (state.starting) {
+      if (onWait) onWait();
       try {
         await state.starting;
       } catch (e) {
@@ -734,6 +750,7 @@ function createLlamaServerRuntime(options = {}) {
 
     assertVramForSwap(model, mmproj);
 
+    if (onWait) onWait();
     const swapStartedAt = nowMs();
     if (isRunning) {
       if (state.model && state.model !== model) {
@@ -747,7 +764,7 @@ function createLlamaServerRuntime(options = {}) {
     state.starting = startServer(model, mmproj, profile);
     try {
       await state.starting;
-      state.lastStartFailureAt = 0;
+      state.startFailures.delete(model);
       state.loadedAt = nowMs();
       // #693: only a process this runtime spawned proves the new build
       // works -- an adopted server may still be the old one.
@@ -767,12 +784,15 @@ function createLlamaServerRuntime(options = {}) {
         console.log(`llama-server: swap completed in ${state.lastSwapMs}ms${vramNote}`);
       }
     } catch (e) {
-      state.lastStartFailureAt = nowMs();
+      const count = (state.startFailures.get(model)?.count || 0) + 1;
+      state.startFailures.set(model, { at: nowMs(), count });
+      e.retryAfterMs = startCooldownMs(count);
       // #693: an update-installed build that won't start is swapped back
       // to the previous one; skip the retry cooldown so the next reply
       // starts on it straight away instead of falling back to llama-cli.
       if (settleBuild(e)) {
-        state.lastStartFailureAt = 0;
+        state.startFailures.clear();
+        e.retryAfterMs = 0;
       }
       throw e;
     } finally {
@@ -801,6 +821,45 @@ function createLlamaServerRuntime(options = {}) {
 
   async function ensureServer(profile) {
     return ensureServerConfig(findLlamaModel(profile), null, profile);
+  }
+
+  // #666: a chat turn waits out a llama-server (re)start or a brief outage
+  // instead of failing. Retries back off (2s, 6s, 18s, or the cooldown if
+  // longer) while they fit in LLAMA_SERVER_TURN_WAIT_MS (20s), then the
+  // profile's fallbackProfile gets one try. onWait fires at most once, the
+  // first time the turn actually has to wait. Resolves to the profile that
+  // is ready; rejects with the primary's error when nothing came up.
+  async function waitForServer(profile, onWait = null) {
+    let waited = false;
+    const notify = () => {
+      if (waited) return;
+      waited = true;
+      if (onWait) onWait();
+    };
+    const deadline = nowMs() + Number(env.LLAMA_SERVER_TURN_WAIT_MS || 20000);
+    const model = findLlamaModel(profile);
+    for (let delayMs = 2000; ; delayMs *= 3) {
+      try {
+        await ensureServerConfig(model, null, profile, notify);
+        return profile;
+      } catch (e) {
+        const waitMs = Math.max(delayMs, e.retryAfterMs || 0);
+        if (nowMs() + waitMs <= deadline) {
+          notify();
+          await sleep(waitMs);
+          continue;
+        }
+        const fallback = LLAMA_MODEL_PROFILES[profile]?.fallbackProfile;
+        const fallbackModel = fallback ? findLlamaModel(fallback) : null;
+        if (!fallbackModel || fallbackModel === model) throw e;
+        try {
+          await ensureServerConfig(fallbackModel, null, fallback, notify);
+        } catch {
+          throw e;
+        }
+        return fallback;
+      }
+    }
   }
 
   // Issue #282: splices caller-supplied memory entries into the message
@@ -1502,6 +1561,7 @@ function createLlamaServerRuntime(options = {}) {
     proxyChatCompletion,
     streamLocalAssistantReply,
     runBestOfNReply,
+    waitForServer,
     runLocalAssistantReply,
     runToolAwareReply,
     runVisionReply,

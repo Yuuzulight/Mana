@@ -3,8 +3,12 @@ const path = require("node:path");
 
 const DEFAULT_LLAMA_MODEL = "Qwen/Qwen2.5-0.5B-Instruct-GGUF:Q4_K_M";
 const LLAMA_MODEL_PROFILES = {
+  // #666: fallbackProfile is what a chat turn answers with when this
+  // profile's model won't come up (see llama-server-runtime's
+  // waitForServer). Optional; skipped when it resolves to the same file.
   default: {
     label: "Default chat",
+    fallbackProfile: "fast",
     names: [
       "Qwen3-4B-Q4_K_M.gguf",
       "qwen2.5-1.5b-instruct-q4_k_m.gguf",
@@ -22,6 +26,7 @@ const LLAMA_MODEL_PROFILES = {
   },
   quality: {
     label: "Quality fallback",
+    fallbackProfile: "default",
     names: [
       "Qwen3.5-9B-heretic-v2-Q4_K_M.gguf",
       "Qwen3.5-9B-Q4_K_M.gguf",
@@ -33,6 +38,7 @@ const LLAMA_MODEL_PROFILES = {
   },
   coding: {
     label: "Coding",
+    fallbackProfile: "default",
     names: [
       // Custom imatrix calibrated on Mana's own codebase + the user's other
       // real projects (Python/TS-React/SQL/C++) plus real git diffs -- see

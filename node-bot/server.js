@@ -3553,7 +3553,8 @@ function registerRoutes(app, upload, deps = {}) {
     onSentence = null,
   ) {
     const prompt = buildScreenAwarePrompt(transcript, screenText, marketText);
-    const normalizedModelProfile = selectLlamaModelProfileForPrompt(
+    // let: #666's wait below may switch this turn to the fallback profile.
+    let normalizedModelProfile = selectLlamaModelProfileForPrompt(
       transcript,
       modelProfile,
     );
@@ -4404,6 +4405,32 @@ function registerRoutes(app, upload, deps = {}) {
         }
       }
       return replyMaybeWithTools(promptText);
+    }
+
+    // #666: wait out a llama-server (re)start instead of failing the turn,
+    // telling a streaming client once, as a spoken sentence. Not in
+    // streamedSentences, so it never counts against streamedMatchesFinal.
+    // If nothing comes up, the paths below fall back to llama-cli as before.
+    // Gated on the runtime's own isEnabled (false under the test runner), not
+    // the deps.isLlamaServerEnabled override: a test that only stubs that
+    // override must never reach a real llama-server start from here.
+    if (
+      activeLlamaServerRuntime.waitForServer &&
+      activeLlamaServerRuntime.isEnabled()
+    ) {
+      try {
+        const readyProfile = await activeLlamaServerRuntime.waitForServer(
+          normalizedModelProfile,
+          onSentence ? () => onSentence("Give me a second, I'm waking up.") : null,
+        );
+        if (readyProfile !== normalizedModelProfile) {
+          console.warn(`Mana: ${normalizedModelProfile} model unavailable, answering with ${readyProfile}`);
+          if (onSentence) onSentence("My main model isn't answering, so I'm using my backup.");
+          normalizedModelProfile = readyProfile;
+        }
+      } catch (e) {
+        console.warn("llama-server still unavailable after waiting:", e && e.message ? e.message : e);
+      }
     }
 
     // Fall back to local llama
