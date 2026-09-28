@@ -2,6 +2,7 @@ const defaultFs = require("node:fs");
 const path = require("node:path");
 const { spawn: defaultSpawn } = require("node:child_process");
 const { createOnDemandProcess } = require("../utils/on-demand-process");
+const { GAMING_IDLE_MS } = require("../utils/gaming-watch");
 
 // Issue #674: an optional CPU-only reranker for memory recall -- a second,
 // small llama-server started on demand with --reranking on its own port,
@@ -34,6 +35,10 @@ function createReranker(options = {}) {
   const findServerBin = options.findServerBin;
   const threads = Number(options.threads || env.LLAMA_THREADS || 4);
   const sleep = options.sleep || ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
+  // server.js's cached watched-game status (utils/gaming-watch.js): CPU
+  // only, but its RAM is the game's too, so it follows the embedder's
+  // gaming rules (#760).
+  const gaming = options.gaming || (() => false);
 
   // Spawn/reuse/idle-stop/cooldown live in utils/on-demand-process.js.
   const server = createOnDemandProcess({
@@ -61,7 +66,10 @@ function createReranker(options = {}) {
         },
       };
     },
-    idleMs: () => Number(env.MANA_RERANKER_IDLE_MS === undefined ? 3600000 : env.MANA_RERANKER_IDLE_MS),
+    idleMs: () =>
+      gaming()
+        ? GAMING_IDLE_MS
+        : Number(env.MANA_RERANKER_IDLE_MS === undefined ? 3600000 : env.MANA_RERANKER_IDLE_MS),
     startupTimeoutMs: STARTUP_TIMEOUT_MS,
     spawn,
     fetch: fetchImpl,
@@ -151,9 +159,9 @@ function createReranker(options = {}) {
 
   // Starts the server ahead of use (backend startup, the start of a user
   // turn): its ~3.5 s cold start is longer than rerank()'s budget. Never
-  // throws; concurrent calls share one start.
+  // throws; concurrent calls share one start. Not while gaming.
   function warm() {
-    if (isEnabled()) server.ensure().then(server.touch, () => {});
+    if (isEnabled() && !gaming()) server.ensure().then(server.touch, () => {});
   }
 
   return { rerank, warm, isEnabled, stop: server.stop };

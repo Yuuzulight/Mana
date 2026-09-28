@@ -8,6 +8,7 @@ const path = require("node:path");
 const test = require("node:test");
 
 const { createEmbedder, QUERY_PROMPT } = require("../ai/embedder-runtime");
+const { createGamingWatch, GAMING_IDLE_MS } = require("../utils/gaming-watch");
 
 function tempModel(name = "embed.gguf") {
   const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "mana-embedder-")), name);
@@ -15,17 +16,29 @@ function tempModel(name = "embed.gguf") {
   return file;
 }
 
-// A fake llama-server: healthy once spawned, answering /v1/embeddings with
-// one [index, length] vector per input, in reverse order.
+// A fake llama-server: healthy once spawned (until killed), answering
+// /v1/embeddings with one [index, length] vector per input, in reverse order.
 function fakeServer({ response = null } = {}) {
   const calls = { spawn: [], embed: [] };
+  const children = [];
   let up = false;
   return {
     calls,
+    children,
     spawn: (bin, args, opts) => {
       calls.spawn.push({ bin, args, opts });
       up = true;
-      return { stderr: { on: () => {} }, on: () => {}, kill: () => {} };
+      const child = {
+        killed: false,
+        stderr: { on: () => {} },
+        on: () => {},
+        kill() {
+          this.killed = true;
+          up = false;
+        },
+      };
+      children.push(child);
+      return child;
     },
     fetch: async (url, init) => {
       if (url.endsWith("/health")) return { ok: up };
@@ -38,7 +51,7 @@ function fakeServer({ response = null } = {}) {
   };
 }
 
-function makeEmbedder(server, env = {}, supportsLoadMode = () => true) {
+function makeEmbedder(server, env = {}, supportsLoadMode = () => true, gaming = undefined) {
   return createEmbedder({
     env,
     spawn: server.spawn,
@@ -46,17 +59,18 @@ function makeEmbedder(server, env = {}, supportsLoadMode = () => true) {
     findServerBin: () => "C:\\llama\\llama-server.exe",
     supportsLoadMode,
     sleep: async () => {},
+    gaming,
   });
 }
 
 function quietly(fn) {
-  return async () => {
+  return async (t) => {
     const warn = console.warn;
     const log = console.log;
     console.warn = () => {};
     console.log = () => {};
     try {
-      await fn();
+      await fn(t);
     } finally {
       console.warn = warn;
       console.log = log;
@@ -177,4 +191,68 @@ test("warm() starts the server ahead of the first embed, once, and does nothing 
   makeEmbedder(off, {}).warm();
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(off.calls.spawn.length, 0);
+}));
+
+// #760: a game starting stops the GPU embedder straight away.
+test("a watched game starting stops a running embedder, once per game; a failed check keeps the last answer", quietly(async () => {
+  const server = fakeServer();
+  let running = false;
+  let fail = false;
+  let starts = 0;
+  const watch = createGamingWatch({
+    check: async () => {
+      if (fail) throw new Error("tasklist failed");
+      return running;
+    },
+    onGameStart: () => {
+      starts += 1;
+      embedder.stop();
+    },
+  });
+  const embedder = makeEmbedder(server, { MANA_EMBEDDER_MODEL: tempModel(), MANA_EMBEDDER_IDLE_MS: "0" }, undefined, watch.isGaming);
+  await embedder.embed(["a"]);
+  assert.equal(await watch.poll(), false);
+  assert.equal(server.children[0].killed, false);
+
+  running = true;
+  assert.equal(await watch.poll(), true);
+  assert.equal(server.children[0].killed, true);
+  await watch.poll();
+  fail = true;
+  assert.equal(await watch.poll(), true);
+  assert.equal(starts, 1);
+
+  fail = false;
+  running = false;
+  assert.equal(await watch.poll(), false);
+  running = true;
+  await watch.poll();
+  assert.equal(starts, 2);
+}));
+
+test("warm() does nothing while gaming", quietly(async () => {
+  const server = fakeServer();
+  makeEmbedder(server, { MANA_EMBEDDER_MODEL: tempModel() }, undefined, () => true).warm();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(server.calls.spawn.length, 0);
+}));
+
+test("an embedder used while gaming stops GAMING_IDLE_MS after; the normal idle is back after the game", quietly(async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const server = fakeServer();
+  let gaming = true;
+  const embedder = makeEmbedder(server, { MANA_EMBEDDER_MODEL: tempModel() }, undefined, () => gaming);
+  assert.deepEqual(await embedder.embed(["a"]), [[0, 1]]);
+  t.mock.timers.tick(GAMING_IDLE_MS - 1);
+  assert.equal(server.children[0].killed, false);
+  t.mock.timers.tick(1);
+  assert.equal(server.children[0].killed, true);
+
+  gaming = false;
+  await embedder.embed(["a"]);
+  assert.equal(server.children.length, 2);
+  t.mock.timers.tick(GAMING_IDLE_MS);
+  assert.equal(server.children[1].killed, false);
+  t.mock.timers.tick(3600000 - GAMING_IDLE_MS);
+  assert.equal(server.children[1].killed, true);
 }));

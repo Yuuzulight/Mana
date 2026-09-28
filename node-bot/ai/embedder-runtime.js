@@ -2,6 +2,7 @@ const defaultFs = require("node:fs");
 const path = require("node:path");
 const { spawn: defaultSpawn } = require("node:child_process");
 const { createOnDemandProcess } = require("../utils/on-demand-process");
+const { GAMING_IDLE_MS } = require("../utils/gaming-watch");
 
 // Text embeddings for semantic memory search on the GPU: a small
 // llama-server with --embedding, started on first use and stopped after an
@@ -65,6 +66,8 @@ function createEmbedder(options = {}) {
   const findServerBin = options.findServerBin;
   const supportsLoadMode = options.supportsLoadMode || (() => true);
   const sleep = options.sleep || ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
+  // server.js's cached watched-game status (utils/gaming-watch.js).
+  const gaming = options.gaming || (() => false);
 
   const server = createOnDemandProcess({
     name: "Embedding llama-server",
@@ -91,7 +94,10 @@ function createEmbedder(options = {}) {
         options: { cwd: path.win32.dirname(bin) },
       };
     },
-    idleMs: () => Number(env.MANA_EMBEDDER_IDLE_MS === undefined ? 3600000 : env.MANA_EMBEDDER_IDLE_MS),
+    idleMs: () =>
+      gaming()
+        ? GAMING_IDLE_MS
+        : Number(env.MANA_EMBEDDER_IDLE_MS === undefined ? 3600000 : env.MANA_EMBEDDER_IDLE_MS),
     startupTimeoutMs: STARTUP_TIMEOUT_MS,
     spawn,
     fetch: fetchImpl,
@@ -165,9 +171,9 @@ function createEmbedder(options = {}) {
 
   // Starts the server ahead of use (backend startup, the start of a user
   // turn), so the recall that follows doesn't wait out the cold start.
-  // Never throws; concurrent calls share one start.
+  // Never throws; concurrent calls share one start. Not while gaming.
   function warm() {
-    if (isEnabled()) server.ensure().then(server.touch, () => {});
+    if (isEnabled() && !gaming()) server.ensure().then(server.touch, () => {});
   }
 
   return { embed, warm, isEnabled, modelId, stop: server.stop };

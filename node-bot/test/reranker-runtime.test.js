@@ -7,6 +7,7 @@ const path = require("node:path");
 const test = require("node:test");
 
 const { createReranker } = require("../ai/reranker-runtime");
+const { GAMING_IDLE_MS } = require("../utils/gaming-watch");
 
 function tempModel(name = "reranker.gguf") {
   const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "mana-reranker-")), name);
@@ -58,9 +59,10 @@ function fakeServer({ score = () => 0, rerankResponse = null } = {}) {
   };
 }
 
-function makeReranker(server, env = {}) {
+function makeReranker(server, env = {}, gaming = undefined) {
   return createReranker({
     env,
+    gaming,
     spawn: server.spawn,
     fetch: server.fetch,
     findServerBin: () => "C:\\llama\\llama-server.exe",
@@ -69,13 +71,13 @@ function makeReranker(server, env = {}) {
 }
 
 function quietly(fn) {
-  return async () => {
+  return async (t) => {
     const warn = console.warn;
     const log = console.log;
     console.warn = () => {};
     console.log = () => {};
     try {
-      await fn();
+      await fn(t);
     } finally {
       console.warn = warn;
       console.log = log;
@@ -235,4 +237,20 @@ test("warm() starts the server ahead of the first rerank, once, and does nothing
   makeReranker(off, {}).warm();
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(off.calls.spawn.length, 0);
+}));
+
+// #760: RAM is the game's too -- no warm, and a short idle, while gaming.
+test("while gaming the reranker is not warmed, and one used stops GAMING_IDLE_MS after", quietly(async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const server = fakeServer();
+  const reranker = makeReranker(server, { MANA_RERANKER_MODEL: tempModel() }, () => true);
+  reranker.warm();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(server.calls.spawn.length, 0);
+
+  await reranker.rerank("q", ["a", "b"]);
+  t.mock.timers.tick(GAMING_IDLE_MS - 1);
+  assert.equal(server.child.killed, false);
+  t.mock.timers.tick(1);
+  assert.equal(server.child.killed, true);
 }));
