@@ -7,6 +7,7 @@ This guide exposes the Mana backend through a dedicated Cloudflare-protected hos
 - Mana backend starts successfully on `http://127.0.0.1:5005`.
 - `MOBILE_PASSCODE_HASH` is set.
 - `MOBILE_SESSION_SECRET` is set.
+- `MANA_ALLOWED_HOSTS` (or `MANA_TUNNEL_URL`) names the tunnel hostname, e.g. `MANA_ALLOWED_HOSTS=mana.example.com`. `cloudflared` forwards the public hostname as the `Host` header, and Mana refuses unknown hostnames to block DNS rebinding (#670), so without this every tunnelled request gets a 403.
 - `node-bot/data/` is ignored by Git.
 - A Cloudflare account and domain are available for the tunnel hostname.
 
