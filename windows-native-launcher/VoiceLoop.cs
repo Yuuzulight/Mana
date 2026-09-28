@@ -217,7 +217,8 @@ internal sealed class VoiceLoop : IDisposable
         streamingReplyPlayer = new StreamingReplyPlayer(
             backendClient,
             audioPlayer.PlayAsync,
-            talking => OnTalkingStateChanged(talking));
+            talking => OnTalkingStateChanged(talking),
+            running => avatarOverlay.SetActivity(AvatarState.Working, running));
     }
 
     // #681: true between Start() and Stop() -- what the tray's and chat
@@ -1250,7 +1251,29 @@ internal sealed class VoiceLoop : IDisposable
     // block nulls heldReply on any capture/transcribe/classify failure) --
     // failure and interruption are NOT distinguished by this return value;
     // both mean "don't resume".
+    // #661: every reply goes through here, so this is where the avatar
+    // shows Thinking (until she starts speaking -- speech outranks it),
+    // and the short Done beat once a reply finishes naturally.
     private async Task<bool> SpeakReplyAsync(string commandText, string screenText = "", string? image = null, IReadOnlyList<string>? images = null)
+    {
+        avatarOverlay.SetActivity(AvatarState.Thinking, true);
+        try
+        {
+            var completed = await SpeakReplyCoreAsync(commandText, screenText, image, images);
+            if (completed)
+            {
+                avatarOverlay.PulseDone();
+            }
+            return completed;
+        }
+        finally
+        {
+            avatarOverlay.SetActivity(AvatarState.Thinking, false);
+            avatarOverlay.SetActivity(AvatarState.Working, false);
+        }
+    }
+
+    private async Task<bool> SpeakReplyCoreAsync(string commandText, string screenText, string? image, IReadOnlyList<string>? images)
     {
         string? reply;
         bool changed;

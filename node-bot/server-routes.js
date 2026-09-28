@@ -450,7 +450,11 @@ function registerCoreRoutes(app, upload, deps) {
       const sessionId = optionalString(req.body?.sessionId, "sessionId", null);
       const assistantMode = optionalString(req.body?.assistantMode, "assistantMode", null);
       const presetId = optionalString(req.body?.presetId, "presetId", null);
-      const replyMeta = {};
+      // #661: tool start/end events, so the native avatar can show she's
+      // working while a tool runs.
+      const replyMeta = {
+        onToolCall: ({ name, phase }) => writeEvent({ type: "tool", name, phase }),
+      };
 
       const reply = await buildAssistantReply(
         transcript,

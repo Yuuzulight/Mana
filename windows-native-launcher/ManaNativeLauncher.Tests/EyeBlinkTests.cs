@@ -11,14 +11,14 @@ public class EyeBlinkTests
     private sealed record Blink(double Start, double End, float MinOpenness);
 
     // Runs the blink for `seconds` at 240fps and returns each blink seen.
-    private static List<Blink> Simulate(EyeBlink blink, double seconds, bool talking = false, double from = 0)
+    private static List<Blink> Simulate(EyeBlink blink, double seconds, float rate = 1f, double from = 0)
     {
         var blinks = new List<Blink>();
         double? start = null;
         var min = 1f;
         for (var t = from; t < from + seconds; t += Frame)
         {
-            var v = blink.Openness(t, talking);
+            var v = blink.Openness(t, rate);
             if (v < 1f)
             {
                 start ??= t;
@@ -38,7 +38,7 @@ public class EyeBlinkTests
     public void NextInterval_IsLogNormalIsh_WithinBounds_MeanAroundThreeAndAHalfSeconds()
     {
         var random = new Random(1);
-        var samples = Enumerable.Range(0, 20000).Select(_ => EyeBlink.NextIntervalSeconds(random, talking: false)).ToList();
+        var samples = Enumerable.Range(0, 20000).Select(_ => EyeBlink.NextIntervalSeconds(random, 1f)).ToList();
 
         Assert.All(samples, s => Assert.InRange(s, 1.2f, 8f));
         Assert.InRange(samples.Average(), 3.2, 3.9);
@@ -52,8 +52,8 @@ public class EyeBlinkTests
     public void Talking_BlinksAboutFortyPercentMoreOften()
     {
         var random = new Random(2);
-        var rest = Enumerable.Range(0, 20000).Average(_ => EyeBlink.NextIntervalSeconds(random, talking: false));
-        var talk = Enumerable.Range(0, 20000).Average(_ => EyeBlink.NextIntervalSeconds(random, talking: true));
+        var rest = Enumerable.Range(0, 20000).Average(_ => EyeBlink.NextIntervalSeconds(random, 1f));
+        var talk = Enumerable.Range(0, 20000).Average(_ => EyeBlink.NextIntervalSeconds(random, EyeBlink.TalkingRate));
 
         Assert.InRange(rest / talk, 1.3, 1.5);
     }

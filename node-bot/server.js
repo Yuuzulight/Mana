@@ -4287,10 +4287,25 @@ function registerRoutes(app, upload, deps = {}) {
           // shared audit/trace log.
           mergedToolPolicy = wrapWithToolCallLog(mergedToolPolicy, activeToolCallLog);
           const executeLoggedTool = mergedToolPolicy.executeTool;
+          // #661: /reply/stream relays tool start/end so the avatar can
+          // show she's working. expression__set is her face, not work.
+          const onToolCall =
+            replyMeta && typeof replyMeta.onToolCall === "function" ? replyMeta.onToolCall : null;
+          const reportTool = (name, phase) => {
+            if (!onToolCall || isExpressionToolName(name)) return;
+            try {
+              onToolCall({ name, phase });
+            } catch (e) {}
+          };
           mergedToolPolicy.executeTool = async (name, args) => {
-            const result = await executeLoggedTool(name, args);
-            turnTools.push(name);
-            return result;
+            reportTool(name, "start");
+            try {
+              const result = await executeLoggedTool(name, args);
+              turnTools.push(name);
+              return result;
+            } finally {
+              reportTool(name, "end");
+            }
           };
           const toolResult = await runToolAwareReply(
             promptText,

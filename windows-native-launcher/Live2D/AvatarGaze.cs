@@ -22,10 +22,18 @@ namespace Mana.NativeLauncher.Live2D;
 // Pure math: the caller adds HeadAngleX/EyeBallX/EyeBallY on top of what
 // the motion and expression set this frame and passes pitch/roll through
 // ApplyPitch/ApplyRoll, so those layers keep their own movement.
+//
+// #661 activity modes: Thinking looks up and to one side and holds there
+// (the classic "searching memory" glance); Working looks down with small,
+// quick, reading-like hops; Attentive (waiting for you) keeps her eyes on
+// the viewer. Idle and Attentive keep the side tilt; the others ease it off.
 internal enum GazeMode
 {
     Idle,
     Talking,
+    Thinking,
+    Working,
+    Attentive,
 }
 
 internal sealed class AvatarGaze
@@ -109,7 +117,7 @@ internal sealed class AvatarGaze
     public bool Update(float dtMs, GazeMode mode)
     {
         nowMs += dtMs;
-        TiltBlend += ((mode == GazeMode.Idle ? 1f : 0f) - TiltBlend) * Math.Min(1f, dtMs / TiltBlendMs);
+        TiltBlend += ((mode is GazeMode.Idle or GazeMode.Attentive ? 1f : 0f) - TiltBlend) * Math.Min(1f, dtMs / TiltBlendMs);
         if (!GazeActive)
         {
             return false;
@@ -148,24 +156,50 @@ internal sealed class AvatarGaze
         return rawAngleY + ((clamped - rawAngleY) * TiltBlend);
     }
 
+    // #661: the "done" beat's small nod -- a ParamAngleY dip (degrees) to
+    // add, sinceSeconds after the beat started; 0 outside it.
+    public const float NodSeconds = 0.5f;
+    public static float NodOffset(double sinceSeconds) =>
+        sinceSeconds is >= 0 and < NodSeconds ? -6f * MathF.Sin(MathF.PI * (float)(sinceSeconds / NodSeconds)) : 0f;
+
     // Eases the head roll toward the configured side tilt.
     public float ApplyRoll(float rawAngleZ) => rawAngleZ + ((tiltDegrees - rawAngleZ) * TiltBlend);
 
     private bool StartSaccade(GazeMode mode)
     {
         SaccadeCount++;
-        var talking = mode == GazeMode.Talking;
-        var home = random.NextDouble() < (talking ? 0.8 : 0.55);
-        float x, y;
+        var busy = mode is GazeMode.Thinking or GazeMode.Working;
+        var home = random.NextDouble() < mode switch
+        {
+            GazeMode.Talking => 0.8,
+            GazeMode.Attentive => 1.0,
+            GazeMode.Thinking or GazeMode.Working => 0.15, // an occasional glance back at you
+            _ => 0.55,
+        };
+        float x, y, holdMs;
         if (home)
         {
             x = Uniform(-0.08f, 0.08f);
             y = Uniform(-0.06f, 0.06f);
+            holdMs = busy ? Uniform(500f, 1000f) : NextFixationMs(mode);
+        }
+        else if (mode == GazeMode.Thinking)
+        {
+            x = Side() * Uniform(0.35f, 0.7f);
+            y = Uniform(0.4f, 0.75f);
+            holdMs = Uniform(1500f, 3500f);
+        }
+        else if (mode == GazeMode.Working)
+        {
+            x = Uniform(-0.4f, 0.4f);
+            y = Uniform(-0.55f, -0.3f);
+            holdMs = Uniform(250f, 600f);
         }
         else
         {
-            x = (random.Next(2) == 0 ? -1f : 1f) * Uniform(0.3f, 1f);
+            x = Side() * Uniform(0.3f, 1f);
             y = Uniform(-0.5f, 0.25f); // smaller, and more often down than up
+            holdMs = mode == GazeMode.Talking ? Uniform(400f, 900f) : NextFixationMs(mode);
         }
 
         var shift = MathF.Sqrt(((x - eyeX) * (x - eyeX)) + ((y - eyeY) * (y - eyeY)));
@@ -185,7 +219,7 @@ internal sealed class AvatarGaze
             headDurationMs = Uniform(300f, 500f);
         }
 
-        nextSaccadeAtMs = nowMs + (talking && !home ? Uniform(400f, 900f) : NextFixationMs(mode));
+        nextSaccadeAtMs = nowMs + holdMs;
         return large && random.NextDouble() < GazeBlinkChance;
     }
 
@@ -202,6 +236,8 @@ internal sealed class AvatarGaze
         }
         return (SaccadeIntervals[^1].BaseMs + ((float)random.NextDouble() * SaccadeStepMs)) * scale;
     }
+
+    private float Side() => random.Next(2) == 0 ? -1f : 1f;
 
     private float Uniform(float min, float max) => min + ((float)random.NextDouble() * (max - min));
 

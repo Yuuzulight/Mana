@@ -5,7 +5,8 @@ namespace Mana.NativeLauncher.Live2D;
 // shaped after human blink figures rather than Cubism's uniform timer:
 // - Rate: ~15-20 blinks/min at rest, more in conversation (Bentivoglio et
 //   al. 1997), so the interval is log-normal around ~3.5s, clamped to
-//   1.2-8s, and ~1.4x as frequent while talking.
+//   1.2-8s, and ~1.4x as frequent while talking (#661: less often while
+//   thinking or concentrating on a task -- the caller passes the rate).
 // - Shape: the lid closes fast and accelerating, holds briefly, and opens
 //   more slowly, decelerating (VanderWerf et al. 2003: closing ~2x faster
 //   than opening), each phase jittered +-15% per blink.
@@ -22,7 +23,9 @@ internal sealed class EyeBlink
     private const float IntervalSigma = 0.45f;
     private const float MinIntervalSeconds = 1.2f;
     private const float MaxIntervalSeconds = 8f;
-    private const float TalkingRateFactor = 1.4f;
+    // #661: blink-rate multipliers for the caller's rate argument.
+    public const float TalkingRate = 1.4f;
+    public const float ThinkingRate = 0.75f;
     private const float DoubleBlinkChance = 0.12f;
     private const float PartialBlinkChance = 0.1f;
     private const float CloseSeconds = 0.085f;
@@ -47,12 +50,13 @@ internal sealed class EyeBlink
         random = seed is { } s ? new Random(s) : new Random();
     }
 
-    // 1 = fully open, 0 = fully closed, at nowSeconds (monotonic).
-    public float Openness(double nowSeconds, bool talking = false)
+    // 1 = fully open, 0 = fully closed, at nowSeconds (monotonic). rate
+    // scales how often she blinks (TalkingRate, ThinkingRate; 1 = at rest).
+    public float Openness(double nowSeconds, float rate = 1f)
     {
         if (double.IsNaN(nextBlinkAt))
         {
-            nextBlinkAt = nowSeconds + NextIntervalSeconds(random, talking);
+            nextBlinkAt = nowSeconds + NextIntervalSeconds(random, rate);
         }
         if (double.IsNaN(blinkStart))
         {
@@ -85,7 +89,7 @@ internal sealed class EyeBlink
         isSecondOfDouble = doubleBlink;
         nextBlinkAt = Math.Max(nowSeconds, lastBlinkEnd) + (doubleBlink
             ? 0.25 + (random.NextDouble() * 0.15)
-            : NextIntervalSeconds(random, talking));
+            : NextIntervalSeconds(random, rate));
         return 1f;
     }
 
@@ -99,13 +103,13 @@ internal sealed class EyeBlink
         }
     }
 
-    internal static float NextIntervalSeconds(Random random, bool talking)
+    internal static float NextIntervalSeconds(Random random, float rate)
     {
         // Box-Muller normal -> log-normal.
         var u1 = 1.0 - random.NextDouble();
         var z = Math.Sqrt(-2.0 * Math.Log(u1)) * Math.Cos(2.0 * Math.PI * random.NextDouble());
         var seconds = (float)Math.Clamp(MedianIntervalSeconds * Math.Exp(IntervalSigma * z), MinIntervalSeconds, MaxIntervalSeconds);
-        return talking ? seconds / TalkingRateFactor : seconds;
+        return rate > 0 ? seconds / rate : seconds;
     }
 
     private void StartBlink(double nowSeconds)

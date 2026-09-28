@@ -33,6 +33,13 @@ internal sealed class AvatarMotionPlayer
         [AvatarState.Angry] = ["Angry", "Mad", "Shake", "FlickHead"],
         [AvatarState.Sad] = ["Sad", "Cry", "Down", "Upset"],
         [AvatarState.Disgusted] = ["Disgusted", "Disgust", "Recoil", "Dislike"],
+        // #661: activity states -- a model with none of these keeps its
+        // idle loop, and the gaze/blink/nod still show the state.
+        [AvatarState.Thinking] = ["Thinking", "Think"],
+        [AvatarState.Working] = ["Working", "Work"],
+        [AvatarState.Waiting] = ["Waiting", "Wait"],
+        [AvatarState.Done] = ["Done", "Nod"],
+        [AvatarState.Dreaming] = ["Dreaming", "Dream", "Sleep", "Sleepy"],
     };
 
     private sealed record Clip(CubismMotionFile Motion, string Group, double StartSeconds);

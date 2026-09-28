@@ -293,6 +293,21 @@ Differences from Electron:
   random one from the same group crossfades in, over the clip's
   `FadeInTime` (0.5s by default).
 
+Native also shows what Mana is doing (#661), not just her mood:
+
+| State | When | Default look | Motion group it plays, if the model has one |
+| --- | --- | --- | --- |
+| `thinking` | From sending a message until she starts speaking | Eyes up and to one side, held; blinks less | `Thinking` / `Think` |
+| `working` | While a tool runs | Eyes down with small, quick glances | `Working` / `Work` |
+| `waiting` | While an approval or edit proposal is pending | Looks at you. The tray icon gets an amber dot, and a toast appears if no Mana window has focus | `Waiting` / `Wait` |
+| `done` | A 1.2s beat after a reply | A small nod | `Done` / `Nod` |
+| `dreaming` | After Dream Mode's idle consolidation starts, until you're back | Eyes slowly close | `Dreaming` / `Dream` / `Sleep` / `Sleepy` |
+
+`stateMotions`/`stateExpressions` accept these state names too. Speech
+always wins. After that the priority is working > thinking > waiting >
+done > dreaming > idle. Each state stays up for a short minimum, so a burst
+of quick tool calls doesn't flicker.
+
 ## Performance
 
 - Rendering is capped at 30 FPS (`MANA_AVATAR_FPS` to change) in the small
