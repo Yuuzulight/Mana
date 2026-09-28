@@ -29,6 +29,10 @@ internal sealed class ManaSettingsStore
     // hold and is now ignored, so existing installs get the new default.
     public string? WakePrefilter { get; set; }
 
+    // #619: echo cancellation on the microphone (EchoCancellation); null =
+    // default (on). Settings > Voice; MANA_VOICE_AEC overrides it.
+    public bool? EchoCancellation { get; set; }
+
     // #681: the prompt preset sent as presetId with every reply; null =
     // none. Chosen in Settings > Presets (windows-launcher kept the same
     // choice in localStorage's manaSelectedPresetId).
