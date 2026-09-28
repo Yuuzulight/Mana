@@ -170,6 +170,17 @@ internal sealed unsafe class CubismModel : IDisposable
 
     public bool HasPart(string id) => partIndexById.ContainsKey(id);
 
+    // #683: for motion crossfades that blend a part's opacity.
+    public float GetPartOpacity(string id)
+    {
+        if (!partIndexById.TryGetValue(id, out var index))
+        {
+            return 0f;
+        }
+        var opacities = (float*)CubismCoreNative.csmGetPartOpacities(model);
+        return opacities[index];
+    }
+
     public IReadOnlyCollection<string> ParameterIds => parameterIndexById.Keys;
 
     public float GetParameterCurrentValue(string id)

@@ -13,6 +13,9 @@ internal sealed class CubismMotionFile
     private sealed class Curve
     {
         public required string Id { get; init; }
+        // #683: a PartOpacity curve (e.g. hiyori's Tap motion switching to
+        // its second arm set) rather than a parameter one.
+        public bool IsPart { get; init; }
         // Raw Cubism Motion3 curve encoding -- see EvaluateCurve's own
         // comment for the format.
         public required float[] Segments { get; init; }
@@ -20,6 +23,9 @@ internal sealed class CubismMotionFile
 
     public required float Duration { get; init; }
     public required bool Loop { get; init; }
+    // #683: Meta.FadeInTime (seconds), or null when the file doesn't say --
+    // how long AvatarMotionPlayer crossfades into this clip.
+    public float? FadeInTime { get; init; }
     // Not `required` -- a required member's setter must be at least as
     // accessible as the containing type for external object-initializer
     // syntax to work, but this is only ever set internally by Load()
@@ -35,18 +41,19 @@ internal sealed class CubismMotionFile
         var meta = root.GetProperty("Meta");
         var duration = meta.TryGetProperty("Duration", out var durationElement) ? durationElement.GetSingle() : 0f;
         var loop = meta.TryGetProperty("Loop", out var loopElement) && loopElement.GetBoolean();
+        float? fadeIn = meta.TryGetProperty("FadeInTime", out var fadeElement) && fadeElement.ValueKind == JsonValueKind.Number
+            ? fadeElement.GetSingle()
+            : null;
 
         var curves = new List<Curve>();
         if (root.TryGetProperty("Curves", out var curvesElement))
         {
             foreach (var curveElement in curvesElement.EnumerateArray())
             {
-                // Only Parameter-target curves are driven here -- PartOpacity
-                // and Model-target curves are a separate Cubism concept this
-                // project doesn't need for "the avatar isn't frozen between
-                // sentences" (the issue's own scope).
+                // Parameter and (#683) PartOpacity curves are driven here;
+                // Model-target curves (EyeBlink/LipSync weights) aren't.
                 var target = curveElement.TryGetProperty("Target", out var targetElement) ? targetElement.GetString() : null;
-                if (target != "Parameter")
+                if (target is not ("Parameter" or "PartOpacity"))
                 {
                     continue;
                 }
@@ -60,11 +67,11 @@ internal sealed class CubismMotionFile
                 {
                     segments.Add(segmentValue.GetSingle());
                 }
-                curves.Add(new Curve { Id = id, Segments = [.. segments] });
+                curves.Add(new Curve { Id = id, IsPart = target == "PartOpacity", Segments = [.. segments] });
             }
         }
 
-        return new CubismMotionFile { Duration = duration, Loop = loop, Curves = curves };
+        return new CubismMotionFile { Duration = duration, Loop = loop, FadeInTime = fadeIn, Curves = curves };
     }
 
     // Applies each curve's value AT timeSeconds to model. Loops
@@ -75,9 +82,13 @@ internal sealed class CubismMotionFile
     // layer a caller applies BEFORE any expression/lip-sync override, not
     // to be additive itself -- see AvatarOverlayForm.RenderFrame's own
     // layering comment.
-    public void ApplyTo(CubismModel model, float timeSeconds)
+    //
+    // #683: weight < 1 blends toward the curve value from whatever is
+    // already there (Cubism's own fade: source + (value - source) * weight),
+    // which is how AvatarMotionPlayer crossfades between clips.
+    public void ApplyTo(CubismModel model, float timeSeconds, float weight = 1f)
     {
-        if (Duration <= 0)
+        if (Duration <= 0 || weight <= 0)
         {
             return;
         }
@@ -85,11 +96,26 @@ internal sealed class CubismMotionFile
 
         foreach (var curve in Curves)
         {
+            if (curve.IsPart)
+            {
+                if (model.HasPart(curve.Id))
+                {
+                    var from = weight < 1f ? model.GetPartOpacity(curve.Id) : 0f;
+                    model.SetPartOpacity(curve.Id, from + ((EvaluateCurve(curve.Segments, t) - from) * weight));
+                }
+                continue;
+            }
             if (!model.HasParameter(curve.Id))
             {
                 continue;
             }
-            model.SetParameterValue(curve.Id, EvaluateCurve(curve.Segments, t));
+            var value = EvaluateCurve(curve.Segments, t);
+            if (weight < 1f)
+            {
+                var source = model.GetParameterCurrentValue(curve.Id);
+                value = source + ((value - source) * weight);
+            }
+            model.SetParameterValue(curve.Id, value);
         }
     }
 

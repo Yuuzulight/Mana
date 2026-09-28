@@ -72,20 +72,24 @@ internal sealed class AvatarOverlayForm : Form
     private readonly IReadOnlyDictionary<string, CubismExpressionFile> expressions;
     private CubismExpressionFile? activeExpression;
 
-    // #515: the model's own first Idle motion (null if it declares none),
-    // applied continuously every render tick as the base animation layer
-    // -- see RenderFrame's own layering comment for why it runs before
-    // expression/lip-sync. Read-only after construction, so (unlike
-    // activeExpression) it needs no thread-ownership comment.
-    private readonly CubismMotionFile? idleMotion;
+    // #515/#683: plays the model's own motion groups as the base animation
+    // layer -- its Idle group at rest, each mood's own group when it has
+    // one, plus mana-avatar.json's random ambient motions (see
+    // AvatarMotionPlayer). Null without a Live2D model. Only touched on the
+    // UI thread (SetState marshals there first; RenderFrame is a UI-thread
+    // timer tick).
+    private readonly AvatarMotionPlayer? motionPlayer;
 
-    // #342 follow-up: fallback base layer for when idleMotion above is
-    // null (no authored .motion3.json idle clip configured, or it failed
-    // to load) -- without this, the avatar previously had zero idle
-    // movement in that case. Only ever constructed when idleMotion is
-    // null (see the constructor), so RenderFrame only ever runs one of
-    // the two, never both.
+    // #342 follow-up: base layer underneath motionPlayer when the model has
+    // no Idle group (none declared, all failed to load, or no stateMotions
+    // idle mapping) -- without this, the avatar previously had zero idle
+    // movement in that case. Mood clips, when the model has any, still
+    // play (and crossfade) over it.
     private readonly ProceduralIdleMotion? proceduralIdleMotion;
+
+    // #683: mana-avatar.json / MANA_LIVE2D_* tuning (AvatarConfig).
+    private readonly string mouthParam = "ParamMouthOpenY";
+    private readonly IReadOnlyDictionary<string, IReadOnlyList<string>> expressionOverrides = new Dictionary<string, IReadOnlyList<string>>();
 
     // The model's .physics3.json simulation (hair/skirt sway), or null if it
     // ships none or it failed to load. Stateful, stepped once per frame.
@@ -97,10 +101,9 @@ internal sealed class AvatarOverlayForm : Form
     // its default and range: they're reset to default at the start of each
     // frame so an offset/multiplier never compounds on last frame's value
     // when no motion rewrites that parameter.
-    private static readonly string[] DefaultEyeBlinkIds = ["ParamEyeLOpen", "ParamEyeROpen"];
     private static readonly string[] GazeIds = ["ParamAngleX", "ParamAngleY", "ParamAngleZ", "ParamEyeBallX", "ParamEyeBallY"];
     private readonly EyeBlink eyeBlink = new();
-    private readonly AvatarGaze gaze = new();
+    private readonly AvatarGaze gaze;
     private readonly string[] eyeBlinkIds = [];
     private readonly Dictionary<string, (float Default, float Min, float Max)> lifeParameters = [];
 
@@ -127,22 +130,28 @@ internal sealed class AvatarOverlayForm : Form
         cubismModel = loaded.Model;
         cubismRenderer = loaded.Renderer;
         expressions = loaded.Expressions;
-        idleMotion = loaded.IdleMotion;
         physics = loaded.Physics;
         ModelPath = loaded.ModelPath;
         ModelLoadProblem = loaded.Problem;
         ModelLoadWarnings = loaded.Warnings ?? Array.Empty<string>();
-        if (idleMotion is null && cubismModel is not null)
-        {
-            proceduralIdleMotion = new ProceduralIdleMotion();
-        }
+        var config = loaded.Config ?? AvatarConfig.Parse(null, _ => null);
+        gaze = new AvatarGaze(config.IdleGazeDeg, config.IdleGazePeriodMs, config.IdleTiltDeg, config.IdleMaxPitchDeg);
         if (cubismModel is not null)
         {
-            // #683: the model's own EyeBlink group, else the standard ids
-            // (Electron's augmentModelSettings backfill); ids the model
-            // doesn't have are dropped, so a model with no eye parameters
-            // just doesn't blink.
-            var blinkIds = loaded.EyeBlinkIds is { Count: > 0 } declared ? declared : DefaultEyeBlinkIds;
+            motionPlayer = new AvatarMotionPlayer(loaded.MotionGroups, config.StateMotions, config.RandomMotions);
+            if (motionPlayer.IdleGroup is null)
+            {
+                proceduralIdleMotion = new ProceduralIdleMotion();
+            }
+            mouthParam = config.MouthParam;
+            expressionOverrides = config.StateExpressions;
+            LipSyncDriver.MouthGain = config.MouthGain;
+
+            // #683: the model's own EyeBlink group, else the configured
+            // backfill (the standard ids by default, like Electron's
+            // augmentModelSettings); ids the model doesn't have are
+            // dropped, so a model with no eye parameters just doesn't blink.
+            var blinkIds = loaded.EyeBlinkIds is { Count: > 0 } declared ? declared : config.EyeBlinkParams;
             eyeBlinkIds = blinkIds.Where(cubismModel.HasParameter).Distinct().ToArray();
             foreach (var id in eyeBlinkIds.Concat(GazeIds).Where(cubismModel.HasParameter))
             {
@@ -153,7 +162,9 @@ internal sealed class AvatarOverlayForm : Form
         {
             // ~60fps: WM_TIMER fires on the ~15.6ms system tick, so 15
             // lands on every tick (16 would round up to every other one).
-            renderTimer = new System.Windows.Forms.Timer { Interval = 15 };
+            // MANA_AVATAR_FPS (#683, Electron's knob) can lower that.
+            var fps = ReadIntEnv("MANA_AVATAR_FPS", 0);
+            renderTimer = new System.Windows.Forms.Timer { Interval = fps > 0 ? Math.Max(15, 1000 / fps) : 15 };
             renderTimer.Tick += (_, _) => RenderFrame(cubismModel, cubismRenderer);
             // Only animate while she's actually on screen -- the launcher
             // shows the overlay after the startup screen closes, so there's
@@ -169,7 +180,8 @@ internal sealed class AvatarOverlayForm : Form
         CubismModel? Model,
         CubismRenderer? Renderer,
         IReadOnlyDictionary<string, CubismExpressionFile> Expressions,
-        CubismMotionFile? IdleMotion,
+        IReadOnlyDictionary<string, IReadOnlyList<CubismMotionFile>> MotionGroups,
+        AvatarConfig? Config = null,
         CubismPhysics? Physics = null,
         IReadOnlyList<string>? EyeBlinkIds = null,
         string? ModelPath = null,
@@ -182,7 +194,7 @@ internal sealed class AvatarOverlayForm : Form
         {
             Console.WriteLine($"AvatarOverlayForm: Live2D model not loaded, using static PNGs. {problem}");
         }
-        return new(null, null, new Dictionary<string, CubismExpressionFile>(), null, null, null, modelPath, problem);
+        return new(null, null, new Dictionary<string, CubismExpressionFile>(), new Dictionary<string, IReadOnlyList<CubismMotionFile>>(), null, null, null, modelPath, problem);
     }
 
     // Set when a Live2D model was found but couldn't be used (a plain-English
@@ -255,17 +267,27 @@ internal sealed class AvatarOverlayForm : Form
                 }
             }
 
-            CubismMotionFile? idleMotion = null;
-            if (settings.IdleMotionPath is not null)
+            // #515/#683: every motion in every group, best-effort -- a
+            // broken clip is skipped (and reported), an emptied group dropped.
+            var motionGroups = new Dictionary<string, IReadOnlyList<CubismMotionFile>>();
+            foreach (var (group, paths) in settings.MotionGroups)
             {
-                try
+                var clips = new List<CubismMotionFile>();
+                foreach (var path in paths)
                 {
-                    idleMotion = CubismMotionFile.Load(settings.IdleMotionPath);
+                    try
+                    {
+                        clips.Add(CubismMotionFile.Load(path));
+                    }
+                    catch (Exception ex) when (ex is not (OutOfMemoryException or StackOverflowException))
+                    {
+                        Console.WriteLine($"AvatarOverlayForm: failed to load motion '{group}' ({path}), skipping it. {ex.Message}");
+                        warnings.Add(CubismModelDiagnostics.SkippedPart("motion", $"{group}/{Path.GetFileName(path)}", ex));
+                    }
                 }
-                catch (Exception ex) when (ex is not (OutOfMemoryException or StackOverflowException))
+                if (clips.Count > 0)
                 {
-                    Console.WriteLine($"AvatarOverlayForm: failed to load idle motion ({settings.IdleMotionPath}), skipping it. {ex.Message}");
-                    warnings.Add(CubismModelDiagnostics.SkippedPart("idle motion", Path.GetFileName(settings.IdleMotionPath), ex));
+                    motionGroups[group] = clips;
                 }
             }
 
@@ -284,7 +306,8 @@ internal sealed class AvatarOverlayForm : Form
                 }
             }
 
-            return new CubismLoadResult(model, renderer, expressions, idleMotion, physics, settings.EyeBlinkParameterIds, model3JsonPath, null, warnings);
+            var config = AvatarConfig.Load(model3JsonPath, CubismModelLocator.ModelDirectory(rootDirectory), Environment.GetEnvironmentVariable);
+            return new CubismLoadResult(model, renderer, expressions, motionGroups, config, physics, settings.EyeBlinkParameterIds, model3JsonPath, null, warnings);
         }
         // Broad by design, not just the handful of exception types this
         // path happens to throw today: "the model file exists but fails
@@ -315,11 +338,11 @@ internal sealed class AvatarOverlayForm : Form
         var dtMs = lastRenderTickMs == 0 ? 33f : Math.Max(1, nowMs - lastRenderTickMs);
         lastRenderTickMs = nowMs;
 
-        // Layering, base to override: #515's idle motion (or, when no
-        // authored idle clip is configured, proceduralIdleMotion's
-        // randomized-parameter fallback -- see that class's own header
-        // comment) sets the resting-pose sway first, so she isn't frozen
-        // between sentences either way; #514's expression applies on top
+        // Layering, base to override: #515/#683's motion player (the idle
+        // group, or the current mood's group, crossfading between clips --
+        // over proceduralIdleMotion's randomized-parameter fallback when
+        // the model has no idle group) sets the pose first, so she isn't
+        // frozen between sentences either way; #514's expression applies on top
         // of that, since a deliberate mood read should win over generic
         // idle animation where they'd otherwise conflict on the same
         // parameter; lip-sync's explicit mouth writes below always win
@@ -336,17 +359,15 @@ internal sealed class AvatarOverlayForm : Form
         {
             model.SetParameterValue(id, defaultValue);
         }
-        if (idleMotion is not null)
+        var nowSeconds = renderClock.Elapsed.TotalSeconds;
+        proceduralIdleMotion?.ApplyTo(model, (float)nowSeconds);
+        if (motionPlayer is not null)
         {
-            idleMotion.ApplyTo(model, (float)renderClock.Elapsed.TotalSeconds);
-        }
-        else
-        {
-            proceduralIdleMotion?.ApplyTo(model, (float)renderClock.Elapsed.TotalSeconds);
+            motionPlayer.Update(nowSeconds);
+            motionPlayer.Apply(model, nowSeconds);
         }
         activeExpression?.ApplyTo(model);
 
-        var nowSeconds = renderClock.Elapsed.TotalSeconds;
         var talking = CurrentState != AvatarState.Idle;
         if (gaze.Update(dtMs, talking ? GazeMode.Talking : GazeMode.Idle))
         {
@@ -376,9 +397,9 @@ internal sealed class AvatarOverlayForm : Form
         // vowel shapes rather than natural articulation.
         smoothedMouthForm = LipSyncAnalyzer.SmoothMouthValue(smoothedMouthForm, targetMouthForm, dtMs);
 
-        if (model.HasParameter("ParamMouthOpenY"))
+        if (model.HasParameter(mouthParam))
         {
-            model.SetParameterValue("ParamMouthOpenY", smoothedMouthOpen);
+            model.SetParameterValue(mouthParam, smoothedMouthOpen);
         }
         if (model.HasParameter("ParamMouthForm"))
         {
@@ -453,7 +474,8 @@ internal sealed class AvatarOverlayForm : Form
             // reads as simply not overriding whatever the render loop's
             // other signals (idle motion, lip-sync, physics) already
             // produce.
-            var expressionName = AvatarExpressionSelector.SelectExpressionName(state, expressions.Keys, preferredExpression);
+            motionPlayer?.SetState(state, renderClock.Elapsed.TotalSeconds);
+            var expressionName = AvatarExpressionSelector.SelectExpressionName(state, expressions.Keys, preferredExpression, expressionOverrides);
             activeExpression = expressionName is not null && expressions.TryGetValue(expressionName, out var expression)
                 ? expression
                 : null;

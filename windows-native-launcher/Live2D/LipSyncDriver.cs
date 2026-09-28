@@ -27,6 +27,10 @@ internal sealed class LipSyncDriver
 
     public (float MouthOpen, float MouthForm) Current => (mouthOpen, mouthForm);
 
+    // #683: mana-avatar.json mouthGain / MANA_LIVE2D_MOUTH_GAIN (set once
+    // at startup, before any audio plays).
+    public float MouthGain { get; set; } = 9f;
+
     // Matches SamplesReadHandler's shape -- pass this directly as
     // AudioPlayer's onSamplesPlayed.
     public void OnSamplesPlayed(ReadOnlySpan<float> samples, int sampleRate)
@@ -72,7 +76,7 @@ internal sealed class LipSyncDriver
         var mfcc = LipSyncAnalyzer.ComputeMelEnergies(magnitudesDb, sampleRate, WindowSize);
         var viseme = LipSyncAnalyzer.ClassifyViseme(mfcc);
 
-        mouthOpen = LipSyncAnalyzer.RmsToMouth(rms);
+        mouthOpen = LipSyncAnalyzer.RmsToMouth(rms, gain: MouthGain);
         mouthForm = LipSyncAnalyzer.VisemeToMouthForm(viseme);
     }
 
