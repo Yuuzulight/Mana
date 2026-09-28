@@ -9,6 +9,7 @@ const {
   detectGpuVramMb,
   detectGpuVramUsageMb,
   detectSystemMemoryMb,
+  estimateModelFit,
   recommendModelProfile,
 } = require("../model-management");
 
@@ -593,6 +594,46 @@ test("scanForModels finds .gguf files under the given roots and skips unreadable
     const names = result.found.map((m) => m.name).sort();
     assert.deepEqual(names, ["nested.gguf", "top.gguf"]);
     assert.equal(result.truncated, false);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("estimateModelFit labels a model against VRAM, then VRAM + half of RAM", () => {
+  const gb = 1024 ** 3;
+  // 5GB file -> ~6GB footprint with the 1.2 margin.
+  assert.equal(estimateModelFit({ sizeBytes: 5 * gb, vramMb: 8192, ramMb: 16384 }), "fits");
+  assert.equal(estimateModelFit({ sizeBytes: 5 * gb, vramMb: 4096, ramMb: 16384 }), "slow");
+  assert.equal(estimateModelFit({ sizeBytes: 20 * gb, vramMb: 4096, ramMb: 16384 }), "wont_fit");
+  // No NVIDIA GPU detected: never "fits", RAM-only is at best slow.
+  assert.equal(estimateModelFit({ sizeBytes: 1 * gb, vramMb: null, ramMb: 16384 }), "slow");
+  assert.equal(estimateModelFit({ sizeBytes: 10 * gb, vramMb: null, ramMb: 16384 }), "wont_fit");
+  // Unknown size or unknown hardware: no label rather than a guess.
+  assert.equal(estimateModelFit({ sizeBytes: null, vramMb: 8192, ramMb: 16384 }), null);
+  assert.equal(estimateModelFit({ sizeBytes: 0, vramMb: 8192, ramMb: 16384 }), null);
+  assert.equal(estimateModelFit({ sizeBytes: 5 * gb, vramMb: null, ramMb: null }), null);
+});
+
+test("scanForModels attaches a fit label per file from the detected hardware", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "mana-model-fit-"));
+  const mb = 1024 * 1024;
+  // Tiny fake hardware (1MB VRAM, 4MB RAM) so real-sized files aren't needed.
+  fs.writeFileSync(path.join(root, "small.gguf"), Buffer.alloc(100));
+  fs.writeFileSync(path.join(root, "medium.gguf"), Buffer.alloc(2 * mb));
+  fs.writeFileSync(path.join(root, "large.gguf"), Buffer.alloc(5 * mb));
+  const manager = createModelManagement({
+    env: {},
+    localGgufs: [],
+    spawnSync: () => ({ status: 0, stdout: "1\n" }),
+    totalmem: () => 4 * mb,
+    modelSettingsStore: fakeModelSettingsStore(),
+  });
+
+  try {
+    const fits = Object.fromEntries(
+      manager.scanForModels([root]).found.map((m) => [m.name, m.fit]),
+    );
+    assert.deepEqual(fits, { "small.gguf": "fits", "medium.gguf": "slow", "large.gguf": "wont_fit" });
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

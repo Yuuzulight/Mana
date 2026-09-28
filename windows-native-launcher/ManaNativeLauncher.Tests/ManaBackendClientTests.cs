@@ -2131,7 +2131,62 @@ public class ManaBackendClientTests
         var file = Assert.Single(result.Files);
         Assert.Equal(@"C:\models\a.gguf", file.Path);
         Assert.Equal(123456, file.SizeBytes);
+        Assert.Null(file.Fit);
         Assert.True(result.Truncated);
+    }
+
+    [Fact]
+    public async Task ScanForModelsAsync_ParsesFitAndToleratesANullSize()
+    {
+        var handler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(
+                """{"found":[{"path":"C:\\models\\a.gguf","name":"a.gguf","sizeBytes":123456,"fit":"slow"},{"path":"C:\\models\\b.gguf","name":"b.gguf","sizeBytes":null,"fit":null}],"truncated":false}""",
+                Encoding.UTF8,
+                "application/json"),
+        });
+        var client = new ManaBackendClient(handler);
+
+        var result = await client.ScanForModelsAsync();
+
+        Assert.Equal(2, result.Files.Count);
+        Assert.Equal("slow", result.Files[0].Fit);
+        Assert.Equal(0, result.Files[1].SizeBytes);
+        Assert.Null(result.Files[1].Fit);
+    }
+
+    [Fact]
+    public async Task GetModelStatusAsync_ParsesTheHardwareRecommendation()
+    {
+        var handler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(
+                """{"recommendation":{"profile":"quality","label":"Quality","reason":"Detected ~15.9GB GPU VRAM","detected":{"vramMb":16303,"ramMb":32768}}}""",
+                Encoding.UTF8,
+                "application/json"),
+        });
+        var client = new ManaBackendClient(handler);
+
+        var status = await client.GetModelStatusAsync();
+
+        Assert.Equal("quality", status.RecommendedProfile);
+    }
+
+    [Theory]
+    [InlineData("fits", "Fits")]
+    [InlineData("slow", "May be slow")]
+    [InlineData("wont_fit", "Won't fit")]
+    public void ModelFitPill_MapsEachBackendFitValueToItsLabel(string fit, string expected)
+    {
+        Assert.Equal(expected, SettingsPanel.ModelFitPill(fit)?.Text);
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("something-new")]
+    public void ModelFitPill_DrawsNoPillForAnUnknownFit(string? fit)
+    {
+        Assert.Null(SettingsPanel.ModelFitPill(fit));
     }
 
     [Fact]

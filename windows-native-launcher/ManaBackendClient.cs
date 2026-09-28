@@ -311,6 +311,7 @@ internal sealed class ManaBackendClient
 
         var brain = root.TryGetProperty("brain", out var brainEl) ? brainEl : default;
         var vision = root.TryGetProperty("vision", out var visionEl) ? visionEl : default;
+        var recommendation = root.TryGetProperty("recommendation", out var recommendationEl) ? recommendationEl : default;
 
         return new ManaModelStatus
         {
@@ -323,6 +324,7 @@ internal sealed class ManaBackendClient
             BrainHasApiKey = brain.ValueKind == JsonValueKind.Object && brain.TryGetProperty("hasApiKey", out var hasKeyEl) && hasKeyEl.GetBoolean(),
             VisionModelPath = vision.ValueKind == JsonValueKind.Object && vision.TryGetProperty("modelPath", out var visionModelEl) ? visionModelEl.GetString() ?? "" : "",
             VisionMmprojPath = vision.ValueKind == JsonValueKind.Object && vision.TryGetProperty("mmprojPath", out var mmprojEl) ? mmprojEl.GetString() ?? "" : "",
+            RecommendedProfile = recommendation.ValueKind == JsonValueKind.Object && recommendation.TryGetProperty("profile", out var recProfileEl) ? recProfileEl.GetString() : null,
         };
     }
 
@@ -355,7 +357,11 @@ internal sealed class ManaBackendClient
                 {
                     Path = entry.TryGetProperty("path", out var pathEl) ? pathEl.GetString() ?? "" : "",
                     Name = entry.TryGetProperty("name", out var nameEl) ? nameEl.GetString() ?? "" : "",
-                    SizeBytes = entry.TryGetProperty("sizeBytes", out var sizeEl) ? sizeEl.GetInt64() : 0,
+                    // #625: sizeBytes is null when node-bot couldn't stat the
+                    // file -- GetInt64 on a JSON null would throw and fail
+                    // the whole scan over one unreadable entry.
+                    SizeBytes = entry.TryGetProperty("sizeBytes", out var sizeEl) && sizeEl.ValueKind == JsonValueKind.Number ? sizeEl.GetInt64() : 0,
+                    Fit = entry.TryGetProperty("fit", out var fitEl) && fitEl.ValueKind == JsonValueKind.String ? fitEl.GetString() : null,
                 });
             }
         }
@@ -1576,6 +1582,8 @@ internal sealed class ManaModelStatus
     public bool BrainHasApiKey { get; init; }
     public string VisionModelPath { get; init; } = "";
     public string VisionMmprojPath { get; init; } = "";
+    // #625: model-management.js's hardware-based profile suggestion key.
+    public string? RecommendedProfile { get; init; }
 }
 
 // #572: one entry from GET /models/brain-providers.
@@ -1599,6 +1607,8 @@ internal sealed class ManaGgufFile
     public string Path { get; init; } = "";
     public string Name { get; init; } = "";
     public long SizeBytes { get; init; }
+    // #625: "fits" / "slow" / "wont_fit", or null when node-bot couldn't tell.
+    public string? Fit { get; init; }
 }
 
 internal sealed class ManaModelProfile

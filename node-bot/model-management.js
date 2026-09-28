@@ -227,6 +227,29 @@ function recommendModelProfile({ vramMb, ramMb }) {
   };
 }
 
+// #625: per-model hardware-fit label for the Model tab's scan results.
+// Footprint is the same "file size x 1.2" the load-time VRAM guard uses
+// (assertVramForSwap in ai/llama-server-runtime.js), measured against
+// *total* VRAM rather than live free VRAM, so a label doesn't flip to
+// "wont_fit" just because another model happens to be loaded right now.
+//   fits     -- footprint fits in VRAM (full GPU offload)
+//   slow     -- doesn't fit in VRAM but fits in VRAM + half of system RAM
+//               (llama.cpp offloads the rest to CPU), or no NVIDIA GPU was
+//               detected so it would run from RAM alone
+//   wont_fit -- exceeds even that
+// null when the file size or all hardware is unknown.
+// ponytail: ignores KV cache at the configured context and VRAM already
+// held by Whisper/TTS, so "fits" can be optimistic on a tight card; the
+// upgrade path is #625's follow-up (GGUF-derived KV cache estimate shared
+// with assertVramForSwap).
+function estimateModelFit({ sizeBytes, vramMb, ramMb }) {
+  if (!Number.isFinite(sizeBytes) || sizeBytes <= 0) return null;
+  if (vramMb == null && ramMb == null) return null;
+  const requiredMb = (sizeBytes / (1024 * 1024)) * 1.2;
+  if (vramMb != null && requiredMb <= vramMb) return "fits";
+  return requiredMb <= (vramMb || 0) + (ramMb || 0) / 2 ? "slow" : "wont_fit";
+}
+
 function createModelManagement(options = {}) {
   const env = options.env || process.env;
   const searchDir =
@@ -432,7 +455,13 @@ function createModelManagement(options = {}) {
 
   function scanForModels(roots) {
     const searchRoots = Array.isArray(roots) && roots.length ? roots : defaultScanRoots();
-    return scanForGgufFiles({ roots: searchRoots });
+    const result = scanForGgufFiles({ roots: searchRoots });
+    // #625: reuses the cached hardware detection behind `recommendation`.
+    const { vramMb, ramMb } = getRecommendedModelProfile().detected;
+    for (const file of result.found) {
+      file.fit = estimateModelFit({ sizeBytes: file.sizeBytes, vramMb, ramMb });
+    }
+    return result;
   }
 
   // Switches Mana's "brain" between the local llama-server path (default)
@@ -555,5 +584,6 @@ module.exports = {
   detectGpuVramMb,
   detectGpuVramUsageMb,
   detectSystemMemoryMb,
+  estimateModelFit,
   recommendModelProfile,
 };

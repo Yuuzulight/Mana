@@ -118,7 +118,7 @@ internal static class MermaidRenderer
         g.DrawString(node.Label, font, textBrush, bounds, textFormat);
     }
 
-    private static GraphicsPath RoundedRect(RectangleF bounds, float radius)
+    internal static GraphicsPath RoundedRect(RectangleF bounds, float radius)
     {
         var diameter = radius * 2f;
         var path = new GraphicsPath();
