@@ -42,6 +42,6 @@ inspectable way.
 
 ## Related
 
-`docs/roadmap/hermes-desktop-eval-2026-09.md`. Relevant to issue #621's
+the 2026-09 Hermes Desktop evaluation (moved out of the repo; see git history). Relevant to issue #621's
 plugin-schema-loading concerns (small local models are more sensitive to
 context bloat than cloud models).

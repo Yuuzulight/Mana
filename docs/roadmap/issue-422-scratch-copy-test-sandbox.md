@@ -12,7 +12,7 @@ verification.
 against the live workspace. Full Docker-per-task isolation (OpenHands'
 approach) is the wrong weight class for a single-user Windows companion
 app with no Docker dependency -- deliberately scoped narrower here. See
-`docs/roadmap/oss-inspiration-survey-2026-08.md`.
+the 2026-08 OSS survey (moved out of the repo; see git history).
 
 Not a duplicate of #352, which is about OS-level sandboxing for
 *generated skill script execution* (`script-runner-worker.js`, a security

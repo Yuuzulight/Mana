@@ -8,13 +8,13 @@ incoming facts adds anything Mana's memory system doesn't already do.
 ## Why
 
 Inspired by mem0's LLM-judged CRUD decision per incoming fact against
-existing memory. See `docs/roadmap/oss-inspiration-survey-2026-08.md`.
+existing memory. See the 2026-08 OSS survey (moved out of the repo; see git history).
 
 ## Note -- flagged low-priority in the survey
 
 This mechanically overlaps with what Dream Mode consolidation already
 does, plus the contradiction-detection idea already logged from the July
-survey (`oss-inspiration-survey-2026-07.md`, Soul of Waifu) and the
+survey (the 2026-07 OSS survey, since moved out of the repo -- see git history; Soul of Waifu) and the
 archive action added in #277. Reads as "another memory database with
 LLM-judged CRUD" rather than a genuinely new mechanism.
 
@@ -33,4 +33,4 @@ LLM-judged CRUD" rather than a genuinely new mechanism.
 
 ## Related
 
-#277, `docs/roadmap/oss-inspiration-survey-2026-07.md`
+#277, the 2026-07 OSS survey (moved out of the repo; see git history)

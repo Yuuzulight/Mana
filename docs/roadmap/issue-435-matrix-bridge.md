@@ -10,7 +10,7 @@ A self-hosted Matrix homeserver (Synapse/Dendrite) with Mana as a bot
 user gives E2EE chat with a pairing-style DM flow similar to the existing
 bridges, but federatable to other chat networks from one integration
 point instead of one bridge per network. See
-`docs/roadmap/oss-inspiration-survey-2026-08.md`.
+the 2026-08 OSS survey (moved out of the repo; see git history).
 
 ## Proposed Scope
 

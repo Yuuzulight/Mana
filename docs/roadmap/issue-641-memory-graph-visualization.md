@@ -45,4 +45,4 @@ actually remembers about them short of reading raw data files.
 
 ## Related
 
-`docs/roadmap/hermes-desktop-eval-2026-09.md`.
+the 2026-09 Hermes Desktop evaluation (moved out of the repo; see git history).

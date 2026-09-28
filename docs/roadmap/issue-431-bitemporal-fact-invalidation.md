@@ -13,7 +13,7 @@ contradicting new fact marks the old edge invalid rather than
 overwriting/deleting it, so the full timeline stays queryable ("what did
 I believe was true in March?"). Mana's Hebbian memory graph (#285) tracks
 associative strength, not fact validity over time -- a distinct axis. See
-`docs/roadmap/oss-inspiration-survey-2026-08.md`.
+the 2026-08 OSS survey (moved out of the repo; see git history).
 
 ## Proposed Scope
 

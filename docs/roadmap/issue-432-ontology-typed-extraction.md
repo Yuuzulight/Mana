@@ -12,7 +12,7 @@ Inspired by cognee: typed extraction against a defined ontology cuts
 synonym/drift noise versus open-vocabulary LLM labels, and a
 post-ingestion pass infers derived facts via multi-hop/transitive graph
 structure. Mana's cross-session entity tagging (#78) uses open-vocabulary
-labels today. See `docs/roadmap/oss-inspiration-survey-2026-08.md`.
+labels today. See the 2026-08 OSS survey (moved out of the repo; see git history).
 
 ## Proposed Scope
 

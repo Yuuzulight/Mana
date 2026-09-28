@@ -59,5 +59,5 @@ logic exists at first run." Half of that is false:
 
 ## Related
 
-`docs/roadmap/oss-inspiration-survey-2026-09.md`. Relevant to both
+the 2026-09 OSS survey (moved out of the repo; see git history). Relevant to both
 launchers' first-run flow.

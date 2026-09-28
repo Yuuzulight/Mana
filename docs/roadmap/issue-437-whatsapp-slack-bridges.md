@@ -16,7 +16,7 @@ WhatsApp has no compliant local bridge -- only reverse-engineered,
 ToS-risk libraries exist. Slack has no meaningful local/self-hosted
 server option. Both fail Mana's local-first, no-cloud-mandatory-dependency
 constraint on the merits, not on effort. See
-`docs/roadmap/oss-inspiration-survey-2026-08.md`.
+the 2026-08 OSS survey (moved out of the repo; see git history).
 
 ## Proposed Scope
 

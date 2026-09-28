@@ -9,7 +9,7 @@ Decide whether a Signal bridge is worth the added Docker dependency.
 `signal-cli-rest-api` is a local, Dockerized REST/WebSocket wrapper
 around `signal-cli` that lets a self-hosted bot send/receive Signal
 messages, including E2EE DMs, with no cloud vendor API involved. See
-`docs/roadmap/oss-inspiration-survey-2026-08.md`.
+the 2026-08 OSS survey (moved out of the repo; see git history).
 
 ## Note -- flagged as a bigger lift in the survey
 

@@ -9,7 +9,7 @@ logic and chat-context injection.
 
 Inspired by AIRI's Gamelet API (`plugin.airi.json` manifest format,
 reference example: a chess gamelet). Mana's `plugins/` system is
-backend-only today. See `docs/roadmap/oss-inspiration-survey-2026-08.md`.
+backend-only today. See the 2026-08 OSS survey (moved out of the repo; see git history).
 Bigger architectural lift than most survey items -- scoping now as a
 pattern, not committing to build ahead of a plugin that actually needs it.
 

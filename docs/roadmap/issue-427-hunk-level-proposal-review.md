@@ -8,7 +8,7 @@ instead of only approving or rejecting the whole proposal.
 ## Why
 
 Inspired by avante.nvim and Cursor, which support hunk-level review. See
-`docs/roadmap/oss-inspiration-survey-2026-08.md`. Mana's
+the 2026-08 OSS survey (moved out of the repo; see git history). Mana's
 `editors/workspace/proposals` diff preview is all-or-nothing today.
 
 ## Proposed Scope

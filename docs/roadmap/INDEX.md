@@ -2,7 +2,7 @@
 
 Last built: 2026-08-19. Partially refreshed 2026-09-02 against `main`'s
 actual GitHub issue state (not just doc text) for the batch of ideas filed
-in `oss-inspiration-survey-2026-08.md` and its "Ad-hoc link evaluations"
+in the 2026-08 OSS survey (moved out of the repo; see git history) and its "Ad-hoc link evaluations"
 addendum -- see "Known staleness" at the bottom for what this refresh did
 and didn't cover.
 
@@ -153,7 +153,7 @@ section since the issues themselves aren't closed.
 | issue-260-honcho-vs-manas-memory.md | #260 | Honcho dialectic memory vs Mana's memory design | Investigated, not adopted -- has a named condition for revisiting |
 | issue-490-openbot-governance-scoping.md | #490 | OpenBot-style multi-agent governance | Not adopted -- single-user gate/audit already covers it; named condition for revisiting. GitHub issue closed as not_planned 2026-09-02, resolving the prior doc/issue mismatch |
 
-## Design only -- scoped, gated on something (6)
+## Design only -- scoped, gated on something (4)
 
 | Doc | Issue | Topic | Gated on |
 | --- | --- | --- | --- |
@@ -161,8 +161,6 @@ section since the issues themselves aren't closed.
 | issue-258-mobile-app-scoping.md | #258 | Native mobile app (Godot) | Not started; open questions already decided |
 | issue-268-credential-broker-scoping.md | #268 | Local OAuth credential broker | No OAuth-gated plugin exists yet to build it for |
 | issue-359-mac-linux-scoping.md | #359 | Mac/Linux launcher and packaging | Scoping only, no code changes yet |
-| oss-inspiration-survey-2026-07.md | -- | OSS survey: companions, assistants, coding agents, Live2D | Research only, nothing implemented from it yet |
-| oss-inspiration-survey-2026-08.md | -- | OSS survey: companions, coding-agent tooling, voice stack, memory, integrations | Research only, nothing implemented from it yet |
 
 ## Open (18)
 

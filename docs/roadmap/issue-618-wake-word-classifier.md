@@ -62,5 +62,5 @@ happening at all times regardless of whether anyone is talking to Mana.
 
 ## Related
 
-`docs/roadmap/oss-inspiration-survey-2026-09.md` (full research backing).
+the 2026-09 OSS survey (moved out of the repo; see git history) (full research backing).
 Complements #619 (echo suppression and turn-detection).

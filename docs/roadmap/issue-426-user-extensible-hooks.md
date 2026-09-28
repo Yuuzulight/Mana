@@ -10,7 +10,7 @@ execution, alongside Mana's built-in approval gate and audit layer.
 Inspired by Claude Code's `PreToolUse`/`PostToolUse` hook config
 (allow/deny/ask/modify-input). Mana's approval gate (#152) and unified
 audit layer (#188) are fixed internal gates with no user-authored
-extension point. See `docs/roadmap/oss-inspiration-survey-2026-08.md`.
+extension point. See the 2026-08 OSS survey (moved out of the repo; see git history).
 
 ## Proposed Scope
 

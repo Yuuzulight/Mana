@@ -82,4 +82,4 @@ fact-validity/typed-entity work in #431/#432.
 
 #431 (bi-temporal fact validity, already shipped), #432 (typed-entity
 extraction + derived-facts, already shipped).
-`docs/roadmap/oss-inspiration-survey-2026-09.md`.
+the 2026-09 OSS survey (moved out of the repo; see git history).
