@@ -97,3 +97,22 @@ test("an empty body yields nothing rather than throwing", async () => {
   assert.deepEqual(seen, []);
   assert.equal(full, "");
 });
+
+// Issue #660: the final frame's timings (prompt cache hit/miss counts) reach
+// the caller so the runtime can log them.
+test("onTimings receives the timings object a frame carries", async () => {
+  const timings = { prompt_n: 12, cache_n: 480 };
+  const resp = {
+    body: {
+      async *[Symbol.asyncIterator]() {
+        yield `data: ${JSON.stringify({ choices: [{ delta: { content: "Hi. " } }] })}${NL}`;
+        yield `data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: "stop" }], timings })}${NL}`;
+        yield `data: [DONE]${NL}`;
+      },
+    },
+  };
+  const seenTimings = [];
+  const full = await streamSentences(resp, { onTimings: (t) => seenTimings.push(t) });
+  assert.equal(full, "Hi.");
+  assert.deepEqual(seenTimings, [timings]);
+});

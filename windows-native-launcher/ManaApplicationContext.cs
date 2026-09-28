@@ -251,7 +251,11 @@ internal sealed class ManaApplicationContext : ApplicationContext
         menu.Opening += (_, _) => listeningItem.Text = voiceLoop.IsListening ? "Stop listening" : "Start listening";
         menu.Items.Add(listeningItem);
         menu.Items.Add(new ToolStripSeparator());
-        menu.Items.Add("Restart Fish Speech", null, (_, _) => RestartFishSpeech());
+        if (processManager.IsBackendLocal)
+        {
+            // A remote backend's Fish Speech isn't this launcher's to restart.
+            menu.Items.Add("Restart Fish Speech", null, (_, _) => RestartFishSpeech());
+        }
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add("Exit Mana", null, (_, _) => _ = ShutdownAsync());
         return menu;
@@ -468,7 +472,9 @@ internal sealed class ManaApplicationContext : ApplicationContext
     private string FallbackNoteFor(string? configuredProvider)
     {
         var isFishConfigured = string.Equals(configuredProvider, "fish", StringComparison.OrdinalIgnoreCase);
-        return isFishConfigured && !processManager.IsFishSpeechAvailable ? " (Kokoro fallback active)" : "";
+        // A remote backend uses its own machine's TTS, which this launcher
+        // neither starts nor can see -- no local fallback to report.
+        return isFishConfigured && processManager.IsBackendLocal && !processManager.IsFishSpeechAvailable ? " (Kokoro fallback active)" : "";
     }
 
     // #479 review: a manual escape hatch for the fallback case FallbackNoteFor
@@ -559,7 +565,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
         }
     }
 
-    private static string FindRootDirectory()
+    internal static string FindRootDirectory()
     {
         var current = AppContext.BaseDirectory;
         while (!string.IsNullOrWhiteSpace(current))

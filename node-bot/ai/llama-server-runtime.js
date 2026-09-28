@@ -7,6 +7,7 @@ const {
   collectFilesRecursively,
   findPreferredLlamaModel,
   getKnownLlamaModelProfiles,
+  LLAMA_MODEL_PROFILES,
 } = require("./local-ai");
 const {
   DEFAULT_SYSTEM_PROMPT,
@@ -47,7 +48,8 @@ function createLlamaServerRuntime(options = {}) {
     starting: null,
     idleTimer: null,
     exitHandlerRegistered: false,
-    lastStartFailureAt: 0,
+    // #666: model -> { at, count } of its consecutive failed starts.
+    startFailures: new Map(),
     loadedAt: null,
     lastSwapMs: null,
     // #693: the binary the latest start attempt used, so a pointer switch
@@ -675,6 +677,14 @@ function createLlamaServerRuntime(options = {}) {
     );
   }
 
+  // #666: cooldown after the Nth consecutive failed start of one model.
+  function startCooldownMs(failureCount) {
+    return Math.min(
+      Number(env.LLAMA_SERVER_RETRY_COOLDOWN_MS || 300000),
+      5000 * 3 ** (failureCount - 1),
+    );
+  }
+
   // profile only affects which flags a *new* start gets (see PROFILE_TUNING
   // above) -- if the same model+mmproj is already running and healthy, that
   // process keeps whatever flags it started with, even if called again
@@ -683,23 +693,29 @@ function createLlamaServerRuntime(options = {}) {
   // profile's own primary model is distinct from the others'), and forcing
   // a restart on a profile-label-only change would undo the "don't restart
   // for no reason" debounce/adoption logic below for a cosmetic difference.
-  async function ensureServerConfig(model, mmproj = null, profile = null) {
+  // onWait (#666) is called whenever this call is about to wait on a
+  // (re)start, so a chat turn can tell the user it's waking up.
+  async function ensureServerConfig(model, mmproj = null, profile = null, onWait = null) {
     // After a failed start (missing binary, port conflict, out of memory),
     // don't re-pay the startup wait on every reply; let the llama-cli
-    // fallback serve until the cooldown expires.
-    const retryCooldownMs = Number(
-      env.LLAMA_SERVER_RETRY_COOLDOWN_MS || 300000,
-    );
-    if (
-      state.lastStartFailureAt &&
-      nowMs() - state.lastStartFailureAt < retryCooldownMs
-    ) {
-      throw new Error(
-        "llama-server recently failed to start; retry cooldown active",
-      );
+    // fallback serve until the cooldown expires. #666: per model, and it
+    // backs off -- 5s after the first failure, x3 per repeat, capped at
+    // LLAMA_SERVER_RETRY_COOLDOWN_MS -- so a transient failure no longer
+    // locks the model out for five minutes.
+    const failure = state.startFailures.get(model);
+    if (failure) {
+      const retryAfterMs = failure.at + startCooldownMs(failure.count) - nowMs();
+      if (retryAfterMs > 0) {
+        const error = new Error(
+          "llama-server recently failed to start; retry cooldown active",
+        );
+        error.retryAfterMs = retryAfterMs;
+        throw error;
+      }
     }
 
     if (state.starting) {
+      if (onWait) onWait();
       try {
         await state.starting;
       } catch (e) {
@@ -734,6 +750,7 @@ function createLlamaServerRuntime(options = {}) {
 
     assertVramForSwap(model, mmproj);
 
+    if (onWait) onWait();
     const swapStartedAt = nowMs();
     if (isRunning) {
       if (state.model && state.model !== model) {
@@ -747,7 +764,7 @@ function createLlamaServerRuntime(options = {}) {
     state.starting = startServer(model, mmproj, profile);
     try {
       await state.starting;
-      state.lastStartFailureAt = 0;
+      state.startFailures.delete(model);
       state.loadedAt = nowMs();
       // #693: only a process this runtime spawned proves the new build
       // works -- an adopted server may still be the old one.
@@ -767,12 +784,15 @@ function createLlamaServerRuntime(options = {}) {
         console.log(`llama-server: swap completed in ${state.lastSwapMs}ms${vramNote}`);
       }
     } catch (e) {
-      state.lastStartFailureAt = nowMs();
+      const count = (state.startFailures.get(model)?.count || 0) + 1;
+      state.startFailures.set(model, { at: nowMs(), count });
+      e.retryAfterMs = startCooldownMs(count);
       // #693: an update-installed build that won't start is swapped back
       // to the previous one; skip the retry cooldown so the next reply
       // starts on it straight away instead of falling back to llama-cli.
       if (settleBuild(e)) {
-        state.lastStartFailureAt = 0;
+        state.startFailures.clear();
+        e.retryAfterMs = 0;
       }
       throw e;
     } finally {
@@ -803,20 +823,81 @@ function createLlamaServerRuntime(options = {}) {
     return ensureServerConfig(findLlamaModel(profile), null, profile);
   }
 
+  // #666: a chat turn waits out a llama-server (re)start or a brief outage
+  // instead of failing. Retries back off (2s, 6s, 18s, or the cooldown if
+  // longer) while they fit in LLAMA_SERVER_TURN_WAIT_MS (20s), then the
+  // profile's fallbackProfile gets one try. onWait fires at most once, the
+  // first time the turn actually has to wait. Resolves to the profile that
+  // is ready; rejects with the primary's error when nothing came up.
+  async function waitForServer(profile, onWait = null) {
+    let waited = false;
+    const notify = () => {
+      if (waited) return;
+      waited = true;
+      if (onWait) onWait();
+    };
+    const deadline = nowMs() + Number(env.LLAMA_SERVER_TURN_WAIT_MS || 20000);
+    const model = findLlamaModel(profile);
+    for (let delayMs = 2000; ; delayMs *= 3) {
+      try {
+        await ensureServerConfig(model, null, profile, notify);
+        return profile;
+      } catch (e) {
+        const waitMs = Math.max(delayMs, e.retryAfterMs || 0);
+        if (nowMs() + waitMs <= deadline) {
+          notify();
+          await sleep(waitMs);
+          continue;
+        }
+        const fallback = LLAMA_MODEL_PROFILES[profile]?.fallbackProfile;
+        const fallbackModel = fallback ? findLlamaModel(fallback) : null;
+        if (!fallbackModel || fallbackModel === model) throw e;
+        try {
+          await ensureServerConfig(fallbackModel, null, fallback, notify);
+        } catch {
+          throw e;
+        }
+        return fallback;
+      }
+    }
+  }
+
   // Issue #282: splices caller-supplied memory entries into the message
   // array at either end -- "early" right after the persona system message,
   // "late" right before the live user message (the higher-salience
   // position, closest to what's actually being asked). Omitting
   // extraMessages entirely preserves today's exact 2-message shape.
+  // Issue #660: "early" is only for content that is stable across turns --
+  // anything there becomes part of the prompt prefix llama-server's prompt
+  // cache reuses, so per-turn content there would invalidate it each turn.
+  //
+  // Only the first message may be system-role: Qwen3.5's chat template (the
+  // default model) raises "System message must be at the beginning" for any
+  // later one, and llama-server answers 500 -- so every turn with memory
+  // fell back to llama-cli. System-role entries are folded instead: early
+  // ones into the leading system message (where they already sat), late
+  // ones onto the front of the live user message (still last in the prompt,
+  // so the stable prefix stays cacheable, #660). Other roles pass through.
   function buildMessages(systemContent, prompt, extraMessages) {
     const early = extraMessages?.early || [];
     const late = extraMessages?.late || [];
+    const systemText = (entries) => entries.filter((m) => m.role === "system").map((m) => m.content);
+    const nonSystem = (entries) => entries.filter((m) => m.role !== "system");
+    const lateText = systemText(late);
     return [
-      { role: "system", content: systemContent },
-      ...early,
-      ...late,
-      { role: "user", content: prompt },
+      { role: "system", content: [systemContent, ...systemText(early)].join("\n\n") },
+      ...nonSystem(early),
+      ...nonSystem(late),
+      { role: "user", content: [...lateText, prompt].join("\n\n") },
     ];
+  }
+
+  // Issue #660: llama-server reports per request how many prompt tokens it
+  // reused from its prompt cache (cache_n) vs. processed fresh (prompt_n),
+  // so the cache hit rate between turns is visible in the log.
+  function logPromptCache(label, timings) {
+    if (!timings || typeof timings.prompt_n !== "number") return;
+    console.log(`${label}: prompt cache_n=${timings.cache_n ?? 0} prompt_n=${timings.prompt_n}`);
   }
 
   async function runLocalAssistantReply(
@@ -854,6 +935,7 @@ function createLlamaServerRuntime(options = {}) {
       );
     }
     const json = await resp.json();
+    logPromptCache("llama-server", json && json.timings);
     const content =
       json && json.choices && json.choices[0] && json.choices[0].message
         ? String(json.choices[0].message.content || "")
@@ -922,7 +1004,17 @@ function createLlamaServerRuntime(options = {}) {
       );
     }
 
-    const full = await streamSentences(resp, { onSentence, maxSentenceChars });
+    // Kept and logged once: only the final frame normally carries timings,
+    // but a server run with timings_per_token sends them on every frame.
+    let lastTimings = null;
+    const full = await streamSentences(resp, {
+      onSentence,
+      maxSentenceChars,
+      onTimings: (timings) => {
+        lastTimings = timings;
+      },
+    });
+    logPromptCache("llama-server-stream", lastTimings);
 
     if (!full.trim()) {
       throw new Error("llama-server returned an empty reply");
@@ -1156,7 +1248,9 @@ function createLlamaServerRuntime(options = {}) {
           `llama-server reply failed (${resp.status}): ${text.slice(0, 500)}`,
         );
       }
-      return resp.json();
+      const json = await resp.json();
+      logPromptCache("llama-server-tool-reply", json && json.timings);
+      return json;
     }
 
     const executedToolCalls = [];
@@ -1502,6 +1596,7 @@ function createLlamaServerRuntime(options = {}) {
     proxyChatCompletion,
     streamLocalAssistantReply,
     runBestOfNReply,
+    waitForServer,
     runLocalAssistantReply,
     runToolAwareReply,
     runVisionReply,

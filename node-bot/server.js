@@ -5,7 +5,8 @@ Node backend server (server.js)
 - POST /screen/read : accepts a screenshot data URL and returns local OCR text.
 - GET /health : basic health check
 
-Environment variables (set before running):
+Environment variables (node-bot/.env, loaded at startup -- its values win
+over inherited ones -- or set before running):
 - WHISPER_BIN : full path to whisper.cpp main executable (e.g. C:\whisper.cpp\main.exe)
 - WHISPER_MODEL : full path to whisper model file (e.g. models/ggml-base.en.bin)
 - WHISPER_LANGUAGE : spoken language passed to whisper.cpp (default "en")
@@ -44,6 +45,16 @@ Environment variables (set before running):
 
 This server aims to avoid Python. You must download and place the whisper.cpp and llama.cpp binaries and model files yourself.
 */
+
+// First, before any module below reads process.env at require time (e.g.
+// tools/retriever-index.js's USE_EMBEDDINGS). Only when run as the server:
+// tests that require() this file keep their own environment.
+if (require.main === module) {
+  const loadedEnvKeys = require("./load-env").loadEnvFile();
+  if (loadedEnvKeys.length) {
+    console.log(`Loaded ${loadedEnvKeys.length} settings from node-bot/.env`);
+  }
+}
 
 const express = require("express");
 const multer = require("multer");
@@ -3553,7 +3564,8 @@ function registerRoutes(app, upload, deps = {}) {
     onSentence = null,
   ) {
     const prompt = buildScreenAwarePrompt(transcript, screenText, marketText);
-    const normalizedModelProfile = selectLlamaModelProfileForPrompt(
+    // let: #666's wait below may switch this turn to the fallback profile.
+    let normalizedModelProfile = selectLlamaModelProfileForPrompt(
       transcript,
       modelProfile,
     );
@@ -3714,6 +3726,13 @@ function registerRoutes(app, upload, deps = {}) {
     // below). Paths that only take a flat system-prompt string (the OpenAI
     // proxy, Best-of-N) fall back to the old flattened text via
     // flatMemorySuffix so they don't lose memory context entirely.
+    //
+    // Issue #660: every memory entry built below changes turn to turn, so
+    // all of them default to "late" -- anything per-turn placed early would
+    // change the prompt prefix and defeat llama-server's prompt cache. The
+    // system prompt above stays per-turn-free for the same reason (persona,
+    // background memory, name-sorted skills index, session goal); screen
+    // and market text already ride on the user message itself.
     const memoryExtraMessages = { early: [], late: [] };
     let flatMemorySuffix = "";
     let promptMemoryChars = 0;
@@ -4404,6 +4423,32 @@ function registerRoutes(app, upload, deps = {}) {
         }
       }
       return replyMaybeWithTools(promptText);
+    }
+
+    // #666: wait out a llama-server (re)start instead of failing the turn,
+    // telling a streaming client once, as a spoken sentence. Not in
+    // streamedSentences, so it never counts against streamedMatchesFinal.
+    // If nothing comes up, the paths below fall back to llama-cli as before.
+    // Gated on the runtime's own isEnabled (false under the test runner), not
+    // the deps.isLlamaServerEnabled override: a test that only stubs that
+    // override must never reach a real llama-server start from here.
+    if (
+      activeLlamaServerRuntime.waitForServer &&
+      activeLlamaServerRuntime.isEnabled()
+    ) {
+      try {
+        const readyProfile = await activeLlamaServerRuntime.waitForServer(
+          normalizedModelProfile,
+          onSentence ? () => onSentence("Give me a second, I'm waking up.") : null,
+        );
+        if (readyProfile !== normalizedModelProfile) {
+          console.warn(`Mana: ${normalizedModelProfile} model unavailable, answering with ${readyProfile}`);
+          if (onSentence) onSentence("My main model isn't answering, so I'm using my backup.");
+          normalizedModelProfile = readyProfile;
+        }
+      } catch (e) {
+        console.warn("llama-server still unavailable after waiting:", e && e.message ? e.message : e);
+      }
     }
 
     // Fall back to local llama

@@ -35,6 +35,10 @@ internal sealed class ManaProcessManager : IDisposable
     // it" -- the two look identical from the configured-provider name alone.
     public bool IsFishSpeechAvailable { get; private set; }
 
+    // False when the configured backend URL points at another machine --
+    // that machine runs its own node-bot and its own TTS services.
+    public bool IsBackendLocal => isBackendLocal;
+
     // The backend's own health-check URL, derived from the same configured
     // base URL ManaBackendClient/TrayNotificationClient use -- previously
     // hardcoded to 127.0.0.1:5005 here regardless of a user-configured
@@ -90,13 +94,18 @@ internal sealed class ManaProcessManager : IDisposable
         // running: Fish Speech to answer synthesis requests by default,
         // Kokoro so the fallback has something live to fall back to.
         //
-        // These three checks are independent (none needs another already
+        // Kokoro and Fish Speech are only ever called by node-bot (native
+        // synthesizes through the backend), so with a remote backend they'd
+        // be dead weight -- and Kokoro's missing-venv throw would fail
+        // startup for nothing. Skipped then, like the backend and embedder.
+        //
+        // These checks are independent (none needs another already
         // running before it can start), so they run concurrently instead
         // of one-after-another -- a stale/wedged listener on one port no
         // longer serializes an ~100s HttpClient timeout in front of the
         // other two.
-        var kokoroTask = StartAndReport("kokoro", "http://127.0.0.1:5011/health", () => Task.FromResult<Process?>(StartKokoro()));
-        var fishSpeechTask = StartAndReport("fish-speech", "http://127.0.0.1:8080/v1/health", () => Task.FromResult(StartFishSpeech()));
+        var kokoroTask = StartAndReport("kokoro", "http://127.0.0.1:5011/health", () => Task.FromResult<Process?>(isBackendLocal ? StartKokoro() : null));
+        var fishSpeechTask = StartAndReport("fish-speech", "http://127.0.0.1:8080/v1/health", () => Task.FromResult(isBackendLocal ? StartFishSpeech() : null));
         var backendTask = StartAndReport("backend", backendHealthUrl, () => Task.FromResult<Process?>(isBackendLocal ? StartBackend() : null));
         // #691: the embedder only serves a backend on this machine -- a remote
         // backend calls its own 127.0.0.1:9001, never ours.
