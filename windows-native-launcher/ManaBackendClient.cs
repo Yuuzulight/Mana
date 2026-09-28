@@ -283,6 +283,16 @@ internal sealed class ManaBackendClient
         return document.RootElement.TryGetProperty("text", out var textElement) ? textElement.GetString() ?? "" : "";
     }
 
+    // #681: POST /internal/idle-report -- same {idleSeconds} body
+    // windows-launcher sends; node-bot decides whether that's idle enough.
+    public async Task ReportIdleAsync(int idleSeconds)
+    {
+        var payload = JsonSerializer.Serialize(new { idleSeconds });
+        using var content = new StringContent(payload, Encoding.UTF8, "application/json");
+        using var response = await http.PostAsync("/internal/idle-report", content);
+        response.EnsureSuccessStatusCode();
+    }
+
     // #527: node-bot's configured llama-server profiles -- see
     // model-management.js's getModelStatus/buildProfileStatus for the
     // full shape; this only carries what compare-mode needs.
