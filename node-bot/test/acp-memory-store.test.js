@@ -2126,3 +2126,153 @@ test("the 500-fact cap drops the oldest inactive facts, never an active one (#67
   assert.ok(!facts.some((f) => f.key === "archived 0"));
   assert.ok(facts.some((f) => f.key === "archived 29"));
 });
+
+// Issue #663: facts.json as it looks on disk today -- no id on the oldest
+// records, no schemaVersion, history entries, a pinned fact, a stale and an
+// archived one. None of them may turn pending or change on load.
+function writeTodaysFactsFixture(dataDir) {
+  const facts = [
+    { key: "the user's GPU", text: "RTX 5080", sessionId: "default", status: "active", createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z" },
+    {
+      id: "m0-abc123", key: "favorite color", text: "teal", sessionId: "s1", status: "active",
+      validFrom: "2026-03-01T00:00:00.000Z", schemaVersion: 1, createdAt: "2026-02-01T00:00:00.000Z", updatedAt: "2026-03-01T00:00:00.000Z",
+      history: [{ text: "blue", validFrom: "2026-02-01T00:00:00.000Z", invalidatedAt: "2026-03-01T00:00:00.000Z" }],
+    },
+    { id: "m1-def456", key: "user name", text: "Yuuzu", sessionId: "s1", status: "active", pinned: true, schemaVersion: 1, createdAt: "2026-02-02T00:00:00.000Z", updatedAt: "2026-02-02T00:00:00.000Z" },
+    { id: "m2-ghi789", key: "old job", text: "barista", sessionId: "s1", status: "stale", createdAt: "2026-01-02T00:00:00.000Z", updatedAt: "2026-01-03T00:00:00.000Z" },
+    { id: "m3-jkl012", key: "finished project", text: "tax filing", sessionId: "s1", status: "archived", createdAt: "2026-01-02T00:00:00.000Z", updatedAt: "2026-01-03T00:00:00.000Z" },
+  ];
+  fs.writeFileSync(path.join(dataDir, "facts.json"), JSON.stringify({ facts }), "utf8");
+  return facts;
+}
+
+test("today's facts.json records load and behave as before: nothing is pending, recall is unmarked (issue #663)", () => {
+  const dataDir = createTempDir();
+  const original = writeTodaysFactsFixture(dataDir);
+  const store = createAcpMemoryStore({ dataDir });
+
+  assert.deepEqual(store.listFacts(), original);
+  assert.ok(store.listFactKeys().every((f) => !f.pending));
+  assert.deepEqual(store.listFactKeys().map((f) => f.key), ["the user's GPU", "favorite color", "user name"]);
+  const recalled = store.getRelatedFacts("what is the user's GPU and favorite color", { maxChars: 2000 });
+  assert.match(recalled, /RTX 5080/);
+  assert.match(recalled, /teal/);
+  assert.match(recalled, /Yuuzu/);
+  assert.doesNotMatch(recalled, /unconfirmed/);
+  // A version exists for an old record with no id, so approvals can pin it.
+  assert.match(store.getFactVersion("the user's GPU"), /^[0-9a-f]{12}$/);
+  assert.equal(store.archiveExpiredPendingFacts().archived.length, 0);
+  // Loading, recalling and the expiry pass wrote nothing back.
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(dataDir, "facts.json"), "utf8")).facts, original);
+});
+
+test("a pending fact is recalled marked unconfirmed, and confirm makes it active (issue #663)", () => {
+  const store = createAcpMemoryStore({ dataDir: createTempDir() });
+  const inserted = store.rememberFact({ key: "coffee order", text: "oat flat white", pending: true });
+  assert.equal(inserted.pending, true);
+  assert.equal(store.listFacts()[0].status, "pending");
+  assert.deepEqual(store.listFactKeys(), [{ key: "coffee order", preview: "oat flat white", pending: true }]);
+  assert.match(store.getRelatedFacts("my coffee order"), /oat flat white \(unconfirmed/);
+
+  assert.deepEqual(store.rememberFact({ key: "coffee order", action: "confirm" }), {
+    ok: true, action: "confirm", key: "coffee order", found: true,
+  });
+  assert.equal(store.listFacts()[0].status, "active");
+  assert.doesNotMatch(store.getRelatedFacts("my coffee order"), /unconfirmed/);
+  assert.equal(store.rememberFact({ key: "nothing here", action: "confirm" }).found, false);
+});
+
+test("patching a pending fact keeps it one fact; an explicit restatement confirms it, a pending patch never demotes an active one (issue #663)", () => {
+  const store = createAcpMemoryStore({ dataDir: createTempDir() });
+  store.rememberFact({ key: "pet", text: "has a cat", pending: true });
+  store.rememberFact({ key: "pet", text: "has a cat named Tom", action: "patch", pending: true });
+  assert.equal(store.listFacts().length, 1);
+  assert.equal(store.listFacts()[0].status, "pending");
+  store.rememberFact({ key: "pet", text: "has a cat named Tom", action: "patch" });
+  assert.equal(store.listFacts()[0].status, "active");
+  store.rememberFact({ key: "pet", text: "has two cats", action: "patch", pending: true });
+  assert.equal(store.listFacts()[0].status, "active");
+
+  store.rememberFact({ key: "job guess", text: "works in retail", pending: true });
+  const result = store.rememberFact({ key: "job", text: "works as a nurse", supersedes: "job guess" });
+  assert.equal(result.superseded.found, true);
+});
+
+test("unconfirmed pending facts age into archived, not deleted; confirmed or recent ones stay (issue #663)", () => {
+  let clock = "2026-09-01T00:00:00.000Z";
+  const store = createAcpMemoryStore({ dataDir: createTempDir(), now: () => clock });
+  store.rememberFact({ key: "old guess", text: "likes jazz", pending: true });
+  store.rememberFact({ key: "old confirmed", text: "likes rock", pending: true });
+  store.rememberFact({ key: "old confirmed", action: "confirm" });
+  clock = "2026-09-10T00:00:00.000Z";
+  store.rememberFact({ key: "new guess", text: "likes pop", pending: true });
+  clock = "2026-09-16T00:00:00.000Z";
+
+  assert.deepEqual(store.archiveExpiredPendingFacts({ maxAgeDays: 14 }).archived, ["old guess"]);
+  const byKey = Object.fromEntries(store.listFacts().map((f) => [f.key, f.status]));
+  assert.deepEqual(byKey, { "old guess": "archived", "old confirmed": "active", "new guess": "pending" });
+});
+
+test("the 500 cap keeps pending facts like active ones and drops inactive ones first (issue #663)", () => {
+  const dataDir = createTempDir();
+  const facts = [];
+  for (let i = 0; i < 10; i += 1) facts.push({ key: `stale ${i}`, text: "x", status: "stale" });
+  for (let i = 0; i < 490; i += 1) facts.push({ key: `pending ${i}`, text: "y", status: "pending" });
+  fs.writeFileSync(path.join(dataDir, "facts.json"), JSON.stringify({ facts }), "utf8");
+  const store = createAcpMemoryStore({ dataDir });
+  store.rememberFact({ key: "one more", text: "z" });
+  const kept = store.listFacts();
+  assert.equal(kept.length, 500);
+  assert.equal(kept.filter((f) => f.status === "pending").length, 490);
+  assert.ok(!kept.some((f) => f.key === "stale 0"));
+});
+
+test("a write pinned to a fact version is refused, with nothing written or snapshotted, once that fact changed (issue #663)", () => {
+  let tick = 0;
+  const snapshotStore = createSnapshotStore({ dataDir: createTempDir() });
+  const store = createAcpMemoryStore({
+    dataDir: createTempDir(),
+    snapshotStore,
+    now: () => new Date(Date.UTC(2026, 8, 1, 0, 0, tick++)).toISOString(),
+  });
+  store.rememberFact({ key: "gpu", text: "RTX 4070" });
+  store.rememberFact({ key: "old status", text: "single" });
+  const reviewed = [
+    { key: "gpu", version: store.getFactVersion("gpu") },
+    { key: "old status", version: store.getFactVersion("old status") },
+  ];
+  assert.equal(store.getFactVersion("no such key"), null);
+
+  // Changed between request and approval.
+  store.rememberFact({ key: "gpu", text: "RTX 5080", action: "patch" });
+  const snapshotsBefore = snapshotStore.listSnapshots("memory-fact").length;
+  const refused = store.rememberFact({
+    key: "gpu", text: "RTX 3060", action: "patch", supersedes: "old status", expectedVersions: reviewed,
+  });
+  assert.equal(refused.ok, false);
+  assert.equal(refused.refused, "changed");
+  assert.deepEqual(refused.changed, ["gpu"]);
+  assert.match(refused.error, /nothing was overwritten/);
+  assert.equal(store.listFacts().find((f) => f.key === "gpu").text, "RTX 5080");
+  assert.ok(!store.listFacts().find((f) => f.key === "old status").invalidatedAt);
+  assert.equal(snapshotStore.listSnapshots("memory-fact").length, snapshotsBefore);
+
+  // Pinned to the current versions, it applies.
+  const applied = store.rememberFact({
+    key: "gpu", text: "RTX 3060", action: "patch",
+    expectedVersions: [{ key: "gpu", version: store.getFactVersion("gpu") }],
+  });
+  assert.equal(applied.ok, true);
+  assert.equal(store.listFacts().find((f) => f.key === "gpu").text, "RTX 3060");
+
+  // A fact that appeared since a "nothing here yet" request also refuses.
+  store.rememberFact({ key: "new key", text: "exists now" });
+  assert.equal(
+    store.rememberFact({ key: "new key", text: "other", expectedVersions: [{ key: "new key", version: null }] }).refused,
+    "changed",
+  );
+  // Pin/unpin is not a change to what was reviewed.
+  const pinnedVersion = store.getFactVersion("gpu");
+  store.setFactPinned("gpu", true);
+  assert.equal(store.getFactVersion("gpu"), pinnedVersion);
+});

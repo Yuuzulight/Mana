@@ -315,10 +315,30 @@ internal sealed class SettingsPanel : UserControl
             }
         };
 
+        // #663: a pending fact is one Mana picked up without being asked.
+        var confirmButton = new Button { Text = "Confirm (pending)", Dock = DockStyle.Bottom, Height = 28 };
+        DarkTheme.ApplyButton(confirmButton);
+        confirmButton.Click += async (_, _) =>
+        {
+            confirmButton.Enabled = false;
+            try
+            {
+                await ConfirmSelectedFactAsync();
+            }
+            finally
+            {
+                if (!IsDisposed)
+                {
+                    confirmButton.Enabled = true;
+                }
+            }
+        };
+
         var page = new TabPage("Memory Facts");
         page.Controls.Add(factsList);
         page.Controls.Add(pinButton);
         page.Controls.Add(archiveButton);
+        page.Controls.Add(confirmButton);
         return page;
     }
 
@@ -336,6 +356,27 @@ internal sealed class SettingsPanel : UserControl
         catch (Exception ex)
         {
             Console.WriteLine($"SettingsPanel: failed to pin fact '{fact.Key}'. {ex.Message}");
+            return;
+        }
+        if (!IsDisposed)
+        {
+            await RefreshMemoryFactsAsync();
+        }
+    }
+
+    private async Task ConfirmSelectedFactAsync()
+    {
+        if (factsList.SelectedItems.Count == 0 || factsList.SelectedItems[0].Tag is not ManaMemoryFact fact)
+        {
+            return;
+        }
+        try
+        {
+            await backendClient.ConfirmMemoryFactAsync(fact.Key);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"SettingsPanel: failed to confirm fact '{fact.Key}'. {ex.Message}");
             return;
         }
         if (!IsDisposed)

@@ -50,6 +50,21 @@ function registerMemoryFactsRoutes(app, context = {}) {
     }
   });
 
+  // Issue #663: confirm a pending (auto-picked-up) fact, making it active.
+  app.post("/admin/memory/facts/:key/confirm", adminMemoryRateLimiter, (req, res) => {
+    if (!checkAdminAuth(req, res)) return;
+    try {
+      const result = acpMemoryStore.rememberFact({
+        key: req.params.key,
+        action: "confirm",
+        source: "human",
+      });
+      return res.status(result.found ? 200 : 404).json({ ...result, ok: result.found });
+    } catch (e) {
+      return res.status(500).json({ ok: false, error: String(e) });
+    }
+  });
+
   // Issue #674: pin/unpin a fact so it is injected every turn. Body
   // {pinned: boolean}; anything but a literal true unpins.
   app.post("/admin/memory/facts/:key/pin", adminMemoryRateLimiter, (req, res) => {
@@ -69,7 +84,7 @@ const memoryFactsCapability = {
   getHealth: () => ({
     status: "configured",
     configured: true,
-    message: "Memory facts admin routes are available (list, archive, pin).",
+    message: "Memory facts admin routes are available (list, archive, confirm, pin).",
   }),
 };
 

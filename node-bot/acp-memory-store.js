@@ -60,10 +60,18 @@ const SESSION_SEARCH_RERANKED_TOP = 8;
 // scores yet -- make it an env var if recall is visibly too loose/tight.
 const MIN_FACT_SIMILARITY = 0.5;
 
+// Issue #663: "pending" is a fact Mana picked up on her own and the user has
+// not confirmed yet. It is live (patchable, recallable, one per key) like an
+// active fact; old records have no pending status, so they behave as before.
+function isLiveFact(fact) {
+  return fact.status === "active" || fact.status === "pending";
+}
+
 // Issue #317/#277/#431: unverified, archived/stale and invalidated facts
-// never auto-surface -- unchanged from the key-match-only version.
+// never auto-surface -- unchanged from the key-match-only version. #663:
+// pending facts do, marked tentative (factsBlockFor).
 function isRecallable(fact) {
-  return fact.status === "active" && !fact.unverifiedSource && !fact.invalidatedAt;
+  return isLiveFact(fact) && !fact.unverifiedSource && !fact.invalidatedAt;
 }
 
 // Facts from before ids existed fall back to their (active-unique) key;
@@ -136,7 +144,10 @@ function maxMatchedFacts(options) {
 // Pinned lines first: they are the same every turn, so the block's start
 // stays stable (#660), and they survive the whole-line char cap first.
 function factsBlockFor(pinned, matched) {
-  const lines = [...pinned, ...matched].map((fact) => `- ${fact.key}: ${fact.text}`);
+  const lines = [...pinned, ...matched].map(
+    (fact) =>
+      `- ${fact.key}: ${fact.text}${fact.status === "pending" ? " (unconfirmed -- check with the user before relying on it)" : ""}`,
+  );
   return lines.length ? `Remembered:\n${lines.join("\n")}` : "";
 }
 
@@ -197,9 +208,10 @@ function applySupersedes(facts, cleanKey, supersedes, timestamp) {
   if (!cleanSupersedes || cleanSupersedes.toLowerCase() === cleanKey.toLowerCase()) {
     return null;
   }
+  // #663: a pending fact can be superseded too.
   const target = facts.find(
     (f) =>
-      f.status === "active" &&
+      isLiveFact(f) &&
       !f.invalidatedAt &&
       f.key.toLowerCase() === cleanSupersedes.toLowerCase(),
   );
@@ -208,6 +220,23 @@ function applySupersedes(facts, cleanKey, supersedes, timestamp) {
   }
   target.invalidatedAt = timestamp;
   return { key: cleanSupersedes, found: true };
+}
+
+function liveFactByKey(facts, key) {
+  const lowerKey = String(key || "").toLowerCase();
+  return facts.find((f) => isLiveFact(f) && f.key.toLowerCase() === lowerKey);
+}
+
+// Issue #663: what a memory-write approval pins -- the target fact as the
+// model saw it when it asked (null: no live fact with that key yet).
+// Pinning/unpinning isn't a change to what was reviewed, so it's left out.
+function factVersion(fact) {
+  if (!fact) return null;
+  return crypto
+    .createHash("sha1")
+    .update(JSON.stringify([fact.id, fact.text, fact.status, fact.invalidatedAt || null, fact.updatedAt]))
+    .digest("hex")
+    .slice(0, 12);
 }
 
 function sessionFilename(sessionId) {
@@ -327,8 +356,9 @@ function createAcpMemoryStore(options = {}) {
     if (excess <= 0) return facts;
     return facts.filter((fact) => {
       // Superseded facts keep status "active" but carry invalidatedAt
-      // (applySupersedes), so they count as inactive here too.
-      if (excess > 0 && (fact.status !== "active" || fact.invalidatedAt)) {
+      // (applySupersedes), so they count as inactive here too. #663:
+      // pending facts are live, kept like active ones.
+      if (excess > 0 && (!isLiveFact(fact) || fact.invalidatedAt)) {
         excess -= 1;
         return false;
       }
@@ -606,8 +636,17 @@ function createAcpMemoryStore(options = {}) {
   // one for a rephrased version of the same fact.
   function listFactKeys() {
     return loadFacts()
-      .filter((f) => f.status === "active" && !f.invalidatedAt)
-      .map((f) => ({ key: f.key, preview: cleanText(f.text, 80) }));
+      .filter((f) => isLiveFact(f) && !f.invalidatedAt)
+      .map((f) => ({
+        key: f.key,
+        preview: cleanText(f.text, 80),
+        ...(f.status === "pending" ? { pending: true } : {}),
+      }));
+  }
+
+  // Issue #663: the version an approval request pins (see factVersion).
+  function getFactVersion(key) {
+    return factVersion(liveFactByKey(loadFacts(), cleanText(key, 200)));
   }
 
   // Issue #324: full-detail listing (every status, every field including
@@ -620,6 +659,25 @@ function createAcpMemoryStore(options = {}) {
 
   function saveFacts(facts) {
     writeJsonObject(factsPath, { facts });
+  }
+
+  function snapshotFact(key, fact, summary, source) {
+    if (!snapshotStore) return;
+    try {
+      // Deep-cloned: `fact` is a live reference into the loaded array, and
+      // callers mutate it in place (existing.history.push(...) mutates the
+      // same array existing.history already pointed at) right after this --
+      // a shallow copy would be corrupted by then.
+      snapshotStore.recordSnapshot({
+        kind: "memory-fact",
+        key,
+        payload: fact ? JSON.parse(JSON.stringify(fact)) : null,
+        summary,
+        source,
+      });
+    } catch (e) {
+      console.warn("Fact snapshot failed:", e?.message || e);
+    }
   }
 
   // action: "insert" (default) always creates a new fact. "patch" updates
@@ -651,37 +709,56 @@ function createAcpMemoryStore(options = {}) {
     occurredAt,
     supersedes,
     source,
+    pending,
+    expectedVersions,
   } = {}) {
     const cleanKey = cleanText(key, 200);
     if (!cleanKey) {
       throw new Error("key is required");
     }
-    const normalizedAction = ["insert", "patch", "remove", "archive"].includes(action)
+    const normalizedAction = ["insert", "patch", "remove", "archive", "confirm"].includes(action)
       ? action
       : "insert";
     const facts = loadFacts();
-    const existing = facts.find(
-      (f) => f.status === "active" && f.key.toLowerCase() === cleanKey.toLowerCase(),
-    );
+    const existing = liveFactByKey(facts, cleanKey);
     const timestamp = now();
 
-    if (snapshotStore) {
-      try {
-        // Deep-cloned: `existing` is a live reference into `facts`, and the
-        // patch branch below mutates it in place (existing.history.push(...)
-        // mutates the same array existing.history already pointed at) before
-        // ever reassigning it -- a shallow copy taken here would still be
-        // corrupted by that mutation by the time it's serialized.
-        snapshotStore.recordSnapshot({
-          kind: "memory-fact",
+    // Issue #663: an approved write applies only to the facts the approver
+    // reviewed. expectedVersions ([{key, version}], from getFactVersion at
+    // request time) is checked in the same synchronous call that writes, so
+    // nothing can change in between. Refused before the snapshot: nothing
+    // is written at all.
+    if (Array.isArray(expectedVersions)) {
+      const changed = expectedVersions
+        .filter(
+          (e) => factVersion(liveFactByKey(facts, cleanText(e?.key, 200))) !== (e?.version ?? null),
+        )
+        .map((e) => e?.key);
+      if (changed.length) {
+        return {
+          ok: false,
+          action: normalizedAction,
           key: cleanKey,
-          payload: existing ? JSON.parse(JSON.stringify(existing)) : null,
-          summary: `fact ${normalizedAction}: ${cleanKey}`,
-          source: source || "agent",
-        });
-      } catch (e) {
-        console.warn("Fact snapshot failed:", e?.message || e);
+          refused: "changed",
+          changed,
+          error: `Not applied: ${changed.map((k) => `"${k}"`).join(", ")} changed after this was requested, so nothing was overwritten.`,
+        };
       }
+    }
+
+    snapshotFact(cleanKey, existing, `fact ${normalizedAction}: ${cleanKey}`, source || "agent");
+
+    // Issue #663: pending -> active. A no-op on an already-active fact.
+    if (normalizedAction === "confirm") {
+      if (!existing) {
+        return { ok: true, action: "confirm", key: cleanKey, found: false };
+      }
+      if (existing.status === "pending") {
+        existing.status = "active";
+        existing.updatedAt = timestamp;
+        saveFacts(facts);
+      }
+      return { ok: true, action: "confirm", key: cleanKey, found: true };
     }
 
     if (normalizedAction === "remove" || normalizedAction === "archive") {
@@ -725,6 +802,9 @@ function createAcpMemoryStore(options = {}) {
       existing.text = cleanTextValue;
       existing.updatedAt = timestamp;
       existing.validFrom = timestamp;
+      // Issue #663: the user explicitly restating a pending fact confirms
+      // it; a model-initiated patch never demotes an active one.
+      if (existing.status === "pending" && !pending) existing.status = "active";
       if (unverifiedSource) {
         existing.unverifiedSource = true;
       } else {
@@ -757,7 +837,8 @@ function createAcpMemoryStore(options = {}) {
       key: cleanKey,
       text: cleanTextValue,
       sessionId: cleanText(sessionId || "default", 240),
-      status: "active",
+      // Issue #663: facts Mana picked up without being asked start pending.
+      status: pending ? "pending" : "active",
       validFrom: timestamp,
       schemaVersion: FACT_SCHEMA_VERSION,
       createdAt: timestamp,
@@ -773,6 +854,7 @@ function createAcpMemoryStore(options = {}) {
       action: "insert",
       key: cleanKey,
       text: cleanTextValue,
+      ...(pending ? { pending: true } : {}),
       ...(unverifiedSource ? { unverifiedSource: true } : {}),
       ...(conflict
         ? { possibleConflict: { key: conflict.key, preview: cleanText(conflict.text, 80) } }
@@ -800,6 +882,25 @@ function createAcpMemoryStore(options = {}) {
     target.invalidatedAt = now();
     saveFacts(facts);
     return { key: cleanTargetKey, found: true };
+  }
+
+  // Issue #663: pending facts nobody confirmed within maxAgeDays of being
+  // picked up are archived, not deleted. Run from Dream Mode (server.js).
+  function archiveExpiredPendingFacts({ maxAgeDays = 14 } = {}) {
+    const cutoff = new Date(Date.parse(now()) - maxAgeDays * 24 * 60 * 60 * 1000).toISOString();
+    const facts = loadFacts();
+    const expired = facts.filter(
+      (f) => f.status === "pending" && String(f.createdAt || f.updatedAt || "") < cutoff,
+    );
+    if (!expired.length) return { archived: [] };
+    const timestamp = now();
+    for (const fact of expired) {
+      snapshotFact(fact.key, fact, `pending fact expired: ${fact.key}`, "system");
+      fact.status = "archived";
+      fact.updatedAt = timestamp;
+    }
+    saveFacts(facts);
+    return { archived: expired.map((f) => f.key) };
   }
 
   // Issue #674: user-set "always relevant" flag (name, pronouns, current
@@ -1960,6 +2061,8 @@ function createAcpMemoryStore(options = {}) {
     listFacts,
     getFactsValidAt,
     invalidateFactByKey,
+    getFactVersion,
+    archiveExpiredPendingFacts,
     setFactPinned,
     listUntypedEntities,
     setEntityType,
