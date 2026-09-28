@@ -66,7 +66,9 @@ function userNameFromFacts(facts) {
 // ponytail: capitalization heuristic, not NER.
 function extractTerms(text) {
   const terms = [];
-  for (const sentence of String(text || "").split(/[.!?\n]+/)) {
+  // A sentence end needs whitespace (or the end) after it, so "Node.js"
+  // stays one word.
+  for (const sentence of String(text || "").split(/[.!?]+(?:\s+|$)|\n+/)) {
     const words = sentence.split(/\s+/).filter(Boolean);
     words.forEach((word, i) => {
       const term = cleanTerm(word.replace(/['’]s$/i, ""));
@@ -85,9 +87,10 @@ function extractTerms(text) {
 function buildWhisperPrompt({ facts = [], userTexts = [] } = {}) {
   const usableFacts = facts.filter(isUsableFact);
   const name = userNameFromFacts(usableFacts);
-  // Words already in the prompt; terms never contain "." (extractTerms
-  // splits sentences on it), so neither do these.
-  const known = new Set(`${BASE_WHISPER_PROMPT} ${name}`.toLowerCase().match(/[\p{L}\p{N}'’-]+/gu) || []);
+  // Words already in the prompt, split the same way extractTerms does.
+  const known = new Set(
+    `${BASE_WHISPER_PROMPT} ${name}`.split(/[.!?]+(?:\s+|$)|[\s,]+/).map((w) => cleanTerm(w).toLowerCase()),
+  );
 
   const counts = new Map();
   const termFacts = usableFacts.filter((f) => !NAME_KEY.test(String(f.key || "").trim()));

@@ -18,6 +18,7 @@ test("extractTerms keeps mid-sentence capitals and jargon, not sentence starters
     extractTerms("Want to try Kokoro? Hey, FFXIV runs on PyTorch now. I'm sure it's OK with Mana's voice."),
     ["Kokoro", "FFXIV", "PyTorch", "Mana"],
   );
+  assert.deepEqual(extractTerms("it runs on Node.js. Then Zed"), ["Node.js", "Zed"]);
 });
 
 test("the prompt keeps the base, adds the user's name and frequent terms", () => {
