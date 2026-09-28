@@ -298,12 +298,18 @@ internal sealed class ManaBackendClient
 
     // #681: POST /internal/idle-report -- same {idleSeconds} body
     // windows-launcher sends; node-bot decides whether that's idle enough.
-    public async Task ReportIdleAsync(int idleSeconds)
+    // #661: true when this report started Dream Mode's idle consolidation
+    // (node-bot's idleTriggered) -- the avatar shows Dreaming from then.
+    public async Task<bool> ReportIdleAsync(int idleSeconds)
     {
         var payload = JsonSerializer.Serialize(new { idleSeconds });
         using var content = new StringContent(payload, Encoding.UTF8, "application/json");
         using var response = await http.PostAsync("/internal/idle-report", content);
         response.EnsureSuccessStatusCode();
+        using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        return document.RootElement.ValueKind == JsonValueKind.Object
+            && document.RootElement.TryGetProperty("idleTriggered", out var triggered)
+            && triggered.ValueKind == JsonValueKind.True;
     }
 
     // #527: node-bot's configured llama-server profiles -- see
@@ -1693,6 +1699,8 @@ internal sealed class ManaBackendClient
             Changed = root.TryGetProperty("changed", out var changedProp) && changedProp.GetBoolean(),
             Expression = root.TryGetProperty("expression", out var exprProp) ? exprProp.GetString() : null,
             Error = root.TryGetProperty("error", out var errProp) ? errProp.GetString() : null,
+            Name = root.TryGetProperty("name", out var nameProp) && nameProp.ValueKind == JsonValueKind.String ? nameProp.GetString() : null,
+            Phase = root.TryGetProperty("phase", out var phaseProp) && phaseProp.ValueKind == JsonValueKind.String ? phaseProp.GetString() : null,
         };
     }
 }
@@ -1954,6 +1962,9 @@ internal sealed class ReplyStreamEvent
     public bool Changed { get; init; }
     public string? Expression { get; init; }
     public string? Error { get; init; }
+    // #661: type "tool" -- the tool's name and "start"/"end".
+    public string? Name { get; init; }
+    public string? Phase { get; init; }
 }
 
 // #580: a row from GET /editors/workspace/proposals -- see

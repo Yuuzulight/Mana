@@ -17,6 +17,13 @@ internal enum AvatarState
     Sad,
     Angry,
     Disgusted,
+    // #661: what she's doing rather than how she feels -- see
+    // AvatarStateArbiter for which one shows when several apply.
+    Thinking,
+    Working,
+    Waiting,
+    Done,
+    Dreaming,
 }
 
 // #479 sub-project 4: renders a real, parameter-driven Cubism model when
@@ -47,11 +54,21 @@ internal sealed class AvatarOverlayForm : Form
 
     // #538's own sidebar had a static "Avatar: idle" card; SessionListForm
     // ports that as a real, live-updating one instead, reading this rather
-    // than guessing at state from the outside. Only ever written inside
-    // SetState after its own marshal-to-UI-thread guard, so (like
-    // activeExpression above) no lock is needed.
+    // than guessing at state from the outside. #661: the state actually
+    // shown (arbiter's pick of speech vs activities). Only ever written on
+    // the UI thread (SetState/SetActivity/PulseDone marshal there first, and
+    // stateTimer ticks there), so no lock is needed.
     public AvatarState CurrentState { get; private set; } = AvatarState.Idle;
     public event Action<AvatarState>? StateChanged;
+
+    // #661: speech (SetState) + activities (SetActivity/PulseDone) -> the
+    // shown state; stateTimer re-resolves it so held states and the Done
+    // beat expire even when no new event arrives.
+    private readonly AvatarStateArbiter arbiter = new();
+    private readonly System.Windows.Forms.Timer stateTimer = new() { Interval = 100 };
+    private string? speechExpression;
+    private double doneStartedAt = double.NegativeInfinity;
+    private float sleepiness;
 
     private readonly CubismModel? cubismModel;
     private readonly CubismRenderer? cubismRenderer;
@@ -173,6 +190,8 @@ internal sealed class AvatarOverlayForm : Form
         }
 
         SetState(AvatarState.Idle);
+        stateTimer.Tick += (_, _) => ShowResolvedState(reapply: false);
+        stateTimer.Start();
         PositionOverlay();
     }
 
@@ -368,8 +387,18 @@ internal sealed class AvatarOverlayForm : Form
         }
         activeExpression?.ApplyTo(model);
 
-        var talking = CurrentState != AvatarState.Idle;
-        if (gaze.Update(dtMs, talking ? GazeMode.Talking : GazeMode.Idle))
+        // #661: where she looks and how often she blinks follow what she's
+        // doing; Dreaming slowly closes her eyes, Done nods once.
+        var shown = CurrentState;
+        var speaking = AvatarStateArbiter.IsSpeech(shown);
+        var gazeMode = shown switch
+        {
+            AvatarState.Thinking => GazeMode.Thinking,
+            AvatarState.Working => GazeMode.Working,
+            AvatarState.Waiting => GazeMode.Attentive,
+            _ => speaking ? GazeMode.Talking : GazeMode.Idle,
+        };
+        if (gaze.Update(dtMs, gazeMode))
         {
             eyeBlink.Trigger(nowSeconds); // big glance -> blink with it
         }
@@ -378,13 +407,21 @@ internal sealed class AvatarOverlayForm : Form
             SetLifeParameter(model, "ParamAngleY", gaze.ApplyPitch(model.GetParameterCurrentValue("ParamAngleY")));
             SetLifeParameter(model, "ParamAngleZ", gaze.ApplyRoll(model.GetParameterCurrentValue("ParamAngleZ")));
         }
+        if (shown == AvatarState.Done)
+        {
+            SetLifeParameter(model, "ParamAngleY", model.GetParameterCurrentValue("ParamAngleY") + AvatarGaze.NodOffset(nowSeconds - doneStartedAt));
+        }
         if (gaze.GazeActive)
         {
             SetLifeParameter(model, "ParamAngleX", model.GetParameterCurrentValue("ParamAngleX") + gaze.HeadAngleX);
             SetLifeParameter(model, "ParamEyeBallX", model.GetParameterCurrentValue("ParamEyeBallX") + gaze.EyeBallX);
             SetLifeParameter(model, "ParamEyeBallY", model.GetParameterCurrentValue("ParamEyeBallY") + gaze.EyeBallY);
         }
-        var openness = eyeBlink.Openness(nowSeconds, talking);
+        var blinkRate = shown is AvatarState.Thinking or AvatarState.Working ? EyeBlink.ThinkingRate
+            : speaking ? EyeBlink.TalkingRate
+            : 1f;
+        sleepiness += ((shown == AvatarState.Dreaming ? 1f : 0f) - sleepiness) * Math.Min(1f, dtMs / 1500f);
+        var openness = eyeBlink.Openness(nowSeconds, blinkRate) * (1f - (0.85f * sleepiness));
         foreach (var id in eyeBlinkIds)
         {
             SetLifeParameter(model, id, model.GetParameterCurrentValue(id) * openness);
@@ -451,15 +488,62 @@ internal sealed class AvatarOverlayForm : Form
             LipSyncDriver.Reset();
         }
 
-        if (state != CurrentState)
+        // #661: this is the speech input; the arbiter decides what shows.
+        // The expression is re-applied even when the shown state doesn't
+        // change (two excited replies in a row can each pick their own).
+        arbiter.SetSpeech(state);
+        speechExpression = AvatarStateArbiter.IsSpeech(state) ? preferredExpression : null;
+        ShowResolvedState(reapply: true);
+    }
+
+    // #661: Thinking/Working/Waiting/Dreaming on or off. Callable from any
+    // thread, like SetState.
+    public void SetActivity(AvatarState activity, bool on)
+    {
+        if (IsHandleCreated && InvokeRequired)
         {
-            if (CurrentState == AvatarState.Idle)
+            BeginInvoke(() => SetActivity(activity, on));
+            return;
+        }
+        arbiter.Set(activity, on);
+        ShowResolvedState(reapply: false);
+    }
+
+    // #661: the short "done" beat at the end of a turn.
+    public void PulseDone()
+    {
+        if (IsHandleCreated && InvokeRequired)
+        {
+            BeginInvoke(PulseDone);
+            return;
+        }
+        arbiter.PulseDone(renderClock.Elapsed.TotalSeconds);
+        ShowResolvedState(reapply: false);
+    }
+
+    private void ShowResolvedState(bool reapply)
+    {
+        var now = renderClock.Elapsed.TotalSeconds;
+        var changed = arbiter.Resolve(now);
+        if (!changed && !reapply)
+        {
+            return;
+        }
+        var state = arbiter.Shown;
+        if (changed)
+        {
+            if (!AvatarStateArbiter.IsSpeech(CurrentState) && AvatarStateArbiter.IsSpeech(state))
             {
-                eyeBlink.Trigger(renderClock.Elapsed.TotalSeconds); // #683: people blink as they start to speak
+                eyeBlink.Trigger(now); // #683: people blink as they start to speak
+            }
+            if (state == AvatarState.Done)
+            {
+                doneStartedAt = now;
             }
             CurrentState = state;
             StateChanged?.Invoke(state);
         }
+        var preferredExpression = AvatarStateArbiter.IsSpeech(state) ? speechExpression : null;
 
         // #479 sub-project 4: when a real Cubism model is loaded, the
         // render timer (RenderFrame) is what actually draws every frame
@@ -474,7 +558,7 @@ internal sealed class AvatarOverlayForm : Form
             // reads as simply not overriding whatever the render loop's
             // other signals (idle motion, lip-sync, physics) already
             // produce.
-            motionPlayer?.SetState(state, renderClock.Elapsed.TotalSeconds);
+            motionPlayer?.SetState(state, now);
             var expressionName = AvatarExpressionSelector.SelectExpressionName(state, expressions.Keys, preferredExpression, expressionOverrides);
             activeExpression = expressionName is not null && expressions.TryGetValue(expressionName, out var expression)
                 ? expression
@@ -482,7 +566,7 @@ internal sealed class AvatarOverlayForm : Form
             return;
         }
 
-        var nextPath = state == AvatarState.Idle ? idlePath : talkingPath;
+        var nextPath = AvatarStateArbiter.IsSpeech(state) ? talkingPath : idlePath;
         if (!File.Exists(nextPath))
         {
             return;
@@ -638,6 +722,7 @@ internal sealed class AvatarOverlayForm : Form
     {
         renderTimer?.Stop();
         renderTimer?.Dispose();
+        stateTimer.Dispose();
         cubismRenderer?.Dispose();
         cubismModel?.Dispose();
         ReleaseDib();

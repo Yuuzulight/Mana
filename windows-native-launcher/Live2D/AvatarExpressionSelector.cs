@@ -15,6 +15,12 @@ internal static class AvatarExpressionSelector
         [AvatarState.Angry] = ["angry", "mad", "grumpy", "annoyed"],
         [AvatarState.Sad] = ["sad", "cry", "sniff", "tears", "upset"],
         [AvatarState.Disgusted] = ["disgusted", "disgust", "white-eyes", "dead-eyes", "blank"],
+        // #661: activity states.
+        [AvatarState.Thinking] = ["think", "ponder", "hmm", "curious"],
+        [AvatarState.Working] = ["focus", "serious", "determined"],
+        [AvatarState.Waiting] = ["question", "curious", "wonder"],
+        [AvatarState.Done] = ["smile", "happy"],
+        [AvatarState.Dreaming] = ["sleep", "dream", "doze"],
         // Idle/Talking intentionally have no entry -- matches live2d-logic.js's
         // own idle:[]/talking:[] (no preference, no expression change).
     };

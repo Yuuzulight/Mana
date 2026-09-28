@@ -39,6 +39,14 @@ internal sealed class ManaApplicationContext : ApplicationContext
     // text already reflects.
     private bool gamingModeActive;
 
+    // #661: approvals/edit proposals waiting on the user (see
+    // RefreshWaitingAsync), and whether Dream Mode's idle consolidation has
+    // started and the user hasn't come back yet.
+    private readonly HashSet<string> announcedWaiting = [];
+    private Icon? normalTrayIcon;
+    private Icon? waitingTrayIcon;
+    private bool dreaming;
+
     // #574: client-side-only override, matching windows-launcher's own
     // #gamingMode checkbox -- it isn't a 3-way auto/on/off switch, just an
     // enable/disable for the auto-detection RefreshTrayStatusAsync already
@@ -192,7 +200,17 @@ internal sealed class ManaApplicationContext : ApplicationContext
         {
             Interval = 5000,
         };
-        statusTimer.Tick += async (_, _) => await RefreshTrayStatusAsync();
+        statusTimer.Tick += async (_, _) =>
+        {
+            await RefreshTrayStatusAsync();
+            await RefreshWaitingAsync();
+            if (dreaming && SystemIdle.GetIdleSeconds() < 5)
+            {
+                // #661: the user's back -- she wakes up.
+                dreaming = false;
+                avatarOverlay.SetActivity(AvatarState.Dreaming, false);
+            }
+        };
         statusTimer.Start();
 
         // #681: tells node-bot how long the user has been idle, so Dream
@@ -203,7 +221,12 @@ internal sealed class ManaApplicationContext : ApplicationContext
         {
             try
             {
-                await backendClient.ReportIdleAsync(SystemIdle.GetIdleSeconds());
+                if (await backendClient.ReportIdleAsync(SystemIdle.GetIdleSeconds()))
+                {
+                    // #661: Dream Mode just started consolidating memories.
+                    dreaming = true;
+                    avatarOverlay.SetActivity(AvatarState.Dreaming, true);
+                }
             }
             catch (Exception ex)
             {
@@ -370,6 +393,41 @@ internal sealed class ManaApplicationContext : ApplicationContext
         catch
         {
             trayIcon.Text = "Mana - backend starting";
+        }
+    }
+
+    // #661: anything waiting on the user holds the avatar's Waiting pose and
+    // badges the tray icon; a new item also gets a toast when no Mana window
+    // has focus. Approving or dismissing clears it on the next 5s poll.
+    private async Task RefreshWaitingAsync()
+    {
+        IReadOnlyList<ManaPendingApproval> approvals;
+        try
+        {
+            approvals = await backendClient.GetPendingApprovalsAsync();
+        }
+        catch
+        {
+            return; // backend not up yet -- leave things as they are
+        }
+        IReadOnlyList<ManaProposalSummary> proposals = [];
+        try
+        {
+            proposals = await backendClient.GetProposalsAsync();
+        }
+        catch
+        {
+            // Edit proposals need admin access / the editors integration.
+        }
+
+        var items = WaitingForYou.Items(approvals, proposals);
+        avatarOverlay.SetActivity(AvatarState.Waiting, items.Count > 0);
+        normalTrayIcon ??= trayIcon.Icon;
+        trayIcon.Icon = items.Count > 0 ? waitingTrayIcon ??= WaitingForYou.Badged(normalTrayIcon!) : normalTrayIcon;
+        var notice = WaitingForYou.NewItemsNotice(items, announcedWaiting);
+        if (notice is not null && Form.ActiveForm is null)
+        {
+            trayIcon.ShowBalloonTip(8000, "Mana is waiting for you", notice, ToolTipIcon.Info);
         }
     }
 

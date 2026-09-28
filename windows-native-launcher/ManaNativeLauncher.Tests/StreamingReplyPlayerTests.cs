@@ -138,6 +138,23 @@ public class StreamingReplyPlayerTests
         Assert.Empty(talkingStates);
     }
 
+    // #661: "tool" start/end events drive the avatar's Working state.
+    [Fact]
+    public async Task StreamReplyAndPlayAsync_ReportsToolStartAndEnd()
+    {
+        const string ndjson =
+            "{\"type\":\"tool\",\"name\":\"web_search\",\"phase\":\"start\"}\n" +
+            "{\"type\":\"tool\",\"name\":\"web_search\",\"phase\":\"end\"}\n" +
+            "{\"type\":\"final\",\"reply\":\"Found it.\",\"changed\":true}\n";
+        var toolStates = new List<bool>();
+        var player = new StreamingReplyPlayer(BuildFakeClient(ndjson, []), _ => Task.FromResult(true), _ => { }, running => toolStates.Add(running));
+
+        var (reply, _, _, _, _) = await player.StreamReplyAndPlayAsync("look it up");
+
+        Assert.Equal("Found it.", reply);
+        Assert.Equal([true, false], toolStates);
+    }
+
     // #681: VoiceLoop's active preset reaches /reply/stream through here.
     [Fact]
     public async Task StreamReplyAndPlayAsync_ForwardsPresetIdToTheRequest()

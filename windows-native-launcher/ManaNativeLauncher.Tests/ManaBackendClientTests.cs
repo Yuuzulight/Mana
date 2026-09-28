@@ -1187,10 +1187,21 @@ public class ManaBackendClientTests
         });
         var client = new ManaBackendClient(handler);
 
-        await client.ReportIdleAsync(1500);
+        Assert.False(await client.ReportIdleAsync(1500));
 
         Assert.Equal("/internal/idle-report", path);
         Assert.Equal("{\"idleSeconds\":1500}", body);
+    }
+
+    // #661: idleTriggered:true (Dream Mode's consolidation just started)
+    // is what turns the avatar's Dreaming state on.
+    [Fact]
+    public async Task ReportIdleAsync_ReturnsWhetherDreamModeWasTriggered()
+    {
+        var handler = new FakeHttpMessageHandler(_ =>
+            new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("{\"ok\":true,\"idleTriggered\":true}") });
+
+        Assert.True(await new ManaBackendClient(handler).ReportIdleAsync(1500));
     }
 
     [Fact]

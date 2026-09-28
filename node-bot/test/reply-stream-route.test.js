@@ -202,3 +202,33 @@ test("POST /reply/stream: missing text emits a single final error event as ndjso
     assert.equal(replyCalls, 0);
   });
 });
+
+test("POST /reply/stream relays tool start/end events before the final (#661)", async () => {
+  const app = createApp({
+    buildAssistantReply: async (
+      transcript,
+      screenText,
+      marketText,
+      modelProfile,
+      sessionId,
+      assistantMode,
+      presetId,
+      replyMeta,
+    ) => {
+      replyMeta.onToolCall({ name: "web_search", phase: "start" });
+      replyMeta.onToolCall({ name: "web_search", phase: "end" });
+      return "done";
+    },
+  });
+
+  await withServer(app, async (baseUrl) => {
+    const { events } = await postNdjson(baseUrl, "/reply/stream", { text: "look it up" });
+
+    assert.deepEqual(events.slice(0, 2), [
+      { type: "tool", name: "web_search", phase: "start" },
+      { type: "tool", name: "web_search", phase: "end" },
+    ]);
+    assert.equal(events[2].type, "final");
+    assert.equal(events.length, 3);
+  });
+});

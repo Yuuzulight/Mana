@@ -203,4 +203,92 @@ public class AvatarGazeTests
         Assert.False(new AvatarGaze(tiltDegrees: 0f, maxPitchDegrees: 90f).TiltActive);
         Assert.True(new AvatarGaze(tiltDegrees: 0f, maxPitchDegrees: 8f).TiltActive);
     }
+
+    // #661: Thinking looks up and aside and holds; Working looks down with
+    // quick small hops; Attentive keeps her eyes on the viewer.
+    [Fact]
+    public void ActivityModes_LookWhereTheActivitySuggests()
+    {
+        var thinking = new AvatarGaze(seed: 8);
+        var upAside = 0;
+        for (var i = 0; i < 400; i++)
+        {
+            NextSaccade(thinking, GazeMode.Thinking);
+            if (thinking.TargetY >= 0.4f && Math.Abs(thinking.TargetX) >= 0.35f)
+            {
+                upAside++;
+            }
+            else
+            {
+                Assert.True(IsHome(thinking), "thinking glances are up-aside or back at the viewer");
+            }
+        }
+        Assert.InRange(upAside / 400.0, 0.78, 0.92);
+
+        var working = new AvatarGaze(seed: 9);
+        var down = 0;
+        for (var i = 0; i < 400; i++)
+        {
+            NextSaccade(working, GazeMode.Working);
+            down += working.TargetY <= -0.3f ? 1 : 0;
+        }
+        Assert.InRange(down / 400.0, 0.78, 0.92);
+
+        var attentive = new AvatarGaze(seed: 10);
+        for (var i = 0; i < 200; i++)
+        {
+            NextSaccade(attentive, GazeMode.Attentive);
+            Assert.True(IsHome(attentive));
+        }
+    }
+
+    [Fact]
+    public void ThinkingHoldsLonger_WorkingHopsFaster()
+    {
+        static double MeanHoldMs(GazeMode mode, int seed)
+        {
+            var gaze = new AvatarGaze(seed: seed);
+            NextSaccade(gaze, mode);
+            var elapsed = 0.0;
+            for (var i = 0; i < 200; i++)
+            {
+                var count = gaze.SaccadeCount;
+                while (gaze.SaccadeCount == count)
+                {
+                    gaze.Update(Frame, mode);
+                    elapsed += Frame;
+                }
+            }
+            return elapsed / 200;
+        }
+
+        Assert.InRange(MeanHoldMs(GazeMode.Thinking, 11), 1500, 3200);
+        Assert.InRange(MeanHoldMs(GazeMode.Working, 12), 250, 650);
+    }
+
+    [Fact]
+    public void Tilt_StaysOnWhileAttentive_OffWhileThinking()
+    {
+        var gaze = new AvatarGaze(seed: 13);
+        for (var i = 0; i < 300; i++)
+        {
+            gaze.Update(16f, GazeMode.Attentive);
+        }
+        Assert.True(gaze.TiltBlend > 0.95f);
+        for (var i = 0; i < 300; i++)
+        {
+            gaze.Update(16f, GazeMode.Thinking);
+        }
+        Assert.True(gaze.TiltBlend < 0.05f);
+    }
+
+    [Fact]
+    public void NodOffset_DipsOnceAndReturns()
+    {
+        Assert.Equal(0f, AvatarGaze.NodOffset(-0.1));
+        Assert.Equal(0f, AvatarGaze.NodOffset(0));
+        Assert.Equal(-6f, AvatarGaze.NodOffset(AvatarGaze.NodSeconds / 2), 0.01f);
+        Assert.Equal(0f, AvatarGaze.NodOffset(AvatarGaze.NodSeconds));
+        Assert.Equal(0f, AvatarGaze.NodOffset(double.PositiveInfinity));
+    }
 }

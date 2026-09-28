@@ -19,12 +19,14 @@ internal sealed class StreamingReplyPlayer
     private readonly ManaBackendClient backendClient;
     private readonly Func<byte[], Task<bool>> playAsync; // true = clip finished naturally, false = interrupted (#479 sub-project 3)
     private readonly Action<bool> setTalking; // true once the first chunk starts, false once talking stops (naturally or interrupted)
+    private readonly Action<bool>? setToolRunning; // #661: true on a "tool" start event, false on its end
 
-    public StreamingReplyPlayer(ManaBackendClient backendClient, Func<byte[], Task<bool>> playAsync, Action<bool> setTalking)
+    public StreamingReplyPlayer(ManaBackendClient backendClient, Func<byte[], Task<bool>> playAsync, Action<bool> setTalking, Action<bool>? setToolRunning = null)
     {
         this.backendClient = backendClient;
         this.playAsync = playAsync;
         this.setTalking = setTalking;
+        this.setToolRunning = setToolRunning;
     }
 
     // Reply is null when Interrupted is true -- a barge-in cut off
@@ -116,6 +118,10 @@ internal sealed class StreamingReplyPlayer
                 else if (evt.Type == "final")
                 {
                     onFinal(evt);
+                }
+                else if (evt.Type == "tool")
+                {
+                    setToolRunning?.Invoke(evt.Phase == "start");
                 }
             }
         }
