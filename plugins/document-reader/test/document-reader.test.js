@@ -181,3 +181,20 @@ test("isValidPdfFile checks the %PDF- magic header", async () => {
     fs.rmSync(tempDir, { recursive: true });
   }
 });
+
+test("listDocuments skips a document deleted between readdir and stat instead of throwing", async () => {
+  const result = await documentReader.ingestText({
+    title: "test-doc-vanishing",
+    sourceType: "test",
+    text: "This one disappears mid-list.",
+  });
+  const realStatSync = fs.statSync;
+  fs.statSync = (p, opts) => (p === result.path ? realStatSync(`${p}.missing`, opts) : realStatSync(p, opts));
+  try {
+    const listed = documentReader.listDocuments();
+    assert.ok(!listed.some((d) => d.id === result.id));
+  } finally {
+    fs.statSync = realStatSync;
+    await documentReader.removeDocument(result.id);
+  }
+});
