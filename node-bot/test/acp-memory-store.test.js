@@ -2101,3 +2101,23 @@ test("rememberFact accepts an explicit source override -- used by the human-only
   const archiveSnapshot = snapshots.find((s) => s.summary.startsWith("fact archive"));
   assert.equal(archiveSnapshot.source, "human");
 });
+
+test("the 500-fact cap drops the oldest inactive facts, never an active one (#673)", () => {
+  const store = createAcpMemoryStore({ dataDir: createTempDir() });
+  store.rememberFact({ key: "oldest active fact", text: "Must survive the cap." });
+  for (let i = 0; i < 30; i += 1) {
+    store.rememberFact({ key: `archived ${i}`, text: `Archived fact ${i}.` });
+    store.rememberFact({ key: `archived ${i}`, action: "archive" });
+  }
+  for (let i = 0; i < 480; i += 1) {
+    store.rememberFact({ key: `active ${i}`, text: `Active fact ${i}.` });
+  }
+
+  const facts = store.listFacts();
+  assert.equal(facts.length, 500);
+  assert.ok(facts.some((f) => f.key === "oldest active fact" && f.status === "active"));
+  assert.equal(facts.filter((f) => f.status === "active").length, 481);
+  // The 11 dropped were the oldest archived ones.
+  assert.ok(!facts.some((f) => f.key === "archived 0"));
+  assert.ok(facts.some((f) => f.key === "archived 29"));
+});
