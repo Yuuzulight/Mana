@@ -118,6 +118,7 @@ test("rerank starts a CPU-only llama-server on demand and orders docs by score",
   assert.ok(args.includes("--reranking"));
   assert.equal(args[args.indexOf("-ngl") + 1], "0");
   assert.ok(!args.includes("-hf"), "never a hub spec -- nothing is downloaded");
+  assert.ok(!args.includes("--no-mmap"), "CPU-only model: mmap stays on");
   assert.equal(opts.env.CUDA_VISIBLE_DEVICES, "-1");
   assert.equal(opts.windowsHide, true);
 

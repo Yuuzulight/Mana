@@ -2175,6 +2175,25 @@ test("buildServerArgs omits --mlock by default", () => {
   assert.equal(args.includes("--mlock"), false);
 });
 
+test("buildServerArgs adds --no-mmap by default; MANA_LLAMA_MMAP=1 or a saved false turns it off", () => {
+  const argsFor = (env, modelSettingsStore) =>
+    createLlamaServerRuntime({
+      env: { ...makeFakeEnv(), ...env },
+      fs: makeFakeFs(),
+      registerExitHandlers: false,
+      modelSettingsStore,
+    }).buildServerArgs("C:\\models\\mana.gguf", 8090);
+  const store = (saved) => ({
+    isLlamaNoMmap: (env) => (saved === null ? env.MANA_LLAMA_MMAP !== "1" : saved),
+  });
+
+  assert.ok(argsFor({}).includes("--no-mmap"));
+  assert.equal(argsFor({ MANA_LLAMA_MMAP: "1" }).includes("--no-mmap"), false);
+  assert.ok(argsFor({}, store(null)).includes("--no-mmap"));
+  assert.equal(argsFor({}, store(false)).includes("--no-mmap"), false);
+  assert.ok(argsFor({ MANA_LLAMA_MMAP: "1" }, store(true)).includes("--no-mmap"));
+});
+
 test("buildServerArgs adds --mlock only when LLAMA_MLOCK=1", () => {
   const runtime = createLlamaServerRuntime({
     env: { ...makeFakeEnv(), LLAMA_MLOCK: "1" },

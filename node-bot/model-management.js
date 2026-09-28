@@ -400,7 +400,17 @@ function createModelManagement(options = {}) {
         return { ...rest, hasApiKey: Boolean(apiKey) };
       })(),
       vision: modelSettingsStore.getVisionSettings(),
+      llamaNoMmap: modelSettingsStore.isLlamaNoMmap(env),
     };
+  }
+
+  // Takes effect on llama-server's next start (see buildServerArgs).
+  function setLlamaNoMmap(noMmap) {
+    if (typeof noMmap !== "boolean") {
+      throw new Error("noMmap must be true or false");
+    }
+    modelSettingsStore.setLlamaNoMmap(noMmap);
+    return getModelStatus();
   }
 
   function setActiveProfile(profile) {
@@ -573,6 +583,7 @@ function createModelManagement(options = {}) {
     scanForModels,
     setActiveProfile,
     setBrainSettings,
+    setLlamaNoMmap,
     setModelPath,
     setVisionSettings,
     testBrainConnection,

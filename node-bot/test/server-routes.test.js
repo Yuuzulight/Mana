@@ -426,6 +426,35 @@ test("vision path route persists the model/mmproj override and surfaces validati
   });
 });
 
+test("llama-no-mmap route is admin-gated and passes the boolean through", async () => {
+  const calls = [];
+  const app = createApp({
+    env: { MANA_ADMIN_SECRET: "topsecret" },
+    modelManagement: {
+      setLlamaNoMmap: (value) => {
+        calls.push(value);
+        if (typeof value !== "boolean") throw new Error("noMmap must be true or false");
+        return { llamaNoMmap: value };
+      },
+    },
+  });
+  const auth = { Authorization: "Bearer topsecret" };
+
+  await withServer(app, async (baseUrl) => {
+    const unauthorized = await postJson(`${baseUrl}/models/llama-no-mmap`, { noMmap: false });
+    assert.equal(unauthorized.response.status, 401);
+    assert.equal(calls.length, 0);
+
+    const ok = await postJson(`${baseUrl}/models/llama-no-mmap`, { noMmap: false }, auth);
+    assert.equal(ok.response.status, 200);
+    assert.equal(ok.payload.llamaNoMmap, false);
+
+    const rejected = await postJson(`${baseUrl}/models/llama-no-mmap`, { noMmap: "no" }, auth);
+    assert.equal(rejected.response.status, 400);
+    assert.deepEqual(calls, [false, "no"]);
+  });
+});
+
 test("brain-providers route lists presets from model-management", async () => {
   const app = createApp({
     modelManagement: {

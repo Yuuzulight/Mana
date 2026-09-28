@@ -109,8 +109,25 @@ function createModelSettingsStore(options = {}) {
     return getVisionSettings();
   }
 
+  // --no-mmap for the chat llama-server (see buildServerArgs in
+  // ai/llama-server-runtime.js). Precedence: a saved choice here, else
+  // MANA_LLAMA_MMAP=1 turns mmap back on, else no-mmap (the default).
+  function isLlamaNoMmap(env = process.env) {
+    const saved = readAll().llamaNoMmap;
+    return typeof saved === "boolean" ? saved : env.MANA_LLAMA_MMAP !== "1";
+  }
+
+  function setLlamaNoMmap(noMmap) {
+    const settings = readAll();
+    settings.llamaNoMmap = noMmap === true;
+    writeAll(settings);
+    return settings.llamaNoMmap;
+  }
+
   return {
     dataDir,
+    isLlamaNoMmap,
+    setLlamaNoMmap,
     getModelPath,
     setModelPath,
     getBrainSettings,

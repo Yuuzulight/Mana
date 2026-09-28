@@ -355,6 +355,7 @@ internal sealed class ManaBackendClient
             VisionModelPath = vision.ValueKind == JsonValueKind.Object && vision.TryGetProperty("modelPath", out var visionModelEl) ? visionModelEl.GetString() ?? "" : "",
             VisionMmprojPath = vision.ValueKind == JsonValueKind.Object && vision.TryGetProperty("mmprojPath", out var mmprojEl) ? mmprojEl.GetString() ?? "" : "",
             RecommendedProfile = recommendation.ValueKind == JsonValueKind.Object && recommendation.TryGetProperty("profile", out var recProfileEl) ? recProfileEl.GetString() : null,
+            LlamaNoMmap = root.TryGetProperty("llamaNoMmap", out var noMmapEl) && noMmapEl.ValueKind == JsonValueKind.True,
         };
     }
 
@@ -468,6 +469,15 @@ internal sealed class ManaBackendClient
         var payload = JsonSerializer.Serialize(new { modelPath, mmprojPath });
         using var content = new StringContent(payload, Encoding.UTF8, "application/json");
         using var response = await http.PostAsync("/models/vision-path", content);
+        response.EnsureSuccessStatusCode();
+    }
+
+    // Saved backend-side; llama-server picks it up on its next start.
+    public async Task SetLlamaNoMmapAsync(bool noMmap)
+    {
+        var payload = JsonSerializer.Serialize(new { noMmap });
+        using var content = new StringContent(payload, Encoding.UTF8, "application/json");
+        using var response = await http.PostAsync("/models/llama-no-mmap", content);
         response.EnsureSuccessStatusCode();
     }
 
@@ -1711,6 +1721,8 @@ internal sealed class ManaModelStatus
     public string VisionMmprojPath { get; init; } = "";
     // #625: model-management.js's hardware-based profile suggestion key.
     public string? RecommendedProfile { get; init; }
+    // Whether llama-server loads with --no-mmap (effective value).
+    public bool LlamaNoMmap { get; init; }
 }
 
 // #572: one entry from GET /models/brain-providers.

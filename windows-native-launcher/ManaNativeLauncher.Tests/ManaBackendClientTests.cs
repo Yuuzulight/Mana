@@ -2469,6 +2469,44 @@ public class ManaBackendClientTests
     }
 
     [Fact]
+    public async Task GetModelStatusAsync_ParsesLlamaNoMmap()
+    {
+        var handler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent("""{"llamaNoMmap":true}""", Encoding.UTF8, "application/json"),
+        });
+        Assert.True((await new ManaBackendClient(handler).GetModelStatusAsync()).LlamaNoMmap);
+
+        var missing = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent("{}", Encoding.UTF8, "application/json"),
+        });
+        Assert.False((await new ManaBackendClient(missing).GetModelStatusAsync()).LlamaNoMmap);
+    }
+
+    [Fact]
+    public async Task SetLlamaNoMmapAsync_PostsTheFlag()
+    {
+        string? path = null;
+        string? body = null;
+        var handler = new FakeHttpMessageHandler(request =>
+        {
+            path = request.RequestUri!.AbsolutePath;
+            body = request.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("{}", Encoding.UTF8, "application/json"),
+            };
+        });
+        var client = new ManaBackendClient(handler);
+
+        await client.SetLlamaNoMmapAsync(false);
+
+        Assert.Equal("/models/llama-no-mmap", path);
+        Assert.Equal("""{"noMmap":false}""", body);
+    }
+
+    [Fact]
     public async Task SetVisionSettingsAsync_PostsBothPaths()
     {
         string? path = null;

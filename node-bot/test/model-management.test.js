@@ -17,7 +17,10 @@ function fakeModelSettingsStore(initialPath = null) {
   let modelPath = initialPath;
   let brain = { type: "local", baseUrl: "", apiKey: "", model: "" };
   let vision = { modelPath: "", mmprojPath: "" };
+  let llamaNoMmap = null;
   return {
+    isLlamaNoMmap: (env) => (llamaNoMmap === null ? env.MANA_LLAMA_MMAP !== "1" : llamaNoMmap),
+    setLlamaNoMmap: (value) => (llamaNoMmap = value),
     getModelPath: () => modelPath,
     setModelPath: (p) => {
       modelPath = p || null;
@@ -637,4 +640,17 @@ test("scanForModels attaches a fit label per file from the detected hardware", (
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("llamaNoMmap: on by default in /models/status, saved via setLlamaNoMmap, non-booleans rejected", () => {
+  const manager = createModelManagement({
+    env: {},
+    localGgufs: [],
+    spawnSync: () => ({ status: 1, stdout: "" }),
+    modelSettingsStore: fakeModelSettingsStore(),
+  });
+  assert.equal(manager.getModelStatus().llamaNoMmap, true);
+  assert.equal(manager.setLlamaNoMmap(false).llamaNoMmap, false);
+  assert.throws(() => manager.setLlamaNoMmap("false"), /noMmap must be true or false/);
+  assert.equal(manager.getModelStatus().llamaNoMmap, false);
 });

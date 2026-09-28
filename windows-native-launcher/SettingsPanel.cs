@@ -58,6 +58,7 @@ internal sealed class SettingsPanel : UserControl
     private readonly Label brainStatusLabel = new() { AutoSize = true };
     private readonly TextBox visionModelPathBox = new() { Width = 300 };
     private readonly TextBox visionMmprojPathBox = new() { Width = 300 };
+    private readonly CheckBox llamaNoMmapCheckBox = new() { Text = "Load the model straight into VRAM (saves ~4 GB RAM; --no-mmap)", AutoSize = true };
     private System.Collections.Generic.IReadOnlyList<ManaBrainProviderPreset> brainPresets = System.Array.Empty<ManaBrainProviderPreset>();
     // #693: llama.cpp build group. Update stays disabled until a check
     // finds a newer build -- nothing downloads without that click.
@@ -1256,6 +1257,9 @@ internal sealed class SettingsPanel : UserControl
         clearButton.Click += async (_, _) => await SetModelPathAsync(null);
         scanButton.Click += async (_, _) => await ScanForModelsAsync();
         useSelectedButton.Click += async (_, _) => await UseScanResultAsync();
+        llamaNoMmapCheckBox.ForeColor = DarkTheme.Text;
+        // Click, not CheckedChanged: only a user toggle saves, not Refresh.
+        llamaNoMmapCheckBox.Click += async (_, _) => await SaveLlamaNoMmapAsync();
 
         scanResultsList.BackColor = DarkTheme.Panel2;
         scanResultsList.ForeColor = DarkTheme.Text;
@@ -1281,8 +1285,27 @@ internal sealed class SettingsPanel : UserControl
         stack.Controls.Add(selectedModelLabel);
         stack.Controls.Add(buttonRow);
         stack.Controls.Add(scanRow);
+        stack.Controls.Add(llamaNoMmapCheckBox);
+        stack.Controls.Add(new Label { Text = "Applies the next time the model loads (after 10 idle minutes, a model switch, or restarting Mana).", AutoSize = true, ForeColor = DarkTheme.Muted });
         group.Controls.Add(stack);
         return group;
+    }
+
+    private async Task SaveLlamaNoMmapAsync()
+    {
+        var noMmap = llamaNoMmapCheckBox.Checked;
+        try
+        {
+            await backendClient.SetLlamaNoMmapAsync(noMmap);
+        }
+        catch (Exception ex)
+        {
+            if (!IsDisposed)
+            {
+                llamaNoMmapCheckBox.Checked = !noMmap;
+                MessageBox.Show(this, $"Failed to save the model loading setting: {ex.Message}", "Model", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
     }
 
     private async Task BrowseForModelAsync()
@@ -1774,6 +1797,7 @@ internal sealed class SettingsPanel : UserControl
 
         visionModelPathBox.Text = status.VisionModelPath;
         visionMmprojPathBox.Text = status.VisionMmprojPath;
+        llamaNoMmapCheckBox.Checked = status.LlamaNoMmap;
     }
 
     // #569: TOTP secret enrollment has no API endpoint at all

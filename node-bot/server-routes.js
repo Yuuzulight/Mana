@@ -748,6 +748,17 @@ function registerModelRoutes(app, deps) {
       return res.status(400).json({ error: error.message });
     }
   });
+
+  // Saves whether llama-server loads with --no-mmap (read back as
+  // /models/status's llamaNoMmap). Admin-gated: it changes launch args.
+  app.post("/models/llama-no-mmap", (req, res) => {
+    if (!checkAdminAuth(req, res)) return;
+    try {
+      return res.json(modelManagement.setLlamaNoMmap(req.body?.noMmap));
+    } catch (error) {
+      return res.status(400).json({ error: error.message });
+    }
+  });
 }
 
 // Issue #500: each of these just serves a static admin HTML file from

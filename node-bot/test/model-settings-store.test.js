@@ -99,3 +99,21 @@ test("model-settings-store: brain and vision settings persist independently of m
     fs.rmSync(tempDir, { recursive: true });
   }
 });
+
+test("model-settings-store: llama no-mmap defaults on, MANA_LLAMA_MMAP=1 turns it off, a saved choice beats both", () => {
+  const tempDir = createTempDir();
+  try {
+    const store = createModelSettingsStore({ dataDir: tempDir });
+    assert.equal(store.isLlamaNoMmap({}), true);
+    assert.equal(store.isLlamaNoMmap({ MANA_LLAMA_MMAP: "1" }), false);
+    assert.equal(store.isLlamaNoMmap({ MANA_LLAMA_MMAP: "0" }), true);
+
+    store.setLlamaNoMmap(true);
+    assert.equal(store.isLlamaNoMmap({ MANA_LLAMA_MMAP: "1" }), true);
+    store.setLlamaNoMmap(false);
+    // Persisted: a fresh store over the same dir reads it back.
+    assert.equal(createModelSettingsStore({ dataDir: tempDir }).isLlamaNoMmap({}), false);
+  } finally {
+    fs.rmSync(tempDir, { recursive: true });
+  }
+});

@@ -499,6 +499,21 @@ function createLlamaServerRuntime(options = {}) {
       args.push("--mlock");
     }
 
+    // With full GPU offload, mmap still maps the whole GGUF into this
+    // process: measured on an RTX 5080 / 32 GB box (9B Q4_K_M, -ngl 99,
+    // -c 16384) that drove llama-server to ~5 GB working set and system RAM
+    // 79% -> 95%+; --no-mmap loaded in 6.7s at ~1.1 GB (+3.7 points RAM).
+    // The #360 page-cache note above assumed mmap. With a low LLAMA_NGL the
+    // CPU layers become private (unevictable) memory, so mmap is the better
+    // fit there: Settings > Model or MANA_LLAMA_MMAP=1 turns it back on
+    // (see model-settings-store.js).
+    const noMmap = modelSettingsStore
+      ? modelSettingsStore.isLlamaNoMmap(env)
+      : env.MANA_LLAMA_MMAP !== "1";
+    if (noMmap) {
+      args.push("--no-mmap");
+    }
+
     // Same opt-in hardware flags as the llama-cli path.
     if (env.LLAMA_ENABLE_FLASHATTN === "1") {
       args.push("--flash-attn", env.LLAMA_ARG_FLASH_ATTN || "auto");
