@@ -171,3 +171,31 @@ test("a stale idle timer can't kill a start in progress", async (t) => {
   assert.equal(taskkills.length, 0);
   assert.deepEqual(live(), [children[1]]);
 });
+
+test("a stop() during a start (a game starting, #760) never leaves the killed child marked ready", async () => {
+  let answer;
+  const children = [];
+  const service = createOnDemandProcess({
+    name: "Fake service",
+    healthUrl: () => "http://127.0.0.1:5999/health",
+    command: () => ({ bin: "fake.exe", args: [], options: {} }),
+    idleMs: () => 0,
+    platform: "linux",
+    fetch: () => new Promise((resolve) => (answer = resolve)),
+    spawn: () => {
+      const child = { exitCode: null, signalCode: null, stderr: { on: () => {} }, on: () => {}, kill: () => {} };
+      children.push(child);
+      return child;
+    },
+    sleep: tick,
+  });
+
+  const start = service.ensure();
+  await tick();
+  answer({ ok: false }); // nothing on the port yet
+  await tick(); // spawned; its first health check is in flight
+  service.stop();
+  answer({ ok: true }); // answered just before the kill landed
+  await assert.rejects(start, /stopped while starting/);
+  assert.equal(children.length, 1);
+});

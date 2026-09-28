@@ -113,6 +113,9 @@ function createOnDemandProcess({
       }
       await sleep(500);
     }
+    // stop() while that last health check was in flight (a game starting,
+    // #760): the child is being killed, so it must not be marked ready.
+    if (state.child !== child) throw new Error(`${name} was stopped while starting`);
     state.ready = true;
     touch();
     console.log(`${name} ready`);

@@ -63,7 +63,8 @@ const multer = require("multer");
 const cors = require("cors");
 const { createRequestGuard } = require("./request-guard");
 const rateLimit = require("express-rate-limit");
-const { spawnSync, spawn } = require("child_process");
+const { spawnSync, spawn, execFile } = require("child_process");
+const { promisify } = require("util");
 const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
@@ -244,6 +245,7 @@ const {
 const { createLlamaServerRuntime } = require("./ai/llama-server-runtime");
 const { createReranker } = require("./ai/reranker-runtime");
 const { createEmbedder } = require("./ai/embedder-runtime");
+const { createGamingWatch } = require("./utils/gaming-watch");
 const { streamedMatchesFinal } = require("./utils/reply-stream-diff");
 const { createRestartController } = require("./admin-restart");
 const ffxivMarketPlugin = require("../plugins/ffxiv-market");
@@ -485,12 +487,39 @@ const llamaServerRuntime = createLlamaServerRuntime({
   modelSettingsStore,
 });
 
+// #754/#760: stop the memory embedder (~2.3 GB VRAM) and reranker (RAM) as
+// soon as a watched game starts -- a turn during the game used to wake them
+// for the full 1-hour idle. Polled in the background with a non-blocking
+// tasklist (full path, like kill-process-tree.js: a bare name is looked up
+// in the cwd first); the runtimes read the cached answer on every turn.
+const gamingWatch = createGamingWatch({
+  check: async () => {
+    if (process.platform !== "win32") return false;
+    const tasklist = path.win32.join(process.env.SystemRoot || "C:\\Windows", "System32", "tasklist.exe");
+    const { stdout } = await promisify(execFile)(tasklist, ["/fo", "csv", "/nh"], {
+      maxBuffer: 5 * 1024 * 1024,
+      windowsHide: true,
+    });
+    return parseTasklistNames(stdout).some((name) => GAMING_PROCESS_NAMES.includes(name));
+  },
+  onGameStart: () => {
+    console.log("Watched game started: stopping the memory embedder and reranker");
+    embedder.stop();
+    reranker.stop();
+  },
+});
+if (process.env.NODE_ENV !== "test" && !process.env.NODE_TEST_CONTEXT) {
+  gamingWatch.poll();
+  setInterval(gamingWatch.poll, 30 * 1000).unref();
+}
+
 // Issue #674: optional CPU-only reranker for memory recall -- off unless
 // MANA_RERANKER_MODEL names a local .gguf file. Same llama-server binary.
 const reranker = createReranker({
   env: process.env,
   threads: LLAMA_THREADS,
   findServerBin: llamaServerRuntime.findLlamaServerBin,
+  gaming: gamingWatch.isGaming,
 });
 
 // Optional GPU text embedder (llama.cpp) for semantic memory search -- off
@@ -500,6 +529,7 @@ const embedder = createEmbedder({
   env: process.env,
   findServerBin: llamaServerRuntime.findLlamaServerBin,
   supportsLoadMode: llamaServerRuntime.supportsLoadMode,
+  gaming: gamingWatch.isGaming,
 });
 require("./tools/retriever-index").useEmbedder(embedder);
 
@@ -1738,7 +1768,11 @@ function getRunningProcessNames() {
     throw new Error(result.stderr || "tasklist failed");
   }
 
-  return (result.stdout || "")
+  return parseTasklistNames(result.stdout);
+}
+
+function parseTasklistNames(stdout) {
+  return (stdout || "")
     .split(/\r?\n/)
     .map((line) => parseTasklistCsvLine(line)[0])
     .filter(Boolean)
