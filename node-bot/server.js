@@ -3714,6 +3714,13 @@ function registerRoutes(app, upload, deps = {}) {
     // below). Paths that only take a flat system-prompt string (the OpenAI
     // proxy, Best-of-N) fall back to the old flattened text via
     // flatMemorySuffix so they don't lose memory context entirely.
+    //
+    // Issue #660: every memory entry built below changes turn to turn, so
+    // all of them default to "late" -- anything per-turn placed early would
+    // change the prompt prefix and defeat llama-server's prompt cache. The
+    // system prompt above stays per-turn-free for the same reason (persona,
+    // background memory, name-sorted skills index, session goal); screen
+    // and market text already ride on the user message itself.
     const memoryExtraMessages = { early: [], late: [] };
     let flatMemorySuffix = "";
     let promptMemoryChars = 0;

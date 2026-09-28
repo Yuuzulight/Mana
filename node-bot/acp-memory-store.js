@@ -1768,19 +1768,23 @@ function createAcpMemoryStore(options = {}) {
 
   // Issue #282: structured form of buildPromptMemory -- the summary and the
   // recent-turns block as two independently-positionable entries instead of
-  // one joined string. Defaults: summary "early" (durable background,
-  // belongs near the persona definition), recent turns "late" (right
-  // before the live user message -- SillyTavern's high-salience "depth 0"
-  // equivalent, since what was *just* discussed is most relevant to what's
-  // being asked now). Each entry is token-bounded independently with the
-  // same budget buildPromptMemory applies to the combined block.
+  // one joined string. Both default to "late" (right before the live user
+  // message -- SillyTavern's high-salience "depth 0" equivalent, since what
+  // was *just* discussed is most relevant to what's being asked now). Each
+  // entry is token-bounded independently with the same budget
+  // buildPromptMemory applies to the combined block.
+  //
+  // Issue #660: the summary used to default to "early" (right after the
+  // persona), but appendTurn folds a new line into it on every turn, so an
+  // early summary changed the prompt prefix every turn and stopped
+  // llama-server reusing its prompt cache past the system message.
   function buildPromptMemoryEntries(sessionId, options = {}) {
     const session = getSession(sessionId);
     if (!session || (!session.summary && !session.turns.length)) {
       return { entries: [], turnsDroppedByAge: 0 };
     }
 
-    const summaryPosition = options.summaryPosition === "late" ? "late" : "early";
+    const summaryPosition = options.summaryPosition === "early" ? "early" : "late";
     const recentTurnsPosition = options.recentTurnsPosition === "early" ? "early" : "late";
 
     const entries = [];

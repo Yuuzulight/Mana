@@ -808,6 +808,9 @@ function createLlamaServerRuntime(options = {}) {
   // "late" right before the live user message (the higher-salience
   // position, closest to what's actually being asked). Omitting
   // extraMessages entirely preserves today's exact 2-message shape.
+  // Issue #660: "early" is only for content that is stable across turns --
+  // anything there becomes part of the prompt prefix llama-server's prompt
+  // cache reuses, so per-turn content there would invalidate it each turn.
   function buildMessages(systemContent, prompt, extraMessages) {
     const early = extraMessages?.early || [];
     const late = extraMessages?.late || [];
@@ -817,6 +820,14 @@ function createLlamaServerRuntime(options = {}) {
       ...late,
       { role: "user", content: prompt },
     ];
+  }
+
+  // Issue #660: llama-server reports per request how many prompt tokens it
+  // reused from its prompt cache (cache_n) vs. processed fresh (prompt_n),
+  // so the cache hit rate between turns is visible in the log.
+  function logPromptCache(label, timings) {
+    if (!timings || typeof timings.prompt_n !== "number") return;
+    console.log(`${label}: prompt cache_n=${timings.cache_n ?? 0} prompt_n=${timings.prompt_n}`);
   }
 
   async function runLocalAssistantReply(
@@ -854,6 +865,7 @@ function createLlamaServerRuntime(options = {}) {
       );
     }
     const json = await resp.json();
+    logPromptCache("llama-server", json && json.timings);
     const content =
       json && json.choices && json.choices[0] && json.choices[0].message
         ? String(json.choices[0].message.content || "")
@@ -922,7 +934,17 @@ function createLlamaServerRuntime(options = {}) {
       );
     }
 
-    const full = await streamSentences(resp, { onSentence, maxSentenceChars });
+    // Kept and logged once: only the final frame normally carries timings,
+    // but a server run with timings_per_token sends them on every frame.
+    let lastTimings = null;
+    const full = await streamSentences(resp, {
+      onSentence,
+      maxSentenceChars,
+      onTimings: (timings) => {
+        lastTimings = timings;
+      },
+    });
+    logPromptCache("llama-server-stream", lastTimings);
 
     if (!full.trim()) {
       throw new Error("llama-server returned an empty reply");
@@ -1156,7 +1178,9 @@ function createLlamaServerRuntime(options = {}) {
           `llama-server reply failed (${resp.status}): ${text.slice(0, 500)}`,
         );
       }
-      return resp.json();
+      const json = await resp.json();
+      logPromptCache("llama-server-tool-reply", json && json.timings);
+      return json;
     }
 
     const executedToolCalls = [];

@@ -6,7 +6,10 @@ const { createThinkFilter } = require("./think-filter");
 // across network chunks, so partial lines are held rather than parsed.
 const NEWLINE = String.fromCharCode(10);
 
-async function* readSseDeltas(resp) {
+// onTimings (issue #660): called with llama-server's `timings` object when a
+// frame carries one (the final frame does), so a caller can log how much of
+// the prompt was served from the prompt cache.
+async function* readSseDeltas(resp, onTimings = null) {
   const body = resp.body;
   if (!body) return;
   const decoder = new TextDecoder();
@@ -37,6 +40,7 @@ async function* readSseDeltas(resp) {
       if (payload === "[DONE]") return;
       try {
         const json = JSON.parse(payload);
+        if (json?.timings && onTimings) onTimings(json.timings);
         const delta = json?.choices?.[0]?.delta?.content;
         if (delta) yield delta;
       } catch (e) {
@@ -58,7 +62,7 @@ async function* readSseDeltas(resp) {
 // Order matters: think-block suppression runs BEFORE sentence cutting, so
 // reasoning never reaches TTS. The other way round would speak the model's
 // deliberation before its closing tag arrived.
-async function streamSentences(resp, { onSentence = null, maxSentenceChars } = {}) {
+async function streamSentences(resp, { onSentence = null, maxSentenceChars, onTimings = null } = {}) {
   const thinkFilter = createThinkFilter();
   const chunker = createSentenceChunker({ maxChars: maxSentenceChars });
   const emit = typeof onSentence === "function" ? onSentence : () => {};
@@ -71,7 +75,7 @@ async function streamSentences(resp, { onSentence = null, maxSentenceChars } = {
     }
   };
 
-  for await (const delta of readSseDeltas(resp)) {
+  for await (const delta of readSseDeltas(resp, onTimings)) {
     const visible = thinkFilter.push(delta);
     if (visible) await deliver(chunker.push(visible));
   }
