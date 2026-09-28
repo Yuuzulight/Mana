@@ -160,17 +160,30 @@ internal sealed class ManaBackendClient
         };
     }
 
-    public async Task<string> TranscribeAsync(byte[] wavBytes)
+    // #619: VoiceLoop only polls live partial transcripts against a backend
+    // on this machine -- over the network the extra Whisper round trips
+    // would mostly arrive too late to help and just add load.
+    public bool IsLocalBackend => http.BaseAddress?.IsLoopback == true;
+
+    public Task<string> TranscribeAsync(byte[] wavBytes) => TranscribeAsync("/transcribe-only", wavBytes, default);
+
+    // #619: same upload to node-bot's /transcribe-partial (the endpoint
+    // windows-launcher's pollPartialTranscript uses) -- async on the server,
+    // so a poll never blocks the final /transcribe-only behind it.
+    public Task<string> TranscribePartialAsync(byte[] wavBytes, CancellationToken cancellationToken) =>
+        TranscribeAsync("/transcribe-partial", wavBytes, cancellationToken);
+
+    private async Task<string> TranscribeAsync(string route, byte[] wavBytes, CancellationToken cancellationToken)
     {
         using var content = new MultipartFormDataContent();
         using var fileContent = new ByteArrayContent(wavBytes);
         fileContent.Headers.ContentType = new MediaTypeHeaderValue("audio/wav");
         content.Add(fileContent, "file", "clip.wav");
 
-        using var response = await http.PostAsync("/transcribe-only", content);
+        using var response = await http.PostAsync(route, content, cancellationToken);
         response.EnsureSuccessStatusCode();
-        await using var stream = await response.Content.ReadAsStreamAsync();
-        using var document = await JsonDocument.ParseAsync(stream);
+        await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+        using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
         return document.RootElement.GetProperty("transcript").GetString() ?? string.Empty;
     }
 

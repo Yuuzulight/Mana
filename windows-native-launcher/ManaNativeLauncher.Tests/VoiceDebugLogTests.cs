@@ -74,6 +74,35 @@ public class VoiceDebugLogTests
     }
 
     [Fact]
+    public void Entry_TurnDetectionDecisions()
+    {
+        // #619: end-of-turn reason, the partials behind it, and a merge.
+        var entry = new VoiceSegmentLogEntry
+        {
+            Awake = true,
+            Eot = "800ms/complete",
+            Partials = 2,
+            PartialMs = 640,
+            Partial = "turn on \"the\" lights.",
+            Merged = true,
+            Whisper = "ok",
+            Transcript = "Turn on the lights.",
+        };
+
+        Assert.EndsWith(
+            " whisper=ok eot=800ms/complete partials=2/640ms merged=yes partial=\"turn on 'the' lights.\" transcript=\"Turn on the lights.\"",
+            entry.ToString());
+    }
+
+    [Fact]
+    public void Entry_WithoutTurnDetectionFields_IsUnchanged()
+    {
+        var line = new VoiceSegmentLogEntry { Whisper = "empty" }.ToString();
+
+        Assert.EndsWith(" whisper=empty", line);
+    }
+
+    [Fact]
     public void Append_RotatesOnceOverCap()
     {
         var dir = Path.Combine(Path.GetTempPath(), "mana-voice-log-" + Guid.NewGuid());

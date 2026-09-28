@@ -12,4 +12,8 @@ internal interface IChatLog
     // #652 part 6: Mana's reply is complete (not interrupted, not failed) --
     // the chat checks then whether the turn left any edits for approval.
     void ReplyFinished() { }
+
+    // #619: the live partial transcript of what the user is saying right
+    // now ("Hearing: ..."), or null once that segment has closed.
+    void ShowHearing(string? text) { }
 }
