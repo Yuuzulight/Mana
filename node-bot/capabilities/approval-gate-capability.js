@@ -36,8 +36,9 @@ function registerApprovalGateRoutes(app, context = {}) {
     try {
       const id = requireString(req.params?.id, "id");
       const decision = requireString(req.body?.decision, "decision");
-      if (!["allow-once", "always-allow", "deny"].includes(decision)) {
-        throw new ValidationError('decision must be "allow-once", "always-allow", or "deny"');
+      // "allow-session": issue #669's in-memory grant, gone on restart.
+      if (!["allow-once", "allow-session", "always-allow", "deny"].includes(decision)) {
+        throw new ValidationError('decision must be "allow-once", "allow-session", "always-allow", or "deny"');
       }
       const result = await approvalGate.decide(id, decision);
       if (!result) {

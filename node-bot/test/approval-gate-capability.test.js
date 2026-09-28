@@ -109,3 +109,20 @@ test("getHealth reports the current pending count", () => {
   assert.equal(empty.count, 0);
   assert.match(empty.message, /No approvals pending/);
 });
+
+test("#669 POST /approvals/:id/decide accepts allow-session", async () => {
+  const gate = createApprovalGate({ dataDir: createTempDir() });
+  gate.registerExecutor("skill-write", () => "created");
+  const outcome = await gate.requestApproval("skill-write", { payload: {} });
+
+  const app = buildApp(gate);
+  await withServer(app, async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/approvals/${outcome.requestId}/decide`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ decision: "allow-session" }),
+    });
+    assert.equal(response.status, 200);
+    assert.equal(gate.isGranted("skill-write"), true);
+  });
+});

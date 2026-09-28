@@ -1256,7 +1256,7 @@ internal sealed class ManaBackendClient
         return pending;
     }
 
-    // decision: "allow-once" | "always-allow" | "deny" -- node-bot
+    // decision: "allow-once" | "allow-session" | "always-allow" | "deny" -- node-bot
     // validates this itself and 400s on anything else, so this client
     // doesn't duplicate that validation.
     public async Task DecideApprovalAsync(string id, string decision)
