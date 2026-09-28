@@ -101,6 +101,10 @@ windows-native-launcher/assets/wakeword/embedding_model.onnx
 # not distributed with the public repo; the launcher falls back to the
 # generic idle.svg/talking.svg placeholders if these are absent.
 windows-launcher/assets/avatar/*.png
+# #681: the native launcher's own copies of the avatar art and Live2D model
+# (it falls back to the windows-launcher/ ones above when these are absent).
+windows-native-launcher/assets/avatar/*.png
+windows-native-launcher/assets/avatar/model/
 
 # Personal voice references (never commit someone's voice)
 tts-service/references/
