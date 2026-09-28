@@ -12,6 +12,13 @@ Opt-in: disabled unless MANA_MCP_SERVER_ENABLED=1. Run directly with
 it as a subprocess.
 */
 
+// Same guard as server.js (#731): load node-bot/.env first, only when run
+// directly, so tests that require() this file keep their own environment.
+// No "Loaded N settings" log here: stdout is the MCP protocol stream.
+if (require.main === module) {
+  require("./load-env").loadEnvFile();
+}
+
 const { McpServer } = require("@modelcontextprotocol/sdk/server/mcp.js");
 const {
   StdioServerTransport,
