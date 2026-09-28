@@ -7,7 +7,7 @@
 // stops working, nothing is lost.
 //
 // Issue #263 part 1: also an optional vec0 (sqlite-vec) semantic index over
-// the same database file, alongside FTS5 -- see indexEmbedding()/search()'s
+// the same database file, alongside FTS5 -- see syncEmbeddings()/search()'s
 // queryEmbedding param below. Vector search is a pure enhancement: if
 // sqlite-vec's extension fails to load for any reason (unsupported
 // platform, missing prebuild), vectorEnabled stays false and every existing
@@ -19,13 +19,12 @@ const { significantWords, sharedWordCount } = require("./utils/word-overlap");
 
 const DEFAULT_DB_PATH = path.join(__dirname, "data", "acp-memory", "session-search.db");
 
-// Matches local_embedder.py's default model (all-MiniLM-L6-v2). vec0's
-// table dimension is fixed at creation time -- if RETRIEVER_EMBEDDER_MODEL
-// is ever swapped for a different-dimension model, indexEmbedding() below
-// just skips (dimension mismatch), it doesn't crash. Not solved further
-// here since nothing in this codebase swaps the embedder model at runtime
-// today.
-const DEFAULT_EMBED_DIM = 384;
+// vec0's dimension is fixed when the table is created, so turns_vec is
+// (re)built from the first embedding the configured model actually returns
+// (issue #263: it used to be hard-coded at 384 while Qwen3-Embedding returns
+// 1024, so no vector was ever stored). Past turns are embedded in pages of
+// this many messages_fts rows, so a re-index never holds the embedder long.
+const EMBED_BATCH_ROWS = 16;
 
 // A candidate whose text overlaps an already-kept result by more than this
 // fraction of its own significant words is treated as a near-duplicate and
@@ -34,11 +33,8 @@ const DIVERSITY_OVERLAP_THRESHOLD = 0.7;
 
 // options.dbPath: injectable so tests never write into node-bot's real data
 // directory (same pattern as acp-memory-store.js/approval-gate.js).
-// options.embedDim: injectable so tests can use small deterministic vectors
-// instead of real 384-dim ones.
 function createSessionSearchIndex(options = {}) {
   const dbPath = options.dbPath || DEFAULT_DB_PATH;
-  const embedDim = Math.max(1, Number(options.embedDim) || DEFAULT_EMBED_DIM);
   if (dbPath !== ":memory:") {
     fs.mkdirSync(path.dirname(dbPath), { recursive: true });
   }
@@ -59,34 +55,29 @@ function createSessionSearchIndex(options = {}) {
   );
 
   let vectorEnabled = false;
-  let vecInsertStmt = null;
-  let vecMetaInsertStmt = null;
-  let vecCandidatesStmt = null;
-  let vecMetaLookupStmt = null;
+  // { model, dims, cursor }: which embedding model turns_vec holds vectors
+  // from, and the last messages_fts rowid embedded so far. null until the
+  // first embedding arrives -- also for a DB from before this row existed,
+  // whose vectors are of unknown origin and get rebuilt.
+  let vecModel = null;
   try {
     const sqliteVec = require("sqlite-vec");
     db.loadExtension(sqliteVec.getLoadablePath());
     db.exec(`
-      CREATE VIRTUAL TABLE IF NOT EXISTS turns_vec USING vec0(
-        embedding float[${embedDim}] distance_metric=cosine
-      );
       CREATE TABLE IF NOT EXISTS turns_vec_meta (
         rowid INTEGER PRIMARY KEY,
         sessionId TEXT,
         text TEXT,
         at TEXT
       );
+      CREATE TABLE IF NOT EXISTS turns_vec_model (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        model TEXT NOT NULL,
+        dims INTEGER NOT NULL,
+        cursor INTEGER NOT NULL
+      );
     `);
-    vecInsertStmt = db.prepare("INSERT INTO turns_vec (embedding) VALUES (vec_f32(?))");
-    vecMetaInsertStmt = db.prepare(
-      "INSERT INTO turns_vec_meta (rowid, sessionId, text, at) VALUES (?, ?, ?, ?)",
-    );
-    vecCandidatesStmt = db.prepare(
-      "SELECT rowid, distance FROM turns_vec WHERE embedding MATCH vec_f32(?) ORDER BY distance LIMIT ?",
-    );
-    vecMetaLookupStmt = db.prepare(
-      "SELECT sessionId, text, at FROM turns_vec_meta WHERE rowid = ?",
-    );
+    vecModel = db.prepare("SELECT model, dims, cursor FROM turns_vec_model").get() || null;
     vectorEnabled = true;
   } catch (e) {
     // sqlite-vec unavailable on this platform, or the extension failed to
@@ -111,26 +102,98 @@ function createSessionSearchIndex(options = {}) {
     insertMany(rows);
   }
 
-  // Indexes one turn's combined text as a single embedding (whole-turn, not
-  // per-role -- half the embedding calls of indexTurn's per-role FTS5 rows,
-  // and matches how a search question usually spans both sides of a turn).
-  // Caller (acp-memory-store.js) computes the embedding; this module never
-  // calls out to an embedder itself, same separation retriever-index.js's
-  // callers already follow. A no-op if vector search isn't available, or
-  // the embedding's dimension doesn't match this index's fixed table
-  // dimension (e.g. the embedder model was swapped after this DB was
-  // created).
-  function indexEmbedding({ sessionId, turn, embedding } = {}) {
-    if (!vectorEnabled || !sessionId || !turn) return;
-    if (!Array.isArray(embedding) || embedding.length !== embedDim) return;
-    const text = `User: ${turn.user || ""}\nAssistant: ${turn.assistant || ""}`.trim();
-    if (!text) return;
-    const at = turn.at || new Date().toISOString();
-    const insertBoth = db.transaction(() => {
-      const info = vecInsertStmt.run(JSON.stringify(embedding));
-      vecMetaInsertStmt.run(info.lastInsertRowid, sessionId, text, at);
+  // Issue #263: only derived data (turns_vec, turns_vec_meta) is dropped,
+  // in the same transaction that records the new model, so a crash leaves
+  // either the old consistent state or the new empty one -- vectors from two
+  // models are never mixed. messages_fts is never touched.
+  const rebuildVectors = db.transaction((model, dims) => {
+    db.exec("DROP TABLE IF EXISTS turns_vec; DELETE FROM turns_vec_meta;");
+    db.exec(`CREATE VIRTUAL TABLE turns_vec USING vec0(embedding float[${dims}] distance_metric=cosine)`);
+    db.prepare(
+      "INSERT OR REPLACE INTO turns_vec_model (id, model, dims, cursor) VALUES (1, ?, ?, 0)",
+    ).run(model, dims);
+  });
+
+  // One page's vectors and the advanced cursor commit together, so an
+  // interrupted run never embeds a turn twice or skips one.
+  const writeVectors = db.transaction((turns, embeddings, cursor) => {
+    const insertVec = db.prepare("INSERT INTO turns_vec (embedding) VALUES (vec_f32(?))");
+    const insertMeta = db.prepare(
+      "INSERT INTO turns_vec_meta (rowid, sessionId, text, at) VALUES (?, ?, ?, ?)",
+    );
+    turns.forEach((turn, i) => {
+      if (embeddings[i]?.length !== vecModel.dims) return; // stays keyword-only
+      const info = insertVec.run(JSON.stringify(embeddings[i]));
+      insertMeta.run(info.lastInsertRowid, turn.sessionId, turn.text, turn.at);
     });
-    insertBoth();
+    db.prepare("UPDATE turns_vec_model SET cursor = ? WHERE id = 1").run(cursor);
+  });
+
+  // Whole turns (not per-role -- half the embedding calls of indexTurn's
+  // rows, and a search question usually spans both sides of a turn),
+  // re-paired from indexTurn's consecutive user/assistant rows.
+  function groupTurns(rows) {
+    const turns = [];
+    for (const row of rows) {
+      const prev = turns[turns.length - 1];
+      if (row.role === "assistant" && prev && prev.assistant === undefined &&
+          prev.sessionId === row.sessionId && prev.at === row.at) {
+        prev.assistant = row.text;
+      } else {
+        turns.push({ sessionId: row.sessionId, at: row.at, [row.role]: row.text });
+      }
+    }
+    for (const turn of turns) {
+      turn.text = `User: ${turn.user || ""}\nAssistant: ${turn.assistant || ""}`.trim();
+    }
+    return turns;
+  }
+
+  // Issue #263: embeds every messages_fts row past the cursor, a page at a
+  // time, so a new or rebuilt table catches up on all past turns and a new
+  // turn is just the last page. The model is whatever the embedder returns:
+  // a different model id (retriever-index.js's embeddingModelId, #754) or
+  // dimension rebuilds turns_vec and starts again from the first row. The
+  // cursor commits with each page, so an interrupted run resumes where it
+  // stopped. Never rejects; an unavailable embedder just ends the run
+  // (keyword search is unaffected) and the next call retries. One run at a
+  // time -- a call during a run returns at once, and the running loop
+  // reaches the new rows anyway.
+  let syncing = false;
+  async function syncEmbeddings(computeEmbeddingsFn, embeddingModelIdFn = () => "") {
+    if (!vectorEnabled || syncing || typeof computeEmbeddingsFn !== "function") return;
+    syncing = true;
+    try {
+      for (;;) {
+        const from = vecModel ? vecModel.cursor : 0;
+        const rows = db
+          .prepare("SELECT rowid, sessionId, role, text, at FROM messages_fts WHERE rowid > ? ORDER BY rowid LIMIT ?")
+          .all(from, EMBED_BATCH_ROWS);
+        if (!rows.length) return;
+        // A full page may end between a turn's user and assistant rows --
+        // that user row starts the next page instead.
+        if (rows.length === EMBED_BATCH_ROWS && rows[rows.length - 1].role === "user") rows.pop();
+        const turns = groupTurns(rows);
+        const embeddings = await computeEmbeddingsFn(turns.map((t) => t.text));
+        const dims = Array.isArray(embeddings)
+          ? embeddings.find((e) => Array.isArray(e) && e.length)?.length
+          : 0;
+        if (!dims) return;
+        const model = String(embeddingModelIdFn() || "");
+        if (!vecModel || vecModel.model !== model || vecModel.dims !== dims) {
+          rebuildVectors(model, dims);
+          vecModel = { model, dims, cursor: 0 };
+          if (from !== 0) continue; // this page was past the new cursor
+        }
+        const cursor = rows[rows.length - 1].rowid;
+        writeVectors(turns, embeddings, cursor);
+        vecModel.cursor = cursor;
+      }
+    } catch (e) {
+      console.warn("Session embedding indexing failed:", e?.message || e);
+    } finally {
+      syncing = false;
+    }
   }
 
   // Global KNN search over turns_vec, joined against turns_vec_meta,
@@ -145,10 +208,13 @@ function createSessionSearchIndex(options = {}) {
     if (!vectorEnabled) return [];
     try {
       const fetchCap = sessionId ? 500 : limit;
-      const candidates = vecCandidatesStmt.all(JSON.stringify(queryEmbedding), fetchCap);
+      const candidates = db
+        .prepare("SELECT rowid, distance FROM turns_vec WHERE embedding MATCH vec_f32(?) ORDER BY distance LIMIT ?")
+        .all(JSON.stringify(queryEmbedding), fetchCap);
+      const metaLookup = db.prepare("SELECT sessionId, text, at FROM turns_vec_meta WHERE rowid = ?");
       const results = [];
       for (const row of candidates) {
-        const meta = vecMetaLookupStmt.get(row.rowid);
+        const meta = metaLookup.get(row.rowid);
         if (!meta) continue;
         if (sessionId && meta.sessionId !== sessionId) continue;
         results.push({
@@ -210,7 +276,9 @@ function createSessionSearchIndex(options = {}) {
   // explicit request to bypass relevance ranking entirely) and for an
   // explicit roleFilter (vector hits are whole-turn, not per-role, so they
   // can't honestly satisfy a user/assistant-only filter) -- in both cases
-  // behavior is unchanged from keyword-only search.
+  // behavior is unchanged from keyword-only search. Also skipped when the
+  // query was embedded by a different model (queryModel, #754's
+  // embeddingModelId) or dimension than turns_vec holds (#263).
   function search({
     query,
     limit = 20,
@@ -218,6 +286,7 @@ function createSessionSearchIndex(options = {}) {
     roleFilter,
     sessionId,
     queryEmbedding,
+    queryModel = "",
     since,
     until,
   } = {}) {
@@ -232,8 +301,10 @@ function createSessionSearchIndex(options = {}) {
     const useHybrid =
       hasQuery &&
       vectorEnabled &&
+      vecModel &&
       Array.isArray(queryEmbedding) &&
-      queryEmbedding.length === embedDim &&
+      queryEmbedding.length === vecModel.dims &&
+      String(queryModel || "") === vecModel.model &&
       sort === "relevance" &&
       !(Array.isArray(roleFilter) && roleFilter.length);
 
@@ -310,7 +381,7 @@ function createSessionSearchIndex(options = {}) {
   // actually loaded -- e.g. sqlite-vec's platform binary being unavailable
   // in an environment (see the `catch` above) is a real, expected state,
   // not just an internal implementation detail.
-  return { indexTurn, indexEmbedding, search, close, vectorEnabled: () => vectorEnabled };
+  return { indexTurn, syncEmbeddings, search, close, vectorEnabled: () => vectorEnabled };
 }
 
-module.exports = { createSessionSearchIndex, DEFAULT_DB_PATH, DEFAULT_EMBED_DIM };
+module.exports = { createSessionSearchIndex, DEFAULT_DB_PATH };
