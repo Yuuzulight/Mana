@@ -11,9 +11,16 @@ const KEY = "sessions";
 function registerSessionsRoutes(app, context = {}) {
   const acpMemoryStore = context.acpMemoryStore;
 
+  // #687: ?q= keeps only the sessions whose stored messages contain every
+  // word (session-search-index.js). `query` is echoed so a client can tell
+  // this backend understood q. No search index = no matches.
   app.get("/sessions", (req, res) => {
     try {
-      return res.json({ sessions: acpMemoryStore.listSessions() });
+      const q = typeof req.query?.q === "string" ? req.query.q.trim() : "";
+      if (!q) return res.json({ sessions: acpMemoryStore.listSessions() });
+      const ids = acpMemoryStore.sessionIdsMatching ? acpMemoryStore.sessionIdsMatching(q) : null;
+      const sessions = ids ? acpMemoryStore.listSessions().filter((s) => ids.has(s.sessionId)) : [];
+      return res.json({ sessions, query: q });
     } catch (e) {
       console.error(e);
       return res.status(500).json({ error: String(e) });
