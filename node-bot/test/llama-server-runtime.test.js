@@ -1877,11 +1877,12 @@ function makeTwoModelFs() {
         "C:\\models\\mana.gguf",
         "C:\\models\\vision.gguf",
         "C:\\models\\vision-mmproj.gguf",
+        "C:\\models\\gaming.gguf",
       ].includes(target),
   };
 }
 
-function makeSwappingHarness(extraEnv = {}) {
+function makeSwappingHarness(extraEnv = {}, options = {}) {
   const spawnCalls = [];
   // Tracks liveness of whichever child is "current" -- reset on every spawn,
   // flipped off when that specific child is killed, so a stopAndWait()
@@ -1920,6 +1921,7 @@ function makeSwappingHarness(extraEnv = {}) {
     sleep: async () => {},
     nowMs: () => clock,
     registerExitHandlers: false,
+    ...options,
   });
 
   return {
@@ -2037,6 +2039,77 @@ test("#872: unloadVision leaves a server without the mmproj alone", async () => 
   await new Promise((resolve) => setTimeout(resolve, 20));
 
   assert.equal(spawnCalls.length, 1);
+});
+
+// #889: the gaming profile. mana.gguf is the vision-capable chat model.
+const GAMING_ENV = {
+  LLAMA_VISION_MODEL: "C:\\models\\mana.gguf",
+  LLAMA_CONTEXT: "16384",
+  MANA_GAMING_LLAMA_MODEL: "C:\\models\\gaming.gguf",
+};
+const argAfter = (args, flag) => args[args.indexOf(flag) + 1];
+
+test("#889: a game start swaps once to the gaming model (its context, KV cache and cache-ram, no mmproj); the game end swaps back", async () => {
+  const { runtime, spawnCalls } = makeSwappingHarness(GAMING_ENV, { probeHelp: () => "--cache-ram" });
+  await runtime.runLocalAssistantReply("what's this?", 64, "default", null, { images: ["AAAA"] });
+  assert.ok(spawnCalls[0].args.includes("--mmproj"));
+
+  runtime.setGaming(true);
+  await waitUntil(() => runtime.getStatus().gamingModel);
+  const gamingArgs = spawnCalls[1].args;
+  assert.equal(argAfter(gamingArgs, "-m"), "C:\\models\\gaming.gguf");
+  assert.equal(argAfter(gamingArgs, "-c"), "8192");
+  assert.equal(argAfter(gamingArgs, "-ctk"), "q8_0");
+  assert.equal(argAfter(gamingArgs, "-ctv"), "q8_0");
+  assert.equal(argAfter(gamingArgs, "--cache-ram"), "256");
+  assert.ok(!gamingArgs.includes("--mmproj"));
+
+  // Every profile, image turns included, stays on it without the mmproj.
+  assert.equal(runtime.chatAcceptsImages("default"), false);
+  await runtime.runLocalAssistantReply("and this?", 64, "quality", null, { images: ["AAAA"] });
+  await runtime.runLocalAssistantReply("hello", 64, "default");
+  assert.equal(spawnCalls.length, 2);
+  await assert.rejects(runtime.runVisionReply("describe", ["AAAA"]), { code: "VISION_PAUSED_GAMING" });
+
+  runtime.setGaming(false);
+  await waitUntil(() => spawnCalls.length === 3 && runtime.getStatus().running);
+  const normalArgs = spawnCalls[2].args;
+  assert.equal(argAfter(normalArgs, "-m"), "C:\\models\\mana.gguf");
+  assert.equal(argAfter(normalArgs, "-c"), "16384");
+  assert.equal(argAfter(normalArgs, "--cache-ram"), "1024");
+  assert.ok(!normalArgs.includes("-ctk"));
+  assert.equal(runtime.getStatus().gamingModel, false);
+});
+
+test("#889: a game start mid-reply waits for the reply, then swaps", async () => {
+  const { runtime, spawnCalls, chatBodies, holdChat } = makeSwappingHarness(GAMING_ENV);
+  const release = holdChat();
+  const reply = runtime.runLocalAssistantReply("hello", 64, "default");
+  await waitUntil(() => chatBodies.length === 1);
+
+  runtime.setGaming(true);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(spawnCalls.length, 1, "no restart under a reply in flight");
+
+  release();
+  assert.equal(await reply, "ok");
+  await waitUntil(() => spawnCalls.length === 2);
+  assert.equal(argAfter(spawnCalls[1].args, "-m"), "C:\\models\\gaming.gguf");
+});
+
+test("#889: without MANA_GAMING_LLAMA_MODEL a game start only drops the mmproj, and a game end changes nothing", async () => {
+  const { runtime, spawnCalls } = makeSwappingHarness({ LLAMA_VISION_MODEL: "C:\\models\\mana.gguf" });
+  await runtime.runLocalAssistantReply("what's this?", 64, "default", null, { images: ["AAAA"] });
+
+  runtime.setGaming(true);
+  await waitUntil(() => spawnCalls.length === 2);
+  assert.equal(argAfter(spawnCalls[1].args, "-m"), "C:\\models\\mana.gguf");
+  assert.ok(!spawnCalls[1].args.includes("-ctk"));
+
+  runtime.setGaming(false);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(spawnCalls.length, 2);
+  assert.equal(runtime.getStatus().gamingModel, false);
 });
 
 test("#679: a text-only chat server drops attached images instead of sending a request it would reject", async () => {

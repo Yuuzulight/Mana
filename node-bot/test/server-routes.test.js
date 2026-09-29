@@ -1412,6 +1412,30 @@ test("reply with an image allows empty text", async () => {
   assert.equal(transcriptSeen, "[Image: A screenshot of a stack trace.]");
 });
 
+test("#889: an image turn while vision is paused for gaming still gets a reply that says so", async () => {
+  let transcriptSeen = null;
+  const app = createApp({
+    getVisionStatus: () => ({ available: true }),
+    chatAcceptsImages: () => false,
+    runVisionReply: async () => {
+      throw Object.assign(new Error("Vision is paused while gaming"), { code: "VISION_PAUSED_GAMING" });
+    },
+    buildAssistantReply: async (transcript) => {
+      transcriptSeen = transcript;
+      return "I can't see images while you're gaming.";
+    },
+  });
+
+  await withServer(app, async (baseUrl) => {
+    const { response } = await postJson(`${baseUrl}/reply`, {
+      text: "what's this?",
+      image: "data:image/png;base64,iVBORw0KGgo=",
+    });
+    assert.equal(response.status, 200);
+  });
+  assert.match(transcriptSeen, /vision is paused while a game is running[\s\S]*what's this\?$/);
+});
+
 test("POST /web/search returns results from the injected searchWeb", async () => {
   const app = createApp({
     searchWeb: async (query, options) => {

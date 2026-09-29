@@ -611,7 +611,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
         {
             var status = await backendClient.GetPerformanceStatusAsync();
             MessageBox.Show(
-                $"Backend: running\nGame detected: {status.GamingAppRunning}\nMemory: {status.TotalMemoryMb} MB\nTTS: {status.TtsProvider}{FallbackNoteFor(status.TtsProvider)}{AvatarStatusLine()}",
+                $"Backend: running\nGame detected: {status.GamingAppRunning}\nChat model: {status.ChatModel ?? "not loaded"}\nMemory: {status.TotalMemoryMb} MB\nTTS: {status.TtsProvider}{FallbackNoteFor(status.TtsProvider)}{AvatarStatusLine()}",
                 "Mana Status",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Information);

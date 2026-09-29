@@ -509,6 +509,12 @@ const llamaServerRuntime = createLlamaServerRuntime({
   gaming: () => gamingWatch.isGaming(),
 });
 
+// #889: the chat model llama-server is running, for the tray and Doctor.
+function chatModelLabel() {
+  const { model, gamingModel } = llamaServerRuntime.getStatus();
+  return model ? `${path.basename(model)}${gamingModel ? " (gaming model)" : ""}` : null;
+}
+
 // #754/#760: stop the memory embedder (~2.3 GB VRAM) and reranker (RAM) as
 // soon as a watched game starts -- a turn during the game used to wake them
 // for the full 1-hour idle. Polled in the background with a non-blocking
@@ -525,11 +531,13 @@ const gamingWatch = createGamingWatch({
     return parseTasklistNames(stdout).some((name) => GAMING_PROCESS_NAMES.includes(name));
   },
   onGameStart: () => {
-    console.log("Watched game started: stopping the memory embedder and reranker, unloading vision");
+    console.log("Watched game started: stopping the memory embedder and reranker");
     embedder.stop();
     reranker.stop();
-    llamaServerRuntime.unloadVision();
+    // #872/#889: drops the vision mmproj, and swaps to MANA_GAMING_LLAMA_MODEL when it's set.
+    llamaServerRuntime.setGaming(true);
   },
+  onGameEnd: () => llamaServerRuntime.setGaming(false),
 });
 if (process.env.NODE_ENV !== "test" && !process.env.NODE_TEST_CONTEXT) {
   gamingWatch.poll();
@@ -2360,6 +2368,7 @@ function registerRoutes(app, upload, deps = {}) {
         // Q18 (#645): named here, not warned about on every start.
         plainTextSecrets: (deps.plainTextSecretKeys || plainTextSecretKeys)(),
         memoryGraphHistory,
+        chatModel: chatModelLabel(),
       });
       return res.status(result.ok ? 200 : 503).json(result);
     } catch (error) {
@@ -2859,6 +2868,7 @@ function registerRoutes(app, upload, deps = {}) {
           screenContextEnabled: SCREEN_CONTEXT_ENABLED,
           screenContextMaxChars: SCREEN_CONTEXT_MAX_CHARS,
           ttsProvider: TTS_PROVIDER,
+          chatModel: chatModelLabel(),
         },
         gaming,
         process: getManaProcessSnapshot(),

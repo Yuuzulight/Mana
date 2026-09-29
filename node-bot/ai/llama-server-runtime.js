@@ -112,6 +112,10 @@ function createLlamaServerRuntime(options = {}) {
     visionTimer: null,
     busy: 0,
     visionUnloadPending: false,
+    // #889: the gaming model is in use (see setGaming); gamingSwapPending
+    // is a swap (true/false) waiting for the reply in flight.
+    gamingModel: false,
+    gamingSwapPending: null,
   };
 
   // Debounce: back-to-back requests for different profiles (e.g. one coding
@@ -255,7 +259,12 @@ function createLlamaServerRuntime(options = {}) {
     }
   }
 
+  // #889: while the gaming model is in use, every profile resolves to it.
   function findLlamaModel(profile = "default") {
+    return state.gamingModel ? env.MANA_GAMING_LLAMA_MODEL : findNormalLlamaModel(profile);
+  }
+
+  function findNormalLlamaModel(profile = "default") {
     const storedPath = modelSettingsStore ? modelSettingsStore.getModelPath() : null;
     return findPreferredLlamaModel({
       explicitModel: storedPath || env.LLAMA_MODEL || "",
@@ -360,6 +369,9 @@ function createLlamaServerRuntime(options = {}) {
   // null. #872: the chat server only loads it once an image turn wants it
   // (state.visionWanted) and drops it again after MANA_VISION_IDLE_MS.
   function chatMmprojFor(model) {
+    // #889: never with the gaming model (a small model may not see images);
+    // image turns go describe-first instead.
+    if (state.gamingModel) return null;
     try {
       const visionModel = findVisionModel();
       // path.relative is case-insensitive on Windows.
@@ -610,18 +622,24 @@ function createLlamaServerRuntime(options = {}) {
     // reuse; the host cache only helps when requests hop slots or sessions,
     // so 1 GiB keeps most of that. LLAMA_CACHE_RAM overrides it (MiB; -1 =
     // no limit, 0 = off).
+    // #889: the gaming model gets MANA_GAMING_CACHE_RAM (256): a live FFXIV
+    // run showed system RAM, not VRAM, runs out first while gaming.
     if (supportsFlag(bin, "--cache-ram")) {
-      const cacheRam = Number(String(env.LLAMA_CACHE_RAM || "").trim() || 1024);
-      args.push("--cache-ram", String(Number.isInteger(cacheRam) && cacheRam >= -1 ? cacheRam : 1024));
+      const [setting, fallback] = state.gamingModel ? [env.MANA_GAMING_CACHE_RAM, 256] : [env.LLAMA_CACHE_RAM, 1024];
+      const cacheRam = Number(String(setting || "").trim() || fallback);
+      args.push("--cache-ram", String(Number.isInteger(cacheRam) && cacheRam >= -1 ? cacheRam : fallback));
     }
 
     // Same opt-in hardware flags as the llama-cli path.
     if (env.LLAMA_ENABLE_FLASHATTN === "1") {
       args.push("--flash-attn", env.LLAMA_ARG_FLASH_ATTN || "auto");
     }
-    if (env.LLAMA_KV_COMPRESS) {
-      args.push("-ctk", env.LLAMA_KV_COMPRESS);
-      args.push("-ctv", env.LLAMA_KV_COMPRESS);
+    // #889: the gaming model's KV cache type. A quantized V cache needs
+    // flash attention, which llama-server's default (auto) turns on for it.
+    const kvCache = state.gamingModel ? env.MANA_GAMING_KV_CACHE || "q8_0" : env.LLAMA_KV_COMPRESS;
+    if (kvCache) {
+      args.push("-ctk", kvCache);
+      args.push("-ctv", kvCache);
     }
     if (env.LLAMA_ENABLE_NO_KV_OFFLOAD === "1") {
       args.push("--no-kv-offload");
@@ -683,7 +701,7 @@ function createLlamaServerRuntime(options = {}) {
     if (ngl) {
       args.push("-ngl", String(ngl));
     }
-    const contextCap = Number(env.LLAMA_CONTEXT || env.LLAMA_CONTEXT_CAP || "4096");
+    const contextCap = configuredContext();
 
     // Issue #462: opt-in real concurrency, now that the 16GB card leaves
     // room for it (was rejected on the prior 8GB card -- see
@@ -870,6 +888,8 @@ function createLlamaServerRuntime(options = {}) {
       state.model &&
       state.model !== model &&
       swapDebounceMs > 0 &&
+      // #889: swaps to or from the gaming model are never skipped.
+      ![model, state.model].includes(env.MANA_GAMING_LLAMA_MODEL) &&
       state.loadedAt !== null &&
       nowMs() - state.loadedAt < swapDebounceMs
     ) {
@@ -1002,8 +1022,41 @@ function createLlamaServerRuntime(options = {}) {
     );
   }
 
-  // #872: counts a reply as in flight, so unloadVision never restarts the
-  // server under it.
+  // #889: a watched game started (true) or ended (false). With
+  // MANA_GAMING_LLAMA_MODEL set, the chat server swaps to that model (see
+  // buildServerArgs for its context and KV cache) so Fish can stay on the
+  // GPU next to the game, and back when it ends. Without it, a game start
+  // only drops the vision mmproj (#872). Like unloadVision, a swap that
+  // lands mid-reply waits for the last reply to finish (see inTurn).
+  function setGaming(on) {
+    const gamingModel = env.MANA_GAMING_LLAMA_MODEL;
+    if (!gamingModel || (on && !fs.existsSync(gamingModel))) {
+      if (gamingModel) console.warn(`MANA_GAMING_LLAMA_MODEL not found, keeping the normal model: ${gamingModel}`);
+      if (on) unloadVision();
+      return;
+    }
+    if (state.busy > 0) {
+      state.gamingSwapPending = on;
+      // The swap drops the mmproj anyway; one restart, not two.
+      if (on) state.visionUnloadPending = false;
+      return;
+    }
+    state.gamingSwapPending = null;
+    if (state.gamingModel === on) return;
+    state.gamingModel = on;
+    clearTimeout(state.visionTimer);
+    state.visionWanted = false;
+    // Nothing loaded: the next turn starts the right model.
+    if (!state.port && !state.starting) return;
+    console.log(`Watched game ${on ? "started" : "ended"}: restarting llama-server with the ${on ? "gaming" : "normal"} model`);
+    ensureServerConfig(findLlamaModel(), null, "default").then(
+      scheduleIdleShutdown,
+      (e) => console.warn("llama-server gaming model swap failed:", e.message),
+    );
+  }
+
+  // #872: counts a reply as in flight, so unloadVision (and #889's
+  // setGaming) never restarts the server under it.
   function inTurn(fn) {
     return async (...args) => {
       state.busy += 1;
@@ -1011,6 +1064,7 @@ function createLlamaServerRuntime(options = {}) {
         return await fn(...args);
       } finally {
         state.busy -= 1;
+        if (state.busy === 0 && state.gamingSwapPending !== null) setGaming(state.gamingSwapPending);
         if (state.busy === 0 && state.visionUnloadPending) unloadVision();
       }
     };
@@ -1156,8 +1210,13 @@ function createLlamaServerRuntime(options = {}) {
 
   // #642: the running server's real per-slot context (/props n_ctx),
   // else the -c value buildServerArgs would pass. Never starts a server.
+  function configuredContext() {
+    if (state.gamingModel) return Number(env.MANA_GAMING_LLAMA_CONTEXT || 8192);
+    return Number(env.LLAMA_CONTEXT || env.LLAMA_CONTEXT_CAP || "4096");
+  }
+
   async function getContextSize() {
-    const configured = Number(env.LLAMA_CONTEXT || env.LLAMA_CONTEXT_CAP || "4096");
+    const configured = configuredContext();
     if (!state.port || typeof fetchImpl !== "function") return configured;
     try {
       const resp = await fetchImpl(`http://127.0.0.1:${state.port}/props`);
@@ -2056,6 +2115,14 @@ function createLlamaServerRuntime(options = {}) {
 
     const startedAt = nowMs();
     const model = findVisionModel();
+    // #889: while gaming, a separate vision model can still describe the
+    // image (the VRAM guard has the last word), but the normal chat model
+    // plus its mmproj is exactly the load the gaming model is there to avoid.
+    if (state.gamingModel && sameModelPath(model, findNormalLlamaModel())) {
+      const error = new Error("Vision is paused while gaming");
+      error.code = "VISION_PAUSED_GAMING";
+      throw error;
+    }
     const mmproj = findVisionMmproj(model);
     // #872: when the vision model is the chat model, chat turns now keep
     // the mmproj this loads (vision__look mid tool loop: one reload, not two).
@@ -2116,6 +2183,8 @@ function createLlamaServerRuntime(options = {}) {
       external: Boolean(state.port && state.model && !state.child),
       model: state.model,
       mmproj: state.mmproj,
+      // #889: the running model is the gaming model.
+      gamingModel: Boolean(state.gamingModel && state.model === env.MANA_GAMING_LLAMA_MODEL),
       port: state.port,
       lastSwapMs: state.lastSwapMs,
     };
@@ -2180,6 +2249,7 @@ function createLlamaServerRuntime(options = {}) {
     isProfileAlreadyLoaded,
     runLocalReplyIfSafelyLoaded: inTurn(runLocalReplyIfSafelyLoaded),
     scheduleIdleShutdown,
+    setGaming,
     stop,
     supportsLoadMode,
     systemPrompt,
