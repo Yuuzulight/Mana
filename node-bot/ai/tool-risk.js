@@ -46,6 +46,11 @@ const BUILTIN_TIERS = {
   expression__set: "read",
   session_goal__finish: "read",
   deep_thinking__set: "read",
+  // #923: only Mana's own speech word list, and only words from my own
+  // message (ai/speech-tool-source.js) -- my asking is the approval.
+  speech__add_word: "read",
+  speech__remove_word: "read",
+  speech__list_words: "read",
   browser_automation__snapshot: "read",
   coding__propose_edit: "read",
   memory__remember: "write",

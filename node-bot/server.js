@@ -9,7 +9,8 @@ Environment variables (node-bot/.env, loaded at startup -- its values win
 over inherited ones -- or set before running):
 - WHISPER_BIN : full path to whisper.cpp main executable (e.g. C:\whisper.cpp\main.exe)
 - WHISPER_MODEL : full path to whisper model file (e.g. models/ggml-base.en.bin)
-- WHISPER_LANGUAGE : spoken language passed to whisper.cpp (default "en")
+- WHISPER_LANGUAGE : spoken language passed to whisper.cpp; when unset,
+  Settings > Voice picks "en" (default) or "auto" (issue #926)
 - WHISPER_PROMPT : replaces the initial prompt that biases transcription
   toward Mana's wake words, your name and your frequent terms (issue #667)
 - WHISPER_VOCABULARY : comma-separated words whisper should know, added to
@@ -224,6 +225,7 @@ const { createSessionSearchToolSource } = require("./ai/session-search-tool-sour
 const { createSkillToolSource } = require("./ai/skill-tool-source");
 const { createSnapshotToolSource } = require("./ai/snapshot-tool-source");
 const { createExpressionToolSource, isExpressionToolName } = require("./ai/expression-tool-source");
+const { createSpeechToolSource } = require("./ai/speech-tool-source");
 const { createVisionToolSource } = require("./ai/vision-tool-source");
 const { createSessionGoalToolSource } = require("./ai/session-goal-tool-source");
 const { createDeepThinkingState, createDeepThinkingToolSource } = require("./ai/deep-thinking-tool-source");
@@ -251,6 +253,7 @@ const { createLlamaBuildManager } = require("./llama-builds");
 const { createModelSettingsStore } = require("./model-settings-store");
 const whisperDiscovery = require("./whisper-discovery");
 const { createWhisperPromptProvider } = require("./whisper-prompt");
+const { createSpeechVocabulary, resolveWhisperLanguage } = require("./speech-vocabulary");
 const {
   normalizeLlamaModelProfile,
   pickPreferredLlamaModel,
@@ -413,10 +416,10 @@ const SCREEN_CONTEXT_MAX_CHARS = Number(
 const SCREEN_OCR_CACHE_PATH =
   process.env.SCREEN_OCR_CACHE_PATH || path.join(__dirname, "tmp", "tesseract");
 const WHISPER_THREADS = Number(process.env.WHISPER_THREADS || 2);
-const WHISPER_LANGUAGE = process.env.WHISPER_LANGUAGE || "en";
 // whisper.cpp's initial prompt comes from getWhisperPrompt (below
 // acpMemoryStore, which it reads): Mana's wake words plus the user's name
-// and frequent terms (issue #667, see whisper-prompt.js).
+// and frequent terms (issue #667, see whisper-prompt.js). Its language
+// comes from whisperLanguage(), next to it (#926).
 const WHISPER_BEAM_SIZE = process.env.WHISPER_BEAM_SIZE || "5";
 const WHISPER_NO_SPEECH_THRESHOLD =
   process.env.WHISPER_NO_SPEECH_THRESHOLD || "0.45";
@@ -784,12 +787,23 @@ const acpMemoryStore = createAcpMemoryStore({
   },
 });
 
+// #923/#925/#926: my saved speech words, mishearing fixes and language
+// (data/speech.json), from Settings > Voice or the speech__* tools.
+const speechVocabulary = createSpeechVocabulary({
+  filePath: path.join(acpMemoryStore.dataDir, "speech.json"),
+});
+
+function whisperLanguage() {
+  return resolveWhisperLanguage(process.env.WHISPER_LANGUAGE, speechVocabulary.language());
+}
+
 // Issue #667: whisper's initial prompt, rebuilt from memory every few
 // minutes. WHISPER_PROMPT, when set, still replaces it entirely.
 const getWhisperPrompt = createWhisperPromptProvider({
   memoryStore: acpMemoryStore,
   override: process.env.WHISPER_PROMPT || "",
   vocabulary: process.env.WHISPER_VOCABULARY || "",
+  savedWords: speechVocabulary.words,
 });
 
 // #619: a loaded whisper-server for final and partial transcripts, with
@@ -805,7 +819,7 @@ const whisperServer = createWhisperServer({
   findCliBin: () => whisperDiscovery.findWhisperBin({ env: process.env }),
   findModel: () => whisperDiscovery.findWhisperModel({ env: process.env }),
   threads: whisperThreads,
-  language: WHISPER_LANGUAGE,
+  language: whisperLanguage,
   beamSize: WHISPER_BEAM_SIZE,
   noSpeechThreshold: WHISPER_NO_SPEECH_THRESHOLD,
 });
@@ -2835,6 +2849,34 @@ function registerRoutes(app, upload, deps = {}) {
     return res.json({ ok: true, override: ttsRuntime.getProviderOverride() });
   });
 
+  // #923/#925/#926: Settings > Voice's speech words, mishearing fixes and
+  // language. envLanguage: WHISPER_LANGUAGE, which wins over language.
+  const speechState = () => ({
+    ok: true,
+    ...speechVocabulary.state(),
+    envLanguage: process.env.WHISPER_LANGUAGE || null,
+  });
+
+  app.get("/speech", (req, res) => res.json(speechState()));
+
+  // One of: { addWord }, { removeWord }, { heard, term, confirm },
+  // { removeCorrection }, { language }. 409 + needsConfirm when heard may
+  // be an ordinary word.
+  app.post("/speech", (req, res) => {
+    const body = req.body || {};
+    try {
+      if (body.addWord !== undefined) speechVocabulary.addWord(body.addWord);
+      else if (body.removeWord !== undefined) speechVocabulary.removeWord(body.removeWord);
+      else if (body.heard !== undefined) speechVocabulary.addCorrection(body.heard, body.term, { confirm: body.confirm === true });
+      else if (body.removeCorrection !== undefined) speechVocabulary.removeCorrection(body.removeCorrection);
+      else if (body.language !== undefined) speechVocabulary.setLanguage(body.language);
+      else return res.status(400).json({ ok: false, error: "nothing to change" });
+    } catch (e) {
+      return res.status(e.needsConfirm ? 409 : 400).json({ ok: false, error: e.message, needsConfirm: Boolean(e.needsConfirm) });
+    }
+    return res.json(speechState());
+  });
+
   app.get("/gaming/status", (req, res) => {
     try {
       return res.json({
@@ -3068,15 +3110,24 @@ function registerRoutes(app, upload, deps = {}) {
     return localLlamaRuntime.getLlamaStatus();
   }
 
+  // #925: heard is what whisper wrote, transcript the same with my
+  // mishearing fixes applied -- what every caller uses.
+  async function runWhisperHeard(filePath) {
+    const heard =
+      STT_PROVIDER === "parakeet"
+        ? await runParakeet(filePath)
+        : ((await transcribeWithWhisperServer(filePath)) ?? runWhisperCli(filePath));
+    return { heard, transcript: speechVocabulary.correct(heard) };
+  }
+
   async function runWhisper(filePath) {
-    if (STT_PROVIDER === "parakeet") {
-      return runParakeet(filePath);
-    }
-    return (await transcribeWithWhisperServer(filePath)) ?? runWhisperCli(filePath);
+    return (await runWhisperHeard(filePath)).transcript;
   }
 
   async function runWhisperPartial(filePath) {
-    return (await transcribeWithWhisperServer(filePath)) ?? runWhisperCliPartial(filePath);
+    return speechVocabulary.correct(
+      (await transcribeWithWhisperServer(filePath)) ?? (await runWhisperCliPartial(filePath)),
+    );
   }
 
   function findParakeetBin() {
@@ -3159,7 +3210,7 @@ function registerRoutes(app, upload, deps = {}) {
       "-t",
       String(whisperThreads()),
       "-l",
-      WHISPER_LANGUAGE,
+      whisperLanguage(),
       "-bs",
       WHISPER_BEAM_SIZE,
       "-nth",
@@ -3274,7 +3325,7 @@ function registerRoutes(app, upload, deps = {}) {
       "-t",
       String(whisperThreads()),
       "-l",
-      WHISPER_LANGUAGE,
+      whisperLanguage(),
       "-bs",
       WHISPER_BEAM_SIZE,
       "-nth",
@@ -4486,6 +4537,9 @@ function registerRoutes(app, upload, deps = {}) {
             // detection. No approvalGate/store needed -- see
             // ai/expression-tool-source.js's own header comment for why.
             createExpressionToolSource(),
+            // #923/#925: speech words and mishearing fixes I ask for;
+            // only words from this turn's own text (see the source).
+            createSpeechToolSource({ speechVocabulary, userMessage: transcript }),
             // Issue #417: lets Mana decide mid-reply that seeing the screen
             // would help, instead of vision only being reachable via the
             // hotkey or the ambient screen-sensing loop. Same
@@ -5108,6 +5162,7 @@ function registerRoutes(app, upload, deps = {}) {
     rejectVisionCapture:
       deps.rejectVisionCapture || visionCaptureBridge.rejectCapture,
     runWhisper: deps.runWhisper || runWhisper,
+    runWhisperHeard: deps.runWhisperHeard || runWhisperHeard,
     runWhisperPartial: deps.runWhisperPartial || runWhisperPartial,
     normalizeUploadedAudioAsync:
       deps.normalizeUploadedAudioAsync || normalizeUploadedAudioAsync,
