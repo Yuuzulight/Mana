@@ -66,6 +66,21 @@
     <Exec Command="powershell -NoProfile -ExecutionPolicy Bypass -Command &quot;Invoke-WebRequest -Uri '$(EmbeddingModelUrl)' -OutFile '$(EmbeddingModelPath)' -UserAgent 'mana-fetch-wakeword-backbone'&quot;" Condition="!Exists('$(EmbeddingModelPath)')" ContinueOnError="WarnAndContinue" />
   </Target>
 
+  <!-- #678: WeSpeaker's VoxCeleb ResNet34-LM speaker embedding (CC BY 4.0,
+       see THIRD_PARTY.md) for the voiceprint gate, pinned to a revision and
+       checked against its SHA-256 before it's kept. Same fetch-at-build-time
+       convention as the models above; MANA_SPEAKER_MODEL points elsewhere. -->
+  <Target Name="FetchSpeakerModel" BeforeTargets="Build">
+    <PropertyGroup>
+      <SpeakerModelDir>$(MSBuildProjectDirectory)\assets\speaker</SpeakerModelDir>
+      <SpeakerModelPath>$(SpeakerModelDir)\voxceleb_resnet34_LM.onnx</SpeakerModelPath>
+      <SpeakerModelUrl>https://huggingface.co/Wespeaker/wespeaker-voxceleb-resnet34-LM/resolve/f0c48c298fd835726c27956a5d617bad7115627e/voxceleb_resnet34_LM.onnx</SpeakerModelUrl>
+      <SpeakerModelSha256>7BB2F06E9DF17CDF1EF14EE8A15AB08ED28E8D0EF5054EE135741560DF2EC068</SpeakerModelSha256>
+    </PropertyGroup>
+    <MakeDir Directories="$(SpeakerModelDir)" Condition="!Exists('$(SpeakerModelDir)')" />
+    <Exec Command="powershell -NoProfile -ExecutionPolicy Bypass -Command &quot;$t='$(SpeakerModelPath).tmp'; Invoke-WebRequest -Uri '$(SpeakerModelUrl)' -OutFile $t -UserAgent 'mana-fetch-speaker-model'; if ((Get-FileHash $t -Algorithm SHA256).Hash -eq '$(SpeakerModelSha256)') { Move-Item $t '$(SpeakerModelPath)' } else { Remove-Item $t; Write-Error 'speaker model SHA-256 mismatch'; exit 1 }&quot;" Condition="!Exists('$(SpeakerModelPath)')" ContinueOnError="WarnAndContinue" />
+  </Target>
+
   <ItemGroup>
     <InternalsVisibleTo Include="ManaNativeLauncher.Tests" />
   </ItemGroup>
