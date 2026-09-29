@@ -61,7 +61,7 @@ internal sealed class SessionListForm : Form
     private readonly Font messageBoxFont;
     private readonly System.Collections.Generic.HashSet<string> offeredProposalIds = new();
 
-    // Mirrors VoiceLoop's own currentSessionId -- null until something is
+    // Mirrors VoiceLoop.CurrentSessionId -- null until something is
     // switched to or VoiceLoop auto-starts a session (see AutoSession),
     // which the ReplyEnded handler below picks up.
     private string? activeSessionId;
@@ -914,14 +914,14 @@ internal sealed class SessionListForm : Form
             return;
         }
 
+        // Q62: deleting the active session leaves none, so the next turn
+        // auto-starts one (which, unlike "+ New chat", rotates after 4 h).
         if (sessionId == activeSessionId)
         {
-            StartNewChat();
+            activeSessionId = null;
+            voiceLoop.SetSessionId(null);
         }
-        else
-        {
-            await RefreshAsync();
-        }
+        await RefreshAsync();
     }
 
     // #586: pre-fills the prompt with whatever goal is already stored
