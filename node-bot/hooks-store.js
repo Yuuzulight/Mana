@@ -9,8 +9,7 @@
 //   - phase "pre",  action "ask"         -- routes through the approval gate
 //   - phase "post", action "run-command" -- runs a command after a matching
 //                                           call succeeds
-// Claude Code's own "modify-input" hook action is prior-art background, not
-// something this issue's Proposal asks for -- deliberately not built here.
+// #486 adds a fourth, "pre"/"modify-input" (see wrapWithInputHooks below).
 //
 // Persistence: one JSON array file, atomic tmp+rename write, dataDir
 // injectable for tests -- same shape as plugin-settings-store.js.
@@ -25,7 +24,9 @@ const PHASES = ["pre", "post"];
 // shape (a command that runs after a matching call succeeds), but on
 // failure it also restores the file's pre-write snapshot instead of only
 // logging. Requires the same `command`/`args` fields as run-command.
-const ACTIONS_BY_PHASE = { pre: ["deny", "ask"], post: ["run-command", "rollback-on-failure"] };
+// #486: "modify-input" shallow-merges the rule's `set` object over the
+// call's args (see wrapWithInputHooks).
+const ACTIONS_BY_PHASE = { pre: ["deny", "ask", "modify-input"], post: ["run-command", "rollback-on-failure"] };
 // Fire-and-forget post-hook commands still need a ceiling -- an unbounded
 // prettier/lint command hanging forever would leak a child process per
 // write forever.
@@ -74,6 +75,45 @@ function ruleMatchesPath(rule, args) {
   return candidate.toLowerCase().includes(rule.pathContains.toLowerCase());
 }
 
+// Validates a rule's user-editable fields and returns only those, normalized
+// -- shared by addRule and updateRule so an edit can never store a rule that
+// adding it would have rejected.
+function normalizeRule(rule) {
+  if (!rule || typeof rule !== "object") {
+    throw new Error("rule is required");
+  }
+  if (!PHASES.includes(rule.phase)) {
+    throw new Error('phase must be "pre" or "post"');
+  }
+  const allowedActions = ACTIONS_BY_PHASE[rule.phase];
+  if (!allowedActions.includes(rule.action)) {
+    throw new Error(`action for phase "${rule.phase}" must be one of: ${allowedActions.join(", ")}`);
+  }
+  const toolName = String(rule.toolName || "").trim();
+  if (!toolName) {
+    throw new Error("toolName is required");
+  }
+  if ((rule.action === "run-command" || rule.action === "rollback-on-failure") && !String(rule.command || "").trim()) {
+    throw new Error(`command is required for a ${rule.action} rule`);
+  }
+  const isArgsObject = rule.set && typeof rule.set === "object" && !Array.isArray(rule.set);
+  if (rule.action === "modify-input" && !(isArgsObject && Object.keys(rule.set).length)) {
+    throw new Error("set (an object of argument values) is required for a modify-input rule");
+  }
+
+  const entry = { phase: rule.phase, action: rule.action, toolName };
+  if (rule.pathContains) entry.pathContains = String(rule.pathContains);
+  if (rule.command) entry.command = String(rule.command);
+  // Each element is passed to child_process.execFile as its own argv
+  // entry (shell: false) -- see runPostCommandHook below. The literal
+  // string "{path}" is substituted with the real call's args.path at run
+  // time; nothing here is ever concatenated into a shell string.
+  if (Array.isArray(rule.args)) entry.args = rule.args.map(String);
+  if (rule.action === "modify-input") entry.set = { ...rule.set };
+  if (rule.reason) entry.reason = String(rule.reason);
+  return entry;
+}
+
 // options.dataDir: injectable so tests never write into node-bot's real
 // data directory (same pattern as plugin-settings-store.js/approval-gate.js).
 function createHooksStore(options = {}) {
@@ -87,43 +127,15 @@ function createHooksStore(options = {}) {
   }
 
   function addRule(rule) {
-    if (!rule || typeof rule !== "object") {
-      throw new Error("rule is required");
-    }
-    if (!PHASES.includes(rule.phase)) {
-      throw new Error('phase must be "pre" or "post"');
-    }
-    const allowedActions = ACTIONS_BY_PHASE[rule.phase];
-    if (!allowedActions.includes(rule.action)) {
-      throw new Error(`action for phase "${rule.phase}" must be one of: ${allowedActions.join(", ")}`);
-    }
-    const toolName = String(rule.toolName || "").trim();
-    if (!toolName) {
-      throw new Error("toolName is required");
-    }
-    if ((rule.action === "run-command" || rule.action === "rollback-on-failure") && !String(rule.command || "").trim()) {
-      throw new Error(`command is required for a ${rule.action} rule`);
-    }
-
     const entry = {
       id: makeId(),
-      phase: rule.phase,
-      action: rule.action,
-      toolName,
+      ...normalizeRule(rule),
       createdAt: now(),
       // Lets a rule be paused for iteration (tuning a pathContains pattern,
       // testing a command) without losing its id or lastRun history the way
       // delete-and-re-add would.
       enabled: rule.enabled === false ? false : true,
     };
-    if (rule.pathContains) entry.pathContains = String(rule.pathContains);
-    if (rule.command) entry.command = String(rule.command);
-    // Each element is passed to child_process.execFile as its own argv
-    // entry (shell: false) -- see runPostCommandHook below. The literal
-    // string "{path}" is substituted with the real call's args.path at run
-    // time; nothing here is ever concatenated into a shell string.
-    if (Array.isArray(rule.args)) entry.args = rule.args.map(String);
-    if (rule.reason) entry.reason = String(rule.reason);
 
     const rules = listRules();
     rules.push(entry);
@@ -151,6 +163,25 @@ function createHooksStore(options = {}) {
     const idx = findRuleIndex(rules, id);
     if (idx === -1) return null;
     rules[idx] = { ...rules[idx], enabled: Boolean(enabled) };
+    writeRules(filePath, rules);
+    return rules[idx];
+  }
+
+  // #486: edit a rule in place (keeps its id, createdAt and position, so
+  // modify-input ordering is stable). The patch is merged over the stored
+  // rule and re-validated exactly like addRule; lastRun is dropped because
+  // it described the rule's previous command.
+  function updateRule(id, patch) {
+    const rules = listRules();
+    const idx = findRuleIndex(rules, id);
+    if (idx === -1) return null;
+    const current = rules[idx];
+    rules[idx] = {
+      id: current.id,
+      ...normalizeRule({ ...current, ...patch }),
+      createdAt: current.createdAt,
+      enabled: typeof patch.enabled === "boolean" ? patch.enabled : current.enabled !== false,
+    };
     writeRules(filePath, rules);
     return rules[idx];
   }
@@ -187,7 +218,7 @@ function createHooksStore(options = {}) {
     );
   }
 
-  return { dataDir, listRules, addRule, removeRule, setRuleEnabled, recordRunOutcome, matchRules };
+  return { dataDir, listRules, addRule, removeRule, setRuleEnabled, updateRule, recordRunOutcome, matchRules };
 }
 
 // #426 sub-project 4: best-effort -- finds the newest "file" snapshot whose
@@ -308,4 +339,31 @@ function wrapWithHooks(policy, hooksStore, approvalGate, options = {}) {
   };
 }
 
-module.exports = { createHooksStore, wrapWithHooks, runPostCommandHook, HOOK_COMMAND_TIMEOUT_MS };
+// #486: applies "modify-input" rules. server.js wraps this *outside* the
+// risk gate (#669), wrapWithHooks and the audit log, so every one of them
+// sees -- and gates, and logs -- the rewritten call, never the original: a
+// rewrite can't slip a call past the approval gate. Matching rules apply in
+// file order, each shallow-merging its `set` over the args so far (same
+// ordered-chain idea as #677's plugin input hooks, minus the timeout: a
+// static merge can't hang). Non-object args (a model's malformed call) pass
+// through untouched rather than being spread into index keys.
+function wrapWithInputHooks(policy, hooksStore) {
+  return {
+    tools: policy.tools,
+    isKnownTool: policy.isKnownTool,
+    executeTool: async (name, args) => {
+      if (args != null && (typeof args !== "object" || Array.isArray(args))) {
+        return policy.executeTool(name, args);
+      }
+      let next = args;
+      for (const rule of hooksStore.matchRules(name, "pre", args)) {
+        if (rule.action !== "modify-input") continue;
+        next = { ...next, ...rule.set };
+        console.log(`[hooks] modify-input rule ${rule.id} set ${Object.keys(rule.set).join(", ")} on ${name}`);
+      }
+      return policy.executeTool(name, next);
+    },
+  };
+}
+
+module.exports = { createHooksStore, wrapWithHooks, wrapWithInputHooks, runPostCommandHook, HOOK_COMMAND_TIMEOUT_MS };

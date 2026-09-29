@@ -176,4 +176,4 @@ function wrapWithToolCallLog(policy, toolCallLog, onFailure) {
   };
 }
 
-module.exports = { DEFAULT_LOG_PATH, createToolCallLog, wrapWithToolCallLog };
+module.exports = { DEFAULT_LOG_PATH, REDACTED, createToolCallLog, isSecretKey, redactText, wrapWithToolCallLog };

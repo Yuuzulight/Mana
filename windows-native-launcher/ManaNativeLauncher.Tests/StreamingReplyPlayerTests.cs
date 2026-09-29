@@ -392,4 +392,24 @@ public class StreamingReplyPlayerTests
         Assert.True(interrupted);
         Assert.Equal(new[] { "Three." }, pending);
     }
+
+    // #623: each sentence's emotion tag reaches onSentencePlaying with its
+    // text, and the final event's is kept for a one-clip replay.
+    [Fact]
+    public async Task StreamReplyAndPlayAsync_PassesEachSentencesEmotionAndKeepsTheFinalOne()
+    {
+        const string ndjson =
+            "{\"type\":\"sentence\",\"text\":\"Hi.\"}\n" +
+            "{\"type\":\"sentence\",\"text\":\"You're back!\",\"emotion\":\"happy\"}\n" +
+            "{\"type\":\"final\",\"reply\":\"Hi. You're back!\",\"changed\":false,\"emotion\":\"happy\"}\n";
+        var playing = new List<string>();
+        var player = new StreamingReplyPlayer(
+            BuildFakeClient(ndjson, []), _ => Task.FromResult(true), _ => { }, null,
+            (text, emotion) => playing.Add($"{text}|{emotion}"));
+
+        await player.StreamReplyAndPlayAsync("hi");
+
+        Assert.Equal(new[] { "Hi.|", "You're back!|happy" }, playing);
+        Assert.Equal("happy", player.FinalEmotion);
+    }
 }

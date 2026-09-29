@@ -95,6 +95,14 @@ public class VoiceDebugLogTests
     }
 
     [Fact]
+    public void Entry_SpeechFilterDecisions()
+    {
+        var entry = new VoiceSegmentLogEntry { Awake = true, Whisper = "ok", Gain = 2.5, Drop = "hallucination", Transcript = "Thank you." };
+
+        Assert.EndsWith(" whisper=ok gain=2.5 drop=hallucination transcript=\"Thank you.\"", entry.ToString());
+    }
+
+    [Fact]
     public void Entry_WithoutTurnDetectionFields_IsUnchanged()
     {
         var line = new VoiceSegmentLogEntry { Whisper = "empty" }.ToString();

@@ -105,10 +105,12 @@ A plugin's `index.js` exports:
   registerRoutes(app, context) {},        // optional: mount Express routes
   getHealth(context) {},                  // optional: contributes to GET /health's components
   contributePromptContext(text, context) {}, // optional: inject context into chat replies
+  onUserInput(input, context) {},         // optional: see or rewrite the user's message (#677)
+  inputHookPriority,    // optional: onUserInput order, lower runs first (default 100)
 }
 ```
 
-All four hooks are optional except `key` — a plugin that only wants to show
+All the hooks are optional except `key` — a plugin that only wants to show
 up in `GET /plugins` can supply just `key`/`name`/`category`/`description`.
 
 `node-bot/server.js` builds a `capabilities` array containing every
@@ -127,6 +129,25 @@ values, etc.), then:
   A plugin that isn't relevant to the given text should return `""` (or
   throw — the loop swallows errors and logs a warning, then moves on to
   the next plugin) rather than always contributing something.
+- `runPluginInputHooks(capabilities, input, context)` runs every enabled
+  plugin's `onUserInput(input, context)` on each chat turn (`/reply`,
+  `/reply/stream`, `/transcribe`, image turns included), before the prompt
+  is built. `input` is `{ text, source, sessionId, hasImages }`, where
+  `source` is `"voice"` for `/transcribe` and otherwise whatever the client
+  sent (default `"typed"`). Plugins run lowest `inputHookPriority` first
+  (ties keep array order), and each sees the text as rewritten by the ones
+  before it. Return nothing, or any of:
+  - `{ text }`: replacement text (both versions are logged);
+  - `{ promptPatch: { system, user } }`: `system` is appended to the system
+    prompt, `user` to the user message (next to `contributePromptContext`'s
+    result); every plugin's patches are kept;
+  - `{ reply }`: answer the turn yourself. The chain stops, the model is
+    skipped, and the reply is recorded and spoken like any other.
+
+  A hook that throws or takes longer than 200 ms is logged and skipped (the
+  turn carries on without it), and disabled plugins are skipped. The hook
+  only sees the user's message, never tool calls, so it can't get around the
+  approval gate.
 
 See [`ffxiv-market/index.js`](ffxiv-market/index.js) and
 [`stock-market/index.js`](stock-market/index.js) for real examples,
