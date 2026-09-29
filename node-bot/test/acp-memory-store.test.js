@@ -2434,3 +2434,32 @@ test("facts dropped by the 500 cap and pending facts that expire are logged, not
   store.archiveExpiredPendingFacts();
   assert.deepEqual(store.getFactHistory("guess").map((e) => e.op), ["add", "expire"]);
 });
+
+// Issue #624: a key visible in the user's terminal reaches the reply prompt
+// as screen text, and the reply quotes it back. It must not land in the
+// session file, the search index, or a remembered fact.
+test("appendTurn and rememberFact redact secrets before storing them", async () => {
+  const secret = "sk-proj-abcdEFGH1234ijklMNOP5678";
+  const dataDir = createTempDir();
+  const sessionSearchIndex = createSessionSearchIndex({ dbPath: ":memory:" });
+  const store = createAcpMemoryStore({ dataDir, sessionSearchIndex });
+
+  await store.appendTurn({
+    sessionId: "s1",
+    user: "what's in my terminal?",
+    assistant: `You exported OPENAI_API_KEY=${secret} in PowerShell.`,
+    toolCalls: [{ name: "memory__remember", ok: true, args: { text: `key ${secret}` } }],
+  });
+  store.rememberFact({ key: "api key", text: `the key is ${secret}` });
+
+  const onDisk = fs
+    .readdirSync(dataDir, { recursive: true })
+    .map((f) => path.join(dataDir, f))
+    .filter((p) => fs.statSync(p).isFile())
+    .map((p) => fs.readFileSync(p, "utf8"))
+    .join("\n");
+  assert.ok(!onDisk.includes(secret));
+  assert.ok(onDisk.includes("the key is [redacted]"));
+  assert.match(store.getSession("s1").turns[0].assistant, /OPENAI_API_KEY=\[redacted\]/);
+  assert.deepEqual(await store.searchSessions({ query: "abcdEFGH1234ijklMNOP5678" }), []);
+});
