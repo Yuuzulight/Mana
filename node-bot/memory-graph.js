@@ -118,20 +118,13 @@ function createMemoryGraph(options = {}) {
       ORDER BY weight ASC, last_reinforced_at ASC LIMIT ?
     )
   `);
-  // ponytail: closed windows are capped at maxEdges per table, oldest
-  // closure dropped first -- the one place history is still lost; raise
-  // the cap if long-range asOf queries ever need more.
-  const pruneClosedStmt = db.prepare(`
-    DELETE FROM memory_graph_edges WHERE rowid IN (
-      SELECT rowid FROM memory_graph_edges WHERE invalidated_at IS NOT NULL
-      ORDER BY invalidated_at DESC LIMIT -1 OFFSET ?
-    )
-  `);
-  const pruneHistoryStmt = db.prepare(`
-    DELETE FROM memory_graph_edge_history WHERE rowid IN (
-      SELECT rowid FROM memory_graph_edge_history
-      ORDER BY invalidated_at DESC LIMIT -1 OFFSET ?
-    )
+  // Q28: closed windows are never pruned (no cap); Doctor shows how many
+  // there are (getHistorySize).
+  const historySizeStmt = db.prepare(`
+    SELECT
+      (SELECT COUNT(*) FROM memory_graph_edges WHERE invalidated_at IS NULL) AS live,
+      (SELECT COUNT(*) FROM memory_graph_edges WHERE invalidated_at IS NOT NULL) AS closed,
+      (SELECT COUNT(*) FROM memory_graph_edge_history) AS archived
   `);
   const neighborsStmt = db.prepare(`
     SELECT node_a, node_b, weight, valid_from, invalidated_at FROM memory_graph_edges
@@ -164,7 +157,6 @@ function createMemoryGraph(options = {}) {
     const [nodeA, nodeB] = pairKey(a, b);
     if (nodeA === nodeB) return;
     const at = now();
-    let closed = false;
 
     // maxDegree is only enforced before a brand-new (or reopened) edge is
     // created -- reinforcing a live edge never needs room made for it.
@@ -173,27 +165,16 @@ function createMemoryGraph(options = {}) {
         const { count } = degreeStmt.get(node, node);
         if (count >= maxDegree) {
           const weakest = weakestEdgeForNodeStmt.get(node, node);
-          if (weakest) {
-            closeEdgeStmt.run(at, weakest.node_a, weakest.node_b);
-            closed = true;
-          }
+          if (weakest) closeEdgeStmt.run(at, weakest.node_a, weakest.node_b);
         }
       }
-      if (archiveClosedStmt.run(nodeA, nodeB).changes > 0) closed = true;
+      archiveClosedStmt.run(nodeA, nodeB);
     }
 
     upsertStmt.run(nodeA, nodeB, at, at);
 
     const { count: total } = totalEdgesStmt.get();
-    if (total > maxEdges) {
-      closeLowestStmt.run(at, total - maxEdges);
-      closed = true;
-    }
-
-    if (closed) {
-      pruneClosedStmt.run(maxEdges);
-      pruneHistoryStmt.run(maxEdges);
-    }
+    if (total > maxEdges) closeLowestStmt.run(at, total - maxEdges);
   }
 
   // entities: the same array extractEntities() already produces for one
@@ -242,6 +223,7 @@ function createMemoryGraph(options = {}) {
   // bounded by the caller so the view never pulls the whole table.
   const strongestEdgesStmt = db.prepare(`
     SELECT node_a, node_b, weight, last_reinforced_at FROM memory_graph_edges
+    WHERE invalidated_at IS NULL
     ORDER BY weight DESC, last_reinforced_at DESC
     LIMIT ?
   `);
@@ -255,7 +237,13 @@ function createMemoryGraph(options = {}) {
     }));
   }
 
-  return { reinforce, getNeighbors, listStrongestEdges, close };
+  // Q28: live edges, closed windows still in the edges table, and archived
+  // windows (memory_graph_edge_history), for Doctor.
+  function getHistorySize() {
+    return historySizeStmt.get();
+  }
+
+  return { reinforce, getNeighbors, listStrongestEdges, getHistorySize, close };
 }
 
 module.exports = {

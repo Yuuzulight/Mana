@@ -164,17 +164,20 @@ test("opening a pre-#620 memory-graph.db migrates it in place without losing edg
   }
 });
 
-test("maxEdges closes the lowest-weight edge's window, and closed windows are themselves capped", () => {
+test("maxEdges closes the lowest-weight edge's window, and closed windows are all kept (Q28: no cap)", () => {
   let tick = 0;
   const now = () => new Date(Date.UTC(2026, 0, 1, 0, 0, tick++)).toISOString();
   const at = (s) => new Date(Date.UTC(2026, 0, 1, 0, 0, s)).toISOString();
   const graph = createMemoryGraph({ dbPath: ":memory:", maxEdges: 1, maxDegree: 100, now });
   graph.reinforce(["A", "B"]); // t0
   graph.reinforce(["A", "C"]); // t1: A-B closed
-  graph.reinforce(["A", "D"]); // t2: A-C closed; A-B's closed window pruned (cap 1)
+  graph.reinforce(["A", "D"]); // t2: A-C closed
+  graph.reinforce(["A", "B"]); // t3: A-D closed; A-B reopened, its old window archived
 
-  assert.deepEqual(graph.getNeighbors("A").map((n) => n.node), ["d"]);
+  assert.deepEqual(graph.getNeighbors("A").map((n) => n.node), ["b"]);
   assert.deepEqual(graph.getNeighbors("A", { asOf: at(1) }).map((n) => [n.node, n.invalidatedAt]), [["c", at(2)]]);
-  assert.deepEqual(graph.getNeighbors("A", { asOf: at(0) }), [], "the oldest closed window is past the cap");
+  assert.deepEqual(graph.getNeighbors("A", { asOf: at(0) }).map((n) => [n.node, n.invalidatedAt]), [["b", at(1)]]);
+  assert.deepEqual(graph.getHistorySize(), { live: 1, closed: 2, archived: 1 });
+  assert.deepEqual(graph.listStrongestEdges(10).map((e) => e.b), ["b"], "the graph view shows live edges only");
   graph.close();
 });
