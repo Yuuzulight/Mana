@@ -1,5 +1,6 @@
 const defaultFs = require("node:fs");
 const { streamSentences } = require("../utils/sse-sentence-stream");
+const { stripEmotionTags } = require("../utils/emotion-tags");
 const { buildSamplingParams } = require("./sampler-presets");
 const path = require("node:path");
 const {
@@ -1199,8 +1200,13 @@ function createLlamaServerRuntime(options = {}) {
   // dict/object literals essentially never use exactly those two key names
   // back to back, so this is unlikely to false-positive on this model's
   // otherwise code-heavy replies.
+  //
+  // Checked after stripping emotion tags (#623): a tagged reply always starts
+  // with "[" ("[happy] Welcome home"), and flagging it forced a repair round
+  // whose schema had to return some tool call -- it invented skill__view
+  // every turn in a live run.
   function looksLikeFailedToolCallJson(content) {
-    const trimmed = String(content || "").trim();
+    const trimmed = stripEmotionTags(content).text;
     if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
       return true;
     }

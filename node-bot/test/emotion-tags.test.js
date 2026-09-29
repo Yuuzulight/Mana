@@ -3,7 +3,7 @@
 const assert = require("node:assert/strict");
 const test = require("node:test");
 
-const { stripEmotionTags, replyEmotion } = require("../utils/emotion-tags");
+const { EMOTION_TAGS, EMOTION_TAG_PROMPT, stripEmotionTags, replyEmotion } = require("../utils/emotion-tags");
 const { createApp } = require("../server");
 
 test("stripEmotionTags removes known tags and aliases, keeping spacing and other brackets", () => {
@@ -24,6 +24,19 @@ test("replyEmotion prefers the first non-neutral tag", () => {
   assert.equal(replyEmotion(["neutral", "embarrassed", "happy"]), "embarrassed");
   assert.equal(replyEmotion(["neutral"]), "neutral");
   assert.equal(replyEmotion([]), null);
+});
+
+// Live, "Before each sentence" + a two-sentence example got only the first
+// sentence tagged, and [thinking] for sad news.
+test("the tag prompt asks for a tag on every sentence and shows it with differing faces", () => {
+  assert.match(EMOTION_TAG_PROMPT, /EVERY sentence/);
+  assert.match(EMOTION_TAG_PROMPT, /\[sad\]/);
+  const example = EMOTION_TAG_PROMPT.slice(EMOTION_TAG_PROMPT.indexOf("Example:") + "Example:".length).trim();
+  const sentences = example.split(/(?<=[.!?])\s+/);
+  assert.ok(sentences.length >= 3);
+  const tags = sentences.map((sentence) => (sentence.match(/^\[(\w+)\] /) || [])[1]);
+  for (const tag of tags) assert.ok(EMOTION_TAGS.includes(tag), `every example sentence starts with a known tag: ${sentences}`);
+  assert.equal(new Set(tags).size, tags.length, "each example sentence shows a different face");
 });
 
 test("buildAssistantReply asks for tags and returns the reply without them", async () => {

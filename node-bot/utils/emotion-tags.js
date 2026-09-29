@@ -34,7 +34,11 @@ const ALIASES = {
   disgust: "disgusted",
 };
 
-const EMOTION_TAG_PROMPT = `Before each sentence, write one emotion tag for the face you make while saying it, chosen from: ${EMOTION_TAGS.map((tag) => `[${tag}]`).join(" ")}. The tags are hidden, never spoken or shown, so never mention them. Example: [happy] Welcome back! [questioning] Did the raid go well?`;
+// Live run on Qwen3.5-9B: "Before each sentence" plus a two-sentence example
+// got a tag on the first sentence only (~16% of sentences), and [thinking]
+// for sad news. So: "every sentence", a hint to match the content, and an
+// example where each sentence's face differs.
+const EMOTION_TAG_PROMPT = `Start EVERY sentence with an emotion tag for the face you make while saying it, not just the first sentence. Choose from: ${EMOTION_TAGS.map((tag) => `[${tag}]`).join(" ")}. Match the tag to what the sentence says: bad news is [sad], good news [happy] or [excited], a question [questioning]; [thinking] only when you are actually pondering. The tags are hidden, never spoken or shown, so never mention them. Example: [sad] Oh no, your cat is sick? [questioning] Is she still eating? [happy] She'll be okay with you looking after her.`;
 
 function canonicalTag(word) {
   const lower = word.toLowerCase();

@@ -1012,6 +1012,41 @@ test("runToolAwareReply does NOT attempt repair when content is a normal reply, 
   assert.equal(result.content, "Sure, notes.txt says hello.");
 });
 
+// #623: every emotion-tagged reply starts with "[". Live, that sent each
+// reply to the repair round, which invented a skill__view call every turn.
+test("runToolAwareReply does NOT attempt repair on a plain reply that starts with an emotion tag", async () => {
+  let callCount = 0;
+  let serverUp = false;
+  const fakeFetch = async (url) => {
+    if (String(url).endsWith("/health")) return { ok: serverUp };
+    if (String(url).endsWith("/v1/chat/completions")) {
+      callCount += 1;
+      return {
+        ok: true,
+        json: async () => ({ choices: [{ message: { content: "[happy] Welcome home! [questioning] How was work?" } }] }),
+      };
+    }
+    return { ok: false, status: 404, text: async () => "not found" };
+  };
+
+  const runtime = createLlamaServerRuntime({
+    env: makeFakeEnv(),
+    fs: makeFakeFs(),
+    fetch: fakeFetch,
+    spawn: () => {
+      serverUp = true;
+      return makeFakeChild();
+    },
+    sleep: async () => {},
+    registerExitHandlers: false,
+  });
+
+  const result = await runtime.runToolAwareReply("I'm home", makeFakePolicy());
+
+  assert.equal(callCount, 1, "a tagged prose reply must never trigger the repair round-trip");
+  assert.equal(result.content, "[happy] Welcome home! [questioning] How was work?");
+});
+
 test("runToolAwareReply's repair path gives up cleanly (no throw) when the repair response itself doesn't parse", async () => {
   let callCount = 0;
   let serverUp = false;
