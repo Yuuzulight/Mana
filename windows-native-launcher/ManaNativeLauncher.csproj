@@ -75,10 +75,13 @@
       <SpeakerModelDir>$(MSBuildProjectDirectory)\assets\speaker</SpeakerModelDir>
       <SpeakerModelPath>$(SpeakerModelDir)\voxceleb_resnet34_LM.onnx</SpeakerModelPath>
       <SpeakerModelUrl>https://huggingface.co/Wespeaker/wespeaker-voxceleb-resnet34-LM/resolve/f0c48c298fd835726c27956a5d617bad7115627e/voxceleb_resnet34_LM.onnx</SpeakerModelUrl>
-      <SpeakerModelSha256>7BB2F06E9DF17CDF1EF14EE8A15AB08ED28E8D0EF5054EE135741560DF2EC068</SpeakerModelSha256>
+      <SpeakerModelSha256>7bb2f06e9df17cdf1ef14ee8a15ab08ed28e8d0ef5054ee135741560df2ec068</SpeakerModelSha256>
     </PropertyGroup>
     <MakeDir Directories="$(SpeakerModelDir)" Condition="!Exists('$(SpeakerModelDir)')" />
-    <Exec Command="powershell -NoProfile -ExecutionPolicy Bypass -Command &quot;$t='$(SpeakerModelPath).tmp'; Invoke-WebRequest -Uri '$(SpeakerModelUrl)' -OutFile $t -UserAgent 'mana-fetch-speaker-model'; if ((Get-FileHash $t -Algorithm SHA256).Hash -eq '$(SpeakerModelSha256)') { Move-Item $t '$(SpeakerModelPath)' } else { Remove-Item $t; Write-Error 'speaker model SHA-256 mismatch'; exit 1 }&quot;" Condition="!Exists('$(SpeakerModelPath)')" ContinueOnError="WarnAndContinue" />
+    <Exec Command="powershell -NoProfile -ExecutionPolicy Bypass -Command &quot;Invoke-WebRequest -Uri '$(SpeakerModelUrl)' -OutFile '$(SpeakerModelPath).tmp' -UserAgent 'mana-fetch-speaker-model'&quot;" Condition="!Exists('$(SpeakerModelPath)')" ContinueOnError="WarnAndContinue" />
+    <VerifyFileHash File="$(SpeakerModelPath).tmp" Hash="$(SpeakerModelSha256)" Algorithm="SHA256" Condition="Exists('$(SpeakerModelPath).tmp')" ContinueOnError="WarnAndContinue" />
+    <Copy SourceFiles="$(SpeakerModelPath).tmp" DestinationFiles="$(SpeakerModelPath)" Condition="Exists('$(SpeakerModelPath).tmp') And '$(MSBuildLastTaskResult)' == 'true'" />
+    <Delete Files="$(SpeakerModelPath).tmp" />
   </Target>
 
   <ItemGroup>
