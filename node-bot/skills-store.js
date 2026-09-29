@@ -491,19 +491,26 @@ const MAX_ZIP_BYTES = 16 * MAX_IMPORT_BYTES;
 function readSkillZip(zipPath) {
   const file = path.resolve(String(zipPath || ""));
   if (fs.statSync(file).size > MAX_ZIP_BYTES) throw new Error(`zip is larger than ${MAX_ZIP_BYTES / 1024 / 1024} MB`);
+  return readSkillZipBuffer(fs.readFileSync(file), path.basename(file));
+}
+
+// subdir (link import, #664): the skill's folder inside the zip's one
+// top-level folder, e.g. "skills/weather" in a GitHub repo zip.
+function readSkillZipBuffer(buffer, zipName, subdir = "") {
   let entries;
   try {
-    entries = readZipEntries(fs.readFileSync(file));
+    entries = readZipEntries(buffer);
   } catch (e) {
-    throw new Error(`${path.basename(file)} isn't a zip Mana can read (${e.message})`);
+    throw new Error(`${zipName} isn't a zip Mana can read (${e.message})`);
   }
   const names = [...entries.keys()];
   const unsafe = names.find((name) => name.startsWith("/") || name.includes(":") || name.split("/").includes(".."));
   if (unsafe) throw new Error(`zip entry "${unsafe}" points outside the skill folder`);
   const kept = names.filter((name) => !name.startsWith("__MACOSX/") && !name.split("/").some((seg) => seg.startsWith(".")));
-  const tops = new Set(kept.map((name) => name.split("/")[0]));
-  const prefix = kept.includes(SKILL_MD) ? "" : tops.size === 1 && kept.includes(`${[...tops][0]}/${SKILL_MD}`) ? `${[...tops][0]}/` : null;
-  if (prefix === null) throw new Error(`no ${SKILL_MD} at the top of ${path.basename(file)}`);
+  const tops = [...new Set(kept.map((name) => name.split("/")[0]))];
+  const inTop = tops.length === 1 ? `${tops[0]}/${subdir ? `${subdir}/` : ""}` : null;
+  const prefix = !subdir && kept.includes(SKILL_MD) ? "" : inTop && kept.includes(`${inTop}${SKILL_MD}`) ? inTop : null;
+  if (prefix === null) throw new Error(`no ${SKILL_MD} at the top of ${zipName}${subdir ? ` under ${subdir}` : ""}`);
   const paths = kept.filter((name) => name.startsWith(prefix)).map((name) => name.slice(prefix.length));
   const readData = (rel, budget) => {
     const { method, compressed } = entries.get(prefix + rel);
@@ -516,7 +523,8 @@ function readSkillZip(zipPath) {
       throw new Error(`zip entry "${rel}" is damaged (${e.message})`);
     }
   };
-  return describeSkillImport(paths, readData, prefix ? prefix.slice(0, -1) : path.basename(file, path.extname(file)));
+  const fallbackName = prefix ? prefix.slice(0, -1).split("/").pop() : zipName.replace(/\.zip$/i, "");
+  return describeSkillImport(paths, readData, fallbackName);
 }
 
 function createSkillsStore(options = {}) {
@@ -1036,6 +1044,8 @@ module.exports = {
   evaluateSkillAvailability,
   readSkillFolder,
   readSkillZip,
+  readSkillZipBuffer,
+  MAX_ZIP_BYTES,
   slugify,
   extractSkillScript,
   extractSkillInputs,

@@ -251,6 +251,21 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
 
     public void ShowHearing(string? text) => RunOnUiThread(() => HearingChanged?.Invoke(text));
 
+    // #690: a message from Mana outside any turn (an ambient screen glance)
+    // -- always its own, finished bubble, never merged into a reply that's
+    // still open (e.g. one cut off by a barge-in).
+    public void AppendManaMessage(string text) => RunOnUiThread(() =>
+    {
+        var blocks = ChatMarkdownParser.Parse(text);
+        if (blocks.Count == 0)
+        {
+            return;
+        }
+        var message = new Message(fromUser: false) { FinalText = text };
+        message.Blocks.AddRange(blocks);
+        Add(message, forceScroll: false);
+    });
+
     // Puts buttons under Mana's latest message (replacing any it had, except
     // kept ones like the artifact button, which move after the new ones).
     public void AttachActions(IReadOnlyList<ChatAction> actions)
@@ -1192,6 +1207,26 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
             }
         }
         return -1;
+    }
+
+    // #701: a clicked chat bubble -- selects (and scrolls to) Mana's latest
+    // message containing that sentence, else her latest message.
+    public void SelectMessageContaining(string sentence)
+    {
+        var index = LatestManaMessage(sentence);
+        if (index >= 0)
+        {
+            Select(index);
+        }
+    }
+
+    // -1 when Mana has no messages.
+    internal int LatestManaMessage(string sentence)
+    {
+        var mana = Enumerable.Range(0, messages.Count).Reverse().Where(i => !messages[i].FromUser).ToList();
+        return mana.Count == 0
+            ? -1
+            : mana.FirstOrDefault(i => messages[i].PlainText.Contains(sentence.Trim(), StringComparison.OrdinalIgnoreCase), mana[0]);
     }
 
     private void Select(int index)

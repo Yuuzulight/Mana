@@ -356,3 +356,24 @@ test("buildToolPolicyWithMcp merges base and MCP tools and routes executeTool to
   assert.equal(await merged.executeTool("read_file", {}), "local:read_file");
   assert.match(await merged.executeTool("mcp__docs__search_docs", { q: "x" }), /search_docs/);
 });
+
+test("local-only mode doesn't start a stdio server (#670)", async () => {
+  const { sdk, capturedTransports } = createFakeSdk({ toolsByServerName: { npx: [{ name: "run" }] } });
+  const approvalGate = createApprovalGate({ dataDir: createTempDir() });
+  const registry = createRegistry({ approvalGate, sdk });
+  await registerAndApprove(registry, approvalGate, {
+    name: "local",
+    transport: { kind: "stdio", command: "npx", args: ["-y", "local-mcp"] },
+    allowedTools: ["run"],
+  });
+  const prior = process.env.MANA_LOCAL_ONLY;
+  process.env.MANA_LOCAL_ONLY = "1";
+  try {
+    assert.deepEqual(await registry.listApprovedToolSchemas(), []);
+    await assert.rejects(() => registry.executeTool("mcp__local__run", {}), /Local-only mode is on .*MCP server "local"/);
+    assert.equal(capturedTransports.length, 0);
+  } finally {
+    if (prior === undefined) delete process.env.MANA_LOCAL_ONLY;
+    else process.env.MANA_LOCAL_ONLY = prior;
+  }
+});
