@@ -19,6 +19,9 @@ function getScheduler(deps = {}) {
           if (typeof deps.buildAssistantReply !== "function") {
             throw new Error("no buildAssistantReply function available for agent jobs");
           }
+          // Issue #643: the normal reply pipeline, so the job's prompt gets
+          // the same memory a chat turn does (background memory, this
+          // session's memory, pinned/related facts) before it runs.
           return deps.buildAssistantReply(job.prompt, "", "", "default", job.sessionId);
         }),
       onResult: (job, result, error) => {
