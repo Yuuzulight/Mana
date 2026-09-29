@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -68,8 +69,19 @@ internal sealed class ManaSettingsStore
 
     // #678: SpeakerGate.ModeNames (null = off) and my enrolled voiceprint,
     // an averaged speaker embedding. Stays in this local file, never uploaded.
+    // #922: DPAPI-encrypted like the admin token (VoiceprintProtected); one
+    // this account can't decrypt counts as not enrolled.
     public string? VoiceprintGate { get; set; }
+
+    [JsonIgnore]
     public float[]? Voiceprint { get; set; }
+
+    [JsonPropertyName("Voiceprint")]
+    public float[]? PlainVoiceprint { get; set; }
+
+    public string? VoiceprintProtected { get; set; }
+
+    private static readonly byte[] VoiceprintEntropy = Encoding.UTF8.GetBytes("Mana.NativeLauncher.Voiceprint");
 
     // #681: the prompt preset sent as presetId with every reply; null =
     // none. Chosen in Settings > Presets (windows-launcher kept the same
@@ -130,31 +142,23 @@ internal sealed class ManaSettingsStore
             return new ManaSettingsStore();
         }
 
-        settings.AdminToken = settings.PlainAdminToken;
-        if (settings.AdminTokenProtected is not null)
+        settings.AdminToken = Unprotect(settings.AdminTokenProtected, AdminTokenEntropy, "admin token") is { } token
+            ? Encoding.UTF8.GetString(token)
+            : settings.PlainAdminToken;
+        settings.Voiceprint = Unprotect(settings.VoiceprintProtected, VoiceprintEntropy, "voiceprint") is { } voiceprint
+            ? MemoryMarshal.Cast<byte, float>(voiceprint).ToArray()
+            : settings.PlainVoiceprint;
+        if ((settings.AdminTokenProtected is null && settings.PlainAdminToken is not null)
+            || (settings.VoiceprintProtected is null && settings.PlainVoiceprint is not null))
         {
-            try
-            {
-                settings.AdminToken = Encoding.UTF8.GetString(ProtectedData.Unprotect(
-                    Convert.FromBase64String(settings.AdminTokenProtected), AdminTokenEntropy, DataProtectionScope.CurrentUser));
-            }
-            catch (Exception ex) when (ex is CryptographicException or FormatException or PlatformNotSupportedException)
-            {
-                // Another Windows account's (or a damaged) blob: the token has
-                // to be entered again in Settings.
-                Console.WriteLine($"ManaSettingsStore: couldn't decrypt the admin token. {ex.Message}");
-            }
-        }
-        else if (settings.PlainAdminToken is not null)
-        {
-            // First run after the upgrade: move the plain token into DPAPI.
+            // First run after the upgrade: move the plain values into DPAPI.
             try
             {
                 settings.Save(filePath);
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
             {
-                Console.WriteLine($"ManaSettingsStore: couldn't encrypt the saved admin token yet. {ex.Message}");
+                Console.WriteLine($"ManaSettingsStore: couldn't encrypt the saved settings yet. {ex.Message}");
             }
         }
         return settings;
@@ -162,24 +166,46 @@ internal sealed class ManaSettingsStore
 
     public void Save(string? filePath = null)
     {
-        PlainAdminToken = null;
-        AdminTokenProtected = null;
-        if (AdminToken is not null)
-        {
-            try
-            {
-                AdminTokenProtected = Convert.ToBase64String(ProtectedData.Protect(
-                    Encoding.UTF8.GetBytes(AdminToken), AdminTokenEntropy, DataProtectionScope.CurrentUser));
-            }
-            catch (Exception ex) when (ex is CryptographicException or PlatformNotSupportedException)
-            {
-                // Fallback: better a plain token than none (the pre-#645 format).
-                Console.WriteLine($"ManaSettingsStore: DPAPI unavailable, saving the admin token unencrypted. {ex.Message}");
-                PlainAdminToken = AdminToken;
-            }
-        }
+        // Fallback: better a plain value than none (the pre-#645/#922 format).
+        AdminTokenProtected = AdminToken is null ? null : Protect(Encoding.UTF8.GetBytes(AdminToken), AdminTokenEntropy, "admin token");
+        PlainAdminToken = AdminTokenProtected is null ? AdminToken : null;
+        VoiceprintProtected = Voiceprint is null ? null : Protect(MemoryMarshal.AsBytes(Voiceprint.AsSpan()).ToArray(), VoiceprintEntropy, "voiceprint");
+        PlainVoiceprint = VoiceprintProtected is null ? Voiceprint : null;
         var path = filePath ?? FilePath;
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         File.WriteAllText(path, JsonSerializer.Serialize(this));
+    }
+
+    // Another Windows account's (or a damaged) blob gives null: the value
+    // has to be entered (or taught) again in Settings.
+    private static byte[]? Unprotect(string? blob, byte[] entropy, string what)
+    {
+        if (blob is null)
+        {
+            return null;
+        }
+        try
+        {
+            return ProtectedData.Unprotect(Convert.FromBase64String(blob), entropy, DataProtectionScope.CurrentUser);
+        }
+        catch (Exception ex) when (ex is CryptographicException or FormatException or PlatformNotSupportedException)
+        {
+            Console.WriteLine($"ManaSettingsStore: couldn't decrypt the {what}. {ex.Message}");
+            return null;
+        }
+    }
+
+    // null when DPAPI isn't available; Save then keeps the plain value.
+    private static string? Protect(byte[] data, byte[] entropy, string what)
+    {
+        try
+        {
+            return Convert.ToBase64String(ProtectedData.Protect(data, entropy, DataProtectionScope.CurrentUser));
+        }
+        catch (Exception ex) when (ex is CryptographicException or PlatformNotSupportedException)
+        {
+            Console.WriteLine($"ManaSettingsStore: DPAPI unavailable, saving the {what} unencrypted. {ex.Message}");
+            return null;
+        }
     }
 }

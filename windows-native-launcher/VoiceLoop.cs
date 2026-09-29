@@ -121,6 +121,7 @@ internal sealed class VoiceLoop : IDisposable
     private float[]? voiceprint;
     private float speakerThreshold = SpeakerGate.DefaultThreshold;
     private SpeakerEmbedder? speakerEmbedder;
+    private bool disposed; // #922: Settings closing after quit mustn't restart listening
 
     // #665 notWhileSpeaking: recording what I say while she keeps talking
     // (mode stays Speaking), and what I said, held until she finishes.
@@ -354,7 +355,7 @@ internal sealed class VoiceLoop : IDisposable
 
     public void Start()
     {
-        if (capture is not null)
+        if (capture is not null || disposed)
         {
             return;
         }
@@ -374,7 +375,7 @@ internal sealed class VoiceLoop : IDisposable
             speakerEmbedder ??= SpeakerEmbedder.TryLoad(ManaApplicationContext.FindRootDirectory());
         }
         VoiceDebugLog.AppendNote(string.Create(System.Globalization.CultureInfo.InvariantCulture,
-            $"speaker: gate={SpeakerGate.ModeNames[(int)speakerGateMode]} enrolled={(settings.Voiceprint is null ? "no" : "yes")} model={(voiceprint is null ? "unused" : speakerEmbedder is null ? "missing (passing all speech through)" : "loaded")} threshold={speakerThreshold:F2}"));
+            $"speaker: gate={SpeakerGate.ModeNames[(int)speakerGateMode]} enrolled={(settings.Voiceprint is not null ? "yes" : settings.VoiceprintProtected is not null ? "unreadable (teach her again)" : "no")} model={(voiceprint is null ? "unused" : speakerEmbedder is null ? "missing (passing all speech through)" : "loaded")} threshold={speakerThreshold:F2}"));
 
         // #858: voice tunables, env var over Settings > Voice.
         var voiceSettings = ManaSettingsStore.Load();
@@ -658,6 +659,7 @@ internal sealed class VoiceLoop : IDisposable
 
     public void Dispose()
     {
+        disposed = true;
         Stop();
         speakerEmbedder?.Dispose();
     }

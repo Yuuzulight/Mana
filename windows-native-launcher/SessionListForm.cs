@@ -1103,7 +1103,7 @@ internal sealed class SessionListForm : Form
 
     private void OpenSettings()
     {
-        using var dialog = new SettingsDialog(backendClient, backendLog, () => voiceLoop.CurrentSessionId, BindHotkey);
+        using var dialog = new SettingsDialog(backendClient, backendLog, () => voiceLoop.CurrentSessionId, BindHotkey, new ListeningPause(() => voiceLoop.IsListening, voiceLoop.ToggleListening));
         dialog.ShowDialog(this);
         // #681: Settings > Presets persists the active preset straight to
         // ManaSettingsStore; pick up whatever it left there.

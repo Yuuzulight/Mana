@@ -22,6 +22,7 @@ internal sealed class SettingsPanel : UserControl
     // a session concept (there isn't one today; kept optional so a future
     // caller isn't forced to plumb a session id it may not have).
     private readonly Func<string?>? getCurrentSessionId;
+    private readonly ListeningPause? listeningPause; // #922
     private readonly ListView pluginsList = new();
     private readonly ListView factsList = new();
     // #688: search boxes over the last-loaded plugins/facts.
@@ -83,9 +84,10 @@ internal sealed class SettingsPanel : UserControl
     private bool llamaUpdateAvailable;
     private string? llamaCheckNote;
 
-    public SettingsPanel(ManaBackendClient backendClient, BackendLogBuffer backendLog, Func<string?>? getCurrentSessionId = null, Func<HotkeyAction, Keys?, string?>? bindHotkey = null)
+    public SettingsPanel(ManaBackendClient backendClient, BackendLogBuffer backendLog, Func<string?>? getCurrentSessionId = null, Func<HotkeyAction, Keys?, string?>? bindHotkey = null, ListeningPause? listeningPause = null)
     {
         this.bindHotkey = bindHotkey;
+        this.listeningPause = listeningPause;
         this.backendClient = backendClient;
         this.backendLog = backendLog;
         this.getCurrentSessionId = getCurrentSessionId;
@@ -1239,6 +1241,7 @@ internal sealed class SettingsPanel : UserControl
     // my voice: each prompt is recorded for EnrollClipMs from the default
     // mic, embedded, and the average saved as ManaSettingsStore.Voiceprint.
     // Read each time listening starts; MANA_SPEAKER_GATE overrides the mode.
+    // #922: listening pauses while it records, until it ends or Settings closes.
     private static readonly string[] EnrollPrompts =
     {
         "The quick brown fox jumps over the lazy dog.",
@@ -1249,7 +1252,7 @@ internal sealed class SettingsPanel : UserControl
     };
     private const int EnrollClipMs = 5000;
 
-    private static FlowLayoutPanel BuildVoiceprintRow()
+    private FlowLayoutPanel BuildVoiceprintRow()
     {
         var label = new Label { Text = "Only my voice can", AutoSize = true, ForeColor = DarkTheme.Text, Anchor = AnchorStyles.Left };
         var combo = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 260, BackColor = DarkTheme.Panel2, ForeColor = DarkTheme.Text };
@@ -1288,6 +1291,7 @@ internal sealed class SettingsPanel : UserControl
             teach.Enabled = forget.Enabled = false;
             try
             {
+                listeningPause?.Pause();
                 using var embedder = await Task.Run(() => new SpeakerEmbedder(modelPath));
                 var embeddings = new List<float[]>();
                 for (var i = 0; i < EnrollPrompts.Length; i++)
@@ -1317,6 +1321,7 @@ internal sealed class SettingsPanel : UserControl
             }
             finally
             {
+                listeningPause?.Resume();
                 if (!teach.IsDisposed)
                 {
                     teach.Enabled = forget.Enabled = true;
@@ -1330,6 +1335,7 @@ internal sealed class SettingsPanel : UserControl
         row.Controls.Add(teach);
         row.Controls.Add(forget);
         row.Controls.Add(status);
+        row.Disposed += (_, _) => listeningPause?.Resume();
         return row;
     }
 
