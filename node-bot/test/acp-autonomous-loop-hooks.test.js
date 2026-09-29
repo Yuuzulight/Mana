@@ -85,3 +85,89 @@ test("deny wins over ask, matched on the rewritten args", async () => {
 
   assert.deepEqual(res.results[0], { tool: "file_read", status: "denied", detail: "not that one" });
 });
+
+// ---- #838 step 2: post hooks ----
+
+function fakeFileWriteFs(t, existing = true) {
+  const saved = {
+    stat: fs.promises.stat,
+    readFile: fs.promises.readFile,
+    writeFile: fs.promises.writeFile,
+    appendFile: fs.promises.appendFile,
+    mkdir: fs.promises.mkdir,
+    env: { allow: process.env.ALLOW_FILE_WRITE, approval: process.env.FILE_WRITE_REQUIRE_APPROVAL },
+  };
+  process.env.ALLOW_FILE_WRITE = "1";
+  process.env.FILE_WRITE_REQUIRE_APPROVAL = "0";
+  fs.promises.stat = async () => {
+    if (!existing) throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
+    return { isFile: () => true, size: 5 };
+  };
+  fs.promises.readFile = async () => "old content";
+  fs.promises.writeFile = async () => {};
+  fs.promises.appendFile = async () => {};
+  fs.promises.mkdir = async () => {};
+  t.after(() => {
+    Object.assign(fs.promises, {
+      stat: saved.stat,
+      readFile: saved.readFile,
+      writeFile: saved.writeFile,
+      appendFile: saved.appendFile,
+      mkdir: saved.mkdir,
+    });
+    for (const [key, value] of [["ALLOW_FILE_WRITE", saved.env.allow], ["FILE_WRITE_REQUIRE_APPROVAL", saved.env.approval]]) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  });
+}
+
+test("a post run-command rule runs from the repo root after a successful call only", async () => {
+  const hooksStore = hooksWith(
+    { phase: "post", action: "run-command", toolName: "file_read", command: "echo", args: ["{path}"] },
+    { phase: "pre", action: "deny", toolName: "file_read", pathContains: "blocked" },
+  );
+  const calls = [];
+  const execFile = (cmd, args, opts) => calls.push({ cmd, args, cwd: opts.cwd, shell: opts.shell });
+
+  await executeAutonomousStep(step("file_read", { path: "README.md" }), "pb-post", { hooksStore, execFile });
+  await executeAutonomousStep(step("file_read", { path: "blocked.md" }), "pb-post", { hooksStore, execFile });
+  await executeAutonomousStep(step("file_read", { path: "missing-file.md" }), "pb-post", { hooksStore, execFile });
+
+  assert.deepEqual(calls, [{ cmd: "echo", args: ["README.md"], cwd: path.resolve(__dirname, "..", ".."), shell: false }]);
+});
+
+test("rollback-on-failure after a file_write overwrite restores that write's own snapshot", async (t) => {
+  fakeFileWriteFs(t);
+  const hooksStore = hooksWith({ phase: "post", action: "rollback-on-failure", toolName: "write", command: "eslint", args: ["{path}"] });
+  const restored = [];
+  const snapshotStore = {
+    recordSnapshot: () => ({ id: "snap-this-write" }),
+    restoreSnapshot: async (id) => restored.push(id),
+  };
+  const execFile = (cmd, args, opts, cb) => cb(new Error("lint failed"));
+  const originalWarn = console.warn;
+  console.warn = () => {};
+  t.after(() => {
+    console.warn = originalWarn;
+  });
+
+  const res = await executeAutonomousStep(
+    step("file_write", { path: "src/pb-out.txt", content: "new", mode: "overwrite" }),
+    "pb-rollback",
+    { hooksStore, execFile, snapshotStore },
+  );
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(res.results[0].snapshotId, "snap-this-write");
+  assert.deepEqual(restored, ["snap-this-write"]);
+
+  // An append takes no snapshot, so there is nothing to roll back.
+  await executeAutonomousStep(
+    step("file_write", { path: "src/pb-out.txt", content: "more", mode: "append" }),
+    "pb-rollback",
+    { hooksStore, execFile, snapshotStore },
+  );
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(restored, ["snap-this-write"]);
+});
