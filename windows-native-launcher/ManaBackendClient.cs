@@ -1586,6 +1586,45 @@ internal sealed class ManaBackendClient
         return new ManaBrowserAutomationActivity { Log = log, ScreenshotBase64 = screenshotBase64 };
     }
 
+    // #646: the chat tool loop's live runs -- no auth, a read-only status
+    // readout like /browser-automation/activity above.
+    public async Task<IReadOnlyList<ManaAgentRun>> GetAgentActivityAsync()
+    {
+        using var response = await http.GetAsync("/agent/activity");
+        response.EnsureSuccessStatusCode();
+        await using var stream = await response.Content.ReadAsStreamAsync();
+        using var document = await JsonDocument.ParseAsync(stream);
+        var runs = new List<ManaAgentRun>();
+        if (document.RootElement.TryGetProperty("runs", out var runsElement) && runsElement.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var element in runsElement.EnumerateArray())
+            {
+                runs.Add(new ManaAgentRun
+                {
+                    Id = element.TryGetProperty("id", out var idElement) ? idElement.GetString() ?? "" : "",
+                    ElapsedMs = element.TryGetProperty("elapsedMs", out var elapsedElement) ? elapsedElement.GetInt64() : 0,
+                    Tool = element.TryGetProperty("tool", out var toolElement) ? toolElement.GetString() : null,
+                    ToolElapsedMs = element.TryGetProperty("toolElapsedMs", out var toolElapsedElement) && toolElapsedElement.ValueKind == JsonValueKind.Number
+                        ? toolElapsedElement.GetInt64()
+                        : null,
+                    ToolCount = element.TryGetProperty("toolCount", out var countElement) ? countElement.GetInt32() : 0,
+                    LastTool = element.TryGetProperty("lastTool", out var lastToolElement) ? lastToolElement.GetString() : null,
+                    Stopping = element.TryGetProperty("stopping", out var stoppingElement) && stoppingElement.ValueKind == JsonValueKind.True,
+                });
+            }
+        }
+        return runs;
+    }
+
+    // #646: admin-gated (checkAdminAuth) like the proposal approve route.
+    public async Task StopAgentRunAsync(string id)
+    {
+        var payload = JsonSerializer.Serialize(new { id });
+        using var content = new StringContent(payload, Encoding.UTF8, "application/json");
+        using var response = await http.PostAsync("/agent/stop", content);
+        response.EnsureSuccessStatusCode();
+    }
+
     // #577: node-bot's deep-research job store (capabilities/deep-research-
     // capability.js) -- 202-Accepted with a jobId, polled via
     // GetResearchJobAsync. sessionId, when given, is what lets the
@@ -2057,6 +2096,18 @@ internal sealed class ManaBrowserAutomationLogEntry
     public string Status { get; init; } = "";
     public string Summary { get; init; } = "";
     public string At { get; init; } = "";
+}
+
+// #646: one entry from GET /agent/activity (node-bot/agent-activity.js).
+internal sealed class ManaAgentRun
+{
+    public string Id { get; init; } = "";
+    public long ElapsedMs { get; init; }
+    public string? Tool { get; init; }
+    public long? ToolElapsedMs { get; init; }
+    public int ToolCount { get; init; }
+    public string? LastTool { get; init; }
+    public bool Stopping { get; init; }
 }
 
 // #577: GET /research/:jobId's shape -- see deep-research-capability.js's

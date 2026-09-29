@@ -217,6 +217,7 @@ const { createCodingToolSource } = require("./ai/coding-tool-source");
 const { createMcpClientRegistry } = require("./mcp-client-registry");
 const { mcpClientCapability } = require("./capabilities/mcp-client-capability");
 const { createToolCallLog, wrapWithToolCallLog } = require("./tool-call-log");
+const { createAgentActivity } = require("./agent-activity");
 const { filterRelevantTools, wrapWithResultDigest } = require("./ai/tool-context-guard");
 const { toolCallLogCapability } = require("./capabilities/tool-call-log-capability");
 const { createHooksStore, wrapWithHooks } = require("./hooks-store");
@@ -2170,6 +2171,7 @@ function registerRoutes(app, upload, deps = {}) {
   const activeHooksStore = deps.hooksStore || hooksStore;
   const activePronunciationLexiconStore = deps.pronunciationLexiconStore || pronunciationLexiconStore;
   const activeBrowserAutomationToolSource = deps.browserAutomationToolSource || browserAutomationToolSource;
+  const agentActivity = createAgentActivity();
   const capabilityContext = {
     acpMemoryStore: deps.acpMemoryStore || acpMemoryStore,
     // Only cron-scheduler's agent-job executor uses this today -- every
@@ -2337,6 +2339,18 @@ function registerRoutes(app, upload, deps = {}) {
   // admin action like /editors/workspace/*).
   app.get("/browser-automation/activity", (req, res) => {
     return res.json(activeBrowserAutomationToolSource.activityLog.getActivity());
+  });
+
+  // #646: the chat tool loop's live runs (current tool, elapsed), polled
+  // by the launcher's activity panel -- read-only, no auth, same as above.
+  app.get("/agent/activity", (req, res) => {
+    return res.json({ runs: agentActivity.list() });
+  });
+
+  // #646: Stop from that panel, by run id.
+  app.post("/agent/stop", (req, res) => {
+    if (!checkAdminAuth(req, res)) return;
+    return res.json({ stopped: agentActivity.stop(String(req.body?.id ?? "")) });
   });
 
   // A one-off, session-scoped mode switch layered on top of Mana's base
@@ -4210,10 +4224,19 @@ function registerRoutes(app, upload, deps = {}) {
     // means this pass never reached llama-server (llama-cli fallback).
     let turnToolSchemas = [];
     let turnPromptUsage = null;
+    // #646: this pass's entry in GET /agent/activity; its stop flag is
+    // read by the executeTool wrapper below.
+    let activityRun = null;
     async function replyMaybeWithTools(promptText) {
       turnToolSchemas = [];
       const usageBefore = activeLlamaServerRuntime.getLastPromptUsage?.();
-      const reply = await replyMaybeWithToolsUnmetered(promptText);
+      activityRun = agentActivity.start();
+      let reply;
+      try {
+        reply = await replyMaybeWithToolsUnmetered(promptText);
+      } finally {
+        agentActivity.finish(activityRun);
+      }
       const usageAfter = activeLlamaServerRuntime.getLastPromptUsage?.();
       turnPromptUsage = usageAfter && usageAfter !== usageBefore ? usageAfter : null;
       compositionTexts["user-turn"] = promptText;
@@ -4373,13 +4396,26 @@ function registerRoutes(app, upload, deps = {}) {
           // show she's working. expression__set is her face, not work.
           const onToolCall =
             replyMeta && typeof replyMeta.onToolCall === "function" ? replyMeta.onToolCall : null;
+          const run = activityRun;
           const reportTool = (name, phase) => {
-            if (!onToolCall || isExpressionToolName(name)) return;
+            if (isExpressionToolName(name)) return;
+            if (phase === "start") agentActivity.toolStarted(run, name);
+            else agentActivity.toolEnded(run, name);
+            if (!onToolCall) return;
             try {
               onToolCall({ name, phase });
             } catch (e) {}
           };
           mergedToolPolicy.executeTool = async (name, args) => {
+            // #646: Stop from the activity panel. The tool already running
+            // finishes; every later call is refused, so the model answers
+            // or the loop's own 3-consecutive-errors cap makes it.
+            // ponytail: no runtime change (it's mid-edit in #770/#787) --
+            // a stop check in runToolAwareReply's budget test would end
+            // the loop without those extra refused rounds.
+            if (run.stopRequested) {
+              throw new Error("Stopped by the user. Don't call any more tools; answer with what you have.");
+            }
             reportTool(name, "start");
             try {
               const result = await executeLoggedTool(name, args);
