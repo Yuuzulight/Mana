@@ -2,8 +2,9 @@
 // me in 40 minutes to check my retainers", "ping me at 20:50"). They are
 // cron-scheduler "reminder" jobs, so they survive a restart and fire on the
 // scheduler's tick; delivery goes through the proactive engine as explicit
-// (plugins/cron-scheduler/index.js), so they get through even mid-game. No
-// model call when one fires -- the reminder text is the message.
+// (plugins/cron-scheduler/index.js), so they get through even mid-game, as
+// a toast and a spoken line. No model call when one fires -- the reminder
+// text is the message.
 //
 // Times are the backend's local clock (the user's own PC), so the model
 // never has to know today's date: "at 21:00" is the next 21:00, "tomorrow
@@ -17,7 +18,7 @@ const TOOL_SCHEMAS = [
     function: {
       name: "reminder__set",
       description:
-        "Set a reminder or timer the user asked for. Give exactly one of in_minutes (\"in 40 minutes\"), at (\"at 21:00\", \"tomorrow at 9\") or every_minutes (\"every 2 hours\"). It shows up as a notification at that time, even mid-game.",
+        "Set a reminder or timer the user asked for. Give exactly one of in_minutes (\"in 40 minutes\"), at (\"at 21:00\", \"tomorrow at 9\") or every_minutes (\"every 2 hours\"). At that time you say it out loud and it shows as a notification, even mid-game.",
       parameters: {
         type: "object",
         properties: {

@@ -226,7 +226,9 @@ internal sealed class ManaApplicationContext : ApplicationContext
         trayNotifications = new TrayNotificationClient(
             backendBaseUrl: settings.BackendBaseUrl,
             openChat: () => RunOnUi(ShowSessionList),
-            onDoctor: payload => RunOnUi(() => ShowDoctorAlert(payload)));
+            onDoctor: payload => RunOnUi(() => ShowDoctorAlert(payload)),
+            // #905: a reminder is said out loud too, even mid-game.
+            onSpeak: text => _ = voiceLoop.SpeakAnnouncementAsync(text));
         // #689: a second launcher started -- show this one's window instead.
         showRequests = SingleInstance.ListenForShow(() => RunOnUi(ShowSessionList));
         // #681: answers the model's mid-reply screenshot requests.

@@ -159,7 +159,7 @@ test("a failed cron job still notifies the tray, even with no acpMemoryStore con
   assert.match(trayEvents[0].text, /failed/);
 });
 
-test("#905 a reminder is a Reminder toast through the proactive engine, even mid-game", async () => {
+test("#905 a reminder is a Reminder toast and a spoken line through the proactive engine, even mid-game", async () => {
   cronPlugin._resetForTests();
   const trayEvents = [];
   trayNotifier.setBroadcaster((payload) => trayEvents.push(payload));
@@ -167,14 +167,18 @@ test("#905 a reminder is a Reminder toast through the proactive engine, even mid
   proactive.watchGaming(() => true);
   try {
     let now = 1000;
-    const scheduler = cronPlugin._getSchedulerForTests({ dataDir: createTempDir(), now: () => now });
-    scheduler.addJob({ name: "check retainers", jobType: "reminder", schedule: { type: "once", at: 1500 } });
+    const scheduler = cronPlugin._getSchedulerForTests({
+      dataDir: createTempDir(),
+      now: () => now,
+      acpMemoryStore: { listFacts: () => [{ key: "name", text: "Yuuzu", status: "active" }] },
+    });
+    scheduler.addJob({ name: "raid in 10 minutes.", jobType: "reminder", schedule: { type: "once", at: 1500 } });
     now = 1600;
     await scheduler.runDueJobs();
     await new Promise((resolve) => setImmediate(resolve));
     assert.deepEqual(
-      trayEvents.map((e) => [e.type, e.title, e.text]),
-      [["cron", "Reminder", "check retainers"]],
+      trayEvents.map((e) => [e.type, e.title, e.text, e.speak]),
+      [["cron", "Reminder", "raid in 10 minutes.", "Yuuzu, raid in 10 minutes!"]],
     );
     assert.deepEqual(scheduler.listJobs(), []);
   } finally {

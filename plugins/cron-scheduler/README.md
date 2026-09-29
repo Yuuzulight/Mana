@@ -19,7 +19,9 @@ Two job types:
   call. Mana sets, lists and cancels these from chat
   (`node-bot/ai/reminder-tool-source.js`). They go out as a "Reminder" toast
   through the proactive engine as explicit, so they get through even
-  mid-game, and they fire whether or not this plugin is enabled.
+  mid-game, and the payload's `speak` line ("Yuuzu, raid in 10 minutes!")
+  is said out loud by the native launcher. They fire whether or not this
+  plugin is enabled.
 
 Either way, the result (or error) is delivered as a chat turn
 (`acpMemoryStore.appendTurn`) in the job's session -- visible in the

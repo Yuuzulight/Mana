@@ -1997,6 +1997,51 @@ internal sealed class VoiceLoop : IDisposable
 
     private const string ReplyFailedMessage = "Sorry, I couldn't answer that just now. Try again in a moment.";
 
+    // #905: a line nobody just asked for (a reminder firing), said through
+    // the same player as replies, with SayReplyFailedAsync's mode handling.
+    // Waits for her to be idle so it never cuts into a turn; gives up
+    // (the toast still showed) if she's busy for a whole minute.
+    public async Task<bool> SpeakAnnouncementAsync(string text)
+    {
+        for (var tries = 0; ; tries++)
+        {
+            lock (stateLock)
+            {
+                if (mode == ListenMode.Idle)
+                {
+                    mode = ListenMode.Processing;
+                    break;
+                }
+            }
+            if (tries >= 30)
+            {
+                return false;
+            }
+            await Task.Delay(2000);
+        }
+        try
+        {
+            var wav = await backendClient.SynthesizeAsync(text);
+            OnTalkingStateChanged(true);
+            captions?.ShowSentence(text);
+            bubbles?.ShowSentence(text);
+            var completedNaturally = await audioPlayer.PlayAsync(wav);
+            OnTalkingStateChanged(false);
+            if (!completedNaturally)
+            {
+                ConsumeManualStop();
+                return true;
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"VoiceLoop: couldn't speak the announcement. {ex.Message}");
+            OnTalkingStateChanged(false);
+        }
+        ReturnToIdle();
+        return true;
+    }
+
     // #666: a failed reply is shown in the chat and spoken once, with the
     // same mode handling as the non-streamed fallback above. If TTS is what
     // failed, the chat line is all the user gets -- still not silence.

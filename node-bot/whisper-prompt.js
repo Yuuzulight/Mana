@@ -192,4 +192,6 @@ module.exports = {
   buildWhisperPrompt,
   createWhisperPromptProvider,
   extractTerms,
+  isUsableFact,
+  userNameFromFacts,
 };

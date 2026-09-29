@@ -2,6 +2,7 @@ const { createCronScheduler } = require("./cron-scheduler");
 const { createHeartbeat } = require("./heartbeat");
 const { notifyTray } = require("../../node-bot/tray-notifier");
 const proactive = require("../../node-bot/proactive");
+const { isUsableFact, userNameFromFacts } = require("../../node-bot/whisper-prompt");
 const { isPluginEnabled } = require("../../node-bot/capabilities/registry");
 
 // Module-level singleton (mirrors other plugins, e.g. document-reader) so
@@ -42,8 +43,12 @@ function getScheduler(deps = {}) {
           at: new Date().toISOString(),
         };
         // #905: a reminder the user asked for goes through the proactive
-        // engine as explicit, so it gets through even mid-game.
-        if (job.jobType === "reminder") proactive.offer({ reason: "reminder", explicit: true, payload });
+        // engine as explicit, so it gets through even mid-game, and the
+        // launcher says it out loud too ("Yuuzu, raid in 10 minutes!").
+        if (job.jobType === "reminder") {
+          payload.speak = `${reminderName(deps.acpMemoryStore)}${assistantText.replace(/[\s.!?]+$/, "")}!`;
+          proactive.offer({ reason: "reminder", explicit: true, payload });
+        }
         // Issue #423: a scheduled job's result should reach the user even
         // if they never reopen that job's chat session -- fire-and-forget,
         // same as the memory-turn write below.
@@ -87,6 +92,16 @@ function getScheduler(deps = {}) {
     }
   }
   return scheduler;
+}
+
+// "Yuuzu, " from memory, the name whisper's prompt uses; "" if none.
+function reminderName(acpMemoryStore) {
+  try {
+    const name = userNameFromFacts((acpMemoryStore?.listFacts?.() || []).filter(isUsableFact));
+    return name ? `${name}, ` : "";
+  } catch {
+    return "";
+  }
 }
 
 function registerCronSchedulerRoutes(app, deps = {}) {
