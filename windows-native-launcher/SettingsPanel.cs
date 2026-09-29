@@ -2,6 +2,7 @@ using System;
 using System.Diagnostics;
 using System.Drawing;
 using System.IO;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 
@@ -23,6 +24,7 @@ internal sealed class SettingsPanel : UserControl
     // caller isn't forced to plumb a session id it may not have).
     private readonly Func<string?>? getCurrentSessionId;
     private readonly ListeningPause? listeningPause; // #922
+    private CancellationTokenSource? enrolmentCancel; // #922: set while teaching Mana my voice
     private readonly ListView pluginsList = new();
     private readonly ListView factsList = new();
     // #688: search boxes over the last-loaded plugins/facts.
@@ -102,7 +104,8 @@ internal sealed class SettingsPanel : UserControl
         tabs.TabPages.Add(BuildMemoryFactsTab());
         tabs.TabPages.Add(BuildSkillsTab());
         tabs.TabPages.Add(BuildApprovalsTab());
-        tabs.TabPages.Add(BuildVoiceTab());
+        var voiceTab = BuildVoiceTab();
+        tabs.TabPages.Add(voiceTab);
         tabs.TabPages.Add(BuildHotkeysTab());
         tabs.TabPages.Add(BuildLogsTab());
         tabs.TabPages.Add(BuildThemeTab());
@@ -117,6 +120,14 @@ internal sealed class SettingsPanel : UserControl
         {
             page.BackColor = DarkTheme.Background;
         }
+        // #922: leaving the Voice tab mid-enrolment cancels it, like closing Settings.
+        tabs.Deselected += (_, e) =>
+        {
+            if (e.TabPage == voiceTab)
+            {
+                enrolmentCancel?.Cancel();
+            }
+        };
         Controls.Add(tabs);
     }
 
@@ -1241,7 +1252,8 @@ internal sealed class SettingsPanel : UserControl
     // my voice: each prompt is recorded for EnrollClipMs from the default
     // mic, embedded, and the average saved as ManaSettingsStore.Voiceprint.
     // Read each time listening starts; MANA_SPEAKER_GATE overrides the mode.
-    // #922: listening pauses while it records, until it ends or Settings closes.
+    // #922: listening pauses while it records, until it ends, I leave the
+    // Voice tab (which cancels it, nothing saved) or Settings closes.
     private static readonly string[] EnrollPrompts =
     {
         "The quick brown fox jumps over the lazy dog.",
@@ -1288,6 +1300,20 @@ internal sealed class SettingsPanel : UserControl
                 status.Text = $"Speaker model not found: {modelPath}";
                 return;
             }
+            using var cancel = new CancellationTokenSource();
+            enrolmentCancel = cancel;
+            bool Stopped()
+            {
+                if (status.IsDisposed)
+                {
+                    return true; // Settings closed mid-way: nothing saved
+                }
+                if (cancel.IsCancellationRequested)
+                {
+                    status.Text = "Stopped when you left the Voice tab -- nothing saved.";
+                }
+                return cancel.IsCancellationRequested;
+            }
             teach.Enabled = forget.Enabled = false;
             try
             {
@@ -1297,10 +1323,10 @@ internal sealed class SettingsPanel : UserControl
                 for (var i = 0; i < EnrollPrompts.Length; i++)
                 {
                     status.Text = $"{i + 1}/{EnrollPrompts.Length} -- read aloud now: \"{EnrollPrompts[i]}\"";
-                    var clip = await RecordAsync(EnrollClipMs);
-                    if (status.IsDisposed)
+                    var clip = await RecordAsync(EnrollClipMs, cancel.Token);
+                    if (Stopped())
                     {
-                        return; // Settings closed mid-way: nothing saved
+                        return;
                     }
                     var (boosted, _) = SpeechFilters.ApplySpeechGain(clip, SpeechFilters.GainTargetPeak, SpeechFilters.GainMaxBoost);
                     if (SpeechFilters.GetSpeechRejectReason(boosted, SpeechFilters.MinSpeechRms, SpeechFilters.MinSpeechPeak, SpeechFilters.MaxClickyZcr) is { } reason)
@@ -1309,6 +1335,10 @@ internal sealed class SettingsPanel : UserControl
                         return;
                     }
                     embeddings.Add(await Task.Run(() => embedder.Embed(SpeakerGate.SpeechSpan(clip))));
+                }
+                if (Stopped())
+                {
+                    return;
                 }
                 var latest = ManaSettingsStore.Load();
                 latest.Voiceprint = SpeakerGate.Voiceprint(embeddings);
@@ -1321,6 +1351,7 @@ internal sealed class SettingsPanel : UserControl
             }
             finally
             {
+                enrolmentCancel = null;
                 listeningPause?.Resume();
                 if (!teach.IsDisposed)
                 {
@@ -1335,12 +1366,16 @@ internal sealed class SettingsPanel : UserControl
         row.Controls.Add(teach);
         row.Controls.Add(forget);
         row.Controls.Add(status);
-        row.Disposed += (_, _) => listeningPause?.Resume();
+        row.Disposed += (_, _) =>
+        {
+            enrolmentCancel?.Cancel();
+            listeningPause?.Resume();
+        };
         return row;
     }
 
     // 16kHz mono from the default mic, like VoiceLoop's segments.
-    private static async Task<short[]> RecordAsync(int ms)
+    private static async Task<short[]> RecordAsync(int ms, CancellationToken cancel)
     {
         var samples = new List<short>();
         using var waveIn = new NAudio.Wave.WaveInEvent { DeviceNumber = -1, WaveFormat = new NAudio.Wave.WaveFormat(SileroVadRunner.SampleRate, 16, 1) };
@@ -1367,7 +1402,14 @@ internal sealed class SettingsPanel : UserControl
             }
         };
         waveIn.StartRecording();
-        await Task.Delay(ms);
+        try
+        {
+            await Task.Delay(ms, cancel);
+        }
+        catch (OperationCanceledException)
+        {
+            // #922: cut short; the caller discards the clip.
+        }
         waveIn.StopRecording();
         await stopped.Task;
         lock (samples)
