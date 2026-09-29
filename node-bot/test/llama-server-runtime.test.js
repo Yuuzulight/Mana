@@ -1744,6 +1744,21 @@ test("#787 review: finishing an edit goal without any edit is not done, whatever
   assert.match(result.content, /^Not done yet: no edit was made yet/);
 });
 
+// Live, the default model twice answered "change < to <=" in prose instead of
+// proposing the edit, and the stall ended the run before anyone told it so.
+test("#787 review: a stall with no edit made still gets told, then gives up after two cycles", async () => {
+  const { result, loopBodies } = await runGoalScript({
+    tools: CODING_TOOLS,
+    turns: [["read_file"], "Change < to <= in range.js."],
+    toolResult: codingResult({ passed: true }),
+  });
+
+  const told = loopBodies.filter((b) => /Still missing: no edit was made yet/.test(lastUserText(b)));
+  assert.ok(told.length >= 2, "both review cycles name the missing edit");
+  assert.equal(loopBodies.length, 10, "1 tool round + 3 stalls of 3 plain replies");
+  assert.match(result.content, /^Not done yet: no edit was made yet/);
+});
+
 test("#787 review: the model review is shown a failing test run after the last edit", async () => {
   const { result, reviewBodies } = await runGoalScript({
     tools: CODING_TOOLS,

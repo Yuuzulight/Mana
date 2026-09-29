@@ -1389,7 +1389,7 @@ function createLlamaServerRuntime(options = {}) {
   // test run, not just that the calls ran.
   async function reviewGoalCompletion({ prompt, goal, toolCalls, toolNames, draft, maxTokens, profile }) {
     const { gaps, tests } = goalEvidence(goal, toolCalls, toolNames);
-    if (gaps.length) return { complete: false, missing: gaps };
+    if (gaps.length) return { complete: false, missing: gaps, evidence: true };
     const calls = toolCalls
       .map(
         (c) =>
@@ -1614,7 +1614,9 @@ function createLlamaServerRuntime(options = {}) {
       notDone = "";
       if (!review || review.complete) return false;
       if (
-        stalled ||
+        // #787: a stall still gets its cycles when the gap is one the run
+        // shows outright (no edit made) -- the generic re-checks never said so.
+        (stalled && !review.evidence) ||
         awaitingApproval ||
         reviewCycles >= 2 ||
         consecutiveToolErrors >= MAX_CONSECUTIVE_TOOL_ERRORS ||
@@ -1625,6 +1627,7 @@ function createLlamaServerRuntime(options = {}) {
       }
       reviewCycles += 1;
       goalFinished = false;
+      stalled = false;
       unansweredRechecks = 0;
       messages.push(
         { role: "assistant", content: message.content || "" },
