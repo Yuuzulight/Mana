@@ -812,6 +812,8 @@ internal sealed class ManaBackendClient
                     Status = entry.TryGetProperty("status", out var statusEl) ? statusEl.GetString() ?? "" : "",
                     Pinned = entry.TryGetProperty("pinned", out var pinnedEl) && pinnedEl.ValueKind == JsonValueKind.True,
                     Trust = entry.TryGetProperty("trust", out var trustEl) ? trustEl.GetString() ?? "" : "",
+                    Trigger = entry.TryGetProperty("trigger", out var triggerEl) ? triggerEl.GetString() ?? "" : "",
+                    Paused = entry.TryGetProperty("paused", out var pausedEl) && pausedEl.ValueKind == JsonValueKind.True,
                 });
             }
         }
@@ -837,6 +839,26 @@ internal sealed class ManaBackendClient
         var payload = JsonSerializer.Serialize(new { pinned });
         using var content = new StringContent(payload, Encoding.UTF8, "application/json");
         using var response = await http.PostAsync($"/admin/memory/facts/{Uri.EscapeDataString(key)}/pin", content);
+        response.EnsureSuccessStatusCode();
+    }
+
+    // Q29 (#698): Settings' Edit -- the fact's text, and a standing intent's
+    // trigger (null leaves it). node-bot records the old value in history.
+    public async Task UpdateMemoryFactAsync(string key, string text, string? trigger = null)
+    {
+        var payload = JsonSerializer.Serialize(trigger is null ? (object)new { text } : new { text, trigger });
+        using var content = new StringContent(payload, Encoding.UTF8, "application/json");
+        using var request = new HttpRequestMessage(HttpMethod.Patch, $"/admin/memory/facts/{Uri.EscapeDataString(key)}") { Content = content };
+        using var response = await http.SendAsync(request);
+        response.EnsureSuccessStatusCode();
+    }
+
+    // #698: a paused standing intent never fires.
+    public async Task SetMemoryFactPausedAsync(string key, bool paused)
+    {
+        var payload = JsonSerializer.Serialize(new { paused });
+        using var content = new StringContent(payload, Encoding.UTF8, "application/json");
+        using var response = await http.PostAsync($"/admin/memory/facts/{Uri.EscapeDataString(key)}/pause", content);
         response.EnsureSuccessStatusCode();
     }
 
@@ -1981,6 +2003,9 @@ internal sealed class ManaMemoryFact
     public bool Pinned { get; init; }
     // #673: "trusted" / "tentative" / "untrusted", derived server-side.
     public string Trust { get; init; } = "";
+    // #698: set on a standing intent ("when Trigger comes up, mention Text").
+    public string Trigger { get; init; } = "";
+    public bool Paused { get; init; }
 }
 
 // #529: GET /skills (index only -- see GetSkillsAsync's own comment).
