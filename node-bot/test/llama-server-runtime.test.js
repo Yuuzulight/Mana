@@ -1701,6 +1701,72 @@ test("#676 goal mode: stops after two unanswered re-checks and says what is miss
   assert.equal(result.content, "Not done yet: change B\n\nDone!");
 });
 
+// #898: runGoalScript outside goal mode, with memory__remember offered.
+const runMemoryScript = ({ turns, toolResult = JSON.stringify({ ok: true, decision: "insert" }), options = {} }) =>
+  runGoalScript({ turns, toolResult, tools: ["memory__remember"], options: { goal: null, ...options } });
+
+test("#898 a claimed memory save with no memory__remember call gets re-asked once", async () => {
+  for (const claim of [
+    "I already saved that detail into my memory just now.",
+    "I'll remember that, Onesan!",
+    "覚えておくね！",
+    "好的，我记住了。",
+  ]) {
+    const { result, loopBodies, executed } = await runMemoryScript({
+      turns: [claim, ["memory__remember"], "Saved it!"],
+    });
+
+    assert.match(lastUserText(loopBodies[1]), /no memory__remember call went through/, claim);
+    assert.deepEqual(executed, ["memory__remember"], claim);
+    assert.equal(result.content, "Saved it!", claim);
+  }
+});
+
+test("#898 with no rounds left, the claim is corrected without tools", async () => {
+  const { result, loopBodies } = await runMemoryScript({ turns: ["I'll remember that."], options: { maxRounds: 1 } });
+
+  assert.equal(loopBodies.length, 2);
+  assert.equal(loopBodies[1].tool_choice, "none");
+  assert.equal(result.content, "final answer");
+});
+
+test("#898 a claim backed by a real memory__remember call is left alone", async () => {
+  const { result, loopBodies } = await runMemoryScript({
+    turns: [["memory__remember"], "I saved that to my memory."],
+  });
+
+  assert.equal(loopBodies.length, 2);
+  assert.equal(result.content, "I saved that to my memory.");
+});
+
+test("#898 a memory write waiting on approval must be said as waiting, not saved", async () => {
+  const { result, loopBodies } = await runMemoryScript({
+    turns: [["memory__remember"], "I'll remember that!", "It's waiting for your approval."],
+    toolResult: JSON.stringify({ status: "pending", requestId: "r1" }),
+  });
+
+  assert.match(lastUserText(loopBodies[2]), /waiting for the user's approval/);
+  assert.equal(result.content, "It's waiting for your approval.");
+});
+
+test("#898 recall and honest replies aren't claims", async () => {
+  for (const reply of [
+    "Remember when we raided together?",
+    "Do you remember that song?",
+    "I remember that you like Hololive.",
+    "I haven't saved that to my memory yet. Want me to?",
+  ]) {
+    const { result, loopBodies } = await runMemoryScript({ turns: [reply] });
+    assert.equal(loopBodies.length, 1, reply);
+    assert.equal(result.content, reply);
+  }
+  const pending = await runMemoryScript({
+    turns: [["memory__remember"], "It'll be saved to my memory once you approve it."],
+    toolResult: JSON.stringify({ status: "pending", requestId: "r1" }),
+  });
+  assert.equal(pending.loopBodies.length, 2);
+});
+
 test("#676 goal mode: stops before the prompt outgrows 80% of the context", async () => {
   // No /props in the fake, so the context is the configured 4096 default.
   const { result, loopBodies } = await runGoalScript({ turns: [["read_file"]], promptN: 3300 });
