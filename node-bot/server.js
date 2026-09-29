@@ -2300,10 +2300,17 @@ function registerRoutes(app, upload, deps = {}) {
   app.get("/doctor", async (req, res) => {
     try {
       const doctor = deps.doctor || runDoctorChecksAsync;
+      let memoryGraphHistory = null;
+      try {
+        memoryGraphHistory = (deps.acpMemoryStore || acpMemoryStore).memoryGraph?.getHistorySize?.() || null;
+      } catch (e) {
+        console.warn("Memory graph size check failed:", e?.message || e);
+      }
       const result = await doctor({
         fishTtsWarmup: ttsRuntime.getFishWarmupStatus(),
         sessionSearchVectorEnabled: sessionSearchIndex.vectorEnabled(),
         promptComposition: getMostRecentComposition(),
+        memoryGraphHistory,
       });
       return res.status(result.ok ? 200 : 503).json(result);
     } catch (error) {
