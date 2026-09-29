@@ -338,6 +338,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
                 overlay.SetRowStatus("fish-speech", fishReady ? "Ready" : "Not ready yet", fishReady ? RowState.Ready : RowState.Warn);
             }
             await RefreshTrayStatusAsync();
+            await sessionListForm.ReopenLastSessionAsync(); // #687
             voiceLoop.Start();
         }
         catch (Exception ex)

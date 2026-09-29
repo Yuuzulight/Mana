@@ -432,7 +432,30 @@ internal sealed class VoiceLoop : IDisposable
     // a user action on a separate window, not an interruption of Mana
     // herself; whatever she's currently saying keeps playing against
     // whichever session was active when that turn started.
-    public void SetSessionId(string? sessionId) => session.Set(sessionId);
+    public void SetSessionId(string? sessionId)
+    {
+        session.Set(sessionId);
+        SaveLastSession();
+    }
+
+    // #687: see AutoSession.Restore.
+    public void RestoreSession(string sessionId, bool auto, DateTime lastTurnAtUtc) => session.Restore(sessionId, auto, lastTurnAtUtc);
+
+    // #687: remembered so the next launch reopens this session.
+    private void SaveLastSession()
+    {
+        try
+        {
+            var settings = ManaSettingsStore.Load();
+            settings.LastSessionId = session.CurrentId;
+            settings.LastSessionAuto = session.IsAuto;
+            settings.Save();
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            Console.WriteLine($"VoiceLoop: couldn't remember the current session. {ex.Message}");
+        }
+    }
 
     public void SetPresetId(string? presetId) => currentPresetId = presetId;
 
@@ -452,7 +475,16 @@ internal sealed class VoiceLoop : IDisposable
     // spoken, vision/clip hotkeys) via SpeakReplyCoreAsync, and #577's
     // ResearchForm, matching windows-launcher's own ensureSessionId() at
     // its deep-research entry point.
-    public string EnsureSessionId() => session.EnsureForTurn();
+    public string EnsureSessionId()
+    {
+        var before = session.CurrentId;
+        var id = session.EnsureForTurn();
+        if (id != before)
+        {
+            SaveLastSession();
+        }
+        return id;
+    }
 
     // #668: no turn in flight and she isn't speaking -- when the message
     // box's queue may send its next message without cutting her off.
