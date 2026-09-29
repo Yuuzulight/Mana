@@ -49,9 +49,11 @@ toast) when a check finds something you need to know or act on:
 - Default interval 30 minutes; `every 15m:`, `every 2h:`, `daily 09:00:`
   override it (5 minutes at the shortest).
 - A new or edited check (different permissions or text) does a dry run
-  first: read calls, plus read-only requests (fetch/get/list/search-style
-  tools, no shell commands or page clicks) to the sites its own line names
-  when it has `network`. It then waits in the approval queue with what it
+  first: read calls, plus Mana's own built-in page fetch
+  (`browser_automation__navigate`) from the sites its own line names when it
+  has `network`. MCP/add-on tools, shell commands and page clicks never run
+  in a dry run, whatever their names; they only run once the check is
+  approved. It then waits in the approval queue with what it
   would have said. Approving it takes it live.
 - Nothing runs while a watched game is running, or while this plugin is
   disabled.
