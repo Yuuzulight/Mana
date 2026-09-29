@@ -9,6 +9,17 @@ namespace ManaNativeLauncher.Tests;
 [Collection("DarkTheme palette")] // reads the shared static palette
 public class CaptionOverlayFormTests
 {
+    // #701: with chat bubbles on, the caption bar never shows.
+    [Fact]
+    public void Suppressed_KeepsTheBarHidden()
+    {
+        using var form = new CaptionOverlayForm { Suppressed = true };
+        form.ShowSentence("Hello there.", TimeSpan.FromSeconds(1));
+        form.ShowSpokenText("One. Two.", TimeSpan.FromSeconds(2));
+        form.SpeechEnded();
+        Assert.False(form.Visible);
+    }
+
     [Fact]
     public void SetCaption_GrowsTheBarToFitEveryWrappedLine()
     {

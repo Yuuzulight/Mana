@@ -17,7 +17,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
     private readonly ManaBackendClient backendClient;
     private readonly System.Windows.Forms.Timer statusTimer;
     private readonly System.Windows.Forms.Timer idleReportTimer;
-    private readonly SileroVadRunner sileroVad;
+    private readonly SileroVadRunner? sileroVad; // #858: null = RMS fallback
     private readonly WakeWordClassifier? wakeWordClassifier;
     private readonly AudioPlayer audioPlayer;
     private readonly VoiceLoop voiceLoop;
@@ -118,13 +118,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
         // #646: same ambient kind, for the chat tool loop, with a Stop button.
         agentActivityPanel = new AgentActivityPanel(backendClient);
 
-        var vadModelPath = Path.Combine(rootDir, "windows-native-launcher", "assets", "vad", "silero_vad.onnx");
-        // #665: MANA_VAD_THRESHOLD (Electron's name) enters speech,
-        // MANA_VAD_EXIT_THRESHOLD leaves it.
-        sileroVad = new SileroVadRunner(
-            vadModelPath,
-            ReadFloatEnv("MANA_VAD_THRESHOLD", SileroVadRunner.DefaultThreshold),
-            ReadFloatEnv("MANA_VAD_EXIT_THRESHOLD", SileroVadRunner.DefaultExitThreshold));
+        sileroVad = TryLoadSileroVad(rootDir);
         wakeWordClassifier = TryLoadWakeWordClassifier(
             rootDir,
             WakeWordClassifier.ResolveThreshold(Environment.GetEnvironmentVariable("MANA_WAKE_PREFILTER"), settings.WakePrefilter));
@@ -154,6 +148,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
         // Q8: under Mana while she's showing (Visible/Bounds are plain field reads).
         captionOverlay = new CaptionOverlayForm(() => avatarOverlay.Visible ? avatarOverlay.Bounds : null);
         chatBubbles = new ChatBubblesForm(() => avatarOverlay.Visible ? avatarOverlay.Bounds : null, () => ChatBubblesForm.InView(sessionListForm));
+        captionOverlay.Suppressed = chatBubbles.BubblesOn; // #701: bubbles replace the caption bar
         chatBubbles.BubbleClicked += text =>
         {
             ShowSessionList();
@@ -182,6 +177,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
                 () => voiceLoop.IsIdle,
                 () => gamingModeActive,
                 () => SystemIdle.GetIdleMilliseconds() ?? 0,
+                screenContextReader.ReadForGlanceAsync,
                 ScreenCapture.CaptureAsJpegDataUrl,
                 chatLog.AppendManaMessage,
                 PositiveIntEnv("MANA_SCREEN_SENSING_PRESENCE_IDLE_MS", 90000));
@@ -381,6 +377,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
         bubblesItem.Click += (_, _) =>
         {
             chatBubbles.BubblesOn = bubblesItem.Checked;
+            captionOverlay.Suppressed = bubblesItem.Checked; // #701
             var latest = ManaSettingsStore.Load();
             latest.ChatBubbles = bubblesItem.Checked;
             latest.Save();
@@ -565,8 +562,17 @@ internal sealed class ManaApplicationContext : ApplicationContext
         {
             // Edit proposals need admin access / the editors integration.
         }
+        IReadOnlyList<ManaPendingWrite> writes = [];
+        try
+        {
+            writes = await backendClient.GetPendingWritesAsync();
+        }
+        catch
+        {
+            // Admin-only, like edit proposals.
+        }
 
-        var items = WaitingForYou.Items(approvals, proposals);
+        var items = WaitingForYou.Items(approvals, proposals, writes);
         avatarOverlay.SetActivity(AvatarState.Waiting, items.Count > 0);
         normalTrayIcon ??= trayIcon.Icon;
         trayIcon.Icon = items.Count > 0 ? waitingTrayIcon ??= WaitingForYou.Badged(normalTrayIcon!) : normalTrayIcon;
@@ -627,7 +633,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
         {
             var status = await backendClient.GetPerformanceStatusAsync();
             MessageBox.Show(
-                $"Backend: running\nGame detected: {status.GamingAppRunning}\nChat model: {status.ChatModel ?? "not loaded"}\nMemory: {status.TotalMemoryMb} MB\nTTS: {status.TtsProvider}{FallbackNoteFor(status.TtsProvider)}{AvatarStatusLine()}",
+                $"Backend: running\nGame detected: {status.GamingAppRunning}\nChat model: {status.ChatModel ?? "not loaded"}\nMemory: {status.TotalMemoryMb} MB\nTTS: {status.TtsProvider}{FallbackNoteFor(status.TtsProvider)}\nVoice detector: {voiceLoop.VadInUse}{AvatarStatusLine()}",
                 "Mana Status",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Information);
@@ -635,7 +641,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
         catch (Exception error)
         {
             MessageBox.Show(
-                $"Mana backend is not ready yet.\n\n{error.Message}{AvatarStatusLine()}",
+                $"Mana backend is not ready yet.\n\n{error.Message}\nVoice detector: {voiceLoop.VadInUse}{AvatarStatusLine()}",
                 "Mana Status",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Warning);
@@ -808,7 +814,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
         chatBubbles.Close();
         voiceLoop.Dispose();
         audioPlayer.Dispose();
-        sileroVad.Dispose();
+        sileroVad?.Dispose();
         wakeWordClassifier?.Dispose();
         trayIcon.Visible = false;
         trayIcon.Dispose();
@@ -826,13 +832,41 @@ internal sealed class ManaApplicationContext : ApplicationContext
         base.ExitThreadCore();
     }
 
+    // #858: like Electron, MANA_DISABLE_VAD=1 or a missing/broken Silero
+    // model means RMS speech detection (VoiceLoop.IsSpeechFrame) instead of
+    // no voice loop at all.
+    private static SileroVadRunner? TryLoadSileroVad(string rootDir)
+    {
+        if (Environment.GetEnvironmentVariable("MANA_DISABLE_VAD") == "1")
+        {
+            return null;
+        }
+        var modelPath = Path.Combine(rootDir, "windows-native-launcher", "assets", "vad", "silero_vad.onnx");
+        try
+        {
+            // #665: MANA_VAD_THRESHOLD (Electron's name) enters speech,
+            // MANA_VAD_EXIT_THRESHOLD leaves it. #858: VoiceLoop re-resolves
+            // the enter threshold (env, then Settings > Voice) each time
+            // listening starts.
+            return new SileroVadRunner(
+                modelPath,
+                ReadFloatEnv("MANA_VAD_THRESHOLD", SileroVadRunner.DefaultThreshold),
+                ReadFloatEnv("MANA_VAD_EXIT_THRESHOLD", SileroVadRunner.DefaultExitThreshold));
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException)
+        {
+            Console.WriteLine($"SileroVadRunner: couldn't load {modelPath}, using RMS speech detection. {ex.Message}");
+            return null;
+        }
+    }
+
     // #342: the acoustic wake-word pre-filter is a soft optimization, not
     // a required service -- if any of its three model files are missing
     // (e.g. the build-time fetch of melspectrogram.onnx/embedding_model.onnx
     // failed, or hasn't run yet on a fresh checkout) or fail to load,
     // VoiceLoop just skips the acoustic gate entirely and falls back to
     // today's existing behavior (every segment reaches Whisper, text-match
-    // decides). Unlike sileroVad above, this must never take the whole app
+    // decides). Like sileroVad above (#858), this must never take the whole app
     // down over a missing model file.
     private static WakeWordClassifier? TryLoadWakeWordClassifier(string rootDir, float? threshold)
     {

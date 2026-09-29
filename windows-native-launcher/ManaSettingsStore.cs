@@ -50,6 +50,12 @@ internal sealed class ManaSettingsStore
     // default (on). Settings > Voice; MANA_VOICE_AEC overrides it.
     public bool? EchoCancellation { get; set; }
 
+    // #858: Settings > Voice; null = default. MANA_SILENCE_BUFFER_MS and
+    // MANA_VAD_THRESHOLD override them (RecordingSegmenter/SileroVadRunner
+    // .Resolve*). Read each time listening starts.
+    public long? SilenceBufferMs { get; set; }
+    public float? VadThreshold { get; set; }
+
     // #670: local-only mode for the node-bot this launcher starts (passed
     // as MANA_LAUNCHER_LOCAL_ONLY=1). Settings > Connection; applies on the
     // next start. MANA_LOCAL_ONLY=1 in node-bot/.env turns it on regardless.

@@ -45,7 +45,14 @@ internal enum ListenMode
 // serves both normal segment recording and barge-in detection.
 internal sealed class VoiceLoop : IDisposable
 {
-    private readonly SileroVadRunner vad;
+    // #858: null when MANA_DISABLE_VAD=1 or the model couldn't load;
+    // vadFailed once inference threw. Either way frames are judged by RMS
+    // instead (IsSpeechFrame), like Electron's fallback.
+    private readonly SileroVadRunner? vad;
+    private volatile bool vadFailed;
+    // #858: the end-of-turn silence (MANA_SILENCE_BUFFER_MS / Settings >
+    // Voice), read each time listening starts.
+    private long baseSilenceBufferMs = RecordingSegmenter.DefaultSilenceBufferMs;
     private readonly WakeWordClassifier? wakeWordClassifier;
     private readonly CaptionOverlayForm? captions;
     private readonly ChatBubblesForm? bubbles; // #701
@@ -230,7 +237,7 @@ internal sealed class VoiceLoop : IDisposable
     private readonly IChatLog? chatLog;
 
     public VoiceLoop(
-        SileroVadRunner vad,
+        SileroVadRunner? vad,
         ManaBackendClient backendClient,
         AudioPlayer audioPlayer,
         AvatarOverlayForm avatarOverlay,
@@ -335,6 +342,16 @@ internal sealed class VoiceLoop : IDisposable
         bargeInMode = BargeInPolicy.Resolve(Environment.GetEnvironmentVariable("MANA_BARGE_IN_MODE"), settings.BargeInMode);
         bargeInMinWords = BargeInPolicy.MinWords(Environment.GetEnvironmentVariable("MANA_BARGE_IN_MIN_WORDS"));
 
+        // #858: voice tunables, env var over Settings > Voice.
+        var voiceSettings = ManaSettingsStore.Load();
+        baseSilenceBufferMs = RecordingSegmenter.ResolveSilenceBufferMs(Environment.GetEnvironmentVariable("MANA_SILENCE_BUFFER_MS"), voiceSettings.SilenceBufferMs);
+        if (vad is not null)
+        {
+            vad.Threshold = SileroVadRunner.ResolveThreshold(Environment.GetEnvironmentVariable("MANA_VAD_THRESHOLD"), voiceSettings.VadThreshold);
+        }
+        VoiceDebugLog.AppendNote(string.Create(System.Globalization.CultureInfo.InvariantCulture,
+            $"vad: {VadInUse}{(vad is not null && !vadFailed ? $" threshold={vad.Threshold:F2}/exit={vad.ExitThreshold:F2}" : $" minRms={SpeechFilters.MinSpeechRms:F3}")} silence={baseSilenceBufferMs}ms"));
+
         // #619: echo-cancelled capture first (EchoCancellation), falling back
         // to the plain capture this always used if Windows doesn't apply an
         // AEC or any step fails. speech-debug.log records which one runs.
@@ -436,10 +453,10 @@ internal sealed class VoiceLoop : IDisposable
         }
     }
 
-    // #860: an exception that got out of the voice loop, for voice-crash.log.
-    // The VAD is always Silero today (#858 adds the RMS fallback).
+    // #860: an exception that got out of the voice loop, for voice-crash.log,
+    // with the speech detector in use (#858).
     private void LogCrash(Exception ex, string where) =>
-        VoiceCrashLog.Append(ex, where, "silero-vad", CaptureDeviceName(), awake, IsListening);
+        VoiceCrashLog.Append(ex, where, VadInUse, CaptureDeviceName(), awake, IsListening);
 
     private static string? CaptureDeviceName()
     {
@@ -633,6 +650,41 @@ internal sealed class VoiceLoop : IDisposable
     }
 
     // Caller must already hold stateLock.
+    // #858: which speech detector is judging frames -- for the status
+    // window and speech-debug.log.
+    public string VadInUse => vad is null ? "rms (Silero off or unavailable)" : vadFailed ? "rms (Silero failed)" : "silero";
+
+    // #858: Silero's speech probability, else Electron's RMS fallback
+    // (isSpeechNow: frame RMS >= MANA_MIN_SPEECH_RMS). An inference error
+    // switches to RMS for the rest of the session, as in Electron.
+    private bool IsSpeechFrame(float[] frame)
+    {
+        if (vad is not null && !vadFailed)
+        {
+            try
+            {
+                return vad.IsSpeech(vad.ProcessFrame(frame));
+            }
+            catch (Exception ex) when (ex is not OutOfMemoryException)
+            {
+                vadFailed = true;
+                Console.WriteLine($"VoiceLoop: Silero VAD failed, using RMS for this session. {ex.Message}");
+                VoiceDebugLog.AppendNote($"vad: silero failed, using rms ({ex.GetType().Name}: {ex.Message})");
+            }
+        }
+        return IsSpeechByRms(frame, SpeechFilters.MinSpeechRms);
+    }
+
+    internal static bool IsSpeechByRms(float[] frame, double minRms)
+    {
+        double sum = 0;
+        foreach (var sample in frame)
+        {
+            sum += sample * sample;
+        }
+        return frame.Length > 0 && Math.Sqrt(sum / frame.Length) >= minRms;
+    }
+
     private void ProcessBufferedFrames()
     {
         if (mode == ListenMode.Processing && !mergeWindow.IsOpen)
@@ -651,8 +703,7 @@ internal sealed class VoiceLoop : IDisposable
                 continue; // #859: gaming-mode pause after a segment that led nowhere
             }
 
-            var probability = vad.ProcessFrame(frame);
-            var isSpeech = vad.IsSpeech(probability);
+            var isSpeech = IsSpeechFrame(frame);
 
             if (mode == ListenMode.Speaking)
             {
@@ -786,7 +837,7 @@ internal sealed class VoiceLoop : IDisposable
         segmentElapsedMs = 0;
         segmentSpeechMs = 0;
         msSinceLastSpeech = 0;
-        vad.Reset();
+        vad?.Reset();
 
         // #619: a new segment gets new partials (segmentId drops any still
         // in flight for this one) and clears the "Hearing:" line.
@@ -905,7 +956,7 @@ internal sealed class VoiceLoop : IDisposable
             }
             lastPartial = text;
             lastPartialSpeechMs = speechMs;
-            (partialSilenceBufferMs, partialEotReason) = RecordingSegmenter.SilenceBufferMsForTranscript(text);
+            (partialSilenceBufferMs, partialEotReason) = RecordingSegmenter.SilenceBufferMsForTranscript(text, baseSilenceBufferMs);
             chatLog?.ShowHearing(text);
         }
     }
@@ -927,7 +978,7 @@ internal sealed class VoiceLoop : IDisposable
         // it sounds complete, longer when it trails off); none, or a stale
         // one, keeps the old fixed 2.2s.
         var partialFresh = lastPartial is not null && lastPartialSpeechMs == segmentSpeechMs;
-        var silenceBufferMs = partialFresh ? partialSilenceBufferMs : RecordingSegmenter.DefaultSilenceBufferMs;
+        var silenceBufferMs = partialFresh ? partialSilenceBufferMs : baseSilenceBufferMs;
 
         var stopReason = RecordingSegmenter.ShouldStopRecording(
             hasHeardSpeechInSegment,
@@ -1441,7 +1492,7 @@ internal sealed class VoiceLoop : IDisposable
                 {
                     mode = ListenMode.Speaking;
                     bargeInHeldMs = 0;
-                    vad.Reset();
+                    vad?.Reset();
                     return false;
                 }
             }
@@ -1947,7 +1998,7 @@ internal sealed class VoiceLoop : IDisposable
                 mode = ListenMode.Speaking;
                 bargeInHeldMs = 0;
                 hearingOverSpeech = false;
-                vad.Reset();
+                vad?.Reset();
             }
             else if (!talking && mode == ListenMode.Speaking)
             {

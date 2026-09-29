@@ -85,6 +85,16 @@ internal sealed class ScreenContextReader
             return lastScreenText;
         }
 
+        return await ReadForegroundAsync(atCursor, normalized, now);
+    }
+
+    // #690: the ambient glance's read -- the foreground window as it is now
+    // (tree first, OCR fallback), no command or interval gate. "" when
+    // nothing usable came back.
+    public Task<string> ReadForGlanceAsync() => ReadForegroundAsync(atCursor: false, normalized: "", Environment.TickCount64);
+
+    private async Task<string> ReadForegroundAsync(bool atCursor, string normalized, long now)
+    {
         try
         {
             var window = GetForegroundWindow();

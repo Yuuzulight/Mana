@@ -375,13 +375,16 @@ internal sealed class ManaBackendClient
         response.EnsureSuccessStatusCode();
     }
 
-    // #690: POST /screen-sensing/glance (plugins/screen-sensing) -- the
-    // same {image, gamingModeActive} body windows-launcher sends. Returns
-    // the summary when the backend's attention gate says it's worth
-    // surfacing, else null.
-    public async Task<string?> ScreenSensingGlanceAsync(string image, bool gamingModeActive)
+    // #690: POST /screen-sensing/glance (plugins/screen-sensing) -- either
+    // the foreground window's text ({text, gamingModeActive}, preferred) or
+    // a screenshot ({image, gamingModeActive}, the body windows-launcher
+    // sends). Returns the summary when the backend's attention gate says
+    // it's worth surfacing, else null.
+    public async Task<string?> ScreenSensingGlanceAsync(string? text, string? image, bool gamingModeActive)
     {
-        var payload = JsonSerializer.Serialize(new { image, gamingModeActive });
+        var payload = text is not null
+            ? JsonSerializer.Serialize(new { text, gamingModeActive })
+            : JsonSerializer.Serialize(new { image, gamingModeActive });
         using var content = new StringContent(payload, Encoding.UTF8, "application/json");
         using var response = await http.PostAsync("/screen-sensing/glance", content);
         response.EnsureSuccessStatusCode();
@@ -1508,6 +1511,63 @@ internal sealed class ManaBackendClient
         return pending;
     }
 
+    // #838: the ACP agent's (Pipeline B) file-based approvals -- file_write,
+    // snapshot_restore and hook-ask requests -- from GET /admin/pending-writes.
+    // Only undecided ones: a decided marker waits for the agent to read it.
+    public async Task<IReadOnlyList<ManaPendingWrite>> GetPendingWritesAsync()
+    {
+        using var response = await http.GetAsync("/admin/pending-writes");
+        response.EnsureSuccessStatusCode();
+        await using var stream = await response.Content.ReadAsStreamAsync();
+        using var document = await JsonDocument.ParseAsync(stream);
+        var pending = new List<ManaPendingWrite>();
+        if (document.RootElement.TryGetProperty("pending", out var pendingElement))
+        {
+            foreach (var entry in pendingElement.EnumerateArray())
+            {
+                var decided = (entry.TryGetProperty("approved", out var a) && a.ValueKind == JsonValueKind.True)
+                    || (entry.TryGetProperty("rejected", out var r) && r.ValueKind == JsonValueKind.True);
+                if (decided || !entry.TryGetProperty("payload", out var payload) || payload.ValueKind != JsonValueKind.Object)
+                {
+                    continue;
+                }
+                var (kind, summary) = DescribePendingWrite(payload);
+                pending.Add(new ManaPendingWrite
+                {
+                    Id = entry.TryGetProperty("id", out var idEl) ? idEl.GetString() ?? "" : "",
+                    Kind = kind,
+                    Summary = summary,
+                });
+            }
+        }
+        return pending;
+    }
+
+    private static (string Kind, string Summary) DescribePendingWrite(JsonElement payload)
+    {
+        string? Text(string name) => payload.TryGetProperty(name, out var el) && el.ValueKind == JsonValueKind.String ? el.GetString() : null;
+        if (Text("kind") == "hook-ask")
+        {
+            return ("hook ask", $"{Text("reason") ?? "A hook rule asks"} ({Text("tool")})");
+        }
+        if (Text("snapshotId") is { } snapshotId)
+        {
+            return ("agent restore", Text("summary") ?? $"restore snapshot {snapshotId}");
+        }
+        var write = $"{Text("mode") ?? "write"} {Text("path")}".Trim();
+        // #838 step 4: a write the adversarial review refuted says how it breaks.
+        var failingCase = payload.TryGetProperty("adversarialReview", out var review) && review.ValueKind == JsonValueKind.Object
+            && review.TryGetProperty("failingCase", out var failEl) && failEl.ValueKind == JsonValueKind.String ? failEl.GetString() : null;
+        return ("agent write", failingCase is null ? write : $"{write} -- Mana's review found a way this breaks: {failingCase}");
+    }
+
+    public async Task DecidePendingWriteAsync(string id, bool approve)
+    {
+        using var content = new StringContent("{}", Encoding.UTF8, "application/json");
+        using var response = await http.PostAsync($"/admin/pending-writes/{Uri.EscapeDataString(id)}/{(approve ? "approve" : "reject")}", content);
+        response.EnsureSuccessStatusCode();
+    }
+
     // #669: "smart" | "ask" | "off" -- which tool calls ask first.
     public async Task<string?> GetToolApprovalModeAsync()
     {
@@ -2196,6 +2256,14 @@ internal sealed class ManaPendingApproval
 {
     public string Id { get; init; } = "";
     public string ActionType { get; init; } = "";
+    public string Summary { get; init; } = "";
+}
+
+// #838: one undecided GET /admin/pending-writes entry.
+internal sealed class ManaPendingWrite
+{
+    public string Id { get; init; } = "";
+    public string Kind { get; init; } = "";
     public string Summary { get; init; } = "";
 }
 

@@ -29,9 +29,10 @@ internal sealed class ManaProcessManager : IDisposable
     // #691: opt-in services, read once at construction (node-bot/.env is
     // already loaded by then). They get a startup row only when turned on,
     // so an unused one never shows as "Unavailable".
-    // The Python retriever is opt-in: only MANA_START_RETRIEVER=1, here at
-    // launch. It used to json.load ~11 GB of metadata; since #809 it settles
-    // around 0.5 GB, and bringing back on-demand start is still open there.
+    // The Python retriever (~0.5 GB since #809) is started on demand by
+    // node-bot when a coding turn needs it and stopped when idle
+    // (ai/retriever-runtime.js). MANA_START_RETRIEVER=1 force-starts it here
+    // at launch instead.
     public bool UsesRetriever { get; } = Environment.GetEnvironmentVariable("MANA_START_RETRIEVER") == "1";
     // User decision: only the selected TTS provider is started. Fish is the
     // default (the same "fish" this launcher passes node-bot when unset);
@@ -418,7 +419,8 @@ internal sealed class ManaProcessManager : IDisposable
     }
 
     // #691: tools/retriever_service.py (main.js startRetrieverService), only
-    // with MANA_START_RETRIEVER=1 (see UsesRetriever).
+    // with MANA_START_RETRIEVER=1 (see UsesRetriever). Optional: node-bot
+    // starts it on demand otherwise.
     private Process? StartRetriever()
     {
         var retrieverScript = Path.Combine(RootDirectory, "tools", "retriever_service.py");

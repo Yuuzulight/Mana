@@ -18,6 +18,8 @@ public class ScreenSensingGlanceTests
         public bool Gaming;
         public long IdleMs;
         public int Captures;
+        public int TextReads;
+        public string ScreenText = ""; // "" = nothing readable, so the image goes
         public string? Path;
         public string? Body;
         public HttpStatusCode Status = HttpStatusCode.OK;
@@ -36,9 +38,34 @@ public class ScreenSensingGlanceTests
             () => VoiceIdle,
             () => Gaming,
             () => IdleMs,
+            () => { TextReads++; return Task.FromResult(ScreenText); },
             () => { Captures++; return "data:image/jpeg;base64,AAAA"; },
             Surfaced.Add,
             presenceIdleMs: 90000);
+    }
+
+    [Fact]
+    public async Task SendsTheWindowsTextFirstWithoutCapturingTheScreen()
+    {
+        var h = new Harness { ScreenText = "  Visual Studio Code - VoiceLoop.cs - fixing a failing test  " };
+        await h.Build().RunOnceAsync();
+
+        Assert.Equal(0, h.Captures);
+        Assert.Contains("\"text\":\"Visual Studio Code - VoiceLoop.cs - fixing a failing test\"", h.Body);
+        Assert.DoesNotContain("\"image\"", h.Body);
+        Assert.Equal(["Looks like you're debugging a test."], h.Surfaced);
+    }
+
+    [Fact]
+    public async Task FallsBackToTheScreenshotWhenTheTextIsTooThin()
+    {
+        var h = new Harness { ScreenText = "OK" };
+        await h.Build().RunOnceAsync();
+
+        Assert.Equal(1, h.TextReads);
+        Assert.Equal(1, h.Captures);
+        Assert.Contains("\"image\":", h.Body);
+        Assert.DoesNotContain("\"text\"", h.Body);
     }
 
     [Fact]
@@ -70,6 +97,7 @@ public class ScreenSensingGlanceTests
     {
         var h = new Harness { VoiceIdle = voiceIdle, Gaming = gaming, IdleMs = idleMs };
         await h.Build().RunOnceAsync();
+        Assert.Equal(0, h.TextReads);
         Assert.Equal(0, h.Captures);
         Assert.Null(h.Path);
     }
