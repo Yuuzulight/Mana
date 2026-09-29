@@ -56,7 +56,7 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
     private bool pressed;
     private bool dragSelecting;
     private Bitmap? glow;
-    private (Size Size, Point Offset, Size Window) glowKey;
+    private (Size Size, Point Offset, Size Window, int Theme) glowKey;
 
     public ChatView()
     {
@@ -701,7 +701,7 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
     {
         if (DarkTheme.IsGlass && FindForm() is { } form)
         {
-            (Size Size, Point Offset, Size Window) key = (ClientSize, form.PointToClient(PointToScreen(Point.Empty)), form.ClientSize);
+            (Size Size, Point Offset, Size Window, int Theme) key = (ClientSize, form.PointToClient(PointToScreen(Point.Empty)), form.ClientSize, DarkTheme.Version);
             if (glow is null || key != glowKey)
             {
                 glow?.Dispose();

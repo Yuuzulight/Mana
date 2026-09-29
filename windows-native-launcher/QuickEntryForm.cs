@@ -28,6 +28,7 @@ internal sealed class QuickEntryForm : Form
         // own one-off dark color -- was already dark, just a different
         // dark than every other window in the app.
         BackColor = DarkTheme.Panel;
+        DarkTheme.Track(this); // #688: recoloured on a live theme switch
         Width = 480;
         Height = 40;
         Deactivate += (_, _) => HideAndClear();

@@ -1379,9 +1379,8 @@ internal sealed class SettingsPanel : UserControl
     }
 
     // #576: reads/writes ManaThemeSettings' own file directly, same
-    // reasoning as #565's Connection tab -- DarkTheme.ApplyPreset only
-    // ever runs once, at startup (Program.cs), so nothing here can take
-    // effect live regardless of how it's wired.
+    // reasoning as #565's Connection tab. #688: Save also applies it live
+    // (DarkTheme.ApplyPresetLive).
     private TabPage BuildThemeTab()
     {
         var settings = ManaThemeSettings.Load();
@@ -1440,8 +1439,10 @@ internal sealed class SettingsPanel : UserControl
             settings.Preset = themePresetCombo.SelectedItem is ThemePresetInfo preset ? preset.Id : "mana";
             settings.AccentHex = accentText.Length == 0 ? null : accentText;
             settings.Save();
+            // #688: every open window restyles now, no restart.
+            DarkTheme.ApplyPresetLive(settings.Preset, settings.AccentHex);
             statusLabel.ForeColor = DarkTheme.Muted;
-            statusLabel.Text = "Saved -- restart Mana for this to take effect.";
+            statusLabel.Text = "Saved and applied.";
         };
 
         var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, AutoSize = true, Padding = new Padding(12), BackColor = DarkTheme.Background };
