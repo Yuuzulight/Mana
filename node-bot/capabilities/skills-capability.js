@@ -4,7 +4,7 @@ const {
   sendValidationError,
 } = require("../request-validation");
 const { significantWords: sharedSignificantWords } = require("../utils/word-overlap");
-const { readSkillFolder } = require("../skills-store");
+const { readSkillFolder, readSkillZip } = require("../skills-store");
 
 const KEY = "skills";
 const DEFAULT_STALE_DAYS = 30;
@@ -69,7 +69,7 @@ function registerSkillsRoutes(app, context = {}) {
     }
   });
 
-  // Issue #664: import a SKILL.md folder (OpenClaw/AgentSkills). Always a
+  // Issue #664: import a SKILL.md folder or a zip of one (OpenClaw/AgentSkills). Always a
   // pending proposal -- forceReview, so no always-allow, session grant or
   // Guardian verdict can wave a third-party skill through -- whose summary
   // names its files, scripts and requirements. The files are read now and
@@ -100,7 +100,9 @@ function registerSkillsRoutes(app, context = {}) {
       if (typeof context.isLocalRestartRequest !== "function" || !context.isLocalRestartRequest(req)) {
         return res.status(403).json({ error: "this endpoint is only available from this PC" });
       }
-      const folder = readSkillFolder(requireString(req.body?.path, "path"));
+      // #664 (Q21): a .zip of a skill folder imports the same way.
+      const source = requireString(req.body?.path, "path");
+      const folder = /\.zip$/i.test(source) ? readSkillZip(source) : readSkillFolder(source);
       const outcome = await context.approvalGate.requestApproval("skill-import", {
         summary: [
           `Import skill "${folder.name}" -- ${folder.files.length} file(s)`,
