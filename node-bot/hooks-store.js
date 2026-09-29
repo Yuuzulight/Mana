@@ -19,18 +19,28 @@ const crypto = require("node:crypto");
 const { execFile } = require("node:child_process");
 
 const DEFAULT_DATA_DIR = path.join(__dirname, "data", "hooks");
-const PHASES = ["pre", "post"];
+// #838 decision 6: "finish" runs when Pipeline B's loop sends finish.
+const PHASES = ["pre", "post", "finish"];
 // #426 sub-project 4: "rollback-on-failure" is run-command's sibling -- same
 // shape (a command that runs after a matching call succeeds), but on
 // failure it also restores the file's pre-write snapshot instead of only
 // logging. Requires the same `command`/`args` fields as run-command.
 // #486: "modify-input" shallow-merges the rule's `set` object over the
 // call's args (see wrapWithInputHooks).
-const ACTIONS_BY_PHASE = { pre: ["deny", "ask", "modify-input"], post: ["run-command", "rollback-on-failure"] };
+const ACTIONS_BY_PHASE = {
+  pre: ["deny", "ask", "modify-input"],
+  post: ["run-command", "rollback-on-failure"],
+  finish: ["run-command"],
+};
 // Fire-and-forget post-hook commands still need a ceiling -- an unbounded
 // prettier/lint command hanging forever would leak a child process per
 // write forever.
 const HOOK_COMMAND_TIMEOUT_MS = 15000;
+// A finish check is typically the test suite and is awaited, so it gets the
+// ACP test runner's default instead (MANA_AGENT_TEST_TIMEOUT_MS's 120 s).
+const FINISH_HOOK_TIMEOUT_MS = 120000;
+// The tail of a finish check's output that goes back to the ACP client.
+const FINISH_HOOK_OUTPUT_CHARS = 2000;
 
 function readRules(filePath) {
   if (!fs.existsSync(filePath)) return [];
@@ -88,13 +98,14 @@ function normalizeRule(rule) {
     throw new Error("rule is required");
   }
   if (!PHASES.includes(rule.phase)) {
-    throw new Error('phase must be "pre" or "post"');
+    throw new Error('phase must be "pre", "post" or "finish"');
   }
   const allowedActions = ACTIONS_BY_PHASE[rule.phase];
   if (!allowedActions.includes(rule.action)) {
     throw new Error(`action for phase "${rule.phase}" must be one of: ${allowedActions.join(", ")}`);
   }
-  const toolName = String(rule.toolName || "").trim();
+  // A finish rule isn't about a tool call; it matches the finish signal.
+  const toolName = String(rule.toolName || (rule.phase === "finish" ? "finish" : "")).trim();
   if (!toolName) {
     throw new Error("toolName is required");
   }
@@ -296,6 +307,35 @@ function snapshotIdOf(result) {
   }
 }
 
+// #838 decision 6: runs a finish rule's command and resolves with what the
+// ACP client is told -- never rejects. Same argv-only execFile as the post
+// hooks, but awaited, because the result is the point.
+function runFinishCommand(rule, execFileFn, hooks = {}) {
+  return new Promise((resolve) => {
+    // maxBuffer: a verbose test run can print more than execFile's 1 MB
+    // default, which would kill it and misreport a pass as a failure.
+    const options = {
+      timeout: FINISH_HOOK_TIMEOUT_MS,
+      maxBuffer: 16 * 1024 * 1024,
+      shell: false,
+      ...(hooks.cwd ? { cwd: hooks.cwd } : {}),
+    };
+    execFileFn(rule.command, (rule.args || []).map(String), options, (err, stdout, stderr) => {
+      const output = `${stdout || ""}${stderr || ""}${err && !stdout && !stderr ? err.message || String(err) : ""}`;
+      if (hooks.hooksStore) {
+        hooks.hooksStore.recordRunOutcome(rule.id, { ok: !err, error: err && (err.message || String(err)) });
+      }
+      resolve({
+        rule: rule.id,
+        command: [rule.command, ...(rule.args || [])].join(" "),
+        ok: !err,
+        exitCode: err ? (typeof err.code === "number" ? err.code : null) : 0,
+        output: output.slice(-FINISH_HOOK_OUTPUT_CHARS),
+      });
+    });
+  });
+}
+
 // Wraps any {tools, isKnownTool, executeTool}-shaped tool policy so every
 // executeTool() call is checked against the user's own hook rules first.
 // Deliberately applied *inside* wrapWithToolCallLog in server.js (a hook's
@@ -400,5 +440,6 @@ module.exports = {
   wrapWithInputHooks,
   applyInputRules,
   runPostCommandHook,
+  runFinishCommand,
   HOOK_COMMAND_TIMEOUT_MS,
 };

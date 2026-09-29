@@ -319,3 +319,39 @@ test("a broken hooks.json refuses file_write, snapshot_restore and run_tests; re
     console.error = originalError;
   }
 });
+
+// ---- #838 step 6: the finish hook ----
+
+test("finish runs my finish rules and reports them to the ACP client, without blocking the finish", async () => {
+  const hooksStore = hooksWith({ phase: "finish", action: "run-command", command: "npm", args: ["test"] });
+  const calls = [];
+  const execFile = (cmd, args, opts, cb) => {
+    calls.push({ cmd, args, cwd: opts.cwd });
+    cb(Object.assign(new Error("exit 1"), { code: 1 }), "2 failing\n", "");
+  };
+
+  const res = await executeAutonomousStep(step("finish", { reason: "done" }), "pb-finish", { hooksStore, execFile });
+
+  assert.equal(res.status, "finished");
+  assert.equal(res.reason, "done");
+  assert.deepEqual(calls, [{ cmd: "npm", args: ["test"], cwd: path.resolve(__dirname, "..", "..") }]);
+  assert.equal(res.finishChecks.length, 1);
+  assert.deepEqual(
+    [res.finishChecks[0].ok, res.finishChecks[0].exitCode, res.finishChecks[0].output],
+    [false, 1, "2 failing\n"],
+  );
+
+  const none = await executeAutonomousStep(step("finish", {}), "pb-finish", { hooksStore: hooksWith(), execFile });
+  assert.equal(none.status, "finished");
+  assert.equal(none.finishChecks, undefined);
+});
+
+test("finish with a broken hooks.json reports that the checks couldn't run", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "mana-pb-broken-finish-"));
+  fs.writeFileSync(path.join(dir, "hooks.json"), "not json");
+  const res = await executeAutonomousStep(step("finish", {}), "pb-finish", {
+    hooksStore: createHooksStore({ dataDir: dir }),
+    execFile: () => assert.fail("no command should run"),
+  });
+  assert.deepEqual(res.finishChecks, [{ ok: false, detail: "hooks_config_unreadable" }]);
+});
