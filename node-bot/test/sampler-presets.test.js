@@ -309,8 +309,9 @@ test("think harder on the tool loop: every round thinks, repair doesn't, reasoni
   assert.equal("reasoning_content" in echoed, false);
 
   // The repair request stays schema-only: no thinking even on a think-harder turn.
+  // (Malformed on purpose: a well-formed text call is parsed directly, #787.)
   const leaky = makeRuntime({}, (body) =>
-    body.response_format ? { content: '{"tool_calls":[]}' } : { content: '{"name": "x", "arguments": {}}' },
+    body.response_format ? { content: '{"tool_calls":[]}' } : { content: '{{"name": "x", "arguments": {}}' },
   );
   await leaky.runtime.runToolAwareReply("q", toolPolicy, { maxTokens: 64, thinking: true });
   const repair = leaky.bodies.find((b) => b.response_format);
