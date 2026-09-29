@@ -1017,23 +1017,36 @@ internal sealed class VoiceLoop : IDisposable
             prefilterRejected = logEntry.Score < logEntry.Threshold;
         }
 
+        // #682: Electron's speech filters (SpeechFilters) -- a quiet segment
+        // is boosted before Whisper hears it, one still too quiet or
+        // hiss-like never reaches Whisper, and a phantom phrase or
+        // noise-only caption is dropped like an empty transcript.
         var transcript = "";
         if (!prefilterRejected)
         {
-            try
+            var (boosted, gain) = SpeechFilters.ApplySpeechGain(samples, SpeechFilters.GainTargetPeak, SpeechFilters.GainMaxBoost);
+            logEntry.Gain = gain;
+            logEntry.Drop = SpeechFilters.GetSpeechRejectReason(boosted, SpeechFilters.MinSpeechRms, SpeechFilters.MinSpeechPeak, SpeechFilters.MaxClickyZcr);
+            if (logEntry.Drop is null)
             {
-                transcript = await backendClient.TranscribeAsync(BuildWavBytes(samples));
-                logEntry.Whisper = string.IsNullOrWhiteSpace(transcript) ? "empty" : "ok";
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"VoiceLoop: transcription failed, resuming listening. {ex.Message}");
-                logEntry.Whisper = "failed";
+                try
+                {
+                    transcript = await backendClient.TranscribeAsync(BuildWavBytes(boosted));
+                    logEntry.Whisper = string.IsNullOrWhiteSpace(transcript) ? "empty" : "ok";
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"VoiceLoop: transcription failed, resuming listening. {ex.Message}");
+                    logEntry.Whisper = "failed";
+                }
             }
         }
         if (logEntry.Whisper == "ok")
         {
             logEntry.Transcript = transcript;
+            logEntry.Drop = SpeechFilters.IsLikelyWhisperHallucination(transcript, samples.Length / (double)SileroVadRunner.SampleRate) ? "hallucination"
+                : SpeechFilters.IsNoiseOnlyTranscript(transcript) ? "noise"
+                : null;
         }
 
         if (!await ClaimTurnAsync(turnId))
@@ -1071,13 +1084,16 @@ internal sealed class VoiceLoop : IDisposable
             await ReturnToIdleOrResumeHeldAsync(held, nested);
         }
 
-        // skipped (pre-filter), failed, or empty.
-        if (logEntry.Whisper != "ok")
+        // skipped (pre-filter or speech gate), failed, empty, or filtered.
+        if (logEntry.Whisper != "ok" || logEntry.Drop is not null)
         {
             await Skip();
             return;
         }
 
+        // Electron's handleTranscript strips "(laughs)"/"[music]" annotations
+        // before the wake match and before the text is shown or sent.
+        transcript = ScreenContextTrigger.CleanTranscriptText(transcript);
         string commandText;
         if (!awake)
         {
