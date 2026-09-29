@@ -67,8 +67,10 @@ internal static class BargeInGate
 }
 
 // #665: what talking over Mana does. MinWords(2) is the default: the gate
-// still fires on sustained loud speech, but only an interruption with at
-// least that many words counts -- a cough, "mm" or "yeah" lets her carry on.
+// still fires on sustained loud speech, but instead of stopping her it
+// lowers her volume while what I said is transcribed; only an interruption
+// with at least that many words stops her -- a cough, "mm" or "yeah" and
+// she carries on at full volume, mid-sentence.
 // NotWhileSpeaking never interrupts; what I say while she talks is answered
 // once she finishes. Always is the old behaviour (any sustained speech).
 internal enum BargeInMode
@@ -81,6 +83,14 @@ internal enum BargeInMode
 internal static class BargeInPolicy
 {
     public const int DefaultMinWords = 2;
+
+    // How loud she stays while an interruption is being decided.
+    public const float DuckVolume = 0.3f;
+
+    // Whether a ducked interruption turned out real: transcribed, not
+    // dropped as noise or a hallucination, and at least minWords words.
+    public static bool IsRealInterruption(bool transcribed, bool dropped, string transcript, int minWords) =>
+        transcribed && !dropped && WordCount(transcript) >= minWords;
 
     // The env var (MANA_BARGE_IN_MODE) wins over the saved setting, like
     // the other voice tunables; unknown or missing text means the default.

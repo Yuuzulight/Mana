@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Net.Http;
@@ -71,6 +72,7 @@ internal sealed class ManaProcessManager : IDisposable
     // where the node-bot backend happens to live.
     private readonly string backendHealthUrl;
     private readonly bool isBackendLocal;
+    private readonly bool localOnly;
 
     // handler: null (the default, and every existing call site's behavior)
     // constructs a real HttpClient for live health checks. Tests pass a
@@ -81,9 +83,10 @@ internal sealed class ManaProcessManager : IDisposable
     // behavior; pass the configured settings.BackendBaseUrl to keep the
     // backend health check consistent with where ManaBackendClient actually
     // points.
-    public ManaProcessManager(string rootDirectory, HttpMessageHandler? handler = null, string? backendBaseUrl = null)
+    public ManaProcessManager(string rootDirectory, HttpMessageHandler? handler = null, string? backendBaseUrl = null, bool localOnly = false)
     {
         RootDirectory = rootDirectory;
+        this.localOnly = localOnly;
         http = handler is null ? new HttpClient() : new HttpClient(handler);
         backendHealthUrl = $"{(backendBaseUrl ?? "http://127.0.0.1:5005").TrimEnd('/')}/health";
         // #681: a remote backend URL means that machine starts its own
@@ -468,6 +471,7 @@ internal sealed class ManaProcessManager : IDisposable
         startInfo.Environment["USE_EMBEDDINGS"] =
             Environment.GetEnvironmentVariable("USE_EMBEDDINGS") ?? "1";
         startInfo.Environment["MANA_LAUNCHER_KEY"] = LauncherKey;
+        ApplyLocalOnly(startInfo.Environment, localOnly);
 
         var process = Process.Start(startInfo) ??
                throw new InvalidOperationException("Failed to start Mana backend.");
@@ -485,6 +489,16 @@ internal sealed class ManaProcessManager : IDisposable
         process.BeginErrorReadLine();
 
         return process;
+    }
+
+    // #670: the Settings > Connection toggle. Only ever turns local-only
+    // mode on; MANA_LOCAL_ONLY in node-bot/.env is node-bot's own switch.
+    internal static void ApplyLocalOnly(IDictionary<string, string?> environment, bool localOnly)
+    {
+        if (localOnly)
+        {
+            environment["MANA_LAUNCHER_LOCAL_ONLY"] = "1";
+        }
     }
 
     // Shared by StartFishSpeech/StartEmbedder -- both are "python from a

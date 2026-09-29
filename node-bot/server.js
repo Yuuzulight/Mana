@@ -58,6 +58,12 @@ if (require.main === module) {
   if (loadedEnvKeys.length) {
     console.log(`Loaded ${loadedEnvKeys.length} settings from node-bot/.env`);
   }
+  // #670: before anything below can open a connection.
+  const localOnly = require("./local-only");
+  if (localOnly.isLocalOnly()) {
+    localOnly.installLocalOnlyGuard();
+    console.log("[Mana Boot] Local-only mode is on: nothing leaves this PC and your local network.");
+  }
 }
 
 const express = require("express");

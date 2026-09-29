@@ -140,6 +140,25 @@ test("setBrainSettings switches to a local OpenAI-compatible endpoint without ne
   assert.equal(status.brain.model, "llama3");
 });
 
+test("setBrainSettings refuses a cloud endpoint in local-only mode, but not a LAN one (#670)", () => {
+  const store = fakeModelSettingsStore();
+  const manager = createModelManagement({ env: {}, localGgufs: [], modelSettingsStore: store });
+  const prior = process.env.MANA_LOCAL_ONLY;
+  process.env.MANA_LOCAL_ONLY = "1";
+  try {
+    assert.throws(
+      () => manager.setBrainSettings({ type: "openai_compatible", baseUrl: "https://api.openai.com/v1" }),
+      /Local-only mode is on .*remote AI at api\.openai\.com/,
+    );
+    assert.equal(store.getBrainSettings().type, "local");
+    manager.setBrainSettings({ type: "openai_compatible", baseUrl: "http://192.168.1.20:11434/v1" });
+    assert.equal(store.getBrainSettings().baseUrl, "http://192.168.1.20:11434/v1");
+  } finally {
+    if (prior === undefined) delete process.env.MANA_LOCAL_ONLY;
+    else process.env.MANA_LOCAL_ONLY = prior;
+  }
+});
+
 test("getModelStatus never echoes back a stored apiKey", () => {
   const manager = createModelManagement({
     env: {},
