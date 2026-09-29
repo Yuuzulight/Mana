@@ -15,8 +15,9 @@
 // the check's reports (for #697's quiet hours).
 //
 // A check is identified by its permissions + text, so editing either one
-// makes it a new check: it does a dry run (read calls only; anything else
-// is noted, not run), then waits in the approval queue with what it would
+// makes it a new check: it does a dry run (read calls, plus read-only
+// requests to the sites its own line names; anything else is noted, not
+// run), then waits in the approval queue with what it would
 // have said, and only runs for real once approved. Changing just the
 // interval or "urgent" doesn't need a new approval. Nothing runs while a
 // watched game is running.
@@ -183,11 +184,29 @@ function refusalFor(check, risk, targets, protectedDir) {
   return "";
 }
 
+// Q31: a dry run may fetch from the sites the check's own line names, but
+// only with a tool whose name says it reads (fetch/get/read/search/list/
+// query/navigate/view/lookup) -- never a shell command, a page click/type or
+// anything that writes a file.
+// ponytail: name-based, so an MCP "get_x" that mutates would slip through;
+// needs per-tool read-only metadata from MCP servers to do better.
+const READ_ONLY_TOOL_RE = /(?:^|_)(?:fetch|get|read|search|list|query|navigate|view|lookup)(?:_|$)/i;
+
+function isReadOnlyNetworkCall(name, args, risk) {
+  return (
+    risk.tier === "network" &&
+    !risk.command &&
+    READ_ONLY_TOOL_RE.test(String(name).split("__").pop()) &&
+    !writeTargets(args, risk).length
+  );
+}
+
 // The tool gate for one check's run. server.js's reply pipeline uses it in
 // place of #669's risk gate (replyMeta.wrapToolPolicy). Read calls run;
 // install/destructive ones always wait for the user; write/network ones run
 // only inside the check's grants and scope, each write snapshotted first.
-// In a dry run only read calls run -- the rest are noted in wouldRun.
+// In a dry run only read calls (and Q31's read-only requests to the check's
+// own sites) run -- the rest are noted in wouldRun.
 // protectedDir: the heartbeat's own data folder, never writable.
 function createCheckToolGate(check, { dryRun, snapshotStore, writes, wouldRun, protectedDir, fsDeps = fs }) {
   return (policy, approvalGate) => {
@@ -197,6 +216,9 @@ function createCheckToolGate(check, { dryRun, snapshotStore, writes, wouldRun, p
       const label = `${name}${risk.command ? ` (${risk.command.slice(0, 120)})` : ""}`;
       if (risk.tier === "read") return policy.executeTool(name, args);
       if (dryRun) {
+        if (isReadOnlyNetworkCall(name, args, risk) && !refusalFor(check, risk, [], protectedDir)) {
+          return policy.executeTool(name, args);
+        }
         wouldRun.push(`${label} [${risk.tier}]`);
         return `Dry run: ${name} was not run. Say what you would have done with it.`;
       }

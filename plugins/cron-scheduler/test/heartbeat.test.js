@@ -163,6 +163,47 @@ test("tool gate: network only to named sites; install/destructive always held; d
   assert.match(await dry.executeTool("fs__write_file", { path: "Q:\\Notes\\a.md" }), /Dry run/);
   assert.deepEqual(dryPolicy.calls, ["read_file"]);
   assert.deepEqual(wouldRun, ["fs__write_file [write]"]);
+
+  // Q31: a dry run may fetch from the sites the check's own line names,
+  // read-only tools only.
+  await dry.executeTool("browser_automation__navigate", { url: "https://github.com/notifications" });
+  await dry.executeTool("mcp__fetch__fetch", { url: "https://api.github.com/notifications" });
+  for (const [name, args] of [
+    ["browser_automation__navigate", { url: "https://evil.example/" }], // not a named site
+    ["browser_automation__click", { url: "https://github.com/", selector: "#merge" }], // acts on the page
+    ["mcp__github__create_issue", { repo: "https://github.com/a/b", title: "x" }], // not a read
+    ["run_command", { command: "curl -X POST https://github.com/x" }], // shell
+  ]) {
+    assert.match(await dry.executeTool(name, args), /Dry run/, name);
+  }
+  assert.deepEqual(dryPolicy.calls, ["read_file", "browser_automation__navigate", "mcp__fetch__fetch"]);
+  // ...and only when the check has the network permission.
+  const [readOnly] = parseHeartbeat("- check github.com").checks;
+  const noNet = fakePolicy();
+  const dryNoNet = createCheckToolGate(readOnly, { dryRun: true, writes: [], wouldRun: [] })(noNet, gate);
+  assert.match(await dryNoNet.executeTool("mcp__fetch__fetch", { url: "https://github.com/" }), /Dry run/);
+  assert.deepEqual(noNet.calls, []);
+});
+
+// Q27: a heartbeat check is a scheduled reply, so it only sees confirmed
+// facts (buildAssistantReply's replyMeta.scheduled, #780).
+test("heartbeat checks run as scheduled replies", async () => {
+  const cronPlugin = require("../index");
+  cronPlugin._resetForTests();
+  const metas = [];
+  const hb = cronPlugin._getHeartbeatForTests({
+    dataDir: tempDir("mana-hb-plugin-"),
+    buildAssistantReply: async (...args) => {
+      metas.push(args[7]);
+      return "NOTHING_TO_REPORT";
+    },
+  });
+  fs.writeFileSync(hb.filePath, "- check D: free space\n");
+  await hb.runDue();
+  cronPlugin._resetForTests();
+  assert.equal(metas.length, 1);
+  assert.equal(metas[0].scheduled, true);
+  assert.equal(typeof metas[0].wrapToolPolicy, "function");
 });
 
 test("dry run -> approval -> quiet runs stay silent; writes are listed in the next report; edits reset", async () => {

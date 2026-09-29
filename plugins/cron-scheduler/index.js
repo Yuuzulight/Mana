@@ -57,7 +57,11 @@ function getScheduler(deps = {}) {
         if (typeof deps.buildAssistantReply !== "function") {
           throw new Error("no buildAssistantReply function available for heartbeat checks");
         }
-        return deps.buildAssistantReply(prompt, "", "", "default", sessionId, null, null, { wrapToolPolicy });
+        // Q27: scheduled, so it sees confirmed facts only (#780's flag).
+        return deps.buildAssistantReply(prompt, "", "", "default", sessionId, null, null, {
+          wrapToolPolicy,
+          scheduled: true,
+        });
       },
       notify: (payload) => notifyTray(payload).catch(() => {}),
       isGaming: deps.isGaming,
@@ -130,4 +134,9 @@ module.exports = {
   // wiring above only runs through that method, so tests need direct access
   // to the singleton to exercise it.
   _getSchedulerForTests: (deps = {}) => getScheduler(deps),
+  // Same, for the heartbeat built alongside the scheduler.
+  _getHeartbeatForTests: (deps = {}) => {
+    getScheduler(deps);
+    return heartbeat;
+  },
 };
