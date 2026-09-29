@@ -72,6 +72,11 @@ internal sealed class ManaSettingsStore
     public int? AvatarLeft { get; set; }
     public int? AvatarTop { get; set; }
 
+    // #684: Electron's "minimized Mana" -- the avatar steps aside while the
+    // chat window is open and comes back when it's closed or minimized.
+    // Off keeps her always showing. Tray menu.
+    public bool AvatarHidesWithChat { get; set; } = true;
+
     // #574/#688: gaming-mode detection (tray menu and Settings >
     // Performance); off ignores the backend's watched-game scan.
     public bool GamingModeDetection { get; set; } = true;
