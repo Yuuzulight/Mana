@@ -117,7 +117,7 @@ test("buildToolPolicy works end to end with the real memory/session-search/skill
       // construction, so a stub has to match the real gate's interface.
       registerExecutor: () => {},
     },
-    skillsStore: { viewSkill: () => null },
+    skillsStore: { viewSkill: () => null, listSkills: () => [] },
   });
   const snapshotSource = createSnapshotToolSource({
     approvalGate: {

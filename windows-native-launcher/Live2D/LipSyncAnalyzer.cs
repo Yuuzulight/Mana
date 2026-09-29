@@ -16,11 +16,20 @@ internal static class LipSyncAnalyzer
 {
     public readonly record struct MfccResult(double[] MelEnergies, double[] MelCenterHz);
 
-    // Maps speech RMS amplitude to a 0..1 mouth-open value with a noise floor.
-    public static float RmsToMouth(float rms, float floor = 0.01f, float gain = 9f)
+    // Maps speech RMS amplitude to a 0..max mouth-open value with a noise
+    // floor. Q6: max caps how wide a high gain can open it.
+    public static float RmsToMouth(float rms, float floor = 0.01f, float gain = 9f, float max = 1f)
     {
         var value = rms - floor;
-        return value <= 0 ? 0f : Math.Min(1f, value * gain);
+        return value <= 0 ? 0f : Math.Min(max, value * gain);
+    }
+
+    // Q6: mouth openness snaps both ways (under 70ms) and shuts fully in
+    // the gaps between words instead of hovering just open.
+    public static float SmoothMouthOpen(float previous, float target, float dtMs)
+    {
+        var value = SmoothMouthValue(previous, target, dtMs, attackMs: 40f, decayMs: 60f);
+        return target <= 0f && value < 0.05f ? 0f : value;
     }
 
     // Fast attack, slower decay so the mouth snaps open but closes

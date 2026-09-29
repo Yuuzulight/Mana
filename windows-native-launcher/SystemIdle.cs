@@ -20,10 +20,13 @@ internal static class SystemIdle
     private static extern bool GetLastInputInfo(ref LastInputInfo info);
 
     // Whole seconds, like getSystemIdleTime(); 0 if the call fails.
-    public static int GetIdleSeconds()
+    public static int GetIdleSeconds() => (int)((GetIdleMilliseconds() ?? 0) / 1000);
+
+    // #671: since the last keyboard or mouse input anywhere; null if the call fails.
+    public static long? GetIdleMilliseconds()
     {
         var info = new LastInputInfo { cbSize = (uint)Marshal.SizeOf<LastInputInfo>() };
-        return GetLastInputInfo(ref info) ? IdleSecondsBetween((uint)Environment.TickCount, info.dwTime) : 0;
+        return GetLastInputInfo(ref info) ? (uint)Environment.TickCount - info.dwTime : null;
     }
 
     // Both are GetTickCount-style uint milliseconds; the unsigned

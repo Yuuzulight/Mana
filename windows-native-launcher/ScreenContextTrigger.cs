@@ -33,6 +33,31 @@ internal static class ScreenContextTrigger
         "quest", "window", "error",
     };
 
+    // #648: "this"/"here"/"that" point at something rather than naming
+    // it. Not a trigger on its own (far too common a word) -- it only
+    // changes *what* a keyword-gated read reads: what's under the cursor.
+    private static readonly Regex Deictic = new(@"\b(this|that|these|those|here)\b");
+
+    // normalizedText is expected already-lowercased.
+    public static bool IsDeictic(string normalizedText) => Deictic.IsMatch(normalizedText);
+
+    // Q36: a bare "what's this?" / "what does that say?" / "read this" /
+    // "explain that" reads the screen on its own -- unless there's a recent
+    // topic it could mean instead: the rule is that the previous voice turn
+    // was under RecentTopicMs ago (null = no previous turn).
+    public const long RecentTopicMs = 60_000;
+    private static readonly Regex ShortDeicticQuestion = new(
+        @"^(what(?:'s| is|s)? (?:this|that)|what does (?:this|that) (?:say|mean)|(?:read|explain) (?:this|that))[\s?!.]*$");
+
+    public static bool ReadsScreenOnItsOwn(string normalizedText, long? msSincePreviousTurn) =>
+        ShortDeicticQuestion.IsMatch(normalizedText) && !(msSincePreviousTurn < RecentTopicMs);
+
+    // Q37: "here" is the cursor, except "next to you"/"behind you"/"where
+    // you are" -- then it's next to Mana's avatar.
+    private static readonly Regex NearAvatar = new(@"\b(next to you|beside you|behind you|where you are)\b");
+
+    public static bool MeansNearAvatar(string normalizedText) => NearAvatar.IsMatch(normalizedText);
+
     // normalizedText is expected already-lowercased.
     public static bool ShouldReadScreenForCommand(string normalizedText, bool gamingModeActive, bool keywordGateEnabled = true)
     {

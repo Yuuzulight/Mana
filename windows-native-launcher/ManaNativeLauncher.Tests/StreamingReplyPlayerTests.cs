@@ -405,7 +405,7 @@ public class StreamingReplyPlayerTests
         var playing = new List<string>();
         var player = new StreamingReplyPlayer(
             BuildFakeClient(ndjson, []), _ => Task.FromResult(true), _ => { }, null,
-            (text, emotion) => playing.Add($"{text}|{emotion}"));
+            (text, emotion, _) => playing.Add($"{text}|{emotion}"));
 
         await player.StreamReplyAndPlayAsync("hi");
 

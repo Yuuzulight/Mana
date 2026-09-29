@@ -1503,7 +1503,9 @@ function createAcpMemoryStore(options = {}) {
       rerankMs: 0,
       fallback: null,
     };
-    const facts = loadFacts();
+    // Q27: scheduled jobs (cron, heartbeat) run with nobody to check an
+    // unconfirmed fact with, so they only see confirmed ones.
+    const facts = options.confirmedOnly ? loadFacts().filter((fact) => fact.status === "active") : loadFacts();
     const similarityById = await factSimilarities(
       text,
       withUserWordsVariants(facts.filter((fact) => isRecallable(fact) && (fact.trigger || !fact.pinned))),
