@@ -98,7 +98,9 @@ internal sealed class ManaApplicationContext : ApplicationContext
         // #521: constructed before voiceLoop so it can be passed in as
         // VoiceLoop's IChatLog -- SessionListForm only needs the control
         // itself (to embed it), not the other way around.
-        var chatLog = new ChatView();
+        // #686: also VoiceLoop's artifact sink, so it can re-render Mana's
+        // bubble from the final reply text before passing it to the viewer.
+        var chatLog = new ChatView { Artifacts = artifactViewer };
         // #522: ScreenContextReader owns its own min-interval/keyword-gate
         // caching internally, so this is just held and passed straight
         // through to VoiceLoop, same as the other optional collaborators
@@ -107,7 +109,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
         // #571: on-screen equivalent of spoken output, fed sentence by
         // sentence by VoiceLoop's own playback.
         captionOverlay = new CaptionOverlayForm();
-        voiceLoop = new VoiceLoop(sileroVad, backendClient, audioPlayer, avatarOverlay, chatLog, artifactViewer, screenContextReader, () => gamingModeActive, clipBuffer, wakeWordClassifier, captionOverlay);
+        voiceLoop = new VoiceLoop(sileroVad, backendClient, audioPlayer, avatarOverlay, chatLog, chatLog, screenContextReader, () => gamingModeActive, clipBuffer, wakeWordClassifier, captionOverlay);
         voiceLoop.SetPresetId(settings.ActivePresetId); // #681
         // #523: Ctrl+Alt+M asks Mana to look at the screen, through the
         // same reply/TTS pipeline a normal turn uses.
