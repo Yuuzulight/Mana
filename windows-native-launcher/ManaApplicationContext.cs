@@ -59,8 +59,10 @@ internal sealed class ManaApplicationContext : ApplicationContext
     // #gamingMode checkbox -- it isn't a 3-way auto/on/off switch, just an
     // enable/disable for the auto-detection RefreshTrayStatusAsync already
     // does. Off forces gamingModeActive false regardless of what the
-    // backend's process scan reports; no new backend route needed.
-    private bool gamingModeEnabled = true;
+    // backend's process scan reports; no new backend route needed. #688:
+    // saved (ManaSettingsStore.GamingModeDetection), also set from Settings >
+    // Performance, so the 5s poll re-reads it.
+    private bool gamingModeEnabled = ManaSettingsStore.Load().GamingModeDetection;
 
     // The services ManaProcessManager actually starts/stops (no Kokoro
     // row since #694 / the user decision: node-bot starts Kokoro on
@@ -301,9 +303,13 @@ internal sealed class ManaApplicationContext : ApplicationContext
         menu.Items.Add("Set avatar talking", null, (_, _) => avatarOverlay.SetState(AvatarState.Talking));
         menu.Items.Add(new ToolStripSeparator());
         var gamingModeItem = new ToolStripMenuItem("Gaming mode detection") { CheckOnClick = true, Checked = gamingModeEnabled };
+        menu.Opening += (_, _) => gamingModeItem.Checked = gamingModeEnabled;
         gamingModeItem.Click += (_, _) =>
         {
             gamingModeEnabled = gamingModeItem.Checked;
+            var latest = ManaSettingsStore.Load();
+            latest.GamingModeDetection = gamingModeEnabled;
+            latest.Save();
             if (!gamingModeEnabled)
             {
                 gamingModeActive = false;
@@ -447,6 +453,9 @@ internal sealed class ManaApplicationContext : ApplicationContext
         try
         {
             var status = await backendClient.GetPerformanceStatusAsync();
+            // ponytail: re-reads the small settings file each 5s poll rather
+            // than wiring a change event from Settings.
+            gamingModeEnabled = ManaSettingsStore.Load().GamingModeDetection;
             gamingModeActive = gamingModeEnabled && status.GamingAppRunning;
             SetTrayStatus(gamingModeActive ? "Mana - game mode" : "Mana");
             avatarOverlay.GameRunning = gamingModeActive; // Q3: click-through while gaming

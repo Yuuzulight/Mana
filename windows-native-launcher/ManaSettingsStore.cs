@@ -67,6 +67,10 @@ internal sealed class ManaSettingsStore
     public int? AvatarLeft { get; set; }
     public int? AvatarTop { get; set; }
 
+    // #574/#688: gaming-mode detection (tray menu and Settings >
+    // Performance); off ignores the backend's watched-game scan.
+    public bool GamingModeDetection { get; set; } = true;
+
     // #685: the chat window's live avatar framing -- "full", "waist" or
     // "bust" (see LiveAvatarPanel); null = full.
     public string? AvatarFraming { get; set; }
