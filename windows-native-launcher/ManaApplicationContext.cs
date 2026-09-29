@@ -102,13 +102,17 @@ internal sealed class ManaApplicationContext : ApplicationContext
         // VoiceLoop's IChatLog -- SessionListForm only needs the control
         // itself (to embed it), not the other way around.
         // #686: also VoiceLoop's artifact sink, so it can re-render Mana's
-        // bubble from the final reply text before passing it to the viewer.
-        var chatLog = new ChatView { Artifacts = artifactViewer };
+        // bubble from the final reply text and give an artifact its button.
+        var chatLog = new ChatView { Artifacts = artifactViewer.Add };
         // #522: ScreenContextReader owns its own min-interval/keyword-gate
         // caching internally, so this is just held and passed straight
         // through to VoiceLoop, same as the other optional collaborators
         // constructed above it.
-        var screenContextReader = new ScreenContextReader(rootDir, backendClient);
+        // Q37: "next to you" reads beside the avatar while she's showing
+        // (a hidden overlay is Visible false; it's never minimized). Called
+        // off the UI thread: Visible and Bounds are plain field reads.
+        var screenContextReader = new ScreenContextReader(rootDir, backendClient,
+            () => avatarOverlay.Visible ? avatarOverlay.Bounds : null);
         // #571: on-screen equivalent of spoken output, fed sentence by
         // sentence by VoiceLoop's own playback.
         // Q8: under Mana while she's showing (Visible/Bounds are plain field reads).
@@ -195,6 +199,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
         };
 
         trayIcon.DoubleClick += (_, _) => ShowStatus();
+        avatarOverlay.Clicked += voiceLoop.Wake; // #662
         trayNotifications.Start();
         visionCaptureClient.Start();
 
@@ -252,7 +257,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
         menu.Items.Add("Pending Edits", null, (_, _) => new ProposalsForm(backendClient).Show());
         menu.Items.Add("Edit Snapshots", null, (_, _) => new SnapshotsForm(backendClient).Show());
         menu.Items.Add("Memory Graph", null, (_, _) => new MemoryGraphForm(backendClient).Show());
-        menu.Items.Add("Deep Research", null, (_, _) => new ResearchForm(backendClient, () => voiceLoop.CurrentSessionId).Show());
+        menu.Items.Add("Deep Research", null, (_, _) => new ResearchForm(backendClient, voiceLoop.EnsureSessionId).Show());
         menu.Items.Add("Doctor", null, (_, _) => ShowDoctorPanel());
         menu.Items.Add("VTube Studio", null, (_, _) => new VTubeStudioForm(backendClient).Show());
         menu.Items.Add("Sessions", null, (_, _) => ShowSessionList());
@@ -268,9 +273,21 @@ internal sealed class ManaApplicationContext : ApplicationContext
             {
                 gamingModeActive = false;
                 trayIcon.Text = "Mana";
+                avatarOverlay.GameRunning = false;
             }
         };
         menu.Items.Add(gamingModeItem);
+        // #662: back to an avatar that ignores the mouse entirely (she
+        // already does while a game runs -- Q3).
+        var clickThroughItem = new ToolStripMenuItem("Click-through avatar") { CheckOnClick = true, Checked = avatarOverlay.ClickThrough };
+        clickThroughItem.Click += (_, _) =>
+        {
+            avatarOverlay.ClickThrough = clickThroughItem.Checked;
+            var latest = ManaSettingsStore.Load();
+            latest.AvatarClickThrough = clickThroughItem.Checked;
+            latest.Save();
+        };
+        menu.Items.Add(clickThroughItem);
         // #681: Stop listening turns the mic off and puts Mana back to
         // sleep; Start listening needs the wake word again.
         var listeningItem = new ToolStripMenuItem();
@@ -395,6 +412,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
             var status = await backendClient.GetPerformanceStatusAsync();
             gamingModeActive = gamingModeEnabled && status.GamingAppRunning;
             trayIcon.Text = gamingModeActive ? "Mana - game mode" : "Mana";
+            avatarOverlay.GameRunning = gamingModeActive; // Q3: click-through while gaming
         }
         catch
         {

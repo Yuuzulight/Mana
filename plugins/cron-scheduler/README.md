@@ -10,7 +10,11 @@ Two job types:
   passed in at wiring time (e.g. `{ ffxivMarketSummary: () => ... }`). No
   model call.
 - **`agent`**: asks Mana's normal reply pipeline (`buildAssistantReply`) a
-  prompt, exactly as if the user had typed it in that session.
+  prompt, exactly as if the user had typed it in that session -- so it
+  sees the same memory a chat turn does (background memory, the session's
+  own memory, pinned and related facts), except that only confirmed facts
+  are used: unverified and pending (unconfirmed) ones stay out, since
+  there's nobody to check them with.
 
 Either way, the result (or error) is delivered as a chat turn
 (`acpMemoryStore.appendTurn`) in the job's session -- visible in the

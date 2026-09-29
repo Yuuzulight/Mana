@@ -13,7 +13,11 @@ const fs = require("node:fs");
 const path = require("node:path");
 const Database = require("better-sqlite3");
 
-const DEFAULT_DB_PATH = path.join(__dirname, "data", "acp-memory", "memory-graph.db");
+// Beside the rest of memory: MANA_ACP_MEMORY_DIR moves it too.
+const DEFAULT_DB_PATH = path.join(
+  process.env.MANA_ACP_MEMORY_DIR || path.join(__dirname, "data", "acp-memory"),
+  "memory-graph.db",
+);
 // An order of magnitude above acp-memory-store.js's maxFacts (500) since
 // edges are pairs, not single facts -- same "fixed cap, not age-based
 // pruning" reasoning as that file's own caps.

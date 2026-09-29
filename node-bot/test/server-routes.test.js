@@ -663,6 +663,23 @@ test("reply omits presetId as null when the request doesn't select one", async (
   });
 });
 
+test("a turn without a sessionId warns once that it isn't saved to memory", async () => {
+  const app = createApp({ buildAssistantReply: async () => "ok" });
+  const warnings = [];
+  const originalWarn = console.warn;
+  console.warn = (...args) => warnings.push(args.join(" "));
+  try {
+    await withServer(app, async (baseUrl) => {
+      await postJson(`${baseUrl}/reply`, { text: "hello", sessionId: "s1" });
+      await postJson(`${baseUrl}/reply`, { text: "hello" });
+      await postJson(`${baseUrl}/reply`, { text: "hello again" });
+    });
+  } finally {
+    console.warn = originalWarn;
+  }
+  assert.equal(warnings.filter((w) => w.includes("without a sessionId")).length, 1);
+});
+
 test("transcribe passes presetId through to buildAssistantReply", async () => {
   let receivedPresetId = "not-set";
   const app = createApp({
