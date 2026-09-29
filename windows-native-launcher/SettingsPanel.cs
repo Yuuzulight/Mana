@@ -602,6 +602,9 @@ internal sealed class SettingsPanel : UserControl
         var importZipButton = new Button { Text = "Import zip...", AutoSize = true };
         DarkTheme.ApplyButton(importZipButton);
         importZipButton.Click += async (_, _) => await ImportSkillZipAsync();
+        var importLinkButton = new Button { Text = "Import link...", AutoSize = true };
+        DarkTheme.ApplyButton(importLinkButton);
+        importLinkButton.Click += async (_, _) => await ImportSkillLinkAsync();
 
         var buttonRow = new FlowLayoutPanel { Dock = DockStyle.Bottom, Height = 32, FlowDirection = FlowDirection.LeftToRight, BackColor = DarkTheme.Background };
         buttonRow.Controls.Add(newButton);
@@ -609,6 +612,7 @@ internal sealed class SettingsPanel : UserControl
         buttonRow.Controls.Add(deleteButton);
         buttonRow.Controls.Add(importButton);
         buttonRow.Controls.Add(importZipButton);
+        buttonRow.Controls.Add(importLinkButton);
 
         // Q20: how Mana may use imported skills (default: ask the first time).
         importedSkillUseBox.Items.AddRange(new object[] { "Use freely", "Ask each time", "Ask the first time" });
@@ -652,6 +656,15 @@ internal sealed class SettingsPanel : UserControl
         if (dialog.ShowDialog(this) == DialogResult.OK)
         {
             await SubmitSkillImportAsync(dialog.FileName);
+        }
+    }
+
+    private async Task ImportSkillLinkAsync()
+    {
+        using var dialog = new TextPromptDialog("Import Skill", "Link (github.com or clawhub.ai):", "");
+        if (dialog.ShowDialog(this) == DialogResult.OK && !string.IsNullOrWhiteSpace(dialog.Value))
+        {
+            await SubmitSkillImportAsync(dialog.Value.Trim());
         }
     }
 
@@ -1026,7 +1039,34 @@ internal sealed class SettingsPanel : UserControl
         layout.Controls.Add(row);
         layout.Controls.Add(BuildWakePrefilterRow());
         layout.Controls.Add(BuildEchoCancellationRow());
+        layout.Controls.Add(BuildBargeInRow());
         return new TabPage("Voice") { Controls = { layout } };
+    }
+
+    // #665: what talking over Mana does (BargeInPolicy), read each time
+    // listening starts; MANA_BARGE_IN_MODE overrides it.
+    private static readonly string[] BargeInModes = { "minWords", "always", "notWhileSpeaking" };
+
+    private static FlowLayoutPanel BuildBargeInRow()
+    {
+        var label = new Label { Text = "When I talk over Mana", AutoSize = true, ForeColor = DarkTheme.Text, Anchor = AnchorStyles.Left };
+        var combo = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 300, BackColor = DarkTheme.Panel2, ForeColor = DarkTheme.Text };
+        combo.Items.AddRange(new object[] { "Stop her for two words or more (default)", "Stop her for any speech", "Never stop her; answer when she's done" });
+        combo.SelectedIndex = (int)BargeInPolicy.Resolve(null, ManaSettingsStore.Load().BargeInMode);
+        var status = new Label { AutoSize = true, ForeColor = DarkTheme.Muted, Anchor = AnchorStyles.Left };
+        combo.SelectionChangeCommitted += (_, _) =>
+        {
+            var latest = ManaSettingsStore.Load();
+            latest.BargeInMode = combo.SelectedIndex == 0 ? null : BargeInModes[combo.SelectedIndex];
+            latest.Save();
+            status.Text = "Saved -- applies next time listening starts.";
+        };
+
+        var row = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.LeftToRight, BackColor = DarkTheme.Background };
+        row.Controls.Add(label);
+        row.Controls.Add(combo);
+        row.Controls.Add(status);
+        return row;
     }
 
     // #619: EchoCancellation on the mic, read each time listening starts;

@@ -937,9 +937,12 @@ internal sealed class ManaBackendClient
     // node-bot reads it now and always asks in Approvals before writing
     // anything. Returns null when queued, else node-bot's error (no
     // SKILL.md, not local, ...).
+    // An http(s) link goes as {url}: node-bot downloads it from an allowed
+    // site (github.com, codeload.github.com, clawhub.ai) and checks it first.
     public async Task<string?> ImportSkillAsync(string path)
     {
-        var payload = JsonSerializer.Serialize(new { path });
+        var isLink = path.StartsWith("https://", StringComparison.OrdinalIgnoreCase) || path.StartsWith("http://", StringComparison.OrdinalIgnoreCase);
+        var payload = isLink ? JsonSerializer.Serialize(new { url = path }) : JsonSerializer.Serialize(new { path });
         using var content = new StringContent(payload, Encoding.UTF8, "application/json");
         using var response = await http.PostAsync("/skills/import", content);
         if (response.IsSuccessStatusCode)

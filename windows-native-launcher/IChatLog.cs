@@ -7,6 +7,9 @@ namespace Mana.NativeLauncher;
 internal interface IChatLog
 {
     void AppendUserMessage(string text);
+
+    // #679: a typed message with images attached (data URLs).
+    void AppendUserMessage(string text, IReadOnlyList<string> images) => AppendUserMessage(text);
     void AppendReplySentence(string text);
 
     // #652 part 6: Mana's reply is complete (not interrupted, not failed) --

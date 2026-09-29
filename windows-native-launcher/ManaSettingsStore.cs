@@ -55,6 +55,11 @@ internal sealed class ManaSettingsStore
     // next start. MANA_LOCAL_ONLY=1 in node-bot/.env turns it on regardless.
     public bool LocalOnly { get; set; }
 
+    // #665: what talking over Mana does (BargeInMode: "minWords" -- the
+    // default when null -- "always" or "notWhileSpeaking"). Settings >
+    // Voice; MANA_BARGE_IN_MODE overrides it.
+    public string? BargeInMode { get; set; }
+
     // #681: the prompt preset sent as presetId with every reply; null =
     // none. Chosen in Settings > Presets (windows-launcher kept the same
     // choice in localStorage's manaSelectedPresetId).
@@ -66,6 +71,10 @@ internal sealed class ManaSettingsStore
     public bool AvatarClickThrough { get; set; }
     public int? AvatarLeft { get; set; }
     public int? AvatarTop { get; set; }
+
+    // #685: the chat window's live avatar framing -- "full", "waist" or
+    // "bust" (see LiveAvatarPanel); null = full.
+    public string? AvatarFraming { get; set; }
 
     // #687: the chat session open when the launcher last ran, reopened on
     // launch, and whether it was auto-started (Q62: those still rotate).
