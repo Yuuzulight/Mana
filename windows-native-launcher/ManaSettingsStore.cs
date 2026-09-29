@@ -62,6 +62,11 @@ internal sealed class ManaSettingsStore
     public int? AvatarLeft { get; set; }
     public int? AvatarTop { get; set; }
 
+    // #684: Electron's "minimized Mana" -- the avatar steps aside while the
+    // chat window is open and comes back when it's closed or minimized.
+    // Off keeps her always showing. Tray menu.
+    public bool AvatarHidesWithChat { get; set; } = true;
+
     // filePath: null (every real call site) uses the real per-user
     // settings file. Tests pass a temp file path to exercise
     // load/save/corruption handling without touching LocalApplicationData.

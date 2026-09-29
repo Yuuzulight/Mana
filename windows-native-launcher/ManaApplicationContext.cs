@@ -87,6 +87,11 @@ internal sealed class ManaApplicationContext : ApplicationContext
     // would show a second overlay and re-kill already-exiting processes.
     private bool isShuttingDown;
 
+    // #684: see ManaSettingsStore.AvatarHidesWithChat. servicesStarted: the
+    // avatar first appears once startup is done, so nothing shows her earlier.
+    private bool avatarHidesWithChat = ManaSettingsStore.Load().AvatarHidesWithChat;
+    private bool servicesStarted;
+
     public ManaApplicationContext()
     {
         var rootDir = FindRootDirectory();
@@ -213,6 +218,8 @@ internal sealed class ManaApplicationContext : ApplicationContext
         };
 
         trayIcon.DoubleClick += (_, _) => ShowStatus();
+        sessionListForm.VisibleChanged += (_, _) => SyncAvatarWithChat();
+        sessionListForm.Resize += (_, _) => SyncAvatarWithChat(); // minimized or restored
         avatarOverlay.Clicked += voiceLoop.Wake; // #662
         trayNotifications.Start();
         visionCaptureClient.Start();
@@ -302,6 +309,23 @@ internal sealed class ManaApplicationContext : ApplicationContext
             latest.Save();
         };
         menu.Items.Add(clickThroughItem);
+        var hidesWithChatItem = new ToolStripMenuItem("Hide avatar while chat is open") { CheckOnClick = true, Checked = avatarHidesWithChat };
+        hidesWithChatItem.Click += (_, _) =>
+        {
+            avatarHidesWithChat = hidesWithChatItem.Checked;
+            var latest = ManaSettingsStore.Load();
+            latest.AvatarHidesWithChat = avatarHidesWithChat;
+            latest.Save();
+            if (avatarHidesWithChat)
+            {
+                SyncAvatarWithChat();
+            }
+            else if (servicesStarted)
+            {
+                avatarOverlay.Show();
+            }
+        };
+        menu.Items.Add(hidesWithChatItem);
         // #681: Stop listening turns the mic off and puts Mana back to
         // sleep; Start listening needs the wake word again.
         var listeningItem = new ToolStripMenuItem();
@@ -357,7 +381,9 @@ internal sealed class ManaApplicationContext : ApplicationContext
             overlay.Close();
             // The avatar appears only once the startup screen is done, so
             // she never pops up over it half-started.
+            servicesStarted = true;
             avatarOverlay.Show();
+            SyncAvatarWithChat();
             ReportAvatarModelProblem();
         }
     }
@@ -537,6 +563,24 @@ internal sealed class ManaApplicationContext : ApplicationContext
     // #526: a fresh dialog per open -- simpler than keeping one instance
     // alive/reused (QuickEntryForm's own pattern), and this isn't opened
     // often enough for that cost to matter.
+    // #684: with AvatarHidesWithChat on, she shows exactly while the chat
+    // window is closed or minimized.
+    private void SyncAvatarWithChat()
+    {
+        if (!servicesStarted || !avatarHidesWithChat || avatarOverlay.IsDisposed)
+        {
+            return;
+        }
+        var show = AvatarShowsBesideChat(sessionListForm.Visible, sessionListForm.WindowState);
+        if (avatarOverlay.Visible != show)
+        {
+            avatarOverlay.Visible = show;
+        }
+    }
+
+    internal static bool AvatarShowsBesideChat(bool chatVisible, FormWindowState chatState) =>
+        !chatVisible || chatState == FormWindowState.Minimized;
+
     private void ShowDoctorPanel()
     {
         using var panel = new DoctorPanelForm(backendClient);

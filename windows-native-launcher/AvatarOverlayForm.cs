@@ -205,6 +205,94 @@ internal sealed class AvatarOverlayForm : Form
         PositionOverlay(settings);
     }
 
+    // #684: back on screen when a monitor is unplugged or its resolution or
+    // scaling changes. Raised off the UI thread; hooked while the window
+    // handle exists (see OnHandleCreated), since the event is static.
+
+    private void OnDisplaySettingsChanged(object? sender, EventArgs e)
+    {
+        if (!IsHandleCreated || IsDisposed)
+        {
+            return;
+        }
+        try
+        {
+            BeginInvoke(KeepOnScreen);
+        }
+        catch (InvalidOperationException)
+        {
+            // the window closed meanwhile
+        }
+    }
+
+    private void KeepOnScreen()
+    {
+        PositionOverlay(ManaSettingsStore.Load());
+        Location = KeepInside(Bounds, Screen.FromRectangle(Bounds).WorkingArea);
+    }
+
+    // #684: `bounds` moved the least needed to lie fully inside `area`
+    // (its top-left corner kept on screen if it's bigger than the area).
+    internal static Point KeepInside(Rectangle bounds, Rectangle area) => new(
+        Math.Max(area.Left, Math.Min(bounds.Left, area.Right - bounds.Width)),
+        Math.Max(area.Top, Math.Min(bounds.Top, area.Bottom - bounds.Height)));
+
+    // #684: TopMost alone loses to a borderless-fullscreen game or video
+    // that comes to the front (it can be topmost too), so each time the
+    // foreground window changes she's put back on top -- without taking
+    // focus. Electron's "screen-saver" level does the same job. Exclusive
+    // fullscreen still wins; that's out of scope.
+    private nint foregroundHook;
+    private WinEventProc? foregroundHookProc; // kept alive while hooked
+
+    protected override void OnHandleCreated(EventArgs e)
+    {
+        base.OnHandleCreated(e);
+        if (foregroundHook != 0)
+        {
+            UnhookWinEvent(foregroundHook); // the handle was recreated
+        }
+        foregroundHookProc = (_, _, _, _, _, _, _) =>
+        {
+            if (Visible)
+            {
+                SetWindowPos(Handle, HwndTopmost, 0, 0, 0, 0, SwpNoMove | SwpNoSize | SwpNoActivate);
+            }
+        };
+        foregroundHook = SetWinEventHook(EventSystemForeground, EventSystemForeground, 0, foregroundHookProc, 0, 0, WinEventOutOfContext);
+        Microsoft.Win32.SystemEvents.DisplaySettingsChanged -= OnDisplaySettingsChanged;
+        Microsoft.Win32.SystemEvents.DisplaySettingsChanged += OnDisplaySettingsChanged;
+    }
+
+    protected override void OnHandleDestroyed(EventArgs e)
+    {
+        Microsoft.Win32.SystemEvents.DisplaySettingsChanged -= OnDisplaySettingsChanged;
+        if (foregroundHook != 0)
+        {
+            UnhookWinEvent(foregroundHook);
+            foregroundHook = 0;
+        }
+        base.OnHandleDestroyed(e);
+    }
+
+    private delegate void WinEventProc(nint hook, uint eventType, nint hwnd, int idObject, int idChild, uint thread, uint time);
+
+    [DllImport("user32.dll")]
+    private static extern nint SetWinEventHook(uint eventMin, uint eventMax, nint module, WinEventProc proc, uint processId, uint threadId, uint flags);
+
+    [DllImport("user32.dll")]
+    private static extern bool UnhookWinEvent(nint hook);
+
+    [DllImport("user32.dll")]
+    private static extern bool SetWindowPos(nint hwnd, nint insertAfter, int x, int y, int cx, int cy, uint flags);
+
+    private const uint EventSystemForeground = 0x0003;
+    private const uint WinEventOutOfContext = 0;
+    private static readonly nint HwndTopmost = -1;
+    private const uint SwpNoSize = 0x1;
+    private const uint SwpNoMove = 0x2;
+    private const uint SwpNoActivate = 0x10;
+
     private sealed record CubismLoadResult(
         CubismModel? Model,
         CubismRenderer? Renderer,
