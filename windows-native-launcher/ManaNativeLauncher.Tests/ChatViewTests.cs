@@ -159,4 +159,21 @@ public class ChatViewTests
         Assert.False(ChatView.IsSafeLink("ms-settings:privacy"));
         Assert.False(ChatView.IsSafeLink("/relative"));
     }
+
+    // #687: reopening/switching sessions shows that session's stored turns.
+    [Fact]
+    public void ShowHistory_ReplacesTheConversation()
+    {
+        using var view = NewView();
+        view.AppendUserMessage("from another session");
+
+        view.ShowHistory(new[]
+        {
+            new ManaSessionTurn { User = "hi", Assistant = "Hello **there**." },
+            new ManaSessionTurn { User = "bye", Assistant = null },
+        });
+
+        Assert.Equal(new[] { "You", "Mana", "You" }, view.Messages.Select(m => m.Speaker));
+        Assert.Equal("Hello there.", view.Messages[1].PlainText);
+    }
 }
