@@ -16,6 +16,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { spawn } = require("node:child_process");
 const { isCredentialPath } = require("./tool-policy");
+const { formatReviewHeader } = require("./adversarial-verifier");
 const { killProcessTree } = require("../utils/kill-process-tree");
 
 const CODING_TOOL_PREFIX = "coding__";
@@ -149,6 +150,8 @@ function runTestCommand(
 // (zed-integration.js) already used by server.js's /editors/* routes.
 // options.diffsDir: injectable for tests; same dataDir convention as
 // acp-memory-store.js/skills-store.js otherwise.
+// options.reviewEdit: optional (proposal) => Promise<review|null>, issue
+// #622's adversarial verifier (ai/adversarial-verifier.js's refuteEdit).
 // options.approvalGate: without one, coding__run_tests isn't offered.
 // options.env / options.runTests: injectable for tests.
 function createCodingToolSource(options = {}) {
@@ -181,7 +184,7 @@ function createCodingToolSource(options = {}) {
   function writeDiffFile(proposal) {
     fs.mkdirSync(diffsDir, { recursive: true });
     const diffPath = path.join(diffsDir, `${proposal.id}.diff`);
-    fs.writeFileSync(diffPath, proposal.diff, "utf8");
+    fs.writeFileSync(diffPath, formatReviewHeader(proposal.adversarialReview) + proposal.diff, "utf8");
     return diffPath;
   }
 
@@ -262,6 +265,9 @@ function createCodingToolSource(options = {}) {
         proposedContent: args?.proposedContent,
         summary: args?.summary,
       });
+      // Issue #622: before the diff reaches the user -- stored on the
+      // proposal too, so the /editors proposal routes show it.
+      if (options.reviewEdit) proposal.adversarialReview = await options.reviewEdit(proposal);
       const diffPath = writeDiffFile(proposal);
       return JSON.stringify({
         status: "ok",
@@ -269,6 +275,7 @@ function createCodingToolSource(options = {}) {
         relativePath: proposal.relativePath,
         summary: proposal.summary,
         proposalId: proposal.id,
+        adversarialReview: proposal.adversarialReview || undefined,
         // #787: the goal review judges from tool results, so it sees the change.
         diff: String(proposal.diff || "").slice(0, 2000),
       });

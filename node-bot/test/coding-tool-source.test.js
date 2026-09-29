@@ -136,6 +136,32 @@ test("executeTool rejects an unrecognized coding tool name", async () => {
   );
 });
 
+// Issue #622: the adversarial verdict reaches the model (tool result) and
+// the user (proposal + a header line on the .diff file) before approval.
+test("propose_edit runs reviewEdit before writing the diff and surfaces its verdict", async () => {
+  const review = { verdict: "refuted", failingCase: "x is read before it's set", reason: "" };
+  const reviewed = [];
+  const source = createCodingToolSource({
+    editors: fakeEditors(),
+    diffsDir: tempDir(),
+    reviewEdit: async (proposal) => {
+      reviewed.push(proposal.id);
+      return review;
+    },
+  });
+
+  const parsed = JSON.parse(
+    await source.executeTool(`${CODING_TOOL_PREFIX}propose_edit`, { path: "src/foo.js", proposedContent: "const x = 2;" }),
+  );
+
+  assert.deepEqual(reviewed, ["proposal-1"]);
+  assert.deepEqual(parsed.adversarialReview, review);
+  assert.equal(
+    fs.readFileSync(parsed.diffPath, "utf8"),
+    "# Adversarial review (#622): REFUTED -- x is read before it's set\n--- src/foo.js\n+++ src/foo.js\n-old\n+const x = 2;\n",
+  );
+});
+
 // #787: coding__run_tests.
 function fakeGate({ granted = false } = {}) {
   const executors = new Map();

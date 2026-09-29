@@ -111,6 +111,7 @@ const { sessionsCapability } = require("./capabilities/sessions-capability");
 const { promptCompositionCapability } = require("./capabilities/prompt-composition-capability");
 const { presetsCapability } = require("./capabilities/presets-capability");
 const { personalityCapability } = require("./capabilities/personality-capability");
+const { moodCapability } = require("./capabilities/mood-capability");
 const {
   deepResearchCapability,
 } = require("./capabilities/deep-research-capability");
@@ -151,6 +152,7 @@ const {
   isLoopbackBindHost,
   runDoctorChecksAsync,
 } = require("./doctor");
+const { plainTextSecretKeys } = require("./load-env");
 	const { createDoctorTrayPoller } = require("./doctor-tray-poll");
 	const { notifyTray } = require("./tray-notifier");
 	const sessionTokenUsage = require("./session-token-usage");
@@ -190,6 +192,7 @@ const { createSkillProposalRunner } = require("./skill-proposal");
 const persona = require("./persona");
 const { createPresetsStore } = require("./presets-store");
 const { createPersonalityStore } = require("./personality-store");
+const { createMoodStore, moodPromptBlock } = require("./mood-store");
 const { createPluginSettingsStore } = require("./plugin-settings-store");
 const { createAuthStore } = require("./auth-store");
 const { createToolPolicy } = require("./ai/tool-policy");
@@ -213,8 +216,10 @@ const { createSnapshotToolSource } = require("./ai/snapshot-tool-source");
 const { createExpressionToolSource, isExpressionToolName } = require("./ai/expression-tool-source");
 const { createVisionToolSource } = require("./ai/vision-tool-source");
 const { createSessionGoalToolSource } = require("./ai/session-goal-tool-source");
+const { createDeepThinkingState, createDeepThinkingToolSource } = require("./ai/deep-thinking-tool-source");
 const { visionCaptureBridge } = require("./vision-capture-bridge");
 const { createCodingToolSource } = require("./ai/coding-tool-source");
+const { refuteEdit } = require("./ai/adversarial-verifier");
 const { createMcpClientRegistry } = require("./mcp-client-registry");
 const { mcpClientCapability } = require("./capabilities/mcp-client-capability");
 const { createToolCallLog, wrapWithToolCallLog } = require("./tool-call-log");
@@ -241,6 +246,7 @@ const {
   pickPreferredLlamaModel,
   selectLlamaModelProfileForPrompt,
   shouldUseRemoteAi: shouldUseRemoteAiCore,
+  wantsThinkHarder,
 } = require("./ai/local-ai");
 const {
   createLocalLlamaRuntime,
@@ -575,6 +581,8 @@ async function runLocalLlamaReply(
   // #666: chat turns pass this to try their backup model on an empty reply
   // before llama-cli; it resolves to a reply, or null to fall through.
   onEmptyReply = null,
+  // #675: true forces thinking on for this reply (a "think harder" turn).
+  thinking = undefined,
 ) {
   if (llamaServerRuntime.isEnabled()) {
     try {
@@ -584,6 +592,8 @@ async function runLocalLlamaReply(
         profile,
         overrideSystemPrompt,
         extraMessages,
+        null,
+        thinking,
       );
     } catch (e) {
       if (onEmptyReply && /returned an empty reply/.test(e && e.message)) {
@@ -816,6 +826,14 @@ const presetsStore = createPresetsStore({});
 // Issue #357: the editable personality layer, persisted so an adjustment
 // survives a restart. persona.js owns the immutable core and no storage.
 const personalityStore = createPersonalityStore({});
+// Issue #700: Mana's mood, persisted beside emotional-state.json (in memory
+// under tests, so they never touch the real data dir).
+const moodStore = createMoodStore({
+  filePath:
+    process.env.NODE_ENV === "test" || process.env.NODE_TEST_CONTEXT
+      ? null
+      : path.join(acpMemoryStore.dataDir, "mood-state.json"),
+});
 
 // Procedural-memory skills store (see skills-store.js, issue #140)
 const skillsStore = createSkillsStore({ snapshotStore });
@@ -836,6 +854,7 @@ const approvalGate = createApprovalGate({
   guardianEnabled: process.env.MANA_GUARDIAN_PRECHECK_ENABLED === "1",
   guardianPreCheck: (actionType, ctx) =>
     judgeActionRisk({ actionType, ...ctx, runLocalReply: runLocalLlamaReply }),
+  onDeny: () => moodStore.record("approval_rejected"),
 });
 
 // Conversational rut detection (issue #159): flags a reply too similar to
@@ -2021,6 +2040,13 @@ function registerRoutes(app, upload, deps = {}) {
     }
     return editorIntegrations;
   }
+  // Issue #622: adversarial review of agent-proposed edits, on by default
+  // (MANA_ADVERSARIAL_VERIFY=0 turns it off), on whatever model is already
+  // loaded -- never a swap.
+  const reviewEdit =
+    deps.reviewEdit ||
+    ((proposal) =>
+      refuteEdit({ ...proposal, runLocalReply: llamaServerRuntime.runLocalReplyIfSafelyLoaded }));
   const modelManagement =
     deps.modelManagement ||
     createModelManagement({
@@ -2113,6 +2139,7 @@ function registerRoutes(app, upload, deps = {}) {
     deepResearchCapability,
     presetsCapability,
     personalityCapability,
+    moodCapability,
     backgroundMemoryCapability,
     memoryFactsCapability,
     retrieverAdminCapability,
@@ -2129,6 +2156,7 @@ function registerRoutes(app, upload, deps = {}) {
   ];
   const activePresetsStore = deps.presetsStore || presetsStore;
   const activePersonalityStore = deps.personalityStore || personalityStore;
+  const activeMoodStore = deps.moodStore || moodStore;
   const activePluginSettingsStore = deps.pluginSettingsStore || pluginSettingsStore;
   const activeSkillsStore = deps.skillsStore || skillsStore;
   // Registered against whichever store this createApp call actually uses
@@ -2180,6 +2208,8 @@ function registerRoutes(app, upload, deps = {}) {
   const activePronunciationLexiconStore = deps.pronunciationLexiconStore || pronunciationLexiconStore;
   const activeBrowserAutomationToolSource = deps.browserAutomationToolSource || browserAutomationToolSource;
   const agentActivity = createAgentActivity();
+  // #675 Q12b: deep thinking Mana turned on herself, per session.
+  const deepThinking = createDeepThinkingState();
   const capabilityContext = {
     acpMemoryStore: deps.acpMemoryStore || acpMemoryStore,
     // Only cron-scheduler's agent-job executor uses this today -- every
@@ -2251,6 +2281,7 @@ function registerRoutes(app, upload, deps = {}) {
         )),
     presetsStore: activePresetsStore,
     personalityStore: activePersonalityStore,
+    moodStore: activeMoodStore,
     marketDataClient,
     jobApplicationsStore,
     adzunaClient,
@@ -2310,6 +2341,8 @@ function registerRoutes(app, upload, deps = {}) {
         fishTtsWarmup: ttsRuntime.getFishWarmupStatus(),
         sessionSearchVectorEnabled: sessionSearchIndex.vectorEnabled(),
         promptComposition: getMostRecentComposition(),
+        // Q18 (#645): named here, not warned about on every start.
+        plainTextSecrets: (deps.plainTextSecretKeys || plainTextSecretKeys)(),
         memoryGraphHistory,
       });
       return res.status(result.ok ? 200 : 503).json(result);
@@ -2338,7 +2371,7 @@ function registerRoutes(app, upload, deps = {}) {
 
   // Issue #500: /zed/* and /editors/* routes (previously inline here)
   // moved to server-routes.js's registerEditorRoutes.
-  registerEditorRoutes(app, { checkAdminAuth, getEditorIntegrations, zed: deps.zed });
+  registerEditorRoutes(app, { checkAdminAuth, getEditorIntegrations, zed: deps.zed, reviewEdit });
 
   // Issue #500: the 9 /models/* routes (previously inline here, minus the
   // two unrelated routes -- /browser-automation/activity and
@@ -3316,8 +3349,9 @@ function registerRoutes(app, upload, deps = {}) {
       overrideSystemPrompt = null,
       extraMessages = null,
       onEmptyReply = null,
+      thinking = undefined,
     ) {
-      return runLocalLlamaReply(prompt, maxTokens, profile, overrideSystemPrompt, extraMessages, onEmptyReply);
+      return runLocalLlamaReply(prompt, maxTokens, profile, overrideSystemPrompt, extraMessages, onEmptyReply, thinking);
     });
 
   // Foundational tool-calling (issue #51): only llama-server (not the
@@ -3622,6 +3656,27 @@ function registerRoutes(app, upload, deps = {}) {
       transcript,
       modelProfile,
     );
+    // #675: "think harder" turns thinking on for this turn's replies (tool
+    // loop, streamed or plain, and regenerations) with its own bigger
+    // budget -- asked for in words, or by the client's thinkHarder request
+    // field (the native launcher's deep-thinking toggle). Best-of-N never
+    // thinks, so such a turn skips it. undefined (not false) otherwise:
+    // the profile's own default then decides.
+    // Q12b: or Mana's own deep thinking (deep_thinking__set) is on for this
+    // session; a literal thinkHarder: false (the user clicked the lit Think
+    // button off) ends it first. Only for callers with a replyMeta (the
+    // user's own chat routes), never cron/Discord or other scheduled jobs
+    // (#780's replyMeta.scheduled). let: her tool call can switch it
+    // mid-reply.
+    const userChat = Boolean(replyMeta && !replyMeta.scheduled);
+    let manaThinking = false;
+    if (userChat) {
+      if (replyMeta.thinkHarder === false) deepThinking.set(sessionId, false);
+      manaThinking = deepThinking.takeReply(sessionId);
+      replyMeta.deepThinking = deepThinking.isOn(sessionId);
+    }
+    const askedThinkHarder = (replyMeta && replyMeta.thinkHarder === true) || wantsThinkHarder(transcript);
+    let thinkHarder = askedThinkHarder || manaThinking || undefined;
 
     // Determine assistant mode and system prompt
     const inferred = pickAssistantMode(transcript, normalizedModelProfile); // { mode, reason }
@@ -3863,6 +3918,21 @@ function registerRoutes(app, upload, deps = {}) {
       console.warn("Failed to look up related facts:", relErr.message);
     }
 
+    // Issue #700: her mood, as tone guidance only -- "late" like memory,
+    // since it changes turn to turn. It never touches the token budget,
+    // tools or mode, and moodPromptBlock leaves coding replies alone.
+    let moodText = "";
+    try {
+      activeMoodStore.recordTurn(transcript);
+      moodText = moodPromptBlock(activeMoodStore.get(), mode) || "";
+      if (moodText) {
+        memoryExtraMessages.late.push({ role: "system", content: moodText });
+        flatMemorySuffix += `\n\n${moodText}`;
+      }
+    } catch (moodErr) {
+      console.warn("Failed to apply mood:", moodErr.message);
+    }
+
     // Issue #400: makes the composition of the prompt this reply actually
     // used observable (GET /prompt-composition), instead of only
     // discoverable by reading the code the way #364's truncation bug was.
@@ -3884,6 +3954,7 @@ function registerRoutes(app, upload, deps = {}) {
       "skills-index": skillsIndexText,
       "prompt-memory": promptMemoryText,
       "related-facts": relatedFactsText,
+      mood: moodText,
     };
     let compositionRecord = null;
     try {
@@ -3896,6 +3967,7 @@ function registerRoutes(app, upload, deps = {}) {
           chars: relatedFactsChars,
           dropped: { truncated: relatedFactsTruncated, ...(relatedFactsRecall ? { recall: relatedFactsRecall } : {}) },
         },
+        { name: "mood", chars: moodText.length, dropped: null },
       ]);
     } catch (compErr) {
       // Diagnostic-only; never blocks a reply.
@@ -4396,7 +4468,7 @@ function registerRoutes(app, upload, deps = {}) {
             // already backs the /editors/* admin routes, just stops short
             // of ever calling approveEditProposal.
             // #787: approvalGate enables coding__run_tests (asks first).
-            createCodingToolSource({ editors: getEditorIntegrations(), approvalGate: activeApprovalGate }),
+            createCodingToolSource({ editors: getEditorIntegrations(), approvalGate: activeApprovalGate, reviewEdit }),
             ...(isPluginEnabled(browserAutomationPlugin, activePluginSettingsStore)
               ? [activeBrowserAutomationToolSource]
               : []),
@@ -4404,6 +4476,21 @@ function registerRoutes(app, upload, deps = {}) {
             // goal set -- there's nothing to finish otherwise, and no
             // reason to spend schema tokens advertising it on every reply.
             ...(sessionGoal ? [createSessionGoalToolSource()] : []),
+            // #675 Q12b: Mana turns deep thinking on/off herself; the rest
+            // of this reply's tool rounds follow it at once.
+            ...(userChat
+              ? [
+                  createDeepThinkingToolSource({
+                    onSet: (on) => {
+                      // Already on for this reply: asking again mustn't
+                      // restart the 10-reply cap.
+                      if (!(on && manaThinking)) deepThinking.set(sessionId, on);
+                      replyMeta.deepThinking = deepThinking.isOn(sessionId);
+                      thinkHarder = askedThinkHarder || on || undefined;
+                    },
+                  }),
+                ]
+              : []),
           ]);
           // Issue #281: on the "fast" (small) profile, protect its limited
           // context from a large tool catalogue and from raw tool-result
@@ -4451,7 +4538,9 @@ function registerRoutes(app, upload, deps = {}) {
           // Issue #188: applied last so it catches every tool call from
           // every source (local read_file, browser-automation, MCP) in one
           // shared audit/trace log.
-          mergedToolPolicy = wrapWithToolCallLog(mergedToolPolicy, activeToolCallLog);
+          mergedToolPolicy = wrapWithToolCallLog(mergedToolPolicy, activeToolCallLog, () =>
+            activeMoodStore.record("task_failed"),
+          );
           // #486: modify-input hook rules rewrite args first, so every gate
           // above and the audit log see the rewritten call, never the original.
           mergedToolPolicy = wrapWithInputHooks(mergedToolPolicy, activeHooksStore);
@@ -4497,6 +4586,7 @@ function registerRoutes(app, upload, deps = {}) {
               profile: normalizedModelProfile,
               overrideSystemPrompt: selectedSystemPrompt,
               extraMessages: memoryExtraMessages,
+              thinking: () => thinkHarder,
               goal: goalMode ? sessionGoal : null,
             },
           );
@@ -4553,6 +4643,7 @@ function registerRoutes(app, upload, deps = {}) {
             overrideSystemPrompt: selectedSystemPrompt,
             extraMessages: memoryExtraMessages,
             onSentence: wrappedOnSentence,
+            thinking: thinkHarder,
           });
         } catch (e) {
           console.warn(
@@ -4568,6 +4659,7 @@ function registerRoutes(app, upload, deps = {}) {
         selectedSystemPrompt,
         memoryExtraMessages,
         () => replyWithBackup(promptText),
+        thinkHarder,
       );
     }
 
@@ -4584,6 +4676,7 @@ function registerRoutes(app, upload, deps = {}) {
         bestOfNEnabled &&
         !goalMode &&
         mode === "coding" &&
+        !thinkHarder &&
         isLlamaServerAvailable()
       ) {
         try {

@@ -455,6 +455,62 @@ internal sealed class SessionListForm : Form
         };
         send.FlatAppearance.BorderSize = 0;
 
+        // #675: deep thinking, sticky until clicked off. While on, every
+        // turn (typed or spoken) asks node-bot to think harder. A toggle
+        // (CheckBox drawn as a button) so its on/off state is also exposed to
+        // screen readers; not saved -- off at each launch, like the tool
+        // panel's pin, since a forgotten "on" makes every reply slow.
+        var think = new CheckBox
+        {
+            Appearance = Appearance.Button,
+            Text = "Think",
+            TextAlign = ContentAlignment.MiddleCenter,
+            Dock = DockStyle.Right,
+            Width = 72,
+            FlatStyle = FlatStyle.Flat,
+            BackColor = DarkTheme.Panel2,
+            ForeColor = DarkTheme.Muted,
+            AccessibleName = "Deep thinking",
+        };
+        think.FlatAppearance.BorderSize = 0;
+        think.FlatAppearance.CheckedBackColor = DarkTheme.Accent;
+        railToolTip.SetToolTip(think, DeepThinkingOffTooltip);
+        // Q12b: it also lights while Mana's own deep thinking is on (she
+        // turned it on when asked); clicking it then turns hers off too.
+        var userThinking = false;
+        var syncing = false;
+        think.CheckedChanged += (_, _) =>
+        {
+            if (!syncing)
+            {
+                userThinking = think.Checked;
+                voiceLoop.SetDeepThinking(think.Checked);
+            }
+            think.ForeColor = think.Checked ? DarkTheme.OnAccent : DarkTheme.Muted;
+            railToolTip.SetToolTip(think, think.Checked ? DeepThinkingOnTooltip : DeepThinkingOffTooltip);
+        };
+        voiceLoop.ManaDeepThinkingChanged += on =>
+        {
+            void Apply()
+            {
+                syncing = true;
+                think.Checked = userThinking || on;
+                syncing = false;
+            }
+            // The form's handle exists from construction (see the ctor), so
+            // this also works while the window is hidden.
+            if (IsDisposed || !IsHandleCreated)
+            {
+                return;
+            }
+            if (InvokeRequired)
+            {
+                BeginInvoke(Apply);
+                return;
+            }
+            Apply();
+        };
+
         async Task SendAsync()
         {
             var text = box.Text;
@@ -527,13 +583,19 @@ internal sealed class SessionListForm : Form
             await sending;
         };
 
-        var gap = new Panel { Dock = DockStyle.Right, Width = 8, BackColor = Color.Transparent };
+        Panel Gap() => new() { Dock = DockStyle.Right, Width = 8, BackColor = Color.Transparent };
         var panel = new Panel { Dock = DockStyle.Bottom, Height = 58, Padding = new Padding(12, 10, 12, 10), BackColor = DarkTheme.Panel };
+        // Docked last-added first: Send at the far right, then Think, then the box.
         panel.Controls.Add(box);
-        panel.Controls.Add(gap);
+        panel.Controls.Add(Gap());
+        panel.Controls.Add(think);
+        panel.Controls.Add(Gap());
         panel.Controls.Add(send);
         return panel;
     }
+
+    private const string DeepThinkingOnTooltip = "Deep thinking: on -- slower, more careful replies. Click to turn off.";
+    private const string DeepThinkingOffTooltip = "Deep thinking: off -- click for slower, more careful replies";
 
     // #652 part 6: when a reply finishes, any edits Mana proposed during
     // that turn get Approve / Review buttons on her message. "During that
@@ -593,6 +655,12 @@ internal sealed class SessionListForm : Form
             if (detail is null || detail.Status != "pending")
             {
                 problem ??= $"{proposal.RelativePath} was already handled.";
+                continue;
+            }
+            // Q16: never batch-approve an edit Mana's review refuted.
+            if (detail.RefutedCase is not null)
+            {
+                problem ??= $"{proposal.RelativePath}: Mana's review found a way it breaks, so it needs approving on its own (Review).";
                 continue;
             }
             var result = await backendClient.ApproveProposalAsync(proposal.Id, detail.Hunks.Select(h => h.Id).ToList());

@@ -254,7 +254,10 @@ internal sealed class ManaBackendClient
     // #681: presetId (the active prompt preset, Settings > Presets) is
     // omitted when empty, matching windows-launcher's
     // `presetId: selectedPresetId || undefined`.
-    public async IAsyncEnumerable<ReplyStreamEvent> ReplyStreamAsync(string text, string? sessionId = null, string screenText = "", string? image = null, IReadOnlyList<string>? images = null, string? presetId = null)
+    // #675: thinkHarder (the main window's deep-thinking toggle): true asks
+    // node-bot to think on this turn, false ends Mana's own deep thinking
+    // (Q12b), null sends nothing.
+    public async IAsyncEnumerable<ReplyStreamEvent> ReplyStreamAsync(string text, string? sessionId = null, string screenText = "", string? image = null, IReadOnlyList<string>? images = null, string? presetId = null, bool? thinkHarder = null)
     {
         var fields = new Dictionary<string, object?> { ["text"] = text, ["screenText"] = screenText };
         if (sessionId is not null)
@@ -264,6 +267,10 @@ internal sealed class ManaBackendClient
         if (!string.IsNullOrEmpty(presetId))
         {
             fields["presetId"] = presetId;
+        }
+        if (thinkHarder is bool think)
+        {
+            fields["thinkHarder"] = think;
         }
         if (images is { Count: > 0 })
         {
@@ -886,6 +893,41 @@ internal sealed class ManaBackendClient
             }
         }
         return skills;
+    }
+
+    // #664: queue a SKILL.md folder for import. node-bot reads it now and
+    // always asks in Approvals before writing anything. Returns null when
+    // queued, else node-bot's error (no SKILL.md, not local, ...).
+    public async Task<string?> ImportSkillFolderAsync(string folderPath)
+    {
+        var payload = JsonSerializer.Serialize(new { path = folderPath });
+        using var content = new StringContent(payload, Encoding.UTF8, "application/json");
+        using var response = await http.PostAsync("/skills/import", content);
+        if (response.IsSuccessStatusCode)
+        {
+            return null;
+        }
+        await using var stream = await response.Content.ReadAsStreamAsync();
+        using var document = await JsonDocument.ParseAsync(stream);
+        return document.RootElement.TryGetProperty("error", out var errorEl) ? errorEl.GetString() ?? "import failed" : "import failed";
+    }
+
+    // Q20: "free", "each" or "first" -- how Mana may use imported skills.
+    public async Task<string> GetImportedSkillUseAsync()
+    {
+        using var response = await http.GetAsync("/skill-settings");
+        response.EnsureSuccessStatusCode();
+        await using var stream = await response.Content.ReadAsStreamAsync();
+        using var document = await JsonDocument.ParseAsync(stream);
+        return document.RootElement.TryGetProperty("importedSkillUse", out var modeEl) ? modeEl.GetString() ?? "first" : "first";
+    }
+
+    public async Task SetImportedSkillUseAsync(string mode)
+    {
+        var payload = JsonSerializer.Serialize(new { importedSkillUse = mode });
+        using var content = new StringContent(payload, Encoding.UTF8, "application/json");
+        using var response = await http.PutAsync("/skill-settings", content);
+        response.EnsureSuccessStatusCode();
     }
 
     public async Task DeleteSkillAsync(string name)
@@ -1517,6 +1559,12 @@ internal sealed class ManaBackendClient
             RelativePath = proposalElement.TryGetProperty("relativePath", out var pathElement) ? pathElement.GetString() ?? "" : "",
             Summary = proposalElement.TryGetProperty("summary", out var summaryElement) ? summaryElement.GetString() : null,
             Hunks = hunks,
+            RefutedCase = proposalElement.TryGetProperty("adversarialReview", out var reviewElement)
+                && reviewElement.ValueKind == JsonValueKind.Object
+                && reviewElement.TryGetProperty("verdict", out var verdictElement)
+                && verdictElement.GetString() == "refuted"
+                    ? (reviewElement.TryGetProperty("failingCase", out var caseElement) ? caseElement.GetString() : null) ?? "(no case given)"
+                    : null,
         };
     }
 
@@ -1524,9 +1572,13 @@ internal sealed class ManaBackendClient
     // proposal not pending, workspace file missing, etc.) comes back with
     // a fully-parseable {proposal:null, error} body the caller needs to
     // read, same reasoning as RestoreEditSnapshotAsync's own handling.
-    public async Task<ManaProposalApproveResult> ApproveProposalAsync(string id, IReadOnlyList<string> acceptedHunkIds)
+    // Q16 (#622): confirmRefuted is the user's explicit go-ahead on an edit
+    // Mana's adversarial review refuted; node-bot refuses one without it.
+    public async Task<ManaProposalApproveResult> ApproveProposalAsync(string id, IReadOnlyList<string> acceptedHunkIds, bool confirmRefuted = false)
     {
-        var payload = JsonSerializer.Serialize(new { acceptedHunkIds });
+        var payload = confirmRefuted
+            ? JsonSerializer.Serialize(new { acceptedHunkIds, confirmRefuted })
+            : JsonSerializer.Serialize(new { acceptedHunkIds });
         using var content = new StringContent(payload, Encoding.UTF8, "application/json");
         using var response = await http.PostAsync($"/editors/workspace/proposals/{Uri.EscapeDataString(id)}/approve", content);
         await using var stream = await response.Content.ReadAsStreamAsync();
@@ -1831,6 +1883,7 @@ internal sealed class ManaBackendClient
             Error = root.TryGetProperty("error", out var errProp) ? errProp.GetString() : null,
             Name = root.TryGetProperty("name", out var nameProp) && nameProp.ValueKind == JsonValueKind.String ? nameProp.GetString() : null,
             Phase = root.TryGetProperty("phase", out var phaseProp) && phaseProp.ValueKind == JsonValueKind.String ? phaseProp.GetString() : null,
+            DeepThinking = root.TryGetProperty("deepThinking", out var deepProp) && deepProp.ValueKind == JsonValueKind.True,
         };
     }
 }
@@ -2120,6 +2173,8 @@ internal sealed class ReplyStreamEvent
     // #661: type "tool" -- the tool's name and "start"/"end".
     public string? Name { get; init; }
     public string? Phase { get; init; }
+    // #675 Q12b: on "final", whether Mana's own deep thinking is on.
+    public bool DeepThinking { get; init; }
 }
 
 // #580: a row from GET /editors/workspace/proposals -- see
@@ -2143,6 +2198,9 @@ internal sealed class ManaProposalDetail
     public string RelativePath { get; init; } = "";
     public string? Summary { get; init; }
     public IReadOnlyList<ManaProposalHunk> Hunks { get; init; } = Array.Empty<ManaProposalHunk>();
+    // Q16 (#622): the failing case when Mana's adversarial review refuted
+    // this edit (approving it then needs the user's explicit confirmation).
+    public string? RefutedCase { get; init; }
 }
 
 // #580: one jsdiff structuredPatch hunk (computeProposalHunks) -- Lines

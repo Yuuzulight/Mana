@@ -32,10 +32,11 @@ function maxTier(a, b) {
 // and coding__propose_edit refuse credential paths themselves, #268), so
 // only tools *not* listed here -- an MCP server's, anything added later --
 // get their arguments inspected. "read" means nothing on the user's machine
-// changes or leaves it: expression__set and session_goal__finish only touch
-// Mana's own reply state, and coding__propose_edit only writes a .diff under
-// Mana's own data dir -- the user applies it themselves (#276), so asking
-// first would only lose the diff path from the reply.
+// changes or leaves it: expression__set, session_goal__finish and
+// deep_thinking__set only touch Mana's own reply state, and
+// coding__propose_edit only writes a .diff under Mana's own data dir -- the
+// user applies it themselves (#276), so asking first would only lose the
+// diff path from the reply.
 const BUILTIN_TIERS = {
   read_file: "read",
   session_search__query: "read",
@@ -44,6 +45,7 @@ const BUILTIN_TIERS = {
   vision__look: "read",
   expression__set: "read",
   session_goal__finish: "read",
+  deep_thinking__set: "read",
   browser_automation__snapshot: "read",
   coding__propose_edit: "read",
   memory__remember: "write",
@@ -507,5 +509,6 @@ module.exports = {
   resolveToolApprovalMode,
   extractHosts,
   bindCall,
+  resolveExecutable,
   wrapWithRiskGate,
 };
