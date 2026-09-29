@@ -31,4 +31,22 @@ public class AvatarOverlayFormTests
     [InlineData(true, true, true)]
     public void IsClickThrough_WhileGamingOrWhenSetInTheTray(bool manual, bool gameRunning, bool expected) =>
         Assert.Equal(expected, AvatarOverlayForm.IsClickThrough(manual, gameRunning));
+
+    // #684: after a display change she's pulled fully back onto the screen.
+    [Theory]
+    [InlineData(1700, 900, 1686, 792)]  // hanging off the bottom-right
+    [InlineData(-50, -20, 0, 0)]        // off the top-left
+    [InlineData(400, 300, 400, 300)]    // already inside
+    public void KeepInside_MovesTheLeastNeeded(int x, int y, int expectedX, int expectedY) =>
+        Assert.Equal(new Point(expectedX, expectedY),
+            AvatarOverlayForm.KeepInside(new Rectangle(x, y, 234, 288), new Rectangle(0, 0, 1920, 1080)));
+
+    // #684: "minimized Mana" -- she shows while the chat window is closed or minimized.
+    [Theory]
+    [InlineData(false, System.Windows.Forms.FormWindowState.Normal, true)]
+    [InlineData(true, System.Windows.Forms.FormWindowState.Minimized, true)]
+    [InlineData(true, System.Windows.Forms.FormWindowState.Normal, false)]
+    [InlineData(true, System.Windows.Forms.FormWindowState.Maximized, false)]
+    public void AvatarShowsBesideChat_OnlyWhileChatIsAway(bool chatVisible, System.Windows.Forms.FormWindowState state, bool expected) =>
+        Assert.Equal(expected, ManaApplicationContext.AvatarShowsBesideChat(chatVisible, state));
 }
