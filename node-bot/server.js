@@ -13,7 +13,7 @@ over inherited ones -- or set before running):
 - WHISPER_PROMPT : replaces the initial prompt that biases transcription
   toward Mana's wake words, your name and your frequent terms (issue #667)
 - WHISPER_VOCABULARY : comma-separated words whisper should know, added to
-  that prompt right after your name (e.g. "Imouto, Onesan, Gigi Murin,
+  that prompt right after your name (e.g. "Imouto, Oneesan, Gigi Murin,
   Hololive, VTuber"; issue #901). Ignored when WHISPER_PROMPT is set
 - WHISPER_BEAM_SIZE, WHISPER_NO_SPEECH_THRESHOLD, WHISPER_TEMPERATURE :
   whisper.cpp decoding tuning knobs, see docs/speech_recognition_improvement_plan.md
