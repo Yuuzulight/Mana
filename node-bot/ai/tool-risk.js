@@ -44,6 +44,7 @@ const BUILTIN_TIERS = {
   skill__view: "read",
   snapshot__list: "read",
   vision__look: "read",
+  vision__camera: "read", // #912: behind its own off-by-default toggle in the launcher
   expression__set: "read",
   session_goal__finish: "read",
   deep_thinking__set: "read",

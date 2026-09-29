@@ -145,6 +145,15 @@ test("findWhisperModel selects the turbo profile's large-v3-turbo model", () => 
   assert.equal(found, turboModel);
 });
 
+test("findWhisperModel's turbo profile finds a quantized large-v3-turbo (#933)", () => {
+  const toolsDir = tempToolsDir();
+  fs.mkdirSync(path.join(toolsDir, "models"), { recursive: true });
+  fs.writeFileSync(path.join(toolsDir, "models", "ggml-base.bin"), ""); // the usual default winner
+  const q5 = path.join(toolsDir, "models", "ggml-large-v3-turbo-q5_0.bin");
+  fs.writeFileSync(q5, "");
+  assert.equal(findWhisperModel({ env: { WHISPER_MODEL_PROFILE: "turbo" }, toolsDir }), q5);
+});
+
 test("findWhisperModel auto-detects large-v3-turbo via PREFERRED_NAME_ORDER even without an explicit profile", () => {
   const toolsDir = tempToolsDir();
   fs.mkdirSync(path.join(toolsDir, "models"), { recursive: true });
