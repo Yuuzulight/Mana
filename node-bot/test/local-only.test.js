@@ -50,3 +50,10 @@ test("the guard blocks every outside connection with an explanation and lets loc
     server.close();
   }
 });
+
+test("the launcher's toggle turns local-only mode on too", () => {
+  const { isLocalOnly } = require("../local-only");
+  assert.equal(isLocalOnly({}), false);
+  assert.equal(isLocalOnly({ MANA_LOCAL_ONLY: "1" }), true);
+  assert.equal(isLocalOnly({ MANA_LOCAL_ONLY: "0", MANA_LAUNCHER_LOCAL_ONLY: "1" }), true);
+});

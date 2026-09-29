@@ -197,8 +197,35 @@ internal sealed class SettingsPanel : UserControl
         layout.Controls.Add(tokenBox);
         layout.Controls.Add(saveButton);
         layout.Controls.Add(statusLabel);
+        layout.Controls.Add(BuildLocalOnlyRow(settings.LocalOnly));
 
         return new TabPage("Connection") { Controls = { layout } };
+    }
+
+    // #670: saved at once like the Voice tab's checkboxes; the backend
+    // reads it when the launcher next starts it.
+    private static FlowLayoutPanel BuildLocalOnlyRow(bool localOnly)
+    {
+        var check = new CheckBox
+        {
+            Text = "Local-only mode (nothing leaves this PC and your local network)",
+            AutoSize = true,
+            ForeColor = DarkTheme.Text,
+            Checked = localOnly,
+        };
+        var status = new Label { AutoSize = true, ForeColor = DarkTheme.Muted, Anchor = AnchorStyles.Left };
+        check.CheckedChanged += (_, _) =>
+        {
+            var latest = ManaSettingsStore.Load();
+            latest.LocalOnly = check.Checked;
+            latest.Save();
+            status.Text = "Saved -- restart Mana for this to take effect. MANA_LOCAL_ONLY=1 in node-bot/.env keeps it on.";
+        };
+
+        var row = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.LeftToRight, BackColor = DarkTheme.Background };
+        row.Controls.Add(check);
+        row.Controls.Add(status);
+        return row;
     }
 
     private TabPage BuildPluginsTab()

@@ -1,11 +1,15 @@
 const net = require("node:net");
 
-// #670 (Q22): local-only mode, off by default. MANA_LOCAL_ONLY=1 keeps
-// everything on this PC and the local network: cloud AI/TTS/STT providers
-// can't be configured, and any connection node-bot would open to anywhere
-// else fails with an explanation instead.
+// #670 (Q22): local-only mode, off by default. It keeps everything on
+// this PC and the local network: cloud AI/TTS/STT providers can't be
+// configured, and any connection node-bot would open to anywhere else fails
+// with an explanation instead. On when either says so: MANA_LOCAL_ONLY=1
+// (node-bot/.env or the environment), or the native launcher's Settings
+// toggle, which it passes as MANA_LAUNCHER_LOCAL_ONLY=1 -- its own name, so
+// a MANA_LOCAL_ONLY line in .env (which .env loading lets win) can't turn
+// the toggle off.
 function isLocalOnly(env = process.env) {
-  return env.MANA_LOCAL_ONLY === "1";
+  return env.MANA_LOCAL_ONLY === "1" || env.MANA_LAUNCHER_LOCAL_ONLY === "1";
 }
 
 // This PC or the LAN: "localhost", loopback and private/link-local IPs
@@ -30,7 +34,7 @@ function isLocalHost(host) {
 
 function localOnlyError(what) {
   return new Error(
-    `Local-only mode is on (MANA_LOCAL_ONLY=1), so ${what} is blocked: it would leave this PC and your local network. Set MANA_LOCAL_ONLY=0 to allow it.`,
+    `Local-only mode is on (Settings > Connection, or MANA_LOCAL_ONLY=1 in node-bot/.env), so ${what} is blocked: it would leave this PC and your local network.`,
   );
 }
 

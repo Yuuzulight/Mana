@@ -50,6 +50,11 @@ internal sealed class ManaSettingsStore
     // default (on). Settings > Voice; MANA_VOICE_AEC overrides it.
     public bool? EchoCancellation { get; set; }
 
+    // #670: local-only mode for the node-bot this launcher starts (passed
+    // as MANA_LAUNCHER_LOCAL_ONLY=1). Settings > Connection; applies on the
+    // next start. MANA_LOCAL_ONLY=1 in node-bot/.env turns it on regardless.
+    public bool LocalOnly { get; set; }
+
     // #681: the prompt preset sent as presetId with every reply; null =
     // none. Chosen in Settings > Presets (windows-launcher kept the same
     // choice in localStorage's manaSelectedPresetId).
