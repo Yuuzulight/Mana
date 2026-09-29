@@ -121,6 +121,7 @@ internal sealed class VoiceLoop : IDisposable
     private float[]? voiceprint;
     private float speakerThreshold = SpeakerGate.DefaultThreshold;
     private SpeakerEmbedder? speakerEmbedder;
+
     // #665 notWhileSpeaking: recording what I say while she keeps talking
     // (mode stays Speaking), and what I said, held until she finishes.
     private bool hearingOverSpeech;
@@ -1361,10 +1362,6 @@ internal sealed class VoiceLoop : IDisposable
             prefilterRejected = logEntry.Score < logEntry.Threshold;
         }
 
-        // #682: Electron's speech filters (SpeechFilters) -- a quiet segment
-        // is boosted before Whisper hears it, one still too quiet or
-        // hiss-like never reaches Whisper, and a phantom phrase or
-        // noise-only caption is dropped like an empty transcript.
         // #678: only my voice gets past here (SpeakerGate), before Whisper.
         // A rejected interruption un-ducks or resumes her like any other
         // non-interruption below; an embedder failure fails open.
@@ -1385,6 +1382,10 @@ internal sealed class VoiceLoop : IDisposable
             }
         }
 
+        // #682: Electron's speech filters (SpeechFilters) -- a quiet segment
+        // is boosted before Whisper hears it, one still too quiet or
+        // hiss-like never reaches Whisper, and a phantom phrase or
+        // noise-only caption is dropped like an empty transcript.
         var transcript = "";
         if (!prefilterRejected && logEntry.Drop is null)
         {
