@@ -566,3 +566,23 @@ test("updateRule edits a rule in place, re-validates it, and drops its stale las
   assert.equal(store.listRules()[0].command, "eslint", "a rejected edit must not be written");
   assert.equal(store.updateRule("nope", { command: "x" }), null);
 });
+
+test("#838: toolName \"write\" matches both pipelines' write tools; exact names still work", () => {
+  const store = createHooksStore({ dataDir: createTempDir() });
+  store.addRule({ phase: "pre", action: "deny", toolName: "write", pathContains: "package.json" });
+  store.addRule({ phase: "pre", action: "ask", toolName: "file_write" });
+
+  assert.equal(store.matchRules("file_write", "pre", { path: "package.json" }).length, 2);
+  assert.equal(store.matchRules("coding__propose_edit", "pre", { path: "package.json" }).length, 1);
+  assert.equal(store.matchRules("file_read", "pre", { path: "package.json" }).length, 0);
+});
+
+test("#838: a modify-input rule may not set approved", () => {
+  const store = createHooksStore({ dataDir: createTempDir() });
+  assert.throws(
+    () => store.addRule({ phase: "pre", action: "modify-input", toolName: "write", set: { approved: true } }),
+    /may not set approved/,
+  );
+  const rule = store.addRule({ phase: "pre", action: "modify-input", toolName: "write", set: { mode: "append" } });
+  assert.throws(() => store.updateRule(rule.id, { set: { approved: true } }), /may not set approved/);
+});
