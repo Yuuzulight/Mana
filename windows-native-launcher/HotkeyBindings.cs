@@ -23,6 +23,7 @@ internal static class HotkeyBindings
         new("vision", "Look at my screen", Keys.Control | Keys.Alt | Keys.M, "MANA_VISION_HOTKEY"),
         new("clip", "What just happened? (clip)", Keys.Control | Keys.Alt | Keys.Shift | Keys.M, "MANA_CLIP_HOTKEY"),
         new("interrupt", "Stop Mana talking", Keys.Control | Keys.Alt | Keys.I, "MANA_INTERRUPT_HOTKEY"),
+        new("textAction", "Text actions on selected text", Keys.Control | Keys.Alt | Keys.T, "MANA_TEXT_ACTION_HOTKEY"),
     };
 
     private static readonly KeysConverter Converter = new();

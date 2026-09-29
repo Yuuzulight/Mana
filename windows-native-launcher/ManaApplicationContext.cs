@@ -195,7 +195,9 @@ internal sealed class ManaApplicationContext : ApplicationContext
         // in HotkeyBindings). #523 vision and #585 clip go through the normal
         // reply pipeline. #584's manual interrupt stops playback and drops
         // any held reply via VoiceLoop.InterruptSpeech -- windows-launcher's
-        // "interrupt-speech" handler, not the fuller barge-in path.
+        // "interrupt-speech" handler, not the fuller barge-in path. #680 text
+        // actions run on the selection in any app; "Ask Mana..." hands it to
+        // quick entry as a normal turn.
         var hotkeyHandlers = new Dictionary<string, Action>
         {
             ["window"] = ToggleSessionListVisible,
@@ -203,6 +205,8 @@ internal sealed class ManaApplicationContext : ApplicationContext
             ["vision"] = () => _ = voiceLoop.SubmitVisionHotkeyAsync(),
             ["clip"] = () => _ = voiceLoop.SubmitClipHotkeyAsync(),
             ["interrupt"] = voiceLoop.InterruptSpeech,
+            ["textAction"] = () => _ = TextActionForm.RunAsync(backendClient, text =>
+                quickEntry.OpenWith($"About \"{System.Text.RegularExpressions.Regex.Replace(text, @"\s+", " ")}\": ")),
         };
         globalHotkeys = new GlobalHotkeyListener(HotkeyBindings.Actions
             .Select(a => (a.Id, HotkeyBindings.Resolve(settings.Hotkeys, a), a.DisableEnvVar, hotkeyHandlers[a.Key]))

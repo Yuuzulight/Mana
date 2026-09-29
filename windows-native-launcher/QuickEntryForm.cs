@@ -49,12 +49,20 @@ internal sealed class QuickEntryForm : Form
             return;
         }
 
+        OpenWith(string.Empty);
+    }
+
+    // #680: also "Ask Mana..." on selected text, opened with that text
+    // quoted and the cursor after it, ready for the question.
+    public void OpenWith(string text)
+    {
         var screen = Screen.PrimaryScreen!.WorkingArea;
         Location = new Point(screen.Left + (screen.Width - Width) / 2, screen.Top + 24);
-        input.Text = string.Empty;
+        input.Text = text;
         Show();
         Activate();
         input.Focus();
+        input.SelectionStart = text.Length;
     }
 
     private void HideAndClear()
