@@ -165,6 +165,28 @@ internal sealed class CaptionOverlayForm : Form
         }
     }
 
+    // #701: while chat bubbles are on they carry her words, so the bar stays
+    // hidden; turning bubbles off brings it back from the next sentence.
+    // UI thread only (the tray toggle).
+    private bool suppressed;
+    public bool Suppressed
+    {
+        get => suppressed;
+        set
+        {
+            suppressed = value;
+            if (value)
+            {
+                upcoming.Clear();
+                timer.Stop();
+                frameTimer.Stop();
+                staying = false;
+                replyEnded = true;
+                Visible = false;
+            }
+        }
+    }
+
     // She stopped talking (finished or interrupted): every word shows, and
     // the bar stays until her next reply, at most 7s.
     public void SpeechEnded()
@@ -282,6 +304,10 @@ internal sealed class CaptionOverlayForm : Form
     // words come in.
     private void StartSentence(string text, double durationMs)
     {
+        if (suppressed)
+        {
+            return;
+        }
         previous = replyEnded ? "" : current;
         replyEnded = false;
         current = RevealedWords(text, 0, 0);

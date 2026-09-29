@@ -152,6 +152,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
         // Q8: under Mana while she's showing (Visible/Bounds are plain field reads).
         captionOverlay = new CaptionOverlayForm(() => avatarOverlay.Visible ? avatarOverlay.Bounds : null);
         chatBubbles = new ChatBubblesForm(() => avatarOverlay.Visible ? avatarOverlay.Bounds : null, () => ChatBubblesForm.InView(sessionListForm));
+        captionOverlay.Suppressed = chatBubbles.BubblesOn; // #701: bubbles replace the caption bar
         chatBubbles.BubbleClicked += text =>
         {
             ShowSessionList();
@@ -380,6 +381,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
         bubblesItem.Click += (_, _) =>
         {
             chatBubbles.BubblesOn = bubblesItem.Checked;
+            captionOverlay.Suppressed = bubblesItem.Checked; // #701
             var latest = ManaSettingsStore.Load();
             latest.ChatBubbles = bubblesItem.Checked;
             latest.Save();
