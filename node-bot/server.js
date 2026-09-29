@@ -71,6 +71,7 @@ const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
 const { Readable } = require("node:stream");
+const { setTimeout: sleep } = require("node:timers/promises");
 const http = require("http");
 const https = require("https");
 const { createWorker } = require("tesseract.js");
@@ -252,7 +253,6 @@ const {
 const { createLlamaServerRuntime } = require("./ai/llama-server-runtime");
 const { createReranker } = require("./ai/reranker-runtime");
 const { createEmbedder } = require("./ai/embedder-runtime");
-const { createRetrieverRuntime } = require("./ai/retriever-runtime");
 const { createWhisperServer, belowNormal } = require("./ai/whisper-server-runtime");
 const { createGamingWatch } = require("./utils/gaming-watch");
 const { streamedMatchesFinal } = require("./utils/reply-stream-diff");
@@ -513,10 +513,9 @@ const gamingWatch = createGamingWatch({
     return parseTasklistNames(stdout).some((name) => GAMING_PROCESS_NAMES.includes(name));
   },
   onGameStart: () => {
-    console.log("Watched game started: stopping the memory embedder, reranker and Python retriever");
+    console.log("Watched game started: stopping the memory embedder and reranker");
     embedder.stop();
     reranker.stop();
-    retrieverService.stop();
   },
 });
 if (process.env.NODE_ENV !== "test" && !process.env.NODE_TEST_CONTEXT) {
@@ -546,10 +545,6 @@ const embedder = createEmbedder({
   gaming: gamingWatch.isGaming,
 });
 require("./tools/retriever-index").useEmbedder(embedder);
-
-// The Python retriever (coding-mode fallback): started by the coding turn
-// that needs it, stopped when idle (ai/retriever-runtime.js).
-const retrieverService = createRetrieverRuntime({ gaming: gamingWatch.isGaming });
 
 // Start both in the background (never awaited). The cold starts (~1-1.5 s
 // embedder, ~3.5 s reranker) are longer than recall's budgets, so a cold
@@ -4068,9 +4063,6 @@ function registerRoutes(app, upload, deps = {}) {
         const retrieverUrl =
           process.env.RETRIEVER_URL || "http://127.0.0.1:9000/retrieve";
         try {
-          await retrieverService.ensure().catch((e) =>
-            console.warn("Python retriever unavailable:", e?.message || e),
-          );
           // try HTTP retriever first
           const resp = await fetch(retrieverUrl, {
             method: "POST",
@@ -5605,8 +5597,8 @@ async function startServer() {
   const port = process.env.PORT || 5005;
 
   // The retriever only enriches replies (retrieval context, token counts) and
-  // every caller has a heuristic fallback, so the backend starts without it;
-  // a coding turn starts it on demand (ai/retriever-runtime.js). Set
+  // every caller has a heuristic fallback, so by default the backend starts
+  // without it and reports its health in the background. Set
   // RETRIEVER_REQUIRED=1 to restore the old block-until-healthy behavior.
   const retrieverHealthUrl =
     process.env.RETRIEVER_HEALTH_URL || "http://127.0.0.1:9000/health";
@@ -5618,6 +5610,26 @@ async function startServer() {
       );
       process.exit(1);
     }
+  } else {
+    (async () => {
+      const retries = Number(process.env.RETRIEVER_HEALTH_RETRIES || 24);
+      const delayMs = Number(process.env.RETRIEVER_HEALTH_DELAY_MS || 5000);
+      for (let i = 0; i < retries; i += 1) {
+        try {
+          const resp = await fetch(retrieverHealthUrl, { method: "GET" });
+          if (resp.ok) {
+            console.log("[Mana Boot] Python retriever is healthy");
+            return;
+          }
+        } catch (e) {
+          // keep waiting quietly
+        }
+        await sleep(delayMs);
+      }
+      console.warn(
+        `[Mana Boot] Python retriever not reachable at ${retrieverHealthUrl}; continuing with heuristic fallbacks (retrieval context disabled).`,
+      );
+    })().catch(() => {});
   }
 
   const app = createApp();
