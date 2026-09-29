@@ -4326,7 +4326,8 @@ function registerRoutes(app, upload, deps = {}) {
             // workspace/proposal machinery (zed-integration.js) that
             // already backs the /editors/* admin routes, just stops short
             // of ever calling approveEditProposal.
-            createCodingToolSource({ editors: getEditorIntegrations() }),
+            // #787: approvalGate enables coding__run_tests (asks first).
+            createCodingToolSource({ editors: getEditorIntegrations(), approvalGate: activeApprovalGate }),
             ...(isPluginEnabled(browserAutomationPlugin, activePluginSettingsStore)
               ? [activeBrowserAutomationToolSource]
               : []),

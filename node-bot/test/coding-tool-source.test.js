@@ -4,14 +4,23 @@ const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
 
-const { CODING_TOOL_PREFIX, TOOL_SCHEMAS, isCodingToolName, createCodingToolSource } = require("../ai/coding-tool-source");
+const {
+  CODING_TOOL_PREFIX,
+  CODING_TEST_TOOL_NAME,
+  TOOL_SCHEMAS,
+  isCodingToolName,
+  detectTestCommand,
+  runTestCommand,
+  createCodingToolSource,
+} = require("../ai/coding-tool-source");
 
 function tempDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), "mana-coding-tool-test-"));
 }
 
-function fakeEditors({ createEditProposalImpl, applied = [] } = {}) {
+function fakeEditors({ createEditProposalImpl, applied = [], workspace = { path: os.tmpdir() } } = {}) {
   return {
+    getWorkspace: () => workspace,
     createEditProposal:
       createEditProposalImpl ||
       (({ path: p, proposedContent, summary }) => ({
@@ -37,10 +46,12 @@ test("isCodingToolName distinguishes coding tool names from anything else", () =
   assert.equal(isCodingToolName(undefined), false);
 });
 
-test("listToolSchemas returns the propose_edit tool schema", () => {
-  const source = createCodingToolSource({ editors: fakeEditors() });
-  assert.deepEqual(source.listToolSchemas(), TOOL_SCHEMAS);
-  assert.deepEqual(TOOL_SCHEMAS.map((t) => t.function.name), [`${CODING_TOOL_PREFIX}propose_edit`]);
+test("listToolSchemas offers run_tests only with an approval gate, and nothing without a workspace", () => {
+  const names = (source) => source.listToolSchemas().map((t) => t.function.name);
+  assert.deepEqual(names(createCodingToolSource({ editors: fakeEditors() })), [`${CODING_TOOL_PREFIX}propose_edit`]);
+  const gated = createCodingToolSource({ editors: fakeEditors(), approvalGate: fakeGate() });
+  assert.deepEqual(gated.listToolSchemas(), TOOL_SCHEMAS);
+  assert.deepEqual(names(createCodingToolSource({ editors: fakeEditors({ workspace: null }), approvalGate: fakeGate() })), []);
 });
 
 test("propose_edit writes the diff to a scratch file and returns its path, never touching the real file", async () => {
@@ -123,4 +134,89 @@ test("executeTool rejects an unrecognized coding tool name", async () => {
     () => source.executeTool(`${CODING_TOOL_PREFIX}delete_everything`, {}),
     /unknown coding tool/,
   );
+});
+
+// #787: coding__run_tests.
+function fakeGate({ granted = false } = {}) {
+  const executors = new Map();
+  const requests = [];
+  return {
+    requests,
+    registerExecutor: (type, fn) => executors.set(type, fn),
+    requestApproval: async (type, request) => {
+      requests.push({ type, ...request });
+      if (!granted) return { status: "pending", requestId: "r1", summary: request.summary };
+      return { status: "approved", actionType: type, result: await executors.get(type)(request.payload) };
+    },
+  };
+}
+
+function fakeFs(files) {
+  return {
+    readdirSync: () => Object.keys(files),
+    readFileSync: (p) => {
+      const name = path.basename(p);
+      if (!(name in files)) throw new Error("ENOENT");
+      return files[name];
+    },
+  };
+}
+
+test("detectTestCommand picks the folder's own test runner", () => {
+  const detect = (files, env = {}) => detectTestCommand("/ws", { env, fsImpl: fakeFs(files) });
+  assert.equal(detect({ "package.json": JSON.stringify({ scripts: { test: "node --test" } }) }), "npm test");
+  assert.equal(detect({ "package.json": JSON.stringify({ scripts: { test: 'echo "Error: no test specified" && exit 1' } }) }), null);
+  assert.equal(detect({ "App.sln": "" }), "dotnet test");
+  assert.equal(detect({ "pyproject.toml": "[tool.pytest.ini_options]", "test_x.py": "" }), "python -m pytest -q");
+  assert.equal(detect({ "test_stats.py": "" }), "python -m unittest discover -v");
+  assert.equal(detect({ "README.md": "" }), null);
+  assert.equal(detect({ "README.md": "" }, { MANA_CODING_TEST_COMMAND: "make check" }), "make check");
+});
+
+test("run_tests asks first, and runs the detected command in the workspace once granted", async () => {
+  const ws = tempDir();
+  fs.writeFileSync(path.join(ws, "package.json"), JSON.stringify({ scripts: { test: "node --test" } }));
+  const ran = [];
+  const runTests = async (command, cwd) => {
+    ran.push({ command, cwd });
+    return { exitCode: 1, timedOut: false, output: "# fail 1" };
+  };
+
+  const pending = fakeGate();
+  const asking = createCodingToolSource({ editors: fakeEditors({ workspace: { path: ws } }), approvalGate: pending, runTests });
+  assert.equal(JSON.parse(await asking.executeTool(CODING_TEST_TOOL_NAME, {})).status, "pending");
+  assert.equal(pending.requests[0].type, "coding-run-tests");
+  assert.equal(pending.requests[0].grantKey, `coding-run-tests:${path.resolve(ws)}|npm test`);
+  assert.deepEqual(ran, []);
+
+  const source = createCodingToolSource({ editors: fakeEditors({ workspace: { path: ws } }), approvalGate: fakeGate({ granted: true }), runTests });
+  const result = JSON.parse(await source.executeTool(CODING_TEST_TOOL_NAME, {}));
+  assert.equal(result.passed, false);
+  assert.equal(result.output, "# fail 1");
+  assert.deepEqual(ran, [{ command: "npm test", cwd: path.resolve(ws) }]);
+});
+
+test("run_tests refuses a dir outside the workspace", async () => {
+  const source = createCodingToolSource({ editors: fakeEditors({ workspace: { path: tempDir() } }), approvalGate: fakeGate({ granted: true }) });
+  const result = JSON.parse(await source.executeTool(CODING_TEST_TOOL_NAME, { dir: ".." }));
+  assert.deepEqual(result, { status: "error", error: "dir must be inside the workspace" });
+});
+
+test("runTestCommand kills the run on timeout and keeps only the output's tail", async () => {
+  const { EventEmitter } = require("node:events");
+  const child = new EventEmitter();
+  child.stdout = new EventEmitter();
+  child.stderr = new EventEmitter();
+  const killed = [];
+  const run = runTestCommand("npm test", "/ws", {
+    spawnImpl: () => child,
+    killTree: (c) => killed.push(c), // never reports 'close': must still settle
+    timeoutMs: 10,
+  });
+  child.stdout.emit("data", "x".repeat(5000) + "TAIL");
+  const result = await run;
+  assert.deepEqual(killed, [child]);
+  assert.equal(result.timedOut, true);
+  assert.ok(result.output.endsWith("TAIL"));
+  assert.ok(result.output.startsWith("...[1004 earlier chars cut]\n"));
 });

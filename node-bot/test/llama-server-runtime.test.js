@@ -1557,9 +1557,10 @@ test("runToolAwareReply respects a wall-clock time budget across rounds", async 
 
 // Issue #676: goal mode. `turns` scripts the tool-loop replies in order
 // (the last one repeats); `reviews` scripts the completion-review replies.
-function runGoalScript({ turns, reviews = [{ complete: true, missing: [] }], options = {}, toolResult = "ok", promptN = 0 }) {
+function runGoalScript({ turns, reviews = [{ complete: true, missing: [] }], options = {}, toolResult = "ok", promptN = 0, tools }) {
   const loopBodies = [];
   const reviewBodies = [];
+  const repairBodies = [];
   let serverUp = false;
   let turnIndex = 0;
   const fakeFetch = async (url, init) => {
@@ -1570,6 +1571,10 @@ function runGoalScript({ turns, reviews = [{ complete: true, missing: [] }], opt
         reviewBodies.push(body);
         const review = reviews[Math.min(reviewBodies.length, reviews.length) - 1];
         return makeAnswerResponse(JSON.stringify(review));
+      }
+      if (body.response_format?.json_schema?.name === "tool_calls_repair") {
+        repairBodies.push(body);
+        return makeAnswerResponse(JSON.stringify({ tool_calls: [] }));
       }
       loopBodies.push(body);
       if (body.tool_choice === "none") return makeAnswerResponse("final answer");
@@ -1596,12 +1601,13 @@ function runGoalScript({ turns, reviews = [{ complete: true, missing: [] }], opt
   const policy = makeFakePolicy({
     executeTool: (name) => {
       executed.push(name);
-      return toolResult;
+      return typeof toolResult === "function" ? toolResult(name) : toolResult;
     },
   });
+  if (tools) policy.tools = tools.map((name) => ({ type: "function", function: { name, parameters: {} } }));
   return runtime
     .runToolAwareReply("change A and change B", policy, { goal: "Change A and B", ...options })
-    .then((result) => ({ result, loopBodies, reviewBodies, executed }));
+    .then((result) => ({ result, loopBodies, reviewBodies, repairBodies, executed }));
 }
 
 const lastUserText = (body) => body.messages.filter((m) => m.role === "user").pop().content;
@@ -1679,6 +1685,70 @@ test("#676 completion review: out of budget, the answer says what is missing", a
 
   assert.equal(reviewBodies.length, 1);
   assert.equal(result.content, "Not done yet: change B\n\nfinal answer");
+});
+
+// #787: the live comparison's false "done"s. T1: finish without any edit;
+// T4/T5: an edit, then a failing test run, then finish. The model review
+// said "complete" to all three.
+const CODING_TOOLS = ["read_file", "coding__propose_edit", "coding__run_tests", "session_goal__finish"];
+const codingResult = ({ passed }) => (name) =>
+  name === "coding__run_tests" ? JSON.stringify({ status: "ok", passed, output: passed ? "# fail 0" : "# fail 1" })
+  : name === "coding__propose_edit" ? JSON.stringify({ status: "ok", diff: "-a\n+b" })
+  : "ok";
+
+test("#787 review: finishing an edit goal without any edit is not done, whatever the model review says", async () => {
+  const { result, loopBodies, reviewBodies } = await runGoalScript({
+    tools: CODING_TOOLS,
+    turns: [["read_file"], ["session_goal__finish"]],
+    reviews: [{ complete: true, missing: [] }],
+    toolResult: codingResult({ passed: true }),
+  });
+
+  assert.equal(reviewBodies.length, 0, "decided from the evidence, no model review");
+  assert.ok(loopBodies.some((b) => /Still missing: no edit was made yet/.test(lastUserText(b))));
+  assert.match(result.content, /^Not done yet: no edit was made yet/);
+});
+
+test("#787 review: a failing test run after the last edit is not done", async () => {
+  const { result, reviewBodies } = await runGoalScript({
+    tools: CODING_TOOLS,
+    turns: [["coding__propose_edit"], ["coding__run_tests"], ["session_goal__finish"]],
+    reviews: [{ complete: true, missing: [] }],
+    toolResult: codingResult({ passed: false }),
+    options: { maxRounds: 3 },
+  });
+
+  assert.equal(reviewBodies.length, 0);
+  assert.match(result.content, /^Not done yet: the last test run failed/);
+});
+
+test("#787 review: with an edit and passing tests the model review decides, and sees the results", async () => {
+  const { result, reviewBodies } = await runGoalScript({
+    tools: CODING_TOOLS,
+    turns: [["coding__propose_edit"], ["coding__run_tests"], ["session_goal__finish"]],
+    toolResult: codingResult({ passed: true }),
+  });
+
+  assert.equal(reviewBodies.length, 1);
+  assert.ok(reviewBodies[0].messages[1].content.includes('coding__run_tests({}) ok\n  result: {"status":"ok","passed":true'));
+  assert.equal(result.content, "final answer");
+});
+
+// #787: qwen2.5-coder writes its calls as text instead of <tool_call> tags.
+test("#787 a well-formed text-form call to an offered tool runs without a repair request", async () => {
+  const fenced = 'Let me look.\n```json\n{"name": "read_file", "arguments": {"path": "a.js"}}\n```';
+  const { executed, repairBodies } = await runGoalScript({ turns: [fenced, "Done."], options: { goal: null } });
+
+  assert.deepEqual(executed, ["read_file"]);
+  assert.equal(repairBodies.length, 0);
+});
+
+test("#787 a text-form call to a tool that isn't offered still goes to repair", async () => {
+  const bare = '{"name": "shell__run", "arguments": {"command": "rm -rf /"}}';
+  const { executed, repairBodies } = await runGoalScript({ turns: [bare], options: { goal: null } });
+
+  assert.deepEqual(executed, []);
+  assert.equal(repairBodies.length, 1);
 });
 
 test("#676 goal mode off: unchanged -- 4 rounds by default, a plain reply ends it, no review", async () => {

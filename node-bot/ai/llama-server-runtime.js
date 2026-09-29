@@ -19,6 +19,7 @@ const {
   isLocalModelSpec,
 } = require("./local-llama-runtime");
 const { SESSION_GOAL_FINISH_TOOL_NAME } = require("./session-goal-tool-source");
+const { CODING_EDIT_TOOL_NAME, CODING_TEST_TOOL_NAME } = require("./coding-tool-source");
 const { detectGpuVramUsageMb } = require("../model-management");
 const { readActivePointer, settleActiveBuild } = require("../llama-builds");
 
@@ -1207,6 +1208,42 @@ function createLlamaServerRuntime(options = {}) {
     return /"name"\s*:\s*"[^"]+"\s*,\s*"arguments"\s*:/.test(trimmed);
   }
 
+  // #787: qwen2.5-coder never uses the <tool_call> tags its template asks
+  // for, so llama-server's parser never sees a call -- measured live, 98 of
+  // 102 goal-mode turns wrote it as a ```json block (or bare JSON) instead,
+  // and fixing the template's doubled `{{"name"...}}` example didn't change
+  // that. Read those text-form calls here, but only well-formed ones naming
+  // an offered tool with its required arguments; anything else still goes
+  // to repairToolCalls.
+  function parseTextToolCalls(content, tools) {
+    const params = new Map((tools || []).map((t) => [t.function.name, t.function.parameters || {}]));
+    const text = String(content || "");
+    const blocks = [...text.matchAll(/```(?:json)?\s*([\s\S]*?)```|<tool_call>([\s\S]*?)<\/tool_call>/g)].map(
+      (m) => m[1] ?? m[2],
+    );
+    const calls = [];
+    for (const raw of blocks.length ? blocks : [text]) {
+      let parsed;
+      try {
+        parsed = JSON.parse(raw.trim());
+      } catch (e) {
+        continue;
+      }
+      for (const call of [].concat(parsed)) {
+        const schema = call && params.get(call.name);
+        const args = call && call.arguments;
+        if (!schema || !args || typeof args !== "object" || Array.isArray(args)) continue;
+        if (!(schema.required || []).every((key) => key in args)) continue;
+        calls.push({
+          id: `text_${Date.now()}_${calls.length}`,
+          type: "function",
+          function: { name: call.name, arguments: JSON.stringify(args) },
+        });
+      }
+    }
+    return calls;
+  }
+
   // Builds a JSON Schema that forces a valid `{tool_calls: [{name, arguments}]}`
   // shape, one oneOf branch per available tool so `arguments` is validated
   // against that specific tool's own parameter schema. Confirmed directly
@@ -1291,13 +1328,38 @@ function createLlamaServerRuntime(options = {}) {
     };
   }
 
+  // #787: facts the review can't be talked past. Measured live, the
+  // model-only review passed "fixed" with no edit made and with the tests
+  // still failing. ponytail: "is this an edit goal" is a verb regex -- a goal
+  // worded without one skips the no-edit check and relies on the model review.
+  const EDIT_GOAL_RE = /\b(fix|add|rename|change|update|implement|refactor|remove|delete|edit|replace|modify)\b/i;
+  function goalEvidenceGaps(goal, calls, toolNames) {
+    const lastIndex = (pred) => calls.reduce((found, c, i) => (pred(c) ? i : found), -1);
+    const lastEdit = lastIndex((c) => c.name === CODING_EDIT_TOOL_NAME && c.status === "ok");
+    const lastTest = lastIndex((c) => c.name === CODING_TEST_TOOL_NAME && typeof c.passed === "boolean");
+    const gaps = [];
+    if (lastEdit < 0 && toolNames.includes(CODING_EDIT_TOOL_NAME) && EDIT_GOAL_RE.test(goal)) {
+      gaps.push(`no edit was made yet (${CODING_EDIT_TOOL_NAME} never succeeded)`);
+    }
+    if (lastTest > lastEdit && !calls[lastTest].passed) gaps.push("the last test run failed");
+    return gaps;
+  }
+
   // Issue #676: one schema-constrained call (same shape as repairToolCalls)
   // asking whether the draft actually does what was asked. Returns
   // {complete, missing[]}, or null when the check itself fails -- a broken
-  // review must never block or rewrite the answer.
-  async function reviewGoalCompletion({ prompt, goal, toolCalls, draft, maxTokens, profile }) {
+  // review must never block or rewrite the answer. #787: evidence gaps
+  // decide first, and the model sees each call's actual result, not just
+  // that it ran.
+  async function reviewGoalCompletion({ prompt, goal, toolCalls, toolNames, draft, maxTokens, profile }) {
+    const gaps = goalEvidenceGaps(goal, toolCalls, toolNames);
+    if (gaps.length) return { complete: false, missing: gaps };
     const calls = toolCalls
-      .map((c) => `- ${c.name}(${JSON.stringify(c.args || {}).slice(0, 200)}) ${c.ok ? "ok" : `error: ${c.error}`}`)
+      .map(
+        (c) =>
+          `- ${c.name}(${JSON.stringify(c.args || {}).slice(0, 200)}) ${c.ok ? "ok" : `error: ${c.error}`}` +
+          (c.result ? `\n  result: ${c.result.slice(0, 800)}` : ""),
+      )
       .join("\n") || "(none)";
     try {
       await ensureServer(profile);
@@ -1308,7 +1370,7 @@ function createLlamaServerRuntime(options = {}) {
           messages: [
             {
               role: "system",
-              content: "You check whether a task was actually done as asked. Judge only from the tool calls and the draft answer; list each requested thing that is missing or unverified.",
+              content: "You check whether a task was actually done as asked. Judge only from the tool calls, their results and the draft answer; a claim in the draft that no tool result backs is unverified. List each requested thing that is missing or unverified.",
             },
             {
               role: "user",
@@ -1477,6 +1539,9 @@ function createLlamaServerRuntime(options = {}) {
     }
 
     const executedToolCalls = [];
+    // #787: what each call returned, for the goal review only -- kept out of
+    // executedToolCalls, which the caller persists with the turn.
+    const reviewLog = [];
     let message = {};
     let rounds = 0;
     let consecutiveToolErrors = 0;
@@ -1504,7 +1569,8 @@ function createLlamaServerRuntime(options = {}) {
       const review = await reviewGoalCompletion({
         prompt,
         goal: goalText,
-        toolCalls: executedToolCalls,
+        toolCalls: reviewLog,
+        toolNames: toolPolicy.tools.map((t) => t.function.name),
         draft: cleanContent(message.content),
         maxTokens,
         profile,
@@ -1540,6 +1606,9 @@ function createLlamaServerRuntime(options = {}) {
         ? message.tool_calls
         : [];
 
+      if (!requestedToolCalls.length) {
+        requestedToolCalls = parseTextToolCalls(message.content, toolPolicy.tools);
+      }
       if (!requestedToolCalls.length && looksLikeFailedToolCallJson(message.content)) {
         // Issue: this method's own header comment documents that some
         // model/template combos (qwen2.5-coder-7b confirmed) never
@@ -1602,18 +1671,22 @@ function createLlamaServerRuntime(options = {}) {
           const result = await toolPolicy.executeTool(name, args);
           resultText = String(result);
           executedToolCalls.push({ name, args, ok: true });
+          let parsed = {};
+          try {
+            parsed = JSON.parse(resultText) || {};
+          } catch (e) {}
+          reviewLog.push({ name, args, ok: true, status: parsed.status, passed: parsed.passed, result: resultText });
           consecutiveToolErrors = 0;
           if (name === SESSION_GOAL_FINISH_TOOL_NAME) {
             goalFinished = true;
           }
           // Issue #676: a call waiting on a human (#669 approval queue) ends
           // goal mode -- retrying would only queue up more approvals.
-          try {
-            awaitingApproval ||= goalMode && ["pending", "blocked"].includes(JSON.parse(resultText).status);
-          } catch (e) {}
+          awaitingApproval ||= goalMode && ["pending", "blocked"].includes(parsed.status);
         } catch (e) {
           resultText = `Error: ${e.message}`;
           executedToolCalls.push({ name, args, ok: false, error: e.message });
+          reviewLog.push({ name, args, ok: false, error: e.message });
           consecutiveToolErrors += 1;
         }
 
