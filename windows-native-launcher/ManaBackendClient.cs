@@ -1517,6 +1517,12 @@ internal sealed class ManaBackendClient
             RelativePath = proposalElement.TryGetProperty("relativePath", out var pathElement) ? pathElement.GetString() ?? "" : "",
             Summary = proposalElement.TryGetProperty("summary", out var summaryElement) ? summaryElement.GetString() : null,
             Hunks = hunks,
+            RefutedCase = proposalElement.TryGetProperty("adversarialReview", out var reviewElement)
+                && reviewElement.ValueKind == JsonValueKind.Object
+                && reviewElement.TryGetProperty("verdict", out var verdictElement)
+                && verdictElement.GetString() == "refuted"
+                    ? (reviewElement.TryGetProperty("failingCase", out var caseElement) ? caseElement.GetString() : null) ?? "(no case given)"
+                    : null,
         };
     }
 
@@ -1524,9 +1530,13 @@ internal sealed class ManaBackendClient
     // proposal not pending, workspace file missing, etc.) comes back with
     // a fully-parseable {proposal:null, error} body the caller needs to
     // read, same reasoning as RestoreEditSnapshotAsync's own handling.
-    public async Task<ManaProposalApproveResult> ApproveProposalAsync(string id, IReadOnlyList<string> acceptedHunkIds)
+    // Q16 (#622): confirmRefuted is the user's explicit go-ahead on an edit
+    // Mana's adversarial review refuted; node-bot refuses one without it.
+    public async Task<ManaProposalApproveResult> ApproveProposalAsync(string id, IReadOnlyList<string> acceptedHunkIds, bool confirmRefuted = false)
     {
-        var payload = JsonSerializer.Serialize(new { acceptedHunkIds });
+        var payload = confirmRefuted
+            ? JsonSerializer.Serialize(new { acceptedHunkIds, confirmRefuted })
+            : JsonSerializer.Serialize(new { acceptedHunkIds });
         using var content = new StringContent(payload, Encoding.UTF8, "application/json");
         using var response = await http.PostAsync($"/editors/workspace/proposals/{Uri.EscapeDataString(id)}/approve", content);
         await using var stream = await response.Content.ReadAsStreamAsync();
@@ -2143,6 +2153,9 @@ internal sealed class ManaProposalDetail
     public string RelativePath { get; init; } = "";
     public string? Summary { get; init; }
     public IReadOnlyList<ManaProposalHunk> Hunks { get; init; } = Array.Empty<ManaProposalHunk>();
+    // Q16 (#622): the failing case when Mana's adversarial review refuted
+    // this edit (approving it then needs the user's explicit confirmation).
+    public string? RefutedCase { get; init; }
 }
 
 // #580: one jsdiff structuredPatch hunk (computeProposalHunks) -- Lines

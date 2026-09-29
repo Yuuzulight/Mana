@@ -2802,6 +2802,37 @@ public class ManaBackendClientTests
         Assert.Equal(new[] { " a", "-b", "+b2", "+c" }, detail.Hunks[0].Lines);
     }
 
+    // Q16 (#622): a refuted edit carries its failing case, and approving it
+    // sends confirmRefuted only when the user said yes.
+    [Fact]
+    public async Task Proposals_ReadTheRefutedCaseAndSendConfirmRefutedOnlyWhenAsked()
+    {
+        var bodies = new List<string>();
+        var handler = new FakeHttpMessageHandler(request =>
+        {
+            if (request.Method == HttpMethod.Get)
+            {
+                return new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent(
+                        """{"proposal":{"id":"p1","status":"pending","relativePath":"a.js","hunks":[],"adversarialReview":{"verdict":"refuted","failingCase":"n = 0","reason":""}}}""",
+                        Encoding.UTF8,
+                        "application/json"),
+                };
+            }
+            bodies.Add(request.Content!.ReadAsStringAsync().GetAwaiter().GetResult());
+            return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("""{"proposal":{"id":"p1"}}""") };
+        });
+        var client = new ManaBackendClient(handler);
+
+        Assert.Equal("n = 0", (await client.GetProposalDetailAsync("p1"))!.RefutedCase);
+        await client.ApproveProposalAsync("p1", new[] { "hunk-0" });
+        await client.ApproveProposalAsync("p1", new[] { "hunk-0" }, confirmRefuted: true);
+
+        Assert.DoesNotContain("confirmRefuted", bodies[0]);
+        Assert.Contains("\"confirmRefuted\":true", bodies[1]);
+    }
+
     [Fact]
     public async Task GetProposalDetailAsync_ReturnsNullOn404()
     {
