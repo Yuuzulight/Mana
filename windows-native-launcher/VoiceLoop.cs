@@ -1418,7 +1418,7 @@ internal sealed class VoiceLoop : IDisposable
             {
                 try
                 {
-                    transcript = await backendClient.TranscribeAsync(BuildWavBytes(boosted));
+                    (transcript, logEntry.Heard) = await backendClient.TranscribeAsync(BuildWavBytes(boosted));
                     logEntry.Whisper = string.IsNullOrWhiteSpace(transcript) ? "empty" : "ok";
                 }
                 catch (Exception ex)

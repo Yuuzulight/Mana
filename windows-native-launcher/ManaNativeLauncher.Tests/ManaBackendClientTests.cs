@@ -1012,10 +1012,53 @@ public class ManaBackendClientTests
         });
         var client = new ManaBackendClient(handler);
 
-        var transcript = await client.TranscribeAsync(new byte[] { 1, 2, 3 });
+        var (transcript, heard) = await client.TranscribeAsync(new byte[] { 1, 2, 3 });
 
         Assert.Equal("/transcribe-only", path);
         Assert.Equal("hello mana", transcript);
+        Assert.Null(heard);
+    }
+
+    [Fact]
+    public async Task TranscribeAsync_ReturnsWhatWhisperHeardBeforeAFix()
+    {
+        var handler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent("{\"transcript\":\"watch Gigi Murin\",\"heard\":\"watch GG Moon\"}", Encoding.UTF8, "application/json"),
+        });
+        var client = new ManaBackendClient(handler);
+
+        Assert.Equal(("watch Gigi Murin", "watch GG Moon"), await client.TranscribeAsync(new byte[] { 1 }));
+    }
+
+    [Fact]
+    public async Task UpdateSpeechAsync_PostsTheChangeAndSurfacesTheConfirmConflict()
+    {
+        string? body = null;
+        var status = HttpStatusCode.OK;
+        var handler = new FakeHttpMessageHandler(request =>
+        {
+            body = request.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
+            return new HttpResponseMessage(status)
+            {
+                Content = new StringContent(status == HttpStatusCode.OK
+                    ? "{\"ok\":true,\"words\":[\"Gigi Murin\"],\"corrections\":{\"GG Moon\":\"Gigi Murin\"},\"language\":\"auto\",\"envLanguage\":null}"
+                    : "{\"ok\":false,\"error\":\"\\\"Immortal\\\" may be an ordinary word\",\"needsConfirm\":true}", Encoding.UTF8, "application/json"),
+            };
+        });
+        var client = new ManaBackendClient(handler);
+
+        var speech = await client.UpdateSpeechAsync(new { heard = "GG Moon", term = "Gigi Murin" });
+        Assert.Equal("{\"heard\":\"GG Moon\",\"term\":\"Gigi Murin\"}", body);
+        Assert.Equal(new[] { "Gigi Murin" }, speech.Words);
+        Assert.Equal("Gigi Murin", speech.Corrections["GG Moon"]);
+        Assert.Equal("auto", speech.Language);
+        Assert.Null(speech.EnvLanguage);
+
+        status = HttpStatusCode.Conflict;
+        var ex = await Assert.ThrowsAsync<HttpRequestException>(() => client.UpdateSpeechAsync(new { heard = "Immortal", term = "Imouto" }));
+        Assert.Equal(HttpStatusCode.Conflict, ex.StatusCode);
+        Assert.Equal("\"Immortal\" may be an ordinary word", ex.Message);
     }
 
     [Fact]

@@ -23,6 +23,8 @@ internal sealed class VoiceSegmentLogEntry
     // skipped (pre-filter or speech gate rejected) | failed | empty | ok
     public string Whisper { get; set; } = "skipped";
     public string? Transcript { get; set; }
+    // #925: what whisper wrote, when a mishearing fix changed it.
+    public string? Heard { get; set; }
     public bool? WakeMatch { get; set; }
     // #619: the end-of-turn silence that closed this segment and why
     // ("800ms/complete", "2200ms/stale", ...), the live partials behind it
@@ -103,6 +105,10 @@ internal sealed class VoiceSegmentLogEntry
         if (Transcript is not null)
         {
             line += $" transcript=\"{Clean(Transcript)}\"";
+            if (Heard is not null)
+            {
+                line += $" heard=\"{Clean(Heard)}\"";
+            }
         }
         return line;
     }
