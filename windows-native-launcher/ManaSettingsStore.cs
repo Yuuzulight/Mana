@@ -62,6 +62,10 @@ internal sealed class ManaSettingsStore
     public int? AvatarLeft { get; set; }
     public int? AvatarTop { get; set; }
 
+    // #685: the chat window's live avatar framing -- "full", "waist" or
+    // "bust" (see LiveAvatarPanel); null = full.
+    public string? AvatarFraming { get; set; }
+
     // filePath: null (every real call site) uses the real per-user
     // settings file. Tests pass a temp file path to exercise
     // load/save/corruption handling without touching LocalApplicationData.
