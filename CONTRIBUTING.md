@@ -56,10 +56,10 @@ Unsigned commits and DCO
 - If you prefer the DCO process, add a `Signed-off-by: Your Name <you@example.com>` line to your commit messages.
 - To include a signed CLA file in your PR, use one of the filename patterns above. The automation will detect the presence of a signed CLA file in the PR and mark the PR as CLA-covered.
 
-ADMIN_TOKEN for remote admin UI access
+ADMIN_TOKEN for admin endpoints
 
-- The admin endpoints (`/mobile/devices`, `/mobile/pair/request`, etc.) are localhost-only by default.
-- To allow remote access you may set an `ADMIN_TOKEN` environment variable on the server. When `ADMIN_TOKEN` is set, clients must present the token in the `Authorization: Bearer <token>` header or `x-admin-token` header.
+- The admin endpoints (`/mobile/devices`, `/mobile/pair/request`, `/admin/*`, etc.) no longer trust a request just for being local (#670). The native launcher sends its own per-run key; everything else (scripts, curl, the `/admin` pages) needs `ADMIN_TOKEN`.
+- Set an `ADMIN_TOKEN` environment variable on the server, and present it in the `x-admin-token` header or `Authorization: Bearer <token>`.
 - CI and test jobs that exercise admin endpoints should set the `ADMIN_TOKEN` secret in the repository settings (name: `ADMIN_TOKEN`).
 
 Thank you for your interest in contributing to Mana. We welcome well-scoped proposals and will respond to request issues in due course.

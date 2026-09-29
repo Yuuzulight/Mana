@@ -84,11 +84,13 @@ const { createVTubeRuntime } = require("./vtube-runtime");
 	const {
   registerCoreRoutes,
   isLocalRestartRequest,
+  isLocalAdminRequest,
   registerModelRoutes,
   registerEditorRoutes,
   registerAdminStaticRoutes,
   registerPendingWritesRoutes,
 } = require("./server-routes");
+	const { ADMIN_KEY_REQUIRED_ERROR, hasAdminKey } = require("./admin-key");
 	const {
 	  handleGetAddonStatus,
 	  handleGenerateVideo,
@@ -2219,6 +2221,8 @@ function registerRoutes(app, upload, deps = {}) {
     // that needs a loopback-only guard builds it inline (e.g. the
     // brain-provider test route above).
     isLocalRestartRequest: deps.isLocalRestartRequest || isLocalRestartRequest,
+    // #670: loopback plus an admin key (admin-key.js) -- skill import.
+    isLocalAdminRequest: deps.isLocalAdminRequest || isLocalAdminRequest,
     approvalGate: activeApprovalGate,
     // #699: heartbeat checks pause while gaming and snapshot their writes.
     isGaming: deps.isGaming || gamingWatch.isGaming,
@@ -5124,26 +5128,17 @@ function registerRoutes(app, upload, deps = {}) {
   // authMiddleware, which sets req.user). Account management is more
   // sensitive than the read-only /api/memory routes -- which are
   // intentionally remote-accessible by design, per issue #93 -- so it gets
-  // an extra layer beyond just "the API key has role=admin": same
-  // local-unless-explicit-token pattern this codebase already uses for
-  // /admin/restart (see isLocalRestartRequest, which also accounts for a
-  // LAN tunnel terminating on loopback but forwarding from elsewhere), so a
-  // leaked admin API key alone isn't enough to manage accounts remotely.
+  // an extra layer beyond just "the API key has role=admin": ADMIN_TOKEN,
+  // or the native launcher's per-run key from this PC (#670, admin-key.js),
+  // so a leaked admin API key alone isn't enough to manage accounts.
   function requireAdmin(req, res, next) {
     if (req.user.role !== "admin") {
       return res.status(403).json({ error: "Admin role required" });
     }
-    const ADMIN_TOKEN = process.env.ADMIN_TOKEN || null;
-    if (ADMIN_TOKEN && req.get("x-admin-token") === ADMIN_TOKEN) {
+    if (hasAdminKey(req, { local: isLocalRestartRequest(req) })) {
       return next();
     }
-    if (isLocalRestartRequest(req)) {
-      return next();
-    }
-    return res.status(403).json({
-      error:
-        "admin-only: request must be local, or present a valid ADMIN_TOKEN via the x-admin-token header",
-    });
+    return res.status(403).json({ error: ADMIN_KEY_REQUIRED_ERROR });
   }
 
   // GET /api/memory — return Mana's consolidated memory to any authenticated

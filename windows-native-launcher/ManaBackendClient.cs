@@ -25,7 +25,10 @@ internal sealed class ManaBackendClient
     // header once here via DefaultRequestHeaders (rather than adding it to
     // every individual request below) covers every current and future
     // method in this file for free.
-    public ManaBackendClient(HttpMessageHandler? handler = null, string? baseUrl = null, string? adminToken = null)
+    // #670: launcherKey is ManaProcessManager.LauncherKey, sent as
+    // x-admin-token -- node-bot's admin routes (restart, accounts, mobile
+    // devices, llama.cpp builds, skill import) need it or ADMIN_TOKEN now.
+    public ManaBackendClient(HttpMessageHandler? handler = null, string? baseUrl = null, string? adminToken = null, string? launcherKey = null)
     {
         http = handler is null
             ? new HttpClient()
@@ -34,6 +37,10 @@ internal sealed class ManaBackendClient
         if (!string.IsNullOrEmpty(adminToken))
         {
             http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", adminToken);
+        }
+        if (!string.IsNullOrEmpty(launcherKey))
+        {
+            http.DefaultRequestHeaders.Add("X-Admin-Token", launcherKey);
         }
     }
 
@@ -1125,9 +1132,8 @@ internal sealed class ManaBackendClient
     // MANA_ADMIN_SECRET's checkAdminAuth and /admin/accounts's
     // authMiddleware+requireAdmin: it checks the same "Authorization:
     // Bearer <token>"/"x-admin-token" header shape, but validates it
-    // against a separate ADMIN_TOKEN env var; if that's unset, it falls
-    // back to localhost-only, which the common local-backend setup
-    // satisfies with no token configured at all). expiresAt is a raw
+    // against a separate ADMIN_TOKEN env var, or #670's per-run launcher
+    // key, which this client sends as x-admin-token). expiresAt is a raw
     // Unix-epoch-milliseconds number (deviceStore's own Date.now()-based
     // TTL), not an ISO string like every other timestamp this client
     // parses elsewhere.
@@ -1201,9 +1207,9 @@ internal sealed class ManaBackendClient
     // named key) -- see auth-store.js's listAccounts, which returns
     // res.json(accounts) directly. Requires an admin-role API key sent as
     // the Connection tab's admin token (server.js's authMiddleware +
-    // requireAdmin) -- for the common local-backend case, requireAdmin's
-    // own loopback check passes automatically, so no separate ADMIN_TOKEN
-    // is needed on top of that key.
+    // requireAdmin) -- requireAdmin's second check is met by #670's per-run
+    // launcher key (x-admin-token), so no separate ADMIN_TOKEN is needed
+    // for a backend this launcher started.
     public async Task<IReadOnlyList<ManaAccount>> GetAccountsAsync()
     {
         using var response = await http.GetAsync("/admin/accounts");

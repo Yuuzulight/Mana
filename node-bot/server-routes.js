@@ -12,6 +12,7 @@ const {
   isLoopbackAddress,
   isRestartCommand,
 } = require("./admin-restart");
+const { ADMIN_KEY_REQUIRED_ERROR, hasAdminKey } = require("./admin-key");
 const { readGgufMetadata } = require("./tools/gguf-metadata");
 const { createZedIntegration } = require("./zed-integration");
 const { runPluginInputHooks } = require("./capabilities/registry");
@@ -44,6 +45,11 @@ function isLocalRestartRequest(req) {
     isLoopbackAddress(socketAddress || requestAddress) &&
     (!forwardedAddress || isLoopbackAddress(forwardedAddress))
   );
+}
+
+// #670: local is no longer enough for admin routes -- see admin-key.js.
+function isLocalAdminRequest(req) {
+  return isLocalRestartRequest(req) && hasAdminKey(req, { local: true });
 }
 
 function hasRestartController(restartController) {
@@ -127,6 +133,9 @@ function registerCoreRoutes(app, upload, deps) {
     }
     if (!isLocalRestartRequest(req)) {
       return res.status(403).json({ error: RESTART_LOCAL_ONLY_ERROR });
+    }
+    if (!isLocalAdminRequest(req)) {
+      return res.status(403).json({ error: ADMIN_KEY_REQUIRED_ERROR });
     }
 
     const payload = restartController.buildAcceptedPayload();
@@ -688,6 +697,10 @@ function registerModelRoutes(app, deps) {
       res.status(403).json({ error: "this endpoint is only available from this PC" });
       return false;
     }
+    if (!isLocalAdminRequest(req)) {
+      res.status(403).json({ error: ADMIN_KEY_REQUIRED_ERROR });
+      return false;
+    }
     return true;
   }
 
@@ -822,6 +835,9 @@ function registerModelRoutes(app, deps) {
   app.post("/models/brain-provider/test", async (req, res) => {
     if (!isLocalRestartRequest(req)) {
       return res.status(403).json({ error: "this endpoint is only available from this PC" });
+    }
+    if (!isLocalAdminRequest(req)) {
+      return res.status(403).json({ error: ADMIN_KEY_REQUIRED_ERROR });
     }
     const result = await modelManagement.testBrainConnection({
       baseUrl: req.body?.baseUrl,
@@ -1277,6 +1293,7 @@ function registerPendingWritesRoutes(app, deps) {
 module.exports = {
   registerCoreRoutes,
   isLocalRestartRequest,
+  isLocalAdminRequest,
   registerModelRoutes,
   registerEditorRoutes,
   registerAdminStaticRoutes,
