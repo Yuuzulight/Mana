@@ -1,3 +1,4 @@
+using System.Drawing;
 using Mana.NativeLauncher;
 using Xunit;
 
@@ -20,6 +21,18 @@ public class ContextMeterFormatterTests
         ContextSize = 16384,
         PercentUsed = 19.6,
     };
+
+    [Theory]
+    [InlineData(null, "Muted")]
+    [InlineData(74.9, "Muted")]
+    [InlineData(75.0, "Warn")]
+    [InlineData(89.9, "Warn")]
+    [InlineData(90.0, "Red")]
+    public void MeterColor_AmberFrom75_RedFrom90(double? percent, string expected)
+    {
+        var want = expected switch { "Warn" => DarkTheme.Warn, "Red" => Color.Firebrick, _ => DarkTheme.Muted };
+        Assert.Equal(want, ContextMeterFormatter.MeterColor(percent));
+    }
 
     [Fact]
     public void FormatMeter_ShowsPromptTokensAgainstTheContextWindow()

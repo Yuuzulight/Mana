@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Drawing;
 using System.Globalization;
 using System.Text;
 
@@ -31,6 +32,10 @@ internal static class ContextMeterFormatter
         var used = composition.PromptTokens ?? composition.TotalTokens ?? 0;
         return $"Context {Tokens(used)} / {Tokens(contextSize)} ({percent.ToString("0.#", CultureInfo.InvariantCulture)}%)";
     }
+
+    // Q33b: amber from 75% full, red from 90% (where Mana also says so once).
+    public static Color MeterColor(double? percentUsed) =>
+        percentUsed >= 90 ? Color.Firebrick : percentUsed >= 75 ? DarkTheme.Warn : DarkTheme.Muted;
 
     public static string FormatBreakdown(ManaPromptComposition? composition)
     {

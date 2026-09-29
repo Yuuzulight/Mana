@@ -883,7 +883,7 @@ internal sealed class SessionListForm : Form
             return; // switched sessions meanwhile -- that switch refreshes it
         }
         contextMeterLabel.Text = ContextMeterFormatter.FormatMeter(composition);
-        contextMeterLabel.ForeColor = composition?.PercentUsed >= 80 ? DarkTheme.Warn : DarkTheme.Muted;
+        contextMeterLabel.ForeColor = ContextMeterFormatter.MeterColor(composition?.PercentUsed);
         railToolTip.SetToolTip(contextMeterLabel, ContextMeterFormatter.FormatBreakdown(composition));
     }
 
