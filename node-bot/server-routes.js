@@ -465,7 +465,9 @@ function registerCoreRoutes(app, upload, deps) {
         assistantMode,
         presetId,
         replyMeta,
-        (sentence) => writeEvent({ type: "sentence", text: sentence }),
+        // #623: emotion is the sentence's face tag, when the model gave one.
+        (sentence, emotion) =>
+          writeEvent({ type: "sentence", text: sentence, ...(emotion ? { emotion } : {}) }),
       );
 
       writeEvent({
@@ -474,6 +476,7 @@ function registerCoreRoutes(app, upload, deps) {
         ttsConfigured: TTS_PROVIDER !== "none",
         changed: !replyMeta.streamedMatchesFinal,
         ...(replyMeta.expression ? { expression: replyMeta.expression } : {}),
+        ...(replyMeta.emotion ? { emotion: replyMeta.emotion } : {}),
       });
       return res.end();
     } catch (e) {

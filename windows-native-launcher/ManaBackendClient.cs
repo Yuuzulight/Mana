@@ -1711,6 +1711,7 @@ internal sealed class ManaBackendClient
             Reply = root.TryGetProperty("reply", out var replyProp) ? replyProp.GetString() : null,
             Changed = root.TryGetProperty("changed", out var changedProp) && changedProp.GetBoolean(),
             Expression = root.TryGetProperty("expression", out var exprProp) ? exprProp.GetString() : null,
+            Emotion = root.TryGetProperty("emotion", out var emotionProp) && emotionProp.ValueKind == JsonValueKind.String ? emotionProp.GetString() : null,
             Error = root.TryGetProperty("error", out var errProp) ? errProp.GetString() : null,
             Name = root.TryGetProperty("name", out var nameProp) && nameProp.ValueKind == JsonValueKind.String ? nameProp.GetString() : null,
             Phase = root.TryGetProperty("phase", out var phaseProp) && phaseProp.ValueKind == JsonValueKind.String ? phaseProp.GetString() : null,
@@ -1974,6 +1975,9 @@ internal sealed class ReplyStreamEvent
     public string? Reply { get; init; }
     public bool Changed { get; init; }
     public string? Expression { get; init; }
+    // #623: node-bot's emotion tag -- a "sentence" event's face, or on
+    // "final" the whole reply's (for speaking it as one clip).
+    public string? Emotion { get; init; }
     public string? Error { get; init; }
     // #661: type "tool" -- the tool's name and "start"/"end".
     public string? Name { get; init; }
