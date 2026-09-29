@@ -426,7 +426,7 @@ test("POST /skills/import stages a forceReview proposal and writes nothing", asy
   app.use(express.json());
   skillsCapability.registerRoutes(app, {
     skillsStore: fakeStore({ importSkill: (payload) => imported.push(payload) }),
-    isLocalRestartRequest: () => local,
+    isLocalAdminRequest: () => local,
     approvalGate: {
       registerExecutor: (type, fn) => executors.set(type, fn),
       requestApproval: async (type, options) => {
@@ -462,6 +462,11 @@ test("POST /skills/import stages a forceReview proposal and writes nothing", asy
     assert.deepEqual(imported[0].files.map((f) => f.path).sort(), ["SKILL.md", "scripts/get.sh"]);
 
     assert.equal((await post({ path: path.join(source, "scripts") })).status, 400, "a folder without SKILL.md is refused");
+    // #664: a .zip path goes to the zip reader (readSkillZip's own tests cover real zips).
+    fs.writeFileSync(path.join(source, "not-really.zip"), "hello");
+    const zipResponse = await post({ path: path.join(source, "not-really.zip") });
+    assert.equal(zipResponse.status, 400);
+    assert.match((await zipResponse.json()).error, /isn't a zip Mana can read/);
     local = false;
     assert.equal((await post({ path: source })).status, 403);
     assert.equal(requests.length, 1);

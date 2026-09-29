@@ -438,3 +438,17 @@ test("a search with neither query nor window returns nothing (issue #337)", () =
   assert.deepEqual(index.search({ sessionId: "s1" }), []);
   index.close();
 });
+
+test("#687: sessionIdsMatching finds sessions by every typed word as a prefix, FTS syntax as plain text", () => {
+  const index = makeIndex();
+  index.indexTurn({ sessionId: "s1", turn: { at: "t1", user: "the deploy broke on Friday", assistant: "Let's roll back." } });
+  index.indexTurn({ sessionId: "s2", turn: { at: "t2", user: "deploying tomorrow", assistant: "Good luck!" } });
+  index.indexTurn({ sessionId: "s3", turn: { at: "t3", user: "cats", assistant: "Cats are great." } });
+
+  assert.deepEqual([...index.sessionIdsMatching("depl")].sort(), ["s1", "s2"]);
+  assert.deepEqual([...index.sessionIdsMatching("Deploy fri")], ["s1"]);
+  assert.deepEqual([...index.sessionIdsMatching('"broke" OR -cats* NEAR(')], []);
+  assert.deepEqual([...index.sessionIdsMatching("- * ")], []);
+  assert.deepEqual([...index.sessionIdsMatching("")], []);
+  index.close();
+});

@@ -17,7 +17,9 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 
 const { createApp } = require('../server');
-const { withServer } = require('./helpers');
+const { useTestAdminToken, withServer } = require('./helpers');
+// #842: these routes are admin-only; every request here sends ADMIN_TOKEN.
+const fetch = useTestAdminToken();
 
 test.after(() => {
   fs.rmSync(path.dirname(tempAuditPath), { recursive: true, force: true });

@@ -9,15 +9,21 @@ Usage:
     --chunk-size 1500 \
     --chunk-overlap 200
 
+Only files git tracks under --root are indexed (#809: the old glob excludes
+never matched nested paths, so venvs, node_modules and .worktrees made up
+~99% of an 859k-chunk index).
+
 This file writes:
   - <out>/index.ann
-  - <out>/metadata.json
+  - <out>/metadata.sqlite
   - <out>/config.json
 """
 
 import argparse
+import fnmatch
 import json
 import os
+import subprocess
 from pathlib import Path
 
 import nbformat
@@ -25,6 +31,8 @@ import numpy as np
 from annoy import AnnoyIndex
 from sentence_transformers import SentenceTransformer
 from tqdm import tqdm
+
+import metadata_db
 
 DEFAULT_EXTS = {
     ".py",
@@ -54,22 +62,9 @@ DEFAULT_EXTS = {
     ".sql",
 }
 
-# Default globs to always ignore: virtualenvs, node_modules, git, large tool/model folders
-DEFAULT_IGNORE_GLOBS = [
-    "**/.venv/**",
-    "**/venv/**",
-    "**/env/**",
-    "**/node_modules/**",
-    "**/.git/**",
-    "**/__pycache__/**",
-    "**/dist/**",
-    "**/build/**",
-    "**/*.egg-info/**",
-    "**/tools/**/models/**",
-    "**/tools/**/.venv/**",
-    "**/tools/**/venv/**",
-    "**/tools/**/node_modules/**",
-]
+# Tracked files still worth skipping. fnmatch against the root-relative
+# posix path, where * also matches "/".
+DEFAULT_IGNORE_GLOBS = ["*package-lock.json"]
 
 
 def load_ignore_globs():
@@ -83,31 +78,18 @@ def load_ignore_globs():
     return DEFAULT_IGNORE_GLOBS
 
 
-def is_ignored(path: Path, ignore_globs):
-    for g in ignore_globs:
-        if path.match(g):
-            return True
-    return False
-
-
 def iter_files(root: Path, exts, ignore_globs):
-    for p in root.rglob("*"):
-        try:
-            # Skip paths that raise on stat (permissions, broken symlinks, inaccessible mounts)
-            if not p.exists():
-                continue
-            if p.is_file():
-                if is_ignored(p, ignore_globs):
-                    continue
-                if p.suffix.lower() in exts:
-                    yield p
-                # treat ipynb specially
-                if p.suffix.lower() == ".ipynb":
-                    yield p
-        except (OSError, PermissionError) as e:
-            # log and continue
-            print(f"Warning: cannot access {p}: {e}")
+    tracked = subprocess.run(
+        ["git", "-C", str(root), "ls-files", "-z"],
+        capture_output=True,
+        check=True,
+    ).stdout.decode("utf-8")
+    for rel in tracked.split("\0"):
+        if not rel or any(fnmatch.fnmatch(rel, g) for g in ignore_globs):
             continue
+        p = root / rel
+        if (p.suffix.lower() in exts or p.suffix.lower() == ".ipynb") and p.is_file():
+            yield p
 
 
 def read_file_text(p: Path):
@@ -172,7 +154,7 @@ def main():
         "--ignore-glob",
         nargs="*",
         default=load_ignore_globs(),
-        help="Glob patterns to ignore (relative globs). Can also be set via env MANA_INDEX_IGNORE_GLOBS (comma-separated).",
+        help="fnmatch patterns (root-relative posix paths, * spans /) of tracked files to skip. Can also be set via env MANA_INDEX_IGNORE_GLOBS (comma-separated).",
     )
     parser.add_argument(
         "--n-trees",
@@ -250,9 +232,7 @@ def main():
     ann_index.save(str(index_path))
     print("Saved Annoy index to", index_path)
 
-    meta_path = outdir / "metadata.json"
-    with open(meta_path, "w", encoding="utf-8") as f:
-        json.dump(metadata, f, indent=2, ensure_ascii=False)
+    metadata_db.write(outdir / metadata_db.DB_NAME, metadata)
     config = {
         "root": str(root),
         "embedding_model": args.embedding_model,
