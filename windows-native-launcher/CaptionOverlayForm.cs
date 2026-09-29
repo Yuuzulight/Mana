@@ -245,7 +245,10 @@ internal sealed class CaptionOverlayForm : Form
     }
 
     // Q8: centred under her avatar, kept on screen (never lower than the
-    // old bottom-centre spot); bottom-centre when she's hidden.
+    // old bottom-centre spot); bottom-centre when she's hidden. With no room
+    // under her (she stands at the bottom of the screen) it goes above her
+    // head instead -- clamped down to the bottom spot it would sit on her
+    // body, behind her window.
     internal static Point Place(Size bar, Rectangle? avatar, Rectangle workArea)
     {
         var bottom = workArea.Bottom - bar.Height - BottomGap;
@@ -255,7 +258,11 @@ internal sealed class CaptionOverlayForm : Form
         }
         var minX = workArea.Left + ScreenMargin;
         var x = Math.Clamp(a.Left + (a.Width / 2) - (bar.Width / 2), minX, Math.Max(minX, workArea.Right - bar.Width - ScreenMargin));
-        return new Point(x, Math.Max(workArea.Top + ScreenMargin, Math.Min(a.Bottom + 8, bottom)));
+        var below = a.Bottom + 8;
+        var above = a.Top - bar.Height - 8;
+        var top = workArea.Top + ScreenMargin;
+        var y = below <= bottom ? below : above >= top ? above : Math.Max(top, bottom);
+        return new Point(x, y);
     }
 
     internal static IReadOnlyList<(string Text, int Ms)> Steps(string text, TimeSpan duration)
