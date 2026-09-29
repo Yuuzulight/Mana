@@ -115,21 +115,40 @@ public class ManaBackendClientTests
     }
 
     [Fact]
-    public async Task CreateSkillAsync_ReturnsTrueOn201AndFalseOn202()
+    public async Task CreateSkillAsync_ReportsCreatedOrPendingWithScanFlags()
     {
         var createdHandler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.Created)
         {
             Content = new StringContent("{\"name\":\"weather-check\"}", Encoding.UTF8, "application/json"),
         });
         var createdClient = new ManaBackendClient(createdHandler);
-        Assert.True(await createdClient.CreateSkillAsync("weather-check", "Checks the weather", "function run() {}", null));
+        Assert.True((await createdClient.CreateSkillAsync("weather-check", "Checks the weather", "function run() {}", null)).Created);
 
         var pendingHandler = new FakeHttpMessageHandler(_ => new HttpResponseMessage((HttpStatusCode)202)
         {
-            Content = new StringContent("{\"status\":\"pending\",\"requestId\":\"req-1\"}", Encoding.UTF8, "application/json"),
+            Content = new StringContent("{\"status\":\"pending\",\"requestId\":\"req-1\",\"flags\":[]}", Encoding.UTF8, "application/json"),
         });
-        var pendingClient = new ManaBackendClient(pendingHandler);
-        Assert.False(await pendingClient.CreateSkillAsync("weather-check", "Checks the weather", "function run() {}", null));
+        var pending = await new ManaBackendClient(pendingHandler).CreateSkillAsync("weather-check", "Checks the weather", "function run() {}", null);
+        Assert.False(pending.Created);
+        Assert.Equal("req-1", pending.PendingId);
+        Assert.Empty(pending.Flags);
+
+        // #688: a flagged skill must stay pending (the caller only auto-approves an empty Flags).
+        var flaggedHandler = new FakeHttpMessageHandler(_ => new HttpResponseMessage((HttpStatusCode)202)
+        {
+            Content = new StringContent("{\"status\":\"pending\",\"requestId\":\"req-2\",\"flags\":[\"shell-exec\"]}", Encoding.UTF8, "application/json"),
+        });
+        var flagged = await new ManaBackendClient(flaggedHandler).CreateSkillAsync("x", "y", "rm -rf /", null);
+        Assert.Equal(new[] { "shell-exec" }, flagged.Flags);
+
+        // #688: a Guardian "not safe" verdict with a clean scan is flagged too, so it waits in Approvals.
+        var guardianHandler = new FakeHttpMessageHandler(_ => new HttpResponseMessage((HttpStatusCode)202)
+        {
+            Content = new StringContent("{\"status\":\"pending\",\"requestId\":\"req-3\",\"flags\":[],\"guardian\":{\"safe\":false,\"reason\":\"\"}}", Encoding.UTF8, "application/json"),
+        });
+        var risky = await new ManaBackendClient(guardianHandler).CreateSkillAsync("x", "y", "z", null);
+        Assert.False(risky.Created);
+        Assert.Equal(new[] { "Guardian judged it risky" }, risky.Flags);
     }
 
     [Fact]
@@ -2162,6 +2181,25 @@ public class ManaBackendClientTests
         Assert.Contains("pdf", requests[0].Body);
         Assert.Equal(("GET", "/skill-settings"), (requests[2].Method, requests[2].Path));
         Assert.Equal(("PUT", "/skill-settings", """{"importedSkillUse":"free"}"""), requests[3]);
+    }
+
+    // #664: a link is sent as {url}, a path as {path}.
+    [Fact]
+    public async Task ImportSkillAsync_SendsALinkAsUrl()
+    {
+        var bodies = new System.Collections.Generic.List<string>();
+        var handler = new FakeHttpMessageHandler(request =>
+        {
+            bodies.Add(request.Content!.ReadAsStringAsync().GetAwaiter().GetResult());
+            return new HttpResponseMessage(HttpStatusCode.Accepted) { Content = new StringContent("{}") };
+        });
+        var client = new ManaBackendClient(handler);
+
+        await client.ImportSkillAsync("https://github.com/o/skills/tree/main/weather");
+        await client.ImportSkillAsync(@"C:\skills\weather.zip");
+
+        Assert.Equal("""{"url":"https://github.com/o/skills/tree/main/weather"}""", bodies[0]);
+        Assert.StartsWith("""{"path":""", bodies[1]);
     }
 
     [Fact]

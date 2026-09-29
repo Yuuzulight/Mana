@@ -25,6 +25,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
     private readonly ClipHotkeyListener clipHotkeyListener;
     private readonly ClipBuffer clipBuffer = new();
     private readonly System.Windows.Forms.Timer? clipCaptureTimer;
+    private readonly System.Windows.Forms.Timer? glanceTimer; // #690
     private readonly GlobalHotkeyListener globalHotkeys;
     private readonly TrayNotificationClient trayNotifications;
     private readonly ForegroundWindowReporter foregroundReporter;
@@ -60,8 +61,10 @@ internal sealed class ManaApplicationContext : ApplicationContext
     // #gamingMode checkbox -- it isn't a 3-way auto/on/off switch, just an
     // enable/disable for the auto-detection RefreshTrayStatusAsync already
     // does. Off forces gamingModeActive false regardless of what the
-    // backend's process scan reports; no new backend route needed.
-    private bool gamingModeEnabled = true;
+    // backend's process scan reports; no new backend route needed. #688:
+    // saved (ManaSettingsStore.GamingModeDetection), also set from Settings >
+    // Performance, so the 5s poll re-reads it.
+    private bool gamingModeEnabled = ManaSettingsStore.Load().GamingModeDetection;
 
     // The services ManaProcessManager actually starts/stops (no Kokoro
     // row since #694 / the user decision: node-bot starts Kokoro on
@@ -96,11 +99,16 @@ internal sealed class ManaApplicationContext : ApplicationContext
     // would show a second overlay and re-kill already-exiting processes.
     private bool isShuttingDown;
 
+    // #684: see ManaSettingsStore.AvatarHidesWithChat. servicesStarted: the
+    // avatar first appears once startup is done, so nothing shows her earlier.
+    private bool avatarHidesWithChat = ManaSettingsStore.Load().AvatarHidesWithChat;
+    private bool servicesStarted;
+
     public ManaApplicationContext()
     {
         var rootDir = FindRootDirectory();
         var settings = ManaSettingsStore.Load();
-        processManager = new ManaProcessManager(rootDir, backendBaseUrl: settings.BackendBaseUrl);
+        processManager = new ManaProcessManager(rootDir, backendBaseUrl: settings.BackendBaseUrl, localOnly: settings.LocalOnly);
         backendClient = new ManaBackendClient(baseUrl: settings.BackendBaseUrl, adminToken: settings.AdminToken, launcherKey: processManager.LauncherKey);
         avatarOverlay = new AvatarOverlayForm(rootDir);
         // #578: ambient indicator, no tray entry -- starts polling
@@ -173,6 +181,19 @@ internal sealed class ManaApplicationContext : ApplicationContext
             clipCaptureTimer = new System.Windows.Forms.Timer { Interval = intervalMs };
             clipCaptureTimer.Tick += async (_, _) => await CaptureClipFrameAsync();
             clipCaptureTimer.Start();
+
+            // #690: the ambient glance itself, on Electron's schedule.
+            var glance = new ScreenSensingGlance(
+                backendClient,
+                () => voiceLoop.IsIdle,
+                () => gamingModeActive,
+                () => SystemIdle.GetIdleMilliseconds() ?? 0,
+                ScreenCapture.CaptureAsJpegDataUrl,
+                chatLog.AppendManaMessage,
+                PositiveIntEnv("MANA_SCREEN_SENSING_PRESENCE_IDLE_MS", 90000));
+            glanceTimer = new System.Windows.Forms.Timer { Interval = PositiveIntEnv("MANA_SCREEN_SENSING_INTERVAL_MS", 120000) };
+            glanceTimer.Tick += async (_, _) => await glance.RunOnceAsync();
+            glanceTimer.Start();
         }
         sessionListForm = new SessionListForm(backendClient, voiceLoop, chatLog, avatarOverlay, processManager.BackendLog);
         // #525: Ctrl+Alt+Space types a command instead of speaking one,
@@ -234,6 +255,8 @@ internal sealed class ManaApplicationContext : ApplicationContext
             }
         };
         trayIcon.BalloonTipClicked += (_, _) => balloonClicked?.Invoke();
+        sessionListForm.VisibleChanged += (_, _) => SyncAvatarWithChat();
+        sessionListForm.Resize += (_, _) => SyncAvatarWithChat(); // minimized or restored
         avatarOverlay.Clicked += voiceLoop.Wake; // #662
         trayNotifications.Start();
         visionCaptureClient.Start();
@@ -308,9 +331,13 @@ internal sealed class ManaApplicationContext : ApplicationContext
         menu.Items.Add("Set avatar talking", null, (_, _) => avatarOverlay.SetState(AvatarState.Talking));
         menu.Items.Add(new ToolStripSeparator());
         var gamingModeItem = new ToolStripMenuItem("Gaming mode detection") { CheckOnClick = true, Checked = gamingModeEnabled };
+        menu.Opening += (_, _) => gamingModeItem.Checked = gamingModeEnabled;
         gamingModeItem.Click += (_, _) =>
         {
             gamingModeEnabled = gamingModeItem.Checked;
+            var latest = ManaSettingsStore.Load();
+            latest.GamingModeDetection = gamingModeEnabled;
+            latest.Save();
             if (!gamingModeEnabled)
             {
                 gamingModeActive = false;
@@ -330,6 +357,23 @@ internal sealed class ManaApplicationContext : ApplicationContext
             latest.Save();
         };
         menu.Items.Add(clickThroughItem);
+        var hidesWithChatItem = new ToolStripMenuItem("Hide avatar while chat is open") { CheckOnClick = true, Checked = avatarHidesWithChat };
+        hidesWithChatItem.Click += (_, _) =>
+        {
+            avatarHidesWithChat = hidesWithChatItem.Checked;
+            var latest = ManaSettingsStore.Load();
+            latest.AvatarHidesWithChat = avatarHidesWithChat;
+            latest.Save();
+            if (avatarHidesWithChat)
+            {
+                SyncAvatarWithChat();
+            }
+            else if (servicesStarted)
+            {
+                avatarOverlay.Show();
+            }
+        };
+        menu.Items.Add(hidesWithChatItem);
         // #701: off by default.
         var bubblesItem = new ToolStripMenuItem("Chat bubbles beside Mana") { CheckOnClick = true, Checked = chatBubbles.BubblesOn };
         bubblesItem.Click += (_, _) =>
@@ -396,7 +440,9 @@ internal sealed class ManaApplicationContext : ApplicationContext
             overlay.Close();
             // The avatar appears only once the startup screen is done, so
             // she never pops up over it half-started.
+            servicesStarted = true;
             avatarOverlay.Show();
+            SyncAvatarWithChat();
             ReportAvatarModelProblem();
         }
     }
@@ -438,6 +484,9 @@ internal sealed class ManaApplicationContext : ApplicationContext
         ExitThread();
     }
 
+    private static int PositiveIntEnv(string name, int fallback) =>
+        int.TryParse(Environment.GetEnvironmentVariable(name), out var value) && value > 0 ? value : fallback;
+
     // #585: mirrors windows-launcher's own captureClipFrame -- a cheap
     // local screenshot with no model call, run on the thread pool (same
     // reasoning as SubmitVisionHotkeyAsync's own screen capture: CopyFromScreen
@@ -464,6 +513,9 @@ internal sealed class ManaApplicationContext : ApplicationContext
         try
         {
             var status = await backendClient.GetPerformanceStatusAsync();
+            // ponytail: re-reads the small settings file each 5s poll rather
+            // than wiring a change event from Settings.
+            gamingModeEnabled = ManaSettingsStore.Load().GamingModeDetection;
             gamingModeActive = gamingModeEnabled && status.GamingAppRunning;
             SetTrayStatus(gamingModeActive ? "Mana - game mode" : "Mana");
             avatarOverlay.GameRunning = gamingModeActive; // Q3: click-through while gaming
@@ -577,6 +629,24 @@ internal sealed class ManaApplicationContext : ApplicationContext
     // #526: a fresh dialog per open -- simpler than keeping one instance
     // alive/reused (QuickEntryForm's own pattern), and this isn't opened
     // often enough for that cost to matter.
+    // #684: with AvatarHidesWithChat on, she shows exactly while the chat
+    // window is closed or minimized.
+    private void SyncAvatarWithChat()
+    {
+        if (!servicesStarted || !avatarHidesWithChat || avatarOverlay.IsDisposed)
+        {
+            return;
+        }
+        var show = AvatarShowsBesideChat(sessionListForm.Visible, sessionListForm.WindowState);
+        if (avatarOverlay.Visible != show)
+        {
+            avatarOverlay.Visible = show;
+        }
+    }
+
+    internal static bool AvatarShowsBesideChat(bool chatVisible, FormWindowState chatState) =>
+        !chatVisible || chatState == FormWindowState.Minimized;
+
     private void ShowDoctorPanel()
     {
         if (doctorAlert is not null)
@@ -713,6 +783,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
         idleReportTimer.Stop();
         foregroundReporter.Dispose();
         clipCaptureTimer?.Stop();
+        glanceTimer?.Stop();
         visionHotkeyListener.Dispose();
         clipHotkeyListener.Dispose();
         globalHotkeys.Dispose();
