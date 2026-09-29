@@ -164,6 +164,21 @@ internal sealed class VoiceLoop : IDisposable
     private readonly ScreenContextReader? screenContextReader;
     private readonly Func<bool> isGamingModeActive;
 
+    // #859: Electron's gaming-mode listen pacing. Electron listens in
+    // discrete rounds and, while a game runs, waits before the next round
+    // after one that led nowhere; native captures continuously, so the
+    // same pause means ignoring mic frames until this time (TickCount64).
+    // Under stateLock.
+    private long listenPausedUntilMs;
+    internal const long GamingAwakePauseMs = 1800;  // GAMING_IDLE_PAUSE_MS
+    internal const long GamingAsleepPauseMs = 3200; // GAMING_DEEP_IDLE_PAUSE_MS
+
+    // How long to stop listening after a segment that led to no turn: 0
+    // outside gaming mode; after a barge-in's segment never (she has a
+    // reply to resume).
+    internal static long GamingListenPauseMs(bool gaming, bool awake, bool wasInterruption) =>
+        !gaming || wasInterruption ? 0 : awake ? GamingAwakePauseMs : GamingAsleepPauseMs;
+
     // #585: populated by ManaApplicationContext's own periodic capture
     // timer (gated behind MANA_SCREEN_SENSING_ENABLED, matching
     // windows-launcher's own opt-in), read here only when the clip
@@ -289,6 +304,10 @@ internal sealed class VoiceLoop : IDisposable
             ToggleListening();
         }
         awake = IsListening;
+        lock (stateLock)
+        {
+            listenPausedUntilMs = 0; // #859: she was just called on purpose
+        }
     }
 
     public void Start()
@@ -616,6 +635,10 @@ internal sealed class VoiceLoop : IDisposable
         {
             var frame = frameBuffer.GetRange(0, SileroVadRunner.FrameSamples).ToArray();
             frameBuffer.RemoveRange(0, SileroVadRunner.FrameSamples);
+            if (mode == ListenMode.Idle && Environment.TickCount64 < listenPausedUntilMs)
+            {
+                continue; // #859: gaming-mode pause after a segment that led nowhere
+            }
 
             var probability = vad.ProcessFrame(frame);
             var isSpeech = vad.IsSpeech(probability);
@@ -1309,6 +1332,15 @@ internal sealed class VoiceLoop : IDisposable
         async Task Skip()
         {
             VoiceDebugLog.Append(logEntry);
+            var pauseMs = GamingListenPauseMs(isGamingModeActive(), awake, wasInterruption);
+            if (pauseMs > 0)
+            {
+                lock (stateLock)
+                {
+                    listenPausedUntilMs = Environment.TickCount64 + pauseMs;
+                }
+                VoiceDebugLog.AppendNote($"gaming: listening paused {pauseMs}ms");
+            }
             await ReturnToIdleOrResumeHeldAsync(held, nested);
         }
 
