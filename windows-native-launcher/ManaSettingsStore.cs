@@ -62,6 +62,10 @@ internal sealed class ManaSettingsStore
     public int? AvatarLeft { get; set; }
     public int? AvatarTop { get; set; }
 
+    // #701: Mana's spoken sentences as bubbles beside the avatar while the
+    // chat window isn't in view (tray menu); off by default.
+    public bool ChatBubbles { get; set; }
+
     // filePath: null (every real call site) uses the real per-user
     // settings file. Tests pass a temp file path to exercise
     // load/save/corruption handling without touching LocalApplicationData.

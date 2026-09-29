@@ -1110,6 +1110,26 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
         return -1;
     }
 
+    // #701: a clicked chat bubble -- selects (and scrolls to) Mana's latest
+    // message containing that sentence, else her latest message.
+    public void SelectMessageContaining(string sentence)
+    {
+        var index = LatestManaMessage(sentence);
+        if (index >= 0)
+        {
+            Select(index);
+        }
+    }
+
+    // -1 when Mana has no messages.
+    internal int LatestManaMessage(string sentence)
+    {
+        var mana = Enumerable.Range(0, messages.Count).Reverse().Where(i => !messages[i].FromUser).ToList();
+        return mana.Count == 0
+            ? -1
+            : mana.FirstOrDefault(i => messages[i].PlainText.Contains(sentence.Trim(), StringComparison.OrdinalIgnoreCase), mana[0]);
+    }
+
     private void Select(int index)
     {
         selected = index;
