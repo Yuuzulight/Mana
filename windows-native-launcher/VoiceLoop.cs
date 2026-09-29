@@ -202,6 +202,21 @@ internal sealed class VoiceLoop : IDisposable
     internal static long GamingListenPauseMs(bool gaming, bool awake, bool wasInterruption) =>
         !gaming || wasInterruption ? 0 : awake ? GamingAwakePauseMs : GamingAsleepPauseMs;
 
+    // #678: after this long with no turn she needs the wake word again
+    // (MANA_WAKE_REARM_MS, 0 = stay awake until Stop). lastTurnAtMs is
+    // when the last turn ended or she was woken (TickCount64, stateLock).
+    internal const long DefaultWakeRearmMs = 60000;
+    private long wakeRearmMs = DefaultWakeRearmMs;
+    private long lastTurnAtMs;
+
+    internal static long ResolveWakeRearmMs(string? env) =>
+        long.TryParse(env, out var ms) && ms >= 0 ? ms : DefaultWakeRearmMs;
+
+    // Only between segments, so a command already being spoken when the
+    // quiet period runs out still counts.
+    internal static bool ShouldRearm(bool awake, bool midSegment, long lastTurnAtMs, long nowMs, long rearmMs) =>
+        awake && !midSegment && rearmMs > 0 && nowMs - lastTurnAtMs >= rearmMs;
+
     // #585: populated by ManaApplicationContext's own periodic capture
     // timer (gated behind MANA_SCREEN_SENSING_ENABLED, matching
     // windows-launcher's own opt-in), read here only when the clip
@@ -329,9 +344,10 @@ internal sealed class VoiceLoop : IDisposable
         {
             ToggleListening();
         }
-        awake = IsListening;
         lock (stateLock)
         {
+            awake = IsListening;
+            lastTurnAtMs = Environment.TickCount64; // #678
             listenPausedUntilMs = 0; // #859: she was just called on purpose
         }
     }
@@ -349,6 +365,7 @@ internal sealed class VoiceLoop : IDisposable
         var settings = ManaSettingsStore.Load();
         bargeInMode = BargeInPolicy.Resolve(Environment.GetEnvironmentVariable("MANA_BARGE_IN_MODE"), settings.BargeInMode);
         bargeInMinWords = BargeInPolicy.MinWords(Environment.GetEnvironmentVariable("MANA_BARGE_IN_MIN_WORDS"));
+        wakeRearmMs = ResolveWakeRearmMs(Environment.GetEnvironmentVariable("MANA_WAKE_REARM_MS"));
         speakerGateMode = SpeakerGate.ResolveMode(Environment.GetEnvironmentVariable("MANA_SPEAKER_GATE"), settings.VoiceprintGate);
         speakerThreshold = SpeakerGate.ResolveThreshold(Environment.GetEnvironmentVariable("MANA_SPEAKER_THRESHOLD"));
         voiceprint = speakerGateMode == SpeakerGateMode.Off ? null : settings.Voiceprint;
@@ -722,6 +739,11 @@ internal sealed class VoiceLoop : IDisposable
             if (mode == ListenMode.Idle && Environment.TickCount64 < listenPausedUntilMs)
             {
                 continue; // #859: gaming-mode pause after a segment that led nowhere
+            }
+            if (mode == ListenMode.Idle && ShouldRearm(awake, hasHeardSpeechInSegment, lastTurnAtMs, Environment.TickCount64, wakeRearmMs))
+            {
+                awake = false;
+                VoiceDebugLog.AppendNote($"wake: re-armed after {wakeRearmMs}ms with no turn");
             }
 
             var isSpeech = IsSpeechFrame(frame);
@@ -2197,6 +2219,7 @@ internal sealed class VoiceLoop : IDisposable
     {
         lock (stateLock)
         {
+            lastTurnAtMs = Environment.TickCount64; // #678: the quiet period starts now
             // #665: a ducked interruption owns what happens next (her reply
             // may finish while it's still being decided).
             if (bargeInDucked)

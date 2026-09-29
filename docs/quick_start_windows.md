@@ -38,7 +38,7 @@ Project goal
    - `WHISPER_BIN` should point to the Whisper CLI executable you want to use.
    - If `WHISPER_BIN` is unset or wrong, Mana will also try common local paths under `tools\whisper\`.
    - `WHISPER_PROMPT` is optional. By default Mana builds Whisper's prompt from its wake words plus your name and frequent names/terms from memory, refreshed every few minutes; setting `WHISPER_PROMPT` replaces that entirely.
-   - `WHISPER_VOCABULARY` adds your own words to that prompt, comma-separated, right after your name, e.g. `WHISPER_VOCABULARY=Imouto, Onesan, Gigi Murin, Hololive, VTuber` in `node-bot\.env`. Restart the backend to pick up changes. The prompt is capped at 450 characters, so keep the list short (the words beyond the cap are dropped). Words in the prompt pull transcription toward them, so remove any word whisper starts writing where you didn't say it. It's ignored when `WHISPER_PROMPT` is set.
+   - `WHISPER_VOCABULARY` adds your own words to that prompt, comma-separated, right after your name, e.g. `WHISPER_VOCABULARY=Imouto, Oneesan, Gigi Murin, Hololive, VTuber` in `node-bot\.env`. Restart the backend to pick up changes. The prompt is capped at 450 characters, so keep the list short (the words beyond the cap are dropped). Words in the prompt pull transcription toward them, so remove any word whisper starts writing where you didn't say it. It's ignored when `WHISPER_PROMPT` is set.
    - For Singaporean-accent recognition, `ggml-base.en.bin` or `ggml-small.en.bin` should be more accurate than `ggml-tiny.en.bin`.
    - `$env:WHISPER_MODEL_PROFILE = "small"` (`tiny`/`base`/`small`/`medium`/`turbo`) picks a size tier by name instead of a raw file path, if you keep more than one model under `tools\whisper\models`. Smaller is faster but less accurate; `turbo` (`large-v3-turbo`) trades some of that speed back for closer-to-large accuracy. Falls back to whatever's actually present if the requested tier's file isn't there.
    - `LLAMA_BIN` should point to the Llama CLI executable you want to use.
@@ -76,6 +76,9 @@ Project goal
    - Keep `Gaming mode` checked when you want Mana to run lighter while a watched game is open.
    - Say `Mana` once to wake her for the session.
    - After that first wake-up, keep talking without repeating the wake word.
+   - The native launcher goes back to sleep after 60 seconds with no turn
+     (and when you stop listening), so she needs `Mana` again; set
+     `MANA_WAKE_REARM_MS` to change that, or `0` to stay awake until you stop.
    - Mana listens for your whole sentence and only treats it as your prompt
      once you've paused for about 2.2 seconds — a long sentence isn't cut
      off partway through. Tune the pause length with

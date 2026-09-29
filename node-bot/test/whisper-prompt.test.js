@@ -147,3 +147,9 @@ test("a term already in the base prompt is not repeated, even at a sentence end"
   const prompt = buildWhisperPrompt({ userTexts: ["say hi to Mana", "wake Up now"] });
   assert.equal(prompt, BASE_WHISPER_PROMPT);
 });
+
+test("the base prompt names Mana only, never the wake-word misspellings whisper would copy", () => {
+  const prompt = buildWhisperPrompt();
+  assert.match(prompt, /named Mana\./);
+  assert.doesNotMatch(prompt, /Manah|Manna|Mannah|Myna|My Na/);
+});

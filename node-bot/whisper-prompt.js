@@ -7,10 +7,11 @@
 // reduced to letters, digits and ' . - before it gets in.
 
 // Keeps the "Singapore English" framing (helps the decoder's accent
-// expectations) and Mana's wake words, per
-// docs/speech_recognition_improvement_plan.md.
+// expectations), per docs/speech_recognition_improvement_plan.md. Only
+// "Mana" is named: listing misspellings (Manah, Manna...) here made
+// whisper write them. WakeWordMatcher still accepts those on its own.
 const BASE_WHISPER_PROMPT =
-  "Singapore English conversation with an AI assistant named Mana. Wake words include Mana, Manah, Manna, Mannah, Myna, My Na, and wake up.";
+  "Singapore English conversation with an AI assistant named Mana. Wake words include Mana and wake up.";
 
 // whisper's prompt budget is n_text_ctx/2 = 224 tokens, shared with the
 // text carried over from the previous window. 450 chars stays under ~150
