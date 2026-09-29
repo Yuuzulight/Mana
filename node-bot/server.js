@@ -111,6 +111,7 @@ const { sessionsCapability } = require("./capabilities/sessions-capability");
 const { promptCompositionCapability } = require("./capabilities/prompt-composition-capability");
 const { presetsCapability } = require("./capabilities/presets-capability");
 const { personalityCapability } = require("./capabilities/personality-capability");
+const { moodCapability } = require("./capabilities/mood-capability");
 const {
   deepResearchCapability,
 } = require("./capabilities/deep-research-capability");
@@ -190,6 +191,7 @@ const { createSkillProposalRunner } = require("./skill-proposal");
 const persona = require("./persona");
 const { createPresetsStore } = require("./presets-store");
 const { createPersonalityStore } = require("./personality-store");
+const { createMoodStore, moodPromptBlock } = require("./mood-store");
 const { createPluginSettingsStore } = require("./plugin-settings-store");
 const { createAuthStore } = require("./auth-store");
 const { createToolPolicy } = require("./ai/tool-policy");
@@ -816,6 +818,14 @@ const presetsStore = createPresetsStore({});
 // Issue #357: the editable personality layer, persisted so an adjustment
 // survives a restart. persona.js owns the immutable core and no storage.
 const personalityStore = createPersonalityStore({});
+// Issue #700: Mana's mood, persisted beside emotional-state.json (in memory
+// under tests, so they never touch the real data dir).
+const moodStore = createMoodStore({
+  filePath:
+    process.env.NODE_ENV === "test" || process.env.NODE_TEST_CONTEXT
+      ? null
+      : path.join(acpMemoryStore.dataDir, "mood-state.json"),
+});
 
 // Procedural-memory skills store (see skills-store.js, issue #140)
 const skillsStore = createSkillsStore({ snapshotStore });
@@ -836,6 +846,7 @@ const approvalGate = createApprovalGate({
   guardianEnabled: process.env.MANA_GUARDIAN_PRECHECK_ENABLED === "1",
   guardianPreCheck: (actionType, ctx) =>
     judgeActionRisk({ actionType, ...ctx, runLocalReply: runLocalLlamaReply }),
+  onDeny: () => moodStore.record("approval_rejected"),
 });
 
 // Conversational rut detection (issue #159): flags a reply too similar to
@@ -2113,6 +2124,7 @@ function registerRoutes(app, upload, deps = {}) {
     deepResearchCapability,
     presetsCapability,
     personalityCapability,
+    moodCapability,
     backgroundMemoryCapability,
     memoryFactsCapability,
     retrieverAdminCapability,
@@ -2129,6 +2141,7 @@ function registerRoutes(app, upload, deps = {}) {
   ];
   const activePresetsStore = deps.presetsStore || presetsStore;
   const activePersonalityStore = deps.personalityStore || personalityStore;
+  const activeMoodStore = deps.moodStore || moodStore;
   const activePluginSettingsStore = deps.pluginSettingsStore || pluginSettingsStore;
   const activeSkillsStore = deps.skillsStore || skillsStore;
   // Registered against whichever store this createApp call actually uses
@@ -2251,6 +2264,7 @@ function registerRoutes(app, upload, deps = {}) {
         )),
     presetsStore: activePresetsStore,
     personalityStore: activePersonalityStore,
+    moodStore: activeMoodStore,
     marketDataClient,
     jobApplicationsStore,
     adzunaClient,
@@ -3863,6 +3877,21 @@ function registerRoutes(app, upload, deps = {}) {
       console.warn("Failed to look up related facts:", relErr.message);
     }
 
+    // Issue #700: her mood, as tone guidance only -- "late" like memory,
+    // since it changes turn to turn. It never touches the token budget,
+    // tools or mode, and moodPromptBlock leaves coding replies alone.
+    let moodText = "";
+    try {
+      activeMoodStore.recordTurn(transcript);
+      moodText = moodPromptBlock(activeMoodStore.get(), mode) || "";
+      if (moodText) {
+        memoryExtraMessages.late.push({ role: "system", content: moodText });
+        flatMemorySuffix += `\n\n${moodText}`;
+      }
+    } catch (moodErr) {
+      console.warn("Failed to apply mood:", moodErr.message);
+    }
+
     // Issue #400: makes the composition of the prompt this reply actually
     // used observable (GET /prompt-composition), instead of only
     // discoverable by reading the code the way #364's truncation bug was.
@@ -3884,6 +3913,7 @@ function registerRoutes(app, upload, deps = {}) {
       "skills-index": skillsIndexText,
       "prompt-memory": promptMemoryText,
       "related-facts": relatedFactsText,
+      mood: moodText,
     };
     let compositionRecord = null;
     try {
@@ -3896,6 +3926,7 @@ function registerRoutes(app, upload, deps = {}) {
           chars: relatedFactsChars,
           dropped: { truncated: relatedFactsTruncated, ...(relatedFactsRecall ? { recall: relatedFactsRecall } : {}) },
         },
+        { name: "mood", chars: moodText.length, dropped: null },
       ]);
     } catch (compErr) {
       // Diagnostic-only; never blocks a reply.
@@ -4451,7 +4482,9 @@ function registerRoutes(app, upload, deps = {}) {
           // Issue #188: applied last so it catches every tool call from
           // every source (local read_file, browser-automation, MCP) in one
           // shared audit/trace log.
-          mergedToolPolicy = wrapWithToolCallLog(mergedToolPolicy, activeToolCallLog);
+          mergedToolPolicy = wrapWithToolCallLog(mergedToolPolicy, activeToolCallLog, () =>
+            activeMoodStore.record("task_failed"),
+          );
           // #486: modify-input hook rules rewrite args first, so every gate
           // above and the audit log see the rewritten call, never the original.
           mergedToolPolicy = wrapWithInputHooks(mergedToolPolicy, activeHooksStore);
