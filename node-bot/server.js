@@ -514,6 +514,9 @@ const gamingWatch = createGamingWatch({
 if (process.env.NODE_ENV !== "test" && !process.env.NODE_TEST_CONTEXT) {
   gamingWatch.poll();
   setInterval(gamingWatch.poll, 30 * 1000).unref();
+  // #697: proactive remarks held during play go out after the game.
+  require("./proactive").watchGaming(gamingWatch.isGaming);
+  setInterval(require("./proactive").flush, 30 * 1000).unref();
 }
 
 // Issue #674: optional CPU-only reranker for memory recall -- off unless
@@ -1313,13 +1316,18 @@ if (process.env.NODE_ENV !== "test" && !process.env.NODE_TEST_CONTEXT) {
             );
             // Issue #423: surface the Dream Mode insight as a proactive toast,
             // not just a silent file write -- fire-and-forget, never blocks
-            // the compaction itself on notification delivery.
-            notifyTray({
-              type: "dream",
-              title: "Dream Mode",
-              text: compacted.length > 200 ? `${compacted.slice(0, 200)}...` : compacted,
-              at: new Date().toISOString(),
-            }).catch(() => {});
+            // the compaction itself on notification delivery. #697: through
+            // the proactive budget and gaming hold; worth it for half a day.
+            require("./proactive").offer({
+              reason: "dream-insight",
+              ttlMs: 12 * 60 * 60 * 1000,
+              payload: {
+                type: "dream",
+                title: "Dream Mode",
+                text: compacted.length > 200 ? `${compacted.slice(0, 200)}...` : compacted,
+                at: new Date().toISOString(),
+              },
+            });
           }
         } catch (e) {
           console.warn(
