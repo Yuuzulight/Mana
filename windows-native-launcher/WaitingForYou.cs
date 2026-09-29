@@ -4,16 +4,19 @@ using System.Drawing.Drawing2D;
 namespace Mana.NativeLauncher;
 
 // #661: what's waiting on the user -- tool/memory/skill approvals
-// (/approvals/pending) and pending edit proposals (#658) -- for the
-// avatar's Waiting pose, the tray badge and the "waiting for you" toast.
+// (/approvals/pending), pending edit proposals (#658) and the ACP agent's
+// pending writes (#838) -- for the avatar's Waiting pose, the tray badge
+// and the "waiting for you" toast.
 internal static class WaitingForYou
 {
     public static IReadOnlyList<(string Id, string What)> Items(
         IReadOnlyList<ManaPendingApproval> approvals,
-        IReadOnlyList<ManaProposalSummary> proposals) =>
+        IReadOnlyList<ManaProposalSummary> proposals,
+        IReadOnlyList<ManaPendingWrite>? writes = null) =>
         [
             .. approvals.Select(a => ("approval:" + a.Id, Describe(a))),
             .. proposals.Where(p => p.Status == "pending").Select(p => ("edit:" + p.Id, $"an edit to {p.RelativePath}")),
+            .. (writes ?? []).Select(w => ("write:" + w.Id, $"{w.Kind}: {w.Summary}")),
         ];
 
     // The toast text for items not announced before (null when there are

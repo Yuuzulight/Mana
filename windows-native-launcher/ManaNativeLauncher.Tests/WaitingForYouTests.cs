@@ -26,6 +26,14 @@ public class WaitingForYouTests
     }
 
     [Fact]
+    public void Items_IncludesTheAgentsPendingWrites()
+    {
+        var items = WaitingForYou.Items([], [], [new ManaPendingWrite { Id = "hook-ask-1", Kind = "hook ask", Summary = "Check writes (file_write)" }]);
+
+        Assert.Equal([("write:hook-ask-1", "hook ask: Check writes (file_write)")], items);
+    }
+
+    [Fact]
     public void NewItemsNotice_AnnouncesEachItemOnce_AndForgetsResolvedOnes()
     {
         var announced = new HashSet<string>();
