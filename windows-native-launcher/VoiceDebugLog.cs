@@ -19,7 +19,7 @@ internal sealed class VoiceSegmentLogEntry
     public float? Score { get; set; }
     public float? Threshold { get; set; }
     public bool ClassifierFailed { get; set; }
-    // skipped (pre-filter rejected) | failed | empty | ok
+    // skipped (pre-filter or speech gate rejected) | failed | empty | ok
     public string Whisper { get; set; } = "skipped";
     public string? Transcript { get; set; }
     public bool? WakeMatch { get; set; }
@@ -32,6 +32,11 @@ internal sealed class VoiceSegmentLogEntry
     public long? PartialMs { get; init; }
     public string? Partial { get; init; }
     public bool Merged { get; set; }
+    // #682 speech filters: the boost applied before Whisper, and why the
+    // segment was dropped (quiet | clicky before Whisper; hallucination |
+    // noise after it), null if it wasn't.
+    public double Gain { get; set; } = 1;
+    public string? Drop { get; set; }
 
     internal const int MaxTranscriptChars = 300;
 
@@ -58,6 +63,14 @@ internal sealed class VoiceSegmentLogEntry
             "{0:yyyy-MM-ddTHH:mm:ss.fff} len={1}ms close={2} peak={3:F1}dBFS rms={4:F1}dBFS speech={5}% awake={6} prefilter={7} score={8} threshold={9} whisper={10}",
             At, lengthMs, Close, Dbfs(peak), Dbfs(rms), speechPct, Awake ? "yes" : "no", prefilter,
             Score?.ToString("F3", inv) ?? "-", Threshold?.ToString("F2", inv) ?? "-", Whisper);
+        if (Gain != 1)
+        {
+            line += string.Format(inv, " gain={0:F1}", Gain);
+        }
+        if (Drop is not null)
+        {
+            line += $" drop={Drop}";
+        }
         if (WakeMatch is bool matched)
         {
             line += matched ? " wake=yes" : " wake=no";
