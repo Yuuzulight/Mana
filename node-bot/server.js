@@ -898,12 +898,9 @@ const browserAutomationToolSource = createBrowserAutomationToolSource({
 let BACKGROUND_MEMORY_BLOCK = "";
 let BACKGROUND_MEMORY_LOCK = false;
 let BACKGROUND_MEMORY_META = { files: {} };
-const BACKGROUND_META_PATH = path.join(
-  __dirname,
-  "data",
-  "acp-memory",
-  "background_meta.json",
-);
+// MANA_ACP_MEMORY_DIR moves these with the rest of memory (acp-memory-store).
+const ACP_MEMORY_DIR = process.env.MANA_ACP_MEMORY_DIR || path.join(__dirname, "data", "acp-memory");
+const BACKGROUND_META_PATH = path.join(ACP_MEMORY_DIR, "background_meta.json");
 
 function loadPersistedBackgroundMetaSync() {
   try {
@@ -979,12 +976,7 @@ function buildSkillsIndexBlock(skills) {
 // (issue #69) -- written whenever a compaction/review pass actually changes
 // the compacted summary or important facts, whether triggered by idle
 // detection or the hourly timer.
-const MEMORY_MD_PATH = path.join(
-  __dirname,
-  "data",
-  "acp-memory",
-  "MEMORY.md",
-);
+const MEMORY_MD_PATH = path.join(ACP_MEMORY_DIR, "MEMORY.md");
 
 function formatMemoryMarkdown(compacted, facts, connections = []) {
   const lines = [
@@ -1156,7 +1148,7 @@ async function asyncLoadBackgroundMemory() {
   try {
     const sessionsDir =
       (acpMemoryStore && acpMemoryStore.sessionsDir) ||
-      path.join(__dirname, "data", "acp-memory", "sessions");
+      path.join(ACP_MEMORY_DIR, "sessions");
     if (!fs.existsSync(sessionsDir)) {
       BACKGROUND_MEMORY_BLOCK = "";
       BACKGROUND_MEMORY_META = { files: {} };
