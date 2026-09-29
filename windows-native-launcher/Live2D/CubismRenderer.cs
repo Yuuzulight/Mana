@@ -145,6 +145,8 @@ internal sealed class CubismRenderer : IDisposable
     // framing, Electron's computeZoomFraming in live2d-logic.js): the top
     // fraction of the model fills the height under a 4% top margin, centred
     // horizontally, and the rest is cropped off the bottom.
+    internal const float TopMargin = 0.04f;
+
     internal static (float Scale, float OffsetX, float OffsetY) Fit(float canvasWidth, float canvasHeight, int width, int height, float heightFraction)
     {
         var valid = canvasWidth > 0 && canvasHeight > 0;
@@ -153,7 +155,7 @@ internal sealed class CubismRenderer : IDisposable
             var fitScale = valid ? Math.Min(width / canvasWidth, height / canvasHeight) : 1f;
             return (fitScale, (width - canvasWidth * fitScale) / 2f, (height - canvasHeight * fitScale) / 2f);
         }
-        var topMargin = height * 0.04f;
+        var topMargin = height * TopMargin;
         var scale = (height - topMargin) / (canvasHeight * Math.Max(0.05f, heightFraction));
         return (scale, (width - canvasWidth * scale) / 2f, topMargin);
     }

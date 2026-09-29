@@ -146,7 +146,8 @@ internal sealed class ManaApplicationContext : ApplicationContext
         // #571: on-screen equivalent of spoken output, fed sentence by
         // sentence by VoiceLoop's own playback.
         // Q8: under Mana while she's showing (Visible/Bounds are plain field reads).
-        captionOverlay = new CaptionOverlayForm(() => avatarOverlay.Visible ? avatarOverlay.Bounds : null);
+        // #899: above her visible top, not the top of her (framed, bigger) window.
+        captionOverlay = new CaptionOverlayForm(() => avatarOverlay.Visible ? avatarOverlay.VisibleBounds : null);
         chatBubbles = new ChatBubblesForm(() => avatarOverlay.Visible ? avatarOverlay.Bounds : null, () => ChatBubblesForm.InView(sessionListForm));
         captionOverlay.Suppressed = chatBubbles.BubblesOn; // #701: bubbles replace the caption bar
         chatBubbles.BubbleClicked += text =>
@@ -372,6 +373,30 @@ internal sealed class ManaApplicationContext : ApplicationContext
             }
         };
         menu.Items.Add(hidesWithChatItem);
+        // #899: the overlay's framing and size, applied live.
+        var framingMenu = new ToolStripMenuItem("Framing");
+        foreach (var (framing, label) in new[] { ("full", "Full body"), ("upperHalf", "Upper half"), ("bust", "Bust") })
+        {
+            framingMenu.DropDownItems.Add(new ToolStripMenuItem(label, null, (_, _) => SetOverlayFraming(framing, avatarOverlay.OverlayScale)) { Tag = framing });
+        }
+        var sizeMenu = new ToolStripMenuItem("Size");
+        foreach (var scale in AvatarOverlayForm.OverlayScales)
+        {
+            sizeMenu.DropDownItems.Add(new ToolStripMenuItem($"{scale * 100:0}%", null, (_, _) => SetOverlayFraming(avatarOverlay.OverlayFraming, scale)) { Tag = scale });
+        }
+        menu.Opening += (_, _) =>
+        {
+            foreach (ToolStripMenuItem item in framingMenu.DropDownItems)
+            {
+                item.Checked = Equals(item.Tag, avatarOverlay.OverlayFraming);
+            }
+            foreach (ToolStripMenuItem item in sizeMenu.DropDownItems)
+            {
+                item.Checked = Equals(item.Tag, avatarOverlay.OverlayScale);
+            }
+        };
+        menu.Items.Add(framingMenu);
+        menu.Items.Add(sizeMenu);
         // #701: off by default.
         var bubblesItem = new ToolStripMenuItem("Chat bubbles beside Mana") { CheckOnClick = true, Checked = chatBubbles.BubblesOn };
         bubblesItem.Click += (_, _) =>
@@ -638,6 +663,22 @@ internal sealed class ManaApplicationContext : ApplicationContext
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Warning);
         }
+    }
+
+    // #899: a saved (dragged-to) spot follows the resize, so she stays put
+    // on the next launch; without one she keeps using the default corner.
+    private void SetOverlayFraming(string framing, float scale)
+    {
+        avatarOverlay.SetFraming(framing, scale);
+        var latest = ManaSettingsStore.Load();
+        latest.OverlayFraming = avatarOverlay.OverlayFraming;
+        latest.OverlayScale = avatarOverlay.OverlayScale;
+        if (latest.AvatarLeft is not null && latest.AvatarTop is not null)
+        {
+            latest.AvatarLeft = avatarOverlay.Left;
+            latest.AvatarTop = avatarOverlay.Top;
+        }
+        latest.Save();
     }
 
     // #526: a fresh dialog per open -- simpler than keeping one instance

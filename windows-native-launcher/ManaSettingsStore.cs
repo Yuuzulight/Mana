@@ -99,6 +99,11 @@ internal sealed class ManaSettingsStore
     // "bust" (see LiveAvatarPanel); null = full.
     public string? AvatarFraming { get; set; }
 
+    // #899: the overlay's framing ("full", "upperHalf" or "bust") and size
+    // (AvatarOverlayForm.OverlayScales); null = the defaults. Tray menu.
+    public string? OverlayFraming { get; set; }
+    public float? OverlayScale { get; set; }
+
     // #687: the chat session open when the launcher last ran, reopened on
     // launch, and whether it was auto-started (Q62: those still rotate).
     public string? LastSessionId { get; set; }

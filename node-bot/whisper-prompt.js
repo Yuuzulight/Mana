@@ -103,13 +103,20 @@ function extractTerms(text) {
 // verified memory fact or at least 2 chat turns -- on real data every one-off
 // capital ("Ali", "Baba") came from a single garbled voice transcript, never
 // from a fact -- while jargon-shaped terms need only one source.
-function buildWhisperPrompt({ facts = [], userTexts = [] } = {}) {
+// #901: vocabulary (WHISPER_VOCABULARY) is the user's own list, kept in their
+// order right after the name, ahead of anything memory suggests.
+function buildWhisperPrompt({ facts = [], userTexts = [], vocabulary = [] } = {}) {
   const usableFacts = facts.filter(isUsableFact);
   const name = userNameFromFacts(usableFacts);
   // Words already in the prompt, split the same way extractTerms does.
-  const known = new Set(
-    `${BASE_WHISPER_PROMPT} ${name}`.split(/[.!?]+(?:\s+|$)|[\s,]+/).map((w) => cleanTerm(w).toLowerCase()),
-  );
+  const words = (text) => text.split(/[.!?]+(?:\s+|$)|[\s,]+/).map((w) => cleanTerm(w).toLowerCase());
+  const known = new Set(words(`${BASE_WHISPER_PROMPT} ${name}`));
+  const vocab = [];
+  for (const term of vocabulary.map(cleanTerm)) {
+    if (!term || known.has(term.toLowerCase())) continue;
+    vocab.push(term);
+    for (const w of [term, ...words(term)]) known.add(w.toLowerCase());
+  }
 
   const counts = new Map();
   const termFacts = usableFacts.filter((f) => !NAME_KEY.test(String(f.key || "").trim()));
@@ -137,7 +144,7 @@ function buildWhisperPrompt({ facts = [], userTexts = [] } = {}) {
 
   const head = name ? `${BASE_WHISPER_PROMPT} The user's name is ${name}.` : BASE_WHISPER_PROMPT;
   const kept = [];
-  for (const term of ranked) {
+  for (const term of [...vocab, ...ranked].slice(0, MAX_TERMS)) {
     if (`${head} Names and terms: ${[...kept, term].join(", ")}.`.length > MAX_PROMPT_CHARS) break;
     kept.push(term);
   }
@@ -147,8 +154,16 @@ function buildWhisperPrompt({ facts = [], userTexts = [] } = {}) {
 // Returns getPrompt(): the WHISPER_PROMPT override when set, otherwise the
 // built prompt, rebuilt at most every refreshMs (reading memory on every
 // utterance would put file I/O on the STT hot path). Falls back to the
-// base prompt if memory can't be read.
-function createWhisperPromptProvider({ memoryStore, override = "", refreshMs = REFRESH_MS, now = Date.now } = {}) {
+// base prompt (plus the vocabulary) if memory can't be read. vocabulary is
+// WHISPER_VOCABULARY, comma-separated.
+function createWhisperPromptProvider({
+  memoryStore,
+  override = "",
+  vocabulary = "",
+  refreshMs = REFRESH_MS,
+  now = Date.now,
+} = {}) {
+  const vocab = String(vocabulary).split(",");
   let cached = null;
   let builtAt = 0;
   return function getPrompt() {
@@ -160,10 +175,10 @@ function createWhisperPromptProvider({ memoryStore, override = "", refreshMs = R
         .slice(0, RECENT_SESSIONS)
         .flatMap((s) => (memoryStore.getSession(s.sessionId)?.turns || []).slice(-TURNS_PER_SESSION))
         .map((turn) => String(turn.user || "").slice(0, MAX_TURN_CHARS));
-      cached = buildWhisperPrompt({ facts: memoryStore.listFacts(), userTexts });
+      cached = buildWhisperPrompt({ facts: memoryStore.listFacts(), userTexts, vocabulary: vocab });
     } catch (e) {
       console.warn("Failed to build whisper prompt from memory:", e.message);
-      cached = BASE_WHISPER_PROMPT;
+      cached = buildWhisperPrompt({ vocabulary: vocab });
     }
     builtAt = now();
     return cached;

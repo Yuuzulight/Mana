@@ -27,7 +27,7 @@ internal sealed class LiveAvatarPanel : Panel
 
     public static float FramingFraction(string? framing) => framing switch
     {
-        "waist" => 0.55f,
+        "waist" or "upperHalf" => 0.55f, // #899: the overlay's name for waist-up
         "bust" => 0.28f,
         _ => 1f,
     };

@@ -115,6 +115,33 @@ test("the provider falls back to the base prompt when memory can't be read", () 
   assert.equal(getPrompt(), BASE_WHISPER_PROMPT);
 });
 
+test("WHISPER_VOCABULARY terms follow the name in the user's order, ahead of memory terms (#901)", () => {
+  const prompt = buildWhisperPrompt({
+    facts: [fact("name", "Yuuzu")],
+    userTexts: ["watch Hololive with Ali", "ask Ali about Hololive"],
+    vocabulary: ["Imouto", " Onesan ", "", "Gigi Murin", "Hololive", "VTuber", "mana", "IMOUTO"],
+  });
+  // Blank, already-in-base (Mana) and repeated entries drop out; Hololive
+  // from chat isn't listed twice.
+  assert.match(prompt, /The user's name is Yuuzu\. Names and terms: Imouto, Onesan, Gigi Murin, Hololive, VTuber, Ali\.$/);
+});
+
+test("a long vocabulary stays within MAX_PROMPT_CHARS, name first (#901)", () => {
+  const vocabulary = Array.from({ length: 60 }, (_, i) => `Vocabword${i}`);
+  const prompt = buildWhisperPrompt({ facts: [fact("name", "Yuuzu")], vocabulary });
+  assert.ok(prompt.length <= MAX_PROMPT_CHARS);
+  assert.match(prompt, /The user's name is Yuuzu\. Names and terms: Vocabword0, Vocabword1, /);
+});
+
+test("the provider splits WHISPER_VOCABULARY on commas, keeps it on the fallback, and WHISPER_PROMPT still wins (#901)", () => {
+  const broken = { listSessions: () => { throw new Error("disk gone"); } };
+  assert.equal(
+    createWhisperPromptProvider({ memoryStore: broken, vocabulary: "Imouto, Gigi Murin" })(),
+    `${BASE_WHISPER_PROMPT} Names and terms: Imouto, Gigi Murin.`,
+  );
+  assert.equal(createWhisperPromptProvider({ memoryStore: broken, override: "custom", vocabulary: "Imouto" })(), "custom");
+});
+
 test("a term already in the base prompt is not repeated, even at a sentence end", () => {
   // "named Mana." ends a sentence in the base prompt.
   const prompt = buildWhisperPrompt({ userTexts: ["say hi to Mana", "wake Up now"] });

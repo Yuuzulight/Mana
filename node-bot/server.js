@@ -12,6 +12,9 @@ over inherited ones -- or set before running):
 - WHISPER_LANGUAGE : spoken language passed to whisper.cpp (default "en")
 - WHISPER_PROMPT : replaces the initial prompt that biases transcription
   toward Mana's wake words, your name and your frequent terms (issue #667)
+- WHISPER_VOCABULARY : comma-separated words whisper should know, added to
+  that prompt right after your name (e.g. "Imouto, Onesan, Gigi Murin,
+  Hololive, VTuber"; issue #901). Ignored when WHISPER_PROMPT is set
 - WHISPER_BEAM_SIZE, WHISPER_NO_SPEECH_THRESHOLD, WHISPER_TEMPERATURE :
   whisper.cpp decoding tuning knobs, see docs/speech_recognition_improvement_plan.md
 - WHISPER_SERVER_BIN, WHISPER_SERVER_PORT : the whisper-server kept loaded for
@@ -786,6 +789,7 @@ const acpMemoryStore = createAcpMemoryStore({
 const getWhisperPrompt = createWhisperPromptProvider({
   memoryStore: acpMemoryStore,
   override: process.env.WHISPER_PROMPT || "",
+  vocabulary: process.env.WHISPER_VOCABULARY || "",
 });
 
 // #619: a loaded whisper-server for final and partial transcripts, with
