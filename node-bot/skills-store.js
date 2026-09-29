@@ -598,6 +598,7 @@ function createSkillsStore(options = {}) {
             lastUsed: skill.lastUsed,
             useCount: skill.useCount,
             requires: skill.requires,
+            hasScript: Boolean(extractSkillScript(skill.body)),
             ...availability,
           };
         } catch (e) {

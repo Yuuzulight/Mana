@@ -111,6 +111,7 @@ const { sessionsCapability } = require("./capabilities/sessions-capability");
 const { promptCompositionCapability } = require("./capabilities/prompt-composition-capability");
 const { presetsCapability } = require("./capabilities/presets-capability");
 const { personalityCapability } = require("./capabilities/personality-capability");
+const { moodCapability } = require("./capabilities/mood-capability");
 const {
   deepResearchCapability,
 } = require("./capabilities/deep-research-capability");
@@ -157,6 +158,7 @@ const {
 	const {
 	  recordPromptComposition,
 	  finalizePromptComposition,
+	  contextFullNote,
 	  getPromptComposition,
 	  getMostRecentComposition,
 	} = require("./prompt-composition-report");
@@ -189,6 +191,7 @@ const { createSkillProposalRunner } = require("./skill-proposal");
 const persona = require("./persona");
 const { createPresetsStore } = require("./presets-store");
 const { createPersonalityStore } = require("./personality-store");
+const { createMoodStore, moodPromptBlock } = require("./mood-store");
 const { createPluginSettingsStore } = require("./plugin-settings-store");
 const { createAuthStore } = require("./auth-store");
 const { createToolPolicy } = require("./ai/tool-policy");
@@ -214,6 +217,7 @@ const { createVisionToolSource } = require("./ai/vision-tool-source");
 const { createSessionGoalToolSource } = require("./ai/session-goal-tool-source");
 const { visionCaptureBridge } = require("./vision-capture-bridge");
 const { createCodingToolSource } = require("./ai/coding-tool-source");
+const { refuteEdit } = require("./ai/adversarial-verifier");
 const { createMcpClientRegistry } = require("./mcp-client-registry");
 const { mcpClientCapability } = require("./capabilities/mcp-client-capability");
 const { createToolCallLog, wrapWithToolCallLog } = require("./tool-call-log");
@@ -815,6 +819,14 @@ const presetsStore = createPresetsStore({});
 // Issue #357: the editable personality layer, persisted so an adjustment
 // survives a restart. persona.js owns the immutable core and no storage.
 const personalityStore = createPersonalityStore({});
+// Issue #700: Mana's mood, persisted beside emotional-state.json (in memory
+// under tests, so they never touch the real data dir).
+const moodStore = createMoodStore({
+  filePath:
+    process.env.NODE_ENV === "test" || process.env.NODE_TEST_CONTEXT
+      ? null
+      : path.join(acpMemoryStore.dataDir, "mood-state.json"),
+});
 
 // Procedural-memory skills store (see skills-store.js, issue #140)
 const skillsStore = createSkillsStore({ snapshotStore });
@@ -835,6 +847,7 @@ const approvalGate = createApprovalGate({
   guardianEnabled: process.env.MANA_GUARDIAN_PRECHECK_ENABLED === "1",
   guardianPreCheck: (actionType, ctx) =>
     judgeActionRisk({ actionType, ...ctx, runLocalReply: runLocalLlamaReply }),
+  onDeny: () => moodStore.record("approval_rejected"),
 });
 
 // Conversational rut detection (issue #159): flags a reply too similar to
@@ -898,12 +911,9 @@ const browserAutomationToolSource = createBrowserAutomationToolSource({
 let BACKGROUND_MEMORY_BLOCK = "";
 let BACKGROUND_MEMORY_LOCK = false;
 let BACKGROUND_MEMORY_META = { files: {} };
-const BACKGROUND_META_PATH = path.join(
-  __dirname,
-  "data",
-  "acp-memory",
-  "background_meta.json",
-);
+// MANA_ACP_MEMORY_DIR moves these with the rest of memory (acp-memory-store).
+const ACP_MEMORY_DIR = process.env.MANA_ACP_MEMORY_DIR || path.join(__dirname, "data", "acp-memory");
+const BACKGROUND_META_PATH = path.join(ACP_MEMORY_DIR, "background_meta.json");
 
 function loadPersistedBackgroundMetaSync() {
   try {
@@ -979,12 +989,7 @@ function buildSkillsIndexBlock(skills) {
 // (issue #69) -- written whenever a compaction/review pass actually changes
 // the compacted summary or important facts, whether triggered by idle
 // detection or the hourly timer.
-const MEMORY_MD_PATH = path.join(
-  __dirname,
-  "data",
-  "acp-memory",
-  "MEMORY.md",
-);
+const MEMORY_MD_PATH = path.join(ACP_MEMORY_DIR, "MEMORY.md");
 
 function formatMemoryMarkdown(compacted, facts, connections = []) {
   const lines = [
@@ -1156,7 +1161,7 @@ async function asyncLoadBackgroundMemory() {
   try {
     const sessionsDir =
       (acpMemoryStore && acpMemoryStore.sessionsDir) ||
-      path.join(__dirname, "data", "acp-memory", "sessions");
+      path.join(ACP_MEMORY_DIR, "sessions");
     if (!fs.existsSync(sessionsDir)) {
       BACKGROUND_MEMORY_BLOCK = "";
       BACKGROUND_MEMORY_META = { files: {} };
@@ -2028,6 +2033,13 @@ function registerRoutes(app, upload, deps = {}) {
     }
     return editorIntegrations;
   }
+  // Issue #622: adversarial review of agent-proposed edits, on by default
+  // (MANA_ADVERSARIAL_VERIFY=0 turns it off), on whatever model is already
+  // loaded -- never a swap.
+  const reviewEdit =
+    deps.reviewEdit ||
+    ((proposal) =>
+      refuteEdit({ ...proposal, runLocalReply: llamaServerRuntime.runLocalReplyIfSafelyLoaded }));
   const modelManagement =
     deps.modelManagement ||
     createModelManagement({
@@ -2120,6 +2132,7 @@ function registerRoutes(app, upload, deps = {}) {
     deepResearchCapability,
     presetsCapability,
     personalityCapability,
+    moodCapability,
     backgroundMemoryCapability,
     memoryFactsCapability,
     retrieverAdminCapability,
@@ -2136,6 +2149,7 @@ function registerRoutes(app, upload, deps = {}) {
   ];
   const activePresetsStore = deps.presetsStore || presetsStore;
   const activePersonalityStore = deps.personalityStore || personalityStore;
+  const activeMoodStore = deps.moodStore || moodStore;
   const activePluginSettingsStore = deps.pluginSettingsStore || pluginSettingsStore;
   const activeSkillsStore = deps.skillsStore || skillsStore;
   // Registered against whichever store this createApp call actually uses
@@ -2197,6 +2211,9 @@ function registerRoutes(app, upload, deps = {}) {
     // brain-provider test route above).
     isLocalRestartRequest: deps.isLocalRestartRequest || isLocalRestartRequest,
     approvalGate: activeApprovalGate,
+    // #699: heartbeat checks pause while gaming and snapshot their writes.
+    isGaming: deps.isGaming || gamingWatch.isGaming,
+    snapshotStore,
     mcpClientRegistry: activeMcpClientRegistry,
     toolCallLog: deps.toolCallLog || toolCallLog,
     hooksStore: activeHooksStore,
@@ -2255,6 +2272,7 @@ function registerRoutes(app, upload, deps = {}) {
         )),
     presetsStore: activePresetsStore,
     personalityStore: activePersonalityStore,
+    moodStore: activeMoodStore,
     marketDataClient,
     jobApplicationsStore,
     adzunaClient,
@@ -2304,10 +2322,17 @@ function registerRoutes(app, upload, deps = {}) {
   app.get("/doctor", async (req, res) => {
     try {
       const doctor = deps.doctor || runDoctorChecksAsync;
+      let memoryGraphHistory = null;
+      try {
+        memoryGraphHistory = (deps.acpMemoryStore || acpMemoryStore).memoryGraph?.getHistorySize?.() || null;
+      } catch (e) {
+        console.warn("Memory graph size check failed:", e?.message || e);
+      }
       const result = await doctor({
         fishTtsWarmup: ttsRuntime.getFishWarmupStatus(),
         sessionSearchVectorEnabled: sessionSearchIndex.vectorEnabled(),
         promptComposition: getMostRecentComposition(),
+        memoryGraphHistory,
       });
       return res.status(result.ok ? 200 : 503).json(result);
     } catch (error) {
@@ -2335,7 +2360,7 @@ function registerRoutes(app, upload, deps = {}) {
 
   // Issue #500: /zed/* and /editors/* routes (previously inline here)
   // moved to server-routes.js's registerEditorRoutes.
-  registerEditorRoutes(app, { checkAdminAuth, getEditorIntegrations, zed: deps.zed });
+  registerEditorRoutes(app, { checkAdminAuth, getEditorIntegrations, zed: deps.zed, reviewEdit });
 
   // Issue #500: the 9 /models/* routes (previously inline here, minus the
   // two unrelated routes -- /browser-automation/activity and
@@ -3749,6 +3774,15 @@ function registerRoutes(app, upload, deps = {}) {
         // ignore -- goal context is best-effort, never blocks a reply
       }
     }
+    // Issue #676: goal mode (opt in with MANA_GOAL_MODE=1) keeps the tool
+    // loop going until the goal is done. It needs tools, which coding-routed
+    // turns never get, so a goal-mode turn stays on the default profile.
+    const goalMode =
+      Boolean(sessionGoal) &&
+      String((deps.env || process.env).MANA_GOAL_MODE || "0") === "1" &&
+      toolCallingEnabled &&
+      isLlamaServerAvailable();
+    if (goalMode) normalizedModelProfile = "default";
 
     // Issue #400: buildSkillsIndexBlock already computes how many skills it
     // left out, but only as a line of text baked into the block -- read
@@ -3835,6 +3869,8 @@ function registerRoutes(app, upload, deps = {}) {
       if (typeof acpMemoryStore.getRelatedFactsEntries === "function") {
         const { entries, recall } = await acpMemoryStore.getRelatedFactsEntries(transcript, {
           excludeSessionId: sessionId,
+          // Q27: a scheduled job (replyMeta.scheduled) sees confirmed facts only.
+          confirmedOnly: Boolean(replyMeta && replyMeta.scheduled),
         });
         relatedFactsRecall = recall || null;
         for (const entry of entries) {
@@ -3847,6 +3883,21 @@ function registerRoutes(app, upload, deps = {}) {
       }
     } catch (relErr) {
       console.warn("Failed to look up related facts:", relErr.message);
+    }
+
+    // Issue #700: her mood, as tone guidance only -- "late" like memory,
+    // since it changes turn to turn. It never touches the token budget,
+    // tools or mode, and moodPromptBlock leaves coding replies alone.
+    let moodText = "";
+    try {
+      activeMoodStore.recordTurn(transcript);
+      moodText = moodPromptBlock(activeMoodStore.get(), mode) || "";
+      if (moodText) {
+        memoryExtraMessages.late.push({ role: "system", content: moodText });
+        flatMemorySuffix += `\n\n${moodText}`;
+      }
+    } catch (moodErr) {
+      console.warn("Failed to apply mood:", moodErr.message);
     }
 
     // Issue #400: makes the composition of the prompt this reply actually
@@ -3870,6 +3921,7 @@ function registerRoutes(app, upload, deps = {}) {
       "skills-index": skillsIndexText,
       "prompt-memory": promptMemoryText,
       "related-facts": relatedFactsText,
+      mood: moodText,
     };
     let compositionRecord = null;
     try {
@@ -3882,6 +3934,7 @@ function registerRoutes(app, upload, deps = {}) {
           chars: relatedFactsChars,
           dropped: { truncated: relatedFactsTruncated, ...(relatedFactsRecall ? { recall: relatedFactsRecall } : {}) },
         },
+        { name: "mood", chars: moodText.length, dropped: null },
       ]);
     } catch (compErr) {
       // Diagnostic-only; never blocks a reply.
@@ -4381,7 +4434,8 @@ function registerRoutes(app, upload, deps = {}) {
             // workspace/proposal machinery (zed-integration.js) that
             // already backs the /editors/* admin routes, just stops short
             // of ever calling approveEditProposal.
-            createCodingToolSource({ editors: getEditorIntegrations() }),
+            // #787: approvalGate enables coding__run_tests (asks first).
+            createCodingToolSource({ editors: getEditorIntegrations(), approvalGate: activeApprovalGate, reviewEdit }),
             ...(isPluginEnabled(browserAutomationPlugin, activePluginSettingsStore)
               ? [activeBrowserAutomationToolSource]
               : []),
@@ -4422,16 +4476,23 @@ function registerRoutes(app, upload, deps = {}) {
           // else "smart") decides the rest. Outside
           // wrapWithHooks so a destructive call is reviewed before any hook
           // runs; inside wrapWithToolCallLog so the outcome is logged.
-          mergedToolPolicy = wrapWithRiskGate(mergedToolPolicy, activeApprovalGate, {
-            mode: resolveToolApprovalMode(
-              activeApprovalGate.getToolApprovalMode(),
-              (deps.env || process.env).MANA_TOOL_APPROVAL,
-            ),
-          });
+          // #699: a heartbeat check brings its own gate (its grants and
+          // scope) in place of this one.
+          mergedToolPolicy =
+            typeof replyMeta?.wrapToolPolicy === "function"
+              ? replyMeta.wrapToolPolicy(mergedToolPolicy, activeApprovalGate)
+              : wrapWithRiskGate(mergedToolPolicy, activeApprovalGate, {
+                  mode: resolveToolApprovalMode(
+                    activeApprovalGate.getToolApprovalMode(),
+                    (deps.env || process.env).MANA_TOOL_APPROVAL,
+                  ),
+                });
           // Issue #188: applied last so it catches every tool call from
           // every source (local read_file, browser-automation, MCP) in one
           // shared audit/trace log.
-          mergedToolPolicy = wrapWithToolCallLog(mergedToolPolicy, activeToolCallLog);
+          mergedToolPolicy = wrapWithToolCallLog(mergedToolPolicy, activeToolCallLog, () =>
+            activeMoodStore.record("task_failed"),
+          );
           // #486: modify-input hook rules rewrite args first, so every gate
           // above and the audit log see the rewritten call, never the original.
           mergedToolPolicy = wrapWithInputHooks(mergedToolPolicy, activeHooksStore);
@@ -4477,6 +4538,7 @@ function registerRoutes(app, upload, deps = {}) {
               profile: normalizedModelProfile,
               overrideSystemPrompt: selectedSystemPrompt,
               extraMessages: memoryExtraMessages,
+              goal: goalMode ? sessionGoal : null,
             },
           );
           if (toolResult.content && toolResult.content.trim()) {
@@ -4561,6 +4623,7 @@ function registerRoutes(app, upload, deps = {}) {
     async function replyMaybeWithBestOfN(promptText) {
       if (
         bestOfNEnabled &&
+        !goalMode &&
         mode === "coding" &&
         isLlamaServerAvailable()
       ) {
@@ -4679,7 +4742,8 @@ function registerRoutes(app, upload, deps = {}) {
     // rut, send it rather than looping.
     try {
       const rutEnabled = String(process.env.MANA_RUT_DETECTION_ENABLED || "1") === "1";
-      if (rutEnabled && sessionId && acpMemoryStore && typeof reply === "string") {
+      // #676: never regenerate a goal-mode reply -- that reruns the whole loop, tool calls included.
+      if (rutEnabled && !goalMode && sessionId && acpMemoryStore && typeof reply === "string") {
         const recentReplies = (acpMemoryStore.getSession(sessionId)?.turns || [])
           .map((t) => t.assistant)
           .filter(Boolean);
@@ -4753,7 +4817,7 @@ function registerRoutes(app, upload, deps = {}) {
           }
 
           console.warn("Reply verification failed:", verification.issues);
-          if (autoRetry && attempts <= maxRetries) {
+          if (autoRetry && !goalMode && attempts <= maxRetries) {
             // Ask the model to fix its previous reply
             const fixPrompt =
               finalPrompt +
@@ -4845,6 +4909,21 @@ function registerRoutes(app, upload, deps = {}) {
     if (replyMeta) {
       replyMeta.streamedMatchesFinal = streamedMatchesFinal(streamedSentences, reply);
     }
+    // #642 (Q33c): once per conversation, at 90% of the context window,
+    // Mana ends this reply by suggesting a fresh chat. Added after the
+    // stream check (like #666's notice, it's an extra sentence, not a
+    // changed reply) and after the turn went to memory. Rides on a reply
+    // the user asked for, so it's fine while gaming too.
+    const contextSize = turnPromptUsage ? await activeLlamaServerRuntime.getContextSize?.() : null;
+    const fullNote = turnPromptUsage && typeof reply === "string"
+      ? contextFullNote(sessionId, turnPromptUsage.promptTokens, contextSize)
+      : "";
+    if (fullNote) {
+      reply = `${reply.trimEnd()} ${fullNote}`;
+      // Streamed and unchanged: speak it as one more sentence. Otherwise the
+      // client speaks the final reply, which now ends with it.
+      if (onSentence && replyMeta?.streamedMatchesFinal) await onSentence(fullNote);
+    }
     // Issue #642: the context meter (GET /prompt-composition/:sessionId).
     // Not awaited -- a few local /tokenize calls are never worth delaying
     // the reply for; until they land the record shows char/4 estimates.
@@ -4860,7 +4939,7 @@ function registerRoutes(app, upload, deps = {}) {
             "mcp-tool-schemas": mcpTools.length ? JSON.stringify(mcpTools) : "",
           },
           promptUsage: turnPromptUsage,
-          contextSize: await activeLlamaServerRuntime.getContextSize?.(),
+          contextSize: contextSize ?? (await activeLlamaServerRuntime.getContextSize?.()),
           countTokens: activeLlamaServerRuntime.countTokens,
         }))().catch((e) => console.warn("Failed to finalize prompt composition:", e?.message || e));
     }

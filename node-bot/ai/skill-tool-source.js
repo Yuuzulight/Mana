@@ -155,8 +155,15 @@ function createSkillToolSource(options = {}) {
     }
   }
 
+  // #787: skill__view/skill__run only when there's a skill (with a script,
+  // for run) to use -- otherwise the model invents skill names ("run_tests")
+  // and spends goal-mode rounds on the errors.
   function listToolSchemas() {
-    return TOOL_SCHEMAS;
+    const skills = skillsStore.listSkills();
+    const usable = new Set([`${SKILL_TOOL_PREFIX}create`]);
+    if (skills.length) usable.add(`${SKILL_TOOL_PREFIX}view`);
+    if (skills.some((s) => s.hasScript)) usable.add(`${SKILL_TOOL_PREFIX}run`);
+    return TOOL_SCHEMAS.filter((t) => usable.has(t.function.name));
   }
 
   async function executeTool(qualifiedName, args) {

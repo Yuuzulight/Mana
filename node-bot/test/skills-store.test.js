@@ -39,6 +39,8 @@ test("createSkillsStore starts empty and creates a skill with the right frontmat
   assert.equal(listed[0].body, undefined);
   assert.equal(listed[0].name, "Restart SearXNG");
   assert.equal(listed[0].description, skill.description);
+  // #787: skill__run is only offered when some skill has a script.
+  assert.equal(listed[0].hasScript, false);
 });
 
 test("createSkill rejects missing fields and duplicate names", () => {
