@@ -219,7 +219,7 @@ const { mcpClientCapability } = require("./capabilities/mcp-client-capability");
 const { createToolCallLog, wrapWithToolCallLog } = require("./tool-call-log");
 const { filterRelevantTools, wrapWithResultDigest } = require("./ai/tool-context-guard");
 const { toolCallLogCapability } = require("./capabilities/tool-call-log-capability");
-const { createHooksStore, wrapWithHooks } = require("./hooks-store");
+const { createHooksStore, wrapWithHooks, wrapWithInputHooks } = require("./hooks-store");
 const { hooksCapability } = require("./capabilities/hooks-capability");
 const { createPronunciationLexiconStore } = require("./pronunciation-lexicon-store");
 const {
@@ -4368,6 +4368,9 @@ function registerRoutes(app, upload, deps = {}) {
           // every source (local read_file, browser-automation, MCP) in one
           // shared audit/trace log.
           mergedToolPolicy = wrapWithToolCallLog(mergedToolPolicy, activeToolCallLog);
+          // #486: modify-input hook rules rewrite args first, so every gate
+          // above and the audit log see the rewritten call, never the original.
+          mergedToolPolicy = wrapWithInputHooks(mergedToolPolicy, activeHooksStore);
           const executeLoggedTool = mergedToolPolicy.executeTool;
           // #661: /reply/stream relays tool start/end so the avatar can
           // show she's working. expression__set is her face, not work.
