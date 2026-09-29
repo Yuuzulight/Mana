@@ -7,7 +7,9 @@ const test = require("node:test");
 const { refuteEdit, formatReviewHeader } = require("../ai/adversarial-verifier");
 const { createApp } = require("../server");
 const { createEditorIntegrations, createEditorWorkspaceStore } = require("../zed-integration");
-const { withServer } = require("./helpers");
+const { useTestAdminToken, withServer } = require("./helpers");
+// #842: these routes are admin-only; every request here sends ADMIN_TOKEN.
+const fetch = useTestAdminToken();
 
 // Q16: on by default; only an explicit "0" turns it off.
 const ON = {};

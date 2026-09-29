@@ -15,13 +15,16 @@ async function parseJsonResponse(response) {
 function createAcpBackendBridge({
   backendUrl = DEFAULT_BACKEND_URL,
   fetchImpl = fetch,
+  // #842: the /editors/workspace routes need ADMIN_TOKEN from this
+  // separate process (Zed starts it, not the launcher).
+  adminToken = process.env.ADMIN_TOKEN,
 } = {}) {
   const baseUrl = normalizeBackendUrl(backendUrl);
 
   async function request(method, requestPath, body) {
     const options = {
       method,
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...(adminToken ? { "x-admin-token": adminToken } : {}) },
     };
     if (body !== undefined) {
       options.body = JSON.stringify(body);

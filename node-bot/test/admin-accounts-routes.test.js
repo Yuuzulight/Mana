@@ -181,3 +181,32 @@ test("POST /admin/accounts succeeds from a non-local origin when a matching x-ad
     else process.env.ADMIN_TOKEN = prior;
   }
 });
+
+// #842: routes behind the MANA_ADMIN_SECRET gate are no longer open when no
+// secret is set -- they take the launcher key (from this PC) or ADMIN_TOKEN.
+test("MANA_ADMIN_SECRET-gated routes need an admin key when no secret is set (#842)", async () => {
+  const prior = process.env.ADMIN_TOKEN;
+  process.env.ADMIN_TOKEN = "gate-test-admin-token";
+  try {
+    await withServer(createApp(), async (baseUrl) => {
+      const get = (route, headers = {}) => fetch(`${baseUrl}${route}`, { headers });
+      for (const route of ["/admin/pending-writes", "/admin/retriever/status"]) {
+        const open = await get(route);
+        assert.equal(open.status, 401, route);
+        assert.match((await open.json()).error, /ADMIN_TOKEN/);
+        assert.equal((await get(route, { "x-admin-token": "gate-test-admin-token" })).status, 200, route);
+        assert.equal((await get(route, { "x-admin-token": LAUNCHER_KEY })).status, 200, route);
+        assert.equal((await get(route, { "x-admin-token": LAUNCHER_KEY, "X-Forwarded-For": "203.0.113.5" })).status, 401, route);
+      }
+    });
+    // With a secret set, its Bearer token stays the requirement.
+    await withServer(createApp({ env: { MANA_ADMIN_SECRET: "topsecret" } }), async (baseUrl) => {
+      const get = (headers) => fetch(`${baseUrl}/admin/pending-writes`, { headers });
+      assert.equal((await get({ Authorization: "Bearer topsecret" })).status, 200);
+      assert.equal((await get({ "x-admin-token": "gate-test-admin-token" })).status, 401);
+    });
+  } finally {
+    if (prior === undefined) delete process.env.ADMIN_TOKEN;
+    else process.env.ADMIN_TOKEN = prior;
+  }
+});

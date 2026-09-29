@@ -1791,7 +1791,7 @@ test("POST snapshots/:id/restore returns 409 with a non-truthy restored field wh
   });
 
   await withServer(app, async (baseUrl) => {
-    const { response, payload } = await postJson(`${baseUrl}/editors/workspace/snapshots/snap-1/restore`, {});
+    const { response, payload } = await postJson(`${baseUrl}/editors/workspace/snapshots/snap-1/restore`, {}, ADMIN);
     assert.equal(response.status, 409);
     assert.equal(payload.restored, null);
     assert.deepEqual(payload.stale, staleResult);
@@ -1806,7 +1806,7 @@ test("POST snapshots/:id/restore still returns 200 with the normal shape when th
   });
 
   await withServer(app, async (baseUrl) => {
-    const { response, payload } = await postJson(`${baseUrl}/editors/workspace/snapshots/snap-1/restore`, {});
+    const { response, payload } = await postJson(`${baseUrl}/editors/workspace/snapshots/snap-1/restore`, {}, ADMIN);
     assert.equal(response.status, 200);
     assert.deepEqual(payload, { restored: { restoredPath: "/repo/a.txt" } });
   });
