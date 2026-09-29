@@ -1971,6 +1971,37 @@ public class ManaBackendClientTests
         Assert.Empty(skills);
     }
 
+    // #664/Q20/Q21: Import folder posts the path; the imported-skills setting
+    // is read and saved through /skill-settings.
+    [Fact]
+    public async Task ImportSkillFolderAndImportedSkillUse_UseTheirRoutes()
+    {
+        var requests = new List<(string Method, string Path, string? Body)>();
+        var handler = new FakeHttpMessageHandler(request =>
+        {
+            requests.Add((request.Method.Method, request.RequestUri!.AbsolutePath, request.Content?.ReadAsStringAsync().GetAwaiter().GetResult()));
+            if (request.RequestUri!.AbsolutePath == "/skills/import" && requests.Count > 1)
+            {
+                return new HttpResponseMessage(HttpStatusCode.BadRequest) { Content = new StringContent("""{"error":"SKILL.md is required"}""") };
+            }
+            return new HttpResponseMessage(request.Method == HttpMethod.Post ? HttpStatusCode.Accepted : HttpStatusCode.OK)
+            {
+                Content = new StringContent("""{"status":"pending","importedSkillUse":"each"}"""),
+            };
+        });
+        var client = new ManaBackendClient(handler);
+
+        Assert.Null(await client.ImportSkillFolderAsync(@"C:\skills\pdf"));
+        Assert.Equal("SKILL.md is required", await client.ImportSkillFolderAsync(@"C:\empty"));
+        Assert.Equal("each", await client.GetImportedSkillUseAsync());
+        await client.SetImportedSkillUseAsync("free");
+
+        Assert.Equal(("POST", "/skills/import"), (requests[0].Method, requests[0].Path));
+        Assert.Contains("pdf", requests[0].Body);
+        Assert.Equal(("GET", "/skill-settings"), (requests[2].Method, requests[2].Path));
+        Assert.Equal(("PUT", "/skill-settings", """{"importedSkillUse":"free"}"""), requests[3]);
+    }
+
     [Fact]
     public async Task DeleteSkillAsync_SendsDeleteToTheNamedSkill()
     {

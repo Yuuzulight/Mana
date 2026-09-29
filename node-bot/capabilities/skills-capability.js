@@ -77,6 +77,24 @@ function registerSkillsRoutes(app, context = {}) {
   // Nothing in the folder runs, on import or on approval.
   // Local-only: it reads a path on this PC.
   context.approvalGate?.registerExecutor?.("skill-import", (payload) => skillsStore.importSkill(payload));
+
+  // Q20: Settings > Skills' "Imported skills" choice -- free, each (ask
+  // every time) or first (ask the first time; the default). Changing it is
+  // local-only, like import: it loosens or tightens a safety gate.
+  app.get("/skill-settings", (req, res) => {
+    return res.json({ importedSkillUse: skillsStore.getImportedSkillUse() });
+  });
+  app.put("/skill-settings", (req, res) => {
+    try {
+      if (typeof context.isLocalRestartRequest !== "function" || !context.isLocalRestartRequest(req)) {
+        return res.status(403).json({ error: "this endpoint is only available from this PC" });
+      }
+      skillsStore.setImportedSkillUse(req.body?.importedSkillUse);
+      return res.json({ importedSkillUse: skillsStore.getImportedSkillUse() });
+    } catch (e) {
+      return res.status(400).json({ error: e.message || String(e) });
+    }
+  });
   app.post("/skills/import", async (req, res) => {
     try {
       if (typeof context.isLocalRestartRequest !== "function" || !context.isLocalRestartRequest(req)) {
@@ -237,8 +255,12 @@ async function contributePromptContext(text, context = {}) {
   const skills = skillsStore.listSkills().filter((skill) => skill.available !== false);
   const matched = findMatchingSkill(skills, text);
   if (!matched) return "";
-  const full = skillsStore.viewSkill(matched.name);
+  const full = skillsStore.viewSkill(matched.name, { touch: false });
   if (!full) return "";
+  // Q20: an imported skill's text only goes in unasked when Settings > Skills
+  // allows it; otherwise Mana reaches it through skill__view, which asks.
+  if (full.dir && !skillsStore.mayUseImportedSkill?.(full.name)) return "";
+  skillsStore.touchSkillUsage?.(full.name);
   return `[SKILL: ${full.name}]\n${full.body}\n[END SKILL]`;
 }
 

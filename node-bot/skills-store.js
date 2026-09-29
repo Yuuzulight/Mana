@@ -712,6 +712,68 @@ function createSkillsStore(options = {}) {
   // folder changed after the review cannot swap in something else. It
   // writes files and nothing more -- no script in the skill is run, by this
   // or on import at all.
+  // Q20 (#664): how Mana may use an imported (SKILL.md folder) skill --
+  // "free", "each" (ask every time) or "first" (ask once per skill, the
+  // default) -- set in Settings > Skills. Kept with the skills in a dot-file
+  // (never listed as a skill), with the skills approved under "first".
+  const IMPORTED_SKILL_USE_MODES = ["free", "each", "first"];
+  const settingsPath = path.join(skillsDir, ".mana-skills.json");
+  // "each": one approved use, taken by the next one. In memory: a restart
+  // just asks again.
+  const approvedOnce = new Set();
+
+  function readSettings() {
+    try {
+      const parsed = JSON.parse(fs.readFileSync(settingsPath, "utf8"));
+      return parsed && typeof parsed === "object" ? parsed : {};
+    } catch (e) {
+      return {};
+    }
+  }
+
+  function writeSettings(settings) {
+    ensureDir();
+    fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2), "utf8");
+  }
+
+  function getImportedSkillUse() {
+    const mode = readSettings().importedSkillUse;
+    return IMPORTED_SKILL_USE_MODES.includes(mode) ? mode : "first";
+  }
+
+  function setImportedSkillUse(mode) {
+    if (!IMPORTED_SKILL_USE_MODES.includes(mode)) {
+      throw new Error(`importedSkillUse must be one of ${IMPORTED_SKILL_USE_MODES.join(", ")}`);
+    }
+    writeSettings({ ...readSettings(), importedSkillUse: mode });
+  }
+
+  // Whether Mana may use this imported skill right now without asking.
+  // takeOnce: consume an "each" approval (a real use, not a check).
+  function mayUseImportedSkill(name, { takeOnce = false } = {}) {
+    const mode = getImportedSkillUse();
+    const key = String(name).toLowerCase();
+    if (mode === "free") return true;
+    if (mode === "first" && (readSettings().useApproved || []).includes(key)) return true;
+    if (!approvedOnce.has(key)) return false;
+    if (takeOnce) approvedOnce.delete(key);
+    return true;
+  }
+
+  // The user approved a use: remembered for good under "first", once
+  // under "each".
+  function approveImportedSkillUse(name) {
+    const key = String(name).toLowerCase();
+    if (getImportedSkillUse() === "first") {
+      const settings = readSettings();
+      const approved = new Set(settings.useApproved || []);
+      approved.add(key);
+      writeSettings({ ...settings, useApproved: [...approved] });
+    } else {
+      approvedOnce.add(key);
+    }
+  }
+
   function importSkill({ files } = {}) {
     ensureDir();
     const list = Array.isArray(files) ? files : [];
@@ -807,8 +869,15 @@ function createSkillsStore(options = {}) {
     if (!fileName) return false;
     const folder = skillFolderOf(fileName);
     // A SKILL.md folder goes whole -- its scripts are no use without it.
-    if (folder) fs.rmSync(path.join(skillsDir, folder), { recursive: true });
-    else fs.unlinkSync(path.join(skillsDir, fileName));
+    if (folder) {
+      fs.rmSync(path.join(skillsDir, folder), { recursive: true });
+      // Q20: a later import under the same name is asked about afresh.
+      const settings = readSettings();
+      const key = String(name).toLowerCase();
+      if ((settings.useApproved || []).includes(key)) {
+        writeSettings({ ...settings, useApproved: settings.useApproved.filter((n) => n !== key) });
+      }
+    } else fs.unlinkSync(path.join(skillsDir, fileName));
     return true;
   }
 
@@ -875,6 +944,10 @@ function createSkillsStore(options = {}) {
     touchSkillUsage,
     createSkill,
     importSkill,
+    getImportedSkillUse,
+    setImportedSkillUse,
+    mayUseImportedSkill,
+    approveImportedSkillUse,
     updateSkill,
     deleteSkill,
     pruneStaleSkills,

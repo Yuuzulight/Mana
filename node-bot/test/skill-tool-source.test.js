@@ -29,6 +29,8 @@ function fakeApprovalGate({ requestThrows } = {}) {
 function fakeSkillsStore(skills = {}) {
   return {
     viewSkill: (name) => skills[name] || null,
+    touchSkillUsage: () => true,
+    approveImportedSkillUse: () => {},
   };
 }
 
@@ -236,6 +238,7 @@ test("a confirm-permission skill routes each run through the gate (issue #355)",
       body: "steps\n\n```skill-script\nreturn 1;\n```",
       permission: "confirm",
     }),
+    touchSkillUsage: () => true,
   };
   const source = createSkillToolSource({
     approvalGate,
@@ -260,6 +263,7 @@ test("an always-permission skill runs without confirmation (issue #355)", async 
       body: "steps\n\n```skill-script\nreturn 1;\n```",
       permission: "always",
     }),
+    touchSkillUsage: () => true,
   };
   const source = createSkillToolSource({
     approvalGate,

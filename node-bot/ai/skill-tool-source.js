@@ -127,6 +127,34 @@ function createSkillToolSource(options = {}) {
     return runScript(code, { inputs: payload?.inputs });
   });
 
+  // Q20 (#664): an imported (SKILL.md folder) skill is third-party text, so
+  // using it follows Settings > Skills: free, ask each time, or ask the first
+  // time (default). Approving records the consent (see the store); Mana then
+  // uses it on her next try. forceReview: the setting decides how long an
+  // approval lasts, not the gate's always-allow/session grants.
+  approvalGate.registerExecutor("skill-use", (payload) => skillsStore.approveImportedSkillUse(payload?.name));
+
+  // A tool result when the skill may not be used yet, else null (and an
+  // "each" approval is used up).
+  async function askToUseImported(skill) {
+    if (!skill.dir || skillsStore.mayUseImportedSkill(skill.name, { takeOnce: true })) return null;
+    const each = skillsStore.getImportedSkillUse() === "each";
+    try {
+      const outcome = await approvalGate.requestApproval("skill-use", {
+        summary: `Use imported skill "${skill.name}"${each ? " (asks every time)" : " (asks the first time)"}: ${skill.description}`,
+        payload: { name: skill.name },
+        forceReview: true,
+        details: { dir: skill.dir },
+      });
+      return JSON.stringify({
+        ...outcome,
+        note: `"${skill.name}" is an imported skill: the user has to approve using it. Tell them it's waiting in Approvals, then try again once they have.`,
+      });
+    } catch (e) {
+      return JSON.stringify({ status: "error", error: e.message || String(e) });
+    }
+  }
+
   function listToolSchemas() {
     return TOOL_SCHEMAS;
   }
@@ -135,8 +163,11 @@ function createSkillToolSource(options = {}) {
     const action = qualifiedName.slice(SKILL_TOOL_PREFIX.length);
 
     if (action === "view") {
-      const skill = skillsStore.viewSkill(args?.name);
+      const skill = skillsStore.viewSkill(args?.name, { touch: false });
       if (!skill) return JSON.stringify({ status: "error", error: `no skill named "${args?.name}"` });
+      const asked = await askToUseImported(skill);
+      if (asked) return asked;
+      skillsStore.touchSkillUsage(skill.name);
       const inputs = extractSkillInputs(skill.body);
       return JSON.stringify({
         status: "ok",
@@ -148,8 +179,11 @@ function createSkillToolSource(options = {}) {
     }
 
     if (action === "run") {
-      const skill = skillsStore.viewSkill(args?.name);
+      const skill = skillsStore.viewSkill(args?.name, { touch: false });
       if (!skill) return JSON.stringify({ status: "error", error: `no skill named "${args?.name}"` });
+      const asked = await askToUseImported(skill);
+      if (asked) return asked;
+      skillsStore.touchSkillUsage(skill.name);
       const code = extractSkillScript(skill.body);
       if (!code) return JSON.stringify({ status: "error", error: `"${skill.name}" has no \`\`\`skill-script block` });
 
