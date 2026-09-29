@@ -25,6 +25,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
     private readonly ClipHotkeyListener clipHotkeyListener;
     private readonly ClipBuffer clipBuffer = new();
     private readonly System.Windows.Forms.Timer? clipCaptureTimer;
+    private readonly System.Windows.Forms.Timer? glanceTimer; // #690
     private readonly GlobalHotkeyListener globalHotkeys;
     private readonly TrayNotificationClient trayNotifications;
     private readonly ForegroundWindowReporter foregroundReporter;
@@ -168,6 +169,19 @@ internal sealed class ManaApplicationContext : ApplicationContext
             clipCaptureTimer = new System.Windows.Forms.Timer { Interval = intervalMs };
             clipCaptureTimer.Tick += async (_, _) => await CaptureClipFrameAsync();
             clipCaptureTimer.Start();
+
+            // #690: the ambient glance itself, on Electron's schedule.
+            var glance = new ScreenSensingGlance(
+                backendClient,
+                () => voiceLoop.IsIdle,
+                () => gamingModeActive,
+                () => SystemIdle.GetIdleMilliseconds() ?? 0,
+                ScreenCapture.CaptureAsJpegDataUrl,
+                chatLog.AppendManaMessage,
+                PositiveIntEnv("MANA_SCREEN_SENSING_PRESENCE_IDLE_MS", 90000));
+            glanceTimer = new System.Windows.Forms.Timer { Interval = PositiveIntEnv("MANA_SCREEN_SENSING_INTERVAL_MS", 120000) };
+            glanceTimer.Tick += async (_, _) => await glance.RunOnceAsync();
+            glanceTimer.Start();
         }
         sessionListForm = new SessionListForm(backendClient, voiceLoop, chatLog, avatarOverlay, processManager.BackendLog);
         // #525: Ctrl+Alt+Space types a command instead of speaking one,
@@ -426,6 +440,9 @@ internal sealed class ManaApplicationContext : ApplicationContext
 
         ExitThread();
     }
+
+    private static int PositiveIntEnv(string name, int fallback) =>
+        int.TryParse(Environment.GetEnvironmentVariable(name), out var value) && value > 0 ? value : fallback;
 
     // #585: mirrors windows-launcher's own captureClipFrame -- a cheap
     // local screenshot with no model call, run on the thread pool (same
@@ -705,6 +722,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
         idleReportTimer.Stop();
         foregroundReporter.Dispose();
         clipCaptureTimer?.Stop();
+        glanceTimer?.Stop();
         visionHotkeyListener.Dispose();
         clipHotkeyListener.Dispose();
         globalHotkeys.Dispose();

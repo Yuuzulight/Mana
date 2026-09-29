@@ -251,6 +251,21 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
 
     public void ShowHearing(string? text) => RunOnUiThread(() => HearingChanged?.Invoke(text));
 
+    // #690: a message from Mana outside any turn (an ambient screen glance)
+    // -- always its own, finished bubble, never merged into a reply that's
+    // still open (e.g. one cut off by a barge-in).
+    public void AppendManaMessage(string text) => RunOnUiThread(() =>
+    {
+        var blocks = ChatMarkdownParser.Parse(text);
+        if (blocks.Count == 0)
+        {
+            return;
+        }
+        var message = new Message(fromUser: false) { FinalText = text };
+        message.Blocks.AddRange(blocks);
+        Add(message, forceScroll: false);
+    });
+
     // Puts buttons under Mana's latest message (replacing any it had, except
     // kept ones like the artifact button, which move after the new ones).
     public void AttachActions(IReadOnlyList<ChatAction> actions)
