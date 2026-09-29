@@ -30,8 +30,8 @@ internal sealed class ScreenContextReader
     private const int MaxTreeFailures = 3;
     private const int MinIntervalMs = 8000;
     private const int GamingMinIntervalMs = 30000;
-    // #671: no tree walk within this long of the last keystroke.
-    private const int TypingQuietMs = 1000;
+    // #671: no tree walk within this long of the last keyboard/mouse input.
+    private const int InputQuietMs = 1000;
 
     // #671: apps whose UI Automation trees are known to be slow or hang.
     private static readonly string[] SlowTreeApps = { "outlook" };
@@ -39,7 +39,6 @@ internal sealed class ScreenContextReader
     private readonly string scriptPath;
     private readonly ManaBackendClient backendClient;
     private readonly ScreenOcrGate ocrGate = new();
-    private readonly KeyboardActivity keyboard;
     private int treeFailureCount;
     private string lastScreenText = "";
     private long lastReadAtMs = long.MinValue;
@@ -50,9 +49,6 @@ internal sealed class ScreenContextReader
         // windows-launcher/scripts/).
         scriptPath = Path.Combine(rootDirectory, "tools", "read-accessibility-tree.ps1");
         this.backendClient = backendClient;
-        // Constructed on the UI thread (ManaApplicationContext), whose
-        // message loop then delivers WM_INPUT to it.
-        keyboard = new KeyboardActivity();
     }
 
     // commandText should already be the turn's resolved command (not the
@@ -184,10 +180,13 @@ internal sealed class ScreenContextReader
     // #671: UI-tree budgets on top of the timeout/caps above. Walking the
     // tree of the app being typed into can stall its input, and some apps'
     // trees are slow enough to burn the whole timeout for nothing -- both
-    // go straight to OCR.
-    private bool ShouldSkipTreeWalk(int windowPid) =>
-        Environment.TickCount64 - keyboard.LastKeyAtMs < TypingQuietMs
-        || IsSlowTreeApp(ProcessNameOf(windowPid));
+    // go straight to OCR. "In use" is Windows' own last-input time (Q2:
+    // GetLastInputInfo, no keyboard listener), so mouse movement counts too.
+    private static bool ShouldSkipTreeWalk(int windowPid) =>
+        InUse(SystemIdle.GetIdleMilliseconds()) || IsSlowTreeApp(ProcessNameOf(windowPid));
+
+    // Unknown idle time (the call failed) never counts as in use.
+    internal static bool InUse(long? idleMs) => idleMs < InputQuietMs;
 
     internal static bool IsSlowTreeApp(string processName) =>
         SlowTreeApps.Contains(processName, StringComparer.OrdinalIgnoreCase);
@@ -225,10 +224,6 @@ internal sealed class ScreenContextReader
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool GetWindowRect(IntPtr hWnd, out NativeRect rect);
 
-    [DllImport("user32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool RegisterRawInputDevices(RawInputDevice[] devices, uint count, uint size);
-
     [StructLayout(LayoutKind.Sequential)]
     private struct NativeRect
     {
@@ -236,46 +231,5 @@ internal sealed class ScreenContextReader
         public int Top;
         public int Right;
         public int Bottom;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct RawInputDevice
-    {
-        public ushort UsagePage;
-        public ushort Usage;
-        public uint Flags;
-        public IntPtr Target;
-    }
-
-    // #671: when the last keystroke happened anywhere on the system, from
-    // keyboard raw input delivered to a hidden window. Only WM_INPUT's
-    // arrival is timestamped -- the key data itself is never read. Raw
-    // input registration is per process and device type, so another
-    // keyboard registration in the launcher would take this one over.
-    // If registration fails, nothing ever counts as typing (the old
-    // always-walk behavior).
-    private sealed class KeyboardActivity : NativeWindow
-    {
-        private const int WmInput = 0x00FF;
-        private const uint RidevInputSink = 0x00000100;
-        private long lastKeyAtMs;
-
-        public KeyboardActivity()
-        {
-            CreateHandle(new CreateParams());
-            var keyboardDevice = new RawInputDevice { UsagePage = 0x01, Usage = 0x06, Flags = RidevInputSink, Target = Handle };
-            RegisterRawInputDevices(new[] { keyboardDevice }, 1, (uint)Marshal.SizeOf<RawInputDevice>());
-        }
-
-        public long LastKeyAtMs => Interlocked.Read(ref lastKeyAtMs);
-
-        protected override void WndProc(ref Message m)
-        {
-            if (m.Msg == WmInput)
-            {
-                Interlocked.Exchange(ref lastKeyAtMs, Environment.TickCount64);
-            }
-            base.WndProc(ref m);
-        }
     }
 }
