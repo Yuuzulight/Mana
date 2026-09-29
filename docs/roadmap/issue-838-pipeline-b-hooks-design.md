@@ -1,7 +1,7 @@
 # Issue 838: Hooks For Pipeline B (The ACP Autonomous Loop)
 
 Status: **Design only.** No code yet. This is the last unbuilt part of #486,
-designed now at the user's request (grilling Q39, 2026-09-29). It builds on
+designed now because I decided to (grilling Q39, 2026-09-29). It builds on
 #796 (`modify-input`, in-place rule edits) and #795 (plugin input hooks), and
 has to fit with goal mode (#787) and the adversarial verifier (#788).
 
@@ -142,7 +142,7 @@ status ok? -> post rules (runPostCommandHook)
     can't spin on it.
   - When the ACP continue hint is built, it should treat `denied`, `rejected`
     and `approval_timeout` the way #787 treats `pending`: stop and hand back to
-    the user, don't retry.
+    me, don't retry.
 - **Hooks can't change who is in charge.** Per Q35b, Mana turns goal mode on
   when asked, and `MANA_GOAL_MODE` stays the master kill switch. Pipeline B
   autonomy stays behind `MANA_AGENT_AUTONOMOUS=1`. No hook action can change
@@ -216,7 +216,7 @@ These are technical defaults, decided here:
 - **The `rollbackFile` basename search** from safety limit 6 also applies to
   Pipeline A.
 
-## Open questions for the user
+## Open questions
 
 1. **Where should Pipeline B's approvals show up?** Today they only reach
    `/admin/pending-writes`, and nothing in the launcher lists them, so `file_write`
@@ -229,7 +229,7 @@ These are technical defaults, decided here:
    name, and `file_write` is not `coding__propose_edit`, so "ask before
    touching package.json" needs one rule per tool.
    *Recommendation:* keep exact names and write one rule per tool, with no
-   alias layer. Revisit with the Claude Code import (#486 comment), whose
+   alias layer. Revisit with the hook-format import (#486 comment), whose
    mapping table already sends `Write`/`Edit` to both.
 3. **Should the adversarial verifier review Pipeline B's `file_write`?**
    *Recommendation:* yes, for source files only.
@@ -244,7 +244,7 @@ These are technical defaults, decided here:
    instead of `file_write`. That is a bigger change to how Pipeline B works,
    because a write would no longer be on disk until someone approves it.
 4. **One prompt or two?** If an `ask` rule matches a `file_write` that also
-   needs its own approval, should the user be asked twice?
+   needs its own approval, should I be asked twice?
    *Recommendation:* once. An approved `hook-ask` also counts as that write's
    approval. The exception is a write the verifier refuted, which always gets
    its own prompt showing the failing case.
@@ -256,7 +256,7 @@ These are technical defaults, decided here:
    `snapshot_restore` and `run_tests` return `hooks_config_unreadable`, and
    reads still work. Leave Pipeline A as it is unless you want the same
    there.
-6. **Should there be a `finish` hook (like Claude Code's `Stop`)?** It could,
+6. **Should there be a `finish` hook (a `Stop` hook)?** It could,
    for example, run the tests and refuse `finish` while they fail.
    *Recommendation:* not now. `finish` is only a signal to the ACP client, so
    refusing it enforces nothing. Revisit together with #787's ACP continue
