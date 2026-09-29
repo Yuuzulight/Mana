@@ -16,10 +16,10 @@
 <body>
   <h2>Paired Mobile Devices</h2>
   <div id="tokenBar">
-    <label for="adminTokenInput">Admin token (optional): </label>
-    <input id="adminTokenInput" placeholder="Paste ADMIN_TOKEN for remote access" style="width:320px" />
+    <label for="adminTokenInput">Admin token: </label>
+    <input id="adminTokenInput" placeholder="Paste ADMIN_TOKEN" style="width:320px" />
     <button id="setToken">Set</button>
-    <span id="tokenHint" class="small">If ADMIN_TOKEN is configured on the server, provide it here to manage devices remotely. Leave blank when opening locally.</span>
+    <span id="tokenHint" class="small">Required: the ADMIN_TOKEN from node-bot/.env. Being on this PC is no longer enough.</span>
   </div>
   <div>
     <button id="newPair">Create pairing code</button>

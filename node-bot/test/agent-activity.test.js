@@ -5,7 +5,9 @@ const test = require("node:test");
 
 const { createApp } = require("../server");
 const { createAgentActivity } = require("../agent-activity");
-const { withServer } = require("./helpers");
+const { useTestAdminToken, withServer } = require("./helpers");
+// #842: these routes are admin-only; every request here sends ADMIN_TOKEN.
+const fetch = useTestAdminToken();
 
 test("agent activity lists only runs that called a tool, with the running tool and elapsed times", () => {
   let now = 1000;

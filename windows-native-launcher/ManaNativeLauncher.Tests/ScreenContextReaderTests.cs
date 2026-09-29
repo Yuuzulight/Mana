@@ -68,4 +68,14 @@ public class ScreenContextReaderTests
     [InlineData(null, false)]
     public void InUse_WithinASecondOfTheLastInput(long? idleMs, bool expected) =>
         Assert.Equal(expected, ScreenContextReader.InUse(idleMs));
+
+    // #648 x #671: a pointing read walks the tree even with the mouse still
+    // moving; the slow-app skip applies to it all the same.
+    [Theory]
+    [InlineData(false, 0L, "notepad", true)]
+    [InlineData(true, 0L, "notepad", false)]
+    [InlineData(true, 5000L, "OUTLOOK", true)]
+    [InlineData(false, 5000L, "notepad", false)]
+    public void SkipTreeWalk_PointingReadsIgnoreRecentInputButNotSlowApps(bool atCursor, long idleMs, string app, bool expected) =>
+        Assert.Equal(expected, ScreenContextReader.SkipTreeWalk(atCursor, idleMs, app));
 }

@@ -64,7 +64,7 @@ A 5-round independent re-verification pass (2026-09-21) of the #565-#586 batch c
 
 ## Build requirement
 
-Requires the .NET 8 SDK (not just the runtime).
+Requires the .NET 10 SDK (not just the runtime).
 
 ```powershell
 cd windows-native-launcher

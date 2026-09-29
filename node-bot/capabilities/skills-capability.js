@@ -4,7 +4,7 @@ const {
   sendValidationError,
 } = require("../request-validation");
 const { significantWords: sharedSignificantWords } = require("../utils/word-overlap");
-const { readSkillFolder } = require("../skills-store");
+const { readSkillFolder, readSkillZip } = require("../skills-store");
 
 const KEY = "skills";
 const DEFAULT_STALE_DAYS = 30;
@@ -69,25 +69,25 @@ function registerSkillsRoutes(app, context = {}) {
     }
   });
 
-  // Issue #664: import a SKILL.md folder (OpenClaw/AgentSkills). Always a
+  // Issue #664: import a SKILL.md folder or a zip of one (OpenClaw/AgentSkills). Always a
   // pending proposal -- forceReview, so no always-allow, session grant or
   // Guardian verdict can wave a third-party skill through -- whose summary
   // names its files, scripts and requirements. The files are read now and
   // carried in the request, so approving writes exactly what was shown.
   // Nothing in the folder runs, on import or on approval.
-  // Local-only: it reads a path on this PC.
+  // Local admin only (#670, admin-key.js): it reads a path on this PC.
   context.approvalGate?.registerExecutor?.("skill-import", (payload) => skillsStore.importSkill(payload));
 
   // Q20: Settings > Skills' "Imported skills" choice -- free, each (ask
   // every time) or first (ask the first time; the default). Changing it is
-  // local-only, like import: it loosens or tightens a safety gate.
+  // local admin only, like import: it loosens or tightens a safety gate.
   app.get("/skill-settings", (req, res) => {
     return res.json({ importedSkillUse: skillsStore.getImportedSkillUse() });
   });
   app.put("/skill-settings", (req, res) => {
     try {
-      if (typeof context.isLocalRestartRequest !== "function" || !context.isLocalRestartRequest(req)) {
-        return res.status(403).json({ error: "this endpoint is only available from this PC" });
+      if (typeof context.isLocalAdminRequest !== "function" || !context.isLocalAdminRequest(req)) {
+        return res.status(403).json({ error: "this endpoint is only available from this PC, with an admin key" });
       }
       skillsStore.setImportedSkillUse(req.body?.importedSkillUse);
       return res.json({ importedSkillUse: skillsStore.getImportedSkillUse() });
@@ -97,10 +97,12 @@ function registerSkillsRoutes(app, context = {}) {
   });
   app.post("/skills/import", async (req, res) => {
     try {
-      if (typeof context.isLocalRestartRequest !== "function" || !context.isLocalRestartRequest(req)) {
-        return res.status(403).json({ error: "this endpoint is only available from this PC" });
+      if (typeof context.isLocalAdminRequest !== "function" || !context.isLocalAdminRequest(req)) {
+        return res.status(403).json({ error: "this endpoint is only available from this PC, with an admin key" });
       }
-      const folder = readSkillFolder(requireString(req.body?.path, "path"));
+      // #664 (Q21): a .zip of a skill folder imports the same way.
+      const source = requireString(req.body?.path, "path");
+      const folder = /\.zip$/i.test(source) ? readSkillZip(source) : readSkillFolder(source);
       const outcome = await context.approvalGate.requestApproval("skill-import", {
         summary: [
           `Import skill "${folder.name}" -- ${folder.files.length} file(s)`,

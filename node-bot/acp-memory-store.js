@@ -2366,6 +2366,12 @@ function createAcpMemoryStore(options = {}) {
     }
   }
 
+  // #687: keyword-only content filter for the chat list (no embedder or
+  // reranker, so typing never touches the GPU); null when there is no index.
+  function sessionIdsMatching(text) {
+    return sessionSearchIndex ? sessionSearchIndex.sessionIdsMatching(text) : null;
+  }
+
   return {
     dataDir,
     sessionsDir,
@@ -2400,6 +2406,7 @@ function createAcpMemoryStore(options = {}) {
     setCanonicalAlias,
     resolveCanonicalKey,
     searchSessions,
+    sessionIdsMatching,
     memoryGraph,
     getUserAffect,
   };
