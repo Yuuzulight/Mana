@@ -189,6 +189,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
         };
 
         trayIcon.DoubleClick += (_, _) => ShowStatus();
+        avatarOverlay.Clicked += voiceLoop.Wake; // #662
         trayNotifications.Start();
         visionCaptureClient.Start();
 
@@ -264,6 +265,16 @@ internal sealed class ManaApplicationContext : ApplicationContext
             }
         };
         menu.Items.Add(gamingModeItem);
+        // #662: back to an avatar that ignores the mouse entirely.
+        var clickThroughItem = new ToolStripMenuItem("Click-through avatar") { CheckOnClick = true, Checked = avatarOverlay.ClickThrough };
+        clickThroughItem.Click += (_, _) =>
+        {
+            avatarOverlay.ClickThrough = clickThroughItem.Checked;
+            var latest = ManaSettingsStore.Load();
+            latest.AvatarClickThrough = clickThroughItem.Checked;
+            latest.Save();
+        };
+        menu.Items.Add(clickThroughItem);
         // #681: Stop listening turns the mic off and puts Mana back to
         // sleep; Start listening needs the wake word again.
         var listeningItem = new ToolStripMenuItem();

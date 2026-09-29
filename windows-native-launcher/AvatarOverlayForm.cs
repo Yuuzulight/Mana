@@ -136,6 +136,8 @@ internal sealed class AvatarOverlayForm : Form
         idlePath = AvatarPngPath(rootDirectory, "idle.png");
         talkingPath = AvatarPngPath(rootDirectory, "talking.png");
 
+        var settings = ManaSettingsStore.Load();
+        clickThrough = settings.AvatarClickThrough;
         FormBorderStyle = FormBorderStyle.None;
         ShowInTaskbar = false;
         TopMost = true;
@@ -192,7 +194,7 @@ internal sealed class AvatarOverlayForm : Form
         SetState(AvatarState.Idle);
         stateTimer.Tick += (_, _) => ShowResolvedState(reapply: false);
         stateTimer.Start();
-        PositionOverlay();
+        PositionOverlay(settings);
     }
 
     private sealed record CubismLoadResult(
@@ -702,16 +704,132 @@ internal sealed class AvatarOverlayForm : Form
     [DllImport("gdi32.dll")]
     private static extern bool DeleteDC(nint hdc);
 
+    [DllImport("user32.dll", EntryPoint = "GetWindowLongW")]
+    private static extern int GetWindowLong(nint hwnd, int index);
+
+    [DllImport("user32.dll", EntryPoint = "SetWindowLongW")]
+    private static extern int SetWindowLong(nint hwnd, int index, int value);
+
+    private const int GwlExStyle = -20;
+    private const int WsExTransparent = 0x20;
+
+    // #662: on, the whole window passes clicks through, as it always did
+    // before (the tray menu's setting, for gaming/streaming). Off, only her
+    // own pixels take clicks: a layered window's fully transparent pixels
+    // already let mouse input through to whatever is behind, so the empty
+    // space around her needs no hit-testing of ours. WS_EX_NOACTIVATE keeps
+    // a click on her from taking focus from the game/app in front.
+    private bool clickThrough;
+    public bool ClickThrough
+    {
+        get => clickThrough;
+        set
+        {
+            clickThrough = value;
+            if (IsHandleCreated)
+            {
+                var style = GetWindowLong(Handle, GwlExStyle);
+                SetWindowLong(Handle, GwlExStyle, value ? style | WsExTransparent : style & ~WsExTransparent);
+            }
+        }
+    }
+
+    // #662: a left click on her that wasn't a drag.
+    public event Action? Clicked;
+
+    // #662: where the cursor and the window were when the left button went
+    // down on her; null when no press is in progress.
+    private Point? pressedAt;
+    private Point pressedLocation;
+    private bool dragging;
+
+    protected override void OnMouseDown(MouseEventArgs e)
+    {
+        base.OnMouseDown(e);
+        if (e.Button == MouseButtons.Left)
+        {
+            pressedAt = Cursor.Position;
+            pressedLocation = Location;
+            dragging = false;
+        }
+    }
+
+    // WinForms captures the mouse on button-down, so a drag keeps following
+    // the cursor even once it's off her pixels.
+    protected override void OnMouseMove(MouseEventArgs e)
+    {
+        base.OnMouseMove(e);
+        if (pressedAt is not Point start)
+        {
+            return;
+        }
+        var cursor = Cursor.Position;
+        var dx = cursor.X - start.X;
+        var dy = cursor.Y - start.Y;
+        var slop = SystemInformation.DragSize;
+        if (!dragging && Math.Abs(dx) <= slop.Width / 2 && Math.Abs(dy) <= slop.Height / 2)
+        {
+            return;
+        }
+        dragging = true;
+        Location = new Point(pressedLocation.X + dx, pressedLocation.Y + dy);
+    }
+
+    protected override void OnMouseUp(MouseEventArgs e)
+    {
+        base.OnMouseUp(e);
+        if (e.Button == MouseButtons.Left)
+        {
+            EndPress(click: true);
+        }
+    }
+
+    // Capture lost mid-press (e.g. Alt+Tab): keep wherever she was dragged
+    // to, but it isn't a click. After a normal button-up this is a no-op.
+    protected override void OnMouseCaptureChanged(EventArgs e)
+    {
+        base.OnMouseCaptureChanged(e);
+        EndPress(click: false);
+    }
+
+    private void EndPress(bool click)
+    {
+        if (pressedAt is null)
+        {
+            return;
+        }
+        pressedAt = null;
+        if (dragging)
+        {
+            // Nothing on this UI thread catches exceptions, and a position
+            // that didn't save isn't worth crashing the launcher over.
+            try
+            {
+                var settings = ManaSettingsStore.Load();
+                settings.AvatarLeft = Left;
+                settings.AvatarTop = Top;
+                settings.Save();
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                Console.WriteLine($"AvatarOverlayForm: couldn't save the overlay position. {ex.Message}");
+            }
+        }
+        else if (click)
+        {
+            Clicked?.Invoke();
+        }
+    }
+
     protected override CreateParams CreateParams
     {
         get
         {
-            const int wsExTransparent = 0x20;
             const int wsExToolWindow = 0x80;
             const int wsExLayered = 0x80000;
             const int wsExNoActivate = 0x08000000;
             var cp = base.CreateParams;
-            cp.ExStyle |= wsExTransparent | wsExToolWindow | wsExLayered | wsExNoActivate;
+            cp.ExStyle |= wsExToolWindow | wsExLayered | wsExNoActivate | (clickThrough ? WsExTransparent : 0);
             return cp;
         }
     }
@@ -729,14 +847,27 @@ internal sealed class AvatarOverlayForm : Form
         base.OnFormClosed(e);
     }
 
-    private void PositionOverlay()
+    private void PositionOverlay(ManaSettingsStore settings)
     {
+        if (SavedLocation(settings.AvatarLeft, settings.AvatarTop, Size, Screen.AllScreens.Select(screen => screen.WorkingArea)) is Point saved)
+        {
+            Location = saved;
+            return;
+        }
         var workArea = Screen.PrimaryScreen?.WorkingArea ?? Screen.FromControl(this).WorkingArea;
         var left = ReadIntEnv("MANA_AVATAR_LEFT", 782);
         var bottom = ReadIntEnv("MANA_AVATAR_BOTTOM", 0);
         Left = workArea.Left + left;
         Top = workArea.Bottom - Height - bottom;
     }
+
+    // #662: where she was last dragged to, unless her centre is no longer on
+    // any screen (e.g. that monitor was unplugged) -- then null, and she goes
+    // back to the default spot instead of somewhere she can't be grabbed.
+    internal static Point? SavedLocation(int? left, int? top, Size size, IEnumerable<Rectangle> workAreas) =>
+        left is int x && top is int y && workAreas.Any(area => area.Contains(x + (size.Width / 2), y + (size.Height / 2)))
+            ? new Point(x, y)
+            : null;
 
     private static int ReadIntEnv(string name, int fallback)
     {
