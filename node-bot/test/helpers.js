@@ -5,6 +5,7 @@
 // keepAliveTimeout, once per test, across every file using this pattern.
 const fs = require("node:fs");
 const http = require("node:http");
+const zlib = require("node:zlib");
 
 async function withServer(app, fn) {
   const server = http.createServer(app);
@@ -61,7 +62,45 @@ function waitForPendingFile(dir, { timeoutMs = 1000, intervalMs = 20 } = {}) {
   });
 }
 
+// #664 (Q21): a minimal zip writer (stored or deflated entries, no CRC --
+// the reader doesn't check it), so the tests can also build hostile zips.
+function makeZip(entries) {
+  const parts = [];
+  const central = [];
+  let offset = 0;
+  for (const { name, data, stored = false } of entries) {
+    const raw = Buffer.from(data);
+    const body = stored ? raw : zlib.deflateRawSync(raw);
+    const nameBuf = Buffer.from(name);
+    const local = Buffer.alloc(30);
+    local.writeUInt32LE(0x04034b50, 0);
+    local.writeUInt16LE(stored ? 0 : 8, 8);
+    local.writeUInt32LE(body.length, 18);
+    local.writeUInt32LE(raw.length, 22);
+    local.writeUInt16LE(nameBuf.length, 26);
+    const entry = Buffer.alloc(46);
+    entry.writeUInt32LE(0x02014b50, 0);
+    entry.writeUInt16LE(stored ? 0 : 8, 10);
+    entry.writeUInt32LE(body.length, 20);
+    entry.writeUInt32LE(raw.length, 24);
+    entry.writeUInt16LE(nameBuf.length, 28);
+    entry.writeUInt32LE(offset, 42);
+    parts.push(local, nameBuf, body);
+    central.push(entry, nameBuf);
+    offset += 30 + nameBuf.length + body.length;
+  }
+  const directory = Buffer.concat(central);
+  const end = Buffer.alloc(22);
+  end.writeUInt32LE(0x06054b50, 0);
+  end.writeUInt16LE(entries.length, 8);
+  end.writeUInt16LE(entries.length, 10);
+  end.writeUInt32LE(directory.length, 12);
+  end.writeUInt32LE(offset, 16);
+  return Buffer.concat([...parts, directory, end]);
+}
+
 module.exports = {
+  makeZip,
   withServer,
   withRawServer,
   waitForPendingFile,

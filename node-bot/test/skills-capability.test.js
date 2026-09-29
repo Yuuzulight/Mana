@@ -462,6 +462,11 @@ test("POST /skills/import stages a forceReview proposal and writes nothing", asy
     assert.deepEqual(imported[0].files.map((f) => f.path).sort(), ["SKILL.md", "scripts/get.sh"]);
 
     assert.equal((await post({ path: path.join(source, "scripts") })).status, 400, "a folder without SKILL.md is refused");
+    // #664: {url} goes to the link importer (skill-link-import.test.js covers it).
+    const refused = await post({ url: "https://evil.example/skill.zip" });
+    assert.equal(refused.status, 400);
+    assert.match((await refused.json()).error, /isn't one of the sites/);
+
     // #664: a .zip path goes to the zip reader (readSkillZip's own tests cover real zips).
     fs.writeFileSync(path.join(source, "not-really.zip"), "hello");
     const zipResponse = await post({ path: path.join(source, "not-really.zip") });
@@ -471,4 +476,37 @@ test("POST /skills/import stages a forceReview proposal and writes nothing", asy
     assert.equal((await post({ path: source })).status, 403);
     assert.equal(requests.length, 1);
   });
+});
+
+// #664: a link import names its source and the malware check in the
+// approval summary, and is forceReview like any import.
+test("POST /skills/import {url} stages the downloaded skill for approval", async () => {
+  const { makeZip } = require("./helpers");
+  const zip = makeZip([{ name: "skills-main/weather/SKILL.md", data: "---\nname: weather\ndescription: d\n---\nbody\n" }]);
+  const requests = [];
+  const app = express();
+  app.use(express.json());
+  skillsCapability.registerRoutes(app, {
+    skillsStore: fakeStore({}),
+    isLocalRestartRequest: () => true,
+    fetchImpl: async () => new Response(zip),
+    approvalGate: {
+      registerExecutor: () => {},
+      requestApproval: async (type, options) => {
+        requests.push(options);
+        return { status: "pending", requestId: "r1" };
+      },
+    },
+  });
+  await withServer(app, async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/skills/import`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ url: "https://github.com/o/skills/tree/main/weather" }),
+    });
+    assert.equal(response.status, 202);
+  });
+  assert.equal(requests[0].forceReview, true);
+  assert.match(requests[0].summary, /from https:\/\/github\.com\/o\/skills\/tree\/main\/weather; malware check: no packages declared/);
+  assert.deepEqual(requests[0].details.files, ["SKILL.md"]);
 });

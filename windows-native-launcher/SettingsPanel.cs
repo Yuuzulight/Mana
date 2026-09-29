@@ -575,6 +575,9 @@ internal sealed class SettingsPanel : UserControl
         var importZipButton = new Button { Text = "Import zip...", AutoSize = true };
         DarkTheme.ApplyButton(importZipButton);
         importZipButton.Click += async (_, _) => await ImportSkillZipAsync();
+        var importLinkButton = new Button { Text = "Import link...", AutoSize = true };
+        DarkTheme.ApplyButton(importLinkButton);
+        importLinkButton.Click += async (_, _) => await ImportSkillLinkAsync();
 
         var buttonRow = new FlowLayoutPanel { Dock = DockStyle.Bottom, Height = 32, FlowDirection = FlowDirection.LeftToRight, BackColor = DarkTheme.Background };
         buttonRow.Controls.Add(newButton);
@@ -582,6 +585,7 @@ internal sealed class SettingsPanel : UserControl
         buttonRow.Controls.Add(deleteButton);
         buttonRow.Controls.Add(importButton);
         buttonRow.Controls.Add(importZipButton);
+        buttonRow.Controls.Add(importLinkButton);
 
         // Q20: how Mana may use imported skills (default: ask the first time).
         importedSkillUseBox.Items.AddRange(new object[] { "Use freely", "Ask each time", "Ask the first time" });
@@ -625,6 +629,15 @@ internal sealed class SettingsPanel : UserControl
         if (dialog.ShowDialog(this) == DialogResult.OK)
         {
             await SubmitSkillImportAsync(dialog.FileName);
+        }
+    }
+
+    private async Task ImportSkillLinkAsync()
+    {
+        using var dialog = new TextPromptDialog("Import Skill", "Link (github.com or clawhub.ai):", "");
+        if (dialog.ShowDialog(this) == DialogResult.OK && !string.IsNullOrWhiteSpace(dialog.Value))
+        {
+            await SubmitSkillImportAsync(dialog.Value.Trim());
         }
     }
 

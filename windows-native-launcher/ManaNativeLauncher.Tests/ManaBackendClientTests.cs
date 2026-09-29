@@ -2087,6 +2087,25 @@ public class ManaBackendClientTests
         Assert.Equal(("PUT", "/skill-settings", """{"importedSkillUse":"free"}"""), requests[3]);
     }
 
+    // #664: a link is sent as {url}, a path as {path}.
+    [Fact]
+    public async Task ImportSkillAsync_SendsALinkAsUrl()
+    {
+        var bodies = new System.Collections.Generic.List<string>();
+        var handler = new FakeHttpMessageHandler(request =>
+        {
+            bodies.Add(request.Content!.ReadAsStringAsync().GetAwaiter().GetResult());
+            return new HttpResponseMessage(HttpStatusCode.Accepted) { Content = new StringContent("{}") };
+        });
+        var client = new ManaBackendClient(handler);
+
+        await client.ImportSkillAsync("https://github.com/o/skills/tree/main/weather");
+        await client.ImportSkillAsync(@"C:\skills\weather.zip");
+
+        Assert.Equal("""{"url":"https://github.com/o/skills/tree/main/weather"}""", bodies[0]);
+        Assert.StartsWith("""{"path":""", bodies[1]);
+    }
+
     [Fact]
     public async Task DeleteSkillAsync_SendsDeleteToTheNamedSkill()
     {

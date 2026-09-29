@@ -5,6 +5,7 @@ const {
 } = require("../request-validation");
 const { significantWords: sharedSignificantWords } = require("../utils/word-overlap");
 const { readSkillFolder, readSkillZip } = require("../skills-store");
+const { readSkillLink } = require("../skill-link-import");
 
 const KEY = "skills";
 const DEFAULT_STALE_DAYS = 30;
@@ -100,14 +101,21 @@ function registerSkillsRoutes(app, context = {}) {
       if (typeof context.isLocalRestartRequest !== "function" || !context.isLocalRestartRequest(req)) {
         return res.status(403).json({ error: "this endpoint is only available from this PC" });
       }
-      // #664 (Q21): a .zip of a skill folder imports the same way.
-      const source = requireString(req.body?.path, "path");
-      const folder = /\.zip$/i.test(source) ? readSkillZip(source) : readSkillFolder(source);
+      // #664 (Q21): a .zip of a skill folder imports the same way, and so
+      // does {url}: a link on an allowed site (skill-link-import.js).
+      let folder;
+      if (typeof req.body?.url === "string" && req.body.url.trim()) {
+        folder = await readSkillLink(req.body.url, { fetchImpl: context.fetchImpl });
+      } else {
+        const source = requireString(req.body?.path, "path");
+        folder = /\.zip$/i.test(source) ? readSkillZip(source) : readSkillFolder(source);
+      }
       const outcome = await context.approvalGate.requestApproval("skill-import", {
         summary: [
           `Import skill "${folder.name}" -- ${folder.files.length} file(s)`,
           folder.scripts.length ? `scripts (never run on import): ${folder.scripts.join(", ")}` : "no scripts",
           folder.requires.length ? `needs ${folder.requires.join(", ")}` : "",
+          folder.source ? `from ${folder.source}; malware check: ${folder.malwareCheck}` : "",
         ].filter(Boolean).join("; "),
         payload: { files: folder.files },
         scanText: folder.files.filter((f) => f.encoding === "utf8").map((f) => f.content).join("\n"),
@@ -118,6 +126,7 @@ function registerSkillsRoutes(app, context = {}) {
           files: folder.files.map((f) => f.path),
           scripts: folder.scripts,
           requires: folder.requires,
+          ...(folder.source ? { source: folder.source, malwareCheck: folder.malwareCheck } : {}),
         },
       });
       return res.status(202).json(outcome);
