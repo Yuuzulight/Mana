@@ -90,6 +90,11 @@ default** (`buildServerEnv()` in `llama-server-runtime.js` sets
 `GGML_CUDA_ENABLE_UNIFIED_MEMORY=1` for the spawned `llama-server.exe`
 process unless `MANA_LLAMA_UNIFIED_MEMORY=0` opts out).
 
+**Later: off by default again.** On the RTX 5080 machine every llama-server
+stop with it on left ~5 GB of system RAM committed to no process until a
+reboot, and the server ignored CTRL_C for 15 s+. `MANA_LLAMA_UNIFIED_MEMORY=1`
+now opts in; see the comment on `buildServerEnv()`.
+
 ### TTS VRAM purge — not applicable, documented why
 
 Investigated Fish Speech (`tools/fish-speech/tools/api_server.py`) and
