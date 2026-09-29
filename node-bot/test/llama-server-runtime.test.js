@@ -2213,6 +2213,32 @@ test("buildServerArgs falls back to --no-mmap for llama.cpp builds without --loa
   ]);
 });
 
+// #660: uncapped, llama-server's host-RAM prompt cache (8 GiB default) grew
+// its working set 0.9 -> 4.6 GB in one session.
+test("buildServerArgs caps the host-RAM prompt cache at 1024 MiB, LLAMA_CACHE_RAM overrides, older builds skip it", () => {
+  const helpFor = {
+    "new-llama-server.exe": "  -cram, --cache-ram N   set the maximum cache size in MiB",
+    "old-llama-server.exe": "  --mmap, --no-mmap  whether to memory-map model",
+  };
+  const cacheRam = (env, bin = "new-llama-server.exe") => {
+    const runtime = createLlamaServerRuntime({
+      env: { ...makeFakeEnv(), ...env },
+      fs: makeFakeFs(),
+      registerExitHandlers: false,
+      probeHelp: (b) => helpFor[b],
+    });
+    const args = runtime.buildServerArgs("C:\\models\\mana.gguf", 8090, null, null, bin);
+    return args.includes("--cache-ram") ? args[args.indexOf("--cache-ram") + 1] : null;
+  };
+
+  assert.equal(cacheRam({}), "1024");
+  assert.equal(cacheRam({ LLAMA_CACHE_RAM: "4096" }), "4096");
+  assert.equal(cacheRam({ LLAMA_CACHE_RAM: "-1" }), "-1", "no limit");
+  assert.equal(cacheRam({ LLAMA_CACHE_RAM: "0" }), "0", "off");
+  assert.equal(cacheRam({ LLAMA_CACHE_RAM: "lots" }), "1024");
+  assert.equal(cacheRam({}, "old-llama-server.exe"), null, "a build without the flag would refuse to start");
+});
+
 test("buildServerArgs loads straight into VRAM (--load-mode none) by default; MANA_LLAMA_MMAP=1, a saved false or LLAMA_MLOCK=1 turn it off", () => {
   const argsFor = (env, modelSettingsStore) =>
     createLlamaServerRuntime({
