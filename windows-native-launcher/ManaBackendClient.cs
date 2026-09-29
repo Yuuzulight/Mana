@@ -110,6 +110,7 @@ internal sealed class ManaBackendClient
             LlamaThreads = config.TryGetProperty("llamaThreads", out var llamaThreadsEl) ? llamaThreadsEl.GetInt32() : 0,
             LlamaMaxTokens = config.TryGetProperty("llamaMaxTokens", out var llamaMaxEl) ? llamaMaxEl.GetInt32() : 0,
             ScreenContextEnabled = config.TryGetProperty("screenContextEnabled", out var screenEl) && screenEl.GetBoolean(),
+            ChatModel = config.TryGetProperty("chatModel", out var chatModelEl) && chatModelEl.ValueKind == JsonValueKind.String ? chatModelEl.GetString() : null,
             Operations = operations,
             TokenUsage = tokenUsage,
         };
@@ -339,6 +340,30 @@ internal sealed class ManaBackendClient
         return document.RootElement.ValueKind == JsonValueKind.Object
             && document.RootElement.TryGetProperty("idleTriggered", out var triggered)
             && triggered.ValueKind == JsonValueKind.True;
+    }
+
+    // #680: one text action (Explain, Rewrite...) on selected text --
+    // node-bot's OpenAI-compatible /v1/chat/completions, which goes straight
+    // to the local model with no persona, session or memory, so the text
+    // isn't remembered. Returns the model's reply, trimmed.
+    public async Task<string> RunTextActionAsync(string prompt, string text)
+    {
+        var payload = JsonSerializer.Serialize(new
+        {
+            messages = new[]
+            {
+                new { role = "system", content = prompt },
+                new { role = "user", content = text },
+            },
+            stream = false,
+        });
+        using var content = new StringContent(payload, Encoding.UTF8, "application/json");
+        using var response = await http.PostAsync("/v1/chat/completions", content);
+        response.EnsureSuccessStatusCode();
+        using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        var reply = document.RootElement.GetProperty("choices")[0].GetProperty("message").GetProperty("content").GetString() ?? "";
+        // Reasoning models may prefix their answer with a <think> block.
+        return System.Text.RegularExpressions.Regex.Replace(reply, @"^\s*<think>[\s\S]*?</think>", "").Trim();
     }
 
     // #697 part 1: which app just came to the front (ForegroundWindowReporter).
@@ -1983,6 +2008,8 @@ internal sealed class ManaPerformanceStatus
     public int LlamaThreads { get; init; }
     public int LlamaMaxTokens { get; init; }
     public bool ScreenContextEnabled { get; init; }
+    // #889: the running chat model, "(gaming model)" appended while gaming; null when none is loaded.
+    public string? ChatModel { get; init; }
     public IReadOnlyDictionary<string, string> Operations { get; init; } = new Dictionary<string, string>();
     // Issue #421 (backend), null whenever the backend omitted "tokenUsage"
     // -- see GetPerformanceStatusAsync's own comment for when that happens.

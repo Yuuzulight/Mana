@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Reflection;
+using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Windows.Forms;
 
@@ -23,21 +24,101 @@ internal static class GlassSurface
     private static readonly Color TopEdge = Color.FromArgb(240, 255, 255, 255);
     private static readonly Color Outline = Color.FromArgb(34, 106, 95, 184);
 
-    public static void Attach(Form form)
+    // #688: everything Attach/Style changed, per control, so Detach can put
+    // each control back exactly as the theme left it (live theme switching).
+    private sealed class Attachment
     {
+        public Attachment(GlassShimmer shimmer) => Shimmer = shimmer;
+        public GlassShimmer Shimmer { get; }
+        public Dictionary<Control, List<Action>> Undo { get; } = new();
+    }
+
+    private static readonly ConditionalWeakTable<Form, Attachment> Attached = new();
+
+    // Records how to put `control` back; dropped when it's disposed.
+    private static void Record(Dictionary<Control, List<Action>>? undo, Control control, Action restore)
+    {
+        if (undo is null)
+        {
+            return;
+        }
+        if (!undo.TryGetValue(control, out var actions))
+        {
+            undo[control] = actions = new List<Action>();
+            control.Disposed += (_, _) => undo.Remove(control);
+        }
+        actions.Add(restore);
+    }
+
+    // live: the form is already built (a theme switch), so its controls are
+    // styled now rather than on Load.
+    public static void Attach(Form form, bool live = false)
+    {
+        if (Attached.TryGetValue(form, out _))
+        {
+            return;
+        }
+        var attachment = new Attachment(new GlassShimmer(form));
+        Attached.Add(form, attachment);
+        var undo = attachment.Undo;
+
         EnableDoubleBuffering(form);
+        var layout = form.BackgroundImageLayout;
+        var image = form.BackgroundImage;
         form.BackgroundImageLayout = ImageLayout.None;
         // ponytail: re-renders the whole glow on every resize step; cache per
         // size or debounce if dragging a big window ever feels sluggish.
         void RefreshGlow() => Swap(form, RenderGlow(form.ClientSize, Point.Empty, form.ClientSize));
+        EventHandler onResize = (_, _) => RefreshGlow();
+        EventHandler onLoad = (_, _) => StyleChildren(form, attachment.Shimmer, undo);
+        FormClosedEventHandler onClosed = (_, _) => attachment.Shimmer.Dispose();
         RefreshGlow();
-        form.Resize += (_, _) => RefreshGlow();
-
-        var shimmer = new GlassShimmer(form);
-        form.Load += (_, _) => StyleChildren(form, shimmer);
-        form.FormClosed += (_, _) => shimmer.Dispose();
+        form.Resize += onResize;
+        form.FormClosed += onClosed;
         form.Disposed += (_, _) => form.BackgroundImage?.Dispose();
+        Record(undo, form, () =>
+        {
+            form.Resize -= onResize;
+            form.Load -= onLoad;
+            form.FormClosed -= onClosed;
+            Swap(form, image);
+            form.BackgroundImageLayout = layout;
+        });
+        if (live)
+        {
+            StyleChildren(form, attachment.Shimmer, undo);
+        }
+        else
+        {
+            form.Load += onLoad;
+        }
     }
+
+    // #688: undoes Attach and every Style it did (switching away from the
+    // Mana preset while the window is open).
+    public static void Detach(Form form)
+    {
+        if (!Attached.TryGetValue(form, out var attachment))
+        {
+            return;
+        }
+        Attached.Remove(form);
+        attachment.Shimmer.Dispose();
+        foreach (var (control, actions) in attachment.Undo.ToList())
+        {
+            if (control.IsDisposed)
+            {
+                continue;
+            }
+            for (var i = actions.Count - 1; i >= 0; i--)
+            {
+                actions[i]();
+            }
+        }
+        attachment.Undo.Clear();
+    }
+
+    internal static bool IsAttached(Form form) => Attached.TryGetValue(form, out _);
 
     // The glows for a `size` area sitting at `offset` inside a window of
     // `windowSize` -- so a control that can't be see-through (a ListView)
@@ -77,80 +158,117 @@ internal static class GlassSurface
         g.FillEllipse(brush, rect);
     }
 
-    private static void StyleChildren(Control parent, GlassShimmer shimmer)
+    private static void StyleChildren(Control parent, GlassShimmer shimmer, Dictionary<Control, List<Action>>? undo)
     {
         foreach (Control child in parent.Controls)
         {
-            Style(child, shimmer);
+            Style(child, shimmer, undo);
         }
-        parent.ControlAdded += (_, e) =>
+        ControlEventHandler onAdded = (_, e) =>
         {
             if (e.Control is not null)
             {
-                Style(e.Control, shimmer);
+                Style(e.Control, shimmer, undo);
             }
         };
+        parent.ControlAdded += onAdded;
+        Record(undo, parent, () => parent.ControlAdded -= onAdded);
     }
 
     // Decides each control's glass role from the colour the theme gave it,
     // so forms need no glass-specific code of their own.
-    internal static void Style(Control control, GlassShimmer? shimmer)
+    // undo (#688): where to record how to put each change back; null (tests)
+    // records nothing.
+    internal static void Style(Control control, GlassShimmer? shimmer, Dictionary<Control, List<Action>>? undo = null)
     {
         var isPanelColour = control.BackColor == DarkTheme.Panel || control.BackColor == DarkTheme.Panel2;
+        var backColor = control.BackColor;
         switch (control)
         {
             case ListView list:
-                AttachGlowSlice(list);
+                AttachGlowSlice(list, undo);
                 break;
             case TabPage page:
+                var useVisualStyle = page.UseVisualStyleBackColor;
+                var pageLayout = page.BackgroundImageLayout;
+                var pageImage = page.BackgroundImage;
                 page.UseVisualStyleBackColor = false;
                 page.BackgroundImageLayout = ImageLayout.None;
                 void RefreshPage() => Swap(page, RenderGlow(page.ClientSize, Point.Empty, page.ClientSize));
+                EventHandler onPageResize = (_, _) => RefreshPage();
                 RefreshPage();
-                page.Resize += (_, _) => RefreshPage();
+                page.Resize += onPageResize;
                 page.Disposed += (_, _) => page.BackgroundImage?.Dispose();
+                Record(undo, page, () =>
+                {
+                    page.Resize -= onPageResize;
+                    Swap(page, pageImage);
+                    page.BackgroundImageLayout = pageLayout;
+                    page.UseVisualStyleBackColor = useVisualStyle;
+                    page.BackColor = backColor;
+                });
                 break;
             // Buttons don't blend a semi-transparent fill (they paint it
             // over a solid base), so they go fully see-through and only
             // frost on hover/press.
             case ButtonBase button when isPanelColour:
                 button.BackColor = Color.Transparent;
+                Record(undo, button, () => button.BackColor = backColor);
                 if (button is Button { FlatStyle: FlatStyle.Flat } flat)
                 {
-                    flat.FlatAppearance.MouseOverBackColor = GlassHover;
-                    flat.FlatAppearance.MouseDownBackColor = GlassHover;
-                    flat.FlatAppearance.BorderColor = Color.FromArgb(200, 255, 255, 255);
+                    var appearance = flat.FlatAppearance;
+                    var (over, down, border) = (appearance.MouseOverBackColor, appearance.MouseDownBackColor, appearance.BorderColor);
+                    appearance.MouseOverBackColor = GlassHover;
+                    appearance.MouseDownBackColor = GlassHover;
+                    appearance.BorderColor = Color.FromArgb(200, 255, 255, 255);
+                    Record(undo, flat, () =>
+                    {
+                        appearance.MouseOverBackColor = over;
+                        appearance.MouseDownBackColor = down;
+                        appearance.BorderColor = border;
+                    });
                 }
                 break;
             case Label label when label.BackColor == DarkTheme.Background || isPanelColour || label.BackColor.A < 255:
                 label.BackColor = Color.Transparent;
+                Record(undo, label, () => label.BackColor = backColor);
                 break;
             case Panel panel when panel.BackColor == DarkTheme.Background:
                 panel.BackColor = Color.Transparent;
+                Record(undo, panel, () => panel.BackColor = backColor);
                 break;
             case Panel panel when isPanelColour:
-                MakeGlass(panel, shimmer);
+                MakeGlass(panel, shimmer, undo);
                 break;
         }
         if (shimmer is not null)
         {
-            StyleChildren(control, shimmer);
+            StyleChildren(control, shimmer, undo);
         }
     }
 
-    private static void MakeGlass(Panel panel, GlassShimmer? shimmer)
+    private static void MakeGlass(Panel panel, GlassShimmer? shimmer, Dictionary<Control, List<Action>>? undo)
     {
+        var backColor = panel.BackColor;
         panel.BackColor = GlassFill;
         EnableDoubleBuffering(panel);
-        panel.Paint += (_, e) => PaintGlassEdges(e.Graphics, panel.ClientRectangle, shimmer?.ProgressFor(panel));
+        PaintEventHandler onPaint = (_, e) => PaintGlassEdges(e.Graphics, panel.ClientRectangle, shimmer?.ProgressFor(panel));
+        panel.Paint += onPaint;
         shimmer?.Register(panel);
+        Record(undo, panel, () =>
+        {
+            panel.Paint -= onPaint;
+            panel.BackColor = backColor;
+        });
     }
 
     // A ListView can't be see-through, but it natively supports a
     // background image: give it the slice of the window's glows behind it,
     // frosted, kept in step as it or the window resizes or moves.
-    private static void AttachGlowSlice(ListView list)
+    private static void AttachGlowSlice(ListView list, Dictionary<Control, List<Action>>? undo)
     {
+        var image = list.BackgroundImage;
+        var tiled = list.BackgroundImageTiled;
         void Refresh()
         {
             var form = list.FindForm();
@@ -161,12 +279,21 @@ internal static class GlassSurface
             var offset = form.PointToClient(list.PointToScreen(Point.Empty));
             Swap(list, RenderGlow(list.ClientSize, offset, form.ClientSize, frosted: true));
         }
+        EventHandler onChange = (_, _) => Refresh();
         list.BackgroundImageTiled = false;
-        list.SizeChanged += (_, _) => Refresh();
-        list.LocationChanged += (_, _) => Refresh();
-        list.HandleCreated += (_, _) => Refresh();
+        list.SizeChanged += onChange;
+        list.LocationChanged += onChange;
+        list.HandleCreated += onChange;
         list.Disposed += (_, _) => list.BackgroundImage?.Dispose();
         Refresh();
+        Record(undo, list, () =>
+        {
+            list.SizeChanged -= onChange;
+            list.LocationChanged -= onChange;
+            list.HandleCreated -= onChange;
+            Swap(list, image);
+            list.BackgroundImageTiled = tiled;
+        });
     }
 
     internal static void PaintGlassEdges(Graphics g, Rectangle bounds, float? sheenProgress)
@@ -212,7 +339,7 @@ internal static class GlassSurface
         g.Clip = clip;
     }
 
-    private static void Swap(Control control, Image image)
+    private static void Swap(Control control, Image? image)
     {
         var old = control.BackgroundImage;
         control.BackgroundImage = image;

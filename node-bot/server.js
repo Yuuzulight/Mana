@@ -505,7 +505,15 @@ const llamaServerRuntime = createLlamaServerRuntime({
   nowMs,
   logPerf,
   modelSettingsStore,
+  // #872: a mid-game image keeps the mmproj for the short gaming idle.
+  gaming: () => gamingWatch.isGaming(),
 });
+
+// #889: the chat model llama-server is running, for the tray and Doctor.
+function chatModelLabel() {
+  const { model, gamingModel } = llamaServerRuntime.getStatus();
+  return model ? `${path.basename(model)}${gamingModel ? " (gaming model)" : ""}` : null;
+}
 
 // #754/#760: stop the memory embedder (~2.3 GB VRAM) and reranker (RAM) as
 // soon as a watched game starts -- a turn during the game used to wake them
@@ -526,7 +534,10 @@ const gamingWatch = createGamingWatch({
     console.log("Watched game started: stopping the memory embedder and reranker");
     embedder.stop();
     reranker.stop();
+    // #872/#889: drops the vision mmproj, and swaps to MANA_GAMING_LLAMA_MODEL when it's set.
+    llamaServerRuntime.setGaming(true);
   },
+  onGameEnd: () => llamaServerRuntime.setGaming(false),
 });
 if (process.env.NODE_ENV !== "test" && !process.env.NODE_TEST_CONTEXT) {
   gamingWatch.poll();
@@ -2090,7 +2101,7 @@ function registerRoutes(app, upload, deps = {}) {
     const eagerStatus = modelManagement.getModelStatus().profiles[eagerProfile];
     if (eagerStatus && eagerStatus.available && eagerStatus.selectedModel) {
       llamaServerRuntime
-        .ensureServerConfig(eagerStatus.selectedModel, llamaServerRuntime.chatMmprojFor(eagerStatus.selectedModel))
+        .ensureServerConfig(eagerStatus.selectedModel)
         .catch((e) => console.warn("Eager llama-server startup skipped:", e.message));
     }
   }
@@ -2357,6 +2368,7 @@ function registerRoutes(app, upload, deps = {}) {
         // Q18 (#645): named here, not warned about on every start.
         plainTextSecrets: (deps.plainTextSecretKeys || plainTextSecretKeys)(),
         memoryGraphHistory,
+        chatModel: chatModelLabel(),
       });
       return res.status(result.ok ? 200 : 503).json(result);
     } catch (error) {
@@ -2856,6 +2868,7 @@ function registerRoutes(app, upload, deps = {}) {
           screenContextEnabled: SCREEN_CONTEXT_ENABLED,
           screenContextMaxChars: SCREEN_CONTEXT_MAX_CHARS,
           ttsProvider: TTS_PROVIDER,
+          chatModel: chatModelLabel(),
         },
         gaming,
         process: getManaProcessSnapshot(),
@@ -4754,6 +4767,7 @@ function registerRoutes(app, upload, deps = {}) {
         const readyProfile = await activeLlamaServerRuntime.waitForServer(
           normalizedModelProfile,
           onSentence ? () => onSentence("Give me a second, I'm waking up.") : null,
+          memoryExtraMessages.images,
         );
         if (readyProfile !== normalizedModelProfile) {
           console.warn(`Mana: ${normalizedModelProfile} model unavailable, answering with ${readyProfile}`);
