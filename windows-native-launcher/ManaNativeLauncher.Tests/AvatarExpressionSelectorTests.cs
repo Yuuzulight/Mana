@@ -96,4 +96,19 @@ public class AvatarExpressionSelectorTests
         Assert.Equal("Wink", AvatarExpressionSelector.SelectExpressionName(AvatarState.Angry, names, null, overrides));
         Assert.Equal("F03_ANGRY", AvatarExpressionSelector.SelectExpressionName(AvatarState.Angry, names, "F03_ANGRY", overrides));
     }
+
+    // #623: a sentence's emotion tag -- mapped in stateExpressions by tag
+    // name, else a model name containing the tag, else the state as before.
+    [Fact]
+    public void SelectExpressionName_TriesTheEmotionTagBeforeTheState()
+    {
+        var names = new[] { "F01_Smile", "F05", "Wink_L", "F07_Blush" };
+        var overrides = new Dictionary<string, IReadOnlyList<string>> { ["embarrassed"] = ["f07_blush"], ["excited"] = ["F01_Smile"] };
+
+        Assert.Equal("F07_Blush", AvatarExpressionSelector.SelectExpressionName(AvatarState.Talking, names, null, overrides, "embarrassed"));
+        Assert.Equal("Wink_L", AvatarExpressionSelector.SelectExpressionName(AvatarState.Excited, names, null, overrides, "wink"));
+        Assert.Equal("F01_Smile", AvatarExpressionSelector.SelectExpressionName(AvatarState.Excited, names, null, overrides, "happy"));
+        Assert.Equal("F05", AvatarExpressionSelector.SelectExpressionName(AvatarState.Talking, names, "F05", overrides, "embarrassed"));
+        Assert.Null(AvatarExpressionSelector.SelectExpressionName(AvatarState.Talking, names, null, overrides, "questioning"));
+    }
 }
