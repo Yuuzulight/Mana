@@ -36,7 +36,7 @@ This is the realistic path toward a roughly 500 MB runtime while keeping local T
 
 **Screen-context awareness** -- Windows UI Automation with an OCR fallback (`ScreenContextReader.cs`, `AccessibilityTreeOutputParser.cs`, `ScreenContextTrigger.cs`), gated by gaming-mode/keyword heuristics.
 
-**Vision hotkey** -- Ctrl+Alt+M ("look at my screen"), screen capture plus a vision-flavored reply path (`VisionHotkeyListener.cs`, `VisionHotkeyMessages.cs`, `ScreenCapture.cs`).
+**Vision hotkey** -- Ctrl+Alt+M ("look at my screen"), screen capture plus a vision-flavored reply path (`GlobalHotkeyListener.cs`, `VisionHotkeyMessages.cs`, `ScreenCapture.cs`; remappable in Settings > Hotkeys since #689).
 
 **Proactive toast notifications** -- native Windows toasts with action buttons, routed back into the chat window on activation (`TrayNotificationClient.cs`, `TrayNotificationPayload.cs`, `ProactiveToastFilter.cs`).
 

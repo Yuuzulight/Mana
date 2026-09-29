@@ -893,7 +893,7 @@ internal sealed class VoiceLoop : IDisposable
         try
         {
             // Off the UI thread -- this runs on WM_HOTKEY's own thread
-            // (VisionHotkeyListener's message pump), and CopyFromScreen +
+            // (GlobalHotkeyListener's message pump), and CopyFromScreen +
             // JPEG-encoding a full screen is enough work to visibly hitch
             // the tray/avatar UI if done inline here.
             image = await Task.Run(ScreenCapture.CaptureAsJpegDataUrl);
