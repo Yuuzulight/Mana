@@ -58,6 +58,14 @@ internal static class ScreenContextTrigger
 
     public static bool MeansNearAvatar(string normalizedText) => NearAvatar.IsMatch(normalizedText);
 
+    // #910: "translate my screen", "what did that JP player say?".
+    // ponytail: also catches "how do I say thanks in Japanese?" -- harmless
+    // (one extra screen read, which helps a reply suggestion anyway).
+    private static readonly Regex Translate = new(
+        @"\btranslat|^(?=.*\b(?:jp|japanese)\b)(?=.*\b(?:say|said|says|saying|mean|means|wrote|typed)\b)");
+
+    public static bool AsksToTranslate(string normalizedText) => Translate.IsMatch(normalizedText);
+
     // normalizedText is expected already-lowercased.
     public static bool ShouldReadScreenForCommand(string normalizedText, bool gamingModeActive, bool keywordGateEnabled = true)
     {

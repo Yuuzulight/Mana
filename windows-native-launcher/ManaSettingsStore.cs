@@ -112,6 +112,9 @@ internal sealed class ManaSettingsStore
     // Performance); off ignores the backend's watched-game scan.
     public bool GamingModeDetection { get; set; } = true;
 
+    // #912: Settings > Voice's camera toggle; off by default.
+    public bool CameraSnapshots { get; set; }
+
     // #685: the chat window's live avatar framing -- "full", "waist" or
     // "bust" (see LiveAvatarPanel); null = full.
     public string? AvatarFraming { get; set; }

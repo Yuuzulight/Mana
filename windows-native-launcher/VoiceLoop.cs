@@ -1155,7 +1155,8 @@ internal sealed class VoiceLoop : IDisposable
     // turn is already in flight); true once accepted, regardless of what
     // happens after -- capture/backend failures are handled internally
     // (ReturnToIdle), same contract shape as the typed-input entry point.
-    public async Task<bool> SubmitVisionHotkeyAsync()
+    // #912: the camera hotkey passes its own capture and prompt.
+    public async Task<bool> SubmitVisionHotkeyAsync(Func<Task<string>>? capture = null, string prompt = VisionHotkeyMessages.DefaultPrompt)
     {
         lock (stateLock)
         {
@@ -1196,17 +1197,17 @@ internal sealed class VoiceLoop : IDisposable
             // (GlobalHotkeyListener's message pump), and CopyFromScreen +
             // JPEG-encoding a full screen is enough work to visibly hitch
             // the tray/avatar UI if done inline here.
-            image = await Task.Run(ScreenCapture.CaptureAsJpegDataUrl);
+            image = capture is null ? await Task.Run(ScreenCapture.CaptureAsJpegDataUrl) : await Task.Run(capture);
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"VoiceLoop: vision hotkey screen capture failed, resuming listening. {ex.Message}");
-            lastError = $"Screen capture failed: {ex.Message}";
+            Console.WriteLine($"VoiceLoop: vision hotkey capture failed, resuming listening. {ex.Message}");
+            lastError = $"{(capture is null ? "Screen capture" : "Camera snapshot")} failed: {ex.Message}";
             ReturnToIdle();
             return true;
         }
 
-        await SpeakReplyAsync(VisionHotkeyMessages.DefaultPrompt, image: image);
+        await SpeakReplyAsync(prompt, image: image);
         return true;
     }
 
@@ -1998,6 +1999,51 @@ internal sealed class VoiceLoop : IDisposable
     }
 
     private const string ReplyFailedMessage = "Sorry, I couldn't answer that just now. Try again in a moment.";
+
+    // #905: a line nobody just asked for (a reminder firing), said through
+    // the same player as replies, with SayReplyFailedAsync's mode handling.
+    // Waits for her to be idle so it never cuts into a turn; gives up
+    // (the toast still showed) if she's busy for a whole minute.
+    public async Task<bool> SpeakAnnouncementAsync(string text)
+    {
+        for (var tries = 0; ; tries++)
+        {
+            lock (stateLock)
+            {
+                if (mode == ListenMode.Idle)
+                {
+                    mode = ListenMode.Processing;
+                    break;
+                }
+            }
+            if (tries >= 30)
+            {
+                return false;
+            }
+            await Task.Delay(2000);
+        }
+        try
+        {
+            var wav = await backendClient.SynthesizeAsync(text);
+            OnTalkingStateChanged(true);
+            captions?.ShowSentence(text);
+            bubbles?.ShowSentence(text);
+            var completedNaturally = await audioPlayer.PlayAsync(wav);
+            OnTalkingStateChanged(false);
+            if (!completedNaturally)
+            {
+                ConsumeManualStop();
+                return true;
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"VoiceLoop: couldn't speak the announcement. {ex.Message}");
+            OnTalkingStateChanged(false);
+        }
+        ReturnToIdle();
+        return true;
+    }
 
     // #666: a failed reply is shown in the chat and spoken once, with the
     // same mode handling as the non-streamed fallback above. If TTS is what
