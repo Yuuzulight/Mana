@@ -110,6 +110,7 @@ internal sealed class ManaBackendClient
             LlamaThreads = config.TryGetProperty("llamaThreads", out var llamaThreadsEl) ? llamaThreadsEl.GetInt32() : 0,
             LlamaMaxTokens = config.TryGetProperty("llamaMaxTokens", out var llamaMaxEl) ? llamaMaxEl.GetInt32() : 0,
             ScreenContextEnabled = config.TryGetProperty("screenContextEnabled", out var screenEl) && screenEl.GetBoolean(),
+            ChatModel = config.TryGetProperty("chatModel", out var chatModelEl) && chatModelEl.ValueKind == JsonValueKind.String ? chatModelEl.GetString() : null,
             Operations = operations,
             TokenUsage = tokenUsage,
         };
@@ -2007,6 +2008,8 @@ internal sealed class ManaPerformanceStatus
     public int LlamaThreads { get; init; }
     public int LlamaMaxTokens { get; init; }
     public bool ScreenContextEnabled { get; init; }
+    // #889: the running chat model, "(gaming model)" appended while gaming; null when none is loaded.
+    public string? ChatModel { get; init; }
     public IReadOnlyDictionary<string, string> Operations { get; init; } = new Dictionary<string, string>();
     // Issue #421 (backend), null whenever the backend omitted "tokenUsage"
     // -- see GetPerformanceStatusAsync's own comment for when that happens.
