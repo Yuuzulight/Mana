@@ -51,14 +51,18 @@ internal sealed class ScreenContextReader
     // does the same.
     public async Task<string> ReadAsync(string commandText, bool gamingModeActive)
     {
+        var normalized = ScreenContextTrigger.CleanTranscriptText(commandText).ToLowerInvariant();
+        // #648: "this"/"here" means whatever is under the mouse cursor
+        // right now, which the cached read may not describe -- so a
+        // deictic command skips the min interval and reads at the cursor.
+        var atCursor = ScreenContextTrigger.IsDeictic(normalized);
         var now = Environment.TickCount64;
         var minInterval = gamingModeActive ? GamingMinIntervalMs : MinIntervalMs;
-        if (lastScreenText.Length > 0 && now - lastReadAtMs < minInterval)
+        if (!atCursor && lastScreenText.Length > 0 && now - lastReadAtMs < minInterval)
         {
             return lastScreenText;
         }
 
-        var normalized = ScreenContextTrigger.CleanTranscriptText(commandText).ToLowerInvariant();
         // Issue #344's own override, ported: set to "0" to restore the
         // old always-read-outside-gaming behavior.
         var keywordGateEnabled = Environment.GetEnvironmentVariable("MANA_SCREEN_CONTEXT_KEYWORD_GATE") != "0";
@@ -69,7 +73,7 @@ internal sealed class ScreenContextReader
 
         try
         {
-            var tree = await ReadAccessibilityTreeAsync();
+            var tree = await ReadAccessibilityTreeAsync(atCursor);
             if (IsTreeUsable(tree, Environment.ProcessId))
             {
                 lastScreenText = tree!.Value.Text;
@@ -98,6 +102,10 @@ internal sealed class ScreenContextReader
     internal static bool IsTreeUsable(AccessibilityTreeResult? tree, int ownProcessId) =>
         tree is { } t && t.OwnerPid != ownProcessId && AccessibilityTreeOutputParser.IsUsable(t.Text);
 
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    [return: System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.Bool)]
+    private static extern bool GetPhysicalCursorPos(out Point point);
+
     // Returns null when the tree read is disabled/gave up for this
     // session/timed out/errored/exited non-zero -- all of those (except
     // the disabled/gave-up gate itself) increment treeFailureCount, same
@@ -105,7 +113,7 @@ internal sealed class ScreenContextReader
     // accessibilityTreeFailureCount. A successful parse whose ownerPid
     // turns out to be this launcher's own process is NOT a failure (the
     // script did its job correctly) -- that check happens in the caller.
-    private async Task<AccessibilityTreeResult?> ReadAccessibilityTreeAsync()
+    private async Task<AccessibilityTreeResult?> ReadAccessibilityTreeAsync(bool atCursor)
     {
         if (Environment.GetEnvironmentVariable("MANA_ACCESSIBILITY_TREE_ENABLED") == "0" || treeFailureCount >= MaxTreeFailures)
         {
@@ -131,6 +139,21 @@ internal sealed class ScreenContextReader
         var maxChars = int.TryParse(maxCharsEnv, out var parsedMaxChars) ? parsedMaxChars : DefaultTreeMaxChars;
         process.StartInfo.ArgumentList.Add("-MaxChars");
         process.StartInfo.ArgumentList.Add(maxChars.ToString());
+        // #648: read from the element under the mouse cursor, in physical
+        // pixels (what UI Automation hit-tests in; Cursor.Position is
+        // DPI-virtualized on a monitor whose scale differs from ours). Our
+        // own windows (avatar, captions) under it are skipped in favor of
+        // the focused element, as before.
+        if (atCursor && GetPhysicalCursorPos(out var cursor))
+        {
+            process.StartInfo.ArgumentList.Add("-AtPoint");
+            process.StartInfo.ArgumentList.Add("-PointX");
+            process.StartInfo.ArgumentList.Add(cursor.X.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            process.StartInfo.ArgumentList.Add("-PointY");
+            process.StartInfo.ArgumentList.Add(cursor.Y.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            process.StartInfo.ArgumentList.Add("-IgnorePointPid");
+            process.StartInfo.ArgumentList.Add(Environment.ProcessId.ToString());
+        }
 
         using var cts = new CancellationTokenSource(TreeTimeoutMs);
         try

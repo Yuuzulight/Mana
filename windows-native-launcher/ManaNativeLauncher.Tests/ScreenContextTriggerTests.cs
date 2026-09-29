@@ -35,6 +35,17 @@ public class ScreenContextTriggerTests
         Assert.False(ScreenContextTrigger.ShouldReadScreenForCommand("what time is it", gamingModeActive: true, keywordGateEnabled: false));
     }
 
+    [Theory]
+    [InlineData("what does this error say", true)]
+    [InlineData("read that", true)]
+    [InlineData("what's in here", true)]
+    [InlineData("what's on my screen", false)]
+    [InlineData("is thistle a flower", false)]
+    public void IsDeictic_MatchesPointingWordsOnlyAsWholeWords(string text, bool expected)
+    {
+        Assert.Equal(expected, ScreenContextTrigger.IsDeictic(text));
+    }
+
     [Fact]
     public void CleanTranscriptText_StripsBracketedSttArtifacts()
     {
