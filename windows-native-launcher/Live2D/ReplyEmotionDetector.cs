@@ -105,6 +105,28 @@ internal static class ReplyEmotionDetector
         @"\b(disgusting|disgusted|gross|grossed out|yuck+y?|ew+|nasty|revolting|repulsive|eww+)\b",
         RegexOptions.Compiled);
 
+    // #623: node-bot's per-sentence emotion tags (node-bot/utils/
+    // emotion-tags.js) onto the same mood states. The model chose the tag,
+    // so it wins over the text heuristics; neutral and the tags with no
+    // matching state (thinking, questioning, embarrassed) read as "talking"
+    // -- their own face comes from the expression, not the state.
+    private static readonly Dictionary<string, string> TagState = new()
+    {
+        ["happy"] = "excited",
+        ["excited"] = "excited",
+        ["surprised"] = "excited",
+        ["wink"] = "excited",
+        ["sad"] = "sad",
+        ["disappointed"] = "sad",
+        ["angry"] = "angry",
+        ["disgusted"] = "disgusted",
+    };
+
+    // tag: the text's emotion tag, or null when the model gave none (then
+    // the text itself is read, as before).
+    public static string DetectReplyEmotion(string? text, string? tag) =>
+        string.IsNullOrWhiteSpace(tag) ? DetectReplyEmotion(text) : TagState.GetValueOrDefault(tag.Trim().ToLowerInvariant(), "talking");
+
     public static string DetectReplyEmotion(string? text)
     {
         var normalized = text ?? "";

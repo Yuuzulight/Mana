@@ -20,9 +20,9 @@ internal sealed class StreamingReplyPlayer
     private readonly Func<byte[], Task<bool>> playAsync; // true = clip finished naturally, false = interrupted (#479 sub-project 3)
     private readonly Action<bool> setTalking; // true once the first chunk starts, false once talking stops (naturally or interrupted)
     private readonly Action<bool>? setToolRunning; // #661: true on a "tool" start event, false on its end
-    private readonly Action<string>? onSentencePlaying; // each sentence's text, as its audio starts
+    private readonly Action<string, string?>? onSentencePlaying; // each sentence's text and #623 emotion tag (null if untagged), as its audio starts
 
-    public StreamingReplyPlayer(ManaBackendClient backendClient, Func<byte[], Task<bool>> playAsync, Action<bool> setTalking, Action<bool>? setToolRunning = null, Action<string>? onSentencePlaying = null)
+    public StreamingReplyPlayer(ManaBackendClient backendClient, Func<byte[], Task<bool>> playAsync, Action<bool> setTalking, Action<bool>? setToolRunning = null, Action<string, string?>? onSentencePlaying = null)
     {
         this.backendClient = backendClient;
         this.playAsync = playAsync;
@@ -30,6 +30,11 @@ internal sealed class StreamingReplyPlayer
         this.setToolRunning = setToolRunning;
         this.onSentencePlaying = onSentencePlaying;
     }
+
+    // #623: the last completed reply's emotion tag (its final event's), for
+    // a caller speaking that reply as one clip after Changed. Not in the
+    // return tuple so its callers don't all change shape for one field.
+    public string? FinalEmotion { get; private set; }
 
     // Reply is null when Interrupted is true -- a barge-in cut off
     // playback before the reply finished streaming/speaking, so there's no
@@ -53,7 +58,7 @@ internal sealed class StreamingReplyPlayer
     public async Task<(string? Reply, bool Changed, string? Expression, bool Interrupted, IReadOnlyList<string> Pending)> StreamReplyAndPlayAsync(
         string commandText, string? sessionId = null, Action<string>? onSentence = null, string screenText = "", string? image = null, IReadOnlyList<string>? images = null, string? presetId = null)
     {
-        var sentences = Channel.CreateUnbounded<string>();
+        var sentences = Channel.CreateUnbounded<(string Text, string? Emotion)>();
         ReplyStreamEvent? finalEvent = null;
 
         var readTask = ReadEventsAsync(commandText, sessionId, screenText, image, images, presetId, onSentence, sentences.Writer, e => finalEvent = e);
@@ -85,6 +90,7 @@ internal sealed class StreamingReplyPlayer
             throw new InvalidOperationException(finalEvent.Error);
         }
 
+        FinalEmotion = finalEvent.Emotion;
         return (finalEvent.Reply ?? string.Empty, finalEvent.Changed, finalEvent.Expression, false, pending);
     }
 
@@ -97,16 +103,16 @@ internal sealed class StreamingReplyPlayer
     // a second interruption mid-resume can be held again by the caller.
     public Task<(bool Interrupted, IReadOnlyList<string> Pending)> ReplaySentencesAsync(IReadOnlyList<string> sentences)
     {
-        var channel = Channel.CreateUnbounded<string>();
+        var channel = Channel.CreateUnbounded<(string Text, string? Emotion)>();
         foreach (var sentence in sentences)
         {
-            channel.Writer.TryWrite(sentence);
+            channel.Writer.TryWrite((sentence, null));
         }
         channel.Writer.Complete();
         return PlayStreamedSentencesAsync(channel.Reader);
     }
 
-    private async Task ReadEventsAsync(string commandText, string? sessionId, string screenText, string? image, IReadOnlyList<string>? images, string? presetId, Action<string>? onSentence, ChannelWriter<string> writer, Action<ReplyStreamEvent> onFinal)
+    private async Task ReadEventsAsync(string commandText, string? sessionId, string screenText, string? image, IReadOnlyList<string>? images, string? presetId, Action<string>? onSentence, ChannelWriter<(string Text, string? Emotion)> writer, Action<ReplyStreamEvent> onFinal)
     {
         try
         {
@@ -115,7 +121,7 @@ internal sealed class StreamingReplyPlayer
                 if (evt.Type == "sentence" && !string.IsNullOrWhiteSpace(evt.Text))
                 {
                     onSentence?.Invoke(evt.Text);
-                    await writer.WriteAsync(evt.Text).ConfigureAwait(false);
+                    await writer.WriteAsync((evt.Text, evt.Emotion)).ConfigureAwait(false);
                 }
                 else if (evt.Type == "final")
                 {
@@ -139,7 +145,7 @@ internal sealed class StreamingReplyPlayer
     // Interrupted is true if playback was cut off by an interruption (#479
     // sub-project 3) before every streamed sentence had a chance to play;
     // Pending is then what hadn't started playing yet, in order (#513).
-    private async Task<(bool Interrupted, IReadOnlyList<string> Pending)> PlayStreamedSentencesAsync(ChannelReader<string> sentences)
+    private async Task<(bool Interrupted, IReadOnlyList<string> Pending)> PlayStreamedSentencesAsync(ChannelReader<(string Text, string? Emotion)> sentences)
     {
         // The one-ahead lookahead pulls its sentence out of the channel on
         // its own (thread-pool) continuation. At interrupt time, Pending
@@ -152,16 +158,16 @@ internal sealed class StreamingReplyPlayer
         var lookaheadLock = new object();
         string? lookaheadText = null;
 
-        string? TakeNext()
+        (string Text, string? Emotion)? TakeNext()
         {
             lock (lookaheadLock)
             {
-                if (!sentences.TryRead(out var text))
+                if (!sentences.TryRead(out var next))
                 {
                     return null;
                 }
-                lookaheadText = text;
-                return text;
+                lookaheadText = next.Text;
+                return next;
             }
         }
 
@@ -196,7 +202,7 @@ internal sealed class StreamingReplyPlayer
                 // matches the acceptable-risk call already made for this same
                 // kind of dangling in-flight synth call elsewhere in this file.
                 var nextTask = TakeAndSynthesizeNextAsync(sentences, TakeNext);
-                onSentencePlaying?.Invoke(sentence.Text);
+                onSentencePlaying?.Invoke(sentence.Text, sentence.Emotion);
                 var completedNaturally = await playAsync(sentence.Audio).ConfigureAwait(false);
                 if (!completedNaturally)
                 {
@@ -211,9 +217,9 @@ internal sealed class StreamingReplyPlayer
                         // lookahead hadn't reached yet. Sentences it streams
                         // after this instant aren't held -- same snapshot-at-
                         // the-cut semantics as windows-launcher's peekPending().
-                        while (sentences.TryRead(out var text))
+                        while (sentences.TryRead(out var unplayed))
                         {
-                            pending.Add(text);
+                            pending.Add(unplayed.Text);
                         }
                     }
                     break;
@@ -236,15 +242,14 @@ internal sealed class StreamingReplyPlayer
         return (interrupted, pending);
     }
 
-    private async Task<(string Text, byte[] Audio)?> TakeAndSynthesizeNextAsync(ChannelReader<string> sentences, Func<string?> takeNext)
+    private async Task<(string Text, string? Emotion, byte[] Audio)?> TakeAndSynthesizeNextAsync(ChannelReader<(string Text, string? Emotion)> sentences, Func<(string Text, string? Emotion)?> takeNext)
     {
         if (!await sentences.WaitToReadAsync().ConfigureAwait(false))
         {
             return null;
         }
-        var text = takeNext();
-        return text is null
+        return takeNext() is not { } next
             ? null
-            : (text, await backendClient.SynthesizeAsync(text).ConfigureAwait(false));
+            : (next.Text, next.Emotion, await backendClient.SynthesizeAsync(next.Text).ConfigureAwait(false));
     }
 }
