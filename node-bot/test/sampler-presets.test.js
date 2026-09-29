@@ -28,6 +28,7 @@ test("quality profile thinks within a budget added on top of max_tokens", () => 
   assert.equal(thinking, true);
   assert.deepEqual(params.chat_template_kwargs, { enable_thinking: true });
   assert.equal(params.thinking_budget_tokens, 512);
+  assert.match(params.reasoning_budget_message, /answer the user directly/);
   assert.equal(params.max_tokens, 256 + 512);
 });
 
@@ -43,6 +44,7 @@ test("tasks turn thinking off regardless of profile", () => {
     assert.equal(thinking, false, task);
     assert.equal(params.max_tokens, 64, task);
     assert.equal("thinking_budget_tokens" in params, false, task);
+    assert.equal("reasoning_budget_message" in params, false, task);
   }
 });
 
@@ -239,6 +241,7 @@ test("think harder: forced thinking reaches streamed and plain requests; MANA_LL
   for (const body of bodies) {
     assert.deepEqual(body.chat_template_kwargs, { enable_thinking: true });
     assert.equal(body.thinking_budget_tokens, 2048);
+    assert.match(body.reasoning_budget_message, /answer the user directly/, "closes thinking cleanly when the budget runs out");
     assert.equal(body.max_tokens, 64 + 2048);
   }
   assert.equal(bodies[0].stream, true);
@@ -257,11 +260,13 @@ test("think harder fits prompt + max_tokens into the context: thinking shrinks f
   assert.equal(roomy.bodies[0].max_tokens, 1032);
   assert.equal(roomy.bodies[0].thinking_budget_tokens, 2048 - (256 + 2048 - 1032));
   assert.deepEqual(roomy.bodies[0].chat_template_kwargs, { enable_thinking: true });
+  assert.match(roomy.bodies[0].reasoning_budget_message, /answer the user directly/);
 
   const full = makeRuntime({ ...env }, () => ({ content: "ok" }), { promptTokens: 3900 });
   await full.runtime.runLocalAssistantReply("q", 256, "default", null, null, null, true);
   assert.equal(full.bodies[0].max_tokens, 4096 - 3900 - 64);
   assert.equal(full.bodies[0].thinking_budget_tokens, undefined);
+  assert.equal(full.bodies[0].reasoning_budget_message, undefined);
   assert.deepEqual(full.bodies[0].chat_template_kwargs, { enable_thinking: false });
 });
 
@@ -290,6 +295,7 @@ test("think harder on the tool loop: every round thinks, repair doesn't, reasoni
   for (const body of bodies) {
     assert.deepEqual(body.chat_template_kwargs, { enable_thinking: true });
     assert.equal(body.thinking_budget_tokens, 2048);
+    assert.match(body.reasoning_budget_message, /answer the user directly/);
     assert.equal(body.max_tokens, 64 + 2048);
     assert.equal(body.tool_choice, "auto");
   }

@@ -1043,6 +1043,7 @@ function createLlamaServerRuntime(options = {}) {
     params.max_tokens = Math.max(1, room);
     if (over >= budget) {
       delete params.thinking_budget_tokens;
+      delete params.reasoning_budget_message;
       params.chat_template_kwargs = { enable_thinking: false };
     } else {
       params.thinking_budget_tokens = budget - over;

@@ -107,6 +107,12 @@ function resolveThinking(profile, task, env, override) {
   return profileFlag !== null ? profileFlag : THINKING_PROFILES.has(profile);
 }
 
+// Live on b10507 + Qwen3.5-9B (#770): when the budget runs out mid-thought
+// the model keeps reasoning, untagged, in `content` until max_tokens. With
+// this closing line sent as reasoning_budget_message it answers cleanly
+// (finish "stop", well under max_tokens) at budgets 64, 512 and 2048.
+const REASONING_BUDGET_MESSAGE = "\n\nOkay, I've thought about this enough. Time to answer the user directly.\n";
+
 function resolveReasoningBudget(profile, env, thinkHarder) {
   const raw = thinkHarder
     ? String(env.MANA_THINK_HARDER_BUDGET || "").trim()
@@ -139,6 +145,7 @@ function buildSamplingParams({ profile = "default", task = null, maxTokens, thin
     // tokens count toward max_tokens, so the reply keeps its own budget.
     const budget = resolveReasoningBudget(profile, env, thinking === true);
     params.thinking_budget_tokens = budget;
+    params.reasoning_budget_message = REASONING_BUDGET_MESSAGE;
     if (Number.isFinite(maxTokens)) params.max_tokens = maxTokens + budget;
   }
   return { params, thinking: think };
