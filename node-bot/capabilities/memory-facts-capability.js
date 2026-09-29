@@ -92,6 +92,18 @@ function registerMemoryFactsRoutes(app, context = {}) {
       return res.status(500).json({ ok: false, error: String(e) });
     }
   });
+
+  // Issue #698: pause/resume a standing intent (a fact with a trigger) --
+  // a paused one never fires. Body {paused: boolean}, same shape as pin.
+  app.post("/admin/memory/facts/:key/pause", adminMemoryRateLimiter, (req, res) => {
+    if (!checkAdminAuth(req, res)) return;
+    try {
+      const result = acpMemoryStore.setFactPaused(req.params.key, req.body?.paused === true);
+      return res.status(result.found ? 200 : 404).json({ ok: result.found, ...result });
+    } catch (e) {
+      return res.status(500).json({ ok: false, error: String(e) });
+    }
+  });
 }
 
 const memoryFactsCapability = {
@@ -100,7 +112,7 @@ const memoryFactsCapability = {
   getHealth: () => ({
     status: "configured",
     configured: true,
-    message: "Memory facts admin routes are available (list, history, archive, confirm, pin).",
+    message: "Memory facts admin routes are available (list, history, archive, confirm, pin, pause).",
   }),
 };
 

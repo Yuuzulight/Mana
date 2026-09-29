@@ -342,11 +342,31 @@ internal sealed class SettingsPanel : UserControl
             }
         };
 
+        // #698: a paused standing reminder ("When ...") never fires.
+        var pauseButton = new Button { Text = "Pause / Resume reminder", Dock = DockStyle.Bottom, Height = 28 };
+        DarkTheme.ApplyButton(pauseButton);
+        pauseButton.Click += async (_, _) =>
+        {
+            pauseButton.Enabled = false;
+            try
+            {
+                await TogglePauseSelectedFactAsync();
+            }
+            finally
+            {
+                if (!IsDisposed)
+                {
+                    pauseButton.Enabled = true;
+                }
+            }
+        };
+
         var page = new TabPage("Memory Facts");
         page.Controls.Add(factsList);
         page.Controls.Add(pinButton);
         page.Controls.Add(archiveButton);
         page.Controls.Add(confirmButton);
+        page.Controls.Add(pauseButton);
         return page;
     }
 
@@ -364,6 +384,27 @@ internal sealed class SettingsPanel : UserControl
         catch (Exception ex)
         {
             Console.WriteLine($"SettingsPanel: failed to pin fact '{fact.Key}'. {ex.Message}");
+            return;
+        }
+        if (!IsDisposed)
+        {
+            await RefreshMemoryFactsAsync();
+        }
+    }
+
+    private async Task TogglePauseSelectedFactAsync()
+    {
+        if (factsList.SelectedItems.Count == 0 || factsList.SelectedItems[0].Tag is not ManaMemoryFact fact || fact.Trigger == "")
+        {
+            return;
+        }
+        try
+        {
+            await backendClient.SetMemoryFactPausedAsync(fact.Key, !fact.Paused);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"SettingsPanel: failed to pause reminder '{fact.Key}'. {ex.Message}");
             return;
         }
         if (!IsDisposed)
@@ -440,8 +481,8 @@ internal sealed class SettingsPanel : UserControl
         foreach (var fact in facts)
         {
             var item = new ListViewItem(fact.Key) { Tag = fact };
-            item.SubItems.Add(fact.Text);
-            item.SubItems.Add(fact.Status);
+            item.SubItems.Add(fact.Trigger == "" ? fact.Text : $"When {fact.Trigger} comes up: {fact.Text}");
+            item.SubItems.Add(fact.Paused ? $"{fact.Status}, paused" : fact.Status);
             item.SubItems.Add(fact.Pinned ? "yes" : "");
             item.SubItems.Add(fact.Trust);
             factsList.Items.Add(item);

@@ -39,6 +39,16 @@ const USER_ASKED_TO_REMEMBER =
   /\b(remember|don'?t forget|do not forget|keep in mind|make a note|note (?:that|this)|save (?:that|this))\b/i;
 const USER_SAID_YES = /\b(yes|yeah|yep|yup|sure|correct|please do|go ahead)\b/i;
 
+// Issue #698: a standing reminder's expiry, as an ISO timestamp. null when
+// absent, undefined when unparseable. A bare date runs through the end of
+// that day, local time.
+function parseExpiry(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return null;
+  const ms = Date.parse(/^\d{4}-\d{2}-\d{2}$/.test(raw) ? `${raw}T23:59:59` : raw);
+  return Number.isNaN(ms) ? undefined : new Date(ms).toISOString();
+}
+
 // Issue #673: tools that can't bring outside content into the turn. Any
 // other tool that ran earlier in the turn (browser automation, MCP, file
 // reads, vision, session search...) makes a memory write tool_derived --
@@ -70,7 +80,9 @@ const MEMORY_INDEX_MAX_CHARS = 2000;
 function buildAlreadyRememberedBlock(existingKeys) {
   if (!existingKeys || !existingKeys.length) return "";
   const allLines = existingKeys.map(
-    (f) => `- "${f.key}"${f.preview ? ` (${f.preview})` : ""}${f.pending ? " [unconfirmed]" : ""}`,
+    (f) =>
+      `- "${f.key}"${f.preview ? ` (${f.preview})` : ""}${f.pending ? " [unconfirmed]" : ""}` +
+      `${f.trigger ? ` [standing reminder, when: ${f.trigger}]` : ""}`,
   );
   const kept = [];
   let charCount = 0;
@@ -128,6 +140,16 @@ function buildToolSchemas(existingKeys) {
               type: "string",
               description:
                 "The key of a DIFFERENT previously remembered fact that this one replaces or contradicts, if any (e.g. this fact is \"dating status: in a relationship\" and it replaces the old \"relationship status: single\"). Only set this when you're confident the old fact is now wrong -- it will be marked invalid, not deleted. Leave unset for an ordinary new or updated fact.",
+            },
+            trigger: {
+              type: "string",
+              description:
+                "Only for a standing reminder (\"when X comes up, mention Y\"): X, the topic that should bring it up (e.g. \"my FFXIV static or raid group\"); text is then Y, what to mention (e.g. \"raid is Thursday 9pm\"). Before saving one, restate it as a rule and ask \"Keep it?\" -- call this only once the user says yes. You may suggest one when you notice a pattern, but only as a question.",
+            },
+            expires: {
+              type: "string",
+              description:
+                "Optional, with trigger: the date the standing reminder stops, as YYYY-MM-DD (e.g. \"until the end of the month\"). Leave unset for no end.",
             },
           },
           required: ["key"],
@@ -224,10 +246,11 @@ function requestMemoryWriteApproval(approvalGate, acpMemoryStore, payload) {
   return approvalGate.requestApproval("memory-write", {
     summary:
       `${payload.action === "confirm" ? "Confirm" : "Remember"} "${payload.key}"` +
+      `${payload.trigger ? ` -- when ${payload.trigger} comes up, mention` : ""}` +
       `${payload.text ? `: ${payload.text}` : ""}` +
       `${current?.preview && current.preview !== payload.text ? ` (currently: ${current.preview})` : ""}`,
     payload: expectedVersions ? { ...payload, expectedVersions } : payload,
-    scanText: payload.text,
+    scanText: [payload.trigger, payload.text].filter(Boolean).join("\n") || payload.text,
   });
 }
 
@@ -307,12 +330,23 @@ function createMemoryToolSource(options = {}) {
     // page can't vouch for what the page says. #663: and only the user can
     // confirm a pending fact.
     const factAction = args?.action;
+    const userSaidYes = Boolean(userMessage && USER_SAID_YES.test(userMessage));
+    // Issue #698: a standing reminder (trigger/expires) is saved only on the
+    // user's yes to the rule Mana restated, and never in a turn that read
+    // outside content (a page can't plant one).
+    const isIntent =
+      Boolean(args?.trigger || args?.expires) && !["confirm", "remove", "archive"].includes(factAction);
+    const expiresAt = isIntent ? parseExpiry(args?.expires) : null;
     const refusal =
-      toolDerived && ["confirm", "remove", "archive"].includes(factAction)
-        ? `Can't ${factAction} a remembered fact in a turn where a tool returned outside content: ask the user again in a later turn.`
-        : factAction === "confirm" && !(userMessage && USER_SAID_YES.test(userMessage))
+      toolDerived && (isIntent || ["confirm", "remove", "archive"].includes(factAction))
+        ? `Can't ${isIntent ? "save a standing reminder" : `${factAction} a remembered fact`} in a turn where a tool returned outside content: ask the user again in a later turn.`
+        : factAction === "confirm" && !userSaidYes
           ? "Only the user can confirm an unconfirmed fact: ask them first, and confirm once they say yes."
-          : null;
+          : isIntent && !userSaidYes
+            ? "Not saved: restate the reminder as a rule (\"when X comes up, I'll mention Y. Keep it?\") and save it once the user says yes."
+            : expiresAt === undefined
+              ? "Not saved: expires must be a date like 2026-10-31."
+              : null;
     if (refusal) {
       return JSON.stringify({ ok: false, action: factAction, decision: "none", key: args?.key, error: refusal });
     }
@@ -323,13 +357,22 @@ function createMemoryToolSource(options = {}) {
       action: factAction,
       ...(args?.supersedes && !toolDerived ? { supersedes: args.supersedes } : {}),
       // Only insert/patch actually carry text to check -- remove/archive
-      // don't assert a new fact, nothing to attribute.
-      ...(args?.text && !looksAttributableToUser(args.text, userMessage)
+      // don't assert a new fact, nothing to attribute. #698: nor does a
+      // standing reminder -- the user's yes (all this turn's message may
+      // say) vouches for the rule Mana restated to them.
+      ...(args?.text && !isIntent && !looksAttributableToUser(args.text, userMessage)
         ? { unverifiedSource: true }
         : {}),
+      ...(isIntent && args?.trigger ? { trigger: args.trigger } : {}),
+      ...(expiresAt ? { expiresAt } : {}),
       // Issue #663: not asked to remember (model_inferred) or tool_derived
       // -> the store keeps the value pending until the user confirms it.
-      origin: { kind: originKind, tools: [...turnTools], turnAt: new Date().toISOString() },
+      // #698: a reminder the user just said yes to is theirs.
+      origin: {
+        kind: isIntent ? "user_stated" : originKind,
+        tools: [...turnTools],
+        turnAt: new Date().toISOString(),
+      },
     };
     // Issue #673: nor may it auto-invalidate a conflicting fact (#431).
     const judge = toolDerived ? null : runLocalReply;
