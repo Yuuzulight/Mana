@@ -342,6 +342,28 @@ function createLlamaServerRuntime(options = {}) {
     return match || mmprojFiles[0];
   }
 
+  // #679: the vision mmproj when the vision model is this same file (a
+  // natively multimodal chat model, the setup .env.sample documents), else
+  // null. The chat server then always starts with it, so image and text
+  // turns share one load instead of reloading between them.
+  function chatMmprojFor(model) {
+    try {
+      const visionModel = findVisionModel();
+      // path.relative is case-insensitive on Windows.
+      return path.relative(visionModel, model) === "" ? findVisionMmproj(visionModel) : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function chatAcceptsImages(profile) {
+    try {
+      return Boolean(chatMmprojFor(findLlamaModel(profile)));
+    } catch {
+      return false;
+    }
+  }
+
   function getVisionStatus() {
     try {
       const model = findVisionModel();
@@ -915,7 +937,8 @@ function createLlamaServerRuntime(options = {}) {
   }
 
   async function ensureServer(profile) {
-    return ensureServerConfig(findLlamaModel(profile), null, profile);
+    const model = findLlamaModel(profile);
+    return ensureServerConfig(model, chatMmprojFor(model), profile);
   }
 
   // #666: a chat turn waits out a llama-server (re)start or a brief outage
@@ -935,7 +958,7 @@ function createLlamaServerRuntime(options = {}) {
     const model = findLlamaModel(profile);
     for (let delayMs = 2000; ; delayMs *= 3) {
       try {
-        await ensureServerConfig(model, null, profile, notify);
+        await ensureServerConfig(model, chatMmprojFor(model), profile, notify);
         return profile;
       } catch (e) {
         const waitMs = Math.max(delayMs, e.retryAfterMs || 0);
@@ -947,7 +970,8 @@ function createLlamaServerRuntime(options = {}) {
         const fallback = backupProfileFor(profile);
         if (!fallback) throw e;
         try {
-          await ensureServerConfig(findLlamaModel(fallback), null, fallback, notify);
+          const fallbackModel = findLlamaModel(fallback);
+          await ensureServerConfig(fallbackModel, chatMmprojFor(fallbackModel), fallback, notify);
         } catch {
           throw e;
         }
@@ -980,17 +1004,39 @@ function createLlamaServerRuntime(options = {}) {
   // ones into the leading system message (where they already sat), late
   // ones onto the front of the live user message (still last in the prompt,
   // so the stable prefix stays cacheable, #660). Other roles pass through.
+  //
+  // #679: extraMessages.images (data URLs) ride on the live user message,
+  // but only when the running server has an mmproj -- a text-only server
+  // (a backup profile, say) would reject the whole request, so they are
+  // dropped there and the model answers from the text alone.
+  // Bare base64 becomes a data URL (runVisionReply's rule); anything else
+  // that isn't one stays unusable to llama-server rather than a URL it fetches.
+  function toImageDataUrl(image) {
+    return String(image).startsWith("data:") ? String(image) : `data:image/png;base64,${image}`;
+  }
+
   function buildMessages(systemContent, prompt, extraMessages) {
     const early = extraMessages?.early || [];
     const late = extraMessages?.late || [];
     const systemText = (entries) => entries.filter((m) => m.role === "system").map((m) => m.content);
     const nonSystem = (entries) => entries.filter((m) => m.role !== "system");
     const lateText = systemText(late);
+    const userText = [...lateText, prompt].join("\n\n");
+    let images = extraMessages?.images || [];
+    if (images.length && !state.mmproj) {
+      console.warn(`llama-server has no mmproj loaded; answering without the ${images.length} attached image(s)`);
+      images = [];
+    }
     return [
       { role: "system", content: [systemContent, ...systemText(early)].join("\n\n") },
       ...nonSystem(early),
       ...nonSystem(late),
-      { role: "user", content: [...lateText, prompt].join("\n\n") },
+      {
+        role: "user",
+        content: images.length
+          ? [{ type: "text", text: userText }, ...images.map((image) => ({ type: "image_url", image_url: { url: toImageDataUrl(image) } }))]
+          : userText,
+      },
     ];
   }
 
@@ -1057,7 +1103,10 @@ function createLlamaServerRuntime(options = {}) {
   async function fitThinkingToContext(params, payload) {
     const budget = params.thinking_budget_tokens;
     if (!budget || !Number.isFinite(params.max_tokens)) return;
-    const text = JSON.stringify(payload);
+    // #679: an attached image's base64 would count as ~100k text tokens.
+    // ponytail: images count as 0 here; a per-image estimate if image turns
+    // with deep thinking start overflowing the context.
+    const text = JSON.stringify(payload, (key, value) => (key === "image_url" ? undefined : value));
     const [contextSize, counted] = await Promise.all([getContextSize(), countTokens(text)]);
     const room = contextSize - (counted ?? Math.ceil(text.length / 3)) - 64;
     const over = params.max_tokens - room;
@@ -2027,6 +2076,8 @@ function createLlamaServerRuntime(options = {}) {
   return {
     backupProfileFor,
     buildServerArgs,
+    chatAcceptsImages,
+    chatMmprojFor,
     ensureServerConfig,
     findLlamaServerBin,
     findLlamaModel,

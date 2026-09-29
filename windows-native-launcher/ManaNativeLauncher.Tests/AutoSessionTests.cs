@@ -91,4 +91,40 @@ public class AutoSessionTests
 
         Assert.Equal(researchSession, session.EnsureForTurn());
     }
+
+    // #687: the session open at the last exit, reopened at launch.
+    [Fact]
+    public void RestoredAutoSession_StillRotatesFourHoursAfterItsLastTurn()
+    {
+        var session = NewSession();
+        session.Restore("yesterday", auto: true, lastTurnAtUtc: now - TimeSpan.FromHours(3));
+
+        Assert.True(session.IsAuto);
+        Assert.Equal("yesterday", session.EnsureForTurn());
+
+        var restartedLater = NewSession();
+        restartedLater.Restore("yesterday", auto: true, lastTurnAtUtc: now - AutoSession.IdleLimit);
+        Assert.NotEqual("yesterday", restartedLater.EnsureForTurn());
+    }
+
+    [Fact]
+    public void RestoredPickedSession_IsKeptHoweverOld()
+    {
+        var session = NewSession();
+        session.Restore("picked", auto: false, lastTurnAtUtc: DateTime.MinValue);
+
+        Assert.False(session.IsAuto);
+        Assert.Equal("picked", session.EnsureForTurn());
+    }
+
+    [Fact]
+    public void Restore_DoesNothingOnceASessionIsSet()
+    {
+        var session = NewSession();
+        var started = session.EnsureForTurn();
+
+        session.Restore("old", auto: false, lastTurnAtUtc: now);
+
+        Assert.Equal(started, session.CurrentId);
+    }
 }

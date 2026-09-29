@@ -292,6 +292,7 @@ function createManaAcpAgent(options = {}) {
     createAcpBackendBridge({
       backendUrl: options.backendUrl || env.MANA_BACKEND_URL,
       fetchImpl: options.fetch,
+      adminToken: env.ADMIN_TOKEN,
     });
   const testRunner =
     options.testRunner ||
@@ -844,6 +845,8 @@ function printHelp(output = process.stdout) {
 }
 
 if (require.main === module) {
+  // #842: ADMIN_TOKEN (and the rest) from node-bot/.env, like mcp-server.js.
+  require("./load-env").loadEnvFile();
   if (process.argv.includes("--print-zed-config")) {
     process.stdout.write(
       `${JSON.stringify(buildZedAgentServerConfig(), null, 2)}${os.EOL}`,

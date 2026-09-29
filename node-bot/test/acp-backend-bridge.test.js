@@ -90,3 +90,16 @@ test("backend bridge converts HTTP failures into clear errors", async () => {
     /Mana backend request failed: GET .* HTTP 400: bad request/,
   );
 });
+
+// #842: the editor routes are admin-only, so the bridge sends ADMIN_TOKEN.
+test("backend bridge sends the admin token as x-admin-token when it has one", async () => {
+  const headers = [];
+  const fetchImpl = async (url, options) => {
+    headers.push(options.headers);
+    return createJsonResponse({ workspace: null });
+  };
+  await createAcpBackendBridge({ fetchImpl, adminToken: "tok" }).getWorkspace();
+  await createAcpBackendBridge({ fetchImpl, adminToken: "" }).getWorkspace();
+  assert.equal(headers[0]["x-admin-token"], "tok");
+  assert.equal(headers[1]["x-admin-token"], undefined);
+});
