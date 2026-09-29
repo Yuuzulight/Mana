@@ -1007,6 +1007,12 @@ internal sealed class ManaBackendClient
         var flags = root.TryGetProperty("flags", out var flagsEl) && flagsEl.ValueKind == JsonValueKind.Array
             ? flagsEl.EnumerateArray().Select(f => f.ValueKind == JsonValueKind.String ? f.GetString()! : f.GetRawText()).ToList()
             : new List<string>();
+        // Guardian judged it and didn't clear it: as good as flagged.
+        if (root.TryGetProperty("guardian", out var guardianEl) && guardianEl.ValueKind == JsonValueKind.Object)
+        {
+            var reason = guardianEl.TryGetProperty("reason", out var reasonEl) ? reasonEl.GetString() : null;
+            flags.Add(string.IsNullOrWhiteSpace(reason) ? "Guardian judged it risky" : $"Guardian judged it risky ({reason})");
+        }
         return new ManaSkillCreateResult(false, id, flags);
     }
 
@@ -1905,7 +1911,8 @@ internal sealed class ManaBackendClient
 }
 
 // #688: POST /skills -- created now, or waiting for approval (PendingId)
-// with what the content scan flagged.
+// with what the content scan or Guardian flagged (only an empty Flags may
+// be auto-approved).
 internal sealed record ManaSkillCreateResult(bool Created, string? PendingId, IReadOnlyList<string> Flags);
 
 internal sealed class ManaPerformanceStatus

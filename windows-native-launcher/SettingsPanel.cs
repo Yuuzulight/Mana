@@ -700,8 +700,8 @@ internal sealed class SettingsPanel : UserControl
             return;
         }
 
-        // #688: like Electron, a skill you typed in yourself that the content
-        // scan flags nothing in is approved straight away; a flagged one
+        // #688: a skill you typed in yourself that neither the content scan
+        // nor Guardian flagged is approved straight away; a flagged one
         // waits in Approvals.
         string? note = null;
         try
@@ -721,7 +721,7 @@ internal sealed class SettingsPanel : UserControl
             else if (!result.Created)
             {
                 note = result.Flags.Count > 0
-                    ? $"The content scan flagged: {string.Join(", ", result.Flags)}. Review and approve it from the Approvals tab."
+                    ? $"Flagged: {string.Join(", ", result.Flags)}. Review and approve it from the Approvals tab."
                     : "Skill submitted -- approve it from the Approvals tab.";
             }
         }

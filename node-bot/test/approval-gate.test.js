@@ -209,6 +209,18 @@ test("guardian pre-check falls through to the pending queue when the judge says 
   assert.equal(outcome.status, "pending");
   assert.equal(ran, false);
   assert.equal(gate.guardianAuditLog.readRecent().length, 0);
+  // #688: a caller can tell this apart from a clean content scan.
+  assert.deepEqual(outcome.flags, []);
+  assert.deepEqual(outcome.guardian, { safe: false, reason: "" });
+});
+
+test("#688: a pending request Guardian never judged carries no guardian verdict", async () => {
+  const gate = createApprovalGate({ dataDir: createTempDir() });
+  gate.registerExecutor("skill-write", () => {});
+
+  const outcome = await gate.requestApproval("skill-write", { payload: {} });
+  assert.equal(outcome.status, "pending");
+  assert.equal(outcome.guardian, undefined);
 });
 
 test("guardian pre-check falls through to the pending queue when the judge throws", async () => {

@@ -140,6 +140,15 @@ public class ManaBackendClientTests
         });
         var flagged = await new ManaBackendClient(flaggedHandler).CreateSkillAsync("x", "y", "rm -rf /", null);
         Assert.Equal(new[] { "shell-exec" }, flagged.Flags);
+
+        // #688: a Guardian "not safe" verdict with a clean scan is flagged too, so it waits in Approvals.
+        var guardianHandler = new FakeHttpMessageHandler(_ => new HttpResponseMessage((HttpStatusCode)202)
+        {
+            Content = new StringContent("{\"status\":\"pending\",\"requestId\":\"req-3\",\"flags\":[],\"guardian\":{\"safe\":false,\"reason\":\"\"}}", Encoding.UTF8, "application/json"),
+        });
+        var risky = await new ManaBackendClient(guardianHandler).CreateSkillAsync("x", "y", "z", null);
+        Assert.False(risky.Created);
+        Assert.Equal(new[] { "Guardian judged it risky" }, risky.Flags);
     }
 
     [Fact]
