@@ -1287,18 +1287,17 @@ test("vision describe reports 503 when no vision model is available", async () =
   });
 });
 
-test("reply with an attached image routes through the vision runtime", async () => {
-  let visionCalls = 0;
+test("reply with an attached image: #679 a chat model that can see gets it in the normal chat turn", async () => {
+  let chatCall = null;
   const app = createApp({
     getVisionStatus: () => ({ available: true }),
-    runVisionReply: async (prompt, images) => {
-      visionCalls += 1;
-      assert.equal(prompt, "what am I looking at?");
-      assert.equal(images.length, 1);
-      return "A market board, obviously.";
+    chatAcceptsImages: () => true,
+    runVisionReply: async () => {
+      throw new Error("no describe-first call when the chat model can see");
     },
-    buildAssistantReply: async () => {
-      throw new Error("text reply path should not run for image replies");
+    buildAssistantReply: async (transcript, screenText, marketText, profile, sessionId, mode, preset, replyMeta) => {
+      chatCall = { transcript, sessionId, images: replyMeta.images };
+      return "A market board, obviously.";
     },
   });
 
@@ -1306,21 +1305,55 @@ test("reply with an attached image routes through the vision runtime", async () 
     const { response, payload } = await postJson(`${baseUrl}/reply`, {
       text: "what am I looking at?",
       image: "data:image/png;base64,iVBORw0KGgo=",
+      sessionId: "s1",
     });
 
     assert.equal(response.status, 200);
     assert.equal(payload.reply, "A market board, obviously.");
-    assert.equal(visionCalls, 1);
+  });
+  assert.deepEqual(chatCall, {
+    transcript: "what am I looking at?",
+    sessionId: "s1",
+    images: ["data:image/png;base64,iVBORw0KGgo="],
   });
 });
 
-test("reply with an image allows empty text", async () => {
+test("#679: the real chat path hands a seeable image to the model call", async () => {
+  let extra = null;
   const app = createApp({
     getVisionStatus: () => ({ available: true }),
+    chatAcceptsImages: () => true,
+    runLocalAssistantReply: async (prompt, maxTokens, profile, systemPrompt, extraMessages) => {
+      extra = extraMessages;
+      return "A cat on a keyboard.";
+    },
+  });
+
+  await withServer(app, async (baseUrl) => {
+    const { response, payload } = await postJson(`${baseUrl}/reply`, {
+      text: "what's this?",
+      image: "data:image/png;base64,AAAA",
+    });
+
+    assert.equal(response.status, 200);
+    assert.equal(payload.reply, "A cat on a keyboard.");
+  });
+  assert.deepEqual(extra.images, ["data:image/png;base64,AAAA"]);
+});
+
+test("reply with an image allows empty text", async () => {
+  let transcriptSeen = null;
+  const app = createApp({
+    getVisionStatus: () => ({ available: true }),
+    chatAcceptsImages: () => false,
     runVisionReply: async (prompt, images) => {
-      assert.equal(prompt, "");
+      assert.doesNotMatch(prompt, /Their message/);
       assert.equal(images.length, 1);
-      return "I see a screenshot.";
+      return "A screenshot of a stack trace.";
+    },
+    buildAssistantReply: async (transcript) => {
+      transcriptSeen = transcript;
+      return "I see a stack trace.";
     },
   });
 
@@ -1330,8 +1363,9 @@ test("reply with an image allows empty text", async () => {
     });
 
     assert.equal(response.status, 200);
-    assert.equal(payload.reply, "I see a screenshot.");
+    assert.equal(payload.reply, "I see a stack trace.");
   });
+  assert.equal(transcriptSeen, "[Image: A screenshot of a stack trace.]");
 });
 
 test("POST /web/search returns results from the injected searchWeb", async () => {
