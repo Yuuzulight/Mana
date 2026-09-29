@@ -67,6 +67,7 @@ internal sealed class AvatarOverlayForm : Form
     private readonly AvatarStateArbiter arbiter = new();
     private readonly System.Windows.Forms.Timer stateTimer = new() { Interval = 100 };
     private string? speechExpression;
+    private string? speechEmotion; // #623: the sentence's emotion tag
     private double doneStartedAt = double.NegativeInfinity;
     private float sleepiness;
 
@@ -468,7 +469,8 @@ internal sealed class AvatarOverlayForm : Form
 
     // #681: preferredExpression is the reply's model-chosen expression name
     // (see AvatarExpressionSelector), tried before the state's own match.
-    public void SetState(AvatarState state, string? preferredExpression = null)
+    // #623: emotion is the sentence's emotion tag, if the model gave one.
+    public void SetState(AvatarState state, string? preferredExpression = null, string? emotion = null)
     {
         // Callers include background threads (VoiceLoop's thread-pool
         // continuations and NAudio's playback thread) -- marshal onto the
@@ -477,7 +479,7 @@ internal sealed class AvatarOverlayForm : Form
         // thread, and InvokeRequired is unreliable pre-handle-creation).
         if (IsHandleCreated && InvokeRequired)
         {
-            BeginInvoke(() => SetState(state, preferredExpression));
+            BeginInvoke(() => SetState(state, preferredExpression, emotion));
             return;
         }
 
@@ -495,6 +497,7 @@ internal sealed class AvatarOverlayForm : Form
         // change (two excited replies in a row can each pick their own).
         arbiter.SetSpeech(state);
         speechExpression = AvatarStateArbiter.IsSpeech(state) ? preferredExpression : null;
+        speechEmotion = AvatarStateArbiter.IsSpeech(state) ? emotion : null;
         ShowResolvedState(reapply: true);
     }
 
@@ -546,6 +549,7 @@ internal sealed class AvatarOverlayForm : Form
             StateChanged?.Invoke(state);
         }
         var preferredExpression = AvatarStateArbiter.IsSpeech(state) ? speechExpression : null;
+        var emotion = AvatarStateArbiter.IsSpeech(state) ? speechEmotion : null;
 
         // #479 sub-project 4: when a real Cubism model is loaded, the
         // render timer (RenderFrame) is what actually draws every frame
@@ -561,7 +565,7 @@ internal sealed class AvatarOverlayForm : Form
             // other signals (idle motion, lip-sync, physics) already
             // produce.
             motionPlayer?.SetState(state, now);
-            var expressionName = AvatarExpressionSelector.SelectExpressionName(state, expressions.Keys, preferredExpression, expressionOverrides);
+            var expressionName = AvatarExpressionSelector.SelectExpressionName(state, expressions.Keys, preferredExpression, expressionOverrides, emotion);
             activeExpression = expressionName is not null && expressions.TryGetValue(expressionName, out var expression)
                 ? expression
                 : null;
