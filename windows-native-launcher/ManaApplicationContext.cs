@@ -268,10 +268,12 @@ internal sealed class ManaApplicationContext : ApplicationContext
             {
                 gamingModeActive = false;
                 trayIcon.Text = "Mana";
+                avatarOverlay.GameRunning = false;
             }
         };
         menu.Items.Add(gamingModeItem);
-        // #662: back to an avatar that ignores the mouse entirely.
+        // #662: back to an avatar that ignores the mouse entirely (she
+        // already does while a game runs -- Q3).
         var clickThroughItem = new ToolStripMenuItem("Click-through avatar") { CheckOnClick = true, Checked = avatarOverlay.ClickThrough };
         clickThroughItem.Click += (_, _) =>
         {
@@ -405,6 +407,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
             var status = await backendClient.GetPerformanceStatusAsync();
             gamingModeActive = gamingModeEnabled && status.GamingAppRunning;
             trayIcon.Text = gamingModeActive ? "Mana - game mode" : "Mana";
+            avatarOverlay.GameRunning = gamingModeActive; // Q3: click-through while gaming
         }
         catch
         {

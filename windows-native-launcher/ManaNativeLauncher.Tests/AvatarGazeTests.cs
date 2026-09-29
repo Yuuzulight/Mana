@@ -283,6 +283,17 @@ public class AvatarGazeTests
     }
 
     [Fact]
+    public void AttentiveLookOffset_TiltsAndLiftsOnceAfterAClick()
+    {
+        Assert.Equal((0f, 0f), AvatarGaze.AttentiveLookOffset(double.PositiveInfinity)); // never clicked
+        Assert.Equal((0f, 0f), AvatarGaze.AttentiveLookOffset(-0.1));
+        var (pitch, roll) = AvatarGaze.AttentiveLookOffset(AvatarGaze.AttentiveSeconds / 2);
+        Assert.Equal(3f, pitch, 0.01f);
+        Assert.Equal(7f, roll, 0.01f);
+        Assert.Equal((0f, 0f), AvatarGaze.AttentiveLookOffset(AvatarGaze.AttentiveSeconds));
+    }
+
+    [Fact]
     public void NodOffset_DipsOnceAndReturns()
     {
         Assert.Equal(0f, AvatarGaze.NodOffset(-0.1));

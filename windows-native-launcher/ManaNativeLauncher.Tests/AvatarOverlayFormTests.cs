@@ -23,4 +23,12 @@ public class AvatarOverlayFormTests
     [InlineData(-200, 600)]   // her centre is off every screen
     public void SavedLocation_FallsBackToTheDefaultSpot(int? left, int? top) =>
         Assert.Null(AvatarOverlayForm.SavedLocation(left, top, Avatar, Screens));
+
+    [Theory]
+    [InlineData(false, false, false)] // clickable
+    [InlineData(false, true, true)]   // a watched game is running
+    [InlineData(true, false, true)]   // the tray's manual setting
+    [InlineData(true, true, true)]
+    public void IsClickThrough_WhileGamingOrWhenSetInTheTray(bool manual, bool gameRunning, bool expected) =>
+        Assert.Equal(expected, AvatarOverlayForm.IsClickThrough(manual, gameRunning));
 }

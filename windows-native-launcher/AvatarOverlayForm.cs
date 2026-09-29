@@ -69,6 +69,7 @@ internal sealed class AvatarOverlayForm : Form
     private string? speechExpression;
     private string? speechEmotion; // #623: the sentence's emotion tag
     private double doneStartedAt = double.NegativeInfinity;
+    private double attentiveStartedAt = double.NegativeInfinity; // Q34: when she was last clicked
     private float sleepiness;
 
     private readonly CubismModel? cubismModel;
@@ -394,11 +395,15 @@ internal sealed class AvatarOverlayForm : Form
         // doing; Dreaming slowly closes her eyes, Done nods once.
         var shown = CurrentState;
         var speaking = AvatarStateArbiter.IsSpeech(shown);
+        // Q34: a click gets a quick attentive look -- eyes straight to you
+        // (switching to Attentive re-picks the gaze at once) and a head tilt.
+        var sinceClick = nowSeconds - attentiveStartedAt;
         var gazeMode = shown switch
         {
             AvatarState.Thinking => GazeMode.Thinking,
             AvatarState.Working => GazeMode.Working,
             AvatarState.Waiting => GazeMode.Attentive,
+            _ when sinceClick < AvatarGaze.AttentiveSeconds => GazeMode.Attentive,
             _ => speaking ? GazeMode.Talking : GazeMode.Idle,
         };
         if (gaze.Update(dtMs, gazeMode))
@@ -409,6 +414,12 @@ internal sealed class AvatarOverlayForm : Form
         {
             SetLifeParameter(model, "ParamAngleY", gaze.ApplyPitch(model.GetParameterCurrentValue("ParamAngleY")));
             SetLifeParameter(model, "ParamAngleZ", gaze.ApplyRoll(model.GetParameterCurrentValue("ParamAngleZ")));
+        }
+        var (lookPitch, lookRoll) = AvatarGaze.AttentiveLookOffset(sinceClick);
+        if (lookRoll != 0f)
+        {
+            SetLifeParameter(model, "ParamAngleY", model.GetParameterCurrentValue("ParamAngleY") + lookPitch);
+            SetLifeParameter(model, "ParamAngleZ", model.GetParameterCurrentValue("ParamAngleZ") + lookRoll);
         }
         if (shown == AvatarState.Done)
         {
@@ -717,24 +728,47 @@ internal sealed class AvatarOverlayForm : Form
     private const int GwlExStyle = -20;
     private const int WsExTransparent = 0x20;
 
-    // #662: on, the whole window passes clicks through, as it always did
-    // before (the tray menu's setting, for gaming/streaming). Off, only her
-    // own pixels take clicks: a layered window's fully transparent pixels
-    // already let mouse input through to whatever is behind, so the empty
-    // space around her needs no hit-testing of ours. WS_EX_NOACTIVATE keeps
-    // a click on her from taking focus from the game/app in front.
+    // #662: click-through, the whole window passes clicks through, as it
+    // always did before. Otherwise only her own pixels take clicks: a
+    // layered window's fully transparent pixels already let mouse input
+    // through to whatever is behind, so the empty space around her needs no
+    // hit-testing of ours. WS_EX_NOACTIVATE keeps a click on her from taking
+    // focus from the game/app in front.
+    // Q3: automatically click-through while a watched game runs (GameRunning,
+    // from the tray's 5s status poll); ClickThrough is the tray menu's
+    // manual setting, which keeps her click-through all the time.
     private bool clickThrough;
+    private bool gameRunning;
     public bool ClickThrough
     {
         get => clickThrough;
         set
         {
             clickThrough = value;
-            if (IsHandleCreated)
+            ApplyClickThrough();
+        }
+    }
+
+    public bool GameRunning
+    {
+        set
+        {
+            if (gameRunning != value)
             {
-                var style = GetWindowLong(Handle, GwlExStyle);
-                SetWindowLong(Handle, GwlExStyle, value ? style | WsExTransparent : style & ~WsExTransparent);
+                gameRunning = value;
+                ApplyClickThrough();
             }
+        }
+    }
+
+    internal static bool IsClickThrough(bool manual, bool gameRunning) => manual || gameRunning;
+
+    private void ApplyClickThrough()
+    {
+        if (IsHandleCreated)
+        {
+            var style = GetWindowLong(Handle, GwlExStyle);
+            SetWindowLong(Handle, GwlExStyle, IsClickThrough(clickThrough, gameRunning) ? style | WsExTransparent : style & ~WsExTransparent);
         }
     }
 
@@ -821,6 +855,7 @@ internal sealed class AvatarOverlayForm : Form
         }
         else if (click)
         {
+            attentiveStartedAt = renderClock.Elapsed.TotalSeconds;
             Clicked?.Invoke();
         }
     }
@@ -833,7 +868,7 @@ internal sealed class AvatarOverlayForm : Form
             const int wsExLayered = 0x80000;
             const int wsExNoActivate = 0x08000000;
             var cp = base.CreateParams;
-            cp.ExStyle |= wsExToolWindow | wsExLayered | wsExNoActivate | (clickThrough ? WsExTransparent : 0);
+            cp.ExStyle |= wsExToolWindow | wsExLayered | wsExNoActivate | (IsClickThrough(clickThrough, gameRunning) ? WsExTransparent : 0);
             return cp;
         }
     }
