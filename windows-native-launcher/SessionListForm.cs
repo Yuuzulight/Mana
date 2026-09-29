@@ -59,6 +59,9 @@ internal sealed class SessionListForm : Form
     // new-chat) with no matching Dispose.
     private readonly Font activeSessionFont;
     private readonly Font messageBoxFont;
+    private readonly MessageQueueStrip messageQueue = new();
+    // ponytail: polls instead of hooking every path back to Idle in VoiceLoop; only runs while something is queued.
+    private readonly System.Windows.Forms.Timer messageQueueTimer = new() { Interval = 300 };
     private readonly System.Collections.Generic.HashSet<string> offeredProposalIds = new();
 
     // Mirrors VoiceLoop's own currentSessionId -- null (nothing switched
@@ -313,8 +316,9 @@ internal sealed class SessionListForm : Form
 
         var chatArea = new Panel { Dock = DockStyle.Fill, BackColor = DarkTheme.Background };
         // Last added docks first: the message box claims the bottom strip,
-        // then the chat fills the rest.
+        // its queue (#668) sits just above it, then the chat fills the rest.
         chatArea.Controls.Add(chatLog);
+        chatArea.Controls.Add(messageQueue);
         chatArea.Controls.Add(BuildMessageBox());
         chatLog.ReplyEnded += () => _ = OfferPendingEditsAsync(chatLog);
         // #619: the live partial transcript takes over the status line while
@@ -392,9 +396,12 @@ internal sealed class SessionListForm : Form
     // #652 part 5: a typed-message box under the chat, sending through the
     // same VoiceLoop entry point as Quick Entry (which also logs the message
     // in the chat). Enter sends, Shift+Enter adds a line. Like Quick Entry it
-    // clears straight away while the turn runs; if Mana is still busy with
-    // the previous turn the submit returns false at once, and the text comes
-    // back with a note instead of being lost.
+    // clears straight away while the turn runs. #668: if Mana is still busy
+    // with the previous turn (the submit returns false at once), or earlier
+    // messages are already waiting, the text joins the queue above the box
+    // instead; the timer sends the queue once she's idle. Esc is a two-stage
+    // stop: it clears the queue, or with nothing queued cuts off her reply
+    // (same as the interrupt hotkey).
     private Panel BuildMessageBox()
     {
         var box = new TextBox
@@ -429,12 +436,10 @@ internal sealed class SessionListForm : Form
                 return;
             }
             box.Clear();
-            var accepted = await voiceLoop.SubmitTypedCommandAsync(text);
-            if (!accepted && !box.IsDisposed && box.TextLength == 0)
+            if (messageQueue.Count > 0 || !await voiceLoop.SubmitTypedCommandAsync(text))
             {
-                box.Text = text;
-                box.SelectionStart = box.TextLength;
-                box.PlaceholderText = "Mana's still replying -- press Enter again in a moment";
+                messageQueue.Add(text);
+                messageQueueTimer.Start();
             }
         }
         box.KeyDown += async (_, e) =>
@@ -449,9 +454,39 @@ internal sealed class SessionListForm : Form
                 e.SuppressKeyPress = true;
                 box.SelectedText = Environment.NewLine;
             }
+            else if (e.KeyCode == Keys.Escape)
+            {
+                e.SuppressKeyPress = true;
+                if (!messageQueue.ClearAll())
+                {
+                    voiceLoop.InterruptSpeech();
+                }
+            }
         };
-        box.TextChanged += (_, _) => box.PlaceholderText = MessageBoxPlaceholder;
         send.Click += async (_, _) => await SendAsync();
+
+        messageQueueTimer.Tick += async (_, _) =>
+        {
+            if (messageQueue.Count == 0)
+            {
+                messageQueueTimer.Stop();
+                return;
+            }
+            var next = messageQueue.PeekReady();
+            if (next is null || !voiceLoop.IsIdle)
+            {
+                return;
+            }
+            // A false comes back at once when a voice turn got in first; the
+            // chip stays and the next tick tries again.
+            var sending = voiceLoop.SubmitTypedCommandAsync(next);
+            if (sending.IsCompleted && !sending.Result)
+            {
+                return;
+            }
+            messageQueue.RemoveFirst();
+            await sending;
+        };
 
         var gap = new Panel { Dock = DockStyle.Right, Width = 8, BackColor = Color.Transparent };
         var panel = new Panel { Dock = DockStyle.Bottom, Height = 58, Padding = new Padding(12, 10, 12, 10), BackColor = DarkTheme.Panel };
@@ -1069,6 +1104,7 @@ internal sealed class SessionListForm : Form
             avatarStatusFont.Dispose();
             toolPanelTitleFont.Dispose();
             railToolTip.Dispose();
+            messageQueueTimer.Dispose();
         }
         base.Dispose(disposing);
     }
