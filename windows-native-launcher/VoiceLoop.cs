@@ -110,6 +110,13 @@ internal sealed class VoiceLoop : IDisposable
     // (mode stays Speaking), and what I said, held until she finishes.
     private bool hearingOverSpeech;
     private (short[] Samples, long SpeechMs)? queuedTurn;
+    // #665 minWords: she's ducked, not stopped, until the interruption turn
+    // decides; replyTalking says whether her reply is still playing then,
+    // and currentReply is what holds her unplayed sentences once stopped.
+    private bool bargeInDucked;
+    private bool duckStopRequested;
+    private bool replyTalking;
+    private Task currentReply = Task.CompletedTask;
 
     // #513: the not-yet-played sentences of a reply a barge-in cut off,
     // kept so a backchannel/unclassified interruption (or the end of an
@@ -654,6 +661,18 @@ internal sealed class VoiceLoop : IDisposable
             ResetSegment(heardSpeech: true);
             bargeInHeldMs = 0;
             return false;
+        }
+
+        // #665 minWords: duck her (instant feedback) and record what I'm
+        // saying like any interruption; ProcessTurnAsync stops her only if
+        // it has enough words (DecideDuckedInterruptionAsync).
+        if (bargeInMode == BargeInMode.MinWords)
+        {
+            bargeInDucked = true;
+            duckStopRequested = false;
+            audioPlayer.Volume = BargeInPolicy.DuckVolume;
+            StartCapturingInterruption();
+            return true;
         }
 
         // Cut Mana off immediately. Whichever audioPlayer.PlayAsync call is
@@ -1229,6 +1248,27 @@ internal sealed class VoiceLoop : IDisposable
             return;
         }
 
+        // #665 minWords: she's been ducked while this was transcribed. Not
+        // a real interruption: she carries on (or, if she finished
+        // meanwhile, listening resumes). Real: she's stopped now, and this
+        // continues as a normal interruption with her unplayed sentences held.
+        bool ducked;
+        lock (stateLock)
+        {
+            ducked = wasInterruption && bargeInDucked;
+        }
+        if (ducked)
+        {
+            var real = BargeInPolicy.IsRealInterruption(logEntry.Whisper == "ok", logEntry.Drop is not null,
+                ScreenContextTrigger.CleanTranscriptText(transcript), bargeInMinWords);
+            if (!await DecideDuckedInterruptionAsync(real))
+            {
+                logEntry.Drop ??= "few-words";
+                VoiceDebugLog.Append(logEntry);
+                return;
+            }
+        }
+
         // #513: consumed here, before any early exit -- a false barge-in
         // trigger (cough, TV noise, a word that didn't actually mean
         // anything) must still resume whatever reply it cut off rather
@@ -1267,15 +1307,6 @@ internal sealed class VoiceLoop : IDisposable
         // before the wake match and before the text is shown or sent.
         transcript = ScreenContextTrigger.CleanTranscriptText(transcript);
 
-        // #665 minWords: a cough, "mm" or "yeah" that tripped the barge-in
-        // gate isn't an interruption -- she picks up where she stopped.
-        if (wasInterruption && bargeInMode == BargeInMode.MinWords && BargeInPolicy.WordCount(transcript) < bargeInMinWords)
-        {
-            logEntry.Drop = "few-words";
-            await Skip();
-            return;
-        }
-
         string commandText;
         if (!awake)
         {
@@ -1297,6 +1328,60 @@ internal sealed class VoiceLoop : IDisposable
 
         VoiceDebugLog.Append(logEntry);
         await DispatchCommandAsync(commandText, wasInterruption, held, nested);
+    }
+
+    // #665: ends a ducked interruption. Returns true if it was real (she's
+    // stopped and her unplayed sentences are held for the caller), false if
+    // she carries on (back to Speaking at full volume, or Idle if her reply
+    // finished while this was decided).
+    private async Task<bool> DecideDuckedInterruptionAsync(bool real)
+    {
+        Task reply;
+        bool stopRequested;
+        lock (stateLock)
+        {
+            bargeInDucked = false;
+            stopRequested = duckStopRequested;
+            if (!real && !stopRequested)
+            {
+                audioPlayer.Volume = 1f;
+                if (replyTalking)
+                {
+                    mode = ListenMode.Speaking;
+                    bargeInHeldMs = 0;
+                    vad.Reset();
+                    return false;
+                }
+            }
+            reply = currentReply;
+        }
+        if (!real && !stopRequested)
+        {
+            ReturnToIdle();
+            return false;
+        }
+
+        // Stop her the way a barge-in always did (the stop hotkey may have
+        // already), and let her reply's continuation hold what hadn't played
+        // before anything reads it. Volume comes back only once she's silent.
+        audioPlayer.Stop();
+        await Task.WhenAny(reply, Task.Delay(3000));
+        audioPlayer.Volume = 1f;
+        if (stopRequested)
+        {
+            // The stop hotkey: nothing of that reply is resumed later.
+            lock (stateLock)
+            {
+                heldSentences = null;
+                heldStackDepth = 0;
+            }
+        }
+        if (!real)
+        {
+            ReturnToIdle();
+            return false;
+        }
+        return true;
     }
 
     // #525: the shared tail of turn processing, once a resolved command
@@ -1462,7 +1547,9 @@ internal sealed class VoiceLoop : IDisposable
         avatarOverlay.SetActivity(AvatarState.Thinking, true);
         try
         {
-            var completed = await SpeakReplyCoreAsync(commandText, screenText, image, images);
+            var reply = SpeakReplyCoreAsync(commandText, screenText, image, images);
+            currentReply = reply; // #665: a ducked interruption waits on this after stopping her
+            var completed = await reply;
             if (completed)
             {
                 avatarOverlay.PulseDone();
@@ -1677,14 +1764,17 @@ internal sealed class VoiceLoop : IDisposable
         }
         lock (stateLock)
         {
-            if (talking)
+            replyTalking = talking;
+            // A ducked interruption owns mode until it's decided.
+            if (talking && mode != ListenMode.CapturingInterruption && !bargeInDucked)
             {
+                audioPlayer.Volume = 1f;
                 mode = ListenMode.Speaking;
                 bargeInHeldMs = 0;
                 hearingOverSpeech = false;
                 vad.Reset();
             }
-            else if (mode == ListenMode.Speaking)
+            else if (!talking && mode == ListenMode.Speaking)
             {
                 // Only step back if nothing has already moved mode on --
                 // a barge-in mid-playback already switched to
@@ -1756,7 +1846,9 @@ internal sealed class VoiceLoop : IDisposable
         IReadOnlyList<string> pending;
         try
         {
-            (interrupted, pending) = await streamingReplyPlayer.ReplaySentencesAsync(held);
+            var replay = streamingReplyPlayer.ReplaySentencesAsync(held);
+            currentReply = replay; // #665: see SpeakReplyAsync
+            (interrupted, pending) = await replay;
         }
         catch (Exception ex)
         {
@@ -1792,6 +1884,16 @@ internal sealed class VoiceLoop : IDisposable
     {
         lock (stateLock)
         {
+            // #665: while a ducked interruption is being decided, stop her
+            // now and let the decision drop the rest of that reply.
+            if (bargeInDucked)
+            {
+                duckStopRequested = true;
+                heldSentences = null;
+                heldStackDepth = 0;
+                audioPlayer.Stop();
+                return;
+            }
             if (mode != ListenMode.Speaking)
             {
                 return;
@@ -1828,6 +1930,13 @@ internal sealed class VoiceLoop : IDisposable
     {
         lock (stateLock)
         {
+            // #665: a ducked interruption owns what happens next (her reply
+            // may finish while it's still being decided).
+            if (bargeInDucked)
+            {
+                return;
+            }
+
             // Guard against a barge-in having already raced ahead and
             // moved mode to CapturingInterruption -- same reasoning
             // OnTalkingStateChanged already applies for the identical
