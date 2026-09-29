@@ -4,7 +4,7 @@ const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
 
-const { loadEnvFile, readKeyringSecrets } = require("../load-env");
+const { loadEnvFile, plainTextSecretKeys, readKeyringSecrets } = require("../load-env");
 
 function writeTempEnv(text) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "mana-load-env-"));
@@ -82,13 +82,19 @@ test("loadEnvFile resolves keyring:/op:// references and never leaves reference 
     "MOBILE_TOTP_SECRET",
     "OPENAI_API_KEY",
   ]);
-  assert.equal(warnings.length, 3);
+  // Q18: plain-text secrets aren't warned about at startup (Doctor names
+  // them), and no secret value appears anywhere.
+  assert.equal(warnings.length, 2);
   const log = warnings.join("\n");
   assert.match(log, /MANA_MATRIX_ACCESS_TOKEN: no Credential Manager entry "Mana\/missing"/);
   assert.match(log, /ALPHA_VANTAGE_API_KEY: op read failed/);
-  // Only the plain-text key is named, and no secret value appears anywhere.
-  assert.match(log, /1 secret\(s\) in plain text in \.env: OPENAI_API_KEY\./);
+  assert.doesNotMatch(log, /plain text|OPENAI_API_KEY/);
   assert.doesNotMatch(log, /fake/);
+
+  // Doctor's list: plain-text secrets by name only; references, empty
+  // values and non-secrets don't count.
+  assert.deepEqual(plainTextSecretKeys(file), ["OPENAI_API_KEY"]);
+  assert.deepEqual(plainTextSecretKeys(`${file}.missing`), []);
 });
 
 test("loadEnvFile leaves keyring: keys unset when Credential Manager can't be read", () => {

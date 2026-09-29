@@ -54,7 +54,7 @@ Found by reading the code, not any real install's files.
 
 | Where | What | Plain text? | Status |
 |---|---|---|---|
-| `node-bot/.env` | Provider keys (`OPENAI_API_KEY`, `MANA_IMAGE_API_KEY`, `FISH_TTS_API_KEY`), plugin tokens (`MANA_DISCORD_BOT_TOKEN`, `MANA_TELEGRAM_BOT_TOKEN`, `MANA_MATRIX_ACCESS_TOKEN`, `ALPHA_VANTAGE_API_KEY`, `ADZUNA_APP_KEY`), backend secrets (`ADMIN_TOKEN`, `MANA_ADMIN_SECRET`, `MOBILE_SESSION_SECRET`, `MOBILE_TOTP_SECRET`, `PY_TOKEN_SERVER_SECRET`, `RETRIEVER_EMBEDDER_SECRET`, `CLOUDFLARE_TUNNEL_TOKEN`) | Yes | **PR 1:** each can be a `keyring:` (Windows Credential Manager) or `op://` (1Password) reference; any still in plain text is named in a startup warning |
+| `node-bot/.env` | Provider keys (`OPENAI_API_KEY`, `MANA_IMAGE_API_KEY`, `FISH_TTS_API_KEY`), plugin tokens (`MANA_DISCORD_BOT_TOKEN`, `MANA_TELEGRAM_BOT_TOKEN`, `MANA_MATRIX_ACCESS_TOKEN`, `ALPHA_VANTAGE_API_KEY`, `ADZUNA_APP_KEY`), backend secrets (`ADMIN_TOKEN`, `MANA_ADMIN_SECRET`, `MOBILE_SESSION_SECRET`, `MOBILE_TOTP_SECRET`, `PY_TOKEN_SERVER_SECRET`, `RETRIEVER_EMBEDDER_SECRET`, `CLOUDFLARE_TUNNEL_TOKEN`) | Yes | **PR 1:** each can be a `keyring:` (Windows Credential Manager) or `op://` (1Password) reference; any still in plain text is named by Doctor |
 | `node-bot/data/model-settings.json` | `brain.apiKey` for an OpenAI-compatible endpoint, set in Settings | Yes | Flagged; not covered yet (it's written by the Settings UI, not hand-edited) |
 | `%LOCALAPPDATA%\Mana\native-launcher-settings.json` | Launcher's `AdminToken` | Yes | Flagged; not covered yet (C# side; Credential Manager or DPAPI) |
 | `node-bot/data/auth/SETUP.txt` | First-run admin API key | Yes | Flagged; the file tells the user to save the key and delete it |
@@ -74,7 +74,7 @@ reference, which is reversible by putting the plain value back.
   (Credential Manager generic credential, read via `CredReadW` through
   PowerShell, no new dependency) and `op://...` (1Password CLI
   `op read`) references in `.env`; unreadable references leave the key
-  unset with a warning; plain-text secrets are named at startup.
+  unset with a warning; plain-text secrets are named by Doctor (not on every start).
   Documented at the top of `node-bot/.env.sample`.
 - **Left:** `brain.apiKey` and the launcher `AdminToken` (above);
   Bitwarden (`bw get`, needs a `BW_SESSION` unlock flow); an opt-in,

@@ -151,6 +151,7 @@ const {
   isLoopbackBindHost,
   runDoctorChecksAsync,
 } = require("./doctor");
+const { plainTextSecretKeys } = require("./load-env");
 	const { createDoctorTrayPoller } = require("./doctor-tray-poll");
 	const { notifyTray } = require("./tray-notifier");
 	const sessionTokenUsage = require("./session-token-usage");
@@ -2308,6 +2309,8 @@ function registerRoutes(app, upload, deps = {}) {
         fishTtsWarmup: ttsRuntime.getFishWarmupStatus(),
         sessionSearchVectorEnabled: sessionSearchIndex.vectorEnabled(),
         promptComposition: getMostRecentComposition(),
+        // Q18 (#645): named here, not warned about on every start.
+        plainTextSecrets: (deps.plainTextSecretKeys || plainTextSecretKeys)(),
       });
       return res.status(result.ok ? 200 : 503).json(result);
     } catch (error) {

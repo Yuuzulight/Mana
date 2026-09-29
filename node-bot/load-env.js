@@ -10,8 +10,8 @@ const { parseEnv } = require("util");
 //     reference, read with the `op` CLI
 // Resolved once here, so every reader of process.env keeps working unchanged.
 // Any other non-empty value whose name ends in _TOKEN/_SECRET/_KEY/_PASSWORD
-// is a plain-text secret: named (never printed) in one warning, so that
-// fallback is never silent.
+// is a plain-text secret: Doctor names them (never their values), so that
+// fallback is never silent -- but not on every start (Q18).
 const SECRET_NAME = /(_TOKEN|_SECRET|_KEY|_PASSWORD)$/;
 const KEYRING_PREFIX = "keyring:";
 
@@ -123,7 +123,6 @@ function loadEnvFile(filePath = path.join(__dirname, ".env"), env = process.env,
   }
 
   const setKeys = [];
-  const plainTextSecrets = [];
   for (const [key, value] of Object.entries(parsed)) {
     let resolved = value;
     if (keyringKeys.includes(key)) {
@@ -138,8 +137,6 @@ function loadEnvFile(filePath = path.join(__dirname, ".env"), env = process.env,
         warn(`[env] ${key}: ${e.message}; leaving it unset`);
         resolved = null;
       }
-    } else if (value && SECRET_NAME.test(key)) {
-      plainTextSecrets.push(key);
     }
     if (resolved === null) {
       delete env[key];
@@ -148,13 +145,21 @@ function loadEnvFile(filePath = path.join(__dirname, ".env"), env = process.env,
     env[key] = resolved;
     setKeys.push(key);
   }
-  if (plainTextSecrets.length) {
-    warn(
-      `[env] ${plainTextSecrets.length} secret(s) in plain text in .env: ${plainTextSecrets.join(", ")}. ` +
-        "Move them to Windows Credential Manager (keyring:) or 1Password (op://), see node-bot/.env.sample.",
-    );
-  }
   return setKeys;
 }
 
-module.exports = { loadEnvFile, readKeyringSecrets };
+// Q18: the names (never the values) of secrets still written in plain text
+// in .env, for Doctor. A missing file has none.
+function plainTextSecretKeys(filePath = path.join(__dirname, ".env")) {
+  let text;
+  try {
+    text = fs.readFileSync(filePath, "utf8");
+  } catch (e) {
+    return [];
+  }
+  return Object.entries(parseEnv(text))
+    .filter(([key, value]) => value && SECRET_NAME.test(key) && !value.startsWith(KEYRING_PREFIX) && !value.startsWith("op://"))
+    .map(([key]) => key);
+}
+
+module.exports = { loadEnvFile, plainTextSecretKeys, readKeyringSecrets };
