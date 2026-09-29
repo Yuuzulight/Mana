@@ -117,6 +117,15 @@ test("an approved id sending an empty message gets no reply, without calling rep
   assert.equal(called, false);
 });
 
+test("an approved id's reply is sanitized before it goes back to the channel (#670)", async () => {
+  const bridge = makeBridge({ replyFn: async () => "Saved to C:\\Users\\me\\notes.txt with sk-proj-abc123def456ghi789jkl0" });
+  const code = (await bridge.handleIncomingMessage({ id: "111", text: "hi" })).match(/[A-Z0-9]{6}$/)[0];
+  bridge.approvePairing(code);
+
+  const reply = await bridge.handleIncomingMessage({ id: "111", text: "save it" });
+  assert.equal(reply, "Saved to [local path] with [redacted]");
+});
+
 test("an approved id's message throws a clear error when no replyFn is configured", async () => {
   const bridge = makeBridge();
   const code = (await bridge.handleIncomingMessage({ id: "111", text: "hi" })).match(/[A-Z0-9]{6}$/)[0];
