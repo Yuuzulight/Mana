@@ -43,6 +43,7 @@ internal sealed class ImageAttachmentStrip : FlowLayoutPanel
         {
             return false;
         }
+        ScreenCapture.ApplyExifOrientation(image);
         var dataUrl = ScreenCapture.ToVisionDataUrl(image);
         var chip = new Panel { Size = new Size(ThumbSize, ThumbSize), Margin = new Padding(0, 0, 6, 6), BackColor = DarkTheme.Panel2, BorderStyle = BorderStyle.FixedSingle, Tag = dataUrl };
         var thumb = new PictureBox

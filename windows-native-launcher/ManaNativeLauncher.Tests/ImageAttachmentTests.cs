@@ -58,6 +58,42 @@ public class ImageAttachmentTests
         Assert.False(strip.Visible);
     }
 
+    // A sideways phone photo: 200x100 pixels tagged "rotate 90 clockwise".
+    private static Bitmap SidewaysPhoto()
+    {
+        var bitmap = new Bitmap(200, 100);
+        var tag = (System.Drawing.Imaging.PropertyItem)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(System.Drawing.Imaging.PropertyItem));
+        tag.Id = 0x0112;
+        tag.Type = 3; // SHORT
+        tag.Len = 2;
+        tag.Value = BitConverter.GetBytes((ushort)6);
+        bitmap.SetPropertyItem(tag);
+        return bitmap;
+    }
+
+    [Fact]
+    public void Strip_TurnsExifRotatedPhotosUpright()
+    {
+        DarkTheme.ApplyPreset("violet", null);
+        using var strip = new ImageAttachmentStrip();
+        using var photo = SidewaysPhoto();
+
+        strip.Add(photo);
+
+        Assert.Equal(new Size(100, 200), DecodedSize(strip.Images[0]));
+    }
+
+    [Theory]
+    [InlineData(1, null)]
+    [InlineData(3, System.Drawing.RotateFlipType.Rotate180FlipNone)]
+    [InlineData(6, System.Drawing.RotateFlipType.Rotate90FlipNone)]
+    [InlineData(8, System.Drawing.RotateFlipType.Rotate270FlipNone)]
+    [InlineData(9, null)]
+    public void OrientationFix_UndoesTheExifTag(int orientation, System.Drawing.RotateFlipType? expected)
+    {
+        Assert.Equal(expected, ScreenCapture.OrientationFix(orientation));
+    }
+
     [Fact]
     public void Strip_OnlyTakesImageFiles()
     {
