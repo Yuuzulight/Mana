@@ -118,4 +118,24 @@ public class BargeInGateTests
         Assert.Equal(2, BargeInPolicy.MinWords("0"));
         Assert.Equal(3, BargeInPolicy.MinWords("3"));
     }
+
+    // #665: a ducked interruption stops her only when it's real.
+    [Theory]
+    [InlineData(true, false, "wait, stop", true)]
+    [InlineData(true, false, "yeah", false)]
+    [InlineData(true, false, "", false)]
+    [InlineData(true, true, "thank you for watching", false)] // dropped as a hallucination
+    [InlineData(false, false, "wait, stop", false)]            // transcription failed
+    public void IsRealInterruption_NeedsATranscriptWithEnoughWords(bool transcribed, bool dropped, string transcript, bool expected) =>
+        Assert.Equal(expected, BargeInPolicy.IsRealInterruption(transcribed, dropped, transcript, BargeInPolicy.DefaultMinWords));
+
+    [Fact]
+    public void AudioPlayerVolume_IsClampedAndKept()
+    {
+        using var player = new AudioPlayer();
+        player.Volume = BargeInPolicy.DuckVolume;
+        Assert.Equal(0.3f, player.Volume);
+        player.Volume = 2f;
+        Assert.Equal(1f, player.Volume);
+    }
 }

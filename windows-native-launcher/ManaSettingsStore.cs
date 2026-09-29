@@ -50,6 +50,11 @@ internal sealed class ManaSettingsStore
     // default (on). Settings > Voice; MANA_VOICE_AEC overrides it.
     public bool? EchoCancellation { get; set; }
 
+    // #670: local-only mode for the node-bot this launcher starts (passed
+    // as MANA_LAUNCHER_LOCAL_ONLY=1). Settings > Connection; applies on the
+    // next start. MANA_LOCAL_ONLY=1 in node-bot/.env turns it on regardless.
+    public bool LocalOnly { get; set; }
+
     // #665: what talking over Mana does (BargeInMode: "minWords" -- the
     // default when null -- "always" or "notWhileSpeaking"). Settings >
     // Voice; MANA_BARGE_IN_MODE overrides it.
@@ -71,6 +76,10 @@ internal sealed class ManaSettingsStore
     // chat window is open and comes back when it's closed or minimized.
     // Off keeps her always showing. Tray menu.
     public bool AvatarHidesWithChat { get; set; } = true;
+
+    // #574/#688: gaming-mode detection (tray menu and Settings >
+    // Performance); off ignores the backend's watched-game scan.
+    public bool GamingModeDetection { get; set; } = true;
 
     // #685: the chat window's live avatar framing -- "full", "waist" or
     // "bust" (see LiveAvatarPanel); null = full.
