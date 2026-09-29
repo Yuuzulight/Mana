@@ -1624,57 +1624,137 @@ internal sealed class VoiceLoop : IDisposable
         chatLog?.AppendReplySentence(reply ?? string.Empty);
         chatLog?.ReplyFinished();
 
-        byte[] replyWav;
-        try
-        {
-            replyWav = await backendClient.SynthesizeAsync(reply ?? string.Empty);
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"VoiceLoop: synthesis failed, resuming listening. {ex.Message}");
-            lastError = $"Voice failed: {ex.Message}";
-            ReturnToIdle();
-            return false;
-        }
-
-        // One clip, so one face for the whole reply (#623: the reply's own
-        // emotion tag when the model gave one; the streaming path above
-        // switches per sentence instead).
-        var emotion = streamingReplyPlayer.FinalEmotion;
-        var expression = ReplyEmotionDetector.DetectReplyEmotion(reply, emotion);
-
-        bool completedNaturally;
-        try
-        {
-            // #681: the model's own expression__set choice rides on the
-            // final event. node-bot only sets it on the tool-calling path,
-            // which never streams sentences -- so it always lands here, never
-            // on the changed:false path above.
-            OnTalkingStateChanged(true, MapReplyEmotionToAvatarState(expression), preferredExpression, emotion);
-            captions?.ShowSpokenText(reply ?? string.Empty, AudioPlayer.Duration(replyWav));
-            completedNaturally = await audioPlayer.PlayAsync(replyWav);
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"VoiceLoop: playback failed to start, resuming listening. {ex.Message}");
-            lastError = $"Playback failed: {ex.Message}";
-            OnTalkingStateChanged(false);
-            ReturnToIdle();
-            return false;
-        }
-
-        OnTalkingStateChanged(false);
-        if (completedNaturally)
+        // #861: spoken in chunks of up to 180 characters (Electron's
+        // splitReplyForSpeech), each synthesized while the one before
+        // plays, so a long reply starts speaking after its first chunk
+        // instead of after the whole reply is synthesized.
+        var chunks = SplitForSpeech(reply ?? string.Empty);
+        if (chunks.Count == 0)
         {
             ReturnToIdle();
             return true;
         }
-        // else: interrupted -- by a barge-in, mode is already
-        // CapturingInterruption (set by ProcessSpeakingFrame on the capture
-        // thread before PlayAsync's Task resolved), nothing further to do
-        // here; by the interrupt hotkey, go back to Idle.
-        ConsumeManualStop();
-        return false;
+
+        // One face for the whole reply (#623: the reply's own emotion tag
+        // when the model gave one; the streaming path above switches per
+        // sentence instead).
+        var emotion = streamingReplyPlayer.FinalEmotion;
+        var expression = ReplyEmotionDetector.DetectReplyEmotion(reply, emotion);
+
+        var next = backendClient.SynthesizeAsync(chunks[0]);
+        for (var i = 0; i < chunks.Count; i++)
+        {
+            byte[] chunkWav;
+            try
+            {
+                chunkWav = await next;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"VoiceLoop: synthesis failed, resuming listening. {ex.Message}");
+                lastError = $"Voice failed: {ex.Message}";
+                if (i > 0)
+                {
+                    OnTalkingStateChanged(false);
+                }
+                ReturnToIdle();
+                return false;
+            }
+            next = i + 1 < chunks.Count ? backendClient.SynthesizeAsync(chunks[i + 1]) : Task.FromResult(Array.Empty<byte>());
+
+            bool completedNaturally;
+            var cutOff = false;
+            try
+            {
+                if (i == 0)
+                {
+                    // #681: the model's own expression__set choice rides on
+                    // the final event. node-bot only sets it on the
+                    // tool-calling path, which never streams sentences -- so
+                    // it always lands here, never on the changed:false path
+                    // above.
+                    OnTalkingStateChanged(true, MapReplyEmotionToAvatarState(expression), preferredExpression, emotion);
+                }
+                else
+                {
+                    // Cut off while this chunk was being synthesized (the
+                    // hotkey, a barge-in, or a typed turn taking over)?
+                    lock (stateLock)
+                    {
+                        cutOff = manualStopPending || mode != ListenMode.Speaking;
+                    }
+                }
+                if (cutOff)
+                {
+                    completedNaturally = false;
+                }
+                else
+                {
+                    captions?.ShowSpokenText(chunks[i], AudioPlayer.Duration(chunkWav));
+                    completedNaturally = await audioPlayer.PlayAsync(chunkWav);
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"VoiceLoop: playback failed to start, resuming listening. {ex.Message}");
+                lastError = $"Playback failed: {ex.Message}";
+                OnTalkingStateChanged(false);
+                ReturnToIdle();
+                return false;
+            }
+            if (!completedNaturally)
+            {
+                // Interrupted, and the rest of the reply isn't spoken (a
+                // chunk being synthesized is just dropped): by a barge-in,
+                // mode is already CapturingInterruption (set by
+                // ProcessSpeakingFrame on the capture thread before
+                // PlayAsync's Task resolved), nothing further to do here; by
+                // the interrupt hotkey, go back to Idle.
+                OnTalkingStateChanged(false);
+                ConsumeManualStop();
+                return false;
+            }
+        }
+
+        OnTalkingStateChanged(false);
+        ReturnToIdle();
+        return true;
+    }
+
+    // #861: Electron's splitReplyForSpeech -- whole sentences packed into
+    // chunks of up to MaxSpeechChunkChars; a longer sentence is a chunk of
+    // its own. Sentences end at . ! ? followed by a space, so "3.5" or
+    // "e.g.x" stay whole (Electron's split turns "3.5" into "3. 5").
+    internal const int MaxSpeechChunkChars = 180;
+
+    internal static IReadOnlyList<string> SplitForSpeech(string text)
+    {
+        var chunks = new List<string>();
+        var current = "";
+        var normalized = System.Text.RegularExpressions.Regex.Replace(text, @"\s+", " ").Trim();
+        foreach (var sentence in System.Text.RegularExpressions.Regex.Split(normalized, @"(?<=[.!?]) "))
+        {
+            if (sentence.Length == 0)
+            {
+                continue;
+            }
+            var joined = current.Length > 0 ? $"{current} {sentence}" : sentence;
+            if (joined.Length <= MaxSpeechChunkChars)
+            {
+                current = joined;
+                continue;
+            }
+            if (current.Length > 0)
+            {
+                chunks.Add(current);
+            }
+            current = sentence;
+        }
+        if (current.Length > 0)
+        {
+            chunks.Add(current);
+        }
+        return chunks;
     }
 
     private const string ReplyFailedMessage = "Sorry, I couldn't answer that just now. Try again in a moment.";
