@@ -557,7 +557,18 @@ internal sealed class SessionListForm : Form
                 await SendAsync();
             }
         };
-        sendButtonTimer.Tick += (_, _) => ShowSendOrStop(send, replying: !voiceLoop.IsIdle);
+        sendButtonTimer.Tick += (_, _) =>
+        {
+            ShowSendOrStop(send, replying: !voiceLoop.IsIdle);
+            // #687: the status line follows VoiceLoop between avatar state changes.
+            var status = StatusLine(avatarOverlay.CurrentState);
+            if (avatarStatusLabel.Text != status)
+            {
+                avatarStatusLabel.Text = status;
+                avatarStatusLabel.Invalidate();
+                railToolTip.SetToolTip(avatarStatusLabel, status); // an error can be longer than the card
+            }
+        };
         sendButtonTimer.Start();
 
         messageQueueTimer.Tick += async (_, _) =>
@@ -861,14 +872,27 @@ internal sealed class SessionListForm : Form
     // the real state.
     private void RefreshAvatarCard(AvatarState state)
     {
-        // Sentence case ("Idle", not "idle" or "IDLE") to match the
-        // reference mock-up's own status text exactly.
-        var text = state.ToString();
-        avatarStatusLabel.Text = hearingText is not null
-            ? $"Hearing: \"{hearingText}\""
-            : text.Length > 0 ? char.ToUpperInvariant(text[0]) + text[1..].ToLowerInvariant() : text;
+        avatarStatusLabel.Text = StatusLine(state);
         avatarStatusLabel.Invalidate(); // repaints the status dot too -- see OnPaintAvatarStatusDot
         avatarVisual.Invalidate();
+    }
+
+    // #687: VoiceLoop's status (waiting/awake/thinking/synthesizing, or the
+    // last error), except while the avatar shows an activity it doesn't
+    // track (dreaming, working, waiting, done). Sentence case ("Idle", not
+    // "idle" or "IDLE") matches the reference mock-up's status text.
+    private string StatusLine(AvatarState state)
+    {
+        if (hearingText is not null)
+        {
+            return $"Hearing: \"{hearingText}\"";
+        }
+        if (state is AvatarState.Dreaming or AvatarState.Working or AvatarState.Waiting or AvatarState.Done)
+        {
+            var text = state.ToString();
+            return char.ToUpperInvariant(text[0]) + text[1..].ToLowerInvariant();
+        }
+        return voiceLoop.StatusText;
     }
 
     // Same abstract gradient + rounded "silhouette" the reference mock-up
