@@ -29,6 +29,13 @@
          both this exe and the tray icon used before. -->
     <ApplicationIcon>assets\mana.ico</ApplicationIcon>
   </PropertyGroup>
+  <ItemGroup>
+    <!-- #680: UI Automation (System.Windows.Automation) for the text
+         actions' password-field check and selection read. It ships in the
+         WPF part of the desktop runtime; referenced directly rather than
+         via UseWPF, which would also drop the System.IO implicit using. -->
+    <FrameworkReference Include="Microsoft.WindowsDesktop.App.WPF" />
+  </ItemGroup>
 
   <Target Name="FetchSileroVadModel" BeforeTargets="Build">
     <PropertyGroup>

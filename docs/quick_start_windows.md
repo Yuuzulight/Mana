@@ -99,6 +99,12 @@ Performance notes
 - When a watched game is running, Mana waits longer after empty/noise chunks to reduce idle work.
 - Set `GAMING_PROCESS_NAMES` to a comma-separated process list if you want to watch other games.
 - Example: `$env:GAMING_PROCESS_NAMES = "ffxiv_dx11.exe,eldenring.exe"`
+- Gaming model (optional): set `MANA_GAMING_LLAMA_MODEL` in `node-bot/.env` and, while a watched game runs, the chat llama-server swaps to that smaller model, then back to the normal one when the game closes. The swap never happens mid-reply; one that comes in during a reply waits for it to finish.
+  - Recommended: `Qwen3.5-4B-IQ4_XS.gguf` (2.5 GB, from unsloth/Qwen3.5-4B-GGUF). For more VRAM headroom, use `Qwen3.5-2B-Q8_0.gguf` (2.0 GB, ~2.5 GB VRAM). For a quick test, `Qwen3-1.7B-Q8_0.gguf` works.
+  - It runs with its own context (`MANA_GAMING_LLAMA_CONTEXT`, default 8192), KV cache type (`MANA_GAMING_KV_CACHE`, default `q8_0`, passed as `--cache-type-k/--cache-type-v`) and host-RAM prompt cache (`MANA_GAMING_CACHE_RAM`, default 256 MiB). Next to a game, system RAM runs out before VRAM does. A quantized V cache needs flash attention, which llama-server's default (`auto`) turns on.
+  - The vision mmproj is never loaded with the gaming model. An image sent while gaming is described by a separate vision model if one is configured. If the vision model is the normal chat model, Mana says vision is paused until the game ends.
+  - Doctor ("Chat model") and the tray's status box show the loaded chat model, with "(gaming model)" after it while it's swapped.
+  - Unset, nothing changes: a game start only drops the vision mmproj and stops the memory embedder and reranker, as before.
 
 Speech recognition debugging
 - In the Electron dev console, run `localStorage.manaSpeechDebug = "1"` to log audio stats and skip reasons.

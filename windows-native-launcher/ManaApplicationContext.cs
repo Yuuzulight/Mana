@@ -21,8 +21,6 @@ internal sealed class ManaApplicationContext : ApplicationContext
     private readonly WakeWordClassifier? wakeWordClassifier;
     private readonly AudioPlayer audioPlayer;
     private readonly VoiceLoop voiceLoop;
-    private readonly VisionHotkeyListener visionHotkeyListener;
-    private readonly ClipHotkeyListener clipHotkeyListener;
     private readonly ClipBuffer clipBuffer = new();
     private readonly System.Windows.Forms.Timer? clipCaptureTimer;
     private readonly System.Windows.Forms.Timer? glanceTimer; // #690
@@ -30,6 +28,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
     private readonly TrayNotificationClient trayNotifications;
     private readonly ForegroundWindowReporter foregroundReporter;
     private readonly CaptionOverlayForm captionOverlay;
+    private readonly ChatBubblesForm chatBubbles; // #701
     private readonly VisionCaptureClient visionCaptureClient;
     private readonly ArtifactViewerForm artifactViewer;
     private readonly QuickEntryForm quickEntry;
@@ -152,14 +151,14 @@ internal sealed class ManaApplicationContext : ApplicationContext
         // sentence by VoiceLoop's own playback.
         // Q8: under Mana while she's showing (Visible/Bounds are plain field reads).
         captionOverlay = new CaptionOverlayForm(() => avatarOverlay.Visible ? avatarOverlay.Bounds : null);
-        voiceLoop = new VoiceLoop(sileroVad, backendClient, audioPlayer, avatarOverlay, chatLog, chatLog, screenContextReader, () => gamingModeActive, clipBuffer, wakeWordClassifier, captionOverlay);
+        chatBubbles = new ChatBubblesForm(() => avatarOverlay.Visible ? avatarOverlay.Bounds : null, () => ChatBubblesForm.InView(sessionListForm));
+        chatBubbles.BubbleClicked += text =>
+        {
+            ShowSessionList();
+            chatLog.SelectMessageContaining(text);
+        };
+        voiceLoop = new VoiceLoop(sileroVad, backendClient, audioPlayer, avatarOverlay, chatLog, chatLog, screenContextReader, () => gamingModeActive, clipBuffer, wakeWordClassifier, captionOverlay, chatBubbles);
         voiceLoop.SetPresetId(settings.ActivePresetId); // #681
-        // #523: Ctrl+Alt+M asks Mana to look at the screen, through the
-        // same reply/TTS pipeline a normal turn uses.
-        visionHotkeyListener = new VisionHotkeyListener(() => _ = voiceLoop.SubmitVisionHotkeyAsync());
-        // #585: Ctrl+Alt+Shift+M asks Mana what just happened, using
-        // whatever clipCaptureTimer below has already buffered.
-        clipHotkeyListener = new ClipHotkeyListener(() => _ = voiceLoop.SubmitClipHotkeyAsync());
         // windows-launcher only runs its own clip-buffer capture timer
         // when screen sensing is opted into (MANA_SCREEN_SENSING_ENABLED=1)
         // -- same gate here, so this launcher doesn't start silently
@@ -189,22 +188,30 @@ internal sealed class ManaApplicationContext : ApplicationContext
             glanceTimer.Start();
         }
         sessionListForm = new SessionListForm(backendClient, voiceLoop, chatLog, avatarOverlay, processManager.BackendLog);
-        // #525: Ctrl+Alt+Space types a command instead of speaking one,
+        // #525: quick entry types a command instead of speaking one,
         // through the exact same turn-processing path.
         quickEntry = new QuickEntryForm(text => voiceLoop.SubmitTypedCommandAsync(text));
-        // #584: windows-launcher's own defaults are Ctrl+Alt+Space for the
-        // window toggle and Ctrl+Alt+I for manual interrupt -- the first
-        // collides with quickEntry's own hotkey right above (already
-        // shipped, #525), so this uses Ctrl+Alt+W instead; Ctrl+Alt+I has
-        // no native collision and is kept as-is. Manual interrupt stops
-        // playback and drops any held reply via VoiceLoop.InterruptSpeech
-        // -- matches windows-launcher's own "interrupt-speech" handler
-        // (stopReplyAudio() + heldReply = null), not the fuller
-        // barge-in/re-capture path VoiceLoop's internal interruption
-        // handling uses for a detected spoken interruption.
-        globalHotkeys = new GlobalHotkeyListener(
-            (0xA584, GlobalHotkeyListener.ModControl | GlobalHotkeyListener.ModAlt, (uint)'W', "MANA_WINDOW_HOTKEY", ToggleSessionListVisible),
-            (0xA585, GlobalHotkeyListener.ModControl | GlobalHotkeyListener.ModAlt, (uint)'I', "MANA_INTERRUPT_HOTKEY", voiceLoop.InterruptSpeech));
+        // #689: every global hotkey, bound from Settings > Hotkeys (defaults
+        // in HotkeyBindings). #523 vision and #585 clip go through the normal
+        // reply pipeline. #584's manual interrupt stops playback and drops
+        // any held reply via VoiceLoop.InterruptSpeech -- windows-launcher's
+        // "interrupt-speech" handler, not the fuller barge-in path. #680 text
+        // actions run on the selection in any app; "Ask Mana..." hands it to
+        // quick entry as a normal turn.
+        var hotkeyHandlers = new Dictionary<string, Action>
+        {
+            ["window"] = ToggleSessionListVisible,
+            ["quickEntry"] = quickEntry.ToggleVisible,
+            ["vision"] = () => _ = voiceLoop.SubmitVisionHotkeyAsync(),
+            ["clip"] = () => _ = voiceLoop.SubmitClipHotkeyAsync(),
+            ["interrupt"] = voiceLoop.InterruptSpeech,
+            ["textAction"] = () => _ = TextActionForm.RunAsync(backendClient, text =>
+                quickEntry.OpenWith($"About \"{System.Text.RegularExpressions.Regex.Replace(text, @"\s+", " ")}\": ")),
+        };
+        globalHotkeys = new GlobalHotkeyListener(HotkeyBindings.Actions
+            .Select(a => (a.Id, HotkeyBindings.Resolve(settings.Hotkeys, a), a.DisableEnvVar, hotkeyHandlers[a.Key]))
+            .ToArray());
+        sessionListForm.BindHotkey = (action, keys) => globalHotkeys.Bind(action.Id, keys);
         // #524: originally a no-op (no chat/session window existed on
         // this branch yet) -- #521/#520 shipped one since, so this now
         // does what the original comment here flagged as the real
@@ -367,6 +374,16 @@ internal sealed class ManaApplicationContext : ApplicationContext
             }
         };
         menu.Items.Add(hidesWithChatItem);
+        // #701: off by default.
+        var bubblesItem = new ToolStripMenuItem("Chat bubbles beside Mana") { CheckOnClick = true, Checked = chatBubbles.BubblesOn };
+        bubblesItem.Click += (_, _) =>
+        {
+            chatBubbles.BubblesOn = bubblesItem.Checked;
+            var latest = ManaSettingsStore.Load();
+            latest.ChatBubbles = bubblesItem.Checked;
+            latest.Save();
+        };
+        menu.Items.Add(bubblesItem);
         // #681: Stop listening turns the mic off and puts Mana back to
         // sleep; Start listening needs the wake word again.
         var listeningItem = new ToolStripMenuItem();
@@ -594,7 +611,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
         {
             var status = await backendClient.GetPerformanceStatusAsync();
             MessageBox.Show(
-                $"Backend: running\nGame detected: {status.GamingAppRunning}\nMemory: {status.TotalMemoryMb} MB\nTTS: {status.TtsProvider}{FallbackNoteFor(status.TtsProvider)}{AvatarStatusLine()}",
+                $"Backend: running\nGame detected: {status.GamingAppRunning}\nChat model: {status.ChatModel ?? "not loaded"}\nMemory: {status.TotalMemoryMb} MB\nTTS: {status.TtsProvider}{FallbackNoteFor(status.TtsProvider)}{AvatarStatusLine()}",
                 "Mana Status",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Information);
@@ -767,13 +784,12 @@ internal sealed class ManaApplicationContext : ApplicationContext
         foregroundReporter.Dispose();
         clipCaptureTimer?.Stop();
         glanceTimer?.Stop();
-        visionHotkeyListener.Dispose();
-        clipHotkeyListener.Dispose();
         globalHotkeys.Dispose();
         trayNotifications.Dispose();
         showRequests.Dispose();
         visionCaptureClient.Dispose();
         captionOverlay.Close();
+        chatBubbles.Close();
         voiceLoop.Dispose();
         audioPlayer.Dispose();
         sileroVad.Dispose();

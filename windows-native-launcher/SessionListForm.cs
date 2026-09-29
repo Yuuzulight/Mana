@@ -1097,9 +1097,13 @@ internal sealed class SessionListForm : Form
         e.Graphics.DrawRectangle(pen, 0, 0, card.Width - 1, card.Height - 1);
     }
 
+    // #689: rebinds a global hotkey live (Settings > Hotkeys); returns why it
+    // couldn't, or null. Set by ManaApplicationContext, which owns the hotkeys.
+    public Func<HotkeyAction, Keys?, string?>? BindHotkey { get; set; }
+
     private void OpenSettings()
     {
-        using var dialog = new SettingsDialog(backendClient, backendLog, () => voiceLoop.CurrentSessionId);
+        using var dialog = new SettingsDialog(backendClient, backendLog, () => voiceLoop.CurrentSessionId, BindHotkey);
         dialog.ShowDialog(this);
         // #681: Settings > Presets persists the active preset straight to
         // ManaSettingsStore; pick up whatever it left there.

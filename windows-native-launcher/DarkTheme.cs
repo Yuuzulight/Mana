@@ -19,8 +19,8 @@ namespace Mana.NativeLauncher;
 internal static class DarkTheme
 {
     // #576: mutable (not readonly) so ApplyPreset can swap the whole
-    // palette -- still only ever called once, at startup before any Form
-    // exists (see Program.cs), not a live-switching mechanism.
+    // palette -- at startup (Program.cs), and since #688 live from Settings
+    // (ApplyPresetLive).
     public static Color Background = ColorTranslator.FromHtml("#1c1a18");
     public static Color Panel = ColorTranslator.FromHtml("#242220");
     public static Color Panel2 = ColorTranslator.FromHtml("#2c2a27");
@@ -45,6 +45,10 @@ internal static class DarkTheme
 
     // #652: the Mana preset's frosted-glass look (see GlassSurface).
     public static bool IsGlass { get; private set; }
+
+    // #688: bumped on every palette change, for anything that caches a
+    // rendering of the theme (ChatView's glow).
+    public static int Version { get; private set; }
     public static Color OnAccent
     {
         get
@@ -128,7 +132,154 @@ internal static class DarkTheme
         TabPanel2Brush.Color = Panel2;
         TabTextBrush.Color = Text;
         TabMutedBrush.Color = Muted;
+        Version++;
     }
+
+    // #688: the palette in a fixed order, for remapping a control's colours
+    // from one preset to the next.
+    internal static Color[] Tokens() =>
+        new[] { Background, Panel, Panel2, Border, Text, Muted, Accent, OnAccent, UserBubble, ManaBubble, CodeText, Green, Warn };
+
+    // Windows a live theme switch reaches, visible or hidden: Tracked ones
+    // are recoloured; Themed ones (through ApplyForm) also get or lose the
+    // glass look and follow the title bar's light/dark mode.
+    private static readonly List<WeakReference<Form>> TrackedForms = new();
+    private static readonly List<WeakReference<Form>> ThemedForms = new();
+
+    private static void Remember(List<WeakReference<Form>> list, Form form)
+    {
+        list.RemoveAll(w => !w.TryGetTarget(out var f) || f.IsDisposed);
+        list.Add(new WeakReference<Form>(form));
+    }
+
+    private static List<Form> Alive(List<WeakReference<Form>> list) =>
+        list.Select(w => w.TryGetTarget(out var f) ? f : null).OfType<Form>().Where(f => !f.IsDisposed).ToList();
+
+    // #688: a window that uses the palette without ApplyForm (an overlay,
+    // Quick entry) still gets recoloured on a live switch.
+    public static void Track(Form form) => Remember(TrackedForms, form);
+
+    // #688: switches the palette with every window open. The glass look
+    // comes off first (restoring what the theme gave each control), every
+    // colour that came from the old palette moves to the same colour of the
+    // new one, then glass goes back on if the new preset has it. Each
+    // window's drawing is held off meanwhile and repainted once, so there's
+    // no flicker.
+    public static void ApplyPresetLive(string presetId, string? accentHex)
+    {
+        var themed = Alive(ThemedForms).ToHashSet();
+        var forms = themed.Concat(Alive(TrackedForms)).Concat(Application.OpenForms.Cast<Form>())
+            .Where(f => !f.IsDisposed).Distinct().ToList();
+        // Only visible windows: WM_SETREDRAW on would also show a hidden one.
+        var frozen = forms.Where(f => f.IsHandleCreated && f.Visible).ToList();
+        foreach (var form in frozen)
+        {
+            SetRedraw(form, false);
+        }
+        try
+        {
+            foreach (var form in forms)
+            {
+                GlassSurface.Detach(form);
+            }
+            var before = Tokens();
+            ApplyPreset(presetId, accentHex);
+            var after = Tokens();
+            foreach (var form in forms)
+            {
+                Recolor(form, before, after);
+                if (themed.Contains(form))
+                {
+                    ApplyTitleBarMode(form);
+                    if (IsGlass)
+                    {
+                        GlassSurface.Attach(form, live: true);
+                    }
+                }
+            }
+        }
+        finally
+        {
+            foreach (var form in frozen)
+            {
+                SetRedraw(form, true);
+            }
+        }
+    }
+
+    // Per control, which palette slot each colour property came from, so a
+    // preset with two equal colours (High contrast's background and panel)
+    // maps them apart next time. Re-derived when the app set a new colour since.
+    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<Control, int[]> ColorSlots = new();
+
+    internal static Color Remap(Color current, Color[] before, Color[] after, ref int slot)
+    {
+        if (current.IsEmpty || current.A == 0)
+        {
+            return current;
+        }
+        if (slot < 0 || slot >= before.Length || before[slot].ToArgb() != current.ToArgb())
+        {
+            slot = Array.FindIndex(before, c => c.ToArgb() == current.ToArgb());
+        }
+        return slot >= 0 ? after[slot] : current;
+    }
+
+    private static void Recolor(Control control, Color[] before, Color[] after)
+    {
+        var slots = ColorSlots.GetValue(control, _ => new[] { -1, -1, -1, -1, -1, -1 });
+        control.BackColor = Remap(control.BackColor, before, after, ref slots[0]);
+        control.ForeColor = Remap(control.ForeColor, before, after, ref slots[1]);
+        if (control is ButtonBase { FlatStyle: FlatStyle.Flat } button)
+        {
+            var look = button.FlatAppearance;
+            look.BorderColor = Remap(look.BorderColor, before, after, ref slots[2]);
+            look.MouseOverBackColor = Remap(look.MouseOverBackColor, before, after, ref slots[3]);
+            look.MouseDownBackColor = Remap(look.MouseDownBackColor, before, after, ref slots[4]);
+            look.CheckedBackColor = Remap(look.CheckedBackColor, before, after, ref slots[5]);
+        }
+        if (control is ListView list)
+        {
+            foreach (ListViewItem item in list.Items)
+            {
+                var none = -1;
+                item.ForeColor = Remap(item.ForeColor, before, after, ref none);
+                none = -1;
+                item.BackColor = Remap(item.BackColor, before, after, ref none);
+            }
+            if (list.IsHandleCreated)
+            {
+                SetWindowTheme(list.Handle, IsLight ? "Explorer" : "DarkMode_Explorer", null);
+            }
+        }
+        foreach (Control child in control.Controls)
+        {
+            Recolor(child, before, after);
+        }
+    }
+
+    private const int WmSetRedraw = 0x000B;
+
+    private static void SetRedraw(Form form, bool on)
+    {
+        SendMessage(form.Handle, WmSetRedraw, on ? 1 : 0, 0);
+        if (on)
+        {
+            // Frame too: the title bar follows the new light/dark mode.
+            RedrawWindow(form.Handle, IntPtr.Zero, IntPtr.Zero, RdwErase | RdwFrame | RdwInvalidate | RdwAllChildren);
+        }
+    }
+
+    private const uint RdwInvalidate = 0x1;
+    private const uint RdwErase = 0x4;
+    private const uint RdwAllChildren = 0x80;
+    private const uint RdwFrame = 0x400;
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr SendMessage(IntPtr hWnd, int msg, int wParam, int lParam);
+
+    [DllImport("user32.dll")]
+    private static extern bool RedrawWindow(IntPtr hWnd, IntPtr updateRect, IntPtr updateRegion, uint flags);
 
     private static Color? TryParseHexColor(string? hex)
     {
@@ -148,6 +299,7 @@ internal static class DarkTheme
 
     public static void ApplyForm(Form form)
     {
+        Remember(ThemedForms, form);
         form.BackColor = Background;
         form.ForeColor = Text;
         ApplyTitleBarMode(form);
