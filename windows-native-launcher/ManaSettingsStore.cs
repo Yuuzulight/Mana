@@ -1,6 +1,9 @@
 using System;
 using System.IO;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace Mana.NativeLauncher;
 
@@ -20,7 +23,21 @@ internal sealed class ManaSettingsStore
         "native-launcher-settings.json");
 
     public string BackendBaseUrl { get; set; } = "http://127.0.0.1:5005";
+
+    // #645 (Q19): the admin token is stored encrypted with Windows DPAPI
+    // (CurrentUser scope: only this Windows account can read it) as
+    // AdminTokenProtected. An older file's plain "AdminToken" is read once
+    // and moved into the encrypted field on the next load. If DPAPI isn't
+    // available, Save falls back to the plain field so the token isn't lost.
+    [JsonIgnore]
     public string? AdminToken { get; set; }
+
+    [JsonPropertyName("AdminToken")]
+    public string? PlainAdminToken { get; set; }
+
+    public string? AdminTokenProtected { get; set; }
+
+    private static readonly byte[] AdminTokenEntropy = Encoding.UTF8.GetBytes("Mana.NativeLauncher.AdminToken");
 
     // #342/#682: acoustic wake-word pre-filter -- "off" (null, default),
     // "loose" or "normal", chosen in Settings > Voice; see
@@ -50,19 +67,65 @@ internal sealed class ManaSettingsStore
     // load/save/corruption handling without touching LocalApplicationData.
     public static ManaSettingsStore Load(string? filePath = null)
     {
+        ManaSettingsStore settings;
         try
         {
             var json = File.ReadAllText(filePath ?? FilePath);
-            return JsonSerializer.Deserialize<ManaSettingsStore>(json) ?? new ManaSettingsStore();
+            settings = JsonSerializer.Deserialize<ManaSettingsStore>(json) ?? new ManaSettingsStore();
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
         {
             return new ManaSettingsStore();
         }
+
+        settings.AdminToken = settings.PlainAdminToken;
+        if (settings.AdminTokenProtected is not null)
+        {
+            try
+            {
+                settings.AdminToken = Encoding.UTF8.GetString(ProtectedData.Unprotect(
+                    Convert.FromBase64String(settings.AdminTokenProtected), AdminTokenEntropy, DataProtectionScope.CurrentUser));
+            }
+            catch (Exception ex) when (ex is CryptographicException or FormatException or PlatformNotSupportedException)
+            {
+                // Another Windows account's (or a damaged) blob: the token has
+                // to be entered again in Settings.
+                Console.WriteLine($"ManaSettingsStore: couldn't decrypt the admin token. {ex.Message}");
+            }
+        }
+        else if (settings.PlainAdminToken is not null)
+        {
+            // First run after the upgrade: move the plain token into DPAPI.
+            try
+            {
+                settings.Save(filePath);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                Console.WriteLine($"ManaSettingsStore: couldn't encrypt the saved admin token yet. {ex.Message}");
+            }
+        }
+        return settings;
     }
 
     public void Save(string? filePath = null)
     {
+        PlainAdminToken = null;
+        AdminTokenProtected = null;
+        if (AdminToken is not null)
+        {
+            try
+            {
+                AdminTokenProtected = Convert.ToBase64String(ProtectedData.Protect(
+                    Encoding.UTF8.GetBytes(AdminToken), AdminTokenEntropy, DataProtectionScope.CurrentUser));
+            }
+            catch (Exception ex) when (ex is CryptographicException or PlatformNotSupportedException)
+            {
+                // Fallback: better a plain token than none (the pre-#645 format).
+                Console.WriteLine($"ManaSettingsStore: DPAPI unavailable, saving the admin token unencrypted. {ex.Message}");
+                PlainAdminToken = AdminToken;
+            }
+        }
         var path = filePath ?? FilePath;
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         File.WriteAllText(path, JsonSerializer.Serialize(this));

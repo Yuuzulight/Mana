@@ -366,7 +366,12 @@ function registerCoreRoutes(app, upload, deps) {
         null,
       );
       const presetId = optionalString(req.body?.presetId, "presetId", null);
-      const replyMeta = { systemPatch: input.systemPatch };
+      // #675: the client's "think harder" (deep-thinking toggle): true thinks
+      // this turn, false ends Mana's own deep thinking (Q12b).
+      const replyMeta = {
+        systemPatch: input.systemPatch,
+        thinkHarder: typeof req.body?.thinkHarder === "boolean" ? req.body.thinkHarder : undefined,
+      };
       const reply = await buildAssistantReply(
         input.text,
         screenText,
@@ -395,6 +400,12 @@ function registerCoreRoutes(app, upload, deps) {
     res.setHeader("Content-Type", "application/x-ndjson; charset=utf-8");
     res.setHeader("Cache-Control", "no-cache");
     res.setHeader("Connection", "keep-alive");
+    // #675: headers now, not at the first event -- a deep-thinking turn can
+    // think ~25 s per request (tool rounds included) before it writes
+    // anything, and the native launcher's HttpClient only waits its 100 s
+    // default for the headers. Every outcome below is an event, never a
+    // status code, so nothing needs the headers held back.
+    res.flushHeaders();
 
     const writeEvent = (event) => res.write(JSON.stringify(event) + "\n");
 
@@ -517,6 +528,9 @@ function registerCoreRoutes(app, upload, deps) {
       const replyMeta = {
         systemPatch: input.systemPatch,
         onToolCall: ({ name, phase }) => writeEvent({ type: "tool", name, phase }),
+        // #675: the client's "think harder" (deep-thinking toggle): true
+        // thinks this turn, false ends Mana's own deep thinking (Q12b).
+        thinkHarder: typeof req.body?.thinkHarder === "boolean" ? req.body.thinkHarder : undefined,
       };
 
       const reply = await buildAssistantReply(
@@ -540,6 +554,8 @@ function registerCoreRoutes(app, upload, deps) {
         changed: !replyMeta.streamedMatchesFinal,
         ...(replyMeta.expression ? { expression: replyMeta.expression } : {}),
         ...(replyMeta.emotion ? { emotion: replyMeta.emotion } : {}),
+        // #675 Q12b: Mana's own deep thinking is on (the Think button lights).
+        deepThinking: replyMeta.deepThinking === true,
       });
       return res.end();
     } catch (e) {

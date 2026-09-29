@@ -236,3 +236,32 @@ test("POST /reply/stream relays tool start/end events before the final (#661)", 
     assert.equal(events.length, 3);
   });
 });
+
+// #675: the native launcher's deep-thinking toggle reaches buildAssistantReply
+// through replyMeta.thinkHarder -- a literal true or false (Q12b: false ends
+// Mana's own deep thinking), anything else is ignored -- and the final event
+// says whether Mana's own deep thinking is on, so the Think button can light.
+test("POST /reply/stream passes thinkHarder through replyMeta and reports deepThinking", async () => {
+  const seen = [];
+  const app = createApp({
+    buildAssistantReply: async (transcript, screenText, marketText, modelProfile, sessionId, assistantMode, presetId, replyMeta) => {
+      seen.push(replyMeta.thinkHarder);
+      replyMeta.deepThinking = transcript === "on";
+      return "ok";
+    },
+  });
+
+  const finals = [];
+  await withServer(app, async (baseUrl) => {
+    for (const body of [
+      { text: "hi", thinkHarder: true },
+      { text: "hi", thinkHarder: false },
+      { text: "hi", thinkHarder: "yes" },
+      { text: "on" },
+    ]) {
+      finals.push((await postNdjson(baseUrl, "/reply/stream", body)).events.at(-1).deepThinking);
+    }
+  });
+  assert.deepEqual(seen, [true, false, undefined, undefined]);
+  assert.deepEqual(finals, [false, false, false, true]);
+});

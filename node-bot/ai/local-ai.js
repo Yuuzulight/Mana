@@ -234,6 +234,12 @@ function selectLlamaModelProfileForPrompt(prompt, explicitProfile = "") {
   return "default";
 }
 
+// Issue #675 (c): a one-turn "think harder" request, next to the "better
+// answer" routing above. Only the wording decides; the profile stays as picked.
+function wantsThinkHarder(prompt) {
+  return /\bthink (harder|carefully|it through)\b/.test(String(prompt || "").toLowerCase());
+}
+
 module.exports = {
   DEFAULT_LLAMA_MODEL,
   LLAMA_MODEL_PROFILES,
@@ -246,4 +252,5 @@ module.exports = {
   pickPreferredLlamaModel,
   selectLlamaModelProfileForPrompt,
   shouldUseRemoteAi,
+  wantsThinkHarder,
 };
