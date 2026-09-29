@@ -2,6 +2,9 @@ const rateLimit = require("express-rate-limit");
 const { factTrust } = require("../acp-memory-store");
 
 const KEY = "memoryFacts";
+// ponytail: fixed bound so the native view's layout stays readable and
+// cheap (<= 2x this many nodes); add paging/zoom if 150 ever hides too much.
+const MEMORY_GRAPH_MAX_EDGES = 150;
 
 // server.js already applies an app-wide rate limiter before
 // registerCapabilities runs, so these routes are covered in practice --
@@ -31,6 +34,44 @@ function registerMemoryFactsRoutes(app, context = {}) {
       // Issue #673: trust is derived (factTrust), shown alongside each fact.
       const facts = acpMemoryStore.listFacts().map((fact) => ({ ...fact, trust: factTrust(fact) }));
       return res.json({ ok: true, facts });
+    } catch (e) {
+      return res.status(500).json({ ok: false, error: String(e) });
+    }
+  });
+
+  // Issue #641: read-only data for the native launcher's memory-graph view
+  // -- the strongest Hebbian edges (#295), each endpoint's ontology type
+  // (#432), and every fact's validity window(s) (#431), superseded ones
+  // included so the view can show them on a timeline instead of hiding them.
+  app.get("/admin/memory/graph", adminMemoryRateLimiter, (req, res) => {
+    if (!checkAdminAuth(req, res)) return;
+    try {
+      const graph = acpMemoryStore.memoryGraph;
+      const allEdges = graph ? graph.listStrongestEdges(MEMORY_GRAPH_MAX_EDGES) : [];
+      const keys = [...new Set(allEdges.flatMap((edge) => [edge.a, edge.b]))];
+      // Typed as "not a real entity" by the ontology pass -- noise, not memory.
+      const nodes = acpMemoryStore.describeEntities(keys).filter((node) => node.type !== "not_an_entity");
+      const shown = new Set(nodes.map((node) => node.key));
+      const edges = allEdges.filter((edge) => shown.has(edge.a) && shown.has(edge.b));
+
+      const facts = [];
+      for (const fact of acpMemoryStore.listFacts()) {
+        facts.push({
+          key: fact.key,
+          text: fact.text,
+          validFrom: fact.validFrom || fact.createdAt || null,
+          invalidatedAt: fact.invalidatedAt || null,
+        });
+        for (const past of Array.isArray(fact.history) ? fact.history : []) {
+          facts.push({ key: fact.key, text: past.text, validFrom: past.validFrom || null, invalidatedAt: past.invalidatedAt || null });
+        }
+      }
+      // Newest first. Plain string order is time order for ISO timestamps
+      // (localeCompare's collation isn't guaranteed to be).
+      const from = (fact) => fact.validFrom || "";
+      facts.sort((x, y) => (from(x) < from(y) ? 1 : from(x) > from(y) ? -1 : 0));
+
+      return res.json({ ok: true, nodes, edges, facts });
     } catch (e) {
       return res.status(500).json({ ok: false, error: String(e) });
     }

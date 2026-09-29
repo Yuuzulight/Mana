@@ -4,7 +4,8 @@ const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
 
-const { createHooksStore, wrapWithHooks, runPostCommandHook, HOOK_COMMAND_TIMEOUT_MS } = require("../hooks-store");
+const { createHooksStore, wrapWithHooks, wrapWithInputHooks, runPostCommandHook, HOOK_COMMAND_TIMEOUT_MS } = require("../hooks-store");
+const { wrapWithRiskGate } = require("../ai/tool-risk");
 const { createApprovalGate } = require("../approval-gate");
 const { createSnapshotStore } = require("../snapshot-store");
 
@@ -496,4 +497,72 @@ test("a rollback-on-failure rule with no matching snapshot and no snapshotStore 
   } finally {
     console.warn = originalWarn;
   }
+});
+
+// ---- #486: modify-input + in-place rule updates ----
+
+test("addRule requires a non-empty set object for a modify-input rule", () => {
+  const store = createHooksStore({ dataDir: createTempDir() });
+  for (const set of [undefined, {}, [], "x"]) {
+    assert.throws(() => store.addRule({ phase: "pre", action: "modify-input", toolName: "t", set }), /set .* is required/);
+  }
+  const rule = store.addRule({ phase: "pre", action: "modify-input", toolName: "t", set: { dryRun: true } });
+  assert.deepEqual(rule.set, { dryRun: true });
+});
+
+test("modify-input rules merge their set over the args in file order; other calls pass through", async () => {
+  const hooksStore = createHooksStore({ dataDir: createTempDir() });
+  hooksStore.addRule({ phase: "pre", action: "modify-input", toolName: "file_write", set: { mode: "a", keep: 1 } });
+  hooksStore.addRule({ phase: "pre", action: "modify-input", toolName: "file_write", pathContains: ".md", set: { mode: "b" } });
+  const policy = basePolicy();
+  const wrapped = wrapWithInputHooks(policy, hooksStore);
+
+  await wrapped.executeTool("file_write", { path: "x.md", mode: "orig" });
+  await wrapped.executeTool("file_write", { path: "x.js" });
+  await wrapped.executeTool("other", { path: "x.md" });
+  await wrapped.executeTool("file_write", "not-an-object");
+
+  assert.deepEqual(policy.calls.map((c) => c.args), [
+    { path: "x.md", mode: "b", keep: 1 },
+    { path: "x.js", mode: "a", keep: 1 },
+    { path: "x.md" },
+    "not-an-object",
+  ]);
+});
+
+test("a modify-input rewrite is gated as rewritten: it cannot slip past the risk gate or a deny hook", async () => {
+  const hooksStore = createHooksStore({ dataDir: createTempDir() });
+  hooksStore.addRule({ phase: "pre", action: "modify-input", toolName: "mcp__shell__run", set: { command: "rm -rf /" } });
+  hooksStore.addRule({ phase: "pre", action: "modify-input", toolName: "file_write", set: { path: "locked/a.md" } });
+  hooksStore.addRule({ phase: "pre", action: "deny", toolName: "file_write", pathContains: "locked/", reason: "locked" });
+  const policy = basePolicy();
+  const gate = fakeApprovalGate();
+  // Same nesting as server.js: input hooks outside the risk gate outside wrapWithHooks.
+  const wrapped = wrapWithInputHooks(
+    wrapWithRiskGate(wrapWithHooks(policy, hooksStore, gate), gate, { mode: "off" }),
+    hooksStore,
+  );
+
+  const outcome = JSON.parse(await wrapped.executeTool("mcp__shell__run", { command: "echo hi" }));
+  assert.equal(outcome.status, "pending", "the rewritten (destructive) command must go to a human even in off mode");
+  await assert.rejects(() => wrapped.executeTool("file_write", { path: "notes.md" }), /locked/);
+  assert.equal(policy.calls.length, 0);
+});
+
+test("updateRule edits a rule in place, re-validates it, and drops its stale lastRun", () => {
+  const store = createHooksStore({ dataDir: createTempDir() });
+  const rule = store.addRule({ phase: "post", action: "run-command", toolName: "file_write", command: "prettier" });
+  store.recordRunOutcome(rule.id, { ok: false, error: "boom" });
+
+  const updated = store.updateRule(rule.id, { command: "eslint", args: ["--fix", "{path}"] });
+  assert.equal(updated.id, rule.id);
+  assert.equal(updated.createdAt, rule.createdAt);
+  assert.equal(updated.command, "eslint");
+  assert.deepEqual(updated.args, ["--fix", "{path}"]);
+  assert.equal(updated.lastRun, undefined);
+  assert.deepEqual(store.listRules(), [updated]);
+
+  assert.throws(() => store.updateRule(rule.id, { phase: "pre" }), /action for phase "pre"/);
+  assert.equal(store.listRules()[0].command, "eslint", "a rejected edit must not be written");
+  assert.equal(store.updateRule("nope", { command: "x" }), null);
 });
