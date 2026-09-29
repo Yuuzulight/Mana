@@ -40,6 +40,28 @@ const TOOL_SCHEMAS = [
   },
 ];
 
+// #912: one webcam snapshot, only for things I'm showing Mana. Gated on the
+// vision model and a camera-capable client (the native launcher, which
+// enforces its own off-by-default camera toggle), not on screen sensing.
+const CAMERA_TOOL_SCHEMA = {
+  type: "function",
+  function: {
+    name: `${VISION_TOOL_PREFIX}camera`,
+    description:
+      "Take one snapshot with the user's webcam and describe it. Only use this when the user asks you to look at something they're showing you (\"look at this\", \"what am I holding?\"), never on your own.",
+    parameters: {
+      type: "object",
+      properties: {
+        prompt: {
+          type: "string",
+          description: "What to look for or ask about the snapshot.",
+        },
+      },
+      required: ["prompt"],
+    },
+  },
+};
+
 function isVisionToolName(name) {
   return typeof name === "string" && name.startsWith(VISION_TOOL_PREFIX);
 }
@@ -53,31 +75,35 @@ function createVisionToolSource({
 }) {
   // #787: not offered when it could only fail (no vision model, or the
   // screen-sensing plugin is off) -- goal mode spent rounds retrying it.
-  function isUsable() {
+  function visionAvailable() {
     const vision = typeof getVisionStatus === "function" ? getVisionStatus() : null;
-    return Boolean(vision && vision.available) && isPluginEnabled(screenSensingPlugin, pluginSettingsStore);
+    return Boolean(vision && vision.available);
   }
 
   function listToolSchemas() {
-    return isUsable() ? TOOL_SCHEMAS : [];
+    if (!visionAvailable()) return [];
+    return [
+      ...(isPluginEnabled(screenSensingPlugin, pluginSettingsStore) ? TOOL_SCHEMAS : []),
+      ...(visionCaptureBridge.hasCamera?.() ? [CAMERA_TOOL_SCHEMA] : []),
+    ];
   }
 
   async function executeTool(qualifiedName, args) {
     const action = qualifiedName.slice(VISION_TOOL_PREFIX.length);
-    if (action !== "look") {
+    if (action !== "look" && action !== "camera") {
       throw new Error(`unknown vision tool: ${qualifiedName}`);
     }
+    const camera = action === "camera";
     const prompt = String(args?.prompt || "").trim();
     if (!prompt) {
       throw new Error("prompt is required");
     }
 
-    const vision = typeof getVisionStatus === "function" ? getVisionStatus() : null;
-    if (!vision || !vision.available) {
+    if (!visionAvailable()) {
       return JSON.stringify({ status: "error", error: "no local vision model available" });
     }
 
-    if (!isPluginEnabled(screenSensingPlugin, pluginSettingsStore)) {
+    if (!camera && !isPluginEnabled(screenSensingPlugin, pluginSettingsStore)) {
       return JSON.stringify({
         status: "error",
         error: "vision look requires the screen-sensing plugin to be enabled",
@@ -86,11 +112,11 @@ function createVisionToolSource({
 
     let image;
     try {
-      image = await visionCaptureBridge.requestCapture();
+      image = await visionCaptureBridge.requestCapture({ camera });
     } catch (e) {
       return JSON.stringify({
         status: "error",
-        error: `could not capture the screen: ${e.message || e}`,
+        error: `${camera ? "could not use the camera" : "could not capture the screen"}: ${e.message || e}`,
       });
     }
 
@@ -100,7 +126,7 @@ function createVisionToolSource({
     } catch (e) {
       return JSON.stringify({
         status: "error",
-        error: `could not describe the screen: ${e.message || e}`,
+        error: `could not describe the ${camera ? "snapshot" : "screen"}: ${e.message || e}`,
       });
     }
   }

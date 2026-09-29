@@ -1232,6 +1232,7 @@ internal sealed class SettingsPanel : UserControl
         layout.Controls.Add(BuildVoiceTuningRow());
         layout.Controls.Add(BuildBargeInRow());
         layout.Controls.Add(BuildVoiceprintRow());
+        layout.Controls.Add(BuildCameraRow());
         return new TabPage("Voice") { Controls = { layout } };
     }
 
@@ -1449,6 +1450,32 @@ internal sealed class SettingsPanel : UserControl
         var row = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.LeftToRight, BackColor = DarkTheme.Background };
         row.Controls.Add(label);
         row.Controls.Add(combo);
+        row.Controls.Add(status);
+        return row;
+    }
+
+    // #912: off by default; read at each snapshot (the camera hotkey, or
+    // Mana's vision__camera when I ask her to look at something).
+    private static FlowLayoutPanel BuildCameraRow()
+    {
+        var check = new CheckBox
+        {
+            Text = "Let Mana take camera snapshots when I ask (\"look at this\", or the camera hotkey)",
+            AutoSize = true,
+            ForeColor = DarkTheme.Text,
+            Checked = ManaSettingsStore.Load().CameraSnapshots,
+        };
+        var status = new Label { AutoSize = true, ForeColor = DarkTheme.Muted, Anchor = AnchorStyles.Left };
+        check.CheckedChanged += (_, _) =>
+        {
+            var latest = ManaSettingsStore.Load();
+            latest.CameraSnapshots = check.Checked;
+            latest.Save();
+            status.Text = "Saved.";
+        };
+
+        var row = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.LeftToRight, BackColor = DarkTheme.Background };
+        row.Controls.Add(check);
         row.Controls.Add(status);
         return row;
     }

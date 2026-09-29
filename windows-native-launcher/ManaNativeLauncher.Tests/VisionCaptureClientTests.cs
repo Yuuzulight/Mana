@@ -14,10 +14,12 @@ public class VisionCaptureClientTests
     private static byte[] Json(string json) => Encoding.UTF8.GetBytes(json);
 
     [Fact]
-    public void TryParseCaptureRequestId_ReadsTheRequestId()
+    public void TryParseCaptureRequest_ReadsTheRequestIdAndSource()
     {
-        Assert.Equal("abc-123", VisionCaptureClient.TryParseCaptureRequestId(
+        Assert.Equal(("abc-123", false), VisionCaptureClient.TryParseCaptureRequest(
             Json("""{"type":"capture-request","requestId":"abc-123"}""")));
+        Assert.Equal(("abc-123", true), VisionCaptureClient.TryParseCaptureRequest(
+            Json("""{"type":"capture-request","requestId":"abc-123","source":"camera"}""")));
     }
 
     [Theory]
@@ -26,9 +28,9 @@ public class VisionCaptureClientTests
     [InlineData("""{"type":"capture-request","requestId":""}""")]
     [InlineData("""{"type":"capture-request","requestId":5}""")]
     [InlineData("not json")]
-    public void TryParseCaptureRequestId_IgnoresAnythingElse(string json)
+    public void TryParseCaptureRequest_IgnoresAnythingElse(string json)
     {
-        Assert.Null(VisionCaptureClient.TryParseCaptureRequestId(Json(json)));
+        Assert.Null(VisionCaptureClient.TryParseCaptureRequest(Json(json)));
     }
 
     [Fact]
@@ -51,6 +53,27 @@ public class VisionCaptureClientTests
         await client.RespondAsync("abc-123");
 
         Assert.Equal("""{"requestId":"abc-123","error":"no display"}""", getRequest().Body);
+    }
+
+    // #912: a camera request takes the camera snapshot, never the screen,
+    // and only a client with a camera says so when it connects.
+    [Fact]
+    public async Task RespondAsync_UsesTheCameraForACameraRequest()
+    {
+        string? body = null;
+        var handler = new FakeHttpMessageHandler(request =>
+        {
+            body = request.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
+            return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("{\"ok\":true}") };
+        });
+        using var client = new VisionCaptureClient(new ManaBackendClient(handler),
+            captureScreen: () => "screen", captureCamera: () => Task.FromResult("camera"));
+
+        await client.RespondAsync("abc-123", camera: true);
+
+        Assert.Equal("""{"requestId":"abc-123","image":"camera"}""", body);
+        Assert.Equal("?camera=1", VisionCaptureClient.BuildSocketUri(null, camera: true).Query);
+        Assert.Equal("", VisionCaptureClient.BuildSocketUri(null, camera: false).Query);
     }
 
     [Fact]
