@@ -1,6 +1,5 @@
 using System;
 using System.Drawing;
-using System.Runtime.InteropServices;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 
@@ -10,20 +9,10 @@ namespace Mana.NativeLauncher;
 // hotkey, for typing a command instead of speaking one. Created once and
 // reused (Hide, not Close/Dispose) for instant reappearance -- matches
 // windows-launcher/quick-entry's own lazy-create-and-reuse behavior.
+// #689: the hotkey (default Ctrl+Alt+Space, remappable or off in Settings >
+// Hotkeys) lives in GlobalHotkeyListener with the others.
 internal sealed class QuickEntryForm : Form
 {
-    [DllImport("user32.dll")]
-    private static extern bool RegisterHotKey(IntPtr hWnd, int id, uint fsModifiers, uint vk);
-
-    [DllImport("user32.dll")]
-    private static extern bool UnregisterHotKey(IntPtr hWnd, int id);
-
-    private const int WM_HOTKEY = 0x0312;
-    private const int HotkeyId = 0xA525; // arbitrary, just needs to be unique within this process
-    private const uint ModControl = 0x0002;
-    private const uint ModAlt = 0x0001;
-    private const uint VkSpace = 0x20;
-
     private readonly Func<string, Task<bool>> submitAsync;
     private readonly TextBox input = new();
 
@@ -50,37 +39,9 @@ internal sealed class QuickEntryForm : Form
         input.Font = new Font("Segoe UI", 12F);
         input.KeyDown += OnInputKeyDown;
         Controls.Add(input);
-
-        Hide();
-        // Forces the native window handle (and OnHandleCreated's hotkey
-        // registration) to exist immediately -- a hidden top-level Form
-        // otherwise defers handle creation until the first real Show(),
-        // which would leave the hotkey unregistered until this popup is
-        // shown once by some other means.
-        _ = Handle;
     }
 
-    protected override void OnHandleCreated(EventArgs e)
-    {
-        base.OnHandleCreated(e);
-        // Ctrl+Alt+Space -- unregistered by any common app the launcher is
-        // likely to run alongside. Silently no-ops if something else
-        // already holds it (e.g. a second launcher instance); there's no
-        // user-facing settings surface yet to pick a different one.
-        RegisterHotKey(Handle, HotkeyId, ModControl | ModAlt, VkSpace);
-    }
-
-    protected override void WndProc(ref Message m)
-    {
-        if (m.Msg == WM_HOTKEY && m.WParam.ToInt32() == HotkeyId)
-        {
-            ToggleVisible();
-            return;
-        }
-        base.WndProc(ref m);
-    }
-
-    private void ToggleVisible()
+    public void ToggleVisible()
     {
         if (Visible)
         {
@@ -123,14 +84,5 @@ internal sealed class QuickEntryForm : Form
                 await submitAsync(text);
                 break;
         }
-    }
-
-    protected override void Dispose(bool disposing)
-    {
-        if (disposing)
-        {
-            UnregisterHotKey(Handle, HotkeyId);
-        }
-        base.Dispose(disposing);
     }
 }
