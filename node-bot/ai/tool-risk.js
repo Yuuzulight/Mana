@@ -509,5 +509,6 @@ module.exports = {
   resolveToolApprovalMode,
   extractHosts,
   bindCall,
+  resolveExecutable,
   wrapWithRiskGate,
 };

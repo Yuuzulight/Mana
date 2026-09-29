@@ -432,6 +432,22 @@ function checkStorage(paths = {}) {
   }
 }
 
+// Q18 (#645): secrets still in plain text in node-bot/.env, by name only.
+// Shown here rather than as a warning on every start.
+function checkPlainTextSecrets(keys) {
+  if (!Array.isArray(keys)) return null;
+  if (!keys.length) {
+    return makeCheck("plain-text-secrets", "Secrets in .env", "pass", "No secrets are stored in plain text in node-bot/.env.");
+  }
+  return makeCheck(
+    "plain-text-secrets",
+    "Secrets in .env",
+    "warn",
+    `${keys.length} secret(s) in plain text in node-bot/.env: ${keys.join(", ")}. Move them to Windows Credential Manager (keyring:) or 1Password (op://), see node-bot/.env.sample.`,
+    { keys },
+  );
+}
+
 // Q28 (#620): the memory graph keeps every closed edge window (no cap), so
 // its size is shown here rather than silently growing.
 function checkMemoryGraphHistory(size) {
@@ -763,6 +779,7 @@ function runDoctorChecks(options = {}) {
     checkMobile2fa(env),
     checkRemoteExposure(env),
     checkStorage(paths),
+    checkPlainTextSecrets(options.plainTextSecrets),
     checkMemoryGraphHistory(options.memoryGraphHistory),
     ...checkEditorIntegrations({
       env,
@@ -823,7 +840,7 @@ async function runDoctorChecksAsync(options = {}) {
 }
 
 if (require.main === module) {
-  runDoctorChecksAsync()
+  runDoctorChecksAsync({ plainTextSecrets: require("./load-env").plainTextSecretKeys() })
     .then((result) => {
       process.stdout.write(`${JSON.stringify(result, null, 2)}${os.EOL}`);
       process.exitCode = result.ok ? 0 : 1;
