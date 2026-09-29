@@ -97,4 +97,13 @@ public class ReplyEmotionDetectorTests
         Assert.Equal("disgusted", ReplyEmotionDetector.DetectReplyEmotion("Ew, that's so gross and disgusting."));
         Assert.Equal("talking", ReplyEmotionDetector.DetectReplyEmotion("The weather looks calm today."));
     }
+
+    // #623: the model's own emotion tag wins over the text heuristics.
+    [Fact]
+    public void DetectReplyEmotion_UsesTheEmotionTagWhenGiven()
+    {
+        Assert.Equal("sad", ReplyEmotionDetector.DetectReplyEmotion("Yay!! Let's go!", "Disappointed"));
+        Assert.Equal("talking", ReplyEmotionDetector.DetectReplyEmotion("Yay!! Let's go!", "questioning"));
+        Assert.Equal("excited", ReplyEmotionDetector.DetectReplyEmotion("Yay!! Let's go!", null));
+    }
 }

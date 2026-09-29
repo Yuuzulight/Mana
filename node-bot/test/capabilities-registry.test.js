@@ -5,6 +5,7 @@ const {
   buildCapabilityHealth,
   contributePluginPromptContext,
   registerCapabilities,
+  runPluginInputHooks,
 } = require("../capabilities/registry");
 
 function fakePluginSettingsStore(overrides = {}) {
@@ -301,4 +302,83 @@ test("an enabled plugin behaves exactly as if ungated", () => {
 
   app.routes[0].handler({}, {});
   assert.equal(handlerRan, true);
+});
+
+test("runPluginInputHooks runs by priority, passes rewrites along and accumulates patches", async () => {
+  const seen = [];
+  const result = await runPluginInputHooks(
+    [
+      {
+        key: "late",
+        onUserInput: async (input) => {
+          seen.push(["late", input.text, input.source]);
+          return { promptPatch: { system: "sys-late", user: "user-late" } };
+        },
+      },
+      {
+        key: "early",
+        inputHookPriority: 10,
+        onUserInput: (input) => {
+          seen.push(["early", input.text, input.source]);
+          return { text: "hello mana", promptPatch: { system: "sys-early" } };
+        },
+      },
+      { key: "no-hook" },
+      {
+        key: "tie",
+        onUserInput: (input) => {
+          seen.push(["tie", input.text, input.source]);
+        },
+      },
+    ],
+    { text: "hello manner", source: "voice", sessionId: "s1", hasImages: false },
+  );
+
+  assert.deepEqual(seen, [
+    ["early", "hello manner", "voice"],
+    ["late", "hello mana", "voice"],
+    ["tie", "hello mana", "voice"],
+  ]);
+  assert.deepEqual(result, {
+    text: "hello mana",
+    systemPatch: "sys-early\n\nsys-late",
+    userPatch: "user-late",
+    reply: "",
+  });
+});
+
+test("runPluginInputHooks stops the chain at the first reply", async () => {
+  let laterRan = false;
+  const result = await runPluginInputHooks(
+    [
+      { key: "clock", onUserInput: () => ({ reply: "It's noon." }) },
+      { key: "later", onUserInput: () => { laterRan = true; } },
+    ],
+    { text: "what time is it" },
+  );
+
+  assert.equal(result.reply, "It's noon.");
+  assert.equal(result.text, "what time is it");
+  assert.equal(laterRan, false);
+});
+
+test("runPluginInputHooks skips throwing, slow and disabled plugins", async () => {
+  const startedAt = Date.now();
+  const result = await runPluginInputHooks(
+    [
+      { key: "throws", onUserInput: () => { throw new Error("boom"); } },
+      { key: "hangs", onUserInput: () => new Promise(() => {}) },
+      {
+        key: "off",
+        category: "utility",
+        onUserInput: () => ({ reply: "should not run" }),
+      },
+      { key: "ok", onUserInput: (input) => ({ text: `${input.text}!` }) },
+    ],
+    { text: "hi" },
+    { pluginSettingsStore: fakePluginSettingsStore({ off: false }) },
+  );
+
+  assert.deepEqual(result, { text: "hi!", systemPatch: "", userPatch: "", reply: "" });
+  assert.ok(Date.now() - startedAt < 1000, "a hanging hook must be cut off by the timeout");
 });

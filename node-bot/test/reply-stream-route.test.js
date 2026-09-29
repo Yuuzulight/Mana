@@ -34,9 +34,12 @@ test("POST /reply/stream emits sentence events then one final event", async () =
     ) => {
       if (onSentence) {
         await onSentence("Hello there.");
-        await onSentence("How can I help?");
+        await onSentence("How can I help?", "questioning");
       }
-      if (replyMeta) replyMeta.streamedMatchesFinal = true;
+      if (replyMeta) {
+        replyMeta.streamedMatchesFinal = true;
+        replyMeta.emotion = "questioning";
+      }
       return "Hello there. How can I help?";
     },
   });
@@ -49,12 +52,13 @@ test("POST /reply/stream emits sentence events then one final event", async () =
     assert.equal(response.status, 200);
     assert.match(response.headers.get("content-type") || "", /application\/x-ndjson/);
     assert.deepEqual(events[0], { type: "sentence", text: "Hello there." });
-    assert.deepEqual(events[1], { type: "sentence", text: "How can I help?" });
+    assert.deepEqual(events[1], { type: "sentence", text: "How can I help?", emotion: "questioning" });
     assert.equal(events.length, 3);
     assert.equal(events[2].type, "final");
     assert.equal(events[2].reply, "Hello there. How can I help?");
     assert.equal(events[2].changed, false);
     assert.equal(events[2].ttsConfigured, true);
+    assert.equal(events[2].emotion, "questioning");
   });
 });
 

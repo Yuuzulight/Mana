@@ -1592,6 +1592,45 @@ internal sealed class ManaBackendClient
         return new ManaBrowserAutomationActivity { Log = log, ScreenshotBase64 = screenshotBase64 };
     }
 
+    // #646: the chat tool loop's live runs -- no auth, a read-only status
+    // readout like /browser-automation/activity above.
+    public async Task<IReadOnlyList<ManaAgentRun>> GetAgentActivityAsync()
+    {
+        using var response = await http.GetAsync("/agent/activity");
+        response.EnsureSuccessStatusCode();
+        await using var stream = await response.Content.ReadAsStreamAsync();
+        using var document = await JsonDocument.ParseAsync(stream);
+        var runs = new List<ManaAgentRun>();
+        if (document.RootElement.TryGetProperty("runs", out var runsElement) && runsElement.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var element in runsElement.EnumerateArray())
+            {
+                runs.Add(new ManaAgentRun
+                {
+                    Id = element.TryGetProperty("id", out var idElement) ? idElement.GetString() ?? "" : "",
+                    ElapsedMs = element.TryGetProperty("elapsedMs", out var elapsedElement) ? elapsedElement.GetInt64() : 0,
+                    Tool = element.TryGetProperty("tool", out var toolElement) ? toolElement.GetString() : null,
+                    ToolElapsedMs = element.TryGetProperty("toolElapsedMs", out var toolElapsedElement) && toolElapsedElement.ValueKind == JsonValueKind.Number
+                        ? toolElapsedElement.GetInt64()
+                        : null,
+                    ToolCount = element.TryGetProperty("toolCount", out var countElement) ? countElement.GetInt32() : 0,
+                    LastTool = element.TryGetProperty("lastTool", out var lastToolElement) ? lastToolElement.GetString() : null,
+                    Stopping = element.TryGetProperty("stopping", out var stoppingElement) && stoppingElement.ValueKind == JsonValueKind.True,
+                });
+            }
+        }
+        return runs;
+    }
+
+    // #646: admin-gated (checkAdminAuth) like the proposal approve route.
+    public async Task StopAgentRunAsync(string id)
+    {
+        var payload = JsonSerializer.Serialize(new { id });
+        using var content = new StringContent(payload, Encoding.UTF8, "application/json");
+        using var response = await http.PostAsync("/agent/stop", content);
+        response.EnsureSuccessStatusCode();
+    }
+
     // #577: node-bot's deep-research job store (capabilities/deep-research-
     // capability.js) -- 202-Accepted with a jobId, polled via
     // GetResearchJobAsync. sessionId, when given, is what lets the
@@ -1708,6 +1747,17 @@ internal sealed class ManaBackendClient
         response.EnsureSuccessStatusCode();
     }
 
+    // #641: read-only data for MemoryGraphForm. Same admin-auth note as
+    // GetMemoryFactsAsync.
+    public async Task<ManaMemoryGraph> GetMemoryGraphAsync()
+    {
+        using var response = await http.GetAsync("/admin/memory/graph");
+        response.EnsureSuccessStatusCode();
+        await using var stream = await response.Content.ReadAsStreamAsync();
+        return await JsonSerializer.DeserializeAsync<ManaMemoryGraph>(stream, new JsonSerializerOptions(JsonSerializerDefaults.Web))
+            ?? new ManaMemoryGraph();
+    }
+
     private static ReplyStreamEvent ParseReplyStreamEvent(JsonElement root)
     {
         return new ReplyStreamEvent
@@ -1717,6 +1767,7 @@ internal sealed class ManaBackendClient
             Reply = root.TryGetProperty("reply", out var replyProp) ? replyProp.GetString() : null,
             Changed = root.TryGetProperty("changed", out var changedProp) && changedProp.GetBoolean(),
             Expression = root.TryGetProperty("expression", out var exprProp) ? exprProp.GetString() : null,
+            Emotion = root.TryGetProperty("emotion", out var emotionProp) && emotionProp.ValueKind == JsonValueKind.String ? emotionProp.GetString() : null,
             Error = root.TryGetProperty("error", out var errProp) ? errProp.GetString() : null,
             Name = root.TryGetProperty("name", out var nameProp) && nameProp.ValueKind == JsonValueKind.String ? nameProp.GetString() : null,
             Phase = root.TryGetProperty("phase", out var phaseProp) && phaseProp.ValueKind == JsonValueKind.String ? phaseProp.GetString() : null,
@@ -1980,6 +2031,9 @@ internal sealed class ReplyStreamEvent
     public string? Reply { get; init; }
     public bool Changed { get; init; }
     public string? Expression { get; init; }
+    // #623: node-bot's emotion tag -- a "sentence" event's face, or on
+    // "final" the whole reply's (for speaking it as one clip).
+    public string? Emotion { get; init; }
     public string? Error { get; init; }
     // #661: type "tool" -- the tool's name and "start"/"end".
     public string? Name { get; init; }
@@ -2065,6 +2119,18 @@ internal sealed class ManaBrowserAutomationLogEntry
     public string At { get; init; } = "";
 }
 
+// #646: one entry from GET /agent/activity (node-bot/agent-activity.js).
+internal sealed class ManaAgentRun
+{
+    public string Id { get; init; } = "";
+    public long ElapsedMs { get; init; }
+    public string? Tool { get; init; }
+    public long? ToolElapsedMs { get; init; }
+    public int ToolCount { get; init; }
+    public string? LastTool { get; init; }
+    public bool Stopping { get; init; }
+}
+
 // #577: GET /research/:jobId's shape -- see deep-research-capability.js's
 // own job object. Status is one of "running"/"done"/"cancelled"/"error".
 internal sealed class ManaResearchJob
@@ -2134,4 +2200,37 @@ internal sealed class ManaLlamaBuildActionResult
     public bool Ok { get; init; }
     public string? Code { get; init; }
     public string? Error { get; init; }
+}
+
+// #641: GET /admin/memory/graph.
+internal sealed class ManaMemoryGraph
+{
+    public List<ManaMemoryGraphNode> Nodes { get; init; } = new();
+    public List<ManaMemoryGraphEdge> Edges { get; init; } = new();
+    // Newest validFrom first; InvalidatedAt set = superseded.
+    public List<ManaMemoryFactWindow> Facts { get; init; } = new();
+}
+
+internal sealed class ManaMemoryGraphNode
+{
+    public string Key { get; init; } = "";
+    public string Display { get; init; } = "";
+    // entity-ontology.js's category; null while not yet typed.
+    public string? Type { get; init; }
+}
+
+internal sealed class ManaMemoryGraphEdge
+{
+    public string A { get; init; } = "";
+    public string B { get; init; } = "";
+    public double Weight { get; init; }
+    public string? LastReinforcedAt { get; init; }
+}
+
+internal sealed class ManaMemoryFactWindow
+{
+    public string Key { get; init; } = "";
+    public string Text { get; init; } = "";
+    public string? ValidFrom { get; init; }
+    public string? InvalidatedAt { get; init; }
 }
