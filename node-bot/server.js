@@ -3777,6 +3777,11 @@ function registerRoutes(app, upload, deps = {}) {
       }
     }
     selectedSystemPrompt = `${selectedSystemPrompt}\n\n${modeText}`;
+    // Issue #677: plugin onUserInput system patches are per turn, so they go
+    // after the mode text for the same prompt-cache reason (#660).
+    if (replyMeta && replyMeta.systemPatch) {
+      selectedSystemPrompt = `${selectedSystemPrompt}\n\n${replyMeta.systemPatch}`;
+    }
 
     // Issue #282: memory (session summary/recent-turns, cross-session
     // facts) becomes its own positionable system-role messages -- "early"
