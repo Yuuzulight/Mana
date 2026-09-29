@@ -1,8 +1,9 @@
 using System;
 using System.Diagnostics;
 using System.Drawing;
-using System.Drawing.Imaging;
 using System.IO;
+using System.Linq;
+using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
@@ -29,15 +30,26 @@ internal sealed class ScreenContextReader
     private const int MaxTreeFailures = 3;
     private const int MinIntervalMs = 8000;
     private const int GamingMinIntervalMs = 30000;
+    // #671: no tree walk within this long of the last keyboard/mouse input.
+    private const int InputQuietMs = 1000;
+
+    // #671: apps whose UI Automation trees are known to be slow or hang.
+    private static readonly string[] SlowTreeApps = { "outlook" };
 
     private readonly string scriptPath;
     private readonly ManaBackendClient backendClient;
+    private readonly ScreenOcrGate ocrGate = new();
     private int treeFailureCount;
     private string lastScreenText = "";
     private long lastReadAtMs = long.MinValue;
+    private long? previousTurnAtMs; // Q36: ReadAsync runs once per voice turn
+    private readonly Func<Rectangle?>? avatarBounds;
 
-    public ScreenContextReader(string rootDirectory, ManaBackendClient backendClient)
+    // avatarBounds (Q37): Mana's avatar on screen, or null while she's
+    // hidden/minimized.
+    public ScreenContextReader(string rootDirectory, ManaBackendClient backendClient, Func<Rectangle?>? avatarBounds = null)
     {
+        this.avatarBounds = avatarBounds;
         // #681: shared with windows-launcher from tools/ (was under
         // windows-launcher/scripts/).
         scriptPath = Path.Combine(rootDirectory, "tools", "read-accessibility-tree.ps1");
@@ -51,34 +63,57 @@ internal sealed class ScreenContextReader
     // does the same.
     public async Task<string> ReadAsync(string commandText, bool gamingModeActive)
     {
+        var normalized = ScreenContextTrigger.CleanTranscriptText(commandText).ToLowerInvariant();
+        // #648: "this"/"here" means whatever is under the mouse cursor
+        // right now, which the cached read may not describe -- so a
+        // deictic command skips the min interval and reads at the cursor.
+        var atCursor = ScreenContextTrigger.IsDeictic(normalized) || ScreenContextTrigger.MeansNearAvatar(normalized);
         var now = Environment.TickCount64;
+        var readsOnItsOwn = ScreenContextTrigger.ReadsScreenOnItsOwn(normalized, now - previousTurnAtMs);
+        previousTurnAtMs = now;
         var minInterval = gamingModeActive ? GamingMinIntervalMs : MinIntervalMs;
-        if (lastScreenText.Length > 0 && now - lastReadAtMs < minInterval)
+        if (!atCursor && lastScreenText.Length > 0 && now - lastReadAtMs < minInterval)
         {
             return lastScreenText;
         }
 
-        var normalized = ScreenContextTrigger.CleanTranscriptText(commandText).ToLowerInvariant();
         // Issue #344's own override, ported: set to "0" to restore the
         // old always-read-outside-gaming behavior.
         var keywordGateEnabled = Environment.GetEnvironmentVariable("MANA_SCREEN_CONTEXT_KEYWORD_GATE") != "0";
-        if (!ScreenContextTrigger.ShouldReadScreenForCommand(normalized, gamingModeActive, keywordGateEnabled))
+        if (!readsOnItsOwn && !ScreenContextTrigger.ShouldReadScreenForCommand(normalized, gamingModeActive, keywordGateEnabled))
         {
             return lastScreenText;
         }
 
         try
         {
-            var tree = await ReadAccessibilityTreeAsync();
-            if (IsTreeUsable(tree, Environment.ProcessId))
+            var window = GetForegroundWindow();
+            GetWindowThreadProcessId(window, out var windowPid);
+            // #671: Mana's own UI in front is a self-description, not
+            // context -- skip both the tree walk and OCR.
+            if (windowPid == Environment.ProcessId)
             {
-                lastScreenText = tree!.Value.Text;
-                lastReadAtMs = now;
-                return lastScreenText;
+                return "";
             }
 
-            var imageDataUrl = CaptureScreenAsJpegDataUrl();
-            var text = await backendClient.ReadScreenAsync(imageDataUrl);
+            if (!ShouldSkipTreeWalk(windowPid))
+            {
+                var tree = await ReadAccessibilityTreeAsync(atCursor ? ReadPoint(normalized) : null);
+                if (IsTreeUsable(tree, Environment.ProcessId))
+                {
+                    lastScreenText = tree!.Value.Text;
+                    lastReadAtMs = now;
+                    return lastScreenText;
+                }
+            }
+
+            // #671: OCR just the foreground window, and only when it
+            // changed since the last OCR (ScreenOcrGate).
+            using var bitmap = ScreenCapture.Capture(ForegroundBounds(window));
+            var text = await ocrGate.ReadAsync(
+                window,
+                ScreenOcrGate.DifferenceHash(bitmap),
+                () => backendClient.ReadScreenAsync(ScreenCapture.ToJpegDataUrl(bitmap)));
             lastScreenText = text;
             lastReadAtMs = now;
             return lastScreenText;
@@ -98,6 +133,34 @@ internal sealed class ScreenContextReader
     internal static bool IsTreeUsable(AccessibilityTreeResult? tree, int ownProcessId) =>
         tree is { } t && t.OwnerPid != ownProcessId && AccessibilityTreeOutputParser.IsUsable(t.Text);
 
+    // #648/Q37: where a deictic read starts -- beside the avatar for "next
+    // to you"/"behind you", else the cursor (physical pixels, what UI
+    // Automation hit-tests in; Cursor.Position is DPI-virtualized on a
+    // monitor whose scale differs from ours). null: the focused element.
+    // ponytail: avatar bounds are logical pixels, so on a mixed-DPI setup the avatar point can be off; convert with LogicalToPhysicalPointForPerMonitorDPI if that shows up.
+    private Point? ReadPoint(string normalized)
+    {
+        if (ScreenContextTrigger.MeansNearAvatar(normalized) && avatarBounds?.Invoke() is Rectangle avatar)
+        {
+            return BesideAvatar(avatar, SystemInformation.VirtualScreen);
+        }
+        return GetPhysicalCursorPos(out var cursor) ? cursor : null;
+    }
+
+    // Just left of her window at mid-height (her own pixels would hit-test
+    // as Mana, which the script skips), or just right of it at the left
+    // edge of the desktop.
+    internal static Point BesideAvatar(Rectangle avatar, Rectangle desktop)
+    {
+        const int gap = 40;
+        var y = avatar.Top + (avatar.Height / 2);
+        return avatar.Left - gap >= desktop.Left ? new Point(avatar.Left - gap, y) : new Point(avatar.Right + gap, y);
+    }
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    [return: System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.Bool)]
+    private static extern bool GetPhysicalCursorPos(out Point point);
+
     // Returns null when the tree read is disabled/gave up for this
     // session/timed out/errored/exited non-zero -- all of those (except
     // the disabled/gave-up gate itself) increment treeFailureCount, same
@@ -105,7 +168,7 @@ internal sealed class ScreenContextReader
     // accessibilityTreeFailureCount. A successful parse whose ownerPid
     // turns out to be this launcher's own process is NOT a failure (the
     // script did its job correctly) -- that check happens in the caller.
-    private async Task<AccessibilityTreeResult?> ReadAccessibilityTreeAsync()
+    private async Task<AccessibilityTreeResult?> ReadAccessibilityTreeAsync(Point? readAt)
     {
         if (Environment.GetEnvironmentVariable("MANA_ACCESSIBILITY_TREE_ENABLED") == "0" || treeFailureCount >= MaxTreeFailures)
         {
@@ -131,6 +194,19 @@ internal sealed class ScreenContextReader
         var maxChars = int.TryParse(maxCharsEnv, out var parsedMaxChars) ? parsedMaxChars : DefaultTreeMaxChars;
         process.StartInfo.ArgumentList.Add("-MaxChars");
         process.StartInfo.ArgumentList.Add(maxChars.ToString());
+        // #648: read from the element at readAt (see ReadPoint). Our own
+        // windows (avatar, captions) there are skipped in favor of the
+        // focused element, as before.
+        if (readAt is Point cursor)
+        {
+            process.StartInfo.ArgumentList.Add("-AtPoint");
+            process.StartInfo.ArgumentList.Add("-PointX");
+            process.StartInfo.ArgumentList.Add(cursor.X.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            process.StartInfo.ArgumentList.Add("-PointY");
+            process.StartInfo.ArgumentList.Add(cursor.Y.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            process.StartInfo.ArgumentList.Add("-IgnorePointPid");
+            process.StartInfo.ArgumentList.Add(Environment.ProcessId.ToString());
+        }
 
         using var cts = new CancellationTokenSource(TreeTimeoutMs);
         try
@@ -153,16 +229,59 @@ internal sealed class ScreenContextReader
         }
     }
 
-    private static string CaptureScreenAsJpegDataUrl()
+    // #671: UI-tree budgets on top of the timeout/caps above. Walking the
+    // tree of the app being typed into can stall its input, and some apps'
+    // trees are slow enough to burn the whole timeout for nothing -- both
+    // go straight to OCR. "In use" is Windows' own last-input time (Q2:
+    // GetLastInputInfo, no keyboard listener), so mouse movement counts too.
+    private static bool ShouldSkipTreeWalk(int windowPid) =>
+        InUse(SystemIdle.GetIdleMilliseconds()) || IsSlowTreeApp(ProcessNameOf(windowPid));
+
+    // Unknown idle time (the call failed) never counts as in use.
+    internal static bool InUse(long? idleMs) => idleMs < InputQuietMs;
+
+    internal static bool IsSlowTreeApp(string processName) =>
+        SlowTreeApps.Contains(processName, StringComparer.OrdinalIgnoreCase);
+
+    private static string ProcessNameOf(int pid)
     {
-        var bounds = Screen.PrimaryScreen!.Bounds;
-        using var bitmap = new Bitmap(bounds.Width, bounds.Height);
-        using (var g = Graphics.FromImage(bitmap))
+        try
         {
-            g.CopyFromScreen(bounds.Location, Point.Empty, bounds.Size);
+            using var process = Process.GetProcessById(pid);
+            return process.ProcessName;
         }
-        using var stream = new MemoryStream();
-        bitmap.Save(stream, ImageFormat.Jpeg);
-        return $"data:image/jpeg;base64,{Convert.ToBase64String(stream.ToArray())}";
+        catch
+        {
+            return "";
+        }
+    }
+
+    // The foreground window's rect clipped to the desktop; the whole
+    // primary screen (the old behavior) when there's no usable window.
+    private static Rectangle ForegroundBounds(IntPtr window)
+    {
+        var bounds = GetWindowRect(window, out var rect)
+            ? Rectangle.Intersect(Rectangle.FromLTRB(rect.Left, rect.Top, rect.Right, rect.Bottom), SystemInformation.VirtualScreen)
+            : Rectangle.Empty;
+        return bounds.Width > 0 && bounds.Height > 0 ? bounds : Screen.PrimaryScreen!.Bounds;
+    }
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetForegroundWindow();
+
+    [DllImport("user32.dll")]
+    private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out int processId);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetWindowRect(IntPtr hWnd, out NativeRect rect);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct NativeRect
+    {
+        public int Left;
+        public int Top;
+        public int Right;
+        public int Bottom;
     }
 }

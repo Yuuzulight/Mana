@@ -1,8 +1,12 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Drawing;
+using System.IO;
 using System.Linq;
+using System.Text.RegularExpressions;
 using System.Windows.Forms;
+using TheArtOfDev.HtmlRenderer.WinForms;
 
 namespace Mana.NativeLauncher;
 
@@ -11,29 +15,42 @@ namespace Mana.NativeLauncher;
 // Mermaid content rendered natively (MermaidParser/MermaidLayout/
 // MermaidRenderer, flowcharts only -- sequence diagrams and everything
 // else fall back to raw source text, same as an unrecognized/malformed
-// diagram), everything else shown as plain monospace text. No markdown
-// rendering for non-Mermaid content: artifact content is source
-// code/HTML, which doesn't carry markdown inline formatting to begin
-// with, so plain monospace text is the correct rendering for it, not a
-// lesser fallback.
+// diagram), simple HTML drawn by HtmlRenderer (#686; pages it can't draw
+// open in the default browser), everything else shown as plain
+// monospace text. No markdown rendering for other
+// content: artifact content is source code, which doesn't carry markdown
+// inline formatting to begin with, so plain monospace text is the correct
+// rendering for it, not a lesser fallback.
 //
-// Unlike the reference (a click affordance in the chat log opens this),
-// the native launcher has no chat surface on this branch to host that
-// click target in -- ReportReply shows/activates this window directly
-// whenever a fresh artifact is detected, a deliberate adaptation given
-// what's actually available to wire into right now.
-internal sealed class ArtifactViewerForm : Form, IArtifactSink
+// #686: like the reference, the chat opens this from a button on the
+// reply's bubble (ChatView calls Add, then the returned action), instead
+// of it popping up by itself.
+internal enum ArtifactOpen
+{
+    Default, // HTML: in Mana if HtmlRenderer can draw it, else the browser
+    InMana,
+    Browser,
+    Source,
+    SaveAs,
+}
+
+internal sealed class ArtifactViewerForm : Form
 {
     private readonly List<VersionedArtifact> history = new();
     private IReadOnlyList<VersionedArtifact> currentThread = Array.Empty<VersionedArtifact>();
     private int currentIndex;
     private string? currentMermaidSource;
+    private bool showSource; // "View source": HTML stays source while paging through versions
 
     private readonly Label titleLabel = new();
     private readonly Button prevButton = new();
     private readonly Button nextButton = new();
     private readonly TextBox textBox = new();
     private readonly Panel diagramPanel = new();
+    // #686: simple HTML, drawn with no network: images only from data:
+    // URIs, no external stylesheets, links go nowhere. Anything needing
+    // scripts or modern layout goes to the browser instead (HtmlArtifact).
+    private readonly HtmlPanel htmlView = new() { Dock = DockStyle.Fill, Visible = false };
 
     public ArtifactViewerForm()
     {
@@ -77,20 +94,21 @@ internal sealed class ArtifactViewerForm : Form, IArtifactSink
         diagramPanel.BackColor = DarkTheme.Background;
         diagramPanel.Paint += OnDiagramPaint;
 
+        htmlView.ImageLoad += (_, e) =>
+        {
+            if (!HtmlArtifact.IsDataUri(e.Src))
+            {
+                e.Handled = true;
+                e.Callback(); // no image
+            }
+        };
+        htmlView.StylesheetLoad += (_, e) => e.SetStyleSheet = "";
+        htmlView.LinkClicked += (_, e) => e.Handled = true;
+
+        Controls.Add(htmlView);
         Controls.Add(diagramPanel);
         Controls.Add(textBox);
         Controls.Add(navRow);
-
-        // Forces the native window handle to exist now, on this (the UI)
-        // thread -- ReportReply can fire from VoiceLoop's background
-        // continuations before this window has ever been shown, and
-        // InvokeRequired/BeginInvoke need a handle that was genuinely
-        // created on the UI thread to marshal correctly (InvokeRequired
-        // returns false, not throws, when no handle exists yet, which
-        // would otherwise let a background thread touch this form's
-        // controls directly).
-        _ = Handle;
-        Hide();
     }
 
     protected override void OnFormClosing(FormClosingEventArgs e)
@@ -104,33 +122,41 @@ internal sealed class ArtifactViewerForm : Form, IArtifactSink
         base.OnFormClosing(e);
     }
 
-    public void ReportReply(string replyText)
+    // Records a reply's artifact in its version thread and returns what its
+    // chat button runs: open the thread at this version (versions added
+    // since stay reachable with Next), or for HTML, the browser / save.
+    // UI thread only.
+    public Action<ArtifactOpen> Add(DetectedArtifact detected)
     {
-        var detected = ArtifactDetector.Extract(replyText);
-        if (detected is null)
-        {
-            return;
-        }
-
-        var versioned = ArtifactDetector.AssignVersion(detected.Value, history);
+        var versioned = ArtifactDetector.AssignVersion(detected, history);
         history.Add(versioned);
-        var thread = history.Where(a => a.ThreadId == versioned.ThreadId).ToList();
-
-        RunOnUiThread(() => ShowThread(thread, thread.Count - 1));
+        return how =>
+        {
+            var html = versioned.Language == "html";
+            if (html && (how == ArtifactOpen.Browser || (how == ArtifactOpen.Default && HtmlArtifact.NeedsBrowser(versioned.Content))))
+            {
+                HtmlArtifact.OpenInBrowser(versioned.Content);
+                return;
+            }
+            if (how == ArtifactOpen.SaveAs)
+            {
+                SaveAs(versioned);
+                return;
+            }
+            showSource = how == ArtifactOpen.Source;
+            var thread = history.Where(a => a.ThreadId == versioned.ThreadId).ToList();
+            ShowThread(thread, thread.IndexOf(versioned));
+        };
     }
 
-    private void RunOnUiThread(Action action)
+    // Only HTML artifacts offer it (their split button's menu).
+    private static void SaveAs(VersionedArtifact artifact)
     {
-        if (IsDisposed)
+        using var dialog = new SaveFileDialog { FileName = "artifact.html", Filter = "Web page (*.html)|*.html|All files (*.*)|*.*" };
+        if (dialog.ShowDialog() == DialogResult.OK)
         {
-            return;
+            File.WriteAllText(dialog.FileName, artifact.Content);
         }
-        if (InvokeRequired)
-        {
-            BeginInvoke(action);
-            return;
-        }
-        action();
     }
 
     private void ShowThread(IReadOnlyList<VersionedArtifact> thread, int index)
@@ -164,6 +190,7 @@ internal sealed class ArtifactViewerForm : Form, IArtifactSink
         prevButton.Enabled = currentIndex > 0;
         nextButton.Enabled = currentIndex < currentThread.Count - 1;
 
+        htmlView.Visible = false;
         if (artifact.Language == "mermaid")
         {
             currentMermaidSource = artifact.Content;
@@ -176,9 +203,23 @@ internal sealed class ArtifactViewerForm : Form, IArtifactSink
             currentMermaidSource = null;
             diagramPanel.Visible = false;
             textBox.Visible = true;
-            textBox.Text = artifact.Content;
+            textBox.Text = artifact.Content; // HTML's source too, when asked for or HtmlRenderer can't draw it
+            if (artifact.Language == "html" && !showSource)
+            {
+                if (HtmlArtifact.NeedsBrowser(artifact.Content))
+                {
+                    titleLabel.Text += " (needs a browser -- source shown)";
+                }
+                else
+                {
+                    htmlView.Text = artifact.Content;
+                    textBox.Visible = false;
+                    htmlView.Visible = true;
+                }
+            }
         }
     }
+
 
     private void OnDiagramPaint(object? sender, PaintEventArgs e)
     {
@@ -234,5 +275,44 @@ internal sealed class ArtifactViewerForm : Form, IArtifactSink
         // background is DarkTheme.Background now, not white.
         using var textBrush = new SolidBrush(DarkTheme.Text);
         g.DrawString(text, textBox.Font, textBrush, 10, 10);
+    }
+}
+
+// #686 (Q1/Q4): what HtmlRenderer can't draw -- scripts, inline event
+// handlers, canvas, SVG, flex/grid layout -- opens in the default browser,
+// from a temp copy whose CSP stops it making network requests.
+internal static class HtmlArtifact
+{
+    private static readonly Regex BrowserOnly = new(
+        @"<script\b|<canvas\b|<svg\b|\son[a-z]+\s*=|display\s*:\s*(inline-)?(flex|grid)\b",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+
+    public static bool NeedsBrowser(string html) => BrowserOnly.IsMatch(html);
+
+    public static bool IsDataUri(string? src) => src?.TrimStart().StartsWith("data:", StringComparison.OrdinalIgnoreCase) == true;
+
+    private const string CspMeta = "<meta http-equiv=\"Content-Security-Policy\" content=\"connect-src 'none'\">";
+
+    // Right after <head>, else after the doctype (a meta there still lands
+    // in the implied head), else first.
+    public static string WithCsp(string html)
+    {
+        var at = Regex.Match(html, @"<head\b[^>]*>", RegexOptions.IgnoreCase);
+        if (!at.Success)
+        {
+            at = Regex.Match(html, @"^\s*<!doctype[^>]*>", RegexOptions.IgnoreCase);
+        }
+        var index = at.Success ? at.Index + at.Length : 0;
+        return html.Insert(index, CspMeta);
+    }
+
+    // ponytail: temp copies are left for Windows' temp cleanup; delete on exit if they pile up.
+    public static void OpenInBrowser(string html)
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "Mana", "artifacts");
+        Directory.CreateDirectory(dir);
+        var path = Path.Combine(dir, $"artifact-{Guid.NewGuid():N}.html");
+        File.WriteAllText(path, WithCsp(html));
+        Process.Start(new ProcessStartInfo(path) { UseShellExecute = true })?.Dispose();
     }
 }

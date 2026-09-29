@@ -681,6 +681,51 @@ internal sealed class ManaBackendClient
         };
     }
 
+    // #642: the context meter -- GET /prompt-composition/:sessionId (see
+    // node-bot/prompt-composition-report.js). Null on 404: nothing has been
+    // assembled for this session yet. A block's Tokens is the tokenizer's
+    // count when the backend has it, else its char/4 estimate; CountedWith
+    // stays null until the backend's end-of-turn count lands.
+    public async Task<ManaPromptComposition?> GetPromptCompositionAsync(string sessionId)
+    {
+        using var response = await http.GetAsync($"/prompt-composition/{Uri.EscapeDataString(sessionId)}");
+        if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
+        {
+            return null;
+        }
+        response.EnsureSuccessStatusCode();
+        await using var stream = await response.Content.ReadAsStreamAsync();
+        using var document = await JsonDocument.ParseAsync(stream);
+        var root = document.RootElement;
+
+        static long? Long(JsonElement element, string name) =>
+            element.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.Number ? value.GetInt64() : null;
+
+        var blocks = new List<ManaPromptBlock>();
+        if (root.TryGetProperty("blocks", out var blocksElement) && blocksElement.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var block in blocksElement.EnumerateArray())
+            {
+                blocks.Add(new ManaPromptBlock
+                {
+                    Name = block.TryGetProperty("name", out var name) ? name.GetString() ?? "" : "",
+                    Tokens = Long(block, "tokens") ?? Long(block, "estTokens") ?? 0,
+                });
+            }
+        }
+
+        return new ManaPromptComposition
+        {
+            Blocks = blocks,
+            CountedWith = root.TryGetProperty("countedWith", out var countedWith) ? countedWith.GetString() : null,
+            TotalTokens = Long(root, "totalTokens"),
+            PromptTokens = Long(root, "promptTokens"),
+            UnattributedTokens = Long(root, "unattributedTokens"),
+            ContextSize = Long(root, "contextSize"),
+            PercentUsed = root.TryGetProperty("percentUsed", out var percent) && percent.ValueKind == JsonValueKind.Number ? percent.GetDouble() : null,
+        };
+    }
+
     public async Task<bool> DeleteSessionAsync(string sessionId)
     {
         using var response = await http.DeleteAsync($"/sessions/{Uri.EscapeDataString(sessionId)}");
@@ -1889,6 +1934,25 @@ internal sealed class ManaSessionDetail
     public string? Goal { get; init; }
     public IReadOnlyList<ManaSessionTurn> RecentTurns { get; init; } = Array.Empty<ManaSessionTurn>();
     public int TotalTurnCount { get; init; }
+}
+
+// #642: GET /prompt-composition/:sessionId, trimmed to what the context
+// meter shows.
+internal sealed class ManaPromptComposition
+{
+    public IReadOnlyList<ManaPromptBlock> Blocks { get; init; } = Array.Empty<ManaPromptBlock>();
+    public string? CountedWith { get; init; }
+    public long? TotalTokens { get; init; }
+    public long? PromptTokens { get; init; }
+    public long? UnattributedTokens { get; init; }
+    public long? ContextSize { get; init; }
+    public double? PercentUsed { get; init; }
+}
+
+internal sealed class ManaPromptBlock
+{
+    public string Name { get; init; } = "";
+    public long Tokens { get; init; }
 }
 
 internal sealed class ManaSessionTurn

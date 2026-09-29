@@ -419,6 +419,19 @@ internal sealed class VoiceLoop : IDisposable
     // its deep-research entry point.
     public string EnsureSessionId() => session.EnsureForTurn();
 
+    // #668: no turn in flight and she isn't speaking -- when the message
+    // box's queue may send its next message without cutting her off.
+    public bool IsIdle
+    {
+        get
+        {
+            lock (stateLock)
+            {
+                return mode == ListenMode.Idle;
+            }
+        }
+    }
+
     public void Dispose() => Stop();
 
     private void OnDataAvailable(object? sender, WaveInEventArgs e)
