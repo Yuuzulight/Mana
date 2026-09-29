@@ -48,6 +48,7 @@ internal sealed class VoiceLoop : IDisposable
     private readonly SileroVadRunner vad;
     private readonly WakeWordClassifier? wakeWordClassifier;
     private readonly CaptionOverlayForm? captions;
+    private readonly ChatBubblesForm? bubbles; // #701
     private readonly ManaBackendClient backendClient;
     private readonly AudioPlayer audioPlayer;
     private readonly AvatarOverlayForm avatarOverlay;
@@ -239,10 +240,12 @@ internal sealed class VoiceLoop : IDisposable
         Func<bool>? isGamingModeActive = null,
         ClipBuffer? clipBuffer = null,
         WakeWordClassifier? wakeWordClassifier = null,
-        CaptionOverlayForm? captions = null)
+        CaptionOverlayForm? captions = null,
+        ChatBubblesForm? bubbles = null)
     {
         this.vad = vad;
         this.captions = captions;
+        this.bubbles = bubbles;
         this.wakeWordClassifier = wakeWordClassifier;
         this.backendClient = backendClient;
         this.audioPlayer = audioPlayer;
@@ -268,6 +271,7 @@ internal sealed class VoiceLoop : IDisposable
             (sentence, emotion, duration) =>
             {
                 captions?.ShowSentence(sentence, duration);
+                bubbles?.ShowSentence(sentence, duration);
                 // #623: each sentence's own face as its audio starts -- the
                 // model's emotion tag, else read from the sentence's text.
                 avatarOverlay.SetState(MapReplyEmotionToAvatarState(ReplyEmotionDetector.DetectReplyEmotion(sentence, emotion)), null, emotion);
@@ -1093,7 +1097,7 @@ internal sealed class VoiceLoop : IDisposable
         try
         {
             // Off the UI thread -- this runs on WM_HOTKEY's own thread
-            // (VisionHotkeyListener's message pump), and CopyFromScreen +
+            // (GlobalHotkeyListener's message pump), and CopyFromScreen +
             // JPEG-encoding a full screen is enough work to visibly hitch
             // the tray/avatar UI if done inline here.
             image = await Task.Run(ScreenCapture.CaptureAsJpegDataUrl);
@@ -1810,6 +1814,7 @@ internal sealed class VoiceLoop : IDisposable
                 else
                 {
                     captions?.ShowSpokenText(chunks[i], AudioPlayer.Duration(chunkWav));
+                    bubbles?.ShowSpokenText(chunks[i], AudioPlayer.Duration(chunkWav));
                     completedNaturally = await audioPlayer.PlayAsync(chunkWav);
                 }
             }
@@ -1889,6 +1894,7 @@ internal sealed class VoiceLoop : IDisposable
             var wav = await backendClient.SynthesizeAsync(ReplyFailedMessage);
             OnTalkingStateChanged(true);
             captions?.ShowSentence(ReplyFailedMessage);
+            bubbles?.ShowSentence(ReplyFailedMessage);
             var completedNaturally = await audioPlayer.PlayAsync(wav);
             OnTalkingStateChanged(false);
             if (!completedNaturally)
@@ -1929,6 +1935,7 @@ internal sealed class VoiceLoop : IDisposable
         if (!talking)
         {
             captions?.SpeechEnded();
+            bubbles?.SpeechEnded();
         }
         lock (stateLock)
         {

@@ -207,7 +207,7 @@ public class ManaBackendClientTests
         var handler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
         {
             Content = new StringContent(
-                """{"ok":true,"uptimeSeconds":3725,"config":{"whisperThreads":4,"llamaThreads":8,"llamaMaxTokens":2048,"screenContextEnabled":true,"ttsProvider":"fish"},"gaming":{"gamingAppRunning":false},"process":{"totalMemoryMb":512},"operations":{"reply_token_usage":{"lastTokens":123,"session":"default"}}}""",
+                """{"ok":true,"uptimeSeconds":3725,"config":{"whisperThreads":4,"llamaThreads":8,"llamaMaxTokens":2048,"screenContextEnabled":true,"ttsProvider":"fish","chatModel":"Qwen3.5-4B-IQ4_XS.gguf (gaming model)"},"gaming":{"gamingAppRunning":false},"process":{"totalMemoryMb":512},"operations":{"reply_token_usage":{"lastTokens":123,"session":"default"}}}""",
                 Encoding.UTF8,
                 "application/json"),
         });
@@ -223,6 +223,7 @@ public class ManaBackendClientTests
         Assert.Equal(8, status.LlamaThreads);
         Assert.Equal(2048, status.LlamaMaxTokens);
         Assert.True(status.ScreenContextEnabled);
+        Assert.Equal("Qwen3.5-4B-IQ4_XS.gguf (gaming model)", status.ChatModel);
         var operation = Assert.Single(status.Operations);
         Assert.Equal("reply_token_usage", operation.Key);
         Assert.Contains("\"lastTokens\":123", operation.Value);
@@ -243,6 +244,7 @@ public class ManaBackendClientTests
         var status = await client.GetPerformanceStatusAsync();
 
         Assert.Empty(status.Operations);
+        Assert.Null(status.ChatModel);
         Assert.Equal(0, status.UptimeSeconds);
         Assert.True(status.GamingAppRunning);
     }

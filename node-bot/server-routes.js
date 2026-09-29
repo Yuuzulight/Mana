@@ -115,12 +115,21 @@ function registerCoreRoutes(app, upload, deps) {
     if (typeof chatAcceptsImages === "function" && chatAcceptsImages(modelProfile)) {
       return { text: text || "(shared an image)", images };
     }
-    const description = await runVisionReply(
-      joinPromptParts(IMAGE_DESCRIBE_PROMPT, text && `Their message: ${text}`),
-      images,
-      512,
-      IMAGE_DESCRIBE_SYSTEM_PROMPT,
-    );
+    let description;
+    try {
+      description = await runVisionReply(
+        joinPromptParts(IMAGE_DESCRIBE_PROMPT, text && `Their message: ${text}`),
+        images,
+        512,
+        IMAGE_DESCRIBE_SYSTEM_PROMPT,
+      );
+    } catch (e) {
+      if (e.code !== "VISION_PAUSED_GAMING") throw e;
+      // #889: the chat model still answers, and says why it can't see it.
+      console.log("Image turn: vision is paused while gaming");
+      const note = "[An image was attached, but vision is paused while a game is running, so you can't see it. Say so.]";
+      return { text: joinPromptParts(note, text), images: [] };
+    }
     console.log(`Image turn: text-only chat model, vision model described ${images.length} image(s)`);
     return { text: joinPromptParts(`[Image: ${description}]`, text), images: [] };
   }
