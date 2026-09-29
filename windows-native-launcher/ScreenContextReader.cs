@@ -96,7 +96,7 @@ internal sealed class ScreenContextReader
                 return "";
             }
 
-            if (!ShouldSkipTreeWalk(windowPid))
+            if (!ShouldSkipTreeWalk(windowPid, atCursor))
             {
                 var tree = await ReadAccessibilityTreeAsync(atCursor ? ReadPoint(normalized) : null);
                 if (IsTreeUsable(tree, Environment.ProcessId))
@@ -234,8 +234,14 @@ internal sealed class ScreenContextReader
     // trees are slow enough to burn the whole timeout for nothing -- both
     // go straight to OCR. "In use" is Windows' own last-input time (Q2:
     // GetLastInputInfo, no keyboard listener), so mouse movement counts too.
-    private static bool ShouldSkipTreeWalk(int windowPid) =>
-        InUse(SystemIdle.GetIdleMilliseconds()) || IsSlowTreeApp(ProcessNameOf(windowPid));
+    // A pointing read (#648: "what's this?", "next to you") is exempt from
+    // the in-use skip: the mouse is often still moving onto the thing meant,
+    // and it asked for exactly that spot. The slow-app skip still applies.
+    private static bool ShouldSkipTreeWalk(int windowPid, bool atCursor) =>
+        SkipTreeWalk(atCursor, SystemIdle.GetIdleMilliseconds(), ProcessNameOf(windowPid));
+
+    internal static bool SkipTreeWalk(bool atCursor, long? idleMs, string processName) =>
+        (!atCursor && InUse(idleMs)) || IsSlowTreeApp(processName);
 
     // Unknown idle time (the call failed) never counts as in use.
     internal static bool InUse(long? idleMs) => idleMs < InputQuietMs;

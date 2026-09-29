@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/.NET_8-WinForms-512BD4?logo=dotnet&logoColor=white" alt=".NET 8 WinForms">
+  <img src="https://img.shields.io/badge/.NET_10-WinForms-512BD4?logo=dotnet&logoColor=white" alt=".NET 10 WinForms">
   <img src="https://img.shields.io/badge/Node.js-Backend-339933?logo=nodedotjs&logoColor=white" alt="Node.js">
   <img src="https://img.shields.io/badge/llama.cpp-Local_LLM-e0b04c" alt="llama.cpp">
   <img src="https://img.shields.io/badge/whisper.cpp-Local_STT-6cd48a" alt="whisper.cpp">
@@ -76,7 +76,7 @@ dotnet build
 dotnet run
 ```
 
-Requires the .NET 8 SDK (not just the runtime). For the full setup flow, including model paths, Whisper, TTS services, gaming mode, and optional market helpers, see [docs/quick_start_windows.md](docs/quick_start_windows.md) and [docs/native_launcher_plan.md](docs/native_launcher_plan.md) for native-launcher-specific build notes. `windows-launcher` (Electron) still works and is kept as a fallback — see [Status](#status).
+Requires the .NET 10 SDK (not just the runtime). For the full setup flow, including model paths, Whisper, TTS services, gaming mode, and optional market helpers, see [docs/quick_start_windows.md](docs/quick_start_windows.md) and [docs/native_launcher_plan.md](docs/native_launcher_plan.md) for native-launcher-specific build notes. `windows-launcher` (Electron) still works and is kept as a fallback — see [Status](#status).
 
 ## Highlights
 
