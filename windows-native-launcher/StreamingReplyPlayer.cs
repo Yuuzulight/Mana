@@ -40,6 +40,13 @@ internal sealed class StreamingReplyPlayer
     // deep thinking is on), for the Think button. Same reason as above.
     public bool FinalDeepThinking { get; private set; }
 
+    // #687: the sentence of the reply now playing out that's being
+    // synthesized (1-based), or null -- for the chat's status line. The
+    // one-ahead lookahead means at most one synthesis is in flight.
+    public int? SynthesizingSentence => synthesizing == 0 ? null : synthesizing;
+    private volatile int synthesizing;
+    private int synthesized;
+
     // Reply is null when Interrupted is true -- a barge-in cut off
     // playback before the reply finished streaming/speaking, so there's no
     // meaningful "true final reply" to report (the caller's already moved
@@ -162,6 +169,7 @@ internal sealed class StreamingReplyPlayer
         // across an await.
         var lookaheadLock = new object();
         string? lookaheadText = null;
+        synthesized = 0;
 
         (string Text, string? Emotion)? TakeNext()
         {
@@ -253,8 +261,18 @@ internal sealed class StreamingReplyPlayer
         {
             return null;
         }
-        return takeNext() is not { } next
-            ? null
-            : (next.Text, next.Emotion, await backendClient.SynthesizeAsync(next.Text).ConfigureAwait(false));
+        if (takeNext() is not { } next)
+        {
+            return null;
+        }
+        synthesizing = ++synthesized;
+        try
+        {
+            return (next.Text, next.Emotion, await backendClient.SynthesizeAsync(next.Text).ConfigureAwait(false));
+        }
+        finally
+        {
+            synthesizing = 0;
+        }
     }
 }

@@ -1872,11 +1872,13 @@ function makeSwappingHarness(extraEnv = {}) {
   // llama-server process exiting would be.
   let liveChild = null;
   let clock = 0;
-  const fakeFetch = async (url) => {
+  const chatBodies = [];
+  const fakeFetch = async (url, options) => {
     if (String(url).endsWith("/health")) {
       return { ok: Boolean(liveChild && liveChild.exitCode === null) };
     }
     if (String(url).endsWith("/v1/chat/completions")) {
+      chatBodies.push(JSON.parse(options.body));
       return {
         ok: true,
         json: async () => ({ choices: [{ message: { content: "ok" } }] }),
@@ -1903,11 +1905,47 @@ function makeSwappingHarness(extraEnv = {}) {
   return {
     runtime,
     spawnCalls,
+    chatBodies,
     advanceClock: (ms) => {
       clock += ms;
     },
   };
 }
+
+test("#679: a chat model that is also the vision model loads its mmproj once; images ride on the user message", async () => {
+  const { runtime, spawnCalls, chatBodies, advanceClock } = makeSwappingHarness({
+    LLAMA_VISION_MODEL: "C:\\models\\mana.gguf",
+  });
+  assert.equal(runtime.chatAcceptsImages("default"), true);
+
+  await runtime.runLocalAssistantReply("hello", 64, "default");
+  assert.ok(spawnCalls[0].args.includes("--mmproj"), "the chat server starts with the mmproj");
+  assert.equal(chatBodies[0].messages.at(-1).content, "hello", "a text turn stays a plain string");
+
+  advanceClock(10000);
+  const image = "data:image/png;base64,AAAA";
+  await runtime.runLocalAssistantReply("what's this?", 64, "default", null, { early: [], late: [], images: [image] });
+  await runtime.runVisionReply("describe", [image]);
+  assert.equal(spawnCalls.length, 1, "text, image and vision turns share one load");
+  assert.deepEqual(chatBodies[1].messages.at(-1).content, [
+    { type: "text", text: "what's this?" },
+    { type: "image_url", image_url: { url: image } },
+  ]);
+
+  // Bare base64 (the routes accept it) is sent as a data URL.
+  await runtime.runLocalAssistantReply("and this?", 64, "default", null, { images: ["BBBB"] });
+  assert.equal(chatBodies.at(-1).messages.at(-1).content[1].image_url.url, "data:image/png;base64,BBBB");
+});
+
+test("#679: a text-only chat server drops attached images instead of sending a request it would reject", async () => {
+  const { runtime, spawnCalls, chatBodies } = makeSwappingHarness();
+  assert.equal(runtime.chatAcceptsImages("default"), false);
+
+  await runtime.runLocalAssistantReply("what's this?", 64, "default", null, { images: ["data:image/png;base64,AAAA"] });
+
+  assert.ok(!spawnCalls[0].args.includes("--mmproj"));
+  assert.equal(chatBodies[0].messages.at(-1).content, "what's this?");
+});
 
 test("a real swap is timed and exposed via getStatus().lastSwapMs", async () => {
   const { runtime, advanceClock } = makeSwappingHarness();

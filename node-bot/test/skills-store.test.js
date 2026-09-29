@@ -4,7 +4,7 @@ const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
 
-const { createSkillsStore, parseSkillFile, serializeSkillFile, extractSkillScript, extractSkillInputs, verifySkillScript, evaluateSkillAvailability, readSkillFolder } = require("../skills-store");
+const { createSkillsStore, parseSkillFile, serializeSkillFile, extractSkillScript, extractSkillInputs, verifySkillScript, evaluateSkillAvailability, readSkillFolder, readSkillZip } = require("../skills-store");
 const { createSnapshotStore } = require("../snapshot-store");
 
 function tempDir() {
@@ -667,6 +667,113 @@ test("readSkillFolder + importSkill: the approved bytes are written, nothing is 
   );
   assert.equal(fs.existsSync(path.join(skillsDir, "evil")), false, "a refused import leaves nothing behind");
   assert.equal(fs.existsSync(path.join(skillsDir, "outside.txt")), false);
+});
+
+// #664 (Q21): a minimal zip writer (stored or deflated entries, no CRC --
+// the reader doesn't check it), so the tests can also build hostile zips.
+function makeZip(entries) {
+  const zlib = require("node:zlib");
+  const parts = [];
+  const central = [];
+  let offset = 0;
+  for (const { name, data, stored = false } of entries) {
+    const raw = Buffer.from(data);
+    const body = stored ? raw : zlib.deflateRawSync(raw);
+    const nameBuf = Buffer.from(name);
+    const local = Buffer.alloc(30);
+    local.writeUInt32LE(0x04034b50, 0);
+    local.writeUInt16LE(stored ? 0 : 8, 8);
+    local.writeUInt32LE(body.length, 18);
+    local.writeUInt32LE(raw.length, 22);
+    local.writeUInt16LE(nameBuf.length, 26);
+    const entry = Buffer.alloc(46);
+    entry.writeUInt32LE(0x02014b50, 0);
+    entry.writeUInt16LE(stored ? 0 : 8, 10);
+    entry.writeUInt32LE(body.length, 20);
+    entry.writeUInt32LE(raw.length, 24);
+    entry.writeUInt16LE(nameBuf.length, 28);
+    entry.writeUInt32LE(offset, 42);
+    parts.push(local, nameBuf, body);
+    central.push(entry, nameBuf);
+    offset += 30 + nameBuf.length + body.length;
+  }
+  const directory = Buffer.concat(central);
+  const end = Buffer.alloc(22);
+  end.writeUInt32LE(0x06054b50, 0);
+  end.writeUInt16LE(entries.length, 8);
+  end.writeUInt16LE(entries.length, 10);
+  end.writeUInt32LE(directory.length, 12);
+  end.writeUInt32LE(offset, 16);
+  return Buffer.concat([...parts, directory, end]);
+}
+
+function writeZip(entries) {
+  const file = path.join(tempDir(), "skill.zip");
+  fs.writeFileSync(file, makeZip(entries));
+  return file;
+}
+
+const ZIP_SKILL_MD = "---\nname: weather\ndescription: Get the weather.\n---\nUse scripts/get.sh.\n";
+
+test("readSkillZip reads a zipped skill folder like a folder, skipping dot-entries (#664)", () => {
+  const zip = writeZip([
+    { name: "weather/", data: "" },
+    { name: "weather/SKILL.md", data: ZIP_SKILL_MD },
+    { name: "weather/scripts/get.sh", data: "curl wttr.in\n", stored: true },
+    { name: "weather/.env", data: "KEY=secret" },
+    { name: "__MACOSX/weather/._SKILL.md", data: "junk" },
+  ]);
+  const skill = readSkillZip(zip);
+  assert.equal(skill.name, "weather");
+  assert.deepEqual(skill.files.map((f) => f.path).sort(), ["SKILL.md", "scripts/get.sh"]);
+  assert.deepEqual(skill.scripts, ["scripts/get.sh"]);
+
+  const skillsDir = tempDir();
+  createSkillsStore({ skillsDir }).importSkill({ files: skill.files });
+  assert.equal(fs.readFileSync(path.join(skillsDir, "weather", "scripts", "get.sh"), "utf8"), "curl wttr.in\n");
+
+  // SKILL.md at the top of the zip works too.
+  assert.equal(readSkillZip(writeZip([{ name: "SKILL.md", data: ZIP_SKILL_MD }])).files.length, 1);
+});
+
+test("readSkillZip refuses escaping paths, zip bombs, missing SKILL.md and non-zips", () => {
+  assert.throws(
+    () => readSkillZip(writeZip([{ name: "SKILL.md", data: ZIP_SKILL_MD }, { name: "../evil.sh", data: "x" }])),
+    /points outside the skill folder/,
+  );
+  assert.throws(
+    () => readSkillZip(writeZip([{ name: "SKILL.md", data: ZIP_SKILL_MD }, { name: "C:/evil.sh", data: "x" }])),
+    /points outside the skill folder/,
+  );
+  assert.throws(
+    () => readSkillZip(writeZip([{ name: "SKILL.md", data: ZIP_SKILL_MD }, { name: "scripts\\..\\..\\evil.sh", data: "x" }])),
+    /points outside the skill folder/,
+  );
+  // 64 MB of zeros deflates to ~64 KB; inflating stops at the 512 KB budget.
+  assert.throws(
+    () => readSkillZip(writeZip([{ name: "SKILL.md", data: ZIP_SKILL_MD }, { name: "big.bin", data: Buffer.alloc(64 * 1024 * 1024) }])),
+    /larger than 512 KB/,
+  );
+  assert.throws(() => readSkillZip(writeZip([{ name: "a/SKILL.md", data: ZIP_SKILL_MD }, { name: "b/x.md", data: "x" }])), /no SKILL\.md/);
+  const notZip = path.join(tempDir(), "fake.zip");
+  fs.writeFileSync(notZip, "hello");
+  assert.throws(() => readSkillZip(notZip), /isn't a zip Mana can read/);
+});
+
+test("readSkillZip reads a zip made by Windows' Compress-Archive", { skip: process.platform !== "win32" }, () => {
+  const { spawnSync } = require("node:child_process");
+  const source = path.join(tempDir(), "weather");
+  fs.mkdirSync(path.join(source, "scripts"), { recursive: true });
+  fs.writeFileSync(path.join(source, "SKILL.md"), ZIP_SKILL_MD);
+  fs.writeFileSync(path.join(source, "scripts", "get.sh"), "curl wttr.in\n");
+  const zip = path.join(tempDir(), "weather.zip");
+  const result = spawnSync(
+    "powershell.exe",
+    ["-NoProfile", "-NonInteractive", "-Command", `Compress-Archive -LiteralPath '${source}' -DestinationPath '${zip}'`],
+    { windowsHide: true },
+  );
+  assert.equal(result.status, 0, String(result.stderr));
+  assert.deepEqual(readSkillZip(zip).files.map((f) => f.path).sort(), ["SKILL.md", "scripts/get.sh"]);
 });
 
 test("pruneStaleSkills archives a SKILL.md folder whole", () => {

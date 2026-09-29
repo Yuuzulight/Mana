@@ -193,10 +193,11 @@ internal sealed class AvatarOverlayForm : Form
             var fps = ReadIntEnv("MANA_AVATAR_FPS", 0);
             renderTimer = new System.Windows.Forms.Timer { Interval = fps > 0 ? Math.Max(15, 1000 / fps) : 15 };
             renderTimer.Tick += (_, _) => RenderFrame(cubismModel, cubismRenderer);
-            // Only animate while she's actually on screen -- the launcher
-            // shows the overlay after the startup screen closes, so there's
-            // no rendering in the background during startup (or while hidden).
-            VisibleChanged += (_, _) => renderTimer.Enabled = Visible;
+            // Only animate while she's actually on screen (here or, #685, in
+            // the chat window) -- the launcher shows the overlay after the
+            // startup screen closes, so there's no rendering in the
+            // background during startup (or while hidden).
+            VisibleChanged += (_, _) => UpdateRenderTimer();
         }
 
         SetState(AvatarState.Idle);
@@ -569,8 +570,47 @@ internal sealed class AvatarOverlayForm : Form
 
         model.Update();
 
-        using var frame = renderer.Render(model, Math.Max(1, ClientSize.Width), Math.Max(1, ClientSize.Height), SKColors.Transparent);
-        Present(frame);
+        if (Visible)
+        {
+            using var frame = renderer.Render(model, Math.Max(1, ClientSize.Width), Math.Max(1, ClientSize.Height), SKColors.Transparent);
+            Present(frame);
+        }
+        if (mirror is { } panel)
+        {
+            using var frame = renderer.Render(model, Math.Max(1, panel.ClientSize.Width), Math.Max(1, panel.ClientSize.Height),
+                SKColors.Transparent, LiveAvatarPanel.FramingFraction(panel.Framing));
+            panel.ShowFrame(frame);
+        }
+    }
+
+    // #685: true when a Live2D model is loaded, i.e. there's something to
+    // show in a LiveAvatarPanel.
+    public bool HasLiveModel => renderTimer is not null;
+
+    // #685: the chat window's live avatar, drawn from this same model every
+    // frame (so lip-sync, expressions and physics match the overlay); null
+    // while it isn't on screen. UI thread only.
+    private LiveAvatarPanel? mirror;
+    public LiveAvatarPanel? Mirror
+    {
+        set
+        {
+            if (mirror == value)
+            {
+                return;
+            }
+            mirror?.ClearFrame();
+            mirror = value;
+            UpdateRenderTimer();
+        }
+    }
+
+    private void UpdateRenderTimer()
+    {
+        if (renderTimer is not null)
+        {
+            renderTimer.Enabled = Visible || mirror is not null;
+        }
     }
 
     // #683: writes value clamped to the parameter's own range; a no-op for a

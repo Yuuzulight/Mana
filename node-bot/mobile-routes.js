@@ -3,6 +3,7 @@ const multer = require("multer");
 const path = require("path");
 const crypto = require('crypto');
 
+const { hasAdminKey, isLocalRestartRequest } = require("./admin-key");
 const { createMobileAuth } = require("./mobile-auth");
 const { createMobileMemoryStore } = require("./mobile-memory-store");
 const { verifyTotpCode: defaultVerifyTotpCode } = require("./totp");
@@ -98,31 +99,16 @@ function randomToken() {
   return crypto.randomBytes(32).toString('base64url');
 }
 
-function isLocalRequest(req) {
-  const ip = (req.ip || '').replace('::ffff:', '');
-  return ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1';
-}
-
-// Admin auth helper: if ADMIN_TOKEN is configured in env, require that token
-// be sent as Authorization: Bearer <token> or x-admin-token header. If no
-// ADMIN_TOKEN is configured, fall back to localhost-only enforcement to
-// preserve previous behavior.
+// Admin auth helper (#670): ADMIN_TOKEN, or the native launcher's per-run
+// key from this PC, as Authorization: Bearer <token> or x-admin-token (see
+// admin-key.js). Being local is no longer enough on its own.
 function adminAuthMiddleware(req, res) {
   // Prefer deps/env when available (registerMobileRoutes will set appEnv from deps.env)
   const appEnv = req.app && req.app.locals && req.app.locals.MOBILE_APP_ENV ? req.app.locals.MOBILE_APP_ENV : process.env;
-  const ADMIN_TOKEN = (appEnv && appEnv.ADMIN_TOKEN) || process.env.ADMIN_TOKEN || null;
-  if (ADMIN_TOKEN) {
-    const auth = (req.get('authorization') || '').trim();
-    const headerToken = auth.startsWith('Bearer ') ? auth.slice('Bearer '.length).trim() : null;
-    const alt = req.get('x-admin-token') || req.get('X-Admin-Token');
-    const token = headerToken || alt || null;
-    if (!token || token !== ADMIN_TOKEN) {
-      return { ok: false, status: 401, body: { error: 'admin_auth_required' } };
-    }
-    return { ok: true };
+  const adminToken = (appEnv && appEnv.ADMIN_TOKEN) || process.env.ADMIN_TOKEN || null;
+  if (!hasAdminKey(req, { local: isLocalRestartRequest(req), adminToken })) {
+    return { ok: false, status: 401, body: { error: 'admin_auth_required' } };
   }
-  // No ADMIN_TOKEN configured: require localhost request (legacy behavior)
-  if (!isLocalRequest(req)) return { ok: false, status: 403, body: { error: 'admin-only' } };
   return { ok: true };
 }
 

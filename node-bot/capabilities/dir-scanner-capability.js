@@ -1,5 +1,6 @@
 const path = require("path");
 const { scanDir } = require("../tools/dir_scanner");
+const { checkAdminSecret } = require("../admin-key");
 
 const KEY = "dirScanner";
 
@@ -14,18 +15,7 @@ function registerRoutes(app, context = {}) {
     "";
 
   function checkAdminAuth(req, res) {
-    if (!ADMIN_SECRET) return true; // no secret -> allow (local dev)
-    const header = req.get("authorization") || req.get("Authorization") || "";
-    if (!header || !header.startsWith("Bearer ")) {
-      res.status(401).json({ ok: false, error: "unauthorized" });
-      return false;
-    }
-    const token = header.slice(7).trim();
-    if (token !== ADMIN_SECRET) {
-      res.status(401).json({ ok: false, error: "unauthorized" });
-      return false;
-    }
-    return true;
+    return checkAdminSecret(req, res, ADMIN_SECRET);
   }
 
   app.get("/tools/dir-scan", (req, res) => {

@@ -2,7 +2,9 @@ const assert = require("node:assert/strict");
 const test = require("node:test");
 
 const { createApp } = require("../server");
-const { withServer } = require("./helpers");
+const { useTestAdminToken, withServer } = require("./helpers");
+// #842: these routes are admin-only; every request here sends ADMIN_TOKEN.
+const fetch = useTestAdminToken();
 
 // These routes were originally wired inside startServer()'s own
 // bolt-onto-app section, where checkAdminAuth (a closure private to

@@ -1,12 +1,12 @@
 const fs = require("fs");
 const path = require("path");
+const { checkAdminSecret } = require("../admin-key");
 
 const KEY = "retrieverAdmin";
 
-// Relocated from server.js's registerRoutes(). Every handler here already
-// did its own inline MANA_ADMIN_SECRET bearer-token check rather than using
-// server.js's shared checkAdminAuth, so that's preserved as-is -- no new
-// shared context needed beyond app itself.
+// Relocated from server.js's registerRoutes(). The handlers check
+// MANA_ADMIN_SECRET themselves (checkRetrieverAdminAuth) rather than through
+// server.js's checkAdminAuth -- the same checkAdminSecret rule (#842).
 let VECTOR_STORE_REBUILD_LOCK = false;
 
 // Overridable so tests can point this at a temp file instead of clobbering
@@ -30,19 +30,7 @@ async function appendVectorRebuildAudit(entry) {
 }
 
 function checkRetrieverAdminAuth(req, res) {
-  const ADMIN_SECRET_ENV = process.env.MANA_ADMIN_SECRET || "";
-  if (!ADMIN_SECRET_ENV) return true;
-  const header = req.get("authorization") || req.get("Authorization") || "";
-  if (!header || !header.startsWith("Bearer ")) {
-    res.status(401).json({ ok: false, error: "unauthorized" });
-    return false;
-  }
-  const token = header.slice(7).trim();
-  if (token !== ADMIN_SECRET_ENV) {
-    res.status(401).json({ ok: false, error: "unauthorized" });
-    return false;
-  }
-  return true;
+  return checkAdminSecret(req, res, process.env.MANA_ADMIN_SECRET || "");
 }
 
 function registerRetrieverAdminRoutes(app, context = {}) {
