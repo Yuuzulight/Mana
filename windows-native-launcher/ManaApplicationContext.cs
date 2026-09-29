@@ -30,6 +30,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
     private readonly TrayNotificationClient trayNotifications;
     private readonly ForegroundWindowReporter foregroundReporter;
     private readonly CaptionOverlayForm captionOverlay;
+    private readonly ChatBubblesForm chatBubbles; // #701
     private readonly VisionCaptureClient visionCaptureClient;
     private readonly ArtifactViewerForm artifactViewer;
     private readonly QuickEntryForm quickEntry;
@@ -152,7 +153,13 @@ internal sealed class ManaApplicationContext : ApplicationContext
         // sentence by VoiceLoop's own playback.
         // Q8: under Mana while she's showing (Visible/Bounds are plain field reads).
         captionOverlay = new CaptionOverlayForm(() => avatarOverlay.Visible ? avatarOverlay.Bounds : null);
-        voiceLoop = new VoiceLoop(sileroVad, backendClient, audioPlayer, avatarOverlay, chatLog, chatLog, screenContextReader, () => gamingModeActive, clipBuffer, wakeWordClassifier, captionOverlay);
+        chatBubbles = new ChatBubblesForm(() => avatarOverlay.Visible ? avatarOverlay.Bounds : null, () => ChatBubblesForm.InView(sessionListForm));
+        chatBubbles.BubbleClicked += text =>
+        {
+            ShowSessionList();
+            chatLog.SelectMessageContaining(text);
+        };
+        voiceLoop = new VoiceLoop(sileroVad, backendClient, audioPlayer, avatarOverlay, chatLog, chatLog, screenContextReader, () => gamingModeActive, clipBuffer, wakeWordClassifier, captionOverlay, chatBubbles);
         voiceLoop.SetPresetId(settings.ActivePresetId); // #681
         // #523: Ctrl+Alt+M asks Mana to look at the screen, through the
         // same reply/TTS pipeline a normal turn uses.
@@ -367,6 +374,16 @@ internal sealed class ManaApplicationContext : ApplicationContext
             }
         };
         menu.Items.Add(hidesWithChatItem);
+        // #701: off by default.
+        var bubblesItem = new ToolStripMenuItem("Chat bubbles beside Mana") { CheckOnClick = true, Checked = chatBubbles.BubblesOn };
+        bubblesItem.Click += (_, _) =>
+        {
+            chatBubbles.BubblesOn = bubblesItem.Checked;
+            var latest = ManaSettingsStore.Load();
+            latest.ChatBubbles = bubblesItem.Checked;
+            latest.Save();
+        };
+        menu.Items.Add(bubblesItem);
         // #681: Stop listening turns the mic off and puts Mana back to
         // sleep; Start listening needs the wake word again.
         var listeningItem = new ToolStripMenuItem();
@@ -774,6 +791,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
         showRequests.Dispose();
         visionCaptureClient.Dispose();
         captionOverlay.Close();
+        chatBubbles.Close();
         voiceLoop.Dispose();
         audioPlayer.Dispose();
         sileroVad.Dispose();
