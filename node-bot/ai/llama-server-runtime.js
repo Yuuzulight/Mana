@@ -24,6 +24,55 @@ const { CODING_EDIT_TOOL_NAME, CODING_TEST_TOOL_NAME } = require("./coding-tool-
 const { detectGpuVramUsageMb } = require("../model-management");
 const { readActivePointer, settleActiveBuild } = require("../llama-builds");
 const { GAMING_IDLE_MS } = require("../utils/gaming-watch");
+const { MEMORY_TOOL_PREFIX } = require("./memory-tool-source");
+
+// #898: a reply saying she saved, or will remember, something. Measured
+// live: "I already saved that detail into my memory just now" with no
+// memory__remember call at all. Not "remember when we..." or "do you
+// remember": those are recall, not a claim. ponytail: phrase regexes in
+// English, Japanese and Chinese; a claim worded another way slips through.
+const MEMORY_REMEMBER_TOOL = `${MEMORY_TOOL_PREFIX}remember`;
+const MEMORY_SAVE_CLAIM_RE = new RegExp(
+  [
+    String.raw`(?<!(?:\bnot|n't|\bnever)\s+(?:yet\s+)?(?:be(?:en)?\s+)?)\b(?:saved|stored|noted|recorded|written|wrote|added|put|committed|locked|filed)\b[^.!?\n]{0,40}?\b(?:in|into|to) (?:my )?(?:long-term )?memor(?:y|ies)\b`,
+    String.raw`\bI(?:'ll| will|'m going to| am going to|'m gonna) (?:make sure to |be sure to )?remember (?:that|this|it)\b`,
+    String.raw`\bI(?:'ve| have)?(?: already| just)? (?:memori[sz]ed|made a (?:mental )?note)\b`,
+    "覚えておく(?:ね|よ)|覚えておきます|覚えました|覚えたよ|(?:記憶|メモリ)に(?:保存|登録|記録)(?:した|しました|しておく|しておきます|しておいた)",
+    "我(?:会|已经)?记住(?:了|的)|(?:保存|记录?)(?:到|在|进)(?:我的)?记忆",
+  ].join("|"),
+  "i",
+);
+
+// "saved" when a memory__remember call wrote (or was approved), "pending"
+// when one is waiting on approval, else "none".
+function memoryWriteState(calls) {
+  let state = "none";
+  for (const call of calls) {
+    if (call.name !== MEMORY_REMEMBER_TOOL || !call.ok) continue;
+    let r = {};
+    try {
+      r = JSON.parse(call.result) || {};
+    } catch (e) {}
+    if (r.ok === true || (r.status === "approved" && r.result?.ok !== false)) return "saved";
+    if (r.status === "pending") state = "pending";
+  }
+  return state;
+}
+
+// #898: what to tell her when the reply claims a memory write this turn
+// doesn't back, or null. The fix goes back through memory__remember (its
+// approval gate and #317 attribution check), never a write from here.
+function memoryClaimNote(reply, calls) {
+  if (!MEMORY_SAVE_CLAIM_RE.test(reply)) return null;
+  const state = memoryWriteState(calls);
+  if (state === "saved") return null;
+  if (state === "pending") {
+    return /approv/i.test(reply)
+      ? null
+      : `Your ${MEMORY_REMEMBER_TOOL} call is waiting for the user's approval, so nothing is saved yet. Answer again and say it's waiting for their approval, not that it's saved.`;
+  }
+  return `Nothing was saved to memory this turn: no ${MEMORY_REMEMBER_TOOL} call went through. If the user asked you to remember something, call ${MEMORY_REMEMBER_TOOL} now; otherwise answer again without saying you saved it or will remember it.`;
+}
 
 // Persistent llama-server runtime.
 //
@@ -1813,6 +1862,21 @@ function createLlamaServerRuntime(options = {}) {
     const outOfBudget = () =>
       rounds >= roundLimit || nowMs() > deadline || promptTokens > promptTokenLimit;
 
+    // #898: once per reply, a claim of a memory write that didn't happen
+    // goes back to her with memoryClaimNote. Goal mode's own review
+    // already checks claims against the tool calls.
+    let memoryRechecked = false;
+    function recheckMemoryClaim() {
+      if (goalMode || memoryRechecked) return false;
+      if (!toolPolicy.tools.some((t) => t.function?.name === MEMORY_REMEMBER_TOOL)) return false;
+      const reply = stripThinking(message.content);
+      const note = memoryClaimNote(reply, reviewLog);
+      if (!note) return false;
+      memoryRechecked = true;
+      messages.push({ role: "assistant", content: reply }, { role: "user", content: note });
+      return true;
+    }
+
     // Issue #676: the end of a goal-mode run. True means the review found
     // something missing and there's budget for another cycle.
     async function reviewAndResume() {
@@ -1901,6 +1965,12 @@ function createLlamaServerRuntime(options = {}) {
           }
           stalled = true;
         }
+        if (recheckMemoryClaim()) {
+          // She can still call memory__remember; with no rounds left she
+          // only gets to correct the reply.
+          if (!outOfBudget()) continue;
+          message = (await complete(false))?.choices?.[0]?.message || {};
+        }
         if (await reviewAndResume()) continue;
         break; // model produced a real answer -- no more tools requested
       }
@@ -1973,6 +2043,7 @@ function createLlamaServerRuntime(options = {}) {
         // means the model cannot request yet another tool call here.
         const finalJson = await complete(false);
         message = (finalJson && finalJson.choices && finalJson.choices[0] && finalJson.choices[0].message) || {};
+        if (recheckMemoryClaim()) message = (await complete(false))?.choices?.[0]?.message || {};
         if (await reviewAndResume()) continue;
         break;
       }
