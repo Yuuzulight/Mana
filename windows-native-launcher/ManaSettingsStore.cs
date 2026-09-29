@@ -50,6 +50,11 @@ internal sealed class ManaSettingsStore
     // default (on). Settings > Voice; MANA_VOICE_AEC overrides it.
     public bool? EchoCancellation { get; set; }
 
+    // #665: what talking over Mana does (BargeInMode: "minWords" -- the
+    // default when null -- "always" or "notWhileSpeaking"). Settings >
+    // Voice; MANA_BARGE_IN_MODE overrides it.
+    public string? BargeInMode { get; set; }
+
     // #681: the prompt preset sent as presetId with every reply; null =
     // none. Chosen in Settings > Presets (windows-launcher kept the same
     // choice in localStorage's manaSelectedPresetId).

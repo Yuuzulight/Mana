@@ -90,4 +90,32 @@ public class BargeInGateTests
         var silence = new float[] { 0f, 0f, 0f, 0f };
         Assert.Equal(double.NegativeInfinity, BargeInGate.DbfsFromSamples(silence));
     }
+
+    // #665: barge-in modes.
+    [Theory]
+    [InlineData(null, null, (int)BargeInMode.MinWords)]
+    [InlineData(null, "always", (int)BargeInMode.Always)]
+    [InlineData("notWhileSpeaking", "always", (int)BargeInMode.NotWhileSpeaking)]
+    [InlineData("nonsense", "notWhileSpeaking", (int)BargeInMode.NotWhileSpeaking)]
+    [InlineData(" Min-Words ", null, (int)BargeInMode.MinWords)]
+    public void Resolve_EnvBeatsSettingAndDefaultsToMinWords(string? env, string? saved, int expected) =>
+        Assert.Equal((BargeInMode)expected, BargeInPolicy.Resolve(env, saved));
+
+    [Theory]
+    [InlineData("", 0)]
+    [InlineData("mm...", 1)]
+    [InlineData("Yeah.", 1)]
+    [InlineData("wait, stop!", 2)]
+    [InlineData("don't go", 2)]
+    [InlineData("hold on a sec", 4)]
+    public void WordCount_CountsRealWords(string transcript, int expected) =>
+        Assert.Equal(expected, BargeInPolicy.WordCount(transcript));
+
+    [Fact]
+    public void MinWords_DefaultsToTwo()
+    {
+        Assert.Equal(2, BargeInPolicy.MinWords(null));
+        Assert.Equal(2, BargeInPolicy.MinWords("0"));
+        Assert.Equal(3, BargeInPolicy.MinWords("3"));
+    }
 }
