@@ -8,6 +8,10 @@ const fs = require("node:fs");
 
 const tempAuthDir = fs.mkdtempSync(path.join(os.tmpdir(), "mana-admin-routes-test-"));
 process.env.MANA_AUTH_DIR = tempAuthDir;
+// #670: admin-key.js reads the native launcher's per-run key once, at
+// require time, and removes it from process.env.
+const LAUNCHER_KEY = "test-launcher-key-0123456789abcdef";
+process.env.MANA_LAUNCHER_KEY = LAUNCHER_KEY;
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
@@ -79,25 +83,48 @@ test("POST /admin/accounts rejects a user-role key with 403", async () => {
   });
 });
 
-test("POST /admin/accounts succeeds for an admin-role key from a local request", async () => {
-  const { apiKey } = authStore.createAccount({
-    email: "admin-local@example.com",
-    role: "admin",
-  });
+test("the launcher key is removed from process.env once read (#670)", () => {
+  assert.equal(process.env.MANA_LAUNCHER_KEY, undefined);
+});
+
+async function postAccountAsAdmin(email, extraHeaders) {
+  const { apiKey } = authStore.createAccount({ email: `admin-${email}`, role: "admin" });
   const app = createApp();
+  let res;
   await withServer(app, async (baseUrl) => {
-    const res = await fetch(`${baseUrl}/admin/accounts`, {
+    res = await fetch(`${baseUrl}/admin/accounts`, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${apiKey}`,
         "Content-Type": "application/json",
+        ...extraHeaders,
       },
-      body: JSON.stringify({ email: "created-locally@example.com" }),
+      body: JSON.stringify({ email }),
     });
-    assert.equal(res.status, 201);
-    const payload = await res.json();
-    assert.ok(payload.apiKey);
   });
+  return res;
+}
+
+test("POST /admin/accounts rejects an admin-role key from a local request with no admin key (#670)", async () => {
+  const res = await postAccountAsAdmin("local-no-key@example.com", {});
+  assert.equal(res.status, 403);
+  assert.match((await res.json()).error, /ADMIN_TOKEN/);
+});
+
+test("POST /admin/accounts succeeds locally with the launcher's per-run key", async () => {
+  const res = await postAccountAsAdmin("local-launcher@example.com", { "x-admin-token": LAUNCHER_KEY });
+  assert.equal(res.status, 201);
+  assert.ok((await res.json()).apiKey);
+});
+
+test("POST /admin/accounts: the launcher key doesn't count from another device, or when wrong", async () => {
+  const forwarded = await postAccountAsAdmin("remote-launcher@example.com", {
+    "x-admin-token": LAUNCHER_KEY,
+    "X-Forwarded-For": "203.0.113.5",
+  });
+  assert.equal(forwarded.status, 403);
+  const wrong = await postAccountAsAdmin("local-wrong@example.com", { "x-admin-token": `${LAUNCHER_KEY}x` });
+  assert.equal(wrong.status, 403);
 });
 
 test("POST /admin/accounts rejects an admin-role key from a non-local origin with no ADMIN_TOKEN configured", async () => {

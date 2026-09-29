@@ -10,6 +10,17 @@ namespace ManaNativeLauncher.Tests;
 
 public class ManaProcessManagerTests
 {
+    // #670: a fresh 256-bit key per launcher run, never a fixed value.
+    [Fact]
+    public void LauncherKey_IsAFreshRandomKeyPerRun()
+    {
+        using var first = new ManaProcessManager(@"C:\mana");
+        using var second = new ManaProcessManager(@"C:\mana");
+
+        Assert.Matches("^[0-9A-F]{64}$", first.LauncherKey);
+        Assert.NotEqual(first.LauncherKey, second.LauncherKey);
+    }
+
     [Fact]
     public void ResolveVenvPython_UsesGivenVenvSubdirUnderRoot()
     {
