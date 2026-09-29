@@ -16,6 +16,8 @@ namespace Mana.NativeLauncher;
 // distinct signals: edge thickness = association weight, node color =
 // entity type, greyed row with an end date = superseded fact. GDI+ only,
 // same as MermaidRenderer. Standalone and fresh-per-open like SnapshotsForm.
+// Wheel zooms around the cursor, drag pans, clicking a node narrows the
+// right pane to that entity's associations and the facts that mention it.
 internal sealed class MemoryGraphForm : Form
 {
     private static readonly Dictionary<string, Color> TypeColors = new()
@@ -32,6 +34,8 @@ internal sealed class MemoryGraphForm : Form
     private readonly ManaBackendClient backendClient;
     private readonly PictureBox canvas = new();
     private readonly ListView factsList = new();
+    private readonly ListView linksList = new();
+    private readonly Label selectionLabel = new();
     private readonly NumericUpDown minWeightInput = new();
     private readonly ComboBox recencyInput = new();
     private readonly Label statusLabel = new();
@@ -39,6 +43,11 @@ internal sealed class MemoryGraphForm : Form
     private List<ManaMemoryGraphNode> shownNodes = new();
     private List<ManaMemoryGraphEdge> shownEdges = new();
     private PointF[] positions = Array.Empty<PointF>();
+    private float zoom = 1f;
+    private PointF pan;
+    private Point? dragFrom;
+    private bool dragged;
+    private string? selectedKey;
 
     public MemoryGraphForm(ManaBackendClient backendClient)
     {
@@ -61,6 +70,9 @@ internal sealed class MemoryGraphForm : Form
         var refreshButton = new Button { Text = "Refresh", AutoSize = true };
         DarkTheme.ApplyButton(refreshButton);
         refreshButton.Click += async (_, _) => await RefreshAsync();
+        var resetViewButton = new Button { Text = "Reset view", AutoSize = true };
+        DarkTheme.ApplyButton(resetViewButton);
+        resetViewButton.Click += (_, _) => ResetView();
         statusLabel.AutoSize = true;
         statusLabel.ForeColor = DarkTheme.Muted;
         statusLabel.Margin = new Padding(8, 6, 0, 0);
@@ -71,12 +83,57 @@ internal sealed class MemoryGraphForm : Form
         toolbar.Controls.Add(new Label { Text = "Reinforced", AutoSize = true, Margin = new Padding(12, 6, 4, 0) });
         toolbar.Controls.Add(recencyInput);
         toolbar.Controls.Add(refreshButton);
+        toolbar.Controls.Add(resetViewButton);
         toolbar.Controls.Add(statusLabel);
 
         canvas.Dock = DockStyle.Fill;
         canvas.BackColor = DarkTheme.Background;
         canvas.Paint += (_, e) => DrawGraph(e.Graphics, canvas.ClientSize);
         canvas.Resize += (_, _) => canvas.Invalidate();
+        canvas.MouseWheel += (_, e) =>
+        {
+            var next = Math.Clamp(zoom * (e.Delta > 0 ? 1.25f : 0.8f), 0.5f, 8f);
+            pan = ZoomAt(zoom, pan, e.Location, next);
+            zoom = next;
+            canvas.Invalidate();
+        };
+        canvas.MouseDown += (_, e) =>
+        {
+            if (e.Button == MouseButtons.Left)
+            {
+                dragFrom = e.Location;
+                dragged = false;
+            }
+        };
+        canvas.MouseMove += (_, e) =>
+        {
+            if (dragFrom is not { } from)
+            {
+                return;
+            }
+            // A few pixels of jitter still counts as a click, not a pan.
+            if (!dragged && Math.Abs(e.X - from.X) + Math.Abs(e.Y - from.Y) < 4)
+            {
+                return;
+            }
+            dragged = true;
+            pan = new PointF(pan.X + e.X - from.X, pan.Y + e.Y - from.Y);
+            dragFrom = e.Location;
+            canvas.Invalidate();
+        };
+        canvas.MouseUp += (_, e) =>
+        {
+            if (dragFrom is null || e.Button != MouseButtons.Left)
+            {
+                return;
+            }
+            dragFrom = null;
+            if (!dragged)
+            {
+                var hit = HitTest(positions, canvas.ClientSize, zoom, pan, e.Location);
+                SelectEntity(hit < 0 ? null : shownNodes[hit].Key);
+            }
+        };
 
         factsList.Dock = DockStyle.Fill;
         factsList.View = View.Details;
@@ -87,9 +144,26 @@ internal sealed class MemoryGraphForm : Form
         factsList.Columns.Add("Fact", 260);
         DarkTheme.ApplyListView(factsList);
 
+        linksList.Dock = DockStyle.Top;
+        linksList.Height = 130;
+        linksList.View = View.Details;
+        linksList.FullRowSelect = true;
+        linksList.Columns.Add("Linked to", 200);
+        linksList.Columns.Add("Weight", 60);
+        linksList.Columns.Add("Last reinforced", 130);
+        linksList.Visible = false;
+        DarkTheme.ApplyListView(linksList);
+        selectionLabel.Dock = DockStyle.Top;
+        selectionLabel.Height = 26;
+        selectionLabel.Padding = new Padding(4, 6, 0, 0);
+        selectionLabel.ForeColor = DarkTheme.Muted;
+
         var split = new SplitContainer { Dock = DockStyle.Fill, BackColor = DarkTheme.Border };
         split.Panel1.Controls.Add(canvas);
+        // Fill first, then the Top ones: the last-added Top control sits highest.
         split.Panel2.Controls.Add(factsList);
+        split.Panel2.Controls.Add(linksList);
+        split.Panel2.Controls.Add(selectionLabel);
 
         Controls.Add(split);
         Controls.Add(toolbar);
@@ -125,8 +199,43 @@ internal sealed class MemoryGraphForm : Form
         }
 
         graph = loaded;
+        ApplyFilters();
+    }
+
+    private void ResetView()
+    {
+        zoom = 1f;
+        pan = PointF.Empty;
+        canvas.Invalidate();
+    }
+
+    // null = no selection: every fact, no links pane.
+    private void SelectEntity(string? key)
+    {
+        var node = shownNodes.FirstOrDefault(n => n.Key == key);
+        selectedKey = node?.Key;
+
+        linksList.Items.Clear();
+        linksList.Visible = node is not null;
+        if (node is not null)
+        {
+            foreach (var edge in shownEdges.Where(e => e.A == node.Key || e.B == node.Key).OrderByDescending(e => e.Weight))
+            {
+                var other = shownNodes.First(n => n.Key == (edge.A == node.Key ? edge.B : edge.A));
+                var item = new ListViewItem(other.Display) { ForeColor = DarkTheme.Text };
+                item.SubItems.Add(edge.Weight.ToString("0.##", CultureInfo.InvariantCulture));
+                item.SubItems.Add(ShortTime(edge.LastReinforcedAt));
+                linksList.Items.Add(item);
+            }
+        }
+
+        var facts = node is null ? graph.Facts : FactsMentioning(graph.Facts, node);
+        selectionLabel.Text = node is null
+            ? "Click an entity to see its links and facts."
+            : $"{node.Display} ({node.Type ?? "untyped"}): {linksList.Items.Count} links, {facts.Count} fact versions mention it";
+        factsList.BeginUpdate();
         factsList.Items.Clear();
-        foreach (var fact in graph.Facts)
+        foreach (var fact in facts)
         {
             var superseded = fact.InvalidatedAt is not null;
             var item = new ListViewItem(ShortTime(fact.ValidFrom)) { ForeColor = superseded ? DarkTheme.Muted : DarkTheme.Text };
@@ -135,8 +244,18 @@ internal sealed class MemoryGraphForm : Form
             item.SubItems.Add(fact.Text);
             factsList.Items.Add(item);
         }
-        ApplyFilters();
+        factsList.EndUpdate();
+        canvas.Invalidate();
     }
+
+    // Facts aren't keyed by entity, so "its facts" = versions whose text or
+    // key names it (case-insensitive; key_like_this read as words).
+    // ponytail: substring match, so "Al" would also hit "Alice"; graph
+    // entities are multi-word (acp-memory-store.js), which keeps that rare.
+    internal static List<ManaMemoryFactWindow> FactsMentioning(IEnumerable<ManaMemoryFactWindow> facts, ManaMemoryGraphNode node) =>
+        facts.Where(f =>
+            (f.Text ?? "").Contains(node.Key, StringComparison.OrdinalIgnoreCase)
+            || (f.Key ?? "").Replace('_', ' ').Replace('-', ' ').Contains(node.Key, StringComparison.OrdinalIgnoreCase)).ToList();
 
     private void ApplyFilters()
     {
@@ -149,10 +268,14 @@ internal sealed class MemoryGraphForm : Form
         (shownNodes, shownEdges) = Filter(graph, (double)minWeightInput.Value, since);
         var index = shownNodes.Select((node, i) => (node.Key, i)).ToDictionary(p => p.Key, p => p.i);
         positions = ComputeLayout(shownNodes.Count, shownEdges.Select(e => (index[e.A], index[e.B], e.Weight)).ToList());
+        // A new layout moves every node, so the old zoom/pan points nowhere.
+        zoom = 1f;
+        pan = PointF.Empty;
         statusLabel.Text = graph.Nodes.Count == 0
             ? "No associations recorded yet."
             : $"{shownNodes.Count} entities, {shownEdges.Count} associations, {graph.Facts.Count} fact versions";
-        canvas.Invalidate();
+        // Keeps the selection if its entity survived the filter.
+        SelectEntity(selectedKey);
     }
 
     // Edges at/above minWeight and (if since is set) reinforced since then;
@@ -233,32 +356,71 @@ internal sealed class MemoryGraphForm : Form
         return Enumerable.Range(0, nodeCount).Select(i => new PointF((float)x[i], (float)y[i])).ToArray();
     }
 
+    private const float LayoutMargin = 60f;
+    private const float NodeRadius = 6f;
+
+    // Unit-square layout position -> canvas pixel: fit inside the margin,
+    // then scale by zoom and shift by pan (pixels, relative to the origin).
+    internal static PointF ToScreen(PointF unit, Size size, float zoom, PointF pan)
+    {
+        var width = Math.Max(1, size.Width - LayoutMargin * 2);
+        var height = Math.Max(1, size.Height - LayoutMargin * 2);
+        return new((LayoutMargin + unit.X * width) * zoom + pan.X, (LayoutMargin + unit.Y * height) * zoom + pan.Y);
+    }
+
+    // The pan that keeps the point under the cursor still while zooming.
+    internal static PointF ZoomAt(float zoom, PointF pan, Point cursor, float newZoom) =>
+        new(cursor.X - (cursor.X - pan.X) * newZoom / zoom, cursor.Y - (cursor.Y - pan.Y) * newZoom / zoom);
+
+    // Index of the node drawn under the click (nearest wins), or -1. The hit
+    // circle is a little wider than the dot so small nodes are easy to hit.
+    internal static int HitTest(IReadOnlyList<PointF> positions, Size size, float zoom, PointF pan, Point click)
+    {
+        var best = -1;
+        var bestDistance = (NodeRadius + 4) * (NodeRadius + 4);
+        for (var i = 0; i < positions.Count; i++)
+        {
+            var p = ToScreen(positions[i], size, zoom, pan);
+            var distance = (p.X - click.X) * (p.X - click.X) + (p.Y - click.Y) * (p.Y - click.Y);
+            if (distance <= bestDistance)
+            {
+                best = i;
+                bestDistance = distance;
+            }
+        }
+        return best;
+    }
+
     private void DrawGraph(Graphics g, Size size)
     {
         g.SmoothingMode = SmoothingMode.AntiAlias;
         g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
-        const float margin = 60f;
-        var width = Math.Max(1, size.Width - margin * 2);
-        var height = Math.Max(1, size.Height - margin * 2);
-        PointF At(int i) => new(margin + positions[i].X * width, margin + positions[i].Y * height);
+        PointF At(int i) => ToScreen(positions[i], size, zoom, pan);
 
         var index = shownNodes.Select((node, i) => (node.Key, i)).ToDictionary(p => p.Key, p => p.i);
         foreach (var edge in shownEdges)
         {
-            // Thickness and opacity both grow with the Hebbian weight.
+            // Thickness and opacity both grow with the Hebbian weight; the
+            // selected entity's edges are drawn bright instead of muted.
             var strength = Math.Min(1.0, Math.Log(Math.Max(1, edge.Weight), 2) / 5);
-            using var pen = new Pen(Color.FromArgb(70 + (int)(150 * strength), DarkTheme.Muted), 1f + 4f * (float)strength);
+            var color = edge.A == selectedKey || edge.B == selectedKey ? DarkTheme.Text : DarkTheme.Muted;
+            using var pen = new Pen(Color.FromArgb(70 + (int)(150 * strength), color), 1f + 4f * (float)strength);
             g.DrawLine(pen, At(index[edge.A]), At(index[edge.B]));
         }
 
         using var font = new Font("Segoe UI", 8F);
         using var textBrush = new SolidBrush(DarkTheme.Text);
-        const float radius = 6f;
+        using var ringPen = new Pen(DarkTheme.Text, 2f);
+        const float radius = NodeRadius;
         for (var i = 0; i < shownNodes.Count; i++)
         {
             var p = At(i);
             using var fill = new SolidBrush(ColorFor(shownNodes[i].Type));
             g.FillEllipse(fill, p.X - radius, p.Y - radius, radius * 2, radius * 2);
+            if (shownNodes[i].Key == selectedKey)
+            {
+                g.DrawEllipse(ringPen, p.X - radius - 3, p.Y - radius - 3, (radius + 3) * 2, (radius + 3) * 2);
+            }
             g.DrawString(shownNodes[i].Display, font, textBrush, p.X + radius + 2, p.Y - 7);
         }
 
@@ -273,6 +435,7 @@ internal sealed class MemoryGraphForm : Form
         }
         using var mutedBrush = new SolidBrush(DarkTheme.Muted);
         g.DrawString("thicker line = stronger association", font, mutedBrush, 8, y + 4);
+        g.DrawString("wheel = zoom, drag = pan, click = details", font, mutedBrush, 8, y + 20);
     }
 
     private static Color ColorFor(string? type) =>

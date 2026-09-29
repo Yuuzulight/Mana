@@ -10,6 +10,33 @@ namespace ManaNativeLauncher.Tests;
 
 public class ManaProcessManagerTests
 {
+    // #670: a fresh 256-bit key per launcher run, never a fixed value.
+    [Fact]
+    public void LauncherKey_IsAFreshRandomKeyPerRun()
+    {
+        using var first = new ManaProcessManager(@"C:\mana");
+        using var second = new ManaProcessManager(@"C:\mana");
+
+        Assert.Matches("^[0-9A-F]{64}$", first.LauncherKey);
+        Assert.NotEqual(first.LauncherKey, second.LauncherKey);
+    }
+
+    // #670: the Settings toggle only ever turns local-only mode on, under
+    // its own variable (so a MANA_LOCAL_ONLY line in node-bot/.env can't
+    // turn it off).
+    [Fact]
+    public void ApplyLocalOnly_SetsTheLauncherVariableOnlyWhenOn()
+    {
+        var on = new Dictionary<string, string?>();
+        var off = new Dictionary<string, string?>();
+
+        ManaProcessManager.ApplyLocalOnly(on, true);
+        ManaProcessManager.ApplyLocalOnly(off, false);
+
+        Assert.Equal("1", on["MANA_LAUNCHER_LOCAL_ONLY"]);
+        Assert.Empty(off);
+    }
+
     [Fact]
     public void ResolveVenvPython_UsesGivenVenvSubdirUnderRoot()
     {

@@ -2,7 +2,9 @@ const assert = require("node:assert/strict");
 const test = require("node:test");
 
 const { createApp } = require("../server");
-const { withServer } = require("./helpers");
+const { useTestAdminToken, withServer } = require("./helpers");
+// #842: these routes are admin-only; every request here sends ADMIN_TOKEN.
+const fetch = useTestAdminToken();
 
 // /admin/pending-writes/:id/approve and /reject build a filesystem path
 // from :id (path.join(PENDING_DIR, id)) -- without validation, an id like

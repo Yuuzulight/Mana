@@ -85,13 +85,45 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
     // current turn, for telling which edits it produced.
     public DateTime? LastUserMessageAt { get; private set; }
 
-    public void AppendUserMessage(string text) => RunOnUiThread(() =>
+    public void AppendUserMessage(string text) => AppendUserMessage(text, Array.Empty<string>());
+
+    // #679: images show as thumbnails above the text; an image-only
+    // message has no text line.
+    public void AppendUserMessage(string text, IReadOnlyList<string> images) => RunOnUiThread(() =>
     {
         LastUserMessageAt = DateTime.UtcNow;
         var message = new Message(fromUser: true);
-        message.Blocks.Add(new MarkdownBlock(MarkdownBlockType.Paragraph, new[] { new MarkdownRun(text, false, false, false) }));
+        foreach (var image in images)
+        {
+            if (DecodeThumbnail(image) is { } thumb)
+            {
+                message.Images.Add(thumb);
+            }
+        }
+        if (text.Length > 0 || message.Images.Count == 0)
+        {
+            message.Blocks.Add(new MarkdownBlock(MarkdownBlockType.Paragraph, new[] { new MarkdownRun(text, false, false, false) }));
+        }
         Add(message, forceScroll: true);
     });
+
+    private const int ThumbnailSide = 160;
+
+    // A data URL's image scaled to ThumbnailSide, or null if it isn't one.
+    internal static Bitmap? DecodeThumbnail(string dataUrl)
+    {
+        var comma = dataUrl.IndexOf(',');
+        try
+        {
+            using var stream = new System.IO.MemoryStream(Convert.FromBase64String(dataUrl[(comma + 1)..]));
+            using var image = Image.FromStream(stream);
+            return new Bitmap(image, ScreenCapture.FitWithin(image.Size, ThumbnailSide));
+        }
+        catch (Exception ex) when (ex is FormatException or ArgumentException)
+        {
+            return null;
+        }
+    }
 
     public void AppendReplySentence(string text) => RunOnUiThread(() =>
     {
@@ -118,6 +150,32 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
         var message = new Message(fromUser: false);
         message.Blocks.AddRange(blocks);
         Add(message, forceScroll: false);
+    });
+
+    // #687: a reopened or switched-to session's stored turns, replacing the
+    // conversation shown. Artifacts stay inline here.
+    public void ShowHistory(IReadOnlyList<ManaSessionTurn> turns) => RunOnUiThread(() =>
+    {
+        messages.Clear();
+        selected = -1;
+        ClearTextSelection();
+        foreach (var turn in turns)
+        {
+            if (!string.IsNullOrWhiteSpace(turn.User))
+            {
+                var user = new Message(fromUser: true);
+                user.Blocks.Add(new MarkdownBlock(MarkdownBlockType.Paragraph, new[] { new MarkdownRun(turn.User, false, false, false) }));
+                messages.Add(user);
+            }
+            if (!string.IsNullOrWhiteSpace(turn.Assistant))
+            {
+                var reply = new Message(fromUser: false) { FinalText = turn.Assistant };
+                reply.Blocks.AddRange(ChatMarkdownParser.Parse(turn.Assistant));
+                messages.Add(reply);
+            }
+        }
+        AccessibilityNotifyClients(AccessibleEvents.Reorder, -1);
+        Relayout(forceScroll: true);
     });
 
     // #686: records a detected artifact with the viewer (ArtifactViewerForm.Add)
@@ -192,6 +250,21 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
     public event Action<string?>? HearingChanged;
 
     public void ShowHearing(string? text) => RunOnUiThread(() => HearingChanged?.Invoke(text));
+
+    // #690: a message from Mana outside any turn (an ambient screen glance)
+    // -- always its own, finished bubble, never merged into a reply that's
+    // still open (e.g. one cut off by a barge-in).
+    public void AppendManaMessage(string text) => RunOnUiThread(() =>
+    {
+        var blocks = ChatMarkdownParser.Parse(text);
+        if (blocks.Count == 0)
+        {
+            return;
+        }
+        var message = new Message(fromUser: false) { FinalText = text };
+        message.Blocks.AddRange(blocks);
+        Add(message, forceScroll: false);
+    });
 
     // Puts buttons under Mana's latest message (replacing any it had, except
     // kept ones like the artifact button, which move after the new ones).
@@ -345,6 +418,27 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
         var y = 0;
         var widest = 0;
         message.Cells.Clear();
+        message.ImageBounds.Clear();
+        if (message.Images.Count > 0)
+        {
+            var x = 0;
+            var rowHeight = 0;
+            foreach (var image in message.Images)
+            {
+                var size = ScreenCapture.FitWithin(image.Size, Math.Min(ThumbnailSide, maxWidth));
+                if (x > 0 && x + size.Width > maxWidth)
+                {
+                    y += rowHeight + BlockGap;
+                    x = 0;
+                    rowHeight = 0;
+                }
+                message.ImageBounds.Add(new Rectangle(new Point(x, y), size));
+                widest = Math.Max(widest, x + size.Width);
+                rowHeight = Math.Max(rowHeight, size.Height);
+                x += size.Width + BlockGap;
+            }
+            y += rowHeight + (message.Blocks.Count > 0 ? BlockGap : 2);
+        }
         for (var b = 0; b < message.Blocks.Count; b++)
         {
             var block = message.Blocks[b];
@@ -653,6 +747,11 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
             }
 
             var origin = new Point(bubble.X + PadX, bubble.Y + PadY);
+            for (var k = 0; k < message.Images.Count; k++)
+            {
+                var rect = message.ImageBounds[k];
+                g.DrawImage(message.Images[k], rect with { X = rect.X + origin.X, Y = rect.Y + origin.Y });
+            }
             if (message.Cells.Count > 0)
             {
                 using var headerBack = new SolidBrush(Color.FromArgb(DarkTheme.IsLight ? 110 : 60, DarkTheme.IsLight ? Color.White : Color.Black));
@@ -1110,6 +1209,26 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
         return -1;
     }
 
+    // #701: a clicked chat bubble -- selects (and scrolls to) Mana's latest
+    // message containing that sentence, else her latest message.
+    public void SelectMessageContaining(string sentence)
+    {
+        var index = LatestManaMessage(sentence);
+        if (index >= 0)
+        {
+            Select(index);
+        }
+    }
+
+    // -1 when Mana has no messages.
+    internal int LatestManaMessage(string sentence)
+    {
+        var mana = Enumerable.Range(0, messages.Count).Reverse().Where(i => !messages[i].FromUser).ToList();
+        return mana.Count == 0
+            ? -1
+            : mana.FirstOrDefault(i => messages[i].PlainText.Contains(sentence.Trim(), StringComparison.OrdinalIgnoreCase), mana[0]);
+    }
+
     private void Select(int index)
     {
         selected = index;
@@ -1297,6 +1416,10 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
             linkTip.Dispose();
             glow?.Dispose();
             ContextMenuStrip?.Dispose();
+            foreach (var image in messages.SelectMany(m => m.Images))
+            {
+                image.Dispose();
+            }
         }
         base.Dispose(disposing);
     }
@@ -1323,6 +1446,8 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
         public Rectangle NoteBounds { get; set; }
         public bool ActionRunning { get; set; }
         public List<(Rectangle Bounds, bool Header)> Cells { get; } = new(); // table cells, in content coordinates
+        public List<Bitmap> Images { get; } = new(); // #679: thumbnails of a user message's images
+        public List<Rectangle> ImageBounds { get; } = new(); // in content coordinates
 
         // The full reply text once VoiceLoop reported it; later sentences start a new bubble.
         public string? FinalText { get; set; }
@@ -1334,6 +1459,10 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
             get
             {
                 var text = new StringBuilder();
+                if (Images.Count > 0)
+                {
+                    text.Append(Images.Count == 1 ? "[image]" : $"[{Images.Count} images]");
+                }
                 foreach (var block in Blocks)
                 {
                     if (text.Length > 0)

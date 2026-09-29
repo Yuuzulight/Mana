@@ -12,6 +12,7 @@
 const fs = require("fs");
 const path = require("path");
 const { spawnSync } = require("child_process");
+const { refuseIfLocalOnly } = require("../../node-bot/local-only");
 
 const MIN_FRAMES = 8;
 const MAX_FRAMES = 20;
@@ -124,6 +125,7 @@ function formatTimestampedTranscript(segments) {
 // Downloads a video (and captions, if the source has any) via yt-dlp.
 // Returns the local video file path and, if found, a captions file path.
 function downloadVideo(url, options = {}) {
+  refuseIfLocalOnly("downloading a video");
   const outputDir = options.outputDir;
   const ytDlpBin = options.ytDlpBin || "yt-dlp";
   const run = options.spawnFn || spawnSync;

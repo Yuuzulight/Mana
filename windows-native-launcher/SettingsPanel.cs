@@ -204,8 +204,35 @@ internal sealed class SettingsPanel : UserControl
         layout.Controls.Add(tokenBox);
         layout.Controls.Add(saveButton);
         layout.Controls.Add(statusLabel);
+        layout.Controls.Add(BuildLocalOnlyRow(settings.LocalOnly));
 
         return new TabPage("Connection") { Controls = { layout } };
+    }
+
+    // #670: saved at once like the Voice tab's checkboxes; the backend
+    // reads it when the launcher next starts it.
+    private static FlowLayoutPanel BuildLocalOnlyRow(bool localOnly)
+    {
+        var check = new CheckBox
+        {
+            Text = "Local-only mode (nothing leaves this PC and your local network)",
+            AutoSize = true,
+            ForeColor = DarkTheme.Text,
+            Checked = localOnly,
+        };
+        var status = new Label { AutoSize = true, ForeColor = DarkTheme.Muted, Anchor = AnchorStyles.Left };
+        check.CheckedChanged += (_, _) =>
+        {
+            var latest = ManaSettingsStore.Load();
+            latest.LocalOnly = check.Checked;
+            latest.Save();
+            status.Text = "Saved -- restart Mana for this to take effect. MANA_LOCAL_ONLY=1 in node-bot/.env keeps it on.";
+        };
+
+        var row = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.LeftToRight, BackColor = DarkTheme.Background };
+        row.Controls.Add(check);
+        row.Controls.Add(status);
+        return row;
     }
 
     private TabPage BuildPluginsTab()
@@ -624,16 +651,24 @@ internal sealed class SettingsPanel : UserControl
         newButton.Click += async (_, _) => await CreateSkillAsync();
         editButton.Click += async (_, _) => await EditSelectedSkillAsync();
         deleteButton.Click += async (_, _) => await DeleteSelectedSkillAsync();
-        // #664 (Q21): import an OpenClaw/AgentSkills SKILL.md folder.
+        // #664 (Q21): import an OpenClaw/AgentSkills SKILL.md folder, or a zip of one.
         var importButton = new Button { Text = "Import folder...", AutoSize = true };
         DarkTheme.ApplyButton(importButton);
         importButton.Click += async (_, _) => await ImportSkillFolderAsync();
+        var importZipButton = new Button { Text = "Import zip...", AutoSize = true };
+        DarkTheme.ApplyButton(importZipButton);
+        importZipButton.Click += async (_, _) => await ImportSkillZipAsync();
+        var importLinkButton = new Button { Text = "Import link...", AutoSize = true };
+        DarkTheme.ApplyButton(importLinkButton);
+        importLinkButton.Click += async (_, _) => await ImportSkillLinkAsync();
 
         var buttonRow = new FlowLayoutPanel { Dock = DockStyle.Bottom, Height = 32, FlowDirection = FlowDirection.LeftToRight, BackColor = DarkTheme.Background };
         buttonRow.Controls.Add(newButton);
         buttonRow.Controls.Add(editButton);
         buttonRow.Controls.Add(deleteButton);
         buttonRow.Controls.Add(importButton);
+        buttonRow.Controls.Add(importZipButton);
+        buttonRow.Controls.Add(importLinkButton);
 
         // Q20: how Mana may use imported skills (default: ask the first time).
         importedSkillUseBox.Items.AddRange(new object[] { "Use freely", "Ask each time", "Ask the first time" });
@@ -665,14 +700,36 @@ internal sealed class SettingsPanel : UserControl
     private async Task ImportSkillFolderAsync()
     {
         using var dialog = new FolderBrowserDialog { Description = "Pick a skill folder (one with a SKILL.md in it)", UseDescriptionForTitle = true };
-        if (dialog.ShowDialog(this) != DialogResult.OK)
+        if (dialog.ShowDialog(this) == DialogResult.OK)
         {
-            return;
+            await SubmitSkillImportAsync(dialog.SelectedPath);
         }
+    }
+
+    private async Task ImportSkillZipAsync()
+    {
+        using var dialog = new OpenFileDialog { Title = "Pick a zipped skill (a SKILL.md folder)", Filter = "Zip files (*.zip)|*.zip" };
+        if (dialog.ShowDialog(this) == DialogResult.OK)
+        {
+            await SubmitSkillImportAsync(dialog.FileName);
+        }
+    }
+
+    private async Task ImportSkillLinkAsync()
+    {
+        using var dialog = new TextPromptDialog("Import Skill", "Link (github.com or clawhub.ai):", "");
+        if (dialog.ShowDialog(this) == DialogResult.OK && !string.IsNullOrWhiteSpace(dialog.Value))
+        {
+            await SubmitSkillImportAsync(dialog.Value.Trim());
+        }
+    }
+
+    private async Task SubmitSkillImportAsync(string path)
+    {
         string? error;
         try
         {
-            error = await backendClient.ImportSkillFolderAsync(dialog.SelectedPath);
+            error = await backendClient.ImportSkillAsync(path);
         }
         catch (Exception ex)
         {
@@ -684,11 +741,11 @@ internal sealed class SettingsPanel : UserControl
         }
         if (error is null)
         {
-            MessageBox.Show(this, "Import submitted -- review and approve it from the Approvals tab. Nothing in the folder runs.", "Import Skill", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            MessageBox.Show(this, "Import submitted -- review and approve it from the Approvals tab. Nothing in it runs.", "Import Skill", MessageBoxButtons.OK, MessageBoxIcon.Information);
         }
         else
         {
-            MessageBox.Show(this, $"Couldn't import that folder: {error}", "Import Skill", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            MessageBox.Show(this, $"Couldn't import that skill: {error}", "Import Skill", MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
     }
 
@@ -1058,7 +1115,34 @@ internal sealed class SettingsPanel : UserControl
         layout.Controls.Add(row);
         layout.Controls.Add(BuildWakePrefilterRow());
         layout.Controls.Add(BuildEchoCancellationRow());
+        layout.Controls.Add(BuildBargeInRow());
         return new TabPage("Voice") { Controls = { layout } };
+    }
+
+    // #665: what talking over Mana does (BargeInPolicy), read each time
+    // listening starts; MANA_BARGE_IN_MODE overrides it.
+    private static readonly string[] BargeInModes = { "minWords", "always", "notWhileSpeaking" };
+
+    private static FlowLayoutPanel BuildBargeInRow()
+    {
+        var label = new Label { Text = "When I talk over Mana", AutoSize = true, ForeColor = DarkTheme.Text, Anchor = AnchorStyles.Left };
+        var combo = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 300, BackColor = DarkTheme.Panel2, ForeColor = DarkTheme.Text };
+        combo.Items.AddRange(new object[] { "Stop her for two words or more (default)", "Stop her for any speech", "Never stop her; answer when she's done" });
+        combo.SelectedIndex = (int)BargeInPolicy.Resolve(null, ManaSettingsStore.Load().BargeInMode);
+        var status = new Label { AutoSize = true, ForeColor = DarkTheme.Muted, Anchor = AnchorStyles.Left };
+        combo.SelectionChangeCommitted += (_, _) =>
+        {
+            var latest = ManaSettingsStore.Load();
+            latest.BargeInMode = combo.SelectedIndex == 0 ? null : BargeInModes[combo.SelectedIndex];
+            latest.Save();
+            status.Text = "Saved -- applies next time listening starts.";
+        };
+
+        var row = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.LeftToRight, BackColor = DarkTheme.Background };
+        row.Controls.Add(label);
+        row.Controls.Add(combo);
+        row.Controls.Add(status);
+        return row;
     }
 
     // #619: EchoCancellation on the mic, read each time listening starts;

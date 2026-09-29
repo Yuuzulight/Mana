@@ -21,6 +21,35 @@ internal sealed class AutoSession
 
     public string? CurrentId => currentId;
 
+    // True while the current session is one this class started (so it rotates).
+    public bool IsAuto
+    {
+        get
+        {
+            lock (gate)
+            {
+                return currentId is not null && currentId == autoId;
+            }
+        }
+    }
+
+    // #687: the session open at the last exit, reopened at launch. An
+    // auto-started one still rotates after IdleLimit, counted from its last
+    // stored turn. Ignored if a turn or a pick already set a session.
+    public void Restore(string sessionId, bool auto, DateTime lastTurnAtUtc)
+    {
+        lock (gate)
+        {
+            if (currentId is not null)
+            {
+                return;
+            }
+            currentId = sessionId;
+            autoId = auto ? sessionId : null;
+            lastTurnAt = lastTurnAtUtc;
+        }
+    }
+
     // The session list's pick. Null leaves the next turn to auto-start one.
     public void Set(string? sessionId)
     {

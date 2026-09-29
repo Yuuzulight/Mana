@@ -72,5 +72,47 @@ public class MemoryGraphFormTests
         Assert.Empty(MemoryGraphForm.ComputeLayout(0, new List<(int, int, double)>()));
     }
 
+    [Fact]
+    public void HitTest_FindsTheNodeUnderTheClickAfterZoomAndPan()
+    {
+        var positions = new[] { new System.Drawing.PointF(0, 0), new System.Drawing.PointF(1, 1) };
+        var size = new System.Drawing.Size(220, 220);
+        var pan = new System.Drawing.PointF(-100, -50);
+
+        // Node 1 sits at (160,160) unzoomed; zoom 2 + pan puts it at (220,270).
+        Assert.Equal(1, MemoryGraphForm.HitTest(positions, size, 2f, pan, new System.Drawing.Point(222, 268)));
+        Assert.Equal(-1, MemoryGraphForm.HitTest(positions, size, 2f, pan, new System.Drawing.Point(160, 160)));
+        Assert.Equal(1, MemoryGraphForm.HitTest(positions, size, 1f, System.Drawing.PointF.Empty, new System.Drawing.Point(160, 160)));
+    }
+
+    [Fact]
+    public void ZoomAt_KeepsThePointUnderTheCursorStill()
+    {
+        var size = new System.Drawing.Size(220, 220);
+        var unit = new System.Drawing.PointF(0.5f, 0.5f);
+        var cursor = new System.Drawing.Point(110, 110);
+        Assert.Equal(new System.Drawing.PointF(110, 110), MemoryGraphForm.ToScreen(unit, size, 1f, System.Drawing.PointF.Empty));
+
+        var pan = MemoryGraphForm.ZoomAt(1f, System.Drawing.PointF.Empty, cursor, 2.5f);
+
+        Assert.Equal(new System.Drawing.PointF(110, 110), MemoryGraphForm.ToScreen(unit, size, 2.5f, pan));
+    }
+
+    [Fact]
+    public void FactsMentioning_MatchesTheEntityInTextOrKeyIgnoringCase()
+    {
+        var facts = new List<ManaMemoryFactWindow>
+        {
+            new() { Key = "friend", Text = "Alice Smith likes tea" },
+            new() { Key = "alice_smith_birthday", Text = "May 3" },
+            new() { Key = "gpu", Text = "RTX 5080" },
+            new() { Key = "note", Text = null! },
+        };
+
+        var matched = MemoryGraphForm.FactsMentioning(facts, new ManaMemoryGraphNode { Key = "alice smith", Display = "Alice Smith" });
+
+        Assert.Equal(new[] { "friend", "alice_smith_birthday" }, matched.Select(f => f.Key));
+    }
+
     private static ManaMemoryGraphNode Node(string key) => new() { Key = key, Display = key };
 }
