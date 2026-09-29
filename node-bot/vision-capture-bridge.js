@@ -23,10 +23,18 @@ const DEFAULT_TIMEOUT_MS = 10000;
 
 function createVisionCaptureBridge({ timeoutMs = DEFAULT_TIMEOUT_MS } = {}) {
   let sender = null;
+  let cameraCheck = null;
   const pending = new Map();
 
-  function setSender(fn) {
+  // #912: hasCamera says whether a connected client can take camera
+  // snapshots (the native launcher declares it; Electron doesn't).
+  function setSender(fn, hasCamera) {
     sender = typeof fn === "function" ? fn : null;
+    cameraCheck = typeof hasCamera === "function" ? hasCamera : null;
+  }
+
+  function hasCamera() {
+    return Boolean(cameraCheck?.());
   }
 
   function clearPending(requestId) {
@@ -37,7 +45,7 @@ function createVisionCaptureBridge({ timeoutMs = DEFAULT_TIMEOUT_MS } = {}) {
     }
   }
 
-  function requestCapture() {
+  function requestCapture({ camera = false } = {}) {
     return new Promise((resolve, reject) => {
       if (typeof sender !== "function") {
         reject(new Error("no client connected"));
@@ -49,7 +57,7 @@ function createVisionCaptureBridge({ timeoutMs = DEFAULT_TIMEOUT_MS } = {}) {
         reject(new Error("capture request timed out"));
       }, timeoutMs);
       pending.set(requestId, { resolve, reject, timer });
-      const sent = sender({ type: "capture-request", requestId });
+      const sent = sender({ type: "capture-request", requestId, ...(camera && { source: "camera" }) });
       if (!sent) {
         clearPending(requestId);
         reject(new Error("no client connected"));
@@ -73,7 +81,7 @@ function createVisionCaptureBridge({ timeoutMs = DEFAULT_TIMEOUT_MS } = {}) {
     return true;
   }
 
-  return { requestCapture, resolveCapture, rejectCapture, setSender };
+  return { requestCapture, resolveCapture, rejectCapture, setSender, hasCamera };
 }
 
 const visionCaptureBridge = createVisionCaptureBridge();
