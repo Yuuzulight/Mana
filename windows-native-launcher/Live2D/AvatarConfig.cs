@@ -20,6 +20,7 @@ internal sealed class AvatarConfig
 
     // State name (lower-case AvatarState name) -> candidate names, tried
     // before the built-in preferences. Env candidates come first.
+    // StateExpressions also takes #623 emotion tags as keys ("wink").
     public IReadOnlyDictionary<string, IReadOnlyList<string>> StateMotions { get; private init; } = new Dictionary<string, IReadOnlyList<string>>();
     public IReadOnlyDictionary<string, IReadOnlyList<string>> StateExpressions { get; private init; } = new Dictionary<string, IReadOnlyList<string>>();
     public IReadOnlyList<RandomMotion> RandomMotions { get; private init; } = [];

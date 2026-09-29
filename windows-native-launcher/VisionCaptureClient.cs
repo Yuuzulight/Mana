@@ -13,7 +13,7 @@ namespace Mana.NativeLauncher;
 // and POSTs it (or the capture error) to /vision/capture-result, so the
 // pending requestCapture() resolves. windows-launcher equivalent:
 // main.js connectVisionCaptureBridge + renderer.js "vision:capture-request".
-// Reconnect loop copied from CaptionWebSocketClient.
+// Reconnect loop copied from TrayNotificationClient.
 internal sealed class VisionCaptureClient : IDisposable
 {
     private const int ReconnectDelayMs = 3000;
@@ -103,7 +103,7 @@ internal sealed class VisionCaptureClient : IDisposable
     }
 
     // {type:"capture-request", requestId:"<uuid>"}; anything else (or a
-    // malformed frame) is ignored, like CaptionWebSocketClient's parser.
+    // malformed frame) is ignored, like TrayNotificationClient's parser.
     internal static string? TryParseCaptureRequestId(byte[] json)
     {
         try

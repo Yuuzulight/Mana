@@ -6,6 +6,7 @@
 const path = require("path");
 const { Readable } = require("stream");
 const { pcmToWav } = require("./pcm-to-wav");
+const { sanitizeBridgeOutput } = require("../../node-bot/bridge-output-sanitizer");
 
 const DEFAULT_SILENCE_MS = 1000;
 const DISCORD_OPUS_RATE = 48000;
@@ -98,7 +99,8 @@ function createDiscordVoiceSession(options = {}) {
     try {
       const transcript = (await whisperQueue.transcribe(wavPath)).trim();
       if (!transcript) return;
-      const reply = await replyFn(transcript, { sessionId: `discord-voice-${channelId}` });
+      // Issue #670: spoken into the channel, so scrubbed like a text reply.
+      const reply = sanitizeBridgeOutput(await replyFn(transcript, { sessionId: `discord-voice-${channelId}` }));
       if (!reply) return;
       const audio = await synthesizeReply(reply);
       await playReplyAudio(audio);

@@ -12,6 +12,7 @@
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
+const { sanitizeBridgeOutput } = require("../../node-bot/bridge-output-sanitizer");
 
 function ensureDir(dir) {
   fs.mkdirSync(dir, { recursive: true });
@@ -136,7 +137,8 @@ function createChannelPairingBridge(options = {}) {
     if (typeof replyFn !== "function") {
       throw new Error("no reply function configured");
     }
-    return replyFn(cleanText, { sessionId: `${sessionPrefix}-${id}` });
+    // Issue #670: every bridge's text reply leaves the PC through here.
+    return sanitizeBridgeOutput(await replyFn(cleanText, { sessionId: `${sessionPrefix}-${id}` }));
   }
 
   return {

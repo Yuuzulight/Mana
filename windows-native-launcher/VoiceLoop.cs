@@ -47,6 +47,7 @@ internal sealed class VoiceLoop : IDisposable
 {
     private readonly SileroVadRunner vad;
     private readonly WakeWordClassifier? wakeWordClassifier;
+    private readonly CaptionOverlayForm? captions;
     private readonly ManaBackendClient backendClient;
     private readonly AudioPlayer audioPlayer;
     private readonly AvatarOverlayForm avatarOverlay;
@@ -194,9 +195,11 @@ internal sealed class VoiceLoop : IDisposable
         ScreenContextReader? screenContextReader = null,
         Func<bool>? isGamingModeActive = null,
         ClipBuffer? clipBuffer = null,
-        WakeWordClassifier? wakeWordClassifier = null)
+        WakeWordClassifier? wakeWordClassifier = null,
+        CaptionOverlayForm? captions = null)
     {
         this.vad = vad;
+        this.captions = captions;
         this.wakeWordClassifier = wakeWordClassifier;
         this.backendClient = backendClient;
         this.audioPlayer = audioPlayer;
@@ -218,7 +221,14 @@ internal sealed class VoiceLoop : IDisposable
             backendClient,
             audioPlayer.PlayAsync,
             talking => OnTalkingStateChanged(talking),
-            running => avatarOverlay.SetActivity(AvatarState.Working, running));
+            running => avatarOverlay.SetActivity(AvatarState.Working, running),
+            (sentence, emotion) =>
+            {
+                captions?.ShowSentence(sentence);
+                // #623: each sentence's own face as its audio starts -- the
+                // model's emotion tag, else read from the sentence's text.
+                avatarOverlay.SetState(MapReplyEmotionToAvatarState(ReplyEmotionDetector.DetectReplyEmotion(sentence, emotion)), null, emotion);
+            });
     }
 
     // #681: true between Start() and Stop() -- what the tray's and chat
@@ -1013,23 +1023,36 @@ internal sealed class VoiceLoop : IDisposable
             prefilterRejected = logEntry.Score < logEntry.Threshold;
         }
 
+        // #682: Electron's speech filters (SpeechFilters) -- a quiet segment
+        // is boosted before Whisper hears it, one still too quiet or
+        // hiss-like never reaches Whisper, and a phantom phrase or
+        // noise-only caption is dropped like an empty transcript.
         var transcript = "";
         if (!prefilterRejected)
         {
-            try
+            var (boosted, gain) = SpeechFilters.ApplySpeechGain(samples, SpeechFilters.GainTargetPeak, SpeechFilters.GainMaxBoost);
+            logEntry.Gain = gain;
+            logEntry.Drop = SpeechFilters.GetSpeechRejectReason(boosted, SpeechFilters.MinSpeechRms, SpeechFilters.MinSpeechPeak, SpeechFilters.MaxClickyZcr);
+            if (logEntry.Drop is null)
             {
-                transcript = await backendClient.TranscribeAsync(BuildWavBytes(samples));
-                logEntry.Whisper = string.IsNullOrWhiteSpace(transcript) ? "empty" : "ok";
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"VoiceLoop: transcription failed, resuming listening. {ex.Message}");
-                logEntry.Whisper = "failed";
+                try
+                {
+                    transcript = await backendClient.TranscribeAsync(BuildWavBytes(boosted));
+                    logEntry.Whisper = string.IsNullOrWhiteSpace(transcript) ? "empty" : "ok";
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"VoiceLoop: transcription failed, resuming listening. {ex.Message}");
+                    logEntry.Whisper = "failed";
+                }
             }
         }
         if (logEntry.Whisper == "ok")
         {
             logEntry.Transcript = transcript;
+            logEntry.Drop = SpeechFilters.IsLikelyWhisperHallucination(transcript, samples.Length / (double)SileroVadRunner.SampleRate) ? "hallucination"
+                : SpeechFilters.IsNoiseOnlyTranscript(transcript) ? "noise"
+                : null;
         }
 
         if (!await ClaimTurnAsync(turnId))
@@ -1067,13 +1090,16 @@ internal sealed class VoiceLoop : IDisposable
             await ReturnToIdleOrResumeHeldAsync(held, nested);
         }
 
-        // skipped (pre-filter), failed, or empty.
-        if (logEntry.Whisper != "ok")
+        // skipped (pre-filter or speech gate), failed, empty, or filtered.
+        if (logEntry.Whisper != "ok" || logEntry.Drop is not null)
         {
             await Skip();
             return;
         }
 
+        // Electron's handleTranscript strips "(laughs)"/"[music]" annotations
+        // before the wake match and before the text is shown or sent.
+        transcript = ScreenContextTrigger.CleanTranscriptText(transcript);
         string commandText;
         if (!awake)
         {
@@ -1364,11 +1390,11 @@ internal sealed class VoiceLoop : IDisposable
             return false;
         }
 
-        // Only reachable here with the FULL final reply text already known
-        // (unlike the streaming path above, which only ever sees individual
-        // sentences as they arrive -- per-sentence expression detection
-        // isn't attempted there, a deliberate scope cut).
-        var expression = ReplyEmotionDetector.DetectReplyEmotion(reply);
+        // One clip, so one face for the whole reply (#623: the reply's own
+        // emotion tag when the model gave one; the streaming path above
+        // switches per sentence instead).
+        var emotion = streamingReplyPlayer.FinalEmotion;
+        var expression = ReplyEmotionDetector.DetectReplyEmotion(reply, emotion);
 
         bool completedNaturally;
         try
@@ -1377,7 +1403,8 @@ internal sealed class VoiceLoop : IDisposable
             // final event. node-bot only sets it on the tool-calling path,
             // which never streams sentences -- so it always lands here, never
             // on the changed:false path above.
-            OnTalkingStateChanged(true, MapReplyEmotionToAvatarState(expression), preferredExpression);
+            OnTalkingStateChanged(true, MapReplyEmotionToAvatarState(expression), preferredExpression, emotion);
+            captions?.ShowSpokenText(reply ?? string.Empty, AudioPlayer.Duration(replyWav));
             completedNaturally = await audioPlayer.PlayAsync(replyWav);
         }
         catch (Exception ex)
@@ -1414,6 +1441,7 @@ internal sealed class VoiceLoop : IDisposable
         {
             var wav = await backendClient.SynthesizeAsync(ReplyFailedMessage);
             OnTalkingStateChanged(true);
+            captions?.ShowSentence(ReplyFailedMessage);
             var completedNaturally = await audioPlayer.PlayAsync(wav);
             OnTalkingStateChanged(false);
             if (!completedNaturally)
@@ -1448,9 +1476,13 @@ internal sealed class VoiceLoop : IDisposable
     // non-streaming fallback call site (which has the full reply text
     // already, unlike streaming) passes ReplyEmotionDetector's result
     // instead. Ignored when talking=false (always goes to Idle).
-    private void OnTalkingStateChanged(bool talking, AvatarState talkingState = AvatarState.Talking, string? preferredExpression = null)
+    private void OnTalkingStateChanged(bool talking, AvatarState talkingState = AvatarState.Talking, string? preferredExpression = null, string? emotion = null)
     {
-        avatarOverlay.SetState(talking ? talkingState : AvatarState.Idle, talking ? preferredExpression : null);
+        avatarOverlay.SetState(talking ? talkingState : AvatarState.Idle, talking ? preferredExpression : null, talking ? emotion : null);
+        if (!talking)
+        {
+            captions?.SpeechEnded();
+        }
         lock (stateLock)
         {
             if (talking)

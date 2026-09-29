@@ -61,7 +61,7 @@ async function extractFileText(filePath, { runVisionReply, runWhisper, fsImpl })
 
 // options.appendTurn: required, acpMemoryStore.appendTurn-shaped function.
 // options.runVisionReply: required, (prompt, images) => Promise<string>.
-// options.runWhisper: required, (filePath) => string (whisper.cpp is sync).
+// options.runWhisper: required, (filePath) => Promise<string>.
 function createMemoryInboxWatcher(options = {}) {
   const inboxDir = options.inboxDir;
   if (!inboxDir) {

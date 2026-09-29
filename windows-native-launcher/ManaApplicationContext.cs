@@ -11,6 +11,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
 {
     private readonly AvatarOverlayForm avatarOverlay;
     private readonly BrowserAutomationPanel browserAutomationPanel;
+    private readonly AgentActivityPanel agentActivityPanel;
     private readonly NotifyIcon trayIcon;
     private readonly ManaProcessManager processManager;
     private readonly ManaBackendClient backendClient;
@@ -27,7 +28,6 @@ internal sealed class ManaApplicationContext : ApplicationContext
     private readonly GlobalHotkeyListener globalHotkeys;
     private readonly TrayNotificationClient trayNotifications;
     private readonly CaptionOverlayForm captionOverlay;
-    private readonly CaptionWebSocketClient captionClient;
     private readonly VisionCaptureClient visionCaptureClient;
     private readonly ArtifactViewerForm artifactViewer;
     private readonly QuickEntryForm quickEntry;
@@ -84,6 +84,8 @@ internal sealed class ManaApplicationContext : ApplicationContext
         // immediately and shows itself only while browser automation is
         // genuinely active.
         browserAutomationPanel = new BrowserAutomationPanel(backendClient);
+        // #646: same ambient kind, for the chat tool loop, with a Stop button.
+        agentActivityPanel = new AgentActivityPanel(backendClient);
 
         var vadModelPath = Path.Combine(rootDir, "windows-native-launcher", "assets", "vad", "silero_vad.onnx");
         sileroVad = new SileroVadRunner(vadModelPath);
@@ -99,13 +101,18 @@ internal sealed class ManaApplicationContext : ApplicationContext
         // #521: constructed before voiceLoop so it can be passed in as
         // VoiceLoop's IChatLog -- SessionListForm only needs the control
         // itself (to embed it), not the other way around.
-        var chatLog = new ChatView();
+        // #686: also VoiceLoop's artifact sink, so it can re-render Mana's
+        // bubble from the final reply text before passing it to the viewer.
+        var chatLog = new ChatView { Artifacts = artifactViewer };
         // #522: ScreenContextReader owns its own min-interval/keyword-gate
         // caching internally, so this is just held and passed straight
         // through to VoiceLoop, same as the other optional collaborators
         // constructed above it.
         var screenContextReader = new ScreenContextReader(rootDir, backendClient);
-        voiceLoop = new VoiceLoop(sileroVad, backendClient, audioPlayer, avatarOverlay, chatLog, artifactViewer, screenContextReader, () => gamingModeActive, clipBuffer, wakeWordClassifier);
+        // #571: on-screen equivalent of spoken output, fed sentence by
+        // sentence by VoiceLoop's own playback.
+        captionOverlay = new CaptionOverlayForm();
+        voiceLoop = new VoiceLoop(sileroVad, backendClient, audioPlayer, avatarOverlay, chatLog, chatLog, screenContextReader, () => gamingModeActive, clipBuffer, wakeWordClassifier, captionOverlay);
         voiceLoop.SetPresetId(settings.ActivePresetId); // #681
         // #523: Ctrl+Alt+M asks Mana to look at the screen, through the
         // same reply/TTS pipeline a normal turn uses.
@@ -170,10 +177,6 @@ internal sealed class ManaApplicationContext : ApplicationContext
             }
             ShowSessionList();
         });
-        // #571: on-screen equivalent of spoken output -- purely additive,
-        // wired up alongside trayNotifications above.
-        captionOverlay = new CaptionOverlayForm();
-        captionClient = new CaptionWebSocketClient(captionOverlay.SetCaption, backendBaseUrl: settings.BackendBaseUrl);
         // #681: answers the model's mid-reply screenshot requests.
         visionCaptureClient = new VisionCaptureClient(backendClient, backendBaseUrl: settings.BackendBaseUrl);
 
@@ -192,7 +195,6 @@ internal sealed class ManaApplicationContext : ApplicationContext
 
         trayIcon.DoubleClick += (_, _) => ShowStatus();
         trayNotifications.Start();
-        captionClient.Start();
         visionCaptureClient.Start();
 
         // Quick rundown: start the existing local services, but keep this host native and small.
@@ -248,6 +250,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
         menu.Items.Add("Compare Models", null, (_, _) => new CompareModeForm(backendClient).Show());
         menu.Items.Add("Pending Edits", null, (_, _) => new ProposalsForm(backendClient).Show());
         menu.Items.Add("Edit Snapshots", null, (_, _) => new SnapshotsForm(backendClient).Show());
+        menu.Items.Add("Memory Graph", null, (_, _) => new MemoryGraphForm(backendClient).Show());
         menu.Items.Add("Deep Research", null, (_, _) => new ResearchForm(backendClient, () => voiceLoop.CurrentSessionId).Show());
         menu.Items.Add("Doctor", null, (_, _) => ShowDoctorPanel());
         menu.Items.Add("VTube Studio", null, (_, _) => new VTubeStudioForm(backendClient).Show());
@@ -582,7 +585,6 @@ internal sealed class ManaApplicationContext : ApplicationContext
         clipHotkeyListener.Dispose();
         globalHotkeys.Dispose();
         trayNotifications.Dispose();
-        captionClient.Dispose();
         visionCaptureClient.Dispose();
         captionOverlay.Close();
         voiceLoop.Dispose();
@@ -593,6 +595,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
         trayIcon.Dispose();
         avatarOverlay.Close();
         browserAutomationPanel.Close();
+        agentActivityPanel.Close();
         // Dispose, not Close -- OnFormClosing overrides UserClosing to
         // Hide-and-cancel for the reuse pattern, so a plain Close() here
         // would risk not actually tearing the window down.
