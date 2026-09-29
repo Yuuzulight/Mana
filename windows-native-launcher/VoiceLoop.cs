@@ -1153,7 +1153,8 @@ internal sealed class VoiceLoop : IDisposable
     // turn is already in flight); true once accepted, regardless of what
     // happens after -- capture/backend failures are handled internally
     // (ReturnToIdle), same contract shape as the typed-input entry point.
-    public async Task<bool> SubmitVisionHotkeyAsync()
+    // #912: the camera hotkey passes its own capture and prompt.
+    public async Task<bool> SubmitVisionHotkeyAsync(Func<Task<string>>? capture = null, string prompt = VisionHotkeyMessages.DefaultPrompt)
     {
         lock (stateLock)
         {
@@ -1194,17 +1195,17 @@ internal sealed class VoiceLoop : IDisposable
             // (GlobalHotkeyListener's message pump), and CopyFromScreen +
             // JPEG-encoding a full screen is enough work to visibly hitch
             // the tray/avatar UI if done inline here.
-            image = await Task.Run(ScreenCapture.CaptureAsJpegDataUrl);
+            image = capture is null ? await Task.Run(ScreenCapture.CaptureAsJpegDataUrl) : await Task.Run(capture);
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"VoiceLoop: vision hotkey screen capture failed, resuming listening. {ex.Message}");
-            lastError = $"Screen capture failed: {ex.Message}";
+            Console.WriteLine($"VoiceLoop: vision hotkey capture failed, resuming listening. {ex.Message}");
+            lastError = $"{(capture is null ? "Screen capture" : "Camera snapshot")} failed: {ex.Message}";
             ReturnToIdle();
             return true;
         }
 
-        await SpeakReplyAsync(VisionHotkeyMessages.DefaultPrompt, image: image);
+        await SpeakReplyAsync(prompt, image: image);
         return true;
     }
 
