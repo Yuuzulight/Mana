@@ -308,6 +308,21 @@ always wins. After that the priority is working > thinking > waiting >
 done > dreaming > idle. Each state stays up for a short minimum, so a burst
 of quick tool calls doesn't flicker.
 
+Native also changes her face per sentence (#623). The reply model tags each
+sentence with an emotion (`neutral`, `happy`, `excited`, `surprised`, `sad`,
+`disappointed`, `angry`, `disgusted`, `embarrassed`, `thinking`,
+`questioning`, `wink`). The tags are removed before anything is spoken or
+shown. Map them to your model's expressions with the same `stateExpressions`
+block, using the tag as the key:
+
+```json
+{ "stateExpressions": { "happy": "F02_smile", "embarrassed": "F07_blush", "wink": "F05" } }
+```
+
+An unmapped tag uses an expression whose name contains the tag (`Wink_L`
+for `wink`), then the matching state's mapping (`happy` → `excited`). A
+sentence without a tag falls back to reading its kaomoji/emoji/words.
+
 ## Performance
 
 - Rendering is capped at 30 FPS (`MANA_AVATAR_FPS` to change) in the small

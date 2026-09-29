@@ -108,9 +108,91 @@ async function contributePluginPromptContext(capabilities = [], text, context = 
   return "";
 }
 
+const DEFAULT_INPUT_HOOK_PRIORITY = 100;
+const INPUT_HOOK_TIMEOUT_MS = 200;
+
+function nonEmptyString(value) {
+  return typeof value === "string" && value.trim() ? value : "";
+}
+
+// Issue #677: plugins that export onUserInput(input, context) see (and can
+// act on) the user's message before the prompt is built. Unlike
+// contributePromptContext's first-wins contest, every enabled plugin runs,
+// lowest inputHookPriority first (default 100; sort is stable, so ties keep
+// capabilities-array order), each seeing the text as rewritten by the ones
+// before it. A hook may return { text } (rewrite), { promptPatch: { system,
+// user } } (patches accumulate), and/or { reply } (short-circuit: stops the
+// chain, the caller skips the model). Fail-open: a hook that throws or takes
+// longer than INPUT_HOOK_TIMEOUT_MS is logged and skipped, so one slow plugin
+// can't stall a voice reply (ponytail: the late hook keeps running and a
+// synchronous busy loop can't be cut off; a worker per hook if that bites). It never touches tool calls, so nothing here can
+// get around the approval gate -- a rewritten message still goes through the
+// normal model/tool path, and a short-circuit reply skips tools entirely.
+async function runPluginInputHooks(capabilities = [], input = {}, context = {}) {
+  const pluginSettingsStore = context.pluginSettingsStore;
+  const priority = (capability) =>
+    Number.isFinite(capability.inputHookPriority)
+      ? capability.inputHookPriority
+      : DEFAULT_INPUT_HOOK_PRIORITY;
+  const hooked = capabilities
+    .filter(
+      (capability) =>
+        typeof capability.onUserInput === "function" &&
+        isPluginEnabled(capability, pluginSettingsStore),
+    )
+    .sort((a, b) => priority(a) - priority(b));
+
+  let text = String(input.text || "");
+  const system = [];
+  const user = [];
+  const result = (reply = "") => ({
+    text,
+    systemPatch: system.join("\n\n"),
+    userPatch: user.join("\n\n"),
+    reply,
+  });
+
+  for (const capability of hooked) {
+    const key = capability.key || "plugin";
+    let timer;
+    try {
+      const output = await Promise.race([
+        Promise.resolve().then(() => capability.onUserInput({ ...input, text }, context)),
+        new Promise((_, reject) => {
+          timer = setTimeout(
+            () => reject(new Error(`timed out after ${INPUT_HOOK_TIMEOUT_MS}ms`)),
+            INPUT_HOOK_TIMEOUT_MS,
+          );
+        }),
+      ]);
+      if (!output || typeof output !== "object") continue;
+      const rewritten = nonEmptyString(output.text);
+      if (rewritten && rewritten !== text) {
+        console.log(
+          `[plugin input] ${key} rewrote ${JSON.stringify(text)} -> ${JSON.stringify(rewritten)}`,
+        );
+        text = rewritten;
+      }
+      if (nonEmptyString(output.promptPatch?.system)) system.push(output.promptPatch.system);
+      if (nonEmptyString(output.promptPatch?.user)) user.push(output.promptPatch.user);
+      const reply = nonEmptyString(output.reply);
+      if (reply) {
+        console.log(`[plugin input] ${key} answered ${JSON.stringify(text)} without the model`);
+        return result(reply);
+      }
+    } catch (error) {
+      console.warn(`Plugin ${key} input hook skipped:`, error?.message || error);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  return result();
+}
+
 module.exports = {
   buildCapabilityHealth,
   contributePluginPromptContext,
+  runPluginInputHooks,
   registerCapabilities,
   isPluginEnabled,
 };
