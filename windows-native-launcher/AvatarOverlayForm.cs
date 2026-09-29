@@ -148,8 +148,7 @@ internal sealed class AvatarOverlayForm : Form
         FormBorderStyle = FormBorderStyle.None;
         ShowInTaskbar = false;
         TopMost = true;
-        Width = ReadIntEnv("MANA_AVATAR_WIDTH", 234);
-        Height = ReadIntEnv("MANA_AVATAR_HEIGHT", 288);
+        baseSize = new Size(ReadIntEnv("MANA_AVATAR_WIDTH", 234), ReadIntEnv("MANA_AVATAR_HEIGHT", 288));
         StartPosition = FormStartPosition.Manual;
 
         var loaded = TryLoadCubismModel(rootDirectory);
@@ -200,9 +199,38 @@ internal sealed class AvatarOverlayForm : Form
             VisibleChanged += (_, _) => UpdateRenderTimer();
         }
 
+        // #899: the framed window is sized from the model's canvas; the
+        // static PNGs are drawn to fill the base window.
+        canvasSize = baseSize;
+        if (cubismModel is not null)
+        {
+            cubismModel.ReadCanvasInfo(out var canvas, out _, out _);
+            canvasSize = new SizeF(canvas.X, canvas.Y);
+        }
+        Size = Frame(settings.OverlayFraming, settings.OverlayScale);
+
         SetState(AvatarState.Idle);
         stateTimer.Tick += (_, _) => ShowResolvedState(reapply: false);
         stateTimer.Start();
+        // #899: a spot saved before framing existed was for the 1x full-body
+        // window; move it once to where that window's bottom centre stood,
+        // so she stays flush on the bottom edge if she was.
+        if (settings.OverlayFraming is null && settings.AvatarLeft is int oldLeft && settings.AvatarTop is int oldTop)
+        {
+            var moved = Resized(new Rectangle(oldLeft, oldTop, baseSize.Width, baseSize.Height), Size);
+            settings.AvatarLeft = moved.Left;
+            settings.AvatarTop = moved.Top;
+            settings.OverlayFraming = OverlayFraming;
+            settings.OverlayScale = OverlayScale;
+            try
+            {
+                settings.Save();
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                Console.WriteLine($"AvatarOverlayForm: couldn't save the moved overlay position. {ex.Message}");
+            }
+        }
         PositionOverlay(settings);
     }
 
@@ -226,11 +254,7 @@ internal sealed class AvatarOverlayForm : Form
         }
     }
 
-    private void KeepOnScreen()
-    {
-        PositionOverlay(ManaSettingsStore.Load());
-        Location = KeepInside(Bounds, Screen.FromRectangle(Bounds).WorkingArea);
-    }
+    private void KeepOnScreen() => PositionOverlay(ManaSettingsStore.Load());
 
     // #684: `bounds` moved the least needed to lie fully inside `area`
     // (its top-left corner kept on screen if it's bigger than the area).
@@ -572,7 +596,8 @@ internal sealed class AvatarOverlayForm : Form
 
         if (Visible)
         {
-            using var frame = renderer.Render(model, Math.Max(1, ClientSize.Width), Math.Max(1, ClientSize.Height), SKColors.Transparent);
+            using var frame = renderer.Render(model, Math.Max(1, ClientSize.Width), Math.Max(1, ClientSize.Height), SKColors.Transparent,
+                LiveAvatarPanel.FramingFraction(OverlayFraming));
             Present(frame);
         }
         if (mirror is { } panel)
@@ -750,17 +775,16 @@ internal sealed class AvatarOverlayForm : Form
         {
             return;
         }
-        // Fit (like the old PictureBox's Zoom), centered.
+        // Framed like the Live2D model (#899); whole-body is a centred fit,
+        // like the old PictureBox's Zoom.
         var width = Math.Max(1, ClientSize.Width);
         var height = Math.Max(1, ClientSize.Height);
-        var scale = Math.Min((float)width / image.Width, (float)height / image.Height);
-        var drawWidth = image.Width * scale;
-        var drawHeight = image.Height * scale;
+        var (scale, x, y) = CubismRenderer.Fit(image.Width, image.Height, width, height, LiveAvatarPanel.FramingFraction(OverlayFraming));
         using var frame = new SKBitmap(new SKImageInfo(width, height, SKColorType.Bgra8888, SKAlphaType.Premul));
         using (var canvas = new SKCanvas(frame))
         {
             canvas.Clear(SKColors.Transparent);
-            canvas.DrawImage(image, SKRect.Create((width - drawWidth) / 2, (height - drawHeight) / 2, drawWidth, drawHeight),
+            canvas.DrawImage(image, SKRect.Create(x, y, image.Width * scale, image.Height * scale),
                 new SKSamplingOptions(SKFilterMode.Linear, SKMipmapMode.Linear));
         }
         Present(frame);
@@ -803,6 +827,10 @@ internal sealed class AvatarOverlayForm : Form
         using (var pixmap = frame.PeekPixels())
         {
             pixmap.ReadPixels(new SKImageInfo(size.Width, size.Height, SKColorType.Bgra8888, SKAlphaType.Premul), dibBits, size.Width * 4);
+        }
+        unsafe
+        {
+            visibleTop = FirstOpaqueRow(new ReadOnlySpan<byte>((void*)dibBits, size.Width * size.Height * 4), size.Width, size.Height);
         }
 
         const byte acSrcOver = 0;
@@ -1044,25 +1072,116 @@ internal sealed class AvatarOverlayForm : Form
 
     private void PositionOverlay(ManaSettingsStore settings)
     {
-        if (SavedLocation(settings.AvatarLeft, settings.AvatarTop, Size, Screen.AllScreens.Select(screen => screen.WorkingArea)) is Point saved)
-        {
-            Location = saved;
-            return;
-        }
-        var workArea = Screen.PrimaryScreen?.WorkingArea ?? Screen.FromControl(this).WorkingArea;
-        var left = ReadIntEnv("MANA_AVATAR_LEFT", 782);
-        var bottom = ReadIntEnv("MANA_AVATAR_BOTTOM", 0);
-        Left = workArea.Left + left;
-        Top = workArea.Bottom - Height - bottom;
+        Location = SavedLocation(settings.AvatarLeft, settings.AvatarTop, Size, Screen.AllScreens.Select(screen => screen.WorkingArea))
+            ?? DefaultLocation(Size, Screen.PrimaryScreen?.WorkingArea ?? Screen.FromControl(this).WorkingArea,
+                int.TryParse(Environment.GetEnvironmentVariable("MANA_AVATAR_LEFT"), out var left) ? left : null,
+                ReadIntEnv("MANA_AVATAR_BOTTOM", 0));
     }
 
     // #662: where she was last dragged to, unless her centre is no longer on
     // any screen (e.g. that monitor was unplugged) -- then null, and she goes
     // back to the default spot instead of somewhere she can't be grabbed.
-    internal static Point? SavedLocation(int? left, int? top, Size size, IEnumerable<Rectangle> workAreas) =>
-        left is int x && top is int y && workAreas.Any(area => area.Contains(x + (size.Width / 2), y + (size.Height / 2)))
-            ? new Point(x, y)
-            : null;
+    // #899: pulled fully onto that screen, so a saved spot doesn't leave a
+    // window that has since grown (framing, size) hanging off it.
+    internal static Point? SavedLocation(int? left, int? top, Size size, IEnumerable<Rectangle> workAreas)
+    {
+        if (left is not int x || top is not int y)
+        {
+            return null;
+        }
+        var bounds = new Rectangle(x, y, size.Width, size.Height);
+        var centre = new Point(x + (size.Width / 2), y + (size.Height / 2));
+        return workAreas.Where(area => area.Contains(centre)).Select(area => (Point?)KeepInside(bounds, area)).FirstOrDefault();
+    }
+
+    // #899: flush in the bottom-right corner, like a streamer overlay: the
+    // frame's bottom (the cut, when framed) on the working area's bottom
+    // edge. MANA_AVATAR_LEFT/MANA_AVATAR_BOTTOM still move it.
+    internal static Point DefaultLocation(Size size, Rectangle workArea, int? left, int bottom) =>
+        new(left is int x ? workArea.Left + x : workArea.Right - size.Width, workArea.Bottom - size.Height - bottom);
+
+    // #899: the overlay's framing and size, from the tray menu. Anything else
+    // (a missing or hand-edited value) is the default: upper half at 1.5x.
+    public static readonly string[] OverlayFramings = ["full", "upperHalf", "bust"];
+    public static readonly float[] OverlayScales = [1f, 1.25f, 1.5f, 1.75f, 2f];
+    public string OverlayFraming { get; private set; } = "upperHalf";
+    public float OverlayScale { get; private set; } = 1.5f;
+    private readonly Size baseSize; // the full-body window at 1x
+    private readonly SizeF canvasSize;
+
+    // The window size for a framing and scale (and remembers both).
+    private Size Frame(string? framing, float? scale)
+    {
+        OverlayFraming = OverlayFramings.Contains(framing) ? framing! : "upperHalf";
+        OverlayScale = scale is float value && OverlayScales.Contains(value) ? value : 1.5f;
+        return OverlaySize(baseSize, canvasSize, LiveAvatarPanel.FramingFraction(OverlayFraming), OverlayScale);
+    }
+
+    // Live, from the tray: a dragged-to spot resizes in place, growing up
+    // and out from where she stands, kept on her screen; otherwise she
+    // stays in the default corner. UI thread only.
+    public void SetFraming(string? framing, float? scale)
+    {
+        var size = Frame(framing, scale);
+        var settings = ManaSettingsStore.Load();
+        if (settings.AvatarLeft is null || settings.AvatarTop is null)
+        {
+            Size = size;
+            PositionOverlay(settings);
+        }
+        else
+        {
+            Bounds = new Rectangle(KeepInside(Resized(Bounds, size), Screen.FromRectangle(Bounds).WorkingArea), size);
+        }
+        if (cubismModel is null)
+        {
+            ShowResolvedState(reapply: true); // redraw the PNG; Live2D redraws every tick
+        }
+    }
+
+    // #899: base width x scale; the height shows `fraction` of the model at
+    // the same pixel scale under CubismRenderer.Fit's top margin, so the
+    // window ends where she's cut (full: the whole base window, scaled).
+    internal static Size OverlaySize(Size baseSize, SizeF canvas, float fraction, float scale)
+    {
+        var width = baseSize.Width * scale;
+        if (fraction >= 1f || canvas.Width <= 0 || canvas.Height <= 0)
+        {
+            return Size.Round(new SizeF(width, baseSize.Height * scale));
+        }
+        var modelScale = scale * Math.Min(baseSize.Width / canvas.Width, baseSize.Height / canvas.Height);
+        return Size.Round(new SizeF(width, canvas.Height * fraction * modelScale / (1f - CubismRenderer.TopMargin)));
+    }
+
+    // #899: `bounds` resized about its bottom centre.
+    internal static Rectangle Resized(Rectangle bounds, Size size) =>
+        new(bounds.Left + ((bounds.Width - size.Width) / 2), bounds.Bottom - size.Height, size.Width, size.Height);
+
+    // #899: the first row of the last frame with any of her in it, so
+    // captions sit over her head rather than the empty top of the window.
+    // Written by Present (UI thread); read like Bounds, a plain field read.
+    private int visibleTop;
+    public Rectangle VisibleBounds => VisiblePart(Bounds, visibleTop);
+
+    internal static Rectangle VisiblePart(Rectangle bounds, int top) =>
+        top > 0 && top < bounds.Height ? Rectangle.FromLTRB(bounds.Left, bounds.Top + top, bounds.Right, bounds.Bottom) : bounds;
+
+    // Premultiplied BGRA rows; a faint edge (alpha <= 32) doesn't count.
+    // Height when there's nothing.
+    internal static int FirstOpaqueRow(ReadOnlySpan<byte> bgra, int width, int height)
+    {
+        for (var row = 0; row < height; row++)
+        {
+            for (var i = (row * width * 4) + 3; i < (row + 1) * width * 4; i += 4)
+            {
+                if (bgra[i] > 32)
+                {
+                    return row;
+                }
+            }
+        }
+        return height;
+    }
 
     private static int ReadIntEnv(string name, int fallback)
     {
