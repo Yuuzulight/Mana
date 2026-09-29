@@ -111,7 +111,8 @@ internal sealed class ManaApplicationContext : ApplicationContext
         var screenContextReader = new ScreenContextReader(rootDir, backendClient);
         // #571: on-screen equivalent of spoken output, fed sentence by
         // sentence by VoiceLoop's own playback.
-        captionOverlay = new CaptionOverlayForm();
+        // Q8: under Mana while she's showing (Visible/Bounds are plain field reads).
+        captionOverlay = new CaptionOverlayForm(() => avatarOverlay.Visible ? avatarOverlay.Bounds : null);
         voiceLoop = new VoiceLoop(sileroVad, backendClient, audioPlayer, avatarOverlay, chatLog, chatLog, screenContextReader, () => gamingModeActive, clipBuffer, wakeWordClassifier, captionOverlay);
         voiceLoop.SetPresetId(settings.ActivePresetId); // #681
         // #523: Ctrl+Alt+M asks Mana to look at the screen, through the

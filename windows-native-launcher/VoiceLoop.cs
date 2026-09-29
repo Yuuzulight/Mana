@@ -222,9 +222,9 @@ internal sealed class VoiceLoop : IDisposable
             audioPlayer.PlayAsync,
             talking => OnTalkingStateChanged(talking),
             running => avatarOverlay.SetActivity(AvatarState.Working, running),
-            (sentence, emotion) =>
+            (sentence, emotion, duration) =>
             {
-                captions?.ShowSentence(sentence);
+                captions?.ShowSentence(sentence, duration);
                 // #623: each sentence's own face as its audio starts -- the
                 // model's emotion tag, else read from the sentence's text.
                 avatarOverlay.SetState(MapReplyEmotionToAvatarState(ReplyEmotionDetector.DetectReplyEmotion(sentence, emotion)), null, emotion);
