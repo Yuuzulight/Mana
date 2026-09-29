@@ -22,6 +22,14 @@ internal static class RecordingSegmenter
     internal const long DefaultMaxWaitForSpeechMs = 6000;
     internal const long DefaultMaxUtteranceMs = 20000;
 
+    // #858: the end-of-turn silence -- MANA_SILENCE_BUFFER_MS (Electron's
+    // knob) wins over Settings > Voice, else 2.2s. Values outside
+    // 300ms-10s are ignored.
+    internal static long ResolveSilenceBufferMs(string? env, long? saved) =>
+        long.TryParse(env, out var fromEnv) && fromEnv is >= 300 and <= 10000 ? fromEnv
+        : saved is >= 300 and <= 10000 ? saved.Value
+        : DefaultSilenceBufferMs;
+
     // msSinceLastSpeech is only meaningful once hasHeardSpeech is true;
     // callers should pass 0 (or anything) beforehand.
     internal static RecordingStopReason ShouldStopRecording(

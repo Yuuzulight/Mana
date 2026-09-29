@@ -1,4 +1,5 @@
 using System;
+using System.Globalization;
 using System.Linq;
 using Microsoft.ML.OnnxRuntime;
 using Microsoft.ML.OnnxRuntime.Tensors;
@@ -31,8 +32,11 @@ internal sealed class SileroVadRunner : IDisposable
     private const int StateSize = 2 * 1 * 128;
 
     private readonly InferenceSession session;
-    private readonly float threshold;
-    private readonly float exitThreshold;
+    // #665 hysteresis; #858: the enter threshold is set each time
+    // listening starts, and the exit one follows it down (never above it).
+    private readonly float configuredExitThreshold;
+    private float threshold;
+    private float exitThreshold;
     private bool inSpeech;
     private float[] state = new float[StateSize];
     private float[] context = new float[ContextSize];
@@ -40,9 +44,31 @@ internal sealed class SileroVadRunner : IDisposable
     public SileroVadRunner(string modelPath, float threshold = DefaultThreshold, float exitThreshold = DefaultExitThreshold)
     {
         session = new InferenceSession(modelPath);
-        this.threshold = threshold;
-        this.exitThreshold = Math.Min(exitThreshold, threshold);
+        configuredExitThreshold = exitThreshold;
+        Threshold = threshold;
     }
+
+    // #858: the speech-probability cutoff to enter speech; VoiceLoop sets it
+    // each time listening starts (ResolveThreshold). The exit threshold
+    // (#665, MANA_VAD_EXIT_THRESHOLD) is capped at it.
+    public float Threshold
+    {
+        get => threshold;
+        set
+        {
+            threshold = value;
+            exitThreshold = Math.Min(configuredExitThreshold, value);
+        }
+    }
+
+    internal float ExitThreshold => exitThreshold;
+
+    // #858: MANA_VAD_THRESHOLD (Electron's knob) wins over Settings > Voice,
+    // else 0.5. Anything outside (0, 1) is ignored.
+    internal static float ResolveThreshold(string? env, float? saved) =>
+        float.TryParse(env, NumberStyles.Float, CultureInfo.InvariantCulture, out var fromEnv) && fromEnv > 0f && fromEnv < 1f ? fromEnv
+        : saved is > 0f and < 1f ? saved.Value
+        : DefaultThreshold;
 
     // New utterance: neither the recurrent state nor the leading context
     // window should carry over speech from a previous, unrelated segment.

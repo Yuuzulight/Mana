@@ -1229,8 +1229,66 @@ internal sealed class SettingsPanel : UserControl
         layout.Controls.Add(row);
         layout.Controls.Add(BuildWakePrefilterRow());
         layout.Controls.Add(BuildEchoCancellationRow());
+        layout.Controls.Add(BuildVoiceTuningRow());
         layout.Controls.Add(BuildBargeInRow());
         return new TabPage("Voice") { Controls = { layout } };
+    }
+
+    // #858: the end-of-turn silence and Silero's speech threshold, read each
+    // time listening starts. MANA_SILENCE_BUFFER_MS / MANA_VAD_THRESHOLD
+    // still win, so the row says when one is set.
+    private static FlowLayoutPanel BuildVoiceTuningRow()
+    {
+        var settings = ManaSettingsStore.Load();
+        var silence = new NumericUpDown
+        {
+            Minimum = 300,
+            Maximum = 10000,
+            Increment = 100,
+            Width = 80,
+            Value = RecordingSegmenter.ResolveSilenceBufferMs(null, settings.SilenceBufferMs),
+            BackColor = DarkTheme.Panel2,
+            ForeColor = DarkTheme.Text,
+        };
+        var threshold = new NumericUpDown
+        {
+            Minimum = 0.05M,
+            Maximum = 0.95M,
+            Increment = 0.05M,
+            DecimalPlaces = 2,
+            Width = 70,
+            Value = Math.Clamp(Math.Round((decimal)SileroVadRunner.ResolveThreshold(null, settings.VadThreshold), 2), 0.05M, 0.95M),
+            BackColor = DarkTheme.Panel2,
+            ForeColor = DarkTheme.Text,
+        };
+        var overridden = new[] { "MANA_SILENCE_BUFFER_MS", "MANA_VAD_THRESHOLD" }
+            .Where(name => !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable(name)))
+            .ToList();
+        var status = new Label
+        {
+            AutoSize = true,
+            ForeColor = DarkTheme.Muted,
+            Anchor = AnchorStyles.Left,
+            Text = overridden.Count > 0 ? $"Set in the environment, which wins: {string.Join(", ", overridden)}" : "",
+        };
+        void Save(Action<ManaSettingsStore> change)
+        {
+            var latest = ManaSettingsStore.Load();
+            change(latest);
+            latest.Save();
+            status.Text = "Saved -- applies next time listening starts.";
+        }
+        silence.ValueChanged += (_, _) => Save(s => s.SilenceBufferMs = (long)silence.Value);
+        threshold.ValueChanged += (_, _) => Save(s => s.VadThreshold = (float)threshold.Value);
+
+        Label Caption(string text) => new() { Text = text, AutoSize = true, ForeColor = DarkTheme.Text, Anchor = AnchorStyles.Left };
+        var row = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.LeftToRight, BackColor = DarkTheme.Background };
+        row.Controls.Add(Caption("Pause before Mana answers (ms)"));
+        row.Controls.Add(silence);
+        row.Controls.Add(Caption("Speech detection threshold (higher = stricter)"));
+        row.Controls.Add(threshold);
+        row.Controls.Add(status);
+        return row;
     }
 
     // #665: what talking over Mana does (BargeInPolicy), read each time

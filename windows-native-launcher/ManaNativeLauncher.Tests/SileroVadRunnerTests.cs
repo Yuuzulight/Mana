@@ -17,6 +17,18 @@ public class SileroVadRunnerTests
 
     internal static bool ModelAvailable => File.Exists(ModelPath) && new FileInfo(ModelPath).Length > 0;
 
+    // #858 + #665: Settings > Voice moves the enter threshold each time
+    // listening starts; the exit threshold follows it down, never above it.
+    [SkippableFact]
+    public void Threshold_KeepsTheExitThresholdAtOrBelowIt()
+    {
+        using var vad = new SileroVadRunner(ModelPath, 0.5f, 0.35f);
+        vad.Threshold = 0.3f;
+        Assert.Equal(0.3f, vad.ExitThreshold);
+        vad.Threshold = 0.7f;
+        Assert.Equal(0.35f, vad.ExitThreshold);
+    }
+
     [SkippableFact]
     public void ProcessFrame_ThrowsOnWrongFrameLength()
     {
