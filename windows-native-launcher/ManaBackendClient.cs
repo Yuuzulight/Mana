@@ -235,9 +235,8 @@ internal sealed class ManaBackendClient
     // it, HttpClient buffers the entire response body before this method
     // could read a single line, defeating the whole point of streaming.
     // #520: sessionId, when present, routes this turn's history into that
-    // ACP memory-store session instead of node-bot's implicit "default"
-    // one -- omitted (not sent as null) exactly matches every call this
-    // launcher made before session support existed.
+    // ACP memory-store session. Omitted (not sent as null), node-bot saves
+    // no turn at all -- why VoiceLoop always sends one (Q62).
     // #522: screenText is always sent (defaulting to "", matching
     // windows-launcher's own requestScreenAwareReply, which always
     // includes the field even when readScreenContext came back empty).
@@ -689,6 +688,51 @@ internal sealed class ManaBackendClient
         };
     }
 
+    // #642: the context meter -- GET /prompt-composition/:sessionId (see
+    // node-bot/prompt-composition-report.js). Null on 404: nothing has been
+    // assembled for this session yet. A block's Tokens is the tokenizer's
+    // count when the backend has it, else its char/4 estimate; CountedWith
+    // stays null until the backend's end-of-turn count lands.
+    public async Task<ManaPromptComposition?> GetPromptCompositionAsync(string sessionId)
+    {
+        using var response = await http.GetAsync($"/prompt-composition/{Uri.EscapeDataString(sessionId)}");
+        if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
+        {
+            return null;
+        }
+        response.EnsureSuccessStatusCode();
+        await using var stream = await response.Content.ReadAsStreamAsync();
+        using var document = await JsonDocument.ParseAsync(stream);
+        var root = document.RootElement;
+
+        static long? Long(JsonElement element, string name) =>
+            element.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.Number ? value.GetInt64() : null;
+
+        var blocks = new List<ManaPromptBlock>();
+        if (root.TryGetProperty("blocks", out var blocksElement) && blocksElement.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var block in blocksElement.EnumerateArray())
+            {
+                blocks.Add(new ManaPromptBlock
+                {
+                    Name = block.TryGetProperty("name", out var name) ? name.GetString() ?? "" : "",
+                    Tokens = Long(block, "tokens") ?? Long(block, "estTokens") ?? 0,
+                });
+            }
+        }
+
+        return new ManaPromptComposition
+        {
+            Blocks = blocks,
+            CountedWith = root.TryGetProperty("countedWith", out var countedWith) ? countedWith.GetString() : null,
+            TotalTokens = Long(root, "totalTokens"),
+            PromptTokens = Long(root, "promptTokens"),
+            UnattributedTokens = Long(root, "unattributedTokens"),
+            ContextSize = Long(root, "contextSize"),
+            PercentUsed = root.TryGetProperty("percentUsed", out var percent) && percent.ValueKind == JsonValueKind.Number ? percent.GetDouble() : null,
+        };
+    }
+
     public async Task<bool> DeleteSessionAsync(string sessionId)
     {
         using var response = await http.DeleteAsync($"/sessions/{Uri.EscapeDataString(sessionId)}");
@@ -775,6 +819,8 @@ internal sealed class ManaBackendClient
                     Status = entry.TryGetProperty("status", out var statusEl) ? statusEl.GetString() ?? "" : "",
                     Pinned = entry.TryGetProperty("pinned", out var pinnedEl) && pinnedEl.ValueKind == JsonValueKind.True,
                     Trust = entry.TryGetProperty("trust", out var trustEl) ? trustEl.GetString() ?? "" : "",
+                    Trigger = entry.TryGetProperty("trigger", out var triggerEl) ? triggerEl.GetString() ?? "" : "",
+                    Paused = entry.TryGetProperty("paused", out var pausedEl) && pausedEl.ValueKind == JsonValueKind.True,
                 });
             }
         }
@@ -800,6 +846,26 @@ internal sealed class ManaBackendClient
         var payload = JsonSerializer.Serialize(new { pinned });
         using var content = new StringContent(payload, Encoding.UTF8, "application/json");
         using var response = await http.PostAsync($"/admin/memory/facts/{Uri.EscapeDataString(key)}/pin", content);
+        response.EnsureSuccessStatusCode();
+    }
+
+    // Q29 (#698): Settings' Edit -- the fact's text, and a standing intent's
+    // trigger (null leaves it). node-bot records the old value in history.
+    public async Task UpdateMemoryFactAsync(string key, string text, string? trigger = null)
+    {
+        var payload = JsonSerializer.Serialize(trigger is null ? (object)new { text } : new { text, trigger });
+        using var content = new StringContent(payload, Encoding.UTF8, "application/json");
+        using var request = new HttpRequestMessage(HttpMethod.Patch, $"/admin/memory/facts/{Uri.EscapeDataString(key)}") { Content = content };
+        using var response = await http.SendAsync(request);
+        response.EnsureSuccessStatusCode();
+    }
+
+    // #698: a paused standing intent never fires.
+    public async Task SetMemoryFactPausedAsync(string key, bool paused)
+    {
+        var payload = JsonSerializer.Serialize(new { paused });
+        using var content = new StringContent(payload, Encoding.UTF8, "application/json");
+        using var response = await http.PostAsync($"/admin/memory/facts/{Uri.EscapeDataString(key)}/pause", content);
         response.EnsureSuccessStatusCode();
     }
 
@@ -1458,6 +1524,12 @@ internal sealed class ManaBackendClient
             RelativePath = proposalElement.TryGetProperty("relativePath", out var pathElement) ? pathElement.GetString() ?? "" : "",
             Summary = proposalElement.TryGetProperty("summary", out var summaryElement) ? summaryElement.GetString() : null,
             Hunks = hunks,
+            RefutedCase = proposalElement.TryGetProperty("adversarialReview", out var reviewElement)
+                && reviewElement.ValueKind == JsonValueKind.Object
+                && reviewElement.TryGetProperty("verdict", out var verdictElement)
+                && verdictElement.GetString() == "refuted"
+                    ? (reviewElement.TryGetProperty("failingCase", out var caseElement) ? caseElement.GetString() : null) ?? "(no case given)"
+                    : null,
         };
     }
 
@@ -1465,9 +1537,13 @@ internal sealed class ManaBackendClient
     // proposal not pending, workspace file missing, etc.) comes back with
     // a fully-parseable {proposal:null, error} body the caller needs to
     // read, same reasoning as RestoreEditSnapshotAsync's own handling.
-    public async Task<ManaProposalApproveResult> ApproveProposalAsync(string id, IReadOnlyList<string> acceptedHunkIds)
+    // Q16 (#622): confirmRefuted is the user's explicit go-ahead on an edit
+    // Mana's adversarial review refuted; node-bot refuses one without it.
+    public async Task<ManaProposalApproveResult> ApproveProposalAsync(string id, IReadOnlyList<string> acceptedHunkIds, bool confirmRefuted = false)
     {
-        var payload = JsonSerializer.Serialize(new { acceptedHunkIds });
+        var payload = confirmRefuted
+            ? JsonSerializer.Serialize(new { acceptedHunkIds, confirmRefuted })
+            : JsonSerializer.Serialize(new { acceptedHunkIds });
         using var content = new StringContent(payload, Encoding.UTF8, "application/json");
         using var response = await http.PostAsync($"/editors/workspace/proposals/{Uri.EscapeDataString(id)}/approve", content);
         await using var stream = await response.Content.ReadAsStreamAsync();
@@ -1900,6 +1976,25 @@ internal sealed class ManaSessionDetail
     public int TotalTurnCount { get; init; }
 }
 
+// #642: GET /prompt-composition/:sessionId, trimmed to what the context
+// meter shows.
+internal sealed class ManaPromptComposition
+{
+    public IReadOnlyList<ManaPromptBlock> Blocks { get; init; } = Array.Empty<ManaPromptBlock>();
+    public string? CountedWith { get; init; }
+    public long? TotalTokens { get; init; }
+    public long? PromptTokens { get; init; }
+    public long? UnattributedTokens { get; init; }
+    public long? ContextSize { get; init; }
+    public double? PercentUsed { get; init; }
+}
+
+internal sealed class ManaPromptBlock
+{
+    public string Name { get; init; } = "";
+    public long Tokens { get; init; }
+}
+
 internal sealed class ManaSessionTurn
 {
     public string? At { get; init; }
@@ -1926,6 +2021,9 @@ internal sealed class ManaMemoryFact
     public bool Pinned { get; init; }
     // #673: "trusted" / "tentative" / "untrusted", derived server-side.
     public string Trust { get; init; } = "";
+    // #698: set on a standing intent ("when Trigger comes up, mention Text").
+    public string Trigger { get; init; } = "";
+    public bool Paused { get; init; }
 }
 
 // #529: GET /skills (index only -- see GetSkillsAsync's own comment).
@@ -2065,6 +2163,9 @@ internal sealed class ManaProposalDetail
     public string RelativePath { get; init; } = "";
     public string? Summary { get; init; }
     public IReadOnlyList<ManaProposalHunk> Hunks { get; init; } = Array.Empty<ManaProposalHunk>();
+    // Q16 (#622): the failing case when Mana's adversarial review refuted
+    // this edit (approving it then needs the user's explicit confirmation).
+    public string? RefutedCase { get; init; }
 }
 
 // #580: one jsdiff structuredPatch hunk (computeProposalHunks) -- Lines

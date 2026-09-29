@@ -8,20 +8,10 @@ const KEY = "backgroundMemory";
 // middleware on every single health check -- this is now a normal top-level
 // registration instead). Audit log storage + its index are only ever read by
 // these routes, so both live entirely in this module.
-const BACKGROUND_AUDIT_PATH = path.join(
-  __dirname,
-  "..",
-  "data",
-  "acp-memory",
-  "background_audit.jsonl",
-);
-const BACKGROUND_AUDIT_INDEX_PATH = path.join(
-  __dirname,
-  "..",
-  "data",
-  "acp-memory",
-  "background_audit_index.json",
-);
+// MANA_ACP_MEMORY_DIR moves these with the rest of memory.
+const ACP_MEMORY_DIR = process.env.MANA_ACP_MEMORY_DIR || path.join(__dirname, "..", "data", "acp-memory");
+const BACKGROUND_AUDIT_PATH = path.join(ACP_MEMORY_DIR, "background_audit.jsonl");
+const BACKGROUND_AUDIT_INDEX_PATH = path.join(ACP_MEMORY_DIR, "background_audit_index.json");
 let BACKGROUND_AUDIT_INDEX = { entries: [], lastSize: 0 };
 let BACKGROUND_AUDIT_REBUILD_LOCK = false;
 let BACKGROUND_AUDIT_LAST_REBUILD = null;

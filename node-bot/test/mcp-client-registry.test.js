@@ -80,6 +80,7 @@ function createRegistry(overrides = {}) {
     dataDir: createTempDir(),
     approvalGate,
     sdk: overrides.sdk || sdk,
+    malwareCheck: overrides.malwareCheck || (async () => {}),
   });
 }
 
@@ -106,6 +107,64 @@ test("validateTransport accepts stdio and http, rejects unknown kinds", () => {
   assert.throws(() => validateTransport({ kind: "stdio" }), /command/);
   assert.throws(() => validateTransport({ kind: "websocket" }), /unsupported transport kind/);
   assert.throws(() => validateTransport(null), /transport is required/);
+});
+
+test("a stdio server whose package fails the malware check is refused before approval is asked (#670)", async () => {
+  const approvalGate = createApprovalGate({ dataDir: createTempDir() });
+  const checked = [];
+  const registry = createRegistry({
+    approvalGate,
+    malwareCheck: async (command, args) => {
+      checked.push([command, args]);
+      throw new Error("Blocked: OSV lists this as known malware");
+    },
+  });
+
+  await assert.rejects(
+    () =>
+      registry.registerServer({
+        name: "evil",
+        transport: { kind: "stdio", command: "npx", args: ["-y", "evil-mcp"] },
+        allowedTools: ["run"],
+      }),
+    /known malware/,
+  );
+  assert.deepEqual(checked, [["npx", ["-y", "evil-mcp"]]]);
+  assert.deepEqual(approvalGate.listPending(), []);
+  assert.equal(registry.listServers().length, 0);
+});
+
+// Q25: npx/uvx fetch whatever the package is now, so every start re-checks.
+test("a stdio server is re-checked every time it starts, and not started on a hit (#670)", async () => {
+  const { sdk, capturedTransports } = createFakeSdk({ toolsByServerName: { npx: [{ name: "run" }] } });
+  const approvalGate = createApprovalGate({ dataDir: createTempDir() });
+  let flagged = false;
+  let checks = 0;
+  const registry = createRegistry({
+    approvalGate,
+    sdk,
+    malwareCheck: async () => {
+      checks += 1;
+      if (flagged) throw new Error("Blocked: OSV lists this as known malware");
+    },
+  });
+  await registerAndApprove(registry, approvalGate, {
+    name: "local",
+    transport: { kind: "stdio", command: "npx", args: ["-y", "local-mcp"] },
+    allowedTools: ["run"],
+  });
+  assert.equal(checks, 1, "at registration");
+
+  assert.equal((await registry.listApprovedToolSchemas()).length, 1);
+  assert.equal(checks, 2, "at start");
+  await registry.listApprovedToolSchemas();
+  assert.equal(checks, 2, "an already-running server isn't re-checked");
+
+  registry.disconnectAll();
+  flagged = true;
+  assert.deepEqual(await registry.listApprovedToolSchemas(), []);
+  await assert.rejects(() => registry.executeTool("mcp__local__run", {}), /known malware/);
+  assert.equal(capturedTransports.length, 1, "never started once flagged");
 });
 
 test("registerServer requires approval -- listServers is empty until decided", async () => {

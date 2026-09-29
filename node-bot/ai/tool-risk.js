@@ -52,13 +52,16 @@ const BUILTIN_TIERS = {
   skill__create: "write",
   skill__run: "write",
   snapshot__restore: "write",
+  // #787: runs the workspace's tests -- the user's own code. #669 has no
+  // execute tier; "write" is what an unrecognized command gets.
+  coding__run_tests: "write",
   browser_automation__navigate: "network",
   browser_automation__click: "network",
   browser_automation__type: "network",
 };
 
 // Built-ins that already ask through the approval gate themselves
-// (memory-write, skill-write/skill-run, snapshot-restore, browser-
+// (memory-write, skill-write/skill-run, snapshot-restore, coding-run-tests, browser-
 // automation's first-use gate). Per-call approval passes them through
 // rather than asking twice for one call.
 const SELF_GATED = new Set([
@@ -66,6 +69,7 @@ const SELF_GATED = new Set([
   "skill__create",
   "skill__run",
   "snapshot__restore",
+  "coding__run_tests",
   "browser_automation__navigate",
   "browser_automation__click",
   "browser_automation__type",
@@ -447,8 +451,11 @@ function resolveToolApprovalMode(...candidates) {
 // binding ("tool-exec:<digest>"), so approving `dir` never approves `del`.
 // Executors are re-registered per reply with the latest policy -- the same
 // tradeoff hooks-store.js's "hook-ask" already documents.
+// options.alwaysReview: further tiers that, like destructive, always go to a
+// human and are never granted (#699: a heartbeat check's install calls).
 function wrapWithRiskGate(policy, approvalGate, options = {}) {
   const mode = resolveToolApprovalMode(options.mode);
+  const alwaysReview = options.alwaysReview || [];
   const bindingDeps = options.bindingDeps || {};
 
   async function ask(name, args, risk) {
@@ -458,7 +465,7 @@ function wrapWithRiskGate(policy, approvalGate, options = {}) {
       payload: { name, args, ...(binding ? { digest: binding.digest } : {}) },
       scanText: risk.command || undefined,
       grantKey: binding ? `tool-exec:${binding.digest}` : undefined,
-      forceReview: risk.tier === "destructive",
+      forceReview: risk.tier === "destructive" || alwaysReview.includes(risk.tier),
       details: {
         tier: risk.tier,
         reasons: risk.reasons,
@@ -495,7 +502,10 @@ function wrapWithRiskGate(policy, approvalGate, options = {}) {
 
 module.exports = {
   MODES,
+  PATH_KEY_RE,
   classifyToolCall,
+  stringEntries,
+  tokenize,
   resolveToolApprovalMode,
   extractHosts,
   bindCall,

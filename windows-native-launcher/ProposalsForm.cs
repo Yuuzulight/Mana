@@ -26,6 +26,8 @@ internal sealed class ProposalsForm : Form
     private readonly Label statusLabel = new();
 
     private string? selectedProposalId;
+    // Q16: the selected edit's failing case, when the adversarial review refuted it.
+    private string? selectedRefutedCase;
     private readonly Dictionary<string, CheckBox> hunkCheckboxes = new();
 
     // Bumped at the start of every LoadSelectedDetailAsync call and
@@ -168,12 +170,13 @@ internal sealed class ProposalsForm : Form
         }
 
         selectedProposalId = detail.Id;
+        selectedRefutedCase = detail.RefutedCase;
         foreach (var hunk in detail.Hunks)
         {
             hunksPanel.Controls.Add(BuildHunkPanel(hunk));
         }
         approveButton.Enabled = detail.Hunks.Count > 0;
-        statusLabel.Text = "";
+        statusLabel.Text = detail.RefutedCase is null ? "" : $"Mana's review found a way this breaks: {detail.RefutedCase}";
     }
 
     private void ClearHunks()
@@ -234,12 +237,30 @@ internal sealed class ProposalsForm : Form
             return;
         }
         var acceptedHunkIds = hunkCheckboxes.Where(kv => kv.Value.Checked).Select(kv => kv.Key).ToList();
+        // Q16: a refuted edit is only applied after the user has read the
+        // failing case and said yes here.
+        var confirmRefuted = false;
+        if (selectedRefutedCase is not null)
+        {
+            var answer = MessageBox.Show(
+                this,
+                $"Mana's adversarial review found a way this edit breaks:\n\n{selectedRefutedCase}\n\nApprove it anyway?",
+                "Approve a refuted edit?",
+                MessageBoxButtons.YesNo,
+                MessageBoxIcon.Warning,
+                MessageBoxDefaultButton.Button2);
+            if (answer != DialogResult.Yes)
+            {
+                return;
+            }
+            confirmRefuted = true;
+        }
 
         approveButton.Enabled = false;
         statusLabel.Text = "Approving...";
         try
         {
-            var result = await backendClient.ApproveProposalAsync(selectedProposalId, acceptedHunkIds);
+            var result = await backendClient.ApproveProposalAsync(selectedProposalId, acceptedHunkIds, confirmRefuted);
             if (IsDisposed)
             {
                 return;

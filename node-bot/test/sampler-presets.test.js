@@ -185,7 +185,8 @@ test("an empty reply with thinking on is retried once with thinking off", async 
 
 test("tool-loop and repair requests never carry DRY/XTC or thinking", async () => {
   const { runtime, bodies } = makeRuntime({ MANA_SAMPLER_PRESET: "creative" }, (body) =>
-    body.response_format ? { content: '{"tool_calls":[]}' } : { content: '{"name": "x", "arguments": {}}' },
+    // Doubled brace: not valid JSON, so the text-form parser (#787) passes and repair runs.
+    body.response_format ? { content: '{"tool_calls":[]}' } : { content: '{{"name": "x", "arguments": {}}' },
   );
   const toolPolicy = {
     tools: [{ type: "function", function: { name: "x", parameters: { type: "object" } } }],

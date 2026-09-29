@@ -168,17 +168,17 @@ internal sealed class VoiceLoop : IDisposable
     private readonly IArtifactSink? artifactSink;
 
     // #520: which ACP memory-store session outgoing turns are appended
-    // to; null (the default, and every pre-#520 turn's behavior) means
-    // node-bot's implicit "default" session, not sent as an explicit
-    // field. Unlike awake/heldSentences (touched only from the single-
-    // threaded turn-processing chain), this is written from the session
-    // list UI's own thread while a turn may be reading it on a thread-
-    // pool continuation -- volatile is enough (a plain reference swap,
-    // not a compound read-modify-write), no need for stateLock here.
-    private volatile string? currentSessionId;
+    // to. No session is not a "default" one: node-bot saves no turn
+    // without a sessionId, so every turn asks AutoSession for one (Q62).
+    // Written from the session list UI's thread while a turn may read it
+    // on a thread-pool continuation; AutoSession locks internally.
+    private readonly AutoSession session = new();
 
     // #681: the active prompt preset (Settings > Presets), sent with every
-    // reply. Same threading story as currentSessionId above.
+    // reply. Unlike awake/heldSentences (touched only from the single-
+    // threaded turn-processing chain), this is written from the UI thread
+    // while a turn may be reading it on a thread-pool continuation --
+    // volatile is enough (a plain reference swap), no need for stateLock.
     private volatile string? currentPresetId;
 
     // #675: the main window's deep-thinking toggle -- while on, every reply
@@ -235,9 +235,9 @@ internal sealed class VoiceLoop : IDisposable
             audioPlayer.PlayAsync,
             talking => OnTalkingStateChanged(talking),
             running => avatarOverlay.SetActivity(AvatarState.Working, running),
-            (sentence, emotion) =>
+            (sentence, emotion, duration) =>
             {
-                captions?.ShowSentence(sentence);
+                captions?.ShowSentence(sentence, duration);
                 // #623: each sentence's own face as its audio starts -- the
                 // model's emotion tag, else read from the sentence's text.
                 avatarOverlay.SetState(MapReplyEmotionToAvatarState(ReplyEmotionDetector.DetectReplyEmotion(sentence, emotion)), null, emotion);
@@ -266,6 +266,18 @@ internal sealed class VoiceLoop : IDisposable
             Console.WriteLine($"VoiceLoop: couldn't start listening. {ex.Message}");
             Stop();
         }
+    }
+
+    // #662: clicking Mana on the overlay counts as the wake word -- listening
+    // comes on if it was off, and the next thing said is a command. Set
+    // after Start(), which resets awake.
+    public void Wake()
+    {
+        if (!IsListening)
+        {
+            ToggleListening();
+        }
+        awake = IsListening;
     }
 
     public void Start()
@@ -420,7 +432,7 @@ internal sealed class VoiceLoop : IDisposable
     // a user action on a separate window, not an interruption of Mana
     // herself; whatever she's currently saying keeps playing against
     // whichever session was active when that turn started.
-    public void SetSessionId(string? sessionId) => currentSessionId = sessionId;
+    public void SetSessionId(string? sessionId) => session.Set(sessionId);
 
     public void SetPresetId(string? presetId) => currentPresetId = presetId;
 
@@ -434,10 +446,26 @@ internal sealed class VoiceLoop : IDisposable
         }
     }
 
-    // #577: lets ResearchForm record a finished report into whatever
-    // session is currently active, matching windows-launcher's own
-    // ensureSessionId() call at its deep-research entry point.
-    public string? CurrentSessionId => currentSessionId;
+    public string? CurrentSessionId => session.CurrentId;
+
+    // Q62: the session a turn goes out with -- every chat turn (typed,
+    // spoken, vision/clip hotkeys) via SpeakReplyCoreAsync, and #577's
+    // ResearchForm, matching windows-launcher's own ensureSessionId() at
+    // its deep-research entry point.
+    public string EnsureSessionId() => session.EnsureForTurn();
+
+    // #668: no turn in flight and she isn't speaking -- when the message
+    // box's queue may send its next message without cutting her off.
+    public bool IsIdle
+    {
+        get
+        {
+            lock (stateLock)
+            {
+                return mode == ListenMode.Idle;
+            }
+        }
+    }
 
     public void Dispose() => Stop();
 
@@ -1333,7 +1361,7 @@ internal sealed class VoiceLoop : IDisposable
         {
             var stopMana = stopManaThinking;
             bool? thinkHarder = deepThinking ? true : stopMana ? false : null;
-            (reply, changed, preferredExpression, interrupted, pending) = await streamingReplyPlayer.StreamReplyAndPlayAsync(commandText, currentSessionId, text => chatLog?.AppendReplySentence(text), screenText, image, images, currentPresetId, thinkHarder);
+            (reply, changed, preferredExpression, interrupted, pending) = await streamingReplyPlayer.StreamReplyAndPlayAsync(commandText, EnsureSessionId(), text => chatLog?.AppendReplySentence(text), screenText, image, images, currentPresetId, thinkHarder);
             if (stopMana)
             {
                 stopManaThinking = false;

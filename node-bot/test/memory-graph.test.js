@@ -115,3 +115,69 @@ test("reinforcing an already-existing edge never triggers maxDegree eviction", (
   assert.equal(neighbors[0].weight, 2);
   graph.close();
 });
+
+// Issue #620: an evicted edge's validity window is closed, not deleted, and
+// survives the pair being reinforced again later.
+test("an evicted association stays retrievable as historical via getNeighbors asOf", () => {
+  let tick = 0;
+  const now = () => new Date(Date.UTC(2026, 0, 1, 0, 0, tick++)).toISOString();
+  const at = (s) => new Date(Date.UTC(2026, 0, 1, 0, 0, s)).toISOString();
+  const graph = createMemoryGraph({ dbPath: ":memory:", maxDegree: 1, now });
+  graph.reinforce(["Hub", "A"]); // t0: Hub-A opens
+  graph.reinforce(["Hub", "B"]); // t1: Hub-A closed (maxDegree), Hub-B opens
+  graph.reinforce(["Hub", "A"]); // t2: Hub-B closed, Hub-A reopens -- its t0-t1 window must not be overwritten
+
+  assert.deepEqual(graph.getNeighbors("Hub").map((n) => [n.node, n.validFrom, n.invalidatedAt]), [["a", at(2), null]]);
+  assert.deepEqual(graph.getNeighbors("Hub", { asOf: at(0) }).map((n) => [n.node, n.validFrom, n.invalidatedAt]), [["a", at(0), at(1)]]);
+  assert.deepEqual(graph.getNeighbors("Hub", { asOf: at(1) }).map((n) => [n.node, n.validFrom, n.invalidatedAt]), [["b", at(1), at(2)]]);
+  assert.deepEqual(graph.getNeighbors("Hub", { asOf: at(5) }).map((n) => n.node), ["a"]);
+  graph.close();
+});
+
+test("opening a pre-#620 memory-graph.db migrates it in place without losing edges, and is idempotent", () => {
+  const fs = require("node:fs");
+  const os = require("node:os");
+  const path = require("node:path");
+  const Database = require("better-sqlite3");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "memory-graph-620-"));
+  const dbPath = path.join(dir, "memory-graph.db");
+  const old = new Database(dbPath);
+  old.exec(`
+    CREATE TABLE memory_graph_edges (
+      node_a TEXT NOT NULL, node_b TEXT NOT NULL, weight REAL NOT NULL DEFAULT 1.0,
+      last_reinforced_at TEXT NOT NULL, PRIMARY KEY (node_a, node_b)
+    );
+    INSERT INTO memory_graph_edges VALUES ('acme corp', 'beta corp', 3, '2026-01-01T00:00:00.000Z');
+  `);
+  old.close();
+
+  try {
+    for (let i = 0; i < 2; i++) {
+      const graph = createMemoryGraph({ dbPath });
+      assert.deepEqual(graph.getNeighbors("Acme Corp"), [
+        { node: "beta corp", weight: 3, validFrom: "2026-01-01T00:00:00.000Z", invalidatedAt: null },
+      ]);
+      graph.close();
+    }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("maxEdges closes the lowest-weight edge's window, and closed windows are all kept (Q28: no cap)", () => {
+  let tick = 0;
+  const now = () => new Date(Date.UTC(2026, 0, 1, 0, 0, tick++)).toISOString();
+  const at = (s) => new Date(Date.UTC(2026, 0, 1, 0, 0, s)).toISOString();
+  const graph = createMemoryGraph({ dbPath: ":memory:", maxEdges: 1, maxDegree: 100, now });
+  graph.reinforce(["A", "B"]); // t0
+  graph.reinforce(["A", "C"]); // t1: A-B closed
+  graph.reinforce(["A", "D"]); // t2: A-C closed
+  graph.reinforce(["A", "B"]); // t3: A-D closed; A-B reopened, its old window archived
+
+  assert.deepEqual(graph.getNeighbors("A").map((n) => n.node), ["b"]);
+  assert.deepEqual(graph.getNeighbors("A", { asOf: at(1) }).map((n) => [n.node, n.invalidatedAt]), [["c", at(2)]]);
+  assert.deepEqual(graph.getNeighbors("A", { asOf: at(0) }).map((n) => [n.node, n.invalidatedAt]), [["b", at(1)]]);
+  assert.deepEqual(graph.getHistorySize(), { live: 1, closed: 2, archived: 1 });
+  assert.deepEqual(graph.listStrongestEdges(10).map((e) => e.b), ["b"], "the graph view shows live edges only");
+  graph.close();
+});

@@ -1094,10 +1094,20 @@ test("a valid JS proposal is unaffected by the syntax check (issue #420)", () =>
   });
 });
 
+// #787: esprima stopped at ES2017 and refused a correct `??` fix in the live goal-mode run.
+test("a JS proposal using modern syntax (??, ?., class fields) passes the syntax check", () => {
+  withTruncationWorkspace("const a = 1;\n", (editors) => {
+    const proposal = editors.createEditProposal({
+      path: "src/app.js",
+      proposedContent: "const a = opts.retries ?? 3;\nconst b = opts?.timeout;\nclass C { #x = 1; }\nmodule.exports = { a, b, C };\n",
+    });
+    assert.equal(proposal.status, "pending");
+  });
+});
+
 test("a .mjs proposal using import/export is not rejected by the JS syntax check (issue #420)", () => {
-  // vm.Script parses "script" goal, not "module" goal, so it throws on
-  // import/export even though this is perfectly valid ESM -- .mjs must be
-  // excluded from the vm.Script check rather than falsely flagged as broken.
+  // A script-goal parser throws on import/export even though this is
+  // perfectly valid ESM -- .mjs must never be falsely flagged as broken.
   withProposalWorkspace("lib/util.mjs", "export const a = 1;\n", (editors) => {
     const proposal = editors.createEditProposal({
       path: "lib/util.mjs",
