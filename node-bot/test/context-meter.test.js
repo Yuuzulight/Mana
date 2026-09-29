@@ -170,7 +170,12 @@ test("server: a tool-aware reply's meter counts tool schemas (local vs MCP), the
     delete process.env.MANA_TOOL_CALLING_ENABLED;
     if (original === undefined) delete process.env.MANA_ACP_MEMORY_DIR;
     else process.env.MANA_ACP_MEMORY_DIR = original;
-    fs.rmSync(tempDir, { recursive: true, force: true });
+    // server.js was first required here, so its memory-graph and search
+    // databases live in tempDir and stay open until the process exits
+    // (Windows won't delete an open file); the OS temp dir cleans up.
+    try {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    } catch (e) {}
   }
 });
 

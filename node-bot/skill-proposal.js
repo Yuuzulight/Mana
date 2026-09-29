@@ -71,7 +71,7 @@ function createSkillProposalRunner(options = {}) {
   // background reviewer's own `skipIfUnchanged`/`lastReviewedHash` pattern
   // (server.js), but scoped to this module's own small meta file since
   // skill-proposal.js has no other persisted state.
-  const dataDir = options.dataDir || path.join(__dirname, "data", "acp-memory");
+  const dataDir = options.dataDir || process.env.MANA_ACP_MEMORY_DIR || path.join(__dirname, "data", "acp-memory");
   const metaPath = path.join(dataDir, "skill_proposal_meta.json");
 
   function loadMeta() {
