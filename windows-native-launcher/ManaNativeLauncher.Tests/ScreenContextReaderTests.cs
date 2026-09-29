@@ -39,4 +39,12 @@ public class ScreenContextReaderTests
 
         Assert.False(ScreenContextReader.IsTreeUsable(tree, OwnPid));
     }
+
+    [Fact]
+    public void IsSlowTreeApp_MatchesTheKnownSlowAppsCaseInsensitively()
+    {
+        Assert.True(ScreenContextReader.IsSlowTreeApp("OUTLOOK"));
+        Assert.False(ScreenContextReader.IsSlowTreeApp("notepad"));
+        Assert.False(ScreenContextReader.IsSlowTreeApp(""));
+    }
 }

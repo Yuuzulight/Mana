@@ -1,8 +1,9 @@
 using System;
 using System.Diagnostics;
 using System.Drawing;
-using System.Drawing.Imaging;
 using System.IO;
+using System.Linq;
+using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
@@ -29,9 +30,16 @@ internal sealed class ScreenContextReader
     private const int MaxTreeFailures = 3;
     private const int MinIntervalMs = 8000;
     private const int GamingMinIntervalMs = 30000;
+    // #671: no tree walk within this long of the last keystroke.
+    private const int TypingQuietMs = 1000;
+
+    // #671: apps whose UI Automation trees are known to be slow or hang.
+    private static readonly string[] SlowTreeApps = { "outlook" };
 
     private readonly string scriptPath;
     private readonly ManaBackendClient backendClient;
+    private readonly ScreenOcrGate ocrGate = new();
+    private readonly KeyboardActivity keyboard;
     private int treeFailureCount;
     private string lastScreenText = "";
     private long lastReadAtMs = long.MinValue;
@@ -42,6 +50,9 @@ internal sealed class ScreenContextReader
         // windows-launcher/scripts/).
         scriptPath = Path.Combine(rootDirectory, "tools", "read-accessibility-tree.ps1");
         this.backendClient = backendClient;
+        // Constructed on the UI thread (ManaApplicationContext), whose
+        // message loop then delivers WM_INPUT to it.
+        keyboard = new KeyboardActivity();
     }
 
     // commandText should already be the turn's resolved command (not the
@@ -69,16 +80,33 @@ internal sealed class ScreenContextReader
 
         try
         {
-            var tree = await ReadAccessibilityTreeAsync();
-            if (IsTreeUsable(tree, Environment.ProcessId))
+            var window = GetForegroundWindow();
+            GetWindowThreadProcessId(window, out var windowPid);
+            // #671: Mana's own UI in front is a self-description, not
+            // context -- skip both the tree walk and OCR.
+            if (windowPid == Environment.ProcessId)
             {
-                lastScreenText = tree!.Value.Text;
-                lastReadAtMs = now;
-                return lastScreenText;
+                return "";
             }
 
-            var imageDataUrl = CaptureScreenAsJpegDataUrl();
-            var text = await backendClient.ReadScreenAsync(imageDataUrl);
+            if (!ShouldSkipTreeWalk(windowPid))
+            {
+                var tree = await ReadAccessibilityTreeAsync();
+                if (IsTreeUsable(tree, Environment.ProcessId))
+                {
+                    lastScreenText = tree!.Value.Text;
+                    lastReadAtMs = now;
+                    return lastScreenText;
+                }
+            }
+
+            // #671: OCR just the foreground window, and only when it
+            // changed since the last OCR (ScreenOcrGate).
+            using var bitmap = ScreenCapture.Capture(ForegroundBounds(window));
+            var text = await ocrGate.ReadAsync(
+                window,
+                ScreenOcrGate.DifferenceHash(bitmap),
+                () => backendClient.ReadScreenAsync(ScreenCapture.ToJpegDataUrl(bitmap)));
             lastScreenText = text;
             lastReadAtMs = now;
             return lastScreenText;
@@ -153,16 +181,101 @@ internal sealed class ScreenContextReader
         }
     }
 
-    private static string CaptureScreenAsJpegDataUrl()
+    // #671: UI-tree budgets on top of the timeout/caps above. Walking the
+    // tree of the app being typed into can stall its input, and some apps'
+    // trees are slow enough to burn the whole timeout for nothing -- both
+    // go straight to OCR.
+    private bool ShouldSkipTreeWalk(int windowPid) =>
+        Environment.TickCount64 - keyboard.LastKeyAtMs < TypingQuietMs
+        || IsSlowTreeApp(ProcessNameOf(windowPid));
+
+    internal static bool IsSlowTreeApp(string processName) =>
+        SlowTreeApps.Contains(processName, StringComparer.OrdinalIgnoreCase);
+
+    private static string ProcessNameOf(int pid)
     {
-        var bounds = Screen.PrimaryScreen!.Bounds;
-        using var bitmap = new Bitmap(bounds.Width, bounds.Height);
-        using (var g = Graphics.FromImage(bitmap))
+        try
         {
-            g.CopyFromScreen(bounds.Location, Point.Empty, bounds.Size);
+            using var process = Process.GetProcessById(pid);
+            return process.ProcessName;
         }
-        using var stream = new MemoryStream();
-        bitmap.Save(stream, ImageFormat.Jpeg);
-        return $"data:image/jpeg;base64,{Convert.ToBase64String(stream.ToArray())}";
+        catch
+        {
+            return "";
+        }
+    }
+
+    // The foreground window's rect clipped to the desktop; the whole
+    // primary screen (the old behavior) when there's no usable window.
+    private static Rectangle ForegroundBounds(IntPtr window)
+    {
+        var bounds = GetWindowRect(window, out var rect)
+            ? Rectangle.Intersect(Rectangle.FromLTRB(rect.Left, rect.Top, rect.Right, rect.Bottom), SystemInformation.VirtualScreen)
+            : Rectangle.Empty;
+        return bounds.Width > 0 && bounds.Height > 0 ? bounds : Screen.PrimaryScreen!.Bounds;
+    }
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetForegroundWindow();
+
+    [DllImport("user32.dll")]
+    private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out int processId);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetWindowRect(IntPtr hWnd, out NativeRect rect);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool RegisterRawInputDevices(RawInputDevice[] devices, uint count, uint size);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct NativeRect
+    {
+        public int Left;
+        public int Top;
+        public int Right;
+        public int Bottom;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct RawInputDevice
+    {
+        public ushort UsagePage;
+        public ushort Usage;
+        public uint Flags;
+        public IntPtr Target;
+    }
+
+    // #671: when the last keystroke happened anywhere on the system, from
+    // keyboard raw input delivered to a hidden window. Only WM_INPUT's
+    // arrival is timestamped -- the key data itself is never read. Raw
+    // input registration is per process and device type, so another
+    // keyboard registration in the launcher would take this one over.
+    // If registration fails, nothing ever counts as typing (the old
+    // always-walk behavior).
+    private sealed class KeyboardActivity : NativeWindow
+    {
+        private const int WmInput = 0x00FF;
+        private const uint RidevInputSink = 0x00000100;
+        private long lastKeyAtMs;
+
+        public KeyboardActivity()
+        {
+            CreateHandle(new CreateParams());
+            var keyboardDevice = new RawInputDevice { UsagePage = 0x01, Usage = 0x06, Flags = RidevInputSink, Target = Handle };
+            RegisterRawInputDevices(new[] { keyboardDevice }, 1, (uint)Marshal.SizeOf<RawInputDevice>());
+        }
+
+        public long LastKeyAtMs => Interlocked.Read(ref lastKeyAtMs);
+
+        protected override void WndProc(ref Message m)
+        {
+            if (m.Msg == WmInput)
+            {
+                Interlocked.Exchange(ref lastKeyAtMs, Environment.TickCount64);
+            }
+            base.WndProc(ref m);
+        }
     }
 }
