@@ -1,4 +1,5 @@
 using System;
+using System.Globalization;
 using System.Linq;
 using Microsoft.ML.OnnxRuntime;
 using Microsoft.ML.OnnxRuntime.Tensors;
@@ -27,15 +28,25 @@ internal sealed class SileroVadRunner : IDisposable
     private const int StateSize = 2 * 1 * 128;
 
     private readonly InferenceSession session;
-    private readonly float threshold;
     private float[] state = new float[StateSize];
     private float[] context = new float[ContextSize];
 
     public SileroVadRunner(string modelPath, float threshold = DefaultThreshold)
     {
         session = new InferenceSession(modelPath);
-        this.threshold = threshold;
+        Threshold = threshold;
     }
+
+    // #858: the speech-probability cutoff; VoiceLoop sets it each time
+    // listening starts (ResolveThreshold).
+    public float Threshold { get; set; }
+
+    // #858: MANA_VAD_THRESHOLD (Electron's knob) wins over Settings > Voice,
+    // else 0.5. Anything outside (0, 1) is ignored.
+    internal static float ResolveThreshold(string? env, float? saved) =>
+        float.TryParse(env, NumberStyles.Float, CultureInfo.InvariantCulture, out var fromEnv) && fromEnv > 0f && fromEnv < 1f ? fromEnv
+        : saved is > 0f and < 1f ? saved.Value
+        : DefaultThreshold;
 
     // New utterance: neither the recurrent state nor the leading context
     // window should carry over speech from a previous, unrelated segment.
@@ -79,7 +90,7 @@ internal sealed class SileroVadRunner : IDisposable
         return output[0];
     }
 
-    public bool IsSpeech(float probability) => probability >= threshold;
+    public bool IsSpeech(float probability) => probability >= Threshold;
 
     public void Dispose() => session.Dispose();
 }

@@ -50,6 +50,12 @@ internal sealed class ManaSettingsStore
     // default (on). Settings > Voice; MANA_VOICE_AEC overrides it.
     public bool? EchoCancellation { get; set; }
 
+    // #858: Settings > Voice; null = default. MANA_SILENCE_BUFFER_MS and
+    // MANA_VAD_THRESHOLD override them (RecordingSegmenter/SileroVadRunner
+    // .Resolve*). Read each time listening starts.
+    public long? SilenceBufferMs { get; set; }
+    public float? VadThreshold { get; set; }
+
     // #681: the prompt preset sent as presetId with every reply; null =
     // none. Chosen in Settings > Presets (windows-launcher kept the same
     // choice in localStorage's manaSelectedPresetId).

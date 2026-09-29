@@ -45,7 +45,14 @@ internal enum ListenMode
 // serves both normal segment recording and barge-in detection.
 internal sealed class VoiceLoop : IDisposable
 {
-    private readonly SileroVadRunner vad;
+    // #858: null when MANA_DISABLE_VAD=1 or the model couldn't load;
+    // vadFailed once inference threw. Either way frames are judged by RMS
+    // instead (IsSpeechFrame), like Electron's fallback.
+    private readonly SileroVadRunner? vad;
+    private volatile bool vadFailed;
+    // #858: the end-of-turn silence (MANA_SILENCE_BUFFER_MS / Settings >
+    // Voice), read each time listening starts.
+    private long baseSilenceBufferMs = RecordingSegmenter.DefaultSilenceBufferMs;
     private readonly WakeWordClassifier? wakeWordClassifier;
     private readonly CaptionOverlayForm? captions;
     private readonly ManaBackendClient backendClient;
@@ -199,7 +206,7 @@ internal sealed class VoiceLoop : IDisposable
     private readonly IChatLog? chatLog;
 
     public VoiceLoop(
-        SileroVadRunner vad,
+        SileroVadRunner? vad,
         ManaBackendClient backendClient,
         AudioPlayer audioPlayer,
         AvatarOverlayForm avatarOverlay,
@@ -292,6 +299,16 @@ internal sealed class VoiceLoop : IDisposable
         // here, not just in Stop(), in case a turn that was already past
         // the wake-word gate when Stop() ran set it back to true since.
         awake = false;
+
+        // #858: voice tunables, env var over Settings > Voice.
+        var voiceSettings = ManaSettingsStore.Load();
+        baseSilenceBufferMs = RecordingSegmenter.ResolveSilenceBufferMs(Environment.GetEnvironmentVariable("MANA_SILENCE_BUFFER_MS"), voiceSettings.SilenceBufferMs);
+        if (vad is not null)
+        {
+            vad.Threshold = SileroVadRunner.ResolveThreshold(Environment.GetEnvironmentVariable("MANA_VAD_THRESHOLD"), voiceSettings.VadThreshold);
+        }
+        VoiceDebugLog.AppendNote(string.Create(System.Globalization.CultureInfo.InvariantCulture,
+            $"vad: {VadInUse}{(vad is not null && !vadFailed ? $" threshold={vad.Threshold:F2}" : $" minRms={SpeechFilters.MinSpeechRms:F3}")} silence={baseSilenceBufferMs}ms"));
 
         // #619: echo-cancelled capture first (EchoCancellation), falling back
         // to the plain capture this always used if Windows doesn't apply an
@@ -556,6 +573,41 @@ internal sealed class VoiceLoop : IDisposable
     }
 
     // Caller must already hold stateLock.
+    // #858: which speech detector is judging frames -- for the status
+    // window and speech-debug.log.
+    public string VadInUse => vad is null ? "rms (Silero off or unavailable)" : vadFailed ? "rms (Silero failed)" : "silero";
+
+    // #858: Silero's speech probability, else Electron's RMS fallback
+    // (isSpeechNow: frame RMS >= MANA_MIN_SPEECH_RMS). An inference error
+    // switches to RMS for the rest of the session, as in Electron.
+    private bool IsSpeechFrame(float[] frame)
+    {
+        if (vad is not null && !vadFailed)
+        {
+            try
+            {
+                return vad.IsSpeech(vad.ProcessFrame(frame));
+            }
+            catch (Exception ex) when (ex is not OutOfMemoryException)
+            {
+                vadFailed = true;
+                Console.WriteLine($"VoiceLoop: Silero VAD failed, using RMS for this session. {ex.Message}");
+                VoiceDebugLog.AppendNote($"vad: silero failed, using rms ({ex.GetType().Name}: {ex.Message})");
+            }
+        }
+        return IsSpeechByRms(frame, SpeechFilters.MinSpeechRms);
+    }
+
+    internal static bool IsSpeechByRms(float[] frame, double minRms)
+    {
+        double sum = 0;
+        foreach (var sample in frame)
+        {
+            sum += sample * sample;
+        }
+        return frame.Length > 0 && Math.Sqrt(sum / frame.Length) >= minRms;
+    }
+
     private void ProcessBufferedFrames()
     {
         if (mode == ListenMode.Processing && !mergeWindow.IsOpen)
@@ -570,8 +622,7 @@ internal sealed class VoiceLoop : IDisposable
             var frame = frameBuffer.GetRange(0, SileroVadRunner.FrameSamples).ToArray();
             frameBuffer.RemoveRange(0, SileroVadRunner.FrameSamples);
 
-            var probability = vad.ProcessFrame(frame);
-            var isSpeech = vad.IsSpeech(probability);
+            var isSpeech = IsSpeechFrame(frame);
 
             if (mode == ListenMode.Speaking)
             {
@@ -655,7 +706,7 @@ internal sealed class VoiceLoop : IDisposable
         segmentElapsedMs = 0;
         segmentSpeechMs = 0;
         msSinceLastSpeech = 0;
-        vad.Reset();
+        vad?.Reset();
 
         // #619: a new segment gets new partials (segmentId drops any still
         // in flight for this one) and clears the "Hearing:" line.
@@ -774,7 +825,7 @@ internal sealed class VoiceLoop : IDisposable
             }
             lastPartial = text;
             lastPartialSpeechMs = speechMs;
-            (partialSilenceBufferMs, partialEotReason) = RecordingSegmenter.SilenceBufferMsForTranscript(text);
+            (partialSilenceBufferMs, partialEotReason) = RecordingSegmenter.SilenceBufferMsForTranscript(text, baseSilenceBufferMs);
             chatLog?.ShowHearing(text);
         }
     }
@@ -796,7 +847,7 @@ internal sealed class VoiceLoop : IDisposable
         // it sounds complete, longer when it trails off); none, or a stale
         // one, keeps the old fixed 2.2s.
         var partialFresh = lastPartial is not null && lastPartialSpeechMs == segmentSpeechMs;
-        var silenceBufferMs = partialFresh ? partialSilenceBufferMs : RecordingSegmenter.DefaultSilenceBufferMs;
+        var silenceBufferMs = partialFresh ? partialSilenceBufferMs : baseSilenceBufferMs;
 
         var stopReason = RecordingSegmenter.ShouldStopRecording(
             hasHeardSpeechInSegment,
@@ -1619,7 +1670,7 @@ internal sealed class VoiceLoop : IDisposable
             {
                 mode = ListenMode.Speaking;
                 bargeInHeldMs = 0;
-                vad.Reset();
+                vad?.Reset();
             }
             else if (mode == ListenMode.Speaking)
             {
