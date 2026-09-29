@@ -3741,6 +3741,15 @@ function registerRoutes(app, upload, deps = {}) {
         // ignore -- goal context is best-effort, never blocks a reply
       }
     }
+    // Issue #676: goal mode (opt in with MANA_GOAL_MODE=1) keeps the tool
+    // loop going until the goal is done. It needs tools, which coding-routed
+    // turns never get, so a goal-mode turn stays on the default profile.
+    const goalMode =
+      Boolean(sessionGoal) &&
+      String((deps.env || process.env).MANA_GOAL_MODE || "0") === "1" &&
+      toolCallingEnabled &&
+      isLlamaServerAvailable();
+    if (goalMode) normalizedModelProfile = "default";
 
     // Issue #400: buildSkillsIndexBlock already computes how many skills it
     // left out, but only as a line of text baked into the block -- read
@@ -4373,7 +4382,8 @@ function registerRoutes(app, upload, deps = {}) {
             // workspace/proposal machinery (zed-integration.js) that
             // already backs the /editors/* admin routes, just stops short
             // of ever calling approveEditProposal.
-            createCodingToolSource({ editors: getEditorIntegrations() }),
+            // #787: approvalGate enables coding__run_tests (asks first).
+            createCodingToolSource({ editors: getEditorIntegrations(), approvalGate: activeApprovalGate }),
             ...(isPluginEnabled(browserAutomationPlugin, activePluginSettingsStore)
               ? [activeBrowserAutomationToolSource]
               : []),
@@ -4469,6 +4479,7 @@ function registerRoutes(app, upload, deps = {}) {
               profile: normalizedModelProfile,
               overrideSystemPrompt: selectedSystemPrompt,
               extraMessages: memoryExtraMessages,
+              goal: goalMode ? sessionGoal : null,
             },
           );
           if (toolResult.content && toolResult.content.trim()) {
@@ -4553,6 +4564,7 @@ function registerRoutes(app, upload, deps = {}) {
     async function replyMaybeWithBestOfN(promptText) {
       if (
         bestOfNEnabled &&
+        !goalMode &&
         mode === "coding" &&
         isLlamaServerAvailable()
       ) {
@@ -4671,7 +4683,8 @@ function registerRoutes(app, upload, deps = {}) {
     // rut, send it rather than looping.
     try {
       const rutEnabled = String(process.env.MANA_RUT_DETECTION_ENABLED || "1") === "1";
-      if (rutEnabled && sessionId && acpMemoryStore && typeof reply === "string") {
+      // #676: never regenerate a goal-mode reply -- that reruns the whole loop, tool calls included.
+      if (rutEnabled && !goalMode && sessionId && acpMemoryStore && typeof reply === "string") {
         const recentReplies = (acpMemoryStore.getSession(sessionId)?.turns || [])
           .map((t) => t.assistant)
           .filter(Boolean);
@@ -4745,7 +4758,7 @@ function registerRoutes(app, upload, deps = {}) {
           }
 
           console.warn("Reply verification failed:", verification.issues);
-          if (autoRetry && attempts <= maxRetries) {
+          if (autoRetry && !goalMode && attempts <= maxRetries) {
             // Ask the model to fix its previous reply
             const fixPrompt =
               finalPrompt +
