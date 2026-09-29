@@ -14,6 +14,7 @@ const {
 } = require("./admin-restart");
 const { readGgufMetadata } = require("./tools/gguf-metadata");
 const { createZedIntegration } = require("./zed-integration");
+const { runPluginInputHooks } = require("./capabilities/registry");
 
 const RESTART_LOCAL_ONLY_ERROR = "restart is only available from this PC";
 
@@ -53,6 +54,8 @@ function hasRestartController(restartController) {
   );
 }
 
+const joinPromptParts = (...parts) => parts.filter(Boolean).join("\n\n");
+
 function scheduleRestartAfterFinish(res, restartController) {
   res.once("finish", () => restartController.scheduleRestart());
 }
@@ -87,6 +90,22 @@ function registerCoreRoutes(app, upload, deps) {
     clampText,
     SCREEN_CONTEXT_MAX_CHARS,
   } = deps;
+
+  // Issue #677: plugin onUserInput hooks (see runPluginInputHooks), run
+  // once per chat turn by /reply, /reply/stream and /transcribe, image
+  // turns included, after the restart command check so no plugin can
+  // swallow it. A short-circuit reply is recorded like any other turn.
+  async function runInputHooks(text, source, sessionId, hasImages) {
+    const input = await runPluginInputHooks(
+      capabilities,
+      { text, source, sessionId, hasImages },
+      { pluginSettingsStore },
+    );
+    if (input.reply && sessionId && typeof recordChatTurn === "function") {
+      recordChatTurn(sessionId, input.text || "(shared an image)", input.reply);
+    }
+    return input;
+  }
 
   app.post("/admin/restart", (req, res) => {
     if (!hasRestartController(restartController)) {
@@ -258,12 +277,18 @@ function registerCoreRoutes(app, upload, deps) {
         });
       }
 
+      const sessionId = optionalString(req.body?.sessionId, "sessionId", null);
+      const input = await runInputHooks(
+        transcript,
+        optionalString(req.body?.source, "source", "typed"),
+        sessionId,
+        Boolean(image),
+      );
+      if (input.reply) {
+        return res.json({ reply: input.reply, ttsConfigured: TTS_PROVIDER !== "none" });
+      }
+
       if (image) {
-        const sessionId = optionalString(
-          req.body?.sessionId,
-          "sessionId",
-          null,
-        );
         if (typeof getVisionStatus === "function") {
           const vision = getVisionStatus();
           if (!vision || !vision.available) {
@@ -273,9 +298,14 @@ function registerCoreRoutes(app, upload, deps) {
             });
           }
         }
-        const reply = await runVisionReply(transcript, [image]);
+        // The vision call takes no system prompt here, so both patches ride
+        // on its prompt text.
+        const reply = await runVisionReply(
+          joinPromptParts(input.text, input.systemPatch, input.userPatch),
+          [image],
+        );
         if (sessionId && typeof recordChatTurn === "function") {
-          recordChatTurn(sessionId, transcript || "(shared an image)", reply);
+          recordChatTurn(sessionId, input.text || "(shared an image)", reply);
         }
         return res.json({
           reply,
@@ -307,7 +337,7 @@ function registerCoreRoutes(app, upload, deps) {
       // order, first non-empty result wins (issue #108) -- each plugin's own
       // builder decides relevance, this just picks the first that answers.
       const marketText = includeContext
-        ? await contributePluginPromptContext(capabilities, transcript, {
+        ? await contributePluginPromptContext(capabilities, input.text, {
             marketDataClient,
             jobApplicationsStore,
             pluginSettingsStore,
@@ -315,18 +345,17 @@ function registerCoreRoutes(app, upload, deps) {
             screenText,
           })
         : "";
-      const sessionId = optionalString(req.body?.sessionId, "sessionId", null);
       const assistantMode = optionalString(
         req.body?.assistantMode,
         "assistantMode",
         null,
       );
       const presetId = optionalString(req.body?.presetId, "presetId", null);
-      const replyMeta = {};
+      const replyMeta = { systemPatch: input.systemPatch };
       const reply = await buildAssistantReply(
-        transcript,
+        input.text,
         screenText,
-        marketText,
+        joinPromptParts(marketText, input.userPatch),
         modelProfile,
         sessionId,
         assistantMode,
@@ -391,8 +420,24 @@ function registerCoreRoutes(app, upload, deps) {
         return res.end();
       }
 
+      const sessionId = optionalString(req.body?.sessionId, "sessionId", null);
+      const input = await runInputHooks(
+        transcript,
+        optionalString(req.body?.source, "source", "typed"),
+        sessionId,
+        images.length > 0,
+      );
+      if (input.reply) {
+        writeEvent({
+          type: "final",
+          reply: input.reply,
+          ttsConfigured: TTS_PROVIDER !== "none",
+          changed: true,
+        });
+        return res.end();
+      }
+
       if (images.length) {
-        const sessionId = optionalString(req.body?.sessionId, "sessionId", null);
         if (typeof getVisionStatus === "function") {
           const vision = getVisionStatus();
           if (!vision || !vision.available) {
@@ -404,9 +449,12 @@ function registerCoreRoutes(app, upload, deps) {
             return res.end();
           }
         }
-        const reply = await runVisionReply(transcript, images);
+        const reply = await runVisionReply(
+          joinPromptParts(input.text, input.systemPatch, input.userPatch),
+          images,
+        );
         if (sessionId && typeof recordChatTurn === "function") {
-          recordChatTurn(sessionId, transcript || "(shared an image)", reply);
+          recordChatTurn(sessionId, input.text || "(shared an image)", reply);
         }
         writeEvent({
           type: "final",
@@ -439,7 +487,7 @@ function registerCoreRoutes(app, upload, deps) {
         UNIVERSALIS_DEFAULT_WORLD,
       );
       const marketText = includeContext
-        ? await contributePluginPromptContext(capabilities, transcript, {
+        ? await contributePluginPromptContext(capabilities, input.text, {
             marketDataClient,
             jobApplicationsStore,
             pluginSettingsStore,
@@ -447,25 +495,27 @@ function registerCoreRoutes(app, upload, deps) {
             screenText,
           })
         : "";
-      const sessionId = optionalString(req.body?.sessionId, "sessionId", null);
       const assistantMode = optionalString(req.body?.assistantMode, "assistantMode", null);
       const presetId = optionalString(req.body?.presetId, "presetId", null);
       // #661: tool start/end events, so the native avatar can show she's
       // working while a tool runs.
       const replyMeta = {
+        systemPatch: input.systemPatch,
         onToolCall: ({ name, phase }) => writeEvent({ type: "tool", name, phase }),
       };
 
       const reply = await buildAssistantReply(
-        transcript,
+        input.text,
         screenText,
-        marketText,
+        joinPromptParts(marketText, input.userPatch),
         modelProfile,
         sessionId,
         assistantMode,
         presetId,
         replyMeta,
-        (sentence) => writeEvent({ type: "sentence", text: sentence }),
+        // #623: emotion is the sentence's face tag, when the model gave one.
+        (sentence, emotion) =>
+          writeEvent({ type: "sentence", text: sentence, ...(emotion ? { emotion } : {}) }),
       );
 
       writeEvent({
@@ -474,6 +524,7 @@ function registerCoreRoutes(app, upload, deps) {
         ttsConfigured: TTS_PROVIDER !== "none",
         changed: !replyMeta.streamedMatchesFinal,
         ...(replyMeta.expression ? { expression: replyMeta.expression } : {}),
+        ...(replyMeta.emotion ? { emotion: replyMeta.emotion } : {}),
       });
       return res.end();
     } catch (e) {
@@ -502,13 +553,24 @@ function registerCoreRoutes(app, upload, deps) {
         fs.existsSync(audioPath) ? fs.statSync(audioPath).size : 0,
       );
       const transcript = await runWhisper(audioPath);
+      cleanupUploadedAudio(tmpPath, audioPath);
+
+      const sessionId = optionalString(req.body?.sessionId, "sessionId", null);
+      const input = await runInputHooks(transcript, "voice", sessionId, false);
+      if (input.reply) {
+        return res.json({
+          transcript,
+          reply: input.reply,
+          ttsConfigured: TTS_PROVIDER !== "none",
+        });
+      }
 
       // Same generic plugin prompt-context chain /reply uses (issue #108).
       // No screenText/ffxivWorld here since /transcribe has no OCR or
       // per-request world override -- UNIVERSALIS_DEFAULT_WORLD covers it.
       const marketText = await contributePluginPromptContext(
         capabilities,
-        transcript,
+        input.text,
         {
           marketDataClient,
           jobApplicationsStore,
@@ -517,25 +579,23 @@ function registerCoreRoutes(app, upload, deps) {
           screenText: "",
         },
       );
-      const sessionId = optionalString(req.body?.sessionId, "sessionId", null);
       const assistantMode = optionalString(
         req.body?.assistantMode,
         "assistantMode",
         null,
       );
       const presetId = optionalString(req.body?.presetId, "presetId", null);
-      const replyMeta = {};
+      const replyMeta = { systemPatch: input.systemPatch };
       const reply = await buildAssistantReply(
-        transcript,
+        input.text,
         "",
-        marketText,
+        joinPromptParts(marketText, input.userPatch),
         "default",
         sessionId,
         assistantMode,
         presetId,
         replyMeta,
       );
-      cleanupUploadedAudio(tmpPath, audioPath);
 
       return res.json({
         transcript,
