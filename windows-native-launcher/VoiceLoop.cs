@@ -273,6 +273,7 @@ internal sealed class VoiceLoop : IDisposable
         catch (Exception ex)
         {
             Console.WriteLine($"VoiceLoop: couldn't start listening. {ex.Message}");
+            LogCrash(ex, "start");
             lastError = $"Listening error: {ex.Message}";
             Stop();
         }
@@ -389,7 +390,38 @@ internal sealed class VoiceLoop : IDisposable
         resampled = resampler.ToSampleProvider();
 
         capture.DataAvailable += OnDataAvailable;
+        capture.RecordingStopped += OnRecordingStopped;
         capture.StartRecording();
+    }
+
+    // #860: NAudio reports a capture that died (mic unplugged, device
+    // error) here; a normal StopRecording has no exception.
+    private void OnRecordingStopped(object? sender, StoppedEventArgs e)
+    {
+        if (e.Exception is { } ex)
+        {
+            Console.WriteLine($"VoiceLoop: microphone capture stopped. {ex.Message}");
+            LogCrash(ex, "capture");
+            lastError = $"Listening error: {ex.Message}";
+        }
+    }
+
+    // #860: an exception that got out of the voice loop, for voice-crash.log.
+    // The VAD is always Silero today (#858 adds the RMS fallback).
+    private void LogCrash(Exception ex, string where) =>
+        VoiceCrashLog.Append(ex, where, "silero-vad", CaptureDeviceName(), awake, IsListening);
+
+    private static string? CaptureDeviceName()
+    {
+        try
+        {
+            using var devices = new MMDeviceEnumerator();
+            return devices.GetDefaultAudioEndpoint(DataFlow.Capture, Role.Console).FriendlyName;
+        }
+        catch (Exception)
+        {
+            return null;
+        }
     }
 
     private void StopCapture()
@@ -397,6 +429,7 @@ internal sealed class VoiceLoop : IDisposable
         if (capture is not null)
         {
             capture.DataAvailable -= OnDataAvailable;
+            capture.RecordingStopped -= OnRecordingStopped;
             capture.StopRecording();
             capture.Dispose();
             capture = null;
@@ -920,7 +953,19 @@ internal sealed class VoiceLoop : IDisposable
             ResetSegment();
         }
 
-        await ProcessTurnAsync(samples, wasInterruption, logEntry, turnId);
+        // #860: fire-and-forget from the capture thread, so an exception
+        // here would otherwise vanish and leave the loop stuck mid-turn.
+        try
+        {
+            await ProcessTurnAsync(samples, wasInterruption, logEntry, turnId);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"VoiceLoop: turn failed, resuming listening. {ex}");
+            LogCrash(ex, "turn");
+            lastError = $"Listening error: {ex.Message}";
+            ReturnToIdle();
+        }
     }
 
     // #619: the turn task's commit point -- waits out the rest of the merge

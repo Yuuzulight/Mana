@@ -1,6 +1,7 @@
 using System;
 using System.Globalization;
 using System.IO;
+using System.Text.Json;
 
 namespace Mana.NativeLauncher;
 
@@ -140,11 +141,15 @@ internal static class VoiceDebugLog
 
     private static void Write(Func<string> format, string? path, long maxBytes)
     {
-        if (Environment.GetEnvironmentVariable("MANA_SPEECH_DEBUG") == "0")
+        if (Environment.GetEnvironmentVariable("MANA_SPEECH_DEBUG") != "0")
         {
-            return;
+            WriteLine(format, path ?? DefaultPath, maxBytes);
         }
-        path ??= DefaultPath;
+    }
+
+    // Appends one line, rotating at maxBytes. Never throws.
+    internal static void WriteLine(Func<string> format, string path, long maxBytes)
+    {
         try
         {
             var line = format();
@@ -163,4 +168,33 @@ internal static class VoiceDebugLog
             Console.WriteLine($"VoiceDebugLog: couldn't write {path}. {ex.Message}");
         }
     }
+}
+
+// #860: native port of windows-launcher's voice-crash.log (main.js's
+// VOICE_CRASH_LOG_PATH, #147) -- one JSON line per exception that escapes
+// the voice loop, next to speech-debug.log, instead of only the console.
+// Always on (it only ever holds errors, never transcripts); same size cap.
+internal static class VoiceCrashLog
+{
+    internal static readonly string DefaultPath = Path.Combine(Path.GetDirectoryName(VoiceDebugLog.DefaultPath)!, "voice-crash.log");
+
+    // Never throws.
+    public static void Append(Exception error, string where, string audioBackend, string? inputDevice, bool awake, bool listening, string? path = null) =>
+        VoiceDebugLog.WriteLine(() => Format(error, where, audioBackend, inputDevice, awake, listening, DateTimeOffset.Now), path ?? DefaultPath, VoiceDebugLog.MaxBytes);
+
+    // Electron's fields (error, stack, audioBackend, inputDeviceLabel,
+    // awake, listening), plus where in the loop it happened.
+    internal static string Format(Exception error, string where, string audioBackend, string? inputDevice, bool awake, bool listening, DateTimeOffset at) =>
+        JsonSerializer.Serialize(new
+        {
+            at = at.ToString("o", CultureInfo.InvariantCulture),
+            where,
+            error = error.Message,
+            type = error.GetType().FullName,
+            stack = error.StackTrace,
+            audioBackend,
+            inputDeviceLabel = inputDevice,
+            awake,
+            listening,
+        });
 }
