@@ -201,6 +201,9 @@ function createMcpClientRegistry(options = {}) {
     const client = new sdk.Client(DEFAULT_CLIENT_INFO, { capabilities: {} });
     let transport;
     if (server.transport.kind === "stdio") {
+      // Issue #670: re-checked on every start, since npx/uvx fetch whatever
+      // the package is now; a hit refuses to start it.
+      await malwareCheck(server.transport.command, server.transport.args);
       const env = { ...sdk.getDefaultEnvironment() };
       for (const key of server.transport.envAllowlist) {
         if (process.env[key] !== undefined) env[key] = process.env[key];
