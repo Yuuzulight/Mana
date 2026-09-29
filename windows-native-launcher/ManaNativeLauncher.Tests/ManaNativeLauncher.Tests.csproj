@@ -1,12 +1,17 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <!-- Matches ManaNativeLauncher.csproj's own TargetFramework, see its
-         #524 comment: a plain net8.0-windows here can't reference a
+         #524 comment: a plain net10.0-windows here can't reference a
          project requiring the versioned Windows SDK target. -->
-    <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
+    <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <IsPackable>false</IsPackable>
+    <!-- Brings in the Windows Desktop framework reference the main project
+         has, so NuGet prunes Microsoft.Toolkit.Uwp.Notifications' old
+         System.Drawing.Common 4.7.0 dependency (NU1904) here too; the
+         framework's own copy is what loads at runtime anyway. -->
+    <UseWindowsForms>true</UseWindowsForms>
   </PropertyGroup>
 
   <ItemGroup>
