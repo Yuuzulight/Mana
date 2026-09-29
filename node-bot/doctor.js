@@ -572,6 +572,15 @@ function getConfiguredTtsHealthTargets(env) {
     });
   }
 
+  // The native launcher starts Qwen3-TTS whenever it's selected, so its
+  // default URL is worth checking too, not only an explicit QWEN3_TTS_URL.
+  if (provider === "qwen3tts") {
+    targets.push({
+      id: "qwen3tts",
+      url: withHealthPath(env.QWEN3_TTS_URL || "http://127.0.0.1:5012"),
+    });
+  }
+
   return targets.filter((target) => target.url);
 }
 

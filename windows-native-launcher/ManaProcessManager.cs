@@ -19,6 +19,10 @@ internal sealed class ManaProcessManager : IDisposable
     private Process? searxngProcess;
     private Process? retrieverProcess;
     private Process? gptSovitsProcess;
+    private Process? qwen3TtsProcess;
+    // True while a watched game runs and the Qwen3-TTS service this launcher
+    // started is stopped for it (SetQwen3TtsGameRunning).
+    private bool qwen3TtsStoppedForGame;
 
     public string RootDirectory { get; }
 
@@ -35,6 +39,14 @@ internal sealed class ManaProcessManager : IDisposable
     // Kokoro stays on demand in node-bot.
     public bool UsesFishSpeech { get; } = Environment.GetEnvironmentVariable("TTS_PROVIDER") is null or "" or "fish";
     public bool UsesGptSovits { get; } = Environment.GetEnvironmentVariable("TTS_PROVIDER") == "gpt_sovits";
+    public bool UsesQwen3Tts { get; } = Environment.GetEnvironmentVariable("TTS_PROVIDER") == "qwen3tts";
+    // #891: the same QWEN3_TTS_URL node-bot calls and the service takes its
+    // port from.
+    private readonly string qwen3TtsHealthUrl =
+        $"{(Environment.GetEnvironmentVariable("QWEN3_TTS_URL") ?? "http://127.0.0.1:5012").TrimEnd('/')}/health";
+
+    // Tests swap in a stand-in process; the real one is StartQwen3Tts.
+    internal Func<Process?> StartQwen3TtsProcess { get; set; }
 
     // #582: only captures output for a backend process THIS launcher
     // spawned -- if StartAsync's health check found node-bot already
@@ -58,6 +70,8 @@ internal sealed class ManaProcessManager : IDisposable
     // "TTS_PROVIDER=fish is configured but Fish Speech isn't answering" --
     // the two look identical from the configured-provider name alone.
     public bool IsFishSpeechAvailable { get; private set; }
+    // Same meaning for Qwen3-TTS: running already, or launched by this run.
+    public bool IsQwen3TtsAvailable { get; private set; }
 
     // False when the configured backend URL points at another machine --
     // that machine runs its own node-bot and its own TTS services.
@@ -95,11 +109,12 @@ internal sealed class ManaProcessManager : IDisposable
         // startWindowsServices / isBackendUrlLoopback). Unparseable counts
         // as local, same as there.
         isBackendLocal = !Uri.TryCreate(backendHealthUrl, UriKind.Absolute, out var parsed) || parsed.IsLoopback;
+        StartQwen3TtsProcess = StartQwen3Tts;
     }
 
     // onServiceReady, when given, fires once per service (key "backend"/
-    // "embedder"/"websearch", plus "fish-speech"/"retriever"/"gpt-sovits"
-    // when in use) the moment its own health-check-then-start
+    // "embedder"/"websearch", plus "fish-speech"/"retriever"/"gpt-sovits"/
+    // "qwen3-tts" when in use) the moment its own health-check-then-start
     // resolves -- lets a caller (the startup overlay) flip that row from
     // "Starting..." to "Ready"/"Unavailable" live instead of only knowing
     // "all three are done" after StartAsync itself returns. Fires on
@@ -162,10 +177,13 @@ internal sealed class ManaProcessManager : IDisposable
         var gptSovitsTask = UsesGptSovits
             ? StartAndReport("gpt-sovits", "http://127.0.0.1:9880/docs", () => Task.FromResult(isBackendLocal ? StartGptSovits() : null))
             : notUsed;
+        var qwen3TtsTask = UsesQwen3Tts
+            ? StartAndReport("qwen3-tts", qwen3TtsHealthUrl, () => Task.FromResult(isBackendLocal ? StartQwen3TtsProcess() : null))
+            : notUsed;
 
         try
         {
-            await Task.WhenAll(fishSpeechTask, backendTask, embedderTask, searxngTask, retrieverTask, gptSovitsTask);
+            await Task.WhenAll(fishSpeechTask, backendTask, embedderTask, searxngTask, retrieverTask, gptSovitsTask, qwen3TtsTask);
         }
         finally
         {
@@ -187,6 +205,11 @@ internal sealed class ManaProcessManager : IDisposable
             if (searxngTask.IsCompletedSuccessfully) searxngProcess = searxngTask.Result.Process;
             if (retrieverTask.IsCompletedSuccessfully) retrieverProcess = retrieverTask.Result.Process;
             if (gptSovitsTask.IsCompletedSuccessfully) gptSovitsProcess = gptSovitsTask.Result.Process;
+            if (qwen3TtsTask.IsCompletedSuccessfully)
+            {
+                qwen3TtsProcess = qwen3TtsTask.Result.Process;
+                IsQwen3TtsAvailable = qwen3TtsTask.Result.Available;
+            }
         }
     }
 
@@ -209,16 +232,24 @@ internal sealed class ManaProcessManager : IDisposable
     // only waits for the launch. The startup screen waits on this so Mana
     // appears (and listens) only once she can actually speak. False straight
     // away if Fish isn't in use (remote backend, not set up, failed start).
-    public async Task<bool> WaitForFishSpeechReadyAsync(TimeSpan timeout, TimeSpan? pollInterval = null)
+    public Task<bool> WaitForFishSpeechReadyAsync(TimeSpan timeout, TimeSpan? pollInterval = null) =>
+        WaitForHealthyAsync(IsFishSpeechAvailable, "http://127.0.0.1:8080/v1/health", timeout, pollInterval);
+
+    // #891: likewise for Qwen3-TTS, whose /health only answers once the
+    // model is loaded and its CUDA graphs captured (~12 s).
+    public Task<bool> WaitForQwen3TtsReadyAsync(TimeSpan timeout, TimeSpan? pollInterval = null) =>
+        WaitForHealthyAsync(IsQwen3TtsAvailable, qwen3TtsHealthUrl, timeout, pollInterval);
+
+    private async Task<bool> WaitForHealthyAsync(bool available, string healthUrl, TimeSpan timeout, TimeSpan? pollInterval)
     {
-        if (!isBackendLocal || !IsFishSpeechAvailable)
+        if (!isBackendLocal || !available)
         {
             return false;
         }
         var deadline = DateTime.UtcNow + timeout;
         while (true)
         {
-            if (await IsServiceRunningAsync("http://127.0.0.1:8080/v1/health"))
+            if (await IsServiceRunningAsync(healthUrl))
             {
                 return true;
             }
@@ -419,6 +450,58 @@ internal sealed class ManaProcessManager : IDisposable
         // silently returns 1 s of silence for every reply (see main.js).
         return StartOptional("GPT-SoVITS", runtimePython, $"{Quote(apiScript)} -a 127.0.0.1 -p 9880", gptSovitsDir,
             new() { ["PYTHONIOENCODING"] = "utf-8", ["PYTHONUTF8"] = "1" });
+    }
+
+    // #891: Qwen3-TTS (tools/qwen3tts_service.py), only with
+    // TTS_PROVIDER=qwen3tts, from its own venv (docs/qwen3_tts.md). Logs
+    // like Fish's, since a model-load failure is otherwise invisible;
+    // BelowNormal so synthesis never competes with the foreground app.
+    private Process? StartQwen3Tts()
+    {
+        var qwenDir = Path.Combine(RootDirectory, "tools", "qwen3-tts");
+        var python = ResolveVenvPython(qwenDir, ".venv");
+        var serviceScript = Path.Combine(RootDirectory, "tools", "qwen3tts_service.py");
+        if (!File.Exists(python) || !File.Exists(serviceScript))
+        {
+            Console.WriteLine($"Qwen3-TTS not set up at {qwenDir}; see docs/qwen3_tts.md.");
+            return null;
+        }
+        try
+        {
+            var process = StartHiddenProcess(
+                python,
+                Quote(serviceScript),
+                qwenDir,
+                stdoutLogPath: Path.Combine(qwenDir, "service.out.log"),
+                stderrLogPath: Path.Combine(qwenDir, "service.err.log"));
+            process.PriorityClass = ProcessPriorityClass.BelowNormal;
+            return process;
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Qwen3-TTS failed to start: {ex.Message}");
+            return null;
+        }
+    }
+
+    // #891: while a watched game runs node-bot speaks through Kokoro, so a
+    // Qwen3-TTS this launcher started is stopped to hand its VRAM (~2.7 GB)
+    // to the game, and started again once the game closes (~12 s; Kokoro,
+    // its fallback, covers the gap). One that was already running on its own
+    // isn't ours to stop. Called from the 5 s status poll.
+    public void SetQwen3TtsGameRunning(bool gameRunning)
+    {
+        if (gameRunning && qwen3TtsProcess is { HasExited: false })
+        {
+            StopProcess(qwen3TtsProcess);
+            qwen3TtsProcess = null;
+            qwen3TtsStoppedForGame = true;
+        }
+        else if (!gameRunning && qwen3TtsStoppedForGame)
+        {
+            qwen3TtsStoppedForGame = false;
+            qwen3TtsProcess = StartQwen3TtsProcess();
+        }
     }
 
     // A launch failure of an optional service is logged, never fatal.
@@ -692,7 +775,8 @@ internal sealed class ManaProcessManager : IDisposable
             StopAndReport("embedder", embedderProcess),
             StopAndReport("websearch", searxngProcess),
             StopAndReport("retriever", retrieverProcess),
-            StopAndReport("gpt-sovits", gptSovitsProcess));
+            StopAndReport("gpt-sovits", gptSovitsProcess),
+            StopAndReport("qwen3-tts", qwen3TtsProcess));
     }
 
     public void Dispose()
@@ -704,6 +788,7 @@ internal sealed class ManaProcessManager : IDisposable
         StopProcess(searxngProcess);
         StopProcess(retrieverProcess);
         StopProcess(gptSovitsProcess);
+        StopProcess(qwen3TtsProcess);
     }
 
     private static void StopProcess(Process? process)

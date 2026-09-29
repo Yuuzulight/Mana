@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Net;
 using System.Net.Http;
 using System.Threading.Tasks;
@@ -324,6 +325,118 @@ public class ManaProcessManagerTests
     }
 
     [Fact]
+    public async Task StartAsync_WithQwen3Tts_StartsItInsteadOfFishSpeech()
+    {
+        // #891: TTS_PROVIDER=qwen3tts checks (and would start) only
+        // Qwen3-TTS; with nothing installed under the root it reads
+        // Unavailable, and Fish Speech is never checked or reported.
+        Environment.SetEnvironmentVariable("TTS_PROVIDER", "qwen3tts");
+        try
+        {
+            var requested = new ConcurrentBag<string>();
+            var handler = new FakeHttpMessageHandler(request =>
+            {
+                requested.Add(request.RequestUri!.GetLeftPart(UriPartial.Path));
+                return new HttpResponseMessage(request.RequestUri.Port == 5005 ? HttpStatusCode.OK : HttpStatusCode.ServiceUnavailable);
+            });
+            using var manager = new ManaProcessManager(@"C:\does-not-exist", handler);
+            var reported = new ConcurrentDictionary<string, bool>();
+
+            await manager.StartAsync((key, available) => reported[key] = available);
+
+            Assert.False(reported["qwen3-tts"]);
+            Assert.False(manager.IsQwen3TtsAvailable);
+            Assert.Contains("http://127.0.0.1:5012/health", requested);
+            Assert.False(reported.ContainsKey("fish-speech"));
+            Assert.DoesNotContain(requested, url => new Uri(url).Port == 8080);
+            Assert.Equal(
+                ManaApplicationContext.ServiceRowsFor(manager).Select(row => row.Key).OrderBy(key => key),
+                reported.Keys.OrderBy(key => key));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("TTS_PROVIDER", null);
+        }
+    }
+
+    // A harmless long-running stand-in for the Qwen3-TTS service.
+    private static Process StartStandIn() =>
+        Process.Start(new ProcessStartInfo("ping", "-n 60 127.0.0.1")
+        {
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            RedirectStandardOutput = true,
+        })!;
+
+    [Fact]
+    public async Task SetQwen3TtsGameRunning_StopsItForAGameAndStartsItAgainAfter()
+    {
+        Environment.SetEnvironmentVariable("TTS_PROVIDER", "qwen3tts");
+        var started = new List<Process>();
+        try
+        {
+            var handler = new FakeHttpMessageHandler(request =>
+                new HttpResponseMessage(request.RequestUri!.Port == 5005 ? HttpStatusCode.OK : HttpStatusCode.ServiceUnavailable));
+            using var manager = new ManaProcessManager(@"C:\does-not-exist", handler);
+            manager.StartQwen3TtsProcess = () =>
+            {
+                var process = StartStandIn();
+                started.Add(process);
+                return process;
+            };
+            await manager.StartAsync();
+            Assert.Single(started);
+            Assert.True(manager.IsQwen3TtsAvailable);
+
+            manager.SetQwen3TtsGameRunning(true);
+            Assert.True(started[0].WaitForExit(5000));
+            manager.SetQwen3TtsGameRunning(true); // still gaming: stays stopped
+            Assert.Single(started);
+
+            manager.SetQwen3TtsGameRunning(false);
+            Assert.Equal(2, started.Count);
+            Assert.False(started[1].HasExited);
+            manager.SetQwen3TtsGameRunning(false); // no second copy
+            Assert.Equal(2, started.Count);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("TTS_PROVIDER", null);
+            foreach (var process in started)
+            {
+                if (!process.HasExited) process.Kill();
+                process.Dispose();
+            }
+        }
+    }
+
+    [Fact]
+    public async Task SetQwen3TtsGameRunning_LeavesAnAlreadyRunningServiceAlone()
+    {
+        // Healthy at launch means someone else runs it: not ours to stop,
+        // and nothing to restart.
+        Environment.SetEnvironmentVariable("TTS_PROVIDER", "qwen3tts");
+        try
+        {
+            var handler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.OK));
+            using var manager = new ManaProcessManager(@"C:\does-not-exist", handler);
+            var starts = 0;
+            manager.StartQwen3TtsProcess = () => { starts++; return null; };
+            await manager.StartAsync();
+
+            manager.SetQwen3TtsGameRunning(true);
+            manager.SetQwen3TtsGameRunning(false);
+
+            Assert.Equal(0, starts);
+            Assert.True(manager.IsQwen3TtsAvailable);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("TTS_PROVIDER", null);
+        }
+    }
+
+    [Fact]
     public async Task WaitForFishSpeechReady_ReturnsTrueOnceFishAnswers()
     {
         // Healthy at launch (so it counts as available), then warming up
@@ -390,6 +503,7 @@ public class ManaProcessManagerTests
             {
                 ["backend"] = true, ["fish-speech"] = true, ["embedder"] = true,
                 ["websearch"] = true, ["retriever"] = true, ["gpt-sovits"] = true,
+                ["qwen3-tts"] = true,
             },
             new Dictionary<string, bool>(reported));
     }
