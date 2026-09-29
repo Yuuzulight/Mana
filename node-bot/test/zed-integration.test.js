@@ -13,7 +13,9 @@ const {
   createEditorWorkspaceStore,
   createZedIntegration,
 } = require("../zed-integration");
-const { withServer } = require("./helpers");
+const { useTestAdminToken, withServer } = require("./helpers");
+// #842: these routes are admin-only; every request here sends ADMIN_TOKEN.
+const fetch = useTestAdminToken();
 
 // Issue #428: every createEditorIntegrations() call in this file that
 // doesn't pass its own snapshotsDir would otherwise fall through to

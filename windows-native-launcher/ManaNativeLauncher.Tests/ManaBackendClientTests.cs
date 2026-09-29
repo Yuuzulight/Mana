@@ -771,6 +771,30 @@ public class ManaBackendClientTests
         Assert.Equal("topsecret", authHeader.Parameter);
     }
 
+    // #670: the per-run launcher key goes out as x-admin-token, alongside
+    // (not instead of) the stored admin token's Bearer header.
+    [Fact]
+    public async Task Constructor_SendsTheLauncherKeyAsXAdminToken()
+    {
+        string? keyHeader = null;
+        AuthenticationHeaderValue? authHeader = null;
+        var handler = new FakeHttpMessageHandler(request =>
+        {
+            keyHeader = request.Headers.TryGetValues("X-Admin-Token", out var values) ? values.Single() : null;
+            authHeader = request.Headers.Authorization;
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("{\"reply\":\"ok\"}", Encoding.UTF8, "application/json"),
+            };
+        });
+        var client = new ManaBackendClient(handler, adminToken: "topsecret", launcherKey: "run-key");
+
+        await client.ReplyAsync("hi");
+
+        Assert.Equal("run-key", keyHeader);
+        Assert.Equal("topsecret", authHeader!.Parameter);
+    }
+
     [Fact]
     public async Task Constructor_UsesTheGivenBaseUrlInsteadOfTheDefault()
     {
