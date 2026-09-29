@@ -5,6 +5,7 @@ const http = require("node:http");
 const {
   createTtsRuntime,
   detectTtsLanguage,
+  postJsonBuffer,
 } = require("../tts-runtime");
 
 test("tts runtime builds CLI args from configured placeholders", () => {
@@ -214,6 +215,83 @@ test("tts runtime falls back from GPT-SoVITS to Kokoro when configured", async (
 
   assert.equal(audio.toString("utf8"), "kokoro-audio");
   assert.equal(calls[0], "http://kokoro.local/synthesize");
+});
+
+test("tts runtime posts text plus the detected language to Qwen3-TTS", async () => {
+  const calls = [];
+  const runtime = createTtsRuntime({
+    env: { TTS_PROVIDER: "qwen3tts", QWEN3_TTS_URL: "http://qwen.local" },
+    postJsonBuffer: async (url, body, timeoutMs) => {
+      calls.push({ url, body, timeoutMs });
+      return Buffer.from("qwen-audio");
+    },
+    nowMs: () => 1,
+    logPerf: () => {},
+  });
+
+  const audio = await runtime.synthesizeReply("こんにちは！");
+
+  assert.equal(audio.toString("utf8"), "qwen-audio");
+  assert.equal(calls[0].url, "http://qwen.local/synthesize");
+  assert.deepEqual(calls[0].body, { text: "こんにちは！", language: "japanese" });
+  assert.ok(calls[0].timeoutMs > 0);
+});
+
+test("postJsonBuffer gives up on a service that never answers once timeoutMs passes", async () => {
+  const server = http.createServer(() => {});
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const { port } = server.address();
+    await assert.rejects(
+      postJsonBuffer(`http://127.0.0.1:${port}/synthesize`, { text: "hi" }, 50),
+      /timed out after 50ms/,
+    );
+  } finally {
+    server.closeAllConnections();
+    server.close();
+  }
+});
+
+test("pickQwen3TtsLanguage passes Mana's languages through and sends Malay as auto", () => {
+  const runtime = createTtsRuntime({ env: {} });
+
+  assert.equal(runtime.pickQwen3TtsLanguage("Hello there!"), "english");
+  assert.equal(runtime.pickQwen3TtsLanguage("你好，今天天气怎么样？"), "chinese");
+  assert.equal(runtime.pickQwen3TtsLanguage("안녕하세요"), "korean");
+  assert.equal(runtime.pickQwen3TtsLanguage("Привет, как дела?"), "russian");
+  assert.equal(runtime.pickQwen3TtsLanguage("Guten Tag, wie geht es dir?"), "german");
+  assert.equal(runtime.pickQwen3TtsLanguage("¡Hola! ¿Qué tal?"), "spanish");
+  assert.equal(runtime.pickQwen3TtsLanguage("Selamat pagi, apa khabar?"), "auto");
+});
+
+test("tts runtime falls back from Qwen3-TTS to Kokoro by default, and not with none", async () => {
+  const urls = [];
+  const post = async (url) => {
+    urls.push(url);
+    if (url.endsWith("/synthesize") && url.startsWith("http://127.0.0.1:5012")) {
+      throw new Error("connect ECONNREFUSED 127.0.0.1:5012");
+    }
+    return Buffer.from("kokoro-audio");
+  };
+  const runtime = createTtsRuntime({
+    env: { TTS_PROVIDER: "qwen3tts", KOKORO_TTS_URL: "http://kokoro.local" },
+    postJsonBuffer: post,
+    nowMs: () => 1,
+    logPerf: () => {},
+  });
+
+  const audio = await runtime.synthesizeReply("hello");
+
+  assert.equal(audio.toString("utf8"), "kokoro-audio");
+  assert.deepEqual(urls, ["http://127.0.0.1:5012/synthesize", "http://kokoro.local/synthesize"]);
+
+  const strict = createTtsRuntime({
+    env: { TTS_PROVIDER: "qwen3tts", QWEN3_TTS_FALLBACK_PROVIDER: "none" },
+    postJsonBuffer: post,
+    nowMs: () => 1,
+    logPerf: () => {},
+  });
+  await assert.rejects(() => strict.synthesizeReply("hello"), /ECONNREFUSED/);
 });
 
 test("tts runtime rejects GPT-SoVITS with no reference configured", async () => {

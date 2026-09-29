@@ -480,6 +480,45 @@ test("createApp exposes doctor checks without leaking secrets", async () => {
   });
 });
 
+test("async doctor probes Qwen3-TTS's /health when it's the provider", async () => {
+  await withRawServer((req, res) => {
+    res.writeHead(req.url === "/health" ? 200 : 404);
+    res.end();
+  }, async ({ url }) => {
+    const result = await runDoctorChecksAsync({
+      env: {
+        MANA_ALLOW_REMOTE_AI: "0",
+        LLAMA_BIN: "",
+        LLAMA_MODEL: "",
+        WHISPER_BIN: "",
+        WHISPER_MODEL: "",
+        MOBILE_PASSCODE_HASH: "",
+        MOBILE_SESSION_SECRET: "",
+        TTS_PROVIDER: "qwen3tts",
+        QWEN3_TTS_URL: url,
+        FISH_TTS_URL: "http://127.0.0.1:1",
+      },
+      paths: {
+        dataDir: fs.mkdtempSync(path.join(os.tmpdir(), "mana-doctor-qwen-")),
+      },
+      whisperToolsDir: fs.mkdtempSync(path.join(os.tmpdir(), "mana-doctor-qwen-whisper-")),
+      ports: [],
+      versions: { node: "v22.19.0" },
+    });
+
+    const tts = result.checks.find((check) => check.id === "tts-services");
+    assert.equal(tts.status, "pass");
+    assert.deepEqual(tts.details.services, [
+      { id: "qwen3tts", url: `${url}/health`, ok: true, statusCode: 200 },
+    ]);
+
+    fs.rmSync(result.checks.find((check) => check.id === "storage").details.dataDir, {
+      recursive: true,
+      force: true,
+    });
+  });
+});
+
 test("async doctor probes configured TTS health URLs", async () => {
   await withRawServer((req, res) => {
     if (req.url === "/health") {

@@ -79,6 +79,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
         ("websearch", "Web search"),
         ("retriever", "Retriever"),
         ("gpt-sovits", "GPT-SoVITS TTS"),
+        ("qwen3-tts", "Qwen3-TTS"),
     };
 
     // #691: the opt-in services only get a row when they're turned on,
@@ -89,6 +90,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
             "fish-speech" => manager.UsesFishSpeech,
             "retriever" => manager.UsesRetriever,
             "gpt-sovits" => manager.UsesGptSovits,
+            "qwen3-tts" => manager.UsesQwen3Tts,
             _ => true,
         }).ToArray();
 
@@ -419,6 +421,12 @@ internal sealed class ManaApplicationContext : ApplicationContext
                 var fishReady = await processManager.WaitForFishSpeechReadyAsync(TimeSpan.FromMinutes(6));
                 overlay.SetRowStatus("fish-speech", fishReady ? "Ready" : "Not ready yet", fishReady ? RowState.Ready : RowState.Warn);
             }
+            if (processManager.IsBackendLocal && processManager.IsQwen3TtsAvailable)
+            {
+                overlay.SetRowStatus("qwen3-tts", "Warming up...", RowState.Starting);
+                var qwenReady = await processManager.WaitForQwen3TtsReadyAsync(TimeSpan.FromMinutes(2));
+                overlay.SetRowStatus("qwen3-tts", qwenReady ? "Ready" : "Not ready yet", qwenReady ? RowState.Ready : RowState.Warn);
+            }
             await RefreshTrayStatusAsync();
             await sessionListForm.ReopenLastSessionAsync(); // #687
             voiceLoop.Start();
@@ -519,6 +527,14 @@ internal sealed class ManaApplicationContext : ApplicationContext
             gamingModeActive = gamingModeEnabled && status.GamingAppRunning;
             SetTrayStatus(gamingModeActive ? "Mana - game mode" : "Mana");
             avatarOverlay.GameRunning = gamingModeActive; // Q3: click-through while gaming
+            // #891: the raw detection, not gamingModeActive -- node-bot
+            // switches the voice to Kokoro on it regardless of this toggle.
+            // Not before startup is done: stopping it mid-warm-up would hold
+            // the startup screen until its wait times out.
+            if (servicesStarted && !isShuttingDown)
+            {
+                processManager.SetQwen3TtsGameRunning(status.GamingAppRunning);
+            }
         }
         catch
         {

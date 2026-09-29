@@ -65,6 +65,12 @@ install required artifacts.
     Mana's backend talks to it only over localhost HTTP. See
     https://github.com/RVC-Boss/GPT-SoVITS for terms.
 
+- Qwen3-TTS (tools/qwen3-tts, git-ignored, set up per docs/qwen3_tts.md)
+  - Apache-2.0 (Qwen3-TTS code and weights, qwen-tts-hf) and MIT
+    (faster-qwen3-tts). Voice provider running as a separate local process;
+    Mana's backend talks to it only over localhost HTTP. See
+    https://github.com/QwenLM/Qwen3-TTS for terms.
+
 What the built installer adds back in (issue #363)
 --------------------------------------------------
 

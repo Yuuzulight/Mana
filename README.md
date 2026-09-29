@@ -271,6 +271,7 @@ Common troubleshooting:
 - [VTube Studio setup](docs/vtube_studio_setup.md): avatar hotkeys and reactions.
 - [Native launcher plan](docs/native_launcher_plan.md): the primary C#/WinForms launcher — full feature parity with the legacy Electron launcher, plus a measured lower memory footprint.
 - [GPT-SoVITS setup](docs/gpt_sovits_setup.md): trial anime-style voice-cloning provider.
+- [Qwen3-TTS](docs/qwen3_tts.md): lighter voice-cloning provider (`TTS_PROVIDER=qwen3tts`).
 - [Fish Speech TTS](docs/fish_speech_tts.md): optional Fish Speech provider.
 - [Market analysis helper](docs/market_analysis_helper.md): stock-market helper setup.
 - [Vision setup](docs/vision_setup.md): local image understanding with a vision GGUF.
