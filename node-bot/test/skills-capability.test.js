@@ -392,4 +392,78 @@ test("contributePromptContext returns the matched skill's full body and nothing 
     skillsStore: store,
   });
   assert.equal(unmatched, "");
+
+  // Issue #664: a skill that cannot run on this machine is never offered.
+  const unavailable = await skillsCapability.contributePromptContext("please restart searxng", {
+    skillsStore: fakeStore({
+      listSkills: () => [{ name: "restart-searxng", description: "x", available: false }],
+      viewSkill: store.viewSkill,
+    }),
+  });
+  assert.equal(unavailable, "");
+});
+
+// Issue #664: importing is always a pending, forceReview proposal that
+// lists the files/scripts/requirements -- nothing is written or run until
+// a human approves, and only this PC may ask.
+test("POST /skills/import stages a forceReview proposal and writes nothing", async () => {
+  const fs = require("node:fs");
+  const os = require("node:os");
+  const path = require("node:path");
+  const source = fs.mkdtempSync(path.join(os.tmpdir(), "mana-skill-import-"));
+  fs.mkdirSync(path.join(source, "scripts"));
+  fs.writeFileSync(
+    path.join(source, "SKILL.md"),
+    '---\nname: weather\ndescription: Get the weather.\nmetadata: {"openclaw": {"requires": {"bins": ["curl"]}}}\n---\nUse scripts/get.sh.\n',
+  );
+  fs.writeFileSync(path.join(source, "scripts", "get.sh"), "curl wttr.in\n");
+
+  const requests = [];
+  const executors = new Map();
+  let local = true;
+  const imported = [];
+  const app = express();
+  app.use(express.json());
+  skillsCapability.registerRoutes(app, {
+    skillsStore: fakeStore({ importSkill: (payload) => imported.push(payload) }),
+    isLocalRestartRequest: () => local,
+    approvalGate: {
+      registerExecutor: (type, fn) => executors.set(type, fn),
+      requestApproval: async (type, options) => {
+        requests.push({ type, ...options });
+        return { status: "pending", requestId: "r1" };
+      },
+    },
+  });
+
+  await withServer(app, async (baseUrl) => {
+    const post = (body) =>
+      fetch(`${baseUrl}/skills/import`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+
+    const response = await post({ path: source });
+    assert.equal(response.status, 202);
+    assert.equal((await response.json()).status, "pending");
+    assert.equal(requests.length, 1);
+    const request = requests[0];
+    assert.equal(request.type, "skill-import");
+    assert.equal(request.forceReview, true);
+    assert.match(request.summary, /Import skill "weather" -- 2 file\(s\)/);
+    assert.match(request.summary, /scripts \(never run on import\): scripts\/get\.sh/);
+    assert.match(request.summary, /needs bin: curl/);
+    assert.deepEqual(request.details.files.sort(), ["SKILL.md", "scripts/get.sh"]);
+    assert.equal(imported.length, 0, "nothing is written before approval");
+
+    // Approval runs the registered executor with exactly the staged files.
+    executors.get("skill-import")(request.payload);
+    assert.deepEqual(imported[0].files.map((f) => f.path).sort(), ["SKILL.md", "scripts/get.sh"]);
+
+    assert.equal((await post({ path: path.join(source, "scripts") })).status, 400, "a folder without SKILL.md is refused");
+    local = false;
+    assert.equal((await post({ path: source })).status, 403);
+    assert.equal(requests.length, 1);
+  });
 });

@@ -888,6 +888,41 @@ internal sealed class ManaBackendClient
         return skills;
     }
 
+    // #664: queue a SKILL.md folder for import. node-bot reads it now and
+    // always asks in Approvals before writing anything. Returns null when
+    // queued, else node-bot's error (no SKILL.md, not local, ...).
+    public async Task<string?> ImportSkillFolderAsync(string folderPath)
+    {
+        var payload = JsonSerializer.Serialize(new { path = folderPath });
+        using var content = new StringContent(payload, Encoding.UTF8, "application/json");
+        using var response = await http.PostAsync("/skills/import", content);
+        if (response.IsSuccessStatusCode)
+        {
+            return null;
+        }
+        await using var stream = await response.Content.ReadAsStreamAsync();
+        using var document = await JsonDocument.ParseAsync(stream);
+        return document.RootElement.TryGetProperty("error", out var errorEl) ? errorEl.GetString() ?? "import failed" : "import failed";
+    }
+
+    // Q20: "free", "each" or "first" -- how Mana may use imported skills.
+    public async Task<string> GetImportedSkillUseAsync()
+    {
+        using var response = await http.GetAsync("/skill-settings");
+        response.EnsureSuccessStatusCode();
+        await using var stream = await response.Content.ReadAsStreamAsync();
+        using var document = await JsonDocument.ParseAsync(stream);
+        return document.RootElement.TryGetProperty("importedSkillUse", out var modeEl) ? modeEl.GetString() ?? "first" : "first";
+    }
+
+    public async Task SetImportedSkillUseAsync(string mode)
+    {
+        var payload = JsonSerializer.Serialize(new { importedSkillUse = mode });
+        using var content = new StringContent(payload, Encoding.UTF8, "application/json");
+        using var response = await http.PutAsync("/skill-settings", content);
+        response.EnsureSuccessStatusCode();
+    }
+
     public async Task DeleteSkillAsync(string name)
     {
         using var response = await http.DeleteAsync($"/skills/{Uri.EscapeDataString(name)}");

@@ -7,8 +7,138 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const vm = require("node:vm");
+const { resolveExecutable } = require("./ai/tool-risk");
 
 const FRONTMATTER_RE = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/;
+
+// Issue #664: SKILL.md (OpenClaw/AgentSkills) frontmatter is YAML with
+// nested fields, e.g. `metadata: {"openclaw": {"requires": {"bins": [...]}}}`
+// or the same thing as an indented block. Mana's own flat `key: value`
+// files are a subset of this, and scalars stay strings (no number/bool
+// coercion), so they parse exactly as before.
+// ponytail: a YAML subset, not a YAML parser -- block maps, "- " lists,
+// |/> block scalars, quoted scalars, JSON flow (single- or multi-line,
+// trailing commas allowed). Anchors, tags, inline comments and unquoted
+// flow maps are out; swap in the `yaml` package if a real skill needs them.
+function parseFlow(text) {
+  for (const candidate of [text, text.replace(/,(\s*[}\]])/g, "$1")]) {
+    try {
+      return JSON.parse(candidate);
+    } catch (e) {
+      // try the next form
+    }
+  }
+  return undefined;
+}
+
+function parseScalar(raw) {
+  const value = raw.trim();
+  if (/^"(?:[^"\\]|\\.)*"$/.test(value)) return parseFlow(value) ?? value;
+  if (/^'.*'$/.test(value)) return value.slice(1, -1).replace(/''/g, "'");
+  if (/^[{[]/.test(value)) {
+    const flow = parseFlow(value);
+    if (flow !== undefined) return flow;
+    // YAML's unquoted flow list, `[uv, git]`
+    if (/^\[[^[\]{}]*\]$/.test(value)) {
+      return value.slice(1, -1).split(",").map((v) => v.trim()).filter(Boolean).map(parseScalar);
+    }
+  }
+  return value;
+}
+
+function parseFrontmatter(text) {
+  const lines = text.split(/\r?\n/).filter((l) => l.trim() && !/^\s*#/.test(l));
+  const indentOf = (line) => line.length - line.trimStart().length;
+  const isItem = (line) => /^-(\s|$)/.test(line.trimStart());
+  let i = 0;
+
+  // Whatever is nested under `key:` -- a multi-line JSON flow, a
+  // deeper-indented block, or a "- " list (YAML allows that at the key's
+  // own indent).
+  function child(indent) {
+    if (i >= lines.length) return "";
+    const next = lines[i];
+    if (indentOf(next) > indent && /^[{[]/.test(next.trim())) {
+      const start = i;
+      while (i < lines.length && indentOf(lines[i]) > indent) i++;
+      const text = lines.slice(start, i).join("\n");
+      return parseFlow(text) ?? text.trim();
+    }
+    if (indentOf(next) > indent || (indentOf(next) === indent && isItem(next))) {
+      return block(indentOf(next));
+    }
+    return "";
+  }
+
+  function blockScalar(indent, folded) {
+    const start = i;
+    while (i < lines.length && indentOf(lines[i]) > indent) i++;
+    return lines.slice(start, i).map((l) => l.trim()).join(folded ? " " : "\n");
+  }
+
+  function block(indent) {
+    const list = isItem(lines[i]);
+    const out = list ? [] : {};
+    while (i < lines.length && indentOf(lines[i]) === indent && isItem(lines[i]) === list) {
+      const line = lines[i++].trim();
+      if (list) {
+        const item = line.replace(/^-\s*/, "");
+        out.push(item ? parseScalar(item) : child(indent));
+        continue;
+      }
+      const idx = line.indexOf(":");
+      if (idx === -1) continue;
+      const key = line.slice(0, idx).trim();
+      const rest = line.slice(idx + 1).trim();
+      if (/^[|>][+-]?$/.test(rest)) out[key] = blockScalar(indent, rest[0] === ">");
+      else if (!rest) out[key] = child(indent);
+      else {
+        out[key] = parseScalar(rest);
+        // A plain scalar wrapped onto deeper-indented lines (a long
+        // description, typically) continues there.
+        if (!/^["'{[]/.test(rest) && i < lines.length && indentOf(lines[i]) > indent) {
+          out[key] = `${out[key]} ${blockScalar(indent, true)}`;
+        }
+      }
+    }
+    return out;
+  }
+
+  const result = {};
+  while (i < lines.length) {
+    // A stray indented or list line at the top level is skipped rather
+    // than failing the whole skill.
+    if (indentOf(lines[i]) !== 0 || isItem(lines[i])) {
+      i++;
+      continue;
+    }
+    Object.assign(result, block(0));
+  }
+  return result;
+}
+
+// Mana's own fields; everything else in the frontmatter (license,
+// metadata, homepage, ...) is carried through untouched as `extra`, so a
+// usage bump or a Settings edit never strips an imported skill's metadata.
+const KNOWN_FIELDS = [
+  "name", "description", "category", "created", "lastUsed",
+  "useCount", "status", "requires", "permission",
+];
+
+function asText(value) {
+  if (value === undefined || value === null) return "";
+  return typeof value === "string" ? value : JSON.stringify(value);
+}
+
+// Written raw when it reads back identically (every value Mana itself
+// writes), JSON-quoted otherwise -- a JSON string is a valid YAML scalar,
+// and objects come out as the single-line JSON OpenClaw's own docs use.
+function formatValue(value) {
+  if (typeof value === "string" && !/[\r\n]/.test(value) && value === value.trim() && !/^[|>][+-]?$/.test(value) && parseScalar(value) === value) {
+    return value;
+  }
+  return JSON.stringify(value);
+}
 
 function parseSkillFile(raw, fallbackName) {
   const match = FRONTMATTER_RE.exec(raw);
@@ -26,35 +156,41 @@ function parseSkillFile(raw, fallbackName) {
       body: raw.trim(),
     };
   }
-  const frontmatter = {};
-  for (const line of match[1].split(/\r?\n/)) {
-    const idx = line.indexOf(":");
-    if (idx === -1) continue;
-    frontmatter[line.slice(0, idx).trim()] = line.slice(idx + 1).trim();
+  const frontmatter = parseFrontmatter(match[1]);
+  const extra = {};
+  for (const [key, value] of Object.entries(frontmatter)) {
+    if (!KNOWN_FIELDS.includes(key)) extra[key] = value;
   }
   return {
-    name: frontmatter.name || fallbackName,
-    description: frontmatter.description || "",
-    category: frontmatter.category || "general",
-    created: frontmatter.created || null,
-    lastUsed: frontmatter.lastUsed || null,
+    name: asText(frontmatter.name) || fallbackName,
+    // Single-line like every Mana description; a SKILL.md may use a
+    // multi-line `|` block for it.
+    description: asText(frontmatter.description).replace(/\s*\n\s*/g, " "),
+    category: asText(frontmatter.category) || "general",
+    created: asText(frontmatter.created) || null,
+    lastUsed: asText(frontmatter.lastUsed) || null,
     // How many times this skill has actually been reached for again since
     // it was approved -- not a moderation signal, just makes an
     // approved-but-never-used proposal visible instead of indistinguishable
     // from one that's genuinely useful (issue: skill system review).
     useCount: Number(frontmatter.useCount) || 0,
-    status: frontmatter.status || "active",
+    status: asText(frontmatter.status) || "active",
     // Issue #354: tools this skill's steps depend on. Without it a skill
     // whose tool has gone away stays status: "active" and fails only when
     // someone finally reaches for it -- and neither useCount nor lastUsed
     // exposes that, since a skill that never runs successfully simply stops
     // incrementing them.
-    requires: parseRequires(frontmatter.requires),
+    requires: parseRequires(
+      Array.isArray(frontmatter.requires) ? frontmatter.requires.join(",") : asText(frontmatter.requires),
+    ),
     // Issue #355: whether *this invocation* needs confirming, which is a
     // different question from whether the skill was allowed to exist.
     // Approving a skill says the instructions are safe to keep; it does not
     // follow that every future run of them is safe to perform unwatched.
     permission: normalizePermission(frontmatter.permission),
+    // Only present when there is any, so a Mana skill parses exactly as it
+    // did before SKILL.md support.
+    ...(Object.keys(extra).length ? { extra } : {}),
     body: match[2].trim(),
   };
 }
@@ -117,25 +253,65 @@ function parseRequires(value) {
 // Reported rather than hidden: "this exists but cannot run right now, and
 // here is what is missing" is far more useful than a skill silently not
 // being offered.
-function evaluateSkillAvailability(skill, isToolAvailable) {
+function evaluateSkillAvailability(skill, isToolAvailable, host = HOST) {
   const requires = Array.isArray(skill?.requires) ? skill.requires : [];
-  if (!requires.length || typeof isToolAvailable !== "function") {
-    return { available: true, missingRequirements: [] };
-  }
-  const missingRequirements = requires.filter((tool) => !isToolAvailable(tool));
+  const missingRequirements = [
+    ...(typeof isToolAvailable === "function" ? requires.filter((tool) => !isToolAvailable(tool)) : []),
+    ...missingHostRequirements(skill, host),
+  ];
   return { available: missingRequirements.length === 0, missingRequirements };
+}
+
+// Issue #664: what a SKILL.md says it needs from the machine, in OpenClaw's
+// own gating fields -- metadata.openclaw.{os, requires.bins, requires.anyBins,
+// requires.env} (clawdbot is that key's older name, still on ClawHub).
+// requires.config points into OpenClaw's own config file, which has no
+// meaning here, so it is not checked.
+const HOST = {
+  platform: process.platform,
+  env: process.env,
+  hasBin: (bin) =>
+    Boolean(
+      resolveExecutable(bin, "", {
+        env: process.env,
+        platform: process.platform,
+        cwd: () => process.cwd(),
+        existsSync: fs.existsSync,
+        statSync: fs.statSync,
+      }),
+    ),
+};
+
+function missingHostRequirements(skill, host) {
+  const metadata = skill?.extra?.metadata;
+  const gate = metadata && typeof metadata === "object"
+    ? metadata.openclaw || metadata.clawdbot
+    : null;
+  if (!gate || typeof gate !== "object") return [];
+  const needs = gate.requires && typeof gate.requires === "object" ? gate.requires : {};
+  const list = (value) => (Array.isArray(value) ? value : value ? [value] : []).map(String);
+  const missing = [];
+  const os = list(gate.os);
+  if (os.length && !os.includes(host.platform)) missing.push(`os: ${os.join(" or ")}`);
+  for (const bin of list(needs.bins)) if (!host.hasBin(bin)) missing.push(`bin: ${bin}`);
+  const anyBins = list(needs.anyBins);
+  if (anyBins.length && !anyBins.some((bin) => host.hasBin(bin))) {
+    missing.push(`bin: ${anyBins.join(" or ")}`);
+  }
+  for (const name of list(needs.env)) if (!host.env[name]) missing.push(`env: ${name}`);
+  return missing;
 }
 
 function serializeSkillFile(skill) {
   return [
     "---",
-    `name: ${skill.name}`,
-    `description: ${skill.description}`,
-    `category: ${skill.category}`,
-    `created: ${skill.created}`,
-    `lastUsed: ${skill.lastUsed}`,
+    `name: ${formatValue(skill.name)}`,
+    `description: ${formatValue(skill.description)}`,
+    `category: ${formatValue(skill.category)}`,
+    `created: ${formatValue(skill.created)}`,
+    `lastUsed: ${formatValue(skill.lastUsed)}`,
     `useCount: ${skill.useCount || 0}`,
-    `status: ${skill.status}`,
+    `status: ${formatValue(skill.status)}`,
     // Omitted entirely when empty rather than written as a blank line, so
     // an existing skill file is unchanged by a round-trip through this.
     ...(Array.isArray(skill.requires) && skill.requires.length
@@ -144,6 +320,7 @@ function serializeSkillFile(skill) {
     ...(skill.permission && skill.permission !== DEFAULT_PERMISSION
       ? [`permission: ${skill.permission}`]
       : []),
+    ...Object.entries(skill.extra || {}).map(([key, value]) => `${key}: ${formatValue(value)}`),
     "---",
     "",
     skill.body,
@@ -211,6 +388,64 @@ function slugify(name) {
   );
 }
 
+const SKILL_MD = "SKILL.md";
+
+// "<folder>/SKILL.md" -> "<folder>"; null for a single-file skill.
+function skillFolderOf(fileName) {
+  return fileName.endsWith(`/${SKILL_MD}`) ? fileName.slice(0, -SKILL_MD.length - 1) : null;
+}
+
+// Relative "/"-separated paths of every file under dir. Dot-entries (.git,
+// .env) and symlinks are skipped: neither belongs in a skill, and a
+// symlink could point anywhere.
+function listFolderFiles(dir, prefix = "") {
+  const out = [];
+  for (const entry of fs.readdirSync(path.join(dir, prefix), { withFileTypes: true })) {
+    if (entry.name.startsWith(".")) continue;
+    const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
+    if (entry.isDirectory()) out.push(...listFolderFiles(dir, rel));
+    else if (entry.isFile()) out.push(rel);
+  }
+  return out;
+}
+
+// Issue #664: everything an import shows the approver, read once so the
+// approval covers these exact bytes (see importSkill). Bounded because the
+// whole thing sits in the pending-approval queue until someone decides.
+const MAX_IMPORT_FILES = 200;
+const MAX_IMPORT_BYTES = 512 * 1024;
+const SCRIPT_RE = /\.(sh|bash|zsh|py|js|mjs|cjs|ts|ps1|psm1|bat|cmd|vbs|rb|pl|php|exe|dll)$/i;
+
+function readSkillFolder(dir) {
+  const root = path.resolve(String(dir || ""));
+  if (!fs.existsSync(path.join(root, SKILL_MD))) throw new Error(`no ${SKILL_MD} in ${root}`);
+  const paths = listFolderFiles(root);
+  if (paths.length > MAX_IMPORT_FILES) throw new Error(`skill folder has more than ${MAX_IMPORT_FILES} files`);
+  let total = 0;
+  const files = paths.map((rel) => {
+    const data = fs.readFileSync(path.join(root, rel));
+    total += data.length;
+    if (total > MAX_IMPORT_BYTES) throw new Error(`skill folder is larger than ${MAX_IMPORT_BYTES / 1024} KB`);
+    const encoding = data.includes(0) ? "base64" : "utf8";
+    return { path: rel, encoding, content: data.toString(encoding) };
+  });
+  const skillFile = files.find((file) => file.path === SKILL_MD);
+  if (!skillFile || skillFile.encoding !== "utf8") throw new Error(`${SKILL_MD} is not readable text`);
+  const skill = parseSkillFile(skillFile.content, path.basename(root));
+  return {
+    name: skill.name,
+    description: skill.description,
+    files,
+    scripts: paths.filter((rel) => rel.startsWith("scripts/") || SCRIPT_RE.test(rel)),
+    // Everything the skill declares it needs, found by checking it against
+    // a host that has nothing.
+    requires: [
+      ...skill.requires.map((tool) => `tool: ${tool}`),
+      ...missingHostRequirements(skill, { platform: "", env: {}, hasBin: () => false }),
+    ],
+  };
+}
+
 function createSkillsStore(options = {}) {
   const skillsDir =
     options.skillsDir ||
@@ -249,14 +484,29 @@ function createSkillsStore(options = {}) {
     fs.mkdirSync(skillsDir, { recursive: true });
   }
 
+  // Issue #664: both layouts -- Mana's single `<name>.md` files, and a
+  // SKILL.md folder (`<name>/SKILL.md` plus its scripts/, references/,
+  // assets/), listed as "<name>/SKILL.md". Dot-folders (.archive) and
+  // symlinked folders are not skills.
   function listSkillFiles() {
     ensureDir();
-    return fs.readdirSync(skillsDir).filter((f) => f.endsWith(".md"));
+    const files = [];
+    for (const entry of fs.readdirSync(skillsDir, { withFileTypes: true })) {
+      if (entry.isFile() && entry.name.endsWith(".md")) files.push(entry.name);
+      else if (
+        entry.isDirectory() &&
+        !entry.name.startsWith(".") &&
+        fs.existsSync(path.join(skillsDir, entry.name, SKILL_MD))
+      ) {
+        files.push(`${entry.name}/${SKILL_MD}`);
+      }
+    }
+    return files;
   }
 
   function readSkill(fileName) {
     const raw = fs.readFileSync(path.join(skillsDir, fileName), "utf8");
-    return { ...parseSkillFile(raw, fileName.replace(/\.md$/, "")), fileName };
+    return { ...parseSkillFile(raw, skillFolderOf(fileName) || fileName.replace(/\.md$/, "")), fileName };
   }
 
   // Issue #393: skills are plain files, so one can arrive without ever
@@ -282,9 +532,12 @@ function createSkillsStore(options = {}) {
 
       const reasons = [];
       // No `created` means parseSkillFile never found frontmatter at all.
-      if (!skill.created) reasons.push("no frontmatter");
+      // (A SKILL.md copied in by hand has frontmatter, just not Mana's.)
+      if (!skill.created) reasons.push(skillFolderOf(fileName) ? "no created date" : "no frontmatter");
       if (!skill.description) reasons.push("no description");
-      const expected = `${slugify(skill.name)}.md`;
+      const expected = skillFolderOf(fileName)
+        ? `${slugify(skill.name)}/${SKILL_MD}`
+        : `${slugify(skill.name)}.md`;
       if (fileName !== expected) reasons.push(`filename does not match name (expected ${expected})`);
 
       if (reasons.length) unmanaged.push({ fileName, name: skill.name, reasons });
@@ -366,7 +619,13 @@ function createSkillsStore(options = {}) {
     // Touch (which writes the updated lastUsed/status to disk) before the
     // read, not after -- otherwise this returns the stale pre-touch copy.
     if (touch) touchSkillUsage(name);
-    return readSkill(fileName);
+    const skill = readSkill(fileName);
+    const folder = skillFolderOf(fileName);
+    if (!folder) return skill;
+    // Issue #664: where a SKILL.md's scripts/references actually live, so
+    // whoever reads the instructions can find the files they mention.
+    const dir = path.join(skillsDir, folder);
+    return { ...skill, dir, files: listFolderFiles(dir) };
   }
 
   function touchSkillUsage(name) {
@@ -416,7 +675,7 @@ function createSkillsStore(options = {}) {
     // their display names differ. Catching that here is what actually
     // prevents the second create from silently overwriting the first.
     const fileName = `${slugify(cleanName)}.md`;
-    if (fs.existsSync(path.join(skillsDir, fileName))) {
+    if (slugTaken(slugify(cleanName))) {
       throw new Error(`a skill named "${cleanName}" already exists`);
     }
 
@@ -441,6 +700,117 @@ function createSkillsStore(options = {}) {
       "utf8",
     );
     return { ...skill, fileName };
+  }
+
+  // Either layout counts: "foo.md" and "foo/SKILL.md" would be two skills
+  // fighting over one name.
+  function slugTaken(slug) {
+    return fs.existsSync(path.join(skillsDir, `${slug}.md`)) || fs.existsSync(path.join(skillsDir, slug));
+  }
+
+  // Issue #664: the executor behind a "skill-import" approval. It runs only
+  // after a human approved the exact files readSkillFolder() captured, so a
+  // folder changed after the review cannot swap in something else. It
+  // writes files and nothing more -- no script in the skill is run, by this
+  // or on import at all.
+  // Q20 (#664): how Mana may use an imported (SKILL.md folder) skill --
+  // "free", "each" (ask every time) or "first" (ask once per skill, the
+  // default) -- set in Settings > Skills. Kept with the skills in a dot-file
+  // (never listed as a skill), with the skills approved under "first".
+  const IMPORTED_SKILL_USE_MODES = ["free", "each", "first"];
+  const settingsPath = path.join(skillsDir, ".mana-skills.json");
+  // "each": one approved use, taken by the next one. In memory: a restart
+  // just asks again.
+  const approvedOnce = new Set();
+
+  function readSettings() {
+    try {
+      const parsed = JSON.parse(fs.readFileSync(settingsPath, "utf8"));
+      return parsed && typeof parsed === "object" ? parsed : {};
+    } catch (e) {
+      return {};
+    }
+  }
+
+  function writeSettings(settings) {
+    ensureDir();
+    fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2), "utf8");
+  }
+
+  function getImportedSkillUse() {
+    const mode = readSettings().importedSkillUse;
+    return IMPORTED_SKILL_USE_MODES.includes(mode) ? mode : "first";
+  }
+
+  function setImportedSkillUse(mode) {
+    if (!IMPORTED_SKILL_USE_MODES.includes(mode)) {
+      throw new Error(`importedSkillUse must be one of ${IMPORTED_SKILL_USE_MODES.join(", ")}`);
+    }
+    writeSettings({ ...readSettings(), importedSkillUse: mode });
+  }
+
+  // Whether Mana may use this imported skill right now without asking.
+  // takeOnce: consume an "each" approval (a real use, not a check).
+  function mayUseImportedSkill(name, { takeOnce = false } = {}) {
+    const mode = getImportedSkillUse();
+    const key = String(name).toLowerCase();
+    if (mode === "free") return true;
+    if (mode === "first" && (readSettings().useApproved || []).includes(key)) return true;
+    if (!approvedOnce.has(key)) return false;
+    if (takeOnce) approvedOnce.delete(key);
+    return true;
+  }
+
+  // The user approved a use: remembered for good under "first", once
+  // under "each".
+  function approveImportedSkillUse(name) {
+    const key = String(name).toLowerCase();
+    if (getImportedSkillUse() === "first") {
+      const settings = readSettings();
+      const approved = new Set(settings.useApproved || []);
+      approved.add(key);
+      writeSettings({ ...settings, useApproved: [...approved] });
+    } else {
+      approvedOnce.add(key);
+    }
+  }
+
+  function importSkill({ files } = {}) {
+    ensureDir();
+    const list = Array.isArray(files) ? files : [];
+    const decode = (file) =>
+      Buffer.from(String(file?.content ?? ""), file?.encoding === "base64" ? "base64" : "utf8");
+    const skillFile = list.find((file) => file?.path === SKILL_MD);
+    if (!skillFile) throw new Error(`${SKILL_MD} is required`);
+    const skill = parseSkillFile(decode(skillFile).toString("utf8"), "");
+    if (!skill.name.trim()) throw new Error("name is required");
+    if (!skill.description) throw new Error("description is required");
+    assertSingleLine(skill.name, "name");
+    const verified = verifySkillScript(skill.body);
+    if (!verified.ok) throw new Error(`skill-script does not parse: ${verified.error}`);
+
+    const folder = slugify(skill.name);
+    if (slugTaken(folder)) throw new Error(`a skill named "${skill.name}" already exists`);
+    const dir = path.join(skillsDir, folder);
+    const timestamp = now();
+    try {
+      for (const file of list) {
+        const target = path.resolve(dir, String(file?.path ?? ""));
+        if (!target.startsWith(dir + path.sep)) throw new Error(`unsafe path in skill: ${file?.path}`);
+        fs.mkdirSync(path.dirname(target), { recursive: true });
+        fs.writeFileSync(
+          target,
+          file === skillFile
+            ? serializeSkillFile({ ...skill, created: timestamp, lastUsed: timestamp, useCount: 0, status: "active" })
+            : decode(file),
+        );
+      }
+    } catch (e) {
+      // Half an import is worse than none: it would block a retry by name.
+      fs.rmSync(dir, { recursive: true, force: true });
+      throw e;
+    }
+    return readSkill(`${folder}/${SKILL_MD}`);
   }
 
   // Direct human edit via Settings (issue #262 follow-up) -- deliberately
@@ -498,7 +868,17 @@ function createSkillsStore(options = {}) {
   function deleteSkill(name) {
     const fileName = findFileForName(name);
     if (!fileName) return false;
-    fs.unlinkSync(path.join(skillsDir, fileName));
+    const folder = skillFolderOf(fileName);
+    // A SKILL.md folder goes whole -- its scripts are no use without it.
+    if (folder) {
+      fs.rmSync(path.join(skillsDir, folder), { recursive: true });
+      // Q20: a later import under the same name is asked about afresh.
+      const settings = readSettings();
+      const key = String(name).toLowerCase();
+      if ((settings.useApproved || []).includes(key)) {
+        writeSettings({ ...settings, useApproved: settings.useApproved.filter((n) => n !== key) });
+      }
+    } else fs.unlinkSync(path.join(skillsDir, fileName));
     return true;
   }
 
@@ -528,12 +908,20 @@ function createSkillsStore(options = {}) {
       if (ageMs >= archiveMs) {
         fs.mkdirSync(archiveDir, { recursive: true });
         skill.status = "archived";
-        fs.writeFileSync(
-          path.join(archiveDir, fileName),
-          serializeSkillFile(skill),
-          "utf8",
-        );
-        fs.unlinkSync(path.join(skillsDir, fileName));
+        const folder = skillFolderOf(fileName);
+        if (folder) {
+          // The whole folder moves, scripts and references with it.
+          fs.writeFileSync(path.join(skillsDir, fileName), serializeSkillFile(skill), "utf8");
+          fs.rmSync(path.join(archiveDir, folder), { recursive: true, force: true });
+          fs.renameSync(path.join(skillsDir, folder), path.join(archiveDir, folder));
+        } else {
+          fs.writeFileSync(
+            path.join(archiveDir, fileName),
+            serializeSkillFile(skill),
+            "utf8",
+          );
+          fs.unlinkSync(path.join(skillsDir, fileName));
+        }
         result.archived.push(skill.name);
       } else if (ageMs >= staleMs && skill.status !== "stale") {
         skill.status = "stale";
@@ -556,6 +944,11 @@ function createSkillsStore(options = {}) {
     viewSkill,
     touchSkillUsage,
     createSkill,
+    importSkill,
+    getImportedSkillUse,
+    setImportedSkillUse,
+    mayUseImportedSkill,
+    approveImportedSkillUse,
     updateSkill,
     deleteSkill,
     pruneStaleSkills,
@@ -567,6 +960,8 @@ module.exports = {
   createSkillsStore,
   parseSkillFile,
   serializeSkillFile,
+  evaluateSkillAvailability,
+  readSkillFolder,
   slugify,
   extractSkillScript,
   extractSkillInputs,
