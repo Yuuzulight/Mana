@@ -28,6 +28,32 @@ without pulling in a cron-expression dependency. If a real need for comma
 lists / step values / weekday filters shows up, that's a `computeNextRun`
 change in `cron-scheduler.js`, not a rewrite.
 
+## Heartbeat (#699)
+
+`node-bot/data/cron-scheduler/heartbeat.md` is a checklist Mana runs in
+the background, one check per `-` line. She only speaks up (a "cron" tray
+toast) when a check finds something you need to know or act on:
+
+```
+- [read, network] every 30m: check github.com notifications for review requests
+- [read, write] daily 09:00: append yesterday's summary to D:\Notes\journal.md
+- warn me if D: drops below 50 GB
+```
+
+- No permission list = read only. `write` and `network` calls run
+  unattended, but only inside the folders/files and sites the check's text
+  names (so name the site: `github.com`, not "GitHub"). Every write is
+  snapshotted first and listed in the next report. `install` and
+  `destructive` can't be granted; those calls always wait in the approval
+  queue. `urgent` is passed along with the check's reports.
+- Default interval 30 minutes; `every 15m:`, `every 2h:`, `daily 09:00:`
+  override it (5 minutes at the shortest).
+- A new or edited check (different permissions or text) does a dry run
+  first, read calls only, and waits in the approval queue with what it
+  would have said. Approving it takes it live.
+- Nothing runs while a watched game is running, or while this plugin is
+  disabled.
+
 ## Routes
 
 - `GET /cron/jobs` -- list all jobs.

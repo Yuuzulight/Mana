@@ -2180,6 +2180,9 @@ function registerRoutes(app, upload, deps = {}) {
     // brain-provider test route above).
     isLocalRestartRequest: deps.isLocalRestartRequest || isLocalRestartRequest,
     approvalGate: activeApprovalGate,
+    // #699: heartbeat checks pause while gaming and snapshot their writes.
+    isGaming: deps.isGaming || gamingWatch.isGaming,
+    snapshotStore,
     mcpClientRegistry: activeMcpClientRegistry,
     toolCallLog: deps.toolCallLog || toolCallLog,
     hooksStore: activeHooksStore,
@@ -4358,12 +4361,17 @@ function registerRoutes(app, upload, deps = {}) {
           // else "smart") decides the rest. Outside
           // wrapWithHooks so a destructive call is reviewed before any hook
           // runs; inside wrapWithToolCallLog so the outcome is logged.
-          mergedToolPolicy = wrapWithRiskGate(mergedToolPolicy, activeApprovalGate, {
-            mode: resolveToolApprovalMode(
-              activeApprovalGate.getToolApprovalMode(),
-              (deps.env || process.env).MANA_TOOL_APPROVAL,
-            ),
-          });
+          // #699: a heartbeat check brings its own gate (its grants and
+          // scope) in place of this one.
+          mergedToolPolicy =
+            typeof replyMeta?.wrapToolPolicy === "function"
+              ? replyMeta.wrapToolPolicy(mergedToolPolicy, activeApprovalGate)
+              : wrapWithRiskGate(mergedToolPolicy, activeApprovalGate, {
+                  mode: resolveToolApprovalMode(
+                    activeApprovalGate.getToolApprovalMode(),
+                    (deps.env || process.env).MANA_TOOL_APPROVAL,
+                  ),
+                });
           // Issue #188: applied last so it catches every tool call from
           // every source (local read_file, browser-automation, MCP) in one
           // shared audit/trace log.
