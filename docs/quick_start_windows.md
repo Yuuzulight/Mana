@@ -76,6 +76,9 @@ Project goal
    - Keep `Gaming mode` checked when you want Mana to run lighter while a watched game is open.
    - Say `Mana` once to wake her for the session.
    - After that first wake-up, keep talking without repeating the wake word.
+   - The native launcher goes back to sleep after 60 seconds with no turn
+     (and when you stop listening), so she needs `Mana` again; set
+     `MANA_WAKE_REARM_MS` to change that, or `0` to stay awake until you stop.
    - Mana listens for your whole sentence and only treats it as your prompt
      once you've paused for about 2.2 seconds — a long sentence isn't cut
      off partway through. Tune the pause length with
