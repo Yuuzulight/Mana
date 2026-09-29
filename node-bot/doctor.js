@@ -448,6 +448,20 @@ function checkPlainTextSecrets(keys) {
   );
 }
 
+// Q28 (#620): the memory graph keeps every closed edge window (no cap), so
+// its size is shown here rather than silently growing.
+function checkMemoryGraphHistory(size) {
+  if (!size) return null;
+  const history = size.closed + size.archived;
+  return makeCheck(
+    "memory-graph-history",
+    "Memory graph history",
+    "pass",
+    `${size.live} live associations; ${history} closed association window${history === 1 ? "" : "s"} kept as history.`,
+    size,
+  );
+}
+
 function checkEditorIntegrations(options = {}) {
   const status = createEditorIntegrations({
     env: options.env || process.env,
@@ -766,6 +780,7 @@ function runDoctorChecks(options = {}) {
     checkRemoteExposure(env),
     checkStorage(paths),
     checkPlainTextSecrets(options.plainTextSecrets),
+    checkMemoryGraphHistory(options.memoryGraphHistory),
     ...checkEditorIntegrations({
       env,
       commandResolver: options.zedCommandResolver,
