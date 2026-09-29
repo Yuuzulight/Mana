@@ -610,6 +610,30 @@ internal sealed class ManaBackendClient
         return sessions;
     }
 
+    // #687 part 3: ids of the sessions whose stored messages contain every
+    // word of query (GET /sessions?q=). Empty unless the backend echoes
+    // `query` -- an older one ignores q and would list every session.
+    public async Task<HashSet<string>> SearchSessionIdsAsync(string query)
+    {
+        using var response = await http.GetAsync($"/sessions?q={Uri.EscapeDataString(query)}");
+        response.EnsureSuccessStatusCode();
+        await using var stream = await response.Content.ReadAsStreamAsync();
+        using var document = await JsonDocument.ParseAsync(stream);
+        var ids = new HashSet<string>();
+        if (document.RootElement.TryGetProperty("query", out _)
+            && document.RootElement.TryGetProperty("sessions", out var sessionsElement))
+        {
+            foreach (var element in sessionsElement.EnumerateArray())
+            {
+                if (element.TryGetProperty("sessionId", out var idElement) && idElement.GetString() is { } id)
+                {
+                    ids.Add(id);
+                }
+            }
+        }
+        return ids;
+    }
+
     // Returns false (rather than throwing) on a 404 -- "the session doesn't
     // exist to rename" is an expected outcome here (e.g. deleted from
     // elsewhere between listing and acting), not a transport failure.

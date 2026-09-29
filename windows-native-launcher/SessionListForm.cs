@@ -38,8 +38,11 @@ internal sealed class SessionListForm : Form
     private readonly ListView list = new();
     private readonly Button newChatButton = new();
     private readonly ChatView chatView;
-    // #687: filters the list by title as you type.
+    // #687: filters the list by title as you type; from 3 characters on,
+    // also by what was said (contentMatches, from the backend).
     private readonly TextBox searchBox = new();
+    private HashSet<string> contentMatches = new();
+    private int searchVersion;
     private System.Collections.Generic.IReadOnlyList<ManaSession> sessions = Array.Empty<ManaSession>();
     private readonly AvatarOverlayForm avatarOverlay;
     private readonly Panel avatarVisual = new();
@@ -123,7 +126,11 @@ internal sealed class SessionListForm : Form
         searchBox.BorderStyle = BorderStyle.FixedSingle;
         searchBox.BackColor = DarkTheme.IsLight ? Color.White : DarkTheme.Panel2;
         searchBox.ForeColor = DarkTheme.Text;
-        searchBox.TextChanged += (_, _) => ShowSessions();
+        searchBox.TextChanged += async (_, _) =>
+        {
+            ShowSessions();
+            await SearchContentAsync();
+        };
 
         list.Dock = DockStyle.Fill;
         list.View = View.Details;
@@ -1296,11 +1303,49 @@ internal sealed class SessionListForm : Form
         ShowSessions();
     }
 
+    // #687 part 3: content matches for 3+ characters. Debounced, and a reply
+    // for an older query is dropped. On failure the list stays title-only.
+    private async Task SearchContentAsync()
+    {
+        var version = ++searchVersion;
+        var query = searchBox.Text.Trim();
+        if (query.Length < 3)
+        {
+            if (contentMatches.Count > 0)
+            {
+                contentMatches = new();
+                ShowSessions();
+            }
+            return;
+        }
+        await Task.Delay(250);
+        if (version != searchVersion)
+        {
+            return;
+        }
+        HashSet<string> ids;
+        try
+        {
+            ids = await backendClient.SearchSessionIdsAsync(query);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"SessionListForm: content search failed. {ex.Message}");
+            return;
+        }
+        if (IsDisposed || version != searchVersion)
+        {
+            return;
+        }
+        contentMatches = ids;
+        ShowSessions();
+    }
+
     private void ShowSessions()
     {
         list.BeginUpdate();
         list.Items.Clear();
-        foreach (var session in sessions.Where(s => SessionListFormatter.MatchesSearch(s, searchBox.Text)))
+        foreach (var session in sessions.Where(s => SessionListFormatter.MatchesSearch(s, searchBox.Text) || contentMatches.Contains(s.SessionId)))
         {
             var item = new ListViewItem(SessionListFormatter.FormatDisplayName(session))
             {
