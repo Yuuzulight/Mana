@@ -11,7 +11,7 @@ All paths are relative to the repo root. Never commit `.env` or model files.
 
 - Windows 11 x64 (the native launcher targets Windows 10 19041+). An NVIDIA GPU is expected (the bundled llama.cpp builds are CUDA).
 - Node.js: CI runs 18.18.0 and 22 (`.github/workflows/fast-node-tests.yml`, `heavy-ci.yml`).
-- .NET 8 SDK, not just the runtime (native launcher).
+- .NET 10 SDK, not just the runtime (native launcher).
 - Python 3.10+ for Kokoro and the embedder; Python 3.12 for Fish Speech.
 - Git (Fish Speech lives in the `tools/fish-speech` submodule).
 

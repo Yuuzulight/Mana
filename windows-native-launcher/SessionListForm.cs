@@ -37,6 +37,10 @@ internal sealed class SessionListForm : Form
     private readonly BackendLogBuffer backendLog;
     private readonly ListView list = new();
     private readonly Button newChatButton = new();
+    private readonly ChatView chatView;
+    // #687: filters the list by title as you type.
+    private readonly TextBox searchBox = new();
+    private System.Collections.Generic.IReadOnlyList<ManaSession> sessions = Array.Empty<ManaSession>();
     private readonly AvatarOverlayForm avatarOverlay;
     private readonly Panel avatarVisual = new();
     private readonly Button avatarZoomButton = new();
@@ -89,6 +93,7 @@ internal sealed class SessionListForm : Form
         this.voiceLoop = voiceLoop;
         this.avatarOverlay = avatarOverlay;
         this.backendLog = backendLog;
+        chatView = chatLog;
         activeSessionFont = new Font(list.Font, FontStyle.Bold);
         messageBoxFont = new Font("Segoe UI", 10.5F);
 
@@ -111,6 +116,14 @@ internal sealed class SessionListForm : Form
         newChatButton.BackColor = DarkTheme.Accent;
         newChatButton.ForeColor = DarkTheme.OnAccent;
         newChatButton.FlatAppearance.BorderSize = 0;
+
+        searchBox.Dock = DockStyle.Top;
+        searchBox.PlaceholderText = "Search chats";
+        searchBox.AccessibleName = "Search chats";
+        searchBox.BorderStyle = BorderStyle.FixedSingle;
+        searchBox.BackColor = DarkTheme.IsLight ? Color.White : DarkTheme.Panel2;
+        searchBox.ForeColor = DarkTheme.Text;
+        searchBox.TextChanged += (_, _) => ShowSessions();
 
         list.Dock = DockStyle.Fill;
         list.View = View.Details;
@@ -223,6 +236,7 @@ internal sealed class SessionListForm : Form
         // card (bottom) and new-chat button (top) stake their strips before
         // the list fills what's left.
         sidebar.Controls.Add(list);
+        sidebar.Controls.Add(searchBox);
         sidebar.Controls.Add(newChatButton);
         sidebar.Controls.Add(avatarCard);
 
@@ -557,7 +571,18 @@ internal sealed class SessionListForm : Form
                 await SendAsync();
             }
         };
-        sendButtonTimer.Tick += (_, _) => ShowSendOrStop(send, replying: !voiceLoop.IsIdle);
+        sendButtonTimer.Tick += (_, _) =>
+        {
+            ShowSendOrStop(send, replying: !voiceLoop.IsIdle);
+            // #687: the status line follows VoiceLoop between avatar state changes.
+            var status = StatusLine(avatarOverlay.CurrentState);
+            if (avatarStatusLabel.Text != status)
+            {
+                avatarStatusLabel.Text = status;
+                avatarStatusLabel.Invalidate();
+                railToolTip.SetToolTip(avatarStatusLabel, status); // an error can be longer than the card
+            }
+        };
         sendButtonTimer.Start();
 
         messageQueueTimer.Tick += async (_, _) =>
@@ -861,14 +886,27 @@ internal sealed class SessionListForm : Form
     // the real state.
     private void RefreshAvatarCard(AvatarState state)
     {
-        // Sentence case ("Idle", not "idle" or "IDLE") to match the
-        // reference mock-up's own status text exactly.
-        var text = state.ToString();
-        avatarStatusLabel.Text = hearingText is not null
-            ? $"Hearing: \"{hearingText}\""
-            : text.Length > 0 ? char.ToUpperInvariant(text[0]) + text[1..].ToLowerInvariant() : text;
+        avatarStatusLabel.Text = StatusLine(state);
         avatarStatusLabel.Invalidate(); // repaints the status dot too -- see OnPaintAvatarStatusDot
         avatarVisual.Invalidate();
+    }
+
+    // #687: VoiceLoop's status (waiting/awake/thinking/synthesizing, or the
+    // last error), except while the avatar shows an activity it doesn't
+    // track (dreaming, working, waiting, done). Sentence case ("Idle", not
+    // "idle" or "IDLE") matches the reference mock-up's status text.
+    private string StatusLine(AvatarState state)
+    {
+        if (hearingText is not null)
+        {
+            return $"Hearing: \"{hearingText}\"";
+        }
+        if (state is AvatarState.Dreaming or AvatarState.Working or AvatarState.Waiting or AvatarState.Done)
+        {
+            var text = state.ToString();
+            return char.ToUpperInvariant(text[0]) + text[1..].ToLowerInvariant();
+        }
+        return voiceLoop.StatusText;
     }
 
     // Same abstract gradient + rounded "silhouette" the reference mock-up
@@ -995,6 +1033,59 @@ internal sealed class SessionListForm : Form
         }
         activeSessionId = sessionId;
         voiceLoop.SetSessionId(sessionId);
+        _ = RefreshAsync();
+        _ = RefreshContextMeterAsync();
+        _ = LoadHistoryAsync(sessionId);
+    }
+
+    private const int HistoryTurns = 50;
+
+    // #687: shows the session's stored conversation (empty for a new chat).
+    // Returns its detail, or null when it isn't stored or couldn't be read.
+    private async Task<ManaSessionDetail?> LoadHistoryAsync(string sessionId)
+    {
+        ManaSessionDetail? detail;
+        try
+        {
+            detail = await backendClient.GetSessionDetailAsync(sessionId, HistoryTurns);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"SessionListForm: couldn't load the session's history. {ex.Message}");
+            return null;
+        }
+        if (IsDisposed || sessionId != activeSessionId)
+        {
+            return null; // switched again meanwhile
+        }
+        chatView.ShowHistory(detail?.RecentTurns ?? Array.Empty<ManaSessionTurn>());
+        return detail;
+    }
+
+    // #687: at launch (backend up, before listening starts), reopens the
+    // session that was open last time with its history. One that's no longer
+    // stored (deleted, or a new chat never used) is dropped, so the first turn
+    // auto-starts a session as before (Q62).
+    public async Task ReopenLastSessionAsync()
+    {
+        var saved = ManaSettingsStore.Load();
+        if (saved.LastSessionId is not { } sessionId || activeSessionId is not null)
+        {
+            return;
+        }
+        activeSessionId = sessionId;
+        var detail = await LoadHistoryAsync(sessionId);
+        if (detail is null)
+        {
+            if (activeSessionId == sessionId)
+            {
+                activeSessionId = null;
+            }
+            return;
+        }
+        var lastTurn = detail.RecentTurns.Count > 0 ? detail.RecentTurns[^1].At : null;
+        voiceLoop.RestoreSession(sessionId, saved.LastSessionAuto, SessionListFormatter.ParseTurnTime(lastTurn));
+        activeSessionId = voiceLoop.CurrentSessionId; // a turn may have started its own meanwhile
         _ = RefreshAsync();
         _ = RefreshContextMeterAsync();
     }
@@ -1212,7 +1303,6 @@ internal sealed class SessionListForm : Form
 
     public async Task RefreshAsync()
     {
-        System.Collections.Generic.IReadOnlyList<ManaSession> sessions;
         try
         {
             sessions = await backendClient.GetSessionsAsync();
@@ -1227,10 +1317,14 @@ internal sealed class SessionListForm : Form
         {
             return;
         }
+        ShowSessions();
+    }
 
+    private void ShowSessions()
+    {
         list.BeginUpdate();
         list.Items.Clear();
-        foreach (var session in sessions)
+        foreach (var session in sessions.Where(s => SessionListFormatter.MatchesSearch(s, searchBox.Text)))
         {
             var item = new ListViewItem(SessionListFormatter.FormatDisplayName(session))
             {

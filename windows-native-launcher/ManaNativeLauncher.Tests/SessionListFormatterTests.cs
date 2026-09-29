@@ -56,4 +56,24 @@ public class SessionListFormatterTests
         Assert.Contains("Mar", formatted);
         Assert.Contains("15", formatted);
     }
+
+    // #687: the sidebar search box.
+    [Theory]
+    [InlineData("ffxiv", true)]
+    [InlineData("  Chat ", true)]
+    [InlineData("", true)]
+    [InlineData("zelda", false)]
+    public void MatchesSearch_IsACaseInsensitiveTitleMatch(string query, bool expected)
+    {
+        var session = new ManaSession { SessionId = "s1", Name = "Chat about FFXIV" };
+        Assert.Equal(expected, SessionListFormatter.MatchesSearch(session, query));
+    }
+
+    [Fact]
+    public void ParseTurnTime_ReadsIsoAsUtcAndFallsBackToMinValue()
+    {
+        Assert.Equal(new System.DateTime(2026, 9, 29, 4, 0, 0, System.DateTimeKind.Utc),
+            SessionListFormatter.ParseTurnTime("2026-09-29T12:00:00+08:00"));
+        Assert.Equal(System.DateTime.MinValue, SessionListFormatter.ParseTurnTime(null));
+    }
 }
