@@ -103,4 +103,60 @@ public class ChatViewTests
         Assert.Equal((0, 0), view.TextPositionAt(new Point(bubble.X + 2, bubble.Y + bubble.Height / 2)));
         Assert.Equal((0, view.Messages[0].Text.Length), view.TextPositionAt(new Point(bubble.Right - 2, bubble.Y + bubble.Height / 2)));
     }
+
+    [Fact]
+    public void ReportReply_RebuildsTheStreamedBubbleFromTheFullText_AndTheFallbackDoesNotRepeatIt()
+    {
+        using var view = NewView();
+        const string reply = "Here:\n| Item | Cost |\n|---|---|\n| Tea. | 3 |";
+        view.AppendUserMessage("prices?");
+        // What streaming delivers: line breaks between sentences are gone.
+        view.AppendReplySentence("Here: | Item | Cost | |---|---| | Tea.");
+        view.AppendReplySentence("| 3 |");
+
+        view.ReportReply(reply);
+        view.AppendReplySentence(reply); // VoiceLoop's non-streamed fallback logs the reply too
+
+        Assert.Equal(2, view.Messages.Count);
+        var mana = view.Messages[1];
+        Assert.Equal(new[] { MarkdownBlockType.Paragraph, MarkdownBlockType.Table }, mana.Blocks.Select(b => b.Type));
+        Assert.Equal(4, mana.Cells.Count);
+        Assert.Equal("Here:\nItem\tCost\nTea.\t3", mana.Text);
+
+        view.AppendReplySentence("A later sentence."); // no user message between: a new bubble, not the finished one
+        Assert.Equal(3, view.Messages.Count);
+    }
+
+    [Fact]
+    public void TableCellsSitSideBySide_AndCopyTabSeparated()
+    {
+        using var view = NewView();
+        view.ReportReply("| Name | Score |\n|---|---|\n| Mana | 10 |");
+
+        var mana = view.Messages[0];
+        var header = mana.Lines[0].Fragments;
+        Assert.Equal(new[] { "Name", "Score" }, header.Select(f => f.Text));
+        Assert.True(header[1].X > header[0].X + header[0].Width, "the second column starts right of the first");
+        view.SelectText((0, 0), (0, mana.Text.Length));
+        Assert.Equal("Name\tScore\nMana\t10", view.SelectedText());
+    }
+
+    [Fact]
+    public void LinkAt_FindsTheLinkUnderThePointer_AndOnlyWebAndMailLinksAreOpened()
+    {
+        using var view = NewView();
+        view.ReportReply("Read [the docs](https://x.dev) first.");
+
+        var mana = view.Messages[0];
+        var link = mana.Lines[0].Fragments.First(f => f.Link is not null);
+        var point = new Point(mana.Bounds.X + 14 + link.X + 2, mana.Bounds.Y + 9 + mana.Lines[0].Y + 2);
+        Assert.Equal("https://x.dev", view.LinkAt(point));
+        Assert.Null(view.LinkAt(new Point(mana.Bounds.X + 16, point.Y)));
+
+        Assert.True(ChatView.IsSafeLink("https://x.dev"));
+        Assert.True(ChatView.IsSafeLink("mailto:a@b.c"));
+        Assert.False(ChatView.IsSafeLink("file:///C:/Windows/System32/calc.exe"));
+        Assert.False(ChatView.IsSafeLink("ms-settings:privacy"));
+        Assert.False(ChatView.IsSafeLink("/relative"));
+    }
 }

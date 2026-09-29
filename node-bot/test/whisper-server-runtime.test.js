@@ -6,7 +6,7 @@ const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
 
-const { createWhisperServer } = require("../ai/whisper-server-runtime");
+const { createWhisperServer, belowNormal } = require("../ai/whisper-server-runtime");
 
 function tempInstall({ withServer = true } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "mana-whisper-"));
@@ -43,7 +43,7 @@ function fakeServer({ inference = async () => ({ ok: true, json: async () => ({ 
   };
 }
 
-function make(server, files, env = {}) {
+function make(server, files, env = {}, threads = () => 2) {
   return createWhisperServer({
     env,
     spawn: server.spawn,
@@ -51,7 +51,7 @@ function make(server, files, env = {}) {
     sleep: async () => {},
     findCliBin: () => files.cli,
     findModel: () => files.model,
-    threads: 2,
+    threads,
     language: "en",
     beamSize: "5",
     noSpeechThreshold: "0.45",
@@ -118,6 +118,40 @@ test("reuses the running server and waits for the reload before the next request
   assert.equal(server.calls.spawn.length, 1);
   assert.deepEqual(server.calls.requests.map((r) => path.basename(r.url)), ["inference", "load", "inference", "load"]);
 }));
+
+test("restarts the server with the new thread count when a game starts or stops", quietly(async () => {
+  const files = tempInstall();
+  const server = fakeServer();
+  let gaming = false;
+  const whisper = make(server, files, {}, () => (gaming ? 2 : 8));
+  const threadsOf = (i) => server.calls.spawn[i].args[server.calls.spawn[i].args.indexOf("-t") + 1];
+
+  await whisper.transcribe(files.audio, { prompt: "", temperature: "0" });
+  await whisper.transcribe(files.audio, { prompt: "", temperature: "0" });
+  assert.equal(server.calls.spawn.length, 1, "same thread count: reused");
+  assert.equal(threadsOf(0), "8");
+
+  gaming = true;
+  assert.equal(await whisper.transcribe(files.audio, { prompt: "", temperature: "0" }), "Mana, can you hear me?");
+  assert.equal(server.calls.spawn.length, 2);
+  assert.equal(threadsOf(1), "2");
+
+  gaming = false;
+  await whisper.transcribe(files.audio, { prompt: "", temperature: "0" });
+  assert.equal(threadsOf(2), "8");
+}));
+
+test("belowNormal lowers a spawned process's priority and tolerates one without a pid", () => {
+  const { spawn } = require("node:child_process");
+  const child = belowNormal(spawn(process.execPath, ["-e", "setTimeout(() => {}, 5000)"]));
+  try {
+    assert.equal(os.getPriority(child.pid), os.constants.priority.PRIORITY_BELOW_NORMAL);
+  } finally {
+    child.kill();
+  }
+  const noPid = {};
+  assert.equal(belowNormal(noPid), noPid);
+});
 
 test("returns null (whisper-cli fallback) when a request fails", quietly(async () => {
   const files = tempInstall();

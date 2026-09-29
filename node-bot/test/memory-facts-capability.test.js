@@ -147,3 +147,47 @@ test("GET /admin/memory/facts/:key/history returns the store's logged changes fo
     assert.deepEqual(await response.json(), { ok: true, key: "gpu", entries });
   });
 });
+
+// Issue #641: real store + real graph, so the view's data is what an
+// actual instance would serve, not a fake's shape.
+test("GET /admin/memory/graph returns typed nodes, weighted edges and every fact window", async () => {
+  const fs = require("node:fs");
+  const os = require("node:os");
+  const path = require("node:path");
+  const { createAcpMemoryStore } = require("../acp-memory-store");
+  const { createMemoryGraph } = require("../memory-graph");
+
+  const memoryGraph = createMemoryGraph({ dbPath: ":memory:" });
+  let clock = 0;
+  const store = createAcpMemoryStore({
+    dataDir: fs.mkdtempSync(path.join(os.tmpdir(), "mana-memory-graph-view-")),
+    memoryGraph,
+    now: () => new Date(Date.UTC(2026, 8, 1, 0, 0, clock++)).toISOString(),
+  });
+  await store.appendTurn({ sessionId: "s1", user: "Alice Smith met Bob Jones at Tokyo Tower.", assistant: "" });
+  await store.appendTurn({ sessionId: "s1", user: "Alice Smith and Bob Jones again.", assistant: "" });
+  store.setEntityType("alice smith", "person");
+  store.setEntityType("tokyo tower", "not_an_entity");
+  store.rememberFact({ key: "gpu", text: "RTX 3070 Ti" });
+  store.rememberFact({ key: "gpu", text: "RTX 5080", action: "patch" });
+
+  const app = express();
+  memoryFactsCapability.registerRoutes(app, { checkAdminAuth: () => true, acpMemoryStore: store });
+
+  await withServer(app, async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/admin/memory/graph`);
+    const payload = await response.json();
+    assert.equal(response.status, 200);
+    assert.deepEqual(payload.nodes, [
+      { key: "alice smith", display: "Alice Smith", type: "person" },
+      { key: "bob jones", display: "Bob Jones", type: null },
+    ]);
+    assert.equal(payload.edges.length, 1);
+    assert.equal(payload.edges[0].weight, 2);
+    assert.deepEqual(
+      payload.facts.map((f) => [f.text, Boolean(f.invalidatedAt)]),
+      [["RTX 5080", false], ["RTX 3070 Ti", true]],
+    );
+  });
+  memoryGraph.close();
+});
