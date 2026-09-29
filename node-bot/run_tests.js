@@ -7,6 +7,18 @@ const path = require('path');
 // so server.js never boots background jobs or spawns real model processes.
 process.env.NODE_ENV = 'test';
 
+// Tests never touch the real memory in node-bot/data/acp-memory: server.js
+// builds its store (and the graph/search databases) at require time, so a
+// test that doesn't pick its own dir would otherwise write fixture sessions
+// into the user's real memory. Every child process inherits this.
+const testMemoryDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mana-test-acp-memory-'));
+process.env.MANA_ACP_MEMORY_DIR = testMemoryDir;
+process.on('exit', () => {
+  try {
+    fs.rmSync(testMemoryDir, { recursive: true, force: true });
+  } catch (e) {}
+});
+
 // Run below-normal priority so tests do not starve whatever else the user is
 // doing. On Windows, child processes inherit the below-normal priority class.
 try {

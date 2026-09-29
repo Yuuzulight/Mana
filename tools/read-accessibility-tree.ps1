@@ -11,7 +11,17 @@
 # budget varies by caller (MANA_ACCESSIBILITY_TREE_MAX_CHARS).
 
 param(
-    [int]$MaxChars = 1200
+    [int]$MaxChars = 1200,
+    # Issue #648: start from the element at physical screen point
+    # (-PointX, -PointY) -- the caller's mouse cursor, for "this"/"here"
+    # requests -- instead of the focused one. The caller passes the point
+    # because it's DPI-aware and this powershell.exe may not be. Falls back
+    # to the focused element when nothing is there or it belongs to
+    # -IgnorePointPid (the caller's own windows).
+    [switch]$AtPoint,
+    [int]$PointX,
+    [int]$PointY,
+    [int]$IgnorePointPid = 0
 )
 
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
@@ -27,22 +37,37 @@ function Write-EmptyResult {
     Write-Output "---"
 }
 
-$focused = $null
-try {
-    $focused = [System.Windows.Automation.AutomationElement]::FocusedElement
-} catch {
-    $focused = $null
+$pointed = $null
+if ($AtPoint) {
+    try {
+        Add-Type -AssemblyName WindowsBase
+        $pointed = [System.Windows.Automation.AutomationElement]::FromPoint((New-Object System.Windows.Point($PointX, $PointY)))
+        if ($pointed.Current.ProcessId -eq $IgnorePointPid) {
+            $pointed = $null
+        }
+    } catch {
+        $pointed = $null
+    }
 }
 
-if ($null -eq $focused) {
+$start = $pointed
+if ($null -eq $start) {
+    try {
+        $start = [System.Windows.Automation.AutomationElement]::FocusedElement
+    } catch {
+        $start = $null
+    }
+}
+
+if ($null -eq $start) {
     Write-EmptyResult
     exit 0
 }
 
 $walker = [System.Windows.Automation.TreeWalker]::ControlViewWalker
 $windowType = [System.Windows.Automation.ControlType]::Window
-$topLevel = $focused
-$current = $focused
+$topLevel = $start
+$current = $start
 while ($null -ne $current) {
     $isWindow = $false
     try {
@@ -86,6 +111,26 @@ function Add-Line([string]$value) {
         $line = $line.Substring(0, $remaining)
     }
     [void]$sb.AppendLine($line)
+}
+
+# Issue #648: what the cursor is on leads the text, so "this" has an
+# obvious referent; the rest of its window follows as context.
+if ($null -ne $pointed) {
+    $pointedText = ""
+    try {
+        $pointedText = $pointed.Current.Name
+    } catch {
+    }
+    try {
+        $valuePattern = $null
+        if ($pointed.TryGetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern, [ref]$valuePattern)) {
+            $pointedText = "$pointedText $($valuePattern.Current.Value)"
+        }
+    } catch {
+    }
+    if (-not [string]::IsNullOrWhiteSpace($pointedText)) {
+        Add-Line "Under the cursor: $($pointedText.Trim())"
+    }
 }
 
 $queue = New-Object System.Collections.Generic.Queue[object]

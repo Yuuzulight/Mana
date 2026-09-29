@@ -1,4 +1,6 @@
 using System;
+using System.Collections.Generic;
+using System.Linq;
 using System.Threading.Tasks;
 using Mana.NativeLauncher;
 using Xunit;
@@ -38,6 +40,96 @@ public class ChatActionsTests
         await view.RunActionAsync(1, 0);
         Assert.Empty(view.Messages[1].Actions);
         Assert.Equal("Approved.", view.Messages[1].Note);
+    }
+
+    [Fact]
+    public async Task AnArtifactMovesBehindAKeptOpenButton_InsteadOfPoppingUp()
+    {
+        using var view = NewView();
+        DetectedArtifact? recorded = null;
+        var opened = new List<ArtifactOpen>();
+        view.Artifacts = artifact =>
+        {
+            recorded = artifact;
+            return opened.Add;
+        };
+        view.AppendUserMessage("make a page");
+
+        view.ReportReply("Here it is:\n```mermaid\ngraph TD; A-->B\n```\nEnjoy.");
+
+        var mana = view.Messages[1];
+        Assert.Equal("mermaid", recorded?.Language);
+        Assert.Empty(opened); // nothing opens until the button is pressed
+        Assert.Equal("Here it is:\nEnjoy.", mana.Text);
+        Assert.Equal("Open mermaid content in new window", Assert.Single(mana.Actions).Label);
+        await view.RunActionAsync(1, 0);
+        Assert.Equal(new[] { ArtifactOpen.Default }, opened);
+
+        // Edit-approval buttons go first, and their note doesn't remove it.
+        view.AttachActions(new[] { new ChatView.ChatAction("Approve", true, () => Task.FromResult<string?>("Approved.")) });
+        Assert.Equal(new[] { "Approve", "Open mermaid content in new window" }, mana.Actions.Select(a => a.Label));
+        await view.RunActionAsync(1, 0);
+        Assert.Equal("Open mermaid content in new window", Assert.Single(mana.Actions).Label);
+        Assert.Equal("Approved.", mana.Note);
+    }
+
+    [Theory]
+    [InlineData("<b>hi</b>", true)]
+    [InlineData("<script>alert(1)</script>", false)]
+    [InlineData("<div style=\"display: flex\">x</div>", false)]
+    public async Task AnHtmlArtifact_GetsAnOpenSplitButton_InManaOnlyWhenItCanBeDrawn(string page, bool inMana)
+    {
+        using var view = NewView();
+        var opened = new List<ArtifactOpen>();
+        view.Artifacts = _ => opened.Add;
+        view.AppendUserMessage("make a page");
+        view.ReportReply($"```html\n{page}\n```");
+
+        var open = Assert.Single(view.Messages[1].Actions);
+        Assert.Equal("Open", open.Label);
+        Assert.Equal(new[] { "Open in browser", "View source", "Save as..." }, open.Menu!.Skip(1).Select(i => i.Label));
+        Assert.Equal(inMana, open.Menu![0].Enabled);
+        await view.RunActionAsync(1, 0); // the main part: the viewer decides (in Mana or browser)
+        foreach (var item in open.Menu!)
+        {
+            await item.Run();
+        }
+        Assert.Equal(new[] { ArtifactOpen.Default, ArtifactOpen.InMana, ArtifactOpen.Browser, ArtifactOpen.Source, ArtifactOpen.SaveAs }, opened);
+    }
+
+    [Theory]
+    [InlineData("<p>plain <b>text</b> <img src=\"data:image/png;base64,AA==\"></p>", false)]
+    [InlineData("<header>not a head</header>", false)]
+    [InlineData("<SCRIPT src=x></SCRIPT>", true)]
+    [InlineData("<button onclick=\"go()\">x</button>", true)]
+    [InlineData("<canvas></canvas>", true)]
+    [InlineData("<svg></svg>", true)]
+    [InlineData("<style>.a{display:grid}</style>", true)]
+    [InlineData("<style>.a{display: inline-flex}</style>", true)]
+    public void HtmlArtifact_NeedsBrowser(string html, bool expected)
+    {
+        Assert.Equal(expected, HtmlArtifact.NeedsBrowser(html));
+    }
+
+    [Theory]
+    [InlineData("<html><head><title>t</title></head></html>", "<html><head>CSP<title>")]
+    [InlineData("<!DOCTYPE html>\n<p>hi</p>", "<!DOCTYPE html>CSP\n<p>")]
+    [InlineData("<p>hi</p>", "CSP<p>hi</p>")]
+    public void HtmlArtifact_WithCsp_BlocksConnectionsFromTheHead(string html, string expectedStart)
+    {
+        const string csp = "<meta http-equiv=\"Content-Security-Policy\" content=\"connect-src 'none'\">";
+        Assert.StartsWith(expectedStart.Replace("CSP", csp), HtmlArtifact.WithCsp(html));
+    }
+
+    [Theory]
+    [InlineData("data:image/png;base64,AA==", true)]
+    [InlineData(" DATA:image/gif,x", true)]
+    [InlineData("https://example.com/a.png", false)]
+    [InlineData("file:///C:/secret.png", false)]
+    [InlineData(null, false)]
+    public void HtmlArtifact_OnlyDataUrisLoad(string? src, bool expected)
+    {
+        Assert.Equal(expected, HtmlArtifact.IsDataUri(src));
     }
 
     [Fact]
