@@ -62,6 +62,10 @@ internal sealed class ManaSettingsStore
     public int? AvatarLeft { get; set; }
     public int? AvatarTop { get; set; }
 
+    // #685: the chat window's live avatar framing -- "full", "waist" or
+    // "bust" (see LiveAvatarPanel); null = full.
+    public string? AvatarFraming { get; set; }
+
     // #687: the chat session open when the launcher last ran, reopened on
     // launch, and whether it was auto-started (Q62: those still rotate).
     public string? LastSessionId { get; set; }

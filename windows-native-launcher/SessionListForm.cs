@@ -45,7 +45,7 @@ internal sealed class SessionListForm : Form
     private int searchVersion;
     private System.Collections.Generic.IReadOnlyList<ManaSession> sessions = Array.Empty<ManaSession>();
     private readonly AvatarOverlayForm avatarOverlay;
-    private readonly Panel avatarVisual = new();
+    private readonly LiveAvatarPanel avatarVisual = new();
     private readonly Button avatarZoomButton = new();
     private readonly Label avatarNameLabel = new();
     private readonly Label avatarStatusLabel = new();
@@ -195,12 +195,27 @@ internal sealed class SessionListForm : Form
         avatarZoomButton.ForeColor = DarkTheme.Muted;
         avatarZoomButton.FlatAppearance.BorderColor = DarkTheme.Border;
         avatarZoomButton.FlatAppearance.BorderSize = 1;
-        railToolTip.SetToolTip(avatarZoomButton, "Bring the avatar overlay to the front");
-        avatarZoomButton.Click += (_, _) =>
+        if (avatarOverlay.HasLiveModel)
         {
-            avatarOverlay.Show();
-            avatarOverlay.Activate();
-        };
+            // #685: the live avatar replaces the placeholder, drawn from the
+            // overlay's own model; the zoom button cycles Electron's
+            // full / waist / bust framing, remembered across launches.
+            avatarVisual.Height = 200;
+            avatarVisual.Framing = ManaSettingsStore.Load().AvatarFraming;
+            railToolTip.SetToolTip(avatarZoomButton, LiveAvatarPanel.FramingTitle(avatarVisual.Framing));
+            avatarZoomButton.Click += (_, _) => CycleAvatarFraming();
+            avatarVisual.VisibleChanged += (_, _) => UpdateAvatarMirror();
+            Resize += (_, _) => UpdateAvatarMirror(); // minimize/restore
+        }
+        else
+        {
+            railToolTip.SetToolTip(avatarZoomButton, "Bring the avatar overlay to the front");
+            avatarZoomButton.Click += (_, _) =>
+            {
+                avatarOverlay.Show();
+                avatarOverlay.Activate();
+            };
+        }
 
         avatarNameLabel.Text = "Mana";
         avatarNameLabel.Dock = DockStyle.Top;
@@ -221,7 +236,7 @@ internal sealed class SessionListForm : Form
         // Width matches the sidebar's starting width so avatarZoomButton's
         // right-edge anchor is measured against the width it's placed for
         // (a Panel starts 200 wide, which anchored the button off the card).
-        var avatarCard = new Panel { Dock = DockStyle.Bottom, Width = 240, Height = 150, BackColor = DarkTheme.Panel, Padding = new Padding(10) };
+        var avatarCard = new Panel { Dock = DockStyle.Bottom, Width = 240, Height = 60 + avatarVisual.Height, BackColor = DarkTheme.Panel, Padding = new Padding(10) };
         avatarCard.Paint += OnPaintAvatarCardBorder;
         // WinForms docks the LAST-added child first (see the main
         // Controls.Add block below), so visual/name/status -- top to
@@ -956,6 +971,29 @@ internal sealed class SessionListForm : Form
         RefreshAvatarCard(state);
     }
 
+    // #685: renders into the card only while it's on screen -- not while
+    // the window is hidden, minimized or the sidebar is collapsed.
+    private void UpdateAvatarMirror()
+    {
+        avatarOverlay.Mirror = avatarVisual.Visible && WindowState != FormWindowState.Minimized ? avatarVisual : null;
+    }
+
+    private void CycleAvatarFraming()
+    {
+        avatarVisual.Framing = LiveAvatarPanel.NextFraming(avatarVisual.Framing);
+        railToolTip.SetToolTip(avatarZoomButton, LiveAvatarPanel.FramingTitle(avatarVisual.Framing));
+        try
+        {
+            var settings = ManaSettingsStore.Load();
+            settings.AvatarFraming = avatarVisual.Framing;
+            settings.Save();
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            Console.WriteLine($"SessionListForm: couldn't save the avatar framing. {ex.Message}");
+        }
+    }
+
     // #538's own card text was literally "Mana — idle" (em dash, no
     // colon) -- kept verbatim, just with the hardcoded "idle" replaced by
     // the real state.
@@ -1006,6 +1044,10 @@ internal sealed class SessionListForm : Form
         using (var bgBrush = new LinearGradientBrush(rect, DarkTheme.Panel2, DarkTheme.Panel, LinearGradientMode.Vertical))
         {
             g.FillRectangle(bgBrush, rect);
+        }
+        if (avatarVisual.HasFrame)
+        {
+            return; // #685: the live avatar is drawn over the gradient, not the placeholder
         }
 
         var glowRect = new RectangleF(rect.Width * 0.05f, -rect.Height * 0.5f, rect.Width * 0.9f, rect.Height * 1.1f);
@@ -1459,6 +1501,7 @@ internal sealed class SessionListForm : Form
         if (disposing)
         {
             avatarOverlay.StateChanged -= OnAvatarStateChanged;
+            avatarOverlay.Mirror = null; // #685: before avatarVisual is disposed
             activeSessionFont.Dispose();
             messageBoxFont.Dispose();
             avatarNameFont.Dispose();

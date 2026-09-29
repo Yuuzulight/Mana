@@ -63,17 +63,13 @@ internal sealed class CubismRenderer : IDisposable
         }
     }
 
-    public SKBitmap Render(CubismModel model, int width, int height, SKColor background)
+    // heightFraction (#685): how much of the model's height to show, from
+    // the top -- 1 is the whole model; see Fit.
+    public SKBitmap Render(CubismModel model, int width, int height, SKColor background, float heightFraction = 1f)
     {
         model.ReadCanvasInfo(out var sizeInPixels, out var originInPixels, out var pixelsPerUnit);
 
-        // Fit the model's own canvas into the requested output size,
-        // preserving aspect ratio, centered.
-        var scale = sizeInPixels.X > 0 && sizeInPixels.Y > 0
-            ? Math.Min(width / sizeInPixels.X, height / sizeInPixels.Y)
-            : 1f;
-        var offsetX = (width - sizeInPixels.X * scale) / 2f;
-        var offsetY = (height - sizeInPixels.Y * scale) / 2f;
+        var (scale, offsetX, offsetY) = Fit(sizeInPixels.X, sizeInPixels.Y, width, height, heightFraction);
 
         var drawables = model.GetDrawables();
 
@@ -142,6 +138,24 @@ internal sealed class CubismRenderer : IDisposable
         }
 
         return bitmap;
+    }
+
+    // Fits the model's canvas into width x height. heightFraction >= 1: the
+    // whole canvas, aspect preserved, centred. Below 1 (#685's waist/bust
+    // framing, Electron's computeZoomFraming in live2d-logic.js): the top
+    // fraction of the model fills the height under a 4% top margin, centred
+    // horizontally, and the rest is cropped off the bottom.
+    internal static (float Scale, float OffsetX, float OffsetY) Fit(float canvasWidth, float canvasHeight, int width, int height, float heightFraction)
+    {
+        var valid = canvasWidth > 0 && canvasHeight > 0;
+        if (heightFraction >= 1f || !valid)
+        {
+            var fitScale = valid ? Math.Min(width / canvasWidth, height / canvasHeight) : 1f;
+            return (fitScale, (width - canvasWidth * fitScale) / 2f, (height - canvasHeight * fitScale) / 2f);
+        }
+        var topMargin = height * 0.04f;
+        var scale = (height - topMargin) / (canvasHeight * Math.Max(0.05f, heightFraction));
+        return (scale, (width - canvasWidth * scale) / 2f, topMargin);
     }
 
     // Unions every mask source's own shape into one clip path -- a
