@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Net.Http;
 using System.Runtime.InteropServices;
+using System.Security.Cryptography;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -23,9 +24,9 @@ internal sealed class ManaProcessManager : IDisposable
     // #691: opt-in services, read once at construction (node-bot/.env is
     // already loaded by then). They get a startup row only when turned on,
     // so an unused one never shows as "Unavailable".
-    // The Python retriever json.loads the whole tools/vector_store metadata
-    // (~11 GB of RAM measured on the current index, #809), so nothing starts
-    // it automatically: only MANA_START_RETRIEVER=1, here at launch.
+    // The Python retriever is opt-in: only MANA_START_RETRIEVER=1, here at
+    // launch. It used to json.load ~11 GB of metadata; since #809 it settles
+    // around 0.5 GB, and bringing back on-demand start is still open there.
     public bool UsesRetriever { get; } = Environment.GetEnvironmentVariable("MANA_START_RETRIEVER") == "1";
     // User decision: only the selected TTS provider is started. Fish is the
     // default (the same "fish" this launcher passes node-bot when unset);
@@ -39,6 +40,12 @@ internal sealed class ManaProcessManager : IDisposable
     // to redirect, so the buffer just stays empty (no log to show, not
     // an error).
     public BackendLogBuffer BackendLog { get; } = new();
+
+    // #670 (Q23): node-bot no longer treats "local" as admin. A fresh key
+    // each run, handed to the node-bot this launcher starts (env
+    // MANA_LAUNCHER_KEY) and sent by ManaBackendClient as x-admin-token.
+    // Memory only, so unlike the stored AdminToken (#804) it needs no DPAPI.
+    public string LauncherKey { get; } = Convert.ToHexString(RandomNumberGenerator.GetBytes(32));
 
     // #479 review: distinct from "did THIS launch start a process handle" --
     // true whether Fish Speech was already running externally (health check
@@ -460,6 +467,7 @@ internal sealed class ManaProcessManager : IDisposable
         // by default alongside the embedder it starts; USE_EMBEDDINGS=0 opts out.
         startInfo.Environment["USE_EMBEDDINGS"] =
             Environment.GetEnvironmentVariable("USE_EMBEDDINGS") ?? "1";
+        startInfo.Environment["MANA_LAUNCHER_KEY"] = LauncherKey;
 
         var process = Process.Start(startInfo) ??
                throw new InvalidOperationException("Failed to start Mana backend.");

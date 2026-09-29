@@ -17,8 +17,10 @@ async function run() {
   const addr = server.address();
   const base = `http://127.0.0.1:${addr.port}`;
 
-  // 1) request pairing code (admin local)
-  let res = await fetch(base + '/mobile/pair/request', { method: 'POST' });
+  // 1) request pairing code (admin: #670 needs ADMIN_TOKEN, local isn't enough)
+  process.env.ADMIN_TOKEN = 'e2e-admin-token';
+  const admin = { 'x-admin-token': 'e2e-admin-token' };
+  let res = await fetch(base + '/mobile/pair/request', { method: 'POST', headers: admin });
   assert.equal(res.status, 200, 'pair request ok');
   const j = await res.json();
   assert.ok(j.code, 'code provided');
@@ -37,7 +39,7 @@ async function run() {
   assert.ok(j3.device && j3.device.name === 'e2e-phone', 'ping returns device info');
 
   // 4) admin list shows device and lastSeen
-  res = await fetch(base + '/mobile/devices');
+  res = await fetch(base + '/mobile/devices', { headers: admin });
   assert.equal(res.status, 200, 'devices list ok');
   const j4 = await res.json();
   assert.ok(Array.isArray(j4.devices) && j4.devices.length >= 1, 'devices list contains at least one device');

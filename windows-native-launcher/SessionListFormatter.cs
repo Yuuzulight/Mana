@@ -26,4 +26,14 @@ internal static class SessionListFormatter
 
         return parsed.ToLocalTime().ToString("MMM d, h:mm tt", CultureInfo.InvariantCulture);
     }
+
+    // #687: the sidebar's search box -- a case-insensitive title match, like
+    // Electron's sidebar filter. Blank shows everything.
+    public static bool MatchesSearch(ManaSession session, string query) =>
+        string.IsNullOrWhiteSpace(query) || FormatDisplayName(session).Contains(query.Trim(), StringComparison.OrdinalIgnoreCase);
+
+    // #687: a stored turn's time, for AutoSession.Restore; MinValue when it
+    // has none, so a restored auto session rotates on its next turn.
+    public static DateTime ParseTurnTime(string? iso) =>
+        DateTimeOffset.TryParse(iso, CultureInfo.InvariantCulture, DateTimeStyles.None, out var parsed) ? parsed.UtcDateTime : DateTime.MinValue;
 }
