@@ -214,6 +214,7 @@ const { createVisionToolSource } = require("./ai/vision-tool-source");
 const { createSessionGoalToolSource } = require("./ai/session-goal-tool-source");
 const { visionCaptureBridge } = require("./vision-capture-bridge");
 const { createCodingToolSource } = require("./ai/coding-tool-source");
+const { refuteEdit } = require("./ai/adversarial-verifier");
 const { createMcpClientRegistry } = require("./mcp-client-registry");
 const { mcpClientCapability } = require("./capabilities/mcp-client-capability");
 const { createToolCallLog, wrapWithToolCallLog } = require("./tool-call-log");
@@ -2012,6 +2013,12 @@ function registerRoutes(app, upload, deps = {}) {
     }
     return editorIntegrations;
   }
+  // Issue #622: opt-in (MANA_ADVERSARIAL_VERIFY=1) adversarial review of
+  // agent-proposed edits, on whatever model is already loaded -- never a swap.
+  const reviewEdit =
+    deps.reviewEdit ||
+    ((proposal) =>
+      refuteEdit({ ...proposal, runLocalReply: llamaServerRuntime.runLocalReplyIfSafelyLoaded }));
   const modelManagement =
     deps.modelManagement ||
     createModelManagement({
@@ -2318,7 +2325,7 @@ function registerRoutes(app, upload, deps = {}) {
 
   // Issue #500: /zed/* and /editors/* routes (previously inline here)
   // moved to server-routes.js's registerEditorRoutes.
-  registerEditorRoutes(app, { checkAdminAuth, getEditorIntegrations, zed: deps.zed });
+  registerEditorRoutes(app, { checkAdminAuth, getEditorIntegrations, zed: deps.zed, reviewEdit });
 
   // Issue #500: the 9 /models/* routes (previously inline here, minus the
   // two unrelated routes -- /browser-automation/activity and
@@ -4317,7 +4324,7 @@ function registerRoutes(app, upload, deps = {}) {
             // workspace/proposal machinery (zed-integration.js) that
             // already backs the /editors/* admin routes, just stops short
             // of ever calling approveEditProposal.
-            createCodingToolSource({ editors: getEditorIntegrations() }),
+            createCodingToolSource({ editors: getEditorIntegrations(), reviewEdit }),
             ...(isPluginEnabled(browserAutomationPlugin, activePluginSettingsStore)
               ? [activeBrowserAutomationToolSource]
               : []),

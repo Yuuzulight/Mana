@@ -10,6 +10,7 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const { isCredentialPath } = require("./tool-policy");
+const { formatReviewHeader } = require("./adversarial-verifier");
 
 const CODING_TOOL_PREFIX = "coding__";
 
@@ -50,6 +51,8 @@ function isCodingToolName(name) {
 // (zed-integration.js) already used by server.js's /editors/* routes.
 // options.diffsDir: injectable for tests; same dataDir convention as
 // acp-memory-store.js/skills-store.js otherwise.
+// options.reviewEdit: optional (proposal) => Promise<review|null>, issue
+// #622's adversarial verifier (ai/adversarial-verifier.js's refuteEdit).
 function createCodingToolSource(options = {}) {
   const editors = options.editors;
   if (!editors) {
@@ -67,7 +70,7 @@ function createCodingToolSource(options = {}) {
   function writeDiffFile(proposal) {
     fs.mkdirSync(diffsDir, { recursive: true });
     const diffPath = path.join(diffsDir, `${proposal.id}.diff`);
-    fs.writeFileSync(diffPath, proposal.diff, "utf8");
+    fs.writeFileSync(diffPath, formatReviewHeader(proposal.adversarialReview) + proposal.diff, "utf8");
     return diffPath;
   }
 
@@ -94,6 +97,9 @@ function createCodingToolSource(options = {}) {
         proposedContent: args?.proposedContent,
         summary: args?.summary,
       });
+      // Issue #622: before the diff reaches the user -- stored on the
+      // proposal too, so the /editors proposal routes show it.
+      if (options.reviewEdit) proposal.adversarialReview = await options.reviewEdit(proposal);
       const diffPath = writeDiffFile(proposal);
       return JSON.stringify({
         status: "ok",
@@ -101,6 +107,7 @@ function createCodingToolSource(options = {}) {
         relativePath: proposal.relativePath,
         summary: proposal.summary,
         proposalId: proposal.id,
+        adversarialReview: proposal.adversarialReview || undefined,
       });
     } catch (e) {
       return JSON.stringify({ status: "error", error: e.message || String(e) });

@@ -802,7 +802,7 @@ function registerAdminStaticRoutes(app) {
 // original inline `deps.zed || createZedIntegration()`) is passed as a
 // plain value since the original never memoized it either.
 function registerEditorRoutes(app, deps) {
-  const { checkAdminAuth, getEditorIntegrations, zed: zedOverride } = deps;
+  const { checkAdminAuth, getEditorIntegrations, zed: zedOverride, reviewEdit } = deps;
 
   app.get("/zed/status", (req, res) => {
     const zed = zedOverride || createZedIntegration();
@@ -910,7 +910,7 @@ function registerEditorRoutes(app, deps) {
     return res.json({ proposals: editors.listEditProposals() });
   });
 
-  app.post("/editors/workspace/proposals", (req, res) => {
+  app.post("/editors/workspace/proposals", async (req, res) => {
     if (!checkAdminAuth(req, res)) return;
     try {
       const editors = getEditorIntegrations();
@@ -919,6 +919,9 @@ function registerEditorRoutes(app, deps) {
         proposedContent: req.body?.proposedContent,
         summary: req.body?.summary,
       });
+      // Issue #622: the ACP agent's proposals come in here -- review them
+      // before they sit waiting for approval.
+      if (reviewEdit) proposal.adversarialReview = await reviewEdit(proposal);
       return res.json({ proposal });
     } catch (error) {
       return res.status(400).json({
