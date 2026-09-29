@@ -147,4 +147,4 @@ function buildRepoMap(files = [], { maxChars = 4000, relevantTo = "" } = {}) {
   };
 }
 
-module.exports = { extractSymbols, buildRepoMap };
+module.exports = { extractSymbols, buildRepoMap, getJavaScriptParser: getParser };

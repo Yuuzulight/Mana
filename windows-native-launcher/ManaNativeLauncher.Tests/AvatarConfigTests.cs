@@ -20,6 +20,8 @@ public class AvatarConfigTests
         Assert.Empty(config.RandomMotions);
         Assert.Equal("ParamMouthOpenY", config.MouthParam);
         Assert.Equal(18f, config.MouthGain);
+        Assert.Equal(0.8f, config.MouthMaxOpen);
+        Assert.Equal(16f, config.AnimatedTiltDeg);
         Assert.Equal(["ParamEyeLOpen", "ParamEyeROpen"], config.EyeBlinkParams);
         Assert.Equal(AvatarGaze.DefaultTiltDegrees, config.IdleTiltDeg);
         Assert.Equal(AvatarGaze.DefaultMaxPitchDegrees, config.IdleMaxPitchDeg);
@@ -34,7 +36,7 @@ public class AvatarConfigTests
             {
               "stateMotions": { "Excited": "curious", "idle": ["sleepy", "Idle"], "sad": [] },
               "stateExpressions": { "idle": "hug-pillow" },
-              "mouthParam": "MouthA", "mouthGain": 12,
+              "mouthParam": "MouthA", "mouthGain": 12, "mouthMaxOpen": 0.6, "animatedTiltDeg": 12,
               "eyeBlinkParams": [],
               "idleTiltDeg": 0, "idleMaxPitchDeg": 90, "idleGazeDeg": 3, "idleGazePeriodMs": 4500
             }
@@ -46,6 +48,8 @@ public class AvatarConfigTests
         Assert.Equal(["hug-pillow"], config.StateExpressions["idle"]);
         Assert.Equal("MouthA", config.MouthParam);
         Assert.Equal(12f, config.MouthGain);
+        Assert.Equal(0.6f, config.MouthMaxOpen);
+        Assert.Equal(12f, config.AnimatedTiltDeg);
         Assert.Empty(config.EyeBlinkParams); // [] disables the backfill
         Assert.Equal(0f, config.IdleTiltDeg);
         Assert.Equal(90f, config.IdleMaxPitchDeg);
@@ -63,7 +67,9 @@ public class AvatarConfigTests
                 ("MANA_LIVE2D_MOUTH_GAIN", "20"),
                 ("MANA_LIVE2D_MOUTH_PARAM", "MouthB"),
                 ("MANA_LIVE2D_EYE_BLINK_PARAMS", " EyeL , ,EyeR "),
-                ("MANA_LIVE2D_IDLE_TILT_DEG", "0")));
+                ("MANA_LIVE2D_IDLE_TILT_DEG", "0"),
+                ("MANA_LIVE2D_MOUTH_MAX_OPEN", "0.7"),
+                ("MANA_LIVE2D_ANIMATED_TILT_DEG", "20")));
 
         Assert.Equal(["Idle", "sleepy"], config.StateMotions["idle"]);
         Assert.Equal(["Shake"], config.StateMotions["angry"]);
@@ -71,6 +77,8 @@ public class AvatarConfigTests
         Assert.Equal("MouthB", config.MouthParam);
         Assert.Equal(["EyeL", "EyeR"], config.EyeBlinkParams);
         Assert.Equal(0f, config.IdleTiltDeg);
+        Assert.Equal(0.7f, config.MouthMaxOpen);
+        Assert.Equal(20f, config.AnimatedTiltDeg);
     }
 
     [Fact]

@@ -9,7 +9,7 @@ const test = require("node:test");
 const { createApp } = require("../server");
 const { createApprovalGate } = require("../approval-gate");
 
-async function finishGoalWith(approvalGate) {
+async function finishGoalWith(approvalGate, replyMeta = {}) {
   let outcome = null;
   const app = createApp({
     env: { ...process.env, MANA_TOOL_CALLING_ENABLED: "1", MANA_TOOL_APPROVAL: "" },
@@ -22,7 +22,7 @@ async function finishGoalWith(approvalGate) {
   });
   app.locals.acpMemoryStore.ensureSession({ sessionId: "sess-669" });
   app.locals.acpMemoryStore.setSessionGoal("sess-669", "Ship it");
-  await app.locals.buildAssistantReply("hi", "", "", "default", "sess-669", null, null, {});
+  await app.locals.buildAssistantReply("hi", "", "", "default", "sess-669", null, null, replyMeta);
   return outcome;
 }
 
@@ -38,6 +38,12 @@ test("#669 the reply's tool gate uses the saved approval mode (smart by default)
 
     gate.setToolApprovalMode("ask");
     assert.equal(JSON.parse(await finishGoalWith(gate)).status, "pending");
+
+    // #699: a heartbeat check's own gate replaces the risk gate.
+    let wrappedWith = null;
+    const wrapToolPolicy = (policy, approvalGate) => ((wrappedWith = approvalGate), policy);
+    assert.doesNotMatch(String(await finishGoalWith(gate, { wrapToolPolicy })), /"pending"/);
+    assert.equal(wrappedWith, gate);
   } finally {
     fs.rmSync(process.env.MANA_ACP_MEMORY_DIR, { recursive: true, force: true });
     for (const [key, value] of [

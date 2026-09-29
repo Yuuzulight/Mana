@@ -11,12 +11,18 @@ using System.Windows.Forms;
 
 namespace Mana.NativeLauncher;
 
-// #571: on-screen equivalent of spoken output -- a borderless, always-on-top,
-// bottom-center bar. It shows only the sentence Mana is saying right now,
-// moving on as each next sentence starts playing, and after she stops it
-// lingers for reading time (#701's timing: ~1s per 3 words, 4-20s) and
-// hides. Driven by VoiceLoop's own playback, not the backend's caption
-// feed, which fires at synthesis time -- a sentence ahead of the audio.
+// #571: on-screen equivalent of spoken output -- a borderless, always-on-top
+// bar. Driven by VoiceLoop's own playback, not the backend's caption feed,
+// which fires at synthesis time -- a sentence ahead of the audio.
+// Q7/Q8 (2026-09-29):
+// - words appear one by one ~150ms ahead of her voice, spread over the
+//   sentence's audio by length;
+// - within a reply the bar keeps the last 2 sentences (the one before, in
+//   full, then the one being said); a new reply starts it fresh;
+// - past 4 lines the font shrinks instead of the bar growing;
+// - after she stops it stays until her next reply, at most 7s;
+// - it sits centred under her avatar (kept on screen), or bottom-centre
+//   while she's hidden.
 //
 // Clear glass, as a per-pixel-alpha layered window like AvatarOverlayForm:
 // the desktop shows straight through under a faint wash of the panel colour,
@@ -26,10 +32,17 @@ namespace Mana.NativeLauncher;
 // - the wash adapts to what's behind the bar (stronger over a busy game,
 //   nearly clear over a calm desktop), sampled from a ring just outside it;
 // - it almost disappears while the mouse is over it;
-// - each new sentence fades in and rises 4px over 150ms.
+// - the bar fades in and rises 4px over 150ms as it appears.
 internal sealed class CaptionOverlayForm : Form
 {
     private const int MaxWidth = 640;
+    private const float BaseFontSize = 12F;
+    private const float MinFontSize = 8F;
+    private const int MaxLines = 4;
+    private const int LeadMs = 150;
+    private const int StayMs = 7000;
+    private const int BottomGap = 48;
+    private const int ScreenMargin = 12;
     private const int PadX = 18;
     private const int PadY = 12;
     private const int Radius = 8;
@@ -38,27 +51,37 @@ internal sealed class CaptionOverlayForm : Form
     private const byte HoverAlpha = 30;
     private const int SampleRingPx = 24;
 
-    private static readonly StringFormat Centered = new() { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
+    // Left-aligned (the bar is sized to the whole text) so a word appearing
+    // never moves the ones before it.
+    private static readonly StringFormat Layout = new() { Alignment = StringAlignment.Near, LineAlignment = StringAlignment.Near };
     private static readonly Regex SentenceEnd = new(@"(?<=[.!?。！？…])\s+|\n+", RegexOptions.Compiled);
     private static readonly (int X, int Y)[] HaloOffsets = [(-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (1, 1), (-1, 1), (1, -1)];
 
-    private readonly Font captionFont = new("Segoe UI", 12F);
+    private Font captionFont = new("Segoe UI", BaseFontSize);
     // Steps through a single-clip reply's sentences, then (queue empty)
-    // lingers before hiding.
+    // stays a while before hiding.
     private readonly System.Windows.Forms.Timer timer = new();
     // Entrance animation and hover fade; runs only while one is in motion,
     // plus a slow hover poll while visible (a click-through window gets no
     // mouse events of its own).
     private readonly System.Windows.Forms.Timer frameTimer = new() { Interval = 16 };
     private readonly Queue<(string Text, int Ms)> upcoming = new();
-    private string caption = "";
-    private bool lingering;
+    // Mana's avatar on screen, or null while she's hidden.
+    private readonly Func<Rectangle?>? anchor;
+    private string previous = ""; // the reply's sentence before this one, shown in full
+    private string current = "";  // the sentence being said, words single-spaced
+    private long currentStart;
+    private double currentMs;     // its audio length; 0 = unknown, show it whole
+    private bool replyEnded = true;
+    private string drawn = "";
+    private bool staying;
     private byte washAlpha;
     private long entranceStart = long.MinValue;
     private double windowAlpha = 255;
 
-    public CaptionOverlayForm()
+    public CaptionOverlayForm(Func<Rectangle?>? anchor = null)
     {
+        this.anchor = anchor;
         FormBorderStyle = FormBorderStyle.None;
         ShowInTaskbar = false;
         TopMost = true;
@@ -92,17 +115,18 @@ internal sealed class CaptionOverlayForm : Form
         }
     }
 
-    // The sentence that just started playing.
-    public void ShowSentence(string text)
+    // The sentence that just started playing, and how long its audio is
+    // (zero when unknown: it shows whole).
+    public void ShowSentence(string text, TimeSpan duration = default)
     {
         if (InvokeRequired)
         {
-            BeginInvoke(() => ShowSentence(text));
+            BeginInvoke(() => ShowSentence(text, duration));
             return;
         }
         upcoming.Clear();
         timer.Stop();
-        Render(text);
+        StartSentence(text, duration.TotalMilliseconds);
     }
 
     // A whole reply spoken as one clip (the tool-calling path never streams
@@ -118,9 +142,10 @@ internal sealed class CaptionOverlayForm : Form
         }
         upcoming.Clear();
         timer.Stop();
+        replyEnded = true; // a whole reply: starts the bar fresh
         if (duration <= TimeSpan.Zero)
         {
-            Render(text); // unreadable clip length: no timing to step by
+            StartSentence(text, 0); // unreadable clip length: no timing to step by
             return;
         }
         foreach (var step in Steps(text, duration))
@@ -132,7 +157,7 @@ internal sealed class CaptionOverlayForm : Form
             return;
         }
         var (first, ms) = upcoming.Dequeue();
-        Render(first);
+        StartSentence(first, ms);
         if (upcoming.Count > 0)
         {
             timer.Interval = ms;
@@ -140,8 +165,8 @@ internal sealed class CaptionOverlayForm : Form
         }
     }
 
-    // She stopped talking (finished or interrupted): leave the last sentence
-    // up long enough to read, then hide.
+    // She stopped talking (finished or interrupted): every word shows, and
+    // the bar stays until her next reply, at most 7s.
     public void SpeechEnded()
     {
         if (InvokeRequired)
@@ -151,20 +176,64 @@ internal sealed class CaptionOverlayForm : Form
         }
         upcoming.Clear();
         timer.Stop();
+        replyEnded = true;
         if (!Visible)
         {
             return;
         }
-        lingering = true;
-        timer.Interval = LingerMs(caption);
+        currentMs = 0;
+        Present();
+        staying = true;
+        timer.Interval = StayMs;
         timer.Start();
     }
 
-    // #701: about 1s per 3 words, at least 4s, at most 20s.
-    internal static int LingerMs(string text)
+    // Q7: the words of `sentence` on screen elapsedMs into its audio --
+    // each word's share of the audio is its share of the characters, and it
+    // shows leadMs before she gets to it.
+    internal static string RevealedWords(string sentence, double elapsedMs, double durationMs, double leadMs = LeadMs)
     {
-        var words = text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries).Length;
-        return Math.Clamp(words * 1000 / 3, 4000, 20000);
+        var words = sentence.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        if (durationMs <= 0)
+        {
+            return string.Join(' ', words);
+        }
+        var progress = (elapsedMs + leadMs) / durationMs;
+        var total = (double)words.Sum(w => w.Length + 1);
+        var shown = 0;
+        for (var acc = 0; shown < words.Length && acc / total <= progress; shown++)
+        {
+            acc += words[shown].Length + 1;
+        }
+        return string.Join(' ', words, 0, shown);
+    }
+
+    // Q8: the largest font size (12pt down to 8pt, in half points) that
+    // fits the text in 4 lines at this width.
+    internal static float FitFontSize(Graphics g, string text, int width)
+    {
+        for (var size = BaseFontSize; ; size -= 0.5F)
+        {
+            using var font = new Font("Segoe UI", size);
+            if (size <= MinFontSize || g.MeasureString(text, font, width, Layout).Height <= (MaxLines * font.GetHeight(g)) + 2)
+            {
+                return size;
+            }
+        }
+    }
+
+    // Q8: centred under her avatar, kept on screen (never lower than the
+    // old bottom-centre spot); bottom-centre when she's hidden.
+    internal static Point Place(Size bar, Rectangle? avatar, Rectangle workArea)
+    {
+        var bottom = workArea.Bottom - bar.Height - BottomGap;
+        if (avatar is not Rectangle a)
+        {
+            return new Point(workArea.Left + ((workArea.Width - bar.Width) / 2), bottom);
+        }
+        var minX = workArea.Left + ScreenMargin;
+        var x = Math.Clamp(a.Left + (a.Width / 2) - (bar.Width / 2), minX, Math.Max(minX, workArea.Right - bar.Width - ScreenMargin));
+        return new Point(x, Math.Max(workArea.Top + ScreenMargin, Math.Min(a.Bottom + 8, bottom)));
     }
 
     internal static IReadOnlyList<(string Text, int Ms)> Steps(string text, TimeSpan duration)
@@ -188,9 +257,9 @@ internal sealed class CaptionOverlayForm : Form
     private void OnTimer()
     {
         timer.Stop();
-        if (lingering)
+        if (staying)
         {
-            lingering = false;
+            staying = false;
             Visible = false;
             frameTimer.Stop();
             return;
@@ -200,7 +269,7 @@ internal sealed class CaptionOverlayForm : Form
             return; // the clip's last sentence stays until SpeechEnded
         }
         var (text, ms) = upcoming.Dequeue();
-        Render(text);
+        StartSentence(text, ms);
         if (upcoming.Count > 0)
         {
             timer.Interval = ms;
@@ -208,27 +277,47 @@ internal sealed class CaptionOverlayForm : Form
         }
     }
 
-    private void Render(string text)
+    // A new sentence joins the reply's previous one (a new reply starts
+    // fresh); the bar is sized for both in full so it doesn't move as the
+    // words come in.
+    private void StartSentence(string text, double durationMs)
     {
-        lingering = false;
-        caption = text;
+        previous = replyEnded ? "" : current;
+        replyEnded = false;
+        current = RevealedWords(text, 0, 0);
+        currentStart = Environment.TickCount64;
+        currentMs = durationMs;
+        staying = false;
+        var full = Joined(previous, current);
+        var avatar = anchor?.Invoke();
+        var area = (avatar is Rectangle a ? Screen.FromRectangle(a) : Screen.PrimaryScreen)?.WorkingArea ?? new Rectangle(0, 0, 1920, 1080);
         using (var g = CreateGraphics())
         {
-            var textSize = Size.Ceiling(g.MeasureString(text, captionFont, MaxWidth - PadX * 2, Centered));
-            var size = new Size(Math.Min(MaxWidth, textSize.Width + PadX * 2), textSize.Height + PadY * 2);
-            var area = Screen.PrimaryScreen?.WorkingArea ?? new Rectangle(0, 0, 1920, 1080);
-            Bounds = new Rectangle(new Point(area.Left + (area.Width - size.Width) / 2, area.Bottom - size.Height - 48), size);
+            var size = FitFontSize(g, full, MaxWidth - (PadX * 2));
+            if (captionFont.Size != size)
+            {
+                captionFont.Dispose();
+                captionFont = new Font("Segoe UI", size);
+            }
+            var textSize = Size.Ceiling(g.MeasureString(full, captionFont, MaxWidth - (PadX * 2), Layout));
+            var barSize = new Size(Math.Min(MaxWidth, textSize.Width + (PadX * 2)), textSize.Height + (PadY * 2));
+            Bounds = new Rectangle(Place(barSize, avatar, area), barSize);
         }
         washAlpha = SampleWashAlpha(Bounds) ?? DefaultWashAlpha;
-        entranceStart = Environment.TickCount64;
         if (!Visible)
         {
+            entranceStart = Environment.TickCount64;
             windowAlpha = 255;
             Visible = true;
         }
         Present();
         frameTimer.Start();
     }
+
+    private static string Joined(string previous, string current) => previous.Length > 0 ? $"{previous} {current}" : current;
+
+    private string Shown() =>
+        Joined(previous, RevealedWords(current, Environment.TickCount64 - currentStart, currentMs));
 
     // Entrance animation, hover fade, and the hover poll. Stops itself once
     // nothing is moving except the poll, which drops to a slow rate.
@@ -243,11 +332,12 @@ internal sealed class CaptionOverlayForm : Form
         var fading = Math.Abs(windowAlpha - target) > 1;
         windowAlpha = fading ? windowAlpha + (target - windowAlpha) * 0.35 : target;
         var entering = Environment.TickCount64 - entranceStart < EntranceMs + frameTimer.Interval;
-        if (entering || fading)
+        var revealing = currentMs > 0 && Environment.TickCount64 - currentStart + LeadMs < currentMs + frameTimer.Interval;
+        if (entering || fading || Shown() != drawn)
         {
             Present();
         }
-        frameTimer.Interval = entering || fading ? 16 : 100;
+        frameTimer.Interval = entering || fading ? 16 : revealing ? 33 : 100;
     }
 
     // Luminance spread of the screen in a ring around the bar (never the bar
@@ -315,6 +405,7 @@ internal sealed class CaptionOverlayForm : Form
         var ease = 1 - (1 - t) * (1 - t);
         var textAlpha = (int)Math.Round(255 * ease);
         var rise = (float)(EntranceRisePx * (1 - ease));
+        drawn = Shown();
 
         using var bitmap = new Bitmap(size.Width, size.Height, PixelFormat.Format32bppArgb);
         using (var g = Graphics.FromImage(bitmap))
@@ -344,11 +435,11 @@ internal sealed class CaptionOverlayForm : Form
             {
                 foreach (var (dx, dy) in HaloOffsets)
                 {
-                    g.DrawString(caption, captionFont, halo, rect with { X = rect.X + dx, Y = rect.Y + dy }, Centered);
+                    g.DrawString(drawn, captionFont, halo, rect with { X = rect.X + dx, Y = rect.Y + dy }, Layout);
                 }
             }
             using var brush = new SolidBrush(Color.FromArgb(textAlpha, DarkTheme.Text));
-            g.DrawString(caption, captionFont, brush, rect, Centered);
+            g.DrawString(drawn, captionFont, brush, rect, Layout);
         }
 
         var screenDc = GetDC(0);

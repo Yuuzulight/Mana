@@ -31,6 +31,9 @@ internal sealed class LipSyncDriver
     // at startup, before any audio plays).
     public float MouthGain { get; set; } = 9f;
 
+    // Q6: mana-avatar.json mouthMaxOpen -- the cap on how wide she opens.
+    public float MouthMaxOpen { get; set; } = 1f;
+
     // Matches SamplesReadHandler's shape -- pass this directly as
     // AudioPlayer's onSamplesPlayed.
     public void OnSamplesPlayed(ReadOnlySpan<float> samples, int sampleRate)
@@ -76,7 +79,7 @@ internal sealed class LipSyncDriver
         var mfcc = LipSyncAnalyzer.ComputeMelEnergies(magnitudesDb, sampleRate, WindowSize);
         var viseme = LipSyncAnalyzer.ClassifyViseme(mfcc);
 
-        mouthOpen = LipSyncAnalyzer.RmsToMouth(rms, gain: MouthGain);
+        mouthOpen = LipSyncAnalyzer.RmsToMouth(rms, gain: MouthGain, max: MouthMaxOpen);
         mouthForm = LipSyncAnalyzer.VisemeToMouthForm(viseme);
     }
 
