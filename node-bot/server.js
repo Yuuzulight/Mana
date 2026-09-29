@@ -2937,11 +2937,9 @@ function registerRoutes(app, upload, deps = {}) {
     // to be unusable for real-time chat. Switch to Kokoro automatically
     // whenever a watched game is running, and back once it closes. Kokoro
     // is started on demand by that switch (kokoro-runtime.js) and stops
-    // again after MANA_KOKORO_IDLE_MS without use. Qwen3-TTS gets the same
-    // switch; instead of a park, the native launcher stops its service while
-    // the game runs and restarts it after (Kokoro, its fallback, covers the
-    // ~12 s restart).
-    if (ttsRuntime.ttsProvider === "fish" || ttsRuntime.ttsProvider === "qwen3tts") {
+    // again after MANA_KOKORO_IDLE_MS without use. Qwen3-TTS has no such
+    // switch: it stays loaded and keeps speaking while a game runs.
+    if (ttsRuntime.ttsProvider === "fish") {
       try {
         const gaming = getGamingStatus();
         ttsRuntime.setProviderOverride(gaming.gamingAppRunning ? "kokoro" : null);
@@ -2949,13 +2947,11 @@ function registerRoutes(app, upload, deps = {}) {
         // the game holds the GPU, and pull them back once it closes. Swaps
         // take 30-100s+ under contention, so this must never block the
         // reply that's about to go out over Kokoro.
-        if (ttsRuntime.ttsProvider === "fish") {
-          ttsRuntime
-            .swapFishDevice(gaming.gamingAppRunning ? "cpu" : "cuda")
-            .catch((err) =>
-              console.warn("Fish device swap failed:", err.message),
-            );
-        }
+        ttsRuntime
+          .swapFishDevice(gaming.gamingAppRunning ? "cpu" : "cuda")
+          .catch((err) =>
+            console.warn("Fish device swap failed:", err.message),
+          );
       } catch (e) {
         // Best-effort; fall through with whatever provider is configured.
       }

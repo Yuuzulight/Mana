@@ -104,6 +104,28 @@ def load_model():
     return tts
 
 
+def trim_working_set():
+    """#904: once warm, only ~0.12 GB of the ~2.5 GB start-up working set
+    (CUDA/cuDNN DLL pages, import- and load-time heap) is touched again while
+    speaking. Hand the rest back to Windows so it isn't held in RAM next to a
+    game. The 256 MB minimum keeps that hot part from being trimmed again
+    under memory pressure: trimming alone cost ~0.06 s per short sentence in
+    the bench, with the floor latency matched the untrimmed service."""
+    if os.name != "nt":
+        return False
+    import ctypes
+
+    # c_void_p(-1): the current-process pseudo handle, pointer-sized.
+    me = ctypes.c_void_p(-1)
+    kernel32 = ctypes.windll.kernel32
+    kernel32.SetProcessWorkingSetSizeEx.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_size_t, ctypes.c_uint32]
+    return bool(
+        ctypes.windll.psapi.EmptyWorkingSet(me)
+        # Soft limits (flags 0): a floor, not a cap.
+        and kernel32.SetProcessWorkingSetSizeEx(me, 256 << 20, 1024 << 20, 0)
+    )
+
+
 @app.get("/health")
 def health():
     # Only served once load_model() has finished, so reachable means ready.
@@ -125,5 +147,6 @@ if __name__ == "__main__":
     import uvicorn
 
     model = load_model()
+    trim_working_set()
     print(f"Qwen3-TTS ready on 127.0.0.1:{PORT}", flush=True)
     uvicorn.run(app, host="127.0.0.1", port=PORT, log_level="warning")

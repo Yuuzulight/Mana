@@ -20,9 +20,6 @@ internal sealed class ManaProcessManager : IDisposable
     private Process? retrieverProcess;
     private Process? gptSovitsProcess;
     private Process? qwen3TtsProcess;
-    // True while a watched game runs and the Qwen3-TTS service this launcher
-    // started is stopped for it (SetQwen3TtsGameRunning).
-    private bool qwen3TtsStoppedForGame;
 
     public string RootDirectory { get; }
 
@@ -44,9 +41,6 @@ internal sealed class ManaProcessManager : IDisposable
     // port from.
     private readonly string qwen3TtsHealthUrl =
         $"{(Environment.GetEnvironmentVariable("QWEN3_TTS_URL") ?? "http://127.0.0.1:5012").TrimEnd('/')}/health";
-
-    // Tests swap in a stand-in process; the real one is StartQwen3Tts.
-    internal Func<Process?> StartQwen3TtsProcess { get; set; }
 
     // #582: only captures output for a backend process THIS launcher
     // spawned -- if StartAsync's health check found node-bot already
@@ -109,7 +103,6 @@ internal sealed class ManaProcessManager : IDisposable
         // startWindowsServices / isBackendUrlLoopback). Unparseable counts
         // as local, same as there.
         isBackendLocal = !Uri.TryCreate(backendHealthUrl, UriKind.Absolute, out var parsed) || parsed.IsLoopback;
-        StartQwen3TtsProcess = StartQwen3Tts;
     }
 
     // onServiceReady, when given, fires once per service (key "backend"/
@@ -178,7 +171,7 @@ internal sealed class ManaProcessManager : IDisposable
             ? StartAndReport("gpt-sovits", "http://127.0.0.1:9880/docs", () => Task.FromResult(isBackendLocal ? StartGptSovits() : null))
             : notUsed;
         var qwen3TtsTask = UsesQwen3Tts
-            ? StartAndReport("qwen3-tts", qwen3TtsHealthUrl, () => Task.FromResult(isBackendLocal ? StartQwen3TtsProcess() : null))
+            ? StartAndReport("qwen3-tts", qwen3TtsHealthUrl, () => Task.FromResult(isBackendLocal ? StartQwen3Tts() : null))
             : notUsed;
 
         try
@@ -481,26 +474,6 @@ internal sealed class ManaProcessManager : IDisposable
         {
             Console.WriteLine($"Qwen3-TTS failed to start: {ex.Message}");
             return null;
-        }
-    }
-
-    // #891: while a watched game runs node-bot speaks through Kokoro, so a
-    // Qwen3-TTS this launcher started is stopped to hand its VRAM (~2.7 GB)
-    // to the game, and started again once the game closes (~12 s; Kokoro,
-    // its fallback, covers the gap). One that was already running on its own
-    // isn't ours to stop. Called from the 5 s status poll.
-    public void SetQwen3TtsGameRunning(bool gameRunning)
-    {
-        if (gameRunning && qwen3TtsProcess is { HasExited: false })
-        {
-            StopProcess(qwen3TtsProcess);
-            qwen3TtsProcess = null;
-            qwen3TtsStoppedForGame = true;
-        }
-        else if (!gameRunning && qwen3TtsStoppedForGame)
-        {
-            qwen3TtsStoppedForGame = false;
-            qwen3TtsProcess = StartQwen3TtsProcess();
         }
     }
 

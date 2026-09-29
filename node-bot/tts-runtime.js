@@ -184,12 +184,12 @@ function createTtsRuntime(options = {}) {
   const gptSovitsFallbackProvider =
     env.GPT_SOVITS_TTS_FALLBACK_PROVIDER || "kokoro";
   // Qwen3-TTS voice (tools/qwen3tts_service.py, docs/qwen3_tts.md); opt in
-  // with TTS_PROVIDER=qwen3tts. Kokoro covers its failures by default --
-  // including the ~12 s restart after a game closes (the native launcher
-  // stops the service while a watched game runs).
+  // with TTS_PROVIDER=qwen3tts. It stays loaded while gaming too, and like
+  // Fish has no fallback by default (Kokoro is left out): a failure shows
+  // the reply as text and surfaces the error.
   const qwen3TtsUrl = env.QWEN3_TTS_URL || "http://127.0.0.1:5012";
   const qwen3TtsFallbackProvider =
-    env.QWEN3_TTS_FALLBACK_PROVIDER || "kokoro";
+    env.QWEN3_TTS_FALLBACK_PROVIDER || "none";
   const ttsProvider = env.TTS_PROVIDER || (ttsBin ? "cli" : "fish");
   // Manual runtime override (e.g. "use Kokoro while gaming"), set via
   // setProviderOverride(); null means "use ttsProvider as configured".

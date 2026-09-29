@@ -264,7 +264,7 @@ test("pickQwen3TtsLanguage passes Mana's languages through and sends Malay as au
   assert.equal(runtime.pickQwen3TtsLanguage("Selamat pagi, apa khabar?"), "auto");
 });
 
-test("tts runtime falls back from Qwen3-TTS to Kokoro by default, and not with none", async () => {
+test("tts runtime has no Qwen3-TTS fallback by default, and uses Kokoro only when asked", async () => {
   const urls = [];
   const post = async (url) => {
     urls.push(url);
@@ -273,25 +273,29 @@ test("tts runtime falls back from Qwen3-TTS to Kokoro by default, and not with n
     }
     return Buffer.from("kokoro-audio");
   };
-  const runtime = createTtsRuntime({
+  const strict = createTtsRuntime({
     env: { TTS_PROVIDER: "qwen3tts", KOKORO_TTS_URL: "http://kokoro.local" },
     postJsonBuffer: post,
     nowMs: () => 1,
     logPerf: () => {},
   });
+  await assert.rejects(() => strict.synthesizeReply("hello"), /ECONNREFUSED/);
+  assert.deepEqual(urls, ["http://127.0.0.1:5012/synthesize"]);
 
-  const audio = await runtime.synthesizeReply("hello");
-
-  assert.equal(audio.toString("utf8"), "kokoro-audio");
-  assert.deepEqual(urls, ["http://127.0.0.1:5012/synthesize", "http://kokoro.local/synthesize"]);
-
-  const strict = createTtsRuntime({
-    env: { TTS_PROVIDER: "qwen3tts", QWEN3_TTS_FALLBACK_PROVIDER: "none" },
+  urls.length = 0;
+  const optedIn = createTtsRuntime({
+    env: {
+      TTS_PROVIDER: "qwen3tts",
+      QWEN3_TTS_FALLBACK_PROVIDER: "kokoro",
+      KOKORO_TTS_URL: "http://kokoro.local",
+    },
     postJsonBuffer: post,
     nowMs: () => 1,
     logPerf: () => {},
   });
-  await assert.rejects(() => strict.synthesizeReply("hello"), /ECONNREFUSED/);
+  const audio = await optedIn.synthesizeReply("hello");
+  assert.equal(audio.toString("utf8"), "kokoro-audio");
+  assert.deepEqual(urls, ["http://127.0.0.1:5012/synthesize", "http://kokoro.local/synthesize"]);
 });
 
 test("tts runtime rejects GPT-SoVITS with no reference configured", async () => {
