@@ -86,6 +86,62 @@ function newestFirst(a, b) {
   return String(b.updatedAt || "").localeCompare(String(a.updatedAt || ""));
 }
 
+// Issue #698: a standing intent ("when X comes up, mention Y") is a fact
+// with a `trigger` (X; its text is Y). It never surfaces as a plain fact:
+// it fires when a message is about its trigger, then waits out the
+// cooldown. Only a confirmed (active) intent fires; paused and expired
+// ones never do. A missing expiresAt/lastFiredAt parses to NaN, and every
+// comparison with NaN is false, so neither blocks.
+const INTENT_COOLDOWN_MS = 12 * 60 * 60 * 1000;
+// ponytail: fixed cap so a message touching many intents doesn't turn the
+// reply into a list of reminders; the rest fire on a later match.
+const MAX_INTENTS_PER_TURN = 2;
+// Cosine cutoff for an intent's trigger vs the message, stricter than
+// MIN_FACT_SIMILARITY because a wrong reminder is worse than a missed one.
+// Measured 2026-09-29 with the live Qwen3-Embedding-0.6B-Q8_0 on this exact
+// path (trigger bare, message with QUERY_PROMPT): 12 intents x 6 positive /
+// 6 hard-negative messages, best F0.5 at 0.55 (P 0.89, R 0.46; 0.50 gave
+// P 0.77, R 0.61), and 0.2% false fires on other intents' messages.
+const MIN_INTENT_SIMILARITY = 0.55;
+// Q41: a keyword match on the trigger only breaks a near-tie -- it fires an
+// intent whose similarity is in [0.45, 0.55), never on its own (keywords
+// alone false-fired on other senses of a word, e.g. "static electricity").
+const MIN_INTENT_KEYWORD_SIMILARITY = 0.45;
+
+// Q42: an intent's trigger is saved twice -- Mana's restated rule
+// (`trigger`) and the user's own words (`triggerUserWords`) -- and either
+// can match. The user's words get their own vector under this id suffix.
+const USER_WORDS_ID_SUFFIX = "#user";
+
+function intentTriggers(fact) {
+  return [fact.trigger, fact.triggerUserWords].filter(Boolean);
+}
+
+// Facts plus, for each intent saved with the user's own words, a stand-in
+// whose trigger is those words, so it's embedded and cached separately.
+function withUserWordsVariants(facts) {
+  return facts.flatMap((fact) =>
+    fact.trigger && fact.triggerUserWords
+      ? [fact, { ...fact, id: `${factRecallId(fact)}${USER_WORDS_ID_SUFFIX}`, trigger: fact.triggerUserWords }]
+      : [fact],
+  );
+}
+
+// Whole words only, so a short trigger like "GPU" (too short for
+// significantWords) still matches "a new GPU?" but not "gpus".
+function wordsOf(text) {
+  return ` ${String(text || "").toLowerCase().split(/[^a-z0-9]+/).filter(Boolean).join(" ")} `;
+}
+
+function intentCanFire(fact, nowMs) {
+  return (
+    fact.status === "active" &&
+    !fact.paused &&
+    !(Date.parse(fact.expiresAt) <= nowMs) &&
+    !(nowMs - Date.parse(fact.lastFiredAt) < INTENT_COOLDOWN_MS)
+  );
+}
+
 // Issue #674: pure candidate gathering. Pinned facts always go in (up to
 // MAX_PINNED_FACTS, newest first) and never also count as matches. The
 // matched candidates come in three tiers, first to last:
@@ -98,15 +154,46 @@ function newestFirst(a, b) {
 //      findConflictingFact -- so a single common word like "have" alone
 //      doesn't pull in unrelated facts.
 // Tiers 2 and 3 share one sort: similarity, then shared words, then recency.
-function factRecallCandidates(facts, text, similarityById = null) {
+// #698: intents match the same three ways, on their trigger (similarity is
+// over the trigger's own vector, see factEmbeddingText), and come back
+// separately as `intents`.
+function factRecallCandidates(facts, text, similarityById = null, nowMs = Date.now()) {
   const lowerText = String(text || "").toLowerCase();
   const messageWords = significantWords(text);
   const minWordHits = Math.min(2, messageWords.length);
   const pinned = [];
   const keyHits = [];
   const scored = [];
+  const intents = [];
+  const messageWordString = wordsOf(text);
   for (const fact of facts) {
     if (!isRecallable(fact)) continue;
+    if (fact.trigger) {
+      if (!intentCanFire(fact, nowMs)) continue;
+      const id = factRecallId(fact);
+      const similarity = Math.max(
+        similarityById?.get(id) || 0,
+        similarityById?.get(`${id}${USER_WORDS_ID_SUFFIX}`) || 0,
+      );
+      let wordHits = 0;
+      let keywordHit = false;
+      for (const trigger of intentTriggers(fact)) {
+        const triggerWords = significantWords(trigger);
+        const hits = sharedWordCount(triggerWords, messageWords);
+        const triggerWordString = wordsOf(trigger);
+        if (
+          (triggerWordString.trim() && messageWordString.includes(triggerWordString)) ||
+          (triggerWords.length && hits >= Math.min(2, triggerWords.length))
+        ) {
+          keywordHit = true;
+        }
+        wordHits = Math.max(wordHits, hits);
+      }
+      if (similarity >= MIN_INTENT_SIMILARITY || (keywordHit && similarity >= MIN_INTENT_KEYWORD_SIMILARITY)) {
+        intents.push({ fact, similarity, wordHits });
+      }
+      continue;
+    }
     if (fact.pinned) {
       pinned.push(fact);
       continue;
@@ -129,9 +216,11 @@ function factRecallCandidates(facts, text, similarityById = null) {
       b.similarity - a.similarity || b.wordHits - a.wordHits || newestFirst(a.fact, b.fact),
   );
   pinned.sort(newestFirst);
+  intents.sort((a, b) => b.similarity - a.similarity || b.wordHits - a.wordHits);
   return {
     pinned: pinned.slice(0, MAX_PINNED_FACTS),
     candidates: [...keyHits, ...scored.map((s) => s.fact)].slice(0, MAX_RECALL_CANDIDATES),
+    intents: intents.slice(0, MAX_INTENTS_PER_TURN).map((s) => s.fact),
   };
 }
 
@@ -703,6 +792,7 @@ function createAcpMemoryStore(options = {}) {
         key: f.key,
         preview: cleanText(f.text, 80),
         ...(f.status === "pending" ? { pending: true } : {}),
+        ...(f.trigger ? { trigger: cleanText(f.trigger, 80) } : {}),
       }));
   }
 
@@ -841,6 +931,9 @@ function createAcpMemoryStore(options = {}) {
     source,
     origin,
     expectedVersions,
+    trigger,
+    triggerUserWords,
+    expiresAt,
   } = {}) {
     const cleanKey = cleanText(key, 200);
     if (!cleanKey) {
@@ -932,6 +1025,11 @@ function createAcpMemoryStore(options = {}) {
     // start pending (#663) until the user confirms them.
     const unverified = Boolean(unverifiedSource) || kind === "tool_derived";
     const nextStatus = kind === "model_inferred" || kind === "tool_derived" ? "pending" : "active";
+    // Issue #698: makes this fact a standing intent (see intentCanFire).
+    // Like epistemic, only written when supplied, never cleared by omission.
+    const cleanTrigger = cleanText(trigger, 200);
+    const cleanTriggerUserWords = cleanText(triggerUserWords, 200);
+    const cleanExpiresAt = cleanText(expiresAt, 40);
 
     // Issue #673: the write decision. "insert" on a key that already has a
     // live fact updates that fact instead of adding a second one with the
@@ -944,7 +1042,11 @@ function createAcpMemoryStore(options = {}) {
       const upgrades =
         (existing.status === "pending" && nextStatus === "active") ||
         (existing.unverifiedSource && !unverified);
-      if (sameText && !supersedes && !upgrades) {
+      const intentChanged =
+        (cleanTrigger && cleanTrigger !== existing.trigger) ||
+        (cleanTriggerUserWords && cleanTriggerUserWords !== existing.triggerUserWords) ||
+        (cleanExpiresAt && cleanExpiresAt !== existing.expiresAt);
+      if (sameText && !supersedes && !upgrades && !intentChanged) {
         return { ok: true, action: "patch", decision: "none", key: cleanKey, text: cleanTextValue };
       }
       snapshot();
@@ -987,6 +1089,14 @@ function createAcpMemoryStore(options = {}) {
       // being true because a later correction did not restate them.
       if (normalizedEpistemic) existing.epistemic = normalizedEpistemic;
       if (cleanOccurredAt) existing.occurredAt = cleanOccurredAt;
+      // A new trigger without new user words drops the old words, so the
+      // reminder never keeps firing on the topic it moved away from.
+      if (cleanTrigger && cleanTrigger !== existing.trigger && !cleanTriggerUserWords) {
+        delete existing.triggerUserWords;
+      }
+      if (cleanTrigger) existing.trigger = cleanTrigger;
+      if (cleanTriggerUserWords) existing.triggerUserWords = cleanTriggerUserWords;
+      if (cleanExpiresAt) existing.expiresAt = cleanExpiresAt;
       const supersededPatch = applySupersedes(facts, cleanKey, supersedes, timestamp);
       saveFacts(facts, { op: "update", key: cleanKey, origin: cleanOrigin });
       return {
@@ -1017,6 +1127,9 @@ function createAcpMemoryStore(options = {}) {
       ...(normalizedEpistemic ? { epistemic: normalizedEpistemic } : {}),
       ...(cleanOccurredAt ? { occurredAt: cleanOccurredAt } : {}),
       ...(cleanOrigin ? { origin: cleanOrigin } : {}),
+      ...(cleanTrigger ? { trigger: cleanTrigger } : {}),
+      ...(cleanTrigger && cleanTriggerUserWords ? { triggerUserWords: cleanTriggerUserWords } : {}),
+      ...(cleanExpiresAt ? { expiresAt: cleanExpiresAt } : {}),
     });
     const supersededInsert = applySupersedes(facts, cleanKey, supersedes, timestamp);
     saveFacts(trimFacts(facts), { op: "add", key: cleanKey, origin: cleanOrigin });
@@ -1079,20 +1192,42 @@ function createAcpMemoryStore(options = {}) {
   // project) -- a pinned fact is injected every turn, up to
   // MAX_PINNED_FACTS, whether or not the message mentions it. Only the
   // Settings UI sets it; the model's memory tool has no pin action.
-  function setFactPinned(key, pinned) {
+  // Issue #698: Settings' pause/resume for a standing intent reuses the
+  // same flag toggle ("paused" instead of "pinned").
+  function setFactFlag(key, flag, on, ops) {
     const cleanTargetKey = cleanText(key, 200);
     const facts = loadFacts();
     const target = facts.find(
       (f) => f.status === "active" && f.key.toLowerCase() === cleanTargetKey.toLowerCase(),
     );
     if (!cleanTargetKey || !target) return { key: cleanTargetKey, found: false };
-    if (pinned) {
-      target.pinned = true;
+    if (on) {
+      target[flag] = true;
     } else {
-      delete target.pinned;
+      delete target[flag];
     }
-    saveFacts(facts, { op: pinned ? "pin" : "unpin", key: cleanTargetKey });
-    return { key: cleanTargetKey, found: true, pinned: Boolean(pinned) };
+    saveFacts(facts, { op: on ? ops[0] : ops[1], key: cleanTargetKey });
+    return { key: cleanTargetKey, found: true, [flag]: Boolean(on) };
+  }
+
+  function setFactPinned(key, pinned) {
+    return setFactFlag(key, "pinned", pinned, ["pin", "unpin"]);
+  }
+
+  function setFactPaused(key, paused) {
+    return setFactFlag(key, "paused", paused, ["pause", "resume"]);
+  }
+
+  // Issue #698: starts each fired intent's cooldown. Re-reads the store so
+  // a write made while this turn awaited the embedder isn't overwritten.
+  function markIntentsFired(ids) {
+    if (!ids.length) return;
+    const facts = loadFacts();
+    const at = now();
+    const fired = facts.filter((f) => ids.includes(factRecallId(f)));
+    if (!fired.length) return;
+    for (const fact of fired) fact.lastFiredAt = at;
+    saveFacts(facts, { op: "fire" });
   }
 
   // Issue #431: the point-in-time query the whole feature is for -- "what
@@ -1168,10 +1303,11 @@ function createAcpMemoryStore(options = {}) {
     // Issue #364: candidates are ordered before the caller truncates (see
     // factRecallCandidates) -- unsorted, the facts that survive a tight
     // budget are just whichever happened to be stored first.
-    const { pinned, candidates } = factRecallCandidates(
+    const { pinned, candidates, intents } = factRecallCandidates(
       options.facts || loadFacts(),
       text,
       options.similarityById,
+      Date.parse(now()),
     );
 
     return {
@@ -1180,6 +1316,7 @@ function createAcpMemoryStore(options = {}) {
         : "",
       pinned,
       candidates,
+      intents,
     };
   }
 
@@ -1198,8 +1335,9 @@ function createAcpMemoryStore(options = {}) {
   const EMBEDDING_RETRY_AFTER_MS = 60 * 1000;
   let embeddingsDownUntil = 0;
 
+  // #698: an intent is matched on what it's about, not what it says.
   function factEmbeddingText(fact) {
-    return `${fact.key}: ${fact.text}`;
+    return fact.trigger || `${fact.key}: ${fact.text}`;
   }
 
   function factEmbeddingHash(fact) {
@@ -1255,7 +1393,7 @@ function createAcpMemoryStore(options = {}) {
           }
         });
         // Drop vectors for facts trimmed out of facts.json since.
-        const live = new Set(loadFacts().map(factRecallId));
+        const live = new Set(withUserWordsVariants(loadFacts()).map(factRecallId));
         for (const id of Object.keys(cache)) if (!live.has(id)) delete cache[id];
         writeJsonObject(factEmbeddingsPath, { embeddings: cache });
       } catch (e) {
@@ -1365,13 +1503,15 @@ function createAcpMemoryStore(options = {}) {
       rerankMs: 0,
       fallback: null,
     };
-    const facts = loadFacts();
+    // Q27: scheduled jobs (cron, heartbeat) run with nobody to check an
+    // unconfirmed fact with, so they only see confirmed ones.
+    const facts = options.confirmedOnly ? loadFacts().filter((fact) => fact.status === "active") : loadFacts();
     const similarityById = await factSimilarities(
       text,
-      facts.filter((fact) => isRecallable(fact) && !fact.pinned),
+      withUserWordsVariants(facts.filter((fact) => isRecallable(fact) && (fact.trigger || !fact.pinned))),
       recall,
     );
-    const { mentionsBlock, pinned, candidates } = gatherRelatedFactsBlocks(text, {
+    const { mentionsBlock, pinned, candidates, intents } = gatherRelatedFactsBlocks(text, {
       ...options,
       facts,
       similarityById,
@@ -1424,6 +1564,20 @@ function createAcpMemoryStore(options = {}) {
         });
       }
     }
+    // Issue #698: not cut to maxChars -- at most MAX_INTENTS_PER_TURN lines,
+    // and a reminder marked fired has to actually reach the prompt.
+    if (intents.length) {
+      entries.push({
+        role: "system",
+        position: factsPosition,
+        content:
+          "Standing reminders the user asked for -- this message touches on them, so work each one into your reply once, briefly and naturally:\n" +
+          intents.map((fact) => `- when ${fact.trigger} comes up: ${fact.text}`).join("\n"),
+        truncated: false,
+      });
+      markIntentsFired(intents.map(factRecallId));
+    }
+    recall.intents = intents.length;
     return { entries, recall };
   }
 
@@ -2239,6 +2393,7 @@ function createAcpMemoryStore(options = {}) {
     getFactVersion,
     archiveExpiredPendingFacts,
     setFactPinned,
+    setFactPaused,
     listUntypedEntities,
     setEntityType,
     listCanonicalEntitiesOfType,

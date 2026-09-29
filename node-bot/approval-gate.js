@@ -66,6 +66,8 @@ function createApprovalGate(options = {}) {
   const guardianEnabled = Boolean(options.guardianEnabled);
   const guardianPreCheck =
     typeof options.guardianPreCheck === "function" ? options.guardianPreCheck : null;
+  // Issue #700: told about each human denial (Mana's mood reacts to it).
+  const onDeny = typeof options.onDeny === "function" ? options.onDeny : null;
   const guardianAuditLog =
     options.guardianAuditLog ||
     createToolCallLog({ logPath: path.join(dataDir, "guardian-audit.jsonl"), now });
@@ -274,6 +276,7 @@ function createApprovalGate(options = {}) {
         decision: "deny",
         summary: entry.summary,
       });
+      if (onDeny) onDeny(entry.actionType);
       return { status: "denied", requestId, actionType: entry.actionType, deniedCount };
     }
     if (!["allow-once", "allow-session", "always-allow"].includes(decision)) {

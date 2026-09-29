@@ -63,7 +63,8 @@ test("always-allow persists and runs the executor immediately on future requests
 
 test("deny removes the pending request without running the executor", async () => {
   let ran = false;
-  const gate = createApprovalGate({ dataDir: createTempDir() });
+  const denied = [];
+  const gate = createApprovalGate({ dataDir: createTempDir(), onDeny: (type) => denied.push(type) });
   gate.registerExecutor("skill-write", () => {
     ran = true;
   });
@@ -73,6 +74,8 @@ test("deny removes the pending request without running the executor", async () =
   assert.equal(decided.status, "denied");
   assert.equal(ran, false);
   assert.equal(gate.listPending().length, 0);
+  // Issue #700: the denial reaches Mana's mood.
+  assert.deepEqual(denied, ["skill-write"]);
 });
 
 test("#475 review: decide() durably logs a human's deny/approve decision on a pending request, not just the guardian-cleared auto-approve path", async () => {

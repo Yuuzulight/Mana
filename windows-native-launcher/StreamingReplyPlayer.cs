@@ -20,9 +20,9 @@ internal sealed class StreamingReplyPlayer
     private readonly Func<byte[], Task<bool>> playAsync; // true = clip finished naturally, false = interrupted (#479 sub-project 3)
     private readonly Action<bool> setTalking; // true once the first chunk starts, false once talking stops (naturally or interrupted)
     private readonly Action<bool>? setToolRunning; // #661: true on a "tool" start event, false on its end
-    private readonly Action<string, string?>? onSentencePlaying; // each sentence's text and #623 emotion tag (null if untagged), as its audio starts
+    private readonly Action<string, string?, TimeSpan>? onSentencePlaying; // each sentence's text, #623 emotion tag (null if untagged) and audio length, as its audio starts
 
-    public StreamingReplyPlayer(ManaBackendClient backendClient, Func<byte[], Task<bool>> playAsync, Action<bool> setTalking, Action<bool>? setToolRunning = null, Action<string, string?>? onSentencePlaying = null)
+    public StreamingReplyPlayer(ManaBackendClient backendClient, Func<byte[], Task<bool>> playAsync, Action<bool> setTalking, Action<bool>? setToolRunning = null, Action<string, string?, TimeSpan>? onSentencePlaying = null)
     {
         this.backendClient = backendClient;
         this.playAsync = playAsync;
@@ -202,7 +202,7 @@ internal sealed class StreamingReplyPlayer
                 // matches the acceptable-risk call already made for this same
                 // kind of dangling in-flight synth call elsewhere in this file.
                 var nextTask = TakeAndSynthesizeNextAsync(sentences, TakeNext);
-                onSentencePlaying?.Invoke(sentence.Text, sentence.Emotion);
+                onSentencePlaying?.Invoke(sentence.Text, sentence.Emotion, AudioPlayer.Duration(sentence.Audio));
                 var completedNaturally = await playAsync(sentence.Audio).ConfigureAwait(false);
                 if (!completedNaturally)
                 {

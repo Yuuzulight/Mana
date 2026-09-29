@@ -91,11 +91,25 @@ function registerCoreRoutes(app, upload, deps) {
     SCREEN_CONTEXT_MAX_CHARS,
   } = deps;
 
+  // Every save path (recordChatTurn here, server.js's reply builder) skips
+  // a turn with no sessionId, so say so once instead of letting memory go
+  // quietly empty -- the native launcher sent none until it began
+  // auto-starting sessions.
+  let warnedSessionless = false;
+  function warnIfSessionless(sessionId) {
+    if (sessionId || warnedSessionless) return;
+    warnedSessionless = true;
+    console.warn(
+      "Chat turn received without a sessionId: it is not saved to memory (warning shown once).",
+    );
+  }
+
   // Issue #677: plugin onUserInput hooks (see runPluginInputHooks), run
   // once per chat turn by /reply, /reply/stream and /transcribe, image
   // turns included, after the restart command check so no plugin can
   // swallow it. A short-circuit reply is recorded like any other turn.
   async function runInputHooks(text, source, sessionId, hasImages) {
+    warnIfSessionless(sessionId);
     const input = await runPluginInputHooks(
       capabilities,
       { text, source, sessionId, hasImages },
@@ -191,6 +205,7 @@ function registerCoreRoutes(app, upload, deps) {
       const image = requireString(req.body?.image, "image");
       const prompt = optionalString(req.body?.prompt, "prompt", "");
       const sessionId = optionalString(req.body?.sessionId, "sessionId", null);
+      warnIfSessionless(sessionId);
 
       if (typeof getVisionStatus === "function") {
         const vision = getVisionStatus();

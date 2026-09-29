@@ -1,7 +1,7 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const { spawn, spawnSync } = require("node:child_process");
-const esprima = require("esprima");
+const { getJavaScriptParser } = require("./utils/repo-map");
 const Diff = require("diff");
 const { createSnapshotStore } = require("./snapshot-store");
 
@@ -348,15 +348,14 @@ const DEFAULT_MIN_RETAINED_RATIO = 0.5;
 
 // Issue #420: blocking, not advisory. A proposal that cannot even parse
 // is not a valid edit, and applying it would hand the workspace a broken
-// file. JS uses esprima (already a dependency, used the same way by
-// utils/reply-verifier.js) -- a pure AST parser with no code-execution
-// capability at all, unlike node:vm's Script constructor (which this
-// originally used): parsing untrusted text with an actual JS engine is a
-// legitimate static-analysis red flag even when nothing ever calls
-// .runInThisContext() on the result, since it's the same API real code
-// execution goes through. esprima can't execute anything, at any call
-// depth, so the concern doesn't apply -- not just quieter about it, an
-// actually different code path. JSON via JSON.parse is the same kind of
+// file. JS uses tree-sitter (already a dependency, utils/repo-map.js) -- a
+// pure parser with no code-execution capability at all, unlike node:vm's
+// Script constructor (which this originally used): parsing untrusted text
+// with an actual JS engine is a legitimate static-analysis red flag even
+// when nothing ever calls .runInThisContext() on the result, since it's
+// the same API real code execution goes through. #787: this was esprima,
+// which stops at ES2017 and rejected valid `??`/`?.` edits (a correct fix
+// was refused in the live goal-mode run). JSON via JSON.parse is the same kind of
 // non-executing, in-process check. Python shells out to the system
 // interpreter since there's no in-process parser available here -- this
 // is a rare, human/model-triggered action (one proposal at a time), not
@@ -366,21 +365,28 @@ const DEFAULT_MIN_RETAINED_RATIO = 0.5;
 // verifySkillScript's own "can't classify it, don't hold it against the
 // proposal" behavior rather than trying to build a parser for every
 // language a workspace might contain.
+// The first ERROR (or MISSING, e.g. an unclosed brace) node in a
+// tree-sitter parse, or null when it parsed cleanly.
+function firstSyntaxError(node) {
+  if (node.type === "ERROR" || node.isMissing) return node;
+  for (const child of node.children) {
+    if (child.hasError || child.isMissing) {
+      const found = firstSyntaxError(child);
+      if (found) return found;
+    }
+  }
+  return null;
+}
+
 function verifyProposalSyntax({ relativePath, proposedContent }) {
   const ext = path.extname(String(relativePath || "")).toLowerCase();
 
-  if (ext === ".js" || ext === ".cjs") {
-    // .mjs is deliberately excluded: esprima.parseScript parses "script"
-    // goal, not "module" goal, so it throws on plain import/export --
-    // which is virtually every real .mjs file. Checking it would reject
-    // valid ESM edits as broken, the exact failure mode this feature must
-    // avoid.
-    try {
-      esprima.parseScript(proposedContent);
-      return { ok: true, checked: true };
-    } catch (e) {
-      return { ok: false, checked: true, error: e.message || String(e) };
-    }
+  if (ext === ".js" || ext === ".cjs" || ext === ".mjs") {
+    const bad = firstSyntaxError(getJavaScriptParser().parse(String(proposedContent)).rootNode);
+    if (!bad) return { ok: true, checked: true };
+    const { row, column } = bad.startPosition;
+    const near = bad.text ? ` near "${bad.text.slice(0, 40)}"` : "";
+    return { ok: false, checked: true, error: `Line ${row + 1}, column ${column + 1}: syntax error${near}` };
   }
 
   if (ext === ".json") {

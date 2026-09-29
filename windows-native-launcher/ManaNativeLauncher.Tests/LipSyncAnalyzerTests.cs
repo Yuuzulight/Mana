@@ -30,6 +30,32 @@ public class LipSyncAnalyzerTests
     }
 
     [Fact]
+    public void RmsToMouth_IsCappedAtMax() =>
+        Assert.Equal(0.8f, LipSyncAnalyzer.RmsToMouth(0.5f, gain: 18f, max: 0.8f));
+
+    // Q6: both ways under 70ms, and fully shut in a gap.
+    [Fact]
+    public void SmoothMouthOpen_SnapsAndClosesFullyInGaps()
+    {
+        var open = 0f;
+        for (var t = 0; t < 70; t += 10)
+        {
+            open = LipSyncAnalyzer.SmoothMouthOpen(open, 0.8f, 10);
+        }
+        Assert.True(open > 0.6f, $"should be mostly open within 70ms, was {open}");
+        for (var t = 0; t < 70; t += 10)
+        {
+            open = LipSyncAnalyzer.SmoothMouthOpen(open, 0f, 10);
+        }
+        Assert.True(open < 0.2f, $"should be mostly shut within 70ms, was {open}");
+        for (var t = 0; t < 200 && open > 0f; t += 10)
+        {
+            open = LipSyncAnalyzer.SmoothMouthOpen(open, 0f, 10);
+        }
+        Assert.Equal(0f, open); // not hovering just open
+    }
+
+    [Fact]
     public void RmsToMouth_And_SmoothMouthValue_BasicBehavior()
     {
         Assert.Equal(0f, LipSyncAnalyzer.RmsToMouth(0));

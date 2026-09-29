@@ -75,13 +75,16 @@ test("wrapWithToolCallLog logs a failed call and still rethrows the original err
       throw new Error("boom");
     },
   };
-  const wrapped = wrapWithToolCallLog(basePolicy, log);
+  const failed = [];
+  const wrapped = wrapWithToolCallLog(basePolicy, log, (name) => failed.push(name));
 
   await assert.rejects(() => wrapped.executeTool("read_file", {}), /boom/);
 
   const [entry] = log.readRecent();
   assert.equal(entry.ok, false);
   assert.equal(entry.error, "boom");
+  // Issue #700: the failure reaches Mana's mood.
+  assert.deepEqual(failed, ["read_file"]);
 });
 
 test("wrapWithToolCallLog passes tools/isKnownTool through unchanged", () => {
