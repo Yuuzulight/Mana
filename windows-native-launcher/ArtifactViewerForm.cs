@@ -3,6 +3,8 @@ using System.Collections.Generic;
 using System.Drawing;
 using System.Linq;
 using System.Windows.Forms;
+using Microsoft.Web.WebView2.Core;
+using Microsoft.Web.WebView2.WinForms;
 
 namespace Mana.NativeLauncher;
 
@@ -136,6 +138,10 @@ internal sealed class ArtifactViewerForm : Form
         prevButton.Enabled = currentIndex > 0;
         nextButton.Enabled = currentIndex < currentThread.Count - 1;
 
+        if (htmlView is not null)
+        {
+            htmlView.Visible = false;
+        }
         if (artifact.Language == "mermaid")
         {
             currentMermaidSource = artifact.Content;
@@ -148,8 +154,72 @@ internal sealed class ArtifactViewerForm : Form
             currentMermaidSource = null;
             diagramPanel.Visible = false;
             textBox.Visible = true;
-            textBox.Text = artifact.Content;
+            textBox.Text = artifact.Content; // HTML's source too, until (or if it can't be) rendered
+            if (artifact.Language == "html")
+            {
+                _ = ShowHtmlAsync(artifact);
+            }
         }
+    }
+
+    // #686: HTML renders in a WebView2 with scripts, host objects and web
+    // messages off, so a page has no way to reach Mana; only the artifact
+    // itself loads -- its links, redirects, frames and popups go nowhere.
+    private WebView2? htmlView;
+    private Task? htmlViewReady;
+    private int htmlNavigationsAllowed;
+
+    private async Task ShowHtmlAsync(VersionedArtifact artifact)
+    {
+        try
+        {
+            htmlViewReady ??= CreateHtmlViewAsync();
+            await htmlViewReady;
+            if (IsDisposed || currentThread.Count == 0 || currentThread[currentIndex] != artifact)
+            {
+                return; // moved to another version meanwhile
+            }
+            htmlNavigationsAllowed++;
+            htmlView!.NavigateToString(artifact.Content);
+            textBox.Visible = false;
+            htmlView.Visible = true;
+        }
+        catch (Exception ex)
+        {
+            // No WebView2 runtime, or the page is over its 2 MB limit: the source stays shown.
+            Console.WriteLine($"ArtifactViewerForm: couldn't render HTML, showing its source. {ex.Message}");
+        }
+    }
+
+    private async Task CreateHtmlViewAsync()
+    {
+        var view = new WebView2 { Dock = DockStyle.Fill, Visible = false };
+        Controls.Add(view);
+        view.BringToFront(); // docked last, so it fills the space under the nav row
+        htmlView = view;
+        var environment = await CoreWebView2Environment.CreateAsync(null, Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Mana", "WebView2"));
+        await view.EnsureCoreWebView2Async(environment);
+        var core = view.CoreWebView2;
+        core.Settings.IsScriptEnabled = false;
+        core.Settings.AreHostObjectsAllowed = false;
+        core.Settings.IsWebMessageEnabled = false;
+        core.Settings.AreDevToolsEnabled = false;
+        core.Settings.AreDefaultContextMenusEnabled = false;
+        core.Settings.IsStatusBarEnabled = false;
+        core.NavigationStarting += (_, e) =>
+        {
+            if (htmlNavigationsAllowed > 0)
+            {
+                htmlNavigationsAllowed--; // one of ours from NavigateToString
+            }
+            else
+            {
+                e.Cancel = true;
+            }
+        };
+        core.FrameNavigationStarting += (_, e) => e.Cancel = true;
+        core.NewWindowRequested += (_, e) => e.Handled = true;
     }
 
     private void OnDiagramPaint(object? sender, PaintEventArgs e)
