@@ -350,13 +350,16 @@ internal sealed class ManaBackendClient
         response.EnsureSuccessStatusCode();
     }
 
-    // #690: POST /screen-sensing/glance (plugins/screen-sensing) -- the
-    // same {image, gamingModeActive} body windows-launcher sends. Returns
-    // the summary when the backend's attention gate says it's worth
-    // surfacing, else null.
-    public async Task<string?> ScreenSensingGlanceAsync(string image, bool gamingModeActive)
+    // #690: POST /screen-sensing/glance (plugins/screen-sensing) -- either
+    // the foreground window's text ({text, gamingModeActive}, preferred) or
+    // a screenshot ({image, gamingModeActive}, the body windows-launcher
+    // sends). Returns the summary when the backend's attention gate says
+    // it's worth surfacing, else null.
+    public async Task<string?> ScreenSensingGlanceAsync(string? text, string? image, bool gamingModeActive)
     {
-        var payload = JsonSerializer.Serialize(new { image, gamingModeActive });
+        var payload = text is not null
+            ? JsonSerializer.Serialize(new { text, gamingModeActive })
+            : JsonSerializer.Serialize(new { image, gamingModeActive });
         using var content = new StringContent(payload, Encoding.UTF8, "application/json");
         using var response = await http.PostAsync("/screen-sensing/glance", content);
         response.EnsureSuccessStatusCode();
