@@ -1,4 +1,5 @@
 const defaultFs = require("node:fs");
+const os = require("node:os");
 const path = require("node:path");
 const { spawn: defaultSpawn } = require("node:child_process");
 const { createOnDemandProcess } = require("../utils/on-demand-process");
@@ -21,20 +22,24 @@ function createWhisperServer(options = {}) {
   const findCliBin = options.findCliBin;
   const findModel = options.findModel;
   // The whisper-cli settings from server.js, so both give the same text.
+  // threads() is read at each start: fewer while a game is running.
   const { threads, language, beamSize, noSpeechThreshold } = options;
+  const spawnImpl = options.spawn || defaultSpawn;
+  let startedThreads = null;
 
   const server = createOnDemandProcess({
     name: "whisper-server",
     healthUrl: () => `${baseUrl()}/health`,
     command: () => {
       const bin = serverBin();
+      startedThreads = threads();
       return {
         bin,
         args: [
           "-m", findModel(),
           "--host", "127.0.0.1",
           "--port", String(port()),
-          "-t", String(threads),
+          "-t", String(startedThreads),
           "-l", String(language),
           "-bs", String(beamSize),
           // whisper-cli's default; whisper-server's is 2.
@@ -46,7 +51,7 @@ function createWhisperServer(options = {}) {
       };
     },
     idleMs: () => IDLE_MS,
-    spawn: options.spawn || defaultSpawn,
+    spawn: (bin, args, spawnOptions) => belowNormal(spawnImpl(bin, args, spawnOptions)),
     fetch: fetchImpl,
     sleep: options.sleep,
   });
@@ -82,6 +87,9 @@ function createWhisperServer(options = {}) {
     if (busy || !isEnabled()) return null;
     busy = true;
     try {
+      // A game started or stopped since this server was launched:
+      // restart it with the right thread count (~0.25 s).
+      if (startedThreads !== null && startedThreads !== threads()) server.stop();
       await server.ensure();
       await reset;
       server.touch();
@@ -125,4 +133,13 @@ function createWhisperServer(options = {}) {
   return { transcribe };
 }
 
-module.exports = { createWhisperServer };
+// Lets a game (and Discord) have the CPU first: whisper only slows down
+// while they actually need the cores.
+function belowNormal(child) {
+  try {
+    if (child?.pid) os.setPriority(child.pid, os.constants.priority.PRIORITY_BELOW_NORMAL);
+  } catch (e) {}
+  return child;
+}
+
+module.exports = { createWhisperServer, belowNormal };

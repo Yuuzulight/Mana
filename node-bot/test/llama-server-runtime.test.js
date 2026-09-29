@@ -1012,6 +1012,41 @@ test("runToolAwareReply does NOT attempt repair when content is a normal reply, 
   assert.equal(result.content, "Sure, notes.txt says hello.");
 });
 
+// #623: every emotion-tagged reply starts with "[". Live, that sent each
+// reply to the repair round, which invented a skill__view call every turn.
+test("runToolAwareReply does NOT attempt repair on a plain reply that starts with an emotion tag", async () => {
+  let callCount = 0;
+  let serverUp = false;
+  const fakeFetch = async (url) => {
+    if (String(url).endsWith("/health")) return { ok: serverUp };
+    if (String(url).endsWith("/v1/chat/completions")) {
+      callCount += 1;
+      return {
+        ok: true,
+        json: async () => ({ choices: [{ message: { content: "[happy] Welcome home! [questioning] How was work?" } }] }),
+      };
+    }
+    return { ok: false, status: 404, text: async () => "not found" };
+  };
+
+  const runtime = createLlamaServerRuntime({
+    env: makeFakeEnv(),
+    fs: makeFakeFs(),
+    fetch: fakeFetch,
+    spawn: () => {
+      serverUp = true;
+      return makeFakeChild();
+    },
+    sleep: async () => {},
+    registerExitHandlers: false,
+  });
+
+  const result = await runtime.runToolAwareReply("I'm home", makeFakePolicy());
+
+  assert.equal(callCount, 1, "a tagged prose reply must never trigger the repair round-trip");
+  assert.equal(result.content, "[happy] Welcome home! [questioning] How was work?");
+});
+
 test("runToolAwareReply's repair path gives up cleanly (no throw) when the repair response itself doesn't parse", async () => {
   let callCount = 0;
   let serverUp = false;
@@ -2418,6 +2453,32 @@ test("buildServerArgs falls back to --no-mmap for llama.cpp builds without --loa
     "C:\\llama\\old\\llama-server.exe",
     "C:\\llama\\broken\\llama-server.exe",
   ]);
+});
+
+// #660: uncapped, llama-server's host-RAM prompt cache (8 GiB default) grew
+// its working set 0.9 -> 4.6 GB in one session.
+test("buildServerArgs caps the host-RAM prompt cache at 1024 MiB, LLAMA_CACHE_RAM overrides, older builds skip it", () => {
+  const helpFor = {
+    "new-llama-server.exe": "  -cram, --cache-ram N   set the maximum cache size in MiB",
+    "old-llama-server.exe": "  --mmap, --no-mmap  whether to memory-map model",
+  };
+  const cacheRam = (env, bin = "new-llama-server.exe") => {
+    const runtime = createLlamaServerRuntime({
+      env: { ...makeFakeEnv(), ...env },
+      fs: makeFakeFs(),
+      registerExitHandlers: false,
+      probeHelp: (b) => helpFor[b],
+    });
+    const args = runtime.buildServerArgs("C:\\models\\mana.gguf", 8090, null, null, bin);
+    return args.includes("--cache-ram") ? args[args.indexOf("--cache-ram") + 1] : null;
+  };
+
+  assert.equal(cacheRam({}), "1024");
+  assert.equal(cacheRam({ LLAMA_CACHE_RAM: "4096" }), "4096");
+  assert.equal(cacheRam({ LLAMA_CACHE_RAM: "-1" }), "-1", "no limit");
+  assert.equal(cacheRam({ LLAMA_CACHE_RAM: "0" }), "0", "off");
+  assert.equal(cacheRam({ LLAMA_CACHE_RAM: "lots" }), "1024");
+  assert.equal(cacheRam({}, "old-llama-server.exe"), null, "a build without the flag would refuse to start");
 });
 
 test("buildServerArgs loads straight into VRAM (--load-mode none) by default; MANA_LLAMA_MMAP=1, a saved false or LLAMA_MLOCK=1 turn it off", () => {

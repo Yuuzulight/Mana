@@ -1,5 +1,6 @@
 const defaultFs = require("node:fs");
 const { streamSentences } = require("../utils/sse-sentence-stream");
+const { stripEmotionTags } = require("../utils/emotion-tags");
 const { buildSamplingParams } = require("./sampler-presets");
 const path = require("node:path");
 const {
@@ -56,23 +57,27 @@ function createLlamaServerRuntime(options = {}) {
         windowsHide: true,
         stdio: ["ignore", "pipe", "pipe"],
       }));
-  const loadModeSupport = new Map();
-  // Builds older than --load-mode (reachable via #693 update/rollback)
-  // refuse to start with it; --no-mmap does the same there. A failed probe
-  // counts as "not supported": --no-mmap is still accepted (deprecated) by
-  // builds that do have --load-mode.
-  function supportsLoadMode(bin) {
+  // Each binary's --help text, probed once. Builds older than a flag
+  // (reachable via #693 update/rollback) refuse to start with it. A failed
+  // probe counts as "not supported".
+  const helpTexts = new Map();
+  function supportsFlag(bin, flag) {
     if (!bin) return true;
-    if (!loadModeSupport.has(bin)) {
-      let supported = false;
+    if (!helpTexts.has(bin)) {
+      let text = "";
       try {
-        supported = String(probeHelp(bin)).includes("--load-mode");
+        text = String(probeHelp(bin));
       } catch (e) {
-        supported = false;
+        text = "";
       }
-      loadModeSupport.set(bin, supported);
+      helpTexts.set(bin, text);
     }
-    return loadModeSupport.get(bin);
+    return helpTexts.get(bin).includes(flag);
+  }
+  // Without --load-mode, --no-mmap does the same; it's still accepted
+  // (deprecated) by builds that do have --load-mode.
+  function supportsLoadMode(bin) {
+    return supportsFlag(bin, "--load-mode");
   }
   const registerExitHandlers = options.registerExitHandlers !== false;
   const sleep = options.sleep || defaultSleep;
@@ -556,6 +561,17 @@ function createLlamaServerRuntime(options = {}) {
       } else {
         args.push("--no-mmap");
       }
+    }
+
+    // Issue #660: llama-server keeps a host-RAM prompt cache (b10507
+    // default 8 GiB). Uncapped, its working set grew 0.9 -> 4.6 GB over one
+    // session. The in-slot KV cache (VRAM) already gives turn-to-turn prefix
+    // reuse; the host cache only helps when requests hop slots or sessions,
+    // so 1 GiB keeps most of that. LLAMA_CACHE_RAM overrides it (MiB; -1 =
+    // no limit, 0 = off).
+    if (supportsFlag(bin, "--cache-ram")) {
+      const cacheRam = Number(String(env.LLAMA_CACHE_RAM || "").trim() || 1024);
+      args.push("--cache-ram", String(Number.isInteger(cacheRam) && cacheRam >= -1 ? cacheRam : 1024));
     }
 
     // Same opt-in hardware flags as the llama-cli path.
@@ -1200,8 +1216,13 @@ function createLlamaServerRuntime(options = {}) {
   // dict/object literals essentially never use exactly those two key names
   // back to back, so this is unlikely to false-positive on this model's
   // otherwise code-heavy replies.
+  //
+  // Checked after stripping emotion tags (#623): a tagged reply always starts
+  // with "[" ("[happy] Welcome home"), and flagging it forced a repair round
+  // whose schema had to return some tool call -- it invented skill__view
+  // every turn in a live run.
   function looksLikeFailedToolCallJson(content) {
-    const trimmed = String(content || "").trim();
+    const trimmed = stripEmotionTags(content).text;
     if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
       return true;
     }
