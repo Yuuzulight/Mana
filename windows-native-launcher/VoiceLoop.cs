@@ -185,6 +185,15 @@ internal sealed class VoiceLoop : IDisposable
     // (spoken or typed) asks node-bot to think harder. Same threading story.
     private volatile bool deepThinking;
 
+    // #675 Q12b: Mana's own deep thinking (she turns it on when asked, for
+    // the task), from each reply's final event; lights the Think button via
+    // ManaDeepThinkingChanged (raised on the reply's thread). stopManaThinking:
+    // the user clicked the lit button off, so the next reply sends
+    // thinkHarder: false to end it on node-bot.
+    private volatile bool manaDeepThinking;
+    private volatile bool stopManaThinking;
+    public event Action<bool>? ManaDeepThinkingChanged;
+
     // #521: null (no chat window constructed) is the common case and a
     // no-op everywhere it's used -- see IChatLog's own header comment.
     private readonly IChatLog? chatLog;
@@ -415,7 +424,15 @@ internal sealed class VoiceLoop : IDisposable
 
     public void SetPresetId(string? presetId) => currentPresetId = presetId;
 
-    public void SetDeepThinking(bool on) => deepThinking = on;
+    public void SetDeepThinking(bool on)
+    {
+        deepThinking = on;
+        if (!on && manaDeepThinking)
+        {
+            manaDeepThinking = false;
+            stopManaThinking = true;
+        }
+    }
 
     // #577: lets ResearchForm record a finished report into whatever
     // session is currently active, matching windows-launcher's own
@@ -1314,7 +1331,19 @@ internal sealed class VoiceLoop : IDisposable
         IReadOnlyList<string> pending;
         try
         {
-            (reply, changed, preferredExpression, interrupted, pending) = await streamingReplyPlayer.StreamReplyAndPlayAsync(commandText, currentSessionId, text => chatLog?.AppendReplySentence(text), screenText, image, images, currentPresetId, deepThinking);
+            var stopMana = stopManaThinking;
+            bool? thinkHarder = deepThinking ? true : stopMana ? false : null;
+            (reply, changed, preferredExpression, interrupted, pending) = await streamingReplyPlayer.StreamReplyAndPlayAsync(commandText, currentSessionId, text => chatLog?.AppendReplySentence(text), screenText, image, images, currentPresetId, thinkHarder);
+            if (stopMana)
+            {
+                stopManaThinking = false;
+            }
+            // A click-off during this reply wins over what it reported.
+            if (!interrupted && !stopManaThinking && streamingReplyPlayer.FinalDeepThinking != manaDeepThinking)
+            {
+                manaDeepThinking = streamingReplyPlayer.FinalDeepThinking;
+                ManaDeepThinkingChanged?.Invoke(manaDeepThinking);
+            }
         }
         catch (Exception ex)
         {

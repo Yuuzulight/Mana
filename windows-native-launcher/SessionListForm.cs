@@ -441,11 +441,40 @@ internal sealed class SessionListForm : Form
         think.FlatAppearance.BorderSize = 0;
         think.FlatAppearance.CheckedBackColor = DarkTheme.Accent;
         railToolTip.SetToolTip(think, DeepThinkingOffTooltip);
+        // Q12b: it also lights while Mana's own deep thinking is on (she
+        // turned it on when asked); clicking it then turns hers off too.
+        var userThinking = false;
+        var syncing = false;
         think.CheckedChanged += (_, _) =>
         {
-            voiceLoop.SetDeepThinking(think.Checked);
+            if (!syncing)
+            {
+                userThinking = think.Checked;
+                voiceLoop.SetDeepThinking(think.Checked);
+            }
             think.ForeColor = think.Checked ? DarkTheme.OnAccent : DarkTheme.Muted;
             railToolTip.SetToolTip(think, think.Checked ? DeepThinkingOnTooltip : DeepThinkingOffTooltip);
+        };
+        voiceLoop.ManaDeepThinkingChanged += on =>
+        {
+            void Apply()
+            {
+                syncing = true;
+                think.Checked = userThinking || on;
+                syncing = false;
+            }
+            // The form's handle exists from construction (see the ctor), so
+            // this also works while the window is hidden.
+            if (IsDisposed || !IsHandleCreated)
+            {
+                return;
+            }
+            if (InvokeRequired)
+            {
+                BeginInvoke(Apply);
+                return;
+            }
+            Apply();
         };
 
         async Task SendAsync()

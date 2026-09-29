@@ -351,8 +351,12 @@ function registerCoreRoutes(app, upload, deps) {
         null,
       );
       const presetId = optionalString(req.body?.presetId, "presetId", null);
-      // #675: the client's one-turn "think harder" (deep-thinking toggle).
-      const replyMeta = { systemPatch: input.systemPatch, thinkHarder: req.body?.thinkHarder === true };
+      // #675: the client's "think harder" (deep-thinking toggle): true thinks
+      // this turn, false ends Mana's own deep thinking (Q12b).
+      const replyMeta = {
+        systemPatch: input.systemPatch,
+        thinkHarder: typeof req.body?.thinkHarder === "boolean" ? req.body.thinkHarder : undefined,
+      };
       const reply = await buildAssistantReply(
         input.text,
         screenText,
@@ -509,8 +513,9 @@ function registerCoreRoutes(app, upload, deps) {
       const replyMeta = {
         systemPatch: input.systemPatch,
         onToolCall: ({ name, phase }) => writeEvent({ type: "tool", name, phase }),
-        // #675: the client's one-turn "think harder" (deep-thinking toggle).
-        thinkHarder: req.body?.thinkHarder === true,
+        // #675: the client's "think harder" (deep-thinking toggle): true
+        // thinks this turn, false ends Mana's own deep thinking (Q12b).
+        thinkHarder: typeof req.body?.thinkHarder === "boolean" ? req.body.thinkHarder : undefined,
       };
 
       const reply = await buildAssistantReply(
@@ -534,6 +539,8 @@ function registerCoreRoutes(app, upload, deps) {
         changed: !replyMeta.streamedMatchesFinal,
         ...(replyMeta.expression ? { expression: replyMeta.expression } : {}),
         ...(replyMeta.emotion ? { emotion: replyMeta.emotion } : {}),
+        // #675 Q12b: Mana's own deep thinking is on (the Think button lights).
+        deepThinking: replyMeta.deepThinking === true,
       });
       return res.end();
     } catch (e) {

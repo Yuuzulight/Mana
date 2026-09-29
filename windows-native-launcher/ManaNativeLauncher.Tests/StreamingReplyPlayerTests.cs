@@ -176,11 +176,14 @@ public class StreamingReplyPlayerTests
     }
 
     // #675: VoiceLoop's deep-thinking toggle reaches /reply/stream through here,
-    // as a request field (never by rewriting the user's text).
+    // as a request field (never by rewriting the user's text): true thinks,
+    // false ends Mana's own deep thinking (Q12b), null sends nothing. The
+    // final event's deepThinking (Mana's own is on) comes back for the button.
     [Theory]
-    [InlineData(true)]
-    [InlineData(false)]
-    public async Task StreamReplyAndPlayAsync_SendsThinkHarderOnlyWhenOn(bool on)
+    [InlineData(true, "\"thinkHarder\":true")]
+    [InlineData(false, "\"thinkHarder\":false")]
+    [InlineData(null, null)]
+    public async Task StreamReplyAndPlayAsync_SendsThinkHarderAndReadsDeepThinking(bool? thinkHarder, string? expected)
     {
         string? body = null;
         var handler = new FakeHttpMessageHandler(request =>
@@ -188,16 +191,23 @@ public class StreamingReplyPlayerTests
             body = request.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
             return new HttpResponseMessage(System.Net.HttpStatusCode.OK)
             {
-                Content = new StringContent("{\"type\":\"final\",\"reply\":\"ok\",\"changed\":false}\n"),
+                Content = new StringContent("{\"type\":\"final\",\"reply\":\"ok\",\"changed\":false,\"deepThinking\":" + (thinkHarder is null ? "true" : "false") + "}\n"),
             };
         });
         var player = new StreamingReplyPlayer(new ManaBackendClient(handler), _ => Task.FromResult(true), _ => { });
 
-        await player.StreamReplyAndPlayAsync("hi", thinkHarder: on);
+        await player.StreamReplyAndPlayAsync("hi", thinkHarder: thinkHarder);
 
-        Assert.Equal(on, body!.Contains("\"thinkHarder\":true"));
-        Assert.Equal(on, body.Contains("thinkHarder"));
+        if (expected is null)
+        {
+            Assert.DoesNotContain("thinkHarder", body!);
+        }
+        else
+        {
+            Assert.Contains(expected, body!);
+        }
         Assert.Contains("\"text\":\"hi\"", body);
+        Assert.Equal(thinkHarder is null, player.FinalDeepThinking);
     }
 
     [Fact]

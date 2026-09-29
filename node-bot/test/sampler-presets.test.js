@@ -240,15 +240,19 @@ test("think harder: forced thinking reaches streamed and plain requests; MANA_LL
   assert.equal(await runtime.runLocalAssistantReply("q", 64, "default", null, null, null, true), "Sure.");
   for (const body of bodies) {
     assert.deepEqual(body.chat_template_kwargs, { enable_thinking: true });
-    assert.equal(body.thinking_budget_tokens, 2048);
+    assert.equal(body.thinking_budget_tokens, 1024);
     assert.match(body.reasoning_budget_message, /answer the user directly/, "closes thinking cleanly when the budget runs out");
-    assert.equal(body.max_tokens, 64 + 2048);
+    assert.equal(body.max_tokens, 64 + 1024);
   }
   assert.equal(bodies[0].stream, true);
   const forced = buildSamplingParams({ maxTokens: 1, thinking: true, env: { MANA_LLAMA_REASONING: "off" } });
   assert.equal(forced.params.chat_template_kwargs, undefined);
   const own = buildSamplingParams({ maxTokens: 10, thinking: true, env: { MANA_THINK_HARDER_BUDGET: "300", MANA_REASONING_BUDGET: "7" } });
   assert.equal(own.params.thinking_budget_tokens, 300);
+  // Q43: a tool round thinks at most 512, and never more than the budget set.
+  assert.equal(buildSamplingParams({ task: "tools", maxTokens: 10, thinking: true, env: {} }).params.thinking_budget_tokens, 512);
+  const lowTools = buildSamplingParams({ task: "tools", maxTokens: 10, thinking: true, env: { MANA_THINK_HARDER_BUDGET: "300" } });
+  assert.equal(lowTools.params.thinking_budget_tokens, 300);
   assert.equal(buildSamplingParams({ profile: "quality", maxTokens: 10, env: {} }).params.thinking_budget_tokens, 512);
 });
 
@@ -256,9 +260,9 @@ test("think harder fits prompt + max_tokens into the context: thinking shrinks f
   const env = { LLAMA_CONTEXT: "4096" };
   const roomy = makeRuntime({ ...env }, () => ({ content: "ok" }), { promptTokens: 3000 });
   await roomy.runtime.runLocalAssistantReply("q", 256, "default", null, null, null, true);
-  // room = 4096 - 3000 - 64 = 1032 < 256 + 2048
+  // room = 4096 - 3000 - 64 = 1032 < 256 + 1024
   assert.equal(roomy.bodies[0].max_tokens, 1032);
-  assert.equal(roomy.bodies[0].thinking_budget_tokens, 2048 - (256 + 2048 - 1032));
+  assert.equal(roomy.bodies[0].thinking_budget_tokens, 1024 - (256 + 1024 - 1032));
   assert.deepEqual(roomy.bodies[0].chat_template_kwargs, { enable_thinking: true });
   assert.match(roomy.bodies[0].reasoning_budget_message, /answer the user directly/);
 
@@ -294,9 +298,9 @@ test("think harder on the tool loop: every round thinks, repair doesn't, reasoni
   assert.equal(bodies.length, 2, "the <think> text is not mistaken for a leaked tool call (no repair)");
   for (const body of bodies) {
     assert.deepEqual(body.chat_template_kwargs, { enable_thinking: true });
-    assert.equal(body.thinking_budget_tokens, 2048);
+    assert.equal(body.thinking_budget_tokens, 512);
     assert.match(body.reasoning_budget_message, /answer the user directly/);
-    assert.equal(body.max_tokens, 64 + 2048);
+    assert.equal(body.max_tokens, 64 + 512);
     assert.equal(body.tool_choice, "auto");
   }
   const echoed = bodies[1].messages.find((m) => m.role === "assistant");
@@ -329,7 +333,7 @@ test("a 'think harder' turn (words or the client's flag) thinks on every reply p
       },
     },
     runToolAwareReply: async (prompt, policy, opts) => {
-      toolThinking.push(opts.thinking);
+      toolThinking.push(opts.thinking());
       return { content: "", toolCalls: [], rounds: 0 };
     },
     runLocalAssistantReply: async (...args) => {

@@ -212,6 +212,7 @@ const { createSnapshotToolSource } = require("./ai/snapshot-tool-source");
 const { createExpressionToolSource, isExpressionToolName } = require("./ai/expression-tool-source");
 const { createVisionToolSource } = require("./ai/vision-tool-source");
 const { createSessionGoalToolSource } = require("./ai/session-goal-tool-source");
+const { createDeepThinkingState, createDeepThinkingToolSource } = require("./ai/deep-thinking-tool-source");
 const { visionCaptureBridge } = require("./vision-capture-bridge");
 const { createCodingToolSource } = require("./ai/coding-tool-source");
 const { createMcpClientRegistry } = require("./mcp-client-registry");
@@ -2192,6 +2193,8 @@ function registerRoutes(app, upload, deps = {}) {
   const activePronunciationLexiconStore = deps.pronunciationLexiconStore || pronunciationLexiconStore;
   const activeBrowserAutomationToolSource = deps.browserAutomationToolSource || browserAutomationToolSource;
   const agentActivity = createAgentActivity();
+  // #675 Q12b: deep thinking Mana turned on herself, per session.
+  const deepThinking = createDeepThinkingState();
   const capabilityContext = {
     acpMemoryStore: deps.acpMemoryStore || acpMemoryStore,
     // Only cron-scheduler's agent-job executor uses this today -- every
@@ -3631,8 +3634,19 @@ function registerRoutes(app, upload, deps = {}) {
     // field (the native launcher's deep-thinking toggle). Best-of-N never
     // thinks, so such a turn skips it. undefined (not false) otherwise:
     // the profile's own default then decides.
-    const thinkHarder =
-      (replyMeta && replyMeta.thinkHarder === true) || wantsThinkHarder(transcript) || undefined;
+    // Q12b: or Mana's own deep thinking (deep_thinking__set) is on for this
+    // session; a literal thinkHarder: false (the user clicked the lit Think
+    // button off) ends it first. Only for callers with a replyMeta (the
+    // user's own chat routes), never cron/Discord jobs. let: her tool call
+    // can switch it mid-reply.
+    let manaThinking = false;
+    if (replyMeta) {
+      if (replyMeta.thinkHarder === false) deepThinking.set(sessionId, false);
+      manaThinking = deepThinking.takeReply(sessionId);
+      replyMeta.deepThinking = deepThinking.isOn(sessionId);
+    }
+    const askedThinkHarder = (replyMeta && replyMeta.thinkHarder === true) || wantsThinkHarder(transcript);
+    let thinkHarder = askedThinkHarder || manaThinking || undefined;
 
     // Determine assistant mode and system prompt
     const inferred = pickAssistantMode(transcript, normalizedModelProfile); // { mode, reason }
@@ -4403,6 +4417,21 @@ function registerRoutes(app, upload, deps = {}) {
             // goal set -- there's nothing to finish otherwise, and no
             // reason to spend schema tokens advertising it on every reply.
             ...(sessionGoal ? [createSessionGoalToolSource()] : []),
+            // #675 Q12b: Mana turns deep thinking on/off herself; the rest
+            // of this reply's tool rounds follow it at once.
+            ...(replyMeta
+              ? [
+                  createDeepThinkingToolSource({
+                    onSet: (on) => {
+                      // Already on for this reply: asking again mustn't
+                      // restart the 10-reply cap.
+                      if (!(on && manaThinking)) deepThinking.set(sessionId, on);
+                      replyMeta.deepThinking = deepThinking.isOn(sessionId);
+                      thinkHarder = askedThinkHarder || on || undefined;
+                    },
+                  }),
+                ]
+              : []),
           ]);
           // Issue #281: on the "fast" (small) profile, protect its limited
           // context from a large tool catalogue and from raw tool-result
@@ -4491,7 +4520,7 @@ function registerRoutes(app, upload, deps = {}) {
               profile: normalizedModelProfile,
               overrideSystemPrompt: selectedSystemPrompt,
               extraMessages: memoryExtraMessages,
-              thinking: thinkHarder,
+              thinking: () => thinkHarder,
             },
           );
           if (toolResult.content && toolResult.content.trim()) {

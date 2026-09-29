@@ -36,6 +36,10 @@ internal sealed class StreamingReplyPlayer
     // return tuple so its callers don't all change shape for one field.
     public string? FinalEmotion { get; private set; }
 
+    // #675 Q12b: the last completed reply's final `deepThinking` (Mana's own
+    // deep thinking is on), for the Think button. Same reason as above.
+    public bool FinalDeepThinking { get; private set; }
+
     // Reply is null when Interrupted is true -- a barge-in cut off
     // playback before the reply finished streaming/speaking, so there's no
     // meaningful "true final reply" to report (the caller's already moved
@@ -56,7 +60,7 @@ internal sealed class StreamingReplyPlayer
     // NOT wait for that sentence to actually finish being spoken), since a
     // chat log should show text as it arrives, not lag behind audio.
     public async Task<(string? Reply, bool Changed, string? Expression, bool Interrupted, IReadOnlyList<string> Pending)> StreamReplyAndPlayAsync(
-        string commandText, string? sessionId = null, Action<string>? onSentence = null, string screenText = "", string? image = null, IReadOnlyList<string>? images = null, string? presetId = null, bool thinkHarder = false)
+        string commandText, string? sessionId = null, Action<string>? onSentence = null, string screenText = "", string? image = null, IReadOnlyList<string>? images = null, string? presetId = null, bool? thinkHarder = null)
     {
         var sentences = Channel.CreateUnbounded<(string Text, string? Emotion)>();
         ReplyStreamEvent? finalEvent = null;
@@ -91,6 +95,7 @@ internal sealed class StreamingReplyPlayer
         }
 
         FinalEmotion = finalEvent.Emotion;
+        FinalDeepThinking = finalEvent.DeepThinking;
         return (finalEvent.Reply ?? string.Empty, finalEvent.Changed, finalEvent.Expression, false, pending);
     }
 
@@ -112,7 +117,7 @@ internal sealed class StreamingReplyPlayer
         return PlayStreamedSentencesAsync(channel.Reader);
     }
 
-    private async Task ReadEventsAsync(string commandText, string? sessionId, string screenText, string? image, IReadOnlyList<string>? images, string? presetId, bool thinkHarder, Action<string>? onSentence, ChannelWriter<(string Text, string? Emotion)> writer, Action<ReplyStreamEvent> onFinal)
+    private async Task ReadEventsAsync(string commandText, string? sessionId, string screenText, string? image, IReadOnlyList<string>? images, string? presetId, bool? thinkHarder, Action<string>? onSentence, ChannelWriter<(string Text, string? Emotion)> writer, Action<ReplyStreamEvent> onFinal)
     {
         try
         {

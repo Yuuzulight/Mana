@@ -76,8 +76,11 @@ const THINKING_PROFILES = new Set(["quality", "coding"]);
 const THINKING_OFF_TASKS = new Set(["tools", "stream", "vision", "bestofn", "utility"]);
 const DEFAULT_REASONING_BUDGET = 512;
 // A "think harder" turn's own budget (MANA_THINK_HARDER_BUDGET): at the
-// ~80-97 tokens/s measured on the RTX 5080, about 21-26 s of thinking.
-const THINK_HARDER_BUDGET = 2048;
+// ~80-97 tokens/s measured on the RTX 5080, about 11-13 s of thinking (Q43:
+// 2048 was wasted on trivial questions). Each tool-loop round thinks at most
+// THINK_HARDER_TOOL_ROUND_BUDGET, since a tool turn thinks on every round.
+const THINK_HARDER_BUDGET = 1024;
+const THINK_HARDER_TOOL_ROUND_BUDGET = 512;
 
 function envValue(env, prefix, name) {
   return String(env[`${prefix}_${String(name).toUpperCase()}`] || "").trim().toLowerCase();
@@ -113,13 +116,14 @@ function resolveThinking(profile, task, env, override) {
 // (finish "stop", well under max_tokens) at budgets 64, 512 and 2048.
 const REASONING_BUDGET_MESSAGE = "\n\nOkay, I've thought about this enough. Time to answer the user directly.\n";
 
-function resolveReasoningBudget(profile, env, thinkHarder) {
+function resolveReasoningBudget(profile, env, thinkHarder, task) {
   const raw = thinkHarder
     ? String(env.MANA_THINK_HARDER_BUDGET || "").trim()
     : envValue(env, "MANA_REASONING_BUDGET", profile) || String(env.MANA_REASONING_BUDGET || "").trim();
-  const budget = Number(raw);
-  if (raw !== "" && Number.isInteger(budget) && budget >= 0) return budget;
-  return thinkHarder ? THINK_HARDER_BUDGET : DEFAULT_REASONING_BUDGET;
+  const value = Number(raw);
+  let budget = thinkHarder ? THINK_HARDER_BUDGET : DEFAULT_REASONING_BUDGET;
+  if (raw !== "" && Number.isInteger(value) && value >= 0) budget = value;
+  return thinkHarder && task === "tools" ? Math.min(budget, THINK_HARDER_TOOL_ROUND_BUDGET) : budget;
 }
 
 // Fields to spread into a local /v1/chat/completions body (max_tokens
@@ -143,7 +147,7 @@ function buildSamplingParams({ profile = "default", task = null, maxTokens, thin
     // (field names present, server not run): thinking_budget_tokens is read
     // per request while --reasoning-budget stays at its -1 default. Thinking
     // tokens count toward max_tokens, so the reply keeps its own budget.
-    const budget = resolveReasoningBudget(profile, env, thinking === true);
+    const budget = resolveReasoningBudget(profile, env, thinking === true, String(task || "").toLowerCase());
     params.thinking_budget_tokens = budget;
     params.reasoning_budget_message = REASONING_BUDGET_MESSAGE;
     if (Number.isFinite(maxTokens)) params.max_tokens = maxTokens + budget;

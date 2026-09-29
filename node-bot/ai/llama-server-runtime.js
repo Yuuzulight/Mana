@@ -1043,9 +1043,10 @@ function createLlamaServerRuntime(options = {}) {
   }
 
   // #675: a "think harder" request asks for its reply's max_tokens plus a
-  // 2048-token thinking budget. Keeps prompt + max_tokens inside the slot's
-  // context, so a long prompt shortens the thinking first (then the reply)
-  // instead of generation running off the end of the window mid-thought.
+  // 1024-token thinking budget (512 on a tool round). Keeps prompt +
+  // max_tokens inside the slot's context, so a long prompt shortens the
+  // thinking first (then the reply) instead of generation running off the
+  // end of the window mid-thought.
   // The prompt is measured as the JSON of what's sent (messages + tools),
   // which slightly overcounts -- the safe side.
   async function fitThinkingToContext(params, payload) {
@@ -1359,7 +1360,9 @@ function createLlamaServerRuntime(options = {}) {
       maxToolCallsPerRound,
       maxMs,
       extraMessages = null,
-      // #675: true on a "think harder" turn -- every round thinks.
+      // #675: true on a "think harder" turn -- every round thinks. May be a
+      // function, read each round: Mana's deep_thinking__set can switch it
+      // mid-reply.
       thinking,
     } = {},
   ) {
@@ -1414,8 +1417,9 @@ function createLlamaServerRuntime(options = {}) {
       const toolFields = toolsEnabled
         ? { tools: toolPolicy.tools, tool_choice: "auto" }
         : { tool_choice: "none" };
-      const { params } = buildSamplingParams({ profile, task: "tools", maxTokens, thinking, env });
-      if (thinking === true) await fitThinkingToContext(params, { messages, ...toolFields });
+      const think = typeof thinking === "function" ? thinking() : thinking;
+      const { params } = buildSamplingParams({ profile, task: "tools", maxTokens, thinking: think, env });
+      if (think === true) await fitThinkingToContext(params, { messages, ...toolFields });
       const resp = await fetchImpl(
         `http://127.0.0.1:${state.port}/v1/chat/completions`,
         {
