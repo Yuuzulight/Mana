@@ -61,6 +61,68 @@ public class ManaSettingsStoreTests
         }
     }
 
+    // #645 (Q19): the token is stored DPAPI-encrypted, never in plain text.
+    [Fact]
+    public void Save_StoresTheAdminTokenEncrypted()
+    {
+        var path = TempPath();
+        try
+        {
+            new ManaSettingsStore { AdminToken = "topsecret" }.Save(path);
+
+            var json = File.ReadAllText(path);
+            Assert.DoesNotContain("topsecret", json);
+            Assert.Contains("AdminTokenProtected", json);
+            Assert.Equal("topsecret", ManaSettingsStore.Load(path).AdminToken);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    // An existing plain-text token is moved into DPAPI on the first load.
+    [Fact]
+    public void Load_MigratesAPlainTextAdminToken()
+    {
+        var path = TempPath();
+        try
+        {
+            File.WriteAllText(path, """{"BackendBaseUrl":"http://127.0.0.1:5005","AdminToken":"legacy-token","ActivePresetId":"p"}""");
+
+            var settings = ManaSettingsStore.Load(path);
+
+            Assert.Equal("legacy-token", settings.AdminToken);
+            Assert.Equal("p", settings.ActivePresetId);
+            Assert.DoesNotContain("legacy-token", File.ReadAllText(path));
+            Assert.Equal("legacy-token", ManaSettingsStore.Load(path).AdminToken);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    // A blob this account can't decrypt leaves the token unset, not a crash.
+    [Fact]
+    public void Load_LeavesTheTokenUnsetWhenItCannotBeDecrypted()
+    {
+        var path = TempPath();
+        try
+        {
+            File.WriteAllText(path, """{"AdminTokenProtected":"bm90IGEgZHBhcGkgYmxvYg=="}""");
+
+            var settings = ManaSettingsStore.Load(path);
+
+            Assert.Null(settings.AdminToken);
+            Assert.Equal("http://127.0.0.1:5005", settings.BackendBaseUrl);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
     [Fact]
     public void Save_CreatesTheParentDirectoryWhenItDoesNotExist()
     {
