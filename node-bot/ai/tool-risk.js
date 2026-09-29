@@ -50,13 +50,16 @@ const BUILTIN_TIERS = {
   skill__create: "write",
   skill__run: "write",
   snapshot__restore: "write",
+  // #787: runs the workspace's tests -- the user's own code. #669 has no
+  // execute tier; "write" is what an unrecognized command gets.
+  coding__run_tests: "write",
   browser_automation__navigate: "network",
   browser_automation__click: "network",
   browser_automation__type: "network",
 };
 
 // Built-ins that already ask through the approval gate themselves
-// (memory-write, skill-write/skill-run, snapshot-restore, browser-
+// (memory-write, skill-write/skill-run, snapshot-restore, coding-run-tests, browser-
 // automation's first-use gate). Per-call approval passes them through
 // rather than asking twice for one call.
 const SELF_GATED = new Set([
@@ -64,6 +67,7 @@ const SELF_GATED = new Set([
   "skill__create",
   "skill__run",
   "snapshot__restore",
+  "coding__run_tests",
   "browser_automation__navigate",
   "browser_automation__click",
   "browser_automation__type",

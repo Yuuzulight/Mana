@@ -29,8 +29,12 @@ function fakeApprovalGate({ requestThrows } = {}) {
 function fakeSkillsStore(skills = {}) {
   return {
     viewSkill: (name) => skills[name] || null,
+    listSkills: () =>
+      Object.values(skills).map((s) => ({ name: s.name, hasScript: String(s.body || "").includes("```skill-script") })),
   };
 }
+
+const SCRIPTED = { scripted: { name: "scripted", body: "```skill-script\nreturn 1;\n```" } };
 
 test("createSkillToolSource requires approvalGate", () => {
   assert.throws(() => createSkillToolSource({ skillsStore: fakeSkillsStore() }), /approvalGate is required/);
@@ -47,8 +51,18 @@ test("isSkillToolName distinguishes skill tool names from anything else", () => 
 });
 
 test("listToolSchemas returns view/run/create tool schemas", () => {
-  const source = createSkillToolSource({ approvalGate: fakeApprovalGate(), skillsStore: fakeSkillsStore() });
+  const source = createSkillToolSource({ approvalGate: fakeApprovalGate(), skillsStore: fakeSkillsStore(SCRIPTED) });
   assert.deepEqual(source.listToolSchemas(), TOOL_SCHEMAS);
+});
+
+// #787: goal mode spent rounds on skill__run("run_tests") with no such skill.
+test("listToolSchemas leaves out view/run when there's no skill (with a script) to use", () => {
+  const names = (skills) =>
+    createSkillToolSource({ approvalGate: fakeApprovalGate(), skillsStore: fakeSkillsStore(skills) })
+      .listToolSchemas()
+      .map((t) => t.function.name);
+  assert.deepEqual(names({}), [`${SKILL_TOOL_PREFIX}create`]);
+  assert.deepEqual(names({ plain: { name: "plain", body: "steps" } }), [`${SKILL_TOOL_PREFIX}view`, `${SKILL_TOOL_PREFIX}create`]);
   assert.deepEqual(
     TOOL_SCHEMAS.map((t) => t.function.name),
     [`${SKILL_TOOL_PREFIX}view`, `${SKILL_TOOL_PREFIX}run`, `${SKILL_TOOL_PREFIX}create`],
@@ -209,7 +223,7 @@ test("executeTool rejects an unrecognized skill tool name", async () => {
 
 test("buildToolPolicyWithSkillCreate merges skill tools into an existing base policy", async () => {
   const approvalGate = fakeApprovalGate();
-  const skillSource = createSkillToolSource({ approvalGate, skillsStore: fakeSkillsStore() });
+  const skillSource = createSkillToolSource({ approvalGate, skillsStore: fakeSkillsStore(SCRIPTED) });
   const basePolicy = {
     tools: [{ type: "function", function: { name: "read_file" } }],
     isKnownTool: (name) => name === "read_file",
