@@ -62,6 +62,10 @@ internal sealed class ManaSettingsStore
     public int? AvatarLeft { get; set; }
     public int? AvatarTop { get; set; }
 
+    // #689: Settings > Hotkeys -- action key (HotkeyBindings.Actions) to a
+    // combination like "Ctrl+Alt+W", "" = off; a missing key uses the default.
+    public Dictionary<string, string>? Hotkeys { get; set; }
+
     // filePath: null (every real call site) uses the real per-user
     // settings file. Tests pass a temp file path to exercise
     // load/save/corruption handling without touching LocalApplicationData.

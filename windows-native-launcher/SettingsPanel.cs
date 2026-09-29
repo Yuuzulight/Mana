@@ -76,8 +76,9 @@ internal sealed class SettingsPanel : UserControl
     private bool llamaUpdateAvailable;
     private string? llamaCheckNote;
 
-    public SettingsPanel(ManaBackendClient backendClient, BackendLogBuffer backendLog, Func<string?>? getCurrentSessionId = null)
+    public SettingsPanel(ManaBackendClient backendClient, BackendLogBuffer backendLog, Func<string?>? getCurrentSessionId = null, Func<HotkeyAction, Keys?, string?>? bindHotkey = null)
     {
+        this.bindHotkey = bindHotkey;
         this.backendClient = backendClient;
         this.backendLog = backendLog;
         this.getCurrentSessionId = getCurrentSessionId;
@@ -93,6 +94,7 @@ internal sealed class SettingsPanel : UserControl
         tabs.TabPages.Add(BuildSkillsTab());
         tabs.TabPages.Add(BuildApprovalsTab());
         tabs.TabPages.Add(BuildVoiceTab());
+        tabs.TabPages.Add(BuildHotkeysTab());
         tabs.TabPages.Add(BuildLogsTab());
         tabs.TabPages.Add(BuildThemeTab());
         tabs.TabPages.Add(BuildPerfTab());
@@ -963,6 +965,81 @@ internal sealed class SettingsPanel : UserControl
     // override rather than sending an invalid 5th value.
     private const string AutoProviderLabel = "Auto (gaming-based)";
     private static readonly string[] TtsProviders = { AutoProviderLabel, "fish", "kokoro", "gpt_sovits", "cli" };
+
+    private readonly Func<HotkeyAction, Keys?, string?>? bindHotkey;
+
+    // #689: each global hotkey's combination -- click the box and press the
+    // new one (Backspace turns it off). A combination another Mana hotkey
+    // or another app already uses is refused. Rebinds live when the
+    // launcher wired bindHotkey; saved either way.
+    private TabPage BuildHotkeysTab()
+    {
+        var layout = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown, BackColor = DarkTheme.Background, AutoScroll = true };
+        layout.Controls.Add(new Label { Text = "Click a box and press the new keys (Ctrl or Alt plus a key). Backspace turns a hotkey off.", AutoSize = true, ForeColor = DarkTheme.Muted, Margin = new Padding(3, 6, 3, 6) });
+        foreach (var action in HotkeyBindings.Actions)
+        {
+            layout.Controls.Add(BuildHotkeyRow(action));
+        }
+        return new TabPage("Hotkeys") { Controls = { layout } };
+    }
+
+    private FlowLayoutPanel BuildHotkeyRow(HotkeyAction action)
+    {
+        var label = new Label { Text = action.Label, Width = 200, ForeColor = DarkTheme.Text, Anchor = AnchorStyles.Left };
+        var box = new TextBox { ReadOnly = true, Width = 150, BackColor = DarkTheme.Panel2, ForeColor = DarkTheme.Text, AccessibleName = $"{action.Label} hotkey", ShortcutsEnabled = false };
+        var reset = new Button { Text = "Default", AutoSize = true };
+        DarkTheme.ApplyButton(reset);
+        var status = new Label { AutoSize = true, ForeColor = DarkTheme.Muted, Anchor = AnchorStyles.Left };
+        box.Text = HotkeyBindings.Format(HotkeyBindings.Resolve(ManaSettingsStore.Load().Hotkeys, action));
+
+        void Apply(Keys? keys)
+        {
+            var settings = ManaSettingsStore.Load();
+            if (keys is Keys k && HotkeyBindings.ConflictFor(settings.Hotkeys, action, k) is { } other)
+            {
+                status.Text = $"Already used for \"{other.Label}\".";
+                return;
+            }
+            if (bindHotkey?.Invoke(action, keys) is { } error)
+            {
+                // The old combination is off now too; put it back.
+                bindHotkey(action, HotkeyBindings.Resolve(settings.Hotkeys, action));
+                status.Text = error;
+                return;
+            }
+            settings.Hotkeys ??= new();
+            settings.Hotkeys[action.Key] = keys is Keys set ? HotkeyBindings.Format(set) : "";
+            settings.Save();
+            box.Text = HotkeyBindings.Format(keys);
+            status.Text = bindHotkey is null ? "Saved -- applies next launch." : "Saved.";
+        }
+
+        box.KeyDown += (_, e) =>
+        {
+            e.SuppressKeyPress = true;
+            e.Handled = true;
+            if (e.KeyData is Keys.Back or Keys.Delete)
+            {
+                Apply(null);
+            }
+            else if (HotkeyBindings.IsValid(e.KeyData))
+            {
+                Apply(e.KeyData);
+            }
+            else if ((e.KeyCode & Keys.KeyCode) is not (Keys.ControlKey or Keys.ShiftKey or Keys.Menu))
+            {
+                status.Text = "Use Ctrl or Alt plus a key.";
+            }
+        };
+        reset.Click += (_, _) => Apply(action.Default);
+
+        var row = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.LeftToRight, BackColor = DarkTheme.Background };
+        row.Controls.Add(label);
+        row.Controls.Add(box);
+        row.Controls.Add(reset);
+        row.Controls.Add(status);
+        return row;
+    }
 
     private TabPage BuildVoiceTab()
     {
