@@ -103,6 +103,14 @@ internal sealed class VoiceLoop : IDisposable
     private long msSinceLastSpeech;
     private long bargeInHeldMs; // only meaningful while mode == Speaking
 
+    // #665: read each time listening starts (see BargeInPolicy).
+    private BargeInMode bargeInMode = BargeInMode.MinWords;
+    private int bargeInMinWords = BargeInPolicy.DefaultMinWords;
+    // #665 notWhileSpeaking: recording what I say while she keeps talking
+    // (mode stays Speaking), and what I said, held until she finishes.
+    private bool hearingOverSpeech;
+    private (short[] Samples, long SpeechMs)? queuedTurn;
+
     // #513: the not-yet-played sentences of a reply a barge-in cut off,
     // kept so a backchannel/unclassified interruption (or the end of an
     // inserted new_question answer) can resume them from the cut point.
@@ -292,11 +300,14 @@ internal sealed class VoiceLoop : IDisposable
         // here, not just in Stop(), in case a turn that was already past
         // the wake-word gate when Stop() ran set it back to true since.
         awake = false;
+        var settings = ManaSettingsStore.Load();
+        bargeInMode = BargeInPolicy.Resolve(Environment.GetEnvironmentVariable("MANA_BARGE_IN_MODE"), settings.BargeInMode);
+        bargeInMinWords = BargeInPolicy.MinWords(Environment.GetEnvironmentVariable("MANA_BARGE_IN_MIN_WORDS"));
 
         // #619: echo-cancelled capture first (EchoCancellation), falling back
         // to the plain capture this always used if Windows doesn't apply an
         // AEC or any step fails. speech-debug.log records which one runs.
-        if (!EchoCancellation.IsEnabled(Environment.GetEnvironmentVariable("MANA_VOICE_AEC"), ManaSettingsStore.Load().EchoCancellation))
+        if (!EchoCancellation.IsEnabled(Environment.GetEnvironmentVariable("MANA_VOICE_AEC"), settings.EchoCancellation))
         {
             VoiceDebugLog.AppendNote("capture: aec=off (Settings > Voice or MANA_VOICE_AEC)" + DescribeDevices());
             StartCapture(new WasapiCapture());
@@ -420,6 +431,9 @@ internal sealed class VoiceLoop : IDisposable
             // #619: no merging a closed turn with the next listening
             // session's audio; its turn task still claims and finishes.
             mergeWindow.Close();
+            // #665: nor answering what was said over her before Stop.
+            queuedTurn = null;
+            hearingOverSpeech = false;
             if (mode is ListenMode.Idle or ListenMode.CapturingInterruption)
             {
                 mode = ListenMode.Idle;
@@ -575,6 +589,11 @@ internal sealed class VoiceLoop : IDisposable
 
             if (mode == ListenMode.Speaking)
             {
+                if (hearingOverSpeech)
+                {
+                    ProcessOverSpeechFrame(frame, isSpeech);
+                    continue;
+                }
                 if (ProcessSpeakingFrame(frame, isSpeech))
                 {
                     return; // barge-in triggered; mode is now CapturingInterruption
@@ -627,6 +646,16 @@ internal sealed class VoiceLoop : IDisposable
             return false;
         }
 
+        // #665 notWhileSpeaking: she keeps talking; what I'm saying is
+        // recorded and answered once she's done.
+        if (bargeInMode == BargeInMode.NotWhileSpeaking)
+        {
+            hearingOverSpeech = true;
+            ResetSegment(heardSpeech: true);
+            bargeInHeldMs = 0;
+            return false;
+        }
+
         // Cut Mana off immediately. Whichever audioPlayer.PlayAsync call is
         // currently being awaited (streaming or the non-streaming
         // fallback) sees this as a completedNaturally: false result and
@@ -636,6 +665,29 @@ internal sealed class VoiceLoop : IDisposable
         audioPlayer.Stop();
         StartCapturingInterruption();
         return true;
+    }
+
+    // Caller must already hold stateLock. #665 notWhileSpeaking: records
+    // like a normal segment while she talks; a finished one is queued (joined
+    // onto any already queued) for ReturnToIdle to dispatch.
+    private void ProcessOverSpeechFrame(float[] frame, bool isSpeech)
+    {
+        AppendSegmentFrame(frame, isSpeech);
+        var stopReason = RecordingSegmenter.ShouldStopRecording(hasHeardSpeechInSegment, segmentElapsedMs, msSinceLastSpeech);
+        if (stopReason is RecordingStopReason.SilenceAfterSpeech or RecordingStopReason.MaxDuration)
+        {
+            var samples = segmentSamples.ToArray();
+            queuedTurn = queuedTurn is { } queued
+                ? ([.. queued.Samples, .. samples], queued.SpeechMs + segmentSpeechMs)
+                : (samples, segmentSpeechMs);
+            hearingOverSpeech = false;
+            ResetSegment();
+        }
+        else if (stopReason == RecordingStopReason.NoSpeechTimeout)
+        {
+            hearingOverSpeech = false;
+            ResetSegment();
+        }
     }
 
     // Caller must already hold stateLock.
@@ -1214,6 +1266,16 @@ internal sealed class VoiceLoop : IDisposable
         // Electron's handleTranscript strips "(laughs)"/"[music]" annotations
         // before the wake match and before the text is shown or sent.
         transcript = ScreenContextTrigger.CleanTranscriptText(transcript);
+
+        // #665 minWords: a cough, "mm" or "yeah" that tripped the barge-in
+        // gate isn't an interruption -- she picks up where she stopped.
+        if (wasInterruption && bargeInMode == BargeInMode.MinWords && BargeInPolicy.WordCount(transcript) < bargeInMinWords)
+        {
+            logEntry.Drop = "few-words";
+            await Skip();
+            return;
+        }
+
         string commandText;
         if (!awake)
         {
@@ -1619,6 +1681,7 @@ internal sealed class VoiceLoop : IDisposable
             {
                 mode = ListenMode.Speaking;
                 bargeInHeldMs = 0;
+                hearingOverSpeech = false;
                 vad.Reset();
             }
             else if (mode == ListenMode.Speaking)
@@ -1779,6 +1842,26 @@ internal sealed class VoiceLoop : IDisposable
                 return;
             }
 
+            // #665 notWhileSpeaking: what I said while she talked is the
+            // next turn.
+            if (queuedTurn is { } queued)
+            {
+                queuedTurn = null;
+                hearingOverSpeech = false;
+                manualStopPending = false;
+                frameBuffer.Clear();
+                segmentSamples.Clear();
+                segmentSamples.AddRange(queued.Samples);
+                segmentSpeechMs = queued.SpeechMs;
+                mode = ListenMode.Processing;
+                _ = HandleSegmentClosedAsync(false, "queued", "-");
+                return;
+            }
+            // Still mid-sentence when she finished: keep that recording
+            // going as a normal segment (and the audio buffered meanwhile).
+            var stillHearing = hearingOverSpeech;
+            hearingOverSpeech = false;
+
             mode = ListenMode.Idle;
             manualStopPending = false;
             // Deliberately discard audio buffered during the turn/playback
@@ -1789,7 +1872,10 @@ internal sealed class VoiceLoop : IDisposable
             // genuine mid-playback interruption is handled entirely
             // differently, via CapturingInterruption -- this path is only
             // ever reached when there was nothing to interrupt into.
-            frameBuffer.Clear();
+            if (!stillHearing)
+            {
+                frameBuffer.Clear();
+            }
             ProcessBufferedFrames();
         }
     }
