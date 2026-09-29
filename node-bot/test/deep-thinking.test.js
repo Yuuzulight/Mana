@@ -69,6 +69,8 @@ test("Mana's deep_thinking__set thinks for the rest of the reply and later ones,
     callTool = null;
     assert.deepEqual(await reply(null), [undefined, undefined, undefined]);
     assert.equal(tools.at(-1).includes("deep_thinking__set"), false);
+    assert.deepEqual(await reply({ scheduled: true }), [undefined, undefined, undefined]);
+    assert.equal(tools.at(-1).includes("deep_thinking__set"), false);
     assert.equal(tools[0].includes("deep_thinking__set"), true);
 
     // Calling it on every reply doesn't get round the 10-reply cap.

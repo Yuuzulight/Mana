@@ -3637,10 +3637,12 @@ function registerRoutes(app, upload, deps = {}) {
     // Q12b: or Mana's own deep thinking (deep_thinking__set) is on for this
     // session; a literal thinkHarder: false (the user clicked the lit Think
     // button off) ends it first. Only for callers with a replyMeta (the
-    // user's own chat routes), never cron/Discord jobs. let: her tool call
-    // can switch it mid-reply.
+    // user's own chat routes), never cron/Discord or other scheduled jobs
+    // (#780's replyMeta.scheduled). let: her tool call can switch it
+    // mid-reply.
+    const userChat = Boolean(replyMeta && !replyMeta.scheduled);
     let manaThinking = false;
-    if (replyMeta) {
+    if (userChat) {
       if (replyMeta.thinkHarder === false) deepThinking.set(sessionId, false);
       manaThinking = deepThinking.takeReply(sessionId);
       replyMeta.deepThinking = deepThinking.isOn(sessionId);
@@ -4419,7 +4421,7 @@ function registerRoutes(app, upload, deps = {}) {
             ...(sessionGoal ? [createSessionGoalToolSource()] : []),
             // #675 Q12b: Mana turns deep thinking on/off herself; the rest
             // of this reply's tool rounds follow it at once.
-            ...(replyMeta
+            ...(userChat
               ? [
                   createDeepThinkingToolSource({
                     onSet: (on) => {
