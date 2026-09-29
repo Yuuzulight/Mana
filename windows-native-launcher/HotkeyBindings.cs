@@ -25,6 +25,7 @@ internal static class HotkeyBindings
         new("camera", "Look through my camera (snapshot)", Keys.Control | Keys.Alt | Keys.C, "MANA_CAMERA_HOTKEY"),
         new("interrupt", "Stop Mana talking", Keys.Control | Keys.Alt | Keys.I, "MANA_INTERRUPT_HOTKEY"),
         new("textAction", "Text actions on selected text", Keys.Control | Keys.Alt | Keys.T, "MANA_TEXT_ACTION_HOTKEY"),
+        new("translate", "Translate my screen", Keys.Control | Keys.Alt | Keys.J, "MANA_TRANSLATE_HOTKEY"), // #910
     };
 
     private static readonly KeysConverter Converter = new();
