@@ -117,3 +117,74 @@ test("model-settings-store: load-into-VRAM defaults on, MANA_LLAMA_MMAP=1 turns 
     fs.rmSync(tempDir, { recursive: true });
   }
 });
+
+// #645: brain.apiKey is saved encrypted. A reversible fake stands in for
+// DPAPI; the last test uses the real thing on Windows.
+const fakeSecrets = {
+  protect: (value) => `enc:${Buffer.from(value).toString("base64")}`,
+  unprotect: (blob) => {
+    if (!blob.startsWith("enc:")) throw new Error("bad blob");
+    return Buffer.from(blob.slice(4), "base64").toString();
+  },
+};
+
+function readFile(dir) {
+  return fs.readFileSync(path.join(dir, "model-settings.json"), "utf8");
+}
+
+test("model-settings-store: the API key is saved encrypted and reloads (#645)", () => {
+  const tempDir = createTempDir();
+  try {
+    createModelSettingsStore({ dataDir: tempDir, secrets: fakeSecrets }).setBrainSettings({ apiKey: "sk-secret" });
+    assert.ok(!readFile(tempDir).includes("sk-secret"));
+    assert.match(readFile(tempDir), /"apiKeyProtected"/);
+    const reloaded = createModelSettingsStore({ dataDir: tempDir, secrets: fakeSecrets });
+    assert.equal(reloaded.getBrainSettings().apiKey, "sk-secret");
+    reloaded.setBrainSettings({ apiKey: "" });
+    assert.ok(!readFile(tempDir).includes("apiKey"));
+  } finally {
+    fs.rmSync(tempDir, { recursive: true });
+  }
+});
+
+test("model-settings-store: a plain-text API key from before #645 is encrypted on first read", () => {
+  const tempDir = createTempDir();
+  try {
+    fs.writeFileSync(
+      path.join(tempDir, "model-settings.json"),
+      JSON.stringify({ brain: { type: "openai_compatible", baseUrl: "http://127.0.0.1:1/v1", apiKey: "sk-legacy" } }),
+    );
+    const store = createModelSettingsStore({ dataDir: tempDir, secrets: fakeSecrets });
+    assert.equal(store.getBrainSettings().apiKey, "sk-legacy");
+    assert.ok(!readFile(tempDir).includes("sk-legacy"));
+    assert.equal(createModelSettingsStore({ dataDir: tempDir, secrets: fakeSecrets }).getBrainSettings().apiKey, "sk-legacy");
+  } finally {
+    fs.rmSync(tempDir, { recursive: true });
+  }
+});
+
+test("model-settings-store: an undecryptable key is left unset, and the rest still loads", () => {
+  const tempDir = createTempDir();
+  try {
+    fs.writeFileSync(
+      path.join(tempDir, "model-settings.json"),
+      JSON.stringify({ brain: { type: "openai_compatible", baseUrl: "http://127.0.0.1:1/v1", apiKeyProtected: "not-a-blob" } }),
+    );
+    const brain = createModelSettingsStore({ dataDir: tempDir, secrets: fakeSecrets }).getBrainSettings();
+    assert.equal(brain.apiKey, "");
+    assert.equal(brain.baseUrl, "http://127.0.0.1:1/v1");
+  } finally {
+    fs.rmSync(tempDir, { recursive: true });
+  }
+});
+
+test("model-settings-store: real DPAPI round trip", { skip: process.platform !== "win32" }, () => {
+  const tempDir = createTempDir();
+  try {
+    createModelSettingsStore({ dataDir: tempDir }).setBrainSettings({ apiKey: "sk-dpapi" });
+    assert.ok(!readFile(tempDir).includes("sk-dpapi"));
+    assert.equal(createModelSettingsStore({ dataDir: tempDir }).getBrainSettings().apiKey, "sk-dpapi");
+  } finally {
+    fs.rmSync(tempDir, { recursive: true });
+  }
+});
