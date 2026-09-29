@@ -2100,8 +2100,8 @@ public class ManaBackendClientTests
         });
         var client = new ManaBackendClient(handler);
 
-        Assert.Null(await client.ImportSkillFolderAsync(@"C:\skills\pdf"));
-        Assert.Equal("SKILL.md is required", await client.ImportSkillFolderAsync(@"C:\empty"));
+        Assert.Null(await client.ImportSkillAsync(@"C:\skills\pdf"));
+        Assert.Equal("SKILL.md is required", await client.ImportSkillAsync(@"C:\empty"));
         Assert.Equal("each", await client.GetImportedSkillUseAsync());
         await client.SetImportedSkillUseAsync("free");
 

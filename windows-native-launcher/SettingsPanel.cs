@@ -568,16 +568,20 @@ internal sealed class SettingsPanel : UserControl
         newButton.Click += async (_, _) => await CreateSkillAsync();
         editButton.Click += async (_, _) => await EditSelectedSkillAsync();
         deleteButton.Click += async (_, _) => await DeleteSelectedSkillAsync();
-        // #664 (Q21): import an OpenClaw/AgentSkills SKILL.md folder.
+        // #664 (Q21): import an OpenClaw/AgentSkills SKILL.md folder, or a zip of one.
         var importButton = new Button { Text = "Import folder...", AutoSize = true };
         DarkTheme.ApplyButton(importButton);
         importButton.Click += async (_, _) => await ImportSkillFolderAsync();
+        var importZipButton = new Button { Text = "Import zip...", AutoSize = true };
+        DarkTheme.ApplyButton(importZipButton);
+        importZipButton.Click += async (_, _) => await ImportSkillZipAsync();
 
         var buttonRow = new FlowLayoutPanel { Dock = DockStyle.Bottom, Height = 32, FlowDirection = FlowDirection.LeftToRight, BackColor = DarkTheme.Background };
         buttonRow.Controls.Add(newButton);
         buttonRow.Controls.Add(editButton);
         buttonRow.Controls.Add(deleteButton);
         buttonRow.Controls.Add(importButton);
+        buttonRow.Controls.Add(importZipButton);
 
         // Q20: how Mana may use imported skills (default: ask the first time).
         importedSkillUseBox.Items.AddRange(new object[] { "Use freely", "Ask each time", "Ask the first time" });
@@ -609,14 +613,27 @@ internal sealed class SettingsPanel : UserControl
     private async Task ImportSkillFolderAsync()
     {
         using var dialog = new FolderBrowserDialog { Description = "Pick a skill folder (one with a SKILL.md in it)", UseDescriptionForTitle = true };
-        if (dialog.ShowDialog(this) != DialogResult.OK)
+        if (dialog.ShowDialog(this) == DialogResult.OK)
         {
-            return;
+            await SubmitSkillImportAsync(dialog.SelectedPath);
         }
+    }
+
+    private async Task ImportSkillZipAsync()
+    {
+        using var dialog = new OpenFileDialog { Title = "Pick a zipped skill (a SKILL.md folder)", Filter = "Zip files (*.zip)|*.zip" };
+        if (dialog.ShowDialog(this) == DialogResult.OK)
+        {
+            await SubmitSkillImportAsync(dialog.FileName);
+        }
+    }
+
+    private async Task SubmitSkillImportAsync(string path)
+    {
         string? error;
         try
         {
-            error = await backendClient.ImportSkillFolderAsync(dialog.SelectedPath);
+            error = await backendClient.ImportSkillAsync(path);
         }
         catch (Exception ex)
         {
@@ -628,11 +645,11 @@ internal sealed class SettingsPanel : UserControl
         }
         if (error is null)
         {
-            MessageBox.Show(this, "Import submitted -- review and approve it from the Approvals tab. Nothing in the folder runs.", "Import Skill", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            MessageBox.Show(this, "Import submitted -- review and approve it from the Approvals tab. Nothing in it runs.", "Import Skill", MessageBoxButtons.OK, MessageBoxIcon.Information);
         }
         else
         {
-            MessageBox.Show(this, $"Couldn't import that folder: {error}", "Import Skill", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            MessageBox.Show(this, $"Couldn't import that skill: {error}", "Import Skill", MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
     }
 
