@@ -51,8 +51,15 @@ function createVisionToolSource({
   screenSensingPlugin,
   pluginSettingsStore,
 }) {
+  // #787: not offered when it could only fail (no vision model, or the
+  // screen-sensing plugin is off) -- goal mode spent rounds retrying it.
+  function isUsable() {
+    const vision = typeof getVisionStatus === "function" ? getVisionStatus() : null;
+    return Boolean(vision && vision.available) && isPluginEnabled(screenSensingPlugin, pluginSettingsStore);
+  }
+
   function listToolSchemas() {
-    return TOOL_SCHEMAS;
+    return isUsable() ? TOOL_SCHEMAS : [];
   }
 
   async function executeTool(qualifiedName, args) {
