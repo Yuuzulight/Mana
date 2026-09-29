@@ -38,6 +38,10 @@ internal sealed class VoiceSegmentLogEntry
     // noise after it), null if it wasn't.
     public double Gain { get; set; } = 1;
     public string? Drop { get; set; }
+    // #678: cosine similarity to my voiceprint and how long it took; null
+    // when the segment wasn't checked.
+    public float? Speaker { get; set; }
+    public long SpeakerMs { get; set; }
 
     internal const int MaxTranscriptChars = 300;
 
@@ -71,6 +75,10 @@ internal sealed class VoiceSegmentLogEntry
         if (Drop is not null)
         {
             line += $" drop={Drop}";
+        }
+        if (Speaker is float speaker)
+        {
+            line += string.Format(inv, " speaker={0:F3}/{1}ms", speaker, SpeakerMs);
         }
         if (WakeMatch is bool matched)
         {

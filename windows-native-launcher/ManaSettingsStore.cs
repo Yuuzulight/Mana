@@ -66,6 +66,11 @@ internal sealed class ManaSettingsStore
     // Voice; MANA_BARGE_IN_MODE overrides it.
     public string? BargeInMode { get; set; }
 
+    // #678: SpeakerGate.ModeNames (null = off) and my enrolled voiceprint,
+    // an averaged speaker embedding. Stays in this local file, never uploaded.
+    public string? VoiceprintGate { get; set; }
+    public float[]? Voiceprint { get; set; }
+
     // #681: the prompt preset sent as presetId with every reply; null =
     // none. Chosen in Settings > Presets (windows-launcher kept the same
     // choice in localStorage's manaSelectedPresetId).

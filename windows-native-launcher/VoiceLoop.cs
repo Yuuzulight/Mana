@@ -114,6 +114,13 @@ internal sealed class VoiceLoop : IDisposable
     // #665: read each time listening starts (see BargeInPolicy).
     private BargeInMode bargeInMode = BargeInMode.MinWords;
     private int bargeInMinWords = BargeInPolicy.DefaultMinWords;
+
+    // #678: the voiceprint gate, read each time listening starts. The model
+    // is only loaded once a gate mode is on and I've enrolled.
+    private SpeakerGateMode speakerGateMode;
+    private float[]? voiceprint;
+    private float speakerThreshold = SpeakerGate.DefaultThreshold;
+    private SpeakerEmbedder? speakerEmbedder;
     // #665 notWhileSpeaking: recording what I say while she keeps talking
     // (mode stays Speaking), and what I said, held until she finishes.
     private bool hearingOverSpeech;
@@ -341,6 +348,15 @@ internal sealed class VoiceLoop : IDisposable
         var settings = ManaSettingsStore.Load();
         bargeInMode = BargeInPolicy.Resolve(Environment.GetEnvironmentVariable("MANA_BARGE_IN_MODE"), settings.BargeInMode);
         bargeInMinWords = BargeInPolicy.MinWords(Environment.GetEnvironmentVariable("MANA_BARGE_IN_MIN_WORDS"));
+        speakerGateMode = SpeakerGate.ResolveMode(Environment.GetEnvironmentVariable("MANA_SPEAKER_GATE"), settings.VoiceprintGate);
+        speakerThreshold = SpeakerGate.ResolveThreshold(Environment.GetEnvironmentVariable("MANA_SPEAKER_THRESHOLD"));
+        voiceprint = speakerGateMode == SpeakerGateMode.Off ? null : settings.Voiceprint;
+        if (voiceprint is not null)
+        {
+            speakerEmbedder ??= SpeakerEmbedder.TryLoad(ManaApplicationContext.FindRootDirectory());
+        }
+        VoiceDebugLog.AppendNote(string.Create(System.Globalization.CultureInfo.InvariantCulture,
+            $"speaker: gate={SpeakerGate.ModeNames[(int)speakerGateMode]} enrolled={(settings.Voiceprint is null ? "no" : "yes")} model={(voiceprint is null ? "unused" : speakerEmbedder is null ? "missing (passing all speech through)" : "loaded")} threshold={speakerThreshold:F2}"));
 
         // #858: voice tunables, env var over Settings > Voice.
         var voiceSettings = ManaSettingsStore.Load();
@@ -622,7 +638,11 @@ internal sealed class VoiceLoop : IDisposable
         }
     }
 
-    public void Dispose() => Stop();
+    public void Dispose()
+    {
+        Stop();
+        speakerEmbedder?.Dispose();
+    }
 
     private void OnDataAvailable(object? sender, WaveInEventArgs e)
     {
@@ -1345,8 +1365,28 @@ internal sealed class VoiceLoop : IDisposable
         // is boosted before Whisper hears it, one still too quiet or
         // hiss-like never reaches Whisper, and a phantom phrase or
         // noise-only caption is dropped like an empty transcript.
+        // #678: only my voice gets past here (SpeakerGate), before Whisper.
+        // A rejected interruption un-ducks or resumes her like any other
+        // non-interruption below; an embedder failure fails open.
+        if (!prefilterRejected && speakerEmbedder is { } embedder && voiceprint is { } enrolled
+            && SpeakerGate.Applies(speakerGateMode, awake, wasInterruption))
+        {
+            try
+            {
+                var stopwatch = Stopwatch.StartNew();
+                var (pass, score) = await Task.Run(() => SpeakerGate.IsEnrolledSpeaker(samples, embedder.Embed, enrolled, speakerThreshold));
+                logEntry.Speaker = score;
+                logEntry.SpeakerMs = stopwatch.ElapsedMilliseconds;
+                logEntry.Drop = pass ? null : "speaker";
+            }
+            catch (Exception ex) when (ex is not OutOfMemoryException)
+            {
+                Console.WriteLine($"VoiceLoop: voiceprint check failed, letting the segment through. {ex.Message}");
+            }
+        }
+
         var transcript = "";
-        if (!prefilterRejected)
+        if (!prefilterRejected && logEntry.Drop is null)
         {
             var (boosted, gain) = SpeechFilters.ApplySpeechGain(samples, SpeechFilters.GainTargetPeak, SpeechFilters.GainMaxBoost);
             logEntry.Gain = gain;
