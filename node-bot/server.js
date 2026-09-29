@@ -2268,6 +2268,11 @@ function registerRoutes(app, upload, deps = {}) {
       deps.runVisionReply ||
       ((prompt, images, maxTokens) =>
         llamaServerRuntime.runVisionReply(prompt, images, maxTokens)),
+    // #690: screen-sensing's text glances -- a short reply from whichever
+    // model is already loaded, or null (never loads or swaps one).
+    runLocalReply:
+      deps.runLocalReply ||
+      ((prompt, maxTokens) => llamaServerRuntime.runLocalReplyIfSafelyLoaded(prompt, maxTokens)),
     pluginSettingsStore: activePluginSettingsStore,
     skillsStore: activeSkillsStore,
     env: deps.env || process.env,

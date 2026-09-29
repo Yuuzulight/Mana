@@ -180,6 +180,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
                 () => voiceLoop.IsIdle,
                 () => gamingModeActive,
                 () => SystemIdle.GetIdleMilliseconds() ?? 0,
+                screenContextReader.ReadForGlanceAsync,
                 ScreenCapture.CaptureAsJpegDataUrl,
                 chatLog.AppendManaMessage,
                 PositiveIntEnv("MANA_SCREEN_SENSING_PRESENCE_IDLE_MS", 90000));
