@@ -41,6 +41,16 @@ Project goal
    - `WHISPER_VOCABULARY` adds your own words to that prompt, comma-separated, right after your name, e.g. `WHISPER_VOCABULARY=Imouto, Oneesan, Gigi Murin, Hololive, VTuber` in `node-bot\.env`. Restart the backend to pick up changes. The prompt is capped at 450 characters, so keep the list short (the words beyond the cap are dropped). Words in the prompt pull transcription toward them, so remove any word whisper starts writing where you didn't say it. It's ignored when `WHISPER_PROMPT` is set.
    - For Singaporean-accent recognition, `ggml-base.en.bin` or `ggml-small.en.bin` should be more accurate than `ggml-tiny.en.bin`.
    - `$env:WHISPER_MODEL_PROFILE = "small"` (`tiny`/`base`/`small`/`medium`/`turbo`) picks a size tier by name instead of a raw file path, if you keep more than one model under `tools\whisper\models`. Smaller is faster but less accurate; `turbo` (`large-v3-turbo`) trades some of that speed back for closer-to-large accuracy. Falls back to whatever's actually present if the requested tier's file isn't there.
+   - **Whisper on an NVIDIA GPU (#933).** Unzip `whisper-cublas-12.4.0-bin-x64.zip` from the official ggml-org/whisper.cpp releases into `tools\whisper-cuda\`, and put `ggml-large-v3-turbo-q5_0.bin` (from the official `ggerganov/whisper.cpp` Hugging Face repo) in `tools\whisper\models\`. Then set these in `node-bot\.env`:
+     ```
+     WHISPER_BIN=C:\path\to\Mana\tools\whisper-cuda\Release\whisper-cli.exe
+     WHISPER_MODEL=C:\path\to\Mana\tools\whisper\models\ggml-large-v3-turbo-q5_0.bin
+     WHISPER_THREADS=2
+     ```
+     whisper-server is picked up from the same folder as `WHISPER_BIN`. On an RTX 5080 this uses ~1.0 GB of VRAM (1.2 GB peak) and ~0.1-0.2 GB more system RAM than base on the CPU. It transcribes in 0.15-0.35 s, against 0.7-1 s for base at 8 CPU threads and 1.7-2.2 s at the 2 threads Mana drops to while gaming. It also gets names and Japanese words right more often.
+     - Point `WHISPER_BIN` at the CUDA build, not only the model: the whisper-cli fallback reuses `WHISPER_MODEL`, and turbo on the CPU takes ~12 s per clip even at 8 threads. On the GPU that fallback takes ~1.3 s.
+     - Thread count doesn't change GPU speed. With `WHISPER_THREADS=2`, starting or stopping a game no longer restarts whisper-server. `STT_PROVIDER=parakeet` runs on the CPU and uses the same setting, so keep the higher thread count if you use Parakeet.
+     - Leave flash attention on (the build's default); turning it off costs VRAM. Don't pass `-ac`, which breaks turbo's transcripts. Don't set `GGML_CUDA_ENABLE_UNIFIED_MEMORY` (#801).
    - `LLAMA_BIN` should point to the Llama CLI executable you want to use.
    - `TTS_PROVIDER=kokoro` tells Mana to use the faster Kokoro ONNX service.
    - `TTS_PROVIDER=fish` (the default) tells Mana to call a separately running Fish Speech server; see docs/fish_speech_tts.md.

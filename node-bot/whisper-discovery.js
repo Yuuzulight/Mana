@@ -64,8 +64,9 @@ const WHISPER_MODEL_PROFILES = {
   // decoder layers), ~7x faster with a modest accuracy tradeoff. No
   // English-only ("*.en.bin") variant exists for any large-tier Whisper
   // model in the official whisper.cpp/OpenAI releases, unlike the
-  // smaller tiers above.
-  turbo: ["ggml-large-v3-turbo.bin"],
+  // smaller tiers above. #933: the quantized files transcribed the same in
+  // less VRAM; q5_0 is the one docs/quick_start_windows.md recommends.
+  turbo: ["ggml-large-v3-turbo.bin", "ggml-large-v3-turbo-q8_0.bin", "ggml-large-v3-turbo-q5_0.bin"],
 };
 
 function findWhisperModel(options = {}) {

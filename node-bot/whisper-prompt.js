@@ -220,4 +220,6 @@ module.exports = {
   createWhisperPromptProvider,
   extractTerms,
   isJargon,
+  isUsableFact,
+  userNameFromFacts,
 };

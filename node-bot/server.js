@@ -228,6 +228,7 @@ const { createExpressionToolSource, isExpressionToolName } = require("./ai/expre
 const { createSpeechToolSource } = require("./ai/speech-tool-source");
 const { createVisionToolSource } = require("./ai/vision-tool-source");
 const { createSessionGoalToolSource } = require("./ai/session-goal-tool-source");
+const { createReminderToolSource } = require("./ai/reminder-tool-source");
 const { createDeepThinkingState, createDeepThinkingToolSource } = require("./ai/deep-thinking-tool-source");
 const { visionCaptureBridge } = require("./vision-capture-bridge");
 const { createCodingToolSource } = require("./ai/coding-tool-source");
@@ -4573,6 +4574,9 @@ function registerRoutes(app, upload, deps = {}) {
             ...(sessionGoal ? [createSessionGoalToolSource()] : []),
             // #675 Q12b: Mana turns deep thinking on/off herself; the rest
             // of this reply's tool rounds follow it at once.
+            // #905: reminders the user asks for in chat -- not offered to
+            // scheduled replies, which nobody is asking in.
+            ...(userChat ? [createReminderToolSource({ getScheduler: cronSchedulerPlugin.getScheduler, sessionId })] : []),
             ...(userChat
               ? [
                   createDeepThinkingToolSource({
