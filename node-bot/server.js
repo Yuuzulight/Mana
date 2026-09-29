@@ -3837,6 +3837,8 @@ function registerRoutes(app, upload, deps = {}) {
       if (typeof acpMemoryStore.getRelatedFactsEntries === "function") {
         const { entries, recall } = await acpMemoryStore.getRelatedFactsEntries(transcript, {
           excludeSessionId: sessionId,
+          // Q27: a scheduled job (replyMeta.scheduled) sees confirmed facts only.
+          confirmedOnly: Boolean(replyMeta && replyMeta.scheduled),
         });
         relatedFactsRecall = recall || null;
         for (const entry of entries) {
