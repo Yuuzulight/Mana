@@ -63,6 +63,23 @@ test("findLlamaModel falls back to env.LLAMA_MODEL when the store has no overrid
   assert.equal(runtime.findLlamaModel("default"), makeFakeEnv().LLAMA_MODEL);
 });
 
+test("#872: an auto-detected mmproj prefers Q8_0 over F16", (t) => {
+  const fs = require("node:fs");
+  const os = require("node:os");
+  const path = require("node:path");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "mana-mmproj-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  for (const name of ["Qwen3.5-9B-Q4_K_M.gguf", "mmproj-Qwen3.5-9B-F16.gguf", "mmproj-Qwen3.5-9B-Q8_0.gguf"]) {
+    fs.writeFileSync(path.join(dir, name), "");
+  }
+  const runtime = createLlamaServerRuntime({ env: {}, registerExitHandlers: false });
+
+  assert.equal(
+    runtime.findVisionMmproj(path.join(dir, "Qwen3.5-9B-Q4_K_M.gguf")),
+    path.join(dir, "mmproj-Qwen3.5-9B-Q8_0.gguf"),
+  );
+});
+
 test("findVisionModel/findVisionMmproj prefer a modelSettingsStore override over env vars", () => {
   const env = {
     ...makeFakeEnv(),
@@ -1860,11 +1877,12 @@ function makeTwoModelFs() {
         "C:\\models\\mana.gguf",
         "C:\\models\\vision.gguf",
         "C:\\models\\vision-mmproj.gguf",
+        "C:\\models\\gaming.gguf",
       ].includes(target),
   };
 }
 
-function makeSwappingHarness(extraEnv = {}) {
+function makeSwappingHarness(extraEnv = {}, options = {}) {
   const spawnCalls = [];
   // Tracks liveness of whichever child is "current" -- reset on every spawn,
   // flipped off when that specific child is killed, so a stopAndWait()
@@ -1872,11 +1890,16 @@ function makeSwappingHarness(extraEnv = {}) {
   // llama-server process exiting would be.
   let liveChild = null;
   let clock = 0;
-  const fakeFetch = async (url) => {
+  const chatBodies = [];
+  // When set, chat completions wait on it (a reply still in flight).
+  let chatGate = null;
+  const fakeFetch = async (url, options) => {
     if (String(url).endsWith("/health")) {
       return { ok: Boolean(liveChild && liveChild.exitCode === null) };
     }
     if (String(url).endsWith("/v1/chat/completions")) {
+      chatBodies.push(JSON.parse(options.body));
+      await chatGate;
       return {
         ok: true,
         json: async () => ({ choices: [{ message: { content: "ok" } }] }),
@@ -1898,16 +1921,206 @@ function makeSwappingHarness(extraEnv = {}) {
     sleep: async () => {},
     nowMs: () => clock,
     registerExitHandlers: false,
+    ...options,
   });
 
   return {
     runtime,
     spawnCalls,
+    chatBodies,
     advanceClock: (ms) => {
       clock += ms;
     },
+    holdChat: () => {
+      let release;
+      chatGate = new Promise((resolve) => {
+        release = resolve;
+      });
+      return () => {
+        chatGate = null;
+        release();
+      };
+    },
   };
 }
+
+// Waits (real time) for a background restart to land.
+async function waitUntil(condition) {
+  for (let i = 0; i < 200 && !condition(); i += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  assert.ok(condition(), "timed out waiting");
+}
+
+test("#679: a chat model that is also the vision model loads its mmproj once; images ride on the user message", async () => {
+  const { runtime, spawnCalls, chatBodies, advanceClock } = makeSwappingHarness({
+    LLAMA_VISION_MODEL: "C:\\models\\mana.gguf",
+  });
+  assert.equal(runtime.chatAcceptsImages("default"), true);
+
+  await runtime.runLocalAssistantReply("hello", 64, "default");
+  await runtime.runLocalAssistantReply("still text", 64, "default");
+  assert.equal(spawnCalls.length, 1);
+  assert.ok(!spawnCalls[0].args.includes("--mmproj"), "#872: the chat server starts without the mmproj");
+  assert.equal(chatBodies[0].messages.at(-1).content, "hello", "a text turn stays a plain string");
+
+  advanceClock(10000);
+  const image = "data:image/png;base64,AAAA";
+  await runtime.runLocalAssistantReply("what's this?", 64, "default", null, { early: [], late: [], images: [image] });
+  assert.equal(spawnCalls.length, 2, "#872: the first image turn restarts the server once");
+  assert.ok(spawnCalls[1].args.includes("--mmproj"));
+  await runtime.runLocalAssistantReply("thanks", 64, "default");
+  await runtime.runVisionReply("describe", [image]);
+  assert.equal(spawnCalls.length, 2, "later text, image and vision turns reuse that load");
+  assert.deepEqual(chatBodies[2].messages.at(-1).content, [
+    { type: "text", text: "what's this?" },
+    { type: "image_url", image_url: { url: image } },
+  ]);
+
+  // Bare base64 (the routes accept it) is sent as a data URL.
+  await runtime.runLocalAssistantReply("and this?", 64, "default", null, { images: ["BBBB"] });
+  assert.equal(chatBodies.at(-1).messages.at(-1).content[1].image_url.url, "data:image/png;base64,BBBB");
+});
+
+test("#872: a cold image turn starts the server with the mmproj straight away (waitForServer, then the reply)", async () => {
+  const { runtime, spawnCalls } = makeSwappingHarness({ LLAMA_VISION_MODEL: "C:\\models\\mana.gguf" });
+  const extra = { images: ["data:image/png;base64,AAAA"] };
+
+  await runtime.waitForServer("default", null, extra.images);
+  await runtime.runLocalAssistantReply("what's this?", 64, "default", null, extra);
+
+  assert.equal(spawnCalls.length, 1);
+  assert.ok(spawnCalls[0].args.includes("--mmproj"));
+});
+
+test("#872: MANA_VISION_IDLE_MS without an image restarts the chat server without the mmproj", async () => {
+  const { runtime, spawnCalls, advanceClock } = makeSwappingHarness({
+    LLAMA_VISION_MODEL: "C:\\models\\mana.gguf",
+    MANA_VISION_IDLE_MS: "20",
+  });
+
+  await runtime.runLocalAssistantReply("what's this?", 64, "default", null, { images: ["AAAA"] });
+  assert.equal(runtime.getStatus().mmproj, "C:\\models\\vision-mmproj.gguf");
+
+  await waitUntil(() => spawnCalls.length === 2);
+  assert.ok(!spawnCalls[1].args.includes("--mmproj"));
+  await waitUntil(() => runtime.getStatus().running);
+  assert.equal(runtime.getStatus().mmproj, null);
+
+  // Text turns after the unload stay on it.
+  advanceClock(10000);
+  await runtime.runLocalAssistantReply("hello", 64, "default");
+  assert.equal(spawnCalls.length, 2);
+});
+
+test("#872: a game starting (unloadVision) mid-reply waits for the reply, then drops the mmproj", async () => {
+  const { runtime, spawnCalls, chatBodies, holdChat } = makeSwappingHarness({
+    LLAMA_VISION_MODEL: "C:\\models\\mana.gguf",
+  });
+  const release = holdChat();
+  const reply = runtime.runLocalAssistantReply("what's this?", 64, "default", null, { images: ["AAAA"] });
+  await waitUntil(() => chatBodies.length === 1);
+
+  runtime.unloadVision();
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(spawnCalls.length, 1, "no restart under a reply in flight");
+
+  release();
+  assert.equal(await reply, "ok");
+  await waitUntil(() => spawnCalls.length === 2);
+  assert.ok(!spawnCalls[1].args.includes("--mmproj"));
+});
+
+test("#872: unloadVision leaves a server without the mmproj alone", async () => {
+  const { runtime, spawnCalls } = makeSwappingHarness({ LLAMA_VISION_MODEL: "C:\\models\\mana.gguf" });
+  await runtime.runLocalAssistantReply("hello", 64, "default");
+
+  runtime.unloadVision();
+  await new Promise((resolve) => setTimeout(resolve, 20));
+
+  assert.equal(spawnCalls.length, 1);
+});
+
+// #889: the gaming profile. mana.gguf is the vision-capable chat model.
+const GAMING_ENV = {
+  LLAMA_VISION_MODEL: "C:\\models\\mana.gguf",
+  LLAMA_CONTEXT: "16384",
+  MANA_GAMING_LLAMA_MODEL: "C:\\models\\gaming.gguf",
+};
+const argAfter = (args, flag) => args[args.indexOf(flag) + 1];
+
+test("#889: a game start swaps once to the gaming model (its context, KV cache and cache-ram, no mmproj); the game end swaps back", async () => {
+  const { runtime, spawnCalls } = makeSwappingHarness(GAMING_ENV, { probeHelp: () => "--cache-ram" });
+  await runtime.runLocalAssistantReply("what's this?", 64, "default", null, { images: ["AAAA"] });
+  assert.ok(spawnCalls[0].args.includes("--mmproj"));
+
+  runtime.setGaming(true);
+  await waitUntil(() => runtime.getStatus().gamingModel);
+  const gamingArgs = spawnCalls[1].args;
+  assert.equal(argAfter(gamingArgs, "-m"), "C:\\models\\gaming.gguf");
+  assert.equal(argAfter(gamingArgs, "-c"), "8192");
+  assert.equal(argAfter(gamingArgs, "-ctk"), "q8_0");
+  assert.equal(argAfter(gamingArgs, "-ctv"), "q8_0");
+  assert.equal(argAfter(gamingArgs, "--cache-ram"), "256");
+  assert.ok(!gamingArgs.includes("--mmproj"));
+
+  // Every profile, image turns included, stays on it without the mmproj.
+  assert.equal(runtime.chatAcceptsImages("default"), false);
+  await runtime.runLocalAssistantReply("and this?", 64, "quality", null, { images: ["AAAA"] });
+  await runtime.runLocalAssistantReply("hello", 64, "default");
+  assert.equal(spawnCalls.length, 2);
+  await assert.rejects(runtime.runVisionReply("describe", ["AAAA"]), { code: "VISION_PAUSED_GAMING" });
+
+  runtime.setGaming(false);
+  await waitUntil(() => spawnCalls.length === 3 && runtime.getStatus().running);
+  const normalArgs = spawnCalls[2].args;
+  assert.equal(argAfter(normalArgs, "-m"), "C:\\models\\mana.gguf");
+  assert.equal(argAfter(normalArgs, "-c"), "16384");
+  assert.equal(argAfter(normalArgs, "--cache-ram"), "1024");
+  assert.ok(!normalArgs.includes("-ctk"));
+  assert.equal(runtime.getStatus().gamingModel, false);
+});
+
+test("#889: a game start mid-reply waits for the reply, then swaps", async () => {
+  const { runtime, spawnCalls, chatBodies, holdChat } = makeSwappingHarness(GAMING_ENV);
+  const release = holdChat();
+  const reply = runtime.runLocalAssistantReply("hello", 64, "default");
+  await waitUntil(() => chatBodies.length === 1);
+
+  runtime.setGaming(true);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(spawnCalls.length, 1, "no restart under a reply in flight");
+
+  release();
+  assert.equal(await reply, "ok");
+  await waitUntil(() => spawnCalls.length === 2);
+  assert.equal(argAfter(spawnCalls[1].args, "-m"), "C:\\models\\gaming.gguf");
+});
+
+test("#889: without MANA_GAMING_LLAMA_MODEL a game start only drops the mmproj, and a game end changes nothing", async () => {
+  const { runtime, spawnCalls } = makeSwappingHarness({ LLAMA_VISION_MODEL: "C:\\models\\mana.gguf" });
+  await runtime.runLocalAssistantReply("what's this?", 64, "default", null, { images: ["AAAA"] });
+
+  runtime.setGaming(true);
+  await waitUntil(() => spawnCalls.length === 2);
+  assert.equal(argAfter(spawnCalls[1].args, "-m"), "C:\\models\\mana.gguf");
+  assert.ok(!spawnCalls[1].args.includes("-ctk"));
+
+  runtime.setGaming(false);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(spawnCalls.length, 2);
+  assert.equal(runtime.getStatus().gamingModel, false);
+});
+
+test("#679: a text-only chat server drops attached images instead of sending a request it would reject", async () => {
+  const { runtime, spawnCalls, chatBodies } = makeSwappingHarness();
+  assert.equal(runtime.chatAcceptsImages("default"), false);
+
+  await runtime.runLocalAssistantReply("what's this?", 64, "default", null, { images: ["data:image/png;base64,AAAA"] });
+
+  assert.ok(!spawnCalls[0].args.includes("--mmproj"));
+  assert.equal(chatBodies[0].messages.at(-1).content, "what's this?");
+});
 
 test("a real swap is timed and exposed via getStatus().lastSwapMs", async () => {
   const { runtime, advanceClock } = makeSwappingHarness();

@@ -90,4 +90,52 @@ public class BargeInGateTests
         var silence = new float[] { 0f, 0f, 0f, 0f };
         Assert.Equal(double.NegativeInfinity, BargeInGate.DbfsFromSamples(silence));
     }
+
+    // #665: barge-in modes.
+    [Theory]
+    [InlineData(null, null, (int)BargeInMode.MinWords)]
+    [InlineData(null, "always", (int)BargeInMode.Always)]
+    [InlineData("notWhileSpeaking", "always", (int)BargeInMode.NotWhileSpeaking)]
+    [InlineData("nonsense", "notWhileSpeaking", (int)BargeInMode.NotWhileSpeaking)]
+    [InlineData(" Min-Words ", null, (int)BargeInMode.MinWords)]
+    public void Resolve_EnvBeatsSettingAndDefaultsToMinWords(string? env, string? saved, int expected) =>
+        Assert.Equal((BargeInMode)expected, BargeInPolicy.Resolve(env, saved));
+
+    [Theory]
+    [InlineData("", 0)]
+    [InlineData("mm...", 1)]
+    [InlineData("Yeah.", 1)]
+    [InlineData("wait, stop!", 2)]
+    [InlineData("don't go", 2)]
+    [InlineData("hold on a sec", 4)]
+    public void WordCount_CountsRealWords(string transcript, int expected) =>
+        Assert.Equal(expected, BargeInPolicy.WordCount(transcript));
+
+    [Fact]
+    public void MinWords_DefaultsToTwo()
+    {
+        Assert.Equal(2, BargeInPolicy.MinWords(null));
+        Assert.Equal(2, BargeInPolicy.MinWords("0"));
+        Assert.Equal(3, BargeInPolicy.MinWords("3"));
+    }
+
+    // #665: a ducked interruption stops her only when it's real.
+    [Theory]
+    [InlineData(true, false, "wait, stop", true)]
+    [InlineData(true, false, "yeah", false)]
+    [InlineData(true, false, "", false)]
+    [InlineData(true, true, "thank you for watching", false)] // dropped as a hallucination
+    [InlineData(false, false, "wait, stop", false)]            // transcription failed
+    public void IsRealInterruption_NeedsATranscriptWithEnoughWords(bool transcribed, bool dropped, string transcript, bool expected) =>
+        Assert.Equal(expected, BargeInPolicy.IsRealInterruption(transcribed, dropped, transcript, BargeInPolicy.DefaultMinWords));
+
+    [Fact]
+    public void AudioPlayerVolume_IsClampedAndKept()
+    {
+        using var player = new AudioPlayer();
+        player.Volume = BargeInPolicy.DuckVolume;
+        Assert.Equal(0.3f, player.Volume);
+        player.Volume = 2f;
+        Assert.Equal(1f, player.Volume);
+    }
 }

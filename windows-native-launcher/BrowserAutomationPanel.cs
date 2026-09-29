@@ -40,6 +40,7 @@ internal sealed class BrowserAutomationPanel : Form
         TopMost = true;
         StartPosition = FormStartPosition.Manual;
         BackColor = DarkTheme.Panel;
+        DarkTheme.Track(this); // #688: recoloured on a live theme switch
         Width = 260;
         Height = 220;
         Visible = false;

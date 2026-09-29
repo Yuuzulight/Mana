@@ -56,6 +56,16 @@ internal sealed class ManaSettingsStore
     public long? SilenceBufferMs { get; set; }
     public float? VadThreshold { get; set; }
 
+    // #670: local-only mode for the node-bot this launcher starts (passed
+    // as MANA_LAUNCHER_LOCAL_ONLY=1). Settings > Connection; applies on the
+    // next start. MANA_LOCAL_ONLY=1 in node-bot/.env turns it on regardless.
+    public bool LocalOnly { get; set; }
+
+    // #665: what talking over Mana does (BargeInMode: "minWords" -- the
+    // default when null -- "always" or "notWhileSpeaking"). Settings >
+    // Voice; MANA_BARGE_IN_MODE overrides it.
+    public string? BargeInMode { get; set; }
+
     // #681: the prompt preset sent as presetId with every reply; null =
     // none. Chosen in Settings > Presets (windows-launcher kept the same
     // choice in localStorage's manaSelectedPresetId).
@@ -67,6 +77,27 @@ internal sealed class ManaSettingsStore
     public bool AvatarClickThrough { get; set; }
     public int? AvatarLeft { get; set; }
     public int? AvatarTop { get; set; }
+
+    // #689: Settings > Hotkeys -- action key (HotkeyBindings.Actions) to a
+    // combination like "Ctrl+Alt+W", "" = off; a missing key uses the default.
+    public Dictionary<string, string>? Hotkeys { get; set; }
+
+    // #701: Mana's spoken sentences as bubbles beside the avatar while the
+    // chat window isn't in view (tray menu); off by default.
+    public bool ChatBubbles { get; set; }
+
+    // #684: Electron's "minimized Mana" -- the avatar steps aside while the
+    // chat window is open and comes back when it's closed or minimized.
+    // Off keeps her always showing. Tray menu.
+    public bool AvatarHidesWithChat { get; set; } = true;
+
+    // #574/#688: gaming-mode detection (tray menu and Settings >
+    // Performance); off ignores the backend's watched-game scan.
+    public bool GamingModeDetection { get; set; } = true;
+
+    // #685: the chat window's live avatar framing -- "full", "waist" or
+    // "bust" (see LiveAvatarPanel); null = full.
+    public string? AvatarFraming { get; set; }
 
     // #687: the chat session open when the launcher last ran, reopened on
     // launch, and whether it was auto-started (Q62: those still rotate).

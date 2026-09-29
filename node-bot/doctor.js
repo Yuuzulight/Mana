@@ -462,6 +462,13 @@ function checkMemoryGraphHistory(size) {
   );
 }
 
+// #889: which chat model llama-server is running, "(gaming model)" while
+// a watched game has it swapped to MANA_GAMING_LLAMA_MODEL.
+function checkChatModel(label) {
+  if (!label) return null;
+  return makeCheck("chat-model", "Chat model", "pass", `${label} is loaded.`);
+}
+
 function checkEditorIntegrations(options = {}) {
   const status = createEditorIntegrations({
     env: options.env || process.env,
@@ -781,6 +788,7 @@ function runDoctorChecks(options = {}) {
     checkStorage(paths),
     checkPlainTextSecrets(options.plainTextSecrets),
     checkMemoryGraphHistory(options.memoryGraphHistory),
+    checkChatModel(options.chatModel),
     ...checkEditorIntegrations({
       env,
       commandResolver: options.zedCommandResolver,

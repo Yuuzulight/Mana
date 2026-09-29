@@ -25,21 +25,43 @@ internal sealed class SileroVadRunner : IDisposable
     internal const int ContextSize = 64;
     internal const int SampleRate = 16000;
     internal const float DefaultThreshold = 0.5f;
+    // #665: once in speech, it takes a score under this to leave it, so soft
+    // consonants, trailing syllables and quieter or accented speech don't
+    // flicker out mid-word (and reset the barge-in count).
+    internal const float DefaultExitThreshold = 0.35f;
     private const int StateSize = 2 * 1 * 128;
 
     private readonly InferenceSession session;
+    // #665 hysteresis; #858: the enter threshold is set each time
+    // listening starts, and the exit one follows it down (never above it).
+    private readonly float configuredExitThreshold;
+    private float threshold;
+    private float exitThreshold;
+    private bool inSpeech;
     private float[] state = new float[StateSize];
     private float[] context = new float[ContextSize];
 
-    public SileroVadRunner(string modelPath, float threshold = DefaultThreshold)
+    public SileroVadRunner(string modelPath, float threshold = DefaultThreshold, float exitThreshold = DefaultExitThreshold)
     {
         session = new InferenceSession(modelPath);
+        configuredExitThreshold = exitThreshold;
         Threshold = threshold;
     }
 
-    // #858: the speech-probability cutoff; VoiceLoop sets it each time
-    // listening starts (ResolveThreshold).
-    public float Threshold { get; set; }
+    // #858: the speech-probability cutoff to enter speech; VoiceLoop sets it
+    // each time listening starts (ResolveThreshold). The exit threshold
+    // (#665, MANA_VAD_EXIT_THRESHOLD) is capped at it.
+    public float Threshold
+    {
+        get => threshold;
+        set
+        {
+            threshold = value;
+            exitThreshold = Math.Min(configuredExitThreshold, value);
+        }
+    }
+
+    internal float ExitThreshold => exitThreshold;
 
     // #858: MANA_VAD_THRESHOLD (Electron's knob) wins over Settings > Voice,
     // else 0.5. Anything outside (0, 1) is ignored.
@@ -54,6 +76,7 @@ internal sealed class SileroVadRunner : IDisposable
     {
         state = new float[StateSize];
         context = new float[ContextSize];
+        inSpeech = false;
     }
 
     public float ProcessFrame(float[] frame)
@@ -90,7 +113,11 @@ internal sealed class SileroVadRunner : IDisposable
         return output[0];
     }
 
-    public bool IsSpeech(float probability) => probability >= Threshold;
+    // #665: with hysteresis -- call once per frame, in order (Reset starts over).
+    public bool IsSpeech(float probability) => inSpeech = NextSpeech(inSpeech, probability, threshold, exitThreshold);
+
+    internal static bool NextSpeech(bool inSpeech, float probability, float enter, float exit) =>
+        probability >= (inSpeech ? exit : enter);
 
     public void Dispose() => session.Dispose();
 }
