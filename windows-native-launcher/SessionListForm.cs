@@ -68,6 +68,7 @@ internal sealed class SessionListForm : Form
     private readonly Font activeSessionFont;
     private readonly Font messageBoxFont;
     private readonly MessageQueueStrip messageQueue = new();
+    private readonly ImageAttachmentStrip attachments = new();
     // ponytail: polls instead of hooking every path back to Idle in VoiceLoop; only runs while something is queued.
     private readonly System.Windows.Forms.Timer messageQueueTimer = new() { Interval = 300 };
     // Q11: flips Send to Stop while she's replying.
@@ -344,6 +345,7 @@ internal sealed class SessionListForm : Form
         // its queue (#668) sits just above it, then the chat fills the rest.
         chatArea.Controls.Add(chatLog);
         chatArea.Controls.Add(messageQueue);
+        chatArea.Controls.Add(attachments);
         chatArea.Controls.Add(BuildMessageBox());
         chatLog.ReplyEnded += () => _ = OfferPendingEditsAsync(chatLog);
         // Q62: VoiceLoop started a session on its own (launch, or 4 h idle);
@@ -535,6 +537,25 @@ internal sealed class SessionListForm : Form
         async Task SendAsync()
         {
             var text = box.Text;
+            if (attachments.Count > 0)
+            {
+                // #679: a message with images doesn't join the queue; while
+                // Mana is busy (or messages are queued) it stays in the box
+                // for another Send.
+                if (messageQueue.Count > 0)
+                {
+                    return;
+                }
+                var sending = voiceLoop.SubmitTypedCommandAsync(text, attachments.Images);
+                if (sending.IsCompleted && !sending.Result)
+                {
+                    return;
+                }
+                box.Clear();
+                attachments.Clear();
+                await sending;
+                return;
+            }
             if (text.Trim().Length == 0)
             {
                 return;
@@ -546,9 +567,56 @@ internal sealed class SessionListForm : Form
                 messageQueueTimer.Start();
             }
         }
+        // #679: Ctrl+V with an image (or copied image files) on the
+        // clipboard, or image files dropped on the box, attach them.
+        void AttachFiles(IEnumerable<string> paths)
+        {
+            foreach (var path in paths.Where(ImageAttachmentStrip.IsImageFile))
+            {
+                if (attachments.Count >= ImageAttachmentStrip.MaxImages)
+                {
+                    break;
+                }
+                attachments.AddFile(path);
+            }
+        }
+        static string[] DroppedFiles(IDataObject? data) =>
+            data?.GetData(DataFormats.FileDrop) is string[] files ? files.Where(ImageAttachmentStrip.IsImageFile).ToArray() : Array.Empty<string>();
+        box.AllowDrop = true;
+        box.DragEnter += (_, e) => e.Effect = DroppedFiles(e.Data).Length > 0 ? DragDropEffects.Copy : DragDropEffects.None;
+        box.DragDrop += (_, e) => AttachFiles(DroppedFiles(e.Data));
+        // True if the clipboard held images (then the text box's own paste is
+        // skipped). Another app holding the clipboard open makes it throw.
+        bool PasteImages()
+        {
+            try
+            {
+                if (Clipboard.ContainsImage())
+                {
+                    using var image = Clipboard.GetImage();
+                    if (image is not null)
+                    {
+                        attachments.Add(image);
+                    }
+                    return true;
+                }
+                var copied = DroppedFiles(Clipboard.GetDataObject());
+                AttachFiles(copied);
+                return copied.Length > 0;
+            }
+            catch (System.Runtime.InteropServices.ExternalException ex)
+            {
+                Console.WriteLine($"SessionListForm: couldn't read the clipboard. {ex.Message}");
+                return false;
+            }
+        }
         box.KeyDown += async (_, e) =>
         {
-            if (e.KeyCode == Keys.Enter && !e.Shift)
+            if (e.KeyCode == Keys.V && e.Control && !e.Alt && PasteImages())
+            {
+                e.SuppressKeyPress = true;
+            }
+            else if (e.KeyCode == Keys.Enter && !e.Shift)
             {
                 e.SuppressKeyPress = true;
                 await SendAsync();

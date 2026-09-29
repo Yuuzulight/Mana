@@ -158,7 +158,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
         sessionListForm = new SessionListForm(backendClient, voiceLoop, chatLog, avatarOverlay, processManager.BackendLog);
         // #525: Ctrl+Alt+Space types a command instead of speaking one,
         // through the exact same turn-processing path.
-        quickEntry = new QuickEntryForm(voiceLoop.SubmitTypedCommandAsync);
+        quickEntry = new QuickEntryForm(text => voiceLoop.SubmitTypedCommandAsync(text));
         // #584: windows-launcher's own defaults are Ctrl+Alt+Space for the
         // window toggle and Ctrl+Alt+I for manual interrupt -- the first
         // collides with quickEntry's own hotkey right above (already
