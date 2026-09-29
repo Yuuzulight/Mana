@@ -261,7 +261,8 @@ public class ManaProcessManagerTests
         // #691: MANA_START_RETRIEVER=1 and TTS_PROVIDER=gpt_sovits add the
         // retriever and GPT-SoVITS; with nothing answering and nothing
         // installed under the root, they (and SearXNG) read Unavailable
-        // instead of failing startup.
+        // instead of failing startup. Only the selected TTS starts, so Fish
+        // Speech is never checked, reported or waited on.
         Environment.SetEnvironmentVariable("MANA_START_RETRIEVER", "1");
         Environment.SetEnvironmentVariable("TTS_PROVIDER", "gpt_sovits");
         try
@@ -281,6 +282,9 @@ public class ManaProcessManagerTests
             Assert.False(reported["retriever"]);
             Assert.False(reported["gpt-sovits"]);
             Assert.Contains("http://127.0.0.1:9880/docs", requested);
+            Assert.False(reported.ContainsKey("fish-speech"));
+            Assert.DoesNotContain(requested, url => new Uri(url).Port == 8080);
+            Assert.False(manager.IsFishSpeechAvailable);
             Assert.Equal(
                 ManaApplicationContext.ServiceRowsFor(manager).Select(row => row.Key).OrderBy(key => key),
                 reported.Keys.OrderBy(key => key));

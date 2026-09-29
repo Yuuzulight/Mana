@@ -23,11 +23,15 @@ internal sealed class ManaProcessManager : IDisposable
     // #691: opt-in services, read once at construction (node-bot/.env is
     // already loaded by then). They get a startup row only when turned on,
     // so an unused one never shows as "Unavailable".
-    // The Python retriever is opt-in here, unlike windows-launcher: it
-    // json.loads the whole tools/vector_store metadata (GBs on a real
-    // index) for a coding-mode fallback node-bot's own retriever-index
-    // already covers. MANA_START_RETRIEVER=1 turns it on.
+    // The Python retriever json.loads the whole tools/vector_store metadata
+    // (GBs on a real index), so node-bot starts it on demand when a coding
+    // turn needs it and stops it when idle (ai/retriever-runtime.js).
+    // MANA_START_RETRIEVER=1 force-starts it here at launch instead.
     public bool UsesRetriever { get; } = Environment.GetEnvironmentVariable("MANA_START_RETRIEVER") == "1";
+    // User decision: only the selected TTS provider is started. Fish is the
+    // default (the same "fish" this launcher passes node-bot when unset);
+    // Kokoro stays on demand in node-bot.
+    public bool UsesFishSpeech { get; } = Environment.GetEnvironmentVariable("TTS_PROVIDER") is null or "" or "fish";
     public bool UsesGptSovits { get; } = Environment.GetEnvironmentVariable("TTS_PROVIDER") == "gpt_sovits";
 
     // #582: only captures output for a backend process THIS launcher
@@ -84,7 +88,7 @@ internal sealed class ManaProcessManager : IDisposable
     }
 
     // onServiceReady, when given, fires once per service (key "backend"/
-    // "fish-speech"/"embedder"/"websearch", plus "retriever"/"gpt-sovits"
+    // "embedder"/"websearch", plus "fish-speech"/"retriever"/"gpt-sovits"
     // when in use) the moment its own health-check-then-start
     // resolves -- lets a caller (the startup overlay) flip that row from
     // "Starting..." to "Ready"/"Unavailable" live instead of only knowing
@@ -115,7 +119,10 @@ internal sealed class ManaProcessManager : IDisposable
         // of one-after-another -- a stale/wedged listener on one port no
         // longer serializes an ~100s HttpClient timeout in front of the
         // others.
-        var fishSpeechTask = StartAndReport("fish-speech", "http://127.0.0.1:8080/v1/health", () => Task.FromResult(isBackendLocal ? StartFishSpeech() : null));
+        var notUsed = Task.FromResult<(Process? Process, bool Available)>((null, false));
+        var fishSpeechTask = UsesFishSpeech
+            ? StartAndReport("fish-speech", "http://127.0.0.1:8080/v1/health", () => Task.FromResult(isBackendLocal ? StartFishSpeech() : null))
+            : notUsed;
         var backendTask = StartAndReport("backend", backendHealthUrl, () => Task.FromResult<Process?>(isBackendLocal ? StartBackend() : null));
         // #691: the embedder only serves a backend on this machine -- a remote
         // backend calls its own 127.0.0.1:9001, never ours. When
@@ -137,7 +144,6 @@ internal sealed class ManaProcessManager : IDisposable
         // embedder they only serve a node-bot on this machine, so a remote
         // backend just gets the health check.
         var searxngTask = StartAndReport("websearch", "http://127.0.0.1:8890/", () => Task.FromResult(isBackendLocal ? StartSearxng() : null));
-        var notUsed = Task.FromResult<(Process? Process, bool Available)>((null, false));
         var retrieverTask = UsesRetriever
             ? StartAndReport("retriever", "http://127.0.0.1:9000/health", () => Task.FromResult(isBackendLocal ? StartRetriever() : null))
             : notUsed;
@@ -372,8 +378,8 @@ internal sealed class ManaProcessManager : IDisposable
     }
 
     // #691: tools/retriever_service.py (main.js startRetrieverService), only
-    // with MANA_START_RETRIEVER=1 (see UsesRetriever). Optional: callers fall
-    // back to heuristics without it.
+    // with MANA_START_RETRIEVER=1 (see UsesRetriever). Optional: node-bot
+    // starts it on demand otherwise.
     private Process? StartRetriever()
     {
         var retrieverScript = Path.Combine(RootDirectory, "tools", "retriever_service.py");

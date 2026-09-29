@@ -71,10 +71,12 @@ internal sealed class ManaApplicationContext : ApplicationContext
         ("gpt-sovits", "GPT-SoVITS TTS"),
     };
 
-    // #691: the opt-in services only get a row when they're turned on.
+    // #691: the opt-in services only get a row when they're turned on,
+    // and only the selected TTS provider gets one.
     internal static (string Key, string Label)[] ServiceRowsFor(ManaProcessManager manager) =>
         ServiceRows.Where(row => row.Key switch
         {
+            "fish-speech" => manager.UsesFishSpeech,
             "retriever" => manager.UsesRetriever,
             "gpt-sovits" => manager.UsesGptSovits,
             _ => true,
@@ -307,9 +309,10 @@ internal sealed class ManaApplicationContext : ApplicationContext
         menu.Opening += (_, _) => listeningItem.Text = voiceLoop.IsListening ? "Stop listening" : "Start listening";
         menu.Items.Add(listeningItem);
         menu.Items.Add(new ToolStripSeparator());
-        if (processManager.IsBackendLocal)
+        if (processManager.IsBackendLocal && processManager.UsesFishSpeech)
         {
-            // A remote backend's Fish Speech isn't this launcher's to restart.
+            // A remote backend's Fish Speech isn't this launcher's to restart,
+            // and another selected TTS provider means Fish isn't in use.
             menu.Items.Add("Restart Fish Speech", null, (_, _) => RestartFishSpeech());
         }
         menu.Items.Add(new ToolStripSeparator());
