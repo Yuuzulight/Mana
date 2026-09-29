@@ -46,6 +46,34 @@ public class ScreenContextTriggerTests
         Assert.Equal(expected, ScreenContextTrigger.IsDeictic(text));
     }
 
+    [Theory]
+    [InlineData("what's this?", null, true)]
+    [InlineData("what is that", 60_000L, true)]
+    [InlineData("whats this", 120_000L, true)]
+    [InlineData("what does this say?", null, true)]
+    [InlineData("what does that mean", null, true)]
+    [InlineData("read this", null, true)]
+    [InlineData("explain that", null, true)]
+    [InlineData("what's this?", 59_999L, false)] // a recent topic "this" could mean
+    [InlineData("explain this", 5_000L, false)]
+    [InlineData("what's this song called", null, false)] // not a bare deictic question
+    [InlineData("is this ok", null, false)]
+    public void ReadsScreenOnItsOwn_ShortDeicticQuestionsWithoutARecentTopic(string text, long? msSincePreviousTurn, bool expected)
+    {
+        Assert.Equal(expected, ScreenContextTrigger.ReadsScreenOnItsOwn(text, msSincePreviousTurn));
+    }
+
+    [Theory]
+    [InlineData("what's that thing next to you", true)]
+    [InlineData("what's behind you", true)]
+    [InlineData("read what's here where you are", true)]
+    [InlineData("what's here", false)]
+    [InlineData("i'm behind your back", false)]
+    public void MeansNearAvatar_OnlyForPhrasesAboutWhereSheIs(string text, bool expected)
+    {
+        Assert.Equal(expected, ScreenContextTrigger.MeansNearAvatar(text));
+    }
+
     [Fact]
     public void CleanTranscriptText_StripsBracketedSttArtifacts()
     {

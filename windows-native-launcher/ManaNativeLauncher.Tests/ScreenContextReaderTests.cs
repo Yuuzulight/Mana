@@ -39,4 +39,15 @@ public class ScreenContextReaderTests
 
         Assert.False(ScreenContextReader.IsTreeUsable(tree, OwnPid));
     }
+
+    // Q37: beside the avatar's window, never under it (her pixels hit-test as Mana).
+    [Fact]
+    public void BesideAvatar_LeftOfHerAtMidHeight_OrRightWhenAtTheDesktopEdge()
+    {
+        var desktop = new System.Drawing.Rectangle(0, 0, 1920, 1080);
+        Assert.Equal(new System.Drawing.Point(740, 844),
+            ScreenContextReader.BesideAvatar(new System.Drawing.Rectangle(780, 700, 234, 288), desktop));
+        Assert.Equal(new System.Drawing.Point(274, 844),
+            ScreenContextReader.BesideAvatar(new System.Drawing.Rectangle(0, 700, 234, 288), desktop));
+    }
 }

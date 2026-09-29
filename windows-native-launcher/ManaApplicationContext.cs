@@ -108,7 +108,11 @@ internal sealed class ManaApplicationContext : ApplicationContext
         // caching internally, so this is just held and passed straight
         // through to VoiceLoop, same as the other optional collaborators
         // constructed above it.
-        var screenContextReader = new ScreenContextReader(rootDir, backendClient);
+        // Q37: "next to you" reads beside the avatar while she's showing
+        // (a hidden overlay is Visible false; it's never minimized). Called
+        // off the UI thread: Visible and Bounds are plain field reads.
+        var screenContextReader = new ScreenContextReader(rootDir, backendClient,
+            () => avatarOverlay.Visible ? avatarOverlay.Bounds : null);
         // #571: on-screen equivalent of spoken output, fed sentence by
         // sentence by VoiceLoop's own playback.
         captionOverlay = new CaptionOverlayForm();
