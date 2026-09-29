@@ -42,6 +42,7 @@ internal sealed class SessionListForm : Form
     private readonly Button avatarZoomButton = new();
     private readonly Label avatarNameLabel = new();
     private readonly Label avatarStatusLabel = new();
+    private readonly Label contextMeterLabel = new();
     private string? hearingText; // #619: live partial transcript, null when none
     private readonly Font avatarNameFont;
     private readonly Font avatarStatusFont;
@@ -362,7 +363,19 @@ internal sealed class SessionListForm : Form
         Activated += (_, _) => RefreshListenButton();
         RefreshListenButton();
 
+        // #642: the context meter, filling the top bar between the two
+        // buttons (added first so it docks last). Hover for the breakdown;
+        // held up to 30s since it's several lines to read.
+        contextMeterLabel.Dock = DockStyle.Fill;
+        contextMeterLabel.TextAlign = ContentAlignment.MiddleRight;
+        contextMeterLabel.Padding = new Padding(0, 0, 8, 0);
+        contextMeterLabel.ForeColor = DarkTheme.Muted;
+        contextMeterLabel.AccessibleName = "Context window usage";
+        railToolTip.AutoPopDelay = 30000;
+        chatLog.ReplyEnded += () => _ = RefreshContextMeterAsync();
+
         var topBar = new Panel { Dock = DockStyle.Top, Height = 28, BackColor = DarkTheme.Background };
+        topBar.Controls.Add(contextMeterLabel);
         topBar.Controls.Add(listenButton);
         topBar.Controls.Add(sidebarToggleButton);
 
@@ -905,6 +918,38 @@ internal sealed class SessionListForm : Form
         activeSessionId = sessionId;
         voiceLoop.SetSessionId(sessionId);
         _ = RefreshAsync();
+        _ = RefreshContextMeterAsync();
+    }
+
+    // #642: how full the model's context window was on this session's last
+    // reply. The backend counts the tokens just after the reply returns
+    // (without holding it up), so an uncounted record gets one more look a
+    // moment later. On failure the meter keeps its last reading.
+    private async Task RefreshContextMeterAsync()
+    {
+        var sessionId = activeSessionId ?? "default"; // node-bot's key for "no sessionId sent"
+        ManaPromptComposition? composition;
+        try
+        {
+            composition = await backendClient.GetPromptCompositionAsync(sessionId);
+            if (composition is { CountedWith: null })
+            {
+                await Task.Delay(1500);
+                composition = await backendClient.GetPromptCompositionAsync(sessionId);
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"SessionListForm: couldn't refresh the context meter. {ex.Message}");
+            return;
+        }
+        if (IsDisposed || sessionId != (activeSessionId ?? "default"))
+        {
+            return; // switched sessions meanwhile -- that switch refreshes it
+        }
+        contextMeterLabel.Text = ContextMeterFormatter.FormatMeter(composition);
+        contextMeterLabel.ForeColor = ContextMeterFormatter.MeterColor(composition?.PercentUsed);
+        railToolTip.SetToolTip(contextMeterLabel, ContextMeterFormatter.FormatBreakdown(composition));
     }
 
     private async void OnAfterLabelEdit(object? sender, LabelEditEventArgs e)
