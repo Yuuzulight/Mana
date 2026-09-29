@@ -1,3 +1,4 @@
+using System.Linq;
 using Mana.NativeLauncher;
 using Xunit;
 
@@ -201,5 +202,50 @@ public class ChatMarkdownParserTests
     public void Parse_NullProducesNoBlocksInsteadOfThrowing()
     {
         Assert.Empty(ChatMarkdownParser.Parse(null));
+    }
+
+    [Fact]
+    public void Parse_GfmTableBecomesRowsOfCells_PaddedToTheHeader()
+    {
+        var blocks = ChatMarkdownParser.Parse("Scores:\n| Name | Score |\n|:-----|------:|\n| **Mana** | 10 |\n| a \\| b |\nafter");
+
+        Assert.Equal(new[] { MarkdownBlockType.Paragraph, MarkdownBlockType.Table, MarkdownBlockType.Paragraph }, blocks.Select(b => b.Type));
+        var rows = blocks[1].Rows!;
+        Assert.Equal(3, rows.Count);
+        Assert.Equal(new[] { "Name", "Score" }, rows[0].Select(c => c[0].Text));
+        Assert.True(rows[1][0][0].Bold);
+        Assert.Equal("a | b", rows[2][0][0].Text);
+        Assert.Empty(rows[2][1]);
+    }
+
+    [Theory]
+    [InlineData("a | b\n---")] // no pipe in the delimiter row: a setext rule, not a table
+    [InlineData("| a | b |\n| --- |")] // column counts differ
+    public void Parse_NotATableUnlessTheDelimiterRowMatches(string markdown)
+    {
+        Assert.DoesNotContain(ChatMarkdownParser.Parse(markdown), b => b.Type == MarkdownBlockType.Table);
+    }
+
+    [Fact]
+    public void Parse_QuoteLineBecomesAQuoteBlock()
+    {
+        var block = Assert.Single(ChatMarkdownParser.Parse("> be *kind*"));
+
+        Assert.Equal(MarkdownBlockType.Quote, block.Type);
+        Assert.Equal("be ", block.Runs[0].Text);
+        Assert.True(block.Runs[1].Italic);
+    }
+
+    [Fact]
+    public void Parse_LinksStrikethroughAndBareUrls()
+    {
+        var runs = ChatMarkdownParser.Parse("See [the docs](https://x.dev/a_b) or ~~not~~ https://y.dev/p.")[0].Runs;
+
+        Assert.Equal("the docs", runs[1].Text);
+        Assert.Equal("https://x.dev/a_b", runs[1].Link);
+        Assert.Equal("not", runs[3].Text);
+        Assert.True(runs[3].Strike);
+        Assert.Equal("https://y.dev/p", runs[5].Link); // the sentence's full stop isn't part of the URL
+        Assert.Equal(".", runs[6].Text);
     }
 }
