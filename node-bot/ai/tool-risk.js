@@ -449,8 +449,11 @@ function resolveToolApprovalMode(...candidates) {
 // binding ("tool-exec:<digest>"), so approving `dir` never approves `del`.
 // Executors are re-registered per reply with the latest policy -- the same
 // tradeoff hooks-store.js's "hook-ask" already documents.
+// options.alwaysReview: further tiers that, like destructive, always go to a
+// human and are never granted (#699: a heartbeat check's install calls).
 function wrapWithRiskGate(policy, approvalGate, options = {}) {
   const mode = resolveToolApprovalMode(options.mode);
+  const alwaysReview = options.alwaysReview || [];
   const bindingDeps = options.bindingDeps || {};
 
   async function ask(name, args, risk) {
@@ -460,7 +463,7 @@ function wrapWithRiskGate(policy, approvalGate, options = {}) {
       payload: { name, args, ...(binding ? { digest: binding.digest } : {}) },
       scanText: risk.command || undefined,
       grantKey: binding ? `tool-exec:${binding.digest}` : undefined,
-      forceReview: risk.tier === "destructive",
+      forceReview: risk.tier === "destructive" || alwaysReview.includes(risk.tier),
       details: {
         tier: risk.tier,
         reasons: risk.reasons,
@@ -497,7 +500,10 @@ function wrapWithRiskGate(policy, approvalGate, options = {}) {
 
 module.exports = {
   MODES,
+  PATH_KEY_RE,
   classifyToolCall,
+  stringEntries,
+  tokenize,
   resolveToolApprovalMode,
   extractHosts,
   bindCall,

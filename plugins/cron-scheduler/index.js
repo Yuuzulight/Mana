@@ -1,10 +1,13 @@
 const { createCronScheduler } = require("./cron-scheduler");
+const { createHeartbeat } = require("./heartbeat");
 const { notifyTray } = require("../../node-bot/tray-notifier");
+const { isPluginEnabled } = require("../../node-bot/capabilities/registry");
 
 // Module-level singleton (mirrors other plugins, e.g. document-reader) so
 // GET/POST/DELETE routes and the health check all see the same job list
 // and running timer regardless of which request hits them.
 let scheduler = null;
+let heartbeat = null;
 
 function getScheduler(deps = {}) {
   if (!scheduler) {
@@ -50,8 +53,32 @@ function getScheduler(deps = {}) {
           .catch(() => {});
       },
     });
+    // #699: heartbeat.md's checks, next to jobs.json. Their reports go out
+    // as "cron" tray notifications (the launcher's proactive toast types).
+    heartbeat = createHeartbeat({
+      dataDir: scheduler.dataDir,
+      runCheck: (prompt, wrapToolPolicy, sessionId) => {
+        if (typeof deps.buildAssistantReply !== "function") {
+          throw new Error("no buildAssistantReply function available for heartbeat checks");
+        }
+        // Q27: scheduled, so it sees confirmed facts only (#780's flag).
+        return deps.buildAssistantReply(prompt, "", "", "default", sessionId, null, null, {
+          wrapToolPolicy,
+          scheduled: true,
+        });
+      },
+      notify: (payload) => notifyTray(payload).catch(() => {}),
+      isGaming: deps.isGaming,
+      isEnabled: () => isPluginEnabled(module.exports, deps.pluginSettingsStore),
+      approvalGate: deps.approvalGate,
+      snapshotStore: deps.snapshotStore,
+    });
+    deps.approvalGate?.registerExecutor("heartbeat-check", ({ id }) => heartbeat.approve(id));
     if (process.env.NODE_ENV !== "test" && !process.env.NODE_TEST_CONTEXT) {
       scheduler.start(Number(process.env.MANA_CRON_CHECK_INTERVAL_MS) || 30000);
+      setInterval(() => {
+        heartbeat.runDue().catch((e) => console.warn("heartbeat: runDue failed:", e?.message || e));
+      }, 60 * 1000).unref();
     }
   }
   return scheduler;
@@ -104,10 +131,16 @@ module.exports = {
   _resetForTests: () => {
     if (scheduler) scheduler.stop();
     scheduler = null;
+    heartbeat = null;
   },
   // Test-only escape hatch: registerRoutes doesn't expose runDueJobs (the
   // route surface is deliberately just CRUD), but the onResult -> notifyTray
   // wiring above only runs through that method, so tests need direct access
   // to the singleton to exercise it.
   _getSchedulerForTests: (deps = {}) => getScheduler(deps),
+  // Same, for the heartbeat built alongside the scheduler.
+  _getHeartbeatForTests: (deps = {}) => {
+    getScheduler(deps);
+    return heartbeat;
+  },
 };
