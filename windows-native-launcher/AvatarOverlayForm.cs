@@ -71,6 +71,10 @@ internal sealed class AvatarOverlayForm : Form
     private double doneStartedAt = double.NegativeInfinity;
     private double attentiveStartedAt = double.NegativeInfinity; // Q34: when she was last clicked
     private float sleepiness;
+    // Q6: the "^^" closed-eye smile -- until when, and how far in (eased).
+    private double closedSmileUntil = double.NegativeInfinity;
+    private float closedSmile;
+    private readonly Random smileRandom = new();
 
     private readonly CubismModel? cubismModel;
     private readonly CubismRenderer? cubismRenderer;
@@ -120,7 +124,8 @@ internal sealed class AvatarOverlayForm : Form
     // its default and range: they're reset to default at the start of each
     // frame so an offset/multiplier never compounds on last frame's value
     // when no motion rewrites that parameter.
-    private static readonly string[] GazeIds = ["ParamAngleX", "ParamAngleY", "ParamAngleZ", "ParamEyeBallX", "ParamEyeBallY"];
+    private static readonly string[] GazeIds = ["ParamAngleX", "ParamAngleY", "ParamAngleZ", "ParamEyeBallX", "ParamEyeBallY",
+        "ParamBodyAngleX", "ParamBodyAngleZ", "ParamEyeLSmile", "ParamEyeRSmile"];
     private readonly EyeBlink eyeBlink = new();
     private readonly AvatarGaze gaze;
     private readonly string[] eyeBlinkIds = [];
@@ -156,7 +161,7 @@ internal sealed class AvatarOverlayForm : Form
         ModelLoadProblem = loaded.Problem;
         ModelLoadWarnings = loaded.Warnings ?? Array.Empty<string>();
         var config = loaded.Config ?? AvatarConfig.Parse(null, _ => null);
-        gaze = new AvatarGaze(config.IdleGazeDeg, config.IdleGazePeriodMs, config.IdleTiltDeg, config.IdleMaxPitchDeg);
+        gaze = new AvatarGaze(config.IdleGazeDeg, config.IdleGazePeriodMs, config.IdleTiltDeg, config.IdleMaxPitchDeg, config.AnimatedTiltDeg);
         if (cubismModel is not null)
         {
             motionPlayer = new AvatarMotionPlayer(loaded.MotionGroups, config.StateMotions, config.RandomMotions);
@@ -167,6 +172,7 @@ internal sealed class AvatarOverlayForm : Form
             mouthParam = config.MouthParam;
             expressionOverrides = config.StateExpressions;
             LipSyncDriver.MouthGain = config.MouthGain;
+            LipSyncDriver.MouthMaxOpen = config.MouthMaxOpen;
 
             // #683: the model's own EyeBlink group, else the configured
             // backfill (the standard ids by default, like Electron's
@@ -406,15 +412,17 @@ internal sealed class AvatarOverlayForm : Form
             _ when sinceClick < AvatarGaze.AttentiveSeconds => GazeMode.Attentive,
             _ => speaking ? GazeMode.Talking : GazeMode.Idle,
         };
-        if (gaze.Update(dtMs, gazeMode))
+        if (gaze.Update(dtMs, gazeMode, animated: speaking && shown == AvatarState.Excited))
         {
             eyeBlink.Trigger(nowSeconds); // big glance -> blink with it
         }
         if (gaze.TiltActive && gaze.TiltBlend > 0.001f)
         {
             SetLifeParameter(model, "ParamAngleY", gaze.ApplyPitch(model.GetParameterCurrentValue("ParamAngleY")));
-            SetLifeParameter(model, "ParamAngleZ", gaze.ApplyRoll(model.GetParameterCurrentValue("ParamAngleZ")));
         }
+        // Q6: the head roll's sway, with the body leaning after it.
+        SetLifeParameter(model, "ParamAngleZ", model.GetParameterCurrentValue("ParamAngleZ") + gaze.Sway);
+        SetLifeParameter(model, "ParamBodyAngleZ", model.GetParameterCurrentValue("ParamBodyAngleZ") + (AvatarGaze.BodyFollow * gaze.Sway));
         var (lookPitch, lookRoll) = AvatarGaze.AttentiveLookOffset(sinceClick);
         if (lookRoll != 0f)
         {
@@ -428,6 +436,7 @@ internal sealed class AvatarOverlayForm : Form
         if (gaze.GazeActive)
         {
             SetLifeParameter(model, "ParamAngleX", model.GetParameterCurrentValue("ParamAngleX") + gaze.HeadAngleX);
+            SetLifeParameter(model, "ParamBodyAngleX", model.GetParameterCurrentValue("ParamBodyAngleX") + (AvatarGaze.BodyFollow * gaze.HeadAngleX));
             SetLifeParameter(model, "ParamEyeBallX", model.GetParameterCurrentValue("ParamEyeBallX") + gaze.EyeBallX);
             SetLifeParameter(model, "ParamEyeBallY", model.GetParameterCurrentValue("ParamEyeBallY") + gaze.EyeBallY);
         }
@@ -435,14 +444,22 @@ internal sealed class AvatarOverlayForm : Form
             : speaking ? EyeBlink.TalkingRate
             : 1f;
         sleepiness += ((shown == AvatarState.Dreaming ? 1f : 0f) - sleepiness) * Math.Min(1f, dtMs / 1500f);
-        var openness = eyeBlink.Openness(nowSeconds, blinkRate) * (1f - (0.85f * sleepiness));
+        // Q6: sleepy blinks are slower; the "^^" smile closes the eyes and
+        // raises the eye-smile parameters, easing in and out over ~80ms.
+        closedSmile += ((nowSeconds < closedSmileUntil ? 1f : 0f) - closedSmile) * Math.Min(1f, dtMs / 80f);
+        var openness = eyeBlink.Openness(nowSeconds, blinkRate, sleepy: sleepiness > 0.5f) * (1f - (0.85f * sleepiness)) * (1f - closedSmile);
         foreach (var id in eyeBlinkIds)
         {
             SetLifeParameter(model, id, model.GetParameterCurrentValue(id) * openness);
         }
+        if (closedSmile > 0.001f)
+        {
+            SetLifeParameter(model, "ParamEyeLSmile", model.GetParameterCurrentValue("ParamEyeLSmile") + closedSmile);
+            SetLifeParameter(model, "ParamEyeRSmile", model.GetParameterCurrentValue("ParamEyeRSmile") + closedSmile);
+        }
 
         var (targetMouthOpen, targetMouthForm) = LipSyncDriver.Current;
-        smoothedMouthOpen = LipSyncAnalyzer.SmoothMouthValue(smoothedMouthOpen, targetMouthOpen, dtMs);
+        smoothedMouthOpen = LipSyncAnalyzer.SmoothMouthOpen(smoothedMouthOpen, targetMouthOpen, dtMs);
         // Same attack/decay smoothing as mouth openness -- mouth *shape*
         // snapping around per-frame would look like flickering between
         // vowel shapes rather than natural articulation.
@@ -509,6 +526,17 @@ internal sealed class AvatarOverlayForm : Form
         arbiter.SetSpeech(state);
         speechExpression = AvatarStateArbiter.IsSpeech(state) ? preferredExpression : null;
         speechEmotion = AvatarStateArbiter.IsSpeech(state) ? emotion : null;
+        // Q6: a happy/excited sentence may get a 0.5-3s "^^" smile (one at
+        // a time); any other face ends it.
+        var now = renderClock.Elapsed.TotalSeconds;
+        if (!EyeBlink.IsSmileTag(speechEmotion))
+        {
+            closedSmileUntil = double.NegativeInfinity;
+        }
+        else if (now >= closedSmileUntil)
+        {
+            closedSmileUntil = now + EyeBlink.ClosedSmileSeconds(smileRandom);
+        }
         ShowResolvedState(reapply: true);
     }
 

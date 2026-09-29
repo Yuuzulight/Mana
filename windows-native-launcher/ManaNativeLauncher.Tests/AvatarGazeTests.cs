@@ -170,17 +170,16 @@ public class AvatarGazeTests
     }
 
     [Fact]
-    public void Tilt_ClampsPitchAndEasesRoll_OnlyWhileIdle()
+    public void Tilt_ClampsPitchOnlyWhileIdle()
     {
         var gaze = new AvatarGaze(tiltDegrees: 8f, maxPitchDegrees: 8f, seed: 7);
 
-        // Talking: tilt stays off, raw values pass through untouched.
+        // Talking: the pitch clamp stays off, raw values pass through.
         for (var i = 0; i < 300; i++)
         {
             gaze.Update(16f, GazeMode.Talking);
         }
         Assert.Equal(-25f, gaze.ApplyPitch(-25f));
-        Assert.Equal(3f, gaze.ApplyRoll(3f));
 
         for (var i = 0; i < 300; i++)
         {
@@ -188,13 +187,58 @@ public class AvatarGazeTests
         }
         Assert.Equal(-8f, gaze.ApplyPitch(-25f), 0.1f);
         Assert.Equal(5f, gaze.ApplyPitch(5f), 0.001f); // in range: unchanged
-        Assert.Equal(8f, gaze.ApplyRoll(3f), 0.1f);
 
         for (var i = 0; i < 300; i++)
         {
             gaze.Update(16f, GazeMode.Talking);
         }
         Assert.True(gaze.TiltBlend < 0.01f);
+    }
+
+    // Q6: +-8 degrees normally, up to 16 while animated, still while busy;
+    // two layered rhythms, so it isn't one repeating sine.
+    [Fact]
+    public void Sway_PeaksAtTheTilt_BiggerWhenAnimated_StillWhileBusy()
+    {
+        (float Min, float Max) Range(AvatarGaze gaze, GazeMode mode, bool animated)
+        {
+            for (var i = 0; i < 400; i++)
+            {
+                gaze.Update(16f, mode, animated); // settle the amplitude (~6s)
+            }
+            var values = new List<float>();
+            for (var i = 0; i < 1250; i++) // 20s
+            {
+                gaze.Update(16f, mode, animated);
+                values.Add(gaze.Sway);
+            }
+            return (values.Min(), values.Max());
+        }
+
+        var gaze = new AvatarGaze(tiltDegrees: 8f, animatedTiltDegrees: 16f, seed: 21);
+        var (min, max) = Range(gaze, GazeMode.Talking, animated: false);
+        Assert.InRange(max, 5f, 8.01f);
+        Assert.InRange(min, -8.01f, -5f);
+        (min, max) = Range(gaze, GazeMode.Talking, animated: true);
+        Assert.InRange(max, 11f, 16.01f);
+        (min, max) = Range(gaze, GazeMode.Thinking, animated: false);
+        Assert.InRange(max - min, 0f, 0.2f);
+
+        // Not a single sine: successive peaks differ in height.
+        var idle = new AvatarGaze(tiltDegrees: 8f, seed: 22);
+        var peaks = new List<float>();
+        float a = 0, b = 0;
+        for (var i = 0; i < 2500; i++)
+        {
+            idle.Update(16f, GazeMode.Idle);
+            if (i > 120 && b > a && b > idle.Sway)
+            {
+                peaks.Add(b);
+            }
+            a = b;
+            b = idle.Sway;
+        }
+        Assert.True(peaks.Max() - peaks.Min() > 1f, "peaks should vary between the two rhythms");
     }
 
     [Fact]
