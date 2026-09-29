@@ -441,6 +441,25 @@ test("mobile audio chat rejects missing file after auth succeeds", async () => {
   });
 });
 
+// #670: pairing codes are admin-only, and being local is no longer enough.
+process.env.ADMIN_TOKEN = "mobile-test-admin-token";
+const ADMIN = { "x-admin-token": "mobile-test-admin-token" };
+
+test("a local pairing-code request without an admin key is refused (#670)", async () => {
+  const { deviceStore, filePath } = makeTmpDeviceStore();
+  try {
+    const app = createApp(makeMobileDeps({ deviceStore }));
+    await withServer(app, async (baseUrl) => {
+      const { response } = await postJson(`${baseUrl}/mobile/pair/request`, {});
+      assert.equal(response.status, 401);
+      const wrong = await postJson(`${baseUrl}/mobile/pair/request`, {}, { "x-admin-token": "nope" });
+      assert.equal(wrong.response.status, 401);
+    });
+  } finally {
+    fs.rmSync(filePath, { force: true });
+  }
+});
+
 // Issue #48: opt-in TOTP second factor on device pairing completion.
 function makeTmpDeviceStore() {
   const filePath = path.join(os.tmpdir(), `mana-mobile-devices-test-${Date.now()}-${Math.random().toString(36).slice(2)}.json`);
@@ -456,7 +475,7 @@ test("pairing works with no TOTP required when mobileTotpSecret is unset, and he
       const health = await (await fetch(`${baseUrl}/mobile/health`)).json();
       assert.equal(health.pairingTotpEnabled, false);
 
-      const { body: requestBody } = await postJson(`${baseUrl}/mobile/pair/request`, {});
+      const { body: requestBody } = await postJson(`${baseUrl}/mobile/pair/request`, {}, ADMIN);
       const { response, body } = await postJson(`${baseUrl}/mobile/pair/complete`, {
         code: requestBody.code,
         deviceName: "test-phone",
@@ -481,7 +500,7 @@ test("pairing requires a valid TOTP code when mobileTotpSecret is set, and healt
       assert.equal(health.pairingTotpEnabled, true);
 
       // Missing totpCode entirely.
-      const { code: codeForMissing } = (await postJson(`${baseUrl}/mobile/pair/request`, {})).body;
+      const { code: codeForMissing } = (await postJson(`${baseUrl}/mobile/pair/request`, {}, ADMIN)).body;
       const missing = await postJson(`${baseUrl}/mobile/pair/complete`, {
         code: codeForMissing,
         deviceName: "test-phone",
@@ -491,7 +510,7 @@ test("pairing requires a valid TOTP code when mobileTotpSecret is set, and healt
 
       // Wrong totpCode -- and the pairing code must still be usable afterward,
       // since a wrong 2FA attempt shouldn't burn the admin's single-use code.
-      const { code: codeForWrong } = (await postJson(`${baseUrl}/mobile/pair/request`, {})).body;
+      const { code: codeForWrong } = (await postJson(`${baseUrl}/mobile/pair/request`, {}, ADMIN)).body;
       const wrong = await postJson(`${baseUrl}/mobile/pair/complete`, {
         code: codeForWrong,
         deviceName: "test-phone",

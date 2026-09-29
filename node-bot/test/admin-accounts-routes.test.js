@@ -8,6 +8,10 @@ const fs = require("node:fs");
 
 const tempAuthDir = fs.mkdtempSync(path.join(os.tmpdir(), "mana-admin-routes-test-"));
 process.env.MANA_AUTH_DIR = tempAuthDir;
+// #670: admin-key.js reads the native launcher's per-run key once, at
+// require time, and removes it from process.env.
+const LAUNCHER_KEY = "test-launcher-key-0123456789abcdef";
+process.env.MANA_LAUNCHER_KEY = LAUNCHER_KEY;
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
@@ -79,25 +83,48 @@ test("POST /admin/accounts rejects a user-role key with 403", async () => {
   });
 });
 
-test("POST /admin/accounts succeeds for an admin-role key from a local request", async () => {
-  const { apiKey } = authStore.createAccount({
-    email: "admin-local@example.com",
-    role: "admin",
-  });
+test("the launcher key is removed from process.env once read (#670)", () => {
+  assert.equal(process.env.MANA_LAUNCHER_KEY, undefined);
+});
+
+async function postAccountAsAdmin(email, extraHeaders) {
+  const { apiKey } = authStore.createAccount({ email: `admin-${email}`, role: "admin" });
   const app = createApp();
+  let res;
   await withServer(app, async (baseUrl) => {
-    const res = await fetch(`${baseUrl}/admin/accounts`, {
+    res = await fetch(`${baseUrl}/admin/accounts`, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${apiKey}`,
         "Content-Type": "application/json",
+        ...extraHeaders,
       },
-      body: JSON.stringify({ email: "created-locally@example.com" }),
+      body: JSON.stringify({ email }),
     });
-    assert.equal(res.status, 201);
-    const payload = await res.json();
-    assert.ok(payload.apiKey);
   });
+  return res;
+}
+
+test("POST /admin/accounts rejects an admin-role key from a local request with no admin key (#670)", async () => {
+  const res = await postAccountAsAdmin("local-no-key@example.com", {});
+  assert.equal(res.status, 403);
+  assert.match((await res.json()).error, /ADMIN_TOKEN/);
+});
+
+test("POST /admin/accounts succeeds locally with the launcher's per-run key", async () => {
+  const res = await postAccountAsAdmin("local-launcher@example.com", { "x-admin-token": LAUNCHER_KEY });
+  assert.equal(res.status, 201);
+  assert.ok((await res.json()).apiKey);
+});
+
+test("POST /admin/accounts: the launcher key doesn't count from another device, or when wrong", async () => {
+  const forwarded = await postAccountAsAdmin("remote-launcher@example.com", {
+    "x-admin-token": LAUNCHER_KEY,
+    "X-Forwarded-For": "203.0.113.5",
+  });
+  assert.equal(forwarded.status, 403);
+  const wrong = await postAccountAsAdmin("local-wrong@example.com", { "x-admin-token": `${LAUNCHER_KEY}x` });
+  assert.equal(wrong.status, 403);
 });
 
 test("POST /admin/accounts rejects an admin-role key from a non-local origin with no ADMIN_TOKEN configured", async () => {
@@ -148,6 +175,35 @@ test("POST /admin/accounts succeeds from a non-local origin when a matching x-ad
         body: JSON.stringify({ email: "created-remotely@example.com" }),
       });
       assert.equal(res.status, 201);
+    });
+  } finally {
+    if (prior === undefined) delete process.env.ADMIN_TOKEN;
+    else process.env.ADMIN_TOKEN = prior;
+  }
+});
+
+// #842: routes behind the MANA_ADMIN_SECRET gate are no longer open when no
+// secret is set -- they take the launcher key (from this PC) or ADMIN_TOKEN.
+test("MANA_ADMIN_SECRET-gated routes need an admin key when no secret is set (#842)", async () => {
+  const prior = process.env.ADMIN_TOKEN;
+  process.env.ADMIN_TOKEN = "gate-test-admin-token";
+  try {
+    await withServer(createApp(), async (baseUrl) => {
+      const get = (route, headers = {}) => fetch(`${baseUrl}${route}`, { headers });
+      for (const route of ["/admin/pending-writes", "/admin/retriever/status"]) {
+        const open = await get(route);
+        assert.equal(open.status, 401, route);
+        assert.match((await open.json()).error, /ADMIN_TOKEN/);
+        assert.equal((await get(route, { "x-admin-token": "gate-test-admin-token" })).status, 200, route);
+        assert.equal((await get(route, { "x-admin-token": LAUNCHER_KEY })).status, 200, route);
+        assert.equal((await get(route, { "x-admin-token": LAUNCHER_KEY, "X-Forwarded-For": "203.0.113.5" })).status, 401, route);
+      }
+    });
+    // With a secret set, its Bearer token stays the requirement.
+    await withServer(createApp({ env: { MANA_ADMIN_SECRET: "topsecret" } }), async (baseUrl) => {
+      const get = (headers) => fetch(`${baseUrl}/admin/pending-writes`, { headers });
+      assert.equal((await get({ Authorization: "Bearer topsecret" })).status, 200);
+      assert.equal((await get({ "x-admin-token": "gate-test-admin-token" })).status, 401);
     });
   } finally {
     if (prior === undefined) delete process.env.ADMIN_TOKEN;

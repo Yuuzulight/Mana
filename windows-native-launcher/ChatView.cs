@@ -120,6 +120,32 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
         Add(message, forceScroll: false);
     });
 
+    // #687: a reopened or switched-to session's stored turns, replacing the
+    // conversation shown. Artifacts stay inline here.
+    public void ShowHistory(IReadOnlyList<ManaSessionTurn> turns) => RunOnUiThread(() =>
+    {
+        messages.Clear();
+        selected = -1;
+        ClearTextSelection();
+        foreach (var turn in turns)
+        {
+            if (!string.IsNullOrWhiteSpace(turn.User))
+            {
+                var user = new Message(fromUser: true);
+                user.Blocks.Add(new MarkdownBlock(MarkdownBlockType.Paragraph, new[] { new MarkdownRun(turn.User, false, false, false) }));
+                messages.Add(user);
+            }
+            if (!string.IsNullOrWhiteSpace(turn.Assistant))
+            {
+                var reply = new Message(fromUser: false) { FinalText = turn.Assistant };
+                reply.Blocks.AddRange(ChatMarkdownParser.Parse(turn.Assistant));
+                messages.Add(reply);
+            }
+        }
+        AccessibilityNotifyClients(AccessibleEvents.Reorder, -1);
+        Relayout(forceScroll: true);
+    });
+
     // #686: records a detected artifact with the viewer (ArtifactViewerForm.Add)
     // and returns what opens it; null means artifacts stay inline.
     public Func<DetectedArtifact, Action<ArtifactOpen>>? Artifacts { get; set; }
