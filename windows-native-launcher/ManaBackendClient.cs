@@ -331,6 +331,15 @@ internal sealed class ManaBackendClient
             && triggered.ValueKind == JsonValueKind.True;
     }
 
+    // #697 part 1: which app just came to the front (ForegroundWindowReporter).
+    public async Task ReportForegroundAsync(string app, string title)
+    {
+        var payload = JsonSerializer.Serialize(new { app, title });
+        using var content = new StringContent(payload, Encoding.UTF8, "application/json");
+        using var response = await http.PostAsync("/internal/foreground-report", content);
+        response.EnsureSuccessStatusCode();
+    }
+
     // #527: node-bot's configured llama-server profiles -- see
     // model-management.js's getModelStatus/buildProfileStatus for the
     // full shape; this only carries what compare-mode needs.

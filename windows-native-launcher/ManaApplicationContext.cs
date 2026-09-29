@@ -27,6 +27,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
     private readonly System.Windows.Forms.Timer? clipCaptureTimer;
     private readonly GlobalHotkeyListener globalHotkeys;
     private readonly TrayNotificationClient trayNotifications;
+    private readonly ForegroundWindowReporter foregroundReporter;
     private readonly CaptionOverlayForm captionOverlay;
     private readonly VisionCaptureClient visionCaptureClient;
     private readonly ArtifactViewerForm artifactViewer;
@@ -260,6 +261,8 @@ internal sealed class ManaApplicationContext : ApplicationContext
             }
         };
         idleReportTimer.Start();
+        // #697 part 1: node-bot's proactive pipeline learns which app is in front.
+        foregroundReporter = new ForegroundWindowReporter(backendClient.ReportForegroundAsync);
     }
 
     private ContextMenuStrip BuildTrayMenu()
@@ -614,6 +617,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
     {
         statusTimer.Stop();
         idleReportTimer.Stop();
+        foregroundReporter.Dispose();
         clipCaptureTimer?.Stop();
         visionHotkeyListener.Dispose();
         clipHotkeyListener.Dispose();
