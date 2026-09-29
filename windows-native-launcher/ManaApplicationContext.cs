@@ -255,7 +255,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
         menu.Items.Add("Pending Edits", null, (_, _) => new ProposalsForm(backendClient).Show());
         menu.Items.Add("Edit Snapshots", null, (_, _) => new SnapshotsForm(backendClient).Show());
         menu.Items.Add("Memory Graph", null, (_, _) => new MemoryGraphForm(backendClient).Show());
-        menu.Items.Add("Deep Research", null, (_, _) => new ResearchForm(backendClient, () => voiceLoop.CurrentSessionId).Show());
+        menu.Items.Add("Deep Research", null, (_, _) => new ResearchForm(backendClient, voiceLoop.EnsureSessionId).Show());
         menu.Items.Add("Doctor", null, (_, _) => ShowDoctorPanel());
         menu.Items.Add("VTube Studio", null, (_, _) => new VTubeStudioForm(backendClient).Show());
         menu.Items.Add("Sessions", null, (_, _) => ShowSessionList());

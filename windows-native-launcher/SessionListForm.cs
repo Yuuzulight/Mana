@@ -68,9 +68,9 @@ internal sealed class SessionListForm : Form
     private readonly System.Windows.Forms.Timer sendButtonTimer = new() { Interval = 250 };
     private readonly System.Collections.Generic.HashSet<string> offeredProposalIds = new();
 
-    // Mirrors VoiceLoop's own currentSessionId -- null (nothing switched
-    // to yet) means node-bot's implicit "default" session, same starting
-    // state VoiceLoop itself has.
+    // Mirrors VoiceLoop.CurrentSessionId -- null until something is
+    // switched to or VoiceLoop auto-starts a session (see AutoSession),
+    // which the ReplyEnded handler below picks up.
     private string? activeSessionId;
 
     // Which rail placeholder (if any) the slide-out tool panel is
@@ -325,6 +325,16 @@ internal sealed class SessionListForm : Form
         chatArea.Controls.Add(messageQueue);
         chatArea.Controls.Add(BuildMessageBox());
         chatLog.ReplyEnded += () => _ = OfferPendingEditsAsync(chatLog);
+        // Q62: VoiceLoop started a session on its own (launch, or 4 h idle);
+        // its row exists once this first reply is saved, so list and bold it.
+        chatLog.ReplyEnded += () =>
+        {
+            if (voiceLoop.CurrentSessionId != activeSessionId)
+            {
+                activeSessionId = voiceLoop.CurrentSessionId;
+                _ = RefreshAsync();
+            }
+        };
         // #619: the live partial transcript takes over the status line while
         // the user is talking. chatLog is a child control, so it can't
         // outlive this subscription.
@@ -1014,14 +1024,15 @@ internal sealed class SessionListForm : Form
             return;
         }
 
+        // Q62: deleting the active session leaves none, so the next turn
+        // auto-starts one (which, unlike "+ New chat", rotates after 4 h).
         if (sessionId == activeSessionId)
         {
-            StartNewChat();
+            activeSessionId = null;
+            voiceLoop.SetSessionId(null);
+            _ = RefreshContextMeterAsync(); // #642: no session, no reading
         }
-        else
-        {
-            await RefreshAsync();
-        }
+        await RefreshAsync();
     }
 
     // #586: pre-fills the prompt with whatever goal is already stored
