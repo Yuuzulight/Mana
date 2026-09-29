@@ -11,6 +11,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
 {
     private readonly AvatarOverlayForm avatarOverlay;
     private readonly BrowserAutomationPanel browserAutomationPanel;
+    private readonly AgentActivityPanel agentActivityPanel;
     private readonly NotifyIcon trayIcon;
     private readonly ManaProcessManager processManager;
     private readonly ManaBackendClient backendClient;
@@ -83,6 +84,8 @@ internal sealed class ManaApplicationContext : ApplicationContext
         // immediately and shows itself only while browser automation is
         // genuinely active.
         browserAutomationPanel = new BrowserAutomationPanel(backendClient);
+        // #646: same ambient kind, for the chat tool loop, with a Stop button.
+        agentActivityPanel = new AgentActivityPanel(backendClient);
 
         var vadModelPath = Path.Combine(rootDir, "windows-native-launcher", "assets", "vad", "silero_vad.onnx");
         sileroVad = new SileroVadRunner(vadModelPath);
@@ -247,6 +250,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
         menu.Items.Add("Compare Models", null, (_, _) => new CompareModeForm(backendClient).Show());
         menu.Items.Add("Pending Edits", null, (_, _) => new ProposalsForm(backendClient).Show());
         menu.Items.Add("Edit Snapshots", null, (_, _) => new SnapshotsForm(backendClient).Show());
+        menu.Items.Add("Memory Graph", null, (_, _) => new MemoryGraphForm(backendClient).Show());
         menu.Items.Add("Deep Research", null, (_, _) => new ResearchForm(backendClient, () => voiceLoop.CurrentSessionId).Show());
         menu.Items.Add("Doctor", null, (_, _) => ShowDoctorPanel());
         menu.Items.Add("VTube Studio", null, (_, _) => new VTubeStudioForm(backendClient).Show());
@@ -591,6 +595,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
         trayIcon.Dispose();
         avatarOverlay.Close();
         browserAutomationPanel.Close();
+        agentActivityPanel.Close();
         // Dispose, not Close -- OnFormClosing overrides UserClosing to
         // Hide-and-cancel for the reuse pattern, so a plain Close() here
         // would risk not actually tearing the window down.

@@ -36,44 +36,31 @@ internal static class AvatarExpressionSelector
     // #683: overrides is mana-avatar.json stateExpressions /
     // MANA_LIVE2D_STATE_EXPRESSIONS (lower-case state name -> exact names),
     // tried after the preferred name and before the keywords.
+    // #623: emotion is the sentence's emotion tag (node-bot/utils/
+    // emotion-tags.js). The same stateExpressions map takes tags as keys
+    // ("wink": "f05"), so a new avatar maps its faces in mana-avatar.json
+    // alone; an unmapped tag tries the model's names containing the tag
+    // itself, then falls back to the state as before.
     public static string? SelectExpressionName(
         AvatarState state,
         IEnumerable<string> availableExpressionNames,
         string? preferredName = null,
-        IReadOnlyDictionary<string, IReadOnlyList<string>>? overrides = null)
+        IReadOnlyDictionary<string, IReadOnlyList<string>>? overrides = null,
+        string? emotion = null)
     {
         var names = availableExpressionNames as IReadOnlyList<string> ?? [.. availableExpressionNames];
-        IEnumerable<string> exact = overrides is not null && overrides.TryGetValue(state.ToString().ToLowerInvariant(), out var custom) ? custom : [];
-        if (!string.IsNullOrWhiteSpace(preferredName))
-        {
-            exact = exact.Prepend(preferredName.Trim());
-        }
-        foreach (var wanted in exact)
-        {
-            foreach (var name in names)
-            {
-                if (string.Equals(name, wanted, StringComparison.OrdinalIgnoreCase))
-                {
-                    return name;
-                }
-            }
-        }
+        IReadOnlyList<string> Custom(string? key) =>
+            key is not null && overrides is not null && overrides.TryGetValue(key, out var custom) ? custom : [];
+        string? Exact(IEnumerable<string> wanted) =>
+            wanted.SelectMany(w => names.Where(name => string.Equals(name, w, StringComparison.OrdinalIgnoreCase))).FirstOrDefault();
+        string? Containing(IEnumerable<string> keywords) =>
+            keywords.SelectMany(k => names.Where(name => name.Contains(k, StringComparison.OrdinalIgnoreCase))).FirstOrDefault();
 
-        if (!StateKeywords.TryGetValue(state, out var keywords))
-        {
-            return null;
-        }
-
-        foreach (var keyword in keywords)
-        {
-            foreach (var name in names)
-            {
-                if (name.Contains(keyword, StringComparison.OrdinalIgnoreCase))
-                {
-                    return name;
-                }
-            }
-        }
-        return null;
+        var tag = string.IsNullOrWhiteSpace(emotion) ? null : emotion.Trim().ToLowerInvariant();
+        IEnumerable<string> preferred = string.IsNullOrWhiteSpace(preferredName) ? [] : [preferredName.Trim()];
+        return Exact(preferred.Concat(Custom(tag)))
+            ?? (tag is null ? null : Containing([tag]))
+            ?? Exact(Custom(state.ToString().ToLowerInvariant()))
+            ?? (StateKeywords.TryGetValue(state, out var keywords) ? Containing(keywords) : null);
     }
 }

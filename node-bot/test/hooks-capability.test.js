@@ -143,3 +143,29 @@ test("getHealth does not flag a rule that has never run or last ran successfully
   assert.equal(health.failing, 0);
   assert.doesNotMatch(health.message, /last ran with an error/);
 });
+
+test("PATCH /hooks/:id with rule fields edits the rule in place and 400s on an invalid edit (#486)", async () => {
+  const hooksStore = createHooksStore({ dataDir: createTempDir() });
+  const rule = hooksStore.addRule({ phase: "pre", action: "deny", toolName: "file_write", pathContains: ".env" });
+  const app = buildApp(hooksStore);
+  await withServer(app, async (baseUrl) => {
+    const patch = (body) =>
+      fetch(`${baseUrl}/hooks/${rule.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+    const ok = await patch({ action: "modify-input", set: { dryRun: true }, enabled: false });
+    const payload = await ok.json();
+    assert.equal(ok.status, 200);
+    assert.equal(payload.id, rule.id);
+    assert.equal(payload.action, "modify-input");
+    assert.deepEqual(payload.set, { dryRun: true });
+    assert.equal(payload.enabled, false);
+    assert.equal(payload.pathContains, ".env");
+
+    const bad = await patch({ action: "run-command" });
+    assert.equal(bad.status, 400);
+    assert.equal(hooksStore.listRules()[0].action, "modify-input");
+  });
+});
