@@ -33,6 +33,7 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
     private const int MessageGap = 14;
     private const int BlockGap = 5;
     private const int ActionHeight = 28;
+    private const int MenuArrowWidth = 22; // a split button's dropdown part
     private const int QuoteIndent = 12;
     private const int CellPad = 6;
     private const TextFormatFlags TextFlags = TextFormatFlags.NoPadding | TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine;
@@ -121,7 +122,7 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
 
     // #686: records a detected artifact with the viewer (ArtifactViewerForm.Add)
     // and returns what opens it; null means artifacts stay inline.
-    public Func<DetectedArtifact, Action>? Artifacts { get; set; }
+    public Func<DetectedArtifact, Action<ArtifactOpen>>? Artifacts { get; set; }
 
     // VoiceLoop reports each finished reply's full text. Streamed sentences
     // lose the line breaks between them and a long table or code block is
@@ -151,16 +152,35 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
         message.FinalText = replyText;
         if (artifact is { } a)
         {
-            var open = addArtifact!(a);
-            message.Actions.Add(new ChatAction($"Open {a.Language} content in new window", false, () =>
-            {
-                open();
-                return Task.FromResult<string?>(null);
-            }, Keep: true));
+            message.Actions.Add(ArtifactAction(a, addArtifact!(a)));
         }
         message.Invalidate();
         Relayout(forceScroll: false);
     });
+
+    // #686 (Q4/Q44b): an HTML artifact gets an "Open" split button whose
+    // main part opens it in Mana when HtmlRenderer can draw it, else in the
+    // browser; the arrow lists every way. Other artifacts open in the viewer.
+    private static ChatAction ArtifactAction(DetectedArtifact artifact, Action<ArtifactOpen> open)
+    {
+        Func<Task<string?>> Run(ArtifactOpen how) => () =>
+        {
+            open(how);
+            return Task.FromResult<string?>(null);
+        };
+        if (artifact.Language != "html")
+        {
+            return new ChatAction($"Open {artifact.Language} content in new window", false, Run(ArtifactOpen.Default), Keep: true);
+        }
+        var inMana = !HtmlArtifact.NeedsBrowser(artifact.Content);
+        return new ChatAction("Open", false, Run(ArtifactOpen.Default), Keep: true, Menu: new[]
+        {
+            new ChatMenuItem(inMana ? "Open in Mana" : "Open in Mana (this page needs a browser)", inMana, Run(ArtifactOpen.InMana)),
+            new ChatMenuItem("Open in browser", true, Run(ArtifactOpen.Browser)),
+            new ChatMenuItem("View source", true, Run(ArtifactOpen.Source)),
+            new ChatMenuItem("Save as...", true, Run(ArtifactOpen.SaveAs)),
+        });
+    }
 
     // #652 part 6: raised when Mana's reply is complete; SessionListForm
     // checks then for edits to approve and attaches buttons for them.
@@ -506,7 +526,7 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
             var x = 0;
             foreach (var action in message.Actions)
             {
-                var w = Measure(action.Label, bodyFont) + 28;
+                var w = Measure(action.Label, bodyFont) + 28 + (action.Menu is null ? 0 : MenuArrowWidth);
                 message.ActionBounds.Add(new Rectangle(x, y, w, ActionHeight));
                 x += w + 8;
             }
@@ -685,9 +705,16 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
     {
         base.OnMouseDown(e);
         Focus();
-        if (e.Button == MouseButtons.Left && ActionAt(e.Location) is var (actionMsg, actionIndex))
+        if (e.Button == MouseButtons.Left && ActionAt(e.Location) is var (actionMsg, actionIndex, actionRect))
         {
-            _ = RunActionAsync(actionMsg, actionIndex);
+            if (messages[actionMsg].Actions[actionIndex].Menu is not null && e.X >= actionRect.Right - MenuArrowWidth)
+            {
+                ShowActionMenu(actionMsg, actionIndex, new Point(actionRect.Right - MenuArrowWidth, actionRect.Bottom));
+            }
+            else
+            {
+                _ = RunActionAsync(actionMsg, actionIndex);
+            }
             return;
         }
         if (e.Button == MouseButtons.Left)
@@ -947,8 +974,16 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
                 g.FillRectangle(fill, rect);
                 using var border = new Pen(DarkTheme.Border);
                 g.DrawRectangle(border, rect.X, rect.Y, rect.Width - 1, rect.Height - 1);
-                TextRenderer.DrawText(g, action.Label, bodyFont, rect, faded ? DarkTheme.Muted : DarkTheme.Text,
+                var labelRect = action.Menu is null ? rect : new Rectangle(rect.X, rect.Y, rect.Width - MenuArrowWidth, rect.Height);
+                TextRenderer.DrawText(g, action.Label, bodyFont, labelRect, faded ? DarkTheme.Muted : DarkTheme.Text,
                     TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
+                if (action.Menu is not null)
+                {
+                    var arrow = new Rectangle(rect.Right - MenuArrowWidth, rect.Y, MenuArrowWidth, rect.Height);
+                    g.DrawLine(border, arrow.X, rect.Y + 5, arrow.X, rect.Bottom - 6);
+                    TextRenderer.DrawText(g, "\u25BE", bodyFont, arrow, faded ? DarkTheme.Muted : DarkTheme.Text,
+                        TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
+                }
             }
         }
         if (message.Note is not null)
@@ -960,7 +995,7 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
     }
 
     // The action button under `point`, as (message, button index), or null.
-    private (int Msg, int Action)? ActionAt(Point point)
+    private (int Msg, int Action, Rectangle Rect)? ActionAt(Point point)
     {
         var scroll = scrollBar.Visible ? scrollBar.Value : 0;
         for (var i = 0; i < messages.Count; i++)
@@ -972,11 +1007,42 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
                 rect.Offset(m.Bounds.X + PadX, m.Bounds.Y + PadY - scroll);
                 if (rect.Contains(point))
                 {
-                    return (i, a);
+                    return (i, a, rect);
                 }
             }
         }
         return null;
+    }
+
+    // A split button's dropdown, under its arrow (or the button, from the keyboard).
+    private void ShowActionMenu(int index, int actionIndex, Point at)
+    {
+        var message = messages[index];
+        if (message.ActionRunning || message.Actions[actionIndex].Menu is not { } items)
+        {
+            return;
+        }
+        var menu = new ContextMenuStrip();
+        foreach (var item in items)
+        {
+            menu.Items.Add(new ToolStripMenuItem(item.Label, null, (_, _) => _ = RunMenuItemAsync(message, item)) { Enabled = item.Enabled });
+        }
+        menu.Closed += (_, _) => BeginInvoke(menu.Dispose); // after the clicked item's handler
+        menu.Show(this, at);
+    }
+
+    private async Task RunMenuItemAsync(Message message, ChatMenuItem item)
+    {
+        try
+        {
+            await item.Run();
+        }
+        catch (Exception ex)
+        {
+            message.Note = $"Couldn't do that: {ex.Message}";
+            message.Invalidate();
+            Relayout(forceScroll: false);
+        }
     }
 
     // Runs a button's action; a returned note replaces the buttons (e.g. "Approved").
@@ -1073,7 +1139,7 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
     }
 
     protected override bool IsInputKey(Keys keyData) =>
-        keyData is Keys.Up or Keys.Down or Keys.Home or Keys.End or Keys.Escape or Keys.Enter || base.IsInputKey(keyData);
+        keyData is Keys.Up or Keys.Down or Keys.Home or Keys.End or Keys.Escape or Keys.Enter or (Keys.Alt | Keys.Down) || base.IsInputKey(keyData);
 
     protected override void OnKeyDown(KeyEventArgs e)
     {
@@ -1096,6 +1162,14 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
                 ClearTextSelection();
                 e.Handled = true;
                 break;
+            case Keys.Alt | Keys.Down when selected >= 0 && messages[selected].Actions.FindIndex(a => a.Menu is not null) is var menuAt and >= 0:
+            {
+                var rect = messages[selected].ActionBounds[menuAt];
+                rect.Offset(messages[selected].Bounds.X + PadX, messages[selected].Bounds.Y + PadY - (scrollBar.Visible ? scrollBar.Value : 0));
+                ShowActionMenu(selected, menuAt, new Point(rect.X, rect.Bottom));
+                e.Handled = true;
+                break;
+            }
             case Keys.Enter when selected >= 0 && messages[selected].Actions.Count > 0:
                 _ = RunActionAsync(selected, 0);
                 e.Handled = true;
@@ -1290,7 +1364,11 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
     // A button under one of Mana's messages. Run returns a note to show in
     // place of the buttons once it's done, or null to keep them. Keep: stays
     // when a note or a new set of buttons replaces the others.
-    internal sealed record ChatAction(string Label, bool Primary, Func<Task<string?>> Run, bool Keep = false);
+    // Menu makes it a split button: its arrow part lists these (Alt+Down from the keyboard).
+    internal sealed record ChatAction(string Label, bool Primary, Func<Task<string?>> Run, bool Keep = false,
+        IReadOnlyList<ChatMenuItem>? Menu = null);
+
+    internal sealed record ChatMenuItem(string Label, bool Enabled, Func<Task<string?>> Run);
 
     // Start: offset of Text within the message's Text. Link: its URL, if it's part of a link.
     internal sealed record Fragment(string Text, Font Font, int X, int Width, bool IsCode, int Start, string? Link = null);
