@@ -77,22 +77,40 @@ function isJargon(term) {
   );
 }
 
-// Single words that look like names or jargon: capitalized mid-sentence
-// ("I switched to Kokoro"), or jargon-shaped anywhere. A capitalized
+// Words that look like names or jargon: capitalized mid-sentence ("I
+// switched to Kokoro"), or jargon-shaped anywhere. A capitalized
 // sentence-initial word ("Want", "Hey") says nothing, which is why the
-// entity index isn't used here.
+// entity index isn't used here. #924: a run of 2-3 capitalized words
+// ("Gigi Murin", "Hololive VTuber") is one term instead of its words; a
+// comma or possessive ends a run, and a longer run (a title, shouting)
+// stays single words. skip: words already in the prompt, which also end a
+// run ("hey Mana Gigi Murin" -> "Gigi Murin").
 // ponytail: capitalization heuristic, not NER.
-function extractTerms(text) {
+function extractTerms(text, skip = new Set()) {
   const terms = [];
   // A sentence end needs whitespace (or the end) after it, so "Node.js"
   // stays one word.
   for (const sentence of String(text || "").split(/[.!?]+(?:\s+|$)|\n+/)) {
     const words = sentence.split(/\s+/).filter(Boolean);
+    let run = [];
+    const flush = () => {
+      const phrase = run.length >= 2 && run.length <= 3 ? cleanTerm(run.join(" ")) : "";
+      terms.push(...(phrase ? [phrase] : run));
+      run = [];
+    };
     words.forEach((word, i) => {
       const term = cleanTerm(word.replace(/['’]s$/i, ""));
-      if (term.length < 2 || term.includes(" ") || NOT_TERMS.has(term.toLowerCase())) return;
-      if (isJargon(term) || (i > 0 && /^\p{Lu}/u.test(term))) terms.push(term);
+      const key = term.toLowerCase();
+      if (term.length < 2 || term.includes(" ") || NOT_TERMS.has(key) || skip.has(key)) return flush();
+      if (i > 0 && /^\p{Lu}/u.test(term)) {
+        run.push(term);
+        if (/(?:['’]s|[,;:)])$/i.test(word)) flush();
+      } else {
+        flush();
+        if (isJargon(term)) terms.push(term);
+      }
     });
+    flush();
   }
   return terms;
 }
@@ -105,7 +123,8 @@ function extractTerms(text) {
 // capital ("Ali", "Baba") came from a single garbled voice transcript, never
 // from a fact -- while jargon-shaped terms need only one source.
 // #901: vocabulary (WHISPER_VOCABULARY) is the user's own list, kept in their
-// order right after the name, ahead of anything memory suggests.
+// order right after the name, ahead of anything memory suggests. #923: the
+// saved speech words (speech-vocabulary.js) follow it in the same list.
 function buildWhisperPrompt({ facts = [], userTexts = [], vocabulary = [] } = {}) {
   const usableFacts = facts.filter(isUsableFact);
   const name = userNameFromFacts(usableFacts);
@@ -127,7 +146,7 @@ function buildWhisperPrompt({ facts = [], userTexts = [], vocabulary = [] } = {}
   ];
   for (const { text, isFact } of sources) {
     const seen = new Set();
-    for (const term of extractTerms(text)) {
+    for (const term of extractTerms(text, known)) {
       const key = term.toLowerCase();
       if (known.has(key) || seen.has(key)) continue;
       seen.add(key);
@@ -138,7 +157,9 @@ function buildWhisperPrompt({ facts = [], userTexts = [], vocabulary = [] } = {}
     }
   }
   const ranked = [...counts.values()]
-    .filter((entry) => entry.inFact || entry.count >= 2 || isJargon(entry.term))
+    // A name run ("Gigi Murin") always needs the 2 turns or a fact, even
+    // with a capital inside.
+    .filter((entry) => entry.inFact || entry.count >= 2 || (!entry.term.includes(" ") && isJargon(entry.term)))
     .sort((a, b) => b.count - a.count || a.term.localeCompare(b.term))
     .slice(0, MAX_TERMS)
     .map((entry) => entry.term);
@@ -156,20 +177,25 @@ function buildWhisperPrompt({ facts = [], userTexts = [], vocabulary = [] } = {}
 // built prompt, rebuilt at most every refreshMs (reading memory on every
 // utterance would put file I/O on the STT hot path). Falls back to the
 // base prompt (plus the vocabulary) if memory can't be read. vocabulary is
-// WHISPER_VOCABULARY, comma-separated.
+// WHISPER_VOCABULARY, comma-separated; savedWords() the saved speech words,
+// which rebuild the prompt at once when they change (#923).
 function createWhisperPromptProvider({
   memoryStore,
   override = "",
   vocabulary = "",
+  savedWords = () => [],
   refreshMs = REFRESH_MS,
   now = Date.now,
 } = {}) {
-  const vocab = String(vocabulary).split(",");
   let cached = null;
   let builtAt = 0;
+  let builtWith = "";
   return function getPrompt() {
     if (override) return override;
-    if (cached && now() - builtAt < refreshMs) return cached;
+    const saved = savedWords();
+    const vocab = [...String(vocabulary).split(","), ...saved];
+    if (cached && now() - builtAt < refreshMs && builtWith === saved.join("\n")) return cached;
+    builtWith = saved.join("\n");
     try {
       const userTexts = memoryStore
         .listSessions()
@@ -190,8 +216,10 @@ module.exports = {
   BASE_WHISPER_PROMPT,
   MAX_PROMPT_CHARS,
   buildWhisperPrompt,
+  cleanTerm,
   createWhisperPromptProvider,
   extractTerms,
+  isJargon,
   isUsableFact,
   userNameFromFacts,
 };

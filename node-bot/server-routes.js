@@ -70,6 +70,7 @@ function registerCoreRoutes(app, upload, deps) {
     resolveVisionCapture,
     rejectVisionCapture,
     runWhisper,
+    runWhisperHeard,
     runWhisperPartial,
     normalizeUploadedAudioAsync,
     synthesizeReply,
@@ -155,10 +156,12 @@ function registerCoreRoutes(app, upload, deps) {
       requireFile(req.file, "file");
 
       const { tmpPath, audioPath } = normalizeUploadedAudio(req.file);
-      const transcript = await runWhisper(audioPath);
+      const { heard, transcript } = await runWhisperHeard(audioPath);
       cleanupUploadedAudio(tmpPath, audioPath);
 
-      return res.json({ transcript });
+      // #925: heard (what whisper wrote) only when a mishearing fix
+      // changed it, for the launcher's speech-debug.log.
+      return res.json(heard === transcript ? { transcript } : { transcript, heard });
     } catch (e) {
       if (e instanceof ValidationError) {
         return sendValidationError(res, e);
