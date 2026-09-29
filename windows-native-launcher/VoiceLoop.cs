@@ -970,10 +970,14 @@ internal sealed class VoiceLoop : IDisposable
     // two turns against the same state, so the caller (the popup) gets a
     // clear "not accepted right now" instead of this silently corrupting
     // shared state.
-    public async Task<bool> SubmitTypedCommandAsync(string text)
+    // #679: images pasted into the chat box go with the text (which may
+    // then be empty) to the vision reply, skipping the barge-in
+    // classification a text-only interruption gets.
+    public async Task<bool> SubmitTypedCommandAsync(string text, IReadOnlyList<string>? images = null)
     {
         var trimmed = text.Trim();
-        if (trimmed.Length == 0)
+        var hasImages = images is { Count: > 0 };
+        if (trimmed.Length == 0 && !hasImages)
         {
             return false;
         }
@@ -1018,6 +1022,13 @@ internal sealed class VoiceLoop : IDisposable
         }
 
         awake = true;
+        if (hasImages)
+        {
+            Console.WriteLine($"VoiceLoop: sending {images!.Count} image(s), {images.Sum(i => i.Length) / 1024} KB.");
+            chatLog?.AppendUserMessage(trimmed, images);
+            await SpeakReplyAsync(trimmed, images: images);
+            return true;
+        }
         await DispatchCommandAsync(trimmed, wasInterruption, held: null, nested: false);
         return true;
     }
