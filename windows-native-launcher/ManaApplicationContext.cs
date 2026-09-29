@@ -32,6 +32,13 @@ internal sealed class ManaApplicationContext : ApplicationContext
     private readonly ArtifactViewerForm artifactViewer;
     private readonly QuickEntryForm quickEntry;
     private readonly SessionListForm sessionListForm;
+    private readonly IDisposable showRequests;
+    // #689: Doctor's latest warn/fail ("label: message"), kept in the tray
+    // tooltip until the Doctor panel is opened.
+    private string? doctorAlert;
+    private string trayStatus = "Mana";
+    // What clicking the tray balloon on screen does (each balloon sets it).
+    private Action? balloonClicked;
 
     // #522: updated by RefreshTrayStatusAsync's existing 5s poll --
     // VoiceLoop reads it (via a delegate, not a captured snapshot) to
@@ -169,19 +176,12 @@ internal sealed class ManaApplicationContext : ApplicationContext
         // IsDisposed-then-marshal shape as this codebase's other
         // background-thread-to-UI call sites (e.g. ChatView's
         // RunOnUiThread).
-        trayNotifications = new TrayNotificationClient(backendBaseUrl: settings.BackendBaseUrl, openChat: () =>
-        {
-            if (sessionListForm.IsDisposed)
-            {
-                return;
-            }
-            if (sessionListForm.InvokeRequired)
-            {
-                sessionListForm.BeginInvoke(ShowSessionList);
-                return;
-            }
-            ShowSessionList();
-        });
+        trayNotifications = new TrayNotificationClient(
+            backendBaseUrl: settings.BackendBaseUrl,
+            openChat: () => RunOnUi(ShowSessionList),
+            onDoctor: payload => RunOnUi(() => ShowDoctorAlert(payload)));
+        // #689: a second launcher started -- show this one's window instead.
+        showRequests = SingleInstance.ListenForShow(() => RunOnUi(ShowSessionList));
         // #681: answers the model's mid-reply screenshot requests.
         visionCaptureClient = new VisionCaptureClient(backendClient, backendBaseUrl: settings.BackendBaseUrl);
 
@@ -198,7 +198,15 @@ internal sealed class ManaApplicationContext : ApplicationContext
             ContextMenuStrip = BuildTrayMenu(),
         };
 
-        trayIcon.DoubleClick += (_, _) => ShowStatus();
+        // #689: left-click toggles the chat window, like Electron's tray.
+        trayIcon.MouseClick += (_, e) =>
+        {
+            if (e.Button == MouseButtons.Left)
+            {
+                ToggleSessionListVisible();
+            }
+        };
+        trayIcon.BalloonTipClicked += (_, _) => balloonClicked?.Invoke();
         avatarOverlay.Clicked += voiceLoop.Wake; // #662
         trayNotifications.Start();
         visionCaptureClient.Start();
@@ -251,6 +259,12 @@ internal sealed class ManaApplicationContext : ApplicationContext
     private ContextMenuStrip BuildTrayMenu()
     {
         var menu = new ContextMenuStrip();
+        // #689: Electron's tray entries, plus its two quick buttons.
+        menu.Items.Add("Open Mana", null, (_, _) => ShowSessionList());
+        menu.Items.Add("Minimize to overlay", null, (_, _) => sessionListForm.Hide());
+        menu.Items.Add("Look at my screen now", null, (_, _) => _ = voiceLoop.SubmitVisionHotkeyAsync());
+        menu.Items.Add("Open Model Web UI", null, (_, _) => OpenModelWebUi());
+        menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add("Show status", null, (_, _) => ShowStatus());
         menu.Items.Add("Artifact Viewer", null, (_, _) => { artifactViewer.Show(); artifactViewer.Activate(); });
         menu.Items.Add("Compare Models", null, (_, _) => new CompareModeForm(backendClient).Show());
@@ -260,7 +274,6 @@ internal sealed class ManaApplicationContext : ApplicationContext
         menu.Items.Add("Deep Research", null, (_, _) => new ResearchForm(backendClient, voiceLoop.EnsureSessionId).Show());
         menu.Items.Add("Doctor", null, (_, _) => ShowDoctorPanel());
         menu.Items.Add("VTube Studio", null, (_, _) => new VTubeStudioForm(backendClient).Show());
-        menu.Items.Add("Sessions", null, (_, _) => ShowSessionList());
         menu.Items.Add("Open project folder", null, (_, _) => OpenProjectFolder());
         menu.Items.Add("Set avatar idle", null, (_, _) => avatarOverlay.SetState(AvatarState.Idle));
         menu.Items.Add("Set avatar talking", null, (_, _) => avatarOverlay.SetState(AvatarState.Talking));
@@ -272,7 +285,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
             if (!gamingModeEnabled)
             {
                 gamingModeActive = false;
-                trayIcon.Text = "Mana";
+                SetTrayStatus("Mana");
                 avatarOverlay.GameRunning = false;
             }
         };
@@ -411,12 +424,12 @@ internal sealed class ManaApplicationContext : ApplicationContext
         {
             var status = await backendClient.GetPerformanceStatusAsync();
             gamingModeActive = gamingModeEnabled && status.GamingAppRunning;
-            trayIcon.Text = gamingModeActive ? "Mana - game mode" : "Mana";
+            SetTrayStatus(gamingModeActive ? "Mana - game mode" : "Mana");
             avatarOverlay.GameRunning = gamingModeActive; // Q3: click-through while gaming
         }
         catch
         {
-            trayIcon.Text = "Mana - backend starting";
+            SetTrayStatus("Mana - backend starting");
         }
     }
 
@@ -451,6 +464,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
         var notice = WaitingForYou.NewItemsNotice(items, announcedWaiting);
         if (notice is not null && Form.ActiveForm is null)
         {
+            balloonClicked = null;
             trayIcon.ShowBalloonTip(8000, "Mana is waiting for you", notice, ToolTipIcon.Info);
         }
     }
@@ -467,7 +481,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
             return;
         }
         var firstLine = problem.Split('\n')[0];
-        trayIcon.BalloonTipClicked += (_, _) => ShowAvatarModelProblem();
+        balloonClicked = ShowAvatarModelProblem;
         trayIcon.ShowBalloonTip(
             10000,
             "Avatar model couldn't load",
@@ -524,8 +538,65 @@ internal sealed class ManaApplicationContext : ApplicationContext
     // often enough for that cost to matter.
     private void ShowDoctorPanel()
     {
+        if (doctorAlert is not null)
+        {
+            doctorAlert = null; // seen
+            SetTrayStatus(trayStatus);
+        }
         using var panel = new DoctorPanelForm(backendClient);
         panel.ShowDialog();
+    }
+
+    // #689: like Electron's tray: tooltip plus a balloon; clicking it opens Doctor.
+    private void ShowDoctorAlert(TrayNotificationPayload payload)
+    {
+        doctorAlert = $"{payload.Title}: {payload.Text}";
+        SetTrayStatus(trayStatus);
+        balloonClicked = ShowDoctorPanel;
+        trayIcon.ShowBalloonTip(10000, payload.Title, payload.Text, payload.Title.Contains("problem") ? ToolTipIcon.Error : ToolTipIcon.Warning);
+    }
+
+    private void SetTrayStatus(string status)
+    {
+        trayStatus = status;
+        trayIcon.Text = TrayTooltip(status, doctorAlert);
+    }
+
+    // NotifyIcon.Text throws past 127 characters.
+    internal static string TrayTooltip(string status, string? doctorAlert)
+    {
+        var text = doctorAlert is null ? status : $"{status} - {doctorAlert}";
+        return text.Length <= 127 ? text : text[..126] + "…";
+    }
+
+    // Electron's "Open Model Web UI" quick button: the local model web UI
+    // on port 7860.
+    private static void OpenModelWebUi()
+    {
+        try
+        {
+            Process.Start(new ProcessStartInfo("http://localhost:7860") { UseShellExecute = true });
+        }
+        catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException)
+        {
+            Console.WriteLine($"ManaApplicationContext: couldn't open the model web UI. {ex.Message}");
+        }
+    }
+
+    // For callbacks raised off the UI thread (toast activation, the tray
+    // socket, a second launcher); dropped once the chat window is gone.
+    private void RunOnUi(Action action)
+    {
+        if (sessionListForm.IsDisposed)
+        {
+            return;
+        }
+        if (sessionListForm.InvokeRequired)
+        {
+            sessionListForm.BeginInvoke(action);
+            return;
+        }
+        action();
     }
 
     // #520: reused (Hide, not Close), so Load's own one-time-only refresh
@@ -604,6 +675,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
         clipHotkeyListener.Dispose();
         globalHotkeys.Dispose();
         trayNotifications.Dispose();
+        showRequests.Dispose();
         visionCaptureClient.Dispose();
         captionOverlay.Close();
         voiceLoop.Dispose();
