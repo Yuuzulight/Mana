@@ -84,13 +84,15 @@ test("each event has a daily cap, so it can't be farmed -- and it resets the nex
   assert.ok(store.get().stress > beforeNextDay, "a new day allows the event again");
 });
 
-test("late at night she's sleepier, without the stored value changing", () => {
+test("no late-night dip (Q32); the morning lifts energy a little, without the stored value changing", () => {
   const day = clockedStore().store.get().energy;
-  const nightStore = clockedStore({ start: new Date(2026, 8, 29, 23, 30).getTime() }).store;
-  const night = nightStore.get().energy;
-  assert.ok(night < day, `night ${night} vs day ${day}`);
+  for (const hour of [23, 2, 5]) {
+    assert.equal(clockedStore({ start: new Date(2026, 8, 29, hour, 30).getTime() }).store.get().energy, day, `${hour}:30`);
+  }
+  const morningStore = clockedStore({ start: new Date(2026, 8, 29, 8, 30).getTime() }).store;
+  assert.ok(morningStore.get().energy > day);
   // Only the view is nudged: freezing shows the stored value.
-  assert.equal(nightStore.setFrozen(true).energy, DEFAULTS.energy);
+  assert.equal(morningStore.setFrozen(true).energy, DEFAULTS.energy);
 });
 
 test("freeze holds values steady through events and time; unfreeze resumes from them", () => {

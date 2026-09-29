@@ -45,11 +45,11 @@ function localDay(ms) {
   return `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`;
 }
 
-// Late at night she's sleepier whatever the stored value says; this is a
-// view-time nudge, not stored, so it never compounds.
+// In the morning she's a little brighter whatever the stored value says;
+// this is a view-time nudge, not stored, so it never compounds. No
+// late-night dip: removed at the user's request (Q32).
 function timeOfDayEnergyNudge(ms) {
   const hour = new Date(ms).getHours();
-  if (hour >= 23 || hour < 6) return -0.15;
   if (hour >= 7 && hour < 11) return 0.05;
   return 0;
 }
