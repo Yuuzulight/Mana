@@ -203,9 +203,12 @@ internal sealed class ManaApplicationContext : ApplicationContext
             ["quickEntry"] = quickEntry.ToggleVisible,
             ["vision"] = () => _ = voiceLoop.SubmitVisionHotkeyAsync(),
             ["clip"] = () => _ = voiceLoop.SubmitClipHotkeyAsync(),
+            ["camera"] = () => _ = voiceLoop.SubmitVisionHotkeyAsync(CaptureCameraAsync, VisionHotkeyMessages.CameraPrompt),
             ["interrupt"] = voiceLoop.InterruptSpeech,
             ["textAction"] = () => _ = TextActionForm.RunAsync(backendClient, text =>
                 quickEntry.OpenWith($"About \"{System.Text.RegularExpressions.Regex.Replace(text, @"\s+", " ")}\": ")),
+            // #910: a normal typed turn; its wording routes the screen read through JapaneseOcr.
+            ["translate"] = () => _ = voiceLoop.SubmitTypedCommandAsync("Translate my screen"),
         };
         globalHotkeys = new GlobalHotkeyListener(HotkeyBindings.Actions
             .Select(a => (a.Id, HotkeyBindings.Resolve(settings.Hotkeys, a), a.DisableEnvVar, hotkeyHandlers[a.Key]))
@@ -230,7 +233,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
         // #689: a second launcher started -- show this one's window instead.
         showRequests = SingleInstance.ListenForShow(() => RunOnUi(ShowSessionList));
         // #681: answers the model's mid-reply screenshot requests.
-        visionCaptureClient = new VisionCaptureClient(backendClient, backendBaseUrl: settings.BackendBaseUrl);
+        visionCaptureClient = new VisionCaptureClient(backendClient, backendBaseUrl: settings.BackendBaseUrl, captureCamera: CaptureCameraAsync);
 
         trayIcon = new NotifyIcon
         {
@@ -600,6 +603,33 @@ internal sealed class ManaApplicationContext : ApplicationContext
             trayIcon.ShowBalloonTip(8000, "Mana is waiting for you", notice, ToolTipIcon.Info);
         }
     }
+
+    // #912: every camera snapshot (hotkey and vision__camera) comes through
+    // here: only while Settings > Voice allows it, with a toast while the
+    // camera is on (besides its light) and one saying why it couldn't be.
+    private async Task<string> CaptureCameraAsync()
+    {
+        try
+        {
+            if (!ManaSettingsStore.Load().CameraSnapshots)
+            {
+                throw new InvalidOperationException(WebcamCapture.OffMessage);
+            }
+            ShowCameraBalloon("Mana is looking through your camera", "One snapshot, not saved.", ToolTipIcon.Info);
+            return await WebcamCapture.CaptureAsJpegDataUrlAsync();
+        }
+        catch (Exception ex)
+        {
+            ShowCameraBalloon("Mana couldn't use the camera", ex.Message, ToolTipIcon.Warning);
+            throw;
+        }
+    }
+
+    private void ShowCameraBalloon(string title, string text, ToolTipIcon icon) => RunOnUi(() =>
+    {
+        balloonClicked = null;
+        trayIcon.ShowBalloonTip(3000, title, text, icon);
+    });
 
     // A found-but-unusable Live2D model used to fall back to the static
     // avatar silently. Tray balloons truncate around 255 characters, so the
