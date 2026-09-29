@@ -80,6 +80,7 @@ function createRegistry(overrides = {}) {
     dataDir: createTempDir(),
     approvalGate,
     sdk: overrides.sdk || sdk,
+    malwareCheck: overrides.malwareCheck || (async () => {}),
   });
 }
 
@@ -106,6 +107,31 @@ test("validateTransport accepts stdio and http, rejects unknown kinds", () => {
   assert.throws(() => validateTransport({ kind: "stdio" }), /command/);
   assert.throws(() => validateTransport({ kind: "websocket" }), /unsupported transport kind/);
   assert.throws(() => validateTransport(null), /transport is required/);
+});
+
+test("a stdio server whose package fails the malware check is refused before approval is asked (#670)", async () => {
+  const approvalGate = createApprovalGate({ dataDir: createTempDir() });
+  const checked = [];
+  const registry = createRegistry({
+    approvalGate,
+    malwareCheck: async (command, args) => {
+      checked.push([command, args]);
+      throw new Error("Blocked: OSV lists this as known malware");
+    },
+  });
+
+  await assert.rejects(
+    () =>
+      registry.registerServer({
+        name: "evil",
+        transport: { kind: "stdio", command: "npx", args: ["-y", "evil-mcp"] },
+        allowedTools: ["run"],
+      }),
+    /known malware/,
+  );
+  assert.deepEqual(checked, [["npx", ["-y", "evil-mcp"]]]);
+  assert.deepEqual(approvalGate.listPending(), []);
+  assert.equal(registry.listServers().length, 0);
 });
 
 test("registerServer requires approval -- listServers is empty until decided", async () => {

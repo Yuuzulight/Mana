@@ -6,6 +6,7 @@
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
+const { assertNoKnownMalware } = require("./osv-malware-check");
 
 const DEFAULT_DATA_DIR = path.join(__dirname, "data", "mcp-client-registry");
 const DEFAULT_CLIENT_INFO = { name: "mana", version: "1.0.0" };
@@ -108,6 +109,8 @@ function createMcpClientRegistry(options = {}) {
   const now = options.now || (() => new Date().toISOString());
   const makeId = options.makeId || (() => crypto.randomUUID());
   const listToolsTimeoutMs = Number(options.listToolsTimeoutMs) || DEFAULT_LIST_TOOLS_TIMEOUT_MS;
+  // Injectable so tests never query the real OSV API.
+  const malwareCheck = options.malwareCheck || assertNoKnownMalware;
 
   // Connected clients (one persistent connection per server, lazily
   // established on first need) live only in memory, same reasoning as
@@ -155,6 +158,11 @@ function createMcpClientRegistry(options = {}) {
     }
     if (!approvalGate) {
       throw new Error("an approvalGate is required to register an MCP server");
+    }
+    // Issue #670: before the user is even asked, a stdio server that would
+    // download a package OSV lists as malware is refused outright.
+    if (validatedTransport.kind === "stdio") {
+      await malwareCheck(validatedTransport.command, validatedTransport.args);
     }
 
     const id = makeId();
