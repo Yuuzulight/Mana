@@ -464,14 +464,18 @@ function createLlamaServerRuntime(options = {}) {
   // pressure instead of the driver hard-failing the allocation. Measured
   // real cold-start/swap latency on an RTX 3070 Ti (see
   // docs/roadmap/issue-68-vram-hotswap-tuning.md): ~64% faster cold start
-  // (11.4s -> 4.1s) and ~32% faster on the larger 4B->7B swap direction,
-  // with no regression the other way -- on by default. Set
-  // MANA_LLAMA_UNIFIED_MEMORY=0 to opt out.
+  // (11.4s -> 4.1s) and ~32% faster on the larger 4B->7B swap direction.
+  // Off by default now: on the RTX 5080 machine, every llama-server
+  // stop with it on left ~5 GB of system RAM committed to no process (model
+  // sized, gone only after a reboot; 4 of 4 runs). With it off nothing was
+  // left behind (3 of 3), including a forced kill after a 60 s CTRL_C wait,
+  // so it's the unified memory, not the kill. MANA_LLAMA_UNIFIED_MEMORY=1
+  // opts back in.
   function buildServerEnv() {
-    if (env.MANA_LLAMA_UNIFIED_MEMORY === "0") {
-      return env;
+    if (env.MANA_LLAMA_UNIFIED_MEMORY === "1") {
+      return { ...env, GGML_CUDA_ENABLE_UNIFIED_MEMORY: "1" };
     }
-    return { ...env, GGML_CUDA_ENABLE_UNIFIED_MEMORY: "1" };
+    return env;
   }
 
   // Issue #370: the flags that actually govern throughput/memory (flash-attn,

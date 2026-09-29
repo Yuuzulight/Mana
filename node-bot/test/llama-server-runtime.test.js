@@ -1712,23 +1712,23 @@ test("LLAMA_SERVER_SWAP_DEBOUNCE_MS=0 disables debouncing entirely", async () =>
   assert.equal(spawnCalls.length, 2, "every swap happens immediately");
 });
 
-test("GGML_CUDA_ENABLE_UNIFIED_MEMORY is set by default (measurably faster on real hardware)", async () => {
-  const { runtime, spawnCalls } = makeSwappingHarness();
-
-  await runtime.runLocalAssistantReply("hello", 64, "default");
-  assert.equal(spawnCalls[0].options.env.GGML_CUDA_ENABLE_UNIFIED_MEMORY, "1");
+// Off by default: with it on, each llama-server stop left ~5 GB of RAM behind
+// on the RTX 5080 machine (see buildServerEnv).
+test("GGML_CUDA_ENABLE_UNIFIED_MEMORY is off by default, and MANA_LLAMA_UNIFIED_MEMORY=0 keeps it off", async () => {
+  for (const extraEnv of [{}, { MANA_LLAMA_UNIFIED_MEMORY: "0" }]) {
+    const { runtime, spawnCalls } = makeSwappingHarness(extraEnv);
+    await runtime.runLocalAssistantReply("hello", 64, "default");
+    assert.equal(spawnCalls[0].options.env.GGML_CUDA_ENABLE_UNIFIED_MEMORY, undefined);
+  }
 });
 
-test("MANA_LLAMA_UNIFIED_MEMORY=0 opts out of GGML_CUDA_ENABLE_UNIFIED_MEMORY", async () => {
+test("MANA_LLAMA_UNIFIED_MEMORY=1 opts back in to GGML_CUDA_ENABLE_UNIFIED_MEMORY", async () => {
   const { runtime, spawnCalls } = makeSwappingHarness({
-    MANA_LLAMA_UNIFIED_MEMORY: "0",
+    MANA_LLAMA_UNIFIED_MEMORY: "1",
   });
 
   await runtime.runLocalAssistantReply("hello", 64, "default");
-  assert.equal(
-    spawnCalls[0].options.env.GGML_CUDA_ENABLE_UNIFIED_MEMORY,
-    undefined,
-  );
+  assert.equal(spawnCalls[0].options.env.GGML_CUDA_ENABLE_UNIFIED_MEMORY, "1");
 });
 
 // Issue #320: VRAM guard. mana.gguf and vision.gguf get controllable sizes
