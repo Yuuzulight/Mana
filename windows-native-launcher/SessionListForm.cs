@@ -595,6 +595,12 @@ internal sealed class SessionListForm : Form
                 problem ??= $"{proposal.RelativePath} was already handled.";
                 continue;
             }
+            // Q16: never batch-approve an edit Mana's review refuted.
+            if (detail.RefutedCase is not null)
+            {
+                problem ??= $"{proposal.RelativePath}: Mana's review found a way it breaks, so it needs approving on its own (Review).";
+                continue;
+            }
             var result = await backendClient.ApproveProposalAsync(proposal.Id, detail.Hunks.Select(h => h.Id).ToList());
             if (result.Approved)
             {

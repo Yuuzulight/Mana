@@ -812,6 +812,8 @@ internal sealed class ManaBackendClient
                     Status = entry.TryGetProperty("status", out var statusEl) ? statusEl.GetString() ?? "" : "",
                     Pinned = entry.TryGetProperty("pinned", out var pinnedEl) && pinnedEl.ValueKind == JsonValueKind.True,
                     Trust = entry.TryGetProperty("trust", out var trustEl) ? trustEl.GetString() ?? "" : "",
+                    Trigger = entry.TryGetProperty("trigger", out var triggerEl) ? triggerEl.GetString() ?? "" : "",
+                    Paused = entry.TryGetProperty("paused", out var pausedEl) && pausedEl.ValueKind == JsonValueKind.True,
                 });
             }
         }
@@ -840,6 +842,26 @@ internal sealed class ManaBackendClient
         response.EnsureSuccessStatusCode();
     }
 
+    // Q29 (#698): Settings' Edit -- the fact's text, and a standing intent's
+    // trigger (null leaves it). node-bot records the old value in history.
+    public async Task UpdateMemoryFactAsync(string key, string text, string? trigger = null)
+    {
+        var payload = JsonSerializer.Serialize(trigger is null ? (object)new { text } : new { text, trigger });
+        using var content = new StringContent(payload, Encoding.UTF8, "application/json");
+        using var request = new HttpRequestMessage(HttpMethod.Patch, $"/admin/memory/facts/{Uri.EscapeDataString(key)}") { Content = content };
+        using var response = await http.SendAsync(request);
+        response.EnsureSuccessStatusCode();
+    }
+
+    // #698: a paused standing intent never fires.
+    public async Task SetMemoryFactPausedAsync(string key, bool paused)
+    {
+        var payload = JsonSerializer.Serialize(new { paused });
+        using var content = new StringContent(payload, Encoding.UTF8, "application/json");
+        using var response = await http.PostAsync($"/admin/memory/facts/{Uri.EscapeDataString(key)}/pause", content);
+        response.EnsureSuccessStatusCode();
+    }
+
     // #529: index-only listing (GET /skills), not full skill bodies --
     // matches skills-capability.js's own "cheap call" framing. Editing a
     // skill's full content is a much bigger form than a lean settings
@@ -864,6 +886,41 @@ internal sealed class ManaBackendClient
             }
         }
         return skills;
+    }
+
+    // #664: queue a SKILL.md folder for import. node-bot reads it now and
+    // always asks in Approvals before writing anything. Returns null when
+    // queued, else node-bot's error (no SKILL.md, not local, ...).
+    public async Task<string?> ImportSkillFolderAsync(string folderPath)
+    {
+        var payload = JsonSerializer.Serialize(new { path = folderPath });
+        using var content = new StringContent(payload, Encoding.UTF8, "application/json");
+        using var response = await http.PostAsync("/skills/import", content);
+        if (response.IsSuccessStatusCode)
+        {
+            return null;
+        }
+        await using var stream = await response.Content.ReadAsStreamAsync();
+        using var document = await JsonDocument.ParseAsync(stream);
+        return document.RootElement.TryGetProperty("error", out var errorEl) ? errorEl.GetString() ?? "import failed" : "import failed";
+    }
+
+    // Q20: "free", "each" or "first" -- how Mana may use imported skills.
+    public async Task<string> GetImportedSkillUseAsync()
+    {
+        using var response = await http.GetAsync("/skill-settings");
+        response.EnsureSuccessStatusCode();
+        await using var stream = await response.Content.ReadAsStreamAsync();
+        using var document = await JsonDocument.ParseAsync(stream);
+        return document.RootElement.TryGetProperty("importedSkillUse", out var modeEl) ? modeEl.GetString() ?? "first" : "first";
+    }
+
+    public async Task SetImportedSkillUseAsync(string mode)
+    {
+        var payload = JsonSerializer.Serialize(new { importedSkillUse = mode });
+        using var content = new StringContent(payload, Encoding.UTF8, "application/json");
+        using var response = await http.PutAsync("/skill-settings", content);
+        response.EnsureSuccessStatusCode();
     }
 
     public async Task DeleteSkillAsync(string name)
@@ -1495,6 +1552,12 @@ internal sealed class ManaBackendClient
             RelativePath = proposalElement.TryGetProperty("relativePath", out var pathElement) ? pathElement.GetString() ?? "" : "",
             Summary = proposalElement.TryGetProperty("summary", out var summaryElement) ? summaryElement.GetString() : null,
             Hunks = hunks,
+            RefutedCase = proposalElement.TryGetProperty("adversarialReview", out var reviewElement)
+                && reviewElement.ValueKind == JsonValueKind.Object
+                && reviewElement.TryGetProperty("verdict", out var verdictElement)
+                && verdictElement.GetString() == "refuted"
+                    ? (reviewElement.TryGetProperty("failingCase", out var caseElement) ? caseElement.GetString() : null) ?? "(no case given)"
+                    : null,
         };
     }
 
@@ -1502,9 +1565,13 @@ internal sealed class ManaBackendClient
     // proposal not pending, workspace file missing, etc.) comes back with
     // a fully-parseable {proposal:null, error} body the caller needs to
     // read, same reasoning as RestoreEditSnapshotAsync's own handling.
-    public async Task<ManaProposalApproveResult> ApproveProposalAsync(string id, IReadOnlyList<string> acceptedHunkIds)
+    // Q16 (#622): confirmRefuted is the user's explicit go-ahead on an edit
+    // Mana's adversarial review refuted; node-bot refuses one without it.
+    public async Task<ManaProposalApproveResult> ApproveProposalAsync(string id, IReadOnlyList<string> acceptedHunkIds, bool confirmRefuted = false)
     {
-        var payload = JsonSerializer.Serialize(new { acceptedHunkIds });
+        var payload = confirmRefuted
+            ? JsonSerializer.Serialize(new { acceptedHunkIds, confirmRefuted })
+            : JsonSerializer.Serialize(new { acceptedHunkIds });
         using var content = new StringContent(payload, Encoding.UTF8, "application/json");
         using var response = await http.PostAsync($"/editors/workspace/proposals/{Uri.EscapeDataString(id)}/approve", content);
         await using var stream = await response.Content.ReadAsStreamAsync();
@@ -1981,6 +2048,9 @@ internal sealed class ManaMemoryFact
     public bool Pinned { get; init; }
     // #673: "trusted" / "tentative" / "untrusted", derived server-side.
     public string Trust { get; init; } = "";
+    // #698: set on a standing intent ("when Trigger comes up, mention Text").
+    public string Trigger { get; init; } = "";
+    public bool Paused { get; init; }
 }
 
 // #529: GET /skills (index only -- see GetSkillsAsync's own comment).
@@ -2118,6 +2188,9 @@ internal sealed class ManaProposalDetail
     public string RelativePath { get; init; } = "";
     public string? Summary { get; init; }
     public IReadOnlyList<ManaProposalHunk> Hunks { get; init; } = Array.Empty<ManaProposalHunk>();
+    // Q16 (#622): the failing case when Mana's adversarial review refuted
+    // this edit (approving it then needs the user's explicit confirmation).
+    public string? RefutedCase { get; init; }
 }
 
 // #580: one jsdiff structuredPatch hunk (computeProposalHunks) -- Lines

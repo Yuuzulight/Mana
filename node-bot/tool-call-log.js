@@ -155,7 +155,9 @@ function createToolCallLog(options = {}) {
 // matter which source (local, browser-automation, MCP) actually owns the
 // tool. Applied last in server.js's merge chain, after every other source
 // has already been folded in, so this one wrap catches everything.
-function wrapWithToolCallLog(policy, toolCallLog) {
+// onFailure (optional): called with the tool name when a call throws --
+// issue #700's mood hears about failed tasks through it.
+function wrapWithToolCallLog(policy, toolCallLog, onFailure) {
   return {
     tools: policy.tools,
     isKnownTool: policy.isKnownTool,
@@ -167,6 +169,7 @@ function wrapWithToolCallLog(policy, toolCallLog) {
         return result;
       } catch (e) {
         toolCallLog.append({ name, args, ok: false, error: e.message, durationMs: Date.now() - startedAt });
+        if (onFailure) onFailure(name);
         throw e;
       }
     },

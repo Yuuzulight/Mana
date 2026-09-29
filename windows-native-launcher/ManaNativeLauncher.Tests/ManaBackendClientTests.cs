@@ -1922,6 +1922,54 @@ public class ManaBackendClientTests
         Assert.Equal("{\"pinned\":true}", body);
     }
 
+    // #698: standing intents carry a trigger and can be paused.
+    [Fact]
+    public async Task MemoryFacts_ParseTheTriggerAndPostThePausedFlag()
+    {
+        string? path = null;
+        string? body = null;
+        var handler = new FakeHttpMessageHandler(request =>
+        {
+            path = request.RequestUri!.AbsolutePath;
+            body = request.Content?.ReadAsStringAsync().GetAwaiter().GetResult();
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(
+                    """{"ok":true,"facts":[{"key":"raid","text":"raid is Thursday 9pm","status":"active","trigger":"my static","paused":true}]}""",
+                    Encoding.UTF8,
+                    "application/json"),
+            };
+        });
+        var client = new ManaBackendClient(handler);
+
+        var facts = await client.GetMemoryFactsAsync();
+        Assert.Equal("my static", facts[0].Trigger);
+        Assert.True(facts[0].Paused);
+
+        await client.SetMemoryFactPausedAsync("raid", false);
+        Assert.Equal("/admin/memory/facts/raid/pause", path);
+        Assert.Equal("{\"paused\":false}", body);
+    }
+
+    // Q29: Settings' Edit sends a PATCH with the text, plus the trigger for a reminder.
+    [Fact]
+    public async Task UpdateMemoryFactAsync_PatchesTextAndOptionalTrigger()
+    {
+        var requests = new List<(string Method, string Path, string Body)>();
+        var handler = new FakeHttpMessageHandler(request =>
+        {
+            requests.Add((request.Method.Method, request.RequestUri!.AbsolutePath, request.Content!.ReadAsStringAsync().GetAwaiter().GetResult()));
+            return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("{\"ok\":true}") };
+        });
+        var client = new ManaBackendClient(handler);
+
+        await client.UpdateMemoryFactAsync("raid reminder", "raid is Friday", "my FC");
+        await client.UpdateMemoryFactAsync("gpu", "RTX 5090");
+
+        Assert.Equal(("PATCH", "/admin/memory/facts/raid%20reminder", "{\"text\":\"raid is Friday\",\"trigger\":\"my FC\"}"), requests[0]);
+        Assert.Equal("{\"text\":\"RTX 5090\"}", requests[1].Body);
+    }
+
     [Fact]
     public async Task GetMemoryFactsAsync_ReturnsEmptyWhenTheFactsKeyIsMissing()
     {
@@ -2006,6 +2054,37 @@ public class ManaBackendClientTests
         var skills = await client.GetSkillsAsync();
 
         Assert.Empty(skills);
+    }
+
+    // #664/Q20/Q21: Import folder posts the path; the imported-skills setting
+    // is read and saved through /skill-settings.
+    [Fact]
+    public async Task ImportSkillFolderAndImportedSkillUse_UseTheirRoutes()
+    {
+        var requests = new List<(string Method, string Path, string? Body)>();
+        var handler = new FakeHttpMessageHandler(request =>
+        {
+            requests.Add((request.Method.Method, request.RequestUri!.AbsolutePath, request.Content?.ReadAsStringAsync().GetAwaiter().GetResult()));
+            if (request.RequestUri!.AbsolutePath == "/skills/import" && requests.Count > 1)
+            {
+                return new HttpResponseMessage(HttpStatusCode.BadRequest) { Content = new StringContent("""{"error":"SKILL.md is required"}""") };
+            }
+            return new HttpResponseMessage(request.Method == HttpMethod.Post ? HttpStatusCode.Accepted : HttpStatusCode.OK)
+            {
+                Content = new StringContent("""{"status":"pending","importedSkillUse":"each"}"""),
+            };
+        });
+        var client = new ManaBackendClient(handler);
+
+        Assert.Null(await client.ImportSkillFolderAsync(@"C:\skills\pdf"));
+        Assert.Equal("SKILL.md is required", await client.ImportSkillFolderAsync(@"C:\empty"));
+        Assert.Equal("each", await client.GetImportedSkillUseAsync());
+        await client.SetImportedSkillUseAsync("free");
+
+        Assert.Equal(("POST", "/skills/import"), (requests[0].Method, requests[0].Path));
+        Assert.Contains("pdf", requests[0].Body);
+        Assert.Equal(("GET", "/skill-settings"), (requests[2].Method, requests[2].Path));
+        Assert.Equal(("PUT", "/skill-settings", """{"importedSkillUse":"free"}"""), requests[3]);
     }
 
     [Fact]
@@ -2752,6 +2831,37 @@ public class ManaBackendClientTests
         Assert.Equal("hunk-0", detail.Hunks[0].Id);
         Assert.Equal(1, detail.Hunks[0].OldStart);
         Assert.Equal(new[] { " a", "-b", "+b2", "+c" }, detail.Hunks[0].Lines);
+    }
+
+    // Q16 (#622): a refuted edit carries its failing case, and approving it
+    // sends confirmRefuted only when the user said yes.
+    [Fact]
+    public async Task Proposals_ReadTheRefutedCaseAndSendConfirmRefutedOnlyWhenAsked()
+    {
+        var bodies = new List<string>();
+        var handler = new FakeHttpMessageHandler(request =>
+        {
+            if (request.Method == HttpMethod.Get)
+            {
+                return new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent(
+                        """{"proposal":{"id":"p1","status":"pending","relativePath":"a.js","hunks":[],"adversarialReview":{"verdict":"refuted","failingCase":"n = 0","reason":""}}}""",
+                        Encoding.UTF8,
+                        "application/json"),
+                };
+            }
+            bodies.Add(request.Content!.ReadAsStringAsync().GetAwaiter().GetResult());
+            return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("""{"proposal":{"id":"p1"}}""") };
+        });
+        var client = new ManaBackendClient(handler);
+
+        Assert.Equal("n = 0", (await client.GetProposalDetailAsync("p1"))!.RefutedCase);
+        await client.ApproveProposalAsync("p1", new[] { "hunk-0" });
+        await client.ApproveProposalAsync("p1", new[] { "hunk-0" }, confirmRefuted: true);
+
+        Assert.DoesNotContain("confirmRefuted", bodies[0]);
+        Assert.Contains("\"confirmRefuted\":true", bodies[1]);
     }
 
     [Fact]
