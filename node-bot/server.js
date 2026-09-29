@@ -90,7 +90,7 @@ const { createVTubeRuntime } = require("./vtube-runtime");
   registerAdminStaticRoutes,
   registerPendingWritesRoutes,
 } = require("./server-routes");
-	const { ADMIN_KEY_REQUIRED_ERROR, hasAdminKey } = require("./admin-key");
+	const { ADMIN_KEY_REQUIRED_ERROR, checkAdminSecret, hasAdminKey } = require("./admin-key");
 	const {
 	  handleGetAddonStatus,
 	  handleGenerateVideo,
@@ -2104,19 +2104,9 @@ function registerRoutes(app, upload, deps = {}) {
     process.env.MANA_ADMIN_SECRET ||
     "";
 
+  // #842: no secret no longer means open -- see checkAdminSecret.
   function checkAdminAuth(req, res) {
-    if (!ADMIN_SECRET) return true; // no secret configured -> allow (local dev)
-    const header = req.get("authorization") || req.get("Authorization") || "";
-    if (!header || !header.startsWith("Bearer ")) {
-      res.status(401).json({ ok: false, error: "unauthorized" });
-      return false;
-    }
-    const token = header.slice(7).trim();
-    if (token !== ADMIN_SECRET) {
-      res.status(401).json({ ok: false, error: "unauthorized" });
-      return false;
-    }
-    return true;
+    return checkAdminSecret(req, res, ADMIN_SECRET);
   }
 
   const capabilities = deps.capabilities || [
@@ -2753,15 +2743,7 @@ function registerRoutes(app, upload, deps = {}) {
 
   // Admin endpoint: send a tray notification (protected)
   app.post("/admin/notify/tray", async (req, res) => {
-    const ADMIN_SECRET_ENV = process.env.MANA_ADMIN_SECRET || "";
-    if (ADMIN_SECRET_ENV) {
-      const header = req.get("authorization") || req.get("Authorization") || "";
-      if (!header || !header.startsWith("Bearer "))
-        return res.status(401).json({ ok: false, error: "unauthorized" });
-      const token = header.slice(7).trim();
-      if (token !== ADMIN_SECRET_ENV)
-        return res.status(401).json({ ok: false, error: "unauthorized" });
-    }
+    if (!checkAdminSecret(req, res, process.env.MANA_ADMIN_SECRET || "")) return;
     try {
       const body = req.body || {};
       const title =
@@ -5501,8 +5483,7 @@ function registerRoutes(app, upload, deps = {}) {
     // /admin/plugins_install.html UI this backs), not something any
     // unauthenticated caller should be able to trigger. Same
     // checkAdminAuth gate every other sensitive route in this file already
-    // uses (auto-allows when MANA_ADMIN_SECRET is unset, matching local-dev
-    // behavior everywhere else).
+    // uses.
     if (!checkAdminAuth(req, res)) return;
     try {
       const { sourceType, urlOrPath } = req.body || {};

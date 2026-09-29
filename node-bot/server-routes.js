@@ -7,45 +7,13 @@ const {
   requireString,
   sendValidationError,
 } = require("./request-validation");
-const {
-  getRequestAddress,
-  isLoopbackAddress,
-  isRestartCommand,
-} = require("./admin-restart");
-const { ADMIN_KEY_REQUIRED_ERROR, hasAdminKey } = require("./admin-key");
+const { isRestartCommand } = require("./admin-restart");
+const { ADMIN_KEY_REQUIRED_ERROR, hasAdminKey, isLocalRestartRequest } = require("./admin-key");
 const { readGgufMetadata } = require("./tools/gguf-metadata");
 const { createZedIntegration } = require("./zed-integration");
 const { runPluginInputHooks } = require("./capabilities/registry");
 
 const RESTART_LOCAL_ONLY_ERROR = "restart is only available from this PC";
-
-function getSocketAddress(req) {
-  return req?.socket?.remoteAddress || "";
-}
-
-function getFirstForwardedAddress(req) {
-  const forwardedFor =
-    typeof req.get === "function"
-      ? req.get("x-forwarded-for")
-      : req?.headers?.["x-forwarded-for"];
-  const value = Array.isArray(forwardedFor) ? forwardedFor[0] : forwardedFor;
-  return String(value || "")
-    .split(",")[0]
-    .trim();
-}
-
-// Loopback-only, and if a proxy claims the socket is loopback (e.g. a
-// LAN tunnel terminating on the same box), an X-Forwarded-For header
-// pointing elsewhere still disqualifies the request.
-function isLocalRestartRequest(req) {
-  const socketAddress = getSocketAddress(req);
-  const requestAddress = getRequestAddress(req);
-  const forwardedAddress = getFirstForwardedAddress(req);
-  return (
-    isLoopbackAddress(socketAddress || requestAddress) &&
-    (!forwardedAddress || isLoopbackAddress(forwardedAddress))
-  );
-}
 
 // #670: local is no longer enough for admin routes -- see admin-key.js.
 function isLocalAdminRequest(req) {

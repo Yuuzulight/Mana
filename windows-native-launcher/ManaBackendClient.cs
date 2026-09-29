@@ -20,8 +20,8 @@ internal sealed class ManaBackendClient
     // #565: baseUrl/adminToken default to null so every existing call
     // site (real and test) keeps working unchanged -- null baseUrl means
     // the same hardcoded local address this always used, and a null/empty
-    // adminToken means no Authorization header, matching every admin-gated
-    // route's own "no secret configured -> allow" behavior. Setting the
+    // adminToken means no Authorization header (with no MANA_ADMIN_SECRET,
+    // the per-run launcherKey below is what admin routes check, #842). Setting the
     // header once here via DefaultRequestHeaders (rather than adding it to
     // every individual request below) covers every current and future
     // method in this file for free.
@@ -799,11 +799,9 @@ internal sealed class ManaBackendClient
         response.EnsureSuccessStatusCode();
     }
 
-    // #529/#565: requires an admin bearer token only when node-bot has
-    // MANA_ADMIN_SECRET configured -- unset (the common local-only case
-    // this launcher otherwise assumes throughout) allows every call here
-    // through with no auth header, matching checkAdminAuth's own "no
-    // secret configured -> allow" rule. The Connection settings tab
+    // #529/#565: requires an admin bearer token when node-bot has
+    // MANA_ADMIN_SECRET configured; unset (the common case), checkAdminAuth
+    // takes this launcher's per-run key instead (#842). The Connection settings tab
     // (#565) is where a token gets entered when one IS configured; a
     // wrong/missing token still surfaces as a 401 EnsureSuccessStatusCode
     // throws, same as any other unexpected status this client doesn't
@@ -1482,10 +1480,8 @@ internal sealed class ManaBackendClient
     }
 
     // #580: node-bot's in-memory edit-proposal store -- see
-    // zed-integration.js's own listEditProposals. Admin-gated the same
-    // lenient way as the already-shipped Memory Facts/Skills/Approvals
-    // tabs (checkAdminAuth allows everything unless MANA_ADMIN_SECRET is
-    // actually configured).
+    // zed-integration.js's own listEditProposals. Admin-gated
+    // (checkAdminAuth) like the Memory Facts/Skills/Approvals tabs.
     public async Task<IReadOnlyList<ManaProposalSummary>> GetProposalsAsync()
     {
         using var response = await http.GetAsync("/editors/workspace/proposals");
@@ -1604,9 +1600,7 @@ internal sealed class ManaBackendClient
 
     // #579: node-bot's recorded per-file edit snapshots -- see
     // zed-integration.js's own listEditSnapshots. Admin-gated
-    // (checkAdminAuth) the same as the already-shipped Memory Facts/
-    // Skills/Approvals tabs -- allowed unconditionally unless
-    // MANA_ADMIN_SECRET is actually configured, same as those.
+    // (checkAdminAuth) the same as the Memory Facts/Skills/Approvals tabs.
     public async Task<IReadOnlyList<ManaEditSnapshot>> GetEditSnapshotsAsync()
     {
         using var response = await http.GetAsync("/editors/workspace/snapshots");
