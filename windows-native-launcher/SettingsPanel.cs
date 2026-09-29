@@ -24,6 +24,11 @@ internal sealed class SettingsPanel : UserControl
     private readonly Func<string?>? getCurrentSessionId;
     private readonly ListView pluginsList = new();
     private readonly ListView factsList = new();
+    // #688: search boxes over the last-loaded plugins/facts.
+    private readonly TextBox pluginsSearch = new() { Dock = DockStyle.Fill, PlaceholderText = "Search plugins", AccessibleName = "Search plugins" };
+    private readonly TextBox factsSearch = new() { Dock = DockStyle.Top, PlaceholderText = "Search memory", AccessibleName = "Search memory" };
+    private System.Collections.Generic.IReadOnlyList<ManaPlugin> plugins = Array.Empty<ManaPlugin>();
+    private System.Collections.Generic.IReadOnlyList<ManaMemoryFact> facts = Array.Empty<ManaMemoryFact>();
     private readonly ListView skillsList = new();
     // Q20: Settings > Skills' "Imported skills" choice, in node-bot's order.
     private static readonly string[] ImportedSkillUseModes = { "free", "each", "first" };
@@ -38,6 +43,8 @@ internal sealed class SettingsPanel : UserControl
     private readonly ComboBox themePresetCombo = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 200 };
     private readonly TextBox themeAccentBox = new() { Width = 100 };
     private readonly Label perfSummaryLabel = new() { AutoSize = true };
+    private readonly Label gamingStatusLabel = new() { AutoSize = true, Anchor = AnchorStyles.Left };
+    private readonly CheckBox gamingModeCheck = new() { Text = "Gaming mode detection", AutoSize = true };
     private readonly ListView perfOperationsList = new();
     private readonly ListView presetsList = new();
     // #681: which preset replies actually use ("None" = index 0).
@@ -211,7 +218,46 @@ internal sealed class SettingsPanel : UserControl
         pluginsList.Columns.Add("Description", 300);
         pluginsList.ItemChecked += OnPluginChecked;
         DarkTheme.ApplyListView(pluginsList);
-        return new TabPage("Plugins") { Controls = { pluginsList } };
+
+        // #688: search, and "+ Add" -> the guide listing plugins and how to
+        // add one (no installer, same as Electron).
+        StyleSearchBox(pluginsSearch);
+        pluginsSearch.TextChanged += (_, _) => ShowPlugins();
+        var addButton = new Button { Text = "+ Add", Dock = DockStyle.Right, Width = 70 };
+        DarkTheme.ApplyButton(addButton);
+        addButton.Click += (_, _) => OpenPluginGuide();
+        var searchRow = new Panel { Dock = DockStyle.Top, Height = 26, BackColor = DarkTheme.Background };
+        searchRow.Controls.Add(pluginsSearch);
+        searchRow.Controls.Add(addButton);
+
+        var page = new TabPage("Plugins");
+        page.Controls.Add(pluginsList);
+        page.Controls.Add(searchRow);
+        return page;
+    }
+
+    private static void StyleSearchBox(TextBox box)
+    {
+        box.BorderStyle = BorderStyle.FixedSingle;
+        box.BackColor = DarkTheme.Panel2;
+        box.ForeColor = DarkTheme.Text;
+    }
+
+    // #688: case-insensitive match of the search text in any field; blank matches all.
+    internal static bool MatchesSearch(string query, params string?[] fields) =>
+        string.IsNullOrWhiteSpace(query) || fields.Any(f => f?.Contains(query.Trim(), StringComparison.OrdinalIgnoreCase) == true);
+
+    private void OpenPluginGuide()
+    {
+        var guide = Path.Combine(ManaApplicationContext.FindRootDirectory(), "plugins", "README.md");
+        try
+        {
+            Process.Start(new ProcessStartInfo(guide) { UseShellExecute = true });
+        }
+        catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException)
+        {
+            MessageBox.Show(this, $"Couldn't open {guide}: {ex.Message}", "Plugins", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
     }
 
     private async void OnPluginChecked(object? sender, ItemCheckedEventArgs e)
@@ -238,7 +284,6 @@ internal sealed class SettingsPanel : UserControl
 
     private async Task RefreshPluginsAsync()
     {
-        System.Collections.Generic.IReadOnlyList<ManaPlugin> plugins;
         try
         {
             plugins = await backendClient.GetPluginsAsync();
@@ -256,12 +301,16 @@ internal sealed class SettingsPanel : UserControl
         {
             return;
         }
+        ShowPlugins();
+    }
 
+    private void ShowPlugins()
+    {
         populatingPlugins = true;
         try
         {
             pluginsList.Items.Clear();
-            foreach (var plugin in plugins)
+            foreach (var plugin in plugins.Where(p => MatchesSearch(pluginsSearch.Text, p.Name, p.Description, p.Key)))
             {
                 var item = new ListViewItem(plugin.Name) { Tag = plugin.Key, Checked = plugin.Enabled };
                 item.SubItems.Add(plugin.Description ?? "");
@@ -384,8 +433,12 @@ internal sealed class SettingsPanel : UserControl
             }
         };
 
+        StyleSearchBox(factsSearch);
+        factsSearch.TextChanged += (_, _) => ShowFacts();
+
         var page = new TabPage("Memory Facts");
         page.Controls.Add(factsList);
+        page.Controls.Add(factsSearch);
         page.Controls.Add(editButton);
         page.Controls.Add(pinButton);
         page.Controls.Add(archiveButton);
@@ -518,7 +571,6 @@ internal sealed class SettingsPanel : UserControl
 
     private async Task RefreshMemoryFactsAsync()
     {
-        System.Collections.Generic.IReadOnlyList<ManaMemoryFact> facts;
         try
         {
             facts = await backendClient.GetMemoryFactsAsync();
@@ -536,9 +588,13 @@ internal sealed class SettingsPanel : UserControl
         {
             return;
         }
+        ShowFacts();
+    }
 
+    private void ShowFacts()
+    {
         factsList.Items.Clear();
-        foreach (var fact in facts)
+        foreach (var fact in facts.Where(f => MatchesSearch(factsSearch.Text, f.Key, f.Text, f.Trigger)))
         {
             var item = new ListViewItem(fact.Key) { Tag = fact };
             item.SubItems.Add(fact.Trigger == "" ? fact.Text : $"When {fact.Trigger} comes up: {fact.Text}");
@@ -644,10 +700,30 @@ internal sealed class SettingsPanel : UserControl
             return;
         }
 
-        bool createdImmediately;
+        // #688: like Electron, a skill you typed in yourself that the content
+        // scan flags nothing in is approved straight away; a flagged one
+        // waits in Approvals.
+        string? note = null;
         try
         {
-            createdImmediately = await backendClient.CreateSkillAsync(dialog.SkillName, dialog.Description, dialog.Body, dialog.Category);
+            var result = await backendClient.CreateSkillAsync(dialog.SkillName, dialog.Description, dialog.Body, dialog.Category);
+            if (!result.Created && result.PendingId is { } id && result.Flags.Count == 0)
+            {
+                try
+                {
+                    await backendClient.DecideApprovalAsync(id, "allow-once");
+                }
+                catch (Exception ex)
+                {
+                    note = $"Skill submitted, but approving it failed ({ex.Message}) -- approve it from the Approvals tab.";
+                }
+            }
+            else if (!result.Created)
+            {
+                note = result.Flags.Count > 0
+                    ? $"The content scan flagged: {string.Join(", ", result.Flags)}. Review and approve it from the Approvals tab."
+                    : "Skill submitted -- approve it from the Approvals tab.";
+            }
         }
         catch (Exception ex)
         {
@@ -658,9 +734,9 @@ internal sealed class SettingsPanel : UserControl
         {
             return;
         }
-        if (!createdImmediately)
+        if (note is not null)
         {
-            MessageBox.Show(this, "Skill submitted -- approve it from the Approvals tab.", "New Skill", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            MessageBox.Show(this, note, "New Skill", MessageBoxButtons.OK, MessageBoxIcon.Information);
         }
         await RefreshSkillsAsync();
     }
@@ -1169,6 +1245,27 @@ internal sealed class SettingsPanel : UserControl
         var statusLabel = new Label { AutoSize = true, ForeColor = DarkTheme.Muted };
         var saveButton = new Button { Text = "Save" };
         DarkTheme.ApplyButton(saveButton);
+
+        // #688: Electron's colour picker and reset, beside the hex box.
+        var pickButton = new Button { Text = "Pick...", AutoSize = true };
+        DarkTheme.ApplyButton(pickButton);
+        pickButton.Click += (_, _) =>
+        {
+            using var picker = new ColorDialog { FullOpen = true, Color = DarkTheme.Accent };
+            if (picker.ShowDialog(this) == DialogResult.OK)
+            {
+                themeAccentBox.Text = $"#{picker.Color.R:x2}{picker.Color.G:x2}{picker.Color.B:x2}";
+            }
+        };
+        var resetButton = new Button { Text = "Reset", AutoSize = true };
+        DarkTheme.ApplyButton(resetButton);
+        resetButton.Click += (_, _) =>
+        {
+            themePresetCombo.SelectedItem = DarkTheme.Presets.First(p => p.Id == new ManaThemeSettings().Preset);
+            themeAccentBox.Text = "";
+            saveButton.PerformClick();
+        };
+
         saveButton.Click += (_, _) =>
         {
             var accentText = themeAccentBox.Text.Trim();
@@ -1190,8 +1287,14 @@ internal sealed class SettingsPanel : UserControl
         layout.Controls.Add(new Label { Text = "Theme", AutoSize = true, ForeColor = DarkTheme.Text });
         layout.Controls.Add(themePresetCombo);
         layout.Controls.Add(new Label { Text = "Accent color override (optional, #rrggbb)", AutoSize = true, ForeColor = DarkTheme.Text });
-        layout.Controls.Add(themeAccentBox);
-        layout.Controls.Add(saveButton);
+        var accentRow = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.LeftToRight, BackColor = DarkTheme.Background, Margin = Padding.Empty };
+        accentRow.Controls.Add(themeAccentBox);
+        accentRow.Controls.Add(pickButton);
+        layout.Controls.Add(accentRow);
+        var buttonRow = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.LeftToRight, BackColor = DarkTheme.Background, Margin = Padding.Empty };
+        buttonRow.Controls.Add(saveButton);
+        buttonRow.Controls.Add(resetButton);
+        layout.Controls.Add(buttonRow);
         layout.Controls.Add(statusLabel);
 
         return new TabPage("Theme") { Controls = { layout } };
@@ -1214,11 +1317,34 @@ internal sealed class SettingsPanel : UserControl
         perfOperationsList.Columns.Add("Details", 340);
         DarkTheme.ApplyListView(perfOperationsList);
 
+        // #688: Electron's gaming-mode setting and what triggered it. Saved
+        // straight away; the launcher's 5s poll picks it up.
+        gamingModeCheck.ForeColor = DarkTheme.Text;
+        gamingModeCheck.Checked = ManaSettingsStore.Load().GamingModeDetection;
+        gamingModeCheck.CheckedChanged += (_, _) =>
+        {
+            var latest = ManaSettingsStore.Load();
+            latest.GamingModeDetection = gamingModeCheck.Checked;
+            latest.Save();
+            _ = RefreshPerfTabAsync();
+        };
+        gamingStatusLabel.ForeColor = DarkTheme.Muted;
+        var gamingRow = new FlowLayoutPanel { Dock = DockStyle.Top, AutoSize = true, Padding = new Padding(4, 4, 4, 0), BackColor = DarkTheme.Background };
+        gamingRow.Controls.Add(gamingModeCheck);
+        gamingRow.Controls.Add(gamingStatusLabel);
+
         var page = new TabPage("Performance");
         page.Controls.Add(perfOperationsList);
         page.Controls.Add(perfSummaryLabel);
+        page.Controls.Add(gamingRow);
         return page;
     }
+
+    // #688: like Electron's gaming status line.
+    internal static string GamingStatusText(bool enabled, bool running, IReadOnlyList<string> processes) =>
+        !enabled ? "Off"
+        : running ? $"Active: {string.Join(", ", processes)}"
+        : "No watched game running";
 
     private async Task RefreshPerfTabAsync()
     {
@@ -1266,6 +1392,7 @@ internal sealed class SettingsPanel : UserControl
         }
 
         perfSummaryLabel.Text = summary;
+        gamingStatusLabel.Text = GamingStatusText(gamingModeCheck.Checked, status.GamingAppRunning, status.MatchedProcesses);
 
         perfOperationsList.Items.Clear();
         foreach (var (name, details) in status.Operations)

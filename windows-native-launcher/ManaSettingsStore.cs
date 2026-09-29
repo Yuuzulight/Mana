@@ -62,6 +62,10 @@ internal sealed class ManaSettingsStore
     public int? AvatarLeft { get; set; }
     public int? AvatarTop { get; set; }
 
+    // #574/#688: gaming-mode detection (tray menu and Settings >
+    // Performance); off ignores the backend's watched-game scan.
+    public bool GamingModeDetection { get; set; } = true;
+
     // filePath: null (every real call site) uses the real per-user
     // settings file. Tests pass a temp file path to exercise
     // load/save/corruption handling without touching LocalApplicationData.

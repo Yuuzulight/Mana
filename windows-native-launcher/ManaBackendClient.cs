@@ -95,6 +95,9 @@ internal sealed class ManaBackendClient
             TotalMemoryMb = process.GetProperty("totalMemoryMb").GetInt32(),
             TtsProvider = config.GetProperty("ttsProvider").GetString() ?? "unknown",
             GamingAppRunning = gaming.GetProperty("gamingAppRunning").GetBoolean(),
+            MatchedProcesses = gaming.TryGetProperty("matchedProcesses", out var matchedEl) && matchedEl.ValueKind == JsonValueKind.Array
+                ? matchedEl.EnumerateArray().Select(p => p.GetString()).OfType<string>().ToList()
+                : Array.Empty<string>(),
             UptimeSeconds = root.TryGetProperty("uptimeSeconds", out var uptimeEl) ? uptimeEl.GetInt64() : 0,
             WhisperThreads = config.TryGetProperty("whisperThreads", out var whisperEl) ? whisperEl.GetInt32() : 0,
             LlamaThreads = config.TryGetProperty("llamaThreads", out var llamaThreadsEl) ? llamaThreadsEl.GetInt32() : 0,
@@ -985,13 +988,26 @@ internal sealed class ManaBackendClient
     // (201's is the created skill itself; 202's is the full approval-gate
     // outcome), so this returns which case happened by status code rather
     // than trying to parse a "status" field that only one of them has.
-    public async Task<bool> CreateSkillAsync(string name, string description, string body, string? category)
+    // #688: a 202 also carries the pending request's id and the content
+    // scan's flags, so a clean one can be approved straight away.
+    public async Task<ManaSkillCreateResult> CreateSkillAsync(string name, string description, string body, string? category)
     {
         var payload = JsonSerializer.Serialize(new { name, description, body, category });
         using var content = new StringContent(payload, Encoding.UTF8, "application/json");
         using var response = await http.PostAsync("/skills", content);
         response.EnsureSuccessStatusCode();
-        return response.StatusCode == System.Net.HttpStatusCode.Created;
+        if (response.StatusCode == System.Net.HttpStatusCode.Created)
+        {
+            return new ManaSkillCreateResult(true, null, Array.Empty<string>());
+        }
+        await using var stream = await response.Content.ReadAsStreamAsync();
+        using var document = await JsonDocument.ParseAsync(stream);
+        var root = document.RootElement;
+        var id = root.TryGetProperty("requestId", out var idEl) ? idEl.GetString() : null;
+        var flags = root.TryGetProperty("flags", out var flagsEl) && flagsEl.ValueKind == JsonValueKind.Array
+            ? flagsEl.EnumerateArray().Select(f => f.ValueKind == JsonValueKind.String ? f.GetString()! : f.GetRawText()).ToList()
+            : new List<string>();
+        return new ManaSkillCreateResult(false, id, flags);
     }
 
     // #581: unlike POST /skills above, this is a direct human edit, not
@@ -1888,11 +1904,17 @@ internal sealed class ManaBackendClient
     }
 }
 
+// #688: POST /skills -- created now, or waiting for approval (PendingId)
+// with what the content scan flagged.
+internal sealed record ManaSkillCreateResult(bool Created, string? PendingId, IReadOnlyList<string> Flags);
+
 internal sealed class ManaPerformanceStatus
 {
     public int TotalMemoryMb { get; init; }
     public string TtsProvider { get; init; } = "unknown";
     public bool GamingAppRunning { get; init; }
+    // #688: the watched game processes found running (empty when none).
+    public IReadOnlyList<string> MatchedProcesses { get; init; } = Array.Empty<string>();
     public long UptimeSeconds { get; init; }
     public int WhisperThreads { get; init; }
     public int LlamaThreads { get; init; }
