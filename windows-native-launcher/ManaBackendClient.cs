@@ -798,6 +798,17 @@ internal sealed class ManaBackendClient
         response.EnsureSuccessStatusCode();
     }
 
+    // Q29 (#698): Settings' Edit -- the fact's text, and a standing intent's
+    // trigger (null leaves it). node-bot records the old value in history.
+    public async Task UpdateMemoryFactAsync(string key, string text, string? trigger = null)
+    {
+        var payload = JsonSerializer.Serialize(trigger is null ? (object)new { text } : new { text, trigger });
+        using var content = new StringContent(payload, Encoding.UTF8, "application/json");
+        using var request = new HttpRequestMessage(HttpMethod.Patch, $"/admin/memory/facts/{Uri.EscapeDataString(key)}") { Content = content };
+        using var response = await http.SendAsync(request);
+        response.EnsureSuccessStatusCode();
+    }
+
     // #698: a paused standing intent never fires.
     public async Task SetMemoryFactPausedAsync(string key, bool paused)
     {

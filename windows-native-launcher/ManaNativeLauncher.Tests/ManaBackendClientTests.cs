@@ -1914,6 +1914,25 @@ public class ManaBackendClientTests
         Assert.Equal("{\"paused\":false}", body);
     }
 
+    // Q29: Settings' Edit sends a PATCH with the text, plus the trigger for a reminder.
+    [Fact]
+    public async Task UpdateMemoryFactAsync_PatchesTextAndOptionalTrigger()
+    {
+        var requests = new List<(string Method, string Path, string Body)>();
+        var handler = new FakeHttpMessageHandler(request =>
+        {
+            requests.Add((request.Method.Method, request.RequestUri!.AbsolutePath, request.Content!.ReadAsStringAsync().GetAwaiter().GetResult()));
+            return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("{\"ok\":true}") };
+        });
+        var client = new ManaBackendClient(handler);
+
+        await client.UpdateMemoryFactAsync("raid reminder", "raid is Friday", "my FC");
+        await client.UpdateMemoryFactAsync("gpu", "RTX 5090");
+
+        Assert.Equal(("PATCH", "/admin/memory/facts/raid%20reminder", "{\"text\":\"raid is Friday\",\"trigger\":\"my FC\"}"), requests[0]);
+        Assert.Equal("{\"text\":\"RTX 5090\"}", requests[1].Body);
+    }
+
     [Fact]
     public async Task GetMemoryFactsAsync_ReturnsEmptyWhenTheFactsKeyIsMissing()
     {

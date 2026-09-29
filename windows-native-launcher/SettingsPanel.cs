@@ -361,8 +361,29 @@ internal sealed class SettingsPanel : UserControl
             }
         };
 
+        // Q29: edit a fact's text (and a reminder's "when" part) in place;
+        // chat edits ("move the raid reminder to Friday") work too.
+        var editButton = new Button { Text = "Edit", Dock = DockStyle.Bottom, Height = 28 };
+        DarkTheme.ApplyButton(editButton);
+        editButton.Click += async (_, _) =>
+        {
+            editButton.Enabled = false;
+            try
+            {
+                await EditSelectedFactAsync();
+            }
+            finally
+            {
+                if (!IsDisposed)
+                {
+                    editButton.Enabled = true;
+                }
+            }
+        };
+
         var page = new TabPage("Memory Facts");
         page.Controls.Add(factsList);
+        page.Controls.Add(editButton);
         page.Controls.Add(pinButton);
         page.Controls.Add(archiveButton);
         page.Controls.Add(confirmButton);
@@ -384,6 +405,42 @@ internal sealed class SettingsPanel : UserControl
         catch (Exception ex)
         {
             Console.WriteLine($"SettingsPanel: failed to pin fact '{fact.Key}'. {ex.Message}");
+            return;
+        }
+        if (!IsDisposed)
+        {
+            await RefreshMemoryFactsAsync();
+        }
+    }
+
+    private async Task EditSelectedFactAsync()
+    {
+        if (factsList.SelectedItems.Count == 0 || factsList.SelectedItems[0].Tag is not ManaMemoryFact fact)
+        {
+            return;
+        }
+        string? trigger = null;
+        if (fact.Trigger != "")
+        {
+            using var whenDialog = new TextPromptDialog("Edit reminder", "When this comes up:", fact.Trigger);
+            if (whenDialog.ShowDialog(this) != DialogResult.OK || whenDialog.Value.Trim() == "")
+            {
+                return;
+            }
+            trigger = whenDialog.Value.Trim();
+        }
+        using var textDialog = new TextPromptDialog("Edit fact", fact.Trigger == "" ? "Fact:" : "Mention:", fact.Text);
+        if (textDialog.ShowDialog(this) != DialogResult.OK || textDialog.Value.Trim() == "")
+        {
+            return;
+        }
+        try
+        {
+            await backendClient.UpdateMemoryFactAsync(fact.Key, textDialog.Value.Trim(), trigger);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"SettingsPanel: failed to edit fact '{fact.Key}'. {ex.Message}");
             return;
         }
         if (!IsDisposed)

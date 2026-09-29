@@ -103,6 +103,29 @@ const MAX_INTENTS_PER_TURN = 2;
 // 6 hard-negative messages, best F0.5 at 0.55 (P 0.89, R 0.46; 0.50 gave
 // P 0.77, R 0.61), and 0.2% false fires on other intents' messages.
 const MIN_INTENT_SIMILARITY = 0.55;
+// Q41: a keyword match on the trigger only breaks a near-tie -- it fires an
+// intent whose similarity is in [0.45, 0.55), never on its own (keywords
+// alone false-fired on other senses of a word, e.g. "static electricity").
+const MIN_INTENT_KEYWORD_SIMILARITY = 0.45;
+
+// Q42: an intent's trigger is saved twice -- Mana's restated rule
+// (`trigger`) and the user's own words (`triggerUserWords`) -- and either
+// can match. The user's words get their own vector under this id suffix.
+const USER_WORDS_ID_SUFFIX = "#user";
+
+function intentTriggers(fact) {
+  return [fact.trigger, fact.triggerUserWords].filter(Boolean);
+}
+
+// Facts plus, for each intent saved with the user's own words, a stand-in
+// whose trigger is those words, so it's embedded and cached separately.
+function withUserWordsVariants(facts) {
+  return facts.flatMap((fact) =>
+    fact.trigger && fact.triggerUserWords
+      ? [fact, { ...fact, id: `${factRecallId(fact)}${USER_WORDS_ID_SUFFIX}`, trigger: fact.triggerUserWords }]
+      : [fact],
+  );
+}
 
 // Whole words only, so a short trigger like "GPU" (too short for
 // significantWords) still matches "a new GPU?" but not "gpus".
@@ -147,15 +170,26 @@ function factRecallCandidates(facts, text, similarityById = null, nowMs = Date.n
     if (!isRecallable(fact)) continue;
     if (fact.trigger) {
       if (!intentCanFire(fact, nowMs)) continue;
-      const similarity = similarityById?.get(factRecallId(fact)) || 0;
-      const triggerWords = significantWords(fact.trigger);
-      const wordHits = sharedWordCount(triggerWords, messageWords);
-      const triggerWordString = wordsOf(fact.trigger);
-      if (
-        similarity >= MIN_INTENT_SIMILARITY ||
-        (triggerWordString.trim() && messageWordString.includes(triggerWordString)) ||
-        (triggerWords.length && wordHits >= Math.min(2, triggerWords.length))
-      ) {
+      const id = factRecallId(fact);
+      const similarity = Math.max(
+        similarityById?.get(id) || 0,
+        similarityById?.get(`${id}${USER_WORDS_ID_SUFFIX}`) || 0,
+      );
+      let wordHits = 0;
+      let keywordHit = false;
+      for (const trigger of intentTriggers(fact)) {
+        const triggerWords = significantWords(trigger);
+        const hits = sharedWordCount(triggerWords, messageWords);
+        const triggerWordString = wordsOf(trigger);
+        if (
+          (triggerWordString.trim() && messageWordString.includes(triggerWordString)) ||
+          (triggerWords.length && hits >= Math.min(2, triggerWords.length))
+        ) {
+          keywordHit = true;
+        }
+        wordHits = Math.max(wordHits, hits);
+      }
+      if (similarity >= MIN_INTENT_SIMILARITY || (keywordHit && similarity >= MIN_INTENT_KEYWORD_SIMILARITY)) {
         intents.push({ fact, similarity, wordHits });
       }
       continue;
@@ -898,6 +932,7 @@ function createAcpMemoryStore(options = {}) {
     origin,
     expectedVersions,
     trigger,
+    triggerUserWords,
     expiresAt,
   } = {}) {
     const cleanKey = cleanText(key, 200);
@@ -993,6 +1028,7 @@ function createAcpMemoryStore(options = {}) {
     // Issue #698: makes this fact a standing intent (see intentCanFire).
     // Like epistemic, only written when supplied, never cleared by omission.
     const cleanTrigger = cleanText(trigger, 200);
+    const cleanTriggerUserWords = cleanText(triggerUserWords, 200);
     const cleanExpiresAt = cleanText(expiresAt, 40);
 
     // Issue #673: the write decision. "insert" on a key that already has a
@@ -1008,6 +1044,7 @@ function createAcpMemoryStore(options = {}) {
         (existing.unverifiedSource && !unverified);
       const intentChanged =
         (cleanTrigger && cleanTrigger !== existing.trigger) ||
+        (cleanTriggerUserWords && cleanTriggerUserWords !== existing.triggerUserWords) ||
         (cleanExpiresAt && cleanExpiresAt !== existing.expiresAt);
       if (sameText && !supersedes && !upgrades && !intentChanged) {
         return { ok: true, action: "patch", decision: "none", key: cleanKey, text: cleanTextValue };
@@ -1052,7 +1089,13 @@ function createAcpMemoryStore(options = {}) {
       // being true because a later correction did not restate them.
       if (normalizedEpistemic) existing.epistemic = normalizedEpistemic;
       if (cleanOccurredAt) existing.occurredAt = cleanOccurredAt;
+      // A new trigger without new user words drops the old words, so the
+      // reminder never keeps firing on the topic it moved away from.
+      if (cleanTrigger && cleanTrigger !== existing.trigger && !cleanTriggerUserWords) {
+        delete existing.triggerUserWords;
+      }
       if (cleanTrigger) existing.trigger = cleanTrigger;
+      if (cleanTriggerUserWords) existing.triggerUserWords = cleanTriggerUserWords;
       if (cleanExpiresAt) existing.expiresAt = cleanExpiresAt;
       const supersededPatch = applySupersedes(facts, cleanKey, supersedes, timestamp);
       saveFacts(facts, { op: "update", key: cleanKey, origin: cleanOrigin });
@@ -1085,6 +1128,7 @@ function createAcpMemoryStore(options = {}) {
       ...(cleanOccurredAt ? { occurredAt: cleanOccurredAt } : {}),
       ...(cleanOrigin ? { origin: cleanOrigin } : {}),
       ...(cleanTrigger ? { trigger: cleanTrigger } : {}),
+      ...(cleanTrigger && cleanTriggerUserWords ? { triggerUserWords: cleanTriggerUserWords } : {}),
       ...(cleanExpiresAt ? { expiresAt: cleanExpiresAt } : {}),
     });
     const supersededInsert = applySupersedes(facts, cleanKey, supersedes, timestamp);
@@ -1349,7 +1393,7 @@ function createAcpMemoryStore(options = {}) {
           }
         });
         // Drop vectors for facts trimmed out of facts.json since.
-        const live = new Set(loadFacts().map(factRecallId));
+        const live = new Set(withUserWordsVariants(loadFacts()).map(factRecallId));
         for (const id of Object.keys(cache)) if (!live.has(id)) delete cache[id];
         writeJsonObject(factEmbeddingsPath, { embeddings: cache });
       } catch (e) {
@@ -1462,7 +1506,7 @@ function createAcpMemoryStore(options = {}) {
     const facts = loadFacts();
     const similarityById = await factSimilarities(
       text,
-      facts.filter((fact) => isRecallable(fact) && (fact.trigger || !fact.pinned)),
+      withUserWordsVariants(facts.filter((fact) => isRecallable(fact) && (fact.trigger || !fact.pinned))),
       recall,
     );
     const { mentionsBlock, pinned, candidates, intents } = gatherRelatedFactsBlocks(text, {

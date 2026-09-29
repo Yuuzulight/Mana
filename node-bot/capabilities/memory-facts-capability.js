@@ -134,6 +134,36 @@ function registerMemoryFactsRoutes(app, context = {}) {
     }
   });
 
+  // Q29 (#698): edit a live fact's text -- and a standing intent's trigger
+  // -- from Settings. Goes through rememberFact's patch like any other
+  // write, so the old value lands in the fact's history and facts-log.
+  // A trigger typed here is the user's own words, so it replaces both
+  // wordings. Body {text, trigger?}; 404 when no live fact has that key.
+  app.patch("/admin/memory/facts/:key", adminMemoryRateLimiter, (req, res) => {
+    if (!checkAdminAuth(req, res)) return;
+    try {
+      const key = String(req.params.key || "").toLowerCase();
+      const existing = acpMemoryStore
+        .listFacts()
+        .find((f) => ["active", "pending"].includes(f.status) && f.key.toLowerCase() === key);
+      if (!existing) return res.status(404).json({ ok: false, error: "no live fact with that key" });
+      const text = typeof req.body?.text === "string" ? req.body.text : existing.text;
+      if (!text.trim()) return res.status(400).json({ ok: false, error: "text can't be empty" });
+      const trigger = typeof req.body?.trigger === "string" && existing.trigger ? req.body.trigger.trim() : "";
+      const result = acpMemoryStore.rememberFact({
+        key: existing.key,
+        text,
+        action: "patch",
+        source: "human",
+        origin: { kind: "user_stated" },
+        ...(trigger ? { trigger, triggerUserWords: trigger } : {}),
+      });
+      return res.json({ ok: true, ...result });
+    } catch (e) {
+      return res.status(500).json({ ok: false, error: String(e) });
+    }
+  });
+
   // Issue #698: pause/resume a standing intent (a fact with a trigger) --
   // a paused one never fires. Body {paused: boolean}, same shape as pin.
   app.post("/admin/memory/facts/:key/pause", adminMemoryRateLimiter, (req, res) => {
@@ -153,7 +183,7 @@ const memoryFactsCapability = {
   getHealth: () => ({
     status: "configured",
     configured: true,
-    message: "Memory facts admin routes are available (list, history, archive, confirm, pin, pause).",
+    message: "Memory facts admin routes are available (list, history, edit, archive, confirm, pin, pause).",
   }),
 };
 

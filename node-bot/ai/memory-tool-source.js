@@ -144,7 +144,12 @@ function buildToolSchemas(existingKeys) {
             trigger: {
               type: "string",
               description:
-                "Only for a standing reminder (\"when X comes up, mention Y\"): X, the topic that should bring it up (e.g. \"my FFXIV static or raid group\"); text is then Y, what to mention (e.g. \"raid is Thursday 9pm\"). Before saving one, restate it as a rule and ask \"Keep it?\" -- call this only once the user says yes. You may suggest one when you notice a pattern, but only as a question.",
+                "Only for a standing reminder (\"when X comes up, mention Y\"): X, the topic that should bring it up, as you restated it (e.g. \"my FFXIV static or raid group\"); text is then Y, what to mention (e.g. \"raid is Thursday 9pm\"). Before saving one, restate it as a rule and ask \"Keep it?\" -- call this only once the user says yes. You may suggest one when you notice a pattern, but only as a question.",
+            },
+            trigger_user_words: {
+              type: "string",
+              description:
+                "With trigger: the same topic in the user's own words, exactly as they put it when they asked (e.g. \"when the lads are online\"). Either wording brings the reminder up. Give it whenever you set or change trigger.",
             },
             expires: {
               type: "string",
@@ -364,6 +369,7 @@ function createMemoryToolSource(options = {}) {
         ? { unverifiedSource: true }
         : {}),
       ...(isIntent && args?.trigger ? { trigger: args.trigger } : {}),
+      ...(isIntent && args?.trigger_user_words ? { triggerUserWords: args.trigger_user_words } : {}),
       ...(expiresAt ? { expiresAt } : {}),
       // Issue #663: not asked to remember (model_inferred) or tool_derived
       // -> the store keeps the value pending until the user confirms it.
