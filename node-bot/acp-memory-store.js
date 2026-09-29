@@ -5,6 +5,7 @@ const { significantWords, sharedWordCount } = require("./utils/word-overlap");
 const { cosine } = require("./tools/vector-store");
 const { detectTextValence } = require("./utils/text-mood");
 const { parseTemporalWindow } = require("./utils/temporal-query");
+const { redactSensitive } = require("./utils/sensitive-text");
 
 function ensureDir(dir) {
   fs.mkdirSync(dir, { recursive: true });
@@ -666,6 +667,19 @@ function createAcpMemoryStore(options = {}) {
     return types[normalizedKey]?.canonicalKey || normalizedKey;
   }
 
+  // Issue #641: display text + ontology type (null while untyped) for a
+  // batch of entity keys -- one read of each file for the memory-graph
+  // view, not one per node.
+  function describeEntities(keys) {
+    const index = loadEntityIndex();
+    const types = loadEntityTypes();
+    return keys.map((key) => ({
+      key,
+      display: displayForEntityKey(index, key),
+      type: types[key]?.type || null,
+    }));
+  }
+
   // Issue #198: explicit facts the model itself chose to persist via the
   // hot-path "remember" tool -- distinct from the passive entity-mention
   // index above, which only ever records "X was mentioned somewhere", never
@@ -901,7 +915,7 @@ function createAcpMemoryStore(options = {}) {
       };
     }
 
-    const cleanTextValue = cleanText(text, 500);
+    const cleanTextValue = cleanText(redactSensitive(text), 500);
     if (!cleanTextValue) {
       throw new Error("text is required for insert/patch");
     }
@@ -1696,8 +1710,8 @@ function createAcpMemoryStore(options = {}) {
     const timestamp = now();
     const turn = {
       at: timestamp,
-      user: cleanText(input.user, 4000),
-      assistant: cleanText(input.assistant, 4000),
+      user: cleanText(redactSensitive(input.user), 4000),
+      assistant: cleanText(redactSensitive(input.assistant), 4000),
     };
     // Optional (issue #153): only the tool-calling reply path ever has
     // these, so most turns simply omit the field rather than storing an
@@ -1706,7 +1720,7 @@ function createAcpMemoryStore(options = {}) {
       turn.toolCalls = input.toolCalls.map((call) => ({
         name: cleanText(call?.name, 200),
         ok: Boolean(call?.ok),
-        args: call?.args,
+        args: redactSensitive(call?.args),
         result: call?.result,
       }));
     }
@@ -2213,6 +2227,7 @@ function createAcpMemoryStore(options = {}) {
     forkSession,
     deleteSession,
     lookupEntity,
+    describeEntities,
     getRelatedFacts,
     getRelatedFactsEntries,
     rememberFact,
