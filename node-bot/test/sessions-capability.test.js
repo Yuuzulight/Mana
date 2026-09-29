@@ -236,3 +236,37 @@ test("sessions capability reports health with the current session count", () => 
   assert.equal(health.status, "configured");
   assert.equal(health.sessionCount, 2);
 });
+
+test("#687: GET /sessions?q= keeps only content matches and echoes the query", async () => {
+  const sessions = [
+    { sessionId: "a", name: "First chat" },
+    { sessionId: "b", name: "Second chat" },
+  ];
+  let asked = null;
+  const withIndex = express();
+  sessionsCapability.registerRoutes(withIndex, {
+    acpMemoryStore: fakeStore({
+      listSessions: () => sessions,
+      sessionIdsMatching: (q) => {
+        asked = q;
+        return new Set(["b"]);
+      },
+    }),
+  });
+  const noIndex = express();
+  sessionsCapability.registerRoutes(noIndex, {
+    acpMemoryStore: fakeStore({ listSessions: () => sessions, sessionIdsMatching: () => null }),
+  });
+
+  await withServer(withIndex, async (baseUrl) => {
+    const payload = await (await fetch(`${baseUrl}/sessions?q=${encodeURIComponent("  deploy ")}`)).json();
+    assert.deepEqual(payload, { sessions: [sessions[1]], query: "deploy" });
+    const all = await (await fetch(`${baseUrl}/sessions?q=`)).json();
+    assert.deepEqual(all, { sessions });
+  });
+  assert.equal(asked, "deploy");
+  await withServer(noIndex, async (baseUrl) => {
+    const payload = await (await fetch(`${baseUrl}/sessions?q=deploy`)).json();
+    assert.deepEqual(payload, { sessions: [], query: "deploy" });
+  });
+});

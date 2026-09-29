@@ -1619,6 +1619,40 @@ public class ManaBackendClientTests
     }
 
     [Fact]
+    public async Task SearchSessionIdsAsync_SendsTheEscapedQueryAndReturnsTheMatchingIds()
+    {
+        string? requested = null;
+        var handler = new FakeHttpMessageHandler(request =>
+        {
+            requested = request.RequestUri!.PathAndQuery;
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(
+                    """{"sessions":[{"sessionId":"s2","name":"Raid night"}],"query":"deploy & fix"}""",
+                    Encoding.UTF8,
+                    "application/json"),
+            };
+        });
+
+        var ids = await new ManaBackendClient(handler).SearchSessionIdsAsync("deploy & fix");
+
+        Assert.Equal("/sessions?q=deploy%20%26%20fix", requested);
+        Assert.Equal(new[] { "s2" }, ids);
+    }
+
+    [Fact]
+    public async Task SearchSessionIdsAsync_IsEmptyWhenTheBackendIgnoresTheQuery()
+    {
+        // An older backend answers GET /sessions?q= with every session and no `query`.
+        var handler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent("""{"sessions":[{"sessionId":"s1"},{"sessionId":"s2"}]}""", Encoding.UTF8, "application/json"),
+        });
+
+        Assert.Empty(await new ManaBackendClient(handler).SearchSessionIdsAsync("deploy"));
+    }
+
+    [Fact]
     public async Task RenameSessionAsync_PatchesTheNameAndReturnsTrue()
     {
         string? path = null;
