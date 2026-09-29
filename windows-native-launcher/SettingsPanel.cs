@@ -1231,7 +1231,143 @@ internal sealed class SettingsPanel : UserControl
         layout.Controls.Add(BuildEchoCancellationRow());
         layout.Controls.Add(BuildVoiceTuningRow());
         layout.Controls.Add(BuildBargeInRow());
+        layout.Controls.Add(BuildVoiceprintRow());
         return new TabPage("Voice") { Controls = { layout } };
+    }
+
+    // #678: which speech has to be my voice (SpeakerGate), and teaching Mana
+    // my voice: each prompt is recorded for EnrollClipMs from the default
+    // mic, embedded, and the average saved as ManaSettingsStore.Voiceprint.
+    // Read each time listening starts; MANA_SPEAKER_GATE overrides the mode.
+    private static readonly string[] EnrollPrompts =
+    {
+        "The quick brown fox jumps over the lazy dog.",
+        "Could you remind me about the meeting tomorrow morning?",
+        "I'd like a cup of tea and some toast, please.",
+        "Seven silver swans swam slowly down the river.",
+        "Let's put some music on and check the weather later.",
+    };
+    private const int EnrollClipMs = 5000;
+
+    private static FlowLayoutPanel BuildVoiceprintRow()
+    {
+        var label = new Label { Text = "Only my voice can", AutoSize = true, ForeColor = DarkTheme.Text, Anchor = AnchorStyles.Left };
+        var combo = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 260, BackColor = DarkTheme.Panel2, ForeColor = DarkTheme.Text };
+        combo.Items.AddRange(new object[] { "Off (anyone, default)", "Wake her", "Wake her or talk over her", "Wake her, talk over her or give commands" });
+        combo.SelectedIndex = (int)SpeakerGate.ResolveMode(null, ManaSettingsStore.Load().VoiceprintGate);
+        var teach = new Button { Text = "Teach Mana your voice", AutoSize = true };
+        var forget = new Button { Text = "Delete my voiceprint", AutoSize = true };
+        DarkTheme.ApplyButton(teach);
+        DarkTheme.ApplyButton(forget);
+        var status = new Label { AutoSize = true, ForeColor = DarkTheme.Muted, Anchor = AnchorStyles.Left };
+        void ShowEnrolled() => status.Text = ManaSettingsStore.Load().Voiceprint is null ? "Not taught yet -- the setting does nothing until you do." : "Your voice is saved on this PC.";
+        ShowEnrolled();
+
+        combo.SelectionChangeCommitted += (_, _) =>
+        {
+            var latest = ManaSettingsStore.Load();
+            latest.VoiceprintGate = combo.SelectedIndex == 0 ? null : SpeakerGate.ModeNames[combo.SelectedIndex];
+            latest.Save();
+            status.Text = "Saved -- applies next time listening starts.";
+        };
+        forget.Click += (_, _) =>
+        {
+            var latest = ManaSettingsStore.Load();
+            latest.Voiceprint = null;
+            latest.Save();
+            status.Text = "Deleted -- applies next time listening starts.";
+        };
+        teach.Click += async (_, _) =>
+        {
+            var modelPath = SpeakerEmbedder.ResolveModelPath(ManaApplicationContext.FindRootDirectory());
+            if (!File.Exists(modelPath))
+            {
+                status.Text = $"Speaker model not found: {modelPath}";
+                return;
+            }
+            teach.Enabled = forget.Enabled = false;
+            try
+            {
+                using var embedder = await Task.Run(() => new SpeakerEmbedder(modelPath));
+                var embeddings = new List<float[]>();
+                for (var i = 0; i < EnrollPrompts.Length; i++)
+                {
+                    status.Text = $"{i + 1}/{EnrollPrompts.Length} -- read aloud now: \"{EnrollPrompts[i]}\"";
+                    var clip = await RecordAsync(EnrollClipMs);
+                    if (status.IsDisposed)
+                    {
+                        return; // Settings closed mid-way: nothing saved
+                    }
+                    var (boosted, _) = SpeechFilters.ApplySpeechGain(clip, SpeechFilters.GainTargetPeak, SpeechFilters.GainMaxBoost);
+                    if (SpeechFilters.GetSpeechRejectReason(boosted, SpeechFilters.MinSpeechRms, SpeechFilters.MinSpeechPeak, SpeechFilters.MaxClickyZcr) is { } reason)
+                    {
+                        status.Text = $"I couldn't hear you clearly ({reason}). Check the mic and try again.";
+                        return;
+                    }
+                    embeddings.Add(await Task.Run(() => embedder.Embed(SpeakerGate.SpeechSpan(clip))));
+                }
+                var latest = ManaSettingsStore.Load();
+                latest.Voiceprint = SpeakerGate.Voiceprint(embeddings);
+                latest.Save();
+                status.Text = "Learned your voice -- applies next time listening starts.";
+            }
+            catch (Exception ex) when (ex is not OutOfMemoryException)
+            {
+                status.Text = $"Couldn't learn your voice: {ex.Message}";
+            }
+            finally
+            {
+                if (!teach.IsDisposed)
+                {
+                    teach.Enabled = forget.Enabled = true;
+                }
+            }
+        };
+
+        var row = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.LeftToRight, BackColor = DarkTheme.Background };
+        row.Controls.Add(label);
+        row.Controls.Add(combo);
+        row.Controls.Add(teach);
+        row.Controls.Add(forget);
+        row.Controls.Add(status);
+        return row;
+    }
+
+    // 16kHz mono from the default mic, like VoiceLoop's segments.
+    private static async Task<short[]> RecordAsync(int ms)
+    {
+        var samples = new List<short>();
+        using var waveIn = new NAudio.Wave.WaveInEvent { DeviceNumber = -1, WaveFormat = new NAudio.Wave.WaveFormat(SileroVadRunner.SampleRate, 16, 1) };
+        var stopped = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        waveIn.DataAvailable += (_, e) =>
+        {
+            lock (samples)
+            {
+                for (var i = 0; i + 1 < e.BytesRecorded; i += 2)
+                {
+                    samples.Add(BitConverter.ToInt16(e.Buffer, i));
+                }
+            }
+        };
+        waveIn.RecordingStopped += (_, e) =>
+        {
+            if (e.Exception is { } ex)
+            {
+                stopped.TrySetException(ex);
+            }
+            else
+            {
+                stopped.TrySetResult();
+            }
+        };
+        waveIn.StartRecording();
+        await Task.Delay(ms);
+        waveIn.StopRecording();
+        await stopped.Task;
+        lock (samples)
+        {
+            return samples.ToArray();
+        }
     }
 
     // #858: the end-of-turn silence and Silero's speech threshold, read each

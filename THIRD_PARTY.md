@@ -31,6 +31,13 @@ or bundling in this repo. This project intentionally keeps large binaries and
 model weights out of source control; please follow the docs to download and
 install required artifacts.
 
+- WeSpeaker VoxCeleb ResNet34-LM speaker embedding (`voxceleb_resnet34_LM.onnx`)
+  - From the WeSpeaker project (https://github.com/wenet-e2e/wespeaker),
+    trained on VoxCeleb2. The model is CC BY 4.0 (it follows the VoxCeleb
+    dataset's license) and WeSpeaker's code is Apache-2.0. The native launcher
+    fetches it at build time into `windows-native-launcher/assets/speaker/`
+    (gitignored) for the optional voiceprint gate (#678).
+
 - pixi.js (npm)
   - MIT license. Bundled via npm in `windows-launcher` and `desktop-client`
     for the built-in Live2D avatar renderer.
