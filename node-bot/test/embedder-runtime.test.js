@@ -199,6 +199,7 @@ test("a watched game starting stops a running embedder, once per game; a failed 
   let running = false;
   let fail = false;
   let starts = 0;
+  let ends = 0;
   const watch = createGamingWatch({
     check: async () => {
       if (fail) throw new Error("tasklist failed");
@@ -207,6 +208,10 @@ test("a watched game starting stops a running embedder, once per game; a failed 
     onGameStart: () => {
       starts += 1;
       embedder.stop();
+    },
+    // #889: and onGameEnd once when it closes.
+    onGameEnd: () => {
+      ends += 1;
     },
   });
   const embedder = makeEmbedder(server, { MANA_EMBEDDER_MODEL: tempModel(), MANA_EMBEDDER_IDLE_MS: "0" }, undefined, watch.isGaming);
@@ -221,10 +226,13 @@ test("a watched game starting stops a running embedder, once per game; a failed 
   fail = true;
   assert.equal(await watch.poll(), true);
   assert.equal(starts, 1);
+  assert.equal(ends, 0);
 
   fail = false;
   running = false;
   assert.equal(await watch.poll(), false);
+  await watch.poll();
+  assert.equal(ends, 1);
   running = true;
   await watch.poll();
   assert.equal(starts, 2);

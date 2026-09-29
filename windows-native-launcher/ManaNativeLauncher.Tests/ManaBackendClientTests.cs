@@ -115,21 +115,40 @@ public class ManaBackendClientTests
     }
 
     [Fact]
-    public async Task CreateSkillAsync_ReturnsTrueOn201AndFalseOn202()
+    public async Task CreateSkillAsync_ReportsCreatedOrPendingWithScanFlags()
     {
         var createdHandler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.Created)
         {
             Content = new StringContent("{\"name\":\"weather-check\"}", Encoding.UTF8, "application/json"),
         });
         var createdClient = new ManaBackendClient(createdHandler);
-        Assert.True(await createdClient.CreateSkillAsync("weather-check", "Checks the weather", "function run() {}", null));
+        Assert.True((await createdClient.CreateSkillAsync("weather-check", "Checks the weather", "function run() {}", null)).Created);
 
         var pendingHandler = new FakeHttpMessageHandler(_ => new HttpResponseMessage((HttpStatusCode)202)
         {
-            Content = new StringContent("{\"status\":\"pending\",\"requestId\":\"req-1\"}", Encoding.UTF8, "application/json"),
+            Content = new StringContent("{\"status\":\"pending\",\"requestId\":\"req-1\",\"flags\":[]}", Encoding.UTF8, "application/json"),
         });
-        var pendingClient = new ManaBackendClient(pendingHandler);
-        Assert.False(await pendingClient.CreateSkillAsync("weather-check", "Checks the weather", "function run() {}", null));
+        var pending = await new ManaBackendClient(pendingHandler).CreateSkillAsync("weather-check", "Checks the weather", "function run() {}", null);
+        Assert.False(pending.Created);
+        Assert.Equal("req-1", pending.PendingId);
+        Assert.Empty(pending.Flags);
+
+        // #688: a flagged skill must stay pending (the caller only auto-approves an empty Flags).
+        var flaggedHandler = new FakeHttpMessageHandler(_ => new HttpResponseMessage((HttpStatusCode)202)
+        {
+            Content = new StringContent("{\"status\":\"pending\",\"requestId\":\"req-2\",\"flags\":[\"shell-exec\"]}", Encoding.UTF8, "application/json"),
+        });
+        var flagged = await new ManaBackendClient(flaggedHandler).CreateSkillAsync("x", "y", "rm -rf /", null);
+        Assert.Equal(new[] { "shell-exec" }, flagged.Flags);
+
+        // #688: a Guardian "not safe" verdict with a clean scan is flagged too, so it waits in Approvals.
+        var guardianHandler = new FakeHttpMessageHandler(_ => new HttpResponseMessage((HttpStatusCode)202)
+        {
+            Content = new StringContent("{\"status\":\"pending\",\"requestId\":\"req-3\",\"flags\":[],\"guardian\":{\"safe\":false,\"reason\":\"\"}}", Encoding.UTF8, "application/json"),
+        });
+        var risky = await new ManaBackendClient(guardianHandler).CreateSkillAsync("x", "y", "z", null);
+        Assert.False(risky.Created);
+        Assert.Equal(new[] { "Guardian judged it risky" }, risky.Flags);
     }
 
     [Fact]
@@ -188,7 +207,7 @@ public class ManaBackendClientTests
         var handler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
         {
             Content = new StringContent(
-                """{"ok":true,"uptimeSeconds":3725,"config":{"whisperThreads":4,"llamaThreads":8,"llamaMaxTokens":2048,"screenContextEnabled":true,"ttsProvider":"fish"},"gaming":{"gamingAppRunning":false},"process":{"totalMemoryMb":512},"operations":{"reply_token_usage":{"lastTokens":123,"session":"default"}}}""",
+                """{"ok":true,"uptimeSeconds":3725,"config":{"whisperThreads":4,"llamaThreads":8,"llamaMaxTokens":2048,"screenContextEnabled":true,"ttsProvider":"fish","chatModel":"Qwen3.5-4B-IQ4_XS.gguf (gaming model)"},"gaming":{"gamingAppRunning":false},"process":{"totalMemoryMb":512},"operations":{"reply_token_usage":{"lastTokens":123,"session":"default"}}}""",
                 Encoding.UTF8,
                 "application/json"),
         });
@@ -204,6 +223,7 @@ public class ManaBackendClientTests
         Assert.Equal(8, status.LlamaThreads);
         Assert.Equal(2048, status.LlamaMaxTokens);
         Assert.True(status.ScreenContextEnabled);
+        Assert.Equal("Qwen3.5-4B-IQ4_XS.gguf (gaming model)", status.ChatModel);
         var operation = Assert.Single(status.Operations);
         Assert.Equal("reply_token_usage", operation.Key);
         Assert.Contains("\"lastTokens\":123", operation.Value);
@@ -224,6 +244,7 @@ public class ManaBackendClientTests
         var status = await client.GetPerformanceStatusAsync();
 
         Assert.Empty(status.Operations);
+        Assert.Null(status.ChatModel);
         Assert.Equal(0, status.UptimeSeconds);
         Assert.True(status.GamingAppRunning);
     }
@@ -1248,6 +1269,25 @@ public class ManaBackendClientTests
         Assert.Equal("{\"idleSeconds\":1500}", body);
     }
 
+    // #697 part 1: the route and body node-bot's foreground.js reads.
+    [Fact]
+    public async Task ReportForegroundAsync_PostsAppAndTitleToTheForegroundReportRoute()
+    {
+        string? path = null;
+        string? body = null;
+        var handler = new FakeHttpMessageHandler(request =>
+        {
+            path = request.RequestUri!.AbsolutePath;
+            body = request.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
+            return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("{\"ok\":true}") };
+        });
+
+        await new ManaBackendClient(handler).ReportForegroundAsync("chrome.exe", "Docs");
+
+        Assert.Equal("/internal/foreground-report", path);
+        Assert.Equal("{\"app\":\"chrome.exe\",\"title\":\"Docs\"}", body);
+    }
+
     // #661: idleTriggered:true (Dream Mode's consolidation just started)
     // is what turns the avatar's Dreaming state on.
     [Fact]
@@ -1597,6 +1637,40 @@ public class ManaBackendClientTests
         var sessions = await client.GetSessionsAsync();
 
         Assert.Empty(sessions);
+    }
+
+    [Fact]
+    public async Task SearchSessionIdsAsync_SendsTheEscapedQueryAndReturnsTheMatchingIds()
+    {
+        string? requested = null;
+        var handler = new FakeHttpMessageHandler(request =>
+        {
+            requested = request.RequestUri!.PathAndQuery;
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(
+                    """{"sessions":[{"sessionId":"s2","name":"Raid night"}],"query":"deploy & fix"}""",
+                    Encoding.UTF8,
+                    "application/json"),
+            };
+        });
+
+        var ids = await new ManaBackendClient(handler).SearchSessionIdsAsync("deploy & fix");
+
+        Assert.Equal("/sessions?q=deploy%20%26%20fix", requested);
+        Assert.Equal(new[] { "s2" }, ids);
+    }
+
+    [Fact]
+    public async Task SearchSessionIdsAsync_IsEmptyWhenTheBackendIgnoresTheQuery()
+    {
+        // An older backend answers GET /sessions?q= with every session and no `query`.
+        var handler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent("""{"sessions":[{"sessionId":"s1"},{"sessionId":"s2"}]}""", Encoding.UTF8, "application/json"),
+        });
+
+        Assert.Empty(await new ManaBackendClient(handler).SearchSessionIdsAsync("deploy"));
     }
 
     [Fact]
@@ -2100,8 +2174,8 @@ public class ManaBackendClientTests
         });
         var client = new ManaBackendClient(handler);
 
-        Assert.Null(await client.ImportSkillFolderAsync(@"C:\skills\pdf"));
-        Assert.Equal("SKILL.md is required", await client.ImportSkillFolderAsync(@"C:\empty"));
+        Assert.Null(await client.ImportSkillAsync(@"C:\skills\pdf"));
+        Assert.Equal("SKILL.md is required", await client.ImportSkillAsync(@"C:\empty"));
         Assert.Equal("each", await client.GetImportedSkillUseAsync());
         await client.SetImportedSkillUseAsync("free");
 
@@ -2109,6 +2183,25 @@ public class ManaBackendClientTests
         Assert.Contains("pdf", requests[0].Body);
         Assert.Equal(("GET", "/skill-settings"), (requests[2].Method, requests[2].Path));
         Assert.Equal(("PUT", "/skill-settings", """{"importedSkillUse":"free"}"""), requests[3]);
+    }
+
+    // #664: a link is sent as {url}, a path as {path}.
+    [Fact]
+    public async Task ImportSkillAsync_SendsALinkAsUrl()
+    {
+        var bodies = new System.Collections.Generic.List<string>();
+        var handler = new FakeHttpMessageHandler(request =>
+        {
+            bodies.Add(request.Content!.ReadAsStringAsync().GetAwaiter().GetResult());
+            return new HttpResponseMessage(HttpStatusCode.Accepted) { Content = new StringContent("{}") };
+        });
+        var client = new ManaBackendClient(handler);
+
+        await client.ImportSkillAsync("https://github.com/o/skills/tree/main/weather");
+        await client.ImportSkillAsync(@"C:\skills\weather.zip");
+
+        Assert.Equal("""{"url":"https://github.com/o/skills/tree/main/weather"}""", bodies[0]);
+        Assert.StartsWith("""{"path":""", bodies[1]);
     }
 
     [Fact]

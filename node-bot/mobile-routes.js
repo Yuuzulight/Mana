@@ -3,8 +3,7 @@ const multer = require("multer");
 const path = require("path");
 const crypto = require('crypto');
 
-const { hasAdminKey } = require("./admin-key");
-const { isLocalRestartRequest } = require("./server-routes");
+const { hasAdminKey, isLocalRestartRequest } = require("./admin-key");
 const { createMobileAuth } = require("./mobile-auth");
 const { createMobileMemoryStore } = require("./mobile-memory-store");
 const { verifyTotpCode: defaultVerifyTotpCode } = require("./totp");
