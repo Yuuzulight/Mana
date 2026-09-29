@@ -32,4 +32,16 @@ public class MessageQueueStripTests
         Assert.Null(strip.PeekReady());
         Assert.False(strip.ClearAll()); // second stage: nothing left to clear
     }
+
+    [Fact]
+    public void SendButton_BecomesStopWhileReplying_AndBack()
+    {
+        using var button = new Button { Text = "Send" };
+        SessionListForm.ShowSendOrStop(button, replying: true);
+        Assert.Equal("Stop", button.Text);
+        Assert.True(SessionListForm.IsStopButton(button));
+        SessionListForm.ShowSendOrStop(button, replying: false);
+        Assert.Equal("Send", button.Text);
+        Assert.False(SessionListForm.IsStopButton(button));
+    }
 }

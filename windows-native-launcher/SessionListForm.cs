@@ -62,6 +62,9 @@ internal sealed class SessionListForm : Form
     private readonly MessageQueueStrip messageQueue = new();
     // ponytail: polls instead of hooking every path back to Idle in VoiceLoop; only runs while something is queued.
     private readonly System.Windows.Forms.Timer messageQueueTimer = new() { Interval = 300 };
+    // Q11: flips Send to Stop while she's replying.
+    // ponytail: polls VoiceLoop.IsIdle rather than an event on every mode change; 4 cheap reads a second.
+    private readonly System.Windows.Forms.Timer sendButtonTimer = new() { Interval = 250 };
     private readonly System.Collections.Generic.HashSet<string> offeredProposalIds = new();
 
     // Mirrors VoiceLoop's own currentSessionId -- null (nothing switched
@@ -401,7 +404,8 @@ internal sealed class SessionListForm : Form
     // messages are already waiting, the text joins the queue above the box
     // instead; the timer sends the queue once she's idle. Esc is a two-stage
     // stop: it clears the queue, or with nothing queued cuts off her reply
-    // (same as the interrupt hotkey).
+    // (same as the interrupt hotkey). Q11: while she's replying the Send
+    // button is a Stop button doing the same cut-off; Enter still queues.
     private Panel BuildMessageBox()
     {
         var box = new TextBox
@@ -463,7 +467,19 @@ internal sealed class SessionListForm : Form
                 }
             }
         };
-        send.Click += async (_, _) => await SendAsync();
+        send.Click += async (_, _) =>
+        {
+            if (IsStopButton(send))
+            {
+                voiceLoop.InterruptSpeech();
+            }
+            else
+            {
+                await SendAsync();
+            }
+        };
+        sendButtonTimer.Tick += (_, _) => ShowSendOrStop(send, replying: !voiceLoop.IsIdle);
+        sendButtonTimer.Start();
 
         messageQueueTimer.Tick += async (_, _) =>
         {
@@ -572,6 +588,20 @@ internal sealed class SessionListForm : Form
         }
         return approved == 0 ? $"Not approved: {problem}" : $"Approved {approved} of {proposals.Count}. {problem}";
     }
+
+    // Q11: Send and Stop share one button; the label is the state, so a
+    // click always does what the button said.
+    internal static void ShowSendOrStop(Button button, bool replying)
+    {
+        var text = replying ? "Stop" : "Send";
+        if (button.Text != text)
+        {
+            button.Text = text;
+            button.AccessibleName = replying ? "Stop Mana's reply" : "Send message";
+        }
+    }
+
+    internal static bool IsStopButton(Button button) => button.Text == "Stop";
 
     private const string MessageBoxPlaceholder = "Message Mana...  (Enter to send, Shift+Enter for a new line)";
 
@@ -1105,6 +1135,7 @@ internal sealed class SessionListForm : Form
             toolPanelTitleFont.Dispose();
             railToolTip.Dispose();
             messageQueueTimer.Dispose();
+            sendButtonTimer.Dispose();
         }
         base.Dispose(disposing);
     }
