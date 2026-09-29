@@ -24,9 +24,9 @@ internal sealed class ManaProcessManager : IDisposable
     // #691: opt-in services, read once at construction (node-bot/.env is
     // already loaded by then). They get a startup row only when turned on,
     // so an unused one never shows as "Unavailable".
-    // The Python retriever json.loads the whole tools/vector_store metadata
-    // (~11 GB of RAM measured on the current index, #809), so nothing starts
-    // it automatically: only MANA_START_RETRIEVER=1, here at launch.
+    // The Python retriever is opt-in: only MANA_START_RETRIEVER=1, here at
+    // launch. It used to json.load ~11 GB of metadata; since #809 it settles
+    // around 0.5 GB, and bringing back on-demand start is still open there.
     public bool UsesRetriever { get; } = Environment.GetEnvironmentVariable("MANA_START_RETRIEVER") == "1";
     // User decision: only the selected TTS provider is started. Fish is the
     // default (the same "fish" this launcher passes node-bot when unset);
