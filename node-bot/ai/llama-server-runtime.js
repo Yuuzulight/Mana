@@ -1282,6 +1282,69 @@ function createLlamaServerRuntime(options = {}) {
     }));
   }
 
+  // Issue #676: goal mode's nudge when the model answers without a tool.
+  function goalRecheckMessage(goal, missing = []) {
+    const stillMissing = missing.length ? `\nStill missing: ${missing.join("; ")}` : "";
+    return {
+      role: "user",
+      content: `Goal: ${goal}${stillMissing}\nIf it's done, call ${SESSION_GOAL_FINISH_TOOL_NAME} with the reason; otherwise do the next step.`,
+    };
+  }
+
+  // Issue #676: one schema-constrained call (same shape as repairToolCalls)
+  // asking whether the draft actually does what was asked. Returns
+  // {complete, missing[]}, or null when the check itself fails -- a broken
+  // review must never block or rewrite the answer.
+  async function reviewGoalCompletion({ prompt, goal, toolCalls, draft, maxTokens, profile }) {
+    const calls = toolCalls
+      .map((c) => `- ${c.name}(${JSON.stringify(c.args || {}).slice(0, 200)}) ${c.ok ? "ok" : `error: ${c.error}`}`)
+      .join("\n") || "(none)";
+    try {
+      await ensureServer(profile);
+      const resp = await fetchImpl(`http://127.0.0.1:${state.port}/v1/chat/completions`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          messages: [
+            {
+              role: "system",
+              content: "You check whether a task was actually done as asked. Judge only from the tool calls and the draft answer; list each requested thing that is missing or unverified.",
+            },
+            {
+              role: "user",
+              content: `Request:\n${prompt}\n\nGoal:\n${goal}\n\nTool calls made:\n${calls}\n\nDraft answer:\n${draft}`,
+            },
+          ],
+          response_format: {
+            type: "json_schema",
+            json_schema: {
+              name: "goal_review",
+              schema: {
+                type: "object",
+                properties: {
+                  complete: { type: "boolean" },
+                  missing: { type: "array", items: { type: "string" } },
+                },
+                required: ["complete", "missing"],
+              },
+            },
+          },
+          ...buildSamplingParams({ profile, task: "tools", maxTokens, env }).params,
+        }),
+      });
+      if (!resp.ok) return null;
+      const json = await resp.json();
+      const parsed = JSON.parse(json?.choices?.[0]?.message?.content || "");
+      if (typeof parsed.complete !== "boolean") return null;
+      const missing = (Array.isArray(parsed.missing) ? parsed.missing : [])
+        .map((m) => String(m).trim())
+        .filter(Boolean);
+      return { complete: parsed.complete, missing };
+    } catch (e) {
+      return null;
+    }
+  }
+
   // Foundational tool-calling loop (issue #51). Single round only: the
   // model gets one chance to call tools, sees the results, and produces a
   // final reply -- deliberately not a multi-step agent loop yet. Every tool
@@ -1308,6 +1371,17 @@ function createLlamaServerRuntime(options = {}) {
   // tools-disabled completion call forces the model to synthesize an
   // answer from whatever it already knows, rather than returning a blank
   // or synthetic fallback string.
+  //
+  // Issue #676: goal mode (options.goal set). A reply without tool calls no
+  // longer ends the loop: the model is re-asked against the goal until it
+  // calls session_goal__finish, stalls (two re-checks in a row answered
+  // with neither a tool nor finish), leaves a call waiting on approval, or
+  // hits a cap -- the round and time caps are longer here
+  // (MANA_GOAL_MODE_MAX_ROUNDS / _MAX_MS), and the loop also stops before
+  // the prompt outgrows 80% of the context. Then one
+  // review call checks the draft against the request; anything missing
+  // goes back in as the next re-check (at most 2 cycles, budget allowing),
+  // else the answer opens with "Not done yet: ...".
   async function runToolAwareReply(
     prompt,
     toolPolicy,
@@ -1319,6 +1393,7 @@ function createLlamaServerRuntime(options = {}) {
       maxToolCallsPerRound,
       maxMs,
       extraMessages = null,
+      goal = null,
     } = {},
   ) {
     if (typeof fetchImpl !== "function") {
@@ -1332,9 +1407,14 @@ function createLlamaServerRuntime(options = {}) {
     const startedAt = nowMs();
     await ensureServer(profile);
 
+    const goalText = String(goal || "").trim();
+    const goalMode = Boolean(goalText);
     const roundLimit = Math.max(
       1,
-      Number(maxRounds ?? env.MANA_TOOL_CALLING_MAX_ROUNDS ?? 4),
+      Number(
+        maxRounds ??
+          (goalMode ? env.MANA_GOAL_MODE_MAX_ROUNDS ?? 30 : env.MANA_TOOL_CALLING_MAX_ROUNDS ?? 4),
+      ),
     );
     const callsPerRoundLimit = Math.max(
       1,
@@ -1342,8 +1422,14 @@ function createLlamaServerRuntime(options = {}) {
     );
     const timeLimitMs = Math.max(
       1,
-      Number(maxMs ?? env.MANA_TOOL_CALLING_MAX_MS ?? 60000),
+      Number(
+        maxMs ??
+          (goalMode ? env.MANA_GOAL_MODE_MAX_MS ?? 600000 : env.MANA_TOOL_CALLING_MAX_MS ?? 60000),
+      ),
     );
+    // Issue #676: a 30-round loop can outgrow the context; stopping first
+    // keeps the work instead of a llama-server error discarding it.
+    const promptTokenLimit = goalMode ? Math.floor((await getContextSize()) * 0.8) : Infinity;
     const deadline = startedAt + timeLimitMs;
     const MAX_CONSECUTIVE_TOOL_ERRORS = 3;
 
@@ -1400,10 +1486,55 @@ function createLlamaServerRuntime(options = {}) {
     // "force a real final answer now" path the round/time/error caps
     // already use, instead of a second code path.
     let goalFinished = false;
+    // Issue #676: goal-mode state, see the header comment.
+    let unansweredRechecks = 0;
+    let reviewCycles = 0;
+    let stalled = false;
+    let awaitingApproval = false;
+    let promptTokens = 0;
+    let notDone = "";
+    const cleanContent = (text) => String(text || "").replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
+    const outOfBudget = () =>
+      rounds >= roundLimit || nowMs() > deadline || promptTokens > promptTokenLimit;
+
+    // Issue #676: the end of a goal-mode run. True means the review found
+    // something missing and there's budget for another cycle.
+    async function reviewAndResume() {
+      if (!goalMode) return false;
+      const review = await reviewGoalCompletion({
+        prompt,
+        goal: goalText,
+        toolCalls: executedToolCalls,
+        draft: cleanContent(message.content),
+        maxTokens,
+        profile,
+      });
+      notDone = "";
+      if (!review || review.complete) return false;
+      if (
+        stalled ||
+        awaitingApproval ||
+        reviewCycles >= 2 ||
+        consecutiveToolErrors >= MAX_CONSECUTIVE_TOOL_ERRORS ||
+        outOfBudget()
+      ) {
+        notDone = review.missing.join("; ") || "the goal isn't finished";
+        return false;
+      }
+      reviewCycles += 1;
+      goalFinished = false;
+      unansweredRechecks = 0;
+      messages.push(
+        { role: "assistant", content: message.content || "" },
+        goalRecheckMessage(goalText, review.missing),
+      );
+      return true;
+    }
 
     for (let round = 1; round <= roundLimit; round += 1) {
       rounds = round;
       const json = await complete(true);
+      promptTokens = (Number(json?.timings?.cache_n) || 0) + (Number(json?.timings?.prompt_n) || 0);
       message = (json && json.choices && json.choices[0] && json.choices[0].message) || {};
       let requestedToolCalls = Array.isArray(message.tool_calls)
         ? message.tool_calls
@@ -1426,8 +1557,20 @@ function createLlamaServerRuntime(options = {}) {
       }
 
       if (!requestedToolCalls.length) {
+        // Issue #676: in goal mode a plain reply isn't the end -- re-ask
+        // against the goal, until two re-checks in a row go unanswered.
+        if (goalMode && !outOfBudget()) {
+          if (unansweredRechecks < 2) {
+            unansweredRechecks += 1;
+            messages.push({ role: "assistant", content: message.content || "" }, goalRecheckMessage(goalText));
+            continue;
+          }
+          stalled = true;
+        }
+        if (await reviewAndResume()) continue;
         break; // model produced a real answer -- no more tools requested
       }
+      unansweredRechecks = 0;
 
       const boundedCalls = requestedToolCalls.slice(0, callsPerRoundLimit);
       messages.push({
@@ -1463,6 +1606,11 @@ function createLlamaServerRuntime(options = {}) {
           if (name === SESSION_GOAL_FINISH_TOOL_NAME) {
             goalFinished = true;
           }
+          // Issue #676: a call waiting on a human (#669 approval queue) ends
+          // goal mode -- retrying would only queue up more approvals.
+          try {
+            awaitingApproval ||= goalMode && ["pending", "blocked"].includes(JSON.parse(resultText).status);
+          } catch (e) {}
         } catch (e) {
           resultText = `Error: ${e.message}`;
           executedToolCalls.push({ name, args, ok: false, error: e.message });
@@ -1478,8 +1626,8 @@ function createLlamaServerRuntime(options = {}) {
 
       const budgetExhausted =
         goalFinished ||
-        round >= roundLimit ||
-        nowMs() > deadline ||
+        awaitingApproval ||
+        outOfBudget() ||
         consecutiveToolErrors >= MAX_CONSECUTIVE_TOOL_ERRORS;
       if (budgetExhausted) {
         // Force a real answer from whatever's been learned so far instead
@@ -1487,13 +1635,13 @@ function createLlamaServerRuntime(options = {}) {
         // means the model cannot request yet another tool call here.
         const finalJson = await complete(false);
         message = (finalJson && finalJson.choices && finalJson.choices[0] && finalJson.choices[0].message) || {};
+        if (await reviewAndResume()) continue;
         break;
       }
     }
 
-    const content = String(message.content || "")
-      .replace(/<think>[\s\S]*?<\/think>/gi, "")
-      .trim();
+    const draft = cleanContent(message.content);
+    const content = notDone ? `Not done yet: ${notDone}\n\n${draft}` : draft;
 
     scheduleIdleShutdown();
     logPerf("llama-server-tool-reply", startedAt);

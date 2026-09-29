@@ -1555,6 +1555,143 @@ test("runToolAwareReply respects a wall-clock time budget across rounds", async 
   assert.equal(result.rounds, 2, "time budget exhausted partway through, not the full maxRounds");
 });
 
+// Issue #676: goal mode. `turns` scripts the tool-loop replies in order
+// (the last one repeats); `reviews` scripts the completion-review replies.
+function runGoalScript({ turns, reviews = [{ complete: true, missing: [] }], options = {}, toolResult = "ok", promptN = 0 }) {
+  const loopBodies = [];
+  const reviewBodies = [];
+  let serverUp = false;
+  let turnIndex = 0;
+  const fakeFetch = async (url, init) => {
+    if (String(url).endsWith("/health")) return { ok: serverUp };
+    if (String(url).endsWith("/v1/chat/completions")) {
+      const body = JSON.parse(init.body);
+      if (body.response_format?.json_schema?.name === "goal_review") {
+        reviewBodies.push(body);
+        const review = reviews[Math.min(reviewBodies.length, reviews.length) - 1];
+        return makeAnswerResponse(JSON.stringify(review));
+      }
+      loopBodies.push(body);
+      if (body.tool_choice === "none") return makeAnswerResponse("final answer");
+      const turn = turns[Math.min(turnIndex++, turns.length - 1)];
+      const reply = Array.isArray(turn) ? makeToolCallResponse(turn) : makeAnswerResponse(turn);
+      if (!promptN) return reply;
+      const json = await reply.json();
+      return { ok: true, json: async () => ({ ...json, timings: { prompt_n: promptN, cache_n: 0 } }) };
+    }
+    return { ok: false, status: 404, text: async () => "not found" };
+  };
+  const runtime = createLlamaServerRuntime({
+    env: makeFakeEnv(),
+    fs: makeFakeFs(),
+    fetch: fakeFetch,
+    spawn: () => {
+      serverUp = true;
+      return makeFakeChild();
+    },
+    sleep: async () => {},
+    registerExitHandlers: false,
+  });
+  const executed = [];
+  const policy = makeFakePolicy({
+    executeTool: (name) => {
+      executed.push(name);
+      return toolResult;
+    },
+  });
+  return runtime
+    .runToolAwareReply("change A and change B", policy, { goal: "Change A and B", ...options })
+    .then((result) => ({ result, loopBodies, reviewBodies, executed }));
+}
+
+const lastUserText = (body) => body.messages.filter((m) => m.role === "user").pop().content;
+
+test("#676 goal mode: a plain reply gets a re-check and the loop continues until finish", async () => {
+  const { result, loopBodies, reviewBodies, executed } = await runGoalScript({
+    turns: [["read_file"], "I think that's it.", ["session_goal__finish"]],
+  });
+
+  assert.deepEqual(executed, ["read_file", "session_goal__finish"]);
+  assert.match(lastUserText(loopBodies[2]), /^Goal: Change A and B\nIf it's done, call session_goal__finish/);
+  assert.equal(loopBodies.length, 4, "tool round, plain reply, finish round, forced final");
+  assert.equal(loopBodies[3].tool_choice, "none");
+  assert.equal(reviewBodies.length, 1);
+  assert.equal(result.content, "final answer");
+});
+
+test("#676 goal mode: stops at the round cap", async () => {
+  const { result, loopBodies } = await runGoalScript({ turns: [["read_file"]], options: { maxRounds: 3 } });
+
+  assert.equal(result.rounds, 3);
+  assert.equal(loopBodies.length, 4, "3 tool rounds + forced final");
+  assert.equal(result.content, "final answer");
+});
+
+test("#676 goal mode: stops after two unanswered re-checks and says what is missing", async () => {
+  const { result, loopBodies, reviewBodies } = await runGoalScript({
+    turns: ["Done!"],
+    reviews: [{ complete: false, missing: ["change B"] }],
+  });
+
+  assert.equal(loopBodies.length, 3, "plain reply + 2 re-checks, then stop instead of spinning");
+  assert.equal(reviewBodies.length, 1, "stalled: no further review cycle");
+  assert.equal(result.content, "Not done yet: change B\n\nDone!");
+});
+
+test("#676 goal mode: stops before the prompt outgrows 80% of the context", async () => {
+  // No /props in the fake, so the context is the configured 4096 default.
+  const { result, loopBodies } = await runGoalScript({ turns: [["read_file"]], promptN: 3300 });
+
+  assert.equal(result.rounds, 1);
+  assert.equal(loopBodies.length, 2, "1 round + forced final");
+});
+
+test("#676 goal mode: a call left waiting on approval stops the loop instead of queueing more", async () => {
+  const { result, loopBodies, executed } = await runGoalScript({
+    turns: [["read_file"]],
+    reviews: [{ complete: false, missing: ["the edit"] }],
+    toolResult: JSON.stringify({ status: "pending", requestId: "r1", summary: "write a file" }),
+  });
+
+  assert.equal(executed.length, 1);
+  assert.equal(loopBodies.length, 2, "1 round + forced final");
+  assert.equal(result.content, "Not done yet: the edit\n\nfinal answer");
+});
+
+test("#676 completion review: a skipped change triggers one more cycle naming it", async () => {
+  const { result, loopBodies, reviewBodies } = await runGoalScript({
+    turns: [["session_goal__finish"], ["read_file"], ["session_goal__finish"]],
+    reviews: [{ complete: false, missing: ["change B"] }, { complete: true, missing: [] }],
+  });
+
+  assert.equal(reviewBodies.length, 2);
+  assert.match(reviewBodies[0].messages[1].content, /session_goal__finish\(\{\}\) ok/);
+  assert.match(lastUserText(loopBodies[2]), /Still missing: change B/);
+  assert.equal(result.content, "final answer", "second review passed, no note");
+});
+
+test("#676 completion review: out of budget, the answer says what is missing", async () => {
+  const { result, reviewBodies } = await runGoalScript({
+    turns: [["read_file"]],
+    reviews: [{ complete: false, missing: ["change B"] }],
+    options: { maxRounds: 2 },
+  });
+
+  assert.equal(reviewBodies.length, 1);
+  assert.equal(result.content, "Not done yet: change B\n\nfinal answer");
+});
+
+test("#676 goal mode off: unchanged -- 4 rounds by default, a plain reply ends it, no review", async () => {
+  const capped = await runGoalScript({ turns: [["read_file"]], options: { goal: null } });
+  assert.equal(capped.result.rounds, 4);
+  assert.equal(capped.reviewBodies.length, 0);
+
+  const plain = await runGoalScript({ turns: ["Hello!"], options: { goal: "" } });
+  assert.equal(plain.loopBodies.length, 1);
+  assert.equal(plain.reviewBodies.length, 0);
+  assert.equal(plain.result.content, "Hello!");
+});
+
 // Two independently controllable "models": runLocalAssistantReply resolves
 // via env.LLAMA_MODEL (chat "default" profile short-circuits to it directly,
 // see local-ai.js), runVisionReply resolves via env.LLAMA_VISION_MODEL. Both
