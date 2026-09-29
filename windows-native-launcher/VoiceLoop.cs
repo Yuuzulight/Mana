@@ -260,10 +260,12 @@ internal sealed class VoiceLoop : IDisposable
         try
         {
             Start();
+            lastError = null;
         }
         catch (Exception ex)
         {
             Console.WriteLine($"VoiceLoop: couldn't start listening. {ex.Message}");
+            lastError = $"Listening error: {ex.Message}";
             Stop();
         }
     }
@@ -432,7 +434,30 @@ internal sealed class VoiceLoop : IDisposable
     // a user action on a separate window, not an interruption of Mana
     // herself; whatever she's currently saying keeps playing against
     // whichever session was active when that turn started.
-    public void SetSessionId(string? sessionId) => session.Set(sessionId);
+    public void SetSessionId(string? sessionId)
+    {
+        session.Set(sessionId);
+        SaveLastSession();
+    }
+
+    // #687: see AutoSession.Restore.
+    public void RestoreSession(string sessionId, bool auto, DateTime lastTurnAtUtc) => session.Restore(sessionId, auto, lastTurnAtUtc);
+
+    // #687: remembered so the next launch reopens this session.
+    private void SaveLastSession()
+    {
+        try
+        {
+            var settings = ManaSettingsStore.Load();
+            settings.LastSessionId = session.CurrentId;
+            settings.LastSessionAuto = session.IsAuto;
+            settings.Save();
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            Console.WriteLine($"VoiceLoop: couldn't remember the current session. {ex.Message}");
+        }
+    }
 
     public void SetPresetId(string? presetId) => currentPresetId = presetId;
 
@@ -452,7 +477,43 @@ internal sealed class VoiceLoop : IDisposable
     // spoken, vision/clip hotkeys) via SpeakReplyCoreAsync, and #577's
     // ResearchForm, matching windows-launcher's own ensureSessionId() at
     // its deep-research entry point.
-    public string EnsureSessionId() => session.EnsureForTurn();
+    public string EnsureSessionId()
+    {
+        var before = session.CurrentId;
+        var id = session.EnsureForTurn();
+        if (id != before)
+        {
+            SaveLastSession();
+        }
+        return id;
+    }
+
+    // #687: the chat window's status line (SessionListForm polls it), like
+    // Electron's: the last error until the next reply starts, else what she's
+    // doing. Read without the lock -- a stale read shows for one poll.
+    public string StatusText => FormatStatus(lastError, IsListening, mode, awake, streamingReplyPlayer.SynthesizingSentence);
+
+    internal static string FormatStatus(string? error, bool listening, ListenMode mode, bool awake, int? synthesizing)
+    {
+        if (error is not null)
+        {
+            return error;
+        }
+        if (!listening)
+        {
+            return "Not listening";
+        }
+        var synth = synthesizing is int n ? $"synthesizing sentence {n}..." : null;
+        return mode switch
+        {
+            ListenMode.Idle => awake ? "Mana is awake..." : "Waiting for Mana...",
+            ListenMode.Speaking => synth is null ? "Speaking..." : $"Speaking, {synth}",
+            ListenMode.CapturingInterruption => "Listening...",
+            _ => synth is null ? "Mana is thinking..." : char.ToUpperInvariant(synth[0]) + synth[1..],
+        };
+    }
+
+    private volatile string? lastError;
 
     // #668: no turn in flight and she isn't speaking -- when the message
     // box's queue may send its next message without cutting her off.
@@ -901,6 +962,7 @@ internal sealed class VoiceLoop : IDisposable
         catch (Exception ex)
         {
             Console.WriteLine($"VoiceLoop: vision hotkey screen capture failed, resuming listening. {ex.Message}");
+            lastError = $"Screen capture failed: {ex.Message}";
             ReturnToIdle();
             return true;
         }
@@ -1094,6 +1156,7 @@ internal sealed class VoiceLoop : IDisposable
                 catch (Exception ex)
                 {
                     Console.WriteLine($"VoiceLoop: transcription failed, resuming listening. {ex.Message}");
+                    lastError = $"Transcription failed: {ex.Message}";
                     logEntry.Whisper = "failed";
                 }
             }
@@ -1333,6 +1396,7 @@ internal sealed class VoiceLoop : IDisposable
     // and the short Done beat once a reply finishes naturally.
     private async Task<bool> SpeakReplyAsync(string commandText, string screenText = "", string? image = null, IReadOnlyList<string>? images = null)
     {
+        lastError = null; // #687: a new reply clears the status line's error
         avatarOverlay.SetActivity(AvatarState.Thinking, true);
         try
         {
@@ -1383,6 +1447,7 @@ internal sealed class VoiceLoop : IDisposable
             // vision for an unrelated reply error on a normal text turn.
             var message = image is not null || images is { Count: > 0 } ? VisionHotkeyMessages.DescribeError(ex.Message) : ex.Message;
             Console.WriteLine($"VoiceLoop: reply/stream failed, resuming listening. {message}");
+            lastError = $"Reply failed: {message}";
             // #666: say so instead of dropping the turn silently. The raw
             // error stays in the console; vision turns keep DescribeError's
             // user-facing text in the chat.
@@ -1449,6 +1514,7 @@ internal sealed class VoiceLoop : IDisposable
         catch (Exception ex)
         {
             Console.WriteLine($"VoiceLoop: synthesis failed, resuming listening. {ex.Message}");
+            lastError = $"Voice failed: {ex.Message}";
             ReturnToIdle();
             return false;
         }
@@ -1473,6 +1539,7 @@ internal sealed class VoiceLoop : IDisposable
         catch (Exception ex)
         {
             Console.WriteLine($"VoiceLoop: playback failed to start, resuming listening. {ex.Message}");
+            lastError = $"Playback failed: {ex.Message}";
             OnTalkingStateChanged(false);
             ReturnToIdle();
             return false;
