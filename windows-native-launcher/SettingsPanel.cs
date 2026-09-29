@@ -139,6 +139,7 @@ internal sealed class SettingsPanel : UserControl
         await RefreshApprovalsAsync();
         await RefreshToolApprovalModeAsync();
         await RefreshVoiceTabAsync();
+        await (refreshSpeechWords?.Invoke() ?? Task.CompletedTask);
         await RefreshPerfTabAsync();
         await RefreshPresetsAsync();
         await RefreshModelTabAsync();
@@ -1238,7 +1239,9 @@ internal sealed class SettingsPanel : UserControl
         row.Controls.Add(voiceProviderCombo);
         row.Controls.Add(saveButton);
 
-        var layout = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown, BackColor = DarkTheme.Background };
+        // Scrolls rather than wrapping into a second column once the rows
+        // outgrow the dialog.
+        var layout = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown, WrapContents = false, AutoScroll = true, BackColor = DarkTheme.Background };
         layout.Controls.Add(row);
         layout.Controls.Add(BuildWakePrefilterRow());
         layout.Controls.Add(BuildEchoCancellationRow());
@@ -1246,7 +1249,146 @@ internal sealed class SettingsPanel : UserControl
         layout.Controls.Add(BuildBargeInRow());
         layout.Controls.Add(BuildVoiceprintRow());
         layout.Controls.Add(BuildCameraRow());
+        layout.Controls.Add(BuildSpeechWordsSection());
         return new TabPage("Voice") { Controls = { layout } };
+    }
+
+    // #923/#925/#926: node-bot's speech words (whisper listens for them),
+    // mishearing fixes (applied to every transcript) and whisper's language,
+    // through GET/POST /speech. Each change is saved at once and applies to
+    // the next thing I say.
+    private Func<Task>? refreshSpeechWords;
+
+    private FlowLayoutPanel BuildSpeechWordsSection()
+    {
+        Label Caption(string text) => new() { Text = text, AutoSize = true, ForeColor = DarkTheme.Text, Anchor = AnchorStyles.Left };
+        TextBox Box(string placeholder) => new() { Width = 160, PlaceholderText = placeholder, AccessibleName = placeholder, BackColor = DarkTheme.Panel2, ForeColor = DarkTheme.Text, BorderStyle = BorderStyle.FixedSingle };
+        ListBox NewList(string name) => new() { Width = 300, Height = 80, AccessibleName = name, BackColor = DarkTheme.Panel2, ForeColor = DarkTheme.Text };
+        Button NewButton(string text)
+        {
+            var button = new Button { Text = text, AutoSize = true };
+            DarkTheme.ApplyButton(button);
+            return button;
+        }
+        FlowLayoutPanel Row(params Control[] controls)
+        {
+            var row = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.LeftToRight, BackColor = DarkTheme.Background };
+            row.Controls.AddRange(controls);
+            return row;
+        }
+
+        var words = NewList("Speech words");
+        var word = Box("Word or name");
+        var addWord = NewButton("Add word");
+        var removeWord = NewButton("Remove");
+        var fixes = NewList("Mishearing fixes");
+        var fixKeys = new List<string>();
+        var heard = Box("Mana heard");
+        var meant = Box("I said");
+        var addFix = NewButton("Add fix");
+        var removeFix = NewButton("Remove");
+        var language = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 200, AccessibleName = "Speech language", BackColor = DarkTheme.Panel2, ForeColor = DarkTheme.Text };
+        language.Items.AddRange(new object[] { "English only (default)", "Auto-detect" });
+        var status = new Label { AutoSize = true, ForeColor = DarkTheme.Muted, Anchor = AnchorStyles.Left };
+
+        void Render(ManaSpeechVocabulary speech)
+        {
+            if (words.IsDisposed)
+            {
+                return;
+            }
+            words.Items.Clear();
+            words.Items.AddRange(speech.Words.ToArray<object>());
+            fixes.Items.Clear();
+            fixKeys.Clear();
+            foreach (var (from, to) in speech.Corrections)
+            {
+                fixes.Items.Add($"{from} -> {to}");
+                fixKeys.Add(from);
+            }
+            language.SelectedIndex = speech.Language == "auto" ? 1 : 0;
+            language.Enabled = speech.EnvLanguage is null;
+            status.Text = speech.EnvLanguage is null ? "" : $"WHISPER_LANGUAGE={speech.EnvLanguage} is set, and wins over this.";
+        }
+
+        // confirmed: the same change with confirm = true, offered when
+        // node-bot says heard may be an ordinary word.
+        async Task<bool> Save(object change, object? confirmed = null)
+        {
+            try
+            {
+                Render(await backendClient.UpdateSpeechAsync(change));
+                if (!status.IsDisposed && language.Enabled)
+                {
+                    status.Text = "Saved -- applies to the next thing you say.";
+                }
+                return true;
+            }
+            catch (HttpRequestException ex) when (ex.StatusCode == System.Net.HttpStatusCode.Conflict && confirmed is not null)
+            {
+                return !IsDisposed
+                    && MessageBox.Show(this, $"{ex.Message}.\n\nAdd the fix anyway?", "Mishearing fixes", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) == DialogResult.Yes
+                    && await Save(confirmed);
+            }
+            catch (Exception ex) when (ex is not OutOfMemoryException)
+            {
+                if (!status.IsDisposed)
+                {
+                    status.Text = $"Couldn't save: {ex.Message}";
+                }
+                return false;
+            }
+        }
+
+        addWord.Click += async (_, _) =>
+        {
+            if (await Save(new { addWord = word.Text }))
+            {
+                word.Clear();
+            }
+        };
+        removeWord.Click += async (_, _) =>
+        {
+            if (words.SelectedItem is string selected)
+            {
+                await Save(new { removeWord = selected });
+            }
+        };
+        addFix.Click += async (_, _) =>
+        {
+            if (await Save(new { heard = heard.Text, term = meant.Text }, new { heard = heard.Text, term = meant.Text, confirm = true }))
+            {
+                heard.Clear();
+                meant.Clear();
+            }
+        };
+        removeFix.Click += async (_, _) =>
+        {
+            if (fixes.SelectedIndex >= 0)
+            {
+                await Save(new { removeCorrection = fixKeys[fixes.SelectedIndex] });
+            }
+        };
+        language.SelectionChangeCommitted += async (_, _) => await Save(new { language = language.SelectedIndex == 1 ? "auto" : "en" });
+        refreshSpeechWords = async () =>
+        {
+            try
+            {
+                Render(await backendClient.GetSpeechAsync());
+            }
+            catch (Exception ex) when (ex is not OutOfMemoryException)
+            {
+                Console.WriteLine($"SettingsPanel: failed to load speech words. {ex.Message}");
+            }
+        };
+
+        var section = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.TopDown, WrapContents = false, BackColor = DarkTheme.Background };
+        section.Controls.Add(Caption("Words Mana should know (for names she mishears):"));
+        section.Controls.Add(Row(words, word, addWord, removeWord));
+        section.Controls.Add(Caption("Mishearing fixes (what she keeps hearing -> what I said):"));
+        section.Controls.Add(Row(fixes, heard, meant, addFix, removeFix));
+        section.Controls.Add(Row(Caption("Speech language"), language, status));
+        return section;
     }
 
     // #678: which speech has to be my voice (SpeakerGate), and teaching Mana

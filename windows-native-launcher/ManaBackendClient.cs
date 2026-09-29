@@ -176,15 +176,17 @@ internal sealed class ManaBackendClient
     // would mostly arrive too late to help and just add load.
     public bool IsLocalBackend => http.BaseAddress?.IsLoopback == true;
 
-    public Task<string> TranscribeAsync(byte[] wavBytes) => TranscribeAsync("/transcribe-only", wavBytes, default);
+    // #925: Heard is what whisper wrote, only when one of my mishearing
+    // fixes changed it into Transcript.
+    public Task<(string Transcript, string? Heard)> TranscribeAsync(byte[] wavBytes) => TranscribeAsync("/transcribe-only", wavBytes, default);
 
     // #619: same upload to node-bot's /transcribe-partial (the endpoint
     // windows-launcher's pollPartialTranscript uses) -- async on the server,
     // so a poll never blocks the final /transcribe-only behind it.
-    public Task<string> TranscribePartialAsync(byte[] wavBytes, CancellationToken cancellationToken) =>
-        TranscribeAsync("/transcribe-partial", wavBytes, cancellationToken);
+    public async Task<string> TranscribePartialAsync(byte[] wavBytes, CancellationToken cancellationToken) =>
+        (await TranscribeAsync("/transcribe-partial", wavBytes, cancellationToken)).Transcript;
 
-    private async Task<string> TranscribeAsync(string route, byte[] wavBytes, CancellationToken cancellationToken)
+    private async Task<(string Transcript, string? Heard)> TranscribeAsync(string route, byte[] wavBytes, CancellationToken cancellationToken)
     {
         using var content = new MultipartFormDataContent();
         using var fileContent = new ByteArrayContent(wavBytes);
@@ -195,7 +197,9 @@ internal sealed class ManaBackendClient
         response.EnsureSuccessStatusCode();
         await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
         using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
-        return document.RootElement.GetProperty("transcript").GetString() ?? string.Empty;
+        var root = document.RootElement;
+        return (root.GetProperty("transcript").GetString() ?? string.Empty,
+            root.TryGetProperty("heard", out var heard) ? heard.GetString() : null);
     }
 
     // #681: answers a /ws/vision-capture request (VisionCaptureClient).
@@ -1047,6 +1051,43 @@ internal sealed class ManaBackendClient
         using var content = new StringContent(payload, Encoding.UTF8, "application/json");
         using var response = await http.PostAsync("/tts/override", content);
         response.EnsureSuccessStatusCode();
+    }
+
+    // #923/#925/#926: my speech words, mishearing fixes and whisper language
+    // (node-bot's GET/POST /speech).
+    public async Task<ManaSpeechVocabulary> GetSpeechAsync()
+    {
+        using var response = await http.GetAsync("/speech");
+        response.EnsureSuccessStatusCode();
+        await using var stream = await response.Content.ReadAsStreamAsync();
+        return await JsonSerializer.DeserializeAsync<ManaSpeechVocabulary>(stream, new JsonSerializerOptions(JsonSerializerDefaults.Web))
+            ?? new ManaSpeechVocabulary();
+    }
+
+    // change: one POST /speech body -- new { addWord }, { removeWord },
+    // { heard, term, confirm }, { removeCorrection } or { language }. A
+    // refused change throws with node-bot's error; StatusCode Conflict means
+    // heard may be an ordinary word and needs confirm = true.
+    public async Task<ManaSpeechVocabulary> UpdateSpeechAsync(object change)
+    {
+        using var content = new StringContent(JsonSerializer.Serialize(change), Encoding.UTF8, "application/json");
+        using var response = await http.PostAsync("/speech", content);
+        var body = await response.Content.ReadAsStringAsync();
+        if (!response.IsSuccessStatusCode)
+        {
+            string? error = null;
+            try
+            {
+                using var document = JsonDocument.Parse(body);
+                error = document.RootElement.TryGetProperty("error", out var errorElement) ? errorElement.GetString() : null;
+            }
+            catch (JsonException)
+            {
+            }
+            throw new HttpRequestException(error ?? $"HTTP {(int)response.StatusCode}", null, response.StatusCode);
+        }
+        return JsonSerializer.Deserialize<ManaSpeechVocabulary>(body, new JsonSerializerOptions(JsonSerializerDefaults.Web))
+            ?? new ManaSpeechVocabulary();
     }
 
     // #581: touch=false matches the editor's own "opening to browse/edit
@@ -2553,4 +2594,14 @@ internal sealed class ManaMemoryFactWindow
     public string Text { get; init; } = "";
     public string? ValidFrom { get; init; }
     public string? InvalidatedAt { get; init; }
+}
+
+internal sealed class ManaSpeechVocabulary
+{
+    public List<string> Words { get; init; } = new();
+    // What whisper wrote -> what I said.
+    public Dictionary<string, string> Corrections { get; init; } = new();
+    // "en" or "auto"; EnvLanguage (WHISPER_LANGUAGE) wins when set.
+    public string Language { get; init; } = "en";
+    public string? EnvLanguage { get; init; }
 }
