@@ -1,4 +1,5 @@
 using System;
+using System.Linq;
 using System.Threading.Tasks;
 using Mana.NativeLauncher;
 using Xunit;
@@ -38,6 +39,37 @@ public class ChatActionsTests
         await view.RunActionAsync(1, 0);
         Assert.Empty(view.Messages[1].Actions);
         Assert.Equal("Approved.", view.Messages[1].Note);
+    }
+
+    [Fact]
+    public async Task AnArtifactMovesBehindAKeptOpenButton_InsteadOfPoppingUp()
+    {
+        using var view = NewView();
+        DetectedArtifact? recorded = null;
+        var opened = 0;
+        view.Artifacts = artifact =>
+        {
+            recorded = artifact;
+            return () => opened++;
+        };
+        view.AppendUserMessage("make a page");
+
+        view.ReportReply("Here it is:\n```html\n<b>hi</b>\n```\nEnjoy.");
+
+        var mana = view.Messages[1];
+        Assert.Equal("html", recorded?.Language);
+        Assert.Equal(0, opened); // nothing opens until the button is pressed
+        Assert.Equal("Here it is:\nEnjoy.", mana.Text);
+        Assert.Equal("Open html content in new window", Assert.Single(mana.Actions).Label);
+        await view.RunActionAsync(1, 0);
+        Assert.Equal(1, opened);
+
+        // Edit-approval buttons go first, and their note doesn't remove it.
+        view.AttachActions(new[] { new ChatView.ChatAction("Approve", true, () => Task.FromResult<string?>("Approved.")) });
+        Assert.Equal(new[] { "Approve", "Open html content in new window" }, mana.Actions.Select(a => a.Label));
+        await view.RunActionAsync(1, 0);
+        Assert.Equal("Open html content in new window", Assert.Single(mana.Actions).Label);
+        Assert.Equal("Approved.", mana.Note);
     }
 
     [Fact]

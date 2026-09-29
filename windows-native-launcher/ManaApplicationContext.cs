@@ -99,8 +99,8 @@ internal sealed class ManaApplicationContext : ApplicationContext
         // VoiceLoop's IChatLog -- SessionListForm only needs the control
         // itself (to embed it), not the other way around.
         // #686: also VoiceLoop's artifact sink, so it can re-render Mana's
-        // bubble from the final reply text before passing it to the viewer.
-        var chatLog = new ChatView { Artifacts = artifactViewer };
+        // bubble from the final reply text and give an artifact its button.
+        var chatLog = new ChatView { Artifacts = artifactViewer.Add };
         // #522: ScreenContextReader owns its own min-interval/keyword-gate
         // caching internally, so this is just held and passed straight
         // through to VoiceLoop, same as the other optional collaborators

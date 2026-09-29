@@ -119,38 +119,48 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
         Add(message, forceScroll: false);
     });
 
-    // #686: the viewer that detected artifacts go to, told after the chat.
-    public IArtifactSink? Artifacts { get; set; }
+    // #686: records a detected artifact with the viewer (ArtifactViewerForm.Add)
+    // and returns what opens it; null means artifacts stay inline.
+    public Func<DetectedArtifact, Action>? Artifacts { get; set; }
 
     // VoiceLoop reports each finished reply's full text. Streamed sentences
     // lose the line breaks between them and a long table or code block is
-    // cut mid-line, so Mana's bubble is re-parsed from the real text.
-    public void ReportReply(string replyText)
+    // cut mid-line, so Mana's bubble is re-parsed from the real text. As in
+    // Electron, the reply's artifact (a big or ```html/```mermaid block)
+    // moves out of the bubble behind an "Open" button.
+    public void ReportReply(string replyText) => RunOnUiThread(() =>
     {
-        RunOnUiThread(() =>
+        var addArtifact = Artifacts;
+        var artifact = addArtifact is null ? null : ArtifactDetector.Extract(replyText);
+        var blocks = ChatMarkdownParser.Parse(artifact is { } found ? replyText.Replace(found.MatchedText, "").Trim() : replyText);
+        if (blocks.Count == 0 && artifact is null)
         {
-            var blocks = ChatMarkdownParser.Parse(replyText);
-            if (blocks.Count == 0)
+            return;
+        }
+        var message = messages.Count > 0 && !messages[^1].FromUser && messages[^1].FinalText is null
+            ? messages[^1]
+            : null;
+        if (message is null)
+        {
+            message = new Message(fromUser: false);
+            messages.Add(message);
+            AccessibilityNotifyClients(AccessibleEvents.Reorder, -1);
+        }
+        message.Blocks.Clear();
+        message.Blocks.AddRange(blocks);
+        message.FinalText = replyText;
+        if (artifact is { } a)
+        {
+            var open = addArtifact!(a);
+            message.Actions.Add(new ChatAction($"Open {a.Language} content in new window", false, () =>
             {
-                return;
-            }
-            var message = messages.Count > 0 && !messages[^1].FromUser && messages[^1].FinalText is null
-                ? messages[^1]
-                : null;
-            if (message is null)
-            {
-                message = new Message(fromUser: false);
-                messages.Add(message);
-                AccessibilityNotifyClients(AccessibleEvents.Reorder, -1);
-            }
-            message.Blocks.Clear();
-            message.Blocks.AddRange(blocks);
-            message.FinalText = replyText;
-            message.Invalidate();
-            Relayout(forceScroll: false);
-        });
-        Artifacts?.ReportReply(replyText);
-    }
+                open();
+                return Task.FromResult<string?>(null);
+            }, Keep: true));
+        }
+        message.Invalidate();
+        Relayout(forceScroll: false);
+    });
 
     // #652 part 6: raised when Mana's reply is complete; SessionListForm
     // checks then for edits to approve and attaches buttons for them.
@@ -163,7 +173,8 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
 
     public void ShowHearing(string? text) => RunOnUiThread(() => HearingChanged?.Invoke(text));
 
-    // Puts buttons under Mana's latest message (replacing any it had).
+    // Puts buttons under Mana's latest message (replacing any it had, except
+    // kept ones like the artifact button, which move after the new ones).
     public void AttachActions(IReadOnlyList<ChatAction> actions)
     {
         var message = messages.LastOrDefault(m => !m.FromUser);
@@ -171,8 +182,10 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
         {
             return;
         }
+        var kept = message.Actions.Where(a => a.Keep).ToList();
         message.Actions.Clear();
         message.Actions.AddRange(actions);
+        message.Actions.AddRange(kept);
         message.Note = null;
         message.Invalidate();
         Relayout(forceScroll: false);
@@ -992,7 +1005,7 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
         message.ActionRunning = false;
         if (note is not null)
         {
-            message.Actions.Clear();
+            message.Actions.RemoveAll(a => !a.Keep);
             message.Note = note;
             message.Invalidate();
             Relayout(forceScroll: false);
@@ -1275,8 +1288,9 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
     internal sealed record Line(int Y, int Height, bool Code, List<Fragment> Fragments, bool Quote = false);
 
     // A button under one of Mana's messages. Run returns a note to show in
-    // place of the buttons once it's done, or null to keep them.
-    internal sealed record ChatAction(string Label, bool Primary, Func<Task<string?>> Run);
+    // place of the buttons once it's done, or null to keep them. Keep: stays
+    // when a note or a new set of buttons replaces the others.
+    internal sealed record ChatAction(string Label, bool Primary, Func<Task<string?>> Run, bool Keep = false);
 
     // Start: offset of Text within the message's Text. Link: its URL, if it's part of a link.
     internal sealed record Fragment(string Text, Font Font, int X, int Width, bool IsCode, int Start, string? Link = null);

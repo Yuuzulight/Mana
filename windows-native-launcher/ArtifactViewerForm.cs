@@ -11,18 +11,16 @@ namespace Mana.NativeLauncher;
 // Mermaid content rendered natively (MermaidParser/MermaidLayout/
 // MermaidRenderer, flowcharts only -- sequence diagrams and everything
 // else fall back to raw source text, same as an unrecognized/malformed
-// diagram), everything else shown as plain monospace text. No markdown
-// rendering for non-Mermaid content: artifact content is source
-// code/HTML, which doesn't carry markdown inline formatting to begin
-// with, so plain monospace text is the correct rendering for it, not a
-// lesser fallback.
+// diagram), HTML rendered in a locked-down WebView2 (#686), everything
+// else shown as plain monospace text. No markdown rendering for other
+// content: artifact content is source code, which doesn't carry markdown
+// inline formatting to begin with, so plain monospace text is the correct
+// rendering for it, not a lesser fallback.
 //
-// Unlike the reference (a click affordance in the chat log opens this),
-// the native launcher has no chat surface on this branch to host that
-// click target in -- ReportReply shows/activates this window directly
-// whenever a fresh artifact is detected, a deliberate adaptation given
-// what's actually available to wire into right now.
-internal sealed class ArtifactViewerForm : Form, IArtifactSink
+// #686: like the reference, the chat opens this from a button on the
+// reply's bubble (ChatView calls Add, then the returned action), instead
+// of it popping up by itself.
+internal sealed class ArtifactViewerForm : Form
 {
     private readonly List<VersionedArtifact> history = new();
     private IReadOnlyList<VersionedArtifact> currentThread = Array.Empty<VersionedArtifact>();
@@ -80,17 +78,6 @@ internal sealed class ArtifactViewerForm : Form, IArtifactSink
         Controls.Add(diagramPanel);
         Controls.Add(textBox);
         Controls.Add(navRow);
-
-        // Forces the native window handle to exist now, on this (the UI)
-        // thread -- ReportReply can fire from VoiceLoop's background
-        // continuations before this window has ever been shown, and
-        // InvokeRequired/BeginInvoke need a handle that was genuinely
-        // created on the UI thread to marshal correctly (InvokeRequired
-        // returns false, not throws, when no handle exists yet, which
-        // would otherwise let a background thread touch this form's
-        // controls directly).
-        _ = Handle;
-        Hide();
     }
 
     protected override void OnFormClosing(FormClosingEventArgs e)
@@ -104,33 +91,18 @@ internal sealed class ArtifactViewerForm : Form, IArtifactSink
         base.OnFormClosing(e);
     }
 
-    public void ReportReply(string replyText)
+    // Records a reply's artifact in its version thread and returns what its
+    // chat button runs: open the thread at this version (versions added
+    // since stay reachable with Next). UI thread only.
+    public Action Add(DetectedArtifact detected)
     {
-        var detected = ArtifactDetector.Extract(replyText);
-        if (detected is null)
-        {
-            return;
-        }
-
-        var versioned = ArtifactDetector.AssignVersion(detected.Value, history);
+        var versioned = ArtifactDetector.AssignVersion(detected, history);
         history.Add(versioned);
-        var thread = history.Where(a => a.ThreadId == versioned.ThreadId).ToList();
-
-        RunOnUiThread(() => ShowThread(thread, thread.Count - 1));
-    }
-
-    private void RunOnUiThread(Action action)
-    {
-        if (IsDisposed)
+        return () =>
         {
-            return;
-        }
-        if (InvokeRequired)
-        {
-            BeginInvoke(action);
-            return;
-        }
-        action();
+            var thread = history.Where(a => a.ThreadId == versioned.ThreadId).ToList();
+            ShowThread(thread, thread.IndexOf(versioned));
+        };
     }
 
     private void ShowThread(IReadOnlyList<VersionedArtifact> thread, int index)
