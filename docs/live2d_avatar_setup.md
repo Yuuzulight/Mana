@@ -282,7 +282,20 @@ a full glance, `0` disables the gaze) and `idleGazePeriodMs`
 Differences from Electron:
 
 - `idleTiltDeg` defaults to `8` (Electron's `16` was tuned for a sleepy
-  idle clip on another model).
+  idle clip on another model). Native uses it as the peak of a head-roll
+  sway on two layered rhythms (~2.5s and ~5s) while idle or talking, with
+  the body leaning after the head at 0.6x. `animatedTiltDeg`
+  (`MANA_LIVE2D_ANIMATED_TILT_DEG`, default `16`) is the peak while she says
+  an excited/happy sentence.
+- `mouthMaxOpen` (`MANA_LIVE2D_MOUTH_MAX_OPEN`, default `0.8`) caps how wide
+  `mouthGain` can open the mouth. The mouth snaps open and shut in under
+  70ms and closes fully between words.
+- Blinks come every 2.5-6s and last 120-220ms (slower when she's sleepy),
+  with a ~13.5% chance of a second blink 250-700ms later. The eyes jump to
+  each new spot and hold 0.5-1.5s while talking, 1-3s otherwise.
+- With a `happy`/`excited` emotion tag (#779), she may close her eyes in a
+  "^^" smile for 0.5-3s. This drives `ParamEyeLSmile`/`ParamEyeRSmile`
+  when the model has them.
 - `MANA_AVATAR_FPS` defaults to `60`.
 - The blink never overrides the eyes. It multiplies whatever the motion or
   expression set, so `eyeOpenScale`, `smileParams` and `browParams` (the
