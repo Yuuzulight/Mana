@@ -254,7 +254,10 @@ internal sealed class ManaBackendClient
     // #681: presetId (the active prompt preset, Settings > Presets) is
     // omitted when empty, matching windows-launcher's
     // `presetId: selectedPresetId || undefined`.
-    public async IAsyncEnumerable<ReplyStreamEvent> ReplyStreamAsync(string text, string? sessionId = null, string screenText = "", string? image = null, IReadOnlyList<string>? images = null, string? presetId = null)
+    // #675: thinkHarder (the main window's deep-thinking toggle): true asks
+    // node-bot to think on this turn, false ends Mana's own deep thinking
+    // (Q12b), null sends nothing.
+    public async IAsyncEnumerable<ReplyStreamEvent> ReplyStreamAsync(string text, string? sessionId = null, string screenText = "", string? image = null, IReadOnlyList<string>? images = null, string? presetId = null, bool? thinkHarder = null)
     {
         var fields = new Dictionary<string, object?> { ["text"] = text, ["screenText"] = screenText };
         if (sessionId is not null)
@@ -264,6 +267,10 @@ internal sealed class ManaBackendClient
         if (!string.IsNullOrEmpty(presetId))
         {
             fields["presetId"] = presetId;
+        }
+        if (thinkHarder is bool think)
+        {
+            fields["thinkHarder"] = think;
         }
         if (images is { Count: > 0 })
         {
@@ -1876,6 +1883,7 @@ internal sealed class ManaBackendClient
             Error = root.TryGetProperty("error", out var errProp) ? errProp.GetString() : null,
             Name = root.TryGetProperty("name", out var nameProp) && nameProp.ValueKind == JsonValueKind.String ? nameProp.GetString() : null,
             Phase = root.TryGetProperty("phase", out var phaseProp) && phaseProp.ValueKind == JsonValueKind.String ? phaseProp.GetString() : null,
+            DeepThinking = root.TryGetProperty("deepThinking", out var deepProp) && deepProp.ValueKind == JsonValueKind.True,
         };
     }
 }
@@ -2165,6 +2173,8 @@ internal sealed class ReplyStreamEvent
     // #661: type "tool" -- the tool's name and "start"/"end".
     public string? Name { get; init; }
     public string? Phase { get; init; }
+    // #675 Q12b: on "final", whether Mana's own deep thinking is on.
+    public bool DeepThinking { get; init; }
 }
 
 // #580: a row from GET /editors/workspace/proposals -- see

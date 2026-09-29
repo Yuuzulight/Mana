@@ -216,6 +216,7 @@ const { createSnapshotToolSource } = require("./ai/snapshot-tool-source");
 const { createExpressionToolSource, isExpressionToolName } = require("./ai/expression-tool-source");
 const { createVisionToolSource } = require("./ai/vision-tool-source");
 const { createSessionGoalToolSource } = require("./ai/session-goal-tool-source");
+const { createDeepThinkingState, createDeepThinkingToolSource } = require("./ai/deep-thinking-tool-source");
 const { visionCaptureBridge } = require("./vision-capture-bridge");
 const { createCodingToolSource } = require("./ai/coding-tool-source");
 const { refuteEdit } = require("./ai/adversarial-verifier");
@@ -245,6 +246,7 @@ const {
   pickPreferredLlamaModel,
   selectLlamaModelProfileForPrompt,
   shouldUseRemoteAi: shouldUseRemoteAiCore,
+  wantsThinkHarder,
 } = require("./ai/local-ai");
 const {
   createLocalLlamaRuntime,
@@ -579,6 +581,8 @@ async function runLocalLlamaReply(
   // #666: chat turns pass this to try their backup model on an empty reply
   // before llama-cli; it resolves to a reply, or null to fall through.
   onEmptyReply = null,
+  // #675: true forces thinking on for this reply (a "think harder" turn).
+  thinking = undefined,
 ) {
   if (llamaServerRuntime.isEnabled()) {
     try {
@@ -588,6 +592,8 @@ async function runLocalLlamaReply(
         profile,
         overrideSystemPrompt,
         extraMessages,
+        null,
+        thinking,
       );
     } catch (e) {
       if (onEmptyReply && /returned an empty reply/.test(e && e.message)) {
@@ -2202,6 +2208,8 @@ function registerRoutes(app, upload, deps = {}) {
   const activePronunciationLexiconStore = deps.pronunciationLexiconStore || pronunciationLexiconStore;
   const activeBrowserAutomationToolSource = deps.browserAutomationToolSource || browserAutomationToolSource;
   const agentActivity = createAgentActivity();
+  // #675 Q12b: deep thinking Mana turned on herself, per session.
+  const deepThinking = createDeepThinkingState();
   const capabilityContext = {
     acpMemoryStore: deps.acpMemoryStore || acpMemoryStore,
     // Only cron-scheduler's agent-job executor uses this today -- every
@@ -3341,8 +3349,9 @@ function registerRoutes(app, upload, deps = {}) {
       overrideSystemPrompt = null,
       extraMessages = null,
       onEmptyReply = null,
+      thinking = undefined,
     ) {
-      return runLocalLlamaReply(prompt, maxTokens, profile, overrideSystemPrompt, extraMessages, onEmptyReply);
+      return runLocalLlamaReply(prompt, maxTokens, profile, overrideSystemPrompt, extraMessages, onEmptyReply, thinking);
     });
 
   // Foundational tool-calling (issue #51): only llama-server (not the
@@ -3647,6 +3656,27 @@ function registerRoutes(app, upload, deps = {}) {
       transcript,
       modelProfile,
     );
+    // #675: "think harder" turns thinking on for this turn's replies (tool
+    // loop, streamed or plain, and regenerations) with its own bigger
+    // budget -- asked for in words, or by the client's thinkHarder request
+    // field (the native launcher's deep-thinking toggle). Best-of-N never
+    // thinks, so such a turn skips it. undefined (not false) otherwise:
+    // the profile's own default then decides.
+    // Q12b: or Mana's own deep thinking (deep_thinking__set) is on for this
+    // session; a literal thinkHarder: false (the user clicked the lit Think
+    // button off) ends it first. Only for callers with a replyMeta (the
+    // user's own chat routes), never cron/Discord or other scheduled jobs
+    // (#780's replyMeta.scheduled). let: her tool call can switch it
+    // mid-reply.
+    const userChat = Boolean(replyMeta && !replyMeta.scheduled);
+    let manaThinking = false;
+    if (userChat) {
+      if (replyMeta.thinkHarder === false) deepThinking.set(sessionId, false);
+      manaThinking = deepThinking.takeReply(sessionId);
+      replyMeta.deepThinking = deepThinking.isOn(sessionId);
+    }
+    const askedThinkHarder = (replyMeta && replyMeta.thinkHarder === true) || wantsThinkHarder(transcript);
+    let thinkHarder = askedThinkHarder || manaThinking || undefined;
 
     // Determine assistant mode and system prompt
     const inferred = pickAssistantMode(transcript, normalizedModelProfile); // { mode, reason }
@@ -4446,6 +4476,21 @@ function registerRoutes(app, upload, deps = {}) {
             // goal set -- there's nothing to finish otherwise, and no
             // reason to spend schema tokens advertising it on every reply.
             ...(sessionGoal ? [createSessionGoalToolSource()] : []),
+            // #675 Q12b: Mana turns deep thinking on/off herself; the rest
+            // of this reply's tool rounds follow it at once.
+            ...(userChat
+              ? [
+                  createDeepThinkingToolSource({
+                    onSet: (on) => {
+                      // Already on for this reply: asking again mustn't
+                      // restart the 10-reply cap.
+                      if (!(on && manaThinking)) deepThinking.set(sessionId, on);
+                      replyMeta.deepThinking = deepThinking.isOn(sessionId);
+                      thinkHarder = askedThinkHarder || on || undefined;
+                    },
+                  }),
+                ]
+              : []),
           ]);
           // Issue #281: on the "fast" (small) profile, protect its limited
           // context from a large tool catalogue and from raw tool-result
@@ -4541,6 +4586,7 @@ function registerRoutes(app, upload, deps = {}) {
               profile: normalizedModelProfile,
               overrideSystemPrompt: selectedSystemPrompt,
               extraMessages: memoryExtraMessages,
+              thinking: () => thinkHarder,
               goal: goalMode ? sessionGoal : null,
             },
           );
@@ -4597,6 +4643,7 @@ function registerRoutes(app, upload, deps = {}) {
             overrideSystemPrompt: selectedSystemPrompt,
             extraMessages: memoryExtraMessages,
             onSentence: wrappedOnSentence,
+            thinking: thinkHarder,
           });
         } catch (e) {
           console.warn(
@@ -4612,6 +4659,7 @@ function registerRoutes(app, upload, deps = {}) {
         selectedSystemPrompt,
         memoryExtraMessages,
         () => replyWithBackup(promptText),
+        thinkHarder,
       );
     }
 
@@ -4628,6 +4676,7 @@ function registerRoutes(app, upload, deps = {}) {
         bestOfNEnabled &&
         !goalMode &&
         mode === "coding" &&
+        !thinkHarder &&
         isLlamaServerAvailable()
       ) {
         try {
