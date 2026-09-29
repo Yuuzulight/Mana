@@ -1638,7 +1638,17 @@ function createLlamaServerRuntime(options = {}) {
 
     for (let round = 1; round <= roundLimit; round += 1) {
       rounds = round;
-      const json = await complete(true);
+      let json;
+      try {
+        json = await complete(true);
+      } catch (e) {
+        // #787: one round's tool results (file contents, test output) can
+        // jump past the 80% guard below and the whole context. Keep the run's
+        // work and say why it stopped, rather than failing the reply.
+        if (!goalMode || !/exceeds the available context/i.test(e.message)) throw e;
+        notDone = "the conversation outgrew the model's context";
+        break;
+      }
       promptTokens = (Number(json?.timings?.cache_n) || 0) + (Number(json?.timings?.prompt_n) || 0);
       message = (json && json.choices && json.choices[0] && json.choices[0].message) || {};
       let requestedToolCalls = Array.isArray(message.tool_calls)
@@ -1753,7 +1763,7 @@ function createLlamaServerRuntime(options = {}) {
     }
 
     const draft = cleanContent(message.content);
-    const content = notDone ? `Not done yet: ${notDone}\n\n${draft}` : draft;
+    const content = notDone ? `Not done yet: ${notDone}${draft ? `\n\n${draft}` : ""}` : draft;
 
     scheduleIdleShutdown();
     logPerf("llama-server-tool-reply", startedAt);

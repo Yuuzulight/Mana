@@ -1592,6 +1592,8 @@ test("runToolAwareReply respects a wall-clock time budget across rounds", async 
 
 // Issue #676: goal mode. `turns` scripts the tool-loop replies in order
 // (the last one repeats); `reviews` scripts the completion-review replies.
+// OVERFLOW as a turn answers like llama-server does past its context.
+const OVERFLOW = Symbol("overflow");
 function runGoalScript({ turns, reviews = [{ complete: true, missing: [] }], options = {}, toolResult = "ok", promptN = 0, tools }) {
   const loopBodies = [];
   const reviewBodies = [];
@@ -1614,6 +1616,9 @@ function runGoalScript({ turns, reviews = [{ complete: true, missing: [] }], opt
       loopBodies.push(body);
       if (body.tool_choice === "none") return makeAnswerResponse("final answer");
       const turn = turns[Math.min(turnIndex++, turns.length - 1)];
+      if (turn === OVERFLOW) {
+        return { ok: false, status: 400, text: async () => "request (17820 tokens) exceeds the available context size (16384 tokens)" };
+      }
       const reply = Array.isArray(turn) ? makeToolCallResponse(turn) : makeAnswerResponse(turn);
       if (!promptN) return reply;
       const json = await reply.json();
@@ -1742,6 +1747,16 @@ test("#787 review: finishing an edit goal without any edit is not done, whatever
   assert.equal(reviewBodies.length, 0, "decided from the evidence, no model review");
   assert.ok(loopBodies.some((b) => /Still missing: no edit was made yet/.test(lastUserText(b))));
   assert.match(result.content, /^Not done yet: no edit was made yet/);
+});
+
+// Live, the coding model's T5 run jumped from under 80% of the context
+// straight past it in one round, and the 400 failed the whole reply.
+test("#787 goal mode: a request past the context stops the run with a note instead of failing the reply", async () => {
+  const { result } = await runGoalScript({ turns: [["read_file"], OVERFLOW] });
+
+  assert.equal(result.content, "Not done yet: the conversation outgrew the model's context");
+  const off = runGoalScript({ turns: [OVERFLOW], options: { goal: null } });
+  await assert.rejects(off, /exceeds the available context/, "outside goal mode the error still surfaces");
 });
 
 // Live, the default model twice answered "change < to <=" in prose instead of
