@@ -1013,6 +1013,8 @@ function registerEditorRoutes(app, deps) {
       return res.json({
         proposal: editors.approveEditProposal(req.params.id, {
           acceptedHunkIds: req.body?.acceptedHunkIds,
+          // Q16: required to apply an edit the adversarial review refuted.
+          confirmRefuted: req.body?.confirmRefuted === true,
         }),
       });
     } catch (error) {

@@ -9,16 +9,17 @@ const { createApp } = require("../server");
 const { createEditorIntegrations, createEditorWorkspaceStore } = require("../zed-integration");
 const { withServer } = require("./helpers");
 
-const ON = { MANA_ADVERSARIAL_VERIFY: "1" };
+// Q16: on by default; only an explicit "0" turns it off.
+const ON = {};
 const edit = { relativePath: "src/sum.js", diff: "-a\n+b\n", summary: "sum the list" };
 
-test("refuteEdit doesn't call the model when off, for non-source files, and returns null with no model loaded", async () => {
+test("refuteEdit is on by default; it doesn't call the model when turned off, for non-source files, and returns null with no model loaded", async () => {
   let calls = 0;
   const runLocalReply = async () => {
     calls += 1;
     return null;
   };
-  assert.equal(await refuteEdit({ ...edit, runLocalReply, env: {} }), null);
+  assert.equal(await refuteEdit({ ...edit, runLocalReply, env: { MANA_ADVERSARIAL_VERIFY: "0" } }), null);
   assert.equal(await refuteEdit({ ...edit, relativePath: "README.md", runLocalReply, env: ON }), null);
   assert.equal(calls, 0);
   assert.equal(await refuteEdit({ ...edit, runLocalReply, env: ON }), null);
@@ -106,6 +107,22 @@ test("buggy-but-parseable edits pass the static gate and reach approval with the
         const stored = await (await fetch(`${baseUrl}/editors/workspace/proposals/${proposal.id}`)).json();
         assert.equal(stored.proposal.adversarialReview.verdict, "refuted");
       }
+
+      // Q16: a refuted edit is never approved without the approver's
+      // explicit confirmation -- but can still be approved with it.
+      const approve = (id, body) =>
+        fetch(`${baseUrl}/editors/workspace/proposals/${id}/approve`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        });
+      const refused = await approve("proposal-1", {});
+      assert.equal(refused.status, 400);
+      assert.match((await refused.json()).error, /off-by-one.*your own approval/);
+      assert.equal(fs.readFileSync(path.join(tempDir, "app.js"), "utf8"), "module.exports = {};\n");
+      const confirmed = await approve("proposal-1", { confirmRefuted: true });
+      assert.equal(confirmed.status, 200);
+      assert.equal(fs.readFileSync(path.join(tempDir, "app.js"), "utf8"), BUGGY_EDITS[0][1]);
     });
   } finally {
     fs.rmSync(tempDir, { recursive: true, force: true });

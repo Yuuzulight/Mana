@@ -2029,8 +2029,9 @@ function registerRoutes(app, upload, deps = {}) {
     }
     return editorIntegrations;
   }
-  // Issue #622: opt-in (MANA_ADVERSARIAL_VERIFY=1) adversarial review of
-  // agent-proposed edits, on whatever model is already loaded -- never a swap.
+  // Issue #622: adversarial review of agent-proposed edits, on by default
+  // (MANA_ADVERSARIAL_VERIFY=0 turns it off), on whatever model is already
+  // loaded -- never a swap.
   const reviewEdit =
     deps.reviewEdit ||
     ((proposal) =>

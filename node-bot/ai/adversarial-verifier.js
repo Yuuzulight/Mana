@@ -6,11 +6,14 @@
 // it, for one concrete failing case. Same shape as guardian-precheck.js's
 // judgeActionRisk: one short call, one-line verdict.
 //
-// Advisory only: the verdict is attached to the proposal (and shown to the
-// model and in the .diff file), the human approval gate is unchanged, and
-// nothing here can block or approve an edit. Opt in with
-// MANA_ADVERSARIAL_VERIFY=1; one extra call per proposal, and only for
-// source files -- docs/config/data edits are skipped to keep the cost down.
+// Advisory: the verdict is attached to the proposal (and shown to the
+// model and in the .diff file) and nothing here can approve an edit. A
+// "refuted" verdict does make approval manual-only (Q16):
+// zed-integration.js's approveEditProposal refuses it unless the approver
+// explicitly confirms, so no batch or agent path applies it unread. On by
+// default (Q16); MANA_ADVERSARIAL_VERIFY=0 turns it off. One extra call
+// per proposal, and only for source files -- docs/config/data edits are
+// skipped to keep the cost down.
 const path = require("node:path");
 
 const MAX_DIFF_CHARS_INTO_PROMPT = 6000;
@@ -25,7 +28,7 @@ const LOGIC_EXTENSIONS = new Set([
 // Returns {verdict: "refuted"|"holds"|"unclear"|"error", failingCase, reason},
 // or null when it didn't run (off, not a source file, no model loaded).
 async function refuteEdit({ relativePath, diff, summary, runLocalReply, env = process.env }) {
-  if (env.MANA_ADVERSARIAL_VERIFY !== "1" || typeof runLocalReply !== "function") return null;
+  if (env.MANA_ADVERSARIAL_VERIFY === "0" || typeof runLocalReply !== "function") return null;
   if (!LOGIC_EXTENSIONS.has(path.extname(String(relativePath || "")).toLowerCase())) return null;
   try {
     // The diff is agent-authored content under review, not instructions --

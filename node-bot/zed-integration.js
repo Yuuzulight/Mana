@@ -807,11 +807,20 @@ function createEditorIntegrations(options = {}) {
     return proposalStore.getProposal(id);
   }
 
-  function approveEditProposal(id, { commit, acceptedHunkIds } = {}) {
+  function approveEditProposal(id, { commit, acceptedHunkIds, confirmRefuted } = {}) {
     const workspace = requireActiveWorkspace(workspaceStore);
     const proposal = proposalStore.getProposal(id);
     if (proposal.status !== "pending") {
       throw new Error("edit proposal is not pending");
+    }
+    // Q16 (#622): an edit the adversarial review refuted is only applied on
+    // an approver's explicit say-so, after seeing the failing case -- never
+    // by a batch "approve all" or an agent's own approve call.
+    if (proposal.adversarialReview?.verdict === "refuted" && confirmRefuted !== true) {
+      throw new Error(
+        `Mana's adversarial review found a way this edit breaks: ${proposal.adversarialReview.failingCase}. ` +
+          "It needs your own approval after reading that (confirmRefuted).",
+      );
     }
 
     // Issue #427: resolved (and validated) before any file I/O -- an unknown
