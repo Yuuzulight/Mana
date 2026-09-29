@@ -14,8 +14,21 @@ internal sealed class ManaProcessManager : IDisposable
     private Process? backendProcess;
     private Process? fishSpeechProcess;
     private Process? embedderProcess;
+    private Process? searxngProcess;
+    private Process? retrieverProcess;
+    private Process? gptSovitsProcess;
 
     public string RootDirectory { get; }
+
+    // #691: opt-in services, read once at construction (node-bot/.env is
+    // already loaded by then). They get a startup row only when turned on,
+    // so an unused one never shows as "Unavailable".
+    // The Python retriever is opt-in here, unlike windows-launcher: it
+    // json.loads the whole tools/vector_store metadata (GBs on a real
+    // index) for a coding-mode fallback node-bot's own retriever-index
+    // already covers. MANA_START_RETRIEVER=1 turns it on.
+    public bool UsesRetriever { get; } = Environment.GetEnvironmentVariable("MANA_START_RETRIEVER") == "1";
+    public bool UsesGptSovits { get; } = Environment.GetEnvironmentVariable("TTS_PROVIDER") == "gpt_sovits";
 
     // #582: only captures output for a backend process THIS launcher
     // spawned -- if StartAsync's health check found node-bot already
@@ -71,7 +84,8 @@ internal sealed class ManaProcessManager : IDisposable
     }
 
     // onServiceReady, when given, fires once per service (key "backend"/
-    // "fish-speech"/"embedder") the moment its own health-check-then-start
+    // "fish-speech"/"embedder"/"websearch", plus "retriever"/"gpt-sovits"
+    // when in use) the moment its own health-check-then-start
     // resolves -- lets a caller (the startup overlay) flip that row from
     // "Starting..." to "Ready"/"Unavailable" live instead of only knowing
     // "all three are done" after StartAsync itself returns. Fires on
@@ -119,10 +133,23 @@ internal sealed class ManaProcessManager : IDisposable
             onServiceReady?.Invoke("embedder", true);
             embedderTask = Task.FromResult<(Process? Process, bool Available)>((null, true));
         }
+        // #691: the rest of windows-launcher's helper services. Like the
+        // embedder they only serve a node-bot on this machine, so a remote
+        // backend just gets the health check.
+        var searxngTask = StartAndReport("websearch", "http://127.0.0.1:8890/", () => Task.FromResult(isBackendLocal ? StartSearxng() : null));
+        var notUsed = Task.FromResult<(Process? Process, bool Available)>((null, false));
+        var retrieverTask = UsesRetriever
+            ? StartAndReport("retriever", "http://127.0.0.1:9000/health", () => Task.FromResult(isBackendLocal ? StartRetriever() : null))
+            : notUsed;
+        // api_v2.py has no health route; FastAPI's default /docs page
+        // answers 200 as soon as the server is up.
+        var gptSovitsTask = UsesGptSovits
+            ? StartAndReport("gpt-sovits", "http://127.0.0.1:9880/docs", () => Task.FromResult(isBackendLocal ? StartGptSovits() : null))
+            : notUsed;
 
         try
         {
-            await Task.WhenAll(fishSpeechTask, backendTask, embedderTask);
+            await Task.WhenAll(fishSpeechTask, backendTask, embedderTask, searxngTask, retrieverTask, gptSovitsTask);
         }
         finally
         {
@@ -141,6 +168,9 @@ internal sealed class ManaProcessManager : IDisposable
             }
             if (backendTask.IsCompletedSuccessfully) backendProcess = backendTask.Result.Process;
             if (embedderTask.IsCompletedSuccessfully) embedderProcess = embedderTask.Result.Process;
+            if (searxngTask.IsCompletedSuccessfully) searxngProcess = searxngTask.Result.Process;
+            if (retrieverTask.IsCompletedSuccessfully) retrieverProcess = retrieverTask.Result.Process;
+            if (gptSovitsTask.IsCompletedSuccessfully) gptSovitsProcess = gptSovitsTask.Result.Process;
         }
     }
 
@@ -196,7 +226,7 @@ internal sealed class ManaProcessManager : IDisposable
         // For the backend, start() either returns a real process or
         // throws (fatal) -- so `process is not null` here is always true
         // whenever this line is reached at all. Fish Speech (and the #691
-        // embedder) are the callers where start() can return null non-fatally (missing native
+        // optional services) are the callers where start() can return null non-fatally (missing native
         // setup, or a launch failure) -- that's the actual degraded case.
         // #681: so is an unreachable remote backend, which is never spawned.
         return (process, process is not null);
@@ -326,6 +356,69 @@ internal sealed class ManaProcessManager : IDisposable
         }
     }
 
+    // #691: local SearXNG behind web search (main.js startSearxngService).
+    // Only when its venv is set up (docs/web_access_setup.md);
+    // MANA_START_SEARXNG=0 skips it. Optional: web replies fail gracefully.
+    private Process? StartSearxng()
+    {
+        var searxngDir = Path.Combine(RootDirectory, "tools", "searxng");
+        var python = ResolveVenvPython(searxngDir, "venv");
+        if (Environment.GetEnvironmentVariable("MANA_START_SEARXNG") == "0" || !File.Exists(python))
+        {
+            return null;
+        }
+        return StartOptional("SearXNG", python, "-m searx.webapp", searxngDir,
+            new() { ["SEARXNG_SETTINGS_PATH"] = Path.Combine(searxngDir, "mana-settings.yml") });
+    }
+
+    // #691: tools/retriever_service.py (main.js startRetrieverService), only
+    // with MANA_START_RETRIEVER=1 (see UsesRetriever). Optional: callers fall
+    // back to heuristics without it.
+    private Process? StartRetriever()
+    {
+        var retrieverScript = Path.Combine(RootDirectory, "tools", "retriever_service.py");
+        if (!File.Exists(retrieverScript))
+        {
+            return null;
+        }
+        var venvPython = ResolveVenvPython(RootDirectory, "venv");
+        return StartOptional("Python retriever", File.Exists(venvPython) ? venvPython : "python", $"-u {Quote(retrieverScript)}", RootDirectory);
+    }
+
+    // #691: GPT-SoVITS, only with TTS_PROVIDER=gpt_sovits (main.js
+    // startGptSovitsService). It ships its own runtime python. Unlike
+    // Electron, no Kokoro is started when it's missing -- node-bot starts
+    // Kokoro on demand for its fallback (#745).
+    private Process? StartGptSovits()
+    {
+        var gptSovitsDir = Path.Combine(RootDirectory, "tools", "gpt-sovits");
+        var runtimePython = Path.Combine(gptSovitsDir, "runtime", "python.exe");
+        var apiScript = Path.Combine(gptSovitsDir, "api_v2.py");
+        if (!File.Exists(runtimePython) || !File.Exists(apiScript))
+        {
+            Console.WriteLine($"GPT-SoVITS not found at {gptSovitsDir}; see docs/gpt_sovits_setup.md.");
+            return null;
+        }
+        // UTF-8 stdio: under cp1252 its Chinese debug print throws and it
+        // silently returns 1 s of silence for every reply (see main.js).
+        return StartOptional("GPT-SoVITS", runtimePython, $"{Quote(apiScript)} -a 127.0.0.1 -p 9880", gptSovitsDir,
+            new() { ["PYTHONIOENCODING"] = "utf-8", ["PYTHONUTF8"] = "1" });
+    }
+
+    // A launch failure of an optional service is logged, never fatal.
+    private static Process? StartOptional(string name, string fileName, string arguments, string workingDirectory, Dictionary<string, string>? environment = null)
+    {
+        try
+        {
+            return StartHiddenProcess(fileName, arguments, workingDirectory, environment: environment);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"{name} failed to start: {ex.Message}");
+            return null;
+        }
+    }
+
     private Process StartBackend()
     {
         var nodeBotDir = Path.Combine(RootDirectory, "node-bot");
@@ -397,7 +490,8 @@ internal sealed class ManaProcessManager : IDisposable
         string arguments,
         string workingDirectory,
         string? stdoutLogPath = null,
-        string? stderrLogPath = null)
+        string? stderrLogPath = null,
+        Dictionary<string, string>? environment = null)
     {
         var startInfo = new ProcessStartInfo
         {
@@ -409,6 +503,10 @@ internal sealed class ManaProcessManager : IDisposable
             RedirectStandardOutput = stdoutLogPath is not null,
             RedirectStandardError = stderrLogPath is not null,
         };
+        foreach (var (key, value) in environment ?? new())
+        {
+            startInfo.Environment[key] = value;
+        }
 
         var process = Process.Start(startInfo) ??
                throw new InvalidOperationException($"Failed to start {fileName}.");
@@ -563,7 +661,10 @@ internal sealed class ManaProcessManager : IDisposable
         await Task.WhenAll(
             StopAndReport("backend", backendProcess),
             StopAndReport("fish-speech", fishSpeechProcess),
-            StopAndReport("embedder", embedderProcess));
+            StopAndReport("embedder", embedderProcess),
+            StopAndReport("websearch", searxngProcess),
+            StopAndReport("retriever", retrieverProcess),
+            StopAndReport("gpt-sovits", gptSovitsProcess));
     }
 
     public void Dispose()
@@ -572,6 +673,9 @@ internal sealed class ManaProcessManager : IDisposable
         StopProcess(backendProcess);
         StopProcess(fishSpeechProcess);
         StopProcess(embedderProcess);
+        StopProcess(searxngProcess);
+        StopProcess(retrieverProcess);
+        StopProcess(gptSovitsProcess);
     }
 
     private static void StopProcess(Process? process)
