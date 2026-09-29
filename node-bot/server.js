@@ -157,6 +157,7 @@ const {
 	const {
 	  recordPromptComposition,
 	  finalizePromptComposition,
+	  contextFullNote,
 	  getPromptComposition,
 	  getMostRecentComposition,
 	} = require("./prompt-composition-report");
@@ -4858,6 +4859,21 @@ function registerRoutes(app, upload, deps = {}) {
     if (replyMeta) {
       replyMeta.streamedMatchesFinal = streamedMatchesFinal(streamedSentences, reply);
     }
+    // #642 (Q33c): once per conversation, at 90% of the context window,
+    // Mana ends this reply by suggesting a fresh chat. Added after the
+    // stream check (like #666's notice, it's an extra sentence, not a
+    // changed reply) and after the turn went to memory. Rides on a reply
+    // the user asked for, so it's fine while gaming too.
+    const contextSize = turnPromptUsage ? await activeLlamaServerRuntime.getContextSize?.() : null;
+    const fullNote = turnPromptUsage && typeof reply === "string"
+      ? contextFullNote(sessionId, turnPromptUsage.promptTokens, contextSize)
+      : "";
+    if (fullNote) {
+      reply = `${reply.trimEnd()} ${fullNote}`;
+      // Streamed and unchanged: speak it as one more sentence. Otherwise the
+      // client speaks the final reply, which now ends with it.
+      if (onSentence && replyMeta?.streamedMatchesFinal) await onSentence(fullNote);
+    }
     // Issue #642: the context meter (GET /prompt-composition/:sessionId).
     // Not awaited -- a few local /tokenize calls are never worth delaying
     // the reply for; until they land the record shows char/4 estimates.
@@ -4873,7 +4889,7 @@ function registerRoutes(app, upload, deps = {}) {
             "mcp-tool-schemas": mcpTools.length ? JSON.stringify(mcpTools) : "",
           },
           promptUsage: turnPromptUsage,
-          contextSize: await activeLlamaServerRuntime.getContextSize?.(),
+          contextSize: contextSize ?? (await activeLlamaServerRuntime.getContextSize?.()),
           countTokens: activeLlamaServerRuntime.countTokens,
         }))().catch((e) => console.warn("Failed to finalize prompt composition:", e?.message || e));
     }
