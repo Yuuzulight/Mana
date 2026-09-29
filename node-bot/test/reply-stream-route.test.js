@@ -232,3 +232,22 @@ test("POST /reply/stream relays tool start/end events before the final (#661)", 
     assert.equal(events.length, 3);
   });
 });
+
+// #675: the native launcher's deep-thinking toggle reaches buildAssistantReply
+// through replyMeta.thinkHarder -- only a literal true turns it on.
+test("POST /reply/stream passes thinkHarder through replyMeta", async () => {
+  const seen = [];
+  const app = createApp({
+    buildAssistantReply: async (transcript, screenText, marketText, modelProfile, sessionId, assistantMode, presetId, replyMeta) => {
+      seen.push(replyMeta.thinkHarder);
+      return "ok";
+    },
+  });
+
+  await withServer(app, async (baseUrl) => {
+    await postNdjson(baseUrl, "/reply/stream", { text: "hi", thinkHarder: true });
+    await postNdjson(baseUrl, "/reply/stream", { text: "hi", thinkHarder: "yes" });
+    await postNdjson(baseUrl, "/reply/stream", { text: "hi" });
+  });
+  assert.deepEqual(seen, [true, false, false]);
+});

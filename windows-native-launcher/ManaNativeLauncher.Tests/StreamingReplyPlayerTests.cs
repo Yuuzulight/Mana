@@ -175,6 +175,31 @@ public class StreamingReplyPlayerTests
         Assert.Contains("\"presetId\":\"preset-1\"", body);
     }
 
+    // #675: VoiceLoop's deep-thinking toggle reaches /reply/stream through here,
+    // as a request field (never by rewriting the user's text).
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task StreamReplyAndPlayAsync_SendsThinkHarderOnlyWhenOn(bool on)
+    {
+        string? body = null;
+        var handler = new FakeHttpMessageHandler(request =>
+        {
+            body = request.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
+            return new HttpResponseMessage(System.Net.HttpStatusCode.OK)
+            {
+                Content = new StringContent("{\"type\":\"final\",\"reply\":\"ok\",\"changed\":false}\n"),
+            };
+        });
+        var player = new StreamingReplyPlayer(new ManaBackendClient(handler), _ => Task.FromResult(true), _ => { });
+
+        await player.StreamReplyAndPlayAsync("hi", thinkHarder: on);
+
+        Assert.Equal(on, body!.Contains("\"thinkHarder\":true"));
+        Assert.Equal(on, body.Contains("thinkHarder"));
+        Assert.Contains("\"text\":\"hi\"", body);
+    }
+
     [Fact]
     public async Task StreamReplyAndPlayAsync_ThrowsOnErrorFinalEvent()
     {

@@ -70,9 +70,14 @@ const THINKING_PROFILES = new Set(["quality", "coding"]);
 // Thinking stays off for these whatever the profile: tool calls and their
 // repair (reasoning can break the JSON), streamed replies (spoken; thinking
 // only delays the first sentence), vision, Best-of-N (N candidates plus a
-// 16-token judge) and small utility classifications.
+// 16-token judge) and small utility classifications. A "think harder" turn
+// still thinks on the tool loop and streamed replies (see runToolAwareReply
+// for how reasoning is kept out of tool calls); the tool-call repair never.
 const THINKING_OFF_TASKS = new Set(["tools", "stream", "vision", "bestofn", "utility"]);
 const DEFAULT_REASONING_BUDGET = 512;
+// A "think harder" turn's own budget (MANA_THINK_HARDER_BUDGET): at the
+// ~80-97 tokens/s measured on the RTX 5080, about 21-26 s of thinking.
+const THINK_HARDER_BUDGET = 2048;
 
 function envValue(env, prefix, name) {
   return String(env[`${prefix}_${String(name).toUpperCase()}`] || "").trim().toLowerCase();
@@ -102,15 +107,19 @@ function resolveThinking(profile, task, env, override) {
   return profileFlag !== null ? profileFlag : THINKING_PROFILES.has(profile);
 }
 
-function resolveReasoningBudget(profile, env) {
-  const raw = envValue(env, "MANA_REASONING_BUDGET", profile) || String(env.MANA_REASONING_BUDGET || "").trim();
+function resolveReasoningBudget(profile, env, thinkHarder) {
+  const raw = thinkHarder
+    ? String(env.MANA_THINK_HARDER_BUDGET || "").trim()
+    : envValue(env, "MANA_REASONING_BUDGET", profile) || String(env.MANA_REASONING_BUDGET || "").trim();
   const budget = Number(raw);
-  return raw !== "" && Number.isInteger(budget) && budget >= 0 ? budget : DEFAULT_REASONING_BUDGET;
+  if (raw !== "" && Number.isInteger(budget) && budget >= 0) return budget;
+  return thinkHarder ? THINK_HARDER_BUDGET : DEFAULT_REASONING_BUDGET;
 }
 
 // Fields to spread into a local /v1/chat/completions body (max_tokens
-// included). `thinking` forces thinking on/off (the empty-reply retry, a
-// "think harder" turn).
+// included). `thinking`: true is a "think harder" turn (thinking on, with
+// its own bigger budget, even for tasks that normally never think), false
+// forces thinking off (the empty-reply retry).
 function buildSamplingParams({ profile = "default", task = null, maxTokens, thinking, env = process.env } = {}) {
   const presets = loadSamplerPresets(env);
   const params = { ...presets[resolvePresetName(profile, env, presets)] };
@@ -128,7 +137,7 @@ function buildSamplingParams({ profile = "default", task = null, maxTokens, thin
     // (field names present, server not run): thinking_budget_tokens is read
     // per request while --reasoning-budget stays at its -1 default. Thinking
     // tokens count toward max_tokens, so the reply keeps its own budget.
-    const budget = resolveReasoningBudget(profile, env);
+    const budget = resolveReasoningBudget(profile, env, thinking === true);
     params.thinking_budget_tokens = budget;
     if (Number.isFinite(maxTokens)) params.max_tokens = maxTokens + budget;
   }

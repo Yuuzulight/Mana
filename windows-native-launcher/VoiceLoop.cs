@@ -181,6 +181,10 @@ internal sealed class VoiceLoop : IDisposable
     // reply. Same threading story as currentSessionId above.
     private volatile string? currentPresetId;
 
+    // #675: the main window's deep-thinking toggle -- while on, every reply
+    // (spoken or typed) asks node-bot to think harder. Same threading story.
+    private volatile bool deepThinking;
+
     // #521: null (no chat window constructed) is the common case and a
     // no-op everywhere it's used -- see IChatLog's own header comment.
     private readonly IChatLog? chatLog;
@@ -404,6 +408,8 @@ internal sealed class VoiceLoop : IDisposable
     public void SetSessionId(string? sessionId) => currentSessionId = sessionId;
 
     public void SetPresetId(string? presetId) => currentPresetId = presetId;
+
+    public void SetDeepThinking(bool on) => deepThinking = on;
 
     // #577: lets ResearchForm record a finished report into whatever
     // session is currently active, matching windows-launcher's own
@@ -1286,7 +1292,7 @@ internal sealed class VoiceLoop : IDisposable
         IReadOnlyList<string> pending;
         try
         {
-            (reply, changed, preferredExpression, interrupted, pending) = await streamingReplyPlayer.StreamReplyAndPlayAsync(commandText, currentSessionId, text => chatLog?.AppendReplySentence(text), screenText, image, images, currentPresetId);
+            (reply, changed, preferredExpression, interrupted, pending) = await streamingReplyPlayer.StreamReplyAndPlayAsync(commandText, currentSessionId, text => chatLog?.AppendReplySentence(text), screenText, image, images, currentPresetId, deepThinking);
         }
         catch (Exception ex)
         {

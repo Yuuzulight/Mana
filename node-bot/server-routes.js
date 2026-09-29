@@ -322,7 +322,8 @@ function registerCoreRoutes(app, upload, deps) {
         null,
       );
       const presetId = optionalString(req.body?.presetId, "presetId", null);
-      const replyMeta = {};
+      // #675: the client's one-turn "think harder" (deep-thinking toggle).
+      const replyMeta = { thinkHarder: req.body?.thinkHarder === true };
       const reply = await buildAssistantReply(
         transcript,
         screenText,
@@ -351,6 +352,12 @@ function registerCoreRoutes(app, upload, deps) {
     res.setHeader("Content-Type", "application/x-ndjson; charset=utf-8");
     res.setHeader("Cache-Control", "no-cache");
     res.setHeader("Connection", "keep-alive");
+    // #675: headers now, not at the first event -- a deep-thinking turn can
+    // think ~25 s per request (tool rounds included) before it writes
+    // anything, and the native launcher's HttpClient only waits its 100 s
+    // default for the headers. Every outcome below is an event, never a
+    // status code, so nothing needs the headers held back.
+    res.flushHeaders();
 
     const writeEvent = (event) => res.write(JSON.stringify(event) + "\n");
 
@@ -454,6 +461,8 @@ function registerCoreRoutes(app, upload, deps) {
       // working while a tool runs.
       const replyMeta = {
         onToolCall: ({ name, phase }) => writeEvent({ type: "tool", name, phase }),
+        // #675: the client's one-turn "think harder" (deep-thinking toggle).
+        thinkHarder: req.body?.thinkHarder === true,
       };
 
       const reply = await buildAssistantReply(

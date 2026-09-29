@@ -421,6 +421,33 @@ internal sealed class SessionListForm : Form
         };
         send.FlatAppearance.BorderSize = 0;
 
+        // #675: deep thinking, sticky until clicked off. While on, every
+        // turn (typed or spoken) asks node-bot to think harder. A toggle
+        // (CheckBox drawn as a button) so its on/off state is also exposed to
+        // screen readers; not saved -- off at each launch, like the tool
+        // panel's pin, since a forgotten "on" makes every reply slow.
+        var think = new CheckBox
+        {
+            Appearance = Appearance.Button,
+            Text = "Think",
+            TextAlign = ContentAlignment.MiddleCenter,
+            Dock = DockStyle.Right,
+            Width = 72,
+            FlatStyle = FlatStyle.Flat,
+            BackColor = DarkTheme.Panel2,
+            ForeColor = DarkTheme.Muted,
+            AccessibleName = "Deep thinking",
+        };
+        think.FlatAppearance.BorderSize = 0;
+        think.FlatAppearance.CheckedBackColor = DarkTheme.Accent;
+        railToolTip.SetToolTip(think, DeepThinkingOffTooltip);
+        think.CheckedChanged += (_, _) =>
+        {
+            voiceLoop.SetDeepThinking(think.Checked);
+            think.ForeColor = think.Checked ? DarkTheme.OnAccent : DarkTheme.Muted;
+            railToolTip.SetToolTip(think, think.Checked ? DeepThinkingOnTooltip : DeepThinkingOffTooltip);
+        };
+
         async Task SendAsync()
         {
             var text = box.Text;
@@ -453,13 +480,19 @@ internal sealed class SessionListForm : Form
         box.TextChanged += (_, _) => box.PlaceholderText = MessageBoxPlaceholder;
         send.Click += async (_, _) => await SendAsync();
 
-        var gap = new Panel { Dock = DockStyle.Right, Width = 8, BackColor = Color.Transparent };
+        Panel Gap() => new() { Dock = DockStyle.Right, Width = 8, BackColor = Color.Transparent };
         var panel = new Panel { Dock = DockStyle.Bottom, Height = 58, Padding = new Padding(12, 10, 12, 10), BackColor = DarkTheme.Panel };
+        // Docked last-added first: Send at the far right, then Think, then the box.
         panel.Controls.Add(box);
-        panel.Controls.Add(gap);
+        panel.Controls.Add(Gap());
+        panel.Controls.Add(think);
+        panel.Controls.Add(Gap());
         panel.Controls.Add(send);
         return panel;
     }
+
+    private const string DeepThinkingOnTooltip = "Deep thinking: on -- slower, more careful replies. Click to turn off.";
+    private const string DeepThinkingOffTooltip = "Deep thinking: off -- click for slower, more careful replies";
 
     // #652 part 6: when a reply finishes, any edits Mana proposed during
     // that turn get Approve / Review buttons on her message. "During that

@@ -255,7 +255,9 @@ internal sealed class ManaBackendClient
     // #681: presetId (the active prompt preset, Settings > Presets) is
     // omitted when empty, matching windows-launcher's
     // `presetId: selectedPresetId || undefined`.
-    public async IAsyncEnumerable<ReplyStreamEvent> ReplyStreamAsync(string text, string? sessionId = null, string screenText = "", string? image = null, IReadOnlyList<string>? images = null, string? presetId = null)
+    // #675: thinkHarder (the main window's deep-thinking toggle) asks
+    // node-bot to think on this turn; sent only when on.
+    public async IAsyncEnumerable<ReplyStreamEvent> ReplyStreamAsync(string text, string? sessionId = null, string screenText = "", string? image = null, IReadOnlyList<string>? images = null, string? presetId = null, bool thinkHarder = false)
     {
         var fields = new Dictionary<string, object?> { ["text"] = text, ["screenText"] = screenText };
         if (sessionId is not null)
@@ -265,6 +267,10 @@ internal sealed class ManaBackendClient
         if (!string.IsNullOrEmpty(presetId))
         {
             fields["presetId"] = presetId;
+        }
+        if (thinkHarder)
+        {
+            fields["thinkHarder"] = true;
         }
         if (images is { Count: > 0 })
         {

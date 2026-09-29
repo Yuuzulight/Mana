@@ -3596,11 +3596,14 @@ function registerRoutes(app, upload, deps = {}) {
       transcript,
       modelProfile,
     );
-    // #675: "think harder" turns thinking on for this turn's reply (and its
-    // regenerations), within the profile's reasoning budget. Tool calls and
-    // Best-of-N never think, so such a turn skips both and gets a plain reply.
-    // undefined (not false) otherwise: the profile's own default then decides.
-    const thinkHarder = wantsThinkHarder(transcript) || undefined;
+    // #675: "think harder" turns thinking on for this turn's replies (tool
+    // loop, streamed or plain, and regenerations) with its own bigger
+    // budget -- asked for in words, or by the client's thinkHarder request
+    // field (the native launcher's deep-thinking toggle). Best-of-N never
+    // thinks, so such a turn skips it. undefined (not false) otherwise:
+    // the profile's own default then decides.
+    const thinkHarder =
+      (replyMeta && replyMeta.thinkHarder === true) || wantsThinkHarder(transcript) || undefined;
 
     // Determine assistant mode and system prompt
     const inferred = pickAssistantMode(transcript, normalizedModelProfile); // { mode, reason }
@@ -3738,7 +3741,6 @@ function registerRoutes(app, upload, deps = {}) {
     if (
       toolCallingEnabled &&
       normalizedModelProfile === "default" &&
-      !thinkHarder &&
       isLlamaServerAvailable()
     ) {
       try {
@@ -4237,7 +4239,6 @@ function registerRoutes(app, upload, deps = {}) {
       if (
         toolCallingEnabled &&
         normalizedModelProfile === "default" &&
-        !thinkHarder &&
         isLlamaServerAvailable()
       ) {
         try {
@@ -4410,6 +4411,7 @@ function registerRoutes(app, upload, deps = {}) {
               profile: normalizedModelProfile,
               overrideSystemPrompt: selectedSystemPrompt,
               extraMessages: memoryExtraMessages,
+              thinking: thinkHarder,
             },
           );
           if (toolResult.content && toolResult.content.trim()) {

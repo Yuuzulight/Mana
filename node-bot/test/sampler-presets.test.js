@@ -111,7 +111,7 @@ test("an explicit thinking override wins", () => {
 // Runtime wiring, against a fake fetch/spawn -- never a real llama-server.
 // No LLAMA_MODEL and an empty tools dir make every profile resolve to the
 // same model, i.e. one shared llama-server process.
-function makeRuntime(env, reply) {
+function makeRuntime(env, reply, { promptTokens = 100 } = {}) {
   const bodies = [];
   let spawns = 0;
   let serverUp = false;
@@ -127,6 +127,7 @@ function makeRuntime(env, reply) {
     fetch: async (url, init) => {
       if (String(url).endsWith("/health")) return { ok: serverUp };
       if (String(url).endsWith("/props")) return { ok: false, status: 404, json: async () => ({}) };
+      if (String(url).endsWith("/tokenize")) return { ok: true, json: async () => ({ tokens: new Array(promptTokens).fill(1) }) };
       const body = JSON.parse(init.body);
       bodies.push(body);
       if (body.stream) {
@@ -232,25 +233,85 @@ test("data/sampler-presets.json tunes and adds presets; a missing or broken file
 });
 
 test("think harder: forced thinking reaches streamed and plain requests; MANA_LLAMA_REASONING=on|off still wins", async () => {
-  const { runtime, bodies } = makeRuntime({}, () => ({ content: "Sure." }));
+  const { runtime, bodies } = makeRuntime({}, () => ({ content: "<think>hmm</think>Sure." }));
   assert.equal(await runtime.streamLocalAssistantReply("q", { maxTokens: 64, thinking: true }), "Sure.");
-  await runtime.runLocalAssistantReply("q", 64, "default", null, null, null, true);
+  assert.equal(await runtime.runLocalAssistantReply("q", 64, "default", null, null, null, true), "Sure.");
   for (const body of bodies) {
     assert.deepEqual(body.chat_template_kwargs, { enable_thinking: true });
-    assert.equal(body.thinking_budget_tokens, 512);
-    assert.equal(body.max_tokens, 64 + 512);
+    assert.equal(body.thinking_budget_tokens, 2048);
+    assert.equal(body.max_tokens, 64 + 2048);
   }
   assert.equal(bodies[0].stream, true);
   const forced = buildSamplingParams({ maxTokens: 1, thinking: true, env: { MANA_LLAMA_REASONING: "off" } });
   assert.equal(forced.params.chat_template_kwargs, undefined);
+  const own = buildSamplingParams({ maxTokens: 10, thinking: true, env: { MANA_THINK_HARDER_BUDGET: "300", MANA_REASONING_BUDGET: "7" } });
+  assert.equal(own.params.thinking_budget_tokens, 300);
+  assert.equal(buildSamplingParams({ profile: "quality", maxTokens: 10, env: {} }).params.thinking_budget_tokens, 512);
 });
 
-test("a 'think harder' turn skips tool calling and asks its reply to think; other turns don't", async () => {
+test("think harder fits prompt + max_tokens into the context: thinking shrinks first, then goes off", async () => {
+  const env = { LLAMA_CONTEXT: "4096" };
+  const roomy = makeRuntime({ ...env }, () => ({ content: "ok" }), { promptTokens: 3000 });
+  await roomy.runtime.runLocalAssistantReply("q", 256, "default", null, null, null, true);
+  // room = 4096 - 3000 - 64 = 1032 < 256 + 2048
+  assert.equal(roomy.bodies[0].max_tokens, 1032);
+  assert.equal(roomy.bodies[0].thinking_budget_tokens, 2048 - (256 + 2048 - 1032));
+  assert.deepEqual(roomy.bodies[0].chat_template_kwargs, { enable_thinking: true });
+
+  const full = makeRuntime({ ...env }, () => ({ content: "ok" }), { promptTokens: 3900 });
+  await full.runtime.runLocalAssistantReply("q", 256, "default", null, null, null, true);
+  assert.equal(full.bodies[0].max_tokens, 4096 - 3900 - 64);
+  assert.equal(full.bodies[0].thinking_budget_tokens, undefined);
+  assert.deepEqual(full.bodies[0].chat_template_kwargs, { enable_thinking: false });
+});
+
+test("think harder on the tool loop: every round thinks, repair doesn't, reasoning never leaks or parses as a call", async () => {
+  const { runtime, bodies } = makeRuntime({}, (body) => {
+    if (body.response_format) return { content: '{"tool_calls":[]}' };
+    const round = bodies.filter((b) => !b.response_format).length;
+    if (round === 1) {
+      return {
+        content: '<think>maybe {"name": "x", "arguments": {}}</think>',
+        reasoning_content: "I should call x",
+        tool_calls: [{ id: "c1", type: "function", function: { name: "x", arguments: "{}" } }],
+      };
+    }
+    if (round === 2) return { content: '<think>now {"name": "x", "arguments": {}}</think>Final answer', reasoning_content: "done" };
+    return { content: "should not be reached" };
+  });
+  const toolPolicy = {
+    tools: [{ type: "function", function: { name: "x", parameters: { type: "object" } } }],
+    executeTool: () => "tool result",
+  };
+  const result = await runtime.runToolAwareReply("q", toolPolicy, { maxTokens: 64, thinking: true });
+
+  assert.equal(result.content, "Final answer");
+  assert.equal(bodies.length, 2, "the <think> text is not mistaken for a leaked tool call (no repair)");
+  for (const body of bodies) {
+    assert.deepEqual(body.chat_template_kwargs, { enable_thinking: true });
+    assert.equal(body.thinking_budget_tokens, 2048);
+    assert.equal(body.max_tokens, 64 + 2048);
+    assert.equal(body.tool_choice, "auto");
+  }
+  const echoed = bodies[1].messages.find((m) => m.role === "assistant");
+  assert.equal(echoed.content, null);
+  assert.equal("reasoning_content" in echoed, false);
+
+  // The repair request stays schema-only: no thinking even on a think-harder turn.
+  const leaky = makeRuntime({}, (body) =>
+    body.response_format ? { content: '{"tool_calls":[]}' } : { content: '{"name": "x", "arguments": {}}' },
+  );
+  await leaky.runtime.runToolAwareReply("q", toolPolicy, { maxTokens: 64, thinking: true });
+  const repair = leaky.bodies.find((b) => b.response_format);
+  assert.deepEqual(repair.chat_template_kwargs, { enable_thinking: false });
+});
+
+test("a 'think harder' turn (words or the client's flag) thinks on every reply path, tools kept; other turns don't", async () => {
   assert.equal(wantsThinkHarder("Can you think it through?"), true);
   assert.equal(wantsThinkHarder("I think hard work pays off"), false);
 
   const { createApp } = require("../server");
-  let toolCalls = 0;
+  const toolThinking = [];
   const streamThinking = [];
   const plainThinking = [];
   const app = createApp({
@@ -261,8 +322,8 @@ test("a 'think harder' turn skips tool calling and asks its reply to think; othe
         return "streamed reply";
       },
     },
-    runToolAwareReply: async () => {
-      toolCalls += 1;
+    runToolAwareReply: async (prompt, policy, opts) => {
+      toolThinking.push(opts.thinking);
       return { content: "", toolCalls: [], rounds: 0 };
     },
     runLocalAssistantReply: async (...args) => {
@@ -270,13 +331,13 @@ test("a 'think harder' turn skips tool calling and asks its reply to think; othe
       return "plain reply";
     },
   });
-  const reply = (text, onSentence) =>
-    app.locals.buildAssistantReply(text, "", "", "default", null, null, null, {}, onSentence);
+  const reply = (text, onSentence, replyMeta = {}) =>
+    app.locals.buildAssistantReply(text, "", "", "default", null, null, null, replyMeta, onSentence);
 
   await reply("why is the sky blue", () => {});
-  assert.deepEqual([toolCalls, streamThinking], [1, [undefined]]);
+  assert.deepEqual([toolThinking, streamThinking], [[undefined], [undefined]]);
   await reply("Think harder: why is the sky blue", () => {});
-  assert.deepEqual([toolCalls, streamThinking], [1, [undefined, true]]);
-  await reply("think harder about it");
-  assert.deepEqual([toolCalls, plainThinking], [1, [true]]);
+  assert.deepEqual([toolThinking, streamThinking], [[undefined, true], [undefined, true]]);
+  await reply("why is the sky blue", null, { thinkHarder: true });
+  assert.deepEqual([toolThinking, plainThinking], [[undefined, true, true], [true]]);
 });

@@ -1026,6 +1026,29 @@ function createLlamaServerRuntime(options = {}) {
     }
   }
 
+  // #675: a "think harder" request asks for its reply's max_tokens plus a
+  // 2048-token thinking budget. Keeps prompt + max_tokens inside the slot's
+  // context, so a long prompt shortens the thinking first (then the reply)
+  // instead of generation running off the end of the window mid-thought.
+  // The prompt is measured as the JSON of what's sent (messages + tools),
+  // which slightly overcounts -- the safe side.
+  async function fitThinkingToContext(params, payload) {
+    const budget = params.thinking_budget_tokens;
+    if (!budget || !Number.isFinite(params.max_tokens)) return;
+    const text = JSON.stringify(payload);
+    const [contextSize, counted] = await Promise.all([getContextSize(), countTokens(text)]);
+    const room = contextSize - (counted ?? Math.ceil(text.length / 3)) - 64;
+    const over = params.max_tokens - room;
+    if (over <= 0) return;
+    params.max_tokens = Math.max(1, room);
+    if (over >= budget) {
+      delete params.thinking_budget_tokens;
+      params.chat_template_kwargs = { enable_thinking: false };
+    } else {
+      params.thinking_budget_tokens = budget - over;
+    }
+  }
+
   async function runLocalAssistantReply(
     prompt,
     maxTokens = 256,
@@ -1043,19 +1066,14 @@ function createLlamaServerRuntime(options = {}) {
 
     // #675: per-profile/per-task sampler preset and thinking.
     const sampling = buildSamplingParams({ profile, task, maxTokens, thinking: thinkingOverride, env });
+    const messages = buildMessages(overrideSystemPrompt || systemPrompt, prompt, extraMessages);
+    if (thinkingOverride === true) await fitThinkingToContext(sampling.params, { messages });
     const resp = await fetchImpl(
       `http://127.0.0.1:${state.port}/v1/chat/completions`,
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          messages: buildMessages(
-            overrideSystemPrompt || systemPrompt,
-            prompt,
-            extraMessages,
-          ),
-          ...sampling.params,
-        }),
+        body: JSON.stringify({ messages, ...sampling.params }),
       },
     );
     if (!resp.ok) {
@@ -1066,11 +1084,10 @@ function createLlamaServerRuntime(options = {}) {
     }
     const json = await resp.json();
     logPromptCache("llama-server", json && json.timings);
-    const content =
-      json && json.choices && json.choices[0] && json.choices[0].message
-        ? String(json.choices[0].message.content || "")
-        : "";
-    if (!content.trim()) {
+    // Reasoning models may wrap deliberation in <think> blocks; keep only
+    // the reply (a reply that was all thinking counts as empty).
+    const content = stripThinking(json?.choices?.[0]?.message?.content);
+    if (!content) {
       // #675: thinking can use up the reply (reasoning, no content) -- one
       // retry with thinking off so the user still gets an answer.
       if (sampling.thinking) {
@@ -1082,8 +1099,7 @@ function createLlamaServerRuntime(options = {}) {
 
     scheduleIdleShutdown();
     logPerf("llama-server", startedAt);
-    // Reasoning models may wrap deliberation in <think> blocks; keep only the reply.
-    return content.replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
+    return content;
   }
 
   // Issue #331: the streaming counterpart of runLocalAssistantReply. Same
@@ -1118,20 +1134,15 @@ function createLlamaServerRuntime(options = {}) {
     const startedAt = nowMs();
     await ensureServer(profile);
 
+    const messages = buildMessages(overrideSystemPrompt || systemPrompt, prompt, extraMessages);
+    const { params } = buildSamplingParams({ profile, task: "stream", maxTokens, thinking, env });
+    if (thinking === true) await fitThinkingToContext(params, { messages });
     const resp = await fetchImpl(
       `http://127.0.0.1:${state.port}/v1/chat/completions`,
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          messages: buildMessages(
-            overrideSystemPrompt || systemPrompt,
-            prompt,
-            extraMessages,
-          ),
-          ...buildSamplingParams({ profile, task: "stream", maxTokens, thinking, env }).params,
-          stream: true,
-        }),
+        body: JSON.stringify({ messages, ...params, stream: true }),
       },
     );
     if (!resp.ok) {
@@ -1200,6 +1211,12 @@ function createLlamaServerRuntime(options = {}) {
   // dict/object literals essentially never use exactly those two key names
   // back to back, so this is unlikely to false-positive on this model's
   // otherwise code-heavy replies.
+  // #675: reply text without reasoning: a closed <think> block, or an
+  // unclosed one running to the end (thinking cut off by its budget).
+  function stripThinking(content) {
+    return String(content || "").replace(/<think>[\s\S]*?(?:<\/think>|$)/gi, "").trim();
+  }
+
   function looksLikeFailedToolCallJson(content) {
     const trimmed = String(content || "").trim();
     if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
@@ -1320,6 +1337,8 @@ function createLlamaServerRuntime(options = {}) {
       maxToolCallsPerRound,
       maxMs,
       extraMessages = null,
+      // #675: true on a "think harder" turn -- every round thinks.
+      thinking,
     } = {},
   ) {
     if (typeof fetchImpl !== "function") {
@@ -1365,19 +1384,22 @@ function createLlamaServerRuntime(options = {}) {
       // isHealthy() check (ensureServerConfig's early-return), not a real
       // restart.
       await ensureServer(profile);
+      // #675: never DRY/XTC here, and no thinking unless this is a "think
+      // harder" turn -- both can break tool-call JSON. When it thinks,
+      // llama-server returns the reasoning apart from content and
+      // tool_calls (reasoning_content); the loop below never sends it back
+      // or parses it, and strips any <think> block left inside content.
+      const toolFields = toolsEnabled
+        ? { tools: toolPolicy.tools, tool_choice: "auto" }
+        : { tool_choice: "none" };
+      const { params } = buildSamplingParams({ profile, task: "tools", maxTokens, thinking, env });
+      if (thinking === true) await fitThinkingToContext(params, { messages, ...toolFields });
       const resp = await fetchImpl(
         `http://127.0.0.1:${state.port}/v1/chat/completions`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            messages,
-            ...(toolsEnabled
-              ? { tools: toolPolicy.tools, tool_choice: "auto" }
-              : { tool_choice: "none" }),
-            // #675: never DRY/XTC or thinking here -- both can break tool-call JSON.
-            ...buildSamplingParams({ profile, task: "tools", maxTokens, env }).params,
-          }),
+          body: JSON.stringify({ messages, ...toolFields, ...params }),
         },
       );
       if (!resp.ok) {
@@ -1406,11 +1428,12 @@ function createLlamaServerRuntime(options = {}) {
       rounds = round;
       const json = await complete(true);
       message = (json && json.choices && json.choices[0] && json.choices[0].message) || {};
+      const visibleContent = stripThinking(message.content);
       let requestedToolCalls = Array.isArray(message.tool_calls)
         ? message.tool_calls
         : [];
 
-      if (!requestedToolCalls.length && looksLikeFailedToolCallJson(message.content)) {
+      if (!requestedToolCalls.length && looksLikeFailedToolCallJson(visibleContent)) {
         // Issue: this method's own header comment documents that some
         // model/template combos (qwen2.5-coder-7b confirmed) never
         // populate `tool_calls` at all -- they leak the call they meant to
@@ -1433,7 +1456,7 @@ function createLlamaServerRuntime(options = {}) {
       const boundedCalls = requestedToolCalls.slice(0, callsPerRoundLimit);
       messages.push({
         role: "assistant",
-        content: message.content || null,
+        content: visibleContent || null,
         tool_calls: boundedCalls,
       });
 
@@ -1492,9 +1515,7 @@ function createLlamaServerRuntime(options = {}) {
       }
     }
 
-    const content = String(message.content || "")
-      .replace(/<think>[\s\S]*?<\/think>/gi, "")
-      .trim();
+    const content = stripThinking(message.content);
 
     scheduleIdleShutdown();
     logPerf("llama-server-tool-reply", startedAt);
