@@ -1,7 +1,8 @@
 // Issue #643: a cron agent job runs through the real buildAssistantReply,
 // so its prompt carries the same memory a chat turn gets (the job
 // session's conversation memory, pinned and related facts, with unverified
-// facts left out) -- not just the result written back afterward.
+// facts left out) -- not just the result written back afterward. Q27: and
+// only confirmed facts, never pending (unconfirmed) ones.
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const os = require("node:os");
@@ -32,6 +33,12 @@ test("a cron agent job's prompt includes remembered facts and its result is stil
     text: "an unverified guess",
     sessionId: "sess-other",
     unverifiedSource: true,
+  });
+  store.rememberFact({
+    key: "graphics card",
+    text: "a pending guess nobody confirmed",
+    sessionId: "sess-other",
+    origin: { kind: "model_inferred" },
   });
   store.appendTurn({ sessionId: "cron-643", user: "keep an eye on my drivers", assistant: "will do" });
 
@@ -65,6 +72,10 @@ test("a cron agent job's prompt includes remembered facts and its result is stil
   assert.match(late, /FFXIV/); // pinned fact
   assert.match(late, /keep an eye on my drivers/); // the job session's own memory
   assert.doesNotMatch(late, /an unverified guess/);
+  assert.doesNotMatch(late, /a pending guess/);
+  // ...which a chat turn does get, marked unconfirmed.
+  await app.locals.buildAssistantReply("what about my graphics card?", "", "", "default", "chat", null, null, {});
+  assert.match(calls.at(-1).extraMessages.late.map((m) => m.content).join("\n"), /a pending guess.*unconfirmed/);
 
   const turns = store.getSession("cron-643").turns;
   assert.equal(turns.at(-1).user, "[scheduled: Driver check]");
