@@ -84,11 +84,13 @@ const { createVTubeRuntime } = require("./vtube-runtime");
 	const {
   registerCoreRoutes,
   isLocalRestartRequest,
+  isLocalAdminRequest,
   registerModelRoutes,
   registerEditorRoutes,
   registerAdminStaticRoutes,
   registerPendingWritesRoutes,
 } = require("./server-routes");
+	const { ADMIN_KEY_REQUIRED_ERROR, checkAdminSecret, hasAdminKey } = require("./admin-key");
 	const {
 	  handleGetAddonStatus,
 	  handleGenerateVideo,
@@ -523,8 +525,11 @@ const gamingWatch = createGamingWatch({
 if (process.env.NODE_ENV !== "test" && !process.env.NODE_TEST_CONTEXT) {
   gamingWatch.poll();
   setInterval(gamingWatch.poll, 30 * 1000).unref();
-  // #697: proactive remarks held during play go out after the game.
-  require("./proactive").watchGaming(gamingWatch.isGaming);
+  // #697: proactive remarks held during play go out after the game, or
+  // one in a break -- alt-tabbed out of the game (foreground.js).
+  require("./proactive").watchGaming(gamingWatch.isGaming, () =>
+    require("./foreground").isAwayFromGame(GAMING_PROCESS_NAMES),
+  );
   setInterval(require("./proactive").flush, 30 * 1000).unref();
 }
 
@@ -1997,6 +2002,16 @@ function registerRoutes(app, upload, deps = {}) {
       }
     });
 
+  // #697 part 1: the native launcher reports each foreground-window change.
+  app.post("/internal/foreground-report", (req, res) => {
+    try {
+      require("./foreground").reportForeground(req.body || {});
+      return res.json({ ok: true });
+    } catch (e) {
+      return res.status(400).json({ error: e.message });
+    }
+  });
+
   // Reported by windows-launcher's powerMonitor.getSystemIdleTime() poll.
   // Fires consolidation once per idle period (resets when the user is seen
   // active again below the threshold), so staying idle for hours doesn't
@@ -2069,7 +2084,7 @@ function registerRoutes(app, upload, deps = {}) {
     const eagerStatus = modelManagement.getModelStatus().profiles[eagerProfile];
     if (eagerStatus && eagerStatus.available && eagerStatus.selectedModel) {
       llamaServerRuntime
-        .ensureServerConfig(eagerStatus.selectedModel)
+        .ensureServerConfig(eagerStatus.selectedModel, llamaServerRuntime.chatMmprojFor(eagerStatus.selectedModel))
         .catch((e) => console.warn("Eager llama-server startup skipped:", e.message));
     }
   }
@@ -2102,19 +2117,9 @@ function registerRoutes(app, upload, deps = {}) {
     process.env.MANA_ADMIN_SECRET ||
     "";
 
+  // #842: no secret no longer means open -- see checkAdminSecret.
   function checkAdminAuth(req, res) {
-    if (!ADMIN_SECRET) return true; // no secret configured -> allow (local dev)
-    const header = req.get("authorization") || req.get("Authorization") || "";
-    if (!header || !header.startsWith("Bearer ")) {
-      res.status(401).json({ ok: false, error: "unauthorized" });
-      return false;
-    }
-    const token = header.slice(7).trim();
-    if (token !== ADMIN_SECRET) {
-      res.status(401).json({ ok: false, error: "unauthorized" });
-      return false;
-    }
-    return true;
+    return checkAdminSecret(req, res, ADMIN_SECRET);
   }
 
   const capabilities = deps.capabilities || [
@@ -2219,6 +2224,8 @@ function registerRoutes(app, upload, deps = {}) {
     // that needs a loopback-only guard builds it inline (e.g. the
     // brain-provider test route above).
     isLocalRestartRequest: deps.isLocalRestartRequest || isLocalRestartRequest,
+    // #670: loopback plus an admin key (admin-key.js) -- skill import.
+    isLocalAdminRequest: deps.isLocalAdminRequest || isLocalAdminRequest,
     approvalGate: activeApprovalGate,
     // #699: heartbeat checks pause while gaming and snapshot their writes.
     isGaming: deps.isGaming || gamingWatch.isGaming,
@@ -2749,15 +2756,7 @@ function registerRoutes(app, upload, deps = {}) {
 
   // Admin endpoint: send a tray notification (protected)
   app.post("/admin/notify/tray", async (req, res) => {
-    const ADMIN_SECRET_ENV = process.env.MANA_ADMIN_SECRET || "";
-    if (ADMIN_SECRET_ENV) {
-      const header = req.get("authorization") || req.get("Authorization") || "";
-      if (!header || !header.startsWith("Bearer "))
-        return res.status(401).json({ ok: false, error: "unauthorized" });
-      const token = header.slice(7).trim();
-      if (token !== ADMIN_SECRET_ENV)
-        return res.status(401).json({ ok: false, error: "unauthorized" });
-    }
+    if (!checkAdminSecret(req, res, process.env.MANA_ADMIN_SECRET || "")) return;
     try {
       const body = req.body || {};
       const title =
@@ -3868,6 +3867,9 @@ function registerRoutes(app, upload, deps = {}) {
     // changes its tail; screen and market text already ride on the user
     // message itself.
     const memoryExtraMessages = { early: [], late: [] };
+    // #679: images the chat model can see itself (server-routes.js decided);
+    // buildMessages puts them on the live user message on every path below.
+    if (replyMeta?.images?.length) memoryExtraMessages.images = replyMeta.images;
     let flatMemorySuffix = "";
     let promptMemoryChars = 0;
     let promptMemoryText = "";
@@ -4675,6 +4677,8 @@ function registerRoutes(app, upload, deps = {}) {
       if (
         bestOfNEnabled &&
         !goalMode &&
+        // #679: Best-of-N builds its own messages without the images.
+        !replyMeta?.images?.length &&
         mode === "coding" &&
         !thinkHarder &&
         isLlamaServerAvailable()
@@ -5050,10 +5054,15 @@ function registerRoutes(app, upload, deps = {}) {
       }),
     runVisionReply:
       deps.runVisionReply ||
-      ((prompt, images, maxTokens) =>
-        llamaServerRuntime.runVisionReply(prompt, images, maxTokens)),
+      ((prompt, images, maxTokens, overrideSystemPrompt) =>
+        llamaServerRuntime.runVisionReply(prompt, images, maxTokens, overrideSystemPrompt)),
     getVisionStatus:
       deps.getVisionStatus || (() => llamaServerRuntime.getVisionStatus()),
+    // #679: false under the test runner (runtime disabled), so route tests
+    // take the describe-first path unless they pass their own.
+    chatAcceptsImages:
+      deps.chatAcceptsImages ||
+      ((profile) => llamaServerRuntime.isEnabled() && llamaServerRuntime.chatAcceptsImages(profile)),
     resolveVisionCapture:
       deps.resolveVisionCapture || visionCaptureBridge.resolveCapture,
     rejectVisionCapture:
@@ -5124,26 +5133,17 @@ function registerRoutes(app, upload, deps = {}) {
   // authMiddleware, which sets req.user). Account management is more
   // sensitive than the read-only /api/memory routes -- which are
   // intentionally remote-accessible by design, per issue #93 -- so it gets
-  // an extra layer beyond just "the API key has role=admin": same
-  // local-unless-explicit-token pattern this codebase already uses for
-  // /admin/restart (see isLocalRestartRequest, which also accounts for a
-  // LAN tunnel terminating on loopback but forwarding from elsewhere), so a
-  // leaked admin API key alone isn't enough to manage accounts remotely.
+  // an extra layer beyond just "the API key has role=admin": ADMIN_TOKEN,
+  // or the native launcher's per-run key from this PC (#670, admin-key.js),
+  // so a leaked admin API key alone isn't enough to manage accounts.
   function requireAdmin(req, res, next) {
     if (req.user.role !== "admin") {
       return res.status(403).json({ error: "Admin role required" });
     }
-    const ADMIN_TOKEN = process.env.ADMIN_TOKEN || null;
-    if (ADMIN_TOKEN && req.get("x-admin-token") === ADMIN_TOKEN) {
+    if (hasAdminKey(req, { local: isLocalRestartRequest(req) })) {
       return next();
     }
-    if (isLocalRestartRequest(req)) {
-      return next();
-    }
-    return res.status(403).json({
-      error:
-        "admin-only: request must be local, or present a valid ADMIN_TOKEN via the x-admin-token header",
-    });
+    return res.status(403).json({ error: ADMIN_KEY_REQUIRED_ERROR });
   }
 
   // GET /api/memory — return Mana's consolidated memory to any authenticated
@@ -5506,8 +5506,7 @@ function registerRoutes(app, upload, deps = {}) {
     // /admin/plugins_install.html UI this backs), not something any
     // unauthenticated caller should be able to trigger. Same
     // checkAdminAuth gate every other sensitive route in this file already
-    // uses (auto-allows when MANA_ADMIN_SECRET is unset, matching local-dev
-    // behavior everywhere else).
+    // uses.
     if (!checkAdminAuth(req, res)) return;
     try {
       const { sourceType, urlOrPath } = req.body || {};

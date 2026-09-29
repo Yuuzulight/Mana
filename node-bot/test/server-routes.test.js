@@ -66,6 +66,10 @@ async function postJson(url, body, headers = {}) {
   return { response, payload };
 }
 
+// #670: local admin routes also need an admin key (admin-key.js).
+process.env.ADMIN_TOKEN = "routes-test-admin-token";
+const ADMIN = { "x-admin-token": "routes-test-admin-token" };
+
 test("admin restart accepts loopback requests and schedules restart once", async () => {
   let buildPayloadCalls = 0;
   let scheduleCalls = 0;
@@ -89,13 +93,46 @@ test("admin restart accepts loopback requests and schedules restart once", async
   });
 
   await withServer(app, async (baseUrl) => {
-    const { response, payload } = await postJson(`${baseUrl}/admin/restart`, {});
+    const { response, payload } = await postJson(`${baseUrl}/admin/restart`, {}, ADMIN);
     await new Promise((resolve) => setImmediate(resolve));
 
     assert.equal(response.status, 200);
     assert.deepEqual(payload, acceptedPayload);
     assert.equal(buildPayloadCalls, 1);
     assert.equal(scheduleCalls, 1);
+  });
+});
+
+test("admin restart refuses a loopback request with no admin key (#670)", async () => {
+  let scheduleCalls = 0;
+  const app = createApp({
+    restartController: { buildAcceptedPayload: () => ({ ok: true }), scheduleRestart: () => { scheduleCalls += 1; } },
+  });
+
+  await withServer(app, async (baseUrl) => {
+    const { response, payload } = await postJson(`${baseUrl}/admin/restart`, {});
+    const wrong = await postJson(`${baseUrl}/admin/restart`, {}, { "x-admin-token": "wrong" });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.equal(response.status, 403);
+    assert.match(payload.error, /ADMIN_TOKEN/);
+    assert.equal(wrong.response.status, 403);
+    assert.equal(scheduleCalls, 0);
+  });
+});
+
+test("skill settings are wired to the admin-key check (#670)", async () => {
+  const app = createApp();
+  await withServer(app, async (baseUrl) => {
+    const put = (headers) =>
+      fetch(`${baseUrl}/skill-settings`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json", ...headers },
+        body: JSON.stringify({ importedSkillUse: "not-a-mode" }),
+      });
+    assert.equal((await put({})).status, 403);
+    // Past the gate; the invalid value is refused before anything is saved.
+    assert.equal((await put(ADMIN)).status, 400);
   });
 });
 
@@ -486,10 +523,14 @@ test("brain-provider test route surfaces the connection result", async () => {
   });
 
   await withServer(app, async (baseUrl) => {
+    const noKey = await postJson(`${baseUrl}/models/brain-provider/test`, { baseUrl: "http://127.0.0.1:11434/v1" });
+    assert.equal(noKey.response.status, 403);
+    assert.equal(received, null);
+
     const result = await postJson(`${baseUrl}/models/brain-provider/test`, {
       baseUrl: "http://127.0.0.1:11434/v1",
       apiKey: "sk-local",
-    });
+    }, ADMIN);
     assert.equal(result.response.status, 200);
     assert.deepEqual(result.payload, { ok: true, status: 200, modelCount: 3 });
     assert.deepEqual(received, { baseUrl: "http://127.0.0.1:11434/v1", apiKey: "sk-local" });
@@ -539,11 +580,14 @@ test("llama-build routes are admin-gated and local-only, and map a missing diges
     },
   };
   const app = createApp({ llamaBuilds, env: { MANA_ADMIN_SECRET: "topsecret" } });
-  const auth = { Authorization: "Bearer topsecret" };
+  const auth = { Authorization: "Bearer topsecret", ...ADMIN };
 
   await withServer(app, async (baseUrl) => {
     const unauthorized = await postJson(`${baseUrl}/models/llama-build/update`, {});
     assert.equal(unauthorized.response.status, 401);
+
+    const noAdminKey = await postJson(`${baseUrl}/models/llama-build/update`, {}, { Authorization: "Bearer topsecret" });
+    assert.equal(noAdminKey.response.status, 403);
 
     const remote = await postJson(`${baseUrl}/models/llama-build/update`, {}, { ...auth, "X-Forwarded-For": "192.168.1.50" });
     assert.equal(remote.response.status, 403);
@@ -1287,18 +1331,17 @@ test("vision describe reports 503 when no vision model is available", async () =
   });
 });
 
-test("reply with an attached image routes through the vision runtime", async () => {
-  let visionCalls = 0;
+test("reply with an attached image: #679 a chat model that can see gets it in the normal chat turn", async () => {
+  let chatCall = null;
   const app = createApp({
     getVisionStatus: () => ({ available: true }),
-    runVisionReply: async (prompt, images) => {
-      visionCalls += 1;
-      assert.equal(prompt, "what am I looking at?");
-      assert.equal(images.length, 1);
-      return "A market board, obviously.";
+    chatAcceptsImages: () => true,
+    runVisionReply: async () => {
+      throw new Error("no describe-first call when the chat model can see");
     },
-    buildAssistantReply: async () => {
-      throw new Error("text reply path should not run for image replies");
+    buildAssistantReply: async (transcript, screenText, marketText, profile, sessionId, mode, preset, replyMeta) => {
+      chatCall = { transcript, sessionId, images: replyMeta.images };
+      return "A market board, obviously.";
     },
   });
 
@@ -1306,21 +1349,55 @@ test("reply with an attached image routes through the vision runtime", async () 
     const { response, payload } = await postJson(`${baseUrl}/reply`, {
       text: "what am I looking at?",
       image: "data:image/png;base64,iVBORw0KGgo=",
+      sessionId: "s1",
     });
 
     assert.equal(response.status, 200);
     assert.equal(payload.reply, "A market board, obviously.");
-    assert.equal(visionCalls, 1);
+  });
+  assert.deepEqual(chatCall, {
+    transcript: "what am I looking at?",
+    sessionId: "s1",
+    images: ["data:image/png;base64,iVBORw0KGgo="],
   });
 });
 
-test("reply with an image allows empty text", async () => {
+test("#679: the real chat path hands a seeable image to the model call", async () => {
+  let extra = null;
   const app = createApp({
     getVisionStatus: () => ({ available: true }),
+    chatAcceptsImages: () => true,
+    runLocalAssistantReply: async (prompt, maxTokens, profile, systemPrompt, extraMessages) => {
+      extra = extraMessages;
+      return "A cat on a keyboard.";
+    },
+  });
+
+  await withServer(app, async (baseUrl) => {
+    const { response, payload } = await postJson(`${baseUrl}/reply`, {
+      text: "what's this?",
+      image: "data:image/png;base64,AAAA",
+    });
+
+    assert.equal(response.status, 200);
+    assert.equal(payload.reply, "A cat on a keyboard.");
+  });
+  assert.deepEqual(extra.images, ["data:image/png;base64,AAAA"]);
+});
+
+test("reply with an image allows empty text", async () => {
+  let transcriptSeen = null;
+  const app = createApp({
+    getVisionStatus: () => ({ available: true }),
+    chatAcceptsImages: () => false,
     runVisionReply: async (prompt, images) => {
-      assert.equal(prompt, "");
+      assert.doesNotMatch(prompt, /Their message/);
       assert.equal(images.length, 1);
-      return "I see a screenshot.";
+      return "A screenshot of a stack trace.";
+    },
+    buildAssistantReply: async (transcript) => {
+      transcriptSeen = transcript;
+      return "I see a stack trace.";
     },
   });
 
@@ -1330,8 +1407,9 @@ test("reply with an image allows empty text", async () => {
     });
 
     assert.equal(response.status, 200);
-    assert.equal(payload.reply, "I see a screenshot.");
+    assert.equal(payload.reply, "I see a stack trace.");
   });
+  assert.equal(transcriptSeen, "[Image: A screenshot of a stack trace.]");
 });
 
 test("POST /web/search returns results from the injected searchWeb", async () => {
@@ -1747,7 +1825,7 @@ test("POST snapshots/:id/restore returns 409 with a non-truthy restored field wh
   });
 
   await withServer(app, async (baseUrl) => {
-    const { response, payload } = await postJson(`${baseUrl}/editors/workspace/snapshots/snap-1/restore`, {});
+    const { response, payload } = await postJson(`${baseUrl}/editors/workspace/snapshots/snap-1/restore`, {}, ADMIN);
     assert.equal(response.status, 409);
     assert.equal(payload.restored, null);
     assert.deepEqual(payload.stale, staleResult);
@@ -1762,7 +1840,7 @@ test("POST snapshots/:id/restore still returns 200 with the normal shape when th
   });
 
   await withServer(app, async (baseUrl) => {
-    const { response, payload } = await postJson(`${baseUrl}/editors/workspace/snapshots/snap-1/restore`, {});
+    const { response, payload } = await postJson(`${baseUrl}/editors/workspace/snapshots/snap-1/restore`, {}, ADMIN);
     assert.equal(response.status, 200);
     assert.deepEqual(payload, { restored: { restoredPath: "/repo/a.txt" } });
   });

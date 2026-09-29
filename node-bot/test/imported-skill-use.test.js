@@ -81,7 +81,7 @@ test("an imported skill's text isn't put in the prompt unasked; the setting is r
   let local = true;
   const app = express();
   app.use(express.json());
-  skillsCapability.registerRoutes(app, { skillsStore, isLocalRestartRequest: () => local });
+  skillsCapability.registerRoutes(app, { skillsStore, isLocalAdminRequest: () => local });
   await withServer(app, async (baseUrl) => {
     const put = (importedSkillUse) =>
       fetch(`${baseUrl}/skill-settings`, {

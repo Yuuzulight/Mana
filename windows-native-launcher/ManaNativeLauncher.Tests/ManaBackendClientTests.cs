@@ -790,6 +790,30 @@ public class ManaBackendClientTests
         Assert.Equal("topsecret", authHeader.Parameter);
     }
 
+    // #670: the per-run launcher key goes out as x-admin-token, alongside
+    // (not instead of) the stored admin token's Bearer header.
+    [Fact]
+    public async Task Constructor_SendsTheLauncherKeyAsXAdminToken()
+    {
+        string? keyHeader = null;
+        AuthenticationHeaderValue? authHeader = null;
+        var handler = new FakeHttpMessageHandler(request =>
+        {
+            keyHeader = request.Headers.TryGetValues("X-Admin-Token", out var values) ? values.Single() : null;
+            authHeader = request.Headers.Authorization;
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("{\"reply\":\"ok\"}", Encoding.UTF8, "application/json"),
+            };
+        });
+        var client = new ManaBackendClient(handler, adminToken: "topsecret", launcherKey: "run-key");
+
+        await client.ReplyAsync("hi");
+
+        Assert.Equal("run-key", keyHeader);
+        Assert.Equal("topsecret", authHeader!.Parameter);
+    }
+
     [Fact]
     public async Task Constructor_UsesTheGivenBaseUrlInsteadOfTheDefault()
     {
@@ -1243,6 +1267,25 @@ public class ManaBackendClientTests
         Assert.Equal("{\"idleSeconds\":1500}", body);
     }
 
+    // #697 part 1: the route and body node-bot's foreground.js reads.
+    [Fact]
+    public async Task ReportForegroundAsync_PostsAppAndTitleToTheForegroundReportRoute()
+    {
+        string? path = null;
+        string? body = null;
+        var handler = new FakeHttpMessageHandler(request =>
+        {
+            path = request.RequestUri!.AbsolutePath;
+            body = request.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
+            return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("{\"ok\":true}") };
+        });
+
+        await new ManaBackendClient(handler).ReportForegroundAsync("chrome.exe", "Docs");
+
+        Assert.Equal("/internal/foreground-report", path);
+        Assert.Equal("{\"app\":\"chrome.exe\",\"title\":\"Docs\"}", body);
+    }
+
     // #661: idleTriggered:true (Dream Mode's consolidation just started)
     // is what turns the avatar's Dreaming state on.
     [Fact]
@@ -1592,6 +1635,40 @@ public class ManaBackendClientTests
         var sessions = await client.GetSessionsAsync();
 
         Assert.Empty(sessions);
+    }
+
+    [Fact]
+    public async Task SearchSessionIdsAsync_SendsTheEscapedQueryAndReturnsTheMatchingIds()
+    {
+        string? requested = null;
+        var handler = new FakeHttpMessageHandler(request =>
+        {
+            requested = request.RequestUri!.PathAndQuery;
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(
+                    """{"sessions":[{"sessionId":"s2","name":"Raid night"}],"query":"deploy & fix"}""",
+                    Encoding.UTF8,
+                    "application/json"),
+            };
+        });
+
+        var ids = await new ManaBackendClient(handler).SearchSessionIdsAsync("deploy & fix");
+
+        Assert.Equal("/sessions?q=deploy%20%26%20fix", requested);
+        Assert.Equal(new[] { "s2" }, ids);
+    }
+
+    [Fact]
+    public async Task SearchSessionIdsAsync_IsEmptyWhenTheBackendIgnoresTheQuery()
+    {
+        // An older backend answers GET /sessions?q= with every session and no `query`.
+        var handler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent("""{"sessions":[{"sessionId":"s1"},{"sessionId":"s2"}]}""", Encoding.UTF8, "application/json"),
+        });
+
+        Assert.Empty(await new ManaBackendClient(handler).SearchSessionIdsAsync("deploy"));
     }
 
     [Fact]
@@ -2095,8 +2172,8 @@ public class ManaBackendClientTests
         });
         var client = new ManaBackendClient(handler);
 
-        Assert.Null(await client.ImportSkillFolderAsync(@"C:\skills\pdf"));
-        Assert.Equal("SKILL.md is required", await client.ImportSkillFolderAsync(@"C:\empty"));
+        Assert.Null(await client.ImportSkillAsync(@"C:\skills\pdf"));
+        Assert.Equal("SKILL.md is required", await client.ImportSkillAsync(@"C:\empty"));
         Assert.Equal("each", await client.GetImportedSkillUseAsync());
         await client.SetImportedSkillUseAsync("free");
 

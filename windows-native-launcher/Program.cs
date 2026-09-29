@@ -9,6 +9,13 @@ internal static class Program
     [STAThread]
     private static void Main()
     {
+        // #689: a second launcher shows the first one's window and exits.
+        using var instance = SingleInstance.Claim();
+        if (instance is null)
+        {
+            return;
+        }
+
         // node-bot/.env first, before anything reads its environment --
         // every env-driven setting below, and every child process, sees it.
         DotEnvFile.Load(Path.Combine(ManaApplicationContext.FindRootDirectory(), "node-bot", ".env"));

@@ -3,7 +3,9 @@ const assert = require("node:assert/strict");
 
 // createApp from server
 const { createApp } = require("../server");
-const { withServer } = require("./helpers");
+const { useTestAdminToken, withServer } = require("./helpers");
+// #842: these routes are admin-only; every request here sends ADMIN_TOKEN.
+const fetch = useTestAdminToken();
 
 // Helper to POST JSON
 async function postJson(url, body) {

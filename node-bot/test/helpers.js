@@ -61,7 +61,17 @@ function waitForPendingFile(dir, { timeoutMs = 1000, intervalMs = 20 } = {}) {
   });
 }
 
+// #842: with no MANA_ADMIN_SECRET, admin routes need ADMIN_TOKEN (or the
+// native launcher's key). A test file that exercises them shadows fetch
+// with this, which sends the token on every request.
+function useTestAdminToken() {
+  process.env.ADMIN_TOKEN = "test-admin-token";
+  return (url, init = {}) =>
+    globalThis.fetch(url, { ...init, headers: { "x-admin-token": "test-admin-token", ...init.headers } });
+}
+
 module.exports = {
+  useTestAdminToken,
   withServer,
   withRawServer,
   waitForPendingFile,

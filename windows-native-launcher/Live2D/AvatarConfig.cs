@@ -11,7 +11,8 @@ namespace Mana.NativeLauncher.Live2D;
 // Only the knobs the native renderer has a use for are read: the fixed-iris
 // ones (eyeOpenScale/smileParams/browParams) would override expressions the
 // native avatar honours (#681), mouthForm* has no native counterpart
-// (native drives mouth form from visemes), and there's no native zoom.
+// (native drives mouth form from visemes), and zoomFractions isn't read
+// (the chat window's framing, #685, uses Electron's default fractions).
 internal sealed class AvatarConfig
 {
     public const string FileName = "mana-avatar.json";

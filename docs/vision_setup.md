@@ -7,18 +7,21 @@ using a fully local vision model. Nothing leaves your machine.
 
 - Vision replies run through the persistent `llama-server` runtime with a
   multimodal GGUF model plus its `mmproj` projector file.
-- The backend exposes `POST /vision/describe`, and `POST /reply` accepts an
-  optional `image` field so image questions flow through the normal chat path
-  (same persona, same session memory).
-- Chat and vision share one llama-server process. If they're different
-  model files, asking about an image swaps the loaded model to the vision
-  model, and the next text chat swaps back -- each swap costs one model
-  load. If `LLAMA_MODEL` and `LLAMA_VISION_MODEL` point at the **same**
+- The backend exposes `POST /vision/describe`. `POST /reply` and
+  `POST /reply/stream` accept `image` (or `images`), and an image turn goes
+  through the normal chat path: same persona, session history, memory and
+  tools (#679).
+- If `LLAMA_MODEL` and `LLAMA_VISION_MODEL` point at the **same**
   natively-multimodal model (some newer models, e.g. Qwen3.5, understand
   both text and images from one set of weights, unlike Qwen3 which needed
-  a separate `-VL` variant), there's no swap at all -- chat and vision
-  share the already-loaded model. The server auto-releases RAM/VRAM after
-  10 minutes idle either way (`LLAMA_SERVER_IDLE_MS`).
+  a separate `-VL` variant), the chat llama-server always starts with the
+  mmproj and images go straight into the chat request. Image and text turns
+  never reload the model; the cost is the mmproj's VRAM staying loaded.
+- If they're different files, the vision model first describes the image
+  (a swap to the vision model), then the chat model answers from that
+  description (a swap back). Each swap costs one model load.
+- The server auto-releases RAM/VRAM after 10 minutes idle either way
+  (`LLAMA_SERVER_IDLE_MS`).
 
 ## Installing a vision model
 
