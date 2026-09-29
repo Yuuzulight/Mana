@@ -67,6 +67,31 @@ internal sealed class AudioPlayer : IDisposable
     private WasapiOut? output;
     private WaveFileReader? reader;
     private MemoryStream? stream;
+    private float volume = 1f;
+
+    // #665: 0..1, kept across clips -- VoiceLoop ducks her while it decides
+    // whether talking over her is a real interruption.
+    public float Volume
+    {
+        get
+        {
+            lock (syncRoot)
+            {
+                return volume;
+            }
+        }
+        set
+        {
+            lock (syncRoot)
+            {
+                volume = Math.Clamp(value, 0f, 1f);
+                if (output is not null)
+                {
+                    output.Volume = volume;
+                }
+            }
+        }
+    }
 
     public void Play(byte[] wavBytes)
     {
@@ -83,6 +108,7 @@ internal sealed class AudioPlayer : IDisposable
             }
             var newOutput = new WasapiOut(AudioClientShareMode.Shared, latency: 100);
             newOutput.Init(playbackSource);
+            newOutput.Volume = volume;
 
             var myGeneration = ++generation;
             currentClipCompletedNaturally = false;
