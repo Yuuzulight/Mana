@@ -355,3 +355,33 @@ test("finish with a broken hooks.json reports that the checks couldn't run", asy
   });
   assert.deepEqual(res.finishChecks, [{ ok: false, detail: "hooks_config_unreadable" }]);
 });
+
+// ---- #883: the agent limits ----
+
+test("maxFilesChanged refuses a new file past the limit; the same file can be rewritten", async (t) => {
+  fakeFileWriteFs(t);
+  const { resetSessionToolCounts: reset } = require("../acp-autonomous-loop");
+  reset("pb-files");
+  t.after(() => reset("pb-files"));
+  const options = { hooksStore: hooksWith(), maxFilesChanged: 1, snapshotStore: { recordSnapshot: () => ({ id: "s" }) } };
+  const write = (file) => executeAutonomousStep(step("file_write", { path: file, content: "x" }), "pb-files", options);
+
+  assert.equal((await write("src/one.txt")).results[0].status, "ok");
+  assert.equal((await write("src/one.txt")).results[0].status, "ok");
+  assert.deepEqual((await write("src/two.txt")).results[0], { tool: "file_write", status: "error", detail: "max_files_changed", cap: 1 });
+
+  const other = await executeAutonomousStep(step("file_write", { path: "src/two.txt", content: "x" }), "pb-files-other", options);
+  assert.equal(other.results[0].status, "ok", "counted per session");
+  reset("pb-files-other");
+});
+
+test("maxIterations refuses mana/agent/run calls past the limit, per session", async () => {
+  const { createAcpAutonomousLoop } = require("../acp-autonomous-loop");
+  const loop = await createAcpAutonomousLoop({ maxIterations: 2 });
+  const run = (sessionId) => loop.run({ sessionId, modelReply: "just talking" });
+
+  assert.equal((await run("pb-iter")).status, "conversational");
+  assert.equal((await run("pb-iter")).status, "conversational");
+  assert.deepEqual(await run("pb-iter"), { status: "error", error: "max_iterations_reached", cap: 2 });
+  assert.equal((await run("pb-iter-other")).status, "conversational");
+});

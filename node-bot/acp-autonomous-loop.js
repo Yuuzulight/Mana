@@ -323,9 +323,22 @@ function countToolCall(sessionId, tool) {
 function resetSessionToolCounts(sessionId) {
   if (sessionId === undefined) {
     sessionToolCounts.clear();
+    sessionFilesWritten.clear();
     return true;
   }
+  sessionFilesWritten.delete(String(sessionId || "default"));
   return sessionToolCounts.delete(String(sessionId || "default"));
+}
+
+// #883: the distinct files file_write has changed per session, counted
+// against the agent's maxFilesChanged (MANA_AGENT_MAX_FILES_CHANGED) --
+// shown in the ACP capabilities, but never enforced before.
+const sessionFilesWritten = new Map();
+
+function filesWrittenBy(sessionId) {
+  const key = String(sessionId || "default");
+  if (!sessionFilesWritten.has(key)) sessionFilesWritten.set(key, new Set());
+  return sessionFilesWritten.get(key);
 }
 
 // Issue #419: bounds how many times run_tests may report a genuine failure
@@ -397,6 +410,8 @@ async function executeAutonomousStep(rawModelReply, sessionId, options = {}) {
   // #838: ({path, before, after, summary}) => review | null -- the backend's
   // adversarial verifier (acp-backend-bridge.js's reviewEdit). Optional.
   const reviewWrite = options.reviewWrite || null;
+  // #883: unlimited unless the ACP agent passes its configured limit.
+  const maxFilesChanged = options.maxFilesChanged ?? Infinity;
   const makeScratchCopy =
     options.createScratchWorkspaceCopy || createScratchWorkspaceCopy;
   const removeScratchCopy =
@@ -646,6 +661,21 @@ async function executeAutonomousStep(rawModelReply, sessionId, options = {}) {
           return;
         }
 
+        // #883: a new file past the session's limit is refused before any
+        // review or approval; rewriting a file already changed is fine.
+        const filesWritten = filesWrittenBy(sessionId);
+        // Windows paths are case-insensitive: one file, one count.
+        const fileKey = process.platform === "win32" ? resolvedPath.toLowerCase() : resolvedPath;
+        if (!filesWritten.has(fileKey) && filesWritten.size >= maxFilesChanged) {
+          results.push({
+            tool: "file_write",
+            status: "error",
+            detail: "max_files_changed",
+            cap: maxFilesChanged,
+          });
+          return;
+        }
+
         // Ensure parent directory exists
         await fs.promises.mkdir(path.dirname(resolvedPath), {
           recursive: true,
@@ -737,6 +767,7 @@ async function executeAutonomousStep(rawModelReply, sessionId, options = {}) {
             action: "appended",
             size: newSize,
           });
+          filesWritten.add(fileKey);
           console.error(
             `  ✅ file_write append: ${resolvedPath} (+${Buffer.byteLength(content, "utf8")} bytes)`,
           );
@@ -797,6 +828,7 @@ async function executeAutonomousStep(rawModelReply, sessionId, options = {}) {
             size: finalStat.size,
             ...(snapshotId ? { snapshotId } : {}),
           });
+          filesWritten.add(fileKey);
           console.error(
             `  ✅ file_write overwrite: ${resolvedPath} (${finalStat.size} bytes)`,
           );
@@ -1280,9 +1312,20 @@ async function createAcpAutonomousLoop(options = {}) {
   // run tests, and apply file edits. For unit tests we provide a simple noop loop
   // that accepts params and returns an idle result or proxies to a provided runner.
   const runner = options.runner || null;
+  // #883: mana/agent/run calls per session, against maxIterations
+  // (MANA_AGENT_MAX_ITERATIONS) -- shown in the ACP capabilities, never
+  // enforced before. Unlimited when not given.
+  const maxIterations = options.maxIterations ?? Infinity;
+  const iterations = new Map();
 
   return {
     run: async (params = {}) => {
+      const key = String(params?.sessionId || "default");
+      const count = (iterations.get(key) || 0) + 1;
+      iterations.set(key, count);
+      if (count > maxIterations) {
+        return { status: "error", error: "max_iterations_reached", cap: maxIterations };
+      }
       if (runner && typeof runner === "function") {
         try {
           return await runner(params);
@@ -1300,6 +1343,7 @@ async function createAcpAutonomousLoop(options = {}) {
               testRunner: options.testRunner,
               // #838: file_write's adversarial review goes through the backend.
               reviewWrite: options.backendBridge?.reviewEdit,
+              maxFilesChanged: options.maxFilesChanged,
             },
           );
         } catch (e) {
