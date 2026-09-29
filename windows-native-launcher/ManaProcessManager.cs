@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Net.Http;
 using System.Runtime.InteropServices;
+using System.Security.Cryptography;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -39,6 +40,12 @@ internal sealed class ManaProcessManager : IDisposable
     // to redirect, so the buffer just stays empty (no log to show, not
     // an error).
     public BackendLogBuffer BackendLog { get; } = new();
+
+    // #670 (Q23): node-bot no longer treats "local" as admin. A fresh key
+    // each run, handed to the node-bot this launcher starts (env
+    // MANA_LAUNCHER_KEY) and sent by ManaBackendClient as x-admin-token.
+    // Memory only, so unlike the stored AdminToken (#804) it needs no DPAPI.
+    public string LauncherKey { get; } = Convert.ToHexString(RandomNumberGenerator.GetBytes(32));
 
     // #479 review: distinct from "did THIS launch start a process handle" --
     // true whether Fish Speech was already running externally (health check
@@ -460,6 +467,7 @@ internal sealed class ManaProcessManager : IDisposable
         // by default alongside the embedder it starts; USE_EMBEDDINGS=0 opts out.
         startInfo.Environment["USE_EMBEDDINGS"] =
             Environment.GetEnvironmentVariable("USE_EMBEDDINGS") ?? "1";
+        startInfo.Environment["MANA_LAUNCHER_KEY"] = LauncherKey;
 
         var process = Process.Start(startInfo) ??
                throw new InvalidOperationException("Failed to start Mana backend.");

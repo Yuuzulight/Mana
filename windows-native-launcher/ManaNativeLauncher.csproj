@@ -1,18 +1,23 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
-    <!-- #524: versioned (not plain net8.0-windows) so NuGet resolves
+    <!-- #524: versioned (not plain net10.0-windows) so NuGet resolves
          Microsoft.Toolkit.Uwp.Notifications' windows10.0-specific asset,
          which is the only one carrying ToastNotificationManagerCompat,
          since the plain net5.0 asset (what an unversioned target resolves
          to) doesn't have it: toast activation needs WinRT interop that
          requires a versioned Windows SDK target. 10.0.19041.0 is a
          common, safely-below-current-Windows floor for that. -->
-    <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
+    <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
     <UseWindowsForms>true</UseWindowsForms>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <ApplicationManifest>app.manifest</ApplicationManifest>
+    <!-- .NET 9+ turns WFO1000 (a public property on a control/form with no
+         designer serialization attribute) into an error. Every form here is
+         built in code, never opened in the WinForms designer, so there is
+         nothing to serialize. -->
+    <NoWarn>$(NoWarn);WFO1000</NoWarn>
     <!-- #479 sub-project 4: CubismModel.cs manages Cubism Core's aligned
          native buffers directly (NativeMemory.AlignedAlloc/AlignedFree,
          raw pointer arithmetic over the C API's array-of-pointers return

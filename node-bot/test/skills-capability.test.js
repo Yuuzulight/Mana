@@ -426,7 +426,7 @@ test("POST /skills/import stages a forceReview proposal and writes nothing", asy
   app.use(express.json());
   skillsCapability.registerRoutes(app, {
     skillsStore: fakeStore({ importSkill: (payload) => imported.push(payload) }),
-    isLocalRestartRequest: () => local,
+    isLocalAdminRequest: () => local,
     approvalGate: {
       registerExecutor: (type, fn) => executors.set(type, fn),
       requestApproval: async (type, options) => {
@@ -488,7 +488,7 @@ test("POST /skills/import {url} stages the downloaded skill for approval", async
   app.use(express.json());
   skillsCapability.registerRoutes(app, {
     skillsStore: fakeStore({}),
-    isLocalRestartRequest: () => true,
+    isLocalAdminRequest: () => true,
     fetchImpl: async () => new Response(zip),
     approvalGate: {
       registerExecutor: () => {},

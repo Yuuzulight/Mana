@@ -62,6 +62,11 @@ internal sealed class ManaSettingsStore
     public int? AvatarLeft { get; set; }
     public int? AvatarTop { get; set; }
 
+    // #687: the chat session open when the launcher last ran, reopened on
+    // launch, and whether it was auto-started (Q62: those still rotate).
+    public string? LastSessionId { get; set; }
+    public bool LastSessionAuto { get; set; }
+
     // filePath: null (every real call site) uses the real per-user
     // settings file. Tests pass a temp file path to exercise
     // load/save/corruption handling without touching LocalApplicationData.

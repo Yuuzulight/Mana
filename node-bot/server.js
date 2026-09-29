@@ -84,11 +84,13 @@ const { createVTubeRuntime } = require("./vtube-runtime");
 	const {
   registerCoreRoutes,
   isLocalRestartRequest,
+  isLocalAdminRequest,
   registerModelRoutes,
   registerEditorRoutes,
   registerAdminStaticRoutes,
   registerPendingWritesRoutes,
 } = require("./server-routes");
+	const { ADMIN_KEY_REQUIRED_ERROR, checkAdminSecret, hasAdminKey } = require("./admin-key");
 	const {
 	  handleGetAddonStatus,
 	  handleGenerateVideo,
@@ -2102,19 +2104,9 @@ function registerRoutes(app, upload, deps = {}) {
     process.env.MANA_ADMIN_SECRET ||
     "";
 
+  // #842: no secret no longer means open -- see checkAdminSecret.
   function checkAdminAuth(req, res) {
-    if (!ADMIN_SECRET) return true; // no secret configured -> allow (local dev)
-    const header = req.get("authorization") || req.get("Authorization") || "";
-    if (!header || !header.startsWith("Bearer ")) {
-      res.status(401).json({ ok: false, error: "unauthorized" });
-      return false;
-    }
-    const token = header.slice(7).trim();
-    if (token !== ADMIN_SECRET) {
-      res.status(401).json({ ok: false, error: "unauthorized" });
-      return false;
-    }
-    return true;
+    return checkAdminSecret(req, res, ADMIN_SECRET);
   }
 
   const capabilities = deps.capabilities || [
@@ -2219,6 +2211,8 @@ function registerRoutes(app, upload, deps = {}) {
     // that needs a loopback-only guard builds it inline (e.g. the
     // brain-provider test route above).
     isLocalRestartRequest: deps.isLocalRestartRequest || isLocalRestartRequest,
+    // #670: loopback plus an admin key (admin-key.js) -- skill import.
+    isLocalAdminRequest: deps.isLocalAdminRequest || isLocalAdminRequest,
     approvalGate: activeApprovalGate,
     // #699: heartbeat checks pause while gaming and snapshot their writes.
     isGaming: deps.isGaming || gamingWatch.isGaming,
@@ -2749,15 +2743,7 @@ function registerRoutes(app, upload, deps = {}) {
 
   // Admin endpoint: send a tray notification (protected)
   app.post("/admin/notify/tray", async (req, res) => {
-    const ADMIN_SECRET_ENV = process.env.MANA_ADMIN_SECRET || "";
-    if (ADMIN_SECRET_ENV) {
-      const header = req.get("authorization") || req.get("Authorization") || "";
-      if (!header || !header.startsWith("Bearer "))
-        return res.status(401).json({ ok: false, error: "unauthorized" });
-      const token = header.slice(7).trim();
-      if (token !== ADMIN_SECRET_ENV)
-        return res.status(401).json({ ok: false, error: "unauthorized" });
-    }
+    if (!checkAdminSecret(req, res, process.env.MANA_ADMIN_SECRET || "")) return;
     try {
       const body = req.body || {};
       const title =
@@ -5124,26 +5110,17 @@ function registerRoutes(app, upload, deps = {}) {
   // authMiddleware, which sets req.user). Account management is more
   // sensitive than the read-only /api/memory routes -- which are
   // intentionally remote-accessible by design, per issue #93 -- so it gets
-  // an extra layer beyond just "the API key has role=admin": same
-  // local-unless-explicit-token pattern this codebase already uses for
-  // /admin/restart (see isLocalRestartRequest, which also accounts for a
-  // LAN tunnel terminating on loopback but forwarding from elsewhere), so a
-  // leaked admin API key alone isn't enough to manage accounts remotely.
+  // an extra layer beyond just "the API key has role=admin": ADMIN_TOKEN,
+  // or the native launcher's per-run key from this PC (#670, admin-key.js),
+  // so a leaked admin API key alone isn't enough to manage accounts.
   function requireAdmin(req, res, next) {
     if (req.user.role !== "admin") {
       return res.status(403).json({ error: "Admin role required" });
     }
-    const ADMIN_TOKEN = process.env.ADMIN_TOKEN || null;
-    if (ADMIN_TOKEN && req.get("x-admin-token") === ADMIN_TOKEN) {
+    if (hasAdminKey(req, { local: isLocalRestartRequest(req) })) {
       return next();
     }
-    if (isLocalRestartRequest(req)) {
-      return next();
-    }
-    return res.status(403).json({
-      error:
-        "admin-only: request must be local, or present a valid ADMIN_TOKEN via the x-admin-token header",
-    });
+    return res.status(403).json({ error: ADMIN_KEY_REQUIRED_ERROR });
   }
 
   // GET /api/memory — return Mana's consolidated memory to any authenticated
@@ -5506,8 +5483,7 @@ function registerRoutes(app, upload, deps = {}) {
     // /admin/plugins_install.html UI this backs), not something any
     // unauthenticated caller should be able to trigger. Same
     // checkAdminAuth gate every other sensitive route in this file already
-    // uses (auto-allows when MANA_ADMIN_SECRET is unset, matching local-dev
-    // behavior everywhere else).
+    // uses.
     if (!checkAdminAuth(req, res)) return;
     try {
       const { sourceType, urlOrPath } = req.body || {};

@@ -447,4 +447,23 @@ public class StreamingReplyPlayerTests
         Assert.Equal(new[] { "Hi.|", "You're back!|happy" }, playing);
         Assert.Equal("happy", player.FinalEmotion);
     }
+
+    // #687: the status line's "synthesizing sentence n".
+    [Fact]
+    public async Task SynthesizingSentence_CountsEachSentenceWhileItsVoiceIsMade()
+    {
+        var seen = new List<int?>();
+        StreamingReplyPlayer? player = null;
+        var handler = new FakeHttpMessageHandler(_ =>
+        {
+            seen.Add(player!.SynthesizingSentence);
+            return new HttpResponseMessage(HttpStatusCode.OK) { Content = new ByteArrayContent(new byte[] { 1, 2, 3 }) };
+        });
+        player = new StreamingReplyPlayer(new ManaBackendClient(handler), _ => Task.FromResult(true), _ => { });
+
+        await player.ReplaySentencesAsync(new[] { "One.", "Two." });
+
+        Assert.Equal(new int?[] { 1, 2 }, seen);
+        Assert.Null(player.SynthesizingSentence);
+    }
 }

@@ -66,6 +66,10 @@ async function postJson(url, body, headers = {}) {
   return { response, payload };
 }
 
+// #670: local admin routes also need an admin key (admin-key.js).
+process.env.ADMIN_TOKEN = "routes-test-admin-token";
+const ADMIN = { "x-admin-token": "routes-test-admin-token" };
+
 test("admin restart accepts loopback requests and schedules restart once", async () => {
   let buildPayloadCalls = 0;
   let scheduleCalls = 0;
@@ -89,13 +93,46 @@ test("admin restart accepts loopback requests and schedules restart once", async
   });
 
   await withServer(app, async (baseUrl) => {
-    const { response, payload } = await postJson(`${baseUrl}/admin/restart`, {});
+    const { response, payload } = await postJson(`${baseUrl}/admin/restart`, {}, ADMIN);
     await new Promise((resolve) => setImmediate(resolve));
 
     assert.equal(response.status, 200);
     assert.deepEqual(payload, acceptedPayload);
     assert.equal(buildPayloadCalls, 1);
     assert.equal(scheduleCalls, 1);
+  });
+});
+
+test("admin restart refuses a loopback request with no admin key (#670)", async () => {
+  let scheduleCalls = 0;
+  const app = createApp({
+    restartController: { buildAcceptedPayload: () => ({ ok: true }), scheduleRestart: () => { scheduleCalls += 1; } },
+  });
+
+  await withServer(app, async (baseUrl) => {
+    const { response, payload } = await postJson(`${baseUrl}/admin/restart`, {});
+    const wrong = await postJson(`${baseUrl}/admin/restart`, {}, { "x-admin-token": "wrong" });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.equal(response.status, 403);
+    assert.match(payload.error, /ADMIN_TOKEN/);
+    assert.equal(wrong.response.status, 403);
+    assert.equal(scheduleCalls, 0);
+  });
+});
+
+test("skill settings are wired to the admin-key check (#670)", async () => {
+  const app = createApp();
+  await withServer(app, async (baseUrl) => {
+    const put = (headers) =>
+      fetch(`${baseUrl}/skill-settings`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json", ...headers },
+        body: JSON.stringify({ importedSkillUse: "not-a-mode" }),
+      });
+    assert.equal((await put({})).status, 403);
+    // Past the gate; the invalid value is refused before anything is saved.
+    assert.equal((await put(ADMIN)).status, 400);
   });
 });
 
@@ -486,10 +523,14 @@ test("brain-provider test route surfaces the connection result", async () => {
   });
 
   await withServer(app, async (baseUrl) => {
+    const noKey = await postJson(`${baseUrl}/models/brain-provider/test`, { baseUrl: "http://127.0.0.1:11434/v1" });
+    assert.equal(noKey.response.status, 403);
+    assert.equal(received, null);
+
     const result = await postJson(`${baseUrl}/models/brain-provider/test`, {
       baseUrl: "http://127.0.0.1:11434/v1",
       apiKey: "sk-local",
-    });
+    }, ADMIN);
     assert.equal(result.response.status, 200);
     assert.deepEqual(result.payload, { ok: true, status: 200, modelCount: 3 });
     assert.deepEqual(received, { baseUrl: "http://127.0.0.1:11434/v1", apiKey: "sk-local" });
@@ -539,11 +580,14 @@ test("llama-build routes are admin-gated and local-only, and map a missing diges
     },
   };
   const app = createApp({ llamaBuilds, env: { MANA_ADMIN_SECRET: "topsecret" } });
-  const auth = { Authorization: "Bearer topsecret" };
+  const auth = { Authorization: "Bearer topsecret", ...ADMIN };
 
   await withServer(app, async (baseUrl) => {
     const unauthorized = await postJson(`${baseUrl}/models/llama-build/update`, {});
     assert.equal(unauthorized.response.status, 401);
+
+    const noAdminKey = await postJson(`${baseUrl}/models/llama-build/update`, {}, { Authorization: "Bearer topsecret" });
+    assert.equal(noAdminKey.response.status, 403);
 
     const remote = await postJson(`${baseUrl}/models/llama-build/update`, {}, { ...auth, "X-Forwarded-For": "192.168.1.50" });
     assert.equal(remote.response.status, 403);
@@ -1747,7 +1791,7 @@ test("POST snapshots/:id/restore returns 409 with a non-truthy restored field wh
   });
 
   await withServer(app, async (baseUrl) => {
-    const { response, payload } = await postJson(`${baseUrl}/editors/workspace/snapshots/snap-1/restore`, {});
+    const { response, payload } = await postJson(`${baseUrl}/editors/workspace/snapshots/snap-1/restore`, {}, ADMIN);
     assert.equal(response.status, 409);
     assert.equal(payload.restored, null);
     assert.deepEqual(payload.stale, staleResult);
@@ -1762,7 +1806,7 @@ test("POST snapshots/:id/restore still returns 200 with the normal shape when th
   });
 
   await withServer(app, async (baseUrl) => {
-    const { response, payload } = await postJson(`${baseUrl}/editors/workspace/snapshots/snap-1/restore`, {});
+    const { response, payload } = await postJson(`${baseUrl}/editors/workspace/snapshots/snap-1/restore`, {}, ADMIN);
     assert.equal(response.status, 200);
     assert.deepEqual(payload, { restored: { restoredPath: "/repo/a.txt" } });
   });
