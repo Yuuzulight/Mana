@@ -15,8 +15,26 @@ and plays the WAV that comes back. See #891.
 | Start (load + CUDA graphs) | ~12 s | ~58 s |
 | VRAM resident | ~+2.7 GB | +5.1 GB |
 | VRAM peak while speaking | 3.3–3.9 GB | |
-| Short sentence | 0.8–0.9 s | |
+| Host RAM (working set) once ready | ~0.12 GB (~2.5 GB while starting) | |
+| Short sentence | 0.7–0.9 s | |
 | Streaming first audio (not used yet) | 0.2–0.3 s | |
+
+Host RAM, measured on 2026-09-30 with FFXIV running (#904): the process
+reaches a ~2.5 GB working set while loading. Most of that is CUDA/cuDNN DLL
+pages and import- and load-time heap that speaking never touches again. Once
+it's warm, the service hands that memory back to Windows with
+`EmptyWorkingSet`, and sets a 256 MB soft minimum so the ~0.12 GB it does use
+isn't trimmed again. System RAM in use at ready dropped by ~1.5 GB (89.5% to
+84.7% of 32 GB). Latency stayed within noise, except the first reply after
+start, which pays ~0.1 s to page back in. Private bytes (commit, ~6.7 GB, mostly CUDA's reservations)
+don't change, and don't need physical RAM.
+
+These didn't help, so they aren't used:
+- `CUDA_MODULE_LOADING=LAZY`: torch already loads lazily.
+- `gc.collect()` after load: there are no CPU tensors, and the safetensors
+  files aren't left mapped.
+- cuDNN off: saved only ~0.15 GB, and speech got slower.
+- No CUDA graphs: saved nothing, and speech was ~10x slower.
 
 WER/CER was equal to or better than Fish in English, Japanese, Chinese,
 Korean, Russian, German and Spanish. The resident figure depends on two
@@ -77,8 +95,9 @@ service clones the same clip. Optional settings (defaults shown in
   bound to 127.0.0.1).
 - `QWEN3_TTS_MODEL_DIR`: the weights, if they're not under
   `tools\qwen3-tts\models\`.
-- `QWEN3_TTS_FALLBACK_PROVIDER` (default `kokoro`): the voice used when
-  Qwen3-TTS fails or isn't up yet. `none` makes a failure surface instead.
+- `QWEN3_TTS_FALLBACK_PROVIDER` (default `none`): with `none`, a reply that
+  Qwen3-TTS can't voice (it failed or isn't up yet) shows as text and the
+  error surfaces. `kokoro` speaks it through Kokoro instead.
 
 The native launcher starts the service when `TTS_PROVIDER=qwen3tts`:
 - It uses the venv's python at BelowNormal priority.
@@ -92,14 +111,10 @@ To run the service by hand, set the same variables in your shell and run
 
 ## Gaming
 
-While a watched game runs, node-bot speaks through Kokoro, the same as with
-Fish. The launcher also stops the Qwen3-TTS service so the game gets its VRAM,
-and starts it again once the game closes. That restart takes ~12 s and Kokoro
-(the fallback) covers it. A service that was already running before the
-launcher started isn't stopped.
-
-Later: keeping Qwen3-TTS loaded while gaming (with ~2.7 GB it may fit next to
-some games) waits on a live in-game VRAM/latency measurement.
+Qwen3-TTS stays loaded and keeps speaking while a watched game runs. There's no
+switch to Kokoro and no stop/restart, unlike Fish, which hands over to Kokoro
+and parks its weights in RAM. With ~2.7 GB of VRAM it fits next to FFXIV and
+the 4B gaming chat model on a 16 GB card.
 
 ## Known break: the RoPE shim
 

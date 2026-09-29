@@ -57,6 +57,9 @@ def run():
         assert len(fake.calls) == 3
 
     assert client.get("/health").json()["ok"] is True
+    # #904: a real call on this process, so the ctypes signatures are
+    # checked too (nothing to trim off Windows).
+    assert svc.trim_working_set() is (os.name == "nt")
     print("qwen3tts_service self-check passed")
 
 

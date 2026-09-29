@@ -1,6 +1,5 @@
 using System.Collections.Concurrent;
 using System.Collections.Generic;
-using System.Diagnostics;
 using System.Net;
 using System.Net.Http;
 using System.Threading.Tasks;
@@ -352,83 +351,6 @@ public class ManaProcessManagerTests
             Assert.Equal(
                 ManaApplicationContext.ServiceRowsFor(manager).Select(row => row.Key).OrderBy(key => key),
                 reported.Keys.OrderBy(key => key));
-        }
-        finally
-        {
-            Environment.SetEnvironmentVariable("TTS_PROVIDER", null);
-        }
-    }
-
-    // A harmless long-running stand-in for the Qwen3-TTS service.
-    private static Process StartStandIn() =>
-        Process.Start(new ProcessStartInfo("ping", "-n 60 127.0.0.1")
-        {
-            UseShellExecute = false,
-            CreateNoWindow = true,
-            RedirectStandardOutput = true,
-        })!;
-
-    [Fact]
-    public async Task SetQwen3TtsGameRunning_StopsItForAGameAndStartsItAgainAfter()
-    {
-        Environment.SetEnvironmentVariable("TTS_PROVIDER", "qwen3tts");
-        var started = new List<Process>();
-        try
-        {
-            var handler = new FakeHttpMessageHandler(request =>
-                new HttpResponseMessage(request.RequestUri!.Port == 5005 ? HttpStatusCode.OK : HttpStatusCode.ServiceUnavailable));
-            using var manager = new ManaProcessManager(@"C:\does-not-exist", handler);
-            manager.StartQwen3TtsProcess = () =>
-            {
-                var process = StartStandIn();
-                started.Add(process);
-                return process;
-            };
-            await manager.StartAsync();
-            Assert.Single(started);
-            Assert.True(manager.IsQwen3TtsAvailable);
-
-            manager.SetQwen3TtsGameRunning(true);
-            Assert.True(started[0].WaitForExit(5000));
-            manager.SetQwen3TtsGameRunning(true); // still gaming: stays stopped
-            Assert.Single(started);
-
-            manager.SetQwen3TtsGameRunning(false);
-            Assert.Equal(2, started.Count);
-            Assert.False(started[1].HasExited);
-            manager.SetQwen3TtsGameRunning(false); // no second copy
-            Assert.Equal(2, started.Count);
-        }
-        finally
-        {
-            Environment.SetEnvironmentVariable("TTS_PROVIDER", null);
-            foreach (var process in started)
-            {
-                if (!process.HasExited) process.Kill();
-                process.Dispose();
-            }
-        }
-    }
-
-    [Fact]
-    public async Task SetQwen3TtsGameRunning_LeavesAnAlreadyRunningServiceAlone()
-    {
-        // Healthy at launch means someone else runs it: not ours to stop,
-        // and nothing to restart.
-        Environment.SetEnvironmentVariable("TTS_PROVIDER", "qwen3tts");
-        try
-        {
-            var handler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.OK));
-            using var manager = new ManaProcessManager(@"C:\does-not-exist", handler);
-            var starts = 0;
-            manager.StartQwen3TtsProcess = () => { starts++; return null; };
-            await manager.StartAsync();
-
-            manager.SetQwen3TtsGameRunning(true);
-            manager.SetQwen3TtsGameRunning(false);
-
-            Assert.Equal(0, starts);
-            Assert.True(manager.IsQwen3TtsAvailable);
         }
         finally
         {

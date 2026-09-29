@@ -549,14 +549,6 @@ internal sealed class ManaApplicationContext : ApplicationContext
             gamingModeActive = gamingModeEnabled && status.GamingAppRunning;
             SetTrayStatus(gamingModeActive ? "Mana - game mode" : "Mana");
             avatarOverlay.GameRunning = gamingModeActive; // Q3: click-through while gaming
-            // #891: the raw detection, not gamingModeActive -- node-bot
-            // switches the voice to Kokoro on it regardless of this toggle.
-            // Not before startup is done: stopping it mid-warm-up would hold
-            // the startup screen until its wait times out.
-            if (servicesStarted && !isShuttingDown)
-            {
-                processManager.SetQwen3TtsGameRunning(status.GamingAppRunning);
-            }
         }
         catch
         {
