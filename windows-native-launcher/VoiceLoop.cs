@@ -168,14 +168,20 @@ internal sealed class VoiceLoop : IDisposable
     private readonly IArtifactSink? artifactSink;
 
     // #520: which ACP memory-store session outgoing turns are appended
-    // to; null (the default, and every pre-#520 turn's behavior) means
-    // node-bot's implicit "default" session, not sent as an explicit
-    // field. Unlike awake/heldSentences (touched only from the single-
+    // to. Null (nothing picked yet) is not a "default" session: node-bot
+    // saves no turn without a sessionId, so EnsureSessionId sets one
+    // before sending. Unlike awake/heldSentences (touched only from the single-
     // threaded turn-processing chain), this is written from the session
     // list UI's own thread while a turn may be reading it on a thread-
     // pool continuation -- volatile is enough (a plain reference swap,
     // not a compound read-modify-write), no need for stateLock here.
     private volatile string? currentSessionId;
+
+    // Q62: the session EnsureSessionId started itself (null once the user
+    // picks one), and when the last turn went out -- see AutoSession.
+    // lastTurnAt is only touched on the turn chain.
+    private volatile string? autoSessionId;
+    private DateTime lastTurnAt;
 
     // #681: the active prompt preset (Settings > Presets), sent with every
     // reply. Same threading story as currentSessionId above.
@@ -407,7 +413,27 @@ internal sealed class VoiceLoop : IDisposable
     // a user action on a separate window, not an interruption of Mana
     // herself; whatever she's currently saying keeps playing against
     // whichever session was active when that turn started.
-    public void SetSessionId(string? sessionId) => currentSessionId = sessionId;
+    public void SetSessionId(string? sessionId)
+    {
+        autoSessionId = null;
+        currentSessionId = sessionId;
+    }
+
+    // Q62: every turn (typed, spoken, vision/clip hotkeys) goes out through
+    // SpeakReplyCoreAsync, which calls this for the session to send it with.
+    private string EnsureSessionId()
+    {
+        var now = DateTime.UtcNow;
+        var sessionId = currentSessionId;
+        if (AutoSession.NeedsNew(sessionId, sessionId is not null && sessionId == autoSessionId, lastTurnAt, now))
+        {
+            sessionId = Guid.NewGuid().ToString();
+            autoSessionId = sessionId;
+            currentSessionId = sessionId;
+        }
+        lastTurnAt = now;
+        return sessionId!;
+    }
 
     public void SetPresetId(string? presetId) => currentPresetId = presetId;
 
@@ -1308,7 +1334,7 @@ internal sealed class VoiceLoop : IDisposable
         IReadOnlyList<string> pending;
         try
         {
-            (reply, changed, preferredExpression, interrupted, pending) = await streamingReplyPlayer.StreamReplyAndPlayAsync(commandText, currentSessionId, text => chatLog?.AppendReplySentence(text), screenText, image, images, currentPresetId);
+            (reply, changed, preferredExpression, interrupted, pending) = await streamingReplyPlayer.StreamReplyAndPlayAsync(commandText, EnsureSessionId(), text => chatLog?.AppendReplySentence(text), screenText, image, images, currentPresetId);
         }
         catch (Exception ex)
         {

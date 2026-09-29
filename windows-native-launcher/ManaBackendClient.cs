@@ -235,9 +235,8 @@ internal sealed class ManaBackendClient
     // it, HttpClient buffers the entire response body before this method
     // could read a single line, defeating the whole point of streaming.
     // #520: sessionId, when present, routes this turn's history into that
-    // ACP memory-store session instead of node-bot's implicit "default"
-    // one -- omitted (not sent as null) exactly matches every call this
-    // launcher made before session support existed.
+    // ACP memory-store session. Omitted (not sent as null), node-bot saves
+    // no turn at all -- why VoiceLoop always sends one (Q62).
     // #522: screenText is always sent (defaulting to "", matching
     // windows-launcher's own requestScreenAwareReply, which always
     // includes the field even when readScreenContext came back empty).
