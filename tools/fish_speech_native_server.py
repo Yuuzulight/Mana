@@ -60,21 +60,28 @@ _load_codec = dac_inference.load_model
 def _park_aware_to(model):
     def to(device):
         device = torch.device(device)
+        # Same replacement rules as nn.Module._apply: parameters keep their
+        # object (.data swap), buffers are replaced.
         for m in model.modules():
-            for t in [*m._parameters.values(), *m._buffers.values()]:
-                if t is None or t.device.type == device.type:
-                    continue
-                if isinstance(m, KVCache):
-                    if device.type == "cpu":
-                        m.parked_shape = t.shape
-                        t.data = torch.empty(0, dtype=t.dtype)
+            for store in (m._parameters, m._buffers):
+                for name, t in store.items():
+                    if t is None or t.device.type == device.type:
+                        continue
+                    if isinstance(m, KVCache):
+                        if device.type == "cpu":
+                            m.parked_shape = t.shape
+                            new = torch.empty(0, dtype=t.dtype)
+                        else:
+                            new = torch.zeros(m.parked_shape, dtype=t.dtype, device=device)
+                    elif device.type == "cpu":
+                        buf = torch.from_numpy(np.empty(t.nbytes, np.uint8))
+                        new = buf.view(t.dtype).view(t.shape).copy_(t)
                     else:
-                        t.data = torch.zeros(m.parked_shape, dtype=t.dtype, device=device)
-                elif device.type == "cpu":
-                    buf = torch.from_numpy(np.empty(t.nbytes, np.uint8))
-                    t.data = buf.view(t.dtype).view(t.shape).copy_(t)
-                else:
-                    t.data = t.to(device)
+                        new = t.to(device)
+                    if store is m._parameters:
+                        t.data = new
+                    else:
+                        store[name] = new
         return model
 
     model.to = to
