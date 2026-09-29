@@ -55,6 +55,13 @@ internal sealed class ManaSettingsStore
     // choice in localStorage's manaSelectedPresetId).
     public string? ActivePresetId { get; set; }
 
+    // #662: the avatar overlay -- fully click-through (the pre-#662
+    // behaviour, for gaming/streaming; tray menu), and where she was last
+    // dragged to (screen coordinates; null = the default spot).
+    public bool AvatarClickThrough { get; set; }
+    public int? AvatarLeft { get; set; }
+    public int? AvatarTop { get; set; }
+
     // filePath: null (every real call site) uses the real per-user
     // settings file. Tests pass a temp file path to exercise
     // load/save/corruption handling without touching LocalApplicationData.

@@ -2,11 +2,11 @@ namespace Mana.NativeLauncher.Live2D;
 
 // #683: where she's looking. Electron drifts head+eyes toward random targets
 // (windows-launcher/avatar/live2d-avatar.js ~243-280/319, live2d-logic.js's
-// AIRI saccade-interval table); this keeps that table for fixation lengths
-// but moves like a person rather than a lerp:
-// - Eyes are saccadic: a fast ease-out jump (~40-80ms, longer for bigger
-//   jumps -- the saccadic "main sequence", Bahill et al. 1975), then a hold
-//   with only tiny fixational drift.
+// AIRI saccade-interval table); this moves like a person rather than a
+// lerp, with Q6's (2026-09-29) Neuro-style fixation lengths:
+// - Eyes are saccadic: they jump to the new spot at once (Q6, 16-32ms,
+//   a frame or two), then hold with only tiny fixational drift -- 0.5-1.5s
+//   per fixation while talking, 1-3s otherwise (Q6).
 // - The head follows late and partially (eye-head coordination, Freedman
 //   2008): it starts ~80-150ms after the eyes, takes ~300-500ms, covers
 //   60-100% of the configured head turn, and stays put for small shifts.
@@ -16,12 +16,14 @@ namespace Mana.NativeLauncher.Live2D;
 // - A large shift asks for a blink 40% of the time (gaze-evoked blinks,
 //   Evinger et al. 1994) -- Update() returns true; the caller forwards it
 //   to EyeBlink.Trigger.
-// Plus Electron's sleepy tilt while idle: pitch clamped to +-maxPitch, roll
-// eased toward the tilt, fading in/out over 900ms.
+// Plus Electron's idle pitch clamp (+-maxPitch, fading in/out over 900ms),
+// and (Q6) a head roll that sways on two layered rhythms, ~2.5s and ~5s,
+// peaking at the tilt (+-8 by default), or the animated tilt (16) while an
+// excited sentence is said; the body leans after it at BodyFollow.
 //
 // Pure math: the caller adds HeadAngleX/EyeBallX/EyeBallY on top of what
 // the motion and expression set this frame and passes pitch/roll through
-// ApplyPitch/ApplyRoll, so those layers keep their own movement.
+// ApplyPitch and adds Sway, so those layers keep their own movement.
 //
 // #661 activity modes: Thinking looks up and to one side and holds there
 // (the classic "searching memory" glance); Working looks down with small,
@@ -45,23 +47,22 @@ internal sealed class AvatarGaze
     // different model; 8 reads as a relaxed head tilt rather than a slump.
     public const float DefaultTiltDegrees = 8f;
     public const float DefaultMaxPitchDegrees = 8f;
+    public const float DefaultAnimatedTiltDegrees = 16f;
+    // Q6: the body leans with the head at 0.5-0.7x its offsets.
+    public const float BodyFollow = 0.6f;
 
     private const float TiltBlendMs = 900f;
     private const float LargeShift = 0.4f; // eyeball units; smaller shifts are eyes-only
     private const float GazeBlinkChance = 0.4f;
-    private const float SaccadeStepMs = 400f;
-
-    // live2d-logic.js's SACCADE_INTERVAL_TABLE (ported from Project AIRI,
-    // MIT), made cumulative: [probability, baseMs]. The last row is the
-    // catch-all.
-    private static readonly (float Probability, float BaseMs)[] SaccadeIntervals = BuildSaccadeIntervals();
 
     private readonly float gazeDegrees;
     private readonly float intervalScale;
     private readonly float tiltDegrees;
+    private readonly float animatedTiltDegrees;
     private readonly float maxPitchDegrees;
     private readonly Random random;
-    private readonly float microPhaseX, microPhaseX2, microPhaseY;
+    private readonly float microPhaseX, microPhaseX2, microPhaseY, swayPhase, swayPhase2;
+    private float swayAmplitude;
 
     // double: a float millisecond clock stops advancing by a 16ms frame
     // after a few days of uptime.
@@ -81,20 +82,27 @@ internal sealed class AvatarGaze
         float gazePeriodMs = DefaultGazePeriodMs,
         float tiltDegrees = DefaultTiltDegrees,
         float maxPitchDegrees = DefaultMaxPitchDegrees,
+        float animatedTiltDegrees = DefaultAnimatedTiltDegrees,
         int? seed = null)
     {
         this.gazeDegrees = gazeDegrees;
         intervalScale = gazePeriodMs > 0 && float.IsFinite(gazePeriodMs) ? gazePeriodMs / DefaultGazePeriodMs : 1f;
         this.tiltDegrees = tiltDegrees;
+        this.animatedTiltDegrees = animatedTiltDegrees;
         this.maxPitchDegrees = maxPitchDegrees;
         random = seed is { } s ? new Random(s) : new Random();
         microPhaseX = (float)(random.NextDouble() * Math.Tau);
         microPhaseX2 = (float)(random.NextDouble() * Math.Tau);
         microPhaseY = (float)(random.NextDouble() * Math.Tau);
+        swayPhase = (float)(random.NextDouble() * Math.Tau);
+        swayPhase2 = (float)(random.NextDouble() * Math.Tau);
     }
 
-    // 0 = not idle (tilt off), 1 = fully idle.
+    // 0 = not idle (pitch clamp off), 1 = fully idle.
     public float TiltBlend { get; private set; }
+
+    // Q6: head roll (degrees of ParamAngleZ) to add this frame.
+    public float Sway { get; private set; }
 
     // Offsets to add this frame.
     public float HeadAngleX { get; private set; }
@@ -113,11 +121,19 @@ internal sealed class AvatarGaze
     public bool GazeActive => gazeDegrees != 0;
 
     // Advances the clock; returns true when a large saccade just started and
-    // would like a blink with it.
-    public bool Update(float dtMs, GazeMode mode)
+    // would like a blink with it. animated: an excited sentence is being
+    // said (bigger sway).
+    public bool Update(float dtMs, GazeMode mode, bool animated = false)
     {
         nowMs += dtMs;
-        TiltBlend += ((mode is GazeMode.Idle or GazeMode.Attentive ? 1f : 0f) - TiltBlend) * Math.Min(1f, dtMs / TiltBlendMs);
+        var ease = Math.Min(1f, dtMs / TiltBlendMs);
+        TiltBlend += ((mode is GazeMode.Idle or GazeMode.Attentive ? 1f : 0f) - TiltBlend) * ease;
+        // Busy (thinking/working) holds her head still; otherwise it sways.
+        var swayTarget = mode is GazeMode.Thinking or GazeMode.Working ? 0f : animated ? animatedTiltDegrees : tiltDegrees;
+        swayAmplitude += (swayTarget - swayAmplitude) * ease;
+        var t = nowMs / 1000.0;
+        Sway = swayAmplitude * ((0.6f * (float)Math.Sin((Math.Tau * t / 2.5) + swayPhase))
+                              + (0.4f * (float)Math.Sin((Math.Tau * t / 5.0) + swayPhase2)));
         if (!GazeActive)
         {
             return false;
@@ -127,7 +143,7 @@ internal sealed class AvatarGaze
         {
             // A mode change (e.g. starting to talk) re-picks the gaze now,
             // under the new mode's rules.
-            nextSaccadeAtMs = lastMode is null ? nowMs + NextFixationMs(mode) : nowMs;
+            nextSaccadeAtMs = lastMode is null ? nowMs + FixationMs(mode) : nowMs;
             lastMode = mode;
         }
         var wantsBlink = nowMs >= nextSaccadeAtMs && StartSaccade(mode);
@@ -162,8 +178,20 @@ internal sealed class AvatarGaze
     public static float NodOffset(double sinceSeconds) =>
         sinceSeconds is >= 0 and < NodSeconds ? -6f * MathF.Sin(MathF.PI * (float)(sinceSeconds / NodSeconds)) : 0f;
 
-    // Eases the head roll toward the configured side tilt.
-    public float ApplyRoll(float rawAngleZ) => rawAngleZ + ((tiltDegrees - rawAngleZ) * TiltBlend);
+    // Q34: clicking her -- a quick attentive look: (pitch, roll) degrees to
+    // add, a small lift and a head tilt toward you that ease in and back
+    // out, sinceSeconds after the click; (0, 0) outside it. The eyes come to
+    // the viewer through GazeMode.Attentive for the same window.
+    public const float AttentiveSeconds = 1.2f;
+    public static (float Pitch, float Roll) AttentiveLookOffset(double sinceSeconds)
+    {
+        if (sinceSeconds is not (>= 0 and < AttentiveSeconds))
+        {
+            return (0f, 0f);
+        }
+        var k = MathF.Sin(MathF.PI * (float)(sinceSeconds / AttentiveSeconds));
+        return (3f * k, 7f * k);
+    }
 
     private bool StartSaccade(GazeMode mode)
     {
@@ -181,7 +209,7 @@ internal sealed class AvatarGaze
         {
             x = Uniform(-0.08f, 0.08f);
             y = Uniform(-0.06f, 0.06f);
-            holdMs = busy ? Uniform(500f, 1000f) : NextFixationMs(mode);
+            holdMs = busy ? Uniform(500f, 1000f) : FixationMs(mode);
         }
         else if (mode == GazeMode.Thinking)
         {
@@ -199,7 +227,7 @@ internal sealed class AvatarGaze
         {
             x = Side() * Uniform(0.3f, 1f);
             y = Uniform(-0.5f, 0.25f); // smaller, and more often down than up
-            holdMs = mode == GazeMode.Talking ? Uniform(400f, 900f) : NextFixationMs(mode);
+            holdMs = FixationMs(mode);
         }
 
         var shift = MathF.Sqrt(((x - eyeX) * (x - eyeX)) + ((y - eyeY) * (y - eyeY)));
@@ -208,7 +236,7 @@ internal sealed class AvatarGaze
         TargetX = x;
         TargetY = y;
         eyeStartMs = nowMs;
-        eyeDurationMs = 40f + (40f * Math.Min(1f, shift / 1.5f));
+        eyeDurationMs = 16f + (16f * Math.Min(1f, shift / 1.5f));
 
         var large = shift >= LargeShift;
         if (large)
@@ -223,33 +251,12 @@ internal sealed class AvatarGaze
         return large && random.NextDouble() < GazeBlinkChance;
     }
 
-    private float NextFixationMs(GazeMode mode)
-    {
-        var scale = intervalScale * (mode == GazeMode.Talking ? 1.3f : 1f);
-        var r = random.NextDouble();
-        foreach (var (probability, baseMs) in SaccadeIntervals)
-        {
-            if (r <= probability)
-            {
-                return (baseMs + ((float)random.NextDouble() * SaccadeStepMs)) * scale;
-            }
-        }
-        return (SaccadeIntervals[^1].BaseMs + ((float)random.NextDouble() * SaccadeStepMs)) * scale;
-    }
+    // Q6: how long a fixation holds -- 0.5-1.5s while talking, 1-3s
+    // otherwise, scaled by idleGazePeriodMs.
+    private float FixationMs(GazeMode mode) =>
+        (mode == GazeMode.Talking ? Uniform(500f, 1500f) : Uniform(1000f, 3000f)) * intervalScale;
 
     private float Side() => random.Next(2) == 0 ? -1f : 1f;
 
     private float Uniform(float min, float max) => min + ((float)random.NextDouble() * (max - min));
-
-    private static (float, float)[] BuildSaccadeIntervals()
-    {
-        float[] probabilities = [0.075f, 0.11f, 0.125f, 0.14f, 0.125f, 0.05f, 0.04f, 0.03f, 0.02f, 1f];
-        var table = new (float, float)[probabilities.Length];
-        table[0] = (probabilities[0], 800f);
-        for (var i = 1; i < table.Length; i++)
-        {
-            table[i] = (table[i - 1].Item1 + probabilities[i], table[i - 1].Item2 + SaccadeStepMs);
-        }
-        return table;
-    }
 }

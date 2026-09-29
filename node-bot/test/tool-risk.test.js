@@ -76,6 +76,8 @@ test("#669 tiers: built-ins keep their fixed tier and are not content-inspected"
   // only writes a .diff under Mana's data dir; the user applies it (#276)
   assert.equal(classifyToolCall("coding__propose_edit", { path: "a.js", proposedContent: "x" }).tier, "read");
   assert.equal(classifyToolCall("memory__remember", { fact: "rm -rf /" }).tier, "write");
+  // #787: runs the user's tests -- asks through its own "coding-run-tests" approval
+  assert.equal(classifyToolCall("coding__run_tests", {}).tier, "write");
   const nav = classifyToolCall("browser_automation__navigate", { url: "https://example.com/a" });
   assert.equal(nav.tier, "network");
   assert.deepEqual(nav.hosts, ["example.com"]);
@@ -262,7 +264,8 @@ test("#669 ask mode: even a read-only call asks; self-gated built-ins pass throu
   const { wrapped, ran } = setup({ mode: "ask" });
   assert.equal(JSON.parse(await wrapped.executeTool("read_file", { path: "a" })).status, "pending");
   assert.equal(await wrapped.executeTool("memory__remember", { fact: "x" }), "ran memory__remember");
-  assert.deepEqual(ran.map((r) => r.name), ["memory__remember"]);
+  assert.equal(await wrapped.executeTool("coding__run_tests", {}), "ran coding__run_tests");
+  assert.deepEqual(ran.map((r) => r.name), ["memory__remember", "coding__run_tests"]);
 });
 
 test("#669 a destructive call always asks, even with a session grant or an always-allow", async () => {

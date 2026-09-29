@@ -20,9 +20,9 @@ internal sealed class StreamingReplyPlayer
     private readonly Func<byte[], Task<bool>> playAsync; // true = clip finished naturally, false = interrupted (#479 sub-project 3)
     private readonly Action<bool> setTalking; // true once the first chunk starts, false once talking stops (naturally or interrupted)
     private readonly Action<bool>? setToolRunning; // #661: true on a "tool" start event, false on its end
-    private readonly Action<string, string?>? onSentencePlaying; // each sentence's text and #623 emotion tag (null if untagged), as its audio starts
+    private readonly Action<string, string?, TimeSpan>? onSentencePlaying; // each sentence's text, #623 emotion tag (null if untagged) and audio length, as its audio starts
 
-    public StreamingReplyPlayer(ManaBackendClient backendClient, Func<byte[], Task<bool>> playAsync, Action<bool> setTalking, Action<bool>? setToolRunning = null, Action<string, string?>? onSentencePlaying = null)
+    public StreamingReplyPlayer(ManaBackendClient backendClient, Func<byte[], Task<bool>> playAsync, Action<bool> setTalking, Action<bool>? setToolRunning = null, Action<string, string?, TimeSpan>? onSentencePlaying = null)
     {
         this.backendClient = backendClient;
         this.playAsync = playAsync;
@@ -35,6 +35,10 @@ internal sealed class StreamingReplyPlayer
     // a caller speaking that reply as one clip after Changed. Not in the
     // return tuple so its callers don't all change shape for one field.
     public string? FinalEmotion { get; private set; }
+
+    // #675 Q12b: the last completed reply's final `deepThinking` (Mana's own
+    // deep thinking is on), for the Think button. Same reason as above.
+    public bool FinalDeepThinking { get; private set; }
 
     // Reply is null when Interrupted is true -- a barge-in cut off
     // playback before the reply finished streaming/speaking, so there's no
@@ -56,12 +60,12 @@ internal sealed class StreamingReplyPlayer
     // NOT wait for that sentence to actually finish being spoken), since a
     // chat log should show text as it arrives, not lag behind audio.
     public async Task<(string? Reply, bool Changed, string? Expression, bool Interrupted, IReadOnlyList<string> Pending)> StreamReplyAndPlayAsync(
-        string commandText, string? sessionId = null, Action<string>? onSentence = null, string screenText = "", string? image = null, IReadOnlyList<string>? images = null, string? presetId = null)
+        string commandText, string? sessionId = null, Action<string>? onSentence = null, string screenText = "", string? image = null, IReadOnlyList<string>? images = null, string? presetId = null, bool? thinkHarder = null)
     {
         var sentences = Channel.CreateUnbounded<(string Text, string? Emotion)>();
         ReplyStreamEvent? finalEvent = null;
 
-        var readTask = ReadEventsAsync(commandText, sessionId, screenText, image, images, presetId, onSentence, sentences.Writer, e => finalEvent = e);
+        var readTask = ReadEventsAsync(commandText, sessionId, screenText, image, images, presetId, thinkHarder, onSentence, sentences.Writer, e => finalEvent = e);
         var (interrupted, pending) = await PlayStreamedSentencesAsync(sentences.Reader).ConfigureAwait(false);
 
         if (interrupted)
@@ -91,6 +95,7 @@ internal sealed class StreamingReplyPlayer
         }
 
         FinalEmotion = finalEvent.Emotion;
+        FinalDeepThinking = finalEvent.DeepThinking;
         return (finalEvent.Reply ?? string.Empty, finalEvent.Changed, finalEvent.Expression, false, pending);
     }
 
@@ -112,11 +117,11 @@ internal sealed class StreamingReplyPlayer
         return PlayStreamedSentencesAsync(channel.Reader);
     }
 
-    private async Task ReadEventsAsync(string commandText, string? sessionId, string screenText, string? image, IReadOnlyList<string>? images, string? presetId, Action<string>? onSentence, ChannelWriter<(string Text, string? Emotion)> writer, Action<ReplyStreamEvent> onFinal)
+    private async Task ReadEventsAsync(string commandText, string? sessionId, string screenText, string? image, IReadOnlyList<string>? images, string? presetId, bool? thinkHarder, Action<string>? onSentence, ChannelWriter<(string Text, string? Emotion)> writer, Action<ReplyStreamEvent> onFinal)
     {
         try
         {
-            await foreach (var evt in backendClient.ReplyStreamAsync(commandText, sessionId, screenText, image, images, presetId))
+            await foreach (var evt in backendClient.ReplyStreamAsync(commandText, sessionId, screenText, image, images, presetId, thinkHarder))
             {
                 if (evt.Type == "sentence" && !string.IsNullOrWhiteSpace(evt.Text))
                 {
@@ -202,7 +207,7 @@ internal sealed class StreamingReplyPlayer
                 // matches the acceptable-risk call already made for this same
                 // kind of dangling in-flight synth call elsewhere in this file.
                 var nextTask = TakeAndSynthesizeNextAsync(sentences, TakeNext);
-                onSentencePlaying?.Invoke(sentence.Text, sentence.Emotion);
+                onSentencePlaying?.Invoke(sentence.Text, sentence.Emotion, AudioPlayer.Duration(sentence.Audio));
                 var completedNaturally = await playAsync(sentence.Audio).ConfigureAwait(false);
                 if (!completedNaturally)
                 {

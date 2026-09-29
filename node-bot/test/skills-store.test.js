@@ -4,7 +4,7 @@ const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
 
-const { createSkillsStore, parseSkillFile, serializeSkillFile, extractSkillScript, extractSkillInputs, verifySkillScript } = require("../skills-store");
+const { createSkillsStore, parseSkillFile, serializeSkillFile, extractSkillScript, extractSkillInputs, verifySkillScript, evaluateSkillAvailability, readSkillFolder } = require("../skills-store");
 const { createSnapshotStore } = require("../snapshot-store");
 
 function tempDir() {
@@ -39,6 +39,8 @@ test("createSkillsStore starts empty and creates a skill with the right frontmat
   assert.equal(listed[0].body, undefined);
   assert.equal(listed[0].name, "Restart SearXNG");
   assert.equal(listed[0].description, skill.description);
+  // #787: skill__run is only offered when some skill has a script.
+  assert.equal(listed[0].hasScript, false);
 });
 
 test("createSkill rejects missing fields and duplicate names", () => {
@@ -514,4 +516,170 @@ test("restoring a skill snapshot backs up the file content it overwrote first, s
   const backup = snapshotStore.getSnapshot(backups[0].id);
   assert.equal(backup.source, "system");
   assert.equal(backup.payload, beforeRestore, "the backup holds the file content as it stood right before the restore");
+});
+
+// Issue #664: an OpenClaw/AgentSkills skill as it is actually published --
+// nested YAML frontmatter with a multi-line JSON metadata block (trailing
+// commas included), plus a scripts/ folder.
+function writeOpenClawSkill(dir) {
+  fs.mkdirSync(path.join(dir, "scripts"), { recursive: true });
+  fs.writeFileSync(
+    path.join(dir, "SKILL.md"),
+    [
+      "---",
+      "name: nano-pdf",
+      "description: >",
+      "  Edit PDFs with natural-language",
+      "  instructions.",
+      "homepage: https://example.com/nano-pdf",
+      "metadata:",
+      "  {",
+      '    "openclaw":',
+      '      { "requires": { "bins": ["nano-pdf"], "env": ["NANO_KEY"] }, "os": ["darwin", "linux"], },',
+      "  }",
+      "---",
+      "",
+      "Run scripts/edit.sh with the page number.",
+      "",
+    ].join("\n"),
+  );
+  fs.writeFileSync(path.join(dir, "scripts", "edit.sh"), "nano-pdf edit \"$@\"\n");
+  fs.writeFileSync(path.join(dir, ".env"), "NANO_KEY=not-for-import\n");
+}
+
+test("a SKILL.md folder loads next to single-file skills with its name, description and files", () => {
+  const skillsDir = tempDir();
+  const store = createSkillsStore({ skillsDir, now: () => "2026-01-01T00:00:00.000Z" });
+  store.createSkill({ name: "Flat skill", description: "Plain Mana skill.", body: "Do it." });
+  writeOpenClawSkill(path.join(skillsDir, "nano-pdf"));
+
+  const listed = store.listSkills();
+  assert.deepEqual(listed.map((s) => s.name), ["Flat skill", "nano-pdf"]);
+  assert.equal(listed[1].description, "Edit PDFs with natural-language instructions.");
+
+  const viewed = store.viewSkill("nano-pdf", { touch: false });
+  assert.equal(viewed.body, "Run scripts/edit.sh with the page number.");
+  assert.equal(viewed.dir, path.join(skillsDir, "nano-pdf"));
+  assert.deepEqual(viewed.files.sort(), ["SKILL.md", "scripts/edit.sh"], "dotfiles are not part of a skill");
+  assert.deepEqual(viewed.extra.metadata.openclaw.requires.bins, ["nano-pdf"]);
+
+  // A usage bump rewrites the frontmatter; the OpenClaw metadata survives it.
+  store.touchSkillUsage("nano-pdf");
+  const touched = store.viewSkill("nano-pdf", { touch: false });
+  assert.equal(touched.useCount, 1);
+  assert.deepEqual(touched.extra.metadata, viewed.extra.metadata);
+  assert.equal(touched.extra.homepage, "https://example.com/nano-pdf");
+
+  assert.equal(store.deleteSkill("nano-pdf"), true);
+  assert.equal(fs.existsSync(path.join(skillsDir, "nano-pdf")), false, "delete takes the whole folder");
+});
+
+test("an existing flat skill file parses exactly as before and round-trips unchanged", () => {
+  const raw = [
+    "---",
+    "name: Restart SearXNG",
+    "description: Use when: search is down",
+    "category: ops",
+    "created: 2026-01-01T00:00:00.000Z",
+    "lastUsed: null",
+    "useCount: 2",
+    "status: active",
+    "requires: web_search, shell",
+    "permission: confirm",
+    "---",
+    "",
+    "1. Restart it.",
+    "",
+  ].join("\n");
+  const skill = parseSkillFile(raw, "fallback");
+  assert.equal(skill.description, "Use when: search is down");
+  assert.equal(skill.lastUsed, "null");
+  assert.equal(skill.useCount, 2);
+  assert.deepEqual(skill.requires, ["web_search", "shell"]);
+  assert.equal(skill.extra, undefined);
+  assert.equal(serializeSkillFile(skill), raw);
+
+  // SKILL.md files often wrap a long description onto indented lines.
+  const wrapped = parseSkillFile(["---", "name: x", "description: wrapped", "  onto two lines", "---", "b"].join("\n"), "f");
+  assert.equal(wrapped.description, "wrapped onto two lines");
+});
+
+test("evaluateSkillAvailability honours OpenClaw's os / bins / anyBins / env gates and says why", () => {
+  const skill = parseSkillFile(
+    [
+      "---",
+      "name: x",
+      'metadata: {"openclaw": {"os": ["darwin"], "requires": {"bins": ["uv", "git"], "anyBins": ["rg", "grep"], "env": ["KEY"]}}}',
+      "---",
+      "body",
+    ].join("\n"),
+    "x",
+  );
+  const host = (overrides) => ({ platform: "win32", env: {}, hasBin: () => false, ...overrides });
+
+  assert.deepEqual(evaluateSkillAvailability(skill, undefined, host()).missingRequirements, [
+    "os: darwin",
+    "bin: uv",
+    "bin: git",
+    "bin: rg or grep",
+    "env: KEY",
+  ]);
+  const ok = evaluateSkillAvailability(
+    skill,
+    undefined,
+    host({ platform: "darwin", env: { KEY: "1" }, hasBin: (bin) => bin !== "rg" }),
+  );
+  assert.deepEqual(ok, { available: true, missingRequirements: [] });
+});
+
+test("readSkillFolder + importSkill: the approved bytes are written, nothing is run, collisions and escapes are refused", () => {
+  const source = tempDir();
+  writeOpenClawSkill(source);
+  const folder = readSkillFolder(source);
+  assert.equal(folder.name, "nano-pdf");
+  assert.deepEqual(folder.files.map((f) => f.path).sort(), ["SKILL.md", "scripts/edit.sh"]);
+  assert.deepEqual(folder.scripts, ["scripts/edit.sh"]);
+  assert.deepEqual(folder.requires, ["os: darwin or linux", "bin: nano-pdf", "env: NANO_KEY"]);
+
+  // Changing the source after it was read must not change what gets written.
+  fs.writeFileSync(path.join(source, "scripts", "edit.sh"), "rm -rf /\n");
+
+  const skillsDir = tempDir();
+  const store = createSkillsStore({ skillsDir, now: () => "2026-02-02T00:00:00.000Z" });
+  const imported = store.importSkill({ files: folder.files });
+  assert.equal(imported.fileName, "nano-pdf/SKILL.md");
+  assert.equal(imported.created, "2026-02-02T00:00:00.000Z");
+  assert.equal(
+    fs.readFileSync(path.join(skillsDir, "nano-pdf", "scripts", "edit.sh"), "utf8"),
+    "nano-pdf edit \"$@\"\n",
+  );
+  assert.equal(store.listSkills()[0].name, "nano-pdf");
+
+  assert.throws(() => store.importSkill({ files: folder.files }), /already exists/);
+  assert.throws(
+    () => store.importSkill({
+      files: [
+        { path: "SKILL.md", encoding: "utf8", content: "---\nname: evil\ndescription: d\n---\nbody" },
+        { path: "../outside.txt", encoding: "utf8", content: "x" },
+      ],
+    }),
+    /unsafe path/,
+  );
+  assert.equal(fs.existsSync(path.join(skillsDir, "evil")), false, "a refused import leaves nothing behind");
+  assert.equal(fs.existsSync(path.join(skillsDir, "outside.txt")), false);
+});
+
+test("pruneStaleSkills archives a SKILL.md folder whole", () => {
+  const skillsDir = tempDir();
+  let clock = "2026-01-01T00:00:00.000Z";
+  const store = createSkillsStore({ skillsDir, now: () => clock });
+  const source = tempDir();
+  writeOpenClawSkill(source);
+  store.importSkill({ files: readSkillFolder(source).files });
+
+  clock = "2026-06-01T00:00:00.000Z";
+  assert.deepEqual(store.pruneStaleSkills().archived, ["nano-pdf"]);
+  assert.equal(fs.existsSync(path.join(skillsDir, "nano-pdf")), false);
+  assert.ok(fs.existsSync(path.join(skillsDir, ".archive", "nano-pdf", "scripts", "edit.sh")));
+  assert.deepEqual(store.listSkills(), []);
 });

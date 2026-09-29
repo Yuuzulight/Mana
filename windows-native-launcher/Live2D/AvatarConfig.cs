@@ -26,9 +26,14 @@ internal sealed class AvatarConfig
     public IReadOnlyList<RandomMotion> RandomMotions { get; private init; } = [];
     public string MouthParam { get; private init; } = "ParamMouthOpenY";
     public float MouthGain { get; private init; } = 18f;
+    // Q6: gain 18 opens wide on loud syllables; this caps it (0..1).
+    public float MouthMaxOpen { get; private init; } = 0.8f;
     // Backfill for a model3.json with no EyeBlink group; [] disables it.
     public IReadOnlyList<string> EyeBlinkParams { get; private init; } = ["ParamEyeLOpen", "ParamEyeROpen"];
+    // Q6: the head roll sway's peak -- normally, and while she's animated
+    // (an excited/happy sentence).
     public float IdleTiltDeg { get; private init; } = AvatarGaze.DefaultTiltDegrees;
+    public float AnimatedTiltDeg { get; private init; } = AvatarGaze.DefaultAnimatedTiltDegrees;
     public float IdleMaxPitchDeg { get; private init; } = AvatarGaze.DefaultMaxPitchDegrees;
     public float IdleGazeDeg { get; private init; } = AvatarGaze.DefaultGazeDegrees;
     public float IdleGazePeriodMs { get; private init; } = AvatarGaze.DefaultGazePeriodMs;
@@ -75,12 +80,14 @@ internal sealed class AvatarConfig
             MouthParam = NonEmpty(env("MANA_LIVE2D_MOUTH_PARAM"))
                 ?? (Field("mouthParam") is { ValueKind: JsonValueKind.String } mouth && NonEmpty(mouth.GetString()) is { } id ? id : defaults.MouthParam),
             MouthGain = Number(env("MANA_LIVE2D_MOUTH_GAIN"), Field("mouthGain"), defaults.MouthGain),
+            MouthMaxOpen = Number(env("MANA_LIVE2D_MOUTH_MAX_OPEN"), Field("mouthMaxOpen"), defaults.MouthMaxOpen),
             EyeBlinkParams = env("MANA_LIVE2D_EYE_BLINK_PARAMS") is { } blinkEnv
                 ? blinkEnv.Split(',').Select(p => p.Trim()).Where(p => p.Length > 0).ToArray()
                 : Field("eyeBlinkParams") is { ValueKind: JsonValueKind.Array } blinkList
                     ? blinkList.EnumerateArray().Select(Text).Where(p => p.Length > 0).ToArray()
                     : defaults.EyeBlinkParams,
             IdleTiltDeg = Number(env("MANA_LIVE2D_IDLE_TILT_DEG"), Field("idleTiltDeg"), defaults.IdleTiltDeg),
+            AnimatedTiltDeg = Number(env("MANA_LIVE2D_ANIMATED_TILT_DEG"), Field("animatedTiltDeg"), defaults.AnimatedTiltDeg),
             IdleMaxPitchDeg = Number(env("MANA_LIVE2D_IDLE_MAX_PITCH_DEG"), Field("idleMaxPitchDeg"), defaults.IdleMaxPitchDeg),
             IdleGazeDeg = Number(env("MANA_LIVE2D_IDLE_GAZE_DEG"), Field("idleGazeDeg"), defaults.IdleGazeDeg),
             IdleGazePeriodMs = Number(env("MANA_LIVE2D_IDLE_GAZE_PERIOD_MS"), Field("idleGazePeriodMs"), defaults.IdleGazePeriodMs),

@@ -239,6 +239,65 @@ test("doctor warns prompt-composition when a block dropped content, naming which
   assert.match(check.message, /system-prompt/);
 });
 
+// Q18 (#645): plain-text secrets are named by Doctor (never their values),
+// not warned about on every start.
+test("doctor names plain-text secrets in .env, from GET /doctor", async () => {
+  const run = (plainTextSecrets) =>
+    runDoctorChecks({
+      env: { MANA_ALLOW_REMOTE_AI: "0" },
+      paths: { dataDir: fs.mkdtempSync(path.join(os.tmpdir(), "mana-doctor-test-")) },
+      versions: { node: "v22.19.0" },
+      zedCommandResolver: () => null,
+      plainTextSecrets,
+    }).checks.find((c) => c.id === "plain-text-secrets");
+  assert.equal(run(undefined), undefined);
+  assert.equal(run([]).status, "pass");
+  const warned = run(["OPENAI_API_KEY", "ADMIN_TOKEN"]);
+  assert.equal(warned.status, "warn");
+  assert.match(warned.message, /2 secret\(s\) in plain text in node-bot\/\.env: OPENAI_API_KEY, ADMIN_TOKEN/);
+
+  let seen = null;
+  const app = createApp({
+    plainTextSecretKeys: () => ["MANA_DISCORD_BOT_TOKEN"],
+    doctor: (options) => {
+      seen = options.plainTextSecrets;
+      return { ok: true, summary: { pass: 0, warn: 0, fail: 0 }, checks: [] };
+    },
+  });
+  await withServer(app, async (baseUrl) => {
+    await fetch(`${baseUrl}/doctor`);
+  });
+  assert.deepEqual(seen, ["MANA_DISCORD_BOT_TOKEN"]);
+});
+
+// Q28 (#620): closed memory-graph windows are kept forever, so Doctor shows
+// how many there are -- from the live graph, via GET /doctor.
+test("doctor shows the memory graph's history size, from the live graph", async () => {
+  assert.equal(runDoctorForPromptComposition(null).checks.find((c) => c.id === "memory-graph-history"), undefined);
+
+  let seen = null;
+  const app = createApp({
+    acpMemoryStore: { memoryGraph: { getHistorySize: () => ({ live: 3, closed: 4, archived: 5 }) } },
+    doctor: (options) => {
+      seen = options.memoryGraphHistory;
+      return runDoctorChecks({
+        env: { MANA_ALLOW_REMOTE_AI: "0" },
+        paths: { dataDir: fs.mkdtempSync(path.join(os.tmpdir(), "mana-doctor-test-")) },
+        versions: { node: "v22.19.0" },
+        zedCommandResolver: () => null,
+        memoryGraphHistory: options.memoryGraphHistory,
+      });
+    },
+  });
+  await withServer(app, async (baseUrl) => {
+    const body = await (await fetch(`${baseUrl}/doctor`)).json();
+    const check = body.checks.find((c) => c.id === "memory-graph-history");
+    assert.equal(check.status, "pass");
+    assert.match(check.message, /3 live associations; 9 closed association windows kept/);
+  });
+  assert.deepEqual(seen, { live: 3, closed: 4, archived: 5 });
+});
+
 test("doctor passes remote exposure when no tunnel is configured", () => {
   const result = runDoctorChecks({
     env: {},

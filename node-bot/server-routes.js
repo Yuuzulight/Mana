@@ -91,11 +91,25 @@ function registerCoreRoutes(app, upload, deps) {
     SCREEN_CONTEXT_MAX_CHARS,
   } = deps;
 
+  // Every save path (recordChatTurn here, server.js's reply builder) skips
+  // a turn with no sessionId, so say so once instead of letting memory go
+  // quietly empty -- the native launcher sent none until it began
+  // auto-starting sessions.
+  let warnedSessionless = false;
+  function warnIfSessionless(sessionId) {
+    if (sessionId || warnedSessionless) return;
+    warnedSessionless = true;
+    console.warn(
+      "Chat turn received without a sessionId: it is not saved to memory (warning shown once).",
+    );
+  }
+
   // Issue #677: plugin onUserInput hooks (see runPluginInputHooks), run
   // once per chat turn by /reply, /reply/stream and /transcribe, image
   // turns included, after the restart command check so no plugin can
   // swallow it. A short-circuit reply is recorded like any other turn.
   async function runInputHooks(text, source, sessionId, hasImages) {
+    warnIfSessionless(sessionId);
     const input = await runPluginInputHooks(
       capabilities,
       { text, source, sessionId, hasImages },
@@ -191,6 +205,7 @@ function registerCoreRoutes(app, upload, deps) {
       const image = requireString(req.body?.image, "image");
       const prompt = optionalString(req.body?.prompt, "prompt", "");
       const sessionId = optionalString(req.body?.sessionId, "sessionId", null);
+      warnIfSessionless(sessionId);
 
       if (typeof getVisionStatus === "function") {
         const vision = getVisionStatus();
@@ -351,7 +366,12 @@ function registerCoreRoutes(app, upload, deps) {
         null,
       );
       const presetId = optionalString(req.body?.presetId, "presetId", null);
-      const replyMeta = { systemPatch: input.systemPatch };
+      // #675: the client's "think harder" (deep-thinking toggle): true thinks
+      // this turn, false ends Mana's own deep thinking (Q12b).
+      const replyMeta = {
+        systemPatch: input.systemPatch,
+        thinkHarder: typeof req.body?.thinkHarder === "boolean" ? req.body.thinkHarder : undefined,
+      };
       const reply = await buildAssistantReply(
         input.text,
         screenText,
@@ -380,6 +400,12 @@ function registerCoreRoutes(app, upload, deps) {
     res.setHeader("Content-Type", "application/x-ndjson; charset=utf-8");
     res.setHeader("Cache-Control", "no-cache");
     res.setHeader("Connection", "keep-alive");
+    // #675: headers now, not at the first event -- a deep-thinking turn can
+    // think ~25 s per request (tool rounds included) before it writes
+    // anything, and the native launcher's HttpClient only waits its 100 s
+    // default for the headers. Every outcome below is an event, never a
+    // status code, so nothing needs the headers held back.
+    res.flushHeaders();
 
     const writeEvent = (event) => res.write(JSON.stringify(event) + "\n");
 
@@ -502,6 +528,9 @@ function registerCoreRoutes(app, upload, deps) {
       const replyMeta = {
         systemPatch: input.systemPatch,
         onToolCall: ({ name, phase }) => writeEvent({ type: "tool", name, phase }),
+        // #675: the client's "think harder" (deep-thinking toggle): true
+        // thinks this turn, false ends Mana's own deep thinking (Q12b).
+        thinkHarder: typeof req.body?.thinkHarder === "boolean" ? req.body.thinkHarder : undefined,
       };
 
       const reply = await buildAssistantReply(
@@ -525,6 +554,8 @@ function registerCoreRoutes(app, upload, deps) {
         changed: !replyMeta.streamedMatchesFinal,
         ...(replyMeta.expression ? { expression: replyMeta.expression } : {}),
         ...(replyMeta.emotion ? { emotion: replyMeta.emotion } : {}),
+        // #675 Q12b: Mana's own deep thinking is on (the Think button lights).
+        deepThinking: replyMeta.deepThinking === true,
       });
       return res.end();
     } catch (e) {
@@ -862,7 +893,7 @@ function registerAdminStaticRoutes(app) {
 // original inline `deps.zed || createZedIntegration()`) is passed as a
 // plain value since the original never memoized it either.
 function registerEditorRoutes(app, deps) {
-  const { checkAdminAuth, getEditorIntegrations, zed: zedOverride } = deps;
+  const { checkAdminAuth, getEditorIntegrations, zed: zedOverride, reviewEdit } = deps;
 
   app.get("/zed/status", (req, res) => {
     const zed = zedOverride || createZedIntegration();
@@ -970,7 +1001,7 @@ function registerEditorRoutes(app, deps) {
     return res.json({ proposals: editors.listEditProposals() });
   });
 
-  app.post("/editors/workspace/proposals", (req, res) => {
+  app.post("/editors/workspace/proposals", async (req, res) => {
     if (!checkAdminAuth(req, res)) return;
     try {
       const editors = getEditorIntegrations();
@@ -979,6 +1010,9 @@ function registerEditorRoutes(app, deps) {
         proposedContent: req.body?.proposedContent,
         summary: req.body?.summary,
       });
+      // Issue #622: the ACP agent's proposals come in here -- review them
+      // before they sit waiting for approval.
+      if (reviewEdit) proposal.adversarialReview = await reviewEdit(proposal);
       return res.json({ proposal });
     } catch (error) {
       return res.status(400).json({
@@ -1010,6 +1044,8 @@ function registerEditorRoutes(app, deps) {
       return res.json({
         proposal: editors.approveEditProposal(req.params.id, {
           acceptedHunkIds: req.body?.acceptedHunkIds,
+          // Q16: required to apply an edit the adversarial review refuted.
+          confirmRefuted: req.body?.confirmRefuted === true,
         }),
       });
     } catch (error) {

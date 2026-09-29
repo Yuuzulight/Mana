@@ -25,6 +25,9 @@ internal sealed class SettingsPanel : UserControl
     private readonly ListView pluginsList = new();
     private readonly ListView factsList = new();
     private readonly ListView skillsList = new();
+    // Q20: Settings > Skills' "Imported skills" choice, in node-bot's order.
+    private static readonly string[] ImportedSkillUseModes = { "free", "each", "first" };
+    private readonly ComboBox importedSkillUseBox = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 180 };
     private readonly ListView approvalsList = new();
     // #669: index-aligned with ToolApprovalModes below.
     private readonly ComboBox toolApprovalModeCombo = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 320 };
@@ -342,11 +345,52 @@ internal sealed class SettingsPanel : UserControl
             }
         };
 
+        // #698: a paused standing reminder ("When ...") never fires.
+        var pauseButton = new Button { Text = "Pause / Resume reminder", Dock = DockStyle.Bottom, Height = 28 };
+        DarkTheme.ApplyButton(pauseButton);
+        pauseButton.Click += async (_, _) =>
+        {
+            pauseButton.Enabled = false;
+            try
+            {
+                await TogglePauseSelectedFactAsync();
+            }
+            finally
+            {
+                if (!IsDisposed)
+                {
+                    pauseButton.Enabled = true;
+                }
+            }
+        };
+
+        // Q29: edit a fact's text (and a reminder's "when" part) in place;
+        // chat edits ("move the raid reminder to Friday") work too.
+        var editButton = new Button { Text = "Edit", Dock = DockStyle.Bottom, Height = 28 };
+        DarkTheme.ApplyButton(editButton);
+        editButton.Click += async (_, _) =>
+        {
+            editButton.Enabled = false;
+            try
+            {
+                await EditSelectedFactAsync();
+            }
+            finally
+            {
+                if (!IsDisposed)
+                {
+                    editButton.Enabled = true;
+                }
+            }
+        };
+
         var page = new TabPage("Memory Facts");
         page.Controls.Add(factsList);
+        page.Controls.Add(editButton);
         page.Controls.Add(pinButton);
         page.Controls.Add(archiveButton);
         page.Controls.Add(confirmButton);
+        page.Controls.Add(pauseButton);
         return page;
     }
 
@@ -364,6 +408,63 @@ internal sealed class SettingsPanel : UserControl
         catch (Exception ex)
         {
             Console.WriteLine($"SettingsPanel: failed to pin fact '{fact.Key}'. {ex.Message}");
+            return;
+        }
+        if (!IsDisposed)
+        {
+            await RefreshMemoryFactsAsync();
+        }
+    }
+
+    private async Task EditSelectedFactAsync()
+    {
+        if (factsList.SelectedItems.Count == 0 || factsList.SelectedItems[0].Tag is not ManaMemoryFact fact)
+        {
+            return;
+        }
+        string? trigger = null;
+        if (fact.Trigger != "")
+        {
+            using var whenDialog = new TextPromptDialog("Edit reminder", "When this comes up:", fact.Trigger);
+            if (whenDialog.ShowDialog(this) != DialogResult.OK || whenDialog.Value.Trim() == "")
+            {
+                return;
+            }
+            trigger = whenDialog.Value.Trim();
+        }
+        using var textDialog = new TextPromptDialog("Edit fact", fact.Trigger == "" ? "Fact:" : "Mention:", fact.Text);
+        if (textDialog.ShowDialog(this) != DialogResult.OK || textDialog.Value.Trim() == "")
+        {
+            return;
+        }
+        try
+        {
+            await backendClient.UpdateMemoryFactAsync(fact.Key, textDialog.Value.Trim(), trigger);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"SettingsPanel: failed to edit fact '{fact.Key}'. {ex.Message}");
+            return;
+        }
+        if (!IsDisposed)
+        {
+            await RefreshMemoryFactsAsync();
+        }
+    }
+
+    private async Task TogglePauseSelectedFactAsync()
+    {
+        if (factsList.SelectedItems.Count == 0 || factsList.SelectedItems[0].Tag is not ManaMemoryFact fact || fact.Trigger == "")
+        {
+            return;
+        }
+        try
+        {
+            await backendClient.SetMemoryFactPausedAsync(fact.Key, !fact.Paused);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"SettingsPanel: failed to pause reminder '{fact.Key}'. {ex.Message}");
             return;
         }
         if (!IsDisposed)
@@ -440,8 +541,8 @@ internal sealed class SettingsPanel : UserControl
         foreach (var fact in facts)
         {
             var item = new ListViewItem(fact.Key) { Tag = fact };
-            item.SubItems.Add(fact.Text);
-            item.SubItems.Add(fact.Status);
+            item.SubItems.Add(fact.Trigger == "" ? fact.Text : $"When {fact.Trigger} comes up: {fact.Text}");
+            item.SubItems.Add(fact.Paused ? $"{fact.Status}, paused" : fact.Status);
             item.SubItems.Add(fact.Pinned ? "yes" : "");
             item.SubItems.Add(fact.Trust);
             factsList.Items.Add(item);
@@ -467,16 +568,72 @@ internal sealed class SettingsPanel : UserControl
         newButton.Click += async (_, _) => await CreateSkillAsync();
         editButton.Click += async (_, _) => await EditSelectedSkillAsync();
         deleteButton.Click += async (_, _) => await DeleteSelectedSkillAsync();
+        // #664 (Q21): import an OpenClaw/AgentSkills SKILL.md folder.
+        var importButton = new Button { Text = "Import folder...", AutoSize = true };
+        DarkTheme.ApplyButton(importButton);
+        importButton.Click += async (_, _) => await ImportSkillFolderAsync();
 
         var buttonRow = new FlowLayoutPanel { Dock = DockStyle.Bottom, Height = 32, FlowDirection = FlowDirection.LeftToRight, BackColor = DarkTheme.Background };
         buttonRow.Controls.Add(newButton);
         buttonRow.Controls.Add(editButton);
         buttonRow.Controls.Add(deleteButton);
+        buttonRow.Controls.Add(importButton);
+
+        // Q20: how Mana may use imported skills (default: ask the first time).
+        importedSkillUseBox.Items.AddRange(new object[] { "Use freely", "Ask each time", "Ask the first time" });
+        importedSkillUseBox.SelectedIndex = 2;
+        importedSkillUseBox.BackColor = DarkTheme.Panel2;
+        importedSkillUseBox.ForeColor = DarkTheme.Text;
+        importedSkillUseBox.SelectionChangeCommitted += async (_, _) =>
+        {
+            try
+            {
+                await backendClient.SetImportedSkillUseAsync(ImportedSkillUseModes[importedSkillUseBox.SelectedIndex]);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"SettingsPanel: failed to save the imported-skills setting. {ex.Message}");
+            }
+        };
+        var settingRow = new FlowLayoutPanel { Dock = DockStyle.Top, Height = 32, FlowDirection = FlowDirection.LeftToRight, BackColor = DarkTheme.Background };
+        settingRow.Controls.Add(new Label { Text = "Imported skills:", AutoSize = true, ForeColor = DarkTheme.Text, Padding = new Padding(0, 6, 0, 0) });
+        settingRow.Controls.Add(importedSkillUseBox);
 
         var page = new TabPage("Skills");
         page.Controls.Add(skillsList);
+        page.Controls.Add(settingRow);
         page.Controls.Add(buttonRow);
         return page;
+    }
+
+    private async Task ImportSkillFolderAsync()
+    {
+        using var dialog = new FolderBrowserDialog { Description = "Pick a skill folder (one with a SKILL.md in it)", UseDescriptionForTitle = true };
+        if (dialog.ShowDialog(this) != DialogResult.OK)
+        {
+            return;
+        }
+        string? error;
+        try
+        {
+            error = await backendClient.ImportSkillFolderAsync(dialog.SelectedPath);
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+        }
+        if (IsDisposed)
+        {
+            return;
+        }
+        if (error is null)
+        {
+            MessageBox.Show(this, "Import submitted -- review and approve it from the Approvals tab. Nothing in the folder runs.", "Import Skill", MessageBoxButtons.OK, MessageBoxIcon.Information);
+        }
+        else
+        {
+            MessageBox.Show(this, $"Couldn't import that folder: {error}", "Import Skill", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
     }
 
     private async Task CreateSkillAsync()
@@ -600,6 +757,23 @@ internal sealed class SettingsPanel : UserControl
                 ShowLoadFailure(skillsList, ex.Message);
             }
             return;
+        }
+        if (IsDisposed)
+        {
+            return;
+        }
+
+        try
+        {
+            var mode = Array.IndexOf(ImportedSkillUseModes, await backendClient.GetImportedSkillUseAsync());
+            if (!IsDisposed && mode >= 0)
+            {
+                importedSkillUseBox.SelectedIndex = mode;
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"SettingsPanel: failed to load the imported-skills setting. {ex.Message}");
         }
         if (IsDisposed)
         {

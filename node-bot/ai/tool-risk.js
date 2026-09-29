@@ -32,10 +32,11 @@ function maxTier(a, b) {
 // and coding__propose_edit refuse credential paths themselves, #268), so
 // only tools *not* listed here -- an MCP server's, anything added later --
 // get their arguments inspected. "read" means nothing on the user's machine
-// changes or leaves it: expression__set and session_goal__finish only touch
-// Mana's own reply state, and coding__propose_edit only writes a .diff under
-// Mana's own data dir -- the user applies it themselves (#276), so asking
-// first would only lose the diff path from the reply.
+// changes or leaves it: expression__set, session_goal__finish and
+// deep_thinking__set only touch Mana's own reply state, and
+// coding__propose_edit only writes a .diff under Mana's own data dir -- the
+// user applies it themselves (#276), so asking first would only lose the
+// diff path from the reply.
 const BUILTIN_TIERS = {
   read_file: "read",
   session_search__query: "read",
@@ -44,19 +45,23 @@ const BUILTIN_TIERS = {
   vision__look: "read",
   expression__set: "read",
   session_goal__finish: "read",
+  deep_thinking__set: "read",
   browser_automation__snapshot: "read",
   coding__propose_edit: "read",
   memory__remember: "write",
   skill__create: "write",
   skill__run: "write",
   snapshot__restore: "write",
+  // #787: runs the workspace's tests -- the user's own code. #669 has no
+  // execute tier; "write" is what an unrecognized command gets.
+  coding__run_tests: "write",
   browser_automation__navigate: "network",
   browser_automation__click: "network",
   browser_automation__type: "network",
 };
 
 // Built-ins that already ask through the approval gate themselves
-// (memory-write, skill-write/skill-run, snapshot-restore, browser-
+// (memory-write, skill-write/skill-run, snapshot-restore, coding-run-tests, browser-
 // automation's first-use gate). Per-call approval passes them through
 // rather than asking twice for one call.
 const SELF_GATED = new Set([
@@ -64,6 +69,7 @@ const SELF_GATED = new Set([
   "skill__create",
   "skill__run",
   "snapshot__restore",
+  "coding__run_tests",
   "browser_automation__navigate",
   "browser_automation__click",
   "browser_automation__type",
@@ -445,8 +451,11 @@ function resolveToolApprovalMode(...candidates) {
 // binding ("tool-exec:<digest>"), so approving `dir` never approves `del`.
 // Executors are re-registered per reply with the latest policy -- the same
 // tradeoff hooks-store.js's "hook-ask" already documents.
+// options.alwaysReview: further tiers that, like destructive, always go to a
+// human and are never granted (#699: a heartbeat check's install calls).
 function wrapWithRiskGate(policy, approvalGate, options = {}) {
   const mode = resolveToolApprovalMode(options.mode);
+  const alwaysReview = options.alwaysReview || [];
   const bindingDeps = options.bindingDeps || {};
 
   async function ask(name, args, risk) {
@@ -456,7 +465,7 @@ function wrapWithRiskGate(policy, approvalGate, options = {}) {
       payload: { name, args, ...(binding ? { digest: binding.digest } : {}) },
       scanText: risk.command || undefined,
       grantKey: binding ? `tool-exec:${binding.digest}` : undefined,
-      forceReview: risk.tier === "destructive",
+      forceReview: risk.tier === "destructive" || alwaysReview.includes(risk.tier),
       details: {
         tier: risk.tier,
         reasons: risk.reasons,
@@ -493,9 +502,13 @@ function wrapWithRiskGate(policy, approvalGate, options = {}) {
 
 module.exports = {
   MODES,
+  PATH_KEY_RE,
   classifyToolCall,
+  stringEntries,
+  tokenize,
   resolveToolApprovalMode,
   extractHosts,
   bindCall,
+  resolveExecutable,
   wrapWithRiskGate,
 };

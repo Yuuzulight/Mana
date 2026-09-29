@@ -4,6 +4,7 @@ const {
   sendValidationError,
 } = require("../request-validation");
 const { significantWords: sharedSignificantWords } = require("../utils/word-overlap");
+const { readSkillFolder } = require("../skills-store");
 
 const KEY = "skills";
 const DEFAULT_STALE_DAYS = 30;
@@ -60,6 +61,63 @@ function registerSkillsRoutes(app, context = {}) {
         scanText: body,
       });
       if (outcome.status === "approved") return res.status(201).json(outcome.result);
+      return res.status(202).json(outcome);
+    } catch (e) {
+      if (e instanceof ValidationError) return sendValidationError(res, e);
+      console.error(e);
+      return res.status(400).json({ error: e.message || String(e) });
+    }
+  });
+
+  // Issue #664: import a SKILL.md folder (OpenClaw/AgentSkills). Always a
+  // pending proposal -- forceReview, so no always-allow, session grant or
+  // Guardian verdict can wave a third-party skill through -- whose summary
+  // names its files, scripts and requirements. The files are read now and
+  // carried in the request, so approving writes exactly what was shown.
+  // Nothing in the folder runs, on import or on approval.
+  // Local-only: it reads a path on this PC.
+  context.approvalGate?.registerExecutor?.("skill-import", (payload) => skillsStore.importSkill(payload));
+
+  // Q20: Settings > Skills' "Imported skills" choice -- free, each (ask
+  // every time) or first (ask the first time; the default). Changing it is
+  // local-only, like import: it loosens or tightens a safety gate.
+  app.get("/skill-settings", (req, res) => {
+    return res.json({ importedSkillUse: skillsStore.getImportedSkillUse() });
+  });
+  app.put("/skill-settings", (req, res) => {
+    try {
+      if (typeof context.isLocalRestartRequest !== "function" || !context.isLocalRestartRequest(req)) {
+        return res.status(403).json({ error: "this endpoint is only available from this PC" });
+      }
+      skillsStore.setImportedSkillUse(req.body?.importedSkillUse);
+      return res.json({ importedSkillUse: skillsStore.getImportedSkillUse() });
+    } catch (e) {
+      return res.status(400).json({ error: e.message || String(e) });
+    }
+  });
+  app.post("/skills/import", async (req, res) => {
+    try {
+      if (typeof context.isLocalRestartRequest !== "function" || !context.isLocalRestartRequest(req)) {
+        return res.status(403).json({ error: "this endpoint is only available from this PC" });
+      }
+      const folder = readSkillFolder(requireString(req.body?.path, "path"));
+      const outcome = await context.approvalGate.requestApproval("skill-import", {
+        summary: [
+          `Import skill "${folder.name}" -- ${folder.files.length} file(s)`,
+          folder.scripts.length ? `scripts (never run on import): ${folder.scripts.join(", ")}` : "no scripts",
+          folder.requires.length ? `needs ${folder.requires.join(", ")}` : "",
+        ].filter(Boolean).join("; "),
+        payload: { files: folder.files },
+        scanText: folder.files.filter((f) => f.encoding === "utf8").map((f) => f.content).join("\n"),
+        forceReview: true,
+        details: {
+          name: folder.name,
+          description: folder.description,
+          files: folder.files.map((f) => f.path),
+          scripts: folder.scripts,
+          requires: folder.requires,
+        },
+      });
       return res.status(202).json(outcome);
     } catch (e) {
       if (e instanceof ValidationError) return sendValidationError(res, e);
@@ -192,11 +250,17 @@ function findMatchingSkill(skills, text) {
 async function contributePromptContext(text, context = {}) {
   const skillsStore = context.skillsStore;
   if (!skillsStore) return "";
-  const skills = skillsStore.listSkills();
+  // A skill that cannot run here (wrong OS, missing binary -- see
+  // listSkills' missingRequirements) is still listed, just never offered.
+  const skills = skillsStore.listSkills().filter((skill) => skill.available !== false);
   const matched = findMatchingSkill(skills, text);
   if (!matched) return "";
-  const full = skillsStore.viewSkill(matched.name);
+  const full = skillsStore.viewSkill(matched.name, { touch: false });
   if (!full) return "";
+  // Q20: an imported skill's text only goes in unasked when Settings > Skills
+  // allows it; otherwise Mana reaches it through skill__view, which asks.
+  if (full.dir && !skillsStore.mayUseImportedSkill?.(full.name)) return "";
+  skillsStore.touchSkillUsage?.(full.name);
   return `[SKILL: ${full.name}]\n${full.body}\n[END SKILL]`;
 }
 
