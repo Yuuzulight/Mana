@@ -1167,44 +1167,11 @@ function registerPendingWritesRoutes(app, deps) {
         JSON.stringify(data, null, 2),
         "utf8",
       );
-      // Optionally archive immediately
-      try {
-        const archiveDir = path.join(PENDING_DIR, "archive");
-        await fs.promises.mkdir(archiveDir, { recursive: true });
-        const pendingPath = `${base}.json`;
-        let pendingPayload = null;
-        try {
-          pendingPayload = JSON.parse(
-            await fs.promises.readFile(pendingPath, "utf8"),
-          );
-        } catch (e) {
-          pendingPayload = null;
-        }
-        const outPath = path.join(archiveDir, `${id}.approved.json`);
-        const archiveObj = {
-          id,
-          status: "approved",
-          pending: pendingPayload,
-          action: data,
-          archivedAt: new Date().toISOString(),
-        };
-        await fs.promises.writeFile(
-          outPath,
-          JSON.stringify(archiveObj, null, 2),
-          "utf8",
-        );
-        // remove originals
-        try {
-          if (fs.existsSync(pendingPath))
-            await fs.promises.unlink(pendingPath);
-        } catch (e) {}
-        try {
-          if (fs.existsSync(approvedPath))
-            await fs.promises.unlink(approvedPath);
-        } catch (e) {}
-      } catch (e) {
-        // ignore archive errors
-      }
+      // #838: the marker is all this route writes. The waiting loop
+      // (acp-autonomous-loop.js's waitForApprovalResult) polls for it and
+      // archives the request itself once it has read the decision --
+      // archiving here deleted the marker before the loop could see it,
+      // so every approval from outside timed out.
 
       return res.json({ ok: true, id });
     } catch (err) {
@@ -1232,44 +1199,11 @@ function registerPendingWritesRoutes(app, deps) {
         JSON.stringify(data, null, 2),
         "utf8",
       );
-      // Optionally archive immediately
-      try {
-        const archiveDir = path.join(PENDING_DIR, "archive");
-        await fs.promises.mkdir(archiveDir, { recursive: true });
-        const pendingPath = `${base}.json`;
-        let pendingPayload = null;
-        try {
-          pendingPayload = JSON.parse(
-            await fs.promises.readFile(pendingPath, "utf8"),
-          );
-        } catch (e) {
-          pendingPayload = null;
-        }
-        const outPath = path.join(archiveDir, `${id}.rejected.json`);
-        const archiveObj = {
-          id,
-          status: "rejected",
-          pending: pendingPayload,
-          action: data,
-          archivedAt: new Date().toISOString(),
-        };
-        await fs.promises.writeFile(
-          outPath,
-          JSON.stringify(archiveObj, null, 2),
-          "utf8",
-        );
-        // remove originals
-        try {
-          if (fs.existsSync(pendingPath))
-            await fs.promises.unlink(pendingPath);
-        } catch (e) {}
-        try {
-          if (fs.existsSync(rejectedPath))
-            await fs.promises.unlink(rejectedPath);
-        } catch (e) {}
-      } catch (e) {
-        // ignore archive errors
-      }
+      // #838: the marker is all this route writes. The waiting loop
+      // (acp-autonomous-loop.js's waitForApprovalResult) polls for it and
+      // archives the request itself once it has read the decision --
+      // archiving here deleted the marker before the loop could see it,
+      // so every approval from outside timed out.
 
       return res.json({ ok: true, id });
     } catch (err) {

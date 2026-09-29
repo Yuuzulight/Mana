@@ -552,8 +552,17 @@ internal sealed class ManaApplicationContext : ApplicationContext
         {
             // Edit proposals need admin access / the editors integration.
         }
+        IReadOnlyList<ManaPendingWrite> writes = [];
+        try
+        {
+            writes = await backendClient.GetPendingWritesAsync();
+        }
+        catch
+        {
+            // Admin-only, like edit proposals.
+        }
 
-        var items = WaitingForYou.Items(approvals, proposals);
+        var items = WaitingForYou.Items(approvals, proposals, writes);
         avatarOverlay.SetActivity(AvatarState.Waiting, items.Count > 0);
         normalTrayIcon ??= trayIcon.Icon;
         trayIcon.Icon = items.Count > 0 ? waitingTrayIcon ??= WaitingForYou.Badged(normalTrayIcon!) : normalTrayIcon;
