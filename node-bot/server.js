@@ -525,8 +525,11 @@ const gamingWatch = createGamingWatch({
 if (process.env.NODE_ENV !== "test" && !process.env.NODE_TEST_CONTEXT) {
   gamingWatch.poll();
   setInterval(gamingWatch.poll, 30 * 1000).unref();
-  // #697: proactive remarks held during play go out after the game.
-  require("./proactive").watchGaming(gamingWatch.isGaming);
+  // #697: proactive remarks held during play go out after the game, or
+  // one in a break -- alt-tabbed out of the game (foreground.js).
+  require("./proactive").watchGaming(gamingWatch.isGaming, () =>
+    require("./foreground").isAwayFromGame(GAMING_PROCESS_NAMES),
+  );
   setInterval(require("./proactive").flush, 30 * 1000).unref();
 }
 
@@ -1998,6 +2001,16 @@ function registerRoutes(app, upload, deps = {}) {
         }
       }
     });
+
+  // #697 part 1: the native launcher reports each foreground-window change.
+  app.post("/internal/foreground-report", (req, res) => {
+    try {
+      require("./foreground").reportForeground(req.body || {});
+      return res.json({ ok: true });
+    } catch (e) {
+      return res.status(400).json({ error: e.message });
+    }
+  });
 
   // Reported by windows-launcher's powerMonitor.getSystemIdleTime() poll.
   // Fires consolidation once per idle period (resets when the user is seen

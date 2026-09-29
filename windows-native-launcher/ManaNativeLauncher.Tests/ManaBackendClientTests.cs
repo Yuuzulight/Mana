@@ -1248,6 +1248,25 @@ public class ManaBackendClientTests
         Assert.Equal("{\"idleSeconds\":1500}", body);
     }
 
+    // #697 part 1: the route and body node-bot's foreground.js reads.
+    [Fact]
+    public async Task ReportForegroundAsync_PostsAppAndTitleToTheForegroundReportRoute()
+    {
+        string? path = null;
+        string? body = null;
+        var handler = new FakeHttpMessageHandler(request =>
+        {
+            path = request.RequestUri!.AbsolutePath;
+            body = request.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
+            return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("{\"ok\":true}") };
+        });
+
+        await new ManaBackendClient(handler).ReportForegroundAsync("chrome.exe", "Docs");
+
+        Assert.Equal("/internal/foreground-report", path);
+        Assert.Equal("{\"app\":\"chrome.exe\",\"title\":\"Docs\"}", body);
+    }
+
     // #661: idleTriggered:true (Dream Mode's consolidation just started)
     // is what turns the avatar's Dreaming state on.
     [Fact]
