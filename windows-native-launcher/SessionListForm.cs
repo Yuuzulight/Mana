@@ -38,11 +38,14 @@ internal sealed class SessionListForm : Form
     private readonly ListView list = new();
     private readonly Button newChatButton = new();
     private readonly ChatView chatView;
-    // #687: filters the list by title as you type.
+    // #687: filters the list by title as you type; from 3 characters on,
+    // also by what was said (contentMatches, from the backend).
     private readonly TextBox searchBox = new();
+    private HashSet<string> contentMatches = new();
+    private int searchVersion;
     private System.Collections.Generic.IReadOnlyList<ManaSession> sessions = Array.Empty<ManaSession>();
     private readonly AvatarOverlayForm avatarOverlay;
-    private readonly Panel avatarVisual = new();
+    private readonly LiveAvatarPanel avatarVisual = new();
     private readonly Button avatarZoomButton = new();
     private readonly Label avatarNameLabel = new();
     private readonly Label avatarStatusLabel = new();
@@ -65,6 +68,7 @@ internal sealed class SessionListForm : Form
     private readonly Font activeSessionFont;
     private readonly Font messageBoxFont;
     private readonly MessageQueueStrip messageQueue = new();
+    private readonly ImageAttachmentStrip attachments = new();
     // ponytail: polls instead of hooking every path back to Idle in VoiceLoop; only runs while something is queued.
     private readonly System.Windows.Forms.Timer messageQueueTimer = new() { Interval = 300 };
     // Q11: flips Send to Stop while she's replying.
@@ -123,7 +127,11 @@ internal sealed class SessionListForm : Form
         searchBox.BorderStyle = BorderStyle.FixedSingle;
         searchBox.BackColor = DarkTheme.IsLight ? Color.White : DarkTheme.Panel2;
         searchBox.ForeColor = DarkTheme.Text;
-        searchBox.TextChanged += (_, _) => ShowSessions();
+        searchBox.TextChanged += async (_, _) =>
+        {
+            ShowSessions();
+            await SearchContentAsync();
+        };
 
         list.Dock = DockStyle.Fill;
         list.View = View.Details;
@@ -187,12 +195,27 @@ internal sealed class SessionListForm : Form
         avatarZoomButton.ForeColor = DarkTheme.Muted;
         avatarZoomButton.FlatAppearance.BorderColor = DarkTheme.Border;
         avatarZoomButton.FlatAppearance.BorderSize = 1;
-        railToolTip.SetToolTip(avatarZoomButton, "Bring the avatar overlay to the front");
-        avatarZoomButton.Click += (_, _) =>
+        if (avatarOverlay.HasLiveModel)
         {
-            avatarOverlay.Show();
-            avatarOverlay.Activate();
-        };
+            // #685: the live avatar replaces the placeholder, drawn from the
+            // overlay's own model; the zoom button cycles Electron's
+            // full / waist / bust framing, remembered across launches.
+            avatarVisual.Height = 200;
+            avatarVisual.Framing = ManaSettingsStore.Load().AvatarFraming;
+            railToolTip.SetToolTip(avatarZoomButton, LiveAvatarPanel.FramingTitle(avatarVisual.Framing));
+            avatarZoomButton.Click += (_, _) => CycleAvatarFraming();
+            avatarVisual.VisibleChanged += (_, _) => UpdateAvatarMirror();
+            Resize += (_, _) => UpdateAvatarMirror(); // minimize/restore
+        }
+        else
+        {
+            railToolTip.SetToolTip(avatarZoomButton, "Bring the avatar overlay to the front");
+            avatarZoomButton.Click += (_, _) =>
+            {
+                avatarOverlay.Show();
+                avatarOverlay.Activate();
+            };
+        }
 
         avatarNameLabel.Text = "Mana";
         avatarNameLabel.Dock = DockStyle.Top;
@@ -213,7 +236,7 @@ internal sealed class SessionListForm : Form
         // Width matches the sidebar's starting width so avatarZoomButton's
         // right-edge anchor is measured against the width it's placed for
         // (a Panel starts 200 wide, which anchored the button off the card).
-        var avatarCard = new Panel { Dock = DockStyle.Bottom, Width = 240, Height = 150, BackColor = DarkTheme.Panel, Padding = new Padding(10) };
+        var avatarCard = new Panel { Dock = DockStyle.Bottom, Width = 240, Height = 60 + avatarVisual.Height, BackColor = DarkTheme.Panel, Padding = new Padding(10) };
         avatarCard.Paint += OnPaintAvatarCardBorder;
         // WinForms docks the LAST-added child first (see the main
         // Controls.Add block below), so visual/name/status -- top to
@@ -337,6 +360,7 @@ internal sealed class SessionListForm : Form
         // its queue (#668) sits just above it, then the chat fills the rest.
         chatArea.Controls.Add(chatLog);
         chatArea.Controls.Add(messageQueue);
+        chatArea.Controls.Add(attachments);
         chatArea.Controls.Add(BuildMessageBox());
         chatLog.ReplyEnded += () => _ = OfferPendingEditsAsync(chatLog);
         // Q62: VoiceLoop started a session on its own (launch, or 4 h idle);
@@ -528,6 +552,25 @@ internal sealed class SessionListForm : Form
         async Task SendAsync()
         {
             var text = box.Text;
+            if (attachments.Count > 0)
+            {
+                // #679: a message with images doesn't join the queue; while
+                // Mana is busy (or messages are queued) it stays in the box
+                // for another Send.
+                if (messageQueue.Count > 0)
+                {
+                    return;
+                }
+                var sending = voiceLoop.SubmitTypedCommandAsync(text, attachments.Images);
+                if (sending.IsCompleted && !sending.Result)
+                {
+                    return;
+                }
+                box.Clear();
+                attachments.Clear();
+                await sending;
+                return;
+            }
             if (text.Trim().Length == 0)
             {
                 return;
@@ -539,9 +582,56 @@ internal sealed class SessionListForm : Form
                 messageQueueTimer.Start();
             }
         }
+        // #679: Ctrl+V with an image (or copied image files) on the
+        // clipboard, or image files dropped on the box, attach them.
+        void AttachFiles(IEnumerable<string> paths)
+        {
+            foreach (var path in paths.Where(ImageAttachmentStrip.IsImageFile))
+            {
+                if (attachments.Count >= ImageAttachmentStrip.MaxImages)
+                {
+                    break;
+                }
+                attachments.AddFile(path);
+            }
+        }
+        static string[] DroppedFiles(IDataObject? data) =>
+            data?.GetData(DataFormats.FileDrop) is string[] files ? files.Where(ImageAttachmentStrip.IsImageFile).ToArray() : Array.Empty<string>();
+        box.AllowDrop = true;
+        box.DragEnter += (_, e) => e.Effect = DroppedFiles(e.Data).Length > 0 ? DragDropEffects.Copy : DragDropEffects.None;
+        box.DragDrop += (_, e) => AttachFiles(DroppedFiles(e.Data));
+        // True if the clipboard held images (then the text box's own paste is
+        // skipped). Another app holding the clipboard open makes it throw.
+        bool PasteImages()
+        {
+            try
+            {
+                if (Clipboard.ContainsImage())
+                {
+                    using var image = Clipboard.GetImage();
+                    if (image is not null)
+                    {
+                        attachments.Add(image);
+                    }
+                    return true;
+                }
+                var copied = DroppedFiles(Clipboard.GetDataObject());
+                AttachFiles(copied);
+                return copied.Length > 0;
+            }
+            catch (System.Runtime.InteropServices.ExternalException ex)
+            {
+                Console.WriteLine($"SessionListForm: couldn't read the clipboard. {ex.Message}");
+                return false;
+            }
+        }
         box.KeyDown += async (_, e) =>
         {
-            if (e.KeyCode == Keys.Enter && !e.Shift)
+            if (e.KeyCode == Keys.V && e.Control && !e.Alt && PasteImages())
+            {
+                e.SuppressKeyPress = true;
+            }
+            else if (e.KeyCode == Keys.Enter && !e.Shift)
             {
                 e.SuppressKeyPress = true;
                 await SendAsync();
@@ -881,6 +971,29 @@ internal sealed class SessionListForm : Form
         RefreshAvatarCard(state);
     }
 
+    // #685: renders into the card only while it's on screen -- not while
+    // the window is hidden, minimized or the sidebar is collapsed.
+    private void UpdateAvatarMirror()
+    {
+        avatarOverlay.Mirror = avatarVisual.Visible && WindowState != FormWindowState.Minimized ? avatarVisual : null;
+    }
+
+    private void CycleAvatarFraming()
+    {
+        avatarVisual.Framing = LiveAvatarPanel.NextFraming(avatarVisual.Framing);
+        railToolTip.SetToolTip(avatarZoomButton, LiveAvatarPanel.FramingTitle(avatarVisual.Framing));
+        try
+        {
+            var settings = ManaSettingsStore.Load();
+            settings.AvatarFraming = avatarVisual.Framing;
+            settings.Save();
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            Console.WriteLine($"SessionListForm: couldn't save the avatar framing. {ex.Message}");
+        }
+    }
+
     // #538's own card text was literally "Mana — idle" (em dash, no
     // colon) -- kept verbatim, just with the hardcoded "idle" replaced by
     // the real state.
@@ -931,6 +1044,10 @@ internal sealed class SessionListForm : Form
         using (var bgBrush = new LinearGradientBrush(rect, DarkTheme.Panel2, DarkTheme.Panel, LinearGradientMode.Vertical))
         {
             g.FillRectangle(bgBrush, rect);
+        }
+        if (avatarVisual.HasFrame)
+        {
+            return; // #685: the live avatar is drawn over the gradient, not the placeholder
         }
 
         var glowRect = new RectangleF(rect.Width * 0.05f, -rect.Height * 0.5f, rect.Width * 0.9f, rect.Height * 1.1f);
@@ -1320,11 +1437,49 @@ internal sealed class SessionListForm : Form
         ShowSessions();
     }
 
+    // #687 part 3: content matches for 3+ characters. Debounced, and a reply
+    // for an older query is dropped. On failure the list stays title-only.
+    private async Task SearchContentAsync()
+    {
+        var version = ++searchVersion;
+        var query = searchBox.Text.Trim();
+        if (query.Length < 3)
+        {
+            if (contentMatches.Count > 0)
+            {
+                contentMatches = new();
+                ShowSessions();
+            }
+            return;
+        }
+        await Task.Delay(250);
+        if (version != searchVersion)
+        {
+            return;
+        }
+        HashSet<string> ids;
+        try
+        {
+            ids = await backendClient.SearchSessionIdsAsync(query);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"SessionListForm: content search failed. {ex.Message}");
+            return;
+        }
+        if (IsDisposed || version != searchVersion)
+        {
+            return;
+        }
+        contentMatches = ids;
+        ShowSessions();
+    }
+
     private void ShowSessions()
     {
         list.BeginUpdate();
         list.Items.Clear();
-        foreach (var session in sessions.Where(s => SessionListFormatter.MatchesSearch(s, searchBox.Text)))
+        foreach (var session in sessions.Where(s => SessionListFormatter.MatchesSearch(s, searchBox.Text) || contentMatches.Contains(s.SessionId)))
         {
             var item = new ListViewItem(SessionListFormatter.FormatDisplayName(session))
             {
@@ -1346,6 +1501,7 @@ internal sealed class SessionListForm : Form
         if (disposing)
         {
             avatarOverlay.StateChanged -= OnAvatarStateChanged;
+            avatarOverlay.Mirror = null; // #685: before avatarVisual is disposed
             activeSessionFont.Dispose();
             messageBoxFont.Dispose();
             avatarNameFont.Dispose();

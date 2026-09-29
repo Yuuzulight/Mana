@@ -338,6 +338,15 @@ internal sealed class ManaBackendClient
             && triggered.ValueKind == JsonValueKind.True;
     }
 
+    // #697 part 1: which app just came to the front (ForegroundWindowReporter).
+    public async Task ReportForegroundAsync(string app, string title)
+    {
+        var payload = JsonSerializer.Serialize(new { app, title });
+        using var content = new StringContent(payload, Encoding.UTF8, "application/json");
+        using var response = await http.PostAsync("/internal/foreground-report", content);
+        response.EnsureSuccessStatusCode();
+    }
+
     // #527: node-bot's configured llama-server profiles -- see
     // model-management.js's getModelStatus/buildProfileStatus for the
     // full shape; this only carries what compare-mode needs.
@@ -615,6 +624,30 @@ internal sealed class ManaBackendClient
             }
         }
         return sessions;
+    }
+
+    // #687 part 3: ids of the sessions whose stored messages contain every
+    // word of query (GET /sessions?q=). Empty unless the backend echoes
+    // `query` -- an older one ignores q and would list every session.
+    public async Task<HashSet<string>> SearchSessionIdsAsync(string query)
+    {
+        using var response = await http.GetAsync($"/sessions?q={Uri.EscapeDataString(query)}");
+        response.EnsureSuccessStatusCode();
+        await using var stream = await response.Content.ReadAsStreamAsync();
+        using var document = await JsonDocument.ParseAsync(stream);
+        var ids = new HashSet<string>();
+        if (document.RootElement.TryGetProperty("query", out _)
+            && document.RootElement.TryGetProperty("sessions", out var sessionsElement))
+        {
+            foreach (var element in sessionsElement.EnumerateArray())
+            {
+                if (element.TryGetProperty("sessionId", out var idElement) && idElement.GetString() is { } id)
+                {
+                    ids.Add(id);
+                }
+            }
+        }
+        return ids;
     }
 
     // Returns false (rather than throwing) on a 404 -- "the session doesn't
@@ -900,12 +933,13 @@ internal sealed class ManaBackendClient
         return skills;
     }
 
-    // #664: queue a SKILL.md folder for import. node-bot reads it now and
-    // always asks in Approvals before writing anything. Returns null when
-    // queued, else node-bot's error (no SKILL.md, not local, ...).
-    public async Task<string?> ImportSkillFolderAsync(string folderPath)
+    // #664: queue a SKILL.md folder, or a .zip of one (Q21), for import.
+    // node-bot reads it now and always asks in Approvals before writing
+    // anything. Returns null when queued, else node-bot's error (no
+    // SKILL.md, not local, ...).
+    public async Task<string?> ImportSkillAsync(string path)
     {
-        var payload = JsonSerializer.Serialize(new { path = folderPath });
+        var payload = JsonSerializer.Serialize(new { path });
         using var content = new StringContent(payload, Encoding.UTF8, "application/json");
         using var response = await http.PostAsync("/skills/import", content);
         if (response.IsSuccessStatusCode)

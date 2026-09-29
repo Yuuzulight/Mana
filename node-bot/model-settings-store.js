@@ -4,6 +4,9 @@
 // override -- keep auto-discovering by filename as before."
 const fs = require("node:fs");
 const path = require("node:path");
+const dpapi = require("./dpapi");
+
+const API_KEY_ENTROPY = "Mana.BrainApiKey";
 
 function createModelSettingsStore(options = {}) {
   const dataDir =
@@ -11,6 +14,16 @@ function createModelSettingsStore(options = {}) {
     process.env.MANA_MODEL_SETTINGS_DIR ||
     path.join(__dirname, "data");
   const filePath = path.join(dataDir, "model-settings.json");
+  // #645 (Q19): brain.apiKey is saved DPAPI-encrypted as apiKeyProtected,
+  // like the launcher's AdminToken (#804). Tests pass a fake.
+  const secrets = options.secrets || {
+    protect: (value) => dpapi.protect(value, API_KEY_ENTROPY),
+    unprotect: (blob) => dpapi.unprotect(blob, API_KEY_ENTROPY),
+  };
+  // getBrainSettings runs on every reply and decrypting starts PowerShell,
+  // so the last blob's plain value is kept in memory.
+  let cachedKey = { blob: null, value: "" };
+  let migrationTried = false;
 
   function ensureDir() {
     fs.mkdirSync(dataDir, { recursive: true });
@@ -61,13 +74,55 @@ function createModelSettingsStore(options = {}) {
   // whether that counts as "remote" for MANA_ALLOW_REMOTE_AI purposes is
   // decided by shouldUseRemoteAi() (see ai/local-ai.js) based on baseUrl's
   // host, not by this store.
+  // The fields to save for an API key: encrypted, or -- when DPAPI isn't
+  // there (not Windows) or fails -- the old plain field, said out loud.
+  function apiKeyFields(value) {
+    if (!value) return {};
+    try {
+      const blob = secrets.protect(value);
+      cachedKey = { blob, value };
+      return { apiKeyProtected: blob };
+    } catch (e) {
+      console.warn(`[Mana] Couldn't encrypt the Settings API key (${e.message}); it's saved in plain text.`);
+      return { apiKey: value };
+    }
+  }
+
+  function readApiKey(brain) {
+    if (typeof brain.apiKeyProtected === "string" && brain.apiKeyProtected) {
+      if (cachedKey.blob !== brain.apiKeyProtected) {
+        let value = "";
+        try {
+          value = secrets.unprotect(brain.apiKeyProtected);
+        } catch (e) {
+          console.warn(
+            "[Mana] The Settings API key couldn't be decrypted (another Windows account, a copied profile, or damage). Enter it again in Settings.",
+          );
+        }
+        cachedKey = { blob: brain.apiKeyProtected, value };
+      }
+      return cachedKey.value;
+    }
+    return typeof brain.apiKey === "string" ? brain.apiKey : "";
+  }
+
   function getBrainSettings() {
     const settings = readAll();
     const brain = settings.brain && typeof settings.brain === "object" ? settings.brain : {};
+    // A file from before #645 has a plain apiKey: encrypt it once, now.
+    if (!migrationTried && typeof brain.apiKey === "string" && brain.apiKey && !brain.apiKeyProtected) {
+      migrationTried = true;
+      const fields = apiKeyFields(brain.apiKey);
+      if (fields.apiKeyProtected) {
+        const { apiKey, ...rest } = brain;
+        settings.brain = { ...rest, ...fields };
+        writeAll(settings);
+      }
+    }
     return {
       type: brain.type === "openai_compatible" ? "openai_compatible" : "local",
       baseUrl: typeof brain.baseUrl === "string" ? brain.baseUrl : "",
-      apiKey: typeof brain.apiKey === "string" ? brain.apiKey : "",
+      apiKey: readApiKey(brain),
       model: typeof brain.model === "string" ? brain.model : "",
     };
   }
@@ -79,7 +134,11 @@ function createModelSettingsStore(options = {}) {
       next.type = partial.type === "openai_compatible" ? "openai_compatible" : "local";
     }
     if (partial.baseUrl !== undefined) next.baseUrl = String(partial.baseUrl || "").trim();
-    if (partial.apiKey !== undefined) next.apiKey = String(partial.apiKey || "").trim();
+    if (partial.apiKey !== undefined) {
+      delete next.apiKey;
+      delete next.apiKeyProtected;
+      Object.assign(next, apiKeyFields(String(partial.apiKey || "").trim()));
+    }
     if (partial.model !== undefined) next.model = String(partial.model || "").trim();
     settings.brain = next;
     writeAll(settings);

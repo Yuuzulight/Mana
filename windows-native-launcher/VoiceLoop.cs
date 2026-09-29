@@ -104,6 +104,14 @@ internal sealed class VoiceLoop : IDisposable
     private long msSinceLastSpeech;
     private long bargeInHeldMs; // only meaningful while mode == Speaking
 
+    // #665: read each time listening starts (see BargeInPolicy).
+    private BargeInMode bargeInMode = BargeInMode.MinWords;
+    private int bargeInMinWords = BargeInPolicy.DefaultMinWords;
+    // #665 notWhileSpeaking: recording what I say while she keeps talking
+    // (mode stays Speaking), and what I said, held until she finishes.
+    private bool hearingOverSpeech;
+    private (short[] Samples, long SpeechMs)? queuedTurn;
+
     // #513: the not-yet-played sentences of a reply a barge-in cut off,
     // kept so a backchannel/unclassified interruption (or the end of an
     // inserted new_question answer) can resume them from the cut point.
@@ -156,6 +164,21 @@ internal sealed class VoiceLoop : IDisposable
     // tray-status poll result, not a stale snapshot from construction time.
     private readonly ScreenContextReader? screenContextReader;
     private readonly Func<bool> isGamingModeActive;
+
+    // #859: Electron's gaming-mode listen pacing. Electron listens in
+    // discrete rounds and, while a game runs, waits before the next round
+    // after one that led nowhere; native captures continuously, so the
+    // same pause means ignoring mic frames until this time (TickCount64).
+    // Under stateLock.
+    private long listenPausedUntilMs;
+    internal const long GamingAwakePauseMs = 1800;  // GAMING_IDLE_PAUSE_MS
+    internal const long GamingAsleepPauseMs = 3200; // GAMING_DEEP_IDLE_PAUSE_MS
+
+    // How long to stop listening after a segment that led to no turn: 0
+    // outside gaming mode; after a barge-in's segment never (she has a
+    // reply to resume).
+    internal static long GamingListenPauseMs(bool gaming, bool awake, bool wasInterruption) =>
+        !gaming || wasInterruption ? 0 : awake ? GamingAwakePauseMs : GamingAsleepPauseMs;
 
     // #585: populated by ManaApplicationContext's own periodic capture
     // timer (gated behind MANA_SCREEN_SENSING_ENABLED, matching
@@ -269,6 +292,7 @@ internal sealed class VoiceLoop : IDisposable
         catch (Exception ex)
         {
             Console.WriteLine($"VoiceLoop: couldn't start listening. {ex.Message}");
+            LogCrash(ex, "start");
             lastError = $"Listening error: {ex.Message}";
             Stop();
         }
@@ -284,6 +308,10 @@ internal sealed class VoiceLoop : IDisposable
             ToggleListening();
         }
         awake = IsListening;
+        lock (stateLock)
+        {
+            listenPausedUntilMs = 0; // #859: she was just called on purpose
+        }
     }
 
     public void Start()
@@ -296,11 +324,14 @@ internal sealed class VoiceLoop : IDisposable
         // here, not just in Stop(), in case a turn that was already past
         // the wake-word gate when Stop() ran set it back to true since.
         awake = false;
+        var settings = ManaSettingsStore.Load();
+        bargeInMode = BargeInPolicy.Resolve(Environment.GetEnvironmentVariable("MANA_BARGE_IN_MODE"), settings.BargeInMode);
+        bargeInMinWords = BargeInPolicy.MinWords(Environment.GetEnvironmentVariable("MANA_BARGE_IN_MIN_WORDS"));
 
         // #619: echo-cancelled capture first (EchoCancellation), falling back
         // to the plain capture this always used if Windows doesn't apply an
         // AEC or any step fails. speech-debug.log records which one runs.
-        if (!EchoCancellation.IsEnabled(Environment.GetEnvironmentVariable("MANA_VOICE_AEC"), ManaSettingsStore.Load().EchoCancellation))
+        if (!EchoCancellation.IsEnabled(Environment.GetEnvironmentVariable("MANA_VOICE_AEC"), settings.EchoCancellation))
         {
             VoiceDebugLog.AppendNote("capture: aec=off (Settings > Voice or MANA_VOICE_AEC)" + DescribeDevices());
             StartCapture(new WasapiCapture());
@@ -382,7 +413,38 @@ internal sealed class VoiceLoop : IDisposable
         resampled = resampler.ToSampleProvider();
 
         capture.DataAvailable += OnDataAvailable;
+        capture.RecordingStopped += OnRecordingStopped;
         capture.StartRecording();
+    }
+
+    // #860: NAudio reports a capture that died (mic unplugged, device
+    // error) here; a normal StopRecording has no exception.
+    private void OnRecordingStopped(object? sender, StoppedEventArgs e)
+    {
+        if (e.Exception is { } ex)
+        {
+            Console.WriteLine($"VoiceLoop: microphone capture stopped. {ex.Message}");
+            LogCrash(ex, "capture");
+            lastError = $"Listening error: {ex.Message}";
+        }
+    }
+
+    // #860: an exception that got out of the voice loop, for voice-crash.log.
+    // The VAD is always Silero today (#858 adds the RMS fallback).
+    private void LogCrash(Exception ex, string where) =>
+        VoiceCrashLog.Append(ex, where, "silero-vad", CaptureDeviceName(), awake, IsListening);
+
+    private static string? CaptureDeviceName()
+    {
+        try
+        {
+            using var devices = new MMDeviceEnumerator();
+            return devices.GetDefaultAudioEndpoint(DataFlow.Capture, Role.Console).FriendlyName;
+        }
+        catch (Exception)
+        {
+            return null;
+        }
     }
 
     private void StopCapture()
@@ -390,6 +452,7 @@ internal sealed class VoiceLoop : IDisposable
         if (capture is not null)
         {
             capture.DataAvailable -= OnDataAvailable;
+            capture.RecordingStopped -= OnRecordingStopped;
             capture.StopRecording();
             capture.Dispose();
             capture = null;
@@ -424,6 +487,9 @@ internal sealed class VoiceLoop : IDisposable
             // #619: no merging a closed turn with the next listening
             // session's audio; its turn task still claims and finishes.
             mergeWindow.Close();
+            // #665: nor answering what was said over her before Stop.
+            queuedTurn = null;
+            hearingOverSpeech = false;
             if (mode is ListenMode.Idle or ListenMode.CapturingInterruption)
             {
                 mode = ListenMode.Idle;
@@ -573,12 +639,21 @@ internal sealed class VoiceLoop : IDisposable
         {
             var frame = frameBuffer.GetRange(0, SileroVadRunner.FrameSamples).ToArray();
             frameBuffer.RemoveRange(0, SileroVadRunner.FrameSamples);
+            if (mode == ListenMode.Idle && Environment.TickCount64 < listenPausedUntilMs)
+            {
+                continue; // #859: gaming-mode pause after a segment that led nowhere
+            }
 
             var probability = vad.ProcessFrame(frame);
             var isSpeech = vad.IsSpeech(probability);
 
             if (mode == ListenMode.Speaking)
             {
+                if (hearingOverSpeech)
+                {
+                    ProcessOverSpeechFrame(frame, isSpeech);
+                    continue;
+                }
                 if (ProcessSpeakingFrame(frame, isSpeech))
                 {
                     return; // barge-in triggered; mode is now CapturingInterruption
@@ -631,6 +706,16 @@ internal sealed class VoiceLoop : IDisposable
             return false;
         }
 
+        // #665 notWhileSpeaking: she keeps talking; what I'm saying is
+        // recorded and answered once she's done.
+        if (bargeInMode == BargeInMode.NotWhileSpeaking)
+        {
+            hearingOverSpeech = true;
+            ResetSegment(heardSpeech: true);
+            bargeInHeldMs = 0;
+            return false;
+        }
+
         // Cut Mana off immediately. Whichever audioPlayer.PlayAsync call is
         // currently being awaited (streaming or the non-streaming
         // fallback) sees this as a completedNaturally: false result and
@@ -640,6 +725,29 @@ internal sealed class VoiceLoop : IDisposable
         audioPlayer.Stop();
         StartCapturingInterruption();
         return true;
+    }
+
+    // Caller must already hold stateLock. #665 notWhileSpeaking: records
+    // like a normal segment while she talks; a finished one is queued (joined
+    // onto any already queued) for ReturnToIdle to dispatch.
+    private void ProcessOverSpeechFrame(float[] frame, bool isSpeech)
+    {
+        AppendSegmentFrame(frame, isSpeech);
+        var stopReason = RecordingSegmenter.ShouldStopRecording(hasHeardSpeechInSegment, segmentElapsedMs, msSinceLastSpeech);
+        if (stopReason is RecordingStopReason.SilenceAfterSpeech or RecordingStopReason.MaxDuration)
+        {
+            var samples = segmentSamples.ToArray();
+            queuedTurn = queuedTurn is { } queued
+                ? ([.. queued.Samples, .. samples], queued.SpeechMs + segmentSpeechMs)
+                : (samples, segmentSpeechMs);
+            hearingOverSpeech = false;
+            ResetSegment();
+        }
+        else if (stopReason == RecordingStopReason.NoSpeechTimeout)
+        {
+            hearingOverSpeech = false;
+            ResetSegment();
+        }
     }
 
     // Caller must already hold stateLock.
@@ -872,7 +980,19 @@ internal sealed class VoiceLoop : IDisposable
             ResetSegment();
         }
 
-        await ProcessTurnAsync(samples, wasInterruption, logEntry, turnId);
+        // #860: fire-and-forget from the capture thread, so an exception
+        // here would otherwise vanish and leave the loop stuck mid-turn.
+        try
+        {
+            await ProcessTurnAsync(samples, wasInterruption, logEntry, turnId);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"VoiceLoop: turn failed, resuming listening. {ex}");
+            LogCrash(ex, "turn");
+            lastError = $"Listening error: {ex.Message}";
+            ReturnToIdle();
+        }
     }
 
     // #619: the turn task's commit point -- waits out the rest of the merge
@@ -1036,10 +1156,14 @@ internal sealed class VoiceLoop : IDisposable
     // two turns against the same state, so the caller (the popup) gets a
     // clear "not accepted right now" instead of this silently corrupting
     // shared state.
-    public async Task<bool> SubmitTypedCommandAsync(string text)
+    // #679: images pasted into the chat box go with the text (which may
+    // then be empty) to the vision reply, skipping the barge-in
+    // classification a text-only interruption gets.
+    public async Task<bool> SubmitTypedCommandAsync(string text, IReadOnlyList<string>? images = null)
     {
         var trimmed = text.Trim();
-        if (trimmed.Length == 0)
+        var hasImages = images is { Count: > 0 };
+        if (trimmed.Length == 0 && !hasImages)
         {
             return false;
         }
@@ -1084,6 +1208,13 @@ internal sealed class VoiceLoop : IDisposable
         }
 
         awake = true;
+        if (hasImages)
+        {
+            Console.WriteLine($"VoiceLoop: sending {images!.Count} image(s), {images.Sum(i => i.Length) / 1024} KB.");
+            chatLog?.AppendUserMessage(trimmed, images);
+            await SpeakReplyAsync(trimmed, images: images);
+            return true;
+        }
         await DispatchCommandAsync(trimmed, wasInterruption, held: null, nested: false);
         return true;
     }
@@ -1205,6 +1336,15 @@ internal sealed class VoiceLoop : IDisposable
         async Task Skip()
         {
             VoiceDebugLog.Append(logEntry);
+            var pauseMs = GamingListenPauseMs(isGamingModeActive(), awake, wasInterruption);
+            if (pauseMs > 0)
+            {
+                lock (stateLock)
+                {
+                    listenPausedUntilMs = Environment.TickCount64 + pauseMs;
+                }
+                VoiceDebugLog.AppendNote($"gaming: listening paused {pauseMs}ms");
+            }
             await ReturnToIdleOrResumeHeldAsync(held, nested);
         }
 
@@ -1218,6 +1358,16 @@ internal sealed class VoiceLoop : IDisposable
         // Electron's handleTranscript strips "(laughs)"/"[music]" annotations
         // before the wake match and before the text is shown or sent.
         transcript = ScreenContextTrigger.CleanTranscriptText(transcript);
+
+        // #665 minWords: a cough, "mm" or "yeah" that tripped the barge-in
+        // gate isn't an interruption -- she picks up where she stopped.
+        if (wasInterruption && bargeInMode == BargeInMode.MinWords && BargeInPolicy.WordCount(transcript) < bargeInMinWords)
+        {
+            logEntry.Drop = "few-words";
+            await Skip();
+            return;
+        }
+
         string commandText;
         if (!awake)
         {
@@ -1510,58 +1660,138 @@ internal sealed class VoiceLoop : IDisposable
         chatLog?.AppendReplySentence(reply ?? string.Empty);
         chatLog?.ReplyFinished();
 
-        byte[] replyWav;
-        try
-        {
-            replyWav = await backendClient.SynthesizeAsync(reply ?? string.Empty);
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"VoiceLoop: synthesis failed, resuming listening. {ex.Message}");
-            lastError = $"Voice failed: {ex.Message}";
-            ReturnToIdle();
-            return false;
-        }
-
-        // One clip, so one face for the whole reply (#623: the reply's own
-        // emotion tag when the model gave one; the streaming path above
-        // switches per sentence instead).
-        var emotion = streamingReplyPlayer.FinalEmotion;
-        var expression = ReplyEmotionDetector.DetectReplyEmotion(reply, emotion);
-
-        bool completedNaturally;
-        try
-        {
-            // #681: the model's own expression__set choice rides on the
-            // final event. node-bot only sets it on the tool-calling path,
-            // which never streams sentences -- so it always lands here, never
-            // on the changed:false path above.
-            OnTalkingStateChanged(true, MapReplyEmotionToAvatarState(expression), preferredExpression, emotion);
-            captions?.ShowSpokenText(reply ?? string.Empty, AudioPlayer.Duration(replyWav));
-            bubbles?.ShowSpokenText(reply ?? string.Empty, AudioPlayer.Duration(replyWav));
-            completedNaturally = await audioPlayer.PlayAsync(replyWav);
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"VoiceLoop: playback failed to start, resuming listening. {ex.Message}");
-            lastError = $"Playback failed: {ex.Message}";
-            OnTalkingStateChanged(false);
-            ReturnToIdle();
-            return false;
-        }
-
-        OnTalkingStateChanged(false);
-        if (completedNaturally)
+        // #861: spoken in chunks of up to 180 characters (Electron's
+        // splitReplyForSpeech), each synthesized while the one before
+        // plays, so a long reply starts speaking after its first chunk
+        // instead of after the whole reply is synthesized.
+        var chunks = SplitForSpeech(reply ?? string.Empty);
+        if (chunks.Count == 0)
         {
             ReturnToIdle();
             return true;
         }
-        // else: interrupted -- by a barge-in, mode is already
-        // CapturingInterruption (set by ProcessSpeakingFrame on the capture
-        // thread before PlayAsync's Task resolved), nothing further to do
-        // here; by the interrupt hotkey, go back to Idle.
-        ConsumeManualStop();
-        return false;
+
+        // One face for the whole reply (#623: the reply's own emotion tag
+        // when the model gave one; the streaming path above switches per
+        // sentence instead).
+        var emotion = streamingReplyPlayer.FinalEmotion;
+        var expression = ReplyEmotionDetector.DetectReplyEmotion(reply, emotion);
+
+        var next = backendClient.SynthesizeAsync(chunks[0]);
+        for (var i = 0; i < chunks.Count; i++)
+        {
+            byte[] chunkWav;
+            try
+            {
+                chunkWav = await next;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"VoiceLoop: synthesis failed, resuming listening. {ex.Message}");
+                lastError = $"Voice failed: {ex.Message}";
+                if (i > 0)
+                {
+                    OnTalkingStateChanged(false);
+                }
+                ReturnToIdle();
+                return false;
+            }
+            next = i + 1 < chunks.Count ? backendClient.SynthesizeAsync(chunks[i + 1]) : Task.FromResult(Array.Empty<byte>());
+
+            bool completedNaturally;
+            var cutOff = false;
+            try
+            {
+                if (i == 0)
+                {
+                    // #681: the model's own expression__set choice rides on
+                    // the final event. node-bot only sets it on the
+                    // tool-calling path, which never streams sentences -- so
+                    // it always lands here, never on the changed:false path
+                    // above.
+                    OnTalkingStateChanged(true, MapReplyEmotionToAvatarState(expression), preferredExpression, emotion);
+                }
+                else
+                {
+                    // Cut off while this chunk was being synthesized (the
+                    // hotkey, a barge-in, or a typed turn taking over)?
+                    lock (stateLock)
+                    {
+                        cutOff = manualStopPending || mode != ListenMode.Speaking;
+                    }
+                }
+                if (cutOff)
+                {
+                    completedNaturally = false;
+                }
+                else
+                {
+                    captions?.ShowSpokenText(chunks[i], AudioPlayer.Duration(chunkWav));
+                    bubbles?.ShowSpokenText(chunks[i], AudioPlayer.Duration(chunkWav));
+                    completedNaturally = await audioPlayer.PlayAsync(chunkWav);
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"VoiceLoop: playback failed to start, resuming listening. {ex.Message}");
+                lastError = $"Playback failed: {ex.Message}";
+                OnTalkingStateChanged(false);
+                ReturnToIdle();
+                return false;
+            }
+            if (!completedNaturally)
+            {
+                // Interrupted, and the rest of the reply isn't spoken (a
+                // chunk being synthesized is just dropped): by a barge-in,
+                // mode is already CapturingInterruption (set by
+                // ProcessSpeakingFrame on the capture thread before
+                // PlayAsync's Task resolved), nothing further to do here; by
+                // the interrupt hotkey, go back to Idle.
+                OnTalkingStateChanged(false);
+                ConsumeManualStop();
+                return false;
+            }
+        }
+
+        OnTalkingStateChanged(false);
+        ReturnToIdle();
+        return true;
+    }
+
+    // #861: Electron's splitReplyForSpeech -- whole sentences packed into
+    // chunks of up to MaxSpeechChunkChars; a longer sentence is a chunk of
+    // its own. Sentences end at . ! ? followed by a space, so "3.5" or
+    // "e.g.x" stay whole (Electron's split turns "3.5" into "3. 5").
+    internal const int MaxSpeechChunkChars = 180;
+
+    internal static IReadOnlyList<string> SplitForSpeech(string text)
+    {
+        var chunks = new List<string>();
+        var current = "";
+        var normalized = System.Text.RegularExpressions.Regex.Replace(text, @"\s+", " ").Trim();
+        foreach (var sentence in System.Text.RegularExpressions.Regex.Split(normalized, @"(?<=[.!?]) "))
+        {
+            if (sentence.Length == 0)
+            {
+                continue;
+            }
+            var joined = current.Length > 0 ? $"{current} {sentence}" : sentence;
+            if (joined.Length <= MaxSpeechChunkChars)
+            {
+                current = joined;
+                continue;
+            }
+            if (current.Length > 0)
+            {
+                chunks.Add(current);
+            }
+            current = sentence;
+        }
+        if (current.Length > 0)
+        {
+            chunks.Add(current);
+        }
+        return chunks;
     }
 
     private const string ReplyFailedMessage = "Sorry, I couldn't answer that just now. Try again in a moment.";
@@ -1626,6 +1856,7 @@ internal sealed class VoiceLoop : IDisposable
             {
                 mode = ListenMode.Speaking;
                 bargeInHeldMs = 0;
+                hearingOverSpeech = false;
                 vad.Reset();
             }
             else if (mode == ListenMode.Speaking)
@@ -1786,6 +2017,26 @@ internal sealed class VoiceLoop : IDisposable
                 return;
             }
 
+            // #665 notWhileSpeaking: what I said while she talked is the
+            // next turn.
+            if (queuedTurn is { } queued)
+            {
+                queuedTurn = null;
+                hearingOverSpeech = false;
+                manualStopPending = false;
+                frameBuffer.Clear();
+                segmentSamples.Clear();
+                segmentSamples.AddRange(queued.Samples);
+                segmentSpeechMs = queued.SpeechMs;
+                mode = ListenMode.Processing;
+                _ = HandleSegmentClosedAsync(false, "queued", "-");
+                return;
+            }
+            // Still mid-sentence when she finished: keep that recording
+            // going as a normal segment (and the audio buffered meanwhile).
+            var stillHearing = hearingOverSpeech;
+            hearingOverSpeech = false;
+
             mode = ListenMode.Idle;
             manualStopPending = false;
             // Deliberately discard audio buffered during the turn/playback
@@ -1796,7 +2047,10 @@ internal sealed class VoiceLoop : IDisposable
             // genuine mid-playback interruption is handled entirely
             // differently, via CapturingInterruption -- this path is only
             // ever reached when there was nothing to interrupt into.
-            frameBuffer.Clear();
+            if (!stillHearing)
+            {
+                frameBuffer.Clear();
+            }
             ProcessBufferedFrames();
         }
     }

@@ -525,8 +525,11 @@ const gamingWatch = createGamingWatch({
 if (process.env.NODE_ENV !== "test" && !process.env.NODE_TEST_CONTEXT) {
   gamingWatch.poll();
   setInterval(gamingWatch.poll, 30 * 1000).unref();
-  // #697: proactive remarks held during play go out after the game.
-  require("./proactive").watchGaming(gamingWatch.isGaming);
+  // #697: proactive remarks held during play go out after the game, or
+  // one in a break -- alt-tabbed out of the game (foreground.js).
+  require("./proactive").watchGaming(gamingWatch.isGaming, () =>
+    require("./foreground").isAwayFromGame(GAMING_PROCESS_NAMES),
+  );
   setInterval(require("./proactive").flush, 30 * 1000).unref();
 }
 
@@ -1999,6 +2002,16 @@ function registerRoutes(app, upload, deps = {}) {
       }
     });
 
+  // #697 part 1: the native launcher reports each foreground-window change.
+  app.post("/internal/foreground-report", (req, res) => {
+    try {
+      require("./foreground").reportForeground(req.body || {});
+      return res.json({ ok: true });
+    } catch (e) {
+      return res.status(400).json({ error: e.message });
+    }
+  });
+
   // Reported by windows-launcher's powerMonitor.getSystemIdleTime() poll.
   // Fires consolidation once per idle period (resets when the user is seen
   // active again below the threshold), so staying idle for hours doesn't
@@ -2071,7 +2084,7 @@ function registerRoutes(app, upload, deps = {}) {
     const eagerStatus = modelManagement.getModelStatus().profiles[eagerProfile];
     if (eagerStatus && eagerStatus.available && eagerStatus.selectedModel) {
       llamaServerRuntime
-        .ensureServerConfig(eagerStatus.selectedModel)
+        .ensureServerConfig(eagerStatus.selectedModel, llamaServerRuntime.chatMmprojFor(eagerStatus.selectedModel))
         .catch((e) => console.warn("Eager llama-server startup skipped:", e.message));
     }
   }
@@ -3854,6 +3867,9 @@ function registerRoutes(app, upload, deps = {}) {
     // changes its tail; screen and market text already ride on the user
     // message itself.
     const memoryExtraMessages = { early: [], late: [] };
+    // #679: images the chat model can see itself (server-routes.js decided);
+    // buildMessages puts them on the live user message on every path below.
+    if (replyMeta?.images?.length) memoryExtraMessages.images = replyMeta.images;
     let flatMemorySuffix = "";
     let promptMemoryChars = 0;
     let promptMemoryText = "";
@@ -4661,6 +4677,8 @@ function registerRoutes(app, upload, deps = {}) {
       if (
         bestOfNEnabled &&
         !goalMode &&
+        // #679: Best-of-N builds its own messages without the images.
+        !replyMeta?.images?.length &&
         mode === "coding" &&
         !thinkHarder &&
         isLlamaServerAvailable()
@@ -5036,10 +5054,15 @@ function registerRoutes(app, upload, deps = {}) {
       }),
     runVisionReply:
       deps.runVisionReply ||
-      ((prompt, images, maxTokens) =>
-        llamaServerRuntime.runVisionReply(prompt, images, maxTokens)),
+      ((prompt, images, maxTokens, overrideSystemPrompt) =>
+        llamaServerRuntime.runVisionReply(prompt, images, maxTokens, overrideSystemPrompt)),
     getVisionStatus:
       deps.getVisionStatus || (() => llamaServerRuntime.getVisionStatus()),
+    // #679: false under the test runner (runtime disabled), so route tests
+    // take the describe-first path unless they pass their own.
+    chatAcceptsImages:
+      deps.chatAcceptsImages ||
+      ((profile) => llamaServerRuntime.isEnabled() && llamaServerRuntime.chatAcceptsImages(profile)),
     resolveVisionCapture:
       deps.resolveVisionCapture || visionCaptureBridge.resolveCapture,
     rejectVisionCapture:
