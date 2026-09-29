@@ -1448,7 +1448,11 @@ internal sealed class ManaBackendClient
         {
             return ("agent restore", Text("summary") ?? $"restore snapshot {snapshotId}");
         }
-        return ("agent write", $"{Text("mode") ?? "write"} {Text("path")}".Trim());
+        var write = $"{Text("mode") ?? "write"} {Text("path")}".Trim();
+        // #838 step 4: a write the adversarial review refuted says how it breaks.
+        var failingCase = payload.TryGetProperty("adversarialReview", out var review) && review.ValueKind == JsonValueKind.Object
+            && review.TryGetProperty("failingCase", out var failEl) && failEl.ValueKind == JsonValueKind.String ? failEl.GetString() : null;
+        return ("agent write", failingCase is null ? write : $"{write} -- Mana's review found a way this breaks: {failingCase}");
     }
 
     public async Task DecidePendingWriteAsync(string id, bool approve)

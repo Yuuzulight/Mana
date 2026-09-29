@@ -2190,7 +2190,7 @@ public class ManaBackendClientTests
         var handler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
         {
             Content = new StringContent(
-                """{"ok":true,"pending":[{"id":"hook-ask-1","payload":{"kind":"hook-ask","tool":"file_write","reason":"Ask before touching package.json"},"approved":false,"rejected":false},{"id":"snapshot-restore-2","payload":{"snapshotId":"s9","kind":"file","summary":"Restore src/a.js"},"approved":false,"rejected":false},{"id":"a1b2","payload":{"path":"src/b.js","mode":"overwrite"},"approved":false,"rejected":false},{"id":"done","payload":{"path":"x.js"},"approved":true,"rejected":false},{"id":"broken","payload":null,"approved":false,"rejected":false}]}""",
+                """{"ok":true,"pending":[{"id":"hook-ask-1","payload":{"kind":"hook-ask","tool":"file_write","reason":"Ask before touching package.json"},"approved":false,"rejected":false},{"id":"snapshot-restore-2","payload":{"snapshotId":"s9","kind":"file","summary":"Restore src/a.js"},"approved":false,"rejected":false},{"id":"a1b2","payload":{"path":"src/b.js","mode":"overwrite"},"approved":false,"rejected":false},{"id":"c3d4","payload":{"path":"src/c.js","mode":"overwrite","adversarialReview":{"verdict":"refuted","failingCase":"an empty list crashes it"}},"approved":false,"rejected":false},{"id":"done","payload":{"path":"x.js"},"approved":true,"rejected":false},{"id":"broken","payload":null,"approved":false,"rejected":false}]}""",
                 Encoding.UTF8,
                 "application/json"),
         });
@@ -2198,7 +2198,7 @@ public class ManaBackendClientTests
         var writes = await new ManaBackendClient(handler).GetPendingWritesAsync();
 
         Assert.Equal(
-            [("hook-ask-1", "hook ask", "Ask before touching package.json (file_write)"), ("snapshot-restore-2", "agent restore", "Restore src/a.js"), ("a1b2", "agent write", "overwrite src/b.js")],
+            [("hook-ask-1", "hook ask", "Ask before touching package.json (file_write)"), ("snapshot-restore-2", "agent restore", "Restore src/a.js"), ("a1b2", "agent write", "overwrite src/b.js"), ("c3d4", "agent write", "overwrite src/c.js -- Mana's review found a way this breaks: an empty list crashes it")],
             writes.Select(w => (w.Id, w.Kind, w.Summary)));
     }
 
