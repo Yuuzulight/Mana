@@ -1,6 +1,6 @@
 # Issue 838: Hooks For Pipeline B (The ACP Autonomous Loop)
 
-Status: **Design only.** No code yet. This is the last unbuilt part of #486,
+Status: **Decided** (2026-09-29). Being built in the PRs listed at the end. This is the last unbuilt part of #486,
 designed now because I decided to (grilling Q39, 2026-09-29). It builds on
 #796 (`modify-input`, in-place rule edits) and #795 (plugin input hooks), and
 has to fit with goal mode (#787) and the adversarial verifier (#788).
@@ -9,11 +9,12 @@ has to fit with goal mode (#787) and the adversarial verifier (#788).
 
 Pipeline B should apply the same `hooks.json` rules as Pipeline A, in the same
 order: `modify-input` first, then `deny`, then `ask`, then the tool itself,
-then the `post` rules. Nothing new is needed in the rule format except one
-safety check (a `modify-input` rule may not set `approved`). The work is small
-once the dispatch chain in `executeAutonomousStep` has one place to hook
-into. The open questions are mostly about where Pipeline B's approvals show up
-and whether its `file_write` gets the adversarial review.
+then the `post` rules. The rule format gets three additions: a `modify-input`
+rule may not set `approved`, a shared tool name `write` covers both write
+tools, and a new `finish` phase runs a command when the loop sends `finish`.
+The work is small once the dispatch chain in `executeAutonomousStep` has one
+place to hook into. The decisions at the end settle where Pipeline B's
+approvals show up, the adversarial review of its `file_write`, and the limits.
 
 ## What Pipeline B is today
 
@@ -65,7 +66,8 @@ through `approval-gate.js` and returns `{status: "pending"}` to the model.
 
 ## Hook points Pipeline B needs
 
-Only the per-call points Pipeline A already has. No new rule actions.
+The per-call points Pipeline A already has, plus the `finish` hook
+(decision 6).
 
 | Point | Actions | Where in `executeAutonomousStep` | Result the model sees |
 | --- | --- | --- | --- |
@@ -73,6 +75,7 @@ Only the per-call points Pipeline A already has. No new rule actions.
 | pre, block | `deny` | After the cap check | `{tool, status: "denied", detail: reason}` |
 | pre, gate | `ask` | After `deny` | Waits for a human via `runApprovalGate`; on reject/timeout `{status: "rejected", detail}` |
 | post | `run-command`, `rollback-on-failure` | After the tool, only when its result has `status: "ok"` | Nothing; fire-and-forget like Pipeline A |
+| finish | `run-command` | After the step's other actions, when it contains `finish` | `finishChecks` on the step result (see below) |
 
 Proposed per-action order:
 
@@ -101,8 +104,21 @@ status ok? -> post rules (runPostCommandHook)
   and `matchRules` reads the file on every call. A rule added or edited
   through `POST`/`PATCH /hooks` applies from Pipeline B's next action, with
   no reload.
-- **Not needed now:** a step-level or `finish` ("Stop") hook. See open
-  question 6.
+- **Shared name `write` (decision 2).** A rule with `toolName: "write"`
+  matches both `file_write` and `coding__propose_edit`, in both pipelines and
+  every phase. Exact names and `prefix*` still work. It lives in
+  `ruleMatchesTool`, so every caller of `matchRules` gets it.
+- **`finish` hook (decision 6).** A rule `{phase: "finish", action:
+  "run-command", command, args}` (no `toolName` needed). When a step contains
+  `finish`, each enabled `finish` rule runs in file order after the step's
+  other actions: awaited, `execFile` with `shell: false`, the repo root as the
+  working directory, and a 2-minute timeout (the same as the ACP test
+  runner's default). The step result gets
+  `finishChecks: [{rule, command, ok, exitCode, output}]`, with the last
+  2000 characters of output, for the ACP client to read.
+  **It can't truly block finishing.** `finish` is only a signal to the ACP
+  client, which decides whether to call `mana/agent/run` again. The step still
+  returns `status: "finished"`. A failed check is reported, not enforced.
 
 ## Interactions
 
@@ -119,9 +135,12 @@ status ok? -> post rules (runPostCommandHook)
   This is the same guarantee #426 gives Pipeline A.
 - `runApprovalGate` blocks, so a step with several `ask` matches waits for
   each one in turn.
-- Today these requests are invisible in the launcher (see open question 1).
-  Until they show up there, every `ask` just times out after 5 minutes, which
-  makes it a slow `deny`.
+- Today these requests are invisible in the launcher. Decision 1 adds them to
+  the launcher's approvals list, with Approve/Reject. Until then, every `ask`
+  just times out after 5 minutes, which makes it a slow `deny`.
+- **One prompt (decision 4).** An approved `hook-ask` also counts as the
+  matched `file_write`'s own approval. The exception is a write the verifier
+  refuted: it always gets its own prompt, showing the failing case.
 
 ### Goal mode (#787)
 
@@ -162,9 +181,17 @@ status ok? -> post rules (runPostCommandHook)
   can't get around Q16.
 - **The ACP agent's `mana/edit/*` path** already goes through the same
   proposal routes. It never sends `confirmRefuted`, so it is covered.
-- **Pipeline B's `file_write` is not covered.** It writes straight to disk
-  after its own file-based approval, with no proposal and no review. See open
-  question 3.
+- **Pipeline B's `file_write` today** writes straight to disk after its own
+  file-based approval, with no proposal and no review. Decision 3:
+  - Source files only (`refuteEdit`'s own extension list).
+  - The ACP process has no model, so it asks the backend for a review only,
+    through one new bridge call to a route that wraps `refuteEdit`. The
+    review sees a unified diff of the old and new content.
+  - A `refuted` verdict forces the manual approval even with
+    `args.approved === true` or `FILE_WRITE_REQUIRE_APPROVAL=0`. The failing
+    case goes into the pending request, so the approver sees it (Q16).
+  - An unreachable backend or a verifier error leaves the write as it was:
+    the verifier only changes anything when it refutes.
 
 ## Safety limits
 
@@ -199,15 +226,19 @@ These are technical defaults, decided here:
    there was nothing to roll back.
 7. **Logs hold no values.** Rewrites log the rule id and key names only, as
    in #796.
-8. **No GPU or model use by hooks.** If the verifier is added (open
-   question 3), it uses only a model that is already loaded, as in #788.
+8. **No GPU or model use by hooks.** The verifier (decision 3) uses only a
+   model that is already loaded, as in #788.
+9. **A broken `hooks.json` fails closed in Pipeline B (decision 5).** If the
+   file exists but won't parse, `file_write`, `snapshot_restore` and
+   `run_tests` return `hooks_config_unreadable`, and the read-only tools still
+   work. Pipeline A is unchanged: it still reads a broken file as "no rules".
 
 ## Found while reading the code (not fixed here)
 
 - **Limits that are shown but not enforced.** `mana-acp-agent.js` passes
   `maxIterations` (`MANA_AGENT_MAX_ITERATIONS`, 3) and `maxFilesChanged`
   (`MANA_AGENT_MAX_FILES_CHANGED`, 5) to `createAcpAutonomousLoop`, and shows
-  them in its capabilities. The loop ignores both. See open question 7.
+  them in its capabilities. The loop ignores both. Decision 7 enforces them.
 - **Post hooks on `coding__propose_edit` fire too early.** A `run-command`
   rule (the "prettier after a write" example) runs when the proposal is
   created, before the file changes, so it formats the old file. This is
@@ -216,72 +247,48 @@ These are technical defaults, decided here:
 - **The `rollbackFile` basename search** from safety limit 6 also applies to
   Pipeline A.
 
-## Open questions
+## Decisions (2026-09-29)
 
-1. **Where should Pipeline B's approvals show up?** Today they only reach
-   `/admin/pending-writes`, and nothing in the launcher lists them, so `file_write`
-   approvals time out as well.
-   *Recommendation:* list pending writes (and `hook-ask` requests) in the
-   launcher's existing approvals list, with Approve/Reject. Do this before, or
-   together with, the `ask` wiring. Without it, `ask` in Pipeline B is a slow
-   `deny`.
-2. **Should one rule cover both pipelines' write tools?** Rules match by tool
-   name, and `file_write` is not `coding__propose_edit`, so "ask before
-   touching package.json" needs one rule per tool.
-   *Recommendation:* keep exact names and write one rule per tool, with no
-   alias layer. Revisit with the hook-format import (#486 comment), whose
-   mapping table already sends `Write`/`Edit` to both.
-3. **Should the adversarial verifier review Pipeline B's `file_write`?**
-   *Recommendation:* yes, for source files only.
-   - The ACP process has no model, so it asks the backend for a review only
-     (one new bridge call to a route that wraps `refuteEdit`).
-   - A `refuted` verdict forces the manual approval even with
-     `args.approved === true` or `FILE_WRITE_REQUIRE_APPROVAL=0`.
-   - The failing case goes into the pending request, so the approver sees it
-     (Q16).
+1. **Approvals show up in the launcher.** Pending writes and `hook-ask`
+   requests go in the launcher's approvals list, with Approve/Reject.
+2. **One rule covers both write tools.** I chose this over the
+   one-rule-per-tool recommendation. The shared name `write` matches
+   `file_write` and `coding__propose_edit`, in both pipelines. Exact tool
+   names still work.
+3. **The verifier reviews Pipeline B's `file_write`,** for source files only.
+   A refuted verdict forces manual approval, even with `approved: true` or
+   `FILE_WRITE_REQUIRE_APPROVAL=0`.
+4. **One prompt.** An approved `hook-ask` counts as the write's approval,
+   except for a refuted write, which gets its own prompt showing the failing
+   case.
+5. **A broken `hooks.json` fails closed in Pipeline B** on side effects
+   (`file_write`, `snapshot_restore` and `run_tests` return
+   `hooks_config_unreadable`). Reads still work. Pipeline A is unchanged.
+6. **A `finish` hook now.** I chose this over waiting. A rule can run a
+   command (the tests, say) when the loop sends `finish`, and the result goes
+   back to the ACP client. It can't truly block finishing (see Implementation
+   shape).
+7. **The agent limits are enforced,** in a separate issue and PR:
+   - distinct files written per session count against `maxFilesChanged`;
+   - `mana/agent/run` calls per session count against `maxIterations`.
 
-   The alternative is to send source-file writes through the proposal path
-   instead of `file_write`. That is a bigger change to how Pipeline B works,
-   because a write would no longer be on disk until someone approves it.
-4. **One prompt or two?** If an `ask` rule matches a `file_write` that also
-   needs its own approval, should I be asked twice?
-   *Recommendation:* once. An approved `hook-ask` also counts as that write's
-   approval. The exception is a write the verifier refuted, which always gets
-   its own prompt showing the failing case.
-5. **What should happen when `hooks.json` is broken?** Today a file that
-   won't parse means "no rules" in both pipelines, so `deny` rules silently
-   stop working.
-   *Recommendation:* for the unattended Pipeline B, fail closed on side
-   effects. If `hooks.json` exists but won't parse, `file_write`,
-   `snapshot_restore` and `run_tests` return `hooks_config_unreadable`, and
-   reads still work. Leave Pipeline A as it is unless you want the same
-   there.
-6. **Should there be a `finish` hook (a `Stop` hook)?** It could,
-   for example, run the tests and refuse `finish` while they fail.
-   *Recommendation:* not now. `finish` is only a signal to the ACP client, so
-   refusing it enforces nothing. Revisit together with #787's ACP continue
-   hint and the import's `run-command-decide`.
-7. **Should `maxIterations` / `maxFilesChanged` be enforced?**
-   *Recommendation:* yes, as a separate small issue, not in the hooks PRs.
-   - Count distinct files written per session in `file_write`, and stop at
-     `maxFilesChanged`.
-   - `maxIterations` belongs to the caller-driven loop. Either count
-     `mana/agent/run` calls per session, or stop showing it as a capability.
+## PR split
 
-## Proposed PR split (after the questions are answered)
+Each step has its own issue (Refs #838). Steps 1, 2, 4, 5, 6 and 7 all
+change `acp-autonomous-loop.js`, and step 1 moves its whole dispatch chain,
+so they are stacked in that order. Step 3 only touches the launcher and the
+pending-writes routes, so it goes straight onto `main`.
 
 1. **Pre hooks in Pipeline B:**
    - `applyInputRules` taken out of `wrapWithInputHooks`;
    - `normalizeRule` rejects `approved` in `set`;
+   - the shared `write` tool name (decision 2);
    - the `runAction` move;
    - `modify-input` / `deny` / `ask` wired in, in the order above.
-
-   Tests: a rewrite passes through the path guard and the approval; `deny`
-   is reported and counted toward #396; `ask` is rejected on timeout; a rule
-   can't set `approved`.
 2. **Post hooks in Pipeline B**, plus the fix that makes rollback use the
    snapshot id (safety limit 6), in both pipelines.
-3. **Launcher approvals list for pending writes** (question 1).
-4. **Verifier on Pipeline B `file_write`** (questions 3 and 4).
-5. **Separate issues:** the fail-closed config (question 5, if yes) and the
-   agent limits (question 7).
+3. **Launcher approvals list for pending writes and hook asks** (decision 1).
+4. **Verifier on Pipeline B `file_write`, and one prompt** (decisions 3 and 4).
+5. **Fail-closed config** (decision 5).
+6. **The `finish` hook** (decision 6).
+7. **The agent limits** (decision 7), under their own issue.
