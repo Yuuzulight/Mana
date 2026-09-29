@@ -467,9 +467,10 @@ function createLlamaServerRuntime(options = {}) {
   // (11.4s -> 4.1s) and ~32% faster on the larger 4B->7B swap direction.
   // Off by default now: on the RTX 5080 machine, every llama-server
   // stop with it on left ~5 GB of system RAM committed to no process (model
-  // sized, gone only after a reboot; 3 of 3 runs), and the server ignored
-  // CTRL_C for 15 s+; with it off, 2 of 2 runs exited on CTRL_C in ~5 s and
-  // left nothing behind. MANA_LLAMA_UNIFIED_MEMORY=1 opts back in.
+  // sized, gone only after a reboot; 4 of 4 runs). With it off nothing was
+  // left behind (3 of 3), including a forced kill after a 60 s CTRL_C wait,
+  // so it's the unified memory, not the kill. MANA_LLAMA_UNIFIED_MEMORY=1
+  // opts back in.
   function buildServerEnv() {
     if (env.MANA_LLAMA_UNIFIED_MEMORY === "1") {
       return { ...env, GGML_CUDA_ENABLE_UNIFIED_MEMORY: "1" };

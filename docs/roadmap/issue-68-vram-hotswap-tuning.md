@@ -92,8 +92,8 @@ process unless `MANA_LLAMA_UNIFIED_MEMORY=0` opts out).
 
 **Later: off by default again.** On the RTX 5080 machine every llama-server
 stop with it on left ~5 GB of system RAM committed to no process until a
-reboot, and the server ignored CTRL_C for 15 s+. `MANA_LLAMA_UNIFIED_MEMORY=1`
-now opts in; see the comment on `buildServerEnv()`.
+reboot; with it off, even a forced kill left nothing behind.
+`MANA_LLAMA_UNIFIED_MEMORY=1` now opts in; see the comment on `buildServerEnv()`.
 
 ### TTS VRAM purge — not applicable, documented why
 
