@@ -10,6 +10,7 @@ const test = require("node:test");
 const {
   recordPromptComposition,
   finalizePromptComposition,
+  contextFullNote,
   getPromptComposition,
   resetPromptCompositionReport,
 } = require("../prompt-composition-report");
@@ -170,5 +171,44 @@ test("server: a tool-aware reply's meter counts tool schemas (local vs MCP), the
     if (original === undefined) delete process.env.MANA_ACP_MEMORY_DIR;
     else process.env.MANA_ACP_MEMORY_DIR = original;
     fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("contextFullNote: only at 90% or more, once per session", () => {
+  resetPromptCompositionReport();
+  assert.equal(contextFullNote("a", 14000, 16384), "", "85% says nothing");
+  assert.equal(contextFullNote("a", 100, null), "", "unknown context says nothing");
+  assert.match(contextFullNote("a", 14746, 16384), /getting pretty full/);
+  assert.equal(contextFullNote("a", 16000, 16384), "", "already said in this session");
+  assert.match(contextFullNote("b", 16000, 16384), /fresh one/, "another session still hears it");
+  resetPromptCompositionReport("a");
+  assert.match(contextFullNote("a", 16000, 16384), /fresh one/);
+});
+
+test("server: at 90% of the context Mana ends one reply with the full-chat note", async () => {
+  // After the test above: server.js (and its memory dir) is already loaded.
+  resetPromptCompositionReport();
+  process.env.MANA_TOOL_CALLING_ENABLED = "1";
+  try {
+    const { createApp } = require("../server");
+    let usage = null;
+    const app = createApp({
+      llamaServerRuntime: {
+        isEnabled: () => true,
+        getLastPromptUsage: () => usage,
+        countTokens: words,
+        getContextSize: async () => 16384,
+      },
+      runToolAwareReply: async () => {
+        usage = { promptTokens: 15000, promptN: 15000, cacheN: 0 };
+        return { content: "tool-aware reply", toolCalls: [], rounds: 1 };
+      },
+    });
+    const first = await app.locals.buildAssistantReply("hi", "", "", "default", "sess-full", null, null, {});
+    assert.match(first, /^tool-aware reply By the way, this chat is getting pretty full/);
+    const second = await app.locals.buildAssistantReply("hi", "", "", "default", "sess-full", null, null, {});
+    assert.equal(second, "tool-aware reply");
+  } finally {
+    delete process.env.MANA_TOOL_CALLING_ENABLED;
   }
 });

@@ -62,6 +62,10 @@
     <PackageReference Include="NAudio" Version="2.2.1" />
     <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.19.2" />
     <PackageReference Include="SkiaSharp" Version="4.151.1" />
+    <!-- #686: draws simple (script-free) HTML artifacts in the viewer;
+         pure managed GDI+, BSD-3-Clause. Pages it can't draw open in the
+         default browser instead. -->
+    <PackageReference Include="HtmlRenderer.WinForms" Version="1.6.1" />
     <!-- #524: native Windows toast notifications with action buttons for
          an unpackaged (no MSIX/Start Menu shortcut) WinForms app, the
          standard non-WinUI3 way to do this; the newer Windows App SDK

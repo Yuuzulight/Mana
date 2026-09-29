@@ -84,6 +84,39 @@ test("a session's goal IS surfaced (in the prompt and as session_goal__finish) w
   });
 });
 
+test("#676: with MANA_GOAL_MODE=1 a coding-routed turn in a goal session keeps tools (default profile) and gets the goal", async () => {
+  await withTempAcpMemoryDir(async () => {
+    process.env.MANA_TOOL_CALLING_ENABLED = "1";
+    const calls = [];
+    const app = createApp({
+      llamaServerRuntime: { isEnabled: () => true },
+      runToolAwareReply: async (prompt, toolPolicy, options) => {
+        calls.push(options);
+        return { content: "tool-aware reply", toolCalls: [], rounds: 1 };
+      },
+      runLocalAssistantReply: async () => "plain reply",
+    });
+    const store = app.locals.acpMemoryStore;
+    store.ensureSession({ sessionId: "sess-goal-mode" });
+    store.setSessionGoal("sess-goal-mode", "Fix the login bug");
+    const ask = () =>
+      app.locals.buildAssistantReply("debug the python login code", "", "", "", "sess-goal-mode", null, null, {});
+
+    try {
+      assert.equal(await ask(), "plain reply", "goal mode off: coding-routed, no tools, as before");
+      assert.equal(calls.length, 0);
+
+      process.env.MANA_GOAL_MODE = "1";
+      assert.equal(await ask(), "tool-aware reply");
+      assert.equal(calls[0].profile, "default");
+      assert.equal(calls[0].goal, "Fix the login bug");
+    } finally {
+      delete process.env.MANA_GOAL_MODE;
+      delete process.env.MANA_TOOL_CALLING_ENABLED;
+    }
+  });
+});
+
 test("session_goal__finish is NOT offered when the session has no goal set, even with tool-calling enabled", async () => {
   await withTempAcpMemoryDir(async () => {
     process.env.MANA_TOOL_CALLING_ENABLED = "1";
