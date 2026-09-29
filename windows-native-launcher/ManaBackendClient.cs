@@ -331,6 +331,25 @@ internal sealed class ManaBackendClient
             && triggered.ValueKind == JsonValueKind.True;
     }
 
+    // #690: POST /screen-sensing/glance (plugins/screen-sensing) -- the
+    // same {image, gamingModeActive} body windows-launcher sends. Returns
+    // the summary when the backend's attention gate says it's worth
+    // surfacing, else null.
+    public async Task<string?> ScreenSensingGlanceAsync(string image, bool gamingModeActive)
+    {
+        var payload = JsonSerializer.Serialize(new { image, gamingModeActive });
+        using var content = new StringContent(payload, Encoding.UTF8, "application/json");
+        using var response = await http.PostAsync("/screen-sensing/glance", content);
+        response.EnsureSuccessStatusCode();
+        using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        var root = document.RootElement;
+        return root.ValueKind == JsonValueKind.Object
+            && root.TryGetProperty("shouldSurface", out var surface) && surface.ValueKind == JsonValueKind.True
+            && root.TryGetProperty("summary", out var summary) && summary.ValueKind == JsonValueKind.String
+                ? summary.GetString()
+                : null;
+    }
+
     // #527: node-bot's configured llama-server profiles -- see
     // model-management.js's getModelStatus/buildProfileStatus for the
     // full shape; this only carries what compare-mode needs.
