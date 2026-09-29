@@ -17,7 +17,11 @@ const path = require("node:path");
 const Database = require("better-sqlite3");
 const { significantWords, sharedWordCount } = require("./utils/word-overlap");
 
-const DEFAULT_DB_PATH = path.join(__dirname, "data", "acp-memory", "session-search.db");
+// Beside the rest of memory: MANA_ACP_MEMORY_DIR moves it too.
+const DEFAULT_DB_PATH = path.join(
+  process.env.MANA_ACP_MEMORY_DIR || path.join(__dirname, "data", "acp-memory"),
+  "session-search.db",
+);
 
 // vec0's dimension is fixed when the table is created, so turns_vec is
 // (re)built from the first embedding the configured model actually returns

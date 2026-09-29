@@ -37,6 +37,12 @@ test("listToolSchemas returns the look tool schema, requiring no per-call option
   assert.deepEqual(source.listToolSchemas(), TOOL_SCHEMAS);
 });
 
+// #787: an unusable tool isn't offered -- goal mode spent rounds retrying it.
+test("listToolSchemas offers nothing without a vision model or with screen sensing off", () => {
+  assert.deepEqual(createVisionToolSource(baseOptions({ getVisionStatus: () => ({ available: false }) })).listToolSchemas(), []);
+  assert.deepEqual(createVisionToolSource(baseOptions({ pluginSettingsStore: fakePluginSettingsStore(false) })).listToolSchemas(), []);
+});
+
 test("executeTool returns a description on success", async () => {
   const source = createVisionToolSource(baseOptions());
   const result = await source.executeTool(`${VISION_TOOL_PREFIX}look`, { prompt: "what's open?" });

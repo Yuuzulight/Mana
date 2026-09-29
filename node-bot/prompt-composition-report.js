@@ -9,6 +9,8 @@
 // session (a replace, not an accumulate) -- this reports what the last
 // assembled prompt actually contained, not a running history.
 const compositionBySession = new Map();
+// #642 (Q33c): sessions Mana has already told the chat is getting full.
+const fullNoteSessions = new Set();
 
 // Matches the char/4 heuristic acp-memory-store.js's selectPartsWithinTokenBudget
 // actually truncates against (its real HTTP tokenizer result is discarded --
@@ -95,6 +97,19 @@ async function finalizePromptComposition(
   return record;
 }
 
+// #642 (Q33c): once per conversation, when a reply's prompt filled 90% or
+// more of the context window, the sentence Mana adds at the end of that
+// reply; "" otherwise. promptTokens is llama-server's own count.
+const CONTEXT_FULL_NOTE =
+  "By the way, this chat is getting pretty full. Starting a fresh one would help me keep track.";
+function contextFullNote(sessionId, promptTokens, contextSize) {
+  const key = String(sessionId || "default");
+  if (!(Number(contextSize) > 0) || !(promptTokens / contextSize >= 0.9)) return "";
+  if (fullNoteSessions.has(key)) return "";
+  fullNoteSessions.add(key);
+  return CONTEXT_FULL_NOTE;
+}
+
 function getPromptComposition(sessionId) {
   const key = String(sessionId || "default");
   return compositionBySession.get(key) || null;
@@ -118,14 +133,17 @@ function getMostRecentComposition() {
 function resetPromptCompositionReport(sessionId) {
   if (sessionId === undefined) {
     compositionBySession.clear();
+    fullNoteSessions.clear();
     return;
   }
   compositionBySession.delete(String(sessionId));
+  fullNoteSessions.delete(String(sessionId));
 }
 
 module.exports = {
   recordPromptComposition,
   finalizePromptComposition,
+  contextFullNote,
   getPromptComposition,
   getMostRecentComposition,
   resetPromptCompositionReport,

@@ -12,17 +12,19 @@ namespace Mana.NativeLauncher;
 // #652 part 3: the chat pane, custom-drawn so it can take the Mana preset's
 // glass look (a RichTextBox can't be see-through). Replaces ChatLogPanel in
 // every theme: padded bubbles, "You"/"Mana" labels, markdown (paragraphs,
-// headings, bullet/numbered items, inline bold/italic/code, code blocks).
-// Mana's sentences stream in one at a time; they all join her current
-// bubble until your next message starts a new turn (VoiceLoop always logs
-// the user message before a reply).
+// headings, bullet/numbered items, quotes, tables, inline bold/italic/
+// strikethrough/code/links, code blocks). Mana's sentences stream in one at
+// a time; they all join her current bubble until your next message starts
+// a new turn (VoiceLoop always logs the user message before a reply). Once
+// the reply is done, ReportReply re-renders the bubble from the full text.
 //
 // Copying: drag to select text within or across bubbles, or click a bubble
 // to select all of it; then Ctrl+C or right-click Copy. Ctrl+A selects all
 // text; right-click "Copy conversation" copies everything with labels.
-// Up/Down move the bubble selection. Screen readers see a list with one
-// item per message.
-internal sealed class ChatView : Control, IChatLog
+// Table cells copy tab-separated, so they paste into a spreadsheet. Clicking
+// a link opens it in the browser. Up/Down move the bubble selection. Screen
+// readers see a list with one item per message.
+internal sealed class ChatView : Control, IChatLog, IArtifactSink
 {
     private const int SideMargin = 24;
     private const int PadX = 14;
@@ -31,18 +33,21 @@ internal sealed class ChatView : Control, IChatLog
     private const int MessageGap = 14;
     private const int BlockGap = 5;
     private const int ActionHeight = 28;
+    private const int MenuArrowWidth = 22; // a split button's dropdown part
+    private const int QuoteIndent = 12;
+    private const int CellPad = 6;
     private const TextFormatFlags TextFlags = TextFormatFlags.NoPadding | TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine;
     private static readonly Regex WordPattern = new(@"\S+\s*|\s+", RegexOptions.Compiled);
 
     private readonly List<Message> messages = new();
     private readonly VScrollBar scrollBar = new() { Dock = DockStyle.Right, Visible = false };
     private readonly Font bodyFont = new("Segoe UI", 10F);
-    private readonly Font boldFont;
-    private readonly Font italicFont;
-    private readonly Font boldItalicFont;
+    private readonly Dictionary<FontStyle, Font> styledFonts = new(); // bodyFont in bold/italic/strikeout/underline mixes
     private readonly Font headerFont = new("Segoe UI", 11F, FontStyle.Bold);
     private readonly Font codeFont = new("Consolas", 9.5F);
     private readonly Font labelFont = new("Segoe UI", 8.5F, FontStyle.Bold);
+    private readonly ToolTip linkTip = new();
+    private string? hoveredLink;
     private int contentHeight;
     private int selected = -1;
     private (int Msg, int Offset)? anchor;
@@ -61,9 +66,6 @@ internal sealed class ChatView : Control, IChatLog
         TabStop = true;
         BackColor = DarkTheme.Background;
         ForeColor = DarkTheme.Text;
-        boldFont = new Font(bodyFont, FontStyle.Bold);
-        italicFont = new Font(bodyFont, FontStyle.Italic);
-        boldItalicFont = new Font(bodyFont, FontStyle.Bold | FontStyle.Italic);
         AccessibleName = "Conversation";
         AccessibleRole = AccessibleRole.List;
 
@@ -101,15 +103,84 @@ internal sealed class ChatView : Control, IChatLog
         if (messages.Count > 0 && !messages[^1].FromUser)
         {
             var current = messages[^1];
-            AppendSentence(current, blocks);
-            current.Invalidate();
-            Relayout(forceScroll: false);
-            return;
+            if (current.FinalText == text)
+            {
+                return; // VoiceLoop's non-streamed fallback logging the reply it just reported
+            }
+            if (current.FinalText is null)
+            {
+                AppendSentence(current, blocks);
+                current.Invalidate();
+                Relayout(forceScroll: false);
+                return;
+            }
         }
         var message = new Message(fromUser: false);
         message.Blocks.AddRange(blocks);
         Add(message, forceScroll: false);
     });
+
+    // #686: records a detected artifact with the viewer (ArtifactViewerForm.Add)
+    // and returns what opens it; null means artifacts stay inline.
+    public Func<DetectedArtifact, Action<ArtifactOpen>>? Artifacts { get; set; }
+
+    // VoiceLoop reports each finished reply's full text. Streamed sentences
+    // lose the line breaks between them and a long table or code block is
+    // cut mid-line, so Mana's bubble is re-parsed from the real text. As in
+    // Electron, the reply's artifact (a big or ```html/```mermaid block)
+    // moves out of the bubble behind an "Open" button.
+    public void ReportReply(string replyText) => RunOnUiThread(() =>
+    {
+        var addArtifact = Artifacts;
+        var artifact = addArtifact is null ? null : ArtifactDetector.Extract(replyText);
+        var blocks = ChatMarkdownParser.Parse(artifact is { } found ? replyText.Replace(found.MatchedText, "").Trim() : replyText);
+        if (blocks.Count == 0 && artifact is null)
+        {
+            return;
+        }
+        var message = messages.Count > 0 && !messages[^1].FromUser && messages[^1].FinalText is null
+            ? messages[^1]
+            : null;
+        if (message is null)
+        {
+            message = new Message(fromUser: false);
+            messages.Add(message);
+            AccessibilityNotifyClients(AccessibleEvents.Reorder, -1);
+        }
+        message.Blocks.Clear();
+        message.Blocks.AddRange(blocks);
+        message.FinalText = replyText;
+        if (artifact is { } a)
+        {
+            message.Actions.Add(ArtifactAction(a, addArtifact!(a)));
+        }
+        message.Invalidate();
+        Relayout(forceScroll: false);
+    });
+
+    // #686 (Q4/Q44b): an HTML artifact gets an "Open" split button whose
+    // main part opens it in Mana when HtmlRenderer can draw it, else in the
+    // browser; the arrow lists every way. Other artifacts open in the viewer.
+    private static ChatAction ArtifactAction(DetectedArtifact artifact, Action<ArtifactOpen> open)
+    {
+        Func<Task<string?>> Run(ArtifactOpen how) => () =>
+        {
+            open(how);
+            return Task.FromResult<string?>(null);
+        };
+        if (artifact.Language != "html")
+        {
+            return new ChatAction($"Open {artifact.Language} content in new window", false, Run(ArtifactOpen.Default), Keep: true);
+        }
+        var inMana = !HtmlArtifact.NeedsBrowser(artifact.Content);
+        return new ChatAction("Open", false, Run(ArtifactOpen.Default), Keep: true, Menu: new[]
+        {
+            new ChatMenuItem(inMana ? "Open in Mana" : "Open in Mana (this page needs a browser)", inMana, Run(ArtifactOpen.InMana)),
+            new ChatMenuItem("Open in browser", true, Run(ArtifactOpen.Browser)),
+            new ChatMenuItem("View source", true, Run(ArtifactOpen.Source)),
+            new ChatMenuItem("Save as...", true, Run(ArtifactOpen.SaveAs)),
+        });
+    }
 
     // #652 part 6: raised when Mana's reply is complete; SessionListForm
     // checks then for edits to approve and attaches buttons for them.
@@ -122,7 +193,8 @@ internal sealed class ChatView : Control, IChatLog
 
     public void ShowHearing(string? text) => RunOnUiThread(() => HearingChanged?.Invoke(text));
 
-    // Puts buttons under Mana's latest message (replacing any it had).
+    // Puts buttons under Mana's latest message (replacing any it had, except
+    // kept ones like the artifact button, which move after the new ones).
     public void AttachActions(IReadOnlyList<ChatAction> actions)
     {
         var message = messages.LastOrDefault(m => !m.FromUser);
@@ -130,8 +202,10 @@ internal sealed class ChatView : Control, IChatLog
         {
             return;
         }
+        var kept = message.Actions.Where(a => a.Keep).ToList();
         message.Actions.Clear();
         message.Actions.AddRange(actions);
+        message.Actions.AddRange(kept);
         message.Note = null;
         message.Invalidate();
         Relayout(forceScroll: false);
@@ -270,6 +344,7 @@ internal sealed class ChatView : Control, IChatLog
         var flat = new StringBuilder();
         var y = 0;
         var widest = 0;
+        message.Cells.Clear();
         for (var b = 0; b < message.Blocks.Count; b++)
         {
             var block = message.Blocks[b];
@@ -299,6 +374,12 @@ internal sealed class ChatView : Control, IChatLog
                 continue;
             }
 
+            if (block.Type == MarkdownBlockType.Table && block.Rows is { Count: > 0 } rows)
+            {
+                LayOutTable(rows);
+                continue;
+            }
+
             var indent = 0;
             var runs = block.Runs.ToList();
             if (block.Type == MarkdownBlockType.BulletItem)
@@ -306,26 +387,102 @@ internal sealed class ChatView : Control, IChatLog
                 runs.Insert(0, new MarkdownRun("•  ", false, false, false));
                 indent = Measure("•  ", bodyFont);
             }
-            var headerFontFor = block.Type == MarkdownBlockType.Header;
+            var isHeader = block.Type == MarkdownBlockType.Header;
+            var isQuote = block.Type == MarkdownBlockType.Quote;
+            var left = isQuote ? QuoteIndent : 0;
+            var lineHeight = isHeader ? headerFont.Height : bodyFont.Height;
+            foreach (var fragments in Wrap(runs, isHeader ? headerFont : null, left, maxWidth - left, indent))
+            {
+                lines.Add(new Line(y, lineHeight, false, fragments, isQuote));
+                widest = Math.Max(widest, fragments[^1].X + fragments[^1].Width);
+                y += lineHeight + 2;
+            }
+        }
+
+        // Columns get their natural (unwrapped) width, scaled down together
+        // when the table is wider than the bubble; cells then wrap inside.
+        void LayOutTable(IReadOnlyList<IReadOnlyList<IReadOnlyList<MarkdownRun>>> rows)
+        {
+            static IEnumerable<MarkdownRun> CellRuns(IReadOnlyList<MarkdownRun> cell, bool header) =>
+                header ? cell.Select(r => r with { Bold = true }) : cell;
+            var columns = rows[0].Count;
+            var widths = new int[columns];
+            for (var r = 0; r < rows.Count; r++)
+            {
+                for (var c = 0; c < columns; c++)
+                {
+                    widths[c] = Math.Max(widths[c], CellRuns(rows[r][c], r == 0).Sum(run => Measure(run.Text, FontFor(run))) + CellPad * 2);
+                }
+            }
+            var total = widths.Sum();
+            if (total > maxWidth)
+            {
+                for (var c = 0; c < columns; c++)
+                {
+                    widths[c] = Math.Max(1, (int)((long)widths[c] * maxWidth / total));
+                }
+            }
+            for (var r = 0; r < rows.Count; r++)
+            {
+                if (r > 0)
+                {
+                    flat.Append('\n');
+                }
+                var cellLines = new List<List<Fragment>>[columns];
+                var x = 0;
+                for (var c = 0; c < columns; c++)
+                {
+                    if (c > 0)
+                    {
+                        flat.Append('\t');
+                    }
+                    cellLines[c] = Wrap(CellRuns(rows[r][c], r == 0), null, x + CellPad, Math.Max(8, widths[c] - CellPad * 2), 0);
+                    x += widths[c];
+                }
+                var lineCount = Math.Max(1, cellLines.Max(l => l.Count));
+                var rowHeight = lineCount * (bodyFont.Height + 2) + CellPad;
+                x = 0;
+                for (var c = 0; c < columns; c++)
+                {
+                    message.Cells.Add((new Rectangle(x, y, widths[c], rowHeight), r == 0));
+                    x += widths[c];
+                }
+                for (var k = 0; k < lineCount; k++)
+                {
+                    // One visual line across every cell, left to right.
+                    var fragments = cellLines.Where(l => k < l.Count).SelectMany(l => l[k]).ToList();
+                    if (fragments.Count > 0)
+                    {
+                        lines.Add(new Line(y + CellPad / 2 + k * (bodyFont.Height + 2), bodyFont.Height, false, fragments));
+                    }
+                }
+                widest = Math.Max(widest, x);
+                y += rowHeight;
+            }
+            y += 2;
+        }
+
+        // Word-wraps runs into lines of fragments `width` wide, starting at
+        // x = left; continuation lines start `indent` further in.
+        List<List<Fragment>> Wrap(IEnumerable<MarkdownRun> runs, Font? onlyFont, int left, int width, int indent)
+        {
+            var result = new List<List<Fragment>>();
             var line = new List<Fragment>();
             var x = 0;
-            var lineHeight = headerFontFor ? headerFont.Height : bodyFont.Height;
             void EndLine()
             {
-                lines.Add(new Line(y, lineHeight, false, line));
-                widest = Math.Max(widest, x);
-                y += lineHeight + 2;
+                result.Add(line);
                 line = new List<Fragment>();
                 x = indent;
             }
             foreach (var run in runs)
             {
-                var font = headerFontFor ? headerFont : FontFor(run);
+                var font = onlyFont ?? FontFor(run);
                 foreach (Match word in WordPattern.Matches(run.Text))
                 {
                     var text = word.Value;
                     var w = Measure(text, font);
-                    if (x + w > maxWidth && x > indent)
+                    if (x + w > width && x > indent)
                     {
                         EndLine();
                         text = text.TrimStart();
@@ -335,22 +492,22 @@ internal sealed class ChatView : Control, IChatLog
                         }
                         w = Measure(text, font);
                     }
-                    if (w > maxWidth - indent)
+                    if (w > width - indent)
                     {
-                        foreach (var piece in BreakToWidth(text, font, maxWidth - indent))
+                        foreach (var piece in BreakToWidth(text, font, width - indent))
                         {
                             if (x > indent)
                             {
                                 EndLine();
                             }
                             var pw = Measure(piece, font);
-                            line.Add(new Fragment(piece, font, x, pw, run.Code, flat.Length));
+                            line.Add(new Fragment(piece, font, left + x, pw, run.Code, flat.Length, run.Link));
                             flat.Append(piece);
                             x += pw;
                         }
                         continue;
                     }
-                    line.Add(new Fragment(text, font, x, w, run.Code, flat.Length));
+                    line.Add(new Fragment(text, font, left + x, w, run.Code, flat.Length, run.Link));
                     flat.Append(text);
                     x += w;
                 }
@@ -359,6 +516,7 @@ internal sealed class ChatView : Control, IChatLog
             {
                 EndLine();
             }
+            return result;
         }
         message.ActionBounds.Clear();
         message.NoteBounds = Rectangle.Empty;
@@ -368,7 +526,7 @@ internal sealed class ChatView : Control, IChatLog
             var x = 0;
             foreach (var action in message.Actions)
             {
-                var w = Measure(action.Label, bodyFont) + 28;
+                var w = Measure(action.Label, bodyFont) + 28 + (action.Menu is null ? 0 : MenuArrowWidth);
                 message.ActionBounds.Add(new Rectangle(x, y, w, ActionHeight));
                 x += w + 8;
             }
@@ -392,8 +550,24 @@ internal sealed class ChatView : Control, IChatLog
         message.LaidOutWidth = maxWidth;
     }
 
-    private Font FontFor(MarkdownRun run) =>
-        run.Code ? codeFont : run.Bold && run.Italic ? boldItalicFont : run.Bold ? boldFont : run.Italic ? italicFont : bodyFont;
+    private Font FontFor(MarkdownRun run)
+    {
+        if (run.Code)
+        {
+            return codeFont;
+        }
+        var style = (run.Bold ? FontStyle.Bold : 0) | (run.Italic ? FontStyle.Italic : 0)
+                    | (run.Strike ? FontStyle.Strikeout : 0) | (run.Link is not null ? FontStyle.Underline : 0);
+        if (style == FontStyle.Regular)
+        {
+            return bodyFont;
+        }
+        if (!styledFonts.TryGetValue(style, out var font))
+        {
+            styledFonts[style] = font = new Font(bodyFont, style);
+        }
+        return font;
+    }
 
     private static int Measure(string text, Font font) =>
         TextRenderer.MeasureText(text, font, new Size(int.MaxValue, int.MaxValue), TextFlags).Width;
@@ -479,6 +653,20 @@ internal sealed class ChatView : Control, IChatLog
             }
 
             var origin = new Point(bubble.X + PadX, bubble.Y + PadY);
+            if (message.Cells.Count > 0)
+            {
+                using var headerBack = new SolidBrush(Color.FromArgb(DarkTheme.IsLight ? 110 : 60, DarkTheme.IsLight ? Color.White : Color.Black));
+                using var grid = new Pen(DarkTheme.Border);
+                foreach (var (cell, header) in message.Cells)
+                {
+                    var rect = cell with { X = cell.X + origin.X, Y = cell.Y + origin.Y };
+                    if (header)
+                    {
+                        g.FillRectangle(headerBack, rect);
+                    }
+                    g.DrawRectangle(grid, rect);
+                }
+            }
             foreach (var line in message.Lines)
             {
                 if (line.Code)
@@ -486,13 +674,18 @@ internal sealed class ChatView : Control, IChatLog
                     using var codeBack = new SolidBrush(Color.FromArgb(DarkTheme.IsLight ? 110 : 60, DarkTheme.IsLight ? Color.White : Color.Black));
                     g.FillRectangle(codeBack, origin.X, origin.Y + line.Y - 1, message.ContentWidth, line.Height);
                 }
+                if (line.Quote)
+                {
+                    using var bar = new SolidBrush(Color.FromArgb(160, DarkTheme.Accent));
+                    g.FillRectangle(bar, origin.X, origin.Y + line.Y - 1, 3, line.Height + 2);
+                }
                 foreach (var fragment in line.Fragments)
                 {
                     PaintSelection(g, i, fragment, origin.X, origin.Y + line.Y - 1, line.Height);
                     // Centred on the line, so a smaller code-font span sits level with the words around it.
                     var y = origin.Y + line.Y + (line.Height - fragment.Font.Height) / 2;
                     TextRenderer.DrawText(g, fragment.Text, fragment.Font, new Point(origin.X + fragment.X, y),
-                        fragment.IsCode ? DarkTheme.CodeText : DarkTheme.Text, TextFlags);
+                        fragment.IsCode ? DarkTheme.CodeText : fragment.Link is not null ? DarkTheme.Accent : DarkTheme.Text, TextFlags);
                 }
             }
 
@@ -512,9 +705,16 @@ internal sealed class ChatView : Control, IChatLog
     {
         base.OnMouseDown(e);
         Focus();
-        if (e.Button == MouseButtons.Left && ActionAt(e.Location) is var (actionMsg, actionIndex))
+        if (e.Button == MouseButtons.Left && ActionAt(e.Location) is var (actionMsg, actionIndex, actionRect))
         {
-            _ = RunActionAsync(actionMsg, actionIndex);
+            if (messages[actionMsg].Actions[actionIndex].Menu is not null && e.X >= actionRect.Right - MenuArrowWidth)
+            {
+                ShowActionMenu(actionMsg, actionIndex, new Point(actionRect.Right - MenuArrowWidth, actionRect.Bottom));
+            }
+            else
+            {
+                _ = RunActionAsync(actionMsg, actionIndex);
+            }
             return;
         }
         if (e.Button == MouseButtons.Left)
@@ -538,7 +738,14 @@ internal sealed class ChatView : Control, IChatLog
     protected override void OnMouseMove(MouseEventArgs e)
     {
         base.OnMouseMove(e);
-        Cursor = ActionAt(e.Location) is not null ? Cursors.Hand : HitTest(e.Location) >= 0 ? Cursors.IBeam : Cursors.Default;
+        var link = LinkAt(e.Location);
+        if (link != hoveredLink)
+        {
+            hoveredLink = link;
+            linkTip.SetToolTip(this, link); // shows where a link really goes before it's clicked
+        }
+        Cursor = ActionAt(e.Location) is not null || link is not null ? Cursors.Hand
+            : HitTest(e.Location) >= 0 ? Cursors.IBeam : Cursors.Default;
         if (!pressed || (e.Button & MouseButtons.Left) == 0 || messages.Count == 0)
         {
             return;
@@ -566,8 +773,62 @@ internal sealed class ChatView : Control, IChatLog
     protected override void OnMouseUp(MouseEventArgs e)
     {
         base.OnMouseUp(e);
+        // A click (not the end of a drag-selection) on a link opens it.
+        if (e.Button == MouseButtons.Left && pressed && !dragSelecting && LinkAt(e.Location) is { } link)
+        {
+            OpenLink(link);
+        }
         pressed = false;
         dragSelecting = false;
+    }
+
+    // The link URL under `point`, or null.
+    internal string? LinkAt(Point point)
+    {
+        var index = HitTest(point);
+        if (index < 0)
+        {
+            return null;
+        }
+        var m = messages[index];
+        var x = point.X - m.Bounds.X - PadX;
+        var y = point.Y + (scrollBar.Visible ? scrollBar.Value : 0) - m.Bounds.Y - PadY;
+        foreach (var line in m.Lines)
+        {
+            if (y < line.Y || y >= line.Y + line.Height)
+            {
+                continue;
+            }
+            foreach (var fragment in line.Fragments)
+            {
+                if (fragment.Link is not null && x >= fragment.X && x < fragment.X + fragment.Width)
+                {
+                    return fragment.Link;
+                }
+            }
+        }
+        return null;
+    }
+
+    // Opens web and mail links only -- the reply is model text, possibly
+    // echoing web content, so no file:, ms-settings: or other handlers.
+    internal static bool IsSafeLink(string link) =>
+        Uri.TryCreate(link, UriKind.Absolute, out var uri) && uri.Scheme is "http" or "https" or "mailto";
+
+    private static void OpenLink(string link)
+    {
+        if (!IsSafeLink(link))
+        {
+            return;
+        }
+        try
+        {
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(new Uri(link).AbsoluteUri) { UseShellExecute = true });
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"ChatView: couldn't open {link}: {ex.Message}");
+        }
     }
 
     // ---- Text selection -------------------------------------------------
@@ -713,8 +974,16 @@ internal sealed class ChatView : Control, IChatLog
                 g.FillRectangle(fill, rect);
                 using var border = new Pen(DarkTheme.Border);
                 g.DrawRectangle(border, rect.X, rect.Y, rect.Width - 1, rect.Height - 1);
-                TextRenderer.DrawText(g, action.Label, bodyFont, rect, faded ? DarkTheme.Muted : DarkTheme.Text,
+                var labelRect = action.Menu is null ? rect : new Rectangle(rect.X, rect.Y, rect.Width - MenuArrowWidth, rect.Height);
+                TextRenderer.DrawText(g, action.Label, bodyFont, labelRect, faded ? DarkTheme.Muted : DarkTheme.Text,
                     TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
+                if (action.Menu is not null)
+                {
+                    var arrow = new Rectangle(rect.Right - MenuArrowWidth, rect.Y, MenuArrowWidth, rect.Height);
+                    g.DrawLine(border, arrow.X, rect.Y + 5, arrow.X, rect.Bottom - 6);
+                    TextRenderer.DrawText(g, "\u25BE", bodyFont, arrow, faded ? DarkTheme.Muted : DarkTheme.Text,
+                        TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
+                }
             }
         }
         if (message.Note is not null)
@@ -726,7 +995,7 @@ internal sealed class ChatView : Control, IChatLog
     }
 
     // The action button under `point`, as (message, button index), or null.
-    private (int Msg, int Action)? ActionAt(Point point)
+    private (int Msg, int Action, Rectangle Rect)? ActionAt(Point point)
     {
         var scroll = scrollBar.Visible ? scrollBar.Value : 0;
         for (var i = 0; i < messages.Count; i++)
@@ -738,11 +1007,42 @@ internal sealed class ChatView : Control, IChatLog
                 rect.Offset(m.Bounds.X + PadX, m.Bounds.Y + PadY - scroll);
                 if (rect.Contains(point))
                 {
-                    return (i, a);
+                    return (i, a, rect);
                 }
             }
         }
         return null;
+    }
+
+    // A split button's dropdown, under its arrow (or the button, from the keyboard).
+    private void ShowActionMenu(int index, int actionIndex, Point at)
+    {
+        var message = messages[index];
+        if (message.ActionRunning || message.Actions[actionIndex].Menu is not { } items)
+        {
+            return;
+        }
+        var menu = new ContextMenuStrip();
+        foreach (var item in items)
+        {
+            menu.Items.Add(new ToolStripMenuItem(item.Label, null, (_, _) => _ = RunMenuItemAsync(message, item)) { Enabled = item.Enabled });
+        }
+        menu.Closed += (_, _) => BeginInvoke(menu.Dispose); // after the clicked item's handler
+        menu.Show(this, at);
+    }
+
+    private async Task RunMenuItemAsync(Message message, ChatMenuItem item)
+    {
+        try
+        {
+            await item.Run();
+        }
+        catch (Exception ex)
+        {
+            message.Note = $"Couldn't do that: {ex.Message}";
+            message.Invalidate();
+            Relayout(forceScroll: false);
+        }
     }
 
     // Runs a button's action; a returned note replaces the buttons (e.g. "Approved").
@@ -771,7 +1071,7 @@ internal sealed class ChatView : Control, IChatLog
         message.ActionRunning = false;
         if (note is not null)
         {
-            message.Actions.Clear();
+            message.Actions.RemoveAll(a => !a.Keep);
             message.Note = note;
             message.Invalidate();
             Relayout(forceScroll: false);
@@ -839,7 +1139,7 @@ internal sealed class ChatView : Control, IChatLog
     }
 
     protected override bool IsInputKey(Keys keyData) =>
-        keyData is Keys.Up or Keys.Down or Keys.Home or Keys.End or Keys.Escape or Keys.Enter || base.IsInputKey(keyData);
+        keyData is Keys.Up or Keys.Down or Keys.Home or Keys.End or Keys.Escape or Keys.Enter or (Keys.Alt | Keys.Down) || base.IsInputKey(keyData);
 
     protected override void OnKeyDown(KeyEventArgs e)
     {
@@ -862,6 +1162,14 @@ internal sealed class ChatView : Control, IChatLog
                 ClearTextSelection();
                 e.Handled = true;
                 break;
+            case Keys.Alt | Keys.Down when selected >= 0 && messages[selected].Actions.FindIndex(a => a.Menu is not null) is var menuAt and >= 0:
+            {
+                var rect = messages[selected].ActionBounds[menuAt];
+                rect.Offset(messages[selected].Bounds.X + PadX, messages[selected].Bounds.Y + PadY - (scrollBar.Visible ? scrollBar.Value : 0));
+                ShowActionMenu(selected, menuAt, new Point(rect.X, rect.Bottom));
+                e.Handled = true;
+                break;
+            }
             case Keys.Enter when selected >= 0 && messages[selected].Actions.Count > 0:
                 _ = RunActionAsync(selected, 0);
                 e.Handled = true;
@@ -979,12 +1287,14 @@ internal sealed class ChatView : Control, IChatLog
         if (disposing)
         {
             bodyFont.Dispose();
-            boldFont.Dispose();
-            italicFont.Dispose();
-            boldItalicFont.Dispose();
+            foreach (var font in styledFonts.Values)
+            {
+                font.Dispose();
+            }
             headerFont.Dispose();
             codeFont.Dispose();
             labelFont.Dispose();
+            linkTip.Dispose();
             glow?.Dispose();
             ContextMenuStrip?.Dispose();
         }
@@ -1012,6 +1322,10 @@ internal sealed class ChatView : Control, IChatLog
         public string? Note { get; set; }
         public Rectangle NoteBounds { get; set; }
         public bool ActionRunning { get; set; }
+        public List<(Rectangle Bounds, bool Header)> Cells { get; } = new(); // table cells, in content coordinates
+
+        // The full reply text once VoiceLoop reported it; later sentences start a new bubble.
+        public string? FinalText { get; set; }
 
         public void Invalidate() => LaidOutWidth = -1;
 
@@ -1030,6 +1344,11 @@ internal sealed class ChatView : Control, IChatLog
                     {
                         text.Append("• ");
                     }
+                    if (block.Rows is { } rows)
+                    {
+                        text.AppendJoin(Environment.NewLine,
+                            rows.Select(row => string.Join("\t", row.Select(cell => string.Concat(cell.Select(r => r.Text))))));
+                    }
                     foreach (var run in block.Runs)
                     {
                         text.Append(run.Text);
@@ -1040,12 +1359,17 @@ internal sealed class ChatView : Control, IChatLog
         }
     }
 
-    internal sealed record Line(int Y, int Height, bool Code, List<Fragment> Fragments);
+    internal sealed record Line(int Y, int Height, bool Code, List<Fragment> Fragments, bool Quote = false);
 
     // A button under one of Mana's messages. Run returns a note to show in
-    // place of the buttons once it's done, or null to keep them.
-    internal sealed record ChatAction(string Label, bool Primary, Func<Task<string?>> Run);
+    // place of the buttons once it's done, or null to keep them. Keep: stays
+    // when a note or a new set of buttons replaces the others.
+    // Menu makes it a split button: its arrow part lists these (Alt+Down from the keyboard).
+    internal sealed record ChatAction(string Label, bool Primary, Func<Task<string?>> Run, bool Keep = false,
+        IReadOnlyList<ChatMenuItem>? Menu = null);
 
-    // Start: offset of Text within the message's Text.
-    internal sealed record Fragment(string Text, Font Font, int X, int Width, bool IsCode, int Start);
+    internal sealed record ChatMenuItem(string Label, bool Enabled, Func<Task<string?>> Run);
+
+    // Start: offset of Text within the message's Text. Link: its URL, if it's part of a link.
+    internal sealed record Fragment(string Text, Font Font, int X, int Width, bool IsCode, int Start, string? Link = null);
 }

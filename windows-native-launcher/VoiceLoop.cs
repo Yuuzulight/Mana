@@ -168,17 +168,17 @@ internal sealed class VoiceLoop : IDisposable
     private readonly IArtifactSink? artifactSink;
 
     // #520: which ACP memory-store session outgoing turns are appended
-    // to; null (the default, and every pre-#520 turn's behavior) means
-    // node-bot's implicit "default" session, not sent as an explicit
-    // field. Unlike awake/heldSentences (touched only from the single-
-    // threaded turn-processing chain), this is written from the session
-    // list UI's own thread while a turn may be reading it on a thread-
-    // pool continuation -- volatile is enough (a plain reference swap,
-    // not a compound read-modify-write), no need for stateLock here.
-    private volatile string? currentSessionId;
+    // to. No session is not a "default" one: node-bot saves no turn
+    // without a sessionId, so every turn asks AutoSession for one (Q62).
+    // Written from the session list UI's thread while a turn may read it
+    // on a thread-pool continuation; AutoSession locks internally.
+    private readonly AutoSession session = new();
 
     // #681: the active prompt preset (Settings > Presets), sent with every
-    // reply. Same threading story as currentSessionId above.
+    // reply. Unlike awake/heldSentences (touched only from the single-
+    // threaded turn-processing chain), this is written from the UI thread
+    // while a turn may be reading it on a thread-pool continuation --
+    // volatile is enough (a plain reference swap), no need for stateLock.
     private volatile string? currentPresetId;
 
     // #521: null (no chat window constructed) is the common case and a
@@ -222,7 +222,13 @@ internal sealed class VoiceLoop : IDisposable
             audioPlayer.PlayAsync,
             talking => OnTalkingStateChanged(talking),
             running => avatarOverlay.SetActivity(AvatarState.Working, running),
-            sentence => captions?.ShowSentence(sentence));
+            (sentence, emotion, duration) =>
+            {
+                captions?.ShowSentence(sentence, duration);
+                // #623: each sentence's own face as its audio starts -- the
+                // model's emotion tag, else read from the sentence's text.
+                avatarOverlay.SetState(MapReplyEmotionToAvatarState(ReplyEmotionDetector.DetectReplyEmotion(sentence, emotion)), null, emotion);
+            });
     }
 
     // #681: true between Start() and Stop() -- what the tray's and chat
@@ -247,6 +253,18 @@ internal sealed class VoiceLoop : IDisposable
             Console.WriteLine($"VoiceLoop: couldn't start listening. {ex.Message}");
             Stop();
         }
+    }
+
+    // #662: clicking Mana on the overlay counts as the wake word -- listening
+    // comes on if it was off, and the next thing said is a command. Set
+    // after Start(), which resets awake.
+    public void Wake()
+    {
+        if (!IsListening)
+        {
+            ToggleListening();
+        }
+        awake = IsListening;
     }
 
     public void Start()
@@ -401,14 +419,30 @@ internal sealed class VoiceLoop : IDisposable
     // a user action on a separate window, not an interruption of Mana
     // herself; whatever she's currently saying keeps playing against
     // whichever session was active when that turn started.
-    public void SetSessionId(string? sessionId) => currentSessionId = sessionId;
+    public void SetSessionId(string? sessionId) => session.Set(sessionId);
 
     public void SetPresetId(string? presetId) => currentPresetId = presetId;
 
-    // #577: lets ResearchForm record a finished report into whatever
-    // session is currently active, matching windows-launcher's own
-    // ensureSessionId() call at its deep-research entry point.
-    public string? CurrentSessionId => currentSessionId;
+    public string? CurrentSessionId => session.CurrentId;
+
+    // Q62: the session a turn goes out with -- every chat turn (typed,
+    // spoken, vision/clip hotkeys) via SpeakReplyCoreAsync, and #577's
+    // ResearchForm, matching windows-launcher's own ensureSessionId() at
+    // its deep-research entry point.
+    public string EnsureSessionId() => session.EnsureForTurn();
+
+    // #668: no turn in flight and she isn't speaking -- when the message
+    // box's queue may send its next message without cutting her off.
+    public bool IsIdle
+    {
+        get
+        {
+            lock (stateLock)
+            {
+                return mode == ListenMode.Idle;
+            }
+        }
+    }
 
     public void Dispose() => Stop();
 
@@ -1017,23 +1051,36 @@ internal sealed class VoiceLoop : IDisposable
             prefilterRejected = logEntry.Score < logEntry.Threshold;
         }
 
+        // #682: Electron's speech filters (SpeechFilters) -- a quiet segment
+        // is boosted before Whisper hears it, one still too quiet or
+        // hiss-like never reaches Whisper, and a phantom phrase or
+        // noise-only caption is dropped like an empty transcript.
         var transcript = "";
         if (!prefilterRejected)
         {
-            try
+            var (boosted, gain) = SpeechFilters.ApplySpeechGain(samples, SpeechFilters.GainTargetPeak, SpeechFilters.GainMaxBoost);
+            logEntry.Gain = gain;
+            logEntry.Drop = SpeechFilters.GetSpeechRejectReason(boosted, SpeechFilters.MinSpeechRms, SpeechFilters.MinSpeechPeak, SpeechFilters.MaxClickyZcr);
+            if (logEntry.Drop is null)
             {
-                transcript = await backendClient.TranscribeAsync(BuildWavBytes(samples));
-                logEntry.Whisper = string.IsNullOrWhiteSpace(transcript) ? "empty" : "ok";
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"VoiceLoop: transcription failed, resuming listening. {ex.Message}");
-                logEntry.Whisper = "failed";
+                try
+                {
+                    transcript = await backendClient.TranscribeAsync(BuildWavBytes(boosted));
+                    logEntry.Whisper = string.IsNullOrWhiteSpace(transcript) ? "empty" : "ok";
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"VoiceLoop: transcription failed, resuming listening. {ex.Message}");
+                    logEntry.Whisper = "failed";
+                }
             }
         }
         if (logEntry.Whisper == "ok")
         {
             logEntry.Transcript = transcript;
+            logEntry.Drop = SpeechFilters.IsLikelyWhisperHallucination(transcript, samples.Length / (double)SileroVadRunner.SampleRate) ? "hallucination"
+                : SpeechFilters.IsNoiseOnlyTranscript(transcript) ? "noise"
+                : null;
         }
 
         if (!await ClaimTurnAsync(turnId))
@@ -1071,13 +1118,16 @@ internal sealed class VoiceLoop : IDisposable
             await ReturnToIdleOrResumeHeldAsync(held, nested);
         }
 
-        // skipped (pre-filter), failed, or empty.
-        if (logEntry.Whisper != "ok")
+        // skipped (pre-filter or speech gate), failed, empty, or filtered.
+        if (logEntry.Whisper != "ok" || logEntry.Drop is not null)
         {
             await Skip();
             return;
         }
 
+        // Electron's handleTranscript strips "(laughs)"/"[music]" annotations
+        // before the wake match and before the text is shown or sent.
+        transcript = ScreenContextTrigger.CleanTranscriptText(transcript);
         string commandText;
         if (!awake)
         {
@@ -1286,7 +1336,7 @@ internal sealed class VoiceLoop : IDisposable
         IReadOnlyList<string> pending;
         try
         {
-            (reply, changed, preferredExpression, interrupted, pending) = await streamingReplyPlayer.StreamReplyAndPlayAsync(commandText, currentSessionId, text => chatLog?.AppendReplySentence(text), screenText, image, images, currentPresetId);
+            (reply, changed, preferredExpression, interrupted, pending) = await streamingReplyPlayer.StreamReplyAndPlayAsync(commandText, EnsureSessionId(), text => chatLog?.AppendReplySentence(text), screenText, image, images, currentPresetId);
         }
         catch (Exception ex)
         {
@@ -1368,11 +1418,11 @@ internal sealed class VoiceLoop : IDisposable
             return false;
         }
 
-        // Only reachable here with the FULL final reply text already known
-        // (unlike the streaming path above, which only ever sees individual
-        // sentences as they arrive -- per-sentence expression detection
-        // isn't attempted there, a deliberate scope cut).
-        var expression = ReplyEmotionDetector.DetectReplyEmotion(reply);
+        // One clip, so one face for the whole reply (#623: the reply's own
+        // emotion tag when the model gave one; the streaming path above
+        // switches per sentence instead).
+        var emotion = streamingReplyPlayer.FinalEmotion;
+        var expression = ReplyEmotionDetector.DetectReplyEmotion(reply, emotion);
 
         bool completedNaturally;
         try
@@ -1381,7 +1431,7 @@ internal sealed class VoiceLoop : IDisposable
             // final event. node-bot only sets it on the tool-calling path,
             // which never streams sentences -- so it always lands here, never
             // on the changed:false path above.
-            OnTalkingStateChanged(true, MapReplyEmotionToAvatarState(expression), preferredExpression);
+            OnTalkingStateChanged(true, MapReplyEmotionToAvatarState(expression), preferredExpression, emotion);
             captions?.ShowSpokenText(reply ?? string.Empty, AudioPlayer.Duration(replyWav));
             completedNaturally = await audioPlayer.PlayAsync(replyWav);
         }
@@ -1454,9 +1504,9 @@ internal sealed class VoiceLoop : IDisposable
     // non-streaming fallback call site (which has the full reply text
     // already, unlike streaming) passes ReplyEmotionDetector's result
     // instead. Ignored when talking=false (always goes to Idle).
-    private void OnTalkingStateChanged(bool talking, AvatarState talkingState = AvatarState.Talking, string? preferredExpression = null)
+    private void OnTalkingStateChanged(bool talking, AvatarState talkingState = AvatarState.Talking, string? preferredExpression = null, string? emotion = null)
     {
-        avatarOverlay.SetState(talking ? talkingState : AvatarState.Idle, talking ? preferredExpression : null);
+        avatarOverlay.SetState(talking ? talkingState : AvatarState.Idle, talking ? preferredExpression : null, talking ? emotion : null);
         if (!talking)
         {
             captions?.SpeechEnded();

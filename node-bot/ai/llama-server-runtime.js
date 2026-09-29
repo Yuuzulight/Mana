@@ -1,5 +1,6 @@
 const defaultFs = require("node:fs");
 const { streamSentences } = require("../utils/sse-sentence-stream");
+const { stripEmotionTags } = require("../utils/emotion-tags");
 const { buildSamplingParams } = require("./sampler-presets");
 const path = require("node:path");
 const {
@@ -19,6 +20,7 @@ const {
   isLocalModelSpec,
 } = require("./local-llama-runtime");
 const { SESSION_GOAL_FINISH_TOOL_NAME } = require("./session-goal-tool-source");
+const { CODING_EDIT_TOOL_NAME, CODING_TEST_TOOL_NAME } = require("./coding-tool-source");
 const { detectGpuVramUsageMb } = require("../model-management");
 const { readActivePointer, settleActiveBuild } = require("../llama-builds");
 
@@ -55,23 +57,27 @@ function createLlamaServerRuntime(options = {}) {
         windowsHide: true,
         stdio: ["ignore", "pipe", "pipe"],
       }));
-  const loadModeSupport = new Map();
-  // Builds older than --load-mode (reachable via #693 update/rollback)
-  // refuse to start with it; --no-mmap does the same there. A failed probe
-  // counts as "not supported": --no-mmap is still accepted (deprecated) by
-  // builds that do have --load-mode.
-  function supportsLoadMode(bin) {
+  // Each binary's --help text, probed once. Builds older than a flag
+  // (reachable via #693 update/rollback) refuse to start with it. A failed
+  // probe counts as "not supported".
+  const helpTexts = new Map();
+  function supportsFlag(bin, flag) {
     if (!bin) return true;
-    if (!loadModeSupport.has(bin)) {
-      let supported = false;
+    if (!helpTexts.has(bin)) {
+      let text = "";
       try {
-        supported = String(probeHelp(bin)).includes("--load-mode");
+        text = String(probeHelp(bin));
       } catch (e) {
-        supported = false;
+        text = "";
       }
-      loadModeSupport.set(bin, supported);
+      helpTexts.set(bin, text);
     }
-    return loadModeSupport.get(bin);
+    return helpTexts.get(bin).includes(flag);
+  }
+  // Without --load-mode, --no-mmap does the same; it's still accepted
+  // (deprecated) by builds that do have --load-mode.
+  function supportsLoadMode(bin) {
+    return supportsFlag(bin, "--load-mode");
   }
   const registerExitHandlers = options.registerExitHandlers !== false;
   const sleep = options.sleep || defaultSleep;
@@ -459,14 +465,18 @@ function createLlamaServerRuntime(options = {}) {
   // pressure instead of the driver hard-failing the allocation. Measured
   // real cold-start/swap latency on an RTX 3070 Ti (see
   // docs/roadmap/issue-68-vram-hotswap-tuning.md): ~64% faster cold start
-  // (11.4s -> 4.1s) and ~32% faster on the larger 4B->7B swap direction,
-  // with no regression the other way -- on by default. Set
-  // MANA_LLAMA_UNIFIED_MEMORY=0 to opt out.
+  // (11.4s -> 4.1s) and ~32% faster on the larger 4B->7B swap direction.
+  // Off by default now: on the RTX 5080 machine, every llama-server
+  // stop with it on left ~5 GB of system RAM committed to no process (model
+  // sized, gone only after a reboot; 4 of 4 runs). With it off nothing was
+  // left behind (3 of 3), including a forced kill after a 60 s CTRL_C wait,
+  // so it's the unified memory, not the kill. MANA_LLAMA_UNIFIED_MEMORY=1
+  // opts back in.
   function buildServerEnv() {
-    if (env.MANA_LLAMA_UNIFIED_MEMORY === "0") {
-      return env;
+    if (env.MANA_LLAMA_UNIFIED_MEMORY === "1") {
+      return { ...env, GGML_CUDA_ENABLE_UNIFIED_MEMORY: "1" };
     }
-    return { ...env, GGML_CUDA_ENABLE_UNIFIED_MEMORY: "1" };
+    return env;
   }
 
   // Issue #370: the flags that actually govern throughput/memory (flash-attn,
@@ -555,6 +565,17 @@ function createLlamaServerRuntime(options = {}) {
       } else {
         args.push("--no-mmap");
       }
+    }
+
+    // Issue #660: llama-server keeps a host-RAM prompt cache (b10507
+    // default 8 GiB). Uncapped, its working set grew 0.9 -> 4.6 GB over one
+    // session. The in-slot KV cache (VRAM) already gives turn-to-turn prefix
+    // reuse; the host cache only helps when requests hop slots or sessions,
+    // so 1 GiB keeps most of that. LLAMA_CACHE_RAM overrides it (MiB; -1 =
+    // no limit, 0 = off).
+    if (supportsFlag(bin, "--cache-ram")) {
+      const cacheRam = Number(String(env.LLAMA_CACHE_RAM || "").trim() || 1024);
+      args.push("--cache-ram", String(Number.isInteger(cacheRam) && cacheRam >= -1 ? cacheRam : 1024));
     }
 
     // Same opt-in hardware flags as the llama-cli path.
@@ -1199,12 +1220,53 @@ function createLlamaServerRuntime(options = {}) {
   // dict/object literals essentially never use exactly those two key names
   // back to back, so this is unlikely to false-positive on this model's
   // otherwise code-heavy replies.
+  //
+  // Checked after stripping emotion tags (#623): a tagged reply always starts
+  // with "[" ("[happy] Welcome home"), and flagging it forced a repair round
+  // whose schema had to return some tool call -- it invented skill__view
+  // every turn in a live run.
   function looksLikeFailedToolCallJson(content) {
-    const trimmed = String(content || "").trim();
+    const trimmed = stripEmotionTags(content).text;
     if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
       return true;
     }
     return /"name"\s*:\s*"[^"]+"\s*,\s*"arguments"\s*:/.test(trimmed);
+  }
+
+  // #787: qwen2.5-coder never uses the <tool_call> tags its template asks
+  // for, so llama-server's parser never sees a call -- measured live, 98 of
+  // 102 goal-mode turns wrote it as a ```json block (or bare JSON) instead,
+  // and fixing the template's doubled `{{"name"...}}` example didn't change
+  // that. Read those text-form calls here, but only well-formed ones naming
+  // an offered tool with its required arguments; anything else still goes
+  // to repairToolCalls.
+  function parseTextToolCalls(content, tools) {
+    const params = new Map((tools || []).map((t) => [t.function.name, t.function.parameters || {}]));
+    const text = String(content || "");
+    const blocks = [...text.matchAll(/```(?:json)?\s*([\s\S]*?)```|<tool_call>([\s\S]*?)<\/tool_call>/g)].map(
+      (m) => m[1] ?? m[2],
+    );
+    const calls = [];
+    for (const raw of blocks.length ? blocks : [text]) {
+      let parsed;
+      try {
+        parsed = JSON.parse(raw.trim());
+      } catch (e) {
+        continue;
+      }
+      for (const call of [].concat(parsed)) {
+        const schema = call && params.get(call.name);
+        const args = call && call.arguments;
+        if (!schema || !args || typeof args !== "object" || Array.isArray(args)) continue;
+        if (!(schema.required || []).every((key) => key in args)) continue;
+        calls.push({
+          id: `text_${Date.now()}_${calls.length}`,
+          type: "function",
+          function: { name: call.name, arguments: JSON.stringify(args) },
+        });
+      }
+    }
+    return calls;
   }
 
   // Builds a JSON Schema that forces a valid `{tool_calls: [{name, arguments}]}`
@@ -1282,6 +1344,109 @@ function createLlamaServerRuntime(options = {}) {
     }));
   }
 
+  // Issue #676: goal mode's nudge when the model answers without a tool.
+  function goalRecheckMessage(goal, missing = []) {
+    const stillMissing = missing.length ? `\nStill missing: ${missing.join("; ")}` : "";
+    return {
+      role: "user",
+      content: `Goal: ${goal}${stillMissing}\nIf it's done, call ${SESSION_GOAL_FINISH_TOOL_NAME} with the reason; otherwise do the next step.`,
+    };
+  }
+
+  // #787: what the run itself shows, for the review. Measured live, the
+  // model-only review passed "fixed" with no edit made and with the tests
+  // still failing. No edit on an edit goal is decided here; a failing test
+  // run goes to the model review with its output instead, since a suite can
+  // fail on something the goal doesn't cover. ponytail: "is this an edit
+  // goal" is a verb regex -- a goal worded without one skips the no-edit
+  // check and relies on the model review.
+  const EDIT_GOAL_RE = /\b(fix|add|rename|change|update|implement|refactor|remove|delete|edit|replace|modify)\b/i;
+  function goalEvidence(goal, calls, toolNames) {
+    const lastIndex = (pred) => calls.reduce((found, c, i) => (pred(c) ? i : found), -1);
+    const lastEdit = lastIndex((c) => c.name === CODING_EDIT_TOOL_NAME && c.status === "ok");
+    const lastTest = lastIndex((c) => c.name === CODING_TEST_TOOL_NAME && typeof c.passed === "boolean");
+    const gaps =
+      lastEdit < 0 && toolNames.includes(CODING_EDIT_TOOL_NAME) && EDIT_GOAL_RE.test(goal)
+        ? [`no edit was made yet (${CODING_EDIT_TOOL_NAME} never succeeded)`]
+        : [];
+    let tests = "";
+    if (lastTest >= 0 && lastTest > lastEdit) {
+      const output = (() => {
+        try {
+          return String(JSON.parse(calls[lastTest].result).output || "");
+        } catch (e) {
+          return "";
+        }
+      })();
+      tests = `Latest test run, after the last edit: ${calls[lastTest].passed ? "passed" : "FAILED"}\n${output.slice(-1500)}`;
+    } else if (toolNames.includes(CODING_TEST_TOOL_NAME)) {
+      tests = "Tests: not run since the last edit.";
+    }
+    return { gaps, tests };
+  }
+
+  // Issue #676: one schema-constrained call (same shape as repairToolCalls)
+  // asking whether the draft actually does what was asked. Returns
+  // {complete, missing[]}, or null when the check itself fails -- a broken
+  // review must never block or rewrite the answer. #787: an evidence gap
+  // decides first; the model sees each call's actual result and the latest
+  // test run, not just that the calls ran.
+  async function reviewGoalCompletion({ prompt, goal, toolCalls, toolNames, draft, maxTokens, profile }) {
+    const { gaps, tests } = goalEvidence(goal, toolCalls, toolNames);
+    if (gaps.length) return { complete: false, missing: gaps, evidence: true };
+    const calls = toolCalls
+      .map(
+        (c) =>
+          `- ${c.name}(${JSON.stringify(c.args || {}).slice(0, 200)}) ${c.ok ? "ok" : `error: ${c.error}`}` +
+          (c.result ? `\n  result: ${c.result.slice(0, 800)}` : ""),
+      )
+      .join("\n") || "(none)";
+    try {
+      await ensureServer(profile);
+      const resp = await fetchImpl(`http://127.0.0.1:${state.port}/v1/chat/completions`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          messages: [
+            {
+              role: "system",
+              content: "You check whether a task was actually done as asked. Judge only from the tool calls, their results and the draft answer; a claim in the draft that no tool result backs is unverified. If the latest test run failed on something the goal covers, that part is not done. List each requested thing that is missing or unverified.",
+            },
+            {
+              role: "user",
+              content: `Request:\n${prompt}\n\nGoal:\n${goal}\n\nTool calls made:\n${calls}${tests ? `\n\n${tests}` : ""}\n\nDraft answer:\n${draft}`,
+            },
+          ],
+          response_format: {
+            type: "json_schema",
+            json_schema: {
+              name: "goal_review",
+              schema: {
+                type: "object",
+                properties: {
+                  complete: { type: "boolean" },
+                  missing: { type: "array", items: { type: "string" } },
+                },
+                required: ["complete", "missing"],
+              },
+            },
+          },
+          ...buildSamplingParams({ profile, task: "tools", maxTokens, env }).params,
+        }),
+      });
+      if (!resp.ok) return null;
+      const json = await resp.json();
+      const parsed = JSON.parse(json?.choices?.[0]?.message?.content || "");
+      if (typeof parsed.complete !== "boolean") return null;
+      const missing = (Array.isArray(parsed.missing) ? parsed.missing : [])
+        .map((m) => String(m).trim())
+        .filter(Boolean);
+      return { complete: parsed.complete, missing };
+    } catch (e) {
+      return null;
+    }
+  }
+
   // Foundational tool-calling loop (issue #51). Single round only: the
   // model gets one chance to call tools, sees the results, and produces a
   // final reply -- deliberately not a multi-step agent loop yet. Every tool
@@ -1308,6 +1473,17 @@ function createLlamaServerRuntime(options = {}) {
   // tools-disabled completion call forces the model to synthesize an
   // answer from whatever it already knows, rather than returning a blank
   // or synthetic fallback string.
+  //
+  // Issue #676: goal mode (options.goal set). A reply without tool calls no
+  // longer ends the loop: the model is re-asked against the goal until it
+  // calls session_goal__finish, stalls (two re-checks in a row answered
+  // with neither a tool nor finish), leaves a call waiting on approval, or
+  // hits a cap -- the round and time caps are longer here
+  // (MANA_GOAL_MODE_MAX_ROUNDS / _MAX_MS), and the loop also stops before
+  // the prompt outgrows 80% of the context. Then one
+  // review call checks the draft against the request; anything missing
+  // goes back in as the next re-check (at most 2 cycles, budget allowing),
+  // else the answer opens with "Not done yet: ...".
   async function runToolAwareReply(
     prompt,
     toolPolicy,
@@ -1319,6 +1495,7 @@ function createLlamaServerRuntime(options = {}) {
       maxToolCallsPerRound,
       maxMs,
       extraMessages = null,
+      goal = null,
     } = {},
   ) {
     if (typeof fetchImpl !== "function") {
@@ -1332,9 +1509,14 @@ function createLlamaServerRuntime(options = {}) {
     const startedAt = nowMs();
     await ensureServer(profile);
 
+    const goalText = String(goal || "").trim();
+    const goalMode = Boolean(goalText);
     const roundLimit = Math.max(
       1,
-      Number(maxRounds ?? env.MANA_TOOL_CALLING_MAX_ROUNDS ?? 4),
+      Number(
+        maxRounds ??
+          (goalMode ? env.MANA_GOAL_MODE_MAX_ROUNDS ?? 30 : env.MANA_TOOL_CALLING_MAX_ROUNDS ?? 4),
+      ),
     );
     const callsPerRoundLimit = Math.max(
       1,
@@ -1342,8 +1524,14 @@ function createLlamaServerRuntime(options = {}) {
     );
     const timeLimitMs = Math.max(
       1,
-      Number(maxMs ?? env.MANA_TOOL_CALLING_MAX_MS ?? 60000),
+      Number(
+        maxMs ??
+          (goalMode ? env.MANA_GOAL_MODE_MAX_MS ?? 600000 : env.MANA_TOOL_CALLING_MAX_MS ?? 60000),
+      ),
     );
+    // Issue #676: a 30-round loop can outgrow the context; stopping first
+    // keeps the work instead of a llama-server error discarding it.
+    const promptTokenLimit = goalMode ? Math.floor((await getContextSize()) * 0.8) : Infinity;
     const deadline = startedAt + timeLimitMs;
     const MAX_CONSECUTIVE_TOOL_ERRORS = 3;
 
@@ -1391,6 +1579,9 @@ function createLlamaServerRuntime(options = {}) {
     }
 
     const executedToolCalls = [];
+    // #787: what each call returned, for the goal review only -- kept out of
+    // executedToolCalls, which the caller persists with the turn.
+    const reviewLog = [];
     let message = {};
     let rounds = 0;
     let consecutiveToolErrors = 0;
@@ -1400,15 +1591,77 @@ function createLlamaServerRuntime(options = {}) {
     // "force a real final answer now" path the round/time/error caps
     // already use, instead of a second code path.
     let goalFinished = false;
+    // Issue #676: goal-mode state, see the header comment.
+    let unansweredRechecks = 0;
+    let reviewCycles = 0;
+    let stalled = false;
+    let awaitingApproval = false;
+    let promptTokens = 0;
+    let notDone = "";
+    const cleanContent = (text) => String(text || "").replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
+    const outOfBudget = () =>
+      rounds >= roundLimit || nowMs() > deadline || promptTokens > promptTokenLimit;
+
+    // Issue #676: the end of a goal-mode run. True means the review found
+    // something missing and there's budget for another cycle.
+    async function reviewAndResume() {
+      if (!goalMode) return false;
+      const review = await reviewGoalCompletion({
+        prompt,
+        goal: goalText,
+        toolCalls: reviewLog,
+        toolNames: toolPolicy.tools.map((t) => t.function.name),
+        draft: cleanContent(message.content),
+        maxTokens,
+        profile,
+      });
+      notDone = "";
+      if (!review || review.complete) return false;
+      if (
+        // #787: a stall still gets its cycles when the gap is one the run
+        // shows outright (no edit made) -- the generic re-checks never said so.
+        (stalled && !review.evidence) ||
+        awaitingApproval ||
+        reviewCycles >= 2 ||
+        consecutiveToolErrors >= MAX_CONSECUTIVE_TOOL_ERRORS ||
+        outOfBudget()
+      ) {
+        notDone = review.missing.join("; ") || "the goal isn't finished";
+        return false;
+      }
+      reviewCycles += 1;
+      goalFinished = false;
+      stalled = false;
+      unansweredRechecks = 0;
+      messages.push(
+        { role: "assistant", content: message.content || "" },
+        goalRecheckMessage(goalText, review.missing),
+      );
+      return true;
+    }
 
     for (let round = 1; round <= roundLimit; round += 1) {
       rounds = round;
-      const json = await complete(true);
+      let json;
+      try {
+        json = await complete(true);
+      } catch (e) {
+        // #787: one round's tool results (file contents, test output) can
+        // jump past the 80% guard below and the whole context. Keep the run's
+        // work and say why it stopped, rather than failing the reply.
+        if (!goalMode || !/exceeds the available context/i.test(e.message)) throw e;
+        notDone = "the conversation outgrew the model's context";
+        break;
+      }
+      promptTokens = (Number(json?.timings?.cache_n) || 0) + (Number(json?.timings?.prompt_n) || 0);
       message = (json && json.choices && json.choices[0] && json.choices[0].message) || {};
       let requestedToolCalls = Array.isArray(message.tool_calls)
         ? message.tool_calls
         : [];
 
+      if (!requestedToolCalls.length) {
+        requestedToolCalls = parseTextToolCalls(message.content, toolPolicy.tools);
+      }
       if (!requestedToolCalls.length && looksLikeFailedToolCallJson(message.content)) {
         // Issue: this method's own header comment documents that some
         // model/template combos (qwen2.5-coder-7b confirmed) never
@@ -1426,8 +1679,20 @@ function createLlamaServerRuntime(options = {}) {
       }
 
       if (!requestedToolCalls.length) {
+        // Issue #676: in goal mode a plain reply isn't the end -- re-ask
+        // against the goal, until two re-checks in a row go unanswered.
+        if (goalMode && !outOfBudget()) {
+          if (unansweredRechecks < 2) {
+            unansweredRechecks += 1;
+            messages.push({ role: "assistant", content: message.content || "" }, goalRecheckMessage(goalText));
+            continue;
+          }
+          stalled = true;
+        }
+        if (await reviewAndResume()) continue;
         break; // model produced a real answer -- no more tools requested
       }
+      unansweredRechecks = 0;
 
       const boundedCalls = requestedToolCalls.slice(0, callsPerRoundLimit);
       messages.push({
@@ -1459,13 +1724,22 @@ function createLlamaServerRuntime(options = {}) {
           const result = await toolPolicy.executeTool(name, args);
           resultText = String(result);
           executedToolCalls.push({ name, args, ok: true });
+          let parsed = {};
+          try {
+            parsed = JSON.parse(resultText) || {};
+          } catch (e) {}
+          reviewLog.push({ name, args, ok: true, status: parsed.status, passed: parsed.passed, result: resultText });
           consecutiveToolErrors = 0;
           if (name === SESSION_GOAL_FINISH_TOOL_NAME) {
             goalFinished = true;
           }
+          // Issue #676: a call waiting on a human (#669 approval queue) ends
+          // goal mode -- retrying would only queue up more approvals.
+          awaitingApproval ||= goalMode && ["pending", "blocked"].includes(parsed.status);
         } catch (e) {
           resultText = `Error: ${e.message}`;
           executedToolCalls.push({ name, args, ok: false, error: e.message });
+          reviewLog.push({ name, args, ok: false, error: e.message });
           consecutiveToolErrors += 1;
         }
 
@@ -1478,8 +1752,8 @@ function createLlamaServerRuntime(options = {}) {
 
       const budgetExhausted =
         goalFinished ||
-        round >= roundLimit ||
-        nowMs() > deadline ||
+        awaitingApproval ||
+        outOfBudget() ||
         consecutiveToolErrors >= MAX_CONSECUTIVE_TOOL_ERRORS;
       if (budgetExhausted) {
         // Force a real answer from whatever's been learned so far instead
@@ -1487,13 +1761,13 @@ function createLlamaServerRuntime(options = {}) {
         // means the model cannot request yet another tool call here.
         const finalJson = await complete(false);
         message = (finalJson && finalJson.choices && finalJson.choices[0] && finalJson.choices[0].message) || {};
+        if (await reviewAndResume()) continue;
         break;
       }
     }
 
-    const content = String(message.content || "")
-      .replace(/<think>[\s\S]*?<\/think>/gi, "")
-      .trim();
+    const draft = cleanContent(message.content);
+    const content = notDone ? `Not done yet: ${notDone}${draft ? `\n\n${draft}` : ""}` : draft;
 
     scheduleIdleShutdown();
     logPerf("llama-server-tool-reply", startedAt);

@@ -67,8 +67,14 @@ internal sealed class AvatarOverlayForm : Form
     private readonly AvatarStateArbiter arbiter = new();
     private readonly System.Windows.Forms.Timer stateTimer = new() { Interval = 100 };
     private string? speechExpression;
+    private string? speechEmotion; // #623: the sentence's emotion tag
     private double doneStartedAt = double.NegativeInfinity;
+    private double attentiveStartedAt = double.NegativeInfinity; // Q34: when she was last clicked
     private float sleepiness;
+    // Q6: the "^^" closed-eye smile -- until when, and how far in (eased).
+    private double closedSmileUntil = double.NegativeInfinity;
+    private float closedSmile;
+    private readonly Random smileRandom = new();
 
     private readonly CubismModel? cubismModel;
     private readonly CubismRenderer? cubismRenderer;
@@ -118,7 +124,8 @@ internal sealed class AvatarOverlayForm : Form
     // its default and range: they're reset to default at the start of each
     // frame so an offset/multiplier never compounds on last frame's value
     // when no motion rewrites that parameter.
-    private static readonly string[] GazeIds = ["ParamAngleX", "ParamAngleY", "ParamAngleZ", "ParamEyeBallX", "ParamEyeBallY"];
+    private static readonly string[] GazeIds = ["ParamAngleX", "ParamAngleY", "ParamAngleZ", "ParamEyeBallX", "ParamEyeBallY",
+        "ParamBodyAngleX", "ParamBodyAngleZ", "ParamEyeLSmile", "ParamEyeRSmile"];
     private readonly EyeBlink eyeBlink = new();
     private readonly AvatarGaze gaze;
     private readonly string[] eyeBlinkIds = [];
@@ -136,6 +143,8 @@ internal sealed class AvatarOverlayForm : Form
         idlePath = AvatarPngPath(rootDirectory, "idle.png");
         talkingPath = AvatarPngPath(rootDirectory, "talking.png");
 
+        var settings = ManaSettingsStore.Load();
+        clickThrough = settings.AvatarClickThrough;
         FormBorderStyle = FormBorderStyle.None;
         ShowInTaskbar = false;
         TopMost = true;
@@ -152,7 +161,7 @@ internal sealed class AvatarOverlayForm : Form
         ModelLoadProblem = loaded.Problem;
         ModelLoadWarnings = loaded.Warnings ?? Array.Empty<string>();
         var config = loaded.Config ?? AvatarConfig.Parse(null, _ => null);
-        gaze = new AvatarGaze(config.IdleGazeDeg, config.IdleGazePeriodMs, config.IdleTiltDeg, config.IdleMaxPitchDeg);
+        gaze = new AvatarGaze(config.IdleGazeDeg, config.IdleGazePeriodMs, config.IdleTiltDeg, config.IdleMaxPitchDeg, config.AnimatedTiltDeg);
         if (cubismModel is not null)
         {
             motionPlayer = new AvatarMotionPlayer(loaded.MotionGroups, config.StateMotions, config.RandomMotions);
@@ -163,6 +172,7 @@ internal sealed class AvatarOverlayForm : Form
             mouthParam = config.MouthParam;
             expressionOverrides = config.StateExpressions;
             LipSyncDriver.MouthGain = config.MouthGain;
+            LipSyncDriver.MouthMaxOpen = config.MouthMaxOpen;
 
             // #683: the model's own EyeBlink group, else the configured
             // backfill (the standard ids by default, like Electron's
@@ -192,7 +202,7 @@ internal sealed class AvatarOverlayForm : Form
         SetState(AvatarState.Idle);
         stateTimer.Tick += (_, _) => ShowResolvedState(reapply: false);
         stateTimer.Start();
-        PositionOverlay();
+        PositionOverlay(settings);
     }
 
     private sealed record CubismLoadResult(
@@ -391,21 +401,33 @@ internal sealed class AvatarOverlayForm : Form
         // doing; Dreaming slowly closes her eyes, Done nods once.
         var shown = CurrentState;
         var speaking = AvatarStateArbiter.IsSpeech(shown);
+        // Q34: a click gets a quick attentive look -- eyes straight to you
+        // (switching to Attentive re-picks the gaze at once) and a head tilt.
+        var sinceClick = nowSeconds - attentiveStartedAt;
         var gazeMode = shown switch
         {
             AvatarState.Thinking => GazeMode.Thinking,
             AvatarState.Working => GazeMode.Working,
             AvatarState.Waiting => GazeMode.Attentive,
+            _ when sinceClick < AvatarGaze.AttentiveSeconds => GazeMode.Attentive,
             _ => speaking ? GazeMode.Talking : GazeMode.Idle,
         };
-        if (gaze.Update(dtMs, gazeMode))
+        if (gaze.Update(dtMs, gazeMode, animated: speaking && shown == AvatarState.Excited))
         {
             eyeBlink.Trigger(nowSeconds); // big glance -> blink with it
         }
         if (gaze.TiltActive && gaze.TiltBlend > 0.001f)
         {
             SetLifeParameter(model, "ParamAngleY", gaze.ApplyPitch(model.GetParameterCurrentValue("ParamAngleY")));
-            SetLifeParameter(model, "ParamAngleZ", gaze.ApplyRoll(model.GetParameterCurrentValue("ParamAngleZ")));
+        }
+        // Q6: the head roll's sway, with the body leaning after it.
+        SetLifeParameter(model, "ParamAngleZ", model.GetParameterCurrentValue("ParamAngleZ") + gaze.Sway);
+        SetLifeParameter(model, "ParamBodyAngleZ", model.GetParameterCurrentValue("ParamBodyAngleZ") + (AvatarGaze.BodyFollow * gaze.Sway));
+        var (lookPitch, lookRoll) = AvatarGaze.AttentiveLookOffset(sinceClick);
+        if (lookRoll != 0f)
+        {
+            SetLifeParameter(model, "ParamAngleY", model.GetParameterCurrentValue("ParamAngleY") + lookPitch);
+            SetLifeParameter(model, "ParamAngleZ", model.GetParameterCurrentValue("ParamAngleZ") + lookRoll);
         }
         if (shown == AvatarState.Done)
         {
@@ -414,6 +436,7 @@ internal sealed class AvatarOverlayForm : Form
         if (gaze.GazeActive)
         {
             SetLifeParameter(model, "ParamAngleX", model.GetParameterCurrentValue("ParamAngleX") + gaze.HeadAngleX);
+            SetLifeParameter(model, "ParamBodyAngleX", model.GetParameterCurrentValue("ParamBodyAngleX") + (AvatarGaze.BodyFollow * gaze.HeadAngleX));
             SetLifeParameter(model, "ParamEyeBallX", model.GetParameterCurrentValue("ParamEyeBallX") + gaze.EyeBallX);
             SetLifeParameter(model, "ParamEyeBallY", model.GetParameterCurrentValue("ParamEyeBallY") + gaze.EyeBallY);
         }
@@ -421,14 +444,22 @@ internal sealed class AvatarOverlayForm : Form
             : speaking ? EyeBlink.TalkingRate
             : 1f;
         sleepiness += ((shown == AvatarState.Dreaming ? 1f : 0f) - sleepiness) * Math.Min(1f, dtMs / 1500f);
-        var openness = eyeBlink.Openness(nowSeconds, blinkRate) * (1f - (0.85f * sleepiness));
+        // Q6: sleepy blinks are slower; the "^^" smile closes the eyes and
+        // raises the eye-smile parameters, easing in and out over ~80ms.
+        closedSmile += ((nowSeconds < closedSmileUntil ? 1f : 0f) - closedSmile) * Math.Min(1f, dtMs / 80f);
+        var openness = eyeBlink.Openness(nowSeconds, blinkRate, sleepy: sleepiness > 0.5f) * (1f - (0.85f * sleepiness)) * (1f - closedSmile);
         foreach (var id in eyeBlinkIds)
         {
             SetLifeParameter(model, id, model.GetParameterCurrentValue(id) * openness);
         }
+        if (closedSmile > 0.001f)
+        {
+            SetLifeParameter(model, "ParamEyeLSmile", model.GetParameterCurrentValue("ParamEyeLSmile") + closedSmile);
+            SetLifeParameter(model, "ParamEyeRSmile", model.GetParameterCurrentValue("ParamEyeRSmile") + closedSmile);
+        }
 
         var (targetMouthOpen, targetMouthForm) = LipSyncDriver.Current;
-        smoothedMouthOpen = LipSyncAnalyzer.SmoothMouthValue(smoothedMouthOpen, targetMouthOpen, dtMs);
+        smoothedMouthOpen = LipSyncAnalyzer.SmoothMouthOpen(smoothedMouthOpen, targetMouthOpen, dtMs);
         // Same attack/decay smoothing as mouth openness -- mouth *shape*
         // snapping around per-frame would look like flickering between
         // vowel shapes rather than natural articulation.
@@ -466,7 +497,8 @@ internal sealed class AvatarOverlayForm : Form
 
     // #681: preferredExpression is the reply's model-chosen expression name
     // (see AvatarExpressionSelector), tried before the state's own match.
-    public void SetState(AvatarState state, string? preferredExpression = null)
+    // #623: emotion is the sentence's emotion tag, if the model gave one.
+    public void SetState(AvatarState state, string? preferredExpression = null, string? emotion = null)
     {
         // Callers include background threads (VoiceLoop's thread-pool
         // continuations and NAudio's playback thread) -- marshal onto the
@@ -475,7 +507,7 @@ internal sealed class AvatarOverlayForm : Form
         // thread, and InvokeRequired is unreliable pre-handle-creation).
         if (IsHandleCreated && InvokeRequired)
         {
-            BeginInvoke(() => SetState(state, preferredExpression));
+            BeginInvoke(() => SetState(state, preferredExpression, emotion));
             return;
         }
 
@@ -493,6 +525,18 @@ internal sealed class AvatarOverlayForm : Form
         // change (two excited replies in a row can each pick their own).
         arbiter.SetSpeech(state);
         speechExpression = AvatarStateArbiter.IsSpeech(state) ? preferredExpression : null;
+        speechEmotion = AvatarStateArbiter.IsSpeech(state) ? emotion : null;
+        // Q6: a happy/excited sentence may get a 0.5-3s "^^" smile (one at
+        // a time); any other face ends it.
+        var now = renderClock.Elapsed.TotalSeconds;
+        if (!EyeBlink.IsSmileTag(speechEmotion))
+        {
+            closedSmileUntil = double.NegativeInfinity;
+        }
+        else if (now >= closedSmileUntil)
+        {
+            closedSmileUntil = now + EyeBlink.ClosedSmileSeconds(smileRandom);
+        }
         ShowResolvedState(reapply: true);
     }
 
@@ -544,6 +588,7 @@ internal sealed class AvatarOverlayForm : Form
             StateChanged?.Invoke(state);
         }
         var preferredExpression = AvatarStateArbiter.IsSpeech(state) ? speechExpression : null;
+        var emotion = AvatarStateArbiter.IsSpeech(state) ? speechEmotion : null;
 
         // #479 sub-project 4: when a real Cubism model is loaded, the
         // render timer (RenderFrame) is what actually draws every frame
@@ -559,7 +604,7 @@ internal sealed class AvatarOverlayForm : Form
             // other signals (idle motion, lip-sync, physics) already
             // produce.
             motionPlayer?.SetState(state, now);
-            var expressionName = AvatarExpressionSelector.SelectExpressionName(state, expressions.Keys, preferredExpression, expressionOverrides);
+            var expressionName = AvatarExpressionSelector.SelectExpressionName(state, expressions.Keys, preferredExpression, expressionOverrides, emotion);
             activeExpression = expressionName is not null && expressions.TryGetValue(expressionName, out var expression)
                 ? expression
                 : null;
@@ -702,16 +747,156 @@ internal sealed class AvatarOverlayForm : Form
     [DllImport("gdi32.dll")]
     private static extern bool DeleteDC(nint hdc);
 
+    [DllImport("user32.dll", EntryPoint = "GetWindowLongW")]
+    private static extern int GetWindowLong(nint hwnd, int index);
+
+    [DllImport("user32.dll", EntryPoint = "SetWindowLongW")]
+    private static extern int SetWindowLong(nint hwnd, int index, int value);
+
+    private const int GwlExStyle = -20;
+    private const int WsExTransparent = 0x20;
+
+    // #662: click-through, the whole window passes clicks through, as it
+    // always did before. Otherwise only her own pixels take clicks: a
+    // layered window's fully transparent pixels already let mouse input
+    // through to whatever is behind, so the empty space around her needs no
+    // hit-testing of ours. WS_EX_NOACTIVATE keeps a click on her from taking
+    // focus from the game/app in front.
+    // Q3: automatically click-through while a watched game runs (GameRunning,
+    // from the tray's 5s status poll); ClickThrough is the tray menu's
+    // manual setting, which keeps her click-through all the time.
+    private bool clickThrough;
+    private bool gameRunning;
+    public bool ClickThrough
+    {
+        get => clickThrough;
+        set
+        {
+            clickThrough = value;
+            ApplyClickThrough();
+        }
+    }
+
+    public bool GameRunning
+    {
+        set
+        {
+            if (gameRunning != value)
+            {
+                gameRunning = value;
+                ApplyClickThrough();
+            }
+        }
+    }
+
+    internal static bool IsClickThrough(bool manual, bool gameRunning) => manual || gameRunning;
+
+    private void ApplyClickThrough()
+    {
+        if (IsHandleCreated)
+        {
+            var style = GetWindowLong(Handle, GwlExStyle);
+            SetWindowLong(Handle, GwlExStyle, IsClickThrough(clickThrough, gameRunning) ? style | WsExTransparent : style & ~WsExTransparent);
+        }
+    }
+
+    // #662: a left click on her that wasn't a drag.
+    public event Action? Clicked;
+
+    // #662: where the cursor and the window were when the left button went
+    // down on her; null when no press is in progress.
+    private Point? pressedAt;
+    private Point pressedLocation;
+    private bool dragging;
+
+    protected override void OnMouseDown(MouseEventArgs e)
+    {
+        base.OnMouseDown(e);
+        if (e.Button == MouseButtons.Left)
+        {
+            pressedAt = Cursor.Position;
+            pressedLocation = Location;
+            dragging = false;
+        }
+    }
+
+    // WinForms captures the mouse on button-down, so a drag keeps following
+    // the cursor even once it's off her pixels.
+    protected override void OnMouseMove(MouseEventArgs e)
+    {
+        base.OnMouseMove(e);
+        if (pressedAt is not Point start)
+        {
+            return;
+        }
+        var cursor = Cursor.Position;
+        var dx = cursor.X - start.X;
+        var dy = cursor.Y - start.Y;
+        var slop = SystemInformation.DragSize;
+        if (!dragging && Math.Abs(dx) <= slop.Width / 2 && Math.Abs(dy) <= slop.Height / 2)
+        {
+            return;
+        }
+        dragging = true;
+        Location = new Point(pressedLocation.X + dx, pressedLocation.Y + dy);
+    }
+
+    protected override void OnMouseUp(MouseEventArgs e)
+    {
+        base.OnMouseUp(e);
+        if (e.Button == MouseButtons.Left)
+        {
+            EndPress(click: true);
+        }
+    }
+
+    // Capture lost mid-press (e.g. Alt+Tab): keep wherever she was dragged
+    // to, but it isn't a click. After a normal button-up this is a no-op.
+    protected override void OnMouseCaptureChanged(EventArgs e)
+    {
+        base.OnMouseCaptureChanged(e);
+        EndPress(click: false);
+    }
+
+    private void EndPress(bool click)
+    {
+        if (pressedAt is null)
+        {
+            return;
+        }
+        pressedAt = null;
+        if (dragging)
+        {
+            // Nothing on this UI thread catches exceptions, and a position
+            // that didn't save isn't worth crashing the launcher over.
+            try
+            {
+                var settings = ManaSettingsStore.Load();
+                settings.AvatarLeft = Left;
+                settings.AvatarTop = Top;
+                settings.Save();
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                Console.WriteLine($"AvatarOverlayForm: couldn't save the overlay position. {ex.Message}");
+            }
+        }
+        else if (click)
+        {
+            attentiveStartedAt = renderClock.Elapsed.TotalSeconds;
+            Clicked?.Invoke();
+        }
+    }
+
     protected override CreateParams CreateParams
     {
         get
         {
-            const int wsExTransparent = 0x20;
             const int wsExToolWindow = 0x80;
             const int wsExLayered = 0x80000;
             const int wsExNoActivate = 0x08000000;
             var cp = base.CreateParams;
-            cp.ExStyle |= wsExTransparent | wsExToolWindow | wsExLayered | wsExNoActivate;
+            cp.ExStyle |= wsExToolWindow | wsExLayered | wsExNoActivate | (IsClickThrough(clickThrough, gameRunning) ? WsExTransparent : 0);
             return cp;
         }
     }
@@ -729,14 +914,27 @@ internal sealed class AvatarOverlayForm : Form
         base.OnFormClosed(e);
     }
 
-    private void PositionOverlay()
+    private void PositionOverlay(ManaSettingsStore settings)
     {
+        if (SavedLocation(settings.AvatarLeft, settings.AvatarTop, Size, Screen.AllScreens.Select(screen => screen.WorkingArea)) is Point saved)
+        {
+            Location = saved;
+            return;
+        }
         var workArea = Screen.PrimaryScreen?.WorkingArea ?? Screen.FromControl(this).WorkingArea;
         var left = ReadIntEnv("MANA_AVATAR_LEFT", 782);
         var bottom = ReadIntEnv("MANA_AVATAR_BOTTOM", 0);
         Left = workArea.Left + left;
         Top = workArea.Bottom - Height - bottom;
     }
+
+    // #662: where she was last dragged to, unless her centre is no longer on
+    // any screen (e.g. that monitor was unplugged) -- then null, and she goes
+    // back to the default spot instead of somewhere she can't be grabbed.
+    internal static Point? SavedLocation(int? left, int? top, Size size, IEnumerable<Rectangle> workAreas) =>
+        left is int x && top is int y && workAreas.Any(area => area.Contains(x + (size.Width / 2), y + (size.Height / 2)))
+            ? new Point(x, y)
+            : null;
 
     private static int ReadIntEnv(string name, int fallback)
     {

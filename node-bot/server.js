@@ -157,6 +157,7 @@ const {
 	const {
 	  recordPromptComposition,
 	  finalizePromptComposition,
+	  contextFullNote,
 	  getPromptComposition,
 	  getMostRecentComposition,
 	} = require("./prompt-composition-report");
@@ -217,9 +218,10 @@ const { createCodingToolSource } = require("./ai/coding-tool-source");
 const { createMcpClientRegistry } = require("./mcp-client-registry");
 const { mcpClientCapability } = require("./capabilities/mcp-client-capability");
 const { createToolCallLog, wrapWithToolCallLog } = require("./tool-call-log");
+const { createAgentActivity } = require("./agent-activity");
 const { filterRelevantTools, wrapWithResultDigest } = require("./ai/tool-context-guard");
 const { toolCallLogCapability } = require("./capabilities/tool-call-log-capability");
-const { createHooksStore, wrapWithHooks } = require("./hooks-store");
+const { createHooksStore, wrapWithHooks, wrapWithInputHooks } = require("./hooks-store");
 const { hooksCapability } = require("./capabilities/hooks-capability");
 const { createPronunciationLexiconStore } = require("./pronunciation-lexicon-store");
 const {
@@ -247,9 +249,10 @@ const {
 const { createLlamaServerRuntime } = require("./ai/llama-server-runtime");
 const { createReranker } = require("./ai/reranker-runtime");
 const { createEmbedder } = require("./ai/embedder-runtime");
-const { createWhisperServer } = require("./ai/whisper-server-runtime");
+const { createWhisperServer, belowNormal } = require("./ai/whisper-server-runtime");
 const { createGamingWatch } = require("./utils/gaming-watch");
 const { streamedMatchesFinal } = require("./utils/reply-stream-diff");
+const { EMOTION_TAG_PROMPT, stripEmotionTags, replyEmotion } = require("./utils/emotion-tags");
 const { createRestartController } = require("./admin-restart");
 const ffxivMarketPlugin = require("../plugins/ffxiv-market");
 const {
@@ -514,6 +517,9 @@ const gamingWatch = createGamingWatch({
 if (process.env.NODE_ENV !== "test" && !process.env.NODE_TEST_CONTEXT) {
   gamingWatch.poll();
   setInterval(gamingWatch.poll, 30 * 1000).unref();
+  // #697: proactive remarks held during play go out after the game.
+  require("./proactive").watchGaming(gamingWatch.isGaming);
+  setInterval(require("./proactive").flush, 30 * 1000).unref();
 }
 
 // Issue #674: optional CPU-only reranker for memory recall -- off unless
@@ -747,11 +753,17 @@ const getWhisperPrompt = createWhisperPromptProvider({
 
 // #619: a loaded whisper-server for final and partial transcripts, with
 // whisper-cli (runWhisperCli/runWhisperCliPartial) as the fallback.
+// While a watched game runs, whisper keeps to 2 threads so it doesn't take
+// CPU from the game; WHISPER_THREADS applies the rest of the time.
+function whisperThreads() {
+  return gamingWatch.isGaming() ? Math.min(WHISPER_THREADS, 2) : WHISPER_THREADS;
+}
+
 const whisperServer = createWhisperServer({
   env: process.env,
   findCliBin: () => whisperDiscovery.findWhisperBin({ env: process.env }),
   findModel: () => whisperDiscovery.findWhisperModel({ env: process.env }),
-  threads: WHISPER_THREADS,
+  threads: whisperThreads,
   language: WHISPER_LANGUAGE,
   beamSize: WHISPER_BEAM_SIZE,
   noSpeechThreshold: WHISPER_NO_SPEECH_THRESHOLD,
@@ -887,12 +899,9 @@ const browserAutomationToolSource = createBrowserAutomationToolSource({
 let BACKGROUND_MEMORY_BLOCK = "";
 let BACKGROUND_MEMORY_LOCK = false;
 let BACKGROUND_MEMORY_META = { files: {} };
-const BACKGROUND_META_PATH = path.join(
-  __dirname,
-  "data",
-  "acp-memory",
-  "background_meta.json",
-);
+// MANA_ACP_MEMORY_DIR moves these with the rest of memory (acp-memory-store).
+const ACP_MEMORY_DIR = process.env.MANA_ACP_MEMORY_DIR || path.join(__dirname, "data", "acp-memory");
+const BACKGROUND_META_PATH = path.join(ACP_MEMORY_DIR, "background_meta.json");
 
 function loadPersistedBackgroundMetaSync() {
   try {
@@ -968,12 +977,7 @@ function buildSkillsIndexBlock(skills) {
 // (issue #69) -- written whenever a compaction/review pass actually changes
 // the compacted summary or important facts, whether triggered by idle
 // detection or the hourly timer.
-const MEMORY_MD_PATH = path.join(
-  __dirname,
-  "data",
-  "acp-memory",
-  "MEMORY.md",
-);
+const MEMORY_MD_PATH = path.join(ACP_MEMORY_DIR, "MEMORY.md");
 
 function formatMemoryMarkdown(compacted, facts, connections = []) {
   const lines = [
@@ -1145,7 +1149,7 @@ async function asyncLoadBackgroundMemory() {
   try {
     const sessionsDir =
       (acpMemoryStore && acpMemoryStore.sessionsDir) ||
-      path.join(__dirname, "data", "acp-memory", "sessions");
+      path.join(ACP_MEMORY_DIR, "sessions");
     if (!fs.existsSync(sessionsDir)) {
       BACKGROUND_MEMORY_BLOCK = "";
       BACKGROUND_MEMORY_META = { files: {} };
@@ -1313,13 +1317,18 @@ if (process.env.NODE_ENV !== "test" && !process.env.NODE_TEST_CONTEXT) {
             );
             // Issue #423: surface the Dream Mode insight as a proactive toast,
             // not just a silent file write -- fire-and-forget, never blocks
-            // the compaction itself on notification delivery.
-            notifyTray({
-              type: "dream",
-              title: "Dream Mode",
-              text: compacted.length > 200 ? `${compacted.slice(0, 200)}...` : compacted,
-              at: new Date().toISOString(),
-            }).catch(() => {});
+            // the compaction itself on notification delivery. #697: through
+            // the proactive budget and gaming hold; worth it for half a day.
+            require("./proactive").offer({
+              reason: "dream-insight",
+              ttlMs: 12 * 60 * 60 * 1000,
+              payload: {
+                type: "dream",
+                title: "Dream Mode",
+                text: compacted.length > 200 ? `${compacted.slice(0, 200)}...` : compacted,
+                at: new Date().toISOString(),
+              },
+            });
           }
         } catch (e) {
           console.warn(
@@ -2170,6 +2179,7 @@ function registerRoutes(app, upload, deps = {}) {
   const activeHooksStore = deps.hooksStore || hooksStore;
   const activePronunciationLexiconStore = deps.pronunciationLexiconStore || pronunciationLexiconStore;
   const activeBrowserAutomationToolSource = deps.browserAutomationToolSource || browserAutomationToolSource;
+  const agentActivity = createAgentActivity();
   const capabilityContext = {
     acpMemoryStore: deps.acpMemoryStore || acpMemoryStore,
     // Only cron-scheduler's agent-job executor uses this today -- every
@@ -2180,6 +2190,9 @@ function registerRoutes(app, upload, deps = {}) {
     // brain-provider test route above).
     isLocalRestartRequest: deps.isLocalRestartRequest || isLocalRestartRequest,
     approvalGate: activeApprovalGate,
+    // #699: heartbeat checks pause while gaming and snapshot their writes.
+    isGaming: deps.isGaming || gamingWatch.isGaming,
+    snapshotStore,
     mcpClientRegistry: activeMcpClientRegistry,
     toolCallLog: deps.toolCallLog || toolCallLog,
     hooksStore: activeHooksStore,
@@ -2337,6 +2350,18 @@ function registerRoutes(app, upload, deps = {}) {
   // admin action like /editors/workspace/*).
   app.get("/browser-automation/activity", (req, res) => {
     return res.json(activeBrowserAutomationToolSource.activityLog.getActivity());
+  });
+
+  // #646: the chat tool loop's live runs (current tool, elapsed), polled
+  // by the launcher's activity panel -- read-only, no auth, same as above.
+  app.get("/agent/activity", (req, res) => {
+    return res.json({ runs: agentActivity.list() });
+  });
+
+  // #646: Stop from that panel, by run id.
+  app.post("/agent/stop", (req, res) => {
+    if (!checkAdminAuth(req, res)) return;
+    return res.json({ stopped: agentActivity.stop(String(req.body?.id ?? "")) });
   });
 
   // A one-off, session-scoped mode switch layered on top of Mana's base
@@ -3006,7 +3031,7 @@ function registerRoutes(app, upload, deps = {}) {
       "-f",
       filePath,
       "-t",
-      String(WHISPER_THREADS),
+      String(whisperThreads()),
       "-otxt",
       "-of",
       outBase,
@@ -3057,7 +3082,7 @@ function registerRoutes(app, upload, deps = {}) {
       "-f",
       filePath,
       "-t",
-      String(WHISPER_THREADS),
+      String(whisperThreads()),
       "-l",
       WHISPER_LANGUAGE,
       "-bs",
@@ -3136,7 +3161,7 @@ function registerRoutes(app, upload, deps = {}) {
   // contract, and converting it would risk silently breaking them.
   function spawnWhisperCliAsync(whisperBin, args) {
     return new Promise((resolve, reject) => {
-      const child = spawn(whisperBin, args, { windowsHide: true });
+      const child = belowNormal(spawn(whisperBin, args, { windowsHide: true }));
       let stdout = "";
       let stderr = "";
       child.stdout.on("data", (chunk) => {
@@ -3172,7 +3197,7 @@ function registerRoutes(app, upload, deps = {}) {
       "-f",
       filePath,
       "-t",
-      String(WHISPER_THREADS),
+      String(whisperThreads()),
       "-l",
       WHISPER_LANGUAGE,
       "-bs",
@@ -3629,6 +3654,9 @@ function registerRoutes(app, upload, deps = {}) {
       sessionId,
       personalityStore.get().traits,
     );
+    // Issue #623: per-sentence emotion tags for the avatar. Static text, so
+    // it sits in the cached prefix; every reply path below strips the tags.
+    selectedSystemPrompt = `${selectedSystemPrompt}\n\n${EMOTION_TAG_PROMPT}`;
     // Issue #660: the mode is picked per message, so its text is appended
     // last (after the session goal below) -- spliced in right after the
     // persona, a mode switch changed the prompt prefix and cost
@@ -3717,6 +3745,15 @@ function registerRoutes(app, upload, deps = {}) {
         // ignore -- goal context is best-effort, never blocks a reply
       }
     }
+    // Issue #676: goal mode (opt in with MANA_GOAL_MODE=1) keeps the tool
+    // loop going until the goal is done. It needs tools, which coding-routed
+    // turns never get, so a goal-mode turn stays on the default profile.
+    const goalMode =
+      Boolean(sessionGoal) &&
+      String((deps.env || process.env).MANA_GOAL_MODE || "0") === "1" &&
+      toolCallingEnabled &&
+      isLlamaServerAvailable();
+    if (goalMode) normalizedModelProfile = "default";
 
     // Issue #400: buildSkillsIndexBlock already computes how many skills it
     // left out, but only as a line of text baked into the block -- read
@@ -3745,6 +3782,11 @@ function registerRoutes(app, upload, deps = {}) {
       }
     }
     selectedSystemPrompt = `${selectedSystemPrompt}\n\n${modeText}`;
+    // Issue #677: plugin onUserInput system patches are per turn, so they go
+    // after the mode text for the same prompt-cache reason (#660).
+    if (replyMeta && replyMeta.systemPatch) {
+      selectedSystemPrompt = `${selectedSystemPrompt}\n\n${replyMeta.systemPatch}`;
+    }
 
     // Issue #282: memory (session summary/recent-turns, cross-session
     // facts) becomes its own positionable system-role messages -- "early"
@@ -3798,6 +3840,8 @@ function registerRoutes(app, upload, deps = {}) {
       if (typeof acpMemoryStore.getRelatedFactsEntries === "function") {
         const { entries, recall } = await acpMemoryStore.getRelatedFactsEntries(transcript, {
           excludeSessionId: sessionId,
+          // Q27: a scheduled job (replyMeta.scheduled) sees confirmed facts only.
+          confirmedOnly: Boolean(replyMeta && replyMeta.scheduled),
         });
         relatedFactsRecall = recall || null;
         for (const entry of entries) {
@@ -4120,15 +4164,25 @@ function registerRoutes(app, upload, deps = {}) {
 
     const finalPrompt = (retrievedText || "") + prompt;
 
+    // Issue #623: the reply without its emotion tags, applied wherever a
+    // pass produces one; replyMeta.emotion is the face for a client that
+    // speaks it as one clip (not streamed, or rewritten after streaming).
+    const untag = (text) => {
+      if (typeof text !== "string") return text;
+      const { text: clean, emotions } = stripEmotionTags(text);
+      if (replyMeta) replyMeta.emotion = replyEmotion(emotions);
+      return clean;
+    };
+
     // Try OpenAI/proxy only when explicitly allowed.
     if (shouldUseRemoteAi()) {
       try {
-        const openAiReply = await runOpenAIReply(
+        const openAiReply = untag(await runOpenAIReply(
           finalPrompt,
           effectiveMaxTokens,
           selectedSystemPrompt + flatMemorySuffix,
           sessionId,
-        );
+        ));
         if (openAiReply) {
           console.log("Using OpenAI proxy reply.");
           queueVTubeReaction(openAiReply);
@@ -4195,10 +4249,18 @@ function registerRoutes(app, upload, deps = {}) {
     // "first call only" explicit rather than relying on call order.
     let firstPassStreamed = false;
     const streamedSentences = [];
+    // Issue #623: each sentence goes out without its emotion tags, with the
+    // face it's said with. An untagged sentence keeps the previous one's;
+    // a bare tag (the chunker cut it off as its own "sentence") only sets
+    // the face for the next.
+    let sentenceEmotion = null;
     const wrappedOnSentence = onSentence
-      ? async (sentence) => {
+      ? async (tagged) => {
+          const { text: sentence, emotions } = stripEmotionTags(tagged);
+          if (emotions.length) sentenceEmotion = emotions[0];
+          if (!sentence) return;
           streamedSentences.push(sentence);
-          await onSentence(sentence);
+          await onSentence(sentence, sentenceEmotion);
         }
       : null;
 
@@ -4210,10 +4272,19 @@ function registerRoutes(app, upload, deps = {}) {
     // means this pass never reached llama-server (llama-cli fallback).
     let turnToolSchemas = [];
     let turnPromptUsage = null;
+    // #646: this pass's entry in GET /agent/activity; its stop flag is
+    // read by the executeTool wrapper below.
+    let activityRun = null;
     async function replyMaybeWithTools(promptText) {
       turnToolSchemas = [];
       const usageBefore = activeLlamaServerRuntime.getLastPromptUsage?.();
-      const reply = await replyMaybeWithToolsUnmetered(promptText);
+      activityRun = agentActivity.start();
+      let reply;
+      try {
+        reply = await replyMaybeWithToolsUnmetered(promptText);
+      } finally {
+        agentActivity.finish(activityRun);
+      }
       const usageAfter = activeLlamaServerRuntime.getLastPromptUsage?.();
       turnPromptUsage = usageAfter && usageAfter !== usageBefore ? usageAfter : null;
       compositionTexts["user-turn"] = promptText;
@@ -4317,7 +4388,8 @@ function registerRoutes(app, upload, deps = {}) {
             // workspace/proposal machinery (zed-integration.js) that
             // already backs the /editors/* admin routes, just stops short
             // of ever calling approveEditProposal.
-            createCodingToolSource({ editors: getEditorIntegrations() }),
+            // #787: approvalGate enables coding__run_tests (asks first).
+            createCodingToolSource({ editors: getEditorIntegrations(), approvalGate: activeApprovalGate }),
             ...(isPluginEnabled(browserAutomationPlugin, activePluginSettingsStore)
               ? [activeBrowserAutomationToolSource]
               : []),
@@ -4358,28 +4430,49 @@ function registerRoutes(app, upload, deps = {}) {
           // else "smart") decides the rest. Outside
           // wrapWithHooks so a destructive call is reviewed before any hook
           // runs; inside wrapWithToolCallLog so the outcome is logged.
-          mergedToolPolicy = wrapWithRiskGate(mergedToolPolicy, activeApprovalGate, {
-            mode: resolveToolApprovalMode(
-              activeApprovalGate.getToolApprovalMode(),
-              (deps.env || process.env).MANA_TOOL_APPROVAL,
-            ),
-          });
+          // #699: a heartbeat check brings its own gate (its grants and
+          // scope) in place of this one.
+          mergedToolPolicy =
+            typeof replyMeta?.wrapToolPolicy === "function"
+              ? replyMeta.wrapToolPolicy(mergedToolPolicy, activeApprovalGate)
+              : wrapWithRiskGate(mergedToolPolicy, activeApprovalGate, {
+                  mode: resolveToolApprovalMode(
+                    activeApprovalGate.getToolApprovalMode(),
+                    (deps.env || process.env).MANA_TOOL_APPROVAL,
+                  ),
+                });
           // Issue #188: applied last so it catches every tool call from
           // every source (local read_file, browser-automation, MCP) in one
           // shared audit/trace log.
           mergedToolPolicy = wrapWithToolCallLog(mergedToolPolicy, activeToolCallLog);
+          // #486: modify-input hook rules rewrite args first, so every gate
+          // above and the audit log see the rewritten call, never the original.
+          mergedToolPolicy = wrapWithInputHooks(mergedToolPolicy, activeHooksStore);
           const executeLoggedTool = mergedToolPolicy.executeTool;
           // #661: /reply/stream relays tool start/end so the avatar can
           // show she's working. expression__set is her face, not work.
           const onToolCall =
             replyMeta && typeof replyMeta.onToolCall === "function" ? replyMeta.onToolCall : null;
+          const run = activityRun;
           const reportTool = (name, phase) => {
-            if (!onToolCall || isExpressionToolName(name)) return;
+            if (isExpressionToolName(name)) return;
+            if (phase === "start") agentActivity.toolStarted(run, name);
+            else agentActivity.toolEnded(run, name);
+            if (!onToolCall) return;
             try {
               onToolCall({ name, phase });
             } catch (e) {}
           };
           mergedToolPolicy.executeTool = async (name, args) => {
+            // #646: Stop from the activity panel. The tool already running
+            // finishes; every later call is refused, so the model answers
+            // or the loop's own 3-consecutive-errors cap makes it.
+            // ponytail: no runtime change (it's mid-edit in #770/#787) --
+            // a stop check in runToolAwareReply's budget test would end
+            // the loop without those extra refused rounds.
+            if (run.stopRequested) {
+              throw new Error("Stopped by the user. Don't call any more tools; answer with what you have.");
+            }
             reportTool(name, "start");
             try {
               const result = await executeLoggedTool(name, args);
@@ -4397,6 +4490,7 @@ function registerRoutes(app, upload, deps = {}) {
               profile: normalizedModelProfile,
               overrideSystemPrompt: selectedSystemPrompt,
               extraMessages: memoryExtraMessages,
+              goal: goalMode ? sessionGoal : null,
             },
           );
           if (toolResult.content && toolResult.content.trim()) {
@@ -4481,6 +4575,7 @@ function registerRoutes(app, upload, deps = {}) {
     async function replyMaybeWithBestOfN(promptText) {
       if (
         bestOfNEnabled &&
+        !goalMode &&
         mode === "coding" &&
         isLlamaServerAvailable()
       ) {
@@ -4588,7 +4683,7 @@ function registerRoutes(app, upload, deps = {}) {
     }
 
     // Fall back to local llama
-    let reply = await replyMaybeWithBestOfN(finalPrompt);
+    let reply = untag(await replyMaybeWithBestOfN(finalPrompt));
 
     // Conversational rut detection (issue #159), general reply path: the
     // Best-of-N branch above already prefers a less-repetitive candidate
@@ -4599,7 +4694,8 @@ function registerRoutes(app, upload, deps = {}) {
     // rut, send it rather than looping.
     try {
       const rutEnabled = String(process.env.MANA_RUT_DETECTION_ENABLED || "1") === "1";
-      if (rutEnabled && sessionId && acpMemoryStore && typeof reply === "string") {
+      // #676: never regenerate a goal-mode reply -- that reruns the whole loop, tool calls included.
+      if (rutEnabled && !goalMode && sessionId && acpMemoryStore && typeof reply === "string") {
         const recentReplies = (acpMemoryStore.getSession(sessionId)?.turns || [])
           .map((t) => t.assistant)
           .filter(Boolean);
@@ -4608,7 +4704,7 @@ function registerRoutes(app, upload, deps = {}) {
           const nudgedPrompt = `${finalPrompt}\n\nYour last several replies have repeated similar phrasing. Say this differently -- vary your wording and sentence structure instead of reusing recent lines.`;
           const regenerated = await replyMaybeWithBestOfN(nudgedPrompt);
           if (typeof regenerated === "string" && regenerated.trim()) {
-            reply = regenerated;
+            reply = untag(regenerated);
             rutDetector.recordIntervention(sessionId);
             console.log("Mana rut detection: regenerated a repetitive reply with a phrasing nudge");
           }
@@ -4673,7 +4769,7 @@ function registerRoutes(app, upload, deps = {}) {
           }
 
           console.warn("Reply verification failed:", verification.issues);
-          if (autoRetry && attempts <= maxRetries) {
+          if (autoRetry && !goalMode && attempts <= maxRetries) {
             // Ask the model to fix its previous reply
             const fixPrompt =
               finalPrompt +
@@ -4688,7 +4784,7 @@ function registerRoutes(app, upload, deps = {}) {
               ")",
             );
             try {
-              reply = await replyMaybeWithBestOfN(fixPrompt);
+              reply = untag(await replyMaybeWithBestOfN(fixPrompt));
               queueVTubeReaction(reply);
               continue; // re-verify
             } catch (retryErr) {
@@ -4765,6 +4861,21 @@ function registerRoutes(app, upload, deps = {}) {
     if (replyMeta) {
       replyMeta.streamedMatchesFinal = streamedMatchesFinal(streamedSentences, reply);
     }
+    // #642 (Q33c): once per conversation, at 90% of the context window,
+    // Mana ends this reply by suggesting a fresh chat. Added after the
+    // stream check (like #666's notice, it's an extra sentence, not a
+    // changed reply) and after the turn went to memory. Rides on a reply
+    // the user asked for, so it's fine while gaming too.
+    const contextSize = turnPromptUsage ? await activeLlamaServerRuntime.getContextSize?.() : null;
+    const fullNote = turnPromptUsage && typeof reply === "string"
+      ? contextFullNote(sessionId, turnPromptUsage.promptTokens, contextSize)
+      : "";
+    if (fullNote) {
+      reply = `${reply.trimEnd()} ${fullNote}`;
+      // Streamed and unchanged: speak it as one more sentence. Otherwise the
+      // client speaks the final reply, which now ends with it.
+      if (onSentence && replyMeta?.streamedMatchesFinal) await onSentence(fullNote);
+    }
     // Issue #642: the context meter (GET /prompt-composition/:sessionId).
     // Not awaited -- a few local /tokenize calls are never worth delaying
     // the reply for; until they land the record shows char/4 estimates.
@@ -4780,7 +4891,7 @@ function registerRoutes(app, upload, deps = {}) {
             "mcp-tool-schemas": mcpTools.length ? JSON.stringify(mcpTools) : "",
           },
           promptUsage: turnPromptUsage,
-          contextSize: await activeLlamaServerRuntime.getContextSize?.(),
+          contextSize: contextSize ?? (await activeLlamaServerRuntime.getContextSize?.()),
           countTokens: activeLlamaServerRuntime.countTokens,
         }))().catch((e) => console.warn("Failed to finalize prompt composition:", e?.message || e));
     }

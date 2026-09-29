@@ -282,7 +282,20 @@ a full glance, `0` disables the gaze) and `idleGazePeriodMs`
 Differences from Electron:
 
 - `idleTiltDeg` defaults to `8` (Electron's `16` was tuned for a sleepy
-  idle clip on another model).
+  idle clip on another model). Native uses it as the peak of a head-roll
+  sway on two layered rhythms (~2.5s and ~5s) while idle or talking, with
+  the body leaning after the head at 0.6x. `animatedTiltDeg`
+  (`MANA_LIVE2D_ANIMATED_TILT_DEG`, default `16`) is the peak while she says
+  an excited/happy sentence.
+- `mouthMaxOpen` (`MANA_LIVE2D_MOUTH_MAX_OPEN`, default `0.8`) caps how wide
+  `mouthGain` can open the mouth. The mouth snaps open and shut in under
+  70ms and closes fully between words.
+- Blinks come every 2.5-6s and last 120-220ms (slower when she's sleepy),
+  with a ~13.5% chance of a second blink 250-700ms later. The eyes jump to
+  each new spot and hold 0.5-1.5s while talking, 1-3s otherwise.
+- With a `happy`/`excited` emotion tag (#779), she may close her eyes in a
+  "^^" smile for 0.5-3s. This drives `ParamEyeLSmile`/`ParamEyeRSmile`
+  when the model has them.
 - `MANA_AVATAR_FPS` defaults to `60`.
 - The blink never overrides the eyes. It multiplies whatever the motion or
   expression set, so `eyeOpenScale`, `smileParams` and `browParams` (the
@@ -307,6 +320,21 @@ Native also shows what Mana is doing (#661), not just her mood:
 always wins. After that the priority is working > thinking > waiting >
 done > dreaming > idle. Each state stays up for a short minimum, so a burst
 of quick tool calls doesn't flicker.
+
+Native also changes her face per sentence (#623). The reply model tags each
+sentence with an emotion (`neutral`, `happy`, `excited`, `surprised`, `sad`,
+`disappointed`, `angry`, `disgusted`, `embarrassed`, `thinking`,
+`questioning`, `wink`). The tags are removed before anything is spoken or
+shown. Map them to your model's expressions with the same `stateExpressions`
+block, using the tag as the key:
+
+```json
+{ "stateExpressions": { "happy": "F02_smile", "embarrassed": "F07_blush", "wink": "F05" } }
+```
+
+An unmapped tag uses an expression whose name contains the tag (`Wink_L`
+for `wink`), then the matching state's mapping (`happy` → `excited`). A
+sentence without a tag falls back to reading its kaomoji/emoji/words.
 
 ## Performance
 

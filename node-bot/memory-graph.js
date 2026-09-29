@@ -13,7 +13,11 @@ const fs = require("node:fs");
 const path = require("node:path");
 const Database = require("better-sqlite3");
 
-const DEFAULT_DB_PATH = path.join(__dirname, "data", "acp-memory", "memory-graph.db");
+// Beside the rest of memory: MANA_ACP_MEMORY_DIR moves it too.
+const DEFAULT_DB_PATH = path.join(
+  process.env.MANA_ACP_MEMORY_DIR || path.join(__dirname, "data", "acp-memory"),
+  "memory-graph.db",
+);
 // An order of magnitude above acp-memory-store.js's maxFacts (500) since
 // edges are pairs, not single facts -- same "fixed cap, not age-based
 // pruning" reasoning as that file's own caps.
@@ -145,7 +149,24 @@ function createMemoryGraph(options = {}) {
     db.close();
   }
 
-  return { reinforce, getNeighbors, close };
+  // Issue #641: the strongest edges overall, for the memory-graph view --
+  // bounded by the caller so the view never pulls the whole table.
+  const strongestEdgesStmt = db.prepare(`
+    SELECT node_a, node_b, weight, last_reinforced_at FROM memory_graph_edges
+    ORDER BY weight DESC, last_reinforced_at DESC
+    LIMIT ?
+  `);
+
+  function listStrongestEdges(limit) {
+    return strongestEdgesStmt.all(Math.max(1, Number(limit) || 1)).map((row) => ({
+      a: row.node_a,
+      b: row.node_b,
+      weight: row.weight,
+      lastReinforcedAt: row.last_reinforced_at,
+    }));
+  }
+
+  return { reinforce, getNeighbors, listStrongestEdges, close };
 }
 
 module.exports = {

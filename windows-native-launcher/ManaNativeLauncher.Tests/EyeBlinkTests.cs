@@ -35,27 +35,30 @@ public class EyeBlinkTests
     }
 
     [Fact]
-    public void NextInterval_IsLogNormalIsh_WithinBounds_MeanAroundThreeAndAHalfSeconds()
+    public void NextInterval_IsLogNormalIsh_Within2Point5To6Seconds()
     {
         var random = new Random(1);
         var samples = Enumerable.Range(0, 20000).Select(_ => EyeBlink.NextIntervalSeconds(random, 1f)).ToList();
 
-        Assert.All(samples, s => Assert.InRange(s, 1.2f, 8f));
-        Assert.InRange(samples.Average(), 3.2, 3.9);
-        // Skewed: the median sits below the mean, and long stares are rare.
+        Assert.All(samples, s => Assert.InRange(s, 2.5f, 6f));
+        Assert.InRange(samples.Average(), 3.7, 4.2);
+        // Centred near 3.8s, and long stares are rare.
         var sorted = samples.Order().ToList();
-        Assert.True(sorted[sorted.Count / 2] < samples.Average());
-        Assert.True(samples.Count(s => s > 6.5f) < samples.Count * 0.08);
+        Assert.InRange(sorted[sorted.Count / 2], 3.6f, 4.0f);
+        Assert.True(samples.Count(s => s > 5.5f) < samples.Count * 0.1);
     }
 
     [Fact]
-    public void Talking_BlinksAboutFortyPercentMoreOften()
+    public void Talking_BlinksMoreOften_ThinkingLess_StillWithin2Point5To6Seconds()
     {
         var random = new Random(2);
-        var rest = Enumerable.Range(0, 20000).Average(_ => EyeBlink.NextIntervalSeconds(random, 1f));
-        var talk = Enumerable.Range(0, 20000).Average(_ => EyeBlink.NextIntervalSeconds(random, EyeBlink.TalkingRate));
+        var rest = Enumerable.Range(0, 20000).Select(_ => EyeBlink.NextIntervalSeconds(random, 1f)).ToList();
+        var talk = Enumerable.Range(0, 20000).Select(_ => EyeBlink.NextIntervalSeconds(random, EyeBlink.TalkingRate)).ToList();
+        var think = Enumerable.Range(0, 20000).Select(_ => EyeBlink.NextIntervalSeconds(random, EyeBlink.ThinkingRate)).ToList();
 
-        Assert.InRange(rest / talk, 1.3, 1.5);
+        Assert.InRange(rest.Average() / talk.Average(), 1.2, 1.5);
+        Assert.True(think.Average() > rest.Average());
+        Assert.All(talk.Concat(think), s => Assert.InRange(s, 2.5f, 6f));
     }
 
     [Fact]
@@ -82,7 +85,7 @@ public class EyeBlinkTests
 
         var closeDuration = closing[^1].T - closing[0].T;
         var total = values[^1].T - values[0].T;
-        Assert.InRange(total, 0.2, 0.45); // ~85ms close + 45ms shut + 185ms open, +-15%
+        Assert.InRange(total, 0.115, 0.23); // Q6: 120-220ms
         Assert.True(total - closeDuration > closeDuration * 1.5, "opening (incl. hold) should take clearly longer than closing");
 
         // Ease-in close: the first half of the closing time covers less than
@@ -105,13 +108,15 @@ public class EyeBlinkTests
             gaps.AddRange(blinks.Zip(blinks.Skip(1)).Select(p => p.Second.Start - p.First.End));
         }
 
-        // ~15-20 blinks/min at rest.
-        Assert.InRange(total / 80.0, 13, 22);
-        var doubles = gaps.Count(g => g < 0.5);
-        Assert.InRange((double)doubles / gaps.Count, 0.07, 0.18);
+        // ~13-17 blinks/min at rest (doubles included).
+        Assert.InRange(total / 80.0, 12, 19);
+        // Q6: 12-15% doubles, the second 250-700ms after the first.
+        var doubles = gaps.Where(g => g < 1.0).ToList();
+        Assert.InRange((double)doubles.Count / gaps.Count, 0.09, 0.18);
+        Assert.All(doubles, g => Assert.InRange(g, 0.24, 0.71));
         Assert.InRange((double)partial / total, 0.05, 0.16);
-        // Outside double blinks, never closer than the 1.2s floor.
-        Assert.All(gaps.Where(g => g >= 0.5), g => Assert.True(g >= 1.19, $"gap {g}"));
+        // Outside double blinks, never closer than the 2.5s floor.
+        Assert.All(gaps.Where(g => g >= 1.0), g => Assert.True(g >= 2.49, $"gap {g}"));
     }
 
     [Fact]
@@ -143,5 +148,48 @@ public class EyeBlinkTests
         var blinks = Simulate(blink, 1.0, from: 600);
 
         Assert.InRange(blinks.Count, 0, 2); // at most one, plus its double
+    }
+
+    // Q6: sleepy blinks are slower (x1.6).
+    [Fact]
+    public void SleepyBlinks_AreSlower()
+    {
+        static double Length(bool sleepy, int seed)
+        {
+            var blink = new EyeBlink(seed);
+            var t = 0.0;
+            while (blink.Openness(t, 1f, sleepy) == 1f)
+            {
+                t += Frame;
+            }
+            var start = t;
+            while (blink.Openness(t, 1f, sleepy) < 1f)
+            {
+                t += Frame;
+            }
+            return t - start;
+        }
+
+        Assert.InRange(Length(sleepy: true, 5), 0.19, 0.36);
+        Assert.InRange(Length(sleepy: true, 5) / Length(sleepy: false, 5), 1.5, 1.7);
+    }
+
+    // Q6: the "^^" smile only for happy/excited tags, 0.5-3s.
+    [Theory]
+    [InlineData("happy", true)]
+    [InlineData("excited", true)]
+    [InlineData("wink", false)]
+    [InlineData("surprised", false)]
+    [InlineData(null, false)]
+    public void ClosedSmile_OnlyForHappyOrExcitedTags(string? tag, bool expected) =>
+        Assert.Equal(expected, EyeBlink.IsSmileTag(tag));
+
+    [Fact]
+    public void ClosedSmile_LastsHalfASecondToThreeSeconds()
+    {
+        var random = new Random(9);
+        var samples = Enumerable.Range(0, 2000).Select(_ => EyeBlink.ClosedSmileSeconds(random)).ToList();
+        Assert.All(samples, s => Assert.InRange(s, 0.5, 3.0));
+        Assert.True(samples.Max() - samples.Min() > 2.0);
     }
 }
