@@ -22,6 +22,7 @@ internal static class HotkeyBindings
         new("quickEntry", "Quick entry (type to Mana)", Keys.Control | Keys.Alt | Keys.Space, null),
         new("vision", "Look at my screen", Keys.Control | Keys.Alt | Keys.M, "MANA_VISION_HOTKEY"),
         new("clip", "What just happened? (clip)", Keys.Control | Keys.Alt | Keys.Shift | Keys.M, "MANA_CLIP_HOTKEY"),
+        new("camera", "Look through my camera (snapshot)", Keys.Control | Keys.Alt | Keys.C, "MANA_CAMERA_HOTKEY"),
         new("interrupt", "Stop Mana talking", Keys.Control | Keys.Alt | Keys.I, "MANA_INTERRUPT_HOTKEY"),
         new("textAction", "Text actions on selected text", Keys.Control | Keys.Alt | Keys.T, "MANA_TEXT_ACTION_HOTKEY"),
     };

@@ -9,6 +9,7 @@ namespace Mana.NativeLauncher;
 internal static class VisionHotkeyMessages
 {
     public const string DefaultPrompt = "Take a look at my screen and tell me what you see. Answer briefly.";
+    public const string CameraPrompt = "Take a look at what I'm showing you on my camera and tell me what you see. Answer briefly.";
 
     // #585: the span is stated explicitly and computed from the buffer's
     // real timestamps rather than hardcoding the target ~15s window --
