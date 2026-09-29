@@ -54,11 +54,11 @@ internal sealed class ManaApplicationContext : ApplicationContext
     // backend's process scan reports; no new backend route needed.
     private bool gamingModeEnabled = true;
 
-    // The 3 services ManaProcessManager actually starts/stops (no Kokoro
+    // The services ManaProcessManager actually starts/stops (no Kokoro
     // row since #694 / the user decision: node-bot starts Kokoro on
     // demand) -- shared between the startup and shutdown overlays, same
     // as windows-launcher's single #startupOverlay markup being reused for both (there it also
-    // tracks Voice/Web search/Local AI, which don't apply here: this
+    // tracks Voice/Local AI, which don't apply here: this
     // launcher waits on one backend health check for all of node-bot's own
     // internal readiness, not separate per-feature ones).
     internal static readonly (string Key, string Label)[] ServiceRows =
@@ -66,7 +66,21 @@ internal sealed class ManaApplicationContext : ApplicationContext
         ("backend", "Backend"),
         ("fish-speech", "Fish Speech TTS"),
         ("embedder", "Memory search"),
+        ("websearch", "Web search"),
+        ("retriever", "Retriever"),
+        ("gpt-sovits", "GPT-SoVITS TTS"),
     };
+
+    // #691: the opt-in services only get a row when they're turned on,
+    // and only the selected TTS provider gets one.
+    internal static (string Key, string Label)[] ServiceRowsFor(ManaProcessManager manager) =>
+        ServiceRows.Where(row => row.Key switch
+        {
+            "fish-speech" => manager.UsesFishSpeech,
+            "retriever" => manager.UsesRetriever,
+            "gpt-sovits" => manager.UsesGptSovits,
+            _ => true,
+        }).ToArray();
 
     // Guards against "Exit Mana" clicked twice while ShutdownAsync's own
     // overlay/graceful-stop is still running -- without it, a second click
@@ -295,9 +309,10 @@ internal sealed class ManaApplicationContext : ApplicationContext
         menu.Opening += (_, _) => listeningItem.Text = voiceLoop.IsListening ? "Stop listening" : "Start listening";
         menu.Items.Add(listeningItem);
         menu.Items.Add(new ToolStripSeparator());
-        if (processManager.IsBackendLocal)
+        if (processManager.IsBackendLocal && processManager.UsesFishSpeech)
         {
-            // A remote backend's Fish Speech isn't this launcher's to restart.
+            // A remote backend's Fish Speech isn't this launcher's to restart,
+            // and another selected TTS provider means Fish isn't in use.
             menu.Items.Add("Restart Fish Speech", null, (_, _) => RestartFishSpeech());
         }
         menu.Items.Add(new ToolStripSeparator());
@@ -307,7 +322,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
 
     private async Task StartServicesAsync()
     {
-        var overlay = new StartupOverlayForm("Starting Mana", "Starting...", ServiceRows);
+        var overlay = new StartupOverlayForm("Starting Mana", "Starting...", ServiceRowsFor(processManager));
         overlay.Show();
         try
         {
@@ -352,7 +367,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
     // tear the process down invisibly (no window to watch it happen in,
     // just the tray icon vanishing) while backend/Fish Speech/the embedder are
     // still being killed -- this shows the same overlay startup used,
-    // relabeled, stops the 3 managed services with live per-row feedback,
+    // relabeled, stops the managed services with live per-row feedback,
     // then actually exits. ExitThreadCore's own processManager.Dispose()
     // still runs afterward as a synchronous safety net; StopAllAsync
     // already leaves it nothing to do for services it stopped cleanly.
@@ -364,7 +379,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
         }
         isShuttingDown = true;
 
-        var overlay = new StartupOverlayForm("Closing Mana", "Shutting down...", ServiceRows);
+        var overlay = new StartupOverlayForm("Closing Mana", "Shutting down...", ServiceRowsFor(processManager));
         overlay.Show();
         try
         {
