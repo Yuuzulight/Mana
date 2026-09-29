@@ -56,6 +56,9 @@ test("an intent never surfaces as a plain fact, and matches only on its trigger"
   assert.deepEqual(onText.intents, []);
   // Paraphrase by meaning (similarity), then the trigger's own words.
   assert.equal(factRecallCandidates(facts, "party finder tonight?", new Map([["i", 0.9]])).intents.length, 1);
+  // Stricter than plain-fact recall's 0.5 (MIN_INTENT_SIMILARITY).
+  assert.equal(factRecallCandidates(facts, "party finder tonight?", new Map([["i", 0.54]])).intents.length, 0);
+  assert.equal(factRecallCandidates(facts, "party finder tonight?", new Map([["i", 0.55]])).intents.length, 1);
   assert.equal(factRecallCandidates(facts, "my ffxiv static wiped again").intents.length, 1);
   // A short trigger matches as a whole word only.
   const gpu = [{ key: "budget", text: "budget is $800", trigger: "GPU", status: "active" }];

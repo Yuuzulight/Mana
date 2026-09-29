@@ -95,6 +95,13 @@ const INTENT_COOLDOWN_MS = 12 * 60 * 60 * 1000;
 // ponytail: fixed cap so a message touching many intents doesn't turn the
 // reply into a list of reminders; the rest fire on a later match.
 const MAX_INTENTS_PER_TURN = 2;
+// Cosine cutoff for an intent's trigger vs the message, stricter than
+// MIN_FACT_SIMILARITY because a wrong reminder is worse than a missed one.
+// Measured 2026-09-29 with the live Qwen3-Embedding-0.6B-Q8_0 on this exact
+// path (trigger bare, message with QUERY_PROMPT): 12 intents x 6 positive /
+// 6 hard-negative messages, best F0.5 at 0.55 (P 0.89, R 0.46; 0.50 gave
+// P 0.77, R 0.61), and 0.2% false fires on other intents' messages.
+const MIN_INTENT_SIMILARITY = 0.55;
 
 // Whole words only, so a short trigger like "GPU" (too short for
 // significantWords) still matches "a new GPU?" but not "gpus".
@@ -144,7 +151,7 @@ function factRecallCandidates(facts, text, similarityById = null, nowMs = Date.n
       const wordHits = sharedWordCount(triggerWords, messageWords);
       const triggerWordString = wordsOf(fact.trigger);
       if (
-        similarity >= MIN_FACT_SIMILARITY ||
+        similarity >= MIN_INTENT_SIMILARITY ||
         (triggerWordString.trim() && messageWordString.includes(triggerWordString)) ||
         (triggerWords.length && wordHits >= Math.min(2, triggerWords.length))
       ) {
