@@ -666,6 +666,19 @@ function createAcpMemoryStore(options = {}) {
     return types[normalizedKey]?.canonicalKey || normalizedKey;
   }
 
+  // Issue #641: display text + ontology type (null while untyped) for a
+  // batch of entity keys -- one read of each file for the memory-graph
+  // view, not one per node.
+  function describeEntities(keys) {
+    const index = loadEntityIndex();
+    const types = loadEntityTypes();
+    return keys.map((key) => ({
+      key,
+      display: displayForEntityKey(index, key),
+      type: types[key]?.type || null,
+    }));
+  }
+
   // Issue #198: explicit facts the model itself chose to persist via the
   // hot-path "remember" tool -- distinct from the passive entity-mention
   // index above, which only ever records "X was mentioned somewhere", never
@@ -2213,6 +2226,7 @@ function createAcpMemoryStore(options = {}) {
     forkSession,
     deleteSession,
     lookupEntity,
+    describeEntities,
     getRelatedFacts,
     getRelatedFactsEntries,
     rememberFact,

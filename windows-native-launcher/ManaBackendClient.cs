@@ -1702,6 +1702,17 @@ internal sealed class ManaBackendClient
         response.EnsureSuccessStatusCode();
     }
 
+    // #641: read-only data for MemoryGraphForm. Same admin-auth note as
+    // GetMemoryFactsAsync.
+    public async Task<ManaMemoryGraph> GetMemoryGraphAsync()
+    {
+        using var response = await http.GetAsync("/admin/memory/graph");
+        response.EnsureSuccessStatusCode();
+        await using var stream = await response.Content.ReadAsStreamAsync();
+        return await JsonSerializer.DeserializeAsync<ManaMemoryGraph>(stream, new JsonSerializerOptions(JsonSerializerDefaults.Web))
+            ?? new ManaMemoryGraph();
+    }
+
     private static ReplyStreamEvent ParseReplyStreamEvent(JsonElement root)
     {
         return new ReplyStreamEvent
@@ -2132,4 +2143,37 @@ internal sealed class ManaLlamaBuildActionResult
     public bool Ok { get; init; }
     public string? Code { get; init; }
     public string? Error { get; init; }
+}
+
+// #641: GET /admin/memory/graph.
+internal sealed class ManaMemoryGraph
+{
+    public List<ManaMemoryGraphNode> Nodes { get; init; } = new();
+    public List<ManaMemoryGraphEdge> Edges { get; init; } = new();
+    // Newest validFrom first; InvalidatedAt set = superseded.
+    public List<ManaMemoryFactWindow> Facts { get; init; } = new();
+}
+
+internal sealed class ManaMemoryGraphNode
+{
+    public string Key { get; init; } = "";
+    public string Display { get; init; } = "";
+    // entity-ontology.js's category; null while not yet typed.
+    public string? Type { get; init; }
+}
+
+internal sealed class ManaMemoryGraphEdge
+{
+    public string A { get; init; } = "";
+    public string B { get; init; } = "";
+    public double Weight { get; init; }
+    public string? LastReinforcedAt { get; init; }
+}
+
+internal sealed class ManaMemoryFactWindow
+{
+    public string Key { get; init; } = "";
+    public string Text { get; init; } = "";
+    public string? ValidFrom { get; init; }
+    public string? InvalidatedAt { get; init; }
 }
