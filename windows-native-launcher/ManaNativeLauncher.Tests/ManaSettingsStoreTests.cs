@@ -123,6 +123,68 @@ public class ManaSettingsStoreTests
         }
     }
 
+    // #922: the voiceprint gets the same DPAPI treatment as the token.
+    [Fact]
+    public void Save_StoresTheVoiceprintEncrypted()
+    {
+        var path = TempPath();
+        try
+        {
+            new ManaSettingsStore { Voiceprint = new[] { 0.6f, -0.8f } }.Save(path);
+
+            var json = File.ReadAllText(path);
+            Assert.Contains("\"Voiceprint\":null", json);
+            Assert.Contains("VoiceprintProtected", json);
+            Assert.Equal(new[] { 0.6f, -0.8f }, ManaSettingsStore.Load(path).Voiceprint);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public void Load_MigratesAPlainVoiceprint()
+    {
+        var path = TempPath();
+        try
+        {
+            File.WriteAllText(path, """{"VoiceprintGate":"wake","Voiceprint":[0.6,-0.8]}""");
+
+            var settings = ManaSettingsStore.Load(path);
+
+            Assert.Equal(new[] { 0.6f, -0.8f }, settings.Voiceprint);
+            Assert.Equal("wake", settings.VoiceprintGate);
+            Assert.Contains("\"Voiceprint\":null", File.ReadAllText(path));
+            Assert.Equal(new[] { 0.6f, -0.8f }, ManaSettingsStore.Load(path).Voiceprint);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    // Another account's or machine's blob: not enrolled, so the gate lets
+    // everything through instead of rejecting my own voice.
+    [Fact]
+    public void Load_TreatsAnUnreadableVoiceprintAsNotEnrolled()
+    {
+        var path = TempPath();
+        try
+        {
+            File.WriteAllText(path, """{"VoiceprintGate":"wake","VoiceprintProtected":"bm90IGEgZHBhcGkgYmxvYg=="}""");
+
+            var settings = ManaSettingsStore.Load(path);
+
+            Assert.Null(settings.Voiceprint);
+            Assert.Equal("wake", settings.VoiceprintGate);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
     [Fact]
     public void Save_CreatesTheParentDirectoryWhenItDoesNotExist()
     {

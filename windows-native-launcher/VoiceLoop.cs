@@ -121,6 +121,7 @@ internal sealed class VoiceLoop : IDisposable
     private float[]? voiceprint;
     private float speakerThreshold = SpeakerGate.DefaultThreshold;
     private SpeakerEmbedder? speakerEmbedder;
+    private bool disposed; // #922: Settings closing after quit mustn't restart listening
 
     // #665 notWhileSpeaking: recording what I say while she keeps talking
     // (mode stays Speaking), and what I said, held until she finishes.
@@ -354,7 +355,7 @@ internal sealed class VoiceLoop : IDisposable
 
     public void Start()
     {
-        if (capture is not null)
+        if (capture is not null || disposed)
         {
             return;
         }
@@ -374,7 +375,7 @@ internal sealed class VoiceLoop : IDisposable
             speakerEmbedder ??= SpeakerEmbedder.TryLoad(ManaApplicationContext.FindRootDirectory());
         }
         VoiceDebugLog.AppendNote(string.Create(System.Globalization.CultureInfo.InvariantCulture,
-            $"speaker: gate={SpeakerGate.ModeNames[(int)speakerGateMode]} enrolled={(settings.Voiceprint is null ? "no" : "yes")} model={(voiceprint is null ? "unused" : speakerEmbedder is null ? "missing (passing all speech through)" : "loaded")} threshold={speakerThreshold:F2}"));
+            $"speaker: gate={SpeakerGate.ModeNames[(int)speakerGateMode]} enrolled={(settings.Voiceprint is not null ? "yes" : settings.VoiceprintProtected is not null ? "unreadable (teach her again)" : "no")} model={(voiceprint is null ? "unused" : speakerEmbedder is null ? "missing (passing all speech through)" : "loaded")} threshold={speakerThreshold:F2}"));
 
         // #858: voice tunables, env var over Settings > Voice.
         var voiceSettings = ManaSettingsStore.Load();
@@ -658,6 +659,7 @@ internal sealed class VoiceLoop : IDisposable
 
     public void Dispose()
     {
+        disposed = true;
         Stop();
         speakerEmbedder?.Dispose();
     }
@@ -1997,6 +1999,51 @@ internal sealed class VoiceLoop : IDisposable
     }
 
     private const string ReplyFailedMessage = "Sorry, I couldn't answer that just now. Try again in a moment.";
+
+    // #905: a line nobody just asked for (a reminder firing), said through
+    // the same player as replies, with SayReplyFailedAsync's mode handling.
+    // Waits for her to be idle so it never cuts into a turn; gives up
+    // (the toast still showed) if she's busy for a whole minute.
+    public async Task<bool> SpeakAnnouncementAsync(string text)
+    {
+        for (var tries = 0; ; tries++)
+        {
+            lock (stateLock)
+            {
+                if (mode == ListenMode.Idle)
+                {
+                    mode = ListenMode.Processing;
+                    break;
+                }
+            }
+            if (tries >= 30)
+            {
+                return false;
+            }
+            await Task.Delay(2000);
+        }
+        try
+        {
+            var wav = await backendClient.SynthesizeAsync(text);
+            OnTalkingStateChanged(true);
+            captions?.ShowSentence(text);
+            bubbles?.ShowSentence(text);
+            var completedNaturally = await audioPlayer.PlayAsync(wav);
+            OnTalkingStateChanged(false);
+            if (!completedNaturally)
+            {
+                ConsumeManualStop();
+                return true;
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"VoiceLoop: couldn't speak the announcement. {ex.Message}");
+            OnTalkingStateChanged(false);
+        }
+        ReturnToIdle();
+        return true;
+    }
 
     // #666: a failed reply is shown in the chat and spoken once, with the
     // same mode handling as the non-streamed fallback above. If TTS is what

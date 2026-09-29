@@ -43,7 +43,7 @@ function fakeServer({ inference = async () => ({ ok: true, json: async () => ({ 
   };
 }
 
-function make(server, files, env = {}, threads = () => 2) {
+function make(server, files, env = {}, threads = () => 2, language = () => "en") {
   return createWhisperServer({
     env,
     spawn: server.spawn,
@@ -52,7 +52,7 @@ function make(server, files, env = {}, threads = () => 2) {
     findCliBin: () => files.cli,
     findModel: () => files.model,
     threads,
-    language: "en",
+    language,
     beamSize: "5",
     noSpeechThreshold: "0.45",
   });
@@ -139,6 +139,20 @@ test("restarts the server with the new thread count when a game starts or stops"
   gaming = false;
   await whisper.transcribe(files.audio, { prompt: "", temperature: "0" });
   assert.equal(threadsOf(2), "8");
+}));
+
+test("restarts the server with -l auto when the language setting changes (#926)", quietly(async () => {
+  const files = tempInstall();
+  const server = fakeServer();
+  let language = "en";
+  const whisper = make(server, files, {}, () => 2, () => language);
+  const languageOf = (i) => server.calls.spawn[i].args[server.calls.spawn[i].args.indexOf("-l") + 1];
+
+  await whisper.transcribe(files.audio, { prompt: "", temperature: "0" });
+  language = "auto";
+  await whisper.transcribe(files.audio, { prompt: "", temperature: "0" });
+  assert.equal(server.calls.spawn.length, 2);
+  assert.deepEqual([languageOf(0), languageOf(1)], ["en", "auto"]);
 }));
 
 test("belowNormal lowers a spawned process's priority and tolerates one without a pid", () => {
