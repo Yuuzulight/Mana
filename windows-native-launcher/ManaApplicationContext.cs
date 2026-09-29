@@ -146,6 +146,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
         // Q8: under Mana while she's showing (Visible/Bounds are plain field reads).
         captionOverlay = new CaptionOverlayForm(() => avatarOverlay.Visible ? avatarOverlay.Bounds : null);
         chatBubbles = new ChatBubblesForm(() => avatarOverlay.Visible ? avatarOverlay.Bounds : null, () => ChatBubblesForm.InView(sessionListForm));
+        captionOverlay.Suppressed = chatBubbles.BubblesOn; // #701: bubbles replace the caption bar
         chatBubbles.BubbleClicked += text =>
         {
             ShowSessionList();
@@ -174,6 +175,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
                 () => voiceLoop.IsIdle,
                 () => gamingModeActive,
                 () => SystemIdle.GetIdleMilliseconds() ?? 0,
+                screenContextReader.ReadForGlanceAsync,
                 ScreenCapture.CaptureAsJpegDataUrl,
                 chatLog.AppendManaMessage,
                 PositiveIntEnv("MANA_SCREEN_SENSING_PRESENCE_IDLE_MS", 90000));
@@ -373,6 +375,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
         bubblesItem.Click += (_, _) =>
         {
             chatBubbles.BubblesOn = bubblesItem.Checked;
+            captionOverlay.Suppressed = bubblesItem.Checked; // #701
             var latest = ManaSettingsStore.Load();
             latest.ChatBubbles = bubblesItem.Checked;
             latest.Save();
@@ -543,8 +546,17 @@ internal sealed class ManaApplicationContext : ApplicationContext
         {
             // Edit proposals need admin access / the editors integration.
         }
+        IReadOnlyList<ManaPendingWrite> writes = [];
+        try
+        {
+            writes = await backendClient.GetPendingWritesAsync();
+        }
+        catch
+        {
+            // Admin-only, like edit proposals.
+        }
 
-        var items = WaitingForYou.Items(approvals, proposals);
+        var items = WaitingForYou.Items(approvals, proposals, writes);
         avatarOverlay.SetActivity(AvatarState.Waiting, items.Count > 0);
         normalTrayIcon ??= trayIcon.Icon;
         trayIcon.Icon = items.Count > 0 ? waitingTrayIcon ??= WaitingForYou.Badged(normalTrayIcon!) : normalTrayIcon;

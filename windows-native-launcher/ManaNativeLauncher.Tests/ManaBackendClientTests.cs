@@ -2278,6 +2278,41 @@ public class ManaBackendClientTests
     }
 
     [Fact]
+    public async Task GetPendingWritesAsync_ListsOnlyUndecidedAgentRequestsWithASummary()
+    {
+        var handler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(
+                """{"ok":true,"pending":[{"id":"hook-ask-1","payload":{"kind":"hook-ask","tool":"file_write","reason":"Ask before touching package.json"},"approved":false,"rejected":false},{"id":"snapshot-restore-2","payload":{"snapshotId":"s9","kind":"file","summary":"Restore src/a.js"},"approved":false,"rejected":false},{"id":"a1b2","payload":{"path":"src/b.js","mode":"overwrite"},"approved":false,"rejected":false},{"id":"c3d4","payload":{"path":"src/c.js","mode":"overwrite","adversarialReview":{"verdict":"refuted","failingCase":"an empty list crashes it"}},"approved":false,"rejected":false},{"id":"done","payload":{"path":"x.js"},"approved":true,"rejected":false},{"id":"broken","payload":null,"approved":false,"rejected":false}]}""",
+                Encoding.UTF8,
+                "application/json"),
+        });
+
+        var writes = await new ManaBackendClient(handler).GetPendingWritesAsync();
+
+        Assert.Equal(
+            [("hook-ask-1", "hook ask", "Ask before touching package.json (file_write)"), ("snapshot-restore-2", "agent restore", "Restore src/a.js"), ("a1b2", "agent write", "overwrite src/b.js"), ("c3d4", "agent write", "overwrite src/c.js -- Mana's review found a way this breaks: an empty list crashes it")],
+            writes.Select(w => (w.Id, w.Kind, w.Summary)));
+    }
+
+    [Fact]
+    public async Task DecidePendingWriteAsync_PostsApproveOrReject()
+    {
+        var paths = new List<string>();
+        var handler = new FakeHttpMessageHandler(request =>
+        {
+            paths.Add(request.RequestUri!.AbsolutePath);
+            return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("{\"ok\":true}") };
+        });
+        var client = new ManaBackendClient(handler);
+
+        await client.DecidePendingWriteAsync("hook-ask-1", approve: true);
+        await client.DecidePendingWriteAsync("a1b2", approve: false);
+
+        Assert.Equal(["/admin/pending-writes/hook-ask-1/approve", "/admin/pending-writes/a1b2/reject"], paths);
+    }
+
+    [Fact]
     public async Task GetPendingApprovalsAsync_ReturnsEmptyWhenThePendingKeyIsMissing()
     {
         var handler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)

@@ -1050,7 +1050,21 @@ internal sealed class SettingsPanel : UserControl
         var id = (string)approvalsList.SelectedItems[0].Tag!;
         try
         {
-            await backendClient.DecideApprovalAsync(id, decision);
+            // #838: an ACP agent request is decided once; there are no
+            // session or standing grants for it.
+            if (id.StartsWith(PendingWriteTag, StringComparison.Ordinal))
+            {
+                if (decision is not ("allow-once" or "deny"))
+                {
+                    MessageBox.Show(this, "This request from the coding agent can only be allowed once or denied.", "Approvals", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    return;
+                }
+                await backendClient.DecidePendingWriteAsync(id[PendingWriteTag.Length..], decision == "allow-once");
+            }
+            else
+            {
+                await backendClient.DecideApprovalAsync(id, decision);
+            }
         }
         catch (Exception ex)
         {
@@ -1084,6 +1098,20 @@ internal sealed class SettingsPanel : UserControl
             return;
         }
 
+        IReadOnlyList<ManaPendingWrite> writes = [];
+        try
+        {
+            writes = await backendClient.GetPendingWritesAsync();
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"SettingsPanel: failed to load pending agent writes. {ex.Message}");
+        }
+        if (IsDisposed)
+        {
+            return;
+        }
+
         approvalsList.Items.Clear();
         foreach (var approval in pending)
         {
@@ -1091,7 +1119,16 @@ internal sealed class SettingsPanel : UserControl
             item.SubItems.Add(approval.Summary);
             approvalsList.Items.Add(item);
         }
+        foreach (var write in writes)
+        {
+            var item = new ListViewItem(write.Kind) { Tag = PendingWriteTag + write.Id };
+            item.SubItems.Add(write.Summary);
+            approvalsList.Items.Add(item);
+        }
     }
+
+    // Marks an approvals-list row as an ACP agent pending write (#838).
+    private const string PendingWriteTag = "write:";
 
     // #583: "Auto" (null override) plus the 4 providers server.js's
     // TTS_OVERRIDE_PROVIDERS allow-lists -- selecting it clears the
