@@ -170,7 +170,12 @@ internal sealed class ManaApplicationContext : ApplicationContext
         // handling uses for a detected spoken interruption.
         globalHotkeys = new GlobalHotkeyListener(
             (0xA584, GlobalHotkeyListener.ModControl | GlobalHotkeyListener.ModAlt, (uint)'W', "MANA_WINDOW_HOTKEY", ToggleSessionListVisible),
-            (0xA585, GlobalHotkeyListener.ModControl | GlobalHotkeyListener.ModAlt, (uint)'I', "MANA_INTERRUPT_HOTKEY", voiceLoop.InterruptSpeech));
+            (0xA585, GlobalHotkeyListener.ModControl | GlobalHotkeyListener.ModAlt, (uint)'I', "MANA_INTERRUPT_HOTKEY", voiceLoop.InterruptSpeech),
+            // #680: text actions on the selection in any app; "Ask Mana..."
+            // hands it to quick entry as a normal turn.
+            (0xA680, GlobalHotkeyListener.ModControl | GlobalHotkeyListener.ModAlt, (uint)'T', "MANA_TEXT_ACTION_HOTKEY",
+                () => _ = TextActionForm.RunAsync(backendClient, text =>
+                    quickEntry.OpenWith($"About \"{System.Text.RegularExpressions.Regex.Replace(text, @"\s+", " ")}\": "))));
         // #524: originally a no-op (no chat/session window existed on
         // this branch yet) -- #521/#520 shipped one since, so this now
         // does what the original comment here flagged as the real

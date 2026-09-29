@@ -331,6 +331,30 @@ internal sealed class ManaBackendClient
             && triggered.ValueKind == JsonValueKind.True;
     }
 
+    // #680: one text action (Explain, Rewrite...) on selected text --
+    // node-bot's OpenAI-compatible /v1/chat/completions, which goes straight
+    // to the local model with no persona, session or memory, so the text
+    // isn't remembered. Returns the model's reply, trimmed.
+    public async Task<string> RunTextActionAsync(string prompt, string text)
+    {
+        var payload = JsonSerializer.Serialize(new
+        {
+            messages = new[]
+            {
+                new { role = "system", content = prompt },
+                new { role = "user", content = text },
+            },
+            stream = false,
+        });
+        using var content = new StringContent(payload, Encoding.UTF8, "application/json");
+        using var response = await http.PostAsync("/v1/chat/completions", content);
+        response.EnsureSuccessStatusCode();
+        using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        var reply = document.RootElement.GetProperty("choices")[0].GetProperty("message").GetProperty("content").GetString() ?? "";
+        // Reasoning models may prefix their answer with a <think> block.
+        return System.Text.RegularExpressions.Regex.Replace(reply, @"^\s*<think>[\s\S]*?</think>", "").Trim();
+    }
+
     // #527: node-bot's configured llama-server profiles -- see
     // model-management.js's getModelStatus/buildProfileStatus for the
     // full shape; this only carries what compare-mode needs.
