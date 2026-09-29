@@ -119,8 +119,9 @@ public class ManaProcessManagerTests
 
         await manager.StartAsync((key, available) => reported[key] = available);
 
+        // #691: no "retriever"/"gpt-sovits" either -- both are opt-in.
         Assert.Equal(
-            new Dictionary<string, bool> { ["backend"] = true, ["fish-speech"] = true, ["embedder"] = true },
+            new Dictionary<string, bool> { ["backend"] = true, ["fish-speech"] = true, ["embedder"] = true, ["websearch"] = true },
             new Dictionary<string, bool>(reported));
     }
 
@@ -250,8 +251,49 @@ public class ManaProcessManagerTests
         await manager.StartAsync((key, available) => reported[key] = available);
 
         Assert.Equal(
-            ManaApplicationContext.ServiceRows.Select(row => row.Key).OrderBy(key => key),
+            ManaApplicationContext.ServiceRowsFor(manager).Select(row => row.Key).OrderBy(key => key),
             reported.Keys.OrderBy(key => key));
+    }
+
+    [Fact]
+    public async Task StartAsync_OptInServicesGetARowAndDegradeWithoutThrowing_WhenTurnedOn()
+    {
+        // #691: MANA_START_RETRIEVER=1 and TTS_PROVIDER=gpt_sovits add the
+        // retriever and GPT-SoVITS; with nothing answering and nothing
+        // installed under the root, they (and SearXNG) read Unavailable
+        // instead of failing startup. Only the selected TTS starts, so Fish
+        // Speech is never checked, reported or waited on.
+        Environment.SetEnvironmentVariable("MANA_START_RETRIEVER", "1");
+        Environment.SetEnvironmentVariable("TTS_PROVIDER", "gpt_sovits");
+        try
+        {
+            var requested = new ConcurrentBag<string>();
+            var handler = new FakeHttpMessageHandler(request =>
+            {
+                requested.Add(request.RequestUri!.GetLeftPart(UriPartial.Path));
+                return new HttpResponseMessage(request.RequestUri.Port == 5005 ? HttpStatusCode.OK : HttpStatusCode.ServiceUnavailable);
+            });
+            using var manager = new ManaProcessManager(@"C:\does-not-exist", handler);
+            var reported = new ConcurrentDictionary<string, bool>();
+
+            await manager.StartAsync((key, available) => reported[key] = available);
+
+            Assert.False(reported["websearch"]);
+            Assert.False(reported["retriever"]);
+            Assert.False(reported["gpt-sovits"]);
+            Assert.Contains("http://127.0.0.1:9880/docs", requested);
+            Assert.False(reported.ContainsKey("fish-speech"));
+            Assert.DoesNotContain(requested, url => new Uri(url).Port == 8080);
+            Assert.False(manager.IsFishSpeechAvailable);
+            Assert.Equal(
+                ManaApplicationContext.ServiceRowsFor(manager).Select(row => row.Key).OrderBy(key => key),
+                reported.Keys.OrderBy(key => key));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("MANA_START_RETRIEVER", null);
+            Environment.SetEnvironmentVariable("TTS_PROVIDER", null);
+        }
     }
 
     [Fact]
@@ -317,7 +359,11 @@ public class ManaProcessManagerTests
         await manager.StopAllAsync((key, stopped) => reported[key] = stopped);
 
         Assert.Equal(
-            new Dictionary<string, bool> { ["backend"] = true, ["fish-speech"] = true, ["embedder"] = true },
+            new Dictionary<string, bool>
+            {
+                ["backend"] = true, ["fish-speech"] = true, ["embedder"] = true,
+                ["websearch"] = true, ["retriever"] = true, ["gpt-sovits"] = true,
+            },
             new Dictionary<string, bool>(reported));
     }
 
