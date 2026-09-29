@@ -1,8 +1,9 @@
 using System;
 using System.Diagnostics;
 using System.Drawing;
-using System.Drawing.Imaging;
 using System.IO;
+using System.Linq;
+using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
@@ -29,9 +30,15 @@ internal sealed class ScreenContextReader
     private const int MaxTreeFailures = 3;
     private const int MinIntervalMs = 8000;
     private const int GamingMinIntervalMs = 30000;
+    // #671: no tree walk within this long of the last keyboard/mouse input.
+    private const int InputQuietMs = 1000;
+
+    // #671: apps whose UI Automation trees are known to be slow or hang.
+    private static readonly string[] SlowTreeApps = { "outlook" };
 
     private readonly string scriptPath;
     private readonly ManaBackendClient backendClient;
+    private readonly ScreenOcrGate ocrGate = new();
     private int treeFailureCount;
     private string lastScreenText = "";
     private long lastReadAtMs = long.MinValue;
@@ -69,16 +76,33 @@ internal sealed class ScreenContextReader
 
         try
         {
-            var tree = await ReadAccessibilityTreeAsync();
-            if (IsTreeUsable(tree, Environment.ProcessId))
+            var window = GetForegroundWindow();
+            GetWindowThreadProcessId(window, out var windowPid);
+            // #671: Mana's own UI in front is a self-description, not
+            // context -- skip both the tree walk and OCR.
+            if (windowPid == Environment.ProcessId)
             {
-                lastScreenText = tree!.Value.Text;
-                lastReadAtMs = now;
-                return lastScreenText;
+                return "";
             }
 
-            var imageDataUrl = CaptureScreenAsJpegDataUrl();
-            var text = await backendClient.ReadScreenAsync(imageDataUrl);
+            if (!ShouldSkipTreeWalk(windowPid))
+            {
+                var tree = await ReadAccessibilityTreeAsync();
+                if (IsTreeUsable(tree, Environment.ProcessId))
+                {
+                    lastScreenText = tree!.Value.Text;
+                    lastReadAtMs = now;
+                    return lastScreenText;
+                }
+            }
+
+            // #671: OCR just the foreground window, and only when it
+            // changed since the last OCR (ScreenOcrGate).
+            using var bitmap = ScreenCapture.Capture(ForegroundBounds(window));
+            var text = await ocrGate.ReadAsync(
+                window,
+                ScreenOcrGate.DifferenceHash(bitmap),
+                () => backendClient.ReadScreenAsync(ScreenCapture.ToJpegDataUrl(bitmap)));
             lastScreenText = text;
             lastReadAtMs = now;
             return lastScreenText;
@@ -153,16 +177,59 @@ internal sealed class ScreenContextReader
         }
     }
 
-    private static string CaptureScreenAsJpegDataUrl()
+    // #671: UI-tree budgets on top of the timeout/caps above. Walking the
+    // tree of the app being typed into can stall its input, and some apps'
+    // trees are slow enough to burn the whole timeout for nothing -- both
+    // go straight to OCR. "In use" is Windows' own last-input time (Q2:
+    // GetLastInputInfo, no keyboard listener), so mouse movement counts too.
+    private static bool ShouldSkipTreeWalk(int windowPid) =>
+        InUse(SystemIdle.GetIdleMilliseconds()) || IsSlowTreeApp(ProcessNameOf(windowPid));
+
+    // Unknown idle time (the call failed) never counts as in use.
+    internal static bool InUse(long? idleMs) => idleMs < InputQuietMs;
+
+    internal static bool IsSlowTreeApp(string processName) =>
+        SlowTreeApps.Contains(processName, StringComparer.OrdinalIgnoreCase);
+
+    private static string ProcessNameOf(int pid)
     {
-        var bounds = Screen.PrimaryScreen!.Bounds;
-        using var bitmap = new Bitmap(bounds.Width, bounds.Height);
-        using (var g = Graphics.FromImage(bitmap))
+        try
         {
-            g.CopyFromScreen(bounds.Location, Point.Empty, bounds.Size);
+            using var process = Process.GetProcessById(pid);
+            return process.ProcessName;
         }
-        using var stream = new MemoryStream();
-        bitmap.Save(stream, ImageFormat.Jpeg);
-        return $"data:image/jpeg;base64,{Convert.ToBase64String(stream.ToArray())}";
+        catch
+        {
+            return "";
+        }
+    }
+
+    // The foreground window's rect clipped to the desktop; the whole
+    // primary screen (the old behavior) when there's no usable window.
+    private static Rectangle ForegroundBounds(IntPtr window)
+    {
+        var bounds = GetWindowRect(window, out var rect)
+            ? Rectangle.Intersect(Rectangle.FromLTRB(rect.Left, rect.Top, rect.Right, rect.Bottom), SystemInformation.VirtualScreen)
+            : Rectangle.Empty;
+        return bounds.Width > 0 && bounds.Height > 0 ? bounds : Screen.PrimaryScreen!.Bounds;
+    }
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetForegroundWindow();
+
+    [DllImport("user32.dll")]
+    private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out int processId);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetWindowRect(IntPtr hWnd, out NativeRect rect);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct NativeRect
+    {
+        public int Left;
+        public int Top;
+        public int Right;
+        public int Bottom;
     }
 }

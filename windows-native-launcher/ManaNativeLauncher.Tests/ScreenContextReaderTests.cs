@@ -39,4 +39,22 @@ public class ScreenContextReaderTests
 
         Assert.False(ScreenContextReader.IsTreeUsable(tree, OwnPid));
     }
+
+    [Fact]
+    public void IsSlowTreeApp_MatchesTheKnownSlowAppsCaseInsensitively()
+    {
+        Assert.True(ScreenContextReader.IsSlowTreeApp("OUTLOOK"));
+        Assert.False(ScreenContextReader.IsSlowTreeApp("notepad"));
+        Assert.False(ScreenContextReader.IsSlowTreeApp(""));
+    }
+
+    // #671/Q2: GetLastInputInfo-based -- any keyboard or mouse input in the
+    // last second skips the tree walk; an unknown idle time never does.
+    [Theory]
+    [InlineData(0L, true)]
+    [InlineData(999L, true)]
+    [InlineData(1000L, false)]
+    [InlineData(null, false)]
+    public void InUse_WithinASecondOfTheLastInput(long? idleMs, bool expected) =>
+        Assert.Equal(expected, ScreenContextReader.InUse(idleMs));
 }
