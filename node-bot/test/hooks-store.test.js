@@ -619,3 +619,19 @@ test("#838: a modify-input rule may not set approved", () => {
   const rule = store.addRule({ phase: "pre", action: "modify-input", toolName: "write", set: { mode: "append" } });
   assert.throws(() => store.updateRule(rule.id, { set: { approved: true } }), /may not set approved/);
 });
+
+test("#838: configError is null for a missing, empty or valid file, and says why otherwise", () => {
+  const dir = createTempDir();
+  const store = createHooksStore({ dataDir: dir });
+  const file = path.join(dir, "hooks.json");
+  assert.equal(store.configError(), null);
+  fs.writeFileSync(file, "  ");
+  assert.equal(store.configError(), null);
+  fs.writeFileSync(file, "[]");
+  assert.equal(store.configError(), null);
+  fs.writeFileSync(file, '{"rules": []}');
+  assert.match(store.configError(), /not a list/);
+  fs.writeFileSync(file, "[{ half written");
+  assert.match(store.configError(), /unreadable/);
+  assert.deepEqual(store.listRules(), [], "Pipeline A still reads it as no rules");
+});

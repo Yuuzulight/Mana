@@ -375,6 +375,8 @@ const defaultHooksStore = createHooksStore({});
 // #838: the adversarial review is one 200-token call on an already-loaded
 // model; past this the write goes on unreviewed.
 const REVIEW_TIMEOUT_MS = 60 * 1000;
+// #838 decision 5: the tools a broken hooks.json stops. Reads still run.
+const SIDE_EFFECT_TOOLS = new Set(["file_write", "snapshot_restore", "run_tests"]);
 
 // #838: a hook-ask pending request shows the call's args, but a
 // file_write's content can be a whole file -- long strings are cut to the
@@ -1148,6 +1150,16 @@ async function executeAutonomousStep(rawModelReply, sessionId, options = {}) {
 
   for (const action of actions) {
     const tool = action.tool;
+    // #838 decision 5: with a hooks.json that won't parse, a deny rule may
+    // be silently missing, so an unattended loop gets no side effects.
+    if (SIDE_EFFECT_TOOLS.has(tool)) {
+      const configError = hooksStore.configError();
+      if (configError) {
+        console.error(`[Mana Agent Loop] 🛑 ${tool} refused: ${configError}`);
+        results.push({ tool, status: "error", detail: "hooks_config_unreadable" });
+        continue;
+      }
+    }
     // #838: modify-input first, so the #396 cap, deny/ask and every guard
     // inside runAction see the rewritten call, never the original.
     const args = applyInputRules(hooksStore.matchRules(tool, "pre", action.args), tool, action.args);

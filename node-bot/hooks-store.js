@@ -136,6 +136,20 @@ function createHooksStore(options = {}) {
     return readRules(filePath);
   }
 
+  // #838 decision 5: why hooks.json can't be used -- it exists but won't
+  // parse, or isn't an array -- else null. listRules still reads such a file
+  // as "no rules" (Pipeline A); Pipeline B refuses side effects instead.
+  function configError() {
+    if (!fs.existsSync(filePath)) return null;
+    try {
+      const raw = fs.readFileSync(filePath, "utf8").trim();
+      if (!raw) return null;
+      return Array.isArray(JSON.parse(raw)) ? null : "hooks.json is not a list of rules";
+    } catch (e) {
+      return `hooks.json is unreadable: ${e.message}`;
+    }
+  }
+
   function addRule(rule) {
     const entry = {
       id: makeId(),
@@ -228,7 +242,7 @@ function createHooksStore(options = {}) {
     );
   }
 
-  return { dataDir, listRules, addRule, removeRule, setRuleEnabled, updateRule, recordRunOutcome, matchRules };
+  return { dataDir, listRules, configError, addRule, removeRule, setRuleEnabled, updateRule, recordRunOutcome, matchRules };
 }
 
 // #426 sub-project 4, fixed in #838: restores only the snapshot the call
