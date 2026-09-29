@@ -250,6 +250,7 @@ const { createEmbedder } = require("./ai/embedder-runtime");
 const { createWhisperServer } = require("./ai/whisper-server-runtime");
 const { createGamingWatch } = require("./utils/gaming-watch");
 const { streamedMatchesFinal } = require("./utils/reply-stream-diff");
+const { EMOTION_TAG_PROMPT, stripEmotionTags, replyEmotion } = require("./utils/emotion-tags");
 const { createRestartController } = require("./admin-restart");
 const ffxivMarketPlugin = require("../plugins/ffxiv-market");
 const {
@@ -3629,6 +3630,9 @@ function registerRoutes(app, upload, deps = {}) {
       sessionId,
       personalityStore.get().traits,
     );
+    // Issue #623: per-sentence emotion tags for the avatar. Static text, so
+    // it sits in the cached prefix; every reply path below strips the tags.
+    selectedSystemPrompt = `${selectedSystemPrompt}\n\n${EMOTION_TAG_PROMPT}`;
     // Issue #660: the mode is picked per message, so its text is appended
     // last (after the session goal below) -- spliced in right after the
     // persona, a mode switch changed the prompt prefix and cost
@@ -4120,15 +4124,25 @@ function registerRoutes(app, upload, deps = {}) {
 
     const finalPrompt = (retrievedText || "") + prompt;
 
+    // Issue #623: the reply without its emotion tags, applied wherever a
+    // pass produces one; replyMeta.emotion is the face for a client that
+    // speaks it as one clip (not streamed, or rewritten after streaming).
+    const untag = (text) => {
+      if (typeof text !== "string") return text;
+      const { text: clean, emotions } = stripEmotionTags(text);
+      if (replyMeta) replyMeta.emotion = replyEmotion(emotions);
+      return clean;
+    };
+
     // Try OpenAI/proxy only when explicitly allowed.
     if (shouldUseRemoteAi()) {
       try {
-        const openAiReply = await runOpenAIReply(
+        const openAiReply = untag(await runOpenAIReply(
           finalPrompt,
           effectiveMaxTokens,
           selectedSystemPrompt + flatMemorySuffix,
           sessionId,
-        );
+        ));
         if (openAiReply) {
           console.log("Using OpenAI proxy reply.");
           queueVTubeReaction(openAiReply);
@@ -4195,10 +4209,18 @@ function registerRoutes(app, upload, deps = {}) {
     // "first call only" explicit rather than relying on call order.
     let firstPassStreamed = false;
     const streamedSentences = [];
+    // Issue #623: each sentence goes out without its emotion tags, with the
+    // face it's said with. An untagged sentence keeps the previous one's;
+    // a bare tag (the chunker cut it off as its own "sentence") only sets
+    // the face for the next.
+    let sentenceEmotion = null;
     const wrappedOnSentence = onSentence
-      ? async (sentence) => {
+      ? async (tagged) => {
+          const { text: sentence, emotions } = stripEmotionTags(tagged);
+          if (emotions.length) sentenceEmotion = emotions[0];
+          if (!sentence) return;
           streamedSentences.push(sentence);
-          await onSentence(sentence);
+          await onSentence(sentence, sentenceEmotion);
         }
       : null;
 
@@ -4588,7 +4610,7 @@ function registerRoutes(app, upload, deps = {}) {
     }
 
     // Fall back to local llama
-    let reply = await replyMaybeWithBestOfN(finalPrompt);
+    let reply = untag(await replyMaybeWithBestOfN(finalPrompt));
 
     // Conversational rut detection (issue #159), general reply path: the
     // Best-of-N branch above already prefers a less-repetitive candidate
@@ -4608,7 +4630,7 @@ function registerRoutes(app, upload, deps = {}) {
           const nudgedPrompt = `${finalPrompt}\n\nYour last several replies have repeated similar phrasing. Say this differently -- vary your wording and sentence structure instead of reusing recent lines.`;
           const regenerated = await replyMaybeWithBestOfN(nudgedPrompt);
           if (typeof regenerated === "string" && regenerated.trim()) {
-            reply = regenerated;
+            reply = untag(regenerated);
             rutDetector.recordIntervention(sessionId);
             console.log("Mana rut detection: regenerated a repetitive reply with a phrasing nudge");
           }
@@ -4688,7 +4710,7 @@ function registerRoutes(app, upload, deps = {}) {
               ")",
             );
             try {
-              reply = await replyMaybeWithBestOfN(fixPrompt);
+              reply = untag(await replyMaybeWithBestOfN(fixPrompt));
               queueVTubeReaction(reply);
               continue; // re-verify
             } catch (retryErr) {

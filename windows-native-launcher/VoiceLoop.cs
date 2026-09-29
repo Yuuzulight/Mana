@@ -222,7 +222,13 @@ internal sealed class VoiceLoop : IDisposable
             audioPlayer.PlayAsync,
             talking => OnTalkingStateChanged(talking),
             running => avatarOverlay.SetActivity(AvatarState.Working, running),
-            sentence => captions?.ShowSentence(sentence));
+            (sentence, emotion) =>
+            {
+                captions?.ShowSentence(sentence);
+                // #623: each sentence's own face as its audio starts -- the
+                // model's emotion tag, else read from the sentence's text.
+                avatarOverlay.SetState(MapReplyEmotionToAvatarState(ReplyEmotionDetector.DetectReplyEmotion(sentence, emotion)), null, emotion);
+            });
     }
 
     // #681: true between Start() and Stop() -- what the tray's and chat
@@ -1368,11 +1374,11 @@ internal sealed class VoiceLoop : IDisposable
             return false;
         }
 
-        // Only reachable here with the FULL final reply text already known
-        // (unlike the streaming path above, which only ever sees individual
-        // sentences as they arrive -- per-sentence expression detection
-        // isn't attempted there, a deliberate scope cut).
-        var expression = ReplyEmotionDetector.DetectReplyEmotion(reply);
+        // One clip, so one face for the whole reply (#623: the reply's own
+        // emotion tag when the model gave one; the streaming path above
+        // switches per sentence instead).
+        var emotion = streamingReplyPlayer.FinalEmotion;
+        var expression = ReplyEmotionDetector.DetectReplyEmotion(reply, emotion);
 
         bool completedNaturally;
         try
@@ -1381,7 +1387,7 @@ internal sealed class VoiceLoop : IDisposable
             // final event. node-bot only sets it on the tool-calling path,
             // which never streams sentences -- so it always lands here, never
             // on the changed:false path above.
-            OnTalkingStateChanged(true, MapReplyEmotionToAvatarState(expression), preferredExpression);
+            OnTalkingStateChanged(true, MapReplyEmotionToAvatarState(expression), preferredExpression, emotion);
             captions?.ShowSpokenText(reply ?? string.Empty, AudioPlayer.Duration(replyWav));
             completedNaturally = await audioPlayer.PlayAsync(replyWav);
         }
@@ -1454,9 +1460,9 @@ internal sealed class VoiceLoop : IDisposable
     // non-streaming fallback call site (which has the full reply text
     // already, unlike streaming) passes ReplyEmotionDetector's result
     // instead. Ignored when talking=false (always goes to Idle).
-    private void OnTalkingStateChanged(bool talking, AvatarState talkingState = AvatarState.Talking, string? preferredExpression = null)
+    private void OnTalkingStateChanged(bool talking, AvatarState talkingState = AvatarState.Talking, string? preferredExpression = null, string? emotion = null)
     {
-        avatarOverlay.SetState(talking ? talkingState : AvatarState.Idle, talking ? preferredExpression : null);
+        avatarOverlay.SetState(talking ? talkingState : AvatarState.Idle, talking ? preferredExpression : null, talking ? emotion : null);
         if (!talking)
         {
             captions?.SpeechEnded();
