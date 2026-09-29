@@ -15,6 +15,11 @@ Two job types:
   own memory, pinned and related facts), except that only confirmed facts
   are used: unverified and pending (unconfirmed) ones stay out, since
   there's nobody to check them with.
+- **`reminder`** (#905): the job's `name` is the reminder text; no model
+  call. Mana sets, lists and cancels these from chat
+  (`node-bot/ai/reminder-tool-source.js`). They go out as a "Reminder" toast
+  through the proactive engine as explicit, so they get through even
+  mid-game, and they fire whether or not this plugin is enabled.
 
 Either way, the result (or error) is delivered as a chat turn
 (`acpMemoryStore.appendTurn`) in the job's session -- visible in the
@@ -26,6 +31,8 @@ Deliberately just two schedule shapes, not a full cron-expression parser:
 
 - `{ type: "interval", everyMs }` -- fire every `everyMs` milliseconds.
 - `{ type: "daily", hour, minute }` -- fire once a day at that local time.
+- `{ type: "once", at }` -- fire once at that timestamp (ms), then the job
+  is removed. One that came due while the backend was down fires on start.
 
 Covers every example in the issue (a daily 9am summary, a periodic check)
 without pulling in a cron-expression dependency. If a real need for comma

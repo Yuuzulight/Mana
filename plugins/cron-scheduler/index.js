@@ -1,6 +1,7 @@
 const { createCronScheduler } = require("./cron-scheduler");
 const { createHeartbeat } = require("./heartbeat");
 const { notifyTray } = require("../../node-bot/tray-notifier");
+const proactive = require("../../node-bot/proactive");
 const { isPluginEnabled } = require("../../node-bot/capabilities/registry");
 
 // Module-level singleton (mirrors other plugins, e.g. document-reader) so
@@ -34,15 +35,19 @@ function getScheduler(deps = {}) {
           : typeof result === "string"
             ? result
             : JSON.stringify(result);
+        const payload = {
+          type: "cron",
+          title: job.jobType === "reminder" ? "Reminder" : `Cron: ${job.name}`,
+          text: assistantText.length > 200 ? `${assistantText.slice(0, 200)}...` : assistantText,
+          at: new Date().toISOString(),
+        };
+        // #905: a reminder the user asked for goes through the proactive
+        // engine as explicit, so it gets through even mid-game.
+        if (job.jobType === "reminder") proactive.offer({ reason: "reminder", explicit: true, payload });
         // Issue #423: a scheduled job's result should reach the user even
         // if they never reopen that job's chat session -- fire-and-forget,
         // same as the memory-turn write below.
-        notifyTray({
-          type: "cron",
-          title: `Cron: ${job.name}`,
-          text: assistantText.length > 200 ? `${assistantText.slice(0, 200)}...` : assistantText,
-          at: new Date().toISOString(),
-        }).catch(() => {});
+        else notifyTray(payload).catch(() => {});
         if (typeof deps.acpMemoryStore?.appendTurn !== "function") return;
         deps.acpMemoryStore
           .appendTurn({
@@ -117,6 +122,8 @@ module.exports = {
   description:
     "Run a script action or a full agent prompt on a fixed schedule (interval or daily-at-time), independent of chat or idle activity. Results are delivered as a chat turn in the job's session.",
   registerRoutes: registerCronSchedulerRoutes,
+  // #905: server.js's reminder tools share the routes' job list.
+  getScheduler,
   getHealth: (deps = {}) => {
     const cron = getScheduler(deps);
     const jobs = cron.listJobs();
