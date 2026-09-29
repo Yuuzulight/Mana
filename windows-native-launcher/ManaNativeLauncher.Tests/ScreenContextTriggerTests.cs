@@ -103,4 +103,17 @@ public class ScreenContextTriggerTests
     {
         Assert.Equal("hello there", ScreenContextTrigger.CleanTranscriptText("hello   there"));
     }
+
+    // #910
+    [Theory]
+    [InlineData("translate my screen", true)]
+    [InlineData("can you translate the party finder", true)]
+    [InlineData("what did that jp player just say?", true)]
+    [InlineData("what does this japanese mean", true)]
+    [InlineData("what did he say", false)]
+    [InlineData("i love japanese food", false)]
+    public void AsksToTranslate(string text, bool expected)
+    {
+        Assert.Equal(expected, ScreenContextTrigger.AsksToTranslate(text));
+    }
 }

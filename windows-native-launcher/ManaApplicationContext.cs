@@ -206,6 +206,8 @@ internal sealed class ManaApplicationContext : ApplicationContext
             ["interrupt"] = voiceLoop.InterruptSpeech,
             ["textAction"] = () => _ = TextActionForm.RunAsync(backendClient, text =>
                 quickEntry.OpenWith($"About \"{System.Text.RegularExpressions.Regex.Replace(text, @"\s+", " ")}\": ")),
+            // #910: a normal typed turn; its wording routes the screen read through JapaneseOcr.
+            ["translate"] = () => _ = voiceLoop.SubmitTypedCommandAsync("Translate my screen"),
         };
         globalHotkeys = new GlobalHotkeyListener(HotkeyBindings.Actions
             .Select(a => (a.Id, HotkeyBindings.Resolve(settings.Hotkeys, a), a.DisableEnvVar, hotkeyHandlers[a.Key]))
