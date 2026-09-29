@@ -32,6 +32,7 @@ function registerHooksRoutes(app, context = {}) {
         pathContains: req.body?.pathContains,
         command: req.body?.command,
         args: req.body?.args,
+        set: req.body?.set,
         reason: req.body?.reason,
       });
       return res.status(201).json(rule);
@@ -61,15 +62,18 @@ function registerHooksRoutes(app, context = {}) {
     }
   });
 
-  // #426 review: pause/resume a rule without deleting it -- only `enabled`
-  // is settable here, same narrow surface as the rest of this route file.
+  // #426 review: pause/resume a rule without deleting it ({ enabled } alone
+  // keeps its lastRun). #486: any other rule field edits the rule in place,
+  // validated the same way POST /hooks is.
   app.patch("/hooks/:id", (req, res) => {
     try {
       const id = requireString(req.params?.id, "id");
-      if (typeof req.body?.enabled !== "boolean") {
+      const body = req.body && typeof req.body === "object" ? req.body : {};
+      const editsFields = Object.keys(body).some((key) => key !== "enabled");
+      if ((body.enabled !== undefined || !editsFields) && typeof body.enabled !== "boolean") {
         throw new ValidationError("enabled must be a boolean");
       }
-      const rule = hooksStore.setRuleEnabled(id, req.body.enabled);
+      const rule = editsFields ? hooksStore.updateRule(id, body) : hooksStore.setRuleEnabled(id, body.enabled);
       if (!rule) {
         return res.status(404).json({ error: "hook rule not found" });
       }
@@ -78,8 +82,9 @@ function registerHooksRoutes(app, context = {}) {
       if (e instanceof ValidationError) {
         return sendValidationError(res, e);
       }
+      // Same as POST: a rule the store rejects is the caller's error.
       console.error(e);
-      return res.status(500).json({ error: String(e) });
+      return res.status(400).json({ error: e.message || String(e) });
     }
   });
 }

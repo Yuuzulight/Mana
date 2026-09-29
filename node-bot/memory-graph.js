@@ -238,7 +238,24 @@ function createMemoryGraph(options = {}) {
     db.close();
   }
 
-  return { reinforce, getNeighbors, close };
+  // Issue #641: the strongest edges overall, for the memory-graph view --
+  // bounded by the caller so the view never pulls the whole table.
+  const strongestEdgesStmt = db.prepare(`
+    SELECT node_a, node_b, weight, last_reinforced_at FROM memory_graph_edges
+    ORDER BY weight DESC, last_reinforced_at DESC
+    LIMIT ?
+  `);
+
+  function listStrongestEdges(limit) {
+    return strongestEdgesStmt.all(Math.max(1, Number(limit) || 1)).map((row) => ({
+      a: row.node_a,
+      b: row.node_b,
+      weight: row.weight,
+      lastReinforcedAt: row.last_reinforced_at,
+    }));
+  }
+
+  return { reinforce, getNeighbors, listStrongestEdges, close };
 }
 
 module.exports = {
