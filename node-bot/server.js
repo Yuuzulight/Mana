@@ -2379,6 +2379,7 @@ function registerRoutes(app, upload, deps = {}) {
         plainTextSecrets: (deps.plainTextSecretKeys || plainTextSecretKeys)(),
         memoryGraphHistory,
         chatModel: chatModelLabel(),
+        findLlamaServerBin: llamaServerRuntime.findLlamaServerBin,
       });
       return res.status(result.ok ? 200 : 503).json(result);
     } catch (error) {
@@ -2398,6 +2399,7 @@ function registerRoutes(app, upload, deps = {}) {
     doctorOptions: () => ({
       fishTtsWarmup: ttsRuntime.getFishWarmupStatus(),
       sessionSearchVectorEnabled: sessionSearchIndex.vectorEnabled(),
+      findLlamaServerBin: llamaServerRuntime.findLlamaServerBin,
     }),
   });
   if (!(process.env.NODE_ENV === "test" || Boolean(process.env.NODE_TEST_CONTEXT))) {

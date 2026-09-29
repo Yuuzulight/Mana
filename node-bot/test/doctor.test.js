@@ -113,6 +113,30 @@ test("doctor surfaces the injected hardware model recommendation", () => {
   assert.deepEqual(check.details.recommendation, fakeRecommendation);
 });
 
+test("doctor passes an auto-detected llama-server and only warns when none is found", () => {
+  const run = (findLlamaServerBin) =>
+    runDoctorChecks({
+      env: { MANA_ALLOW_REMOTE_AI: "0" },
+      paths: { dataDir: fs.mkdtempSync(path.join(os.tmpdir(), "mana-doctor-test-")) },
+      ports: [],
+      services: [],
+      versions: { node: "v22.19.0" },
+      zedCommandResolver: () => null,
+      findLlamaServerBin,
+    }).checks.find((c) => c.id === "llama-server-binary");
+
+  const found = run(() => "D:\\llama\\llama-server.exe");
+  assert.equal(found.status, "pass");
+  assert.match(found.message, /auto-detected/);
+  assert.equal(found.details.path, "D:\\llama\\llama-server.exe");
+
+  const missing = run(() => {
+    throw new Error("llama-server executable not found");
+  });
+  assert.equal(missing.status, "warn");
+  assert.match(missing.message, /auto-detection found none/);
+});
+
 function runDoctorForFishWarmup(fishTtsWarmup) {
   return runDoctorChecks({
     env: { MANA_ALLOW_REMOTE_AI: "0" },

@@ -136,6 +136,32 @@ function checkRequiredFile(id, label, filePath, missingConfigMessage) {
   });
 }
 
+// With LLAMA_SERVER_BIN unset, asks the runtime's own lookup (active build,
+// next to LLAMA_BIN, bundled), so an auto-detected server passes instead of
+// warning on every start.
+function checkLlamaServerBinary(env, findLlamaServerBin) {
+  const id = "llama-server-binary";
+  const label = "Llama server binary";
+  if (env.LLAMA_SERVER_BIN || !findLlamaServerBin) {
+    return checkRequiredFile(
+      id,
+      label,
+      env.LLAMA_SERVER_BIN || "",
+      "LLAMA_SERVER_BIN is not configured. Mana auto-detects the bundled llama-server.exe and falls back to one-shot llama-cli replies.",
+    );
+  }
+  try {
+    return makeCheck(id, label, "pass", `${label} found (auto-detected).`, { path: findLlamaServerBin() });
+  } catch (e) {
+    return makeCheck(
+      id,
+      label,
+      "warn",
+      "No llama-server.exe found (LLAMA_SERVER_BIN is unset and auto-detection found none). Replies fall back to one-shot llama-cli.",
+    );
+  }
+}
+
 // Reflects the same auto-detection server.js's actual whisper-cli
 // invocation uses (see whisper-discovery.js), not just whether the env
 // vars happen to be set -- a model dropped into tools/whisper/ by hand (or
@@ -772,12 +798,7 @@ function runDoctorChecks(options = {}) {
       env.LLAMA_MODEL || "",
       "LLAMA_MODEL is not configured. Local replies will use a placeholder.",
     ),
-    checkRequiredFile(
-      "llama-server-binary",
-      "Llama server binary",
-      env.LLAMA_SERVER_BIN || "",
-      "LLAMA_SERVER_BIN is not configured. Mana auto-detects the bundled llama-server.exe and falls back to one-shot llama-cli replies.",
-    ),
+    checkLlamaServerBinary(env, options.findLlamaServerBin),
     checkRequiredFile(
       "llama-vision-model",
       "Llama vision model",
