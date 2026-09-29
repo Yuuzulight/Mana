@@ -110,7 +110,12 @@ internal sealed class ManaApplicationContext : ApplicationContext
         agentActivityPanel = new AgentActivityPanel(backendClient);
 
         var vadModelPath = Path.Combine(rootDir, "windows-native-launcher", "assets", "vad", "silero_vad.onnx");
-        sileroVad = new SileroVadRunner(vadModelPath);
+        // #665: MANA_VAD_THRESHOLD (Electron's name) enters speech,
+        // MANA_VAD_EXIT_THRESHOLD leaves it.
+        sileroVad = new SileroVadRunner(
+            vadModelPath,
+            ReadFloatEnv("MANA_VAD_THRESHOLD", SileroVadRunner.DefaultThreshold),
+            ReadFloatEnv("MANA_VAD_EXIT_THRESHOLD", SileroVadRunner.DefaultExitThreshold));
         wakeWordClassifier = TryLoadWakeWordClassifier(
             rootDir,
             WakeWordClassifier.ResolveThreshold(Environment.GetEnvironmentVariable("MANA_WAKE_PREFILTER"), settings.WakePrefilter));
@@ -749,6 +754,11 @@ internal sealed class ManaApplicationContext : ApplicationContext
             return null;
         }
     }
+
+    private static float ReadFloatEnv(string name, float fallback) =>
+        float.TryParse(Environment.GetEnvironmentVariable(name), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var value) && value is > 0 and < 1
+            ? value
+            : fallback;
 
     internal static string FindRootDirectory()
     {
