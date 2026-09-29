@@ -1744,17 +1744,28 @@ test("#787 review: finishing an edit goal without any edit is not done, whatever
   assert.match(result.content, /^Not done yet: no edit was made yet/);
 });
 
-test("#787 review: a failing test run after the last edit is not done", async () => {
+test("#787 review: the model review is shown a failing test run after the last edit", async () => {
   const { result, reviewBodies } = await runGoalScript({
     tools: CODING_TOOLS,
     turns: [["coding__propose_edit"], ["coding__run_tests"], ["session_goal__finish"]],
-    reviews: [{ complete: true, missing: [] }],
+    reviews: [{ complete: false, missing: ["range.test.js still fails"] }],
     toolResult: codingResult({ passed: false }),
     options: { maxRounds: 3 },
   });
 
-  assert.equal(reviewBodies.length, 0);
-  assert.match(result.content, /^Not done yet: the last test run failed/);
+  assert.equal(reviewBodies.length, 1);
+  assert.ok(reviewBodies[0].messages[1].content.includes("Latest test run, after the last edit: FAILED\n# fail 1"));
+  assert.equal(result.content, "Not done yet: range.test.js still fails\n\nfinal answer");
+});
+
+test("#787 review: an edit made after the last test run is flagged as untested", async () => {
+  const { reviewBodies } = await runGoalScript({
+    tools: CODING_TOOLS,
+    turns: [["coding__run_tests"], ["coding__propose_edit"], ["session_goal__finish"]],
+    toolResult: codingResult({ passed: true }),
+  });
+
+  assert.ok(reviewBodies[0].messages[1].content.includes("Tests: not run since the last edit."));
 });
 
 test("#787 review: with an edit and passing tests the model review decides, and sees the results", async () => {

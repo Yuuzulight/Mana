@@ -1349,31 +1349,46 @@ function createLlamaServerRuntime(options = {}) {
     };
   }
 
-  // #787: facts the review can't be talked past. Measured live, the
+  // #787: what the run itself shows, for the review. Measured live, the
   // model-only review passed "fixed" with no edit made and with the tests
-  // still failing. ponytail: "is this an edit goal" is a verb regex -- a goal
-  // worded without one skips the no-edit check and relies on the model review.
+  // still failing. No edit on an edit goal is decided here; a failing test
+  // run goes to the model review with its output instead, since a suite can
+  // fail on something the goal doesn't cover. ponytail: "is this an edit
+  // goal" is a verb regex -- a goal worded without one skips the no-edit
+  // check and relies on the model review.
   const EDIT_GOAL_RE = /\b(fix|add|rename|change|update|implement|refactor|remove|delete|edit|replace|modify)\b/i;
-  function goalEvidenceGaps(goal, calls, toolNames) {
+  function goalEvidence(goal, calls, toolNames) {
     const lastIndex = (pred) => calls.reduce((found, c, i) => (pred(c) ? i : found), -1);
     const lastEdit = lastIndex((c) => c.name === CODING_EDIT_TOOL_NAME && c.status === "ok");
     const lastTest = lastIndex((c) => c.name === CODING_TEST_TOOL_NAME && typeof c.passed === "boolean");
-    const gaps = [];
-    if (lastEdit < 0 && toolNames.includes(CODING_EDIT_TOOL_NAME) && EDIT_GOAL_RE.test(goal)) {
-      gaps.push(`no edit was made yet (${CODING_EDIT_TOOL_NAME} never succeeded)`);
+    const gaps =
+      lastEdit < 0 && toolNames.includes(CODING_EDIT_TOOL_NAME) && EDIT_GOAL_RE.test(goal)
+        ? [`no edit was made yet (${CODING_EDIT_TOOL_NAME} never succeeded)`]
+        : [];
+    let tests = "";
+    if (lastTest >= 0 && lastTest > lastEdit) {
+      const output = (() => {
+        try {
+          return String(JSON.parse(calls[lastTest].result).output || "");
+        } catch (e) {
+          return "";
+        }
+      })();
+      tests = `Latest test run, after the last edit: ${calls[lastTest].passed ? "passed" : "FAILED"}\n${output.slice(-1500)}`;
+    } else if (toolNames.includes(CODING_TEST_TOOL_NAME)) {
+      tests = "Tests: not run since the last edit.";
     }
-    if (lastTest > lastEdit && !calls[lastTest].passed) gaps.push("the last test run failed");
-    return gaps;
+    return { gaps, tests };
   }
 
   // Issue #676: one schema-constrained call (same shape as repairToolCalls)
   // asking whether the draft actually does what was asked. Returns
   // {complete, missing[]}, or null when the check itself fails -- a broken
-  // review must never block or rewrite the answer. #787: evidence gaps
-  // decide first, and the model sees each call's actual result, not just
-  // that it ran.
+  // review must never block or rewrite the answer. #787: an evidence gap
+  // decides first; the model sees each call's actual result and the latest
+  // test run, not just that the calls ran.
   async function reviewGoalCompletion({ prompt, goal, toolCalls, toolNames, draft, maxTokens, profile }) {
-    const gaps = goalEvidenceGaps(goal, toolCalls, toolNames);
+    const { gaps, tests } = goalEvidence(goal, toolCalls, toolNames);
     if (gaps.length) return { complete: false, missing: gaps };
     const calls = toolCalls
       .map(
@@ -1391,11 +1406,11 @@ function createLlamaServerRuntime(options = {}) {
           messages: [
             {
               role: "system",
-              content: "You check whether a task was actually done as asked. Judge only from the tool calls, their results and the draft answer; a claim in the draft that no tool result backs is unverified. List each requested thing that is missing or unverified.",
+              content: "You check whether a task was actually done as asked. Judge only from the tool calls, their results and the draft answer; a claim in the draft that no tool result backs is unverified. If the latest test run failed on something the goal covers, that part is not done. List each requested thing that is missing or unverified.",
             },
             {
               role: "user",
-              content: `Request:\n${prompt}\n\nGoal:\n${goal}\n\nTool calls made:\n${calls}\n\nDraft answer:\n${draft}`,
+              content: `Request:\n${prompt}\n\nGoal:\n${goal}\n\nTool calls made:\n${calls}${tests ? `\n\n${tests}` : ""}\n\nDraft answer:\n${draft}`,
             },
           ],
           response_format: {

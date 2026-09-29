@@ -196,10 +196,31 @@ test("run_tests asks first, and runs the detected command in the workspace once 
   assert.deepEqual(ran, [{ command: "npm test", cwd: path.resolve(ws) }]);
 });
 
-test("run_tests refuses a dir outside the workspace", async () => {
+test("run_tests refuses a path outside the workspace", async () => {
   const source = createCodingToolSource({ editors: fakeEditors({ workspace: { path: tempDir() } }), approvalGate: fakeGate({ granted: true }) });
-  const result = JSON.parse(await source.executeTool(CODING_TEST_TOOL_NAME, { dir: ".." }));
-  assert.deepEqual(result, { status: "error", error: "dir must be inside the workspace" });
+  const result = JSON.parse(await source.executeTool(CODING_TEST_TOOL_NAME, { path: ".." }));
+  assert.deepEqual(result, { status: "error", error: "path must be inside the workspace" });
+});
+
+// Live, models asked for run_tests("test") and run_tests("test/range.test.js").
+test("run_tests finds the project above a subfolder, and narrows npm test to one file", async () => {
+  const ws = tempDir();
+  fs.writeFileSync(path.join(ws, "package.json"), JSON.stringify({ scripts: { test: "node --test" } }));
+  fs.mkdirSync(path.join(ws, "test"));
+  fs.writeFileSync(path.join(ws, "test", "range.test.js"), "");
+  const ran = [];
+  const runTests = async (command, cwd) => {
+    ran.push({ command, cwd });
+    return { exitCode: 0, timedOut: false, output: "" };
+  };
+  const source = createCodingToolSource({ editors: fakeEditors({ workspace: { path: ws } }), approvalGate: fakeGate({ granted: true }), runTests });
+
+  await source.executeTool(CODING_TEST_TOOL_NAME, { path: "test" });
+  await source.executeTool(CODING_TEST_TOOL_NAME, { path: "test/range.test.js" });
+  assert.deepEqual(ran, [
+    { command: "npm test", cwd: path.resolve(ws) },
+    { command: 'npm test -- "test/range.test.js"', cwd: path.resolve(ws) },
+  ]);
 });
 
 test("runTestCommand kills the run on timeout and keeps only the output's tail", async () => {

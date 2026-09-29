@@ -56,14 +56,14 @@ const TOOL_SCHEMAS = [
     function: {
       name: CODING_TEST_TOOL_NAME,
       description:
-        "Run the active workspace's tests (npm test, dotnet test, pytest or unittest -- picked from what's in the folder) and get the exit code and output. Asks the user first unless they've allowed it for this session.",
+        "Run the active workspace's tests (npm test, dotnet test, pytest or unittest -- picked from the project files) and get the exit code and output. Asks the user first unless they've allowed it for this session.",
       parameters: {
         type: "object",
         properties: {
-          dir: {
+          path: {
             type: "string",
             description:
-              "Optional subfolder of the workspace to run the tests in, e.g. a Python package folder. Defaults to the workspace root.",
+              "Optional test file or folder inside the workspace. A test file runs just that file where the runner allows it (npm test, pytest); a folder runs its project's tests. Defaults to the whole workspace.",
           },
         },
       },
@@ -190,22 +190,44 @@ function createCodingToolSource(options = {}) {
     if (!workspace || !approvalGate) {
       return JSON.stringify({ status: "error", error: "no active workspace to run tests in" });
     }
-    const cwd = path.resolve(workspace.path, String(args?.dir || "."));
-    const rel = path.relative(workspace.path, cwd);
+    const root = path.resolve(workspace.path);
+    const target = path.resolve(root, String(args?.path || "."));
+    const rel = path.relative(root, target);
     if (rel.startsWith("..") || path.isAbsolute(rel)) {
-      return JSON.stringify({ status: "error", error: "dir must be inside the workspace" });
+      return JSON.stringify({ status: "error", error: "path must be inside the workspace" });
     }
-    let command;
+    // The nearest folder, from the target up to the workspace root, with a
+    // test command: models ask for "test" or "test/x.test.js", not the root.
+    let file = null;
+    let cwd = target;
+    let command = null;
     try {
-      command = detectTestCommand(cwd, { env });
+      if (fs.statSync(target).isFile()) {
+        file = target;
+        cwd = path.dirname(target);
+      }
+      for (;;) {
+        command = detectTestCommand(cwd, { env });
+        if (command || cwd === root || path.dirname(cwd) === cwd) break;
+        cwd = path.dirname(cwd);
+      }
     } catch (e) {
-      return JSON.stringify({ status: "error", error: `cannot read ${args?.dir || "the workspace"}: ${e.message}` });
+      return JSON.stringify({ status: "error", error: `cannot read ${args?.path || "the workspace"}: ${e.message}` });
     }
     if (!command) {
       return JSON.stringify({
         status: "error",
         error: "no test command found (looked for package.json scripts.test, a .sln/.csproj, pytest config, test*.py)",
       });
+    }
+    // One file, where the runner takes one; the name goes into a shell
+    // command line, so only plain path characters.
+    if (file && (command === "npm test" || command === "python -m pytest -q")) {
+      const name = path.relative(cwd, file).split(path.sep).join("/");
+      if (!/^[\w./ -]+$/.test(name)) {
+        return JSON.stringify({ status: "error", error: "unsupported characters in the test file name" });
+      }
+      command = command === "npm test" ? `npm test -- "${name}"` : `${command} "${name}"`;
     }
     const outcome = await approvalGate.requestApproval("coding-run-tests", {
       summary: `Run tests: ${command} (in ${cwd})`,
