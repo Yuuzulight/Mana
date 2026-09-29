@@ -178,6 +178,20 @@ internal sealed class AvatarGaze
     public static float NodOffset(double sinceSeconds) =>
         sinceSeconds is >= 0 and < NodSeconds ? -6f * MathF.Sin(MathF.PI * (float)(sinceSeconds / NodSeconds)) : 0f;
 
+    // Q34: clicking her -- a quick attentive look: (pitch, roll) degrees to
+    // add, a small lift and a head tilt toward you that ease in and back
+    // out, sinceSeconds after the click; (0, 0) outside it. The eyes come to
+    // the viewer through GazeMode.Attentive for the same window.
+    public const float AttentiveSeconds = 1.2f;
+    public static (float Pitch, float Roll) AttentiveLookOffset(double sinceSeconds)
+    {
+        if (sinceSeconds is not (>= 0 and < AttentiveSeconds))
+        {
+            return (0f, 0f);
+        }
+        var k = MathF.Sin(MathF.PI * (float)(sinceSeconds / AttentiveSeconds));
+        return (3f * k, 7f * k);
+    }
 
     private bool StartSaccade(GazeMode mode)
     {
