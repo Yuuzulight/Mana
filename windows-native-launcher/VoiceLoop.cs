@@ -255,6 +255,18 @@ internal sealed class VoiceLoop : IDisposable
         }
     }
 
+    // #662: clicking Mana on the overlay counts as the wake word -- listening
+    // comes on if it was off, and the next thing said is a command. Set
+    // after Start(), which resets awake.
+    public void Wake()
+    {
+        if (!IsListening)
+        {
+            ToggleListening();
+        }
+        awake = IsListening;
+    }
+
     public void Start()
     {
         if (capture is not null)
