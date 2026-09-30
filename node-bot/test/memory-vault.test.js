@@ -70,8 +70,9 @@ test("Mana's changes reach the note; its own writes never come back as edits (lo
   assert.equal(t.store.getFactHistory("gpu").length, historyBefore + 1);
 });
 
-test("editing an existing fact's note applies it directly as a vault edit", () => {
-  const t = setup();
+test("editing an existing fact's note applies it directly as a vault edit; a pin change asks first", () => {
+  const approvals = [];
+  const t = setup({ approvals });
   t.store.rememberFact({ key: "gpu", text: "RTX 4080.", origin: { kind: "user_stated" } });
   t.vault.sync();
   t.write("Facts/gpu.md", t.read("Facts/gpu.md").replace("pinned: false", "pinned: true").replace("RTX 4080.", "RTX 5080,\nwater cooled."));
@@ -80,12 +81,23 @@ test("editing an existing fact's note applies it directly as a vault edit", () =
   const gpu = t.fact("gpu");
   assert.equal(gpu.text, "RTX 5080, water cooled.");
   assert.equal(gpu.status, "active");
-  assert.equal(gpu.pinned, true);
   assert.equal(gpu.origin.kind, "vault_edit");
   assert.equal(gpu.history.at(-1).text, "RTX 4080.");
   // Rewritten in Mana's own form, then quiet.
   assert.equal(parseNote(t.read("Facts/gpu.md")).header.source, "your vault");
   assert.equal(t.vault.sync().applied, 0);
+
+  // Pinned means in every prompt: not until the user's OK in Mana.
+  assert.equal(gpu.pinned, undefined);
+  assert.equal(parseNote(t.read("Facts/gpu.md")).header.pinned, false);
+  assert.equal(approvals.length, 1);
+  assert.equal(approvals[0].type, "memory-vault-pin");
+  assert.equal(approvals[0].forceReview, true);
+  assert.deepEqual(approvals[0].payload, { key: "gpu", pinned: true });
+  // Approving runs server.js's executor, setFactPinned.
+  t.store.setFactPinned(approvals[0].payload.key, approvals[0].payload.pinned);
+  t.vault.sync();
+  assert.equal(parseNote(t.read("Facts/gpu.md")).header.pinned, true);
 });
 
 test("a note keeps its own header lines, its line breaks and a BOM doesn't break it", () => {
@@ -95,14 +107,13 @@ test("a note keeps its own header lines, its line breaks and a BOM doesn't break
   const mine = "tags:\n  - hardware\n  - pc\naliases: [graphics card]\n# my comment\ncssclasses:\n- wide";
   t.write(
     "Facts/gpu.md",
-    `\uFEFF${t.read("Facts/gpu.md").replace("pinned: false", `pinned: true\n${mine}`).replace("RTX 4080.", "RTX 5080,\n\nwater cooled.")}`,
+    `\uFEFF${t.read("Facts/gpu.md").replace("pinned: false", `pinned: false\n${mine}`).replace("RTX 4080.", "RTX 5080,\n\nwater cooled.")}`,
   );
   t.vault.sync();
   assert.equal(t.fact("gpu").text, "RTX 5080, water cooled.");
-  assert.equal(t.fact("gpu").pinned, true);
   let note = t.read("Facts/gpu.md");
   assert.ok(note.includes(`${mine}\n---\n\nRTX 5080,\n\nwater cooled.\n`));
-  assert.match(note, /^---\nstatus: active\npinned: true\n/);
+  assert.match(note, /^---\nstatus: active\npinned: false\n/);
   assert.equal(parseNote(note).header.tags, undefined);
   assert.equal(t.vault.sync().applied, 0);
 
@@ -139,6 +150,7 @@ test("a brand-new note becomes a pending fact that asks for the user's OK", () =
   assert.equal(raid.status, "pending");
   assert.equal(raid.pinned, undefined);
   assert.equal(raid.origin.kind, "vault_edit");
+  assert.doesNotMatch(t.store.getRelatedFacts("when is raid night"), /Friday/);
   assert.equal(fs.existsSync(t.note("Facts/raid night.md")), false);
   assert.equal(parseNote(t.read("Facts/Pending/raid night.md")).header.status, "pending");
   assert.equal(approvals.length, 1);
