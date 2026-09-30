@@ -33,7 +33,10 @@ internal sealed class ManaApplicationContext : ApplicationContext
     private readonly ArtifactViewerForm artifactViewer;
     private readonly QuickEntryForm quickEntry;
     private readonly SessionListForm sessionListForm;
+    private readonly ChatView chatLog;
     private readonly SynchronizationContext uiContext;
+    // #991: the backend restart in progress, if any; a second request joins it.
+    private Task? backendRestart;
     private readonly IDisposable showRequests;
     // #689: Doctor's latest warn/fail ("label: message"), kept in the tray
     // tooltip until the Doctor panel is opened.
@@ -134,7 +137,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
         // itself (to embed it), not the other way around.
         // #686: also VoiceLoop's artifact sink, so it can re-render Mana's
         // bubble from the final reply text and give an artifact its button.
-        var chatLog = new ChatView { Artifacts = artifactViewer.Add };
+        chatLog = new ChatView { Artifacts = artifactViewer.Add };
         // #522: ScreenContextReader owns its own min-interval/keyword-gate
         // caching internally, so this is just held and passed straight
         // through to VoiceLoop, same as the other optional collaborators
@@ -268,6 +271,8 @@ internal sealed class ManaApplicationContext : ApplicationContext
         avatarOverlay.Clicked += voiceLoop.Wake; // #662
         trayNotifications.Start();
         visionCaptureClient.Start();
+        // #991: node-bot's own /restart.
+        processManager.BackendRestartRequested += () => RunOnUi(() => _ = RestartBackendAsync());
 
         // Quick rundown: start the existing local services, but keep this host native and small.
         _ = StartServicesAsync();
@@ -424,6 +429,10 @@ internal sealed class ManaApplicationContext : ApplicationContext
         menu.Opening += (_, _) => listeningItem.Text = voiceLoop.IsListening ? "Stop listening" : "Start listening";
         menu.Items.Add(listeningItem);
         menu.Items.Add(new ToolStripSeparator());
+        if (processManager.IsBackendLocal)
+        {
+            menu.Items.Add("Restart backend", null, (_, _) => _ = RestartBackendAsync()); // #991
+        }
         if (processManager.IsBackendLocal && processManager.UsesFishSpeech)
         {
             // A remote backend's Fish Speech isn't this launcher's to restart,
@@ -867,6 +876,70 @@ internal sealed class ManaApplicationContext : ApplicationContext
             "Mana Status",
             MessageBoxButtons.OK,
             processManager.IsFishSpeechAvailable ? MessageBoxIcon.Information : MessageBoxIcon.Warning);
+    }
+
+    // #991: node-bot restarts under a running launcher -- windows, avatar,
+    // voice loop, session and LauncherKey all stay. If the new one doesn't
+    // come up it says so once and keeps trying every 30 s until it does (or
+    // Mana exits); rolling the code back would mean git surgery on the live
+    // checkout, so it doesn't. UI thread only.
+    private Task RestartBackendAsync() =>
+        backendRestart is { IsCompleted: false } ? backendRestart : backendRestart = RunBackendRestartAsync();
+
+    private async Task RunBackendRestartAsync()
+    {
+        if (!processManager.CanRestartBackend)
+        {
+            ShowBalloon("Mana's backend wasn't restarted", "It was already running when Mana started, so it isn't mine to restart.", ToolTipIcon.Warning);
+            return;
+        }
+        var done = new TaskCompletionSource();
+        voiceLoop.BackendRestart = done.Task;
+        var reported = false;
+        try
+        {
+            while (!isShuttingDown)
+            {
+                SetTrayStatus("Mana - restarting backend");
+                bool healthy;
+                try
+                {
+                    healthy = await processManager.RestartBackendAsync(TimeSpan.FromSeconds(90));
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"ManaApplicationContext: backend restart failed. {ex.Message}");
+                    healthy = false;
+                }
+                if (healthy)
+                {
+                    if (reported)
+                    {
+                        chatLog.AppendManaMessage("My backend is back.");
+                    }
+                    await RefreshTrayStatusAsync();
+                    return;
+                }
+                if (!reported)
+                {
+                    reported = true;
+                    ShowBalloon("Mana's backend didn't come back", "I'll keep trying every 30 seconds. The backend log has the details.", ToolTipIcon.Error);
+                    chatLog.AppendManaMessage("My backend didn't come back after that restart. I'll keep trying every 30 seconds; the backend log has the details.");
+                }
+                await Task.Delay(TimeSpan.FromSeconds(30));
+            }
+        }
+        finally
+        {
+            voiceLoop.BackendRestart = null;
+            done.SetResult();
+        }
+    }
+
+    private void ShowBalloon(string title, string text, ToolTipIcon icon)
+    {
+        balloonClicked = null;
+        trayIcon.ShowBalloonTip(8000, title, text, icon);
     }
 
     private void OpenProjectFolder()
