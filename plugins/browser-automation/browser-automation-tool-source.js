@@ -44,6 +44,10 @@ const TOOL_SCHEMAS = [
     direction: { type: "string", enum: ["down", "up"] },
   }, ["direction"]),
   tool("back", "Go back to the previous page."),
+  // #1139: the user takes over in a visible window and presses Done.
+  tool("hand_over", "Ask the user to take over the browser: for a login, a CAPTCHA, a payment or account change, or when you're stuck. You never type passwords or pay.", {
+    reason: { type: "string", description: "What they need to do, short." },
+  }, ["reason"]),
 ];
 const ACTIONS = TOOL_SCHEMAS.map((t) => t.function.name.slice(BROWSER_TOOL_PREFIX.length));
 
@@ -60,7 +64,11 @@ function describeForModel(result) {
     lines.push("The elements didn't change.");
   }
   if (result.text !== undefined) lines.push("", "Page text (start):", result.text);
-  return wrapUntrusted("browser page", lines.join("\n"));
+  const framed = wrapUntrusted("browser page", lines.join("\n"));
+  // Outside the frame: this is Mana's code talking, not the page.
+  return result.sensitive
+    ? `${framed}\nThis page asks for ${result.sensitive}. That's the user's to do: don't click or type here. The Browser panel now asks them to take over; tell them and wait.`
+    : framed;
 }
 
 function isBrowserAutomationToolName(name) {
@@ -79,6 +87,8 @@ function createBrowserAutomationToolSource(options = {}) {
   const approvalGate = options.approvalGate;
   const sessionDeps = options.sessionDeps || {};
   const activityLog = options.activityLog || createBrowserActivityLog();
+  // #1139: flags "she needs you" in the Browser panel (plugin index.js).
+  const requestHandOver = options.requestHandOver || (() => {});
 
   if (!approvalGate) {
     throw new Error("an approvalGate is required");
@@ -98,7 +108,7 @@ function createBrowserAutomationToolSource(options = {}) {
       // failed tool call (see tool-policy.js's ToolPolicyError handling),
       // rather than blocking this call on a human decision.
       const result = await approvalGate.requestApproval(APPROVAL_ACTION_TYPE, {
-        summary: "Allow Mana to use browser-automation (open, read, click, type, select, scroll, back) as a tool during replies",
+        summary: "Allow Mana to use browser-automation (open, read, click, type, select, scroll, back, hand over) as a tool during replies",
         payload: null,
       });
       throw new Error(
@@ -114,6 +124,11 @@ function createBrowserAutomationToolSource(options = {}) {
     }
 
     // #1137: her page loads images only while the Browser panel watches.
+    if (action === "hand_over") {
+      requestHandOver(args?.reason);
+      activityLog.recordActivity({ action, args, status: "ok" });
+      return "The Browser panel now asks the user to take over. Tell them what's needed and wait; once they press Done, the browser is yours again with their login kept.";
+    }
     const session = await getSession({ ...sessionDeps, isWatched: activityLog.isWatched });
     let result;
     try {
@@ -135,6 +150,7 @@ function createBrowserAutomationToolSource(options = {}) {
 
     activityLog.recordActivity({ action, args, status: "ok" });
     activityLog.recordPage(result);
+    if (result.sensitive) requestHandOver(`This page asks for ${result.sensitive}.`);
     // Screenshots are for the Browser panel only, taken while it's on
     // screen. Best-effort: a capture failure (page mid-navigation, tab
     // closed) must never break the real tool call it happened alongside.

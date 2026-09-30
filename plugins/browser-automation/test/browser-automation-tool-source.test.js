@@ -22,21 +22,23 @@ function createTempDir() {
 // createBrowserSession's real logic runs unmodified; only the page is fake.
 function createFakePage(calls = []) {
   let currentUrl = "about:blank";
+  let page;
   const locator = (selector) => ({
     click: async () => calls.push(["click", selector]),
     fill: async (text) => calls.push(["fill", selector, text]),
     press: async (key) => calls.push(["press", selector, key]),
     selectOption: async (value) => calls.push(["select", selector, value]),
   });
-  return {
+  page = {
+    sensitive: null,
     async goto(url) {
       currentUrl = url;
     },
     async ariaSnapshot() {
       return '- generic [ref=e1]:\n  - button "Go" [ref=e2] [cursor=pointer]';
     },
-    async evaluate() {
-      return "page text";
+    async evaluate(fn) {
+      return fn.name === "sensitiveInPage" ? page.sensitive : "page text";
     },
     locator,
     mouse: { move: async () => {}, wheel: async (x, y) => calls.push(["wheel", y]) },
@@ -53,6 +55,7 @@ function createFakePage(calls = []) {
       return Buffer.from("fake-jpeg-bytes");
     },
   };
+  return page;
 }
 
 function createSource(overrides = {}) {
@@ -60,7 +63,8 @@ function createSource(overrides = {}) {
   const { createBrowserSession } = require("../browser-automation");
   const session = overrides.session || createBrowserSession({ page: createFakePage() });
   const getSession = overrides.getSession || (async () => session);
-  return { source: createBrowserAutomationToolSource({ getSession, approvalGate }), approvalGate, session };
+  const requestHandOver = overrides.requestHandOver;
+  return { source: createBrowserAutomationToolSource({ getSession, approvalGate, requestHandOver }), approvalGate, session };
 }
 
 test("listToolSchemas exposes navigate/snapshot/click/type as OpenAI-shaped tool schemas", () => {
@@ -71,6 +75,7 @@ test("listToolSchemas exposes navigate/snapshot/click/type as OpenAI-shaped tool
     [
       "browser_automation__back",
       "browser_automation__click",
+      "browser_automation__hand_over",
       "browser_automation__navigate",
       "browser_automation__scroll",
       "browser_automation__select",
@@ -251,10 +256,10 @@ test("#1137: executeTool tells the session whether the Browser panel is watching
   assert.equal(seenDeps.isWatched(), true);
 });
 
-async function approvedSource(calls) {
+async function approvedSource(calls, options = {}) {
   const { createBrowserSession } = require("../browser-automation");
-  const session = createBrowserSession({ page: createFakePage(calls) });
-  const { source, approvalGate } = createSource({ session });
+  const session = createBrowserSession({ page: options.page || createFakePage(calls) });
+  const { source, approvalGate } = createSource({ session, requestHandOver: options.requestHandOver });
   await source.executeTool("browser_automation__snapshot", {}).catch(() => {});
   await approvalGate.decide(approvalGate.listPending()[0].id, "always-allow");
   return source;
@@ -306,4 +311,35 @@ test("#1138: describeForModel lists only the changed elements after an action on
   const text = describeForModel({ url: "https://a.test/", title: "A", added: ['button "Save" [ref=e9]'], removed: ['link "Edit" [ref=e4]'] });
   assert.match(text, /Changed elements \(the rest are as in the last snapshot\):\nnew: button "Save" \[ref=e9\]\ngone: link "Edit" \[ref=e4\]/);
   assert.doesNotMatch(text, /Page text/);
+});
+
+test("#1139: hand_over asks the user in the Browser panel without touching the browser", async () => {
+  const asked = [];
+  let sessions = 0;
+  const { source, approvalGate } = createSource({
+    requestHandOver: (reason) => asked.push(reason),
+    getSession: async () => {
+      sessions += 1;
+      throw new Error("the browser isn't needed to ask");
+    },
+  });
+  await source.executeTool("browser_automation__hand_over", { reason: "x" }).catch(() => {});
+  await approvalGate.decide(approvalGate.listPending()[0].id, "always-allow");
+
+  const reply = await source.executeTool("browser_automation__hand_over", { reason: "Log in to the shop" });
+  assert.match(reply, /asks the user to take over/);
+  assert.deepEqual(asked, ["Log in to the shop"]);
+  assert.equal(sessions, 0);
+  assert.equal(source.activityLog.getActivity().log[0].summary, "Asking you to take over: Log in to the shop");
+});
+
+test("#1139: landing on a password page flags it for the user, with a note outside the page's frame", async () => {
+  const asked = [];
+  const page = createFakePage();
+  page.sensitive = "a password";
+  const source = await approvedSource(undefined, { page, requestHandOver: (reason) => asked.push(reason) });
+  const result = await source.executeTool("browser_automation__navigate", { url: "https://shop.test/login" });
+  assert.match(result, /<\/untrusted-[0-9a-f]{12}>\nThis page asks for a password\. That's the user's to do/);
+  assert.deepEqual(asked, ["This page asks for a password."]);
+  await assert.rejects(() => source.executeTool("browser_automation__type", { ref: "e2", text: "hunter2" }), /so it's the user's to do/);
 });

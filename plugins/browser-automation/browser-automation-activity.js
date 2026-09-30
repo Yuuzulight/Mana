@@ -18,6 +18,7 @@ function describeBrowserAction(action, args) {
   if (action === "select") return `Choosing "${args?.value ?? ""}" in element ${args?.ref ?? "?"}`;
   if (action === "scroll") return `Scrolling ${args?.direction || "down"}`;
   if (action === "back") return "Going back";
+  if (action === "hand_over") return `Asking you to take over: ${args?.reason || "she needs you"}`;
   return action;
 }
 

@@ -37,6 +37,7 @@ const CHECK_EVERY_MS = 30 * 1000;
 
 let session = null;
 let context = null;
+let activePage = null;
 let starting = null;
 let closing = null;
 let checkTimer = null;
@@ -44,6 +45,12 @@ let lastUsedAt = 0;
 // The latest caller's deps: the game/RAM gates, the clock, and whether
 // the rail's Browser panel is watching.
 let gateDeps = {};
+// #1139: while I've taken over, the visible Edge window on her profile;
+// where she picks up after Done; and why she asked me to take over.
+let takenOver = null;
+let opening = false;
+let resumeUrl = null;
+let needsYou = null;
 
 // Why her browser mustn't run right now, or null -- self-work's gates.
 function blocker(deps) {
@@ -54,6 +61,7 @@ function blocker(deps) {
 
 async function getSession(deps = {}) {
   gateDeps = deps;
+  if (takenOver || opening) throw new Error("the user has the browser right now; wait until they press Done");
   const blocked = blocker(deps);
   if (blocked) {
     await closeSession();
@@ -65,7 +73,8 @@ async function getSession(deps = {}) {
   return starting;
 }
 
-async function startSession(deps) {
+// Mana's profile in installed Edge: headless for her, visible for me.
+async function launch(deps, options) {
   const env = deps.env || process.env;
   // #670: the browser is its own program, outside node-bot's connection
   // guard, and any page can pull from the internet.
@@ -80,10 +89,14 @@ async function startSession(deps) {
   // playwright-core lives in node-bot's packages; a bare require from this
   // folder never found it.
   const chromium = deps.chromium || require("../../node-bot/node_modules/playwright-core").chromium;
-  const headless = env.MANA_BROWSER_HEADLESS !== "0";
   // A profile is locked while any browser has it open.
   await closing;
-  const ctx = await chromium.launchPersistentContext(PROFILE_DIR, { executablePath, headless, args: LAUNCH_ARGS });
+  return chromium.launchPersistentContext(PROFILE_DIR, { executablePath, args: LAUNCH_ARGS, ...options });
+}
+
+async function startSession(deps) {
+  const env = deps.env || process.env;
+  const ctx = await launch(deps, { headless: env.MANA_BROWSER_HEADLESS !== "0" });
   // Edge went away under us (crashed, killed): start fresh next call.
   ctx.on("close", () => context === ctx && forget());
   let page;
@@ -96,15 +109,66 @@ async function startSession(deps) {
         ? route.abort()
         : route.continue(),
     );
+    // #1139: after I hand back, she carries on where I left off.
+    if (resumeUrl) await page.goto(resumeUrl).catch(() => {});
+    resumeUrl = null;
   } catch (e) {
     await ctx.close().catch(() => {});
     throw e;
   }
   context = ctx;
+  activePage = page;
   session = createBrowserSession({ page });
   checkTimer = setInterval(checkSession, CHECK_EVERY_MS);
   checkTimer.unref?.();
   return session;
+}
+
+// #1139: Chromium can't turn a headless session visible, so Take over
+// closes hers and opens the same profile as a normal Edge window at her
+// page (or fallbackUrl, the page the Browser panel shows). I do the login,
+// CAPTCHA or payment there myself; nothing I type goes to the model. Not
+// gated on games or RAM: I asked for it.
+async function takeOver(deps = {}, fallbackUrl = null) {
+  if (takenOver || opening) return;
+  opening = true;
+  try {
+    let url = activePage ? await activePage.url() : null;
+    if (!/^https?:/i.test(url || "")) url = /^https?:/i.test(fallbackUrl || "") ? fallbackUrl : null;
+    await closeSession();
+    // No viewport emulation (the page fits the window), and no "controlled
+    // by automated software" flag, which some sign-in pages refuse.
+    const ctx = await launch(deps, { headless: false, viewport: null, ignoreDefaultArgs: ["--enable-automation"] });
+    takenOver = ctx;
+    needsYou = null;
+    resumeUrl = url;
+    // Closing the window myself counts as Done.
+    ctx.on("close", () => takenOver === ctx && (takenOver = null));
+    const page = ctx.pages()[0] || (await ctx.newPage());
+    if (url) await page.goto(url).catch(() => {});
+  } finally {
+    opening = false;
+  }
+}
+
+// Done: the window closes; her next call reopens the profile headless (my
+// login kept) at the page I finished on.
+async function handBack() {
+  const ctx = takenOver;
+  if (!ctx) return;
+  const page = ctx.pages()[0];
+  if (page && /^https?:/i.test(await page.url())) resumeUrl = await page.url();
+  takenOver = null;
+  closing = ctx.close().catch(() => {});
+  await closing;
+}
+
+function requestHandOver(reason) {
+  needsYou = String(reason || "she needs you").slice(0, 200);
+}
+
+function takeOverStatus() {
+  return { active: Boolean(takenOver || opening), needsYou };
 }
 
 // Closes her browser after IDLE_CLOSE_MS without a call, and at once when
@@ -119,6 +183,7 @@ function forget() {
   clearInterval(checkTimer);
   checkTimer = null;
   context = null;
+  activePage = null;
   session = null;
 }
 
@@ -189,8 +254,27 @@ function registerBrowserAutomationRoutes(app, deps = {}) {
 
   app.post("/browser/close", async (req, res) => {
     if (!requireLocal(req, res)) return;
+    needsYou = null;
     await closeSession();
     return res.json({ ok: true });
+  });
+
+  // #1139: the Browser panel's Take over and Done.
+  const checkAdminAuth = deps.checkAdminAuth || (() => true);
+  app.post("/browser/take-over", async (req, res) => {
+    if (!requireLocal(req, res) || !checkAdminAuth(req, res)) return;
+    try {
+      await takeOver(deps, req.body?.url);
+      return res.json(takeOverStatus());
+    } catch (e) {
+      return res.status(400).json({ error: e.message });
+    }
+  });
+
+  app.post("/browser/hand-back", async (req, res) => {
+    if (!requireLocal(req, res) || !checkAdminAuth(req, res)) return;
+    await handBack();
+    return res.json(takeOverStatus());
   });
 }
 
@@ -221,6 +305,10 @@ module.exports = {
   resolveExecutablePath,
   checkSession,
   closeSession,
+  takeOver,
+  handBack,
+  requestHandOver,
+  takeOverStatus,
   PROFILE_DIR,
   IDLE_CLOSE_MS,
   // Test-only escape hatch to reset the module-level singleton between
@@ -230,5 +318,9 @@ module.exports = {
     starting = null;
     closing = null;
     gateDeps = {};
+    takenOver = null;
+    opening = false;
+    resumeUrl = null;
+    needsYou = null;
   },
 };

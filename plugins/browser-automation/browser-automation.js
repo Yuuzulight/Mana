@@ -39,6 +39,25 @@ function extractTextInPage(maxChars) {
   return (document.body?.innerText || "").trim().replace(/\n{3,}/g, "\n\n").slice(0, maxChars);
 }
 
+// #1139: a page asking for a password or payment details is mine: she
+// never types credentials or pays. Runs in the page; why, or null.
+// ponytail: field and URL heuristics; a card form in a provider's iframe we
+// don't list, on a URL without these words, slips past -- add it here.
+function sensitiveInPage() {
+  const has = (selector) => Boolean(document.querySelector(selector));
+  if (has('input[type="password" i], [autocomplete~="current-password"], [autocomplete~="new-password"], [autocomplete~="one-time-code"]')) {
+    return "a password";
+  }
+  if (
+    has('[autocomplete*="cc-"], input[name*="cardnumber" i], input[name*="card_number" i], input[name*="cvc" i], input[name*="cvv" i]') ||
+    has('iframe[src*="stripe.com"], iframe[src*="paypal.com"], iframe[src*="braintree"], iframe[src*="adyen"]') ||
+    /checkout|payment|billing/i.test(location.pathname)
+  ) {
+    return "payment details";
+  }
+  return null;
+}
+
 // "e5", or the model's "[ref=e5]" / "ref=e5" -- nothing else reaches the
 // selector.
 function refSelector(ref) {
@@ -58,16 +77,17 @@ function createBrowserSession(options = {}) {
   let last = null;
 
   async function snapshot() {
-    const [aria, text, title, url] = await Promise.all([
+    const [aria, text, title, url, sensitive] = await Promise.all([
       page.ariaSnapshot({ mode: "ai", depth: SNAPSHOT_DEPTH }),
       page.evaluate(extractTextInPage, maxTextChars),
       page.title(),
       page.url(),
+      page.evaluate(sensitiveInPage),
     ]);
     const all = interactiveElements(aria);
     const elements = all.slice(0, MAX_ELEMENTS);
     if (all.length > elements.length) elements.push(`(${all.length - elements.length} more not shown)`);
-    last = { url, title, elements, text };
+    last = { url, title, elements, text, ...(sensitive ? { sensitive } : {}) };
     return last;
   }
 
@@ -88,6 +108,7 @@ function createBrowserSession(options = {}) {
       added,
       removed,
       ...(now.text !== before.text ? { text: now.text } : {}),
+      ...(now.sensitive ? { sensitive: now.sensitive } : {}),
     };
   }
 
@@ -105,13 +126,24 @@ function createBrowserSession(options = {}) {
     return snapshot();
   }
 
+  // Checked fresh before every click, type and select: the page may have
+  // changed since her last look.
+  async function refuseIfSensitive() {
+    const reason = await page.evaluate(sensitiveInPage);
+    if (reason) {
+      throw new Error(`this page asks for ${reason}, so it's the user's to do: don't act on it, hand it over (browser_automation__hand_over)`);
+    }
+  }
+
   async function click(ref) {
+    await refuseIfSensitive();
     await page.locator(refSelector(ref)).click({ timeout: ACTION_TIMEOUT_MS });
     return afterAction();
   }
 
   // Replaces the field's text; submit presses Enter after.
   async function type(ref, text, submit = false) {
+    await refuseIfSensitive();
     const field = page.locator(refSelector(ref));
     await field.fill(String(text ?? ""), { timeout: ACTION_TIMEOUT_MS });
     if (submit) await field.press("Enter", { timeout: ACTION_TIMEOUT_MS });
@@ -120,6 +152,7 @@ function createBrowserSession(options = {}) {
 
   // An option's label or value.
   async function select(ref, value) {
+    await refuseIfSensitive();
     await page.locator(refSelector(ref)).selectOption(String(value ?? ""), { timeout: ACTION_TIMEOUT_MS });
     return afterAction();
   }
@@ -155,5 +188,6 @@ module.exports = {
   createBrowserSession,
   interactiveElements,
   extractTextInPage,
+  sensitiveInPage,
   refSelector,
 };
