@@ -132,6 +132,7 @@ function createBrowserAutomationToolSource(options = {}) {
     }
 
     activityLog.recordActivity({ action, args, status: "ok" });
+    activityLog.recordPage(result);
     // Best-effort: a capture failure (page mid-navigation, tab closed) must
     // never break the real tool call it happened alongside, and the model
     // never sees this value either way -- it's the human-facing side channel.
