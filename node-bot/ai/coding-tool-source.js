@@ -16,6 +16,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { spawn } = require("node:child_process");
 const { isCredentialPath } = require("./tool-policy");
+const { protectedPathFor, protectedPathMessage } = require("../protected-paths");
 const { formatReviewHeader } = require("./adversarial-verifier");
 const { killProcessTree } = require("../utils/kill-process-tree");
 
@@ -257,6 +258,13 @@ function createCodingToolSource(options = {}) {
     // diff file and reflected back through the tool result.
     if (isCredentialPath(path.basename(String(args?.path || "")))) {
       return JSON.stringify({ status: "error", error: "refusing to read a credential file" });
+    }
+    // #1000: not even a proposal for one of her own guardrails.
+    const workspace = editors.getWorkspace();
+    const guardrail = workspace && protectedPathFor(path.resolve(workspace.path, String(args?.path || "")));
+    if (guardrail) {
+      console.warn(`coding__propose_edit refused: ${guardrail} is protected (#1000).`);
+      return JSON.stringify({ status: "error", error: protectedPathMessage(guardrail) });
     }
 
     try {

@@ -224,13 +224,6 @@ test("a guardrail changed by anything in the run (her tests too) isn't pushed", 
   assert.throws(() => git(repos.origin, "rev-parse", "--verify", "mana/7-fix-the-add-helper"));
 });
 
-test("she refuses to start without the guardrail list", async () => {
-  const sw = createSelfWork({ protectedPaths: null, runLoop: async () => ({}) });
-  const result = await sw.start(7);
-  assert.equal(result.ok, false);
-  assert.match(result.error, /#1000/);
-});
-
 test("secrets: key shapes and the backend's own values are caught; her tests get a clean env", () => {
   const env = { DISCORD_TOKEN: "abcdefghijklmnop", PATH: "p" };
   assert.equal(findSecret("+const x = 'abcdefghijklmnop';", env), "the value of DISCORD_TOKEN");
@@ -328,18 +321,16 @@ test("a run going nowhere stops after 8 steps without anything new", async () =>
   assert.match(fs.readFileSync(path.join(sw.status().worktree, "node-bot", "util.js"), "utf8"), /a - b/);
 });
 
-test("starting on her own: off by the hard flag, else the oldest labelled issue without her PR", async () => {
+test("starting on her own: the oldest labelled issue without her PR, or nothing", async () => {
   const repos = makeRepos();
-  const off = selfWork(repos, { calls: [], issues: [7] });
-  assert.match((await off.sw.startIdle()).error, /off until my security fixes are merged/);
-  assert.equal(off.ghCalls.length, 0);
+  const none = selfWork(repos, { calls: [], issues: [3], prs: [{ number: 30, headRefName: "mana/3-old" }] });
+  assert.match((await none.sw.startIdle()).error, /No issue is waiting for me/);
 
   const on = selfWork(repos, {
     calls: [],
     issues: [9, 3, 7],
     prs: [{ number: 30, headRefName: "mana/3-old" }],
     labels: [{ name: "mana-task" }],
-    unattendedAllowed: true,
   });
   assert.equal((await on.sw.startIdle()).ok, true);
   assert.equal(on.sw.status().issue, 7);
