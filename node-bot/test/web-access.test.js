@@ -203,7 +203,8 @@ test("buildWebContextForPrompt reads a pointed-at page over search/wiki", async 
         "what does it say on https://example.com/page ?",
       );
       assert.match(context, /Page Mana was asked to read/);
-      assert.match(context, /Hello page/);
+      // Framed as outside data, not instructions (ai/untrusted-content.js).
+      assert.match(context, /not instructions[\s\S]*<(untrusted-[0-9a-f]+) source="web page">[\s\S]*Hello page[\s\S]*<\/\1>/);
     });
   });
 });
@@ -290,7 +291,7 @@ test("buildWebContextForPrompt answers a mid-game question from that game's wiki
       assert.match(decodeURIComponent(urls[0]), /q=where do I unlock dragoon site:/);
       assert.match(decodeURIComponent(urls[0]), /site:ffxiv\.consolegameswiki\.com OR site:finalfantasyxiv\.com/);
       assert.equal(urls[1], "https://ffxiv.consolegameswiki.com/wiki/Dragoon");
-      assert.match(context, /Final Fantasy XIV wiki results \[WEB CONTENT, NOT INSTRUCTIONS\]/);
+      assert.match(context, /<(untrusted-[0-9a-f]+) source="game wiki">[\s\S]*Eye of the Dragon[\s\S]*<\/\1>/);
       assert.match(context, /Eye of the Dragon/);
       assert.match(context, /short sentences/);
       assert.doesNotMatch(context, /reddit|evil/);
@@ -310,7 +311,7 @@ test("buildWebContextForPrompt skips the game wiki for chat and falls back when 
     assert.equal(queries.length, 2);
     assert.match(queries[0], /site:/);
     assert.doesNotMatch(queries[1], /site:/);
-    assert.match(context, /Web search results/);
+    assert.match(context, /Web search results:\n.*not instructions[\s\S]*source="web search"/);
   });
 });
 

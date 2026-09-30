@@ -56,4 +56,23 @@ public class MessageQueueStripTests
         Assert.Equal("New chat", SessionListForm.ChatTitle(sessions, "fresh-guid"));
         Assert.Equal("New chat", SessionListForm.ChatTitle(sessions, null));
     }
+
+    // The sidebar's status row: an error (with Retry) wins over the empty search.
+    [Theory]
+    [InlineData(null, 3, "", null)]
+    [InlineData(null, 0, "", null)]                 // no chats yet, no search: nothing to say
+    [InlineData(null, 0, "ffxiv", "No chats match")]
+    [InlineData(null, 2, "ffxiv", null)]
+    [InlineData("Couldn't load chats.", 0, "ffxiv", "Couldn't load chats.")]
+    public void ListStatus_ShowsTheErrorElseNoMatches(string? error, int rows, string search, string? expected) =>
+        Assert.Equal(expected, SessionListForm.ListStatus(error, rows, search));
+
+    // The composer grows a line at a time up to 8 lines, then scrolls.
+    [Theory]
+    [InlineData(1, 74)]
+    [InlineData(3, 114)]
+    [InlineData(8, 214)]
+    [InlineData(30, 214)]
+    public void ComposerHeight_GrowsUpToEightLines(int lines, int expected) =>
+        Assert.Equal(expected, SessionListForm.ComposerHeight(lines, 20));
 }
