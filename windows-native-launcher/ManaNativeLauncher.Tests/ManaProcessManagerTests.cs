@@ -51,6 +51,32 @@ public class ManaProcessManagerTests
         Assert.Equal(@"C:\mana\tools\fish-speech\.venv-native\Scripts\python.exe", fishPython);
     }
 
+    // A crash is looked at after the next launch: the log that had it is
+    // kept as *.prev.log instead of being truncated.
+    [Fact]
+    public void StartLogFile_KeepsThePreviousRunsLog()
+    {
+        var dir = Directory.CreateTempSubdirectory("mana-log-rotate-");
+        try
+        {
+            var log = Path.Combine(dir.FullName, "service.err.log");
+            ManaProcessManager.StartLogFile(log);
+            File.AppendAllText(log, "first run crashed");
+
+            ManaProcessManager.StartLogFile(log);
+            Assert.Equal("", File.ReadAllText(log));
+            Assert.Equal("first run crashed", File.ReadAllText(Path.Combine(dir.FullName, "service.err.prev.log")));
+
+            File.AppendAllText(log, "second run");
+            ManaProcessManager.StartLogFile(log);
+            Assert.Equal("second run", File.ReadAllText(Path.Combine(dir.FullName, "service.err.prev.log")));
+        }
+        finally
+        {
+            dir.Delete(recursive: true);
+        }
+    }
+
     [Fact]
     public async Task StartAsync_StartsNothingWhenAllThreeServicesAlreadyHealthy()
     {
@@ -69,6 +95,34 @@ public class ManaProcessManagerTests
         Assert.True(manager.IsFishSpeechAvailable);
         // #991: a backend already running at launch isn't this launcher's to restart.
         Assert.False(manager.CanRestartBackend);
+    }
+
+    [Theory]
+    [InlineData("kokoro", false)]
+    [InlineData("fish", true)]
+    public async Task StartAsync_WithTtsProviderUnset_FollowsTheBackendsChoice(string backendProvider, bool usesFish)
+    {
+        // #1076: node-bot picks Fish or Kokoro from the GPU when
+        // TTS_PROVIDER is unset; the launcher starts (and even checks) Fish
+        // Speech only when the backend's /health says "fish".
+        var requested = new ConcurrentBag<string>();
+        var handler = new FakeHttpMessageHandler(request =>
+        {
+            requested.Add(request.RequestUri!.GetLeftPart(UriPartial.Path));
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(request.RequestUri.Port == 5005 ? $"{{\"ok\":true,\"ttsProvider\":\"{backendProvider}\"}}" : ""),
+            };
+        });
+        using var manager = new ManaProcessManager(@"C:\does-not-exist", handler);
+        var reported = new ConcurrentDictionary<string, bool>();
+
+        await manager.StartAsync((key, available) => reported[key] = available);
+
+        Assert.Equal(usesFish, manager.UsesFishSpeech);
+        Assert.Equal(usesFish, reported.ContainsKey("fish-speech"));
+        Assert.Equal(usesFish, requested.Contains("http://127.0.0.1:8080/v1/health"));
+        Assert.Equal(usesFish, manager.IsFishSpeechAvailable);
     }
 
     [Fact]
@@ -462,6 +516,9 @@ public class ManaProcessManagerTests
         var backendUp = false;
         var handler = new FakeHttpMessageHandler(request =>
             new HttpResponseMessage(request.RequestUri!.Port == 5005 && backendUp ? HttpStatusCode.OK : HttpStatusCode.ServiceUnavailable));
+        // #1076: a set provider, so StartAsync doesn't wait for this
+        // not-yet-healthy backend's TTS pick.
+        Environment.SetEnvironmentVariable("TTS_PROVIDER", "kokoro");
         try
         {
             using var manager = new ManaProcessManager(root, handler);
@@ -489,6 +546,7 @@ public class ManaProcessManagerTests
         }
         finally
         {
+            Environment.SetEnvironmentVariable("TTS_PROVIDER", null);
             DeleteBestEffort(root);
         }
     }

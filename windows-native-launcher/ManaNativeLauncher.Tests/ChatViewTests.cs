@@ -31,6 +31,20 @@ public class ChatViewTests
         Assert.Equal("Three.", view.Messages[3].PlainText);
     }
 
+    // #914: group mode -- her sister's reaction is her own, labelled bubble.
+    [Fact]
+    public void EachCharacterGetsHerOwnLabelledBubble()
+    {
+        using var view = NewView();
+        view.AppendUserMessage("which of you is smarter?");
+        view.AppendReplySentence("Me.", "Evil Mana");
+        view.AppendReplySentence("Obviously.", "Evil Mana");
+        view.AppendReplySentence("She wishes.", "Mana");
+
+        Assert.Equal(new[] { "You", "Evil Mana", "Mana" }, view.Messages.Select(m => m.Speaker));
+        Assert.Equal("Me. Obviously.", view.Messages[1].PlainText);
+    }
+
     [Fact]
     public void AppendSentence_ListItemsAndCodeStartTheirOwnBlocks()
     {

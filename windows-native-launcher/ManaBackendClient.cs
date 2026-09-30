@@ -238,9 +238,10 @@ internal sealed class ManaBackendClient
 
     // #909: emotion is the sentence's tag, which Qwen3-TTS turns into her
     // speaking rate; null leaves the voice as it is.
-    public async Task<byte[]> SynthesizeAsync(string text, string? emotion = null)
+    // #914: character (a reply event's) speaks in her own voice; null, the active one's.
+    public async Task<byte[]> SynthesizeAsync(string text, string? emotion = null, string? character = null)
     {
-        var payload = JsonSerializer.Serialize(new { text, emotion });
+        var payload = JsonSerializer.Serialize(new { text, emotion, character });
         using var content = new StringContent(payload, Encoding.UTF8, "application/json");
         using var response = await http.PostAsync("/synthesize", content);
         response.EnsureSuccessStatusCode();
@@ -973,6 +974,28 @@ internal sealed class ManaBackendClient
         response.EnsureSuccessStatusCode();
     }
 
+    // #935: the Obsidian vault sync's status; VaultDir is null when it's off.
+    public async Task<ManaVaultStatus> GetMemoryVaultStatusAsync()
+    {
+        using var response = await http.GetAsync("/admin/memory/vault");
+        return await ReadVaultStatusAsync(response);
+    }
+
+    // #935: "Sync now" -- syncs at once and returns the new status.
+    public async Task<ManaVaultStatus> SyncMemoryVaultAsync()
+    {
+        using var response = await http.PostAsync("/admin/memory/vault/sync", null);
+        return await ReadVaultStatusAsync(response);
+    }
+
+    private static async Task<ManaVaultStatus> ReadVaultStatusAsync(HttpResponseMessage response)
+    {
+        response.EnsureSuccessStatusCode();
+        await using var stream = await response.Content.ReadAsStreamAsync();
+        return await JsonSerializer.DeserializeAsync<ManaVaultStatus>(stream, new JsonSerializerOptions(JsonSerializerDefaults.Web))
+            ?? new ManaVaultStatus();
+    }
+
     // #529: index-only listing (GET /skills), not full skill bodies --
     // matches skills-capability.js's own "cheap call" framing. Editing a
     // skill's full content is a much bigger form than a lean settings
@@ -1057,8 +1080,9 @@ internal sealed class ManaBackendClient
         return document.RootElement.TryGetProperty("override", out var overrideEl) ? overrideEl.GetString() : null;
     }
 
-    // #914: node-bot's characters (id, name) and the active one's id.
-    public async Task<(string Active, IReadOnlyList<(string Id, string Name)> Characters)> GetCharactersAsync()
+    // #914: node-bot's characters (id, name), the active one's id, and
+    // whether group mode is on.
+    public async Task<(string Active, IReadOnlyList<(string Id, string Name)> Characters, bool GroupOn)> GetCharactersAsync()
     {
         using var response = await http.GetAsync("/characters");
         response.EnsureSuccessStatusCode();
@@ -1068,7 +1092,19 @@ internal sealed class ManaBackendClient
         var characters = root.GetProperty("characters").EnumerateArray()
             .Select(c => (c.GetProperty("id").GetString() ?? "", c.GetProperty("name").GetString() ?? ""))
             .ToList();
-        return (root.GetProperty("active").GetString() ?? "", characters);
+        var groupOn = root.TryGetProperty("group", out var group) && group.ValueKind == JsonValueKind.Object
+            && group.TryGetProperty("on", out var on) && on.ValueKind == JsonValueKind.True;
+        return (root.GetProperty("active").GetString() ?? "", characters, groupOn);
+    }
+
+    // #914: group mode on (with the last partner, else the first other
+    // character) or off.
+    public async Task SetGroupAsync(bool on)
+    {
+        var payload = JsonSerializer.Serialize(new { on });
+        using var content = new StringContent(payload, Encoding.UTF8, "application/json");
+        using var response = await http.PostAsync("/characters/group", content);
+        response.EnsureSuccessStatusCode();
     }
 
     // #914: switches character; her handoff line, or null if she already was.
@@ -2052,6 +2088,19 @@ internal sealed class ManaBackendClient
     }
 
     // #646: admin-gated (checkAdminAuth) like the proposal approve route.
+    // #1011: node-bot opens an issue and a revert PR for a merged PR
+    // (admin-gated). MergeCommit is what the rollback checks against.
+    public async Task<ManaRevertResult> RevertPrAsync(int pr)
+    {
+        using var content = new StringContent(JsonSerializer.Serialize(new { pr }), Encoding.UTF8, "application/json");
+        using var response = await http.PostAsync("/updates/revert", content);
+        response.EnsureSuccessStatusCode();
+        using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        var root = document.RootElement;
+        string? Text(string name) => root.TryGetProperty(name, out var e) && e.ValueKind == JsonValueKind.String ? e.GetString() : null;
+        return new ManaRevertResult { PrUrl = Text("prUrl"), MergeCommit = Text("mergeCommit"), Error = Text("error") };
+    }
+
     // #1008: Mana's work on her own code. All three are admin-gated.
     public async Task<ManaSelfWorkStatus> GetSelfWorkAsync()
     {
@@ -2257,6 +2306,8 @@ internal sealed class ManaBackendClient
             Name = root.TryGetProperty("name", out var nameProp) && nameProp.ValueKind == JsonValueKind.String ? nameProp.GetString() : null,
             Phase = root.TryGetProperty("phase", out var phaseProp) && phaseProp.ValueKind == JsonValueKind.String ? phaseProp.GetString() : null,
             DeepThinking = root.TryGetProperty("deepThinking", out var deepProp) && deepProp.ValueKind == JsonValueKind.True,
+            Character = root.TryGetProperty("character", out var characterProp) && characterProp.ValueKind == JsonValueKind.String ? characterProp.GetString() : null,
+            CharacterName = root.TryGetProperty("characterName", out var characterNameProp) && characterNameProp.ValueKind == JsonValueKind.String ? characterNameProp.GetString() : null,
         };
     }
 }
@@ -2565,6 +2616,10 @@ internal sealed class ReplyStreamEvent
     public string? Phase { get; init; }
     // #675 Q12b: on "final", whether Mana's own deep thinking is on.
     public bool DeepThinking { get; init; }
+    // #914: on "sentence"/"final", the character speaking (id and name) --
+    // in group mode a second final follows with her sister's reaction.
+    public string? Character { get; init; }
+    public string? CharacterName { get; init; }
 }
 
 // #580: a row from GET /editors/workspace/proposals -- see
@@ -2647,6 +2702,14 @@ internal sealed class ManaBrowserAutomationLogEntry
     public string Status { get; init; } = "";
     public string Summary { get; init; } = "";
     public string At { get; init; } = "";
+}
+
+// #1011: POST /updates/revert's answer.
+internal sealed class ManaRevertResult
+{
+    public string? PrUrl { get; init; }
+    public string? MergeCommit { get; init; }
+    public string? Error { get; init; }
 }
 
 // #1008: GET /self-work (node-bot/self-work.js). State is "idle" when she
@@ -2799,6 +2862,24 @@ internal sealed class ManaSpeechVocabulary
     // "en" or "auto"; EnvLanguage (WHISPER_LANGUAGE) wins when set.
     public string Language { get; init; } = "en";
     public string? EnvLanguage { get; init; }
+}
+
+// #935: GET /admin/memory/vault (memory-vault.js getStatus()).
+internal sealed class ManaVaultStatus
+{
+    public string? VaultDir { get; init; }
+    // "watching", "polling" (the file watcher is down) or "stopped".
+    public string? Mode { get; init; }
+    public int Notes { get; init; }
+    public DateTimeOffset? LastSyncAt { get; init; }
+    public string? Error { get; init; }
+    public List<ManaVaultSkippedNote> Skipped { get; init; } = new();
+}
+
+internal sealed class ManaVaultSkippedNote
+{
+    public string File { get; init; } = "";
+    public string Reason { get; init; } = "";
 }
 
 // #950: GET /mail-calendar. Null when that account isn't set up;

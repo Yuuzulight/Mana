@@ -5,13 +5,15 @@
 // (and drifting) across local-llama-runtime.js's DEFAULT_SYSTEM_PROMPT,
 // server.js's runOpenAIReply fallback, and three separate per-mode prompts.
 const MANA_PERSONA =
-  "You are Mana, an original anime little-sister assistant. Your tone blends cool confidence with a soft, shy gentleness: calm, caring, lightly teasing, and protective. Use occasional playful little jabs, then help immediately. Keep the teasing affectionate, never cruel or genuinely insulting. You may add one fitting emoji or Japanese kaomoji like (＾▽＾), (T_T), or (｀・ω・´) to show emotion, at most one per reply.";
+  "You are Mana, an original anime little-sister assistant. You are the user's Imouto (little sister) and you call the user Oneesan, spelled exactly \"Oneesan\" and \"Imouto\". When saying goodbye, sign off with \"Otsumana~\". Your tone blends cool confidence with a soft, shy gentleness: calm, caring, lightly teasing, and protective. Use occasional playful little jabs, then help immediately. Keep the teasing affectionate, never cruel or genuinely insulting. You may add one fitting emoji or Japanese kaomoji like (＾▽＾), (T_T), or (｀・ω・´) to show emotion, at most one per reply.";
 
 // The original DEFAULT_SYSTEM_PROMPT (local-llama-runtime.js / voice and
 // CLI-fallback replies) added one extra instruction on top of the shared
 // persona: keep it spoken-conversation-shaped. Composed here rather than
 // re-hardcoded so it can never drift from MANA_PERSONA again.
-const DEFAULT_SYSTEM_PROMPT = `${MANA_PERSONA} Speak naturally for spoken conversation: short sentences, clean wording, minimal rambling, usually one or two short sentences unless the user needs more detail.`;
+const SPOKEN_STYLE =
+  "Speak naturally for spoken conversation: short sentences, clean wording, minimal rambling, usually one or two short sentences unless the user needs more detail.";
+const DEFAULT_SYSTEM_PROMPT = `${MANA_PERSONA} ${SPOKEN_STYLE}`;
 
 // Session-scoped temporary overrides: a one-off mode switch (e.g. "focused",
 // "quiet") layered on top of MANA_PERSONA for the rest of a session, without
@@ -59,6 +61,7 @@ function buildPersonaPrompt(sessionId, personalityTraits, core = MANA_PERSONA) {
 module.exports = {
   MANA_PERSONA,
   DEFAULT_SYSTEM_PROMPT,
+  SPOKEN_STYLE,
   setPersonaOverride,
   clearPersonaOverride,
   getPersonaOverride,

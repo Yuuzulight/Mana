@@ -101,11 +101,18 @@ function createProactive({ deliver, isGaming = () => false, inBreak = () => fals
   return { offer, flush, persistTo };
 }
 
-// The process-wide instance; server.js hands it the gaming watch and its file.
+// The process-wide instance; server.js hands it the gaming watch, its file
+// and who's speaking.
 let gamingCheck = () => false;
 let breakCheck = () => false;
+// #914: the active character when it goes out (a held remark can outlast a
+// switch), named in the toast unless she's Mana (null).
+let speakerName = () => null;
 const proactive = createProactive({
-  deliver: notifyTray,
+  deliver: (payload) => {
+    const name = speakerName();
+    return notifyTray(name ? { ...payload, title: payload.title ? `${name}: ${payload.title}` : name } : payload);
+  },
   isGaming: () => gamingCheck(),
   inBreak: () => breakCheck(),
 });
@@ -115,9 +122,14 @@ function watchGaming(isGaming, inBreak = () => false) {
   breakCheck = inBreak;
 }
 
+function watchSpeaker(nameOf) {
+  speakerName = nameOf;
+}
+
 module.exports = {
   createProactive,
   watchGaming,
+  watchSpeaker,
   offer: proactive.offer,
   flush: proactive.flush,
   persistTo: proactive.persistTo,

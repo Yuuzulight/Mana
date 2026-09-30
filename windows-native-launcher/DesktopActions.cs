@@ -7,6 +7,8 @@ using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
 using NAudio.CoreAudioApi;
+using Windows.ApplicationModel;
+using Windows.Management.Deployment;
 
 namespace Mana.NativeLauncher;
 
@@ -38,7 +40,7 @@ internal static class DesktopActions
         "set_audio_output" => SetAudioOutput(RequiredString(args, "name")),
         "list_folder" => ListFolder(OptionalString(args, "path"), AllowedFolders(folders)),
         "move_files" => MoveFiles(StringList(args, "from"), RequiredString(args, "to"),
-            args.TryGetProperty("exact", out var exact) && exact.ValueKind == JsonValueKind.True, AllowedFolders(folders)),
+            IsTrue(args, "exact"), AllowedFolders(folders), IsTrue(args, "new_folder")),
         _ => throw new ArgumentException($"unknown desktop action: {action}"),
     };
 
@@ -104,7 +106,7 @@ internal static class DesktopActions
     private static int Percent(float scalar) => (int)Math.Round(scalar * 100);
 
     // Brings its window forward if it's open, else starts its Start-menu
-    // shortcut -- never an arbitrary path.
+    // shortcut or Store app -- never an arbitrary path.
     private static object OpenApp(string name)
     {
         // By process only: a browser tab titled "Discord" isn't Discord.
@@ -112,9 +114,9 @@ internal static class DesktopActions
         {
             return new { name, opened = false, focused = BringToFront(window) };
         }
-        var shortcut = FindShortcut(StartMenuShortcuts(), name);
-        Process.Start(new ProcessStartInfo(shortcut) { UseShellExecute = true })?.Dispose();
-        return new { name = Path.GetFileNameWithoutExtension(shortcut), opened = true, focused = false };
+        var (app, target) = FindApp(StartMenuShortcuts(), StoreApps, name);
+        Process.Start(new ProcessStartInfo(target) { UseShellExecute = true })?.Dispose();
+        return new { name = app, opened = true, focused = false };
     }
 
     private static object FocusApp(string name)
@@ -133,19 +135,52 @@ internal static class DesktopActions
             .SelectMany(dir => Directory.EnumerateFiles(dir, "*.lnk", options));
     }
 
-    // The shortcut picked by PickByName. Uninstallers are never offered.
-    internal static string FindShortcut(IEnumerable<string> shortcuts, string name)
+    // Store (MSIX/UWP) apps have no .lnk; the package manager lists their
+    // Start-menu entries, which start by AppUserModelID.
+    private static IEnumerable<(string Name, string AppId)> StoreApps() =>
+        new PackageManager().FindPackagesForUser("")
+            .Where(p => !p.IsFramework && !p.IsResourcePackage)
+            .SelectMany(AppListEntries);
+
+    private static IEnumerable<(string Name, string AppId)> AppListEntries(Package package)
+    {
+        try
+        {
+            return package.GetAppListEntries().Select(e => (e.DisplayInfo.DisplayName, e.AppUserModelId)).ToList();
+        }
+        catch (Exception ex) when (ex is COMException or IOException or UnauthorizedAccessException)
+        {
+            return []; // a half-installed or broken package
+        }
+    }
+
+    // The app picked by PickByName, with what to start: its shortcut, or
+    // shell:AppsFolder\<AppUserModelID> for a Store app. Store apps are only
+    // listed (slower) when no shortcut's name has `name` in it. Uninstallers
+    // are never offered.
+    internal static (string Name, string Target) FindApp(IEnumerable<string> shortcuts, Func<IEnumerable<(string Name, string AppId)>> storeApps, string name)
     {
         var byName = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var path in shortcuts)
+        void Add(string app, string target)
         {
-            var app = Path.GetFileNameWithoutExtension(path);
-            if (!app.Contains("uninstall", StringComparison.OrdinalIgnoreCase))
+            if (!string.IsNullOrWhiteSpace(app) && !app.Contains("uninstall", StringComparison.OrdinalIgnoreCase))
             {
-                byName.TryAdd(app, path);
+                byName.TryAdd(app, target);
             }
         }
-        return byName[PickByName(byName.Keys, name, "Start-menu app")];
+        foreach (var path in shortcuts)
+        {
+            Add(Path.GetFileNameWithoutExtension(path), path);
+        }
+        if (!byName.Keys.Any(app => Normalize(app).Contains(Normalize(name))))
+        {
+            foreach (var (app, id) in storeApps())
+            {
+                Add(app, @"shell:AppsFolder\" + id);
+            }
+        }
+        var picked = PickByName(byName.Keys, name, "Start-menu app");
+        return (picked, byName[picked]);
     }
 
     // The name that is exactly `name` (case, spaces and punctuation
@@ -305,17 +340,28 @@ internal static class DesktopActions
     }
 
     // Moves each of `from` into the folder `to`, or one item to the new
-    // path `to` (a rename; also when exact, which undo uses). Both ends stay
-    // inside the allowed folders; nothing is overwritten or deleted. Returns
-    // what moved (the undo record) and what didn't.
-    internal static object MoveFiles(IReadOnlyList<string> from, string to, bool exact, IReadOnlyList<string> roots)
+    // path `to` (a rename; also when exact, which undo uses). newFolder
+    // creates `to` first, in a folder that exists. Both ends stay inside the
+    // allowed folders; nothing is overwritten or deleted. Returns what moved
+    // (the undo record) and what didn't.
+    internal static object MoveFiles(IReadOnlyList<string> from, string to, bool exact, IReadOnlyList<string> roots, bool newFolder = false)
     {
         if (from.Count is 0 or > MaxMoves)
         {
             throw new ArgumentException($"give 1 to {MaxMoves} paths to move");
         }
         var target = Allowed(to, roots, allowRoot: true);
-        var into = !exact && Directory.Exists(target);
+        if (newFolder && !exact && !Directory.Exists(target))
+        {
+            if (File.Exists(target) || !Directory.Exists(Path.GetDirectoryName(target)))
+            {
+                throw new InvalidOperationException($"can't make the folder {to}: {(File.Exists(target) ? "a file has that name" : "the folder it goes in doesn't exist")}");
+            }
+            Directory.CreateDirectory(target);
+        }
+        // A folder's own path in another case renames it, not "into itself".
+        var into = !exact && Directory.Exists(target)
+            && !(from.Count == 1 && Path.TrimEndingDirectorySeparator(from[0]).Equals(target, StringComparison.OrdinalIgnoreCase));
         if (!into && from.Count > 1)
         {
             throw new InvalidOperationException($"{to} isn't a folder");
@@ -328,7 +374,9 @@ internal static class DesktopActions
             {
                 var source = Allowed(path, roots);
                 var destination = Allowed(into ? Path.Combine(target, Path.GetFileName(source)) : target, roots);
-                if (File.Exists(destination) || Directory.Exists(destination))
+                // A case-only rename (cat.png -> Cat.png) is the same file here.
+                var caseOnly = !into && destination.Equals(source, StringComparison.OrdinalIgnoreCase) && destination != source;
+                if (!caseOnly && (File.Exists(destination) || Directory.Exists(destination)))
                 {
                     throw new IOException($"{destination} already exists");
                 }
@@ -470,6 +518,9 @@ internal static class DesktopActions
         args.TryGetProperty(key, out var v) && v.ValueKind == JsonValueKind.String && !string.IsNullOrWhiteSpace(v.GetString())
             ? v.GetString()!.Trim()
             : null;
+
+    private static bool IsTrue(JsonElement args, string key) =>
+        args.TryGetProperty(key, out var v) && v.ValueKind == JsonValueKind.True;
 
     private static double? OptionalNumber(JsonElement args, string key) =>
         args.TryGetProperty(key, out var v) && v.ValueKind == JsonValueKind.Number ? v.GetDouble() : null;
