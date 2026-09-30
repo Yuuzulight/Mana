@@ -343,6 +343,8 @@ internal sealed partial class SessionListForm : Form
         var railArtifactsButton = MakeRailButton("artifacts", "Artifacts");
         railArtifactsButton.Click += (_, _) => ShowArtifacts?.Invoke();
         toolRail.Controls.Add(railArtifactsButton);
+        // #1121: the commands Mana runs.
+        RegisterRailTool("terminal", "terminal", "Terminal", () => new TerminalTool(backendClient));
 
         var chatArea = new Panel { Dock = DockStyle.Fill, BackColor = DarkTheme.Background };
         // #1118: clicking back into the chat closes an unpinned tool panel.
