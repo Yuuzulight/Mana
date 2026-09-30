@@ -329,3 +329,26 @@ test("buildWebContextForPrompt stays quiet when the game wiki can't be searched"
     console.warn = original;
   }
 });
+
+// #945
+test("buildWebContextForPrompt gives up on a slow game wiki after about 5 s", async () => {
+  const game = { name: "Final Fantasy XIV", sites: ["ffxiv.consolegameswiki.com"] };
+  const original = console.warn;
+  const warnings = [];
+  console.warn = (...args) => warnings.push(args.join(" "));
+  const started = Date.now();
+  const keepAlive = setInterval(() => {}, 1000); // AbortSignal.timeout's timer doesn't hold the event loop
+  try {
+    await withMockedFetch((url, options) => new Promise((resolve, reject) => {
+      options.signal.addEventListener("abort", () => reject(options.signal.reason));
+    }), async () => {
+      assert.equal(await buildWebContextForPrompt("where is the aetheryte in Limsa?", {}, game), "");
+    });
+  } finally {
+    clearInterval(keepAlive);
+    console.warn = original;
+  }
+  const elapsed = Date.now() - started;
+  assert.ok(elapsed >= 4500 && elapsed < 8000, `took ${elapsed} ms`);
+  assert.match(warnings.join("\n"), /wiki lookup failed/);
+});

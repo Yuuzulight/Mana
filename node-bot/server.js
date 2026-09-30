@@ -452,9 +452,12 @@ const DEFAULT_GAMING_PROCESS_NAMES = [
   "ffxivlauncher.exe",
   "ffxivlauncher64.exe",
 ];
-const GAMING_PROCESS_NAMES = parseGamingProcessNames(
-  process.env.GAMING_PROCESS_NAMES,
-);
+// #908: the wikis game questions are answered from (data/game-wikis.json on
+// top of game-wikis.js's defaults). #945: every game listed there is watched too.
+const gameWikis = loadGameWikis(path.join(__dirname, "data", "game-wikis.json"));
+const GAMING_PROCESS_NAMES = [
+  ...new Set([...parseGamingProcessNames(process.env.GAMING_PROCESS_NAMES), ...gameWikis.processes]),
+];
 const vtubeStudio = VTUBE_STUDIO_ENABLED
   ? new VTubeStudioClient({ url: VTUBE_STUDIO_URL })
   : null;
@@ -796,13 +799,11 @@ const speechVocabulary = createSpeechVocabulary({
   filePath: path.join(acpMemoryStore.dataDir, "speech.json"),
 });
 
-// #908: the game I'm playing, if its wiki is known (data/game-wikis.json on
-// top of game-wikis.js's defaults): the one in front (the native launcher's
-// foreground report), else the watched game that's running.
-const gameWikiFor = loadGameWikis(path.join(acpMemoryStore.dataDir, "game-wikis.json"));
+// #908: the game I'm playing, if its wiki is known: the one in front (the
+// native launcher's foreground report), else the watched game that's running.
 function currentGame() {
   const front = require("./foreground").getForeground();
-  return gameWikiFor(front && front.app) || gameWikiFor(gamingWatch.game());
+  return gameWikis.gameFor(front && front.app) || gameWikis.gameFor(gamingWatch.game());
 }
 
 function whisperLanguage() {

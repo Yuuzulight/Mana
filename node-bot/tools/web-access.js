@@ -15,6 +15,7 @@ const MAX_PAGE_BYTES = 3 * 1024 * 1024; // stop reading a page past this size
 const MAX_PAGE_TEXT_CHARS = 6000; // how much page text we hand to the prompt
 const MAX_REDIRECTS = 5;
 const GAME_WIKI_PAGE_CHARS = 2000; // #908: a voice answer mid-game needs little
+const GAME_WIKI_BUDGET_MS = 5000; // #945: the whole mid-game lookup; past it she answers without the wiki
 
 function isWebAccessEnabled(env = process.env) {
   return env.MANA_WEB_ACCESS_ENABLED !== "0";
@@ -117,12 +118,14 @@ function extractTitle(html) {
 async function fetchPage(rawUrl, options = {}) {
   let target = await assertPublicUrl(rawUrl);
   let lastResponse = null;
+  // #945: a caller's timeoutMs covers every redirect hop together.
+  const budget = options.timeoutMs ? AbortSignal.timeout(options.timeoutMs) : null;
 
   for (let hop = 0; hop <= MAX_REDIRECTS; hop += 1) {
     lastResponse = await fetch(target.href, {
       redirect: "manual",
       headers: { "User-Agent": "Mana-local-assistant/1.0" },
-      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+      signal: budget || AbortSignal.timeout(FETCH_TIMEOUT_MS),
     });
 
     if ([301, 302, 303, 307, 308].includes(lastResponse.status)) {
@@ -191,7 +194,7 @@ async function searchWeb(query, options = {}) {
 
   let resp;
   try {
-    resp = await fetch(url, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
+    resp = await fetch(url, { signal: AbortSignal.timeout(options.timeoutMs || FETCH_TIMEOUT_MS) });
   } catch (e) {
     throw new Error(
       `Could not reach local SearXNG at ${base} (${e.message}). See docs/web_access_setup.md.`,
@@ -317,9 +320,14 @@ async function buildGameWikiContext(text, game, env) {
   };
   const question = extractSearchQuery(text).replace(/^(?:(?:hey|ok|okay)\s+)?mana\W+/i, "");
   const query = `${question} ${game.sites.map((site) => `site:${site}`).join(" OR ")}`;
-  const hits = (await searchWeb(query, { env, limit: 10 })).filter((r) => onWiki(r.url)).slice(0, 3);
+  const deadline = Date.now() + GAME_WIKI_BUDGET_MS;
+  const hits = (await searchWeb(query, { env, limit: 10, timeoutMs: GAME_WIKI_BUDGET_MS })).filter((r) => onWiki(r.url)).slice(0, 3);
   if (!hits.length) return null;
-  const page = await fetchPage(hits[0].url, { maxChars: GAME_WIKI_PAGE_CHARS }).catch(() => null);
+  // Out of time: the snippets alone.
+  const page = await fetchPage(hits[0].url, { maxChars: GAME_WIKI_PAGE_CHARS, timeoutMs: Math.max(1, deadline - Date.now()) }).catch((e) => {
+    console.warn(`${game.name} wiki page skipped:`, e.message);
+    return null;
+  });
   return [
     `I'm playing ${game.name} and asking by voice: answer in one or two short sentences from the wiki results below, and say so if they don't cover it. If the answer depends on what's on my screen and you have vision__look, look first.`,
     "",

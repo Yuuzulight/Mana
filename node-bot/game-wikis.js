@@ -2,7 +2,8 @@
 // I can edit by hand (data/game-wikis.json), same shape as the defaults:
 //   { "Game name": { "processes": ["game.exe"], "sites": ["wiki.example.com"] } }
 // Its entries add games or replace a default of the same name. A site also
-// covers its subdomains. Read at backend start.
+// covers its subdomains. Every listed process is also a watched game (#945),
+// so gaming mode turns on for it. Read at backend start.
 const fs = require("node:fs");
 
 const DEFAULT_GAME_WIKIS = {
@@ -25,7 +26,7 @@ function strings(value) {
   return Array.isArray(value) ? value.filter((v) => typeof v === "string").map((v) => v.trim().toLowerCase()) : [];
 }
 
-// Returns processName -> { name, sites } or null.
+// gameFor: processName -> { name, sites } or null; processes: every game's.
 function loadGameWikis(filePath) {
   let mine = {};
   try {
@@ -36,9 +37,12 @@ function loadGameWikis(filePath) {
   const games = Object.entries({ ...DEFAULT_GAME_WIKIS, ...mine })
     .map(([name, game]) => ({ name, processes: strings(game?.processes), sites: strings(game?.sites).filter((s) => HOST_RE.test(s)) }))
     .filter((game) => game.processes.length && game.sites.length);
-  return (processName) => {
-    const game = games.find((g) => g.processes.includes(String(processName || "").toLowerCase()));
-    return game ? { name: game.name, sites: game.sites } : null;
+  return {
+    processes: games.flatMap((game) => game.processes),
+    gameFor(processName) {
+      const game = games.find((g) => g.processes.includes(String(processName || "").toLowerCase()));
+      return game ? { name: game.name, sites: game.sites } : null;
+    },
   };
 }
 
