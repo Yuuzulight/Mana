@@ -572,6 +572,8 @@ function registerCoreRoutes(app, upload, deps) {
       const replyMeta = {
         systemPatch: input.systemPatch,
         onToolCall: ({ name, phase }) => writeEvent({ type: "tool", name, phase }),
+        // #914: a relationship note she just made, for its chat line.
+        onNoted: (noted) => writeEvent({ type: "noted", ...noted }),
         // #675: the client's "think harder" (deep-thinking toggle): true
         // thinks this turn, false ends Mana's own deep thinking (Q12b).
         thinkHarder: typeof req.body?.thinkHarder === "boolean" ? req.body.thinkHarder : undefined,
