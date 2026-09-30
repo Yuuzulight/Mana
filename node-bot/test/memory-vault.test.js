@@ -81,6 +81,35 @@ test("editing an existing fact's note applies it directly as a vault edit", () =
   assert.equal(t.vault.sync().applied, 0);
 });
 
+test("a note keeps its own header lines, its line breaks and a BOM doesn't break it", () => {
+  const t = setup();
+  t.store.rememberFact({ key: "gpu", text: "RTX 4080.", origin: { kind: "user_stated" } });
+  t.vault.sync();
+  const mine = "tags:\n  - hardware\n  - pc\naliases: [graphics card]\n# my comment\ncssclasses:\n- wide";
+  t.write(
+    "Facts/gpu.md",
+    `\uFEFF${t.read("Facts/gpu.md").replace("pinned: false", `pinned: true\n${mine}`).replace("RTX 4080.", "RTX 5080,\n\nwater cooled.")}`,
+  );
+  t.vault.sync();
+  assert.equal(t.fact("gpu").text, "RTX 5080, water cooled.");
+  assert.equal(t.fact("gpu").pinned, true);
+  let note = t.read("Facts/gpu.md");
+  assert.ok(note.includes(`${mine}\n---\n\nRTX 5080,\n\nwater cooled.\n`));
+  assert.match(note, /^---\nstatus: active\npinned: true\n/);
+  assert.equal(parseNote(note).header.tags, undefined);
+  assert.equal(t.vault.sync().applied, 0);
+
+  // Mana's own change replaces the body but keeps the user's header lines.
+  t.store.rememberFact({ key: "gpu", text: "RTX 5090.", action: "patch", origin: { kind: "user_stated" } });
+  t.vault.sync();
+  note = t.read("Facts/gpu.md");
+  assert.ok(note.includes(`${mine}\n---\n\nRTX 5090.\n`));
+  // Moved to Archived/: still kept.
+  t.store.rememberFact({ key: "gpu", action: "archive" });
+  t.vault.sync();
+  assert.ok(t.read("Facts/Archived/gpu.md").includes(mine));
+});
+
 test("a vault edit keeps the untrusted flag and redaction still applies", () => {
   const t = setup();
   t.store.rememberFact({ key: "site", text: "Some claim.", unverifiedSource: true, origin: { kind: "user_stated" } });
