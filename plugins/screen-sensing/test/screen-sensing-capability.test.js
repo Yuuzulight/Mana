@@ -45,12 +45,52 @@ test("has the expected plugin metadata shape (off by default, Vision category)",
   assert.equal(typeof screenSensingPlugin.registerRoutes, "function");
 });
 
-test("POST /screen-sensing/glance requires an image", async () => {
+test("POST /screen-sensing/glance requires an image or text", async () => {
   const app = buildApp({ runVisionReply: async () => "irrelevant" });
   await withServer(app, async (baseUrl) => {
-    const { response, payload } = await postJson(`${baseUrl}/screen-sensing/glance`, {});
-    assert.equal(response.status, 400);
-    assert.match(payload.error, /image is required/);
+    for (const body of [{}, { text: "   " }]) {
+      const { response, payload } = await postJson(`${baseUrl}/screen-sensing/glance`, body);
+      assert.equal(response.status, 400);
+      assert.match(payload.error, /image or text is required/);
+    }
+  });
+});
+
+test("POST /screen-sensing/glance summarizes window text with the loaded model, not vision (#690)", async () => {
+  const localCalls = [];
+  const app = buildApp({
+    runVisionReply: async () => {
+      throw new Error("vision must not run for a text glance");
+    },
+    runLocalReply: async (prompt, maxTokens) => {
+      localCalls.push({ prompt, maxTokens });
+      return "The user is editing VoiceLoop.cs in VS Code.";
+    },
+    attentionGate: createAttentionGate({ now: () => 1000 }),
+  });
+
+  await withServer(app, async (baseUrl) => {
+    const { response, payload } = await postJson(`${baseUrl}/screen-sensing/glance`, {
+      text: "VoiceLoop.cs - Visual Studio Code",
+      image: "data:image/png;base64,ignoredwhentextispresent",
+    });
+    assert.equal(response.status, 200);
+    assert.equal(payload.shouldSurface, true);
+    assert.equal(payload.summary, "The user is editing VoiceLoop.cs in VS Code.");
+    assert.equal(localCalls.length, 1);
+    assert.match(localCalls[0].prompt, /<screen_text>\nVoiceLoop\.cs - Visual Studio Code\n<\/screen_text>/);
+  });
+});
+
+test("POST /screen-sensing/glance skips a text glance when no model is loaded", async () => {
+  const app = buildApp({ runLocalReply: async () => null });
+  await withServer(app, async (baseUrl) => {
+    const { response, payload } = await postJson(`${baseUrl}/screen-sensing/glance`, {
+      text: "Some window text that is long enough.",
+    });
+    assert.equal(response.status, 200);
+    assert.equal(payload.shouldSurface, false);
+    assert.equal(payload.reason, "no-model-loaded");
   });
 });
 

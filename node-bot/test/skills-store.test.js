@@ -4,8 +4,9 @@ const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
 
-const { createSkillsStore, parseSkillFile, serializeSkillFile, extractSkillScript, extractSkillInputs, verifySkillScript, evaluateSkillAvailability, readSkillFolder } = require("../skills-store");
+const { createSkillsStore, parseSkillFile, serializeSkillFile, extractSkillScript, extractSkillInputs, verifySkillScript, evaluateSkillAvailability, readSkillFolder, readSkillZip } = require("../skills-store");
 const { createSnapshotStore } = require("../snapshot-store");
+const { makeZip } = require("./helpers");
 
 function tempDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), "mana-skills-test-"));
@@ -667,6 +668,75 @@ test("readSkillFolder + importSkill: the approved bytes are written, nothing is 
   );
   assert.equal(fs.existsSync(path.join(skillsDir, "evil")), false, "a refused import leaves nothing behind");
   assert.equal(fs.existsSync(path.join(skillsDir, "outside.txt")), false);
+});
+
+function writeZip(entries) {
+  const file = path.join(tempDir(), "skill.zip");
+  fs.writeFileSync(file, makeZip(entries));
+  return file;
+}
+
+const ZIP_SKILL_MD = "---\nname: weather\ndescription: Get the weather.\n---\nUse scripts/get.sh.\n";
+
+test("readSkillZip reads a zipped skill folder like a folder, skipping dot-entries (#664)", () => {
+  const zip = writeZip([
+    { name: "weather/", data: "" },
+    { name: "weather/SKILL.md", data: ZIP_SKILL_MD },
+    { name: "weather/scripts/get.sh", data: "curl wttr.in\n", stored: true },
+    { name: "weather/.env", data: "KEY=secret" },
+    { name: "__MACOSX/weather/._SKILL.md", data: "junk" },
+  ]);
+  const skill = readSkillZip(zip);
+  assert.equal(skill.name, "weather");
+  assert.deepEqual(skill.files.map((f) => f.path).sort(), ["SKILL.md", "scripts/get.sh"]);
+  assert.deepEqual(skill.scripts, ["scripts/get.sh"]);
+
+  const skillsDir = tempDir();
+  createSkillsStore({ skillsDir }).importSkill({ files: skill.files });
+  assert.equal(fs.readFileSync(path.join(skillsDir, "weather", "scripts", "get.sh"), "utf8"), "curl wttr.in\n");
+
+  // SKILL.md at the top of the zip works too.
+  assert.equal(readSkillZip(writeZip([{ name: "SKILL.md", data: ZIP_SKILL_MD }])).files.length, 1);
+});
+
+test("readSkillZip refuses escaping paths, zip bombs, missing SKILL.md and non-zips", () => {
+  assert.throws(
+    () => readSkillZip(writeZip([{ name: "SKILL.md", data: ZIP_SKILL_MD }, { name: "../evil.sh", data: "x" }])),
+    /points outside the skill folder/,
+  );
+  assert.throws(
+    () => readSkillZip(writeZip([{ name: "SKILL.md", data: ZIP_SKILL_MD }, { name: "C:/evil.sh", data: "x" }])),
+    /points outside the skill folder/,
+  );
+  assert.throws(
+    () => readSkillZip(writeZip([{ name: "SKILL.md", data: ZIP_SKILL_MD }, { name: "scripts\\..\\..\\evil.sh", data: "x" }])),
+    /points outside the skill folder/,
+  );
+  // 64 MB of zeros deflates to ~64 KB; inflating stops at the 512 KB budget.
+  assert.throws(
+    () => readSkillZip(writeZip([{ name: "SKILL.md", data: ZIP_SKILL_MD }, { name: "big.bin", data: Buffer.alloc(64 * 1024 * 1024) }])),
+    /larger than 512 KB/,
+  );
+  assert.throws(() => readSkillZip(writeZip([{ name: "a/SKILL.md", data: ZIP_SKILL_MD }, { name: "b/x.md", data: "x" }])), /no SKILL\.md/);
+  const notZip = path.join(tempDir(), "fake.zip");
+  fs.writeFileSync(notZip, "hello");
+  assert.throws(() => readSkillZip(notZip), /isn't a zip Mana can read/);
+});
+
+test("readSkillZip reads a zip made by Windows' Compress-Archive", { skip: process.platform !== "win32" }, () => {
+  const { spawnSync } = require("node:child_process");
+  const source = path.join(tempDir(), "weather");
+  fs.mkdirSync(path.join(source, "scripts"), { recursive: true });
+  fs.writeFileSync(path.join(source, "SKILL.md"), ZIP_SKILL_MD);
+  fs.writeFileSync(path.join(source, "scripts", "get.sh"), "curl wttr.in\n");
+  const zip = path.join(tempDir(), "weather.zip");
+  const result = spawnSync(
+    "powershell.exe",
+    ["-NoProfile", "-NonInteractive", "-Command", `Compress-Archive -LiteralPath '${source}' -DestinationPath '${zip}'`],
+    { windowsHide: true },
+  );
+  assert.equal(result.status, 0, String(result.stderr));
+  assert.deepEqual(readSkillZip(zip).files.map((f) => f.path).sort(), ["SKILL.md", "scripts/get.sh"]);
 });
 
 test("pruneStaleSkills archives a SKILL.md folder whole", () => {

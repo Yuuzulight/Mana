@@ -23,6 +23,56 @@ const { SESSION_GOAL_FINISH_TOOL_NAME } = require("./session-goal-tool-source");
 const { CODING_EDIT_TOOL_NAME, CODING_TEST_TOOL_NAME } = require("./coding-tool-source");
 const { detectGpuVramUsageMb } = require("../model-management");
 const { readActivePointer, settleActiveBuild } = require("../llama-builds");
+const { GAMING_IDLE_MS } = require("../utils/gaming-watch");
+const { MEMORY_TOOL_PREFIX } = require("./memory-tool-source");
+
+// #898: a reply saying she saved, or will remember, something. Measured
+// live: "I already saved that detail into my memory just now" with no
+// memory__remember call at all. Not "remember when we..." or "do you
+// remember": those are recall, not a claim. ponytail: phrase regexes in
+// English, Japanese and Chinese; a claim worded another way slips through.
+const MEMORY_REMEMBER_TOOL = `${MEMORY_TOOL_PREFIX}remember`;
+const MEMORY_SAVE_CLAIM_RE = new RegExp(
+  [
+    String.raw`(?<!(?:\bnot|n't|\bnever)\s+(?:yet\s+)?(?:be(?:en)?\s+)?)\b(?:saved|stored|noted|recorded|written|wrote|added|put|committed|locked|filed)\b[^.!?\n]{0,40}?\b(?:in|into|to) (?:my )?(?:long-term )?memor(?:y|ies)\b`,
+    String.raw`\bI(?:'ll| will|'m going to| am going to|'m gonna) (?:make sure to |be sure to )?remember (?:that|this|it)\b`,
+    String.raw`\bI(?:'ve| have)?(?: already| just)? (?:memori[sz]ed|made a (?:mental )?note)\b`,
+    "覚えておく(?:ね|よ)|覚えておきます|覚えました|覚えたよ|(?:記憶|メモリ)に(?:保存|登録|記録)(?:した|しました|しておく|しておきます|しておいた)",
+    "我(?:会|已经)?记住(?:了|的)|(?:保存|记录?)(?:到|在|进)(?:我的)?记忆",
+  ].join("|"),
+  "i",
+);
+
+// "saved" when a memory__remember call wrote (or was approved), "pending"
+// when one is waiting on approval, else "none".
+function memoryWriteState(calls) {
+  let state = "none";
+  for (const call of calls) {
+    if (call.name !== MEMORY_REMEMBER_TOOL || !call.ok) continue;
+    let r = {};
+    try {
+      r = JSON.parse(call.result) || {};
+    } catch (e) {}
+    if (r.ok === true || (r.status === "approved" && r.result?.ok !== false)) return "saved";
+    if (r.status === "pending") state = "pending";
+  }
+  return state;
+}
+
+// #898: what to tell her when the reply claims a memory write this turn
+// doesn't back, or null. The fix goes back through memory__remember (its
+// approval gate and #317 attribution check), never a write from here.
+function memoryClaimNote(reply, calls) {
+  if (!MEMORY_SAVE_CLAIM_RE.test(reply)) return null;
+  const state = memoryWriteState(calls);
+  if (state === "saved") return null;
+  if (state === "pending") {
+    return /approv/i.test(reply)
+      ? null
+      : `Your ${MEMORY_REMEMBER_TOOL} call is waiting for the user's approval, so nothing is saved yet. Answer again and say it's waiting for their approval, not that it's saved.`;
+  }
+  return `Nothing was saved to memory this turn: no ${MEMORY_REMEMBER_TOOL} call went through. If the user asked you to remember something, call ${MEMORY_REMEMBER_TOOL} now; otherwise answer again without saying you saved it or will remember it.`;
+}
 
 // Persistent llama-server runtime.
 //
@@ -46,6 +96,8 @@ function createLlamaServerRuntime(options = {}) {
   const nowMs = options.nowMs || (() => Date.now());
   const logPerf = options.logPerf || (() => {});
   const modelSettingsStore = options.modelSettingsStore || null;
+  // #872: is a watched game running (server.js passes the gaming watch).
+  const gaming = options.gaming || (() => false);
   // `llama-server --help` text for a binary, cached per path (a probe is
   // ~1 s and only happens when a server starts). Injectable for tests.
   const probeHelp =
@@ -102,6 +154,17 @@ function createLlamaServerRuntime(options = {}) {
     lastStartBin: null,
     // #642: prompt size of the latest completion, from its timings.
     lastPromptUsage: null,
+    // #872: an image turn sets visionWanted (the chat server then keeps
+    // its mmproj); visionTimer clears it after MANA_VISION_IDLE_MS. busy
+    // counts replies in flight -- an unload waits for it to reach 0.
+    visionWanted: false,
+    visionTimer: null,
+    busy: 0,
+    visionUnloadPending: false,
+    // #889: the gaming model is in use (see setGaming); gamingSwapPending
+    // is a swap (true/false) waiting for the reply in flight.
+    gamingModel: false,
+    gamingSwapPending: null,
   };
 
   // Debounce: back-to-back requests for different profiles (e.g. one coding
@@ -245,7 +308,12 @@ function createLlamaServerRuntime(options = {}) {
     }
   }
 
+  // #889: while the gaming model is in use, every profile resolves to it.
   function findLlamaModel(profile = "default") {
+    return state.gamingModel ? env.MANA_GAMING_LLAMA_MODEL : findNormalLlamaModel(profile);
+  }
+
+  function findNormalLlamaModel(profile = "default") {
     const storedPath = modelSettingsStore ? modelSettingsStore.getModelPath() : null;
     return findPreferredLlamaModel({
       explicitModel: storedPath || env.LLAMA_MODEL || "",
@@ -331,7 +399,10 @@ function createLlamaServerRuntime(options = {}) {
       );
     }
 
-    // Prefer an mmproj that shares the model's family token (e.g. "qwen2.5-vl").
+    // #872: Q8_0 first -- it read test images as well as F16 for ~280 MiB
+    // less VRAM. Then prefer one that shares the model's family token
+    // (e.g. "qwen2.5-vl").
+    mmprojFiles.sort((a, b) => /-q8_0\.gguf$/i.test(b) - /-q8_0\.gguf$/i.test(a));
     const modelName = path.basename(modelPath).toLowerCase();
     const familyToken = (modelName.match(/^[a-z0-9.]+(-vl)?/i) || [""])[0];
     const match = mmprojFiles.find(
@@ -340,6 +411,31 @@ function createLlamaServerRuntime(options = {}) {
         path.basename(fullPath).toLowerCase().includes(familyToken),
     );
     return match || mmprojFiles[0];
+  }
+
+  // #679: the vision mmproj when the vision model is this same file (a
+  // natively multimodal chat model, the setup .env.sample documents), else
+  // null. #872: the chat server only loads it once an image turn wants it
+  // (state.visionWanted) and drops it again after MANA_VISION_IDLE_MS.
+  function chatMmprojFor(model) {
+    // #889: never with the gaming model (a small model may not see images);
+    // image turns go describe-first instead.
+    if (state.gamingModel) return null;
+    try {
+      const visionModel = findVisionModel();
+      // path.relative is case-insensitive on Windows.
+      return path.relative(visionModel, model) === "" ? findVisionMmproj(visionModel) : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function chatAcceptsImages(profile) {
+    try {
+      return Boolean(chatMmprojFor(findLlamaModel(profile)));
+    } catch {
+      return false;
+    }
   }
 
   function getVisionStatus() {
@@ -420,6 +516,8 @@ function createLlamaServerRuntime(options = {}) {
       // the reply it's for schedules a fresh one.
       if (state.starting) return;
       const port = state.port;
+      // #872: and the next start is text-only until an image asks again.
+      state.visionWanted = false;
       const child = stop();
       if (!child) {
         // Adopted (see startServer): no handle to it, so nothing to kill.
@@ -573,18 +671,24 @@ function createLlamaServerRuntime(options = {}) {
     // reuse; the host cache only helps when requests hop slots or sessions,
     // so 1 GiB keeps most of that. LLAMA_CACHE_RAM overrides it (MiB; -1 =
     // no limit, 0 = off).
+    // #889: the gaming model gets MANA_GAMING_CACHE_RAM (256): a live FFXIV
+    // run showed system RAM, not VRAM, runs out first while gaming.
     if (supportsFlag(bin, "--cache-ram")) {
-      const cacheRam = Number(String(env.LLAMA_CACHE_RAM || "").trim() || 1024);
-      args.push("--cache-ram", String(Number.isInteger(cacheRam) && cacheRam >= -1 ? cacheRam : 1024));
+      const [setting, fallback] = state.gamingModel ? [env.MANA_GAMING_CACHE_RAM, 256] : [env.LLAMA_CACHE_RAM, 1024];
+      const cacheRam = Number(String(setting || "").trim() || fallback);
+      args.push("--cache-ram", String(Number.isInteger(cacheRam) && cacheRam >= -1 ? cacheRam : fallback));
     }
 
     // Same opt-in hardware flags as the llama-cli path.
     if (env.LLAMA_ENABLE_FLASHATTN === "1") {
       args.push("--flash-attn", env.LLAMA_ARG_FLASH_ATTN || "auto");
     }
-    if (env.LLAMA_KV_COMPRESS) {
-      args.push("-ctk", env.LLAMA_KV_COMPRESS);
-      args.push("-ctv", env.LLAMA_KV_COMPRESS);
+    // #889: the gaming model's KV cache type. A quantized V cache needs
+    // flash attention, which llama-server's default (auto) turns on for it.
+    const kvCache = state.gamingModel ? env.MANA_GAMING_KV_CACHE || "q8_0" : env.LLAMA_KV_COMPRESS;
+    if (kvCache) {
+      args.push("-ctk", kvCache);
+      args.push("-ctv", kvCache);
     }
     if (env.LLAMA_ENABLE_NO_KV_OFFLOAD === "1") {
       args.push("--no-kv-offload");
@@ -646,7 +750,7 @@ function createLlamaServerRuntime(options = {}) {
     if (ngl) {
       args.push("-ngl", String(ngl));
     }
-    const contextCap = Number(env.LLAMA_CONTEXT || env.LLAMA_CONTEXT_CAP || "4096");
+    const contextCap = configuredContext();
 
     // Issue #462: opt-in real concurrency, now that the 16GB card leaves
     // room for it (was rejected on the prior 8GB card -- see
@@ -833,6 +937,8 @@ function createLlamaServerRuntime(options = {}) {
       state.model &&
       state.model !== model &&
       swapDebounceMs > 0 &&
+      // #889: swaps to or from the gaming model are never skipped.
+      ![model, state.model].includes(env.MANA_GAMING_LLAMA_MODEL) &&
       state.loadedAt !== null &&
       nowMs() - state.loadedAt < swapDebounceMs
     ) {
@@ -914,8 +1020,103 @@ function createLlamaServerRuntime(options = {}) {
     return false;
   }
 
-  async function ensureServer(profile) {
-    return ensureServerConfig(findLlamaModel(profile), null, profile);
+  // #872: images = the turn's attached images, if any. The first image turn
+  // restarts the chat server with its mmproj; later turns keep it until
+  // unloadVision().
+  async function ensureServer(profile, images = null) {
+    if (images?.length) noteImageTurn();
+    const model = findLlamaModel(profile);
+    return ensureServerConfig(model, chatMmprojToLoad(model), profile);
+  }
+
+  function chatMmprojToLoad(model) {
+    return state.visionWanted ? chatMmprojFor(model) : null;
+  }
+
+  // #872: (re)starts the vision idle countdown. While a watched game runs
+  // it's the embedder's short gaming idle, so a mid-game image doesn't
+  // hold the mmproj's VRAM for 10 minutes.
+  function noteImageTurn() {
+    state.visionWanted = true;
+    clearTimeout(state.visionTimer);
+    const idleMs = gaming()
+      ? GAMING_IDLE_MS
+      : Number(env.MANA_VISION_IDLE_MS === undefined ? 600000 : env.MANA_VISION_IDLE_MS);
+    if (!(idleMs > 0)) return; // 0: kept until the server's own idle shutdown
+    state.visionTimer = setTimeout(unloadVision, idleMs);
+    state.visionTimer.unref?.();
+  }
+
+  // #872: restarts the chat server without its mmproj (idle, or a watched
+  // game started). Mid-reply it waits: the last reply to finish calls it
+  // again (see inTurn).
+  function unloadVision() {
+    if (state.busy > 0) {
+      state.visionUnloadPending = true;
+      return;
+    }
+    state.visionUnloadPending = false;
+    clearTimeout(state.visionTimer);
+    state.visionWanted = false;
+    if (!state.mmproj || state.starting) return;
+    // Only a chat model's server: a separate vision model (describe-first)
+    // is swapped out by the next chat turn anyway.
+    const profile = getKnownLlamaModelProfiles().find(isProfileAlreadyLoaded);
+    if (!profile) return;
+    console.log("Vision idle: restarting llama-server without the mmproj");
+    ensureServerConfig(state.model, null, profile).then(
+      // stop() cleared the idle shutdown; the restarted server needs one.
+      scheduleIdleShutdown,
+      (e) => console.warn("llama-server restart without the mmproj failed:", e.message),
+    );
+  }
+
+  // #889: a watched game started (true) or ended (false). With
+  // MANA_GAMING_LLAMA_MODEL set, the chat server swaps to that model (see
+  // buildServerArgs for its context and KV cache) so Fish can stay on the
+  // GPU next to the game, and back when it ends. Without it, a game start
+  // only drops the vision mmproj (#872). Like unloadVision, a swap that
+  // lands mid-reply waits for the last reply to finish (see inTurn).
+  function setGaming(on) {
+    const gamingModel = env.MANA_GAMING_LLAMA_MODEL;
+    if (!gamingModel || (on && !fs.existsSync(gamingModel))) {
+      if (gamingModel) console.warn(`MANA_GAMING_LLAMA_MODEL not found, keeping the normal model: ${gamingModel}`);
+      if (on) unloadVision();
+      return;
+    }
+    if (state.busy > 0) {
+      state.gamingSwapPending = on;
+      // The swap drops the mmproj anyway; one restart, not two.
+      if (on) state.visionUnloadPending = false;
+      return;
+    }
+    state.gamingSwapPending = null;
+    if (state.gamingModel === on) return;
+    state.gamingModel = on;
+    clearTimeout(state.visionTimer);
+    state.visionWanted = false;
+    // Nothing loaded: the next turn starts the right model.
+    if (!state.port && !state.starting) return;
+    console.log(`Watched game ${on ? "started" : "ended"}: restarting llama-server with the ${on ? "gaming" : "normal"} model`);
+    ensureServerConfig(findLlamaModel(), null, "default").then(
+      scheduleIdleShutdown,
+      (e) => console.warn("llama-server gaming model swap failed:", e.message),
+    );
+  }
+
+  // #872: counts a reply as in flight, so unloadVision (and #889's
+  // setGaming) never restarts the server under it.
+  function inTurn(fn) {
+    return async (...args) => {
+      state.busy += 1;
+      try {
+        return await fn(...args);
+      } finally {
+        state.busy -= 1;
+        if (state.busy === 0 && state.gamingSwapPending !== null) setGaming(state.gamingSwapPending);
+        if (state.busy === 0 && state.visionUnloadPending) unloadVision();
+      }
+    };
   }
 
   // #666: a chat turn waits out a llama-server (re)start or a brief outage
@@ -924,7 +1125,8 @@ function createLlamaServerRuntime(options = {}) {
   // profile's fallbackProfile gets one try. onWait fires at most once, the
   // first time the turn actually has to wait. Resolves to the profile that
   // is ready; rejects with the primary's error when nothing came up.
-  async function waitForServer(profile, onWait = null) {
+  async function waitForServer(profile, onWait = null, images = null) {
+    if (images?.length) noteImageTurn();
     let waited = false;
     const notify = () => {
       if (waited) return;
@@ -935,7 +1137,7 @@ function createLlamaServerRuntime(options = {}) {
     const model = findLlamaModel(profile);
     for (let delayMs = 2000; ; delayMs *= 3) {
       try {
-        await ensureServerConfig(model, null, profile, notify);
+        await ensureServerConfig(model, chatMmprojToLoad(model), profile, notify);
         return profile;
       } catch (e) {
         const waitMs = Math.max(delayMs, e.retryAfterMs || 0);
@@ -947,7 +1149,8 @@ function createLlamaServerRuntime(options = {}) {
         const fallback = backupProfileFor(profile);
         if (!fallback) throw e;
         try {
-          await ensureServerConfig(findLlamaModel(fallback), null, fallback, notify);
+          const fallbackModel = findLlamaModel(fallback);
+          await ensureServerConfig(fallbackModel, chatMmprojToLoad(fallbackModel), fallback, notify);
         } catch {
           throw e;
         }
@@ -980,17 +1183,39 @@ function createLlamaServerRuntime(options = {}) {
   // ones into the leading system message (where they already sat), late
   // ones onto the front of the live user message (still last in the prompt,
   // so the stable prefix stays cacheable, #660). Other roles pass through.
+  //
+  // #679: extraMessages.images (data URLs) ride on the live user message,
+  // but only when the running server has an mmproj -- a text-only server
+  // (a backup profile, say) would reject the whole request, so they are
+  // dropped there and the model answers from the text alone.
+  // Bare base64 becomes a data URL (runVisionReply's rule); anything else
+  // that isn't one stays unusable to llama-server rather than a URL it fetches.
+  function toImageDataUrl(image) {
+    return String(image).startsWith("data:") ? String(image) : `data:image/png;base64,${image}`;
+  }
+
   function buildMessages(systemContent, prompt, extraMessages) {
     const early = extraMessages?.early || [];
     const late = extraMessages?.late || [];
     const systemText = (entries) => entries.filter((m) => m.role === "system").map((m) => m.content);
     const nonSystem = (entries) => entries.filter((m) => m.role !== "system");
     const lateText = systemText(late);
+    const userText = [...lateText, prompt].join("\n\n");
+    let images = extraMessages?.images || [];
+    if (images.length && !state.mmproj) {
+      console.warn(`llama-server has no mmproj loaded; answering without the ${images.length} attached image(s)`);
+      images = [];
+    }
     return [
       { role: "system", content: [systemContent, ...systemText(early)].join("\n\n") },
       ...nonSystem(early),
       ...nonSystem(late),
-      { role: "user", content: [...lateText, prompt].join("\n\n") },
+      {
+        role: "user",
+        content: images.length
+          ? [{ type: "text", text: userText }, ...images.map((image) => ({ type: "image_url", image_url: { url: toImageDataUrl(image) } }))]
+          : userText,
+      },
     ];
   }
 
@@ -1034,8 +1259,13 @@ function createLlamaServerRuntime(options = {}) {
 
   // #642: the running server's real per-slot context (/props n_ctx),
   // else the -c value buildServerArgs would pass. Never starts a server.
+  function configuredContext() {
+    if (state.gamingModel) return Number(env.MANA_GAMING_LLAMA_CONTEXT || 8192);
+    return Number(env.LLAMA_CONTEXT || env.LLAMA_CONTEXT_CAP || "4096");
+  }
+
   async function getContextSize() {
-    const configured = Number(env.LLAMA_CONTEXT || env.LLAMA_CONTEXT_CAP || "4096");
+    const configured = configuredContext();
     if (!state.port || typeof fetchImpl !== "function") return configured;
     try {
       const resp = await fetchImpl(`http://127.0.0.1:${state.port}/props`);
@@ -1057,7 +1287,10 @@ function createLlamaServerRuntime(options = {}) {
   async function fitThinkingToContext(params, payload) {
     const budget = params.thinking_budget_tokens;
     if (!budget || !Number.isFinite(params.max_tokens)) return;
-    const text = JSON.stringify(payload);
+    // #679: an attached image's base64 would count as ~100k text tokens.
+    // ponytail: images count as 0 here; a per-image estimate if image turns
+    // with deep thinking start overflowing the context.
+    const text = JSON.stringify(payload, (key, value) => (key === "image_url" ? undefined : value));
     const [contextSize, counted] = await Promise.all([getContextSize(), countTokens(text)]);
     const room = contextSize - (counted ?? Math.ceil(text.length / 3)) - 64;
     const over = params.max_tokens - room;
@@ -1085,7 +1318,7 @@ function createLlamaServerRuntime(options = {}) {
       throw new Error("fetch is not available; cannot use llama-server");
     }
     const startedAt = nowMs();
-    await ensureServer(profile);
+    await ensureServer(profile, extraMessages?.images);
 
     // #675: per-profile/per-task sampler preset and thinking.
     const sampling = buildSamplingParams({ profile, task, maxTokens, thinking: thinkingOverride, env });
@@ -1155,7 +1388,7 @@ function createLlamaServerRuntime(options = {}) {
       throw new Error("fetch is not available; cannot use llama-server");
     }
     const startedAt = nowMs();
-    await ensureServer(profile);
+    await ensureServer(profile, extraMessages?.images);
 
     const messages = buildMessages(overrideSystemPrompt || systemPrompt, prompt, extraMessages);
     const { params } = buildSamplingParams({ profile, task: "stream", maxTokens, thinking, env });
@@ -1531,7 +1764,7 @@ function createLlamaServerRuntime(options = {}) {
       );
     }
     const startedAt = nowMs();
-    await ensureServer(profile);
+    await ensureServer(profile, extraMessages?.images);
 
     const goalText = String(goal || "").trim();
     const goalMode = Boolean(goalText);
@@ -1629,6 +1862,21 @@ function createLlamaServerRuntime(options = {}) {
     const outOfBudget = () =>
       rounds >= roundLimit || nowMs() > deadline || promptTokens > promptTokenLimit;
 
+    // #898: once per reply, a claim of a memory write that didn't happen
+    // goes back to her with memoryClaimNote. Goal mode's own review
+    // already checks claims against the tool calls.
+    let memoryRechecked = false;
+    function recheckMemoryClaim() {
+      if (goalMode || memoryRechecked) return false;
+      if (!toolPolicy.tools.some((t) => t.function?.name === MEMORY_REMEMBER_TOOL)) return false;
+      const reply = stripThinking(message.content);
+      const note = memoryClaimNote(reply, reviewLog);
+      if (!note) return false;
+      memoryRechecked = true;
+      messages.push({ role: "assistant", content: reply }, { role: "user", content: note });
+      return true;
+    }
+
     // Issue #676: the end of a goal-mode run. True means the review found
     // something missing and there's budget for another cycle.
     async function reviewAndResume() {
@@ -1717,6 +1965,12 @@ function createLlamaServerRuntime(options = {}) {
           }
           stalled = true;
         }
+        if (recheckMemoryClaim()) {
+          // She can still call memory__remember; with no rounds left she
+          // only gets to correct the reply.
+          if (!outOfBudget()) continue;
+          message = (await complete(false))?.choices?.[0]?.message || {};
+        }
         if (await reviewAndResume()) continue;
         break; // model produced a real answer -- no more tools requested
       }
@@ -1789,6 +2043,7 @@ function createLlamaServerRuntime(options = {}) {
         // means the model cannot request yet another tool call here.
         const finalJson = await complete(false);
         message = (finalJson && finalJson.choices && finalJson.choices[0] && finalJson.choices[0].message) || {};
+        if (recheckMemoryClaim()) message = (await complete(false))?.choices?.[0]?.message || {};
         if (await reviewAndResume()) continue;
         break;
       }
@@ -1931,7 +2186,18 @@ function createLlamaServerRuntime(options = {}) {
 
     const startedAt = nowMs();
     const model = findVisionModel();
+    // #889: while gaming, a separate vision model can still describe the
+    // image (the VRAM guard has the last word), but the normal chat model
+    // plus its mmproj is exactly the load the gaming model is there to avoid.
+    if (state.gamingModel && sameModelPath(model, findNormalLlamaModel())) {
+      const error = new Error("Vision is paused while gaming");
+      error.code = "VISION_PAUSED_GAMING";
+      throw error;
+    }
     const mmproj = findVisionMmproj(model);
+    // #872: when the vision model is the chat model, chat turns now keep
+    // the mmproj this loads (vision__look mid tool loop: one reload, not two).
+    noteImageTurn();
     await ensureServerConfig(model, mmproj);
 
     const content = [
@@ -1988,6 +2254,8 @@ function createLlamaServerRuntime(options = {}) {
       external: Boolean(state.port && state.model && !state.child),
       model: state.model,
       mmproj: state.mmproj,
+      // #889: the running model is the gaming model.
+      gamingModel: Boolean(state.gamingModel && state.model === env.MANA_GAMING_LLAMA_MODEL),
       port: state.port,
       lastSwapMs: state.lastSwapMs,
     };
@@ -2027,6 +2295,8 @@ function createLlamaServerRuntime(options = {}) {
   return {
     backupProfileFor,
     buildServerArgs,
+    chatAcceptsImages,
+    chatMmprojFor,
     ensureServerConfig,
     findLlamaServerBin,
     findLlamaModel,
@@ -2034,23 +2304,27 @@ function createLlamaServerRuntime(options = {}) {
     findVisionMmproj,
     getVisionStatus,
     isEnabled,
+    // ponytail: the proxy's streamed body outlives this call, so an unload
+    // can still land mid-stream there; track the body if that ever bites.
     proxyChatCompletion,
-    streamLocalAssistantReply,
-    runBestOfNReply,
-    waitForServer,
-    runLocalAssistantReply,
-    runToolAwareReply,
-    runVisionReply,
+    streamLocalAssistantReply: inTurn(streamLocalAssistantReply),
+    runBestOfNReply: inTurn(runBestOfNReply),
+    waitForServer: inTurn(waitForServer),
+    runLocalAssistantReply: inTurn(runLocalAssistantReply),
+    runToolAwareReply: inTurn(runToolAwareReply),
+    runVisionReply: inTurn(runVisionReply),
     getStatus,
     getLastPromptUsage,
     countTokens,
     getContextSize,
     isProfileAlreadyLoaded,
-    runLocalReplyIfSafelyLoaded,
+    runLocalReplyIfSafelyLoaded: inTurn(runLocalReplyIfSafelyLoaded),
     scheduleIdleShutdown,
+    setGaming,
     stop,
     supportsLoadMode,
     systemPrompt,
+    unloadVision,
   };
 }
 

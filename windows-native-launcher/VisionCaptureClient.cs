@@ -21,24 +21,29 @@ internal sealed class VisionCaptureClient : IDisposable
     private readonly Uri socketUri;
     private readonly ManaBackendClient backendClient;
     private readonly Func<string> captureScreen;
+    private readonly Func<Task<string>>? captureCamera;
     private readonly CancellationTokenSource cts = new();
 
     // captureScreen: null (the real call site) uses ScreenCapture's
-    // primary-screen JPEG; tests pass a fake.
-    public VisionCaptureClient(ManaBackendClient backendClient, string? backendBaseUrl = null, Func<string>? captureScreen = null)
+    // primary-screen JPEG; tests pass a fake. #912: captureCamera answers
+    // vision__camera; with it the socket tells node-bot (?camera=1) this
+    // client can take camera snapshots.
+    public VisionCaptureClient(ManaBackendClient backendClient, string? backendBaseUrl = null, Func<string>? captureScreen = null, Func<Task<string>>? captureCamera = null)
     {
         this.backendClient = backendClient;
         this.captureScreen = captureScreen ?? ScreenCapture.CaptureAsJpegDataUrl;
-        socketUri = BuildSocketUri(backendBaseUrl);
+        this.captureCamera = captureCamera;
+        socketUri = BuildSocketUri(backendBaseUrl, captureCamera is not null);
     }
 
-    private static Uri BuildSocketUri(string? backendBaseUrl)
+    internal static Uri BuildSocketUri(string? backendBaseUrl, bool camera)
     {
         var httpUri = new Uri(string.IsNullOrWhiteSpace(backendBaseUrl) ? "http://127.0.0.1:5005" : backendBaseUrl);
         return new UriBuilder(httpUri)
         {
             Scheme = httpUri.Scheme == "https" ? "wss" : "ws",
             Path = "/ws/vision-capture",
+            Query = camera ? "camera=1" : "",
         }.Uri;
     }
 
@@ -92,19 +97,19 @@ internal sealed class VisionCaptureClient : IDisposable
             }
             while (!result.EndOfMessage);
 
-            var requestId = TryParseCaptureRequestId(stream.ToArray());
-            if (requestId is not null)
+            if (TryParseCaptureRequest(stream.ToArray()) is var (requestId, camera))
             {
                 // Not awaited: the reply is blocked on this answer, and the
                 // socket should keep reading meanwhile.
-                _ = RespondAsync(requestId);
+                _ = RespondAsync(requestId, camera);
             }
         }
     }
 
-    // {type:"capture-request", requestId:"<uuid>"}; anything else (or a
-    // malformed frame) is ignored, like TrayNotificationClient's parser.
-    internal static string? TryParseCaptureRequestId(byte[] json)
+    // {type:"capture-request", requestId:"<uuid>"}, plus source:"camera"
+    // for #912's snapshot; anything else (or a malformed frame) is ignored,
+    // like TrayNotificationClient's parser.
+    internal static (string RequestId, bool Camera)? TryParseCaptureRequest(byte[] json)
     {
         try
         {
@@ -115,7 +120,8 @@ internal sealed class VisionCaptureClient : IDisposable
                 return null;
             }
             var requestId = root.TryGetProperty("requestId", out var id) ? id.GetString() : null;
-            return string.IsNullOrEmpty(requestId) ? null : requestId;
+            var camera = root.TryGetProperty("source", out var source) && source.ValueKind == JsonValueKind.String && source.GetString() == "camera";
+            return string.IsNullOrEmpty(requestId) ? null : (requestId, camera);
         }
         catch (Exception)
         {
@@ -126,7 +132,7 @@ internal sealed class VisionCaptureClient : IDisposable
     // A failed capture is reported as {requestId, error} so node-bot rejects
     // the pending request at once instead of waiting out its timeout (same
     // as renderer.js). Never throws -- it runs unobserved.
-    internal async Task RespondAsync(string requestId)
+    internal async Task RespondAsync(string requestId, bool camera = false)
     {
         string? image = null;
         string? error = null;
@@ -134,11 +140,13 @@ internal sealed class VisionCaptureClient : IDisposable
         {
             // Off the socket's thread: CopyFromScreen + JPEG encoding of a
             // full screen isn't free.
-            image = await Task.Run(captureScreen);
+            image = camera
+                ? await Task.Run(captureCamera ?? throw new InvalidOperationException("this launcher has no camera"))
+                : await Task.Run(captureScreen);
         }
         catch (Exception ex)
         {
-            error = string.IsNullOrWhiteSpace(ex.Message) ? "screen capture failed" : ex.Message;
+            error = string.IsNullOrWhiteSpace(ex.Message) ? (camera ? "camera snapshot failed" : "screen capture failed") : ex.Message;
         }
 
         try

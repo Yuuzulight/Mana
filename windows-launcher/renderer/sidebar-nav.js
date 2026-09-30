@@ -7,6 +7,7 @@
 
 const { shell } = require("electron");
 const path = require("path");
+const { skillReviewFlags } = require("./skill-approval");
 
 const sidebarEl = document.getElementById("sessionSidebar");
 const sidebarCollapseBtnEl = document.getElementById("sidebarCollapseBtn");
@@ -590,10 +591,11 @@ skillSaveBtnEl?.addEventListener("click", async () => {
       if (!response.ok) throw new Error(`Create skill returned ${response.status}`);
       const outcome = await response.json();
       if (outcome.status === "pending" && outcome.requestId) {
-        if (!outcome.flags || outcome.flags.length === 0) {
-          // Nothing the content scan flagged, and a human just typed this
-          // in directly -- auto-clear the hold instead of a redundant
-          // second confirmation step.
+        const reviewFlags = skillReviewFlags(outcome);
+        if (reviewFlags.length === 0) {
+          // Nothing the content scan or Guardian (#850) flagged, and a
+          // human just typed this in directly -- auto-clear the hold
+          // instead of a redundant second confirmation step.
           const decideResponse = await fetch(`${BACKEND_BASE_URL}/approvals/${outcome.requestId}/decide`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -605,7 +607,7 @@ skillSaveBtnEl?.addEventListener("click", async () => {
           // Flagged -- leave it genuinely pending rather than rubber-
           // stamping past the scan's own tripwire; shows up in the
           // pending-review list above for an explicit decision.
-          setSkillsStatus(`Staged for review (flagged: ${outcome.flags.join(", ")}).`);
+          setSkillsStatus(`Staged for review (flagged: ${reviewFlags.join(", ")}).`);
         }
       } else {
         setSkillsStatus("Skill created.");

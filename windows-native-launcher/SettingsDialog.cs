@@ -14,9 +14,9 @@ namespace Mana.NativeLauncher;
 // the staleness risk.
 internal sealed class SettingsDialog : Form
 {
-    public SettingsDialog(ManaBackendClient backendClient, BackendLogBuffer backendLog, Func<string?>? getCurrentSessionId = null)
+    public SettingsDialog(ManaBackendClient backendClient, BackendLogBuffer backendLog, Func<string?>? getCurrentSessionId = null, Func<HotkeyAction, Keys?, string?>? bindHotkey = null, ListeningPause? listeningPause = null)
     {
-        var panel = new SettingsPanel(backendClient, backendLog, getCurrentSessionId);
+        var panel = new SettingsPanel(backendClient, backendLog, getCurrentSessionId, bindHotkey, listeningPause);
 
         Text = "Settings";
         Width = 640;

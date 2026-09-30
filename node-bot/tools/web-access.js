@@ -7,6 +7,7 @@ const dns = require("node:dns").promises;
 const net = require("node:net");
 const { URL } = require("node:url");
 const { ValidationError } = require("../request-validation");
+const { refuseIfLocalOnly } = require("../local-only");
 
 const DEFAULT_SEARXNG_URL = "http://127.0.0.1:8890";
 const FETCH_TIMEOUT_MS = 15000;
@@ -181,6 +182,8 @@ async function searchWeb(query, options = {}) {
   if (!cleanQuery) {
     throw new ValidationError("query is required");
   }
+  // #670: SearXNG is local, but it searches the internet.
+  refuseIfLocalOnly("web search", options.env);
   const limit = Math.min(Math.max(Number(options.limit) || 5, 1), 10);
   const base = getSearxngUrl(options.env);
   const url = `${base}/search?format=json&q=${encodeURIComponent(cleanQuery)}`;

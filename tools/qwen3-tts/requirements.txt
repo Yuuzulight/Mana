@@ -1,0 +1,11 @@
+# Qwen3-TTS service venv (tools/qwen3-tts/.venv, Python 3.12). These versions
+# are known to work together on an RTX 5080; see docs/qwen3_tts.md.
+--extra-index-url https://download.pytorch.org/whl/cu128
+torch==2.11.0+cu128
+torchaudio==2.11.0+cu128
+faster-qwen3-tts==0.5.2
+qwen-tts-hf==0.1.1.post1
+transformers==5.17.0
+fastapi==0.142.0
+uvicorn==0.54.0
+soundfile==0.14.0

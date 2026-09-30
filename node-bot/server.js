@@ -9,9 +9,13 @@ Environment variables (node-bot/.env, loaded at startup -- its values win
 over inherited ones -- or set before running):
 - WHISPER_BIN : full path to whisper.cpp main executable (e.g. C:\whisper.cpp\main.exe)
 - WHISPER_MODEL : full path to whisper model file (e.g. models/ggml-base.en.bin)
-- WHISPER_LANGUAGE : spoken language passed to whisper.cpp (default "en")
+- WHISPER_LANGUAGE : spoken language passed to whisper.cpp; when unset,
+  Settings > Voice picks "en" (default) or "auto" (issue #926)
 - WHISPER_PROMPT : replaces the initial prompt that biases transcription
   toward Mana's wake words, your name and your frequent terms (issue #667)
+- WHISPER_VOCABULARY : comma-separated words whisper should know, added to
+  that prompt right after your name (e.g. "Imouto, Oneesan, Gigi Murin,
+  Hololive, VTuber"; issue #901). Ignored when WHISPER_PROMPT is set
 - WHISPER_BEAM_SIZE, WHISPER_NO_SPEECH_THRESHOLD, WHISPER_TEMPERATURE :
   whisper.cpp decoding tuning knobs, see docs/speech_recognition_improvement_plan.md
 - WHISPER_SERVER_BIN, WHISPER_SERVER_PORT : the whisper-server kept loaded for
@@ -58,6 +62,12 @@ if (require.main === module) {
   if (loadedEnvKeys.length) {
     console.log(`Loaded ${loadedEnvKeys.length} settings from node-bot/.env`);
   }
+  // #670: before anything below can open a connection.
+  const localOnly = require("./local-only");
+  if (localOnly.isLocalOnly()) {
+    localOnly.installLocalOnlyGuard();
+    console.log("[Mana Boot] Local-only mode is on: nothing leaves this PC and your local network.");
+  }
 }
 
 const express = require("express");
@@ -71,7 +81,6 @@ const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
 const { Readable } = require("node:stream");
-const { setTimeout: sleep } = require("node:timers/promises");
 const http = require("http");
 const https = require("https");
 const { createWorker } = require("tesseract.js");
@@ -216,8 +225,10 @@ const { createSessionSearchToolSource } = require("./ai/session-search-tool-sour
 const { createSkillToolSource } = require("./ai/skill-tool-source");
 const { createSnapshotToolSource } = require("./ai/snapshot-tool-source");
 const { createExpressionToolSource, isExpressionToolName } = require("./ai/expression-tool-source");
+const { createSpeechToolSource } = require("./ai/speech-tool-source");
 const { createVisionToolSource } = require("./ai/vision-tool-source");
 const { createSessionGoalToolSource } = require("./ai/session-goal-tool-source");
+const { createReminderToolSource } = require("./ai/reminder-tool-source");
 const { createDeepThinkingState, createDeepThinkingToolSource } = require("./ai/deep-thinking-tool-source");
 const { visionCaptureBridge } = require("./vision-capture-bridge");
 const { createCodingToolSource } = require("./ai/coding-tool-source");
@@ -243,6 +254,7 @@ const { createLlamaBuildManager } = require("./llama-builds");
 const { createModelSettingsStore } = require("./model-settings-store");
 const whisperDiscovery = require("./whisper-discovery");
 const { createWhisperPromptProvider } = require("./whisper-prompt");
+const { createSpeechVocabulary, resolveWhisperLanguage } = require("./speech-vocabulary");
 const {
   normalizeLlamaModelProfile,
   pickPreferredLlamaModel,
@@ -257,6 +269,7 @@ const {
 const { createLlamaServerRuntime } = require("./ai/llama-server-runtime");
 const { createReranker } = require("./ai/reranker-runtime");
 const { createEmbedder } = require("./ai/embedder-runtime");
+const { createRetrieverRuntime } = require("./ai/retriever-runtime");
 const { createWhisperServer, belowNormal } = require("./ai/whisper-server-runtime");
 const { createGamingWatch } = require("./utils/gaming-watch");
 const { streamedMatchesFinal } = require("./utils/reply-stream-diff");
@@ -404,10 +417,10 @@ const SCREEN_CONTEXT_MAX_CHARS = Number(
 const SCREEN_OCR_CACHE_PATH =
   process.env.SCREEN_OCR_CACHE_PATH || path.join(__dirname, "tmp", "tesseract");
 const WHISPER_THREADS = Number(process.env.WHISPER_THREADS || 2);
-const WHISPER_LANGUAGE = process.env.WHISPER_LANGUAGE || "en";
 // whisper.cpp's initial prompt comes from getWhisperPrompt (below
 // acpMemoryStore, which it reads): Mana's wake words plus the user's name
-// and frequent terms (issue #667, see whisper-prompt.js).
+// and frequent terms (issue #667, see whisper-prompt.js). Its language
+// comes from whisperLanguage(), next to it (#926).
 const WHISPER_BEAM_SIZE = process.env.WHISPER_BEAM_SIZE || "5";
 const WHISPER_NO_SPEECH_THRESHOLD =
   process.env.WHISPER_NO_SPEECH_THRESHOLD || "0.45";
@@ -499,7 +512,15 @@ const llamaServerRuntime = createLlamaServerRuntime({
   nowMs,
   logPerf,
   modelSettingsStore,
+  // #872: a mid-game image keeps the mmproj for the short gaming idle.
+  gaming: () => gamingWatch.isGaming(),
 });
+
+// #889: the chat model llama-server is running, for the tray and Doctor.
+function chatModelLabel() {
+  const { model, gamingModel } = llamaServerRuntime.getStatus();
+  return model ? `${path.basename(model)}${gamingModel ? " (gaming model)" : ""}` : null;
+}
 
 // #754/#760: stop the memory embedder (~2.3 GB VRAM) and reranker (RAM) as
 // soon as a watched game starts -- a turn during the game used to wake them
@@ -517,16 +538,23 @@ const gamingWatch = createGamingWatch({
     return parseTasklistNames(stdout).some((name) => GAMING_PROCESS_NAMES.includes(name));
   },
   onGameStart: () => {
-    console.log("Watched game started: stopping the memory embedder and reranker");
+    console.log("Watched game started: stopping the memory embedder, reranker and Python retriever");
     embedder.stop();
     reranker.stop();
+    retrieverService.stop();
+    // #872/#889: drops the vision mmproj, and swaps to MANA_GAMING_LLAMA_MODEL when it's set.
+    llamaServerRuntime.setGaming(true);
   },
+  onGameEnd: () => llamaServerRuntime.setGaming(false),
 });
 if (process.env.NODE_ENV !== "test" && !process.env.NODE_TEST_CONTEXT) {
   gamingWatch.poll();
   setInterval(gamingWatch.poll, 30 * 1000).unref();
-  // #697: proactive remarks held during play go out after the game.
-  require("./proactive").watchGaming(gamingWatch.isGaming);
+  // #697: proactive remarks held during play go out after the game, or
+  // one in a break -- alt-tabbed out of the game (foreground.js).
+  require("./proactive").watchGaming(gamingWatch.isGaming, () =>
+    require("./foreground").isAwayFromGame(GAMING_PROCESS_NAMES),
+  );
   setInterval(require("./proactive").flush, 30 * 1000).unref();
 }
 
@@ -549,6 +577,10 @@ const embedder = createEmbedder({
   gaming: gamingWatch.isGaming,
 });
 require("./tools/retriever-index").useEmbedder(embedder);
+
+// The Python retriever (coding-mode fallback): started by the coding turn
+// that needs it, stopped when idle (ai/retriever-runtime.js).
+const retrieverService = createRetrieverRuntime({ gaming: gamingWatch.isGaming });
 
 // Start both in the background (never awaited). The cold starts (~1-1.5 s
 // embedder, ~3.5 s reranker) are longer than recall's budgets, so a cold
@@ -756,11 +788,23 @@ const acpMemoryStore = createAcpMemoryStore({
   },
 });
 
+// #923/#925/#926: my saved speech words, mishearing fixes and language
+// (data/speech.json), from Settings > Voice or the speech__* tools.
+const speechVocabulary = createSpeechVocabulary({
+  filePath: path.join(acpMemoryStore.dataDir, "speech.json"),
+});
+
+function whisperLanguage() {
+  return resolveWhisperLanguage(process.env.WHISPER_LANGUAGE, speechVocabulary.language());
+}
+
 // Issue #667: whisper's initial prompt, rebuilt from memory every few
 // minutes. WHISPER_PROMPT, when set, still replaces it entirely.
 const getWhisperPrompt = createWhisperPromptProvider({
   memoryStore: acpMemoryStore,
   override: process.env.WHISPER_PROMPT || "",
+  vocabulary: process.env.WHISPER_VOCABULARY || "",
+  savedWords: speechVocabulary.words,
 });
 
 // #619: a loaded whisper-server for final and partial transcripts, with
@@ -776,7 +820,7 @@ const whisperServer = createWhisperServer({
   findCliBin: () => whisperDiscovery.findWhisperBin({ env: process.env }),
   findModel: () => whisperDiscovery.findWhisperModel({ env: process.env }),
   threads: whisperThreads,
-  language: WHISPER_LANGUAGE,
+  language: whisperLanguage,
   beamSize: WHISPER_BEAM_SIZE,
   noSpeechThreshold: WHISPER_NO_SPEECH_THRESHOLD,
 });
@@ -1999,6 +2043,16 @@ function registerRoutes(app, upload, deps = {}) {
       }
     });
 
+  // #697 part 1: the native launcher reports each foreground-window change.
+  app.post("/internal/foreground-report", (req, res) => {
+    try {
+      require("./foreground").reportForeground(req.body || {});
+      return res.json({ ok: true });
+    } catch (e) {
+      return res.status(400).json({ error: e.message });
+    }
+  });
+
   // Reported by windows-launcher's powerMonitor.getSystemIdleTime() poll.
   // Fires consolidation once per idle period (resets when the user is seen
   // active again below the threshold), so staying idle for hours doesn't
@@ -2233,6 +2287,11 @@ function registerRoutes(app, upload, deps = {}) {
       deps.runVisionReply ||
       ((prompt, images, maxTokens) =>
         llamaServerRuntime.runVisionReply(prompt, images, maxTokens)),
+    // #690: screen-sensing's text glances -- a short reply from whichever
+    // model is already loaded, or null (never loads or swaps one).
+    runLocalReply:
+      deps.runLocalReply ||
+      ((prompt, maxTokens) => llamaServerRuntime.runLocalReplyIfSafelyLoaded(prompt, maxTokens)),
     pluginSettingsStore: activePluginSettingsStore,
     skillsStore: activeSkillsStore,
     env: deps.env || process.env,
@@ -2338,6 +2397,8 @@ function registerRoutes(app, upload, deps = {}) {
         // Q18 (#645): named here, not warned about on every start.
         plainTextSecrets: (deps.plainTextSecretKeys || plainTextSecretKeys)(),
         memoryGraphHistory,
+        chatModel: chatModelLabel(),
+        findLlamaServerBin: llamaServerRuntime.findLlamaServerBin,
       });
       return res.status(result.ok ? 200 : 503).json(result);
     } catch (error) {
@@ -2357,6 +2418,7 @@ function registerRoutes(app, upload, deps = {}) {
     doctorOptions: () => ({
       fishTtsWarmup: ttsRuntime.getFishWarmupStatus(),
       sessionSearchVectorEnabled: sessionSearchIndex.vectorEnabled(),
+      findLlamaServerBin: llamaServerRuntime.findLlamaServerBin,
     }),
   });
   if (!(process.env.NODE_ENV === "test" || Boolean(process.env.NODE_TEST_CONTEXT))) {
@@ -2788,6 +2850,34 @@ function registerRoutes(app, upload, deps = {}) {
     return res.json({ ok: true, override: ttsRuntime.getProviderOverride() });
   });
 
+  // #923/#925/#926: Settings > Voice's speech words, mishearing fixes and
+  // language. envLanguage: WHISPER_LANGUAGE, which wins over language.
+  const speechState = () => ({
+    ok: true,
+    ...speechVocabulary.state(),
+    envLanguage: process.env.WHISPER_LANGUAGE || null,
+  });
+
+  app.get("/speech", (req, res) => res.json(speechState()));
+
+  // One of: { addWord }, { removeWord }, { heard, term, confirm },
+  // { removeCorrection }, { language }. 409 + needsConfirm when heard may
+  // be an ordinary word.
+  app.post("/speech", (req, res) => {
+    const body = req.body || {};
+    try {
+      if (body.addWord !== undefined) speechVocabulary.addWord(body.addWord);
+      else if (body.removeWord !== undefined) speechVocabulary.removeWord(body.removeWord);
+      else if (body.heard !== undefined) speechVocabulary.addCorrection(body.heard, body.term, { confirm: body.confirm === true });
+      else if (body.removeCorrection !== undefined) speechVocabulary.removeCorrection(body.removeCorrection);
+      else if (body.language !== undefined) speechVocabulary.setLanguage(body.language);
+      else return res.status(400).json({ ok: false, error: "nothing to change" });
+    } catch (e) {
+      return res.status(e.needsConfirm ? 409 : 400).json({ ok: false, error: e.message, needsConfirm: Boolean(e.needsConfirm) });
+    }
+    return res.json(speechState());
+  });
+
   app.get("/gaming/status", (req, res) => {
     try {
       return res.json({
@@ -2837,6 +2927,7 @@ function registerRoutes(app, upload, deps = {}) {
           screenContextEnabled: SCREEN_CONTEXT_ENABLED,
           screenContextMaxChars: SCREEN_CONTEXT_MAX_CHARS,
           ttsProvider: TTS_PROVIDER,
+          chatModel: chatModelLabel(),
         },
         gaming,
         process: getManaProcessSnapshot(),
@@ -2893,7 +2984,8 @@ function registerRoutes(app, upload, deps = {}) {
     // to be unusable for real-time chat. Switch to Kokoro automatically
     // whenever a watched game is running, and back once it closes. Kokoro
     // is started on demand by that switch (kokoro-runtime.js) and stops
-    // again after MANA_KOKORO_IDLE_MS without use.
+    // again after MANA_KOKORO_IDLE_MS without use. Qwen3-TTS has no such
+    // switch: it stays loaded and keeps speaking while a game runs.
     if (ttsRuntime.ttsProvider === "fish") {
       try {
         const gaming = getGamingStatus();
@@ -3019,15 +3111,24 @@ function registerRoutes(app, upload, deps = {}) {
     return localLlamaRuntime.getLlamaStatus();
   }
 
+  // #925: heard is what whisper wrote, transcript the same with my
+  // mishearing fixes applied -- what every caller uses.
+  async function runWhisperHeard(filePath) {
+    const heard =
+      STT_PROVIDER === "parakeet"
+        ? await runParakeet(filePath)
+        : ((await transcribeWithWhisperServer(filePath)) ?? runWhisperCli(filePath));
+    return { heard, transcript: speechVocabulary.correct(heard) };
+  }
+
   async function runWhisper(filePath) {
-    if (STT_PROVIDER === "parakeet") {
-      return runParakeet(filePath);
-    }
-    return (await transcribeWithWhisperServer(filePath)) ?? runWhisperCli(filePath);
+    return (await runWhisperHeard(filePath)).transcript;
   }
 
   async function runWhisperPartial(filePath) {
-    return (await transcribeWithWhisperServer(filePath)) ?? runWhisperCliPartial(filePath);
+    return speechVocabulary.correct(
+      (await transcribeWithWhisperServer(filePath)) ?? (await runWhisperCliPartial(filePath)),
+    );
   }
 
   function findParakeetBin() {
@@ -3110,7 +3211,7 @@ function registerRoutes(app, upload, deps = {}) {
       "-t",
       String(whisperThreads()),
       "-l",
-      WHISPER_LANGUAGE,
+      whisperLanguage(),
       "-bs",
       WHISPER_BEAM_SIZE,
       "-nth",
@@ -3225,7 +3326,7 @@ function registerRoutes(app, upload, deps = {}) {
       "-t",
       String(whisperThreads()),
       "-l",
-      WHISPER_LANGUAGE,
+      whisperLanguage(),
       "-bs",
       WHISPER_BEAM_SIZE,
       "-nth",
@@ -3854,6 +3955,9 @@ function registerRoutes(app, upload, deps = {}) {
     // changes its tail; screen and market text already ride on the user
     // message itself.
     const memoryExtraMessages = { early: [], late: [] };
+    // #679: images the chat model can see itself (server-routes.js decided);
+    // buildMessages puts them on the live user message on every path below.
+    if (replyMeta?.images?.length) memoryExtraMessages.images = replyMeta.images;
     let flatMemorySuffix = "";
     let promptMemoryChars = 0;
     let promptMemoryText = "";
@@ -4079,6 +4183,9 @@ function registerRoutes(app, upload, deps = {}) {
         const retrieverUrl =
           process.env.RETRIEVER_URL || "http://127.0.0.1:9000/retrieve";
         try {
+          await retrieverService.ensure().catch((e) =>
+            console.warn("Python retriever unavailable:", e?.message || e),
+          );
           // try HTTP retriever first
           const resp = await fetch(retrieverUrl, {
             method: "POST",
@@ -4431,6 +4538,9 @@ function registerRoutes(app, upload, deps = {}) {
             // detection. No approvalGate/store needed -- see
             // ai/expression-tool-source.js's own header comment for why.
             createExpressionToolSource(),
+            // #923/#925: speech words and mishearing fixes I ask for;
+            // only words from this turn's own text (see the source).
+            createSpeechToolSource({ speechVocabulary, userMessage: transcript }),
             // Issue #417: lets Mana decide mid-reply that seeing the screen
             // would help, instead of vision only being reachable via the
             // hotkey or the ambient screen-sensing loop. Same
@@ -4464,6 +4574,9 @@ function registerRoutes(app, upload, deps = {}) {
             ...(sessionGoal ? [createSessionGoalToolSource()] : []),
             // #675 Q12b: Mana turns deep thinking on/off herself; the rest
             // of this reply's tool rounds follow it at once.
+            // #905: reminders the user asks for in chat -- not offered to
+            // scheduled replies, which nobody is asking in.
+            ...(userChat ? [createReminderToolSource({ getScheduler: cronSchedulerPlugin.getScheduler, sessionId })] : []),
             ...(userChat
               ? [
                   createDeepThinkingToolSource({
@@ -4661,6 +4774,8 @@ function registerRoutes(app, upload, deps = {}) {
       if (
         bestOfNEnabled &&
         !goalMode &&
+        // #679: Best-of-N builds its own messages without the images.
+        !replyMeta?.images?.length &&
         mode === "coding" &&
         !thinkHarder &&
         isLlamaServerAvailable()
@@ -4730,6 +4845,7 @@ function registerRoutes(app, upload, deps = {}) {
         const readyProfile = await activeLlamaServerRuntime.waitForServer(
           normalizedModelProfile,
           onSentence ? () => onSentence("Give me a second, I'm waking up.") : null,
+          memoryExtraMessages.images,
         );
         if (readyProfile !== normalizedModelProfile) {
           console.warn(`Mana: ${normalizedModelProfile} model unavailable, answering with ${readyProfile}`);
@@ -5036,15 +5152,21 @@ function registerRoutes(app, upload, deps = {}) {
       }),
     runVisionReply:
       deps.runVisionReply ||
-      ((prompt, images, maxTokens) =>
-        llamaServerRuntime.runVisionReply(prompt, images, maxTokens)),
+      ((prompt, images, maxTokens, overrideSystemPrompt) =>
+        llamaServerRuntime.runVisionReply(prompt, images, maxTokens, overrideSystemPrompt)),
     getVisionStatus:
       deps.getVisionStatus || (() => llamaServerRuntime.getVisionStatus()),
+    // #679: false under the test runner (runtime disabled), so route tests
+    // take the describe-first path unless they pass their own.
+    chatAcceptsImages:
+      deps.chatAcceptsImages ||
+      ((profile) => llamaServerRuntime.isEnabled() && llamaServerRuntime.chatAcceptsImages(profile)),
     resolveVisionCapture:
       deps.resolveVisionCapture || visionCaptureBridge.resolveCapture,
     rejectVisionCapture:
       deps.rejectVisionCapture || visionCaptureBridge.rejectCapture,
     runWhisper: deps.runWhisper || runWhisper,
+    runWhisperHeard: deps.runWhisperHeard || runWhisperHeard,
     runWhisperPartial: deps.runWhisperPartial || runWhisperPartial,
     normalizeUploadedAudioAsync:
       deps.normalizeUploadedAudioAsync || normalizeUploadedAudioAsync,
@@ -5622,8 +5744,8 @@ async function startServer() {
   const port = process.env.PORT || 5005;
 
   // The retriever only enriches replies (retrieval context, token counts) and
-  // every caller has a heuristic fallback, so by default the backend starts
-  // without it and reports its health in the background. Set
+  // every caller has a heuristic fallback, so the backend starts without it;
+  // a coding turn starts it on demand (ai/retriever-runtime.js). Set
   // RETRIEVER_REQUIRED=1 to restore the old block-until-healthy behavior.
   const retrieverHealthUrl =
     process.env.RETRIEVER_HEALTH_URL || "http://127.0.0.1:9000/health";
@@ -5635,26 +5757,6 @@ async function startServer() {
       );
       process.exit(1);
     }
-  } else {
-    (async () => {
-      const retries = Number(process.env.RETRIEVER_HEALTH_RETRIES || 24);
-      const delayMs = Number(process.env.RETRIEVER_HEALTH_DELAY_MS || 5000);
-      for (let i = 0; i < retries; i += 1) {
-        try {
-          const resp = await fetch(retrieverHealthUrl, { method: "GET" });
-          if (resp.ok) {
-            console.log("[Mana Boot] Python retriever is healthy");
-            return;
-          }
-        } catch (e) {
-          // keep waiting quietly
-        }
-        await sleep(delayMs);
-      }
-      console.warn(
-        `[Mana Boot] Python retriever not reachable at ${retrieverHealthUrl}; continuing with heuristic fallbacks (retrieval context disabled).`,
-      );
-    })().catch(() => {});
   }
 
   const app = createApp();

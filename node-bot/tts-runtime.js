@@ -15,7 +15,7 @@ const DEFAULT_KOKORO_LANGUAGE_PROFILES = {
   malay: { lang: "ms", speed: 1.1 },
 };
 
-function postJsonBuffer(urlString, body) {
+function postJsonBuffer(urlString, body, timeoutMs = 0) {
   return new Promise((resolve, reject) => {
     const url = new URL(urlString);
     const transport = url.protocol === "https:" ? https : http;
@@ -31,6 +31,7 @@ function postJsonBuffer(urlString, body) {
           "Content-Type": "application/json",
           "Content-Length": payload.length,
         },
+        ...(timeoutMs ? { timeout: timeoutMs } : {}),
       },
       (res) => {
         const chunks = [];
@@ -51,10 +52,26 @@ function postJsonBuffer(urlString, body) {
     );
 
     req.on("error", reject);
+    req.on("timeout", () => {
+      req.destroy(new Error(`TTS service request timed out after ${timeoutMs}ms`));
+    });
     req.write(payload);
     req.end();
   });
 }
+
+// Qwen3-TTS's languages among detectTtsLanguage's names (the model's
+// codec_language_id uses the same lowercase names). Anything else -- Malay --
+// goes as "auto" and the model reads it as best it can.
+const QWEN3_TTS_LANGUAGES = new Set([
+  "english",
+  "chinese",
+  "japanese",
+  "korean",
+  "russian",
+  "german",
+  "spanish",
+]);
 
 // GPT-SoVITS's cross-lingual synthesis (same reference voice, different
 // target-text language) only covers these languages regardless of version;
@@ -166,6 +183,13 @@ function createTtsRuntime(options = {}) {
   const gptSovitsPromptLang = env.GPT_SOVITS_PROMPT_LANG || "en";
   const gptSovitsFallbackProvider =
     env.GPT_SOVITS_TTS_FALLBACK_PROVIDER || "kokoro";
+  // Qwen3-TTS voice (tools/qwen3tts_service.py, docs/qwen3_tts.md); opt in
+  // with TTS_PROVIDER=qwen3tts. It stays loaded while gaming too, and like
+  // Fish has no fallback by default (Kokoro is left out): a failure shows
+  // the reply as text and surfaces the error.
+  const qwen3TtsUrl = env.QWEN3_TTS_URL || "http://127.0.0.1:5012";
+  const qwen3TtsFallbackProvider =
+    env.QWEN3_TTS_FALLBACK_PROVIDER || "none";
   const ttsProvider = env.TTS_PROVIDER || (ttsBin ? "cli" : "fish");
   // Manual runtime override (e.g. "use Kokoro while gaming"), set via
   // setProviderOverride(); null means "use ttsProvider as configured".
@@ -480,6 +504,11 @@ function createTtsRuntime(options = {}) {
     return GPT_SOVITS_LANGUAGE_MAP[language] || null;
   }
 
+  function pickQwen3TtsLanguage(text) {
+    const language = detectTtsLanguage(text);
+    return QWEN3_TTS_LANGUAGES.has(language) ? language : "auto";
+  }
+
   function estimateWordTimings(text, avgMsPerWord = 120) {
     const words = String(text || "")
       .split(/\s+/)
@@ -536,6 +565,16 @@ function createTtsRuntime(options = {}) {
         media_type: "wav",
       });
       logPerf("tts gpt_sovits", startedAt);
+    } else if (provider === "qwen3tts") {
+      const startedAt = nowMs();
+      // A short sentence takes ~1 s; the timeout only stops a wedged service
+      // (e.g. GPU contention) from hanging the reply instead of falling back.
+      audio = await postJson(
+        `${qwen3TtsUrl}/synthesize`,
+        { text, language: pickQwen3TtsLanguage(text) },
+        20000,
+      );
+      logPerf("tts qwen3tts", startedAt);
     } else if (provider === "cli") {
       audio = runTts(text);
     } else {
@@ -630,6 +669,25 @@ function createTtsRuntime(options = {}) {
       }
     }
 
+    if (activeProvider === "qwen3tts") {
+      try {
+        const res = await synthesizeWithConfiguredProvider("qwen3tts", text);
+        return res.audio;
+      } catch (error) {
+        if (qwen3TtsFallbackProvider === "none") {
+          throw error;
+        }
+        console.warn(
+          `Qwen3-TTS failed, falling back to ${qwen3TtsFallbackProvider}: ${error.message}`,
+        );
+        const res = await synthesizeWithConfiguredProvider(
+          qwen3TtsFallbackProvider,
+          text,
+        );
+        return res.audio;
+      }
+    }
+
     if (activeProvider === "cli") {
       const res = await synthesizeWithConfiguredProvider("cli", text);
       return res.audio;
@@ -644,6 +702,7 @@ function createTtsRuntime(options = {}) {
     detectTtsLanguage,
     pickGptSovitsTextLang,
     pickKokoroLanguageProfile,
+    pickQwen3TtsLanguage,
     runTts,
     synthesizeReply,
     synthesizeWithConfiguredProvider,

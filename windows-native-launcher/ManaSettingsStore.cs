@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -50,6 +51,38 @@ internal sealed class ManaSettingsStore
     // default (on). Settings > Voice; MANA_VOICE_AEC overrides it.
     public bool? EchoCancellation { get; set; }
 
+    // #858: Settings > Voice; null = default. MANA_SILENCE_BUFFER_MS and
+    // MANA_VAD_THRESHOLD override them (RecordingSegmenter/SileroVadRunner
+    // .Resolve*). Read each time listening starts.
+    public long? SilenceBufferMs { get; set; }
+    public float? VadThreshold { get; set; }
+
+    // #670: local-only mode for the node-bot this launcher starts (passed
+    // as MANA_LAUNCHER_LOCAL_ONLY=1). Settings > Connection; applies on the
+    // next start. MANA_LOCAL_ONLY=1 in node-bot/.env turns it on regardless.
+    public bool LocalOnly { get; set; }
+
+    // #665: what talking over Mana does (BargeInMode: "minWords" -- the
+    // default when null -- "always" or "notWhileSpeaking"). Settings >
+    // Voice; MANA_BARGE_IN_MODE overrides it.
+    public string? BargeInMode { get; set; }
+
+    // #678: SpeakerGate.ModeNames (null = off) and my enrolled voiceprint,
+    // an averaged speaker embedding. Stays in this local file, never uploaded.
+    // #922: DPAPI-encrypted like the admin token (VoiceprintProtected); one
+    // this account can't decrypt counts as not enrolled.
+    public string? VoiceprintGate { get; set; }
+
+    [JsonIgnore]
+    public float[]? Voiceprint { get; set; }
+
+    [JsonPropertyName("Voiceprint")]
+    public float[]? PlainVoiceprint { get; set; }
+
+    public string? VoiceprintProtected { get; set; }
+
+    private static readonly byte[] VoiceprintEntropy = Encoding.UTF8.GetBytes("Mana.NativeLauncher.Voiceprint");
+
     // #681: the prompt preset sent as presetId with every reply; null =
     // none. Chosen in Settings > Presets (windows-launcher kept the same
     // choice in localStorage's manaSelectedPresetId).
@@ -61,6 +94,35 @@ internal sealed class ManaSettingsStore
     public bool AvatarClickThrough { get; set; }
     public int? AvatarLeft { get; set; }
     public int? AvatarTop { get; set; }
+
+    // #689: Settings > Hotkeys -- action key (HotkeyBindings.Actions) to a
+    // combination like "Ctrl+Alt+W", "" = off; a missing key uses the default.
+    public Dictionary<string, string>? Hotkeys { get; set; }
+
+    // #701: Mana's spoken sentences as bubbles beside the avatar while the
+    // chat window isn't in view (tray menu); off by default.
+    public bool ChatBubbles { get; set; }
+
+    // #684: Electron's "minimized Mana" -- the avatar steps aside while the
+    // chat window is open and comes back when it's closed or minimized.
+    // Off keeps her always showing. Tray menu.
+    public bool AvatarHidesWithChat { get; set; } = true;
+
+    // #574/#688: gaming-mode detection (tray menu and Settings >
+    // Performance); off ignores the backend's watched-game scan.
+    public bool GamingModeDetection { get; set; } = true;
+
+    // #912: Settings > Voice's camera toggle; off by default.
+    public bool CameraSnapshots { get; set; }
+
+    // #685: the chat window's live avatar framing -- "full", "waist" or
+    // "bust" (see LiveAvatarPanel); null = full.
+    public string? AvatarFraming { get; set; }
+
+    // #899: the overlay's framing ("full", "upperHalf" or "bust") and size
+    // (AvatarOverlayForm.OverlayScales); null = the defaults. Tray menu.
+    public string? OverlayFraming { get; set; }
+    public float? OverlayScale { get; set; }
 
     // #687: the chat session open when the launcher last ran, reopened on
     // launch, and whether it was auto-started (Q62: those still rotate).
@@ -83,31 +145,23 @@ internal sealed class ManaSettingsStore
             return new ManaSettingsStore();
         }
 
-        settings.AdminToken = settings.PlainAdminToken;
-        if (settings.AdminTokenProtected is not null)
+        settings.AdminToken = Unprotect(settings.AdminTokenProtected, AdminTokenEntropy, "admin token") is { } token
+            ? Encoding.UTF8.GetString(token)
+            : settings.PlainAdminToken;
+        settings.Voiceprint = Unprotect(settings.VoiceprintProtected, VoiceprintEntropy, "voiceprint") is { } voiceprint
+            ? MemoryMarshal.Cast<byte, float>(voiceprint).ToArray()
+            : settings.PlainVoiceprint;
+        if ((settings.AdminTokenProtected is null && settings.PlainAdminToken is not null)
+            || (settings.VoiceprintProtected is null && settings.PlainVoiceprint is not null))
         {
-            try
-            {
-                settings.AdminToken = Encoding.UTF8.GetString(ProtectedData.Unprotect(
-                    Convert.FromBase64String(settings.AdminTokenProtected), AdminTokenEntropy, DataProtectionScope.CurrentUser));
-            }
-            catch (Exception ex) when (ex is CryptographicException or FormatException or PlatformNotSupportedException)
-            {
-                // Another Windows account's (or a damaged) blob: the token has
-                // to be entered again in Settings.
-                Console.WriteLine($"ManaSettingsStore: couldn't decrypt the admin token. {ex.Message}");
-            }
-        }
-        else if (settings.PlainAdminToken is not null)
-        {
-            // First run after the upgrade: move the plain token into DPAPI.
+            // First run after the upgrade: move the plain values into DPAPI.
             try
             {
                 settings.Save(filePath);
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
             {
-                Console.WriteLine($"ManaSettingsStore: couldn't encrypt the saved admin token yet. {ex.Message}");
+                Console.WriteLine($"ManaSettingsStore: couldn't encrypt the saved settings yet. {ex.Message}");
             }
         }
         return settings;
@@ -115,24 +169,46 @@ internal sealed class ManaSettingsStore
 
     public void Save(string? filePath = null)
     {
-        PlainAdminToken = null;
-        AdminTokenProtected = null;
-        if (AdminToken is not null)
-        {
-            try
-            {
-                AdminTokenProtected = Convert.ToBase64String(ProtectedData.Protect(
-                    Encoding.UTF8.GetBytes(AdminToken), AdminTokenEntropy, DataProtectionScope.CurrentUser));
-            }
-            catch (Exception ex) when (ex is CryptographicException or PlatformNotSupportedException)
-            {
-                // Fallback: better a plain token than none (the pre-#645 format).
-                Console.WriteLine($"ManaSettingsStore: DPAPI unavailable, saving the admin token unencrypted. {ex.Message}");
-                PlainAdminToken = AdminToken;
-            }
-        }
+        // Fallback: better a plain value than none (the pre-#645/#922 format).
+        AdminTokenProtected = AdminToken is null ? null : Protect(Encoding.UTF8.GetBytes(AdminToken), AdminTokenEntropy, "admin token");
+        PlainAdminToken = AdminTokenProtected is null ? AdminToken : null;
+        VoiceprintProtected = Voiceprint is null ? null : Protect(MemoryMarshal.AsBytes(Voiceprint.AsSpan()).ToArray(), VoiceprintEntropy, "voiceprint");
+        PlainVoiceprint = VoiceprintProtected is null ? Voiceprint : null;
         var path = filePath ?? FilePath;
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         File.WriteAllText(path, JsonSerializer.Serialize(this));
+    }
+
+    // Another Windows account's (or a damaged) blob gives null: the value
+    // has to be entered (or taught) again in Settings.
+    private static byte[]? Unprotect(string? blob, byte[] entropy, string what)
+    {
+        if (blob is null)
+        {
+            return null;
+        }
+        try
+        {
+            return ProtectedData.Unprotect(Convert.FromBase64String(blob), entropy, DataProtectionScope.CurrentUser);
+        }
+        catch (Exception ex) when (ex is CryptographicException or FormatException or PlatformNotSupportedException)
+        {
+            Console.WriteLine($"ManaSettingsStore: couldn't decrypt the {what}. {ex.Message}");
+            return null;
+        }
+    }
+
+    // null when DPAPI isn't available; Save then keeps the plain value.
+    private static string? Protect(byte[] data, byte[] entropy, string what)
+    {
+        try
+        {
+            return Convert.ToBase64String(ProtectedData.Protect(data, entropy, DataProtectionScope.CurrentUser));
+        }
+        catch (Exception ex) when (ex is CryptographicException or PlatformNotSupportedException)
+        {
+            Console.WriteLine($"ManaSettingsStore: DPAPI unavailable, saving the {what} unencrypted. {ex.Message}");
+            return null;
+        }
     }
 }

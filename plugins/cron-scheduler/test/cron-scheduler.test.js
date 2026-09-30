@@ -202,3 +202,25 @@ test("runDueJobs routes an agent job through the injected runAgentJob executor",
   await scheduler.runDueJobs();
   assert.deepEqual(prompts, ["Summarize today's market"]);
 });
+
+test("#905 a one-shot reminder fires once, is removed, and a job added meanwhile survives", async () => {
+  let now = 1000;
+  const results = [];
+  let scheduler;
+  scheduler = createCronScheduler({
+    dataDir: createTempDir(),
+    now: () => now,
+    // A slow job during which a reminder is set from chat.
+    scriptActions: { slow: async () => scheduler.addJob({ name: "later", jobType: "reminder", schedule: { type: "once", at: 9000 } }) },
+    onResult: (job, result) => results.push([job.name, result]),
+  });
+  scheduler.addJob({ name: "check retainers", jobType: "reminder", schedule: { type: "once", at: 1500 } });
+  scheduler.addJob({ name: "slow", jobType: "script", actionName: "slow", schedule: { type: "interval", everyMs: 500 } });
+
+  now = 1600;
+  await scheduler.runDueJobs();
+
+  assert.deepEqual(results[0], ["check retainers", "check retainers"]);
+  assert.deepEqual(scheduler.listJobs().map((j) => j.name).sort(), ["later", "slow"]);
+  assert.equal(scheduler.listJobs().find((j) => j.name === "slow").lastRunAt, 1600);
+});
