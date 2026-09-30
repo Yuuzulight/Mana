@@ -45,7 +45,9 @@ function createVisionCaptureBridge({ timeoutMs = DEFAULT_TIMEOUT_MS } = {}) {
     }
   }
 
-  function requestCapture({ camera = false } = {}) {
+  // #962: save asks the launcher to write its last camera snapshot to disk
+  // and answer with the file's path instead of an image.
+  function requestCapture({ camera = false, save = false } = {}) {
     return new Promise((resolve, reject) => {
       if (typeof sender !== "function") {
         reject(new Error("no client connected"));
@@ -57,7 +59,8 @@ function createVisionCaptureBridge({ timeoutMs = DEFAULT_TIMEOUT_MS } = {}) {
         reject(new Error("capture request timed out"));
       }, timeoutMs);
       pending.set(requestId, { resolve, reject, timer });
-      const sent = sender({ type: "capture-request", requestId, ...(camera && { source: "camera" }) });
+      const source = save ? "camera-save" : camera ? "camera" : null;
+      const sent = sender({ type: "capture-request", requestId, ...(source && { source }) });
       if (!sent) {
         clearPending(requestId);
         reject(new Error("no client connected"));

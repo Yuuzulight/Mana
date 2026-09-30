@@ -1758,8 +1758,39 @@ internal sealed class SettingsPanel : UserControl
             status.Text = "Saved.";
         };
 
+        // #962: where "save that" puts a snapshot; blank = Pictures\Mana.
+        var folder = new TextBox
+        {
+            Width = 260,
+            PlaceholderText = @"Pictures\Mana",
+            Text = ManaSettingsStore.Load().CameraSnapshotFolder ?? "",
+            BackColor = DarkTheme.Panel2,
+            ForeColor = DarkTheme.Text,
+        };
+        void SaveFolder()
+        {
+            var latest = ManaSettingsStore.Load();
+            latest.CameraSnapshotFolder = string.IsNullOrWhiteSpace(folder.Text) ? null : folder.Text.Trim();
+            latest.Save();
+            status.Text = "Saved.";
+        }
+        folder.TextChanged += (_, _) => SaveFolder();
+        var browse = new Button { Text = "Browse...", AutoSize = true };
+        DarkTheme.ApplyButton(browse);
+        browse.Click += (_, _) =>
+        {
+            using var dialog = new FolderBrowserDialog { Description = "Where Mana saves snapshots you ask her to keep", UseDescriptionForTitle = true };
+            if (dialog.ShowDialog() == DialogResult.OK)
+            {
+                folder.Text = dialog.SelectedPath;
+            }
+        };
+
         var row = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.LeftToRight, BackColor = DarkTheme.Background };
         row.Controls.Add(check);
+        row.Controls.Add(new Label { Text = "Save snapshots I ask to keep in", AutoSize = true, ForeColor = DarkTheme.Text, Anchor = AnchorStyles.Left });
+        row.Controls.Add(folder);
+        row.Controls.Add(browse);
         row.Controls.Add(status);
         return row;
     }

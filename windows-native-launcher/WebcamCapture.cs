@@ -13,12 +13,14 @@ namespace Mana.NativeLauncher;
 
 // #912: one webcam frame for Mana's vision, through Windows' own
 // MediaCapture (no extra package). The camera is opened for this call only
-// and released before it returns; the frame never touches the disk.
+// and released before it returns; the frame never touches the disk unless
+// I ask to keep it (#962, SaveSnapshot).
 internal static class WebcamCapture
 {
     public const string OffMessage = "The camera is off. Turn it on in Settings > Voice.";
     public const string NoCameraMessage = "No camera found.";
     public const string InUseMessage = "The camera is in use by another app.";
+    public const string NothingToSaveMessage = "There's no camera snapshot to save yet.";
     public const string BlockedMessage = "Windows is blocking camera access. Turn on \"Let desktop apps access your camera\" in Settings > Privacy & security > Camera.";
 
     // The first frames off most webcams are dark while auto-exposure
@@ -82,6 +84,34 @@ internal static class WebcamCapture
         stream.Seek(0);
         using var image = Image.FromStream(stream.AsStream());
         return ScreenCapture.ToVisionDataUrl(image);
+    }
+
+    // #962: writes a snapshot (CaptureAsJpegDataUrlAsync's data URL) into
+    // folder, or Pictures\Mana when that's blank, as "Mana <time>.jpg", and
+    // returns the file's path. Never overwrites an earlier one.
+    internal static string SaveSnapshot(string? dataUrl, string? folder, DateTime now)
+    {
+        const string prefix = "data:image/jpeg;base64,";
+        if (dataUrl is null || !dataUrl.StartsWith(prefix, StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException(NothingToSaveMessage);
+        }
+        var dir = string.IsNullOrWhiteSpace(folder)
+            ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyPictures), "Mana")
+            : folder.Trim();
+        if (!Path.IsPathFullyQualified(dir))
+        {
+            throw new InvalidOperationException($"The snapshot folder needs a full path (Settings > Voice): {dir}");
+        }
+        Directory.CreateDirectory(dir);
+        var name = "Mana " + now.ToString("yyyy-MM-dd HH-mm-ss", System.Globalization.CultureInfo.InvariantCulture);
+        var path = Path.Combine(dir, name + ".jpg");
+        for (var i = 2; File.Exists(path); i++)
+        {
+            path = Path.Combine(dir, $"{name} ({i}).jpg");
+        }
+        File.WriteAllBytes(path, Convert.FromBase64String(dataUrl[prefix.Length..]));
+        return path;
     }
 
     // The failures worth a plain answer; anything else keeps its own message.

@@ -38,7 +38,7 @@ function registerVisionCaptureServer(httpServer, { path = "/ws/vision-capture", 
     const raw = JSON.stringify(message);
     let sent = false;
     for (const client of clients) {
-      if (message.source === "camera" && !cameraClients.has(client)) continue;
+      if (String(message.source || "").startsWith("camera") && !cameraClients.has(client)) continue;
       try {
         if (isOpen(client)) {
           client.send(raw);

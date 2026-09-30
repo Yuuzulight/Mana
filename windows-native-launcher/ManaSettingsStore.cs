@@ -115,6 +115,9 @@ internal sealed class ManaSettingsStore
     // #912: Settings > Voice's camera toggle; off by default.
     public bool CameraSnapshots { get; set; }
 
+    // #962: where "save that" puts a camera snapshot; null = Pictures\Mana.
+    public string? CameraSnapshotFolder { get; set; }
+
     // #685: the chat window's live avatar framing -- "full", "waist" or
     // "bust" (see LiveAvatarPanel); null = full.
     public string? AvatarFraming { get; set; }

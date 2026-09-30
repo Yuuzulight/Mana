@@ -172,9 +172,35 @@ test("the camera tool follows the camera client, not screen sensing", async () =
   const source = createVisionToolSource(
     baseOptions({ visionCaptureBridge: cameraBridge(true), pluginSettingsStore: fakePluginSettingsStore(false) }),
   );
-  assert.deepEqual(names(source), [`${VISION_TOOL_PREFIX}camera`]);
+  assert.deepEqual(names(source), [`${VISION_TOOL_PREFIX}camera`, `${VISION_TOOL_PREFIX}save_snapshot`]);
 
   const result = await source.executeTool(`${VISION_TOOL_PREFIX}camera`, { prompt: "what am I holding?" });
   assert.equal(JSON.parse(result).status, "ok");
   assert.deepEqual(seenOptions, { camera: true });
+});
+
+// #962: saving the last snapshot is offered with a camera client (even
+// without a vision model), asks the launcher to save, and is write tier.
+test("the save-snapshot tool asks the launcher to save and reports the file", async () => {
+  const { classifyToolCall } = require("../ai/tool-risk");
+  let answer = "C:\Users\me\Pictures\Mana\Mana 2026-09-30 12-00-00.jpg";
+  let seenOptions = null;
+  const bridge = {
+    hasCamera: () => true,
+    requestCapture: async (options) => {
+      seenOptions = options;
+      return answer;
+    },
+  };
+  const source = createVisionToolSource(baseOptions({ visionCaptureBridge: bridge, getVisionStatus: () => ({ available: false }) }));
+  assert.deepEqual(source.listToolSchemas().map((t) => t.function.name), [`${VISION_TOOL_PREFIX}save_snapshot`]);
+
+  const result = JSON.parse(await source.executeTool(`${VISION_TOOL_PREFIX}save_snapshot`, {}));
+  assert.deepEqual(result, { status: "ok", saved: answer });
+  assert.deepEqual(seenOptions, { save: true });
+  assert.equal(classifyToolCall(`${VISION_TOOL_PREFIX}save_snapshot`, {}).tier, "write");
+
+  // An older launcher answers a screenshot instead of a path.
+  answer = "data:image/jpeg;base64,screen";
+  assert.match(JSON.parse(await source.executeTool(`${VISION_TOOL_PREFIX}save_snapshot`, {})).error, /can't save snapshots/);
 });
