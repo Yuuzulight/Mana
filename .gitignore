@@ -97,6 +97,9 @@ windows-native-launcher/assets/wakeword/embedding_model.onnx
 # at build time like the models above.
 windows-native-launcher/assets/speaker/
 
+# Folio packages, packed from the pinned commit by pack-folio.ps1 (#937).
+windows-native-launcher/folio-feed/
+
 # Smart Turn end-of-turn model (#909).
 windows-native-launcher/assets/turn/
 

@@ -6,6 +6,7 @@
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
+const { isInsideRoot } = require("../acp-path-guard");
 
 const INDEX_PATH = path.join(__dirname, "..", "data", "dir_index.json");
 function ensureIndexDir() {
@@ -112,6 +113,9 @@ function scanDirRecursive(root, opts) {
       const full = path.join(curr, ent.name);
       const rel = path.relative(base, full).split(path.sep).join("/");
       if (isExcluded(rel, opts.exclude)) continue;
+      // A link (symlink or junction) that leads out of the root is skipped,
+      // so a scan can't list names and sizes from outside it.
+      if (ent.isSymbolicLink() && !isInsideRoot(full, base)) continue;
       try {
         const stat = fs.statSync(full);
         if (stat.isDirectory()) {
@@ -173,7 +177,8 @@ function paginate(list, offset = 0, limit = null) {
 function scanDir(root, opts) {
   // opts: {path, maxDepth, exts, exclude, limit, offset, useIndex}
   const resolvedRoot = path.resolve(root);
-  const idxKey = resolvedRoot;
+  // "links-v2": ignore indexes saved before links out of the root were skipped.
+  const idxKey = `links-v2:${resolvedRoot}`;
   let list = null;
   let fingerprint = null;
   if (opts.useIndex) {
