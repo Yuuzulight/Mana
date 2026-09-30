@@ -66,7 +66,7 @@ test("after outside content, tools that act or read private things ask for the r
 
   // The prompt came with a web page: they ask, and no grant or Guardian skips it.
   const fromPrompt = setup({ untrustedSources: ["web page"] }, ["tool-read", "tool-low", "tool-write"]);
-  for (const name of ["vision__look", "reminder__set", "email__read", "desktop__focus_app", "read_file"]) {
+  for (const name of ["vision__look", "reminder__set", "email__read", "desktop__focus_app", "read_file", "git__change"]) {
     assert.equal(JSON.parse(await fromPrompt.wrapped.executeTool(name, {})).status, "pending", name);
   }
   assert.deepEqual(fromPrompt.ran, []);

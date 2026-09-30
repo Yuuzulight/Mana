@@ -47,13 +47,21 @@ function execWith(ghCalls, answers = {}) {
   };
 }
 
-function setup(answers) {
+// state.gaming: flip it to make a game run.
+function setup(answers, env = {}) {
   const repos = makeRepos();
   const gate = createApprovalGate({ dataDir: path.join(repos.base, "gate") });
   const ghCalls = [];
-  const source = createGitToolSource({ roots: [repos.root], approvalGate: gate, exec: execWith(ghCalls, answers), env: {} });
+  const state = { gaming: false };
+  const source = createGitToolSource({
+    roots: [repos.root],
+    approvalGate: gate,
+    exec: execWith(ghCalls, answers),
+    env,
+    isGaming: () => state.gaming,
+  });
   const call = (name, args) => source.executeTool(name, args);
-  return { ...repos, gate, ghCalls, source, call };
+  return { ...repos, gate, ghCalls, source, call, state };
 }
 
 test("reads a repo under an allowed root: status, diff, log, branches", async () => {
@@ -168,4 +176,115 @@ test("runCommand stops a call at its timeout", async () => {
   assert.equal(r.timedOut, true);
   assert.notEqual(r.code, 0);
   assert.match(r.stderr, /timed out/);
+});
+
+// #1191: local changes and the approval tiers.
+const idOf = (dir) => dir.replace(/\\/g, "/").toLowerCase();
+const parsed = (text) => JSON.parse(text);
+
+test("ask once (the default): a change waits for me, runs on allow, and always sticks per repo", async () => {
+  const { repo, gate, call } = setup();
+  fs.writeFileSync(path.join(repo, "b.txt"), "b\n");
+  assert.equal(parsed(await call("git__change", { repo, action: "stage", paths: ["b.txt"] })).status, "pending");
+  const [req] = gate.listPending();
+  assert.equal(req.actionType, `git-local:${idOf(repo)}`);
+  assert.match(req.summary, /^Stage b\.txt in .* \(on main\)$/);
+  assert.match((await gate.decide(req.id, "always-allow")).result, /A {2}b\.txt/);
+  // Remembered for this repo: the commit runs at once.
+  assert.match(await call("git__change", { repo, action: "commit", message: "Add b\n\nCo-authored-by: Someone <s@x>" }), /Committed: \w+ Add b/);
+  assert.equal(git(repo, "log", "-1", "--format=%an|%B"), "Me|Add b", "the repo's identity, no trailer");
+});
+
+test("ask every time: always doesn't stick", async () => {
+  const { repo, gate, call } = setup();
+  gate.setGitApprovalMode("local", "ask");
+  await call("git__change", { repo, action: "switch", branch: "x", create: true });
+  await gate.decide(gate.listPending()[0].id, "always-allow");
+  assert.equal(git(repo, "rev-parse", "--abbrev-ref", "HEAD"), "x");
+  assert.equal(parsed(await call("git__change", { repo, action: "switch", branch: "main" })).status, "pending");
+  assert.equal(gate.isGranted(`git-local:${idOf(repo)}`), false);
+});
+
+test("no approval: runs at once and is logged; a remembered never still blocks", async () => {
+  const { repo, gate, call } = setup();
+  gate.setGitApprovalMode("local", "off");
+  assert.match(await call("git__change", { repo, action: "switch", branch: "feat/x", create: true }), /Switched .* to feat\/x/);
+  assert.equal(git(repo, "rev-parse", "--abbrev-ref", "HEAD"), "feat/x");
+  const [logged] = gate.guardianAuditLog.readRecent();
+  assert.equal(logged.decision, "no approval (setting)");
+  assert.equal(logged.name, `git-local:${idOf(repo)}`);
+
+  gate.setGitApprovalMode("local", "once");
+  await call("git__change", { repo, action: "switch", branch: "main" });
+  await gate.decide(gate.listPending()[0].id, "never");
+  gate.setGitApprovalMode("local", "off");
+  assert.match(parsed(await call("git__change", { repo, action: "switch", branch: "main" })).error, /never/);
+  assert.equal(git(repo, "rev-parse", "--abbrev-ref", "HEAD"), "feat/x");
+});
+
+test("the secret scan refuses a commit with a key in it", async () => {
+  const { repo, gate, call } = setup(undefined, { MY_API_TOKEN: "super-secret-value-42" });
+  gate.setGitApprovalMode("local", "off");
+  fs.writeFileSync(path.join(repo, "c.txt"), `token = ghp_${"a".repeat(36)}\n`);
+  await call("git__change", { repo, action: "stage", paths: ["c.txt"] });
+  assert.match(parsed(await call("git__change", { repo, action: "commit", message: "oops" })).error, /key-shaped string.*didn't commit/);
+  fs.writeFileSync(path.join(repo, "c.txt"), "value super-secret-value-42\n");
+  await call("git__change", { repo, action: "stage", paths: ["c.txt"] });
+  assert.match(parsed(await call("git__change", { repo, action: "commit", message: "oops" })).error, /MY_API_TOKEN/);
+  assert.equal(git(repo, "log", "--format=%s"), "first");
+});
+
+test("while a game runs, changes are refused in every mode, and an approved one doesn't run; reads still work", async () => {
+  const { repo, gate, call, state } = setup();
+  await call("git__change", { repo, action: "switch", branch: "y", create: true });
+  state.gaming = true;
+  await assert.rejects(gate.decide(gate.listPending()[0].id, "allow-once"), /game is running/);
+  gate.setGitApprovalMode("local", "off");
+  assert.match(parsed(await call("git__change", { repo, action: "switch", branch: "y", create: true })).error, /game is running/);
+  assert.equal(git(repo, "rev-parse", "--abbrev-ref", "HEAD"), "main");
+  assert.match(await call("git__read", { repo, action: "status" }), /## main/);
+});
+
+test("branch, ref, path and worktree names can't become flags or leave the repo; there's no stash", async () => {
+  const { repo, gate, call } = setup();
+  gate.setGitApprovalMode("local", "off");
+  const error = async (args) => parsed(await call("git__change", { repo, ...args })).error;
+  assert.match(await error({ action: "switch", branch: "--orphan" }), /isn't a branch name/);
+  assert.match(await error({ action: "switch", branch: "a..b" }), /isn't a branch name/);
+  assert.match(await error({ action: "switch", branch: "x", create: true, start: "-q" }), /isn't a ref/);
+  assert.match(await error({ action: "merge", ref: "--no-verify" }), /isn't a ref/);
+  assert.match(await error({ action: "worktree_add", name: "../escape", branch: "z", create: true }), /plain folder name/);
+  assert.match(await error({ action: "stage", paths: ["../outside.txt"] }), /escapes/);
+  assert.match(await error({ action: "stash" }), /unknown action/);
+});
+
+test("a merge that conflicts lists the files, and merge_abort undoes it", async () => {
+  const { repo, gate, call } = setup();
+  gate.setGitApprovalMode("local", "off");
+  git(repo, "switch", "-q", "-c", "side");
+  fs.writeFileSync(path.join(repo, "a.txt"), "side\n");
+  git(repo, "commit", "-q", "-am", "side");
+  git(repo, "switch", "-q", "main");
+  fs.writeFileSync(path.join(repo, "a.txt"), "main\n");
+  git(repo, "commit", "-q", "-am", "main");
+  assert.match(await call("git__change", { repo, action: "merge", ref: "side" }), /stopped at conflicts in:\na\.txt/);
+  assert.match(await call("git__read", { repo, action: "conflicts" }), /a\.txt/);
+  assert.match(await call("git__change", { repo, action: "merge_abort" }), /Aborted/);
+  assert.match(await call("git__read", { repo, action: "conflicts" }), /No conflicts/);
+});
+
+test("removing a worktree unlinks its node_modules link first and never deletes through it", async () => {
+  const { base, repo, gate, call } = setup();
+  gate.setGitApprovalMode("local", "off");
+  assert.match(await call("git__change", { repo, action: "worktree_add", name: "wt1", branch: "w", create: true }), /Added the worktree/);
+  const wt = path.join(path.dirname(repo), "allowed-worktrees", "wt1");
+  const live = path.join(base, "live-modules");
+  fs.mkdirSync(path.join(live, "dep"), { recursive: true });
+  fs.writeFileSync(path.join(live, "dep", "index.js"), "// live\n");
+  fs.mkdirSync(path.join(wt, "node-bot"));
+  fs.symlinkSync(live, path.join(wt, "node-bot", "node_modules"), "junction");
+  assert.match(await call("git__change", { repo, action: "worktree_remove", name: "wt1" }), /Removed the worktree/);
+  assert.equal(fs.existsSync(wt), false);
+  assert.equal(fs.readFileSync(path.join(live, "dep", "index.js"), "utf8"), "// live\n");
+  assert.match(parsed(await call("git__change", { repo, action: "worktree_remove", name: "wt1" })).error, /isn't one of/);
 });

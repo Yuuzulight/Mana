@@ -5,6 +5,7 @@ const {
   sendValidationError,
 } = require("../request-validation");
 const { MODES, resolveToolApprovalMode } = require("../ai/tool-risk");
+const { GIT_APPROVAL_DEFAULTS, GIT_APPROVAL_MODES, resolveGitApprovalModes } = require("../ai/git-tool-source");
 
 const KEY = "approvalGate";
 
@@ -60,6 +61,24 @@ function registerApprovalGateRoutes(app, context = {}) {
     }
     approvalGate.setToolApprovalMode(mode);
     return res.json({ mode });
+  });
+
+  // #1191: Settings > Approvals' "Git and GitHub" section -- per tier,
+  // "ask" (every time), "once" (then always, per repo) or "off".
+  app.get("/approvals/git-mode", (req, res) => {
+    return res.json({ modes: resolveGitApprovalModes(approvalGate.getGitApprovalModes()) });
+  });
+
+  app.post("/approvals/git-mode", toolModeRateLimiter, (req, res) => {
+    if (!context.checkAdminAuth(req, res)) return;
+    const { tier, mode } = req.body || {};
+    if (!Object.keys(GIT_APPROVAL_DEFAULTS).includes(tier) || !GIT_APPROVAL_MODES.includes(mode)) {
+      return res.status(400).json({
+        error: `tier must be one of: ${Object.keys(GIT_APPROVAL_DEFAULTS).join(", ")}; mode one of: ${GIT_APPROVAL_MODES.join(", ")}`,
+      });
+    }
+    approvalGate.setGitApprovalMode(tier, mode);
+    return res.json({ modes: resolveGitApprovalModes(approvalGate.getGitApprovalModes()) });
   });
 
   // #1154: the remembered always/never answers (per-site browser

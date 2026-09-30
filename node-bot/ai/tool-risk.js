@@ -96,6 +96,8 @@ const BUILTIN_TIERS = {
   // only; GitHub text comes back framed as untrusted.
   git__read: "read",
   github__read: "read",
+  // #1191: asks through its own approval setting (Settings > Approvals).
+  git__change: "write",
   memory__remember: "write",
   skill__create: "write",
   skill__run: "write",
@@ -138,6 +140,7 @@ const SELF_GATED = new Set([
   "browser_automation__press",
   "browser_automation__drag",
   "browser_automation__batch",
+  "git__change",
 ]);
 
 // Once a turn has taken in outside content (a web page, search or wiki
@@ -160,6 +163,9 @@ const ASK_AFTER_UNTRUSTED = new Set([
   "coding__propose_edit",
   "speech__add_word",
   "speech__remove_word",
+  // #1191: a git change, whatever its own approval setting says (a PR
+  // comment or someone's commit message may be what's asking for it).
+  "git__change",
 ]);
 
 // sources: where the turn's outside content came from. Game wiki results
