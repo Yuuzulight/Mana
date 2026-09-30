@@ -37,6 +37,16 @@ public class DesktopActionsTests
     }
 
     [Fact]
+    public void PickByName_MatchesAnAudioOutputByAnyUniquePart()
+    {
+        var outputs = new[] { "Speakers (Realtek(R) Audio)", "Headphones (Arctis Nova 7)", "Headset Earphone (Arctis Nova 7 Chat)" };
+        Assert.Equal(outputs[0], DesktopActions.PickByName(outputs, "speakers", "audio output"));
+        Assert.Equal(outputs[1], DesktopActions.PickByName(outputs, "headphones", "audio output"));
+        Assert.Contains("Headset Earphone", Assert.Throws<InvalidOperationException>(() => DesktopActions.PickByName(outputs, "arctis", "audio output")).Message);
+        Assert.Throws<InvalidOperationException>(() => DesktopActions.PickByName(outputs, "hdmi", "audio output"));
+    }
+
+    [Fact]
     public void PickWindow_PrefersTheProcessNameOverATitleMatch()
     {
         var windows = new[]

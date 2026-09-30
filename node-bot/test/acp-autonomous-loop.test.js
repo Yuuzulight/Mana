@@ -917,11 +917,8 @@ test("acp-autonomous-loop: snapshot_restore archives the approver metadata when 
 });
 
 // #475 whole-branch review fix: a model-supplied "approved": true in its own
-// tool-call args must NOT bypass the approval-wait flow. Unlike file_write's
-// own args.approved escape hatch (additionally gated behind ALLOW_FILE_WRITE,
-// default off), snapshot_restore has no master kill-switch, so honoring this
-// would let the model self-approve a restore on a stock deployment -- this
-// test used to assert the bypass worked; it now asserts the opposite.
+// tool-call args must NOT bypass the approval-wait flow -- this test used to
+// assert the bypass worked; it now asserts the opposite.
 test("acp-autonomous-loop: snapshot_restore ignores a model-supplied args.approved:true and still waits for real approval", async () => {
   const origRequire = process.env.SNAPSHOT_RESTORE_REQUIRE_APPROVAL;
   const origApprovalDir = process.env.MANA_PENDING_WRITES_DIR;
@@ -967,6 +964,39 @@ test("acp-autonomous-loop: snapshot_restore ignores a model-supplied args.approv
     fs.rmSync(tmpApprovalDir, { recursive: true, force: true });
   }
 });
+
+// #1002: file_write used to skip its approval on the model's own
+// "approved": true. In either write mode it now waits for a real decision.
+for (const mode of ["overwrite", "append"]) {
+  test(`acp-autonomous-loop: file_write (${mode}) ignores a model-supplied args.approved:true`, async () => {
+    const envKeys = ["ALLOW_FILE_WRITE", "FILE_WRITE_REQUIRE_APPROVAL", "MANA_PENDING_WRITES_DIR"];
+    const orig = envKeys.map((key) => process.env[key]);
+    const tmpApprovalDir = fs.mkdtempSync(path.join(os.tmpdir(), "mana-file-write-self-approve-"));
+    const relPath = `node-bot/test/tmp-1002-${mode}.txt`;
+    const target = path.join(__dirname, "..", "..", relPath);
+    try {
+      process.env.ALLOW_FILE_WRITE = "1";
+      process.env.FILE_WRITE_REQUIRE_APPROVAL = "1";
+      process.env.MANA_PENDING_WRITES_DIR = tmpApprovalDir;
+
+      const reply = JSON.stringify([
+        { tool: "file_write", args: { path: relPath, content: "x", mode, approved: true } },
+      ]);
+      const step = executeAutonomousStep(reply, `self-approve-${mode}`);
+      const pendingFile = await waitForPendingFile(tmpApprovalDir);
+      assert.equal(fs.existsSync(target), false, "must not write before a human decides");
+      fs.writeFileSync(path.join(tmpApprovalDir, pendingFile.replace(/\.json$/, ".rejected.json")), "{}");
+
+      const res = await step;
+      assert.equal(res.results[0].status, "rejected");
+      assert.equal(fs.existsSync(target), false);
+    } finally {
+      envKeys.forEach((key, i) => (orig[i] === undefined ? delete process.env[key] : (process.env[key] = orig[i])));
+      fs.rmSync(target, { force: true });
+      fs.rmSync(tmpApprovalDir, { recursive: true, force: true });
+    }
+  });
+}
 
 test("acp-autonomous-loop: snapshot_restore reports an error for an unknown snapshot id, without creating a pending request", async () => {
   const origRequire = process.env.SNAPSHOT_RESTORE_REQUIRE_APPROVAL;
