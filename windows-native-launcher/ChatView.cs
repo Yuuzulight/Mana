@@ -112,10 +112,26 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
         }
         if (text.Length > 0 || message.Images.Count == 0)
         {
-            message.Blocks.Add(new MarkdownBlock(MarkdownBlockType.Paragraph, new[] { new MarkdownRun(text, false, false, false) }));
+            message.Blocks.AddRange(UserBlocks(text));
         }
         Add(message, forceScroll: true);
     });
+
+    // My message as typed -- except text I shared from My shell (#1121),
+    // which Mana gets framed as outside text: the chat shows it as a
+    // "Shared from terminal" card with the text in a monospace box.
+    internal static IReadOnlyList<MarkdownBlock> UserBlocks(string text)
+    {
+        if (UntrustedText.Unwrap(MyShellPanel.SharedSource, text) is not { } shared)
+        {
+            return [new MarkdownBlock(MarkdownBlockType.Paragraph, new[] { new MarkdownRun(text, false, false, false) })];
+        }
+        return
+        [
+            new MarkdownBlock(MarkdownBlockType.Paragraph, new[] { new MarkdownRun("Shared from terminal", true, false, false) }),
+            new MarkdownBlock(MarkdownBlockType.CodeBlock, new[] { new MarkdownRun(shared.ReplaceLineEndings("\n"), false, false, true) }),
+        ];
+    }
 
     private const int ThumbnailSide = 160;
 
@@ -178,7 +194,7 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
             if (!string.IsNullOrWhiteSpace(turn.User))
             {
                 var user = new Message(fromUser: true);
-                user.Blocks.Add(new MarkdownBlock(MarkdownBlockType.Paragraph, new[] { new MarkdownRun(turn.User, false, false, false) }));
+                user.Blocks.AddRange(UserBlocks(turn.User));
                 messages.Add(user);
             }
             if (!string.IsNullOrWhiteSpace(turn.Assistant))

@@ -42,10 +42,11 @@ function isLocalRestartRequest(req) {
   );
 }
 
+// req.headers, not req.get(): WebSocket upgrades are plain http requests.
 function presentedKeys(req) {
-  const auth = String(req.get("authorization") || "");
+  const auth = String(req.headers?.authorization || "");
   const bearer = auth.startsWith("Bearer ") ? auth.slice(7).trim() : "";
-  return [req.get("x-admin-token"), bearer].filter(Boolean);
+  return [req.headers?.["x-admin-token"], bearer].filter(Boolean);
 }
 
 function keyMatches(presented, expected) {
@@ -81,4 +82,71 @@ function checkAdminSecret(req, res, secret) {
   return false;
 }
 
-module.exports = { ADMIN_KEY_REQUIRED_ERROR, checkAdminSecret, hasAdminKey, isLocalRestartRequest };
+// Default deny: every route needs one of the admin keys above (ADMIN_TOKEN,
+// the launcher's per-run key from this PC, or MANA_ADMIN_SECRET) unless
+// it's listed here. Routes still keep their own, stricter checks on top.
+// Everything listed either has its own auth or must answer without a key:
+const PUBLIC_ROUTES = new Set([
+  // Liveness probes: the launchers, doctor.js and the service scripts.
+  "GET /health",
+  // Mobile companion (mobile-routes.js): unlock with the passcode, pair
+  // with a one-time code, then a session token (requireAuth) or device
+  // token. The admin mobile routes check hasAdminKey themselves.
+  "GET /mobile/health",
+  "POST /mobile/auth/unlock",
+  "POST /mobile/pair/complete",
+  "GET /mobile/ping",
+  "POST /mobile/chat/text",
+  "POST /mobile/chat/audio",
+  "POST /mobile/synthesize",
+  "GET /mobile/summaries",
+  "POST /mobile/summaries",
+  // API-key routes (authMiddleware): the OpenAI-style API and Obsidian.
+  "POST /v1/chat/completions",
+  "POST /v1/embeddings",
+  "GET /v1/models",
+  "GET /api/memory",
+  "GET /api/memory/notes",
+  // The context-push browser extension, which has no way to hold a key.
+  // Loopback only (plugins/context-push), and off unless I enable it.
+  "POST /context/push",
+  // Admin pages a browser opens by URL; their API calls send the key.
+  "GET /admin/token-cache-ui",
+  "GET /admin/background-memory-ui",
+  "GET /admin/accounts-ui",
+  "GET /admin/plugins-ui",
+  "GET /admin/plugins/install",
+]);
+// Static files: the mobile PWA and the admin pages' folder.
+const PUBLIC_STATIC_PREFIXES = ["/mobile/app/", "/admin/mobile-devices/"];
+
+function isPublicRoute(method, routePath) {
+  const verb = method === "HEAD" ? "GET" : method;
+  if (PUBLIC_ROUTES.has(`${verb} ${routePath}`)) return true;
+  return verb === "GET" && (routePath === "/mobile/app" || PUBLIC_STATIC_PREFIXES.some((p) => routePath.startsWith(p)));
+}
+
+function presentsAdminKey(req, env = process.env) {
+  const secret = env.MANA_ADMIN_SECRET || process.env.MANA_ADMIN_SECRET;
+  return (
+    hasAdminKey(req, { local: isLocalRestartRequest(req), adminToken: env.ADMIN_TOKEN || process.env.ADMIN_TOKEN }) ||
+    presentedKeys(req).some((key) => keyMatches(key, secret))
+  );
+}
+
+function requireAdminKeyByDefault(env = process.env) {
+  return (req, res, next) => {
+    if (isPublicRoute(req.method, req.path) || presentsAdminKey(req, env)) return next();
+    return res.status(401).json({ ok: false, error: ADMIN_KEY_REQUIRED_ERROR });
+  };
+}
+
+module.exports = {
+  ADMIN_KEY_REQUIRED_ERROR,
+  checkAdminSecret,
+  hasAdminKey,
+  isLocalRestartRequest,
+  isPublicRoute,
+  presentsAdminKey,
+  requireAdminKeyByDefault,
+};

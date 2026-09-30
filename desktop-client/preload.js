@@ -26,6 +26,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   openAvatarNotice: () => ipcRenderer.invoke('open-avatar-notice'),
   openExternal: (url) => ipcRenderer.invoke('open-external', url),
   getAppVersion: () => ipcRenderer.invoke('get-app-version'),
+  // This run's backend key (see main.js's BACKEND_KEY); renderer/backend-key.js
+  // adds it to every backend request.
+  getBackendKey: () => ipcRenderer.sendSync('get-backend-key-sync'),
   checkForUpdates: () => ipcRenderer.invoke('check-for-updates'),
   onUpdateStatus: (cb) => ipcRenderer.on('update-status', (evt, status) => cb(status)),
   // Live2D model/config resolution (see avatar/resolve-model.js) -- the
