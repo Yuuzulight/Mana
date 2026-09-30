@@ -269,7 +269,7 @@ internal sealed class StreamingReplyPlayer
         synthesizing = ++synthesized;
         try
         {
-            return (next.Text, next.Emotion, await backendClient.SynthesizeAsync(next.Text).ConfigureAwait(false));
+            return (next.Text, next.Emotion, await backendClient.SynthesizeAsync(next.Text, next.Emotion).ConfigureAwait(false));
         }
         finally
         {
