@@ -202,8 +202,18 @@ const { createMemoryGraph } = require("./memory-graph");
 const { createSkillProposalRunner } = require("./skill-proposal");
 const persona = require("./persona");
 const { createPresetsStore } = require("./presets-store");
-const { createPersonalityStore } = require("./personality-store");
+const {
+  createPersonalityStore,
+  DEFAULT_FILE_PATH: DEFAULT_PERSONALITY_FILE,
+} = require("./personality-store");
 const { createMoodStore, levelWord, moodPromptBlock } = require("./mood-store");
+const {
+  characterFilePath,
+  createCharacterStore,
+  perCharacter,
+  personaOf,
+} = require("./characters");
+const { createCharactersCapability } = require("./capabilities/characters-capability");
 const { createPluginSettingsStore } = require("./plugin-settings-store");
 const { createAuthStore } = require("./auth-store");
 const { createToolPolicy } = require("./ai/tool-policy");
@@ -681,8 +691,22 @@ const pronunciationLexiconStore = createPronunciationLexiconStore({});
 // the gaming override below, and stopped after MANA_KOKORO_IDLE_MS idle.
 const kokoroRuntime = createKokoroRuntime({ env: process.env });
 
+// Issue #914: the active character (Mana by default). Created before
+// ttsRuntime, which speaks in her voice; the launcher hears of each switch
+// on /ws/tray so it can load her Live2D model.
+const characterStore = createCharacterStore({
+  onSwitch: (character) =>
+    notifyTray({
+      type: "character",
+      id: character.id,
+      title: character.name,
+      model: character.live2dModel,
+    }),
+});
+
 const ttsRuntime = createTtsRuntime({
   env: process.env,
+  getVoice: () => characterStore.active().voice,
   baseDir: __dirname,
   nowMs,
   logPerf,
@@ -908,15 +932,24 @@ async function checkEmotionalReflexes(store = acpMemoryStore) {
 const presetsStore = createPresetsStore({});
 // Issue #357: the editable personality layer, persisted so an adjustment
 // survives a restart. persona.js owns the immutable core and no storage.
-const personalityStore = createPersonalityStore({});
+// #914: each character has her own (and her own mood below); both delegate
+// to the active character's store.
+const personalityStore = perCharacter(
+  characterStore,
+  (id) => createPersonalityStore({ filePath: characterFilePath(DEFAULT_PERSONALITY_FILE, id) }),
+  ["get", "set", "revert", "clear"],
+);
 // Issue #700: Mana's mood, persisted beside emotional-state.json (in memory
 // under tests, so they never touch the real data dir).
-const moodStore = createMoodStore({
-  filePath:
-    process.env.NODE_ENV === "test" || process.env.NODE_TEST_CONTEXT
-      ? null
-      : path.join(acpMemoryStore.dataDir, "mood-state.json"),
-});
+const moodFilePath =
+  process.env.NODE_ENV === "test" || process.env.NODE_TEST_CONTEXT
+    ? null
+    : path.join(acpMemoryStore.dataDir, "mood-state.json");
+const moodStore = perCharacter(
+  characterStore,
+  (id) => createMoodStore({ filePath: characterFilePath(moodFilePath, id) }),
+  ["get", "record", "recordTurn", "reset", "setFrozen"],
+);
 
 // Procedural-memory skills store (see skills-store.js, issue #140)
 const skillsStore = createSkillsStore({ snapshotStore });
@@ -2266,6 +2299,7 @@ function registerRoutes(app, upload, deps = {}) {
     presetsCapability,
     personalityCapability,
     moodCapability,
+    createCharactersCapability(characterStore),
     backgroundMemoryCapability,
     memoryFactsCapability,
     retrieverAdminCapability,
@@ -3916,6 +3950,7 @@ function registerRoutes(app, upload, deps = {}) {
     let selectedSystemPrompt = persona.buildPersonaPrompt(
       sessionId,
       personalityStore.get().traits,
+      personaOf(characterStore.active()),
     );
     // Issue #623: per-sentence emotion tags for the avatar. Static text, so
     // it sits in the cached prefix; every reply path below strips the tags.
