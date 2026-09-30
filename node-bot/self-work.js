@@ -188,6 +188,21 @@ const TOOL_SCHEMAS = [
   },
 ];
 
+const CHAT_START_TOOL = "self_work__start";
+const CHAT_START_SCHEMA = {
+  type: "function",
+  function: {
+    name: CHAT_START_TOOL,
+    description:
+      "Start working on one of Yuuzulight's GitHub issues for your own code, in your own worktree, ending in a PR for them to review. Only when they ask you to in their message, naming the issue number.",
+    parameters: {
+      type: "object",
+      properties: { issue: { type: "integer", description: "The issue number from their message." } },
+      required: ["issue"],
+    },
+  },
+};
+
 function createSelfWork(options = {}) {
   const repoRoot = path.resolve(options.repoRoot || path.join(__dirname, ".."));
   const worktreesDir = path.resolve(options.worktreesDir || path.join(path.dirname(repoRoot), "Mana-worktrees"));
@@ -214,12 +229,13 @@ function createSelfWork(options = {}) {
   const git = (args, cwd = repoRoot) => run("git", args, cwd);
   const gh = (args, cwd = repoRoot) => run("gh", args, cwd);
 
-  function log(r, text) {
+  // notice: a start or an end, which also goes to the chat (#1008).
+  function log(r, text, notice = false) {
     r.step = text;
     r.log.push({ at: new Date().toISOString(), text });
     if (r.log.length > MAX_LOG) r.log.shift();
     try {
-      onEvent(r, text);
+      onEvent(r, text, notice);
     } catch {}
   }
 
@@ -247,11 +263,13 @@ function createSelfWork(options = {}) {
 
   // One run at a time, including while one is still being set up.
   let starting = false;
-  async function start(issueNumber) {
+  // by: "me" (the launcher, with my admin key), "chat" (my own message)
+  // or "idle" (#1007).
+  async function start(issueNumber, { by = "me" } = {}) {
     if (starting || current?.state === "running") return { ok: false, error: "I'm already working on an issue." };
     starting = true;
     try {
-      return await begin(issueNumber);
+      return await begin(issueNumber, by);
     } finally {
       starting = false;
     }
@@ -292,10 +310,10 @@ function createSelfWork(options = {}) {
       return { ok: false, error: e.message };
     }
     if (!issues.length) return { ok: false, error: "No issue is waiting for me." };
-    return start(issues[0]);
+    return start(issues[0], { by: "idle" });
   }
 
-  async function begin(issueNumber) {
+  async function begin(issueNumber, by) {
     if (!guard) return { ok: false, error: "Self-work waits for my guardrail list (#1000) to be merged into this checkout." };
     let why;
     try {
@@ -308,7 +326,7 @@ function createSelfWork(options = {}) {
     if (!Number.isInteger(n) || n <= 0) return { ok: false, error: "Which issue? Give me its number." };
     let issue;
     try {
-      issue = JSON.parse(await gh(["issue", "view", String(n), "--json", "number,title,body,state,labels"]));
+      issue = JSON.parse(await gh(["issue", "view", String(n), "--json", "number,title,body,state,labels,author"]));
     } catch (e) {
       return { ok: false, error: e.message };
     }
@@ -316,8 +334,14 @@ function createSelfWork(options = {}) {
     let place;
     try {
       place = placeFor(n, issue.title);
-      // Started by me, so it's assigned to her: the label records that.
+      // Assigned by me, so the label records it. From the chat only an
+      // issue I wrote, so a stranger's issue can't be slipped in; on her
+      // own only what's already labelled.
       if (!(issue.labels || []).some((l) => l.name === TASK_LABEL)) {
+        const mine = by === "chat" && issue.author?.login === (await gh(["api", "user", "--jq", ".login"]));
+        if (by !== "me" && !mine) {
+          return { ok: false, error: `#${n} isn't one of yours and has no ${TASK_LABEL} label; add the label and I'll take it.` };
+        }
         await gh(["label", "create", TASK_LABEL, "--force", "--color", "C5A3FF", "--description", "Mana may work on this"]);
         await gh(["issue", "edit", String(n), "--add-label", TASK_LABEL]);
       }
@@ -350,11 +374,11 @@ function createSelfWork(options = {}) {
   function end(r, state, text) {
     r.state = state;
     r.endedAt = new Date().toISOString();
-    log(r, text);
+    log(r, text, true);
   }
 
   async function work(r, issue) {
-    log(r, `Starting #${r.issue}: ${r.title}`);
+    log(r, `I'm starting on #${r.issue}: ${r.title}`, true);
     await git(["fetch", "origin", "main"]);
     if (!fs.existsSync(r.worktree)) {
       const hasBranch = (await exec("git", ["rev-parse", "--verify", "--quiet", `refs/heads/${r.branch}`], { cwd: repoRoot, env })).code === 0;
@@ -600,7 +624,24 @@ How to work:
     };
   }
 
-  return { start, startIdle, stop, status, _current: () => current };
+  // #1008: "work on #N" in the chat. Only a number from my own message.
+  function chatToolSource(userMessage) {
+    const asked = new Set([...String(userMessage || "").matchAll(/#(\d+)/g)].map((m) => Number(m[1])));
+    return {
+      listToolSchemas: () => [CHAT_START_SCHEMA],
+      isKnownToolName: (name) => name === CHAT_START_TOOL,
+      async executeTool(name, args) {
+        const n = Number(args?.issue);
+        if (!asked.has(n)) return JSON.stringify({ status: "error", error: `#${n} isn't in Yuuzulight's message.` });
+        const result = await start(n, { by: "chat" });
+        if (!result.ok) return JSON.stringify({ status: "error", error: result.error });
+        const { worktree, branch } = result.status;
+        return JSON.stringify({ status: "ok", started: n, worktree, branch });
+      },
+    };
+  }
+
+  return { start, startIdle, stop, status, chatToolSource, _current: () => current };
 }
 
 module.exports = { createSelfWork, slugify, stripAttribution, findSecret, testEnv, TASK_LABEL };

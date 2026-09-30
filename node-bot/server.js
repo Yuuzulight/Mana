@@ -2615,6 +2615,11 @@ function registerRoutes(app, upload, deps = {}) {
       runLoop: (...args) => llamaServerRuntime.runToolAwareReply(...args),
       reviewEdit,
       isGaming: deps.isGaming || gamingWatch.isGaming,
+      // #1008: starts and ends go to the chat and a toast; a ready PR's link comes along.
+      onEvent: (run, text, notice) => {
+        console.log(`[self-work #${run.issue}] ${text}`);
+        if (notice) notifyTray({ type: "self-work", title: "Mana's own code", text, url: run.prUrl || undefined });
+      },
     });
   app.get("/self-work", (req, res) => {
     if (!checkAdminAuth(req, res)) return;
@@ -4803,6 +4808,8 @@ function registerRoutes(app, upload, deps = {}) {
             // #905: reminders the user asks for in chat -- not offered to
             // scheduled replies, which nobody is asking in.
             ...(userChat ? [createReminderToolSource({ getScheduler: cronSchedulerPlugin.getScheduler, sessionId })] : []),
+            // #1008: "work on #N" -- only a number from my own message.
+            ...(userChat ? [selfWork.chatToolSource(transcript)] : []),
             // #906: my email and calendar, only in my own chat (never a
             // scheduled reply or a Discord/Telegram bridge).
             ...(userChat

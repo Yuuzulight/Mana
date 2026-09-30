@@ -44,16 +44,18 @@ const guard = {
 };
 
 // Real git; gh answers from a script and records its calls.
-function fakeExec(ghCalls, { labels = [], prs = [], issues = [] } = {}) {
+function fakeExec(ghCalls, { labels = [], prs = [], issues = [], author = "Yuuzulight" } = {}) {
   const { execFile } = require("node:child_process");
   return (cmd, args, { cwd }) =>
     new Promise((resolve) => {
       if (cmd === "gh") {
         ghCalls.push(args);
         const out = args[0] === "issue" && args[1] === "view"
-          ? JSON.stringify({ number: 7, title: "Fix the add helper", body: "add() subtracts.", state: "OPEN", labels })
+          ? JSON.stringify({ number: 7, title: "Fix the add helper", body: "add() subtracts.", state: "OPEN", labels, author: { login: author } })
           : args[0] === "pr" && args[1] === "create"
             ? "https://github.com/x/y/pull/8\n"
+            : args[0] === "api" && args[1] === "user"
+              ? "Yuuzulight\n"
             : args[0] === "pr" && args[1] === "list"
               ? JSON.stringify(prs)
               : args[0] === "issue" && args[1] === "list"
@@ -91,13 +93,13 @@ const fix = ["coding__propose_edit", { path: "node-bot/util.js", old_text: "retu
 const runTests = ["coding__run_tests", { path: "node-bot/test/util.test.js" }];
 const finish = ["session_goal__finish", { reason: "fixed" }];
 
-function selfWork(repos, { calls, answer = "I made add() add and tested it.\nCo-Authored-By: Someone <x@y>", passed = true, review = null, labels, seen, onTest = () => {}, prs, issues, ...extra } = {}) {
+function selfWork(repos, { calls, answer = "I made add() add and tested it.\nCo-Authored-By: Someone <x@y>", passed = true, review = null, labels, seen, onTest = () => {}, prs, issues, author, ...extra } = {}) {
   const ghCalls = [];
   const testRuns = [];
   const sw = createSelfWork({
     repoRoot: repos.live,
     worktreesDir: repos.worktrees,
-    exec: fakeExec(ghCalls, { labels, prs, issues }),
+    exec: fakeExec(ghCalls, { labels, prs, issues, author }),
     env: { PATH: process.env.PATH, SystemRoot: process.env.SystemRoot, DISCORD_TOKEN: "super-secret-token-value" },
     protectedPaths: guard,
     reviewEdit: async () => review,
@@ -367,4 +369,39 @@ test("20 minutes idle tries an idle start once per idle period", async () => {
     await report(1300);
     assert.equal(idleStarts, 2);
   });
+});
+
+// #1008: the chat's "work on #N", and what reaches the chat.
+test("chat: only a number from my message, and only my issue or a labelled one", async () => {
+  const repos = makeRepos();
+  const call = (sw, message, issue) => sw.chatToolSource(message).executeTool("self_work__start", { issue }).then(JSON.parse);
+
+  const stranger = selfWork(repos, { calls: [], author: "someone-else" });
+  assert.match((await call(stranger.sw, "work on #7 please", 8)).error, /#8 isn't in Yuuzulight's message/);
+  assert.match((await call(stranger.sw, "work on #7 please", 7)).error, /isn't one of yours and has no mana-task label/);
+  assert.ok(!stranger.ghCalls.some((a) => a[0] === "issue" && a[1] === "edit"));
+
+  const labelled = selfWork(repos, { calls: [], author: "someone-else", labels: [{ name: "mana-task" }] });
+  assert.equal((await call(labelled.sw, "work on #7", 7)).status, "ok");
+  await labelled.sw._current().done;
+
+  const mine = selfWork(repos, { calls: [] });
+  const started = await call(mine.sw, "can you take #7?", 7);
+  assert.equal(started.status, "ok");
+  assert.equal(started.branch, "mana/7-fix-the-add-helper");
+  assert.ok(mine.ghCalls.some((a) => a.join(" ") === "issue edit 7 --add-label mana-task"));
+  await mine.sw._current().done;
+});
+
+test("starts and ends are notices; the steps between aren't", async () => {
+  const repos = makeRepos();
+  const events = [];
+  const { sw } = selfWork(repos, { calls: [fix, runTests, finish], onEvent: (run, text, notice) => events.push({ text, notice }) });
+  await sw.start(7);
+  await sw._current().done;
+  const notices = events.filter((e) => e.notice).map((e) => e.text);
+  assert.equal(notices.length, 2);
+  assert.match(notices[0], /^I'm starting on #7: Fix the add helper/);
+  assert.match(notices[1], /^My PR for #7 is ready: https:\/\/github.com\/x\/y\/pull\/8/);
+  assert.ok(events.some((e) => !e.notice && /Changed node-bot\/util\.js/.test(e.text)));
 });
