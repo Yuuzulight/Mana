@@ -1,75 +1,94 @@
 // Interactive browser automation: navigate/click/type/read a live page,
 // not just search-and-extract (that's web-access.js's job, and stays
-// untouched). Local-only by default, driven through a narrow "page-like"
-// interface (goto/evaluate/click/type/title/url/screenshot) rather than exposing
-// Playwright's full API directly -- this is what makes the module testable
-// without a real browser: production wraps a real Playwright page,
-// test-suite implementations inject a plain fake object. No real browser
-// was launched in the process that built this (CI runners have no
-// Windows/Edge install to launch, and this plugin defaults to Edge --
-// see index.js); every behavior here is exercised against a fake page.
-const MAX_PAGE_TEXT_CHARS = 6000; // matches web-access.js's own budget
+// untouched). Driven through a narrow "page-like" interface (goto,
+// ariaSnapshot, locator, evaluate, goBack, mouse, title, url, screenshot)
+// rather than exposing Playwright's full API directly -- production passes
+// a real Playwright page, tests inject a plain fake object.
+//
+// #1138: what she reads is Playwright's AI accessibility snapshot
+// (`page.ariaSnapshot({ mode: "ai" })`, iframes included), cut down to the
+// interactive elements, plus a short text excerpt. She acts by the
+// snapshot's refs (`aria-ref=e5`).
+const MAX_PAGE_TEXT_CHARS = 1500;
+const MAX_ELEMENTS = 150;
+const SNAPSHOT_DEPTH = 40;
+// A stale ref fails fast instead of waiting out Playwright's 30 seconds.
+const ACTION_TIMEOUT_MS = 5000;
+const INTERACTIVE_ROLES = new Set([
+  "button", "link", "textbox", "searchbox", "combobox", "listbox", "option", "checkbox", "radio",
+  "switch", "slider", "spinbutton", "tab", "menuitem", "menuitemcheckbox", "menuitemradio", "treeitem",
+]);
+const REF_RE = /^(?:f\d+)?e\d+$/;
 
-// Runs in the real page's context via page.evaluate() -- assigns a stable
-// data-mana-ref attribute to each visible interactive element (only once
-// per element, so refs stay stable across repeated snapshots of the same
-// page) and returns a compact description of each. Kept as a single
-// stringified function so it can cross into the page's own JS context;
-// the fake page used in tests just calls it directly.
-function snapshotInPage() {
-  const SELECTOR =
-    'a[href], button, input, textarea, select, [role="button"], [role="link"], [role="textbox"], [contenteditable="true"]';
-  window.__manaRefCounter = window.__manaRefCounter || 0;
-  const elements = Array.from(document.querySelectorAll(SELECTOR)).filter((el) => {
-    const rect = el.getBoundingClientRect();
-    return rect.width > 0 && rect.height > 0;
-  });
-
-  return elements.map((el) => {
-    if (!el.hasAttribute("data-mana-ref")) {
-      window.__manaRefCounter += 1;
-      el.setAttribute("data-mana-ref", String(window.__manaRefCounter));
-    }
-    const label =
-      el.getAttribute("aria-label") ||
-      el.textContent?.trim().slice(0, 80) ||
-      el.getAttribute("placeholder") ||
-      el.getAttribute("value") ||
-      "";
-    return {
-      ref: el.getAttribute("data-mana-ref"),
-      tag: el.tagName.toLowerCase(),
-      role: el.getAttribute("role") || null,
-      label,
-    };
-  });
+// The snapshot's interactive lines, flattened: `link "More" [ref=e6]`,
+// `textbox "Search" [ref=e9]: current value`. Lines without a ref can't be
+// acted on, so they go too.
+function interactiveElements(ariaSnapshot) {
+  const lines = [];
+  for (const raw of String(ariaSnapshot || "").split("\n")) {
+    const match = /^\s*- (\w+)\b(.*)$/.exec(raw);
+    if (!match || !INTERACTIVE_ROLES.has(match[1]) || !/\[ref=/.test(match[2])) continue;
+    lines.push((match[1] + match[2].replace(/ \[cursor=pointer\]/g, "")).replace(/:$/, ""));
+  }
+  return lines;
 }
 
 // A plain, token-efficient text extraction -- not a screenshot or raw
-// HTML dump, matching the issue's explicit requirement.
+// HTML dump.
 function extractTextInPage(maxChars) {
-  return (document.body?.innerText || "").trim().slice(0, maxChars);
+  return (document.body?.innerText || "").trim().replace(/\n{3,}/g, "\n\n").slice(0, maxChars);
 }
 
-// options.page: the injected page-like object (see file header). Kept as
-// a plain object of async methods rather than a class -- matches this
-// codebase's existing dependency-injection style (acp-memory-store.js,
-// cron-scheduler.js, etc.).
+// "e5", or the model's "[ref=e5]" / "ref=e5" -- nothing else reaches the
+// selector.
+function refSelector(ref) {
+  const id = String(ref ?? "").replace(/^\[?(?:ref=)?|\]$/g, "");
+  if (!id) throw new Error("ref is required");
+  if (!REF_RE.test(id)) throw new Error(`"${ref}" isn't a ref from the page snapshot (like e5)`);
+  return `aria-ref=${id}`;
+}
+
+// options.page: the injected page-like object (see file header).
 function createBrowserSession(options = {}) {
   const page = options.page;
   if (!page || typeof page.goto !== "function") {
-    throw new Error("a page-like object ({goto, evaluate, click, type, title, url, screenshot}) is required");
+    throw new Error("a page-like object ({goto, ariaSnapshot, locator, evaluate, title, url, screenshot}) is required");
   }
-  const maxTextChars = Math.max(500, Number(options.maxTextChars) || MAX_PAGE_TEXT_CHARS);
+  const maxTextChars = Math.max(200, Number(options.maxTextChars) || MAX_PAGE_TEXT_CHARS);
+  let last = null;
 
   async function snapshot() {
-    const [interactiveElements, text, title, url] = await Promise.all([
-      page.evaluate(snapshotInPage),
+    const [aria, text, title, url] = await Promise.all([
+      page.ariaSnapshot({ mode: "ai", depth: SNAPSHOT_DEPTH }),
       page.evaluate(extractTextInPage, maxTextChars),
       page.title(),
       page.url(),
     ]);
-    return { url, title, text, interactiveElements };
+    const all = interactiveElements(aria);
+    const elements = all.slice(0, MAX_ELEMENTS);
+    if (all.length > elements.length) elements.push(`(${all.length - elements.length} more not shown)`);
+    last = { url, title, elements, text };
+    return last;
+  }
+
+  // After an action: on the same page, only what changed; on a new page
+  // (or when most of it changed), a fresh snapshot.
+  async function afterAction() {
+    const before = last;
+    const now = await snapshot();
+    if (!before || before.url !== now.url) return now;
+    const was = new Set(before.elements);
+    const is = new Set(now.elements);
+    const added = now.elements.filter((l) => !was.has(l));
+    const removed = before.elements.filter((l) => !is.has(l));
+    if (added.length + removed.length > now.elements.length / 2) return now;
+    return {
+      url: now.url,
+      title: now.title,
+      added,
+      removed,
+      ...(now.text !== before.text ? { text: now.text } : {}),
+    };
   }
 
   async function navigate(url) {
@@ -87,31 +106,54 @@ function createBrowserSession(options = {}) {
   }
 
   async function click(ref) {
-    if (!ref) throw new Error("ref is required");
-    await page.click(`[data-mana-ref="${ref}"]`);
+    await page.locator(refSelector(ref)).click({ timeout: ACTION_TIMEOUT_MS });
+    return afterAction();
+  }
+
+  // Replaces the field's text; submit presses Enter after.
+  async function type(ref, text, submit = false) {
+    const field = page.locator(refSelector(ref));
+    await field.fill(String(text ?? ""), { timeout: ACTION_TIMEOUT_MS });
+    if (submit) await field.press("Enter", { timeout: ACTION_TIMEOUT_MS });
+    return afterAction();
+  }
+
+  // An option's label or value.
+  async function select(ref, value) {
+    await page.locator(refSelector(ref)).selectOption(String(value ?? ""), { timeout: ACTION_TIMEOUT_MS });
+    return afterAction();
+  }
+
+  // Most of a screen, with the wheel over the page's middle so a scrolling
+  // panel scrolls too, not just the window.
+  async function scroll(direction) {
+    if (direction !== "up" && direction !== "down") throw new Error('direction must be "up" or "down"');
+    const { width, height } = page.viewportSize?.() || { width: 1280, height: 720 };
+    await page.mouse.move(width / 2, height / 2);
+    await page.mouse.wheel(0, (direction === "down" ? 0.8 : -0.8) * height);
+    return afterAction();
+  }
+
+  async function back() {
+    await page.goBack();
     return snapshot();
   }
 
-  async function type(ref, text) {
-    if (!ref) throw new Error("ref is required");
-    await page.type(`[data-mana-ref="${ref}"]`, String(text ?? ""));
-    return snapshot();
-  }
-
-  // Issue #418: a human-facing "what's it doing" activity feed for the
-  // launcher UI -- entirely separate from snapshot()'s token-efficient text
-  // extraction, which stays the only thing the model itself ever reads (see
-  // the file header: no screenshot/raw HTML ever reaches the model). Real
-  // Playwright pages already expose .screenshot() natively (index.js passes
-  // the raw page object straight into createBrowserSession, not a narrowed
-  // wrapper), so this is required on the page-like interface the same way
-  // goto/evaluate/click/type/title/url already are.
+  // Issue #418: a human-facing "what's it doing" feed for the launcher's
+  // Browser panel -- the model never sees a screenshot.
   async function screenshot() {
     const buffer = await page.screenshot({ type: "jpeg", quality: 50 });
     return buffer.toString("base64");
   }
 
-  return { navigate, click, type, snapshot, screenshot };
+  return { navigate, click, type, select, scroll, back, snapshot, screenshot };
 }
 
-module.exports = { MAX_PAGE_TEXT_CHARS, createBrowserSession, snapshotInPage, extractTextInPage };
+module.exports = {
+  MAX_PAGE_TEXT_CHARS,
+  MAX_ELEMENTS,
+  createBrowserSession,
+  interactiveElements,
+  extractTextInPage,
+  refSelector,
+};
