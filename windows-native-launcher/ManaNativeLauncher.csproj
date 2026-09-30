@@ -29,6 +29,13 @@
          both this exe and the tray icon used before. -->
     <ApplicationIcon>assets\mana.ico</ApplicationIcon>
   </PropertyGroup>
+  <ItemGroup>
+    <!-- #680: UI Automation (System.Windows.Automation) for the text
+         actions' password-field check and selection read. It ships in the
+         WPF part of the desktop runtime; referenced directly rather than
+         via UseWPF, which would also drop the System.IO implicit using. -->
+    <FrameworkReference Include="Microsoft.WindowsDesktop.App.WPF" />
+  </ItemGroup>
 
   <Target Name="FetchSileroVadModel" BeforeTargets="Build">
     <PropertyGroup>
@@ -57,6 +64,24 @@
     <MakeDir Directories="$(WakeWordModelDir)" Condition="!Exists('$(WakeWordModelDir)')" />
     <Exec Command="powershell -NoProfile -ExecutionPolicy Bypass -Command &quot;Invoke-WebRequest -Uri '$(MelspectrogramModelUrl)' -OutFile '$(MelspectrogramModelPath)' -UserAgent 'mana-fetch-wakeword-backbone'&quot;" Condition="!Exists('$(MelspectrogramModelPath)')" ContinueOnError="WarnAndContinue" />
     <Exec Command="powershell -NoProfile -ExecutionPolicy Bypass -Command &quot;Invoke-WebRequest -Uri '$(EmbeddingModelUrl)' -OutFile '$(EmbeddingModelPath)' -UserAgent 'mana-fetch-wakeword-backbone'&quot;" Condition="!Exists('$(EmbeddingModelPath)')" ContinueOnError="WarnAndContinue" />
+  </Target>
+
+  <!-- #678: WeSpeaker's VoxCeleb ResNet34-LM speaker embedding (CC BY 4.0,
+       see THIRD_PARTY.md) for the voiceprint gate, pinned to a revision and
+       checked against its SHA-256 before it's kept. Same fetch-at-build-time
+       convention as the models above; MANA_SPEAKER_MODEL points elsewhere. -->
+  <Target Name="FetchSpeakerModel" BeforeTargets="Build">
+    <PropertyGroup>
+      <SpeakerModelDir>$(MSBuildProjectDirectory)\assets\speaker</SpeakerModelDir>
+      <SpeakerModelPath>$(SpeakerModelDir)\voxceleb_resnet34_LM.onnx</SpeakerModelPath>
+      <SpeakerModelUrl>https://huggingface.co/Wespeaker/wespeaker-voxceleb-resnet34-LM/resolve/f0c48c298fd835726c27956a5d617bad7115627e/voxceleb_resnet34_LM.onnx</SpeakerModelUrl>
+      <SpeakerModelSha256>7bb2f06e9df17cdf1ef14ee8a15ab08ed28e8d0ef5054ee135741560df2ec068</SpeakerModelSha256>
+    </PropertyGroup>
+    <MakeDir Directories="$(SpeakerModelDir)" Condition="!Exists('$(SpeakerModelDir)')" />
+    <Exec Command="powershell -NoProfile -ExecutionPolicy Bypass -Command &quot;Invoke-WebRequest -Uri '$(SpeakerModelUrl)' -OutFile '$(SpeakerModelPath).tmp' -UserAgent 'mana-fetch-speaker-model'&quot;" Condition="!Exists('$(SpeakerModelPath)')" ContinueOnError="WarnAndContinue" />
+    <VerifyFileHash File="$(SpeakerModelPath).tmp" Hash="$(SpeakerModelSha256)" Algorithm="SHA256" Condition="Exists('$(SpeakerModelPath).tmp')" ContinueOnError="WarnAndContinue" />
+    <Copy SourceFiles="$(SpeakerModelPath).tmp" DestinationFiles="$(SpeakerModelPath)" Condition="Exists('$(SpeakerModelPath).tmp') And '$(MSBuildLastTaskResult)' == 'true'" />
+    <Delete Files="$(SpeakerModelPath).tmp" />
   </Target>
 
   <ItemGroup>

@@ -37,6 +37,10 @@ function isValidSchedule(schedule) {
   if (schedule.type === "interval") {
     return Number.isFinite(schedule.everyMs) && schedule.everyMs > 0;
   }
+  // #905: one-shot, fires once at that timestamp (ms) and is then removed.
+  if (schedule.type === "once") {
+    return Number.isFinite(schedule.at);
+  }
   if (schedule.type === "daily") {
     return (
       Number.isInteger(schedule.hour) &&
@@ -54,6 +58,9 @@ function isValidSchedule(schedule) {
 function computeNextRun(schedule, nowMs) {
   if (schedule.type === "interval") {
     return nowMs + schedule.everyMs;
+  }
+  if (schedule.type === "once") {
+    return schedule.at;
   }
   if (schedule.type === "daily") {
     const next = new Date(nowMs);
@@ -93,16 +100,22 @@ function createCronScheduler(options = {}) {
 
   function addJob(input = {}) {
     if (!isValidSchedule(input.schedule)) {
-      throw new Error("a valid schedule ({type: 'interval', everyMs} or {type: 'daily', hour, minute}) is required");
+      throw new Error(
+        "a valid schedule ({type: 'interval', everyMs}, {type: 'daily', hour, minute} or {type: 'once', at}) is required",
+      );
     }
-    if (input.jobType !== "script" && input.jobType !== "agent") {
-      throw new Error("jobType must be 'script' or 'agent'");
+    if (!["script", "agent", "reminder"].includes(input.jobType)) {
+      throw new Error("jobType must be 'script', 'agent' or 'reminder'");
     }
     if (input.jobType === "script" && !String(input.actionName || "").trim()) {
       throw new Error("actionName is required for a script job");
     }
     if (input.jobType === "agent" && !String(input.prompt || "").trim()) {
       throw new Error("prompt is required for an agent job");
+    }
+    // #905: a reminder's name is its text; running it just hands that back.
+    if (input.jobType === "reminder" && !String(input.name || "").trim()) {
+      throw new Error("name (the reminder text) is required for a reminder job");
     }
 
     const nowValue = now();
@@ -136,6 +149,7 @@ function createCronScheduler(options = {}) {
   }
 
   async function runJob(job) {
+    if (job.jobType === "reminder") return job.name;
     if (job.jobType === "script") {
       const action = scriptActions[job.actionName];
       if (typeof action !== "function") {
@@ -150,16 +164,17 @@ function createCronScheduler(options = {}) {
   }
 
   // Runs every enabled job whose nextRunAt has passed, delivering each
-  // result (or error) via onResult, and reschedules it for its next fire.
-  // A failing job doesn't stop the rest of the batch.
+  // result (or error) via onResult, and reschedules it for its next fire
+  // (a one-shot job is removed instead). A failing job doesn't stop the
+  // rest of the batch.
   async function runDueJobs() {
     const nowValue = now();
     const jobs = listJobs();
-    let changed = false;
+    const ran = new Map();
 
     for (const job of jobs) {
       if (!job.enabled || job.nextRunAt > nowValue) continue;
-      changed = true;
+      ran.set(job.id, job);
       try {
         const result = await runJob(job);
         job.lastError = null;
@@ -172,17 +187,31 @@ function createCronScheduler(options = {}) {
       job.nextRunAt = computeNextRun(job.schedule, nowValue);
     }
 
-    if (changed) saveJobs(jobs);
-    return jobs;
+    if (!ran.size) return jobs;
+    // Re-read: an agent job can take a while, and a job added or removed
+    // meanwhile (a reminder set or cancelled from chat) must survive.
+    return saveJobs(
+      listJobs().flatMap((j) => {
+        const done = ran.get(j.id);
+        if (!done) return [j];
+        return done.schedule.type === "once" ? [] : [done];
+      }),
+    );
   }
 
   let timer = null;
+  let running = false;
   function start(intervalMs = 30000) {
     if (timer) return;
     timer = setInterval(() => {
-      runDueJobs().catch((e) =>
-        console.warn("cron-scheduler: runDueJobs failed:", e && e.message ? e.message : e),
-      );
+      // A slow agent job mustn't let the next tick run the same jobs again.
+      if (running) return;
+      running = true;
+      runDueJobs()
+        .catch((e) => console.warn("cron-scheduler: runDueJobs failed:", e && e.message ? e.message : e))
+        .finally(() => {
+          running = false;
+        });
     }, intervalMs);
     if (typeof timer.unref === "function") timer.unref();
   }

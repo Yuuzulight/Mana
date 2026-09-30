@@ -20,15 +20,28 @@ internal sealed class TrayNotificationClient : IDisposable
 
     private readonly Uri trayWebSocketUri;
     private readonly Action openChat;
+    private readonly Action<TrayNotificationPayload>? onDoctor;
+    private readonly Action<string>? onSpeak;
+    private readonly bool proactiveToasts;
     private readonly CancellationTokenSource cts = new();
 
     // #565: backendBaseUrl derives this client's ws(s):// endpoint from
     // the same configured backend address ManaBackendClient uses for
     // http(s) -- null (every existing call site) keeps the original
     // hardcoded local address.
-    public TrayNotificationClient(Action openChat, string? backendBaseUrl = null)
+    // #689: onDoctor gets Doctor's warn/fail transitions (on a thread-pool
+    // thread) -- Electron's tray tooltip + balloon, not a proactive toast.
+    // #905: onSpeak gets a payload's spoken line (a reminder), on a
+    // thread-pool thread, whether or not proactive toasts are on.
+    public TrayNotificationClient(Action openChat, string? backendBaseUrl = null, Action<TrayNotificationPayload>? onDoctor = null, Action<string>? onSpeak = null)
     {
         this.openChat = openChat;
+        this.onDoctor = onDoctor;
+        this.onSpeak = onSpeak;
+        // Matches windows-launcher's own MANA_PROACTIVE_TOASTS_ENABLED gate
+        // -- "0" opts out, anything else (including unset) is enabled. Like
+        // there, it doesn't silence Doctor alerts.
+        proactiveToasts = Environment.GetEnvironmentVariable("MANA_PROACTIVE_TOASTS_ENABLED") != "0";
         trayWebSocketUri = BuildTrayWebSocketUri(backendBaseUrl);
         ToastNotificationManagerCompat.OnActivated += OnToastActivated;
     }
@@ -50,9 +63,7 @@ internal sealed class TrayNotificationClient : IDisposable
 
     public void Start()
     {
-        // Matches windows-launcher's own MANA_PROACTIVE_TOASTS_ENABLED gate
-        // -- "0" opts out, anything else (including unset) is enabled.
-        if (Environment.GetEnvironmentVariable("MANA_PROACTIVE_TOASTS_ENABLED") == "0")
+        if (!proactiveToasts && onDoctor is null)
         {
             return;
         }
@@ -108,10 +119,19 @@ internal sealed class TrayNotificationClient : IDisposable
         }
     }
 
-    private static void HandleMessage(byte[] json)
+    private void HandleMessage(byte[] json)
     {
         var payload = TrayNotificationPayload.TryParse(json);
-        if (payload is null || !ProactiveToastFilter.IsProactiveToast(payload.Type))
+        if (payload?.Type == "doctor")
+        {
+            onDoctor?.Invoke(payload);
+            return;
+        }
+        if (!string.IsNullOrWhiteSpace(payload?.Speak))
+        {
+            onSpeak?.Invoke(payload.Speak);
+        }
+        if (!proactiveToasts || payload is null || !ProactiveToastFilter.IsProactiveToast(payload.Type))
         {
             return;
         }

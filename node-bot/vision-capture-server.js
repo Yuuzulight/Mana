@@ -11,12 +11,19 @@ const WebSocket = require("ws");
 function registerVisionCaptureServer(httpServer, { path = "/ws/vision-capture", bridge, requestGuard } = {}) {
   const wss = new WebSocket.Server({ noServer: true });
   const clients = new Set();
+  // #912: clients that connected with ?camera=1 can take camera snapshots.
+  const cameraClients = new WeakSet();
 
-  wss.on("connection", (socket) => {
+  wss.on("connection", (socket, req) => {
     clients.add(socket);
+    if (new URL(req?.url || "/", "http://localhost").searchParams.get("camera") === "1") {
+      cameraClients.add(socket);
+    }
     socket.on("close", () => clients.delete(socket));
     socket.on("error", () => clients.delete(socket));
   });
+
+  const isOpen = (client) => client.readyState === WebSocket.OPEN;
 
   httpServer.on("upgrade", (req, socket, head) => {
     if ((req.url || "").split("?")[0] !== path) return;
@@ -31,8 +38,9 @@ function registerVisionCaptureServer(httpServer, { path = "/ws/vision-capture", 
     const raw = JSON.stringify(message);
     let sent = false;
     for (const client of clients) {
+      if (message.source === "camera" && !cameraClients.has(client)) continue;
       try {
-        if (client.readyState === WebSocket.OPEN) {
+        if (isOpen(client)) {
           client.send(raw);
           sent = true;
         }
@@ -41,7 +49,7 @@ function registerVisionCaptureServer(httpServer, { path = "/ws/vision-capture", 
       }
     }
     return sent;
-  });
+  }, () => [...clients].some((client) => cameraClients.has(client) && isOpen(client)));
 
   return { wss };
 }

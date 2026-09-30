@@ -95,3 +95,15 @@ test("#697 held remarks expire when stale", async () => {
   await tick();
   assert.deepEqual(state.sent, ["insight"]);
 });
+
+test("#905 an explicit reminder gets through mid-game", async () => {
+  const { state, say, later } = setup();
+  state.gaming = true;
+  say("remark", { urgent: true });
+  assert.equal(say("check retainers", { explicit: true }), "delivered");
+  assert.equal(later(), null); // the remark still waits for a break
+  state.inBreak = true;
+  assert.equal(later(), "remark");
+  await tick();
+  assert.deepEqual(state.sent, ["check retainers", "remark"]);
+});

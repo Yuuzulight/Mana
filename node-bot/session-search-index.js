@@ -377,6 +377,17 @@ function createSessionSearchIndex(options = {}) {
     return mergeResults(keywordResults, vectorResults, safeLimit);
   }
 
+  // #687: the sessions with a stored message containing every typed word,
+  // each as a prefix so the list narrows while typing. Words are quoted, so
+  // FTS5 syntax in what was typed (quotes, AND/OR/NEAR, -, *) is just text.
+  function sessionIdsMatching(text) {
+    const words = String(text || "").split(/\s+/).filter((word) => /[\p{L}\p{N}]/u.test(word));
+    if (!words.length) return new Set();
+    const query = words.map((word) => `"${word.replace(/"/g, '""')}"*`).join(" ");
+    const rows = db.prepare("SELECT DISTINCT sessionId FROM messages_fts WHERE messages_fts MATCH ?").all(query);
+    return new Set(rows.map((row) => row.sessionId));
+  }
+
   function close() {
     db.close();
   }
@@ -385,7 +396,7 @@ function createSessionSearchIndex(options = {}) {
   // actually loaded -- e.g. sqlite-vec's platform binary being unavailable
   // in an environment (see the `catch` above) is a real, expected state,
   // not just an internal implementation detail.
-  return { indexTurn, syncEmbeddings, search, close, vectorEnabled: () => vectorEnabled };
+  return { indexTurn, syncEmbeddings, search, sessionIdsMatching, close, vectorEnabled: () => vectorEnabled };
 }
 
 module.exports = { createSessionSearchIndex, DEFAULT_DB_PATH };
