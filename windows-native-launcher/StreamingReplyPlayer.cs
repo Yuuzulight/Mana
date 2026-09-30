@@ -67,13 +67,17 @@ internal sealed class StreamingReplyPlayer
     // NOT wait for that sentence to actually finish being spoken), since a
     // chat log should show text as it arrives, not lag behind audio.
     // #963: source ("voice" or "typed") goes to /reply/stream as is.
+    // #914: onSentence also gets the speaking character's name (null from
+    // an older backend). In group mode a second final follows with her
+    // sister's reaction; its sentence streams and plays like the rest, and
+    // the first final stays the reply reported here.
     public async Task<(string? Reply, bool Changed, string? Expression, bool Interrupted, IReadOnlyList<string> Pending)> StreamReplyAndPlayAsync(
-        string commandText, string? sessionId = null, Action<string>? onSentence = null, string screenText = "", string? image = null, IReadOnlyList<string>? images = null, string? presetId = null, bool? thinkHarder = null, string? source = null)
+        string commandText, string? sessionId = null, Action<string, string?>? onSentence = null, string screenText = "", string? image = null, IReadOnlyList<string>? images = null, string? presetId = null, bool? thinkHarder = null, string? source = null)
     {
-        var sentences = Channel.CreateUnbounded<(string Text, string? Emotion)>();
+        var sentences = Channel.CreateUnbounded<(string Text, string? Emotion, string? Character)>();
         ReplyStreamEvent? finalEvent = null;
 
-        var readTask = ReadEventsAsync(commandText, sessionId, screenText, image, images, presetId, thinkHarder, source, onSentence, sentences.Writer, e => finalEvent = e);
+        var readTask = ReadEventsAsync(commandText, sessionId, screenText, image, images, presetId, thinkHarder, source, onSentence, sentences.Writer, e => finalEvent ??= e);
         var (interrupted, pending) = await PlayStreamedSentencesAsync(sentences.Reader).ConfigureAwait(false);
 
         if (interrupted)
@@ -116,16 +120,16 @@ internal sealed class StreamingReplyPlayer
     // a second interruption mid-resume can be held again by the caller.
     public Task<(bool Interrupted, IReadOnlyList<string> Pending)> ReplaySentencesAsync(IReadOnlyList<string> sentences)
     {
-        var channel = Channel.CreateUnbounded<(string Text, string? Emotion)>();
+        var channel = Channel.CreateUnbounded<(string Text, string? Emotion, string? Character)>();
         foreach (var sentence in sentences)
         {
-            channel.Writer.TryWrite((sentence, null));
+            channel.Writer.TryWrite((sentence, null, null));
         }
         channel.Writer.Complete();
         return PlayStreamedSentencesAsync(channel.Reader);
     }
 
-    private async Task ReadEventsAsync(string commandText, string? sessionId, string screenText, string? image, IReadOnlyList<string>? images, string? presetId, bool? thinkHarder, string? source, Action<string>? onSentence, ChannelWriter<(string Text, string? Emotion)> writer, Action<ReplyStreamEvent> onFinal)
+    private async Task ReadEventsAsync(string commandText, string? sessionId, string screenText, string? image, IReadOnlyList<string>? images, string? presetId, bool? thinkHarder, string? source, Action<string, string?>? onSentence, ChannelWriter<(string Text, string? Emotion, string? Character)> writer, Action<ReplyStreamEvent> onFinal)
     {
         try
         {
@@ -133,8 +137,8 @@ internal sealed class StreamingReplyPlayer
             {
                 if (evt.Type == "sentence" && !string.IsNullOrWhiteSpace(evt.Text))
                 {
-                    onSentence?.Invoke(evt.Text);
-                    await writer.WriteAsync((evt.Text, evt.Emotion)).ConfigureAwait(false);
+                    onSentence?.Invoke(evt.Text, evt.CharacterName);
+                    await writer.WriteAsync((evt.Text, evt.Emotion, evt.Character)).ConfigureAwait(false);
                 }
                 else if (evt.Type == "final")
                 {
@@ -158,7 +162,7 @@ internal sealed class StreamingReplyPlayer
     // Interrupted is true if playback was cut off by an interruption (#479
     // sub-project 3) before every streamed sentence had a chance to play;
     // Pending is then what hadn't started playing yet, in order (#513).
-    private async Task<(bool Interrupted, IReadOnlyList<string> Pending)> PlayStreamedSentencesAsync(ChannelReader<(string Text, string? Emotion)> sentences)
+    private async Task<(bool Interrupted, IReadOnlyList<string> Pending)> PlayStreamedSentencesAsync(ChannelReader<(string Text, string? Emotion, string? Character)> sentences)
     {
         // The one-ahead lookahead pulls its sentence out of the channel on
         // its own (thread-pool) continuation. At interrupt time, Pending
@@ -172,7 +176,7 @@ internal sealed class StreamingReplyPlayer
         string? lookaheadText = null;
         synthesized = 0;
 
-        (string Text, string? Emotion)? TakeNext()
+        (string Text, string? Emotion, string? Character)? TakeNext()
         {
             lock (lookaheadLock)
             {
@@ -256,7 +260,7 @@ internal sealed class StreamingReplyPlayer
         return (interrupted, pending);
     }
 
-    private async Task<(string Text, string? Emotion, byte[] Audio)?> TakeAndSynthesizeNextAsync(ChannelReader<(string Text, string? Emotion)> sentences, Func<(string Text, string? Emotion)?> takeNext)
+    private async Task<(string Text, string? Emotion, byte[] Audio)?> TakeAndSynthesizeNextAsync(ChannelReader<(string Text, string? Emotion, string? Character)> sentences, Func<(string Text, string? Emotion, string? Character)?> takeNext)
     {
         if (!await sentences.WaitToReadAsync().ConfigureAwait(false))
         {
@@ -269,7 +273,7 @@ internal sealed class StreamingReplyPlayer
         synthesizing = ++synthesized;
         try
         {
-            return (next.Text, next.Emotion, await backendClient.SynthesizeAsync(next.Text, next.Emotion).ConfigureAwait(false));
+            return (next.Text, next.Emotion, await backendClient.SynthesizeAsync(next.Text, next.Emotion, next.Character).ConfigureAwait(false));
         }
         finally
         {
