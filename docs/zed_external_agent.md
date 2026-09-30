@@ -103,7 +103,7 @@ Set `MANA_AGENT_AUTONOMOUS=1` only when you want Mana to run a bounded local cod
 
 Optional controls:
 
-- `MANA_AGENT_MAX_ITERATIONS`: default `3`.
+- `MANA_AGENT_MAX_ITERATIONS`: default `20`.
 - `MANA_AGENT_MAX_FILES_CHANGED`: default `5`.
 - `MANA_AGENT_TEST_TIMEOUT_MS`: default `120000`.
 - `MANA_AGENT_ALLOWED_PATHS`: absolute outside-workspace roots allowed for file access.
