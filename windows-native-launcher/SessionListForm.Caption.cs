@@ -170,6 +170,10 @@ internal sealed partial class SessionListForm
         {
             g.FillRectangle(glass, 0, 0, width, height);
         }
+        if (GlassSurface.SheenProgress(this) is float sheen)
+        {
+            GlassSurface.PaintSheen(g, new Rectangle(0, 0, width, height), sheen);
+        }
         using (var top = new Pen(CaptionTopEdge))
         using (var bottom = new Pen(CaptionBottomEdge))
         using (var outline = new Pen(CaptionOutline))

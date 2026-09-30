@@ -736,7 +736,7 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
             {
                 using var glass = new SolidBrush(Color.FromArgb(175, fill));
                 g.FillRectangle(glass, bubble);
-                GlassSurface.PaintGlassEdges(g, bubble, null);
+                GlassSurface.PaintGlassEdges(g, bubble, message.FromUser ? null : GlassSurface.SheenProgress(this)); // #652: her bubbles shimmer
             }
             else
             {
