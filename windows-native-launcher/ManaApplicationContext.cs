@@ -200,7 +200,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
             glanceTimer.Tick += async (_, _) => await glance.RunOnceAsync();
             glanceTimer.Start();
         }
-        sessionListForm = new SessionListForm(backendClient, voiceLoop, chatLog, avatarOverlay, processManager.BackendLog);
+        sessionListForm = new SessionListForm(backendClient, voiceLoop, chatLog, avatarOverlay, processManager.BackendLog) { ShowArtifacts = ShowArtifactViewer };
         // Creating the first form installed WinForms' context on this (UI)
         // thread; RunOnUi posts to it.
         uiContext = SynchronizationContext.Current ?? new WindowsFormsSynchronizationContext();
@@ -359,7 +359,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
         menu.Items.Add("Open Model Web UI", null, (_, _) => OpenModelWebUi());
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add("Show status", null, (_, _) => ShowStatus());
-        menu.Items.Add("Artifact Viewer", null, (_, _) => { artifactViewer.Show(); artifactViewer.Activate(); });
+        menu.Items.Add("Artifact Viewer", null, (_, _) => ShowArtifactViewer());
         menu.Items.Add("Compare Models", null, (_, _) => new CompareModeForm(backendClient).Show());
         menu.Items.Add("Pending Edits", null, (_, _) => new ProposalsForm(backendClient).Show());
         menu.Items.Add("Edit Snapshots", null, (_, _) => new SnapshotsForm(backendClient).Show());
@@ -925,6 +925,12 @@ internal sealed class ManaApplicationContext : ApplicationContext
                 action();
             }
         }, null);
+    }
+
+    private void ShowArtifactViewer()
+    {
+        artifactViewer.Show();
+        artifactViewer.Activate();
     }
 
     // #520: reused (Hide, not Close), so Load's own one-time-only refresh

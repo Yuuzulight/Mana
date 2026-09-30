@@ -40,7 +40,7 @@ internal sealed class SettingsPanel : UserControl
     // #669: index-aligned with ToolApprovalModes below.
     private readonly ComboBox toolApprovalModeCombo = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 320 };
     private static readonly string[] ToolApprovalModes = { "smart", "ask", "off" };
-    private readonly ComboBox voiceProviderCombo = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 200 };
+    private readonly ComboBox voiceProviderCombo = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 200, AccessibleName = "Voice provider" };
     private readonly TextBox logsTextBox = new() { Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Vertical, Dock = DockStyle.Fill };
     private readonly System.Windows.Forms.Timer logRefreshTimer = new() { Interval = 1000 };
     private readonly ComboBox themePresetCombo = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 200 };
