@@ -116,7 +116,8 @@ internal sealed class ManaSettingsStore
     public bool CameraSnapshots { get; set; }
 
     // #911: the folders Mana may move and rename files in (full paths);
-    // null = Desktop, Downloads, Pictures and Documents.
+    // null = Desktop, Downloads, Pictures and Documents, empty = none.
+    // Settings > Desktop (#997) edits it; read again on every move.
     public List<string>? DesktopActionFolders { get; set; }
 
     // #685: the chat window's live avatar framing -- "full", "waist" or
