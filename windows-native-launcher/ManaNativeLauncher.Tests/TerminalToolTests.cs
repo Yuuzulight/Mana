@@ -85,7 +85,7 @@ public class TerminalToolTests
         RunSta(() =>
         {
             var requests = new List<string>();
-            using var tool = new TerminalTool(Backend(requests));
+            using var tool = new TerminalTool(Backend(requests), System.IO.Path.GetTempPath());
             string? copied = null;
             tool.CopyText = text => copied = text;
             var list = Find<ListView>(tool, _ => true);

@@ -7,11 +7,12 @@ using System.Windows.Forms;
 
 namespace Mana.NativeLauncher;
 
-// #1121: the chat rail's Terminal tool, "Mana's runs": every command she
+// #1121: the chat rail's Terminal tool. "Mana's runs": every command she
 // runs (node-bot/terminal-feed.js) with its output, exit code and time.
 // Read-only. It polls GET /terminal/runs once a second while it's on
 // screen. Stop goes through the stop path of whatever ran the command (the
 // chat tool loop's Stop, self-work's stop); nothing can be started here.
+// "My shell" (MyShellPanel): my own shells, which Mana can't reach.
 internal sealed class TerminalTool : Panel
 {
     private const int PollIntervalMs = 1000;
@@ -48,11 +49,14 @@ internal sealed class TerminalTool : Panel
     // Tests swap this out so they never touch the real clipboard.
     internal Action<string> CopyText { get; set; } = Clipboard.SetText;
 
-    public TerminalTool(ManaBackendClient client)
+    private readonly TabPage runsPage = new("Mana's runs") { BackColor = DarkTheme.Panel2, Padding = new Padding(6) };
+
+    // shellFolder: where my shells start (the repo). sendToMana: "Send to
+    // Mana" in My shell, which sends a chat message.
+    public TerminalTool(ManaBackendClient client, string shellFolder, Action<string>? sendToMana = null)
     {
         this.client = client;
         BackColor = DarkTheme.Panel2;
-        Padding = new Padding(6);
 
         foreach (var (label, _) in Filters)
         {
@@ -103,17 +107,26 @@ internal sealed class TerminalTool : Panel
 
         // Last added docks first: the filter on top, then the list and the
         // run's details, the buttons at the bottom, the output fills the rest.
-        Controls.Add(outputBox);
-        Controls.Add(buttonRow);
-        Controls.Add(detailLabel);
-        Controls.Add(runList);
-        Controls.Add(filterBox);
+        runsPage.Controls.Add(outputBox);
+        runsPage.Controls.Add(buttonRow);
+        runsPage.Controls.Add(detailLabel);
+        runsPage.Controls.Add(runList);
+        runsPage.Controls.Add(filterBox);
+
+        var shellPage = new TabPage("My shell") { BackColor = DarkTheme.Panel2, Padding = new Padding(6) };
+        shellPage.Controls.Add(new MyShellPanel(shellFolder, sendToMana) { Dock = DockStyle.Fill });
+        var tabs = new TabControl { Dock = DockStyle.Fill };
+        DarkTheme.ApplyTabControl(tabs);
+        tabs.TabPages.Add(runsPage);
+        tabs.TabPages.Add(shellPage);
+        Controls.Add(tabs);
 
         pollTimer.Tick += async (_, _) => await RefreshAsync();
-        VisibleChanged += (_, _) =>
+        // Only while "Mana's runs" is the tab on screen.
+        runsPage.VisibleChanged += (_, _) =>
         {
-            pollTimer.Enabled = Visible;
-            if (Visible)
+            pollTimer.Enabled = runsPage.Visible;
+            if (runsPage.Visible)
             {
                 _ = RefreshAsync();
             }
