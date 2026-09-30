@@ -83,6 +83,7 @@ test("#907 runs once a day at or after its time, through the proactive engine", 
   assert.equal(reason, "briefing");
   assert.ok(!explicit); // held mid-game until a break, like any remark
   assert.equal(payload.speak, payload.text);
+  assert.equal(payload.kind, "briefing"); // #1024: said cheerfully
   // No model loaded: the plain notes, in order.
   assert.equal(
     payload.text,

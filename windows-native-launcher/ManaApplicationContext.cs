@@ -248,7 +248,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
             openChat: () => RunOnUi(ShowSessionList),
             onDoctor: payload => RunOnUi(() => ShowDoctorAlert(payload)),
             // #905: a reminder is said out loud too, even mid-game.
-            onSpeak: text => _ = voiceLoop.SpeakAnnouncementAsync(text),
+            onSpeak: payload => _ = voiceLoop.SpeakAnnouncementAsync(payload.Speak!, AnnouncementEmotion.For(payload.Emotion, payload.Kind ?? payload.Type)),
             // #914: the new character's Live2D model, loaded in place (and
             // why not, when her own model can't be used).
             onCharacter: payload => RunOnUi(() =>
@@ -824,7 +824,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
         {
             if (await backendClient.SetCharacterAsync(id) is string handoff)
             {
-                await voiceLoop.SpeakAnnouncementAsync(handoff);
+                await voiceLoop.SpeakAnnouncementAsync(handoff, AnnouncementEmotion.For(null, "handoff"));
             }
         }
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or JsonException)
