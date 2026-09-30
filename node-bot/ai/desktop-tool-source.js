@@ -1,10 +1,11 @@
 // #911: safe desktop actions -- media keys, volume, opening or focusing an
-// app from the Start menu, the audio output -- carried out by the native launcher (Windows
+// app from the Start menu, the audio output, moving files in allowed
+// folders -- carried out by the native launcher (Windows
 // APIs) over the vision-capture socket, which only a launcher that
 // connected with ?desktop=1 answers. The launcher validates every argument;
 // nothing here clicks or types into other apps. Tiers are in
 // ai/tool-risk.js: focusing and listing are "read", switching the output
-// is "write" (asks first), the rest "low".
+// and moving files are "write" (they ask first), the rest "low".
 const DESKTOP_TOOL_PREFIX = "desktop__";
 
 const APP_NAME = {
@@ -79,7 +80,41 @@ const TOOL_SCHEMAS = [
       },
     },
   },
+  {
+    type: "function",
+    function: {
+      name: `${DESKTOP_TOOL_PREFIX}list_folder`,
+      description:
+        "List the folders you may move files in (no path), or what's in one of them, newest first. Use full paths from here for desktop__move_files.",
+      parameters: {
+        type: "object",
+        properties: { path: { type: "string", description: "A full folder path. Omit to list the allowed folders." } },
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: `${DESKTOP_TOOL_PREFIX}move_files`,
+      description:
+        "Move files or folders into a folder, or rename one, inside the user's allowed folders (see desktop__list_folder). Never overwrites or deletes anything. The user approves it first, and it can be undone with snapshot__restore.",
+      parameters: {
+        type: "object",
+        // "to" first: models tend to send arguments in schema order, and
+        // the approval prompt cuts off a long list of files, not the destination.
+        properties: {
+          to: { type: "string", description: "Full path of the folder to move them into, or the new full path when renaming one item." },
+          from: { type: "array", items: { type: "string" }, description: "Full paths of the files or folders to move." },
+        },
+        required: ["to", "from"],
+      },
+    },
+  },
 ];
+
+// A big move across drives can take a while; running past this, it still
+// finishes but its undo isn't recorded.
+const MOVE_TIMEOUT_MS = 5 * 60 * 1000;
 
 const ACTIONS = new Set(TOOL_SCHEMAS.map((t) => t.function.name.slice(DESKTOP_TOOL_PREFIX.length)));
 
@@ -89,8 +124,9 @@ function isDesktopToolName(name) {
 
 // bridge: vision-capture-bridge.js. isGaming: whether a game is running.
 // voice: this turn was spoken -- mid-game, only a spoken ask runs anything,
-// so nothing fires while I'm typing in a game.
-function createDesktopToolSource({ bridge, isGaming = () => false, voice = false }) {
+// so nothing fires while I'm typing in a game. snapshotStore: where file
+// moves are recorded so they can be undone (registerFileMoveRestorer).
+function createDesktopToolSource({ bridge, isGaming = () => false, voice = false, snapshotStore = null }) {
   function listToolSchemas() {
     return bridge.hasDesktop() ? TOOL_SCHEMAS : [];
   }
@@ -105,6 +141,18 @@ function createDesktopToolSource({ bridge, isGaming = () => false, voice = false
       });
     }
     try {
+      if (action === "move_files") {
+        // Only the model's two fields: "exact" is for undo alone.
+        const result = await bridge.requestDesktop(action, { to: args?.to, from: args?.from }, MOVE_TIMEOUT_MS);
+        const snapshot = snapshotStore?.recordSnapshot({
+          kind: "file-move",
+          key: String(args?.to || ""),
+          payload: { moves: result.moved },
+          summary: `Moved ${result.moved.length} item(s) to ${args?.to}`,
+          source: "agent",
+        });
+        return JSON.stringify({ status: "ok", ...result, ...(snapshot ? { undoSnapshotId: snapshot.id } : {}) });
+      }
       const result = await bridge.requestDesktop(action, args);
       return JSON.stringify({ status: "ok", ...result });
     } catch (e) {
@@ -115,4 +163,30 @@ function createDesktopToolSource({ bridge, isGaming = () => false, voice = false
   return { listToolSchemas, executeTool, isKnownToolName: isDesktopToolName };
 }
 
-module.exports = { DESKTOP_TOOL_PREFIX, TOOL_SCHEMAS, isDesktopToolName, createDesktopToolSource };
+// Undoing a file-move snapshot moves each item back, last first. What
+// can't go back (moved again, deleted since) is reported; only when
+// nothing could does it throw, which keeps the snapshot for a retry.
+function registerFileMoveRestorer(snapshotStore, bridge) {
+  snapshotStore.registerRestorer("file-move", async (key, payload) => {
+    const failed = [];
+    let undone = 0;
+    for (const move of [...(payload?.moves || [])].reverse()) {
+      try {
+        await bridge.requestDesktop("move_files", { from: [move.to], to: move.from, exact: true }, MOVE_TIMEOUT_MS);
+        undone += 1;
+      } catch (e) {
+        failed.push({ path: move.to, error: e.message || String(e) });
+      }
+    }
+    if (!undone && failed.length) throw new Error(failed.map((f) => f.error).join("; "));
+    return { undone, failed };
+  });
+}
+
+module.exports = {
+  DESKTOP_TOOL_PREFIX,
+  TOOL_SCHEMAS,
+  isDesktopToolName,
+  createDesktopToolSource,
+  registerFileMoveRestorer,
+};

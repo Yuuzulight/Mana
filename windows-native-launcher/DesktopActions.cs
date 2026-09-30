@@ -24,7 +24,11 @@ internal static class DesktopActions
         ["previous"] = 0xB1,   // VK_MEDIA_PREV_TRACK
     };
 
-    public static object Run(string action, JsonElement args) => action switch
+    private const int MaxMoves = 200;
+    private const int MaxListed = 200;
+
+    // folders: the settings' DesktopActionFolders (null = the defaults).
+    public static object Run(string action, JsonElement args, IReadOnlyList<string>? folders = null) => action switch
     {
         "media" => PressMediaKey(RequiredString(args, "key")),
         "set_volume" => SetVolume(OptionalString(args, "app"), OptionalNumber(args, "level"), OptionalNumber(args, "change")),
@@ -32,6 +36,9 @@ internal static class DesktopActions
         "focus_app" => FocusApp(RequiredString(args, "name")),
         "list_audio_outputs" => ListAudioOutputs(),
         "set_audio_output" => SetAudioOutput(RequiredString(args, "name")),
+        "list_folder" => ListFolder(OptionalString(args, "path"), AllowedFolders(folders)),
+        "move_files" => MoveFiles(StringList(args, "from"), RequiredString(args, "to"),
+            args.TryGetProperty("exact", out var exact) && exact.ValueKind == JsonValueKind.True, AllowedFolders(folders)),
         _ => throw new ArgumentException($"unknown desktop action: {action}"),
     };
 
@@ -160,6 +167,151 @@ internal static class DesktopActions
         };
     }
 
+    // Desktop, Downloads, Pictures and Documents, unless the settings list
+    // other folders. Only full paths count.
+    internal static IReadOnlyList<string> AllowedFolders(IReadOnlyList<string>? configured) =>
+        (configured is { Count: > 0 }
+            ? configured
+            : new[]
+            {
+                Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory),
+                DownloadsFolder(),
+                Environment.GetFolderPath(Environment.SpecialFolder.MyPictures),
+                Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),
+            })
+        .Where(f => !string.IsNullOrWhiteSpace(f) && Path.IsPathFullyQualified(f))
+        .Select(f => Path.TrimEndingDirectorySeparator(Path.GetFullPath(f)))
+        .ToList();
+
+    private static string DownloadsFolder()
+    {
+        if (SHGetKnownFolderPath(new Guid("374DE290-123F-4565-9164-39C4925E467B"), 0, IntPtr.Zero, out var path) != 0)
+        {
+            return "";
+        }
+        try
+        {
+            return Marshal.PtrToStringUni(path) ?? "";
+        }
+        finally
+        {
+            Marshal.FreeCoTaskMem(path);
+        }
+    }
+
+    // `path` as a full path, if it's inside one of `roots` (a root itself
+    // only with allowRoot) with no symlink or junction on the way from the
+    // root; otherwise throws. OneDrive placeholders are reparse points too,
+    // but not links, so they pass.
+    internal static string Allowed(string path, IReadOnlyList<string> roots, bool allowRoot = false)
+    {
+        // Relative, a device path, or an alternate data stream (a second ':').
+        if (!Path.IsPathFullyQualified(path) || path.IndexOf(':', 2) >= 0)
+        {
+            throw new InvalidOperationException($"{path} isn't a plain full path");
+        }
+        var full = Path.TrimEndingDirectorySeparator(Path.GetFullPath(path));
+        var root = roots.FirstOrDefault(r => full.Equals(r, StringComparison.OrdinalIgnoreCase)
+            || full.StartsWith(Path.EndsInDirectorySeparator(r) ? r : r + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase));
+        if (root is null || (!allowRoot && full.Length == root.Length))
+        {
+            throw new InvalidOperationException($"{path} isn't inside the folders I may use: {string.Join(", ", roots)}");
+        }
+        for (var dir = full; dir.Length > root.Length; dir = Path.GetDirectoryName(dir)!)
+        {
+            if (new DirectoryInfo(dir).LinkTarget is not null)
+            {
+                throw new InvalidOperationException($"{dir} is a link; I only use real folders");
+            }
+        }
+        return full;
+    }
+
+    // The allowed folders, or one folder's contents, newest first. Hidden
+    // and system files are left out.
+    internal static object ListFolder(string? path, IReadOnlyList<string> roots)
+    {
+        if (path is null)
+        {
+            return new { folders = roots };
+        }
+        var dir = new DirectoryInfo(Allowed(path, roots, allowRoot: true));
+        if (!dir.Exists)
+        {
+            throw new InvalidOperationException($"{path} isn't a folder");
+        }
+        var entries = dir.EnumerateFileSystemInfos("*", new EnumerationOptions { AttributesToSkip = FileAttributes.Hidden | FileAttributes.System })
+            .OrderByDescending(e => e.LastWriteTime)
+            .ToList();
+        return new
+        {
+            path = dir.FullName,
+            total = entries.Count,
+            entries = entries.Take(MaxListed)
+                .Select(e => new { name = e.Name, folder = e is DirectoryInfo, modified = e.LastWriteTime.ToString("yyyy-MM-dd HH:mm") })
+                .ToArray(),
+        };
+    }
+
+    // Moves each of `from` into the folder `to`, or one item to the new
+    // path `to` (a rename; also when exact, which undo uses). Both ends stay
+    // inside the allowed folders; nothing is overwritten or deleted. Returns
+    // what moved (the undo record) and what didn't.
+    internal static object MoveFiles(IReadOnlyList<string> from, string to, bool exact, IReadOnlyList<string> roots)
+    {
+        if (from.Count is 0 or > MaxMoves)
+        {
+            throw new ArgumentException($"give 1 to {MaxMoves} paths to move");
+        }
+        var target = Allowed(to, roots, allowRoot: true);
+        var into = !exact && Directory.Exists(target);
+        if (!into && from.Count > 1)
+        {
+            throw new InvalidOperationException($"{to} isn't a folder");
+        }
+        var moved = new List<object>();
+        var failed = new List<(string From, string Error)>();
+        foreach (var path in from)
+        {
+            try
+            {
+                var source = Allowed(path, roots);
+                var destination = Allowed(into ? Path.Combine(target, Path.GetFileName(source)) : target, roots);
+                if (File.Exists(destination) || Directory.Exists(destination))
+                {
+                    throw new IOException($"{destination} already exists");
+                }
+                // "to" was meant as a folder that doesn't exist yet: don't
+                // turn shot.png into a file called "Screenshots".
+                if (!into && !exact && File.Exists(source)
+                    && !Path.GetExtension(source).Equals(Path.GetExtension(destination), StringComparison.OrdinalIgnoreCase))
+                {
+                    throw new InvalidOperationException($"{to} isn't a folder; to rename, keep the {Path.GetExtension(source)} extension");
+                }
+                if (File.Exists(source))
+                {
+                    File.Move(source, destination);
+                }
+                else if (Directory.Exists(source))
+                {
+                    Directory.Move(source, destination);
+                }
+                else
+                {
+                    throw new FileNotFoundException($"{path} doesn't exist");
+                }
+                moved.Add(new { from = source, to = destination });
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException or ArgumentException)
+            {
+                failed.Add((path, ex.Message));
+            }
+        }
+        return moved.Count > 0
+            ? new { moved, failed = failed.Select(f => new { from = f.From, error = f.Error }).ToArray() }
+            : throw new InvalidOperationException(string.Join("; ", failed.Select(f => f.Error)));
+    }
+
     private static object ListAudioOutputs()
     {
         using var enumerator = new MMDeviceEnumerator();
@@ -271,6 +423,13 @@ internal static class DesktopActions
     private static double? OptionalNumber(JsonElement args, string key) =>
         args.TryGetProperty(key, out var v) && v.ValueKind == JsonValueKind.Number ? v.GetDouble() : null;
 
+    // A string or an array of strings.
+    private static List<string> StringList(JsonElement args, string key) =>
+        !args.TryGetProperty(key, out var v) ? new()
+        : v.ValueKind == JsonValueKind.String ? new() { v.GetString()! }
+        : v.ValueKind == JsonValueKind.Array ? v.EnumerateArray().Where(e => e.ValueKind == JsonValueKind.String).Select(e => e.GetString()!).ToList()
+        : new();
+
     private const uint KeyEventExtendedKey = 0x0001;
     private const uint KeyEventKeyUp = 0x0002;
     private const int SwRestore = 9;
@@ -323,6 +482,9 @@ internal static class DesktopActions
 
     [DllImport("user32.dll")]
     private static extern bool SetForegroundWindow(IntPtr hWnd);
+
+    [DllImport("shell32.dll")]
+    private static extern int SHGetKnownFolderPath([MarshalAs(UnmanagedType.LPStruct)] Guid rfid, uint dwFlags, IntPtr hToken, out IntPtr ppszPath);
 
     [DllImport("user32.dll")]
     private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);

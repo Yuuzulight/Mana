@@ -64,10 +64,12 @@ const BUILTIN_TIERS = {
   reminder__cancel: "read",
   // #911 (ai/desktop-tool-source.js): the launcher only focuses a window
   // that's already open, and only opens Start-menu apps. Switching the audio
-  // output is "write": it asks first.
+  // output and moving files are "write": they ask first.
   desktop__focus_app: "read",
   desktop__list_audio_outputs: "read",
   desktop__set_audio_output: "write",
+  desktop__list_folder: "read",
+  desktop__move_files: "write",
   desktop__media: "low",
   desktop__set_volume: "low",
   desktop__open_app: "low",
