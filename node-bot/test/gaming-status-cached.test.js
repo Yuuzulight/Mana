@@ -12,7 +12,10 @@ childProcess.spawnSync = (cmd, ...rest) => {
   return realSpawnSync(cmd, ...rest);
 };
 const { createApp } = require("../server");
-const { withServer } = require("./helpers");
+const { withServer, useTestAdminToken } = require("./helpers");
+
+// Every route but a few public ones needs an admin key (admin-key.js).
+const fetch = useTestAdminToken();
 childProcess.spawnSync = realSpawnSync;
 
 test("/gaming/status doesn't run tasklist", async () => {
