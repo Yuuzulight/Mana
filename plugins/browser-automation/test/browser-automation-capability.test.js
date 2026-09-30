@@ -396,3 +396,28 @@ test("#1168: ad and tracker domains are always blocked and counted per page, whi
   assert.equal((await session.snapshot()).blockedMayBreak, undefined);
   await browserAutomationPlugin.closeSession();
 });
+
+test("#1169: a new hand-over request pops one toast, never while gaming, and never opens a window", async () => {
+  browserAutomationPlugin._resetForTests();
+  const toasts = [];
+  let gaming = false;
+  const { chromium, launches } = createFakeEdge();
+  const deps = { env: FAKE_ENV, chromium, isGaming: () => gaming, notifyTray: async (p) => toasts.push(p) };
+
+  browserAutomationPlugin.requestHandOver("Log in to the shop", deps);
+  browserAutomationPlugin.requestHandOver("Log in to the shop", deps); // the same request again
+  assert.deepEqual(toasts, [{ type: "browser-hand-over", title: "Mana needs you in her browser", text: "Log in to the shop" }]);
+  assert.equal(launches.length, 0);
+
+  gaming = true;
+  browserAutomationPlugin.requestHandOver("This page asks for a password.", deps);
+  assert.equal(toasts.length, 1);
+  assert.equal(browserAutomationPlugin.takeOverStatus().needsYou, "This page asks for a password.");
+
+  // While I have the browser, nothing new.
+  gaming = false;
+  await browserAutomationPlugin.takeOver(deps);
+  browserAutomationPlugin.requestHandOver("Something else", deps);
+  assert.equal(toasts.length, 1);
+  await browserAutomationPlugin.handBack();
+});

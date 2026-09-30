@@ -173,7 +173,7 @@ function createBrowserAutomationToolSource(options = {}) {
     }
 
     if (action === "hand_over") {
-      requestHandOver(args?.reason);
+      requestHandOver(args?.reason, sessionDeps);
       activityLog.recordActivity({ action, args, status: "ok" });
       return "The Browser panel now asks the user to take over. Tell them what's needed and wait; once they press Done, the browser is yours again with their login kept.";
     }
@@ -202,7 +202,7 @@ function createBrowserAutomationToolSource(options = {}) {
     activityLog.recordActivity({ action, args, status: "ok" });
     activityLog.recordPage(result);
     activityLog.recordBlocked(result.url, result.blockedMayBreak || 0);
-    if (result.sensitive) requestHandOver(`This page asks for ${result.sensitive}.`);
+    if (result.sensitive) requestHandOver(`This page asks for ${result.sensitive}.`, sessionDeps);
     // Screenshots are for the Browser panel only, taken while it's on
     // screen. Best-effort: a capture failure (page mid-navigation, tab
     // closed) must never break the real tool call it happened alongside.
