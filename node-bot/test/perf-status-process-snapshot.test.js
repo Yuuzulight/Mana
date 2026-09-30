@@ -2,6 +2,7 @@
 // every 15 s) and never as a blocking spawnSync on the request path.
 const assert = require("node:assert/strict");
 const test = require("node:test");
+const path = require("node:path");
 const util = require("node:util");
 const childProcess = require("node:child_process");
 
@@ -18,11 +19,14 @@ const fakeExecFile = (cmd, ...rest) => realExecFile(cmd, ...rest);
 fakeExecFile[util.promisify.custom] = async (cmd, args) => {
   if (!/powershell/i.test(cmd)) return util.promisify(realExecFile)(cmd, args);
   listed.push(cmd);
-  const row = { ProcessId: 42, Name: "node.exe", WorkingSetSize: 300 * 1024 * 1024, CommandLine: "node node-bot\\server.js" };
-  return { stdout: JSON.stringify(row), stderr: "" };
+  const rows = [
+    { ProcessId: 42, Name: "node.exe", WorkingSetSize: 300 * 1024 * 1024, CommandLine: `node ${path.resolve(__dirname, "..", "server.js")}` },
+    { ProcessId: 7, Name: "explorer.exe", WorkingSetSize: 1, CommandLine: "C:\\Windows\\explorer.exe" },
+  ];
+  return { stdout: JSON.stringify(rows), stderr: "" };
 };
 childProcess.execFile = fakeExecFile;
-const { createApp } = require("../server");
+const { createApp, manaProcessesUnder } = require("../server");
 const { withServer } = require("./helpers");
 childProcess.spawnSync = realSpawnSync;
 childProcess.execFile = realExecFile;
@@ -40,4 +44,17 @@ test("/perf/status answers at once and lists processes from the background read"
     }
   });
   assert.deepEqual(blocking.filter((cmd) => /powershell/i.test(cmd)), []);
+});
+
+test("Mana's processes are found under whatever folder she's checked out in", () => {
+  const rows = [
+    { ProcessId: 1, Name: "node.exe", WorkingSetSize: 100 * 1024 * 1024, CommandLine: 'node "D:\\Mana\\node-bot\\server.js"' },
+    { ProcessId: 2, Name: "python.exe", WorkingSetSize: 50 * 1024 * 1024, CommandLine: "python d:/mana/tts-service/kokoro_service.py" },
+    { ProcessId: 3, Name: "node.exe", WorkingSetSize: 1, CommandLine: 'node "D:\\Mana-worktrees\\x\\node-bot\\server.js"' },
+    { ProcessId: 4, Name: "node.exe", WorkingSetSize: 1, CommandLine: 'node "C:\\ManaAI\\Mana\\node-bot\\server.js"' },
+  ];
+  assert.deepEqual(manaProcessesUnder(rows, "D:\\Mana\\"), [
+    { pid: 1, name: "node.exe", memoryMb: 100, role: "backend" },
+    { pid: 2, name: "python.exe", memoryMb: 50, role: "kokoro tts" },
+  ]);
 });

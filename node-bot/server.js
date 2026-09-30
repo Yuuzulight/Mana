@@ -2094,12 +2094,27 @@ function getManaProcessSnapshot() {
   return manaProcessSnapshot || ownOnly;
 }
 
+// The Win32_Process rows running something under root, the checkout this
+// server runs from wherever it is: root plus a separator, so D:\Mana
+// doesn't also match D:\Mana-worktrees\...
+function manaProcessesUnder(rows, root) {
+  const winPath = (text) => String(text || "").toLowerCase().replaceAll("/", "\\");
+  const prefix = `${winPath(root).replace(/\\+$/, "")}\\`;
+  return rows
+    .filter((row) => winPath(row.CommandLine).includes(prefix))
+    .map((row) => ({
+      pid: row.ProcessId,
+      name: row.Name,
+      memoryMb: Math.round((row.WorkingSetSize || 0) / 1024 / 1024),
+      role: getManaProcessRole(row.CommandLine || row.Name || ""),
+    }));
+}
+
 async function readManaProcessSnapshot() {
   const command = [
-    "$items = Get-CimInstance Win32_Process |",
-    "Where-Object { $_.CommandLine -match 'C:\\\\ManaAI\\\\Mana' -and $_.CommandLine -notmatch 'Get-CimInstance Win32_Process' } |",
-    "Select-Object ProcessId,Name,WorkingSetSize,CommandLine;",
-    "$items | ConvertTo-Json -Compress -Depth 3",
+    "Get-CimInstance Win32_Process | Where-Object { $_.CommandLine } |",
+    "Select-Object ProcessId,Name,WorkingSetSize,CommandLine |",
+    "ConvertTo-Json -Compress -Depth 3",
   ].join(" ");
   // Full path, like the gaming watch's tasklist: a bare name is looked up
   // in the cwd first.
@@ -2123,13 +2138,7 @@ async function readManaProcessSnapshot() {
   }
 
   const parsed = JSON.parse(stdout);
-  const rows = Array.isArray(parsed) ? parsed : [parsed];
-  const processes = rows.map((row) => ({
-    pid: row.ProcessId,
-    name: row.Name,
-    memoryMb: Math.round((row.WorkingSetSize || 0) / 1024 / 1024),
-    role: getManaProcessRole(row.CommandLine || row.Name || ""),
-  }));
+  const processes = manaProcessesUnder(Array.isArray(parsed) ? parsed : [parsed], path.resolve(__dirname, ".."));
 
   return {
     totalMemoryMb: processes.reduce((sum, item) => sum + item.memoryMb, 0),
@@ -6300,6 +6309,7 @@ if (require.main === module) {
 
 module.exports = {
   createApp,
+  manaProcessesUnder,
   buildMemoryNotes,
   buildVaultViews,
   buildSkillsIndexBlock,
