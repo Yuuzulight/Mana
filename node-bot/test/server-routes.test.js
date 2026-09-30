@@ -1,7 +1,7 @@
 const assert = require("node:assert/strict");
 const test = require("node:test");
 
-const { createApp, formatMemoryMarkdown, buildMemoryNotes, buildSkillsIndexBlock } = require("../server");
+const { createApp, formatMemoryMarkdown, buildMemoryNotes, buildVaultViews, buildSkillsIndexBlock } = require("../server");
 const { withServer } = require("./helpers");
 
 test("buildSkillsIndexBlock returns nothing when there are no skills", () => {
@@ -1681,6 +1681,14 @@ test("formatMemoryMarkdown renders the compacted summary and key facts", () => {
   ]);
   assert.match(md, /## Summary\n\nUser prefers concise replies\./);
   assert.match(md, /## Key Facts\n\n- Likes FFXIV crafting\n- Uses windows-launcher/);
+});
+
+test("buildVaultViews gives the summary, a mood view in level words and the entity notes (#935)", () => {
+  const views = buildVaultViews({ summary: "tired, chatty", energy: 0.2, sociability: 0.8, stress: 0.5 });
+  const byRel = Object.fromEntries(views.map((v) => [v.rel, v.body]));
+  assert.ok("Views/Summary.md" in byRel);
+  assert.match(byRel["Views/Mood.md"], /Right now: tired, chatty\.\n\n- Energy: low\n- Sociability: high\n- Stress: moderate/);
+  assert.ok(views.every((v) => /^Views\/(Summary|Mood|Entities\/[a-z0-9-]+)\.md$/.test(v.rel)));
 });
 
 test("formatMemoryMarkdown omits the Connections section when there are none (issue #75)", () => {

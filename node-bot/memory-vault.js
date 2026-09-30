@@ -31,6 +31,12 @@ const MAX_TEXT_CHARS = 500;
 const DEBOUNCE_MS = 1500;
 // An archived note the user deleted: kept deleted, not written again.
 const DELETED = "deleted";
+// Views/ and Journal/: Mana writes these, the user only reads them.
+const VIEWS_MARKER = "> Written by Mana from her memory: edits here are overwritten. Edit facts in Facts/ instead.";
+const VIEWS_REFRESH_MS = 5 * 60 * 1000;
+// A journal entry is a short diary paragraph, never a transcript.
+const JOURNAL_MAX_CHARS = 1200;
+const JOURNAL_SESSION_CHARS = 1500;
 const SOURCE_LABELS = {
   user_stated: "you told me",
   model_inferred: "I picked it up in chat",
@@ -131,6 +137,10 @@ function parseNote(content) {
 // options.approvalGate: optional -- a brand-new note is stored pending
 // either way; with a gate it also asks for the user's OK (toast / Settings >
 // Approvals). options.watch: false in tests (sync() by hand).
+// options.buildViews: () => [{rel: "Views/...md", body}], the read-only
+// views. For the journal: options.runModel, (prompt, maxTokens) => reply
+// or null from a model that's already loaded (never loads one), and
+// options.isGaming.
 function createMemoryVault(options = {}) {
   const store = options.store;
   const vaultDir = path.resolve(options.vaultDir);
@@ -140,8 +150,12 @@ function createMemoryVault(options = {}) {
   const status = { vaultDir, writable: null, notes: 0, skipped: [], lastSyncAt: null, error: null };
   let timer = null;
   let watcher = null;
+  let viewsTimer = null;
+  let lastJournalAt = null;
 
   const full = (rel) => path.join(vaultDir, rel);
+  // Views and the journal never create the vault either (see sync()).
+  const vaultExists = () => fs.existsSync(vaultDir) && fs.statSync(vaultDir).isDirectory();
 
   function loadState() {
     try {
@@ -450,18 +464,112 @@ function createMemoryVault(options = {}) {
     }
   }
 
+  // Rewrites each view whose content changed (an edit of the user's
+  // included) and removes old ones -- only files starting with the marker.
+  function refreshViews() {
+    if (!options.buildViews || !vaultExists()) return;
+    try {
+      const desired = new Map();
+      for (const view of options.buildViews()) {
+        const target = full(view.rel);
+        if (path.relative(full("Views"), target).startsWith("..")) throw new Error(`unsafe view path ${view.rel}`);
+        desired.set(target.toLowerCase(), { target, content: `${VIEWS_MARKER}\n\n${view.body}` });
+      }
+      for (const { target, content } of desired.values()) {
+        let current = null;
+        try {
+          current = fs.readFileSync(target, "utf8");
+        } catch (e) {
+          fs.mkdirSync(path.dirname(target), { recursive: true });
+        }
+        if (current !== content) fs.writeFileSync(target, content, "utf8");
+      }
+      for (const dir of [full("Views"), full("Views/Entities")]) {
+        let names = [];
+        try {
+          names = fs.readdirSync(dir).filter((name) => /\.md$/i.test(name));
+        } catch (e) {
+          continue;
+        }
+        for (const name of names) {
+          const file = path.join(dir, name);
+          if (!desired.has(file.toLowerCase()) && fs.readFileSync(file, "utf8").startsWith(VIEWS_MARKER)) {
+            fs.unlinkSync(file);
+          }
+        }
+      }
+    } catch (e) {
+      log(`views not refreshed: ${e?.message || e}`);
+    }
+  }
+
+  // Appends a short diary entry about what happened since the last one
+  // today to Journal/YYYY-MM-DD.md, linking the facts it touched. Called at
+  // session end (idle). Skipped while gaming, when nothing happened, and
+  // when no model is already loaded. Returns whether it wrote one.
+  async function writeJournal() {
+    if (!options.runModel || options.isGaming?.() || !vaultExists()) return false;
+    try {
+      const nowDate = new Date();
+      const day = localDate(nowDate.toISOString());
+      const rel = `Journal/${day}.md`;
+      const startOfDay = new Date(nowDate.getFullYear(), nowDate.getMonth(), nowDate.getDate()).toISOString();
+      let since = lastJournalAt;
+      if (!since) {
+        try {
+          since = fs.statSync(full(rel)).mtime.toISOString();
+        } catch (e) {
+          since = startOfDay;
+        }
+      }
+      if (since < startOfDay) since = startOfDay;
+      const facts = store.listFacts().filter((f) => statusOf(f) && String(f.updatedAt || "") > since);
+      const summaries = store
+        .listSessions()
+        .filter((s) => String(s.updatedAt || "") > since)
+        .slice(0, 3)
+        .map((s) => String(store.getSession(s.sessionId)?.summary || "").slice(-JOURNAL_SESSION_CHARS))
+        .filter(Boolean);
+      if (!facts.length && !summaries.length) return false;
+
+      const prompt = [
+        "You are Mana. Write a short private diary entry (2-4 sentences, first person) about your time with the user since your last entry today.",
+        "Don't quote the conversation and don't list everything; reply with the entry only.",
+        summaries.length ? `\nWhat we talked about (summaries):\n${summaries.join("\n\n")}` : "",
+        facts.length ? `\nFacts I remembered or changed:\n${facts.map((f) => `- ${f.key}: ${f.text}`).join("\n")}` : "",
+      ].join("\n");
+      const reply = cleanText(await options.runModel(prompt, 300)).slice(0, JOURNAL_MAX_CHARS);
+      if (!reply) return false;
+
+      const links = [...new Set(facts.map((f) => `[[${noteName(f.key)}]]`))];
+      const entry = `## ${nowDate.toTimeString().slice(0, 5)}\n\n${reply}\n${links.length ? `\nFacts: ${links.join(", ")}\n` : ""}\n`;
+      fs.mkdirSync(full("Journal"), { recursive: true });
+      if (!fs.existsSync(full(rel))) fs.writeFileSync(full(rel), `# ${day}\n\n`, "utf8");
+      fs.appendFileSync(full(rel), entry, "utf8");
+      lastJournalAt = nowDate.toISOString();
+      return true;
+    } catch (e) {
+      log(`journal not written: ${e?.message || e}`);
+      return false;
+    }
+  }
+
   function start() {
     store.onFactsChanged(schedule);
     sync();
+    refreshViews();
+    viewsTimer = setInterval(refreshViews, VIEWS_REFRESH_MS);
+    viewsTimer.unref?.();
   }
 
   function stop() {
     clearTimeout(timer);
+    clearInterval(viewsTimer);
     if (watcher) watcher.close();
     watcher = null;
   }
 
-  return { start, stop, sync, getStatus: () => ({ ...status }) };
+  return { start, stop, sync, refreshViews, writeJournal, getStatus: () => ({ ...status }) };
 }
 
-module.exports = { createMemoryVault, noteName, keyFromName, parseNote, renderNote };
+module.exports = { VIEWS_MARKER, createMemoryVault, noteName, keyFromName, parseNote, renderNote };

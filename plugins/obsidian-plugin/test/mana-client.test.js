@@ -60,3 +60,26 @@ test("fetchManaMemoryNotes throws a clear error on invalid key", async () => {
     /rejected the API key/
   );
 });
+
+// Issue #935: Mana syncs facts into the vault herself now.
+const { isManaOwnedPath, withoutKeyFacts, withoutFactNotes } = require("../mana-client.js");
+
+test("isManaOwnedPath flags Facts/, Views/ and Journal/ only", () => {
+  for (const p of ["Facts", "facts/x.md", "/Views/Mood.md", "./Views","Journal\\2026-09-30.md"]) {
+    assert.equal(isManaOwnedPath(p), true, p);
+  }
+  for (const p of ["Mana Memory.md", "Mana", "Notes/Facts", "Factsheet.md"]) {
+    assert.equal(isManaOwnedPath(p), false, p);
+  }
+});
+
+test("withoutKeyFacts drops only the Key Facts section", () => {
+  const md = "# Mana Memory\n\n## Summary\n\nHi.\n\n## Key Facts\n\n- a\n- b\n\n## Connections\n\n- c\n";
+  assert.equal(withoutKeyFacts(md), "# Mana Memory\n\n## Summary\n\nHi.\n\n## Connections\n\n- c\n");
+  assert.equal(withoutKeyFacts("# M\n\n## Summary\n\nHi.\n\n## Key Facts\n\n- a\n"), "# M\n\n## Summary\n\nHi.\n");
+});
+
+test("withoutFactNotes drops the Key Facts note", () => {
+  const notes = [{ slug: "tokyo" }, { slug: "key-facts" }, { slug: "connections" }];
+  assert.deepEqual(withoutFactNotes(notes).map((n) => n.slug), ["tokyo", "connections"]);
+});
