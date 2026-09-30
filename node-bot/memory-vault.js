@@ -16,7 +16,7 @@
 // note Mana wrote: a note that still matches is Mana's own write (the loop
 // guard) and is never read back as an edit; one that differs is the user's.
 // A note Mana wrote that is gone was deleted by the user, which archives
-// the fact.
+// the fact (after MISSING_GRACE_MS), or renamed, which renames it.
 const crypto = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
@@ -29,6 +29,15 @@ const MAX_NOTE_BYTES = 8 * 1024;
 // silently cut.
 const MAX_TEXT_CHARS = 500;
 const DEBOUNCE_MS = 1500;
+// A note Mana wrote that's gone is archived only when two syncs this far
+// apart found it missing (applyDeletion); until then applyDeletion WAITs.
+const MISSING_GRACE_MS = 30 * 1000;
+const WAIT = "wait";
+// A sync this often whatever the watcher does (poll()): the fallback when
+// it's down, and a catch-up for events it missed.
+const POLL_MS = 60 * 1000;
+// The header fields Mana writes (renderNote); any other key is the user's.
+const OWN_FIELDS = new Set(["status", "pinned", "trigger", "paused", "since", "source"]);
 // An archived note the user deleted: kept deleted, not written again.
 const DELETED = "deleted";
 // Views/ and Journal/: Mana writes these, the user only reads them.
@@ -84,19 +93,40 @@ function keyFromName(name) {
   }
 }
 
+// A sync tool's conflict copy of a note: Syncthing's ".sync-conflict-",
+// Obsidian Sync's / Dropbox's "(conflicted copy ...)", and OneDrive's
+// "Name-PCNAME" / "Name 2" -- those two only when "Name" is a fact's note,
+// since they're also ordinary names.
+function isConflictCopy(name, facts) {
+  if (/\.sync-conflict-|\(.*conflict(ed)? copy/i.test(name)) return true;
+  const bases = [];
+  const numbered = / \d+$/.exec(name);
+  if (numbered) bases.push(name.slice(0, numbered.index));
+  for (let i = name.indexOf("-"); i > 0; i = name.indexOf("-", i + 1)) {
+    if (/^(?=.*[A-Z])[A-Z0-9-]+$/.test(name.slice(i + 1))) bases.push(name.slice(0, i));
+  }
+  if (!bases.length) return false;
+  const names = new Set(facts.filter(statusOf).map((f) => noteName(f.key).toLowerCase()));
+  return bases.some((base) => names.has(base.toLowerCase()));
+}
+
 function statusOf(fact) {
   if (fact.status === "pending") return "pending";
   if (fact.status === "archived" || (fact.status === "active" && fact.invalidatedAt)) return "archived";
   return fact.status === "active" ? "active" : null;
 }
 
-function renderNote(fact) {
+// `kept`: the note already on disk (parseNote's result), if any. Its header
+// lines that aren't Mana's stay, and so does its body's layout while the
+// body still says the same as the fact (the fact's text has single spaces).
+function renderNote(fact, kept = {}) {
   const lines = ["---", `status: ${statusOf(fact)}`, `pinned: ${Boolean(fact.pinned)}`];
   if (fact.trigger) lines.push(`trigger: ${JSON.stringify(fact.trigger)}`, `paused: ${Boolean(fact.paused)}`);
   lines.push(`since: ${localDate(fact.validFrom || fact.createdAt)}`);
   const source = SOURCE_LABELS[fact.origin?.kind];
   if (source) lines.push(`source: ${source}${fact.unverifiedSource ? " (unverified)" : ""}`);
-  lines.push("---", "", fact.text, "");
+  const body = kept.rawBody && cleanText(kept.rawBody) === fact.text ? kept.rawBody : fact.text;
+  lines.push(...(kept.extra || []), "---", "", body, "");
   return lines.join("\n");
 }
 
@@ -116,27 +146,43 @@ function parseScalar(raw) {
   return raw;
 }
 
-// Just enough YAML for the header Mana writes: `key: scalar` lines.
-// Indented or "- " lines (a tags list Obsidian added) are skipped; any
-// other line makes the header broken.
+// Just enough YAML for the header Mana writes: `key: scalar` lines for her
+// own fields. Every other key (tags, aliases, a plugin's), with its
+// indented / "- " / blank lines, and comments go to `extra` as written, so
+// the note keeps them. Any other line makes the header broken. A UTF-8 BOM
+// (Notepad) is fine. `body` is the text as a fact (single spaces);
+// `rawBody` keeps its line breaks.
 function parseNote(content) {
-  const match = /^---\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n([\s\S]*))?$/.exec(content);
+  const match = /^﻿?---\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n([\s\S]*))?$/.exec(content);
   if (!match) return { error: "missing or broken YAML header" };
   const header = {};
+  const extra = [];
+  let keeping = false;
   for (const line of match[1].split(/\r?\n/)) {
-    if (!line.trim() || /^(\s|-\s|#)/.test(line)) continue;
+    if (!line.trim() || /^(\s|-(\s|$))/.test(line)) {
+      if (keeping) extra.push(line);
+      continue;
+    }
     const kv = /^([A-Za-z_][\w-]*):[ \t]*(.*)$/.exec(line);
+    keeping = line.startsWith("#") || Boolean(kv && !OWN_FIELDS.has(kv[1].toLowerCase()));
+    if (keeping) {
+      extra.push(line);
+      continue;
+    }
     const value = kv ? parseScalar(kv[2].trim()) : undefined;
     if (value === undefined) return { error: `broken YAML header line "${line.slice(0, 60)}"` };
     header[kv[1].toLowerCase()] = value;
   }
-  return { header, body: cleanText(match[2]) };
+  while (extra.length && !extra[extra.length - 1].trim()) extra.pop();
+  const rawBody = String(match[2] || "").replace(/\r\n/g, "\n").replace(/^([ \t]*\n)+/, "").trimEnd();
+  return { header, extra, body: cleanText(rawBody), rawBody };
 }
 
 // options.store: the acp memory store. options.vaultDir: the vault root.
 // options.approvalGate: optional -- a brand-new note is stored pending
 // either way; with a gate it also asks for the user's OK (toast / Settings >
-// Approvals). options.watch: false in tests (sync() by hand).
+// Approvals). options.watch: false in tests (sync() by hand); options.now,
+// a clock for tests.
 // options.buildViews: () => [{rel: "Views/...md", body}], the read-only
 // views. For the journal: options.runModel, (prompt, maxTokens) => reply
 // or null from a model that's already loaded (never loads one), and
@@ -148,10 +194,16 @@ function createMemoryVault(options = {}) {
   const statePath = path.join(store.dataDir, "vault-sync.json");
   const log = options.log || ((message) => console.log(`Memory vault: ${message}`));
   const status = { vaultDir, writable: null, notes: 0, skipped: [], lastSyncAt: null, error: null };
+  const now = options.now || Date.now;
   let timer = null;
   let watcher = null;
   let viewsTimer = null;
   let lastJournalAt = null;
+  let started = false;
+  let pollTimer = null;
+  let watchedIno = null;
+  // Note id -> when a sync first found Mana's note missing (applyDeletion).
+  const missingSince = new Map();
 
   const full = (rel) => path.join(vaultDir, rel);
   // Views and the journal never create the vault either (see sync()).
@@ -220,23 +272,27 @@ function createMemoryVault(options = {}) {
     );
   }
 
-  function requestOk(key, text) {
+  // A new note or a pin change always needs the user's own OK: no grant,
+  // always-allow or Guardian verdict skips it.
+  function ask(actionType, key, request) {
     if (!approvalGate) return;
     approvalGate
-      .requestApproval("memory-vault-note", {
-        summary: `Remember "${key}" from your vault: ${text}`,
-        payload: { key, action: "confirm", source: "vault", expectedVersions: [{ key, version: store.getFactVersion(key) }] },
-        scanText: text,
-        // A new note always needs the user's own OK: no grant, always-allow
-        // or Guardian verdict skips it.
-        forceReview: true,
-      })
+      .requestApproval(actionType, { ...request, forceReview: true })
       .catch((e) => log(`couldn't ask about "${key}": ${e?.message || e}`));
   }
 
+  function requestOk(key, text) {
+    ask("memory-vault-note", key, {
+      summary: `Remember "${key}" from your vault: ${text}`,
+      payload: { key, action: "confirm", source: "vault", expectedVersions: [{ key, version: store.getFactVersion(key) }] },
+      scanText: text,
+    });
+  }
+
   // Returns {key} when the note was taken in (Mana may now rewrite or move
-  // it), or a string saying why it was skipped.
-  function applyNote(note, facts) {
+  // it), or a string saying why it was skipped. missing: ids of Mana's notes
+  // that are gone from disk (a rename's old name).
+  function applyNote(note, facts, missing) {
     if (note.error) return note.error;
     const parsed = parseNote(note.content);
     if (parsed.error) return parsed.error;
@@ -250,6 +306,18 @@ function createMemoryVault(options = {}) {
     if (!fact) {
       const key = keyFromName(note.name);
       if (!key) return "no fact key in the filename";
+      if (isConflictCopy(note.name, facts)) return "a sync-conflict copy, ignored";
+      // Same text as an active fact whose note just went missing: the note
+      // was renamed, so the fact is (instead of archive + a new pending one).
+      const renamed =
+        note.folder === FOLDERS.active &&
+        facts.find(
+          (f) => statusOf(f) === "active" && f.text === body && missing.has(`${FOLDERS.active}/${noteName(f.key)}.md`.toLowerCase()),
+        );
+      if (renamed && store.renameFact(renamed, key, origin).renamed) {
+        log(`"${renamed.key}" was renamed to "${key}" in the vault.`);
+        return applyNote(note, store.listFacts(), new Set());
+      }
       store.rememberFact({
         key,
         text: body,
@@ -301,8 +369,17 @@ function createMemoryVault(options = {}) {
       if (current === "pending") requestOk(fact.key, body);
     }
     if (current === "pending") return { key: fact.key };
-    if (typeof header.pinned === "boolean" && header.pinned !== Boolean(fact.pinned)) {
-      store.setFactPinned(fact.key, header.pinned);
+    // A pinned fact is in every prompt, so pinning is asked about like a new
+    // note (executor in server.js); the note shows the current pin until
+    // then. Unpinning only takes it out of the prompt: applied directly.
+    if (header.pinned === false && fact.pinned) {
+      store.setFactPinned(fact.key, false);
+    } else if (header.pinned === true && !fact.pinned) {
+      ask("memory-vault-pin", fact.key, {
+        summary: `Pin "${fact.key}" from your vault: ${fact.text}`,
+        payload: { key: fact.key, pinned: true },
+      });
+      log(`pinning "${note.rel}" is waiting for your OK in Mana.`);
     }
     if (fact.trigger && typeof header.paused === "boolean" && header.paused !== Boolean(fact.paused)) {
       store.setFactPaused(fact.key, header.paused);
@@ -315,7 +392,9 @@ function createMemoryVault(options = {}) {
     return { key: fact.key };
   }
 
-  // A note Mana wrote is gone: archive its fact (never a hard delete).
+  // A note Mana wrote is gone: archive its fact (never a hard delete), once
+  // it's been missing for two syncs MISSING_GRACE_MS apart (a sync tool
+  // replacing the file, an editor's delete-and-rewrite); until then WAIT.
   // Returns true for a deleted archived note, which then stays deleted.
   // A fact whose other note was just taken in was moved, not deleted.
   function applyDeletion(id, facts, takenKeys) {
@@ -323,20 +402,34 @@ function createMemoryVault(options = {}) {
     const note = { folder: id.slice(0, slash), name: id.slice(slash + 1, -3) };
     const fact = bindFact(note, facts);
     if (!fact || takenKeys.has(fact.key.toLowerCase())) return false;
+    if (!missingSince.has(id)) missingSince.set(id, now());
+    if (now() - missingSince.get(id) < MISSING_GRACE_MS) return WAIT;
     if (statusOf(fact) === "archived") return note.folder === FOLDERS.archived.toLowerCase();
     store.rememberFact({ key: fact.key, action: "archive", source: "vault", origin: { kind: "vault_edit" } });
     log(`"${id}" was deleted, so "${fact.key}" is archived (move its note back into Facts/ to restore it).`);
     return false;
   }
 
-  function desiredNotes(facts) {
+  // onDisk: the scanned notes, whose own header lines and layout a
+  // rewrite keeps (renderNote) -- from the note at the same path, or one of
+  // the same name in another folder (the fact moved).
+  function desiredNotes(facts, onDisk) {
+    const parsed = new Map();
+    for (const note of onDisk.values()) {
+      const p = note.content === null ? null : parseNote(note.content);
+      if (!p || p.error) continue;
+      parsed.set(note.id, p);
+      if (!parsed.has(note.name.toLowerCase())) parsed.set(note.name.toLowerCase(), p);
+    }
     const desired = new Map();
     const oldestFirst = [...facts].sort((a, b) => String(a.updatedAt || "").localeCompare(String(b.updatedAt || "")));
     for (const fact of oldestFirst) {
       const noteStatus = statusOf(fact);
       if (!noteStatus) continue;
-      const rel = `${FOLDERS[noteStatus]}/${noteName(fact.key)}.md`;
-      desired.set(rel.toLowerCase(), { rel, content: renderNote(fact) });
+      const name = noteName(fact.key);
+      const rel = `${FOLDERS[noteStatus]}/${name}.md`;
+      const kept = parsed.get(rel.toLowerCase()) || parsed.get(name.toLowerCase());
+      desired.set(rel.toLowerCase(), { rel, content: renderNote(fact, kept) });
     }
     return desired;
   }
@@ -360,17 +453,19 @@ function createMemoryVault(options = {}) {
       // than read every missing note as a deletion.
       const fresh = !fs.existsSync(full(FOLDERS.active));
       for (const folder of Object.values(FOLDERS)) fs.mkdirSync(full(folder), { recursive: true });
-      const state = fresh ? { vaultDir, notes: {} } : loadState();
+      const state = fresh ? { ...loadState(), notes: {} } : loadState();
       const onDisk = scanNotes();
       const taken = new Set();
       const takenKeys = new Set();
+      const missing = new Set(Object.keys(state.notes).filter((id) => !onDisk.has(id) && state.notes[id] !== DELETED));
+      const waiting = new Set();
 
       // Vault -> Mana.
       for (const note of onDisk.values()) {
         if (note.hash && note.hash === state.notes[note.id]) continue;
         let outcome;
         try {
-          outcome = applyNote(note, store.listFacts());
+          outcome = applyNote(note, store.listFacts(), missing);
         } catch (e) {
           outcome = e?.message || String(e);
         }
@@ -382,25 +477,31 @@ function createMemoryVault(options = {}) {
         takenKeys.add(outcome.key.toLowerCase());
         result.applied += 1;
       }
-      for (const [id, noteHash] of Object.entries(state.notes)) {
-        if (onDisk.has(id) || noteHash === DELETED) continue;
-        if (applyDeletion(id, store.listFacts(), takenKeys)) {
+      for (const id of missing) {
+        const deleted = applyDeletion(id, store.listFacts(), takenKeys);
+        if (deleted === WAIT) {
+          waiting.add(id);
+          continue;
+        }
+        if (deleted) {
           state.notes[id] = DELETED;
         } else {
           delete state.notes[id];
         }
         result.applied += 1;
       }
+      for (const id of missingSince.keys()) if (!waiting.has(id)) missingSince.delete(id);
 
       // Mana -> vault. A note the user changed that couldn't be taken in
-      // (broken header...) is left alone until they fix it.
-      const desired = desiredNotes(store.listFacts());
+      // (broken header...) is left alone until they fix it, and one that's
+      // waiting out its grace isn't written back.
+      const desired = desiredNotes(store.listFacts(), onDisk);
       const ours = (id) => {
         const note = onDisk.get(id);
         return !note || taken.has(id) || (note.hash && note.hash === state.notes[id]);
       };
       for (const [id, want] of desired) {
-        if ((state.notes[id] === DELETED && !onDisk.has(id)) || !ours(id)) continue;
+        if ((state.notes[id] === DELETED && !onDisk.has(id)) || !ours(id) || waiting.has(id)) continue;
         if (onDisk.get(id)?.content !== want.content) {
           writeNote(want.rel, want.content);
           result.written += 1;
@@ -432,21 +533,23 @@ function createMemoryVault(options = {}) {
       log(`sync failed: ${status.error}`);
     }
     watch();
+    // A missing note is looked at again once its grace is up.
+    if (started && missingSince.size) schedule(MISSING_GRACE_MS + DEBOUNCE_MS);
     return result;
   }
 
-  function schedule() {
+  function schedule(delay = DEBOUNCE_MS) {
     clearTimeout(timer);
-    timer = setTimeout(sync, DEBOUNCE_MS);
+    timer = setTimeout(sync, delay);
     timer.unref?.();
   }
 
   // Facts/ and its two subfolders, .md files only. (Re)started after each
   // sync, so a Facts/ folder deleted and recreated is watched again.
   function watch() {
-    if (options.watch === false || watcher) return;
+    if (options.watch === false || watcher || !started) return;
     try {
-      watcher = fs.watch(full(FOLDERS.active), { recursive: true }, (event, filename) => {
+      const w = fs.watch(full(FOLDERS.active), { recursive: true }, (event, filename) => {
         const parts = filename ? String(filename).split(/[\\/]/) : null;
         const inScope =
           !parts ||
@@ -454,21 +557,65 @@ function createMemoryVault(options = {}) {
             (parts.length === 1 || (parts.length === 2 && /^(pending|archived)$/i.test(parts[0]))));
         if (inScope) schedule();
       });
-      watcher.on("error", (e) => {
+      w.on("error", (e) => {
         log(`watcher stopped: ${e?.message || e}`);
-        watcher.close();
-        watcher = null;
+        w.close();
+        if (watcher === w) watcher = null;
       });
+      watcher = w;
+      watchedIno = fs.statSync(full(FOLDERS.active)).ino;
     } catch (e) {
+      watcher?.close();
       watcher = null;
     }
   }
 
+  // Every POLL_MS: a watcher on a Facts/ folder that was since deleted or
+  // replaced hears nothing, so it's restarted; then a sync, which also
+  // restarts a watcher that died and catches whatever it missed.
+  function poll() {
+    if (watcher) {
+      let ino = null;
+      try {
+        ino = fs.statSync(full(FOLDERS.active)).ino;
+      } catch (e) {
+        // Gone: sync() recreates it.
+      }
+      if (ino !== watchedIno) {
+        log("Facts/ was replaced; restarting the file watcher.");
+        watcher.close();
+        watcher = null;
+      }
+    }
+    sync();
+  }
+
+  // Views/ and Journal/ files Mana created, as vault-relative lower-case
+  // paths in vault-sync.json's `created`: she only writes to or removes
+  // those (and, for views written before this list, files starting with
+  // the marker), never a file of the user's that happens to have the name.
+  const relOf = (target) => path.relative(vaultDir, target).split(path.sep).join("/").toLowerCase();
+  function saveCreated(state, created) {
+    const list = [...created].sort();
+    if (JSON.stringify(list) === JSON.stringify(state.created || [])) return;
+    state.created = list;
+    saveState(state);
+  }
+  const noticed = new Set();
+  function leaveAlone(target) {
+    if (noticed.has(target)) return;
+    noticed.add(target);
+    log(`left "${relOf(target)}" alone: Mana didn't create it.`);
+  }
+
   // Rewrites each view whose content changed (an edit of the user's
-  // included) and removes old ones -- only files starting with the marker.
+  // included) and removes old ones -- only Mana's own files.
   function refreshViews() {
     if (!options.buildViews || !vaultExists()) return;
     try {
+      const state = loadState();
+      const created = new Set(state.created || []);
+      const mine = (target, current) => created.has(relOf(target)) || current.startsWith(VIEWS_MARKER);
       const desired = new Map();
       for (const view of options.buildViews()) {
         const target = full(view.rel);
@@ -482,7 +629,12 @@ function createMemoryVault(options = {}) {
         } catch (e) {
           fs.mkdirSync(path.dirname(target), { recursive: true });
         }
+        if (current !== null && !mine(target, current)) {
+          leaveAlone(target);
+          continue;
+        }
         if (current !== content) fs.writeFileSync(target, content, "utf8");
+        created.add(relOf(target));
       }
       for (const dir of [full("Views"), full("Views/Entities")]) {
         let names = [];
@@ -493,14 +645,27 @@ function createMemoryVault(options = {}) {
         }
         for (const name of names) {
           const file = path.join(dir, name);
-          if (!desired.has(file.toLowerCase()) && fs.readFileSync(file, "utf8").startsWith(VIEWS_MARKER)) {
+          if (!desired.has(file.toLowerCase()) && mine(file, fs.readFileSync(file, "utf8"))) {
             fs.unlinkSync(file);
+            created.delete(relOf(file));
           }
         }
       }
+      saveCreated(state, created);
     } catch (e) {
       log(`views not refreshed: ${e?.message || e}`);
     }
+  }
+
+  // Today's journal file: Journal/<day>.md, or "<day> (Mana).md" when the
+  // user (a daily-notes plugin...) already made that one; null when both
+  // are taken.
+  function journalFile(day, created) {
+    return (
+      [`Journal/${day}.md`, `Journal/${day} (Mana).md`].find(
+        (rel) => created.has(rel.toLowerCase()) || !fs.existsSync(full(rel)),
+      ) || null
+    );
   }
 
   // Appends a short diary entry about what happened since the last one
@@ -512,7 +677,13 @@ function createMemoryVault(options = {}) {
     try {
       const nowDate = new Date();
       const day = localDate(nowDate.toISOString());
-      const rel = `Journal/${day}.md`;
+      let state = loadState();
+      let created = new Set(state.created || []);
+      let rel = journalFile(day, created);
+      if (!rel) {
+        leaveAlone(full(`Journal/${day}.md`));
+        return false;
+      }
       const startOfDay = new Date(nowDate.getFullYear(), nowDate.getMonth(), nowDate.getDate()).toISOString();
       let since = lastJournalAt;
       if (!since) {
@@ -543,8 +714,20 @@ function createMemoryVault(options = {}) {
 
       const links = [...new Set(facts.map((f) => `[[${noteName(f.key)}]]`))];
       const entry = `## ${nowDate.toTimeString().slice(0, 5)}\n\n${reply}\n${links.length ? `\nFacts: ${links.join(", ")}\n` : ""}\n`;
+      // Again: the user may have made the day's file while the model ran.
+      state = loadState();
+      created = new Set(state.created || []);
+      rel = journalFile(day, created);
+      if (!rel) {
+        leaveAlone(full(`Journal/${day}.md`));
+        return false;
+      }
       fs.mkdirSync(full("Journal"), { recursive: true });
-      if (!fs.existsSync(full(rel))) fs.writeFileSync(full(rel), `# ${day}\n\n`, "utf8");
+      if (!fs.existsSync(full(rel))) {
+        fs.writeFileSync(full(rel), `# ${day}\n\n`, "utf8");
+        created.add(rel.toLowerCase());
+        saveCreated(state, created);
+      }
       fs.appendFileSync(full(rel), entry, "utf8");
       lastJournalAt = nowDate.toISOString();
       return true;
@@ -554,22 +737,33 @@ function createMemoryVault(options = {}) {
     }
   }
 
+  // mode: "watching" (file watcher up), "polling" (it's down: only the
+  // POLL_MS syncs) or "stopped".
+  function getStatus() {
+    return { ...status, mode: !started ? "stopped" : watcher ? "watching" : "polling" };
+  }
+
   function start() {
-    store.onFactsChanged(schedule);
+    started = true;
+    store.onFactsChanged(() => schedule());
     sync();
     refreshViews();
     viewsTimer = setInterval(refreshViews, VIEWS_REFRESH_MS);
     viewsTimer.unref?.();
+    pollTimer = setInterval(poll, POLL_MS);
+    pollTimer.unref?.();
   }
 
   function stop() {
+    started = false;
     clearTimeout(timer);
     clearInterval(viewsTimer);
+    clearInterval(pollTimer);
     if (watcher) watcher.close();
     watcher = null;
   }
 
-  return { start, stop, sync, refreshViews, writeJournal, getStatus: () => ({ ...status }) };
+  return { start, stop, sync, refreshViews, writeJournal, getStatus };
 }
 
 module.exports = { VIEWS_MARKER, createMemoryVault, noteName, keyFromName, parseNote, renderNote };
