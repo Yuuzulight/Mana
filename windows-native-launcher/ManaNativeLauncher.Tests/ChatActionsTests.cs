@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Drawing;
 using System.Linq;
 using System.Threading.Tasks;
 using Mana.NativeLauncher;
@@ -76,7 +77,7 @@ public class ChatActionsTests
     [Theory]
     [InlineData("<b>hi</b>", true)]
     [InlineData("<script>alert(1)</script>", false)]
-    [InlineData("<div style=\"display: flex\">x</div>", false)]
+    [InlineData("<canvas></canvas>", false)]
     public async Task AnHtmlArtifact_GetsAnOpenSplitButton_InManaOnlyWhenItCanBeDrawn(string page, bool inMana)
     {
         using var view = NewView();
@@ -97,18 +98,25 @@ public class ChatActionsTests
         Assert.Equal(new[] { ArtifactOpen.Default, ArtifactOpen.InMana, ArtifactOpen.Browser, ArtifactOpen.Source, ArtifactOpen.SaveAs }, opened);
     }
 
+    // #937: Folio's ArtifactClassifier decides; anything but Static goes to the browser.
     [Theory]
-    [InlineData("<p>plain <b>text</b> <img src=\"data:image/png;base64,AA==\"></p>", false)]
+    [InlineData("<p>plain <b>text</b> <img src=\"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=\"></p>", false)]
     [InlineData("<header>not a head</header>", false)]
+    [InlineData("<style>.a{display:grid}</style><div class=a>x</div>", false)] // Folio lays out grid and flex
     [InlineData("<SCRIPT src=x></SCRIPT>", true)]
     [InlineData("<button onclick=\"go()\">x</button>", true)]
     [InlineData("<canvas></canvas>", true)]
     [InlineData("<svg></svg>", true)]
-    [InlineData("<style>.a{display:grid}</style>", true)]
-    [InlineData("<style>.a{display: inline-flex}</style>", true)]
+    [InlineData("<img src=\"https://example.com/a.png\">", true)] // Folio loads nothing from the network
     public void HtmlArtifact_NeedsBrowser(string html, bool expected)
     {
-        Assert.Equal(expected, HtmlArtifact.NeedsBrowser(html));
+        Assert.Equal(expected, HtmlArtifact.BrowserReasons(html) is not null);
+    }
+
+    [Fact]
+    public void HtmlArtifact_SaysWhyAPageNeedsABrowser()
+    {
+        Assert.Equal("uses inline SVG", HtmlArtifact.BrowserReasons("<svg></svg>"));
     }
 
     [Theory]
@@ -121,15 +129,28 @@ public class ChatActionsTests
         Assert.StartsWith(expectedStart.Replace("CSP", csp), HtmlArtifact.WithCsp(html));
     }
 
-    [Theory]
-    [InlineData("data:image/png;base64,AA==", true)]
-    [InlineData(" DATA:image/gif,x", true)]
-    [InlineData("https://example.com/a.png", false)]
-    [InlineData("file:///C:/secret.png", false)]
-    [InlineData(null, false)]
-    public void HtmlArtifact_OnlyDataUrisLoad(string? src, bool expected)
+    // #937: without the system fonts Folio lays text out but draws none of it.
+    [Fact]
+    public void TheViewerDrawsHtmlTextWithFolio()
     {
-        Assert.Equal(expected, HtmlArtifact.IsDataUri(src));
+        using var viewer = new ArtifactViewerForm();
+        var view = viewer.HtmlView;
+        view.Size = new Size(160, 60);
+        view.LoadHtml("<p style=\"margin:0; font: 40px sans-serif; color: black\">Hi</p>");
+        using var bitmap = new Bitmap(160, 60);
+        view.DrawToBitmap(bitmap, new Rectangle(0, 0, 160, 60));
+        Assert.Contains(Enumerable.Range(0, 160 * 60), i => bitmap.GetPixel(i % 160, i / 160).R < 128);
+    }
+
+    [Theory]
+    [InlineData("https://example.com/a", true)]
+    [InlineData("HTTP://example.com/", true)]
+    [InlineData("mailto:a@example.com", false)]
+    [InlineData("file:///C:/Windows/System32/calc.exe", false)]
+    [InlineData("ms-settings:privacy", false)]
+    public void HtmlArtifact_OnlyWebLinksOpen(string uri, bool expected)
+    {
+        Assert.Equal(expected, HtmlArtifact.IsWebLink(new Uri(uri)));
     }
 
     [Fact]

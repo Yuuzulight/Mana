@@ -227,7 +227,7 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
     });
 
     // #686 (Q4/Q44b): an HTML artifact gets an "Open" split button whose
-    // main part opens it in Mana when HtmlRenderer can draw it, else in the
+    // main part opens it in Mana when Folio can draw it (#937), else in the
     // browser; the arrow lists every way. Other artifacts open in the viewer.
     private static ChatAction ArtifactAction(DetectedArtifact artifact, Action<ArtifactOpen> open)
     {
@@ -240,10 +240,10 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
         {
             return new ChatAction($"Open {artifact.Language} content in new window", false, Run(ArtifactOpen.Default), Keep: true);
         }
-        var inMana = !HtmlArtifact.NeedsBrowser(artifact.Content);
+        var whyBrowser = HtmlArtifact.BrowserReasons(artifact.Content);
         return new ChatAction("Open", false, Run(ArtifactOpen.Default), Keep: true, Menu: new[]
         {
-            new ChatMenuItem(inMana ? "Open in Mana" : "Open in Mana (this page needs a browser)", inMana, Run(ArtifactOpen.InMana)),
+            new ChatMenuItem(whyBrowser is null ? "Open in Mana" : $"Open in Mana (needs a browser: {whyBrowser})", whyBrowser is null, Run(ArtifactOpen.InMana)),
             new ChatMenuItem("Open in browser", true, Run(ArtifactOpen.Browser)),
             new ChatMenuItem("View source", true, Run(ArtifactOpen.Source)),
             new ChatMenuItem("Save as...", true, Run(ArtifactOpen.SaveAs)),
