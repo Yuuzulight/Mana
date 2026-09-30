@@ -214,6 +214,7 @@ const { createToolPolicy } = require("./ai/tool-policy");
 const { buildToolPolicy } = require("./ai/tool-source");
 const { resolveToolApprovalMode, wrapWithRiskGate } = require("./ai/tool-risk");
 const { createMemoryToolSource, createMemoryWriteExecutor } = require("./ai/memory-tool-source");
+const { createMemoryVault } = require("./memory-vault");
 const {
   loadSessionSummaries,
   runCompactorStage,
@@ -2223,6 +2224,24 @@ function registerRoutes(app, upload, deps = {}) {
     "memory-write",
     createMemoryWriteExecutor({ acpMemoryStore, approvalGate: activeApprovalGate }),
   );
+  // #935: two-way sync with the Obsidian vault (MANA_VAULT_DIR). A new
+  // note asks for the user's OK under its own action type, so denying one
+  // never counts against (or grants) Mana's own memory writes.
+  activeApprovalGate.registerExecutor("memory-vault-note", (payload) => acpMemoryStore.rememberFact(payload));
+  let memoryVault = null;
+  if (process.env.MANA_VAULT_DIR && process.env.NODE_ENV !== "test" && !process.env.NODE_TEST_CONTEXT) {
+    try {
+      memoryVault = createMemoryVault({
+        store: acpMemoryStore,
+        vaultDir: process.env.MANA_VAULT_DIR,
+        approvalGate: activeApprovalGate,
+      });
+      memoryVault.start();
+    } catch (e) {
+      console.warn("Memory vault sync failed to start:", e?.message || e);
+    }
+  }
+  const memoryVaultStatus = () => (memoryVault ? memoryVault.getStatus() : { vaultDir: null });
 
   // Lets acpMemoryStore's summarizeFn (built at module load time, long
   // before registerRoutes ever runs) reach the real runOpenAIReply --
@@ -2397,6 +2416,7 @@ function registerRoutes(app, upload, deps = {}) {
         // Q18 (#645): named here, not warned about on every start.
         plainTextSecrets: (deps.plainTextSecretKeys || plainTextSecretKeys)(),
         memoryGraphHistory,
+        memoryVault: memoryVaultStatus(),
         chatModel: chatModelLabel(),
         findLlamaServerBin: llamaServerRuntime.findLlamaServerBin,
       });
@@ -2418,6 +2438,7 @@ function registerRoutes(app, upload, deps = {}) {
     doctorOptions: () => ({
       fishTtsWarmup: ttsRuntime.getFishWarmupStatus(),
       sessionSearchVectorEnabled: sessionSearchIndex.vectorEnabled(),
+      memoryVault: memoryVaultStatus(),
       findLlamaServerBin: llamaServerRuntime.findLlamaServerBin,
     }),
   });
