@@ -44,6 +44,11 @@ internal sealed class StreamingReplyPlayer
     // synthesized (1-based), or null -- for the chat's status line. The
     // one-ahead lookahead means at most one synthesis is in flight.
     public int? SynthesizingSentence => synthesizing == 0 ? null : synthesizing;
+
+    // #914: the character whose sentence is playing now (null between
+    // sentences or from an older backend) -- group mode lip-syncs her avatar.
+    public string? PlayingCharacter => playingCharacter;
+    private volatile string? playingCharacter;
     private volatile int synthesizing;
     private int synthesized;
 
@@ -221,6 +226,7 @@ internal sealed class StreamingReplyPlayer
                 // kind of dangling in-flight synth call elsewhere in this file.
                 var nextTask = TakeAndSynthesizeNextAsync(sentences, TakeNext);
                 onSentencePlaying?.Invoke(sentence.Text, sentence.Emotion, AudioPlayer.Duration(sentence.Audio));
+                playingCharacter = sentence.Character;
                 var completedNaturally = await playAsync(sentence.Audio).ConfigureAwait(false);
                 if (!completedNaturally)
                 {
@@ -252,6 +258,7 @@ internal sealed class StreamingReplyPlayer
             // never fires and the caller (VoiceLoop, via avatarOverlay) is
             // left showing "talking" forever, on top of never handing mode
             // back to the caller either.
+            playingCharacter = null;
             if (talking)
             {
                 setTalking(false);
@@ -260,7 +267,7 @@ internal sealed class StreamingReplyPlayer
         return (interrupted, pending);
     }
 
-    private async Task<(string Text, string? Emotion, byte[] Audio)?> TakeAndSynthesizeNextAsync(ChannelReader<(string Text, string? Emotion, string? Character)> sentences, Func<(string Text, string? Emotion, string? Character)?> takeNext)
+    private async Task<(string Text, string? Emotion, string? Character, byte[] Audio)?> TakeAndSynthesizeNextAsync(ChannelReader<(string Text, string? Emotion, string? Character)> sentences, Func<(string Text, string? Emotion, string? Character)?> takeNext)
     {
         if (!await sentences.WaitToReadAsync().ConfigureAwait(false))
         {
@@ -273,7 +280,7 @@ internal sealed class StreamingReplyPlayer
         synthesizing = ++synthesized;
         try
         {
-            return (next.Text, next.Emotion, await backendClient.SynthesizeAsync(next.Text, next.Emotion, next.Character).ConfigureAwait(false));
+            return (next.Text, next.Emotion, next.Character, await backendClient.SynthesizeAsync(next.Text, next.Emotion, next.Character).ConfigureAwait(false));
         }
         finally
         {
