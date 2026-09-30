@@ -7,7 +7,8 @@ namespace Mana.NativeLauncher;
 // testable directly -- same split ProactiveToastFilter uses.
 // #905: Speak, when set, is a line Mana says out loud too (a reminder).
 // #914: Model, on a "character" payload, is her Live2D model (null: the default).
-internal sealed record TrayNotificationPayload(string? Type, string Title, string Text, string? Speak = null, string? Model = null)
+// #1008: Url, on a "self-work" payload, is her PR once it's ready.
+internal sealed record TrayNotificationPayload(string? Type, string Title, string Text, string? Speak = null, string? Model = null, string? Url = null)
 {
     // Returns null for anything that isn't a well-formed JSON object --
     // a malformed or unexpectedly-shaped message (e.g. "type" present but
@@ -28,7 +29,8 @@ internal sealed record TrayNotificationPayload(string? Type, string Title, strin
             var text = root.TryGetProperty("text", out var textElement) ? textElement.GetString() ?? "" : "";
             var speak = root.TryGetProperty("speak", out var speakElement) ? speakElement.GetString() : null;
             var model = root.TryGetProperty("model", out var modelElement) ? modelElement.GetString() : null;
-            return new TrayNotificationPayload(type, title, text, speak, model);
+            var url = root.TryGetProperty("url", out var urlElement) ? urlElement.GetString() : null;
+            return new TrayNotificationPayload(type, title, text, speak, model, url);
         }
         catch
         {
