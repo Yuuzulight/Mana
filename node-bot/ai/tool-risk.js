@@ -60,6 +60,13 @@ const BUILTIN_TIERS = {
   reminder__cancel: "read",
   // #907: no arguments; searches only the topics and games I set in Settings.
   briefing__now: "read",
+  // #906: only reach the mail/calendar server I set up in Settings, and
+  // change nothing there (read-only mailbox, BODY.PEEK).
+  email__recent: "read",
+  email__search: "read",
+  email__read: "read",
+  calendar__events: "read",
+  calendar__add_event: "write",
   memory__remember: "write",
   skill__create: "write",
   skill__run: "write",
@@ -73,7 +80,8 @@ const BUILTIN_TIERS = {
 };
 
 // Built-ins that already ask through the approval gate themselves
-// (memory-write, skill-write/skill-run, snapshot-restore, coding-run-tests, browser-
+// (memory-write, skill-write/skill-run, snapshot-restore, coding-run-tests,
+// calendar-add-event, browser-
 // automation's first-use gate). Per-call approval passes them through
 // rather than asking twice for one call.
 const SELF_GATED = new Set([
@@ -82,6 +90,7 @@ const SELF_GATED = new Set([
   "skill__run",
   "snapshot__restore",
   "coding__run_tests",
+  "calendar__add_event",
   "browser_automation__navigate",
   "browser_automation__click",
   "browser_automation__type",
