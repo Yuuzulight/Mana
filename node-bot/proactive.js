@@ -5,7 +5,9 @@
 // played except one per detected break, and a minute apart so remarks don't
 // arrive in a burst. Held candidates wait for a later flush (server.js runs
 // one every 30 s) and expire when stale. Delivery is today's proactive
-// toast path (tray-notifier).
+// toast path (tray-notifier). An explicit candidate -- something the user
+// asked for, like a reminder (#905) -- is urgent and also gets through
+// mid-game.
 const { notifyTray } = require("./tray-notifier");
 
 const SCORE_THRESHOLD = 0.5;
@@ -17,7 +19,7 @@ const DEFAULT_TTL_MS = 60 * 60 * 1000;
 const MAX_HELD = 20;
 const MIN_GAP_MS = 60 * 1000;
 
-// candidate: { reason, payload, score (0..1, default 1), urgent, ttlMs }.
+// candidate: { reason, payload, score (0..1, default 1), urgent, explicit, ttlMs }.
 // payload is the tray notification, sent as-is.
 // ponytail: held candidates live in memory, so a restart drops them.
 function createProactive({ deliver, isGaming = () => false, inBreak = () => false, now = Date.now }) {
@@ -39,13 +41,13 @@ function createProactive({ deliver, isGaming = () => false, inBreak = () => fals
     const gaming = isGaming();
     const inGameBreak = gaming && inBreak();
     if (!inGameBreak) breakUsed = false;
-    if (gaming && (!inGameBreak || breakUsed)) return null;
+    const gameHold = gaming && (!inGameBreak || breakUsed);
     if (t - lastSentAt < MIN_GAP_MS) return null;
-    const next = held.find((c) => c.urgent || spentToday < DAILY_BUDGET);
+    const next = held.find((c) => (gameHold ? c.explicit : c.urgent || spentToday < DAILY_BUDGET));
     if (!next) return null;
     held.splice(held.indexOf(next), 1);
     if (!next.urgent) spentToday += 1;
-    if (inGameBreak) breakUsed = true;
+    if (inGameBreak && !next.explicit) breakUsed = true;
     lastSentAt = t;
     Promise.resolve()
       .then(() => deliver(next.payload))
@@ -54,10 +56,11 @@ function createProactive({ deliver, isGaming = () => false, inBreak = () => fals
   }
 
   // Returns "delivered", "held" or "dropped".
-  function offer({ reason, payload, score = 1, urgent = false, ttlMs = DEFAULT_TTL_MS }) {
+  function offer({ reason, payload, score = 1, urgent = false, explicit = false, ttlMs = DEFAULT_TTL_MS }) {
+    urgent = Boolean(urgent || explicit);
     if (!urgent && !(score >= SCORE_THRESHOLD)) return "dropped";
     if (held.some((c) => c.reason === reason && c.payload.text === payload.text)) return "held";
-    const candidate = { reason, payload, score, urgent: Boolean(urgent), expiresAt: now() + ttlMs };
+    const candidate = { reason, payload, score, urgent, explicit: Boolean(explicit), expiresAt: now() + ttlMs };
     held.push(candidate);
     held.sort((a, b) => b.urgent - a.urgent || b.score - a.score);
     held = held.slice(0, MAX_HELD);

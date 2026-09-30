@@ -7,10 +7,11 @@
 // reduced to letters, digits and ' . - before it gets in.
 
 // Keeps the "Singapore English" framing (helps the decoder's accent
-// expectations) and Mana's wake words, per
-// docs/speech_recognition_improvement_plan.md.
+// expectations), per docs/speech_recognition_improvement_plan.md. Only
+// "Mana" is named: listing misspellings (Manah, Manna...) here made
+// whisper write them. WakeWordMatcher still accepts those on its own.
 const BASE_WHISPER_PROMPT =
-  "Singapore English conversation with an AI assistant named Mana. Wake words include Mana, Manah, Manna, Mannah, Myna, My Na, and wake up.";
+  "Singapore English conversation with an AI assistant named Mana. Wake words include Mana and wake up.";
 
 // whisper's prompt budget is n_text_ctx/2 = 224 tokens, shared with the
 // text carried over from the previous window. 450 chars stays under ~150
@@ -76,22 +77,40 @@ function isJargon(term) {
   );
 }
 
-// Single words that look like names or jargon: capitalized mid-sentence
-// ("I switched to Kokoro"), or jargon-shaped anywhere. A capitalized
+// Words that look like names or jargon: capitalized mid-sentence ("I
+// switched to Kokoro"), or jargon-shaped anywhere. A capitalized
 // sentence-initial word ("Want", "Hey") says nothing, which is why the
-// entity index isn't used here.
+// entity index isn't used here. #924: a run of 2-3 capitalized words
+// ("Gigi Murin", "Hololive VTuber") is one term instead of its words; a
+// comma or possessive ends a run, and a longer run (a title, shouting)
+// stays single words. skip: words already in the prompt, which also end a
+// run ("hey Mana Gigi Murin" -> "Gigi Murin").
 // ponytail: capitalization heuristic, not NER.
-function extractTerms(text) {
+function extractTerms(text, skip = new Set()) {
   const terms = [];
   // A sentence end needs whitespace (or the end) after it, so "Node.js"
   // stays one word.
   for (const sentence of String(text || "").split(/[.!?]+(?:\s+|$)|\n+/)) {
     const words = sentence.split(/\s+/).filter(Boolean);
+    let run = [];
+    const flush = () => {
+      const phrase = run.length >= 2 && run.length <= 3 ? cleanTerm(run.join(" ")) : "";
+      terms.push(...(phrase ? [phrase] : run));
+      run = [];
+    };
     words.forEach((word, i) => {
       const term = cleanTerm(word.replace(/['’]s$/i, ""));
-      if (term.length < 2 || term.includes(" ") || NOT_TERMS.has(term.toLowerCase())) return;
-      if (isJargon(term) || (i > 0 && /^\p{Lu}/u.test(term))) terms.push(term);
+      const key = term.toLowerCase();
+      if (term.length < 2 || term.includes(" ") || NOT_TERMS.has(key) || skip.has(key)) return flush();
+      if (i > 0 && /^\p{Lu}/u.test(term)) {
+        run.push(term);
+        if (/(?:['’]s|[,;:)])$/i.test(word)) flush();
+      } else {
+        flush();
+        if (isJargon(term)) terms.push(term);
+      }
     });
+    flush();
   }
   return terms;
 }
@@ -103,13 +122,21 @@ function extractTerms(text) {
 // verified memory fact or at least 2 chat turns -- on real data every one-off
 // capital ("Ali", "Baba") came from a single garbled voice transcript, never
 // from a fact -- while jargon-shaped terms need only one source.
-function buildWhisperPrompt({ facts = [], userTexts = [] } = {}) {
+// #901: vocabulary (WHISPER_VOCABULARY) is the user's own list, kept in their
+// order right after the name, ahead of anything memory suggests. #923: the
+// saved speech words (speech-vocabulary.js) follow it in the same list.
+function buildWhisperPrompt({ facts = [], userTexts = [], vocabulary = [] } = {}) {
   const usableFacts = facts.filter(isUsableFact);
   const name = userNameFromFacts(usableFacts);
   // Words already in the prompt, split the same way extractTerms does.
-  const known = new Set(
-    `${BASE_WHISPER_PROMPT} ${name}`.split(/[.!?]+(?:\s+|$)|[\s,]+/).map((w) => cleanTerm(w).toLowerCase()),
-  );
+  const words = (text) => text.split(/[.!?]+(?:\s+|$)|[\s,]+/).map((w) => cleanTerm(w).toLowerCase());
+  const known = new Set(words(`${BASE_WHISPER_PROMPT} ${name}`));
+  const vocab = [];
+  for (const term of vocabulary.map(cleanTerm)) {
+    if (!term || known.has(term.toLowerCase())) continue;
+    vocab.push(term);
+    for (const w of [term, ...words(term)]) known.add(w.toLowerCase());
+  }
 
   const counts = new Map();
   const termFacts = usableFacts.filter((f) => !NAME_KEY.test(String(f.key || "").trim()));
@@ -119,7 +146,7 @@ function buildWhisperPrompt({ facts = [], userTexts = [] } = {}) {
   ];
   for (const { text, isFact } of sources) {
     const seen = new Set();
-    for (const term of extractTerms(text)) {
+    for (const term of extractTerms(text, known)) {
       const key = term.toLowerCase();
       if (known.has(key) || seen.has(key)) continue;
       seen.add(key);
@@ -130,14 +157,16 @@ function buildWhisperPrompt({ facts = [], userTexts = [] } = {}) {
     }
   }
   const ranked = [...counts.values()]
-    .filter((entry) => entry.inFact || entry.count >= 2 || isJargon(entry.term))
+    // A name run ("Gigi Murin") always needs the 2 turns or a fact, even
+    // with a capital inside.
+    .filter((entry) => entry.inFact || entry.count >= 2 || (!entry.term.includes(" ") && isJargon(entry.term)))
     .sort((a, b) => b.count - a.count || a.term.localeCompare(b.term))
     .slice(0, MAX_TERMS)
     .map((entry) => entry.term);
 
   const head = name ? `${BASE_WHISPER_PROMPT} The user's name is ${name}.` : BASE_WHISPER_PROMPT;
   const kept = [];
-  for (const term of ranked) {
+  for (const term of [...vocab, ...ranked].slice(0, MAX_TERMS)) {
     if (`${head} Names and terms: ${[...kept, term].join(", ")}.`.length > MAX_PROMPT_CHARS) break;
     kept.push(term);
   }
@@ -147,23 +176,36 @@ function buildWhisperPrompt({ facts = [], userTexts = [] } = {}) {
 // Returns getPrompt(): the WHISPER_PROMPT override when set, otherwise the
 // built prompt, rebuilt at most every refreshMs (reading memory on every
 // utterance would put file I/O on the STT hot path). Falls back to the
-// base prompt if memory can't be read.
-function createWhisperPromptProvider({ memoryStore, override = "", refreshMs = REFRESH_MS, now = Date.now } = {}) {
+// base prompt (plus the vocabulary) if memory can't be read. vocabulary is
+// WHISPER_VOCABULARY, comma-separated; savedWords() the saved speech words,
+// which rebuild the prompt at once when they change (#923).
+function createWhisperPromptProvider({
+  memoryStore,
+  override = "",
+  vocabulary = "",
+  savedWords = () => [],
+  refreshMs = REFRESH_MS,
+  now = Date.now,
+} = {}) {
   let cached = null;
   let builtAt = 0;
+  let builtWith = "";
   return function getPrompt() {
     if (override) return override;
-    if (cached && now() - builtAt < refreshMs) return cached;
+    const saved = savedWords();
+    const vocab = [...String(vocabulary).split(","), ...saved];
+    if (cached && now() - builtAt < refreshMs && builtWith === saved.join("\n")) return cached;
+    builtWith = saved.join("\n");
     try {
       const userTexts = memoryStore
         .listSessions()
         .slice(0, RECENT_SESSIONS)
         .flatMap((s) => (memoryStore.getSession(s.sessionId)?.turns || []).slice(-TURNS_PER_SESSION))
         .map((turn) => String(turn.user || "").slice(0, MAX_TURN_CHARS));
-      cached = buildWhisperPrompt({ facts: memoryStore.listFacts(), userTexts });
+      cached = buildWhisperPrompt({ facts: memoryStore.listFacts(), userTexts, vocabulary: vocab });
     } catch (e) {
       console.warn("Failed to build whisper prompt from memory:", e.message);
-      cached = BASE_WHISPER_PROMPT;
+      cached = buildWhisperPrompt({ vocabulary: vocab });
     }
     builtAt = now();
     return cached;
@@ -174,6 +216,10 @@ module.exports = {
   BASE_WHISPER_PROMPT,
   MAX_PROMPT_CHARS,
   buildWhisperPrompt,
+  cleanTerm,
   createWhisperPromptProvider,
   extractTerms,
+  isJargon,
+  isUsableFact,
+  userNameFromFacts,
 };

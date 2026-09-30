@@ -71,6 +71,12 @@ internal sealed class ScreenContextReader
         var now = Environment.TickCount64;
         var readsOnItsOwn = ScreenContextTrigger.ReadsScreenOnItsOwn(normalized, now - previousTurnAtMs);
         previousTurnAtMs = now;
+        // #910: an explicit translate request always reads fresh, and its OCR
+        // reads Japanese (JapaneseOcr).
+        if (ScreenContextTrigger.AsksToTranslate(normalized))
+        {
+            return await ReadForegroundAsync(atCursor, normalized, now, translate: true);
+        }
         var minInterval = gamingModeActive ? GamingMinIntervalMs : MinIntervalMs;
         if (!atCursor && lastScreenText.Length > 0 && now - lastReadAtMs < minInterval)
         {
@@ -85,6 +91,16 @@ internal sealed class ScreenContextReader
             return lastScreenText;
         }
 
+        return await ReadForegroundAsync(atCursor, normalized, now);
+    }
+
+    // #690: the ambient glance's read -- the foreground window as it is now
+    // (tree first, OCR fallback), no command or interval gate. "" when
+    // nothing usable came back.
+    public Task<string> ReadForGlanceAsync() => ReadForegroundAsync(atCursor: false, normalized: "", Environment.TickCount64);
+
+    private async Task<string> ReadForegroundAsync(bool atCursor, string normalized, long now, bool translate = false)
+    {
         try
         {
             var window = GetForegroundWindow();
@@ -110,6 +126,12 @@ internal sealed class ScreenContextReader
             // #671: OCR just the foreground window, and only when it
             // changed since the last OCR (ScreenOcrGate).
             using var bitmap = ScreenCapture.Capture(ForegroundBounds(window));
+            if (translate)
+            {
+                // Not cached: the next ordinary turn shouldn't get
+                // JapaneseOcr's vision__look note as its screen text.
+                return await JapaneseOcr.ReadAsync(bitmap);
+            }
             var text = await ocrGate.ReadAsync(
                 window,
                 ScreenOcrGate.DifferenceHash(bitmap),

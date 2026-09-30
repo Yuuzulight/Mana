@@ -17,21 +17,29 @@ internal sealed class ManaApplicationContext : ApplicationContext
     private readonly ManaBackendClient backendClient;
     private readonly System.Windows.Forms.Timer statusTimer;
     private readonly System.Windows.Forms.Timer idleReportTimer;
-    private readonly SileroVadRunner sileroVad;
+    private readonly SileroVadRunner? sileroVad; // #858: null = RMS fallback
     private readonly WakeWordClassifier? wakeWordClassifier;
     private readonly AudioPlayer audioPlayer;
     private readonly VoiceLoop voiceLoop;
-    private readonly VisionHotkeyListener visionHotkeyListener;
-    private readonly ClipHotkeyListener clipHotkeyListener;
     private readonly ClipBuffer clipBuffer = new();
     private readonly System.Windows.Forms.Timer? clipCaptureTimer;
+    private readonly System.Windows.Forms.Timer? glanceTimer; // #690
     private readonly GlobalHotkeyListener globalHotkeys;
     private readonly TrayNotificationClient trayNotifications;
+    private readonly ForegroundWindowReporter foregroundReporter;
     private readonly CaptionOverlayForm captionOverlay;
+    private readonly ChatBubblesForm chatBubbles; // #701
     private readonly VisionCaptureClient visionCaptureClient;
     private readonly ArtifactViewerForm artifactViewer;
     private readonly QuickEntryForm quickEntry;
     private readonly SessionListForm sessionListForm;
+    private readonly IDisposable showRequests;
+    // #689: Doctor's latest warn/fail ("label: message"), kept in the tray
+    // tooltip until the Doctor panel is opened.
+    private string? doctorAlert;
+    private string trayStatus = "Mana";
+    // What clicking the tray balloon on screen does (each balloon sets it).
+    private Action? balloonClicked;
 
     // #522: updated by RefreshTrayStatusAsync's existing 5s poll --
     // VoiceLoop reads it (via a delegate, not a captured snapshot) to
@@ -51,8 +59,10 @@ internal sealed class ManaApplicationContext : ApplicationContext
     // #gamingMode checkbox -- it isn't a 3-way auto/on/off switch, just an
     // enable/disable for the auto-detection RefreshTrayStatusAsync already
     // does. Off forces gamingModeActive false regardless of what the
-    // backend's process scan reports; no new backend route needed.
-    private bool gamingModeEnabled = true;
+    // backend's process scan reports; no new backend route needed. #688:
+    // saved (ManaSettingsStore.GamingModeDetection), also set from Settings >
+    // Performance, so the 5s poll re-reads it.
+    private bool gamingModeEnabled = ManaSettingsStore.Load().GamingModeDetection;
 
     // The services ManaProcessManager actually starts/stops (no Kokoro
     // row since #694 / the user decision: node-bot starts Kokoro on
@@ -69,6 +79,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
         ("websearch", "Web search"),
         ("retriever", "Retriever"),
         ("gpt-sovits", "GPT-SoVITS TTS"),
+        ("qwen3-tts", "Qwen3-TTS"),
     };
 
     // #691: the opt-in services only get a row when they're turned on,
@@ -79,6 +90,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
             "fish-speech" => manager.UsesFishSpeech,
             "retriever" => manager.UsesRetriever,
             "gpt-sovits" => manager.UsesGptSovits,
+            "qwen3-tts" => manager.UsesQwen3Tts,
             _ => true,
         }).ToArray();
 
@@ -87,11 +99,16 @@ internal sealed class ManaApplicationContext : ApplicationContext
     // would show a second overlay and re-kill already-exiting processes.
     private bool isShuttingDown;
 
+    // #684: see ManaSettingsStore.AvatarHidesWithChat. servicesStarted: the
+    // avatar first appears once startup is done, so nothing shows her earlier.
+    private bool avatarHidesWithChat = ManaSettingsStore.Load().AvatarHidesWithChat;
+    private bool servicesStarted;
+
     public ManaApplicationContext()
     {
         var rootDir = FindRootDirectory();
         var settings = ManaSettingsStore.Load();
-        processManager = new ManaProcessManager(rootDir, backendBaseUrl: settings.BackendBaseUrl);
+        processManager = new ManaProcessManager(rootDir, backendBaseUrl: settings.BackendBaseUrl, localOnly: settings.LocalOnly);
         backendClient = new ManaBackendClient(baseUrl: settings.BackendBaseUrl, adminToken: settings.AdminToken, launcherKey: processManager.LauncherKey);
         avatarOverlay = new AvatarOverlayForm(rootDir);
         // #578: ambient indicator, no tray entry -- starts polling
@@ -101,8 +118,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
         // #646: same ambient kind, for the chat tool loop, with a Stop button.
         agentActivityPanel = new AgentActivityPanel(backendClient);
 
-        var vadModelPath = Path.Combine(rootDir, "windows-native-launcher", "assets", "vad", "silero_vad.onnx");
-        sileroVad = new SileroVadRunner(vadModelPath);
+        sileroVad = TryLoadSileroVad(rootDir);
         wakeWordClassifier = TryLoadWakeWordClassifier(
             rootDir,
             WakeWordClassifier.ResolveThreshold(Environment.GetEnvironmentVariable("MANA_WAKE_PREFILTER"), settings.WakePrefilter));
@@ -130,15 +146,17 @@ internal sealed class ManaApplicationContext : ApplicationContext
         // #571: on-screen equivalent of spoken output, fed sentence by
         // sentence by VoiceLoop's own playback.
         // Q8: under Mana while she's showing (Visible/Bounds are plain field reads).
-        captionOverlay = new CaptionOverlayForm(() => avatarOverlay.Visible ? avatarOverlay.Bounds : null);
-        voiceLoop = new VoiceLoop(sileroVad, backendClient, audioPlayer, avatarOverlay, chatLog, chatLog, screenContextReader, () => gamingModeActive, clipBuffer, wakeWordClassifier, captionOverlay);
+        // #899: above her visible top, not the top of her (framed, bigger) window.
+        captionOverlay = new CaptionOverlayForm(() => avatarOverlay.Visible ? avatarOverlay.VisibleBounds : null);
+        chatBubbles = new ChatBubblesForm(() => avatarOverlay.Visible ? avatarOverlay.Bounds : null, () => ChatBubblesForm.InView(sessionListForm));
+        captionOverlay.Suppressed = chatBubbles.BubblesOn; // #701: bubbles replace the caption bar
+        chatBubbles.BubbleClicked += text =>
+        {
+            ShowSessionList();
+            chatLog.SelectMessageContaining(text);
+        };
+        voiceLoop = new VoiceLoop(sileroVad, backendClient, audioPlayer, avatarOverlay, chatLog, chatLog, screenContextReader, () => gamingModeActive, clipBuffer, wakeWordClassifier, captionOverlay, chatBubbles);
         voiceLoop.SetPresetId(settings.ActivePresetId); // #681
-        // #523: Ctrl+Alt+M asks Mana to look at the screen, through the
-        // same reply/TTS pipeline a normal turn uses.
-        visionHotkeyListener = new VisionHotkeyListener(() => _ = voiceLoop.SubmitVisionHotkeyAsync());
-        // #585: Ctrl+Alt+Shift+M asks Mana what just happened, using
-        // whatever clipCaptureTimer below has already buffered.
-        clipHotkeyListener = new ClipHotkeyListener(() => _ = voiceLoop.SubmitClipHotkeyAsync());
         // windows-launcher only runs its own clip-buffer capture timer
         // when screen sensing is opted into (MANA_SCREEN_SENSING_ENABLED=1)
         // -- same gate here, so this launcher doesn't start silently
@@ -153,24 +171,49 @@ internal sealed class ManaApplicationContext : ApplicationContext
             clipCaptureTimer = new System.Windows.Forms.Timer { Interval = intervalMs };
             clipCaptureTimer.Tick += async (_, _) => await CaptureClipFrameAsync();
             clipCaptureTimer.Start();
+
+            // #690: the ambient glance itself, on Electron's schedule.
+            var glance = new ScreenSensingGlance(
+                backendClient,
+                () => voiceLoop.IsIdle,
+                () => gamingModeActive,
+                () => SystemIdle.GetIdleMilliseconds() ?? 0,
+                screenContextReader.ReadForGlanceAsync,
+                ScreenCapture.CaptureAsJpegDataUrl,
+                chatLog.AppendManaMessage,
+                PositiveIntEnv("MANA_SCREEN_SENSING_PRESENCE_IDLE_MS", 90000));
+            glanceTimer = new System.Windows.Forms.Timer { Interval = PositiveIntEnv("MANA_SCREEN_SENSING_INTERVAL_MS", 120000) };
+            glanceTimer.Tick += async (_, _) => await glance.RunOnceAsync();
+            glanceTimer.Start();
         }
         sessionListForm = new SessionListForm(backendClient, voiceLoop, chatLog, avatarOverlay, processManager.BackendLog);
-        // #525: Ctrl+Alt+Space types a command instead of speaking one,
+        // #525: quick entry types a command instead of speaking one,
         // through the exact same turn-processing path.
-        quickEntry = new QuickEntryForm(voiceLoop.SubmitTypedCommandAsync);
-        // #584: windows-launcher's own defaults are Ctrl+Alt+Space for the
-        // window toggle and Ctrl+Alt+I for manual interrupt -- the first
-        // collides with quickEntry's own hotkey right above (already
-        // shipped, #525), so this uses Ctrl+Alt+W instead; Ctrl+Alt+I has
-        // no native collision and is kept as-is. Manual interrupt stops
-        // playback and drops any held reply via VoiceLoop.InterruptSpeech
-        // -- matches windows-launcher's own "interrupt-speech" handler
-        // (stopReplyAudio() + heldReply = null), not the fuller
-        // barge-in/re-capture path VoiceLoop's internal interruption
-        // handling uses for a detected spoken interruption.
-        globalHotkeys = new GlobalHotkeyListener(
-            (0xA584, GlobalHotkeyListener.ModControl | GlobalHotkeyListener.ModAlt, (uint)'W', "MANA_WINDOW_HOTKEY", ToggleSessionListVisible),
-            (0xA585, GlobalHotkeyListener.ModControl | GlobalHotkeyListener.ModAlt, (uint)'I', "MANA_INTERRUPT_HOTKEY", voiceLoop.InterruptSpeech));
+        quickEntry = new QuickEntryForm(text => voiceLoop.SubmitTypedCommandAsync(text));
+        // #689: every global hotkey, bound from Settings > Hotkeys (defaults
+        // in HotkeyBindings). #523 vision and #585 clip go through the normal
+        // reply pipeline. #584's manual interrupt stops playback and drops
+        // any held reply via VoiceLoop.InterruptSpeech -- windows-launcher's
+        // "interrupt-speech" handler, not the fuller barge-in path. #680 text
+        // actions run on the selection in any app; "Ask Mana..." hands it to
+        // quick entry as a normal turn.
+        var hotkeyHandlers = new Dictionary<string, Action>
+        {
+            ["window"] = ToggleSessionListVisible,
+            ["quickEntry"] = quickEntry.ToggleVisible,
+            ["vision"] = () => _ = voiceLoop.SubmitVisionHotkeyAsync(),
+            ["clip"] = () => _ = voiceLoop.SubmitClipHotkeyAsync(),
+            ["camera"] = () => _ = voiceLoop.SubmitVisionHotkeyAsync(CaptureCameraAsync, VisionHotkeyMessages.CameraPrompt),
+            ["interrupt"] = voiceLoop.InterruptSpeech,
+            ["textAction"] = () => _ = TextActionForm.RunAsync(backendClient, text =>
+                quickEntry.OpenWith($"About \"{System.Text.RegularExpressions.Regex.Replace(text, @"\s+", " ")}\": ")),
+            // #910: a normal typed turn; its wording routes the screen read through JapaneseOcr.
+            ["translate"] = () => _ = voiceLoop.SubmitTypedCommandAsync("Translate my screen"),
+        };
+        globalHotkeys = new GlobalHotkeyListener(HotkeyBindings.Actions
+            .Select(a => (a.Id, HotkeyBindings.Resolve(settings.Hotkeys, a), a.DisableEnvVar, hotkeyHandlers[a.Key]))
+            .ToArray());
+        sessionListForm.BindHotkey = (action, keys) => globalHotkeys.Bind(action.Id, keys);
         // #524: originally a no-op (no chat/session window existed on
         // this branch yet) -- #521/#520 shipped one since, so this now
         // does what the original comment here flagged as the real
@@ -183,21 +226,16 @@ internal sealed class ManaApplicationContext : ApplicationContext
         // IsDisposed-then-marshal shape as this codebase's other
         // background-thread-to-UI call sites (e.g. ChatView's
         // RunOnUiThread).
-        trayNotifications = new TrayNotificationClient(backendBaseUrl: settings.BackendBaseUrl, openChat: () =>
-        {
-            if (sessionListForm.IsDisposed)
-            {
-                return;
-            }
-            if (sessionListForm.InvokeRequired)
-            {
-                sessionListForm.BeginInvoke(ShowSessionList);
-                return;
-            }
-            ShowSessionList();
-        });
+        trayNotifications = new TrayNotificationClient(
+            backendBaseUrl: settings.BackendBaseUrl,
+            openChat: () => RunOnUi(ShowSessionList),
+            onDoctor: payload => RunOnUi(() => ShowDoctorAlert(payload)),
+            // #905: a reminder is said out loud too, even mid-game.
+            onSpeak: text => _ = voiceLoop.SpeakAnnouncementAsync(text));
+        // #689: a second launcher started -- show this one's window instead.
+        showRequests = SingleInstance.ListenForShow(() => RunOnUi(ShowSessionList));
         // #681: answers the model's mid-reply screenshot requests.
-        visionCaptureClient = new VisionCaptureClient(backendClient, backendBaseUrl: settings.BackendBaseUrl);
+        visionCaptureClient = new VisionCaptureClient(backendClient, backendBaseUrl: settings.BackendBaseUrl, captureCamera: CaptureCameraAsync);
 
         trayIcon = new NotifyIcon
         {
@@ -212,7 +250,17 @@ internal sealed class ManaApplicationContext : ApplicationContext
             ContextMenuStrip = BuildTrayMenu(),
         };
 
-        trayIcon.DoubleClick += (_, _) => ShowStatus();
+        // #689: left-click toggles the chat window, like Electron's tray.
+        trayIcon.MouseClick += (_, e) =>
+        {
+            if (e.Button == MouseButtons.Left)
+            {
+                ToggleSessionListVisible();
+            }
+        };
+        trayIcon.BalloonTipClicked += (_, _) => balloonClicked?.Invoke();
+        sessionListForm.VisibleChanged += (_, _) => SyncAvatarWithChat();
+        sessionListForm.Resize += (_, _) => SyncAvatarWithChat(); // minimized or restored
         avatarOverlay.Clicked += voiceLoop.Wake; // #662
         trayNotifications.Start();
         visionCaptureClient.Start();
@@ -260,11 +308,19 @@ internal sealed class ManaApplicationContext : ApplicationContext
             }
         };
         idleReportTimer.Start();
+        // #697 part 1: node-bot's proactive pipeline learns which app is in front.
+        foregroundReporter = new ForegroundWindowReporter(backendClient.ReportForegroundAsync);
     }
 
     private ContextMenuStrip BuildTrayMenu()
     {
         var menu = new ContextMenuStrip();
+        // #689: Electron's tray entries, plus its two quick buttons.
+        menu.Items.Add("Open Mana", null, (_, _) => ShowSessionList());
+        menu.Items.Add("Minimize to overlay", null, (_, _) => sessionListForm.Hide());
+        menu.Items.Add("Look at my screen now", null, (_, _) => _ = voiceLoop.SubmitVisionHotkeyAsync());
+        menu.Items.Add("Open Model Web UI", null, (_, _) => OpenModelWebUi());
+        menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add("Show status", null, (_, _) => ShowStatus());
         menu.Items.Add("Artifact Viewer", null, (_, _) => { artifactViewer.Show(); artifactViewer.Activate(); });
         menu.Items.Add("Compare Models", null, (_, _) => new CompareModeForm(backendClient).Show());
@@ -274,19 +330,22 @@ internal sealed class ManaApplicationContext : ApplicationContext
         menu.Items.Add("Deep Research", null, (_, _) => new ResearchForm(backendClient, voiceLoop.EnsureSessionId).Show());
         menu.Items.Add("Doctor", null, (_, _) => ShowDoctorPanel());
         menu.Items.Add("VTube Studio", null, (_, _) => new VTubeStudioForm(backendClient).Show());
-        menu.Items.Add("Sessions", null, (_, _) => ShowSessionList());
         menu.Items.Add("Open project folder", null, (_, _) => OpenProjectFolder());
         menu.Items.Add("Set avatar idle", null, (_, _) => avatarOverlay.SetState(AvatarState.Idle));
         menu.Items.Add("Set avatar talking", null, (_, _) => avatarOverlay.SetState(AvatarState.Talking));
         menu.Items.Add(new ToolStripSeparator());
         var gamingModeItem = new ToolStripMenuItem("Gaming mode detection") { CheckOnClick = true, Checked = gamingModeEnabled };
+        menu.Opening += (_, _) => gamingModeItem.Checked = gamingModeEnabled;
         gamingModeItem.Click += (_, _) =>
         {
             gamingModeEnabled = gamingModeItem.Checked;
+            var latest = ManaSettingsStore.Load();
+            latest.GamingModeDetection = gamingModeEnabled;
+            latest.Save();
             if (!gamingModeEnabled)
             {
                 gamingModeActive = false;
-                trayIcon.Text = "Mana";
+                SetTrayStatus("Mana");
                 avatarOverlay.GameRunning = false;
             }
         };
@@ -302,6 +361,58 @@ internal sealed class ManaApplicationContext : ApplicationContext
             latest.Save();
         };
         menu.Items.Add(clickThroughItem);
+        var hidesWithChatItem = new ToolStripMenuItem("Hide avatar while chat is open") { CheckOnClick = true, Checked = avatarHidesWithChat };
+        hidesWithChatItem.Click += (_, _) =>
+        {
+            avatarHidesWithChat = hidesWithChatItem.Checked;
+            var latest = ManaSettingsStore.Load();
+            latest.AvatarHidesWithChat = avatarHidesWithChat;
+            latest.Save();
+            if (avatarHidesWithChat)
+            {
+                SyncAvatarWithChat();
+            }
+            else if (servicesStarted)
+            {
+                avatarOverlay.Show();
+            }
+        };
+        menu.Items.Add(hidesWithChatItem);
+        // #899: the overlay's framing and size, applied live.
+        var framingMenu = new ToolStripMenuItem("Framing");
+        foreach (var (framing, label) in new[] { ("full", "Full body"), ("upperHalf", "Upper half"), ("bust", "Bust") })
+        {
+            framingMenu.DropDownItems.Add(new ToolStripMenuItem(label, null, (_, _) => SetOverlayFraming(framing, avatarOverlay.OverlayScale)) { Tag = framing });
+        }
+        var sizeMenu = new ToolStripMenuItem("Size");
+        foreach (var scale in AvatarOverlayForm.OverlayScales)
+        {
+            sizeMenu.DropDownItems.Add(new ToolStripMenuItem($"{scale * 100:0}%", null, (_, _) => SetOverlayFraming(avatarOverlay.OverlayFraming, scale)) { Tag = scale });
+        }
+        menu.Opening += (_, _) =>
+        {
+            foreach (ToolStripMenuItem item in framingMenu.DropDownItems)
+            {
+                item.Checked = Equals(item.Tag, avatarOverlay.OverlayFraming);
+            }
+            foreach (ToolStripMenuItem item in sizeMenu.DropDownItems)
+            {
+                item.Checked = Equals(item.Tag, avatarOverlay.OverlayScale);
+            }
+        };
+        menu.Items.Add(framingMenu);
+        menu.Items.Add(sizeMenu);
+        // #701: off by default.
+        var bubblesItem = new ToolStripMenuItem("Chat bubbles beside Mana") { CheckOnClick = true, Checked = chatBubbles.BubblesOn };
+        bubblesItem.Click += (_, _) =>
+        {
+            chatBubbles.BubblesOn = bubblesItem.Checked;
+            captionOverlay.Suppressed = bubblesItem.Checked; // #701
+            var latest = ManaSettingsStore.Load();
+            latest.ChatBubbles = bubblesItem.Checked;
+            latest.Save();
+        };
+        menu.Items.Add(bubblesItem);
         // #681: Stop listening turns the mic off and puts Mana back to
         // sleep; Start listening needs the wake word again.
         var listeningItem = new ToolStripMenuItem();
@@ -337,6 +448,12 @@ internal sealed class ManaApplicationContext : ApplicationContext
                 var fishReady = await processManager.WaitForFishSpeechReadyAsync(TimeSpan.FromMinutes(6));
                 overlay.SetRowStatus("fish-speech", fishReady ? "Ready" : "Not ready yet", fishReady ? RowState.Ready : RowState.Warn);
             }
+            if (processManager.IsBackendLocal && processManager.IsQwen3TtsAvailable)
+            {
+                overlay.SetRowStatus("qwen3-tts", "Warming up...", RowState.Starting);
+                var qwenReady = await processManager.WaitForQwen3TtsReadyAsync(TimeSpan.FromMinutes(2));
+                overlay.SetRowStatus("qwen3-tts", qwenReady ? "Ready" : "Not ready yet", qwenReady ? RowState.Ready : RowState.Warn);
+            }
             await RefreshTrayStatusAsync();
             await sessionListForm.ReopenLastSessionAsync(); // #687
             voiceLoop.Start();
@@ -358,7 +475,9 @@ internal sealed class ManaApplicationContext : ApplicationContext
             overlay.Close();
             // The avatar appears only once the startup screen is done, so
             // she never pops up over it half-started.
+            servicesStarted = true;
             avatarOverlay.Show();
+            SyncAvatarWithChat();
             ReportAvatarModelProblem();
         }
     }
@@ -400,6 +519,9 @@ internal sealed class ManaApplicationContext : ApplicationContext
         ExitThread();
     }
 
+    private static int PositiveIntEnv(string name, int fallback) =>
+        int.TryParse(Environment.GetEnvironmentVariable(name), out var value) && value > 0 ? value : fallback;
+
     // #585: mirrors windows-launcher's own captureClipFrame -- a cheap
     // local screenshot with no model call, run on the thread pool (same
     // reasoning as SubmitVisionHotkeyAsync's own screen capture: CopyFromScreen
@@ -426,13 +548,16 @@ internal sealed class ManaApplicationContext : ApplicationContext
         try
         {
             var status = await backendClient.GetPerformanceStatusAsync();
+            // ponytail: re-reads the small settings file each 5s poll rather
+            // than wiring a change event from Settings.
+            gamingModeEnabled = ManaSettingsStore.Load().GamingModeDetection;
             gamingModeActive = gamingModeEnabled && status.GamingAppRunning;
-            trayIcon.Text = gamingModeActive ? "Mana - game mode" : "Mana";
+            SetTrayStatus(gamingModeActive ? "Mana - game mode" : "Mana");
             avatarOverlay.GameRunning = gamingModeActive; // Q3: click-through while gaming
         }
         catch
         {
-            trayIcon.Text = "Mana - backend starting";
+            SetTrayStatus("Mana - backend starting");
         }
     }
 
@@ -459,17 +584,54 @@ internal sealed class ManaApplicationContext : ApplicationContext
         {
             // Edit proposals need admin access / the editors integration.
         }
+        IReadOnlyList<ManaPendingWrite> writes = [];
+        try
+        {
+            writes = await backendClient.GetPendingWritesAsync();
+        }
+        catch
+        {
+            // Admin-only, like edit proposals.
+        }
 
-        var items = WaitingForYou.Items(approvals, proposals);
+        var items = WaitingForYou.Items(approvals, proposals, writes);
         avatarOverlay.SetActivity(AvatarState.Waiting, items.Count > 0);
         normalTrayIcon ??= trayIcon.Icon;
         trayIcon.Icon = items.Count > 0 ? waitingTrayIcon ??= WaitingForYou.Badged(normalTrayIcon!) : normalTrayIcon;
         var notice = WaitingForYou.NewItemsNotice(items, announcedWaiting);
         if (notice is not null && Form.ActiveForm is null)
         {
+            balloonClicked = null;
             trayIcon.ShowBalloonTip(8000, "Mana is waiting for you", notice, ToolTipIcon.Info);
         }
     }
+
+    // #912: every camera snapshot (hotkey and vision__camera) comes through
+    // here: only while Settings > Voice allows it, with a toast while the
+    // camera is on (besides its light) and one saying why it couldn't be.
+    private async Task<string> CaptureCameraAsync()
+    {
+        try
+        {
+            if (!ManaSettingsStore.Load().CameraSnapshots)
+            {
+                throw new InvalidOperationException(WebcamCapture.OffMessage);
+            }
+            ShowCameraBalloon("Mana is looking through your camera", "One snapshot, not saved.", ToolTipIcon.Info);
+            return await WebcamCapture.CaptureAsJpegDataUrlAsync();
+        }
+        catch (Exception ex)
+        {
+            ShowCameraBalloon("Mana couldn't use the camera", ex.Message, ToolTipIcon.Warning);
+            throw;
+        }
+    }
+
+    private void ShowCameraBalloon(string title, string text, ToolTipIcon icon) => RunOnUi(() =>
+    {
+        balloonClicked = null;
+        trayIcon.ShowBalloonTip(3000, title, text, icon);
+    });
 
     // A found-but-unusable Live2D model used to fall back to the static
     // avatar silently. Tray balloons truncate around 255 characters, so the
@@ -483,7 +645,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
             return;
         }
         var firstLine = problem.Split('\n')[0];
-        trayIcon.BalloonTipClicked += (_, _) => ShowAvatarModelProblem();
+        balloonClicked = ShowAvatarModelProblem;
         trayIcon.ShowBalloonTip(
             10000,
             "Avatar model couldn't load",
@@ -520,7 +682,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
         {
             var status = await backendClient.GetPerformanceStatusAsync();
             MessageBox.Show(
-                $"Backend: running\nGame detected: {status.GamingAppRunning}\nMemory: {status.TotalMemoryMb} MB\nTTS: {status.TtsProvider}{FallbackNoteFor(status.TtsProvider)}{AvatarStatusLine()}",
+                $"Backend: running\nGame detected: {status.GamingAppRunning}\nChat model: {status.ChatModel ?? "not loaded"}\nMemory: {status.TotalMemoryMb} MB\nTTS: {status.TtsProvider}{FallbackNoteFor(status.TtsProvider)}\nVoice detector: {voiceLoop.VadInUse}{AvatarStatusLine()}",
                 "Mana Status",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Information);
@@ -528,20 +690,111 @@ internal sealed class ManaApplicationContext : ApplicationContext
         catch (Exception error)
         {
             MessageBox.Show(
-                $"Mana backend is not ready yet.\n\n{error.Message}{AvatarStatusLine()}",
+                $"Mana backend is not ready yet.\n\n{error.Message}\nVoice detector: {voiceLoop.VadInUse}{AvatarStatusLine()}",
                 "Mana Status",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Warning);
         }
     }
 
+    // #899: a saved (dragged-to) spot follows the resize, so she stays put
+    // on the next launch; without one she keeps using the default corner.
+    private void SetOverlayFraming(string framing, float scale)
+    {
+        avatarOverlay.SetFraming(framing, scale);
+        var latest = ManaSettingsStore.Load();
+        latest.OverlayFraming = avatarOverlay.OverlayFraming;
+        latest.OverlayScale = avatarOverlay.OverlayScale;
+        if (latest.AvatarLeft is not null && latest.AvatarTop is not null)
+        {
+            latest.AvatarLeft = avatarOverlay.Left;
+            latest.AvatarTop = avatarOverlay.Top;
+        }
+        latest.Save();
+    }
+
     // #526: a fresh dialog per open -- simpler than keeping one instance
     // alive/reused (QuickEntryForm's own pattern), and this isn't opened
     // often enough for that cost to matter.
+    // #684: with AvatarHidesWithChat on, she shows exactly while the chat
+    // window is closed or minimized.
+    private void SyncAvatarWithChat()
+    {
+        if (!servicesStarted || !avatarHidesWithChat || avatarOverlay.IsDisposed)
+        {
+            return;
+        }
+        var show = AvatarShowsBesideChat(sessionListForm.Visible, sessionListForm.WindowState);
+        if (avatarOverlay.Visible != show)
+        {
+            avatarOverlay.Visible = show;
+        }
+    }
+
+    internal static bool AvatarShowsBesideChat(bool chatVisible, FormWindowState chatState) =>
+        !chatVisible || chatState == FormWindowState.Minimized;
+
     private void ShowDoctorPanel()
     {
+        if (doctorAlert is not null)
+        {
+            doctorAlert = null; // seen
+            SetTrayStatus(trayStatus);
+        }
         using var panel = new DoctorPanelForm(backendClient);
         panel.ShowDialog();
+    }
+
+    // #689: like Electron's tray: tooltip plus a balloon; clicking it opens Doctor.
+    private void ShowDoctorAlert(TrayNotificationPayload payload)
+    {
+        doctorAlert = $"{payload.Title}: {payload.Text}";
+        SetTrayStatus(trayStatus);
+        balloonClicked = ShowDoctorPanel;
+        trayIcon.ShowBalloonTip(10000, payload.Title, payload.Text, payload.Title.Contains("problem") ? ToolTipIcon.Error : ToolTipIcon.Warning);
+    }
+
+    private void SetTrayStatus(string status)
+    {
+        trayStatus = status;
+        trayIcon.Text = TrayTooltip(status, doctorAlert);
+    }
+
+    // NotifyIcon.Text throws past 127 characters.
+    internal static string TrayTooltip(string status, string? doctorAlert)
+    {
+        var text = doctorAlert is null ? status : $"{status} - {doctorAlert}";
+        return text.Length <= 127 ? text : text[..126] + "…";
+    }
+
+    // Electron's "Open Model Web UI" quick button: the local model web UI
+    // on port 7860.
+    private static void OpenModelWebUi()
+    {
+        try
+        {
+            Process.Start(new ProcessStartInfo("http://localhost:7860") { UseShellExecute = true });
+        }
+        catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException)
+        {
+            Console.WriteLine($"ManaApplicationContext: couldn't open the model web UI. {ex.Message}");
+        }
+    }
+
+    // For callbacks raised off the UI thread (toast activation, the tray
+    // socket, a second launcher); dropped once the chat window is gone.
+    private void RunOnUi(Action action)
+    {
+        if (sessionListForm.IsDisposed)
+        {
+            return;
+        }
+        if (sessionListForm.InvokeRequired)
+        {
+            sessionListForm.BeginInvoke(action);
+            return;
+        }
+        action();
     }
 
     // #520: reused (Hide, not Close), so Load's own one-time-only refresh
@@ -615,16 +868,18 @@ internal sealed class ManaApplicationContext : ApplicationContext
     {
         statusTimer.Stop();
         idleReportTimer.Stop();
+        foregroundReporter.Dispose();
         clipCaptureTimer?.Stop();
-        visionHotkeyListener.Dispose();
-        clipHotkeyListener.Dispose();
+        glanceTimer?.Stop();
         globalHotkeys.Dispose();
         trayNotifications.Dispose();
+        showRequests.Dispose();
         visionCaptureClient.Dispose();
         captionOverlay.Close();
+        chatBubbles.Close();
         voiceLoop.Dispose();
         audioPlayer.Dispose();
-        sileroVad.Dispose();
+        sileroVad?.Dispose();
         wakeWordClassifier?.Dispose();
         trayIcon.Visible = false;
         trayIcon.Dispose();
@@ -642,13 +897,41 @@ internal sealed class ManaApplicationContext : ApplicationContext
         base.ExitThreadCore();
     }
 
+    // #858: like Electron, MANA_DISABLE_VAD=1 or a missing/broken Silero
+    // model means RMS speech detection (VoiceLoop.IsSpeechFrame) instead of
+    // no voice loop at all.
+    private static SileroVadRunner? TryLoadSileroVad(string rootDir)
+    {
+        if (Environment.GetEnvironmentVariable("MANA_DISABLE_VAD") == "1")
+        {
+            return null;
+        }
+        var modelPath = Path.Combine(rootDir, "windows-native-launcher", "assets", "vad", "silero_vad.onnx");
+        try
+        {
+            // #665: MANA_VAD_THRESHOLD (Electron's name) enters speech,
+            // MANA_VAD_EXIT_THRESHOLD leaves it. #858: VoiceLoop re-resolves
+            // the enter threshold (env, then Settings > Voice) each time
+            // listening starts.
+            return new SileroVadRunner(
+                modelPath,
+                ReadFloatEnv("MANA_VAD_THRESHOLD", SileroVadRunner.DefaultThreshold),
+                ReadFloatEnv("MANA_VAD_EXIT_THRESHOLD", SileroVadRunner.DefaultExitThreshold));
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException)
+        {
+            Console.WriteLine($"SileroVadRunner: couldn't load {modelPath}, using RMS speech detection. {ex.Message}");
+            return null;
+        }
+    }
+
     // #342: the acoustic wake-word pre-filter is a soft optimization, not
     // a required service -- if any of its three model files are missing
     // (e.g. the build-time fetch of melspectrogram.onnx/embedding_model.onnx
     // failed, or hasn't run yet on a fresh checkout) or fail to load,
     // VoiceLoop just skips the acoustic gate entirely and falls back to
     // today's existing behavior (every segment reaches Whisper, text-match
-    // decides). Unlike sileroVad above, this must never take the whole app
+    // decides). Like sileroVad above (#858), this must never take the whole app
     // down over a missing model file.
     private static WakeWordClassifier? TryLoadWakeWordClassifier(string rootDir, float? threshold)
     {
@@ -673,6 +956,11 @@ internal sealed class ManaApplicationContext : ApplicationContext
             return null;
         }
     }
+
+    private static float ReadFloatEnv(string name, float fallback) =>
+        float.TryParse(Environment.GetEnvironmentVariable(name), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var value) && value is > 0 and < 1
+            ? value
+            : fallback;
 
     internal static string FindRootDirectory()
     {

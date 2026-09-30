@@ -7,6 +7,7 @@ const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
 const { assertNoKnownMalware } = require("./osv-malware-check");
+const { refuseIfLocalOnly } = require("./local-only");
 
 const DEFAULT_DATA_DIR = path.join(__dirname, "data", "mcp-client-registry");
 const DEFAULT_CLIENT_INFO = { name: "mana", version: "1.0.0" };
@@ -201,6 +202,9 @@ function createMcpClientRegistry(options = {}) {
     const client = new sdk.Client(DEFAULT_CLIENT_INFO, { capabilities: {} });
     let transport;
     if (server.transport.kind === "stdio") {
+      // #670: a stdio server is its own program, outside node-bot's
+      // connection guard, so local-only mode doesn't start it at all.
+      refuseIfLocalOnly(`starting the MCP server "${server.name}" (its own program, which can go online by itself)`);
       // Issue #670: re-checked on every start, since npx/uvx fetch whatever
       // the package is now; a hit refuses to start it.
       await malwareCheck(server.transport.command, server.transport.args);

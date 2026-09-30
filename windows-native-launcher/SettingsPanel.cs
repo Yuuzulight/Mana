@@ -2,6 +2,7 @@ using System;
 using System.Diagnostics;
 using System.Drawing;
 using System.IO;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 
@@ -22,8 +23,15 @@ internal sealed class SettingsPanel : UserControl
     // a session concept (there isn't one today; kept optional so a future
     // caller isn't forced to plumb a session id it may not have).
     private readonly Func<string?>? getCurrentSessionId;
+    private readonly ListeningPause? listeningPause; // #922
+    private CancellationTokenSource? enrolmentCancel; // #922: set while teaching Mana my voice
     private readonly ListView pluginsList = new();
     private readonly ListView factsList = new();
+    // #688: search boxes over the last-loaded plugins/facts.
+    private readonly TextBox pluginsSearch = new() { Dock = DockStyle.Fill, PlaceholderText = "Search plugins", AccessibleName = "Search plugins" };
+    private readonly TextBox factsSearch = new() { Dock = DockStyle.Top, PlaceholderText = "Search memory", AccessibleName = "Search memory" };
+    private System.Collections.Generic.IReadOnlyList<ManaPlugin> plugins = Array.Empty<ManaPlugin>();
+    private System.Collections.Generic.IReadOnlyList<ManaMemoryFact> facts = Array.Empty<ManaMemoryFact>();
     private readonly ListView skillsList = new();
     // Q20: Settings > Skills' "Imported skills" choice, in node-bot's order.
     private static readonly string[] ImportedSkillUseModes = { "free", "each", "first" };
@@ -38,6 +46,8 @@ internal sealed class SettingsPanel : UserControl
     private readonly ComboBox themePresetCombo = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 200 };
     private readonly TextBox themeAccentBox = new() { Width = 100 };
     private readonly Label perfSummaryLabel = new() { AutoSize = true };
+    private readonly Label gamingStatusLabel = new() { AutoSize = true, Anchor = AnchorStyles.Left };
+    private readonly CheckBox gamingModeCheck = new() { Text = "Gaming mode detection", AutoSize = true };
     private readonly ListView perfOperationsList = new();
     private readonly ListView presetsList = new();
     // #681: which preset replies actually use ("None" = index 0).
@@ -76,8 +86,10 @@ internal sealed class SettingsPanel : UserControl
     private bool llamaUpdateAvailable;
     private string? llamaCheckNote;
 
-    public SettingsPanel(ManaBackendClient backendClient, BackendLogBuffer backendLog, Func<string?>? getCurrentSessionId = null)
+    public SettingsPanel(ManaBackendClient backendClient, BackendLogBuffer backendLog, Func<string?>? getCurrentSessionId = null, Func<HotkeyAction, Keys?, string?>? bindHotkey = null, ListeningPause? listeningPause = null)
     {
+        this.bindHotkey = bindHotkey;
+        this.listeningPause = listeningPause;
         this.backendClient = backendClient;
         this.backendLog = backendLog;
         this.getCurrentSessionId = getCurrentSessionId;
@@ -92,7 +104,9 @@ internal sealed class SettingsPanel : UserControl
         tabs.TabPages.Add(BuildMemoryFactsTab());
         tabs.TabPages.Add(BuildSkillsTab());
         tabs.TabPages.Add(BuildApprovalsTab());
-        tabs.TabPages.Add(BuildVoiceTab());
+        var voiceTab = BuildVoiceTab();
+        tabs.TabPages.Add(voiceTab);
+        tabs.TabPages.Add(BuildHotkeysTab());
         tabs.TabPages.Add(BuildLogsTab());
         tabs.TabPages.Add(BuildThemeTab());
         tabs.TabPages.Add(BuildPerfTab());
@@ -106,6 +120,14 @@ internal sealed class SettingsPanel : UserControl
         {
             page.BackColor = DarkTheme.Background;
         }
+        // #922: leaving the Voice tab mid-enrolment cancels it, like closing Settings.
+        tabs.Deselected += (_, e) =>
+        {
+            if (e.TabPage == voiceTab)
+            {
+                enrolmentCancel?.Cancel();
+            }
+        };
         Controls.Add(tabs);
     }
 
@@ -117,6 +139,7 @@ internal sealed class SettingsPanel : UserControl
         await RefreshApprovalsAsync();
         await RefreshToolApprovalModeAsync();
         await RefreshVoiceTabAsync();
+        await (refreshSpeechWords?.Invoke() ?? Task.CompletedTask);
         await RefreshPerfTabAsync();
         await RefreshPresetsAsync();
         await RefreshModelTabAsync();
@@ -197,8 +220,35 @@ internal sealed class SettingsPanel : UserControl
         layout.Controls.Add(tokenBox);
         layout.Controls.Add(saveButton);
         layout.Controls.Add(statusLabel);
+        layout.Controls.Add(BuildLocalOnlyRow(settings.LocalOnly));
 
         return new TabPage("Connection") { Controls = { layout } };
+    }
+
+    // #670: saved at once like the Voice tab's checkboxes; the backend
+    // reads it when the launcher next starts it.
+    private static FlowLayoutPanel BuildLocalOnlyRow(bool localOnly)
+    {
+        var check = new CheckBox
+        {
+            Text = "Local-only mode (nothing leaves this PC and your local network)",
+            AutoSize = true,
+            ForeColor = DarkTheme.Text,
+            Checked = localOnly,
+        };
+        var status = new Label { AutoSize = true, ForeColor = DarkTheme.Muted, Anchor = AnchorStyles.Left };
+        check.CheckedChanged += (_, _) =>
+        {
+            var latest = ManaSettingsStore.Load();
+            latest.LocalOnly = check.Checked;
+            latest.Save();
+            status.Text = "Saved -- restart Mana for this to take effect. MANA_LOCAL_ONLY=1 in node-bot/.env keeps it on.";
+        };
+
+        var row = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.LeftToRight, BackColor = DarkTheme.Background };
+        row.Controls.Add(check);
+        row.Controls.Add(status);
+        return row;
     }
 
     private TabPage BuildPluginsTab()
@@ -211,7 +261,46 @@ internal sealed class SettingsPanel : UserControl
         pluginsList.Columns.Add("Description", 300);
         pluginsList.ItemChecked += OnPluginChecked;
         DarkTheme.ApplyListView(pluginsList);
-        return new TabPage("Plugins") { Controls = { pluginsList } };
+
+        // #688: search, and "+ Add" -> the guide listing plugins and how to
+        // add one (no installer, same as Electron).
+        StyleSearchBox(pluginsSearch);
+        pluginsSearch.TextChanged += (_, _) => ShowPlugins();
+        var addButton = new Button { Text = "+ Add", Dock = DockStyle.Right, Width = 70 };
+        DarkTheme.ApplyButton(addButton);
+        addButton.Click += (_, _) => OpenPluginGuide();
+        var searchRow = new Panel { Dock = DockStyle.Top, Height = 26, BackColor = DarkTheme.Background };
+        searchRow.Controls.Add(pluginsSearch);
+        searchRow.Controls.Add(addButton);
+
+        var page = new TabPage("Plugins");
+        page.Controls.Add(pluginsList);
+        page.Controls.Add(searchRow);
+        return page;
+    }
+
+    private static void StyleSearchBox(TextBox box)
+    {
+        box.BorderStyle = BorderStyle.FixedSingle;
+        box.BackColor = DarkTheme.Panel2;
+        box.ForeColor = DarkTheme.Text;
+    }
+
+    // #688: case-insensitive match of the search text in any field; blank matches all.
+    internal static bool MatchesSearch(string query, params string?[] fields) =>
+        string.IsNullOrWhiteSpace(query) || fields.Any(f => f?.Contains(query.Trim(), StringComparison.OrdinalIgnoreCase) == true);
+
+    private void OpenPluginGuide()
+    {
+        var guide = Path.Combine(ManaApplicationContext.FindRootDirectory(), "plugins", "README.md");
+        try
+        {
+            Process.Start(new ProcessStartInfo(guide) { UseShellExecute = true });
+        }
+        catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException)
+        {
+            MessageBox.Show(this, $"Couldn't open {guide}: {ex.Message}", "Plugins", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
     }
 
     private async void OnPluginChecked(object? sender, ItemCheckedEventArgs e)
@@ -238,7 +327,6 @@ internal sealed class SettingsPanel : UserControl
 
     private async Task RefreshPluginsAsync()
     {
-        System.Collections.Generic.IReadOnlyList<ManaPlugin> plugins;
         try
         {
             plugins = await backendClient.GetPluginsAsync();
@@ -256,12 +344,16 @@ internal sealed class SettingsPanel : UserControl
         {
             return;
         }
+        ShowPlugins();
+    }
 
+    private void ShowPlugins()
+    {
         populatingPlugins = true;
         try
         {
             pluginsList.Items.Clear();
-            foreach (var plugin in plugins)
+            foreach (var plugin in plugins.Where(p => MatchesSearch(pluginsSearch.Text, p.Name, p.Description, p.Key)))
             {
                 var item = new ListViewItem(plugin.Name) { Tag = plugin.Key, Checked = plugin.Enabled };
                 item.SubItems.Add(plugin.Description ?? "");
@@ -384,8 +476,12 @@ internal sealed class SettingsPanel : UserControl
             }
         };
 
+        StyleSearchBox(factsSearch);
+        factsSearch.TextChanged += (_, _) => ShowFacts();
+
         var page = new TabPage("Memory Facts");
         page.Controls.Add(factsList);
+        page.Controls.Add(factsSearch);
         page.Controls.Add(editButton);
         page.Controls.Add(pinButton);
         page.Controls.Add(archiveButton);
@@ -518,7 +614,6 @@ internal sealed class SettingsPanel : UserControl
 
     private async Task RefreshMemoryFactsAsync()
     {
-        System.Collections.Generic.IReadOnlyList<ManaMemoryFact> facts;
         try
         {
             facts = await backendClient.GetMemoryFactsAsync();
@@ -536,9 +631,13 @@ internal sealed class SettingsPanel : UserControl
         {
             return;
         }
+        ShowFacts();
+    }
 
+    private void ShowFacts()
+    {
         factsList.Items.Clear();
-        foreach (var fact in facts)
+        foreach (var fact in facts.Where(f => MatchesSearch(factsSearch.Text, f.Key, f.Text, f.Trigger)))
         {
             var item = new ListViewItem(fact.Key) { Tag = fact };
             item.SubItems.Add(fact.Trigger == "" ? fact.Text : $"When {fact.Trigger} comes up: {fact.Text}");
@@ -568,16 +667,24 @@ internal sealed class SettingsPanel : UserControl
         newButton.Click += async (_, _) => await CreateSkillAsync();
         editButton.Click += async (_, _) => await EditSelectedSkillAsync();
         deleteButton.Click += async (_, _) => await DeleteSelectedSkillAsync();
-        // #664 (Q21): import an OpenClaw/AgentSkills SKILL.md folder.
+        // #664 (Q21): import an OpenClaw/AgentSkills SKILL.md folder, or a zip of one.
         var importButton = new Button { Text = "Import folder...", AutoSize = true };
         DarkTheme.ApplyButton(importButton);
         importButton.Click += async (_, _) => await ImportSkillFolderAsync();
+        var importZipButton = new Button { Text = "Import zip...", AutoSize = true };
+        DarkTheme.ApplyButton(importZipButton);
+        importZipButton.Click += async (_, _) => await ImportSkillZipAsync();
+        var importLinkButton = new Button { Text = "Import link...", AutoSize = true };
+        DarkTheme.ApplyButton(importLinkButton);
+        importLinkButton.Click += async (_, _) => await ImportSkillLinkAsync();
 
         var buttonRow = new FlowLayoutPanel { Dock = DockStyle.Bottom, Height = 32, FlowDirection = FlowDirection.LeftToRight, BackColor = DarkTheme.Background };
         buttonRow.Controls.Add(newButton);
         buttonRow.Controls.Add(editButton);
         buttonRow.Controls.Add(deleteButton);
         buttonRow.Controls.Add(importButton);
+        buttonRow.Controls.Add(importZipButton);
+        buttonRow.Controls.Add(importLinkButton);
 
         // Q20: how Mana may use imported skills (default: ask the first time).
         importedSkillUseBox.Items.AddRange(new object[] { "Use freely", "Ask each time", "Ask the first time" });
@@ -609,14 +716,36 @@ internal sealed class SettingsPanel : UserControl
     private async Task ImportSkillFolderAsync()
     {
         using var dialog = new FolderBrowserDialog { Description = "Pick a skill folder (one with a SKILL.md in it)", UseDescriptionForTitle = true };
-        if (dialog.ShowDialog(this) != DialogResult.OK)
+        if (dialog.ShowDialog(this) == DialogResult.OK)
         {
-            return;
+            await SubmitSkillImportAsync(dialog.SelectedPath);
         }
+    }
+
+    private async Task ImportSkillZipAsync()
+    {
+        using var dialog = new OpenFileDialog { Title = "Pick a zipped skill (a SKILL.md folder)", Filter = "Zip files (*.zip)|*.zip" };
+        if (dialog.ShowDialog(this) == DialogResult.OK)
+        {
+            await SubmitSkillImportAsync(dialog.FileName);
+        }
+    }
+
+    private async Task ImportSkillLinkAsync()
+    {
+        using var dialog = new TextPromptDialog("Import Skill", "Link (github.com or clawhub.ai):", "");
+        if (dialog.ShowDialog(this) == DialogResult.OK && !string.IsNullOrWhiteSpace(dialog.Value))
+        {
+            await SubmitSkillImportAsync(dialog.Value.Trim());
+        }
+    }
+
+    private async Task SubmitSkillImportAsync(string path)
+    {
         string? error;
         try
         {
-            error = await backendClient.ImportSkillFolderAsync(dialog.SelectedPath);
+            error = await backendClient.ImportSkillAsync(path);
         }
         catch (Exception ex)
         {
@@ -628,11 +757,11 @@ internal sealed class SettingsPanel : UserControl
         }
         if (error is null)
         {
-            MessageBox.Show(this, "Import submitted -- review and approve it from the Approvals tab. Nothing in the folder runs.", "Import Skill", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            MessageBox.Show(this, "Import submitted -- review and approve it from the Approvals tab. Nothing in it runs.", "Import Skill", MessageBoxButtons.OK, MessageBoxIcon.Information);
         }
         else
         {
-            MessageBox.Show(this, $"Couldn't import that folder: {error}", "Import Skill", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            MessageBox.Show(this, $"Couldn't import that skill: {error}", "Import Skill", MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
     }
 
@@ -644,10 +773,30 @@ internal sealed class SettingsPanel : UserControl
             return;
         }
 
-        bool createdImmediately;
+        // #688: a skill you typed in yourself that neither the content scan
+        // nor Guardian flagged is approved straight away; a flagged one
+        // waits in Approvals.
+        string? note = null;
         try
         {
-            createdImmediately = await backendClient.CreateSkillAsync(dialog.SkillName, dialog.Description, dialog.Body, dialog.Category);
+            var result = await backendClient.CreateSkillAsync(dialog.SkillName, dialog.Description, dialog.Body, dialog.Category);
+            if (!result.Created && result.PendingId is { } id && result.Flags.Count == 0)
+            {
+                try
+                {
+                    await backendClient.DecideApprovalAsync(id, "allow-once");
+                }
+                catch (Exception ex)
+                {
+                    note = $"Skill submitted, but approving it failed ({ex.Message}) -- approve it from the Approvals tab.";
+                }
+            }
+            else if (!result.Created)
+            {
+                note = result.Flags.Count > 0
+                    ? $"Flagged: {string.Join(", ", result.Flags)}. Review and approve it from the Approvals tab."
+                    : "Skill submitted -- approve it from the Approvals tab.";
+            }
         }
         catch (Exception ex)
         {
@@ -658,9 +807,9 @@ internal sealed class SettingsPanel : UserControl
         {
             return;
         }
-        if (!createdImmediately)
+        if (note is not null)
         {
-            MessageBox.Show(this, "Skill submitted -- approve it from the Approvals tab.", "New Skill", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            MessageBox.Show(this, note, "New Skill", MessageBoxButtons.OK, MessageBoxIcon.Information);
         }
         await RefreshSkillsAsync();
     }
@@ -915,7 +1064,21 @@ internal sealed class SettingsPanel : UserControl
         var id = (string)approvalsList.SelectedItems[0].Tag!;
         try
         {
-            await backendClient.DecideApprovalAsync(id, decision);
+            // #838: an ACP agent request is decided once; there are no
+            // session or standing grants for it.
+            if (id.StartsWith(PendingWriteTag, StringComparison.Ordinal))
+            {
+                if (decision is not ("allow-once" or "deny"))
+                {
+                    MessageBox.Show(this, "This request from the coding agent can only be allowed once or denied.", "Approvals", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    return;
+                }
+                await backendClient.DecidePendingWriteAsync(id[PendingWriteTag.Length..], decision == "allow-once");
+            }
+            else
+            {
+                await backendClient.DecideApprovalAsync(id, decision);
+            }
         }
         catch (Exception ex)
         {
@@ -949,6 +1112,20 @@ internal sealed class SettingsPanel : UserControl
             return;
         }
 
+        IReadOnlyList<ManaPendingWrite> writes = [];
+        try
+        {
+            writes = await backendClient.GetPendingWritesAsync();
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"SettingsPanel: failed to load pending agent writes. {ex.Message}");
+        }
+        if (IsDisposed)
+        {
+            return;
+        }
+
         approvalsList.Items.Clear();
         foreach (var approval in pending)
         {
@@ -956,13 +1133,97 @@ internal sealed class SettingsPanel : UserControl
             item.SubItems.Add(approval.Summary);
             approvalsList.Items.Add(item);
         }
+        foreach (var write in writes)
+        {
+            var item = new ListViewItem(write.Kind) { Tag = PendingWriteTag + write.Id };
+            item.SubItems.Add(write.Summary);
+            approvalsList.Items.Add(item);
+        }
     }
+
+    // Marks an approvals-list row as an ACP agent pending write (#838).
+    private const string PendingWriteTag = "write:";
 
     // #583: "Auto" (null override) plus the 4 providers server.js's
     // TTS_OVERRIDE_PROVIDERS allow-lists -- selecting it clears the
     // override rather than sending an invalid 5th value.
     private const string AutoProviderLabel = "Auto (gaming-based)";
     private static readonly string[] TtsProviders = { AutoProviderLabel, "fish", "kokoro", "gpt_sovits", "cli" };
+
+    private readonly Func<HotkeyAction, Keys?, string?>? bindHotkey;
+
+    // #689: each global hotkey's combination -- click the box and press the
+    // new one (Backspace turns it off). A combination another Mana hotkey
+    // or another app already uses is refused. Rebinds live when the
+    // launcher wired bindHotkey; saved either way.
+    private TabPage BuildHotkeysTab()
+    {
+        var layout = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown, BackColor = DarkTheme.Background, AutoScroll = true };
+        layout.Controls.Add(new Label { Text = "Click a box and press the new keys (Ctrl or Alt plus a key). Backspace turns a hotkey off.", AutoSize = true, ForeColor = DarkTheme.Muted, Margin = new Padding(3, 6, 3, 6) });
+        foreach (var action in HotkeyBindings.Actions)
+        {
+            layout.Controls.Add(BuildHotkeyRow(action));
+        }
+        return new TabPage("Hotkeys") { Controls = { layout } };
+    }
+
+    private FlowLayoutPanel BuildHotkeyRow(HotkeyAction action)
+    {
+        var label = new Label { Text = action.Label, Width = 200, ForeColor = DarkTheme.Text, Anchor = AnchorStyles.Left };
+        var box = new TextBox { ReadOnly = true, Width = 150, BackColor = DarkTheme.Panel2, ForeColor = DarkTheme.Text, AccessibleName = $"{action.Label} hotkey", ShortcutsEnabled = false };
+        var reset = new Button { Text = "Default", AutoSize = true };
+        DarkTheme.ApplyButton(reset);
+        var status = new Label { AutoSize = true, ForeColor = DarkTheme.Muted, Anchor = AnchorStyles.Left };
+        box.Text = HotkeyBindings.Format(HotkeyBindings.Resolve(ManaSettingsStore.Load().Hotkeys, action));
+
+        void Apply(Keys? keys)
+        {
+            var settings = ManaSettingsStore.Load();
+            if (keys is Keys k && HotkeyBindings.ConflictFor(settings.Hotkeys, action, k) is { } other)
+            {
+                status.Text = $"Already used for \"{other.Label}\".";
+                return;
+            }
+            if (bindHotkey?.Invoke(action, keys) is { } error)
+            {
+                // The old combination is off now too; put it back.
+                bindHotkey(action, HotkeyBindings.Resolve(settings.Hotkeys, action));
+                status.Text = error;
+                return;
+            }
+            settings.Hotkeys ??= new();
+            settings.Hotkeys[action.Key] = keys is Keys set ? HotkeyBindings.Format(set) : "";
+            settings.Save();
+            box.Text = HotkeyBindings.Format(keys);
+            status.Text = bindHotkey is null ? "Saved -- applies next launch." : "Saved.";
+        }
+
+        box.KeyDown += (_, e) =>
+        {
+            e.SuppressKeyPress = true;
+            e.Handled = true;
+            if (e.KeyData is Keys.Back or Keys.Delete)
+            {
+                Apply(null);
+            }
+            else if (HotkeyBindings.IsValid(e.KeyData))
+            {
+                Apply(e.KeyData);
+            }
+            else if ((e.KeyCode & Keys.KeyCode) is not (Keys.ControlKey or Keys.ShiftKey or Keys.Menu))
+            {
+                status.Text = "Use Ctrl or Alt plus a key.";
+            }
+        };
+        reset.Click += (_, _) => Apply(action.Default);
+
+        var row = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.LeftToRight, BackColor = DarkTheme.Background };
+        row.Controls.Add(label);
+        row.Controls.Add(box);
+        row.Controls.Add(reset);
+        row.Controls.Add(status);
+        return row;
+    }
 
     private TabPage BuildVoiceTab()
     {
@@ -978,11 +1239,435 @@ internal sealed class SettingsPanel : UserControl
         row.Controls.Add(voiceProviderCombo);
         row.Controls.Add(saveButton);
 
-        var layout = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown, BackColor = DarkTheme.Background };
+        // Scrolls rather than wrapping into a second column once the rows
+        // outgrow the dialog.
+        var layout = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown, WrapContents = false, AutoScroll = true, BackColor = DarkTheme.Background };
         layout.Controls.Add(row);
         layout.Controls.Add(BuildWakePrefilterRow());
         layout.Controls.Add(BuildEchoCancellationRow());
+        layout.Controls.Add(BuildVoiceTuningRow());
+        layout.Controls.Add(BuildBargeInRow());
+        layout.Controls.Add(BuildVoiceprintRow());
+        layout.Controls.Add(BuildCameraRow());
+        layout.Controls.Add(BuildSpeechWordsSection());
         return new TabPage("Voice") { Controls = { layout } };
+    }
+
+    // #923/#925/#926: node-bot's speech words (whisper listens for them),
+    // mishearing fixes (applied to every transcript) and whisper's language,
+    // through GET/POST /speech. Each change is saved at once and applies to
+    // the next thing I say.
+    private Func<Task>? refreshSpeechWords;
+
+    private FlowLayoutPanel BuildSpeechWordsSection()
+    {
+        Label Caption(string text) => new() { Text = text, AutoSize = true, ForeColor = DarkTheme.Text, Anchor = AnchorStyles.Left };
+        TextBox Box(string placeholder) => new() { Width = 160, PlaceholderText = placeholder, AccessibleName = placeholder, BackColor = DarkTheme.Panel2, ForeColor = DarkTheme.Text, BorderStyle = BorderStyle.FixedSingle };
+        ListBox NewList(string name) => new() { Width = 300, Height = 80, AccessibleName = name, BackColor = DarkTheme.Panel2, ForeColor = DarkTheme.Text };
+        Button NewButton(string text)
+        {
+            var button = new Button { Text = text, AutoSize = true };
+            DarkTheme.ApplyButton(button);
+            return button;
+        }
+        FlowLayoutPanel Row(params Control[] controls)
+        {
+            var row = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.LeftToRight, BackColor = DarkTheme.Background };
+            row.Controls.AddRange(controls);
+            return row;
+        }
+
+        var words = NewList("Speech words");
+        var word = Box("Word or name");
+        var addWord = NewButton("Add word");
+        var removeWord = NewButton("Remove");
+        var fixes = NewList("Mishearing fixes");
+        var fixKeys = new List<string>();
+        var heard = Box("Mana heard");
+        var meant = Box("I said");
+        var addFix = NewButton("Add fix");
+        var removeFix = NewButton("Remove");
+        var language = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 200, AccessibleName = "Speech language", BackColor = DarkTheme.Panel2, ForeColor = DarkTheme.Text };
+        language.Items.AddRange(new object[] { "English only (default)", "Auto-detect" });
+        var status = new Label { AutoSize = true, ForeColor = DarkTheme.Muted, Anchor = AnchorStyles.Left };
+
+        void Render(ManaSpeechVocabulary speech)
+        {
+            if (words.IsDisposed)
+            {
+                return;
+            }
+            words.Items.Clear();
+            words.Items.AddRange(speech.Words.ToArray<object>());
+            fixes.Items.Clear();
+            fixKeys.Clear();
+            foreach (var (from, to) in speech.Corrections)
+            {
+                fixes.Items.Add($"{from} -> {to}");
+                fixKeys.Add(from);
+            }
+            language.SelectedIndex = speech.Language == "auto" ? 1 : 0;
+            language.Enabled = speech.EnvLanguage is null;
+            status.Text = speech.EnvLanguage is null ? "" : $"WHISPER_LANGUAGE={speech.EnvLanguage} is set, and wins over this.";
+        }
+
+        // confirmed: the same change with confirm = true, offered when
+        // node-bot says heard may be an ordinary word.
+        async Task<bool> Save(object change, object? confirmed = null)
+        {
+            try
+            {
+                Render(await backendClient.UpdateSpeechAsync(change));
+                if (!status.IsDisposed && language.Enabled)
+                {
+                    status.Text = "Saved -- applies to the next thing you say.";
+                }
+                return true;
+            }
+            catch (HttpRequestException ex) when (ex.StatusCode == System.Net.HttpStatusCode.Conflict && confirmed is not null)
+            {
+                return !IsDisposed
+                    && MessageBox.Show(this, $"{ex.Message}.\n\nAdd the fix anyway?", "Mishearing fixes", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) == DialogResult.Yes
+                    && await Save(confirmed);
+            }
+            catch (Exception ex) when (ex is not OutOfMemoryException)
+            {
+                if (!status.IsDisposed)
+                {
+                    status.Text = $"Couldn't save: {ex.Message}";
+                }
+                return false;
+            }
+        }
+
+        addWord.Click += async (_, _) =>
+        {
+            if (await Save(new { addWord = word.Text }))
+            {
+                word.Clear();
+            }
+        };
+        removeWord.Click += async (_, _) =>
+        {
+            if (words.SelectedItem is string selected)
+            {
+                await Save(new { removeWord = selected });
+            }
+        };
+        addFix.Click += async (_, _) =>
+        {
+            if (await Save(new { heard = heard.Text, term = meant.Text }, new { heard = heard.Text, term = meant.Text, confirm = true }))
+            {
+                heard.Clear();
+                meant.Clear();
+            }
+        };
+        removeFix.Click += async (_, _) =>
+        {
+            if (fixes.SelectedIndex >= 0)
+            {
+                await Save(new { removeCorrection = fixKeys[fixes.SelectedIndex] });
+            }
+        };
+        language.SelectionChangeCommitted += async (_, _) => await Save(new { language = language.SelectedIndex == 1 ? "auto" : "en" });
+        refreshSpeechWords = async () =>
+        {
+            try
+            {
+                Render(await backendClient.GetSpeechAsync());
+            }
+            catch (Exception ex) when (ex is not OutOfMemoryException)
+            {
+                Console.WriteLine($"SettingsPanel: failed to load speech words. {ex.Message}");
+            }
+        };
+
+        var section = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.TopDown, WrapContents = false, BackColor = DarkTheme.Background };
+        section.Controls.Add(Caption("Words Mana should know (for names she mishears):"));
+        section.Controls.Add(Row(words, word, addWord, removeWord));
+        section.Controls.Add(Caption("Mishearing fixes (what she keeps hearing -> what I said):"));
+        section.Controls.Add(Row(fixes, heard, meant, addFix, removeFix));
+        section.Controls.Add(Row(Caption("Speech language"), language, status));
+        return section;
+    }
+
+    // #678: which speech has to be my voice (SpeakerGate), and teaching Mana
+    // my voice: each prompt is recorded for EnrollClipMs from the default
+    // mic, embedded, and the average saved as ManaSettingsStore.Voiceprint.
+    // Read each time listening starts; MANA_SPEAKER_GATE overrides the mode.
+    // #922: listening pauses while it records, until it ends, I leave the
+    // Voice tab (which cancels it, nothing saved) or Settings closes.
+    private static readonly string[] EnrollPrompts =
+    {
+        "The quick brown fox jumps over the lazy dog.",
+        "Could you remind me about the meeting tomorrow morning?",
+        "I'd like a cup of tea and some toast, please.",
+        "Seven silver swans swam slowly down the river.",
+        "Let's put some music on and check the weather later.",
+    };
+    private const int EnrollClipMs = 5000;
+
+    private FlowLayoutPanel BuildVoiceprintRow()
+    {
+        var label = new Label { Text = "Only my voice can", AutoSize = true, ForeColor = DarkTheme.Text, Anchor = AnchorStyles.Left };
+        var combo = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 260, BackColor = DarkTheme.Panel2, ForeColor = DarkTheme.Text };
+        combo.Items.AddRange(new object[] { "Off (anyone, default)", "Wake her", "Wake her or talk over her", "Wake her, talk over her or give commands" });
+        combo.SelectedIndex = (int)SpeakerGate.ResolveMode(null, ManaSettingsStore.Load().VoiceprintGate);
+        var teach = new Button { Text = "Teach Mana your voice", AutoSize = true };
+        var forget = new Button { Text = "Delete my voiceprint", AutoSize = true };
+        DarkTheme.ApplyButton(teach);
+        DarkTheme.ApplyButton(forget);
+        var status = new Label { AutoSize = true, ForeColor = DarkTheme.Muted, Anchor = AnchorStyles.Left };
+        void ShowEnrolled() => status.Text = ManaSettingsStore.Load().Voiceprint is null ? "Not taught yet -- the setting does nothing until you do." : "Your voice is saved on this PC.";
+        ShowEnrolled();
+
+        combo.SelectionChangeCommitted += (_, _) =>
+        {
+            var latest = ManaSettingsStore.Load();
+            latest.VoiceprintGate = combo.SelectedIndex == 0 ? null : SpeakerGate.ModeNames[combo.SelectedIndex];
+            latest.Save();
+            status.Text = "Saved -- applies next time listening starts.";
+        };
+        forget.Click += (_, _) =>
+        {
+            var latest = ManaSettingsStore.Load();
+            latest.Voiceprint = null;
+            latest.Save();
+            status.Text = "Deleted -- applies next time listening starts.";
+        };
+        teach.Click += async (_, _) =>
+        {
+            var modelPath = SpeakerEmbedder.ResolveModelPath(ManaApplicationContext.FindRootDirectory());
+            if (!File.Exists(modelPath))
+            {
+                status.Text = $"Speaker model not found: {modelPath}";
+                return;
+            }
+            using var cancel = new CancellationTokenSource();
+            enrolmentCancel = cancel;
+            bool Stopped()
+            {
+                if (status.IsDisposed)
+                {
+                    return true; // Settings closed mid-way: nothing saved
+                }
+                if (cancel.IsCancellationRequested)
+                {
+                    status.Text = "Stopped when you left the Voice tab -- nothing saved.";
+                }
+                return cancel.IsCancellationRequested;
+            }
+            teach.Enabled = forget.Enabled = false;
+            try
+            {
+                listeningPause?.Pause();
+                using var embedder = await Task.Run(() => new SpeakerEmbedder(modelPath));
+                var embeddings = new List<float[]>();
+                for (var i = 0; i < EnrollPrompts.Length; i++)
+                {
+                    status.Text = $"{i + 1}/{EnrollPrompts.Length} -- read aloud now: \"{EnrollPrompts[i]}\"";
+                    var clip = await RecordAsync(EnrollClipMs, cancel.Token);
+                    if (Stopped())
+                    {
+                        return;
+                    }
+                    var (boosted, _) = SpeechFilters.ApplySpeechGain(clip, SpeechFilters.GainTargetPeak, SpeechFilters.GainMaxBoost);
+                    if (SpeechFilters.GetSpeechRejectReason(boosted, SpeechFilters.MinSpeechRms, SpeechFilters.MinSpeechPeak, SpeechFilters.MaxClickyZcr) is { } reason)
+                    {
+                        status.Text = $"I couldn't hear you clearly ({reason}). Check the mic and try again.";
+                        return;
+                    }
+                    embeddings.Add(await Task.Run(() => embedder.Embed(SpeakerGate.SpeechSpan(clip))));
+                }
+                if (Stopped())
+                {
+                    return;
+                }
+                var latest = ManaSettingsStore.Load();
+                latest.Voiceprint = SpeakerGate.Voiceprint(embeddings);
+                latest.Save();
+                status.Text = "Learned your voice -- applies next time listening starts.";
+            }
+            catch (Exception ex) when (ex is not OutOfMemoryException)
+            {
+                status.Text = $"Couldn't learn your voice: {ex.Message}";
+            }
+            finally
+            {
+                enrolmentCancel = null;
+                listeningPause?.Resume();
+                if (!teach.IsDisposed)
+                {
+                    teach.Enabled = forget.Enabled = true;
+                }
+            }
+        };
+
+        var row = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.LeftToRight, BackColor = DarkTheme.Background };
+        row.Controls.Add(label);
+        row.Controls.Add(combo);
+        row.Controls.Add(teach);
+        row.Controls.Add(forget);
+        row.Controls.Add(status);
+        row.Disposed += (_, _) =>
+        {
+            enrolmentCancel?.Cancel();
+            listeningPause?.Resume();
+        };
+        return row;
+    }
+
+    // 16kHz mono from the default mic, like VoiceLoop's segments.
+    private static async Task<short[]> RecordAsync(int ms, CancellationToken cancel)
+    {
+        var samples = new List<short>();
+        using var waveIn = new NAudio.Wave.WaveInEvent { DeviceNumber = -1, WaveFormat = new NAudio.Wave.WaveFormat(SileroVadRunner.SampleRate, 16, 1) };
+        var stopped = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        waveIn.DataAvailable += (_, e) =>
+        {
+            lock (samples)
+            {
+                for (var i = 0; i + 1 < e.BytesRecorded; i += 2)
+                {
+                    samples.Add(BitConverter.ToInt16(e.Buffer, i));
+                }
+            }
+        };
+        waveIn.RecordingStopped += (_, e) =>
+        {
+            if (e.Exception is { } ex)
+            {
+                stopped.TrySetException(ex);
+            }
+            else
+            {
+                stopped.TrySetResult();
+            }
+        };
+        waveIn.StartRecording();
+        try
+        {
+            await Task.Delay(ms, cancel);
+        }
+        catch (OperationCanceledException)
+        {
+            // #922: cut short; the caller discards the clip.
+        }
+        waveIn.StopRecording();
+        await stopped.Task;
+        lock (samples)
+        {
+            return samples.ToArray();
+        }
+    }
+
+    // #858: the end-of-turn silence and Silero's speech threshold, read each
+    // time listening starts. MANA_SILENCE_BUFFER_MS / MANA_VAD_THRESHOLD
+    // still win, so the row says when one is set.
+    private static FlowLayoutPanel BuildVoiceTuningRow()
+    {
+        var settings = ManaSettingsStore.Load();
+        var silence = new NumericUpDown
+        {
+            Minimum = 300,
+            Maximum = 10000,
+            Increment = 100,
+            Width = 80,
+            Value = RecordingSegmenter.ResolveSilenceBufferMs(null, settings.SilenceBufferMs),
+            BackColor = DarkTheme.Panel2,
+            ForeColor = DarkTheme.Text,
+        };
+        var threshold = new NumericUpDown
+        {
+            Minimum = 0.05M,
+            Maximum = 0.95M,
+            Increment = 0.05M,
+            DecimalPlaces = 2,
+            Width = 70,
+            Value = Math.Clamp(Math.Round((decimal)SileroVadRunner.ResolveThreshold(null, settings.VadThreshold), 2), 0.05M, 0.95M),
+            BackColor = DarkTheme.Panel2,
+            ForeColor = DarkTheme.Text,
+        };
+        var overridden = new[] { "MANA_SILENCE_BUFFER_MS", "MANA_VAD_THRESHOLD" }
+            .Where(name => !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable(name)))
+            .ToList();
+        var status = new Label
+        {
+            AutoSize = true,
+            ForeColor = DarkTheme.Muted,
+            Anchor = AnchorStyles.Left,
+            Text = overridden.Count > 0 ? $"Set in the environment, which wins: {string.Join(", ", overridden)}" : "",
+        };
+        void Save(Action<ManaSettingsStore> change)
+        {
+            var latest = ManaSettingsStore.Load();
+            change(latest);
+            latest.Save();
+            status.Text = "Saved -- applies next time listening starts.";
+        }
+        silence.ValueChanged += (_, _) => Save(s => s.SilenceBufferMs = (long)silence.Value);
+        threshold.ValueChanged += (_, _) => Save(s => s.VadThreshold = (float)threshold.Value);
+
+        Label Caption(string text) => new() { Text = text, AutoSize = true, ForeColor = DarkTheme.Text, Anchor = AnchorStyles.Left };
+        var row = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.LeftToRight, BackColor = DarkTheme.Background };
+        row.Controls.Add(Caption("Pause before Mana answers (ms)"));
+        row.Controls.Add(silence);
+        row.Controls.Add(Caption("Speech detection threshold (higher = stricter)"));
+        row.Controls.Add(threshold);
+        row.Controls.Add(status);
+        return row;
+    }
+
+    // #665: what talking over Mana does (BargeInPolicy), read each time
+    // listening starts; MANA_BARGE_IN_MODE overrides it.
+    private static readonly string[] BargeInModes = { "minWords", "always", "notWhileSpeaking" };
+
+    private static FlowLayoutPanel BuildBargeInRow()
+    {
+        var label = new Label { Text = "When I talk over Mana", AutoSize = true, ForeColor = DarkTheme.Text, Anchor = AnchorStyles.Left };
+        var combo = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 300, BackColor = DarkTheme.Panel2, ForeColor = DarkTheme.Text };
+        combo.Items.AddRange(new object[] { "Stop her for two words or more (default)", "Stop her for any speech", "Never stop her; answer when she's done" });
+        combo.SelectedIndex = (int)BargeInPolicy.Resolve(null, ManaSettingsStore.Load().BargeInMode);
+        var status = new Label { AutoSize = true, ForeColor = DarkTheme.Muted, Anchor = AnchorStyles.Left };
+        combo.SelectionChangeCommitted += (_, _) =>
+        {
+            var latest = ManaSettingsStore.Load();
+            latest.BargeInMode = combo.SelectedIndex == 0 ? null : BargeInModes[combo.SelectedIndex];
+            latest.Save();
+            status.Text = "Saved -- applies next time listening starts.";
+        };
+
+        var row = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.LeftToRight, BackColor = DarkTheme.Background };
+        row.Controls.Add(label);
+        row.Controls.Add(combo);
+        row.Controls.Add(status);
+        return row;
+    }
+
+    // #912: off by default; read at each snapshot (the camera hotkey, or
+    // Mana's vision__camera when I ask her to look at something).
+    private static FlowLayoutPanel BuildCameraRow()
+    {
+        var check = new CheckBox
+        {
+            Text = "Let Mana take camera snapshots when I ask (\"look at this\", or the camera hotkey)",
+            AutoSize = true,
+            ForeColor = DarkTheme.Text,
+            Checked = ManaSettingsStore.Load().CameraSnapshots,
+        };
+        var status = new Label { AutoSize = true, ForeColor = DarkTheme.Muted, Anchor = AnchorStyles.Left };
+        check.CheckedChanged += (_, _) =>
+        {
+            var latest = ManaSettingsStore.Load();
+            latest.CameraSnapshots = check.Checked;
+            latest.Save();
+            status.Text = "Saved.";
+        };
+
+        var row = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.LeftToRight, BackColor = DarkTheme.Background };
+        row.Controls.Add(check);
+        row.Controls.Add(status);
+        return row;
     }
 
     // #619: EchoCancellation on the mic, read each time listening starts;
@@ -1142,9 +1827,8 @@ internal sealed class SettingsPanel : UserControl
     }
 
     // #576: reads/writes ManaThemeSettings' own file directly, same
-    // reasoning as #565's Connection tab -- DarkTheme.ApplyPreset only
-    // ever runs once, at startup (Program.cs), so nothing here can take
-    // effect live regardless of how it's wired.
+    // reasoning as #565's Connection tab. #688: Save also applies it live
+    // (DarkTheme.ApplyPresetLive).
     private TabPage BuildThemeTab()
     {
         var settings = ManaThemeSettings.Load();
@@ -1169,6 +1853,27 @@ internal sealed class SettingsPanel : UserControl
         var statusLabel = new Label { AutoSize = true, ForeColor = DarkTheme.Muted };
         var saveButton = new Button { Text = "Save" };
         DarkTheme.ApplyButton(saveButton);
+
+        // #688: Electron's colour picker and reset, beside the hex box.
+        var pickButton = new Button { Text = "Pick...", AutoSize = true };
+        DarkTheme.ApplyButton(pickButton);
+        pickButton.Click += (_, _) =>
+        {
+            using var picker = new ColorDialog { FullOpen = true, Color = DarkTheme.Accent };
+            if (picker.ShowDialog(this) == DialogResult.OK)
+            {
+                themeAccentBox.Text = $"#{picker.Color.R:x2}{picker.Color.G:x2}{picker.Color.B:x2}";
+            }
+        };
+        var resetButton = new Button { Text = "Reset", AutoSize = true };
+        DarkTheme.ApplyButton(resetButton);
+        resetButton.Click += (_, _) =>
+        {
+            themePresetCombo.SelectedItem = DarkTheme.Presets.First(p => p.Id == new ManaThemeSettings().Preset);
+            themeAccentBox.Text = "";
+            saveButton.PerformClick();
+        };
+
         saveButton.Click += (_, _) =>
         {
             var accentText = themeAccentBox.Text.Trim();
@@ -1182,16 +1887,24 @@ internal sealed class SettingsPanel : UserControl
             settings.Preset = themePresetCombo.SelectedItem is ThemePresetInfo preset ? preset.Id : "mana";
             settings.AccentHex = accentText.Length == 0 ? null : accentText;
             settings.Save();
+            // #688: every open window restyles now, no restart.
+            DarkTheme.ApplyPresetLive(settings.Preset, settings.AccentHex);
             statusLabel.ForeColor = DarkTheme.Muted;
-            statusLabel.Text = "Saved -- restart Mana for this to take effect.";
+            statusLabel.Text = "Saved and applied.";
         };
 
         var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, AutoSize = true, Padding = new Padding(12), BackColor = DarkTheme.Background };
         layout.Controls.Add(new Label { Text = "Theme", AutoSize = true, ForeColor = DarkTheme.Text });
         layout.Controls.Add(themePresetCombo);
         layout.Controls.Add(new Label { Text = "Accent color override (optional, #rrggbb)", AutoSize = true, ForeColor = DarkTheme.Text });
-        layout.Controls.Add(themeAccentBox);
-        layout.Controls.Add(saveButton);
+        var accentRow = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.LeftToRight, BackColor = DarkTheme.Background, Margin = Padding.Empty };
+        accentRow.Controls.Add(themeAccentBox);
+        accentRow.Controls.Add(pickButton);
+        layout.Controls.Add(accentRow);
+        var buttonRow = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.LeftToRight, BackColor = DarkTheme.Background, Margin = Padding.Empty };
+        buttonRow.Controls.Add(saveButton);
+        buttonRow.Controls.Add(resetButton);
+        layout.Controls.Add(buttonRow);
         layout.Controls.Add(statusLabel);
 
         return new TabPage("Theme") { Controls = { layout } };
@@ -1214,11 +1927,34 @@ internal sealed class SettingsPanel : UserControl
         perfOperationsList.Columns.Add("Details", 340);
         DarkTheme.ApplyListView(perfOperationsList);
 
+        // #688: Electron's gaming-mode setting and what triggered it. Saved
+        // straight away; the launcher's 5s poll picks it up.
+        gamingModeCheck.ForeColor = DarkTheme.Text;
+        gamingModeCheck.Checked = ManaSettingsStore.Load().GamingModeDetection;
+        gamingModeCheck.CheckedChanged += (_, _) =>
+        {
+            var latest = ManaSettingsStore.Load();
+            latest.GamingModeDetection = gamingModeCheck.Checked;
+            latest.Save();
+            _ = RefreshPerfTabAsync();
+        };
+        gamingStatusLabel.ForeColor = DarkTheme.Muted;
+        var gamingRow = new FlowLayoutPanel { Dock = DockStyle.Top, AutoSize = true, Padding = new Padding(4, 4, 4, 0), BackColor = DarkTheme.Background };
+        gamingRow.Controls.Add(gamingModeCheck);
+        gamingRow.Controls.Add(gamingStatusLabel);
+
         var page = new TabPage("Performance");
         page.Controls.Add(perfOperationsList);
         page.Controls.Add(perfSummaryLabel);
+        page.Controls.Add(gamingRow);
         return page;
     }
+
+    // #688: like Electron's gaming status line.
+    internal static string GamingStatusText(bool enabled, bool running, IReadOnlyList<string> processes) =>
+        !enabled ? "Off"
+        : running ? $"Active: {string.Join(", ", processes)}"
+        : "No watched game running";
 
     private async Task RefreshPerfTabAsync()
     {
@@ -1266,6 +2002,7 @@ internal sealed class SettingsPanel : UserControl
         }
 
         perfSummaryLabel.Text = summary;
+        gamingStatusLabel.Text = GamingStatusText(gamingModeCheck.Checked, status.GamingAppRunning, status.MatchedProcesses);
 
         perfOperationsList.Items.Clear();
         foreach (var (name, details) in status.Operations)
