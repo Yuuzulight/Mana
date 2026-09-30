@@ -29,6 +29,8 @@ function createFakePage(calls = []) {
     fill: async (text) => calls.push(["fill", selector, text]),
     press: async (key) => calls.push(["press", selector, key]),
     selectOption: async (value) => calls.push(["select", selector, value]),
+    hover: async () => calls.push(["hover", selector]),
+    dragTo: async () => calls.push(["drag", selector]),
   });
   page = {
     sensitive: null,
@@ -43,6 +45,7 @@ function createFakePage(calls = []) {
     },
     locator,
     mouse: { move: async () => {}, wheel: async (x, y) => calls.push(["wheel", y]) },
+    keyboard: { press: async (key) => calls.push(["key", key]) },
     async goBack() {
       calls.push(["back"]);
     },
@@ -76,8 +79,11 @@ test("listToolSchemas exposes navigate/snapshot/click/type as OpenAI-shaped tool
     [
       "browser_automation__back",
       "browser_automation__click",
+      "browser_automation__drag",
       "browser_automation__hand_over",
+      "browser_automation__hover",
       "browser_automation__navigate",
+      "browser_automation__press",
       "browser_automation__scroll",
       "browser_automation__select",
       "browser_automation__snapshot",
@@ -427,4 +433,14 @@ test("#1168: a page that may need blocked ads gets a note outside its frame, and
   health = { blockedAds: 0, pageErrors: 0 };
   await source.executeTool("browser_automation__navigate", { url: "https://calm.test/" });
   assert.equal(source.activityLog.getActivity().blocked, null);
+});
+
+test("#1155: press and drag ask for the site like a click; hover doesn't", async () => {
+  const source = await approvedSource([]);
+  await source.executeTool("browser_automation__navigate", { url: "https://a.test/" });
+  assert.match(await source.executeTool("browser_automation__hover", { ref: "e2" }), /URL: https:\/\/a\.test\//);
+  await assert.rejects(() => source.executeTool("browser_automation__press", { key: "Enter" }), /needs the user's OK first/);
+  await answerSite(source, "allow-once");
+  await source.executeTool("browser_automation__press", { key: "Enter" });
+  await assert.rejects(() => source.executeTool("browser_automation__drag", { from: "e1", to: "e2" }), /needs the user's OK first/);
 });

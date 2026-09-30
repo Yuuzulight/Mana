@@ -9,6 +9,7 @@ const {
   extractTextInPage,
   sensitiveInPage,
   refSelector,
+  pageKey,
 } = require("../browser-automation");
 
 // A real `page.ariaSnapshot({ mode: "ai" })` shape: nested roles, refs,
@@ -53,8 +54,13 @@ function createFakePage(overrides = {}) {
         fill: async (text) => state.calls.push(["fill", selector, text]),
         press: async (key) => state.calls.push(["press", selector, key]),
         selectOption: async (value) => state.calls.push(["select", selector, value]),
+        hover: async () => state.calls.push(["hover", selector]),
+        press: async (key) => state.calls.push(["press", selector, key]),
+        dragTo: async (target) => state.calls.push(["drag", selector, target.selector]),
+        selector,
       };
     },
+    keyboard: { press: async (key) => state.calls.push(["key", key]) },
     mouse: {
       move: async (x, y) => state.calls.push(["move", x, y]),
       wheel: async (x, y) => state.calls.push(["wheel", x, y]),
@@ -319,4 +325,50 @@ test("#1168: an action that times out on a page with blocked ads says the site m
     () => session.click("e5"),
     (e) => /Timeout 5000ms exceeded\. -- this site may need the 2 ad or tracker requests that were blocked/.test(e.message) && e.blockedMayBreak === 2,
   );
+});
+
+test("#1155: pageKey allows the page's keys and editing shortcuts, never ones that act outside it", () => {
+  assert.equal(pageKey("Enter"), "Enter");
+  assert.equal(pageKey("esc"), "Escape");
+  assert.equal(pageKey("shift+tab"), "Shift+Tab");
+  assert.equal(pageKey("Ctrl+A"), "Control+a");
+  assert.equal(pageKey("ctrl+shift+z"), "Control+Shift+z");
+  assert.equal(pageKey("space"), " ");
+  assert.equal(pageKey("ArrowDown"), "ArrowDown");
+  assert.throws(() => pageKey("Ctrl+W"), /Ctrl\+W isn't allowed/);
+  assert.throws(() => pageKey("Ctrl+V"), /isn't allowed/); // my clipboard
+  assert.throws(() => pageKey("ctrl+c"), /isn't allowed/);
+  assert.throws(() => pageKey("Ctrl+P"), /isn't allowed/);
+  assert.throws(() => pageKey("Alt+F4"), /only Ctrl and Shift/);
+  assert.throws(() => pageKey("Meta+r"), /only Ctrl and Shift/);
+  assert.throws(() => pageKey("F12"), /isn't a key she can press/);
+  assert.throws(() => pageKey("F5"), /isn't a key she can press/);
+  assert.throws(() => pageKey(""), /isn't a key/);
+});
+
+test("#1155: hover, press (on an element or the focus) and drag act by ref", async () => {
+  const page = createFakePage();
+  const session = createBrowserSession({ page });
+  await session.hover("e3");
+  await session.press("Escape");
+  await session.press("Ctrl+A", "e4");
+  await session.drag("e5", "f1e2");
+  assert.deepEqual(actions(page), [
+    ["hover", "aria-ref=e3"],
+    ["key", "Escape"],
+    ["press", "aria-ref=e4", "Control+a"],
+    ["drag", "aria-ref=e5", "aria-ref=f1e2"],
+  ]);
+  await assert.rejects(() => session.press("Ctrl+W"), /isn't allowed/);
+  await assert.rejects(() => session.drag("e5", "#x"), /isn't a ref/);
+});
+
+test("#1155: on a password or payment page she can't press keys or drag", async () => {
+  const page = createFakePage();
+  page.state.sensitive = "a password";
+  const session = createBrowserSession({ page });
+  await assert.rejects(() => session.press("Enter"), /asks for a password/);
+  await assert.rejects(() => session.drag("e1", "e2"), /asks for a password/);
+  await session.hover("e3");
+  assert.deepEqual(actions(page), [["hover", "aria-ref=e3"]]);
 });
