@@ -1,6 +1,9 @@
 Fish Speech TTS
 
-Fish Speech (S1-mini) is Mana's default TTS provider. Kokoro and GPT-SoVITS
+Fish Speech (S1-mini) is Mana's default TTS provider on an NVIDIA GPU with
+about 5 GB of free VRAM. Without a CUDA GPU, or with less free VRAM than
+that at startup, Mana defaults to Kokoro (CPU) instead; setting
+`TTS_PROVIDER` explicitly always overrides this. Kokoro and GPT-SoVITS
 are secondary choices, available by setting `TTS_PROVIDER` explicitly. Kokoro
 also runs as S1-mini's automatic fallback voice so Mana never goes silent if
 S1-mini is unreachable or errors.

@@ -123,4 +123,33 @@ public class AvatarStateArbiterTests
         Assert.False(arbiter.Resolve(0));
         Assert.Equal(AvatarState.Idle, arbiter.Shown);
     }
+
+    // The mic being on shows Listening under everything else she's doing,
+    // and switching it off drops straight back to Idle.
+    [Fact]
+    public void Listening_IsTheBackdrop_AndEndsAtOnce()
+    {
+        Assert.False(AvatarStateArbiter.IsSpeech(AvatarState.Listening)); // renders at the at-rest frame rate
+        var arbiter = new AvatarStateArbiter();
+        arbiter.Set(AvatarState.Listening, true);
+        arbiter.Resolve(0);
+        Assert.Equal(AvatarState.Listening, arbiter.Shown);
+
+        arbiter.Set(AvatarState.Thinking, true);
+        arbiter.Resolve(0.1);
+        Assert.Equal(AvatarState.Thinking, arbiter.Shown);
+        arbiter.Set(AvatarState.Thinking, false);
+        arbiter.Resolve(1.0);
+        Assert.Equal(AvatarState.Listening, arbiter.Shown);
+
+        arbiter.Set(AvatarState.Dreaming, true);
+        arbiter.Resolve(1.1);
+        Assert.Equal(AvatarState.Dreaming, arbiter.Shown);
+        arbiter.Set(AvatarState.Dreaming, false);
+        arbiter.Resolve(4.0);
+
+        arbiter.Set(AvatarState.Listening, false);
+        arbiter.Resolve(4.01);
+        Assert.Equal(AvatarState.Idle, arbiter.Shown);
+    }
 }

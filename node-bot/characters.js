@@ -15,8 +15,8 @@
 //
 // An entry with a built-in id only overrides the fields it sets. Relative
 // paths are relative to the file's folder; voice clips must be under it
-// (tools/qwen3tts_service.py refuses any other file). The active character is not
-// persisted: a restart brings Mana back.
+// (tools/qwen3tts_service.py refuses any other file). The active character
+// is remembered across restarts (options.activeFilePath).
 //
 // Facts about the user stay shared; each character's mood and personality
 // layer are her own (perCharacter below, wired in server.js).
@@ -71,11 +71,22 @@ function normalize(entry, baseDir, builtIn) {
 
 // options.filePath: injectable for tests. options.onSwitch(character,
 // previous) runs after every change of the active character.
+// options.activeFilePath: where the active character's id is kept so a
+// restart brings her back; omit it to keep it in memory only.
 function createCharacterStore(options = {}) {
   const filePath = options.filePath || DEFAULT_FILE_PATH;
+  const activeFilePath = options.activeFilePath || null;
   const onSwitch = options.onSwitch || (() => {});
   const builtIn = BUILT_IN.map((c) => ({ ...c, voice: null, live2dModel: null }));
   let activeId = DEFAULT_ID;
+  if (activeFilePath) {
+    try {
+      const saved = JSON.parse(fs.readFileSync(activeFilePath, "utf8"))?.id;
+      if (typeof saved === "string" && ID_PATTERN.test(saved)) activeId = saved;
+    } catch (e) {
+      // no file yet (or a broken one): Mana
+    }
+  }
   // Read again only when the file changes: active() runs every turn and
   // every spoken sentence, and a bad file should warn once, not each time.
   let cache = { mtimeMs: null, characters: builtIn };
@@ -123,7 +134,17 @@ function createCharacterStore(options = {}) {
     if (!character) return null;
     const previous = active();
     activeId = character.id;
-    if (character.id !== previous.id) onSwitch(character, previous);
+    if (character.id !== previous.id) {
+      if (activeFilePath) {
+        try {
+          fs.mkdirSync(path.dirname(activeFilePath), { recursive: true });
+          fs.writeFileSync(activeFilePath, JSON.stringify({ id: activeId }), "utf8");
+        } catch (e) {
+          console.warn(`couldn't save the active character (${e.message})`);
+        }
+      }
+      onSwitch(character, previous);
+    }
     return { character, previous };
   }
 

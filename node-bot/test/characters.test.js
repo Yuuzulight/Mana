@@ -1,5 +1,6 @@
 // Issue #914: characters are prompts -- profiles, switching from chat or
-// the tray, per-character mood/personality, and her voice on Qwen3-TTS.
+// the tray, per-character mood/personality, her voice on Qwen3-TTS, and
+// remembering who was active across a restart.
 const assert = require("node:assert/strict");
 const express = require("express");
 const fs = require("node:fs");
@@ -60,6 +61,38 @@ test("characters.json adds characters and overrides only the fields it sets", ()
   assert.equal(evil.live2dModel, path.join(path.dirname(filePath), "m", "evil.model3.json"));
   assert.equal(store.get("halfvoice").voice, null, "a clip without its transcript is no voice");
   assert.equal(handoffLine(store.get("aoi"), store.get("evil-mana")), "Aoi here, after Evil Mana.");
+});
+
+test("the active character survives a restart", () => {
+  const filePath = tempFile();
+  const activeFilePath = path.join(path.dirname(filePath), "active-character.json");
+  createCharacterStore({ filePath, activeFilePath }).setActive("evil-mana");
+  assert.equal(createCharacterStore({ filePath, activeFilePath }).active().id, "evil-mana");
+  fs.writeFileSync(activeFilePath, JSON.stringify({ id: "gone" }));
+  assert.equal(createCharacterStore({ filePath, activeFilePath }).active().id, "mana", "a removed one falls back to Mana");
+  fs.writeFileSync(activeFilePath, "{ broken");
+  assert.equal(createCharacterStore({ filePath, activeFilePath }).active().id, "mana");
+});
+
+test("a tray client that connects is told the active character", async () => {
+  delete require.cache[require.resolve("../tray-server")];
+  const trayServer = require("../tray-server");
+  const WebSocket = require("ws");
+  const server = require("node:http").createServer();
+  trayServer.registerTrayServer(server, { greeting: () => ({ type: "character", id: "evil-mana" }) });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const socket = new WebSocket(`ws://127.0.0.1:${server.address().port}/ws/tray`);
+    const first = await new Promise((resolve, reject) => {
+      socket.on("message", (data) => resolve(JSON.parse(data.toString())));
+      socket.on("error", reject);
+    });
+    socket.close();
+    assert.deepEqual(first, { type: "character", id: "evil-mana" });
+  } finally {
+    server.closeAllConnections();
+    await new Promise((resolve) => server.close(resolve));
+  }
 });
 
 test("a broken characters.json falls back to the built-ins, and edits are picked up", () => {
