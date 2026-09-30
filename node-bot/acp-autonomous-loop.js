@@ -7,6 +7,7 @@ const { scanDir } = require("./tools/dir_scanner");
 const { createAcpTestRunner } = require("./acp-test-runner");
 const { createSnapshotStore } = require("./snapshot-store");
 const { previewRestore } = require("./ai/snapshot-tool-source");
+const { protectedPathFor, protectedPathMessage } = require("./protected-paths");
 const { execFile } = require("child_process");
 const { createHooksStore, applyInputRules, runPostCommandHook, runFinishCommand } = require("./hooks-store");
 const { isReviewableFile } = require("./ai/adversarial-verifier");
@@ -657,6 +658,20 @@ async function executeAutonomousStep(rawModelReply, sessionId, options = {}) {
             tool: "file_write",
             status: "error",
             detail: "path_forbidden",
+          });
+          return;
+        }
+
+        // #1000: her own guardrails, whatever the approval settings say.
+        const guardrail = protectedPathFor(resolvedPath);
+        if (guardrail) {
+          console.warn(`file_write refused: ${guardrail} is protected (#1000).`);
+          results.push({
+            tool: "file_write",
+            status: "forbidden",
+            detail: "protected_path",
+            path: guardrail,
+            message: protectedPathMessage(guardrail),
           });
           return;
         }

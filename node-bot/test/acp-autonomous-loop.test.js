@@ -1039,3 +1039,29 @@ test("acp-autonomous-loop: snapshot_list returns the store's list, optionally fi
   await executeAutonomousStep(mockModelReplyFiltered, "test-session", { snapshotStore: fakeSnapshotStore });
   assert.deepEqual(calls, [undefined, "skill"]);
 });
+
+test("#1000 file_write refuses a guardrail even when approved", async () => {
+  const origEnv = process.env.ALLOW_FILE_WRITE;
+  const origApproval = process.env.FILE_WRITE_REQUIRE_APPROVAL;
+  const origWrite = fs.promises.writeFile;
+  let wrote = false;
+  try {
+    process.env.ALLOW_FILE_WRITE = "1";
+    process.env.FILE_WRITE_REQUIRE_APPROVAL = "0";
+    fs.promises.writeFile = async () => {
+      wrote = true;
+    };
+    const res = await executeAutonomousStep(
+      '[{"tool":"file_write","args":{"path":"node-bot/ai/tool-risk.js","content":"x","approved":true}}]',
+      "protected-session",
+    );
+    assert.equal(res.results[0].status, "forbidden");
+    assert.equal(res.results[0].detail, "protected_path");
+    assert.equal(res.results[0].path, "node-bot/ai/tool-risk.js");
+    assert.equal(wrote, false);
+  } finally {
+    process.env.ALLOW_FILE_WRITE = origEnv;
+    process.env.FILE_WRITE_REQUIRE_APPROVAL = origApproval;
+    fs.promises.writeFile = origWrite;
+  }
+});
