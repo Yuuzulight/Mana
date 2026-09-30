@@ -240,6 +240,7 @@ const { createSpeechToolSource } = require("./ai/speech-tool-source");
 const { createVisionToolSource } = require("./ai/vision-tool-source");
 const { createSessionGoalToolSource } = require("./ai/session-goal-tool-source");
 const { createReminderToolSource } = require("./ai/reminder-tool-source");
+const { createDesktopToolSource, registerFileMoveRestorer } = require("./ai/desktop-tool-source");
 const { createDeepThinkingState, createDeepThinkingToolSource } = require("./ai/deep-thinking-tool-source");
 const { visionCaptureBridge } = require("./vision-capture-bridge");
 const { createCodingToolSource } = require("./ai/coding-tool-source");
@@ -732,6 +733,8 @@ const memoryGraph = createMemoryGraph();
 // getEditorIntegrations) -- one store means one place to eventually list
 // "everything that's undoable right now", not three disconnected pools.
 const snapshotStore = createSnapshotStore({});
+// #911: undoing a desktop__move_files moves the files back.
+registerFileMoveRestorer(snapshotStore, visionCaptureBridge);
 
 // ACP memory store (conversation/session memory)
 const acpMemoryStore = createAcpMemoryStore({
@@ -4723,6 +4726,18 @@ function registerRoutes(app, upload, deps = {}) {
             // #905: reminders the user asks for in chat -- not offered to
             // scheduled replies, which nobody is asking in.
             ...(userChat ? [createReminderToolSource({ getScheduler: cronSchedulerPlugin.getScheduler, sessionId })] : []),
+            // #911: media keys, volume, apps, audio output, file moves --
+            // only when I'm asking.
+            ...(userChat
+              ? [
+                  createDesktopToolSource({
+                    bridge: visionCaptureBridge,
+                    isGaming: deps.isGaming || gamingWatch.isGaming,
+                    voice: replyMeta.voice === true,
+                    snapshotStore,
+                  }),
+                ]
+              : []),
             // #907: "brief me".
             ...(userChat ? [briefing.toolSource] : []),
             ...(userChat
