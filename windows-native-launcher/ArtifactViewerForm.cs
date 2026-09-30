@@ -19,11 +19,8 @@ namespace Mana.NativeLauncher;
 // MermaidRenderer, flowcharts only -- sequence diagrams and everything
 // else fall back to raw source text, same as an unrecognized/malformed
 // diagram), static HTML drawn by Folio (#937; pages it can't draw open in
-// the default browser), everything else shown as plain
-// monospace text. No markdown rendering for other
-// content: artifact content is source code, which doesn't carry markdown
-// inline formatting to begin with, so plain monospace text is the correct
-// rendering for it, not a lesser fallback.
+// the default browser), everything else as a highlighted code page that
+// Folio also draws (#1141, CodeArtifact).
 //
 // #686: like the reference, the chat opens this from a button on the
 // reply's bubble (ChatView calls Add, then the returned action), instead
@@ -197,15 +194,17 @@ internal sealed class ArtifactViewerForm : Form
 }
 
 // #1120: draws one artifact -- a Mermaid flowchart natively, static HTML
-// with Folio, anything else (and HTML Folio can't draw, or its source) as
-// plain monospace text. Shared by the viewer window and the chat window's
-// Artifacts panel so both look the same.
+// with Folio, anything else (and HTML Folio can't draw, or its source) as a
+// highlighted code page, also drawn by Folio (#1141, CodeArtifact). Shared
+// by the viewer window and the chat window's Artifacts panel so both look
+// the same.
 internal sealed class ArtifactView : Panel
 {
-    private readonly TextBox textBox = new();
+    private readonly CheckBox wrapBox = new() { Text = "Wrap long lines", Checked = true, Dock = DockStyle.Top, AutoSize = true, Padding = new Padding(6, 2, 6, 2), Visible = false };
     private readonly Panel diagramPanel = new();
     private readonly Font textFont = new("Consolas", 10F);
     private string? currentMermaidSource;
+    private VersionedArtifact? currentCode; // shown as a code page
     // #937: static HTML, drawn by Folio with the system's fonts. Folio loads
     // nothing but data: images and runs no scripts; pages that need more go
     // to the browser instead (HtmlArtifact.BrowserReasons).
@@ -214,23 +213,18 @@ internal sealed class ArtifactView : Panel
         Dock = DockStyle.Fill,
         Visible = false,
         Options = new FolioOptions { Fonts = new FontSettings { Source = new SystemFontSource() } },
+        AccessibleName = "Artifact",
     };
 
     internal FolioView HtmlView => htmlView;
+    internal CheckBox WrapBox => wrapBox; // tests
 
     public ArtifactView()
     {
         BackColor = DarkTheme.Background;
-        textBox.Multiline = true;
-        textBox.ReadOnly = true;
-        textBox.ScrollBars = ScrollBars.Both;
-        textBox.WordWrap = false;
-        textBox.Font = textFont;
-        textBox.Dock = DockStyle.Fill;
-        textBox.BackColor = DarkTheme.Background;
-        textBox.ForeColor = DarkTheme.Text;
-        textBox.BorderStyle = BorderStyle.None;
-        textBox.AccessibleName = "Artifact source";
+        wrapBox.ForeColor = DarkTheme.Text;
+        // Wrapping is set when the page is built (it has no script).
+        wrapBox.CheckedChanged += (_, _) => ShowCode();
 
         diagramPanel.Dock = DockStyle.Fill;
         diagramPanel.AutoScroll = true;
@@ -247,10 +241,12 @@ internal sealed class ArtifactView : Panel
                 Process.Start(new ProcessStartInfo(e.Uri.AbsoluteUri) { UseShellExecute = true })?.Dispose();
             }
         };
+        // The code page carries the theme's colours: rebuild it on a switch.
+        DarkTheme.Changed += ShowCode;
 
         Controls.Add(htmlView);
         Controls.Add(diagramPanel);
-        Controls.Add(textBox);
+        Controls.Add(wrapBox);
     }
 
     // Returns why an HTML artifact needs a browser (its source is shown
@@ -258,36 +254,45 @@ internal sealed class ArtifactView : Panel
     public string? Show(VersionedArtifact artifact, bool source)
     {
         htmlView.Visible = false;
+        diagramPanel.Visible = false;
+        wrapBox.Visible = false;
+        currentMermaidSource = null;
+        currentCode = null;
         if (artifact.Language == "mermaid")
         {
             currentMermaidSource = artifact.Content;
-            textBox.Visible = false;
             diagramPanel.Visible = true;
             diagramPanel.Invalidate();
             return null;
         }
-        currentMermaidSource = null;
-        diagramPanel.Visible = false;
-        textBox.Visible = true;
-        textBox.Text = artifact.Content; // HTML's source too, when asked for or Folio can't draw it
-        if (artifact.Language != "html" || source)
+        var whyBrowser = artifact.Language == "html" && !source ? HtmlArtifact.BrowserReasons(artifact.Content) : null;
+        if (artifact.Language == "html" && !source && whyBrowser is null)
         {
+            htmlView.LoadHtml(artifact.Content);
+            htmlView.Visible = true;
             return null;
         }
-        if (HtmlArtifact.BrowserReasons(artifact.Content) is { } whyBrowser)
+        currentCode = artifact; // HTML's source too, when asked for or Folio can't draw it
+        ShowCode();
+        return whyBrowser;
+    }
+
+    private void ShowCode()
+    {
+        if (currentCode is not { } code)
         {
-            return whyBrowser;
+            return;
         }
-        htmlView.LoadHtml(artifact.Content);
-        textBox.Visible = false;
+        htmlView.LoadHtml(CodeArtifact.Html(code.Language, code.Content, wrapBox.Checked));
         htmlView.Visible = true;
-        return null;
+        wrapBox.Visible = true;
     }
 
     protected override void Dispose(bool disposing)
     {
         if (disposing)
         {
+            DarkTheme.Changed -= ShowCode; // a static event: don't keep this view alive
             textFont.Dispose();
         }
         base.Dispose(disposing);
@@ -337,7 +342,7 @@ internal sealed class ArtifactView : Panel
     // fresh scroll region would have shown.
     private void DrawFallbackText(Graphics g, string text)
     {
-        var size = g.MeasureString(text, textBox.Font, diagramPanel.ClientSize.Width > 0 ? diagramPanel.ClientSize.Width : 2000);
+        var size = g.MeasureString(text, textFont, diagramPanel.ClientSize.Width > 0 ? diagramPanel.ClientSize.Width : 2000);
         var scrollSize = new Size((int)size.Width + 20, (int)size.Height + 20);
         if (diagramPanel.AutoScrollMinSize != scrollSize)
         {
@@ -346,7 +351,7 @@ internal sealed class ArtifactView : Panel
         // DarkTheme.Text, not Brushes.Black -- diagramPanel's own
         // background is DarkTheme.Background now, not white.
         using var textBrush = new SolidBrush(DarkTheme.Text);
-        g.DrawString(text, textBox.Font, textBrush, 10, 10);
+        g.DrawString(text, textFont, textBrush, 10, 10);
     }
 }
 
