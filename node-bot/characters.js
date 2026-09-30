@@ -22,6 +22,7 @@
 // layer are her own (perCharacter below, wired in server.js).
 const fs = require("node:fs");
 const path = require("node:path");
+const { AsyncLocalStorage } = require("node:async_hooks");
 const { MANA_PERSONA, SPOKEN_STYLE } = require("./persona");
 
 const DEFAULT_ID = "mana";
@@ -130,14 +131,20 @@ function createCharacterStore(options = {}) {
   const get = (id) => list().find((c) => c.id === id) || null;
 
   // Falls back to Mana if the active one was removed from the file.
-  const active = () => get(activeId) || get(DEFAULT_ID);
+  const selected = () => get(activeId) || get(DEFAULT_ID);
+  // Group mode: the character speaking in this async context (one reply,
+  // one /synthesize call) stands in for the active one, so her persona,
+  // mood, personality and voice follow. Outside speakAs it's the active one.
+  const speaking = new AsyncLocalStorage();
+  const active = () => get(speaking.getStore()) || selected();
+  const speakAs = (id, fn) => speaking.run(id, fn);
 
   // Null for an unknown id. Switching to the active character is a no-op
   // (no onSwitch).
   function setActive(id) {
     const character = get(String(id || "").trim().toLowerCase());
     if (!character) return null;
-    const previous = active();
+    const previous = selected();
     activeId = character.id;
     if (character.id !== previous.id) {
       // Switching to the partner keeps the duo: the previous one takes her place.
@@ -166,7 +173,7 @@ function createCharacterStore(options = {}) {
   function groupPartner() {
     if (!group.on || (isGaming() && !group.duringGame)) return null;
     const partner = get(group.partner);
-    return partner && partner.id !== active().id ? partner : null;
+    return partner && partner.id !== selected().id ? partner : null;
   }
 
   function reportGroup() {
@@ -190,8 +197,8 @@ function createCharacterStore(options = {}) {
     if (on) {
       const partner = partnerId
         ? get(String(partnerId).trim().toLowerCase())
-        : get(group.partner) || list().find((c) => c.id !== active().id);
-      if (!partner || partner.id === active().id) return null;
+        : get(group.partner) || list().find((c) => c.id !== selected().id);
+      if (!partner || partner.id === selected().id) return null;
       group = { on: true, partner: partner.id, duringGame: isGaming() };
     } else {
       group = { ...group, on: false, duringGame: false };
@@ -226,7 +233,7 @@ function createCharacterStore(options = {}) {
   function findGroupRequest(message) {
     const line = String(message || "").trim().toLowerCase();
     if (!line || line.length > MAX_SWITCH_REQUEST_CHARS) return null;
-    const named = mentioned(line).find((c) => c.id !== active().id) || null;
+    const named = mentioned(line).find((c) => c.id !== selected().id) || null;
     if (/\b(?:(?:turn|switch)\s+off|stop|end|disable)\s+(?:the\s+)?group\s+(?:mode|chat)\b|\bgroup\s+(?:mode|chat)\s+off\b/.test(line)) {
       return { on: false, partner: null };
     }
@@ -241,7 +248,7 @@ function createCharacterStore(options = {}) {
   function findSwitchRequest(message) {
     const line = String(message || "").trim().toLowerCase();
     if (!line || line.length > MAX_SWITCH_REQUEST_CHARS) return null;
-    const current = active().id;
+    const current = selected().id;
     return (
       list().find((c) => {
         if (c.id === current) return false;
@@ -261,6 +268,7 @@ function createCharacterStore(options = {}) {
     list,
     get,
     active,
+    speakAs,
     setActive,
     findSwitchRequest,
     groupPartner,

@@ -478,6 +478,8 @@ const LLAMA_MAX_TOKENS = Number(process.env.LLAMA_MAX_TOKENS || 180);
 // conversation, cutting code off mid-example. Casual/everyday replies stay
 // at LLAMA_MAX_TOKENS; only coding/developer mode gets the bigger budget.
 const LLAMA_MAX_TOKENS_CODING = Number(process.env.LLAMA_MAX_TOKENS_CODING || 768);
+// #914: a group-mode reaction is about 60 tokens.
+const GROUP_REACTION_MAX_TOKENS = 60;
 const VTUBE_STUDIO_URL = process.env.VTUBE_STUDIO_URL || "ws://127.0.0.1:8001";
 const VTUBE_STUDIO_ENABLED = process.env.VTUBE_STUDIO_ENABLED !== "0";
 const VTUBE_STUDIO_REACTIONS_JSON =
@@ -4104,6 +4106,8 @@ function registerRoutes(app, upload, deps = {}) {
       mode === "coding" || mode === "developer"
         ? LLAMA_MAX_TOKENS_CODING
         : LLAMA_MAX_TOKENS;
+    // #914: group mode adds a second reply only to casual turns.
+    if (replyMeta) replyMeta.mode = mode;
 
     // Optional lightweight intent telemetry (enable with MANA_INTENT_TELEMETRY=1)
     try {
@@ -5467,6 +5471,8 @@ function registerRoutes(app, upload, deps = {}) {
     currentGame: deps.currentGame || currentGame,
     restartController: deps.restartController || createRestartController(),
     buildAssistantReply: deps.buildAssistantReply || buildAssistantReply,
+    characters: characterStore,
+    buildGroupReaction: deps.buildGroupReaction || buildGroupReaction,
     capabilities,
     pluginSettingsStore: activePluginSettingsStore,
     contributePluginPromptContext:
@@ -5534,6 +5540,25 @@ function registerRoutes(app, upload, deps = {}) {
       deps.normalizeUploadedAudioAsync || normalizeUploadedAudioAsync,
     synthesizeReply: deps.synthesizeReply || synthesizeReply,
   });
+
+  // #914 group mode: the partner's short reaction to her sister's reply,
+  // run inside speakAs(partner) so the persona, personality and mood are
+  // hers. Same chat model, one short call; no tools and no emotion tags.
+  // The route saves it (only if it's still wanted).
+  async function buildGroupReaction({ sessionId, userText, sister, reply }) {
+    const me = characterStore.active();
+    const system = [
+      persona.buildPersonaPrompt(sessionId, personalityStore.get().traits, personaOf(me)),
+      moodPromptBlock(activeMoodStore.get(), "casual"),
+    ]
+      .filter(Boolean)
+      .join("\n\n");
+    const prompt = `I said: "${userText}"\n\nYour sister ${sister.name} answered: "${reply}"\n\nAdd one short reaction to her, one or two short sentences, as yourself. Don't repeat what she said.`;
+    const raw = shouldUseRemoteAi()
+      ? await runOpenAIReply(prompt, GROUP_REACTION_MAX_TOKENS, system, sessionId)
+      : await runLocalAssistantReply(prompt, GROUP_REACTION_MAX_TOKENS, "default", system);
+    return cleanLlamaOutput(stripEmotionTags(String(raw || "")).text).trim();
+  }
 
   // Test-only hook (same pattern as app.locals.broadcastTrayNotification
   // below): exposes the real buildAssistantReply closure -- with its
