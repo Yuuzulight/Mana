@@ -217,7 +217,7 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
     });
 
     // #686 (Q4/Q44b): an HTML artifact gets an "Open" split button whose
-    // main part opens it in Mana when HtmlRenderer can draw it, else in the
+    // main part opens it in Mana when Folio can draw it (#937), else in the
     // browser; the arrow lists every way. Other artifacts open in the viewer.
     private static ChatAction ArtifactAction(DetectedArtifact artifact, Action<ArtifactOpen> open)
     {

@@ -84,6 +84,17 @@
     <Delete Files="$(SpeakerModelPath).tmp" />
   </Target>
 
+  <!-- #937: Folio, from the local package folder in nuget.config.
+       pack-folio.ps1 builds the packages from FolioCommit and checks that
+       they come out as FolioVersion; CI runs it before restoring. To bump
+       Folio: set FolioCommit to a Folio commit on main, set FolioVersion to
+       0.1.0-m1.N, where N is the number of commits in that commit's
+       history, then run pack-folio.ps1 (README, Quick Start). -->
+  <PropertyGroup>
+    <FolioCommit>541a7f28cf0b8ed95c2fed86884a0c93a9cb28db</FolioCommit>
+    <FolioVersion>0.1.0-m1.127</FolioVersion>
+  </PropertyGroup>
+
   <ItemGroup>
     <InternalsVisibleTo Include="ManaNativeLauncher.Tests" />
   </ItemGroup>
@@ -91,11 +102,11 @@
   <ItemGroup>
     <PackageReference Include="NAudio" Version="2.2.1" />
     <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.19.2" />
-    <PackageReference Include="SkiaSharp" Version="4.151.1" />
-    <!-- #686: draws simple (script-free) HTML artifacts in the viewer;
-         pure managed GDI+, BSD-3-Clause. Pages it can't draw open in the
-         default browser instead. -->
-    <PackageReference Include="HtmlRenderer.WinForms" Version="1.6.1" />
+    <!-- 4.153.0: Folio.Skia's own SkiaSharp, which a lower version here
+         would downgrade (NU1605). -->
+    <PackageReference Include="SkiaSharp" Version="4.153.0" />
+    <!-- #937: draws static HTML artifacts in the viewer (FolioView). -->
+    <PackageReference Include="Folio.WinForms" Version="$(FolioVersion)" />
     <!-- #524: native Windows toast notifications with action buttons for
          an unpackaged (no MSIX/Start Menu shortcut) WinForms app, the
          standard non-WinUI3 way to do this; the newer Windows App SDK
