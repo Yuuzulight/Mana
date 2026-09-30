@@ -3,6 +3,7 @@ using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using NAudio.Wave;
 
 namespace Mana.NativeLauncher;
@@ -15,6 +16,8 @@ namespace Mana.NativeLauncher;
 //           clips for training" is on: <time>.wav (16 kHz mono, what
 //           Whisper heard) and <time>.json (TurnClip). node-bot's
 //           voice-data.js fills in Corrected when I add a mishearing fix.
+//   readings\, conversations\  #1112's "Record training lines" takes
+//           (TrainingSession): <name>.wav and <name>.json (ReadingClip).
 // The turns folder is capped (MANA_VOICE_DATA_MAX_MB, default 2 GB),
 // oldest clips deleted first.
 internal static class VoiceData
@@ -28,12 +31,25 @@ internal static class VoiceData
 
     public static string Root(string? env) => string.IsNullOrWhiteSpace(env) ? DefaultRoot : env;
 
-    public static string TurnsFolder => Path.Combine(Root(Environment.GetEnvironmentVariable("MANA_VOICE_DATA_DIR")), "turns");
+    public static string Folder(string name) => Path.Combine(Root(Environment.GetEnvironmentVariable("MANA_VOICE_DATA_DIR")), name);
+
+    public static string TurnsFolder => Folder("turns");
+
+    // Every folder of mine, for Settings' totals and delete.
+    public static string[] AllFolders => new[] { TurnsFolder, Folder("readings"), Folder("conversations") };
 
     public static long MaxBytes(string? envMb) => long.TryParse(envMb, out var mb) && mb > 0 ? mb * 1024 * 1024 : DefaultMaxBytes;
 
     // Heard: what Whisper wrote; Transcript: after my mishearing fixes.
     public sealed record TurnClip(string Heard, string Transcript, string? Corrected, string? Language, string? Model, double DurationSec, DateTimeOffset RecordedAt);
+
+    // #1112: Text is the script line I read, the ground truth.
+    public sealed record ReadingClip(
+        string Text,
+        [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? ConversationId,
+        [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] int? Turn,
+        double DurationSec,
+        DateTimeOffset RecordedAt);
 
     // A turn worth keeping is one that reached Mana: transcribed, not dropped
     // by any of listening's filters (the voiceprint gate, too quiet or
