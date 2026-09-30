@@ -64,7 +64,7 @@ function registerApprovalGateRoutes(app, context = {}) {
 
   // #1154: the remembered always/never answers (per-site browser
   // permissions among them), listed in Settings > Approvals with Forget.
-  app.get("/approvals/remembered", (req, res) => {
+  app.get("/approvals/remembered", toolModeRateLimiter, (req, res) => {
     if (!context.checkAdminAuth(req, res)) return;
     return res.json({ remembered: approvalGate.listRemembered() });
   });
