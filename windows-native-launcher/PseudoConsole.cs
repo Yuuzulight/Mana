@@ -84,6 +84,10 @@ internal sealed class PseudoConsole : IDisposable
             }
             var startup = new STARTUPINFOEX { lpAttributeList = attributes };
             startup.StartupInfo.cb = Marshal.SizeOf<STARTUPINFOEX>();
+            // Null std handles: without this, a caller whose own stdio is
+            // redirected (a test host) hands the shell those handles, and
+            // its output bypasses the pseudo-console.
+            startup.StartupInfo.dwFlags = StartfUseStdHandles;
             // Suspended until it's in the job, so nothing it starts escapes.
             if (!CreateProcessW(null, new StringBuilder(commandLine), IntPtr.Zero, IntPtr.Zero, false,
                     ExtendedStartupInfoPresent | CreateSuspended | CreateUnicodeEnvironment, environment, workingDirectory, ref startup, out var info))
@@ -197,6 +201,7 @@ internal sealed class PseudoConsole : IDisposable
     private static readonly IntPtr ProcThreadAttributePseudoConsole = (IntPtr)0x00020016;
     private const int JobObjectExtendedLimitInformation = 9;
     private const uint TokenQuery = 0x0008;
+    private const int StartfUseStdHandles = 0x00000100;
     private const uint JobObjectLimitKillOnJobClose = 0x2000;
 
     [StructLayout(LayoutKind.Sequential)]
