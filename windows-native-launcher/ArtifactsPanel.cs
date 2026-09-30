@@ -4,6 +4,7 @@ using System.Drawing;
 using System.Linq;
 using System.Net;
 using System.Text.RegularExpressions;
+using System.Threading.Tasks;
 using System.Windows.Forms;
 
 namespace Mana.NativeLauncher;
@@ -14,6 +15,8 @@ namespace Mana.NativeLauncher;
 // here with ArtifactView (Folio for the HTML ArtifactClassifier allows),
 // with Prev/Next through its versions. The artifacts themselves live in
 // ArtifactViewerForm, which also stays the "Open in its own window".
+// #1142: past chats' artifacts are listed too (read back from the saved
+// chats by SessionListForm); one's content is read when it's opened.
 internal sealed class ArtifactsPanel : UserControl
 {
     private readonly ArtifactViewerForm store;
@@ -92,6 +95,7 @@ internal sealed class ArtifactsPanel : UserControl
         Controls.Add(list);
 
         store.Added += OnAdded;
+        store.HistoryAdded += RefreshList;
         // The open chat may have changed while it was hidden.
         VisibleChanged += (_, _) =>
         {
@@ -154,7 +158,7 @@ internal sealed class ArtifactsPanel : UserControl
         list.Items.Clear();
         foreach (var entry in Order(store.Entries, sessionId))
         {
-            var row = new ListViewItem(new[] { Title(entry.Artifact), entry.Artifact.Language, entry.At.ToString("t") })
+            var row = new ListViewItem(new[] { entry.Title ?? Title(entry.Artifact), entry.Artifact.Language, entry.At.ToString(entry.At.Date == DateTime.Today ? "t" : "d") })
             {
                 Tag = entry,
                 Group = sessionId is not null && entry.SessionId == sessionId ? thisChat : otherChats,
@@ -188,8 +192,34 @@ internal sealed class ArtifactsPanel : UserControl
     private void ShowEntry(ArtifactEntry entry)
     {
         thread = store.ThreadOf(entry);
-        index = thread.IndexOf(entry);
+        // By version: a saved one's entry is replaced once its content is read.
+        index = Math.Max(0, thread.FindIndex(e => e.Artifact.VersionIndex == entry.Artifact.VersionIndex));
+        if (thread.Any(e => e.Load is not null))
+        {
+            _ = LoadAndShowAsync(entry);
+            return;
+        }
         Render();
+    }
+
+    // #1142: a saved chat's artifact: its thread's content is read first.
+    private async Task LoadAndShowAsync(ArtifactEntry entry)
+    {
+        view.Visible = false;
+        EnableActions(false);
+        noteLabel.Text = "Loading...";
+        noteLabel.Visible = true;
+        var loaded = await store.LoadThreadAsync(entry);
+        if (IsDisposed || list.SelectedItems.Count == 0 || ((ArtifactEntry)list.SelectedItems[0].Tag!).Artifact.ThreadId != entry.Artifact.ThreadId)
+        {
+            return; // another one was picked meanwhile
+        }
+        if (!loaded)
+        {
+            noteLabel.Text = "Couldn't read this artifact from the saved chat.";
+            return;
+        }
+        ShowEntry(entry);
     }
 
     private void Step(int delta)
@@ -229,6 +259,7 @@ internal sealed class ArtifactsPanel : UserControl
         if (disposing)
         {
             store.Added -= OnAdded; // the store outlives the chat window
+            store.HistoryAdded -= RefreshList;
         }
         base.Dispose(disposing);
     }

@@ -5,6 +5,7 @@ const {
   sendValidationError,
 } = require("../request-validation");
 const { exportSessionAsShareGPTJSONL } = require("../session-export");
+const { artifactsOf } = require("../artifact-history");
 
 const KEY = "sessions";
 
@@ -58,6 +59,44 @@ function registerSessionsRoutes(app, context = {}) {
         return res.status(404).json({ error: "session not found" });
       }
       return res.json(page);
+    } catch (e) {
+      if (e instanceof ValidationError) {
+        return sendValidationError(res, e);
+      }
+      console.error(e);
+      return res.status(500).json({ error: String(e) });
+    }
+  });
+
+  // #1142: a chat's artifacts without their content (artifact-history.js),
+  // for the Artifacts panel; ?before= (an ISO time) keeps turns saved
+  // earlier. .../artifacts/:turn is one artifact's { language, content }.
+  app.get("/sessions/:id/artifacts", (req, res) => {
+    try {
+      const sessionId = requireString(req.params?.id, "sessionId");
+      const session = acpMemoryStore.getSession(sessionId);
+      if (!session) {
+        return res.status(404).json({ error: "session not found" });
+      }
+      const before = typeof req.query?.before === "string" ? Date.parse(req.query.before) : NaN;
+      return res.json({ artifacts: artifactsOf(session, { before: Number.isNaN(before) ? undefined : before }) });
+    } catch (e) {
+      if (e instanceof ValidationError) {
+        return sendValidationError(res, e);
+      }
+      console.error(e);
+      return res.status(500).json({ error: String(e) });
+    }
+  });
+
+  app.get("/sessions/:id/artifacts/:turn", (req, res) => {
+    try {
+      const sessionId = requireString(req.params?.id, "sessionId");
+      const artifact = acpMemoryStore.getSession(sessionId)?.turns?.[Number(req.params?.turn)]?.artifact;
+      if (!artifact) {
+        return res.status(404).json({ error: "artifact not found" });
+      }
+      return res.json({ language: artifact.language, content: artifact.content });
     } catch (e) {
       if (e instanceof ValidationError) {
         return sendValidationError(res, e);
