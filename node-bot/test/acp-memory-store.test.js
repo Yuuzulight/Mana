@@ -68,6 +68,20 @@ test("ACP memory store builds a compact local memory prompt block", () => {
   assert.ok(promptBlock.length <= 1200);
 });
 
+// #914: group mode -- each character knows who said what.
+test("history lines are labelled with the character who said them", async () => {
+  const store = createAcpMemoryStore({ dataDir: createTempDir(), now: () => "2026-09-30T00:00:00.000Z" });
+  await store.appendTurn({ sessionId: "duo", user: "Which of you is smarter?", assistant: "Me, obviously.", speaker: "Mana" });
+  await store.appendTurn({ sessionId: "duo", user: "", assistant: "Obviously me, sis.", speaker: "Evil Mana" });
+  await store.appendTurn({ sessionId: "duo", user: "Old turn", assistant: "No label." });
+
+  const recent = store.buildPromptMemory("duo");
+  assert.match(recent, /User: Which of you is smarter\?\nMana: Me, obviously\./);
+  assert.match(recent, /Mana: Me, obviously\.\nEvil Mana: Obviously me, sis\./, "a reaction has no empty User line");
+  assert.match(recent, /User: Old turn\nAssistant: No label\./);
+  assert.match(store.getSession("duo").summary, /^- User: Which of you is smarter\? Mana: Me, obviously\.\s+- Evil Mana: Obviously me, sis\./);
+});
+
 test("appendTurn auto-names a session from its first user turn", async () => {
   const store = createAcpMemoryStore({
     dataDir: createTempDir(),

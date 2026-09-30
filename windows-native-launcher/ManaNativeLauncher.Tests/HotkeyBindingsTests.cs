@@ -15,8 +15,10 @@ public class HotkeyBindingsTests
     public void Resolve_UsesTheDefaultUntilChangedAndEmptyMeansOff()
     {
         var vision = Action("vision");
-        Assert.Equal(Keys.Control | Keys.Alt | Keys.M, HotkeyBindings.Resolve(null, vision));
-        Assert.Equal(Keys.Control | Keys.Alt | Keys.M, HotkeyBindings.Resolve(new Dictionary<string, string>(), vision));
+        Assert.Equal(Keys.Control | Keys.Alt | Keys.Shift | Keys.M, HotkeyBindings.Resolve(null, vision));
+        Assert.Equal(Keys.Control | Keys.Alt | Keys.Shift | Keys.M, HotkeyBindings.Resolve(new Dictionary<string, string>(), vision));
+        // Saved before the defaults moved to Ctrl+Alt+Shift: kept as it was.
+        Assert.Equal(Keys.Control | Keys.Alt | Keys.M, HotkeyBindings.Resolve(new Dictionary<string, string> { ["vision"] = "Ctrl+Alt+M" }, vision));
         Assert.Null(HotkeyBindings.Resolve(new Dictionary<string, string> { ["vision"] = "" }, vision));
         Assert.Equal(Keys.Control | Keys.Shift | Keys.F9, HotkeyBindings.Resolve(new Dictionary<string, string> { ["vision"] = "Ctrl+Shift+F9" }, vision));
         Assert.Equal(vision.Default, HotkeyBindings.Resolve(new Dictionary<string, string> { ["vision"] = "nonsense+" }, vision));
@@ -47,9 +49,10 @@ public class HotkeyBindingsTests
     public void ConflictFor_FindsAnotherActionWithTheSameKeys()
     {
         var saved = new Dictionary<string, string> { ["interrupt"] = "Ctrl+Alt+M", ["vision"] = "Ctrl+Alt+V" };
-        Assert.Equal("vision", HotkeyBindings.ConflictFor(null, Action("interrupt"), Keys.Control | Keys.Alt | Keys.M)?.Key);
-        Assert.Null(HotkeyBindings.ConflictFor(null, Action("vision"), Keys.Control | Keys.Alt | Keys.M)); // its own
-        Assert.Null(HotkeyBindings.ConflictFor(new Dictionary<string, string> { ["vision"] = "" }, Action("interrupt"), Keys.Control | Keys.Alt | Keys.M));
+        var visionDefault = Keys.Control | Keys.Alt | Keys.Shift | Keys.M;
+        Assert.Equal("vision", HotkeyBindings.ConflictFor(null, Action("interrupt"), visionDefault)?.Key);
+        Assert.Null(HotkeyBindings.ConflictFor(null, Action("vision"), visionDefault)); // its own
+        Assert.Null(HotkeyBindings.ConflictFor(new Dictionary<string, string> { ["vision"] = "" }, Action("interrupt"), visionDefault));
         Assert.Equal("interrupt", HotkeyBindings.ConflictFor(saved, Action("window"), Keys.Control | Keys.Alt | Keys.M)?.Key);
     }
 
@@ -58,6 +61,20 @@ public class HotkeyBindingsTests
     {
         Assert.Equal(HotkeyBindings.Actions.Length, HotkeyBindings.Actions.Select(a => a.Default).Distinct().Count());
         Assert.Equal(HotkeyBindings.Actions.Length, HotkeyBindings.Actions.Select(a => a.Id).Distinct().Count());
+    }
+
+    // Ctrl+Alt is AltGr: a Ctrl+Alt+letter default would swallow a Polish or
+    // German character, so every letter default adds Shift -- and skips the
+    // Polish AltGr+Shift capitals (Ą Ć Ę Ł Ń Ó Ś Ź Ż).
+    [Fact]
+    public void LetterDefaultsAreCtrlAltShiftAndMissPolishAltGrLetters()
+    {
+        foreach (var action in HotkeyBindings.Actions.Where(a => (a.Default & Keys.KeyCode) is >= Keys.A and <= Keys.Z))
+        {
+            Assert.Equal(Keys.Control | Keys.Alt | Keys.Shift, action.Default & Keys.Modifiers);
+            Assert.DoesNotContain(action.Default & Keys.KeyCode, new[] { Keys.A, Keys.C, Keys.E, Keys.L, Keys.N, Keys.O, Keys.S, Keys.X, Keys.Z });
+        }
+        Assert.Equal(Keys.Control | Keys.Alt | Keys.Shift | Keys.H, Action("listening").Default);
     }
 
     [Fact]

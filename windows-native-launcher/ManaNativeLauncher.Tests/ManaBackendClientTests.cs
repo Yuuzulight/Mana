@@ -56,17 +56,21 @@ public class ManaBackendClientTests
         {
             requests.Add($"{request.Method} {request.RequestUri!.AbsolutePath} {request.Content?.ReadAsStringAsync().GetAwaiter().GetResult()}");
             var json = request.Method == HttpMethod.Get
-                ? "{\"active\":\"mana\",\"characters\":[{\"id\":\"mana\",\"name\":\"Mana\",\"live2dModel\":null},{\"id\":\"evil-mana\",\"name\":\"Evil Mana\",\"live2dModel\":null}]}"
+                ? "{\"active\":\"mana\",\"characters\":[{\"id\":\"mana\",\"name\":\"Mana\",\"live2dModel\":null},{\"id\":\"evil-mana\",\"name\":\"Evil Mana\",\"live2dModel\":null}],\"group\":{\"on\":true,\"partner\":\"evil-mana\",\"paused\":false}}"
                 : "{\"character\":{\"id\":\"evil-mana\"},\"handoff\":\"Evil Mana here.\"}";
             return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(json, Encoding.UTF8, "application/json") };
         });
         var client = new ManaBackendClient(handler);
 
-        var (active, characters) = await client.GetCharactersAsync();
+        var (active, characters, groupOn) = await client.GetCharactersAsync();
         Assert.Equal("mana", active);
         Assert.Equal(new[] { ("mana", "Mana"), ("evil-mana", "Evil Mana") }, characters);
+        Assert.True(groupOn);
         Assert.Equal("Evil Mana here.", await client.SetCharacterAsync("evil-mana"));
         Assert.Equal("POST /characters/active {\"id\":\"evil-mana\"}", requests[^1]);
+        // #914: the tray's group mode toggle.
+        await client.SetGroupAsync(false);
+        Assert.Equal("POST /characters/group {\"on\":false}", requests[^1]);
     }
 
     [Fact]

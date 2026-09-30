@@ -22,11 +22,13 @@ public class TrayNotificationPayloadTests
     [Fact]
     public void TryParse_ReadsTheSpokenLineWhenPresent()
     {
-        var reminder = TrayNotificationPayload.TryParse(Json("""{"type":"cron","title":"Reminder","text":"raid","speak":"Yuuzu, raid!"}"""));
+        var reminder = TrayNotificationPayload.TryParse(Json("""{"type":"cron","kind":"reminder-late","emotion":"sad","title":"Reminder","text":"raid","speak":"Yuuzu, raid!"}"""));
         var job = TrayNotificationPayload.TryParse(Json("""{"type":"cron","text":"job finished"}"""));
 
         Assert.Equal("Yuuzu, raid!", reminder!.Speak);
+        Assert.Equal(("reminder-late", "sad"), (reminder.Kind, reminder.Emotion));
         Assert.Null(job!.Speak);
+        Assert.Null(job.Kind);
     }
 
     [Fact]
@@ -83,5 +85,16 @@ public class TrayNotificationPayloadTests
 
         Assert.Equal(@"C:\m\evil.model3.json", evil!.Model);
         Assert.Null(mana!.Model);
+    }
+
+    // #914: group mode's partner, or nobody (her avatar goes away).
+    [Fact]
+    public void TryParse_ReadsTheGroupPartner()
+    {
+        var on = TrayNotificationPayload.TryParse(Json("""{"type":"group","id":"evil-mana","title":"Evil Mana","model":null}"""));
+        var off = TrayNotificationPayload.TryParse(Json("""{"type":"group","id":null,"title":null,"model":null}"""));
+
+        Assert.Equal("evil-mana", on!.Id);
+        Assert.Null(off!.Id);
     }
 }
