@@ -16,10 +16,12 @@ public class VisionCaptureClientTests
     [Fact]
     public void TryParseCaptureRequest_ReadsTheRequestIdAndSource()
     {
-        Assert.Equal(("abc-123", false), VisionCaptureClient.TryParseCaptureRequest(
+        Assert.Equal(("abc-123", "screen"), VisionCaptureClient.TryParseCaptureRequest(
             Json("""{"type":"capture-request","requestId":"abc-123"}""")));
-        Assert.Equal(("abc-123", true), VisionCaptureClient.TryParseCaptureRequest(
+        Assert.Equal(("abc-123", "camera"), VisionCaptureClient.TryParseCaptureRequest(
             Json("""{"type":"capture-request","requestId":"abc-123","source":"camera"}""")));
+        Assert.Equal(("abc-123", "camera-save"), VisionCaptureClient.TryParseCaptureRequest(
+            Json("""{"type":"capture-request","requestId":"abc-123","source":"camera-save"}""")));
     }
 
     [Theory]
@@ -69,11 +71,32 @@ public class VisionCaptureClientTests
         using var client = new VisionCaptureClient(new ManaBackendClient(handler),
             captureScreen: () => "screen", captureCamera: () => Task.FromResult("camera"));
 
-        await client.RespondAsync("abc-123", camera: true);
+        await client.RespondAsync("abc-123", "camera");
 
         Assert.Equal("""{"requestId":"abc-123","image":"camera"}""", body);
         Assert.Equal("?camera=1", VisionCaptureClient.BuildSocketUri(null, camera: true).Query);
         Assert.Equal("", VisionCaptureClient.BuildSocketUri(null, camera: false).Query);
+    }
+
+    // #962: a save request answers with the saved file's path, and a
+    // launcher that can't save says so instead of sending the screen.
+    [Fact]
+    public async Task RespondAsync_SavesTheSnapshotForASaveRequest()
+    {
+        string? body = null;
+        var handler = new FakeHttpMessageHandler(request =>
+        {
+            body = request.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
+            return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("{\"ok\":true}") };
+        });
+        using var saving = new VisionCaptureClient(new ManaBackendClient(handler),
+            captureScreen: () => "screen", captureCamera: () => Task.FromResult("camera"), saveCameraSnapshot: () => Task.FromResult("snap.jpg"));
+        await saving.RespondAsync("abc-123", "camera-save");
+        Assert.Equal("""{"requestId":"abc-123","image":"snap.jpg"}""", body);
+
+        using var notSaving = new VisionCaptureClient(new ManaBackendClient(handler), captureScreen: () => "screen");
+        await notSaving.RespondAsync("abc-123", "camera-save");
+        Assert.Contains("\"error\":\"this launcher can", body);
     }
 
     [Fact]

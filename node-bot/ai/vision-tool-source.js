@@ -62,6 +62,19 @@ const CAMERA_TOOL_SCHEMA = {
   },
 };
 
+// #962: keeps the last camera snapshot as a JPEG, only when I ask. The
+// launcher holds the snapshot and writes the file (PicturesMana, or the
+// folder from Settings > Voice). Write tier (tool-risk.js).
+const SAVE_SNAPSHOT_TOOL_SCHEMA = {
+  type: "function",
+  function: {
+    name: `${VISION_TOOL_PREFIX}save_snapshot`,
+    description:
+      "Save the last camera snapshot as a photo in the user's Pictures folder. Only when the user asks to keep it (\"save that\", \"keep this photo\"), never on your own.",
+    parameters: { type: "object", properties: {} },
+  },
+};
+
 function isVisionToolName(name) {
   return typeof name === "string" && name.startsWith(VISION_TOOL_PREFIX);
 }
@@ -81,15 +94,29 @@ function createVisionToolSource({
   }
 
   function listToolSchemas() {
-    if (!visionAvailable()) return [];
+    const camera = Boolean(visionCaptureBridge.hasCamera?.());
+    // #962: saving needs no vision model, only the launcher with the snapshot.
+    const save = camera ? [SAVE_SNAPSHOT_TOOL_SCHEMA] : [];
+    if (!visionAvailable()) return save;
     return [
       ...(isPluginEnabled(screenSensingPlugin, pluginSettingsStore) ? TOOL_SCHEMAS : []),
-      ...(visionCaptureBridge.hasCamera?.() ? [CAMERA_TOOL_SCHEMA] : []),
+      ...(camera ? [CAMERA_TOOL_SCHEMA] : []),
+      ...save,
     ];
   }
 
   async function executeTool(qualifiedName, args) {
     const action = qualifiedName.slice(VISION_TOOL_PREFIX.length);
+    if (action === "save_snapshot") {
+      try {
+        const saved = await visionCaptureBridge.requestCapture({ save: true });
+        // A launcher without #962 answers with a screenshot instead.
+        if (!/.jpg$/i.test(saved)) throw new Error("this launcher can't save snapshots; update it");
+        return JSON.stringify({ status: "ok", saved });
+      } catch (e) {
+        return JSON.stringify({ status: "error", error: `could not save the snapshot: ${e.message || e}` });
+      }
+    }
     if (action !== "look" && action !== "camera") {
       throw new Error(`unknown vision tool: ${qualifiedName}`);
     }

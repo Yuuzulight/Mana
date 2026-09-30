@@ -220,6 +220,48 @@ internal sealed class ManaProcessManager : IDisposable
         IsFishSpeechAvailable = fishSpeechProcess is not null;
     }
 
+    // #991: node-bot's /restart and /admin/restart exit with this code for
+    // the launcher to start it again (admin-restart.js).
+    internal const int BackendRestartExitCode = 77;
+
+    // #991: raised on a thread-pool thread when node-bot exits asking for a restart.
+    public event Action? BackendRestartRequested;
+
+    // #991: only a node-bot this launcher started -- a remote one, or one
+    // already running at launch, isn't this launcher's to stop.
+    public bool CanRestartBackend => isBackendLocal && backendProcess is not null;
+
+    // #991: stops node-bot (with its children, as on exit) and starts it
+    // again with the same LauncherKey; true once the new one answers its
+    // health check. Throws if node can't be started at all.
+    public async Task<bool> RestartBackendAsync(TimeSpan timeout, TimeSpan? pollInterval = null)
+    {
+        if (!CanRestartBackend)
+        {
+            return false;
+        }
+        var old = backendProcess!;
+        StopProcess(old);
+        using (var exited = new CancellationTokenSource(TimeSpan.FromSeconds(10)))
+        {
+            try
+            {
+                // Its port must be free before the new one binds it.
+                await old.WaitForExitAsync(exited.Token);
+            }
+            catch (OperationCanceledException)
+            {
+                // Still going; the new one fails to bind and gets retried.
+            }
+        }
+        if (disposed)
+        {
+            return false; // Mana exited meanwhile: nothing would stop a new one
+        }
+        backendProcess = StartBackend();
+        return await WaitForHealthyAsync(true, backendHealthUrl, timeout, pollInterval, backendProcess);
+    }
+
     // Fish Speech answers its health check only once its model is loaded
     // and torch.compile has finished (up to a few minutes cold) -- StartAsync
     // only waits for the launch. The startup screen waits on this so Mana
@@ -233,7 +275,7 @@ internal sealed class ManaProcessManager : IDisposable
     public Task<bool> WaitForQwen3TtsReadyAsync(TimeSpan timeout, TimeSpan? pollInterval = null) =>
         WaitForHealthyAsync(IsQwen3TtsAvailable, qwen3TtsHealthUrl, timeout, pollInterval);
 
-    private async Task<bool> WaitForHealthyAsync(bool available, string healthUrl, TimeSpan timeout, TimeSpan? pollInterval)
+    private async Task<bool> WaitForHealthyAsync(bool available, string healthUrl, TimeSpan timeout, TimeSpan? pollInterval, Process? process = null)
     {
         if (!isBackendLocal || !available)
         {
@@ -242,6 +284,11 @@ internal sealed class ManaProcessManager : IDisposable
         var deadline = DateTime.UtcNow + timeout;
         while (true)
         {
+            // A process that died won't answer, whatever else holds its port.
+            if (process is { HasExited: true })
+            {
+                return false;
+            }
             if (await IsServiceRunningAsync(healthUrl))
             {
                 return true;
@@ -545,6 +592,14 @@ internal sealed class ManaProcessManager : IDisposable
         process.ErrorDataReceived += OnLine;
         process.BeginOutputReadLine();
         process.BeginErrorReadLine();
+        process.Exited += (_, _) =>
+        {
+            if (process.ExitCode == BackendRestartExitCode)
+            {
+                BackendRestartRequested?.Invoke();
+            }
+        };
+        process.EnableRaisingEvents = true;
 
         return process;
     }
@@ -752,8 +807,11 @@ internal sealed class ManaProcessManager : IDisposable
             StopAndReport("qwen3-tts", qwen3TtsProcess));
     }
 
+    private bool disposed;
+
     public void Dispose()
     {
+        disposed = true;
         http.Dispose();
         StopProcess(backendProcess);
         StopProcess(fishSpeechProcess);

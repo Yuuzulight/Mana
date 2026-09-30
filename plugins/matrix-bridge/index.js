@@ -1,4 +1,11 @@
 const { createMatrixBridge, createMatrixClient, syncOnce } = require("./matrix-bridge");
+const { localOnlyRefusal } = require("../../node-bot/local-only");
+
+// #670: "" unless local-only mode rules out the homeserver (one on this PC
+// or the LAN, given by IP, still works).
+function localOnlyBlock(env) {
+  return localOnlyRefusal(env.MANA_MATRIX_HOMESERVER_URL, "the Matrix bridge's connection to", env);
+}
 
 // Module-level singletons, same pattern as telegram-bridge's -- one
 // bridge/client/sync-loop shared across every route and the background
@@ -62,6 +69,11 @@ function startSyncing(deps) {
   const env = deps.env || process.env;
   if (!env.MANA_MATRIX_HOMESERVER_URL || !env.MANA_MATRIX_ACCESS_TOKEN || !env.MANA_MATRIX_USER_ID) return;
   if (syncStarted) return;
+  const blocked = localOnlyBlock(env);
+  if (blocked) {
+    console.warn(`matrix-bridge: not started. ${blocked}`);
+    return;
+  }
   syncStarted = true;
 
   client =
@@ -113,12 +125,15 @@ module.exports = {
     const configured = Boolean(
       env.MANA_MATRIX_HOMESERVER_URL && env.MANA_MATRIX_ACCESS_TOKEN && env.MANA_MATRIX_USER_ID,
     );
+    const blocked = configured && localOnlyBlock(env);
     return {
-      status: configured ? "configured" : "unavailable",
+      status: configured && !blocked ? "configured" : "unavailable",
       configured,
-      message: configured
-        ? "Matrix bridge configured and syncing"
-        : "Not configured -- set MANA_MATRIX_HOMESERVER_URL, MANA_MATRIX_ACCESS_TOKEN, and MANA_MATRIX_USER_ID",
+      message:
+        blocked ||
+        (configured
+          ? "Matrix bridge configured and syncing"
+          : "Not configured -- set MANA_MATRIX_HOMESERVER_URL, MANA_MATRIX_ACCESS_TOKEN, and MANA_MATRIX_USER_ID"),
     };
   },
   // Test-only: the pure backoff-delay calculation, exported so it's directly

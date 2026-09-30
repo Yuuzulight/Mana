@@ -29,12 +29,6 @@ If `agent_servers` already has other agents, keep them and add `mana` beside the
 
 To enable the autonomous coding loop, change `MANA_AGENT_AUTONOMOUS` to `1`.
 
-To allow Mana to access paths outside the active workspace, add an allowlist:
-
-```json
-"MANA_AGENT_ALLOWED_PATHS": "D:\\SomeFolder;C:\\AnotherFolder"
-```
-
 You can print the same snippet from the backend folder:
 
 ```powershell
@@ -106,14 +100,13 @@ Optional controls:
 - `MANA_AGENT_MAX_ITERATIONS`: default `20`.
 - `MANA_AGENT_MAX_FILES_CHANGED`: default `5`.
 - `MANA_AGENT_TEST_TIMEOUT_MS`: default `120000`.
-- `MANA_AGENT_ALLOWED_PATHS`: absolute outside-workspace roots allowed for file access.
 
 Autonomous mode can approve proposals and run allowed tests without per-step approval, but only inside the configured guardrails.
 
 ## Guardrails
 
 - Local-only remains the default.
-- Outside-workspace file access is denied unless the path is under `MANA_AGENT_ALLOWED_PATHS`.
+- File access outside the active workspace is always denied, including through a junction or symlink inside it.
 - Test commands must be allowlisted.
 - Destructive commands are rejected.
 - Test commands run without shell expansion.
