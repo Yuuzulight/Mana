@@ -36,8 +36,12 @@ internal static class SpeakerGate
         return index < 0 ? SpeakerGateMode.Off : (SpeakerGateMode)index;
     }
 
-    internal static float ResolveThreshold(string? env) =>
-        float.TryParse(env, NumberStyles.Float, CultureInfo.InvariantCulture, out var t) && t is > 0f and < 1f ? t : DefaultThreshold;
+    // #965: MANA_SPEAKER_THRESHOLD (env) wins over Settings > Voice; either
+    // must be between 0 and 1.
+    internal static float ResolveThreshold(string? env, float? setting = null) =>
+        float.TryParse(env, NumberStyles.Float, CultureInfo.InvariantCulture, out var t) && t is > 0f and < 1f ? t
+        : setting is > 0f and < 1f ? setting.Value
+        : DefaultThreshold;
 
     // Whether this segment is checked. An interruption only happens while
     // she's awake and speaking.

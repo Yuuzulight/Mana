@@ -52,8 +52,11 @@ function createVisionCaptureBridge({ timeoutMs = DEFAULT_TIMEOUT_MS } = {}) {
     }
   }
 
-  function requestCapture({ camera = false } = {}) {
-    return request({ type: "capture-request", ...(camera && { source: "camera" }) }, "capture");
+  // #962: save asks the launcher to write its last camera snapshot to disk
+  // and answer with the file's path instead of an image.
+  function requestCapture({ camera = false, save = false } = {}) {
+    const source = save ? "camera-save" : camera ? "camera" : null;
+    return request({ type: "capture-request", ...(source && { source }) }, "capture");
   }
 
   // #911: a desktop action the launcher carries out (ai/desktop-tool-source.js);

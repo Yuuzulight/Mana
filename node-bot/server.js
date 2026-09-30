@@ -20,6 +20,8 @@ over inherited ones -- or set before running):
   whisper.cpp decoding tuning knobs, see docs/speech_recognition_improvement_plan.md
 - WHISPER_SERVER_BIN, WHISPER_SERVER_PORT : the whisper-server kept loaded for
   transcription (default: next to WHISPER_BIN, port 8093); whisper-cli is the fallback
+- MANA_WHISPER_RELOAD : 1/0 forces whisper-server's model reload after each
+  request on or off (default: on for the CPU build, off for the CUDA build)
 - LLAMA_BIN : full path to llama.cpp/main executable (e.g. C:\llama.cpp\main.exe)
 - LLAMA_MODEL : full path to a GGUF model file, or an HF repo shorthand like user/model:Q4_K_M
 - TTS_PROVIDER : "cli", "kokoro", or "fish" (default: "fish",
@@ -240,7 +242,7 @@ const { createSpeechToolSource } = require("./ai/speech-tool-source");
 const { createVisionToolSource } = require("./ai/vision-tool-source");
 const { createSessionGoalToolSource } = require("./ai/session-goal-tool-source");
 const { createReminderToolSource } = require("./ai/reminder-tool-source");
-const { createMailCalendarToolSource } = require("./ai/mail-calendar-tool-source");
+const { briefingLines: mailCalendarBriefingLines, createMailCalendarToolSource } = require("./ai/mail-calendar-tool-source");
 const { createMailCalendarSettingsStore } = require("./mail-calendar-settings-store");
 const { checkMail } = require("./imap-client");
 const { checkCalendar } = require("./calendar-client");
@@ -832,13 +834,17 @@ const speechVocabulary = createSpeechVocabulary({
   filePath: path.join(acpMemoryStore.dataDir, "speech.json"),
 });
 
+// #986: held proactive remarks (data/proactive-held.json) survive a restart.
+if (process.env.NODE_ENV !== "test" && !process.env.NODE_TEST_CONTEXT) {
+  require("./proactive").persistTo(path.join(acpMemoryStore.dataDir, "proactive-held.json"));
+}
+
 // #906: the email/calendar accounts from Settings > Calendar & email.
 const mailCalendarSettings = createMailCalendarSettingsStore();
 // #907: the daily briefing (data/briefing.json, Settings > Briefing),
 // through the proactive engine. The chat model writes it only when it's
-// already loaded. Calendar and mail: #906 isn't in yet -- when it lands it
-// passes its today's-events-and-unread-mail lines as `calendar`; until
-// then that section is skipped.
+// already loaded. #961: calendar and mail come from #906's accounts; the
+// section is skipped while neither is set up.
 const briefing = createBriefing({
   filePath: path.join(acpMemoryStore.dataDir, "briefing.json"),
   listFacts: () => acpMemoryStore.listFacts(),
@@ -848,6 +854,7 @@ const briefing = createBriefing({
     return searchWeb(query, options);
   },
   runLocalReply: (prompt, maxTokens) => llamaServerRuntime.runLocalReplyIfSafelyLoaded(prompt, maxTokens),
+  calendar: () => mailCalendarBriefingLines({ store: mailCalendarSettings }),
   offer: (candidate) => require("./proactive").offer(candidate),
 });
 // "Sitting down": the launchers' idle report (every 60 s) saw input this recently.

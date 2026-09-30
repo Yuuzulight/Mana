@@ -1253,6 +1253,7 @@ internal sealed class SettingsPanel : UserControl
         layout.Controls.Add(BuildVoiceTuningRow());
         layout.Controls.Add(BuildBargeInRow());
         layout.Controls.Add(BuildVoiceprintRow());
+        layout.Controls.Add(BuildSpeakerThresholdRow());
         layout.Controls.Add(BuildCameraRow());
         layout.Controls.Add(BuildSpeechWordsSection());
         return new TabPage("Voice") { Controls = { layout } };
@@ -1741,6 +1742,59 @@ internal sealed class SettingsPanel : UserControl
         return row;
     }
 
+    // #965: how close to my voiceprint speech has to be (SpeakerGate), read
+    // each time listening starts; MANA_SPEAKER_THRESHOLD still wins. The
+    // recent speaker= scores from speech-debug.log are there to pick it by.
+    private static FlowLayoutPanel BuildSpeakerThresholdRow()
+    {
+        var inv = System.Globalization.CultureInfo.InvariantCulture;
+        var threshold = SpeakerGate.ResolveThreshold(null, ManaSettingsStore.Load().SpeakerThreshold);
+        var slider = new TrackBar
+        {
+            Minimum = 10,
+            Maximum = 90,
+            TickFrequency = 10,
+            LargeChange = 5,
+            Width = 200,
+            Value = Math.Clamp((int)Math.Round(threshold * 100), 10, 90),
+            BackColor = DarkTheme.Background,
+        };
+        var value = new Label { AutoSize = true, ForeColor = DarkTheme.Text, Anchor = AnchorStyles.Left, Text = (slider.Value / 100f).ToString("F2", inv) };
+        var status = new Label
+        {
+            AutoSize = true,
+            ForeColor = DarkTheme.Muted,
+            Anchor = AnchorStyles.Left,
+            Text = string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("MANA_SPEAKER_THRESHOLD")) ? "" : "Set in the environment, which wins: MANA_SPEAKER_THRESHOLD",
+        };
+        var scores = VoiceDebugLog.RecentSpeakerScores();
+        var recent = new Label
+        {
+            AutoSize = true,
+            ForeColor = DarkTheme.Muted,
+            Anchor = AnchorStyles.Left,
+            Text = scores.Count == 0
+                ? "No voice match scores yet (speech-debug.log has them once the setting above is on)."
+                : $"Recent match scores: {string.Join(", ", scores.Select(s => s.ToString("F2", inv)))}",
+        };
+        slider.ValueChanged += (_, _) =>
+        {
+            value.Text = (slider.Value / 100f).ToString("F2", inv);
+            var latest = ManaSettingsStore.Load();
+            latest.SpeakerThreshold = slider.Value / 100f;
+            latest.Save();
+            status.Text = "Saved -- applies next time listening starts.";
+        };
+
+        var row = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.LeftToRight, BackColor = DarkTheme.Background };
+        row.Controls.Add(new Label { Text = "Voice match needed (higher = stricter)", AutoSize = true, ForeColor = DarkTheme.Text, Anchor = AnchorStyles.Left });
+        row.Controls.Add(slider);
+        row.Controls.Add(value);
+        row.Controls.Add(recent);
+        row.Controls.Add(status);
+        return row;
+    }
+
     // #912: off by default; read at each snapshot (the camera hotkey, or
     // Mana's vision__camera when I ask her to look at something).
     private static FlowLayoutPanel BuildCameraRow()
@@ -1761,8 +1815,39 @@ internal sealed class SettingsPanel : UserControl
             status.Text = "Saved.";
         };
 
+        // #962: where "save that" puts a snapshot; blank = Pictures\Mana.
+        var folder = new TextBox
+        {
+            Width = 260,
+            PlaceholderText = @"Pictures\Mana",
+            Text = ManaSettingsStore.Load().CameraSnapshotFolder ?? "",
+            BackColor = DarkTheme.Panel2,
+            ForeColor = DarkTheme.Text,
+        };
+        void SaveFolder()
+        {
+            var latest = ManaSettingsStore.Load();
+            latest.CameraSnapshotFolder = string.IsNullOrWhiteSpace(folder.Text) ? null : folder.Text.Trim();
+            latest.Save();
+            status.Text = "Saved.";
+        }
+        folder.TextChanged += (_, _) => SaveFolder();
+        var browse = new Button { Text = "Browse...", AutoSize = true };
+        DarkTheme.ApplyButton(browse);
+        browse.Click += (_, _) =>
+        {
+            using var dialog = new FolderBrowserDialog { Description = "Where Mana saves snapshots you ask her to keep", UseDescriptionForTitle = true };
+            if (dialog.ShowDialog() == DialogResult.OK)
+            {
+                folder.Text = dialog.SelectedPath;
+            }
+        };
+
         var row = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.LeftToRight, BackColor = DarkTheme.Background };
         row.Controls.Add(check);
+        row.Controls.Add(new Label { Text = "Save snapshots I ask to keep in", AutoSize = true, ForeColor = DarkTheme.Text, Anchor = AnchorStyles.Left });
+        row.Controls.Add(folder);
+        row.Controls.Add(browse);
         row.Controls.Add(status);
         return row;
     }
