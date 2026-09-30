@@ -52,3 +52,19 @@ test("dir_scanner filters by extension and exclude", () => {
     fs.rmSync(base, { recursive: true, force: true });
   }
 });
+
+test("dir_scanner doesn't follow links that lead outside the scanned root", () => {
+  const base = createSampleTree();
+  const outside = fs.mkdtempSync(path.join(os.tmpdir(), "mana-scan-out-"));
+  try {
+    fs.writeFileSync(path.join(outside, "secret.txt"), "not yours");
+    fs.symlinkSync(outside, path.join(base, "out"), "junction");
+    fs.symlinkSync(path.join(base, "sub"), path.join(base, "inner"), "junction");
+    const paths = scanDir(base, { path: base, maxDepth: 5, exclude: [] }).map((i) => i.path);
+    assert.ok(!paths.some((p) => p.startsWith("out")), paths.join(", "));
+    assert.ok(paths.includes("inner/c.py"), "a link that stays inside is still listed");
+  } finally {
+    fs.rmSync(base, { recursive: true, force: true });
+    fs.rmSync(outside, { recursive: true, force: true });
+  }
+});

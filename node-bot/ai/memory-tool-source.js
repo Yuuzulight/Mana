@@ -422,6 +422,7 @@ async function buildToolPolicyWithMemory(basePolicy, memoryToolSource) {
 module.exports = {
   MEMORY_TOOL_PREFIX,
   TOOL_SCHEMAS,
+  USER_SAID_YES,
   isMemoryToolName,
   createMemoryToolSource,
   createMemoryWriteExecutor,
