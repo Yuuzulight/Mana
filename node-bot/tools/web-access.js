@@ -186,7 +186,9 @@ async function searchWeb(query, options = {}) {
   refuseIfLocalOnly("web search", options.env);
   const limit = Math.min(Math.max(Number(options.limit) || 5, 1), 10);
   const base = getSearxngUrl(options.env);
-  const url = `${base}/search?format=json&q=${encodeURIComponent(cleanQuery)}`;
+  // #907: timeRange "day"/"week" keeps a news search to recent results.
+  const timeRange = ["day", "week"].includes(options.timeRange) ? `&time_range=${options.timeRange}` : "";
+  const url = `${base}/search?format=json&q=${encodeURIComponent(cleanQuery)}${timeRange}`;
 
   let resp;
   try {
