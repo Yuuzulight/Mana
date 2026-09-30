@@ -44,6 +44,14 @@ gets a fresh snapshot. Everything from the page reaches the model inside
 one untrusted frame (`ai/untrusted-content.js`). Screenshots are only for
 the Browser panel, taken while it's on screen; the model never sees one.
 
+## Tabs (#1159)
+
+`tab { do: "open", url }`, `{ do: "switch", number }`, `{ do: "close", number }`:
+up to 3 tabs (`MANA_BROWSER_MAX_TABS`, 1 to 5) for comparing pages. With
+more than one open, every answer lists them (title and URL). A new tab
+isn't opened while RAM is above 85%, and when her reply ends only the tab
+she's on stays open (popups a site opened go too).
+
 ## Batches (#1160)
 
 `batch { steps }` runs up to five steps (any action but `hand_over`, each

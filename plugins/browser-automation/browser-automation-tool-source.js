@@ -72,6 +72,12 @@ const TOOL_SCHEMAS = [
     to: { type: "string", description: "The ref of where to drop it." },
   }, ["from", "to"]),
   tool("back", "Go back to the previous page."),
+  // #1159
+  tool("tab", "Work with tabs (a few at most, e.g. to compare pages): open one at a URL, switch to one, or close one. With more than one open, every answer lists them.", {
+    do: { type: "string", enum: ["open", "switch", "close"] },
+    url: { type: "string", description: "For open: the http(s) URL." },
+    number: { type: "integer", description: "For switch and close: the tab's number in the list." },
+  }, ["do"]),
   // #1139: the user takes over in a visible window and presses Done.
   tool("hand_over", "Ask the user to take over the browser: for a login, a CAPTCHA, a payment or account change, or when you're stuck. You never type passwords or pay.", {
     reason: { type: "string", description: "What they need to do, short." },
@@ -101,7 +107,7 @@ TOOL_SCHEMAS.push(
 // What the model reads: everything from the page sits inside one untrusted
 // frame.
 function describeForModel(result) {
-  const lines = [`URL: ${result.url}`, `Title: ${result.title}`, ""];
+  const lines = [`URL: ${result.url}`, `Title: ${result.title}`, ...(result.tabs ? ["Tabs:", ...result.tabs] : []), ""];
   if (result.matches) {
     lines.push(result.matches.length ? `Best matches for "${result.description}":` : `Nothing on the page matches "${result.description}".`, ...result.matches);
   } else if (result.elements) {
@@ -257,6 +263,7 @@ function createBrowserAutomationToolSource(options = {}) {
       else if (action === "hover") result = await session.hover(args?.ref);
       else if (action === "press") result = await session.press(args?.key, args?.ref);
       else if (action === "drag") result = await session.drag(args?.from, args?.to);
+      else if (action === "tab") result = await session.tab(args);
       else result = await session.back();
     } catch (err) {
       // Issue #418: the launcher's activity feed should show a failed step
