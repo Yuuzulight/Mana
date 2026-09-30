@@ -64,6 +64,17 @@ Each tab keeps its last 100 console messages and requests, cleared when it
 loads a new page. Everything the page says comes back inside the untrusted
 frame.
 
+## Test this site (#1161)
+
+`test_site { urls, sizes? }` loads up to 5 pages at phone, tablet and
+desktop size (images included) and checks each for console errors, failed
+requests, layout that breaks out of the window, and basic accessibility
+(missing alt text and labels, unnamed buttons and links, low contrast), with
+a screenshot. Each page's links on the same site (up to 25) are checked
+once. Every site in it needs her permission (#1154). She gets the counts;
+the Browser panel's "Test report" opens the full report, with screenshots,
+drawn by Folio. `GET /browser-automation/site-test` serves the latest one.
+
 ## Look and click (#1157)
 
 `look_and_click { description }` is the last resort for pages with no

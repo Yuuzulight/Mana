@@ -22,6 +22,7 @@ const REF_RE = /^(?:f\d+)?e\d+$/;
 // #1161: the sizes she tests a page at.
 const VIEWPORTS = { phone: { width: 390, height: 844 }, tablet: { width: 820, height: 1180 }, desktop: { width: 1280, height: 720 } };
 const MAX_JS_RESULT_CHARS = 2000;
+const { inspectInPage, MAX_LINKS } = require("./site-test");
 // #1155: keys she may press -- the page's own keys, never a shortcut that
 // acts outside it (closing or opening tabs, printing, saving, devtools).
 const NAMED_KEYS = new Map(
@@ -380,6 +381,53 @@ function createBrowserSession(options = {}) {
     throw new Error('do must be "console", "network", "run_js", "viewport", "color_scheme" or "look"');
   }
 
+  // #1161: "Test this site" for one page: at each size, what inspectInPage
+  // finds plus the console errors, failed requests and a screenshot; then
+  // its links on the same site (at most MAX_LINKS), checked once, together.
+  // Other sites' links aren't fetched: she has no permission there.
+  async function testPage(url, sizes) {
+    const checks = [];
+    let links = [];
+    try {
+      for (const size of sizes) {
+        const viewport = VIEWPORTS[size];
+        if (!viewport) throw new Error(`"${size}" isn't a size (phone, tablet, desktop)`);
+        await page.setViewportSize(viewport);
+        await navigate(url);
+        const found = await page.evaluate(inspectInPage);
+        const { console: messages, network } = pageLog();
+        const shot = await page.screenshot({ type: "jpeg", quality: 40 });
+        checks.push({
+          size,
+          ...viewport,
+          consoleErrors: messages.filter((m) => m.type === "error").map((m) => m.text),
+          failedRequests: network.filter((r) => r.failure || r.status >= 400).map((r) => `${r.method} ${r.url} -- ${r.failure || `HTTP ${r.status}`}`),
+          layout: found.layout,
+          a11y: found.a11y,
+          screenshot: `data:image/jpeg;base64,${shot.toString("base64")}`,
+        });
+        if (!links.length) links = found.links;
+      }
+    } finally {
+      await page.setViewportSize(VIEWPORTS.desktop).catch(() => {});
+    }
+    const origin = new URL(await page.url()).origin;
+    const toCheck = links.filter((l) => new URL(l).origin === origin).slice(0, MAX_LINKS);
+    const results = await Promise.all(
+      toCheck.map(async (link) => {
+        try {
+          const response = await page.request.head(link, { timeout: ACTION_TIMEOUT_MS, failOnStatusCode: false });
+          // 405: the server just doesn't answer HEAD.
+          return response.status() >= 400 && response.status() !== 405 ? `${link} (HTTP ${response.status()})` : null;
+        } catch (e) {
+          return `${link} (${String(e.message || e).split("\n")[0].slice(0, 80)})`;
+        }
+      }),
+    );
+    const brokenLinks = results.filter(Boolean);
+    return { url, title: await page.title(), sizes: checks, brokenLinks, linksChecked: toCheck.length };
+  }
+
   // #1157: for pages with no useful accessibility info (canvas apps,
   // unlabeled custom UIs). locate(imageDataUrl, width, height) is her
   // vision model's answer: { x, y } in the screenshot, or null.
@@ -405,7 +453,7 @@ function createBrowserSession(options = {}) {
     return buffer.toString("base64");
   }
 
-  return { navigate, click, type, select, scroll, hover, press, drag, upload, lookAndClick, devtools, back, find, snapshot, screenshot, url: () => page.url() };
+  return { navigate, click, type, select, scroll, hover, press, drag, upload, lookAndClick, devtools, testPage, back, find, snapshot, screenshot, url: () => page.url() };
 }
 
 module.exports = {

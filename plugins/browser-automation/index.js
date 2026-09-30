@@ -65,6 +65,8 @@ let takenOver = null;
 let opening = false;
 let resumeUrl = null;
 let needsYou = null;
+// #1161: a site test loads images whether or not the panel watches.
+let loadMedia = false;
 
 // Why her browser mustn't run right now, or null -- self-work's gates.
 function blocker(deps) {
@@ -157,7 +159,7 @@ async function setUpTab(page) {
       aborted.add(request);
       return route.abort();
     }
-    if (BLOCKED_RESOURCE_TYPES.has(request.resourceType()) && !gateDeps.isWatched?.()) {
+    if (BLOCKED_RESOURCE_TYPES.has(request.resourceType()) && !gateDeps.isWatched?.() && !loadMedia) {
       aborted.add(request);
       return route.abort();
     }
@@ -255,7 +257,17 @@ function tabbedSession(deps) {
     return withTabs(await tabs[current].session.upload(ref, path.resolve(String(file))));
   }
 
-  const facade = { tab, upload, screenshot: () => tabs[current].session.screenshot(), url: () => currentPage().url() };
+  // #1161: a site test sees the pages as I would, images included.
+  async function testPage(url, sizes) {
+    loadMedia = true;
+    try {
+      return await tabs[current].session.testPage(url, sizes);
+    } finally {
+      loadMedia = false;
+    }
+  }
+
+  const facade = { tab, upload, testPage, screenshot: () => tabs[current].session.screenshot(), url: () => currentPage().url() };
   for (const name of SESSION_METHODS) {
     facade[name] = async (...args) => withTabs(await tabs[current].session[name](...args));
   }
@@ -525,6 +537,7 @@ module.exports = {
     takenOver = null;
     opening = false;
     offered.clear();
+    loadMedia = false;
     resumeUrl = null;
     needsYou = null;
   },

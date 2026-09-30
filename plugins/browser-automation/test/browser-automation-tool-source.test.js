@@ -94,6 +94,7 @@ test("listToolSchemas exposes navigate/snapshot/click/type as OpenAI-shaped tool
       "browser_automation__select",
       "browser_automation__snapshot",
       "browser_automation__tab",
+      "browser_automation__test_site",
       "browser_automation__type",
       "browser_automation__upload",
     ],
@@ -589,4 +590,33 @@ test("#1161: dev tools need the site's permission, frame what the page says, and
   assert.match(await source.executeTool("browser_automation__devtools", { do: "look", question: "Is the menu cut off?" }), /What she sees:\nseen: This is a screenshot of a web page\. Is the menu cut off\?/);
   gaming = true;
   await assert.rejects(() => source.executeTool("browser_automation__devtools", { do: "look" }), /off while the user is gaming/);
+});
+
+test("#1161: test_site asks for every site in it, keeps the report for the panel, and gives her the counts", async () => {
+  const pages = [];
+  const session = {
+    url: async () => "about:blank",
+    testPage: async (url, sizes) => {
+      pages.push([url, sizes]);
+      return { url, title: "Home", brokenLinks: [], linksChecked: 0, sizes: sizes.map((size) => ({ size, width: 1, height: 1, consoleErrors: [], failedRequests: [], layout: [], a11y: [], screenshot: null })) };
+    },
+  };
+  const { source, approvalGate } = createSource({ session });
+  await source.executeTool("browser_automation__test_site", { urls: ["https://a.test/"] }).catch(() => {});
+  await approvalGate.decide(approvalGate.listPending()[0].id, "always-allow");
+
+  await assert.rejects(() => source.executeTool("browser_automation__test_site", { urls: ["https://a.test/", "https://b.test/"] }), /a\.test needs the user's OK first/);
+  await approvalGate.decide(approvalGate.listPending().find((p) => p.actionType === "browser-site:a.test").id, "always-allow");
+  await assert.rejects(() => source.executeTool("browser_automation__test_site", { urls: ["https://a.test/", "https://b.test/"] }), /b\.test needs the user's OK first/);
+  assert.equal(pages.length, 0); // nothing loads until every site is allowed
+  await approvalGate.decide(approvalGate.listPending().find((p) => p.actionType === "browser-site:b.test").id, "always-allow");
+
+  const result = await source.executeTool("browser_automation__test_site", { urls: ["https://a.test/", "https://b.test/"], sizes: ["phone"] });
+  assert.deepEqual(pages, [["https://a.test/", ["phone"]], ["https://b.test/", ["phone"]]]);
+  assert.match(result, /Site test \(the full report, with screenshots, is in the user's Browser panel\):\nhttps:\/\/a\.test\/:\n  phone: 0 console errors/);
+  assert.equal(source.activityLog.getActivity().siteTest.title, "Site test: a.test");
+  assert.match(source.activityLog.getSiteTest().text, /^# Site test: a\.test/);
+
+  await assert.rejects(() => source.executeTool("browser_automation__test_site", { urls: [] }), /name 1 to 5 pages/);
+  await assert.rejects(() => source.executeTool("browser_automation__test_site", { urls: ["file:///C:/x"] }), /isn't a web page/);
 });

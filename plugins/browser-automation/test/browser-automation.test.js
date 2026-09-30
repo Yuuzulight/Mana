@@ -524,3 +524,116 @@ test("#1161: run_js returns JSON (capped), sizes and color schemes switch, never
   await assert.rejects(() => session.devtools({ do: "run_js", code: "document.forms[0].password.value" }), /asks for a password/);
   await assert.rejects(() => session.devtools({ do: "look" }, async () => "a login form"), /asks for a password/);
 });
+
+test("#1161: inspectInPage finds sideways scrolling, missing alt text and labels, unnamed buttons and low contrast", () => {
+  const { inspectInPage } = require("../site-test");
+  const el = (props) => ({
+    nodeType: 1,
+    textContent: "",
+    childNodes: [],
+    getAttribute: (name) => props.attrs?.[name] ?? null,
+    hasAttribute: (name) => name in (props.attrs || {}),
+    getBoundingClientRect: () => props.box || { width: 10, right: 100 },
+    getClientRects: () => [1],
+    querySelector: () => null,
+    parentElement: null,
+    style: props.style || {},
+    ...props,
+  });
+  const grey = el({ textContent: "Fine print", childNodes: [{ nodeType: 3, textContent: "Fine print" }], style: { color: "rgb(119, 119, 119)", backgroundColor: "rgb(255, 255, 255)", fontSize: "14px", fontWeight: "400" } });
+  const black = el({ textContent: "Readable", childNodes: [{ nodeType: 3, textContent: "Readable" }], style: { color: "rgb(0, 0, 0)", backgroundColor: "rgba(0, 0, 0, 0)", fontSize: "14px", fontWeight: "400" } });
+  const wide = el({ box: { width: 600, right: 600 }, style: { position: "static" } });
+  const noAlt = el({ attrs: {} });
+  const input = el({ labels: [], attrs: {} });
+  const emptyButton = el({ attrs: {} });
+  const link = el({ textContent: "Home", href: "https://a.test/" });
+  const selectors = {
+    'input:not([type="hidden"]):not([type="submit"]):not([type="button"]), select, textarea': [input],
+    "button, a[href]": [emptyButton, link],
+    "p, span, a, li, h1, h2, h3, h4, h5, h6, button, label, td, th": [grey, black],
+    "a[href]": [link, link, { href: "mailto:x@a.test" }],
+  };
+  global.window = { innerWidth: 390 };
+  global.document = {
+    documentElement: { scrollWidth: 600 },
+    body: { querySelectorAll: () => [wide, grey] },
+    images: [noAlt],
+    querySelectorAll: (s) => selectors[s] || [],
+  };
+  global.getComputedStyle = (node) => node.style || {};
+  try {
+    const found = inspectInPage();
+    assert.deepEqual(found.layout, ["the page is 600px wide in a 390px window (it scrolls sideways)", "1 elements stick out past the right edge"]);
+    assert.deepEqual(found.a11y, [
+      "1 images without alt text",
+      "1 form fields without a label",
+      "1 buttons or links without a name",
+      '1 text elements with low contrast, e.g. "Fine print"',
+    ]);
+    assert.deepEqual(found.links, ["https://a.test/"]);
+  } finally {
+    delete global.window;
+    delete global.document;
+    delete global.getComputedStyle;
+  }
+});
+
+test("#1161: testPage checks each size, then the links once, and goes back to desktop", async () => {
+  const page = createFakePage();
+  const { inspectInPage } = require("../site-test");
+  const evaluate = page.evaluate;
+  page.evaluate = async (fn, arg) =>
+    fn === inspectInPage ? { layout: page.state.viewport?.width === 390 ? ["the page is 500px wide in a 390px window (it scrolls sideways)"] : [], a11y: ["2 images without alt text"], links: ["https://other.test/x", "https://example.com/gone", "https://example.com/ok", "https://example.com/down"] } : evaluate(fn, arg);
+  page.setViewportSize = async (size) => (page.state.viewport = size);
+  page.request = {
+    head: async (url) => {
+      if (url.includes("other")) throw new Error("other sites aren't fetched");
+      if (url.endsWith("down")) throw new Error("net::ERR_CONNECTION_RESET\nmore");
+      return { status: () => (url.endsWith("gone") ? 404 : 200) };
+    },
+  };
+  const log = { console: [{ type: "error", text: "boom" }, { type: "log", text: "hi" }], network: [{ method: "GET", url: "https://example.com/api", status: 500 }] };
+  const session = createBrowserSession({ page, pageLog: () => log });
+  const result = await session.testPage("https://example.com/", ["phone", "desktop"]);
+
+  assert.deepEqual(result.sizes.map((s) => [s.size, s.width, s.height]), [["phone", 390, 844], ["desktop", 1280, 720]]);
+  assert.deepEqual(result.sizes[0].layout, ["the page is 500px wide in a 390px window (it scrolls sideways)"]);
+  assert.deepEqual(result.sizes[1].layout, []);
+  assert.deepEqual(result.sizes[0].consoleErrors, ["boom"]);
+  assert.deepEqual(result.sizes[0].failedRequests, ["GET https://example.com/api -- HTTP 500"]);
+  assert.match(result.sizes[0].screenshot, /^data:image\/jpeg;base64,/);
+  // Only this site's links; a failure keeps its first line.
+  assert.deepEqual(result.brokenLinks, ["https://example.com/gone (HTTP 404)", "https://example.com/down (net::ERR_CONNECTION_RESET)"]);
+  assert.equal(result.linksChecked, 3);
+  assert.deepEqual(page.state.viewport, { width: 1280, height: 720 });
+  await assert.rejects(() => session.testPage("https://example.com/", ["watch"]), /isn't a size/);
+});
+
+test("#1161: the report is Markdown with its screenshots as data images, and a short summary for her", () => {
+  const { reportMarkdown, reportSummary } = require("../site-test");
+  const report = {
+    site: "example.com",
+    when: "1 Oct 2026, 14:03",
+    pages: [
+      {
+        url: "https://example.com/",
+        title: "Home",
+        brokenLinks: ["https://example.com/gone (HTTP 404)"],
+        linksChecked: 3,
+        sizes: [
+          { size: "phone", width: 390, height: 844, consoleErrors: ["boom"], failedRequests: [], layout: [], a11y: ["2 images without alt text"], screenshot: "data:image/jpeg;base64,AAA" },
+        ],
+      },
+    ],
+  };
+  const { title, text, images } = reportMarkdown(report);
+  assert.equal(title, "Site test: example.com");
+  assert.match(text, /^# Site test: example\.com\n\n1 Oct 2026, 14:03 · 1 page × 1 sizes · 3 problems\n\n## Home\nhttps:\/\/example\.com\/\n\n### phone \(390×844\)\n!\[phone screenshot\]\(shot-1\)/);
+  assert.match(text, /- \*\*Console errors\*\* \(1\):\n  - boom\n- Failed requests: none\n- Layout: none\n- \*\*Accessibility\*\* \(1\):\n  - 2 images without alt text/);
+  assert.match(text, /- \*\*Broken links \(3 checked\)\*\* \(1\):\n  - https:\/\/example\.com\/gone \(HTTP 404\)$/);
+  assert.deepEqual(images, { "shot-1": "data:image/jpeg;base64,AAA" });
+  assert.equal(
+    reportSummary(report),
+    "https://example.com/:\n  phone: 1 console errors, 0 failed requests, layout ok, 2 images without alt text\n  broken links: https://example.com/gone (HTTP 404)",
+  );
+});
