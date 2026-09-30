@@ -135,6 +135,23 @@ public class ToolPanelHostTests : IDisposable
     }
 
     [Fact]
+    public void Highlight_LastsUntilTheToolOpens()
+    {
+        RunSta(() =>
+        {
+            using var toolTip = new ToolTip();
+            using var host = new ToolPanelHost(toolTip, settings);
+            host.Add("a", "Alpha", new Button(), () => new Label());
+            host.Highlight("a");
+            Assert.True(host.IsHighlighted("a"));
+            host.Open("a");
+            Assert.False(host.IsHighlighted("a"));
+            host.Highlight("a"); // already in view
+            Assert.False(host.IsHighlighted("a"));
+        });
+    }
+
+    [Fact]
     public void ToolWithoutAnIcon_OpensOnlyWhenAsked()
     {
         new ManaSettingsStore { RailTool = "docs", RailToolPinned = true }.Save(settings);

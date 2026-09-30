@@ -27,6 +27,8 @@ namespace Mana.NativeLauncher;
 //   closes an unpinned panel (SessionListForm.ProcessCmdKey).
 // - The open tool, the pin and the width are saved in ManaSettingsStore
 //   (RailTool, RailToolPinned, RailToolWidth); a pinned tool reopens on launch.
+// - Highlight(id) puts a dot on a closed tool's icon until it's opened
+//   (something new inside, like a new artifact).
 internal sealed class ToolPanelHost : Panel
 {
     private const int MinWidth = 160;
@@ -121,6 +123,20 @@ internal sealed class ToolPanelHost : Panel
 
     public bool IsOpen(string id) => OpenId == id;
 
+    // #1120: something new in a closed tool (a new artifact) puts a dot on
+    // its icon until it's opened.
+    private readonly HashSet<string> highlighted = new();
+
+    public bool IsHighlighted(string id) => highlighted.Contains(id);
+
+    public void Highlight(string id)
+    {
+        if (OpenId != id && highlighted.Add(id))
+        {
+            tools.FirstOrDefault(t => t.Id == id)?.Button?.Invalidate();
+        }
+    }
+
     // The host half of SessionListForm.RegisterRailTool: the icon is already
     // made. A null button (#1127's docs) is a tool with no rail icon, opened
     // only through Open.
@@ -158,6 +174,7 @@ internal sealed class ToolPanelHost : Panel
             return;
         }
         OpenId = id;
+        highlighted.Remove(id);
         titleLabel.Text = tool.Label;
         errorRow.Visible = false;
         if (tool.Content is null)
