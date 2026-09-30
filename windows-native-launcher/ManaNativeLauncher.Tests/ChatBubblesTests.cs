@@ -106,4 +106,14 @@ public class ChatBubblesTests
         Assert.Equal(1, view.LatestManaMessage("Hi there."));
         Assert.Equal(3, view.LatestManaMessage("not said"));
     }
+
+    // Click-through (and so never opening chat) while a game runs.
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(true, true)]
+    public void ExStyle_IsClickThroughOnlyWhileGaming(bool gameRunning, bool clickThrough)
+    {
+        Assert.Equal(clickThrough, (ChatBubblesForm.ExStyle(0, gameRunning) & ChatBubblesForm.WsExTransparent) != 0);
+        Assert.Equal(clickThrough, (ChatBubblesForm.ExStyle(ChatBubblesForm.WsExTransparent, gameRunning) & ChatBubblesForm.WsExTransparent) != 0);
+    }
 }

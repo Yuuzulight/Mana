@@ -80,9 +80,14 @@ async function createPendingRequest(id, payload) {
   await ensureApprovalDir();
   const { approvalDir } = getApprovalConfig();
   const filePath = path.join(approvalDir, `${id}.json`);
-  await fs.promises.writeFile(filePath, JSON.stringify(payload, null, 2), {
+  // Written under a temporary name and renamed into place, so nothing that
+  // lists pending approvals (the launcher, /admin/pending-writes) ever reads
+  // a half-written file.
+  const tmpPath = `${filePath}.tmp`;
+  await fs.promises.writeFile(tmpPath, JSON.stringify(payload, null, 2), {
     encoding: "utf8",
   });
+  await fs.promises.rename(tmpPath, filePath);
   return filePath;
 }
 

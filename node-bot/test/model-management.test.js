@@ -6,6 +6,7 @@ const test = require("node:test");
 
 const {
   createModelManagement,
+  detectGpu,
   detectGpuVramMb,
   detectGpuVramUsageMb,
   detectSystemMemoryMb,
@@ -376,6 +377,55 @@ test("detectGpuVramMb parses nvidia-smi output and returns null on failure", () 
   );
 });
 
+// Fakes nvidia-smi (missing unless given) and the two `reg query` calls.
+function fakeGpuSpawn({ smi = null, driverDesc = "", qwMemorySize = "" } = {}) {
+  return (bin, args) => {
+    if (bin === "nvidia-smi") {
+      return smi ? { status: 0, stdout: smi } : { error: new Error("ENOENT"), status: null };
+    }
+    const out = args.includes("DriverDesc") ? driverDesc : qwMemorySize;
+    return out ? { status: 0, stdout: `\r\n${out}\r\nEnd of search: 1 match(es) found.\r\n` } : { status: 1, stdout: "" };
+  };
+}
+const CLASS = "HKEY_LOCAL_MACHINE\\SYSTEM\\CurrentControlSet\\Control\\Class\\{4d36e968-e325-11ce-bfc1-08002be10318}";
+
+test("detectGpu: nvidia-smi first, with name, VRAM and CUDA", () => {
+  const gpu = detectGpu({ spawnSync: fakeGpuSpawn({ smi: "NVIDIA GeForce RTX 5080, 16303\n" }), platform: "win32" });
+  assert.deepEqual(gpu, { vendor: "nvidia", name: "NVIDIA GeForce RTX 5080", vramMb: 16303, cuda: true, sharedMemory: false });
+});
+
+test("detectGpu: without nvidia-smi, reads 64-bit VRAM and name from the display adapter registry keys", () => {
+  const spawnSync = fakeGpuSpawn({
+    driverDesc:
+      `${CLASS}\\0000\r\n    DriverDesc    REG_SZ    AMD Radeon(TM) Graphics\r\n\r\n` +
+      `${CLASS}\\0001\r\n    DriverDesc    REG_SZ    AMD Radeon RX 7900 XTX\r\n\r\n` +
+      `${CLASS}\\0002\r\n    DriverDesc    REG_SZ    Microsoft Basic Display Adapter`,
+    qwMemorySize:
+      `${CLASS}\\0000\r\n    HardwareInformation.qwMemorySize    REG_QWORD    0x20000000\r\n\r\n` +
+      `${CLASS}\\0001\r\n    HardwareInformation.qwMemorySize    REG_QWORD    0x600000000`,
+  });
+  // 24 GB -- past the 4 GB WMI AdapterRAM cap; the APU is skipped for it.
+  assert.deepEqual(detectGpu({ spawnSync, platform: "win32" }), {
+    vendor: "amd", name: "AMD Radeon RX 7900 XTX", vramMb: 24576, cuda: false, sharedMemory: false,
+  });
+});
+
+test("detectGpu: an integrated GPU is flagged as shared memory, not counted as VRAM", () => {
+  const spawnSync = fakeGpuSpawn({
+    driverDesc: `${CLASS}\\0000\r\n    DriverDesc    REG_SZ    Intel(R) Iris(R) Xe Graphics`,
+    qwMemorySize: `${CLASS}\\0000\r\n    HardwareInformation.qwMemorySize    REG_QWORD    0x80000000`,
+  });
+  assert.deepEqual(detectGpu({ spawnSync, platform: "win32" }), {
+    vendor: "intel", name: "Intel(R) Iris(R) Xe Graphics", vramMb: null, cuda: false, sharedMemory: true,
+  });
+});
+
+test("detectGpu: null when nothing is found, off Windows without nvidia-smi, or on a throw", () => {
+  assert.equal(detectGpu({ spawnSync: fakeGpuSpawn(), platform: "win32" }), null);
+  assert.equal(detectGpu({ spawnSync: fakeGpuSpawn({ driverDesc: `${CLASS}\\0000\r\n    DriverDesc    REG_SZ    AMD Radeon RX 6600` }), platform: "linux" }), null);
+  assert.equal(detectGpu({ spawnSync: () => { throw new Error("boom"); }, platform: "win32" }), null);
+});
+
 test("detectGpuVramUsageMb parses used/free nvidia-smi output and returns null on failure", () => {
   assert.deepEqual(
     detectGpuVramUsageMb(() => ({ status: 0, stdout: "1024, 5120\n" })),
@@ -462,20 +512,21 @@ test("detectSystemMemoryMb converts bytes to whole megabytes", () => {
   assert.equal(detectSystemMemoryMb(() => NaN), null);
 });
 
-test("recommendModelProfile picks a tier from VRAM when available", () => {
-  assert.equal(recommendModelProfile({ vramMb: 8192, ramMb: 65536 }).profile, "default");
-  assert.equal(recommendModelProfile({ vramMb: 6144, ramMb: 65536 }).profile, "fast");
-  assert.equal(recommendModelProfile({ vramMb: 16384, ramMb: 8192 }).profile, "quality");
+test("recommendModelProfile picks a tier from the VRAM left for the LLM", () => {
+  assert.equal(recommendModelProfile({ vramMb: 4096, ramMb: 65536 }).profile, "fast");
+  assert.equal(recommendModelProfile({ vramMb: 6144, ramMb: 65536 }).profile, "default");
+  assert.equal(recommendModelProfile({ vramMb: 8188, ramMb: 65536 }).profile, "default");
+  assert.equal(recommendModelProfile({ vramMb: 12288, ramMb: 8192 }).profile, "quality");
   assert.match(recommendModelProfile({ vramMb: 6144, ramMb: null }).reason, /nvidia-smi/i);
 });
 
-test("recommendModelProfile treats a real 16GB card as quality despite nvidia-smi under-reporting", () => {
-  // A real 16GB card typically reports ~16000-16300MB via nvidia-smi
-  // (driver/OS reservations), never the full 16384 -- the tier boundary
-  // must sit below that or a genuine 16GB upgrade gets silently
-  // recommended "default" instead of "quality".
-  assert.equal(recommendModelProfile({ vramMb: 16043, ramMb: 8192 }).profile, "quality");
-  assert.equal(recommendModelProfile({ vramMb: 15359, ramMb: 8192 }).profile, "default");
+test("recommendModelProfile subtracts TTS and Whisper VRAM first (#1086)", () => {
+  // 8GB with Fish on: ~3GB left, so fast.
+  const tight = recommendModelProfile({ vramMb: 8188, ramMb: 32768, voiceMb: 5120 + 273 });
+  assert.equal(tight.profile, "fast");
+  assert.match(tight.reason, /~5\.3GB of it held by TTS and Whisper, leaving ~2\.7GB for the LLM/);
+  // A 16GB card keeps quality next to Fish and a medium Whisper model.
+  assert.equal(recommendModelProfile({ vramMb: 16303, ramMb: 32768, voiceMb: 5120 + 2150 }).profile, "quality");
 });
 
 test("recommendModelProfile falls back to system RAM when VRAM is unknown", () => {
@@ -520,10 +571,14 @@ test("model management surfaces and caches a hardware recommendation", () => {
     },
     totalmem: () => 34_359_738_368,
     modelSettingsStore: fakeModelSettingsStore(),
+    // #1086: Fish (5GB) + whisper tiny leave under 1GB of the 6GB.
+    ttsProvider: "fish",
+    whisperModel: path.join("C:", "whisper", "ggml-tiny.en.bin"),
   });
 
   const first = manager.getRecommendedModelProfile();
   assert.equal(first.profile, "fast");
+  assert.match(first.reason, /~5\.3GB of it held by TTS and Whisper/);
   assert.equal(first.label, "Fast fallback");
   assert.deepEqual(first.detected, { vramMb: 6144, ramMb: 32768 });
 
