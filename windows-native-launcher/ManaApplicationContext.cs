@@ -264,7 +264,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
             openChat: () => RunOnUi(ShowSessionList),
             onDoctor: payload => RunOnUi(() => ShowDoctorAlert(payload)),
             // #905: a reminder is said out loud too, even mid-game.
-            onSpeak: text => _ = voiceLoop.SpeakAnnouncementAsync(text),
+            onSpeak: payload => _ = voiceLoop.SpeakAnnouncementAsync(payload.Speak!, AnnouncementEmotion.For(payload.Emotion, payload.Kind ?? payload.Type)),
             // #914: the new character's Live2D model, loaded in place (and
             // why not, when her own model can't be used).
             onCharacter: payload => RunOnUi(() =>
@@ -506,11 +506,12 @@ internal sealed class ManaApplicationContext : ApplicationContext
         menu.Items.Add("Try a PR...", null, (_, _) => PromptTryPr());
         var backToMainItem = new ToolStripMenuItem("Back to main", null, (_, _) => _ = RunLauncherScriptAsync("try-pr.ps1", ["-Main"], "Going back to main", "Mana's switch back to main failed", "try-pr.log"));
         menu.Items.Add(backToMainItem);
+        menu.Items.Add("Revert a merged PR...", null, (_, _) => PromptRevertPr()); // #1011
         menu.Opening += (_, _) =>
         {
-            var trying = TryingPr(Path.Combine(processManager.RootDirectory, "windows-native-launcher"));
-            backToMainItem.Visible = trying is not null;
-            backToMainItem.Text = $"Back to main (trying PR #{trying})";
+            var running = RunningOffMain(Path.Combine(processManager.RootDirectory, "windows-native-launcher"));
+            backToMainItem.Visible = running is not null;
+            backToMainItem.Text = $"Back to main (running {running})";
         };
         menu.Items.Add("Exit Mana", null, (_, _) => _ = ShutdownAsync());
         return menu;
@@ -723,7 +724,9 @@ internal sealed class ManaApplicationContext : ApplicationContext
                 throw new InvalidOperationException(WebcamCapture.OffMessage);
             }
             ShowCameraBalloon("Mana is looking through your camera", "One snapshot, not saved.", ToolTipIcon.Info);
-            return lastCameraSnapshot = await WebcamCapture.CaptureAsJpegDataUrlAsync();
+            var snapshot = await WebcamCapture.CaptureAsync();
+            lastCameraSnapshot = snapshot.Jpeg;
+            return snapshot.VisionDataUrl;
         }
         catch (Exception ex)
         {
@@ -732,8 +735,9 @@ internal sealed class ManaApplicationContext : ApplicationContext
         }
     }
 
-    // #962: the last snapshot, in memory only, for "save that".
-    private volatile string? lastCameraSnapshot;
+    // #962: the last snapshot's full-resolution JPEG, in memory only, for
+    // "save that".
+    private volatile byte[]? lastCameraSnapshot;
 
     // #962: vision__save_snapshot (write tier, so smart approval asks first)
     // writes it to Settings > Voice's folder or Pictures\Mana.
@@ -884,7 +888,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
         {
             if (await backendClient.SetCharacterAsync(id) is string handoff)
             {
-                await voiceLoop.SpeakAnnouncementAsync(handoff);
+                await voiceLoop.SpeakAnnouncementAsync(handoff, AnnouncementEmotion.For(null, "handoff"));
             }
         }
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or JsonException)
@@ -1173,8 +1177,14 @@ internal sealed class ManaApplicationContext : ApplicationContext
         {
             return;
         }
+        var reason = File.ReadAllText(note).Trim();
         File.Delete(note);
-        ShowBalloon("Mana's update was rolled back", "The new launcher build didn't start, so I'm back on the previous one.", ToolTipIcon.Warning);
+        if (reason.Length == 0)
+        {
+            reason = "The new launcher build didn't start";
+        }
+        Console.WriteLine($"Launcher update rolled back: {reason}");
+        ShowBalloon("Mana's update was rolled back", $"{reason}, so I'm back on the previous one.", ToolTipIcon.Warning);
     }
 
     // #995: the tray's Update now -- pull, build, then apply straight away
@@ -1182,11 +1192,40 @@ internal sealed class ManaApplicationContext : ApplicationContext
     private Task RunUpdateScriptAsync() =>
         RunLauncherScriptAsync("update-mana.ps1", ["-Now"], "Updating Mana", "Mana's update failed", "update.log");
 
-    // #1010: the PR a "Try a PR" left running (bin/trying-pr), or null on main.
-    internal static int? TryingPr(string launcherDir)
+    // #1010: what try-pr.ps1 left running instead of main ("PR #1020", or
+    // #1011's "the previous build"), from bin/trying-pr; null on main.
+    internal static string? RunningOffMain(string launcherDir)
     {
         var marker = Path.Combine(launcherDir, "bin", "trying-pr");
-        return File.Exists(marker) && int.TryParse(File.ReadAllText(marker).Trim(), out var pr) ? pr : null;
+        var running = File.Exists(marker) ? File.ReadAllText(marker).Trim() : "";
+        return running.Length > 0 ? running : null;
+    }
+
+    // #1011: a merged PR broke something -- node-bot opens its issue and a
+    // revert PR, then the running build rolls back to the previous one.
+    private async void PromptRevertPr()
+    {
+        using var dialog = new TextPromptDialog("Revert a merged PR", "Merged PR number to revert:", "");
+        if (dialog.ShowDialog() != DialogResult.OK || !int.TryParse(dialog.Value.Trim().TrimStart('#'), out var pr) || pr <= 0)
+        {
+            return;
+        }
+        ManaRevertResult result;
+        try
+        {
+            result = await backendClient.RevertPrAsync(pr);
+        }
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or InvalidOperationException or JsonException)
+        {
+            result = new ManaRevertResult { Error = ex.Message };
+        }
+        if (result.PrUrl is null || result.MergeCommit is null)
+        {
+            ShowBalloon($"Mana couldn't revert #{pr}", result.Error ?? "No revert PR came back.", ToolTipIcon.Error);
+            return;
+        }
+        chatLog.AppendManaMessage($"I opened {result.PrUrl} to revert #{pr}, and I'm rolling back to the previous build.");
+        await RunLauncherScriptAsync("try-pr.ps1", ["-Previous", "-Without", result.MergeCommit], "Rolling back to the previous build", "Mana couldn't roll back", "try-pr.log");
     }
 
     private void PromptTryPr()
