@@ -9,7 +9,9 @@ namespace Mana.NativeLauncher;
 // #914: Model, on a "character" payload, is her Live2D model (null: the default).
 // #1008: Url, on a "self-work" payload, is her PR once it's ready.
 // #1024: Kind and Emotion pick how Speak is said (AnnouncementEmotion).
-internal sealed record TrayNotificationPayload(string? Type, string Title, string Text, string? Speak = null, string? Model = null, string? Url = null, string? Kind = null, string? Emotion = null)
+// #914: Id, on a "group" payload, is the partner replying alongside the
+// active character (null: nobody, so her avatar goes away).
+internal sealed record TrayNotificationPayload(string? Type, string Title, string Text, string? Speak = null, string? Model = null, string? Url = null, string? Kind = null, string? Emotion = null, string? Id = null)
 {
     // Returns null for anything that isn't a well-formed JSON object --
     // a malformed or unexpectedly-shaped message (e.g. "type" present but
@@ -33,7 +35,8 @@ internal sealed record TrayNotificationPayload(string? Type, string Title, strin
             var url = root.TryGetProperty("url", out var urlElement) ? urlElement.GetString() : null;
             var kind = root.TryGetProperty("kind", out var kindElement) ? kindElement.GetString() : null;
             var emotion = root.TryGetProperty("emotion", out var emotionElement) ? emotionElement.GetString() : null;
-            return new TrayNotificationPayload(type, title, text, speak, model, url, kind, emotion);
+            var id = root.TryGetProperty("id", out var idElement) && idElement.ValueKind == JsonValueKind.String ? idElement.GetString() : null;
+            return new TrayNotificationPayload(type, title, text, speak, model, url, kind, emotion, id);
         }
         catch
         {

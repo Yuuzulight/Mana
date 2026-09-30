@@ -32,11 +32,11 @@ internal sealed class ToolPanelHost : Panel
     private const int MinWidth = 160;
     private const int MaxWidth = 600;
 
-    private sealed class Tool(string id, string label, Button button, Func<Control> create)
+    private sealed class Tool(string id, string label, Button? button, Func<Control> create)
     {
         public string Id { get; } = id;
         public string Label { get; } = label;
-        public Button Button { get; } = button;
+        public Button? Button { get; } = button;
         public Func<Control> Create { get; } = create;
         public Control? Content { get; set; }
     }
@@ -121,13 +121,18 @@ internal sealed class ToolPanelHost : Panel
 
     public bool IsOpen(string id) => OpenId == id;
 
-    // The host half of SessionListForm.RegisterRailTool: the icon is already made.
-    public void Add(string id, string label, Button button, Func<Control> createContent)
+    // The host half of SessionListForm.RegisterRailTool: the icon is already
+    // made. A null button (#1127's docs) is a tool with no rail icon, opened
+    // only through Open.
+    public void Add(string id, string label, Button? button, Func<Control> createContent)
     {
         tools.Add(new Tool(id, label, button, createContent));
-        button.AccessibleName ??= label;
-        button.Click += (_, _) => Toggle(id);
-        if (id == restoreId && OpenId is null)
+        if (button is not null)
+        {
+            button.AccessibleName ??= label;
+            button.Click += (_, _) => Toggle(id);
+        }
+        if (id == restoreId && button is not null && OpenId is null)
         {
             Open(id);
         }
@@ -177,7 +182,7 @@ internal sealed class ToolPanelHost : Panel
             {
                 t.Content.Visible = t == tool;
             }
-            t.Button.Invalidate();
+            t.Button?.Invalidate();
         }
         Visible = true;
         Splitter.Visible = true;
@@ -194,7 +199,7 @@ internal sealed class ToolPanelHost : Panel
         OpenId = null;
         Visible = false;
         Splitter.Visible = false;
-        wasOpen.Button.Invalidate();
+        wasOpen.Button?.Invalidate();
         Save(s => s.RailTool = null);
     }
 
@@ -219,7 +224,7 @@ internal sealed class ToolPanelHost : Panel
         {
             return false;
         }
-        var tool = tools.OrderBy(t => t.Button.Top).ElementAtOrDefault(n);
+        var tool = tools.Where(t => t.Button is not null).OrderBy(t => t.Button!.Top).ElementAtOrDefault(n);
         if (tool is null)
         {
             return false;

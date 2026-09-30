@@ -331,10 +331,10 @@ internal sealed partial class SessionListForm : Form
         // #538's rail: Artifacts then Background tasks on top, Settings
         // docked at the bottom. (#538's Browser and Terminal icons stay off
         // until those tools exist.)
-        var railSettingsButton = MakeRailButton("settings", "Settings");
-        railSettingsButton.Dock = DockStyle.Bottom;
-        railSettingsButton.Click += (_, _) => OpenSettings();
-        toolRail.Controls.Add(railSettingsButton);
+        // #1119: Settings opens in the tool panel.
+        RegisterRailTool("settings", "settings", "Settings", CreateSettingsTool).Dock = DockStyle.Bottom;
+        // #1127: Mana's docs, opened from Settings (OpenDoc); no rail icon.
+        toolPanel.Add("docs", "Docs", null, () => docsPanel = new DocsPanel(ManaApplicationContext.FindRootDirectory()));
         var railArtifactsButton = MakeRailButton("artifacts", "Artifacts");
         railArtifactsButton.Click += (_, _) => ShowArtifacts?.Invoke();
         toolRail.Controls.Add(railArtifactsButton);
@@ -1165,29 +1165,82 @@ internal sealed partial class SessionListForm : Form
     // couldn't, or null. Set by ManaApplicationContext, which owns the hotkeys.
     public Func<HotkeyAction, Keys?, string?>? BindHotkey { get; set; }
 
-    // Also the tray's Settings…; a second open just brings it forward.
-    private SettingsDialog? openSettings;
+    // #1119: the tray's Settings… -- the tool panel on Settings, with focus
+    // in it (so the chat getting focus as the window activates doesn't
+    // close it). Call after showing the window.
+    // #1127: a Mana doc (a Markdown file in the repo) in the tool panel,
+    // bringing this window up if it's hidden (Settings' own window).
+    private DocsPanel? docsPanel;
+
+    internal void OpenDoc(string path)
+    {
+        if (!Visible)
+        {
+            Show();
+        }
+        Activate();
+        toolPanel.Open("docs");
+        docsPanel?.Open(path);
+        toolPanel.SelectNextControl(null, forward: true, tabStopOnly: true, nested: true, wrap: false);
+    }
 
     internal void OpenSettings()
     {
-        if (openSettings is not null)
+        toolPanel.Open("settings");
+        toolPanel.SelectNextControl(null, forward: true, tabStopOnly: true, nested: true, wrap: false);
+    }
+
+    // The same Settings, non-modal: the tool panel's, and its "Open in its
+    // own window" (a second open just brings that window forward).
+    private SettingsDialog? settingsWindow;
+
+    private SettingsPanel NewSettingsPanel()
+    {
+        // BindHotkey is set after this form is made, and a pinned Settings
+        // panel is made with it, so it's looked up when used.
+        var panel = new SettingsPanel(backendClient, backendLog, () => voiceLoop.CurrentSessionId,
+            (action, keys) => BindHotkey is { } bind ? bind(action, keys) : "Hotkeys aren't set up yet.",
+            new ListeningPause(() => voiceLoop.IsListening, voiceLoop.ToggleListening));
+        // #681: the active preset reaches the next reply as soon as it's chosen.
+        panel.ActivePresetChanged = voiceLoop.SetPresetId;
+        panel.OpenDoc = OpenDoc;
+        return panel;
+    }
+
+    private Control CreateSettingsTool()
+    {
+        var panel = NewSettingsPanel();
+        // Fresh data whenever it comes into view, as each dialog open did.
+        Task? refresh = null;
+        panel.VisibleChanged += async (_, _) =>
         {
-            openSettings.Activate();
+            if (panel.Visible && refresh is not { IsCompleted: false })
+            {
+                refresh = panel.RefreshAllAsync();
+                await refresh;
+            }
+        };
+        var ownWindow = new Button { Text = "Open in its own window", Dock = DockStyle.Right, AutoSize = true };
+        DarkTheme.ApplyButton(ownWindow);
+        ownWindow.Click += (_, _) => OpenSettingsWindow();
+        var row = new Panel { Dock = DockStyle.Top, Height = 30, Padding = new Padding(4) };
+        row.Controls.Add(ownWindow);
+        var tool = new Panel();
+        tool.Controls.Add(panel);
+        tool.Controls.Add(row);
+        return tool;
+    }
+
+    private void OpenSettingsWindow()
+    {
+        toolPanel.Close();
+        if (settingsWindow is { IsDisposed: false })
+        {
+            settingsWindow.Activate();
             return;
         }
-        using var dialog = new SettingsDialog(backendClient, backendLog, () => voiceLoop.CurrentSessionId, BindHotkey, new ListeningPause(() => voiceLoop.IsListening, voiceLoop.ToggleListening));
-        openSettings = dialog;
-        try
-        {
-            dialog.ShowDialog(this);
-        }
-        finally
-        {
-            openSettings = null;
-        }
-        // #681: Settings > Presets persists the active preset straight to
-        // ManaSettingsStore; pick up whatever it left there.
-        voiceLoop.SetPresetId(ManaSettingsStore.Load().ActivePresetId);
+        settingsWindow = new SettingsDialog(NewSettingsPanel());
+        settingsWindow.Show(this);
     }
 
     protected override void OnFormClosing(FormClosingEventArgs e)

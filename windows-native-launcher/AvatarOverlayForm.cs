@@ -145,8 +145,14 @@ internal sealed class AvatarOverlayForm : Form
             Path.Combine(rootDirectory, "windows-native-launcher", "assets", "avatar", fileName),
             Path.Combine(rootDirectory, "windows-launcher", "assets", "avatar", fileName));
 
-    public AvatarOverlayForm(string rootDirectory)
+    // #914 group mode: partner is the second character's overlay, placed
+    // beside Mana's by its owner (BesideLocation); it never reads or saves
+    // the overlay's position.
+    private readonly bool partner;
+
+    public AvatarOverlayForm(string rootDirectory, bool partner = false)
     {
+        this.partner = partner;
         // #681: native's own copy first, Electron's as the fallback (see
         // CubismModelLocator.ModelDirectory).
         idlePath = AvatarPngPath(rootDirectory, "idle.png");
@@ -176,6 +182,10 @@ internal sealed class AvatarOverlayForm : Form
             ShowResolvedState(reapply: false);
         };
         stateTimer.Start();
+        if (partner)
+        {
+            return; // placed by its owner
+        }
         // #899: a spot saved before framing existed was for the 1x full-body
         // window; move it once to where that window's bottom centre stood,
         // so she stays flush on the bottom edge if she was.
@@ -302,7 +312,15 @@ internal sealed class AvatarOverlayForm : Form
         }
     }
 
-    private void KeepOnScreen() => PositionOverlay(ManaSettingsStore.Load());
+    private void KeepOnScreen()
+    {
+        if (partner)
+        {
+            Location = KeepInside(Bounds, Screen.FromRectangle(Bounds).WorkingArea);
+            return;
+        }
+        PositionOverlay(ManaSettingsStore.Load());
+    }
 
     // #684: `bounds` moved the least needed to lie fully inside `area`
     // (its top-left corner kept on screen if it's bigger than the area).
@@ -1106,7 +1124,7 @@ internal sealed class AvatarOverlayForm : Form
             return;
         }
         pressedAt = null;
-        if (dragging)
+        if (dragging && !partner)
         {
             // Nothing on this UI thread catches exceptions, and a position
             // that didn't save isn't worth crashing the launcher over.
@@ -1182,6 +1200,14 @@ internal sealed class AvatarOverlayForm : Form
     // #899: flush in the bottom-right corner, like a streamer overlay: the
     // frame's bottom (the cut, when framed) on the working area's bottom
     // edge. MANA_AVATAR_LEFT/MANA_AVATAR_BOTTOM still move it.
+    // #914: the partner's spot: bottom-aligned just left of Mana's, or to
+    // her right when there's no room, kept inside the working area.
+    internal static Point BesideLocation(Rectangle mana, Size size, Rectangle workArea)
+    {
+        var left = mana.Left - size.Width >= workArea.Left ? mana.Left - size.Width : mana.Right;
+        return KeepInside(new Rectangle(left, mana.Bottom - size.Height, size.Width, size.Height), workArea);
+    }
+
     internal static Point DefaultLocation(Size size, Rectangle workArea, int? left, int bottom) =>
         new(left is int x ? workArea.Left + x : workArea.Right - size.Width, workArea.Bottom - size.Height - bottom);
 

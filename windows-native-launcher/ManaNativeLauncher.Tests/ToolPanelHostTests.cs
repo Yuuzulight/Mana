@@ -135,6 +135,22 @@ public class ToolPanelHostTests : IDisposable
     }
 
     [Fact]
+    public void ToolWithoutAnIcon_OpensOnlyWhenAsked()
+    {
+        new ManaSettingsStore { RailTool = "docs", RailToolPinned = true }.Save(settings);
+        RunSta(() =>
+        {
+            using var toolTip = new ToolTip();
+            using var host = new ToolPanelHost(toolTip, settings);
+            host.Add("docs", "Docs", null, () => new Label());
+            Assert.Null(host.OpenId); // not reopened on launch
+            Assert.False(host.HandleShortcut(Keys.Control | Keys.D1));
+            host.Open("docs");
+            Assert.Equal("docs", host.OpenId);
+        });
+    }
+
+    [Fact]
     public void PanelButtons_HaveScreenReaderNames()
     {
         RunSta(() =>
@@ -173,7 +189,7 @@ public class ToolPanelHostTests : IDisposable
         throw new InvalidOperationException($"No matching {typeof(T).Name}.");
     }
 
-    private static void RunSta(Action body)
+    internal static void RunSta(Action body)
     {
         Exception? error = null;
         var thread = new Thread(() =>
