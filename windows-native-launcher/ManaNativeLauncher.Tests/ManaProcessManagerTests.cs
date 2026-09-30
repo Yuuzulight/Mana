@@ -51,6 +51,32 @@ public class ManaProcessManagerTests
         Assert.Equal(@"C:\mana\tools\fish-speech\.venv-native\Scripts\python.exe", fishPython);
     }
 
+    // A crash is looked at after the next launch: the log that had it is
+    // kept as *.prev.log instead of being truncated.
+    [Fact]
+    public void StartLogFile_KeepsThePreviousRunsLog()
+    {
+        var dir = Directory.CreateTempSubdirectory("mana-log-rotate-");
+        try
+        {
+            var log = Path.Combine(dir.FullName, "service.err.log");
+            ManaProcessManager.StartLogFile(log);
+            File.AppendAllText(log, "first run crashed");
+
+            ManaProcessManager.StartLogFile(log);
+            Assert.Equal("", File.ReadAllText(log));
+            Assert.Equal("first run crashed", File.ReadAllText(Path.Combine(dir.FullName, "service.err.prev.log")));
+
+            File.AppendAllText(log, "second run");
+            ManaProcessManager.StartLogFile(log);
+            Assert.Equal("second run", File.ReadAllText(Path.Combine(dir.FullName, "service.err.prev.log")));
+        }
+        finally
+        {
+            dir.Delete(recursive: true);
+        }
+    }
+
     [Fact]
     public async Task StartAsync_StartsNothingWhenAllThreeServicesAlreadyHealthy()
     {

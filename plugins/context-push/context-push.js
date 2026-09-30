@@ -1,4 +1,5 @@
 const { createContextPushStore } = require("./context-push-store");
+const { wrapUntrusted } = require("../../node-bot/ai/untrusted-content");
 
 const store = createContextPushStore();
 
@@ -39,7 +40,8 @@ function buildContextForPrompt(text, entry) {
   if (entry.text) {
     lines.push(`Page text: ${entry.text}`);
   }
-  return lines.join("\n");
+  // The page's own words (and whatever any extension posted): data only.
+  return wrapUntrusted("browser tab", lines.join("\n"));
 }
 
 async function contributePromptContext(text) {
