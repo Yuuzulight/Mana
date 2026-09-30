@@ -399,7 +399,24 @@ function createHeartbeat({
     }
   }
 
-  return { filePath, runDue, approve, getState: () => state };
+  // #1124: each check in heartbeat.md with its run state, for the
+  // Background tasks panel.
+  function listChecks() {
+    return read().checks.map((c) => {
+      const entry = state.checks[c.id] || {};
+      return {
+        id: c.id,
+        text: c.text,
+        approved: Boolean(entry.approved),
+        nextRunAt: entry.nextRunAt || 0,
+        lastError: entry.lastError || null,
+        // The set keeps approved ids too; runDue ignores those.
+        awaitingApproval: !entry.approved && awaitingApproval.has(c.id),
+      };
+    });
+  }
+
+  return { filePath, runDue, approve, listChecks, getState: () => state };
 }
 
 module.exports = { parseHeartbeat, createCheckToolGate, createHeartbeat };

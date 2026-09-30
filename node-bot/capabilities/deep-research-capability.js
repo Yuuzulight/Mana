@@ -36,6 +36,14 @@ function envInteger(env, name) {
   return Number.isSafeInteger(n) && n > 0 ? n : undefined;
 }
 
+// Also the Background tasks panel's Cancel (#1124).
+function cancelResearchJob(job) {
+  if (job.status === "running" && !job.cancelRequested) {
+    job.cancelRequested = true;
+    job.progress = { step: "cancelling", label: "Cancelling..." };
+  }
+}
+
 function registerDeepResearchRoutes(app, context = {}) {
   const env = context.env || process.env;
   const searchWeb = context.searchWeb;
@@ -160,6 +168,8 @@ function registerDeepResearchRoutes(app, context = {}) {
       const jobId = makeJobId();
       const job = {
         id: jobId,
+        // #1124: the Background tasks panel's title for it.
+        question,
         status: "running",
         cancelRequested: false,
         progress: { step: "starting", label: "Starting research..." },
@@ -245,10 +255,7 @@ function registerDeepResearchRoutes(app, context = {}) {
     if (!job) {
       return res.status(404).json({ error: "research job not found" });
     }
-    if (job.status === "running" && !job.cancelRequested) {
-      job.cancelRequested = true;
-      job.progress = { step: "cancelling", label: "Cancelling..." };
-    }
+    cancelResearchJob(job);
     return res.json({
       id: job.id,
       status: job.status,
@@ -274,6 +281,7 @@ const deepResearchCapability = {
 
 module.exports = {
   DEFAULT_JOB_TTL_MS,
+  cancelResearchJob,
   createResearchJobStore,
   deepResearchCapability,
   registerDeepResearchRoutes,

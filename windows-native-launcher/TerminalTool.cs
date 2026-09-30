@@ -142,12 +142,21 @@ internal sealed class TerminalTool : Panel
             try
             {
                 runs = await client.GetTerminalRunsAsync();
-                selectedId ??= ShownRuns.FirstOrDefault()?.Id;
-                selected = selectedId is null ? null : await client.GetTerminalRunAsync(selectedId);
-                // Dropped off the feed: the newest one is picked on the next poll.
-                if (selected is null)
+                // Dropped off the feed: the newest one is picked instead.
+                if (runs.All(r => r.Id != selectedId))
                 {
                     selectedId = null;
+                }
+                selectedId ??= ShownRuns.FirstOrDefault()?.Id;
+                // Its output once, then again only while it runs: every poll
+                // counts against the backend's app-wide rate limit.
+                if (selectedId is null)
+                {
+                    selected = null;
+                }
+                else if (selected?.Id != selectedId || selected.Running)
+                {
+                    selected = await client.GetTerminalRunAsync(selectedId);
                 }
                 error = null;
             }
@@ -220,7 +229,7 @@ internal sealed class TerminalTool : Panel
     }
 
     internal static string Result(ManaTerminalRun run) =>
-        run.Running ? "running" : run.ExitCode is int code ? $"exit {code}" : "ended";
+        run.Running ? (run.Stopped ? "stopping" : "running") : run.Stopped ? "stopped" : run.ExitCode is int code ? $"exit {code}" : "ended";
 
     internal static string FormatTime(ManaTerminalRun run)
     {

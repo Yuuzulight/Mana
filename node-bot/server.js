@@ -24,8 +24,9 @@ over inherited ones -- or set before running):
   request on or off (default: on for the CPU build, off for the CUDA build)
 - LLAMA_BIN : full path to llama.cpp/main executable (e.g. C:\llama.cpp\main.exe)
 - LLAMA_MODEL : full path to a GGUF model file, or an HF repo shorthand like user/model:Q4_K_M
-- TTS_PROVIDER : "cli", "kokoro", or "fish" (default: "fish",
-  see docs/fish_speech_tts.md for the recommended S1-mini checkpoint)
+- TTS_PROVIDER : "cli", "kokoro", or "fish" (default: "fish" on a CUDA GPU
+  with room for it, "kokoro" otherwise -- see resolveTtsProvider in
+  tts-runtime.js and docs/fish_speech_tts.md for the S1-mini checkpoint)
 - TTS_BIN : full path to your TTS executable
 - TTS_MODEL : model path or model id for your TTS executable
 - TTS_ARGS_JSON : optional JSON array of CLI args with placeholders like {text}, {output}, {model}, {voice}, {speaker}
@@ -126,14 +127,17 @@ const { presetsCapability } = require("./capabilities/presets-capability");
 const { personalityCapability } = require("./capabilities/personality-capability");
 const { moodCapability } = require("./capabilities/mood-capability");
 const {
+  createResearchJobStore,
   deepResearchCapability,
 } = require("./capabilities/deep-research-capability");
+const { backgroundTasksCapability } = require("./capabilities/background-tasks-capability");
 const {
   backgroundMemoryCapability,
 } = require("./capabilities/background-memory-capability");
 const {
   memoryFactsCapability,
 } = require("./capabilities/memory-facts-capability");
+const { memoryVaultCapability } = require("./capabilities/memory-vault-capability");
 const {
   retrieverAdminCapability,
 } = require("./capabilities/retriever-admin-capability");
@@ -195,7 +199,7 @@ const { plainTextSecretKeys } = require("./load-env");
 	const contextPushPlugin = require("../plugins/context-push");
 	const screenSensingPlugin = require("../plugins/screen-sensing");
 const { PluginStore, pluginStore } = require("./plugin-store");
-const { createTtsRuntime } = require("./tts-runtime");
+const { createTtsRuntime, resolveTtsProvider } = require("./tts-runtime");
 const { createKokoroRuntime } = require("./kokoro-runtime");
 const { createAcpMemoryStore } = require("./acp-memory-store");
 const { createSnapshotStore } = require("./snapshot-store");
@@ -210,12 +214,20 @@ const {
 } = require("./personality-store");
 const { createMoodStore, levelWord, moodPromptBlock } = require("./mood-store");
 const {
+  createRelationshipStore,
+  createRelationshipToolSource,
+  relationshipPromptBlock,
+} = require("./relationship-store");
+const {
   characterFilePath,
+  DEFAULT_ID: DEFAULT_CHARACTER_ID,
   createCharacterStore,
+  defaultPromptOf,
   perCharacter,
   personaOf,
 } = require("./characters");
 const { createCharactersCapability } = require("./capabilities/characters-capability");
+const { createRelationshipCapability } = require("./capabilities/relationship-capability");
 const { createPluginSettingsStore } = require("./plugin-settings-store");
 const { createAuthStore } = require("./auth-store");
 const { createToolPolicy } = require("./ai/tool-policy");
@@ -261,6 +273,8 @@ const { createToolCallLog, wrapWithToolCallLog } = require("./tool-call-log");
 const { createAgentActivity } = require("./agent-activity");
 const { filterRelevantTools, wrapWithResultDigest } = require("./ai/tool-context-guard");
 const { toolCallLogCapability } = require("./capabilities/tool-call-log-capability");
+const { terminalCapability } = require("./capabilities/terminal-capability");
+const { terminalFeed } = require("./terminal-feed");
 const { createHooksStore, wrapWithHooks, wrapWithInputHooks } = require("./hooks-store");
 const { hooksCapability } = require("./capabilities/hooks-capability");
 const { createPronunciationLexiconStore } = require("./pronunciation-lexicon-store");
@@ -277,6 +291,7 @@ const { createModelSettingsStore } = require("./model-settings-store");
 const whisperDiscovery = require("./whisper-discovery");
 const { createWhisperPromptProvider } = require("./whisper-prompt");
 const { createSpeechVocabulary, resolveWhisperLanguage } = require("./speech-vocabulary");
+const { applyCorrectionToClips, voiceDataDir } = require("./voice-data");
 const { createBriefing } = require("./briefing");
 const { loadGameWikis } = require("./game-wikis");
 const {
@@ -475,12 +490,15 @@ const LLAMA_MAX_TOKENS = Number(process.env.LLAMA_MAX_TOKENS || 180);
 // conversation, cutting code off mid-example. Casual/everyday replies stay
 // at LLAMA_MAX_TOKENS; only coding/developer mode gets the bigger budget.
 const LLAMA_MAX_TOKENS_CODING = Number(process.env.LLAMA_MAX_TOKENS_CODING || 768);
+// #914: a group-mode reaction is about 60 tokens.
+const GROUP_REACTION_MAX_TOKENS = 60;
 const VTUBE_STUDIO_URL = process.env.VTUBE_STUDIO_URL || "ws://127.0.0.1:8001";
 const VTUBE_STUDIO_ENABLED = process.env.VTUBE_STUDIO_ENABLED !== "0";
 const VTUBE_STUDIO_REACTIONS_JSON =
   process.env.VTUBE_STUDIO_REACTIONS_JSON || "{}";
-const TTS_PROVIDER =
-  process.env.TTS_PROVIDER || (TTS_BIN ? "cli" : "fish");
+// #1076: decided once here; ttsRuntime and /health (which the native
+// launcher follows) both use this value.
+const TTS_PROVIDER = resolveTtsProvider(process.env);
 const DEFAULT_GAMING_PROCESS_NAMES = [
   "ffxiv_dx11.exe",
   "ffxiv.exe",
@@ -534,8 +552,13 @@ function logPerf(label, startedAt) {
 
 configureFfxivMarketTools({ nowMs, logPerf });
 
+// #914: a call without its own system prompt speaks as the active
+// character (characterStore is created below, before any call).
+const activeDefaultPrompt = () => defaultPromptOf(characterStore.active());
+
 const localLlamaRuntime = createLocalLlamaRuntime({
   env: process.env,
+  systemPrompt: activeDefaultPrompt,
   threads: LLAMA_THREADS,
   nowMs,
   logPerf,
@@ -549,6 +572,7 @@ const modelSettingsStore = createModelSettingsStore({});
 
 const llamaServerRuntime = createLlamaServerRuntime({
   env: process.env,
+  systemPrompt: activeDefaultPrompt,
   threads: LLAMA_THREADS,
   nowMs,
   logPerf,
@@ -586,8 +610,13 @@ const gamingWatch = createGamingWatch({
     retrieverService.stop();
     // #872/#889: drops the vision mmproj, and swaps to MANA_GAMING_LLAMA_MODEL when it's set.
     llamaServerRuntime.setGaming(true);
+    // #914: group mode pauses; after this poll has recorded the game.
+    queueMicrotask(() => characterStore.gameChanged());
   },
-  onGameEnd: () => llamaServerRuntime.setGaming(false),
+  onGameEnd: () => {
+    llamaServerRuntime.setGaming(false);
+    queueMicrotask(() => characterStore.gameChanged());
+  },
 });
 if (process.env.NODE_ENV !== "test" && !process.env.NODE_TEST_CONTEXT) {
   gamingWatch.poll();
@@ -715,21 +744,36 @@ const pronunciationLexiconStore = createPronunciationLexiconStore({});
 // the gaming override below, and stopped after MANA_KOKORO_IDLE_MS idle.
 const kokoroRuntime = createKokoroRuntime({ env: process.env });
 
-// Issue #914: the active character (Mana by default). Created before
-// ttsRuntime, which speaks in her voice; the launcher hears of each switch
-// on /ws/tray so it can load her Live2D model.
+// Issue #914: the active character (Mana by default, remembered across
+// restarts; in memory under tests). Created before ttsRuntime, which speaks
+// in her voice; the launcher hears of each switch on /ws/tray, and of the
+// current one when it connects, so it can load her Live2D model.
+const characterEvent = (character) => ({
+  type: "character",
+  id: character.id,
+  title: character.name,
+  model: character.live2dModel,
+});
 const characterStore = createCharacterStore({
-  onSwitch: (character) =>
+  activeFilePath:
+    process.env.NODE_ENV === "test" || process.env.NODE_TEST_CONTEXT
+      ? null
+      : path.join(__dirname, "data", "active-character.json"),
+  onSwitch: (character) => notifyTray(characterEvent(character)),
+  // Group mode: the launcher shows (or hides, id null) the partner's avatar.
+  isGaming: () => gamingWatch.isGaming(),
+  onGroupChange: (partner) =>
     notifyTray({
-      type: "character",
-      id: character.id,
-      title: character.name,
-      model: character.live2dModel,
+      type: "group",
+      id: partner?.id ?? null,
+      title: partner?.name ?? null,
+      model: partner?.live2dModel ?? null,
     }),
 });
 
 const ttsRuntime = createTtsRuntime({
   env: process.env,
+  ttsProvider: TTS_PROVIDER,
   getVoice: () => characterStore.active().voice,
   baseDir: __dirname,
   nowMs,
@@ -848,8 +892,19 @@ const acpMemoryStore = createAcpMemoryStore({
 
 // #923/#925/#926: my saved speech words, mishearing fixes and language
 // (data/speech.json), from Settings > Voice or the speech__* tools.
+// #1107: a new mishearing fix also corrects my kept voice clips.
 const speechVocabulary = createSpeechVocabulary({
   filePath: path.join(acpMemoryStore.dataDir, "speech.json"),
+  onCorrection: ({ heard, term }) =>
+    applyCorrectionToClips(voiceDataDir(), heard, term).catch((e) =>
+      console.warn(`[Mana] Couldn't correct kept voice clips: ${e.message}`),
+    ),
+});
+
+// #914: proactive toasts name the character saying them when she isn't Mana.
+require("./proactive").watchSpeaker(() => {
+  const character = characterStore.active();
+  return character.id === DEFAULT_CHARACTER_ID ? null : character.name;
 });
 
 // #986: held proactive remarks (data/proactive-held.json) survive a restart.
@@ -981,6 +1036,32 @@ const moodStore = perCharacter(
   (id) => createMoodStore({ filePath: characterFilePath(moodFilePath, id) }),
   ["get", "record", "recordTurn", "reset", "setFrozen"],
 );
+// #914: each character's own notes on her relationship with me, beside
+// the mood (in memory under tests). relationshipFor(id) is any character's
+// (Settings lists them all); relationshipStore is the active one's.
+const relationshipStores = new Map();
+function relationshipFor(id) {
+  if (!relationshipStores.has(id)) {
+    relationshipStores.set(
+      id,
+      createRelationshipStore({
+        filePath: characterFilePath(moodFilePath && path.join(acpMemoryStore.dataDir, "relationship.json"), id),
+      }),
+    );
+  }
+  return relationshipStores.get(id);
+}
+const relationshipStore = perCharacter(characterStore, relationshipFor, [
+  "list",
+  "add",
+  "ensureFirstChat",
+  "milestoneToMention",
+]);
+// When my oldest session began, or null.
+function oldestSessionAt() {
+  const times = acpMemoryStore.listSessions().map((s) => s.createdAt).filter(Boolean).sort();
+  return times[0] || null;
+}
 
 // Procedural-memory skills store (see skills-store.js, issue #140)
 const skillsStore = createSkillsStore({ snapshotStore });
@@ -1065,6 +1146,9 @@ const browserAutomationToolSource = createBrowserAutomationToolSource({
 let BACKGROUND_MEMORY_BLOCK = "";
 let BACKGROUND_MEMORY_LOCK = false;
 let BACKGROUND_MEMORY_META = { files: {} };
+// #1124: Dream Mode's compactor for the Background tasks panel -- when its
+// refresh timer started, its interval, and since when a run is going.
+const DREAM_MODE = { everyMs: 0, scheduledAt: null, runningSince: null };
 // MANA_ACP_MEMORY_DIR moves these with the rest of memory (acp-memory-store).
 const ACP_MEMORY_DIR = process.env.MANA_ACP_MEMORY_DIR || path.join(__dirname, "data", "acp-memory");
 const BACKGROUND_META_PATH = path.join(ACP_MEMORY_DIR, "background_meta.json");
@@ -1456,6 +1540,7 @@ if (process.env.NODE_ENV !== "test" && !process.env.NODE_TEST_CONTEXT) {
       async function runBackgroundCompactor() {
         if (summarizerRunning) return;
         summarizerRunning = true;
+        DREAM_MODE.runningSince = Date.now();
         try {
           const res = await asyncLoadBackgroundMemory();
           const summaries = res && res.summaries ? res.summaries : [];
@@ -1541,6 +1626,7 @@ if (process.env.NODE_ENV !== "test" && !process.env.NODE_TEST_CONTEXT) {
           );
         } finally {
           summarizerRunning = false;
+          DREAM_MODE.runningSince = null;
         }
       }
 
@@ -1906,6 +1992,7 @@ if (process.env.NODE_ENV !== "test" && !process.env.NODE_TEST_CONTEXT) {
       if (refreshMs > 0) {
         // The compactor reloads background memory itself, so one call per tick
         // is enough; reviewing runs on its own (slower) schedule below.
+        Object.assign(DREAM_MODE, { everyMs: refreshMs, scheduledAt: Date.now() });
         setInterval(() => {
           if (backgroundJobsPausedForGaming()) return;
           runBackgroundCompactor().catch((err) =>
@@ -2008,45 +2095,83 @@ function getGamingStatus() {
   };
 }
 
-function getManaProcessSnapshot() {
-  if (process.platform !== "win32") {
-    return {
-      totalMemoryMb: Math.round(process.memoryUsage().rss / 1024 / 1024),
-      processes: [],
-    };
-  }
+// /perf/status is polled by the launcher, and the PowerShell process
+// listing takes a second or more: it runs in the background at most every
+// 15 s, and the route answers with the last result (the backend's own RSS
+// until the first one lands). It used to be a spawnSync on every poll.
+const MANA_PROCESS_SNAPSHOT_MS = 15 * 1000;
+let manaProcessSnapshot = null;
+let manaProcessSnapshotAt = 0;
+let manaProcessSnapshotPending = false;
 
+function getManaProcessSnapshot() {
+  const ownOnly = {
+    totalMemoryMb: Math.round(process.memoryUsage().rss / 1024 / 1024),
+    processes: [],
+  };
+  if (process.platform !== "win32") {
+    return ownOnly;
+  }
+  if (!manaProcessSnapshotPending && Date.now() - manaProcessSnapshotAt >= MANA_PROCESS_SNAPSHOT_MS) {
+    manaProcessSnapshotPending = true;
+    readManaProcessSnapshot()
+      .then((snapshot) => {
+        manaProcessSnapshot = snapshot;
+      })
+      .catch(() => {})
+      .finally(() => {
+        manaProcessSnapshotAt = Date.now();
+        manaProcessSnapshotPending = false;
+      });
+  }
+  return manaProcessSnapshot || ownOnly;
+}
+
+// The Win32_Process rows running something under root, the checkout this
+// server runs from wherever it is: root plus a separator, so D:\Mana
+// doesn't also match D:\Mana-worktrees\...
+function manaProcessesUnder(rows, root) {
+  const winPath = (text) => String(text || "").toLowerCase().replaceAll("/", "\\");
+  const prefix = `${winPath(root).replace(/\\+$/, "")}\\`;
+  return rows
+    .filter((row) => winPath(row.CommandLine).includes(prefix))
+    .map((row) => ({
+      pid: row.ProcessId,
+      name: row.Name,
+      memoryMb: Math.round((row.WorkingSetSize || 0) / 1024 / 1024),
+      role: getManaProcessRole(row.CommandLine || row.Name || ""),
+    }));
+}
+
+async function readManaProcessSnapshot() {
   const command = [
-    "$items = Get-CimInstance Win32_Process |",
-    "Where-Object { $_.CommandLine -match 'C:\\\\ManaAI\\\\Mana' -and $_.CommandLine -notmatch 'Get-CimInstance Win32_Process' } |",
-    "Select-Object ProcessId,Name,WorkingSetSize,CommandLine;",
-    "$items | ConvertTo-Json -Compress -Depth 3",
+    "Get-CimInstance Win32_Process | Where-Object { $_.CommandLine } |",
+    "Select-Object ProcessId,Name,WorkingSetSize,CommandLine |",
+    "ConvertTo-Json -Compress -Depth 3",
   ].join(" ");
-  const result = spawnSync(
-    "powershell",
+  // Full path, like the gaming watch's tasklist: a bare name is looked up
+  // in the cwd first.
+  const powershell = path.win32.join(
+    process.env.SystemRoot || "C:\\Windows",
+    "System32",
+    "WindowsPowerShell",
+    "v1.0",
+    "powershell.exe",
+  );
+  const { stdout } = await promisify(execFile)(
+    powershell,
     ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", command],
     {
-      encoding: "utf8",
       maxBuffer: 5 * 1024 * 1024,
       windowsHide: true,
     },
   );
-
-  if (result.status !== 0 || !result.stdout.trim()) {
-    return {
-      totalMemoryMb: Math.round(process.memoryUsage().rss / 1024 / 1024),
-      processes: [],
-    };
+  if (!stdout.trim()) {
+    return null;
   }
 
-  const parsed = JSON.parse(result.stdout);
-  const rows = Array.isArray(parsed) ? parsed : [parsed];
-  const processes = rows.map((row) => ({
-    pid: row.ProcessId,
-    name: row.Name,
-    memoryMb: Math.round((row.WorkingSetSize || 0) / 1024 / 1024),
-    role: getManaProcessRole(row.CommandLine || row.Name || ""),
-  }));
+  const parsed = JSON.parse(stdout);
+  const processes = manaProcessesUnder(Array.isArray(parsed) ? parsed : [parsed], path.resolve(__dirname, ".."));
 
   return {
     totalMemoryMb: processes.reduce((sum, item) => sum + item.memoryMb, 0),
@@ -2274,6 +2399,9 @@ function registerRoutes(app, upload, deps = {}) {
     createModelManagement({
       env: deps.env || process.env,
       modelSettingsStore,
+      // #1086: the recommendation subtracts what these hold in VRAM.
+      ttsProvider: TTS_PROVIDER,
+      whisperModel: whisperDiscovery.findWhisperModel({ env: deps.env || process.env }),
     });
 
   // llama-server normally starts lazily on the first chat reply. Desktop
@@ -2353,15 +2481,19 @@ function registerRoutes(app, upload, deps = {}) {
     personalityCapability,
     moodCapability,
     createCharactersCapability(characterStore),
+    createRelationshipCapability(characterStore, relationshipFor),
     backgroundMemoryCapability,
     memoryFactsCapability,
+    memoryVaultCapability,
     retrieverAdminCapability,
     skillsCapability,
     approvalGateCapability,
     mcpClientCapability,
     toolCallLogCapability,
+    terminalCapability,
     hooksCapability,
     pronunciationLexiconCapability,
+    backgroundTasksCapability,
     // Yellowlight enhancements (#496-#489) — optional plugins wired into capability system
     cloudSyncCapability,
     scheduledExportCapability,
@@ -2394,6 +2526,9 @@ function registerRoutes(app, upload, deps = {}) {
   // note asks for the user's OK under its own action type, so denying one
   // never counts against (or grants) Mana's own memory writes.
   activeApprovalGate.registerExecutor("memory-vault-note", (payload) => acpMemoryStore.rememberFact(payload));
+  activeApprovalGate.registerExecutor("memory-vault-pin", (payload) =>
+    acpMemoryStore.setFactPinned(payload.key, payload.pinned === true),
+  );
   let memoryVault = null;
   if (process.env.MANA_VAULT_DIR && process.env.NODE_ENV !== "test" && !process.env.NODE_TEST_CONTEXT) {
     try {
@@ -2444,8 +2579,31 @@ function registerRoutes(app, upload, deps = {}) {
   const agentActivity = createAgentActivity();
   // #675 Q12b: deep thinking Mana turned on herself, per session.
   const deepThinking = createDeepThinkingState();
+  // Deep research's job list, shared with the Background tasks panel.
+  const researchJobs = createResearchJobStore();
+  const isGamingNow = deps.isGaming || gamingWatch.isGaming;
   const capabilityContext = {
     acpMemoryStore: deps.acpMemoryStore || acpMemoryStore,
+    jobs: researchJobs,
+    // #1124: what GET /background-tasks lists. selfWork is built further
+    // down, hence the getter.
+    backgroundTaskSources: {
+      cron: () => cronSchedulerPlugin.getScheduler(),
+      heartbeat: () => cronSchedulerPlugin.getHeartbeat(),
+      heartbeatEnabled: () => isPluginEnabled(cronSchedulerPlugin, activePluginSettingsStore),
+      isGaming: isGamingNow,
+      proactive: require("./proactive"),
+      briefing,
+      dreamMode: () => DREAM_MODE,
+      embeddings: { status: () => require("./tools/embedding-worker").status() },
+      memoryVault: memoryVaultStatus,
+      researchJobs,
+      selfWork: () => selfWork,
+      agentActivity,
+      llama: llamaServerRuntime,
+      llamaBuilds: deps.llamaBuilds || llamaBuilds,
+      fishWarmup: () => ttsRuntime.getFishWarmupStatus(),
+    },
     // Only cron-scheduler's agent-job executor uses this today -- every
     // other capability builds its own scoped model-reply function above.
     buildAssistantReply: deps.buildAssistantReply || buildAssistantReply,
@@ -2457,10 +2615,11 @@ function registerRoutes(app, upload, deps = {}) {
     isLocalAdminRequest: deps.isLocalAdminRequest || isLocalAdminRequest,
     approvalGate: activeApprovalGate,
     // #699: heartbeat checks pause while gaming and snapshot their writes.
-    isGaming: deps.isGaming || gamingWatch.isGaming,
+    isGaming: isGamingNow,
     snapshotStore,
     mcpClientRegistry: activeMcpClientRegistry,
     toolCallLog: deps.toolCallLog || toolCallLog,
+    terminalFeed,
     hooksStore: activeHooksStore,
     pronunciationLexiconStore: activePronunciationLexiconStore,
     // Issue #187: discord-bot's voice session needs the same full
@@ -2547,6 +2706,7 @@ function registerRoutes(app, upload, deps = {}) {
     fetchPage: deps.fetchPage || fetchPage,
     wikiLookup: deps.wikiLookup || wikiLookup,
     checkAdminAuth,
+    getMemoryVault: () => memoryVault,
     runBackgroundReviewerPublic: deps.runBackgroundReviewerPublic || runBackgroundReviewerPublic,
     runSkillProposalPublic: deps.runSkillProposalPublic || runSkillProposalPublic,
     asyncLoadBackgroundMemory: deps.asyncLoadBackgroundMemory || asyncLoadBackgroundMemory,
@@ -2579,6 +2739,7 @@ function registerRoutes(app, upload, deps = {}) {
         console.warn("Memory graph size check failed:", e?.message || e);
       }
       const result = await doctor({
+        modelManagement, // #1086: same recommendation as /models/status
         fishTtsWarmup: ttsRuntime.getFishWarmupStatus(),
         sessionSearchVectorEnabled: sessionSearchIndex.vectorEnabled(),
         promptComposition: getMostRecentComposition(),
@@ -2606,6 +2767,7 @@ function registerRoutes(app, upload, deps = {}) {
     doctor: deps.doctor || runDoctorChecksAsync,
     notifyTray: deps.notifyTray || notifyTray,
     doctorOptions: () => ({
+      modelManagement,
       fishTtsWarmup: ttsRuntime.getFishWarmupStatus(),
       sessionSearchVectorEnabled: sessionSearchIndex.vectorEnabled(),
       memoryVault: memoryVaultStatus(),
@@ -3395,13 +3557,22 @@ function registerRoutes(app, upload, deps = {}) {
   }
 
   // #925: heard is what whisper wrote, transcript the same with my
-  // mishearing fixes applied -- what every caller uses.
+  // mishearing fixes applied -- what every caller uses. #1107: model and
+  // language go into a kept voice clip's sidecar.
   async function runWhisperHeard(filePath) {
-    const heard =
-      STT_PROVIDER === "parakeet"
-        ? await runParakeet(filePath)
-        : ((await transcribeWithWhisperServer(filePath)) ?? runWhisperCli(filePath));
-    return { heard, transcript: speechVocabulary.correct(heard) };
+    const parakeet = STT_PROVIDER === "parakeet";
+    const heard = parakeet
+      ? await runParakeet(filePath)
+      : ((await transcribeWithWhisperServer(filePath)) ?? runWhisperCli(filePath));
+    const model = parakeet
+      ? whisperDiscovery.findParakeetModel({ env: process.env })
+      : whisperDiscovery.findWhisperModel({ env: process.env });
+    return {
+      heard,
+      transcript: speechVocabulary.correct(heard),
+      model: model ? path.basename(model) : null,
+      language: whisperLanguage(),
+    };
   }
 
   async function runWhisper(filePath) {
@@ -3908,7 +4079,7 @@ function registerRoutes(app, upload, deps = {}) {
       }
     }
 
-    const systemPrompt = systemPromptOverride || persona.DEFAULT_SYSTEM_PROMPT;
+    const systemPrompt = systemPromptOverride || activeDefaultPrompt();
 
     const baseUrl = openAiBaseUrl().replace(/\/+$/, "");
     const url = new URL(baseUrl + "/v1/chat/completions");
@@ -4063,6 +4234,8 @@ function registerRoutes(app, upload, deps = {}) {
       mode === "coding" || mode === "developer"
         ? LLAMA_MAX_TOKENS_CODING
         : LLAMA_MAX_TOKENS;
+    // #914: group mode adds a second reply only to casual turns.
+    if (replyMeta) replyMeta.mode = mode;
 
     // Optional lightweight intent telemetry (enable with MANA_INTENT_TELEMETRY=1)
     try {
@@ -4310,6 +4483,24 @@ function registerRoutes(app, upload, deps = {}) {
       }
     } catch (moodErr) {
       console.warn("Failed to apply mood:", moodErr.message);
+    }
+    // #914: her own notes on how we get along, same place and rules; in my
+    // own chat, now and then one of her milestones (our first chat is one:
+    // for Mana, the day of the oldest session).
+    try {
+      const relationshipText = relationshipPromptBlock(relationshipStore.list(), mode);
+      if (userChat) {
+        relationshipStore.ensureFirstChat(() =>
+          characterStore.active().id === DEFAULT_CHARACTER_ID ? oldestSessionAt() : null,
+        );
+      }
+      const milestoneText = userChat ? relationshipStore.milestoneToMention(mode) : null;
+      for (const text of [relationshipText, milestoneText].filter(Boolean)) {
+        memoryExtraMessages.late.push({ role: "system", content: text });
+        flatMemorySuffix += `\n\n${text}`;
+      }
+    } catch (relationshipErr) {
+      console.warn("Failed to apply relationship notes:", relationshipErr.message);
     }
 
     // Issue #400: makes the composition of the prompt this reply actually
@@ -4663,6 +4854,8 @@ function registerRoutes(app, upload, deps = {}) {
                     typeof cleanLlamaOutput === "function"
                       ? cleanLlamaOutput(openAiReply)
                       : openAiReply,
+                  // #914: history lines are labelled with who said them.
+                  speaker: characterStore.active().name,
                 })
                 .catch((memErr) =>
                   console.warn(
@@ -4890,6 +5083,19 @@ function registerRoutes(app, upload, deps = {}) {
               : []),
             // #907: "brief me".
             ...(userChat ? [briefing.toolSource] : []),
+            // #914: her own notes on our relationship.
+            // Each new note is a chat line (replyMeta.onNoted), so I see it.
+            ...(userChat
+              ? [
+                  createRelationshipToolSource({
+                    store: relationshipStore,
+                    onNoted: ({ kind, id, text, date }) => {
+                      const character = characterStore.active();
+                      replyMeta.onNoted?.({ kind, id, text, date, character: character.id, characterName: character.name });
+                    },
+                  }),
+                ]
+              : []),
             ...(userChat
               ? [
                   createDeepThinkingToolSource({
@@ -4986,7 +5192,10 @@ function registerRoutes(app, upload, deps = {}) {
             }
             reportTool(name, "start");
             try {
-              const result = await executeLoggedTool(name, args);
+              // #1121: a command this call runs is stopped by this loop's Stop.
+              const result = await terminalFeed.runWith({ stop: () => agentActivity.stop(run.id) }, () =>
+                executeLoggedTool(name, args),
+              );
               turnTools.push(name);
               return result;
             } finally {
@@ -5365,6 +5574,7 @@ function registerRoutes(app, upload, deps = {}) {
                 ? cleanLlamaOutput(reply)
                 : reply,
             toolCalls: lastToolCalls,
+            speaker: characterStore.active().name,
           })
           .catch((memErr) =>
             console.warn(
@@ -5423,6 +5633,8 @@ function registerRoutes(app, upload, deps = {}) {
     currentGame: deps.currentGame || currentGame,
     restartController: deps.restartController || createRestartController(),
     buildAssistantReply: deps.buildAssistantReply || buildAssistantReply,
+    characters: characterStore,
+    buildGroupReaction: deps.buildGroupReaction || buildGroupReaction,
     capabilities,
     pluginSettingsStore: activePluginSettingsStore,
     contributePluginPromptContext:
@@ -5452,6 +5664,7 @@ function registerRoutes(app, upload, deps = {}) {
                 sessionId,
                 user: userText,
                 assistant: assistantText,
+                speaker: characterStore.active().name,
               })
               .catch((memErr) =>
                 console.warn(
@@ -5489,6 +5702,25 @@ function registerRoutes(app, upload, deps = {}) {
       deps.normalizeUploadedAudioAsync || normalizeUploadedAudioAsync,
     synthesizeReply: deps.synthesizeReply || synthesizeReply,
   });
+
+  // #914 group mode: the partner's short reaction to her sister's reply,
+  // run inside speakAs(partner) so the persona, personality and mood are
+  // hers. Same chat model, one short call; no tools and no emotion tags.
+  // The route saves it (only if it's still wanted).
+  async function buildGroupReaction({ sessionId, userText, sister, reply }) {
+    const me = characterStore.active();
+    const system = [
+      persona.buildPersonaPrompt(sessionId, personalityStore.get().traits, personaOf(me)),
+      moodPromptBlock(activeMoodStore.get(), "casual"),
+    ]
+      .filter(Boolean)
+      .join("\n\n");
+    const prompt = `I said: "${userText}"\n\nYour sister ${sister.name} answered: "${reply}"\n\nAdd one short reaction to her, one or two short sentences, as yourself. Don't repeat what she said.`;
+    const raw = shouldUseRemoteAi()
+      ? await runOpenAIReply(prompt, GROUP_REACTION_MAX_TOKENS, system, sessionId)
+      : await runLocalAssistantReply(prompt, GROUP_REACTION_MAX_TOKENS, "default", system);
+    return cleanLlamaOutput(stripEmotionTags(String(raw || "")).text).trim();
+  }
 
   // Test-only hook (same pattern as app.locals.broadcastTrayNotification
   // below): exposes the real buildAssistantReply closure -- with its
@@ -6091,7 +6323,11 @@ async function startServer() {
   // attach tray websocket server for live tray notifications
   try {
     const trayServer = require("./tray-server");
-    trayServer.registerTrayServer(server, { path: "/ws/tray", requestGuard });
+    trayServer.registerTrayServer(server, {
+      path: "/ws/tray",
+      requestGuard,
+      greeting: () => characterEvent(characterStore.active()),
+    });
     // make broadcast available via app locals for other modules
     app.locals.broadcastTrayNotification = trayServer.broadcastTrayNotification;
     try {
@@ -6168,6 +6404,7 @@ if (require.main === module) {
 
 module.exports = {
   createApp,
+  manaProcessesUnder,
   buildMemoryNotes,
   buildVaultViews,
   buildSkillsIndexBlock,

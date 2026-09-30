@@ -22,7 +22,7 @@ namespace Mana.NativeLauncher;
 // stateful AllowExit escape hatch to work around -- see DarkTheme.ApplyForm).
 // The Mana preset's glass title strip (SessionListForm.Caption.cs) keeps the
 // native frame and hands all of that back to Windows. Of #538's rail
-// (Browser/Terminal/Artifacts/Tasks) Artifacts (the artifact viewer) and
+// (Browser/Terminal/Artifacts/Tasks) Artifacts (#1120's panel) and
 // Tasks (#1016's self-work window) exist in this app; the others are left
 // off until they're built.
 //
@@ -86,8 +86,10 @@ internal sealed partial class SessionListForm : Form
     // which the ReplyEnded handler below picks up.
     private string? activeSessionId;
 
-    // The rail's Artifacts icon; ManaApplicationContext owns the viewer.
-    public Action? ShowArtifacts { get; set; }
+    // #1120: every artifact so far (ManaApplicationContext owns it), for the
+    // rail's Artifacts panel, made when it first opens.
+    private readonly ArtifactViewerForm artifacts;
+    private ArtifactsPanel? artifactsPanel;
 
     // Under the search box: why the list couldn't load / a chat couldn't be
     // renamed or deleted (with Retry), or "No chats match" for a search.
@@ -97,9 +99,10 @@ internal sealed partial class SessionListForm : Form
     private string? listError;
     private Func<Task>? listRetry;
 
-    public SessionListForm(ManaBackendClient backendClient, VoiceLoop voiceLoop, ChatView chatLog, AvatarOverlayForm avatarOverlay, BackendLogBuffer backendLog)
+    public SessionListForm(ManaBackendClient backendClient, VoiceLoop voiceLoop, ChatView chatLog, AvatarOverlayForm avatarOverlay, BackendLogBuffer backendLog, ArtifactViewerForm artifacts)
     {
         this.backendClient = backendClient;
+        this.artifacts = artifacts;
         this.voiceLoop = voiceLoop;
         this.avatarOverlay = avatarOverlay;
         this.backendLog = backendLog;
@@ -328,21 +331,18 @@ internal sealed partial class SessionListForm : Form
         // Before any RegisterRailTool.
         toolPanel = new ToolPanelHost(railToolTip);
 
-        // #538's rail: Artifacts then Tasks on top, Settings docked at the
-        // bottom. (#538's Browser and Terminal icons stay off until those
-        // tools exist.) Docked last-added-first, so Tasks goes in before
-        // Artifacts.
-        var railSettingsButton = MakeRailButton("settings", "Settings");
-        railSettingsButton.Dock = DockStyle.Bottom;
-        railSettingsButton.Click += (_, _) => OpenSettings();
-        toolRail.Controls.Add(railSettingsButton);
-        // The same window as the tray's "What I'm working on" (#1016).
-        var railTasksButton = MakeRailButton("tasks", "What I'm working on");
-        railTasksButton.Click += (_, _) => new SelfWorkForm(backendClient).Show();
-        toolRail.Controls.Add(railTasksButton);
-        var railArtifactsButton = MakeRailButton("artifacts", "Artifacts");
-        railArtifactsButton.Click += (_, _) => ShowArtifacts?.Invoke();
-        toolRail.Controls.Add(railArtifactsButton);
+        // #538's rail: Artifacts, Background tasks and Terminal on top,
+        // Settings docked at the bottom.
+        // #1119: Settings opens in the tool panel.
+        RegisterRailTool("settings", "settings", "Settings", CreateSettingsTool).Dock = DockStyle.Bottom;
+        // #1127: Mana's docs, opened from Settings (OpenDoc); no rail icon.
+        toolPanel.Add("docs", "Docs", null, () => docsPanel = new DocsPanel(ManaApplicationContext.FindRootDirectory()));
+        // #1120: the Artifacts panel. A new artifact in the chat selects
+        // itself there when it's open, else puts a dot on the icon.
+        RegisterRailTool("artifacts", "artifacts", "Artifacts", () => artifactsPanel = new ArtifactsPanel(artifacts, () => voiceLoop.CurrentSessionId));
+        artifacts.Added += OnArtifactAdded;
+        // #1125: its Self-work section opens the "What I'm working on" window (#1016).
+        RegisterRailTool("background-tasks", "tasks", "Background tasks", () => new BackgroundTasksPanel(backendClient));
         // #1121: the commands Mana runs.
         RegisterRailTool("terminal", "terminal", "Terminal", () => new TerminalTool(backendClient));
         // #1122: her browser automation, docked.
@@ -905,7 +905,7 @@ internal sealed partial class SessionListForm : Form
     // tool panel. Returns the icon, e.g. to dock it at the bottom.
     internal Button RegisterRailTool(string id, string icon, string label, Func<Control> createContent)
     {
-        var button = MakeRailButton(icon, label, () => toolPanel.IsOpen(id));
+        var button = MakeRailButton(icon, label, () => toolPanel.IsOpen(id), () => toolPanel.IsHighlighted(id));
         toolRail.Controls.Add(button);
         button.BringToFront(); // docked last-added-first, so this keeps registration order
         toolPanel.Add(id, label, button, createContent);
@@ -923,7 +923,7 @@ internal sealed partial class SessionListForm : Form
         return base.ProcessCmdKey(ref msg, keyData);
     }
 
-    private Button MakeRailButton(string icon, string tooltip, Func<bool>? active = null)
+    private Button MakeRailButton(string icon, string tooltip, Func<bool>? active = null, Func<bool>? highlighted = null)
     {
         var button = new Button
         {
@@ -948,6 +948,12 @@ internal sealed partial class SessionListForm : Form
                 e.Graphics.FillRectangle(lit, button.ClientRectangle);
             }
             DrawRailIcon(e.Graphics, button.ClientRectangle, open ? DarkTheme.Accent : button.ForeColor, icon);
+            if (highlighted?.Invoke() == true)
+            {
+                // #1120: something new inside -- an accent dot at the icon's top right.
+                using var dot = new SolidBrush(DarkTheme.Accent);
+                e.Graphics.FillEllipse(dot, (button.Width / 2f) + 6, (button.Height / 2f) - 11, 7, 7);
+            }
         };
         railToolTip.SetToolTip(button, tooltip);
         button.AccessibleName = tooltip;
@@ -1175,29 +1181,82 @@ internal sealed partial class SessionListForm : Form
     // couldn't, or null. Set by ManaApplicationContext, which owns the hotkeys.
     public Func<HotkeyAction, Keys?, string?>? BindHotkey { get; set; }
 
-    // Also the tray's Settings…; a second open just brings it forward.
-    private SettingsDialog? openSettings;
+    // #1119: the tray's Settings… -- the tool panel on Settings, with focus
+    // in it (so the chat getting focus as the window activates doesn't
+    // close it). Call after showing the window.
+    // #1127: a Mana doc (a Markdown file in the repo) in the tool panel,
+    // bringing this window up if it's hidden (Settings' own window).
+    private DocsPanel? docsPanel;
+
+    internal void OpenDoc(string path)
+    {
+        if (!Visible)
+        {
+            Show();
+        }
+        Activate();
+        toolPanel.Open("docs");
+        docsPanel?.Open(path);
+        toolPanel.SelectNextControl(null, forward: true, tabStopOnly: true, nested: true, wrap: false);
+    }
 
     internal void OpenSettings()
     {
-        if (openSettings is not null)
+        toolPanel.Open("settings");
+        toolPanel.SelectNextControl(null, forward: true, tabStopOnly: true, nested: true, wrap: false);
+    }
+
+    // The same Settings, non-modal: the tool panel's, and its "Open in its
+    // own window" (a second open just brings that window forward).
+    private SettingsDialog? settingsWindow;
+
+    private SettingsPanel NewSettingsPanel()
+    {
+        // BindHotkey is set after this form is made, and a pinned Settings
+        // panel is made with it, so it's looked up when used.
+        var panel = new SettingsPanel(backendClient, backendLog, () => voiceLoop.CurrentSessionId,
+            (action, keys) => BindHotkey is { } bind ? bind(action, keys) : "Hotkeys aren't set up yet.",
+            new ListeningPause(() => voiceLoop.IsListening, voiceLoop.ToggleListening));
+        // #681: the active preset reaches the next reply as soon as it's chosen.
+        panel.ActivePresetChanged = voiceLoop.SetPresetId;
+        panel.OpenDoc = OpenDoc;
+        return panel;
+    }
+
+    private Control CreateSettingsTool()
+    {
+        var panel = NewSettingsPanel();
+        // Fresh data whenever it comes into view, as each dialog open did.
+        Task? refresh = null;
+        panel.VisibleChanged += async (_, _) =>
         {
-            openSettings.Activate();
+            if (panel.Visible && refresh is not { IsCompleted: false })
+            {
+                refresh = panel.RefreshAllAsync();
+                await refresh;
+            }
+        };
+        var ownWindow = new Button { Text = "Open in its own window", Dock = DockStyle.Right, AutoSize = true };
+        DarkTheme.ApplyButton(ownWindow);
+        ownWindow.Click += (_, _) => OpenSettingsWindow();
+        var row = new Panel { Dock = DockStyle.Top, Height = 30, Padding = new Padding(4) };
+        row.Controls.Add(ownWindow);
+        var tool = new Panel();
+        tool.Controls.Add(panel);
+        tool.Controls.Add(row);
+        return tool;
+    }
+
+    private void OpenSettingsWindow()
+    {
+        toolPanel.Close();
+        if (settingsWindow is { IsDisposed: false })
+        {
+            settingsWindow.Activate();
             return;
         }
-        using var dialog = new SettingsDialog(backendClient, backendLog, () => voiceLoop.CurrentSessionId, BindHotkey, new ListeningPause(() => voiceLoop.IsListening, voiceLoop.ToggleListening));
-        openSettings = dialog;
-        try
-        {
-            dialog.ShowDialog(this);
-        }
-        finally
-        {
-            openSettings = null;
-        }
-        // #681: Settings > Presets persists the active preset straight to
-        // ManaSettingsStore; pick up whatever it left there.
-        voiceLoop.SetPresetId(ManaSettingsStore.Load().ActivePresetId);
+        settingsWindow = new SettingsDialog(NewSettingsPanel());
+        settingsWindow.Show(this);
     }
 
     protected override void OnFormClosing(FormClosingEventArgs e)
@@ -1693,10 +1752,23 @@ internal sealed partial class SessionListForm : Form
         }
     }
 
+    private void OnArtifactAdded(ArtifactEntry entry)
+    {
+        if (toolPanel.IsOpen("artifacts") && artifactsPanel is not null)
+        {
+            artifactsPanel.Select(entry);
+        }
+        else
+        {
+            toolPanel.Highlight("artifacts");
+        }
+    }
+
     protected override void Dispose(bool disposing)
     {
         if (disposing)
         {
+            artifacts.Added -= OnArtifactAdded; // the viewer outlives this form
             avatarOverlay.StateChanged -= OnAvatarStateChanged;
             avatarOverlay.Mirror = null; // #685: before avatarVisual is disposed
             sessionTitleFont.Dispose();

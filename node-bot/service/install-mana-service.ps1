@@ -53,11 +53,12 @@ nssm set $ServiceName AppStderr (Join-Path $LogDir "service-stderr.log")
 # windows-launcher reaches this service through the LAN IP (see README.md),
 # so the service keeps listening on every interface as it did before #670.
 # That also exposes it to the rest of your network -- see README.md.
+#
+# No WHISPER_MODEL: node-bot picks the installed model (multilingual when
+# the speech language isn't English); node-bot\.env can still pin one.
 $whisperBin = Join-Path $RootDir "tools\whisper\Release\whisper-cli.exe"
-$whisperModel = Join-Path $RootDir "tools\whisper\models\ggml-tiny.en.bin"
 nssm set $ServiceName AppEnvironmentExtra `
     "WHISPER_BIN=$whisperBin" `
-    "WHISPER_MODEL=$whisperModel" `
     "TTS_PROVIDER=fish" `
     "KOKORO_TTS_URL=http://127.0.0.1:5011" `
     "VTUBE_STUDIO_URL=ws://127.0.0.1:8001" `

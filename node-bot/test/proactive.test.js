@@ -134,3 +134,27 @@ test("#986 held remarks and today's spend survive a restart", async () => {
     fs.rmSync(path.dirname(file), { recursive: true, force: true });
   }
 });
+
+test("#914 a toast names the active character when she isn't Mana", async () => {
+  const proactive = require("../proactive");
+  const trayNotifier = require("../tray-notifier");
+  const sent = [];
+  trayNotifier.setBroadcaster((payload) => sent.push(payload.title));
+  proactive.watchSpeaker(() => "Evil Mana");
+  try {
+    proactive.offer({ reason: "reminder", explicit: true, payload: { title: "Reminder", text: "raid" } });
+    await tick();
+    assert.deepEqual(sent, ["Evil Mana: Reminder"]);
+  } finally {
+    proactive.watchSpeaker(() => null);
+  }
+});
+
+test("#1124 held remarks are listed for the Background tasks panel", () => {
+  const { state, p, say } = setup();
+  state.gaming = true;
+  say("build finished", { score: 0.9 });
+  assert.deepEqual(p.listHeld(), [
+    { reason: "test", title: undefined, text: "build finished", urgent: false, expiresAt: state.t + 60 * MINUTE },
+  ]);
+});
