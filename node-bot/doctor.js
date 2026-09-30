@@ -488,6 +488,24 @@ function checkMemoryGraphHistory(size) {
   );
 }
 
+// #935: the Obsidian vault sync (memory-vault.js getStatus()); {} when
+// MANA_VAULT_DIR isn't set.
+function checkMemoryVault(vault) {
+  if (!vault) return null;
+  const label = "Memory vault";
+  if (!vault.vaultDir) {
+    return makeCheck("memory-vault", label, "pass", "Off. Set MANA_VAULT_DIR to sync memory with an Obsidian vault.");
+  }
+  if (vault.error) {
+    return makeCheck("memory-vault", label, "warn", `${vault.vaultDir}: ${vault.error}`, vault);
+  }
+  if (vault.skipped?.length) {
+    const files = vault.skipped.map((s) => `${s.file} (${s.reason})`).join("; ");
+    return makeCheck("memory-vault", label, "warn", `${vault.vaultDir}: ${vault.notes} notes synced; skipped ${files}.`, vault);
+  }
+  return makeCheck("memory-vault", label, "pass", `${vault.vaultDir}: writable, ${vault.notes} notes synced.`, vault);
+}
+
 // #889: which chat model llama-server is running, "(gaming model)" while
 // a watched game has it swapped to MANA_GAMING_LLAMA_MODEL.
 function checkChatModel(label) {
@@ -818,6 +836,7 @@ function runDoctorChecks(options = {}) {
     checkStorage(paths),
     checkPlainTextSecrets(options.plainTextSecrets),
     checkMemoryGraphHistory(options.memoryGraphHistory),
+    checkMemoryVault(options.memoryVault),
     checkChatModel(options.chatModel),
     ...checkEditorIntegrations({
       env,
