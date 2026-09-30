@@ -361,6 +361,19 @@ function createApp(deps = {}) {
     if (req.method === "POST") warmMemoryModels();
     next();
   });
+  // Voice uploads are recordings of me: each one, and whatever ffmpeg and
+  // whisper wrote next to it, is deleted once its request is over --
+  // success, error or a dropped connection alike (multer's own routes and
+  // mobile-routes.js's share this tmp dir). A dropped request's handler may
+  // still be running, so that case is swept once more a bit later.
+  app.use((req, res, next) => {
+    res.once("close", () => {
+      if (!req.file) return;
+      deleteUploadFiles(req.file.path);
+      if (!res.writableFinished) setTimeout(() => deleteUploadFiles(req.file.path), 2 * 60 * 1000).unref();
+    });
+    next();
+  });
   	const upload = multer({ dest: path.join(__dirname, "tmp") });
 
   	  // wire mobile device store (allow override via deps for tests)
@@ -2075,6 +2088,44 @@ function ensureDirectory(dirPath) {
 }
 
 ensureDirectory(path.join(__dirname, "tmp"));
+
+// An upload's temp files are its multer name (32 random hex, no extension)
+// plus whatever ffmpeg/whisper appended: .wav, .out.json, .partial-out.json.
+function deleteUploadFiles(uploadPath) {
+  const dir = path.dirname(uploadPath);
+  const name = path.basename(uploadPath);
+  try {
+    for (const entry of fs.readdirSync(dir)) {
+      if (entry.startsWith(name)) fs.rmSync(path.join(dir, entry), { force: true });
+    }
+  } catch (e) {
+    console.warn(`[Mana] Couldn't delete voice upload ${name}: ${e.message}`);
+  }
+}
+
+// On start: anything left in tmp/ from before (a crash, or builds that
+// kept every voice upload) that's over an hour old. Files only -- tmp/
+// also holds the OCR model cache in tmp/tesseract.
+function sweepStaleTmpFiles(dir = path.join(__dirname, "tmp"), maxAgeMs = 60 * 60 * 1000, now = Date.now()) {
+  let removed = 0;
+  try {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      if (!entry.isFile()) continue;
+      const file = path.join(dir, entry.name);
+      try {
+        if (now - fs.statSync(file).mtimeMs > maxAgeMs) {
+          fs.rmSync(file, { force: true });
+          removed += 1;
+        }
+      } catch (e) {
+        console.warn(`[Mana] Couldn't delete old temp file ${entry.name}: ${e.message}`);
+      }
+    }
+  } catch (e) {
+    console.warn(`[Mana] Couldn't clean ${dir}: ${e.message}`);
+  }
+  return removed;
+}
 
 function registerRoutes(app, upload, deps = {}) {
   // Fires the same compaction/review pass the hourly timer runs, but on the
@@ -5995,6 +6046,8 @@ async function waitForPythonService(
 
 async function startServer() {
   const port = process.env.PORT || 5005;
+  const sweptTmpFiles = sweepStaleTmpFiles();
+  if (sweptTmpFiles) console.log(`[Mana Boot] Deleted ${sweptTmpFiles} old voice upload/temp file(s) from tmp/.`);
 
   // The retriever only enriches replies (retrieval context, token counts) and
   // every caller has a heuristic fallback, so the backend starts without it;
@@ -6124,4 +6177,5 @@ module.exports = {
   selectLlamaModelProfileForPrompt,
   shouldUseRemoteAi,
   startServer,
+  sweepStaleTmpFiles,
 };
