@@ -234,6 +234,30 @@ public class VoiceDebugLogTests
         }
     }
 
+    // Settings > Voice re-reads the log each tick, so a score logged while
+    // the tab is open shows up without reopening Settings.
+    [Fact]
+    public void SpeakerScoresText_PicksUpNewScores()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "mana-voice-log-" + Guid.NewGuid());
+        var path = Path.Combine(dir, "speech-debug.log");
+        Directory.CreateDirectory(dir);
+        try
+        {
+            Assert.StartsWith("No voice match scores yet", SettingsPanel.SpeakerScoresText(path));
+
+            File.AppendAllLines(path, new[] { "2026-09-29T14:03:12.345 len=1000ms whisper=ok speaker=0.812/31ms" });
+            Assert.Equal("Recent match scores: 0.81", SettingsPanel.SpeakerScoresText(path));
+
+            File.AppendAllLines(path, new[] { "2026-09-29T14:03:14.345 len=900ms whisper=ok speaker=0.401/30ms" });
+            Assert.Equal("Recent match scores: 0.81, 0.40", SettingsPanel.SpeakerScoresText(path));
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
     private static short[] Filled(int length, short value)
     {
         var samples = new short[length];

@@ -1744,8 +1744,9 @@ internal sealed class SettingsPanel : UserControl
 
     // #965: how close to my voiceprint speech has to be (SpeakerGate), read
     // each time listening starts; MANA_SPEAKER_THRESHOLD still wins. The
-    // recent speaker= scores from speech-debug.log are there to pick it by.
-    private static FlowLayoutPanel BuildSpeakerThresholdRow()
+    // recent speaker= scores from speech-debug.log are there to pick it by,
+    // re-read each second while the Voice tab is showing.
+    private FlowLayoutPanel BuildSpeakerThresholdRow()
     {
         var inv = System.Globalization.CultureInfo.InvariantCulture;
         var threshold = SpeakerGate.ResolveThreshold(null, ManaSettingsStore.Load().SpeakerThreshold);
@@ -1767,15 +1768,13 @@ internal sealed class SettingsPanel : UserControl
             Anchor = AnchorStyles.Left,
             Text = string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("MANA_SPEAKER_THRESHOLD")) ? "" : "Set in the environment, which wins: MANA_SPEAKER_THRESHOLD",
         };
-        var scores = VoiceDebugLog.RecentSpeakerScores();
-        var recent = new Label
+        var recent = new Label { AutoSize = true, ForeColor = DarkTheme.Muted, Anchor = AnchorStyles.Left, Text = SpeakerScoresText() };
+        logRefreshTimer.Tick += (_, _) =>
         {
-            AutoSize = true,
-            ForeColor = DarkTheme.Muted,
-            Anchor = AnchorStyles.Left,
-            Text = scores.Count == 0
-                ? "No voice match scores yet (speech-debug.log has them when MANA_SPEECH_DEBUG=1 and the setting above is on)."
-                : $"Recent match scores: {string.Join(", ", scores.Select(s => s.ToString("F2", inv)))}",
+            if (recent.Visible)
+            {
+                recent.Text = SpeakerScoresText();
+            }
         };
         slider.ValueChanged += (_, _) =>
         {
@@ -1793,6 +1792,14 @@ internal sealed class SettingsPanel : UserControl
         row.Controls.Add(recent);
         row.Controls.Add(status);
         return row;
+    }
+
+    internal static string SpeakerScoresText(string? logPath = null)
+    {
+        var scores = VoiceDebugLog.RecentSpeakerScores(path: logPath);
+        return scores.Count == 0
+            ? "No voice match scores yet (speech-debug.log has them when MANA_SPEECH_DEBUG=1 and the setting above is on)."
+            : $"Recent match scores: {string.Join(", ", scores.Select(s => s.ToString("F2", System.Globalization.CultureInfo.InvariantCulture)))}";
     }
 
     // #912: off by default; read at each snapshot (the camera hotkey, or
