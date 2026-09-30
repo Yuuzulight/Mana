@@ -137,6 +137,9 @@ function createTtsRuntime(options = {}) {
   // Starts Kokoro on demand before it's used (kokoro-runtime.js); a no-op
   // unless server.js wires it in.
   const ensureKokoro = options.ensureKokoro || (async () => {});
+  // #914: the active character's Qwen3-TTS voice ({ refAudio, refText }),
+  // or null for the service's own (Mana's).
+  const getVoice = options.getVoice || (() => null);
   const postFish =
     options.postFishTtsBuffer ||
     ((text, timeoutMs) => postFishTtsBuffer(text, timeoutMs));
@@ -569,10 +572,16 @@ function createTtsRuntime(options = {}) {
       const startedAt = nowMs();
       // A short sentence takes ~1 s; the timeout only stops a wedged service
       // (e.g. GPU contention) from hanging the reply instead of falling back.
+      const voice = getVoice();
       audio = await postJson(
         `${qwen3TtsUrl}/synthesize`,
         // #909: the service turns the emotion tag into her speaking rate.
-        { text, language: pickQwen3TtsLanguage(text), ...(emotion ? { emotion } : {}) },
+        {
+          text,
+          language: pickQwen3TtsLanguage(text),
+          ...(emotion ? { emotion } : {}),
+          ...(voice ? { ref_audio: voice.refAudio, ref_text: voice.refText } : {}),
+        },
         20000,
       );
       logPerf("tts qwen3tts", startedAt);

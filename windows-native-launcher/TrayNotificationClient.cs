@@ -22,6 +22,7 @@ internal sealed class TrayNotificationClient : IDisposable
     private readonly Action openChat;
     private readonly Action<TrayNotificationPayload>? onDoctor;
     private readonly Action<string>? onSpeak;
+    private readonly Action<TrayNotificationPayload>? onCharacter;
     private readonly bool proactiveToasts;
     private readonly CancellationTokenSource cts = new();
 
@@ -33,11 +34,14 @@ internal sealed class TrayNotificationClient : IDisposable
     // thread) -- Electron's tray tooltip + balloon, not a proactive toast.
     // #905: onSpeak gets a payload's spoken line (a reminder), on a
     // thread-pool thread, whether or not proactive toasts are on.
-    public TrayNotificationClient(Action openChat, string? backendBaseUrl = null, Action<TrayNotificationPayload>? onDoctor = null, Action<string>? onSpeak = null)
+    // #914: onCharacter gets each switch of character (from chat or the
+    // tray), on a thread-pool thread.
+    public TrayNotificationClient(Action openChat, string? backendBaseUrl = null, Action<TrayNotificationPayload>? onDoctor = null, Action<string>? onSpeak = null, Action<TrayNotificationPayload>? onCharacter = null)
     {
         this.openChat = openChat;
         this.onDoctor = onDoctor;
         this.onSpeak = onSpeak;
+        this.onCharacter = onCharacter;
         // Matches windows-launcher's own MANA_PROACTIVE_TOASTS_ENABLED gate
         // -- "0" opts out, anything else (including unset) is enabled. Like
         // there, it doesn't silence Doctor alerts.
@@ -63,7 +67,7 @@ internal sealed class TrayNotificationClient : IDisposable
 
     public void Start()
     {
-        if (!proactiveToasts && onDoctor is null)
+        if (!proactiveToasts && onDoctor is null && onCharacter is null)
         {
             return;
         }
@@ -125,6 +129,11 @@ internal sealed class TrayNotificationClient : IDisposable
         if (payload?.Type == "doctor")
         {
             onDoctor?.Invoke(payload);
+            return;
+        }
+        if (payload?.Type == "character")
+        {
+            onCharacter?.Invoke(payload);
             return;
         }
         if (!string.IsNullOrWhiteSpace(payload?.Speak))
