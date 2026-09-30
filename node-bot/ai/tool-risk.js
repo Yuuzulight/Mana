@@ -98,6 +98,9 @@ const BUILTIN_TIERS = {
   github__read: "read",
   // #1191: asks through its own approval setting (Settings > Approvals).
   git__change: "write",
+  // #1192: the same, and network: they ask after outside content, too.
+  git__push: "network",
+  github__write: "network",
   memory__remember: "write",
   skill__create: "write",
   skill__run: "write",
@@ -141,6 +144,8 @@ const SELF_GATED = new Set([
   "browser_automation__drag",
   "browser_automation__batch",
   "git__change",
+  "git__push",
+  "github__write",
 ]);
 
 // Once a turn has taken in outside content (a web page, search or wiki

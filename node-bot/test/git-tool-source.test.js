@@ -288,3 +288,74 @@ test("removing a worktree unlinks its node_modules link first and never deletes 
   assert.equal(fs.readFileSync(path.join(live, "dep", "index.js"), "utf8"), "// live\n");
   assert.match(parsed(await call("git__change", { repo, action: "worktree_remove", name: "wt1" })).error, /isn't one of/);
 });
+
+// #1192: GitHub writes. The repo gets a bare origin; gh stays scripted.
+function withOrigin(ctx) {
+  const origin = path.join(ctx.base, "origin.git");
+  git(ctx.base, "init", "-q", "--bare", "-b", "main", origin);
+  git(ctx.repo, "remote", "add", "origin", origin);
+  git(ctx.repo, "push", "-q", "-u", "origin", "main");
+  return origin;
+}
+
+test("push asks (ask once), says how many commits, then pushes; the default branch is refused", async () => {
+  const ctx = setup({ "repo view": "main\n" });
+  const origin = withOrigin(ctx);
+  const { repo, gate, call } = ctx;
+  git(repo, "switch", "-q", "-c", "feat/y");
+  git(repo, "commit", "-q", "--allow-empty", "-m", "one");
+  git(repo, "commit", "-q", "--allow-empty", "-m", "two");
+  assert.equal(parsed(await call("git__push", { repo })).status, "pending");
+  const [req] = gate.listPending();
+  assert.equal(req.actionType, `git-github:${idOf(repo)}`);
+  assert.match(req.summary, /^Push feat\/y \(2 commit\(s\), a new branch\) to origin from /);
+  assert.match((await gate.decide(req.id, "allow-once")).result, /Pushed feat\/y/);
+  assert.match(git(origin, "branch", "--list", "feat/y"), /feat\/y/);
+  assert.match(parsed(await call("git__push", { repo, branch: "main" })).error, /default branch/);
+});
+
+test("push runs the secret scan on what it would send, whoever committed it", async () => {
+  const ctx = setup({ "repo view": "main\n" });
+  withOrigin(ctx);
+  const { repo, gate, call } = ctx;
+  gate.setGitApprovalMode("github", "off");
+  git(repo, "switch", "-q", "-c", "leak");
+  fs.writeFileSync(path.join(repo, "k.txt"), `AKIA${"A".repeat(16)}\n`);
+  git(repo, "add", "k.txt");
+  git(repo, "commit", "-q", "-m", "key");
+  assert.match(parsed(await call("git__push", { repo })).error, /key-shaped string.*didn't push/);
+});
+
+test("PR and issue text is sanitized, passed as flag values, and shown in the prompt", async () => {
+  const ctx = setup({ "repo view": "main\n", "pr create": "https://github.com/x/y/pull/9\n", "pr view": "Old title\n", "issue view": "Bug\n" }, {
+    DISCORD_TOKEN: "discord-secret-value-123",
+  });
+  const { repo, gate, ghCalls, call } = ctx;
+  git(repo, "switch", "-q", "-c", "feat/z");
+  const body = "-- I changed C:\\Users\\me\\x.js, token discord-secret-value-123.\n\nCo-authored-by: Bot <b@x>";
+  await call("github__write", { repo, action: "pr_create", title: "--help", body });
+  const [req] = gate.listPending();
+  assert.match(req.summary, /^Open a PR in .*: feat\/z -> main, "--help": "-- I changed \[local path\],? token \[redacted\]\."$/);
+  await gate.decide(req.id, "allow-once");
+  const create = ghCalls.find((c) => c.args[1] === "create").args;
+  assert.deepEqual(create.slice(0, 4), ["pr", "create", "--base=main", "--head=feat/z"]);
+  assert.equal(create[4], "--title=--help");
+  assert.match(create[5], /^--body=-- I changed \[local path\],? token \[redacted\]\.$/);
+
+  gate.setGitApprovalMode("github", "off");
+  assert.match(await call("github__write", { repo, action: "pr_edit", number: 9, add_labels: ["bug"], remove_labels: ["-x"] }), /Edited pr #9/);
+  assert.deepEqual(ghCalls.at(-1).args, ["pr", "edit", "9", "--add-label=bug", "--remove-label=-x"]);
+  assert.match(parsed(await call("github__write", { repo, action: "issue_edit", number: 3, add_labels: ["a,b"] })).error, /isn't a label/);
+  assert.match(await call("github__write", { repo, action: "issue_close", number: 3, reason: "not_planned" }), /as not planned/);
+  assert.deepEqual(ghCalls.at(-1).args, ["issue", "close", "3", "--reason=not planned"]);
+  assert.match(parsed(await call("github__write", { repo, action: "rerun_failed", run_id: "1 --web" })).error, /run_id/);
+  assert.match(parsed(await call("github__write", { repo, action: "pr_comment", number: 9 })).error, /body is required/);
+});
+
+test("GitHub writes are refused while a game runs", async () => {
+  const { repo, gate, call, ghCalls, state } = setup({ "issue view": "Bug\n" });
+  gate.setGitApprovalMode("github", "off");
+  state.gaming = true;
+  assert.match(parsed(await call("github__write", { repo, action: "issue_comment", number: 3, body: "hi" })).error, /game is running/);
+  assert.ok(!ghCalls.some((c) => c.args[1] === "comment"));
+});
