@@ -285,6 +285,23 @@ test("workspace inspector lists files and skips heavy folders", () => {
   }
 });
 
+// #1004
+test("workspace inspector refuses a junction that leads out of the workspace", (t) => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), "mana-editor-link-"));
+  t.after(() => fs.rmSync(base, { recursive: true, force: true }));
+  const workspace = path.join(base, "ws");
+  const outside = path.join(base, "outside");
+  fs.mkdirSync(workspace);
+  fs.mkdirSync(outside);
+  fs.writeFileSync(path.join(outside, "secret.txt"), "secret");
+  fs.symlinkSync(outside, path.join(workspace, "link"), "junction");
+
+  const workspaceStore = createEditorWorkspaceStore();
+  workspaceStore.setWorkspace(workspace, { editor: "zed" });
+  const inspector = createEditorWorkspaceInspector({ workspaceStore });
+  assert.throws(() => inspector.readFile("link/secret.txt"), /inside the active workspace/i);
+});
+
 test("workspace inspector reads bounded text files inside the workspace only", () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mana-editor-read-"));
   fs.mkdirSync(path.join(tempDir, "src"));

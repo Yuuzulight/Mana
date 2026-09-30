@@ -8,6 +8,7 @@ const { createAcpTestRunner } = require("./acp-test-runner");
 const { createSnapshotStore } = require("./snapshot-store");
 const { previewRestore } = require("./ai/snapshot-tool-source");
 const { protectedPathFor, protectedPathMessage } = require("./protected-paths");
+const { isInsideRoot } = require("./acp-path-guard");
 const { execFile } = require("child_process");
 const { createHooksStore, applyInputRules, runPostCommandHook, runFinishCommand } = require("./hooks-store");
 const { isReviewableFile } = require("./ai/adversarial-verifier");
@@ -46,15 +47,8 @@ function resolveWithinRepo(requestedPath) {
   const resolvedPath = path.isAbsolute(requestedPath)
     ? path.resolve(requestedPath)
     : path.resolve(REPO_ROOT, requestedPath);
-  const rel = path.relative(REPO_ROOT, resolvedPath);
-  // On Windows, path.relative() between paths on different drives (or a
-  // drive vs. a UNC root) can't express the difference as a relative path,
-  // so it returns the "to" path back out unchanged -- which does NOT start
-  // with "..". That let paths like "C:\Windows\system.ini" slip past the
-  // ".." check above when REPO_ROOT is on a different drive/root. Any rel
-  // that is still absolute means resolvedPath never actually descended from
-  // REPO_ROOT, so treat that as outside the repo too.
-  if (rel.startsWith("..") || path.isAbsolute(rel)) {
+  // #1004: also by real path, so a junction inside the repo can't lead out.
+  if (!isInsideRoot(resolvedPath, REPO_ROOT)) {
     return null;
   }
   return resolvedPath;

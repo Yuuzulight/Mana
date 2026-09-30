@@ -96,4 +96,4 @@ function protectedPathMessage(entry) {
   return `${entry} is one of my guardrails, so I won't change it myself. It takes a flagged PR that Yuuzulight approves.`;
 }
 
-module.exports = { PROTECTED_PATHS, protectedPathFor, protectedPathMessage };
+module.exports = { PROTECTED_PATHS, canonical, protectedPathFor, protectedPathMessage };
