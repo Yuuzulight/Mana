@@ -541,9 +541,12 @@ public class ManaProcessManagerTests
             using var manager = new ManaProcessManager(root, handler);
             await manager.StartAsync();
             Assert.True(manager.CanRestartBackend);
-            async Task<int[]> Pids(int count)
+            // #1151: this is the CI job's first node launch, which a cold
+            // runner can take over 20 s to start (node printed nothing), so
+            // the first wait is longer; the restart's node is warm.
+            async Task<int[]> Pids(int count, int seconds, string which)
             {
-                var deadline = DateTime.UtcNow.AddSeconds(20);
+                var deadline = DateTime.UtcNow.AddSeconds(seconds);
                 while (true)
                 {
                     var pids = Directory.GetFiles(Path.Combine(root, "node-bot"), "*.pid")
@@ -554,16 +557,16 @@ public class ManaProcessManagerTests
                         return pids;
                     }
                     Assert.True(DateTime.UtcNow < deadline,
-                        $"Only {pids.Length} of {count} fake node-bots started within 20 s. Their output: [{string.Join(" | ", manager.BackendLog.Snapshot())}]");
+                        $"Only {pids.Length} of {count} fake node-bots started within {seconds} s ({which}). Their output: [{string.Join(" | ", manager.BackendLog.Snapshot())}]");
                     await Task.Delay(50);
                 }
             }
-            var first = Assert.Single(await Pids(1));
+            var first = Assert.Single(await Pids(1, 60, "first launch, may be a cold start"));
             backendUp = true;
 
             Assert.True(await manager.RestartBackendAsync(TimeSpan.FromSeconds(20), TimeSpan.FromMilliseconds(50)));
 
-            var second = Assert.Single(await Pids(2), pid => pid != first);
+            var second = Assert.Single(await Pids(2, 20, "after the restart"), pid => pid != first);
             Assert.False(IsRunning(first));
             Assert.True(IsRunning(second));
         }
