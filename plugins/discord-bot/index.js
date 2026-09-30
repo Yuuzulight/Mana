@@ -48,8 +48,10 @@ function getVoiceCommands(deps, realClient) {
     console.warn("discord-bot: Whisper not configured -- voice commands (!join/!leave) will fail until it is.");
   }
 
-  const voice = deps.voiceModule || require("@discordjs/voice");
-  const opus = deps.opusModule || require("prism-media").opus;
+  // These packages live in node-bot's packages; a bare require from this
+  // folder never found them.
+  const voice = deps.voiceModule || require("../../node-bot/node_modules/@discordjs/voice");
+  const opus = deps.opusModule || require("../../node-bot/node_modules/prism-media").opus;
   const whisperQueue =
     deps.whisperQueue || (whisperBin && whisperModel ? createWhisperQueue({ whisperBin, whisperModel }) : null);
 
@@ -93,7 +95,7 @@ function startClient(deps) {
   }
 
   const activeBridge = getBridge(deps);
-  const { Client, GatewayIntentBits, Events, Partials } = deps.discordjs || require("discord.js");
+  const { Client, GatewayIntentBits, Events, Partials } = deps.discordjs || require("../../node-bot/node_modules/discord.js");
   client = new Client({
     intents: [GatewayIntentBits.Guilds, GatewayIntentBits.DirectMessages, GatewayIntentBits.MessageContent],
     partials: [Partials.Channel, Partials.Message],
