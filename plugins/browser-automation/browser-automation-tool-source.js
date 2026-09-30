@@ -20,7 +20,7 @@ const APPROVAL_ACTION_TYPE = "browser-automation-tool-use";
 // asked (allow once / for the session / always / deny / never), per site.
 // Reading, scrolling and going back never ask.
 const SITE_ACTION_TYPE = "browser-site";
-const ACTS_ON_SITE = new Set(["click", "type", "select"]);
+const ACTS_ON_SITE = new Set(["click", "type", "select", "press", "drag"]);
 
 // "shop.example.com" from a page URL (www. dropped), or null off the web.
 function siteOf(url) {
@@ -59,6 +59,15 @@ const TOOL_SCHEMAS = [
   tool("scroll", "Scroll the page by most of a screen, to load more of it.", {
     direction: { type: "string", enum: ["down", "up"] },
   }, ["direction"]),
+  tool("hover", "Move the mouse over an element by its ref, e.g. to open a menu.", { ref: REF_PARAM }, ["ref"]),
+  tool("press", "Press a key or an editing shortcut: Enter, Escape, Tab, arrows, Home/End, PageUp/PageDown, Backspace, Delete, Space, a letter, with Shift, or Ctrl+A/Z/Y/B/I/U.", {
+    key: { type: "string", description: 'Like "Enter", "Escape", "Shift+Tab", "Ctrl+A".' },
+    ref: { type: "string", description: "Optional: the element to press it on; otherwise wherever the focus is." },
+  }, ["key"]),
+  tool("drag", "Drag one element onto another by their refs (sliders, reordering).", {
+    from: REF_PARAM,
+    to: { type: "string", description: "The ref of where to drop it." },
+  }, ["from", "to"]),
   tool("back", "Go back to the previous page."),
   // #1139: the user takes over in a visible window and presses Done.
   tool("hand_over", "Ask the user to take over the browser: for a login, a CAPTCHA, a payment or account change, or when you're stuck. You never type passwords or pay.", {
@@ -188,6 +197,9 @@ function createBrowserAutomationToolSource(options = {}) {
       else if (action === "type") result = await session.type(args?.ref, args?.text, args?.submit === true);
       else if (action === "select") result = await session.select(args?.ref, args?.value);
       else if (action === "scroll") result = await session.scroll(args?.direction);
+      else if (action === "hover") result = await session.hover(args?.ref);
+      else if (action === "press") result = await session.press(args?.key, args?.ref);
+      else if (action === "drag") result = await session.drag(args?.from, args?.to);
       else result = await session.back();
     } catch (err) {
       // Issue #418: the launcher's activity feed should show a failed step

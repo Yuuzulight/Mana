@@ -19,6 +19,35 @@ const INTERACTIVE_ROLES = new Set([
   "switch", "slider", "spinbutton", "tab", "menuitem", "menuitemcheckbox", "menuitemradio", "treeitem",
 ]);
 const REF_RE = /^(?:f\d+)?e\d+$/;
+// #1155: keys she may press -- the page's own keys, never a shortcut that
+// acts outside it (closing or opening tabs, printing, saving, devtools).
+const NAMED_KEYS = new Map(
+  ["Enter", "Escape", "Tab", "Backspace", "Delete", "Space", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Home", "End", "PageUp", "PageDown"]
+    .map((k) => [k.toLowerCase(), k === "Space" ? " " : k]),
+);
+NAMED_KEYS.set("esc", "Escape");
+NAMED_KEYS.set("return", "Enter");
+// Editing shortcuts only: select all, undo, redo, bold, italic, underline.
+// No copy, cut or paste: those reach my own clipboard.
+const CONTROL_LETTERS = new Set(["a", "z", "y", "b", "i", "u"]);
+
+// "Ctrl+A", "shift+tab", "Enter" -> Playwright's "Control+a", "Shift+Tab",
+// "Enter"; throws on anything else.
+function pageKey(key) {
+  const parts = String(key ?? "").split("+").map((p) => p.trim().toLowerCase());
+  const base = parts.pop();
+  const mods = new Set(parts.map((m) => (m === "ctrl" ? "control" : m)));
+  if (![...mods].every((m) => m === "control" || m === "shift")) {
+    throw new Error(`only Ctrl and Shift combinations are allowed, not "${key}"`);
+  }
+  const named = NAMED_KEYS.get(base);
+  const letter = /^[a-z0-9]$/.test(base) ? base : null;
+  if (!named && !letter) throw new Error(`"${key}" isn't a key she can press (Enter, Escape, Tab, arrows, a letter...)`);
+  if (mods.has("control") && letter && !CONTROL_LETTERS.has(letter)) {
+    throw new Error(`Ctrl+${letter.toUpperCase()} isn't allowed: only the page's editing shortcuts (Ctrl+A/Z/Y/B/I/U)`);
+  }
+  return [...(mods.has("control") ? ["Control"] : []), ...(mods.has("shift") ? ["Shift"] : []), named || letter].join("+");
+}
 
 // The snapshot's interactive lines, flattened: `link "More" [ref=e6]`,
 // `textbox "Search" [ref=e9]: current value`. Lines without a ref can't be
@@ -200,6 +229,29 @@ function createBrowserSession(options = {}) {
     return afterAction();
   }
 
+  // #1155: menus that open on hover.
+  async function hover(ref) {
+    await acting(() => page.locator(refSelector(ref)).hover({ timeout: ACTION_TIMEOUT_MS }));
+    return afterAction();
+  }
+
+  // On the element (ref) or wherever the focus is.
+  async function press(key, ref) {
+    const combo = pageKey(key);
+    await refuseIfSensitive();
+    await acting(() => (ref ? page.locator(refSelector(ref)).press(combo, { timeout: ACTION_TIMEOUT_MS }) : page.keyboard.press(combo)));
+    return afterAction();
+  }
+
+  // Sliders, reordering.
+  async function drag(fromRef, toRef) {
+    const from = page.locator(refSelector(fromRef));
+    const to = page.locator(refSelector(toRef));
+    await refuseIfSensitive();
+    await acting(() => from.dragTo(to, { timeout: ACTION_TIMEOUT_MS }));
+    return afterAction();
+  }
+
   async function back() {
     await page.goBack();
     return snapshot();
@@ -212,7 +264,7 @@ function createBrowserSession(options = {}) {
     return buffer.toString("base64");
   }
 
-  return { navigate, click, type, select, scroll, back, snapshot, screenshot, url: () => page.url() };
+  return { navigate, click, type, select, scroll, hover, press, drag, back, snapshot, screenshot, url: () => page.url() };
 }
 
 module.exports = {
@@ -223,5 +275,6 @@ module.exports = {
   extractTextInPage,
   sensitiveInPage,
   refSelector,
+  pageKey,
   blockedNote,
 };

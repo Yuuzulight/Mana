@@ -44,6 +44,14 @@ gets a fresh snapshot. Everything from the page reaches the model inside
 one untrusted frame (`ai/untrusted-content.js`). Screenshots are only for
 the Browser panel, taken while it's on screen; the model never sees one.
 
+## Hover, keys and drag (#1155)
+
+`hover` (menus that open on hover), `press` (Enter, Escape, Tab, arrows,
+Home/End, PageUp/PageDown, Backspace, Delete, Space, letters, with Shift, or
+Ctrl+A/Z/Y/B/I/U -- never Alt, Meta, F-keys, tab/window shortcuts, or copy,
+cut and paste, which reach my clipboard) and `drag` (one ref onto another).
+Press and drag ask for the site like a click; hover doesn't.
+
 ## Asking before acting on a new site (#1154)
 
 The first time she clicks, types or selects on a site (host, `www.`
