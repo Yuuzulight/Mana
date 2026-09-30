@@ -7,6 +7,7 @@ GPU or weights needed. Run with the service's venv:
 import io
 import os
 import sys
+import tempfile
 from unittest import mock
 
 sys.path.insert(0, os.path.dirname(__file__))
@@ -55,6 +56,29 @@ def run():
 
         assert client.post("/synthesize", json={"text": "  "}).status_code == 400
         assert len(fake.calls) == 3
+
+        # #914: another character's voice, per request, on the same model.
+        outside = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
+        outside.close()
+        svc.VOICES_DIR = os.path.realpath(tempfile.mkdtemp())
+        with tempfile.NamedTemporaryFile(suffix=".wav", dir=svc.VOICES_DIR, delete=False) as clip:
+            pass
+        try:
+            voice = {"ref_audio": clip.name, "ref_text": "Evil Mana's line."}
+            assert client.post("/synthesize", json={"text": "Hi", **voice}).status_code == 200
+            assert fake.calls[-1]["ref_audio"] == clip.name and fake.calls[-1]["ref_text"] == "Evil Mana's line."
+            # Half a voice, or a clip that isn't there, is refused before the model.
+            assert client.post("/synthesize", json={"text": "Hi", "ref_audio": clip.name}).status_code == 400
+            missing = {"ref_audio": clip.name + ".gone", "ref_text": "x"}
+            assert client.post("/synthesize", json={"text": "Hi", **missing}).status_code == 400
+            # Only clips under node-bot/data, never any file the caller names.
+            elsewhere = {"ref_audio": outside.name, "ref_text": "x"}
+            assert client.post("/synthesize", json={"text": "Hi", **elsewhere}).status_code == 400
+            assert len(fake.calls) == 4
+        finally:
+            os.remove(clip.name)
+            os.remove(outside.name)
+            os.rmdir(svc.VOICES_DIR)
 
         # #909: an emotion tag changes the pace (sad slower, excited faster)
         # and never reaches the model; an unknown one changes nothing.
