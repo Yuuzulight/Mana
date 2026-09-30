@@ -10,6 +10,7 @@ const {
   SITE_ACTION_TYPE,
   TOOL_SCHEMAS,
   describeForModel,
+  parsePoint,
   isBrowserAutomationToolName,
   createBrowserAutomationToolSource,
   buildToolPolicyWithBrowserAutomation,
@@ -68,7 +69,8 @@ function createSource(overrides = {}) {
   const session = overrides.session || createBrowserSession({ page: createFakePage() });
   const getSession = overrides.getSession || (async () => session);
   const requestHandOver = overrides.requestHandOver;
-  return { source: createBrowserAutomationToolSource({ getSession, approvalGate, requestHandOver }), approvalGate, session };
+  const { runVisionReply, sessionDeps } = overrides;
+  return { source: createBrowserAutomationToolSource({ getSession, approvalGate, requestHandOver, runVisionReply, sessionDeps }), approvalGate, session };
 }
 
 test("listToolSchemas exposes navigate/snapshot/click/type as OpenAI-shaped tool schemas", () => {
@@ -84,6 +86,7 @@ test("listToolSchemas exposes navigate/snapshot/click/type as OpenAI-shaped tool
       "browser_automation__find",
       "browser_automation__hand_over",
       "browser_automation__hover",
+      "browser_automation__look_and_click",
       "browser_automation__navigate",
       "browser_automation__press",
       "browser_automation__scroll",
@@ -519,4 +522,47 @@ test("#1159: the model sees her tabs inside the page's frame", () => {
   const text = describeForModel({ url: "https://b.test/", title: "B", tabs: ["1. A -- https://a.test/", "2. B -- https://b.test/ (current)"], elements: [] });
   assert.match(text, /Title: B\nTabs:\n1\. A -- https:\/\/a\.test\/\n2\. B -- https:\/\/b\.test\/ \(current\)\n\nInteractive elements:/);
   assert.match(text, /<\/untrusted-[0-9a-f]{12}>$/);
+});
+
+test("#1157: parsePoint takes x,y inside the screenshot, or nothing", () => {
+  assert.deepEqual(parsePoint("412,230", 1280, 720), { x: 412, y: 230 });
+  assert.deepEqual(parsePoint("The button is at 100.6, 50", 1280, 720), { x: 101, y: 50 });
+  assert.equal(parsePoint("NONE", 1280, 720), null);
+  assert.equal(parsePoint("2000,10", 1280, 720), null);
+  assert.equal(parsePoint("", 1280, 720), null);
+});
+
+test("#1157: look_and_click is a fallback: only when find sees nothing, never while gaming, and it asks for the site", async () => {
+  const { createBrowserSession } = require("../browser-automation");
+  const page = createFakePage();
+  page.mouse.click = async () => {};
+  const session = createBrowserSession({ page });
+  const prompts = [];
+  let gaming = false;
+  const { source, approvalGate } = createSource({
+    session,
+    sessionDeps: { isGaming: () => gaming },
+    runVisionReply: async (prompt, images) => (prompts.push({ prompt, images }), "300,200"),
+  });
+  await source.executeTool("browser_automation__snapshot", {}).catch(() => {});
+  await approvalGate.decide(approvalGate.listPending()[0].id, "always-allow");
+  await source.executeTool("browser_automation__navigate", { url: "https://game.test/" });
+  await source.executeTool("browser_automation__look_and_click", { description: "the Play button" }).catch(() => {});
+  const site = approvalGate.listPending().find((p) => p.actionType === "browser-site:game.test");
+  await approvalGate.decide(site.id, "always-allow");
+
+  // The snapshot already has a "Go" button: use its ref instead.
+  await assert.rejects(
+    () => source.executeTool("browser_automation__look_and_click", { description: "the Go button" }),
+    /already match that; click one by its ref instead: button "Go" \[ref=e2\]/,
+  );
+  assert.equal(prompts.length, 0);
+
+  assert.match(await source.executeTool("browser_automation__look_and_click", { description: "the Play button" }), /URL: https:\/\/game\.test\//);
+  assert.match(prompts[0].prompt, /Where is this: "the Play button"\?/);
+  assert.match(prompts[0].images[0], /^data:image\/jpeg;base64,/);
+
+  gaming = true;
+  await assert.rejects(() => source.executeTool("browser_automation__look_and_click", { description: "the Play button" }), /off while the user is gaming/);
+  assert.equal(prompts.length, 1);
 });

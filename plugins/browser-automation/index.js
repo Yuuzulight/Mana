@@ -38,7 +38,7 @@ const BLOCKED_RESOURCE_TYPES = new Set(["image", "media", "font"]);
 const IDLE_CLOSE_MS = 5 * 60 * 1000;
 // #1159: tabs she may have open at once (MANA_BROWSER_MAX_TABS, 1 to 5).
 const DEFAULT_MAX_TABS = 3;
-const SESSION_METHODS = ["navigate", "click", "type", "select", "scroll", "hover", "press", "drag", "back", "find", "snapshot"];
+const SESSION_METHODS = ["navigate", "click", "type", "select", "scroll", "hover", "press", "drag", "back", "find", "snapshot", "lookAndClick"];
 const CHECK_EVERY_MS = 30 * 1000;
 // #1158: how long a file I point her to stays hers to upload.
 const OFFER_MS = 30 * 60 * 1000;

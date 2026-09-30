@@ -45,6 +45,16 @@ gets a fresh snapshot. Everything from the page reaches the model inside
 one untrusted frame (`ai/untrusted-content.js`). Screenshots are only for
 the Browser panel, taken while it's on screen; the model never sees one.
 
+## Look and click (#1157)
+
+`look_and_click { description }` is the last resort for pages with no
+useful accessibility info (canvas apps, unlabeled custom UIs). It only
+runs when `find` sees nothing matching; then her own vision model gets a
+screenshot and answers with x,y, and she clicks there. Off while a game
+runs, asks for the site like a click, refused on password/payment pages.
+Images on the page only show while the Browser panel is on screen (#1137),
+so an image-only icon is easier to spot with the panel open.
+
 ## Uploads and downloads (#1158)
 
 - `upload { ref, file }` fills a file input, or answers the file chooser a
