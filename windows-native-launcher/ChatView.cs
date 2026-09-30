@@ -135,14 +135,18 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
         }
     }
 
-    public void AppendReplySentence(string text) => RunOnUiThread(() =>
+    public void AppendReplySentence(string text) => AppendReplySentence(text, null);
+
+    // #914: a sentence from another character than the open reply's (group
+    // mode's second reply) starts her own message, labelled with her name.
+    public void AppendReplySentence(string text, string? speaker) => RunOnUiThread(() =>
     {
         var blocks = ChatMarkdownParser.Parse(text);
         if (blocks.Count == 0)
         {
             return;
         }
-        if (messages.Count > 0 && !messages[^1].FromUser)
+        if (messages.Count > 0 && !messages[^1].FromUser && (speaker is null || messages[^1].Speaker == speaker))
         {
             var current = messages[^1];
             if (current.FinalText == text)
@@ -157,7 +161,7 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
                 return;
             }
         }
-        var message = new Message(fromUser: false);
+        var message = new Message(fromUser: false) { Name = speaker };
         message.Blocks.AddRange(blocks);
         Add(message, forceScroll: false);
     });
@@ -1444,7 +1448,9 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
         public Message(bool fromUser) => FromUser = fromUser;
 
         public bool FromUser { get; }
-        public string Speaker => FromUser ? "You" : "Mana";
+        // #914: the character's name on her messages (null: Mana).
+        public string? Name { get; init; }
+        public string Speaker => FromUser ? "You" : Name ?? "Mana";
         public List<MarkdownBlock> Blocks { get; } = new();
         public List<Line> Lines { get; set; } = new();
         public string Text { get; set; } = "";
