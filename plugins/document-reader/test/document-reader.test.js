@@ -89,46 +89,30 @@ test("ingestPdf rejects an oversized file before ever parsing it", async () => {
     fs.ftruncateSync(fd, 26 * 1024 * 1024);
     fs.closeSync(fd);
 
-    let parseCalled = false;
-    await assert.rejects(
-      () =>
-        documentReader.ingestPdf(bigPdf, {
-          pdfParse: async () => {
-            parseCalled = true;
-            return { text: "should not get here" };
-          },
-        }),
-      /too large to ingest/,
-    );
-    assert.equal(parseCalled, false);
+    await assert.rejects(() => documentReader.ingestPdf(bigPdf), /too large to ingest/);
   } finally {
     fs.rmSync(tempDir, { recursive: true });
   }
 });
 
-test("ingestPdf parses a valid-magic-byte PDF via the injected pdfParse and ingests the extracted text", async () => {
-  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mana-doc-reader-parse-test-"));
+test("ingestPdf extracts a real PDF's text and ingests it", async () => {
+  const result = await documentReader.ingestPdf(path.join(__dirname, "fixtures", "chromium-mixed.pdf"));
   try {
-    const pdfPath = path.join(tempDir, "report.pdf");
-    fs.writeFileSync(pdfPath, "%PDF-1.4\n%fake body, parsing is mocked below%");
-
-    const result = await documentReader.ingestPdf(pdfPath, {
-      pdfParse: async (buffer) => {
-        assert.ok(Buffer.isBuffer(buffer));
-        return { text: "Extracted PDF body about quarterly hydration goals." };
-      },
-    });
-    try {
-      assert.equal(result.sourceType, "pdf");
-      assert.equal(result.title, "report");
-      const contents = fs.readFileSync(result.path, "utf8");
-      assert.match(contents, /Extracted PDF body about quarterly hydration goals\./);
-    } finally {
-      await documentReader.removeDocument(result.id);
-    }
+    assert.equal(result.sourceType, "pdf");
+    assert.equal(result.title, "chromium-mixed");
+    const contents = fs.readFileSync(result.path, "utf8");
+    assert.match(contents, /The quick brown fox jumps over the lazy dog\./);
+    assert.match(contents, /日本語のテキスト/);
   } finally {
-    fs.rmSync(tempDir, { recursive: true });
+    await documentReader.removeDocument(result.id);
   }
+});
+
+test("ingestPdf refuses a PDF with no text instead of ingesting nothing", async () => {
+  await assert.rejects(
+    () => documentReader.ingestPdf(path.join(__dirname, "fixtures", "image-only.pdf")),
+    /no extractable text/,
+  );
 });
 
 test("ingestUrl requires a fetchPage dependency and ingests what it returns", async () => {
