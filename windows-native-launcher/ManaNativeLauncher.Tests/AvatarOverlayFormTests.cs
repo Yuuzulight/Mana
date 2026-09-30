@@ -34,6 +34,15 @@ public class AvatarOverlayFormTests
     public void IsClickThrough_WhileGamingOrWhenSetInTheTray(bool manual, bool gameRunning, bool expected) =>
         Assert.Equal(expected, AvatarOverlayForm.IsClickThrough(manual, gameRunning));
 
+    [Theory]
+    [InlineData(false, true, 0, 15)]   // talking: every system tick
+    [InlineData(false, false, 0, 31)]  // at rest: ~30fps
+    [InlineData(true, true, 0, 46)]    // gaming: ~20fps even while talking
+    [InlineData(false, true, 10, 100)] // MANA_AVATAR_FPS lowers it
+    [InlineData(true, false, 60, 46)]  // but never raises it
+    public void RenderInterval_CapsFramesAtRestAndWhileGaming(bool gameRunning, bool speaking, int fpsCap, int expected) =>
+        Assert.Equal(expected, AvatarOverlayForm.RenderIntervalMs(gameRunning, speaking, fpsCap));
+
     // #684: after a display change she's pulled fully back onto the screen.
     [Theory]
     [InlineData(1700, 900, 1686, 792)]  // hanging off the bottom-right
@@ -42,6 +51,16 @@ public class AvatarOverlayFormTests
     public void KeepInside_MovesTheLeastNeeded(int x, int y, int expectedX, int expectedY) =>
         Assert.Equal(new Point(expectedX, expectedY),
             AvatarOverlayForm.KeepInside(new Rectangle(x, y, 234, 288), new Rectangle(0, 0, 1920, 1080)));
+
+    // The tray's Show avatar off wins over everything; on, #684 decides.
+    [Theory]
+    [InlineData(false, false, false, false)]
+    [InlineData(false, true, false, false)]
+    [InlineData(true, false, true, true)]   // not hiding with chat: always there
+    [InlineData(true, true, true, false)]   // chat open: steps aside
+    [InlineData(true, true, false, true)]
+    public void AvatarVisible_FollowsShowAvatarThenTheChatWindow(bool showAvatar, bool hidesWithChat, bool chatVisible, bool expected) =>
+        Assert.Equal(expected, ManaApplicationContext.AvatarVisible(showAvatar, hidesWithChat, chatVisible, System.Windows.Forms.FormWindowState.Normal));
 
     // #684: "minimized Mana" -- she shows while the chat window is closed or minimized.
     [Theory]

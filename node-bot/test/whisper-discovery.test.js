@@ -7,6 +7,7 @@ const test = require("node:test");
 const {
   findWhisperBin,
   findWhisperModel,
+  isEnglishOnlyWhisperModel,
   findParakeetBin,
   findParakeetModel,
 } = require("../whisper-discovery");
@@ -222,4 +223,24 @@ test("findParakeetModel prefers f16 over q4_k/q8_0 when multiple quants are pres
 test("findParakeetModel returns null when nothing is found", () => {
   const toolsDir = tempToolsDir();
   assert.equal(findParakeetModel({ env: {}, toolsDir }), null);
+});
+
+test("findWhisperModel prefers a multilingual model when the speech language isn't English", () => {
+  const toolsDir = tempToolsDir();
+  fs.mkdirSync(path.join(toolsDir, "models"), { recursive: true });
+  const english = path.join(toolsDir, "models", "ggml-base.en.bin");
+  const multilingual = path.join(toolsDir, "models", "ggml-small.bin");
+  fs.writeFileSync(english, "");
+  fs.writeFileSync(multilingual, "");
+  assert.equal(findWhisperModel({ env: {}, toolsDir }), english, "English keeps the usual default");
+  assert.equal(findWhisperModel({ env: {}, toolsDir, language: "auto" }), multilingual);
+  assert.equal(findWhisperModel({ env: { WHISPER_LANGUAGE: "ja" }, toolsDir }), multilingual);
+
+  // Off the naming convention too: an .en file only when nothing else is there.
+  const oddToolsDir = tempToolsDir();
+  fs.writeFileSync(path.join(oddToolsDir, "a-model.en-q5_1.bin"), "");
+  fs.writeFileSync(path.join(oddToolsDir, "b-model.bin"), "");
+  assert.equal(path.basename(findWhisperModel({ env: {}, toolsDir: oddToolsDir, language: "auto" })), "b-model.bin");
+  assert.equal(isEnglishOnlyWhisperModel("ggml-small.en-q5_1.bin"), true);
+  assert.equal(isEnglishOnlyWhisperModel("ggml-large-v3-turbo.bin"), false);
 });

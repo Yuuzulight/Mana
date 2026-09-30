@@ -92,7 +92,11 @@ function createLlamaServerRuntime(options = {}) {
   const toolsDir =
     options.toolsDir || path.resolve(baseDir, "..", "tools", "llama");
   const threads = Number(options.threads || env.LLAMA_THREADS || 4);
-  const systemPrompt = options.systemPrompt || DEFAULT_SYSTEM_PROMPT;
+  // #914: a function is read on every call (the active character's).
+  const systemPromptOf =
+    typeof options.systemPrompt === "function"
+      ? options.systemPrompt
+      : () => options.systemPrompt || DEFAULT_SYSTEM_PROMPT;
   const nowMs = options.nowMs || (() => Date.now());
   const logPerf = options.logPerf || (() => {});
   const modelSettingsStore = options.modelSettingsStore || null;
@@ -1322,7 +1326,7 @@ function createLlamaServerRuntime(options = {}) {
 
     // #675: per-profile/per-task sampler preset and thinking.
     const sampling = buildSamplingParams({ profile, task, maxTokens, thinking: thinkingOverride, env });
-    const messages = buildMessages(overrideSystemPrompt || systemPrompt, prompt, extraMessages);
+    const messages = buildMessages(overrideSystemPrompt || systemPromptOf(), prompt, extraMessages);
     if (thinkingOverride === true) await fitThinkingToContext(sampling.params, { messages });
     const resp = await fetchImpl(
       `http://127.0.0.1:${state.port}/v1/chat/completions`,
@@ -1390,7 +1394,7 @@ function createLlamaServerRuntime(options = {}) {
     const startedAt = nowMs();
     await ensureServer(profile, extraMessages?.images);
 
-    const messages = buildMessages(overrideSystemPrompt || systemPrompt, prompt, extraMessages);
+    const messages = buildMessages(overrideSystemPrompt || systemPromptOf(), prompt, extraMessages);
     const { params } = buildSamplingParams({ profile, task: "stream", maxTokens, thinking, env });
     if (thinking === true) await fitThinkingToContext(params, { messages });
     const resp = await fetchImpl(
@@ -1793,7 +1797,7 @@ function createLlamaServerRuntime(options = {}) {
     const MAX_CONSECUTIVE_TOOL_ERRORS = 3;
 
     const messages = buildMessages(
-      overrideSystemPrompt || systemPrompt,
+      overrideSystemPrompt || systemPromptOf(),
       prompt,
       extraMessages,
     );
@@ -2107,7 +2111,7 @@ function createLlamaServerRuntime(options = {}) {
     }
 
     const baseMessages = [
-      { role: "system", content: overrideSystemPrompt || systemPrompt },
+      { role: "system", content: overrideSystemPrompt || systemPromptOf() },
       { role: "user", content: prompt },
     ];
     // Fixed ladder from a safe low-temperature baseline up to more varied
@@ -2220,7 +2224,7 @@ function createLlamaServerRuntime(options = {}) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           messages: [
-            { role: "system", content: overrideSystemPrompt || systemPrompt },
+            { role: "system", content: overrideSystemPrompt || systemPromptOf() },
             { role: "user", content },
           ],
           ...buildSamplingParams({ task: "vision", maxTokens, env }).params,
@@ -2323,7 +2327,9 @@ function createLlamaServerRuntime(options = {}) {
     setGaming,
     stop,
     supportsLoadMode,
-    systemPrompt,
+    get systemPrompt() {
+      return systemPromptOf();
+    },
     unloadVision,
   };
 }
