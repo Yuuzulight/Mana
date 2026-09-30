@@ -76,6 +76,19 @@ public class SpeakerGateTests
         Assert.Equal((SpeakerGateMode)expected, SpeakerGate.ResolveMode(env, setting));
     }
 
+    // #965: MANA_SPEAKER_THRESHOLD wins over Settings > Voice; out-of-range
+    // values fall through.
+    [Theory]
+    [InlineData(null, null, SpeakerGate.DefaultThreshold)]
+    [InlineData(null, 0.6f, 0.6f)]
+    [InlineData("0.3", 0.6f, 0.3f)]
+    [InlineData("1.5", 0.6f, 0.6f)]
+    [InlineData(null, 0f, SpeakerGate.DefaultThreshold)]
+    public void ResolveThreshold(string? env, float? setting, float expected)
+    {
+        Assert.Equal(expected, SpeakerGate.ResolveThreshold(env, setting));
+    }
+
     [Fact]
     public void SpeechSpan_DropsSilenceAroundTheVoiceAndCaps()
     {

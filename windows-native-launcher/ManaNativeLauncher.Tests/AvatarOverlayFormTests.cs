@@ -128,4 +128,40 @@ public class AvatarOverlayFormTests
     [InlineData(248)] // nothing drawn (yet)
     public void VisiblePart_IsTheWholeWindowWithoutAVisibleTop(int top) =>
         Assert.Equal(new Rectangle(1569, 792, 351, 248), AvatarOverlayForm.VisiblePart(new Rectangle(1569, 792, 351, 248), top));
+
+    // #914: a character's model swaps in place -- here one that can't render
+    // (no Cubism Core in a bare checkout), so she stays the static avatar and
+    // says why; null goes back to the default (none here). STA, never shown.
+    [Fact]
+    public void LoadModel_SwapsTheModelInPlace()
+    {
+        var root = Directory.CreateTempSubdirectory("mana-overlay-").FullName;
+        var evil = Path.Combine(root, "evil.model3.json");
+        File.WriteAllText(evil, "{}");
+        System.Runtime.ExceptionServices.ExceptionDispatchInfo? failure = null;
+        var thread = new Thread(() =>
+        {
+            try
+            {
+                using var overlay = new AvatarOverlayForm(root);
+                Assert.Null(overlay.ModelPath);
+
+                overlay.LoadModel(evil);
+                Assert.Equal(evil, overlay.ModelPath);
+                Assert.NotNull(overlay.ModelLoadProblem);
+                Assert.False(overlay.HasLiveModel);
+
+                overlay.LoadModel(null);
+                Assert.Null(overlay.ModelPath);
+            }
+            catch (Exception ex)
+            {
+                failure = System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(ex);
+            }
+        });
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+        thread.Join();
+        failure?.Throw();
+    }
 }

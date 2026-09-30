@@ -284,3 +284,24 @@ test("runTestCommand kills the run on timeout and keeps only the output's tail",
   assert.ok(result.output.endsWith("TAIL"));
   assert.ok(result.output.startsWith("...[1004 earlier chars cut]\n"));
 });
+
+test("#1000 propose_edit refuses one of Mana's own guardrails", async () => {
+  const root = path.resolve(__dirname, "..", "..");
+  let proposed = false;
+  const editors = fakeEditors({
+    workspace: { path: root },
+    createEditProposalImpl: () => {
+      proposed = true;
+      return {};
+    },
+  });
+  const source = createCodingToolSource({ editors, diffsDir: tempDir() });
+
+  const result = JSON.parse(
+    await source.executeTool(`${CODING_TOOL_PREFIX}propose_edit`, { path: "node-bot/approval-gate.js", proposedContent: "" }),
+  );
+
+  assert.equal(result.status, "error");
+  assert.match(result.error, /node-bot\/approval-gate\.js is one of my guardrails/);
+  assert.equal(proposed, false);
+});

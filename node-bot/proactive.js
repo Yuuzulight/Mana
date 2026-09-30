@@ -8,6 +8,8 @@
 // toast path (tray-notifier). An explicit candidate -- something the user
 // asked for, like a reminder (#905) -- is urgent and also gets through
 // mid-game.
+const fs = require("node:fs");
+const path = require("node:path");
 const { notifyTray } = require("./tray-notifier");
 
 const SCORE_THRESHOLD = 0.5;
@@ -21,17 +23,42 @@ const MIN_GAP_MS = 60 * 1000;
 
 // candidate: { reason, payload, score (0..1, default 1), urgent, explicit, ttlMs }.
 // payload is the tray notification, sent as-is.
-// ponytail: held candidates live in memory, so a restart drops them.
 function createProactive({ deliver, isGaming = () => false, inBreak = () => false, now = Date.now }) {
   let held = [];
   let day = "";
   let spentToday = 0;
   let breakUsed = false;
   let lastSentAt = -Infinity;
+  let file = null;
+
+  // #986: held candidates and today's spend survive a backend restart.
+  function persistTo(filePath) {
+    file = filePath;
+    try {
+      const saved = JSON.parse(fs.readFileSync(file, "utf8"));
+      held = Array.isArray(saved.held) ? saved.held.filter((c) => c?.payload && Number.isFinite(c.expiresAt)) : [];
+      day = typeof saved.day === "string" ? saved.day : "";
+      spentToday = Number(saved.spentToday) || 0;
+    } catch {
+      // Nothing saved yet, or unreadable: start empty; the next change rewrites it.
+    }
+  }
+
+  function save() {
+    if (!file) return;
+    try {
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(`${file}.tmp`, JSON.stringify({ held, day, spentToday }), "utf8");
+      fs.renameSync(`${file}.tmp`, file);
+    } catch (e) {
+      console.warn(`Couldn't save held remarks to ${file}:`, e.message);
+    }
+  }
 
   // Delivers at most one held candidate and returns it (or null).
   function flush() {
     const t = now();
+    const count = held.length;
     held = held.filter((c) => c.expiresAt > t);
     const today = new Date(t).toDateString();
     if (today !== day) {
@@ -42,17 +69,18 @@ function createProactive({ deliver, isGaming = () => false, inBreak = () => fals
     const inGameBreak = gaming && inBreak();
     if (!inGameBreak) breakUsed = false;
     const gameHold = gaming && (!inGameBreak || breakUsed);
-    if (t - lastSentAt < MIN_GAP_MS) return null;
-    const next = held.find((c) => (gameHold ? c.explicit : c.urgent || spentToday < DAILY_BUDGET));
-    if (!next) return null;
-    held.splice(held.indexOf(next), 1);
-    if (!next.urgent) spentToday += 1;
-    if (inGameBreak && !next.explicit) breakUsed = true;
-    lastSentAt = t;
-    Promise.resolve()
-      .then(() => deliver(next.payload))
-      .catch(() => {});
-    return next;
+    const next = t - lastSentAt < MIN_GAP_MS ? null : held.find((c) => (gameHold ? c.explicit : c.urgent || spentToday < DAILY_BUDGET));
+    if (next) {
+      held.splice(held.indexOf(next), 1);
+      if (!next.urgent) spentToday += 1;
+      if (inGameBreak && !next.explicit) breakUsed = true;
+      lastSentAt = t;
+      Promise.resolve()
+        .then(() => deliver(next.payload))
+        .catch(() => {});
+    }
+    if (held.length !== count) save();
+    return next ?? null;
   }
 
   // Returns "delivered", "held" or "dropped".
@@ -64,14 +92,16 @@ function createProactive({ deliver, isGaming = () => false, inBreak = () => fals
     held.push(candidate);
     held.sort((a, b) => b.urgent - a.urgent || b.score - a.score);
     held = held.slice(0, MAX_HELD);
-    if (flush() === candidate) return "delivered";
+    const delivered = flush() === candidate;
+    save();
+    if (delivered) return "delivered";
     return held.includes(candidate) ? "held" : "dropped";
   }
 
-  return { offer, flush };
+  return { offer, flush, persistTo };
 }
 
-// The process-wide instance; server.js hands it the gaming watch.
+// The process-wide instance; server.js hands it the gaming watch and its file.
 let gamingCheck = () => false;
 let breakCheck = () => false;
 const proactive = createProactive({
@@ -90,5 +120,6 @@ module.exports = {
   watchGaming,
   offer: proactive.offer,
   flush: proactive.flush,
+  persistTo: proactive.persistTo,
   DAILY_BUDGET,
 };

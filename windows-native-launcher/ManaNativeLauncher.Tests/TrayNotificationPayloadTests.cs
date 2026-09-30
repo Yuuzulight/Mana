@@ -73,4 +73,15 @@ public class TrayNotificationPayloadTests
     {
         Assert.Null(TrayNotificationPayload.TryParse(Json("[1,2,3]")));
     }
+
+    // #914: a character switch carries her Live2D model, or none for the default.
+    [Fact]
+    public void TryParse_ReadsTheCharactersModel()
+    {
+        var evil = TrayNotificationPayload.TryParse(Json("""{"type":"character","title":"Evil Mana","model":"C:\\m\\evil.model3.json"}"""));
+        var mana = TrayNotificationPayload.TryParse(Json("""{"type":"character","title":"Mana","model":null}"""));
+
+        Assert.Equal(@"C:\m\evil.model3.json", evil!.Model);
+        Assert.Null(mana!.Model);
+    }
 }
