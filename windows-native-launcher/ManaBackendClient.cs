@@ -2129,6 +2129,60 @@ internal sealed class ManaBackendClient
         response.EnsureSuccessStatusCode();
     }
 
+    // #1125: everything Mana is doing or has scheduled (node-bot's
+    // capabilities/background-tasks-capability.js, #1124). Admin-gated.
+    public async Task<IReadOnlyList<ManaBackgroundTask>> GetBackgroundTasksAsync()
+    {
+        using var response = await http.GetAsync("/background-tasks");
+        response.EnsureSuccessStatusCode();
+        await using var stream = await response.Content.ReadAsStreamAsync();
+        using var document = await JsonDocument.ParseAsync(stream);
+        var tasks = new List<ManaBackgroundTask>();
+        if (!document.RootElement.TryGetProperty("tasks", out var list) || list.ValueKind != JsonValueKind.Array)
+        {
+            return tasks;
+        }
+        foreach (var e in list.EnumerateArray())
+        {
+            string? Text(string name) => e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
+            DateTimeOffset? Time(string name) => DateTimeOffset.TryParse(Text(name), System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.None, out var t) ? t : null;
+            ManaTaskProgress? progress = null;
+            if (e.TryGetProperty("progress", out var p) && p.ValueKind == JsonValueKind.Object
+                && p.TryGetProperty("done", out var done) && done.ValueKind == JsonValueKind.Number
+                && p.TryGetProperty("total", out var total) && total.ValueKind == JsonValueKind.Number && total.GetDouble() > 0)
+            {
+                progress = new ManaTaskProgress(done.GetDouble(), total.GetDouble(), p.TryGetProperty("unit", out var unit) && unit.ValueKind == JsonValueKind.String ? unit.GetString() : null);
+            }
+            tasks.Add(new ManaBackgroundTask
+            {
+                Id = Text("id") ?? "",
+                Kind = Text("kind") ?? "",
+                Title = Text("title") ?? "",
+                Status = Text("status") ?? "",
+                StartedAt = Time("startedAt"),
+                NextRunAt = Time("nextRunAt"),
+                Progress = progress,
+                EtaSeconds = e.TryGetProperty("etaSeconds", out var eta) && eta.ValueKind == JsonValueKind.Number ? eta.GetDouble() : null,
+                Detail = Text("detail"),
+                CanCancel = e.TryGetProperty("canCancel", out var cancel) && cancel.ValueKind == JsonValueKind.True,
+            });
+        }
+        return tasks;
+    }
+
+    // False when the task already ended or can't be stopped now (404/409).
+    public async Task<bool> CancelBackgroundTaskAsync(string id)
+    {
+        using var content = new StringContent("{}", Encoding.UTF8, "application/json");
+        using var response = await http.PostAsync($"/background-tasks/{Uri.EscapeDataString(id)}/cancel", content);
+        if (response.StatusCode is System.Net.HttpStatusCode.NotFound or System.Net.HttpStatusCode.Conflict)
+        {
+            return false;
+        }
+        response.EnsureSuccessStatusCode();
+        return true;
+    }
+
     // #577: node-bot's deep-research job store (capabilities/deep-research-
     // capability.js) -- 202-Accepted with a jobId, polled via
     // GetResearchJobAsync. sessionId, when given, is what lets the
@@ -2682,6 +2736,30 @@ internal sealed class ManaSelfWorkStatus
     public string? Step { get; init; }
     public string? PrUrl { get; init; }
     public IReadOnlyList<string> Log { get; init; } = [];
+}
+
+// #1125: one entry from GET /background-tasks. Status is running,
+// scheduled, waiting, paused, done or failed. No Progress on a running task
+// means the backend can't measure it (an indeterminate bar); EtaSeconds is
+// only there when it can be estimated from the rate so far.
+internal sealed class ManaBackgroundTask
+{
+    public string Id { get; init; } = "";
+    public string Kind { get; init; } = "";
+    public string Title { get; init; } = "";
+    public string Status { get; init; } = "";
+    public DateTimeOffset? StartedAt { get; init; }
+    public DateTimeOffset? NextRunAt { get; init; }
+    public ManaTaskProgress? Progress { get; init; }
+    public double? EtaSeconds { get; init; }
+    public string? Detail { get; init; }
+    public bool CanCancel { get; init; }
+}
+
+// Unit: "files", "bytes", "sources", "rounds", or "ms" for a countdown.
+internal sealed record ManaTaskProgress(double Done, double Total, string? Unit)
+{
+    public double Fraction => Math.Clamp(Done / Total, 0, 1);
 }
 
 // #646: one entry from GET /agent/activity (node-bot/agent-activity.js).

@@ -328,21 +328,18 @@ internal sealed partial class SessionListForm : Form
         // Before any RegisterRailTool.
         toolPanel = new ToolPanelHost(railToolTip);
 
-        // #538's rail: Artifacts then Tasks on top, Settings docked at the
-        // bottom. (#538's Browser and Terminal icons stay off until those
-        // tools exist.) Docked last-added-first, so Tasks goes in before
-        // Artifacts.
+        // #538's rail: Artifacts then Background tasks on top, Settings
+        // docked at the bottom. (#538's Browser and Terminal icons stay off
+        // until those tools exist.)
         var railSettingsButton = MakeRailButton("settings", "Settings");
         railSettingsButton.Dock = DockStyle.Bottom;
         railSettingsButton.Click += (_, _) => OpenSettings();
         toolRail.Controls.Add(railSettingsButton);
-        // The same window as the tray's "What I'm working on" (#1016).
-        var railTasksButton = MakeRailButton("tasks", "What I'm working on");
-        railTasksButton.Click += (_, _) => new SelfWorkForm(backendClient).Show();
-        toolRail.Controls.Add(railTasksButton);
         var railArtifactsButton = MakeRailButton("artifacts", "Artifacts");
         railArtifactsButton.Click += (_, _) => ShowArtifacts?.Invoke();
         toolRail.Controls.Add(railArtifactsButton);
+        // #1125: its Self-work section opens the "What I'm working on" window (#1016).
+        RegisterRailTool("background-tasks", "tasks", "Background tasks", () => new BackgroundTasksPanel(backendClient));
 
         var chatArea = new Panel { Dock = DockStyle.Fill, BackColor = DarkTheme.Background };
         // #1118: clicking back into the chat closes an unpinned tool panel.
