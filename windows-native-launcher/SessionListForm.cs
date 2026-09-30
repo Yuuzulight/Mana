@@ -51,6 +51,8 @@ internal sealed partial class SessionListForm : Form
     private readonly Label avatarNameLabel = new();
     private readonly Label avatarStatusLabel = new();
     private readonly Label contextMeterLabel = new();
+    private readonly Label chatTitleLabel = new();
+    private readonly Font chatTitleFont = new("Segoe UI Semibold", 10.5f);
     private string? hearingText; // #619: live partial transcript, null when none
     private readonly Font avatarNameFont;
     private readonly Font avatarStatusFont;
@@ -61,6 +63,7 @@ internal sealed partial class SessionListForm : Form
     // control caption map on one native tooltip window), not one instance
     // per control.
     private readonly ToolTip railToolTip = new();
+    private readonly Panel toolRail = new() { Dock = DockStyle.Right, Width = 44, BackColor = DarkTheme.Panel };
 
     // The chat list's row fonts (the #652 mockup's 13px title, semibold for
     // the open chat, and 12px time) -- built once, not per row painted.
@@ -360,7 +363,6 @@ internal sealed partial class SessionListForm : Form
             }
         };
 
-        var toolRail = new Panel { Dock = DockStyle.Right, Width = 44, BackColor = DarkTheme.Panel };
         // #538's own rail order (top to bottom): Browser, Terminal,
         // Artifacts, Tasks, then Settings. None of the first four exist
         // in this app yet -- kept as honest placeholders (clicking one
@@ -411,14 +413,13 @@ internal sealed partial class SessionListForm : Form
         };
 
         // Same collapse toggle as Claude's own UI, and the design
-        // reference's own #sidebarToggleBtn -- a persistent top strip
-        // (not a child of `sidebar` itself, which is what gets hidden;
-        // a button that disappears along with the panel it opens would
-        // have no way to bring it back).
+        // reference's own #sidebarToggleBtn -- in the chat header (not a
+        // child of `sidebar` itself, which is what gets hidden; a button
+        // that disappears along with the panel it opens would have no way
+        // to bring it back).
         var sidebarToggleButton = MakeRailButton("sidebar", "Toggle sidebar");
         sidebarToggleButton.Dock = DockStyle.Left;
         sidebarToggleButton.Width = 34;
-        sidebarToggleButton.Height = 28;
         sidebarToggleButton.Click += (_, _) =>
         {
             sidebar.Visible = !sidebar.Visible;
@@ -426,40 +427,59 @@ internal sealed partial class SessionListForm : Form
         };
 
         // #681: same toggle as the tray's Start/Stop listening item. Its
-        // label is refreshed on Activated since the tray can flip it while
-        // this window is in the background.
+        // label follows VoiceLoop on the status timer, since the tray and the
+        // mic button can flip it too.
         var listenButton = new Button { Dock = DockStyle.Right, Width = 120 };
         DarkTheme.ApplyButton(listenButton);
+        GlassSurface.MakeGlassButton(listenButton);
         void RefreshListenButton() => listenButton.Text = voiceLoop.IsListening ? "Stop listening" : "Start listening";
         listenButton.Click += (_, _) =>
         {
             voiceLoop.ToggleListening();
             RefreshListenButton();
         };
-        Activated += (_, _) => RefreshListenButton();
+        sendButtonTimer.Tick += (_, _) => RefreshListenButton();
         RefreshListenButton();
 
-        // #642: the context meter, filling the top bar between the two
-        // buttons (added first so it docks last). Hover for the breakdown;
-        // held up to 30s since it's several lines to read.
-        contextMeterLabel.Dock = DockStyle.Fill;
+        // #642: the context meter, just left of the listen toggle. Hover for
+        // the breakdown; held up to 30s since it's several lines to read.
+        contextMeterLabel.Dock = DockStyle.Right;
+        contextMeterLabel.AutoSize = true;
         contextMeterLabel.TextAlign = ContentAlignment.MiddleRight;
-        contextMeterLabel.Padding = new Padding(0, 0, 8, 0);
+        contextMeterLabel.Padding = new Padding(8, 0, 8, 0);
         contextMeterLabel.ForeColor = DarkTheme.Muted;
         contextMeterLabel.AccessibleName = "Context window usage";
         railToolTip.AutoPopDelay = 30000;
         chatLog.ReplyEnded += () => _ = RefreshContextMeterAsync();
 
-        var topBar = new Panel { Dock = DockStyle.Top, Height = 28, BackColor = DarkTheme.Background };
-        topBar.Controls.Add(contextMeterLabel);
-        topBar.Controls.Add(listenButton);
-        topBar.Controls.Add(sidebarToggleButton);
+        // The #652 mockup's 36px chat header: the sidebar toggle and the open
+        // chat's title, with the context meter and listen toggle on the right.
+        chatTitleLabel.Dock = DockStyle.Fill;
+        chatTitleLabel.TextAlign = ContentAlignment.MiddleLeft;
+        chatTitleLabel.AutoEllipsis = true;
+        chatTitleLabel.Padding = new Padding(10, 0, 0, 0);
+        chatTitleLabel.Font = chatTitleFont;
+        chatTitleLabel.ForeColor = DarkTheme.Text;
+        chatTitleLabel.BackColor = DarkTheme.Background;
+        chatTitleLabel.Text = "New chat";
+        var chatHeader = new Panel { Dock = DockStyle.Top, Height = 36, BackColor = DarkTheme.Background, Padding = new Padding(12, 4, 12, 4) };
+        chatHeader.Paint += (_, e) =>
+        {
+            using var line = new Pen(DarkTheme.IsGlass ? Color.FromArgb(36, 106, 95, 184) : DarkTheme.Border);
+            e.Graphics.DrawLine(line, 0, chatHeader.Height - 1, chatHeader.Width, chatHeader.Height - 1);
+        };
+        // Last added docks first: toggle left, listen toggle outermost right.
+        chatHeader.Controls.Add(chatTitleLabel);
+        chatHeader.Controls.Add(contextMeterLabel);
+        chatHeader.Controls.Add(listenButton);
+        chatHeader.Controls.Add(sidebarToggleButton);
+        chatArea.Controls.Add(chatHeader);
 
         // Dock order matters, and WinForms docks in REVERSE of the Controls
         // collection: the last control added claims its edge first. So the
-        // intended docking sequence -- topBar (full width), sidebar, its
-        // splitter, toolRail (outermost right), toolPanel, its splitter,
-        // then chatArea filling what's left -- is added back to front.
+        // intended docking sequence -- sidebar, its splitter, toolRail
+        // (outermost right), toolPanel, its splitter, then chatArea filling
+        // what's left -- is added back to front.
         // (Adding them front to back docked chatArea first: it took the
         // whole window and the rest were laid over it, hiding the first
         // lines of chat and clipping both sides.) Each Splitter still sits
@@ -470,7 +490,6 @@ internal sealed partial class SessionListForm : Form
         Controls.Add(toolRail);
         Controls.Add(sidebarSplitter);
         Controls.Add(sidebar);
-        Controls.Add(topBar);
 
         // Forces the native window handle to exist now, on this (the UI)
         // thread -- #524's toast "Open Chat" callback can fire on a
@@ -483,6 +502,15 @@ internal sealed partial class SessionListForm : Form
         // thread call ShowSessionList() -- and touch this form's controls
         // -- directly). Same pattern as ArtifactViewerForm/QuickEntryForm.
         _ = Handle;
+
+        // The #652 mockup's shimmer and its delays: title strip, Mana's
+        // bubbles, the open chat's card, the avatar card, the rail.
+        GlassSurface.Shimmer(this, 0, () => new Rectangle(0, 0, ClientSize.Width, CaptionHeight));
+        // ponytail: repaints the whole chat during its sweep; limit it to her visible bubbles if that ever shows up in CPU use.
+        GlassSurface.Shimmer(chatLog, 1100);
+        GlassSurface.Shimmer(list, 2200, () => list.Items.Cast<ListViewItem>().FirstOrDefault(i => (string?)i.Tag == activeSessionId)?.Bounds ?? Rectangle.Empty);
+        GlassSurface.Shimmer(avatarCard, 4500);
+        GlassSurface.Shimmer(toolRail, 5600);
     }
 
     // #652 part 5: a typed-message box under the chat, sending through the
@@ -502,14 +530,15 @@ internal sealed partial class SessionListForm : Form
             Multiline = true,
             AcceptsReturn = false,
             Dock = DockStyle.Fill,
-            BorderStyle = BorderStyle.FixedSingle,
             BackColor = DarkTheme.IsLight ? Color.White : DarkTheme.Panel2,
             ForeColor = DarkTheme.Text,
             Font = messageBoxFont,
             PlaceholderText = MessageBoxPlaceholder,
             AccessibleName = "Message Mana",
+            AccessibleDescription = MessageBoxHint,
             ScrollBars = ScrollBars.None,
         };
+        railToolTip.SetToolTip(box, MessageBoxHint);
         var send = new Button
         {
             Text = "Send",
@@ -520,6 +549,24 @@ internal sealed partial class SessionListForm : Form
             ForeColor = DarkTheme.OnAccent,
         };
         send.FlatAppearance.BorderSize = 0;
+        GlassSurface.MakeGlassButton(send, gloss: true);
+
+        // The #652 mockup's push-to-talk button: counts as saying her name,
+        // like clicking her on the overlay (listening comes on if it was off).
+        var mic = new Button
+        {
+            Dock = DockStyle.Right,
+            Width = 44,
+            FlatStyle = FlatStyle.Flat,
+            BackColor = DarkTheme.Panel2,
+            ForeColor = DarkTheme.Accent,
+            AccessibleName = "Push to talk",
+        };
+        mic.FlatAppearance.BorderSize = 0;
+        GlassSurface.MakeGlassButton(mic);
+        mic.Paint += (_, e) => DrawMicIcon(e.Graphics, mic.ClientRectangle, mic.ForeColor);
+        mic.Click += (_, _) => voiceLoop.Wake();
+        railToolTip.SetToolTip(mic, "Talk to Mana: the next thing you say is for her");
 
         // #675: deep thinking, sticky until clicked off. While on, every
         // turn (typed or spoken) asks node-bot to think harder. A toggle
@@ -540,6 +587,7 @@ internal sealed partial class SessionListForm : Form
         };
         think.FlatAppearance.BorderSize = 0;
         think.FlatAppearance.CheckedBackColor = DarkTheme.Accent;
+        GlassSurface.MakeGlassButton(think);
         railToolTip.SetToolTip(think, DeepThinkingOffTooltip);
         // Q12b: it also lights while Mana's own deep thinking is on (she
         // turned it on when asked); clicking it then turns hers off too.
@@ -726,10 +774,15 @@ internal sealed partial class SessionListForm : Form
             await sending;
         };
 
+        // The #652 mockup's composer: a 44px field, then the buttons, 8px apart.
         Panel Gap() => new() { Dock = DockStyle.Right, Width = 8, BackColor = Color.Transparent };
-        var panel = new Panel { Dock = DockStyle.Bottom, Height = 58, Padding = new Padding(12, 10, 12, 10), BackColor = DarkTheme.Panel };
-        // Docked last-added first: Send at the far right, then Think, then the box.
-        panel.Controls.Add(box);
+        var field = GlassSurface.Field(box, new Padding(12, 11, 12, 4));
+        field.Dock = DockStyle.Fill;
+        var panel = new Panel { Dock = DockStyle.Bottom, Height = 74, Padding = new Padding(32, 12, 32, 18), BackColor = DarkTheme.Background };
+        // Docked last-added first: Send at the far right, then Think, the mic, then the box.
+        panel.Controls.Add(field);
+        panel.Controls.Add(Gap());
+        panel.Controls.Add(mic);
         panel.Controls.Add(Gap());
         panel.Controls.Add(think);
         panel.Controls.Add(Gap());
@@ -837,7 +890,23 @@ internal sealed partial class SessionListForm : Form
 
     internal static bool IsStopButton(Button button) => button.Text == "Stop";
 
-    private const string MessageBoxPlaceholder = "Message Mana...  (Enter to send, Shift+Enter for a new line)";
+    private const string MessageBoxPlaceholder = "Message Mana…";
+    private const string MessageBoxHint = "Enter to send, Shift+Enter for a new line";
+
+    // The mockup's mic: a capsule over a cradle and stand, 18px in 1.6px strokes.
+    private static void DrawMicIcon(Graphics g, Rectangle bounds, Color color)
+    {
+        g.SmoothingMode = SmoothingMode.AntiAlias;
+        var x = bounds.Left + (bounds.Width - 18) / 2f;
+        var y = bounds.Top + (bounds.Height - 18) / 2f;
+        using var pen = new Pen(color, 1.6f) { StartCap = LineCap.Round, EndCap = LineCap.Round };
+        using (var capsule = RoundedRect(new RectangleF(x + 6.5f, y + 1.5f, 5, 9), 2.5f))
+        {
+            g.DrawPath(pen, capsule);
+        }
+        g.DrawArc(pen, x + 3.5f, y + 3, 11, 11, 0, 180);
+        g.DrawLine(pen, x + 9, y + 14, x + 9, y + 16.5f);
+    }
 
     private Button MakeRailButton(string icon, string tooltip)
     {
@@ -851,94 +920,81 @@ internal sealed partial class SessionListForm : Form
         };
         button.FlatAppearance.BorderSize = 0;
         button.FlatAppearance.MouseOverBackColor = DarkTheme.Panel2;
-        // No Text -- these are line-icon glyphs (same set as the design
-        // reference's rail: circle-globe/terminal/artifacts/list/gear),
-        // drawn to match its stroke-width:2-on-24px-viewBox look rather
-        // than approximated with Unicode symbol characters.
-        button.Paint += (_, e) => DrawRailIcon(e.Graphics, button.ClientRectangle, button.ForeColor, icon);
+        // No Text -- these are line-icon glyphs drawn in the #652 mockup's
+        // rail style rather than approximated with Unicode symbol
+        // characters. The open tool's icon is lit like the mockup's active one.
+        button.Paint += (_, e) =>
+        {
+            var open = openTool == tooltip;
+            if (open)
+            {
+                using var lit = new SolidBrush(DarkTheme.IsGlass ? Color.FromArgb(217, 238, 231, 248) : DarkTheme.Panel2);
+                e.Graphics.FillRectangle(lit, button.ClientRectangle);
+            }
+            DrawRailIcon(e.Graphics, button.ClientRectangle, open ? DarkTheme.Accent : button.ForeColor, icon);
+        };
         railToolTip.SetToolTip(button, tooltip);
         return button;
     }
 
-    // Ported from the design reference's own rail SVGs (24x24 viewBox,
-    // stroke-width 2, round caps/joins) -- redrawn in GDI+ rather than
-    // embedded as image resources, matching this file's own avatar-card
-    // precedent of procedural drawing over baked-in art assets. Every Pen
-    // is `using`-scoped per call, same discipline as the avatar card's
-    // Paint handlers.
+    // The #652 mockup's rail icons: 18px, 1.6px strokes, round caps,
+    // square-cornered frames. Every Pen is `using`-scoped per call, same
+    // discipline as the avatar card's Paint handlers.
     private static void DrawRailIcon(Graphics g, Rectangle bounds, Color color, string icon)
     {
         g.SmoothingMode = SmoothingMode.AntiAlias;
-        const int size = 17;
-        var x = bounds.Left + (bounds.Width - size) / 2f;
-        var y = bounds.Top + (bounds.Height - size) / 2f;
-        using var pen = new Pen(color, 1.5f) { StartCap = LineCap.Round, EndCap = LineCap.Round, LineJoin = LineJoin.Round };
+        var x = bounds.Left + (bounds.Width - 18) / 2f;
+        var y = bounds.Top + (bounds.Height - 18) / 2f;
+        using var pen = new Pen(color, 1.6f) { StartCap = LineCap.Round, EndCap = LineCap.Round, LineJoin = LineJoin.Round };
+        void Frame() => g.DrawRectangle(pen, x + 1.5f, y + 2.5f, 15, 13);
 
         switch (icon)
         {
-            case "browser":
-                g.DrawEllipse(pen, x, y, size, size);
-                g.DrawLine(pen, x, y + size / 2f, x + size, y + size / 2f);
-                g.DrawArc(pen, x + size * 0.28f, y, size * 0.44f, size, 90, 180);
+            case "browser": // the mockup's "Browser activity": a window with a title bar
+                Frame();
+                g.DrawLine(pen, x + 1.5f, y + 6, x + 16.5f, y + 6);
                 break;
 
             case "terminal":
-                using (var terminalPath = RoundedRect(new RectangleF(x, y, size, size * 0.82f), 2.5f))
-                {
-                    g.DrawPath(pen, terminalPath);
-                }
-                g.DrawLines(pen, new[]
-                {
-                    new PointF(x + size * 0.2f, y + size * 0.28f),
-                    new PointF(x + size * 0.45f, y + size * 0.41f),
-                    new PointF(x + size * 0.2f, y + size * 0.54f),
-                });
-                g.DrawLine(pen, x + size * 0.5f, y + size * 0.54f, x + size * 0.78f, y + size * 0.54f);
+                Frame();
+                g.DrawLines(pen, new[] { new PointF(x + 5, y + 6.5f), new PointF(x + 8, y + 9), new PointF(x + 5, y + 11.5f) });
+                g.DrawLine(pen, x + 9.5f, y + 11.5f, x + 13, y + 11.5f);
                 break;
 
-            case "artifacts":
-                using (var artifactsPath = RoundedRect(new RectangleF(x, y, size, size), 2.5f))
-                {
-                    g.DrawPath(pen, artifactsPath);
-                }
-                g.DrawLine(pen, x + size * 0.62f, y, x + size * 0.62f, y + size);
+            case "artifacts": // a panel on the right, like the tool panel it opens
+                Frame();
+                g.DrawLine(pen, x + 11.5f, y + 2.5f, x + 11.5f, y + 15.5f);
                 break;
 
-            // Same shape as "artifacts", mirrored -- a panel divided near
-            // its LEFT edge instead of its right, standing for the left
-            // sidebar instead of the right tool panel.
-            case "sidebar":
-                using (var sidebarPath = RoundedRect(new RectangleF(x, y, size, size), 2.5f))
-                {
-                    g.DrawPath(pen, sidebarPath);
-                }
-                g.DrawLine(pen, x + size * 0.38f, y, x + size * 0.38f, y + size);
+            case "sidebar": // the mockup's toggle: a panel on the left
+                Frame();
+                g.DrawLine(pen, x + 6.5f, y + 2.5f, x + 6.5f, y + 15.5f);
                 break;
 
             case "tasks":
-                using (var dotBrush = new SolidBrush(color))
+                for (var i = 0; i < 3; i++)
                 {
-                    for (var i = 0; i < 3; i++)
-                    {
-                        var lineY = y + size * (0.2f + i * 0.3f);
-                        g.DrawLine(pen, x + size * 0.28f, lineY, x + size, lineY);
-                        g.FillEllipse(dotBrush, x, lineY - 1f, 2f, 2f);
-                    }
+                    var lineY = y + 4.5f + i * 4.5f;
+                    g.DrawLine(pen, x + 6, lineY, x + 16.5f, lineY);
+                    g.DrawLine(pen, x + 2, lineY, x + 2.2f, lineY); // round caps make it a dot
                 }
                 break;
 
-            case "settings":
-                var center = new PointF(x + size / 2f, y + size / 2f);
-                var outerR = size * 0.34f;
-                var innerR = size * 0.14f;
-                g.DrawEllipse(pen, center.X - innerR, center.Y - innerR, innerR * 2, innerR * 2);
+            case "settings": // a cog: eight teeth around a hub
+                var cx = x + 9;
+                var cy = y + 9;
+                var outline = new PointF[32];
                 for (var i = 0; i < 8; i++)
                 {
-                    var angle = i * Math.PI / 4;
-                    var toothInner = new PointF(center.X + (float)(outerR * 0.75 * Math.Cos(angle)), center.Y + (float)(outerR * 0.75 * Math.Sin(angle)));
-                    var toothOuter = new PointF(center.X + (float)(outerR * Math.Cos(angle)), center.Y + (float)(outerR * Math.Sin(angle)));
-                    g.DrawLine(pen, toothInner, toothOuter);
+                    var a = i * Math.PI / 4;
+                    PointF At(double angle, float r) => new(cx + r * (float)Math.Cos(angle), cy + r * (float)Math.Sin(angle));
+                    outline[i * 4] = At(a - 0.36, 5.4f);
+                    outline[i * 4 + 1] = At(a - 0.2, 7.5f);
+                    outline[i * 4 + 2] = At(a + 0.2, 7.5f);
+                    outline[i * 4 + 3] = At(a + 0.36, 5.4f);
                 }
+                g.DrawPolygon(pen, outline);
+                g.DrawEllipse(pen, cx - 2.5f, cy - 2.5f, 5, 5);
                 break;
         }
     }
@@ -958,9 +1014,11 @@ internal sealed partial class SessionListForm : Form
             toolPanel.Visible = false;
             toolPanelSplitter.Visible = false;
             openTool = null;
+            toolRail.Invalidate(true);
             return;
         }
         openTool = tool;
+        toolRail.Invalidate(true);
         toolPanelTitleLabel.Text = tool;
         toolPanelBodyLabel.Text = "Not built yet.";
         toolPanel.Visible = true;
@@ -972,6 +1030,7 @@ internal sealed partial class SessionListForm : Form
         toolPanel.Visible = false;
         toolPanelSplitter.Visible = false;
         openTool = null;
+        toolRail.Invalidate(true);
         SetToolPanelPinned(toolPinButton, false);
     }
 
@@ -1195,6 +1254,7 @@ internal sealed partial class SessionListForm : Form
         }
         activeSessionId = sessionId;
         voiceLoop.SetSessionId(sessionId);
+        ShowChatTitle();
         _ = RefreshAsync();
         _ = RefreshContextMeterAsync();
         _ = LoadHistoryAsync(sessionId);
@@ -1536,7 +1596,14 @@ internal sealed partial class SessionListForm : Form
         }
         list.EndUpdate();
         FitSessionColumn();
+        ShowChatTitle();
     }
+
+    private void ShowChatTitle() => chatTitleLabel.Text = ChatTitle(sessions, activeSessionId);
+
+    // The open chat's name for the header; a chat not saved yet is "New chat".
+    internal static string ChatTitle(System.Collections.Generic.IReadOnlyList<ManaSession> sessions, string? activeSessionId) =>
+        sessions.FirstOrDefault(s => s.SessionId == activeSessionId) is { } open ? SessionListFormatter.FormatDisplayName(open) : "New chat";
 
     private const int SessionRowHeight = 52; // 8px padding, title, 2px, time, 8px padding, 2px between rows
 
@@ -1567,7 +1634,7 @@ internal sealed partial class SessionListForm : Form
             }
             if (active)
             {
-                GlassSurface.PaintGlassEdges(g, card, null);
+                GlassSurface.PaintGlassEdges(g, card, GlassSurface.SheenProgress(list));
             }
         }
         else
@@ -1607,6 +1674,7 @@ internal sealed partial class SessionListForm : Form
             sessionTimeFont.Dispose();
             sessionRowHeight.Dispose();
             messageBoxFont.Dispose();
+            chatTitleFont.Dispose();
             avatarNameFont.Dispose();
             avatarStatusFont.Dispose();
             toolPanelTitleFont.Dispose();
