@@ -75,3 +75,14 @@ test("describeBrowserAction covers every known action and falls back to the raw 
   assert.equal(describeBrowserAction("snapshot", {}), "Reading the current page");
   assert.equal(describeBrowserAction("something_else", {}), "something_else");
 });
+
+test("#1137: isWatched is true for 5 seconds after the Browser panel reads the feed", () => {
+  let clock = 1000;
+  const log = createBrowserActivityLog({ clock: () => clock });
+  assert.equal(log.isWatched(), false);
+  log.getActivity();
+  clock += 4999;
+  assert.equal(log.isWatched(), true);
+  clock += 1;
+  assert.equal(log.isWatched(), false);
+});

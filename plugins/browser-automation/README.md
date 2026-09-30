@@ -14,15 +14,43 @@ browser. Set `MANA_BROWSER_EXECUTABLE_PATH` to point at Chrome, or a
 `playwright install chromium`-downloaded browser, instead.
 `MANA_BROWSER_HEADLESS=0` shows the window instead of running headless.
 
-## Ref-based interaction, not coordinates
+## One light, persistent session (#1137)
 
-`POST /browser/navigate` and every action route return a `snapshot`:
-`{url, title, text, interactiveElements}`. `text` is a plain, token-
-efficient extraction (`document.body.innerText`, capped), not a
-screenshot or raw HTML dump. Each entry in `interactiveElements` has a
-stable `ref` (assigned via a `data-mana-ref` attribute the first time an
-element is seen, kept afterward) -- `POST /browser/click` and
-`POST /browser/type` take that `ref`, not coordinates.
+- Mana's own profile in `node-bot/data/browser-profile`
+  (`launchPersistentContext`), so a site I log in to stays logged in.
+- Started on her first browser call; one context, one page.
+- `--disable-gpu` (no VRAM) and `--renderer-process-limit=1`.
+- Images, video and fonts are blocked (`page.route`) unless the rail's
+  Browser panel is on screen, for its screenshot.
+- Closes after 5 idle minutes, and never starts (or closes at once) while
+  a watched game runs or RAM is above 85% -- self-work's gates.
+
+## Accessibility snapshots and refs (#1138)
+
+What she reads is Playwright's AI accessibility snapshot
+(`page.ariaSnapshot({ mode: "ai", depth: 40 })`, iframes included), cut
+down to its interactive lines (`button "Go" [ref=e5]`, up to 150), plus
+the first 1500 characters of the page's text. She acts by those refs
+(`aria-ref=e5`): click, type (optionally pressing Enter), select, scroll,
+back, and navigate. After an action on the same page she gets only the
+elements that appeared or went; a new page (or one that mostly changed)
+gets a fresh snapshot. Everything from the page reaches the model inside
+one untrusted frame (`ai/untrusted-content.js`). Screenshots are only for
+the Browser panel, taken while it's on screen; the model never sees one.
+
+## Take over and hand back (#1139)
+
+Chromium can't turn a headless session visible, so **Take over** (the
+Browser panel's button) closes hers and opens the same profile as a normal
+Edge window at her page. I do the login, CAPTCHA or payment there myself;
+nothing I type goes to the model. **Done** closes the window (so does
+closing it myself) and she carries on headless, with my login kept, at the
+page I finished on. While I have it, her browser calls wait.
+
+She never types credentials or pays: on a page with a password, one-time
+code or card field, a payment provider's iframe, or a checkout/payment/
+billing URL, her click, type and select are refused, and the panel asks me
+to take over. She can also ask herself (`browser_automation__hand_over`).
 
 ## Routes
 
@@ -30,7 +58,11 @@ element is seen, kept afterward) -- `POST /browser/click` and
 - `POST /browser/snapshot` -- re-reads the current page's state.
 - `POST /browser/click` -- `{ ref }`.
 - `POST /browser/type` -- `{ ref, text }`.
+
+Each returns `{url, title, elements, text}`, or after an action on the
+same page `{url, title, added, removed, text?}`.
 - `POST /browser/close` -- ends the session.
+- `POST /browser/take-over` -- `{ url? }`, and `POST /browser/hand-back` (admin key too).
 
 All local-only (same loopback check `/admin/restart` and the
 brain-provider test route already use) -- this drives a real browser, so
@@ -42,9 +74,9 @@ network-adjacent caller.
 No real browser was launched in the environment that built this (CI
 runners have no Windows/Edge install, and this session's own Browser pane
 was unresponsive throughout). `browser-automation.js`'s actual logic
-(navigation validation, ref assignment, snapshot shape) is verified
+(navigation validation, snapshot filtering, ref actions) is verified
 against a fake "page-like" object
-(`{goto, evaluate, click, type, title, url}`) in tests -- production code
+(`{goto, ariaSnapshot, locator, evaluate, title, url}`) in tests -- production code
 passes it a real Playwright `Page`, whose method names and signatures
 already match that shape, so no adapter layer was needed. The
 route-level wiring (executable-path resolution, loopback gating) is

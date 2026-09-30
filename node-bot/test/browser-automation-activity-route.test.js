@@ -56,5 +56,7 @@ test("GET /browser-automation/activity returns an empty log and null screenshot 
     assert.equal(response.status, 200);
     assert.deepEqual(body.log, []);
     assert.equal(body.screenshot, null);
+    // #1139: nobody has taken over, and she isn't asking.
+    assert.deepEqual(body.takeOver, { active: false, needsYou: null });
   });
 });

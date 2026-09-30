@@ -1161,6 +1161,10 @@ const hooksStore = createHooksStore({});
 const browserAutomationToolSource = createBrowserAutomationToolSource({
   getSession: browserAutomationPlugin.getSession,
   approvalGate,
+  // #1137: her browser closes (or never starts) while I'm gaming.
+  sessionDeps: { isGaming: () => gamingWatch.isGaming() },
+  // #1139: "she needs you" in the Browser panel.
+  requestHandOver: browserAutomationPlugin.requestHandOver,
 });
 
 // Background memory block that can be refreshed periodically from ACP session files.
@@ -2820,7 +2824,8 @@ function registerRoutes(app, upload, deps = {}) {
   // /models/status (a read-only status readout, not a file-system-touching
   // admin action like /editors/workspace/*).
   app.get("/browser-automation/activity", (req, res) => {
-    return res.json(activeBrowserAutomationToolSource.activityLog.getActivity());
+    // #1139: plus whether I've taken over, or she's asking me to.
+    return res.json({ ...activeBrowserAutomationToolSource.activityLog.getActivity(), takeOver: browserAutomationPlugin.takeOverStatus() });
   });
 
   // #646: the chat tool loop's live runs (current tool, elapsed), polled

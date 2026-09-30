@@ -7,17 +7,24 @@
 // acp-autonomous-loop.js's own tool-call counters use the same
 // process-lifetime-only Map convention for the equivalent reason.
 const MAX_LOG_ENTRIES = 20;
+// #1137: the rail's Browser panel polls once a second while it's on screen.
+const WATCHED_WITHIN_MS = 5000;
 
 function describeBrowserAction(action, args) {
   if (action === "navigate") return `Navigating to ${args?.url || "an unknown URL"}`;
   if (action === "click") return `Clicking element ${args?.ref ?? "?"}`;
   if (action === "type") return `Typing into element ${args?.ref ?? "?"}`;
   if (action === "snapshot") return "Reading the current page";
+  if (action === "select") return `Choosing "${args?.value ?? ""}" in element ${args?.ref ?? "?"}`;
+  if (action === "scroll") return `Scrolling ${args?.direction || "down"}`;
+  if (action === "back") return "Going back";
+  if (action === "hand_over") return `Asking you to take over: ${args?.reason || "she needs you"}`;
   return action;
 }
 
 function createBrowserActivityLog(options = {}) {
   const now = options.now || (() => new Date().toISOString());
+  const clock = options.clock || Date.now;
   const maxEntries = Math.max(1, Number(options.maxEntries || MAX_LOG_ENTRIES));
   let log = [];
   let latestScreenshot = null; // { base64, at } | null
@@ -25,6 +32,7 @@ function createBrowserActivityLog(options = {}) {
   // this turn's prompt took in ([{ source, url }]).
   let page = null;
   let turnPages = [];
+  let lastReadAt = -Infinity;
 
   function recordActivity({ action, args, status, error } = {}) {
     const entry = {
@@ -59,7 +67,14 @@ function createBrowserActivityLog(options = {}) {
   }
 
   function getActivity() {
+    lastReadAt = clock();
     return { log, screenshot: latestScreenshot, page, turnPages };
+  }
+
+  // Someone's looking at her browser (the Browser panel), so its pages
+  // load with images and she takes screenshots.
+  function isWatched() {
+    return clock() - lastReadAt < WATCHED_WITHIN_MS;
   }
 
   function reset() {
@@ -67,9 +82,10 @@ function createBrowserActivityLog(options = {}) {
     latestScreenshot = null;
     page = null;
     turnPages = [];
+    lastReadAt = -Infinity;
   }
 
-  return { recordActivity, recordScreenshot, recordPage, recordTurnPages, getActivity, reset };
+  return { recordActivity, recordScreenshot, recordPage, recordTurnPages, getActivity, isWatched, reset };
 }
 
 module.exports = { createBrowserActivityLog, describeBrowserAction, MAX_LOG_ENTRIES };
