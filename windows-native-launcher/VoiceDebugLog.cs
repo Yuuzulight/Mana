@@ -2,6 +2,7 @@ using System;
 using System.Globalization;
 using System.IO;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 
 namespace Mana.NativeLauncher;
 
@@ -143,6 +144,33 @@ internal static class VoiceDebugLog
     internal const long MaxBytes = 512 * 1024;
 
     private static readonly object gate = new();
+
+    private static readonly Regex SpeakerScore = new(@" speaker=(-?\d+\.\d+)/");
+
+    // #965: the last few speaker= scores (oldest first) for Settings >
+    // Voice's threshold slider. Empty when there's no log yet. The read is
+    // shared, so a segment logged meanwhile isn't lost.
+    internal static IReadOnlyList<float> RecentSpeakerScores(int count = 8, string? path = null)
+    {
+        try
+        {
+            using var stream = new FileStream(path ?? DefaultPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+            using var reader = new StreamReader(stream);
+            var scores = new List<float>();
+            while (reader.ReadLine() is { } line)
+            {
+                if (SpeakerScore.Match(line) is { Success: true } match)
+                {
+                    scores.Add(float.Parse(match.Groups[1].Value, CultureInfo.InvariantCulture));
+                }
+            }
+            return scores.TakeLast(count).ToList();
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return Array.Empty<float>();
+        }
+    }
 
     // Never throws: a locked file or full disk must not break the voice loop.
     public static void Append(VoiceSegmentLogEntry entry, string? path = null, long maxBytes = MaxBytes) =>

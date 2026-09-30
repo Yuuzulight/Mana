@@ -20,6 +20,8 @@ over inherited ones -- or set before running):
   whisper.cpp decoding tuning knobs, see docs/speech_recognition_improvement_plan.md
 - WHISPER_SERVER_BIN, WHISPER_SERVER_PORT : the whisper-server kept loaded for
   transcription (default: next to WHISPER_BIN, port 8093); whisper-cli is the fallback
+- MANA_WHISPER_RELOAD : 1/0 forces whisper-server's model reload after each
+  request on or off (default: on for the CPU build, off for the CUDA build)
 - LLAMA_BIN : full path to llama.cpp/main executable (e.g. C:\llama.cpp\main.exe)
 - LLAMA_MODEL : full path to a GGUF model file, or an HF repo shorthand like user/model:Q4_K_M
 - TTS_PROVIDER : "cli", "kokoro", or "fish" (default: "fish",
@@ -202,8 +204,18 @@ const { createMemoryGraph } = require("./memory-graph");
 const { createSkillProposalRunner } = require("./skill-proposal");
 const persona = require("./persona");
 const { createPresetsStore } = require("./presets-store");
-const { createPersonalityStore } = require("./personality-store");
+const {
+  createPersonalityStore,
+  DEFAULT_FILE_PATH: DEFAULT_PERSONALITY_FILE,
+} = require("./personality-store");
 const { createMoodStore, levelWord, moodPromptBlock } = require("./mood-store");
+const {
+  characterFilePath,
+  createCharacterStore,
+  perCharacter,
+  personaOf,
+} = require("./characters");
+const { createCharactersCapability } = require("./capabilities/characters-capability");
 const { createPluginSettingsStore } = require("./plugin-settings-store");
 const { createAuthStore } = require("./auth-store");
 const { createToolPolicy } = require("./ai/tool-policy");
@@ -230,7 +242,11 @@ const { createSpeechToolSource } = require("./ai/speech-tool-source");
 const { createVisionToolSource } = require("./ai/vision-tool-source");
 const { createSessionGoalToolSource } = require("./ai/session-goal-tool-source");
 const { createReminderToolSource } = require("./ai/reminder-tool-source");
-const { createDesktopToolSource } = require("./ai/desktop-tool-source");
+const { briefingLines: mailCalendarBriefingLines, createMailCalendarToolSource } = require("./ai/mail-calendar-tool-source");
+const { createMailCalendarSettingsStore } = require("./mail-calendar-settings-store");
+const { checkMail } = require("./imap-client");
+const { checkCalendar } = require("./calendar-client");
+const { createDesktopToolSource, registerFileMoveRestorer } = require("./ai/desktop-tool-source");
 const { createDeepThinkingState, createDeepThinkingToolSource } = require("./ai/deep-thinking-tool-source");
 const { visionCaptureBridge } = require("./vision-capture-bridge");
 const { createCodingToolSource } = require("./ai/coding-tool-source");
@@ -681,8 +697,22 @@ const pronunciationLexiconStore = createPronunciationLexiconStore({});
 // the gaming override below, and stopped after MANA_KOKORO_IDLE_MS idle.
 const kokoroRuntime = createKokoroRuntime({ env: process.env });
 
+// Issue #914: the active character (Mana by default). Created before
+// ttsRuntime, which speaks in her voice; the launcher hears of each switch
+// on /ws/tray so it can load her Live2D model.
+const characterStore = createCharacterStore({
+  onSwitch: (character) =>
+    notifyTray({
+      type: "character",
+      id: character.id,
+      title: character.name,
+      model: character.live2dModel,
+    }),
+});
+
 const ttsRuntime = createTtsRuntime({
   env: process.env,
+  getVoice: () => characterStore.active().voice,
   baseDir: __dirname,
   nowMs,
   logPerf,
@@ -709,6 +739,8 @@ const memoryGraph = createMemoryGraph();
 // getEditorIntegrations) -- one store means one place to eventually list
 // "everything that's undoable right now", not three disconnected pools.
 const snapshotStore = createSnapshotStore({});
+// #911: undoing a desktop__move_files moves the files back.
+registerFileMoveRestorer(snapshotStore, visionCaptureBridge);
 
 // ACP memory store (conversation/session memory)
 const acpMemoryStore = createAcpMemoryStore({
@@ -802,11 +834,17 @@ const speechVocabulary = createSpeechVocabulary({
   filePath: path.join(acpMemoryStore.dataDir, "speech.json"),
 });
 
+// #986: held proactive remarks (data/proactive-held.json) survive a restart.
+if (process.env.NODE_ENV !== "test" && !process.env.NODE_TEST_CONTEXT) {
+  require("./proactive").persistTo(path.join(acpMemoryStore.dataDir, "proactive-held.json"));
+}
+
+// #906: the email/calendar accounts from Settings > Calendar & email.
+const mailCalendarSettings = createMailCalendarSettingsStore();
 // #907: the daily briefing (data/briefing.json, Settings > Briefing),
 // through the proactive engine. The chat model writes it only when it's
-// already loaded. Calendar and mail: #906 isn't in yet -- when it lands it
-// passes its today's-events-and-unread-mail lines as `calendar`; until
-// then that section is skipped.
+// already loaded. #961: calendar and mail come from #906's accounts; the
+// section is skipped while neither is set up.
 const briefing = createBriefing({
   filePath: path.join(acpMemoryStore.dataDir, "briefing.json"),
   listFacts: () => acpMemoryStore.listFacts(),
@@ -816,6 +854,7 @@ const briefing = createBriefing({
     return searchWeb(query, options);
   },
   runLocalReply: (prompt, maxTokens) => llamaServerRuntime.runLocalReplyIfSafelyLoaded(prompt, maxTokens),
+  calendar: () => mailCalendarBriefingLines({ store: mailCalendarSettings }),
   offer: (candidate) => require("./proactive").offer(candidate),
 });
 // "Sitting down": the launchers' idle report (every 60 s) saw input this recently.
@@ -906,15 +945,24 @@ async function checkEmotionalReflexes(store = acpMemoryStore) {
 const presetsStore = createPresetsStore({});
 // Issue #357: the editable personality layer, persisted so an adjustment
 // survives a restart. persona.js owns the immutable core and no storage.
-const personalityStore = createPersonalityStore({});
+// #914: each character has her own (and her own mood below); both delegate
+// to the active character's store.
+const personalityStore = perCharacter(
+  characterStore,
+  (id) => createPersonalityStore({ filePath: characterFilePath(DEFAULT_PERSONALITY_FILE, id) }),
+  ["get", "set", "revert", "clear"],
+);
 // Issue #700: Mana's mood, persisted beside emotional-state.json (in memory
 // under tests, so they never touch the real data dir).
-const moodStore = createMoodStore({
-  filePath:
-    process.env.NODE_ENV === "test" || process.env.NODE_TEST_CONTEXT
-      ? null
-      : path.join(acpMemoryStore.dataDir, "mood-state.json"),
-});
+const moodFilePath =
+  process.env.NODE_ENV === "test" || process.env.NODE_TEST_CONTEXT
+    ? null
+    : path.join(acpMemoryStore.dataDir, "mood-state.json");
+const moodStore = perCharacter(
+  characterStore,
+  (id) => createMoodStore({ filePath: characterFilePath(moodFilePath, id) }),
+  ["get", "record", "recordTurn", "reset", "setFrozen"],
+);
 
 // Procedural-memory skills store (see skills-store.js, issue #140)
 const skillsStore = createSkillsStore({ snapshotStore });
@@ -2264,6 +2312,7 @@ function registerRoutes(app, upload, deps = {}) {
     presetsCapability,
     personalityCapability,
     moodCapability,
+    createCharactersCapability(characterStore),
     backgroundMemoryCapability,
     memoryFactsCapability,
     retrieverAdminCapability,
@@ -2979,6 +3028,36 @@ function registerRoutes(app, upload, deps = {}) {
     return res.json(speechState());
   });
 
+  // #906: Settings > Calendar & email. Credentials go in and never come
+  // back out (describe() shows hosts and usernames only). This PC with the
+  // admin key only: the body carries an app password, and Test logs in to
+  // the saved server.
+  function allowMailCalendarRequest(req, res) {
+    if (!checkAdminAuth(req, res)) return false;
+    if (isLocalAdminRequest(req)) return true;
+    res.status(403).json({ ok: false, error: ADMIN_KEY_REQUIRED_ERROR });
+    return false;
+  }
+
+  app.get("/mail-calendar", (req, res) => {
+    if (!allowMailCalendarRequest(req, res)) return;
+    return res.json({ ok: true, ...mailCalendarSettings.describe() });
+  });
+
+  // { kind: "email", host, port, user, password, mailbox } or { kind:
+  // "calendar", url, user, password }; a blank password or url keeps the
+  // saved one. { kind, clear: true } removes that account.
+  app.post("/mail-calendar", (req, res) => {
+    if (!allowMailCalendarRequest(req, res)) return;
+    const { kind, clear, ...fields } = req.body || {};
+    try {
+      const state = clear === true ? mailCalendarSettings.clear(kind) : mailCalendarSettings.set(kind, fields);
+      return res.json({ ok: true, ...state });
+    } catch (e) {
+      return res.status(400).json({ ok: false, error: e.message });
+    }
+  });
+
   // #907: Settings > Briefing. POST takes any of { enabled, time, sections,
   // topics, games }.
   app.get("/briefing", (req, res) => res.json({ ok: true, ...briefing.settings() }));
@@ -2987,6 +3066,21 @@ function registerRoutes(app, upload, deps = {}) {
       return res.json({ ok: true, ...briefing.update(req.body || {}) });
     } catch (e) {
       return res.status(400).json({ ok: false, error: e.message });
+    }
+  });
+
+  // { kind }: log in to the saved account and report what went wrong.
+  app.post("/mail-calendar/test", async (req, res) => {
+    if (!allowMailCalendarRequest(req, res)) return;
+    const kind = req.body?.kind;
+    try {
+      if (kind !== "email" && kind !== "calendar") throw new Error("kind must be email or calendar");
+      const account = mailCalendarSettings.get(kind);
+      if (!account) throw new Error(`${kind} isn't set up`);
+      const result = kind === "email" ? await checkMail(account) : await checkCalendar(account);
+      return res.json({ ok: true, ...(typeof result === "object" ? result : {}) });
+    } catch (e) {
+      return res.json({ ok: false, error: e.message });
     }
   });
 
@@ -3914,6 +4008,7 @@ function registerRoutes(app, upload, deps = {}) {
     let selectedSystemPrompt = persona.buildPersonaPrompt(
       sessionId,
       personalityStore.get().traits,
+      personaOf(characterStore.active()),
     );
     // Issue #623: per-sentence emotion tags for the avatar. Static text, so
     // it sits in the cached prefix; every reply path below strips the tags.
@@ -4689,13 +4784,20 @@ function registerRoutes(app, upload, deps = {}) {
             // #905: reminders the user asks for in chat -- not offered to
             // scheduled replies, which nobody is asking in.
             ...(userChat ? [createReminderToolSource({ getScheduler: cronSchedulerPlugin.getScheduler, sessionId })] : []),
-            // #911: media keys, volume, apps -- only when I'm asking.
+            // #906: my email and calendar, only in my own chat (never a
+            // scheduled reply or a Discord/Telegram bridge).
+            ...(userChat
+              ? [createMailCalendarToolSource({ store: mailCalendarSettings, approvalGate: activeApprovalGate })]
+              : []),
+            // #911: media keys, volume, apps, audio output, file moves --
+            // only when I'm asking.
             ...(userChat
               ? [
                   createDesktopToolSource({
                     bridge: visionCaptureBridge,
                     isGaming: deps.isGaming || gamingWatch.isGaming,
                     voice: replyMeta.voice === true,
+                    snapshotStore,
                   }),
                 ]
               : []),

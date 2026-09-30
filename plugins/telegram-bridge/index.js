@@ -3,6 +3,12 @@ const {
   createTelegramClient,
   pollOnce,
 } = require("./telegram-bridge");
+const { localOnlyRefusal } = require("../../node-bot/local-only");
+
+// #670: "" unless local-only mode rules out api.telegram.org.
+function localOnlyBlock(env) {
+  return localOnlyRefusal("https://api.telegram.org", "the Telegram bridge's connection to", env);
+}
 
 // Module-level singleton, same pattern as cron-scheduler/image-generation
 // -- one bridge/poll-loop shared across every route and the background
@@ -31,6 +37,11 @@ function getBridge(deps = {}) {
 function startPolling(deps) {
   const env = deps.env || process.env;
   if (!env.MANA_TELEGRAM_BOT_TOKEN || pollTimer) return;
+  const blocked = localOnlyBlock(env);
+  if (blocked) {
+    console.warn(`telegram-bridge: not started. ${blocked}`);
+    return;
+  }
 
   const client = deps.telegramClient || createTelegramClient({ botToken: env.MANA_TELEGRAM_BOT_TOKEN });
   const activeBridge = getBridge(deps);
@@ -83,12 +94,15 @@ module.exports = {
   getHealth: (deps = {}) => {
     const env = deps.env || process.env;
     const configured = Boolean(env.MANA_TELEGRAM_BOT_TOKEN);
+    const blocked = configured && localOnlyBlock(env);
     return {
-      status: configured ? "configured" : "unavailable",
+      status: configured && !blocked ? "configured" : "unavailable",
       configured,
-      message: configured
-        ? "Telegram bridge configured and polling"
-        : "No bot token configured -- set MANA_TELEGRAM_BOT_TOKEN",
+      message:
+        blocked ||
+        (configured
+          ? "Telegram bridge configured and polling"
+          : "No bot token configured -- set MANA_TELEGRAM_BOT_TOKEN"),
     };
   },
   // Test-only escape hatch to reset the module-level singleton between

@@ -67,6 +67,8 @@ public class ManaProcessManagerTests
         // not as a degraded/fallback state -- there's no process handle
         // (nothing needed starting) but Fish Speech genuinely is up.
         Assert.True(manager.IsFishSpeechAvailable);
+        // #991: a backend already running at launch isn't this launcher's to restart.
+        Assert.False(manager.CanRestartBackend);
     }
 
     [Fact]
@@ -441,5 +443,98 @@ public class ManaProcessManagerTests
         manager.RestartFishSpeech();
 
         Assert.False(manager.IsFishSpeechAvailable);
+    }
+
+    // #991: a fake node-bot (a real node process) that logs its pid, so the
+    // test can see the old one stopped and a new one started in its place.
+    private static string FakeNodeBot(string script)
+    {
+        var root = Path.Combine(Path.GetTempPath(), "mana-restart-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(Path.Combine(root, "node-bot"));
+        File.WriteAllText(Path.Combine(root, "node-bot", "server.js"), script);
+        return root;
+    }
+
+    [Fact]
+    public async Task RestartBackendAsync_ReplacesTheNodeBotItStartedAndWaitsForItsHealth()
+    {
+        var root = FakeNodeBot("require('fs').appendFileSync('pids.txt', process.pid + require('os').EOL); setInterval(() => {}, 1000);");
+        var backendUp = false;
+        var handler = new FakeHttpMessageHandler(request =>
+            new HttpResponseMessage(request.RequestUri!.Port == 5005 && backendUp ? HttpStatusCode.OK : HttpStatusCode.ServiceUnavailable));
+        try
+        {
+            using var manager = new ManaProcessManager(root, handler);
+            await manager.StartAsync();
+            Assert.True(manager.CanRestartBackend);
+            var pidsFile = Path.Combine(root, "node-bot", "pids.txt");
+            async Task<int[]> Pids(int count)
+            {
+                var deadline = DateTime.UtcNow.AddSeconds(20);
+                while ((!File.Exists(pidsFile) || File.ReadAllLines(pidsFile).Length < count) && DateTime.UtcNow < deadline)
+                {
+                    await Task.Delay(50);
+                }
+                return File.ReadAllLines(pidsFile).Select(int.Parse).ToArray();
+            }
+            await Pids(1);
+            backendUp = true;
+
+            Assert.True(await manager.RestartBackendAsync(TimeSpan.FromSeconds(20), TimeSpan.FromMilliseconds(50)));
+
+            var pids = await Pids(2);
+            Assert.Equal(2, pids.Length);
+            Assert.False(IsRunning(pids[0]));
+            Assert.True(IsRunning(pids[1]));
+        }
+        finally
+        {
+            DeleteBestEffort(root);
+        }
+    }
+
+    [Fact]
+    public async Task BackendRestartRequested_FiresWhenNodeBotExitsWithTheRestartCode()
+    {
+        var root = FakeNodeBot("process.exit(77);");
+        var requested = new TaskCompletionSource();
+        var handler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.ServiceUnavailable));
+        try
+        {
+            using var manager = new ManaProcessManager(root, handler);
+            manager.BackendRestartRequested += () => requested.TrySetResult();
+            await manager.StartAsync();
+
+            await requested.Task.WaitAsync(TimeSpan.FromSeconds(20));
+        }
+        finally
+        {
+            DeleteBestEffort(root);
+        }
+    }
+
+    private static bool IsRunning(int pid)
+    {
+        try
+        {
+            using var process = System.Diagnostics.Process.GetProcessById(pid);
+            return !process.HasExited;
+        }
+        catch (ArgumentException)
+        {
+            return false;
+        }
+    }
+
+    // A just-killed node may still hold its working directory for a moment.
+    private static void DeleteBestEffort(string root)
+    {
+        try
+        {
+            Directory.Delete(root, recursive: true);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+        }
     }
 }
