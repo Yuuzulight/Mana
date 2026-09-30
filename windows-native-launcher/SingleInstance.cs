@@ -33,19 +33,26 @@ internal static class SingleInstance
     }
 
     // Runs onShow (on a thread-pool thread) each time a second launcher starts.
-    public static IDisposable ListenForShow(Action onShow, string name = DefaultName)
+    public static IDisposable ListenForShow(Action onShow, string name = DefaultName) => Listen($"{name}.Show", onShow);
+
+    // #995: update-mana.ps1 sets Local\Mana.NativeLauncher.Update (apply at
+    // a quiet moment) or .UpdateNow once it has pulled and built.
+    public static IDisposable ListenForUpdate(bool now, Action onUpdate, string name = DefaultName) =>
+        Listen(now ? $"{name}.UpdateNow" : $"{name}.Update", onUpdate);
+
+    private static IDisposable Listen(string eventName, Action onSignal)
     {
-        var show = new EventWaitHandle(false, EventResetMode.AutoReset, $@"Local\{name}.Show");
-        var registration = ThreadPool.RegisterWaitForSingleObject(show, (_, _) => onShow(), null, Timeout.Infinite, executeOnlyOnce: false);
-        return new Listener(show, registration);
+        var signal = new EventWaitHandle(false, EventResetMode.AutoReset, $@"Local\{eventName}");
+        var registration = ThreadPool.RegisterWaitForSingleObject(signal, (_, _) => onSignal(), null, Timeout.Infinite, executeOnlyOnce: false);
+        return new Listener(signal, registration);
     }
 
-    private sealed class Listener(EventWaitHandle show, RegisteredWaitHandle registration) : IDisposable
+    private sealed class Listener(EventWaitHandle signal, RegisteredWaitHandle registration) : IDisposable
     {
         public void Dispose()
         {
             registration.Unregister(null);
-            show.Dispose();
+            signal.Dispose();
         }
     }
 
