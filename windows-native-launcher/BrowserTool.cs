@@ -11,8 +11,10 @@ namespace Mana.NativeLauncher;
 // docked: the page she's on, its latest screenshot and her last steps,
 // with Stop (ends her browser session) and Take over (#1139: her Edge
 // profile opens as a visible window at her page; Done hands it back), plus
-// the web pages this turn took in, each opening in my browser. Polls GET /browser-automation/activity once a second while it's
-// on screen.
+// the web pages this turn took in. Polls GET /browser-automation/activity
+// once a second while it's on screen.
+// #1140: opening one of this turn's pages reads it here, drawn by Folio
+// (ReaderView), in place of the rest until Back.
 internal sealed class BrowserTool : Panel
 {
     private const int PollIntervalMs = 1000;
@@ -31,11 +33,12 @@ internal sealed class BrowserTool : Panel
     private readonly Panel blockedRow = new() { Dock = DockStyle.Top, Height = 28, Visible = false, Padding = new Padding(0, 2, 0, 2) };
     private readonly Label blockedLabel = new() { Dock = DockStyle.Fill, AutoEllipsis = true, ForeColor = DarkTheme.Muted, TextAlign = ContentAlignment.MiddleLeft };
     private readonly Button openInMyBrowserButton = new() { Text = "Open in my browser", Dock = DockStyle.Right, Width = 130, AccessibleName = "Open this page in my own browser" };
-    private readonly Label pagesLabel = new() { Dock = DockStyle.Top, Height = 22, Text = "Pages she read this turn", ForeColor = DarkTheme.Muted, Padding = new Padding(0, 6, 0, 0) };
+    private readonly Label pagesLabel = new() { Dock = DockStyle.Top, Height = 22, Text = "Pages she read this turn (open one to read it here)", ForeColor = DarkTheme.Muted, Padding = new Padding(0, 6, 0, 0) };
     private readonly ListView pagesList = new() { Dock = DockStyle.Fill, View = View.Details, FullRowSelect = true, HeaderStyle = ColumnHeaderStyle.None, AccessibleName = "Pages she read this turn (outside content)" };
     private readonly Button stopButton = new() { Text = "Stop", Dock = DockStyle.Right, Width = 64, AccessibleName = "Stop: end her browser session" };
     private readonly Button takeOverButton = new() { Text = "Take over", Dock = DockStyle.Left, Width = 84, AccessibleName = TakeOverName };
     private readonly Font titleFont;
+    private readonly ReaderView reader;
 
     private ManaBrowserAutomationActivity? activity;
     private string? note;
@@ -47,6 +50,8 @@ internal sealed class BrowserTool : Panel
 
     // Tests swap this out so nothing opens a real browser.
     internal Action<string> OpenUrl { get; set; } = url => Process.Start(new ProcessStartInfo(url) { UseShellExecute = true });
+
+    internal ReaderView Reader => reader; // tests
 
     public BrowserTool(ManaBackendClient client)
     {
@@ -65,7 +70,7 @@ internal sealed class BrowserTool : Panel
         {
             if (pagesList.SelectedItems.Count > 0)
             {
-                Open((string)pagesList.SelectedItems[0].Tag!);
+                Read((string)pagesList.SelectedItems[0].Tag!);
             }
         };
 
@@ -81,8 +86,12 @@ internal sealed class BrowserTool : Panel
         buttonRow.Controls.Add(takeOverButton);
         buttonRow.Controls.Add(stopButton);
 
+        reader = new ReaderView(client, () => ShowReader(false)) { Dock = DockStyle.Fill, Visible = false, OpenUrl = url => this.OpenUrl(url) };
+
         // Last added docks first: title and URL on top, then the screenshot,
         // her steps, and this turn's pages filling the rest above the buttons.
+        // The reader, when it's open, is the only one shown.
+        Controls.Add(reader);
         Controls.Add(pagesList);
         Controls.Add(buttonRow);
         Controls.Add(pagesLabel);
@@ -184,6 +193,30 @@ internal sealed class BrowserTool : Panel
         }
     }
 
+    private void Read(string? url)
+    {
+        if (IsWebUrl(url))
+        {
+            ShowReader(true);
+            _ = reader.ShowAsync(url!);
+        }
+    }
+
+    private void ShowReader(bool on)
+    {
+        readerOn = on;
+        SuspendLayout();
+        foreach (Control control in Controls)
+        {
+            control.Visible = (control == reader) == on;
+        }
+        // #1168: the blocked-ads note only when there is one.
+        blockedRow.Visible = !on && blockedLabel.Text.Length > 0;
+        ResumeLayout();
+    }
+
+    private bool readerOn;
+
     internal static bool IsWebUrl(string? url) =>
         Uri.TryCreate(url, UriKind.Absolute, out var uri) && (uri.Scheme == Uri.UriSchemeHttps || uri.Scheme == Uri.UriSchemeHttp);
 
@@ -204,7 +237,7 @@ internal sealed class BrowserTool : Panel
             : activity!.PageTitle is { Length: > 0 } title ? title : "(untitled page)");
         urlLabel.Text = pageUrl ?? "";
         var blockedUrl = endedAtStep is null && activity?.BlockedCount > 0 && IsWebUrl(activity.BlockedUrl) ? activity.BlockedUrl : null;
-        blockedRow.Visible = blockedUrl is not null;
+        blockedRow.Visible = blockedUrl is not null && !readerOn;
         blockedLabel.Text = blockedUrl is null ? "" : $"This site may need the {activity!.BlockedCount} ad/tracker request(s) her browser blocked.";
         takeOverButton.Text = takenOver ? "Done" : "Take over";
         takeOverButton.AccessibleName = takenOver ? DoneName : TakeOverName;

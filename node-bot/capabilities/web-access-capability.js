@@ -42,7 +42,8 @@ function registerWebAccessRoutes(app, context = {}) {
   app.post("/web/read", async (req, res) => {
     try {
       const url = requireString(req.body?.url, "url");
-      const page = await fetchPage(url);
+      // #1140: reader -- the Browser tool's reader view (whole article, images as data: URLs).
+      const page = await fetchPage(url, req.body?.reader === true ? { reader: true } : {});
       return res.json(page);
     } catch (e) {
       if (e instanceof ValidationError) {
