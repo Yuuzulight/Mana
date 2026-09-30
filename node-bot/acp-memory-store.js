@@ -6,6 +6,7 @@ const { cosine } = require("./tools/vector-store");
 const { detectTextValence } = require("./utils/text-mood");
 const { parseTemporalWindow } = require("./utils/temporal-query");
 const { redactSensitive } = require("./utils/sensitive-text");
+const { UNTRUSTED_RULE, wrapUntrustedInline } = require("./ai/untrusted-content");
 
 function ensureDir(dir) {
   fs.mkdirSync(dir, { recursive: true });
@@ -68,11 +69,18 @@ function isLiveFact(fact) {
   return fact.status === "active" || fact.status === "pending";
 }
 
+// #935: a pending fact read in from a note in the Obsidian vault is a file
+// nobody has reviewed yet (anything that can write to the vault can make
+// one), so it stays out of the prompt until the user confirms it in Mana.
+function isVaultPending(fact) {
+  return fact.status === "pending" && fact.origin?.kind === "vault_edit";
+}
+
 // Issue #317/#277/#431: unverified, archived/stale and invalidated facts
 // never auto-surface -- unchanged from the key-match-only version. #663:
-// pending facts do, marked tentative (factsBlockFor).
+// pending facts do, marked tentative (factsBlockFor), except vault ones.
 function isRecallable(fact) {
-  return isLiveFact(fact) && !fact.unverifiedSource && !fact.invalidatedAt;
+  return isLiveFact(fact) && !fact.unverifiedSource && !fact.invalidatedAt && !isVaultPending(fact);
 }
 
 // Facts from before ids existed fall back to their (active-unique) key;
@@ -233,12 +241,21 @@ function maxMatchedFacts(options) {
 
 // Pinned lines first: they are the same every turn, so the block's start
 // stays stable (#660), and they survive the whole-line char cap first.
+// A fact whose text came from a note in my vault (#935) is framed as outside
+// data (ai/untrusted-content.js): anything that can write the vault folder
+// can write it. Tool-derived facts only reach recall once I confirm them.
+const UNTRUSTED_FACT_SOURCES = { vault_edit: "vault note" };
+
 function factsBlockFor(pinned, matched) {
-  const lines = [...pinned, ...matched].map(
-    (fact) =>
-      `- ${fact.key}: ${fact.text}${fact.status === "pending" ? " (unconfirmed -- check with the user before relying on it)" : ""}`,
-  );
-  return lines.length ? `Remembered:\n${lines.join("\n")}` : "";
+  let untrusted = false;
+  const lines = [...pinned, ...matched].map((fact) => {
+    const source = UNTRUSTED_FACT_SOURCES[fact.origin?.kind];
+    untrusted ||= Boolean(source);
+    const text = source ? wrapUntrustedInline(source, fact.text) : fact.text;
+    return `- ${fact.key}: ${text}${fact.status === "pending" ? " (unconfirmed -- check with the user before relying on it)" : ""}`;
+  });
+  if (!lines.length) return "";
+  return `Remembered${untrusted ? ` (${UNTRUSTED_RULE})` : ""}:\n${lines.join("\n")}`;
 }
 
 // Issue #336: the record shape's own version, stamped on every new fact so
@@ -425,14 +442,15 @@ function autoNameFromText(text) {
   return full.length > 60 ? `${full.slice(0, 60)}…` : full;
 }
 
-function summarizeTurn(user, assistant, maxSummaryChars) {
+function summarizeTurn(user, assistant, maxSummaryChars, speaker = "Assistant") {
   const userText = cleanText(user, 500);
   const assistantText = cleanText(assistant, 500);
   if (!userText && !assistantText) {
     return "";
   }
 
-  return `- User: ${userText}${assistantText ? ` Assistant: ${assistantText}` : ""}`;
+  const parts = [userText && `User: ${userText}`, assistantText && `${speaker}: ${assistantText}`];
+  return `- ${parts.filter(Boolean).join(" ")}`;
 }
 
 // Issue #78: lightweight cross-session entity tagging, zero LLM calls --
@@ -791,7 +809,7 @@ function createAcpMemoryStore(options = {}) {
   // one for a rephrased version of the same fact.
   function listFactKeys() {
     return loadFacts()
-      .filter((f) => isLiveFact(f) && !f.invalidatedAt)
+      .filter((f) => isLiveFact(f) && !f.invalidatedAt && !isVaultPending(f))
       .map((f) => ({
         key: f.key,
         preview: cleanText(f.text, 80),
@@ -1210,6 +1228,25 @@ function createAcpMemoryStore(options = {}) {
     target.updatedAt = timestamp;
     saveFacts(facts, { op: "unarchive", key: target.key, origin: normalizeOrigin(origin, target.sessionId, timestamp) });
     return { found: true, restored: true };
+  }
+
+  // #935: a live fact's note renamed in the vault renames the fact. Refused
+  // while another live fact holds the new key.
+  function renameFact(fact, newKey, origin) {
+    const cleanNewKey = cleanText(newKey, 200);
+    const facts = loadFacts();
+    const target = fact && facts.find((f) => factIdentity(f) === factIdentity(fact));
+    if (!target || !isLiveFact(target) || !cleanNewKey) return { found: false };
+    const lowerKey = cleanNewKey.toLowerCase();
+    if (facts.some((f) => f !== target && isLiveFact(f) && f.key.toLowerCase() === lowerKey)) {
+      return { found: true, renamed: false };
+    }
+    snapshotFact(target.key, target, `fact rename: ${target.key} -> ${cleanNewKey}`, "human");
+    const timestamp = now();
+    target.key = cleanNewKey;
+    target.updatedAt = timestamp;
+    saveFacts(facts, { op: "rename", key: cleanNewKey, origin: normalizeOrigin(origin, target.sessionId, timestamp) });
+    return { found: true, renamed: true };
   }
 
   // Issue #663: pending facts nobody confirmed within maxAgeDays of being
@@ -1910,6 +1947,10 @@ function createAcpMemoryStore(options = {}) {
       user: cleanText(redactSensitive(input.user), 4000),
       assistant: cleanText(redactSensitive(input.assistant), 4000),
     };
+    // #914: which character said it (group mode, switching), for the
+    // history's labels; turns from before carry none.
+    const speaker = cleanText(input.speaker, 60);
+    if (speaker) turn.speaker = speaker;
     // Optional (issue #153): only the tool-calling reply path ever has
     // these, so most turns simply omit the field rather than storing an
     // empty array on every single turn.
@@ -1978,6 +2019,7 @@ function createAcpMemoryStore(options = {}) {
       turn.user,
       turn.assistant,
       maxSummaryChars,
+      turn.speaker,
     );
     const summary = truncateKeepingRecent(
       [session.summary, summaryLine].filter(Boolean).join("\n"),
@@ -2189,8 +2231,9 @@ function createAcpMemoryStore(options = {}) {
       .slice(-Math.min(5, maxRecentTurns))
       .map((turn) =>
         [
-          `User: ${turn.user}`,
-          turn.assistant ? `Assistant: ${turn.assistant}` : "",
+          // A group-mode reaction has no user line of its own.
+          turn.user ? `User: ${turn.user}` : "",
+          turn.assistant ? `${turn.speaker || "Assistant"}: ${turn.assistant}` : "",
         ]
           .filter(Boolean)
           .join("\n"),
@@ -2444,6 +2487,7 @@ function createAcpMemoryStore(options = {}) {
     setFactPinned,
     setFactPaused,
     restoreFact,
+    renameFact,
     onFactsChanged,
     listUntypedEntities,
     setEntityType,

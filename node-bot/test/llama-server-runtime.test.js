@@ -329,6 +329,33 @@ test("runLocalAssistantReply splices extraMessages.early/late around the system/
   assert.equal(capturedMessages.filter((m) => m.role === "system").length, 1);
 });
 
+// #914: the default system prompt is the active character's, read per call.
+test("a systemPrompt function is read on every call", async () => {
+  const systems = [];
+  let serverUp = false;
+  let prompt = "You are Mana.";
+  const runtime = createLlamaServerRuntime({
+    env: makeFakeEnv(),
+    fs: makeFakeFs(),
+    systemPrompt: () => prompt,
+    fetch: async (url, init) => {
+      if (String(url).endsWith("/health")) return { ok: serverUp };
+      systems.push(JSON.parse(init.body).messages[0].content);
+      return { ok: true, json: async () => ({ choices: [{ message: { content: "ok" } }] }) };
+    },
+    spawn: () => {
+      serverUp = true;
+      return makeFakeChild();
+    },
+    sleep: async () => {},
+    registerExitHandlers: false,
+  });
+  await runtime.runLocalAssistantReply("hello", 64, "default");
+  prompt = "You are Evil Mana.";
+  await runtime.runLocalReplyIfSafelyLoaded("brief me", 64);
+  assert.deepEqual(systems, ["You are Mana.", "You are Evil Mana."]);
+});
+
 test("runLocalAssistantReply keeps the plain 2-message shape when extraMessages is omitted", async () => {
   let capturedMessages = null;
   let serverUp = false;
