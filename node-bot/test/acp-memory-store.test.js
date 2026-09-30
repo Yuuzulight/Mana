@@ -68,6 +68,20 @@ test("ACP memory store builds a compact local memory prompt block", () => {
   assert.ok(promptBlock.length <= 1200);
 });
 
+// #914: group mode -- each character knows who said what.
+test("history lines are labelled with the character who said them", async () => {
+  const store = createAcpMemoryStore({ dataDir: createTempDir(), now: () => "2026-09-30T00:00:00.000Z" });
+  await store.appendTurn({ sessionId: "duo", user: "Which of you is smarter?", assistant: "Me, obviously.", speaker: "Mana" });
+  await store.appendTurn({ sessionId: "duo", user: "", assistant: "Obviously me, sis.", speaker: "Evil Mana" });
+  await store.appendTurn({ sessionId: "duo", user: "Old turn", assistant: "No label." });
+
+  const recent = store.buildPromptMemory("duo");
+  assert.match(recent, /User: Which of you is smarter\?\nMana: Me, obviously\./);
+  assert.match(recent, /Mana: Me, obviously\.\nEvil Mana: Obviously me, sis\./, "a reaction has no empty User line");
+  assert.match(recent, /User: Old turn\nAssistant: No label\./);
+  assert.match(store.getSession("duo").summary, /^- User: Which of you is smarter\? Mana: Me, obviously\.\s+- Evil Mana: Obviously me, sis\./);
+});
+
 test("appendTurn auto-names a session from its first user turn", async () => {
   const store = createAcpMemoryStore({
     dataDir: createTempDir(),
@@ -2190,6 +2204,20 @@ test("a pending fact is recalled marked unconfirmed, and confirm makes it active
   assert.equal(store.listFacts()[0].status, "active");
   assert.doesNotMatch(store.getRelatedFacts("my coffee order"), /unconfirmed/);
   assert.equal(store.rememberFact({ key: "nothing here", action: "confirm" }).found, false);
+});
+
+test("a pending fact from a vault note stays out of the prompt until confirmed (#935)", () => {
+  const store = createAcpMemoryStore({ dataDir: createTempDir() });
+  store.rememberFact({ key: "coffee order", text: "oat flat white", source: "vault", origin: { kind: "vault_edit" } });
+  store.rememberFact({ key: "tea order", text: "genmaicha", origin: { kind: "model_inferred" } });
+  assert.deepEqual(store.listFacts().map((f) => f.status), ["pending", "pending"]);
+  assert.deepEqual(store.listFactKeys().map((f) => f.key), ["tea order"]);
+  const recalled = store.getRelatedFacts("my coffee order and tea order");
+  assert.doesNotMatch(recalled, /oat flat white/);
+  assert.match(recalled, /genmaicha \(unconfirmed/);
+
+  store.rememberFact({ key: "coffee order", action: "confirm" });
+  assert.match(store.getRelatedFacts("my coffee order"), /oat flat white/);
 });
 
 test("patching a pending fact keeps it one fact; an explicit restatement confirms it; a model-inferred correction needs confirming again, an identical one changes nothing (issues #663, #673)", () => {

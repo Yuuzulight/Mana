@@ -32,6 +32,9 @@ internal sealed class SettingsPanel : UserControl
     private readonly TextBox factsSearch = new() { Dock = DockStyle.Top, PlaceholderText = "Search memory", AccessibleName = "Search memory" };
     private System.Collections.Generic.IReadOnlyList<ManaPlugin> plugins = Array.Empty<ManaPlugin>();
     private System.Collections.Generic.IReadOnlyList<ManaMemoryFact> facts = Array.Empty<ManaMemoryFact>();
+    // #935: Memory Facts' vault row.
+    private readonly Label vaultStatusLabel = new() { AutoSize = true, MaximumSize = new Size(640, 0), ForeColor = DarkTheme.Muted, Anchor = AnchorStyles.Left };
+    private readonly Button vaultSyncButton = new() { Text = "Sync now", AutoSize = true, Enabled = false };
     private readonly ListView skillsList = new();
     // Q20: Settings > Skills' "Imported skills" choice, in node-bot's order.
     private static readonly string[] ImportedSkillUseModes = { "free", "each", "first" };
@@ -108,6 +111,7 @@ internal sealed class SettingsPanel : UserControl
         tabs.TabPages.Add(voiceTab);
         tabs.TabPages.Add(BuildBriefingTab());
         tabs.TabPages.Add(new TabPage("Desktop") { Controls = { new DesktopFoldersPanel() } }); // #997
+        tabs.TabPages.Add(new TabPage("Characters") { Controls = { new RelationshipPanel(backendClient) } }); // #914
         tabs.TabPages.Add(BuildHotkeysTab());
         tabs.TabPages.Add(BuildLogsTab());
         tabs.TabPages.Add(BuildThemeTab());
@@ -484,9 +488,34 @@ internal sealed class SettingsPanel : UserControl
         StyleSearchBox(factsSearch);
         factsSearch.TextChanged += (_, _) => ShowFacts();
 
+        // #935: the Obsidian vault sync's status, and a sync right now.
+        DarkTheme.ApplyButton(vaultSyncButton);
+        vaultSyncButton.Click += async (_, _) =>
+        {
+            vaultSyncButton.Enabled = false;
+            try
+            {
+                ShowVaultStatus(await backendClient.SyncMemoryVaultAsync());
+                await RefreshMemoryFactsAsync();
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"SettingsPanel: vault sync failed. {ex.Message}");
+                if (!IsDisposed)
+                {
+                    vaultStatusLabel.Text = $"Vault sync failed: {ex.Message}";
+                    vaultSyncButton.Enabled = true;
+                }
+            }
+        };
+        var vaultRow = new FlowLayoutPanel { Dock = DockStyle.Top, AutoSize = true, BackColor = DarkTheme.Background };
+        vaultRow.Controls.Add(vaultSyncButton);
+        vaultRow.Controls.Add(vaultStatusLabel);
+
         var page = new TabPage("Memory Facts");
         page.Controls.Add(factsList);
         page.Controls.Add(factsSearch);
+        page.Controls.Add(vaultRow);
         page.Controls.Add(editButton);
         page.Controls.Add(pinButton);
         page.Controls.Add(archiveButton);
@@ -617,8 +646,61 @@ internal sealed class SettingsPanel : UserControl
         }
     }
 
+    private async Task RefreshVaultStatusAsync()
+    {
+        try
+        {
+            ShowVaultStatus(await backendClient.GetMemoryVaultStatusAsync());
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"SettingsPanel: failed to load the vault status. {ex.Message}");
+            if (!IsDisposed)
+            {
+                vaultStatusLabel.Text = $"Vault status unavailable: {ex.Message}";
+            }
+        }
+    }
+
+    private void ShowVaultStatus(ManaVaultStatus status)
+    {
+        if (IsDisposed)
+        {
+            return;
+        }
+        vaultStatusLabel.Text = DescribeVault(status, DateTimeOffset.Now);
+        vaultSyncButton.Enabled = status.VaultDir is not null;
+    }
+
+    // #935: the Memory Facts tab's vault line, in Doctor's terms.
+    internal static string DescribeVault(ManaVaultStatus status, DateTimeOffset now)
+    {
+        if (status.VaultDir is null)
+        {
+            return "Obsidian vault sync is off. Set MANA_VAULT_DIR in node-bot/.env to turn it on.";
+        }
+        var mode = status.Mode switch
+        {
+            "watching" => "watching for changes",
+            "polling" => "file watcher down, checking every 60 s",
+            _ => "not running",
+        };
+        var last = status.LastSyncAt is { } at ? $"last sync {Math.Max(0, (int)(now - at).TotalSeconds)} s ago" : "not synced yet";
+        var text = $"Vault: {status.VaultDir} -- {mode}, {status.Notes} notes, {last}.";
+        if (status.Error is not null)
+        {
+            text += $"\nError: {status.Error}";
+        }
+        if (status.Skipped.Count > 0)
+        {
+            text += $"\nSkipped {status.Skipped.Count}: " + string.Join("; ", status.Skipped.Select(s => $"{s.File} ({s.Reason})"));
+        }
+        return text;
+    }
+
     private async Task RefreshMemoryFactsAsync()
     {
+        await RefreshVaultStatusAsync();
         try
         {
             facts = await backendClient.GetMemoryFactsAsync();
@@ -1254,6 +1336,7 @@ internal sealed class SettingsPanel : UserControl
         layout.Controls.Add(BuildBargeInRow());
         layout.Controls.Add(BuildVoiceprintRow());
         layout.Controls.Add(BuildSpeakerThresholdRow());
+        layout.Controls.Add(BuildVoiceClipsRow());
         layout.Controls.Add(BuildCameraRow());
         layout.Controls.Add(BuildSpeechWordsSection());
         return new TabPage("Voice") { Controls = { layout } };
@@ -1513,8 +1596,25 @@ internal sealed class SettingsPanel : UserControl
         combo.SelectedIndex = (int)SpeakerGate.ResolveMode(null, ManaSettingsStore.Load().VoiceprintGate);
         var teach = new Button { Text = "Teach Mana your voice", AutoSize = true };
         var forget = new Button { Text = "Delete my voiceprint", AutoSize = true };
+        // #1112: a reading session for my Whisper fine-tune (TrainingLinesForm),
+        // listening paused while it's open like the enrolment.
+        var trainingLines = new Button { Text = "Record training lines", AutoSize = true };
         DarkTheme.ApplyButton(teach);
         DarkTheme.ApplyButton(forget);
+        DarkTheme.ApplyButton(trainingLines);
+        trainingLines.Click += (_, _) =>
+        {
+            listeningPause?.Pause();
+            try
+            {
+                using var form = new TrainingLinesForm(backendClient);
+                form.ShowDialog(FindForm());
+            }
+            finally
+            {
+                listeningPause?.Resume();
+            }
+        };
         var status = new Label { AutoSize = true, ForeColor = DarkTheme.Muted, Anchor = AnchorStyles.Left };
         void ShowEnrolled() => status.Text = ManaSettingsStore.Load().Voiceprint is null ? "Not taught yet -- the setting does nothing until you do." : "Your voice is saved on this PC.";
         ShowEnrolled();
@@ -1555,7 +1655,7 @@ internal sealed class SettingsPanel : UserControl
                 }
                 return cancel.IsCancellationRequested;
             }
-            teach.Enabled = forget.Enabled = false;
+            teach.Enabled = forget.Enabled = trainingLines.Enabled = false;
             try
             {
                 listeningPause?.Pause();
@@ -1596,7 +1696,7 @@ internal sealed class SettingsPanel : UserControl
                 listeningPause?.Resume();
                 if (!teach.IsDisposed)
                 {
-                    teach.Enabled = forget.Enabled = true;
+                    teach.Enabled = forget.Enabled = trainingLines.Enabled = true;
                 }
             }
         };
@@ -1606,6 +1706,7 @@ internal sealed class SettingsPanel : UserControl
         row.Controls.Add(combo);
         row.Controls.Add(teach);
         row.Controls.Add(forget);
+        row.Controls.Add(trainingLines);
         row.Controls.Add(status);
         row.Disposed += (_, _) =>
         {
@@ -1800,6 +1901,76 @@ internal sealed class SettingsPanel : UserControl
         return scores.Count == 0
             ? "No voice match scores yet (speech-debug.log has them when MANA_SPEECH_DEBUG=1 and the setting above is on)."
             : $"Recent match scores: {string.Join(", ", scores.Select(s => s.ToString("F2", System.Globalization.CultureInfo.InvariantCulture)))}";
+    }
+
+    // #1107: keep my real spoken turns (VoiceData) for a Whisper fine-tune
+    // later; off by default, read at each turn. The count and delete cover
+    // #1112's training lines too, which "Record training lines" records.
+    private FlowLayoutPanel BuildVoiceClipsRow()
+    {
+        var check = new CheckBox
+        {
+            Text = "Keep my voice clips for training",
+            AutoSize = true,
+            ForeColor = DarkTheme.Text,
+            Checked = ManaSettingsStore.Load().KeepVoiceClips,
+        };
+        var delete = new Button { Text = "Delete my voice clips", AutoSize = true };
+        DarkTheme.ApplyButton(delete);
+        var status = new Label { AutoSize = true, ForeColor = DarkTheme.Muted, Anchor = AnchorStyles.Left };
+        (int Clips, double Minutes) Totals()
+        {
+            var all = VoiceData.AllFolders.Select(VoiceData.Totals).ToList();
+            return (all.Sum(t => t.Clips), all.Sum(t => t.Minutes));
+        }
+        void ShowTotals()
+        {
+            var (clips, minutes) = Totals();
+            status.Text = $"{clips} clips, {minutes:F1} min in {VoiceData.Folder("")} (this PC only, never uploaded)";
+        }
+        ShowTotals();
+
+        check.CheckedChanged += (_, _) =>
+        {
+            var latest = ManaSettingsStore.Load();
+            latest.KeepVoiceClips = check.Checked;
+            latest.Save();
+            ShowTotals();
+        };
+        delete.Click += (_, _) =>
+        {
+            var (clips, _) = Totals();
+            if (clips == 0
+                || MessageBox.Show(this, $"Delete all {clips} of your voice clips? This can't be undone.", "Voice clips", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes)
+            {
+                return;
+            }
+            try
+            {
+                foreach (var folder in VoiceData.AllFolders)
+                {
+                    VoiceData.Delete(folder);
+                }
+                ShowTotals();
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                status.Text = $"Couldn't delete them all: {ex.Message}";
+            }
+        };
+
+        var row = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.LeftToRight, BackColor = DarkTheme.Background };
+        row.Controls.Add(check);
+        row.Controls.Add(delete);
+        row.Controls.Add(status);
+        row.VisibleChanged += (_, _) =>
+        {
+            if (row.Visible)
+            {
+                ShowTotals();
+            }
+        };
+        return row;
     }
 
     // #912: off by default; read at each snapshot (the camera hotkey, or
