@@ -325,6 +325,9 @@ internal sealed partial class SessionListForm : Form
             }
         };
 
+        // Before any RegisterRailTool.
+        toolPanel = new ToolPanelHost(railToolTip);
+
         // #538's rail: Artifacts then Tasks on top, Settings docked at the
         // bottom. (#538's Browser and Terminal icons stay off until those
         // tools exist.) Docked last-added-first, so Tasks goes in before
@@ -340,8 +343,6 @@ internal sealed partial class SessionListForm : Form
         var railArtifactsButton = MakeRailButton("artifacts", "Artifacts");
         railArtifactsButton.Click += (_, _) => ShowArtifacts?.Invoke();
         toolRail.Controls.Add(railArtifactsButton);
-
-        toolPanel = new ToolPanelHost(railToolTip);
 
         var chatArea = new Panel { Dock = DockStyle.Fill, BackColor = DarkTheme.Background };
         // #1118: clicking back into the chat closes an unpinned tool panel.
