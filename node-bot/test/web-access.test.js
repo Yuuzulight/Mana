@@ -388,3 +388,105 @@ test("#963 a typed mid-game question waits past 5 s for the wiki", async () => {
     clearInterval(keepAlive);
   }
 });
+
+// --- #1140: reading pages without a browser --------------------------------
+
+const fs = require("node:fs");
+const path = require("node:path");
+const { MAX_PAGE_TEXT_CHARS } = require("../tools/web-access");
+
+const pageFixture = (name) => fs.readFileSync(path.join(__dirname, "fixtures", "pages", `${name}.html`), "utf8");
+const publicDns = async () => [{ address: "93.184.216.34", family: 4 }];
+
+function pageResponse(contentType, body) {
+  return {
+    ok: true,
+    status: 200,
+    headers: { get: (name) => (name.toLowerCase() === "content-type" ? contentType : null) },
+    body: null,
+    text: async () => body,
+  };
+}
+
+test("fetchPage asks for Markdown first and uses it as served", async () => {
+  const accepts = [];
+  await withMockedDnsLookup(publicDns, async () => {
+    await withMockedFetch(async (url, init) => {
+      accepts.push(init.headers.Accept);
+      return pageResponse("text/markdown; charset=utf-8", "# Racing guide\r\n\r\nHold **sprint** at the last turn.\r\n");
+    }, async () => {
+      const page = await fetchPage("https://docs.example/guide");
+      assert.equal(page.title, "Racing guide");
+      assert.equal(page.text, "# Racing guide\n\nHold **sprint** at the last turn.");
+      assert.equal(page.needsBrowser, null);
+    });
+  });
+  assert.deepEqual(accepts, ["text/markdown, text/html;q=0.9"]);
+});
+
+test("fetchPage hands the model the article, not the menus, within its budget", async () => {
+  await withMockedDnsLookup(publicDns, async () => {
+    await withMockedFetch(async () => pageResponse("text/html", pageFixture("article")), async () => {
+      const page = await fetchPage("https://news.example/2026/race");
+      assert.equal(page.title, "Chocobo racing returns to Gold Saucer | Eorzea Times");
+      assert.match(page.text, /^# Chocobo racing returns to Gold Saucer/);
+      assert.doesNotMatch(page.text, /Accept cookies|Sponsored|All rights reserved/);
+      assert.equal(page.truncated, false);
+      assert.equal(page.images, undefined); // only the reader view fetches images
+
+      // A small budget cuts at a paragraph break, not mid-sentence.
+      const short = await fetchPage("https://news.example/2026/race", { maxChars: 300 });
+      assert.equal(short.truncated, true);
+      assert.ok(short.text.length <= 300 && short.text.length > 210);
+      assert.ok(page.text.startsWith(`${short.text}\n\n`));
+    });
+
+    const long = `<article>${"<p>A paragraph of the article that goes on for a while, with commas, and more.</p>".repeat(400)}</article>`;
+    await withMockedFetch(async () => pageResponse("text/html", long), async () => {
+      const page = await fetchPage("https://news.example/long");
+      assert.equal(page.truncated, true);
+      assert.ok(page.text.length <= MAX_PAGE_TEXT_CHARS && page.text.length > MAX_PAGE_TEXT_CHARS * 0.9);
+    });
+  });
+});
+
+test("a page built by scripts keeps its framing and tells her to use the browser", async () => {
+  await withMockedDnsLookup(publicDns, async () => {
+    await withMockedFetch(async () => pageResponse("text/html", pageFixture("scripts")), async () => {
+      const context = await buildWebContextForPrompt("what's on https://app.example/ ?");
+      assert.match(context, /not instructions[\s\S]*<(untrusted-[0-9a-f]+) source="web page">\nURL: https:\/\/app\.example\/\nTitle: Dashboard[\s\S]*<\/\1>\n\n\[This page needs a browser \(its content is built by scripts\)\. If you have browser_automation__navigate, open it there instead\.\]/);
+    });
+  });
+});
+
+test("the reader view gets the whole page with its images as data: URLs, through the SSRF guard", async () => {
+  const html = `<article><h1>Birds</h1><p>${"Chocobos are large birds. ".repeat(20)}</p>
+    <img src="/a.png" alt="A"><img src="https://cdn.example/b.jpg" alt="B"><img src="https://internal.example/c.png" alt="C">
+    <img src="/d.svg" alt="D"><img src="/huge.png" alt="E"></article>`;
+  const requested = [];
+  await withMockedDnsLookup(async (hostname) => [{ address: hostname === "internal.example" ? "10.0.0.5" : "93.184.216.34", family: 4 }], async () => {
+    await withMockedFetch(async (url, init) => {
+      requested.push(url);
+      if (url === "https://birds.example/page") return pageResponse("text/html", html);
+      const type = url.endsWith(".svg") ? "image/svg+xml" : url.endsWith(".jpg") ? "image/jpeg" : "image/png";
+      const bytes = url.endsWith("huge.png") ? Buffer.alloc(600 * 1024) : Buffer.from([1, 2, 3]);
+      assert.match(init.headers.Accept, /^image\//);
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: (name) => (name.toLowerCase() === "content-type" ? type : null) },
+        body: null,
+        arrayBuffer: async () => bytes,
+      };
+    }, async () => {
+      const page = await fetchPage("https://birds.example/page", { reader: true });
+      assert.deepEqual(page.images, {
+        "/a.png": "data:image/png;base64,AQID",
+        "https://cdn.example/b.jpg": "data:image/jpeg;base64,AQID",
+      });
+      assert.match(page.text, /!\[C\]\(https:\/\/internal\.example\/c\.png\)/); // shown as its alt text
+    });
+  });
+  // The private host was refused before any request.
+  assert.ok(!requested.includes("https://internal.example/c.png"));
+});

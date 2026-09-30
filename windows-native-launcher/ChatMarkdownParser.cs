@@ -44,6 +44,8 @@ internal static class ChatMarkdownParser
     private static readonly Regex QuotePattern = new(@"^\s*>\s?(.*)$", RegexOptions.Compiled);
     private static readonly Regex TableDelimiter = new(@"^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*$", RegexOptions.Compiled);
     private static readonly Regex CellSplit = new(@"(?<!\\)\|", RegexOptions.Compiled);
+    // "\|" and "\\" in a cell are a literal | and \ (#1140: pages' tables escape both).
+    private static readonly Regex CellEscape = new(@"\\([\\|])", RegexOptions.Compiled);
 
     // **bold**, `code`, [text](url), <url>, ~~strike~~, bare http(s) URL,
     // *italic*, _italic_ -- checked in this order per match attempt so
@@ -162,7 +164,7 @@ internal static class ChatMarkdownParser
         {
             trimmed = trimmed[..^1];
         }
-        return CellSplit.Split(trimmed).Select(c => c.Trim().Replace("\\|", "|")).ToList();
+        return CellSplit.Split(trimmed).Select(c => CellEscape.Replace(c.Trim(), "$1")).ToList();
     }
 
     private static IReadOnlyList<MarkdownRun> ParseInline(string text)
