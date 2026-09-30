@@ -216,6 +216,7 @@ const {
 } = require("./relationship-store");
 const {
   characterFilePath,
+  DEFAULT_ID: DEFAULT_CHARACTER_ID,
   createCharacterStore,
   perCharacter,
   personaOf,
@@ -987,7 +988,17 @@ function relationshipFor(id) {
   }
   return relationshipStores.get(id);
 }
-const relationshipStore = perCharacter(characterStore, relationshipFor, ["list", "add"]);
+const relationshipStore = perCharacter(characterStore, relationshipFor, [
+  "list",
+  "add",
+  "ensureFirstChat",
+  "milestoneToMention",
+]);
+// When my oldest session began, or null.
+function oldestSessionAt() {
+  const times = acpMemoryStore.listSessions().map((s) => s.createdAt).filter(Boolean).sort();
+  return times[0] || null;
+}
 
 // Procedural-memory skills store (see skills-store.js, issue #140)
 const skillsStore = createSkillsStore({ snapshotStore });
@@ -4296,11 +4307,23 @@ function registerRoutes(app, upload, deps = {}) {
     } catch (moodErr) {
       console.warn("Failed to apply mood:", moodErr.message);
     }
-    // #914: her own notes on how we get along, same place and rules.
-    const relationshipText = relationshipPromptBlock(relationshipStore.list(), mode);
-    if (relationshipText) {
-      memoryExtraMessages.late.push({ role: "system", content: relationshipText });
-      flatMemorySuffix += `\n\n${relationshipText}`;
+    // #914: her own notes on how we get along, same place and rules; in my
+    // own chat, now and then one of her milestones (our first chat is one:
+    // for Mana, the day of the oldest session).
+    try {
+      const relationshipText = relationshipPromptBlock(relationshipStore.list(), mode);
+      if (userChat) {
+        relationshipStore.ensureFirstChat(() =>
+          characterStore.active().id === DEFAULT_CHARACTER_ID ? oldestSessionAt() : null,
+        );
+      }
+      const milestoneText = userChat ? relationshipStore.milestoneToMention(mode) : null;
+      for (const text of [relationshipText, milestoneText].filter(Boolean)) {
+        memoryExtraMessages.late.push({ role: "system", content: text });
+        flatMemorySuffix += `\n\n${text}`;
+      }
+    } catch (relationshipErr) {
+      console.warn("Failed to apply relationship notes:", relationshipErr.message);
     }
 
     // Issue #400: makes the composition of the prompt this reply actually
@@ -4887,9 +4910,9 @@ function registerRoutes(app, upload, deps = {}) {
               ? [
                   createRelationshipToolSource({
                     store: relationshipStore,
-                    onNoted: (note) => {
+                    onNoted: ({ kind, id, text, date }) => {
                       const character = characterStore.active();
-                      replyMeta.onNoted?.({ kind: "note", id: note.id, text: note.text, character: character.id, characterName: character.name });
+                      replyMeta.onNoted?.({ kind, id, text, date, character: character.id, characterName: character.name });
                     },
                   }),
                 ]
