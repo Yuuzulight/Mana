@@ -33,6 +33,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
     private readonly ArtifactViewerForm artifactViewer;
     private readonly QuickEntryForm quickEntry;
     private readonly SessionListForm sessionListForm;
+    private readonly SynchronizationContext uiContext;
     private readonly IDisposable showRequests;
     // #689: Doctor's latest warn/fail ("label: message"), kept in the tray
     // tooltip until the Doctor panel is opened.
@@ -187,6 +188,9 @@ internal sealed class ManaApplicationContext : ApplicationContext
             glanceTimer.Start();
         }
         sessionListForm = new SessionListForm(backendClient, voiceLoop, chatLog, avatarOverlay, processManager.BackendLog);
+        // Creating the first form installed WinForms' context on this (UI)
+        // thread; RunOnUi posts to it.
+        uiContext = SynchronizationContext.Current ?? new WindowsFormsSynchronizationContext();
         // #525: quick entry types a command instead of speaking one,
         // through the exact same turn-processing path.
         quickEntry = new QuickEntryForm(text => voiceLoop.SubmitTypedCommandAsync(text));
@@ -234,8 +238,9 @@ internal sealed class ManaApplicationContext : ApplicationContext
             onSpeak: text => _ = voiceLoop.SpeakAnnouncementAsync(text));
         // #689: a second launcher started -- show this one's window instead.
         showRequests = SingleInstance.ListenForShow(() => RunOnUi(ShowSessionList));
-        // #681: answers the model's mid-reply screenshot requests.
-        visionCaptureClient = new VisionCaptureClient(backendClient, backendBaseUrl: settings.BackendBaseUrl, captureCamera: CaptureCameraAsync);
+        // #681: answers the model's mid-reply screenshot requests, and
+        // #911's desktop actions (media keys, volume, apps, audio output, file moves).
+        visionCaptureClient = new VisionCaptureClient(backendClient, backendBaseUrl: settings.BackendBaseUrl, captureCamera: CaptureCameraAsync, desktopAction: (action, args) => DesktopActions.Run(action, args, settings.DesktopActionFolders));
 
         trayIcon = new NotifyIcon
         {
@@ -783,18 +788,28 @@ internal sealed class ManaApplicationContext : ApplicationContext
 
     // For callbacks raised off the UI thread (toast activation, the tray
     // socket, a second launcher); dropped once the chat window is gone.
+    // Posts to the UI thread's context, not sessionListForm.InvokeRequired:
+    // that is false until the window has a handle, so before it was first
+    // shown the action ran on the calling (MTA) thread and Show() created
+    // the window there -- "DragDrop registration did not succeed".
     private void RunOnUi(Action action)
     {
         if (sessionListForm.IsDisposed)
         {
             return;
         }
-        if (sessionListForm.InvokeRequired)
+        if (SynchronizationContext.Current == uiContext)
         {
-            sessionListForm.BeginInvoke(action);
+            action();
             return;
         }
-        action();
+        uiContext.Post(_ =>
+        {
+            if (!sessionListForm.IsDisposed)
+            {
+                action();
+            }
+        }, null);
     }
 
     // #520: reused (Hide, not Close), so Load's own one-time-only refresh

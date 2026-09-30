@@ -22,28 +22,38 @@ internal sealed class VisionCaptureClient : IDisposable
     private readonly ManaBackendClient backendClient;
     private readonly Func<string> captureScreen;
     private readonly Func<Task<string>>? captureCamera;
+    private readonly Func<string, JsonElement, object>? desktopAction;
     private readonly CancellationTokenSource cts = new();
 
     // captureScreen: null (the real call site) uses ScreenCapture's
     // primary-screen JPEG; tests pass a fake. #912: captureCamera answers
     // vision__camera; with it the socket tells node-bot (?camera=1) this
-    // client can take camera snapshots.
-    public VisionCaptureClient(ManaBackendClient backendClient, string? backendBaseUrl = null, Func<string>? captureScreen = null, Func<Task<string>>? captureCamera = null)
+    // client can take camera snapshots. #911: desktopAction (DesktopActions.Run)
+    // carries out node-bot's desktop__* tools; with it the socket says
+    // ?desktop=1.
+    public VisionCaptureClient(ManaBackendClient backendClient, string? backendBaseUrl = null, Func<string>? captureScreen = null, Func<Task<string>>? captureCamera = null, Func<string, JsonElement, object>? desktopAction = null)
     {
         this.backendClient = backendClient;
         this.captureScreen = captureScreen ?? ScreenCapture.CaptureAsJpegDataUrl;
         this.captureCamera = captureCamera;
-        socketUri = BuildSocketUri(backendBaseUrl, captureCamera is not null);
+        this.desktopAction = desktopAction;
+        socketUri = BuildSocketUri(backendBaseUrl, captureCamera is not null, desktopAction is not null);
     }
 
-    internal static Uri BuildSocketUri(string? backendBaseUrl, bool camera)
+    internal static Uri BuildSocketUri(string? backendBaseUrl, bool camera, bool desktop = false)
     {
         var httpUri = new Uri(string.IsNullOrWhiteSpace(backendBaseUrl) ? "http://127.0.0.1:5005" : backendBaseUrl);
         return new UriBuilder(httpUri)
         {
             Scheme = httpUri.Scheme == "https" ? "wss" : "ws",
             Path = "/ws/vision-capture",
-            Query = camera ? "camera=1" : "",
+            Query = (camera, desktop) switch
+            {
+                (true, true) => "camera=1&desktop=1",
+                (true, false) => "camera=1",
+                (false, true) => "desktop=1",
+                _ => "",
+            },
         }.Uri;
     }
 
@@ -103,6 +113,10 @@ internal sealed class VisionCaptureClient : IDisposable
                 // socket should keep reading meanwhile.
                 _ = RespondAsync(requestId, camera);
             }
+            else if (desktopAction is not null && TryParseDesktopRequest(stream.ToArray()) is var (desktopId, action, args))
+            {
+                _ = RespondDesktopAsync(desktopId, action, args);
+            }
         }
     }
 
@@ -126,6 +140,53 @@ internal sealed class VisionCaptureClient : IDisposable
         catch (Exception)
         {
             return null;
+        }
+    }
+
+    // #911: {type:"desktop-request", requestId, action, args:{...}}.
+    internal static (string RequestId, string Action, JsonElement Args)? TryParseDesktopRequest(byte[] json)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(json);
+            var root = document.RootElement;
+            if (!root.TryGetProperty("type", out var type) || type.GetString() != "desktop-request"
+                || !root.TryGetProperty("requestId", out var id) || string.IsNullOrEmpty(id.GetString())
+                || !root.TryGetProperty("action", out var action) || action.ValueKind != JsonValueKind.String)
+            {
+                return null;
+            }
+            // Clone: the document is disposed on return.
+            var args = root.TryGetProperty("args", out var a) && a.ValueKind == JsonValueKind.Object ? a.Clone() : JsonDocument.Parse("{}").RootElement.Clone();
+            return (id.GetString()!, action.GetString()!, args);
+        }
+        catch (Exception)
+        {
+            return null;
+        }
+    }
+
+    // Like RespondAsync: the action's result, or its error message. Never throws.
+    internal async Task RespondDesktopAsync(string requestId, string action, JsonElement args)
+    {
+        object? result = null;
+        string? error = null;
+        try
+        {
+            result = await Task.Run(() => desktopAction!(action, args));
+        }
+        catch (Exception ex)
+        {
+            error = string.IsNullOrWhiteSpace(ex.Message) ? "desktop action failed" : ex.Message;
+        }
+
+        try
+        {
+            await backendClient.PostVisionCaptureResultAsync(requestId, null, error, result);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"VisionCaptureClient: posting the desktop result failed. {ex.Message}");
         }
     }
 

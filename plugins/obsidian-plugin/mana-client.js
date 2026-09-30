@@ -34,4 +34,32 @@ async function fetchManaMemoryNotes(serverUrl, apiKey, fetchImpl = fetch) {
   return res.json();
 }
 
-module.exports = { buildMemoryUrl, buildMemoryNotesUrl, fetchManaMemory, fetchManaMemoryNotes };
+// Issue #935: Mana syncs her facts, views and journal into the vault
+// herself (MANA_VAULT_DIR), so the plugin no longer writes facts and never
+// writes inside the folders Mana owns there.
+const MANA_OWNED_FOLDERS = ["facts", "views", "journal"];
+
+function isManaOwnedPath(vaultPath) {
+  const top = String(vaultPath || "").replace(/\\/g, "/").replace(/^(\.?\/)+/, "").split("/")[0].toLowerCase();
+  return MANA_OWNED_FOLDERS.includes(top);
+}
+
+// Drops the "## Key Facts" section from the summary note.
+function withoutKeyFacts(markdown) {
+  return String(markdown).replace(/\n## Key Facts\n[\s\S]*?(?=\n## |$)/, "");
+}
+
+// Drops the Key Facts note from the linked notes.
+function withoutFactNotes(notes) {
+  return notes.filter((note) => note.slug !== "key-facts");
+}
+
+module.exports = {
+  buildMemoryUrl,
+  buildMemoryNotesUrl,
+  fetchManaMemory,
+  fetchManaMemoryNotes,
+  isManaOwnedPath,
+  withoutKeyFacts,
+  withoutFactNotes,
+};
