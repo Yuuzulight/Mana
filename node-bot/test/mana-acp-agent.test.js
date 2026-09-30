@@ -628,7 +628,7 @@ test("createDefaultManaAcpAgent sends prompts to the local backend reply endpoin
   const calls = [];
   const notifications = [];
   const agent = createDefaultManaAcpAgent({
-    env: {},
+    env: { ADMIN_TOKEN: "acp-admin-token" },
     memoryStore: false,
     notifyClient: async (method, params) => {
       notifications.push({ method, params });
@@ -660,6 +660,8 @@ test("createDefaultManaAcpAgent sends prompts to the local backend reply endpoin
   assert.equal(notifications[0].params.update.content.text, "Backend local reply");
   assert.equal(calls[0].url, "http://127.0.0.1:5005/reply");
   assert.equal(calls[0].options.method, "POST");
+  // /reply needs an admin key like every non-public route (admin-key.js).
+  assert.equal(calls[0].options.headers["x-admin-token"], "acp-admin-token");
   assert.deepEqual(JSON.parse(calls[0].options.body), {
     text: "Refactor this function",
     modelProfile: "coding",
