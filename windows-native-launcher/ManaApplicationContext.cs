@@ -1105,8 +1105,14 @@ internal sealed class ManaApplicationContext : ApplicationContext
         {
             return;
         }
+        var reason = File.ReadAllText(note).Trim();
         File.Delete(note);
-        ShowBalloon("Mana's update was rolled back", "The new launcher build didn't start, so I'm back on the previous one.", ToolTipIcon.Warning);
+        if (reason.Length == 0)
+        {
+            reason = "The new launcher build didn't start";
+        }
+        Console.WriteLine($"Launcher update rolled back: {reason}");
+        ShowBalloon("Mana's update was rolled back", $"{reason}, so I'm back on the previous one.", ToolTipIcon.Warning);
     }
 
     // #995: the tray's Update now -- pull, build, then apply straight away
