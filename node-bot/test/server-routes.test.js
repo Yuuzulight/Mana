@@ -1495,6 +1495,22 @@ test("POST /web/read returns the injected fetchPage result", async () => {
   });
 });
 
+test("#1140 POST /web/read asks for the reader view only when told to", async () => {
+  const seen = [];
+  const app = createApp({
+    fetchPage: async (url, options) => {
+      seen.push(options);
+      return { url, title: "Example", text: "Hello page", truncated: false, needsBrowser: null, images: {} };
+    },
+  });
+
+  await withServer(app, async (baseUrl) => {
+    await postJson(`${baseUrl}/web/read`, { url: "https://example.com/page", reader: true });
+    await postJson(`${baseUrl}/web/read`, { url: "https://example.com/page", reader: "yes" });
+  });
+  assert.deepEqual(seen, [{ reader: true }, {}]);
+});
+
 test("GET /wiki/:term returns the injected wikiLookup result", async () => {
   const app = createApp({
     wikiLookup: async (term) => {
