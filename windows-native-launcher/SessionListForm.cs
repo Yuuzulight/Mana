@@ -334,6 +334,8 @@ internal sealed partial class SessionListForm : Form
         // Artifacts.
         // #1119: Settings opens in the tool panel.
         RegisterRailTool("settings", "settings", "Settings", CreateSettingsTool).Dock = DockStyle.Bottom;
+        // #1127: Mana's docs, opened from Settings (OpenDoc); no rail icon.
+        toolPanel.Add("docs", "Docs", null, () => docsPanel = new DocsPanel(ManaApplicationContext.FindRootDirectory()));
         // The same window as the tray's "What I'm working on" (#1016).
         var railTasksButton = MakeRailButton("tasks", "What I'm working on");
         railTasksButton.Click += (_, _) => new SelfWorkForm(backendClient).Show();
@@ -1169,6 +1171,22 @@ internal sealed partial class SessionListForm : Form
     // #1119: the tray's Settings… -- the tool panel on Settings, with focus
     // in it (so the chat getting focus as the window activates doesn't
     // close it). Call after showing the window.
+    // #1127: a Mana doc (a Markdown file in the repo) in the tool panel,
+    // bringing this window up if it's hidden (Settings' own window).
+    private DocsPanel? docsPanel;
+
+    internal void OpenDoc(string path)
+    {
+        if (!Visible)
+        {
+            Show();
+        }
+        Activate();
+        toolPanel.Open("docs");
+        docsPanel?.Open(path);
+        toolPanel.SelectNextControl(null, forward: true, tabStopOnly: true, nested: true, wrap: false);
+    }
+
     internal void OpenSettings()
     {
         toolPanel.Open("settings");
@@ -1188,6 +1206,7 @@ internal sealed partial class SessionListForm : Form
             new ListeningPause(() => voiceLoop.IsListening, voiceLoop.ToggleListening));
         // #681: the active preset reaches the next reply as soon as it's chosen.
         panel.ActivePresetChanged = voiceLoop.SetPresetId;
+        panel.OpenDoc = OpenDoc;
         return panel;
     }
 
