@@ -130,16 +130,21 @@ test("POST /reply/stream: restart command emits a single final event with change
   });
 });
 
-test("POST /reply/stream: an attached image routes through vision and emits changed:true", async () => {
+test("POST /reply/stream: #679 a text-only chat model gets the image described first, then the chat path answers", async () => {
+  let chatCall = null;
   const app = createApp({
     getVisionStatus: () => ({ available: true }),
-    runVisionReply: async (prompt, images) => {
-      assert.equal(prompt, "what am I looking at?");
+    chatAcceptsImages: () => false,
+    runVisionReply: async (prompt, images, maxTokens, systemPrompt) => {
+      assert.match(prompt, /word for word/);
+      assert.match(prompt, /Their message: what am I looking at\?$/);
       assert.equal(images.length, 1);
-      return "A market board, obviously.";
+      assert.match(systemPrompt, /cannot see them/);
+      return "A market board.";
     },
-    buildAssistantReply: async () => {
-      throw new Error("text reply path should not run for image replies");
+    buildAssistantReply: async (transcript, screenText, marketText, profile, sessionId, mode, preset, replyMeta) => {
+      chatCall = { transcript, images: replyMeta.images };
+      return "That's the market board, obviously.";
     },
   });
 
@@ -150,23 +155,23 @@ test("POST /reply/stream: an attached image routes through vision and emits chan
     });
 
     assert.equal(response.status, 200);
-    assert.equal(events.length, 1);
-    assert.equal(events[0].type, "final");
-    assert.equal(events[0].reply, "A market board, obviously.");
-    assert.equal(events[0].changed, true);
+    assert.equal(events.at(-1).type, "final");
+    assert.equal(events.at(-1).reply, "That's the market board, obviously.");
   });
+  assert.deepEqual(chatCall, { transcript: "[Image: A market board.]\n\nwhat am I looking at?", images: [] });
 });
 
-test("POST /reply/stream: an attached images array (issue #450 clip hotkey) routes through vision with all frames", async () => {
+test("POST /reply/stream: #679 a chat model that can see gets every frame (issue #450 clip hotkey) in the chat turn", async () => {
+  let chatCall = null;
   const app = createApp({
     getVisionStatus: () => ({ available: true }),
-    runVisionReply: async (prompt, images) => {
-      assert.equal(prompt, "Look back over the last 6 seconds and tell me what just happened. Answer briefly.");
-      assert.deepEqual(images, ["data:image/jpeg;base64,frame1", "data:image/jpeg;base64,frame2"]);
-      return "You just fell off a ledge.";
+    chatAcceptsImages: (profile) => profile === "default",
+    runVisionReply: async () => {
+      throw new Error("no describe-first call when the chat model can see");
     },
-    buildAssistantReply: async () => {
-      throw new Error("text reply path should not run for image replies");
+    buildAssistantReply: async (transcript, screenText, marketText, profile, sessionId, mode, preset, replyMeta) => {
+      chatCall = { transcript, profile, images: replyMeta.images };
+      return "You just fell off a ledge.";
     },
   });
 
@@ -177,10 +182,13 @@ test("POST /reply/stream: an attached images array (issue #450 clip hotkey) rout
     });
 
     assert.equal(response.status, 200);
-    assert.equal(events.length, 1);
-    assert.equal(events[0].type, "final");
-    assert.equal(events[0].reply, "You just fell off a ledge.");
-    assert.equal(events[0].changed, true);
+    assert.equal(events.at(-1).type, "final");
+    assert.equal(events.at(-1).reply, "You just fell off a ledge.");
+  });
+  assert.deepEqual(chatCall, {
+    transcript: "Look back over the last 6 seconds and tell me what just happened. Answer briefly.",
+    profile: "default",
+    images: ["data:image/jpeg;base64,frame1", "data:image/jpeg;base64,frame2"],
   });
 });
 

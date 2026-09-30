@@ -38,8 +38,19 @@ Project goal
    - `WHISPER_BIN` should point to the Whisper CLI executable you want to use.
    - If `WHISPER_BIN` is unset or wrong, Mana will also try common local paths under `tools\whisper\`.
    - `WHISPER_PROMPT` is optional. By default Mana builds Whisper's prompt from its wake words plus your name and frequent names/terms from memory, refreshed every few minutes; setting `WHISPER_PROMPT` replaces that entirely.
+   - `WHISPER_VOCABULARY` adds your own words to that prompt, comma-separated, right after your name, e.g. `WHISPER_VOCABULARY=Imouto, Oneesan, Gigi Murin, Hololive, VTuber` in `node-bot\.env`. Restart the backend to pick up changes. The prompt is capped at 450 characters, so keep the list short (the words beyond the cap are dropped). Words in the prompt pull transcription toward them, so remove any word whisper starts writing where you didn't say it. It's ignored when `WHISPER_PROMPT` is set.
    - For Singaporean-accent recognition, `ggml-base.en.bin` or `ggml-small.en.bin` should be more accurate than `ggml-tiny.en.bin`.
    - `$env:WHISPER_MODEL_PROFILE = "small"` (`tiny`/`base`/`small`/`medium`/`turbo`) picks a size tier by name instead of a raw file path, if you keep more than one model under `tools\whisper\models`. Smaller is faster but less accurate; `turbo` (`large-v3-turbo`) trades some of that speed back for closer-to-large accuracy. Falls back to whatever's actually present if the requested tier's file isn't there.
+   - **Whisper on an NVIDIA GPU (#933).** Unzip `whisper-cublas-12.4.0-bin-x64.zip` from the official ggml-org/whisper.cpp releases into `tools\whisper-cuda\`, and put `ggml-large-v3-turbo-q5_0.bin` (from the official `ggerganov/whisper.cpp` Hugging Face repo) in `tools\whisper\models\`. Then set these in `node-bot\.env`:
+     ```
+     WHISPER_BIN=C:\path\to\Mana\tools\whisper-cuda\Release\whisper-cli.exe
+     WHISPER_MODEL=C:\path\to\Mana\tools\whisper\models\ggml-large-v3-turbo-q5_0.bin
+     WHISPER_THREADS=2
+     ```
+     whisper-server is picked up from the same folder as `WHISPER_BIN`. On an RTX 5080 this uses ~1.0 GB of VRAM (1.2 GB peak) and ~0.1-0.2 GB more system RAM than base on the CPU. It transcribes in 0.15-0.35 s, against 0.7-1 s for base at 8 CPU threads and 1.7-2.2 s at the 2 threads Mana drops to while gaming. It also gets names and Japanese words right more often.
+     - Point `WHISPER_BIN` at the CUDA build, not only the model: the whisper-cli fallback reuses `WHISPER_MODEL`, and turbo on the CPU takes ~12 s per clip even at 8 threads. On the GPU that fallback takes ~1.3 s.
+     - Thread count doesn't change GPU speed. With `WHISPER_THREADS=2`, starting or stopping a game no longer restarts whisper-server. `STT_PROVIDER=parakeet` runs on the CPU and uses the same setting, so keep the higher thread count if you use Parakeet.
+     - Leave flash attention on (the build's default); turning it off costs VRAM. Don't pass `-ac`, which breaks turbo's transcripts. Don't set `GGML_CUDA_ENABLE_UNIFIED_MEMORY` (#801).
    - `LLAMA_BIN` should point to the Llama CLI executable you want to use.
    - `TTS_PROVIDER=kokoro` tells Mana to use the faster Kokoro ONNX service.
    - `TTS_PROVIDER=fish` (the default) tells Mana to call a separately running Fish Speech server; see docs/fish_speech_tts.md.
@@ -75,6 +86,9 @@ Project goal
    - Keep `Gaming mode` checked when you want Mana to run lighter while a watched game is open.
    - Say `Mana` once to wake her for the session.
    - After that first wake-up, keep talking without repeating the wake word.
+   - The native launcher goes back to sleep after 60 seconds with no turn
+     (and when you stop listening), so she needs `Mana` again; set
+     `MANA_WAKE_REARM_MS` to change that, or `0` to stay awake until you stop.
    - Mana listens for your whole sentence and only treats it as your prompt
      once you've paused for about 2.2 seconds — a long sentence isn't cut
      off partway through. Tune the pause length with
@@ -99,6 +113,12 @@ Performance notes
 - When a watched game is running, Mana waits longer after empty/noise chunks to reduce idle work.
 - Set `GAMING_PROCESS_NAMES` to a comma-separated process list if you want to watch other games.
 - Example: `$env:GAMING_PROCESS_NAMES = "ffxiv_dx11.exe,eldenring.exe"`
+- Gaming model (optional): set `MANA_GAMING_LLAMA_MODEL` in `node-bot/.env` and, while a watched game runs, the chat llama-server swaps to that smaller model, then back to the normal one when the game closes. The swap never happens mid-reply; one that comes in during a reply waits for it to finish.
+  - Recommended: `Qwen3.5-4B-IQ4_XS.gguf` (2.5 GB, from unsloth/Qwen3.5-4B-GGUF). For more VRAM headroom, use `Qwen3.5-2B-Q8_0.gguf` (2.0 GB, ~2.5 GB VRAM). For a quick test, `Qwen3-1.7B-Q8_0.gguf` works.
+  - It runs with its own context (`MANA_GAMING_LLAMA_CONTEXT`, default 8192), KV cache type (`MANA_GAMING_KV_CACHE`, default `q8_0`, passed as `--cache-type-k/--cache-type-v`) and host-RAM prompt cache (`MANA_GAMING_CACHE_RAM`, default 256 MiB). Next to a game, system RAM runs out before VRAM does. A quantized V cache needs flash attention, which llama-server's default (`auto`) turns on.
+  - The vision mmproj is never loaded with the gaming model. An image sent while gaming is described by a separate vision model if one is configured. If the vision model is the normal chat model, Mana says vision is paused until the game ends.
+  - Doctor ("Chat model") and the tray's status box show the loaded chat model, with "(gaming model)" after it while it's swapped.
+  - Unset, nothing changes: a game start only drops the vision mmproj and stops the memory embedder and reranker, as before.
 
 Speech recognition debugging
 - In the Electron dev console, run `localStorage.manaSpeechDebug = "1"` to log audio stats and skip reasons.

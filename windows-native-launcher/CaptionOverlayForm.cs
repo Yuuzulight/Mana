@@ -165,6 +165,28 @@ internal sealed class CaptionOverlayForm : Form
         }
     }
 
+    // #701: while chat bubbles are on they carry her words, so the bar stays
+    // hidden; turning bubbles off brings it back from the next sentence.
+    // UI thread only (the tray toggle).
+    private bool suppressed;
+    public bool Suppressed
+    {
+        get => suppressed;
+        set
+        {
+            suppressed = value;
+            if (value)
+            {
+                upcoming.Clear();
+                timer.Stop();
+                frameTimer.Stop();
+                staying = false;
+                replyEnded = true;
+                Visible = false;
+            }
+        }
+    }
+
     // She stopped talking (finished or interrupted): every word shows, and
     // the bar stays until her next reply, at most 7s.
     public void SpeechEnded()
@@ -223,7 +245,10 @@ internal sealed class CaptionOverlayForm : Form
     }
 
     // Q8: centred under her avatar, kept on screen (never lower than the
-    // old bottom-centre spot); bottom-centre when she's hidden.
+    // old bottom-centre spot); bottom-centre when she's hidden. With no room
+    // under her (she stands at the bottom of the screen) it goes above her
+    // head instead -- clamped down to the bottom spot it would sit on her
+    // body, behind her window.
     internal static Point Place(Size bar, Rectangle? avatar, Rectangle workArea)
     {
         var bottom = workArea.Bottom - bar.Height - BottomGap;
@@ -233,7 +258,11 @@ internal sealed class CaptionOverlayForm : Form
         }
         var minX = workArea.Left + ScreenMargin;
         var x = Math.Clamp(a.Left + (a.Width / 2) - (bar.Width / 2), minX, Math.Max(minX, workArea.Right - bar.Width - ScreenMargin));
-        return new Point(x, Math.Max(workArea.Top + ScreenMargin, Math.Min(a.Bottom + 8, bottom)));
+        var below = a.Bottom + 8;
+        var above = a.Top - bar.Height - 8;
+        var top = workArea.Top + ScreenMargin;
+        var y = below <= bottom ? below : above >= top ? above : Math.Max(top, bottom);
+        return new Point(x, y);
     }
 
     internal static IReadOnlyList<(string Text, int Ms)> Steps(string text, TimeSpan duration)
@@ -282,6 +311,10 @@ internal sealed class CaptionOverlayForm : Form
     // words come in.
     private void StartSentence(string text, double durationMs)
     {
+        if (suppressed)
+        {
+            return;
+        }
         previous = replyEnded ? "" : current;
         replyEnded = false;
         current = RevealedWords(text, 0, 0);

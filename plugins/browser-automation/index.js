@@ -1,5 +1,6 @@
 const fs = require("fs");
 const { createBrowserSession } = require("./browser-automation");
+const { refuseIfLocalOnly } = require("../../node-bot/local-only");
 
 // Windows ships Edge (Chromium-based) on every install -- since Mana
 // targets Windows, this is the "already available" browser rather than
@@ -29,6 +30,9 @@ async function getSession(deps) {
   if (session) return session;
 
   const env = deps.env || process.env;
+  // #670: the browser is its own program, outside node-bot's connection
+  // guard, and any page can pull from the internet.
+  refuseIfLocalOnly("browser automation", env);
   const executablePath = resolveExecutablePath(env);
   if (!executablePath) {
     throw new Error(

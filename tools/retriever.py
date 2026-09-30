@@ -14,6 +14,8 @@ import numpy as np
 from annoy import AnnoyIndex
 from sentence_transformers import SentenceTransformer
 
+import metadata_db
+
 
 def load_store(outdir):
     outdir = Path(outdir)
@@ -21,7 +23,7 @@ def load_store(outdir):
     dim = config["dim"]
     index = AnnoyIndex(dim, config.get("annoy_metric", "angular"))
     index.load(str(outdir / "index.ann"))
-    metadata = json.load(open(outdir / "metadata.json", "r", encoding="utf-8"))
+    metadata = metadata_db.open_ro(outdir / metadata_db.DB_NAME)
     return index, metadata, config
 
 
@@ -30,11 +32,8 @@ def retrieve(outdir, query, k=5, embedding_model="all-MiniLM-L6-v2"):
     model = SentenceTransformer(embedding_model)
     qvec = model.encode([query], convert_to_numpy=True)[0].astype(np.float32)
     ids, distances = index.get_nns_by_vector(qvec, k, include_distances=True)
-    results = []
-    for i, dist in zip(ids, distances):
-        meta = metadata[i]
-        results.append({"score": float(dist), "meta": meta})
-    return results
+    metas = metadata_db.get(metadata, ids)
+    return [{"score": float(d), "meta": metas[i]} for i, d in zip(ids, distances) if i in metas]
 
 
 if __name__ == "__main__":
@@ -42,7 +41,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--index",
         required=True,
-        help="Index directory (contains index.ann, metadata.json)",
+        help="Index directory (contains index.ann, metadata.sqlite)",
     )
     parser.add_argument("--query", required=True, help="Query text")
     parser.add_argument("--k", type=int, default=5, help="Top k")

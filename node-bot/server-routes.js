@@ -30,6 +30,17 @@ function hasRestartController(restartController) {
 
 const joinPromptParts = (...parts) => parts.filter(Boolean).join("\n\n");
 
+// #679: describe-first for a text-only chat model. The description is all
+// the chat model will know about the image, so it asks for the details a
+// question could hinge on.
+const IMAGE_DESCRIBE_SYSTEM_PROMPT =
+  "You describe images for another assistant that cannot see them. Be factual and specific.";
+const IMAGE_DESCRIBE_PROMPT =
+  "Describe this image so someone who can't see it could answer questions about it. " +
+  "Copy any visible text word for word (error messages, code, UI labels), then say what it shows " +
+  "and anything that looks wrong or notable. If a message from the person who sent it follows, " +
+  "focus on what it needs, but don't answer it.";
+
 function scheduleRestartAfterFinish(res, restartController) {
   res.once("finish", () => restartController.scheduleRestart());
 }
@@ -55,9 +66,11 @@ function registerCoreRoutes(app, upload, deps) {
     restartController,
     runVisionReply,
     getVisionStatus,
+    chatAcceptsImages,
     resolveVisionCapture,
     rejectVisionCapture,
     runWhisper,
+    runWhisperHeard,
     runWhisperPartial,
     normalizeUploadedAudioAsync,
     synthesizeReply,
@@ -95,6 +108,33 @@ function registerCoreRoutes(app, upload, deps) {
     return input;
   }
 
+  // #679: an image turn goes through the normal chat path (history, memory,
+  // persona, tools). A chat model that can see (its llama-server runs with
+  // the vision mmproj) gets the images themselves; otherwise the vision
+  // model describes them first and the chat model answers from that.
+  async function prepareImageTurn(text, images, modelProfile) {
+    if (typeof chatAcceptsImages === "function" && chatAcceptsImages(modelProfile)) {
+      return { text: text || "(shared an image)", images };
+    }
+    let description;
+    try {
+      description = await runVisionReply(
+        joinPromptParts(IMAGE_DESCRIBE_PROMPT, text && `Their message: ${text}`),
+        images,
+        512,
+        IMAGE_DESCRIBE_SYSTEM_PROMPT,
+      );
+    } catch (e) {
+      if (e.code !== "VISION_PAUSED_GAMING") throw e;
+      // #889: the chat model still answers, and says why it can't see it.
+      console.log("Image turn: vision is paused while gaming");
+      const note = "[An image was attached, but vision is paused while a game is running, so you can't see it. Say so.]";
+      return { text: joinPromptParts(note, text), images: [] };
+    }
+    console.log(`Image turn: text-only chat model, vision model described ${images.length} image(s)`);
+    return { text: joinPromptParts(`[Image: ${description}]`, text), images: [] };
+  }
+
   app.post("/admin/restart", (req, res) => {
     if (!hasRestartController(restartController)) {
       return res.status(500).json({ error: "restart controller is not configured" });
@@ -116,10 +156,12 @@ function registerCoreRoutes(app, upload, deps) {
       requireFile(req.file, "file");
 
       const { tmpPath, audioPath } = normalizeUploadedAudio(req.file);
-      const transcript = await runWhisper(audioPath);
+      const { heard, transcript } = await runWhisperHeard(audioPath);
       cleanupUploadedAudio(tmpPath, audioPath);
 
-      return res.json({ transcript });
+      // #925: heard (what whisper wrote) only when a mishearing fix
+      // changed it, for the launcher's speech-debug.log.
+      return res.json(heard === transcript ? { transcript } : { transcript, heard });
     } catch (e) {
       if (e instanceof ValidationError) {
         return sendValidationError(res, e);
@@ -245,7 +287,7 @@ function registerCoreRoutes(app, upload, deps) {
 
   app.post("/reply", async (req, res) => {
     try {
-      // An attached image routes the reply through the local vision model;
+      // An attached image joins the chat turn (see prepareImageTurn);
       // text becomes optional because the image can carry the question.
       const image =
         typeof req.body?.image === "string" && req.body.image.trim()
@@ -290,19 +332,6 @@ function registerCoreRoutes(app, upload, deps) {
             });
           }
         }
-        // The vision call takes no system prompt here, so both patches ride
-        // on its prompt text.
-        const reply = await runVisionReply(
-          joinPromptParts(input.text, input.systemPatch, input.userPatch),
-          [image],
-        );
-        if (sessionId && typeof recordChatTurn === "function") {
-          recordChatTurn(sessionId, input.text || "(shared an image)", reply);
-        }
-        return res.json({
-          reply,
-          ttsConfigured: TTS_PROVIDER !== "none",
-        });
       }
       const screenText = clampText(
         optionalString(req.body?.screenText, "screenText", ""),
@@ -349,8 +378,12 @@ function registerCoreRoutes(app, upload, deps) {
         systemPatch: input.systemPatch,
         thinkHarder: typeof req.body?.thinkHarder === "boolean" ? req.body.thinkHarder : undefined,
       };
+      const turn = image
+        ? await prepareImageTurn(input.text, [image], modelProfile)
+        : { text: input.text, images: [] };
+      replyMeta.images = turn.images;
       const reply = await buildAssistantReply(
-        input.text,
+        turn.text,
         screenText,
         joinPromptParts(marketText, input.userPatch),
         modelProfile,
@@ -452,20 +485,6 @@ function registerCoreRoutes(app, upload, deps) {
             return res.end();
           }
         }
-        const reply = await runVisionReply(
-          joinPromptParts(input.text, input.systemPatch, input.userPatch),
-          images,
-        );
-        if (sessionId && typeof recordChatTurn === "function") {
-          recordChatTurn(sessionId, input.text || "(shared an image)", reply);
-        }
-        writeEvent({
-          type: "final",
-          reply,
-          ttsConfigured: TTS_PROVIDER !== "none",
-          changed: true,
-        });
-        return res.end();
       }
 
       const screenText = clampText(
@@ -509,9 +528,13 @@ function registerCoreRoutes(app, upload, deps) {
         // thinks this turn, false ends Mana's own deep thinking (Q12b).
         thinkHarder: typeof req.body?.thinkHarder === "boolean" ? req.body.thinkHarder : undefined,
       };
+      const turn = images.length
+        ? await prepareImageTurn(input.text, images, modelProfile)
+        : { text: input.text, images: [] };
+      replyMeta.images = turn.images;
 
       const reply = await buildAssistantReply(
-        input.text,
+        turn.text,
         screenText,
         joinPromptParts(marketText, input.userPatch),
         modelProfile,
@@ -1147,44 +1170,11 @@ function registerPendingWritesRoutes(app, deps) {
         JSON.stringify(data, null, 2),
         "utf8",
       );
-      // Optionally archive immediately
-      try {
-        const archiveDir = path.join(PENDING_DIR, "archive");
-        await fs.promises.mkdir(archiveDir, { recursive: true });
-        const pendingPath = `${base}.json`;
-        let pendingPayload = null;
-        try {
-          pendingPayload = JSON.parse(
-            await fs.promises.readFile(pendingPath, "utf8"),
-          );
-        } catch (e) {
-          pendingPayload = null;
-        }
-        const outPath = path.join(archiveDir, `${id}.approved.json`);
-        const archiveObj = {
-          id,
-          status: "approved",
-          pending: pendingPayload,
-          action: data,
-          archivedAt: new Date().toISOString(),
-        };
-        await fs.promises.writeFile(
-          outPath,
-          JSON.stringify(archiveObj, null, 2),
-          "utf8",
-        );
-        // remove originals
-        try {
-          if (fs.existsSync(pendingPath))
-            await fs.promises.unlink(pendingPath);
-        } catch (e) {}
-        try {
-          if (fs.existsSync(approvedPath))
-            await fs.promises.unlink(approvedPath);
-        } catch (e) {}
-      } catch (e) {
-        // ignore archive errors
-      }
+      // #838: the marker is all this route writes. The waiting loop
+      // (acp-autonomous-loop.js's waitForApprovalResult) polls for it and
+      // archives the request itself once it has read the decision --
+      // archiving here deleted the marker before the loop could see it,
+      // so every approval from outside timed out.
 
       return res.json({ ok: true, id });
     } catch (err) {
@@ -1212,44 +1202,11 @@ function registerPendingWritesRoutes(app, deps) {
         JSON.stringify(data, null, 2),
         "utf8",
       );
-      // Optionally archive immediately
-      try {
-        const archiveDir = path.join(PENDING_DIR, "archive");
-        await fs.promises.mkdir(archiveDir, { recursive: true });
-        const pendingPath = `${base}.json`;
-        let pendingPayload = null;
-        try {
-          pendingPayload = JSON.parse(
-            await fs.promises.readFile(pendingPath, "utf8"),
-          );
-        } catch (e) {
-          pendingPayload = null;
-        }
-        const outPath = path.join(archiveDir, `${id}.rejected.json`);
-        const archiveObj = {
-          id,
-          status: "rejected",
-          pending: pendingPayload,
-          action: data,
-          archivedAt: new Date().toISOString(),
-        };
-        await fs.promises.writeFile(
-          outPath,
-          JSON.stringify(archiveObj, null, 2),
-          "utf8",
-        );
-        // remove originals
-        try {
-          if (fs.existsSync(pendingPath))
-            await fs.promises.unlink(pendingPath);
-        } catch (e) {}
-        try {
-          if (fs.existsSync(rejectedPath))
-            await fs.promises.unlink(rejectedPath);
-        } catch (e) {}
-      } catch (e) {
-        // ignore archive errors
-      }
+      // #838: the marker is all this route writes. The waiting loop
+      // (acp-autonomous-loop.js's waitForApprovalResult) polls for it and
+      // archives the request itself once it has read the decision --
+      // archiving here deleted the marker before the loop could see it,
+      // so every approval from outside timed out.
 
       return res.json({ ok: true, id });
     } catch (err) {

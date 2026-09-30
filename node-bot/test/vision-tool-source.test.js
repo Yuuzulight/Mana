@@ -154,3 +154,27 @@ test("the vision model check runs before the plugin-enabled check (order doesn't
   const result = await source.executeTool(`${VISION_TOOL_PREFIX}look`, { prompt: "what's open?" });
   assert.equal(JSON.parse(result).status, "error");
 });
+
+// #912: vision__camera is offered only with a camera-capable client, not
+// tied to screen sensing, and asks the bridge for a camera snapshot.
+test("the camera tool follows the camera client, not screen sensing", async () => {
+  let seenOptions = null;
+  const cameraBridge = (hasCamera) => ({
+    hasCamera: () => hasCamera,
+    requestCapture: async (options) => {
+      seenOptions = options;
+      return "data:image/jpeg;base64,cam";
+    },
+  });
+  const names = (source) => source.listToolSchemas().map((t) => t.function.name);
+
+  assert.deepEqual(names(createVisionToolSource(baseOptions({ visionCaptureBridge: cameraBridge(false) }))), [`${VISION_TOOL_PREFIX}look`]);
+  const source = createVisionToolSource(
+    baseOptions({ visionCaptureBridge: cameraBridge(true), pluginSettingsStore: fakePluginSettingsStore(false) }),
+  );
+  assert.deepEqual(names(source), [`${VISION_TOOL_PREFIX}camera`]);
+
+  const result = await source.executeTool(`${VISION_TOOL_PREFIX}camera`, { prompt: "what am I holding?" });
+  assert.equal(JSON.parse(result).status, "ok");
+  assert.deepEqual(seenOptions, { camera: true });
+});

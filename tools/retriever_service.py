@@ -4,7 +4,7 @@ A small FastAPI retrieval microservice that loads an Annoy index and returns top
 
 Usage (from your Python venv):
   pip install fastapi uvicorn sentence-transformers annoy nbformat
-  uvicorn tools.retriever_service:app --host 127.0.0.1 --port 9000
+  python tools/retriever_service.py
 
 Endpoints:
   POST /retrieve  { query: str, k: int }
@@ -24,6 +24,8 @@ from annoy import AnnoyIndex
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from sentence_transformers import SentenceTransformer
+
+import metadata_db
 
 try:
     import tiktoken
@@ -66,7 +68,7 @@ def load_store(index_dir: str, embedding_model: str):
     DIM = CONFIG.get("dim")
     INDEX = AnnoyIndex(DIM, CONFIG.get("annoy_metric", "angular"))
     INDEX.load(str(index_dir / "index.ann"))
-    METADATA = json.load(open(index_dir / "metadata.json", "r", encoding="utf-8"))
+    METADATA = metadata_db.open_ro(index_dir / metadata_db.DB_NAME)
     # mark index loaded before loading model to reflect progress
     STATE["index_loaded"] = True
     EMBED_MODEL = SentenceTransformer(embedding_model)
@@ -105,11 +107,8 @@ async def retrieve(req: RetrieveRequest):
         raise HTTPException(status_code=400, detail="query is required")
     qvec = EMBED_MODEL.encode([req.query], convert_to_numpy=True)[0].astype(np.float32)
     ids, distances = INDEX.get_nns_by_vector(qvec, req.k or 5, include_distances=True)
-    results = []
-    for i, dist in zip(ids, distances):
-        meta = METADATA[i]
-        results.append({"score": float(dist), "meta": meta})
-    return results
+    metas = metadata_db.get(METADATA, ids)
+    return [{"score": float(d), "meta": metas[i]} for i, d in zip(ids, distances) if i in metas]
 
 
 class TokenizeRequest(BaseModel):

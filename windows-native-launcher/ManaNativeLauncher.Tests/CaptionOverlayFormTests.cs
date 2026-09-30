@@ -9,6 +9,17 @@ namespace ManaNativeLauncher.Tests;
 [Collection("DarkTheme palette")] // reads the shared static palette
 public class CaptionOverlayFormTests
 {
+    // #701: with chat bubbles on, the caption bar never shows.
+    [Fact]
+    public void Suppressed_KeepsTheBarHidden()
+    {
+        using var form = new CaptionOverlayForm { Suppressed = true };
+        form.ShowSentence("Hello there.", TimeSpan.FromSeconds(1));
+        form.ShowSpokenText("One. Two.", TimeSpan.FromSeconds(2));
+        form.SpeechEnded();
+        Assert.False(form.Visible);
+    }
+
     [Fact]
     public void SetCaption_GrowsTheBarToFitEveryWrappedLine()
     {
@@ -69,12 +80,15 @@ public class CaptionTimingTests
         var bar = new Size(400, 50);
         // Hidden: bottom-centre, 48px up.
         Assert.Equal(new Point(760, 942), CaptionOverlayForm.Place(bar, null, work));
-        // At the bottom of the screen (the default spot): centred on her, same height.
-        Assert.Equal(new Point(699, 942), CaptionOverlayForm.Place(bar, new Rectangle(782, 752, 234, 288), work));
+        // At the bottom of the screen (the default spot): no room under her, so
+        // above her head -- never over her body, where her window hides it.
+        Assert.Equal(new Point(699, 694), CaptionOverlayForm.Place(bar, new Rectangle(782, 752, 234, 288), work));
         // Dragged up: just below her.
         Assert.Equal(new Point(699, 408), CaptionOverlayForm.Place(bar, new Rectangle(782, 112, 234, 288), work));
         // At the right edge: pulled back on screen.
-        Assert.Equal(new Point(1508, 942), CaptionOverlayForm.Place(bar, new Rectangle(1800, 752, 234, 288), work));
+        Assert.Equal(new Point(1508, 694), CaptionOverlayForm.Place(bar, new Rectangle(1800, 752, 234, 288), work));
+        // Filling the screen height (no room above or below): the old bottom spot.
+        Assert.Equal(new Point(699, 942), CaptionOverlayForm.Place(bar, new Rectangle(782, 0, 234, 1040), work));
     }
 
     [Theory]
