@@ -240,7 +240,7 @@ const { createSpeechToolSource } = require("./ai/speech-tool-source");
 const { createVisionToolSource } = require("./ai/vision-tool-source");
 const { createSessionGoalToolSource } = require("./ai/session-goal-tool-source");
 const { createReminderToolSource } = require("./ai/reminder-tool-source");
-const { createMailCalendarToolSource } = require("./ai/mail-calendar-tool-source");
+const { briefingLines: mailCalendarBriefingLines, createMailCalendarToolSource } = require("./ai/mail-calendar-tool-source");
 const { createMailCalendarSettingsStore } = require("./mail-calendar-settings-store");
 const { checkMail } = require("./imap-client");
 const { checkCalendar } = require("./calendar-client");
@@ -837,9 +837,8 @@ const speechVocabulary = createSpeechVocabulary({
 const mailCalendarSettings = createMailCalendarSettingsStore();
 // #907: the daily briefing (data/briefing.json, Settings > Briefing),
 // through the proactive engine. The chat model writes it only when it's
-// already loaded. Calendar and mail: #906 isn't in yet -- when it lands it
-// passes its today's-events-and-unread-mail lines as `calendar`; until
-// then that section is skipped.
+// already loaded. #961: calendar and mail come from #906's accounts; the
+// section is skipped while neither is set up.
 const briefing = createBriefing({
   filePath: path.join(acpMemoryStore.dataDir, "briefing.json"),
   listFacts: () => acpMemoryStore.listFacts(),
@@ -849,6 +848,7 @@ const briefing = createBriefing({
     return searchWeb(query, options);
   },
   runLocalReply: (prompt, maxTokens) => llamaServerRuntime.runLocalReplyIfSafelyLoaded(prompt, maxTokens),
+  calendar: () => mailCalendarBriefingLines({ store: mailCalendarSettings }),
   offer: (candidate) => require("./proactive").offer(candidate),
 });
 // "Sitting down": the launchers' idle report (every 60 s) saw input this recently.

@@ -11,7 +11,7 @@ const imapClient = require("../imap-client");
 const calendarClient = require("../calendar-client");
 const { createApprovalGate } = require("../approval-gate");
 const { createMailCalendarSettingsStore } = require("../mail-calendar-settings-store");
-const { createMailCalendarToolSource, resolveDay } = require("../ai/mail-calendar-tool-source");
+const { briefingLines, createMailCalendarToolSource, resolveDay } = require("../ai/mail-calendar-tool-source");
 const { classifyToolCall } = require("../ai/tool-risk");
 
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), "mana-mail-cal-"));
@@ -374,4 +374,48 @@ test("#906 calendar tools: CalDAV discovery, 'am I free Thursday', adding asks m
   } finally {
     dav.server.close();
   }
+});
+
+test("#961 briefing lines: today's events and an unread count, skipped without accounts", async () => {
+  const noon = new Date(2026, 8, 30, 12, 0).getTime();
+  const configured = new Set();
+  const store = { isConfigured: (kind) => configured.has(kind), get: (kind) => ({ kind }) };
+  const asked = [];
+  const calendar = {
+    listEvents: async (account, fromMs, toMs) => {
+      asked.push([account.kind, fromMs, toMs]);
+      return [
+        { title: "Holiday", allDay: true, startMs: fromMs, endMs: toMs },
+        { title: "Raid night", allDay: false, startMs: new Date(2026, 8, 30, 20, 0).getTime() },
+        { title: "Book club", allDay: false, startMs: new Date(2025, 0, 1, 19, 0).getTime(), repeatNote: "repeats by a rule I can't unroll" },
+      ];
+    },
+  };
+  let unread = [{ id: 1 }, { id: 2 }];
+  const imap = {
+    recentMail: async (account, options) => {
+      asked.push([account.kind, options.sinceMs, options.unreadOnly]);
+      return unread;
+    },
+  };
+  const lines = () => briefingLines({ store, imap, calendar, now: () => noon });
+
+  assert.deepEqual(await lines(), []);
+  assert.deepEqual(asked, []); // no account, no connection
+
+  configured.add("calendar").add("email");
+  assert.deepEqual(await lines(), ["Today: Holiday (all day); 20:00 Raid night", "2 unread emails in the last day"]);
+  assert.deepEqual(asked, [
+    ["calendar", new Date(2026, 8, 30).getTime(), new Date(2026, 9, 1).getTime()],
+    ["email", noon - 24 * 3600000, true],
+  ]);
+
+  // One failing keeps the other; no unread mail says nothing.
+  calendar.listEvents = async () => {
+    throw new Error("offline");
+  };
+  unread = new Array(30).fill({});
+  assert.deepEqual(await lines(), ["30+ unread emails in the last day"]);
+  unread = [];
+  assert.deepEqual(await lines(), []);
 });
