@@ -1,7 +1,8 @@
-// Issue #914: each character's relationship notes -- listed, edited and
-// removed from the launcher's Settings, and forgotten from chat ("forget
-// that", "forget the note about pizza"). Only my own message counts: this
-// is an input hook, never something the model or a page can trigger.
+// Issue #914: each character's relationship notes and milestones -- listed,
+// edited and removed from the launcher's Settings, and forgotten from chat
+// ("forget that", "forget the note about pizza"). Only my own message
+// counts: this is an input hook, never something the model or a page can
+// trigger.
 const {
   ValidationError,
   requireString,
@@ -38,7 +39,12 @@ function createRelationshipCapability(characters, storeFor) {
         "/characters/relationships",
         handle((req, res) =>
           res.json({
-            characters: characters.list().map((c) => ({ id: c.id, name: c.name, notes: storeFor(c.id).list() })),
+            characters: characters.list().map((c) => ({
+              id: c.id,
+              name: c.name,
+              notes: storeFor(c.id).list(),
+              milestones: storeFor(c.id).milestones(),
+            })),
           }),
         ),
       );
@@ -62,6 +68,31 @@ function createRelationshipCapability(characters, storeFor) {
           return removed ? res.json({ removed }) : res.status(404).json({ error: "unknown note" });
         }),
       );
+
+      // {text?, date? ("YYYY-MM-DD")}
+      app.put(
+        "/characters/:id/relationship/milestones/:milestoneId",
+        handle((req, res) => {
+          const character = characterOf(req, res);
+          if (!character) return undefined;
+          const { text, date } = req.body || {};
+          if (text === undefined && date === undefined) throw new ValidationError("text or date is required");
+          if (text !== undefined) requireString(text, "text");
+          if (date !== undefined && !/^\d{4}-\d{2}-\d{2}$/.test(String(date))) throw new ValidationError("date must be YYYY-MM-DD");
+          const milestone = storeFor(character.id).updateMilestone(req.params.milestoneId, { text, date });
+          return milestone ? res.json({ milestone }) : res.status(404).json({ error: "unknown milestone, or not a real date" });
+        }),
+      );
+
+      app.delete(
+        "/characters/:id/relationship/milestones/:milestoneId",
+        handle((req, res) => {
+          const character = characterOf(req, res);
+          if (!character) return undefined;
+          const removed = storeFor(character.id).removeMilestone(req.params.milestoneId);
+          return removed ? res.json({ removed }) : res.status(404).json({ error: "unknown milestone" });
+        }),
+      );
     },
     onUserInput(input) {
       const request = findForgetRequest(input.text);
@@ -70,7 +101,7 @@ function createRelationshipCapability(characters, storeFor) {
       if (!removed.length) {
         // A bare "forget that" with no fresh note may mean something else
         // (a memory fact): the reply handles it as usual.
-        return request.query ? { reply: "I don't have a note about that." } : null;
+        return request.query ? { reply: "I don't have a note or milestone about that." } : null;
       }
       return { reply: `Okay, I forgot: ${removed.map((n) => `"${n.text}"`).join(", ")}` };
     },

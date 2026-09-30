@@ -142,7 +142,7 @@ test("Settings routes list, edit and remove each character's notes; chat forgets
   storeFor("mana").add("They call me their little gremlin.");
   assert.deepEqual(capability.onUserInput({ text: "forget that" }), { reply: 'Okay, I forgot: "They call me their little gremlin."' });
   assert.equal(capability.onUserInput({ text: "forget that" }), null, "nothing fresh: the reply handles it");
-  assert.deepEqual(capability.onUserInput({ text: "forget the note about karaoke" }), { reply: "I don't have a note about that." });
+  assert.deepEqual(capability.onUserInput({ text: "forget the note about karaoke" }), { reply: "I don't have a note or milestone about that." });
   assert.equal(capability.onUserInput({ text: "hello" }), null);
 });
 
@@ -173,5 +173,73 @@ test("a new note is a chat line on the reply stream", async () => {
       character: "mana",
       characterName: "Mana",
     });
+  });
+});
+
+test("milestones: dated, the first chat once, edited, removed, forgotten", () => {
+  let t = new Date(2026, 9, 1, 12, 0).getTime();
+  const store = createRelationshipStore({ now: () => new Date(t).toISOString() });
+  assert.equal(store.ensureFirstChat(() => new Date(2025, 5, 3, 20, 0).toISOString()).date, "2025-06-03");
+  assert.equal(store.ensureFirstChat(() => null), null, "only once");
+  const raid = store.addMilestone("We cleared the raid after 40 wipes.", "2026-02-30");
+  assert.equal(raid.date, "2026-10-01", "not a real date: today");
+  assert.equal(store.addMilestone("we cleared the raid after 40 wipes.").id, raid.id, "not twice");
+  assert.equal(store.updateMilestone(raid.id, { date: "2026-09-12" }).date, "2026-09-12");
+  assert.equal(store.updateMilestone(raid.id, { date: "2026-13-01" }), null);
+  assert.equal(store.updateMilestone("nope", { text: "x" }), null);
+  assert.deepEqual(store.forget("raid wipes").map((m) => m.id), [raid.id]);
+  const party = store.addMilestone("Their birthday party.", "2026-05-30");
+  assert.deepEqual(store.forget("").map((m) => m.id), [party.id], "forget that: the one just made");
+  assert.deepEqual(store.milestones().map((m) => m.text), ["The first time we talked"]);
+  assert.equal(store.removeMilestone(store.milestones()[0].id).first, true);
+});
+
+test("a milestone comes up now and then, and on its anniversary, never on coding turns", () => {
+  let day = new Date(2026, 5, 1, 12, 0);
+  const store = createRelationshipStore({ now: () => day.toISOString() });
+  const at = (y, m, d) => (day = new Date(y, m - 1, d, 12, 0));
+  store.addMilestone("The first time we talked", "2025-06-03");
+  store.addMilestone("We named the cat Mochi.", "2026-01-10");
+  assert.equal(store.milestoneToMention("coding"), null);
+  assert.match(store.milestoneToMention("casual"), /first time we talked \(2025-06-03\)\. Bring it up only if it fits/);
+  assert.equal(store.milestoneToMention("casual"), null, "once a day");
+  at(2026, 6, 2);
+  assert.equal(store.milestoneToMention("casual"), null, "not again for a few days");
+  at(2026, 6, 3);
+  assert.match(store.milestoneToMention("casual"), /^Today is 1 year since a moment you remember with the user: The first time we talked/);
+  at(2026, 6, 6);
+  assert.match(store.milestoneToMention("casual"), /named the cat Mochi/, "the least recently brought up");
+});
+
+test("the milestone tool shows its chat line too", async () => {
+  const store = createRelationshipStore();
+  const noted = [];
+  const tools = createRelationshipToolSource({ store, onNoted: (item) => noted.push(item) });
+  const result = JSON.parse(await tools.executeTool("relationship__milestone", { text: "Our first duet.", date: "2026-09-20" }));
+  assert.deepEqual(result, { ok: true, milestone: "Our first duet.", date: "2026-09-20" });
+  assert.deepEqual(noted.map((n) => [n.kind, n.text, n.date]), [["milestone", "Our first duet.", "2026-09-20"]]);
+  await assert.rejects(tools.executeTool("relationship__milestone", {}), /text is required/);
+});
+
+test("Settings routes edit and remove milestones", async () => {
+  const express = require("express");
+  const { withServer } = require("./helpers");
+  const { createRelationshipCapability } = require("../capabilities/relationship-capability");
+  const characters = createCharacterStore({ filePath: path.join(os.tmpdir(), "no-such-characters.json") });
+  const store = createRelationshipStore();
+  const duet = store.addMilestone("Our first duet.", "2026-09-20");
+  const app = express();
+  app.use(express.json());
+  createRelationshipCapability(characters, () => store).registerRoutes(app);
+  await withServer(app, async (baseUrl) => {
+    const call = (method, route, body) =>
+      fetch(`${baseUrl}${route}`, { method, headers: { "content-type": "application/json" }, body: body && JSON.stringify(body) });
+    const route = `/characters/mana/relationship/milestones/${duet.id}`;
+    assert.equal((await (await call("GET", "/characters/relationships")).json()).characters[0].milestones[0].id, duet.id);
+    assert.equal((await call("PUT", route, {})).status, 400);
+    assert.equal((await call("PUT", route, { date: "20/09/2026" })).status, 400);
+    assert.equal((await (await call("PUT", route, { text: "Our first duet!", date: "2026-09-21" })).json()).milestone.date, "2026-09-21");
+    assert.equal((await call("DELETE", route)).status, 200);
+    assert.equal((await call("DELETE", route)).status, 404);
   });
 });
