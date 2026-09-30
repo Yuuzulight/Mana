@@ -7,6 +7,7 @@ const { scanDir } = require("./tools/dir_scanner");
 const { createAcpTestRunner } = require("./acp-test-runner");
 const { createSnapshotStore } = require("./snapshot-store");
 const { previewRestore } = require("./ai/snapshot-tool-source");
+const { createHooksStore, applyInputRules } = require("./hooks-store");
 const {
   createScratchWorkspaceCopy,
   removeScratchWorkspaceCopy,
@@ -366,10 +367,25 @@ const defaultTestRunner = createAcpTestRunner();
 // as defaultTestRunner above -- a fresh store per call would defeat
 // maxRetained pruning (every call would see an empty pool).
 const defaultSnapshotStore = createSnapshotStore({});
+// #838: the same hooks.json as Pipeline A (read on every call, so a rule
+// edited through /hooks applies from the next action).
+const defaultHooksStore = createHooksStore({});
+
+// #838: a hook-ask pending request shows the call's args, but a
+// file_write's content can be a whole file -- long strings are cut to the
+// same 2 KB file_write's own preview uses.
+function previewArgs(args) {
+  if (!args || typeof args !== "object" || Array.isArray(args)) return args;
+  return Object.fromEntries(
+    Object.entries(args).map(([key, value]) =>
+      [key, typeof value === "string" && value.length > 2048 ? `${value.slice(0, 2048)}...` : value]),
+  );
+}
 
 async function executeAutonomousStep(rawModelReply, sessionId, options = {}) {
   const testRunner = options.testRunner || defaultTestRunner;
   const snapshotStore = options.snapshotStore || defaultSnapshotStore;
+  const hooksStore = options.hooksStore || defaultHooksStore;
   const makeScratchCopy =
     options.createScratchWorkspaceCopy || createScratchWorkspaceCopy;
   const removeScratchCopy =
@@ -420,27 +436,9 @@ async function executeAutonomousStep(rawModelReply, sessionId, options = {}) {
   // signal for the caller to respect, not an enforced stop.
   let finishReason = null;
 
-  for (const action of actions) {
-    const { tool, args } = action;
-
-    // Issue #396: checked before dispatch, so a capped tool costs nothing
-    // beyond the check. Reported in the results rather than thrown, so the
-    // model is told it hit a ceiling and can stop, instead of seeing an
-    // exception it may read as transient and retry.
-    const callCount = countToolCall(sessionId, tool);
-    if (callCount > MAX_TOOL_CALLS_PER_SESSION) {
-      console.error(
-        `[Mana Agent Loop] 🛑 ${tool} hit the per-session cap of ${MAX_TOOL_CALLS_PER_SESSION}; refusing further calls this session.`,
-      );
-      results.push({
-        tool,
-        status: "error",
-        detail: "session_cap_exceeded",
-        cap: MAX_TOOL_CALLS_PER_SESSION,
-      });
-      continue;
-    }
-
+  // #838: one action's dispatch -- pushes its result onto `results`. The
+  // hooks below wrap it in one place instead of in every case.
+  async function runAction(tool, args) {
     if (tool === "local_retrieve") {
       const query = args && args.query ? String(args.query) : "";
       console.error(
@@ -499,7 +497,7 @@ async function executeAutonomousStep(rawModelReply, sessionId, options = {}) {
         });
       }
 
-      continue;
+      return;
     }
 
     if (tool === "file_read") {
@@ -510,7 +508,7 @@ async function executeAutonomousStep(rawModelReply, sessionId, options = {}) {
           status: "error",
           detail: "missing_path_arg",
         });
-        continue;
+        return;
       }
 
       try {
@@ -522,7 +520,7 @@ async function executeAutonomousStep(rawModelReply, sessionId, options = {}) {
             status: "error",
             detail: "path_outside_repo",
           });
-          continue;
+          return;
         }
 
         // Check file exists and is a file
@@ -533,7 +531,7 @@ async function executeAutonomousStep(rawModelReply, sessionId, options = {}) {
             status: "error",
             detail: "not_a_file",
           });
-          continue;
+          return;
         }
 
         // Limit read size
@@ -572,7 +570,7 @@ async function executeAutonomousStep(rawModelReply, sessionId, options = {}) {
         });
       }
 
-      continue;
+      return;
     }
 
     // file_write tool: write or append content to files inside the repo (guarded)
@@ -589,7 +587,7 @@ async function executeAutonomousStep(rawModelReply, sessionId, options = {}) {
           status: "forbidden",
           detail: "file_write_disabled",
         });
-        continue;
+        return;
       }
 
       if (!requestedPath || content === null) {
@@ -598,7 +596,7 @@ async function executeAutonomousStep(rawModelReply, sessionId, options = {}) {
           status: "error",
           detail: "missing_path_or_content",
         });
-        continue;
+        return;
       }
 
       // Declared here, not inside the try below, so the catch at the
@@ -618,7 +616,7 @@ async function executeAutonomousStep(rawModelReply, sessionId, options = {}) {
             status: "error",
             detail: "path_outside_repo",
           });
-          continue;
+          return;
         }
 
         // Disallow writes to sensitive locations
@@ -633,7 +631,7 @@ async function executeAutonomousStep(rawModelReply, sessionId, options = {}) {
             status: "error",
             detail: "path_forbidden",
           });
-          continue;
+          return;
         }
 
         // Ensure parent directory exists
@@ -658,7 +656,7 @@ async function executeAutonomousStep(rawModelReply, sessionId, options = {}) {
         const gate = await runApprovalGate("file_write", approvalReqId, approvalReqPayload, requireApproval);
         if (gate.rejected) {
           results.push({ tool: "file_write", ...gate.rejected });
-          continue;
+          return;
         }
         approvalId = gate.approvalId;
         approvalMeta = gate.approvalMeta;
@@ -685,7 +683,7 @@ async function executeAutonomousStep(rawModelReply, sessionId, options = {}) {
               status: "error",
               detail: "size_limit_exceeded",
             });
-            continue;
+            return;
           }
 
           await fs.promises.appendFile(resolvedPath, content, {
@@ -740,7 +738,7 @@ async function executeAutonomousStep(rawModelReply, sessionId, options = {}) {
               status: "error",
               detail: "size_limit_exceeded",
             });
-            continue;
+            return;
           }
 
           await fs.promises.writeFile(resolvedPath, content, {
@@ -775,7 +773,7 @@ async function executeAutonomousStep(rawModelReply, sessionId, options = {}) {
         }
       }
 
-      continue;
+      return;
     }
 
     // Shares file_write's approval mechanics via the runApprovalGate/
@@ -795,13 +793,13 @@ async function executeAutonomousStep(rawModelReply, sessionId, options = {}) {
       const id = args && args.id ? String(args.id) : null;
       if (!id) {
         results.push({ tool: "snapshot_restore", status: "error", detail: "missing_id" });
-        continue;
+        return;
       }
 
       const preview = previewRestore(snapshotStore, id);
       if (!preview) {
         results.push({ tool: "snapshot_restore", status: "error", detail: "snapshot_not_found" });
-        continue;
+        return;
       }
 
       // Pipeline B's own snapshotStore (defaultSnapshotStore, module-scope
@@ -813,7 +811,7 @@ async function executeAutonomousStep(rawModelReply, sessionId, options = {}) {
       // guaranteed to throw once approved.
       if (!snapshotStore.hasRestorer(preview.record.kind)) {
         results.push({ tool: "snapshot_restore", status: "error", detail: "no_restorer_for_kind" });
-        continue;
+        return;
       }
 
       const requireApproval = (process.env.SNAPSHOT_RESTORE_REQUIRE_APPROVAL || "1") !== "0";
@@ -834,7 +832,7 @@ async function executeAutonomousStep(rawModelReply, sessionId, options = {}) {
       const gate = await runApprovalGate("snapshot_restore", restoreApprovalId, restoreApprovalPayload, requireApproval);
       if (gate.rejected) {
         results.push({ tool: "snapshot_restore", ...gate.rejected });
-        continue;
+        return;
       }
       const { approvalId, approvalMeta, approvalPayload } = gate;
 
@@ -854,7 +852,7 @@ async function executeAutonomousStep(rawModelReply, sessionId, options = {}) {
           await archiveOutcome(approvalId, "error", { error: String(err.message) }, approvalPayload);
         }
       }
-      continue;
+      return;
     }
 
     // Read-only, no approval needed -- mirrors Pipeline A's snapshot__list
@@ -863,7 +861,7 @@ async function executeAutonomousStep(rawModelReply, sessionId, options = {}) {
     if (tool === "snapshot_list") {
       const snapshots = snapshotStore.listSnapshots(args && args.kind);
       results.push({ tool: "snapshot_list", status: "ok", snapshots });
-      continue;
+      return;
     }
 
     if (tool === "dir_scan") {
@@ -904,7 +902,7 @@ async function executeAutonomousStep(rawModelReply, sessionId, options = {}) {
               status: "error",
               detail: "invalid_nextToken",
             });
-            continue;
+            return;
           }
         }
 
@@ -914,7 +912,7 @@ async function executeAutonomousStep(rawModelReply, sessionId, options = {}) {
             status: "error",
             detail: "path_outside_repo",
           });
-          continue;
+          return;
         }
         const maxDepth = Math.max(0, Number((args && args.maxDepth) || 5));
         let exts = null;
@@ -969,7 +967,7 @@ async function executeAutonomousStep(rawModelReply, sessionId, options = {}) {
         });
       }
 
-      continue;
+      return;
     }
 
     // Issue #419: an explicit, model-called tool -- not auto-triggered after
@@ -986,7 +984,7 @@ async function executeAutonomousStep(rawModelReply, sessionId, options = {}) {
           status: "error",
           detail: "missing_command_arg",
         });
-        continue;
+        return;
       }
 
       const requestedCwd = args && args.cwd ? String(args.cwd) : null;
@@ -999,7 +997,7 @@ async function executeAutonomousStep(rawModelReply, sessionId, options = {}) {
             status: "error",
             detail: "path_outside_repo",
           });
-          continue;
+          return;
         }
       }
 
@@ -1014,7 +1012,7 @@ async function executeAutonomousStep(rawModelReply, sessionId, options = {}) {
           status: "retry_exhausted",
           cap: MAX_TEST_RETRY_ATTEMPTS,
         });
-        continue;
+        return;
       }
 
       // Issue #422: a fresh scratch copy every call, not reused across
@@ -1031,7 +1029,7 @@ async function executeAutonomousStep(rawModelReply, sessionId, options = {}) {
           status: "error",
           detail: "scratch_copy_failed",
         });
-        continue;
+        return;
       }
       const scratchCwd = path.join(scratchDir, path.relative(REPO_ROOT, resolvedCwd));
 
@@ -1091,18 +1089,75 @@ async function executeAutonomousStep(rawModelReply, sessionId, options = {}) {
         removeScratchCopy(scratchDir);
       }
 
-      continue;
+      return;
     }
 
     if (tool === "finish") {
       finishReason = (args && args.reason ? String(args.reason) : "").trim() || "goal achieved";
       results.push({ tool: "finish", status: "ok", reason: finishReason });
-      continue;
+      return;
     }
 
     // Unknown / unsupported tool
     console.error(`[Mana Tool] ⚠️ Unsupported tool: ${tool}`);
     results.push({ tool: tool || "unknown", status: "unsupported" });
+  }
+
+  for (const action of actions) {
+    const tool = action.tool;
+    // #838: modify-input first, so the #396 cap, deny/ask and every guard
+    // inside runAction see the rewritten call, never the original.
+    const args = applyInputRules(hooksStore.matchRules(tool, "pre", action.args), tool, action.args);
+
+    // Issue #396: checked before dispatch, so a capped tool costs nothing
+    // beyond the check. Reported in the results rather than thrown, so the
+    // model is told it hit a ceiling and can stop, instead of seeing an
+    // exception it may read as transient and retry.
+    const callCount = countToolCall(sessionId, tool);
+    if (callCount > MAX_TOOL_CALLS_PER_SESSION) {
+      console.error(
+        `[Mana Agent Loop] 🛑 ${tool} hit the per-session cap of ${MAX_TOOL_CALLS_PER_SESSION}; refusing further calls this session.`,
+      );
+      results.push({
+        tool,
+        status: "error",
+        detail: "session_cap_exceeded",
+        cap: MAX_TOOL_CALLS_PER_SESSION,
+      });
+      continue;
+    }
+
+    // #838: the user's deny/ask rules, matched on the rewritten args. Deny
+    // wins over ask (never ask a human about a call the config blocks), and
+    // is a result rather than a throw, like the cap above.
+    const preRules = hooksStore.matchRules(tool, "pre", args);
+    const denyRule = preRules.find((rule) => rule.action === "deny");
+    if (denyRule) {
+      results.push({ tool, status: "denied", detail: denyRule.reason || `blocked by hook rule for "${tool}"` });
+      continue;
+    }
+    const askRule = preRules.find((rule) => rule.action === "ask");
+    if (askRule) {
+      // Always a human: FILE_WRITE_REQUIRE_APPROVAL and args.approved don't
+      // apply to a hook's own ask.
+      const askId = makeApprovalId("hook-ask");
+      const gate = await runApprovalGate("hook_ask", askId, {
+        id: askId,
+        kind: "hook-ask",
+        tool,
+        reason: askRule.reason || `Hook rule asks before calling "${tool}"`,
+        args: previewArgs(args),
+        sessionId: sessionId || null,
+        createdAt: new Date().toISOString(),
+      }, true);
+      if (gate.rejected) {
+        results.push({ tool, ...gate.rejected });
+        continue;
+      }
+      await archiveOutcome(askId, "approved", gate.approvalMeta, gate.approvalPayload);
+    }
+
+    await runAction(tool, args);
   }
 
   if (finishReason) {

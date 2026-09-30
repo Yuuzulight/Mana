@@ -53,10 +53,15 @@ function writeRules(filePath, rules) {
   fs.renameSync(tmp, filePath);
 }
 
+// #838 decision 2: one rule covers both pipelines' write tools.
+const WRITE_TOOLS = ["file_write", "coding__propose_edit"];
+
 // toolName matches exactly, or as a "prefix*" glob -- e.g. "skill__*"
 // matches every skill tool. "*" (or an unset toolName) matches anything.
+// "write" matches every tool in WRITE_TOOLS.
 function ruleMatchesTool(rule, toolName) {
   if (!rule.toolName || rule.toolName === "*") return true;
+  if (rule.toolName === "write") return WRITE_TOOLS.includes(toolName);
   if (rule.toolName.endsWith("*")) {
     return String(toolName || "").startsWith(rule.toolName.slice(0, -1));
   }
@@ -99,6 +104,11 @@ function normalizeRule(rule) {
   const isArgsObject = rule.set && typeof rule.set === "object" && !Array.isArray(rule.set);
   if (rule.action === "modify-input" && !(isArgsObject && Object.keys(rule.set).length)) {
     throw new Error("set (an object of argument values) is required for a modify-input rule");
+  }
+  // #838: Pipeline B's file_write skips its approval on args.approved ===
+  // true, so a rewrite must never be able to set it.
+  if (rule.action === "modify-input" && Object.prototype.hasOwnProperty.call(rule.set, "approved")) {
+    throw new Error("a modify-input rule may not set approved");
   }
 
   const entry = { phase: rule.phase, action: rule.action, toolName };
@@ -351,19 +361,30 @@ function wrapWithInputHooks(policy, hooksStore) {
   return {
     tools: policy.tools,
     isKnownTool: policy.isKnownTool,
-    executeTool: async (name, args) => {
-      if (args != null && (typeof args !== "object" || Array.isArray(args))) {
-        return policy.executeTool(name, args);
-      }
-      let next = args;
-      for (const rule of hooksStore.matchRules(name, "pre", args)) {
-        if (rule.action !== "modify-input") continue;
-        next = { ...next, ...rule.set };
-        console.log(`[hooks] modify-input rule ${rule.id} set ${Object.keys(rule.set).join(", ")} on ${name}`);
-      }
-      return policy.executeTool(name, next);
-    },
+    executeTool: async (name, args) =>
+      policy.executeTool(name, applyInputRules(hooksStore.matchRules(name, "pre", args), name, args)),
   };
 }
 
-module.exports = { createHooksStore, wrapWithHooks, wrapWithInputHooks, runPostCommandHook, HOOK_COMMAND_TIMEOUT_MS };
+// The modify-input merge itself, shared with Pipeline B
+// (acp-autonomous-loop.js, #838): every modify-input rule among `rules`, in
+// order, shallow-merged over args. Logs key names only, never values.
+function applyInputRules(rules, name, args) {
+  if (args != null && (typeof args !== "object" || Array.isArray(args))) return args;
+  let next = args;
+  for (const rule of rules) {
+    if (rule.action !== "modify-input") continue;
+    next = { ...next, ...rule.set };
+    console.log(`[hooks] modify-input rule ${rule.id} set ${Object.keys(rule.set).join(", ")} on ${name}`);
+  }
+  return next;
+}
+
+module.exports = {
+  createHooksStore,
+  wrapWithHooks,
+  wrapWithInputHooks,
+  applyInputRules,
+  runPostCommandHook,
+  HOOK_COMMAND_TIMEOUT_MS,
+};
