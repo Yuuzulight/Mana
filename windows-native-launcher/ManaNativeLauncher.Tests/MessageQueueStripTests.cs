@@ -44,4 +44,16 @@ public class MessageQueueStripTests
         Assert.Equal("Send", button.Text);
         Assert.False(SessionListForm.IsStopButton(button));
     }
+
+    // The chat header shows the open chat's name; one not saved yet is "New chat".
+    [Fact]
+    public void ChatTitle_IsTheOpenChatsName()
+    {
+        var sessions = new[] { new ManaSession { SessionId = "a", Name = "FFXIV market check" }, new ManaSession { SessionId = "b" } };
+
+        Assert.Equal("FFXIV market check", SessionListForm.ChatTitle(sessions, "a"));
+        Assert.Equal("b", SessionListForm.ChatTitle(sessions, "b"));
+        Assert.Equal("New chat", SessionListForm.ChatTitle(sessions, "fresh-guid"));
+        Assert.Equal("New chat", SessionListForm.ChatTitle(sessions, null));
+    }
 }
