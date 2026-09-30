@@ -7,6 +7,21 @@ namespace ManaNativeLauncher.Tests;
 
 public class VoiceDebugLogTests
 {
+    // The log is opt-in (it holds my transcripts); the write tests turn it on.
+    private static void WithSpeechDebug(string? value, Action body)
+    {
+        var prior = Environment.GetEnvironmentVariable("MANA_SPEECH_DEBUG");
+        Environment.SetEnvironmentVariable("MANA_SPEECH_DEBUG", value);
+        try
+        {
+            body();
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("MANA_SPEECH_DEBUG", prior);
+        }
+    }
+
     private static readonly DateTime At = new(2026, 9, 29, 14, 3, 12, 345);
 
     [Fact]
@@ -126,9 +141,12 @@ public class VoiceDebugLogTests
         try
         {
             var entry = new VoiceSegmentLogEntry();
-            VoiceDebugLog.Append(entry, path, maxBytes: 10);
-            VoiceDebugLog.Append(entry, path, maxBytes: 10); // over cap -> rotated to .1 first
-            VoiceDebugLog.Append(entry, path, maxBytes: 10); // replaces the old .1
+            WithSpeechDebug("1", () =>
+            {
+                VoiceDebugLog.Append(entry, path, maxBytes: 10);
+                VoiceDebugLog.Append(entry, path, maxBytes: 10); // over cap -> rotated to .1 first
+                VoiceDebugLog.Append(entry, path, maxBytes: 10); // replaces the old .1
+            });
 
             Assert.Single(File.ReadAllLines(path));
             Assert.Single(File.ReadAllLines(path + ".1"));
@@ -147,7 +165,7 @@ public class VoiceDebugLogTests
         Directory.CreateDirectory(dir);
         try
         {
-            VoiceDebugLog.Append(new VoiceSegmentLogEntry(), dir);
+            WithSpeechDebug("1", () => VoiceDebugLog.Append(new VoiceSegmentLogEntry(), dir));
         }
         finally
         {
@@ -162,7 +180,7 @@ public class VoiceDebugLogTests
         var path = Path.Combine(dir, "speech-debug.log");
         try
         {
-            VoiceDebugLog.AppendNote("capture: aec=on", path);
+            WithSpeechDebug("1", () => VoiceDebugLog.AppendNote("capture: aec=on", path));
 
             var line = Assert.Single(File.ReadAllLines(path));
             Assert.Matches(@"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3} capture: aec=on$", line);
@@ -171,6 +189,23 @@ public class VoiceDebugLogTests
         {
             Directory.Delete(dir, recursive: true);
         }
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("0")]
+    public void Append_WritesNothingUnlessOptedIn(string? value)
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "mana-voice-log-" + Guid.NewGuid());
+        var path = Path.Combine(dir, "speech-debug.log");
+
+        WithSpeechDebug(value, () =>
+        {
+            VoiceDebugLog.Append(new VoiceSegmentLogEntry { Transcript = "hi" }, path);
+            VoiceDebugLog.AppendNote("capture: aec=on", path);
+        });
+
+        Assert.False(File.Exists(path));
     }
 
     // #965: the Settings slider shows the last speaker= scores, oldest first.
@@ -192,6 +227,30 @@ public class VoiceDebugLogTests
 
             Assert.Equal(new[] { -0.05f, 0.401f }, VoiceDebugLog.RecentSpeakerScores(2, path));
             Assert.Empty(VoiceDebugLog.RecentSpeakerScores(path: Path.Combine(dir, "missing.log")));
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    // Settings > Voice re-reads the log each tick, so a score logged while
+    // the tab is open shows up without reopening Settings.
+    [Fact]
+    public void SpeakerScoresText_PicksUpNewScores()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "mana-voice-log-" + Guid.NewGuid());
+        var path = Path.Combine(dir, "speech-debug.log");
+        Directory.CreateDirectory(dir);
+        try
+        {
+            Assert.StartsWith("No voice match scores yet", SettingsPanel.SpeakerScoresText(path));
+
+            File.AppendAllLines(path, new[] { "2026-09-29T14:03:12.345 len=1000ms whisper=ok speaker=0.812/31ms" });
+            Assert.Equal("Recent match scores: 0.81", SettingsPanel.SpeakerScoresText(path));
+
+            File.AppendAllLines(path, new[] { "2026-09-29T14:03:14.345 len=900ms whisper=ok speaker=0.401/30ms" });
+            Assert.Equal("Recent match scores: 0.81, 0.40", SettingsPanel.SpeakerScoresText(path));
         }
         finally
         {

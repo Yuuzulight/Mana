@@ -2,8 +2,8 @@
 // Calendar & email (data/mail-calendar.json). Each account's whole config
 // -- server, username, app password, feed URL -- is saved as one Windows
 // DPAPI blob, like brain.apiKey (#645): only this Windows account on this
-// PC can read it. Where DPAPI isn't there it's saved in plain text, said
-// out loud. A password may also be a keyring:<target> (Credential Manager)
+// PC can read it. Where DPAPI isn't there (or fails) nothing is saved: it
+// never falls back to plain text. A password may also be a keyring:<target> (Credential Manager)
 // or op://... (1Password) reference, as in .env (#793), read when used.
 const fs = require("node:fs");
 const path = require("node:path");
@@ -107,8 +107,7 @@ function createMailCalendarSettingsStore(options = {}) {
     try {
       all[kind] = secrets.protect(JSON.stringify(next));
     } catch (e) {
-      console.warn(`[Mana] Couldn't encrypt the ${kind} settings (${e.message}); they're saved in plain text.`);
-      all[kind] = next;
+      throw new Error(`couldn't encrypt the ${kind} settings with Windows DPAPI (${e.message}), so nothing was saved`);
     }
     writeAll(all);
     return describe();
