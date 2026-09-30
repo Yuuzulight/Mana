@@ -11,6 +11,7 @@ const { isRestartCommand } = require("./admin-restart");
 const { ADMIN_KEY_REQUIRED_ERROR, hasAdminKey, isLocalRestartRequest } = require("./admin-key");
 const { readGgufMetadata } = require("./tools/gguf-metadata");
 const { createZedIntegration } = require("./zed-integration");
+const Diff = require("diff");
 const { runPluginInputHooks } = require("./capabilities/registry");
 
 const RESTART_LOCAL_ONLY_ERROR = "restart is only available from this PC";
@@ -1003,6 +1004,27 @@ function registerEditorRoutes(app, deps) {
         content: "",
         error: error.message,
       });
+    }
+  });
+
+  // #838: review only, for the ACP agent's file_write (Pipeline B writes
+  // straight to disk, not through a proposal). That process has no model,
+  // so it asks here; the review runs on whatever model is already loaded.
+  // {review: null} when it didn't run (off, not a source file, no model).
+  app.post("/editors/review", async (req, res) => {
+    if (!checkAdminAuth(req, res)) return;
+    try {
+      const relativePath = requireString(req.body?.path, "path");
+      const before = typeof req.body?.before === "string" ? req.body.before : "";
+      const after = requireString(req.body?.after, "after");
+      const diff = Diff.createTwoFilesPatch(relativePath, relativePath, before, after);
+      const review = reviewEdit
+        ? await reviewEdit({ relativePath, diff, summary: optionalString(req.body?.summary, "summary", "") })
+        : null;
+      return res.json({ review });
+    } catch (e) {
+      if (e instanceof ValidationError) return sendValidationError(res, e);
+      return res.status(500).json({ review: null, error: String(e) });
     }
   });
 

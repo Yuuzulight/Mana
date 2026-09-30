@@ -130,3 +130,28 @@ test("buggy-but-parseable edits pass the static gate and reach approval with the
     fs.rmSync(tempDir, { recursive: true, force: true });
   }
 });
+
+test("#838: POST /editors/review diffs the write and returns the review", async () => {
+  let seen = null;
+  const app = createApp({
+    reviewEdit: async (edit) => {
+      seen = edit;
+      return { verdict: "refuted", failingCase: "an empty list", reason: "" };
+    },
+  });
+
+  await withServer(app, async (baseUrl) => {
+    const res = await fetch(`${baseUrl}/editors/review`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path: "src/sum.js", before: "return a;\n", after: "return b;\n", summary: "file_write (overwrite)" }),
+    });
+    assert.equal(res.status, 200);
+    assert.equal((await res.json()).review.failingCase, "an empty list");
+    const missing = await fetch(`${baseUrl}/editors/review`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+    assert.equal(missing.status, 400);
+  });
+  assert.equal(seen.relativePath, "src/sum.js");
+  assert.equal(seen.summary, "file_write (overwrite)");
+  assert.match(seen.diff, /-return a;\n\+return b;/);
+});
