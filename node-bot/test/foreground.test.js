@@ -2,7 +2,7 @@ const assert = require("node:assert/strict");
 const test = require("node:test");
 
 const { createApp } = require("../server");
-const { getForeground, isAwayFromGame } = require("../foreground");
+const { getForeground, isAwayFromGame, reportForeground } = require("../foreground");
 const { withServer } = require("./helpers");
 
 const GAMES = ["ffxiv_dx11.exe"];
@@ -29,4 +29,23 @@ test("the launcher's foreground report is kept, and alt-tabbing out of a game co
     assert.equal((await report({ title: "no app" })).status, 400);
     assert.equal(getForeground().app, "chrome.exe");
   });
+});
+
+test("Discord or OBS in front mid-game isn't a break; MANA_GAME_COMPANION_APPS replaces the list", () => {
+  const saved = process.env.MANA_GAME_COMPANION_APPS;
+  try {
+    delete process.env.MANA_GAME_COMPANION_APPS;
+    reportForeground({ app: "Discord.exe" });
+    assert.equal(isAwayFromGame(GAMES), false);
+    reportForeground({ app: "obs64.exe" });
+    assert.equal(isAwayFromGame(GAMES), false);
+
+    process.env.MANA_GAME_COMPANION_APPS = " Spotify.exe ";
+    assert.equal(isAwayFromGame(GAMES), true, "OBS isn't on my list");
+    reportForeground({ app: "spotify.exe" });
+    assert.equal(isAwayFromGame(GAMES), false);
+  } finally {
+    if (saved === undefined) delete process.env.MANA_GAME_COMPANION_APPS;
+    else process.env.MANA_GAME_COMPANION_APPS = saved;
+  }
 });
