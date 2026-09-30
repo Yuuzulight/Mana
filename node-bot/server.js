@@ -267,6 +267,7 @@ const { createCodingToolSource } = require("./ai/coding-tool-source");
 const { createTryPrToolSource } = require("./ai/try-pr-tool-source");
 const { createReverter } = require("./revert-pr");
 const { createSelfWork } = require("./self-work");
+const { createGitToolSource } = require("./ai/git-tool-source");
 const { refuteEdit } = require("./ai/adversarial-verifier");
 const { createMcpClientRegistry } = require("./mcp-client-registry");
 const { mcpClientCapability } = require("./capabilities/mcp-client-capability");
@@ -2861,6 +2862,9 @@ function registerRoutes(app, upload, deps = {}) {
         if (notice) notifyTray({ type: "self-work", title: "Mana's own code", text, url: run.prUrl || undefined });
       },
     });
+  // #1182: git and GitHub in my chat. One instance, so a repo I "allow
+  // once" stays allowed until restart.
+  const gitTools = deps.gitTools || createGitToolSource({ approvalGate: activeApprovalGate });
   app.get("/self-work", (req, res) => {
     if (!checkAdminAuth(req, res)) return;
     return res.json(selfWork.status());
@@ -5096,6 +5100,8 @@ function registerRoutes(app, upload, deps = {}) {
             ...(userChat ? [createTryPrToolSource({ userMessage: transcript, revert: reverter.revert })] : []),
             // #1008: "work on #N" -- only a number from my own message.
             ...(userChat ? [selfWork.chatToolSource(transcript)] : []),
+            // #1182: git and GitHub, only in my own chat.
+            ...(userChat ? [gitTools] : []),
             // #906: my email and calendar, only in my own chat (never a
             // scheduled reply or a Discord/Telegram bridge).
             ...(userChat

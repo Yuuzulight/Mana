@@ -22,6 +22,8 @@ const {
 } = require("./ai/session-goal-tool-source");
 const { createEditProposalStore } = require("./zed-integration");
 const protectedPaths = require("./protected-paths");
+// #1182: the git safety helpers now live with her git tools.
+const { findSecret, stripAttribution, testEnv } = require("./ai/git-tool-source");
 
 // The label that makes an issue hers to work on. I add it (or starting a
 // run from the launcher adds it for me).
@@ -52,35 +54,6 @@ function systemRamPercent() {
   return Math.round((1 - os.freemem() / os.totalmem()) * 1000) / 10;
 }
 
-// The code she writes runs in her tests; it gets a clean environment, not
-// the backend's keys and tokens.
-const TEST_ENV_KEYS = new Set(
-  [
-    "PATH", "PATHEXT", "SystemRoot", "SystemDrive", "windir", "ComSpec", "TEMP", "TMP", "USERPROFILE",
-    "HOMEDRIVE", "HOMEPATH", "APPDATA", "LOCALAPPDATA", "ProgramFiles", "ProgramFiles(x86)", "ProgramW6432",
-    "ProgramData", "CommonProgramFiles", "NUMBER_OF_PROCESSORS", "PROCESSOR_ARCHITECTURE", "OS", "DOTNET_ROOT",
-  ].map((k) => k.toLowerCase()),
-);
-function testEnv(env) {
-  const clean = Object.fromEntries(Object.entries(env).filter(([k]) => TEST_ENV_KEYS.has(k.toLowerCase())));
-  return { ...clean, NODE_ENV: "test", DOTNET_CLI_TELEMETRY_OPTOUT: "1" };
-}
-
-// Secret shapes, and the backend's own secret values, in the lines she adds.
-const SECRET_SHAPE_RE =
-  /-----BEGIN [A-Z ]*PRIVATE KEY-----|\b(?:gh[pousr]_[A-Za-z0-9]{30,}|github_pat_\w{20,}|sk-[\w-]{20,}|xox[abprs]-[\w-]{10,}|AKIA[0-9A-Z]{16}|AIza[\w-]{35}|hf_[A-Za-z0-9]{30,}|glpat-[\w-]{20,})/;
-function findSecret(diff, env) {
-  const added = String(diff)
-    .split(/\r?\n/)
-    .filter((l) => l.startsWith("+") && !l.startsWith("+++"))
-    .join("\n");
-  if (SECRET_SHAPE_RE.test(added)) return "a key-shaped string";
-  const hit = Object.entries(env).find(
-    ([k, v]) => /key|token|secret|password|passwd/i.test(k) && typeof v === "string" && v.length >= 12 && added.includes(v),
-  );
-  return hit ? `the value of ${hit[0]}` : null;
-}
-
 function slugify(title) {
   return (
     String(title || "")
@@ -90,15 +63,6 @@ function slugify(title) {
       .slice(0, 40)
       .replace(/-+$/, "") || "task"
   );
-}
-
-// Lines that would credit someone else with the change -- never in her commits or PRs.
-function stripAttribution(text) {
-  return String(text || "")
-    .split(/\r?\n/)
-    .filter((l) => !/^\s*(co-authored-by|signed-off-by)\s*:|generated (with|by)\b/i.test(l))
-    .join("\n")
-    .trim();
 }
 
 function defaultExec(cmd, args, { cwd, env } = {}) {
