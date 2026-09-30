@@ -21,6 +21,10 @@ function createBrowserActivityLog(options = {}) {
   const maxEntries = Math.max(1, Number(options.maxEntries || MAX_LOG_ENTRIES));
   let log = [];
   let latestScreenshot = null; // { base64, at } | null
+  // #1122: the page she's on ({ url, title } | null), and the web pages
+  // this turn's prompt took in ([{ source, url }]).
+  let page = null;
+  let turnPages = [];
 
   function recordActivity({ action, args, status, error } = {}) {
     const entry = {
@@ -45,16 +49,27 @@ function createBrowserActivityLog(options = {}) {
     latestScreenshot = base64 ? { base64, at: now() } : null;
   }
 
+  // Every browser step's result is a page snapshot; only its url/title are kept.
+  function recordPage(result) {
+    page = result && typeof result.url === "string" ? { url: result.url, title: String(result.title || "") } : null;
+  }
+
+  function recordTurnPages(pages) {
+    turnPages = Array.isArray(pages) ? pages : [];
+  }
+
   function getActivity() {
-    return { log, screenshot: latestScreenshot };
+    return { log, screenshot: latestScreenshot, page, turnPages };
   }
 
   function reset() {
     log = [];
     latestScreenshot = null;
+    page = null;
+    turnPages = [];
   }
 
-  return { recordActivity, recordScreenshot, getActivity, reset };
+  return { recordActivity, recordScreenshot, recordPage, recordTurnPages, getActivity, reset };
 }
 
 module.exports = { createBrowserActivityLog, describeBrowserAction, MAX_LOG_ENTRIES };

@@ -237,7 +237,7 @@ const { createToolPolicy } = require("./ai/tool-policy");
 // shape buildToolPolicy expects.
 const { buildToolPolicy } = require("./ai/tool-source");
 const { resolveToolApprovalMode, wrapWithRiskGate } = require("./ai/tool-risk");
-const { untrustedSources } = require("./ai/untrusted-content");
+const { untrustedLinks, untrustedSources } = require("./ai/untrusted-content");
 const { createMemoryToolSource, createMemoryWriteExecutor } = require("./ai/memory-tool-source");
 const { createMemoryVault } = require("./memory-vault");
 const {
@@ -4933,6 +4933,8 @@ function registerRoutes(app, upload, deps = {}) {
       turnToolSchemas = [];
       const usageBefore = activeLlamaServerRuntime.getLastPromptUsage?.();
       activityRun = agentActivity.start();
+      // #1122: the Browser tool lists the web pages this turn took in.
+      activeBrowserAutomationToolSource.activityLog.recordTurnPages(untrustedLinks(promptText));
       let reply;
       try {
         reply = await replyMaybeWithToolsUnmetered(promptText);
