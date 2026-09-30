@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
@@ -19,21 +20,10 @@ public class MyShellTests
     [Fact]
     public void PseudoConsole_RunsACommand_InTheFolder_AndReportsItsExit()
     {
-        var output = new StringBuilder();
-        using var exited = new ManualResetEventSlim();
-        var folder = Path.GetTempPath();
-        using var console = new PseudoConsole("cmd.exe /c echo mana-pty-ok & cd", folder, 80, 25);
-        console.Output += text => { lock (output) output.Append(text); };
-        console.Exited += exited.Set;
-        console.Resize(100, 30);
-
-        Assert.True(exited.Wait(TimeSpan.FromSeconds(15)), "cmd didn't exit");
-        Assert.True(SpinWait.SpinUntil(() => { lock (output) return output.ToString().Contains("mana-pty-ok"); }, TimeSpan.FromSeconds(5)));
-        var screen = new VtScreen(100, 30);
-        lock (output) screen.Feed(output.ToString());
-        var lines = Enumerable.Range(0, screen.ScrollbackCount + screen.Rows).Select(screen.LineText).ToList();
+        var folder = Path.GetTempPath().TrimEnd('\\');
+        var lines = Lines(Run("cmd.exe /c echo mana-pty-ok & cd", folder, text => text.Contains("mana-pty-ok") && text.Contains(folder)));
         Assert.Contains("mana-pty-ok", lines);
-        Assert.Contains(folder.TrimEnd('\\'), lines);
+        Assert.Contains(folder, lines);
     }
 
     [Fact]
@@ -43,19 +33,45 @@ public class MyShellTests
         Environment.SetEnvironmentVariable("MANA_SHELL_TEST_SECRET", "leaked");
         try
         {
-            var output = new StringBuilder();
-            using var exited = new ManualResetEventSlim();
-            using var console = new PseudoConsole("cmd.exe /c echo [%MANA_SHELL_TEST_SECRET%]", Path.GetTempPath(), 80, 25);
-            console.Output += text => { lock (output) output.Append(text); };
-            console.Exited += exited.Set;
-            Assert.True(exited.Wait(TimeSpan.FromSeconds(15)));
-            Assert.True(SpinWait.SpinUntil(() => { lock (output) return output.ToString().Contains("[%MANA_SHELL_TEST_SECRET%]"); }, TimeSpan.FromSeconds(5)));
-            lock (output) Assert.DoesNotContain("leaked", output.ToString());
+            var lines = Lines(Run("cmd.exe /c echo [%MANA_SHELL_TEST_SECRET%]", Path.GetTempPath(), text => text.Contains("[%MANA_SHELL_TEST_SECRET%]")));
+            Assert.DoesNotContain(lines, line => line.Contains("leaked"));
         }
         finally
         {
             Environment.SetEnvironmentVariable("MANA_SHELL_TEST_SECRET", null);
         }
+    }
+
+    private static List<string> Lines(VtScreen screen) =>
+        Enumerable.Range(0, screen.ScrollbackCount + screen.Rows).Select(screen.LineText).ToList();
+
+    // Runs a command the way MyShellPanel does (the screen's replies go back
+    // to the console) until it exits and the screen's text matches.
+    private static VtScreen Run(string commandLine, string folder, Func<string, bool> done)
+    {
+        var screen = new VtScreen(100, 30);
+        var raw = new StringBuilder();
+        using var exited = new ManualResetEventSlim();
+        using var console = new PseudoConsole(commandLine, folder, 80, 25);
+        screen.Reply += console.Write;
+        console.Output += text =>
+        {
+            lock (raw)
+            {
+                raw.Append(text);
+                screen.Feed(text);
+            }
+        };
+        console.Exited += exited.Set;
+        console.Resize(screen.Columns, screen.Rows);
+
+        var ok = exited.Wait(TimeSpan.FromSeconds(15))
+            && SpinWait.SpinUntil(() => { lock (raw) return done(string.Join("\n", Lines(screen))); }, TimeSpan.FromSeconds(10));
+        lock (raw)
+        {
+            Assert.True(ok, $"exited: {exited.IsSet}; output: {raw.ToString().Replace("\x1b", "\\e")}");
+        }
+        return screen;
     }
 
     [Fact]
