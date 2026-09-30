@@ -345,6 +345,8 @@ internal sealed partial class SessionListForm : Form
         toolRail.Controls.Add(railArtifactsButton);
         // #1121: the commands Mana runs.
         RegisterRailTool("terminal", "terminal", "Terminal", () => new TerminalTool(backendClient));
+        // #1122: her browser automation, docked.
+        RegisterRailTool("browser", "browser", "Browser", () => new BrowserTool(backendClient));
 
         var chatArea = new Panel { Dock = DockStyle.Fill, BackColor = DarkTheme.Background };
         // #1118: clicking back into the chat closes an unpinned tool panel.
@@ -894,6 +896,9 @@ internal sealed partial class SessionListForm : Form
         g.DrawArc(pen, x + 3.5f, y + 3, 11, 11, 0, 180);
         g.DrawLine(pen, x + 9, y + 14, x + 9, y + 16.5f);
     }
+
+    // #1122: the floating browser window stays away while this is on screen.
+    internal bool BrowserToolShowing => Visible && WindowState != FormWindowState.Minimized && toolPanel.IsOpen("browser");
 
     // #1118: the host API every rail tool uses (see ToolPanelHost): adds its
     // icon below the ones before it and opens createContent's control in the

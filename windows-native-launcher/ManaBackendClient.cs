@@ -2018,7 +2018,35 @@ internal sealed class ManaBackendClient
             screenshotBase64 = base64Element.GetString();
         }
 
-        return new ManaBrowserAutomationActivity { Log = log, ScreenshotBase64 = screenshotBase64 };
+        // #1122: the page she's on, and the web pages this turn took in.
+        string? Text(JsonElement e, string name) => e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
+        var page = root.TryGetProperty("page", out var pageElement) && pageElement.ValueKind == JsonValueKind.Object ? pageElement : (JsonElement?)null;
+        var turnPages = new List<ManaWebPageRef>();
+        if (root.TryGetProperty("turnPages", out var pagesElement) && pagesElement.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var entry in pagesElement.EnumerateArray())
+            {
+                turnPages.Add(new ManaWebPageRef { Source = Text(entry, "source") ?? "", Url = Text(entry, "url") ?? "" });
+            }
+        }
+
+        return new ManaBrowserAutomationActivity
+        {
+            Log = log,
+            ScreenshotBase64 = screenshotBase64,
+            PageUrl = page is { } p ? Text(p, "url") : null,
+            PageTitle = page is { } t ? Text(t, "title") : null,
+            TurnPages = turnPages,
+        };
+    }
+
+    // #1122: Stop in the Browser tool -- ends her browser session
+    // (plugins/browser-automation's POST /browser/close).
+    public async Task CloseBrowserSessionAsync()
+    {
+        using var content = new StringContent("{}", Encoding.UTF8, "application/json");
+        using var response = await http.PostAsync("/browser/close", content);
+        response.EnsureSuccessStatusCode();
     }
 
     // #646: the chat tool loop's live runs -- no auth, a read-only status
@@ -2714,6 +2742,17 @@ internal sealed class ManaBrowserAutomationActivity
 {
     public IReadOnlyList<ManaBrowserAutomationLogEntry> Log { get; init; } = Array.Empty<ManaBrowserAutomationLogEntry>();
     public string? ScreenshotBase64 { get; init; }
+    public string? PageUrl { get; init; }
+    public string? PageTitle { get; init; }
+    public IReadOnlyList<ManaWebPageRef> TurnPages { get; init; } = Array.Empty<ManaWebPageRef>();
+}
+
+// #1122: a web page this turn took in (framed as untrusted); Source is the
+// frame's label ("web page", "web search", ...).
+internal sealed class ManaWebPageRef
+{
+    public string Source { get; init; } = "";
+    public string Url { get; init; } = "";
 }
 
 internal sealed class ManaBrowserAutomationLogEntry

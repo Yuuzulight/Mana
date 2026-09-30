@@ -129,7 +129,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
         // #578: ambient indicator, no tray entry -- starts polling
         // immediately and shows itself only while browser automation is
         // genuinely active.
-        browserAutomationPanel = new BrowserAutomationPanel(backendClient);
+        browserAutomationPanel = new BrowserAutomationPanel(backendClient, () => sessionListForm?.BrowserToolShowing == true);
         // #646: same ambient kind, for the chat tool loop, with a Stop button.
         agentActivityPanel = new AgentActivityPanel(backendClient);
 
@@ -384,6 +384,10 @@ internal sealed class ManaApplicationContext : ApplicationContext
         menu.Items.Add("Memory Graph", null, (_, _) => new MemoryGraphForm(backendClient).Show());
         menu.Items.Add("Deep Research", null, (_, _) => new ResearchForm(backendClient, voiceLoop.EnsureSessionId).Show());
         menu.Items.Add("What I'm working on", null, (_, _) => new SelfWorkForm(backendClient).Show()); // #1008
+        // #1122: her browser, for when the chat window (and its Browser tool) is closed.
+        var browserActivityItem = new ToolStripMenuItem("Browser activity") { CheckOnClick = true };
+        browserActivityItem.CheckedChanged += (_, _) => browserAutomationPanel.KeepOpen = browserActivityItem.Checked;
+        menu.Items.Add(browserActivityItem);
         menu.Items.Add("Doctor", null, (_, _) => ShowDoctorPanel());
         menu.Items.Add("VTube Studio", null, (_, _) => new VTubeStudioForm(backendClient).Show());
         menu.Items.Add("Open project folder", null, (_, _) => OpenProjectFolder());

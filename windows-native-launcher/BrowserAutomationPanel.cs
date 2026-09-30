@@ -18,6 +18,10 @@ namespace Mana.NativeLauncher;
 // exactly (1s poll, hides once 5s pass with no new log entry). No tray
 // menu entry -- like CaptionOverlayForm, this runs ambiently for the
 // whole app lifetime rather than being something the user opens.
+// #1122: the chat rail's Browser tool (BrowserTool) is where this shows now;
+// this window only pops up while that tool isn't on screen (the chat window
+// is closed, say), and the tray's "Browser activity" keeps it open. It never
+// takes focus.
 internal sealed class BrowserAutomationPanel : Form
 {
     private const int PollIntervalMs = 1000;
@@ -29,11 +33,14 @@ internal sealed class BrowserAutomationPanel : Form
     private readonly Label logLabel = new();
     private readonly PictureBox screenshotBox = new();
 
+    private readonly Func<bool> dockedToolShowing;
     private long lastKnownActivityAtMs;
+    private bool keepOpen;
 
-    public BrowserAutomationPanel(ManaBackendClient backendClient)
+    public BrowserAutomationPanel(ManaBackendClient backendClient, Func<bool>? dockedToolShowing = null)
     {
         this.backendClient = backendClient;
+        this.dockedToolShowing = dockedToolShowing ?? (() => false);
 
         FormBorderStyle = FormBorderStyle.None;
         ShowInTaskbar = false;
@@ -71,6 +78,41 @@ internal sealed class BrowserAutomationPanel : Form
         pollTimer.Start();
     }
 
+    protected override bool ShowWithoutActivation => true;
+
+    protected override CreateParams CreateParams
+    {
+        get
+        {
+            const int wsExToolWindow = 0x80;
+            const int wsExNoActivate = 0x08000000;
+            var cp = base.CreateParams;
+            cp.ExStyle |= wsExToolWindow | wsExNoActivate;
+            return cp;
+        }
+    }
+
+    // The tray's "Browser activity": shown even with nothing happening.
+    public bool KeepOpen
+    {
+        get => keepOpen;
+        set
+        {
+            keepOpen = value;
+            if (value)
+            {
+                Visible = true;
+            }
+            else
+            {
+                HideIfStale();
+            }
+        }
+    }
+
+    internal static bool ShouldShow(bool active, bool keepOpen, bool dockedToolShowing) =>
+        keepOpen || (active && !dockedToolShowing);
+
     private void PositionAtBottomRight()
     {
         var area = Screen.PrimaryScreen?.WorkingArea ?? new Rectangle(0, 0, 1920, 1080);
@@ -104,22 +146,25 @@ internal sealed class BrowserAutomationPanel : Form
             lastKnownActivityAtMs = TryParseTimestampMs(lastEntry.At);
         }
 
-        if (lastEntry is null || NowMs() - lastKnownActivityAtMs > StaleMs)
+        var active = lastEntry is not null && NowMs() - lastKnownActivityAtMs <= StaleMs;
+        if (!ShouldShow(active, keepOpen, dockedToolShowing()))
         {
             Visible = false;
             return;
         }
 
-        logLabel.Text = string.Join(
-            Environment.NewLine,
-            activity.Log.Skip(Math.Max(0, activity.Log.Count - MaxLogLines)).Select(e => e.Summary));
+        logLabel.Text = activity.Log.Count == 0
+            ? "Nothing in her browser yet."
+            : string.Join(
+                Environment.NewLine,
+                activity.Log.Skip(Math.Max(0, activity.Log.Count - MaxLogLines)).Select(e => e.Summary));
         UpdateScreenshot(activity.ScreenshotBase64);
         Visible = true;
     }
 
     private void HideIfStale()
     {
-        if (!IsDisposed && NowMs() - lastKnownActivityAtMs > StaleMs)
+        if (!IsDisposed && !keepOpen && NowMs() - lastKnownActivityAtMs > StaleMs)
         {
             Visible = false;
         }
@@ -135,6 +180,24 @@ internal sealed class BrowserAutomationPanel : Form
             return;
         }
 
+        var bitmap = DecodeScreenshot(base64);
+        if (bitmap is null)
+        {
+            return;
+        }
+
+        screenshotBox.Image?.Dispose();
+        screenshotBox.Image = bitmap;
+        screenshotBox.Visible = true;
+    }
+
+    // Null for missing or undecodable data. Shared with BrowserTool (#1122).
+    internal static Bitmap? DecodeScreenshot(string? base64)
+    {
+        if (string.IsNullOrEmpty(base64))
+        {
+            return null;
+        }
         byte[] jpegBytes;
         try
         {
@@ -142,18 +205,11 @@ internal sealed class BrowserAutomationPanel : Form
         }
         catch (FormatException)
         {
-            return;
+            return null;
         }
 
         using var skBitmap = SKBitmap.Decode(jpegBytes);
-        if (skBitmap is null)
-        {
-            return;
-        }
-
-        screenshotBox.Image?.Dispose();
-        screenshotBox.Image = ToGdiBitmap(skBitmap);
-        screenshotBox.Visible = true;
+        return skBitmap is null ? null : ToGdiBitmap(skBitmap);
     }
 
     // Same SkiaSharp -> GDI round-trip AvatarOverlayForm.cs's own
