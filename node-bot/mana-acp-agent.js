@@ -258,7 +258,7 @@ function isAutonomousEnabled(env = process.env) {
 function getAgentLimits(env = process.env) {
   return {
     autonomousEnabled: isAutonomousEnabled(env),
-    maxIterations: Math.max(1, Number(env.MANA_AGENT_MAX_ITERATIONS || 3)),
+    maxIterations: Math.max(1, Number(env.MANA_AGENT_MAX_ITERATIONS || 20)),
     maxFilesChanged: Math.max(1, Number(env.MANA_AGENT_MAX_FILES_CHANGED || 5)),
     // MANA_AGENT_ALLOWED_PATHS is always Windows-style (drive letters,
     // semicolons) since this agent only ever runs on Windows -- pass

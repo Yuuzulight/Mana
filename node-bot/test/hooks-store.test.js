@@ -4,7 +4,7 @@ const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
 
-const { createHooksStore, wrapWithHooks, wrapWithInputHooks, runPostCommandHook, HOOK_COMMAND_TIMEOUT_MS } = require("../hooks-store");
+const { createHooksStore, wrapWithHooks, wrapWithInputHooks, runPostCommandHook, runFinishCommand, HOOK_COMMAND_TIMEOUT_MS } = require("../hooks-store");
 const { wrapWithRiskGate } = require("../ai/tool-risk");
 const { createApprovalGate } = require("../approval-gate");
 const { createSnapshotStore } = require("../snapshot-store");
@@ -425,7 +425,7 @@ test("addRule requires a command for a rollback-on-failure rule, same as run-com
   );
 });
 
-test("a rollback-on-failure rule restores the file's newest snapshot when its command fails", async () => {
+test("a rollback-on-failure rule restores the snapshot the call reported when its command fails", async () => {
   const hooksStore = createHooksStore({ dataDir: createTempDir() });
   hooksStore.addRule({
     phase: "post",
@@ -438,7 +438,7 @@ test("a rollback-on-failure rule restores the file's newest snapshot when its co
   const targetDir = fs.mkdtempSync(path.join(os.tmpdir(), "mana-hooks-rollback-"));
   const filePath = path.join(targetDir, "app.js");
   fs.writeFileSync(filePath, "const x = 2; // broken", "utf8");
-  snapshotStore.recordSnapshot({
+  const snapshot = snapshotStore.recordSnapshot({
     kind: "file",
     key: "app.js",
     scope: targetDir,
@@ -447,7 +447,7 @@ test("a rollback-on-failure rule restores the file's newest snapshot when its co
     source: "agent",
   });
 
-  const policy = basePolicy();
+  const policy = basePolicy(() => JSON.stringify({ ok: true, snapshotId: snapshot.id }));
   const fakeExecFile = (cmd, args, opts, cb) => cb(new Error("lint failed"));
   const wrapped = wrapWithHooks(policy, hooksStore, fakeApprovalGate(), {
     execFile: fakeExecFile,
@@ -460,6 +460,39 @@ test("a rollback-on-failure rule restores the file's newest snapshot when its co
   await new Promise((resolve) => setImmediate(resolve));
 
   assert.equal(fs.readFileSync(filePath, "utf8"), "const x = 1; // working");
+});
+
+test("#838: a rollback-on-failure rule never restores a same-named snapshot the call didn't take", async () => {
+  const hooksStore = createHooksStore({ dataDir: createTempDir() });
+  hooksStore.addRule({ phase: "post", action: "rollback-on-failure", toolName: "file_write", command: "eslint", args: ["{path}"] });
+  const snapshotStore = createSnapshotStore({ dataDir: createTempDir() });
+  const targetDir = fs.mkdtempSync(path.join(os.tmpdir(), "mana-hooks-rollback-none-"));
+  const filePath = path.join(targetDir, "app.js");
+  fs.writeFileSync(filePath, "appended today", "utf8");
+  // An older, unrelated snapshot of a file with the same name.
+  snapshotStore.recordSnapshot({ kind: "file", key: "app.js", scope: targetDir, payload: "last week's app.js" });
+  const originalWarn = console.warn;
+  console.warn = () => {};
+  try {
+    const wrapped = wrapWithHooks(basePolicy(), hooksStore, fakeApprovalGate(), {
+      execFile: (cmd, args, opts, cb) => cb(new Error("lint failed")),
+      snapshotStore,
+    });
+    await wrapped.executeTool("file_write", { path: filePath });
+    await new Promise((resolve) => setImmediate(resolve));
+  } finally {
+    console.warn = originalWarn;
+  }
+
+  assert.equal(fs.readFileSync(filePath, "utf8"), "appended today");
+});
+
+test("#838: runPostCommandHook runs from hooks.cwd when given", () => {
+  let seen = null;
+  runPostCommandHook({ command: "prettier", args: ["{path}"] }, { path: "src/a.js" }, (cmd, args, opts) => {
+    seen = { args, cwd: opts.cwd };
+  }, { cwd: "C:\\repo" });
+  assert.deepEqual(seen, { args: ["src/a.js"], cwd: "C:\\repo" });
 });
 
 test("a rollback-on-failure rule does not roll back when its command succeeds", async () => {
@@ -565,4 +598,70 @@ test("updateRule edits a rule in place, re-validates it, and drops its stale las
   assert.throws(() => store.updateRule(rule.id, { phase: "pre" }), /action for phase "pre"/);
   assert.equal(store.listRules()[0].command, "eslint", "a rejected edit must not be written");
   assert.equal(store.updateRule("nope", { command: "x" }), null);
+});
+
+test("#838: toolName \"write\" matches both pipelines' write tools; exact names still work", () => {
+  const store = createHooksStore({ dataDir: createTempDir() });
+  store.addRule({ phase: "pre", action: "deny", toolName: "write", pathContains: "package.json" });
+  store.addRule({ phase: "pre", action: "ask", toolName: "file_write" });
+
+  assert.equal(store.matchRules("file_write", "pre", { path: "package.json" }).length, 2);
+  assert.equal(store.matchRules("coding__propose_edit", "pre", { path: "package.json" }).length, 1);
+  assert.equal(store.matchRules("file_read", "pre", { path: "package.json" }).length, 0);
+});
+
+test("#838: a modify-input rule may not set approved", () => {
+  const store = createHooksStore({ dataDir: createTempDir() });
+  assert.throws(
+    () => store.addRule({ phase: "pre", action: "modify-input", toolName: "write", set: { approved: true } }),
+    /may not set approved/,
+  );
+  const rule = store.addRule({ phase: "pre", action: "modify-input", toolName: "write", set: { mode: "append" } });
+  assert.throws(() => store.updateRule(rule.id, { set: { approved: true } }), /may not set approved/);
+});
+
+test("#838: configError is null for a missing, empty or valid file, and says why otherwise", () => {
+  const dir = createTempDir();
+  const store = createHooksStore({ dataDir: dir });
+  const file = path.join(dir, "hooks.json");
+  assert.equal(store.configError(), null);
+  fs.writeFileSync(file, "  ");
+  assert.equal(store.configError(), null);
+  fs.writeFileSync(file, "[]");
+  assert.equal(store.configError(), null);
+  fs.writeFileSync(file, '{"rules": []}');
+  assert.match(store.configError(), /not a list/);
+  fs.writeFileSync(file, "[{ half written");
+  assert.match(store.configError(), /unreadable/);
+  assert.deepEqual(store.listRules(), [], "Pipeline A still reads it as no rules");
+});
+
+test("#838: a finish rule runs a command; it needs no toolName and has no other actions", () => {
+  const store = createHooksStore({ dataDir: createTempDir() });
+  const rule = store.addRule({ phase: "finish", action: "run-command", command: "npm", args: ["test"] });
+  assert.equal(rule.toolName, "finish");
+  assert.equal(store.matchRules("finish", "finish", {}).length, 1);
+  assert.throws(() => store.addRule({ phase: "finish", action: "deny" }), /must be one of: run-command/);
+  assert.throws(() => store.addRule({ phase: "finish", action: "run-command" }), /command is required/);
+});
+
+test("#838: runFinishCommand reports exit code and the tail of the output, and never rejects", async () => {
+  const rule = { id: "r1", command: "npm", args: ["test"] };
+  let seen = null;
+  const failing = await runFinishCommand(rule, (cmd, args, opts, cb) => {
+    seen = { cmd, args, cwd: opts.cwd, shell: opts.shell, timeout: opts.timeout };
+    cb(Object.assign(new Error("exit 1"), { code: 1 }), "x".repeat(3000) + "2 failing", "");
+  }, { cwd: "C:\repo" });
+  assert.deepEqual(seen, { cmd: "npm", args: ["test"], cwd: "C:\repo", shell: false, timeout: 120000 });
+  assert.equal(failing.ok, false);
+  assert.equal(failing.exitCode, 1);
+  assert.equal(failing.command, "npm test");
+  assert.equal(failing.output.length, 2000);
+  assert.match(failing.output, /2 failing$/);
+
+  const missing = await runFinishCommand(rule, (cmd, args, opts, cb) => cb(Object.assign(new Error("spawn npm ENOENT"), { code: "ENOENT" })));
+  assert.deepEqual([missing.ok, missing.exitCode, missing.output], [false, null, "spawn npm ENOENT"]);
+
+  const passing = await runFinishCommand(rule, (cmd, args, opts, cb) => cb(null, "ok\n", ""));
+  assert.deepEqual([passing.ok, passing.exitCode, passing.output], [true, 0, "ok\n"]);
 });

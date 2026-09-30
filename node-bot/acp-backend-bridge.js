@@ -87,6 +87,13 @@ function createAcpBackendBridge({
     );
   }
 
+  // #838: the adversarial review of a file_write, as {verdict, failingCase,
+  // reason}, or null when it didn't run.
+  async function reviewEdit({ path: reviewPath, before, after, summary } = {}) {
+    const payload = await request("POST", "/editors/review", { path: reviewPath, before, after, summary });
+    return payload.review || null;
+  }
+
   async function reply(prompt, modelProfile = "coding") {
     const payload = await request("POST", "/reply", {
       text: String(prompt || ""),
@@ -110,6 +117,7 @@ function createAcpBackendBridge({
     readWorkspaceFile,
     reply,
     request,
+    reviewEdit,
     setWorkspace,
   };
 }
