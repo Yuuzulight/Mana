@@ -364,6 +364,19 @@ function createApp(deps = {}) {
     if (req.method === "POST") warmMemoryModels();
     next();
   });
+  // Voice uploads are recordings of me: each one, and whatever ffmpeg and
+  // whisper wrote next to it, is deleted once its request is over --
+  // success, error or a dropped connection alike (multer's own routes and
+  // mobile-routes.js's share this tmp dir). A dropped request's handler may
+  // still be running, so that case is swept once more a bit later.
+  app.use((req, res, next) => {
+    res.once("close", () => {
+      if (!req.file) return;
+      deleteUploadFiles(req.file.path);
+      if (!res.writableFinished) setTimeout(() => deleteUploadFiles(req.file.path), 2 * 60 * 1000).unref();
+    });
+    next();
+  });
   	const upload = multer({ dest: path.join(__dirname, "tmp") });
 
   	  // wire mobile device store (allow override via deps for tests)
@@ -896,7 +909,7 @@ function whisperThreads() {
 const whisperServer = createWhisperServer({
   env: process.env,
   findCliBin: () => whisperDiscovery.findWhisperBin({ env: process.env }),
-  findModel: () => whisperDiscovery.findWhisperModel({ env: process.env }),
+  findModel: () => whisperDiscovery.findWhisperModel({ env: process.env, language: whisperLanguage() }),
   threads: whisperThreads,
   language: whisperLanguage,
   beamSize: WHISPER_BEAM_SIZE,
@@ -1974,27 +1987,6 @@ function parseTasklistCsvLine(line) {
   return values;
 }
 
-function getRunningProcessNames() {
-  if (process.platform !== "win32") {
-    return [];
-  }
-
-  const result = spawnSync("tasklist", ["/fo", "csv", "/nh"], {
-    encoding: "utf8",
-    maxBuffer: 5 * 1024 * 1024,
-    windowsHide: true,
-  });
-
-  if (result.error) {
-    throw result.error;
-  }
-  if (result.status !== 0) {
-    throw new Error(result.stderr || "tasklist failed");
-  }
-
-  return parseTasklistNames(result.stdout);
-}
-
 function parseTasklistNames(stdout) {
   return (stdout || "")
     .split(/\r?\n/)
@@ -2003,17 +1995,14 @@ function parseTasklistNames(stdout) {
     .map((name) => name.toLowerCase());
 }
 
+// The gaming watch's cached answer (polled every 30 s with a non-blocking
+// tasklist), never a fresh tasklist: this runs on every spoken reply and
+// every launcher status poll, and a spawnSync here stalled the event loop.
 function getGamingStatus() {
-  // Quick rundown: if one watched game process is running, Mana uses the lighter idle loop.
-  const runningProcesses = getRunningProcessNames();
-  const watchedNames = new Set(GAMING_PROCESS_NAMES);
-  const matchedProcesses = [
-    ...new Set(runningProcesses.filter((name) => watchedNames.has(name))),
-  ];
-
+  const game = gamingWatch.game();
   return {
-    gamingAppRunning: matchedProcesses.length > 0,
-    matchedProcesses,
+    gamingAppRunning: gamingWatch.isGaming(),
+    matchedProcesses: game ? [game] : [],
     watchedProcesses: GAMING_PROCESS_NAMES,
   };
 }
@@ -2078,6 +2067,46 @@ function ensureDirectory(dirPath) {
 }
 
 ensureDirectory(path.join(__dirname, "tmp"));
+
+// An upload's temp files are its multer name (32 random hex, no extension)
+// plus whatever ffmpeg/whisper appended: .wav, .out.json, .partial-out.json.
+// Both multer instances (here and mobile-routes.js) write to node-bot/tmp.
+function deleteUploadFiles(uploadPath) {
+  const dir = path.join(__dirname, "tmp");
+  const name = path.basename(uploadPath);
+  if (!/^[0-9a-f]{32}$/.test(name)) return;
+  try {
+    for (const entry of fs.readdirSync(dir)) {
+      if (entry.startsWith(name)) fs.rmSync(path.join(dir, entry), { force: true });
+    }
+  } catch (e) {
+    console.warn(`[Mana] Couldn't delete voice upload ${name}: ${e.message}`);
+  }
+}
+
+// On start: anything left in tmp/ from before (a crash, or builds that
+// kept every voice upload) that's over an hour old. Files only -- tmp/
+// also holds the OCR model cache in tmp/tesseract.
+function sweepStaleTmpFiles(dir = path.join(__dirname, "tmp"), maxAgeMs = 60 * 60 * 1000, now = Date.now()) {
+  let removed = 0;
+  try {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      if (!entry.isFile()) continue;
+      const file = path.join(dir, entry.name);
+      try {
+        if (now - fs.statSync(file).mtimeMs > maxAgeMs) {
+          fs.rmSync(file, { force: true });
+          removed += 1;
+        }
+      } catch (e) {
+        console.warn(`[Mana] Couldn't delete old temp file ${entry.name}: ${e.message}`);
+      }
+    }
+  } catch (e) {
+    console.warn(`[Mana] Couldn't clean ${dir}: ${e.message}`);
+  }
+  return removed;
+}
 
 function registerRoutes(app, upload, deps = {}) {
   // Fires the same compaction/review pass the hourly timer runs, but on the
@@ -2558,6 +2587,7 @@ function registerRoutes(app, upload, deps = {}) {
         memoryVault: memoryVaultStatus(),
         chatModel: chatModelLabel(),
         findLlamaServerBin: llamaServerRuntime.findLlamaServerBin,
+        whisperLanguage: whisperLanguage(),
       });
       return res.status(result.ok ? 200 : 503).json(result);
     } catch (error) {
@@ -2579,6 +2609,7 @@ function registerRoutes(app, upload, deps = {}) {
       sessionSearchVectorEnabled: sessionSearchIndex.vectorEnabled(),
       memoryVault: memoryVaultStatus(),
       findLlamaServerBin: llamaServerRuntime.findLlamaServerBin,
+      whisperLanguage: whisperLanguage(),
     }),
   });
   if (!(process.env.NODE_ENV === "test" || Boolean(process.env.NODE_TEST_CONTEXT))) {
@@ -2807,7 +2838,7 @@ function registerRoutes(app, upload, deps = {}) {
       ttsBin: TTS_BIN,
       ttsProvider: TTS_PROVIDER,
       whisperBin: whisperDiscovery.findWhisperBin({ env }),
-      whisperModel: whisperDiscovery.findWhisperModel({ env }),
+      whisperModel: whisperDiscovery.findWhisperModel({ env, language: whisperLanguage() }),
     });
     Object.assign(
       components,
@@ -3443,7 +3474,7 @@ function registerRoutes(app, upload, deps = {}) {
   }
 
   function runWhisperCli(filePath) {
-    const whisperModel = whisperDiscovery.findWhisperModel({ env: process.env });
+    const whisperModel = whisperDiscovery.findWhisperModel({ env: process.env, language: whisperLanguage() });
     if (!whisperModel) {
       throw new Error(
         "Whisper model not found under tools/whisper. Set WHISPER_MODEL to a valid ggml *.bin path.",
@@ -3556,7 +3587,7 @@ function registerRoutes(app, upload, deps = {}) {
   }
 
   async function runWhisperCliPartial(filePath) {
-    const whisperModel = whisperDiscovery.findWhisperModel({ env: process.env });
+    const whisperModel = whisperDiscovery.findWhisperModel({ env: process.env, language: whisperLanguage() });
     if (!whisperModel) {
       throw new Error(
         "Whisper model not found under tools/whisper. Set WHISPER_MODEL to a valid ggml *.bin path.",
@@ -6012,6 +6043,8 @@ async function waitForPythonService(
 
 async function startServer() {
   const port = process.env.PORT || 5005;
+  const sweptTmpFiles = sweepStaleTmpFiles();
+  if (sweptTmpFiles) console.log(`[Mana Boot] Deleted ${sweptTmpFiles} old voice upload/temp file(s) from tmp/.`);
 
   // The retriever only enriches replies (retrieval context, token counts) and
   // every caller has a heuristic fallback, so the backend starts without it;
@@ -6141,4 +6174,5 @@ module.exports = {
   selectLlamaModelProfileForPrompt,
   shouldUseRemoteAi,
   startServer,
+  sweepStaleTmpFiles,
 };

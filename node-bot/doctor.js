@@ -9,6 +9,7 @@ const { createModelManagement } = require("./model-management");
 const {
   findWhisperBin,
   findWhisperModel,
+  isEnglishOnlyWhisperModel,
 } = require("./whisper-discovery");
 
 const DEFAULT_NODE_MAJOR = 18;
@@ -168,9 +169,10 @@ function checkLlamaServerBinary(env, findLlamaServerBin) {
 // via a setup wizard) counts as configured even with no env var at all.
 // `toolsDir` is injectable so tests can point it at an empty directory
 // instead of this machine's real tools/whisper/.
-function checkWhisperConfig(env, toolsDir) {
+// language: the spoken language whisper runs with ("en", "auto", ...).
+function checkWhisperConfig(env, toolsDir, language = env.WHISPER_LANGUAGE || "en") {
   const bin = findWhisperBin({ env, toolsDir });
-  const model = findWhisperModel({ env, toolsDir });
+  const model = findWhisperModel({ env, toolsDir, language });
 
   if (!bin && !model) {
     return makeCheck(
@@ -178,6 +180,16 @@ function checkWhisperConfig(env, toolsDir) {
       "Whisper config",
       "warn",
       "Whisper is not configured. Voice transcription will be unavailable.",
+    );
+  }
+
+  if (bin && model && language !== "en" && isEnglishOnlyWhisperModel(model)) {
+    return makeCheck(
+      "whisper-config",
+      "Whisper config",
+      "warn",
+      `Speech language is "${language}", but ${path.basename(model)} is English-only, so everything is transcribed as English. Use a multilingual model (e.g. ggml-large-v3-turbo) via WHISPER_MODEL.`,
+      { bin, model, language },
     );
   }
 
@@ -823,7 +835,7 @@ function runDoctorChecks(options = {}) {
       env.LLAMA_VISION_MODEL || "",
       "LLAMA_VISION_MODEL is not configured. Mana auto-detects vision GGUF models under tools/llama; image replies stay unavailable until one is installed. See docs/vision_setup.md.",
     ),
-    checkWhisperConfig(env, options.whisperToolsDir),
+    checkWhisperConfig(env, options.whisperToolsDir, options.whisperLanguage),
     checkTtsServices(options.services || []),
     checkFishTtsWarmup(options.fishTtsWarmup),
     checkSessionSearchVectorIndex(options.sessionSearchVectorEnabled),

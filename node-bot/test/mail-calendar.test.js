@@ -266,6 +266,17 @@ test("#906 accounts are saved encrypted; Settings never gets a password or feed 
   assert.deepEqual(other.describe().email, { unreadable: true });
 });
 
+test("accounts are never saved in plain text when DPAPI fails", () => {
+  const filePath = path.join(tmp(), "mc.json");
+  const broken = { protect: () => { throw new Error("DPAPI unavailable"); }, unprotect: fakeSecrets.unprotect };
+  const store = createMailCalendarSettingsStore({ filePath, secrets: broken });
+  assert.throws(
+    () => store.set("email", { host: "imap.example.com", user: "me", password: "app-pass" }),
+    /couldn't encrypt the email settings.*nothing was saved/,
+  );
+  assert.equal(fs.existsSync(filePath), false);
+});
+
 test("#906 iCal feeds: weekly repeats, exceptions, moved and cancelled events, time zones", () => {
   const ics = crlf(
     "BEGIN:VCALENDAR",
