@@ -256,6 +256,9 @@ function detectGpu({ spawnSync = defaultSpawnSync, platform = process.platform }
   }
 }
 
+// #1076: Fish Speech (S1-mini) is CUDA-only and holds about this much VRAM.
+const FISH_VRAM_MB = 5 * 1024;
+
 // Hardware doesn't change mid-process: detect once, share the answer.
 let cachedGpu;
 function getGpu() {
@@ -696,6 +699,7 @@ module.exports = {
   detectGpuVramUsageMb,
   detectSystemMemoryMb,
   estimateModelFit,
+  FISH_VRAM_MB,
   getGpu,
   recommendModelProfile,
 };

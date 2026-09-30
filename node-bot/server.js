@@ -24,8 +24,9 @@ over inherited ones -- or set before running):
   request on or off (default: on for the CPU build, off for the CUDA build)
 - LLAMA_BIN : full path to llama.cpp/main executable (e.g. C:\llama.cpp\main.exe)
 - LLAMA_MODEL : full path to a GGUF model file, or an HF repo shorthand like user/model:Q4_K_M
-- TTS_PROVIDER : "cli", "kokoro", or "fish" (default: "fish",
-  see docs/fish_speech_tts.md for the recommended S1-mini checkpoint)
+- TTS_PROVIDER : "cli", "kokoro", or "fish" (default: "fish" on a CUDA GPU
+  with room for it, "kokoro" otherwise -- see resolveTtsProvider in
+  tts-runtime.js and docs/fish_speech_tts.md for the S1-mini checkpoint)
 - TTS_BIN : full path to your TTS executable
 - TTS_MODEL : model path or model id for your TTS executable
 - TTS_ARGS_JSON : optional JSON array of CLI args with placeholders like {text}, {output}, {model}, {voice}, {speaker}
@@ -195,7 +196,7 @@ const { plainTextSecretKeys } = require("./load-env");
 	const contextPushPlugin = require("../plugins/context-push");
 	const screenSensingPlugin = require("../plugins/screen-sensing");
 const { PluginStore, pluginStore } = require("./plugin-store");
-const { createTtsRuntime } = require("./tts-runtime");
+const { createTtsRuntime, resolveTtsProvider } = require("./tts-runtime");
 const { createKokoroRuntime } = require("./kokoro-runtime");
 const { createAcpMemoryStore } = require("./acp-memory-store");
 const { createSnapshotStore } = require("./snapshot-store");
@@ -479,8 +480,9 @@ const VTUBE_STUDIO_URL = process.env.VTUBE_STUDIO_URL || "ws://127.0.0.1:8001";
 const VTUBE_STUDIO_ENABLED = process.env.VTUBE_STUDIO_ENABLED !== "0";
 const VTUBE_STUDIO_REACTIONS_JSON =
   process.env.VTUBE_STUDIO_REACTIONS_JSON || "{}";
-const TTS_PROVIDER =
-  process.env.TTS_PROVIDER || (TTS_BIN ? "cli" : "fish");
+// #1076: decided once here; ttsRuntime and /health (which the native
+// launcher follows) both use this value.
+const TTS_PROVIDER = resolveTtsProvider(process.env);
 const DEFAULT_GAMING_PROCESS_NAMES = [
   "ffxiv_dx11.exe",
   "ffxiv.exe",
@@ -730,6 +732,7 @@ const characterStore = createCharacterStore({
 
 const ttsRuntime = createTtsRuntime({
   env: process.env,
+  ttsProvider: TTS_PROVIDER,
   getVoice: () => characterStore.active().voice,
   baseDir: __dirname,
   nowMs,
