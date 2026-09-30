@@ -242,7 +242,12 @@ function createBriefing({ filePath, listFacts, listJobs, searchWeb, runLocalRepl
     },
   };
 
-  return { settings, update, maybeRun, toolSource };
+  // #1124: for the Background tasks panel's next-briefing row.
+  function status() {
+    return { enabled: data.enabled && !loadError, time: data.time, lastDay: data.lastDay, running: Boolean(running) };
+  }
+
+  return { settings, update, maybeRun, status, toolSource };
 }
 
 module.exports = { createBriefing, SECTIONS };

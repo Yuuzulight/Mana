@@ -8,6 +8,7 @@ const path = require("path");
 const crypto = require("crypto");
 const { assertNoKnownMalware } = require("./osv-malware-check");
 const { refuseIfLocalOnly } = require("./local-only");
+const { terminalFeed } = require("./terminal-feed");
 
 const DEFAULT_DATA_DIR = path.join(__dirname, "data", "mcp-client-registry");
 const DEFAULT_CLIENT_INFO = { name: "mana", version: "1.0.0" };
@@ -216,11 +217,30 @@ function createMcpClientRegistry(options = {}) {
         command: server.transport.command,
         args: server.transport.args,
         env,
+        // #1121: its stderr is what the Terminal tool shows for it; it
+        // still reaches the backend's log as before.
+        stderr: "pipe",
       });
+      transport.stderr?.on("data", (chunk) => process.stderr.write(chunk));
     } else {
       transport = new sdk.StreamableHTTPClientTransport(new URL(server.transport.url));
     }
-    await client.connect(transport);
+    // #1121: the server's launch shows in the Terminal tool until the
+    // connection closes. Disconnecting it (Settings > MCP) is its stop.
+    const run =
+      server.transport.kind === "stdio"
+        ? terminalFeed.track(
+            { stderr: transport.stderr },
+            { source: "mcp", command: [server.transport.command, ...server.transport.args].join(" "), stop: null },
+          )
+        : null;
+    if (run) client.onclose = () => run.end(null);
+    try {
+      await client.connect(transport);
+    } catch (e) {
+      run?.end(null);
+      throw e;
+    }
     connectedClients.set(server.id, client);
     return client;
   }
