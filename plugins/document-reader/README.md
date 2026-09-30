@@ -26,11 +26,22 @@ wiring needed on the reply path.
 - `DELETE /documents/:id` -- removes a document and re-syncs the retriever
   index.
 
-## Why PDF parsing is dependency-injectable
+## PDF text extraction
 
-`ingestPdf(filePath, { pdfParse })` accepts an optional `pdfParse`
-override. In production it lazily `require("pdf-parse")`; tests inject a
-fake parser instead of depending on a byte-perfect PDF fixture, which is
-fragile to hand-construct and orthogonal to what this plugin is actually
-responsible for (parsing correctness is `pdf-parse`'s job, not this
-plugin's).
+`pdf-text.js` is our own extractor (no dependency beyond Node's zlib):
+`extractPdfText(buffer)` returns `{ text, pages }`. It handles classic and
+stream xrefs (plus a scan-and-rebuild when the xref is damaged), object
+streams, Flate (with PNG predictors), LZW, ASCII85 and ASCIIHex streams,
+the page tree with inherited resources, Form XObjects, and ToUnicode /
+WinAnsi / MacRoman / Standard / `/Differences` font encodings.
+
+It refuses, with a clear error, encrypted PDFs and PDFs with no text at all
+(usually scans; there's no OCR). Input size, object count, decompressed
+bytes, nesting depth and operator count are all capped, so a hostile file
+fails fast instead of hanging or exhausting memory. Not supported:
+decryption, OCR, right-to-left or vertical layout, annotations and form
+fields.
+
+The test fixtures under `test/fixtures/` were printed by headless Edge
+(playwright-core `page.pdf()`); the other test PDFs are built in
+`test/pdf-text.test.js`.
