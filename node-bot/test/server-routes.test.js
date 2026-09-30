@@ -69,6 +69,10 @@ async function postJson(url, body, headers = {}) {
 // #670: local admin routes also need an admin key (admin-key.js).
 process.env.ADMIN_TOKEN = "routes-test-admin-token";
 const ADMIN = { "x-admin-token": "routes-test-admin-token" };
+// Every route but a few public ones needs the key, so every request here
+// sends it; NO_KEY overrides it for the keyless cases.
+const NO_KEY = { "x-admin-token": "" };
+const fetch = (url, init = {}) => globalThis.fetch(url, { ...init, headers: { ...ADMIN, ...init.headers } });
 
 test("admin restart accepts loopback requests and schedules restart once", async () => {
   let buildPayloadCalls = 0;
@@ -110,13 +114,14 @@ test("admin restart refuses a loopback request with no admin key (#670)", async 
   });
 
   await withServer(app, async (baseUrl) => {
-    const { response, payload } = await postJson(`${baseUrl}/admin/restart`, {});
+    const { response, payload } = await postJson(`${baseUrl}/admin/restart`, {}, NO_KEY);
     const wrong = await postJson(`${baseUrl}/admin/restart`, {}, { "x-admin-token": "wrong" });
     await new Promise((resolve) => setImmediate(resolve));
 
-    assert.equal(response.status, 403);
+    // The default-deny gate (admin-key.js) answers before the route.
+    assert.equal(response.status, 401);
     assert.match(payload.error, /ADMIN_TOKEN/);
-    assert.equal(wrong.response.status, 403);
+    assert.equal(wrong.response.status, 401);
     assert.equal(scheduleCalls, 0);
   });
 });
@@ -130,7 +135,7 @@ test("skill settings are wired to the admin-key check (#670)", async () => {
         headers: { "Content-Type": "application/json", ...headers },
         body: JSON.stringify({ importedSkillUse: "not-a-mode" }),
       });
-    assert.equal((await put({})).status, 403);
+    assert.equal((await put(NO_KEY)).status, 401);
     // Past the gate; the invalid value is refused before anything is saved.
     assert.equal((await put(ADMIN)).status, 400);
   });
@@ -523,8 +528,8 @@ test("brain-provider test route surfaces the connection result", async () => {
   });
 
   await withServer(app, async (baseUrl) => {
-    const noKey = await postJson(`${baseUrl}/models/brain-provider/test`, { baseUrl: "http://127.0.0.1:11434/v1" });
-    assert.equal(noKey.response.status, 403);
+    const noKey = await postJson(`${baseUrl}/models/brain-provider/test`, { baseUrl: "http://127.0.0.1:11434/v1" }, NO_KEY);
+    assert.equal(noKey.response.status, 401);
     assert.equal(received, null);
 
     const result = await postJson(`${baseUrl}/models/brain-provider/test`, {
@@ -583,10 +588,10 @@ test("llama-build routes are admin-gated and local-only, and map a missing diges
   const auth = { Authorization: "Bearer topsecret", ...ADMIN };
 
   await withServer(app, async (baseUrl) => {
-    const unauthorized = await postJson(`${baseUrl}/models/llama-build/update`, {});
+    const unauthorized = await postJson(`${baseUrl}/models/llama-build/update`, {}, NO_KEY);
     assert.equal(unauthorized.response.status, 401);
 
-    const noAdminKey = await postJson(`${baseUrl}/models/llama-build/update`, {}, { Authorization: "Bearer topsecret" });
+    const noAdminKey = await postJson(`${baseUrl}/models/llama-build/update`, {}, { ...NO_KEY, Authorization: "Bearer topsecret" });
     assert.equal(noAdminKey.response.status, 403);
 
     const remote = await postJson(`${baseUrl}/models/llama-build/update`, {}, { ...auth, "X-Forwarded-For": "192.168.1.50" });

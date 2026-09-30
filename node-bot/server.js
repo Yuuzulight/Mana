@@ -102,7 +102,7 @@ const { createVTubeRuntime } = require("./vtube-runtime");
   registerAdminStaticRoutes,
   registerPendingWritesRoutes,
 } = require("./server-routes");
-	const { ADMIN_KEY_REQUIRED_ERROR, checkAdminSecret, hasAdminKey } = require("./admin-key");
+	const { ADMIN_KEY_REQUIRED_ERROR, checkAdminSecret, hasAdminKey, requireAdminKeyByDefault } = require("./admin-key");
 	const {
 	  handleGetAddonStatus,
 	  handleGenerateVideo,
@@ -353,6 +353,9 @@ function createApp(deps = {}) {
   const requestGuard = createRequestGuard(appEnv);
   app.use(requestGuard.middleware);
   app.use(cors(requestGuard.corsOptions));
+  // Default deny: every route below needs an admin key unless admin-key.js
+  // lists it as public. After cors() so browsers' preflights still work.
+  app.use(requireAdminKeyByDefault(appEnv));
   app.use(express.json({ limit: "15mb" }));
 
   // App-wide rate limit so every route (server.js, mobile-routes.js,

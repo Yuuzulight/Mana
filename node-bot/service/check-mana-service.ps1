@@ -8,10 +8,14 @@
 # otherwise -- usable in a scheduled task or script, not just interactively.
 
 param(
-    [string]$BaseUrl = "http://127.0.0.1:5005"
+    [string]$BaseUrl = "http://127.0.0.1:5005",
+    # /doctor needs an admin key (every route but /health does): node-bot\.env's ADMIN_TOKEN.
+    [string]$AdminToken = $env:ADMIN_TOKEN
 )
 
 $BaseUrl = $BaseUrl.TrimEnd("/")
+$authHeaders = @{}
+if ($AdminToken) { $authHeaders["x-admin-token"] = $AdminToken }
 $ServiceName = "ManaNodeBot"
 $exitCode = 0
 
@@ -41,7 +45,7 @@ Write-Host ""
 Write-Host "Doctor: $BaseUrl/doctor"
 try {
     $doctor = try {
-        Invoke-RestMethod -Uri "$BaseUrl/doctor" -TimeoutSec 15
+        Invoke-RestMethod -Uri "$BaseUrl/doctor" -TimeoutSec 15 -Headers $authHeaders
     } catch {
         # /doctor intentionally returns 503 (not 200) when any check fails --
         # Invoke-RestMethod throws on that. ErrorDetails.Message is the usual

@@ -27,7 +27,10 @@ fakeExecFile[util.promisify.custom] = async (cmd, args) => {
 };
 childProcess.execFile = fakeExecFile;
 const { createApp, manaProcessesUnder } = require("../server");
-const { withServer } = require("./helpers");
+const { withServer, useTestAdminToken } = require("./helpers");
+
+// Every route but a few public ones needs an admin key (admin-key.js).
+const fetch = useTestAdminToken();
 childProcess.spawnSync = realSpawnSync;
 childProcess.execFile = realExecFile;
 
