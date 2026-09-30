@@ -2188,6 +2188,7 @@ internal sealed class ManaBackendClient
             DurationMs = Number("durationMs"),
             Running = Flag("running"),
             Stoppable = Flag("stoppable"),
+            Stopped = Flag("stopped"),
         };
     }
 
@@ -2762,6 +2763,8 @@ internal sealed class ManaTerminalRun
     public long? DurationMs { get; init; }
     public bool Running { get; init; }
     public bool Stoppable { get; init; }
+    // Ended by Stop (its process tree killed).
+    public bool Stopped { get; init; }
 }
 
 internal sealed class ManaAgentRun
