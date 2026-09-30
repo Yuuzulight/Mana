@@ -31,6 +31,43 @@ public class ChatViewTests
         Assert.Equal("Three.", view.Messages[3].PlainText);
     }
 
+    // #914: group mode -- her sister's reaction is her own, labelled bubble.
+    [Fact]
+    public void EachCharacterGetsHerOwnLabelledBubble()
+    {
+        using var view = NewView();
+        view.AppendUserMessage("which of you is smarter?");
+        view.AppendReplySentence("Me.", "Evil Mana");
+        view.AppendReplySentence("Obviously.", "Evil Mana");
+        view.AppendReplySentence("She wishes.", "Mana");
+
+        Assert.Equal(new[] { "You", "Evil Mana", "Mana" }, view.Messages.Select(m => m.Speaker));
+        Assert.Equal("Me. Obviously.", view.Messages[1].PlainText);
+    }
+
+    // #914: her relationship note is its own line with an Undo button, and
+    // the reply after it starts a fresh bubble.
+    [Fact]
+    public void ANotedLineHasAnUndoAndIsntMergedIntoTheReply()
+    {
+        using var view = NewView();
+        var undone = 0;
+        view.AppendUserMessage("you look smug");
+        view.AppendNoted("Evil Mana", "Noted: \"They like my smug face.\"", () =>
+        {
+            undone++;
+            return System.Threading.Tasks.Task.FromResult<string?>("Forgotten.");
+        });
+        view.AppendReplySentence("Heh.", "Evil Mana");
+
+        Assert.Equal(new[] { "You", "Evil Mana", "Evil Mana" }, view.Messages.Select(m => m.Speaker));
+        Assert.Equal("Noted: \"They like my smug face.\"", view.Messages[1].PlainText);
+        Assert.Equal("Undo", Assert.Single(view.Messages[1].Actions).Label);
+        view.Messages[1].Actions[0].Run().GetAwaiter().GetResult();
+        Assert.Equal(1, undone);
+        Assert.Equal("Heh.", view.Messages[2].PlainText);
+    }
+
     [Fact]
     public void AppendSentence_ListItemsAndCodeStartTheirOwnBlocks()
     {

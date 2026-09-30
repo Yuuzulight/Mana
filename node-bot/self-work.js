@@ -373,6 +373,8 @@ function createSelfWork(options = {}) {
       lastTestPassed: false,
       flagged,
       guardrailsNeeded: [],
+      round: 0,
+      maxRounds: MAX_ROUNDS,
     };
     current = r;
     r.done = work(r, issue).catch((e) => end(r, "failed", `I hit a problem and stopped: ${e.message}`));
@@ -416,6 +418,10 @@ function createSelfWork(options = {}) {
     const reply = await runLoop(buildPrompt(r, issue), tools, {
       goal: `Implement issue #${r.issue}: ${r.title}`,
       maxRounds: MAX_ROUNDS,
+      // #1124: how far into the round cap she is, for the Background tasks panel.
+      onRound: (round) => {
+        r.round = round;
+      },
       maxMs: Infinity,
       maxTokens: 2048,
       overrideSystemPrompt:

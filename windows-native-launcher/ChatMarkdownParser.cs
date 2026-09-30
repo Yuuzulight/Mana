@@ -22,7 +22,8 @@ internal enum MarkdownBlockType
 internal readonly record struct MarkdownRun(string Text, bool Bold, bool Italic, bool Code, bool Strike = false, string? Link = null);
 
 // Rows is set only for a Table: row 0 is the header, each cell a run list.
-internal readonly record struct MarkdownBlock(MarkdownBlockType Type, IReadOnlyList<MarkdownRun> Runs, IReadOnlyList<IReadOnlyList<IReadOnlyList<MarkdownRun>>>? Rows = null);
+// Level is a Header's 1-6 (#1127's docs view uses it; the chat doesn't).
+internal readonly record struct MarkdownBlock(MarkdownBlockType Type, IReadOnlyList<MarkdownRun> Runs, IReadOnlyList<IReadOnlyList<IReadOnlyList<MarkdownRun>>>? Rows = null, int Level = 0);
 
 // #521: a hand-built Markdown parser scoped to what a chat reply actually
 // needs -- headers, bold, italic, strikethrough, inline code, links, fenced
@@ -103,7 +104,7 @@ internal static class ChatMarkdownParser
             var headerMatch = HeaderPattern.Match(line);
             if (headerMatch.Success)
             {
-                blocks.Add(new MarkdownBlock(MarkdownBlockType.Header, ParseInline(headerMatch.Groups[2].Value)));
+                blocks.Add(new MarkdownBlock(MarkdownBlockType.Header, ParseInline(headerMatch.Groups[2].Value), Level: headerMatch.Groups[1].Length));
                 i++;
                 continue;
             }

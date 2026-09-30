@@ -14,16 +14,13 @@ namespace Mana.NativeLauncher;
 // the staleness risk.
 internal sealed class SettingsDialog : Form
 {
-    public SettingsDialog(ManaBackendClient backendClient, BackendLogBuffer backendLog, Func<string?>? getCurrentSessionId = null, Func<HotkeyAction, Keys?, string?>? bindHotkey = null, ListeningPause? listeningPause = null)
+    // #1119: shown non-modal, as Settings' "Open in its own window".
+    public SettingsDialog(SettingsPanel panel)
     {
-        var panel = new SettingsPanel(backendClient, backendLog, getCurrentSessionId, bindHotkey, listeningPause);
-
         Text = "Settings";
-        Width = 640;
-        Height = 480;
-        StartPosition = FormStartPosition.CenterParent;
-        MinimizeBox = false;
-        MaximizeBox = false;
+        Width = 900;
+        Height = 640;
+        StartPosition = FormStartPosition.CenterScreen;
         DarkTheme.ApplyForm(this);
 
         Controls.Add(panel);

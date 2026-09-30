@@ -604,9 +604,10 @@ internal sealed class ManaProcessManager : IDisposable
         startInfo.Environment["WHISPER_BIN"] =
             Environment.GetEnvironmentVariable("WHISPER_BIN") ??
             Path.Combine(whisperDir, "Release", "whisper-cli.exe");
-        startInfo.Environment["WHISPER_MODEL"] =
-            Environment.GetEnvironmentVariable("WHISPER_MODEL") ??
-            Path.Combine(whisperDir, "models", "ggml-tiny.en.bin");
+        // No WHISPER_MODEL default: node-bot's discovery picks the model,
+        // and a multilingual one when the speech language isn't English. A
+        // WHISPER_MODEL in the launcher's environment still passes through,
+        // and node-bot/.env wins over both.
         // #1076: no TTS_PROVIDER default here -- node-bot inherits it when
         // set, and otherwise picks Fish or Kokoro from the GPU itself
         // (resolveTtsProvider in tts-runtime.js). KOKORO_TTS_FALLBACK_PROVIDER
@@ -624,6 +625,12 @@ internal sealed class ManaProcessManager : IDisposable
 
         var process = Process.Start(startInfo) ??
                throw new InvalidOperationException("Failed to start Mana backend.");
+
+        // The same lines as Settings > Logs, also on disk; the last run's as
+        // backend.prev.log. Under node-bot\data (never the launcher's own
+        // folder, which an update renames). Once node has started, so a
+        // failed start never creates folders; before reading its output.
+        BackendLog.StartFile(Path.Combine(nodeBotDir, "data", "logs", "backend.log"));
 
         void OnLine(object? sender, DataReceivedEventArgs e)
         {
@@ -743,6 +750,7 @@ internal sealed class ManaProcessManager : IDisposable
     {
         try
         {
+            Directory.CreateDirectory(Path.GetDirectoryName(logPath)!);
             if (File.Exists(logPath))
             {
                 File.Move(logPath, Path.ChangeExtension(logPath, ".prev.log"), overwrite: true);
