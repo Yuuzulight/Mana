@@ -1,6 +1,7 @@
 using System;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.RegularExpressions;
 
 namespace Mana.NativeLauncher;
 
@@ -19,5 +20,14 @@ internal static class UntrustedText
         var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(text))).ToLowerInvariant()[..12];
         var tag = $"untrusted-{hash}";
         return $"Note: {Rule}.\n<{tag} source=\"{source}\">\n{text}\n</{tag}>";
+    }
+
+    // The text inside exactly what Wrap(source, text) gives, else null -- so
+    // the chat can show a shared block tidily while Mana gets the frame.
+    internal static string? Unwrap(string source, string framed)
+    {
+        var prefix = $"Note: {Rule}.\n<untrusted-";
+        var match = Regex.Match(framed, "^" + Regex.Escape(prefix) + "[0-9a-f]{12} source=\"" + Regex.Escape(source) + "\">\n([\\s\\S]*)\n</untrusted-[0-9a-f]{12}>$");
+        return match.Success && Wrap(source, match.Groups[1].Value) == framed ? match.Groups[1].Value : null;
     }
 }

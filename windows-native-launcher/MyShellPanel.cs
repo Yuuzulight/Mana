@@ -18,6 +18,9 @@ internal sealed class MyShellPanel : Panel
         ("cmd", "cmd.exe"),
     ];
 
+    // The frame label "Send to Mana" uses; the chat shows those as a card.
+    internal const string SharedSource = "my terminal";
+
     private readonly string workingDirectory;
     private readonly Action<string>? sendToMana;
     private readonly TabControl sessions = new() { Dock = DockStyle.Fill };
@@ -125,7 +128,7 @@ internal sealed class MyShellPanel : Panel
         {
             return;
         }
-        sendToMana(UntrustedText.Wrap("my terminal", text));
+        sendToMana(UntrustedText.Wrap(SharedSource, text));
         Current!.View.ClearSelection();
     }
 

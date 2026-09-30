@@ -165,6 +165,24 @@ public class MyShellTests
         Assert.Equal(2, framed.Split("untrusted-000000000000").Length);
     }
 
+    [Fact]
+    public void SharedText_ShowsAsATerminalCard_WhileManaGetsTheFrame()
+    {
+        var framed = UntrustedText.Wrap(MyShellPanel.SharedSource, "PS> dir\r\nfile.txt");
+        Assert.Equal("PS> dir\r\nfile.txt", UntrustedText.Unwrap(MyShellPanel.SharedSource, framed));
+
+        var blocks = ChatView.UserBlocks(framed);
+        Assert.Equal([MarkdownBlockType.Paragraph, MarkdownBlockType.CodeBlock], blocks.Select(b => b.Type));
+        Assert.Equal("Shared from terminal", blocks[0].Runs[0].Text);
+        Assert.True(blocks[0].Runs[0].Bold);
+        Assert.Equal("PS> dir\nfile.txt", blocks[1].Runs[0].Text);
+
+        // A tampered frame, another source or plain text shows as typed.
+        Assert.Null(UntrustedText.Unwrap(MyShellPanel.SharedSource, framed.Replace("file.txt", "evil.txt")));
+        Assert.Null(UntrustedText.Unwrap(MyShellPanel.SharedSource, UntrustedText.Wrap("web page", "x")));
+        Assert.Equal(MarkdownBlockType.Paragraph, Assert.Single(ChatView.UserBlocks("hello")).Type);
+    }
+
     // The first process whose parent is pid.
     private static Process? ChildOf(int pid)
     {
