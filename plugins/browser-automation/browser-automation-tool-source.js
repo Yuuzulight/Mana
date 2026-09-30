@@ -4,6 +4,7 @@
 // action and an HTTP-route-initiated one operate on the same tab, not two
 // separate Chromium instances.
 const { createBrowserActivityLog } = require("./browser-automation-activity");
+const { wrapUntrusted } = require("../../node-bot/ai/untrusted-content");
 
 const BROWSER_TOOL_PREFIX = "browser_automation__";
 // Gates the *first* tool-calling use, not every individual call -- once a
@@ -15,55 +16,52 @@ const BROWSER_TOOL_PREFIX = "browser_automation__";
 // an MCP server's tools are approved once, at registration, not per call).
 const APPROVAL_ACTION_TYPE = "browser-automation-tool-use";
 
+const REF_PARAM = { type: "string", description: "The element's ref from the page snapshot, like e5." };
+function tool(name, description, properties = {}, required = []) {
+  return {
+    type: "function",
+    function: { name: `${BROWSER_TOOL_PREFIX}${name}`, description, parameters: { type: "object", properties, required } },
+  };
+}
+
+// #1138: a small vocabulary, acting by the snapshot's refs.
 const TOOL_SCHEMAS = [
-  {
-    type: "function",
-    function: {
-      name: `${BROWSER_TOOL_PREFIX}navigate`,
-      description: "Navigate the browser to a URL and return a snapshot of the resulting page.",
-      parameters: {
-        type: "object",
-        properties: { url: { type: "string", description: "The http(s) URL to navigate to." } },
-        required: ["url"],
-      },
-    },
-  },
-  {
-    type: "function",
-    function: {
-      name: `${BROWSER_TOOL_PREFIX}snapshot`,
-      description: "Read the current page: title, URL, visible text, and interactive elements with their refs.",
-      parameters: { type: "object", properties: {} },
-    },
-  },
-  {
-    type: "function",
-    function: {
-      name: `${BROWSER_TOOL_PREFIX}click`,
-      description: "Click an interactive element on the current page by its ref (from a prior snapshot).",
-      parameters: {
-        type: "object",
-        properties: { ref: { type: "string", description: "The element's data-mana-ref, from a prior snapshot." } },
-        required: ["ref"],
-      },
-    },
-  },
-  {
-    type: "function",
-    function: {
-      name: `${BROWSER_TOOL_PREFIX}type`,
-      description: "Type text into an interactive element on the current page by its ref (from a prior snapshot).",
-      parameters: {
-        type: "object",
-        properties: {
-          ref: { type: "string", description: "The element's data-mana-ref, from a prior snapshot." },
-          text: { type: "string", description: "The text to type." },
-        },
-        required: ["ref", "text"],
-      },
-    },
-  },
+  tool("navigate", "Open an http(s) URL in her browser and read the page.", {
+    url: { type: "string", description: "The http(s) URL to open." },
+  }, ["url"]),
+  tool("snapshot", "Read the current page again: its interactive elements with their refs, and a short text excerpt."),
+  tool("click", "Click an element by its ref.", { ref: REF_PARAM }, ["ref"]),
+  tool("type", "Replace the text in a field by its ref; submit presses Enter after.", {
+    ref: REF_PARAM,
+    text: { type: "string", description: "The text to put in the field." },
+    submit: { type: "boolean", description: "Press Enter after typing (e.g. to search)." },
+  }, ["ref", "text"]),
+  tool("select", "Choose an option in a dropdown by its ref.", {
+    ref: REF_PARAM,
+    value: { type: "string", description: "The option's label or value." },
+  }, ["ref", "value"]),
+  tool("scroll", "Scroll the page by most of a screen, to load more of it.", {
+    direction: { type: "string", enum: ["down", "up"] },
+  }, ["direction"]),
+  tool("back", "Go back to the previous page."),
 ];
+const ACTIONS = TOOL_SCHEMAS.map((t) => t.function.name.slice(BROWSER_TOOL_PREFIX.length));
+
+// What the model reads: everything from the page sits inside one untrusted
+// frame.
+function describeForModel(result) {
+  const lines = [`URL: ${result.url}`, `Title: ${result.title}`, ""];
+  if (result.elements) {
+    lines.push("Interactive elements:", ...result.elements);
+  } else if (result.added.length || result.removed.length) {
+    lines.push("Changed elements (the rest are as in the last snapshot):");
+    lines.push(...result.added.map((l) => `new: ${l}`), ...result.removed.map((l) => `gone: ${l}`));
+  } else {
+    lines.push("The elements didn't change.");
+  }
+  if (result.text !== undefined) lines.push("", "Page text (start):", result.text);
+  return wrapUntrusted("browser page", lines.join("\n"));
+}
 
 function isBrowserAutomationToolName(name) {
   return typeof name === "string" && name.startsWith(BROWSER_TOOL_PREFIX);
@@ -100,7 +98,7 @@ function createBrowserAutomationToolSource(options = {}) {
       // failed tool call (see tool-policy.js's ToolPolicyError handling),
       // rather than blocking this call on a human decision.
       const result = await approvalGate.requestApproval(APPROVAL_ACTION_TYPE, {
-        summary: "Allow Mana to use browser-automation (navigate/click/type/snapshot) as a tool during replies",
+        summary: "Allow Mana to use browser-automation (open, read, click, type, select, scroll, back) as a tool during replies",
         payload: null,
       });
       throw new Error(
@@ -111,7 +109,7 @@ function createBrowserAutomationToolSource(options = {}) {
     }
 
     const action = qualifiedName.slice(BROWSER_TOOL_PREFIX.length);
-    if (!["navigate", "snapshot", "click", "type"].includes(action)) {
+    if (!ACTIONS.includes(action)) {
       throw new Error(`unknown browser-automation tool: ${qualifiedName}`);
     }
 
@@ -122,7 +120,10 @@ function createBrowserAutomationToolSource(options = {}) {
       if (action === "navigate") result = await session.navigate(args?.url);
       else if (action === "snapshot") result = await session.snapshot();
       else if (action === "click") result = await session.click(args?.ref);
-      else result = await session.type(args?.ref, args?.text);
+      else if (action === "type") result = await session.type(args?.ref, args?.text, args?.submit === true);
+      else if (action === "select") result = await session.select(args?.ref, args?.value);
+      else if (action === "scroll") result = await session.scroll(args?.direction);
+      else result = await session.back();
     } catch (err) {
       // Issue #418: the launcher's activity feed should show a failed step
       // too ("clicking element 5 -- failed"), not just successful ones --
@@ -134,21 +135,22 @@ function createBrowserAutomationToolSource(options = {}) {
 
     activityLog.recordActivity({ action, args, status: "ok" });
     activityLog.recordPage(result);
-    // Best-effort: a capture failure (page mid-navigation, tab closed) must
-    // never break the real tool call it happened alongside, and the model
-    // never sees this value either way -- it's the human-facing side channel.
+    // Screenshots are for the Browser panel only, taken while it's on
+    // screen. Best-effort: a capture failure (page mid-navigation, tab
+    // closed) must never break the real tool call it happened alongside.
     // Wrapped in try/catch, not just a .catch() on the call, so a session
     // that doesn't even expose screenshot as a function (a synchronous
     // TypeError, not a rejected promise) is caught the same way.
+    // An unwatched step clears the old one: it showed an earlier page.
     let screenshotBase64 = null;
     try {
-      screenshotBase64 = await session.screenshot();
+      if (activityLog.isWatched()) screenshotBase64 = await session.screenshot();
     } catch (e) {
       screenshotBase64 = null;
     }
     activityLog.recordScreenshot(screenshotBase64);
 
-    return JSON.stringify(result);
+    return describeForModel(result);
   }
 
   return {
@@ -177,6 +179,7 @@ module.exports = {
   BROWSER_TOOL_PREFIX,
   APPROVAL_ACTION_TYPE,
   TOOL_SCHEMAS,
+  describeForModel,
   isBrowserAutomationToolName,
   createBrowserAutomationToolSource,
   buildToolPolicyWithBrowserAutomation,

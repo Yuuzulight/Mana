@@ -15,6 +15,9 @@ function describeBrowserAction(action, args) {
   if (action === "click") return `Clicking element ${args?.ref ?? "?"}`;
   if (action === "type") return `Typing into element ${args?.ref ?? "?"}`;
   if (action === "snapshot") return "Reading the current page";
+  if (action === "select") return `Choosing "${args?.value ?? ""}" in element ${args?.ref ?? "?"}`;
+  if (action === "scroll") return `Scrolling ${args?.direction || "down"}`;
+  if (action === "back") return "Going back";
   return action;
 }
 

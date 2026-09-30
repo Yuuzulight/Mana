@@ -3,7 +3,7 @@ const express = require("../../../node-bot/node_modules/express");
 const test = require("node:test");
 
 const browserAutomationPlugin = require("../index");
-const { snapshotInPage, extractTextInPage } = require("../browser-automation");
+const { extractTextInPage } = require("../browser-automation");
 
 async function withServer(app, fn) {
   const http = require("node:http");
@@ -105,8 +105,8 @@ function createFakeChromium(pageOverrides = {}) {
     routeHandler: null,
     async route(pattern, handler) { this.routeHandler = handler; },
     async goto(url) { this._url = url; },
+    async ariaSnapshot() { return '- button "Go" [ref=e1]'; },
     async evaluate(fn) {
-      if (fn === snapshotInPage) return [{ ref: "1", tag: "button", role: null, label: "Go" }];
       if (fn === extractTextInPage) return "page text";
       throw new Error("unexpected evaluate() call in test");
     },
@@ -148,7 +148,7 @@ test("POST /browser/navigate drives an injected fake chromium/page end to end", 
     assert.equal(response.status, 200);
     assert.equal(payload.title, "Example");
     assert.equal(payload.text, "page text");
-    assert.equal(payload.interactiveElements[0].ref, "1");
+    assert.deepEqual(payload.elements, ['button "Go" [ref=e1]']);
   });
 });
 

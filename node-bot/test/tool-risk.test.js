@@ -81,6 +81,10 @@ test("#669 tiers: built-ins keep their fixed tier and are not content-inspected"
   const nav = classifyToolCall("browser_automation__navigate", { url: "https://example.com/a" });
   assert.equal(nav.tier, "network");
   assert.deepEqual(nav.hosts, ["example.com"]);
+  // #1138: choosing an option or going back can submit or load a page; scrolling only reads.
+  assert.equal(classifyToolCall("browser_automation__select", { ref: "e3", value: "x" }).tier, "network");
+  assert.equal(classifyToolCall("browser_automation__back", {}).tier, "network");
+  assert.equal(classifyToolCall("browser_automation__scroll", { direction: "down" }).tier, "read");
   assert.deepEqual(classifyToolCall("session_search__query", { query: "https://x.com" }).hosts, []);
 });
 
