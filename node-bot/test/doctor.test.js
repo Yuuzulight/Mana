@@ -113,6 +113,30 @@ test("doctor surfaces the injected hardware model recommendation", () => {
   assert.deepEqual(check.details.recommendation, fakeRecommendation);
 });
 
+test("doctor passes an auto-detected llama-server and only warns when none is found", () => {
+  const run = (findLlamaServerBin) =>
+    runDoctorChecks({
+      env: { MANA_ALLOW_REMOTE_AI: "0" },
+      paths: { dataDir: fs.mkdtempSync(path.join(os.tmpdir(), "mana-doctor-test-")) },
+      ports: [],
+      services: [],
+      versions: { node: "v22.19.0" },
+      zedCommandResolver: () => null,
+      findLlamaServerBin,
+    }).checks.find((c) => c.id === "llama-server-binary");
+
+  const found = run(() => "D:\\llama\\llama-server.exe");
+  assert.equal(found.status, "pass");
+  assert.match(found.message, /auto-detected/);
+  assert.equal(found.details.path, "D:\\llama\\llama-server.exe");
+
+  const missing = run(() => {
+    throw new Error("llama-server executable not found");
+  });
+  assert.equal(missing.status, "warn");
+  assert.match(missing.message, /auto-detection found none/);
+});
+
 function runDoctorForFishWarmup(fishTtsWarmup) {
   return runDoctorChecks({
     env: { MANA_ALLOW_REMOTE_AI: "0" },
@@ -477,6 +501,45 @@ test("createApp exposes doctor checks without leaking secrets", async () => {
     assert.equal(body.summary.pass, 1);
     assert.equal(body.checks[0].id, "local-ai-policy");
     assert.equal(JSON.stringify(body).includes("unit-test-secret"), false);
+  });
+});
+
+test("async doctor probes Qwen3-TTS's /health when it's the provider", async () => {
+  await withRawServer((req, res) => {
+    res.writeHead(req.url === "/health" ? 200 : 404);
+    res.end();
+  }, async ({ url }) => {
+    const result = await runDoctorChecksAsync({
+      env: {
+        MANA_ALLOW_REMOTE_AI: "0",
+        LLAMA_BIN: "",
+        LLAMA_MODEL: "",
+        WHISPER_BIN: "",
+        WHISPER_MODEL: "",
+        MOBILE_PASSCODE_HASH: "",
+        MOBILE_SESSION_SECRET: "",
+        TTS_PROVIDER: "qwen3tts",
+        QWEN3_TTS_URL: url,
+        FISH_TTS_URL: "http://127.0.0.1:1",
+      },
+      paths: {
+        dataDir: fs.mkdtempSync(path.join(os.tmpdir(), "mana-doctor-qwen-")),
+      },
+      whisperToolsDir: fs.mkdtempSync(path.join(os.tmpdir(), "mana-doctor-qwen-whisper-")),
+      ports: [],
+      versions: { node: "v22.19.0" },
+    });
+
+    const tts = result.checks.find((check) => check.id === "tts-services");
+    assert.equal(tts.status, "pass");
+    assert.deepEqual(tts.details.services, [
+      { id: "qwen3tts", url: `${url}/health`, ok: true, statusCode: 200 },
+    ]);
+
+    fs.rmSync(result.checks.find((check) => check.id === "storage").details.dataDir, {
+      recursive: true,
+      force: true,
+    });
   });
 });
 

@@ -33,6 +33,7 @@ internal sealed class AgentActivityPanel : Form
         TopMost = true;
         StartPosition = FormStartPosition.Manual;
         BackColor = DarkTheme.Panel;
+        DarkTheme.Track(this); // #688: recoloured on a live theme switch
         Width = 280;
         Height = 56;
         Visible = false;

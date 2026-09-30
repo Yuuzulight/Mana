@@ -23,9 +23,11 @@ function createWhisperServer(options = {}) {
   const findModel = options.findModel;
   // The whisper-cli settings from server.js, so both give the same text.
   // threads() is read at each start: fewer while a game is running.
+  // language() too: Settings > Voice can switch it to "auto" (#926).
   const { threads, language, beamSize, noSpeechThreshold } = options;
   const spawnImpl = options.spawn || defaultSpawn;
   let startedThreads = null;
+  let startedLanguage = null;
 
   const server = createOnDemandProcess({
     name: "whisper-server",
@@ -33,6 +35,7 @@ function createWhisperServer(options = {}) {
     command: () => {
       const bin = serverBin();
       startedThreads = threads();
+      startedLanguage = language();
       return {
         bin,
         args: [
@@ -40,7 +43,7 @@ function createWhisperServer(options = {}) {
           "--host", "127.0.0.1",
           "--port", String(port()),
           "-t", String(startedThreads),
-          "-l", String(language),
+          "-l", String(startedLanguage),
           "-bs", String(beamSize),
           // whisper-cli's default; whisper-server's is 2.
           "-bo", "5",
@@ -87,9 +90,9 @@ function createWhisperServer(options = {}) {
     if (busy || !isEnabled()) return null;
     busy = true;
     try {
-      // A game started or stopped since this server was launched:
-      // restart it with the right thread count (~0.25 s).
-      if (startedThreads !== null && startedThreads !== threads()) server.stop();
+      // A game started or stopped, or the language changed, since this
+      // server was launched: restart it with the right settings (~0.25 s).
+      if (startedThreads !== null && (startedThreads !== threads() || startedLanguage !== language())) server.stop();
       await server.ensure();
       await reset;
       server.touch();

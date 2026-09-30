@@ -31,6 +31,13 @@ or bundling in this repo. This project intentionally keeps large binaries and
 model weights out of source control; please follow the docs to download and
 install required artifacts.
 
+- WeSpeaker VoxCeleb ResNet34-LM speaker embedding (`voxceleb_resnet34_LM.onnx`)
+  - From the WeSpeaker project (https://github.com/wenet-e2e/wespeaker),
+    trained on VoxCeleb2. The model is CC BY 4.0 (it follows the VoxCeleb
+    dataset's license) and WeSpeaker's code is Apache-2.0. The native launcher
+    fetches it at build time into `windows-native-launcher/assets/speaker/`
+    (gitignored) for the optional voiceprint gate (#678).
+
 - pixi.js (npm)
   - MIT license. Bundled via npm in `windows-launcher` and `desktop-client`
     for the built-in Live2D avatar renderer.
@@ -64,6 +71,12 @@ install required artifacts.
     process (Windows self-contained package incl. its own Python runtime);
     Mana's backend talks to it only over localhost HTTP. See
     https://github.com/RVC-Boss/GPT-SoVITS for terms.
+
+- Qwen3-TTS (tools/qwen3-tts, git-ignored, set up per docs/qwen3_tts.md)
+  - Apache-2.0 (Qwen3-TTS code and weights, qwen-tts-hf) and MIT
+    (faster-qwen3-tts). Voice provider running as a separate local process;
+    Mana's backend talks to it only over localhost HTTP. See
+    https://github.com/QwenLM/Qwen3-TTS for terms.
 
 What the built installer adds back in (issue #363)
 --------------------------------------------------

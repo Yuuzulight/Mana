@@ -115,8 +115,73 @@ test("the provider falls back to the base prompt when memory can't be read", () 
   assert.equal(getPrompt(), BASE_WHISPER_PROMPT);
 });
 
+test("WHISPER_VOCABULARY terms follow the name in the user's order, ahead of memory terms (#901)", () => {
+  const prompt = buildWhisperPrompt({
+    facts: [fact("name", "Yuuzu")],
+    userTexts: ["watch Hololive with Ali", "ask Ali about Hololive"],
+    vocabulary: ["Imouto", " Onesan ", "", "Gigi Murin", "Hololive", "VTuber", "mana", "IMOUTO"],
+  });
+  // Blank, already-in-base (Mana) and repeated entries drop out; Hololive
+  // from chat isn't listed twice.
+  assert.match(prompt, /The user's name is Yuuzu\. Names and terms: Imouto, Onesan, Gigi Murin, Hololive, VTuber, Ali\.$/);
+});
+
+test("a long vocabulary stays within MAX_PROMPT_CHARS, name first (#901)", () => {
+  const vocabulary = Array.from({ length: 60 }, (_, i) => `Vocabword${i}`);
+  const prompt = buildWhisperPrompt({ facts: [fact("name", "Yuuzu")], vocabulary });
+  assert.ok(prompt.length <= MAX_PROMPT_CHARS);
+  assert.match(prompt, /The user's name is Yuuzu\. Names and terms: Vocabword0, Vocabword1, /);
+});
+
+test("the provider splits WHISPER_VOCABULARY on commas, keeps it on the fallback, and WHISPER_PROMPT still wins (#901)", () => {
+  const broken = { listSessions: () => { throw new Error("disk gone"); } };
+  assert.equal(
+    createWhisperPromptProvider({ memoryStore: broken, vocabulary: "Imouto, Gigi Murin" })(),
+    `${BASE_WHISPER_PROMPT} Names and terms: Imouto, Gigi Murin.`,
+  );
+  assert.equal(createWhisperPromptProvider({ memoryStore: broken, override: "custom", vocabulary: "Imouto" })(), "custom");
+});
+
 test("a term already in the base prompt is not repeated, even at a sentence end", () => {
   // "named Mana." ends a sentence in the base prompt.
   const prompt = buildWhisperPrompt({ userTexts: ["say hi to Mana", "wake Up now"] });
   assert.equal(prompt, BASE_WHISPER_PROMPT);
+});
+
+test("the base prompt names Mana only, never the wake-word misspellings whisper would copy", () => {
+  const prompt = buildWhisperPrompt();
+  assert.match(prompt, /named Mana\./);
+  assert.doesNotMatch(prompt, /Manah|Manna|Mannah|Myna|My Na/);
+});
+
+test("a run of 2-3 capitalized words is one term; commas, possessives and long runs split it (#924)", () => {
+  assert.deepEqual(extractTerms("I watched Gigi Murin and Evil Neuro in Party Finder"), ["Gigi Murin", "Evil Neuro", "Party Finder"]);
+  assert.deepEqual(extractTerms("we like Hololive VTuber streams"), ["Hololive VTuber"]);
+  assert.deepEqual(extractTerms("met Ali, Bob and Gigi Murin's cat"), ["Ali", "Bob", "Gigi Murin"]);
+  assert.deepEqual(extractTerms("I love Final Fantasy Fourteen Online"), ["Final", "Fantasy", "Fourteen", "Online"]);
+  // A word already in the prompt ends the run instead of joining it.
+  assert.deepEqual(extractTerms("hey Mana Gigi Murin is live", new Set(["mana"])), ["Gigi Murin"]);
+});
+
+test("a name run needs 2 turns or a fact, its words aren't counted alone, and the cap holds (#924)", () => {
+  const prompt = buildWhisperPrompt({
+    facts: [fact("oshi", "the user watches Evil Neuro")],
+    userTexts: ["watch Gigi Murin", "is Gigi Murin live", "join Party Finder", "only Gigi today"],
+  });
+  // Party Finder: one turn only. Gigi alone: one turn.
+  assert.match(prompt, /Names and terms: Gigi Murin, Evil Neuro\.$/);
+
+  const userTexts = Array.from({ length: 200 }, (_, i) => `see Longname${i} Otherword${i} again`);
+  const capped = buildWhisperPrompt({ userTexts: [...userTexts, ...userTexts] });
+  assert.ok(capped.length <= MAX_PROMPT_CHARS);
+  assert.match(capped, /Names and terms: Longname0 Otherword0, /);
+});
+
+test("saved speech words follow WHISPER_VOCABULARY and rebuild the cached prompt at once (#923)", () => {
+  const broken = { listSessions: () => { throw new Error("disk gone"); } };
+  let saved = ["Gigi Murin"];
+  const getPrompt = createWhisperPromptProvider({ memoryStore: broken, vocabulary: "Imouto", savedWords: () => saved, now: () => 0 });
+  assert.equal(getPrompt(), `${BASE_WHISPER_PROMPT} Names and terms: Imouto, Gigi Murin.`);
+  saved = ["Gigi Murin", "Oneesan"];
+  assert.equal(getPrompt(), `${BASE_WHISPER_PROMPT} Names and terms: Imouto, Gigi Murin, Oneesan.`);
 });

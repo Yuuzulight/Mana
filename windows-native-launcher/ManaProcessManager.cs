@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Net.Http;
@@ -18,21 +19,28 @@ internal sealed class ManaProcessManager : IDisposable
     private Process? searxngProcess;
     private Process? retrieverProcess;
     private Process? gptSovitsProcess;
+    private Process? qwen3TtsProcess;
 
     public string RootDirectory { get; }
 
     // #691: opt-in services, read once at construction (node-bot/.env is
     // already loaded by then). They get a startup row only when turned on,
     // so an unused one never shows as "Unavailable".
-    // The Python retriever json.loads the whole tools/vector_store metadata
-    // (~11 GB of RAM measured on the current index, #809), so nothing starts
-    // it automatically: only MANA_START_RETRIEVER=1, here at launch.
+    // The Python retriever (~0.5 GB since #809) is started on demand by
+    // node-bot when a coding turn needs it and stopped when idle
+    // (ai/retriever-runtime.js). MANA_START_RETRIEVER=1 force-starts it here
+    // at launch instead.
     public bool UsesRetriever { get; } = Environment.GetEnvironmentVariable("MANA_START_RETRIEVER") == "1";
     // User decision: only the selected TTS provider is started. Fish is the
     // default (the same "fish" this launcher passes node-bot when unset);
     // Kokoro stays on demand in node-bot.
     public bool UsesFishSpeech { get; } = Environment.GetEnvironmentVariable("TTS_PROVIDER") is null or "" or "fish";
     public bool UsesGptSovits { get; } = Environment.GetEnvironmentVariable("TTS_PROVIDER") == "gpt_sovits";
+    public bool UsesQwen3Tts { get; } = Environment.GetEnvironmentVariable("TTS_PROVIDER") == "qwen3tts";
+    // #891: the same QWEN3_TTS_URL node-bot calls and the service takes its
+    // port from.
+    private readonly string qwen3TtsHealthUrl =
+        $"{(Environment.GetEnvironmentVariable("QWEN3_TTS_URL") ?? "http://127.0.0.1:5012").TrimEnd('/')}/health";
 
     // #582: only captures output for a backend process THIS launcher
     // spawned -- if StartAsync's health check found node-bot already
@@ -56,6 +64,8 @@ internal sealed class ManaProcessManager : IDisposable
     // "TTS_PROVIDER=fish is configured but Fish Speech isn't answering" --
     // the two look identical from the configured-provider name alone.
     public bool IsFishSpeechAvailable { get; private set; }
+    // Same meaning for Qwen3-TTS: running already, or launched by this run.
+    public bool IsQwen3TtsAvailable { get; private set; }
 
     // False when the configured backend URL points at another machine --
     // that machine runs its own node-bot and its own TTS services.
@@ -71,6 +81,7 @@ internal sealed class ManaProcessManager : IDisposable
     // where the node-bot backend happens to live.
     private readonly string backendHealthUrl;
     private readonly bool isBackendLocal;
+    private readonly bool localOnly;
 
     // handler: null (the default, and every existing call site's behavior)
     // constructs a real HttpClient for live health checks. Tests pass a
@@ -81,9 +92,10 @@ internal sealed class ManaProcessManager : IDisposable
     // behavior; pass the configured settings.BackendBaseUrl to keep the
     // backend health check consistent with where ManaBackendClient actually
     // points.
-    public ManaProcessManager(string rootDirectory, HttpMessageHandler? handler = null, string? backendBaseUrl = null)
+    public ManaProcessManager(string rootDirectory, HttpMessageHandler? handler = null, string? backendBaseUrl = null, bool localOnly = false)
     {
         RootDirectory = rootDirectory;
+        this.localOnly = localOnly;
         http = handler is null ? new HttpClient() : new HttpClient(handler);
         backendHealthUrl = $"{(backendBaseUrl ?? "http://127.0.0.1:5005").TrimEnd('/')}/health";
         // #681: a remote backend URL means that machine starts its own
@@ -94,8 +106,8 @@ internal sealed class ManaProcessManager : IDisposable
     }
 
     // onServiceReady, when given, fires once per service (key "backend"/
-    // "embedder"/"websearch", plus "fish-speech"/"retriever"/"gpt-sovits"
-    // when in use) the moment its own health-check-then-start
+    // "embedder"/"websearch", plus "fish-speech"/"retriever"/"gpt-sovits"/
+    // "qwen3-tts" when in use) the moment its own health-check-then-start
     // resolves -- lets a caller (the startup overlay) flip that row from
     // "Starting..." to "Ready"/"Unavailable" live instead of only knowing
     // "all three are done" after StartAsync itself returns. Fires on
@@ -158,10 +170,13 @@ internal sealed class ManaProcessManager : IDisposable
         var gptSovitsTask = UsesGptSovits
             ? StartAndReport("gpt-sovits", "http://127.0.0.1:9880/docs", () => Task.FromResult(isBackendLocal ? StartGptSovits() : null))
             : notUsed;
+        var qwen3TtsTask = UsesQwen3Tts
+            ? StartAndReport("qwen3-tts", qwen3TtsHealthUrl, () => Task.FromResult(isBackendLocal ? StartQwen3Tts() : null))
+            : notUsed;
 
         try
         {
-            await Task.WhenAll(fishSpeechTask, backendTask, embedderTask, searxngTask, retrieverTask, gptSovitsTask);
+            await Task.WhenAll(fishSpeechTask, backendTask, embedderTask, searxngTask, retrieverTask, gptSovitsTask, qwen3TtsTask);
         }
         finally
         {
@@ -183,6 +198,11 @@ internal sealed class ManaProcessManager : IDisposable
             if (searxngTask.IsCompletedSuccessfully) searxngProcess = searxngTask.Result.Process;
             if (retrieverTask.IsCompletedSuccessfully) retrieverProcess = retrieverTask.Result.Process;
             if (gptSovitsTask.IsCompletedSuccessfully) gptSovitsProcess = gptSovitsTask.Result.Process;
+            if (qwen3TtsTask.IsCompletedSuccessfully)
+            {
+                qwen3TtsProcess = qwen3TtsTask.Result.Process;
+                IsQwen3TtsAvailable = qwen3TtsTask.Result.Available;
+            }
         }
     }
 
@@ -205,16 +225,24 @@ internal sealed class ManaProcessManager : IDisposable
     // only waits for the launch. The startup screen waits on this so Mana
     // appears (and listens) only once she can actually speak. False straight
     // away if Fish isn't in use (remote backend, not set up, failed start).
-    public async Task<bool> WaitForFishSpeechReadyAsync(TimeSpan timeout, TimeSpan? pollInterval = null)
+    public Task<bool> WaitForFishSpeechReadyAsync(TimeSpan timeout, TimeSpan? pollInterval = null) =>
+        WaitForHealthyAsync(IsFishSpeechAvailable, "http://127.0.0.1:8080/v1/health", timeout, pollInterval);
+
+    // #891: likewise for Qwen3-TTS, whose /health only answers once the
+    // model is loaded and its CUDA graphs captured (~12 s).
+    public Task<bool> WaitForQwen3TtsReadyAsync(TimeSpan timeout, TimeSpan? pollInterval = null) =>
+        WaitForHealthyAsync(IsQwen3TtsAvailable, qwen3TtsHealthUrl, timeout, pollInterval);
+
+    private async Task<bool> WaitForHealthyAsync(bool available, string healthUrl, TimeSpan timeout, TimeSpan? pollInterval)
     {
-        if (!isBackendLocal || !IsFishSpeechAvailable)
+        if (!isBackendLocal || !available)
         {
             return false;
         }
         var deadline = DateTime.UtcNow + timeout;
         while (true)
         {
-            if (await IsServiceRunningAsync("http://127.0.0.1:8080/v1/health"))
+            if (await IsServiceRunningAsync(healthUrl))
             {
                 return true;
             }
@@ -384,7 +412,8 @@ internal sealed class ManaProcessManager : IDisposable
     }
 
     // #691: tools/retriever_service.py (main.js startRetrieverService), only
-    // with MANA_START_RETRIEVER=1 (see UsesRetriever).
+    // with MANA_START_RETRIEVER=1 (see UsesRetriever). Optional: node-bot
+    // starts it on demand otherwise.
     private Process? StartRetriever()
     {
         var retrieverScript = Path.Combine(RootDirectory, "tools", "retriever_service.py");
@@ -414,6 +443,38 @@ internal sealed class ManaProcessManager : IDisposable
         // silently returns 1 s of silence for every reply (see main.js).
         return StartOptional("GPT-SoVITS", runtimePython, $"{Quote(apiScript)} -a 127.0.0.1 -p 9880", gptSovitsDir,
             new() { ["PYTHONIOENCODING"] = "utf-8", ["PYTHONUTF8"] = "1" });
+    }
+
+    // #891: Qwen3-TTS (tools/qwen3tts_service.py), only with
+    // TTS_PROVIDER=qwen3tts, from its own venv (docs/qwen3_tts.md). Logs
+    // like Fish's, since a model-load failure is otherwise invisible;
+    // BelowNormal so synthesis never competes with the foreground app.
+    private Process? StartQwen3Tts()
+    {
+        var qwenDir = Path.Combine(RootDirectory, "tools", "qwen3-tts");
+        var python = ResolveVenvPython(qwenDir, ".venv");
+        var serviceScript = Path.Combine(RootDirectory, "tools", "qwen3tts_service.py");
+        if (!File.Exists(python) || !File.Exists(serviceScript))
+        {
+            Console.WriteLine($"Qwen3-TTS not set up at {qwenDir}; see docs/qwen3_tts.md.");
+            return null;
+        }
+        try
+        {
+            var process = StartHiddenProcess(
+                python,
+                Quote(serviceScript),
+                qwenDir,
+                stdoutLogPath: Path.Combine(qwenDir, "service.out.log"),
+                stderrLogPath: Path.Combine(qwenDir, "service.err.log"));
+            process.PriorityClass = ProcessPriorityClass.BelowNormal;
+            return process;
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Qwen3-TTS failed to start: {ex.Message}");
+            return null;
+        }
     }
 
     // A launch failure of an optional service is logged, never fatal.
@@ -468,6 +529,7 @@ internal sealed class ManaProcessManager : IDisposable
         startInfo.Environment["USE_EMBEDDINGS"] =
             Environment.GetEnvironmentVariable("USE_EMBEDDINGS") ?? "1";
         startInfo.Environment["MANA_LAUNCHER_KEY"] = LauncherKey;
+        ApplyLocalOnly(startInfo.Environment, localOnly);
 
         var process = Process.Start(startInfo) ??
                throw new InvalidOperationException("Failed to start Mana backend.");
@@ -485,6 +547,16 @@ internal sealed class ManaProcessManager : IDisposable
         process.BeginErrorReadLine();
 
         return process;
+    }
+
+    // #670: the Settings > Connection toggle. Only ever turns local-only
+    // mode on; MANA_LOCAL_ONLY in node-bot/.env is node-bot's own switch.
+    internal static void ApplyLocalOnly(IDictionary<string, string?> environment, bool localOnly)
+    {
+        if (localOnly)
+        {
+            environment["MANA_LAUNCHER_LOCAL_ONLY"] = "1";
+        }
     }
 
     // Shared by StartFishSpeech/StartEmbedder -- both are "python from a
@@ -676,7 +748,8 @@ internal sealed class ManaProcessManager : IDisposable
             StopAndReport("embedder", embedderProcess),
             StopAndReport("websearch", searxngProcess),
             StopAndReport("retriever", retrieverProcess),
-            StopAndReport("gpt-sovits", gptSovitsProcess));
+            StopAndReport("gpt-sovits", gptSovitsProcess),
+            StopAndReport("qwen3-tts", qwen3TtsProcess));
     }
 
     public void Dispose()
@@ -688,6 +761,7 @@ internal sealed class ManaProcessManager : IDisposable
         StopProcess(searxngProcess);
         StopProcess(retrieverProcess);
         StopProcess(gptSovitsProcess);
+        StopProcess(qwen3TtsProcess);
     }
 
     private static void StopProcess(Process? process)

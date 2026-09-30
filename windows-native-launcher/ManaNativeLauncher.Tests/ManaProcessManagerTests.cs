@@ -21,6 +21,22 @@ public class ManaProcessManagerTests
         Assert.NotEqual(first.LauncherKey, second.LauncherKey);
     }
 
+    // #670: the Settings toggle only ever turns local-only mode on, under
+    // its own variable (so a MANA_LOCAL_ONLY line in node-bot/.env can't
+    // turn it off).
+    [Fact]
+    public void ApplyLocalOnly_SetsTheLauncherVariableOnlyWhenOn()
+    {
+        var on = new Dictionary<string, string?>();
+        var off = new Dictionary<string, string?>();
+
+        ManaProcessManager.ApplyLocalOnly(on, true);
+        ManaProcessManager.ApplyLocalOnly(off, false);
+
+        Assert.Equal("1", on["MANA_LAUNCHER_LOCAL_ONLY"]);
+        Assert.Empty(off);
+    }
+
     [Fact]
     public void ResolveVenvPython_UsesGivenVenvSubdirUnderRoot()
     {
@@ -308,6 +324,41 @@ public class ManaProcessManagerTests
     }
 
     [Fact]
+    public async Task StartAsync_WithQwen3Tts_StartsItInsteadOfFishSpeech()
+    {
+        // #891: TTS_PROVIDER=qwen3tts checks (and would start) only
+        // Qwen3-TTS; with nothing installed under the root it reads
+        // Unavailable, and Fish Speech is never checked or reported.
+        Environment.SetEnvironmentVariable("TTS_PROVIDER", "qwen3tts");
+        try
+        {
+            var requested = new ConcurrentBag<string>();
+            var handler = new FakeHttpMessageHandler(request =>
+            {
+                requested.Add(request.RequestUri!.GetLeftPart(UriPartial.Path));
+                return new HttpResponseMessage(request.RequestUri.Port == 5005 ? HttpStatusCode.OK : HttpStatusCode.ServiceUnavailable);
+            });
+            using var manager = new ManaProcessManager(@"C:\does-not-exist", handler);
+            var reported = new ConcurrentDictionary<string, bool>();
+
+            await manager.StartAsync((key, available) => reported[key] = available);
+
+            Assert.False(reported["qwen3-tts"]);
+            Assert.False(manager.IsQwen3TtsAvailable);
+            Assert.Contains("http://127.0.0.1:5012/health", requested);
+            Assert.False(reported.ContainsKey("fish-speech"));
+            Assert.DoesNotContain(requested, url => new Uri(url).Port == 8080);
+            Assert.Equal(
+                ManaApplicationContext.ServiceRowsFor(manager).Select(row => row.Key).OrderBy(key => key),
+                reported.Keys.OrderBy(key => key));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("TTS_PROVIDER", null);
+        }
+    }
+
+    [Fact]
     public async Task WaitForFishSpeechReady_ReturnsTrueOnceFishAnswers()
     {
         // Healthy at launch (so it counts as available), then warming up
@@ -374,6 +425,7 @@ public class ManaProcessManagerTests
             {
                 ["backend"] = true, ["fish-speech"] = true, ["embedder"] = true,
                 ["websearch"] = true, ["retriever"] = true, ["gpt-sovits"] = true,
+                ["qwen3-tts"] = true,
             },
             new Dictionary<string, bool>(reported));
     }

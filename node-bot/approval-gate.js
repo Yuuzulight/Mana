@@ -207,6 +207,10 @@ function createApprovalGate(options = {}) {
     // patterns, and a model's own risk judgment shouldn't be able to
     // override a hit on those. Any Guardian failure (exception, unclear
     // verdict) falls straight through to the normal pending path below.
+    // #688: set when Guardian judged this and didn't clear it, so a caller
+    // can tell "Guardian said not safe" from a clean content scan (flags
+    // are empty either way).
+    let guardian = null;
     if (guardianEnabled && guardianPreCheck && !flags.length && !forceReview) {
       let verdict = null;
       try {
@@ -232,6 +236,7 @@ function createApprovalGate(options = {}) {
         });
         return { status: "approved", actionType, result, guardianCleared: true };
       }
+      guardian = { safe: false, reason: (verdict && verdict.reason) || "" };
     }
 
     const id = makeId();
@@ -246,7 +251,13 @@ function createApprovalGate(options = {}) {
       ...(forceReview ? { forceReview: true } : {}),
       ...(details ? { details } : {}),
     });
-    return { status: "pending", requestId: id, summary: summary || "", flags };
+    return {
+      status: "pending",
+      requestId: id,
+      summary: summary || "",
+      flags,
+      ...(guardian ? { guardian } : {}),
+    };
   }
 
   function listPending() {

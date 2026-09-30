@@ -42,8 +42,8 @@ internal static class SimpleFft
         return result;
     }
 
-    // In-place iterative radix-2 Cooley-Tukey.
-    private static void Transform(double[] real, double[] imag)
+    // In-place iterative radix-2 Cooley-Tukey. #678: also the speaker fbank.
+    internal static void Transform(double[] real, double[] imag)
     {
         var n = real.Length;
 

@@ -114,20 +114,24 @@ test("voice turn: /transcribe runs the same hooks", async () => {
   assert.equal(calls.replies[0].transcript, "hey Mana");
 });
 
-test("image turn: the rewritten text and patches reach the vision prompt", async () => {
+test("image turn: the rewritten text is described and reaches the chat path with the patches (#679)", async () => {
   let visionPrompt = null;
-  const { app } = createHookedApp({
+  const { app, calls } = createHookedApp({
     getVisionStatus: () => ({ available: true }),
+    chatAcceptsImages: () => false,
     runVisionReply: async (prompt) => {
       visionPrompt = prompt;
-      return "vision reply";
+      return "a cat";
     },
   });
   await withServer(app, async (baseUrl) => {
     const final = await postStream(baseUrl, { text: "manner, look", image: "data:image/png;base64,AAAA" });
-    assert.equal(final.reply, "vision reply");
+    assert.equal(final.reply, "model reply");
   });
-  assert.equal(visionPrompt, "Mana, look\n\nPlugin system note.\n\nPlugin user note.");
+  assert.match(visionPrompt, /Their message: Mana, look$/);
+  assert.equal(calls.replies[0].transcript, "[Image: a cat]\n\nMana, look");
+  assert.match(calls.replies[0].marketText, /Plugin user note\.$/);
+  assert.equal(calls.replies[0].systemPatch, "Plugin system note.");
 });
 
 test("a plugin system patch lands in the local model's system prompt", async () => {

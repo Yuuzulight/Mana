@@ -17,6 +17,18 @@ public class SileroVadRunnerTests
 
     internal static bool ModelAvailable => File.Exists(ModelPath) && new FileInfo(ModelPath).Length > 0;
 
+    // #858 + #665: Settings > Voice moves the enter threshold each time
+    // listening starts; the exit threshold follows it down, never above it.
+    [SkippableFact]
+    public void Threshold_KeepsTheExitThresholdAtOrBelowIt()
+    {
+        using var vad = new SileroVadRunner(ModelPath, 0.5f, 0.35f);
+        vad.Threshold = 0.3f;
+        Assert.Equal(0.3f, vad.ExitThreshold);
+        vad.Threshold = 0.7f;
+        Assert.Equal(0.35f, vad.ExitThreshold);
+    }
+
     [SkippableFact]
     public void ProcessFrame_ThrowsOnWrongFrameLength()
     {
@@ -62,5 +74,37 @@ public class SileroVadRunnerTests
         var probability = vad.ProcessFrame(silence);
 
         Assert.InRange(probability, 0f, 1f);
+    }
+
+    // #665: hysteresis -- enter at 0.5, stay until the score drops under 0.35.
+    [Fact]
+    public void NextSpeech_EntersAtTheThresholdAndLeavesOnlyBelowTheExit()
+    {
+        var scores = new[] { 0.3f, 0.45f, 0.6f, 0.4f, 0.36f, 0.34f, 0.45f, 0.5f };
+        var expected = new[] { false, false, true, true, true, false, false, true };
+        var inSpeech = false;
+        for (var i = 0; i < scores.Length; i++)
+        {
+            inSpeech = SileroVadRunner.NextSpeech(inSpeech, scores[i], SileroVadRunner.DefaultThreshold, SileroVadRunner.DefaultExitThreshold);
+            Assert.Equal(expected[i], inSpeech);
+        }
+    }
+
+    // #665: a soft consonant (0.4) inside "wait, stop" no longer resets the
+    // barge-in count, so it still fires at 350 ms of loud speech.
+    [Fact]
+    public void BargeInCount_SurvivesADipBetweenTheThresholds()
+    {
+        var scores = new[] { 0.7f, 0.8f, 0.4f, 0.7f, 0.6f, 0.4f, 0.7f, 0.8f, 0.7f, 0.9f, 0.7f, 0.8f };
+        var inSpeech = false;
+        long held = 0;
+        var fired = false;
+        foreach (var score in scores)
+        {
+            inSpeech = SileroVadRunner.NextSpeech(inSpeech, score, SileroVadRunner.DefaultThreshold, SileroVadRunner.DefaultExitThreshold);
+            (held, var triggered) = BargeInGate.Next(inSpeech, isLoudEnough: true, held, frameMs: 32);
+            fired |= triggered;
+        }
+        Assert.True(fired); // 12 x 32 ms = 384 ms >= 350 ms, never reset
     }
 }
