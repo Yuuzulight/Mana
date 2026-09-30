@@ -5,11 +5,13 @@ const test = require("node:test");
 
 const { createTryPrToolSource, TRY_PR_TOOL, BACK_TO_MAIN_TOOL } = require("../ai/try-pr-tool-source");
 
+const root = path.resolve("mana-checkout");
+
 function source(userMessage, prs = []) {
   const runs = [];
   const tools = createTryPrToolSource({
     userMessage,
-    repoRoot: "D:\Mana",
+    repoRoot: root,
     gh: async () => prs,
     run: (script, args) => runs.push({ script, args }),
   });
@@ -17,7 +19,7 @@ function source(userMessage, prs = []) {
   return { call, runs };
 }
 
-const script = path.join("D:\Mana", "windows-native-launcher", "try-pr.ps1");
+const script = path.join(root, "windows-native-launcher", "try-pr.ps1");
 
 test("a PR number only from my own message", async () => {
   const { call, runs } = source("can you run PR 1020 for me?");
