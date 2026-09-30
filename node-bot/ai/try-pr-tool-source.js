@@ -5,11 +5,14 @@
 // "back to main" runs it with -Main. A PR number has to come from my own
 // message; without one it's her newest open PR (a mana/* branch). Not in
 // the built-in risk tiers, so the approval gate asks me first.
+// #1011: "revert #N" opens the revert issue and PR (revert-pr.js), then
+// rolls the running build back with -Previous.
 const path = require("node:path");
 const { execFile, spawn } = require("node:child_process");
 
 const TRY_PR_TOOL = "mana_update__try_pr";
 const BACK_TO_MAIN_TOOL = "mana_update__back_to_main";
+const REVERT_TOOL = "mana_update__revert";
 
 const TOOL_SCHEMAS = [
   {
@@ -32,6 +35,22 @@ const TOOL_SCHEMAS = [
       parameters: { type: "object", properties: {} },
     },
   },
+  {
+    type: "function",
+    function: {
+      name: REVERT_TOOL,
+      description:
+        "A merged PR broke something: open an issue and a revert PR for it (never merged by you), and roll your running build back to the previous one. Only when Yuuzulight asks, with the PR number.",
+      parameters: {
+        type: "object",
+        properties: {
+          pr: { type: "integer", description: "The merged PR's number from their message." },
+          reason: { type: "string", description: "What broke, in a sentence, from what they told you." },
+        },
+        required: ["pr"],
+      },
+    },
+  },
 ];
 
 function ghJson(args, cwd) {
@@ -51,7 +70,7 @@ function runScript(script, args) {
   }).unref();
 }
 
-function createTryPrToolSource({ userMessage, repoRoot = path.join(__dirname, "..", ".."), gh = ghJson, run = runScript } = {}) {
+function createTryPrToolSource({ userMessage, repoRoot = path.join(__dirname, "..", ".."), gh = ghJson, run = runScript, revert } = {}) {
   const script = path.join(repoRoot, "windows-native-launcher", "try-pr.ps1");
   const asked = new Set(
     [...String(userMessage || "").matchAll(/(?:#|\bPR\s*#?)(\d+)/gi)].map((m) => Number(m[1])),
@@ -67,6 +86,19 @@ function createTryPrToolSource({ userMessage, repoRoot = path.join(__dirname, ".
     if (name === BACK_TO_MAIN_TOOL) {
       run(script, ["-Main"]);
       return JSON.stringify({ status: "ok", note: "Switching back to main; I restart once it's applied." });
+    }
+    if (name === REVERT_TOOL) {
+      const n = Number(args?.pr);
+      if (!asked.has(n)) return JSON.stringify({ status: "error", error: `#${n} isn't in Yuuzulight's message.` });
+      const result = await revert(n, args?.reason);
+      if (!result.ok) return JSON.stringify({ status: "error", error: result.error });
+      run(script, ["-Previous", "-Without", result.mergeCommit]);
+      return JSON.stringify({
+        status: "ok",
+        issue: result.issueUrl,
+        revertPr: result.prUrl,
+        note: "Rolling my running build back to the previous one in the background; I restart once it's applied.",
+      });
     }
     if (name !== TRY_PR_TOOL) throw new Error(`unknown tool: ${name}`);
     let pr = args?.pr == null ? null : Number(args.pr);
@@ -91,9 +123,9 @@ function createTryPrToolSource({ userMessage, repoRoot = path.join(__dirname, ".
 
   return {
     listToolSchemas: () => TOOL_SCHEMAS,
-    isKnownToolName: (name) => name === TRY_PR_TOOL || name === BACK_TO_MAIN_TOOL,
+    isKnownToolName: (name) => [TRY_PR_TOOL, BACK_TO_MAIN_TOOL, REVERT_TOOL].includes(name),
     executeTool,
   };
 }
 
-module.exports = { createTryPrToolSource, TRY_PR_TOOL, BACK_TO_MAIN_TOOL };
+module.exports = { createTryPrToolSource, TRY_PR_TOOL, BACK_TO_MAIN_TOOL, REVERT_TOOL };

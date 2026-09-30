@@ -346,4 +346,21 @@ public class AvatarGazeTests
         Assert.Equal(0f, AvatarGaze.NodOffset(AvatarGaze.NodSeconds));
         Assert.Equal(0f, AvatarGaze.NodOffset(double.PositiveInfinity));
     }
+
+    // Listening: a steady tilt with a slow sway, a small nod that loops
+    // every ListeningNodSeconds, soft eye smile -- all small.
+    [Fact]
+    public void ListeningPose_IsASubtleLoopingTiltAndNod()
+    {
+        for (var t = 0.0; t < 20; t += 0.05)
+        {
+            var (pitch, roll, eyeSmile) = AvatarGaze.ListeningPose(t);
+            Assert.InRange(pitch, -2f, 0f);
+            Assert.InRange(roll, 3f, 5f);
+            Assert.Equal(0.25f, eyeSmile);
+        }
+        Assert.Equal(0f, AvatarGaze.ListeningPose(0).Pitch, 3);
+        Assert.Equal(-2f, AvatarGaze.ListeningPose(AvatarGaze.ListeningNodSeconds / 2).Pitch, 3);
+        Assert.Equal(AvatarGaze.ListeningPose(1.3).Roll, AvatarGaze.ListeningPose(1.3 + (2 * AvatarGaze.ListeningNodSeconds)).Roll, 3);
+    }
 }

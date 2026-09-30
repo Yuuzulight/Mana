@@ -115,6 +115,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
     // #684: see ManaSettingsStore.AvatarHidesWithChat. servicesStarted: the
     // avatar first appears once startup is done, so nothing shows her earlier.
     private bool avatarHidesWithChat = ManaSettingsStore.Load().AvatarHidesWithChat;
+    private bool showAvatar = ManaSettingsStore.Load().ShowAvatar;
     private bool servicesStarted;
 
     public ManaApplicationContext(Rectangle? restoreChat = null)
@@ -163,7 +164,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
         // #899: above her visible top, not the top of her (framed, bigger) window.
         captionOverlay = new CaptionOverlayForm(() => avatarOverlay.Visible ? avatarOverlay.VisibleBounds : null);
         chatBubbles = new ChatBubblesForm(() => avatarOverlay.Visible ? avatarOverlay.Bounds : null, () => ChatBubblesForm.InView(sessionListForm));
-        captionOverlay.Suppressed = chatBubbles.BubblesOn; // #701: bubbles replace the caption bar
+        captionOverlay.Suppressed = !settings.CaptionsShown();
         chatBubbles.BubbleClicked += text =>
         {
             ShowSessionList();
@@ -171,6 +172,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
         };
         voiceLoop = new VoiceLoop(sileroVad, backendClient, audioPlayer, avatarOverlay, chatLog, chatLog, screenContextReader, () => gamingModeActive, clipBuffer, wakeWordClassifier, captionOverlay, chatBubbles);
         voiceLoop.SetPresetId(settings.ActivePresetId); // #681
+        avatarOverlay.IsListening = () => voiceLoop.IsListening;
         // windows-launcher only runs its own clip-buffer capture timer
         // when screen sensing is opted into (MANA_SCREEN_SENSING_ENABLED=1)
         // -- same gate here, so this launcher doesn't start silently
@@ -200,7 +202,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
             glanceTimer.Tick += async (_, _) => await glance.RunOnceAsync();
             glanceTimer.Start();
         }
-        sessionListForm = new SessionListForm(backendClient, voiceLoop, chatLog, avatarOverlay, processManager.BackendLog);
+        sessionListForm = new SessionListForm(backendClient, voiceLoop, chatLog, avatarOverlay, processManager.BackendLog) { ShowArtifacts = ShowArtifactViewer };
         // Creating the first form installed WinForms' context on this (UI)
         // thread; RunOnUi posts to it.
         uiContext = SynchronizationContext.Current ?? new WindowsFormsSynchronizationContext();
@@ -226,6 +228,9 @@ internal sealed class ManaApplicationContext : ApplicationContext
                 quickEntry.OpenWith($"About \"{System.Text.RegularExpressions.Regex.Replace(text, @"\s+", " ")}\": ")),
             // #910: a normal typed turn; its wording routes the screen read through JapaneseOcr.
             ["translate"] = () => _ = voiceLoop.SubmitTypedCommandAsync("Translate my screen"),
+            // Same as the tray's Start/Stop listening. (Hold-to-talk would
+            // need key-up, which RegisterHotKey doesn't report.)
+            ["listening"] = voiceLoop.ToggleListening,
         };
         globalHotkeys = new GlobalHotkeyListener(HotkeyBindings.Actions
             .Select(a => (a.Id, HotkeyBindings.Resolve(settings.Hotkeys, a), a.DisableEnvVar, hotkeyHandlers[a.Key]))
@@ -248,7 +253,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
             openChat: () => RunOnUi(ShowSessionList),
             onDoctor: payload => RunOnUi(() => ShowDoctorAlert(payload)),
             // #905: a reminder is said out loud too, even mid-game.
-            onSpeak: text => _ = voiceLoop.SpeakAnnouncementAsync(text),
+            onSpeak: payload => _ = voiceLoop.SpeakAnnouncementAsync(payload.Speak!, AnnouncementEmotion.For(payload.Emotion, payload.Kind ?? payload.Type)),
             // #914: the new character's Live2D model, loaded in place (and
             // why not, when her own model can't be used).
             onCharacter: payload => RunOnUi(() =>
@@ -292,7 +297,15 @@ internal sealed class ManaApplicationContext : ApplicationContext
         trayIcon.BalloonTipClicked += (_, _) => balloonClicked?.Invoke();
         sessionListForm.VisibleChanged += (_, _) => SyncAvatarWithChat();
         sessionListForm.Resize += (_, _) => SyncAvatarWithChat(); // minimized or restored
-        avatarOverlay.Clicked += voiceLoop.Wake; // #662
+        // #662: a click wakes her -- but never turns listening back on after
+        // I switched it off (the chat window's mic button still does).
+        avatarOverlay.Clicked += () =>
+        {
+            if (voiceLoop.IsListening)
+            {
+                voiceLoop.Wake();
+            }
+        };
         trayNotifications.Start();
         visionCaptureClient.Start();
         // #991: node-bot's own /restart.
@@ -354,12 +367,17 @@ internal sealed class ManaApplicationContext : ApplicationContext
         var menu = new ContextMenuStrip();
         // #689: Electron's tray entries, plus its two quick buttons.
         menu.Items.Add("Open Mana", null, (_, _) => ShowSessionList());
+        menu.Items.Add("Settings…", null, (_, _) =>
+        {
+            ShowSessionList(); // Settings floats over the chat window
+            sessionListForm.OpenSettings();
+        });
         menu.Items.Add("Minimize to overlay", null, (_, _) => sessionListForm.Hide());
         menu.Items.Add("Look at my screen now", null, (_, _) => _ = voiceLoop.SubmitVisionHotkeyAsync());
         menu.Items.Add("Open Model Web UI", null, (_, _) => OpenModelWebUi());
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add("Show status", null, (_, _) => ShowStatus());
-        menu.Items.Add("Artifact Viewer", null, (_, _) => { artifactViewer.Show(); artifactViewer.Activate(); });
+        menu.Items.Add("Artifact Viewer", null, (_, _) => ShowArtifactViewer());
         menu.Items.Add("Compare Models", null, (_, _) => new CompareModeForm(backendClient).Show());
         menu.Items.Add("Pending Edits", null, (_, _) => new ProposalsForm(backendClient).Show());
         menu.Items.Add("Edit Snapshots", null, (_, _) => new SnapshotsForm(backendClient).Show());
@@ -369,8 +387,6 @@ internal sealed class ManaApplicationContext : ApplicationContext
         menu.Items.Add("Doctor", null, (_, _) => ShowDoctorPanel());
         menu.Items.Add("VTube Studio", null, (_, _) => new VTubeStudioForm(backendClient).Show());
         menu.Items.Add("Open project folder", null, (_, _) => OpenProjectFolder());
-        menu.Items.Add("Set avatar idle", null, (_, _) => avatarOverlay.SetState(AvatarState.Idle));
-        menu.Items.Add("Set avatar talking", null, (_, _) => avatarOverlay.SetState(AvatarState.Talking));
         menu.Items.Add(new ToolStripSeparator());
         var gamingModeItem = new ToolStripMenuItem("Gaming mode detection") { CheckOnClick = true, Checked = gamingModeEnabled };
         menu.Opening += (_, _) => gamingModeItem.Checked = gamingModeEnabled;
@@ -399,6 +415,16 @@ internal sealed class ManaApplicationContext : ApplicationContext
             latest.Save();
         };
         menu.Items.Add(clickThroughItem);
+        var showAvatarItem = new ToolStripMenuItem("Show avatar") { CheckOnClick = true, Checked = showAvatar };
+        showAvatarItem.Click += (_, _) =>
+        {
+            showAvatar = showAvatarItem.Checked;
+            var latest = ManaSettingsStore.Load();
+            latest.ShowAvatar = showAvatar;
+            latest.Save();
+            SyncAvatarWithChat();
+        };
+        menu.Items.Add(showAvatarItem);
         var hidesWithChatItem = new ToolStripMenuItem("Hide avatar while chat is open") { CheckOnClick = true, Checked = avatarHidesWithChat };
         hidesWithChatItem.Click += (_, _) =>
         {
@@ -406,14 +432,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
             var latest = ManaSettingsStore.Load();
             latest.AvatarHidesWithChat = avatarHidesWithChat;
             latest.Save();
-            if (avatarHidesWithChat)
-            {
-                SyncAvatarWithChat();
-            }
-            else if (servicesStarted)
-            {
-                avatarOverlay.Show();
-            }
+            SyncAvatarWithChat();
         };
         menu.Items.Add(hidesWithChatItem);
         // #899: the overlay's framing and size, applied live.
@@ -452,12 +471,21 @@ internal sealed class ManaApplicationContext : ApplicationContext
         bubblesItem.Click += (_, _) =>
         {
             chatBubbles.BubblesOn = bubblesItem.Checked;
-            captionOverlay.Suppressed = bubblesItem.Checked; // #701
             var latest = ManaSettingsStore.Load();
             latest.ChatBubbles = bubblesItem.Checked;
+            latest.Captions ??= !captionOverlay.Suppressed; // pin what's showing now
             latest.Save();
         };
         menu.Items.Add(bubblesItem);
+        var captionsItem = new ToolStripMenuItem("Captions under Mana") { CheckOnClick = true, Checked = !captionOverlay.Suppressed };
+        captionsItem.Click += (_, _) =>
+        {
+            captionOverlay.Suppressed = !captionsItem.Checked;
+            var latest = ManaSettingsStore.Load();
+            latest.Captions = captionsItem.Checked;
+            latest.Save();
+        };
+        menu.Items.Add(captionsItem);
         // #681: Stop listening turns the mic off and puts Mana back to
         // sleep; Start listening needs the wake word again.
         var listeningItem = new ToolStripMenuItem();
@@ -472,8 +500,12 @@ internal sealed class ManaApplicationContext : ApplicationContext
         if (processManager.IsBackendLocal && processManager.UsesFishSpeech)
         {
             // A remote backend's Fish Speech isn't this launcher's to restart,
-            // and another selected TTS provider means Fish isn't in use.
-            menu.Items.Add("Restart Fish Speech", null, (_, _) => RestartFishSpeech());
+            // and another selected TTS provider means Fish isn't in use --
+            // #1076: which, with TTS_PROVIDER unset, is only known once the
+            // backend has picked.
+            var restartFishItem = new ToolStripMenuItem("Restart Fish Speech", null, (_, _) => RestartFishSpeech());
+            menu.Opening += (_, _) => restartFishItem.Visible = processManager.UsesFishSpeech;
+            menu.Items.Add(restartFishItem);
         }
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add("Update now", null, (_, _) => _ = RunUpdateScriptAsync()); // #995
@@ -481,11 +513,12 @@ internal sealed class ManaApplicationContext : ApplicationContext
         menu.Items.Add("Try a PR...", null, (_, _) => PromptTryPr());
         var backToMainItem = new ToolStripMenuItem("Back to main", null, (_, _) => _ = RunLauncherScriptAsync("try-pr.ps1", ["-Main"], "Going back to main", "Mana's switch back to main failed", "try-pr.log"));
         menu.Items.Add(backToMainItem);
+        menu.Items.Add("Revert a merged PR...", null, (_, _) => PromptRevertPr()); // #1011
         menu.Opening += (_, _) =>
         {
-            var trying = TryingPr(Path.Combine(processManager.RootDirectory, "windows-native-launcher"));
-            backToMainItem.Visible = trying is not null;
-            backToMainItem.Text = $"Back to main (trying PR #{trying})";
+            var running = RunningOffMain(Path.Combine(processManager.RootDirectory, "windows-native-launcher"));
+            backToMainItem.Visible = running is not null;
+            backToMainItem.Text = $"Back to main (running {running})";
         };
         menu.Items.Add("Exit Mana", null, (_, _) => _ = ShutdownAsync());
         return menu;
@@ -499,6 +532,12 @@ internal sealed class ManaApplicationContext : ApplicationContext
         {
             await processManager.StartAsync((key, available) =>
                 overlay.SetRowStatus(key, available ? "Ready" : "Unavailable", available ? RowState.Ready : RowState.Warn));
+            if (!processManager.UsesFishSpeech)
+            {
+                // #1076: the backend picked another voice (Kokoro without a
+                // CUDA GPU with room for Fish); a no-op without the row.
+                overlay.SetRowStatus("fish-speech", "Not needed", RowState.Ready);
+            }
             // Launched isn't ready: Fish Speech can compile for minutes. Hold
             // the screen (and listening) until her voice actually answers,
             // so the avatar never appears before she can talk.
@@ -536,7 +575,6 @@ internal sealed class ManaApplicationContext : ApplicationContext
             // The avatar appears only once the startup screen is done, so
             // she never pops up over it half-started.
             servicesStarted = true;
-            avatarOverlay.Show();
             SyncAvatarWithChat();
             ReportAvatarModelProblem();
             ReportUpdateRolledBack();
@@ -621,6 +659,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
             gamingModeActive = gamingModeEnabled && status.GamingAppRunning;
             SetTrayStatus(gamingModeActive ? "Mana - game mode" : "Mana");
             avatarOverlay.GameRunning = gamingModeActive; // Q3: click-through while gaming
+            chatBubbles.GameRunning = gamingModeActive;
         }
         catch
         {
@@ -694,7 +733,9 @@ internal sealed class ManaApplicationContext : ApplicationContext
                 throw new InvalidOperationException(WebcamCapture.OffMessage);
             }
             ShowCameraBalloon("Mana is looking through your camera", "One snapshot, not saved.", ToolTipIcon.Info);
-            return lastCameraSnapshot = await WebcamCapture.CaptureAsJpegDataUrlAsync();
+            var snapshot = await WebcamCapture.CaptureAsync();
+            lastCameraSnapshot = snapshot.Jpeg;
+            return snapshot.VisionDataUrl;
         }
         catch (Exception ex)
         {
@@ -703,8 +744,9 @@ internal sealed class ManaApplicationContext : ApplicationContext
         }
     }
 
-    // #962: the last snapshot, in memory only, for "save that".
-    private volatile string? lastCameraSnapshot;
+    // #962: the last snapshot's full-resolution JPEG, in memory only, for
+    // "save that".
+    private volatile byte[]? lastCameraSnapshot;
 
     // #962: vision__save_snapshot (write tier, so smart approval asks first)
     // writes it to Settings > Voice's folder or Pictures\Mana.
@@ -827,7 +869,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
         {
             if (await backendClient.SetCharacterAsync(id) is string handoff)
             {
-                await voiceLoop.SpeakAnnouncementAsync(handoff);
+                await voiceLoop.SpeakAnnouncementAsync(handoff, AnnouncementEmotion.For(null, "handoff"));
             }
         }
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or JsonException)
@@ -852,19 +894,22 @@ internal sealed class ManaApplicationContext : ApplicationContext
     // alive/reused (QuickEntryForm's own pattern), and this isn't opened
     // often enough for that cost to matter.
     // #684: with AvatarHidesWithChat on, she shows exactly while the chat
-    // window is closed or minimized.
+    // window is closed or minimized; the tray's Show avatar off hides her.
     private void SyncAvatarWithChat()
     {
-        if (!servicesStarted || !avatarHidesWithChat || avatarOverlay.IsDisposed)
+        if (!servicesStarted || avatarOverlay.IsDisposed)
         {
             return;
         }
-        var show = AvatarShowsBesideChat(sessionListForm.Visible, sessionListForm.WindowState);
+        var show = AvatarVisible(showAvatar, avatarHidesWithChat, sessionListForm.Visible, sessionListForm.WindowState);
         if (avatarOverlay.Visible != show)
         {
             avatarOverlay.Visible = show;
         }
     }
+
+    internal static bool AvatarVisible(bool showAvatar, bool hidesWithChat, bool chatVisible, FormWindowState chatState) =>
+        showAvatar && (!hidesWithChat || AvatarShowsBesideChat(chatVisible, chatState));
 
     internal static bool AvatarShowsBesideChat(bool chatVisible, FormWindowState chatState) =>
         !chatVisible || chatState == FormWindowState.Minimized;
@@ -940,6 +985,12 @@ internal sealed class ManaApplicationContext : ApplicationContext
                 action();
             }
         }, null);
+    }
+
+    private void ShowArtifactViewer()
+    {
+        artifactViewer.Show();
+        artifactViewer.Activate();
     }
 
     // #520: reused (Hide, not Close), so Load's own one-time-only refresh
@@ -1116,8 +1167,14 @@ internal sealed class ManaApplicationContext : ApplicationContext
         {
             return;
         }
+        var reason = File.ReadAllText(note).Trim();
         File.Delete(note);
-        ShowBalloon("Mana's update was rolled back", "The new launcher build didn't start, so I'm back on the previous one.", ToolTipIcon.Warning);
+        if (reason.Length == 0)
+        {
+            reason = "The new launcher build didn't start";
+        }
+        Console.WriteLine($"Launcher update rolled back: {reason}");
+        ShowBalloon("Mana's update was rolled back", $"{reason}, so I'm back on the previous one.", ToolTipIcon.Warning);
     }
 
     // #995: the tray's Update now -- pull, build, then apply straight away
@@ -1125,11 +1182,40 @@ internal sealed class ManaApplicationContext : ApplicationContext
     private Task RunUpdateScriptAsync() =>
         RunLauncherScriptAsync("update-mana.ps1", ["-Now"], "Updating Mana", "Mana's update failed", "update.log");
 
-    // #1010: the PR a "Try a PR" left running (bin/trying-pr), or null on main.
-    internal static int? TryingPr(string launcherDir)
+    // #1010: what try-pr.ps1 left running instead of main ("PR #1020", or
+    // #1011's "the previous build"), from bin/trying-pr; null on main.
+    internal static string? RunningOffMain(string launcherDir)
     {
         var marker = Path.Combine(launcherDir, "bin", "trying-pr");
-        return File.Exists(marker) && int.TryParse(File.ReadAllText(marker).Trim(), out var pr) ? pr : null;
+        var running = File.Exists(marker) ? File.ReadAllText(marker).Trim() : "";
+        return running.Length > 0 ? running : null;
+    }
+
+    // #1011: a merged PR broke something -- node-bot opens its issue and a
+    // revert PR, then the running build rolls back to the previous one.
+    private async void PromptRevertPr()
+    {
+        using var dialog = new TextPromptDialog("Revert a merged PR", "Merged PR number to revert:", "");
+        if (dialog.ShowDialog() != DialogResult.OK || !int.TryParse(dialog.Value.Trim().TrimStart('#'), out var pr) || pr <= 0)
+        {
+            return;
+        }
+        ManaRevertResult result;
+        try
+        {
+            result = await backendClient.RevertPrAsync(pr);
+        }
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or InvalidOperationException or JsonException)
+        {
+            result = new ManaRevertResult { Error = ex.Message };
+        }
+        if (result.PrUrl is null || result.MergeCommit is null)
+        {
+            ShowBalloon($"Mana couldn't revert #{pr}", result.Error ?? "No revert PR came back.", ToolTipIcon.Error);
+            return;
+        }
+        chatLog.AppendManaMessage($"I opened {result.PrUrl} to revert #{pr}, and I'm rolling back to the previous build.");
+        await RunLauncherScriptAsync("try-pr.ps1", ["-Previous", "-Without", result.MergeCommit], "Rolling back to the previous build", "Mana couldn't roll back", "try-pr.log");
     }
 
     private void PromptTryPr()
