@@ -29,6 +29,8 @@ const MAX_NOTE_BYTES = 8 * 1024;
 // silently cut.
 const MAX_TEXT_CHARS = 500;
 const DEBOUNCE_MS = 1500;
+// The header fields Mana writes (renderNote); any other key is the user's.
+const OWN_FIELDS = new Set(["status", "pinned", "trigger", "paused", "since", "source"]);
 // An archived note the user deleted: kept deleted, not written again.
 const DELETED = "deleted";
 // Views/ and Journal/: Mana writes these, the user only reads them.
@@ -90,13 +92,17 @@ function statusOf(fact) {
   return fact.status === "active" ? "active" : null;
 }
 
-function renderNote(fact) {
+// `kept`: the note already on disk (parseNote's result), if any. Its header
+// lines that aren't Mana's stay, and so does its body's layout while the
+// body still says the same as the fact (the fact's text has single spaces).
+function renderNote(fact, kept = {}) {
   const lines = ["---", `status: ${statusOf(fact)}`, `pinned: ${Boolean(fact.pinned)}`];
   if (fact.trigger) lines.push(`trigger: ${JSON.stringify(fact.trigger)}`, `paused: ${Boolean(fact.paused)}`);
   lines.push(`since: ${localDate(fact.validFrom || fact.createdAt)}`);
   const source = SOURCE_LABELS[fact.origin?.kind];
   if (source) lines.push(`source: ${source}${fact.unverifiedSource ? " (unverified)" : ""}`);
-  lines.push("---", "", fact.text, "");
+  const body = kept.rawBody && cleanText(kept.rawBody) === fact.text ? kept.rawBody : fact.text;
+  lines.push(...(kept.extra || []), "---", "", body, "");
   return lines.join("\n");
 }
 
@@ -116,21 +122,36 @@ function parseScalar(raw) {
   return raw;
 }
 
-// Just enough YAML for the header Mana writes: `key: scalar` lines.
-// Indented or "- " lines (a tags list Obsidian added) are skipped; any
-// other line makes the header broken.
+// Just enough YAML for the header Mana writes: `key: scalar` lines for her
+// own fields. Every other key (tags, aliases, a plugin's), with its
+// indented / "- " / blank lines, and comments go to `extra` as written, so
+// the note keeps them. Any other line makes the header broken. A UTF-8 BOM
+// (Notepad) is fine. `body` is the text as a fact (single spaces);
+// `rawBody` keeps its line breaks.
 function parseNote(content) {
-  const match = /^---\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n([\s\S]*))?$/.exec(content);
+  const match = /^﻿?---\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n([\s\S]*))?$/.exec(content);
   if (!match) return { error: "missing or broken YAML header" };
   const header = {};
+  const extra = [];
+  let keeping = false;
   for (const line of match[1].split(/\r?\n/)) {
-    if (!line.trim() || /^(\s|-\s|#)/.test(line)) continue;
+    if (!line.trim() || /^(\s|-(\s|$))/.test(line)) {
+      if (keeping) extra.push(line);
+      continue;
+    }
     const kv = /^([A-Za-z_][\w-]*):[ \t]*(.*)$/.exec(line);
+    keeping = line.startsWith("#") || Boolean(kv && !OWN_FIELDS.has(kv[1].toLowerCase()));
+    if (keeping) {
+      extra.push(line);
+      continue;
+    }
     const value = kv ? parseScalar(kv[2].trim()) : undefined;
     if (value === undefined) return { error: `broken YAML header line "${line.slice(0, 60)}"` };
     header[kv[1].toLowerCase()] = value;
   }
-  return { header, body: cleanText(match[2]) };
+  while (extra.length && !extra[extra.length - 1].trim()) extra.pop();
+  const rawBody = String(match[2] || "").replace(/\r\n/g, "\n").replace(/^([ \t]*\n)+/, "").trimEnd();
+  return { header, extra, body: cleanText(rawBody), rawBody };
 }
 
 // options.store: the acp memory store. options.vaultDir: the vault root.
@@ -329,14 +350,26 @@ function createMemoryVault(options = {}) {
     return false;
   }
 
-  function desiredNotes(facts) {
+  // onDisk: the scanned notes, whose own header lines and layout a
+  // rewrite keeps (renderNote) -- from the note at the same path, or one of
+  // the same name in another folder (the fact moved).
+  function desiredNotes(facts, onDisk) {
+    const parsed = new Map();
+    for (const note of onDisk.values()) {
+      const p = note.content === null ? null : parseNote(note.content);
+      if (!p || p.error) continue;
+      parsed.set(note.id, p);
+      if (!parsed.has(note.name.toLowerCase())) parsed.set(note.name.toLowerCase(), p);
+    }
     const desired = new Map();
     const oldestFirst = [...facts].sort((a, b) => String(a.updatedAt || "").localeCompare(String(b.updatedAt || "")));
     for (const fact of oldestFirst) {
       const noteStatus = statusOf(fact);
       if (!noteStatus) continue;
-      const rel = `${FOLDERS[noteStatus]}/${noteName(fact.key)}.md`;
-      desired.set(rel.toLowerCase(), { rel, content: renderNote(fact) });
+      const name = noteName(fact.key);
+      const rel = `${FOLDERS[noteStatus]}/${name}.md`;
+      const kept = parsed.get(rel.toLowerCase()) || parsed.get(name.toLowerCase());
+      desired.set(rel.toLowerCase(), { rel, content: renderNote(fact, kept) });
     }
     return desired;
   }
@@ -394,7 +427,7 @@ function createMemoryVault(options = {}) {
 
       // Mana -> vault. A note the user changed that couldn't be taken in
       // (broken header...) is left alone until they fix it.
-      const desired = desiredNotes(store.listFacts());
+      const desired = desiredNotes(store.listFacts(), onDisk);
       const ours = (id) => {
         const note = onDisk.get(id);
         return !note || taken.has(id) || (note.hash && note.hash === state.notes[id]);
