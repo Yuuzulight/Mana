@@ -40,6 +40,7 @@ internal sealed class AvatarMotionPlayer
         [AvatarState.Waiting] = ["Waiting", "Wait"],
         [AvatarState.Done] = ["Done", "Nod"],
         [AvatarState.Dreaming] = ["Dreaming", "Dream", "Sleep", "Sleepy"],
+        [AvatarState.Listening] = ["Listening", "Listen"],
     };
 
     private sealed record Clip(CubismMotionFile Motion, string Group, double StartSeconds);
@@ -114,7 +115,9 @@ internal sealed class AvatarMotionPlayer
             return; // same loop -- don't restart it
         }
         stateGroup = group;
-        if (newState != AvatarState.Idle)
+        // Listening without a clip of its own is the idle loop, and returns
+        // to it like Idle does (after the current clip).
+        if (newState != AvatarState.Idle && !(newState == AvatarState.Listening && group == IdleGroup))
         {
             Play(group, nowSeconds);
         }
@@ -135,7 +138,7 @@ internal sealed class AvatarMotionPlayer
                 continue;
             }
             nextRandomAtSeconds[i] = nowSeconds + NextRandomDelaySeconds(entry);
-            if (entry.States.Contains(StateName(state)) && FindGroup(entry.Group) is { } randomGroup)
+            if (RandomMotionFits(entry.States, state) && FindGroup(entry.Group) is { } randomGroup)
             {
                 Play(randomGroup, nowSeconds);
             }
@@ -207,4 +210,9 @@ internal sealed class AvatarMotionPlayer
         (entry.MinIntervalMs + ((entry.MaxIntervalMs - entry.MinIntervalMs) * random.NextDouble())) / 1000.0;
 
     private static string StateName(AvatarState state) => state.ToString().ToLowerInvariant();
+
+    // Listening is her at rest with the mic on, so "idle" ambient motions
+    // still play then.
+    private static bool RandomMotionFits(IReadOnlyCollection<string> states, AvatarState state) =>
+        states.Contains(StateName(state)) || (state == AvatarState.Listening && states.Contains("idle"));
 }

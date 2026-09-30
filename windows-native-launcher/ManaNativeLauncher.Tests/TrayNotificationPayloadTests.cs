@@ -22,11 +22,13 @@ public class TrayNotificationPayloadTests
     [Fact]
     public void TryParse_ReadsTheSpokenLineWhenPresent()
     {
-        var reminder = TrayNotificationPayload.TryParse(Json("""{"type":"cron","title":"Reminder","text":"raid","speak":"Yuuzu, raid!"}"""));
+        var reminder = TrayNotificationPayload.TryParse(Json("""{"type":"cron","kind":"reminder-late","emotion":"sad","title":"Reminder","text":"raid","speak":"Yuuzu, raid!"}"""));
         var job = TrayNotificationPayload.TryParse(Json("""{"type":"cron","text":"job finished"}"""));
 
         Assert.Equal("Yuuzu, raid!", reminder!.Speak);
+        Assert.Equal(("reminder-late", "sad"), (reminder.Kind, reminder.Emotion));
         Assert.Null(job!.Speak);
+        Assert.Null(job.Kind);
     }
 
     [Fact]

@@ -95,7 +95,11 @@ function createLocalLlamaRuntime(options = {}) {
   const toolsDir =
     options.toolsDir || path.resolve(baseDir, "..", "tools", "llama");
   const threads = Number(options.threads || env.LLAMA_THREADS || 4);
-  const systemPrompt = options.systemPrompt || DEFAULT_SYSTEM_PROMPT;
+  // #914: a function is read on every call (the active character's).
+  const systemPromptOf =
+    typeof options.systemPrompt === "function"
+      ? options.systemPrompt
+      : () => options.systemPrompt || DEFAULT_SYSTEM_PROMPT;
   const nowMs =
     options.nowMs || (() => Number(process.hrtime.bigint() / 1000000n));
   const logPerf = options.logPerf || (() => {});
@@ -174,7 +178,7 @@ function createLocalLlamaRuntime(options = {}) {
     }
 
     const llamaModel = findLlamaModel(profile);
-    const sysPrompt = overrideSystemPrompt || systemPrompt;
+    const sysPrompt = overrideSystemPrompt || systemPromptOf();
     // Build base args
     const baseArgs = isLocalModelSpec(llamaModel, fs)
       ? [
@@ -290,7 +294,9 @@ function createLocalLlamaRuntime(options = {}) {
     findLlamaModel,
     getLlamaStatus,
     runLocalAssistantReply,
-    systemPrompt,
+    get systemPrompt() {
+      return systemPromptOf();
+    },
   };
 }
 

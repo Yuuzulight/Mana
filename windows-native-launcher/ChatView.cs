@@ -728,9 +728,42 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
         e.Graphics.FillRectangle(brush, ClientRectangle);
     }
 
+    // A new chat's card: how to start, and a few things she can do.
+    internal const string EmptyStateText = "Say \"Mana\" or type below to start.\n\n"
+        + "A few things she can do:\n"
+        + "•  chat, and answer questions\n"
+        + "•  look at your screen (\"what's this?\", \"translate my screen\")\n"
+        + "•  look things up and research a topic\n"
+        + "•  remember what you tell her about yourself";
+
+    private void PaintEmptyState(Graphics g)
+    {
+        const TextFormatFlags flags = TextFormatFlags.WordBreak | TextFormatFlags.NoPrefix;
+        var width = Math.Min(420, ClientSize.Width - 48);
+        if (width <= 0)
+        {
+            return;
+        }
+        var text = TextRenderer.MeasureText(g, EmptyStateText, bodyFont, new Size(width - (PadX * 2), int.MaxValue), flags);
+        var card = new Rectangle((ClientSize.Width - width) / 2, Math.Max(24, (ClientSize.Height - text.Height) / 3), width, text.Height + (PadY * 2));
+        using (var fill = new SolidBrush(DarkTheme.ManaBubble))
+        {
+            g.FillRectangle(fill, card);
+        }
+        using (var border = new Pen(DarkTheme.Border))
+        {
+            g.DrawRectangle(border, card.X, card.Y, card.Width - 1, card.Height - 1);
+        }
+        TextRenderer.DrawText(g, EmptyStateText, bodyFont, Rectangle.Inflate(card, -PadX, -PadY), DarkTheme.Text, flags);
+    }
+
     protected override void OnPaint(PaintEventArgs e)
     {
         var g = e.Graphics;
+        if (messages.Count == 0)
+        {
+            PaintEmptyState(g);
+        }
         var scroll = scrolling ? scrollBar.Value : 0;
         for (var i = 0; i < messages.Count; i++)
         {

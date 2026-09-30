@@ -22,9 +22,20 @@ function getForeground() {
 }
 
 // Alt-tabbed out of a running game: one of #697's natural breaks, where a
-// held remark may go out. Unknown (no launcher reporting) is not a break.
+// held remark may go out. Unknown (no launcher reporting) is not a break,
+// and neither is a companion app I use while playing -- a Discord call or
+// OBS in front is still the game. MANA_GAME_COMPANION_APPS replaces the list.
+const DEFAULT_COMPANION_APPS = "discord.exe,discordptb.exe,discordcanary.exe,obs64.exe,obs32.exe";
+
+function companionApps() {
+  return (process.env.MANA_GAME_COMPANION_APPS ?? DEFAULT_COMPANION_APPS)
+    .split(",")
+    .map((name) => name.trim().toLowerCase())
+    .filter(Boolean);
+}
+
 function isAwayFromGame(gameProcessNames) {
-  return Boolean(current) && !gameProcessNames.includes(current.app);
+  return Boolean(current) && !gameProcessNames.includes(current.app) && !companionApps().includes(current.app);
 }
 
 module.exports = { getForeground, isAwayFromGame, reportForeground };
