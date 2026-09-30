@@ -17,6 +17,8 @@ namespace Mana.NativeLauncher;
 internal sealed class TrayNotificationClient : IDisposable
 {
     private const int ReconnectDelayMs = 15000;
+    // #1169: the toast button that takes over her browser.
+    internal const string BrowserTakeOverAction = "browserTakeOver";
 
     private readonly Uri trayWebSocketUri;
     private readonly ManaBackendClient? backendClient;
@@ -149,6 +151,21 @@ internal sealed class TrayNotificationClient : IDisposable
             onSelfWork?.Invoke(payload);
             return;
         }
+        // #1169: she asks me to take over her browser. node-bot doesn't
+        // send this while a game runs; the request waits in the panel.
+        if (payload?.Type == "browser-hand-over")
+        {
+            if (proactiveToasts)
+            {
+                new ToastContentBuilder()
+                    .AddText(payload.Title)
+                    .AddText(payload.Text)
+                    .AddButton(new ToastButton().SetContent("Take over").AddArgument("action", BrowserTakeOverAction))
+                    .AddButton(new ToastButton().SetContent("Dismiss").SetDismissActivation())
+                    .Show();
+            }
+            return;
+        }
         if (!string.IsNullOrWhiteSpace(payload?.Speak))
         {
             onSpeak?.Invoke(payload);
@@ -166,12 +183,31 @@ internal sealed class TrayNotificationClient : IDisposable
             .Show();
     }
 
-    private void OnToastActivated(ToastNotificationActivatedEventArgsCompat e)
+    private void OnToastActivated(ToastNotificationActivatedEventArgsCompat e) =>
+        _ = HandleActivationAsync(e.Argument, openChat, backendClient);
+
+    // #1169: Take over does what the Browser panel's button does.
+    internal static async Task HandleActivationAsync(string argument, Action openChat, ManaBackendClient? backendClient)
     {
-        var args = ToastArguments.Parse(e.Argument);
-        if (args.Contains("action") && args["action"] == "openChat")
+        var args = ToastArguments.Parse(argument);
+        if (!args.Contains("action"))
+        {
+            return;
+        }
+        if (args["action"] == "openChat")
         {
             openChat();
+        }
+        else if (args["action"] == BrowserTakeOverAction && backendClient is not null)
+        {
+            try
+            {
+                await backendClient.TakeOverBrowserAsync(null);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"TrayNotificationClient: couldn't take over her browser. {ex.Message}");
+            }
         }
     }
 

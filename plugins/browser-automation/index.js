@@ -4,6 +4,7 @@ const { createBrowserSession } = require("./browser-automation");
 const { isAdHost } = require("./ad-hosts");
 const { refuseIfLocalOnly } = require("../../node-bot/local-only");
 const { systemRamPercent, MAX_RAM_PERCENT } = require("../../node-bot/self-work");
+const trayNotifier = require("../../node-bot/tray-notifier");
 
 // Windows ships Edge (Chromium-based) on every install -- since Mana
 // targets Windows, this is the "already available" browser rather than
@@ -185,8 +186,15 @@ async function handBack() {
   await closing;
 }
 
-function requestHandOver(reason) {
-  needsYou = String(reason || "she needs you").slice(0, 200);
+// #1169: a new request also pops a toast with Take over (the launcher's
+// tray feed), except while a game runs: then it just waits in the panel.
+// She never opens the window herself.
+function requestHandOver(reason, deps = gateDeps) {
+  const text = String(reason || "she needs you").slice(0, 200);
+  if (text === needsYou || takenOver) return;
+  needsYou = text;
+  if (deps.isGaming?.()) return;
+  (deps.notifyTray || trayNotifier.notifyTray)({ type: "browser-hand-over", title: "Mana needs you in her browser", text }).catch?.(() => {});
 }
 
 function takeOverStatus() {

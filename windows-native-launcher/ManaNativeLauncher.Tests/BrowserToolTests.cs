@@ -200,6 +200,23 @@ public class BrowserToolTests
         });
     }
 
+    // #1169: the hand-over toast's Take over does what the panel's does;
+    // Open Chat still opens the chat.
+    [Fact]
+    public async Task Toast_TakeOver_AsksTheBackendForTheWindow()
+    {
+        var requests = new List<string>();
+        var chats = 0;
+        var backend = Backend(requests, () => Activity("t1"));
+        await TrayNotificationClient.HandleActivationAsync($"action={TrayNotificationClient.BrowserTakeOverAction}", () => chats++, backend);
+        Assert.Equal(["""POST /browser/take-over {"url":null}"""], requests);
+
+        await TrayNotificationClient.HandleActivationAsync("action=openChat", () => chats++, backend);
+        await TrayNotificationClient.HandleActivationAsync($"action={TrayNotificationClient.BrowserTakeOverAction}", () => chats++, null);
+        Assert.Equal(1, chats);
+        Assert.Single(requests);
+    }
+
     [Fact]
     public void Reader_DrawsTheCleanPage_WithOnlyDataImages_AndOpensTheRealOne()
     {
