@@ -87,8 +87,9 @@ const webAccessCapability = {
   // Chat-reply prompt context (issue #108); last resort in the priority
   // chain, so it stays a plain pass-through -- buildWebContextForPrompt
   // already self-guards on isWebAccessEnabled and its own URL/wiki/search
-  // detection.
-  contributePromptContext: (text) => buildWebContextForPrompt(text),
+  // detection. #908: context.game is the game I'm playing, if its wiki is known.
+  contributePromptContext: (text, context = {}) =>
+    buildWebContextForPrompt(text, process.env, context.game || null),
   getHealth: () => ({
     status: isWebAccessEnabled() ? "configured" : "disabled",
     configured: isWebAccessEnabled(),
