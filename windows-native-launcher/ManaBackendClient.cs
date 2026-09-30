@@ -1045,6 +1045,34 @@ internal sealed class ManaBackendClient
         return document.RootElement.TryGetProperty("override", out var overrideEl) ? overrideEl.GetString() : null;
     }
 
+    // #914: node-bot's characters (id, name) and the active one's id.
+    public async Task<(string Active, IReadOnlyList<(string Id, string Name)> Characters)> GetCharactersAsync()
+    {
+        using var response = await http.GetAsync("/characters");
+        response.EnsureSuccessStatusCode();
+        await using var stream = await response.Content.ReadAsStreamAsync();
+        using var document = await JsonDocument.ParseAsync(stream);
+        var root = document.RootElement;
+        var characters = root.GetProperty("characters").EnumerateArray()
+            .Select(c => (c.GetProperty("id").GetString() ?? "", c.GetProperty("name").GetString() ?? ""))
+            .ToList();
+        return (root.GetProperty("active").GetString() ?? "", characters);
+    }
+
+    // #914: switches character; her handoff line, or null if she already was.
+    public async Task<string?> SetCharacterAsync(string id)
+    {
+        var payload = JsonSerializer.Serialize(new { id });
+        using var content = new StringContent(payload, Encoding.UTF8, "application/json");
+        using var response = await http.PostAsync("/characters/active", content);
+        response.EnsureSuccessStatusCode();
+        await using var stream = await response.Content.ReadAsStreamAsync();
+        using var document = await JsonDocument.ParseAsync(stream);
+        return document.RootElement.TryGetProperty("handoff", out var handoff) && handoff.ValueKind == JsonValueKind.String
+            ? handoff.GetString()
+            : null;
+    }
+
     public async Task SetTtsOverrideAsync(string? provider)
     {
         var payload = JsonSerializer.Serialize(new { provider });
