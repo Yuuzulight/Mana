@@ -250,6 +250,8 @@ const { createDesktopToolSource, registerFileMoveRestorer } = require("./ai/desk
 const { createDeepThinkingState, createDeepThinkingToolSource } = require("./ai/deep-thinking-tool-source");
 const { visionCaptureBridge } = require("./vision-capture-bridge");
 const { createCodingToolSource } = require("./ai/coding-tool-source");
+const { createTryPrToolSource } = require("./ai/try-pr-tool-source");
+const { createReverter } = require("./revert-pr");
 const { createSelfWork } = require("./self-work");
 const { refuteEdit } = require("./ai/adversarial-verifier");
 const { createMcpClientRegistry } = require("./mcp-client-registry");
@@ -1971,27 +1973,6 @@ function parseTasklistCsvLine(line) {
   return values;
 }
 
-function getRunningProcessNames() {
-  if (process.platform !== "win32") {
-    return [];
-  }
-
-  const result = spawnSync("tasklist", ["/fo", "csv", "/nh"], {
-    encoding: "utf8",
-    maxBuffer: 5 * 1024 * 1024,
-    windowsHide: true,
-  });
-
-  if (result.error) {
-    throw result.error;
-  }
-  if (result.status !== 0) {
-    throw new Error(result.stderr || "tasklist failed");
-  }
-
-  return parseTasklistNames(result.stdout);
-}
-
 function parseTasklistNames(stdout) {
   return (stdout || "")
     .split(/\r?\n/)
@@ -2000,17 +1981,14 @@ function parseTasklistNames(stdout) {
     .map((name) => name.toLowerCase());
 }
 
+// The gaming watch's cached answer (polled every 30 s with a non-blocking
+// tasklist), never a fresh tasklist: this runs on every spoken reply and
+// every launcher status poll, and a spawnSync here stalled the event loop.
 function getGamingStatus() {
-  // Quick rundown: if one watched game process is running, Mana uses the lighter idle loop.
-  const runningProcesses = getRunningProcessNames();
-  const watchedNames = new Set(GAMING_PROCESS_NAMES);
-  const matchedProcesses = [
-    ...new Set(runningProcesses.filter((name) => watchedNames.has(name))),
-  ];
-
+  const game = gamingWatch.game();
   return {
-    gamingAppRunning: matchedProcesses.length > 0,
-    matchedProcesses,
+    gamingAppRunning: gamingWatch.isGaming(),
+    matchedProcesses: game ? [game] : [],
     watchedProcesses: GAMING_PROCESS_NAMES,
   };
 }
@@ -2615,6 +2593,14 @@ function registerRoutes(app, upload, deps = {}) {
   app.post("/agent/stop", (req, res) => {
     if (!checkAdminAuth(req, res)) return;
     return res.json({ stopped: agentActivity.stop(String(req.body?.id ?? "")) });
+  });
+
+  // #1011: an issue and a revert PR for a merged PR that broke something;
+  // the launcher then rolls its build back (try-pr.ps1 -Previous).
+  const reverter = deps.reverter || createReverter();
+  app.post("/updates/revert", async (req, res) => {
+    if (!checkAdminAuth(req, res)) return;
+    return res.json(await reverter.revert(req.body?.pr, req.body?.reason));
   });
 
   // #1006: Mana works one of my issues in her own worktree and opens a PR.
@@ -4818,6 +4804,9 @@ function registerRoutes(app, upload, deps = {}) {
             // #905: reminders the user asks for in chat -- not offered to
             // scheduled replies, which nobody is asking in.
             ...(userChat ? [createReminderToolSource({ getScheduler: cronSchedulerPlugin.getScheduler, sessionId })] : []),
+            // #1010: "let me try your PR" / "back to main" -- a PR number
+            // only from my own message.
+            ...(userChat ? [createTryPrToolSource({ userMessage: transcript, revert: reverter.revert })] : []),
             // #1008: "work on #N" -- only a number from my own message.
             ...(userChat ? [selfWork.chatToolSource(transcript)] : []),
             // #906: my email and calendar, only in my own chat (never a
