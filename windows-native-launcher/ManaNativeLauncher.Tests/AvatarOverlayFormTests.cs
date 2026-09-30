@@ -85,6 +85,14 @@ public class AvatarOverlayFormTests
     public void DefaultLocation_SitsOnTheBottomEdge(int? left, int bottom, int x, int y) =>
         Assert.Equal(new Point(x, y), AvatarOverlayForm.DefaultLocation(new Size(351, 248), WorkArea, left, bottom));
 
+    // #914: group mode's partner stands just left of Mana, bottoms level,
+    // or to her right when Mana is at the left edge.
+    [Theory]
+    [InlineData(1569, 792, 1218, 792)]
+    [InlineData(0, 792, 351, 792)]
+    public void BesideLocation_StandsNextToMana(int manaX, int manaY, int x, int y) =>
+        Assert.Equal(new Point(x, y), AvatarOverlayForm.BesideLocation(new Rectangle(manaX, manaY, 351, 248), new Size(351, 248), WorkArea));
+
     // A spot saved for the old 1x window, flush in the bottom-right corner:
     // moved about its bottom centre, then clamped -- still flush, no gap.
     [Fact]

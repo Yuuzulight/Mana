@@ -89,7 +89,13 @@ public class StreamingReplyPlayerTests
             "{\"type\":\"final\",\"reply\":\"She wishes.\",\"changed\":false,\"character\":\"evil-mana\",\"characterName\":\"Evil Mana\"}\n";
         var synthLog = new List<string>();
         var chat = new List<string>();
-        var player = new StreamingReplyPlayer(BuildFakeClient(ndjson, synthLog), _ => Task.FromResult(true), _ => { });
+        var speaking = new List<string?>();
+        StreamingReplyPlayer? player = null;
+        player = new StreamingReplyPlayer(BuildFakeClient(ndjson, synthLog), _ =>
+        {
+            speaking.Add(player!.PlayingCharacter); // whose avatar lip-syncs
+            return Task.FromResult(true);
+        }, _ => { });
 
         var (reply, changed, _, interrupted, _) = await player.StreamReplyAndPlayAsync("who's smarter?", onSentence: (text, speaker) => chat.Add($"{speaker}: {text}"));
 
@@ -98,6 +104,8 @@ public class StreamingReplyPlayerTests
         Assert.False(interrupted);
         Assert.Equal(new[] { "synth:Me.@mana", "synth:She wishes.@evil-mana" }, synthLog);
         Assert.Equal(new[] { "Mana: Me.", "Evil Mana: She wishes." }, chat);
+        Assert.Equal(new[] { "mana", "evil-mana" }, speaking);
+        Assert.Null(player.PlayingCharacter);
     }
 
     [Fact]
