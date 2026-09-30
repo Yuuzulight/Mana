@@ -1201,10 +1201,26 @@ internal sealed partial class SessionListForm : Form
     // couldn't, or null. Set by ManaApplicationContext, which owns the hotkeys.
     public Func<HotkeyAction, Keys?, string?>? BindHotkey { get; set; }
 
-    private void OpenSettings()
+    // Also the tray's Settings…; a second open just brings it forward.
+    private SettingsDialog? openSettings;
+
+    internal void OpenSettings()
     {
+        if (openSettings is not null)
+        {
+            openSettings.Activate();
+            return;
+        }
         using var dialog = new SettingsDialog(backendClient, backendLog, () => voiceLoop.CurrentSessionId, BindHotkey, new ListeningPause(() => voiceLoop.IsListening, voiceLoop.ToggleListening));
-        dialog.ShowDialog(this);
+        openSettings = dialog;
+        try
+        {
+            dialog.ShowDialog(this);
+        }
+        finally
+        {
+            openSettings = null;
+        }
         // #681: Settings > Presets persists the active preset straight to
         // ManaSettingsStore; pick up whatever it left there.
         voiceLoop.SetPresetId(ManaSettingsStore.Load().ActivePresetId);

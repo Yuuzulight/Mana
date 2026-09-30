@@ -115,6 +115,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
     // #684: see ManaSettingsStore.AvatarHidesWithChat. servicesStarted: the
     // avatar first appears once startup is done, so nothing shows her earlier.
     private bool avatarHidesWithChat = ManaSettingsStore.Load().AvatarHidesWithChat;
+    private bool showAvatar = ManaSettingsStore.Load().ShowAvatar;
     private bool servicesStarted;
 
     public ManaApplicationContext(Rectangle? restoreChat = null)
@@ -226,6 +227,9 @@ internal sealed class ManaApplicationContext : ApplicationContext
                 quickEntry.OpenWith($"About \"{System.Text.RegularExpressions.Regex.Replace(text, @"\s+", " ")}\": ")),
             // #910: a normal typed turn; its wording routes the screen read through JapaneseOcr.
             ["translate"] = () => _ = voiceLoop.SubmitTypedCommandAsync("Translate my screen"),
+            // Same as the tray's Start/Stop listening. (Hold-to-talk would
+            // need key-up, which RegisterHotKey doesn't report.)
+            ["listening"] = voiceLoop.ToggleListening,
         };
         globalHotkeys = new GlobalHotkeyListener(HotkeyBindings.Actions
             .Select(a => (a.Id, HotkeyBindings.Resolve(settings.Hotkeys, a), a.DisableEnvVar, hotkeyHandlers[a.Key]))
@@ -354,6 +358,11 @@ internal sealed class ManaApplicationContext : ApplicationContext
         var menu = new ContextMenuStrip();
         // #689: Electron's tray entries, plus its two quick buttons.
         menu.Items.Add("Open Mana", null, (_, _) => ShowSessionList());
+        menu.Items.Add("Settings…", null, (_, _) =>
+        {
+            ShowSessionList(); // Settings floats over the chat window
+            sessionListForm.OpenSettings();
+        });
         menu.Items.Add("Minimize to overlay", null, (_, _) => sessionListForm.Hide());
         menu.Items.Add("Look at my screen now", null, (_, _) => _ = voiceLoop.SubmitVisionHotkeyAsync());
         menu.Items.Add("Open Model Web UI", null, (_, _) => OpenModelWebUi());
@@ -369,8 +378,6 @@ internal sealed class ManaApplicationContext : ApplicationContext
         menu.Items.Add("Doctor", null, (_, _) => ShowDoctorPanel());
         menu.Items.Add("VTube Studio", null, (_, _) => new VTubeStudioForm(backendClient).Show());
         menu.Items.Add("Open project folder", null, (_, _) => OpenProjectFolder());
-        menu.Items.Add("Set avatar idle", null, (_, _) => avatarOverlay.SetState(AvatarState.Idle));
-        menu.Items.Add("Set avatar talking", null, (_, _) => avatarOverlay.SetState(AvatarState.Talking));
         menu.Items.Add(new ToolStripSeparator());
         var gamingModeItem = new ToolStripMenuItem("Gaming mode detection") { CheckOnClick = true, Checked = gamingModeEnabled };
         menu.Opening += (_, _) => gamingModeItem.Checked = gamingModeEnabled;
@@ -399,6 +406,16 @@ internal sealed class ManaApplicationContext : ApplicationContext
             latest.Save();
         };
         menu.Items.Add(clickThroughItem);
+        var showAvatarItem = new ToolStripMenuItem("Show avatar") { CheckOnClick = true, Checked = showAvatar };
+        showAvatarItem.Click += (_, _) =>
+        {
+            showAvatar = showAvatarItem.Checked;
+            var latest = ManaSettingsStore.Load();
+            latest.ShowAvatar = showAvatar;
+            latest.Save();
+            SyncAvatarWithChat();
+        };
+        menu.Items.Add(showAvatarItem);
         var hidesWithChatItem = new ToolStripMenuItem("Hide avatar while chat is open") { CheckOnClick = true, Checked = avatarHidesWithChat };
         hidesWithChatItem.Click += (_, _) =>
         {
@@ -406,14 +423,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
             var latest = ManaSettingsStore.Load();
             latest.AvatarHidesWithChat = avatarHidesWithChat;
             latest.Save();
-            if (avatarHidesWithChat)
-            {
-                SyncAvatarWithChat();
-            }
-            else if (servicesStarted)
-            {
-                avatarOverlay.Show();
-            }
+            SyncAvatarWithChat();
         };
         menu.Items.Add(hidesWithChatItem);
         // #899: the overlay's framing and size, applied live.
@@ -537,7 +547,6 @@ internal sealed class ManaApplicationContext : ApplicationContext
             // The avatar appears only once the startup screen is done, so
             // she never pops up over it half-started.
             servicesStarted = true;
-            avatarOverlay.Show();
             SyncAvatarWithChat();
             ReportAvatarModelProblem();
             ReportUpdateRolledBack();
@@ -838,19 +847,22 @@ internal sealed class ManaApplicationContext : ApplicationContext
     // alive/reused (QuickEntryForm's own pattern), and this isn't opened
     // often enough for that cost to matter.
     // #684: with AvatarHidesWithChat on, she shows exactly while the chat
-    // window is closed or minimized.
+    // window is closed or minimized; the tray's Show avatar off hides her.
     private void SyncAvatarWithChat()
     {
-        if (!servicesStarted || !avatarHidesWithChat || avatarOverlay.IsDisposed)
+        if (!servicesStarted || avatarOverlay.IsDisposed)
         {
             return;
         }
-        var show = AvatarShowsBesideChat(sessionListForm.Visible, sessionListForm.WindowState);
+        var show = AvatarVisible(showAvatar, avatarHidesWithChat, sessionListForm.Visible, sessionListForm.WindowState);
         if (avatarOverlay.Visible != show)
         {
             avatarOverlay.Visible = show;
         }
     }
+
+    internal static bool AvatarVisible(bool showAvatar, bool hidesWithChat, bool chatVisible, FormWindowState chatState) =>
+        showAvatar && (!hidesWithChat || AvatarShowsBesideChat(chatVisible, chatState));
 
     internal static bool AvatarShowsBesideChat(bool chatVisible, FormWindowState chatState) =>
         !chatVisible || chatState == FormWindowState.Minimized;
