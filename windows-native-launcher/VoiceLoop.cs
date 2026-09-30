@@ -381,7 +381,7 @@ internal sealed class VoiceLoop : IDisposable
         bargeInMinWords = BargeInPolicy.MinWords(Environment.GetEnvironmentVariable("MANA_BARGE_IN_MIN_WORDS"));
         wakeRearmMs = ResolveWakeRearmMs(Environment.GetEnvironmentVariable("MANA_WAKE_REARM_MS"));
         speakerGateMode = SpeakerGate.ResolveMode(Environment.GetEnvironmentVariable("MANA_SPEAKER_GATE"), settings.VoiceprintGate);
-        speakerThreshold = SpeakerGate.ResolveThreshold(Environment.GetEnvironmentVariable("MANA_SPEAKER_THRESHOLD"));
+        speakerThreshold = SpeakerGate.ResolveThreshold(Environment.GetEnvironmentVariable("MANA_SPEAKER_THRESHOLD"), settings.SpeakerThreshold);
         voiceprint = speakerGateMode == SpeakerGateMode.Off ? null : settings.Voiceprint;
         if (voiceprint is not null)
         {
