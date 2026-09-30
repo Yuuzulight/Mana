@@ -267,11 +267,15 @@ function normalizeEpistemic(value) {
 //   tool_derived   -- a content-returning tool (browser, MCP, file read...)
 //                     ran earlier in the turn, so the text may be the tool's
 //   system         -- reflexes, admin/Settings actions
+//   vault_edit     -- the user edited the fact's note in the vault (#935):
+//                     theirs like user_stated, except that a brand-new note
+//                     (or an edit to a still-pending fact) stays pending
 // Only user_stated/system writes land active and verified; the rest start
 // pending (#663) and tool_derived is also unverified until confirmed.
-const ORIGIN_KINDS = ["user_stated", "model_inferred", "tool_derived", "system"];
+const ORIGIN_KINDS = ["user_stated", "model_inferred", "tool_derived", "system", "vault_edit"];
 const EPISTEMIC_FOR_ORIGIN = {
   user_stated: "self_report",
+  vault_edit: "self_report",
   model_inferred: "inferred",
   tool_derived: "inferred",
 };
@@ -817,6 +821,11 @@ function createAcpMemoryStore(options = {}) {
   // ponytail: grows without bound (a few KB per change); rotate it if it
   // ever gets big enough to matter.
   const factsLogPath = path.join(dataDir, "facts-log.jsonl");
+  // #935: told after every fact save (the vault sync mirrors notes from it).
+  const factListeners = [];
+  function onFactsChanged(fn) {
+    factListeners.push(fn);
+  }
 
   // Facts from before ids existed fall back to key + creation time.
   function factIdentity(fact) {
@@ -857,6 +866,13 @@ function createAcpMemoryStore(options = {}) {
       fs.appendFileSync(factsLogPath, `${entries.map((e) => JSON.stringify(e)).join("\n")}\n`, "utf8");
     } catch (e) {
       console.warn("Fact history log append failed:", e?.message || e);
+    }
+    for (const fn of factListeners) {
+      try {
+        fn(entries);
+      } catch (e) {
+        console.warn("Fact change listener failed:", e?.message || e);
+      }
     }
   }
 
@@ -1024,7 +1040,12 @@ function createAcpMemoryStore(options = {}) {
     // the attribution check said; model-inferred and tool-derived values
     // start pending (#663) until the user confirms them.
     const unverified = Boolean(unverifiedSource) || kind === "tool_derived";
-    const nextStatus = kind === "model_inferred" || kind === "tool_derived" ? "pending" : "active";
+    const nextStatus =
+      kind === "model_inferred" ||
+      kind === "tool_derived" ||
+      (kind === "vault_edit" && existing?.status !== "active")
+        ? "pending"
+        : "active";
     // Issue #698: makes this fact a standing intent (see intentCanFire).
     // Like epistemic, only written when supplied, never cleared by omission.
     const cleanTrigger = cleanText(trigger, 200);
@@ -1167,6 +1188,28 @@ function createAcpMemoryStore(options = {}) {
     target.invalidatedAt = now();
     saveFacts(facts, { op: "invalidate", key: cleanTargetKey });
     return { key: cleanTargetKey, found: true };
+  }
+
+  // #935: undoes an archive or a supersede (the vault's "move the note back
+  // into Facts/"). Takes the record (from listFacts) since a key can have
+  // several archived ones. Refused while another live fact holds the key,
+  // so a key never has two.
+  function restoreFact(fact, origin) {
+    const facts = loadFacts();
+    const target = fact && facts.find((f) => factIdentity(f) === factIdentity(fact));
+    const restorable = target && (target.status === "archived" || (target.status === "active" && target.invalidatedAt));
+    if (!restorable) return { found: false };
+    const lowerKey = target.key.toLowerCase();
+    if (facts.some((f) => f !== target && isLiveFact(f) && f.key.toLowerCase() === lowerKey)) {
+      return { found: true, restored: false };
+    }
+    snapshotFact(target.key, target, `fact restore: ${target.key}`, "human");
+    const timestamp = now();
+    target.status = "active";
+    delete target.invalidatedAt;
+    target.updatedAt = timestamp;
+    saveFacts(facts, { op: "unarchive", key: target.key, origin: normalizeOrigin(origin, target.sessionId, timestamp) });
+    return { found: true, restored: true };
   }
 
   // Issue #663: pending facts nobody confirmed within maxAgeDays of being
@@ -2400,6 +2443,8 @@ function createAcpMemoryStore(options = {}) {
     archiveExpiredPendingFacts,
     setFactPinned,
     setFactPaused,
+    restoreFact,
+    onFactsChanged,
     listUntypedEntities,
     setEntityType,
     listCanonicalEntitiesOfType,
