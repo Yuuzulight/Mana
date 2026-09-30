@@ -9,7 +9,8 @@ set "MANA_ALLOW_REMOTE_AI=0"
 
 REM --- Whisper (local STT, keep as-is) ---
 set "WHISPER_BIN=C:\ManaAI\Mana\tools\whisper\Release\whisper-cli.exe"
-set "WHISPER_MODEL=C:\ManaAI\Mana\tools\whisper\models\ggml-tiny.en.bin"
+REM No WHISPER_MODEL here: node-bot picks the installed model (multilingual when
+REM the speech language isn't English). node-bot\.env can still pin one.
 
 REM --- Local llama ---
 set "LLAMA_BIN=C:\ManaAI\Mana\tools\llama\llama-b9436-bin-win-cuda-12.4-x64\llama-cli.exe"
