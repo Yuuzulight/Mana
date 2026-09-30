@@ -1,6 +1,12 @@
 const { createDiscordBridge, handleDiscordMessage } = require("./discord-bot");
 const { createVoiceCommandHandler } = require("./discord-voice-commands");
 const { createWhisperQueue } = require("./whisper-queue");
+const { localOnlyRefusal } = require("../../node-bot/local-only");
+
+// #670: "" unless local-only mode rules out discord.com.
+function localOnlyBlock(env) {
+  return localOnlyRefusal("https://discord.com", "the Discord bot's connection to", env);
+}
 
 // Module-level singletons, same pattern as telegram-bridge's -- one
 // bridge/client/voice-command-handler shared across every route and the
@@ -80,6 +86,11 @@ function getVoiceCommands(deps, realClient) {
 function startClient(deps) {
   const env = deps.env || process.env;
   if (!env.MANA_DISCORD_BOT_TOKEN || client) return;
+  const blocked = localOnlyBlock(env);
+  if (blocked) {
+    console.warn(`discord-bot: not started. ${blocked}`);
+    return;
+  }
 
   const activeBridge = getBridge(deps);
   const { Client, GatewayIntentBits, Events, Partials } = deps.discordjs || require("discord.js");
@@ -133,12 +144,15 @@ module.exports = {
   getHealth: (deps = {}) => {
     const env = deps.env || process.env;
     const configured = Boolean(env.MANA_DISCORD_BOT_TOKEN);
+    const blocked = configured && localOnlyBlock(env);
     return {
-      status: configured ? "configured" : "unavailable",
+      status: configured && !blocked ? "configured" : "unavailable",
       configured,
-      message: configured
-        ? "Discord bot configured and connected"
-        : "No bot token configured -- set MANA_DISCORD_BOT_TOKEN",
+      message:
+        blocked ||
+        (configured
+          ? "Discord bot configured and connected"
+          : "No bot token configured -- set MANA_DISCORD_BOT_TOKEN"),
     };
   },
   // Test-only escape hatch to reset the module-level singletons between

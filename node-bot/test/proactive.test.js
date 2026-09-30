@@ -1,6 +1,9 @@
 // Issue #697: the proactive core -- threshold, daily budget, gaming-break
 // gating, spacing and expiry.
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
 const test = require("node:test");
 const { createProactive, DAILY_BUDGET } = require("../proactive");
 
@@ -106,4 +109,28 @@ test("#905 an explicit reminder gets through mid-game", async () => {
   assert.equal(later(), "remark");
   await tick();
   assert.deepEqual(state.sent, ["check retainers", "remark"]);
+});
+
+test("#986 held remarks and today's spend survive a restart", async () => {
+  const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "proactive-")), "proactive-held.json");
+  try {
+    const before = setup();
+    before.p.persistTo(file);
+    for (let i = 0; i < DAILY_BUDGET; i++) {
+      before.say(`r${i}`);
+      before.state.t += MINUTE;
+    }
+    assert.equal(before.say("tomorrow", { ttlMs: DAY }), "held");
+
+    const after = setup(); // a new backend process
+    after.state.t = before.state.t;
+    after.p.persistTo(file);
+    assert.equal(after.later(), null); // today's budget is still spent
+    after.state.t = new Date(2026, 8, 30, 8, 0).getTime();
+    assert.equal(after.later(), "tomorrow");
+    await tick();
+    assert.deepEqual(after.state.sent, ["tomorrow"]);
+  } finally {
+    fs.rmSync(path.dirname(file), { recursive: true, force: true });
+  }
 });
