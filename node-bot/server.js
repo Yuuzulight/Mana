@@ -568,8 +568,13 @@ const gamingWatch = createGamingWatch({
     retrieverService.stop();
     // #872/#889: drops the vision mmproj, and swaps to MANA_GAMING_LLAMA_MODEL when it's set.
     llamaServerRuntime.setGaming(true);
+    // #914: group mode pauses; after this poll has recorded the game.
+    queueMicrotask(() => characterStore.gameChanged());
   },
-  onGameEnd: () => llamaServerRuntime.setGaming(false),
+  onGameEnd: () => {
+    llamaServerRuntime.setGaming(false);
+    queueMicrotask(() => characterStore.gameChanged());
+  },
 });
 if (process.env.NODE_ENV !== "test" && !process.env.NODE_TEST_CONTEXT) {
   gamingWatch.poll();
@@ -707,6 +712,15 @@ const characterStore = createCharacterStore({
       id: character.id,
       title: character.name,
       model: character.live2dModel,
+    }),
+  // Group mode: the launcher shows (or hides, id null) the partner's avatar.
+  isGaming: () => gamingWatch.isGaming(),
+  onGroupChange: (partner) =>
+    notifyTray({
+      type: "group",
+      id: partner?.id ?? null,
+      title: partner?.name ?? null,
+      model: partner?.live2dModel ?? null,
     }),
 });
 

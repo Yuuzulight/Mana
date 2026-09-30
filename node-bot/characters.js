@@ -71,9 +71,14 @@ function normalize(entry, baseDir, builtIn) {
 
 // options.filePath: injectable for tests. options.onSwitch(character,
 // previous) runs after every change of the active character.
+// options.isGaming: whether a game is being played (group mode pauses);
+// options.onGroupChange(partner or null) runs whenever the character
+// replying alongside the active one changes.
 function createCharacterStore(options = {}) {
   const filePath = options.filePath || DEFAULT_FILE_PATH;
   const onSwitch = options.onSwitch || (() => {});
+  const isGaming = options.isGaming || (() => false);
+  const onGroupChange = options.onGroupChange || (() => {});
   const builtIn = BUILT_IN.map((c) => ({ ...c, voice: null, live2dModel: null }));
   let activeId = DEFAULT_ID;
   // Read again only when the file changes: active() runs every turn and
@@ -123,8 +128,93 @@ function createCharacterStore(options = {}) {
     if (!character) return null;
     const previous = active();
     activeId = character.id;
-    if (character.id !== previous.id) onSwitch(character, previous);
+    if (character.id !== previous.id) {
+      // Switching to the partner keeps the duo: the previous one takes her place.
+      if (group.partner === character.id) group.partner = previous.id;
+      onSwitch(character, previous);
+      reportGroup();
+    }
     return { character, previous };
+  }
+
+  // Group mode: a partner replies alongside the active character. Off by
+  // default and not saved. Paused while a game is played, unless it was
+  // turned on during that game -- then it stays on until the game ends.
+  let group = { on: false, partner: null, duringGame: false };
+  let reportedPartner = null;
+
+  // The character replying alongside the active one right now, or null.
+  function groupPartner() {
+    if (!group.on || (isGaming() && !group.duringGame)) return null;
+    const partner = get(group.partner);
+    return partner && partner.id !== active().id ? partner : null;
+  }
+
+  function reportGroup() {
+    const partner = groupPartner();
+    if ((partner?.id ?? null) === reportedPartner) return;
+    reportedPartner = partner?.id ?? null;
+    onGroupChange(partner);
+  }
+
+  // paused: on, but held off by a game.
+  const groupState = () => ({
+    on: group.on,
+    partner: group.partner,
+    paused: group.on && isGaming() && !group.duringGame,
+  });
+
+  // on with a partner id, or without one for the last partner (else the
+  // first character who isn't active). Null for an unknown partner or the
+  // active one herself.
+  function setGroup(on, partnerId) {
+    if (on) {
+      const partner = partnerId
+        ? get(String(partnerId).trim().toLowerCase())
+        : get(group.partner) || list().find((c) => c.id !== active().id);
+      if (!partner || partner.id === active().id) return null;
+      group = { on: true, partner: partner.id, duringGame: isGaming() };
+    } else {
+      group = { ...group, on: false, duringGame: false };
+    }
+    reportGroup();
+    return groupState();
+  }
+
+  // server.js calls this when a game starts or ends.
+  function gameChanged() {
+    if (!isGaming()) group.duringGame = false;
+    reportGroup();
+  }
+
+  // The characters a line names, longest names first so "Evil Mana"
+  // doesn't also count as "Mana".
+  function mentioned(message) {
+    let line = String(message || "").toLowerCase();
+    const found = [];
+    for (const c of [...list()].sort((a, b) => b.name.length - a.name.length)) {
+      const pattern = new RegExp(`(?<![\\w'])${nameRegex(c.name)}(?![\\w'])`, "g");
+      if (pattern.test(line)) {
+        found.push(c);
+        line = line.replace(pattern, " ");
+      }
+    }
+    return found;
+  }
+
+  // "group mode on", "start group chat with Evil Mana", "let Evil Mana
+  // join", "turn off group mode": { on, partner (id or null) }, or null.
+  function findGroupRequest(message) {
+    const line = String(message || "").trim().toLowerCase();
+    if (!line || line.length > MAX_SWITCH_REQUEST_CHARS) return null;
+    const named = mentioned(line).find((c) => c.id !== active().id) || null;
+    if (/\b(?:(?:turn|switch)\s+off|stop|end|disable)\s+(?:the\s+)?group\s+(?:mode|chat)\b|\bgroup\s+(?:mode|chat)\s+off\b/.test(line)) {
+      return { on: false, partner: null };
+    }
+    const asksOn =
+      /\b(?:(?:turn|switch)\s+on|start|enable)\s+(?:a\s+|the\s+)?group\s+(?:mode|chat)\b|\bgroup\s+(?:mode|chat)\s+on\b/.test(line) ||
+      (named && new RegExp(`\\b(?:let|have)\\s+${nameRegex(named.name)}\\s+join\\b`).test(line));
+    return asksOn ? { on: true, partner: named?.id ?? null } : null;
   }
 
   // The character a chat line asks to switch to ("let Evil Mana talk",
@@ -136,7 +226,7 @@ function createCharacterStore(options = {}) {
     return (
       list().find((c) => {
         if (c.id === current) return false;
-        const name = c.name.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/\s+/g, "\\s+");
+        const name = nameRegex(c.name);
         return [
           `\\b(?:let|have|get|make)\\s+${name}\\s+(?:talk|speak|take over|answer|come out)`,
           `\\b(?:switch|swap|change|go)\\s+(?:back\\s+)?(?:over\\s+)?to\\s+${name}(?![\\w'])`,
@@ -148,8 +238,24 @@ function createCharacterStore(options = {}) {
     );
   }
 
-  return { list, get, active, setActive, findSwitchRequest };
+  return {
+    list,
+    get,
+    active,
+    setActive,
+    findSwitchRequest,
+    groupPartner,
+    groupState,
+    setGroup,
+    gameChanged,
+    mentioned,
+    findGroupRequest,
+  };
 }
+
+// A name as regex source, any whitespace between its words.
+const nameRegex = (name) =>
+  name.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/\s+/g, "\\s+");
 
 function handoffLine(character, previous) {
   const line = character.handoff || `${character.name} here.`;

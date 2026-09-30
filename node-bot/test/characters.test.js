@@ -134,6 +134,80 @@ test("routes list and switch; a chat request answers with the handoff line", asy
   assert.equal(store.active().id, "mana");
 });
 
+test("group mode: off by default, paused by a game unless turned on during it", () => {
+  let gaming = false;
+  const reported = [];
+  const store = createCharacterStore({
+    filePath: tempFile(),
+    isGaming: () => gaming,
+    onGroupChange: (partner) => reported.push(partner?.id ?? null),
+  });
+  assert.equal(store.groupPartner(), null);
+  assert.equal(store.setGroup(true, "mana"), null, "not the active one");
+  assert.equal(store.setGroup(true, "nobody"), null);
+  assert.deepEqual(store.setGroup(true), { on: true, partner: "evil-mana", paused: false });
+
+  gaming = true;
+  store.gameChanged();
+  assert.equal(store.groupPartner(), null, "paused while gaming");
+  assert.deepEqual(store.groupState(), { on: true, partner: "evil-mana", paused: true });
+  store.setGroup(true);
+  assert.equal(store.groupPartner()?.id, "evil-mana", "turned on during the game");
+  gaming = false;
+  store.gameChanged();
+  gaming = true;
+  store.gameChanged();
+  assert.equal(store.groupPartner(), null, "the next game pauses it again");
+  gaming = false;
+  store.gameChanged();
+
+  store.setActive("evil-mana");
+  assert.equal(store.groupPartner()?.id, "mana", "switching to the partner keeps the duo");
+  store.setGroup(false);
+  assert.equal(store.groupPartner(), null);
+  assert.deepEqual(reported, ["evil-mana", null, "evil-mana", null, "evil-mana", "mana", null]);
+});
+
+test("group mode from chat and the route; names are found longest first", async () => {
+  const store = createCharacterStore({ filePath: tempFile() });
+  assert.deepEqual(store.mentioned("Evil Mana, what do you think?").map((c) => c.id), ["evil-mana"]);
+  assert.deepEqual(store.mentioned("Mana and Evil Mana").map((c) => c.id), ["evil-mana", "mana"]);
+  assert.deepEqual(store.mentioned("manager's report"), []);
+  assert.deepEqual(store.findGroupRequest("turn on group mode"), { on: true, partner: null });
+  assert.deepEqual(store.findGroupRequest("start a group chat with Evil Mana"), { on: true, partner: "evil-mana" });
+  assert.deepEqual(store.findGroupRequest("let Evil Mana join us"), { on: true, partner: "evil-mana" });
+  assert.deepEqual(store.findGroupRequest("group mode off"), { on: false, partner: null });
+  assert.equal(store.findGroupRequest("what's a group chat?"), null);
+  assert.equal(store.findSwitchRequest("let Evil Mana join"), null, "joining isn't switching");
+
+  const capability = createCharactersCapability(store);
+  assert.deepEqual(capability.onUserInput({ text: "let Evil Mana join" }), { reply: "Okay, Evil Mana is joining us~" });
+  assert.equal(store.groupPartner()?.id, "evil-mana");
+  assert.equal(store.active().id, "mana");
+  assert.deepEqual(capability.onUserInput({ text: "stop group mode" }), { reply: "Okay, just me again~" });
+
+  const app = express();
+  app.use(express.json());
+  capability.registerRoutes(app);
+  await withServer(app, async (baseUrl) => {
+    const post = (body) =>
+      fetch(`${baseUrl}/characters/group`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+    assert.equal((await post({})).status, 400);
+    assert.equal((await post({ on: true, partner: "nobody" })).status, 404);
+    assert.deepEqual((await (await post({ on: true, partner: "evil-mana" })).json()).group, {
+      on: true,
+      partner: "evil-mana",
+      paused: false,
+    });
+    assert.equal((await (await fetch(`${baseUrl}/characters`)).json()).group.on, true);
+    assert.equal((await (await post({ on: false })).json()).group.on, false);
+  });
+});
+
 test("Qwen3-TTS gets the active character's reference clip, or none for the service's own voice", async () => {
   const bodies = [];
   let voice = null;
