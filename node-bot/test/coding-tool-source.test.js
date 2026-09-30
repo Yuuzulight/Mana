@@ -222,6 +222,23 @@ test("run_tests asks first, and runs the detected command in the workspace once 
   assert.deepEqual(ran, [{ command: "npm test", cwd: path.resolve(ws) }]);
 });
 
+// #1002: goal mode's approvals come from the gate, never the call's own args.
+test("run_tests still asks when the model says it's approved", async () => {
+  const ws = tempDir();
+  fs.writeFileSync(path.join(ws, "package.json"), JSON.stringify({ scripts: { test: "node --test" } }));
+  const ran = [];
+  const gate = fakeGate();
+  const source = createCodingToolSource({
+    editors: fakeEditors({ workspace: { path: ws } }),
+    approvalGate: gate,
+    runTests: async (command) => ran.push(command),
+  });
+  const result = JSON.parse(await source.executeTool(CODING_TEST_TOOL_NAME, { approved: true, force: true, confirm: true }));
+  assert.equal(result.status, "pending");
+  assert.equal(gate.requests.length, 1);
+  assert.deepEqual(ran, []);
+});
+
 test("run_tests refuses a path outside the workspace", async () => {
   const source = createCodingToolSource({ editors: fakeEditors({ workspace: { path: tempDir() } }), approvalGate: fakeGate({ granted: true }) });
   const result = JSON.parse(await source.executeTool(CODING_TEST_TOOL_NAME, { path: ".." }));
