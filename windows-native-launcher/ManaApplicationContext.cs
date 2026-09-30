@@ -258,7 +258,8 @@ internal sealed class ManaApplicationContext : ApplicationContext
                 {
                     ReportAvatarModelProblem();
                 }
-            }));
+            }),
+            onSelfWork: payload => RunOnUi(() => ShowSelfWorkNotice(chatLog, payload)));
         // #689: a second launcher started -- show this one's window instead.
         showRequests = SingleInstance.ListenForShow(() => RunOnUi(ShowSessionList));
         updateRequests = SingleInstance.ListenForUpdate(false, () => RunOnUi(() => ApplyUpdate(now: false)));
@@ -364,6 +365,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
         menu.Items.Add("Edit Snapshots", null, (_, _) => new SnapshotsForm(backendClient).Show());
         menu.Items.Add("Memory Graph", null, (_, _) => new MemoryGraphForm(backendClient).Show());
         menu.Items.Add("Deep Research", null, (_, _) => new ResearchForm(backendClient, voiceLoop.EnsureSessionId).Show());
+        menu.Items.Add("What I'm working on", null, (_, _) => new SelfWorkForm(backendClient).Show()); // #1008
         menu.Items.Add("Doctor", null, (_, _) => ShowDoctorPanel());
         menu.Items.Add("VTube Studio", null, (_, _) => new VTubeStudioForm(backendClient).Show());
         menu.Items.Add("Open project folder", null, (_, _) => OpenProjectFolder());
@@ -659,6 +661,15 @@ internal sealed class ManaApplicationContext : ApplicationContext
             balloonClicked = null;
             trayIcon.ShowBalloonTip(8000, "Mana is waiting for you", notice, ToolTipIcon.Info);
         }
+    }
+
+    // #1008: her work on her own code starting or ending -- a chat line and
+    // a balloon that opens the PR (or the "What I'm working on" window).
+    private void ShowSelfWorkNotice(ChatView chat, TrayNotificationPayload payload)
+    {
+        chat.AppendManaMessage(payload.Text);
+        balloonClicked = SelfWorkForm.IsPrUrl(payload.Url) ? () => SelfWorkForm.OpenPr(payload.Url) : () => new SelfWorkForm(backendClient).Show();
+        trayIcon.ShowBalloonTip(8000, payload.Title, payload.Text, ToolTipIcon.Info);
     }
 
     // #912: every camera snapshot (hotkey and vision__camera) comes through

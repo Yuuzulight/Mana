@@ -23,6 +23,7 @@ internal sealed class TrayNotificationClient : IDisposable
     private readonly Action<TrayNotificationPayload>? onDoctor;
     private readonly Action<string>? onSpeak;
     private readonly Action<TrayNotificationPayload>? onCharacter;
+    private readonly Action<TrayNotificationPayload>? onSelfWork;
     private readonly bool proactiveToasts;
     private readonly CancellationTokenSource cts = new();
 
@@ -36,8 +37,11 @@ internal sealed class TrayNotificationClient : IDisposable
     // thread-pool thread, whether or not proactive toasts are on.
     // #914: onCharacter gets each switch of character (from chat or the
     // tray), on a thread-pool thread.
-    public TrayNotificationClient(Action openChat, string? backendBaseUrl = null, Action<TrayNotificationPayload>? onDoctor = null, Action<string>? onSpeak = null, Action<TrayNotificationPayload>? onCharacter = null)
+    // #1008: onSelfWork gets the starts and ends of Mana's work on her own
+    // code, on a thread-pool thread.
+    public TrayNotificationClient(Action openChat, string? backendBaseUrl = null, Action<TrayNotificationPayload>? onDoctor = null, Action<string>? onSpeak = null, Action<TrayNotificationPayload>? onCharacter = null, Action<TrayNotificationPayload>? onSelfWork = null)
     {
+        this.onSelfWork = onSelfWork;
         this.openChat = openChat;
         this.onDoctor = onDoctor;
         this.onSpeak = onSpeak;
@@ -134,6 +138,11 @@ internal sealed class TrayNotificationClient : IDisposable
         if (payload?.Type == "character")
         {
             onCharacter?.Invoke(payload);
+            return;
+        }
+        if (payload?.Type == "self-work")
+        {
+            onSelfWork?.Invoke(payload);
             return;
         }
         if (!string.IsNullOrWhiteSpace(payload?.Speak))
