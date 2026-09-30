@@ -55,6 +55,18 @@ function assertLocalUrl(url, what, env = process.env) {
   if (!isLocalHost(host)) throw localOnlyError(`${what} ${host || url || "an unset address"}`);
 }
 
+// The same check as a message ("" when allowed), for the Discord/Telegram/
+// Matrix bridges: they skip starting and say why once, in the log and their
+// health, instead of failing a poll every few seconds.
+function localOnlyRefusal(url, what, env = process.env) {
+  try {
+    assertLocalUrl(url, what, env);
+    return "";
+  } catch (e) {
+    return e.message;
+  }
+}
+
 // Every TCP connection in this process -- fetch, http(s), WebSocket, the
 // Discord client, axios -- goes through net.Socket.prototype.connect, so
 // one check there covers them all. The socket fails with an 'error' event
@@ -97,5 +109,6 @@ module.exports = {
   installLocalOnlyGuard,
   isLocalHost,
   isLocalOnly,
+  localOnlyRefusal,
   refuseIfLocalOnly,
 };
