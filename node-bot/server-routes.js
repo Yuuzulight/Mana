@@ -187,12 +187,13 @@ function registerCoreRoutes(app, upload, deps) {
       requireFile(req.file, "file");
 
       const { tmpPath, audioPath } = normalizeUploadedAudio(req.file);
-      const { heard, transcript } = await runWhisperHeard(audioPath);
+      const { heard, transcript, model, language } = await runWhisperHeard(audioPath);
       cleanupUploadedAudio(tmpPath, audioPath);
 
       // #925: heard (what whisper wrote) only when a mishearing fix
-      // changed it, for the launcher's speech-debug.log.
-      return res.json(heard === transcript ? { transcript } : { transcript, heard });
+      // changed it, for the launcher's speech-debug.log. #1107: model and
+      // language for a kept voice clip's sidecar.
+      return res.json({ transcript, ...(heard !== transcript && { heard }), model, language });
     } catch (e) {
       if (e instanceof ValidationError) {
         return sendValidationError(res, e);

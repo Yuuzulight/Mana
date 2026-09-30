@@ -1038,11 +1038,13 @@ public class ManaBackendClientTests
         });
         var client = new ManaBackendClient(handler);
 
-        var (transcript, heard) = await client.TranscribeAsync(new byte[] { 1, 2, 3 });
+        var (transcript, heard, model, language) = await client.TranscribeAsync(new byte[] { 1, 2, 3 });
 
         Assert.Equal("/transcribe-only", path);
         Assert.Equal("hello mana", transcript);
         Assert.Null(heard);
+        Assert.Null(model); // an older backend
+        Assert.Null(language);
     }
 
     [Fact]
@@ -1050,11 +1052,11 @@ public class ManaBackendClientTests
     {
         var handler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
         {
-            Content = new StringContent("{\"transcript\":\"watch Gigi Murin\",\"heard\":\"watch GG Moon\"}", Encoding.UTF8, "application/json"),
+            Content = new StringContent("{\"transcript\":\"watch Gigi Murin\",\"heard\":\"watch GG Moon\",\"model\":\"ggml-small.en.bin\",\"language\":\"en\"}", Encoding.UTF8, "application/json"),
         });
         var client = new ManaBackendClient(handler);
 
-        Assert.Equal(("watch Gigi Murin", "watch GG Moon"), await client.TranscribeAsync(new byte[] { 1 }));
+        Assert.Equal(("watch Gigi Murin", "watch GG Moon", "ggml-small.en.bin", "en"), await client.TranscribeAsync(new byte[] { 1 }));
     }
 
     [Fact]
