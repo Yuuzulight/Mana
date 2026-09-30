@@ -76,6 +76,7 @@ function registerCoreRoutes(app, upload, deps) {
     synthesizeReply,
     clampText,
     SCREEN_CONTEXT_MAX_CHARS,
+    currentGame = () => null, // #908
   } = deps;
 
   // Every save path (recordChatTurn here, server.js's reply builder) skips
@@ -364,6 +365,7 @@ function registerCoreRoutes(app, upload, deps) {
             pluginSettingsStore,
             world,
             screenText,
+            game: currentGame(),
           })
         : "";
       const assistantMode = optionalString(
@@ -515,6 +517,7 @@ function registerCoreRoutes(app, upload, deps) {
             pluginSettingsStore,
             world,
             screenText,
+            game: currentGame(),
           })
         : "";
       const assistantMode = optionalString(req.body?.assistantMode, "assistantMode", null);
@@ -608,6 +611,7 @@ function registerCoreRoutes(app, upload, deps) {
           pluginSettingsStore,
           world: UNIVERSALIS_DEFAULT_WORLD,
           screenText: "",
+          game: currentGame(),
         },
       );
       const assistantMode = optionalString(

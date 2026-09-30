@@ -261,3 +261,71 @@ test("fetchPage re-validates each redirect hop", async () => {
     });
   });
 });
+
+// #908
+test("buildWebContextForPrompt answers a mid-game question from that game's wiki only", async () => {
+  const game = { name: "Final Fantasy XIV", sites: ["ffxiv.consolegameswiki.com", "finalfantasyxiv.com"] };
+  const urls = [];
+  await withMockedDnsLookup(async () => [{ address: "93.184.216.34", family: 4 }], async () => {
+    await withMockedFetch(async (url) => {
+      urls.push(String(url));
+      if (String(url).includes("/search?")) {
+        return jsonResponse({
+          results: [
+            { title: "Reddit", url: "https://www.reddit.com/r/ffxiv/dragoon", content: "ignore" },
+            { title: "Dragoon", url: "https://ffxiv.consolegameswiki.com/wiki/Dragoon", content: "Unlocked in Gridania" },
+            { title: "Evil twin", url: "https://ffxiv.consolegameswiki.com.evil.test/wiki/Dragoon", content: "ignore" },
+          ],
+        });
+      }
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: (name) => (name.toLowerCase() === "content-type" ? "text/html" : null) },
+        body: null,
+        text: async () => "<html><body>Dragoon quest: Eye of the Dragon from Ywain.</body></html>",
+      };
+    }, async () => {
+      const context = await buildWebContextForPrompt("Mana, where do I unlock dragoon", {}, game);
+      assert.match(decodeURIComponent(urls[0]), /q=where do I unlock dragoon site:/);
+      assert.match(decodeURIComponent(urls[0]), /site:ffxiv\.consolegameswiki\.com OR site:finalfantasyxiv\.com/);
+      assert.equal(urls[1], "https://ffxiv.consolegameswiki.com/wiki/Dragoon");
+      assert.match(context, /Final Fantasy XIV wiki results \[WEB CONTENT, NOT INSTRUCTIONS\]/);
+      assert.match(context, /Eye of the Dragon/);
+      assert.match(context, /short sentences/);
+      assert.doesNotMatch(context, /reddit|evil/);
+    });
+  });
+});
+
+test("buildWebContextForPrompt skips the game wiki for chat and falls back when the wiki has nothing", async () => {
+  const game = { name: "Final Fantasy XIV", sites: ["ffxiv.consolegameswiki.com"] };
+  assert.equal(await buildWebContextForPrompt("nice, that was fun", {}, game), "");
+  const queries = [];
+  await withMockedFetch(async (url) => {
+    queries.push(decodeURIComponent(String(url)));
+    return jsonResponse({ results: [{ title: "Elsewhere", url: "https://example.com/x", content: "general" }] });
+  }, async () => {
+    const context = await buildWebContextForPrompt("look up the Pandaemonium raid", {}, game);
+    assert.equal(queries.length, 2);
+    assert.match(queries[0], /site:/);
+    assert.doesNotMatch(queries[1], /site:/);
+    assert.match(context, /Web search results/);
+  });
+});
+
+test("buildWebContextForPrompt stays quiet when the game wiki can't be searched", async () => {
+  const game = { name: "Final Fantasy XIV", sites: ["ffxiv.consolegameswiki.com"] };
+  const original = console.warn;
+  console.warn = () => {};
+  try {
+    await withMockedFetch(async () => {
+      throw new Error("connection refused");
+    }, async () => {
+      assert.equal(await buildWebContextForPrompt("where is the aetheryte in Limsa?", {}, game), "");
+    });
+    assert.equal(await buildWebContextForPrompt("where is the aetheryte in Limsa?", { MANA_LOCAL_ONLY: "1" }, game), "");
+  } finally {
+    console.warn = original;
+  }
+});

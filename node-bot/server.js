@@ -255,6 +255,7 @@ const { createModelSettingsStore } = require("./model-settings-store");
 const whisperDiscovery = require("./whisper-discovery");
 const { createWhisperPromptProvider } = require("./whisper-prompt");
 const { createSpeechVocabulary, resolveWhisperLanguage } = require("./speech-vocabulary");
+const { loadGameWikis } = require("./game-wikis");
 const {
   normalizeLlamaModelProfile,
   pickPreferredLlamaModel,
@@ -535,7 +536,8 @@ const gamingWatch = createGamingWatch({
       maxBuffer: 5 * 1024 * 1024,
       windowsHide: true,
     });
-    return parseTasklistNames(stdout).some((name) => GAMING_PROCESS_NAMES.includes(name));
+    // #908: which one, for currentGame().
+    return parseTasklistNames(stdout).find((name) => GAMING_PROCESS_NAMES.includes(name)) || false;
   },
   onGameStart: () => {
     console.log("Watched game started: stopping the memory embedder, reranker and Python retriever");
@@ -793,6 +795,15 @@ const acpMemoryStore = createAcpMemoryStore({
 const speechVocabulary = createSpeechVocabulary({
   filePath: path.join(acpMemoryStore.dataDir, "speech.json"),
 });
+
+// #908: the game I'm playing, if its wiki is known (data/game-wikis.json on
+// top of game-wikis.js's defaults): the one in front (the native launcher's
+// foreground report), else the watched game that's running.
+const gameWikiFor = loadGameWikis(path.join(acpMemoryStore.dataDir, "game-wikis.json"));
+function currentGame() {
+  const front = require("./foreground").getForeground();
+  return gameWikiFor(front && front.app) || gameWikiFor(gamingWatch.game());
+}
 
 function whisperLanguage() {
   return resolveWhisperLanguage(process.env.WHISPER_LANGUAGE, speechVocabulary.language());
@@ -5104,6 +5115,7 @@ function registerRoutes(app, upload, deps = {}) {
     UNIVERSALIS_DEFAULT_WORLD,
     TTS_PROVIDER,
     SCREEN_CONTEXT_MAX_CHARS,
+    currentGame: deps.currentGame || currentGame,
     restartController: deps.restartController || createRestartController(),
     buildAssistantReply: deps.buildAssistantReply || buildAssistantReply,
     capabilities,
