@@ -38,6 +38,12 @@ install required artifacts.
     fetches it at build time into `windows-native-launcher/assets/speaker/`
     (gitignored) for the optional voiceprint gate (#678).
 
+- Smart Turn v3.2 end-of-turn model (`smart-turn-v3.2-cpu.onnx`)
+  - From pipecat-ai (https://github.com/pipecat-ai/smart-turn,
+    https://huggingface.co/pipecat-ai/smart-turn-v3), BSD-2-Clause. The native
+    launcher loads it from `windows-native-launcher/assets/turn/` (gitignored)
+    to tell a thinking pause from the end of a turn (#909).
+
 - pixi.js (npm)
   - MIT license. Bundled via npm in `windows-launcher` and `desktop-client`
     for the built-in Live2D avatar renderer.
