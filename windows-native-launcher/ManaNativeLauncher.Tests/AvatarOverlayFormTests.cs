@@ -34,6 +34,15 @@ public class AvatarOverlayFormTests
     public void IsClickThrough_WhileGamingOrWhenSetInTheTray(bool manual, bool gameRunning, bool expected) =>
         Assert.Equal(expected, AvatarOverlayForm.IsClickThrough(manual, gameRunning));
 
+    [Theory]
+    [InlineData(false, true, 0, 15)]   // talking: every system tick
+    [InlineData(false, false, 0, 31)]  // at rest: ~30fps
+    [InlineData(true, true, 0, 46)]    // gaming: ~20fps even while talking
+    [InlineData(false, true, 10, 100)] // MANA_AVATAR_FPS lowers it
+    [InlineData(true, false, 60, 46)]  // but never raises it
+    public void RenderInterval_CapsFramesAtRestAndWhileGaming(bool gameRunning, bool speaking, int fpsCap, int expected) =>
+        Assert.Equal(expected, AvatarOverlayForm.RenderIntervalMs(gameRunning, speaking, fpsCap));
+
     // #684: after a display change she's pulled fully back onto the screen.
     [Theory]
     [InlineData(1700, 900, 1686, 792)]  // hanging off the bottom-right

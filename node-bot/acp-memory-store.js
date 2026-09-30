@@ -6,6 +6,7 @@ const { cosine } = require("./tools/vector-store");
 const { detectTextValence } = require("./utils/text-mood");
 const { parseTemporalWindow } = require("./utils/temporal-query");
 const { redactSensitive } = require("./utils/sensitive-text");
+const { UNTRUSTED_RULE, wrapUntrustedInline } = require("./ai/untrusted-content");
 
 function ensureDir(dir) {
   fs.mkdirSync(dir, { recursive: true });
@@ -233,12 +234,21 @@ function maxMatchedFacts(options) {
 
 // Pinned lines first: they are the same every turn, so the block's start
 // stays stable (#660), and they survive the whole-line char cap first.
+// A fact whose text came from a note in my vault (#935) is framed as outside
+// data (ai/untrusted-content.js): anything that can write the vault folder
+// can write it. Tool-derived facts only reach recall once I confirm them.
+const UNTRUSTED_FACT_SOURCES = { vault_edit: "vault note" };
+
 function factsBlockFor(pinned, matched) {
-  const lines = [...pinned, ...matched].map(
-    (fact) =>
-      `- ${fact.key}: ${fact.text}${fact.status === "pending" ? " (unconfirmed -- check with the user before relying on it)" : ""}`,
-  );
-  return lines.length ? `Remembered:\n${lines.join("\n")}` : "";
+  let untrusted = false;
+  const lines = [...pinned, ...matched].map((fact) => {
+    const source = UNTRUSTED_FACT_SOURCES[fact.origin?.kind];
+    untrusted ||= Boolean(source);
+    const text = source ? wrapUntrustedInline(source, fact.text) : fact.text;
+    return `- ${fact.key}: ${text}${fact.status === "pending" ? " (unconfirmed -- check with the user before relying on it)" : ""}`;
+  });
+  if (!lines.length) return "";
+  return `Remembered${untrusted ? ` (${UNTRUSTED_RULE})` : ""}:\n${lines.join("\n")}`;
 }
 
 // Issue #336: the record shape's own version, stamped on every new fact so

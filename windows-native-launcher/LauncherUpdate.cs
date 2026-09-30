@@ -54,7 +54,9 @@ internal static class LauncherUpdate
     // then exit. handoff is passed on to the build that ends up running.
     public static void StartInstaller(string live, IEnumerable<string> handoff)
     {
-        var startInfo = new ProcessStartInfo(Path.Combine(StagingDir(live), ExeName)) { UseShellExecute = false };
+        // Its own folder, not ours: Windows won't rename a folder a running
+        // process has as its current directory, and the live one is renamed.
+        var startInfo = new ProcessStartInfo(Path.Combine(StagingDir(live), ExeName)) { UseShellExecute = false, WorkingDirectory = StagingDir(live) };
         startInfo.ArgumentList.Add(InstallArg);
         startInfo.ArgumentList.Add(Environment.ProcessId.ToString());
         foreach (var arg in handoff)
@@ -73,11 +75,15 @@ internal static class LauncherUpdate
         {
             return false; // only a staged build installs itself
         }
+        // Whoever started us may have left us in the live folder, which
+        // then can't be renamed.
+        Directory.SetCurrentDirectory(staging);
         WaitForExit(oldPid);
         var live = staging[..^".staging".Length];
         var previous = PreviousDir(live);
         // Removed first, so a build that fails is never installed twice.
         File.Delete(Path.Combine(staging, ReadyMarker));
+        string reason;
         try
         {
             Swap(live, staging, previous);
@@ -85,13 +91,16 @@ internal static class LauncherUpdate
             {
                 return true;
             }
+            reason = "The new launcher build didn't start";
             Rollback(live, previous);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
             // Swap already put the old build back if it got that far.
+            reason = $"Couldn't swap the launcher folders ({ex.Message})";
         }
-        File.WriteAllText(Path.Combine(live, RolledBackNote), "");
+        // The note says why; the build that starts next shows it once.
+        File.WriteAllText(Path.Combine(live, RolledBackNote), reason);
         Start(live, handoff)?.Dispose();
         return false;
     }
