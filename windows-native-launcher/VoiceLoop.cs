@@ -639,6 +639,11 @@ internal sealed class VoiceLoop : IDisposable
     // #687: the chat window's status line (SessionListForm polls it), like
     // Electron's: the last error until the next reply starts, else what she's
     // doing. Read without the lock -- a stale read shows for one poll.
+    // #914: whose sentence is playing (group mode lip-syncs her avatar), and
+    // when a reply's talking ends (her mouth closes too).
+    public string? PlayingCharacter => streamingReplyPlayer.PlayingCharacter;
+    public event Action? TalkingEnded;
+
     public string StatusText => FormatStatus(lastError, IsListening, mode, awake, streamingReplyPlayer.SynthesizingSentence);
 
     internal static string FormatStatus(string? error, bool listening, ListenMode mode, bool awake, int? synthesizing)
@@ -1851,7 +1856,7 @@ internal sealed class VoiceLoop : IDisposable
         {
             var stopMana = stopManaThinking;
             bool? thinkHarder = deepThinking ? true : stopMana ? false : null;
-            (reply, changed, preferredExpression, interrupted, pending) = await streamingReplyPlayer.StreamReplyAndPlayAsync(commandText, EnsureSessionId(), text => chatLog?.AppendReplySentence(text), screenText, image, images, currentPresetId, thinkHarder, source);
+            (reply, changed, preferredExpression, interrupted, pending) = await streamingReplyPlayer.StreamReplyAndPlayAsync(commandText, EnsureSessionId(), (text, speaker) => chatLog?.AppendReplySentence(text, speaker), screenText, image, images, currentPresetId, thinkHarder, source);
             if (stopMana)
             {
                 stopManaThinking = false;
@@ -2181,6 +2186,7 @@ internal sealed class VoiceLoop : IDisposable
         {
             captions?.SpeechEnded();
             bubbles?.SpeechEnded();
+            TalkingEnded?.Invoke();
         }
         lock (stateLock)
         {

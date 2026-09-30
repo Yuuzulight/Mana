@@ -3,6 +3,7 @@ const path = require("node:path");
 const http = require("node:http");
 const https = require("node:https");
 const { spawnSync: defaultSpawnSync } = require("node:child_process");
+const { FISH_VRAM_MB, detectGpuVramUsageMb, getGpu } = require("./model-management");
 
 const DEFAULT_KOKORO_LANGUAGE_PROFILES = {
   english: { lang: "en-us", speed: 1.12 },
@@ -124,6 +125,23 @@ function detectTtsLanguage(text) {
   return "english";
 }
 
+// #1076: the TTS provider when TTS_PROVIDER isn't set. Fish (S1-mini) needs
+// CUDA and ~5 GB of VRAM; without a CUDA GPU, or with less free VRAM than
+// that at startup, Kokoro (int8 ONNX on CPU) instead. server.js decides once
+// and reports it on /health, and the native launcher starts Fish Speech only
+// when that says "fish", so the two can't disagree. An explicit TTS_PROVIDER
+// always wins.
+// ponytail: free VRAM is read once at startup, so a game holding VRAM right
+// then keeps Kokoro for the session, and a backend restart next to an
+// already-loaded Fish sees its 5 GB as taken. Set TTS_PROVIDER to pin it.
+function resolveTtsProvider(env, { gpu = getGpu, vramUsage = detectGpuVramUsageMb } = {}) {
+  if (env.TTS_PROVIDER) return env.TTS_PROVIDER;
+  if (env.TTS_BIN) return "cli";
+  if (!gpu()?.cuda) return "kokoro";
+  const freeMb = vramUsage()?.freeMb;
+  return freeMb != null && freeMb < FISH_VRAM_MB ? "kokoro" : "fish";
+}
+
 function createTtsRuntime(options = {}) {
   const env = options.env || process.env;
   const fs = options.fs || defaultFs;
@@ -193,7 +211,8 @@ function createTtsRuntime(options = {}) {
   const qwen3TtsUrl = env.QWEN3_TTS_URL || "http://127.0.0.1:5012";
   const qwen3TtsFallbackProvider =
     env.QWEN3_TTS_FALLBACK_PROVIDER || "none";
-  const ttsProvider = env.TTS_PROVIDER || (ttsBin ? "cli" : "fish");
+  // server.js passes resolveTtsProvider()'s startup decision (#1076).
+  const ttsProvider = options.ttsProvider || env.TTS_PROVIDER || (ttsBin ? "cli" : "fish");
   // Manual runtime override (e.g. "use Kokoro while gaming"), set via
   // setProviderOverride(); null means "use ttsProvider as configured".
   let providerOverride = null;
@@ -742,4 +761,5 @@ module.exports = {
   createTtsRuntime,
   detectTtsLanguage,
   postJsonBuffer,
+  resolveTtsProvider,
 };

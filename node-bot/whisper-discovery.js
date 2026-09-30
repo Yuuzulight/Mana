@@ -69,6 +69,15 @@ const WHISPER_MODEL_PROFILES = {
   turbo: ["ggml-large-v3-turbo.bin", "ggml-large-v3-turbo-q8_0.bin", "ggml-large-v3-turbo-q5_0.bin"],
 };
 
+// ggml-base.en.bin, ggml-small.en-q5_1.bin: English-only models. They
+// can't transcribe or auto-detect any other language.
+function isEnglishOnlyWhisperModel(file) {
+  return /\.en[.-]/i.test(path.basename(String(file || "")));
+}
+
+// options.language: the spoken language whisper is run with ("en", "auto",
+// "ja", ...). Anything but English prefers multilingual models, since an
+// .en model would quietly transcribe everything as English.
 function findWhisperModel(options = {}) {
   const env = options.env || process.env;
   const fs = options.fs || require("node:fs");
@@ -91,8 +100,12 @@ function findWhisperModel(options = {}) {
     return null;
   }
 
+  const multilingual = (options.language || env.WHISPER_LANGUAGE || "en") !== "en";
+  // Stable sort: .en models last, the order otherwise kept.
+  const englishLast = (list) =>
+    multilingual ? [...list].sort((a, b) => isEnglishOnlyWhisperModel(a) - isEnglishOnlyWhisperModel(b)) : list;
   const profile = WHISPER_MODEL_PROFILES[String(env.WHISPER_MODEL_PROFILE || "").toLowerCase()];
-  const nameOrder = profile ? [...profile, ...PREFERRED_NAME_ORDER] : PREFERRED_NAME_ORDER;
+  const nameOrder = englishLast(profile ? [...profile, ...PREFERRED_NAME_ORDER] : PREFERRED_NAME_ORDER);
 
   for (const preferredName of nameOrder) {
     const match = found.find(
@@ -102,7 +115,7 @@ function findWhisperModel(options = {}) {
       return match;
     }
   }
-  return found[0];
+  return englishLast(found)[0];
 }
 
 // NVIDIA Parakeet (ggml-org/parakeet-GGUF port): same tools/whisper build,
@@ -159,6 +172,7 @@ function findParakeetModel(options = {}) {
 module.exports = {
   findWhisperBin,
   findWhisperModel,
+  isEnglishOnlyWhisperModel,
   WHISPER_MODEL_PROFILES,
   findParakeetBin,
   findParakeetModel,
