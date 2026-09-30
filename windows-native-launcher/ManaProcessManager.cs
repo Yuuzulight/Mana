@@ -604,9 +604,10 @@ internal sealed class ManaProcessManager : IDisposable
         startInfo.Environment["WHISPER_BIN"] =
             Environment.GetEnvironmentVariable("WHISPER_BIN") ??
             Path.Combine(whisperDir, "Release", "whisper-cli.exe");
-        startInfo.Environment["WHISPER_MODEL"] =
-            Environment.GetEnvironmentVariable("WHISPER_MODEL") ??
-            Path.Combine(whisperDir, "models", "ggml-tiny.en.bin");
+        // No WHISPER_MODEL default: node-bot's discovery picks the model,
+        // and a multilingual one when the speech language isn't English. A
+        // WHISPER_MODEL in the launcher's environment still passes through,
+        // and node-bot/.env wins over both.
         // #1076: no TTS_PROVIDER default here -- node-bot inherits it when
         // set, and otherwise picks Fish or Kokoro from the GPU itself
         // (resolveTtsProvider in tts-runtime.js). KOKORO_TTS_FALLBACK_PROVIDER
