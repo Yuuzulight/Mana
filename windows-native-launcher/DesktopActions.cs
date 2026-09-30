@@ -30,6 +30,8 @@ internal static class DesktopActions
         "set_volume" => SetVolume(OptionalString(args, "app"), OptionalNumber(args, "level"), OptionalNumber(args, "change")),
         "open_app" => OpenApp(RequiredString(args, "name")),
         "focus_app" => FocusApp(RequiredString(args, "name")),
+        "list_audio_outputs" => ListAudioOutputs(),
+        "set_audio_output" => SetAudioOutput(RequiredString(args, "name")),
         _ => throw new ArgumentException($"unknown desktop action: {action}"),
     };
 
@@ -124,28 +126,75 @@ internal static class DesktopActions
             .SelectMany(dir => Directory.EnumerateFiles(dir, "*.lnk", options));
     }
 
-    // The shortcut named exactly `name`, else the only one whose name
-    // contains it. Uninstallers are never offered.
+    // The shortcut picked by PickByName. Uninstallers are never offered.
     internal static string FindShortcut(IEnumerable<string> shortcuts, string name)
     {
-        var apps = shortcuts
-            .Where(p => !Path.GetFileNameWithoutExtension(p).Contains("uninstall", StringComparison.OrdinalIgnoreCase))
-            .ToList();
-        var exact = apps.FirstOrDefault(p => Normalize(Path.GetFileNameWithoutExtension(p)) == Normalize(name));
+        var byName = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var path in shortcuts)
+        {
+            var app = Path.GetFileNameWithoutExtension(path);
+            if (!app.Contains("uninstall", StringComparison.OrdinalIgnoreCase))
+            {
+                byName.TryAdd(app, path);
+            }
+        }
+        return byName[PickByName(byName.Keys, name, "Start-menu app")];
+    }
+
+    // The name that is exactly `name` (case, spaces and punctuation
+    // ignored), else the only one containing it.
+    internal static string PickByName(IEnumerable<string> names, string name, string what)
+    {
+        var all = names.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        var exact = all.FirstOrDefault(n => Normalize(n) == Normalize(name));
         if (exact is not null)
         {
             return exact;
         }
-        var partial = apps
-            .Where(p => Normalize(Path.GetFileNameWithoutExtension(p)).Contains(Normalize(name)))
-            .GroupBy(p => Path.GetFileNameWithoutExtension(p), StringComparer.OrdinalIgnoreCase)
-            .ToList();
+        var partial = all.Where(n => Normalize(n).Contains(Normalize(name))).ToList();
         return partial.Count switch
         {
-            1 => partial[0].First(),
-            0 => throw new InvalidOperationException($"no Start-menu app called {name}"),
-            _ => throw new InvalidOperationException($"which one: {string.Join(", ", partial.Take(5).Select(g => g.Key))}?"),
+            1 => partial[0],
+            0 => throw new InvalidOperationException($"no {what} called {name}"),
+            _ => throw new InvalidOperationException($"which one: {string.Join(", ", partial.Take(5))}?"),
         };
+    }
+
+    private static object ListAudioOutputs()
+    {
+        using var enumerator = new MMDeviceEnumerator();
+        var current = enumerator.HasDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia)
+            ? enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia).ID
+            : null;
+        return new
+        {
+            outputs = enumerator.EnumerateAudioEndPoints(DataFlow.Render, DeviceState.Active)
+                .Select(d => new { name = d.FriendlyName, current = d.ID == current })
+                .ToArray(),
+        };
+    }
+
+    // Makes it the default output for every role (console, multimedia,
+    // communications), as the Sound settings page does.
+    private static object SetAudioOutput(string name)
+    {
+        using var enumerator = new MMDeviceEnumerator();
+        var devices = enumerator.EnumerateAudioEndPoints(DataFlow.Render, DeviceState.Active).ToList();
+        var chosen = PickByName(devices.Select(d => d.FriendlyName), name, "audio output");
+        var id = devices.First(d => d.FriendlyName.Equals(chosen, StringComparison.OrdinalIgnoreCase)).ID;
+        var policy = (IPolicyConfig)new PolicyConfigClient();
+        try
+        {
+            for (var role = 0; role < 3; role++)
+            {
+                Marshal.ThrowExceptionForHR(policy.SetDefaultEndpoint(id, role));
+            }
+        }
+        finally
+        {
+            Marshal.ReleaseComObject(policy);
+        }
+        return new { name = chosen };
     }
 
     // A visible, titled window whose process is `name` (spaces and case
@@ -227,6 +276,32 @@ internal static class DesktopActions
     private const int SwRestore = 9;
 
     private delegate bool EnumWindowsProc(IntPtr hwnd, IntPtr lParam);
+
+    // Windows has no public API for changing the default output; this is
+    // the undocumented interface the Sound settings use (and EarTrumpet,
+    // SoundSwitch). Only SetDefaultEndpoint is called; the slots before it
+    // just keep the vtable order.
+    [ComImport, Guid("f8679f50-850a-41cf-9c72-430f290290c8"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    private interface IPolicyConfig
+    {
+        void GetMixFormat();
+        void GetDeviceFormat();
+        void ResetDeviceFormat();
+        void SetDeviceFormat();
+        void GetProcessingPeriod();
+        void SetProcessingPeriod();
+        void GetShareMode();
+        void SetShareMode();
+        void GetPropertyValue();
+        void SetPropertyValue();
+        [PreserveSig]
+        int SetDefaultEndpoint([MarshalAs(UnmanagedType.LPWStr)] string deviceId, int role);
+    }
+
+    [ComImport, Guid("870af99c-171d-4f9e-af0d-e63df40c2bc9")]
+    private class PolicyConfigClient
+    {
+    }
 
     [DllImport("user32.dll")]
     private static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, UIntPtr dwExtraInfo);

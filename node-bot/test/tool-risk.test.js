@@ -264,11 +264,17 @@ test("#669 smart auto-approve: a read-only call runs without a prompt, a write s
 test("#911 low tier: runs without a prompt in smart mode, asks in ask mode", async () => {
   assert.equal(classifyToolCall("desktop__set_volume", { level: 20 }).tier, "low");
   assert.equal(classifyToolCall("desktop__focus_app", { name: "Discord" }).tier, "read");
+  assert.equal(classifyToolCall("desktop__list_audio_outputs", {}).tier, "read");
+  assert.equal(classifyToolCall("desktop__set_audio_output", { name: "Headset" }).tier, "write");
   const smart = setup({ mode: "smart" });
   assert.equal(await smart.wrapped.executeTool("desktop__media", { key: "next" }), "ran desktop__media");
   const ask = setup({ mode: "ask" });
   assert.equal(JSON.parse(await ask.wrapped.executeTool("desktop__media", { key: "next" })).status, "pending");
   assert.equal(ask.gate.listPending()[0].actionType, "tool-low");
+  // the approval says what it would do
+  const smartWrite = setup({ mode: "smart" });
+  await smartWrite.wrapped.executeTool("desktop__set_audio_output", { name: "Headset" });
+  assert.equal(smartWrite.gate.listPending()[0].summary, 'desktop__set_audio_output (write) -- with {"name":"Headset"}');
 });
 
 test("#669 ask mode: even a read-only call asks; self-gated built-ins pass through", async () => {
