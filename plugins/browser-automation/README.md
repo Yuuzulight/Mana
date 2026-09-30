@@ -45,6 +45,19 @@ gets a fresh snapshot. Everything from the page reaches the model inside
 one untrusted frame (`ai/untrusted-content.js`). Screenshots are only for
 the Browser panel, taken while it's on screen; the model never sees one.
 
+## Uploads and downloads (#1158)
+
+- `upload { ref, file }` fills a file input, or answers the file chooser a
+  button opens, only with a file I pointed her to in the last 30 minutes:
+  its full path in my own chat message, or one I picked with the Browser
+  panel's "Give her a file". Never keys or secrets (`.env`, `id_rsa`...),
+  never one she chooses herself. It asks for the site like a click.
+- A download waits in `node-bot/data/browser-downloads-pending` for my OK
+  in Approvals, every time (never "always"). Approved, it goes into one
+  folder (`MANA_BROWSER_DOWNLOAD_DIR`, default `Downloads\Mana`), never
+  overwriting, marked as from the internet (Zone.Identifier), and the chat
+  says where it is. She never opens it. Unapproved ones are swept after a day.
+
 ## Tabs (#1159)
 
 `tab { do: "open", url }`, `{ do: "switch", number }`, `{ do: "close", number }`:

@@ -5,6 +5,7 @@ const { isAdHost } = require("./ad-hosts");
 const { refuseIfLocalOnly } = require("../../node-bot/local-only");
 const { systemRamPercent, MAX_RAM_PERCENT } = require("../../node-bot/self-work");
 const trayNotifier = require("../../node-bot/tray-notifier");
+const { isCredentialPath } = require("../../node-bot/ai/tool-policy");
 
 // Windows ships Edge (Chromium-based) on every install -- since Mana
 // targets Windows, this is the "already available" browser rather than
@@ -39,6 +40,10 @@ const IDLE_CLOSE_MS = 5 * 60 * 1000;
 const DEFAULT_MAX_TABS = 3;
 const SESSION_METHODS = ["navigate", "click", "type", "select", "scroll", "hover", "press", "drag", "back", "find", "snapshot"];
 const CHECK_EVERY_MS = 30 * 1000;
+// #1158: how long a file I point her to stays hers to upload.
+const OFFER_MS = 30 * 60 * 1000;
+// Resolved, lower-cased path -> until when she may upload it.
+const offered = new Map();
 
 let session = null;
 let context = null;
@@ -116,6 +121,11 @@ async function setUpTab(page) {
   // #1168: what the current page lost to ad blocking.
   page.on("framenavigated", (frame) => {
     if (frame === page.mainFrame()) health.blockedAds = 0;
+  });
+  // #1158: a download waits for my OK (the tool source); from anywhere
+  // else (the HTTP routes) it's dropped.
+  page.on("download", (download) => {
+    Promise.resolve(gateDeps.onDownload ? gateDeps.onDownload(download) : download.cancel()).catch(() => {});
   });
   // Images, video and fonts only while the rail's Browser panel is
   // watching, for its screenshot; she reads and acts without them. Ad
@@ -214,11 +224,55 @@ function tabbedSession(deps) {
     throw new Error('do must be "open", "switch" or "close"');
   }
 
-  const facade = { tab, screenshot: () => tabs[current].session.screenshot(), url: () => currentPage().url() };
+  // #1158: only a file I pointed her to.
+  async function upload(ref, file) {
+    if (!isOffered(file)) {
+      throw new Error("she can only upload a file the user pointed her to (the Browser panel's \"Give her a file\", or its full path in their message)");
+    }
+    return withTabs(await tabs[current].session.upload(ref, path.resolve(String(file))));
+  }
+
+  const facade = { tab, upload, screenshot: () => tabs[current].session.screenshot(), url: () => currentPage().url() };
   for (const name of SESSION_METHODS) {
     facade[name] = async (...args) => withTabs(await tabs[current].session[name](...args));
   }
   return facade;
+}
+
+// #1158: files I point her to -- from the Browser panel's picker, or full
+// paths in my own chat message -- are the only ones she may upload, for
+// OFFER_MS. Returns the ones that exist and aren't secrets.
+function offerFiles(paths, now = Date.now()) {
+  const added = [];
+  for (const p of Array.isArray(paths) ? paths : []) {
+    const full = path.resolve(String(p));
+    // Keys and secrets (.env, id_rsa, *.pem...) never, even if I name them.
+    if (isCredentialPath(path.basename(full))) continue;
+    try {
+      if (!fs.statSync(full).isFile()) continue;
+    } catch (e) {
+      continue;
+    }
+    offered.set(full.toLowerCase(), now + OFFER_MS);
+    added.push(full);
+  }
+  return added;
+}
+
+function isOffered(file, now = Date.now()) {
+  return (offered.get(path.resolve(String(file || "")).toLowerCase()) || 0) > now;
+}
+
+// Full Windows paths in a message: "C:\with spaces\a.pdf" in quotes, or
+// C:\no\spaces.pdf without.
+function pathsIn(text) {
+  const quoted = [...String(text || "").matchAll(/"([a-zA-Z]:\\[^"\n]+)"/g)].map((m) => m[1]);
+  const bare = [...String(text || "").matchAll(/(?:^|\s)([a-zA-Z]:\\[^\s"'<>|?*]+)/g)].map((m) => m[1].replace(/[.,;:!)]+$/, ""));
+  return [...quoted, ...bare];
+}
+
+function offerFilesFromMessage(text) {
+  return offerFiles(pathsIn(text));
 }
 
 // #1159: when her task (the reply) ends, only the tab she's on stays --
@@ -378,6 +432,12 @@ function registerBrowserAutomationRoutes(app, deps = {}) {
 
   // #1139: the Browser panel's Take over and Done.
   const checkAdminAuth = deps.checkAdminAuth || (() => true);
+
+  // #1158: the Browser panel's "Give her a file".
+  app.post("/browser/offer-files", (req, res) => {
+    if (!requireLocal(req, res) || !checkAdminAuth(req, res)) return;
+    return res.json({ offered: offerFiles(req.body?.paths) });
+  });
   app.post("/browser/take-over", async (req, res) => {
     if (!requireLocal(req, res) || !checkAdminAuth(req, res)) return;
     try {
@@ -423,6 +483,9 @@ module.exports = {
   checkSession,
   closeSession,
   closeExtraTabs,
+  offerFiles,
+  offerFilesFromMessage,
+  pathsIn,
   takeOver,
   handBack,
   requestHandOver,
@@ -438,6 +501,7 @@ module.exports = {
     gateDeps = {};
     takenOver = null;
     opening = false;
+    offered.clear();
     resumeUrl = null;
     needsYou = null;
   },
