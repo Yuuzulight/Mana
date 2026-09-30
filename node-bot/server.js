@@ -250,6 +250,7 @@ const { createDesktopToolSource, registerFileMoveRestorer } = require("./ai/desk
 const { createDeepThinkingState, createDeepThinkingToolSource } = require("./ai/deep-thinking-tool-source");
 const { visionCaptureBridge } = require("./vision-capture-bridge");
 const { createCodingToolSource } = require("./ai/coding-tool-source");
+const { createTryPrToolSource } = require("./ai/try-pr-tool-source");
 const { createSelfWork } = require("./self-work");
 const { refuteEdit } = require("./ai/adversarial-verifier");
 const { createMcpClientRegistry } = require("./mcp-client-registry");
@@ -4818,6 +4819,9 @@ function registerRoutes(app, upload, deps = {}) {
             // #905: reminders the user asks for in chat -- not offered to
             // scheduled replies, which nobody is asking in.
             ...(userChat ? [createReminderToolSource({ getScheduler: cronSchedulerPlugin.getScheduler, sessionId })] : []),
+            // #1010: "let me try your PR" / "back to main" -- a PR number
+            // only from my own message.
+            ...(userChat ? [createTryPrToolSource({ userMessage: transcript })] : []),
             // #1008: "work on #N" -- only a number from my own message.
             ...(userChat ? [selfWork.chatToolSource(transcript)] : []),
             // #906: my email and calendar, only in my own chat (never a

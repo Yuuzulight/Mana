@@ -477,6 +477,16 @@ internal sealed class ManaApplicationContext : ApplicationContext
         }
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add("Update now", null, (_, _) => _ = RunUpdateScriptAsync()); // #995
+        // #1010: run a PR as the live Mana, and back.
+        menu.Items.Add("Try a PR...", null, (_, _) => PromptTryPr());
+        var backToMainItem = new ToolStripMenuItem("Back to main", null, (_, _) => _ = RunLauncherScriptAsync("try-pr.ps1", ["-Main"], "Going back to main", "Mana's switch back to main failed", "try-pr.log"));
+        menu.Items.Add(backToMainItem);
+        menu.Opening += (_, _) =>
+        {
+            var trying = TryingPr(Path.Combine(processManager.RootDirectory, "windows-native-launcher"));
+            backToMainItem.Visible = trying is not null;
+            backToMainItem.Text = $"Back to main (trying PR #{trying})";
+        };
         menu.Items.Add("Exit Mana", null, (_, _) => _ = ShutdownAsync());
         return menu;
     }
@@ -1097,7 +1107,28 @@ internal sealed class ManaApplicationContext : ApplicationContext
 
     // #995: the tray's Update now -- pull, build, then apply straight away
     // (update-mana.ps1 -Now). Mana keeps running while it builds.
-    private async Task RunUpdateScriptAsync()
+    private Task RunUpdateScriptAsync() =>
+        RunLauncherScriptAsync("update-mana.ps1", ["-Now"], "Updating Mana", "Mana's update failed", "update.log");
+
+    // #1010: the PR a "Try a PR" left running (bin/trying-pr), or null on main.
+    internal static int? TryingPr(string launcherDir)
+    {
+        var marker = Path.Combine(launcherDir, "bin", "trying-pr");
+        return File.Exists(marker) && int.TryParse(File.ReadAllText(marker).Trim(), out var pr) ? pr : null;
+    }
+
+    private void PromptTryPr()
+    {
+        using var dialog = new TextPromptDialog("Try a PR", "PR number to run as the live Mana:", "");
+        if (dialog.ShowDialog() == DialogResult.OK && int.TryParse(dialog.Value.Trim().TrimStart('#'), out var pr) && pr > 0)
+        {
+            _ = RunLauncherScriptAsync("try-pr.ps1", ["-Pr", pr.ToString()], $"Trying PR #{pr}", "Mana couldn't switch to the PR", "try-pr.log");
+        }
+    }
+
+    // One of the launcher's scripts (update-mana.ps1, try-pr.ps1), one at a
+    // time, with the running build's folder. Mana keeps running while it builds.
+    private async Task RunLauncherScriptAsync(string scriptName, string[] args, string startingTitle, string failedTitle, string logName)
     {
         if (updateRunning)
         {
@@ -1108,21 +1139,28 @@ internal sealed class ManaApplicationContext : ApplicationContext
         try
         {
             var startInfo = new ProcessStartInfo("powershell.exe") { UseShellExecute = false, CreateNoWindow = true };
-            foreach (var arg in new[] { "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", Path.Combine(launcherDir, "update-mana.ps1"), "-Now", "-LiveDir", LauncherUpdate.LiveDir })
+            // #1010: a PR branched before try-pr.ps1 existed doesn't have it; its copy in bin\ does.
+            var scriptPath = Path.Combine(launcherDir, scriptName);
+            if (!File.Exists(scriptPath))
+            {
+                scriptPath = Path.Combine(launcherDir, "bin", scriptName);
+            }
+            string[] all = ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", scriptPath, .. args, "-LiveDir", LauncherUpdate.LiveDir];
+            foreach (var arg in all)
             {
                 startInfo.ArgumentList.Add(arg);
             }
-            ShowBalloon("Updating Mana", "Pulling and building. I'll keep running meanwhile.", ToolTipIcon.Info);
+            ShowBalloon(startingTitle, "Building it. I'll keep running meanwhile.", ToolTipIcon.Info);
             using var script = Process.Start(startInfo) ?? throw new InvalidOperationException("powershell didn't start");
             await script.WaitForExitAsync();
             if (script.ExitCode != 0)
             {
-                ShowBalloon("Mana's update failed", $"See {Path.Combine(launcherDir, "bin", "update.log")}.", ToolTipIcon.Error);
+                ShowBalloon(failedTitle, $"See {Path.Combine(launcherDir, "bin", logName)}.", ToolTipIcon.Error);
             }
         }
         catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException)
         {
-            ShowBalloon("Mana's update failed", ex.Message, ToolTipIcon.Error);
+            ShowBalloon(failedTitle, ex.Message, ToolTipIcon.Error);
         }
         finally
         {
