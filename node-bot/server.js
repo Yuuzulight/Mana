@@ -276,6 +276,7 @@ const { createModelSettingsStore } = require("./model-settings-store");
 const whisperDiscovery = require("./whisper-discovery");
 const { createWhisperPromptProvider } = require("./whisper-prompt");
 const { createSpeechVocabulary, resolveWhisperLanguage } = require("./speech-vocabulary");
+const { applyCorrectionToClips, voiceDataDir } = require("./voice-data");
 const { createBriefing } = require("./briefing");
 const { loadGameWikis } = require("./game-wikis");
 const {
@@ -833,8 +834,13 @@ const acpMemoryStore = createAcpMemoryStore({
 
 // #923/#925/#926: my saved speech words, mishearing fixes and language
 // (data/speech.json), from Settings > Voice or the speech__* tools.
+// #1107: a new mishearing fix also corrects my kept voice clips.
 const speechVocabulary = createSpeechVocabulary({
   filePath: path.join(acpMemoryStore.dataDir, "speech.json"),
+  onCorrection: ({ heard, term }) =>
+    applyCorrectionToClips(voiceDataDir(), heard, term).catch((e) =>
+      console.warn(`[Mana] Couldn't correct kept voice clips: ${e.message}`),
+    ),
 });
 
 // #986: held proactive remarks (data/proactive-held.json) survive a restart.
@@ -3362,13 +3368,22 @@ function registerRoutes(app, upload, deps = {}) {
   }
 
   // #925: heard is what whisper wrote, transcript the same with my
-  // mishearing fixes applied -- what every caller uses.
+  // mishearing fixes applied -- what every caller uses. #1107: model and
+  // language go into a kept voice clip's sidecar.
   async function runWhisperHeard(filePath) {
-    const heard =
-      STT_PROVIDER === "parakeet"
-        ? await runParakeet(filePath)
-        : ((await transcribeWithWhisperServer(filePath)) ?? runWhisperCli(filePath));
-    return { heard, transcript: speechVocabulary.correct(heard) };
+    const parakeet = STT_PROVIDER === "parakeet";
+    const heard = parakeet
+      ? await runParakeet(filePath)
+      : ((await transcribeWithWhisperServer(filePath)) ?? runWhisperCli(filePath));
+    const model = parakeet
+      ? whisperDiscovery.findParakeetModel({ env: process.env })
+      : whisperDiscovery.findWhisperModel({ env: process.env });
+    return {
+      heard,
+      transcript: speechVocabulary.correct(heard),
+      model: model ? path.basename(model) : null,
+      language: whisperLanguage(),
+    };
   }
 
   async function runWhisper(filePath) {

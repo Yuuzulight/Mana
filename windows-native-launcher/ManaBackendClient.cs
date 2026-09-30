@@ -177,8 +177,9 @@ internal sealed class ManaBackendClient
     public bool IsLocalBackend => http.BaseAddress?.IsLoopback == true;
 
     // #925: Heard is what whisper wrote, only when one of my mishearing
-    // fixes changed it into Transcript.
-    public Task<(string Transcript, string? Heard)> TranscribeAsync(byte[] wavBytes) => TranscribeAsync("/transcribe-only", wavBytes, default);
+    // fixes changed it into Transcript. #1107: Model (the file name) and
+    // Language, for a kept voice clip's sidecar.
+    public Task<(string Transcript, string? Heard, string? Model, string? Language)> TranscribeAsync(byte[] wavBytes) => TranscribeAsync("/transcribe-only", wavBytes, default);
 
     // #619: same upload to node-bot's /transcribe-partial (the endpoint
     // windows-launcher's pollPartialTranscript uses) -- async on the server,
@@ -186,7 +187,7 @@ internal sealed class ManaBackendClient
     public async Task<string> TranscribePartialAsync(byte[] wavBytes, CancellationToken cancellationToken) =>
         (await TranscribeAsync("/transcribe-partial", wavBytes, cancellationToken)).Transcript;
 
-    private async Task<(string Transcript, string? Heard)> TranscribeAsync(string route, byte[] wavBytes, CancellationToken cancellationToken)
+    private async Task<(string Transcript, string? Heard, string? Model, string? Language)> TranscribeAsync(string route, byte[] wavBytes, CancellationToken cancellationToken)
     {
         using var content = new MultipartFormDataContent();
         using var fileContent = new ByteArrayContent(wavBytes);
@@ -198,8 +199,8 @@ internal sealed class ManaBackendClient
         await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
         using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
         var root = document.RootElement;
-        return (root.GetProperty("transcript").GetString() ?? string.Empty,
-            root.TryGetProperty("heard", out var heard) ? heard.GetString() : null);
+        string? Optional(string name) => root.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String ? value.GetString() : null;
+        return (root.GetProperty("transcript").GetString() ?? string.Empty, Optional("heard"), Optional("model"), Optional("language"));
     }
 
     // #681: answers a /ws/vision-capture request (VisionCaptureClient).

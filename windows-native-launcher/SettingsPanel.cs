@@ -1254,6 +1254,7 @@ internal sealed class SettingsPanel : UserControl
         layout.Controls.Add(BuildBargeInRow());
         layout.Controls.Add(BuildVoiceprintRow());
         layout.Controls.Add(BuildSpeakerThresholdRow());
+        layout.Controls.Add(BuildVoiceClipsRow());
         layout.Controls.Add(BuildCameraRow());
         layout.Controls.Add(BuildSpeechWordsSection());
         return new TabPage("Voice") { Controls = { layout } };
@@ -1800,6 +1801,68 @@ internal sealed class SettingsPanel : UserControl
         return scores.Count == 0
             ? "No voice match scores yet (speech-debug.log has them once the setting above is on)."
             : $"Recent match scores: {string.Join(", ", scores.Select(s => s.ToString("F2", System.Globalization.CultureInfo.InvariantCulture)))}";
+    }
+
+    // #1107: keep my real spoken turns (VoiceData) for a Whisper fine-tune
+    // later; off by default, read at each turn. The count covers turns\ only.
+    private FlowLayoutPanel BuildVoiceClipsRow()
+    {
+        var check = new CheckBox
+        {
+            Text = "Keep my voice clips for training",
+            AutoSize = true,
+            ForeColor = DarkTheme.Text,
+            Checked = ManaSettingsStore.Load().KeepVoiceClips,
+        };
+        var delete = new Button { Text = "Delete my voice clips", AutoSize = true };
+        DarkTheme.ApplyButton(delete);
+        var status = new Label { AutoSize = true, ForeColor = DarkTheme.Muted, Anchor = AnchorStyles.Left };
+        var folder = VoiceData.TurnsFolder;
+        void ShowTotals()
+        {
+            var (clips, minutes) = VoiceData.Totals(folder);
+            status.Text = $"{clips} clips, {minutes:F1} min in {folder} (this PC only, never uploaded)";
+        }
+        ShowTotals();
+
+        check.CheckedChanged += (_, _) =>
+        {
+            var latest = ManaSettingsStore.Load();
+            latest.KeepVoiceClips = check.Checked;
+            latest.Save();
+            ShowTotals();
+        };
+        delete.Click += (_, _) =>
+        {
+            var (clips, _) = VoiceData.Totals(folder);
+            if (clips == 0
+                || MessageBox.Show(this, $"Delete all {clips} of your voice clips? This can't be undone.", "Voice clips", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes)
+            {
+                return;
+            }
+            try
+            {
+                VoiceData.Delete(folder);
+                ShowTotals();
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                status.Text = $"Couldn't delete them all: {ex.Message}";
+            }
+        };
+
+        var row = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.LeftToRight, BackColor = DarkTheme.Background };
+        row.Controls.Add(check);
+        row.Controls.Add(delete);
+        row.Controls.Add(status);
+        row.VisibleChanged += (_, _) =>
+        {
+            if (row.Visible)
+            {
+                ShowTotals();
+            }
+        };
+        return row;
     }
 
     // #912: off by default; read at each snapshot (the camera hotkey, or

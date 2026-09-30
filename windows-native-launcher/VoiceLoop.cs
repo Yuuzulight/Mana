@@ -1480,6 +1480,8 @@ internal sealed class VoiceLoop : IDisposable
         // hiss-like never reaches Whisper, and a phantom phrase or
         // noise-only caption is dropped like an empty transcript.
         var transcript = "";
+        short[]? heardSamples = null; // #1107: what Whisper heard, for a kept clip
+        string? sttModel = null, sttLanguage = null;
         if (!prefilterRejected && logEntry.Drop is null)
         {
             var (boosted, gain) = SpeechFilters.ApplySpeechGain(samples, SpeechFilters.GainTargetPeak, SpeechFilters.GainMaxBoost);
@@ -1487,9 +1489,10 @@ internal sealed class VoiceLoop : IDisposable
             logEntry.Drop = SpeechFilters.GetSpeechRejectReason(boosted, SpeechFilters.MinSpeechRms, SpeechFilters.MinSpeechPeak, SpeechFilters.MaxClickyZcr);
             if (logEntry.Drop is null)
             {
+                heardSamples = boosted;
                 try
                 {
-                    (transcript, logEntry.Heard) = await backendClient.TranscribeAsync(BuildWavBytes(boosted));
+                    (transcript, logEntry.Heard, sttModel, sttLanguage) = await backendClient.TranscribeAsync(BuildWavBytes(boosted));
                     logEntry.Whisper = string.IsNullOrWhiteSpace(transcript) ? "empty" : "ok";
                 }
                 catch (Exception ex)
@@ -1604,7 +1607,32 @@ internal sealed class VoiceLoop : IDisposable
         }
 
         VoiceDebugLog.Append(logEntry);
+        KeepClipIfOn(heardSamples!, logEntry, commandText, sttModel, sttLanguage);
         await DispatchCommandAsync(commandText, wasInterruption, held, nested);
+    }
+
+    // #1107: Settings > Voice's "Keep my voice clips for training" (VoiceData),
+    // read at each turn so switching it off stops at once. Saved off the
+    // voice path; a failure only logs.
+    private static void KeepClipIfOn(short[] samples, VoiceSegmentLogEntry logEntry, string commandText, string? model, string? language)
+    {
+        if (!VoiceData.ShouldKeep(logEntry, commandText) || !ManaSettingsStore.Load().KeepVoiceClips)
+        {
+            return;
+        }
+        var clip = new VoiceData.TurnClip(logEntry.Heard ?? logEntry.Transcript!, logEntry.Transcript!, null, language, model,
+            Math.Round(samples.Length / (double)SileroVadRunner.SampleRate, 2), DateTimeOffset.Now);
+        _ = Task.Run(() =>
+        {
+            try
+            {
+                VoiceData.KeepTurn(VoiceData.TurnsFolder, samples, clip, VoiceData.MaxBytes(Environment.GetEnvironmentVariable("MANA_VOICE_DATA_MAX_MB")));
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                Console.WriteLine($"VoiceLoop: couldn't keep the voice clip. {ex.Message}");
+            }
+        });
     }
 
     // #665: ends a ducked interruption. Returns true if it was real (she's

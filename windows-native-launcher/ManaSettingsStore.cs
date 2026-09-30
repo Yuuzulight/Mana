@@ -119,6 +119,10 @@ internal sealed class ManaSettingsStore
     // #912: Settings > Voice's camera toggle; off by default.
     public bool CameraSnapshots { get; set; }
 
+    // #1107: Settings > Voice's "Keep my voice clips for training" (VoiceData);
+    // off by default. Read at each turn, so switching it off stops at once.
+    public bool KeepVoiceClips { get; set; }
+
     // #962: where "save that" puts a camera snapshot; null = Pictures\Mana.
     public string? CameraSnapshotFolder { get; set; }
 
