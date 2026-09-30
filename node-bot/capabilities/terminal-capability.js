@@ -53,8 +53,10 @@ function registerTerminalRoutes(app, context = {}) {
     return res.json({ ok: true });
   });
 
-  // Goes through the stop path of whatever ran it: the chat tool loop's Stop
-  // (the running command finishes, no later tool call runs) or self-work's.
+  // Kills the command's own process tree (through its runner's handle) and
+  // stops whatever ran it: the chat tool loop's Stop (no later tool call
+  // runs) or self-work's. Runs without a stop path (hooks, MCP, the editor
+  // agent's) can't be stopped.
   app.post("/terminal/runs/:id/stop", terminalRateLimiter, (req, res) => {
     if (!checkAdminAuth(req, res)) return;
     return res.json(feed.stop(req.params.id));

@@ -133,7 +133,8 @@ function runTestCommand(
       resolve({ exitCode, timedOut, output: dropped ? `...[${dropped} earlier chars cut]\n${output}` : output });
     };
     const child = spawnImpl(command, { cwd, shell: true, windowsHide: true });
-    terminalFeed.track(child, { source: "chat", command, cwd, ...terminal });
+    // Stop in the Terminal tool kills this command's tree, like the timeout.
+    terminalFeed.track(child, { source: "chat", command, cwd, kill: () => killTree(child), ...terminal });
     // Settles right after the kill: a tree that never reports 'close' must
     // not hang the reply.
     const timer = setTimeout(() => {

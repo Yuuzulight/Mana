@@ -81,6 +81,27 @@ test("Stop calls only the run's own stop path", () => {
   assert.deepEqual(stops, ["chat"]);
 });
 
+test("Stop kills the command itself, stops the loop that ran it, and marks the run stopped", async () => {
+  const child = fakeChild();
+  const killed = [];
+  const stops = [];
+  let done;
+  terminalFeed.runWith({ stop: () => (stops.push("chat"), true) }, () => {
+    done = runTestCommand("npm run slow", "D:\\stop", { spawnImpl: () => child, killTree: (c) => killed.push(c) });
+  });
+  const run = terminalFeed.list().find((r) => r.cwd === "D:\\stop");
+  assert.equal(run.stoppable, true);
+  assert.deepEqual(terminalFeed.stop(run.id), { stopped: true });
+  // Its own child only, and the tool loop's Stop as before.
+  assert.deepEqual(killed, [child]);
+  assert.deepEqual(stops, ["chat"]);
+  child.emit("close", null);
+  await done;
+  const ended = terminalFeed.get(run.id);
+  assert.deepEqual([ended.stopped, ended.running, ended.exitCode], [true, false, null]);
+  assert.deepEqual(terminalFeed.stop(run.id), { stopped: false });
+});
+
 test("a coding test run shows in the shared feed with its source", async () => {
   const child = fakeChild();
   const done = runTestCommand("npm test", "D:\\ws", {

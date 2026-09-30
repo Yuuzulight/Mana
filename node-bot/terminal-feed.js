@@ -3,8 +3,10 @@
 // rail's Terminal tool. In memory only, bounded: the newest MAX_RUNS runs,
 // each keeping the tail of its output.
 //
-// Nothing here starts a process. Stop only calls the stop path the caller
-// handed in (the chat tool loop's Stop, self-work's stop).
+// Nothing here starts a process. Stop ends the command itself (the kill
+// its runner handed in: that command's own process tree, nothing else) and
+// calls the stop path of whatever ran it (the chat tool loop's Stop,
+// self-work's stop).
 const { AsyncLocalStorage } = require("node:async_hooks");
 const { EventEmitter } = require("node:events");
 const { redactText } = require("./tool-call-log");
@@ -23,9 +25,9 @@ function createTerminalFeed({ now = Date.now, maxRuns = MAX_RUNS, maxOutputChars
   let nextId = 1;
 
   const view = (run) => {
-    const { stop, partial, ...rest } = run;
+    const { stop, kill, partial, ...rest } = run;
     const running = run.exitCode === undefined;
-    return { ...rest, running, stoppable: running && typeof stop === "function" };
+    return { ...rest, running, stoppable: running && (typeof stop === "function" || typeof kill === "function") };
   };
 
   // Output is redacted a whole line at a time: a token split across two
@@ -59,17 +61,18 @@ function createTerminalFeed({ now = Date.now, maxRuns = MAX_RUNS, maxOutputChars
     run.partial = "";
     run.exitCode = exitCode ?? null;
     run.durationMs = now() - run.startedAt;
-    events.emit("event", { type: "end", id: run.id, exitCode: run.exitCode, durationMs: run.durationMs });
+    events.emit("event", { type: "end", id: run.id, exitCode: run.exitCode, durationMs: run.durationMs, stopped: run.stopped });
   }
 
   // Records a spawned child. source: "chat" | "self-work" | "hook" | "mcp".
   // stop: the existing stop path for whatever started it; when omitted, the
   // one set by runWith() for this async call chain (the chat tool loop's).
-  // Pass stop: null for a command no Stop reaches.
+  // Pass stop: null for a command no Stop reaches. kill: ends the command's
+  // own process tree now (the runner's own handle on it).
   // child needs only its stdout/stderr streams; without an on("close") the
   // caller ends the run itself through the returned handle's end(code).
   // Returns null when there's no child at all (a test's fake spawn).
-  function track(child, { source, command, cwd, stop } = {}) {
+  function track(child, { source, command, cwd, stop, kill } = {}) {
     if (!child) return null;
     const run = {
       id: String(nextId++),
@@ -83,6 +86,8 @@ function createTerminalFeed({ now = Date.now, maxRuns = MAX_RUNS, maxOutputChars
       durationMs: null,
       partial: "",
       stop: stop !== undefined ? stop : context.getStore()?.stop,
+      kill: typeof kill === "function" ? kill : null,
+      stopped: false,
     };
     runs.set(run.id, run);
     // Oldest finished runs go first; a running one stays until it ends.
@@ -120,11 +125,17 @@ function createTerminalFeed({ now = Date.now, maxRuns = MAX_RUNS, maxOutputChars
     return run ? view(run) : null;
   }
 
-  // { stopped } -- false when the run is over, unknown, or nothing can stop it.
+  // { stopped } -- false when the run is over, unknown, or nothing can stop
+  // it. Kills the command now, then stops whatever ran it; the run is marked
+  // stopped and ends when its process does.
   function stop(id) {
     const run = runs.get(String(id));
-    if (!run || run.exitCode !== undefined || typeof run.stop !== "function") return { stopped: false };
-    return { stopped: Boolean(run.stop()) };
+    if (!run || run.exitCode !== undefined || !view(run).stoppable) return { stopped: false };
+    if (run.stopped) return { stopped: true };
+    run.stopped = true;
+    run.kill?.();
+    if (typeof run.stop === "function") run.stop();
+    return { stopped: true };
   }
 
   function subscribe(listener) {
