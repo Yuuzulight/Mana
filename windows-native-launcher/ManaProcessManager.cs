@@ -5,6 +5,7 @@ using System.IO;
 using System.Net.Http;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -31,10 +32,12 @@ internal sealed class ManaProcessManager : IDisposable
     // (ai/retriever-runtime.js). MANA_START_RETRIEVER=1 force-starts it here
     // at launch instead.
     public bool UsesRetriever { get; } = Environment.GetEnvironmentVariable("MANA_START_RETRIEVER") == "1";
-    // User decision: only the selected TTS provider is started. Fish is the
-    // default (the same "fish" this launcher passes node-bot when unset);
-    // Kokoro stays on demand in node-bot.
-    public bool UsesFishSpeech { get; } = Environment.GetEnvironmentVariable("TTS_PROVIDER") is null or "" or "fish";
+    // User decision: only the selected TTS provider is started; Kokoro stays
+    // on demand in node-bot. #1076: with TTS_PROVIDER unset node-bot picks
+    // (Fish on a CUDA GPU with room for it, Kokoro otherwise), so this starts
+    // out true and StartAsync settles it from the backend's /health.
+    public bool UsesFishSpeech { get; private set; } = Environment.GetEnvironmentVariable("TTS_PROVIDER") is null or "" or "fish";
+    private readonly bool ttsProviderUnset = string.IsNullOrEmpty(Environment.GetEnvironmentVariable("TTS_PROVIDER"));
     public bool UsesGptSovits { get; } = Environment.GetEnvironmentVariable("TTS_PROVIDER") == "gpt_sovits";
     public bool UsesQwen3Tts { get; } = Environment.GetEnvironmentVariable("TTS_PROVIDER") == "qwen3tts";
     // #891: the same QWEN3_TTS_URL node-bot calls and the service takes its
@@ -138,10 +141,32 @@ internal sealed class ManaProcessManager : IDisposable
         // longer serializes an ~100s HttpClient timeout in front of the
         // others.
         var notUsed = Task.FromResult<(Process? Process, bool Available)>((null, false));
-        var fishSpeechTask = UsesFishSpeech
-            ? StartAndReport("fish-speech", "http://127.0.0.1:8080/v1/health", () => Task.FromResult(isBackendLocal ? StartFishSpeech() : null))
-            : notUsed;
         var backendTask = StartAndReport("backend", backendHealthUrl, () => Task.FromResult<Process?>(isBackendLocal ? StartBackend() : null));
+        async Task<(Process? Process, bool Available)> StartFishSpeechIfUsedAsync()
+        {
+            // #1076: TTS_PROVIDER unset -- node-bot picks the voice, so wait
+            // for its answer instead of guessing, and never start Fish next
+            // to a backend that speaks through Kokoro. Its row then gets no
+            // report (the caller marks it "Not needed").
+            if (ttsProviderUnset && isBackendLocal)
+            {
+                try
+                {
+                    await backendTask;
+                }
+                catch
+                {
+                    return (null, false); // WhenAll below rethrows the backend's failure
+                }
+                UsesFishSpeech = await BackendTtsProviderAsync(backendTask.Result.Process) is null or "fish";
+                if (!UsesFishSpeech)
+                {
+                    return (null, false);
+                }
+            }
+            return await StartAndReport("fish-speech", "http://127.0.0.1:8080/v1/health", () => Task.FromResult(isBackendLocal ? StartFishSpeech() : null));
+        }
+        var fishSpeechTask = UsesFishSpeech ? StartFishSpeechIfUsedAsync() : notUsed;
         // #691: the embedder only serves a backend on this machine -- a remote
         // backend calls its own 127.0.0.1:9001, never ours. When
         // MANA_EMBEDDER_MODEL names a model file, node-bot runs a GPU
@@ -317,6 +342,28 @@ internal sealed class ManaProcessManager : IDisposable
         // setup, or a launch failure) -- that's the actual degraded case.
         // #681: so is an unreachable remote backend, which is never spawned.
         return (process, process is not null);
+    }
+
+    // #1076: the TTS provider node-bot settled on, from its /health once it
+    // answers; null if it doesn't within a minute or says nothing usable
+    // (the caller then keeps the old "fish" default).
+    private async Task<string?> BackendTtsProviderAsync(Process? process)
+    {
+        if (!await WaitForHealthyAsync(true, backendHealthUrl, TimeSpan.FromMinutes(1), null, process))
+        {
+            return null;
+        }
+        try
+        {
+            using var doc = JsonDocument.Parse(await http.GetStringAsync(backendHealthUrl));
+            return doc.RootElement.TryGetProperty("ttsProvider", out var provider) && provider.ValueKind == JsonValueKind.String
+                ? provider.GetString()
+                : null;
+        }
+        catch
+        {
+            return null;
+        }
     }
 
     private async Task<bool> IsServiceRunningAsync(string url)
@@ -557,17 +604,15 @@ internal sealed class ManaProcessManager : IDisposable
         startInfo.Environment["WHISPER_BIN"] =
             Environment.GetEnvironmentVariable("WHISPER_BIN") ??
             Path.Combine(whisperDir, "Release", "whisper-cli.exe");
-        startInfo.Environment["WHISPER_MODEL"] =
-            Environment.GetEnvironmentVariable("WHISPER_MODEL") ??
-            Path.Combine(whisperDir, "models", "ggml-tiny.en.bin");
-        // "fish" (Fish Speech / S1-mini) matches node-bot's own default
-        // (tts-runtime.js: env.TTS_PROVIDER || (ttsBin ? "cli" : "fish")) and
-        // docs/fish_speech_tts.md's stated default -- Kokoro only runs on
-        // demand (gaming). KOKORO_TTS_FALLBACK_PROVIDER below is
-        // a different, correctly-named variable (Kokoro's own fallback,
-        // not Fish Speech's) and is left as-is.
-        startInfo.Environment["TTS_PROVIDER"] =
-            Environment.GetEnvironmentVariable("TTS_PROVIDER") ?? "fish";
+        // No WHISPER_MODEL default: node-bot's discovery picks the model,
+        // and a multilingual one when the speech language isn't English. A
+        // WHISPER_MODEL in the launcher's environment still passes through,
+        // and node-bot/.env wins over both.
+        // #1076: no TTS_PROVIDER default here -- node-bot inherits it when
+        // set, and otherwise picks Fish or Kokoro from the GPU itself
+        // (resolveTtsProvider in tts-runtime.js). KOKORO_TTS_FALLBACK_PROVIDER
+        // below is a different, correctly-named variable (Kokoro's own
+        // fallback, not Fish Speech's) and is left as-is.
         startInfo.Environment["KOKORO_TTS_FALLBACK_PROVIDER"] =
             Environment.GetEnvironmentVariable("KOKORO_TTS_FALLBACK_PROVIDER") ?? "none";
         startInfo.Environment["START_FALLBACK_CHATTERBOX"] = "0";
@@ -580,6 +625,12 @@ internal sealed class ManaProcessManager : IDisposable
 
         var process = Process.Start(startInfo) ??
                throw new InvalidOperationException("Failed to start Mana backend.");
+
+        // The same lines as Settings > Logs, also on disk; the last run's as
+        // backend.prev.log. Under node-bot\data (never the launcher's own
+        // folder, which an update renames). Once node has started, so a
+        // failed start never creates folders; before reading its output.
+        BackendLog.StartFile(Path.Combine(nodeBotDir, "data", "logs", "backend.log"));
 
         void OnLine(object? sender, DataReceivedEventArgs e)
         {
@@ -699,6 +750,7 @@ internal sealed class ManaProcessManager : IDisposable
     {
         try
         {
+            Directory.CreateDirectory(Path.GetDirectoryName(logPath)!);
             if (File.Exists(logPath))
             {
                 File.Move(logPath, Path.ChangeExtension(logPath, ".prev.log"), overwrite: true);
