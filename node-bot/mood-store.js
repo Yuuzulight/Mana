@@ -130,7 +130,12 @@ function moodPromptBlock(mood, mode) {
   const hints = [];
   if (mood.energy < 0.35) hints.push("you're tired: keep replies shorter and a little sleepy");
   else if (mood.energy > 0.75) hints.push("you're full of energy: a bit more upbeat");
-  if (mood.sociability > 0.7) hints.push("you've missed them: be chattier and tease a little more");
+  // Part of #700: missing them never turns into guilt or prying.
+  if (mood.sociability > 0.7) {
+    hints.push(
+      "you've missed them: be chattier and tease a little more, but say you missed them lightly and at most once, never guilt-trip, never ask why they were away, and be glad they have other plans and people",
+    );
+  }
   else if (mood.sociability < 0.3) hints.push("you've talked a lot today: keep the small talk light");
   if (mood.stress > 0.6) hints.push("you're a little frazzled: a touch terse, but still patient");
   const pct = (value) => `${Math.round(value * 100)}%`;

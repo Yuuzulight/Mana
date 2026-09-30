@@ -213,6 +213,7 @@ const {
   DEFAULT_FILE_PATH: DEFAULT_PERSONALITY_FILE,
 } = require("./personality-store");
 const { createMoodStore, levelWord, moodPromptBlock } = require("./mood-store");
+const { createCheckIns, gentleHint } = require("./check-ins");
 const {
   createRelationshipStore,
   createRelationshipToolSource,
@@ -937,6 +938,22 @@ const briefing = createBriefing({
 const BRIEFING_ACTIVE_SECONDS = 120;
 const briefingOnActive =
   process.env.NODE_ENV !== "test" && !process.env.NODE_TEST_CONTEXT ? briefing.maybeRun : () => {};
+// Part of #700: at most one gentle check-in a day after I've seemed down
+// (check-ins.js), through the proactive engine; never mid-game.
+const checkIns = createCheckIns({
+  store: acpMemoryStore,
+  offer: (candidate) => require("./proactive").offer(candidate),
+  isGaming: () => gamingWatch.isGaming(),
+});
+if (process.env.NODE_ENV !== "test" && !process.env.NODE_TEST_CONTEXT) {
+  setInterval(() => {
+    try {
+      checkIns.maybeCheckIn();
+    } catch (e) {
+      console.warn("Check-in failed:", e.message);
+    }
+  }, 5 * 60 * 1000).unref();
+}
 // #908: the game I'm playing, if its wiki is known: the one in front (the
 // native launcher's foreground report), else the watched game that's running.
 function currentGame() {
@@ -1011,7 +1028,8 @@ async function checkEmotionalReflexes(store = acpMemoryStore) {
 
   await store.rememberFact({
     key: "journal-loneliness",
-    text: `It's been about ${Math.round(hoursSince)} hours since we last talked.`,
+    // Part of #700: the same counterweight as the mood block and persona.
+    text: `It's been about ${Math.round(hoursSince)} hours since we last talked. If it comes up, mention missing them lightly and only once: no guilt-tripping, no asking why they were away, and be glad they had other plans and people.`,
     action: "patch",
     origin: { kind: "system" },
   });
@@ -4476,10 +4494,14 @@ function registerRoutes(app, upload, deps = {}) {
     // Issue #700: her mood, as tone guidance only -- "late" like memory,
     // since it changes turn to turn. It never touches the token budget,
     // tools or mode, and moodPromptBlock leaves coding replies alone.
+    // Part of #700: plus "be gentle, don't pry" while I've seemed down for
+    // several turns (even with her mood frozen -- that's about me, not her).
     let moodText = "";
     try {
       activeMoodStore.recordTurn(transcript);
-      moodText = moodPromptBlock(activeMoodStore.get(), mode) || "";
+      moodText = [moodPromptBlock(activeMoodStore.get(), mode), gentleHint(acpMemoryStore.getUserAffectState(), mode)]
+        .filter(Boolean)
+        .join("\n");
       if (moodText) {
         memoryExtraMessages.late.push({ role: "system", content: moodText });
         flatMemorySuffix += `\n\n${moodText}`;
