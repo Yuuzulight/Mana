@@ -70,12 +70,48 @@ public class LauncherUpdateTests : IDisposable
         Assert.True(LauncherUpdate.IsStaged(Live));
         using var gone = Process.Start(new ProcessStartInfo(BrokenExe) { UseShellExecute = false, CreateNoWindow = true })!;
         gone.WaitForExit();
-
-        Assert.False(LauncherUpdate.RunInstaller(staging, gone.Id, [], TimeSpan.FromSeconds(30)));
+        var before = Directory.GetCurrentDirectory();
+        try
+        {
+            Assert.False(LauncherUpdate.RunInstaller(staging, gone.Id, [], TimeSpan.FromSeconds(30)));
+        }
+        finally
+        {
+            Directory.SetCurrentDirectory(before); // RunInstaller moves into staging
+        }
 
         Assert.True(File.Exists(Path.Combine(Live, "runtimes", "old.dll")));
         Assert.True(File.Exists(Path.Combine(Live, LauncherUpdate.RolledBackNote)));
         Assert.False(LauncherUpdate.IsStaged(Live)); // never retried in a loop
+    }
+
+    [Fact]
+    public void RunInstaller_SwapsEvenWhenStartedInsideTheLiveFolder()
+    {
+        // The running launcher used to start the installer without a working
+        // directory, so it sat in the live folder and could never rename it.
+        var staging = LauncherUpdate.StagingDir(Live);
+        Build(Live, "old.dll", BrokenExe);
+        Build(staging, "new.dll", BrokenExe);
+        File.WriteAllText(Path.Combine(staging, LauncherUpdate.ReadyMarker), "");
+        using var gone = Process.Start(new ProcessStartInfo(BrokenExe) { UseShellExecute = false, CreateNoWindow = true })!;
+        gone.WaitForExit();
+        var before = Directory.GetCurrentDirectory();
+        try
+        {
+            Directory.SetCurrentDirectory(Live);
+
+            Assert.False(LauncherUpdate.RunInstaller(staging, gone.Id, [], TimeSpan.FromSeconds(30)));
+        }
+        finally
+        {
+            Directory.SetCurrentDirectory(before);
+        }
+
+        // It got as far as starting the new build (which then failed), not
+        // stuck at the folder swap.
+        Assert.Equal("The new launcher build didn't start", File.ReadAllText(Path.Combine(Live, LauncherUpdate.RolledBackNote)));
+        Assert.True(File.Exists(Path.Combine(Live, "runtimes", "old.dll")));
     }
 
     [Fact]

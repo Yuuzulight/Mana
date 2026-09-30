@@ -188,7 +188,7 @@ const CHAT_START_SCHEMA = {
   function: {
     name: CHAT_START_TOOL,
     description:
-      "Start working on one of Yuuzulight's GitHub issues for your own code, in your own worktree, ending in a PR for them to review. Only when they ask you to in their message, naming the issue number.",
+      "Start working on one of the GitHub issues of the person you're talking to, for your own code, in your own worktree, ending in a PR for them to review. Only when they ask you to in their message, naming the issue number.",
     parameters: {
       type: "object",
       properties: { issue: { type: "integer", description: "The issue number from their message." } },
@@ -222,6 +222,24 @@ function createSelfWork(options = {}) {
   }
   const git = (args, cwd = repoRoot) => run("git", args, cwd);
   const gh = (args, cwd = repoRoot) => run("gh", args, cwd);
+
+  // Whose repo this is, for her prompts and the chat-start check:
+  // MANA_SELF_WORK_OWNER, else the gh login, else the origin remote's
+  // owner. Looked up once (a run awaits it before her loop starts).
+  let ownerLookup = null;
+  let ownerFound = null;
+  function owner() {
+    ownerLookup ||= (async () => {
+      if (env.MANA_SELF_WORK_OWNER) return env.MANA_SELF_WORK_OWNER.trim();
+      try {
+        return await gh(["api", "user", "--jq", ".login"]);
+      } catch {}
+      const url = await git(["remote", "get-url", "origin"]).catch(() => "");
+      return /[/:]([^/:]+)\/[^/]+?(?:\.git)?\/?$/.exec(url)?.[1] || null;
+    })().then((name) => (ownerFound = name || null));
+    return ownerLookup;
+  }
+  const ownerName = () => ownerFound || "the repo owner";
 
   // notice: a start or an end, which also goes to the chat (#1008).
   function log(r, text, notice = false) {
@@ -332,7 +350,7 @@ function createSelfWork(options = {}) {
       // issue I wrote, so a stranger's issue can't be slipped in; on her
       // own only what's already labelled.
       if (!(issue.labels || []).some((l) => l.name === TASK_LABEL)) {
-        const mine = by === "chat" && issue.author?.login === (await gh(["api", "user", "--jq", ".login"]));
+        const mine = by === "chat" && Boolean(issue.author?.login) && issue.author.login === (await owner());
         if (by !== "me" && !mine) {
           return { ok: false, error: `#${n} isn't one of yours and has no ${TASK_LABEL} label; add the label and I'll take it.` };
         }
@@ -393,6 +411,7 @@ function createSelfWork(options = {}) {
     if (fs.existsSync(modules) && !fs.existsSync(link)) fs.symlinkSync(modules, link, "junction");
 
     log(r, "Working on it in my worktree.");
+    await owner();
     const tools = worktreeTools(r);
     const reply = await runLoop(buildPrompt(r, issue), tools, {
       goal: `Implement issue #${r.issue}: ${r.title}`,
@@ -473,7 +492,7 @@ How to work:
 - Run the tests you touched with ${CODING_TEST_TOOL_NAME} and fix what fails.
 ${
   r.flagged
-    ? "- Yuuzulight flagged this run to allow changes to your guardrails (approval gate, hooks, tool risk, local-only mode, admin key, redaction). Change only what the issue needs there."
+    ? `- ${ownerName()} flagged this run to allow changes to your guardrails (approval gate, hooks, tool risk, local-only mode, admin key, redaction). Change only what the issue needs there.`
     : "- Your guardrails (approval gate, hooks, tool risk, local-only mode, admin key, redaction) are off limits; writes there are refused."
 }
 - When the tests pass, call ${SESSION_GOAL_FINISH_TOOL_NAME}, then reply with a short first-person summary of what you changed and how you tested it. It becomes the PR description.`;
@@ -629,7 +648,7 @@ ${
       tools: [...TOOL_SCHEMAS, ...GOAL_TOOL_SCHEMAS],
       isKnownTool: (name) => name in executors || name === SESSION_GOAL_FINISH_TOOL_NAME,
       async executeTool(name, args) {
-        if (r.stopRequested) return JSON.stringify({ status: "blocked", error: "stopped by Yuuzulight" });
+        if (r.stopRequested) return JSON.stringify({ status: "blocked", error: `stopped by ${ownerName()}` });
         if (r.halt) return JSON.stringify({ status: "blocked", error: r.halt.text });
         if (isGaming()) return halt("paused", "A game started, so I stopped.");
         if (stepsWithoutProgress >= MAX_STEPS_WITHOUT_PROGRESS) {
@@ -657,7 +676,7 @@ ${
       isKnownToolName: (name) => name === CHAT_START_TOOL,
       async executeTool(name, args) {
         const n = Number(args?.issue);
-        if (!asked.has(n)) return JSON.stringify({ status: "error", error: `#${n} isn't in Yuuzulight's message.` });
+        if (!asked.has(n)) return JSON.stringify({ status: "error", error: `#${n} isn't in their message.` });
         const result = await start(n, { by: "chat" });
         if (!result.ok) return JSON.stringify({ status: "error", error: result.error });
         const { worktree, branch } = result.status;

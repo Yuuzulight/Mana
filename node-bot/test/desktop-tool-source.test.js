@@ -97,3 +97,17 @@ test("a file move is recorded as a snapshot, and undoing it moves each item back
   registerFileMoveRestorer(snapshotStore, gone);
   await assert.rejects(() => restorer.fn(records[0].key, records[0].payload), /doesn't exist/);
 });
+
+test("a move can ask for a new destination folder, and only as true", async () => {
+  const bridge = fakeBridge({ answer: { moved: [], failed: [] } });
+  const source = createDesktopToolSource({ bridge });
+  await source.executeTool("desktop__move_files", { to: "C:\Users\me\Pictures\Cats", new_folder: true, from: ["a"] });
+  await source.executeTool("desktop__move_files", { to: "C:\Users\me\Pictures\Cats", new_folder: "yes", from: ["a"] });
+  assert.deepEqual(
+    bridge.sent.map((s) => s.args),
+    [
+      { to: "C:\Users\me\Pictures\Cats", from: ["a"], new_folder: true },
+      { to: "C:\Users\me\Pictures\Cats", from: ["a"] },
+    ],
+  );
+});
