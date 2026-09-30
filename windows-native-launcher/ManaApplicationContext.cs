@@ -266,7 +266,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
         updateNowRequests = SingleInstance.ListenForUpdate(true, () => RunOnUi(() => ApplyUpdate(now: true)));
         // #681: answers the model's mid-reply screenshot requests, and
         // #911's desktop actions (media keys, volume, apps, audio output, file moves).
-        visionCaptureClient = new VisionCaptureClient(backendClient, backendBaseUrl: settings.BackendBaseUrl, captureCamera: CaptureCameraAsync, desktopAction: (action, args) => DesktopActions.Run(action, args, ManaSettingsStore.Load().DesktopActionFolders));
+        visionCaptureClient = new VisionCaptureClient(backendClient, backendBaseUrl: settings.BackendBaseUrl, captureCamera: CaptureCameraAsync, saveCameraSnapshot: SaveCameraSnapshotAsync, desktopAction: (action, args) => DesktopActions.Run(action, args, ManaSettingsStore.Load().DesktopActionFolders));
 
         trayIcon = new NotifyIcon
         {
@@ -684,7 +684,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
                 throw new InvalidOperationException(WebcamCapture.OffMessage);
             }
             ShowCameraBalloon("Mana is looking through your camera", "One snapshot, not saved.", ToolTipIcon.Info);
-            return await WebcamCapture.CaptureAsJpegDataUrlAsync();
+            return lastCameraSnapshot = await WebcamCapture.CaptureAsJpegDataUrlAsync();
         }
         catch (Exception ex)
         {
@@ -692,6 +692,18 @@ internal sealed class ManaApplicationContext : ApplicationContext
             throw;
         }
     }
+
+    // #962: the last snapshot, in memory only, for "save that".
+    private volatile string? lastCameraSnapshot;
+
+    // #962: vision__save_snapshot (write tier, so smart approval asks first)
+    // writes it to Settings > Voice's folder or Pictures\Mana.
+    private Task<string> SaveCameraSnapshotAsync() => Task.Run(() =>
+    {
+        var path = WebcamCapture.SaveSnapshot(lastCameraSnapshot, ManaSettingsStore.Load().CameraSnapshotFolder, DateTime.Now);
+        ShowCameraBalloon("Saved the camera snapshot", path, ToolTipIcon.Info);
+        return path;
+    });
 
     private void ShowCameraBalloon(string title, string text, ToolTipIcon icon) => RunOnUi(() =>
     {

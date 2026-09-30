@@ -21,6 +21,7 @@ const {
   createSessionGoalToolSource,
 } = require("./ai/session-goal-tool-source");
 const { createEditProposalStore } = require("./zed-integration");
+const protectedPaths = require("./protected-paths");
 
 // The label that makes an issue hers to work on. I add it (or starting a
 // run from the launcher adds it for me).
@@ -46,23 +47,9 @@ const RAM_WAIT_MS = 10 * 60 * 1000;
 // A run with this many tool calls in a row and no new change and no new
 // test result is stuck (on top of goal mode's 20-round cap).
 const MAX_STEPS_WITHOUT_PROGRESS = 8;
-// Starting on her own while I'm away stays off until #1001 and the fixes
-// for #1002 (args.approved), #1003 (mana/test/run's cwd) and #1004
-// (acp-path-guard.js) are merged. Flip it then.
-const UNATTENDED_ALLOWED = false;
 
 function systemRamPercent() {
   return Math.round((1 - os.freemem() / os.totalmem()) * 1000) / 10;
-}
-
-// #1000's guardrail list. Until it's merged into this checkout the runner
-// refuses to start: her writes must not reach her own guardrails.
-function loadProtectedPaths() {
-  try {
-    return require("./protected-paths");
-  } catch {
-    return null;
-  }
 }
 
 // The code she writes runs in her tests; it gets a clean environment, not
@@ -217,13 +204,13 @@ function createSelfWork(options = {}) {
   const env = options.env || process.env;
   const runLoop = options.runLoop;
   const reviewEdit = options.reviewEdit || null;
-  const guard = options.protectedPaths === undefined ? loadProtectedPaths() : options.protectedPaths;
+  // #1000's guardrail list: her writes never reach it.
+  const guard = options.protectedPaths || protectedPaths;
   const runTests = options.runTests || runTestCommand;
   const isGaming = options.isGaming || (() => false);
   const ramPercent = options.ramPercent || systemRamPercent;
   const sleep = options.sleep || ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
   const maxOpenPrs = Math.max(1, Number(env.MANA_SELF_WORK_MAX_OPEN_PRS) || DEFAULT_MAX_OPEN_PRS);
-  const unattendedAllowed = options.unattendedAllowed ?? UNATTENDED_ALLOWED;
   const onEvent = options.onEvent || ((run, text) => console.log(`[self-work #${run.issue}] ${text}`));
   const proposals = createEditProposalStore();
   let current = null;
@@ -304,7 +291,6 @@ function createSelfWork(options = {}) {
   // #1007: called once per idle period of 20 minutes or more. Only issues
   // already labelled for her, without a PR of hers yet.
   async function startIdle() {
-    if (!unattendedAllowed) return { ok: false, error: "Starting on my own is off until my security fixes are merged." };
     if (starting || current?.state === "running") return { ok: false, error: "I'm already working on an issue." };
     let issues;
     try {
@@ -323,7 +309,6 @@ function createSelfWork(options = {}) {
   }
 
   async function begin(issueNumber, by, flagged) {
-    if (!guard) return { ok: false, error: "Self-work waits for my guardrail list (#1000) to be merged into this checkout." };
     let why;
     try {
       why = await blocker();

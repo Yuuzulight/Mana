@@ -277,15 +277,12 @@ internal sealed class ManaBackendClient
     // #675: thinkHarder (the main window's deep-thinking toggle): true asks
     // node-bot to think on this turn, false ends Mana's own deep thinking
     // (Q12b), null sends nothing.
-    // #911: voice marks a spoken turn (source "voice"), which may run
-    // desktop actions while a game is running.
-    public async IAsyncEnumerable<ReplyStreamEvent> ReplyStreamAsync(string text, string? sessionId = null, string screenText = "", string? image = null, IReadOnlyList<string>? images = null, string? presetId = null, bool? thinkHarder = null, bool voice = false)
+    // #963/#911: source is "voice" (a spoken turn, which may run desktop
+    // actions mid-game) or "typed" (gets the longer mid-game wiki wait).
+    // Null sends nothing.
+    public async IAsyncEnumerable<ReplyStreamEvent> ReplyStreamAsync(string text, string? sessionId = null, string screenText = "", string? image = null, IReadOnlyList<string>? images = null, string? presetId = null, bool? thinkHarder = null, string? source = null)
     {
         var fields = new Dictionary<string, object?> { ["text"] = text, ["screenText"] = screenText };
-        if (voice)
-        {
-            fields["source"] = "voice";
-        }
         if (sessionId is not null)
         {
             fields["sessionId"] = sessionId;
@@ -297,6 +294,10 @@ internal sealed class ManaBackendClient
         if (thinkHarder is bool think)
         {
             fields["thinkHarder"] = think;
+        }
+        if (source is not null)
+        {
+            fields["source"] = source;
         }
         if (images is { Count: > 0 })
         {
