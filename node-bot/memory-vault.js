@@ -16,7 +16,7 @@
 // note Mana wrote: a note that still matches is Mana's own write (the loop
 // guard) and is never read back as an edit; one that differs is the user's.
 // A note Mana wrote that is gone was deleted by the user, which archives
-// the fact.
+// the fact (after MISSING_GRACE_MS), or renamed, which renames it.
 const crypto = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
@@ -29,6 +29,10 @@ const MAX_NOTE_BYTES = 8 * 1024;
 // silently cut.
 const MAX_TEXT_CHARS = 500;
 const DEBOUNCE_MS = 1500;
+// A note Mana wrote that's gone is archived only when two syncs this far
+// apart found it missing (applyDeletion); until then applyDeletion WAITs.
+const MISSING_GRACE_MS = 30 * 1000;
+const WAIT = "wait";
 // The header fields Mana writes (renderNote); any other key is the user's.
 const OWN_FIELDS = new Set(["status", "pinned", "trigger", "paused", "since", "source"]);
 // An archived note the user deleted: kept deleted, not written again.
@@ -84,6 +88,23 @@ function keyFromName(name) {
   } catch (e) {
     return cleanText(name);
   }
+}
+
+// A sync tool's conflict copy of a note: Syncthing's ".sync-conflict-",
+// Obsidian Sync's / Dropbox's "(conflicted copy ...)", and OneDrive's
+// "Name-PCNAME" / "Name 2" -- those two only when "Name" is a fact's note,
+// since they're also ordinary names.
+function isConflictCopy(name, facts) {
+  if (/\.sync-conflict-|\(.*conflict(ed)? copy/i.test(name)) return true;
+  const bases = [];
+  const numbered = / \d+$/.exec(name);
+  if (numbered) bases.push(name.slice(0, numbered.index));
+  for (let i = name.indexOf("-"); i > 0; i = name.indexOf("-", i + 1)) {
+    if (/^(?=.*[A-Z])[A-Z0-9-]+$/.test(name.slice(i + 1))) bases.push(name.slice(0, i));
+  }
+  if (!bases.length) return false;
+  const names = new Set(facts.filter(statusOf).map((f) => noteName(f.key).toLowerCase()));
+  return bases.some((base) => names.has(base.toLowerCase()));
 }
 
 function statusOf(fact) {
@@ -157,7 +178,8 @@ function parseNote(content) {
 // options.store: the acp memory store. options.vaultDir: the vault root.
 // options.approvalGate: optional -- a brand-new note is stored pending
 // either way; with a gate it also asks for the user's OK (toast / Settings >
-// Approvals). options.watch: false in tests (sync() by hand).
+// Approvals). options.watch: false in tests (sync() by hand); options.now,
+// a clock for tests.
 // options.buildViews: () => [{rel: "Views/...md", body}], the read-only
 // views. For the journal: options.runModel, (prompt, maxTokens) => reply
 // or null from a model that's already loaded (never loads one), and
@@ -169,10 +191,14 @@ function createMemoryVault(options = {}) {
   const statePath = path.join(store.dataDir, "vault-sync.json");
   const log = options.log || ((message) => console.log(`Memory vault: ${message}`));
   const status = { vaultDir, writable: null, notes: 0, skipped: [], lastSyncAt: null, error: null };
+  const now = options.now || Date.now;
   let timer = null;
   let watcher = null;
   let viewsTimer = null;
   let lastJournalAt = null;
+  let started = false;
+  // Note id -> when a sync first found Mana's note missing (applyDeletion).
+  const missingSince = new Map();
 
   const full = (rel) => path.join(vaultDir, rel);
   // Views and the journal never create the vault either (see sync()).
@@ -256,8 +282,9 @@ function createMemoryVault(options = {}) {
   }
 
   // Returns {key} when the note was taken in (Mana may now rewrite or move
-  // it), or a string saying why it was skipped.
-  function applyNote(note, facts) {
+  // it), or a string saying why it was skipped. missing: ids of Mana's notes
+  // that are gone from disk (a rename's old name).
+  function applyNote(note, facts, missing) {
     if (note.error) return note.error;
     const parsed = parseNote(note.content);
     if (parsed.error) return parsed.error;
@@ -271,6 +298,18 @@ function createMemoryVault(options = {}) {
     if (!fact) {
       const key = keyFromName(note.name);
       if (!key) return "no fact key in the filename";
+      if (isConflictCopy(note.name, facts)) return "a sync-conflict copy, ignored";
+      // Same text as an active fact whose note just went missing: the note
+      // was renamed, so the fact is (instead of archive + a new pending one).
+      const renamed =
+        note.folder === FOLDERS.active &&
+        facts.find(
+          (f) => statusOf(f) === "active" && f.text === body && missing.has(`${FOLDERS.active}/${noteName(f.key)}.md`.toLowerCase()),
+        );
+      if (renamed && store.renameFact(renamed, key, origin).renamed) {
+        log(`"${renamed.key}" was renamed to "${key}" in the vault.`);
+        return applyNote(note, store.listFacts(), new Set());
+      }
       store.rememberFact({
         key,
         text: body,
@@ -336,7 +375,9 @@ function createMemoryVault(options = {}) {
     return { key: fact.key };
   }
 
-  // A note Mana wrote is gone: archive its fact (never a hard delete).
+  // A note Mana wrote is gone: archive its fact (never a hard delete), once
+  // it's been missing for two syncs MISSING_GRACE_MS apart (a sync tool
+  // replacing the file, an editor's delete-and-rewrite); until then WAIT.
   // Returns true for a deleted archived note, which then stays deleted.
   // A fact whose other note was just taken in was moved, not deleted.
   function applyDeletion(id, facts, takenKeys) {
@@ -344,6 +385,8 @@ function createMemoryVault(options = {}) {
     const note = { folder: id.slice(0, slash), name: id.slice(slash + 1, -3) };
     const fact = bindFact(note, facts);
     if (!fact || takenKeys.has(fact.key.toLowerCase())) return false;
+    if (!missingSince.has(id)) missingSince.set(id, now());
+    if (now() - missingSince.get(id) < MISSING_GRACE_MS) return WAIT;
     if (statusOf(fact) === "archived") return note.folder === FOLDERS.archived.toLowerCase();
     store.rememberFact({ key: fact.key, action: "archive", source: "vault", origin: { kind: "vault_edit" } });
     log(`"${id}" was deleted, so "${fact.key}" is archived (move its note back into Facts/ to restore it).`);
@@ -397,13 +440,15 @@ function createMemoryVault(options = {}) {
       const onDisk = scanNotes();
       const taken = new Set();
       const takenKeys = new Set();
+      const missing = new Set(Object.keys(state.notes).filter((id) => !onDisk.has(id) && state.notes[id] !== DELETED));
+      const waiting = new Set();
 
       // Vault -> Mana.
       for (const note of onDisk.values()) {
         if (note.hash && note.hash === state.notes[note.id]) continue;
         let outcome;
         try {
-          outcome = applyNote(note, store.listFacts());
+          outcome = applyNote(note, store.listFacts(), missing);
         } catch (e) {
           outcome = e?.message || String(e);
         }
@@ -415,25 +460,31 @@ function createMemoryVault(options = {}) {
         takenKeys.add(outcome.key.toLowerCase());
         result.applied += 1;
       }
-      for (const [id, noteHash] of Object.entries(state.notes)) {
-        if (onDisk.has(id) || noteHash === DELETED) continue;
-        if (applyDeletion(id, store.listFacts(), takenKeys)) {
+      for (const id of missing) {
+        const deleted = applyDeletion(id, store.listFacts(), takenKeys);
+        if (deleted === WAIT) {
+          waiting.add(id);
+          continue;
+        }
+        if (deleted) {
           state.notes[id] = DELETED;
         } else {
           delete state.notes[id];
         }
         result.applied += 1;
       }
+      for (const id of missingSince.keys()) if (!waiting.has(id)) missingSince.delete(id);
 
       // Mana -> vault. A note the user changed that couldn't be taken in
-      // (broken header...) is left alone until they fix it.
+      // (broken header...) is left alone until they fix it, and one that's
+      // waiting out its grace isn't written back.
       const desired = desiredNotes(store.listFacts(), onDisk);
       const ours = (id) => {
         const note = onDisk.get(id);
         return !note || taken.has(id) || (note.hash && note.hash === state.notes[id]);
       };
       for (const [id, want] of desired) {
-        if ((state.notes[id] === DELETED && !onDisk.has(id)) || !ours(id)) continue;
+        if ((state.notes[id] === DELETED && !onDisk.has(id)) || !ours(id) || waiting.has(id)) continue;
         if (onDisk.get(id)?.content !== want.content) {
           writeNote(want.rel, want.content);
           result.written += 1;
@@ -465,12 +516,14 @@ function createMemoryVault(options = {}) {
       log(`sync failed: ${status.error}`);
     }
     watch();
+    // A missing note is looked at again once its grace is up.
+    if (started && missingSince.size) schedule(MISSING_GRACE_MS + DEBOUNCE_MS);
     return result;
   }
 
-  function schedule() {
+  function schedule(delay = DEBOUNCE_MS) {
     clearTimeout(timer);
-    timer = setTimeout(sync, DEBOUNCE_MS);
+    timer = setTimeout(sync, delay);
     timer.unref?.();
   }
 
@@ -588,7 +641,8 @@ function createMemoryVault(options = {}) {
   }
 
   function start() {
-    store.onFactsChanged(schedule);
+    started = true;
+    store.onFactsChanged(() => schedule());
     sync();
     refreshViews();
     viewsTimer = setInterval(refreshViews, VIEWS_REFRESH_MS);
@@ -596,6 +650,7 @@ function createMemoryVault(options = {}) {
   }
 
   function stop() {
+    started = false;
     clearTimeout(timer);
     clearInterval(viewsTimer);
     if (watcher) watcher.close();

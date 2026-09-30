@@ -1212,6 +1212,25 @@ function createAcpMemoryStore(options = {}) {
     return { found: true, restored: true };
   }
 
+  // #935: a live fact's note renamed in the vault renames the fact. Refused
+  // while another live fact holds the new key.
+  function renameFact(fact, newKey, origin) {
+    const cleanNewKey = cleanText(newKey, 200);
+    const facts = loadFacts();
+    const target = fact && facts.find((f) => factIdentity(f) === factIdentity(fact));
+    if (!target || !isLiveFact(target) || !cleanNewKey) return { found: false };
+    const lowerKey = cleanNewKey.toLowerCase();
+    if (facts.some((f) => f !== target && isLiveFact(f) && f.key.toLowerCase() === lowerKey)) {
+      return { found: true, renamed: false };
+    }
+    snapshotFact(target.key, target, `fact rename: ${target.key} -> ${cleanNewKey}`, "human");
+    const timestamp = now();
+    target.key = cleanNewKey;
+    target.updatedAt = timestamp;
+    saveFacts(facts, { op: "rename", key: cleanNewKey, origin: normalizeOrigin(origin, target.sessionId, timestamp) });
+    return { found: true, renamed: true };
+  }
+
   // Issue #663: pending facts nobody confirmed within maxAgeDays of being
   // picked up are archived, not deleted. Run from Dream Mode (server.js).
   function archiveExpiredPendingFacts({ maxAgeDays = 14 } = {}) {
@@ -2444,6 +2463,7 @@ function createAcpMemoryStore(options = {}) {
     setFactPinned,
     setFactPaused,
     restoreFact,
+    renameFact,
     onFactsChanged,
     listUntypedEntities,
     setEntityType,

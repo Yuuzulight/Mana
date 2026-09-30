@@ -18,12 +18,19 @@ function setup({ approvals } = {}) {
   const approvalGate = approvals
     ? { requestApproval: async (type, request) => approvals.push({ type, ...request }) }
     : null;
-  const vault = createMemoryVault({ store, vaultDir, approvalGate, watch: false, log: (m) => logs.push(m) });
+  const clock = { ms: Date.now() };
+  const vault = createMemoryVault({ store, vaultDir, approvalGate, watch: false, log: (m) => logs.push(m), now: () => clock.ms });
   const note = (rel) => path.join(vaultDir, rel);
   const read = (rel) => fs.readFileSync(note(rel), "utf8");
   const write = (rel, content) => fs.writeFileSync(note(rel), content, "utf8");
   const fact = (key) => store.listFacts().find((f) => f.key === key && f.status !== "stale");
-  return { root, vaultDir, store, vault, logs, note, read, write, fact };
+  // A deleted note counts once it's been missing for two syncs 30 s apart.
+  const syncPastGrace = () => {
+    vault.sync();
+    clock.ms += 31 * 1000;
+    return vault.sync();
+  };
+  return { root, vaultDir, store, vault, logs, note, read, write, fact, clock, syncPastGrace };
 }
 
 test("facts export as notes, and a second sync writes nothing (idempotent first start)", () => {
@@ -189,6 +196,14 @@ test("status: archived in the header archives; deleting a note archives; moving 
   assert.equal(parseNote(t.read("Facts/Archived/gpu.md")).header.status, "archived");
 
   fs.unlinkSync(t.note("Facts/cat.md"));
+  // Not yet (a sync tool may be replacing the file), and not written back.
+  assert.equal(t.vault.sync().written, 0);
+  assert.equal(t.fact("cat").status, "active");
+  assert.equal(fs.existsSync(t.note("Facts/cat.md")), false);
+  t.clock.ms += 29 * 1000;
+  t.vault.sync();
+  assert.equal(t.fact("cat").status, "active");
+  t.clock.ms += 2 * 1000;
   t.vault.sync();
   assert.equal(t.fact("cat").status, "archived");
   assert.ok(fs.existsSync(t.note("Facts/Archived/cat.md")));
@@ -202,7 +217,7 @@ test("status: archived in the header archives; deleting a note archives; moving 
 
   // Deleting an archived note leaves the fact archived and the note gone.
   fs.unlinkSync(t.note("Facts/Archived/gpu.md"));
-  assert.equal(t.vault.sync().written, 0);
+  assert.equal(t.syncPastGrace().written, 0);
   assert.equal(t.fact("gpu").status, "archived");
   assert.equal(fs.existsSync(t.note("Facts/Archived/gpu.md")), false);
 });
@@ -327,11 +342,74 @@ test("moving a note into Archived/ archives it; deleting a pending note archives
   t.vault.sync();
   fs.renameSync(t.note("Facts/gpu.md"), t.note("Facts/Archived/gpu.md"));
   fs.unlinkSync(t.note("Facts/Pending/coffee.md"));
-  t.vault.sync();
+  t.syncPastGrace();
   assert.equal(t.fact("gpu").status, "archived");
   assert.equal(parseNote(t.read("Facts/Archived/gpu.md")).header.status, "archived");
   assert.equal(t.fact("coffee").status, "archived");
   assert.ok(fs.existsSync(t.note("Facts/Archived/coffee.md")));
+});
+
+test("a note that's back within the grace period was never deleted", () => {
+  const t = setup();
+  t.store.rememberFact({ key: "gpu", text: "RTX 5080.", origin: { kind: "user_stated" } });
+  t.vault.sync();
+  const content = t.read("Facts/gpu.md");
+  fs.unlinkSync(t.note("Facts/gpu.md"));
+  t.vault.sync();
+  t.write("Facts/gpu.md", content);
+  t.clock.ms += 31 * 1000;
+  t.vault.sync();
+  // Gone again later: the grace starts over.
+  fs.unlinkSync(t.note("Facts/gpu.md"));
+  t.vault.sync();
+  assert.equal(t.fact("gpu").status, "active");
+  t.clock.ms += 31 * 1000;
+  t.vault.sync();
+  assert.equal(t.fact("gpu").status, "archived");
+});
+
+test("renaming a note renames its fact instead of archiving it and adding a pending one", () => {
+  const approvals = [];
+  const t = setup({ approvals });
+  t.store.rememberFact({ key: "gpu", text: "RTX 5080.", origin: { kind: "user_stated" } });
+  t.store.setFactPinned("gpu", true);
+  t.vault.sync();
+  const id = t.fact("gpu").id;
+  fs.renameSync(t.note("Facts/gpu.md"), t.note("Facts/graphics card.md"));
+  t.vault.sync();
+  assert.equal(t.fact("gpu"), undefined);
+  const renamed = t.fact("graphics card");
+  assert.deepEqual([renamed.id, renamed.status, renamed.pinned, renamed.text], [id, "active", true, "RTX 5080."]);
+  assert.equal(t.store.getFactHistory("graphics card").at(-1).op, "rename");
+  assert.equal(approvals.length, 0);
+  assert.ok(fs.existsSync(t.note("Facts/graphics card.md")));
+  assert.equal(fs.existsSync(t.note("Facts/gpu.md")), false);
+  assert.deepEqual(t.syncPastGrace(), { applied: 0, written: 0, removed: 0, skipped: [] });
+  assert.equal(t.store.listFacts().length, 1);
+});
+
+test("sync-conflict copies are skipped, never taken in or touched", () => {
+  const t = setup();
+  t.store.rememberFact({ key: "gpu", text: "RTX 5080.", origin: { kind: "user_stated" } });
+  t.vault.sync();
+  const copies = [
+    "Facts/gpu-DESKTOP-4F2K9.md",
+    "Facts/gpu 2.md",
+    "Facts/gpu.sync-conflict-20260930-101500-ABCDEFG.md",
+    "Facts/gpu (conflicted copy 2026-09-30).md",
+    "Facts/Pending/gpu (Conflicted copy laptop 202609301015).md",
+  ];
+  for (const rel of copies) t.write(rel, t.read("Facts/gpu.md").replace("RTX 5080.", "RTX 4080."));
+  // Ordinary names that only look alike are still new notes.
+  t.write("Facts/raid 2.md", "---\ntags: raid\n---\nSecond raid team.\n");
+  t.write("Facts/gpu-fan.md", "---\ntags: pc\n---\nNoisy.\n");
+  const result = t.vault.sync();
+  assert.deepEqual(result.skipped.map((s) => s.file).sort(), [...copies].sort());
+  assert.ok(result.skipped.every((s) => s.reason === "a sync-conflict copy, ignored"));
+  assert.equal(t.fact("gpu").text, "RTX 5080.");
+  for (const rel of copies) assert.ok(fs.existsSync(t.note(rel)));
+  assert.equal(t.fact("raid 2").status, "pending");
+  assert.equal(t.fact("gpu-fan").status, "pending");
 });
 
 test("restoring is refused while another live fact holds the key", () => {
