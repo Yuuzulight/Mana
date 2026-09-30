@@ -364,15 +364,17 @@ function createMemoryVault(options = {}) {
       if (current === "pending") requestOk(fact.key, body);
     }
     if (current === "pending") return { key: fact.key };
-    // A pinned fact is in every prompt, so a pin change is asked about like
-    // a new note (executor in server.js); the note shows the current pin
-    // until then.
-    if (typeof header.pinned === "boolean" && header.pinned !== Boolean(fact.pinned)) {
+    // A pinned fact is in every prompt, so pinning is asked about like a new
+    // note (executor in server.js); the note shows the current pin until
+    // then. Unpinning only takes it out of the prompt: applied directly.
+    if (header.pinned === false && fact.pinned) {
+      store.setFactPinned(fact.key, false);
+    } else if (header.pinned === true && !fact.pinned) {
       ask("memory-vault-pin", fact.key, {
-        summary: `${header.pinned ? "Pin" : "Unpin"} "${fact.key}" from your vault: ${fact.text}`,
-        payload: { key: fact.key, pinned: header.pinned },
+        summary: `Pin "${fact.key}" from your vault: ${fact.text}`,
+        payload: { key: fact.key, pinned: true },
       });
-      log(`the pin change on "${note.rel}" is waiting for your OK in Mana.`);
+      log(`pinning "${note.rel}" is waiting for your OK in Mana.`);
     }
     if (fact.trigger && typeof header.paused === "boolean" && header.paused !== Boolean(fact.paused)) {
       store.setFactPaused(fact.key, header.paused);
