@@ -331,7 +331,7 @@ internal sealed partial class SessionListForm : Form
         // Before any RegisterRailTool.
         toolPanel = new ToolPanelHost(railToolTip);
 
-        // #538's rail: Artifacts, Background tasks and Terminal on top,
+        // #538's rail: Artifacts, Background tasks, Terminal and Browser on top,
         // Settings docked at the bottom.
         // #1119: Settings opens in the tool panel.
         RegisterRailTool("settings", "settings", "Settings", CreateSettingsTool).Dock = DockStyle.Bottom;
